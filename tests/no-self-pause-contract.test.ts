@@ -31,7 +31,10 @@ test("clarification preserves understanding without reopening informed approval"
 test("resolved subdecisions retain the original authorized objective", () => {
 	const prompt = __testing.buildGentlePrompt("gentleman");
 	assert.ok(prompt.includes("Resolving an incident or subdecision does not complete or cancel the original authorized objective; resume safe, necessary in-scope steps automatically, using judgment for proportionate recovery and respecting explicit user dispositions. Investigate pending technical uncertainty rather than treating it alone as a new human decision."));
-	assert.ok(prompt.includes("Stop only for an unresolved consequential scope/product decision, required explicit consent, a denied action, unavailable required proof, or the human's explicit stop."));
+	assert.ok(prompt.includes("Stop for an unresolved consequential scope/product decision, required explicit consent, a denied action, or the human's explicit stop."));
+	assert.ok(prompt.includes("Unavailable required proof blocks completion and delivery; it does not alone prohibit specifically authorized in-scope implementation where actual native authority and other limits permit it."));
+	assert.ok(prompt.includes("After a setup prerequisite is repaired, the human may explicitly request one new bounded verification attempt."));
+	assert.ok(prompt.includes("Never bypass consent, a denial, explicit one-run or no-retry limits, terminal native outcomes, or exhausted native budgets."));
 	assert.ok(prompt.includes("Do not infer permission for publishing, destructive actions, unrelated scope or native consent from this continuity rule."));
 });
 

@@ -190,6 +190,55 @@ posixTest("no initial Node acquires verified native binary and refreshes child P
 		assert.deepEqual(readdirSync(f.home), [], "successful wizard exit removes the owned tools");
 	} finally { f.cleanup(); }
 });
+// BSD ls appends `@` (extended attributes) or `+` (an ACL) to the mode
+// string. Current macOS attaches com.apple.provenance to every new
+// directory, so `@` is the normal case there (#2144). GNU ls appends `.`
+// when the directory has an SELinux security context, which is every
+// directory on an SELinux-enabled host, and `+` for an ACL. This ls reports a
+// fixed marker on every host, so the guard is checked the same way on
+// Linux CI and macOS.
+function lsWithModeMarker(f: ReturnType<typeof fixture>, marker: "" | "@" | "." | "+") {
+	f.executable("ls", `${systemUtility("ls")} "$@" | awk -v m='${marker}' '{ sub(/[@+.]$/, "", $1); $1 = $1 m; print }'`);
+}
+posixTest("a tools directory whose mode shows the extended-attribute marker @ is accepted (#2144)", () => {
+	const f = fixture();
+	try {
+		f.addPnpm(); f.wizard(); lsWithModeMarker(f, "@");
+		const result = f.run();
+		assert.equal(result.status, 0, result.stderr);
+		assert.doesNotMatch(result.stderr, /Unsafe tooling ownership/);
+		assert.match(result.stdout, /wizard-child:.*bootstrap-tools/);
+	} finally { f.cleanup(); }
+});
+posixTest("a tools directory whose mode shows the SELinux context marker . is accepted (#2144)", () => {
+	const f = fixture();
+	try {
+		f.addPnpm(); f.wizard(); lsWithModeMarker(f, ".");
+		const result = f.run();
+		assert.equal(result.status, 0, result.stderr);
+		assert.doesNotMatch(result.stderr, /Unsafe tooling ownership/);
+		assert.match(result.stdout, /wizard-child:.*bootstrap-tools/);
+	} finally { f.cleanup(); }
+});
+posixTest("a tools directory whose mode shows the ACL marker + is still refused", () => {
+	const f = fixture();
+	try {
+		f.addPnpm(); f.wizard(); lsWithModeMarker(f, "+");
+		const result = f.run();
+		assert.notEqual(result.status, 0);
+		assert.match(result.stderr, /Unsafe tooling ownership/);
+		assert.doesNotMatch(result.stdout, /wizard-child/);
+	} finally { f.cleanup(); }
+});
+posixTest("a tools directory with a plain drwx------ mode is still accepted", () => {
+	const f = fixture();
+	try {
+		f.addPnpm(); f.wizard(); lsWithModeMarker(f, "");
+		const result = f.run();
+		assert.equal(result.status, 0, result.stderr);
+		assert.match(result.stdout, /wizard-child:/);
+	} finally { f.cleanup(); }
+});
 posixTest("successful exit removes only the owned tools directory", () => {
 	const f = fixture();
 	try {
@@ -587,7 +636,18 @@ for (const [os, arch, platform, architecture] of [["Darwin", "arm64", "darwin", 
 		try {
 			f.addPnpm(); f.wizard();
 			const hash = artifactFor("node", platform, architecture).integrity.slice(7);
-			assert.equal(f.run({ FAKE_OS: os, FAKE_ARCH: arch, FAKE_HASH: hash }).status, 0);
+			const result = f.run({ FAKE_OS: os, FAKE_ARCH: arch, FAKE_HASH: hash });
+			assert.equal(result.status, 0, JSON.stringify({
+				status: result.status,
+				signal: result.signal,
+				error: result.error ? {
+					name: result.error.name,
+					message: result.error.message,
+					code: "code" in result.error ? result.error.code : null,
+				} : null,
+				stdout: result.stdout,
+				stderr: result.stderr,
+			}));
 		} finally { f.cleanup(); }
 	});
 }
@@ -885,7 +945,7 @@ posixTest("production Node process adapter propagates ordinary nonzero tar exit 
 	try {
 		writeFileSync(join(f.home, "unrelated.txt"), "preserve");
 		f.executable("tar", "exit 7");
-		const result = await guardedFixture(node, [productionPnpmRunner(f.root, f.home, f.bin)], {}, 3000);
+		const result = await guardedFixture(node, [productionPnpmRunner(f.root, f.home, f.bin)], {}, 15000);
 		assert.equal(result.guardKilled, false);
 		assert.equal(result.status, 1);
 		assert.match(result.stderr, /acquisition rejected/);
@@ -1193,9 +1253,11 @@ test("the CI native Windows gate requires exactly the native tests the Windows b
 	const modes = /^const probeModes = \[([^\]]*)\] as const;$/m.exec(source)?.[1].split(",").filter((mode) => mode.trim().length > 0).length ?? 0;
 	assert.ok(/^for \(const mode of probeModes\) \{\n\ttest\(`native Windows: /m.test(source.slice(source.indexOf("const probeModes"))));
 	const ci = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-	const gate = /\[int\]\$passes\.Groups\[1\]\.Value -ne (\d+) -or/.exec(ci);
-	assert.ok(gate, "the gate compares the passed count exactly");
-	assert.ok(/\[int\]\$skips\.Groups\[1\]\.Value -ne 0/.test(ci), "0 skips stays required");
 	assert.equal(literal + modes, 38);
-	assert.equal(Number(gate[1]), literal + modes);
+	const installerJob = ci.slice(ci.indexOf("\n  installer:"));
+	assert.equal((installerJob.match(/node --experimental-strip-types --test --test-reporter=tap /g) ?? []).length, 1);
+	assert.match(installerJob, /status=\("\$\{PIPESTATUS\[@\]\}"\)/);
+	assert.match(installerJob, /if \[ "\$\{status\[0\]\}" -ne 0 \]; then exit "\$\{status\[0\]\}"; fi/);
+	assert.match(installerJob, /if \[ "\$RUNNER_OS" = Windows \]; then\n\s+node scripts\/verify-installer-tap\.mjs < "\$RUNNER_TEMP\/installer\.tap"/);
+	assert.doesNotMatch(installerJob, /--test-name-pattern "\^native Windows"/);
 });

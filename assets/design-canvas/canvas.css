@@ -153,6 +153,14 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport
 	background: var(--gd-stage);
 	cursor: grab;
 	touch-action: none;
+	-webkit-user-select: none;
+	user-select: none;
+}
+
+/* Editable controls keep their native text selection inside the viewport. */
+.gd-viewport input, .gd-viewport textarea, .gd-viewport [contenteditable]:not([contenteditable="false"]) {
+	-webkit-user-select: text;
+	user-select: text;
 }
 
 .gd-viewport.gd-panning { cursor: grabbing; }
@@ -320,7 +328,11 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport
 .gd-commenting .gd-shield:hover { background: transparent; box-shadow: none; }
 .gd-commenting .gd-shield-hint { display: none; }
 
-.gd-viewport.gd-focused { cursor: default; }
+.gd-viewport.gd-focused {
+	cursor: default;
+	-webkit-user-select: auto;
+	user-select: auto;
+}
 .gd-focused .gd-artboard:not(.gd-focus-board) { opacity: 0.25; }
 .gd-focused .gd-focus-board .gd-artboard-frame { box-shadow: 0 0 0 2px var(--gd-accent), 0 2px 16px rgba(0, 0, 0, 0.5); }
 

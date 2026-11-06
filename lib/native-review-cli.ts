@@ -3,12 +3,13 @@ import { chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, posix, win32 } from "node:path";
 import { promisify } from "node:util";
-import { gentleAiIsolationEnv, PackageLocalGentleAiBinaryMissingError, resolveGentleAiBinary } from "./gentle-ai-binary.ts";
+import { binaryDigest, gentleAiIsolationEnv, PackageLocalGentleAiBinaryMissingError, resolveGentleAiBinary } from "./gentle-ai-binary.ts";
 import { GENTLE_PI_REVIEW_RELAY_CONTRACT, GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV } from "./review-relay-contract.ts";
 import { decodeReviewAssessmentV1, type ReviewAssessmentV1 } from "./review-risk-assessment.ts";
 import {
 	REVIEW_INTEGRATION_CONTRACT,
 	decodeReviewAcknowledgedV1,
+	decodeReviewCapabilitiesV2,
 	decodeReviewConsentV2,
 	decodeReviewConsentV3,
 	decodeReviewFailureV2,
@@ -18,6 +19,7 @@ import {
 	decodeReviewStartV3,
 	decodeReviewStartV4,
 	decodeReviewStatusV3,
+	intendedUntrackedSubmissionCarriesTarget,
 	type ReviewAcknowledgedExpectationV1,
 	type ReviewAcknowledgedV1,
 	type ReviewConsentEnvelope,
@@ -157,10 +159,13 @@ export const NATIVE_REVIEW_MODE_SCOPE = {
 	BOTH: "both",
 } as const;
 export type NativeReviewModeScope = (typeof NATIVE_REVIEW_MODE_SCOPE)[keyof typeof NATIVE_REVIEW_MODE_SCOPE];
+export type NativeReviewModeMutationScope = typeof NATIVE_REVIEW_MODE_SCOPE.CLONE | typeof NATIVE_REVIEW_MODE_SCOPE.GLOBAL;
 
 export interface NativeReviewModeRequest {
 	cwd: string;
 	operation: NativeReviewModeOperation;
+	/** Mutation scope is explicit when global; omitted mutations remain clone-local. Status takes no scope. */
+	scope?: NativeReviewModeMutationScope;
 	signal?: AbortSignal;
 }
 
@@ -537,7 +542,20 @@ export interface NativeLensSelectionRequest {
 	lensesReason?: string;
 }
 
-export interface NativeStartRequest extends NativeUntrackedSelectionRequest, NativeLensSelectionRequest {
+/** Explicit request file; native owns reading, freezing, sizing and identity. */
+interface NativeRequestContextSelection {
+	requestContextPath?: string;
+}
+
+export const NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE = "provider does not support request context";
+
+function nativeRequestContextArguments(request: NativeRequestContextSelection): readonly string[] {
+	if (request.requestContextPath === undefined) return [];
+	if (!isCanonicalProcessString(request.requestContextPath)) throw new TypeError("Native requestContextPath must be a non-empty, trimmed, NUL-free string");
+	return ["--request-context", request.requestContextPath];
+}
+
+export interface NativeStartRequest extends NativeUntrackedSelectionRequest, NativeLensSelectionRequest, NativeRequestContextSelection {
 	cwd: string;
 	baseRef?: string;
 	committedOnly?: boolean;
@@ -550,7 +568,7 @@ export interface NativeStartRequest extends NativeUntrackedSelectionRequest, Nat
 }
 export const NATIVE_REVIEW_CONSENT_ANSWER = { GRANTED: "granted", DECLINED: "declined" } as const;
 export type NativeReviewConsentAnswer = (typeof NATIVE_REVIEW_CONSENT_ANSWER)[keyof typeof NATIVE_REVIEW_CONSENT_ANSWER];
-export interface NativeReviewConsentAnswerRequest { cwd: string; consent: ReviewConsentEnvelope; answer: NativeReviewConsentAnswer; signal?: AbortSignal; }
+export interface NativeReviewConsentAnswerRequest extends NativeRequestContextSelection { cwd: string; consent: ReviewConsentEnvelope; answer: NativeReviewConsentAnswer; signal?: AbortSignal; }
 export interface NativeReviewConsentDeclinedResult {
 	kind: "declined";
 	targetIdentity: string;
@@ -564,7 +582,7 @@ export interface NativeReviewConsentDeclinedResult {
 export interface NativeReviewConsentStartedResult { kind: "started"; start: NativeStartResult; }
 export type NativeReviewConsentAnswerResult = NativeReviewConsentStartedResult | NativeReviewConsentDeclinedResult;
 export interface NativeReviewStatusRequest { cwd: string; signal?: AbortSignal; }
-export interface NativeTargetStatusRequest extends NativeUntrackedSelectionRequest, NativeLensSelectionRequest {
+export interface NativeTargetStatusRequest extends NativeUntrackedSelectionRequest, NativeLensSelectionRequest, NativeRequestContextSelection {
 	cwd: string;
 	lineageId?: string;
 	baseRef?: string;
@@ -1475,6 +1493,16 @@ function decodeNativeReviewStatus(value: unknown): NativeReviewStatusResult {
 		raw: body,
 	};
 }
+function nativeReviewModeScopeArguments(operation: NativeReviewModeOperation, scope: NativeReviewModeMutationScope | undefined): string[] {
+	if (scope !== undefined && scope !== NATIVE_REVIEW_MODE_SCOPE.CLONE && scope !== NATIVE_REVIEW_MODE_SCOPE.GLOBAL) {
+		throw new TypeError("Native review mode scope must be clone or global");
+	}
+	if (scope !== undefined && operation !== NATIVE_REVIEW_MODE_OPERATION.ENABLE && operation !== NATIVE_REVIEW_MODE_OPERATION.DISABLE) {
+		throw new TypeError("Native review mode scope is only valid for enable or disable");
+	}
+	return operation === NATIVE_REVIEW_MODE_OPERATION.STATUS ? [] : ["--scope", scope ?? NATIVE_REVIEW_MODE_SCOPE.CLONE];
+}
+
 function isWindowsRepositoryPath(value: string): boolean { return /^[A-Za-z]:[\\/]/.test(value) || /^\\\\/.test(value); }
 export function normalizeNativeReviewCwd(value: string, platform: NodeJS.Platform = process.platform): string {
 	if (platform !== "win32") return value;
@@ -1666,22 +1694,21 @@ class NativeReviewPlainCli {
 		return status;
 	}
 
-	// Dark until the negotiated version reports `mode: true` (Design Decision
-	// #7, organic-rdd-parity). `status` is read-only (no timeout suppression,
-	// exact fixed argv per the design's data flow); `enable`/`disable` mutate
-	// and always pass `--scope clone` so Pi's own kill-switch command surface
-	// never mutates the operator's global gentle-ai state across other clones.
+	// Status stays read-only; mutation defaults to clone unless the caller
+	// explicitly supplies global. Validate scope before cwd or process access.
 	async reviewMode(request: NativeReviewModeRequest): Promise<NativeReviewModeResult> {
+		const operation = request.operation;
+		const scopeArguments = nativeReviewModeScopeArguments(operation, request.scope);
 		const cwd = await canonicalNativeReviewCwd(request.cwd);
-		const mutating = request.operation !== NATIVE_REVIEW_MODE_OPERATION.STATUS;
+		const mutating = operation !== NATIVE_REVIEW_MODE_OPERATION.STATUS;
 		const { body } = await this.execute(
 			NATIVE_REVIEW_OPERATION.MODE,
 			cwd,
-			["review", "mode", request.operation, "--cwd", cwd, ...(mutating ? ["--scope", "clone"] : []), "--json"],
+			["review", "mode", operation, "--cwd", cwd, ...scopeArguments, "--json"],
 			mutating,
 			request.signal,
 		);
-		return decode(NATIVE_REVIEW_OPERATION.MODE, mutating, () => decodeNativeReviewMode(body, request.operation));
+		return decode(NATIVE_REVIEW_OPERATION.MODE, mutating, () => decodeNativeReviewMode(body, operation));
 	}
 
 	async reclaim(request: NativeReviewReclaimRequest): Promise<NativeReviewRecoveryResult> {
@@ -1927,12 +1954,14 @@ export class NativeReviewIntegrationError extends Error {
 // answer only through one of the exact invocations carried by the envelope.
 export class NativeReviewConsentRequiredError extends Error {
 	readonly consent: ReviewConsentEnvelope;
+	readonly requestContextPath?: string;
 	readonly launchAttempted = true;
 	readonly mutationOutcome = "none";
-	constructor(consent: ReviewConsentEnvelope) {
+	constructor(consent: ReviewConsentEnvelope, requestContextPath?: string) {
 		super(consent.headline);
 		this.name = "NativeReviewConsentRequiredError";
 		this.consent = consent;
+		this.requestContextPath = requestContextPath;
 	}
 }
 
@@ -2063,6 +2092,10 @@ function consentInvocationArguments(request: NativeReviewConsentAnswerRequest): 
 	const words = splitNativeConsentInvocation(choice.invocation);
 	if (words[0] !== "gentle-ai" || words[1] !== "review" || words[2] !== "start") throw new NativeReviewConsentBindingError("consent-invocation-not-start", "Native consent invocation is not a provider review START");
 	const arguments_ = words.slice(1);
+	if (request.requestContextPath !== undefined) {
+		const values = arguments_.flatMap((token, index) => token === "--request-context" ? [arguments_[index + 1]] : token.startsWith("--request-context=") ? [token.slice("--request-context=".length)] : []);
+		if (values.length !== 1 || values[0] !== request.requestContextPath) throw new NativeReviewConsentBindingError("consent-invocation-request-context-changed", "Native consent invocation did not retain the requested context file");
+	}
 	if (exactConsentOption(arguments_, "--contract") !== REVIEW_INTEGRATION_CONTRACT) throw new NativeReviewConsentBindingError("consent-invocation-contract-changed", "Native consent invocation contract changed");
 	const providerCwd = exactConsentOption(arguments_, "--cwd");
 	const requestedCwd = normalizeNativeReviewCwd(request.cwd);
@@ -2164,6 +2197,8 @@ function decodeNativeUnachievableLensCaptureArtifact(value: unknown): NativeRevi
 }
 
 export class NativeReviewCliV216 implements NativeReviewCli {
+	// Only executable capabilities are reusable. STATUS and authority remain fresh.
+	private contextCapabilities?: { executable: string; digest: string; value: ReturnType<typeof decodeReviewCapabilitiesV2> };
 	private readonly plain: NativeReviewPlainCli;
 	private readonly adapter: ExecFileAdapter;
 	private readonly executable: string | (() => string);
@@ -2266,6 +2301,7 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		const selection = nativeUntrackedSelection(request);
 		const statusRequest: NativeTargetStatusRequest = {
 			cwd: request.cwd,
+			...(request.requestContextPath === undefined ? {} : { requestContextPath: request.requestContextPath }),
 			projection,
 			...(request.baseRef === undefined ? {} : { baseRef: request.baseRef, committedOnly: true }),
 			...(request.lineageId === undefined ? {} : { lineageId: request.lineageId }),
@@ -2299,6 +2335,10 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 			return argument.token;
 		});
 		const targetIdentity = status.targetIdentity;
+		if (request.requestContextPath !== undefined) {
+			const values = transitionTokens.flatMap((token, index) => token === "--request-context" ? [transitionTokens[index + 1]] : token.startsWith("--request-context=") ? [token.slice("--request-context=".length)] : []);
+			if (values.length !== 1 || values[0] !== request.requestContextPath) throw nativeError(NATIVE_REVIEW_ERROR_CODE.IDENTITY_MISMATCH, NATIVE_REVIEW_OPERATION.START, false, "native START transition did not retain the requested context file", undefined, false);
+		}
 		const execution = await this.negotiated(NATIVE_REVIEW_OPERATION.START, request.cwd, ["review", "start", ...transitionTokens], true, request.signal);
 		// A negotiated v2 START may answer a consent question (action:
 		// "consent_required") instead of `start/v3` when the provider needs an
@@ -2316,7 +2356,10 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 				return decoded;
 			});
 			if (consent.targetIdentity !== targetIdentity || consent.projection !== projection) throw nativeError(NATIVE_REVIEW_ERROR_CODE.IDENTITY_MISMATCH, NATIVE_REVIEW_OPERATION.START, true, "native consent target binding mismatch");
-			throw new NativeReviewConsentRequiredError(consent);
+			if (request.requestContextPath !== undefined) {
+				for (const choice of consent.choices) consentInvocationArguments({ cwd: request.cwd, consent, answer: choice.answer, requestContextPath: request.requestContextPath });
+			}
+			throw new NativeReviewConsentRequiredError(consent, request.requestContextPath);
 		}
 		const result = decode(NATIVE_REVIEW_OPERATION.START, true, () => decodeReviewStartResponse(execution.body));
 		if (request.lineageId !== undefined && result.lineageId !== request.lineageId) throw nativeError(NATIVE_REVIEW_ERROR_CODE.IDENTITY_MISMATCH, NATIVE_REVIEW_OPERATION.START, true, "native start lineage mismatch");
@@ -2386,6 +2429,9 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 	}
 
 	private async observedTargetStatus(request: NativeTargetStatusRequest): Promise<ReviewStatusV3> {
+		// Validate locally before discovery; never probe support by sending an
+		// unknown flag or retrying the review without its requested intent.
+		const requestContextArguments = nativeRequestContextArguments(request);
 		if (request.baseRef !== undefined && !isCanonicalProcessString(request.baseRef)) throw new TypeError("Native STATUS baseRef must be a non-empty, trimmed, NUL-free string");
 		if (request.baseRef !== undefined && request.committedOnly !== true) throw new TypeError("Native STATUS baseRef requires explicit committedOnly acknowledgement");
 		if (request.baseRef === undefined && request.committedOnly !== undefined) throw new TypeError("Native STATUS committedOnly requires an explicit baseRef");
@@ -2399,7 +2445,11 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		// value for the same flag. providerFlagValue also fails closed on a
 		// dangling `--flag` (last token, no value) or an empty `--flag=`.
 		const submittedBaseRefValue = submittedTokens === undefined ? undefined : providerFlagValue(submittedTokens, "base-ref");
-		if (request.baseRef !== undefined && submittedBaseRefValue !== undefined && submittedBaseRefValue !== request.baseRef) throw new TypeError("Native intended-untracked selection already carries a conflicting base-ref");
+		// A provider-issued base-diff selector (base tree plus scope) already binds
+		// the target the request named; the tree is not textually comparable to
+		// the request's ref, so it runs as issued and nothing is re-forwarded.
+		const providerOwnsTarget = submitted !== undefined && intendedUntrackedSubmissionCarriesTarget(submitted.argumentTokens);
+		if (!providerOwnsTarget && request.baseRef !== undefined && submittedBaseRefValue !== undefined && submittedBaseRefValue !== request.baseRef) throw new TypeError("Native intended-untracked selection already carries a conflicting base-ref");
 		const submittedLineageValue = submittedTokens === undefined ? undefined : providerFlagValue(submittedTokens, "lineage");
 		if (request.lineageId !== undefined && submittedLineageValue !== undefined && submittedLineageValue !== request.lineageId) throw new TypeError("Native intended-untracked selection already carries a conflicting lineage");
 		let submittedHasCommittedOnly = false;
@@ -2412,11 +2462,31 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		// Append only the half of the base-ref/committed-only pair the provider
 		// did not already carry (a present base-ref already equals
 		// request.baseRef; the throw above ruled out the conflicting case).
-		const forwardedBaseRef = request.baseRef === undefined ? [] : [
+		const forwardedBaseRef = request.baseRef === undefined || providerOwnsTarget ? [] : [
 			...(submittedBaseRefValue === undefined ? ["--base-ref", request.baseRef] : []),
 			...(submittedHasCommittedOnly ? [] : ["--committed-only"]),
 		];
 		const forwardedLineage = request.lineageId === undefined || submittedLineageValue !== undefined ? [] : ["--lineage", request.lineageId];
+		let contextExecutable: string | undefined;
+		if (requestContextArguments.length > 0) {
+			contextExecutable = this.executablePath(NATIVE_REVIEW_OPERATION.STATUS, false);
+			const digest = binaryDigest(contextExecutable);
+			let capabilities = this.contextCapabilities?.executable === contextExecutable && this.contextCapabilities.digest === digest
+				? this.contextCapabilities.value : undefined;
+			if (capabilities === undefined) {
+				this.contextCapabilities = undefined;
+				const discovery = await this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd,
+					["review", "capabilities", "--contract", REVIEW_INTEGRATION_CONTRACT], false, request.signal, contextExecutable);
+				capabilities = decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewCapabilitiesV2(discovery.body, digest));
+				if (binaryDigest(contextExecutable) !== digest) throw nativeError(NATIVE_REVIEW_ERROR_CODE.IDENTITY_MISMATCH,
+					NATIVE_REVIEW_OPERATION.STATUS, false, "native executable changed during capability discovery", undefined, false);
+				this.contextCapabilities = { executable: contextExecutable, digest, value: capabilities };
+			}
+			if (!["start_request_context", "start_options_preflight"].every(feature => capabilities.optionalFeatures.has(feature))) {
+				throw nativeError(NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE, NATIVE_REVIEW_OPERATION.STATUS, false,
+					NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE, undefined, false);
+			}
+		}
 		const statusArguments = submittedTokens === undefined ? [
 			"review", "status", "--contract", REVIEW_INTEGRATION_CONTRACT, "--cwd", request.cwd,
 			"--projection", request.projection ?? "workspace",
@@ -2425,9 +2495,12 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 			...(request.lineageId === undefined ? [] : ["--lineage", request.lineageId]),
 			...(request.agent === undefined ? [] : ["--agent", request.agent]),
 			...nativeLensSelectionArguments(request),
+			...requestContextArguments,
 			"--next-transition",
-		] : ["review", "status", "--cwd", request.cwd, ...submittedTokens, ...forwardedBaseRef, ...forwardedLineage, ...nativeLensSelectionArguments(request)];
-		const execution = await this.negotiated(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal);
+		] : ["review", "status", "--cwd", request.cwd, ...submittedTokens, ...forwardedBaseRef, ...forwardedLineage, ...nativeLensSelectionArguments(request), ...requestContextArguments];
+		const execution = contextExecutable === undefined
+			? await this.negotiated(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal)
+			: await this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal, contextExecutable);
 		measureStatusSync("decode", () => assertSupportedNextTransitionOperation(execution.body));
 		return decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewStatusV3(execution.body));
 	}
@@ -2635,17 +2708,19 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 	}
 
 	async reviewMode(request: NativeReviewModeRequest): Promise<NativeReviewModeResult> {
+		const operation = request.operation;
+		const scopeArguments = nativeReviewModeScopeArguments(operation, request.scope);
 		const cwd = await canonicalNativeReviewCwd(request.cwd);
-		const mutating = request.operation !== NATIVE_REVIEW_MODE_OPERATION.STATUS;
+		const mutating = operation !== NATIVE_REVIEW_MODE_OPERATION.STATUS;
 		const execution = await this.invoke(
 			NATIVE_REVIEW_OPERATION.MODE,
 			cwd,
-			["review", "mode", request.operation, "--cwd", cwd, ...(mutating ? ["--scope", "clone"] : []), "--json"],
+			["review", "mode", operation, "--cwd", cwd, ...scopeArguments, "--json"],
 			mutating,
 			request.signal,
 			this.executablePath(NATIVE_REVIEW_OPERATION.MODE, mutating),
 		);
-		return decode(NATIVE_REVIEW_OPERATION.MODE, mutating, () => decodeNativeReviewMode(execution.body, request.operation));
+		return decode(NATIVE_REVIEW_OPERATION.MODE, mutating, () => decodeNativeReviewMode(execution.body, operation));
 	}
 
 	// Read-only risk assessment (gentle-ai#4295, gentle-pi#662). Never mutates;

@@ -214,9 +214,38 @@ function linkDir(env: Record<string, string | undefined>, homedir: string): stri
 // launched from inside a Gentle Shell session sees the outer isolated home as
 // PI_CODING_AGENT_DIR, so `--link` must not re-select it (#2015).
 export const USER_PI_HOME_ENV = "GENTLE_SHELL_USER_PI_HOME";
+// Set by bin/gentle-shell.mjs only when Gentle Shell, not Herdr's Pi bridge,
+// owns the pane's Herdr agent reports (extensions/gentle-herdr-agent.ts).
+export const HERDR_REPORTER_ENV = "GENTLE_SHELL_HERDR_REPORTER";
 
 export function userPiHome(env: Record<string, string | undefined>, homedir: string): string {
 	return env[USER_PI_HOME_ENV] || linkDir(env, homedir);
+}
+
+// Nobody can see or type into an editor git opens from Pi's bash tool, so
+// `git rebase --continue` or a bare `git commit` would wait on it forever.
+// `true` makes git keep the prepared message (or abort an empty one) instead.
+// A value the user already set is kept; on Windows env names ignore case, so a
+// user's `git_editor` counts too.
+export const NON_INTERACTIVE_GIT_ENV = { GIT_EDITOR: "true", GIT_SEQUENCE_EDITOR: "true" } as const;
+
+export function nonInteractiveGitEnv(env: Record<string, string | undefined>, platform: string = process.platform): Record<string, string> {
+	const isSet = (key: string) => platform === "win32"
+		? Object.entries(env).some(([name, value]) => value !== undefined && name.toUpperCase() === key)
+		: env[key] !== undefined;
+	return Object.fromEntries(Object.entries(NON_INTERACTIVE_GIT_ENV).filter(([key]) => !isSet(key)));
+}
+
+// On Windows, Node keeps only the first of a set of case variants (in sorted
+// order) and then skips it if it is undefined, so `{ GIT_EDITOR: undefined,
+// git_editor: "vim" }` would reach the child with neither. Drop the undefined
+// variants so the defined one is what gets spawned.
+export function dropUndefinedCaseVariants(env: Record<string, string | undefined>, platform: string = process.platform): void {
+	if (platform !== "win32") return;
+	const defined = new Set(Object.entries(env).filter(([, value]) => value !== undefined).map(([name]) => name.toUpperCase()));
+	for (const [name, value] of Object.entries(env)) {
+		if (value === undefined && defined.has(name.toUpperCase())) delete env[name];
+	}
 }
 
 export function isolatedDir(env: Record<string, string | undefined>, homedir: string): string {
@@ -451,11 +480,16 @@ export interface PiRuntime {
 	kind: PiRuntimeKind;
 	command: string;
 	args: string[];
+	// Only ever set for kind "bundled": the adjacent peer's and the
+	// gentle-shell-managed install's version both come from a package.json
+	// already read into memory, so main() can run checkPiVersion(runtime.version)
+	// without spawning a process just to print it back (#2096).
+	version?: string;
 }
 
 export interface PiRuntimeDeps {
 	env: Record<string, string | undefined>;
-	resolveBundledCli: () => string | undefined;
+	resolveBundledCli: () => { path: string; version: string } | undefined;
 	findOnPath: (name: string) => string | undefined;
 	nodeExecPath: string;
 }
@@ -464,8 +498,8 @@ export function resolvePiRuntime(deps: PiRuntimeDeps): PiRuntime | undefined {
 	const envOverride = deps.env.GENTLE_SHELL_PI;
 	if (envOverride !== undefined && envOverride.length > 0) return { kind: "env", command: envOverride, args: [] };
 
-	const bundledCliPath = deps.resolveBundledCli();
-	if (bundledCliPath !== undefined) return { kind: "bundled", command: deps.nodeExecPath, args: [bundledCliPath] };
+	const bundledCli = deps.resolveBundledCli();
+	if (bundledCli !== undefined) return { kind: "bundled", command: deps.nodeExecPath, args: [bundledCli.path], version: bundledCli.version };
 
 	const onPath = deps.findOnPath("pi");
 	if (onPath !== undefined) return { kind: "path", command: onPath, args: [] };
@@ -985,6 +1019,8 @@ export interface BuildPiInvocationInput {
 	// gentle-pi extension injection below may precede it.
 	piSubcommand?: PiSubcommand;
 	baseEnv: Record<string, string | undefined>;
+	// Defaults to process.platform; decides whether env names ignore case.
+	platform?: string;
 	// A bundled launch: its gentle-pi keeps its config in the prefix, so Pi gets
 	// no standalone config marker (standaloneConfigHome).
 	bundled?: boolean;
@@ -1082,7 +1118,9 @@ export function buildPiInvocation(input: BuildPiInvocationInput): PiInvocation {
 
 	const env: Record<string, string | undefined> = {
 		...input.baseEnv,
+		...nonInteractiveGitEnv(input.baseEnv, input.platform),
 		PI_CODING_AGENT_DIR: input.home.dir,
+		PI_PROGRAM_STATUS_APP: "gentle-shell",
 		GENTLE_PI_AGENT_HOME: input.home.dir,
 		[USER_PI_HOME_ENV]: userPiHome(input.baseEnv, input.homedir),
 	};
@@ -1094,6 +1132,7 @@ export function buildPiInvocation(input: BuildPiInvocationInput): PiInvocation {
 	else env[GENTLE_SHELL_CONFIG_HOME_ENV] = configHome;
 	if (childInjection === undefined) delete env[CHILD_PACKAGE_INJECTION_ENV];
 	else env[CHILD_PACKAGE_INJECTION_ENV] = encodeChildPackageInjection(childInjection);
+	dropUndefinedCaseVariants(env, input.platform);
 
 	return { command: input.runtime.command, args, env };
 }
@@ -1348,11 +1387,11 @@ export function helpText(): string {
 		"  gentle-shell install npm:<pkg>   Run pi's own 'install' against the resolved home.",
 		"  gentle-shell remove <source>     Run pi's own 'remove' against the resolved home.",
 		"  gentle-shell list                Run pi's own 'list' against the resolved home.",
-		"  gentle-shell update [target]     Run pi's own 'update' against the resolved home.",
-		"                                   In a bundled install Pi ships pinned: 'update' without a package",
-		"                                   runs 'gentle-shell upgrade' instead of updating Pi.",
-		"                                   'update --latest' installs the newest published Pi instead,",
-		"                                   without the release's verified lockfile.",
+		"  gentle-shell update [target]     Update Pi through its supported owner, or packages in the resolved home.",
+		"                                   In a bundled install 'update' installs the newest stable Pi",
+		"                                   without the release's verified lockfile; --latest is an alias.",
+		"                                   --all also updates extensions; explicit package pins remain pinned.",
+		"                                   --force is not supported for managed Pi self updates.",
 		"  gentle-shell config              Run pi's own 'config' against the resolved home.",
 		"  gentle-shell auth <command>      Run pi's own 'auth' against the resolved home.",
 		"  gentle-shell mcp <command>       Run pi's own 'mcp' (add, list, login, logout) against the",

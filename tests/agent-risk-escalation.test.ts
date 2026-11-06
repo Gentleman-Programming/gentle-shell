@@ -62,7 +62,7 @@ function assessTool(nativeRisk: "passive" | "medium" | "high" = "medium"): { exe
 	const tools = new Map<string, any>();
 	const pi = { on() {}, registerCommand() {}, registerTool(tool: { name: string }) { tools.set(tool.name, tool); } } as unknown as ExtensionAPI;
 	const nativeReviewCli: Partial<NativeReviewCli> = {
-		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "off", cloneLocal: "off", effective: "off", source: NATIVE_REVIEW_MODE_SOURCE.GLOBAL } }),
+		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "", effective: "on", source: NATIVE_REVIEW_MODE_SOURCE.GLOBAL } }),
 		assess: async () => ({
 			schema: REVIEW_ASSESSMENT_SCHEMA,
 			risk: nativeRisk,

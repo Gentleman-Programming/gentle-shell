@@ -3349,3 +3349,103 @@ test("collect-state public STATUS, INSPECT, and START serialize each provider co
 		assert.ok(serialized.length < 2 * JSON.stringify(bindings).length, `${parameters.operation} answer (${serialized.length} characters) must not double the ${JSON.stringify(bindings).length}-character binding projection`);
 	}
 });
+
+test("a correction-plan binding bound to the frozen authority target is captured after the worktree drifts", async () => {
+	// gentle-ai binds correction-plan collect inputs to authority_target_identity
+	// (the frozen candidate), not to the live target_identity, once the
+	// candidate has drifted; the host must accept the target the provider issued.
+	const lineageId = "drifted-correction";
+	const frozenTarget = `sha256:${"c".repeat(64)}`;
+	const input = correctionPlanInput(lineageId);
+	(input.arguments as { name: string; value: string; token?: string }[])[1] = { name: "target", value: frozenTarget, token: `--target=${frozenTarget}` };
+	const drifted = (): ReviewStatusV3 => ({ ...status(lineageId, [input], "correction_required"), authorityTargetIdentity: frozenTarget });
+	let captures = 0;
+	const native = {
+		targetStatus: async () => drifted(),
+		captureCorrectionPlan: async () => {
+			captures += 1;
+			// The provider echoes the frozen target it was invoked with.
+			return { schema: "gentle-ai.review-last-event-closure/v1", operation: "review.capture-correction-plan", lineageId, targetIdentity: frozenTarget, state: "correction_required", storeRevision: SHA };
+		},
+	} as unknown as NativeReviewCli;
+	const { controller, capture } = reviewRuntime(native, new CandidateViewRegistry());
+	const context = reviewContext(process.cwd());
+	const listed = await controller.execute("", { operation: "status", lineageId }, undefined, undefined, context);
+	const captured = await capture.execute("", { lineageId, collectBinding: bindingOf(listed.details as Record<string, unknown>), correctionLines: 1 }, undefined, undefined, context);
+	assert.equal((captured.details as { outcome?: string }).outcome, "native-last-event-closure");
+	assert.equal((captured.details as { mutation_outcome?: string }).mutation_outcome === "none", false);
+	assert.equal(captures, 1);
+
+	// A target that is neither the frozen authority target nor the live one stays refused.
+	const foreign = correctionPlanInput(lineageId);
+	(foreign.arguments as { name: string; value: string; token?: string }[])[1] = { name: "target", value: `sha256:${"d".repeat(64)}`, token: `--target=sha256:${"d".repeat(64)}` };
+	const foreignNative = {
+		targetStatus: async () => ({ ...status(lineageId, [foreign], "correction_required"), authorityTargetIdentity: frozenTarget }),
+		captureCorrectionPlan: async () => { throw new Error("must not capture"); },
+	} as unknown as NativeReviewCli;
+	const runtime = reviewRuntime(foreignNative, new CandidateViewRegistry());
+	const foreignListed = await runtime.controller.execute("", { operation: "status", lineageId }, undefined, undefined, context);
+	const refused = await runtime.capture.execute("", { lineageId, collectBinding: bindingOf(foreignListed.details as Record<string, unknown>), correctionLines: 1 }, undefined, undefined, context);
+	assert.equal((refused.details as { outcome?: string }).outcome, "capture-binding-rejected");
+});
+
+test("request context survives unrelated untracked selection and its START continuation", async (t) => {
+ const { cwd, eligible, initial, target } = untrackedStopFixture(t);
+ const retained = new Map(); const starts: Array<Record<string, unknown>> = [];
+ const context = join(cwd, "spec.md"); writeFileSync(context, "Requested behavior");
+ const native = { targetStatus: async (request: Record<string, unknown>) => "intendedUntrackedSelection" in request ? target : initial,
+  start: async (request: Record<string, unknown>) => { starts.push(request); return { lineageId: "context-selected", state: "reviewing", riskLevel: "low", selectedLenses: [], changedFiles: 1, changedLines: 1, correctionBudget: 1, action: "created", lensesRequired: false, riskReasons: [], raw: {} }; }
+ } as unknown as NativeReviewCli;
+ const run = (parameters: Record<string, unknown>) => __testing.executeReviewControllerOperation(parameters, cwd, native, undefined, undefined, undefined, retained);
+ const stopped = await run({ operation: "start", input: JSON.stringify({ mode: "ordinary", requestContextPath: "spec.md" }) });
+ assert.equal(typeof stopped.selectionBinding, "string", JSON.stringify(stopped));
+ const selected = await run({ operation: "select-intended-untracked", selectionBinding: stopped.selectionBinding, intendedUntracked: [eligible] });
+ assert.equal(starts.length, 1, JSON.stringify(selected));
+ assert.equal(starts[0].requestContextPath, context);
+});
+
+test("request context preserves unrelated non-start native stops", async (t) => {
+ const cwd = repository(t); writeFileSync(join(cwd, "spec.md"), "Requested behavior"); const target = startStatus(cwd);
+ target.action = "stop"; target.nextTransition = { kind: "stop", reasonCode: "managed_assets_outdated" };
+ const native = { targetStatus: async () => target } as unknown as NativeReviewCli;
+ const result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary", requestContextPath: "spec.md" }) }, cwd, native);
+ assert.notEqual(result.reason, "request-context-requires-fresh-review");
+ assert.equal(result.result, target.raw);
+});
+
+test("request context remains host-bound through the consent registry", async (t) => {
+ const cwd = repository(t), registry = new PendingReviewConsentRegistry(), session = Symbol("intent-consent");
+ writeFileSync(join(cwd, "spec.md"), "Requested behavior");
+ const consent = decodeReviewConsentV3(JSON.parse(readFileSync(join(process.cwd(), "tests/fixtures/devbinary/consent-v3.captured.json"), "utf8")));
+ const answers: Array<Record<string, unknown>> = [];
+ const native = { targetStatus: async () => startStatus(cwd), start: async () => { throw new NativeReviewConsentRequiredError(consent, join(cwd, "spec.md")); },
+  answerConsent: async (request: Record<string, unknown>) => { answers.push(request); return { kind: "declined", targetIdentity: consent.targetIdentity, projection: consent.projection, riskLevel: consent.riskLevel, changedFiles: 1, changedLines: 1, consent: "declined_this_candidate", raw: {} }; }
+ } as unknown as NativeReviewCli;
+ const run = (parameters: Record<string, unknown>) => __testing.executeReviewControllerOperation(parameters, cwd, native, undefined, undefined, undefined, new Map(), registry, session);
+ const pending = await run({ operation: "start", input: JSON.stringify({ mode: "ordinary", requestContextPath: "spec.md" }) });
+ assert.equal(pending.outcome, "native-review-consent-required");
+ await run({ operation: "answer-consent", input: JSON.stringify({ consentBinding: pending.consent_binding, answer: "declined" }) });
+ assert.equal(answers.length, 1);
+ assert.equal(answers[0].requestContextPath, join(cwd, "spec.md"));
+});
+
+test("request context rechecks sensitive aliases before selection and consent continuations", async (t) => {
+ for (const phase of ["selection", "consent"]) {
+  const { cwd, eligible, initial } = untrackedStopFixture(t);
+  fs.mkdirSync(join(cwd, "docs")); writeFileSync(join(cwd, "docs", "request.md"), "allowed fixture");
+  const retained = new Map(), registry = new PendingReviewConsentRegistry(), session = Symbol(phase);
+  const consent = decodeReviewConsentV3(JSON.parse(readFileSync(join(process.cwd(), "tests/fixtures/devbinary/consent-v3.captured.json"), "utf8")));
+  let queries = 0, answers = 0;
+  const native = { targetStatus: async () => { queries++; return phase === "selection" ? initial : startStatus(cwd); },
+   start: async () => { throw new NativeReviewConsentRequiredError(consent, join(cwd, "docs", "request.md")); },
+   answerConsent: async () => { answers++; throw new Error("sensitive alias must not be forwarded"); }
+  } as unknown as NativeReviewCli;
+  const run = (parameters: Record<string, unknown>) => __testing.executeReviewControllerOperation(parameters, cwd, native, undefined, undefined, undefined, retained, registry, session);
+  const stopped = await run({ operation: "start", input: JSON.stringify({ mode: "ordinary", requestContextPath: "docs/request.md" }) });
+  fs.renameSync(join(cwd, "docs"), join(cwd, "prior-docs")); fs.mkdirSync(join(cwd, "secrets")); writeFileSync(join(cwd, "secrets", "request.md"), "private fixture");
+  fs.symlinkSync(join(cwd, "secrets"), join(cwd, "docs"), process.platform === "win32" ? "junction" : "dir");
+  const before = queries;
+  const result = await run(phase === "selection" ? { operation: "select-intended-untracked", selectionBinding: stopped.selectionBinding, intendedUntracked: [eligible] } : { operation: "answer-consent", input: JSON.stringify({ consentBinding: stopped.consent_binding, answer: "granted" }) });
+  assert.equal(result.reason, "request-context-sensitive-path", phase); assert.equal(queries, before); assert.equal(answers, 0);
+ }
+});

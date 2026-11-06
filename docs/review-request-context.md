@@ -1,0 +1,19 @@
+# Frozen request intent in Shell
+
+Fresh ordinary `gentle_review` START accepts `input.requestContextPath`, for example:
+
+```json
+{"operation":"start","input":"{\"mode\":\"ordinary\",\"requestContextPath\":\"docs/feature-request.md\",\"lenses\":[\"risk\"],\"lensesReason\":\"Changes document authorization\"}"}
+```
+
+Relative paths resolve against the selected workspace; `~/` (and `~\` on Windows) expands to the home directory. Shell resolves the real path before forwarding it and rejects missing paths or broken aliases. Supply an existing UTF-8 file containing the request the candidate was built for; files outside the repository can be explicitly selected too. Their contents are sent to reviewer models just like request files inside the repository. Gentle AI reads the file through its existing `--request-context` contract, includes it in the native prompt budget, freezes its contents, and binds the hash into authority and reviewer subject identity. Shell forwards the provider-issued START and consent arguments unchanged. Before forwarding the file, Shell queries the selected executable’s advertised capabilities and requires both `start_request_context` and `start_options_preflight`. The executable hash is reused only while its device, inode, size, mtime and ctime match; capabilities are cached per client, executable path and digest. STATUS and authority are always queried afresh. Unsupported providers fail early with “provider does not support request context”; Shell never retries without its intent.
+
+Use this field when business intent is needed to distinguish a requested behavior change from a regression. `lensesReason` only explains lens selection, and a README does not reach reviewers merely because it exists. Native treats request text as evidence, not reviewer instructions, and excludes its optional `## Verify` section from reviewer context.
+
+Existing lineages retain their frozen intent. START with an explicit request file is blocked when authority already exists; resolve that authority through the ordinary workflow before requesting a fresh review. Editing the source file does not rewrite an old review or retroactively revoke its original scope. Native refuses replaying a lineage under a changed request, and produces different reviewer subject hashes for different intent. Resume with `lineageId` without supplying a request path; the original frozen intent remains in force.
+
+The same sensitive-path policy used by file tools applies to request files, including aliases resolving into protected locations. Files such as .env, .envrc, .netrc, private keys and files in secrets directories are rejected before native reads. This checks path names, not file contents; hardlinks do not expose their other names through realpath and are not detected by this policy. Select a specification that excludes credentials. Resolving aliases reduces the gap between checking and opening a path, but does not make the subsequent native read atomic with the Shell check.
+
+If START pauses for intended-untracked selection, its continuation retains the selected request file. Unrelated native stops remain visible without being mistaken for an existing review. Consent also retains the original file: every offered and replayed choice must carry exactly one matching request-context argument. Selecting a different file requires a fresh request.
+
+START and consent compare request paths literally on every platform. If native changes Windows path spelling (including trailing dots or extended-path prefixes), Shell refuses the transition rather than assuming the paths identify the same file.

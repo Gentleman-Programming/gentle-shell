@@ -192,7 +192,7 @@ test("initial catalog contains all seven documented chat models with configured 
 	assert.deepEqual(model?.input, ["text", "image"]);
 	assert.equal(model?.contextWindow, 1_000_000);
 	assert.equal(models.length, 7);
-	assert.equal(model?.maxTokens, 16_384);
+	assert.equal(model?.maxTokens, 131_072);
 	assert.deepEqual(model?.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 });
 
@@ -211,10 +211,10 @@ test("only NaN DeepSeek serializes its unchanged output cap as max_tokens", asyn
 		},
 	});
 	assert.equal(result.stopReason, "stop");
-	assert.equal(body?.max_tokens, 16_384);
+	assert.equal(body?.max_tokens, 131_072);
 	assert.ok(!Object.hasOwn(body!, "max_completion_tokens"));
 	assert.equal(body?.reasoning_effort, "minimal");
-	assert.equal(model.maxTokens, 16_384);
+	assert.equal(model.maxTokens, 131_072);
 	assert.equal(model.compat?.maxTokensField, "max_tokens");
 	assert.ok(models.filter((candidate) => candidate.id !== model.id).every((candidate) => candidate.compat === undefined));
 });
@@ -347,7 +347,7 @@ test("live discovery uses the key-scoped endpoint and replaces the fallback with
 test("known chat models retain documented capabilities without advertising audio", async () => {
 	const expected = [
 		["glm5.3", 1_000_000, ["text", "image"], 32_768],
-		["deepseek-v4-flash", 1_000_000, ["text", "image"], 16_384],
+		["deepseek-v4-flash", 1_000_000, ["text", "image"], 131_072],
 		["glm5.3-flash", 1_000_000, ["text", "image"], 32_768],
 		["qwen3.8-flash", 1_048_576, ["text", "image"], 131_000],
 		["mimo-v2.6-flash", 1_000_000, ["text", "image"], 32_768],

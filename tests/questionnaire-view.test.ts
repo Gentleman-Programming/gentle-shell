@@ -1,0 +1,711 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+	CURSOR_MARKER,
+	KeybindingsManager,
+	TUI_KEYBINDINGS,
+	TuiAltScreen,
+	stripTerminalSequences,
+	visibleWidth,
+	type Terminal,
+	type TuiMouseEvent,
+} from "@earendil-works/pi-tui";
+import {
+	MIN_PREVIEW_WIDTH,
+	QuestionnaireView,
+	type QuestionnaireResult,
+	type QuestionnaireTheme,
+} from "../lib/questionnaire/questionnaire-view.ts";
+import { CUSTOM_ROW_LABEL, type OptionData, type QuestionData } from "../lib/questionnaire/schema.ts";
+
+const theme: QuestionnaireTheme = {
+	fg: (_color: string, text: string) => text,
+	bold: (text: string) => text,
+};
+
+const option = (label: string, description = `${label} description`, preview?: string): OptionData =>
+	preview === undefined ? { label, description } : { label, description, preview };
+
+const question = (
+	text: string,
+	options: OptionData[],
+	overrides: { header?: string; multiSelect?: boolean } = {},
+): QuestionData => ({
+	question: text,
+	header: overrides.header ?? "Header",
+	options,
+	...(overrides.multiSelect === undefined ? {} : { multiSelect: overrides.multiSelect }),
+});
+
+const single = (preview?: string): QuestionData[] => [
+	question("Proceed?", [option("Alpha", "First choice", preview), option("Beta", "Second choice")]),
+];
+
+const two = (): QuestionData[] => [
+	question("First?", [option("Alpha"), option("Beta")], { header: "First" }),
+	question("Second?", [option("Gamma"), option("Delta")], { header: "Second" }),
+];
+
+function createView(
+	questions: QuestionData[],
+	options: { onComplete?: (result: QuestionnaireResult) => void; keybindings?: KeybindingsManager } = {},
+): QuestionnaireView {
+	return new QuestionnaireView({
+		questions,
+		theme,
+		onComplete: options.onComplete,
+		...(options.keybindings === undefined ? {} : { keybindings: options.keybindings }),
+	});
+}
+
+function viewWithResult(questions: QuestionData[], keybindings?: KeybindingsManager) {
+	const completed: QuestionnaireResult[] = [];
+	const view = createView(questions, {
+		onComplete: (result) => completed.push(result),
+		...(keybindings === undefined ? {} : { keybindings }),
+	});
+	return { view, completed };
+}
+
+function render(view: QuestionnaireView, width = 100): string {
+	return view.render(width).join("\n");
+}
+
+/** Strip SGR styling so assertions see the visible text, not cursor escape codes. */
+function plain(text: string): string {
+	return text.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+function assertFits(view: QuestionnaireView, width: number): void {
+	for (const line of view.render(width)) {
+		assert.ok(
+			visibleWidth(line) <= width,
+			`rendered line exceeds width ${width}: ${JSON.stringify(line)}`,
+		);
+	}
+}
+
+function mouseEvent(lines: string[], row: number, type: TuiMouseEvent["type"]): TuiMouseEvent {
+	return {
+		type,
+		button: "left",
+		x: 1,
+		y: row,
+		screenX: 1,
+		screenY: row,
+		width: 100,
+		height: lines.length,
+		shift: false,
+		alt: false,
+		ctrl: false,
+	};
+}
+
+// Real terminal key sequences: legacy (ESC [) and application-cursor (ESC O).
+const KEY = {
+	up: ["\x1b[A", "\x1bOA"],
+	down: ["\x1b[B", "\x1bOB"],
+	enter: "\r",
+	space: " ",
+	tab: "\t",
+	shiftTab: "\x1b[Z",
+	escape: "\x1b",
+} as const;
+
+test("renders exactly one active question plus a tab strip for all questions", () => {
+	const { view } = viewWithResult(two());
+	const rendered = render(view);
+
+	// Tab strip: progress plus every header, active one marked.
+	assert.match(rendered, /\[1\/2\]/);
+	assert.match(rendered, /▸ First/);
+	assert.match(rendered, /Second/);
+
+	// Only the first question body renders; the second body is absent.
+	assert.match(rendered, /First\?/);
+	assert.match(rendered, /❯ Alpha/);
+	assert.doesNotMatch(rendered, /Gamma/);
+	assert.doesNotMatch(rendered, /Delta/);
+	assert.doesNotMatch(rendered, /Second\?/);
+});
+
+test("Tab and Shift-Tab switch the active question and preserve cursor and toggles", () => {
+	const { view, completed } = viewWithResult([
+		question("First?", [option("Alpha"), option("Beta")], { header: "First" }),
+		question("Second?", [option("Gamma"), option("Delta")], { header: "Second", multiSelect: true }),
+	]);
+
+	view.handleInput(KEY.down[0]); // First: cursor -> Beta
+	view.handleInput(KEY.tab);
+	let rendered = render(view);
+	assert.match(rendered, /\[2\/2\]/);
+	assert.match(rendered, /▸ Second/);
+	assert.match(rendered, /❯ \[ \] Gamma/);
+	assert.doesNotMatch(rendered, /❯ Beta/);
+	assert.doesNotMatch(rendered, /First\?/);
+
+	view.handleInput(KEY.space); // Second: toggle Gamma
+	assert.match(render(view), /❯ \[x\] Gamma/);
+
+	view.handleInput(KEY.shiftTab);
+	rendered = render(view);
+	assert.match(rendered, /\[1\/2\]/);
+	assert.match(rendered, /❯ Beta/); // cursor preserved
+	assert.doesNotMatch(rendered, /Gamma/); // second body hidden again
+
+	view.handleInput(KEY.tab);
+	assert.match(render(view), /❯ \[x\] Gamma/); // toggle preserved
+	assert.equal(completed.length, 0);
+});
+
+test("real key sequences drive the cursor and commit in legacy and application-cursor form", () => {
+	for (const down of KEY.down) {
+		const { view, completed } = viewWithResult(single());
+		view.handleInput(down);
+		assert.match(render(view), /❯ Beta/, `down sequence ${JSON.stringify(down)} should move the cursor`);
+		view.handleInput(KEY.enter);
+		assert.equal(completed.length, 1, `enter after ${JSON.stringify(down)} should commit`);
+		assert.deepEqual(view.getResult().answers, [
+			{ questionIndex: 0, question: "Proceed?", kind: "option", answer: "Beta" },
+		]);
+	}
+
+	for (const up of KEY.up) {
+		const { view } = viewWithResult(single());
+		view.handleInput(KEY.down[0]);
+		view.handleInput(KEY.down[0]);
+		view.handleInput(up);
+		assert.match(render(view), /❯ Beta/, `up sequence ${JSON.stringify(up)} should move the cursor back`);
+	}
+});
+
+test("the injected KeybindingsManager drives the same navigation and commit", () => {
+	const keybindings = new KeybindingsManager(TUI_KEYBINDINGS);
+	const { view, completed } = viewWithResult(single(), keybindings);
+
+	assert.ok(keybindings.matches(KEY.down[0], "tui.select.down"));
+	view.handleInput(KEY.down[0]);
+	assert.match(render(view), /❯ Beta/);
+	view.handleInput(KEY.enter);
+	assert.equal(completed.length, 1);
+	assert.equal(view.getResult().answers[0]?.answer, "Beta");
+});
+
+test("single-select commits on Enter and advances to the next unanswered question", () => {
+	const { view, completed } = viewWithResult(two());
+
+	view.handleInput(KEY.enter);
+	assert.equal(completed.length, 0, "the questionnaire is not done while a question is unanswered");
+	assert.equal(view.getResult().answers.length, 1);
+	assert.equal(view.activeQuestion, 1, "a commit advances to the next unanswered question");
+	assert.match(render(view), /\[2\/2\]/);
+	assert.match(render(view), /❯ Gamma/);
+
+	view.handleInput(KEY.enter);
+	assert.equal(completed.length, 1);
+	assert.deepEqual(view.getResult().answers, [
+		{ questionIndex: 0, question: "First?", kind: "option", answer: "Alpha" },
+		{ questionIndex: 1, question: "Second?", kind: "option", answer: "Gamma" },
+	]);
+});
+
+test("multi-select toggles with space and requires a non-empty selection to commit", () => {
+	const { view, completed } = viewWithResult([
+		question("Pick?", [option("One"), option("Two")], { multiSelect: true }),
+	]);
+	assert.match(render(view), /\[ \] One/);
+
+	view.handleInput(KEY.enter);
+	assert.equal(completed.length, 0, "an empty multiSelect commit is a no-op");
+	assert.equal(view.getResult().answers.length, 0);
+
+	view.handleInput(KEY.space);
+	assert.match(render(view), /\[x\] One/);
+
+	view.handleInput(KEY.down[0]);
+	view.handleInput(KEY.space);
+	assert.match(render(view), /\[x\] Two/);
+
+	view.handleInput(KEY.space);
+	assert.match(render(view), /\[ \] Two/);
+
+	view.handleInput(KEY.enter);
+	assert.equal(completed.length, 1);
+	assert.deepEqual(view.getResult().answers, [
+		{ questionIndex: 0, question: "Pick?", kind: "multi", answer: null, selected: ["One"] },
+	]);
+});
+
+test("custom row opens the editor, empty submit returns, and the draft survives a tab switch", () => {
+	const { view, completed } = viewWithResult(two());
+
+	// Move to the custom row on question one and open the editor.
+	view.handleInput(KEY.down[0]);
+	view.handleInput(KEY.down[0]);
+	view.handleInput(KEY.enter);
+	assert.match(render(view), /Custom response/);
+	assert.match(render(view), /> /);
+
+	view.handleInput("   ");
+	view.handleInput(KEY.enter);
+	assert.equal(completed.length, 0, "a whitespace-only submission stays uncommitted");
+	assert.doesNotMatch(render(view), /Custom response/);
+
+	// Reopen, type a draft, switch away, and come back: the draft is preserved.
+	view.handleInput(KEY.enter);
+	view.handleInput("draft text");
+	view.handleInput(KEY.tab);
+	assert.equal(view.activeQuestion, 1, "tab switches question even while editing");
+	view.handleInput(KEY.shiftTab);
+	assert.equal(view.activeQuestion, 0);
+	view.handleInput(KEY.enter); // still on the custom row
+	assert.match(plain(render(view)), /draft text/, "the custom draft is restored on reopen");
+
+	view.handleInput(KEY.enter);
+	assert.equal(completed.length, 0, "one of two questions answered is not completion");
+	assert.deepEqual(view.getResult().answers, [
+		{ questionIndex: 0, question: "First?", kind: "custom", answer: "draft text" },
+	]);
+});
+
+test("multi-select can commit a custom answer with the toggled options", () => {
+	const { view } = viewWithResult([question("Pick?", [option("One"), option("Two")], { multiSelect: true })]);
+	view.handleInput(KEY.space);
+	view.handleInput(KEY.down[0]);
+	view.handleInput(KEY.down[0]);
+	view.handleInput(KEY.enter);
+
+	assert.match(render(view), /Custom response/);
+	view.handleInput("free note");
+	view.handleInput(KEY.enter);
+
+	assert.deepEqual(view.getResult().answers, [
+		{ questionIndex: 0, question: "Pick?", kind: "custom", answer: "free note", selected: ["One"] },
+	]);
+});
+
+test("preview renders beside the list only while the focused option has one", () => {
+	const { view } = viewWithResult(single("Preview body line"));
+	const wide = render(view, 100);
+	assert.match(wide, /Preview body line/);
+	assert.match(wide, /❯ Alpha/);
+
+	view.handleInput(KEY.down[0]); // Beta has no preview
+	const collapsed = render(view, 100);
+	assert.doesNotMatch(collapsed, /Preview body line/);
+	assert.match(collapsed, /❯ Beta/);
+	assertFits(view, 100);
+});
+
+test("the preview pane wraps cleanly and never exceeds the terminal width", () => {
+	const body = "lorem ipsum dolor sit amet ".repeat(12);
+	const { view } = viewWithResult([
+		question("Proceed?", [option("Alpha", "First choice", body), option("Beta")]),
+	]);
+	for (const width of [MIN_PREVIEW_WIDTH, 100, 120]) {
+		assertFits(view, width);
+	}
+	assert.match(render(view, 100), /lorem ipsum/);
+});
+
+test("narrow widths render the preview inline without corrupting the body", () => {
+	const { view } = viewWithResult(single("Inline preview body"));
+	const narrow = render(view, 60);
+	assert.match(narrow, /Inline preview body/);
+	assert.match(narrow, /❯ Alpha/);
+	assert.match(narrow, /Type something\./);
+	assertFits(view, 60);
+});
+
+test("height stays bounded as the question count grows", () => {
+	const one = viewWithResult([question("Only?", [option("A"), option("B")], { header: "Only" })]);
+	const many = viewWithResult([
+		question("One?", [option("A"), option("B")], { header: "One" }),
+		question("Two?", [option("C"), option("D")], { header: "Two" }),
+		question("Three?", [option("E"), option("F")], { header: "Three" }),
+		question("Four?", [option("G"), option("H")], { header: "Four" }),
+	]);
+
+	const oneLines = one.view.render(100).length;
+	const manyLines = many.view.render(100).length;
+	assert.ok(
+		manyLines <= oneLines + 2,
+		`four questions must not stack bodies (one=${oneLines}, many=${manyLines})`,
+	);
+	// Only the first body renders, so later bodies stay absent.
+	const rendered = render(many.view, 100);
+	assert.doesNotMatch(rendered, /Two\?/);
+	assert.doesNotMatch(rendered, /Four\?/);
+	assert.match(rendered, /❯ A/);
+});
+
+test("long option preview height is bounded to terminal rows in side-by-side mode (#1340)", () => {
+	const longPreview = Array.from({ length: 65 }, (_, i) => `Preview line ${i + 1}`).join("\n");
+	const { view } = viewWithResult(single(longPreview));
+	const renderedLines = view.render(100);
+	assert.ok(
+		renderedLines.length <= 24,
+		`rendered height must be bounded to terminal rows (was ${renderedLines.length} lines, expected <= 24)`,
+	);
+	const text = renderedLines.join("\n");
+	assert.match(text, /Preview line 1/);
+	assert.match(text, /\[1–/);
+});
+
+test("scrolling with pageDown/pageUp moves the visible preview slice (#1340)", () => {
+	const longPreview = Array.from({ length: 65 }, (_, i) => `Preview line ${i + 1}`).join("\n");
+	const { view } = viewWithResult(single(longPreview));
+	assert.match(render(view, 100), /Preview line 1/);
+
+	// Page down scrolls the preview window
+	view.handleInput("\x1b[6~"); // PageDown
+	const pageDownText = render(view, 100);
+	assert.doesNotMatch(pageDownText, /Preview line 1\b/);
+	assert.match(pageDownText, /Preview line/);
+
+	// Page up scrolls back
+	view.handleInput("\x1b[5~"); // PageUp
+	const pageUpText = render(view, 100);
+	assert.match(pageUpText, /Preview line 1\b/);
+
+	// Ctrl+j and Ctrl+k also scroll
+	view.handleInput("\x0a"); // ctrl+j
+	const ctrlJText = render(view, 100);
+	assert.doesNotMatch(ctrlJText, /Preview line 1\b/);
+
+	view.handleInput("\x0b"); // ctrl+k
+	const ctrlKText = render(view, 100);
+	assert.match(ctrlKText, /Preview line 1\b/);
+
+	// Mouse wheel scrolls preview
+	view.render(100);
+	view.handleMouse({ type: "wheel", button: "none", wheelDelta: 1, x: 50, y: 5, screenX: 50, screenY: 5, width: 100, height: 24, shift: false, alt: false, ctrl: false });
+	const wheelDownText = render(view, 100);
+	assert.doesNotMatch(wheelDownText, /Preview line 1\b/);
+
+	// Moving cursor to next option and back resets scroll position
+	view.handleInput(KEY.down[0]); // to Beta
+	view.handleInput(KEY.up[0]);   // back to Alpha
+	const resetText = render(view, 100);
+	assert.match(resetText, /Preview line 1\b/);
+});
+
+test("selecting an option without preview clears scrollability and mouse wheel handling (#1340)", () => {
+	const longPreview = Array.from({ length: 65 }, (_, i) => `Preview line ${i + 1}`).join("\n");
+	const { view } = viewWithResult(single(longPreview));
+
+	// Focused on Alpha (has preview): scrollable hint and wheel handling active
+	const alphaLines = view.render(100);
+	assert.match(alphaLines.join("\n"), /pgup\/pgdn scroll/);
+	const alphaWheel = view.handleMouse({
+		type: "wheel",
+		button: "none",
+		wheelDelta: 1,
+		x: 50,
+		y: 5,
+		screenX: 50,
+		screenY: 5,
+		width: 100,
+		height: 24,
+		shift: false,
+		alt: false,
+		ctrl: false,
+	});
+	assert.equal(alphaWheel?.handled, true);
+
+	// Move cursor to Beta (no preview)
+	view.handleInput(KEY.down[0]);
+	const betaLines = view.render(100);
+	assert.doesNotMatch(betaLines.join("\n"), /pgup\/pgdn scroll/);
+	const betaWheel = view.handleMouse({
+		type: "wheel",
+		button: "none",
+		wheelDelta: 1,
+		x: 50,
+		y: 5,
+		screenX: 50,
+		screenY: 5,
+		width: 100,
+		height: 24,
+		shift: false,
+		alt: false,
+		ctrl: false,
+	});
+	assert.equal(betaWheel, undefined);
+});
+
+test("long option preview height is bounded to terminal rows in inline mode (#1340)", () => {
+	const longPreview = Array.from({ length: 65 }, (_, i) => `Preview line ${i + 1}`).join("\n");
+	const { view } = viewWithResult(single(longPreview));
+	const renderedLines = view.render(60);
+	assert.ok(
+		renderedLines.length <= 24,
+		`inline rendered height must be bounded to terminal rows (was ${renderedLines.length} lines, expected <= 24)`,
+	);
+});
+
+test("inline preview height stays bounded within terminal rows when options wrap (#1340)", () => {
+	const longPreview = Array.from({ length: 65 }, (_, i) => `Preview line ${i + 1}`).join("\n");
+	const wrappedOptions = [
+		option("Option A", "This is a detailed description that wraps across multiple lines in narrow viewports", longPreview),
+		option("Option B", "Another long description that wraps across multiple lines when rendered inline"),
+		option("Option C", "Yet another detailed description for the third option taking multiple lines"),
+		option("Option D", "Fourth option with a description that also wraps across lines in the terminal"),
+	];
+	const { view } = viewWithResult([question("Which configuration should be used for this environment?", wrappedOptions)]);
+	const renderedLines = view.render(60);
+	assert.ok(
+		renderedLines.length <= 24,
+		`inline rendered height must be <= 24 terminal rows (was ${renderedLines.length} lines, expected <= 24)`,
+	);
+});
+
+test("pageDown in inline mode advances by visible preview rows without skipping lines (#1340)", () => {
+	const longPreview = Array.from({ length: 65 }, (_, i) => `Preview line ${i + 1}`).join("\n");
+	const { view } = viewWithResult(single(longPreview));
+
+	// Initial render in inline mode (width = 60)
+	const initialLines = view.render(60);
+	const initialText = initialLines.join("\n");
+	assert.match(initialText, /Preview line 1\b/);
+
+	// Find the last visible preview content line in initial slice
+	let lastVisibleLineNum = 1;
+	for (let i = 1; i <= 65; i++) {
+		if (new RegExp(`Preview line ${i}\\b`).test(initialText)) {
+			lastVisibleLineNum = i;
+		}
+	}
+	assert.ok(lastVisibleLineNum < 65, "initial preview should be sliced");
+
+	// Page down should show the next line without skipping
+	view.handleInput("\x1b[6~"); // PageDown
+	const pageDownText = view.render(60).join("\n");
+	const nextExpectedLine = `Preview line ${lastVisibleLineNum + 1}\\b`;
+	assert.match(
+		pageDownText,
+		new RegExp(nextExpectedLine),
+		`PageDown must show next line (${nextExpectedLine}) without skipping lines`,
+	);
+});
+
+test("Escape cancels the questionnaire with a cancelled result", () => {
+	const { view, completed } = viewWithResult(single());
+	view.handleInput(KEY.escape);
+	assert.equal(completed.length, 1);
+	assert.deepEqual(view.getResult(), { cancelled: true, answers: [] });
+});
+
+test("focus propagates to the free-text input for IME cursor positioning", () => {
+	const { view } = viewWithResult(single());
+	view.handleInput(KEY.down[0]);
+	view.handleInput(KEY.down[0]);
+	view.handleInput(KEY.enter);
+
+	view.focused = true;
+	assert.ok(render(view).includes(CURSOR_MARKER), "a focused view positions the input cursor");
+
+	view.focused = false;
+	assert.ok(!render(view).includes(CURSOR_MARKER), "an unfocused view hides the input cursor");
+});
+
+test("a committed option carries its preview on the answer row", () => {
+	const { view } = viewWithResult(single("Preview body line"));
+	view.handleInput(KEY.enter);
+	assert.deepEqual(view.getResult().answers, [
+		{ questionIndex: 0, question: "Proceed?", kind: "option", answer: "Alpha", preview: "Preview body line" },
+	]);
+});
+
+test("pointer press focuses a row and click commits it", () => {
+	const { view, completed } = viewWithResult(single());
+	const lines = view.render(100);
+	const betaRow = lines.findIndex((line) => line.includes("Beta"));
+	assert.ok(betaRow >= 0);
+
+	assert.equal(view.handleMouse(mouseEvent(lines, betaRow, "press"))?.handled, true);
+	assert.equal(completed.length, 0, "press focuses but never answers");
+	const afterPress = view.render(100);
+	const betaRowAfterPress = afterPress.findIndex((line) => line.includes("Beta"));
+	assert.equal(view.handleMouse(mouseEvent(afterPress, betaRowAfterPress, "click"))?.handled, true);
+	assert.equal(completed.length, 1);
+	assert.equal(view.getResult().answers[0]?.answer, "Beta");
+});
+
+test("pointer click toggles a multi-select option instead of committing", () => {
+	const { view, completed } = viewWithResult([
+		question("Pick?", [option("One"), option("Two")], { multiSelect: true }),
+	]);
+
+	let lines = view.render(100);
+	assert.equal(view.handleMouse(mouseEvent(lines, lines.findIndex((line) => line.includes("One")), "click"))?.handled, true);
+	assert.equal(completed.length, 0, "a multi-select click toggles without committing");
+	assert.match(render(view), /\[x\] One/);
+
+	// Clicking the same option again un-toggles it; still no commit.
+	lines = view.render(100);
+	view.handleMouse(mouseEvent(lines, lines.findIndex((line) => line.includes("One")), "click"));
+	assert.match(render(view), /\[ \] One/);
+	assert.equal(completed.length, 0);
+
+	// Toggle two options with the mouse, then commit with the keyboard.
+	lines = view.render(100);
+	view.handleMouse(mouseEvent(lines, lines.findIndex((line) => line.includes("One")), "click"));
+	lines = view.render(100);
+	view.handleMouse(mouseEvent(lines, lines.findIndex((line) => line.includes("Two")), "click"));
+	assert.match(render(view), /\[x\] One/);
+	assert.match(render(view), /\[x\] Two/);
+
+	view.handleInput(KEY.enter);
+	assert.equal(completed.length, 1);
+	assert.deepEqual(view.getResult().answers, [
+		{ questionIndex: 0, question: "Pick?", kind: "multi", answer: null, selected: ["One", "Two"] },
+	]);
+});
+
+test("pointer click on the custom row opens the editor without committing", () => {
+	for (const questions of [single(), [question("Pick?", [option("One"), option("Two")], { multiSelect: true })]]) {
+		const { view, completed } = viewWithResult(questions);
+		const lines = view.render(100);
+		const customRow = lines.findIndex((line) => line.includes(CUSTOM_ROW_LABEL));
+		assert.ok(customRow >= 0);
+
+		assert.equal(view.handleMouse(mouseEvent(lines, customRow, "click"))?.handled, true);
+		assert.match(render(view), /Custom response/);
+		assert.equal(completed.length, 0, "opening the custom editor never commits");
+	}
+});
+
+test("the custom row is always appended after the authored options", () => {
+	const { view } = viewWithResult(single());
+	const lines = view.render(100);
+	const betaRow = lines.findIndex((line) => line.includes("Beta"));
+	const customRow = lines.findIndex((line) => line.includes(CUSTOM_ROW_LABEL));
+	assert.ok(betaRow >= 0 && customRow >= 0);
+	assert.ok(customRow > betaRow);
+});
+
+const hoverTheme: QuestionnaireTheme = {
+	fg: (role, text) => role === "warning" ? `\x1b[33m${text}\x1b[39m` : text,
+	bold: (text) => text,
+};
+
+function move(lines: string[], x: number, y: number, width: number): TuiMouseEvent {
+	return { ...mouseEvent(lines, y, "move"), button: "none", x, screenX: x, width };
+}
+
+function textRow(lines: string[], text: string): number {
+	const row = lines.findIndex((line) => stripTerminalSequences(line).includes(text));
+	assert.ok(row >= 0, `missing ${text}`);
+	return row;
+}
+
+test("questionnaire hovers only selectable labels in the shared warning role, without changing answers", () => {
+	const completed: QuestionnaireResult[] = [];
+	const view = new QuestionnaireView({
+		questions: [question("Pick?", [option("Alpha", "First detail", "Preview body"), option("Beta", "Second detail")], { multiSelect: true })],
+		theme: hoverTheme,
+		onComplete: (result) => completed.push(result),
+	});
+	let lines = view.render(100);
+	const beta = textRow(lines, "Beta");
+	assert.equal(view.handleMouse(move(lines, 3, beta, 100))?.render, true);
+	lines = view.render(100);
+	assert.match(lines[beta]!, /\x1b\[33mBeta\x1b\[39m/);
+	assert.match(lines[textRow(lines, "Alpha")]!, /❯ \[ \] Alpha/);
+	assert.doesNotMatch(lines[textRow(lines, "Second detail")]!, /\x1b\[33m/);
+	assert.equal(view.handleMouse(move(lines, 3, beta, 100))?.render, false, "repeated motion does not redraw");
+	assert.deepEqual(view.getResult(), { cancelled: false, answers: [] });
+	assert.deepEqual(completed, []);
+
+	const description = textRow(lines, "Second detail");
+	assert.equal(view.handleMouse(move(lines, 5, description, 100))?.render, true);
+	lines = view.render(100);
+	assert.doesNotMatch(lines.join("\n"), /\x1b\[33m/);
+	const alpha = textRow(lines, "Alpha");
+	assert.equal(view.handleMouse(move(lines, 60, alpha, 100)), undefined, "preview cells are not label targets");
+	assert.equal(view.handleMouse(move(lines, 3, alpha, 100))?.render, true);
+	lines = view.render(100);
+	assert.match(lines[alpha]!, /\x1b\[33mAlpha\x1b\[39m/);
+	assert.doesNotMatch(lines[alpha]!, /\x1b\[33mPreview/);
+	assert.equal(view.handleMouse(move(lines, 2, 0, 100))?.render, true, "the tab heading is not a pointer-actionable target");
+	lines = view.render(100);
+	const custom = textRow(lines, CUSTOM_ROW_LABEL);
+	assert.equal(view.handleMouse(move(lines, 3, custom, 100))?.render, true);
+	assert.match(view.render(100)[custom]!, /\x1b\[33mType something\.\x1b\[39m/);
+	assert.deepEqual(completed, []);
+	view.handleInput(KEY.space);
+	view.handleInput(KEY.enter);
+	assert.deepEqual(view.getResult().answers, [
+		{ questionIndex: 0, question: "Pick?", kind: "multi", answer: null, selected: ["Alpha"] },
+	]);
+});
+
+test("questionnaire rejects stale, clipped and disposed hover geometry", () => {
+	let rows = 24;
+	const view = new QuestionnaireView({ questions: single(), theme: hoverTheme, rows: () => rows });
+	let lines = view.render(100);
+	const beta = textRow(lines, "Beta");
+	const old = move(lines, 3, beta, 100);
+	assert.equal(view.handleMouse(old)?.render, true);
+	lines = view.render(80);
+	assert.doesNotMatch(lines.join("\n"), /\x1b\[33m/);
+	assert.equal(view.handleMouse(old), undefined, "old width cannot target the new layout");
+	assert.equal(view.handleMouse({ ...move(lines, 3, textRow(lines, "Beta"), 80), height: 2 }), undefined, "clipped rows are not targets");
+	assert.equal(view.handleMouse(move(lines, 3, textRow(lines, "Beta"), 80))?.render, true);
+	view.invalidate();
+	assert.equal(view.handleMouse(move(lines, 3, textRow(lines, "Beta"), 80)), undefined, "invalidation rejects geometry until render");
+	lines = view.render(80);
+	assert.doesNotMatch(lines.join("\n"), /\x1b\[33m/);
+	assert.equal(view.handleMouse(move(lines, 3, textRow(lines, "Beta"), 80))?.render, true);
+	rows = 10;
+	assert.notEqual(view.handleMouse(move(lines, 3, textRow(lines, "Beta"), 80))?.handled, true, "height changes reject the old layout");
+	lines = view.render(80);
+	assert.doesNotMatch(lines.join("\n"), /\x1b\[33m/);
+	view.dispose();
+	assert.equal(view.handleMouse(move(lines, 3, textRow(lines, "Beta"), 80)), undefined);
+	view.handleInput(KEY.enter);
+	assert.deepEqual(view.getResult().answers, []);
+});
+
+test("questionnaire receives SGR hover and click through a centered TuiAltScreen overlay", () => {
+	let input: ((data: string) => void) | undefined;
+	const terminal: Terminal = {
+		start(onInput) { input = onInput; }, stop() {}, async drainInput() {}, write() {},
+		get columns() { return 120; }, get rows() { return 30; }, get kittyProtocolActive() { return false; },
+		moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {},
+		setTitle() {}, setProgress() {}, setProgramStatus() {},
+	};
+	const completed: QuestionnaireResult[] = [];
+	const view = new QuestionnaireView({ questions: single(), theme: hoverTheme, onComplete: (result) => completed.push(result) });
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
+	const overlay = tui.showOverlay(view, { anchor: "center", width: 80, maxHeight: 20 });
+	tui.start(); tui.renderNow(true);
+	try {
+		let lines = view.render(80);
+		const bounds = overlay.getBounds();
+		assert.ok(bounds && bounds.col > 0 && bounds.row > 0);
+		const beta = textRow(lines, "Beta");
+		const x = bounds.col + 4, y = bounds.row + beta + 1;
+		input?.(`\x1b[<35;${x};${y}M`);
+		lines = view.render(80);
+		assert.match(lines[beta]!, /\x1b\[33mBeta\x1b\[39m/);
+		assert.deepEqual(completed, []);
+		input?.(`\x1b[<0;${x};${y}M`);
+		input?.(`\x1b[<0;${x};${y}m`);
+		assert.equal(completed[0]?.answers[0]?.answer, "Beta");
+	} finally { tui.stop(); }
+});
+
+test("every rendered line fits the width across 1-4 questions", () => {
+	const questions = [
+		question("One?", [option("A"), option("B", "B description", "preview ".repeat(20))], { header: "One" }),
+		question("Two?", [option("C"), option("D")], { header: "Two", multiSelect: true }),
+		question("Three?", [option("E"), option("F")], { header: "Three" }),
+		question("Four?", [option("G"), option("H")], { header: "Four" }),
+	];
+	const { view } = viewWithResult(questions);
+	for (const width of [40, 60, 80, 100, 140]) {
+		assertFits(view, width);
+	}
+});

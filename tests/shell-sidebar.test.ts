@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { TUI } from "@earendil-works/pi-tui";
-import { sidebarPart, sidebarState } from "../lib/shell-sidebar.ts";
+import { sidebarHeader, sidebarPart, sidebarState } from "../lib/shell-sidebar.ts";
 
 const host = (terminal?: object) => ({ terminal }) as TUI;
 const component = () => ({ render: (_width = 80) => ["bottom"], invalidate() {} });
@@ -47,4 +47,28 @@ test("disposing an old part preserves its replacement and releases its bottom", 
 	assert.equal(sidebarState(tui).parts.get("todo"), replacement);
 	(second as typeof second & { dispose?(): void }).dispose?.();
 	assert.equal(sidebarState(tui).parts.size, 0);
+});
+
+test("sidebarHeader registers the header part under its own key and disposes it without a bottom widget", () => {
+	const tui = host({});
+	const rail = { render: () => ["header line"], invalidate() {}, digest: () => "d" };
+	const dispose = sidebarHeader(tui, rail);
+	assert.equal(sidebarState(tui).parts.get("header"), rail);
+	dispose();
+	assert.equal(sidebarState(tui).parts.get("header"), undefined);
+});
+
+test("sidebarHeader on an unsupported host is a harmless no-op", () => {
+	const dispose = sidebarHeader(host(), { render: () => [], invalidate() {} });
+	assert.doesNotThrow(dispose);
+});
+
+test("sidebarHeader dispose does not remove a replacement rail registered after it", () => {
+	const tui = host({});
+	const first = { render: () => ["first"], invalidate() {} };
+	const dispose = sidebarHeader(tui, first);
+	const second = { render: () => ["second"], invalidate() {} };
+	sidebarHeader(tui, second);
+	dispose();
+	assert.equal(sidebarState(tui).parts.get("header"), second);
 });

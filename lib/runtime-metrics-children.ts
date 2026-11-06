@@ -18,7 +18,7 @@ const tokenFields = ["input", "output", "cacheRead", "cacheWrite", "reasoning", 
  * Only the fixed package catalog is cached; runtime instructions are not retained.
  */
 let definitions: Array<{ name: string; fingerprint: string; fingerprintClass?: AgentClass }> | undefined;
-const packagedAgentClassAliases = new Map([["sdd-proposal", "sdd-propose"]] as const);
+const packagedAgentClassAliases = new Map<string, string>([["sdd-proposal", "sdd-propose"]]);
 function fingerprintAgentClassName(name: string): string {
 	const compatibilityName = name.startsWith("gentle-ai-") ? name.slice("gentle-ai-".length) : name;
 	return packagedAgentClassAliases.get(compatibilityName) ?? compatibilityName;

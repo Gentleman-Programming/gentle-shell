@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { execSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { __testing } from "../extensions/skill-registry.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import skillRegistryExtension, { __testing, type ResolvedSkill } from "../extensions/skill-registry.ts";
+const skillRegistry = skillRegistryExtension;
+
+// Registered startup reads process.env directly; a suite launched from a
+// delegated child must still exercise the parent paths (gentle-shell#1690).
+delete process.env.GENTLE_PI_AGENTS_CHILD;
 
 test("project skill dirs include supported workspace roots", () => {
 	const cwd = "/repo";
@@ -114,34 +121,73 @@ test("uniqueExistingDirs normalizes duplicates and ignores missing roots", async
 	);
 });
 
-test("findSkillFiles scans one skill directory level only", async () => {
+test("findSkillFiles scans flat skills and category-nested skills without descending further", async () => {
 	const root = join(tmpdir(), `gentle-pi-shallow-${Date.now()}`);
 	const skillPath = join(root, "docs", "SKILL.md");
 	const nestedSkillPath = join(root, "fixtures", "nested", "SKILL.md");
+	const deeperSkillPath = join(root, "fixtures", "nested", "deeper", "SKILL.md");
 	mkdirSync(dirname(skillPath), { recursive: true });
 	mkdirSync(dirname(nestedSkillPath), { recursive: true });
+	mkdirSync(dirname(deeperSkillPath), { recursive: true });
 	writeFileSync(skillPath, "---\nname: docs\ndescription: Docs.\n---\n");
 	writeFileSync(nestedSkillPath, "---\nname: nested\ndescription: Nested fixture.\n---\n");
+	writeFileSync(deeperSkillPath, "---\nname: deeper\ndescription: Deeper fixture.\n---\n");
 
-	assert.deepEqual(await __testing.findSkillFiles(root), [skillPath]);
+	assert.deepEqual(await __testing.findSkillFiles(root), [skillPath, nestedSkillPath]);
 });
 
-test("findSkillFiles follows symlinked skill directories", async (t) => {
+test("findSkillFiles keeps direct skills ahead of alphabetically earlier nested collisions", async () => {
+	const cwd = join(tmpdir(), `gentle-pi-precedence-${Date.now()}`);
+	const directSkillPath = join(cwd, "skills", "zeta", "SKILL.md");
+	const nestedSkillPath = join(cwd, "skills", "alpha", "duplicate", "SKILL.md");
+	mkdirSync(dirname(directSkillPath), { recursive: true });
+	mkdirSync(dirname(nestedSkillPath), { recursive: true });
+	writeFileSync(directSkillPath, "---\nname: duplicate\ndescription: Direct skill.\n---\n");
+	writeFileSync(nestedSkillPath, "---\nname: duplicate\ndescription: Nested skill.\n---\n");
+
+	await __testing.regenerateRegistry(cwd, true);
+	const registry = readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8");
+	assert.match(registry, new RegExp(directSkillPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+	assert.doesNotMatch(registry, new RegExp(nestedSkillPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("findSkillFiles does not descend into excluded categories", async () => {
+	const root = join(tmpdir(), `gentle-pi-excluded-category-${Date.now()}`);
+	for (const category of ["_shared", "skill-registry", "sdd-fixtures"]) {
+		const nestedSkillPath = join(root, category, "hidden", "SKILL.md");
+		mkdirSync(dirname(nestedSkillPath), { recursive: true });
+		writeFileSync(nestedSkillPath, "---\nname: hidden\ndescription: Hidden skill.\n---\n");
+	}
+
+	assert.deepEqual(await __testing.findSkillFiles(root), []);
+});
+
+test("findSkillFiles follows direct symlinked skills but not symlinked categories", async (t) => {
 	const root = join(tmpdir(), `gentle-pi-symlink-root-${Date.now()}`);
 	const realSkillDir = join(tmpdir(), `gentle-pi-symlink-target-${Date.now()}`);
+	const categoryTarget = join(tmpdir(), `gentle-pi-symlink-category-${Date.now()}`);
 	const linkedSkillDir = join(root, "linked");
 	const skillPath = join(linkedSkillDir, "SKILL.md");
 	mkdirSync(root, { recursive: true });
 	mkdirSync(realSkillDir, { recursive: true });
+	mkdirSync(join(categoryTarget, "nested"), { recursive: true });
 	writeFileSync(join(realSkillDir, "SKILL.md"), "---\nname: linked\ndescription: Linked skill.\n---\n");
+	writeFileSync(join(categoryTarget, "nested", "SKILL.md"), "---\nname: nested\ndescription: Nested skill.\n---\n");
 	try {
 		symlinkSync(realSkillDir, linkedSkillDir, "dir");
+		symlinkSync(categoryTarget, join(root, "category"), "dir");
 	} catch (error) {
 		t.skip(`symlink creation unavailable: ${error instanceof Error ? error.message : String(error)}`);
 		return;
 	}
 
 	assert.deepEqual(await __testing.findSkillFiles(root), [skillPath]);
+});
+
+test("only missing skill-file errors allow category scanning", () => {
+	assert.equal(__testing.isMissingSkillFileError({ code: "ENOENT" }), true);
+	assert.equal(__testing.isMissingSkillFileError({ code: "ENOTDIR" }), true);
+	assert.equal(__testing.isMissingSkillFileError({ code: "EACCES" }), false);
 });
 
 test("skill registry watchers close on shutdown", async () => {
@@ -176,6 +222,8 @@ test("startup skip honors no skill registry controls", () => {
 		true,
 	);
 	assert.equal(__testing.shouldSkipSkillRegistryStartup(disabled, [], {}), false);
+	assert.equal(__testing.shouldSkipSkillRegistryStartup(disabled, [], { GENTLE_PI_AGENTS_CHILD: "1" }), true);
+	assert.equal(__testing.shouldSkipSkillRegistryStartup(disabled, [], { GENTLE_PI_AGENTS_CHILD: "0" }), false);
 });
 
 test("duplicate extension load is skipped only across different sources", () => {
@@ -315,4 +363,1255 @@ test("non-forced regeneration invalidates cache when skill bytes change but path
 	const secondRegistry = readFileSync(registryPath, "utf8");
 	assert.match(secondRegistry, /Variant two\. Body B\./);
 	assert.doesNotMatch(secondRegistry, /Variant one\. Body A\./);
+});
+
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+test("toResolvedEntry maps exact file path and scope from sourceInfo", () => {
+	const cwd = join(tmpdir(), `gentle-pi-resolved-${Date.now()}`);
+	const projectPath = join(cwd, "skills", "go-testing", "SKILL.md");
+	const projectEntry = __testing.toResolvedEntry(
+		{
+			name: "go-testing",
+			description: "Trigger: Go tests.\nApply focused patterns.",
+			filePath: projectPath,
+			sourceInfo: { scope: "project" },
+		} satisfies ResolvedSkill,
+		cwd,
+	);
+	assert.ok(projectEntry);
+	assert.equal(projectEntry.name, "go-testing");
+	assert.equal(projectEntry.path, projectPath, "resolved path must be preserved exactly");
+	assert.equal(projectEntry.description, "Trigger: Go tests. Apply focused patterns.");
+	assert.equal(projectEntry.scope, "project");
+
+	const userEntry = __testing.toResolvedEntry(
+		{
+			name: "docs",
+			description: "Docs.",
+			filePath: "/home/u/.pi/agent/skills/docs/SKILL.md",
+			sourceInfo: { scope: "user" },
+		} satisfies ResolvedSkill,
+		cwd,
+	);
+	assert.ok(userEntry);
+	assert.equal(userEntry.scope, "user");
+
+	const temporaryEntry = __testing.toResolvedEntry(
+		{
+			name: "temp",
+			description: "Temp.",
+			filePath: "/run/pi/temp-skills/temp/SKILL.md",
+			sourceInfo: { scope: "temporary" },
+		} satisfies ResolvedSkill,
+		cwd,
+	);
+	assert.ok(temporaryEntry);
+	assert.equal(temporaryEntry.scope, "user", "temporary scope maps to the user label");
+
+	const absentEntry = __testing.toResolvedEntry(
+		{ name: "plain", description: "Plain.", filePath: "/anywhere/plain/SKILL.md" } satisfies ResolvedSkill,
+		cwd,
+	);
+	assert.ok(absentEntry);
+	assert.equal(absentEntry.scope, "user", "absent sourceInfo falls back to the user label");
+});
+
+test("toResolvedEntry appends package origin to the scope label", () => {
+	const cwd = join(tmpdir(), `gentle-pi-resolved-package-${Date.now()}`);
+	const packaged = __testing.toResolvedEntry(
+		{
+			name: "packaged",
+			description: "Packaged.",
+			filePath: "/pkg/skills/packaged/SKILL.md",
+			sourceInfo: { scope: "user", origin: "package" },
+		} satisfies ResolvedSkill,
+		cwd,
+	);
+	assert.ok(packaged);
+	assert.equal(packaged.scope, "user · package");
+
+	const projectPackaged = __testing.toResolvedEntry(
+		{
+			name: "project-packaged",
+			description: "Packaged.",
+			filePath: "/pkg/skills/project-packaged/SKILL.md",
+			sourceInfo: { scope: "project", origin: "package" },
+		} satisfies ResolvedSkill,
+		cwd,
+	);
+	assert.ok(projectPackaged);
+	assert.equal(projectPackaged.scope, "project · package");
+
+	const topLevel = __testing.toResolvedEntry(
+		{
+			name: "top",
+			description: "Top.",
+			filePath: "/pkg/skills/top/SKILL.md",
+			sourceInfo: { scope: "user", origin: "top-level" },
+		} satisfies ResolvedSkill,
+		cwd,
+	);
+	assert.ok(topLevel);
+	assert.equal(topLevel.scope, "user", "top-level origin must not append the package label");
+});
+
+test("toResolvedEntry returns undefined when model invocation is disabled", () => {
+	assert.equal(
+		__testing.toResolvedEntry(
+			{
+				name: "internal",
+				description: "Internal.",
+				filePath: "/skills/internal/SKILL.md",
+				disableModelInvocation: true,
+			} satisfies ResolvedSkill,
+			"/repo",
+		),
+		undefined,
+	);
+});
+
+test("toResolvedEntry returns undefined for excluded skill names", () => {
+	assert.equal(
+		__testing.toResolvedEntry(
+			{
+				name: "sdd-research",
+				description: "Research.",
+				filePath: "/skills/sdd-research/SKILL.md",
+			} satisfies ResolvedSkill,
+			"/repo",
+		),
+		undefined,
+	);
+	assert.equal(
+		__testing.toResolvedEntry(
+			{
+				name: "_shared",
+				description: "Shared.",
+				filePath: "/skills/_shared/SKILL.md",
+			} satisfies ResolvedSkill,
+			"/repo",
+		),
+		undefined,
+	);
+});
+
+test("mergeResolvedWithLoose gives resolved paths per-path authority", () => {
+	const cwd = join(tmpdir(), `gentle-pi-merge-${Date.now()}`);
+	const resolvedPath = join(tmpdir(), `gentle-pi-merge-pkg-${Date.now()}`, "skills", "dup", "SKILL.md");
+	const otherPath = join(cwd, ".opencode", "skills", "other", "SKILL.md");
+	const merged = __testing.mergeResolvedWithLoose(
+		[{ name: "dup", path: resolvedPath, description: "resolved", scope: "user · package" }],
+		[
+			{ name: "dup", path: resolvedPath, description: "loose" },
+			{ name: "other", path: otherPath, description: "loose-other" },
+		],
+		cwd,
+	);
+
+	assert.equal(merged.length, 2, "only the path-colliding loose entry is dropped");
+	const dup = merged.find((entry) => entry.name === "dup");
+	assert.ok(dup);
+	assert.equal(dup.path, resolvedPath, "the exact resolved path must survive");
+	assert.equal(dup.description, "resolved");
+	assert.ok(merged.some((entry) => entry.name === "other"), "unrelated loose entries survive");
+});
+
+test("mergeResolvedWithLoose keeps project-over-user name precedence", () => {
+	const cwd = join(tmpdir(), `gentle-pi-merge-precedence-${Date.now()}`);
+	const packagePath = join(tmpdir(), `gentle-pi-merge-pkg2-${Date.now()}`, "skills", "dup", "SKILL.md");
+	const projectPath = join(cwd, "skills", "dup", "SKILL.md");
+
+	const looseProjectWins = __testing.mergeResolvedWithLoose(
+		[{ name: "dup", path: packagePath, description: "resolved", scope: "user · package" }],
+		[{ name: "dup", path: projectPath, description: "loose" }],
+		cwd,
+	);
+	assert.equal(looseProjectWins.length, 1);
+	assert.equal(looseProjectWins[0].path, projectPath, "loose project path beats resolved user/package path");
+
+	const resolvedProjectPath = join(cwd, ".claude", "skills", "dup", "SKILL.md");
+	const userPath = join(tmpdir(), `gentle-pi-merge-home-${Date.now()}`, ".pi", "agent", "skills", "dup", "SKILL.md");
+	const resolvedWins = __testing.mergeResolvedWithLoose(
+		[{ name: "dup", path: resolvedProjectPath, description: "resolved", scope: "project" }],
+		[{ name: "dup", path: userPath, description: "loose" }],
+		cwd,
+	);
+	assert.equal(resolvedWins.length, 1);
+	assert.equal(resolvedWins[0].path, resolvedProjectPath, "resolved project path beats loose user path");
+});
+
+test("mergeResolvedWithLoose does not promote resolved user scope inside cwd", () => {
+	const cwd = join(tmpdir(), `gentle-pi-resolved-user-cwd-${Date.now()}`);
+	const resolvedPath = join(cwd, ".pi", "agent", "skills", "dup", "SKILL.md");
+	const loosePath = join(cwd, "skills", "dup", "SKILL.md");
+	const resolved = __testing.toResolvedEntry({
+		name: "dup", description: "Pi user skill", filePath: resolvedPath,
+		sourceInfo: { scope: "user" },
+	}, cwd);
+	assert.ok(resolved);
+	assert.equal(resolved.scope, "user");
+	const merged = __testing.mergeResolvedWithLoose(
+		[resolved], [{ name: "dup", path: loosePath, description: "Loose project skill" }], cwd,
+	);
+	assert.equal(merged.length, 1);
+	assert.equal(merged[0].path, loosePath, "loose project beats Pi-resolved user even inside cwd");
+});
+
+test("mergeResolvedWithLoose honors resolved project scope outside cwd", () => {
+	const cwd = join(tmpdir(), `gentle-pi-linked-workspace-${Date.now()}`);
+	const linkedPath = join(tmpdir(), `gentle-pi-linked-source-${Date.now()}`, "skills", "dup", "SKILL.md");
+	const loosePath = join(cwd, "skills", "dup", "SKILL.md");
+	const resolved = __testing.toResolvedEntry({
+		name: "dup", description: "Pi project skill", filePath: linkedPath,
+		sourceInfo: { scope: "project" },
+	}, cwd);
+	assert.ok(resolved);
+	const merged = __testing.mergeResolvedWithLoose(
+		[resolved], [{ name: "dup", path: loosePath, description: "Loose cwd skill" }], cwd,
+	);
+	assert.equal(merged.length, 1);
+	assert.deepEqual(merged[0], resolved);
+});
+
+test("mergeResolvedWithLoose with empty resolved matches the loose-only result", () => {
+	const cwd = join(tmpdir(), `gentle-pi-merge-empty-${Date.now()}`);
+	const loose = [
+		{ name: "zeta", path: join(cwd, "skills", "zeta", "SKILL.md"), description: "z" },
+		{
+			name: "alpha",
+			path: join(tmpdir(), `gentle-pi-merge-empty-home-${Date.now()}`, "skills", "alpha", "SKILL.md"),
+			description: "a-user",
+		},
+		{ name: "alpha", path: join(cwd, ".opencode", "skills", "alpha", "SKILL.md"), description: "a-project" },
+	];
+
+	assert.deepEqual(
+		__testing.mergeResolvedWithLoose([], loose, cwd),
+		__testing.dedupeBySkillName(loose, cwd),
+	);
+});
+
+test("regenerateRegistry merges pi-resolved skills with the loose scan", async () => {
+	const cwd = join(tmpdir(), `gentle-pi-regen-resolved-${Date.now()}`);
+	const looseSkillPath = join(cwd, "skills", "loose-one", "SKILL.md");
+	mkdirSync(dirname(looseSkillPath), { recursive: true });
+	writeFileSync(looseSkillPath, "---\nname: loose-one\ndescription: Loose skill.\n---\n");
+
+	const pkgRoot = join(tmpdir(), `gentle-pi-regen-pkg-${Date.now()}`);
+	const resolvedSkillPath = join(pkgRoot, "skills", "resolved-one", "SKILL.md");
+	const resolved: ResolvedSkill[] = [
+		{
+			name: "resolved-one",
+			description: "Trigger: resolved skill. Runtime authority.",
+			filePath: resolvedSkillPath,
+			sourceInfo: { scope: "project", origin: "package" },
+		},
+	];
+
+	const first = await __testing.regenerateRegistry(cwd, false, resolved);
+	assert.equal(first.regenerated, true, "first regeneration writes the registry");
+	assert.equal(first.reason, "fingerprint-changed");
+	assert.ok(
+		first.skillCount >= 2,
+		"merged count must include the resolved skill and the loose skill (host user skills may add more)",
+	);
+
+	const registryPath = join(cwd, ".atl", "skill-registry.md");
+	const registry = readFileSync(registryPath, "utf8");
+	assert.match(registry, new RegExp(escapeRegExp(resolvedSkillPath)));
+	assert.match(registry, new RegExp(escapeRegExp(looseSkillPath)));
+	assert.match(registry, /project · package/);
+	assert.match(
+		registry,
+		/Pi-resolved runtime authority \(before_agent_start\.systemPromptOptions\.skills\): 1 skill\(s\)/,
+	);
+
+	const second = await __testing.regenerateRegistry(cwd, false, resolved);
+	assert.equal(second.regenerated, false, "identical resolved set must be a cache hit");
+	assert.equal(second.reason, "cache-hit");
+
+	const changed: ResolvedSkill[] = [
+		...resolved,
+		{
+			name: "resolved-two",
+			description: "Second resolved skill.",
+			filePath: join(pkgRoot, "skills", "resolved-two", "SKILL.md"),
+			sourceInfo: { scope: "user" },
+		},
+	];
+	const third = await __testing.regenerateRegistry(cwd, false, changed);
+	assert.equal(third.regenerated, true, "changed resolved set must regenerate");
+	assert.equal(third.reason, "fingerprint-changed");
+	const updated = readFileSync(registryPath, "utf8");
+	assert.match(updated, /resolved-two/);
+	assert.match(
+		updated,
+		/Pi-resolved runtime authority \(before_agent_start\.systemPromptOptions\.skills\): 2 skill\(s\)/,
+	);
+});
+
+test("regenerateRegistry carries a skill resolved from a non-default PI_CODING_AGENT_DIR", async () => {
+	// Acceptance case from gentle-shell#369 (2026-09-27): with
+	// PI_CODING_AGENT_DIR set to a non-default directory, Pi resolves user
+	// skills from <agent-dir>/skills, which no loose scan root reaches. The
+	// runtime mirror must be the only route into the registry.
+	const cwd = join(tmpdir(), `gentle-pi-agentdir-cwd-${Date.now()}`);
+	const isolatedHome = join(tmpdir(), `gentle-pi-agentdir-home-${Date.now()}`);
+	const agentDir = join(tmpdir(), `gentle-pi-agentdir-root-${Date.now()}`);
+	const skillPath = join(agentDir, "skills", "codegraph", "SKILL.md");
+	mkdirSync(dirname(skillPath), { recursive: true });
+	writeFileSync(skillPath, "---\nname: codegraph\ndescription: Trigger: agent-dir skill.\n---\n");
+
+	const resolved: ResolvedSkill[] = [
+		{
+			name: "codegraph",
+			description: "Trigger: agent-dir skill.",
+			filePath: skillPath,
+			sourceInfo: { scope: "user" },
+		},
+	];
+
+	const previousHome = process.env.HOME;
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.HOME = isolatedHome;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const result = await __testing.regenerateRegistry(cwd, false, resolved);
+		assert.equal(result.regenerated, true, "agent-dir resolved skill must trigger regeneration");
+		const registry = readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8");
+		assert.match(
+			registry,
+			new RegExp(escapeRegExp(skillPath)),
+			"the agent-dir skill reaches the registry through the runtime mirror",
+		);
+		assert.match(
+			registry,
+			/Pi-resolved runtime authority \(before_agent_start\.systemPromptOptions\.skills\): 1 skill\(s\)/,
+		);
+
+		// Counter-proof: with no resolved set, the isolated agent dir is
+		// unreachable — no loose root scans it. If the skill still appeared, a
+		// hardcoded agent-dir loose root would have been reintroduced.
+		const bareCwd = join(tmpdir(), `gentle-pi-agentdir-bare-${Date.now()}`);
+		const decoyPath = join(bareCwd, "skills", "decoy", "SKILL.md");
+		mkdirSync(dirname(decoyPath), { recursive: true });
+		writeFileSync(decoyPath, "---\nname: decoy\ndescription: Trigger: decoy.\n---\n");
+		await __testing.regenerateRegistry(bareCwd, false, []);
+		const bareRegistry = readFileSync(join(bareCwd, ".atl", "skill-registry.md"), "utf8");
+		assert.match(
+			bareRegistry,
+			new RegExp(escapeRegExp(decoyPath)),
+			"decoy loose skill proves the registry was written",
+		);
+		assert.doesNotMatch(
+			bareRegistry,
+			new RegExp(escapeRegExp(skillPath)),
+			"no loose scan root may reach a non-default agent dir",
+		);
+	} finally {
+		if (previousHome === undefined) {
+			delete process.env.HOME;
+		} else {
+			process.env.HOME = previousHome;
+		}
+		if (previousAgentDir === undefined) {
+			delete process.env.PI_CODING_AGENT_DIR;
+		} else {
+			process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		}
+	}
+});
+
+test("regenerateRegistry never re-indexes a filtered Pi skill from a loose root", async (t) => {
+	// A Pi-managed loose root (.pi/skills) still holds the SKILL.md of a skill
+	// Pi filtered out at runtime; the loose scan must not resurrect it as an
+	// active registry row.
+	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-suppressed-"));
+	t.after(() => rmSync(cwd, { recursive: true, force: true }));
+	const disabledPath = join(cwd, ".pi", "skills", "runtime-hidden", "SKILL.md");
+	const livePath = join(cwd, ".pi", "skills", "loose-live", "SKILL.md");
+	for (const [path, name, description] of [
+		[disabledPath, "runtime-hidden", "Hidden by runtime disablement."],
+		[livePath, "loose-live", "Loose live skill."],
+	] as const) {
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, `---\nname: ${name}\ndescription: ${description}\n---\n`);
+	}
+
+	const result = await __testing.regenerateRegistry(cwd, true, [
+		{
+			name: "runtime-hidden",
+			description: "Hidden by runtime disablement.",
+			filePath: disabledPath,
+			disableModelInvocation: true,
+		},
+	] satisfies ResolvedSkill[], true);
+
+	assert.equal(result.regenerated, true);
+	const registry = readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8");
+	assert.match(registry, new RegExp(escapeRegExp(livePath)), "the loose scan still indexes live skills");
+	assert.doesNotMatch(
+		registry,
+		new RegExp(escapeRegExp(disabledPath)),
+		"a skill Pi resolved and filtered must never come back through the loose scan",
+	);
+	assert.doesNotMatch(registry, /Hidden by runtime disablement/);
+});
+
+test("renderRegistry emits the pi-resolved authority bullet only when resolved entries exist", () => {
+	const cwd = join(tmpdir(), `gentle-pi-render-resolved-${Date.now()}`);
+	const entry = { name: "docs", path: join(cwd, "skills", "docs", "SKILL.md"), description: "Docs." };
+
+	const withResolved = __testing.renderRegistry(cwd, ["skills"], [entry], 1);
+	const sourcesIndex = withResolved.indexOf("## Sources scanned");
+	const bulletText = "- Pi-resolved runtime authority (before_agent_start.systemPromptOptions.skills): 1 skill(s)";
+	const bulletIndex = withResolved.indexOf(bulletText);
+	assert.ok(bulletIndex > sourcesIndex, "authority bullet must live in the sources section");
+	assert.ok(
+		withResolved.indexOf("- skills") > bulletIndex,
+		"authority bullet must be the first source bullet",
+	);
+
+	const withoutResolved = __testing.renderRegistry(cwd, ["skills"], [entry], 0);
+	assert.doesNotMatch(withoutResolved, /Pi-resolved runtime authority/);
+});
+
+function fakeSkillRegistryPi(getFlag: (name: string) => boolean = () => false) {
+	const handlers = new Map<string, Array<(event: unknown, ctx: unknown) => unknown>>();
+	const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
+	const pi = {
+		on(event: string, handler: (event: unknown, ctx: unknown) => unknown) {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+		},
+		registerFlag(_name: string, _registration: unknown) {},
+		registerCommand(name: string, registration: { handler: (args: string, ctx: unknown) => Promise<void> }) {
+			commands.set(name, registration);
+		},
+		getFlag,
+	} as unknown as ExtensionAPI;
+	return { pi, handlers, commands };
+}
+
+test("applyResolvedSkillsUpdate writes the registry from pi-resolved skills", async () => {
+	const cwd = join(tmpdir(), `gentle-pi-apply-${Date.now()}`);
+	const skillPath = join(tmpdir(), `gentle-pi-apply-pkg-${Date.now()}`, "skills", "applied", "SKILL.md");
+
+	const result = await __testing.applyResolvedSkillsUpdate(cwd, [
+		{
+			name: "applied",
+			description: "Trigger: applied skill. Runtime capture.",
+			filePath: skillPath,
+			sourceInfo: { scope: "project", origin: "package" },
+		},
+	] satisfies ResolvedSkill[]);
+
+	assert.equal(result.regenerated, true, "first applied update must write the registry");
+	const registry = readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8");
+	assert.match(registry, new RegExp(escapeRegExp(skillPath)));
+	assert.match(registry, /project · package/);
+	assert.match(
+		registry,
+		/Pi-resolved runtime authority \(before_agent_start\.systemPromptOptions\.skills\): 1 skill\(s\)/,
+	);
+});
+
+test("resolved set spans global packages, project-local packages, and custom paths", async () => {
+	// Issue #369 acceptance: global and project-local npm packages plus custom
+	// package-declared paths must all be represented by their exact SKILL.md path.
+	const cwd = join(tmpdir(), `gentle-pi-apply-matrix-${Date.now()}`);
+	const globalPkgPath = join("/", "usr", "lib", "node_modules", "@scope", "pkg-a", "skills", "global-pkg-skill", "SKILL.md");
+	const projectPkgPath = join(cwd, "node_modules", "pkg-b", "skills", "project-pkg-skill", "SKILL.md");
+	const customPath = join(cwd, "custom-declared", "skills", "custom-path-skill", "SKILL.md");
+
+	const result = await __testing.applyResolvedSkillsUpdate(cwd, [
+		{
+			name: "global-pkg-skill",
+			description: "Trigger: global npm package skill.",
+			filePath: globalPkgPath,
+			sourceInfo: { scope: "user", origin: "package" },
+		},
+		{
+			name: "project-pkg-skill",
+			description: "Trigger: project-local npm package skill.",
+			filePath: projectPkgPath,
+			sourceInfo: { scope: "project", origin: "package" },
+		},
+		{
+			name: "custom-path-skill",
+			description: "Trigger: custom package-declared path skill.",
+			filePath: customPath,
+			sourceInfo: { scope: "project", origin: "top-level" },
+		},
+	] satisfies ResolvedSkill[]);
+
+	assert.equal(result.regenerated, true);
+	// The loose scan merges this host's real user skill dirs, so the count is a
+	// lower bound; the exact-path assertions below carry the acceptance weight.
+	assert.ok(result.skillCount >= 3, `expected >= 3 skills, got ${result.skillCount}`);
+	const registry = readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8");
+	for (const path of [globalPkgPath, projectPkgPath, customPath]) {
+		assert.match(registry, new RegExp(escapeRegExp(path)));
+	}
+	assert.match(registry, /user · package/);
+	assert.match(registry, /project · package/);
+	assert.match(
+		registry,
+		/Pi-resolved runtime authority \(before_agent_start\.systemPromptOptions\.skills\): 3 skill\(s\)/,
+	);
+});
+
+test("applyResolvedSkillsUpdate is idempotent for an unchanged resolved set", async () => {
+	const cwd = join(tmpdir(), `gentle-pi-apply-idempotent-${Date.now()}`);
+	const resolved: ResolvedSkill[] = [
+		{
+			name: "idempotent",
+			description: "Trigger: idempotent skill.",
+			filePath: "/pkg/skills/idempotent/SKILL.md",
+			sourceInfo: { scope: "user", origin: "package" },
+		},
+	];
+
+	await __testing.applyResolvedSkillsUpdate(cwd, resolved);
+	const registryPath = join(cwd, ".atl", "skill-registry.md");
+	const before = statSync(registryPath);
+	await new Promise((resolve) => setTimeout(resolve, 25));
+
+	const second = await __testing.applyResolvedSkillsUpdate(cwd, resolved);
+	assert.equal(second.regenerated, false, "identical resolved set must be a cache hit");
+	assert.equal(second.reason, "cache-hit");
+	assert.equal(
+		statSync(registryPath).mtimeMs,
+		before.mtimeMs,
+		"cache hit must not rewrite the registry file",
+	);
+});
+
+test("applyResolvedSkillsUpdate regenerates when the resolved set changes", async () => {
+	const cwd = join(tmpdir(), `gentle-pi-apply-change-${Date.now()}`);
+	const firstPath = "/pkg/skills/change-one/SKILL.md";
+	await __testing.applyResolvedSkillsUpdate(cwd, [
+		{ name: "change-one", description: "First.", filePath: firstPath } satisfies ResolvedSkill,
+	]);
+
+	const secondPath = "/pkg/skills/change-two/SKILL.md";
+	const changed = await __testing.applyResolvedSkillsUpdate(cwd, [
+		{ name: "change-one", description: "First.", filePath: firstPath } satisfies ResolvedSkill,
+		{ name: "change-two", description: "Second.", filePath: secondPath } satisfies ResolvedSkill,
+	]);
+
+	assert.equal(changed.regenerated, true, "changed resolved set must regenerate");
+	assert.equal(changed.reason, "fingerprint-changed");
+	const registry = readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8");
+	assert.match(registry, new RegExp(escapeRegExp(secondPath)));
+});
+
+test("resolved fingerprint tracks normalized descriptions, effective disabled state, and runtime order", async () => {
+	const cwd = join(tmpdir(), `gentle-pi-resolved-fingerprint-${Date.now()}`);
+	const alphaPath = "/pkg/skills/fingerprint-alpha/SKILL.md";
+	const betaPath = "/pkg/skills/fingerprint-beta/SKILL.md";
+	const first: ResolvedSkill[] = [
+		{ name: "duplicate", description: "Trigger: first entry.", filePath: alphaPath },
+		{ name: "duplicate", description: "Trigger: second entry.", filePath: betaPath },
+	];
+
+	assert.equal((await __testing.regenerateRegistry(cwd, false, first)).regenerated, true);
+	assert.equal(
+		(await __testing.regenerateRegistry(cwd, false, [
+			{ ...first[0], description: "  Trigger:   first entry.  " },
+			first[1],
+		])).regenerated,
+		false,
+		"whitespace-only description changes must remain cache-equivalent",
+	);
+	assert.equal(
+		(await __testing.regenerateRegistry(cwd, false, [
+			{ ...first[0], description: "Trigger: updated first entry." },
+			first[1],
+		])).regenerated,
+		true,
+		"normalized description changes must invalidate the cache",
+	);
+	assert.equal(
+		(await __testing.regenerateRegistry(cwd, false, [
+			{ ...first[0], description: "Trigger: updated first entry.", disableModelInvocation: true },
+			first[1],
+		])).regenerated,
+		true,
+		"effective disabled-state changes must invalidate the cache",
+	);
+
+	const orderCwd = join(tmpdir(), `gentle-pi-resolved-order-${Date.now()}`);
+	assert.equal((await __testing.regenerateRegistry(orderCwd, false, first)).regenerated, true);
+	const reordered = [first[1], first[0]];
+	assert.equal(
+		(await __testing.regenerateRegistry(orderCwd, false, reordered)).regenerated,
+		true,
+		"runtime order changes must invalidate the cache",
+	);
+	const registry = readFileSync(join(orderCwd, ".atl", "skill-registry.md"), "utf8");
+	assert.match(registry, new RegExp(escapeRegExp(betaPath)));
+	assert.doesNotMatch(registry, new RegExp(escapeRegExp(alphaPath)));
+});
+
+test("before_agent_start rejects malformed batches and preserves prior resolved skills", async () => {
+	const cwd = join(tmpdir(), `gentle-pi-wire-malformed-batch-${Date.now()}`);
+	const skillPath = "/pkg/skills/valid-before-malformed/SKILL.md";
+	const { pi, handlers, commands } = fakeSkillRegistryPi();
+	skillRegistryExtension(pi);
+	const handler = handlers.get("before_agent_start")?.[0];
+	const refresh = commands.get("skill-registry:refresh");
+	assert.ok(handler);
+	assert.ok(refresh);
+
+	await handler(
+		{ systemPromptOptions: { skills: [{ name: "valid", description: "Valid runtime skill.", filePath: skillPath }] } },
+		{ cwd, hasUI: false },
+	);
+	for (const skills of [
+		[
+			{ name: "replacement-scope", description: "Must not partially apply.", filePath: "/pkg/skills/replacement-scope/SKILL.md" },
+			{
+				name: "invalid-scope",
+				description: "Invalid nested metadata.",
+				filePath: "/pkg/skills/invalid-scope/SKILL.md",
+				sourceInfo: { scope: 42 },
+			},
+		],
+		[
+			{ name: "replacement-origin", description: "Must not partially apply.", filePath: "/pkg/skills/replacement-origin/SKILL.md" },
+			{
+				name: "invalid-origin",
+				description: "Invalid nested metadata.",
+				filePath: "/pkg/skills/invalid-origin/SKILL.md",
+				sourceInfo: { origin: "invalid" },
+			},
+		],
+	]) {
+		writeFileSync(join(cwd, ".atl", "skill-registry.md"), "sentinel\n");
+		await handler({ systemPromptOptions: { skills } }, { cwd, hasUI: false });
+		await refresh.handler("", { cwd, hasUI: false, ui: { notify() {} } });
+
+		const registry = readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8");
+		assert.match(registry, new RegExp(escapeRegExp(skillPath)));
+		assert.doesNotMatch(registry, new RegExp(escapeRegExp(skills[0].filePath)));
+		assert.doesNotMatch(registry, /sentinel/);
+	}
+});
+
+test("watcher refresh retains captured runtime-resolved skills", { timeout: 5_000 }, async () => {
+	const cwd = join(tmpdir(), `gentle-pi-watch-resolved-${Date.now()}`);
+	const looseSkillPath = join(cwd, "skills", "loose", "SKILL.md");
+	const resolvedPath = "/pkg/skills/watcher-retained/SKILL.md";
+	mkdirSync(dirname(looseSkillPath), { recursive: true });
+	writeFileSync(looseSkillPath, "---\nname: loose\ndescription: Before watcher refresh.\n---\n");
+	await __testing.applyResolvedSkillsUpdate(cwd, [
+		{ name: "retained", description: "Runtime authority.", filePath: resolvedPath },
+	]);
+
+	let resolveRefresh: (() => void) | undefined;
+	let timeout: ReturnType<typeof setTimeout> | undefined;
+	const refreshed = new Promise<void>((resolve) => {
+		resolveRefresh = resolve;
+	});
+	try {
+		await __testing.startSkillRegistryWatcher(cwd, () => resolveRefresh?.());
+		writeFileSync(looseSkillPath, "---\nname: loose\ndescription: After watcher refresh.\n---\n");
+		await Promise.race([
+			refreshed,
+			new Promise<void>((_resolve, reject) => {
+				timeout = setTimeout(() => reject(new Error("watcher did not refresh the registry")), 3_000);
+			}),
+		]);
+	} finally {
+		if (timeout) clearTimeout(timeout);
+		__testing.closeSkillRegistryWatchers();
+	}
+
+	const registry = readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8");
+	assert.match(registry, new RegExp(escapeRegExp(resolvedPath)));
+});
+
+test("before_agent_start handler wires pi-resolved skills into the registry", async () => {
+	// Happy path: the handler captures runtime-resolved skills for the session cwd.
+	{
+		const cwd = join(tmpdir(), `gentle-pi-wire-${Date.now()}`);
+		const { pi, handlers } = fakeSkillRegistryPi();
+		skillRegistryExtension(pi);
+		const handler = handlers.get("before_agent_start")?.[0];
+		assert.ok(handler, "default export must register a before_agent_start handler");
+
+		const skillPath = join(
+			tmpdir(),
+			`gentle-pi-wire-pkg-${Date.now()}`,
+			"skills",
+			"wired-skill",
+			"SKILL.md",
+		);
+		await handler(
+			{
+				systemPromptOptions: {
+					skills: [
+						{
+							name: "wired-skill",
+							description: "Trigger: wired skill. Runtime capture.",
+							filePath: skillPath,
+							sourceInfo: { scope: "project", origin: "package" },
+						},
+					],
+				},
+			},
+			{ cwd, hasUI: false },
+		);
+
+		const registry = readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8");
+		assert.match(registry, new RegExp(escapeRegExp(skillPath)));
+	}
+
+	// The no-skill-registry opt-out must leave the registry untouched.
+	{
+		const cwd = join(tmpdir(), `gentle-pi-wire-skip-${Date.now()}`);
+		const { pi, handlers } = fakeSkillRegistryPi((name) => name === "no-skill-registry");
+		skillRegistryExtension(pi);
+		const handler = handlers.get("before_agent_start")?.[0];
+		assert.ok(handler);
+
+		await handler(
+			{ systemPromptOptions: { skills: [{ name: "skipped", description: "S.", filePath: "/pkg/skills/skipped/SKILL.md" }] } },
+			{ cwd, hasUI: false },
+		);
+		assert.equal(
+			existsSync(join(cwd, ".atl", "skill-registry.md")),
+			false,
+			"flagged opt-out must not write a registry",
+		);
+	}
+
+	// A non-array skills payload must be ignored entirely.
+	{
+		const cwd = join(tmpdir(), `gentle-pi-wire-malformed-${Date.now()}`);
+		const { pi, handlers } = fakeSkillRegistryPi();
+		skillRegistryExtension(pi);
+		const handler = handlers.get("before_agent_start")?.[0];
+		assert.ok(handler);
+
+		await handler(
+			{ systemPromptOptions: { skills: "not-an-array" } },
+			{ cwd, hasUI: false },
+		);
+		assert.equal(
+			existsSync(join(cwd, ".atl", "skill-registry.md")),
+			false,
+			"non-array skills payload must not write a registry",
+		);
+	}
+});
+
+test("startup regeneration keeps the resolved set captured before it settles", async (t) => {
+	// Startup regeneration is scheduled by session_start and lands later; a
+	// capture that already arrived is newer authority and must survive it.
+	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-startup-authority-"));
+	const packageRoot = mkdtempSync(join(tmpdir(), "gentle-pi-startup-authority-pkg-"));
+	t.after(() => {
+		rmSync(cwd, { recursive: true, force: true });
+		rmSync(packageRoot, { recursive: true, force: true });
+	});
+	const loosePath = join(cwd, "skills", "loose", "SKILL.md");
+	mkdirSync(dirname(loosePath), { recursive: true });
+	writeFileSync(loosePath, "---\nname: loose\ndescription: Loose project skill.\n---\n");
+	const resolvedPath = join(packageRoot, "skills", "runtime-authority", "SKILL.md");
+
+	const { pi, handlers } = fakeSkillRegistryPi();
+	skillRegistryExtension(pi);
+	const capture = handlers.get("before_agent_start")?.[0];
+	const start = handlers.get("session_start")?.[0];
+	assert.ok(capture, "default export must register a before_agent_start handler");
+	assert.ok(start, "default export must register a session_start handler");
+	const ctx = { cwd, hasUI: false };
+
+	await capture(
+		{
+			systemPromptOptions: {
+				skills: [
+					{
+						name: "runtime-authority",
+						description: "Trigger: runtime authority. Captured before startup settles.",
+						filePath: resolvedPath,
+						sourceInfo: { scope: "project", origin: "package" },
+					},
+				],
+			},
+		},
+		ctx,
+	);
+	await start(undefined, ctx);
+	await __testing.startupSettled();
+
+	const registry = readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8");
+	assert.match(registry, new RegExp(escapeRegExp(resolvedPath)), "startup regeneration must not drop captured runtime authority");
+	assert.match(registry, new RegExp(escapeRegExp(loosePath)));
+	assert.match(
+		registry,
+		/Pi-resolved runtime authority \(before_agent_start\.systemPromptOptions\.skills\): 1 skill\(s\)/,
+	);
+});
+
+test("manual /skill-registry:refresh keeps the captured resolved set", async () => {
+	const cwd = join(tmpdir(), `gentle-pi-refresh-${Date.now()}`);
+	const skillPath = join(tmpdir(), `gentle-pi-refresh-pkg-${Date.now()}`, "skills", "refreshed", "SKILL.md");
+	const { pi, handlers, commands } = fakeSkillRegistryPi();
+	skillRegistryExtension(pi);
+	const handler = handlers.get("before_agent_start")?.[0];
+	assert.ok(handler);
+	const refresh = commands.get("skill-registry:refresh");
+	assert.ok(refresh, "default export must register skill-registry:refresh");
+
+	await handler(
+		{
+			systemPromptOptions: {
+				skills: [
+				{
+						name: "refreshed",
+						description: "Trigger: refresh retention. Authority must survive a manual refresh.",
+						filePath: skillPath,
+						sourceInfo: { scope: "project", origin: "package" },
+					},
+				],
+			},
+		},
+		{ cwd, hasUI: false },
+	);
+	assert.ok(existsSync(join(cwd, ".atl", "skill-registry.md")));
+
+	// A forced manual refresh must not drop the runtime-resolved authority.
+	const notices: string[] = [];
+	await refresh.handler("", { cwd, hasUI: true, ui: { notify: (text: string) => notices.push(text) } });
+	const registry = readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8");
+	assert.match(
+		registry,
+		new RegExp(escapeRegExp(skillPath)),
+		"forced refresh must retain pi-resolved skills",
+	);
+	assert.ok(notices.length > 0);
+});
+
+test("ensureAtlIgnored creates .atl/.gitignore with * and leaves root .gitignore untouched (#1387)", async (t) => {
+	const cwd = mkdtempSync(join(tmpdir(), `gentle-pi-git-atl-${Date.now()}-`));
+	t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+	// An empty index is sufficient; fixtures never need commits.
+	execSync("git init", { cwd, stdio: "ignore" });
+
+	const rootGitignore = join(cwd, ".gitignore");
+	const atlGitignore = join(cwd, ".atl", ".gitignore");
+
+	// Run ensureAtlIgnored
+	await __testing.ensureAtlIgnored(cwd);
+
+	// Root .gitignore must NOT be created
+	assert.equal(existsSync(rootGitignore), false, "root .gitignore must not be created");
+
+	// .atl/.gitignore must exist with * rule
+	assert.equal(existsSync(atlGitignore), true, ".atl/.gitignore must exist");
+	assert.equal(readFileSync(atlGitignore, "utf8").trim(), "*");
+
+	// Write generated registry file inside .atl
+	writeFileSync(join(cwd, ".atl", "skill-registry.md"), "## Skills\n");
+
+	// Verify that git status reports no untracked files
+	const status = execSync("git status --porcelain", { cwd, encoding: "utf8" });
+	assert.equal(status.trim(), "", ".atl/ files must not appear in git status");
+
+	// Idempotency: calling ensureAtlIgnored again does not duplicate or alter the rule
+	await __testing.ensureAtlIgnored(cwd);
+	assert.equal(readFileSync(atlGitignore, "utf8").trim(), "*");
+
+	// Existing root .gitignore is preserved unmodified
+	writeFileSync(rootGitignore, "node_modules/\n");
+	await __testing.ensureAtlIgnored(cwd);
+	assert.equal(readFileSync(rootGitignore, "utf8"), "node_modules/\n", "existing root .gitignore must remain untouched");
+
+	// If .atl/.gitignore already has intermediate rules ending with a negation, ensure * is appended
+	writeFileSync(atlGitignore, "*\n!*.md\n");
+	await __testing.ensureAtlIgnored(cwd);
+	const updatedRules = readFileSync(atlGitignore, "utf8")
+		.split("\n")
+		.map((l) => l.trim())
+		.filter((l) => l !== "" && !l.startsWith("#"));
+	assert.equal(updatedRules.at(-1), "*", "final active ignore rule must be *");
+});
+
+// Keep runtime scans inside an isolated home, including the existing watcher tests.
+const fixtureHome = mkdtempSync(join(tmpdir(), "gentle-pi-registry-home-"));
+const originalHome = process.env.HOME;
+const originalUserProfile = process.env.USERPROFILE;
+const originalGitCeiling = process.env.GIT_CEILING_DIRECTORIES;
+process.env.GIT_CEILING_DIRECTORIES = tmpdir();
+process.env.HOME = fixtureHome;
+process.env.USERPROFILE = fixtureHome;
+test.after(() => {
+	if (originalHome === undefined) delete process.env.HOME;
+	else process.env.HOME = originalHome;
+	if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+	else process.env.USERPROFILE = originalUserProfile;
+	if (originalGitCeiling === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
+	else process.env.GIT_CEILING_DIRECTORIES = originalGitCeiling;
+});
+
+function registeredRegistry(cwd: string, suppressed = false) {
+	type Context = { cwd: string; hasUI: boolean; ui: { notify: (message: string, level?: string) => void } };
+	const events = new Map<string, (event: unknown, ctx: Context) => Promise<void>>();
+	const commands = new Map<string, { handler: (args: string, ctx: Context) => Promise<void> }>();
+	const notices: { message: string; level?: string }[] = [];
+	skillRegistry({
+		on: (name: string, handler: (event: unknown, ctx: Context) => Promise<void>) => events.set(name, handler),
+		registerCommand: (name: string, command: { handler: (args: string, ctx: Context) => Promise<void> }) => commands.set(name, command),
+		registerFlag: () => undefined,
+		getFlag: () => suppressed,
+	} as unknown as ExtensionAPI);
+	const ctx = { cwd, hasUI: true, ui: { notify: (message: string, level?: string) => notices.push({ message, level }) } };
+	return {
+		notices,
+		// Startup work runs after session_start returns; settle it for assertions.
+		start: async () => { await events.get("session_start")!(undefined, ctx); await __testing.startupSettled(); },
+		startOnly: () => events.get("session_start")!(undefined, ctx),
+		refresh: () => commands.get("skill-registry:refresh")!.handler("", ctx),
+		stop: () => events.get("session_shutdown")!(undefined, ctx),
+	};
+}
+
+function registryFixture(git = true, nested = false) {
+	const root = mkdtempSync(join(tmpdir(), "gentle-pi-protected-"));
+	if (git) execSync("git init", { cwd: root, stdio: "ignore" });
+	const cwd = nested ? join(root, "nested") : root;
+	mkdirSync(join(cwd, ".atl"), { recursive: true });
+	const skill = join(cwd, "skills", "local", "SKILL.md");
+	mkdirSync(dirname(skill), { recursive: true });
+	writeFileSync(skill, "---\nname: local\ndescription: Initial skill.\n---\n");
+	return { root, cwd, skill, registry: join(cwd, ".atl", "skill-registry.md"), ignore: join(cwd, ".atl", ".gitignore") };
+}
+
+for (const target of ["registry", "ignore"] as const) {
+	test(`registered startup preserves tracked ${target} in nested cwd and explicit refresh remains intentional`, async (t) => {
+		const fixture = registryFixture(true, true);
+		writeFileSync(fixture[target], target === "registry" ? "Reviewed registry\n" : "!*.md\n");
+		execSync(`git add -f nested/.atl/${target === "registry" ? "skill-registry.md" : ".gitignore"}`, { cwd: fixture.root, stdio: "ignore" });
+		const before = readFileSync(fixture[target], "utf8");
+		const runtime = registeredRegistry(fixture.cwd);
+		t.after(() => runtime.stop());
+		await runtime.start();
+		assert.equal(readFileSync(fixture[target], "utf8"), before);
+		assert.ok(runtime.notices.some(({ message, level }) => level === "warning" && message.includes(`.atl/${target === "registry" ? "skill-registry.md" : ".gitignore"}`) && message.includes("/skill-registry:refresh")));
+		if (target === "registry") assert.ok(!runtime.notices.some(({ message }) => message.includes("refreshed")));
+		await runtime.refresh();
+		assert.notEqual(readFileSync(fixture[target], "utf8"), before);
+		assert.ok(runtime.notices.some(({ message }) => message.includes("written to .atl/skill-registry.md")));
+	});
+}
+
+test("registered watcher protects registry tracked after a cache hit", async (t) => {
+	const fixture = registryFixture();
+	const runtime = registeredRegistry(fixture.cwd);
+	t.after(() => runtime.stop());
+	await runtime.start();
+	await runtime.start();
+	const before = readFileSync(fixture.registry, "utf8");
+	execSync("git add -f .atl/skill-registry.md", { cwd: fixture.root, stdio: "ignore" });
+	runtime.notices.length = 0;
+	writeFileSync(fixture.skill, "---\nname: local\ndescription: Changed skill.\n---\n");
+	const deadline = Date.now() + 5000;
+	while (runtime.notices.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(readFileSync(fixture.registry, "utf8"), before);
+	assert.ok(runtime.notices.some(({ message, level }) => level === "warning" && message.includes("/skill-registry:refresh")));
+	// The poll re-asks the same tracked-target state every interval: the
+	// warning stays a one-shot per unchanged state instead of repeating.
+	runtime.notices.length = 0;
+	await new Promise((resolve) => setTimeout(resolve, 3000));
+	assert.deepEqual(runtime.notices, []);
+	assert.ok(!runtime.notices.some(({ message }) => message.includes("refreshed")));
+});
+
+for (const git of [true, false]) {
+	test(`registered startup and watcher regenerate normally in ${git ? "untracked Git" : "non-Git"} fixtures`, async (t) => {
+		const fixture = registryFixture(git);
+		const runtime = registeredRegistry(fixture.cwd);
+		t.after(() => runtime.stop());
+		await runtime.start();
+		assert.match(readFileSync(fixture.registry, "utf8"), /Initial skill/);
+		assert.equal(readFileSync(fixture.ignore, "utf8"), "*\n");
+		writeFileSync(fixture.skill, "---\nname: local\ndescription: Changed skill.\n---\n");
+		const deadline = Date.now() + 5000;
+		while (!readFileSync(fixture.registry, "utf8").includes("Changed skill") && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.match(readFileSync(fixture.registry, "utf8"), /Changed skill/);
+	});
+}
+
+test("automatic forced freshness protects tracked cache without partial registry writes", async () => {
+	const fixture = registryFixture();
+	await __testing.regenerateRegistry(fixture.cwd, false);
+	const cache = join(fixture.cwd, ".atl", ".skill-registry.cache.json");
+	execSync("git add -f .atl/.skill-registry.cache.json", { cwd: fixture.root, stdio: "ignore" });
+	const beforeCache = readFileSync(cache, "utf8");
+	const beforeRegistry = readFileSync(fixture.registry, "utf8");
+	writeFileSync(fixture.skill, "---\nname: local\ndescription: Changed skill.\n---\n");
+	const result = await __testing.regenerateRegistry(fixture.cwd, true);
+	assert.equal(result.regenerated, false);
+	assert.match(result.warning ?? "", /\.atl\/\.skill-registry\.cache\.json/);
+	assert.equal(readFileSync(cache, "utf8"), beforeCache);
+	assert.equal(readFileSync(fixture.registry, "utf8"), beforeRegistry);
+});
+
+test("registered Git detection failure skips automatic writes and reports deliberate refresh", async (t) => {
+	const fixture = registryFixture(false);
+	writeFileSync(join(fixture.cwd, ".git"), "invalid gitfile\n");
+	const runtime = registeredRegistry(fixture.cwd);
+	t.after(() => runtime.stop());
+	await runtime.start();
+	assert.equal(existsSync(fixture.ignore), false);
+	assert.equal(existsSync(fixture.registry), false);
+	assert.ok(runtime.notices.some(({ message, level }) => level === "warning" && message.includes(".atl/.gitignore") && message.includes("/skill-registry:refresh")));
+	assert.ok(!runtime.notices.some(({ message }) => message.includes("refreshed")));
+	await runtime.refresh();
+	assert.match(readFileSync(fixture.registry, "utf8"), /Initial skill/);
+});
+
+for (const nested of [false, true]) {
+	test(`registered startup fails closed for broken Git redirect with nested=${nested}`, async (t) => {
+		const fixture = registryFixture(false, nested);
+		writeFileSync(join(fixture.root, ".git"), "gitdir: missing-git-directory\n");
+		const runtime = registeredRegistry(fixture.cwd);
+		t.after(() => runtime.stop());
+		await runtime.start();
+		for (const path of [fixture.ignore, fixture.registry, join(fixture.cwd, ".atl", ".skill-registry.cache.json")]) {
+			assert.equal(existsSync(path), false, `automatic startup must not create ${path}`);
+		}
+		assert.ok(runtime.notices.some(({ message, level }) => level === "warning" && message.includes("Resolve Git detection")));
+		assert.ok(!runtime.notices.some(({ message }) => message.includes("refreshed")));
+	});
+}
+
+test("registered startup preserves tracked generated legacy source with accurate manual remedy", async (t) => {
+	const fixture = registryFixture();
+	const legacy = join(fixture.cwd, ".pi", "extensions", "skill-registry.ts");
+	const source = 'Auto-generated by .pi/extensions/skill-registry.ts\nconst REGISTRY_REL_PATH = ".atl/skill-registry.md"\nfunction projectSkillDirs(cwd: string): string[]\nfunction regenerateRegistry(cwd: string, force: boolean)\n';
+	mkdirSync(dirname(legacy), { recursive: true });
+	writeFileSync(legacy, source);
+	execSync("git add .pi/extensions/skill-registry.ts", { cwd: fixture.root, stdio: "ignore" });
+	const runtime = registeredRegistry(fixture.cwd);
+	t.after(() => runtime.stop());
+	await runtime.start();
+	assert.equal(readFileSync(legacy, "utf8"), source);
+	assert.equal(existsSync(`${legacy}.disabled`), false);
+	assert.ok(!runtime.notices.some(({ message }) => /quarantined/i.test(message)));
+	const warning = runtime.notices.find(({ message, level }) => level === "warning" && message.includes(".pi/extensions/skill-registry.ts"))?.message ?? "";
+	assert.match(warning, /manually.*tracked legacy extension/i);
+	assert.doesNotMatch(warning, /\/skill-registry:refresh/);
+	await runtime.refresh();
+	assert.equal(readFileSync(legacy, "utf8"), source);
+	assert.equal(existsSync(`${legacy}.disabled`), false);
+});
+
+for (const control of ["environment", "--no-skills", "-ns"]) {
+	test(`registered ${control} suppression skips startup writes and watchers`, async (t) => {
+		const fixture = registryFixture();
+		const runtime = registeredRegistry(fixture.cwd);
+		const previousEnv = process.env.GENTLE_PI_NO_SKILL_REGISTRY;
+		const previousArgv = process.argv;
+		if (control === "environment") process.env.GENTLE_PI_NO_SKILL_REGISTRY = "1";
+		else process.argv = [...process.argv, control];
+		t.after(() => {
+			process.argv = previousArgv;
+			if (previousEnv === undefined) delete process.env.GENTLE_PI_NO_SKILL_REGISTRY;
+			else process.env.GENTLE_PI_NO_SKILL_REGISTRY = previousEnv;
+			return runtime.stop();
+		});
+		await runtime.start();
+		assert.equal(existsSync(fixture.registry), false);
+		assert.equal(existsSync(fixture.ignore), false);
+		assert.equal(__testing.activeWatcherCount(), 0);
+		await runtime.refresh();
+		assert.match(readFileSync(fixture.registry, "utf8"), /Initial skill/);
+	});
+}
+
+// gentle-shell#1690: delegated rpc children have hasUI=true but must not write
+// .atl/, rename the legacy registry or start a watcher in the shared cwd.
+test("registered startup in a delegated child avoids writes, legacy rename and watchers", async (t) => {
+	const fixture = registryFixture();
+	const legacy = join(fixture.cwd, ".pi", "extensions", "skill-registry.ts");
+	mkdirSync(dirname(legacy), { recursive: true });
+	const source = 'Auto-generated by .pi/extensions/skill-registry.ts\nconst REGISTRY_REL_PATH = ".atl/skill-registry.md"\nfunction projectSkillDirs(cwd: string): string[]\nfunction regenerateRegistry(cwd: string, force: boolean)\n';
+	writeFileSync(legacy, source);
+	const previous = process.env.GENTLE_PI_AGENTS_CHILD;
+	process.env.GENTLE_PI_AGENTS_CHILD = "1";
+	t.after(() => {
+		if (previous === undefined) delete process.env.GENTLE_PI_AGENTS_CHILD;
+		else process.env.GENTLE_PI_AGENTS_CHILD = previous;
+	});
+	const runtime = registeredRegistry(fixture.cwd);
+	t.after(() => runtime.stop());
+	await runtime.start();
+	assert.equal(existsSync(fixture.registry), false);
+	assert.equal(existsSync(fixture.ignore), false);
+	assert.equal(readFileSync(legacy, "utf8"), source);
+	assert.equal(existsSync(`${legacy}.disabled`), false);
+	assert.equal(__testing.activeWatcherCount(), 0);
+	assert.deepEqual(runtime.notices, []);
+});
+
+test("registered suppression avoids writes and watchers but permits explicit refresh", async (t) => {
+	const fixture = registryFixture();
+	const runtime = registeredRegistry(fixture.cwd, true);
+	t.after(() => runtime.stop());
+	await runtime.start();
+	assert.equal(existsSync(fixture.registry), false);
+	assert.equal(existsSync(fixture.ignore), false);
+	assert.equal(__testing.activeWatcherCount(), 0);
+	await runtime.refresh();
+	assert.match(readFileSync(fixture.registry, "utf8"), /Initial skill/);
+});
+
+// S7 CR4: the delayed regeneration after a legacy quarantine belongs to the
+// session that scheduled it; a shutdown before it fires cancels it.
+test("registered startup skips the delayed quarantine regeneration after shutdown", async () => {
+	const fixture = registryFixture();
+	const legacy = join(fixture.cwd, ".pi", "extensions", "skill-registry.ts");
+	mkdirSync(dirname(legacy), { recursive: true });
+	writeFileSync(legacy, 'Auto-generated by .pi/extensions/skill-registry.ts\nconst REGISTRY_REL_PATH = ".atl/skill-registry.md"\nfunction projectSkillDirs(cwd: string): string[]\nfunction regenerateRegistry(cwd: string, force: boolean)\n');
+	const runtime = registeredRegistry(fixture.cwd);
+	await runtime.start();
+	assert.equal(existsSync(`${legacy}.disabled`), true, "the legacy registry was quarantined");
+	await runtime.stop();
+	rmSync(fixture.registry);
+	await new Promise((resolve) => setTimeout(resolve, 800));
+	assert.equal(existsSync(fixture.registry), false, "a shut-down session must not regenerate the registry");
+});
+
+// S4: regeneration must not hold Pi's serial session_start chain.
+test("registered startup returns before regenerating and settles to the same output", async (t) => {
+	const fixture = registryFixture();
+	const runtime = registeredRegistry(fixture.cwd);
+	t.after(() => runtime.stop());
+	await runtime.startOnly();
+	assert.equal(existsSync(fixture.registry), false, "session_start must not await regeneration");
+	await __testing.startupSettled();
+	assert.match(readFileSync(fixture.registry, "utf8"), /Initial skill/);
+	assert.equal(readFileSync(fixture.ignore, "utf8"), "*\n");
+	assert.ok(runtime.notices.some(({ message }) => message === "Skill registry refreshed (1 skills)"));
+});
+
+// S4: a Git lookup that never answers (a repository rooted at HOME) takes the
+// existing fail-closed path instead of hanging.
+test("automatic Git tracking check times out into the fail-closed path", { skip: process.platform === "win32" }, async (t) => {
+	const fixture = registryFixture();
+	const bin = mkdtempSync(join(tmpdir(), "gentle-pi-slow-git-"));
+	writeFileSync(join(bin, "git"), "#!/bin/sh\nexec sleep 3\n", { mode: 0o755 });
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${bin}:${previousPath ?? ""}`;
+	const previousTimeout = __testing.setGitTimeoutMs(200);
+	t.after(() => {
+		process.env.PATH = previousPath;
+		__testing.setGitTimeoutMs(previousTimeout);
+		rmSync(bin, { recursive: true, force: true });
+	});
+	const started = Date.now();
+	await assert.rejects(__testing.ensureAtlIgnored(fixture.cwd), /Cannot verify Git tracking/);
+	assert.ok(Date.now() - started < 2000, "the lookup must stop at its timeout");
+	assert.equal(existsSync(fixture.ignore), false);
+});
+
+// S2: a repository rooted at HOME makes every Git call scan the whole home.
+// Startup skips the automatic Git work there; deliberate refresh still works.
+test("registered startup skips Git work and watchers when the repository is rooted at HOME", async (t) => {
+	const home = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-registry-git-home-")));
+	execSync("git init", { cwd: home, stdio: "ignore" });
+	const cwd = join(home, "project");
+	const skill = join(cwd, "skills", "local", "SKILL.md");
+	mkdirSync(dirname(skill), { recursive: true });
+	writeFileSync(skill, "---\nname: local\ndescription: Initial skill.\n---\n");
+	process.env.HOME = home;
+	process.env.USERPROFILE = home;
+	const runtime = registeredRegistry(cwd);
+	t.after(async () => {
+		await runtime.stop();
+		process.env.HOME = fixtureHome;
+		process.env.USERPROFILE = fixtureHome;
+		rmSync(home, { recursive: true, force: true });
+	});
+	await runtime.start();
+	assert.equal(existsSync(join(cwd, ".atl", ".gitignore")), false);
+	assert.equal(existsSync(join(cwd, ".atl", "skill-registry.md")), false);
+	assert.equal(__testing.activeWatcherCount(), 0);
+	assert.deepEqual(runtime.notices, []);
+	await runtime.refresh();
+	assert.match(readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8"), /Initial skill/);
+});
+
+// gentle-shell#373: permission failures must degrade truthfully. The registry
+// refresh reports a typed unavailable result with the offending path and a
+// safe next action, never a successful regeneration, and unexpected I/O keeps
+// its own diagnostic.
+test("isStorageUnavailableError classifies only storage faults", () => {
+	for (const code of ["EACCES", "EPERM", "EROFS", "ENOTDIR", "EISDIR", "EEXIST"]) {
+		assert.equal(__testing.isStorageUnavailableError({ code }), true, code);
+	}
+	for (const code of ["ENOENT", "EMFILE", "ELOOP", "ENOSPC"]) {
+		assert.equal(__testing.isStorageUnavailableError({ code }), false, code);
+	}
+	assert.equal(__testing.isStorageUnavailableError(new Error("no code")), false);
+	assert.equal(__testing.isStorageUnavailableError(null), false);
+});
+
+test("regenerateRegistry reports a typed unavailable result instead of throwing on EACCES", async (t) => {
+	const cwd = mkdtempSync(join(tmpdir(), "gentle-skill-373-eacces-"));
+	t.after(() => {
+		chmodSync(join(cwd, ".atl"), 0o755);
+		rmSync(cwd, { recursive: true, force: true });
+	});
+	mkdirSync(join(cwd, "skills", "a"), { recursive: true });
+	writeFileSync(join(cwd, "skills", "a", "SKILL.md"), "---\nname: a\ndescription: A skill.\n---\nbody");
+	const first = await __testing.regenerateRegistry(cwd, true);
+	assert.equal(first.regenerated, true, "the happy path must succeed before the fault is injected");
+
+	// A write of an existing registry file succeeds regardless of the
+	// directory mode (the file owner owns the open), so the read-only case
+	// must remove the managed files first: the fresh-install scenario where
+	// storage is read-only and the write actually fails.
+	rmSync(join(cwd, ".atl", "skill-registry.md"), { force: true });
+	rmSync(join(cwd, ".atl", ".skill-registry.cache.json"), { force: true });
+	chmodSync(join(cwd, ".atl"), 0o555);
+	const result = await __testing.regenerateRegistry(cwd, true, [], true);
+	assert.equal(result.regenerated, false, "a permission failure must never report success");
+	assert.equal(result.reason, "storage-unavailable");
+	assert.match(result.warning ?? "", /\.atl[/\\]skill-registry\.md/);
+	assert.match(result.warning ?? "", /not writable/);
+	assert.match(result.warning ?? "", /\/skill-registry:refresh/);
+	assert.equal(existsSync(join(cwd, ".atl", "skill-registry.md")), false);
+
+	chmodSync(join(cwd, ".atl"), 0o755);
+	const recovered = await __testing.regenerateRegistry(cwd, true, [], true);
+	assert.equal(recovered.regenerated, true, "the registry must regenerate once storage is writable again");
+});
+
+test("regenerateRegistry degrades truthfully when .atl is a regular file", async (t) => {
+	const cwd = mkdtempSync(join(tmpdir(), "gentle-skill-373-enotdir-"));
+	t.after(() => rmSync(cwd, { recursive: true, force: true }));
+	writeFileSync(join(cwd, ".atl"), "not a directory\n");
+	const result = await __testing.regenerateRegistry(cwd, true, [], true);
+	assert.equal(result.regenerated, false, "a non-directory .atl must never report success");
+	assert.equal(result.reason, "storage-unavailable");
+	assert.match(result.warning ?? "", /not writable/);
+});
+
+test("regenerateRegistry preserves the diagnostic for unexpected I/O errors", async (t) => {
+	const cwd = mkdtempSync(join(tmpdir(), "gentle-skill-373-eloop-"));
+	t.after(() => rmSync(cwd, { recursive: true, force: true }));
+	symlinkSync(join(cwd, ".atl", "self"), join(cwd, ".atl"));
+	await assert.rejects(
+		__testing.regenerateRegistry(cwd, true, [], true),
+		/ELOOP/,
+		"unexpected I/O must keep its own diagnostic instead of a typed unavailable result",
+	);
 });

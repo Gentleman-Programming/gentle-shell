@@ -8,10 +8,11 @@ import { resolveDefaultSubagentMode } from "../extensions/gentle-agents.ts";
 // neither an explicit params.mode nor an agent-defined mode was given.
 //
 // Background is a runtime default only when the background-subagents policy
-// is "on" AND the parent can receive background results. Print mode exits
-// before a parent session exists to deliver a background result to, so it
-// must keep the configured default even when the policy is on (see the
-// `ctx.mode === "print"` guard in gentle-agents.ts `launch`).
+// is "on" AND the parent can receive background results. The single-shot
+// modes (`pi -p` and `pi --mode json`) dispose the runtime once the prompt
+// returns, before a background result can be delivered, so they must keep
+// the configured default even when the policy is on (see the single-shot
+// guard in gentle-agents.ts `launch`).
 // ---------------------------------------------------------------------------
 
 test("policy on + interactive parent -> background", () => {
@@ -22,6 +23,28 @@ test("policy on + interactive parent -> background", () => {
 			parentMode: "interactive",
 		}),
 		AGENT_MODE.BACKGROUND,
+	);
+});
+
+test("policy on + tui parent -> background", () => {
+	assert.equal(
+		resolveDefaultSubagentMode({
+			configuredDefault: AGENT_MODE.TASK,
+			policy: "on",
+			parentMode: "tui",
+		}),
+		AGENT_MODE.BACKGROUND,
+	);
+});
+
+test("policy on + json parent -> configured default (task), never background", () => {
+	assert.equal(
+		resolveDefaultSubagentMode({
+			configuredDefault: AGENT_MODE.TASK,
+			policy: "on",
+			parentMode: "json",
+		}),
+		AGENT_MODE.TASK,
 	);
 });
 
@@ -48,7 +71,7 @@ test("policy on + print parent -> configured default (task), never background", 
 });
 
 test("policy off -> configured default regardless of parent mode", () => {
-	for (const parentMode of ["interactive", "rpc", "print", undefined]) {
+	for (const parentMode of ["interactive", "tui", "rpc", "print", "json", undefined]) {
 		assert.equal(
 			resolveDefaultSubagentMode({
 				configuredDefault: AGENT_MODE.TASK,

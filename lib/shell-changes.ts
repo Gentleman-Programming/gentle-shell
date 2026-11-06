@@ -27,7 +27,8 @@ export interface ChangesModel {
 	files: ChangedFile[];
 	added: number;
 	deleted: number;
-	notice?: string;
+	/** Stored once per model build; the footer memo reads it every keystroke. */
+	digest?: string;
 }
 
 export interface ChangesSnapshot {
@@ -46,6 +47,11 @@ interface NumstatEntry {
 }
 
 export const CHANGES_COMMAND = "/gentle:changes";
+// One selected file's diff is the only bounded thing in Changes: past either
+// limit the panel shows DIFF_TOO_LARGE instead of buffering and coloring it.
+export const DIFF_MAX_BYTES = 1024 * 1024;
+export const DIFF_MAX_LINES = 20_000;
+export const DIFF_TOO_LARGE = "Diff too large — press o to open in editor.";
 const WIDGET_GLYPH = "✎";
 const STATUS_BY_CODE: Record<string, ChangeStatus> = {
 	A: CHANGE_STATUS.ADDED,
@@ -59,7 +65,7 @@ const HAS_RENAME_BRACES = /\{[^{}]* => [^{}]*\}/;
 const RENAME_ARROW = " => ";
 
 export function emptyChanges(): ChangesModel {
-	return { files: [], added: 0, deleted: 0 };
+	return { files: [], added: 0, deleted: 0, digest: EMPTY_CHANGES_DIGEST };
 }
 
 function renamedPath(path: string): string {
@@ -90,8 +96,13 @@ export function parsePorcelain(text: string): Map<string, ChangeStatus> {
 		const record = records[index];
 		const code = record.slice(0, 2);
 		const path = record.slice(3);
-		const status = STATUS_BY_CODE[code[0]] ?? STATUS_BY_CODE[code[1]] ?? CHANGE_STATUS.MODIFIED;
-		statuses.set(path, status);
+		// A trailing "/" is Git's own marker for an embedded repository (a
+		// nested .git directory, e.g. an inner repo inside an outer one) or an
+		// excluded directory -- never an individual file. Even with
+		// --untracked-files=all, Git reports these as one directory-shaped line
+		// instead of expanding into files, so keeping it would show a phantom
+		// changed "file" on whatever ancestor repository contains the nested one.
+		if (!path.endsWith("/")) statuses.set(path, STATUS_BY_CODE[code[0]] ?? STATUS_BY_CODE[code[1]] ?? CHANGE_STATUS.MODIFIED);
 		if (code[0] === "R" || code[0] === "C") index += 1;
 	}
 	return statuses;
@@ -101,6 +112,8 @@ export function snapshotChanges(snapshot: ChangesSnapshot): ChangedFile[] {
 	const counts = new Map(parseNumstat(snapshot.numstat).map((entry) => [entry.path, entry]));
 	const files: ChangedFile[] = [];
 	for (const [path, status] of parsePorcelain(snapshot.porcelain)) {
+		// Dependency backups are local artifacts; tracked files remain visible.
+		if (status === CHANGE_STATUS.UNTRACKED && /(?:^|\/)node_modules\.backup-[^/]+\//.test(path)) continue;
 		const entry = counts.get(path);
 		files.push({ path, added: entry?.added ?? 0, deleted: entry?.deleted ?? 0, status });
 	}
@@ -113,38 +126,97 @@ export function changesModel(changed: ChangedFile[]): ChangesModel {
 		files,
 		added: files.reduce((total, file) => total + file.added, 0),
 		deleted: files.reduce((total, file) => total + file.deleted, 0),
+		digest: changesDigest({ files, added: 0, deleted: 0 }),
 	};
 }
 
+// The footer Status memo asks "did any change move?" on every keystroke, so
+// the answer must be O(1) to read: the model stores this digest once per
+// build (changesModel/emptyChanges) and consumers read the stored field.
+// It is a 64-bit FNV-1a roll over every per-file tuple the renderer consumes
+// (path, status, counts, diffRevision, countsUnavailable), so counts alone
+// cannot miss a same-count edit. A hash collision could only skip one
+// refresh until the next change moves the digest again -- it never renders a
+// wrong picture -- but it is a probabilistic signal, not an exact one.
+function fnv1a(hash: number, text: string): number {
+	for (let index = 0; index < text.length; index += 1) {
+		hash ^= text.charCodeAt(index);
+		hash = Math.imul(hash, 0x01000193);
+	}
+	return hash >>> 0;
+}
+
+const FNV_OFFSET_BASIS = 0x811c9dc5;
+const SECOND_SEED = 0x811c9dc5 ^ 0x9e3779b9;
+
+export function changesDigest(model: ChangesModel): string {
+	let first = FNV_OFFSET_BASIS;
+	let second = SECOND_SEED;
+	for (const file of model.files) {
+		const tuple = `\u0000${file.path}\u0000${file.status}\u0000${file.added}\u0000${file.deleted}\u0000${file.diffRevision ?? ""}\u0000${file.countsUnavailable ?? ""}`;
+		first = fnv1a(first, tuple);
+		second = fnv1a(second, tuple);
+	}
+	return `${first.toString(16).padStart(8, "0")}${second.toString(16).padStart(8, "0")}`;
+}
+
+const EMPTY_CHANGES_DIGEST = changesDigest({ files: [], added: 0, deleted: 0 });
+
 export function changesSummary(model: ChangesModel): string {
 	const noun = model.files.length === 1 ? "file" : "files";
-	return `${model.files.length} ${noun} · +${model.added} −${model.deleted}${model.files.some(file => file.countsUnavailable) ? " · partial counts" : ""}${model.notice ? " · capture limit reached" : ""}`;
+	return `${model.files.length} ${noun} · +${model.added} −${model.deleted}${model.files.some(file => file.countsUnavailable) ? " · partial counts" : ""}`;
 }
 
 // One line: summary, the files joined by dots, and the command pushed to
 // the right edge. The file list goes first when the terminal is narrow.
+// The idle widget exists only while files are tracked. An unborn root (no
+// commits yet) is silence here: /gentle:changes explains the state on demand,
+// where the message has room and context.
+//
+// Both surfaces that paint it (the sidebar part and the below-input header
+// row) re-render every frame, so the paint is memoized per digest, width and
+// theme identity -- one stored frame, like CodemodeCard's cachedFrame. The
+// digest already rolls up every per-file detail the paint consumes (path,
+// status, counts, diffRevision, countsUnavailable), so a digest hit skips the
+// per-file join entirely; a digest-less (hand-built) model never caches, and
+// a new theme object repaints.
+type WidgetFrame = { digest: string; width: number; theme: ChangesTheme; lines: string[] };
+let widgetFrame: WidgetFrame | undefined;
+
 export function renderChangesWidget(model: ChangesModel, theme: ChangesTheme, width: number): string[] {
 	if (model.files.length === 0) return [];
+	if (model.digest !== undefined && widgetFrame?.digest === model.digest && widgetFrame.width === width && widgetFrame.theme === theme) return widgetFrame.lines;
 	const noun = model.files.length === 1 ? "file" : "files";
 	const dot = theme.fg("muted", "·");
-	const head = `${theme.fg("accent", WIDGET_GLYPH)} ${theme.fg("text", `${model.files.length} ${noun}`)} ${dot} ${theme.fg("success", `+${model.added}`)} ${theme.fg("error", `−${model.deleted}`)}${model.files.some(file => file.countsUnavailable) ? " · partial counts" : ""}${model.notice ? ` ${dot} ${theme.fg("warning", "capture limit reached")}` : ""}`;
+	const head = `${theme.fg("accent", WIDGET_GLYPH)} ${theme.fg("text", `${model.files.length} ${noun}`)} ${dot} ${theme.fg("success", `+${model.added}`)} ${theme.fg("error", `−${model.deleted}`)}${model.files.some(file => file.countsUnavailable) ? " · partial counts" : ""}`;
 	const hint = theme.fg("dim", CHANGES_COMMAND);
 	const list = model.files.map((file) => theme.fg("muted", file.path)).join(` ${dot} `);
 	const left = `${head} ${dot} ${list}`;
+	let lines: string[];
 	const gap = width - visibleWidth(left) - visibleWidth(hint);
-	if (gap >= 2) return [`${left}${" ".repeat(gap)}${hint}`];
-	const headGap = width - visibleWidth(head) - visibleWidth(hint);
-	if (headGap >= 2) return [`${head}${" ".repeat(headGap)}${hint}`];
-	return [truncateToWidth(head, width, "…")];
+	if (gap >= 2) lines = [`${left}${" ".repeat(gap)}${hint}`];
+	else {
+		const headGap = width - visibleWidth(head) - visibleWidth(hint);
+		lines = headGap >= 2 ? [`${head}${" ".repeat(headGap)}${hint}`] : [truncateToWidth(head, width, "…")];
+	}
+	if (model.digest === undefined) return lines;
+	widgetFrame = { digest: model.digest, width, theme, lines };
+	return lines;
 }
 
 export interface GitResult {
 	stdout: string;
 	code: number;
+	/** The runner stopped reading at its output bound; stdout is partial. */
+	truncated?: boolean;
+	/** The Git deadline elapsed; stdout is diagnostic output, not a complete result. */
+	timedOut?: boolean;
 }
 
 export type GitRunner = (args: string[]) => Promise<GitResult>;
 export type LineCounter = (path: string) => Promise<number>;
+/** A cheap content identity (e.g. size and mtime) so same-count edits refresh their diff. */
+export type FileRevision = (path: string) => Promise<string | undefined>;
 
 export interface WorktreeChanges {
 	root: string;
@@ -163,26 +235,74 @@ export function parseWorktrees(text: string): Array<{ root: string; branch?: str
 	});
 }
 
+// A root the view shows as-is when its own HEAD could not be determined at
+// all -- distinct from "detached", which means git answered and there really
+// is no branch. Exported so callers and tests share one literal.
+export const UNKNOWN_BRANCH = "unknown";
+
+// Resolve a foreign clone's own HEAD directly instead of assuming "detached":
+// a real branch name, "no commits yet" for an unborn branch (a branch ref
+// that exists but has no commit), or undefined for a genuine detached HEAD
+// (the caller falls back to "detached" in that case). A GitRunner that
+// cannot even ask -- it rejects, e.g. because the root was removed or git
+// itself is unavailable -- rejects here too, on purpose: that is a real
+// failure to distinguish from git successfully reporting "no branch", and
+// callers must not fold the two into the same undefined result.
+export async function foreignRootBranch(git: GitRunner): Promise<string | undefined> {
+	const symbolic = await git(["symbolic-ref", "--quiet", "--short", "HEAD"]);
+	const branch = symbolic.code === 0 ? symbolic.stdout.trim() : "";
+	if (!branch) return undefined;
+	const verified = await git(["rev-parse", "--verify", "-q", "HEAD"]);
+	return verified.code === 0 ? branch : "no commits yet";
+}
+
+// A root whose HEAD is unborn (no commits yet) has no baseline: `git diff
+// HEAD` is meaningless and `git status` reports every file as untracked.
+// Worktree-holder folders -- repositories that exist only to parent linked
+// worktrees -- look exactly like this, and scanning them floods Changes with
+// thousands of phantom untracked files (the whole holder's contents). One
+// cheap verify answers "is there anything to diff against" before a scan.
+const HEAD_EXISTS_ARGS = ["rev-parse", "--verify", "-q", "HEAD"];
+
+// /gentle:changes: one group per registered root holding its working tree
+// against HEAD. A root whose Git fails (timed out, rejected) has no group but
+// is listed in failedRoots: a failed scan is never reported as a clean root.
+// A root with no commits has no group either, listed in unbornRoots: there is
+// nothing to track yet, and the bar says so instead of scanning the holder.
 export class WorktreeChangesTracker {
 	worktrees: WorktreeChanges[] = [];
+	failedRoots: string[] = [];
+	/** Registered roots whose HEAD is unborn: skipped, never scanned. */
+	unbornRoots: string[] = [];
+	scannedRootCount = 0;
 	private inFlight: Promise<ChangesModel> | undefined;
 	private readonly discover: GitRunner;
 	private readonly gitForRoot: (root: string) => GitRunner;
 	private readonly linesForRoot: (root: string) => LineCounter;
 	private readonly registeredRoots: () => readonly string[];
+	private readonly revisionForRoot: (root: string) => FileRevision | undefined;
 
-	constructor(discover: GitRunner, gitForRoot: (root: string) => GitRunner, linesForRoot: (root: string) => LineCounter = () => noLines, registeredRoots: () => readonly string[] = () => []) {
+	constructor(discover: GitRunner, gitForRoot: (root: string) => GitRunner, linesForRoot: (root: string) => LineCounter = () => noLines, registeredRoots: () => readonly string[] = () => [], revisionForRoot: (root: string) => FileRevision | undefined = () => undefined) {
 		this.discover = discover;
 		this.gitForRoot = gitForRoot;
 		this.linesForRoot = linesForRoot;
 		this.registeredRoots = registeredRoots;
+		this.revisionForRoot = revisionForRoot;
 	}
 
+	private modelOf: WorktreeChanges[] | undefined;
+	private combined: ChangesModel = emptyChanges();
+
+	// Footers read this every frame; rebuild only when a scan replaced the trees.
 	get model(): ChangesModel {
-		return changesModel(this.worktrees.flatMap((tree) => tree.model.files.map((file) => ({
-			...file,
-			path: this.worktrees.length === 1 ? file.path : `${tree.root}/${file.path}`,
-		}))));
+		if (this.modelOf !== this.worktrees) {
+			this.modelOf = this.worktrees;
+			this.combined = changesModel(this.worktrees.flatMap((tree) => tree.model.files.map((file) => ({
+				...file,
+				path: this.worktrees.length === 1 ? file.path : `${tree.root}/${file.path}`,
+			}))));
+		}
+		return this.combined;
 	}
 
 	async start(): Promise<void> {
@@ -202,31 +322,81 @@ export class WorktreeChangesTracker {
 	}
 
 	private async capture(): Promise<ChangesModel> {
-		const result = await this.discover(["worktree", "list", "--porcelain", "-z"]).catch(() => ({ code: 128, stdout: "" }));
-		const trees: WorktreeChanges[] = [];
-		const metadata = new Map((result.code === 0 ? parseWorktrees(result.stdout) : []).map((tree) => [tree.root, tree]));
 		// Discovery labels registered roots; it never grants visibility to siblings.
 		const roots = new Set(this.registeredRoots());
-		for (const root of roots) {
-			const tree = metadata.get(root) ?? { root };
-			try {
-				const tracker = new ChangesTracker(this.gitForRoot(tree.root), this.linesForRoot(tree.root));
-				await tracker.start();
-				if (tracker.model.files.length) trees.push({ ...tree, model: tracker.model });
-			} catch {
-				// Linked roots can disappear between discovery and status.
-			}
+		// No root to scan means no Git at all, not even branch discovery.
+		if (roots.size === 0) {
+			this.worktrees = [];
+			this.failedRoots = [];
+			this.scannedRootCount = 0;
+			return this.model;
 		}
+		const result = await this.discover(["worktree", "list", "--porcelain", "-z"]).catch(() => ({ code: 128, stdout: "" }));
+		const metadata = new Map((result.code === 0 ? parseWorktrees(result.stdout) : []).map((tree) => [tree.root, tree]));
+		// Roots scan in parallel so one slow root does not delay the others.
+		const failed: string[] = [];
+		const unborn: string[] = [];
+		const scanned = await Promise.all([...roots].map(async (root): Promise<WorktreeChanges | undefined> => {
+			const known = metadata.get(root);
+			try {
+				// Only an answered "no" means unborn: a rejected verify cannot tell
+				// unborn from broken Git, so the scan below still decides.
+				const head = await this.gitForRoot(root)(HEAD_EXISTS_ARGS).catch(() => undefined);
+				if (head && head.code !== 0) {
+					unborn.push(root);
+					return undefined;
+				}
+				const tracker = new ChangesTracker(this.gitForRoot(root), this.linesForRoot(root), this.revisionForRoot(root));
+				await tracker.start();
+				if (!tracker.statusRead) {
+					failed.push(root);
+					return undefined;
+				}
+				if (!tracker.model.files.length) return undefined;
+				// A root missing from this discovery scan belongs to a different Git
+				// clone entirely (e.g. an inner repository nested inside an outer
+				// one) -- worktree list can never describe a foreign clone, so ask
+				// it directly instead of defaulting to "detached". A root the scan
+				// DID describe is trusted as-is: its own "detached" marker (or lack
+				// of a branch) is already accurate for that clone. The direct ask
+				// can fail on its own (root gone, git unavailable) without the
+				// change scan above failing -- that must label the root
+				// UNKNOWN_BRANCH, not drop real, already-captured changes.
+				const branch = known ? known.branch : await foreignRootBranch(this.gitForRoot(root)).catch(() => UNKNOWN_BRANCH);
+				return { root, ...(branch ? { branch } : {}), model: tracker.model };
+			} catch {
+				// A root the caller stops registering mid-scan (e.g. a removed
+				// worktree) triggers the rescan below without it, not a failure.
+				failed.push(root);
+				return undefined;
+			}
+		}));
+		const trees = scanned.filter((tree): tree is WorktreeChanges => tree !== undefined);
 		const latest = new Set(this.registeredRoots());
 		// A root admitted during status must not wait for a later poll (which may
 		// be disabled). Ordinary overlapping polls still share exactly one scan.
 		if (latest.size !== roots.size || [...latest].some((root) => !roots.has(root))) return this.capture();
 		this.worktrees = trees;
+		this.failedRoots = failed;
+		this.unbornRoots = unborn;
+		this.scannedRootCount = roots.size;
 		return this.model;
 	}
 }
 
 const noLines: LineCounter = async () => 0;
+
+// Per-file line counts and revision lookups are file IO: a large change set
+// runs this many files at a time instead of one by one or all at once.
+export const FILE_WORK_CONCURRENCY = 8;
+
+async function eachLimited<T>(items: readonly T[], limit: number, work: (item: T) => Promise<void>): Promise<void> {
+	let next = 0;
+	const worker = async () => {
+		while (next < items.length) await work(items[next++]);
+	};
+	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+}
 
 const NUMSTAT_ARGS = ["diff", "--numstat", "HEAD"];
 const PORCELAIN_ARGS = ["status", "--porcelain=v1", "--untracked-files=all", "-z"];
@@ -237,18 +407,25 @@ const PORCELAIN_ARGS = ["status", "--porcelain=v1", "--untracked-files=all", "-z
 export class ChangesTracker {
 	private readonly git: GitRunner;
 	private readonly countLines: LineCounter;
+	private readonly revision: FileRevision | undefined;
 	private current: ChangesModel = emptyChanges();
 	private available = false;
 	private inFlight: Promise<ChangesModel> | undefined;
 	private queued = false;
 
-	constructor(git: GitRunner, countLines: LineCounter = noLines) {
+	constructor(git: GitRunner, countLines: LineCounter = noLines, revision?: FileRevision) {
 		this.git = git;
 		this.countLines = countLines;
+		this.revision = revision;
 	}
 
 	get model(): ChangesModel {
 		return this.current;
+	}
+
+	/** False when the last start could not read `git status`. */
+	get statusRead(): boolean {
+		return this.available;
 	}
 
 	async start(): Promise<void> {
@@ -285,9 +462,14 @@ export class ChangesTracker {
 		if (porcelain.code !== 0) return undefined;
 		const files = snapshotChanges({ numstat: numstat.stdout, porcelain: porcelain.stdout });
 		// Untracked files never appear in numstat; count their lines directly.
-		for (const file of files) {
-			if (file.status === CHANGE_STATUS.UNTRACKED) file.added = await this.countLines(file.path).catch(() => 0);
-		}
+		await eachLimited(files, FILE_WORK_CONCURRENCY, async (file) => {
+			const [added, revision] = await Promise.all([
+				file.status === CHANGE_STATUS.UNTRACKED ? this.countLines(file.path).catch(() => 0) : undefined,
+				this.revision?.(file.path).catch(() => undefined),
+			]);
+			if (added !== undefined) file.added = added;
+			if (revision) file.diffRevision = revision;
+		});
 		return files;
 	}
 }

@@ -13,9 +13,16 @@ export const THINKING_LEVELS = [
 
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
+export type ServiceTier = "standard" | "fast";
+
+export function isServiceTier(value: unknown): value is ServiceTier {
+	return value === "standard" || value === "fast";
+}
+
 export interface AgentRoutingEntry {
 	model?: string;
 	thinking?: ThinkingLevel;
+	tier?: ServiceTier;
 }
 
 export type AgentModelConfig = Record<string, AgentRoutingEntry>;
@@ -25,8 +32,13 @@ export type ModelConfigFileResult =
 	| { status: "invalid"; path: string }
 	| { status: "valid"; config: AgentModelConfig };
 
-const SAFE_MODEL_ID_PATTERN = /^[A-Za-z0-9._~:@/+%-]+$/;
+export const SAFE_MODEL_ID_PATTERN = /^[A-Za-z0-9._~:@/+%-]+$/;
 const SAFE_AGENT_NAME_PATTERN = /^[A-Za-z0-9._:@/+%-]+$/;
+
+/** Shared agent-name policy; the same test normalizeModelConfig applies per key. */
+export function isSafeAgentName(name: string): boolean {
+	return SAFE_AGENT_NAME_PATTERN.test(name);
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -63,18 +75,23 @@ export function normalizeRoutingEntry(value: unknown): AgentRoutingEntry | undef
 	}
 	if (!isRecord(value)) return undefined;
 	const model = normalizeModelId(value.model);
-	const thinking = isThinkingLevel(value.thinking) ? value.thinking : undefined;
-	if (!model && !thinking) {
+	const thinking = isThinkingLevel(value.thinking)
+		? value.thinking
+		: isThinkingLevel(value.effort)
+			? value.effort
+			: undefined;
+	const tier = isServiceTier(value.tier) ? value.tier : undefined;
+	if (!model && !thinking && !tier) {
 		return Object.keys(value).length === 0 ? {} : undefined;
 	}
-	return { model, thinking };
+	return { model, thinking, ...(tier === undefined ? {} : { tier }) };
 }
 
 export function normalizeModelConfig(value: unknown): AgentModelConfig | undefined {
 	if (!isRecord(value)) return undefined;
 	const cleaned: AgentModelConfig = {};
 	for (const [name, entryValue] of Object.entries(value)) {
-		if (!SAFE_AGENT_NAME_PATTERN.test(name)) continue;
+		if (!isSafeAgentName(name)) continue;
 		const entry = normalizeRoutingEntry(entryValue);
 		if (entry) cleaned[name] = entry;
 	}
@@ -114,13 +131,31 @@ export async function readModelConfigFileAsync(
 	}
 }
 
+// A present global config must merge with, not fully shadow, the legacy project
+// config: project-only entries still apply, same-name entries prefer global.
+function mergeSavedModelConfig(
+	globalResult: ModelConfigFileResult,
+	projectResult: ModelConfigFileResult,
+): ModelConfigFileResult {
+	if (globalResult.status === "invalid") return globalResult;
+	if (projectResult.status === "invalid") return projectResult;
+	if (globalResult.status === "missing" && projectResult.status === "missing") return { status: "missing" };
+	return {
+		status: "valid",
+		config: {
+			...(projectResult.status === "valid" ? projectResult.config : {}),
+			...(globalResult.status === "valid" ? globalResult.config : {}),
+		},
+	};
+}
+
 export function readSavedModelConfig(
 	globalPath: string,
 	projectPath: string,
 ): ModelConfigFileResult {
 	const globalResult = readModelConfigFile(globalPath);
-	if (globalResult.status !== "missing") return globalResult;
-	return readModelConfigFile(projectPath);
+	if (globalResult.status === "invalid") return globalResult;
+	return mergeSavedModelConfig(globalResult, readModelConfigFile(projectPath));
 }
 
 export async function readSavedModelConfigAsync(
@@ -128,6 +163,6 @@ export async function readSavedModelConfigAsync(
 	projectPath: string,
 ): Promise<ModelConfigFileResult> {
 	const globalResult = await readModelConfigFileAsync(globalPath);
-	if (globalResult.status !== "missing") return globalResult;
-	return readModelConfigFileAsync(projectPath);
+	if (globalResult.status === "invalid") return globalResult;
+	return mergeSavedModelConfig(globalResult, await readModelConfigFileAsync(projectPath));
 }

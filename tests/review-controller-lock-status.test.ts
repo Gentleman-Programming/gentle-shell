@@ -101,7 +101,6 @@ function fakeNative(status: NativeReviewStatusResult, onStart?: (request: Parame
 		finalize: async () => { throw new Error("finalize must not run"); },
 		validate: async () => { throw new Error("validate must not run"); },
 		bindSdd: async () => { throw new Error("bindSdd must not run"); },
-		sddStatus: async () => ({ ready: false }),
 		reviewStatus: async () => { throw new Error("inventory status must not run"); },
 		targetStatus: async () => ({
 			applicability: blocking ? "corrupted" : "unrelated",

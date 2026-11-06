@@ -33,6 +33,7 @@ interface ChoiceTool {
 	promptGuidelines?: string[];
 	parameters: ChoiceParameters;
 	execute: (...args: unknown[]) => Promise<ChoiceResult>;
+	renderResult?: (result: unknown, options: unknown, theme: ChoiceTheme) => { render(width: number): string[] };
 }
 
 interface ChoiceLifecycleEvent {
@@ -133,6 +134,47 @@ const options = [
 	{ label: "Preserve requested hash", description: "Keep the hash from the original request.", value: "preserve_requested_hash" },
 ];
 
+const INTERACTIVE_HOST_ENV = "GENTLE_SHELL_INTERACTIVE_HOST";
+
+function withInteractiveHostEnv(t: { after(fn: () => void): void }): void {
+	const previous = process.env[INTERACTIVE_HOST_ENV];
+	process.env[INTERACTIVE_HOST_ENV] = "1";
+	t.after(() => {
+		if (previous === undefined) delete process.env[INTERACTIVE_HOST_ENV];
+		else process.env[INTERACTIVE_HOST_ENV] = previous;
+	});
+}
+
+/** Fake interactive-RPC-host ctx: scripted `select`/`input` answers, one per call. */
+function rpcHostContext(selectAnswers: readonly (string | undefined)[], inputAnswers: readonly (string | undefined)[] = []) {
+	const selectCalls: Array<{ title: string; options: string[] }> = [];
+	const inputCalls: Array<{ title: string; placeholder?: string }> = [];
+	let selectIndex = 0;
+	let inputIndex = 0;
+	return {
+		ctx: {
+			mode: "rpc",
+			hasUI: true,
+			ui: {
+				select: async (title: string, opts: string[]) => {
+					selectCalls.push({ title, options: opts });
+					const answer = selectAnswers[selectIndex];
+					selectIndex += 1;
+					return answer;
+				},
+				input: async (title: string, placeholder?: string) => {
+					inputCalls.push({ title, placeholder });
+					const answer = inputAnswers[inputIndex];
+					inputIndex += 1;
+					return answer;
+				},
+			},
+		},
+		selectCalls,
+		inputCalls,
+	};
+}
+
 function tuiContext(inputs: readonly string[], rendered: { value: string }) {
 	return {
 		mode: "tui",
@@ -192,7 +234,7 @@ test("ask_user_choice hover preserves the keyboard-selected opaque value", async
 		ui: { custom: async (factory: ChoiceCustomFactory) => {
 			let completed: unknown;
 			const component = factory({ requestRender() {} }, {
-				fg: (_color, text) => `\u001b[38;5;39m${text}\u001b[39m`,
+				fg: (color, text) => color === "warning" ? `\u001b[33m${text}\u001b[39m` : `\u001b[38;5;39m${text}\u001b[39m`,
 				bg: (_color, text) => `\u001b[48;5;236m${text}\u001b[49m`, bold: (text) => text,
 			}, {}, (value) => { completionCalls++; completed = value; });
 			const lines = component.render(80);
@@ -207,9 +249,10 @@ test("ask_user_choice hover preserves the keyboard-selected opaque value", async
 			assert.equal(component.handleMouse?.(hover)?.render, true);
 			assert.equal(completed, undefined, "hover never submits");
 			const hovered = component.render(80);
-			assert.ok(hovered[second]?.includes("\u001b[48;5;236m"), "only the second option is hovered");
+			assert.ok(hovered[second]?.includes("\u001b[33m"), "the second option uses the shared warning foreground");
+			assert.ok(!hovered[second]?.includes("\u001b[48;5;236m"), "hover does not use toolPendingBg");
 			assert.ok(
-				hovered[first]?.includes("\u001b[38;5;39m") && !hovered[first]?.includes("\u001b[48;5;236m"),
+				hovered[first]?.includes("\u001b[38;5;39m") && !hovered[first]?.includes("\u001b[33m"),
 				"hover does not change keyboard selection",
 			);
 			component.handleInput("\r");
@@ -483,6 +526,80 @@ test("ask_user_choice cancels without a value and remains unavailable outside th
 	);
 });
 
+test("ask_user_choice stays unavailable on a plain rpc host without the interactive-host variable", async (t) => {
+	const { tool } = registerChoiceTool();
+	t.after(() => { delete process.env[INTERACTIVE_HOST_ENV]; });
+	delete process.env[INTERACTIVE_HOST_ENV];
+
+	await assert.rejects(
+		() => tool.execute("call", { question: "Proceed?", options }, new AbortController().signal, undefined, { mode: "rpc", hasUI: true, ui: { select: async () => undefined } }),
+		/unavailable outside the interactive TUI/,
+	);
+});
+
+/** Expected `gentle-pi:ask-user-choice:blocked` sequence around one RPC-dialog turn. */
+const RPC_BLOCKED_SEQUENCE = [
+	{ channel: "gentle-pi:ask-user-choice:blocked", data: { active: true } },
+	{ channel: "gentle-pi:ask-user-choice:blocked", data: { active: false } },
+];
+
+test("ask_user_choice resolves a selection through RPC dialogs on an interactive host", async (t) => {
+	withInteractiveHostEnv(t);
+	const registration = registerChoiceTool();
+	const { tool } = registration;
+	const { ctx, selectCalls } = rpcHostContext([options[1]!.label]);
+
+	const result = await tool.execute("call", { question: "Proceed?", options }, new AbortController().signal, undefined, ctx);
+
+	assert.equal(selectCalls.length, 1);
+	assert.equal(selectCalls[0]?.title, "Proceed?");
+	assert.deepEqual(selectCalls[0]?.options, [options[0]!.label, options[1]!.label]);
+	assert.deepEqual(result.details.selection, { value: options[1]!.value, label: options[1]!.label, index: 2 });
+	assert.equal(result.content[0]?.text, `User selected: 2. ${options[1]!.label} (value: ${options[1]!.value})`);
+	assert.deepEqual(registration.emittedEvents(), RPC_BLOCKED_SEQUENCE);
+});
+
+test("ask_user_choice resolves an Other… custom response through ctx.ui.input on an interactive host", async (t) => {
+	withInteractiveHostEnv(t);
+	const registration = registerChoiceTool();
+	const { tool } = registration;
+	const { ctx, selectCalls, inputCalls } = rpcHostContext(["Other…"], ["a free-form reply"]);
+
+	const result = await tool.execute("call", { question: "Explain?", options, allowCustomResponse: true }, new AbortController().signal, undefined, ctx);
+
+	assert.deepEqual(selectCalls[0]?.options, [options[0]!.label, options[1]!.label, "Other…"]);
+	assert.equal(inputCalls.length, 1);
+	assert.equal(inputCalls[0]?.title, "Explain?");
+	assert.deepEqual(result.details, { question: "Explain?", options, customResponse: "a free-form reply" });
+	assert.equal(result.content[0]?.text, "User responded: a free-form reply");
+	assert.deepEqual(registration.emittedEvents(), RPC_BLOCKED_SEQUENCE);
+});
+
+test("ask_user_choice cancels through RPC dialogs like the TUI path when select returns undefined", async (t) => {
+	withInteractiveHostEnv(t);
+	const registration = registerChoiceTool();
+	const { tool } = registration;
+	const { ctx } = rpcHostContext([undefined]);
+
+	const result = await tool.execute("call", { question: "Proceed?", options }, new AbortController().signal, undefined, ctx);
+
+	assert.deepEqual(result.details, { question: "Proceed?", options, cancelled: true });
+	assert.equal(result.content[0]?.text, "User cancelled the choice");
+	assert.deepEqual(registration.emittedEvents(), RPC_BLOCKED_SEQUENCE, "the blocked lifecycle must still balance on a cancel");
+});
+
+test("ask_user_choice cancels through RPC dialogs when the Other… input is cancelled", async (t) => {
+	withInteractiveHostEnv(t);
+	const registration = registerChoiceTool();
+	const { tool } = registration;
+	const { ctx } = rpcHostContext(["Other…"], [undefined]);
+
+	const result = await tool.execute("call", { question: "Explain?", options, allowCustomResponse: true }, new AbortController().signal, undefined, ctx);
+
+	assert.deepEqual(result.details, { question: "Explain?", options, cancelled: true });
+	assert.deepEqual(registration.emittedEvents(), RPC_BLOCKED_SEQUENCE, "the blocked lifecycle must still balance on a cancel");
+});
+
 test("ask_user_choice emits a private balanced lifecycle around selection and cancellation", async () => {
 	const sequence: string[] = [];
 	const selectedRegistration = registerChoiceTool([], ({ data }) => {
@@ -581,4 +698,47 @@ test("ask_user_choice is offered only for interactive TUI turns and preserves th
 	assert.deepEqual(registration.activeTools(), ["read", "ask_user_question", "ask_user_choice"]);
 	for (const hook of registration.hooks) await hook({}, { mode: "print" });
 	assert.deepEqual(registration.activeTools(), ["read", "ask_user_question"]);
+});
+
+test("ask_user_choice is offered on an interactive rpc host and withdrawn once the variable is gone", async (t) => {
+	const registration = registerChoiceTool(["read"]);
+	registration.allowRuntimeActions();
+	t.after(() => { delete process.env[INTERACTIVE_HOST_ENV]; });
+
+	process.env[INTERACTIVE_HOST_ENV] = "1";
+	for (const hook of registration.hooks) await hook({}, { mode: "rpc" });
+	assert.deepEqual(registration.activeTools(), ["read", "ask_user_choice"]);
+
+	delete process.env[INTERACTIVE_HOST_ENV];
+	for (const hook of registration.hooks) await hook({}, { mode: "rpc" });
+	assert.deepEqual(registration.activeTools(), ["read"]);
+});
+
+test("ask_user_choice renderResult renders selected, custom response with text, and cancelled states (#1692)", () => {
+	const registration = registerChoiceTool();
+	const theme: ChoiceTheme = { fg: (_color, text) => text, bg: (_color, text) => text, bold: (text) => text };
+
+	// 1. Selected option
+	const selected = registration.tool.renderResult!(
+		{ details: { selection: { index: 1, label: "Deploy to production" } } },
+		{},
+		theme,
+	).render(80).join("\n");
+	assert.match(selected, /✓ 1\. Deploy to production/);
+
+	// 2. Custom response with submitted text (#1692)
+	const custom = registration.tool.renderResult!(
+		{ details: { customResponse: "use the staging bucket" } },
+		{},
+		theme,
+	).render(80).join("\n");
+	assert.match(custom, /✓ Custom response — use the staging bucket/);
+
+	// 3. Cancelled
+	const cancelled = registration.tool.renderResult!(
+		{ details: { cancelled: true } },
+		{},
+		theme,
+	).render(80).join("\n");
+	assert.match(cancelled, /Cancelled/);
 });

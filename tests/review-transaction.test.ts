@@ -33,6 +33,7 @@ import {
 	createFrozenLedger,
 	createReceiptEnvelope,
 	createReviewState,
+	validateReviewGraphReplayV1,
 	evaluateGateTarget,
 	type CanonicalFrozenRowV1,
 	type ReceiptBodyV1,
@@ -41,8 +42,12 @@ import {
 import { REVIEW_LENS, REVIEW_ROUTE } from "../lib/review-triggers.ts";
 import {
 	ordinaryValidatorRequest,
+	recordOrdinaryDiscovery,
+	resolveOrdinaryEvidence,
+	recordOrdinaryFinalVerification,
 	recordOrdinaryValidation,
 } from "../lib/review-policy-ordinary.ts";
+import { createReviewEventV1 } from "../lib/review-graph-schema.ts";
 import { qualifiedReviewLockPlatform, testSnapshot } from "./review-test-fixtures.ts";
 
 const TREE = {
@@ -393,7 +398,19 @@ test("ordinary follow-ups are ID-sorted action-free validation evidence and do n
 	assert.equal(recorded.phase, REVIEW_PHASE.FINAL_VERIFICATION);
 	assert.equal(recorded.counters.validator_runs, fixed.counters.validator_runs + 1);
 	assert.equal(recorded.current_candidate_tree, fixed.current_candidate_tree);
-	assert.equal(recorded.follow_ups, undefined);
+	assert.equal(Object.hasOwn(recorded, "follow_ups"), false);
+});
+
+test("graph replay rejects a persisted non-boolean final verification instead of approving truthy input", () => {
+	const ready = resolveOrdinaryEvidence(recordOrdinaryDiscovery(state(), { rows: [] }), { deterministicResults: [] });
+	const approved = recordOrdinaryFinalVerification(ready, { passed: true });
+	const genesis = createReviewEventV1({ lineage_id: ready.lineage_id, sequence: 0, predecessor_event_id: null, kind: "lineage-created", reducer_transition: "start", reducer_input: ready, payload: { state: ready }, reduced_state_hash: canonicalHash(ready) });
+	for (const passed of ["false", "true", 0, 1, null]) {
+		const next = createReviewEventV1({ lineage_id: ready.lineage_id, sequence: 1, predecessor_event_id: genesis.event_id, kind: "operation-completed", reducer_transition: REVIEW_TRANSITION.ORDINARY_FINAL_VERIFICATION, reducer_input: { passed }, payload: { state: approved }, reduced_state_hash: canonicalHash(approved) });
+		assert.throws(() => validateReviewGraphReplayV1([genesis, next]), /reducer input.*passed/i);
+	}
+	const valid = createReviewEventV1({ lineage_id: ready.lineage_id, sequence: 1, predecessor_event_id: genesis.event_id, kind: "operation-completed", reducer_transition: REVIEW_TRANSITION.ORDINARY_FINAL_VERIFICATION, reducer_input: { passed: true }, payload: { state: approved }, reduced_state_hash: canonicalHash(approved) });
+	assert.deepEqual(validateReviewGraphReplayV1([genesis, valid]), approved);
 });
 
 test("new ordinary lineages fail closed when immutable genesis paths are absent", () => {

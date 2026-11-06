@@ -3,14 +3,115 @@ import test from "node:test";
 import {
 	applyTaskEvent,
 	emptyThread,
+	MISSING_TOOLS_NOTE_PREFIX,
 	normalizeRpcEvent,
+	ToolArgumentProgress,
 	TASK_EVENT,
 	TASK_STATUS,
 	taskLabel,
 	TaskStore,
+	TERMINAL_RETENTION,
 	THREAD_ITEM,
+	isFinished,
 	type TaskRecord,
 } from "../lib/agents-protocol.ts";
+
+function terminalError(message: Record<string, unknown>) {
+	const [event] = normalizeRpcEvent({ type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "error", ...message }] });
+	assert.equal(event?.type, TASK_EVENT.AGENT_END);
+	return event as Extract<typeof event, { type: typeof TASK_EVENT.AGENT_END }>;
+}
+
+test("terminal assistant errors expose one closed category, never provider text (#2322)", () => {
+	const cases: Array<[string, Record<string, unknown>, string]> = [
+		["rate limit error type", { errorMessage: "429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\"}}" }, "rate_limit"],
+		["too many requests", { errorMessage: "Too Many Requests" }, "rate_limit"],
+		["bare 429 status", { errorMessage: "429: {}" }, "rate_limit"],
+		["quota on a 429", { errorMessage: "429 You exceeded your current quota (insufficient_quota)" }, "quota"],
+		["invalid key", { errorMessage: "401 invalid x-api-key" }, "auth"],
+		["forbidden status", { errorMessage: "Provider (403): {}" }, "auth"],
+		["prompt too long", { errorMessage: "400 prompt is too long: 210000 tokens > 200000 maximum" }, "context_length"],
+		["context window raw stop reason", { rawStopReason: "model_context_window_exceeded" }, "context_length"],
+		["timed out", { errorMessage: "Request timed out." }, "timeout"],
+		["diagnostic timeout code", { diagnostics: [{ type: "stream", timestamp: 1, error: { message: "x", code: "ETIMEDOUT" } }] }, "timeout"],
+		["fetch failed", { errorMessage: "fetch failed" }, "network"],
+		["connection reset", { errorMessage: "read ECONNRESET" }, "network"],
+		["overloaded", { errorMessage: "529 {\"type\":\"overloaded_error\"}" }, "provider_unavailable"],
+		["bad gateway status", { errorMessage: "502: <html>" }, "provider_unavailable"],
+		["invalid request", { errorMessage: "400 invalid_request_error: messages.0 is malformed" }, "invalid_request"],
+		["unmatched provider text", { errorMessage: "Provider finish_reason: content_filter" }, "unavailable"],
+		["token count is not a status", { errorMessage: "stopped after 500 tokens" }, "unavailable"],
+		["no error message", {}, "unavailable"],
+		["non-string error message", { errorMessage: { status: 429 } }, "unavailable"],
+		["raw stop reason that is not an identifier", { rawStopReason: "rate limit <script>" }, "unavailable"],
+		["signal beyond the scan bound", { errorMessage: `${"x".repeat(5000)} rate limit` }, "unavailable"],
+	];
+	for (const [name, message, category] of cases) {
+		assert.deepEqual(terminalError(message), { type: TASK_EVENT.AGENT_END, text: "", outcome: "error", diagnostic: `assistant reported an error (${category})`, errorCategory: category }, name);
+	}
+});
+
+test("terminal error categories never carry provider payload into the event or the task (#2322)", () => {
+	const secret = "sk-live-never-copy-7f3a";
+	const event = terminalError({ errorMessage: `429 rate limit for key ${secret} at https://private.example/v1`, rawStopReason: "error", diagnostics: [{ type: "stream", timestamp: 1, error: { message: secret, code: secret } }] });
+	assert.equal(event.errorCategory, "rate_limit");
+	assert.equal(JSON.stringify(event).includes("never-copy"), false);
+	assert.equal(JSON.stringify(event).includes("private.example"), false);
+	const store = new TaskStore();
+	store.add(record({ status: TASK_STATUS.RUNNING }));
+	store.apply("t1", event, 2);
+	const task = store.get("t1");
+	assert.equal(task?.error, "assistant reported an error (rate_limit)");
+	assert.equal(task?.lastStep, "assistant reported an error (rate_limit)");
+	assert.equal(task?.result, null);
+	assert.equal(JSON.stringify(task).includes("never-copy"), false);
+	assert.equal(JSON.stringify(store.thread("t1")).includes("never-copy"), false);
+});
+
+test("status observers see only live transitions, remain isolated and cannot fail mutations", () => {
+	const store = new TaskStore();
+	const changes: Array<{ status: string; sequence: number; parentSessionId: string; producerId: string; runId: string }> = [];
+	store.subscribeStatusChanges(() => { throw new Error("listener failure"); });
+	store.subscribeStatusChanges(async () => { throw new Error("async failure"); });
+	const stop = store.subscribeStatusChanges(change => { changes.push(change); });
+	store.restore(record({ id: "restored" }), emptyThread());
+	store.add(record());
+	store.update("t1", { status: TASK_STATUS.RUNNING });
+	store.update("t1", { status: TASK_STATUS.RUNNING, label: "new label" });
+	const ask = { type: TASK_EVENT.ASK, request: { id: "q", method: "input", title: "Question" } } as const;
+	store.apply("t1", ask, 2);
+	store.apply("t1", ask, 3);
+	store.apply("t1", { type: TASK_EVENT.TEXT, text: "answer" }, 4);
+	store.apply("t1", { type: TASK_EVENT.TEXT, text: "more" }, 5);
+	store.add(record({ id: "other", parentSessionId: "s2" }));
+	assert.deepEqual(changes.map(change => change.status), ["queued", "running", "waiting", "running", "queued"]);
+	assert.deepEqual(changes.map(change => change.sequence), [1, 2, 3, 4, 5]);
+	assert.deepEqual(changes.map(change => change.parentSessionId), ["s1", "s1", "s1", "s1", "s2"]);
+	assert.equal(new Set(changes.slice(0, 4).map(change => change.runId)).size, 1);
+	assert.equal(store.get("t1")?.status, "running");
+	const another = new TaskStore();
+	let otherProducer: string | undefined;
+	another.subscribeStatusChanges(change => { otherProducer = change.producerId; });
+	another.add(record());
+	assert.notEqual(otherProducer, changes[0].producerId);
+	stop();
+	store.update("t1", { status: TASK_STATUS.COMPLETED });
+	assert.equal(changes.length, 5);
+});
+
+test("all terminal statuses produce exactly one transition and restore establishes a silent baseline", () => {
+	for (const status of [TASK_STATUS.COMPLETED, TASK_STATUS.FAILED, TASK_STATUS.CANCELLED, TASK_STATUS.TIMED_OUT]) {
+		const store = new TaskStore();
+		const statuses: string[] = [];
+		store.subscribeStatusChanges(change => { statuses.push(change.status); });
+		store.restore(record({ status: TASK_STATUS.RUNNING }), emptyThread());
+		store.update("t1", { status });
+		store.update("t1", { status, result: "report" });
+		store.add(record({ status }));
+		assert.deepEqual(statuses, [status]);
+		assert.equal(store.get("t1")?.status, status);
+	}
+});
 
 // Gentle Agents protocol: the child pi process streams RPC events; the host
 // normalizes them into small typed deltas, applies them to an append-only
@@ -52,7 +153,7 @@ test("normalizeRpcEvent maps pi RPC events to task deltas and ignores the rest",
 	assert.deepEqual(normalizeRpcEvent({ type: "tool_execution_end", toolCallId: "c1", toolName: "bash", isError: true, result: { content: [{ type: "text", text: "boom" }] } }), [{ type: TASK_EVENT.TOOL_END, callId: "c1", output: "boom", isError: true }]);
 	assert.deepEqual(normalizeRpcEvent({ type: "turn_end" }), [{ type: TASK_EVENT.TURN_END }]);
 	assert.deepEqual(normalizeRpcEvent({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done." }], stopReason: "stop" }] }), [{ type: TASK_EVENT.AGENT_END, text: "done.", outcome: "success" }]);
-	assert.deepEqual(normalizeRpcEvent({ type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "error", errorMessage: "WebSocket error with untrusted provider payload" }] }), [{ type: TASK_EVENT.AGENT_END, text: "", outcome: "error", diagnostic: "assistant reported an error" }]);
+	assert.deepEqual(normalizeRpcEvent({ type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "error", errorMessage: "WebSocket error with untrusted provider payload" }] }), [{ type: TASK_EVENT.AGENT_END, text: "", outcome: "error", diagnostic: "assistant reported an error (network)", errorCategory: "network" }]);
 	assert.deepEqual(normalizeRpcEvent({ type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "aborted" }] }), [{ type: TASK_EVENT.AGENT_END, text: "", outcome: "aborted", diagnostic: "assistant aborted" }]);
 	assert.deepEqual(normalizeRpcEvent({ type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "stop" }] }), [{ type: TASK_EVENT.AGENT_END, text: "", outcome: "empty", diagnostic: "assistant returned no final report" }]);
 	assert.deepEqual(normalizeRpcEvent({ type: "agent_settled" }), [{ type: TASK_EVENT.AGENT_SETTLED }]);
@@ -65,6 +166,56 @@ test("normalizeRpcEvent maps pi RPC events to task deltas and ignores the rest",
 	assert.deepEqual(normalizeRpcEvent({ type: "message_end", message: { role: "user" } }), []);
 	assert.deepEqual(normalizeRpcEvent({ type: "queue_update" }), []);
 	assert.deepEqual(normalizeRpcEvent("garbage"), []);
+});
+
+// #1690: Pi drops unknown --tools names silently, so the child reports them
+// with one marked notify; only that notify reaches the task thread.
+test("normalizeRpcEvent turns the marked missing-tools notify into a note and drops every other notify", () => {
+	const message = `${MISSING_TOOLS_NOTE_PREFIX} gentle_review_scope, codegraph`;
+	assert.deepEqual(normalizeRpcEvent({ type: "extension_ui_request", id: "u1", method: "notify", message, notifyType: "warning" }), [{ type: TASK_EVENT.NOTE, text: message }]);
+	assert.deepEqual(normalizeRpcEvent({ type: "extension_ui_request", id: "u2", method: "notify", message: "requested tools missing in child: x" }), [], "an unmarked notify stays dropped");
+	assert.deepEqual(normalizeRpcEvent({ type: "extension_ui_request", id: "u3", method: "notify", message: ` ${MISSING_TOOLS_NOTE_PREFIX} x` }), [], "the marker must be a prefix");
+	assert.deepEqual(normalizeRpcEvent({ type: "extension_ui_request", id: "u4", method: "setStatus", statusKey: "k", statusText: `${MISSING_TOOLS_NOTE_PREFIX} x` }), [], "only notify carries the marker");
+	assert.deepEqual(normalizeRpcEvent({ type: "extension_ui_request", id: "u5", method: "notify", message: `${MISSING_TOOLS_NOTE_PREFIX} \u001B[2Jx` }), [{ type: TASK_EVENT.NOTE, text: `${MISSING_TOOLS_NOTE_PREFIX} x` }], "child text is sanitized");
+});
+
+test("argument liveness accepts current and legacy Pi starts without display or usage deltas", () => {
+	for (const start of [{ type: "toolcall_start", contentIndex: 0, id: "c1", toolName: "write" },
+		{ type: "toolcall_start", contentIndex: 0, partial: { content: [{ type: "toolCall", id: "c1", name: "write", arguments: {} }] } }]) {
+		const progress = new ToolArgumentProgress();
+		const update = (inner: Record<string, unknown>) => ({ type: "message_update", assistantMessageEvent: inner });
+		const delta = update({ type: "toolcall_delta", contentIndex: 0, delta: "private" });
+		assert.equal(progress.observe(delta), false, "no active generation");
+		progress.observe({ type: "message_start", message: { role: "assistant", timestamp: 1 } });
+		assert.equal(progress.observe(delta), false, "no announced block");
+		assert.equal(progress.observe(update(start)), false, "announcement alone is not progress");
+		assert.equal(progress.observe(delta), true);
+		assert.equal(progress.observe(delta), false);
+		assert.deepEqual(normalizeRpcEvent(delta), [], "no arguments in display events or provisional totals");
+		progress.observe(update({ type: "toolcall_end", contentIndex: 0 }));
+		assert.equal(progress.observe(update({ type: "toolcall_delta", contentIndex: 0, delta: "late" })), false);
+		progress.observe(update(start));
+		assert.equal(progress.observe(delta), false, "a closed block cannot be reopened");
+	}
+});
+
+test("argument liveness fails closed on malformed starts, stale generations and fingerprint exhaustion", () => {
+	const progress = new ToolArgumentProgress();
+	const update = (inner: Record<string, unknown>) => ({ type: "message_update", assistantMessageEvent: inner });
+	for (const timestamp of [undefined, "1", -1, 1.5]) progress.observe({ type: "message_start", message: { role: "assistant", timestamp } });
+	assert.equal(progress.observe(update({ type: "toolcall_delta", contentIndex: 0, delta: "x" })), false);
+	progress.observe({ type: "message_start", message: { role: "assistant", timestamp: 1 } });
+	for (const fields of [{ id: 1, toolName: "write" }, { id: "c", toolName: "" }, { partial: null }]) {
+		progress.observe(update({ type: "toolcall_start", contentIndex: 0, ...fields }));
+		assert.equal(progress.observe(update({ type: "toolcall_delta", contentIndex: 0, delta: "x" })), false);
+	}
+	progress.observe(update({ type: "toolcall_start", contentIndex: 0, id: "c", toolName: "write" }));
+	for (let index = 0; index < 4096; index++) assert.equal(progress.observe(update({ type: "toolcall_delta", contentIndex: 0, delta: String(index) })), true);
+	assert.equal(progress.observe(update({ type: "toolcall_delta", contentIndex: 0, delta: "over-cap" })), false);
+	progress.observe({ type: "message_end" });
+	progress.observe({ type: "message_start", message: { role: "assistant", timestamp: 1 } });
+	progress.observe(update({ type: "toolcall_start", contentIndex: 0, id: "c", toolName: "write" }));
+	assert.equal(progress.observe(update({ type: "toolcall_delta", contentIndex: 0, delta: "stale" })), false);
 });
 
 test("response observations are opt-in, finalized, field-specific and content-free", () => {
@@ -175,6 +326,36 @@ test("TaskStore notifies only the listeners of the task that changed and keeps s
 	assert.deepEqual(store.list("s1").map((task) => task.id), ["a", "b"], "newest activity first");
 	assert.equal(store.get("missing"), undefined);
 	assert.deepEqual(store.thread("missing"), emptyThread());
+});
+
+// Finished tasks must release their weight: a bounded window of the most
+// recent ones stays readable, older ones leave the store entirely, and a
+// terminal task's listeners go quiet after the one final transition.
+test("TaskStore keeps a bounded window of finished tasks and silences terminal listeners", () => {
+	const store = new TaskStore();
+	const seen: string[] = [];
+	store.add(record({ id: "watched", status: TASK_STATUS.RUNNING, lastActivityAt: 1 }));
+	store.add(record({ id: "filler", status: TASK_STATUS.RUNNING, lastActivityAt: 2 }));
+	store.subscribe("watched", (task) => seen.push(task.status));
+	// `watched` completes the window once it finishes, so the next terminal
+	// task evicts exactly the oldest one.
+	for (let index = 0; index < TERMINAL_RETENTION - 1; index += 1) {
+		store.add(record({ id: `done-${index}`, status: TASK_STATUS.COMPLETED, lastActivityAt: 10 + index }));
+	}
+	assert.equal(store.list().filter((task) => isFinished(task.status)).length, TERMINAL_RETENTION - 1, "retained finished tasks stay at the cap");
+	assert.ok(store.get("watched") && store.get("filler"), "running tasks are never evicted");
+	store.update("watched", { status: TASK_STATUS.COMPLETED, endedAt: 50 });
+	assert.deepEqual(seen, ["completed"], "the terminal transition itself still notifies exactly once");
+	store.apply("watched", { type: TASK_EVENT.TEXT, text: "late" }, 60);
+	assert.deepEqual(seen, ["completed"], "a terminal task's listener stays quiet afterwards");
+	store.add(record({ id: "newest", status: TASK_STATUS.COMPLETED, lastActivityAt: 1_000 }));
+	assert.equal(store.get("done-0"), undefined, "the oldest finished task is evicted");
+	assert.ok(store.get("done-1") && store.get("newest"), "recent finished tasks remain readable");
+	assert.ok(store.get("filler"), "running tasks survive eviction");
+	assert.equal(store.list().filter((task) => isFinished(task.status)).length, TERMINAL_RETENTION);
+	assert.deepEqual(store.thread("done-0"), emptyThread(), "an evicted task's thread weight is released");
+	assert.ok(store.thread("done-1").limits.maxItems > 0, "a retained finished task stays renderable");
+	assert.equal(store.summary().finished, TERMINAL_RETENTION, "summaries reflect the bounded window");
 });
 
 test("TaskStore.apply moves the task to waiting on ask, back to running on any later event, and counts turns", () => {

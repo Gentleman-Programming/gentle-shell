@@ -77,8 +77,8 @@ export type ReviewStartState = (typeof REVIEW_START_STATE)[keyof typeof REVIEW_S
 const START_ACTIONS = ["created", "resumed", "closed", "blocked-scope-action"] as const;
 const RISK_LEVELS = ["low", "medium", "high"] as const;
 const REVIEW_LENSES = ["review-risk", "review-resilience", "review-readability", "review-reliability"] as const;
-const RISK_REASON_CODES = ["configuration_change", "empty_content", "executable_change", "executable_mode", "hot_path", "large_change", "non_executable_only", "process_boundary", "process_scan_limit", "service_token", "shell_source"] as const;
-const RISK_SIGNALS = ["auth", "update", "security", "payments", "permissions", "shell_process"] as const;
+const RISK_REASON_CODES = ["agent_escalation", "configuration_change", "dangerous_sink", "empty_content", "executable_change", "executable_mode", "hot_path", "large_change", "non_executable_only", "process_boundary", "process_scan_limit", "service_token", "shell_source"] as const;
+const RISK_SIGNALS = ["auth", "update", "security", "payments", "permissions", "shell_process", "dangerous_sink", "agent_escalation"] as const;
 // "collect" and "execute" are the v2 envelope's projection of a live
 // transaction whose next_transition is mandatory: the root action names the
 // transition kind instead of reading as a terminal stop.
@@ -199,8 +199,26 @@ const CAPABILITIES_SCHEMA_IDENTITIES: Readonly<Record<string, { protocolMinor: n
 		requiredMandatoryFeatures: REQUIRED_MANDATORY_FEATURES_V23,
 		optionalFeatureFloor: 14,
 	}),
+	// Ground-truthed against the published v3.4.0 binary: capabilities/v2.6
+	// advertises the same required surface as v2.5 (status/v6 is still
+	// advertised for compatibility) plus the status/v7 and status/v8 schemas,
+	// which are superset-checked additions, not requirements --
+	// decodeReviewStatusV3 already accepts v7/v8/v9 as additive extensions of
+	// v6, so the required-schema floor stays unchanged. `review assess` also
+	// gained review_due/review_due_reason/next_transition, which is unrelated
+	// to this negotiated capabilities surface. The v3.4.0 binary advertised
+	// 15 optional features, same as v2.5's binary (floor stays at 14, its
+	// established minimum).
+	"gentle-ai.review-integration.capabilities/v2.6": Object.freeze({
+		protocolMinor: 6,
+		requiredSchemas: Object.freeze([...REQUIRED_SCHEMAS_COMMON_V23, "gentle-ai.review-integration.capabilities/v2.6", "gentle-ai.review-integration.consent/v3", "gentle-ai.review-integration.start/v4", "gentle-ai.review-integration.status/v6", "gentle-ai.review-intended-untracked-selection/v1"]),
+		requiredMandatoryFeatures: REQUIRED_MANDATORY_FEATURES_V23,
+		optionalFeatureFloor: 14,
+	}),
 });
 const OPTIONAL_FEATURE_NAMES = Object.freeze([
+	"start_request_context",
+	"start_options_preflight",
 	"base_ref_workspace_overlay",
 	"bounded_process_waits",
 	"classified_authority_repair",
@@ -220,6 +238,8 @@ const OPTIONAL_FEATURE_NAMES = Object.freeze([
 	"validating_result_reopen",
 ] as const);
 const FEATURE_NAMES = Object.freeze([
+	"start_request_context",
+	"start_options_preflight",
 	"base_ref_workspace_overlay",
 	"bounded_process_waits",
 	"classified_authority_repair",
@@ -294,6 +314,7 @@ export interface ChangedPathEntry {
 	readonly typeChanged: boolean;
 	readonly modeOnly: boolean;
 	readonly intendedUntracked: boolean;
+	readonly generated?: true;
 }
 
 export interface ReviewArtifactSubjectV2 {
@@ -438,11 +459,21 @@ export interface ReviewCaptureSubmissionV1 {
 	values: readonly ReviewCaptureSubmissionValueV1[];
 }
 
-// The two Go-owned non-lens provider role capture operations (gentle-pi#311
-// P4-roles; provider side gentle-ai#3264). Their collect inputs are
-// self-contained authority-advancing vectors: binding tokens plus
-// `--agent=pi --execute=true`, with NO submission descriptor. The known set
-// is closed — an unknown role capture operation is never executed.
+// The two non-lens provider role capture operations (gentle-pi#311 P4-roles;
+// provider side gentle-ai#3264). An older gentle-ai still renders each one as
+// a self-contained authority-advancing vector: binding tokens plus
+// `--agent=pi --execute=true`, with NO submission descriptor — executing the
+// exact rendered tokens makes Go materialize the role prompt, run its own
+// locked-down pi subprocess, and admit the verdict itself.
+//
+// gentle-ai's v9 contract makes both roles host-mediated exactly like a lens
+// materialize slot instead (gentle-pi#311 P3): the collect input carries
+// `--materialize=true` (never alongside `--execute`) plus a provider-owned
+// `submission` descriptor, and the host completes the frozen prompt
+// in-process and submits the result through that exact descriptor. The two
+// wire forms are mutually exclusive on one input; see the gating in
+// decodeCollectInput below. The known operation set is closed — an unknown
+// role capture operation is never executed either way.
 export const REVIEW_PROVIDER_ROLE_CAPTURE_OPERATION = {
 	CAPTURE_REFUTER: "review.capture-refuter",
 	CAPTURE_VALIDATION: "review.capture-validation",
@@ -607,6 +638,23 @@ export interface ReviewEscalationV1 {
 	cause: (typeof ESCALATION_CAUSES)[number];
 	findingIds: readonly string[];
 	refuterOutcomes?: readonly ReviewEscalationRefuterOutcomeV1[];
+}
+
+function decodeReviewEscalationV1(value: unknown, label: string): ReviewEscalationV1 {
+	const source = exactRecord(value, label, ["cause", "finding_ids"], ["refuter_outcomes"]);
+	const escalation: ReviewEscalationV1 = {
+		cause: enumeration(source.cause, ESCALATION_CAUSES, `${label}.cause`),
+		findingIds: stringArray(source.finding_ids, `${label}.finding_ids`),
+	};
+	if (Object.hasOwn(source, "refuter_outcomes")) escalation.refuterOutcomes = array(source.refuter_outcomes, `${label}.refuter_outcomes`, (entry, itemLabel) => {
+		const row = exactRecord(entry, itemLabel, ["finding_id", "outcome", "proof"]);
+		return {
+			findingId: nonempty(row.finding_id, `${itemLabel}.finding_id`),
+			outcome: enumeration(row.outcome, ESCALATION_REFUTER_OUTCOMES, `${itemLabel}.outcome`),
+			proof: nonempty(row.proof, `${itemLabel}.proof`),
+		};
+	});
+	return escalation;
 }
 
 export interface ReviewStatusV3 {
@@ -1124,7 +1172,8 @@ export function decodeReviewArtifactSubjectV2(value: unknown): ReviewArtifactSub
 }
 
 function decodeChangedPathEntry(value: unknown, label: string): ChangedPathEntry {
-	const body = exactRecord(value, label, ["path", "status", "old_mode", "new_mode", "deleted", "type_changed", "mode_only", "intended_untracked"]);
+	const body = exactRecord(value, label, ["path", "status", "old_mode", "new_mode", "deleted", "type_changed", "mode_only", "intended_untracked"], ["generated"]);
+	if (body.generated !== undefined && body.generated !== true) throw new TypeError(`${label}.generated must be true when present`);
 	return {
 		path: nonempty(body.path, `${label}.path`),
 		status: enumeration(body.status, ["A", "D", "M", "T"] as const, `${label}.status`),
@@ -1134,6 +1183,7 @@ function decodeChangedPathEntry(value: unknown, label: string): ChangedPathEntry
 		typeChanged: boolean(body.type_changed, `${label}.type_changed`),
 		modeOnly: boolean(body.mode_only, `${label}.mode_only`),
 		intendedUntracked: boolean(body.intended_untracked, `${label}.intended_untracked`),
+		...(body.generated === undefined ? {} : { generated: true }),
 	};
 }
 
@@ -1420,17 +1470,32 @@ function decodeTransitionArguments(value: unknown, label: string): readonly Revi
 	});
 }
 
+// The intended-untracked submission re-enters STATUS for the same target: the
+// workspace projection, or a provider-issued base-diff selector (a base tree
+// plus --committed-only or --workspace-overlay). No other selector is accepted.
+const INTENDED_UNTRACKED_PREFIX = ["--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi"] as const;
+const INTENDED_UNTRACKED_SELECTION_TOKEN = "--intended-untracked-selection={{value}}";
+const INTENDED_UNTRACKED_BASE_TREE = /^--base-ref=[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+
+/** True when a validated submission already carries the provider-issued base-diff target selector. */
+export function intendedUntrackedSubmissionCarriesTarget(tokens: readonly string[]): boolean {
+	return isIntendedUntrackedSubmissionTokens(tokens) && tokens.length === INTENDED_UNTRACKED_PREFIX.length + 3;
+}
+
+function isIntendedUntrackedSubmissionTokens(tokens: readonly string[]): boolean {
+	if (INTENDED_UNTRACKED_PREFIX.some((token, index) => tokens[index] !== token) || tokens[tokens.length - 1] !== INTENDED_UNTRACKED_SELECTION_TOKEN) return false;
+	const selector = tokens.slice(INTENDED_UNTRACKED_PREFIX.length, -1);
+	if (selector.length === 1) return selector[0] === "--projection=workspace";
+	return selector.length === 2 && INTENDED_UNTRACKED_BASE_TREE.test(selector[0]!) && (selector[1] === "--committed-only=true" || selector[1] === "--workspace-overlay=true");
+}
+
 function decodeCaptureSubmission(value: unknown, label: string, v5: boolean, v6: boolean, captureOperation: string): ReviewCaptureSubmissionV1 {
 	// status/v6 adds the provider-owned intended-untracked selection form.
 	if (v6 && captureOperation === "external.select_intended_untracked" && typeof value === "object" && value !== null && (value as Record<string, unknown>).operation_token === "status") {
 		const submission = exactRecord(value, label, ["operation_token", "argument_tokens", "value"]);
-		const expectedTokens = [
-			"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi",
-			"--projection=workspace", "--intended-untracked-selection={{value}}",
-		] as const;
 		const operationToken = enumeration(submission.operation_token, ["status"] as const, `${label}.operation_token`);
-		const argumentTokens = stringArray(submission.argument_tokens, `${label}.argument_tokens`, { minimum: expectedTokens.length, maximum: expectedTokens.length });
-		if (argumentTokens.some((token, index) => token !== expectedTokens[index])) throw new TypeError(`${label}.argument_tokens substitution binding is invalid`);
+		const argumentTokens = stringArray(submission.argument_tokens, `${label}.argument_tokens`, { minimum: 5, maximum: 6 });
+		if (!isIntendedUntrackedSubmissionTokens(argumentTokens)) throw new TypeError(`${label}.argument_tokens substitution binding is invalid`);
 		const row = exactRecord(submission.value, `${label}.value`, ["slot", "domain", "schema", "substitution_location"]);
 		return {
 			operationToken,
@@ -1439,7 +1504,7 @@ function decodeCaptureSubmission(value: unknown, label: string, v5: boolean, v6:
 				slot: enumeration(row.slot, ["intended_untracked_selection"] as const, `${label}.value.slot`),
 				domain: enumeration(row.domain, ["schema_bound_json"] as const, `${label}.value.domain`),
 				schema: enumeration(row.schema, ["gentle-ai.review-intended-untracked-selection/v1"] as const, `${label}.value.schema`),
-				substitutionLocation: integer(row.substitution_location, `${label}.value.substitution_location`, 4, 4),
+				substitutionLocation: integer(row.substitution_location, `${label}.value.substitution_location`, argumentTokens.length - 1, argumentTokens.length - 1),
 			}],
 		};
 	}
@@ -1451,11 +1516,18 @@ function decodeCaptureSubmission(value: unknown, label: string, v5: boolean, v6:
 	// one-entry values array the host relay already consumes. A payload
 	// carrying both wire forms at once matches no captured shape and falls
 	// through to the legacy decoder, which rejects the unknown `value` key.
+	//
+	// gentle-ai's v9 contract renders the same singular-value shape for the
+	// two host-mediated provider role operations (capture-refuter,
+	// capture-validation): they carry a `schema` key exactly like
+	// capture-result, since both bind one artifact-path-or-stdin value, never
+	// the correction-plan's numeric bounds (gentle-pi#311 P3).
 	if (v5 && typeof value === "object" && value !== null && "value" in value && !("values" in value)) {
 		const submission = exactRecord(value, label, ["operation_token", "argument_tokens", "value"]);
-		const operationToken = enumeration(submission.operation_token, ["capture-result", "capture-correction-plan"] as const, `${label}.operation_token`);
+		const operationToken = enumeration(submission.operation_token, ["capture-result", "capture-correction-plan", "capture-refuter", "capture-validation"] as const, `${label}.operation_token`);
 		const argumentTokens = stringArray(submission.argument_tokens, `${label}.argument_tokens`, { minimum: 1 });
-		const row = operationToken === "capture-result"
+		const bindsArtifactSchema = operationToken === "capture-result" || operationToken === "capture-refuter" || operationToken === "capture-validation";
+		const row = bindsArtifactSchema
 			? exactRecord(submission.value, `${label}.value`, ["slot", "domain", "schema", "substitution_location"])
 			: exactRecord(submission.value, `${label}.value`, ["slot", "domain", "minimum", "maximum", "substitution_location"]);
 		return {
@@ -1464,7 +1536,11 @@ function decodeCaptureSubmission(value: unknown, label: string, v5: boolean, v6:
 			values: [{
 				slot: operationToken === "capture-result"
 					? enumeration(row.slot, ["reviewer_result"] as const, `${label}.value.slot`)
-					: enumeration(row.slot, ["correction_lines"] as const, `${label}.value.slot`),
+					: operationToken === "capture-correction-plan"
+					? enumeration(row.slot, ["correction_lines"] as const, `${label}.value.slot`)
+					: operationToken === "capture-refuter"
+					? enumeration(row.slot, ["provider_refuter"] as const, `${label}.value.slot`)
+					: enumeration(row.slot, ["provider_targeted_validator"] as const, `${label}.value.slot`),
 				domain: nonempty(row.domain, `${label}.value.domain`),
 				...(row.schema === undefined ? {} : { schema: nonempty(row.schema, `${label}.value.schema`) }),
 				...(row.minimum === undefined ? {} : { minimum: integer(row.minimum, `${label}.value.minimum`, 1, 200) }),
@@ -1605,7 +1681,7 @@ const CORRECTION_REQUEST_REASON_CODES = Object.freeze(["correction_plan_required
 // v5 capture operations that must carry a submission descriptor.
 const V5_SUBMISSION_CAPTURE_OPERATIONS = Object.freeze(["review.capture-correction-plan"] as const);
 
-function decodeCollectInput(value: unknown, label: string, v5: boolean, v6: boolean): ReviewCollectInputV3 {
+function decodeCollectInput(value: unknown, label: string, v5: boolean, v6: boolean, v9: boolean): ReviewCollectInputV3 {
 	const input = exactRecord(value, label, ["name", "schema", "capture_operation", "arguments"], ["artifact_subject", "base_tree", "candidate_tree", "changed_path_manifest", "submission", ...(v5 ? ["provider_task", "validation_request"] : [])]);
 	const name = text(input.name, `${label}.name`, { minimum: 1, pattern: /^[a-z0-9_]+$/ });
 	const schema = nonempty(input.schema, `${label}.schema`);
@@ -1656,13 +1732,18 @@ function decodeCollectInput(value: unknown, label: string, v5: boolean, v6: bool
 		sha256(argumentsList[5]!.value, `${label}.arguments[5].value`);
 	}
 
-	// gentle-pi#311 P4-roles: the two Go-owned non-lens provider role capture
-	// operations render SELF-CONTAINED authority-advancing vectors. Executing
+	// gentle-pi#311 P4-roles / P3: the two non-lens provider role capture
+	// operations render either wire form on one input, never both at once.
+	// An older gentle-ai renders a SELF-CONTAINED authority-advancing vector
+	// (binding tokens + --agent=pi --execute=true, no submission): executing
 	// the exact rendered tokens makes Go materialize the role prompt, run its
-	// own locked-down pi subprocess, and admit the raw verdict — so a
-	// submission descriptor (the host-mediated completing form) on one of
-	// these inputs would hand the caller a way to author the verdict and is
-	// rejected as a provider contract violation.
+	// own locked-down pi subprocess, and admit the raw verdict. gentle-ai's
+	// v9 contract instead renders a HOST-MEDIATED form: the same binding
+	// tokens plus --materialize=true (never --execute) and a provider-owned
+	// submission descriptor, exactly like a lens capture-result materialize
+	// slot — the host completes the frozen prompt in-process and submits
+	// through that descriptor.
+	const isRoleCaptureOperation = (REVIEW_PROVIDER_ROLE_CAPTURE_OPERATIONS as readonly string[]).includes(captureOperation);
 	if (captureOperation === REVIEW_PROVIDER_ROLE_CAPTURE_OPERATION.CAPTURE_REFUTER && schema !== "https://gentle-ai.dev/schema/review/refuter/v1") {
 		throw new TypeError(`${label}.schema must be https://gentle-ai.dev/schema/review/refuter/v1`);
 	}
@@ -1693,8 +1774,30 @@ function decodeCollectInput(value: unknown, label: string, v5: boolean, v6: bool
 		if (providerArgument("target") !== validationRequest.correctionTargetIdentity) throw new TypeError(`${label}.arguments target must bind validation_request.correction_target_identity`);
 		if (providerArgument("request-hash") !== validationRequest.requestHash) throw new TypeError(`${label}.arguments request-hash must bind validation_request.request_hash`);
 	}
-	if (input.submission !== undefined && (REVIEW_PROVIDER_ROLE_CAPTURE_OPERATIONS as readonly string[]).includes(captureOperation)) {
-		throw new TypeError(`${label}.submission is not allowed on the self-contained ${captureOperation} vector`);
+	if (isRoleCaptureOperation && input.submission !== undefined) {
+		// A submission descriptor only ever rides the v9 host-mediated form
+		// (gentle-ai's v9 provider contract; the sibling branch ahead of the
+		// currently-released v8). A v8-or-earlier provider (status/v3..v8) never
+		// renders one, even if it happened to carry a submission-shaped payload,
+		// so this is gated on v9 specifically — not on v5, which v8 already
+		// satisfies. Within a v9 payload the discriminator is exactly the
+		// materialize slot's --materialize=true with no --execute, the same one
+		// a lens capture-result materialize slot already uses. Mixing a
+		// submission with the old self-contained --execute=true vector, or with
+		// neither flag, is a malformed vector.
+		if (!v9) {
+			throw new TypeError(`${label}.submission requires the v9 provider contract for the host-mediated ${captureOperation} form`);
+		}
+		const argumentNamed = (argumentName: string): string | undefined => {
+			const matches = argumentsList.filter((argument) => argument.name === argumentName);
+			return matches.length === 1 ? matches[0]!.value : undefined;
+		};
+		if (argumentNamed("materialize") !== "true") {
+			throw new TypeError(`${label}.submission requires --materialize=true on the host-mediated ${captureOperation} form`);
+		}
+		if (argumentNamed("execute") !== undefined) {
+			throw new TypeError(`${label} must not carry --execute alongside a submission descriptor on ${captureOperation}`);
+		}
 	}
 
 	if (captureOperation === "review.capture-result") {
@@ -1711,7 +1814,12 @@ function decodeCollectInput(value: unknown, label: string, v5: boolean, v6: bool
 	const submissionOperations: readonly string[] = v5
 		? ["review.capture-result", "review.capture-correction-plan", ...(v6 ? ["external.select_intended_untracked"] : [])]
 		: ["review.capture-result"];
-	if (input.submission !== undefined && !submissionOperations.includes(captureOperation)) {
+	// Role operations are gated above by the materialize/execute discriminator
+	// instead of this allowlist: an older gentle-ai's self-contained vector
+	// legitimately carries no submission regardless of v5/v6, so they cannot
+	// simply join the list the way every other submission-carrying operation
+	// does.
+	if (input.submission !== undefined && !isRoleCaptureOperation && !submissionOperations.includes(captureOperation)) {
 		throw new TypeError(v5 ? `${label}.submission is only valid for ${submissionOperations.join(", ")}` : `${label}.submission is only valid for review.capture-result`);
 	}
 	if (intendedUntracked && input.submission === undefined) throw new TypeError(`${label}.submission is required for external.select_intended_untracked`);
@@ -1749,8 +1857,14 @@ export function decodeReviewManagedAssetsContinuationV1(value: unknown, label: s
 	return { operation, command, ...(agent === undefined ? {} : { agent }), ...(staleAssets === undefined ? {} : { staleAssets }) };
 }
 
-export function decodeReviewNextTransitionV3(value: unknown, options: { v5?: boolean; v6?: boolean } = {}): ReviewNextTransitionV3 {
-	const v6 = options.v6 === true;
+export function decodeReviewNextTransitionV3(value: unknown, options: { v5?: boolean; v6?: boolean; v9?: boolean } = {}): ReviewNextTransitionV3 {
+	// v9 (gentle-ai's next contract, ahead of the currently-released v8) is
+	// the only rung this sub-decoder distinguishes beyond v6: v7 and v8 add
+	// nothing to next_transition/collect-input decoding (v8 only extended the
+	// reviewer-result transition for OpenCode provider tasks at the top
+	// status level), so they decode on the exact v6 surface here.
+	const v9 = options.v9 === true;
+	const v6 = options.v6 === true || v9;
 	const v5 = options.v5 === true || v6;
 	const transition = exactRecord(value, "next_transition", ["kind", "reason_code"], ["execute", "collect", ...(v5 ? ["correction_request"] : []), "continuation", "unachievable_lens_slots"]);
 	const kind = enumeration(transition.kind, ["execute", "collect", "stop"] as const, "next_transition.kind");
@@ -1812,7 +1926,7 @@ export function decodeReviewNextTransitionV3(value: unknown, options: { v5?: boo
 	}
 	if (kind === "collect") {
 		const collect = exactRecord(transition.collect, "next_transition.collect", ["inputs"]);
-		const inputs = array(collect.inputs, "next_transition.collect.inputs", (entry, label) => decodeCollectInput(entry, label, v5, v6), { minimum: 1 });
+		const inputs = array(collect.inputs, "next_transition.collect.inputs", (entry, label) => decodeCollectInput(entry, label, v5, v6, v9), { minimum: 1 });
 		if (transition.execute !== undefined) throw new TypeError("next_transition.execute is incompatible with collect");
 		return { kind, reasonCode, collect: { inputs }, ...(correctionRequest === undefined ? {} : { correctionRequest }) };
 	}
@@ -1925,16 +2039,25 @@ export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
 	// surfaces. status/v6 adds the intended-untracked selection; status/v7
 	// (gentle-ai v2.6.0, advertised through capabilities/v2.5 alongside v6)
 	// adds optional `eligible_untracked_inventory` and escalation metadata,
-	// so it is decoded on the v6 surface. v3 keeps rejecting every v5/v6/v7-only
-	// field.
+	// so it is decoded on the v6 surface. status/v8 (gentle-ai main, PR #4765;
+	// the current released contract) only extended the reviewer-result
+	// transition for OpenCode provider tasks -- no new top-level key -- so it
+	// decodes on the exact v7 surface too. status/v9 (the sibling gentle-ai
+	// branch's contract, ahead of the released v8) adds nothing at this top
+	// level either: its one addition is the host-mediated role `submission`
+	// on a next_transition.collect input (gentle-pi#311 P3), gated on v9 in
+	// decodeCollectInput, not here. v3 keeps rejecting every
+	// v5/v6/v7/v8/v9-only field.
 	const schema = typeof value === "object" && value !== null ? (value as Record<string, unknown>).schema : undefined;
-	const v7 = schema === "gentle-ai.review-integration.status/v7";
+	const v9 = schema === "gentle-ai.review-integration.status/v9";
+	const v8 = v9 || schema === "gentle-ai.review-integration.status/v8";
+	const v7 = v8 || schema === "gentle-ai.review-integration.status/v7";
 	const v6 = v7 || schema === "gentle-ai.review-integration.status/v6";
 	const v5 = v6 || schema === "gentle-ai.review-integration.status/v5";
 	const body = exactRecord(value, "status", [
 		"schema", "contract", "operation", "applicability", "action", "replayability", "target_identity", "projection", "repair", "candidates",
 	], ["authority", "frozen", "action_disposition", "eligibility", "next_transition", "authority_target_identity", ...(v5 ? ["receipt", "forecast", "repository_context", "validation_request"] : []), ...(v7 ? ["eligible_untracked_inventory", "escalation"] : [])]);
-	requireIdentity(body, v7 ? "gentle-ai.review-integration.status/v7" : v6 ? "gentle-ai.review-integration.status/v6" : v5 ? "gentle-ai.review-integration.status/v5" : "gentle-ai.review-integration.status/v3", REVIEW_INTEGRATION_OPERATION.STATUS);
+	requireIdentity(body, v9 ? "gentle-ai.review-integration.status/v9" : v8 ? "gentle-ai.review-integration.status/v8" : v7 ? "gentle-ai.review-integration.status/v7" : v6 ? "gentle-ai.review-integration.status/v6" : v5 ? "gentle-ai.review-integration.status/v5" : "gentle-ai.review-integration.status/v3", REVIEW_INTEGRATION_OPERATION.STATUS);
 
 	const applicability = enumeration(body.applicability, ["current_target", "unrelated", "ambiguous", "corrupted"] as const, "status.applicability");
 	let receipt: ReviewStatusReceiptV1 | undefined;
@@ -1982,7 +2105,7 @@ export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
 	if (action === "recover" && actionDisposition === undefined) throw new TypeError("recover status requires action_disposition");
 	if (action !== "recover" && actionDisposition !== undefined) throw new TypeError("status.action_disposition is only valid for the recover action");
 	if (body.eligibility !== undefined) decodeEligibility(body.eligibility, "status.eligibility");
-	const nextTransition = body.next_transition === undefined ? undefined : decodeReviewNextTransitionV3(body.next_transition, { v5, v6 });
+	const nextTransition = body.next_transition === undefined ? undefined : decodeReviewNextTransitionV3(body.next_transition, { v5, v6, v9 });
 	const validationRequest = v5 && body.validation_request !== undefined
 		? decodeReviewTargetedValidationRequestV1(body.validation_request, "status.validation_request")
 		: undefined;
@@ -2017,23 +2140,9 @@ export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
 		};
 	}
 
-	let escalation: ReviewEscalationV1 | undefined;
-	if (Object.hasOwn(body, "escalation")) {
-		const label = "status.escalation";
-		const source = exactRecord(body.escalation, label, ["cause", "finding_ids"], ["refuter_outcomes"]);
-		escalation = {
-			cause: enumeration(source.cause, ESCALATION_CAUSES, `${label}.cause`),
-			findingIds: stringArray(source.finding_ids, `${label}.finding_ids`),
-		};
-		if (Object.hasOwn(source, "refuter_outcomes")) escalation.refuterOutcomes = array(source.refuter_outcomes, `${label}.refuter_outcomes`, (entry, itemLabel) => {
-			const row = exactRecord(entry, itemLabel, ["finding_id", "outcome", "proof"]);
-			return {
-				findingId: nonempty(row.finding_id, `${itemLabel}.finding_id`),
-				outcome: enumeration(row.outcome, ESCALATION_REFUTER_OUTCOMES, `${itemLabel}.outcome`),
-				proof: nonempty(row.proof, `${itemLabel}.proof`),
-			};
-		});
-	}
+	const escalation = Object.hasOwn(body, "escalation")
+		? decodeReviewEscalationV1(body.escalation, "status.escalation")
+		: undefined;
 
 	// status/v7 top-level optional digest (gentle-ai v2.6.0): resolves #4066's
 	// closed loop where `sdd-attempt finish` named a digest status never
@@ -2496,7 +2605,11 @@ function assertReviewApprovedAcknowledgementExecuteShapeV1(execute: ReviewNextTr
 	if (execute.arguments.length !== REVIEW_APPROVED_ACKNOWLEDGEMENT_ARGUMENTS.length) throw new TypeError(`acknowledgement.execute.arguments must carry exactly ${REVIEW_APPROVED_ACKNOWLEDGEMENT_ARGUMENTS.length} provider-issued arguments`);
 	const values = execute.arguments.map((argument, index) => { const name = REVIEW_APPROVED_ACKNOWLEDGEMENT_ARGUMENTS[index]!; if (argument.name !== name) throw new TypeError(`acknowledgement.execute.arguments[${index}].name must be ${name}`); const value = nonempty(argument.value, `acknowledgement.execute.arguments[${index}].value`); if (nonempty(argument.token, `acknowledgement.execute.arguments[${index}].token`) !== `--${name}=${value}`) throw new TypeError(`acknowledgement.execute.arguments[${index}].token must exactly match ${name}`); return value; });
 	if (execute.preconditions.length !== 1 || execute.preconditions[0]?.name !== "state" || execute.preconditions[0]?.value !== "approved") throw new TypeError("acknowledgement.execute.preconditions must be the single approved state precondition");
-	return { tokens: execute.arguments.map((argument) => argument.token!) as ReviewApprovedAcknowledgementExecuteTokensV1, values: values as readonly [string, string, string, string, string], lineageId: lineage(execute.binding.lineageId, "acknowledgement.execute.binding.lineage_id"), targetIdentity: sha256(execute.binding.targetIdentity, "acknowledgement.execute.binding.target_identity"), revision: sha256(execute.binding.revision, "acknowledgement.execute.binding.revision") };
+	const tokens = execute.arguments.map((argument) => argument.token!);
+	// The exact five-argument check above validates both vectors before tuple construction.
+	const tokenTuple: ReviewApprovedAcknowledgementExecuteTokensV1 = [tokens[0]!, tokens[1]!, tokens[2]!, tokens[3]!, tokens[4]!];
+	const valueTuple: readonly [string, string, string, string, string] = [values[0]!, values[1]!, values[2]!, values[3]!, values[4]!];
+	return { tokens: tokenTuple, values: valueTuple, lineageId: lineage(execute.binding.lineageId, "acknowledgement.execute.binding.lineage_id"), targetIdentity: sha256(execute.binding.targetIdentity, "acknowledgement.execute.binding.target_identity"), revision: sha256(execute.binding.revision, "acknowledgement.execute.binding.revision") };
 }
 
 /**
@@ -2595,6 +2708,26 @@ export interface ReviewLastEventReviewerResultV1 {
 	resultHash: string;
 }
 
+export interface ReviewTargetedValidatorCheckEvidenceV1 {
+	passed: boolean;
+	evidence: readonly string[];
+	regressions?: readonly {
+		id?: string;
+		location: string;
+		claim: string;
+		proofRefs: readonly string[];
+	}[];
+}
+
+export interface ReviewTargetedValidatorEvidenceV1 {
+	targetedValidationRequestHash: string;
+	correctionTargetIdentity: string;
+	originalCriteria: ReviewTargetedValidatorCheckEvidenceV1;
+	correctionRegression: ReviewTargetedValidatorCheckEvidenceV1;
+	followUps: readonly { observation: string; proofRefs: readonly string[] }[];
+	raw: Record<string, unknown>;
+}
+
 export interface ReviewLastEventClosureV1 {
 	schema: typeof REVIEW_LAST_EVENT_CLOSURE_SCHEMA;
 	operation: ReviewLastEventClosureOperation;
@@ -2605,6 +2738,8 @@ export interface ReviewLastEventClosureV1 {
 	targetIdentity?: string;
 	requestHash?: string;
 	correctionLines?: number;
+	escalation?: ReviewEscalationV1;
+	targetedValidatorEvidence?: ReviewTargetedValidatorEvidenceV1;
 	advisoryFindings?: ReviewAdvisoryFindingsV1;
 	reviewerResults?: readonly ReviewLastEventReviewerResultV1[];
 	statusContinuation?: ReviewStatusContinuationV1;
@@ -2748,18 +2883,67 @@ function decodeReviewLastEventReviewerResultV1(value: unknown, label: string): R
 	};
 }
 
+function decodeReviewTargetedValidatorCheckEvidenceV1(value: unknown, label: string): ReviewTargetedValidatorCheckEvidenceV1 {
+	const check = exactRecord(value, label, ["passed", "evidence"], ["regressions"]);
+	const regressions = Object.hasOwn(check, "regressions")
+		? array(check.regressions, `${label}.regressions`, (entry, entryLabel) => {
+			const row = exactRecord(entry, entryLabel, ["location", "claim", "proof_refs"], ["id"]);
+			return {
+				...(Object.hasOwn(row, "id") ? { id: nonempty(row.id, `${entryLabel}.id`) } : {}),
+				location: nonempty(row.location, `${entryLabel}.location`),
+				claim: nonempty(row.claim, `${entryLabel}.claim`),
+				proofRefs: stringArray(row.proof_refs, `${entryLabel}.proof_refs`, { minimum: 1 }),
+			};
+		}) : undefined;
+	return {
+		passed: boolean(check.passed, `${label}.passed`),
+		// Native admission rejects observations containing only Unicode whitespace.
+		evidence: stringArray(check.evidence, `${label}.evidence`, { minimum: 1, pattern: /[^\p{White_Space}]/u }),
+		...(regressions === undefined ? {} : { regressions }),
+	};
+}
+
+function decodeReviewTargetedValidatorEvidenceV1(value: unknown, label: string): ReviewTargetedValidatorEvidenceV1 {
+	const body = exactRecord(value, label, ["targeted_validation_request_hash", "correction_target_identity", "original_criteria", "correction_regression", "follow_ups"]);
+	return {
+		targetedValidationRequestHash: sha256(body.targeted_validation_request_hash, `${label}.targeted_validation_request_hash`),
+		correctionTargetIdentity: sha256(body.correction_target_identity, `${label}.correction_target_identity`),
+		originalCriteria: decodeReviewTargetedValidatorCheckEvidenceV1(body.original_criteria, `${label}.original_criteria`),
+		correctionRegression: decodeReviewTargetedValidatorCheckEvidenceV1(body.correction_regression, `${label}.correction_regression`),
+		followUps: array(body.follow_ups, `${label}.follow_ups`, (entry, entryLabel) => {
+			const row = exactRecord(entry, entryLabel, ["observation", "proof_refs"]);
+			return { observation: nonempty(row.observation, `${entryLabel}.observation`), proofRefs: stringArray(row.proof_refs, `${entryLabel}.proof_refs`, { minimum: 1 }) };
+		}),
+		raw: body,
+	};
+}
+
 export function decodeReviewLastEventClosureV1(value: unknown): ReviewLastEventClosureV1 {
-	const body = exactRecord(value, "last_event_closure", ["schema", "operation", "lineage_id", "state", "store_revision"], ["target_identity", "request_hash", "correction_lines", "action", "advisory_findings", "reviewer_results", "status_continuation", "acknowledgement"]);
+	const body = exactRecord(value, "last_event_closure", ["schema", "operation", "lineage_id", "state", "store_revision"], ["target_identity", "request_hash", "correction_lines", "action", "escalation", "targeted_validator_evidence", "advisory_findings", "reviewer_results", "status_continuation", "acknowledgement"]);
 	if (body.schema !== REVIEW_LAST_EVENT_CLOSURE_SCHEMA) throw new TypeError(`last_event_closure.schema must be ${REVIEW_LAST_EVENT_CLOSURE_SCHEMA}`);
 	const operation = enumeration(body.operation, Object.values(REVIEW_LAST_EVENT_CLOSURE_OPERATION), "last_event_closure.operation") as ReviewLastEventClosureOperation;
 	const state = enumeration(body.state, REVIEW_LAST_EVENT_TERMINAL_STATES, "last_event_closure.state") as ReviewLastEventClosureState;
+	if (Object.hasOwn(body, "targeted_validator_evidence") && (operation !== REVIEW_LAST_EVENT_CLOSURE_OPERATION.CAPTURE_VALIDATION || state !== "escalated")) {
+		throw new TypeError("last_event_closure targeted_validator_evidence requires escalated review/capture-validation");
+	}
+	// Diagnostic evidence is optional for older providers and never controls terminal authority.
+	const targetedValidatorEvidence = Object.hasOwn(body, "targeted_validator_evidence")
+		? decodeReviewTargetedValidatorEvidenceV1(body.targeted_validator_evidence, "last_event_closure.targeted_validator_evidence")
+		: undefined;
+	if (Object.hasOwn(body, "escalation") && state !== "escalated") throw new TypeError("last_event_closure escalation requires escalated state");
+	// Older native closures omit this diagnostic; its presence never grants a continuation.
+	const escalation = Object.hasOwn(body, "escalation")
+		? decodeReviewEscalationV1(body.escalation, "last_event_closure.escalation")
+		: undefined;
 	const shared = {
 		schema: REVIEW_LAST_EVENT_CLOSURE_SCHEMA,
 		operation,
 		lineageId: lineage(body.lineage_id, "last_event_closure.lineage_id"),
 		state,
 		storeRevision: sha256(body.store_revision, "last_event_closure.store_revision"),
-	};
+		...(escalation === undefined ? {} : { escalation }),
+		...(targetedValidatorEvidence === undefined ? {} : { targetedValidatorEvidence }),
+	} as const;
 	if (operation === REVIEW_LAST_EVENT_CLOSURE_OPERATION.CAPTURE_CORRECTION_PLAN) {
 		if (body.reviewer_results !== undefined) throw new TypeError("last_event_closure reviewer_results requires approved state");
 		if (body.action !== undefined || body.advisory_findings !== undefined || body.status_continuation !== undefined) throw new TypeError("last_event_closure correction-plan cannot carry action, advisory_findings, or status_continuation");

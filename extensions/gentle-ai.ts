@@ -2496,13 +2496,31 @@ function writePersonaMode(cwd: string, mode: PersonaMode): string[] {
 	return paths;
 }
 
+// A pinned or active profile is a complete routing snapshot, so while the
+// global file is missing its own snapshot stands in for the legacy project
+// file, which would resurrect agents the profile deliberately omits. Only a
+// readable legacy file is replaced: with nothing there to suppress, the reader
+// keeps the result it returned before that merge (`missing`, or empty for an
+// unreadable file), so a pin or active profile never invents saved routing
+// where no model config exists at all and a session that cleared its profile
+// cannot read the pin back (gentle-shell#2477).
+function profileSnapshotForLegacySource(
+	cwd: string,
+	target: CurrentProfileTarget,
+	legacyResult: ModelConfigFileResult,
+): ModelConfigFileResult {
+	if (legacyResult.status === "missing") return legacyResult;
+	if (legacyResult.status === "invalid") return { status: "valid", config: {} };
+	return activeProfileRoutingSnapshot(cwd, target) ?? { status: "valid", config: {} };
+}
+
 // An invalid legacy project file must never block the global config it merges
 // with: fall back to the global-only result (or empty) instead of erroring.
 function readSavedModelConfig(cwd: string): ModelConfigFileResult {
 	const globalPath = modelConfigPath(cwd);
 	const target = resolveCurrentProfileTarget(cwd);
 	if (target !== undefined && !existsSync(globalPath)) {
-		return activeProfileRoutingSnapshot(cwd, target) ?? { status: "valid", config: {} };
+		return profileSnapshotForLegacySource(cwd, target, readModelConfigFile(legacyProjectModelConfigPath(cwd)));
 	}
 	const projectPath = secondaryMergeSourcePath(cwd, target);
 	const result = readModelRoutingAuthority(globalPath, projectPath);
@@ -2517,7 +2535,7 @@ async function readSavedModelConfigAsync(
 	const globalPath = modelConfigPath(cwd);
 	const target = resolveCurrentProfileTarget(cwd);
 	if (target !== undefined && !existsSync(globalPath)) {
-		return activeProfileRoutingSnapshot(cwd, target) ?? { status: "valid", config: {} };
+		return profileSnapshotForLegacySource(cwd, target, await readModelConfigFileAsync(legacyProjectModelConfigPath(cwd)));
 	}
 	const projectPath = secondaryMergeSourcePath(cwd, target);
 	const result = await readModelRoutingAuthorityAsync(globalPath, projectPath);

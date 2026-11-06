@@ -1,6 +1,6 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { paintSurfaceRow, surfaceOpener, type CardTheme } from "./shell-card.ts";
-import { paintHoverable } from "./shell-hover.ts";
+import { HOVER_ROLE, paintHoverable } from "./shell-hover.ts";
 import type { ChromeSurface } from "./visual-customization-policy.ts";
 
 // Fullscreen rail sections drawn as one IDE-like panel (design/shell-rework/02-proposal.html):
@@ -17,9 +17,9 @@ export function setChromeSurface(value: ChromeSurface): void { surface = value; 
 export function panelSurfaceOpener(theme: CardTheme): string {
 	return surface === "transparent" ? "" : surfaceOpener(theme, PANEL_SURFACE_ROLE);
 }
-/** Without a tint, rail sections keep a blank row between them unless density is minimal. */
+/** Rail sections keep a blank row between them in comfortable density, whatever the surface. */
 export function sectionGap(density: string | undefined): boolean {
-	return density === undefined || density === "comfortable" || (surface === "transparent" && density !== "minimal");
+	return density === undefined || density === "comfortable";
 }
 /** Columns a panel row is indented under its header. */
 export const PANEL_ROW_INDENT = 2;
@@ -68,7 +68,8 @@ export function fitPanelLine(left: string, right: string, width: number): string
 export function renderPanelHeader(theme: PanelTheme, width: number, header: PanelHeader): string {
 	const glyph = paintHoverable(theme, header.open ? "▾" : "▸", header.hovered ?? false, "muted");
 	const name = header.title.toUpperCase();
-	const title = theme.fg("text", theme.bold ? theme.bold(name) : name);
+	// The hover paints the name too: a lone glyph is too small a signal, and other rail controls paint their text.
+	const title = theme.fg(header.hovered ? HOVER_ROLE : "text", theme.bold ? theme.bold(name) : name);
 	const count = header.count ? theme.fg(header.countRole ?? "muted", header.count) : "";
 	return fitPanelLine(`${glyph} ${title}`, count, width);
 }

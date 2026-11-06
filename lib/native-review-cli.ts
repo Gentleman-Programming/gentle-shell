@@ -160,10 +160,13 @@ export const NATIVE_REVIEW_MODE_SCOPE = {
 	BOTH: "both",
 } as const;
 export type NativeReviewModeScope = (typeof NATIVE_REVIEW_MODE_SCOPE)[keyof typeof NATIVE_REVIEW_MODE_SCOPE];
+export type NativeReviewModeMutationScope = typeof NATIVE_REVIEW_MODE_SCOPE.CLONE | typeof NATIVE_REVIEW_MODE_SCOPE.GLOBAL;
 
 export interface NativeReviewModeRequest {
 	cwd: string;
 	operation: NativeReviewModeOperation;
+	/** Mutation scope is explicit when global; omitted mutations remain clone-local. Status takes no scope. */
+	scope?: NativeReviewModeMutationScope;
 	signal?: AbortSignal;
 }
 
@@ -1491,6 +1494,16 @@ function decodeNativeReviewStatus(value: unknown): NativeReviewStatusResult {
 		raw: body,
 	};
 }
+function nativeReviewModeScopeArguments(operation: NativeReviewModeOperation, scope: NativeReviewModeMutationScope | undefined): string[] {
+	if (scope !== undefined && scope !== NATIVE_REVIEW_MODE_SCOPE.CLONE && scope !== NATIVE_REVIEW_MODE_SCOPE.GLOBAL) {
+		throw new TypeError("Native review mode scope must be clone or global");
+	}
+	if (scope !== undefined && operation !== NATIVE_REVIEW_MODE_OPERATION.ENABLE && operation !== NATIVE_REVIEW_MODE_OPERATION.DISABLE) {
+		throw new TypeError("Native review mode scope is only valid for enable or disable");
+	}
+	return operation === NATIVE_REVIEW_MODE_OPERATION.STATUS ? [] : ["--scope", scope ?? NATIVE_REVIEW_MODE_SCOPE.CLONE];
+}
+
 function isWindowsRepositoryPath(value: string): boolean { return /^[A-Za-z]:[\\/]/.test(value) || /^\\\\/.test(value); }
 export function normalizeNativeReviewCwd(value: string, platform: NodeJS.Platform = process.platform): string {
 	if (platform !== "win32") return value;
@@ -1682,22 +1695,21 @@ class NativeReviewPlainCli {
 		return status;
 	}
 
-	// Dark until the negotiated version reports `mode: true` (Design Decision
-	// #7, organic-rdd-parity). `status` is read-only (no timeout suppression,
-	// exact fixed argv per the design's data flow); `enable`/`disable` mutate
-	// and always pass `--scope clone` so Pi's own kill-switch command surface
-	// never mutates the operator's global gentle-ai state across other clones.
+	// Status stays read-only; mutation defaults to clone unless the caller
+	// explicitly supplies global. Validate scope before cwd or process access.
 	async reviewMode(request: NativeReviewModeRequest): Promise<NativeReviewModeResult> {
+		const operation = request.operation;
+		const scopeArguments = nativeReviewModeScopeArguments(operation, request.scope);
 		const cwd = await canonicalNativeReviewCwd(request.cwd);
-		const mutating = request.operation !== NATIVE_REVIEW_MODE_OPERATION.STATUS;
+		const mutating = operation !== NATIVE_REVIEW_MODE_OPERATION.STATUS;
 		const { body } = await this.execute(
 			NATIVE_REVIEW_OPERATION.MODE,
 			cwd,
-			["review", "mode", request.operation, "--cwd", cwd, ...(mutating ? ["--scope", "clone"] : []), "--json"],
+			["review", "mode", operation, "--cwd", cwd, ...scopeArguments, "--json"],
 			mutating,
 			request.signal,
 		);
-		return decode(NATIVE_REVIEW_OPERATION.MODE, mutating, () => decodeNativeReviewMode(body, request.operation));
+		return decode(NATIVE_REVIEW_OPERATION.MODE, mutating, () => decodeNativeReviewMode(body, operation));
 	}
 
 	async reclaim(request: NativeReviewReclaimRequest): Promise<NativeReviewRecoveryResult> {
@@ -2687,17 +2699,19 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 	}
 
 	async reviewMode(request: NativeReviewModeRequest): Promise<NativeReviewModeResult> {
+		const operation = request.operation;
+		const scopeArguments = nativeReviewModeScopeArguments(operation, request.scope);
 		const cwd = await canonicalNativeReviewCwd(request.cwd);
-		const mutating = request.operation !== NATIVE_REVIEW_MODE_OPERATION.STATUS;
+		const mutating = operation !== NATIVE_REVIEW_MODE_OPERATION.STATUS;
 		const execution = await this.invoke(
 			NATIVE_REVIEW_OPERATION.MODE,
 			cwd,
-			["review", "mode", request.operation, "--cwd", cwd, ...(mutating ? ["--scope", "clone"] : []), "--json"],
+			["review", "mode", operation, "--cwd", cwd, ...scopeArguments, "--json"],
 			mutating,
 			request.signal,
 			this.executablePath(NATIVE_REVIEW_OPERATION.MODE, mutating),
 		);
-		return decode(NATIVE_REVIEW_OPERATION.MODE, mutating, () => decodeNativeReviewMode(execution.body, request.operation));
+		return decode(NATIVE_REVIEW_OPERATION.MODE, mutating, () => decodeNativeReviewMode(execution.body, operation));
 	}
 
 	// Read-only risk assessment (gentle-ai#4295, gentle-pi#662). Never mutates;

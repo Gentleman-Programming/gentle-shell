@@ -127,7 +127,6 @@ test("the rail Status draws Changes, Review and Integrations with the agent prof
 		"  app.ts +2 files",
 		"",
 		edge("▾ INTEGRATIONS", "2", 48),
-		"  Agent profile: claude (session)",
 		"  - 🧠 gentle-pi · ready",
 		"  - 💥 SUPER YOLO ON — no permission prompts;",
 		"    private paths stay blocked",
@@ -157,13 +156,13 @@ const chromeModel = {
 	integrations: ["🧠 gentle-pi · ready"],
 };
 
-test("the title row names the project once and always keeps the session and profile", () => {
+test("the title row names the project once and always keeps the session; the profile rides the status bar", () => {
 	const row = stripAnsi(renderShellTitleRow(chromeModel, plain as never, 90));
 	assert.equal(visibleWidth(row), 90);
-	assert.match(row, /^ ✿ gentle-pi  ~\/work\/gentle-pi +fleet adopt · claude \(session\) $/);
-	const narrow = stripAnsi(renderShellTitleRow(chromeModel, plain as never, 44));
-	assert.equal(visibleWidth(narrow), 44);
-	assert.match(narrow, /fleet adopt · claude \(session\) $/, "the path gives way before the profile");
+	assert.match(row, /^ ✿ gentle-pi  ~\/work\/gentle-pi +fleet adopt $/);
+	const narrow = stripAnsi(renderShellTitleRow(chromeModel, plain as never, 34));
+	assert.equal(visibleWidth(narrow), 34);
+	assert.match(narrow, /fleet adopt $/, "the path gives way before the session");
 	assert.doesNotMatch(stripAnsi(renderShellTitleRow({ ...chromeModel, sessionName: undefined, profile: undefined }, plain as never, 90)), /·/);
 });
 
@@ -204,8 +203,7 @@ test("Integrations bullets distinguish items from continuations without losing d
   const [header, ...body] = result.lines.map(line => stripAnsi(line).trimEnd());
   assert.match(header, /INTEGRATIONS\s+3$/);
   const firstBullet = body.findIndex(line => line.startsWith("  - "));
-  assert.ok(firstBullet > 0, "the profile is contextual metadata before the status bullets");
-  assert.equal(body.slice(0, firstBullet).map(line => line.trim()).join(" "), "Agent profile: claude (session)");
+  assert.equal(firstBullet, 0, "the status bullets open the section; the profile lives in Stats and the bars");
   const bullets = body.slice(firstBullet);
   assert.equal(bullets.filter(line => line.startsWith("  - ")).length, 3);
   assert.ok(bullets.every(line => line.startsWith("  - ") || line.startsWith("    ")), "wrapped lines align beneath the item's text");
@@ -223,7 +221,7 @@ test("Integrations bullets distinguish items from continuations without losing d
 test("Integrations explains the permission mode without repeating it", () => {
 	const rows = renderShellSidebarBar(chromeModel, plain as never, 48).map((line) => line.trimEnd());
 	const at = rows.findIndex((row) => row.startsWith("▾ INTEGRATIONS"));
-	assert.deepEqual(rows.slice(at + 1), ["  Agent profile: claude (session)", "  - permissions no permission prompts; private", "    paths stay blocked", "  - 🧠 gentle-pi · ready"]);
+	assert.deepEqual(rows.slice(at + 1), ["  - permissions no permission prompts; private", "    paths stay blocked", "  - 🧠 gentle-pi · ready"]);
 	assert.doesNotMatch(rows.join("\n"), /SUPER-YOLO|SUPER YOLO/);
 });
 
@@ -261,17 +259,17 @@ test("the panel sheet stacks the rail sections under a title row and scrolls wit
 	assert.deepEqual(end.slice(1), [" ▾ AGENTS", "", " ▾ CHANGES", "   clean"], "the last page shows the last rows without a more row");
 });
 
-test("the mobile sheet wraps and scrolls the Integrations agent profile", () => {
-	const model = { ...chromeModel, profile: "mobile-agent-with-a-long-name (local)", permission: undefined, integrations: ["MCP connected"] };
+test("the mobile sheet wraps and scrolls a long Integrations status", () => {
+	const model = { ...chromeModel, permission: undefined, integrations: ["mobile-integration-with-a-long-name (local)", "MCP connected"] };
 	const visibility = { changes: false, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false };
 	const parts = new Map([["footer", { render: (width: number) => renderShellSidebarBar(model, plain, width, { density: "compact", visibility }) }]]);
 	const full = renderPanelSheet(parts, plain, 28, { rows: 15, scrollTop: 0 });
-	assert.match(full.lines.join("").replace(/\s/g, ""), /Agentprofile:mobile-agent-with-a-long-name\(local\)/);
-	assert.match(full.lines.join("\n"), /INTEGRATIONS\s+1/);
+	assert.match(full.lines.join("").replace(/\s/g, ""), /mobile-integration-with-a-long-name\(local\)/);
+	assert.match(full.lines.join("\n"), /INTEGRATIONS\s+2/);
 	const top = renderPanelSheet(parts, plain, 28, { rows: 5, scrollTop: 0 });
 	assert.ok(top.maxScroll > 0);
 	assert.match(top.lines.join("\n"), /INTEGRATIONS/);
-	assert.match(top.lines.join("\n"), /Agent profile:/);
+	assert.match(top.lines.join("\n"), /mobile-integration/);
 	const end = renderPanelSheet(parts, plain, 28, { rows: 5, scrollTop: top.maxScroll });
 	assert.match(end.lines.join("\n"), /MCP connected/);
 	for (const line of [...top.lines, ...end.lines]) assert.equal(visibleWidth(line), 28);
@@ -289,10 +287,10 @@ test("a short sheet fills the resized viewport with painted rows without adding 
 	}
 });
 
-test("the mobile title row carries the model, since the narrow status bar leaves it out", () => {
-	const row = stripAnsi(renderShellTitleRow(chromeModel, plain as never, 56, { model: true }));
-	assert.equal(visibleWidth(row), 56);
-	assert.match(row, /^ ✿ gentle-pi .*claude-opus-5-5 · high $/);
+test("the mobile title row carries the model and the profile, since the narrow status bar leaves them out", () => {
+	const row = stripAnsi(renderShellTitleRow(chromeModel, plain as never, 72, { model: true }));
+	assert.equal(visibleWidth(row), 72);
+	assert.match(row, /^ ✿ gentle-pi .*claude-opus-5-5 · high · claude \(session\) $/);
 });
 
 test("a long branch gives way before the context and cost in a phone-width status bar", () => {
@@ -317,7 +315,7 @@ test("the rail Status sections are click targets: headers collapse them and the 
 	assert.ok(collapsed.some((line) => /^▸ INTEGRATIONS/.test(line)), "a collapsed section keeps its header with ▸");
 	assert.ok(!collapsed.some((line) => /gentle-pi · ready/.test(line)), "and hides its rows");
 	const hovered = renderShellStatusSections(model, theme as never, 120, undefined, undefined, { hovered: "changes" }).lines.join("\n");
-	assert.match(hovered, /<warning>▾<\/warning> <text>\*CHANGES\*<\/text>/, "a hovered header paints the shared hover role");
+	assert.match(hovered, /<warning>▾<\/warning> <warning>\*CHANGES\*<\/warning>/, "a hovered header paints the shared hover role");
 	const hoveredOpen = renderShellStatusSections(model, theme as never, 120, undefined, undefined, { hovered: "open-changes" }).lines.join("\n");
 	assert.match(hoveredOpen, /<warning>\/gentle:changes<\/warning>/, "a hovered Changes row paints its command in the hover role");
 	assert.deepEqual(renderShellSidebarBar(model, plain as never, 48), open.lines, "renderShellSidebarBar stays the lines of the same render");
@@ -341,4 +339,22 @@ test("minimal density drops the rail's key hints row; compact keeps it", () => {
 	const minimal = renderShellStatusSections(chromeModel, plain as never, 48, { density: "minimal", visibility }, hints, {}).lines.map(stripAnsi).join("\n");
 	assert.match(compact, /alt\+u usage/);
 	assert.doesNotMatch(minimal, /alt\+u usage/);
+});
+
+test("the agent profile lives next to the model in the bars and in Stats, never in Integrations", async () => {
+	const { collectSessionStats } = await import("../lib/shell-stats.ts");
+	const bar = stripAnsi(renderShellStatusBar(chromeModel, plain as never, 140, "alt+u").rows[0]!);
+	assert.match(bar, /claude-opus-5-5 · high · claude \(session\) │ ctx/, "the profile follows the model and effort");
+	const roomy = stripAnsi(renderShellStatusBar(chromeModel, plain as never, 120, "alt+u").rows[0]!);
+	assert.match(roomy, /claude-opus-5-5 · high │ ctx .*usage/, "the profile gives way before usage");
+	const tight = stripAnsi(renderShellStatusBar(chromeModel, plain as never, 70, "alt+u").rows[0]!);
+	assert.doesNotMatch(tight, /claude \(session\)/, "the profile gives way with the model");
+	const sections = renderShellStatusSections({ ...chromeModel, stats: collectSessionStats([]) }, plain as never, 48, undefined, undefined, {}).lines.map(stripAnsi);
+	const integrations = sections.slice(sections.findIndex((row) => /INTEGRATIONS/.test(row)));
+	assert.doesNotMatch(integrations.join("\n"), /profile/i, "Integrations no longer lists the profile");
+	const stats = sections.slice(sections.findIndex((row) => /STATS/.test(row)), sections.findIndex((row) => /INTEGRATIONS/.test(row)));
+	assert.match(stats.join("\n"), /profile +claude \(session\)/, "Stats names the profile");
+	const mobile = stripAnsi(renderShellTitleRow(chromeModel, plain as never, 90, { model: true }));
+	assert.match(mobile, /claude-opus-5-5 · high · claude \(session\) $/, "on a phone the title row carries model and profile");
+	assert.doesNotMatch(stripAnsi(renderShellTitleRow(chromeModel, plain as never, 90)), /claude \(session\)/, "the split title row leaves the profile to the bar");
 });

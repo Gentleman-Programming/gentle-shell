@@ -1766,3 +1766,51 @@ test("the production factory takes over native bash drawing through a tool rende
 	assert.match(renderToString(call), /printf hi \(timeout 5s\)/);
 });
 
+
+test("a minimal bash card titles a long or multi-line command with one summary row and expands to the whole command", (t) => {
+	useCardContent(t, CARD_CONTENT.MINIMAL);
+	const bash = registeredQuietTools().get("bash");
+	const command = "cd /Users/me/work/project && python3 - <<'EOF'\nprint('one')\nprint('two')\nEOF";
+	const rows = (expanded: boolean) => bash.renderCall({ command }, passthroughTheme, routineRenderContext({ args: { command }, isPartial: false, executionStarted: true, expanded })).render(100).map(stripAnsi);
+	const collapsed = rows(false);
+	const title = collapsed.filter((row) => /python3/.test(row));
+	assert.equal(title.length, 1, "one row says what the command does");
+	assert.match(title[0]!, /python3 - <<'EOF' … \+3 lines/, "the first line, without the cd hop, and how much is folded");
+	assert.doesNotMatch(collapsed.join("\n"), /print\('one'\)|\/Users\/me\/work\/project/, "no heredoc body or working-directory hop while collapsed");
+	const long = `npm run build -- --filter ${"package-".repeat(30)}`;
+	const longRows = bash.renderCall({ command: long }, passthroughTheme, routineRenderContext({ args: { command: long }, isPartial: false, executionStarted: true })).render(100).map(stripAnsi);
+	assert.equal(longRows.filter((row) => /npm run build/.test(row)).length, 1);
+	assert.equal(longRows.filter((row) => /package-/.test(row)).length, 1, "a long single line is clipped to its row, not wrapped");
+	assert.match(rows(true).join("\n"), /print\('two'\)/, "expanding shows the whole command");
+});
+
+test("a collapsed minimal bash card keeps a long, multi-line or timed-out command on its top row", (t) => {
+	useCardContent(t, CARD_CONTENT.MINIMAL);
+	const bash = registeredQuietTools().get("bash");
+	const cases: Array<[Record<string, unknown>, number[]]> = [
+		[{ command: `npm run build -- --filter ${"package-".repeat(30)}` }, [40, 60, 100, 160]],
+		[{ command: `npm run build -- --filter ${"package-".repeat(30)}`, timeout: 5 }, [40, 60, 100, 160]],
+		[{ command: `git commit -m ${"x".repeat(200)}\nsecond\nthird` }, [40, 60, 100, 160]],
+		[{ command: "cd /Users/me/work/project && python3 - <<'EOF'\nprint('one')\nprint('two')\nEOF" }, [40, 60, 100, 160]],
+		[{ command: "cd /Users/me/work/project && python3 - <<'EOF'\nprint('one')\nprint('two')\nEOF", timeout: 120 }, [60, 100, 160]],
+	];
+	for (const [args, widths] of cases) for (const width of widths) for (const state of [{ executionStarted: true }, { isError: true }]) {
+		const rows = bash.renderCall(args, passthroughTheme, routineRenderContext({ args, isPartial: false, ...state })).render(width).map(stripAnsi).filter((row: string) => !row.startsWith("╰"));
+		assert.equal(rows.length, 1, `${width} ${JSON.stringify(state)}: one top row, got ${JSON.stringify(rows)}`);
+		assert.equal(visibleWidth(rows[0]!), width);
+	}
+});
+
+test("a finished card restored from the session history keeps its expand hint even though Pi never saw its execution start", (t) => {
+	for (const level of [CARD_CONTENT.MINIMAL, CARD_CONTENT.DEFAULT]) {
+		useCardContent(t, level);
+		const tools = registeredQuietTools();
+		for (const [name, args] of [["read", { path: "a.ts" }], ["grep", { pattern: "x", path: "." }], ["bash", { command: "node scripts/build.mjs --check && git diff --check", timeout: 30 }]] as const) {
+			if (name === "bash" && level === CARD_CONTENT.DEFAULT) continue;
+			const restored = tools.get(name).renderCall(args, passthroughTheme, routineRenderContext({ args, isPartial: false, executionStarted: false })).render(120).map(stripAnsi).join("\n");
+			assert.match(restored, /to expand/, `${level} ${name}: a restored finished card says it expands`);
+			const streaming = tools.get(name).renderCall(args, passthroughTheme, routineRenderContext({ args, isPartial: true, executionStarted: false })).render(120).map(stripAnsi).join("\n");
+			assert.doesNotMatch(streaming, /to expand/, `${level} ${name}: a call still streaming has nothing to expand yet`);
+		}
+	}
+});

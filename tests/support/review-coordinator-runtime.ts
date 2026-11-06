@@ -1,13 +1,14 @@
 // Actual registered facade executors over an in-memory native authority fixture.
 // No real approval, native CLI, reviewer network call or candidate freeze occurs.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { createGentleAiExtension, __testing } from "../../extensions/gentle-ai.ts";
 import { decodeReviewStatusV3 } from "../../lib/review-integration-v2.ts";
 import type { NativeReviewCli } from "../../lib/native-review-cli.ts";
 
 type Body = Record<string, any>;
 export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coordinator") {
+	cwd = realpathSync(cwd);
 	const raw = JSON.parse(readFileSync(new URL("../fixtures/devbinary/status-v5-capture-result-submission.captured.json", import.meta.url), "utf8"));
 	raw.action = "stop";
 	const reviewing = decodeReviewStatusV3(raw);

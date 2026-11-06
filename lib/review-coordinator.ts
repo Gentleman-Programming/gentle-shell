@@ -48,6 +48,7 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
  const now = deps.now ?? (() => performance.now());
  const began = now();
  const steps: Body[] = [];
+ const forecasts: Body[] = [];
  const workspace = input.workspaceRoot === undefined ? {} : { workspaceRoot: input.workspaceRoot };
  const selector = input.baseRef === undefined ? {} : { baseRef: input.baseRef, committedOnly: true };
  const selectorInput = input.baseRef === undefined ? {} : { input: JSON.stringify(selector) };
@@ -64,12 +65,13 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
   checkCancelled();
   const start = now();
   const result = await deps.invoke(tool, { ...workspace, ...parameters });
+  if (result.outcome === "reviewer-model-run-forecast") forecasts.push(structuredClone(result));
   steps.push({ tool, operation: parameters.operation, elapsed_ms: now() - start,
    request_bytes: Buffer.byteLength(JSON.stringify({ ...workspace, ...parameters })), response_bytes: Buffer.byteLength(JSON.stringify(result)) });
   if (!acknowledged(result)) checkCancelled();
   return result;
  };
- const finish = (outcome: string, result: Body) => ({ schema: "gentle-pi.review-coordinator-experiment/v1", outcome, result,
+ const finish = (outcome: string, result: Body) => ({ schema: "gentle-pi.review-coordinator-experiment/v1", outcome, result, forecasts,
   ...(lineage === undefined ? {} : { lineage_id: lineage }), metrics: { elapsed_ms: now() - began, facade_calls: steps.length, steps } });
  const status = () => invoke("gentle_review", { operation: "status", lineageId: lineage, ...selectorInput });
  let details: Body;
@@ -123,7 +125,9 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
   }
   if (transition.kind !== "collect") return finish("blocked", details);
   const entries = Array.isArray(details.collectBindings) ? details.collectBindings.map(record) : [];
-  if (entries.length === 0 || entries.some(entry => entry.requiresInput !== false)) return finish("input-required", details);
+  // Native explicitly supplies the authored correction request. Do not derive
+  // host routing metadata from submission domains or inspect opaque bindings.
+  if (transition.correction_request !== undefined || entries.length === 0) return finish("input-required", details);
   if (lineage === undefined || target === undefined) return finish("blocked", details);
   const bindings = entries.map(entry => entry.collectBinding);
   if (!bindings.every(nonempty)) return finish("blocked", details);

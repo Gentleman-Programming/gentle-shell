@@ -8,7 +8,7 @@ const target = "sha256:" + "a".repeat(64);
 const lineage = "review-fixture";
 const scoped = { workspaceRoot: process.cwd(), baseRef: "b".repeat(40), committedOnly: true as const };
 const ready = { result: { target_identity: target, next_transition: { kind: "execute", execute: { operation: "review.start" } } } };
-const collect = { result: { target_identity: target, authority: { lineage_id: lineage }, next_transition: { kind: "collect" } }, collectBindings: [{ collectBinding: "opaque-not-json", requiresInput: false }] };
+const collect = { result: { target_identity: target, authority: { lineage_id: lineage }, next_transition: { kind: "collect" } }, collectBindings: [{ collectBinding: "opaque-not-json" }] };
 const approved = { result: { target_identity: target, authority: { lineage_id: lineage }, next_transition: { kind: "execute", execute: { operation: "review.acknowledge-approved" } } } };
 const closed = { outcome: "native-approved-acknowledgement-completed", status: "closed", authority: "burned", target_identity: target, lineage_id: lineage };
 const captured = { outcome: "native-last-event-closure" };
@@ -28,6 +28,7 @@ test("fresh ordinary review retains selectors, displays forecasts and ends at na
  const shown: Body[] = [];
  const result = await runReviewCoordinator({ ...scoped, lenses: ["risk"], lensesReason: "permission check", requestContextPath: "spec.md" }, { ...host, presentForecast: async value => { shown.push(value); return true; } });
  assert.equal(result.outcome, "closed"); assert.deepEqual(result.result, closed); assert.deepEqual(shown, [forecast]);
+ assert.deepEqual(result.forecasts, [forecast], "the primary model must receive the complete forecast for lossless relay");
  assert.equal(result.current_candidate, undefined, "ACK describes only its frozen target");
  assert.equal(host.calls.at(-1)!.parameters.operation, "acknowledge-approved");
  assert.equal(JSON.parse(String(host.calls[2].parameters.input)).requestContextPath, "spec.md");
@@ -55,7 +56,7 @@ test("routing ignores every native state, reason code and capture closure shape"
 });
 
 test("stop is surfaced unchanged before edit; authored collect returns to the model", async () => {
- for (const response of [stopped, { ...collect, collectBindings: [{ collectBinding: "plan", requiresInput: true }] }, { ...collect, collectBindings: [] }]) {
+ for (const response of [stopped, { ...collect, result: { ...collect.result, next_transition: { kind: "collect", correction_request: { schema: "gentle-ai.review-correction-plan-request/v1", request_hash: "opaque-request" } } }, collectBindings: [{ collectBinding: "plan" }] }, { ...collect, collectBindings: [] }]) {
   const host = backend([response]); const result = await runReviewCoordinator({ lineageId: lineage }, host);
   assert.equal(result.outcome, response === stopped ? "stopped" : "input-required");
   assert.equal(result.result, response); assert.equal(host.calls.length, 1);
@@ -68,10 +69,8 @@ test("post-edit opaque captures need no targeted-validator reason or operation",
  assert.equal(host.calls.filter(call => call.tool === "gentle_review_capture").length, 1);
 });
 
-test("unknown input metadata fails closed and exact groups retain provider order", async () => {
- const missing = backend([{ ...collect, collectBindings: [{ collectBinding: "opaque" }] }]);
- assert.equal((await runReviewCoordinator({ lineageId: lineage }, missing)).outcome, "input-required");
- const host = backend([{ ...collect, collectBindings: [{ collectBinding: "second", requiresInput: false }, { collectBinding: "first", requiresInput: false }] }, captured, stopped]);
+test("opaque captures need no Pi metadata and groups retain provider order", async () => {
+ const host = backend([{ ...collect, collectBindings: [{ collectBinding: "second" }, { collectBinding: "first" }] }, captured, stopped]);
  assert.equal((await runReviewCoordinator({ lineageId: lineage }, host)).outcome, "stopped");
  assert.equal(host.calls[1].tool, "gentle_review_capture_group"); assert.deepEqual(host.calls[1].parameters.collectBindings, ["second", "first"]);
 });
@@ -141,4 +140,14 @@ test("coordinator is absent by default and in child sessions; enabled only by ex
 		assert.equal(tools.has("gentle_review_run"), expected);
 		for (const name of ["gentle_review", "gentle_review_capture", "gentle_review_capture_group"]) assert.ok(tools.has(name));
 	}
+});
+
+test("forecasts remain lossless in final results even if capture later refuses", async () => {
+ const first = { outcome: "reviewer-model-run-forecast", cost_forecast: { model_runs: 2, roles: ["review-risk", "review-refuter"] }, message: "Relay all forecast fields" };
+ const second = { outcome: "reviewer-model-run-forecast", cost_forecast: { model_runs: 1, roles: ["review-validator"] } };
+ const next = { ...collect, collectBindings: [{ collectBinding: "another-opaque" }] };
+ const host = backend([collect, first, captured, next, second, { outcome: "capture-binding-rejected" }]);
+ const expected = structuredClone([first, second]);
+ const result = await runReviewCoordinator({ lineageId: lineage }, { ...host, presentForecast: async forecast => { forecast.message = "UI rendering must not alter the model relay"; return true; } });
+ assert.equal(result.outcome, "blocked"); assert.deepEqual(result.forecasts, expected);
 });

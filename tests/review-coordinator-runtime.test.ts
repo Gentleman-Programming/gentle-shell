@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync, symlinkSync } from "node:fs";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,8 +11,8 @@ import { decodeReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 
 test("registered coordinator executes existing facade and preserves the baseline native trace", async (t) => {
-	const cwd = mkdtempSync(join(tmpdir(), "rdd-coordinator-runtime-"));
-	t.after(() => { assert.ok(cwd.startsWith(join(tmpdir(), "rdd-coordinator-runtime-"))); rmSync(cwd, { recursive: true, force: true }); });
+	const cwd = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), "rdd-coordinator-runtime-")));
+	t.after(() => { assert.ok(cwd.startsWith(join(realpathSync(tmpdir()), "rdd-coordinator-runtime-"))); rmSync(cwd, { recursive: true, force: true }); });
 	execFileSync("git", ["init", "-q"], { cwd });
 	writeFileSync(join(cwd, "candidate.ts"), "export const value = 1;\n");
 	const baseline = createCoordinatorRuntime(cwd, "baseline");
@@ -37,6 +37,7 @@ test("registered coordinator executes existing facade and preserves the baseline
 		assert.deepEqual(coordinated.nativeCalls, baselineTrace!);
 		assert.equal(coordinated.forecasts.length, 1);
 		assert.equal(coordinated.forecasts[0]!.outcome, "reviewer-model-run-forecast");
+		assert.deepEqual(result.forecasts, coordinated.forecasts, "the final tool result relays every forecast to the primary");
 		assert.equal(result.metrics.facade_calls, 5);
 		assert.equal(result.current_candidate, undefined);
 		assert.equal(coordinated.candidateReads(), 0, "ACK requires no post-burn query");
@@ -44,8 +45,8 @@ test("registered coordinator executes existing facade and preserves the baseline
 });
 
 test("experimental coordinator respects RDD off and a switch disabled during its forecast", async (t) => {
-	const cwd = mkdtempSync(join(tmpdir(), "rdd-coordinator-mode-"));
-	t.after(() => { assert.ok(cwd.startsWith(join(tmpdir(), "rdd-coordinator-mode-"))); rmSync(cwd, { recursive: true, force: true }); });
+	const cwd = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), "rdd-coordinator-mode-")));
+	t.after(() => { assert.ok(cwd.startsWith(join(realpathSync(tmpdir()), "rdd-coordinator-mode-"))); rmSync(cwd, { recursive: true, force: true }); });
 	execFileSync("git", ["init", "-q"], { cwd });
 	const raw = JSON.parse(readFileSync(new URL("./fixtures/devbinary/status-v5-capture-result-submission.captured.json", import.meta.url), "utf8"));
 	raw.action = "stop";
@@ -71,8 +72,8 @@ test("experimental coordinator respects RDD off and a switch disabled during its
 });
 
 test("capture forecast retains fresh mode and session checks before model execution", async (t) => {
-	const cwd = mkdtempSync(join(tmpdir(), "rdd-projected-guards-"));
-	t.after(() => { assert.ok(cwd.startsWith(join(tmpdir(), "rdd-projected-guards-"))); rmSync(cwd, { recursive: true, force: true }); });
+	const cwd = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), "rdd-projected-guards-")));
+	t.after(() => { assert.ok(cwd.startsWith(join(realpathSync(tmpdir()), "rdd-projected-guards-"))); rmSync(cwd, { recursive: true, force: true }); });
 	execFileSync("git", ["init", "-q"], { cwd });
 	const raw = JSON.parse(readFileSync(new URL("./fixtures/devbinary/status-v5-capture-result-submission.captured.json", import.meta.url), "utf8"));
 	raw.action = "stop";
@@ -102,4 +103,15 @@ test("capture forecast retains fresh mode and session checks before model execut
 			assert.equal(runs, 0);
 		} finally { __testing.setReviewHostRelayRunnerForTesting(); }
 	}
+});
+
+test("coordinator fixture closes through an unresolved temporary-directory alias", async (t) => {
+ const root = realpathSync(mkdtempSync(join(tmpdir(), "rdd-canonical-fixture-")));
+ t.after(() => { assert.ok(root.startsWith(join(realpathSync(tmpdir()), "rdd-canonical-fixture-"))); rmSync(root, { recursive: true, force: true }); });
+ const cwd = join(root, "repo"), alias = join(root, "alias"); mkdirSync(cwd);
+ execFileSync("git", ["init", "-q"], { cwd }); writeFileSync(join(cwd, "candidate.ts"), "export const value = 1;\n");
+ symlinkSync(cwd, alias, process.platform === "win32" ? "junction" : "dir");
+ const runtime = createCoordinatorRuntime(alias, "coordinator");
+ try { const result = await runtime.invoke("gentle_review_run", { lineageId: runtime.lineage }); assert.equal(result.outcome, "closed", JSON.stringify(result)); }
+ finally { runtime.close(); }
 });

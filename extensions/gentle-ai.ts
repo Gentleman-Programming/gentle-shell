@@ -9452,7 +9452,7 @@ function reviewIntendedUntrackedInput(status: ReviewStatusV3): ReviewCollectInpu
 const INSPECT_UNTRACKED_SELECTION_NEXT_STEP =
 	'The intended-untracked selection is required before START. The expected_untracked_inventory digest covers untracked path names only (git ls-files --others --exclude-standard); nothing is read or hashed at inventory time, and file content is hashed only for selected paths at candidate freeze. Either call gentle_review with operation "select-intended-untracked" passing this selectionBinding and intendedUntracked ([] excludes every eligible path, a subset includes only those paths), or call inspect again with untrackedScope ("exclude", or "select" with intendedUntracked) to resolve the round trip in one call. To keep a path out of the inventory permanently, ignore it through .gitignore or .git/info/exclude.';
 
-interface PublicReviewCaptureBinding { collectBinding: string; requiresInput: boolean; }
+interface PublicReviewCaptureBinding { collectBinding: string; }
 
 function canOfferNativeCaptureBindings(status: ReviewStatusV3): boolean {
 	return status.applicability === "current_target" && isCanonicalProcessString(status.authority?.lineageId)
@@ -9461,10 +9461,7 @@ function canOfferNativeCaptureBindings(status: ReviewStatusV3): boolean {
 
 function publicReviewCaptureBindings(status: ReviewStatusV3): readonly PublicReviewCaptureBinding[] {
 	if (!canOfferNativeCaptureBindings(status) || status.nextTransition?.kind !== "collect") return [];
-	return (status.nextTransition.collect?.inputs ?? []).filter((input) => input.captureOperation !== "external.select_intended_untracked").map((input) => ({
-  collectBinding: canonicalReviewCaptureBinding(input),
-  requiresInput: input.submission?.values.some(value => value.domain !== "artifact_path_or_stdin") ?? false,
- }));
+	return (status.nextTransition.collect?.inputs ?? []).filter((input) => input.captureOperation !== "external.select_intended_untracked").map((input) => ({ collectBinding: canonicalReviewCaptureBinding(input) }));
 }
 
 function captureBindingRejected(reason: string, group = false): Record<string, unknown> {
@@ -11370,7 +11367,7 @@ function createGentleAiExtensionForTesting(
 		},
 	});
 
-	const GENTLE_TIMED_TOOLS = new Set(["gentle_review_scope", "gentle_review_capture_group", "gentle_review_capture", "gentle_review"]);
+	const GENTLE_TIMED_TOOLS = new Set(["gentle_review_scope", "gentle_review_capture_group", "gentle_review_capture", "gentle_review", "gentle_review_run"]);
 	let elapsedTiming: GentleAiElapsedTimingLedger | undefined;
 	const recordReviewTiming = (event: { toolCallId: string; toolName: string }, endedAt?: number): void => {
 		const ledger = elapsedTiming;
@@ -11685,7 +11682,7 @@ function createGentleAiExtensionForTesting(
 			label: "Experimental Review Coordinator",
 			description: "Experimental ordinary review coordinator. Uses the existing review facade and host consent. Resume by lineageId to follow native next_transition offers. Stops on correction edits, unresolved consent, failure or maintenance; never retries a failed capture or authorizes delivery.",
 			promptSnippet: "Experimental: use gentle_review_run to assess and coordinate ordinary review; retain its returned lineage when resuming.",
-			promptGuidelines: ["Supply the exact candidate selector and pertinent lenses with a reason. Resume an existing transaction with lineageId and the same workspaceRoot/baseRef. After an authorized correction edit, resume to follow the next native transition. Review consent stays in the host; never supply a consent answer. Correction edits and maintenance remain explicit handoffs."],
+			promptGuidelines: ["Supply the exact candidate selector and pertinent lenses with a reason. Resume an existing transaction with lineageId and the same workspaceRoot/baseRef. After an authorized correction edit, resume to follow the next native transition. Review consent stays in the host; never supply a consent answer. Correction edits and maintenance remain explicit handoffs.", "Relay every returned forecasts entry losslessly in the user's language, preserving all forecast fields and counts. Forecasts are informational; they do not grant review consent or delivery permission."],
 			parameters: {
 				type: "object", additionalProperties: false, properties: {
 					workspaceRoot: { type: "string" }, baseRef: { type: "string" }, committedOnly: { type: "boolean", enum: [true] },
@@ -11713,6 +11710,10 @@ function createGentleAiExtensionForTesting(
 							const gated = await resolveReviewModeGate(nativeReviewCli, operation, workspaceRoot, signal);
 							if (gated !== undefined) return gated;
 						}
+						// Direct facade dispatch retains executor safety and sidebar hooks,
+						// but emits no nested tool_call/tool_result/execution events. SDK
+						// accounting sees only the outer call; internal facade calls have
+						// no additional budget/timing events. Returned metrics describe them.
 						const result = await tools[name].execute(toolCallId, args as never, signal, onUpdate, ctx);
 						return result.details as Record<string, unknown>;
 					},

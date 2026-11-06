@@ -492,27 +492,27 @@ test("refuter and validation each execute one self-contained provider vector", a
 	}
 });
 
-test("public collect metadata identifies authored input without changing its opaque binding", async () => {
+test("public STATUS retains only the original opaque binding projection", async () => {
 	const lineageId = "validation-projection";
 	const input = roleInput(lineageId, "review.capture-validation");
 	const native = { targetStatus: async () => status(lineageId, [input]),
 		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "", effective: "on", source: "global" } }),
 	} as unknown as NativeReviewCli;
 	const result = await __testing.executeReviewControllerOperation({ operation: "status", lineageId }, process.cwd(), native);
-	const entries = result.collectBindings as Array<{ collectBinding: string; requiresInput: boolean }>;
+	const entries = result.collectBindings as Array<{ collectBinding: string }>;
 	assert.equal(entries.length, 1);
-	assert.equal(entries[0].requiresInput, false);
+	assert.deepEqual(Object.keys(entries[0]), ["collectBinding"]);
 	assert.deepEqual(JSON.parse(entries[0].collectBinding), input);
 	assert.equal((entries[0] as Record<string, unknown>).forecast, undefined, "legacy execute vectors keep their existing route");
 });
 
-test("public collect metadata requires authored correction input", async () => {
+test("public correction STATUS adds no inferred input metadata", async () => {
  const lineageId = "authored-plan-metadata";
  const input = correctionPlanInput(lineageId);
  const native = { targetStatus: async () => status(lineageId, [input]) } as unknown as NativeReviewCli;
  const result = await __testing.executeReviewControllerOperation({ operation: "status", lineageId }, process.cwd(), native);
- const entries = result.collectBindings as Array<{ collectBinding: string; requiresInput: boolean }>;
- assert.equal(entries[0].requiresInput, true);
+ const entries = result.collectBindings as Array<{ collectBinding: string }>;
+ assert.deepEqual(Object.keys(entries[0]), ["collectBinding"]);
  assert.deepEqual(JSON.parse(entries[0].collectBinding), input);
 });
 

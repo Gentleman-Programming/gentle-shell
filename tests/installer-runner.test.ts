@@ -1140,6 +1140,10 @@ test("npm prefix is set only when inside the pnpm store and not explicit; never 
 		assert.ok(result.completed.includes("configure-npm-prefix"));
 		// An explicit prefix never needs the store; an effective one is compared with `pnpm store path`.
 		assert.equal(h.pnpmCalls().includes("store path"), Object.keys(env).length === 0);
+		if (Object.keys(env).length === 0) {
+			const storeCall = h.calls.find((call) => call.args.slice(1).join(" ") === "store path");
+			assert.equal(storeCall?.cwd, PNPM_HOME, "pnpm store path must run with cwd set to PNPM_HOME (#2886)");
+		}
 	}
 	const failures = [
 		{ [set]: { code: 1 } },

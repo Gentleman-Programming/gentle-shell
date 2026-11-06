@@ -113,12 +113,15 @@ import {
 	setActiveProfile,
 	updateProfile,
 	writeProfilesFileSync,
+	DEFAULT_ORCHESTRATOR_MODE,
 	type AgentProfilesFile,
+	type OrchestratorMode,
 	type ProfileListItem,
 	type ProfileRoutingRow,
 	type ProfilesFileReadResult,
 	type ProfilesParseDrops,
 } from "../lib/agent-profiles.ts";
+import { resolveOrchestratorMode } from "../lib/orchestrator-mode-policy.ts";
 import {
 	clearProfilePinSync,
 	evaluateProfilePin,
@@ -1292,11 +1295,47 @@ async function resolveRddStatusLine(
 	return renderRddStatusLine(await resolveRddModeStatus(nativeReviewCli, cwd, signal, now, ctx));
 }
 
-// Rendered prompts are memoized per background policy/capability/RDD-status
+// full-delegation-mode S1/S3/S4: the always-on core carries exactly ONE workflow
+// block, selected per active profile. The organic rules stay where they are in
+// `assets/orchestrator.md` and a profile that did not opt in renders that asset
+// byte for byte, so the mode cannot leak into a session nobody switched. In full
+// delegation mode the single span below is REPLACED by the variant asset, never
+// appended beside the organic text: two contradictory rule sets in one prompt are
+// worse than either one alone, and the orchestrator would have to guess.
+const DELEGATION_MODE_REGION_START = "You are a COORDINATOR, not the default executor for substantial work.";
+// The region ends at the background-policy placeholder, so the status line and
+// the lazy pointers that follow it stay in both modes.
+const DELEGATION_MODE_REGION_END = "{{GENTLE_PI_BACKGROUND_POLICY}}";
+const FULL_DELEGATION_VARIANT_FILE = "orchestrator-full-delegation.md";
+
+/**
+ * Swap the organic workflow span for the supervisor-only variant.
+ *
+ * Fails safe in every degraded case — missing variant asset, empty variant, or an
+ * anchor the asset no longer contains — by returning the organic text unchanged.
+ * A half-spliced prompt mixes "implement inline" with "never implement", which is
+ * exactly the ambiguity this mode exists to remove.
+ */
+function applyDelegationMode(assetsDir: string, text: string, mode: OrchestratorMode): string {
+	if (mode === DEFAULT_ORCHESTRATOR_MODE) return text;
+	const start = text.indexOf(DELEGATION_MODE_REGION_START);
+	const end = text.indexOf(DELEGATION_MODE_REGION_END);
+	if (start < 0 || end <= start) return text;
+	let variant: string;
+	try {
+		variant = readFileSync(join(assetsDir, FULL_DELEGATION_VARIANT_FILE), "utf8").trim();
+	} catch {
+		return text;
+	}
+	if (variant.length === 0) return text;
+	return `${text.slice(0, start)}${variant}\n\n${text.slice(end)}`;
+}
+
+// Rendered prompts are memoized per background policy/capability/RDD-status/mode
 // key for the process lifetime; the assets bytes themselves are read once
 // per key. `rddStatusLine` defaults to the "unknown" fallback line (the
 // longest of the three renderable forms), not "", so the default no-argument
-// render IS the worst case the canonical 8 KiB budget in
+// render IS the worst case the canonical budget in
 // tests/orchestrator-budget.test.ts measures; assets/orchestrator.md is
 // sized with that worst case already included. Production still resolves
 // and passes the real line (on/off/unknown) via resolveRddStatusLine.
@@ -1306,16 +1345,19 @@ function getOrchestratorPrompt(
 	activeTools?: readonly string[],
 	rddStatusLine: string = renderRddStatusLine(undefined),
 	hostMode?: string,
+	delegationMode: OrchestratorMode = DEFAULT_ORCHESTRATOR_MODE,
 ): string {
 	const background: BackgroundSubagentsRendering = {
 		policy: loadBackgroundSubagentsPolicy(cwd),
 		capability: resolveBackgroundSubagentsCapability(cwd, activeTools),
 		singleShot: isSingleShotHostMode(hostMode),
 	};
-	const cacheKey = `${background.policy}:${background.capability}:${background.singleShot}:${rddStatusLine}`;
+	// The workflow mode is part of the key: without it a profile switch would keep
+	// serving the previous profile's rules for the rest of the process.
+	const cacheKey = `${background.policy}:${background.capability}:${background.singleShot}:${rddStatusLine}:${delegationMode}`;
 	let prompt = orchestratorPromptCache.get(cacheKey);
 	if (prompt === undefined) {
-		prompt = renderOrchestratorPrompt(ASSETS_DIR, background, rddStatusLine);
+		prompt = renderOrchestratorPrompt(ASSETS_DIR, background, rddStatusLine, delegationMode);
 		orchestratorPromptCache.set(cacheKey, prompt);
 	}
 	return prompt;
@@ -1325,9 +1367,10 @@ function renderOrchestratorPrompt(
 	assetsDir: string,
 	background: BackgroundSubagentsRendering = DEFAULT_BACKGROUND_SUBAGENTS_RENDERING,
 	rddStatusLine: string = renderRddStatusLine(undefined),
+	delegationMode: OrchestratorMode = DEFAULT_ORCHESTRATOR_MODE,
 ): string {
 	const backgroundPolicyBlock = `${renderBackgroundSubagentsStatusLine(background)}\n${rddStatusLine}`;
-	return readFileSync(join(assetsDir, "orchestrator.md"), "utf8")
+	return applyDelegationMode(assetsDir, readFileSync(join(assetsDir, "orchestrator.md"), "utf8"), delegationMode)
 		.replaceAll("{{GENTLE_PI_ASSETS_ROOT}}", assetsDir)
 		.replaceAll(
 			"{{GENTLE_PI_BACKGROUND_POLICY}}",
@@ -1477,12 +1520,33 @@ const NEUTRAL_PERSONA_PROMPT = `Persona:
 - Push back when the user asks for code without enough context or understanding.
 - Correct errors directly, explain why, and show the better path.`;
 
+/**
+ * The workflow mode this primary session runs under (full-delegation-mode S2).
+ * Read through the live session profile on every prompt build, never from the
+ * startup freeze, so a profile switch is visible on the very next turn. Any
+ * failure here degrades to the organic rules instead of breaking the prompt.
+ */
+function resolveSessionDelegationMode(
+	ctx: Pick<ExtensionContext, "cwd"> & { sessionManager?: { getSessionId?: () => string | undefined } },
+): OrchestratorMode {
+	try {
+		return resolveOrchestratorMode({
+			cwd: ctx.cwd,
+			configHome: gentleAiConfigHome(),
+			sessionId: ctx.sessionManager?.getSessionId?.(),
+		}).mode;
+	} catch {
+		return DEFAULT_ORCHESTRATOR_MODE;
+	}
+}
+
 function buildGentlePrompt(
 	persona: PersonaMode,
 	cwd: string = process.cwd(),
 	activeTools?: readonly string[],
 	rddStatusLine: string = renderRddStatusLine(undefined),
 	hostMode?: string,
+	delegationMode: OrchestratorMode = DEFAULT_ORCHESTRATOR_MODE,
 ): string {
 	const personaPrompt =
 		persona === "neutral" ? NEUTRAL_PERSONA_PROMPT : GENTLEMAN_PERSONA_PROMPT;
@@ -1539,7 +1603,7 @@ Harness principles:
 - Protect the human reviewer: avoid oversized changes, surface review workload risk, and ask before turning one task into a large multi-area change.
 - Never claim persistent memory is available because of this package. Memory is provided by separate packages or MCP tools when installed and callable.
 
-${getOrchestratorPrompt(cwd, activeTools, rddStatusLine, hostMode)}${headlessDeliveryNote(hostMode)}`;
+${getOrchestratorPrompt(cwd, activeTools, rddStatusLine, hostMode, delegationMode)}${headlessDeliveryNote(hostMode)}`;
 }
 
 // Bench gate-p53-r1-BS40 x6 run 3: in a headless RPC session the ask-on-risk
@@ -12373,6 +12437,11 @@ function createGentleAiExtensionForTesting(
 					readActiveToolNames(pi),
 					rddStatusLine,
 					ctx.mode,
+					// full-delegation-mode S2: resolved per prompt build, so pressing Enter
+					// on another profile changes these rules on the next turn, and pressing
+					// Enter back restores them. A child or named-agent session keeps the
+					// organic rules: its own instructions are the bounded task it received.
+					isPrimarySession ? resolveSessionDelegationMode(ctx) : DEFAULT_ORCHESTRATOR_MODE,
 				)}`;
 		// gentle-pi#560 / gentle-ai#4056, #4057: inject the mirrored provider
 		// contract bundle's review execution contract for the primary session

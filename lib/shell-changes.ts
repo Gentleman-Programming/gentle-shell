@@ -154,6 +154,8 @@ export interface GitResult {
 	code: number;
 	/** The runner stopped reading at its output bound; stdout is partial. */
 	truncated?: boolean;
+	/** The Git deadline elapsed; stdout is diagnostic output, not a complete result. */
+	timedOut?: boolean;
 }
 
 export type GitRunner = (args: string[]) => Promise<GitResult>;

@@ -1261,13 +1261,14 @@ export function shellGitRunner(cwd: string, env: NodeJS.ProcessEnv = process.env
 		// A scan that passed its deadline is a failed scan, never a partial
 		// success, even if the direct child exited 0 before its pipes closed.
 		let timedOut = false;
-		const settle = (error: { code?: unknown } | null, stdout: string): void => {
+		const settle = (error: { code?: unknown; killed?: boolean } | null, stdout: string): void => {
 			settled = true;
 			if (deadline !== undefined) clearTimeout(deadline);
 			if (grace !== undefined) clearTimeout(grace);
 			if (error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") { resolve({ stdout, code: 1, truncated: true }); return; }
-			if (timedOut) { resolve({ stdout, code: 1 }); return; }
-			resolve({ stdout, code: error ? typeof error.code === "number" ? error.code : 1 : 0 });
+			const code = timedOut ? 1 : error ? typeof error.code === "number" ? error.code : 1 : 0;
+			// Without a tree killer execFile owns the timeout and reports its kill on the error.
+			resolve({ stdout, code, ...(timedOut || (treeKiller === undefined && error?.killed) ? { timedOut: true } : {}) });
 		};
 		const child = run("git", ["-C", cwd, ...args], {
 			env: childEnv,
@@ -1306,7 +1307,7 @@ export async function loadFileDiff(git: GitRunner, file: ChangedFile): Promise<s
 	const args = file.status === CHANGE_STATUS.UNTRACKED ? ["diff", "--no-index", "--", "/dev/null", file.path] : ["diff", "HEAD", "--", file.path];
 	const result = await git(args);
 	if (result.truncated || result.stdout.length > DIFF_MAX_BYTES || result.stdout.split("\n", DIFF_MAX_LINES + 2).length > DIFF_MAX_LINES + 1) return DIFF_TOO_LARGE;
-	return result.code === 0 || result.code === 1 ? result.stdout : "";
+	return !result.timedOut && (result.code === 0 || result.code === 1) ? result.stdout : "";
 }
 
 // Untracked files have no numstat; count their lines without reading past the diff bound.

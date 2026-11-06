@@ -93,7 +93,7 @@ Changes shows the **current Git state** — working tree against HEAD, untracked
 
 ### Bounds and session lifetime
 
-Changes lists every changed file outside the untracked dependency-backup exclusion without a count limit. One selected diff is bounded at 1 MiB or 20,000 lines; beyond that the panel shows "Diff too large — press o to open in editor."
+Changes lists every changed file outside the untracked dependency-backup exclusion without a count limit. One selected diff is bounded at 1 MiB or 20,000 lines; beyond that the panel shows "Diff too large — press o to open in editor." If Git times out, partial diff output is discarded and the pane shows "no diff for this file"; press `o` to inspect the file in the editor.
 
 Captured evidence (`gentle-pi.session-change/v1`) is still stored for session statistics and root discovery, capped at 256 operations and 4 MiB per session, without affecting the Changes list. Reload and resume read the same state from Git; new sessions and forks do not inherit another session's worktrees.
 

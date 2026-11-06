@@ -4900,6 +4900,76 @@ test("loadFileDiff asks git for a HEAD diff, or a no-index diff for untracked fi
 	]);
 });
 
+test("loadFileDiff discards partial output after the shell Git deadline", async (t) => {
+	for (const { status, exitCode, error, expectedArgs } of [
+		{ status: CHANGE_STATUS.MODIFIED, exitCode: 0, error: null, expectedArgs: ["diff", "HEAD", "--", "file.txt"] },
+		{ status: CHANGE_STATUS.UNTRACKED, exitCode: null, error: Object.assign(new Error("different"), { code: 1 }), expectedArgs: ["diff", "--no-index", "--", "/dev/null", "file.txt"] },
+	]) {
+		await t.test(status, async (t) => {
+			t.mock.timers.enable({ apis: ["setTimeout"] });
+			const events: string[] = [];
+			const partial = "@@ -0,0 +1 @@\n+partial";
+			let calledArgs: readonly string[] = [];
+			const fake = ((command: string, args: readonly string[], options: Record<string, unknown>, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+				void command; void options;
+				calledArgs = args;
+				return {
+					pid: 8, exitCode, signalCode: null,
+					kill() { events.push("kill"); },
+					stdout: { destroy() { events.push("stdout"); callback(error, partial, ""); } },
+					stderr: { destroy() { events.push("stderr"); } },
+				} as unknown as import("node:child_process").ChildProcess;
+			}) as typeof import("node:child_process").execFile;
+			const run = shellGitRunner("/repo", {}, fake, Infinity, () => events.push("tree"));
+			const diff = loadFileDiff(async (args) => {
+				const result = await run(args);
+				assert.equal(result.code, 1);
+				assert.equal(result.stdout, partial, "diagnostic output remains available to other consumers");
+				return result;
+			}, { path: "file.txt", added: 1, deleted: 0, status });
+			t.mock.timers.tick(5_000);
+			t.mock.timers.tick(1_000);
+			assert.deepEqual(calledArgs, ["-C", "/repo", ...expectedArgs]);
+			assert.deepEqual(events, exitCode === null ? ["tree", "kill", "stdout", "stderr"] : ["stdout", "stderr"]);
+			assert.equal(await diff, "", "a timed-out partial diff must not be displayed");
+		});
+	}
+});
+
+test("loadFileDiff discards partial output after execFile's deadline", { skip: process.platform === "win32" }, async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const partial = "@@ -0,0 +1 @@\n+partial";
+	const fake = ((command: string, args: readonly string[], options: { timeout?: number }, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+		void command; void args;
+		assert.equal(options.timeout, 5_000);
+		setTimeout(() => callback(Object.assign(new Error("timed out"), { code: null, killed: true, signal: "SIGTERM" }), partial, ""), options.timeout);
+	}) as typeof import("node:child_process").execFile;
+	const run = shellGitRunner("/repo", {}, fake);
+	const diff = loadFileDiff(async (args) => {
+		const result = await run(args);
+		assert.equal(result.code, 1);
+		assert.equal(result.stdout, partial);
+		return result;
+	}, { path: "file.txt", added: 1, deleted: 0, status: CHANGE_STATUS.MODIFIED });
+	t.mock.timers.tick(5_000);
+	assert.equal(await diff, "", "a timed-out partial diff must not be displayed");
+});
+
+test("loadFileDiff preserves completed shell Git results and bounded output", async () => {
+	for (const { status, error, stdout, expected } of [
+		{ status: CHANGE_STATUS.MODIFIED, error: null, stdout: "+tracked\n", expected: "+tracked\n" },
+		{ status: CHANGE_STATUS.UNTRACKED, error: Object.assign(new Error("different"), { code: 1 }), stdout: "+new\n", expected: "+new\n" },
+		{ status: CHANGE_STATUS.MODIFIED, error: Object.assign(new Error("max buffer"), { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" }), stdout: "+partial", expected: DIFF_TOO_LARGE },
+	]) {
+		const fake = ((command: string, args: readonly string[], options: Record<string, unknown>, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+			void command; void args; void options;
+			callback(error, stdout, "");
+		}) as typeof import("node:child_process").execFile;
+		const run = shellGitRunner("/repo", {}, fake, DIFF_MAX_BYTES, () => assert.fail("completed Git must not be killed"));
+		assert.equal(await loadFileDiff(run, { path: "file.txt", added: 1, deleted: 0, status }), expected);
+	}
+});
+
 test("loadFileDiff replaces one oversized diff with a short open-in-editor line", async () => {
 	const answer = (stdout: string, truncated?: boolean) => async () => ({ stdout, code: 0, ...(truncated ? { truncated } : {}) });
 	const file = { path: "big.ts", added: 1, deleted: 0, status: CHANGE_STATUS.MODIFIED };

@@ -492,6 +492,30 @@ test("refuter and validation each execute one self-contained provider vector", a
 	}
 });
 
+test("public STATUS retains only the original opaque binding projection", async () => {
+	const lineageId = "validation-projection";
+	const input = roleInput(lineageId, "review.capture-validation");
+	const native = { targetStatus: async () => status(lineageId, [input]),
+		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "", effective: "on", source: "global" } }),
+	} as unknown as NativeReviewCli;
+	const result = await __testing.executeReviewControllerOperation({ operation: "status", lineageId }, process.cwd(), native);
+	const entries = result.collectBindings as Array<{ collectBinding: string }>;
+	assert.equal(entries.length, 1);
+	assert.deepEqual(Object.keys(entries[0]), ["collectBinding"]);
+	assert.deepEqual(JSON.parse(entries[0].collectBinding), input);
+	assert.equal((entries[0] as Record<string, unknown>).forecast, undefined, "legacy execute vectors keep their existing route");
+});
+
+test("public correction STATUS adds no inferred input metadata", async () => {
+ const lineageId = "authored-plan-metadata";
+ const input = correctionPlanInput(lineageId);
+ const native = { targetStatus: async () => status(lineageId, [input]) } as unknown as NativeReviewCli;
+ const result = await __testing.executeReviewControllerOperation({ operation: "status", lineageId }, process.cwd(), native);
+ const entries = result.collectBindings as Array<{ collectBinding: string }>;
+ assert.deepEqual(Object.keys(entries[0]), ["collectBinding"]);
+ assert.deepEqual(JSON.parse(entries[0].collectBinding), input);
+});
+
 test("terminal capture closes directly, nonterminal capture does not auto-follow, and unknown mutation reconciles once", async (t) => {
 	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
 	const lineageId = "closure-behavior";

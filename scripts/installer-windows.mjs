@@ -107,6 +107,36 @@ function exists(path) {
 	try { lstatSync(path); return true; }
 	catch (error) { if (error.code === "ENOENT") return false; throw error; }
 }
+// Failure-only diagnostics, in UTF-16 code units. Suppress entire sensitive
+// streams (including continuation lines), and individual path/SID/opaque lines.
+// This is conservative diagnostic filtering, not a general-purpose secret parser.
+function processDiagnosticText(value, limit) {
+	if (typeof value !== "string") return "";
+	if (/(?:^|[^a-z0-9])(?:authorization|bearer|token|password|passphrase|secret|credential|api[_-]?key|access[_-]?key|cookie)(?:$|[^a-z0-9])/i.test(value)) return "[redacted]";
+	return value.split(/\r\n?|\n/).map(line =>
+		/[A-Za-z]:[\\/]|\\|(?:^|[\s"'=])\/\S+|\bS-\d-(?:\d+-)+\d+\b|unsafe:[^|]*\||[A-Za-z0-9+/=_-]{64,}|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/i.test(line) ? "[redacted]" : line
+	).join("\n").slice(0, limit);
+}
+function prerequisiteProcessCause(result) {
+	const failure = result.error;
+	const code = processDiagnosticText(failure?.code, 64);
+	const details = {
+		status: Number.isSafeInteger(result.status) ? result.status : null,
+		signal: processDiagnosticText(result.signal, 32) || null,
+		error: failure ? {
+			code, name: processDiagnosticText(failure.name, 64),
+			// Spawn text may contain a bare private executable name, not just paths.
+			message: /^E[A-Z0-9_]+$/.test(code) ? `Windows prerequisite process error: ${code}` : "Windows prerequisite process error",
+			errno: Number.isSafeInteger(failure.errno) ? failure.errno : processDiagnosticText(failure.errno, 64),
+		} : null,
+		stdout: processDiagnosticText(result.stdout, 1024), stderr: processDiagnosticText(result.stderr, 1024),
+	};
+	const cause = Object.assign(new Error("Windows prerequisite process diagnostics"), details);
+	// Existing evidence consumers read cause.stack only; omit local callsites and
+	// never attach the raw spawn Error (which carries command/path/argv fields).
+	cause.stack = `Error: ${cause.message}\n${JSON.stringify(details)}`.slice(0, 8192);
+	return cause;
+}
 export function windowsProcessCheck(command, args, env) {
 	// Owned direct children only, not a tree/global kill. Descendant-held stdio
 	// is outside this guarantee. Never execute .cmd through a command interpreter.
@@ -114,7 +144,7 @@ export function windowsProcessCheck(command, args, env) {
 	// A neutral cwd: inside a project (the bundle itself), pnpm 11 reports, and may
 	// fetch, the version that project's packageManager pins instead of its own.
 	const result = spawnSync(command, args, { cwd: parse(command).root || undefined, env, shell: false, encoding: "utf8", timeout: 15000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024, windowsHide: true });
-	if (result.error || result.status !== 0) throw new Error("Windows prerequisite process failed");
+	if (result.error || result.status !== 0) throw new Error("Windows prerequisite process failed", { cause: prerequisiteProcessCause(result) });
 	return result.stdout.trim();
 }
 
@@ -151,9 +181,9 @@ try {
   $depth = 0;
   while ($path) {
     $role = 'ancestor'; if ($depth -eq 0) { $role = 'target' } elseif ($depth -eq 1) { $role = 'parent' };
-    $item = Get-Item -LiteralPath $path -Force;
-    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { $detail = $path + '|||'; throw ($role + '-reparse') };
-    if ($item.PSIsContainer) { $acl = [IO.Directory]::GetAccessControl($path) } else { $acl = [IO.File]::GetAccessControl($path) };
+    $attributes = [IO.File]::GetAttributes($path);
+    if ($attributes -band [IO.FileAttributes]::ReparsePoint) { $detail = $path + '|||'; throw ($role + '-reparse') };
+    if ($attributes -band [IO.FileAttributes]::Directory) { $acl = [IO.Directory]::GetAccessControl($path) } else { $acl = [IO.File]::GetAccessControl($path) };
     $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]);
     if ($trusted -notcontains $owner.Value) { $detail = $path + '|' + $owner.Value + '|' + (& $account $owner) + '|'; throw ($role + '-owner') };
     $allowedRights = 0x1200a9; if ($depth -ge 2) { $allowedRights = 0x1200ad };
@@ -186,9 +216,9 @@ foreach ($start in $env:GENTLE_WINDOWS_CHECKS.Split('|')) {
     $depth = 0;
     while ($path) {
       $role = 'ancestor'; if ($depth -eq 0) { $role = 'target' } elseif ($depth -eq 1) { $role = 'parent' };
-      $item = Get-Item -LiteralPath $path -Force;
-      if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { $detail = $path + '|||'; throw ($role + '-reparse') };
-      if ($item.PSIsContainer) { $acl = [IO.Directory]::GetAccessControl($path) } else { $acl = [IO.File]::GetAccessControl($path) };
+      $attributes = [IO.File]::GetAttributes($path);
+      if ($attributes -band [IO.FileAttributes]::ReparsePoint) { $detail = $path + '|||'; throw ($role + '-reparse') };
+      if ($attributes -band [IO.FileAttributes]::Directory) { $acl = [IO.Directory]::GetAccessControl($path) } else { $acl = [IO.File]::GetAccessControl($path) };
       $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]);
       if ($trusted -notcontains $owner.Value) { $detail = $path + '|' + $owner.Value + '|' + (& $account $owner) + '|'; throw ($role + '-owner') };
       $allowedRights = 0x1200a9; if ($depth -ge 2) { $allowedRights = 0x1200ad };

@@ -78,6 +78,40 @@ const FALLBACK_INSTRUCTIONS = "Use read, grep, and find for this exploration.";
 // init is the legitimately slow first index, so only the user's signal bounds it.
 const CODEGRAPH_QUERY_TIMEOUT_MS = 180_000;
 const execFileAsync = promisify(execFile);
+const GIT_ROOT_REQUIRED = "CodeGraph requires a real Git project root equal to the current workspace.";
+const GIT_DIAGNOSTIC_MAX_CHARS = 1_000;
+
+/**
+ * Compare two directories by file identity, not path spelling. On Windows a mapped
+ * drive (`X:\repo`) and the UNC path Git reports for it (`\\server\share\repo`) name
+ * the same directory but never compare equal as strings (#2558).
+ */
+export function isSameDirectory(left: string, right: string): boolean {
+	if (left === right) return true;
+	try {
+		const a = statSync(left, { bigint: true });
+		const b = statSync(right, { bigint: true });
+		// A zero inode means the filesystem reports no identity; never treat that as a match.
+		return a.isDirectory() && b.isDirectory() && a.ino !== 0n && a.dev === b.dev && a.ino === b.ino;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Keep the stable prefix and append what was compared, so a path mismatch and a Git
+ * refusal (for example safe.directory on a network share) are told apart (#2558).
+ */
+function gitRootRequiredError(workspace: string, label: "git toplevel" | "git", detail: string): Error {
+	return new Error(`${GIT_ROOT_REQUIRED}\n  workspace: ${workspace}\n  ${label}: ${detail.split(/\r?\n/).filter((line) => line.trim()).join("\n    ")}`);
+}
+
+/** Prefer Git's own stderr over Node's "Command failed" wrapper, bounded for the tool output. */
+function gitFailureDetail(error: unknown): string {
+	const stderr = (error as { stderr?: unknown } | undefined)?.stderr;
+	const text = (typeof stderr === "string" && stderr.trim()) || (error instanceof Error ? error.message : String(error)).trim();
+	return text.length > GIT_DIAGNOSTIC_MAX_CHARS ? `${text.slice(0, GIT_DIAGNOSTIC_MAX_CHARS)}...` : text;
+}
 
 function resolveWorkspaceCwd(cwd: string): string {
 	const resolved = realpathSync(cwd);
@@ -91,16 +125,16 @@ function resolveWorkspaceCwd(cwd: string): string {
 		const root = realpathSync(execFileSync("git", ["rev-parse", "--show-toplevel"], {
 			cwd: resolved,
 			encoding: "utf8",
-			stdio: ["ignore", "pipe", "ignore"],
+			stdio: ["ignore", "pipe", "pipe"],
 			windowsHide: true,
 		}).trim());
-		if (root !== resolved) {
-			throw new Error("CodeGraph requires a real Git project root equal to the current workspace.");
+		if (!isSameDirectory(root, resolved)) {
+			throw gitRootRequiredError(resolved, "git toplevel", root);
 		}
 		return resolved;
 	} catch (error) {
 		if (error instanceof Error && /real Git project root/.test(error.message)) throw error;
-		throw new Error("CodeGraph requires a real Git project root equal to the current workspace.");
+		throw gitRootRequiredError(resolved, "git", gitFailureDetail(error));
 	}
 }
 

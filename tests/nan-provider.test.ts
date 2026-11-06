@@ -3,6 +3,7 @@ import test from "node:test";
 import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, createModels, getSupportedThinkingLevels, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import type { Provider } from "@earendil-works/pi-ai";
+import { completeSimple } from "@earendil-works/pi-ai/compat";
 import nanProviderExtension from "../extensions/nan-provider.ts";
 import { createNanProviderConfig as createNativeProvider, isNanAdaptiveReasoningModel, NAN_PROVIDER_BASE_URL, NAN_PROVIDER_ID } from "../lib/nan-provider.ts";
 
@@ -191,8 +192,43 @@ test("initial catalog contains all seven documented chat models with configured 
 	assert.deepEqual(model?.input, ["text", "image"]);
 	assert.equal(model?.contextWindow, 1_000_000);
 	assert.equal(models.length, 7);
-	assert.equal(model?.maxTokens, 16_384);
+	assert.equal(model?.maxTokens, 131_072);
 	assert.deepEqual(model?.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+});
+
+test("only NaN DeepSeek serializes its unchanged output cap as max_tokens", async () => {
+	const models = createNativeProvider().getModels();
+	const model = models.find((model) => model.id === "deepseek-v4-flash")!;
+	let body: Record<string, unknown> | undefined;
+	const result = await completeSimple(model, { messages: [{ role: "user", content: "offline probe", timestamp: 0 }] }, {
+		apiKey: "synthetic-key", reasoning: "minimal",
+		fetch: async (input, init) => {
+			assert.equal(String(input), `${NAN_PROVIDER_BASE_URL}/chat/completions`);
+			body = JSON.parse(String(init?.body));
+			return new Response('data: {"id":"offline","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', {
+				headers: { "content-type": "text/event-stream" },
+			});
+		},
+	});
+	assert.equal(result.stopReason, "stop");
+	assert.equal(body?.max_tokens, 131_072);
+	assert.ok(!Object.hasOwn(body!, "max_completion_tokens"));
+	assert.equal(body?.reasoning_effort, "minimal");
+	assert.equal(model.maxTokens, 131_072);
+	assert.equal(model.compat?.maxTokensField, "max_tokens");
+	assert.ok(models.filter((candidate) => candidate.id !== model.id).every((candidate) => candidate.compat === undefined));
+});
+
+test("DeepSeek compat is isolated across snapshots, providers, and live refreshes", async () => {
+	const provider = createNativeProvider({ fetchImpl: async () => jsonResponse({ data: [{ id: "deepseek-v4-flash" }] }) });
+	for (const live of [false, true]) {
+		if (live) await provider.refreshModels!(refreshContext({ type: "api_key", key: "synthetic-key" }));
+		const model = provider.getModels().find((model) => model.id === "deepseek-v4-flash")!;
+		assert.equal(model.compat?.maxTokensField, "max_tokens");
+		model.compat!.maxTokensField = "max_completion_tokens";
+		assert.equal(provider.getModels().find((candidate) => candidate.id === model.id)!.compat?.maxTokensField, "max_tokens");
+		assert.equal(createNativeProvider().getModels().find((model) => model.id === "deepseek-v4-flash")!.compat?.maxTokensField, "max_tokens");
+	}
 });
 
 test("GLM models expose exactly NaN's four efforts and no off", () => {
@@ -311,7 +347,7 @@ test("live discovery uses the key-scoped endpoint and replaces the fallback with
 test("known chat models retain documented capabilities without advertising audio", async () => {
 	const expected = [
 		["glm5.3", 1_000_000, ["text", "image"], 32_768],
-		["deepseek-v4-flash", 1_000_000, ["text", "image"], 16_384],
+		["deepseek-v4-flash", 1_000_000, ["text", "image"], 131_072],
 		["glm5.3-flash", 1_000_000, ["text", "image"], 32_768],
 		["qwen3.8-flash", 1_048_576, ["text", "image"], 131_000],
 		["mimo-v2.6-flash", 1_000_000, ["text", "image"], 32_768],

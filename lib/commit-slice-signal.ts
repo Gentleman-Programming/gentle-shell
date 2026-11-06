@@ -45,7 +45,7 @@ type Git = (args: string[], cwd: string) => Promise<string | undefined>;
 
 // Asynchronous, so the parent stays responsive while git answers.
 const runGit: Git = (args, cwd) => new Promise((resolve) => {
-	execFile("git", args, { cwd, encoding: "utf8", timeout: 2_000 }, (error, stdout) => resolve(error ? undefined : stdout.trim()));
+	execFile("git", args, { cwd, encoding: "utf8", timeout: 2_000, windowsHide: true }, (error, stdout) => resolve(error ? undefined : stdout.trim()));
 });
 
 async function defaultBranch(cwd: string, git: Git): Promise<string | undefined> {

@@ -387,6 +387,8 @@ export interface ReviewHostRelayRequest {
 	readonly selection?: string;
 	/** The routing entry's thinking label, forwarded verbatim to the completion. */
 	readonly thinking?: string;
+	/** Requested profile tier; the provider decides whether it is supported. */
+	readonly tier?: "standard" | "fast";
 	/** Effective Pi transport preference, forwarded without forcing a provider default. */
 	readonly reviewerTransport?: InProcessReviewerRequest["transport"];
 	/**
@@ -600,7 +602,7 @@ function assertTokens(name: string, tokens: readonly string[]): void {
  * an ambient default model (gentle-ai#4611; gentle-pi#311 P2, superseding
  * gentle-shell#1158 / #1136's child-process launch configuration).
  */
-function validateReviewerSelectionConfiguration(request: ReviewHostRelayRequest): { reviewerRegistry: InProcessReviewerRegistry; selection: string; thinking?: string; routingKey: string } {
+function validateReviewerSelectionConfiguration(request: ReviewHostRelayRequest): { reviewerRegistry: InProcessReviewerRegistry; selection: string; thinking?: string; tier?: "standard" | "fast"; routingKey: string } {
 	const routingKey = typeof request.routingKey === "string" && request.routingKey.length > 0 ? request.routingKey : "review capture";
 	if (request.reviewerRegistry === undefined) {
 		throw new ReviewHostRelayError(
@@ -620,6 +622,7 @@ function validateReviewerSelectionConfiguration(request: ReviewHostRelayRequest)
 		reviewerRegistry: request.reviewerRegistry,
 		selection: request.selection,
 		...(request.thinking === undefined ? {} : { thinking: request.thinking }),
+		...(request.tier === undefined ? {} : { tier: request.tier }),
 		...(request.reviewerSessionId === undefined ? {} : { reviewerSessionId: request.reviewerSessionId }),
 		routingKey,
 	};
@@ -630,8 +633,15 @@ function snapshotReviewHostRelayRequest(request: ReviewHostRelayRequest): Review
 	// are TypeErrors — a programmer mistake, never a typed relay refusal — and
 	// are checked before the business-level reviewer selection below.
 	assertTokens("capture", request.captureArgumentTokens);
-	const gentleAiExecutable = request.gentleAiExecutable ?? resolveGentleAiBinary();
-	if (!isAbsolute(gentleAiExecutable)) throw new TypeError("Pi host relay requires an absolute gentle-ai executable path");
+	// A caller-supplied executable path is input, validated like every other
+	// input before anything else. Only the environment-dependent resolution of
+	// an unspecified executable is deferred below: the executable supply is
+	// environment state (a missing pinned binary, an invalid dev override, a
+	// transient filesystem error under load), and letting its untyped errors
+	// escape ahead of the config check turned the typed configuration refusal
+	// into an environment-dependent unknown failure (gentle-shell#2256).
+	const suppliedExecutable = request.gentleAiExecutable;
+	if (suppliedExecutable !== undefined && !isAbsolute(suppliedExecutable)) throw new TypeError("Pi host relay requires an absolute gentle-ai executable path");
 	// Caller-owned reviewer selection is validated before any process launches:
 	// a broken configuration is a typed refusal, never a mid-review transport
 	// failure (gentle-pi#311 P2).
@@ -640,6 +650,8 @@ function snapshotReviewHostRelayRequest(request: ReviewHostRelayRequest): Review
 	// slot without a provider-owned submission is a typed contract mismatch,
 	// never a synthesized invocation.
 	resolveReviewHostRelaySubmission(request.submission);
+	const gentleAiExecutable = suppliedExecutable ?? resolveGentleAiBinary();
+	if (!isAbsolute(gentleAiExecutable)) throw new TypeError("Pi host relay requires an absolute gentle-ai executable path");
 	const environment = Object.freeze({ ...(request.environment ?? process.env) }) as NodeJS.ProcessEnv;
 	const submission = request.submission === undefined ? undefined : Object.freeze({
 		operationToken: request.submission.operationToken,
@@ -741,6 +753,7 @@ export async function prepareReviewHostRelaySlot(
 			{
 				selection: preparedRequest.selection!,
 				...(preparedRequest.thinking === undefined ? {} : { thinking: preparedRequest.thinking }),
+				...(preparedRequest.tier === undefined ? {} : { tier: preparedRequest.tier }),
 				...(preparedRequest.reviewerTransport === undefined ? {} : { transport: preparedRequest.reviewerTransport }),
 				...(preparedRequest.reviewerSessionId === undefined ? {} : { sessionId: preparedRequest.reviewerSessionId }),
 				prompt: promptBytes,

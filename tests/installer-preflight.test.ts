@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { artifactFor } from "../scripts/installer-downloads.mjs";
 import test from "node:test";
-import { PI_INSTALL_VERSION, collectInventory, goAcquisition, planPreflight, pnpmGlobalBin, requirements } from "../scripts/installer-preflight.mjs";
+import { collectInventory, goAcquisition, planPreflight, pnpmGlobalBin, requirements } from "../scripts/installer-preflight.mjs";
 
 const absent = { available: false };
 const tool = (version: string) => ({ available: true, version, usable: true });
@@ -32,7 +33,7 @@ test("requirements follow repository metadata and native installer pin", () => {
 });
 
 test("preflight imports a packed manifest without packageManager using the verified pnpm pin", () => {
-	const root = mkdtempSync(fileURLToPath(new URL("./.preflight-packed-", import.meta.url)));
+	const root = mkdtempSync(join(tmpdir(), "gentle-preflight-packed-"));
 	try {
 		const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 		delete pkg.packageManager;
@@ -172,6 +173,22 @@ test("Windows requires compatible Go only before a missing native binary", () =>
 	assert.deepEqual(older.actions.slice(0, 2), goActions);
 });
 
+test("Windows acquires the pinned Go for a Shell install even when Gentle AI is already installed", () => {
+	// gentle-pi's postinstall always builds Gentle AI from source on Windows, so an
+	// existing compatible gentle-ai never removes the need for Go.
+	const compatible = { ...tool(requirements.gentleAi), compatible: true };
+	for (const inventory of [{ ...clean("win32"), gentleAi: compatible },
+		{ ...installed("win32"), shell: absent, setup: false, go: absent }]) {
+		const plan = planPreflight(inventory);
+		assert.deepEqual(plan.blockers, []);
+		assert.deepEqual(plan.tools.go, { status: "needs-acquire", required: requirements.go, version: goAcquisition.version });
+		assert.ok(ids(inventory).includes("install-shell"));
+		assert.deepEqual(plan.actions.filter((action: { target: string }) => action.target === "go"), goActions);
+	}
+	// A set-up Windows stack builds nothing, so it still needs no Go.
+	assert.equal(planPreflight({ ...installed("win32"), go: absent }).tools.go.status, "not-required");
+});
+
 for (const [name, version] of [["node", "22.18.0"], ["shell", "3.9.0"], ["node", "banana"], ["pi", "1.0.0-rc.1"]]) {
 	test(`${name} ${version} blocks rather than replacing an existing tool`, () => {
 		const inventory = { ...installed(), [name]: tool(version) };
@@ -279,7 +296,7 @@ test("an older Pi that pnpm or npm owns is updated before Gentle Shell is instal
 		assert.deepEqual(plan.blockers, [], owner);
 		assert.deepEqual(plan.tools.pi, { status: "needs-update", required: requirements.pi, version: "0.87.1", owner });
 		assert.deepEqual(updateIds(plan), ["update-pi", "install-shell", "setup-shell", "verify-readiness"]);
-		assert.deepEqual(plan.actions[0], { id: "update-pi", kind: "upgrade", target: "pi", version: PI_INSTALL_VERSION });
+		assert.deepEqual(plan.actions[0], { id: "update-pi", kind: "upgrade", target: "pi", version: "latest" });
 		assert.equal(plan.ready, false);
 	}
 });

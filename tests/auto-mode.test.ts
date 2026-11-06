@@ -42,6 +42,23 @@ test("Auto cannot bypass data-loss, configured confirmation, protected paths or 
  assert.equal(h.requests.length,0);
 });
 
+test("production hook classifies companion updates without granting permission to change authority",async t=>{
+ const h=harness(t);await h.enable();await h.input("Update the installed companion tools from main; preserve permissions.");
+ for(const toolName of ["write","edit"]) {
+  assert.equal(await h.call(toolName,{path:join(h.home,"dev-binary.json"),content:"fixture companion update"}),undefined);
+ }
+ assert.equal(h.requests.length,2,"updates reach the ordinary Auto classifier");
+ h.setDecision("deny");
+ assert.equal((await h.call("write",{path:join(h.home,"channel.json"),content:"unapproved"})).block,true);
+ assert.equal(h.requests.length,3);
+ h.setDecision("allow");
+ for(const name of ["permission-mode.json","runtime-guardrails.json","models.json","persona.json"]) {
+  assert.equal((await h.call("write",{path:join(h.home,name),content:"{}"})).block,true);
+ }
+ assert.equal(h.requests.length,3,"a classifier allow cannot override protected authority");
+ assert.equal(h.confirmations(),0);
+});
+
 test("normal mode preserves previous guard behavior and named children do not inherit Auto",async t=>{
  const h=harness(t);assert.equal((await h.call("bash",{command:"git push origin feature"})).block,true);assert.equal(h.requests.length,0);
  await h.enable();await h.emit("before_agent_start",{agent:{name:"worker"},systemPromptOptions:{}});

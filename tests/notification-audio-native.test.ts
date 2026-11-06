@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { NativePulsePlayer, NATIVE_PULSE_SCHEMA, type NativePulseOptions, type NativePulseSpawnOptions } from "../lib/notification-audio-native.ts";
 
@@ -75,9 +77,12 @@ async function startFakeServer(): Promise<FakeServer> {
 class FakeChild extends EventEmitter {
 	readonly stdout = new EventEmitter();
 	readonly stderr = new EventEmitter();
+	readonly stdin = { writes: [] as string[], write(chunk: string): boolean { this.writes.push(chunk); return true; } };
 	readonly kills: string[] = [];
 	kill(signal: string): boolean { this.kills.push(signal); return true; }
 }
+const okPlay = (): string => `${JSON.stringify({ schema: NATIVE_PULSE_SCHEMA, ok: true, played: true })}\n`;
+const failPlay = (): string => `${JSON.stringify({ schema: NATIVE_PULSE_SCHEMA, ok: false })}\n`;
 function recorder(platform = "linux", overrides: Partial<NativePulseOptions> = {}) {
 	const spawned: Array<{ executable: string; args: string[]; options: NativePulseSpawnOptions }> = [];
 	const children: FakeChild[] = [];
@@ -135,9 +140,75 @@ test("play gate false prevents spawning and no async runs after it", async () =>
 	const { player: second, spawned: secondSpawned, children } = recorder();
 	const playing = second.play("/tmp/s.wav", undefined, { permit: () => true });
 	assert.equal(secondSpawned.length, 1);
-	children[0]!.stdout.emit("data", JSON.stringify({ schema: NATIVE_PULSE_SCHEMA, ok: true, played: true }));
-	children[0]!.emit("close");
+	children[0]!.stdout.emit("data", okPlay());
 	await playing;
+});
+
+/** N plays must reuse ONE persistent `serve` worker: spawn once, queue, answer one envelope per play. */
+test("persistent serve worker: N plays spawn exactly one worker and each play succeeds", async () => {
+	const { player, spawned, children } = recorder();
+	const paths = ["/tmp/a.wav", "/tmp/b.wav", "/tmp/c.wav"];
+	const plays = paths.map(path => player.play(path));
+	assert.equal(spawned.length, 1, "N plays must spawn exactly one serve worker");
+	assert.equal(spawned[0]!.args[3], "serve");
+	assert.deepEqual(spawned[0]!.options.stdio, ["pipe", "pipe", "pipe"]);
+	assert.equal(children[0]!.stdin.writes.length, 1, "queued plays must not write until the active play settles");
+	for (const write of children[0]!.stdin.writes) {
+		const request = JSON.parse(write) as { schema: string; op: string; path: string };
+		assert.equal(request.schema, NATIVE_PULSE_SCHEMA); assert.equal(request.op, "play"); assert.equal(request.path, paths[0]);
+	}
+	for (let i = 0; i < plays.length; i++) children[0]!.stdout.emit("data", okPlay());
+	await Promise.all(plays);
+	assert.equal(spawned.length, 1);
+	assert.equal(children[0]!.stdin.writes.length, 3);
+	assert.deepEqual(children[0]!.stdin.writes.map(write => (JSON.parse(write) as { path: string }).path), paths);
+});
+
+test("a crashed serve worker is replaced by a fresh spawn on the next play", async () => {
+	const { player, spawned, children } = recorder();
+	const first = player.play("/tmp/a.wav");
+	children[0]!.stdout.emit("data", okPlay());
+	await first;
+	children[0]!.emit("close"); // crash while idle
+	const second = player.play("/tmp/b.wav");
+	assert.equal(spawned.length, 2, "the next play must spawn a fresh worker after a crash");
+	assert.equal(spawned[1]!.args[3], "serve");
+	children[1]!.stdout.emit("data", okPlay());
+	await second;
+});
+
+test("a crash with a play in flight fails that play privately and the next play spawns fresh", async () => {
+	const { player, spawned, children } = recorder();
+	const failing = player.play("/tmp/a.wav");
+	children[0]!.emit("close");
+	await assert.rejects(failing, /Native pulse/);
+	const next = player.play("/tmp/b.wav");
+	assert.equal(spawned.length, 2);
+	children[1]!.stdout.emit("data", okPlay());
+	await next;
+});
+
+test("dispose kills the persistent worker, fails pending plays and the next play spawns fresh", async () => {
+	const { player, spawned, children } = recorder();
+	const playing = player.play("/tmp/a.wav");
+	player.dispose();
+	assert.deepEqual(children[0]!.kills, ["SIGKILL"]);
+	await assert.rejects(playing, /Native pulse/);
+	const next = player.play("/tmp/b.wav");
+	assert.equal(spawned.length, 2);
+	children[1]!.stdout.emit("data", okPlay());
+	await next;
+	player.dispose(); // a second dispose is a no-op
+});
+
+test("pending plays are bounded fail-closed and never grow without bound", async () => {
+	const { player, spawned, children } = recorder();
+	const plays = Array.from({ length: 10 }, (_, i) => player.play(`/tmp/${i}.wav`).catch(error => error));
+	assert.equal(spawned.length, 1);
+	assert.match(String(await plays[9]), /too many pending/);
+	for (let i = 0; i < 9; i++) children[0]!.stdout.emit("data", okPlay()); // settle active + queued
+	const settled = await Promise.all(plays);
+	assert.equal(settled.filter(value => value instanceof Error).length, 1);
 });
 
 test("malformed, oversize and error output fail privately and kill at most once", async () => {
@@ -158,9 +229,11 @@ test("malformed, oversize and error output fail privately and kill at most once"
 
 	const failure = recorder();
 	const playing = failure.player.play("/private/snapshot.wav");
-	failure.children[0]!.stdout.emit("data", JSON.stringify({ schema: NATIVE_PULSE_SCHEMA, ok: false }));
-	failure.children[0]!.emit("close");
+	failure.children[0]!.stdout.emit("data", failPlay());
+	// A private ok:false leaves the healthy worker serviceable; no kill, no restart needed.
 	await assert.rejects(playing, (error: Error) => /Native pulse/.test(error.message) && !/snapshot|cookie|\/private/.test(error.message));
+	assert.equal(failure.children[0]!.kills.length, 0);
+	assert.equal(failure.spawned.length, 1);
 });
 
 test("timeout and abort SIGKILL once and settle only on close", async () => {
@@ -181,6 +254,11 @@ test("timeout and abort SIGKILL once and settle only on close", async () => {
 	const playing = aborted.player.play("/tmp/s.wav", controller.signal);
 	controller.abort();
 	assert.deepEqual(aborted.children[0]!.kills, ["SIGKILL"]);
+	let abortSettled = false; void playing.then(() => { abortSettled = true; }, () => { abortSettled = true; });
+	aborted.children[0]!.emit("exit", null);
+	aborted.children[0]!.emit("error", new Error("kill race")); // Node emits close after error
+	await new Promise(resolve => setTimeout(resolve, 0));
+	assert.equal(abortSettled, false);
 	aborted.children[0]!.emit("close");
 	await assert.rejects(playing, /aborted|Native pulse/);
 });
@@ -210,7 +288,8 @@ test("probe never throws for offline/malformed IPC while play rejects and cleans
 	assert.deepEqual(await probing, { available: false, formats: [] });
 	const { player: playPlayer, children: playChildren } = recorder();
 	const playing = playPlayer.play("/tmp/s.wav");
-	playChildren[0]!.stdout.emit("data", JSON.stringify({ schema: "wrong", ok: true, played: true }));
+	playChildren[0]!.stdout.emit("data", `${JSON.stringify({ schema: "wrong", ok: true, played: true })}\n`);
+	assert.deepEqual(playChildren[0]!.kills, ["SIGKILL"], "a malformed serve line is a protocol violation: kill once");
 	playChildren[0]!.emit("close");
 	await assert.rejects(playing, /Native pulse/);
 });
@@ -259,13 +338,13 @@ test("real worker plays a fake PCM snapshot to a fake socket with no OS audio", 
 	const snapshot = join(dir, "sound.wav");
 	writeFileSync(snapshot, bytes, { mode: 0o400 });
 	const server = await startFakeServer();
+	const player = new NativePulsePlayer({ platform: "linux", env: { PULSE_SERVER: `unix:${server.path}` }, playTimeoutMs: 8000 });
 	try {
-		const player = new NativePulsePlayer({ platform: "linux", env: { PULSE_SERVER: `unix:${server.path}` }, playTimeoutMs: 8000 });
 		await player.play(snapshot);
 		assert.deepEqual(Buffer.concat(server.pcm), dataOf(bytes));
 		assert.ok(server.seen.includes(3) && server.seen.includes(12) && server.seen.includes(4));
 		assert.ok(existsSync(snapshot), "the bridge/worker must not delete the snapshot; the owner does");
-	} finally { await server.close(); rmSync(dir, { recursive: true, force: true }); }
+	} finally { player.dispose(); await server.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("real worker rejects invalid WAV before opening the socket", async () => {
@@ -273,9 +352,49 @@ test("real worker rejects invalid WAV before opening the socket", async () => {
 	const snapshot = join(dir, "sound.wav");
 	writeFileSync(snapshot, Buffer.alloc(64, 0x00), { mode: 0o400 });
 	const server = await startFakeServer();
+	const player = new NativePulsePlayer({ platform: "linux", env: { PULSE_SERVER: `unix:${server.path}` }, playTimeoutMs: 8000 });
 	try {
-		const player = new NativePulsePlayer({ platform: "linux", env: { PULSE_SERVER: `unix:${server.path}` }, playTimeoutMs: 8000 });
 		await assert.rejects(player.play(snapshot), /Native pulse/);
 		assert.deepEqual(server.seen, []);
-	} finally { await server.close(); rmSync(dir, { recursive: true, force: true }); }
+	} finally { player.dispose(); await server.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+/** Direct serve-protocol check: bounded fail-closed requests, private per-play failures, stdin EOF teardown. */
+test("real serve worker fails closed on protocol violations and exits on stdin EOF", async () => {
+	const workerPath = fileURLToPath(new URL("../lib/notification-pulse-worker.ts", import.meta.url));
+	const serveEnv = { ...process.env, NODE_NO_WARNINGS: "1", GENTLE_PI_AGENTS_CHILD: "1" };
+	const spawnServe = () => spawn(process.execPath, ["--experimental-strip-types", workerPath, "serve"],
+		{ stdio: ["pipe", "pipe", "pipe"], env: serveEnv });
+	const collect = (child: ReturnType<typeof spawn>): string[] => {
+		const lines: string[] = []; let text = "";
+		child.stdout!.setEncoding("utf8");
+		child.stdout!.on("data", (chunk: string) => {
+			text += chunk;
+			for (let index = text.indexOf("\n"); index !== -1; index = text.indexOf("\n")) { lines.push(text.slice(0, index)); text = text.slice(index + 1); }
+		});
+		return lines;
+	};
+	const exited = (child: ReturnType<typeof spawn>): Promise<number | null> => new Promise(resolve => {
+		if (child.exitCode !== null || child.signalCode !== null) { resolve(child.exitCode); return; }
+		child.once("exit", code => resolve(code));
+	});
+	// (a) A malformed line is a protocol violation: one generic envelope, then a crash the owner restarts.
+	const crashing = spawnServe();
+	const crashingLines = collect(crashing);
+	crashing.stdin!.write("not json\n");
+	assert.equal(await exited(crashing), 1);
+	assert.deepEqual(await crashingLines, [JSON.stringify({ schema: "gentle.audio.pulse/v1", ok: false })]);
+	// (b) A schema-valid request for a missing snapshot fails privately and the worker keeps serving.
+	const serving = spawnServe();
+	const servingLines = collect(serving);
+	for (const path of ["/nonexistent/gentle-a.wav", "/nonexistent/gentle-b.wav"])
+		serving.stdin!.write(`${JSON.stringify({ schema: "gentle.audio.pulse/v1", op: "play", path })}\n`);
+	await new Promise(resolve => setTimeout(resolve, 1200));
+	assert.deepEqual(servingLines, [
+		JSON.stringify({ schema: "gentle.audio.pulse/v1", ok: false }),
+		JSON.stringify({ schema: "gentle.audio.pulse/v1", ok: false }),
+	]);
+	// (c) stdin EOF (owner death) is a clean exit.
+	serving.stdin!.end();
+	assert.equal(await exited(serving), 0);
 });

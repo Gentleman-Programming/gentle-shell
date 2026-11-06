@@ -43,12 +43,6 @@ function coreHelp(core, env) {
 function supportsMigration(core, env) {
 	return coreHelp(core, env).includes("migrate-copy --data-dir <absolute-source> --output-dir <new-absolute-destination> --confirm-quiescent --json");
 }
-export function supportsBundledSessionOwned(core, env) {
-	if (!core) return false;
-	const clean = Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith("ENGRAM_") && key !== "GH_TOKEN" && key !== "GITHUB_TOKEN"));
-	try { return coreHelp(core, { ...clean, ENGRAM_NO_UPDATE_CHECK: "1" }).some((line) => /^serve --session-owned(?:\s|$)/.test(line)); }
-	catch { return false; }
-}
 
 export function migrateBundledEngram({ prefix, core, home, env }) {
 	let markerOwned = false;

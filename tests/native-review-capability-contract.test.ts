@@ -103,9 +103,10 @@ test("2.4.0 repeats 2.2.3 because the START envelope Pi consumes still omits ris
 	//             the envelope carries, not a capability it lost.
 	//   delivery  `review validate --gate pre-commit` still answers
 	//             `gentle-ai.review-gate-result/v1` with
-	//             `delivery: "disabled/unmanaged"` at exit 0. Under opt-in RDD
-	//             this is now the DEFAULT delivery answer for an install that
-	//             never enabled review, so the column matters more, not less.
+	//             `delivery: "disabled/unmanaged"` at exit 0. RDD is on by
+	//             default again since gentle-ai v4.0.0, so this is the answer
+	//             for an install that turned review off, and the column still
+	//             matters.
 	//
 	// riskEvidence and hint stay dark for exactly the reason the 2.2.0 comment
 	// gives, re-proven rather than inherited: the negotiated
@@ -385,11 +386,17 @@ test("4.2.0 explicitly repeats 4.1.1 because capabilities/v2.6 is unchanged desp
 	assert.deepEqual(contract, NATIVE_CLI_CONTRACTS["4.1.1"] as Record<string, boolean>);
 });
 
+test("4.3.1 explicitly repeats 4.2.0 because capabilities/v2.6 and provider contract 1.4.0 are unchanged", () => {
+	const contract = NATIVE_CLI_CONTRACTS["4.3.1"] as Record<string, boolean>;
+	assert.ok(contract);
+	assert.deepEqual(contract, NATIVE_CLI_CONTRACTS["4.2.0"] as Record<string, boolean>);
+});
+
 test("no shipped version key was added beyond the pin bump", () => {
 	// Rows are promises to consumers, so a new key only ever appears in a
 	// dedicated commit alongside a pin bump, never as a side effect. v2.2.4 and
 	// v2.3.0 shipped upstream while Pi stayed on 2.2.3 and were never pinned,
 	// so they get no row: a row asserts ground truth measured against a binary
 	// Pi actually ran, and the table only has to be ascending, not gapless.
-	assert.deepEqual(Object.keys(NATIVE_CLI_CONTRACTS), [...DARK_VERSIONS, "2.2.0", "2.2.1", "2.2.2", "2.2.3", "2.4.0", "2.5.0-rc.3", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.8.1", "2.8.2", "2.9.0", "2.9.1", "3.0.0", "3.0.1", "3.1.0", "3.2.1", "3.4.0", "3.5.0", "3.6.0", "3.6.1", "3.7.0", "4.0.0", "4.1.1", "4.2.0"]);
+	assert.deepEqual(Object.keys(NATIVE_CLI_CONTRACTS), [...DARK_VERSIONS, "2.2.0", "2.2.1", "2.2.2", "2.2.3", "2.4.0", "2.5.0-rc.3", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.8.1", "2.8.2", "2.9.0", "2.9.1", "3.0.0", "3.0.1", "3.1.0", "3.2.1", "3.4.0", "3.5.0", "3.6.0", "3.6.1", "3.7.0", "4.0.0", "4.1.1", "4.2.0", "4.3.1"]);
 });

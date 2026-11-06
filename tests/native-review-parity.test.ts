@@ -384,7 +384,7 @@ test("review-mode gate retains every off-source continuation and fails closed on
 	for (const [source, expected] of [
 		["clone_local", /clear this clone-local override/],
 		["global", /cannot override a global off/],
-		["default", /off by default until explicitly enabled/],
+		["default", /RDD is on by default, but this install could not resolve the review mode and failed closed to off/],
 	] as const) {
 		const native = {
 			reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: source === "global" ? "off" : "", cloneLocal: source === "clone_local" ? "off" : "", effective: "off" as const, source } }),

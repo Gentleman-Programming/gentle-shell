@@ -1854,6 +1854,7 @@ const SENSITIVE_PATH_PATTERNS: RegExp[] = [
 	/(^|\/)\.config\/gh\/hosts\.ya?ml$/,
 	/(^|\/)secrets(?:\/|$)/,
 	/(^|\/)\.env(?:$|[./_-])/,
+	/(^|\/)\.(?:envrc|netrc)(?:$|\/)/,
 	/\.(?:pem|key|p12|pfx)$/,
 ];
 
@@ -1912,7 +1913,7 @@ function isNamedAgentStartEvent(event: unknown): boolean {
 }
 
 function normalizePolicyPath(value: string): string {
-	return value.trim().replace(/^~(?=\/|$)/, homedir()).replace(/\\/g, "/").toLowerCase();
+	return value.trim().replace(/^~(?=[/\\]|$)/, homedir()).replace(/\\/g, "/").toLowerCase();
 }
 
 function isSensitivePath(value: string): boolean {
@@ -1923,7 +1924,7 @@ function isSensitivePath(value: string): boolean {
 function isSensitiveRequestContextPath(path: string): boolean {
 	if (isSensitivePath(path)) return true;
 	try { return isSensitivePath(realpathSync(path)); }
-	catch { return false; /* Native owns missing/unreadable-file diagnostics. */ }
+	catch { return true; /* An unresolved alias cannot be checked safely. */ }
 }
 
 function collectPathInputs(value: unknown, key?: string): string[] {
@@ -7769,7 +7770,7 @@ function baseRefRejectionHint(reason: string): { hint?: string } {
 function nativeStartRejection(reason: string, field?: string): Record<string, unknown> {
 	if (reason.startsWith("request-context-")) return {
 		operation: REVIEW_CONTROLLER_OPERATION.START, status: "blocked", outcome: "native-start-input-invalid", reason,
-		next_action: reason === "request-context-invalid" ? "supply-a-nonempty-requestContextPath" : reason === "request-context-sensitive-path" ? "supply-a-non-sensitive-requestContextPath" : "resolve-existing-authority-before-starting-with-new-intent",
+		next_action: reason === "request-context-unresolved-path" ? "supply-an-existing-resolvable-requestContextPath" : reason === "request-context-invalid" ? "supply-a-nonempty-requestContextPath" : reason === "request-context-sensitive-path" ? "supply-a-non-sensitive-requestContextPath" : "resolve-existing-authority-before-starting-with-new-intent",
 		...nativeStartPreAuthorityRejection(),
 	};
 	return {
@@ -10629,8 +10630,15 @@ async function executeReviewControllerOperation(
 			const unknownField = Object.keys(rawStart).find((field) => !["mode", "baseRef", "committedOnly", "policyPath", "requestContextPath", "focus", "lenses", "lensesReason", "untrackedScope", "expectedUntrackedInventory", "intendedUntracked"].includes(field));
 			if (unknownField !== undefined) return nativeStartRejection("unknown-field", unknownField);
 			if (rawStart.requestContextPath !== undefined && !isCanonicalProcessString(rawStart.requestContextPath)) return nativeStartRejection("request-context-invalid");
-			const requestContext = rawStart.requestContextPath === undefined ? {} : { requestContextPath: resolve(defaultCwd, rawStart.requestContextPath as string) };
-			if (requestContext.requestContextPath !== undefined && (isSensitivePath(rawStart.requestContextPath as string) || isSensitiveRequestContextPath(requestContext.requestContextPath))) return nativeStartRejection("request-context-sensitive-path");
+			const requestContext: { requestContextPath?: string } = {};
+			if (rawStart.requestContextPath !== undefined) {
+				const rawPath = rawStart.requestContextPath as string;
+				if (isSensitivePath(rawPath)) return nativeStartRejection("request-context-sensitive-path");
+				const expandedPath = rawPath.replace(/^~(?=[/\\]|$)/, homedir());
+				try { requestContext.requestContextPath = realpathSync(resolve(defaultCwd, expandedPath)); }
+				catch { return nativeStartRejection("request-context-unresolved-path"); }
+				if (isSensitiveRequestContextPath(requestContext.requestContextPath)) return nativeStartRejection("request-context-sensitive-path");
+			}
 			const focus = rawStart.focus;
 			if (focus !== undefined && !isNativeStartFocus(focus)) return nativeStartRejection("focus-invalid");
 			const lensSelection = validateNativeStartLensSelection(rawStart);

@@ -93,6 +93,15 @@ This is guidance through existing tools, not a new CLI, phase, state engine, or 
 
 ## Herdr active-work summary
 
+Choose `/gentle:customize` → **Layout** → **Task summary: on/off** to show or
+hide the active-task summary published to terminal tools (for example Herdr's
+sidebar). On is the default. Highlighting a choice does not save it; press Enter
+or Space to apply it now. The preference is stored as `enabled` in
+`herdr-task-summary.json` in the active launch's Gentle Pi config home (including
+any `GENTLE_PI_CONFIG_HOME` override). Existing summary colors are preserved. Malformed or
+unreadable preferences are refused with an error and left unchanged. This option
+does not edit Herdr config or change the local Todo list.
+
 Under Herdr, root interactive Pi sessions publish only the `in_progress` Todo
 title, prefixed with `◐`. No phase, working/verifying label or tool fallback is
 used; prompts, tool arguments, output and Todo notes never supply text. Missing,

@@ -28,7 +28,7 @@ async function harness(env: NodeJS.ProcessEnv = {}, failing = false) {
 		attention: (active: boolean) => { listeners.get("herdr:blocked")?.({ active }); flush(); },
 		settings: (enabled: boolean) => { writeFileSync(join(home, "herdr-task-summary.json"), JSON.stringify({ schema: "gentle-pi.herdr-task-summary/v1", enabled, summaryColor: "accent", continuationColor: "muted" })); },
 		change: () => { listeners.get("gentle-pi:herdr-task-summary:changed")?.({ configHome: home }); flush(); },
-		pulse: (ms: number) => { now += ms; tick(); flush(); }, stopped: () => stopped, removed: () => removed, attempts: () => attempts };
+		pulse: (ms: number) => { now += ms; tick(); flush(); }, stopped: () => stopped, removed: () => removed, attempts: () => attempts, fail: (value: boolean) => { failing = value; } };
 }
 const todo = (title: string) => ({ toolName: "todo", result: { details: { gentleTodo: { tasks: [{ title, status: "in_progress" }] } } } });
 test("S2/S3: initial state, blocked dominance, settled idle guard and label", async () => {
@@ -79,4 +79,11 @@ test("S6: a refused store backs off instead of retrying every tick", async () =>
 	for (let i = 0; i < 29; i++) h.pulse(1000);
 	h.fire("agent_start"); assert.equal(h.attempts(), 1);
 	h.pulse(1000); assert.equal(h.attempts(), 2);
+});
+test("S4: disabling task summaries redacts the title even during write backoff", async () => {
+	const h = await harness(); h.settings(true); h.fire("session_start"); h.fire("agent_start");
+	h.fire("tool_execution_end", todo("secret title")); assert.deepEqual(h.values.at(-1)?.task, { title: "secret title" });
+	h.fail(true); h.pulse(10000); const attempts = h.attempts();
+	h.fail(false); h.settings(false); h.change();
+	assert.equal(h.attempts(), attempts + 1); assert.equal(h.values.at(-1)?.task, null);
 });

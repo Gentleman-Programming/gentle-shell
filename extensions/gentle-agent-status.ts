@@ -76,7 +76,8 @@ export function createAgentStatusExtension(options: Options = {}) {
 				if (typeof event?.configHome !== "string" || resolve(event.configHome) !== home) return;
 				const next = resolveHerdrTaskSummarySettings({ gentlePiConfigHome: home });
 				if (next.malformed || next.readError) return;
-				enabled = next.settings.enabled; publish();
+				// Disabling must redact a published title now, so it skips the retry delay once.
+				enabled = next.settings.enabled; if (!enabled) retryAt = -Infinity; publish();
 			})];
 			stop = (options.watch ?? ((tick) => {
 				const timer = setInterval(tick, 1000); timer.unref(); return () => clearInterval(timer);

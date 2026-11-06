@@ -22,8 +22,8 @@ Branch: `feat/full-delegation-mode` · Delivery: `single-pr` (user decision, L8;
 | T1 | S1, S2, S6 | inline | done | `99e493561`; `lib/agent-profiles.ts` workflow map, normalization, serialization, lifecycle; `tests/agent-profiles-workflow.test.ts` (9 green) |
 | T2 | S2, S7 | inline | done | `5f3687d3a`; `lib/orchestrator-mode-policy.ts` resolver with source attribution; `tests/orchestrator-mode-policy.test.ts` (9 green) |
 | T3 | S1, S3, S4, S7 | inline | done | `15ad6c5c1`; `assets/orchestrator-full-delegation.md`, `applyDelegationMode` + cache key in `extensions/gentle-ai.ts`, packaged-asset list; `tests/orchestrator-delegation-mode.test.ts` (8 green). Measured: organic 9146 B, full delegation 5611 B (-3535 B) |
-| T4 | S5 | delegated | in progress | key is `w` (`d` is already "make default"); bounded writer on `extensions/gentle-ai.ts`; `tests/profiles-panel-delegation-mode.test.ts` |
-| T5 | S8 | inline | done | `5a10a7984`; `docs/gentle-shell.md`, `docs/readme-reference.md` |
+| T4 | S5 | delegated | done | `9cfacecb6`; `w` toggle with draft semantics, atomic save/use-session persistence through `setProfileOrchestratorMode`, orchestrator-row chip beside the tier, mode draft survives switch-save and the custom-model reopen; `tests/profiles-panel-delegation-mode.test.ts` (16 green) |
+| T5 | S8 | inline | done | `5a10a7984` + the peer-modes docs rewrite; `docs/gentle-shell.md`, `docs/readme-reference.md` |
 
 ## Log
 
@@ -75,4 +75,6 @@ The whole cluster is session-freeze, pin and reviewer-routing behavior — the s
 **L13** (user correction, verbatim): "ojo, organic no es peor que full-delegation, necesitamos diferenciar que solo son dos modos diferentes y quiero mostrar tambien que hace cada uno pero de una manera comoda"
 
 Rewrote S5 only. Two defects fixed: the chip carried a ranking nobody asked for (`accent` for full delegation against `dim` for organic), and it named the modes without saying what they do. Both modes now share one tone — the distinction is glyph plus label alone — and the Orchestrator row's existing description slot states both behaviours and the key, symmetric in length so neither mode reads as the special case.
+
+**L14** (panel final state, after two user corrections): the chip lives on the Orchestrator row only, has no mouse region, and its form table carries `{text, mode}` with **no tone field** — a single `ORCHESTRATOR_MODE_CHIP_TONE = "status"` renders both modes alike, so a per-mode ranking is not expressible rather than merely avoided. The symmetric ladder is `◎ organic` / `◎ org` / `◎` and `⚡ full delegation` / `⚡ full` / `⚡`, with the fallback chain yielding first. `ORCHESTRATOR_MODE_EXPLAINER` (`◎ inline · ⚡ writer · w switches`) is appended to the existing cursor-bound description slot only while the Orchestrator row is focused, is identical for both modes, and drops before it can wrap.
 

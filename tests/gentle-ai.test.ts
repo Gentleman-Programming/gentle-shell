@@ -2689,6 +2689,29 @@ test("applying a populated profile whose routes already match skips the confirma
 	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore, "settings.json is untouched");
 });
 
+test("applying an already-matching active profile ignores legacy project routes in the confirmation diff", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings, settingsPath } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/gpt-5" } }, null, 2)}\n`);
+	writeFileSync(fixture.projectPath, `${JSON.stringify({ "review-risk": { model: "openai/legacy" } }, null, 2)}\n`);
+	const workerPath = join(fixture.root, ".pi", "agents", "worker.md");
+	const reviewerPath = join(fixture.root, ".pi", "agents", "review-risk.md");
+	writeMarkdown(reviewerPath, "---\nname: review-risk\ndescription: Reviewer\n---\nbody\n");
+	writeStore({ team: { worker: { model: "openai/gpt-5" } } }, "team");
+	const paths = [fixture.globalPath, fixture.projectPath, storePath, settingsPath, reviewerPath];
+	const before = paths.map((path) => readFileSync(path, "utf8"));
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 0, "legacy routes outside the active profile must not produce a false clearing diff");
+	assert.ok(fixture.notifications.some((entry) => entry.severity === "info" && /already matches the current global routing/.test(entry.message)));
+	assert.deepEqual(paths.map((path) => readFileSync(path, "utf8")), before, "global, legacy, profile, settings, and the omitted agent stay byte-identical");
+	assert.match(readFileSync(workerPath, "utf8"), /model: openai\/gpt-5/, "the apply still materializes the profile's own route");
+	assert.doesNotMatch(readFileSync(reviewerPath, "utf8"), /openai\/legacy/, "the omitted legacy route is never materialized");
+});
+
 test("applying a populated profile whose routes match and whose orchestrator is already set skips the confirmation", async (t) => {
 	const { fixture, storePath, writeStore, writeSettings } = profilesStoreFixture(t);
 	// writeSettings defaults to nan/deepseek-v4-flash · high; the profile's

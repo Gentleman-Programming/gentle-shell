@@ -4,12 +4,13 @@ import { chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, posix, win32 } from "node:path";
 import { promisify } from "node:util";
-import { gentleAiIsolationEnv, PackageLocalGentleAiBinaryMissingError, resolveGentleAiBinary } from "./gentle-ai-binary.mjs";
+import { binaryDigest, gentleAiIsolationEnv, PackageLocalGentleAiBinaryMissingError, resolveGentleAiBinary } from "./gentle-ai-binary.mjs";
 import { GENTLE_PI_REVIEW_RELAY_CONTRACT, GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV } from "./review-relay-contract.mjs";
 import { decodeReviewAssessmentV1,                         } from "./review-risk-assessment.mjs";
 import {
 	REVIEW_INTEGRATION_CONTRACT,
 	decodeReviewAcknowledgedV1,
+	decodeReviewCapabilitiesV2,
 	decodeReviewConsentV2,
 	decodeReviewConsentV3,
 	decodeReviewFailureV2,
@@ -541,6 +542,19 @@ export const NATIVE_UNTRACKED_SCOPE = {
 
 
 
+
+/** Explicit request file; native owns reading, freezing, sizing and identity. */
+
+
+
+
+export const NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE = "provider does not support request context";
+
+function nativeRequestContextArguments(request                               )                    {
+	if (request.requestContextPath === undefined) return [];
+	if (!isCanonicalProcessString(request.requestContextPath)) throw new TypeError("Native requestContextPath must be a non-empty, trimmed, NUL-free string");
+	return ["--request-context", request.requestContextPath];
+}
 
 
 
@@ -1941,12 +1955,14 @@ export class NativeReviewIntegrationError extends Error {
 // answer only through one of the exact invocations carried by the envelope.
 export class NativeReviewConsentRequiredError extends Error {
 	         consent                       ;
+	         requestContextPath         ;
 	         launchAttempted = true;
 	         mutationOutcome = "none";
-	constructor(consent                       ) {
+	constructor(consent                       , requestContextPath         ) {
 		super(consent.headline);
 		this.name = "NativeReviewConsentRequiredError";
 		this.consent = consent;
+		this.requestContextPath = requestContextPath;
 	}
 }
 
@@ -2077,6 +2093,10 @@ function consentInvocationArguments(request                                  )  
 	const words = splitNativeConsentInvocation(choice.invocation);
 	if (words[0] !== "gentle-ai" || words[1] !== "review" || words[2] !== "start") throw new NativeReviewConsentBindingError("consent-invocation-not-start", "Native consent invocation is not a provider review START");
 	const arguments_ = words.slice(1);
+	if (request.requestContextPath !== undefined) {
+		const values = arguments_.flatMap((token, index) => token === "--request-context" ? [arguments_[index + 1]] : token.startsWith("--request-context=") ? [token.slice("--request-context=".length)] : []);
+		if (values.length !== 1 || values[0] !== request.requestContextPath) throw new NativeReviewConsentBindingError("consent-invocation-request-context-changed", "Native consent invocation did not retain the requested context file");
+	}
 	if (exactConsentOption(arguments_, "--contract") !== REVIEW_INTEGRATION_CONTRACT) throw new NativeReviewConsentBindingError("consent-invocation-contract-changed", "Native consent invocation contract changed");
 	const providerCwd = exactConsentOption(arguments_, "--cwd");
 	const requestedCwd = normalizeNativeReviewCwd(request.cwd);
@@ -2178,6 +2198,8 @@ function decodeNativeUnachievableLensCaptureArtifact(value         )            
 }
 
 export class NativeReviewCliV216                            {
+	// Only executable capabilities are reusable. STATUS and authority remain fresh.
+	        contextCapabilities                                                                                               ;
 	                 plain                      ;
 	                 adapter                 ;
 	                 executable                         ;
@@ -2280,6 +2302,7 @@ export class NativeReviewCliV216                            {
 		const selection = nativeUntrackedSelection(request);
 		const statusRequest                            = {
 			cwd: request.cwd,
+			...(request.requestContextPath === undefined ? {} : { requestContextPath: request.requestContextPath }),
 			projection,
 			...(request.baseRef === undefined ? {} : { baseRef: request.baseRef, committedOnly: true }),
 			...(request.lineageId === undefined ? {} : { lineageId: request.lineageId }),
@@ -2313,6 +2336,10 @@ export class NativeReviewCliV216                            {
 			return argument.token;
 		});
 		const targetIdentity = status.targetIdentity;
+		if (request.requestContextPath !== undefined) {
+			const values = transitionTokens.flatMap((token, index) => token === "--request-context" ? [transitionTokens[index + 1]] : token.startsWith("--request-context=") ? [token.slice("--request-context=".length)] : []);
+			if (values.length !== 1 || values[0] !== request.requestContextPath) throw nativeError(NATIVE_REVIEW_ERROR_CODE.IDENTITY_MISMATCH, NATIVE_REVIEW_OPERATION.START, false, "native START transition did not retain the requested context file", undefined, false);
+		}
 		const execution = await this.negotiated(NATIVE_REVIEW_OPERATION.START, request.cwd, ["review", "start", ...transitionTokens], true, request.signal);
 		// A negotiated v2 START may answer a consent question (action:
 		// "consent_required") instead of `start/v3` when the provider needs an
@@ -2330,7 +2357,10 @@ export class NativeReviewCliV216                            {
 				return decoded;
 			});
 			if (consent.targetIdentity !== targetIdentity || consent.projection !== projection) throw nativeError(NATIVE_REVIEW_ERROR_CODE.IDENTITY_MISMATCH, NATIVE_REVIEW_OPERATION.START, true, "native consent target binding mismatch");
-			throw new NativeReviewConsentRequiredError(consent);
+			if (request.requestContextPath !== undefined) {
+				for (const choice of consent.choices) consentInvocationArguments({ cwd: request.cwd, consent, answer: choice.answer, requestContextPath: request.requestContextPath });
+			}
+			throw new NativeReviewConsentRequiredError(consent, request.requestContextPath);
 		}
 		const result = decode(NATIVE_REVIEW_OPERATION.START, true, () => decodeReviewStartResponse(execution.body));
 		if (request.lineageId !== undefined && result.lineageId !== request.lineageId) throw nativeError(NATIVE_REVIEW_ERROR_CODE.IDENTITY_MISMATCH, NATIVE_REVIEW_OPERATION.START, true, "native start lineage mismatch");
@@ -2400,6 +2430,9 @@ export class NativeReviewCliV216                            {
 	}
 
 	        async observedTargetStatus(request                           )                          {
+		// Validate locally before discovery; never probe support by sending an
+		// unknown flag or retrying the review without its requested intent.
+		const requestContextArguments = nativeRequestContextArguments(request);
 		if (request.baseRef !== undefined && !isCanonicalProcessString(request.baseRef)) throw new TypeError("Native STATUS baseRef must be a non-empty, trimmed, NUL-free string");
 		if (request.baseRef !== undefined && request.committedOnly !== true) throw new TypeError("Native STATUS baseRef requires explicit committedOnly acknowledgement");
 		if (request.baseRef === undefined && request.committedOnly !== undefined) throw new TypeError("Native STATUS committedOnly requires an explicit baseRef");
@@ -2435,6 +2468,26 @@ export class NativeReviewCliV216                            {
 			...(submittedHasCommittedOnly ? [] : ["--committed-only"]),
 		];
 		const forwardedLineage = request.lineageId === undefined || submittedLineageValue !== undefined ? [] : ["--lineage", request.lineageId];
+		let contextExecutable                    ;
+		if (requestContextArguments.length > 0) {
+			contextExecutable = this.executablePath(NATIVE_REVIEW_OPERATION.STATUS, false);
+			const digest = binaryDigest(contextExecutable);
+			let capabilities = this.contextCapabilities?.executable === contextExecutable && this.contextCapabilities.digest === digest
+				? this.contextCapabilities.value : undefined;
+			if (capabilities === undefined) {
+				this.contextCapabilities = undefined;
+				const discovery = await this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd,
+					["review", "capabilities", "--contract", REVIEW_INTEGRATION_CONTRACT], false, request.signal, contextExecutable);
+				capabilities = decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewCapabilitiesV2(discovery.body, digest));
+				if (binaryDigest(contextExecutable) !== digest) throw nativeError(NATIVE_REVIEW_ERROR_CODE.IDENTITY_MISMATCH,
+					NATIVE_REVIEW_OPERATION.STATUS, false, "native executable changed during capability discovery", undefined, false);
+				this.contextCapabilities = { executable: contextExecutable, digest, value: capabilities };
+			}
+			if (!["start_request_context", "start_options_preflight"].every(feature => capabilities.optionalFeatures.has(feature))) {
+				throw nativeError(NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE, NATIVE_REVIEW_OPERATION.STATUS, false,
+					NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE, undefined, false);
+			}
+		}
 		const statusArguments = submittedTokens === undefined ? [
 			"review", "status", "--contract", REVIEW_INTEGRATION_CONTRACT, "--cwd", request.cwd,
 			"--projection", request.projection ?? "workspace",
@@ -2443,9 +2496,12 @@ export class NativeReviewCliV216                            {
 			...(request.lineageId === undefined ? [] : ["--lineage", request.lineageId]),
 			...(request.agent === undefined ? [] : ["--agent", request.agent]),
 			...nativeLensSelectionArguments(request),
+			...requestContextArguments,
 			"--next-transition",
-		] : ["review", "status", "--cwd", request.cwd, ...submittedTokens, ...forwardedBaseRef, ...forwardedLineage, ...nativeLensSelectionArguments(request)];
-		const execution = await this.negotiated(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal);
+		] : ["review", "status", "--cwd", request.cwd, ...submittedTokens, ...forwardedBaseRef, ...forwardedLineage, ...nativeLensSelectionArguments(request), ...requestContextArguments];
+		const execution = contextExecutable === undefined
+			? await this.negotiated(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal)
+			: await this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal, contextExecutable);
 		measureStatusSync("decode", () => assertSupportedNextTransitionOperation(execution.body));
 		return decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewStatusV3(execution.body));
 	}

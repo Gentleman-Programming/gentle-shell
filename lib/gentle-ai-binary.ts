@@ -382,7 +382,7 @@ function binaryIdentity(path: string): string {
 	return [details.dev, details.ino, details.size, details.mtimeNs, details.ctimeNs].join(":");
 }
 
-function binaryDigest(path: string, readBinary: (path: string) => Buffer): string {
+export function binaryDigest(path: string, readBinary: (path: string) => Buffer = readFileSync): string {
 	let entries = binaryDigestCache.get(readBinary);
 	if (entries === undefined) binaryDigestCache.set(readBinary, entries = new Map());
 	const identity = binaryIdentity(path);

@@ -17,7 +17,7 @@ Before launching a bounded writer (`gentle-ai-worker`, a user-configured `worker
 - pre-existing untracked targets the writer may write, listed explicitly;
 - nothing beyond the delegated task — a surface wider than the task is the same defect as no surface at all.
 
-Test scratch stays outside the worktree (`mktemp -d`), never in the repository: no scratch, cache, or `TMPDIR` there; state needed inside uses an excluded path the test removes. After it returns, the parent removes the exact scratch paths a worker or verifier reports.
+Test scratch stays outside the worktree (`mktemp -d`), never in the repository (nor caches or `TMPDIR`); state needed inside uses an excluded path the test removes. The runtime owns session scratch; `/gentle:scratch` lists or cleans recorded clones and worktrees.
 
 If the surface genuinely cannot be derived, do not launch the writer or ask the human to author paths. Derive a candidate set first — the exact paths this task would touch — and present that enumerated list as an approve/decline choice under the Lossless Blocking Prompts rules in `orchestrator-prompts.md`. A free-text question asking which paths or globs to authorize is never a valid escalation: computing it is the parent's job.
 

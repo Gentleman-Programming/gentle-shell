@@ -89,11 +89,19 @@ export class OrchestratorStateCache {
 		const previous = this.value?.aliases;
 		// Null/null marks a new publication with no declaration yet; legacy absence
 		// cannot establish historical first-task knowledge.
+		// An explicitly published work topic is owner-curated public task
+		// classification, so it refreshes the current alias when the caller omits
+		// the subject (#2553). State-only refreshes and automatic republications of
+		// unchanged state must not re-derive it, and an explicit subject in the
+		// same publication always wins.
+		const topic = input !== undefined && !declared && state?.work?.topic
+			? normalizeTaskSubject(state.work.topic) : undefined;
 		let aliases = previous;
-		if (declared) {
+		if (declared || topic) {
+			const current = declared ?? topic;
 			let initialAlias = previous?.initialAlias ?? null;
-			if (!this.value || previous?.currentAlias === null) initialAlias = declared;
-			aliases = { initialAlias, currentAlias: declared };
+			if (!this.value || previous?.currentAlias === null) initialAlias = current;
+			aliases = { initialAlias, currentAlias: current };
 		} else if (!this.value) aliases = { initialAlias: null, currentAlias: null };
 		const cwd = input === undefined && this.value ? this.value.cwd : manager.getCwd();
 		const record = decodePublishedState({ schema: state?.work ? 2 : 1, sessionId: manager.getSessionId(),

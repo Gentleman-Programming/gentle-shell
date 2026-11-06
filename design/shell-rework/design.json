@@ -1,0 +1,49 @@
+{
+	"title": "Gentle Shell rework: today vs proposal",
+	"brief": "The whole Gentle Shell screen at 180x50 with the same session data: the real capture today and the proposed IDE-in-a-terminal layout (title row, rail as one tinted panel with sections, editor as a titled panel, one status bar), each with numbered notes. Inventory in design/shell-rework/inventory.md.",
+	"artboards": [
+		{
+			"file": "02-proposal.html",
+			"title": "Proposal",
+			"tradeoff": "Every fact once, rows spent on live work; nothing from today is lost, and the Light preset hides empty sections",
+			"width": 1440,
+			"height": 1120
+		},
+		{
+			"file": "03-hybrid-main.html",
+			"title": "Hybrid · MAIN",
+			"tradeoff": "Same panel plus a tab row that scales to Git, profiles and memory; costs two rail rows and a mode to remember",
+			"width": 1440,
+			"height": 1080
+		},
+		{
+			"file": "04-hybrid-git.html",
+			"title": "Hybrid · GIT",
+			"tradeoff": "A destination tab open while an agent waits: the alert and the MAIN badge stay visible from any tab",
+			"width": 1440,
+			"height": 1080
+		},
+		{
+			"file": "05-mobile.html",
+			"title": "Mobile",
+			"tradeoff": "Live work shrinks to one row and opens as a sheet; alerts and the editor stay on screen; the model moves to the title row",
+			"width": 1440,
+			"height": 940
+		},
+		{
+			"file": "06-many-agents.html",
+			"title": "Many agents",
+			"tradeoff": "One row per agent ordered by what needs you; the rail gets busier, finished work stays collapsed",
+			"width": 1440,
+			"height": 1080
+		},
+		{
+			"file": "07-many-agents-mobile.html",
+			"title": "Many agents · mobile",
+			"tradeoff": "The phone counts agents in one row and lists them in the sheet; the question always stays above the editor",
+			"width": 1440,
+			"height": 860
+		}
+	],
+	"feature": "odd/tasks/shell-ide-rework.md"
+}

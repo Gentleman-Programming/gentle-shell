@@ -2,18 +2,33 @@
 
 > 🚀 **Full speed, destructive actions still ask.** YOLO lets the agent implement, commit, push and open PRs within the already authorized task without asking each time, which suits long autonomous runs. Destructive operations still require fresh confirmation; the one exception is recursive removal of the session's own temp scratch (see [Temp scratch removal](#temp-scratch-removal)).
 
-Use `/gentle:yolo enable` in the interactive primary Pi TUI to stop repeated permission questions for ordinary work **within your already authorized task**. YOLO is **OFF** unless you select it or save YOLO as the user-global default. [Normal, Auto and global defaults](permission-modes.md) are managed separately from the live-session toggle. The active status and a separate editor widget both say **🚀 YOLO ON 🔥 — destructive confirmations remain**, even when Gentle Shell hides its status layout.
+Use `/gentle:yolo` in the interactive primary Pi TUI to choose Normal, Auto, YOLO or Super Yolo for the current session. Select YOLO to stop repeated permission questions for ordinary work **within your already authorized task**. YOLO is **OFF** unless you select it or save YOLO as the user-global default. [Permission modes and global defaults](permission-modes.md) are managed separately from the live-session selection. The active status and a separate editor widget both say **🚀 YOLO ON 🔥 — destructive confirmations remain**, even when Gentle Shell hides its status layout.
 
 | Command | Effect |
 | --- | --- |
 | `/gentle:yolo enable` | Select YOLO for this live session and workspace/clone. |
 | `/gentle:yolo disable` | Select Normal immediately and clear the YOLO indicators; saved defaults stay unchanged. |
-| `/gentle:yolo status` | Show the current state without activating. |
-| `/gentle:yolo` | Open a menu titled **🚀 Gentle YOLO 🔥 — full speed, destructive actions still ask (current: ON\|OFF)** with `enable`, `disable` and `status`. Cancelling changes nothing. Without an interactive menu UI it behaves like `status`. |
+| `/gentle:yolo status` | Show YOLO or Super Yolo when active, otherwise **YOLO OFF**, without activating. |
+| `/gentle:yolo` | Choose `normal`, `auto`, `yolo` or `super-yolo` for this session. The menu shows the current mode and a short description of each choice. Cancelling changes nothing; without an interactive primary TUI it reports status instead. |
 
 Invalid arguments leave state unchanged.
 
 The Session command palette also includes YOLO. Interactive selection requires an eligible primary TUI, live session identity and identifiable workspace. Outside Git, the canonical workspace directory supplies identity. There is no model-callable activation tool. `/gentle:mode default yolo` optionally saves a trusted user-global default for new primary sessions; `/gentle:mode default normal` removes that elevated default. Neither command changes the current mode.
+
+## Super Yolo
+
+**💥 Super Yolo removes every permission prompt; the only line left is private material.** Select it with `/gentle:yolo` or `/gentle:mode super-yolo`, or save it for new sessions with `/gentle:mode default super-yolo`.
+
+While it is active:
+
+- Every shell-guard confirmation is waived, data loss included: recursive `rm`, SQL drops, ordinary pushes, rebases, forced branch deletion, `npm publish` and configured guardrail `confirm`/`block` rules all run without dialogs. Code-level hard denies stay blocked (`git reset --hard`, forced clean, force push); see below.
+- The Auto classifier does not run.
+- The **sensitive-path guard stays hard-blocked**: `read`, `write` and `edit` of `.env` files, `.ssh`, keychains, `*.pem/*.key/*.p12/*.pfx`, `secrets/` directories and cloud credential files are refused in every mode, Super Yolo included.
+- Code-level catastrophic denies remain: `rm -rf /`, `rm -rf ~`, `--no-preserve-root`, `git reset --hard`, forced clean and force push are blocked without a dialog.
+- `ask_user` tools, provider consent, maintenance/recovery authorization and opaque-token decisions are never automatically answered.
+- `/gentle:yolo status` identifies Super Yolo while it is active, and `/gentle:yolo disable` returns to Normal. Children never inherit Super Yolo; their bounded delegation and child guards are unchanged.
+
+Super Yolo is deliberate maximum autonomy for a workspace you accept the consequences of. The shell recognition remains lexical, not a sandbox: unrecognized script forms, custom tools and prompt injection can still reach destructive effects, and OS-level isolation remains your real containment boundary.
 
 ## Configuration menu path
 
@@ -23,7 +38,7 @@ The Session command palette also includes YOLO. Interactive selection requires a
 
 Navigation, the read-only preview and Escape never grant permission. The preview reminds you that ordinary scoped commits/push/PR are covered, destructive confirmations remain, review consent is unchanged and reload resets the live grant. **UNAVAILABLE** means the live primary owner or eligible session/workspace cannot be used; selecting it cannot activate YOLO.
 
-The live YOLO toggle does not save preferences. The separate **Default permissions** rows can save Normal, Auto or YOLO in the dedicated user-global permission store, never a repository preference or visual profile. **Session permissions** selects the current mode without changing that default. Closing the menu removes its observers and cancels unfinished menu activation; it does not revoke an already completed activation. Reload or session replacement invalidates old menu callbacks and resets the live permission.
+The live YOLO toggle does not save preferences. The separate **Default permissions** rows can save Normal, Auto, YOLO or Super Yolo in the dedicated user-global permission store, never a repository preference or visual profile. **Session permissions** selects the current mode without changing that default. Closing the menu removes its observers and cancels unfinished menu activation; it does not revoke an already completed activation. Reload or session replacement invalidates old menu callbacks and resets the live permission.
 
 ## What activation authorizes
 

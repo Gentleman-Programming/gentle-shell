@@ -7,7 +7,7 @@ import {
 import { getNotificationService, type NotificationService } from "./notification-service.ts";
 import type { CustomizeInline, CustomizeRow } from "./visual-customize-view.ts";
 
-/** Silence first, then the builtins; Enter wraps back to silence. Priority is the event's, not the sound's. */
+/** Inline sound options: silence, builtins, then custom. Priority belongs to the event. */
 const SOUND_CYCLE: readonly NotificationSound[] = [null, ...BUILTIN_NOTIFICATION_IDS.map(id => `builtin:${id}` as const)];
 /** Human labels for the builtin tones; the basic card never prints a `builtin:` id. */
 const HUMAN_TONES: Readonly<Record<string, string>> = Object.freeze({
@@ -15,19 +15,19 @@ const HUMAN_TONES: Readonly<Record<string, string>> = Object.freeze({
 	"builtin:error": "error tone",
 	"builtin:attention": "attention tone",
 });
+const CUSTOM_SOUND = "custom";
 /** Footer hint shared by every row that can assign its own sound (basic groups and per-event exceptions). */
-const SOUND_ROW_HINT = "Tab panes · Enter change · f sound · p test · Esc close";
+const SOUND_ROW_HINT = "←/→ choose · Enter apply · f sound · p test · Esc close";
 
 interface GroupPlan {
 	name: string;
-	recommended: `builtin:${typeof BUILTIN_NOTIFICATION_IDS[number]}`;
 	targets: readonly NotificationEvent[];
 }
 /** Fixed, verified targets per basic type. Attention never intersects `subagent.waiting`. */
 const GROUP_PLANS: readonly GroupPlan[] = [
-	{ name: "Success", recommended: "builtin:success", targets: ["agent.completed", "subagent.completed"] },
-	{ name: "Error", recommended: "builtin:error", targets: ["agent.failed", "subagent.failed", "subagent.timed_out"] },
-	{ name: "Attention", recommended: "builtin:attention", targets: ["agent.attention"] },
+	{ name: "Success", targets: ["agent.completed", "subagent.completed"] },
+	{ name: "Error", targets: ["agent.failed", "subagent.failed", "subagent.timed_out"] },
+	{ name: "Attention", targets: ["agent.attention"] },
 ];
 
 /** Human basename for a local audio reference; never leaks the absolute path or the `file:` prefix. */
@@ -135,7 +135,20 @@ export function buildNotificationRows(ctx: ExtensionContext): CustomizeRow[] {
 	};
 
 	const rows: CustomizeRow[] = [];
-	rows.push({
+	const choices = <T>(row: Omit<CustomizeRow, "action" | "choice">, setting: string,
+		options: readonly { value: T; label: string }[], read: () => T | undefined,
+		apply: (value: T, inline: CustomizeInline) => unknown): void => {
+		for (const option of options) rows.push({ ...row,
+			choice: { setting, value: option.label, current: () => read() === option.value, applyOnMove: false },
+			action: async inline => { await apply(option.value, inline); },
+		});
+	};
+	const onOff = [{ value: false, label: "off" }, { value: true, label: "on" }];
+	const sounds: { value: NotificationSound | typeof CUSTOM_SOUND; label: string }[] = [
+		...SOUND_CYCLE.map(value => ({ value, label: selectionLabel(value) })), { value: CUSTOM_SOUND, label: "custom" },
+	];
+	const soundValue = (sound: NotificationSound): NotificationSound | typeof CUSTOM_SOUND => sound?.startsWith("file:") ? CUSTOM_SOUND : sound;
+	choices({
 		category,
 		label: () => { const current = state(); return `Audio notifications: ${current ? (current.settings.enabled ? "on" : "off") : "unavailable"}`; },
 		preview: () => {
@@ -143,25 +156,18 @@ export function buildNotificationRows(ctx: ExtensionContext): CustomizeRow[] {
 			return { title: "Audio notifications · global switch",
 				sample: current ? `opt-in audio · ${current.settings.enabled ? "enabled" : "disabled"} · mute: ${current.muted ? "on" : "off"} · separate from visual settings` : "Unavailable in this session" };
 		},
-		action: async inline => {
-			const service = serviceOrNotify();
-			if (!service) return;
-			const enabled = !service.getState().settings.enabled;
-			await mutate(inline, settings => { settings.enabled = enabled; });
-		},
-	});
-	rows.push({
+	}, "Enabled", onOff, () => state()?.settings.enabled,
+		(enabled, inline) => mutate(inline, settings => { settings.enabled = enabled; }));
+	choices({
 		category,
 		label: () => { const current = state(); return `Audio: ${current ? (current.muted ? "muted" : "unmuted") : "unavailable"}`; },
 		preview: () => ({ title: "Audio · process mute", sample: "mute survives reload and session replacement; restarting Pi clears it; muted or disabled events are never replayed" }),
-		action: () => {
-			const service = serviceOrNotify();
-			if (!service) return;
-			if (!service.setMuted(ctx, !service.getState().muted)) notify("Audio mute could not be changed.", true);
-		},
+	}, "Mute", onOff, () => state()?.muted, muted => {
+		const service = serviceOrNotify();
+		if (service && !service.setMuted(ctx, muted)) notify("Audio mute could not be changed.", true);
 	});
 	for (const group of GROUP_PLANS) {
-		rows.push({
+		choices({
 			category,
 			keyhint: SOUND_ROW_HINT,
 			label: () => { const current = state(); return current ? `${group.name}: ${groupSelectionLabel(current.settings, group)}` : `${group.name}: unavailable`; },
@@ -170,18 +176,10 @@ export function buildNotificationRows(ctx: ExtensionContext): CustomizeRow[] {
 				if (!current) return { title: `${group.name} sounds`, sample: "Unavailable in this session" };
 				const selection = groupSelection(current.settings, group);
 				const detail = selection.kind === "mixed" ? `mixes several sounds across ${group.targets.length} events · expand Advanced for per-event exceptions`
-					: selection.sound === null ? "silence · Enter cycles tone or assign your own sound with f"
+					: selection.sound === null ? "silence · choose a tone or assign your own sound with f"
 					: selection.sound.startsWith("builtin:") ? `${selectionLabel(selection.sound)} · builtin tone · f assigns your own sound`
 					: `${selectionLabel(selection.sound)} (own group file) · f replaces it`;
-				return { title: `${group.name} sounds · applies to ${group.targets.length} event${group.targets.length === 1 ? "" : "s"}`, sample: `${detail} · p tests the selected sound` };
-			},
-			action: async inline => {
-				const service = serviceOrNotify();
-				if (!service) return;
-				const selection = groupSelection(service.getState().settings, group);
-				const next = selection.kind === "mixed" ? group.recommended
-					: SOUND_CYCLE[(SOUND_CYCLE.indexOf(selection.sound) + 1) % SOUND_CYCLE.length]!;
-				await setTargets(inline, group.targets, next);
+				return { title: `${group.name} sounds · applies to ${group.targets.length} event${group.targets.length === 1 ? "" : "s"}`, sample: `${group.name}: ${groupSelectionLabel(current.settings, group)} · ${detail} · p tests the configured sound` };
 			},
 			key: (data, inline) => {
 				if (matchesKey(data, "p")) {
@@ -193,49 +191,48 @@ export function buildNotificationRows(ctx: ExtensionContext): CustomizeRow[] {
 					return true;
 				}
 				if (matchesKey(data, "f")) {
-					const service = getNotificationService();
-					const selection = service ? groupSelection(service.getState().settings, group) : undefined;
-					const prefill = selection?.kind === "uniform" && selection.sound !== null && selection.sound.startsWith("file:")
-						? selection.sound.slice(5) : "";
-					return chooseFileFor(inline, group.targets, prefill);
+					const current = state();
+					const selection = current ? groupSelection(current.settings, group) : undefined;
+					return chooseFileFor(inline, group.targets, selection?.kind === "uniform" && selection.sound?.startsWith("file:") ? selection.sound.slice(5) : "");
 				}
 				return false;
 			},
+		}, group.name, sounds, () => {
+			const current = state();
+			if (!current) return undefined;
+			const selection = groupSelection(current.settings, group);
+			return selection.kind === "mixed" ? CUSTOM_SOUND : soundValue(selection.sound);
+		}, (sound, inline) => {
+			if (sound !== CUSTOM_SOUND) return setTargets(inline, group.targets, sound);
+			const current = state();
+			const selection = current ? groupSelection(current.settings, group) : undefined;
+			return chooseFileFor(inline, group.targets, selection?.kind === "uniform" && selection.sound?.startsWith("file:") ? selection.sound.slice(5) : "");
 		});
 	}
-	rows.push({
+	choices({
 		category,
 		label: () => `Advanced: ${advanced ? "hide" : "show"} per-event exceptions`,
 		preview: () => ({ title: "Advanced · per-event exceptions", sample: advanced ? "hiding folds the per-event rows again; the basic type choices are unaffected" : "reveals one-off per-event overrides; the basic type choices stay independent" }),
-		action: () => { advanced = !advanced; },
-	});
+	}, "Advanced", [{ value: false, label: "hidden" }, { value: true, label: "shown" }], () => advanced, value => { advanced = value; });
 	const events = getNotificationService()?.getState().supportedEvents
 		?? NOTIFICATION_EVENTS.filter(event => event !== "session.shutdown");
 	for (const event of events) {
-		rows.push({
+		choices({
 			category,
 			visible: () => advanced,
 			keyhint: SOUND_ROW_HINT,
 			label: () => { const current = state(); const sound = current?.settings.audio.events[event] ?? null; return `${event}: ${sound === null ? "silence" : sound}`; },
 			preview: () => {
 				const sound = state()?.settings.audio.events[event] ?? null;
-				return { title: `${event} · audio event`, sample: `selected: ${soundDescription(sound)} · Enter cycles silence/success/error/attention · f local sound · p test sound` };
-			},
-			action: async inline => {
-				const service = serviceOrNotify();
-				if (!service) return;
-				const current = service.getState().settings.audio.events[event] ?? null;
-				const index = SOUND_CYCLE.findIndex(candidate => candidate === current);
-				const next = SOUND_CYCLE[(index + 1) % SOUND_CYCLE.length]!;
-				await mutate(inline, settings => { settings.audio.events[event] = next; });
+				return { title: `${event} · audio event`, sample: `${event}: ${sound === null ? "silence" : sound} · ${soundDescription(sound)} · Enter applies the chosen option · f local sound · p test sound` };
 			},
 			key: (data, inline) => {
 				if (matchesKey(data, "p")) { previewSound(getNotificationService()?.getState().settings.audio.events[event] ?? null); return true; }
-				// Return the field/validation promise so the view keeps the card busy until it settles.
 				if (matchesKey(data, "f")) return chooseFileFor(inline, [event], "");
 				return false;
 			},
-		});
+		}, event, sounds, () => { const current = state(); return current ? soundValue(current.settings.audio.events[event] ?? null) : undefined; },
+			(sound, inline) => sound === CUSTOM_SOUND ? chooseFileFor(inline, [event], "") : setTargets(inline, [event], sound));
 	}
 	return rows;
 }

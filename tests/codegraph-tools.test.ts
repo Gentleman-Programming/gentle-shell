@@ -9,6 +9,7 @@ import codeGraphTools, {
 	createCodeGraphTool,
 	codeGraphNodeScript,
 	findCodeGraphNodeScriptOnPath,
+	isSameDirectory,
 	type CodeGraphRunner,
 } from "../extensions/codegraph-tools.ts";
 
@@ -36,6 +37,74 @@ test("CodeGraph tool rejects non-project, nested-project, HOME, and temporary wo
 			/real Git project root equal to the current workspace/i,
 		);
 	}
+	assert.equal(calls, 0);
+});
+
+test("CodeGraph workspace guard compares directories by identity, not path spelling (#2558)", (t) => {
+	// A mapped drive and its UNC form name one directory; an alias reproduces that without a network share.
+	const root = workspace(t);
+	const holder = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-alias-")));
+	t.after(() => rmSync(holder, { recursive: true, force: true }));
+	const alias = join(holder, "root");
+	symlinkSync(root, alias, "junction");
+	t.after(() => rmSync(alias, { force: true }));
+	const nested = join(root, "nested");
+	mkdirSync(nested);
+	assert.notEqual(alias, root);
+	assert.equal(isSameDirectory(alias, root), true);
+	assert.equal(isSameDirectory(root, nested), false);
+	assert.equal(isSameDirectory(root, join(root, "missing")), false);
+});
+
+test("CodeGraph tool accepts the Git root reached through a different spelling of the same directory (#2558)", async (t) => {
+	// A mapped drive is one such spelling; on a case-insensitive filesystem a different letter case is another.
+	const root = workspace(t);
+	const respelled = [...root].map((char) => (char === char.toLowerCase() ? char.toUpperCase() : char.toLowerCase())).join("");
+	if (respelled === root || !existsSync(respelled)) {
+		t.skip("case-sensitive filesystem: no second spelling of the same directory");
+		return;
+	}
+	const cwds: string[] = [];
+	const tool = createCodeGraphTool(async (_args, options) => {
+		cwds.push(options.cwd);
+		return { stdout: "ok", stderr: "" };
+	});
+	await tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd: respelled } as ExtensionContext);
+	assert.deepEqual(cwds, [realpathSync(respelled)]);
+});
+
+test("CodeGraph workspace rejection names the compared paths and Git's own error (#2558)", async (t) => {
+	const nonProject = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-non-project-")));
+	t.after(() => rmSync(nonProject, { recursive: true, force: true }));
+	const root = workspace(t);
+	const nested = join(root, "nested");
+	mkdirSync(nested);
+	let calls = 0;
+	const tool = createCodeGraphTool(async () => {
+		calls += 1;
+		return { stdout: "unexpected", stderr: "" };
+	});
+	const rejection = async (cwd: string): Promise<string> => {
+		try {
+			await tool.execute("test", { operation: "init" }, undefined, undefined, { cwd } as ExtensionContext);
+		} catch (error) {
+			return (error as Error).message;
+		}
+		assert.fail(`expected ${cwd} to be rejected`);
+	};
+
+	assert.equal(
+		await rejection(nested),
+		`CodeGraph requires a real Git project root equal to the current workspace.\n  workspace: ${nested}\n  git toplevel: ${root}`,
+	);
+
+	const [prefix, workspaceLine, gitLine, ...rest] = (await rejection(nonProject)).split("\n");
+	assert.equal(prefix, "CodeGraph requires a real Git project root equal to the current workspace.");
+	assert.equal(workspaceLine, `  workspace: ${nonProject}`);
+	// Git's stderr, not Node's "Command failed" wrapper; Git may localize the text itself.
+	assert.match(gitLine, /^  git: \S/);
+	assert.doesNotMatch(gitLine, /Command failed/);
+	for (const line of rest) assert.match(line, /^    /);
 	assert.equal(calls, 0);
 });
 

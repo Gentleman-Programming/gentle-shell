@@ -19,15 +19,24 @@ export function isGitCommitCommand(command: string): boolean {
 	return command.split(/[;&|(\n]/).some((segment) => COMMIT.test(segment));
 }
 
+/** Shell segments joined by `;`, `&&`, `||`, or a newline. */
+export const SHELL_SEGMENT_SEPARATOR = /;|&&|\|\||\n/;
+
+const unquote = (value: string) => value.replace(/^["']|["']$/g, "");
+
+/** The directory after a shell segment: `cd <dir>` resolved against `base`, else `base`. */
+export function directoryAfterSegment(segment: string, base: string): string {
+	const cdDir = /^\s*cd\s+("[^"]+"|'[^']+'|\S+)\s*$/.exec(segment)?.[1];
+	return cdDir ? resolve(base, unquote(cdDir)) : base;
+}
+
 /** The directory the commit runs in: `git -C <dir>` under every `cd <dir>` segment before the commit (joined by `;`, `&&`, `||`, or a newline), else the session cwd. */
 export function commitTargetDirectory(command: string, cwd: string): string {
 	const gitDir = /\bgit\s+-C\s+("[^"]+"|'[^']+'|\S+)\s+(?:-[Cc]\s+\S+\s+)*commit\b/.exec(command)?.[1];
-	const unquote = (value: string) => value.replace(/^["']|["']$/g, "");
 	let base = cwd;
-	for (const segment of command.split(/;|&&|\|\||\n/)) {
+	for (const segment of command.split(SHELL_SEGMENT_SEPARATOR)) {
 		if (COMMIT.test(segment)) break;
-		const cdDir = /^\s*cd\s+("[^"]+"|'[^']+'|\S+)\s*$/.exec(segment)?.[1];
-		if (cdDir) base = resolve(base, unquote(cdDir));
+		base = directoryAfterSegment(segment, base);
 	}
 	return gitDir ? resolve(base, unquote(gitDir)) : base;
 }
@@ -36,7 +45,7 @@ type Git = (args: string[], cwd: string) => Promise<string | undefined>;
 
 // Asynchronous, so the parent stays responsive while git answers.
 const runGit: Git = (args, cwd) => new Promise((resolve) => {
-	execFile("git", args, { cwd, encoding: "utf8", timeout: 2_000 }, (error, stdout) => resolve(error ? undefined : stdout.trim()));
+	execFile("git", args, { cwd, encoding: "utf8", timeout: 2_000, windowsHide: true }, (error, stdout) => resolve(error ? undefined : stdout.trim()));
 });
 
 async function defaultBranch(cwd: string, git: Git): Promise<string | undefined> {

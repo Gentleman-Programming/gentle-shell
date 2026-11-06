@@ -4,6 +4,14 @@ An interactive RPC host — a client that runs `pi --mode rpc` itself, such as t
 
 Source map: [publisher](../lib/agents-rpc-publisher.ts), [wiring](../extensions/gentle-agents.ts), [store](../lib/agents-protocol.ts).
 
+## Activity labels
+
+The scrollable TUI sidebar shows each task's existing label below its agent when
+there is no room for the inline task column. The line is clipped to the card
+width; waiting questions and errors retain their existing display priority. The
+height-capped card above the editor retains its existing layout. The RPC payload
+carries the task label for hosts to display.
+
 ## Same-profile orchestrator discovery (Refs #1701)
 
 `orchestrator_list` keeps stable raw routing session IDs and adds recorded display
@@ -32,6 +40,20 @@ unknown rather than misleadingly shortened. Labels are sanitized and bounded to
 counted as omitted. Task workspaces are recorded launch directories, not proof of
 isolation, ownership locks, or exclusive access.
 
+### Startup failures
+
+If session transport startup fails, the current session receives a warning such as
+`Session transport startup failed: phase=initialize class=timed-out code=deadline lastStartupMarker=native-ready.`
+Windows registry diagnostics use only validated phase, failure class/code, and the
+last startup marker. Missing or invalid observations instead report
+`phase=registry diagnostics=unavailable`; listener setup failures report
+`phase=listener diagnostics=unavailable`. Raw exceptions, paths, and helper stderr
+are never included. Retired sessions do not emit startup warnings.
+
+The warning explains why peer tools may remain "not ready"; it does not retry
+startup, increase deadlines, or establish the cause of a native helper stall.
+Successful startup remains silent.
+
 ### Declare a recognizable subject
 
 Before delegation or cross-session coordination, call `orchestrator_session_id`
@@ -49,7 +71,11 @@ Aliases are display hints, never authentication or routing identities.
 
 Aliases are optional envelope metadata in the existing branch-local state record,
 restored with `getBranch()` on start/reload/tree navigation. State replacement or
-withdrawal preserves them; no subject preserves both. Subject-only declarations
+withdrawal preserves them; no subject preserves both. When a publication includes
+`state.work` with an explicit `topic` and no `subject`, the topic refreshes Current
+(the first such classification also sets Initial on a new record); an explicit
+`subject` in the same publication wins, and state-only refreshes never re-derive
+the alias from previously stored work. Subject-only declarations
 preserve state contents, recorded cwd and `recordedAt`: old progress is not a fresh
 status update. Publish subject and state together when changing work. New records
 use null/null until the first declaration; legacy records without aliases keep

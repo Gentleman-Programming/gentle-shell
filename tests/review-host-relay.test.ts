@@ -539,7 +539,11 @@ test("every in-process reviewer refusal maps to its typed relay failure code, ca
 		{ code: INPROCESS_REVIEWER_FAILURE.AUTH_UNAVAILABLE, kind: REVIEW_HOST_RELAY_FAILURE.REVIEWER_AUTH_UNAVAILABLE },
 		{ code: INPROCESS_REVIEWER_FAILURE.THINKING_INVALID, kind: REVIEW_HOST_RELAY_FAILURE.REVIEWER_THINKING_INVALID },
 		{ code: INPROCESS_REVIEWER_FAILURE.TOOL_CALL_ATTEMPTED, kind: REVIEW_HOST_RELAY_FAILURE.REVIEWER_TOOL_CALL },
-		{ code: INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT, kind: REVIEW_HOST_RELAY_FAILURE.REVIEWER_EMPTY_OUTPUT, evidence: { stopReason: "stop" } },
+		{ code: INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT, kind: REVIEW_HOST_RELAY_FAILURE.REVIEWER_EMPTY_OUTPUT, evidence: {
+			reviewerModel: "nan/deepseek-v4-flash", stopReason: "length",
+			usage: { input: 12, output: 64, reasoning: 64, cacheRead: 0, cacheWrite: 0, totalTokens: 76 },
+			content: { blocks: 1, textBlocks: 0, thinkingBlocks: 1, textChars: 0, thinkingChars: 16 },
+		} },
 		{ code: INPROCESS_REVIEWER_FAILURE.OUTPUT_TOO_LARGE, kind: REVIEW_HOST_RELAY_FAILURE.REVIEWER_OUTPUT_TOO_LARGE },
 		{ code: INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED, kind: REVIEW_HOST_RELAY_FAILURE.PI_FAILED },
 	];
@@ -550,7 +554,10 @@ test("every in-process reviewer refusal maps to its typed relay failure code, ca
 		assert.equal(error.message, message);
 		assert.equal(error.mutationOutcome, "none");
 		assert.equal(existsSync(fixture.submitCapturePath), false, `${code} must never reach submission`);
-		if (evidence !== undefined) assert.deepEqual(error.reviewerEvidence, evidence, `${code} must carry its outcome evidence`);
+		if (evidence !== undefined) {
+			assert.deepEqual(error.reviewerEvidence, evidence, `${code} must carry its outcome evidence`);
+			assert.doesNotMatch(JSON.stringify(error.reviewerEvidence), /errorMessage|thinkingSignature|rawStopReason|authorization|providerPayload/);
+		}
 	}
 });
 

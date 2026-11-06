@@ -504,12 +504,30 @@ test("evaluateGuardedCommand: repeated forced branch deletions remain separate m
 	);
 });
 
-test("classifyGuardedCommand: git push plain still confirm when autonomousMode=false even with gitPush=allow in config", () => {
+// Explicit allow in the user config is honored in normal mode too: the
+// permission-allowlist feature writes exactly this entry when the user picks
+// "Always allow" in the confirmation dialog.
+test("classifyGuardedCommand: git push honors explicit allow when autonomousMode=false", () => {
 	const result = classifyGuardedCommand("git push origin feature/test", {
 		autonomousMode: false,
 		guardedCommands: { gitPush: "allow" },
 	});
-	assert.equal(result, "confirm");
+	assert.equal(result, "allow");
+});
+
+// Explicit allow in the user config is honored in normal mode too (see the
+// permission-allowlist feature); explicit confirm keeps asking.
+test("classifyGuardedCommand: pi remove honors explicit allow when autonomousMode=false", () => {
+	const result = classifyGuardedCommand("pi remove my-package", {
+		autonomousMode: false,
+		guardedCommands: { piRemove: "allow" },
+	});
+	assert.equal(result, "allow");
+	const confirmResult = classifyGuardedCommand("pi remove my-package", {
+		autonomousMode: false,
+		guardedCommands: { piRemove: "confirm" },
+	});
+	assert.equal(confirmResult, "confirm");
 });
 
 // ---------------------------------------------------------------------------
@@ -699,14 +717,6 @@ test("loadRuntimeGuardrailsConfig: invalid project config fails safe (autonomous
 // ---------------------------------------------------------------------------
 // When autonomous mode is OFF nothing changes vs current behavior
 // ---------------------------------------------------------------------------
-
-test("classifyGuardedCommand: pi remove confirm when autonomousMode=false", () => {
-	const result = classifyGuardedCommand("pi remove my-package", {
-		autonomousMode: false,
-		guardedCommands: { piRemove: "allow" },
-	});
-	assert.equal(result, "confirm");
-});
 
 test("classifyGuardedCommand: pi remove allowed when autonomousMode=true and piRemove=allow", () => {
 	const result = classifyGuardedCommand("pi remove my-package", {
@@ -909,4 +919,24 @@ test("loadRuntimeGuardrailsConfig: autonomousMode:{} (object) in JSON does NOT a
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+test("evaluateSuperYoloCommand: waives data-loss and configured confirmations, keeps only catastrophic denies", () => {
+	const { evaluateSuperYoloCommand } = __testing;
+	// Ordinary data-loss commands run without confirmation.
+	assert.equal(evaluateSuperYoloCommand("rm -rf node_modules build"), "allow");
+	assert.equal(evaluateSuperYoloCommand("git rebase origin/main"), "allow");
+	assert.equal(evaluateSuperYoloCommand("git branch -D feature/x"), "allow");
+	assert.equal(evaluateSuperYoloCommand("npm publish"), "allow");
+	assert.equal(evaluateSuperYoloCommand("git push -u origin feature"), "allow");
+	// Code-level catastrophic denies survive: root/home removal and hard-coded
+	// destructive Git forms (reset --hard, forced clean, force push).
+	assert.equal(evaluateSuperYoloCommand("rm -rf /"), "block");
+	assert.equal(evaluateSuperYoloCommand("rm -rf ~"), "block");
+	assert.equal(evaluateSuperYoloCommand("rm -rf --no-preserve-root /"), "block");
+	assert.equal(evaluateSuperYoloCommand("git reset --hard HEAD~1"), "block");
+	assert.equal(evaluateSuperYoloCommand("git push --force origin main"), "block");
+	assert.equal(evaluateSuperYoloCommand("git clean -fd"), "block");
+	// Harmless commands are unaffected.
+	assert.equal(evaluateSuperYoloCommand("git status && npm test"), "allow");
 });

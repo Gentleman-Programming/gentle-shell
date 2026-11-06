@@ -306,8 +306,8 @@ test("/api/plan names the found and required version of an older Gentle Shell an
 		const view = await plan(port, await login());
 		assert.deepEqual(view.blockers.map((blocker: { code: string; tool: string }) => [blocker.code, blocker.tool]), [["incompatible-tool", "shell"]]);
 		assert.equal(view.blockers[0].guidance,
-			"Gentle Shell 3.4.0 is installed globally with pnpm, but this installer needs 4.2.0 or newer. Nothing was replaced. " +
-			"Update it with `pnpm add -g gentle-pi@4.2.0`, or remove it with `pnpm remove -g gentle-pi`, then select Check again.");
+			"Gentle Shell 3.4.0 is installed globally with pnpm, but this installer needs 4.6.0 or newer. Nothing was replaced. " +
+			"Update it with `pnpm add -g gentle-pi@4.6.0`, or remove it with `pnpm remove -g gentle-pi`, then select Check again.");
 		assert.deepEqual(view.actions, []);
 	} finally {
 		await host.close("test");
@@ -320,7 +320,7 @@ test("/api/plan installs the installer's Pi alongside an older Pi that neither p
 		const view = await plan(port, await login());
 		assert.deepEqual(view.blockers, []);
 		const install = view.actions.find((action: { id: string }) => action.id === "install-pi");
-		assert.equal(install.description, `Install Pi ${PI_INSTALL_VERSION} globally with pnpm for Gentle Shell. The Pi 0.99.0 already on this computer ` +
+		assert.equal(install.description, "Install the latest stable Pi globally with pnpm for Gentle Shell. The Pi 0.99.0 already on this computer " +
 			"was not installed with pnpm or npm, so it is left unchanged. Gentle Shell uses the installer's Pi; the `pi` command in a terminal may still run the older one.");
 		assert.deepEqual(runs, []);
 	} finally {
@@ -328,14 +328,14 @@ test("/api/plan installs the installer's Pi alongside an older Pi that neither p
 	}
 });
 
-test("/api/plan shows an older Pi's update with its found and target versions and package manager, before consent", async () => {
+test("/api/plan shows an older Pi's update to latest stable with its found version and package manager, before consent", async () => {
 	for (const owner of ["pnpm", "npm"]) {
 		const { host, port, login, runs } = await start({ collect: async () => collected({ pi: { available: true, version: "0.87.1", usable: true, owner } }) });
 		try {
 			const view = await plan(port, await login());
 			assert.deepEqual(view.blockers, []);
 			const update = view.actions.find((action: { id: string }) => action.id === "update-pi");
-			assert.equal(update.description, `Update Pi 0.87.1 to ${PI_INSTALL_VERSION} with ${owner}, the package manager that installed it. ` +
+			assert.equal(update.description, `Update Pi 0.87.1 to the latest stable version with ${owner}, the package manager that installed it. ` +
 				`Gentle Shell needs Pi ${requirements.pi} or newer.`);
 			assert.ok(view.actions.findIndex((action: { id: string }) => action.id === "update-pi") <
 				view.actions.findIndex((action: { id: string }) => action.id === "install-shell"));
@@ -474,27 +474,30 @@ test("/api/plan explains a Pi whose version cannot be read", async () => {
 	}
 });
 
-test("/api/plan says that pnpm may put a newer Pi next to Gentle Shell, at least the minimum", async () => {
-	// A newer Pi installed with pnpm never blocks: it is kept as it is.
-	const { host, port, login } = await start({ collect: async () => collected({ pi: { available: true, version: "1.1.0", usable: true } }) });
+test("/api/plan keeps a compatible Pi and says pnpm may put another next to Gentle Shell, at least the minimum", async () => {
+	// A newer compatible Pi is kept as it is; pnpm may install a different peer beside Shell.
+	const { host, port, login, runs } = await start({ collect: async () => collected({ pi: { available: true, version: "1.8.0", usable: true } }) });
 	try {
 		const view = await plan(port, await login());
 		assert.deepEqual(view.blockers, []);
 		assert.equal(view.actions.find((action: { id: string }) => action.id === "install-shell").description,
-			`Install Gentle Shell (gentle-pi) globally with pnpm. pnpm may put a newer Pi than ${PI_INSTALL_VERSION} next to it ` +
+			"Install Gentle Shell (gentle-pi) globally with pnpm. pnpm may put another Pi next to it " +
 			`(at least Pi ${requirements.pi}), and Gentle Shell runs that Pi.`);
+		assert.equal(view.actions.some((action: { id: string }) => action.id === "install-pi" || action.id === "update-pi"), false);
+		assert.deepEqual(runs, []);
 	} finally {
 		await host.close("test");
 	}
 });
 
-test("the outcome says which Pi Gentle Shell runs only when it is not the installer's Pi", async () => {
+test("the outcome says which Pi Gentle Shell runs whenever a valid version is reported", async () => {
 	const cases: [object, string][] = [
 		[{ outcome: "ready", completed: [], piVersion: "1.1.0" }, `${guidance.outcomes.ready} Gentle Shell runs Pi 1.1.0, which pnpm installed next to it.`],
 		[{ outcome: "terminal-action-required", action: "open-new-terminal", completed: [], piVersion: "1.1.0" },
 			`${guidance.outcomes["terminal-action-required"]} Gentle Shell runs Pi 1.1.0, which pnpm installed next to it.`],
 		[{ outcome: "ready", completed: [] }, guidance.outcomes.ready],
-		[{ outcome: "ready", completed: [], piVersion: PI_INSTALL_VERSION }, guidance.outcomes.ready],
+		[{ outcome: "ready", completed: [], piVersion: PI_INSTALL_VERSION },
+			`${guidance.outcomes.ready} Gentle Shell runs Pi ${PI_INSTALL_VERSION}, which pnpm installed next to it.`],
 		[{ outcome: "ready", completed: [], piVersion: "1.1.0 <script>" }, guidance.outcomes.ready],
 	];
 	for (const [result, expected] of cases) {

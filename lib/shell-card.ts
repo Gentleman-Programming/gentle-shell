@@ -138,8 +138,7 @@ function frame(theme: CardTheme, tone: CardTone, text: string): string {
 	return theme.fg(FRAME_ROLE[tone], text);
 }
 
-export function cardTop(card: Card, theme: CardTheme, width: number, hint?: string): string {
-	const targetWidth = Math.max(0, Math.floor(width));
+export function cardTop(card: Card, theme: CardTheme, width: number, hint?: string): string {	const targetWidth = Math.max(0, Math.floor(width));
 	if (targetWidth === 0) return "";
 	if (targetWidth < 5) {
 		const left = theme.fg(FRAME_ROLE[card.tone], "╭");
@@ -157,6 +156,17 @@ export function cardTop(card: Card, theme: CardTheme, width: number, hint?: stri
 	const fill = rule(targetWidth - styledTitleWidth - 5 - hintWidth);
 	const tail = shownHint ? ` ${theme.fg(HINT_ROLE, shownHint)} ` : "";
 	return theme.fg(FRAME_ROLE[card.tone], chrome.topLeft) + frame(theme, card.tone, chrome.topLead) + styledTitle + frame(theme, card.tone, ` ${fill}`) + tail + frame(theme, card.tone, chrome.topRight);
+}
+
+/**
+ * Whether a heading row keeps its key hint at this width. Callers that compose
+ * a subtitle from optional facts (a model, an effort) use it to shed the least
+ * important chip instead of silently losing the affordance.
+ */
+export function headingFits(card: Card, hint: string | undefined, width: number): boolean {
+	const targetWidth = Math.max(0, Math.floor(width));
+	const head = visibleWidth(`${card.glyph ?? CARD_GLYPH} ${card.title}`) + (card.subtitle ? visibleWidth(card.subtitle) + 3 : 0);
+	return head + 5 + (hint ? visibleWidth(hint) + 2 : 0) <= targetWidth;
 }
 
 export function cardLine(text: string, tone: CardTone, theme: CardTheme, width: number): string {
@@ -274,15 +284,25 @@ const BG_RESET = "\x1b[49m";
 // Full resets (pi-tui truncation inserts one) and background resets.
 const BG_CLEARING = /\x1b\[(?:0|49)?m/g;
 
-function panelOpener(theme: CardTheme, tone: CardTone): string {
+/** The SGR that opens `role` as a background, or "" when the theme cannot paint it. */
+export function surfaceOpener(theme: CardTheme, role: string): string {
 	if (typeof theme.bg !== "function") return "";
 	try {
-		const painted = theme.bg(FLOAT_BG_ROLE[tone], "");
+		const painted = theme.bg(role, "");
 		return painted.endsWith(BG_RESET) ? painted.slice(0, -BG_RESET.length) : "";
 	} catch {
-		// A theme without the tool background keeps the outlined card.
+		// A theme without the role keeps the row unpainted (the outlined card).
 		return "";
 	}
+}
+
+/** Paints `row` behind the background `open` starts, re-armed after every reset the row carries. */
+export function paintSurfaceRow(row: string, open: string): string {
+	return open ? `${open}${row.replace(BG_CLEARING, (reset) => reset + open)}${BG_RESET}` : row;
+}
+
+function panelOpener(theme: CardTheme, tone: CardTone): string {
+	return surfaceOpener(theme, FLOAT_BG_ROLE[tone]);
 }
 
 /**
@@ -322,7 +342,7 @@ function floatOpener(theme: CardTheme, tone: CardTone, width: number): string {
 // Padding rows keep their tone-coloured accent just like content rows.
 function paintFloat(rows: readonly string[], open: string): string[] {
 	const margin = " ".repeat(FLOAT_MARGIN);
-	return rows.map((row) => `${margin}${open}${row.replace(BG_CLEARING, (reset) => reset + open)}${BG_RESET}${margin}`);
+	return rows.map((row) => `${margin}${paintSurfaceRow(row, open)}${margin}`);
 }
 
 /**

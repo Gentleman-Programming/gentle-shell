@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { SessionWorktreeRegistry, clearSessionWorktreeMemo, memoizeWorktreeResolver, resolveSessionWorktree, resolveSessionWorktreeWithGit, SESSION_WORKTREE_ENTRY, toolWorktreePath, worktreeGitEnvironment } from "../lib/session-worktree-registry.ts";
+import { SessionWorktreeRegistry, clearSessionWorktreeMemo, memoizeWorktreeResolver, resolveSessionWorktree, resolveSessionWorktreeWithGit, SESSION_WORKTREE_ENTRY, nativeRootSpelling, toolWorktreePath, worktreeGitEnvironment } from "../lib/session-worktree-registry.ts";
 import { sessionRepositoryAuthority } from "../lib/bounded-writer-admission.ts";
 
 // All Git and session writes belong to unique fixtures, never the live clone.
@@ -305,4 +305,16 @@ test("memoized identity still observes removal, nested repositories and expiry",
 	counted(join(f.dir, "empty"), f.dir);
 	counted(join(f.dir, "empty"), f.dir);
 	assert.equal(calls, 4, "a missing repository is never memoized, so bootstrap is observed at once");
+});
+
+test("Windows root spelling accepts forward slashes as the native separator only (gentle-shell#2314)", () => {
+	// Git prints C:/repo while realpath returns C:\\repo; both name the same root.
+	assert.equal(nativeRootSpelling("C:/path/to/sibling-repo", "win32"), "C:\\path\\to\\sibling-repo");
+	assert.equal(nativeRootSpelling("C:\\path\\to\\sibling-repo", "win32"), "C:\\path\\to\\sibling-repo");
+	// Only separators change: dot segments and trailing separators stay non-canonical.
+	assert.equal(nativeRootSpelling("C:/repo/.", "win32"), "C:\\repo\\.");
+	assert.equal(nativeRootSpelling("C:/repo/", "win32"), "C:\\repo\\");
+	// POSIX spelling is untouched; a backslash is an ordinary filename character there.
+	assert.equal(nativeRootSpelling("/srv/repo", "linux"), "/srv/repo");
+	assert.equal(nativeRootSpelling("/srv/re\\po", "darwin"), "/srv/re\\po");
 });

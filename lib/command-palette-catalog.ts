@@ -20,8 +20,7 @@ export const COMMAND_PALETTE_CATALOG: readonly CommandPaletteCatalogGroup[] = [
 	{
 		title: "Configuration",
 		items: [
-			{ command: "gentle:models", label: "Assign models and effort" },
-			{ command: "gentle:profiles", label: "Agent-model profiles" },
+			{ command: "gentle:profiles", label: "Models and profiles" },
 			{ command: "gentle:persona", label: "Switch persona" },
 			{ command: "gentle:review-mode", label: "Review mode (receipt-driven development)" },
 			{ command: "gentle:background-subagents", label: "Background subagents" },
@@ -36,12 +35,15 @@ export const COMMAND_PALETTE_CATALOG: readonly CommandPaletteCatalogGroup[] = [
 	{
 		title: "Session",
 		items: [
+			{ command: "gentle:guide", label: "Guided tour of Gentle Shell" },
 			{ command: "gentle:yolo", label: "🚀 YOLO 🔥 session permission" },
 			{ command: "gentle:changes", label: "Browse changes" },
 			{ command: "gentle:agents", label: "Subagents" },
 			{ command: "gentle:jobs", label: "Background jobs" },
 			{ command: "gentle:usage", label: "Subscription usage" },
 			{ command: "gentle:review-session-permission", label: "Review session permission" },
+			{ command: "gentle:voice", label: "Voice dictation · local Parakeet" },
+			{ command: "gentle:design", label: "Design · HTML artboards" },
 		],
 	},
 	{

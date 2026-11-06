@@ -5392,6 +5392,76 @@ test("loadFileDiff asks git for a HEAD diff, or a no-index diff for untracked fi
 	]);
 });
 
+test("loadFileDiff discards partial output after the shell Git deadline", async (t) => {
+	for (const { status, exitCode, error, expectedArgs } of [
+		{ status: CHANGE_STATUS.MODIFIED, exitCode: 0, error: null, expectedArgs: ["diff", "HEAD", "--", "file.txt"] },
+		{ status: CHANGE_STATUS.UNTRACKED, exitCode: null, error: Object.assign(new Error("different"), { code: 1 }), expectedArgs: ["diff", "--no-index", "--", "/dev/null", "file.txt"] },
+	]) {
+		await t.test(status, async (t) => {
+			t.mock.timers.enable({ apis: ["setTimeout"] });
+			const events: string[] = [];
+			const partial = "@@ -0,0 +1 @@\n+partial";
+			let calledArgs: readonly string[] = [];
+			const fake = ((command: string, args: readonly string[], options: Record<string, unknown>, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+				void command; void options;
+				calledArgs = args;
+				return {
+					pid: 8, exitCode, signalCode: null,
+					kill() { events.push("kill"); },
+					stdout: { destroy() { events.push("stdout"); callback(error, partial, ""); } },
+					stderr: { destroy() { events.push("stderr"); } },
+				} as unknown as import("node:child_process").ChildProcess;
+			}) as typeof import("node:child_process").execFile;
+			const run = shellGitRunner("/repo", {}, fake, Infinity, () => events.push("tree"));
+			const diff = loadFileDiff(async (args) => {
+				const result = await run(args);
+				assert.equal(result.code, 1);
+				assert.equal(result.stdout, partial, "diagnostic output remains available to other consumers");
+				return result;
+			}, { path: "file.txt", added: 1, deleted: 0, status });
+			t.mock.timers.tick(5_000);
+			t.mock.timers.tick(1_000);
+			assert.deepEqual(calledArgs, ["-C", "/repo", ...expectedArgs]);
+			assert.deepEqual(events, exitCode === null ? ["tree", "kill", "stdout", "stderr"] : ["stdout", "stderr"]);
+			assert.equal(await diff, "", "a timed-out partial diff must not be displayed");
+		});
+	}
+});
+
+test("loadFileDiff discards partial output after execFile's deadline", { skip: process.platform === "win32" }, async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const partial = "@@ -0,0 +1 @@\n+partial";
+	const fake = ((command: string, args: readonly string[], options: { timeout?: number }, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+		void command; void args;
+		assert.equal(options.timeout, 5_000);
+		setTimeout(() => callback(Object.assign(new Error("timed out"), { code: null, killed: true, signal: "SIGTERM" }), partial, ""), options.timeout);
+	}) as typeof import("node:child_process").execFile;
+	const run = shellGitRunner("/repo", {}, fake);
+	const diff = loadFileDiff(async (args) => {
+		const result = await run(args);
+		assert.equal(result.code, 1);
+		assert.equal(result.stdout, partial);
+		return result;
+	}, { path: "file.txt", added: 1, deleted: 0, status: CHANGE_STATUS.MODIFIED });
+	t.mock.timers.tick(5_000);
+	assert.equal(await diff, "", "a timed-out partial diff must not be displayed");
+});
+
+test("loadFileDiff preserves completed shell Git results and bounded output", async () => {
+	for (const { status, error, stdout, expected } of [
+		{ status: CHANGE_STATUS.MODIFIED, error: null, stdout: "+tracked\n", expected: "+tracked\n" },
+		{ status: CHANGE_STATUS.UNTRACKED, error: Object.assign(new Error("different"), { code: 1 }), stdout: "+new\n", expected: "+new\n" },
+		{ status: CHANGE_STATUS.MODIFIED, error: Object.assign(new Error("max buffer"), { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" }), stdout: "+partial", expected: DIFF_TOO_LARGE },
+	]) {
+		const fake = ((command: string, args: readonly string[], options: Record<string, unknown>, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+			void command; void args; void options;
+			callback(error, stdout, "");
+		}) as typeof import("node:child_process").execFile;
+		const run = shellGitRunner("/repo", {}, fake, DIFF_MAX_BYTES, () => assert.fail("completed Git must not be killed"));
+		assert.equal(await loadFileDiff(run, { path: "file.txt", added: 1, deleted: 0, status }), expected);
+	}
+});
+
 test("loadFileDiff replaces one oversized diff with a short open-in-editor line", async () => {
 	const answer = (stdout: string, truncated?: boolean) => async () => ({ stdout, code: 0, ...(truncated ? { truncated } : {}) });
 	const file = { path: "big.ts", added: 1, deleted: 0, status: CHANGE_STATUS.MODIFIED };
@@ -5419,6 +5489,122 @@ test("shell Git runner hides initial and repeated background polling children", 
 		assert.equal(call.options.shell, false);
 		assert.equal(call.options.windowsHide, true);
 	}
+});
+
+// #927: on Windows a status scan that passes the timeout leaves its real work
+// running in a git descendant, because Node's own timeout kill reaches only the
+// direct child. The shell runner must kill the whole tree itself, so repeated
+// timeouts cannot pile up orphaned git.exe processes until RAM is exhausted.
+test("a shell Git scan that passes its timeout kills the whole process tree", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const killed: number[] = [];
+	const kill = (pid: number) => killed.push(pid);
+	const fake = (answer: (callback: (error: Error | null, stdout: string, stderr: string) => void) => void, pid: number) => ((command: string, args: readonly string[], options: Record<string, unknown>, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+		void command; void args; void options;
+		answer(callback);
+		return { pid, exitCode: null, signalCode: null, kill() {} } as unknown as import("node:child_process").ChildProcess;
+	}) as typeof import("node:child_process").execFile;
+
+	// A scan that never answers is tree-killed once the timeout elapses.
+	void shellGitRunner("/big-repo", { PATH: process.env.PATH }, fake(() => {}, 4242), Infinity, kill)(["status", "--porcelain=v1", "--untracked-files=all", "-z"]);
+	assert.deepEqual(killed, [], "nothing is killed before the timeout");
+	t.mock.timers.tick(60_000);
+	assert.deepEqual(killed, [4242], "the timed-out scan kills its whole process tree");
+
+	// A scan that answers never arms the killer at all, even long after.
+	await shellGitRunner("/big-repo", { PATH: process.env.PATH }, fake((callback) => callback(null, "", ""), 7), Infinity, kill)(["status"]);
+	t.mock.timers.tick(60_000);
+	assert.deepEqual(killed, [4242], "a completed scan never kills a tree");
+});
+
+// A descendant that inherited the pipes can hold a timed-out scan open after the
+// direct child exits, so the runner cuts them instead of waiting forever.
+test("a timed-out scan whose child never exits has its pipes cut", (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const events: string[] = [];
+	const hung = ((command: string, args: readonly string[], options: Record<string, unknown>, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+		void command; void args; void options; void callback;
+		return {
+			pid: 5,
+			exitCode: null,
+			signalCode: null,
+			kill() { events.push("kill"); },
+			stdout: { destroy() { events.push("stdout"); } },
+			stderr: { destroy() { events.push("stderr"); } },
+		} as unknown as import("node:child_process").ChildProcess;
+	}) as typeof import("node:child_process").execFile;
+
+	void shellGitRunner("/big-repo", { PATH: process.env.PATH }, hung, Infinity, () => events.push("tree"))(["status"]);
+	t.mock.timers.tick(5_000);
+	assert.deepEqual(events, ["tree"], "the tree kill lands when the scan passes its timeout");
+	t.mock.timers.tick(5_000);
+	assert.deepEqual(events, ["tree", "kill", "stdout", "stderr"], "then the pipes are cut so the scan can settle");
+});
+
+// Cutting the pipes makes execFile report the dead child's own exit code, so a
+// timed-out scan can arrive as a clean exit with a truncated porcelain. The
+// deadline has to win over that: a partial inventory must never read as success.
+test("a timed-out scan that ends with exit 0 still reports failure", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	let answer: ((error: Error | null, stdout: string, stderr: string) => void) | undefined;
+	const fake = ((command: string, args: readonly string[], options: Record<string, unknown>, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+		void command; void args; void options;
+		answer = callback;
+		return {
+			pid: 8,
+			exitCode: null,
+			signalCode: null,
+			kill() {},
+			stdout: { destroy() { answer?.(null, "partial porcelain", ""); } },
+			stderr: { destroy() {} },
+		} as unknown as import("node:child_process").ChildProcess;
+	}) as typeof import("node:child_process").execFile;
+
+	const scan = shellGitRunner("/big-repo", { PATH: process.env.PATH }, fake, Infinity, () => {})(["status", "--porcelain=v1", "-z"]);
+	t.mock.timers.tick(5_000);
+	t.mock.timers.tick(5_000);
+	const result = await scan;
+	assert.equal(result.code, 1, "a scan that passed its deadline is a failure, not a partial success");
+	assert.equal(result.stdout, "partial porcelain", "the partial output is still available for diagnostics");
+});
+
+test("a timed-out scan whose direct child already exited skips the tree kill", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const events: string[] = [];
+	let answer: ((error: Error | null, stdout: string, stderr: string) => void) | undefined;
+	// execFile answers only once every inherited pipe has closed, so the scan
+	// must stay pending until the last one is cut.
+	const closed = new Set<string>();
+	const cutPipe = (name: "stdout" | "stderr") => {
+		events.push(name);
+		closed.add(name);
+		if (closed.size === 2) answer?.(null, "", "");
+	};
+	let settled = false;
+	// taskkill walks the tree from a live parent, so with the direct child gone
+	// the call can only answer "process not found": the pipes are all that is left.
+	const exited = ((command: string, args: readonly string[], options: Record<string, unknown>, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+		void command; void args; void options;
+		answer = callback;
+		return {
+			pid: 6,
+			exitCode: 0,
+			signalCode: null,
+			kill() { events.push("kill"); },
+			stdout: { destroy() { cutPipe("stdout"); } },
+			stderr: { destroy() { cutPipe("stderr"); } },
+		} as unknown as import("node:child_process").ChildProcess;
+	}) as typeof import("node:child_process").execFile;
+
+	const scan = shellGitRunner("/big-repo", { PATH: process.env.PATH }, exited, Infinity, () => events.push("tree"))(["status"]);
+	void scan.then(() => { settled = true; });
+	t.mock.timers.tick(5_000);
+	assert.deepEqual(events, [], "an exited direct child is not killed again");
+	await Promise.resolve();
+	assert.equal(settled, false, "the deadline alone does not settle the scan while a pipe is open");
+	t.mock.timers.tick(5_000);
+	assert.deepEqual(events, ["stdout", "stderr"], "the pipes are still cut so the scan can settle");
+	assert.equal((await scan).code, 1, "a timed-out scan stays a failure after the pipes are cut");
 });
 
 test("openInExternalEditor stops the TUI around the editor and honors $VISUAL over $EDITOR", () => {

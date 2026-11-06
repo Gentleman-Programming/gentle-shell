@@ -105,6 +105,7 @@ test("trimmed review surface keeps the security and authority invariants", () =>
 		assert.match(text, /diff lines/, label);
 		assert.match(text, /logical correction budget/, label);
 	}
+	assert.ok(controller.includes("The plan adds an independent verifier only when escalate names a Task Size high-risk item; it can never lower a tier."));
 	// Native review never removes a tier-required verifier (S1) and stays an outside view.
 	assert.match(controller, /native review is an additional outside view/);
 	assert.match(controller, /verify-always-rdd-high/);

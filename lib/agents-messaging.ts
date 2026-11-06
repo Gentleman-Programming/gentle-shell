@@ -18,7 +18,16 @@ export interface QueryFrame {
 	message: string;
 }
 
-export type ChildFrame = NotificationFrame | QueryFrame;
+// The child's own background-job state report. It carries no model text: the
+// runner reads only the bounded JSON state, acks it, and never routes it to the
+// parent model.
+export interface JobFrame {
+	id: string;
+	kind: "job";
+	message: string;
+}
+
+export type ChildFrame = NotificationFrame | QueryFrame | JobFrame;
 
 interface AckFrame {
 	id: string;
@@ -62,7 +71,7 @@ function boundedText(value: unknown, maxBytes: number): value is string {
 	return typeof value === "string" && wellFormedUnicode(value) && Buffer.byteLength(value, "utf8") <= maxBytes;
 }
 
-function validCorrelation(value: unknown, prefix: "n" | "q"): value is string {
+function validCorrelation(value: unknown, prefix: "n" | "q" | "j"): value is string {
 	if (typeof value !== "string" || !new RegExp(`^${prefix}[1-9]\\d{0,15}$`).test(value)) return false;
 	const counter = Number(value.slice(1));
 	return Number.isSafeInteger(counter) && counter > 0;
@@ -76,17 +85,50 @@ export function validChildQueryId(value: unknown): value is string {
 	return validCorrelation(value, "q");
 }
 
+// Job reports use their own correlation space, so a job frame can never be
+// mistaken for a notification admission or collide with its acknowledgement.
+export function validChildJobId(value: unknown): value is string {
+	return validCorrelation(value, "j");
+}
+
 export function validChildMessage(value: unknown): value is string {
 	return boundedText(value, CHILD_MESSAGE_MAX_BYTES);
 }
 
+/** Upper bound on the running count a child job frame may report; the child's
+ * own registry caps running jobs at 25, so this only rejects nonsense. */
+export const CHILD_JOB_MAX_RUNNING = 1_000_000;
+
+/** The bounded state a child reports about its own background jobs. */
+export interface ChildJobState {
+	running: number;
+	/* True while the child still considers itself pending, even with no running job. */
+	pending: boolean;
+}
+
+/** Encodes the child-side job report; see `parseChildJobState`. */
+export function formatChildJobState(state: ChildJobState): string {
+	return JSON.stringify({ running: state.running, pending: state.pending });
+}
+
+/** Decodes a job frame message; undefined for anything that is not the exact shape. */
+export function parseChildJobState(message: string): ChildJobState | undefined {
+	let value: unknown;
+	try { value = JSON.parse(message); } catch { return undefined; }
+	if (!record(value) || !exact(value, ["running", "pending"])) return undefined;
+	const { running, pending } = value as { running?: unknown; pending?: unknown };
+	if (typeof running !== "number" || !Number.isSafeInteger(running) || running < 0 || running > CHILD_JOB_MAX_RUNNING) return undefined;
+	if (typeof pending !== "boolean") return undefined;
+	return { running, pending };
+}
+
 export function parseChildFrame(value: unknown): { frame?: ChildFrame; id?: string; error?: string } {
 	if (!record(value)) return { error: "invalid child IPC frame" };
-	const id = validChildQueryId(value.id) || validChildId(value.id) ? value.id : undefined;
+	const id = validChildQueryId(value.id) || validChildId(value.id) || validChildJobId(value.id) ? value.id : undefined;
 	if (!exact(value, ["id", "kind", "message"])) return { ...(id === undefined ? {} : { id }), error: "invalid child IPC frame" };
 	if (id === undefined) return { error: "invalid child IPC correlation" };
-	if (value.kind !== "notification" && value.kind !== "query") return { id, error: "unsupported child IPC kind" };
-	if (value.kind === "notification" && !validChildId(id) || value.kind === "query" && !validChildQueryId(id)) return { id, error: "invalid child IPC correlation" };
+	if (value.kind !== "notification" && value.kind !== "query" && value.kind !== "job") return { id, error: "unsupported child IPC kind" };
+	if (value.kind === "notification" && !validChildId(id) || value.kind === "query" && !validChildQueryId(id) || value.kind === "job" && !validChildJobId(id)) return { id, error: "invalid child IPC correlation" };
 	if (!validChildMessage(value.message)) return { id, error: "invalid child IPC message" };
 	return { frame: { id, kind: value.kind, message: value.message } } as { frame: ChildFrame };
 }

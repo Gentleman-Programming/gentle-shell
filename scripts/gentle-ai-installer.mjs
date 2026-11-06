@@ -95,12 +95,14 @@ function asset(name, sha256, binarySha256, executable) {
 // documented recovery instead of leaving a dead end until the next repin.
 async function downloadPinnedGentleAiAsset(asset, destination, options) {
 	const download = options.download ?? downloadGentleAiAsset;
+	// Progress is display-only: it never changes what is downloaded or verified.
+	const progress = options.onProgress === undefined ? [] : [undefined, undefined, { onProgress: options.onProgress }];
 	try {
-		await download(asset.url, destination);
+		await download(asset.url, destination, ...progress);
 	} catch (primaryError) {
 		if (asset.mirrorUrl === undefined) throw primaryError;
 		try {
-			await download(asset.mirrorUrl, destination);
+			await download(asset.mirrorUrl, destination, ...progress);
 		} catch (mirrorError) {
 			throw new GentleAiInstallerError(
 				GENTLE_AI_ASSET_UNAVAILABLE_CODE,
@@ -183,7 +185,11 @@ function downloadHttpError(status) { return Object.assign(new Error(`Gentle AI d
  * proxy.
  */
 export async function downloadGentleAiAsset(url, destination, maxBytes = MAX_DOWNLOAD_BYTES, redirects = MAX_REDIRECTS, options = {}) {
-	const { request = https.get, env = process.env, headerTimeoutMs = DOWNLOAD_TIMEOUTS.headers, bodyTimeoutMs = DOWNLOAD_TIMEOUTS.body, maxAttempts = DOWNLOAD_TIMEOUTS.attempts, retryDelayMs = DOWNLOAD_TIMEOUTS.retryDelay } = options;
+	const { request = https.get, env = process.env, headerTimeoutMs = DOWNLOAD_TIMEOUTS.headers, bodyTimeoutMs = DOWNLOAD_TIMEOUTS.body, maxAttempts = DOWNLOAD_TIMEOUTS.attempts, retryDelayMs = DOWNLOAD_TIMEOUTS.retryDelay, onProgress } = options;
+	// `onProgress({ received, total })` is display-only: `total` is undefined
+	// without a content-length. A reporter failure must never fail or alter the
+	// download itself, so it is swallowed here and reported per chunk below.
+	const report = (received, total) => { try { onProgress?.({ received, total }); } catch { /* display only */ } };
 	const trust = proxyTrustOptions(options);
 	if (![headerTimeoutMs, bodyTimeoutMs, retryDelayMs, maxAttempts].every((value) => Number.isSafeInteger(value) && value >= 0) || maxAttempts < 1) throw new TypeError("Gentle AI download timeout and retry options must be safe non-negative integers");
 	const responseFor = async (currentUrl, remainingRedirects) => {
@@ -227,7 +233,7 @@ export async function downloadGentleAiAsset(url, destination, maxBytes = MAX_DOW
 				const finish = (callback, value) => { if (settled) return; settled = true; clearTimeout(timer); void closed().then(() => callback(value)); };
 				const fail = (error) => { response.destroy(); output.destroy(); finish(reject, error); };
 				const reset = () => { clearTimeout(timer); timer = setTimeout(() => response.destroy(downloadTimeoutError("body")), bodyTimeoutMs); };
-				response.on("data", (chunk) => { reset(); received += chunk.length; if (received > maxBytes) response.destroy(new Error("Gentle AI download exceeds the maximum allowed size")); });
+				response.on("data", (chunk) => { reset(); received += chunk.length; if (received > maxBytes) response.destroy(new Error("Gentle AI download exceeds the maximum allowed size")); else report(received, contentLength > 0 ? contentLength : undefined); });
 				response.on("error", fail); response.setTimeout?.(bodyTimeoutMs, () => response.destroy(downloadTimeoutError("body")));
 				output.on("error", fail); output.on("finish", () => finish(resolve)); response.pipe(output);
 			});

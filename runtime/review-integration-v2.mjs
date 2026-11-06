@@ -78,8 +78,8 @@ export const REVIEW_START_STATE = {
 const START_ACTIONS = ["created", "resumed", "closed", "blocked-scope-action"]         ;
 const RISK_LEVELS = ["low", "medium", "high"]         ;
 const REVIEW_LENSES = ["review-risk", "review-resilience", "review-readability", "review-reliability"]         ;
-const RISK_REASON_CODES = ["configuration_change", "empty_content", "executable_change", "executable_mode", "hot_path", "large_change", "non_executable_only", "process_boundary", "process_scan_limit", "service_token", "shell_source"]         ;
-const RISK_SIGNALS = ["auth", "update", "security", "payments", "permissions", "shell_process"]         ;
+const RISK_REASON_CODES = ["agent_escalation", "configuration_change", "dangerous_sink", "empty_content", "executable_change", "executable_mode", "hot_path", "large_change", "non_executable_only", "process_boundary", "process_scan_limit", "service_token", "shell_source"]         ;
+const RISK_SIGNALS = ["auth", "update", "security", "payments", "permissions", "shell_process", "dangerous_sink", "agent_escalation"]         ;
 // "collect" and "execute" are the v2 envelope's projection of a live
 // transaction whose next_transition is mandatory: the root action names the
 // transition kind instead of reading as a terminal stop.
@@ -218,6 +218,8 @@ const CAPABILITIES_SCHEMA_IDENTITIES                                            
 	}),
 });
 const OPTIONAL_FEATURE_NAMES = Object.freeze([
+	"start_request_context",
+	"start_options_preflight",
 	"base_ref_workspace_overlay",
 	"bounded_process_waits",
 	"classified_authority_repair",
@@ -237,6 +239,8 @@ const OPTIONAL_FEATURE_NAMES = Object.freeze([
 	"validating_result_reopen",
 ]         );
 const FEATURE_NAMES = Object.freeze([
+	"start_request_context",
+	"start_options_preflight",
 	"base_ref_workspace_overlay",
 	"bounded_process_waits",
 	"classified_authority_repair",
@@ -1467,17 +1471,32 @@ function decodeTransitionArguments(value         , label        )               
 	});
 }
 
+// The intended-untracked submission re-enters STATUS for the same target: the
+// workspace projection, or a provider-issued base-diff selector (a base tree
+// plus --committed-only or --workspace-overlay). No other selector is accepted.
+const INTENDED_UNTRACKED_PREFIX = ["--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi"]         ;
+const INTENDED_UNTRACKED_SELECTION_TOKEN = "--intended-untracked-selection={{value}}";
+const INTENDED_UNTRACKED_BASE_TREE = /^--base-ref=[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+
+/** True when a validated submission already carries the provider-issued base-diff target selector. */
+export function intendedUntrackedSubmissionCarriesTarget(tokens                   )          {
+	return isIntendedUntrackedSubmissionTokens(tokens) && tokens.length === INTENDED_UNTRACKED_PREFIX.length + 3;
+}
+
+function isIntendedUntrackedSubmissionTokens(tokens                   )          {
+	if (INTENDED_UNTRACKED_PREFIX.some((token, index) => tokens[index] !== token) || tokens[tokens.length - 1] !== INTENDED_UNTRACKED_SELECTION_TOKEN) return false;
+	const selector = tokens.slice(INTENDED_UNTRACKED_PREFIX.length, -1);
+	if (selector.length === 1) return selector[0] === "--projection=workspace";
+	return selector.length === 2 && INTENDED_UNTRACKED_BASE_TREE.test(selector[0] ) && (selector[1] === "--committed-only=true" || selector[1] === "--workspace-overlay=true");
+}
+
 function decodeCaptureSubmission(value         , label        , v5         , v6         , captureOperation        )                            {
 	// status/v6 adds the provider-owned intended-untracked selection form.
 	if (v6 && captureOperation === "external.select_intended_untracked" && typeof value === "object" && value !== null && (value                           ).operation_token === "status") {
 		const submission = exactRecord(value, label, ["operation_token", "argument_tokens", "value"]);
-		const expectedTokens = [
-			"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi",
-			"--projection=workspace", "--intended-untracked-selection={{value}}",
-		]         ;
 		const operationToken = enumeration(submission.operation_token, ["status"]         , `${label}.operation_token`);
-		const argumentTokens = stringArray(submission.argument_tokens, `${label}.argument_tokens`, { minimum: expectedTokens.length, maximum: expectedTokens.length });
-		if (argumentTokens.some((token, index) => token !== expectedTokens[index])) throw new TypeError(`${label}.argument_tokens substitution binding is invalid`);
+		const argumentTokens = stringArray(submission.argument_tokens, `${label}.argument_tokens`, { minimum: 5, maximum: 6 });
+		if (!isIntendedUntrackedSubmissionTokens(argumentTokens)) throw new TypeError(`${label}.argument_tokens substitution binding is invalid`);
 		const row = exactRecord(submission.value, `${label}.value`, ["slot", "domain", "schema", "substitution_location"]);
 		return {
 			operationToken,
@@ -1486,7 +1505,7 @@ function decodeCaptureSubmission(value         , label        , v5         , v6 
 				slot: enumeration(row.slot, ["intended_untracked_selection"]         , `${label}.value.slot`),
 				domain: enumeration(row.domain, ["schema_bound_json"]         , `${label}.value.domain`),
 				schema: enumeration(row.schema, ["gentle-ai.review-intended-untracked-selection/v1"]         , `${label}.value.schema`),
-				substitutionLocation: integer(row.substitution_location, `${label}.value.substitution_location`, 4, 4),
+				substitutionLocation: integer(row.substitution_location, `${label}.value.substitution_location`, argumentTokens.length - 1, argumentTokens.length - 1),
 			}],
 		};
 	}
@@ -2587,7 +2606,11 @@ function assertReviewApprovedAcknowledgementExecuteShapeV1(execute              
 	if (execute.arguments.length !== REVIEW_APPROVED_ACKNOWLEDGEMENT_ARGUMENTS.length) throw new TypeError(`acknowledgement.execute.arguments must carry exactly ${REVIEW_APPROVED_ACKNOWLEDGEMENT_ARGUMENTS.length} provider-issued arguments`);
 	const values = execute.arguments.map((argument, index) => { const name = REVIEW_APPROVED_ACKNOWLEDGEMENT_ARGUMENTS[index] ; if (argument.name !== name) throw new TypeError(`acknowledgement.execute.arguments[${index}].name must be ${name}`); const value = nonempty(argument.value, `acknowledgement.execute.arguments[${index}].value`); if (nonempty(argument.token, `acknowledgement.execute.arguments[${index}].token`) !== `--${name}=${value}`) throw new TypeError(`acknowledgement.execute.arguments[${index}].token must exactly match ${name}`); return value; });
 	if (execute.preconditions.length !== 1 || execute.preconditions[0]?.name !== "state" || execute.preconditions[0]?.value !== "approved") throw new TypeError("acknowledgement.execute.preconditions must be the single approved state precondition");
-	return { tokens: execute.arguments.map((argument) => argument.token )                                                , values: values                                                     , lineageId: lineage(execute.binding.lineageId, "acknowledgement.execute.binding.lineage_id"), targetIdentity: sha256(execute.binding.targetIdentity, "acknowledgement.execute.binding.target_identity"), revision: sha256(execute.binding.revision, "acknowledgement.execute.binding.revision") };
+	const tokens = execute.arguments.map((argument) => argument.token );
+	// The exact five-argument check above validates both vectors before tuple construction.
+	const tokenTuple                                               = [tokens[0] , tokens[1] , tokens[2] , tokens[3] , tokens[4] ];
+	const valueTuple                                                    = [values[0] , values[1] , values[2] , values[3] , values[4] ];
+	return { tokens: tokenTuple, values: valueTuple, lineageId: lineage(execute.binding.lineageId, "acknowledgement.execute.binding.lineage_id"), targetIdentity: sha256(execute.binding.targetIdentity, "acknowledgement.execute.binding.target_identity"), revision: sha256(execute.binding.revision, "acknowledgement.execute.binding.revision") };
 }
 
 /**
@@ -2921,7 +2944,7 @@ export function decodeReviewLastEventClosureV1(value         )                  
 		storeRevision: sha256(body.store_revision, "last_event_closure.store_revision"),
 		...(escalation === undefined ? {} : { escalation }),
 		...(targetedValidatorEvidence === undefined ? {} : { targetedValidatorEvidence }),
-	};
+	}         ;
 	if (operation === REVIEW_LAST_EVENT_CLOSURE_OPERATION.CAPTURE_CORRECTION_PLAN) {
 		if (body.reviewer_results !== undefined) throw new TypeError("last_event_closure reviewer_results requires approved state");
 		if (body.action !== undefined || body.advisory_findings !== undefined || body.status_continuation !== undefined) throw new TypeError("last_event_closure correction-plan cannot carry action, advisory_findings, or status_continuation");

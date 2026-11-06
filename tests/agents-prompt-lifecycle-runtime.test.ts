@@ -128,7 +128,7 @@ async function createHost(t: TestContext): Promise<Host> {
 	const inputHolds: Array<{ reached: () => void; released: Promise<void> }> = [];
 	const probe = (pi: ExtensionAPI) => {
 		pi.on("before_agent_start", (event) => {
-			beforeAgentStarts.push(event.prompt);
+			beforeAgentStarts.push(event.messageType === "user" ? event.prompt : `custom:${event.message.customType}`);
 			return { systemPrompt: `${event.systemPrompt}\n${MARKER}` };
 		});
 	};

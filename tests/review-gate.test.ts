@@ -14,6 +14,7 @@ import {
 	recheckReleaseFastPathRemoteHeadV1,
 	resolveConfiguredPushDestinationV1,
 	type GateTargetV1,
+	type ReleaseGateTargetV1,
 	type GhCommandRunnerV1,
 	type ReleaseFastPathEvidenceV1,
 } from "../lib/review-publication-gate.ts";
@@ -177,14 +178,14 @@ function temporaryAuthority(t: test.TestContext): GateRepository & {
 test("unbranded receipts are rejected before lifecycle gate evaluation", (t) => {
 	const { repository, finalTree, store, receipt } = temporaryAuthority(t);
 	execFileSync("git", ["read-tree", finalTree], { cwd: repository });
-	assert.throws(() => validateReviewGate({
+	assert.throws(() => Reflect.apply(validateReviewGate, undefined, [{
 		store,
 		receipt,
 		target: { kind: GATE_TARGET_KIND.INTENDED_COMMIT, intended_commit_tree: finalTree },
 		repositoryCwd: repository,
 		idempotencyKey: "unbranded-gate",
 		scopeBudget: budget(),
-	}), /branded authoritative receipt/i);
+	}]), /branded authoritative receipt/i);
 });
 
 test("authoritative receipts cannot be validated through another repository store", (t) => {
@@ -333,6 +334,7 @@ test("push gate allows normal same-name updates while preserving exact-old and c
 	const driftedUpdate = {
 		kind: GATE_TARGET_KIND.PUSH,
 		remote,
+		destination_id: target.destination_id,
 		updates: [{
 			...target.updates[1],
 			old_object: finalCommit,
@@ -347,6 +349,7 @@ test("push gate allows normal same-name updates while preserving exact-old and c
 	const createOverExisting = {
 		kind: GATE_TARGET_KIND.PUSH,
 		remote,
+		destination_id: target.destination_id,
 		updates: [{ ...target.updates[0], destination_ref: "refs/heads/final" }],
 	} as const;
 	assert.equal(
@@ -580,7 +583,7 @@ test("scope child claim and parent gate journal publish atomically across faults
 	assert.equal(store.read(receipt.body.lineage_id).child_claims?.length, 1);
 });
 
-function releaseTarget(repository: GateRepository): GateTargetV1 {
+function releaseTarget(repository: GateRepository): ReleaseGateTargetV1 {
 	return {
 		kind: GATE_TARGET_KIND.RELEASE,
 		tag_ref: "refs/tags/v1.2.3",
@@ -628,7 +631,7 @@ test("release fast path independently accepts complete successful Check Runs des
 	const repository = createGateRepository(t);
 	setRemoteMain(repository, repository.finalCommit);
 	const calls: string[][] = [];
-	const checkRuns = (checks: unknown[], totalCount = checks.length, legacyStatus = "pending"): GhCommandRunnerV1 => (args) => {
+	const checkRuns = (checks: readonly unknown[], totalCount = checks.length, legacyStatus = "pending"): GhCommandRunnerV1 => (args) => {
 		calls.push([...args]);
 		if (args[1] === `repos/{owner}/{repo}/commits/${repository.finalCommit}/check-runs?per_page=100`) {
 			return { status: 0, stdout: JSON.stringify({ total_count: totalCount, returned: checks.length, checks }) };
@@ -952,4 +955,28 @@ test("release fast path remote head recheck detects an advanced or unresolvable 
 		expectedRemoteHead: repository.finalCommit,
 	});
 	assert.deepEqual(missing, { advanced: true, remote_head: null });
+});
+
+// gentle-shell#2552 review: an environment-injected GIT_CONFIG_GLOBAL carrying
+// url.insteadOf must not redirect the publication destination probe; the probe
+// strips the key so Git reads the default config paths, never env overrides.
+test("push destination probe ignores environment-injected url.insteadOf rewrites", (t) => {
+	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-probe-redirect-"));
+	t.after(() => rmSync(cwd, { recursive: true, force: true }));
+	// A hostile inherited GIT_DIR would point `git init` away from the fixture.
+	const fixtureEnvironment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")));
+	const git = (...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", env: fixtureEnvironment });
+	git("init", "-b", "main");
+	git("remote", "add", "origin", "https://example.invalid/owner/repo.git");
+	const hostile = join(cwd, "hostile.gitconfig");
+	writeFileSync(hostile, '[url "https://redirect.invalid/"]\n\tinsteadOf = https://example.invalid/\n');
+	const prior = process.env.GIT_CONFIG_GLOBAL;
+	try {
+		process.env.GIT_CONFIG_GLOBAL = hostile;
+		const destination = resolveConfiguredPushDestinationV1(cwd, "origin");
+		assert.equal(destination.url, "https://example.invalid/owner/repo.git");
+	} finally {
+		if (prior === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+		else process.env.GIT_CONFIG_GLOBAL = prior;
+	}
 });

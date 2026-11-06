@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { fork } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
+import fsSync from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { historyDir, saveTask } from "../lib/agents-history.ts";
 import { TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
@@ -20,7 +22,7 @@ function fixture(t: test.TestContext) {
 		if (fs.existsSync(root) && !fs.lstatSync(root).isSymbolicLink()) {
 			for (const name of fs.readdirSync(root)) {
 				const path = join(root, name);
-				if (["tasks", "presence"].includes(name) && fs.lstatSync(path).isDirectory()) {
+				if (["tasks", "presence", "catalog"].includes(name) && fs.lstatSync(path).isDirectory()) {
 					for (const file of fs.readdirSync(path)) fs.unlinkSync(join(path, file));
 					fs.rmdirSync(path);
 				} else fs.unlinkSync(path);
@@ -54,6 +56,102 @@ test("heartbeat refreshes a bounded canonical label and stops an invalid source"
 	heartbeat!();
 	assert.equal(p.error, "stale-session");
 	assert.deepEqual(listPresence(profile).entries, []);
+});
+
+test("warm-cache flush performs no synchronous ancestor validation", (t) => {
+	t.mock.timers.enable({ apis: ["Date", "setInterval", "setTimeout"], now: 100_000 });
+	const profile = fixture(t);
+	const pub = publisher(t, profile);
+	const absolute = resolve(profile);
+	const ancestors = new Set<string>();
+	for (let path = absolute;; path = dirname(path)) {
+		ancestors.add(path);
+		if (dirname(path) === path) break;
+	}
+	ancestors.add(join(absolute, "gentle-agents"));
+	ancestors.add(join(absolute, "gentle-agents", "presence"));
+	const probes: string[] = [];
+	const originalLstat = fsSync.lstatSync;
+	const spy = t.mock.method(fsSync, "lstatSync", (path: Parameters<typeof fsSync.lstatSync>[0], ...args: unknown[]) => {
+		if (typeof path === "string" && ancestors.has(path)) probes.push(path);
+		return (originalLstat as (...args: unknown[]) => fs.Stats)(path, ...args);
+	});
+	syncBuiltinESMExports();
+	t.after(() => { spy.mock.restore(); syncBuiltinESMExports(); });
+	pub.update(rows("warm cache"));
+	t.mock.timers.tick(400);
+	assert.deepEqual(probes, [], "writes must consume the validated cache, not re-probe ancestors");
+	assert.equal(listPresence(profile).entries[0].generation, 2);
+});
+
+test("a vanished storage tree skips publication without crashing and revalidates asynchronously", async (t) => {
+	const profile = fixture(t);
+	let heartbeat: (() => void) | undefined;
+	const interval = globalThis.setInterval;
+	t.mock.method(globalThis, "setInterval", (callback: () => void, ms: number) => {
+		if (ms === 5000) heartbeat = callback;
+		return interval(callback, ms);
+	});
+	const pub = publisher(t, profile);
+	const root = join(profile, "gentle-agents", "presence");
+	for (const name of fs.readdirSync(root)) fs.unlinkSync(join(root, name));
+	fs.rmdirSync(root);
+	heartbeat!();
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(pub.error, undefined, "a vanished tree skips writes instead of failing the publisher");
+	assert.deepEqual(listPresence(profile).entries, []);
+	fs.mkdirSync(root, { mode: 0o700 });
+	heartbeat!(); // cache is still cold: skip this tick while the heartbeat revalidates
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	heartbeat!(); // warm cache again: publication resumes
+	assert.equal(listPresence(profile).entries.length, 1);
+	assert.equal(pub.error, undefined);
+});
+
+test("heartbeat path validations never overlap", async (t) => {
+	const profile = fixture(t);
+	let heartbeat: (() => void) | undefined;
+	const interval = globalThis.setInterval;
+	t.mock.method(globalThis, "setInterval", (callback: () => void, ms: number) => {
+		if (ms === 5000) heartbeat = callback;
+		return interval(callback, ms);
+	});
+	const pub = publisher(t, profile);
+	let chains = 0;
+	let release!: () => void;
+	const gate = new Promise<void>((done) => { release = done; });
+	const original = fs.promises.lstat;
+	const spy = t.mock.method(fs.promises, "lstat", async (path: Parameters<typeof fs.promises.lstat>[0], ...args: unknown[]) => {
+		if (String(path) === resolve(profile)) { chains++; await gate; }
+		return (original as (...args: unknown[]) => Promise<fs.Stats>).apply(fs.promises, [path, ...args]);
+	});
+	t.after(() => spy.mock.restore());
+	heartbeat!();
+	heartbeat!(); // while the first validation waits, this tick must not start another
+	release();
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(chains, 1, "overlapping heartbeat validations must be skipped");
+	heartbeat!();
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(chains, 2, "the next heartbeat validates again");
+	assert.equal(pub.error, undefined);
+});
+
+test("first publication lands immediately after start() with no heartbeat wait", (t) => {
+	const profile = fixture(t);
+	const pub = publisher(t, profile);
+	// The first updateDiscovery lands in the same tick: no heartbeat may be
+	// required for the first header, discovery, or catalog publication.
+	pub.updateDiscovery({ sessionId: "same session", endpoint: "/fixture/first.sock", createdAt: 1 },
+		{ workspace: "/repo", tasks: [{ id: "child", label: "Check auth", status: "waiting", cwd: "/repo-child" }] });
+	const header = listPresence(profile).entries[0];
+	assert.equal(header.label, "Workspace");
+	assert.equal(presence.readDiscovery(profile, header)?.workspace, "/repo");
+	assert.equal(presence.readDiscovery(profile, header)?.tasks[0].id, "child");
+	const catalog = JSON.parse(fs.readFileSync(
+		join(profile, "gentle-agents", "catalog", `${header.sessionHash}.${header.incarnation}.json`), "utf8"));
+	assert.equal(catalog.schema, 1);
+	assert.deepEqual(catalog.catalog.tasks.map((row: { id: string }) => row.id), ["child"]);
 });
 
 function rows(text = "full retained output") {

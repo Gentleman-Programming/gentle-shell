@@ -66,3 +66,22 @@ test("a fresh ledger restores timings recorded by a previous one", () => {
 	const second = new GentleAiElapsedTimingLedger({ getEntries: () => stored });
 	assert.deepEqual(second.lookup("call-1"), { toolCallId: "call-1", startedAt: 1_000 });
 });
+
+test("extension events persist the coordinator outer call timing and ignore foreign tools", async () => {
+ const { createGentleAiExtension } = await import("../extensions/gentle-ai.ts");
+ const entries: Array<{ type: string; customType: string; data: unknown }> = [];
+ const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
+ const pi = { registerCommand() {}, registerTool() {}, appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
+  on(name: string, handler: (event: any, ctx: any) => unknown) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); } };
+ const manager = { getSessionId: () => "coordinator-timing-fixture", getCwd: () => process.cwd(), getEntries: () => entries, getBranch: () => [], getSessionFile: () => undefined };
+ const ctx = { cwd: process.cwd(), hasUI: false, sessionManager: manager, ui: { notify() {}, setStatus() {}, setWidget() {} } };
+ createGentleAiExtension({ nativeReviewCli: null, candidateViews: null, processEnv: { GENTLE_PI_AGENTS_CHILD: "1", GENTLE_AI_TELEMETRY: "0" } })(pi as never);
+ for (const handler of handlers.get("session_start") ?? []) await handler({ reason: "new" }, ctx);
+ for (const [stage, name, id] of [["tool_execution_start", "gentle_review_run", "outer"], ["tool_execution_end", "gentle_review_run", "outer"], ["tool_execution_start", "foreign", "foreign"], ["tool_execution_end", "foreign", "foreign"]]) {
+  for (const handler of handlers.get(stage) ?? []) await handler({ toolName: name, toolCallId: id }, ctx);
+ }
+ const timing = readGentleAiTimings(entries).get("outer");
+ assert.ok(timing); assert.ok(typeof timing.endedAt === "number" && timing.endedAt >= timing.startedAt);
+ assert.equal(readGentleAiTimings(entries).has("foreign"), false);
+ for (const handler of handlers.get("session_shutdown") ?? []) await handler({}, ctx);
+});

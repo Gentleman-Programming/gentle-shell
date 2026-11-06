@@ -45,7 +45,7 @@ jq -r 'select(.schema == "gentle-shell.agent-status/v1") |
 Treat timestamps older than 30 seconds as stale, even if the PID exists. Files
 are replaced atomically on coalesced status changes and heartbeats, then removed
 on shutdown. Crashes may leave stale files. Failed writes/removals never interrupt
-Pi. Children and noninteractive sessions do not publish. Herdr remains unchanged.
+Pi; after a failed write the next attempt waits 30 seconds. Children and noninteractive sessions do not publish. Herdr remains unchanged.
 
 ## Privacy
 

@@ -1,19 +1,21 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import test, { after } from "node:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentStatus } from "../lib/agent-status.ts";
 
 type Handler = (event: any, ctx: ExtensionContext) => void;
+const temporaryRoots: string[] = [];
+after(() => { for (const root of temporaryRoots) rmSync(root, { recursive: true, force: true }); });
 async function harness(env: NodeJS.ProcessEnv = {}, failing = false) {
 	const { createAgentStatusExtension } = await import("../extensions/gentle-agent-status.ts");
-	const home = mkdtempSync(join(tmpdir(), "agent-status-extension-"));
+	const home = mkdtempSync(join(tmpdir(), "agent-status-extension-")); temporaryRoots.push(home);
 	const handlers = new Map<string, Handler>(); const listeners = new Map<string, (data: any) => void>();
-	const values: AgentStatus[] = []; let now = 0; let tick = () => {}; let flush = () => {}; let stopped = false; let removed = 0;
+	const values: AgentStatus[] = []; let now = 0; let tick = () => {}; let flush = () => {}; let stopped = false; let removed = 0; let attempts = 0;
 	createAgentStatusExtension({ env, gentlePiConfigHome: home, now: () => now,
-		store: () => ({ write: (value: AgentStatus) => { if (failing) throw Error("disk"); values.push(value); return true; }, remove: () => { removed++; if (failing) throw Error("disk"); } }),
+		store: () => ({ write: (value: AgentStatus) => { attempts++; if (failing) throw Error("disk"); values.push(value); return true; }, remove: () => { removed++; if (failing) throw Error("disk"); } }),
 		watch: (fn) => { tick = fn; return () => { stopped = true; }; },
 		schedule: (fn) => { flush = fn; return () => { flush = () => {}; }; },
 	})({ on: (name: string, fn: Handler) => handlers.set(name, fn), events: { on: (name: string, fn: (data: any) => void) => {
@@ -26,7 +28,7 @@ async function harness(env: NodeJS.ProcessEnv = {}, failing = false) {
 		attention: (active: boolean) => { listeners.get("herdr:blocked")?.({ active }); flush(); },
 		settings: (enabled: boolean) => { writeFileSync(join(home, "herdr-task-summary.json"), JSON.stringify({ schema: "gentle-pi.herdr-task-summary/v1", enabled, summaryColor: "accent", continuationColor: "muted" })); },
 		change: () => { listeners.get("gentle-pi:herdr-task-summary:changed")?.({ configHome: home }); flush(); },
-		pulse: (ms: number) => { now += ms; tick(); flush(); }, stopped: () => stopped, removed: () => removed };
+		pulse: (ms: number) => { now += ms; tick(); flush(); }, stopped: () => stopped, removed: () => removed, attempts: () => attempts };
 }
 const todo = (title: string) => ({ toolName: "todo", result: { details: { gentleTodo: { tasks: [{ title, status: "in_progress" }] } } } });
 test("S2/S3: initial state, blocked dominance, settled idle guard and label", async () => {
@@ -71,4 +73,10 @@ test("S7: children and noninteractive excluded; Herdr not required; ownership gu
 test("S6: writer and removal failures never escape into Pi", async () => {
 	const h = await harness({}, true);
 	assert.doesNotThrow(() => { h.fire("session_start"); h.fire("agent_start"); h.pulse(10000); h.fire("session_shutdown"); });
+});
+test("S6: a refused store backs off instead of retrying every tick", async () => {
+	const h = await harness({}, true); h.fire("session_start"); assert.equal(h.attempts(), 1);
+	for (let i = 0; i < 29; i++) h.pulse(1000);
+	h.fire("agent_start"); assert.equal(h.attempts(), 1);
+	h.pulse(1000); assert.equal(h.attempts(), 2);
 });

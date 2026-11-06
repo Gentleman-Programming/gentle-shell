@@ -7155,6 +7155,11 @@ test("a busy parent gets the exit notice steered into its run at the next turn b
 		await jobIo();
 		assert.equal(sent.length, 0, "a busy parent is not interrupted mid-tool-call");
 		await fire("turn_end", ctx);
+		// The notice lands when the job log closes, which can outlast this boundary under load; a later turn boundary then delivers it.
+		for (let boundary = 0; boundary < 40 && sent.length === 0; boundary++) {
+			await new Promise((resolve) => setTimeout(resolve, 25));
+			await fire("turn_end", ctx);
+		}
 		assert.equal(sent.length, 1);
 		assert.deepEqual(sent[0]!.options, { deliverAs: "steer", triggerTurn: true });
 		assert.match(String(sent[0]!.message.content), /job-1 \("make build"\) exited with code 0/);
@@ -7218,7 +7223,8 @@ test("/gentle:jobs opens this session's jobs overlay, stops the selected job, an
 		assert.equal(jobs.runs[0]!.signal?.aborted, true, "s stops the selected job");
 		assert.equal(statuses.at(-1), undefined, "the footer count clears when nothing runs");
 		assert.deepEqual(snapshots.at(-1)?.snapshot.jobs.map(({ status }) => status), ["stopped"], "the finished tail keeps the stopped job visible once the count clears");
-		await jobIo();
+		// The stop notice follows the job log close, which can outlast a fixed wait under load.
+		await eventually(() => sent.some((entry) => entry.message.customType === "gentle-jobs.notice"), "the stopped job must report its stop notice");
 		const notices = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
 		assert.equal(notices.length, 1, "the agent was told it would be notified, so a human stop is reported once");
 		assert.match(String(notices[0]!.message.content), /job-1 \("CI"\) was stopped by the user/);
@@ -7261,7 +7267,7 @@ test("/gentle:jobs mouse controls route the chosen running job through the exist
 		overlay.handleMouse?.(eventFor("s Stop", "click"));
 		assert.equal(jobs.runs[0]!.signal?.aborted, false);
 		assert.equal(jobs.runs[1]!.signal?.aborted, true, "the selected job alone is stopped");
-		await jobIo();
+		await eventually(() => sent.some((entry) => entry.message.customType === "gentle-jobs.notice"), "the stopped job must report its stop notice");
 		const notices = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
 		assert.equal(notices.length, 1);
 		assert.match(String(notices[0]!.message.content), /job-2 \("second job"\) was stopped by the user/);
@@ -7289,9 +7295,13 @@ test("a job exit notice whose forwarding throws while the parent is idle is retr
 		await jobIo();
 		assert.equal(sent.length, 0);
 		assert.equal(userMessages.length, 0);
+		assert.equal(sent.length, 0);
+		assert.equal(userMessages.length, 0);
+		// Forwarding keeps throwing until the job settles: the failed flush is what arms the bounded retry.
+		await eventually(() => timers.pending(PARENT_WAKE_GRACE_MS) >= 1, "the failed flush arms the bounded retry timer");
 		Object.assign(pi, { sendMessage });
 		// No turn boundary is coming for an idle parent, so the retry is a timer.
-		assert.equal(timers.run(PARENT_WAKE_GRACE_MS), 1, "one bounded retry flush is armed");
+		assert.equal(timers.run(PARENT_WAKE_GRACE_MS), 1, "exactly one bounded retry flush is armed");
 		await tick();
 		const notices = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
 		assert.equal(notices.length, 1, "the requeued notice reaches the idle parent");
@@ -7326,7 +7336,8 @@ for (const boundary of ["session_compact", "session_compact_failed"] as const) {
 			assert.equal(sent.length, 0, "the boundary handler runs before Pi leaves the compacting state");
 			setIdle(true);
 			assert.equal(timers.run(0), 1, "one deferred flush is scheduled for the compaction boundary");
-			await tick();
+			// The flush only succeeds once the job log close settles, which can outlast the boundary under load.
+			await eventually(() => sent.length >= 1, "the held notice is flushed after the compaction boundary");
 			assert.deepEqual(sent.map((entry) => entry.options), [{ triggerTurn: false }], "the held notice is stored without a direct turn");
 			assert.deepEqual(delivery, ["custom:gentle-jobs.notice", "user"], "one wake follows the held notice");
 		} finally {
@@ -7395,7 +7406,8 @@ test("monitor delivers line events to an idle parent with one wake, and reports 
 		assert.match(renderers.get("gentle-jobs.notice")!(events[0]!.message, { expanded: true }, plainTheme).render(70).map(stripAnsi).join("\n"), /unit: fail/);
 		jobs.runs[0]!.onData(Buffer.from("e2e: pass\n"));
 		jobs.runs[0]!.exit(1);
-		await jobIo();
+		// Pending lines and the end notice follow the job log close, which can outlast a fixed wait under load.
+		await eventually(() => sent.filter((entry) => entry.message.customType === "gentle-jobs.notice").length >= 3, "the closed monitor log must deliver its pending lines and end notice");
 		const contents = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice").map((entry) => String(entry.message.content));
 		assert.equal(contents.length, 3, "pending lines are delivered before the end notice");
 		assert.match(contents[1]!, /reported 1 new line:\ne2e: pass/);
@@ -8227,6 +8239,8 @@ test("a job notice held for a parent busy without a run is delivered by the held
 		jobs.runs[0]!.exit(0);
 		await jobIo();
 		assert.equal(sent.length, 0, "a parent busy without a run gets nothing yet");
+		// The notice arms the re-check when the job settles, which can outlast a fixed wait under load.
+		await eventually(() => timers.pending(HOLD_RECHECK_MS) > clockTicks, "the held job notice arms the re-check once it settles");
 		assert.equal(timers.pending(HOLD_RECHECK_MS) - clockTicks, 1, "the held job notice arms exactly one re-check");
 		setIdle(true);
 		timers.run(HOLD_RECHECK_MS);

@@ -591,7 +591,7 @@ export class AgentRunner {
 			// Admission passed: the child registers its own private job tools and is
 			// trusted to report job state for the settlement drain.
 			env[CHILD_JOBS_ENV] = "1";
-		}
+		} else delete env[CHILD_JOBS_ENV];
 		if (tools !== undefined) env[REQUESTED_TOOLS_ENV] = tools;
 		else delete env[REQUESTED_TOOLS_ENV];
 		let instructionsTransportDir: string | undefined;

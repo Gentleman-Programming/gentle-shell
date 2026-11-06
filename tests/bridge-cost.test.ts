@@ -13,16 +13,20 @@ const catalog = (provider: string, id: string) => (provider === "anthropic" && i
 
 test("priceBridgeMessage prices a zero-cost claude-bridge message at the Anthropic list price", () => {
 	const message = bridgeMessage();
+	const original = structuredClone(message);
 	const priced = priceBridgeMessage(message, catalog);
 	assert.ok(priced);
 	// 1M input * $4 + 100k output * $20 + 2M cache read * $0.2 + 200k cache write * $5
-	assert.deepEqual(priced.usage.cost, { input: 4, output: 2, cacheRead: 0.4, cacheWrite: 1, total: 7.4 });
+	assert.deepEqual(priced.usage.cost, { input: 4, output: 2, cacheRead: 0.4, cacheWrite: 1, total: 7.4, totalFromProvider: false });
 	assert.equal(priced.usage.totalTokens, 3_300_000, "token counts stay as the bridge reported them");
-	assert.equal(message.usage.cost.total, 0, "the original message is not mutated");
+	assert.deepEqual(message, original, "the original message is not mutated");
 });
 
 test("priceBridgeMessage leaves messages it must not price untouched", () => {
-	assert.equal(priceBridgeMessage(bridgeMessage({ provider: "anthropic" }), catalog), undefined, "other providers price themselves");
+	const nonBridge = bridgeMessage({ provider: "anthropic" });
+	const original = structuredClone(nonBridge);
+	assert.equal(priceBridgeMessage(nonBridge, catalog), undefined, "other providers price themselves");
+	assert.deepEqual(nonBridge, original, "other providers are not mutated");
 	assert.equal(priceBridgeMessage(bridgeMessage({ role: "user" }), catalog), undefined);
 	assert.equal(priceBridgeMessage(bridgeMessage({ model: "claude-unknown" }), catalog), undefined, "no catalog price, no guess");
 	const alreadyPriced = bridgeMessage();

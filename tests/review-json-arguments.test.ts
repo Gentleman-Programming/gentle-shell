@@ -126,8 +126,8 @@ test("serialized inputs remain byte-for-byte unchanged at validation and facade 
 	assert.equal(__testing.parseReviewCaptureParameters(validate("gentle_review_capture", { lineageId: "l", collectBinding })).collectBinding, collectBinding);
 });
 
-test("actual validation rejects arrays, null and coerced primitives rather than admitting native calls", async () => {
-	for (const value of [[], 123, true, "123", "null", "[]"]) {
+test("validation and facade keep arrays, primitives and coerced null fail-closed", async () => {
+	for (const value of [[], 123, true, "123", "[]"]) {
 		for (const operation of ["start", "assess", "answer-consent", "inspect", "reset", "recover"]) {
 			assert.throws(() => validate("gentle_review", { operation, input: value }), /Validation failed/);
 		}
@@ -136,7 +136,8 @@ test("actual validation rejects arrays, null and coerced primitives rather than 
 	}
 	let calls = 0;
 	const native = new Proxy({}, { get() { return async () => { calls++; throw new Error("unexpected native execution"); }; } }) as NativeReviewCli;
-	for (const value of [null, false]) {
+	// SDK coercion admits the nullable shell, not native operation input.
+	for (const value of [null, false, "null"]) {
 		for (const operation of ["start", "assess", "answer-consent", "inspect", "reset", "recover"]) {
 			const validated = validate("gentle_review", { operation, input: value });
 			assert.equal(validated.input, null, "nullable shell preserves null instead of stripping it to omitted");

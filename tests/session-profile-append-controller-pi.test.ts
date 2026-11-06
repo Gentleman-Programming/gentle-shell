@@ -6,6 +6,7 @@ import {
  mkdtempSync,
  readFileSync,
  renameSync,
+ writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -147,7 +148,7 @@ for (const prior of ["bound", "invalid", "future"] as const) {
 }
 for (const failure of ["bind", "clear"] as const) {
  for (const recovery of ["bind", "clear"] as const) {
-  test(`public EISDIR failed ${failure} never adopted; new ${recovery} survives orphan-parent reopen`, () => {
+  test(`public EISDIR ${failure} rolls back; new ${recovery} survives intact and missing-parent reopen`, () => {
    const { manager, sessions, adapter, errors } = fixture();
    assert.equal(
     adapter.bind("good", {
@@ -160,6 +161,10 @@ for (const failure of ["bind", "clear"] as const) {
    bound(adapter.refresh(), "good");
    const file = manager.getSessionFile();
    assert.ok(file);
+   const original = readFileSync(file, "utf8");
+   const before = structuredClone(manager.getBranch());
+   const retained = manager.getLeafId();
+   assert.ok(retained);
    const saved = `${file}.saved`;
    renameSync(file, saved);
    mkdirSync(file);
@@ -168,23 +173,20 @@ for (const failure of ["bind", "clear"] as const) {
    assert.equal(failed.status, "indeterminate");
    assert.equal(errors.length, 1);
    assert.equal((errors[0] as NodeJS.ErrnoException).code, "EISDIR");
-   const ghost = manager.getBranch().at(-1);
-   assert.ok(ghost);
-   assert.equal(ghost.type, "custom");
+   assert.deepEqual(manager.getBranch(), before, "SDK rolls back the failed entry and leaf");
+   assert.equal(manager.getLeafId(), retained);
+   assert.equal(readFileSync(saved, "utf8"), original, "rejected append preserves stored bytes");
    // Recover fixture filesystem by moves, not history edits or private APIs.
    renameSync(file, `${file}.fault-directory`);
    renameSync(saved, file);
    const preserved = adapter.refresh();
    assert.equal(preserved.status, "persisted");
    bound(preserved, "good");
-   const branch = manager.getBranch();
-   const good = branch.find(
-    (entry) => entry.type === "custom" && entry.id !== ghost.id,
-   );
+   const good = manager.getBranch().find((entry) => entry.type === "custom");
    assert.ok(good);
    manager.branch(good.id);
    bound(adapter.refresh(), "good");
-   manager.branch(ghost.id);
+   manager.branch(retained);
    bound(adapter.refresh(), "good");
    const recovered =
     recovery === "bind" ? adapter.bind("recovered", {}) : adapter.clear();
@@ -195,15 +197,12 @@ for (const failure of ["bind", "clear"] as const) {
    );
    const latest = manager.getBranch().at(-1);
    assert.ok(latest);
-   assert.equal(latest.parentId, ghost.id);
+   assert.equal(latest.parentId, retained);
    const disk = readFileSync(file, "utf8")
     .trim()
     .split("\n")
     .map((line) => JSON.parse(line));
-   assert.equal(
-    disk.some((row) => row.id === ghost.id),
-    false,
-   );
+   assert.equal(disk.some((row) => row.id === retained), true);
    assert.deepEqual(
     disk.find((row) => row.id === latest.id),
     JSON.parse(JSON.stringify(latest)),
@@ -211,19 +210,23 @@ for (const failure of ["bind", "clear"] as const) {
    const reopened = SessionManager.open(file, sessions);
    const restored = controller(reopened).refresh();
    assert.equal(restored.status, "persisted");
-   assert.equal(
-    restored.state.status,
-    recovery === "bind" ? "bound" : "cleared",
+   assert.equal(restored.state.status, recovery === "bind" ? "bound" : "cleared");
+   assert.deepEqual(reopened.getBranch(), manager.getBranch());
+   // An explicit disk gap is a separate test-owned source, not an SDK
+   // failed append: the current SDK correctly rolls those appends back.
+   const orphanFile = `${file}.orphan.jsonl`;
+   writeFileSync(orphanFile,
+    disk.filter((row) => row.id !== retained)
+     .map((row) => JSON.stringify(row)).join("\n") + "\n",
    );
-   // Pi truncates the resumed branch at the missing failed parent. The new
-   // selected record is valid authority without history repair/full ancestry.
-   assert.equal(reopened.getBranch().length, 1);
-   assert.equal(
-    reopened.getBranch().some((entry) => entry.id === ghost.id),
-    false,
-   );
-   assert.equal(reopened.getBranch().at(-1)?.id, latest.id);
-   manager.branch(ghost.id);
+   const orphan = SessionManager.open(orphanFile, sessions);
+   assert.equal(orphan.getBranch().length, 1);
+   assert.equal(orphan.getBranch()[0].id, latest.id);
+   const orphanRestored = controller(orphan).refresh();
+   assert.equal(orphanRestored.status, "persisted");
+   assert.equal(orphanRestored.state.status, recovery === "bind" ? "bound" : "cleared");
+   if (recovery === "bind") bound(orphanRestored, "recovered");
+   manager.branch(retained);
    bound(adapter.refresh(), "good");
   });
  }

@@ -5607,6 +5607,53 @@ test("a timed-out scan whose direct child already exited skips the tree kill", a
 	assert.equal((await scan).code, 1, "a timed-out scan stays a failure after the pipes are cut");
 });
 
+// The next two edge cases come from #1691 by @dnlrsls: a spawn that fails
+// before or after the child exists must settle as a failed scan and never
+// leave a deadline armed to tree-kill a process that was never running.
+test("a shell Git scan whose spawn throws synchronously resolves as a failure without killing", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const killed: number[] = [];
+	const throwing = ((command: string, args: readonly string[], options: Record<string, unknown>, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+		void command; void args; void options; void callback;
+		throw new Error("spawn failed");
+	}) as unknown as typeof import("node:child_process").execFile;
+
+	for (const killer of [(pid: number) => killed.push(pid), undefined]) {
+		const result = await shellGitRunner("/repo", { PATH: process.env.PATH }, throwing, Infinity, killer)(["status"]);
+		assert.equal(result.code, 1, "a spawn that throws is a failed scan, not a rejected promise");
+		assert.equal(result.stdout, "");
+	}
+	t.mock.timers.tick(60_000);
+	assert.deepEqual(killed, [], "no deadline is left to kill a tree that never started");
+});
+
+test("a shell Git scan whose spawn errors asynchronously before the deadline never kills the tree", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const events: string[] = [];
+	let answer: ((error: Error | null, stdout: string, stderr: string) => void) | undefined;
+	const fake = ((command: string, args: readonly string[], options: Record<string, unknown>, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+		void command; void args; void options;
+		answer = callback;
+		return {
+			pid: 9,
+			exitCode: null,
+			signalCode: null,
+			kill() { events.push("kill"); },
+			stdout: { destroy() { events.push("stdout"); } },
+			stderr: { destroy() { events.push("stderr"); } },
+		} as unknown as import("node:child_process").ChildProcess;
+	}) as typeof import("node:child_process").execFile;
+
+	const scan = shellGitRunner("/repo", { PATH: process.env.PATH }, fake, Infinity, () => events.push("tree"))(["status"]);
+	t.mock.timers.tick(1_000);
+	answer?.(Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT" }), "", "");
+	const result = await scan;
+	assert.equal(result.code, 1, "an asynchronous spawn error is a failed scan");
+	assert.equal(result.timedOut, undefined, "the scan failed before its deadline");
+	t.mock.timers.tick(60_000);
+	assert.deepEqual(events, [], "the deadline was cleared, so nothing is killed or cut");
+});
+
 test("openInExternalEditor stops the TUI around the editor and honors $VISUAL over $EDITOR", () => {
 	const events: string[] = [];
 	const host = { stop: () => events.push("stop"), start: () => events.push("start"), requestRender: (force?: boolean) => events.push(`render:${force}`) };

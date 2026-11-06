@@ -99,3 +99,16 @@ test("a routing block whose ODD protocol section changed shape fails closed", ()
 	const withoutSection = mirroredRoutingText().replace("### ODD protocol (MANDATORY, in this order, on every request)", "### ODD protocol");
 	assert.throws(() => __testing.readMirroredOddProtocolSteps(tempRoutingMirror(withoutSection)), unexpectedShape);
 });
+
+// Issue #2935: the confinement clause must deliver the resolved-skill-read
+// exception in every mode without loosening the rest of the boundary.
+test("Safety clause allows the task's exact resolved skill reads in every mode without new write rights", () => {
+	const line = renderPrimaryPrompt().split("\n").find(candidate => candidate.startsWith("- Keep session work inside the project root"));
+	assert.ok(line, "confinement clause is delivered");
+	for (const clause of [
+		"reading the task's exact resolved skill files needs no per-file question in any mode",
+		"Grants are per-target, per-session, never blanket: in-project scripts naming outside paths are not standing consent",
+		"ask before any read or write outside it, naming the absolute path",
+		"registered same-clone worktrees",
+	]) assert.ok(line.includes(clause), `missing delivered clause: ${clause}`);
+});

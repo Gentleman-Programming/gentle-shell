@@ -2324,6 +2324,10 @@ function profilesStoreFixture(t: test.TestContext) {
 	for (const dir of [pinRoot, pinCommonDir]) mkdirSync(dir, { recursive: true });
 	setProfilePinWorktreeResolverForTesting(() => ({ root: pinRoot, commonDir: pinCommonDir }));
 	t.after(() => setProfilePinWorktreeResolverForTesting());
+	// Fixture-level teardown ensures binding resets only run for profiles-panel tests,
+	// rather than suite-level hooks running across 100+ unrelated tests in this file (#1768).
+	resetSessionProfileBindingsForTesting();
+	t.after(() => resetSessionProfileBindingsForTesting());
 	const writePin = (path: string, profile: string) => {
 		mkdirSync(dirname(path), { recursive: true });
 		writeFileSync(path, `${JSON.stringify({ kind: PROFILE_PIN_KIND, version: PROFILE_PIN_VERSION, profile }, null, 2)}\n`);
@@ -2683,6 +2687,29 @@ test("applying a populated profile whose routes already match skips the confirma
 	assert.equal(store.active, "team", "the apply still claims the profile as active");
 	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), { worker: { model: "openai/alpha" } }, "the routing is unchanged");
 	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore, "settings.json is untouched");
+});
+
+test("applying an already-matching active profile ignores legacy project routes in the confirmation diff", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings, settingsPath } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/gpt-5" } }, null, 2)}\n`);
+	writeFileSync(fixture.projectPath, `${JSON.stringify({ "review-risk": { model: "openai/legacy" } }, null, 2)}\n`);
+	const workerPath = join(fixture.root, ".pi", "agents", "worker.md");
+	const reviewerPath = join(fixture.root, ".pi", "agents", "review-risk.md");
+	writeMarkdown(reviewerPath, "---\nname: review-risk\ndescription: Reviewer\n---\nbody\n");
+	writeStore({ team: { worker: { model: "openai/gpt-5" } } }, "team");
+	const paths = [fixture.globalPath, fixture.projectPath, storePath, settingsPath, reviewerPath];
+	const before = paths.map((path) => readFileSync(path, "utf8"));
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 0, "legacy routes outside the active profile must not produce a false clearing diff");
+	assert.ok(fixture.notifications.some((entry) => entry.severity === "info" && /already matches the current global routing/.test(entry.message)));
+	assert.deepEqual(paths.map((path) => readFileSync(path, "utf8")), before, "global, legacy, profile, settings, and the omitted agent stay byte-identical");
+	assert.match(readFileSync(workerPath, "utf8"), /model: openai\/gpt-5/, "the apply still materializes the profile's own route");
+	assert.doesNotMatch(readFileSync(reviewerPath, "utf8"), /openai\/legacy/, "the omitted legacy route is never materialized");
 });
 
 test("applying a populated profile whose routes match and whose orchestrator is already set skips the confirmation", async (t) => {
@@ -3215,7 +3242,6 @@ function chooseAgent(panel: RoutingConsumerPanel, agent: string): void {
 test("models screen saves the explicit orchestrator choice into the profile", async (t) => {
 	const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
 	// Use in this session binds the fixture session in a process-wide store.
-	t.after(() => resetSessionProfileBindingsForTesting());
 	writeSettings();
 	const settingsBefore = readFileSync(settingsPath, "utf8");
 	fixture.setLiveModel("openai", "alpha", "high");
@@ -3260,7 +3286,6 @@ test("models screen saves the explicit orchestrator choice into the profile", as
 
 test("models screen leave untouched removes a stale profile orchestrator and keeps the live model on use", async (t) => {
 	const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
-	t.after(() => resetSessionProfileBindingsForTesting());
 	writeSettings();
 	const settingsBefore = readFileSync(settingsPath, "utf8");
 	fixture.setLiveModel("openai", "alpha", "low");
@@ -4199,7 +4224,6 @@ test("Enter switches the live orchestrator, binds the profile, and writes nothin
 		store: readFileSync(storePath, "utf8"),
 		settings: readFileSync(settingsPath, "utf8"),
 	};
-	resetSessionProfileBindingsForTesting();
 	const notifications: Array<{ message: string; severity: string }> = [];
 	const manager = profileActionManager(fixture.root);
 	const ctx = {
@@ -4236,7 +4260,6 @@ test("Enter switches the live orchestrator, binds the profile, and writes nothin
 	assert.match(applied, /Subagents and reviewers use this session's routing snapshot/);
 	assert.match(applied, /global routing, pins, and materialized stores are untouched/);
 	assert.doesNotMatch(applied, /launch routing is unchanged/);
-	resetSessionProfileBindingsForTesting();
 });
 
 test("Enter switches only the selecting session's orchestrator and leaves shared defaults untouched", async (t) => {
@@ -4245,8 +4268,6 @@ test("Enter switches only the selecting session's orchestrator and leaves shared
 	writeStore({ team: { orchestrator: { model: "openai/alpha", thinking: "high" }, worker: { model: "openai/beta" } }, old: {} }, "old");
 	const beforeStore = readFileSync(storePath, "utf8");
 	const beforeSettings = readFileSync(settingsPath, "utf8");
-	resetSessionProfileBindingsForTesting();
-	t.after(() => resetSessionProfileBindingsForTesting());
 	bindSessionProfile("other-session", "old", { worker: { model: "openai/old" } });
 	const switches: string[] = [];
 	const thinking: ThinkingLevel[] = [];
@@ -4280,7 +4301,6 @@ test("reviewer routing uses the selecting session snapshot without leaking to ot
 	writeStore({ team: {} });
 	mkdirSync(fixture.configHome, { recursive: true });
 	writeFileSync(fixture.globalPath, JSON.stringify({ "review-risk": { model: "openai/global" }, "review-reliability": { model: "openai/global" } }));
-	resetSessionProfileBindingsForTesting();
 	resetFrozenInheritedProfilesForTesting();
 	t.after(() => { resetSessionProfileBindingsForTesting(); resetFrozenInheritedProfilesForTesting(); });
 	bindSessionProfile("selecting-session", "team", { "review-risk": { model: "openai/session", thinking: "high" } });
@@ -4293,7 +4313,6 @@ test("reviewer routing uses the selecting session snapshot without leaking to ot
 
 test("reviewer routing follows the profile the session froze at startup, not later global routing", (t) => {
 	const { fixture, writeStore } = profilesStoreFixture(t);
-	resetSessionProfileBindingsForTesting();
 	resetFrozenInheritedProfilesForTesting();
 	t.after(() => resetFrozenInheritedProfilesForTesting());
 	writeStore({ sol: { "review-risk": { model: "openai/sol" } } }, "sol");
@@ -4307,8 +4326,6 @@ test("provider review roles fall back to the session profile orchestrator before
 	const { writeStore, writeSettings } = profilesStoreFixture(t);
 	writeStore({ sol: {} }, "sol");
 	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
-	resetSessionProfileBindingsForTesting();
-	t.after(() => resetSessionProfileBindingsForTesting());
 	bindSessionProfile("bound-session", "sol", { orchestrator: { model: "openai/sol", thinking: "high" }, "review-validator": { model: "openai/validator" } });
 	const routing = __testing.readReviewerModelConfig(process.cwd(), "bound-session");
 	assert.deepEqual(__testing.reviewHostRelaySelection("review-refuter", routing), { selection: "openai/sol", thinking: "high", routingKey: "review-refuter" });
@@ -4319,7 +4336,6 @@ test("provider review roles fall back to the session profile orchestrator before
 
 test("provider review roles skip the orchestrator fallback for an inherited profile", (t) => {
 	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
-	resetSessionProfileBindingsForTesting();
 	resetFrozenInheritedProfilesForTesting();
 	t.after(() => resetFrozenInheritedProfilesForTesting());
 	// Inherited routing drops the orchestrator key, so only Use in this session feeds the fallback.
@@ -4335,7 +4351,6 @@ test("provider review roles skip the orchestrator fallback for an inherited prof
 // a freeze at the session's own start knows the definition but records nothing.
 test("provider review roles skip the orchestrator fallback for a profile frozen at the session's own start", (t) => {
 	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
-	resetSessionProfileBindingsForTesting();
 	resetFrozenInheritedProfilesForTesting();
 	t.after(() => resetFrozenInheritedProfilesForTesting());
 	writeStore({ sol: { orchestrator: { model: "openai/sol" }, "review-risk": { model: "openai/sol-risk" } } }, "sol");
@@ -4348,7 +4363,6 @@ test("provider review roles skip the orchestrator fallback for a profile frozen 
 
 test("provider review roles skip the orchestrator fallback for a repository pin", (t) => {
 	const { fixture, writeStore, writeSettings, localPinPath, writePin } = profilesStoreFixture(t);
-	resetSessionProfileBindingsForTesting();
 	resetFrozenInheritedProfilesForTesting();
 	t.after(() => resetFrozenInheritedProfilesForTesting());
 	// Pinned routing drops the orchestrator key, so the pin's own orchestrator never feeds the fallback.
@@ -4363,7 +4377,6 @@ test("provider review roles skip the orchestrator fallback for a repository pin"
 
 test("reviewer routing keeps a frozen pin snapshot after the pin changes", (t) => {
 	const { fixture, writeStore, writeSettings, localPinPath, writePin } = profilesStoreFixture(t);
-	resetSessionProfileBindingsForTesting();
 	resetFrozenInheritedProfilesForTesting();
 	t.after(() => resetFrozenInheritedProfilesForTesting());
 	writeStore({
@@ -4382,7 +4395,6 @@ test("reviewer routing keeps a frozen pin snapshot after the pin changes", (t) =
 
 test("reviewer routing of a session frozen without a profile ignores a pin added later", (t) => {
 	const { fixture, writeStore, localPinPath, writePin } = profilesStoreFixture(t);
-	resetSessionProfileBindingsForTesting();
 	resetFrozenInheritedProfilesForTesting();
 	t.after(() => resetFrozenInheritedProfilesForTesting());
 	writeStore({ later: { "review-risk": { model: "openai/later-risk" } } });
@@ -4395,7 +4407,6 @@ test("reviewer routing of a session frozen without a profile ignores a pin added
 
 test("reviewer routing in follow mode reads the profile the target resolves now", (t) => {
 	const { fixture, writeStore, localPinPath, writePin } = profilesStoreFixture(t);
-	resetSessionProfileBindingsForTesting();
 	resetFrozenInheritedProfilesForTesting();
 	const previous = process.env.GENTLE_PI_PROFILE_FOLLOW;
 	process.env.GENTLE_PI_PROFILE_FOLLOW = "1";
@@ -4414,7 +4425,6 @@ test("reviewer routing in follow mode reads the profile the target resolves now"
 
 test("provider review roles ignore an orchestrator saved in global routing", (t) => {
 	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
-	resetSessionProfileBindingsForTesting();
 	resetFrozenInheritedProfilesForTesting();
 	writeStore({ team: {} });
 	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
@@ -4427,7 +4437,6 @@ test("provider review roles ignore an orchestrator saved in global routing", (t)
 
 test("reviewer routing of a session frozen without a profile uses a foreign repository's own pin", (t) => {
 	const { fixture, writeStore } = profilesStoreFixture(t);
-	resetSessionProfileBindingsForTesting();
 	resetFrozenInheritedProfilesForTesting();
 	t.after(() => resetFrozenInheritedProfilesForTesting());
 	const foreignRoot = join(fixture.root, "foreign");
@@ -4448,7 +4457,6 @@ test("reviewer routing of a session frozen without a profile uses a foreign repo
 
 test("reviewer routing of a session started outside Git uses the target repository's pin", (t) => {
 	const { fixture, writeStore } = profilesStoreFixture(t);
-	resetSessionProfileBindingsForTesting();
 	resetFrozenInheritedProfilesForTesting();
 	t.after(() => resetFrozenInheritedProfilesForTesting());
 	const repoRoot = join(fixture.root, "repo");
@@ -4475,8 +4483,6 @@ test("Enter preserves session-only routing when the orchestrator is absent or ca
 		} }, undefined);
 		const storeBefore = readFileSync(storePath, "utf8");
 		const settingsBefore = readFileSync(settingsPath, "utf8");
-		resetSessionProfileBindingsForTesting();
-		t.after(() => resetSessionProfileBindingsForTesting());
 		const notifications: string[] = [];
 		let modelCalls = 0;
 		let thinkingCalls = 0;
@@ -4510,7 +4516,6 @@ test("u keeps the session binding when a subagent launch requires session profil
 	const { fixture, storePath, writeStore, writeSettings } = profilesStoreFixture(t);
 	writeSettings();
 	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
-	resetSessionProfileBindingsForTesting();
 	const manager = profileActionManager(fixture.root);
 	const notifications: Array<{ message: string; severity: string }> = [];
 	const ctx = {
@@ -4537,7 +4542,6 @@ test("u keeps the session binding when a subagent launch requires session profil
 		"the session binding was dropped by the first subagent launch",
 	);
 	assert.equal(authority.binding?.name, "team", "authority does not publish the bound profile");
-	resetSessionProfileBindingsForTesting();
 });
 
 test("a reload landing while a models screen step is in flight closes the loop without touching the stale ctx", async (t) => {
@@ -4583,8 +4587,6 @@ test("a reload landing while a models screen step is in flight closes the loop w
 test("Enter skipped by a session replacement while queued never touches the stale ctx", async (t) => {
 	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
 	writeStore({ team: { worker: { model: "openai/alpha" } } }, undefined);
-	resetSessionProfileBindingsForTesting();
-	t.after(() => resetSessionProfileBindingsForTesting());
 	const manager = profileActionManager(fixture.root);
 	let stale = false;
 	const notifications: string[] = [];
@@ -5078,7 +5080,6 @@ test("a keeps the legacy global apply semantics", async (t) => {
 	await __testing.runProfilesPanelAction(ctx, live, storePath, file, { type: "apply-global", name: "team", config: file.profiles["team"] }, {});
 	assert.equal(JSON.parse(readFileSync(storePath, "utf8")).active, "team", "the global store claims the profile");
 	assert.ok(existsSync(fixture.globalPath), "the global routing is materialized");
-	resetSessionProfileBindingsForTesting();
 });
 
 test("Enter with a winning pin binds the session and never touches the pin layers", async (t) => {
@@ -5087,7 +5088,6 @@ test("Enter with a winning pin binds the session and never touches the pin layer
 	writePin(localPinPath, "old");
 	const pinBefore = readFileSync(localPinPath, "utf8");
 	const storeBefore = readFileSync(storePath, "utf8");
-	resetSessionProfileBindingsForTesting();
 	const manager = profileActionManager(fixture.root);
 	const ctx = {
 		cwd: fixture.root,
@@ -5102,13 +5102,11 @@ test("Enter with a winning pin binds the session and never touches the pin layer
 	assert.equal(readFileSync(localPinPath, "utf8"), pinBefore, "the clone pin is untouched");
 	assert.equal(readFileSync(storePath, "utf8"), storeBefore, "the store is untouched");
 	assert.equal(existsSync(fixture.globalPath), false);
-	resetSessionProfileBindingsForTesting();
 });
 
 test("a session-bound profile carries ◉ and says it is used in this session", async (t) => {
 	const { fixture, writeStore } = profilesStoreFixture(t);
 	writeStore({ team: { worker: { model: "openai/beta" } }, other: {} }, "team");
-	t.after(() => resetSessionProfileBindingsForTesting());
 	bindSessionProfile("session-panel", "team", { worker: { model: "openai/gamma" } });
 	let rendered = "";
 	fixture.onInput((panel) => {
@@ -5140,7 +5138,6 @@ test("Enter without a parent session id fails loud and writes nothing", async (t
 	assert.equal(readFileSync(storePath, "utf8"), before);
 	assert.equal(existsSync(fixture.globalPath), false);
 	assert.equal(notifications.at(-1)?.severity, "warning");
-	resetSessionProfileBindingsForTesting();
 });
 
 // gentle-shell#1064 slice 3c: the routing screen shows the profile this session launches with.
@@ -5187,7 +5184,6 @@ test("a frozen profile is not marked as used while session profile authority is 
 	assert.doesNotMatch(rendered, /◉|Used in this session\./);
 	assert.ok(flatScreen(rendered).includes(authorityNotice), "the whole notice fits at 40 columns");
 
-	t.after(() => resetSessionProfileBindingsForTesting());
 	actOnProfile(fixture, "u", "team");
 	await fixture.run("gentle:profiles");
 	const recovered = fixture.panels.at(-1) ?? "";
@@ -5235,7 +5231,6 @@ test("a session profile edited in profiles.json after the freeze or the binding 
 	assert.equal(savedRoutingNotice(await openedScreen(fixture, 40), "team"), true, "the whole notice fits at 40 columns");
 
 	resetFrozenInheritedProfilesForTesting();
-	t.after(() => resetSessionProfileBindingsForTesting());
 	bindSessionProfile("session-panel", "team", { worker: { model: "openai/alpha" } });
 	assert.equal(savedRoutingNotice(await openedScreen(fixture), "team"), true);
 });
@@ -5243,7 +5238,6 @@ test("a session profile edited in profiles.json after the freeze or the binding 
 test("an Enter binding opens on its profile while another is the default (#2451)", async (t) => {
 	const { fixture, writeStore } = profilesStoreFixture(t);
 	writeStore({ team: { worker: { model: "openai/alpha" } }, other: { worker: { model: "openai/beta" } } }, "other");
-	t.after(() => resetSessionProfileBindingsForTesting());
 	bindSessionProfile("session-panel", "team", { worker: { model: "openai/alpha" } });
 	const rendered = await openedScreen(fixture);
 	assert.match(screenTabLine(rendered), /team ◉(\s|$)/);

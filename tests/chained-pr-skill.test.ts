@@ -71,17 +71,17 @@ test("size exceptions follow destination policy, not a universal label gate", ()
 	assert.doesNotMatch(skill + workUnits, /require `size:exception` on over-budget|Require `size:exception` for an over-budget/i);
 });
 
-function assertSddWorkloadGuard(text: string) {
-	const row = text.match(/^\| SDD workload guard \|.*$/m)?.[0] ?? "";
+function assertDeliveryWorkloadGuard(text: string) {
+	const row = text.match(/^\| Delivery workload guard \|.*$/m)?.[0] ?? "";
 	assert.match(row, />400-line.*selected `delivery_strategy`/);
 	assert.match(row, /chaining paths only.*group commits into chained PR slices before implementation/i);
 	assert.match(row, /single-pr.*exception-ok.*keep one PR.*destination repository's documented contribution\/size policy/i);
 }
 
-test("critical SDD workload guard honors single-PR delivery without disabling chaining budgets", () => {
-	assertSddWorkloadGuard(workUnits);
-	assert.throws(() => assertSddWorkloadGuard(workUnits.replace("On chaining paths only", "For every delivery strategy")));
-	assert.throws(() => assertSddWorkloadGuard(workUnits.replace("keep one PR", "force chained PRs")));
+test("critical delivery workload guard honors single-PR delivery without disabling chaining budgets", () => {
+	assertDeliveryWorkloadGuard(workUnits);
+	assert.throws(() => assertDeliveryWorkloadGuard(workUnits.replace("On chaining paths only", "For every delivery strategy")));
+	assert.throws(() => assertDeliveryWorkloadGuard(workUnits.replace("keep one PR", "force chained PRs")));
 });
 
 function assertBases(text: string) {
@@ -121,4 +121,6 @@ test("preserves ODD scope and bounded slicing without SDD guidance", () => {
 	assert.match(skill, /per-task advisory 400 authored-line heuristic does not itself require a PR split/);
 	assert.match(skill, /one.*slicing pass/);
 	assert.doesNotMatch(skill, /SDD|OpenSpec/i);
+	// work-unit-commits ships in the same package and follows the same ODD-only guidance.
+	assert.doesNotMatch(workUnits, /SDD|OpenSpec/i);
 });

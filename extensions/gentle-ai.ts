@@ -83,6 +83,8 @@ import {
 	normalizeRoutingEntry,
 	readSavedModelConfig as readModelRoutingAuthority,
 	readSavedModelConfigAsync as readModelRoutingAuthorityAsync,
+	readModelConfigFile,
+	readModelConfigFileAsync,
 	type AgentModelConfig,
 	type AgentRoutingEntry,
 	type ModelConfigFileResult,
@@ -1843,6 +1845,41 @@ function loadRuntimeGuardrailsConfig(
 	}
 }
 
+/**
+ * Ordered policy seam for the model-initiated `bash` tool_call path
+ * (gentle-pi#405 work unit S1).
+ *
+ * `evaluateBashPolicies` runs these policies in list order and the first
+ * verdict (a non-undefined ToolCallEventResult) wins: a policy returning
+ * `undefined` allows the command to pass to the next policy, and an overall
+ * `undefined` means no policy objected. Future policies (package-manager,
+ * SQL) append entries here so evaluation order stays explicit and greppable
+ * through the stable `name` strings.
+ */
+interface BashCommandPolicy {
+	/** Stable, greppable identifier; tests pin the ordered list by name. */
+	name: string;
+	evaluate: (
+		command: string,
+		ctx: ExtensionContext,
+		events: ExtensionAPI["events"],
+		herdrLifecycle: HerdrConfirmationLifecycle,
+		yoloActive: boolean,
+		autoGate?: () => Promise<ToolCallEventResult | undefined>,
+		superYoloActive?: boolean,
+	) => Promise<ToolCallEventResult | undefined>;
+}
+
+const BASH_COMMAND_POLICIES: readonly BashCommandPolicy[] = [
+	{
+		name: "runtime-guardrails",
+		// Thin adapter preserving confirmCommand's async signature; the guard
+		// logic itself stays byte-identical inside confirmCommand.
+		evaluate: async (command, ctx, events, herdrLifecycle, yoloActive, autoGate, superYoloActive) =>
+			confirmCommand(command, ctx, events, herdrLifecycle, yoloActive, autoGate, superYoloActive),
+	},
+];
+
 // Tools whose `path` input names the file or directory they reach. The guard
 // sees only that input: a search scoped to a directory (grep over ".", with or
 // without a glob) still reads whatever the directory contains, and bash is not
@@ -1987,17 +2024,20 @@ const HERDR_BLOCKER_LABEL = {
 	CHOICE: "Choice awaiting input",
 	GUARDED_CONFIRMATION: "Guarded command confirmation",
 	QUESTIONNAIRE: "Questionnaire awaiting input",
+	REVIEW_AUTHORIZATION: "Review authorization awaiting input",
 } as const;
 
 type HerdrBlockerLabel = (typeof HERDR_BLOCKER_LABEL)[keyof typeof HERDR_BLOCKER_LABEL];
 
+type HerdrBlockerSource = "guarded-confirmation" | "review-authorization";
+
 type HerdrConfirmationLifecycle = {
-	begin(): void;
-	settle(): void;
+	begin(source?: HerdrBlockerSource): void;
+	settle(source?: HerdrBlockerSource): void;
 };
 
 function createHerdrConfirmationLifecycle(events: ExtensionAPI["events"]): HerdrConfirmationLifecycle {
-	let pending = 0;
+	const pending: Record<HerdrBlockerSource, number> = { "guarded-confirmation": 0, "review-authorization": 0 };
 	let choiceActive = false;
 	let nativeQuestionnaireActive = false;
 	let legacyQuestionnaireActive = false;
@@ -2007,15 +2047,17 @@ function createHerdrConfirmationLifecycle(events: ExtensionAPI["events"]): Herdr
 			? HERDR_BLOCKER_LABEL.CHOICE
 			: nativeQuestionnaireActive || legacyQuestionnaireActive
 				? HERDR_BLOCKER_LABEL.QUESTIONNAIRE
-				: pending > 0
-					? HERDR_BLOCKER_LABEL.GUARDED_CONFIRMATION
-					: undefined;
+				: pending["review-authorization"] > 0
+					? HERDR_BLOCKER_LABEL.REVIEW_AUTHORIZATION
+					: pending["guarded-confirmation"] > 0
+						? HERDR_BLOCKER_LABEL.GUARDED_CONFIRMATION
+						: undefined;
 		// Herdr bridges count active/inactive edges. Keep the first label until
 		// every source releases; relabel activations would leak a blocked count.
 		if ((nextLabel === undefined) === (emittedLabel === undefined)) return;
 		emittedLabel = nextLabel;
-		if (nextLabel === undefined) events.emit("herdr:blocked", { active: false });
-		else events.emit("herdr:blocked", { active: true, label: nextLabel });
+		if (nextLabel === undefined) events?.emit?.("herdr:blocked", { active: false });
+		else events?.emit?.("herdr:blocked", { active: true, label: nextLabel });
 	};
 
 	events?.on?.(ASK_USER_CHOICE_BLOCKED_EVENT, (event) => {
@@ -2037,16 +2079,52 @@ function createHerdrConfirmationLifecycle(events: ExtensionAPI["events"]): Herdr
 	});
 
 	return {
-		begin() {
-			pending += 1;
+		begin(source = "guarded-confirmation") {
+			pending[source] += 1;
 			emitEffectiveBlocker();
 		},
-		settle() {
-			if (pending === 0) return;
-			pending -= 1;
+		settle(source = "guarded-confirmation") {
+			if (pending[source] === 0) return;
+			pending[source] -= 1;
 			emitEffectiveBlocker();
 		},
 	};
+}
+
+const HERDR_BLOCKING_UI_METHODS = new Set<PropertyKey>(["confirm", "select", "input", "editor", "custom"]);
+
+/**
+ * Projects every human-facing dialog opened through this context's UI as one
+ * Herdr blocker interval. Only `ui` is replaced; every other property reads the
+ * original context so its liveness getters keep their own receiver.
+ */
+function withHerdrBlockingUi<T extends ExtensionContext>(ctx: T, herdrLifecycle: HerdrConfirmationLifecycle, source: HerdrBlockerSource): T {
+	let wrappedUi: ExtensionContext["ui"] | undefined;
+	let wrappedTarget: ExtensionContext["ui"] | undefined;
+	return new Proxy(ctx, {
+		get(target, property) {
+			const value: unknown = Reflect.get(target, property, target);
+			if (property !== "ui" || value === null || typeof value !== "object") return value;
+			const ui = value as ExtensionContext["ui"];
+			if (wrappedUi !== undefined && wrappedTarget === ui) return wrappedUi;
+			wrappedTarget = ui;
+			wrappedUi = new Proxy(ui, {
+				get(uiTarget, uiProperty) {
+					const member = Reflect.get(uiTarget, uiProperty, uiTarget);
+					if (!HERDR_BLOCKING_UI_METHODS.has(uiProperty) || typeof member !== "function") return member;
+					return async (...args: unknown[]) => {
+						herdrLifecycle.begin(source);
+						try {
+							return await Reflect.apply(member, uiTarget, args);
+						} finally {
+							herdrLifecycle.settle(source);
+						}
+					};
+				},
+			});
+			return wrappedUi;
+		},
+	});
 }
 
 // gentle-shell#2172: YOLO waives reversible delivery, not only one bare push.
@@ -2361,6 +2439,33 @@ async function confirmCommand(
 	};
 }
 
+/**
+ * Evaluate the ordered bash command policies for a model-initiated `bash`
+ * tool call. Policies run in `BASH_COMMAND_POLICIES` order; the first policy
+ * to return a verdict terminates evaluation with that verdict, while an
+ * `undefined` from a policy defers to the remaining policies. `yoloActive`
+ * threads the session YOLO state through to every policy, and `autoGate`
+ * threads the Auto permission-mode gate the same way. The optional
+ * `policies` argument exists for tests and future composition; production
+ * callers use the default ordered list.
+ */
+async function evaluateBashPolicies(
+	command: string,
+	ctx: ExtensionContext,
+	events: ExtensionAPI["events"],
+	herdrLifecycle: HerdrConfirmationLifecycle,
+	yoloActive: boolean,
+	policies: readonly BashCommandPolicy[] = BASH_COMMAND_POLICIES,
+	autoGate?: () => Promise<ToolCallEventResult | undefined>,
+	superYoloActive = false,
+): Promise<ToolCallEventResult | undefined> {
+	for (const policy of policies) {
+		const verdict = await policy.evaluate(command, ctx, events, herdrLifecycle, yoloActive, autoGate, superYoloActive);
+		if (verdict !== undefined) return verdict;
+	}
+	return undefined;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -2382,6 +2487,37 @@ const MODEL_EXPORT_VERSION = 1;
 
 function legacyProjectModelConfigPath(cwd: string): string {
 	return join(cwd, ".pi", "gentle-ai", "models.json");
+}
+
+// bootstrapProfilesFile can activate a profile from a read-only
+// effective-config snapshot without ever writing the global file (e.g.
+// opening /gentle:profiles for the first time). A pinned or active profile is
+// a complete routing snapshot (see withOmittedAgentsClearedAsync): omitted
+// agents must inherit. Before the global file exists there is nothing for the
+// "use only the global file" guarantee to read, and falling back to the raw
+// legacy project file would resurrect agents the profile deliberately omits
+// (that file was never filtered by the profile's omissions). Read the
+// profile's own stored snapshot instead: it is already complete, because
+// bootstrapProfilesFile seeds it from the full effective routing that was
+// visible a moment before the profile existed. Takes the already-resolved
+// target so callers that also branch on it never resolve it twice.
+function activeProfileRoutingSnapshot(cwd: string, target: CurrentProfileTarget): ModelConfigFileResult | undefined {
+	const store = readProfilesFileResult(profilesFilePath(gentleAiConfigHome()));
+	if (store.status !== "valid") return undefined;
+	const config = store.file.profiles[target.name];
+	return config === undefined ? undefined : { status: "valid", config };
+}
+
+// The second path fed into the global/project merge below. With no active
+// profile it is the real legacy project file, so project-only entries merge
+// in. With a pinned or active profile and an existing global file it is the
+// *global* path again on purpose: merging the legacy project file here would
+// resurrect agent entries the profile deliberately omitted (the profile's
+// own snapshot, read by activeProfileRoutingSnapshot, is already complete).
+// Takes the already-resolved target so callers that also branch on it never
+// resolve it twice.
+function secondaryMergeSourcePath(cwd: string, target: CurrentProfileTarget | undefined): string {
+	return target !== undefined ? modelConfigPath(cwd) : legacyProjectModelConfigPath(cwd);
 }
 
 function projectPersonaConfigPath(cwd: string): string {
@@ -2422,22 +2558,52 @@ function writePersonaMode(cwd: string, mode: PersonaMode): string[] {
 	return paths;
 }
 
+// A pinned or active profile is a complete routing snapshot, so while the
+// global file is missing its own snapshot stands in for the legacy project
+// file, which would resurrect agents the profile deliberately omits. Only a
+// readable legacy file is replaced: with nothing there to suppress, the reader
+// keeps the result it returned before that merge (`missing`, or empty for an
+// unreadable file), so a pin or active profile never invents saved routing
+// where no model config exists at all and a session that cleared its profile
+// cannot read the pin back (gentle-shell#2477).
+function profileSnapshotForLegacySource(
+	cwd: string,
+	target: CurrentProfileTarget,
+	legacyResult: ModelConfigFileResult,
+): ModelConfigFileResult {
+	if (legacyResult.status === "missing") return legacyResult;
+	if (legacyResult.status === "invalid") return { status: "valid", config: {} };
+	return activeProfileRoutingSnapshot(cwd, target) ?? { status: "valid", config: {} };
+}
+
+// An invalid legacy project file must never block the global config it merges
+// with: fall back to the global-only result (or empty) instead of erroring.
 function readSavedModelConfig(cwd: string): ModelConfigFileResult {
-	const projectPath = legacyProjectModelConfigPath(cwd);
-	const result = readModelRoutingAuthority(modelConfigPath(cwd), projectPath);
-	return result.status === "invalid" && result.path === projectPath
-		? { status: "valid", config: {} }
-		: result;
+	const globalPath = modelConfigPath(cwd);
+	const target = resolveCurrentProfileTarget(cwd);
+	if (target !== undefined && !existsSync(globalPath)) {
+		return profileSnapshotForLegacySource(cwd, target, readModelConfigFile(legacyProjectModelConfigPath(cwd)));
+	}
+	const projectPath = secondaryMergeSourcePath(cwd, target);
+	const result = readModelRoutingAuthority(globalPath, projectPath);
+	if (result.status !== "invalid" || result.path !== projectPath || globalPath === projectPath) return result;
+	const globalResult = readModelConfigFile(globalPath);
+	return globalResult.status === "valid" ? globalResult : { status: "valid", config: {} };
 }
 
 async function readSavedModelConfigAsync(
 	cwd: string,
 ): Promise<ModelConfigFileResult> {
-	const projectPath = legacyProjectModelConfigPath(cwd);
-	const result = await readModelRoutingAuthorityAsync(modelConfigPath(cwd), projectPath);
-	return result.status === "invalid" && result.path === projectPath
-		? { status: "valid", config: {} }
-		: result;
+	const globalPath = modelConfigPath(cwd);
+	const target = resolveCurrentProfileTarget(cwd);
+	if (target !== undefined && !existsSync(globalPath)) {
+		return profileSnapshotForLegacySource(cwd, target, await readModelConfigFileAsync(legacyProjectModelConfigPath(cwd)));
+	}
+	const projectPath = secondaryMergeSourcePath(cwd, target);
+	const result = await readModelRoutingAuthorityAsync(globalPath, projectPath);
+	if (result.status !== "invalid" || result.path !== projectPath || globalPath === projectPath) return result;
+	const globalResult = await readModelConfigFileAsync(globalPath);
+	return globalResult.status === "valid" ? globalResult : { status: "valid", config: {} };
 }
 
 export function readModelConfig(cwd: string): AgentModelConfig {
@@ -3288,10 +3454,11 @@ export async function applySavedModelConfig(
 	ctx: ExtensionContext,
 	applyConfig: typeof applyModelConfigAsync = applyModelConfigAsync,
 ): Promise<{ updated: number; skipped: number; invalidPath?: string }> {
-	const result = await readModelRoutingAuthorityAsync(
-		modelConfigPath(ctx.cwd),
-		legacyProjectModelConfigPath(ctx.cwd),
-	);
+	const applyGlobalPath = modelConfigPath(ctx.cwd);
+	const applyTarget = resolveCurrentProfileTarget(ctx.cwd);
+	const result = applyTarget !== undefined && !existsSync(applyGlobalPath)
+		? activeProfileRoutingSnapshot(ctx.cwd, applyTarget) ?? { status: "valid" as const, config: {} }
+		: await readModelRoutingAuthorityAsync(applyGlobalPath, secondaryMergeSourcePath(ctx.cwd, applyTarget));
 	if (result.status === "invalid") {
 		return { updated: 0, skipped: 0, invalidPath: result.path };
 	}
@@ -5520,9 +5687,11 @@ async function runProfilesPanelAction(
 			// profile omits, so the dialog must name the concrete diff. The current
 			// routing is read from the same authority every other consumer uses; an
 			// unreadable config is tolerated as empty, exactly like readModelConfigAsync.
+			// Like applySavedModelConfig, an active profile excludes legacy project
+			// routes it omitted, so they never surface as a false clearing diff.
 			const savedRouting = await readModelRoutingAuthorityAsync(
 				modelConfigPath(ctx.cwd),
-				legacyProjectModelConfigPath(ctx.cwd),
+				secondaryMergeSourcePath(ctx.cwd, resolveCurrentProfileTarget(ctx.cwd)),
 			);
 			// The apply pads omitted discoverable agents with clear entries, so the
 			// diff must run against the effective current routing: the saved global
@@ -6559,7 +6728,7 @@ const REVIEW_CONTROLLER_PARAMETER_FIELDS = {
 		},
 		input: {
 			type: "string",
-			description: "A JSON object or serialized object string for START/ASSESS/answer-consent; every other operation requires a serialized object string. New native ordinary START uses {\"mode\":\"ordinary\"}, plus the agent lens selection {\"lenses\":[\"risk\",...],\"lensesReason\":\"<what you touched and how>\"} (both or neither, 1-4 of risk, resilience, readability, reliability; never with focus; providers that predate it keep the tier default); answer-consent uses exactly {\"consentBinding\":\"<opaque id>\",\"answer\":\"granted|declined\"}. Ordinary provider capture belongs only to gentle_review_capture. An explicit baseRef requires committedOnly: true and requests a committed range, while repository-local policyPath remains optional. baseRef must be HEAD, a full 40- or 64-character commit id, or a ref name; abbreviated commit ids are rejected as base-ref-unresolvable. ASSESS accepts an optional object with baseRef, committedOnly, writerModelId, writerEffort, nativeReviewOutcome, and escalate (gentle-pi#662/#668/#1175/#2647); escalate is {\"item\":N,\"reason\":\"...\"} with item an integer from 1 to 6 and a non-empty reason of at most 500 characters; any other shape is rejected, and omitting it means no escalation. The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); writerModelId and writerEffort are only a fallback when no runtime evidence exists (caller), and with neither the profile fails closed to small (fallback). The writer profile is reported but never adds a verifier: the plan adds the independent verifier only when escalate names a Task Size high-risk item. ASSESS derives `closed` only from the native candidate.consumed fact for this exact candidate, which native records only when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown. Every outcome yields the exact risk-gated plan ASSESS returns when RDD is off: a closed review never removes the separate verifier the tier requires (verify-always-rdd-high S1), unknown is never treated as closed, and a decline is candidate-scoped and never lowers the bar below the RDD-off path. A declined or unavailable outcome, stated explicitly or recorded by this process for this exact candidate (never a different one, and never from repository state alone), wins over closure. The returned outcome_source (explicit|derived|unknown) says which of these produced the value. Legacy controller input remains separate.",
+			description: "A JSON object or serialized object string for START/ASSESS/answer-consent/abandon; every other operation requires a serialized object string. New native ordinary START uses {\"mode\":\"ordinary\"}, plus the agent lens selection {\"lenses\":[\"risk\",...],\"lensesReason\":\"<what you touched and how>\"} (both or neither, 1-4 of risk, resilience, readability, reliability; never with focus; providers that predate it keep the tier default); answer-consent uses exactly {\"consentBinding\":\"<opaque id>\",\"answer\":\"granted|declined\"}. Ordinary provider capture belongs only to gentle_review_capture. An explicit baseRef requires committedOnly: true and requests a committed range, while repository-local policyPath remains optional. baseRef must be HEAD, a full 40- or 64-character commit id, or a ref name; abbreviated commit ids are rejected as base-ref-unresolvable. ASSESS accepts an optional object with baseRef, committedOnly, writerModelId, writerEffort, nativeReviewOutcome, and escalate (gentle-pi#662/#668/#1175/#2647); escalate is {\"item\":N,\"reason\":\"...\"} with item an integer from 1 to 6 and a non-empty reason of at most 500 characters; any other shape is rejected, and omitting it means no escalation. The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); writerModelId and writerEffort are only a fallback when no runtime evidence exists (caller), and with neither the profile fails closed to small (fallback). The writer profile is reported but never adds a verifier: the plan adds the independent verifier only when escalate names a Task Size high-risk item. ASSESS derives `closed` only from the native candidate.consumed fact for this exact candidate, which native records only when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown. Every outcome yields the exact risk-gated plan ASSESS returns when RDD is off: a closed review never removes the separate verifier the tier requires (verify-always-rdd-high S1), unknown is never treated as closed, and a decline is candidate-scoped and never lowers the bar below the RDD-off path. A declined or unavailable outcome, stated explicitly or recorded by this process for this exact candidate (never a different one, and never from repository state alone), wins over closure. The returned outcome_source (explicit|derived|unknown) says which of these produced the value. Legacy controller input remains separate.",
 		},
 		outputPath: { type: "string", description: "Retired with legacy bundle export; ignored. Export returns legacy-operation-retired." },
 		inputPath: { type: "string", description: "Repository-local JSON input file for the separate legacy controller flow (alternative to input). Legacy bundle import is retired." },
@@ -6830,7 +6999,7 @@ function parseReviewControllerParameters(value: unknown): ReviewControllerParame
 	};
 	for (const key of ["changeName", "idempotencyKey", "transition", "input", "outputPath", "inputPath", "operationId", "lineageIds", "acknowledgeUntrustedBundleSource", "workspaceRoot"] as const) {
 		const optional = value[key];
-		if (key === "input" && key in value && (value.operation === REVIEW_CONTROLLER_OPERATION.START || value.operation === REVIEW_CONTROLLER_OPERATION.ASSESS || value.operation === REVIEW_CONTROLLER_OPERATION.ANSWER_CONSENT)) {
+		if (key === "input" && key in value && (value.operation === REVIEW_CONTROLLER_OPERATION.START || value.operation === REVIEW_CONTROLLER_OPERATION.ASSESS || value.operation === REVIEW_CONTROLLER_OPERATION.ANSWER_CONSENT || value.operation === REVIEW_CONTROLLER_OPERATION.ABANDON)) {
 			parameters.input = serializeReviewJsonArgument(optional);
 			continue;
 		}
@@ -6978,12 +7147,16 @@ function parseReviewBudget(value: unknown, label: string): ReviewBudgetV1 {
 	return value as unknown as ReviewBudgetV1;
 }
 
-function parseStartInput(value: Record<string, unknown>): ReviewControllerStartInput {
-	if (value.mode !== REVIEW_MODE.ORDINARY && value.mode !== REVIEW_MODE.JUDGMENT_DAY) {
+function assertSupportedReviewStartMode(mode: unknown): asserts mode is ReviewMode {
+	if (mode !== REVIEW_MODE.ORDINARY && mode !== REVIEW_MODE.JUDGMENT_DAY) {
 		throw new Error(
 			'Review controller START supports only "ordinary" or "judgment-day" mode; use "ordinary" unless Judgment Day was explicitly selected. Pass input as a JSON string encoding the START object. START failed before authority access, so no lineage was created; do not call STATUS or ADVANCE for this attempted lineage.',
 		);
 	}
+}
+
+function parseStartInput(value: Record<string, unknown>): ReviewControllerStartInput {
+	assertSupportedReviewStartMode(value.mode);
 	if (!isRecord(value.projection) || typeof value.projection.kind !== "string") {
 		throw new Error("Review controller start requires a projection");
 	}
@@ -7863,6 +8036,50 @@ function validateNativeStartUntrackedSelection(value: Record<string, unknown>): 
 		expectedUntrackedInventory,
 		intendedUntracked: [...paths],
 	};
+}
+
+// gentle-pi#941: the pre-lineage selection had eight ways to be refused and one
+// opaque outcome for all of them, so a caller holding provider-issued bytes
+// could not tell a moved status from an ineligible path -- and the only route
+// left was to send the same call again. START rejections have carried
+// `reason`/`field` since they were introduced (nativeStartRejection above);
+// name the failing check here the same way. The checks keep their original
+// order, so which one is reported is the first that fails, exactly as the
+// short-circuiting condition decided before.
+const INTENDED_UNTRACKED_BINDING_FIELDS = ["target_identity", "projection", "base_tree", "candidate_tree"] as const;
+
+function intendedUntrackedSelectionRejection(
+	input: ReviewCollectInputV3 | undefined,
+	canonicalBinding: string,
+	status: ReviewStatusV3,
+	eligible: unknown,
+	selected: NativeStartUntrackedSelection,
+): { readonly reason: string; readonly field?: string } | undefined {
+	if (input === undefined) return { reason: "selection-input-absent" };
+	if (canonicalReviewCaptureBinding(input) !== canonicalBinding) return { reason: "binding-mismatch" };
+	const bound: Record<(typeof INTENDED_UNTRACKED_BINDING_FIELDS)[number], string> = {
+		target_identity: status.targetIdentity,
+		projection: status.projection.projection,
+		base_tree: status.projection.baseTree,
+		candidate_tree: status.projection.currentCandidateTree,
+	};
+	// A field that no longer matches the live status means the binding was
+	// issued against a different target, projection or tree -- the selection is
+	// stale rather than wrong, and a fresh inspect is the forward route.
+	for (const field of INTENDED_UNTRACKED_BINDING_FIELDS) {
+		if (exactCollectArgument(input, field) !== bound[field]) return { reason: "status-field-mismatch", field };
+	}
+	// The eligible list is the provider's own `eligible_paths_json`; unreadable
+	// here means it was absent, duplicated, or not valid JSON in the status.
+	if (!Array.isArray(eligible)) return { reason: "eligible-paths-unreadable" };
+	if (selected.reason !== undefined) return { reason: selected.reason };
+	// Echoes back a path the caller itself submitted -- no information the
+	// caller did not already have, and with a large inventory it is the only
+	// way to tell which entry of a long selection was refused. This `field`
+	// slot therefore carries either an input field name or an echoed caller path.
+	const ineligible = selected.intendedUntracked!.find((path) => !eligible.includes(path));
+	if (ineligible !== undefined) return { reason: "path-not-eligible", field: ineligible };
+	return undefined;
 }
 
 const BASE_REF_REJECTION_REASONS = new Set(["base-ref-unresolvable", "base-ref-ambiguous", "base-ref-moved", "base-ref-invalid"]);
@@ -10695,7 +10912,7 @@ async function executeReviewControllerOperation(
 		const canonicalBinding = parseCanonicalReviewCaptureBinding(parameters.selectionBinding!);
 		const retainedStop = retainedUntrackedSelections.get(reviewLifecycleStorageKey(defaultCwd, ""));
 		const stopSelector = retainedStop !== undefined && "selectionBinding" in retainedStop ? retainedStop : undefined;
-		if (stopSelector !== undefined && stopSelector.selectionBinding !== canonicalBinding) return { operation: parameters.operation, status: "blocked", outcome: "intended-untracked-selection-binding-rejected", mutation_performed: false, mutation_outcome: "none" };
+		if (stopSelector !== undefined && stopSelector.selectionBinding !== canonicalBinding) return { operation: parameters.operation, status: "blocked", outcome: "intended-untracked-selection-binding-rejected", reason: "binding-mismatch", mutation_performed: false, mutation_outcome: "none" };
 		const committedSelector = stopSelector?.baseRef === undefined ? {} : { baseRef: stopSelector.baseRef, committedOnly: true as const };
 		const requestContext = stopSelector?.requestContextPath === undefined ? {} : { requestContextPath: stopSelector.requestContextPath };
 		if (requestContext.requestContextPath !== undefined && isSensitiveRequestContextPath(requestContext.requestContextPath)) return { ...nativeStartRejection("request-context-sensitive-path"), operation: parameters.operation };
@@ -10710,8 +10927,12 @@ async function executeReviewControllerOperation(
 		try { eligible = JSON.parse(eligibleJson ?? ""); } catch { eligible = undefined; }
 		const scope = parameters.intendedUntracked!.length === 0 ? NATIVE_START_UNTRACKED_SCOPE.EXCLUDE : NATIVE_START_UNTRACKED_SCOPE.SELECT;
 		const selected = validateNativeStartUntrackedSelection({ untrackedScope: scope, expectedUntrackedInventory: inventory, intendedUntracked: parameters.intendedUntracked });
-		const rejected = (stopSelector !== undefined && stopSelector.targetIdentity !== status.targetIdentity) || input === undefined || canonicalReviewCaptureBinding(input) !== canonicalBinding || exactCollectArgument(input, "target_identity") !== status.targetIdentity || exactCollectArgument(input, "projection") !== status.projection.projection || exactCollectArgument(input, "base_tree") !== status.projection.baseTree || exactCollectArgument(input, "candidate_tree") !== status.projection.currentCandidateTree || !Array.isArray(eligible) || selected.reason !== undefined || selected.intendedUntracked!.some((path) => !eligible.includes(path));
-		if (rejected) return { operation: parameters.operation, status: "blocked", outcome: "intended-untracked-selection-binding-rejected", mutation_performed: false, mutation_outcome: "none" };
+		// A committed selector retained at STOP was issued for one target, so a live
+		// status on another means the target moved under it, the same stale case.
+		const rejected = stopSelector !== undefined && stopSelector.targetIdentity !== status.targetIdentity
+			? { reason: "status-field-mismatch", field: "target_identity" }
+			: intendedUntrackedSelectionRejection(input, canonicalBinding, status, eligible, selected);
+		if (rejected !== undefined) return { operation: parameters.operation, status: "blocked", outcome: "intended-untracked-selection-binding-rejected", reason: rejected.reason, ...(rejected.field === undefined ? {} : { field: rejected.field }), mutation_performed: false, mutation_outcome: "none" };
 		const submission = { argumentTokens: input.submission!.argumentTokens, value: JSON.stringify({ schema: "gentle-ai.review-intended-untracked-selection/v1", untracked_scope: scope, expected_untracked_inventory: inventory, intended_untracked: selected.intendedUntracked }) };
 		const result = await executeReviewControllerOperation({ operation: REVIEW_CONTROLLER_OPERATION.START, ...(parameters.workspaceRoot === undefined ? {} : { workspaceRoot: parameters.workspaceRoot }), input: JSON.stringify({ mode: REVIEW_MODE.ORDINARY, ...committedSelector, ...requestContext, untrackedScope: scope, expectedUntrackedInventory: inventory, intendedUntracked: selected.intendedUntracked }) }, sessionCwd, nativeReviewCli, signal, candidateViews, context, retainedUntrackedSelections, pendingReviewConsentRegistry, pendingReviewConsentFallbackKey, submission);
 		return { ...result, operation: parameters.operation };
@@ -10721,6 +10942,7 @@ async function executeReviewControllerOperation(
 			requiredControllerString(parameters, "input"),
 			REVIEW_CONTROLLER_OPERATION.START,
 		);
+		assertSupportedReviewStartMode(rawStart.mode);
 		if (rawStart.mode === REVIEW_MODE.ORDINARY) {
 			if ("policyHash" in rawStart) return nativeStartRejection("legacy-policy-hash-unsupported");
 			const unknownField = Object.keys(rawStart).find((field) => !["mode", "baseRef", "committedOnly", "policyPath", "requestContextPath", "focus", "lenses", "lensesReason", "untrackedScope", "expectedUntrackedInventory", "intendedUntracked"].includes(field));
@@ -11025,9 +11247,6 @@ async function executeReviewControllerOperation(
 				}, retainedUntrackedSelections);
 			}
 		}
-		if (rawStart.mode === REVIEW_MODE.ORDINARY) {
-			return nativeStatusUnsupported(parameters.operation);
-		}
 		const idempotencyKey = requiredControllerString(parameters, "idempotencyKey");
 		if (typeof parameters.lineageId !== "string" || parameters.lineageId.trim().length === 0) {
 			throw new Error("Judgment Day graph-v1 START requires lineageId");
@@ -11164,6 +11383,8 @@ async function executeReviewControllerOperation(
 
 /** @internal */
 export const __testing = {
+	readSavedModelConfig,
+	readSavedModelConfigAsync,
 	setCandidateViewSymlinkProbeForTesting,
 	CandidateViewSymlinkProbeUnavailableError,
 	scanCandidateTreeForSymlinks,
@@ -11196,6 +11417,8 @@ export const __testing = {
 	isReversibleYoloCommand,
 	evaluateSuperYoloCommand,
 	yoloConfiguredRestriction,
+	BASH_COMMAND_POLICIES,
+	evaluateBashPolicies,
 	buildGentlePrompt,
 	nativeStatusUnsupported,
 	nativeStartRejection,
@@ -11675,6 +11898,8 @@ function createGentleAiExtensionForTesting(
 		},
 		async execute(_toolCallId, parameters, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw reviewCancellation("Review controller operation was cancelled");
+			// Every review authorization dialog blocks the agent on the human.
+			ctx = withHerdrBlockingUi(ctx, herdrLifecycle, "review-authorization");
 			await authorizeDestructiveReviewOperation(parameters, ctx);
 			const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
 			const retainedSelections = processRetainedNativeStatusSelections.get(sessionKey)
@@ -12276,7 +12501,16 @@ function createGentleAiExtensionForTesting(
 			return { block: true, reason: "Permission mode changed during tool admission. This action was not run; retry under the current mode." };
 		}
 		const autoGate = permissionMode === "auto" ? gate : undefined;
-		return await confirmCommand(command, ctx, pi.events, herdrLifecycle, yoloActive, autoGate, superYoloActive);
+		return await evaluateBashPolicies(
+			command,
+			ctx,
+			pi.events,
+			herdrLifecycle,
+			yoloActive,
+			BASH_COMMAND_POLICIES,
+			autoGate,
+			superYoloActive,
+		);
 	});
 
 	for (const owner of ["delegation", "review"] as const) {

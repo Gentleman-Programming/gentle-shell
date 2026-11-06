@@ -93,6 +93,15 @@ This is guidance through existing tools, not a new CLI, phase, state engine, or 
 
 ## Herdr active-work summary
 
+Choose `/gentle:customize` → **Layout** → **Task summary: on/off** to show or
+hide the active-task summary published to terminal tools (for example Herdr's
+sidebar). On is the default. Highlighting a choice does not save it; press Enter
+or Space to apply it now. The preference is stored as `enabled` in
+`herdr-task-summary.json` in the active launch's Gentle Pi config home (including
+any `GENTLE_PI_CONFIG_HOME` override). Existing summary colors are preserved. Malformed or
+unreadable preferences are refused with an error and left unchanged. This option
+does not edit Herdr config or change the local Todo list.
+
 Under Herdr, root interactive Pi sessions publish only the `in_progress` Todo
 title, prefixed with `◐`. No phase, working/verifying label or tool fallback is
 used; prompts, tool arguments, output and Todo notes never supply text. Missing,
@@ -643,7 +652,7 @@ Outside Herdr, the petal prompt frame replaces Pi's standard loader row. Inside 
 
 ### Herdr blocker events
 
-The Gentle AI adapter projects native `gentle-pi:ask-user-question:blocked`, legacy `rpiv:ask-user:blocked`, choice blockers, and guarded confirmations into one balanced `herdr:blocked` interval. It emits one activation when blocking begins and one release after the last source clears, retaining the initial generic label without relabel pulses. Native and legacy questionnaires are tracked independently; duplicate or malformed source events are ignored. Questionnaire answers, prompts, and commands are not included in the projection. This adapter emits local events; transport availability is a separate concern.
+The Gentle AI adapter projects native `gentle-pi:ask-user-question:blocked`, legacy `rpiv:ask-user:blocked`, choice blockers, guarded confirmations, and every `gentle_review` authorization dialog (review consent and maintenance approvals, labeled `Review authorization awaiting input`) into one balanced `herdr:blocked` interval. It emits one activation when blocking begins and one release after the last source clears, retaining the initial generic label without relabel pulses. Native and legacy questionnaires are tracked independently; duplicate or malformed source events are ignored. Questionnaire answers, prompts, and commands are not included in the projection. This adapter emits local events; transport availability is a separate concern.
 
 ## Diagnose STATUS timing without retrying it
 
@@ -1081,7 +1090,7 @@ Saved globally at:
 ~/.pi/gentle-ai/models.json
 ```
 
-Global routing is owned by profiles: edit a profile's routing on the models screen and apply it with **Make default**. Applying writes the shared global config at `~/.pi/gentle-ai/models.json`; existing project-local `.pi/gentle-ai/models.json` files are still read as a legacy fallback when no global model config exists.
+Global routing is owned by profiles: edit a profile's routing on the models screen and apply it with **Make default**. Applying writes the shared global config at `~/.pi/gentle-ai/models.json`. Existing project-local `.pi/gentle-ai/models.json` files are still read as a legacy source and merged under the global config: an agent entry present only in the project file still applies, while an entry present in both prefers the global one. This merge is skipped while a pinned or active profile exists and the global file is present, so an agent a profile deliberately omits cannot be resurrected by a stale project-local entry; routing then comes from the global file (and, from the profile's own stored snapshot, when the global file is still missing) alone.
 
 Startup and reload materialize saved non-empty routing, but never treat a saved empty agent entry (`{}`) as permission to delete an existing `subagents.json` model profile or agent frontmatter. This also preserves previously materialized routes and routes whose agent definition is missing. To clear routing, make a profile whose entries are inherit the default (or confirm a profile replacement) on the models screen. Activation needs no ownership sidecar or lock.
 

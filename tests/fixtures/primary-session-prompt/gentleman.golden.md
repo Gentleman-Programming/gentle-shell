@@ -151,5 +151,5 @@ This package injects the mirrored provider-bundle review execution contract into
 - Never commit unless the user explicitly asks, except the work-unit commits authorized large ODD implementation makes on its feature branch (ODD step 6).
 - Ask before destructive git operations, publishing, or irreversible file changes.
 - Parallel writers only with disjoint Allowed edit surfaces (runtime-enforced) or isolated worktrees.
-- Keep session work inside the project root and registered same-clone worktrees; ask before any read or write outside it, naming the absolute path. Grants are per-target, per-session, never blanket: in-project scripts naming outside paths are not standing consent.
+- Keep session work inside the project root and registered same-clone worktrees; ask before any read or write outside it, naming the absolute path. Exception: reading the task's exact resolved skill files needs no per-file question in any mode. Grants are per-target, per-session, never blanket: in-project scripts naming outside paths are not standing consent.
 - Preserve human control: user decisions beat agent momentum.

@@ -137,14 +137,14 @@ function resolveBundledCli() {
 	const expectedEntry = join(root, "dist", "index.js");
 	const metadata = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 	if (entry !== expectedEntry || metadata.name !== "@earendil-works/pi-coding-agent" ||
-		metadata.bin?.pi !== "dist/bundle/cli.js") {
+		metadata.bin?.pi !== "dist/bundle/cli.js" || typeof metadata.version !== "string") {
 		throw new Error("Unsupported adjacent Pi package entry/name/bin metadata");
 	}
 	const cliPath = join(root, metadata.bin.pi);
 	if (realpathSync(cliPath) !== cliPath || !statSync(cliPath).isFile()) {
 		throw new Error("Unsupported adjacent Pi CLI path");
 	}
-	return cliPath;
+	return { path: cliPath, version: metadata.version };
 }
 
 function findOnPath(name) {
@@ -385,6 +385,22 @@ function bundledProcessEnv() {
 function ownPackageVersion() {
 	const packageJson = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
 	return packageJson.version;
+}
+
+// The real spawn, only ever needed for a runtime with no in-memory version
+// (env override, PATH pi): kind "bundled" always has runtime.version set and
+// skips this entirely (#2096).
+function probePiVersion(runtime) {
+	const versionProbePlan = planSpawn({ command: runtime.command, args: [...runtime.args, "--version"], platform: process.platform });
+	const versionProbe = spawnSync(versionProbePlan.command, versionProbePlan.args, {
+		stdio: ["ignore", "pipe", "pipe"],
+		timeout: 15000,
+		encoding: "utf8",
+		shell: versionProbePlan.shell,
+		env: bundledEnv ?? process.env,
+	});
+	if (versionProbe.error) fail(`Could not run the pi runtime at "${runtime.command}": ${versionProbe.error.message}`, 1);
+	return checkPiVersion(versionProbe.stdout ?? "");
 }
 
 function emptyArgs() {
@@ -1272,13 +1288,37 @@ async function runSetupFlow(home, runtime, { dryRun, stdio, timeoutMs, homeHadCo
 			process.stderr.write(`gentle-shell: kept your Pi theme unchanged (gentle-ai rewrote ${settingsPath}; tracked upstream)\n`);
 		}
 	}
-	if (installResult.timedOut) {
-		return { ok: false, exitCode: 1, message: `gentle-shell: gentle-ai install timed out after ${formatTimeoutCeiling(timeoutMs)}` };
-	}
 	if (installResult.error) {
 		return { ok: false, exitCode: 1, message: `Could not start the gentle-ai binary: ${installResult.error.message}` };
 	}
-	if (!installResult.ok) return installResult;
+	if (!installResult.ok || installResult.timedOut) {
+		// Run post-install cleanup even on failure or timeout so a failed setup
+		// does not leave npm:gentle-pi declared in settings.json, which would make
+		// subsequent launches silently run the published npm package instead of
+		// the launcher's own package (#1647).
+		if (!dryRun && !installResult.interrupted) {
+			// A cleanup that throws (e.g. an unreadable settings.json) must not
+			// replace the install's own failure; it only adds a diagnostic.
+			let cleanupResult;
+			try {
+				cleanupResult = await runPostInstallCleanup(home, runtime, false, stdio, timeoutMs);
+			} catch (error) {
+				cleanupResult = { ok: false, exitCode: 1, message: `gentle-shell: post-install cleanup failed: ${error.message}` };
+			}
+			if (cleanupResult.interrupted) return cleanupResult;
+			if (!cleanupResult.ok && cleanupResult.message !== undefined) {
+				const baseMessage = installResult.timedOut
+					? `gentle-shell: gentle-ai install timed out after ${formatTimeoutCeiling(timeoutMs)}`
+					: installResult.message;
+				const message = baseMessage ? `${baseMessage}\n${cleanupResult.message}` : cleanupResult.message;
+				return { ok: false, exitCode: installResult.exitCode, message };
+			}
+		}
+		if (installResult.timedOut) {
+			return { ok: false, exitCode: 1, message: `gentle-shell: gentle-ai install timed out after ${formatTimeoutCeiling(timeoutMs)}` };
+		}
+		return installResult;
+	}
 
 	const cleanupResult = await runPostInstallCleanup(home, runtime, dryRun, stdio, timeoutMs);
 	if (cleanupResult.ok && !dryRun) {
@@ -2017,7 +2057,7 @@ async function main() {
 		// S8: only the version's own Pi, never GENTLE_SHELL_PI, an adjacent fallback or PATH.
 		const pi = bundledPi(bundled, { platform: process.platform, fs: bundledFs });
 		if (!pi.ok) fail(pi.message, 1);
-		runtime = { kind: "bundled", command: process.execPath, args: [pi.cli] };
+		runtime = { kind: "bundled", command: process.execPath, args: [pi.cli], version: pi.version };
 		bundledInstall = bundled;
 		bundledCli = pi.cli;
 		bundledMemory = engramQuiet ? { policy: "disabled", notice: ENGRAM_RECOVERY_NOTICE } : await classifyBundledMemory();
@@ -2033,16 +2073,11 @@ async function main() {
 		if (runtime === undefined) fail(missingPiMessage(), 1);
 	}
 
-	const versionProbePlan = planSpawn({ command: runtime.command, args: [...runtime.args, "--version"], platform: process.platform });
-	const versionProbe = spawnSync(versionProbePlan.command, versionProbePlan.args, {
-		stdio: ["ignore", "pipe", "pipe"],
-		timeout: 15000,
-		encoding: "utf8",
-		shell: versionProbePlan.shell,
-		env: bundledEnv ?? process.env,
-	});
-	if (versionProbe.error) fail(`Could not run the pi runtime at "${runtime.command}": ${versionProbe.error.message}`, 1);
-	const versionCheck = checkPiVersion(versionProbe.stdout ?? "");
+	// Bundled runtimes already carry their version in memory (package.json /
+	// the pinned dependency): spawning a whole process just to print it back
+	// is the redundant cost issue #2096 reports, so only env/path runtimes
+	// (which have no such in-memory source) still pay for a real probe.
+	const versionCheck = runtime.version !== undefined ? checkPiVersion(runtime.version) : probePiVersion(runtime);
 	// A managed self update is how an old Pi gets replaced, so the minimum-version
 	// gate must not block it; everything else still requires the minimum.
 	const managedSelfUpdate = !bundled && args.piSubcommand === "update" && versionCheck.version !== undefined

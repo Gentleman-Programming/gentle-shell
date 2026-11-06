@@ -58,6 +58,14 @@ test("active-only structured directive qualifies defaults and is removed from re
 	assert.match(YOLO_DIRECTIVE, /default.*commit.*push.*PR/i);
 	assert.match(YOLO_DIRECTIVE, /ask_user/);
 	assert.match(YOLO_DIRECTIVE, /credentials/);
+	// Quoted destructive text is prose, not an execution: confirmation applies
+	// only to commands the session actually runs (gentle-pi quoted-rm-rf report).
+	assert.match(YOLO_DIRECTIVE, /Quoted.*not an execution/is);
+	assert.match(YOLO_DIRECTIVE, /only to commands this session actually runs/i);
+	// Non-sensitive reads outside the workspace (own skills, docs, config) are
+	// standing-permitted: no permission questions for those reads.
+	assert.match(YOLO_DIRECTIVE, /non-sensitive.*outside the workspace/is);
+	assert.match(YOLO_DIRECTIVE, /skills/);
 	updateYoloPrompt(options, false);
 	assert.equal(options.appendSystemPrompt, "existing harness");
 });

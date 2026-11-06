@@ -69,8 +69,9 @@ In regular mode the terminal owns mouse input, so use the keyboard instead. Revi
 
 ### Fullscreen layout
 
-Open `/gentle:customize` → **Layout** to adjust the existing placements and spacing:
+Open `/gentle:customize` → **Layout** to adjust placements, spacing and task-summary publishing:
 
+- **Task summary:** `on` (the default) or `off` controls the active-task summary published to terminal tools, such as Herdr's sidebar. Highlighting a choice does not save it; Enter or Space saves and applies it now. The `enabled` preference lives in `herdr-task-summary.json` in the Gentle Pi config home, separate from visual profiles. Existing colors are preserved; malformed or unreadable files are not overwritten. This does not edit Herdr config or hide the local Todo list.
 - **Header:** `top` (the default) puts the full-width status bar above both the conversation and the rail. `below-input` puts it below the editor; beside a rail it becomes a full-width row below both columns. `split` puts a title above the conversation and a status bar below it.
 - **Status:** `auto` and `right` use the rail at 140 columns or wider; `bottom` removes the rail and keeps the Status sections available through `[ Panel ]`; `hidden` suppresses Status. This controls the rail and its fallback, not an independent position for every bar.
 - **Density:** `comfortable` adds spacing around the bars and between rail sections. `compact` removes those gaps except between transparent float cards; `minimal` also removes gauges and usage shortcut hints from the fullscreen bars while retaining their values when space permits.

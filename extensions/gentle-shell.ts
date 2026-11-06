@@ -49,6 +49,7 @@ import { isNanAdaptiveReasoningModel } from "../lib/nan-provider.ts";
 import { resolveAnimationPolicy, writeAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy, type VimPolicy } from "../lib/vim-policy.ts";
 import { resolveHistoryCapture, writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
+import { HERDR_TASK_SUMMARY_CHANGED, resolveHerdrTaskSummarySettings, writeHerdrTaskSummarySettings } from "../lib/herdr-task-summary-policy.ts";
 import { createRequire } from "node:module";
 import { createVimEditorAdapter, isAuditedPiEditorVersion } from "../lib/vim-editor-adapter.ts";
 import { VimNormalEngine } from "../lib/vim-normal-engine.ts";
@@ -3078,7 +3079,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		});
 	}
 	pi.registerCommand("gentle:customize", {
-		description: "Configure appearance, audio notifications, Vim editing, RDD, session permissions and global Auto/YOLO defaults, and prompt history capture.",
+		description: "Configure appearance, task summary publishing, audio notifications, Vim editing, RDD, session permissions and global Auto/YOLO defaults, and prompt history capture.",
 		handler: async (_args, ctx) => {
 			if (ctx.mode !== "tui" || !ctx.hasUI) {
 				if (ctx.hasUI) ctx.ui.notify("Customization requires an interactive terminal.", "warning");
@@ -3354,6 +3355,23 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			});
 			rows.push(...buildNotificationRows(ctx));
 			category = "Layout";
+			const taskSummary = () => resolveHerdrTaskSummarySettings(home);
+			const taskSummaryCurrent = (enabled: boolean) => {
+				const current = taskSummary();
+				return !current.malformed && !current.readError && current.settings.enabled === enabled;
+			};
+			for (const enabled of [true, false]) add(
+				() => `Task summary: ${enabled ? "on" : "off"}${taskSummaryCurrent(enabled) ? " (current)" : ""}`,
+				`Task summary: ${enabled ? "on" : "off"}. Applies now to the active-task summary published to terminal tools (for example Herdr's sidebar).`,
+				() => {
+					const current = taskSummary();
+					if (current.malformed || current.readError) throw new Error(`Cannot update malformed or unreadable task summary preference: ${current.globalFile}`);
+					writeHerdrTaskSummarySettings({ ...current.settings, enabled }, home);
+					pi.events.emit(HERDR_TASK_SUMMARY_CHANGED, { configHome: doubleEscCancelConfigHome });
+				},
+				undefined,
+				{ ...explicitChoice("Task summary", enabled ? "on" : "off", () => taskSummaryCurrent(enabled)), hint: "Controls the task summary published to terminal tools" },
+			);
 			// Presets set the visibility switches and keep the placements, the density and the surface; any switch below still overrides them.
 			for (const preset of Object.values(VISUAL_PRESET)) add(() => `Preset: ${PRESET_LABEL[preset]}${visualPresetOf(visual()) === preset ? " (current)" : ""}`, pending, () => updateVisual((settings) => applyVisualPreset(settings, preset)), () => layoutPreview(applyVisualPreset(visual(), preset)),
 				layoutChoice("Preset", PRESET_LABEL[preset], () => visualPresetOf(visual()) === preset, "Light hides the rail, Power user adds Stats; alt+l cycles them"));

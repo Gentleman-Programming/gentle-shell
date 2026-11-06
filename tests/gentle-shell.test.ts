@@ -32,6 +32,7 @@ import { DEFAULT_VISUAL_SETTINGS, DENSITY, VISUAL_PRESET, VISUAL_SCHEMA, resolve
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy } from "../lib/vim-policy.ts";
 import { resolveHistoryCapturePolicy, writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
+import { HERDR_TASK_SUMMARY_CHANGED, resolveHerdrTaskSummarySettings, writeHerdrTaskSummarySettings } from "../lib/herdr-task-summary-policy.ts";
 import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
 import { readBannerConfig } from "../extensions/startup-banner.ts";
 import { listVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
@@ -3586,6 +3587,100 @@ test("customize History rows persist prompt history capture and keep stored hist
 	assert.equal(resolveHistoryCapturePolicy({ gentlePiConfigHome: home }).policy, "off");
 	assert.match(ui.notices.at(-1)!, /stored history is kept/i);
 	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("customize Layout offers explicit task summary choices without saving on navigation", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	try {
+		assert.ok(findCustomizeRow(ui, "Task summary: on (current)"));
+		assert.ok(findCustomizeRow(ui, "Task summary: off"));
+		const frame = ui.overlayView!.render(180).join("\n");
+		assert.match(frame, /Layout ·/);
+		assert.match(frame, /Task summary\s+● on\s+› off/);
+		assert.match(frame, /task summary published to terminal tools/i);
+		ui.overlayView!.handleInput("\x1b[D");
+		ui.overlayView!.handleInput("\x1b[C");
+		await new Promise<void>(resolve => setImmediate(resolve));
+		assert.equal(existsSync(join(home, "herdr-task-summary.json")), false);
+	} finally { ui.closeOverlay?.(); await pending; }
+});
+
+test("customize task summary persists only enabled then emits once per choice for the same home", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const options = { gentlePiConfigHome: home };
+	writeHerdrTaskSummarySettings({ enabled: true, summaryColor: "success", continuationColor: "warning" }, options);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const events: unknown[] = [];
+	const saved: boolean[] = [];
+	pi.events.on(HERDR_TASK_SUMMARY_CHANGED, payload => {
+		events.push(payload);
+		saved.push(resolveHerdrTaskSummarySettings(options).settings.enabled);
+	});
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	try {
+		for (const enabled of [false, true]) {
+			await customizeAction(ui, `Task summary: ${enabled ? "on" : "off"}`);
+			assert.deepEqual(resolveHerdrTaskSummarySettings(options).settings, { enabled, summaryColor: "success", continuationColor: "warning" });
+			assert.ok(findCustomizeRow(ui, `Task summary: ${enabled ? "on" : "off"} (current)`));
+			assert.match(ui.notices.at(-1)!, /applies now.*active-task summary published to terminal tools/i);
+		}
+		assert.deepEqual(events, [{ configHome: home }, { configHome: home }]);
+		assert.deepEqual(saved, [false, true], "each listener sees the completed write");
+		assert.equal(existsSync(join(home, "visual-customization.json")), false);
+	} finally { ui.closeOverlay?.(); await pending; }
+});
+
+for (const [kind, bytes] of [["malformed", "{"], ["unreadable oversized", " ".repeat(4097)]] as const) {
+	test(`customize task summary refuses ${kind} storage without events or overwritten bytes`, async (t) => {
+		const home = scopedDoubleEscCancelConfigHome(t);
+		const file = join(home, "herdr-task-summary.json");
+		const { pi, commands } = fakePi();
+		gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+		let events = 0;
+		pi.events.on(HERDR_TASK_SUMMARY_CHANGED, () => { events++; });
+		const { ctx, ui, overlayReady } = fakeContext();
+		const notices: Array<{ message: string; type: unknown }> = [];
+		const notify = ctx.ui.notify.bind(ctx.ui);
+		ctx.ui.notify = (message, type) => { notices.push({ message, type }); notify(message, type); };
+		const pending = commands.get("gentle:customize")!.handler("", ctx);
+		await overlayReady;
+		try {
+			// Re-read at activation: a file can become invalid while the card is open.
+			writeFileSync(file, bytes);
+			await customizeAction(ui, "Task summary: off");
+			assert.match(notices.at(-1)!.message, /malformed or unreadable task summary preference/i);
+			assert.equal(notices.at(-1)!.type, "error");
+			assert.equal(events, 0);
+			assert.equal(readFileSync(file, "utf8"), bytes);
+		} finally { ui.closeOverlay?.(); await pending; }
+	});
+}
+
+test("customize task summary leaves the previous Layout controls working independently", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	try {
+		assert.ok(findCustomizeRow(ui, "Task summary: off"));
+		for (const label of ["Preset: Light", "Status placement: bottom", "Header placement: split", "Density: compact", "Surface: tinted"]) await customizeAction(ui, label);
+		const settings = resolveVisualSettings({ gentlePiConfigHome: home }).settings;
+		assert.equal(settings.statusPlacement, "bottom");
+		assert.equal(settings.headerPlacement, "split");
+		assert.equal(settings.density, "compact");
+		assert.equal(settings.surface, "tinted");
+		assert.equal(existsSync(join(home, "herdr-task-summary.json")), false);
+	} finally { ui.closeOverlay?.(); await pending; }
 });
 
 test("customize Cards rows persist the card style and switch live conversation cards", async (t) => {

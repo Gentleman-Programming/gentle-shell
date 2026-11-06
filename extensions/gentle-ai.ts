@@ -106,11 +106,13 @@ import {
 	unmatchedRoutingNotes,
 	profilesFilePath,
 	readProfileOrchestrator,
+	readProfileWorkflow,
 	readProfilesFileResult,
 	renameProfile,
 	routingColumnWidths,
 	serializeProfileExport,
 	setActiveProfile,
+	setProfileOrchestratorMode,
 	updateProfile,
 	writeProfilesFileSync,
 	DEFAULT_ORCHESTRATOR_MODE,
@@ -3775,6 +3777,10 @@ const ROUTING_TABLE_HINTS: Array<{ text: string; keep: number }> = [
 	{ text: "e effort", keep: 2 },
 	{ text: "f fallbacks", keep: 6.5 },
 	{ text: "t tier", keep: 6.25 },
+	// The orchestrator mode hint stands beside the tier toggle in display order;
+	// its keep sits just past `u use` so it is the first hint to yield on narrow
+	// terminals instead of displacing a hint the screen relies on.
+	{ text: "w mode", keep: 7.25 },
 	{ text: "s save", keep: 3 },
 	{ text: "u use", keep: 7 },
 	{ text: "d default", keep: 8 },
@@ -3789,9 +3795,9 @@ const ROUTING_MODEL_CARD_CHROME_ROWS = 11;
 type RoutingTableAction =
 	| { type: "load"; name: string }
 	| { type: "custom"; target: string; config: AgentModelConfig }
-	| { type: "use-session"; name: string; config?: AgentModelConfig }
+	| { type: "use-session"; name: string; config?: AgentModelConfig; orchestratorMode?: OrchestratorMode }
 	| { type: "apply-global"; name: string; config: AgentModelConfig }
-	| { type: "save"; name: string; config: AgentModelConfig }
+	| { type: "save"; name: string; config: AgentModelConfig; orchestratorMode?: OrchestratorMode }
 	| { type: "create" }
 	| { type: "create-live" }
 	| { type: "duplicate"; name: string }
@@ -3808,7 +3814,14 @@ type RoutingTableAction =
  * edits across actions that keep the same profile on screen (rename, pin, a
  * declined delete), so managing a profile never throws away what you typed.
  */
-type RoutingTableResult = RoutingTableAction & { saveFirst?: AgentModelConfig; draft?: AgentModelConfig };
+type RoutingTableResult = RoutingTableAction & {
+	saveFirst?: AgentModelConfig;
+	draft?: AgentModelConfig;
+	/** The mode draft riding with a switch-save so a tab change commits it too. */
+	saveFirstMode?: OrchestratorMode;
+	/** The unsaved mode draft carried across a reopen that keeps the routing draft (custom prompt). */
+	modeDraft?: OrchestratorMode;
+};
 
 type RoutingTableButton = "use" | "default" | "save" | "switch-save" | "switch-discard" | "switch-stay";
 
@@ -3826,7 +3839,7 @@ type RoutingProfileSwitch =
  * the next tab let the terminal paint the screen beneath for a frame (and wait
  * on the async model catalog before the new frame), which is the tab flicker.
  */
-type RoutingProfileSwitcher = (name: string, saveFirst?: AgentModelConfig) => RoutingProfileSwitch;
+type RoutingProfileSwitcher = (name: string, saveFirst?: AgentModelConfig, saveFirstMode?: OrchestratorMode) => RoutingProfileSwitch;
 
 type RoutingTableMouseAction =
 	| { kind: "tab"; name: string }
@@ -3855,6 +3868,19 @@ const ROUTING_TABLE_BUTTONS: Record<RoutingTableButton, string> = {
 	"switch-discard": "Discard",
 	"switch-stay": "Stay",
 };
+
+/**
+ * The orchestrator row's mode chip, widest form first. Each form carries its
+ * mode, so the renderer can never show `⚡` for an organic profile: the draft
+ * picks among its own mode's forms only.
+ */
+const ORCHESTRATOR_MODE_CHIP_FORMS: Array<{ text: string; mode: OrchestratorMode; tone: PanelTone }> = [
+	{ text: "  ⚡ full-delegation", mode: "full-delegation", tone: "accent" },
+	{ text: "  ⚡ full", mode: "full-delegation", tone: "accent" },
+	{ text: "  ⚡", mode: "full-delegation", tone: "accent" },
+	{ text: "  organic", mode: "organic", tone: "dim" },
+	{ text: "  ○", mode: "organic", tone: "dim" },
+];
 
 /**
  * `/gentle:profiles` — one screen, one table, profiles as
@@ -3921,6 +3947,9 @@ class RoutingTablePanel implements OverlayComponent {
 	private newColumn = 0;
 	private draft: AgentModelConfig;
 	private stored: AgentModelConfig;
+	/** The shown profile's committed and drafted orchestrator workflow; `w` drafts, a commit lands it. */
+	private committedMode: OrchestratorMode;
+	private modeDraft: OrchestratorMode;
 	private readonly rows: string[];
 	private readonly agents: string[];
 	private readonly catalog: string[];
@@ -3955,6 +3984,7 @@ class RoutingTablePanel implements OverlayComponent {
 			notices?: string[];
 			switchProfile?: RoutingProfileSwitcher;
 			fallbacks?: RoutingFallbacks;
+			modeDraft?: OrchestratorMode;
 		} = {},
 	) {
 		this.switchProfile = options.switchProfile;
@@ -3967,6 +3997,9 @@ class RoutingTablePanel implements OverlayComponent {
 		this.profileName = hasOwnProfile(this.file.profiles, profileName) ? profileName : (names[0] ?? profileName);
 		this.stored = cloneModelConfig(normalizeModelConfig(this.file.profiles[this.profileName]) ?? {});
 		this.draft = cloneModelConfig(draft);
+		this.committedMode = readProfileWorkflow(this.file, this.profileName).orchestratorMode;
+		// A carried draft keeps its unsaved mode across the reopen; a fresh open starts at the committed mode.
+		this.modeDraft = options.modeDraft ?? this.committedMode;
 		this.agents = [...agents];
 		this.rows = [PROFILE_ORCHESTRATOR_KEY, ROUTING_ALL_ROW, ...agents];
 		// The control entries of the old panel (keep current, custom id) are not
@@ -3997,6 +4030,8 @@ class RoutingTablePanel implements OverlayComponent {
 			if (this.isEdited(key, "thinking")) count += 1;
 			if (this.isEdited(key, "tier")) count += 1;
 		}
+		// The drafted orchestrator mode is one unsaved change, like a routing edit.
+		if (this.modeDraft !== this.committedMode) count += 1;
 		return count;
 	}
 
@@ -4117,7 +4152,7 @@ class RoutingTablePanel implements OverlayComponent {
 	private finish(result: RoutingTableResult): void {
 		if (this.completed) return;
 		if (result.type === "load" && this.switchProfile) {
-			this.showProfile(result.name, result.saveFirst);
+			this.showProfile(result.name, result.saveFirst, result.saveFirstMode);
 			return;
 		}
 		this.completed = true;
@@ -4125,8 +4160,8 @@ class RoutingTablePanel implements OverlayComponent {
 	}
 
 	/** Replaces the shown profile on this same screen, as a fresh open on that tab would. */
-	private showProfile(name: string, saveFirst?: AgentModelConfig): void {
-		const next = this.switchProfile!(name, saveFirst);
+	private showProfile(name: string, saveFirst?: AgentModelConfig, saveFirstMode?: OrchestratorMode): void {
+		const next = this.switchProfile!(name, saveFirst, saveFirstMode);
 		this.closeOverlay();
 		if ("error" in next) {
 			this.say(next.error);
@@ -4136,6 +4171,8 @@ class RoutingTablePanel implements OverlayComponent {
 		this.profileName = hasOwnProfile(this.file.profiles, name) ? name : (this.profileNames()[0] ?? name);
 		this.stored = cloneModelConfig(normalizeModelConfig(this.file.profiles[this.profileName]) ?? {});
 		this.draft = cloneModelConfig(this.stored);
+		this.committedMode = readProfileWorkflow(this.file, this.profileName).orchestratorMode;
+		this.modeDraft = this.committedMode;
 		this.sessionBoundName = next.sessionBoundName;
 		this.pinWinner = next.pinWinner;
 		this.notices = next.notices;
@@ -4306,6 +4343,12 @@ class RoutingTablePanel implements OverlayComponent {
 		this.say(`${this.rowLabel(key)}: ${entry.tier === "fast" ? "Fast" : "Standard"}. Save keeps it in ${this.profileName}.${entry.tier === "fast" ? " Fast depends on plan/model; subscription usage 2.5x or purchased credits 2x. API pricing differs." : ""}`);
 	}
 
+	/** `w` drafts the shown profile's orchestrator workflow; saving or using the profile commits it. */
+	private toggleOrchestratorMode(): void {
+		this.modeDraft = this.modeDraft === "full-delegation" ? "organic" : "full-delegation";
+		this.say(`Orchestrator mode ${this.modeDraft}. Save keeps it in ${this.profileName}.`);
+	}
+
 	private setAllFast(): void {
 		let count = 0;
 		for (const key of [PROFILE_ORCHESTRATOR_KEY, ...this.agents]) {
@@ -4333,7 +4376,7 @@ class RoutingTablePanel implements OverlayComponent {
 			return;
 		}
 		if (option === ROUTING_CUSTOM_MODEL) {
-			this.finish({ type: "custom", target: this.target, config: cloneModelConfig(this.draft) });
+			this.finish({ type: "custom", target: this.target, config: cloneModelConfig(this.draft), modeDraft: this.modeDraft });
 			return;
 		}
 		const model = option === this.inheritLabel(this.target) ? undefined : option;
@@ -4418,7 +4461,7 @@ class RoutingTablePanel implements OverlayComponent {
 		const config = cloneModelConfig(this.draft);
 		switch (button) {
 			case "use":
-				this.finish({ type: "use-session", name: this.profileName, config });
+				this.finish({ type: "use-session", name: this.profileName, config, orchestratorMode: this.modeDraft });
 				return;
 			case "default":
 				this.finish({ type: "apply-global", name: this.profileName, config });
@@ -4428,10 +4471,10 @@ class RoutingTablePanel implements OverlayComponent {
 					this.say("Nothing to save.");
 					return;
 				}
-				this.finish({ type: "save", name: this.profileName, config });
+				this.finish({ type: "save", name: this.profileName, config, orchestratorMode: this.modeDraft });
 				return;
 			case "switch-save":
-				if (this.pending) this.finish({ ...this.pending, saveFirst: config });
+				if (this.pending) this.finish({ ...this.pending, saveFirst: config, saveFirstMode: this.modeDraft });
 				return;
 			case "switch-discard":
 				if (this.pending) this.finish(this.pending);
@@ -4497,6 +4540,7 @@ class RoutingTablePanel implements OverlayComponent {
 		if (matchesKey(data, "e")) return this.openEffort(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
 		if (matchesKey(data, "f")) return this.openFallbacks(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
 		if (matchesKey(data, "t")) return this.toggleTier(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
+		if (matchesKey(data, "w")) return this.toggleOrchestratorMode();
 		if (matchesKey(data, "a")) return this.setAllFast();
 		if (matchesKey(data, "s") || matchesKey(data, "ctrl+s")) return this.pressButton("save");
 		if (matchesKey(data, "u")) return this.pressButton("use");
@@ -4766,20 +4810,31 @@ class RoutingTablePanel implements OverlayComponent {
 			const model = this.modelValue(key);
 			const effort = this.effortValue(key);
 			const tier = this.draft[key]?.model && this.fastModels.has(this.draft[key]!.model!) ? `  ${this.draft[key]?.tier === "fast" ? "Fast" : "Standard"} ▾` : "";
+			// The shown profile's orchestrator mode is a read-only chip on its row,
+			// after the tier and before the fallback chain. It outranks the chain: the
+			// chain shortens or drops first. The chip degrades its wording before it
+			// disappears, so the mode stays readable beside a tier; it drops only when
+			// even the last resort does not fit. No mouse region: the chip is a reference.
+			const chip = key === PROFILE_ORCHESTRATOR_KEY
+				? ORCHESTRATOR_MODE_CHIP_FORMS
+					.filter((form) => form.mode === this.modeDraft)
+					.find((form) => effortStart + visibleWidth(effort + tier) + visibleWidth(form.text) <= inner)
+				: undefined;
 			const modelTone: PanelTone = this.isEdited(key, "model")
 				? "edited"
 				: model === LEAVE_ORCHESTRATOR_UNTOUCHED || model === "inherit" || model === ROUTING_PI_DEFAULT ? "dim" : "text";
 			const effortTone: PanelTone = this.isEdited(key, "thinking") ? "edited" : effort === "inherit" || effort === ROUTING_PI_DEFAULT ? "dim" : "status";
 			const chain = this.fallbacks ? this.chain(key) : [];
-			const room = inner - effortStart - visibleWidth(effort + tier) - 3;
+			const room = inner - effortStart - visibleWidth(effort + tier) - (chip ? visibleWidth(chip.text) : 0) - 3;
 			const fallback = chain.length && room > 4 ? truncateToWidth(`↪ ${sanitizeTerminalText(chain[0]!.model)}${chain.length > 1 ? ` +${chain.length - 1}` : ""}`, room, "…") : "";
-			const plain = `${focused ? "▸ " : "  "}${padLabel(label)}${truncateToWidth(model, modelCol - 1, "…").padEnd(modelCol)}${effort}${tier}${fallback ? `   ${fallback}` : ""}`;
+			const plain = `${focused ? "▸ " : "  "}${padLabel(label)}${truncateToWidth(model, modelCol - 1, "…").padEnd(modelCol)}${effort}${tier}${chip?.text ?? ""}${fallback ? `   ${fallback}` : ""}`;
 			const styled =
 				this.renderText(focused ? "▸ " : "  ", "accent")
 				+ this.renderText(padLabel(label), labelTone)
 				+ this.renderText(truncateToWidth(model, modelCol - 1, "…").padEnd(modelCol), modelTone)
 				+ this.renderText(effort, effortTone)
 				+ this.renderText(tier, this.isEdited(key, "tier") ? "edited" : "status")
+				+ (chip ? this.renderText(chip.text, chip.tone) : "")
 				+ (fallback ? `   ${this.renderText(fallback, "dim")}` : "");
 			if (tier) region({ kind: "tier", row: key }, effortStart + visibleWidth(effort), Math.min(inner, effortStart + visibleWidth(effort + tier)));
 			if (effort) region({ kind: "effort", row: key }, effortStart, inner);
@@ -5258,6 +5313,8 @@ interface RoutingTablePanelRequest {
 	name: string;
 	config: AgentModelConfig;
 	file: AgentProfilesFile;
+	/** An unsaved orchestrator mode draft carried across a reopen (custom prompt). */
+	modeDraft?: OrchestratorMode;
 	sessionBoundName?: string;
 	pinWinner?: string;
 	feedback?: string;
@@ -5370,6 +5427,7 @@ async function showRoutingTablePanel(
 					notices: request.notices,
 					switchProfile: request.switchProfile,
 					fallbacks: fileRoutingFallbacks(gentleAiConfigHome()),
+					modeDraft: request.modeDraft,
 				},
 			);
 			const container = createNativeFullscreenInteraction({
@@ -6453,13 +6511,19 @@ async function openProfilesPanelLoop(
 		?? Object.keys(file.profiles)[0];
 	let feedback: string | undefined;
 	let draftOverride: AgentModelConfig | undefined;
+	// The unsaved mode draft carried across a reopen that keeps the routing draft.
+	let modeDraftOverride: OrchestratorMode | undefined;
 	// Read once per visit: the opening read serves the first one.
 	let authorityAvailable = true;
-	const writeDraft = (name: string, config: AgentModelConfig): boolean => {
+	const writeDraft = (name: string, config: AgentModelConfig, orchestratorMode?: OrchestratorMode): boolean => {
 		try {
-			const next = hasOwnProfile(file.profiles, name)
+			let next = hasOwnProfile(file.profiles, name)
 				? updateProfile(file, name, cloneModelConfig(config))
 				: createProfile(file, name, cloneModelConfig(config));
+			// The mode lands in the same write as the routing: the two never drift apart.
+			if (orchestratorMode !== undefined && hasOwnProfile(next.profiles, name)) {
+				next = setProfileOrchestratorMode(next, name, orchestratorMode);
+			}
 			writeProfilesFileSync(path, next);
 			file = next;
 			return true;
@@ -6468,9 +6532,9 @@ async function openProfilesPanelLoop(
 			return false;
 		}
 	};
-	const switchProfile: RoutingProfileSwitcher = (name, saveFirst) => {
+	const switchProfile: RoutingProfileSwitcher = (name, saveFirst, saveFirstMode) => {
 		const previous = selectedName!;
-		if (saveFirst && !writeDraft(previous, saveFirst)) {
+		if (saveFirst && !writeDraft(previous, saveFirst, saveFirstMode)) {
 			const error = feedback ?? `"${previous}" was not saved.`;
 			feedback = undefined;
 			return { error };
@@ -6529,6 +6593,7 @@ async function openProfilesPanelLoop(
 				name: shown,
 				config: draftOverride ?? stored,
 				file,
+				modeDraft: modeDraftOverride,
 				sessionBoundName: launch?.name,
 				pinWinner: pinWinner(),
 				feedback,
@@ -6537,8 +6602,9 @@ async function openProfilesPanelLoop(
 			}));
 			draftOverride = undefined;
 			feedback = undefined;
+			modeDraftOverride = undefined;
 			const previous = selectedName;
-			if (result.saveFirst && !writeDraft(previous, result.saveFirst)) {
+			if (result.saveFirst && !writeDraft(previous, result.saveFirst, result.saveFirstMode)) {
 				draftOverride = result.saveFirst;
 				continue;
 			}
@@ -6556,6 +6622,7 @@ async function openProfilesPanelLoop(
 						: result.target === ROUTING_ALL_ROW ? "every agent" : sanitizeTerminalText(result.target);
 					const answer = await step(() => ctx.ui.input(`Custom model id for ${label}`, "provider/model"));
 					draftOverride = cloneModelConfig(result.config);
+					modeDraftOverride = result.modeDraft;
 					if (answer === undefined || answer.trim() === "") {
 						feedback = "No custom model set.";
 						continue;
@@ -6571,7 +6638,7 @@ async function openProfilesPanelLoop(
 					continue;
 				}
 				case "save":
-					if (writeDraft(previous, result.config)) feedback = `Saved "${previous}".`;
+					if (writeDraft(previous, result.config, result.orchestratorMode)) feedback = `Saved "${previous}".`;
 					else draftOverride = result.config;
 					continue;
 				case "use-session": {
@@ -6579,13 +6646,17 @@ async function openProfilesPanelLoop(
 					// A tab switch may have changed the shown profile since this visit opened.
 					const config = result.config ?? cloneModelConfig(normalizeModelConfig(file.profiles[previous]) ?? {});
 					const saved = differsFromStore(previous, config);
-					if (saved && !writeDraft(previous, config)) {
+					// A toggled mode persists before the bind: Enter never leaves it behind,
+					// and the status line says so.
+					const modeChanged = result.orchestratorMode !== undefined
+						&& result.orchestratorMode !== readProfileWorkflow(file, previous).orchestratorMode;
+					if ((saved || modeChanged) && !writeDraft(previous, config, result.orchestratorMode)) {
 						draftOverride = config;
 						continue;
 					}
 					const report: ProfilesPanelReport = {};
 					file = await step(() => runProfilesPanelAction(ctx, live, path, file, { type: "use-session", name: previous, config }, report));
-					feedback = `${saved ? `Saved "${previous}". ` : ""}${report.status ?? ""}`.trim() || undefined;
+					feedback = `${saved ? `Saved "${previous}". ` : ""}${modeChanged ? `"${previous}" now keeps its orchestrator in ${result.orchestratorMode} mode. ` : ""}${report.status ?? ""}`.trim() || undefined;
 					continue;
 				}
 				case "apply-global": {

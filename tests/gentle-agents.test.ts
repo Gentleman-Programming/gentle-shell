@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { createRequire, syncBuiltinESMExports } from "node:module";
@@ -4511,10 +4511,71 @@ test("an in-flight task is persisted on launch, and reconciles to interrupted if
 	(resumedCtx.ctx.sessionManager as { getSessionId(): string }).getSessionId = () => ctx.sessionManager.getSessionId();
 	(resumedCtx.ctx.sessionManager as { getEntries(): unknown[] }).getEntries = () => [{ type: "custom" }];
 	await resumedPi.fire("session_start", resumedCtx.ctx, { reason: "resume" });
-	await new Promise((resolve) => setTimeout(resolve, 50));
+	// No delay: list_tasks waits for the resumed session's restoration itself.
 	const listResult = await resumedPi.tools.get("subagent_list_tasks")!.execute("l1", {}, undefined, undefined, resumedCtx.ctx);
 	assert.match(listResult.content[0].text, new RegExp(id), "interrupted task must appear in resumed session task list");
 	assert.match(listResult.content[0].text, /interrupted/i);
+});
+
+test("a task that finishes before its launch save settles ends terminal on disk (#1741)", async (t) => {
+	const { pi, tools, fire } = fakePi();
+	const harness = deps();
+	// A large in-flight thread makes the stale launch write slower than the terminal one.
+	const thread = TaskStore.prototype.thread;
+	const slow = applyTaskEvent(emptyThread(), { type: TASK_EVENT.TEXT, text: "x".repeat(32 * 1024 * 1024) });
+	t.mock.method(TaskStore.prototype, "thread", function (this: TaskStore, id: string) {
+		const current = this.get(id);
+		return current && current.status !== TASK_STATUS.COMPLETED ? slow : thread.call(this, id);
+	});
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	const started = await tools.get("subagent_run")!.execute("race", { agent: "explore", task: "Finish fast", mode: "background" }, undefined, undefined, ctx);
+	const id = (started.details.gentleAgents as { taskId: string }).taskId;
+	await tick();
+	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" }] });
+	harness.children[0].emit({ type: "agent_settled" });
+	const tasksDir = historyDir(home);
+	const pendingWrites = () => { try { return readdirSync(tasksDir).filter((name) => name.startsWith(`${id}.json.`)).length; } catch { return 1; } };
+	let stored = await loadStoredTask(tasksDir, id);
+	for (let attempt = 0; attempt < 120 && (stored?.task.status !== TASK_STATUS.COMPLETED || pendingWrites() > 0); attempt += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		stored = await loadStoredTask(tasksDir, id);
+	}
+	// Give any stale launch write that is still in flight time to land.
+	for (let settle = 0; settle < 8; settle += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.equal(pendingWrites(), 0);
+	}
+	stored = await loadStoredTask(tasksDir, id);
+	assert.equal(stored?.task.status, TASK_STATUS.COMPLETED, "the terminal record is never overwritten by a launch write");
+	assert.equal(stored?.task.result, "done");
+});
+
+test("a resumed session reconciles an interrupted task before publishing restored history (#1741)", async (t) => {
+	const { pi, fire } = fakePi();
+	const harness = deps();
+	const resumeHome = join(root, "reconcile-resume-home");
+	const interrupted: TaskRecord = { id: "interrupted-1", agent: "explore", mode: "background", prompt: "p", label: "p", cwd, parentSessionId: "reconcile-session", status: TASK_STATUS.RUNNING, createdAt: 1, startedAt: 1, endedAt: null, model: "m", thinking: undefined, sessionPath: null, error: null, result: null, lastStep: "working", lastActivityAt: 1, turns: 0, toolCalls: 0, tokens: 0, cost: 0 };
+	await saveTask(historyDir(resumeHome), interrupted, emptyThread());
+	harness.deps.home = resumeHome;
+	let store: TaskStore | undefined;
+	const restore = TaskStore.prototype.restore;
+	t.mock.method(TaskStore.prototype, "restore", function (this: TaskStore, ...args: Parameters<TaskStore["restore"]>) {
+		store = this;
+		return restore.apply(this, args);
+	});
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	ctx.sessionManager.getSessionId = () => "reconcile-session";
+	await fire("session_start", ctx, { reason: "resume" });
+	await eventually(() => store?.get("interrupted-1") !== undefined, "restored history published");
+	const restored = store!.get("interrupted-1")!;
+	assert.equal(restored.status, TASK_STATUS.FAILED);
+	assert.match(restored.error ?? "", /interrupted/);
+	assert.equal(typeof restored.endedAt, "number");
+	assert.equal((await loadStoredTask(historyDir(resumeHome), "interrupted-1"))?.task.status, TASK_STATUS.FAILED);
+	await fire("session_shutdown", ctx);
 });
 
 test("the overlay confirms a running task once and reports when it finishes during confirmation", async () => {
@@ -4646,7 +4707,10 @@ test("restored task history cannot enter the live panel or discovery during sync
 	assert.deepEqual(readDiscovery(profile, listPresence(profile).entries[0])?.tasks, []);
 	const opened = commands.get("gentle:agents")!.handler("", ctx);
 	for (let attempt = 0; attempt < 40 && overlays.length === 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
-	assert.doesNotMatch(stripAnsi(overlays[0]!.render(80).join("\n")), /Stop selected|Subagent explore/);
+	// The interrupted record is reconciled on resume, so it shows as finished history, never as stoppable work (#1741).
+	const rendered = stripAnsi(overlays[0]!.render(80).join("\n"));
+	assert.doesNotMatch(rendered, /Stop selected|running/);
+	assert.match(rendered, /failed/);
 	overlays[0]!.handleInput("s");
 	overlays[0]!.handleInput("c");
 	await tick();

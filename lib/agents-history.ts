@@ -40,9 +40,28 @@ function parseStored(text: string): StoredTask | undefined {
 	}
 }
 
-export async function saveTask(dir: string, task: TaskRecord, thread: TaskThread): Promise<void> {
+// Writes to one task file run one after another in call order. Each write
+// renames a fresh temp file over the target, so unordered writes would let a
+// stale launch record land after the terminal one (#1741).
+const pendingWrites = new Map<string, Promise<void>>();
+
+export function saveTask(dir: string, task: TaskRecord, thread: TaskThread): Promise<void> {
+	let target: string;
+	try {
+		target = fileFor(dir, task.id);
+	} catch (error) {
+		return Promise.reject(error);
+	}
+	const previous = pendingWrites.get(target) ?? Promise.resolve();
+	const write = previous.catch(() => {}).then(() => writeTask(dir, target, task, thread));
+	const settled = write.catch(() => {});
+	pendingWrites.set(target, settled);
+	void settled.then(() => { if (pendingWrites.get(target) === settled) pendingWrites.delete(target); });
+	return write;
+}
+
+async function writeTask(dir: string, target: string, task: TaskRecord, thread: TaskThread): Promise<void> {
 	await mkdir(dir, { recursive: true });
-	const target = fileFor(dir, task.id);
 	const temp = `${target}.${process.pid}-${Math.random().toString(36).slice(2, 8)}.tmp`;
 	await writeFile(temp, JSON.stringify({ task, thread }), "utf8");
 	await rename(temp, target);

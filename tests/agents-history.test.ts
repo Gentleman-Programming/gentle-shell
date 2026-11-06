@@ -79,3 +79,17 @@ test("pruneHistory preserves in-flight unfinished tasks regardless of history ca
 	assert.ok(remaining.some((entry) => entry.task.id === "c2"), "newest completed task is preserved");
 	assert.ok(!remaining.some((entry) => entry.task.id === "c1"), "older completed task is pruned");
 });
+
+test("concurrent saves of one task land on disk in call order, so a later terminal write always wins", async () => {
+	const orderedDir = join(root, "ordered-tasks");
+	const running: TaskRecord = { ...task("ordered", 3000), status: TASK_STATUS.RUNNING, endedAt: null, result: null };
+	// A large launch payload makes the stale write slower than the terminal one.
+	const slowThread = applyTaskEvent(emptyThread(), { type: TASK_EVENT.TEXT, text: "x".repeat(32 * 1024 * 1024) });
+	const launch = saveTask(orderedDir, running, slowThread);
+	const terminal = saveTask(orderedDir, task("ordered", 3000), emptyThread());
+	await Promise.all([launch, terminal]);
+	const stored = await loadStoredTask(orderedDir, "ordered");
+	assert.equal(stored?.task.status, TASK_STATUS.COMPLETED);
+	assert.deepEqual(stored?.thread.items, []);
+	assert.deepEqual(readdirSync(orderedDir).filter((name) => name.endsWith(".tmp")), []);
+});

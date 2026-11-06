@@ -708,6 +708,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	const stopStatusNotifications = publishTaskStatusChanges(store, pi.events, () => performance.now());
 	pi.on("session_shutdown", () => { stopStatusNotifications(); });
 	const restoredTaskIds = new Set<string>();
+	// The latest resumed-session history restoration; list_tasks waits for it.
+	let sessionRestoration: Promise<void> = Promise.resolve();
 	const tasksDir = historyDir(deps.home, agentHome);
 	let ui: ExtensionContext["ui"] | undefined;
 	// The session that owns the Agents widget, so a click on an agent row opens its /gentle:agents view.
@@ -1087,9 +1089,13 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 
 	// A launched task is written to disk immediately so abrupt parent process
 	// termination (SIGKILL, host reboot, crash) leaves a durable record (#1741).
-	// Pruning is deferred until final persistence in onFinish.
-	const persistLaunch = (task: TaskRecord) => {
-		void saveTask(tasksDir, task, store.thread(task.id)).catch(() => {});
+	// Pruning is deferred until final persistence in onFinish. saveTask keeps
+	// one task's writes in call order, and a task that is already terminal is
+	// skipped here so its onFinish record is the last one on disk.
+	const persistLaunch = (id: string) => {
+		const task = store.get(id);
+		if (!task || isFinished(task.status)) return;
+		void saveTask(tasksDir, task, store.thread(id)).catch(() => {});
 	};
 
 	// A background result used to be handed straight to the host as a followUp
@@ -1844,8 +1850,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			// The session may have moved on while disk was read; a stale restore
 			// must never land in the wrong session's store.
 			if (ctx.sessionManager.getSessionId() !== sessionId) return;
-			for (const { task, thread } of history) {
-				if (task.parentSessionId !== sessionId) continue;
+			// An in-flight record has no live runner here, so it is reconciled
+			// before the widget or store can show it as still running (#1741).
+			const own = history.filter(({ task }) => task.parentSessionId === sessionId && !store.get(task.id));
+			const reconciled = await Promise.all(own.map(reconcileStored));
+			if (ctx.sessionManager.getSessionId() !== sessionId) return;
+			for (const { task, thread } of reconciled) {
 				if (store.restore(task, thread)) restoredTaskIds.add(task.id);
 			}
 		} catch { /* Partial history is acceptable; the live session keeps running. */ }
@@ -2306,8 +2316,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				launched = true;
 				const foreign = foreignRequests.get(request);
 				if (foreign && launchedTaskId) foreignTasks.set(launchedTaskId, foreign);
-				const current = store.get(task.id) ?? task;
-				persistLaunch(current);
+				if (launchedTaskId) persistLaunch(launchedTaskId);
 			},
 			...(observe ? { canCollectResponseObservations: metrics.valid, prepareResponseObservations: async () => {
 				if (metrics.finished || owner !== metricsOwner || request.parentSessionId !== activeSessionId() || !runtimeMetricsEnvAllows(deps.env)) return false;
@@ -2322,7 +2331,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const foreignRequest = foreignRequests.get(request);
 		if (launched && foreignRequest) foreignTasks.set(task.id, foreignRequest);
 		ownedTaskIds.add(task.id);
-		persistLaunch(task);
+		persistLaunch(task.id);
 		publishWork?.(task.id);
 		publishActivityPrompt(); // Admission's summary notification precedes runtime ownership.
 		store.subscribe(task.id, () => { publishActivity(); requestRender(); });
@@ -2856,6 +2865,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	});
 
 	tool("list_tasks", "List the subagent tasks of this session, newest first.", { properties: {} }, async (_params, ctx) => {
+		await sessionRestoration;
 		const sessionId = ctx.sessionManager.getSessionId() ?? "";
 		const tasks = store.list(sessionId);
 		for (const task of tasks) {
@@ -3007,7 +3017,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// resolveTask path for anything else.
 		const sessionId = ctx.sessionManager.getSessionId();
 		const preexisting = event.reason === "resume" || (event.reason === "startup" && ctx.sessionManager.getEntries().length > 0);
-		if (preexisting && sessionId) void restoreSessionHistory(ctx, sessionId);
+		if (preexisting && sessionId) sessionRestoration = restoreSessionHistory(ctx, sessionId);
 		try {
 			presence = startPresence(ctx.sessionManager);
 			resetActivityPublish();

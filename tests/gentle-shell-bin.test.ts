@@ -513,6 +513,29 @@ function writeGentleAiScriptDeclaringGentlePi(path: string, extraSources: string
 	chmodSync(path, 0o755);
 }
 
+// Test/development-only stub for the setup subcommand's gentle-ai binary
+// that replaces the provisioned home's settings.json with a directory and
+// then fails, so the failure-path post-install cleanup's settings read throws
+// EISDIR instead of reporting a missing file (#1647 hardening).
+function writeGentleAiScriptReplacingSettingsWithDirectory(path: string, exitCode: number) {
+	writeFileSync(
+		path,
+		[
+			"#!/usr/bin/env node",
+			"import { mkdirSync, rmSync } from 'node:fs';",
+			"import { join } from 'node:path';",
+			"const args = process.argv.slice(2);",
+			"const settingsPath = join(process.env.PI_CODING_AGENT_DIR, 'settings.json');",
+			"rmSync(settingsPath, { force: true });",
+			"mkdirSync(settingsPath, { recursive: true });",
+			"process.stdout.write(JSON.stringify({ args }) + '\\n');",
+			`process.exit(${exitCode});`,
+			"",
+		].join("\n"),
+	);
+	chmodSync(path, 0o755);
+}
+
 // Test/development-only fake pi runtime whose `remove <source>` branch also
 // rewrites the target home's settings.json, dropping the matching `packages`
 // entry — unlike the plain `writePiScript` stub above (which only records
@@ -1390,6 +1413,18 @@ test("gentle-shell setup removes npm:gentle-pi that gentle-ai declared even when
 	assert.deepEqual(JSON.parse(lines[1]).args, ["remove", "npm:gentle-pi"]);
 });
 
+test("gentle-shell setup keeps the gentle-ai exit code when failure-path cleanup cannot read settings.json", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptReplacingSettingsWithDirectory(gentleAiScript, 3);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript };
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 3, result.stderr);
+	assert.match(result.stderr, /gentle-shell: post-install cleanup failed: EISDIR/);
+	assert.doesNotMatch(result.stderr, /^\s+at /m);
+});
+
 // A --dry-run gentle-ai install writes nothing, so reading settings.json
 // afterwards would only ever report whatever pre-existed the run (e.g. the
 // isolated-home bootstrap this fixture's fake-gentle-ai script never
@@ -1887,6 +1922,23 @@ test("a failing auto-provision flow warns, still launches pi, and writes no mark
 		const config = JSON.parse(readFileSync(configPath, "utf8"));
 		assert.equal(config.provisioned, undefined);
 	}
+});
+
+// The launch that follows still reads the same unreadable settings.json, so
+// only the setup outcome is pinned here: the install's own exit code reaches
+// the ordinary "starting anyway" branch instead of the unexpected-error one.
+test("a failing auto-provision flow keeps the install exit code when failure-path cleanup cannot read settings.json", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptReplacingSettingsWithDirectory(gentleAiScript, 5);
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const result = run(env, ["--mode", "rpc"]);
+	assert.match(
+		result.stderr,
+		/gentle-shell: automatic setup failed \(exit 5\); starting anyway and retrying next run\. Run `gentle-shell setup` to see the full output\.\ngentle-shell: post-install cleanup failed: EISDIR/,
+	);
+	assert.doesNotMatch(result.stderr, /automatic setup failed unexpectedly/);
 });
 
 test("a failing auto-provision flow names the --home selector in its retry remediation", (t) => {

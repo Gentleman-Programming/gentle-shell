@@ -1281,7 +1281,14 @@ async function runSetupFlow(home, runtime, { dryRun, stdio, timeoutMs, homeHadCo
 		// subsequent launches silently run the published npm package instead of
 		// the launcher's own package (#1647).
 		if (!dryRun && !installResult.interrupted) {
-			const cleanupResult = await runPostInstallCleanup(home, runtime, false, stdio, timeoutMs);
+			// A cleanup that throws (e.g. an unreadable settings.json) must not
+			// replace the install's own failure; it only adds a diagnostic.
+			let cleanupResult;
+			try {
+				cleanupResult = await runPostInstallCleanup(home, runtime, false, stdio, timeoutMs);
+			} catch (error) {
+				cleanupResult = { ok: false, exitCode: 1, message: `gentle-shell: post-install cleanup failed: ${error.message}` };
+			}
 			if (cleanupResult.interrupted) return cleanupResult;
 			if (!cleanupResult.ok && cleanupResult.message !== undefined) {
 				const baseMessage = installResult.timedOut

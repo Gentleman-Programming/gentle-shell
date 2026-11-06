@@ -30,7 +30,7 @@ interface Harness {
 	timers: Array<{ fn: () => void; ms: number; cancelled: boolean }>;
 	asks: Array<{ taskId: string; method: string }>;
 	finishes: string[];
-	spawnOptions: Array<{ command: string; args: string[]; env: NodeJS.ProcessEnv; stdio?: string[] }>;
+	spawnOptions: Array<{ command: string; args: string[]; env: NodeJS.ProcessEnv; stdio?: string[]; shell?: boolean | string }>;
 	advance(ms: number): void;
 }
 
@@ -47,7 +47,7 @@ function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boo
 		resolvePi: options.resolvePi,
 		spawn: (command, args, launchOptions) => {
 			if (options.failStart) throw new Error("fixture spawn failed");
-			spawnOptions.push({ command, args, env: launchOptions.env, stdio: launchOptions.stdio });
+			spawnOptions.push({ command, args, env: launchOptions.env, stdio: launchOptions.stdio, shell: launchOptions.shell });
 			const fake = fakeChild({ exitOnKill: options.exitOnKill, exitOnStdinEnd: options.exitOnStdinEnd, pid: options.pid });
 			if (options.state !== undefined) {
 				fake.child.stdin.removeAllListeners("data");
@@ -973,6 +973,38 @@ test("runner resolves the pi command at each spawn after the entry disappears", 
 	await tick();
 	assert.equal(h.spawnOptions[1].command, "pi");
 	assert.deepEqual(h.spawnOptions[1].args, childArguments(request()));
+});
+
+test("piCommand fallback on win32 includes shell: true to avoid ENOENT on .cmd shims (#2887)", () => {
+	const procWin = {
+		execPath: "C:\\Program Files\\nodejs\\node.exe",
+		argv: ["C:\\Program Files\\nodejs\\node.exe", "C:\\pnpm\\global\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli.js"],
+		env: {},
+		platform: "win32" as const,
+	};
+	assert.deepEqual(piCommand(procWin, (entry) => entry === procWin.argv[1]), { command: procWin.execPath, args: [procWin.argv[1]] });
+	assert.deepEqual(piCommand(procWin, () => false), { command: "pi", args: [], shell: true });
+});
+
+test("runner spawns fallback pi with shell on win32 after upgrade (#2887)", async () => {
+	let exists = true;
+	const procWin = {
+		execPath: "C:\\Program Files\\nodejs\\node.exe",
+		argv: ["C:\\Program Files\\nodejs\\node.exe", "C:\\pi\\dist\\cli.js"],
+		env: {},
+		platform: "win32" as const,
+	};
+	const h = harness({ resolvePi: () => piCommand(procWin, () => exists) });
+	h.runner.run(request());
+	await tick();
+	assert.equal(h.spawnOptions[0].command, procWin.execPath);
+	assert.equal(h.spawnOptions[0].shell, undefined);
+
+	exists = false;
+	h.runner.run(request());
+	await tick();
+	assert.equal(h.spawnOptions[1].command, "pi");
+	assert.equal(h.spawnOptions[1].shell, true);
 });
 
 test("JsonLines splits on LF only, tolerates CRLF, and skips lines that are not JSON", () => {

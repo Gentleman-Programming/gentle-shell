@@ -45,6 +45,7 @@ export interface SpawnOptions {
 	env: NodeJS.ProcessEnv;
 	detached?: boolean;
 	windowsHide?: boolean;
+	shell?: boolean;
 	stdio?: Array<"pipe" | "ignore" | "inherit" | "ipc" | "overlapped">;
 }
 
@@ -58,6 +59,7 @@ export interface ProcessControl {
 export interface PiCommand {
 	command: string;
 	args: string[];
+	shell?: boolean;
 }
 
 export interface RunnerDeps {
@@ -190,6 +192,7 @@ interface ProcessLike {
 	execPath: string;
 	argv: string[];
 	env: NodeJS.ProcessEnv;
+	platform?: NodeJS.Platform;
 }
 
 interface Pending {
@@ -363,7 +366,10 @@ export function piCommand(proc: ProcessLike = process, exists: (path: string) =>
 	}
 	const entry = proc.argv[1];
 	if (entry && /(^|[\\/])cli\.js$/.test(entry) && exists(entry)) return { command: proc.execPath, args: [entry] };
-	return { command: "pi", args: [] };
+	const isWin32 = proc.platform !== undefined
+		? proc.platform === "win32"
+		: (proc === process ? process.platform === "win32" : /^[a-zA-Z]:\\/i.test(proc.execPath) || /\\/.test(proc.execPath));
+	return { command: "pi", args: [], ...(isWin32 ? { shell: true } : {}) };
 }
 
 // RPC framing is strict JSONL: LF only, optional CR. Lines that do not parse
@@ -625,6 +631,7 @@ export class AgentRunner {
 				env,
 				detached,
 				windowsHide: true,
+				...(pi.shell !== undefined ? { shell: pi.shell } : {}),
 				stdio: hasParentPermissionChannel ? ["pipe", "pipe", "pipe", permissionChannelStdio, "ipc"] : ["pipe", "pipe", "pipe", "ipc"],
 			});
 		} catch (error) {

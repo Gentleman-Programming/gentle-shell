@@ -9332,21 +9332,26 @@ async function executeReviewHostRelayCapture(
 				...(signal === undefined ? {} : { signal }),
 			};
 		})());
+		const hostRelay = {
+			transport: "pi_host_relay",
+			...(slot.lens === undefined ? {} : { lens: slot.lens }),
+			...(slot.order === undefined ? {} : { order: slot.order }),
+			...(slot.subjectHash === undefined ? {} : { subject_hash: slot.subjectHash }),
+			...(slot.routingKey === undefined ? {} : { role: slot.name }),
+			prompt_bytes: result.promptByteLength,
+			result_bytes: result.resultByteLength,
+			...(result.reviewerEvidence === undefined ? {} : { reviewer: structuredClone(result.reviewerEvidence) }),
+		};
 		const closure = decodeRelayLastEventClosure(result.submission);
-		if (closure !== undefined) return mapAndClearLastEventClosure(closure, binding, selections, cwd, implicitWorkspaceRoot);
+		if (closure !== undefined) return { ...mapAndClearLastEventClosure(closure, binding, selections, cwd, implicitWorkspaceRoot),
+			...(result.reviewerEvidence === undefined ? {} : { host_relay: hostRelay }) };
 		return {
 			tool: "gentle_review_capture",
 			status: "captured",
 			outcome: "native-reviewer-result-captured",
 			lineage_id: binding.lineageId,
 			host_relay: {
-				transport: "pi_host_relay",
-				...(slot.lens === undefined ? {} : { lens: slot.lens }),
-				...(slot.order === undefined ? {} : { order: slot.order }),
-				...(slot.subjectHash === undefined ? {} : { subject_hash: slot.subjectHash }),
-				...(slot.routingKey === undefined ? {} : { role: slot.name }),
-				prompt_bytes: result.promptByteLength,
-				result_bytes: result.resultByteLength,
+				...hostRelay,
 				submission: result.submission,
 			},
 		};
@@ -10140,7 +10145,11 @@ function reviewHostRelayGroupProgress(
 	return {
 		prepared_reviewers: prepared.length,
 		submitted_reviewers: submitted,
-		host_relay: { transport: "pi_host_relay", reviewers: reviewHostRelayGroupDiagnostics(slots, prepared, submitted) },
+		host_relay: { transport: "pi_host_relay", reviewers: reviewHostRelayGroupDiagnostics(slots, prepared, submitted),
+			// Preparation already ran every completion, even when admission stops
+			// early. Keep that evidence once, separate from submitted-only legacy diagnostics.
+			reviewer_runs: reviewHostRelayGroupDiagnostics(slots, prepared, prepared.length).map((facts, index) => ({ ...facts,
+				...(prepared[index]?.reviewerEvidence === undefined ? {} : { reviewer: structuredClone(prepared[index]!.reviewerEvidence) }) })) },
 		...(submitted === 0 && uncertain ? { mutation_outcome: outcome } : { mutation_performed: submitted > 0, mutation_outcome: outcome }),
 	};
 }

@@ -13,7 +13,7 @@ function scratchDir(prefix: string): string {
 
 async function runRetiredOperation(parameters: Record<string, unknown>): Promise<Record<string, unknown>> {
 	const cwd = scratchDir("gentle-pi-retired-ops-");
-	return await __testing.executeReviewControllerOperation(parameters, cwd, new Map(), null);
+	return await __testing.executeReviewControllerOperation(parameters, cwd, null);
 }
 
 function assertRetiredEnvelope(details: Record<string, unknown>, operation: string): void {

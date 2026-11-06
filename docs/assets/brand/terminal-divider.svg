@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 40" role="img" aria-labelledby="title desc">
+  <title id="title">Decorative terminal separator</title>
+  <desc id="desc">Fading pink rules frame a terminal prompt symbol.</desc>
+  <defs>
+    <linearGradient id="fade-in" x1="0" x2="1">
+      <stop offset="0" stop-color="#F095C8" stop-opacity="0"/>
+      <stop offset="1" stop-color="#F095C8" stop-opacity="0.62"/>
+    </linearGradient>
+    <linearGradient id="fade-out" x1="0" x2="1">
+      <stop offset="0" stop-color="#F095C8" stop-opacity="0.62"/>
+      <stop offset="1" stop-color="#F095C8" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <path d="M16 20H212" fill="none" stroke="url(#fade-in)" stroke-width="1.25"/>
+  <path d="M268 20H464" fill="none" stroke="url(#fade-out)" stroke-width="1.25"/>
+  <path d="M222 13L233 20L222 27M243 27H258" fill="none" stroke="#F095C8" stroke-linecap="square" stroke-linejoin="miter" stroke-width="1.5"/>
+</svg>

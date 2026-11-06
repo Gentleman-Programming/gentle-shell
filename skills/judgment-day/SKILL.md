@@ -11,9 +11,9 @@ metadata:
 
 Load this skill only when the user explicitly requests Judgment Day, Judgement Day, dual/adversarial review, or an equivalent trigger. Resolve one exact target before starting.
 
-Judgment Day is a standalone developer tool: judges run whenever asked, on any runtime, and need no review transaction, runtime identity, or delivery-receipt machinery to start. It replaces ordinary 4R as the adversarial method for that target; never run both.
+Judgment Day is a standalone developer tool: judges run whenever asked, on any runtime, and need no review transaction, runtime identity, or delivery-receipt machinery to start. Judgment Day is independent: it neither enables nor replaces ordinary review; a separately requested ordinary review remains independent.
 
-Judgment Day starts only when explicitly requested and replaces ordinary review for that lineage.
+Judgment Day starts only when explicitly requested. It does not start, configure, or consume ordinary review for that lineage.
 
 ## Transaction Rules
 
@@ -55,6 +55,22 @@ WARNING and SUGGESTION candidates become one-time informational rows and never s
 
 ## Fix Boundary
 
+A standalone `jd-fix-agent` dispatch requires no graph-v1 or native review lineage and is accepted only as one standalone agent with this exact Markdown shape. The `## Judgment Day activation` section contains only `User explicitly requested Judgment Day.`. The parent replaces the example ID, frozen ledger hash, row data, and surface with controller-authorized values. The correction batch contains only one round (`1 of 2` or `2 of 2`) and one lowercase SHA-256. The exact frozen finding rows are one JSON object per line, use only the canonical row fields, and exactly match the authorized IDs.
+
+```markdown
+## Judgment Day activation
+User explicitly requested Judgment Day.
+## Exact authorized severe IDs
+- `JD-A-001`
+## Judgment Day correction batch
+Round: 1 of 2.
+Frozen ledger SHA-256: `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`
+## Exact frozen finding rows
+{"id":"JD-A-001","lens":"judgment-day","location":"path/to/authorized-file.ts:1","severity":"CRITICAL","status_at_freeze":"open","evidence_class":"deterministic","evidence_claim":"Concrete user-impact claim supported by the frozen location."}
+## Allowed edit surfaces
+path/to/authorized-file.ts
+```
+
 Fix only the exact controller-authorized severe IDs in the one supplied batch.
 
 Do not add findings, alter frozen claims, authorize transitions, deliver, publish, or start another actor.
@@ -63,11 +79,7 @@ Each scoped fix returns candidate-tree and fix-diff evidence. It cannot mint aut
 
 ## Lifecycle Boundary
 
-A judgment issues no receipt and carries no delivery authority: it satisfies no commit, push, PR, or release gate. When the caller explicitly wants delivery authority for the same target, run the ordinary negotiated review lifecycle as its own step; a runtime that cannot uphold receipt guarantees loses the receipt, not the judgment.
-
-Pre-commit, pre-push, and PR gates validate approved receipts and exact typed targets with zero actors.
-Release from protected `main` may bypass receipt validation only when the tag targets the current immutable `origin/main` SHA, required CI for that exact SHA is successful, the remote head is rechecked before tag push, and no fresh risk evidence exists; otherwise release fails closed through native receipt validation.
-Major and post-incident releases require explicit extraordinary review even when fast-path checks pass.
+Judgment Day is independent: it creates no delivery authority, enables no ordinary review, and changes no commit, push, PR, or release policy. A separately requested ordinary review remains an independent lifecycle and cannot consume a Judgment Day result as a receipt or authority. Ordinary repository policy owns delivery.
 
 Dangerous-command safety remains independent and authoritative.
 

@@ -4,7 +4,7 @@ import { cpSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
-import { resolveRepositoryAuthorityV1, setReviewRepositoryIdentityRetryHookForTesting } from "../lib/review-repository.ts";
+import { publicationProbeGitEnvironment, resolveRepositoryAuthorityV1, reviewGitEnvironment, setReviewRepositoryIdentityRetryHookForTesting } from "../lib/review-repository.ts";
 import { REVIEW_MODE, ReviewTransactionStore, createReviewState, setReviewMutationLockPlatformForTesting } from "../lib/review-transaction.ts";
 import { REVIEW_LENS, REVIEW_ROUTE } from "../lib/review-triggers.ts";
 import { qualifiedReviewLockPlatform, testSnapshot } from "./review-test-fixtures.ts";
@@ -48,6 +48,84 @@ function addOrphanRoot(root: string, branch: string, file: string): void {
 	git(root, "commit", "-m", `orphan root on ${branch}`);
 	git(root, "checkout", "main");
 }
+
+test("review Git environment uses a Git-compatible null config path on Windows", () => {
+	const environment = reviewGitEnvironment();
+	assert.equal(environment.GIT_CONFIG_GLOBAL, "/dev/null");
+	assert.equal(environment.GIT_CONFIG_SYSTEM, "/dev/null");
+});
+
+test("review Git environment runs a real Git authority probe", (t) => {
+	const root = repository(t);
+	const commonDirectory = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
+		cwd: root,
+		encoding: "utf8",
+		env: reviewGitEnvironment(),
+	}).trim();
+	assert.equal(resolve(commonDirectory), resolve(git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")));
+});
+
+test("review Git environment rejects inherited unsafe Git overrides", () => {
+	const prior = process.env.GIT_DIR;
+	try {
+		process.env.GIT_DIR = "/unsafe";
+		assert.throws(() => reviewGitEnvironment(), /REVIEW_GIT_ENV_UNSAFE/);
+	} finally {
+		if (prior === undefined) delete process.env.GIT_DIR;
+		else process.env.GIT_DIR = prior;
+	}
+});
+
+// gentle-shell#2552: the unit-test runner pins the config-file keys for
+// hermeticity, and reviewGitEnvironment overrides them itself, so inherited
+// values must be tolerated instead of failing closed; routing overrides do not.
+test("review Git environment tolerates inherited config-file keys and still pins them", () => {
+	const prior = { GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM, GIT_CONFIG_COUNT: process.env.GIT_CONFIG_COUNT };
+	try {
+		process.env.GIT_CONFIG_GLOBAL = "/hostile/global.gitconfig";
+		process.env.GIT_CONFIG_NOSYSTEM = "1";
+		const environment = reviewGitEnvironment();
+		assert.equal(environment.GIT_CONFIG_GLOBAL, "/dev/null");
+		assert.equal(environment.GIT_CONFIG_SYSTEM, "/dev/null");
+		assert.equal(environment.GIT_CONFIG_NOSYSTEM, "1");
+		process.env.GIT_CONFIG_COUNT = "1";
+		assert.throws(() => reviewGitEnvironment(), /REVIEW_GIT_ENV_UNSAFE/);
+	} finally {
+		for (const [key, value] of Object.entries(prior)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	}
+});
+
+// gentle-shell#2552: deleting the config-file keys makes the probe fall back to
+// the host's default config paths, which are not environment-injectable; the
+// unit-stage runner redirects HOME instead of relying on preserved pins.
+test("publication probe drops inherited config-file keys and routing overrides", () => {
+	const prior = { GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM: process.env.GIT_CONFIG_SYSTEM, GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM, GIT_DIR: process.env.GIT_DIR, GIT_CONFIG_COUNT: process.env.GIT_CONFIG_COUNT, GIT_CONFIG_KEY_0: process.env.GIT_CONFIG_KEY_0, GIT_CONFIG_VALUE_0: process.env.GIT_CONFIG_VALUE_0 };
+	try {
+		process.env.GIT_CONFIG_GLOBAL = "/pinned/global.gitconfig";
+		process.env.GIT_CONFIG_SYSTEM = "/pinned/system.gitconfig";
+		process.env.GIT_CONFIG_NOSYSTEM = "1";
+		process.env.GIT_DIR = "/unsafe";
+		process.env.GIT_CONFIG_COUNT = "1";
+		process.env.GIT_CONFIG_KEY_0 = "user.name";
+		process.env.GIT_CONFIG_VALUE_0 = "injected";
+		const environment = publicationProbeGitEnvironment();
+		assert.equal(environment.GIT_CONFIG_GLOBAL, undefined);
+		assert.equal(environment.GIT_CONFIG_SYSTEM, undefined);
+		assert.equal(environment.GIT_CONFIG_NOSYSTEM, undefined);
+		assert.equal(environment.GIT_DIR, undefined);
+		assert.equal(environment.GIT_CONFIG_COUNT, undefined);
+		assert.equal(environment.GIT_CONFIG_KEY_0, undefined);
+		assert.equal(environment.GIT_CONFIG_VALUE_0, undefined);
+	} finally {
+		for (const [key, value] of Object.entries(prior)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	}
+});
 
 test("a Windows drive-letter Git common directory resolves repository authority", { skip: process.platform !== "win32" }, (t) => {
 	const root = repository(t);

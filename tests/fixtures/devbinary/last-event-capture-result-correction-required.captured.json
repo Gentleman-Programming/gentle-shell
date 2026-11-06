@@ -1,0 +1,26 @@
+{
+  "schema": "gentle-ai.review-last-event-closure/v1",
+  "operation": "review/capture-result",
+  "lineage_id": "review-afeed0d5a9aa24a1",
+  "state": "correction_required",
+  "action": "candidate-caused severe findings require one bounded correction",
+  "status_continuation": {
+    "operation": "review.status",
+    "arguments": [
+      {"name": "cwd", "value": "/tmp/repository", "token": "--cwd=/tmp/repository"},
+      {"name": "contract", "value": "gentle-ai.review-integration/v2", "token": "--contract=gentle-ai.review-integration/v2"},
+      {"name": "next-transition", "value": "true", "token": "--next-transition=true"},
+      {"name": "lineage", "value": "review-afeed0d5a9aa24a1", "token": "--lineage=review-afeed0d5a9aa24a1"},
+      {"name": "agent", "value": "pi", "token": "--agent=pi"}
+    ],
+    "preconditions": [
+      {"name": "state", "value": "correction_required"}
+    ],
+    "binding": {
+      "lineage_id": "review-afeed0d5a9aa24a1",
+      "revision": "sha256:3c274f44e4d05c748bae28978396f28a4d833500b41f00942f315261e8bc9749",
+      "target_identity": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  "store_revision": "sha256:3c274f44e4d05c748bae28978396f28a4d833500b41f00942f315261e8bc9749"
+}

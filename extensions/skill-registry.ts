@@ -1,7 +1,9 @@
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, type FSWatcher, watch } from "node:fs";
 import {
 	access,
+	lstat,
 	mkdir,
 	readFile,
 	readdir,
@@ -10,18 +12,25 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, join, normalize, relative, sep } from "node:path";
+import { basename, delimiter, dirname, join, normalize, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { isHomeOrBroadUserDirectory } from "../lib/bounded-writer-admission.ts";
+import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 
 const REGISTRY_REL_PATH = ".atl/skill-registry.md";
 const CACHE_REL_PATH = ".atl/.skill-registry.cache.json";
 const SECTION_MARKER = "## Skills";
 const EXCLUDE_NAMES = new Set(["_shared", "skill-registry"]);
 const EXCLUDE_PREFIXES = ["sdd-"];
-const ATL_IGNORE_ENTRY = ".atl/";
 const WATCH_DEBOUNCE_MS = 500;
-const REGISTRY_SCHEMA_VERSION = 7;
+// inotify budgets are finite (ENOSPC/EMFILE) and recursive watches degrade
+// silently on exhausted systems -- WSL2 hits this constantly -- so a slow
+// poll is the floor that keeps regeneration working when the OS cannot
+// deliver change events. The fingerprint gate makes a redundant poll cheap.
+const WATCH_FALLBACK_POLL_MS = 2_000;
+const REGISTRY_SCHEMA_VERSION = 9;
 const NO_SKILL_REGISTRY_FLAG = "no-skill-registry";
 const NO_SKILL_REGISTRY_ENV = "GENTLE_PI_NO_SKILL_REGISTRY";
 const LEGACY_PROJECT_REGISTRY_REL_PATH = ".pi/extensions/skill-registry.ts";
@@ -49,6 +58,23 @@ interface SkillEntry {
 	path: string;
 	description: string;
 	scope?: string;
+}
+
+// Structural mirror of pi's runtime-resolved skill record. Kept local on
+// purpose: this seam must not import pi internals.
+export interface ResolvedSkill {
+	name: string;
+	description: string;
+	filePath: string;
+	baseDir?: string;
+	disableModelInvocation?: boolean;
+	sourceInfo?: {
+		path?: string;
+		source?: string;
+		scope?: "user" | "project" | "temporary";
+		origin?: "package" | "top-level";
+		baseDir?: string;
+	};
 }
 
 function userSkillDirs(): string[] {
@@ -94,6 +120,20 @@ function projectSkillDirs(cwd: string): string[] {
 	];
 }
 
+// gentle-shell#373: only storage-capacity/permission faults degrade the
+// registry to a typed unavailable result. Anything else (ELOOP, ENOSPC, a
+// failing device) keeps its own diagnostic through the ordinary error path.
+function isStorageUnavailableError(error: unknown): boolean {
+	if (typeof error !== "object" || error === null || !("code" in error)) return false;
+	const code = (error as NodeJS.ErrnoException).code;
+	return code === "EACCES" || code === "EPERM" || code === "EROFS" || code === "ENOTDIR" || code === "EISDIR" || code === "EEXIST";
+}
+
+function isMissingSkillFileError(error: unknown): boolean {
+	if (typeof error !== "object" || error === null || !("code" in error)) return false;
+	return error.code === "ENOENT" || error.code === "ENOTDIR";
+}
+
 async function findSkillFiles(root: string): Promise<string[]> {
 	if (!(await pathExists(root))) return [];
 	let entries;
@@ -103,7 +143,8 @@ async function findSkillFiles(root: string): Promise<string[]> {
 		return [];
 	}
 
-	const out: string[] = [];
+	const directSkills: string[] = [];
+	const nestedSkills: string[] = [];
 	for (const entry of entries) {
 		const skillDir = join(root, entry.name);
 		let dirInfo;
@@ -117,12 +158,40 @@ async function findSkillFiles(root: string): Promise<string[]> {
 		const candidate = join(skillDir, "SKILL.md");
 		try {
 			const skillInfo = await stat(candidate);
-			if (skillInfo.isFile()) out.push(candidate);
+			if (skillInfo.isFile()) directSkills.push(candidate);
+			continue;
+		} catch (error) {
+			if (!isMissingSkillFileError(error)) continue;
+		}
+		if (entry.isSymbolicLink() || isExcluded(entry.name)) continue;
+
+		let nestedEntries;
+		try {
+			nestedEntries = await readdir(skillDir, { withFileTypes: true });
 		} catch {
-			// Missing or unreadable skill files are ignored; the registry is best-effort.
+			continue;
+		}
+		for (const nestedEntry of nestedEntries) {
+			if (nestedEntry.isSymbolicLink()) continue;
+			const nestedSkillDir = join(skillDir, nestedEntry.name);
+			let nestedDirInfo;
+			try {
+				nestedDirInfo = await stat(nestedSkillDir);
+			} catch {
+				continue;
+			}
+			if (!nestedDirInfo.isDirectory()) continue;
+
+			const nestedCandidate = join(nestedSkillDir, "SKILL.md");
+			try {
+				const nestedSkillInfo = await stat(nestedCandidate);
+				if (nestedSkillInfo.isFile()) nestedSkills.push(nestedCandidate);
+			} catch {
+				// Missing or unreadable skill files are ignored; the registry is best-effort.
+			}
 		}
 	}
-	return out.sort();
+	return [...directSkills.sort(), ...nestedSkills.sort()];
 }
 
 function parseFrontmatter(source: string): { name?: string; description?: string; body: string } {
@@ -222,10 +291,97 @@ function dedupeBySkillName(entries: SkillEntry[], cwd: string): SkillEntry[] {
 	}
 	const out: SkillEntry[] = [];
 	for (const [, list] of buckets) {
-		const projectScoped = list.find((e) => comparablePath(e.path).startsWith(projectPrefix));
+		const projectScoped = list.find((e) =>
+			e.scope?.startsWith("project") ||
+			(e.scope === undefined && comparablePath(e.path).startsWith(projectPrefix)),
+		);
 		out.push(projectScoped ?? list[0]);
 	}
 	return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function resolvedScopeLabel(skill: ResolvedSkill): string {
+	const scope = skill.sourceInfo?.scope === "project" ? "project" : "user";
+	return skill.sourceInfo?.origin === "package" ? `${scope} · package` : scope;
+}
+
+// Runtime capture state: pi-resolved skills from the latest before_agent_start
+// event, trimmed to only the fields the registry seam consumes. Never retain
+// the full runtime event objects.
+let lastResolvedSkills: ResolvedSkill[] = [];
+
+function trimResolvedSkill(skill: ResolvedSkill): ResolvedSkill {
+	const trimmed: ResolvedSkill = {
+		name: skill.name,
+		description: skill.description,
+		filePath: skill.filePath,
+	};
+	if (skill.disableModelInvocation === true) trimmed.disableModelInvocation = true;
+	if (skill.sourceInfo) {
+		trimmed.sourceInfo = {
+			scope: skill.sourceInfo.scope,
+			origin: skill.sourceInfo.origin,
+		};
+	}
+	return trimmed;
+}
+
+function isResolvedSourceInfo(value: unknown): value is NonNullable<ResolvedSkill["sourceInfo"]> {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const sourceInfo = value as NonNullable<ResolvedSkill["sourceInfo"]>;
+	return (
+		(sourceInfo.scope === undefined ||
+			sourceInfo.scope === "user" ||
+			sourceInfo.scope === "project" ||
+			sourceInfo.scope === "temporary") &&
+		(sourceInfo.origin === undefined || sourceInfo.origin === "package" || sourceInfo.origin === "top-level")
+	);
+}
+
+function isResolvedSkill(value: unknown): value is ResolvedSkill {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const skill = value as Partial<ResolvedSkill>;
+	return (
+		typeof skill.name === "string" &&
+		typeof skill.description === "string" &&
+		typeof skill.filePath === "string" &&
+		(skill.disableModelInvocation === undefined || typeof skill.disableModelInvocation === "boolean") &&
+		(skill.sourceInfo === undefined || isResolvedSourceInfo(skill.sourceInfo))
+	);
+}
+
+async function applyResolvedSkillsUpdate(cwd: string, skills: ResolvedSkill[]): Promise<RegenResult> {
+	lastResolvedSkills = skills.map(trimResolvedSkill);
+	return regenerateRegistry(cwd, false, lastResolvedSkills);
+}
+
+function toResolvedEntry(skill: ResolvedSkill, cwd: string): SkillEntry | undefined {
+	// cwd is reserved: pi-resolved paths are already absolute, but the seam stays
+	// symmetric with the loose scan for future scoping needs.
+	void cwd;
+	if (skill.disableModelInvocation === true) return undefined;
+	if (isExcluded(skill.name)) return undefined;
+	return {
+		name: skill.name,
+		path: skill.filePath,
+		description: normalizeSkillDescription(skill.description),
+		scope: resolvedScopeLabel(skill),
+	};
+}
+
+function mergeResolvedWithLoose(
+	resolved: SkillEntry[],
+	loose: SkillEntry[],
+	cwd: string,
+	suppressedPaths: readonly string[] = [],
+): SkillEntry[] {
+	const resolvedPaths = new Set(resolved.map((entry) => comparablePath(entry.path)));
+	// Every runtime-resolved path was filtered by Pi's own rules, so a skill Pi
+	// hides (disableModelInvocation or an excluded name) must never come back
+	// as an active row through a loose root that still holds its SKILL.md.
+	for (const path of suppressedPaths) resolvedPaths.add(comparablePath(path));
+	const filteredLoose = loose.filter((entry) => !resolvedPaths.has(comparablePath(entry.path)));
+	return dedupeBySkillName([...resolved, ...filteredLoose], cwd);
 }
 
 function scopeForPath(cwd: string, path: string): string {
@@ -248,8 +404,19 @@ function isCacheFile(value: unknown): value is { fingerprint: string } {
 	);
 }
 
-async function fingerprint(files: string[]): Promise<string> {
-	const lines: string[] = [`schema:${REGISTRY_SCHEMA_VERSION}`];
+async function fingerprint(files: string[], resolved: ResolvedSkill[] = []): Promise<string> {
+	const resolvedLines = resolved.map((skill) =>
+		JSON.stringify([
+			"resolved",
+			skill.name,
+			normalizeSkillDescription(skill.description),
+			skill.filePath,
+			skill.disableModelInvocation === true,
+			skill.sourceInfo?.scope ?? "",
+			skill.sourceInfo?.origin ?? "",
+		]),
+	);
+	const fileLines: string[] = [];
 	for (const file of files) {
 		try {
 			const info = await stat(file);
@@ -257,19 +424,20 @@ async function fingerprint(files: string[]): Promise<string> {
 			try {
 				contentHash = createHash("sha1").update(await readFile(file)).digest("hex");
 			} catch {
-				lines.push(`${file}:unreadable`);
+				fileLines.push(`${file}:unreadable`);
 				continue;
 			}
-			lines.push(`${file}:${info.mtimeMs}:${info.size}:${contentHash}`);
+			fileLines.push(`${file}:${info.mtimeMs}:${info.size}:${contentHash}`);
 		} catch {
-			lines.push(`${file}:missing`);
+			fileLines.push(`${file}:missing`);
 		}
 	}
-	lines.sort();
-	return createHash("sha1").update(lines.join("\n")).digest("hex");
+	return createHash("sha1")
+		.update([`schema:${REGISTRY_SCHEMA_VERSION}`, ...resolvedLines, ...fileLines.sort()].join("\n"))
+		.digest("hex");
 }
 
-function renderRegistry(cwd: string, sources: string[], entries: SkillEntry[]): string {
+function renderRegistry(cwd: string, sources: string[], entries: SkillEntry[], resolvedCount = 0): string {
 	const projectName = basename(cwd);
 	const today = new Date().toISOString().slice(0, 10);
 	const lines: string[] = [];
@@ -281,6 +449,9 @@ function renderRegistry(cwd: string, sources: string[], entries: SkillEntry[]): 
 	lines.push("");
 	lines.push("## Sources scanned");
 	lines.push("");
+	if (resolvedCount > 0) {
+		lines.push(`- Pi-resolved runtime authority (before_agent_start.systemPromptOptions.skills): ${resolvedCount} skill(s)`);
+	}
 	for (const src of sources) {
 		lines.push(`- ${src}`);
 	}
@@ -312,22 +483,83 @@ interface RegenResult {
 	regenerated: boolean;
 	skillCount: number;
 	reason: string;
+	warning?: string;
 }
 
-async function ensureAtlIgnored(cwd: string): Promise<void> {
-	const gitignorePath = join(cwd, ".gitignore");
-	let existing = "";
-	if (await pathExists(gitignorePath)) {
-		existing = await readFile(gitignorePath, "utf8");
+const execFileAsync = promisify(execFile);
+// A tracking check that cannot answer (for example a repository rooted at HOME)
+// fails closed through the ordinary detection-failure path instead of hanging.
+let gitTimeoutMs = 5000;
+
+// A failed Git lookup is genuinely non-Git only when no ancestor has metadata.
+// lstat also detects dangling redirects; permission failures remain fail-closed.
+async function hasNoGitMetadata(cwd: string): Promise<boolean> {
+	if (process.env.GIT_DIR || process.env.GIT_WORK_TREE) return false;
+	const ceilings = (process.env.GIT_CEILING_DIRECTORIES ?? "").split(delimiter).filter(Boolean).map((path) => resolve(path));
+	let directory = resolve(cwd);
+	for (;;) {
+		// Git does not inspect ancestors at or above its discovery ceiling.
+		if (directory !== resolve(cwd) && ceilings.includes(directory)) return true;
+		try {
+			await lstat(join(directory, ".git"));
+			return false;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+		}
+		const parent = dirname(directory);
+		if (parent === directory) return true;
+		directory = parent;
 	}
-	const hasAtlIgnore = existing
-		.split("\n")
-		.map((line) => line.trim())
-		.some((line) => line === ".atl" || line === ATL_IGNORE_ENTRY);
-	if (hasAtlIgnore) return;
-	const prefix = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
-	const header = existing.includes("# Local Pi runtime state") ? "" : "# Local Pi runtime state\n";
-	await writeFile(gitignorePath, `${existing}${prefix}${header}${ATL_IGNORE_ENTRY}\n`);
+}
+
+// Freshness (including forced self-heal) never grants automatic write permission.
+export async function automaticWriteWarning(
+	cwd: string,
+	targets: string[],
+	remedy = "Run /skill-registry:refresh to deliberately regenerate runtime files.",
+): Promise<string | undefined> {
+	let tracked: string[];
+	try {
+		const { stdout } = await execFileAsync("git", ["ls-files", "--cached", "-z", "--", ...targets], {
+			cwd,
+			env: { ...process.env, LC_ALL: "C" },
+			timeout: gitTimeoutMs,
+			windowsHide: true,
+		});
+		tracked = stdout.split("\0").filter(Boolean);
+	} catch (error) {
+		const failure = error as { code?: number | string; stderr?: string };
+		// A missing cwd cannot hold tracked targets, but git cannot even spawn there.
+		if (failure.code === "ENOENT" && !(await pathExists(cwd))) return undefined;
+		if (failure.code === 128 && failure.stderr?.startsWith("fatal: not a git repository") && await hasNoGitMetadata(cwd)) return undefined;
+		throw new Error(`Cannot verify Git tracking for ${targets.join(", ")}; automatic writes skipped. Resolve Git detection, or deliberately run /skill-registry:refresh.`);
+	}
+	if (tracked.length === 0) return undefined;
+	return `Skill registry automatic writes skipped for tracked targets: ${tracked.join(", ")}. ${remedy}`;
+}
+
+async function ensureAtlIgnored(cwd: string, intentional = false): Promise<string | undefined> {
+	const atlDir = join(cwd, ".atl");
+	const gitignorePath = join(atlDir, ".gitignore");
+	if (!intentional) {
+		const warning = await automaticWriteWarning(cwd, [".atl/.gitignore"]);
+		if (warning) return warning;
+	}
+	if (await pathExists(gitignorePath)) {
+		const existing = await readFile(gitignorePath, "utf8");
+		const ignoreRules = existing
+			.split("\n")
+			.map((line) => line.trim())
+			.filter((line) => line !== "" && !line.startsWith("#"));
+		if (ignoreRules.at(-1) === "*") {
+			return;
+		}
+		const prefix = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
+		await writeFile(gitignorePath, `${existing}${prefix}*\n`);
+		return;
+	}
+	await mkdir(atlDir, { recursive: true });
+	await writeFile(gitignorePath, "*\n");
 }
 
 function isGeneratedLegacyProjectRegistry(source: string): boolean {
@@ -352,7 +584,7 @@ async function nextLegacyDisabledPath(cwd: string): Promise<string> {
 	return `${base}.${Date.now()}`;
 }
 
-async function quarantineLegacyProjectRegistry(cwd: string): Promise<boolean> {
+async function quarantineLegacyProjectRegistry(cwd: string, notifyWarning: (message: string) => void): Promise<boolean> {
 	const legacyPath = join(cwd, LEGACY_PROJECT_REGISTRY_REL_PATH);
 	if (!(await pathExists(legacyPath))) return false;
 	let source = "";
@@ -363,6 +595,15 @@ async function quarantineLegacyProjectRegistry(cwd: string): Promise<boolean> {
 	}
 	if (!isGeneratedLegacyProjectRegistry(source)) return false;
 	const disabledPath = await nextLegacyDisabledPath(cwd);
+	const warning = await automaticWriteWarning(
+		cwd,
+		[LEGACY_PROJECT_REGISTRY_REL_PATH, relative(cwd, disabledPath).split(sep).join("/")],
+		"Review and manually handle the tracked legacy extension (and any tracked quarantine destination) before retrying startup; refresh only regenerates registry runtime files.",
+	);
+	if (warning) {
+		notifyWarning(warning);
+		return false;
+	}
 	try {
 		await rename(legacyPath, disabledPath);
 		return true;
@@ -374,6 +615,8 @@ async function quarantineLegacyProjectRegistry(cwd: string): Promise<boolean> {
 async function regenerateRegistry(
 	cwd: string,
 	force: boolean,
+	resolved: ResolvedSkill[] = [],
+	intentional = false,
 ): Promise<RegenResult> {
 	const existingDirs = await uniqueExistingDirs([
 		...projectSkillDirs(cwd),
@@ -385,7 +628,7 @@ async function regenerateRegistry(
 	}
 	const cachePath = join(cwd, CACHE_REL_PATH);
 	const registryPath = join(cwd, REGISTRY_REL_PATH);
-	const fp = await fingerprint(files);
+	const fp = await fingerprint(files, resolved);
 	let cached: string | undefined;
 	if (await pathExists(cachePath)) {
 		try {
@@ -398,20 +641,52 @@ async function regenerateRegistry(
 	if (!force && cached === fp && (await pathExists(registryPath))) {
 		return { regenerated: false, skillCount: 0, reason: "cache-hit" };
 	}
+	if (!intentional) {
+		const warning = await automaticWriteWarning(cwd, [REGISTRY_REL_PATH, CACHE_REL_PATH]);
+		if (warning) return { regenerated: false, skillCount: 0, reason: "tracked-target", warning };
+	}
 	const entries: SkillEntry[] = [];
 	for (const file of files) {
 		const entry = await loadSkill(file);
 		if (entry) entries.push(entry);
 	}
-	const deduped = dedupeBySkillName(entries, cwd);
+	const resolvedEntries: SkillEntry[] = [];
+	for (const skill of resolved) {
+		const entry = toResolvedEntry(skill, cwd);
+		if (entry) resolvedEntries.push(entry);
+	}
+	const deduped = mergeResolvedWithLoose(
+		resolvedEntries,
+		entries,
+		cwd,
+		resolved.map((skill) => skill.filePath),
+	);
 	const sources = existingDirs.map((d) => {
 		const rel = relative(cwd, d);
 		return rel.startsWith("..") ? d : rel || ".";
 	});
-	const md = renderRegistry(cwd, sources, deduped);
-	await mkdir(join(cwd, ".atl"), { recursive: true });
-	await writeFile(registryPath, md);
-	await writeFile(cachePath, JSON.stringify({ fingerprint: fp }, null, 2));
+	const md = renderRegistry(cwd, sources, deduped, resolvedEntries.length);
+	try {
+		await mkdir(join(cwd, ".atl"), { recursive: true });
+		await writeFile(registryPath, md);
+		await writeFile(cachePath, JSON.stringify({ fingerprint: fp }, null, 2));
+	} catch (error) {
+		if (isStorageUnavailableError(error)) {
+			// gentle-shell#373: an unwritable storage location must never
+			// report a successful regeneration. The typed result names the
+			// offending path and the safe next action; unexpected I/O keeps
+			// its own diagnostic by rethrowing.
+			const path = typeof (error as NodeJS.ErrnoException).path === "string" ? (error as NodeJS.ErrnoException).path as string : registryPath;
+			const relativePath = relative(cwd, path).split(sep).join("/") || REGISTRY_REL_PATH;
+			return {
+				regenerated: false,
+				skillCount: 0,
+				reason: "storage-unavailable",
+				warning: `Skill registry is unavailable: ${relativePath} is not writable (${(error as NodeJS.ErrnoException).code}). Restore write access, then run /skill-registry:refresh.`,
+			};
+		}
+		throw error;
+	}
 	return {
 		regenerated: true,
 		skillCount: deduped.length,
@@ -420,6 +695,18 @@ async function regenerateRegistry(
 }
 
 const watchedCwds = new Set<string>();
+const watcherPolls = new Map<string, ReturnType<typeof setInterval>>();
+// Startup regeneration runs after session_start returns; watcher refreshes
+// wait for it so an older startup scan never overwrites a newer refresh.
+const pendingStartups = new Map<string, Promise<void>>();
+let startupGeneration = 0;
+
+// A repository rooted at HOME (or a broad user folder) makes every Git call
+// scan the user's whole tree. gentle-ai owns the single user-facing warning.
+function repositoryRootedAtHome(cwd: string): boolean {
+	const root = resolveSessionWorktree(cwd, cwd)?.root;
+	return root !== undefined && isHomeOrBroadUserDirectory(root);
+}
 
 function isTruthyEnv(value: string | undefined): boolean {
 	return value === "1" || value === "true" || value === "yes" || value === "on";
@@ -435,6 +722,9 @@ function shouldSkipSkillRegistryStartup(
 	env = process.env,
 ): boolean {
 	return (
+		// gentle-shell#1690: delegated children share the parent's cwd; the
+		// parent owns .atl/ writes, the legacy rename and the watcher.
+		env.GENTLE_PI_AGENTS_CHILD === "1" ||
 		pi.getFlag(NO_SKILL_REGISTRY_FLAG) === true ||
 		isTruthyEnv(env[NO_SKILL_REGISTRY_ENV]) ||
 		hasCliArg(argv, "--no-skills", "-ns")
@@ -458,7 +748,7 @@ function extensionSourcePath(source: string): string | undefined {
 function shouldSkipDuplicateExtensionLoad(
 	source = import.meta.url,
 	cwd = process.cwd(),
-	state = globalThis as typeof globalThis & SkillRegistryExtensionGlobal,
+	state: SkillRegistryExtensionGlobal = globalThis as typeof globalThis & SkillRegistryExtensionGlobal,
 ): boolean {
 	const currentPath = extensionSourcePath(source);
 	const projectLocalPath = comparablePath(join(cwd, "extensions", "skill-registry.ts"));
@@ -484,12 +774,14 @@ function closeSkillRegistryWatchers(): void {
 		}
 	}
 	activeWatchers.clear();
+	for (const poll of watcherPolls.values()) clearInterval(poll);
+	watcherPolls.clear();
 	watchedCwds.clear();
 }
 
 async function startSkillRegistryWatcher(
 	cwd: string,
-	notify: (message: string) => void,
+	notify: (message: string, level?: "info" | "warning") => void,
 ): Promise<void> {
 	if (watchedCwds.has(cwd)) return;
 	watchedCwds.add(cwd);
@@ -498,17 +790,27 @@ async function startSkillRegistryWatcher(
 		...userSkillDirs(),
 	]);
 	let timer: ReturnType<typeof setTimeout> | undefined;
+	// The poll re-asks a state the watchers already answered: without this,
+	// an unchanged tracked-target warning would repeat every poll interval.
+	let lastWarning: string | undefined;
 	const refresh = () => {
 		if (timer) clearTimeout(timer);
 		timer = setTimeout(() => {
 			void (async () => {
 				try {
-					const result = await regenerateRegistry(cwd, false);
-					if (result.regenerated) {
-						notify(`Skill registry refreshed (${result.skillCount} skills)`);
+					await pendingStartups.get(cwd);
+					const result = await regenerateRegistry(cwd, false, lastResolvedSkills);
+					if (result.warning) {
+						if (result.warning !== lastWarning) notify(result.warning, "warning");
+						lastWarning = result.warning;
+					} else {
+						lastWarning = undefined;
+						if (result.regenerated) {
+							notify(`Skill registry refreshed (${result.skillCount} skills)`, "info");
+						}
 					}
-				} catch {
-					// Keep the watcher best-effort; session_start/manual refresh surfaces detailed failures.
+				} catch (error) {
+					notify(`Skill registry refresh failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
 				}
 			})();
 		}, WATCH_DEBOUNCE_MS);
@@ -516,24 +818,40 @@ async function startSkillRegistryWatcher(
 	for (const dir of dirs) {
 		try {
 			const watcher = watch(dir, { recursive: true }, refresh);
+			watcher.on("error", (error) => {
+				// Recursive rescans can fail after watch() returns (e.g. a removed
+				// assets directory). Without this listener Node terminates Pi.
+				watcher.close();
+				activeWatchers.delete(watcher);
+				notify(`Skill registry watcher stopped: ${error.message}. Run /skill-registry:refresh to update manually.`, "warning");
+			});
 			activeWatchers.add(watcher);
 		} catch {
 			// Some filesystems do not support recursive watches; session_start/manual refresh still work.
 		}
 	}
+	// Watchers may be absent (unsupported filesystem) or silently eventless
+	// (exhausted inotify budget): the poll keeps regeneration alive either way.
+	if (!watcherPolls.has(cwd)) watcherPolls.set(cwd, setInterval(refresh, WATCH_FALLBACK_POLL_MS));
 }
 
 export const __testing = {
 	projectSkillDirs,
 	userSkillDirs,
 	findSkillFiles,
+	isMissingSkillFileError,
+	isStorageUnavailableError,
 	uniqueExistingDirs,
 	dedupeBySkillName,
+	toResolvedEntry,
+	mergeResolvedWithLoose,
 	scopeForPath,
 	normalizeSkillDescription,
 	parseFrontmatter,
 	renderRegistry,
 	regenerateRegistry,
+	applyResolvedSkillsUpdate,
+	ensureAtlIgnored,
 	shouldSkipSkillRegistryStartup,
 	shouldSkipDuplicateExtensionLoad,
 	startSkillRegistryWatcher,
@@ -541,13 +859,23 @@ export const __testing = {
 	activeWatcherCount() {
 		return activeWatchers.size;
 	},
+	async startupSettled(): Promise<void> {
+		await Promise.all(pendingStartups.values());
+	},
+	setGitTimeoutMs(ms: number): number {
+		const previous = gitTimeoutMs;
+		gitTimeoutMs = ms;
+		return previous;
+	},
 };
 
 export default function (pi: ExtensionAPI) {
 	if (shouldSkipDuplicateExtensionLoad()) return;
 
 	pi.on("session_shutdown", () => {
+		startupGeneration += 1;
 		closeSkillRegistryWatchers();
+		lastResolvedSkills = [];
 	});
 
 	pi.registerFlag(NO_SKILL_REGISTRY_FLAG, {
@@ -558,47 +886,92 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (shouldSkipSkillRegistryStartup(pi)) return;
+		if (repositoryRootedAtHome(ctx.cwd)) return;
+		const cwd = ctx.cwd;
+		const generation = startupGeneration;
+		const notifyWarning = (message: string) => {
+			if (ctx.hasUI) ctx.ui.notify(message, "warning");
+		};
+		const regenerate = async () => {
+			if (generation !== startupGeneration) return;
+			try {
+				const ignoreWarning = await ensureAtlIgnored(cwd);
+				if (ignoreWarning) notifyWarning(ignoreWarning);
+				const quarantinedLegacy = await quarantineLegacyProjectRegistry(cwd, notifyWarning);
+				// A capture that already arrived is newer authority than this scan.
+				const result = await regenerateRegistry(cwd, quarantinedLegacy, lastResolvedSkills);
+				if (result.warning) notifyWarning(result.warning);
+				if (result.regenerated && ctx.hasUI) {
+					ctx.ui.notify(
+						`Skill registry refreshed (${result.skillCount} skills)`,
+						"info",
+					);
+				}
+				if (quarantinedLegacy && ctx.hasUI) {
+					ctx.ui.notify(
+						"Disabled stale project-local skill registry extension; using package registry with project skills first.",
+						"warning",
+					);
+				}
+				if (quarantinedLegacy) {
+					setTimeout(() => {
+						if (generation !== startupGeneration) return;
+						void (async () => {
+							try {
+								const result = await regenerateRegistry(cwd, true, lastResolvedSkills);
+								if (result.warning) notifyWarning(result.warning);
+							} catch (error) {
+								notifyWarning(`Skill registry refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+							}
+						})();
+					}, WATCH_DEBOUNCE_MS);
+				}
+			} catch (error) {
+				if (ctx.hasUI) {
+					const message =
+						error instanceof Error ? error.message : String(error);
+					ctx.ui.notify(
+						`Skill registry refresh failed: ${message}`,
+						"warning",
+					);
+				}
+			}
+		};
+		// Pi awaits session_start handlers one after another, so the Git tracking
+		// checks and the skill scan run after startup instead of inside it.
+		const startup = new Promise<void>((resolve) => setImmediate(resolve))
+			.then(regenerate)
+			.catch(() => { /* A replaced session's stale UI must not surface here. */ })
+			.finally(() => { if (pendingStartups.get(cwd) === startup) pendingStartups.delete(cwd); });
+		pendingStartups.set(cwd, startup);
 		try {
-			await ensureAtlIgnored(ctx.cwd);
-			const quarantinedLegacy = await quarantineLegacyProjectRegistry(ctx.cwd);
-			const result = await regenerateRegistry(ctx.cwd, quarantinedLegacy);
+			if (ctx.hasUI) {
+				await startSkillRegistryWatcher(cwd, (message, level = "info") => {
+					ctx.ui.notify(message, level);
+				});
+			}
+		} catch (error) {
+			notifyWarning(`Skill registry refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	});
+
+	pi.on("before_agent_start", async (event, ctx) => {
+		if (shouldSkipSkillRegistryStartup(pi)) return;
+		const skills = event.systemPromptOptions?.skills;
+		if (!Array.isArray(skills) || !skills.every(isResolvedSkill)) return;
+		try {
+			// The startup scan this session scheduled must land before this newer
+			// capture, so an older loose-only scan never overwrites runtime authority.
+			await pendingStartups.get(ctx.cwd);
+			const result = await applyResolvedSkillsUpdate(ctx.cwd, skills);
 			if (result.regenerated && ctx.hasUI) {
 				ctx.ui.notify(
 					`Skill registry refreshed (${result.skillCount} skills)`,
 					"info",
 				);
 			}
-			if (quarantinedLegacy && ctx.hasUI) {
-				ctx.ui.notify(
-					"Disabled stale project-local skill registry extension; using package registry with project skills first.",
-					"warning",
-				);
-			}
-			if (ctx.hasUI) {
-				await startSkillRegistryWatcher(ctx.cwd, (message) => {
-					ctx.ui.notify(message, "info");
-				});
-			}
-			if (quarantinedLegacy) {
-				setTimeout(() => {
-					void (async () => {
-						try {
-							await regenerateRegistry(ctx.cwd, true);
-						} catch {
-							// Best-effort same-session self-heal in case the stale extension already ran.
-						}
-					})();
-				}, WATCH_DEBOUNCE_MS);
-			}
-		} catch (error) {
-			if (ctx.hasUI) {
-				const message =
-					error instanceof Error ? error.message : String(error);
-				ctx.ui.notify(
-					`Skill registry refresh failed: ${message}`,
-					"warning",
-				);
-			}
+		} catch {
+			// Keep the runtime capture best-effort; a failed refresh must never break the agent turn.
 		}
 	});
 
@@ -606,8 +979,12 @@ export default function (pi: ExtensionAPI) {
 		description: "Regenerate .atl/skill-registry.md from local skill sources.",
 		handler: async (_args, ctx) => {
 			try {
-				await ensureAtlIgnored(ctx.cwd);
-				const result = await regenerateRegistry(ctx.cwd, true);
+				await ensureAtlIgnored(ctx.cwd, true);
+				const result = await regenerateRegistry(ctx.cwd, true, lastResolvedSkills, true);
+				if (result.reason === "storage-unavailable") {
+					ctx.ui.notify(result.warning ?? "Skill registry is unavailable.", "warning");
+					return;
+				}
 				ctx.ui.notify(
 					`Skill registry: ${result.skillCount} skill(s) written to ${REGISTRY_REL_PATH}`,
 					"info",

@@ -1,33 +1,55 @@
-import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI, ExtensionFactory, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
-	createBashTool,
 	createEditTool,
 	createFindTool,
 	createGrepTool,
 	createLsTool,
-	createReadTool,
+	createReadToolDefinition,
 	createWriteTool,
+	keyHint,
 } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { Text, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { homedir } from "node:os";
+import { isAbsolute } from "node:path";
+import { resolveGentleAiDevBinaryOverride, type GentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
+import { CARD_CONTENT, cardContent } from "../lib/card-content-policy.ts";
+import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
 import { quietToolsEnabled } from "../lib/quiet-tools-config.ts";
-import { sanitizeTerminalText } from "../lib/terminal-theme.ts";
+import { registerCompactCodemode } from "../lib/codemode-renderer.ts";
+import { offerBuiltinCodemodeOptOut, type BuiltinCodemodeOptOutOptions } from "../lib/builtin-codemode-optout.ts";
+import { getGentleAiRenderState, renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
+import {
+	CARD_TONE, cardAwaitingResult, cardBottom, cardInnerWidth, cardLine, cardRunningLine, cardStyle, cardTopRows, floatRows, markCardResult,
+	type CardRowContext, type CardTheme,
+} from "../lib/shell-card.ts";
+import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
 
 type QuietToolName = "read" | "bash" | "grep" | "find" | "ls" | "edit" | "write";
+type RegisteredToolName = Exclude<QuietToolName, "bash">;
 type ThemeLike = {
 	bold(value: string): string;
 	fg(color: string, value: string): string;
 };
 
 const TOOL_CREATORS = {
-	read: createReadTool,
-	bash: createBashTool,
+	read: createReadToolDefinition,
 	grep: createGrepTool,
 	find: createFindTool,
 	ls: createLsTool,
 	edit: createEditTool,
 	write: createWriteTool,
-} satisfies Record<QuietToolName, (cwd: string) => any>;
+} satisfies Record<RegisteredToolName, (cwd: string) => any>;
+
+// Caller-owned identities: shared notices and lower widgets retain their glyphs.
+const TOOL_GLYPH = {
+	read: "≡",
+	bash: "$",
+	grep: "⌕",
+	find: "⌖",
+	ls: "☷",
+	edit: "✎",
+	write: "+",
+} as const satisfies Record<QuietToolName, string>;
 
 const COLLAPSED_COUNT_LABELS: Partial<Record<QuietToolName, string>> = {
 	grep: "matches",
@@ -35,27 +57,32 @@ const COLLAPSED_COUNT_LABELS: Partial<Record<QuietToolName, string>> = {
 	ls: "entries",
 };
 
-const NO_COLLAPSED_RESULT_TOOLS = new Set<QuietToolName>(["read", "bash"]);
-const COLLAPSED_TAIL_TOOLS = new Set<QuietToolName>(["edit", "write"]);
+// Cards that show only the command while the Card content preference is
+// minimal: their results stay one expand key away and never add rows to the
+// transcript view.
+const COMMAND_ONLY_TOOLS: ReadonlySet<QuietToolName> = new Set(["read", "bash", "grep", "find", "ls", "edit", "write"]);
+
 const COLLAPSED_TAIL_LINE_LIMIT = 10;
+const PREVIEW_LINE_LIMIT = 3;
 
 const EMPTY_RESULT_MESSAGES: Partial<Record<QuietToolName, string[]>> = {
 	grep: ["No matches found"],
 	find: ["No files found matching pattern"],
-	ls: ["Directory is empty"],
+	ls: ["Directory is empty", "(empty directory)"],
+	bash: ["(no output)"],
 };
 
-const toolCache = new Map<string, Record<QuietToolName, any>>();
+const toolCache = new Map<string, Record<RegisteredToolName, any>>();
 
-function createBuiltInTools(cwd: string): Record<QuietToolName, any> {
+function createBuiltInTools(cwd: string): Record<RegisteredToolName, any> {
 	return Object.fromEntries(
-		(Object.entries(TOOL_CREATORS) as [QuietToolName, (cwd: string) => any][]).map(
+		(Object.entries(TOOL_CREATORS) as [RegisteredToolName, (cwd: string) => any][]).map(
 			([name, createTool]) => [name, createTool(cwd)],
 		),
-	) as Record<QuietToolName, any>;
+	) as Record<RegisteredToolName, any>;
 }
 
-function getBuiltInTools(cwd: string): Record<QuietToolName, any> {
+function getBuiltInTools(cwd: string): Record<RegisteredToolName, any> {
 	let tools = toolCache.get(cwd);
 	if (!tools) {
 		tools = createBuiltInTools(cwd);
@@ -83,6 +110,43 @@ export function tailLines(text: string, limit: number): string {
 	return lines.slice(Math.max(0, lines.length - limit)).join("\n");
 }
 
+function outputLines(text: string): string[] {
+	const normalized = text.replace(/\r\n/g, "\n").replace(/\n$/, "");
+	return normalized.length > 0 ? normalized.split("\n") : [];
+}
+
+function firstLines(text: string, limit: number): string {
+	return outputLines(text).slice(0, limit).join("\n");
+}
+
+function lastOutputLines(text: string, limit: number): string {
+	return outputLines(text).slice(-limit).join("\n");
+}
+
+function lastMeaningfulOutputLines(text: string, limit: number): string {
+	return outputLines(text)
+		.filter((line) => line.trim().length > 0)
+		.slice(-limit)
+		.join("\n");
+}
+
+function semanticJsonPreview(text: string): string | undefined {
+	const trimmed = text.trim();
+	if (!/^[\[{]/.test(trimmed)) return undefined;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(trimmed);
+	} catch {
+		return undefined;
+	}
+	const normalized = JSON.stringify(parsed, null, 2);
+	if (normalized === undefined) return undefined;
+	return outputLines(normalized)
+		.filter((line) => !/^[\s{}\[\],]*$/.test(line))
+		.slice(0, PREVIEW_LINE_LIMIT)
+		.join("\n");
+}
+
 export function extractTextContent(result: AgentToolResult<unknown>): string {
 	return result.content
 		.flatMap((content) => (content.type === "text" ? [content.text] : []))
@@ -93,14 +157,225 @@ function safeText(value: string): string {
 	return sanitizeTerminalText(value);
 }
 
+function sanitizeValue(value: unknown): unknown {
+	if (typeof value === "string") return safeText(value);
+	return value;
+}
+
+function sanitizedArgs(args: Record<string, unknown> | undefined): Record<string, unknown> {
+	return (sanitizeValue(args ?? {}) as Record<string, unknown>) ?? {};
+}
+
+function sanitizedResult(result: AgentToolResult<unknown>): AgentToolResult<unknown> {
+	return {
+		...result,
+		content: result.content.map((content) => content.type === "text" ? { ...content, text: safeText(content.text) } : content.type === "image" ? { ...content, mimeType: safeText(content.mimeType) } : content),
+		details: sanitizeValue(result.details),
+	};
+}
+
 function isEmptyResultMessage(toolName: QuietToolName, text: string): boolean {
 	const normalized = text.trim();
-	return EMPTY_RESULT_MESSAGES[toolName]?.some((message) => normalized.startsWith(message)) ?? false;
+	return EMPTY_RESULT_MESSAGES[toolName]?.some((message) => normalized === message) ?? false;
+}
+
+function grepMatchCount(text: string, args: Record<string, unknown> | undefined): number {
+	const context = args?.context;
+	if (typeof context !== "number" || context <= 0) return countNonEmptyLines(text);
+	return outputLines(text).filter((line) => /^\s*.+:\d+:\s?/.test(line)).length;
 }
 
 function isGitCommand(args: Record<string, unknown> | undefined): boolean {
 	const command = typeof args?.command === "string" ? args.command.trim() : "";
 	return /^(?:env\s+\S+=\S+\s+|command\s+|\w+=\S+\s+)*git(?:\s|$)/.test(command);
+}
+
+export type GentleAiRoutineCommand = "review";
+
+const GENTLE_AI_EXECUTABLE = String.raw`(?:gentle-ai(?:\.exe)?|(?:\.{1,2}[\\/]|(?:[A-Za-z]:)?(?:[\\/][^\\/\r\n]+)*[\\/])\.gentle-ai[\\/]v\d+\.\d+\.\d+[\\/]gentle-ai(?:\.exe)?)`;
+const GENTLE_AI_COMMAND_ARGUMENTS = new RegExp(`^${GENTLE_AI_EXECUTABLE}$`);
+
+function createGentleAiCommandArguments(activeDevBinaryPath?: string): RegExp {
+	if (!activeDevBinaryPath) return GENTLE_AI_COMMAND_ARGUMENTS;
+	const escapedPath = activeDevBinaryPath.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+	return new RegExp(`^(?:${GENTLE_AI_EXECUTABLE}|${escapedPath})$`);
+}
+
+type ShellTokenization =
+	| { kind: "complete" | "incomplete"; tokens: string[] }
+	| { kind: "generic" };
+
+function shellTokens(command: string): ShellTokenization {
+	const tokens: string[] = [];
+	let token = "";
+	let quote: "single" | "double" | undefined;
+	let tokenStarted = false;
+	const push = () => {
+		if (tokenStarted) tokens.push(token);
+		token = "";
+		tokenStarted = false;
+	};
+	for (let index = 0; index < command.length; index += 1) {
+		const character = command[index]!;
+		if (character === "\r" || character === "\n") return { kind: "generic" };
+		if (quote === "single") {
+			if (character === "'") quote = undefined;
+			else token += character;
+			continue;
+		}
+		if (quote === "double") {
+			if (character === '"') { quote = undefined; continue; }
+			if (character === "\\") {
+				const next = command[++index];
+				if (next === undefined || next === "\r" || next === "\n") return { kind: "incomplete", tokens };
+				token += "$`\"\\".includes(next) ? next : `\\${next}`;
+				continue;
+			}
+			if (character === "$" || character === "`") return { kind: "generic" };
+			token += character;
+			continue;
+		}
+		if (/\s/.test(character)) { push(); continue; }
+		if (character === "'") { quote = "single"; tokenStarted = true; continue; }
+		if (character === '"') { quote = "double"; tokenStarted = true; continue; }
+		if (character === "\\") {
+			const next = command[++index];
+			if (next === undefined || next === "\r" || next === "\n") return { kind: "incomplete", tokens };
+			const windowsPath = token === "." || /^[A-Za-z]:$/.test(token) || token.includes("\\");
+			token += windowsPath ? `\\${next}` : next;
+			tokenStarted = true;
+			continue;
+		}
+		if ("*?~{}".includes(character)) return { kind: "generic" };
+		if (character === "[" && command.indexOf("]", index + 1) >= 0) return { kind: "generic" };
+		if (";&|<>`()".includes(character) || character === "$" || character === "`") return { kind: "generic" };
+		if (character === "#" && !tokenStarted) return { kind: "generic" };
+		token += character;
+		tokenStarted = true;
+	}
+	if (quote) return { kind: "incomplete", tokens };
+	push();
+	return { kind: "complete", tokens };
+}
+
+function isAssignment(token: string): boolean {
+	return /^[A-Za-z_][A-Za-z0-9_]*=/.test(token);
+}
+const REVIEW_DIRECT_OPERATIONS = new Set([
+	"capabilities",
+	"start",
+	"finalize",
+	"status",
+	"repair",
+	"invalidate",
+	"abandon",
+	"recover",
+	"reclaim",
+	"validate",
+	"capture-result",
+	"capture-refuter",
+	"capture-validation",
+	"capture-evidence",
+	"preserve-result",
+	"lens-context",
+	"retry-final-verification",
+	"store-reset",
+	"inspect-authority",
+	"inspect-candidate",
+	"dispose-result",
+	"reopen-results",
+	"opencode-transport",
+	"bind-sdd",
+]);
+const REVIEW_MODE_VALUES = new Set(["enable", "disable", "status"]);
+const REVIEW_VALIDATE_GATES = new Set(["post-apply", "pre-commit", "pre-push", "pre-pr", "release"]);
+const REVIEW_SCHEMA_NAMES = new Set([
+	"capture-result-dry-run",
+	"final-verification-incident",
+	"refuter",
+	"reviewer",
+	"validator",
+	"verification-evidence",
+	"verification-evidence-record",
+]);
+
+function gentleAiCommandTokensFrom(tokens: string[], commandArguments: RegExp): string[] | undefined {
+	let index = 0;
+	while (isAssignment(tokens[index] ?? "")) index += 1;
+	if (tokens[index] === "command") {
+		index += 1;
+		if (tokens[index] === "--") index += 1;
+		else if ((tokens[index] ?? "").startsWith("-")) return undefined;
+	}
+	if (tokens[index] === "env") {
+		index += 1;
+		while (isAssignment(tokens[index] ?? "")) index += 1;
+		if ((tokens[index] ?? "").startsWith("-")) return undefined;
+	}
+	if (!commandArguments.test(tokens[index] ?? "")) return undefined;
+	return tokens.slice(index + 1);
+}
+
+function gentleAiCommandTokens(args: Record<string, unknown> | undefined, commandArguments = GENTLE_AI_COMMAND_ARGUMENTS): string[] | undefined {
+	const shell = shellTokens(typeof args?.command === "string" ? args.command : "");
+	return shell.kind === "complete" ? gentleAiCommandTokensFrom(shell.tokens, commandArguments) : undefined;
+}
+
+function displayToken(token: string): string {
+	return token.replace(/-/g, " ");
+}
+
+function validateGate(tokens: string[]): string | undefined {
+	const gateFlag = tokens.findIndex((token) => token === "--gate" || token.startsWith("--gate="));
+	if (gateFlag < 0) return undefined;
+	const gate = tokens[gateFlag]!.startsWith("--gate=")
+		? tokens[gateFlag]!.slice("--gate=".length)
+		: tokens[gateFlag + 1];
+	return gate !== undefined && REVIEW_VALIDATE_GATES.has(gate) ? gate : "";
+}
+
+/**
+ * Matches only supported routine Gentle AI CLI calls, including bounded
+ * package-local paths, not arbitrary shell output that merely mentions
+ * gentle-ai. Review commands otherwise emit machine-readable RDD data.
+ */
+export function isGentleAiDirectCommand(args: Record<string, unknown> | undefined, commandArguments = GENTLE_AI_COMMAND_ARGUMENTS): boolean {
+	return gentleAiCommandTokens(args, commandArguments) !== undefined;
+}
+
+export function gentleAiRoutineCommand(args: Record<string, unknown> | undefined, commandArguments = GENTLE_AI_COMMAND_ARGUMENTS): GentleAiRoutineCommand | undefined {
+	const tokens = gentleAiCommandTokens(args, commandArguments);
+	if (!tokens) return undefined;
+	if (tokens[0] === "review") return "review";
+	return undefined;
+}
+
+function gentleAiOperationPathFrom(tokens: string[]): string | undefined {
+	if (tokens[0]?.startsWith("sdd-")) return undefined;
+	if (tokens[0] === "version") return "version";
+	if (tokens[0] !== "review") return "command";
+
+	const operation = tokens[1];
+	if (operation === undefined) return "review";
+	if (operation === "mode") {
+		const mode = tokens[2];
+		return mode !== undefined && REVIEW_MODE_VALUES.has(mode) ? `review mode ${displayToken(mode)}` : "review";
+	}
+	if (operation === "validate") {
+		const gate = validateGate(tokens);
+		if (gate === "") return "review";
+		return gate === undefined ? "review validate" : `review validate ${displayToken(gate)}`;
+	}
+	if (operation === "schema") {
+		const schema = tokens[2];
+		return schema !== undefined && REVIEW_SCHEMA_NAMES.has(schema) ? `review schema ${displayToken(schema)}` : "review schema";
+	}
+	return REVIEW_DIRECT_OPERATIONS.has(operation) ? `review ${displayToken(operation)}` : "review";
+}
+
+export function gentleAiOperationPath(args: Record<string, unknown> | undefined, commandArguments = GENTLE_AI_COMMAND_ARGUMENTS): string | undefined {
+	const tokens = gentleAiCommandTokens(args, commandArguments);
+	return tokens ? gentleAiOperationPathFrom(tokens) : undefined;
 }
 
 interface ToolResultFormatOptions {
@@ -109,30 +384,84 @@ interface ToolResultFormatOptions {
 	args?: Record<string, unknown>;
 }
 
+function detailsRecord(result: AgentToolResult<unknown>): Record<string, unknown> {
+	const details = sanitizeValue(result.details);
+	return details && typeof details === "object" && !Array.isArray(details)
+		? details as Record<string, unknown>
+		: {};
+}
+
+function diffStats(diff: string): { additions: number; removals: number } {
+	let additions = 0;
+	let removals = 0;
+	for (const line of diff.split("\n")) {
+		if (line.startsWith("+") && !line.startsWith("+++")) additions++;
+		if (line.startsWith("-") && !line.startsWith("---")) removals++;
+	}
+	return { additions, removals };
+}
+
+function editSummary(result: AgentToolResult<unknown>): string {
+	const diff = detailsRecord(result).diff;
+	if (typeof diff === "string") {
+		const stats = diffStats(diff);
+		return `✓ +${stats.additions} / -${stats.removals}`;
+	}
+	return "✓ applied";
+}
+
+function writeSummary(text: string): string {
+	const bytes = text.match(/(?:Successfully )?wrote\s+(\d+)\s+bytes/i)?.[1];
+	return `✓ ${bytes ? `wrote ${bytes} bytes` : "written"}`;
+}
+
+function expandedResultText(toolName: QuietToolName, result: AgentToolResult<unknown>, text: string): string {
+	if (toolName === "edit") {
+		const diff = detailsRecord(result).diff;
+		if (typeof diff === "string") return safeText(diff);
+	}
+	return text;
+}
+
 export function formatToolResultOutput(
 	toolName: QuietToolName,
 	result: AgentToolResult<unknown>,
 	{ expanded, isError = false, args }: ToolResultFormatOptions,
 ): string {
 	const text = safeText(extractTextContent(result));
-	if (expanded || isError) return text ? `\n${text}` : "";
-
+	if (expanded) {
+		// Write results only acknowledge the operation; the body lives in the call args.
+		const detail = toolName === "write" && !isError && typeof args?.content === "string" && args.content.length > 0
+			? safeText(args.content)
+			: expandedResultText(toolName, result, text);
+		return detail ? `\n${detail}` : "";
+	}
+	if (isError) {
+		const tail = lastMeaningfulOutputLines(text, PREVIEW_LINE_LIMIT);
+		return tail ? `\n${tail}` : "";
+	}
+	const summaryLabel = COLLAPSED_COUNT_LABELS[toolName];
+	if (summaryLabel) {
+		if (isEmptyResultMessage(toolName, text)) return "";
+		const count = toolName === "grep" ? grepMatchCount(text, args) : countNonEmptyLines(text);
+		return count > 0 ? ` → ${count} ${summaryLabel}` : "";
+	}
 	if (toolName === "bash" && isGitCommand(args)) {
 		const tail = tailLines(text, COLLAPSED_TAIL_LINE_LIMIT);
 		return tail ? `\n${tail}` : "";
 	}
-	if (NO_COLLAPSED_RESULT_TOOLS.has(toolName)) return "";
-	if (COLLAPSED_TAIL_TOOLS.has(toolName)) {
-		const tail = tailLines(text, COLLAPSED_TAIL_LINE_LIMIT);
+	if (toolName === "read") {
+		const head = firstLines(text, PREVIEW_LINE_LIMIT);
+		return head ? `\n${head}` : "";
+	}
+	if (toolName === "bash") {
+		const preview = semanticJsonPreview(text);
+		const tail = preview ?? lastOutputLines(text, PREVIEW_LINE_LIMIT);
 		return tail ? `\n${tail}` : "";
 	}
-	if (isEmptyResultMessage(toolName, text)) return "";
-
-	const summaryLabel = COLLAPSED_COUNT_LABELS[toolName];
-	if (!summaryLabel) return "";
-
-	const count = countNonEmptyLines(text);
-	return count > 0 ? ` → ${count} ${summaryLabel}` : "";
+	if (toolName === "edit") return `\n${editSummary(result)}`;
+	if (toolName === "write") return `\n${writeSummary(text)}`;
+	return "";
 }
 
 function lineRangeSuffix(args: Record<string, unknown>, theme: ThemeLike): string {
@@ -142,7 +471,45 @@ function lineRangeSuffix(args: Record<string, unknown>, theme: ThemeLike): strin
 	return theme.fg("warning", `:${startLine}${endLine === undefined ? "" : `-${endLine}`}`);
 }
 
-function formatToolCall(toolName: QuietToolName, args: Record<string, unknown>, theme: ThemeLike): string {
+interface ToolRenderContextLike {
+	args?: Record<string, unknown>;
+	argsComplete?: boolean;
+	executionStarted?: boolean;
+	isPartial?: boolean;
+	isError?: boolean;
+	lastComponent?: unknown;
+	state?: unknown;
+	cwd?: string;
+	expanded?: boolean;
+	toolCallId?: string;
+	durationMs?: number;
+}
+
+// Columns of the card's top rule around the call: `╭─ <glyph> ` before it and ` ─ … ╮` after.
+const CARD_TOP_CHROME = 8;
+// A collapsed minimal bash card says what the command does in one row: its
+// first line without leading `cd <dir> &&` hops, and how many lines fold behind.
+function bashSummary(command: string, width: number): string {
+	const lines = command.replace(/\s+$/, "").split("\n");
+	const first = lines.findIndex((line) => line.trim() !== "");
+	const line = lines[first] ?? "";
+	const action = line.replace(/^\s*(?:cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*&&\s*)+/, "").trim() || line.trim();
+	const folded = lines.length - first - 1;
+	const suffix = folded > 0 ? ` … +${folded} line${folded === 1 ? "" : "s"}` : "";
+	const room = Math.max(1, width - visibleWidth(suffix));
+	return `${clipPlain(action, room)}${suffix}`;
+}
+
+// Clips plain text to `width` columns with a trailing ellipsis and no SGR reset,
+// so the caller's title style still covers the suffix that follows.
+function clipPlain(text: string, width: number): string {
+	if (visibleWidth(text) <= width) return text;
+	let clipped = Array.from(text);
+	while (clipped.length > 0 && visibleWidth(clipped.join("")) > width - 1) clipped = clipped.slice(0, -1);
+	return `${clipped.join("")}…`;
+}
+
+function formatToolCall(toolName: QuietToolName, args: Record<string, unknown>, theme: ThemeLike, summary?: { width: number }): string {
 	switch (toolName) {
 		case "read": {
 			const path = safeText(shortenPath(args.path) || "...");
@@ -151,7 +518,11 @@ function formatToolCall(toolName: QuietToolName, args: Record<string, unknown>, 
 		case "bash": {
 			const command = safeText(asString(args.command, "..."));
 			const timeout = typeof args.timeout === "number" ? theme.fg("muted", ` (timeout ${args.timeout}s)`) : "";
-			return `${theme.fg("toolTitle", theme.bold(`$ ${command}`))}${timeout}`;
+			// Minimal cards title bash with the bare command; the card glyph supplies the `$` prompt.
+			// Collapsed, they keep it to one summary row; expanding shows every line.
+			const title = cardContent() !== CARD_CONTENT.MINIMAL ? `bash $ ${command}`
+				: summary ? bashSummary(command, Math.max(1, summary.width - visibleWidth(timeout))) : command;
+			return `${theme.fg("toolTitle", theme.bold(title))}${timeout}`;
 		}
 		case "grep": {
 			let text = `${theme.fg("toolTitle", theme.bold("grep"))} ${theme.fg("accent", `/${safeText(asString(args.pattern))}/`)} in ${safeText(shortenPath(args.path) || ".")}`;
@@ -179,40 +550,367 @@ function formatToolCall(toolName: QuietToolName, args: Record<string, unknown>, 
 	}
 }
 
-function partialLabel(toolName: QuietToolName): string {
-	return toolName === "bash" ? "Running..." : `${toolName}...`;
+interface BoundedRowSection {
+	text: string;
+	rows: number;
+	tail?: boolean;
 }
 
-function registerQuietTool(pi: ExtensionAPI, toolName: QuietToolName): void {
-	const registrationTool = getBuiltInTools(process.cwd())[toolName];
+// Cache the rendered preview slice per stable tool-result object: pi re-renders
+// every visible card each frame, so re-tokenizing the full output text per pass is
+// pure waste. Only the returned preview slice is retained, never the full wrapped
+// text, so an arbitrarily large output cannot pin every wrapped line for the
+// result object's lifetime.
+const boundedRowsLineCache = new WeakMap<object, Array<{ text: string; width: number; rows: number; tail: boolean; lines: string[] } | undefined>>();
 
+class BoundedRows implements Component {
+	private readonly sections: readonly BoundedRowSection[];
+	private readonly cacheKey: object | undefined;
+
+	constructor(sections: readonly BoundedRowSection[], cacheKey?: object) {
+		this.sections = sections;
+		this.cacheKey = cacheKey;
+	}
+
+	/** Renders each section through the wrapped-line cache, sliced to the section row budget; cache hits skip re-tokenizing and re-wrapping the section text. */
+	render(width: number): string[] {
+		const cache = this.cacheKey ? boundedRowsLineCache.get(this.cacheKey) : undefined;
+		return this.sections.flatMap(({ text, rows, tail = false }, index) => {
+			if (rows <= 0) return [];
+			const hit = cache?.[index];
+			if (hit && hit.text === text && hit.width === width && hit.rows === rows && hit.tail === tail) {
+				return [...hit.lines];
+			}
+			const rendered = new Text(text, 0, 0).render(width);
+			const sliced = tail ? rendered.slice(-rows) : rendered.slice(0, rows);
+			if (this.cacheKey) {
+				const slot = boundedRowsLineCache.get(this.cacheKey) ?? [];
+				slot[index] = { text, width, rows, tail, lines: sliced };
+				boundedRowsLineCache.set(this.cacheKey, slot);
+			}
+			return [...sliced];
+		});
+	}
+
+	invalidate(): void {}
+}
+
+// Tool card: every quiet tool call is a rounded petal card, like the Gentle AI
+// card, so the call and its output read as one block apart from assistant
+// prose. pi does not paint tool backgrounds for renderShell "self", so the
+// frame tone carries the status the painted Box would otherwise show. The call
+// owns the top rule; the result draws the sides and always closes the frame.
+// Until the first result exists, the call closes the frame itself.
+type ToolTone = typeof CARD_TONE.WARNING | typeof CARD_TONE.SUCCESS | typeof CARD_TONE.ERROR;
+
+function toolTone(pending: boolean, failed: boolean): ToolTone {
+	if (failed) return CARD_TONE.ERROR;
+	return pending ? CARD_TONE.WARNING : CARD_TONE.SUCCESS;
+}
+
+/** One settled frame per component: bounded memory, including all card chrome. */
+class ToolCardRows {
+	private frame?: { width: number; style: ReturnType<typeof cardStyle>; running: boolean; lines: string[] };
+
+	render(width: number, running: boolean, build: () => string[]): string[] {
+		const style = cardStyle();
+		if (this.frame?.width === width && this.frame.style === style && this.frame.running === running) return this.frame.lines;
+		const lines = build();
+		this.frame = { width, style, running, lines };
+		return lines;
+	}
+
+	invalidate(): void { this.frame = undefined; }
+}
+
+class ToolCardTop implements Component {
+	private readonly rows = new ToolCardRows();
+	private readonly header: (inner: number) => string;
+	private readonly glyph: string;
+	private readonly tone: ToolTone;
+	private readonly theme: CardTheme;
+	private readonly hint: string | undefined;
+	private readonly row: CardRowContext | undefined;
+
+	constructor(header: (inner: number) => string, tone: ToolTone, theme: CardTheme, glyph: string, hint?: string, row?: CardRowContext) {
+		this.header = header;
+		this.glyph = glyph;
+		this.tone = tone;
+		this.theme = theme;
+		this.hint = hint;
+		this.row = row;
+	}
+
+	/** Renders `╭─ <icon> <call> ── <hint> ╮`, reserving applicable hint space before wrapping the call. A call that does not fit the rule (a long or multi-line command) continues on card rows below it, so every line of the command stays visible. */
+	render(width: number): string[] {
+		const target = Math.max(0, Math.floor(width));
+		if (target === 0) return [];
+		const running = this.row !== undefined && cardAwaitingResult(this.row);
+		return this.rows.render(target, running, () => floatRows(this.tone, this.theme, target, (inner) => ({
+			head: cardTopRows({ title: this.header(inner), glyph: this.glyph, body: [], tone: this.tone }, this.theme, inner, this.hint),
+			body: running ? [cardRunningLine(this.tone, this.theme, inner)] : undefined,
+			bottom: running ? cardBottom(this.tone, this.theme, inner) : undefined,
+		})));
+	}
+
+	invalidate(): void { this.rows.invalidate(); }
+}
+
+class ToolCardBody implements Component {
+	private readonly rows = new ToolCardRows();
+	private readonly inner: () => Component;
+	private readonly tone: ToolTone;
+	private readonly theme: CardTheme;
+
+	private readonly cacheable: boolean;
+
+	constructor(inner: () => Component, tone: ToolTone, theme: CardTheme, cacheable = true) {
+		this.inner = inner;
+		this.tone = tone;
+		this.theme = theme;
+		this.cacheable = cacheable;
+	}
+
+	/** Renders the inner component between the card sides and closes the frame, even when the result has no rows. */
+	render(width: number): string[] {
+		const target = Math.max(0, Math.floor(width));
+		if (target === 0) return [];
+		const build = () => floatRows(this.tone, this.theme, target, (inner) => ({
+			body: this.inner().render(cardInnerWidth(inner)).map((line) => cardLine(line.trimEnd(), this.tone, this.theme, inner)),
+			bottom: cardBottom(this.tone, this.theme, inner),
+			afterHeading: true,
+		}));
+		return this.cacheable ? this.rows.render(target, false, build) : build();
+	}
+
+	invalidate(): void { this.rows.invalidate(); }
+}
+
+function shouldRenderPreviewTail(
+	toolName: QuietToolName,
+	text: string,
+	isError: boolean,
+	args: Record<string, unknown> | undefined,
+): boolean {
+	if (isError) return true;
+	if (toolName !== "bash") return false;
+	return isGitCommand(args) || semanticJsonPreview(text) === undefined;
+}
+
+function partialLabel(toolName: QuietToolName, text: string): string {
+	const lineCount = countNonEmptyLines(text);
+	return lineCount === 0
+		? `… ${toolName}`
+		: `… ${toolName} · ${lineCount} ${lineCount === 1 ? "line" : "lines"}`;
+}
+
+function hasImageContent(result: AgentToolResult<unknown>): boolean {
+	return result.content.some((content) => content.type === "image");
+}
+
+function isRenderArgs(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function sanitizedRenderContext(context: (Omit<ToolRenderContextLike, "args"> & { args?: unknown }) | undefined): ToolRenderContextLike {
+	if (!context) return { args: {} };
+	return {
+		...context,
+		args: sanitizedArgs(isRenderArgs(context.args) ? context.args : undefined),
+		cwd: typeof context.cwd === "string" ? safeText(context.cwd) : context.cwd,
+	};
+}
+
+type GentleAiDevBinaryOverrideResolver = () => GentleAiDevBinaryOverride | undefined;
+function resolveQuietToolsDevBinaryPath(resolveOverride: GentleAiDevBinaryOverrideResolver): string | undefined {
+	try { const path = resolveOverride()?.path; return typeof path === "string" && isAbsolute(path) ? path : undefined; }
+	catch { return undefined; }
+}
+
+function gentleAiRenderTransition(
+	args: Record<string, unknown> | undefined, context: ToolRenderContextLike | undefined,
+	commandArguments: RegExp, options: { result?: boolean; isPartial?: boolean } = {},
+): { operationPath?: string; directResult: boolean } {
+	const state = getGentleAiRenderState(context?.state);
+	const tokenization = shellTokens(typeof args?.command === "string" ? args.command : "");
+	const directTokens = tokenization.kind === "generic" ? undefined : gentleAiCommandTokensFrom(tokenization.tokens, commandArguments);
+	const operationPath = directTokens ? gentleAiOperationPathFrom(directTokens) : undefined;
+	const argsComplete = context?.argsComplete === true;
+	const forResult = options.result === true;
+	const isPartial = options.isPartial === true || context?.isPartial === true;
+	if (operationPath && (tokenization.kind === "complete" || !argsComplete) && state?.genericLocked !== true) {
+		return { operationPath, directResult: forResult };
+	}
+	if (forResult && state?.lifecycleComponent === true && state.genericLocked !== true) return { directResult: true };
+	if (state && (tokenization.kind === "generic" || argsComplete || (forResult && !isPartial))) {
+		state.genericLocked = true; state.lifecycleComponent = false;
+	}
+	return { directResult: false };
+}
+
+/** Rendering-only factory; the default export attaches the Bash renderers to native Bash through pi.registerToolRenderer, so execution and schema stay pi's. */
+export function createQuietToolRenderer(
+	toolName: QuietToolName,
+	resolveOverride: GentleAiDevBinaryOverrideResolver = () => undefined,
+	timing: () => GentleAiElapsedTimingLedger | undefined = () => undefined,
+	officialRenderResult?: ToolDefinition["renderResult"],
+): Pick<ToolDefinition, "renderShell" | "renderCall" | "renderResult"> {
+	const commandArguments = () => createGentleAiCommandArguments(resolveQuietToolsDevBinaryPath(resolveOverride));
+	const withElapsedTiming = (context: GentleAiRenderContext): GentleAiRenderContext => {
+		const ledger = timing();
+		return ledger ? { ...context, elapsedTiming: ledger } : context;
+	};
+
+	return {
+		renderShell: "self",
+		renderCall(args, theme, context) {
+			const callArgs = args as Record<string, unknown>;
+			const renderContext = sanitizedRenderContext(context);
+			const operationPath = toolName === "bash"
+				? gentleAiRenderTransition(callArgs, renderContext, commandArguments()).operationPath
+				: undefined;
+			if (operationPath) {
+				const detail = renderContext.expanded === true && typeof callArgs.command === "string" ? `$ ${callArgs.command}` : undefined;
+				return renderGentleAiLifecycleCall(operationPath, theme, withElapsedTiming(renderContext as GentleAiRenderContext), detail);
+			}
+			const tone = toolTone(renderContext.isPartial !== false, renderContext.isError === true);
+			// Same place and wording as the Gentle AI card: the expand key rides the top rule once the call finished.
+			// Pi flips isPartial to false only with a result; a card rebuilt from the
+			// session history has one even though Pi never saw its execution start.
+			const finished = renderContext.isPartial === false;
+			const hint = finished ? stripAnsi(keyHint("app.tools.expand", renderContext.expanded === true ? "to collapse" : "to expand")) : undefined;
+			// Minimal collapsed cards fit the call in the top rule; the room leaves the rule's glyph, edges and hint.
+			const summary = renderContext.expanded === true ? undefined : (inner: number) => ({ width: inner - CARD_TOP_CHROME - (hint ? visibleWidth(hint) + 2 : 0) });
+			return new ToolCardTop((inner) => formatToolCall(toolName, callArgs, theme, summary?.(inner)), tone, theme, TOOL_GLYPH[toolName], hint, renderContext);
+		},
+		/** Builds the card component for this render pass; collapsed cards delegate to the wrapped-line cache keyed by the tool result object. */
+		renderResult(result, options, theme, context) {
+			const renderContext = context ? sanitizedRenderContext(context) : undefined;
+			markCardResult(renderContext?.state);
+			const cacheKey = typeof result === "object" && result !== null ? result : undefined;
+			const safeResult = sanitizedResult(result);
+			const text = safeText(extractTextContent(safeResult));
+			// Current Pi carries errors on the context. Older renderer callers
+			// supplied them on options; keep that structural fallback for those hosts.
+			const legacyError = "isError" in options && options.isError === true;
+			const isError = renderContext?.isError ?? legacyError;
+			const directResult = toolName === "bash" && gentleAiRenderTransition(
+				renderContext?.args,
+				renderContext,
+				commandArguments(),
+				{ result: true, isPartial: options.isPartial },
+			).directResult;
+			if (directResult) {
+				return renderGentleAiResult(safeResult, { expanded: options.expanded, isPartial: options.isPartial, isError }, theme, renderContext ? withElapsedTiming(renderContext as GentleAiRenderContext) : undefined);
+			}
+			const resultTone = toolTone(options.isPartial === true, isError);
+			const carded = (component: () => Component, cacheable = options.isPartial !== true): Component => new ToolCardBody(component, resultTone, theme, cacheable);
+			// Under the minimal Card content preference, every quiet tool draws
+			// the command alone while collapsed; the expand key still reveals
+			// the full result. Failures keep their bounded error tail so a red
+			// card always says why. The default preference keeps the previews.
+			if (COMMAND_ONLY_TOOLS.has(toolName) && !options.expanded && !isError && cardContent() === CARD_CONTENT.MINIMAL) {
+				return carded(() => new Text("", 0, 0));
+			}
+			if (options.isPartial) {
+				if (options.expanded) return carded(() => new Text(`${theme.fg("warning", partialLabel(toolName, text))}\n${theme.fg("muted", text)}`, 0, 0));
+				const visible = lastOutputLines(text, PREVIEW_LINE_LIMIT);
+				return carded(() => new BoundedRows([
+					{ text: theme.fg("warning", partialLabel(toolName, text)), rows: 1 },
+					...(visible ? [{ text: theme.fg("muted", visible), rows: PREVIEW_LINE_LIMIT, tail: true }] : []),
+				], cacheKey));
+			}
+			if (options.expanded && toolName === "read" && hasImageContent(safeResult) && officialRenderResult) {
+				return carded(() => officialRenderResult(
+					safeResult,
+					options,
+					theme,
+					{ ...sanitizedRenderContext(renderContext), lastComponent: undefined } as any,
+				), false);
+			}
+			let output = formatToolResultOutput(toolName, safeResult, {
+				expanded: options.expanded,
+				isError,
+				args: renderContext?.args,
+			});
+			// Counts alone hide the result: retain their useful totals alongside actual rows.
+			if (!options.expanded && !isError && output && COLLAPSED_COUNT_LABELS[toolName]) {
+				output += `\n${firstLines(text, PREVIEW_LINE_LIMIT - 1)}`;
+			}
+			if (!options.expanded && !isError && toolName === "edit") {
+				const diff = detailsRecord(safeResult).diff;
+				if (typeof diff === "string") output += `\n${firstLines(safeText(diff).split("\n").filter((line) => /^[+-]/.test(line)).join("\n"), PREVIEW_LINE_LIMIT - 1)}`;
+			}
+			const color = isError ? "error" : options.expanded ? "toolOutput" : "muted";
+			if (options.expanded) return carded(() => new Text(output ? theme.fg(color, output.replace(/^\n/, "")) : "", 0, 0));
+			if (output) {
+				const tail = shouldRenderPreviewTail(toolName, text, isError, renderContext?.args);
+				return carded(() => new BoundedRows([
+					{ text: theme.fg(color, output.replace(/^\n/, "")), rows: PREVIEW_LINE_LIMIT, tail },
+				], cacheKey));
+			}
+			// The card top rule carries the expand key, so an empty result only closes the frame.
+			return carded(() => new Text("", 0, 0));
+		},
+	};
+}
+
+function registerQuietTool(pi: ExtensionAPI, toolName: RegisteredToolName, resolveOverride: GentleAiDevBinaryOverrideResolver, timing: () => GentleAiElapsedTimingLedger | undefined): void {
+	const registrationTool = getBuiltInTools(process.cwd())[toolName];
 	pi.registerTool({
 		...registrationTool,
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const runtimeTool = getBuiltInTools(ctx.cwd)[toolName];
-			return runtimeTool.execute(toolCallId, params, signal, onUpdate, ctx);
+			return getBuiltInTools(ctx.cwd)[toolName].execute(toolCallId, params, signal, onUpdate, ctx);
 		},
-		renderCall(args, theme) {
-			return new Text(formatToolCall(toolName, args as Record<string, unknown>, theme), 0, 0);
-		},
-		renderResult(result, options, theme, context) {
-			if (options.isPartial) {
-				return new Text(theme.fg("warning", partialLabel(toolName)), 0, 0);
-			}
-			const output = formatToolResultOutput(toolName, result, {
-				expanded: options.expanded,
-				isError: options.isError,
-				args: context.args as Record<string, unknown> | undefined,
-			});
-			const color = options.expanded ? "toolOutput" : options.isError ? "error" : "muted";
-			return new Text(output ? theme.fg(color, output) : "", 0, 0);
-		},
+		...createQuietToolRenderer(toolName, resolveOverride, timing, registrationTool.renderResult),
 	});
 }
 
-export default function quietTools(pi: ExtensionAPI): void {
+export default function quietTools(
+	pi: ExtensionAPI,
+	resolveOverride: GentleAiDevBinaryOverrideResolver = () => resolveGentleAiDevBinaryOverride(),
+	codemodeOptOut: Omit<BuiltinCodemodeOptOutOptions, "effectiveExtensions"> = {},
+): ReturnType<ExtensionFactory> {
 	if (!quietToolsEnabled()) return;
-	for (const toolName of Object.keys(TOOL_CREATORS) as QuietToolName[]) {
-		registerQuietTool(pi, toolName);
+	let elapsedTiming: GentleAiElapsedTimingLedger | undefined;
+	let codemodeOptOutOffered = false;
+	pi.on("session_start", (_event, ctx) => {
+		elapsedTiming = new GentleAiElapsedTimingLedger(ctx.sessionManager, pi);
+		// The compact codemode below displaces Pi's builtin, which makes Pi warn
+		// at startup. Offer the settings opt-out once per process, detached so
+		// the dialog never holds up startup; the offer itself never throws.
+		if (codemodeOptOutOffered) return;
+		codemodeOptOutOffered = true;
+		let effectiveExtensions: unknown;
+		try { effectiveExtensions = pi.getSettings().extensions; } catch { /* Fall back to the settings file alone. */ }
+		void offerBuiltinCodemodeOptOut(ctx, { ...codemodeOptOut, effectiveExtensions });
+	});
+	// Only bash calls that render as gentle-ai cards carry a durable duration;
+	// every other quiet tool keeps its plain renderer and writes no entries.
+	const recordGentleTiming = (event: { toolCallId: string; toolName: string; args?: unknown }, endedAt?: number): void => {
+		const ledger = elapsedTiming;
+		if (!ledger || event.toolName !== "bash" || !isGentleAiDirectCommand(event.args as Record<string, unknown> | undefined, createGentleAiCommandArguments(resolveQuietToolsDevBinaryPath(resolveOverride)))) return;
+		try {
+			if (endedAt === undefined) ledger.recordStart(event.toolCallId, Date.now());
+			else ledger.recordEnd(event.toolCallId, endedAt);
+		} catch { /* Timing persistence is best-effort and never breaks the tool event. */ }
+	};
+	pi.on("tool_execution_start", (event) => recordGentleTiming(event));
+	pi.on("tool_execution_end", (event) => recordGentleTiming(event, Date.now()));
+	const withElapsedTiming = (context: GentleAiRenderContext): GentleAiRenderContext =>
+		elapsedTiming ? { ...context, elapsedTiming } : context;
+	for (const toolName of Object.keys(TOOL_CREATORS) as RegisteredToolName[]) {
+		registerQuietTool(pi, toolName, resolveOverride, () => elapsedTiming);
 	}
+	// Native Bash keeps pi's execution and schema; only its drawing becomes a
+	// Gentle card while the Card content preference is minimal, so quiet bash
+	// rows match the other tools. The resolver API is newer than this
+	// package's pinned pi types, so it is probed structurally; hosts without it
+	// — and the default content preference — keep pi's native bash rendering.
+	const host = pi as typeof pi & { registerToolRenderer?: (resolver: (toolName: string, next: () => unknown) => unknown) => void };
+	if (typeof host.registerToolRenderer === "function") {
+		host.registerToolRenderer((toolName, next) =>
+			toolName === "bash" && cardContent() === CARD_CONTENT.MINIMAL ? createQuietToolRenderer("bash", resolveOverride, () => elapsedTiming) : next());
+	}
+	return registerCompactCodemode(pi);
 }

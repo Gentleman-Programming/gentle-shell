@@ -1,0 +1,8 @@
+{
+  "schema": "gentle-ai.review-last-event-closure/v1",
+  "operation": "review/capture-result",
+  "lineage_id": "review-c7c923a031112dd7",
+  "state": "approved",
+  "action": "the approved review completed on the last admitted event and burned; delivery follows ordinary repository policy",
+  "store_revision": "sha256:108e0ba4f5af3f69b44d2fb1057a5054e968cc38f050d2e9a30f58c00bbf7e88"
+}

@@ -1,0 +1,545 @@
+import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
+import { conservativeOwnerDeathProofV1 } from "./review-lock.ts";
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const BOOT_UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+export interface CandidateViewOwner {
+	version: 1;
+	uuid: string;
+	token: string;
+	pid: number;
+	host: string | null;
+	root: string;
+	commonDir: string;
+}
+type Git = (args: readonly string[]) => string;
+export type WindowsAclAuthority = (path: string) => void;
+
+let testingWindowsAclAuthority: WindowsAclAuthority | undefined;
+export function setWindowsAclAuthorityForTesting(authority?: WindowsAclAuthority): void {
+	testingWindowsAclAuthority = authority;
+}
+
+const WINDOWS_SYSTEM = "S-1-5-18";
+const WINDOWS_ADMINISTRATORS = "S-1-5-32-544";
+const WINDOWS_SYSTEM_DIRECTORY = "\\\\?\\GLOBALROOT\\SystemRoot\\System32";
+
+// Cold or contended Windows hosts can take several seconds to start a process
+// (whoami/PowerShell), and owner preparation runs many probes in
+// sequence. Each probe gets a bounded, configurable timeout, plus one bounded
+// retry of the idempotent system probe; authority validation is never retried
+// or weakened because it happens after the probe returns.
+const WINDOWS_SYSTEM_PROBE_TIMEOUT_MS = 15_000;
+const WINDOWS_SYSTEM_PROBE_TIMEOUT_MAX_MS = 120_000;
+const WINDOWS_SYSTEM_PROBE_TIMEOUT_ENV = "GENTLE_PI_CANDIDATE_WINDOWS_PROBE_TIMEOUT_MS";
+
+export function resolveWindowsSystemProbeTimeoutMs(environment: NodeJS.ProcessEnv = process.env): number {
+	const value = environment[WINDOWS_SYSTEM_PROBE_TIMEOUT_ENV];
+	if (value === undefined || !/^[1-9]\d*$/.test(value)) return WINDOWS_SYSTEM_PROBE_TIMEOUT_MS;
+	const parsed = Number(value);
+	return Number.isSafeInteger(parsed) && parsed <= WINDOWS_SYSTEM_PROBE_TIMEOUT_MAX_MS
+		? parsed
+		: WINDOWS_SYSTEM_PROBE_TIMEOUT_MS;
+}
+
+const TRANSIENT_WINDOWS_PROBE_CODES = new Set(["ETIMEDOUT", "EAGAIN", "EBUSY"]);
+
+export function withWindowsSystemProbeRetry<T>(probe: () => T): T {
+	try {
+		return probe();
+	} catch (error) {
+		if (!TRANSIENT_WINDOWS_PROBE_CODES.has((error as NodeJS.ErrnoException | undefined)?.code ?? "")) throw error;
+		return probe();
+	}
+}
+
+function windowsSystemExecutable(name: "whoami.exe" | "WindowsPowerShell\\v1.0\\powershell.exe"): string {
+	try {
+		return realpathSync.native(join(WINDOWS_SYSTEM_DIRECTORY, name));
+	} catch {
+		throw new Error("Windows system executable is unavailable");
+	}
+}
+
+function windowsUserSid(): string {
+	const output = withWindowsSystemProbeRetry(() => execFileSync(windowsSystemExecutable("whoami.exe"), ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", timeout: resolveWindowsSystemProbeTimeoutMs(), maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"], windowsHide: true }));
+	const matches = output.match(/S-\d+(?:-\d+)+/gi) ?? [];
+	if (matches.length !== 1) throw new Error("Windows user SID is unavailable");
+	return matches[0]!.toUpperCase();
+}
+
+export type WindowsDaclValidationReason = "protection" | "ace-count" | "ace-shape" | "ace-type" | "ace-flags" | "ace-rights" | "ace-reserved-fields" | "ace-trustee" | "ace-duplicate";
+export type WindowsDaclTrusteeClassification = "OW" | "CO" | "BU" | "AU" | "WD" | "LA" | "sid" | "other" | "missing";
+
+export class WindowsDaclValidationError extends Error {
+	readonly reason: WindowsDaclValidationReason;
+	readonly trustee?: WindowsDaclTrusteeClassification;
+	constructor(reason: WindowsDaclValidationReason, trustee?: WindowsDaclTrusteeClassification) {
+		super(`Windows DACL validation failed: ${reason}${trustee === undefined ? "" : ` (${trustee})`}`);
+		this.name = "WindowsDaclValidationError";
+		this.reason = reason;
+		this.trustee = trustee;
+	}
+}
+
+export type WindowsOwnerClassification = "user" | "system" | "administrators" | "sid" | "other" | "missing";
+
+export class WindowsOwnerValidationError extends Error {
+	readonly owner: WindowsOwnerClassification;
+	constructor(owner: WindowsOwnerClassification = "missing") {
+		super(`Windows owner validation failed (${owner})`);
+		this.name = "WindowsOwnerValidationError";
+		this.owner = owner;
+	}
+}
+
+function classifyWindowsTrustee(value: string | undefined): WindowsDaclTrusteeClassification {
+	const trustee = value?.toUpperCase() ?? "";
+	if (["OW", "CO", "BU", "AU", "WD", "LA"].includes(trustee)) return trustee as WindowsDaclTrusteeClassification;
+	if (isWindowsSid(trustee)) return "sid";
+	return trustee === "" ? "missing" : "other";
+}
+
+function isWindowsSid(value: string): boolean {
+	return /^S-\d+(?:-\d+)+$/i.test(value);
+}
+
+export function validatePrivateWindowsDacl(dacl: string, user: string, protectedDacl: boolean, localAdministratorSid?: string): void {
+	if (protectedDacl && !dacl.startsWith("D:P")) throw new WindowsDaclValidationError("protection");
+	const trustees = new Map([[user.toUpperCase(), "user"], [WINDOWS_SYSTEM, "system"], ["SY", "system"], [WINDOWS_ADMINISTRATORS, "administrators"], ["BA", "administrators"]]);
+	if (isWindowsSid(user) && localAdministratorSid !== undefined && isWindowsSid(localAdministratorSid) && user.toUpperCase() === localAdministratorSid.toUpperCase()) trustees.set("LA", "user");
+	const aces = [...dacl.matchAll(/\(([^()]*)\)/g)].map((match) => match[1]!.split(";"));
+	const expectedFlags = protectedDacl ? "OICI" : "ID";
+	const granted = new Set<string>();
+	for (const ace of aces) {
+		const trustee = trustees.get(ace[5]?.toUpperCase() ?? "");
+		if (ace.length !== 6) throw new WindowsDaclValidationError("ace-shape");
+		if (ace[0] !== "A") throw new WindowsDaclValidationError("ace-type");
+		if (ace[1] !== expectedFlags) throw new WindowsDaclValidationError("ace-flags");
+		if (ace[2] !== "FA") throw new WindowsDaclValidationError("ace-rights");
+		if (ace[3] !== "" || ace[4] !== "") throw new WindowsDaclValidationError("ace-reserved-fields");
+		if (trustee === undefined) throw new WindowsDaclValidationError("ace-trustee", classifyWindowsTrustee(ace[5]));
+		if (granted.has(trustee)) throw new WindowsDaclValidationError("ace-duplicate");
+		granted.add(trustee);
+	}
+	if (granted.size !== 3) throw new WindowsDaclValidationError("ace-count");
+}
+
+export function validatePrivateWindowsOwner(owner: string | undefined, user: string): void {
+	const normalizedOwner = owner?.toUpperCase();
+	// Owners implicitly control a DACL, so accept only principals that the exact DACL already grants full control.
+	if (normalizedOwner === undefined) throw new WindowsOwnerValidationError("missing");
+	if (!isWindowsSid(user) || !isWindowsSid(normalizedOwner)) throw new WindowsOwnerValidationError(isWindowsSid(normalizedOwner) ? "sid" : "other");
+	if (normalizedOwner === user.toUpperCase()) return;
+	if (normalizedOwner === WINDOWS_SYSTEM) return;
+	if (normalizedOwner === WINDOWS_ADMINISTRATORS) return;
+	throw new WindowsOwnerValidationError("sid");
+}
+
+interface WindowsAclIdentity {
+	user: string;
+	localAdministrator: string;
+}
+
+type WindowsObjectKind = "file" | "directory";
+
+interface WindowsAclProbeSnapshot extends WindowsAclIdentity {
+	entries: readonly { index: number; owner: string; dacl: string }[];
+}
+
+export function decodeWindowsAclProbe(payload: string, count: number): WindowsAclProbeSnapshot {
+	const invalid = () => new Error("Windows ACL probe response is invalid");
+	if (!Number.isInteger(count) || count < 1 || count > 3 || payload.length > 65536) throw invalid();
+	let parsed: unknown;
+	try { parsed = JSON.parse(payload); } catch { throw invalid(); }
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw invalid();
+	const value = parsed as Record<string, unknown>;
+	if (Object.keys(value).sort().join(",") !== "entries,localAdministrator,schema,user" || value.schema !== "gentle-pi.windows-acl-probe/v1" ||
+		typeof value.user !== "string" || !isWindowsSid(value.user) || typeof value.localAdministrator !== "string" || !isWindowsSid(value.localAdministrator) ||
+		!Array.isArray(value.entries) || value.entries.length !== count) throw invalid();
+	const entries = value.entries.map((entry: unknown, index) => {
+		if (typeof entry !== "object" || entry === null || Array.isArray(entry)) throw invalid();
+		const item = entry as Record<string, unknown>;
+		if (Object.keys(item).sort().join(",") !== "dacl,index,owner" || item.index !== index || typeof item.owner !== "string" || !isWindowsSid(item.owner) ||
+			typeof item.dacl !== "string" || item.dacl.length === 0 || item.dacl.length > 16384) throw invalid();
+		return { index, owner: item.owner.toUpperCase(), dacl: item.dacl };
+	});
+	return { user: value.user.toUpperCase(), localAdministrator: value.localAdministrator.toUpperCase(), entries };
+}
+
+// One fresh, read-only observation per synchronous boundary. Never retain a
+// snapshot across calls, Git or makeWritable callbacks. Paths travel through
+// UTF-8 stdin, not interpolated script text or length-limited environment values.
+function windowsAclProbe(requests: readonly { path: string; kind: WindowsObjectKind }[]): WindowsAclProbeSnapshot {
+	if (requests.length < 1 || requests.length > 3 || requests.some(request => request.path.length === 0 || request.path.length > 32767 || request.path.includes("\0") || !["file", "directory"].includes(request.kind))) throw new WindowsOwnerValidationError();
+	const script = `$ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
+[Console]::InputEncoding=[System.Text.Encoding]::UTF8
+[object[]]$requests=ConvertFrom-Json -InputObject ([Console]::In.ReadToEnd())
+$user=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$descriptor=New-Object System.Security.AccessControl.RawSecurityDescriptor 'D:(A;;FA;;;LA)'
+$administrator=$descriptor.DiscretionaryAcl[0].SecurityIdentifier.Value
+$sections=[System.Security.AccessControl.AccessControlSections]::Owner -bor [System.Security.AccessControl.AccessControlSections]::Access
+$entries=@(for($i=0;$i -lt $requests.Count;$i++) {
+  $request=$requests[$i]
+  if($request.kind -eq 'file') { $acl=[System.IO.File]::GetAccessControl($request.path,$sections) }
+  elseif($request.kind -eq 'directory') { $acl=[System.IO.Directory]::GetAccessControl($request.path,$sections) }
+  else { throw 'Invalid object kind' }
+  [pscustomobject]@{index=$i;owner=$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value;dacl=$acl.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::Access)}
+})
+@{schema='gentle-pi.windows-acl-probe/v1';user=$user;localAdministrator=$administrator;entries=$entries} | ConvertTo-Json -Compress -Depth 4`;
+	const systemRoot = dirname(dirname(windowsSystemExecutable("whoami.exe")));
+	let output: string;
+	try {
+		output = withWindowsSystemProbeRetry(() => execFileSync(windowsSystemExecutable("WindowsPowerShell\\v1.0\\powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", input: JSON.stringify(requests), timeout: resolveWindowsSystemProbeTimeoutMs(), maxBuffer: 65536, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env: { ...process.env, SystemRoot: systemRoot } }));
+	} catch { throw new WindowsOwnerValidationError(); }
+	// Invalid responses and authority failures are validated outside the retry.
+	return decodeWindowsAclProbe(output, requests.length);
+}
+
+function assertWindowsAclObservations(requests: readonly { path: string; kind: WindowsObjectKind; protectedDacl: boolean }[], identity?: WindowsAclIdentity): WindowsAclIdentity {
+	const snapshot = windowsAclProbe(requests);
+	if (identity !== undefined && (snapshot.user !== identity.user || snapshot.localAdministrator !== identity.localAdministrator)) throw new WindowsOwnerValidationError();
+	for (const entry of snapshot.entries) {
+		validatePrivateWindowsOwner(entry.owner, snapshot.user);
+		validatePrivateWindowsDacl(entry.dacl, snapshot.user, requests[entry.index]!.protectedDacl, snapshot.localAdministrator);
+	}
+	return { user: snapshot.user, localAdministrator: snapshot.localAdministrator };
+}
+
+function windowsOwnerSid(path: string, kind: WindowsObjectKind): string {
+	if (path.length === 0 || path.length > 32767 || path.includes("\0")) throw new WindowsOwnerValidationError();
+	const script = kind === "file"
+		? "$ErrorActionPreference='Stop';$acl=[System.IO.File]::GetAccessControl($env:GENTLE_PI_CANDIDATE_OWNER_PATH,[System.Security.AccessControl.AccessControlSections]::Owner);$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value"
+		: "$ErrorActionPreference='Stop';$acl=[System.IO.Directory]::GetAccessControl($env:GENTLE_PI_CANDIDATE_OWNER_PATH,[System.Security.AccessControl.AccessControlSections]::Owner);$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value";
+	const systemRoot = dirname(dirname(windowsSystemExecutable("whoami.exe")));
+	let output: string;
+	try {
+		output = withWindowsSystemProbeRetry(() => execFileSync(windowsSystemExecutable("WindowsPowerShell\\v1.0\\powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", timeout: resolveWindowsSystemProbeTimeoutMs(), maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: { ...process.env, SystemRoot: systemRoot, GENTLE_PI_CANDIDATE_OWNER_PATH: path } }));
+	} catch {
+		throw new WindowsOwnerValidationError();
+	}
+	const matches = output.match(/S-\d+(?:-\d+)+/gi) ?? [];
+	if (matches.length !== 1 || !isWindowsSid(matches[0]!)) throw new WindowsOwnerValidationError();
+	return matches[0]!.toUpperCase();
+}
+
+export function assertTrustedWindowsOwner(path: string, kind: WindowsObjectKind): void {
+	validatePrivateWindowsOwner(windowsOwnerSid(path, kind), windowsUserSid());
+}
+
+function assertPrivateWindowsDacl(path: string, kind: WindowsObjectKind, protectedDacl: boolean, identity?: WindowsAclIdentity): void {
+	assertWindowsAclObservations([{ path, kind, protectedDacl }], identity);
+}
+
+function enforcePrivateWindowsDacl(path: string, identity: WindowsAclIdentity): void {
+	validatePrivateWindowsOwner(windowsOwnerSid(path, "directory"), identity.user);
+	const { user, localAdministrator } = identity;
+	const sddl = `D:P(A;OICI;FA;;;${user})(A;OICI;FA;;;${WINDOWS_SYSTEM})(A;OICI;FA;;;${WINDOWS_ADMINISTRATORS})`;
+	const script = "$ErrorActionPreference='Stop';$acl=New-Object System.Security.AccessControl.DirectorySecurity;$acl.SetSecurityDescriptorSddlForm($env:GENTLE_PI_CANDIDATE_ACL_SDDL,[System.Security.AccessControl.AccessControlSections]::Access);[System.IO.Directory]::SetAccessControl($env:GENTLE_PI_CANDIDATE_ACL_PATH,$acl)";
+	const systemRoot = dirname(dirname(windowsSystemExecutable("whoami.exe")));
+	withWindowsSystemProbeRetry(() => execFileSync(windowsSystemExecutable("WindowsPowerShell\\v1.0\\powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", timeout: resolveWindowsSystemProbeTimeoutMs(), maxBuffer: 16384, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: { ...process.env, SystemRoot: systemRoot, GENTLE_PI_CANDIDATE_ACL_PATH: path, GENTLE_PI_CANDIDATE_ACL_SDDL: sddl } }));
+	assertPrivateWindowsDacl(path, "directory", true, identity);
+}
+
+function privateWindowsDacl(path: string, kind: WindowsObjectKind, protectedDacl: boolean, windowsIdentity?: WindowsAclIdentity): void {
+	if (testingWindowsAclAuthority !== undefined) return testingWindowsAclAuthority(path);
+	assertPrivateWindowsDacl(path, kind, protectedDacl, windowsIdentity);
+}
+
+function privateWindowsCandidateOwnerBoundary(commonDir: string, enforce = false): WindowsAclIdentity | undefined {
+	const boundary = [commonDir, join(commonDir, "gentle-ai"), join(commonDir, "gentle-ai", "candidate-views")];
+	if (testingWindowsAclAuthority !== undefined) {
+		for (const path of boundary) testingWindowsAclAuthority(path);
+		return;
+	}
+	if (!enforce) return assertWindowsAclObservations(boundary.map(path => ({ path, kind: "directory", protectedDacl: true })));
+	// Take the identity from the same probe that later reads owners and DACLs
+	// back, so enforcement never compares two different identity sources. The
+	// DACLs are not validated yet: this boundary is about to rewrite them.
+	const snapshot = windowsAclProbe(boundary.map(path => ({ path, kind: "directory" })));
+	const identity = { user: snapshot.user, localAdministrator: snapshot.localAdministrator };
+	for (const entry of snapshot.entries) validatePrivateWindowsOwner(entry.owner, identity.user);
+	for (const path of boundary) enforcePrivateWindowsDacl(path, identity);
+	return identity;
+}
+
+// A hostname or a repository-local nonce cannot prove that a PID is local.
+// Bind to the kernel boot and, on Linux, its PID namespace. Unsupported or
+// unavailable provenance disables reclamation (including across reboots).
+function localHost(): string | null {
+	try {
+		if (process.platform === "darwin") {
+			const boot = execFileSync("/usr/sbin/sysctl", ["-n", "kern.bootsessionuuid"], { encoding: "utf8", timeout: 1000, maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"] }).trim();
+			if (BOOT_UUID.test(boot)) return `darwin:${boot.toLowerCase()}`;
+		}
+		if (process.platform === "linux") {
+			const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+			const namespace = readlinkSync("/proc/self/ns/pid");
+			if (BOOT_UUID.test(boot) && /^pid:\[\d+\]$/.test(namespace)) return `linux:${boot}:${namespace}`;
+		}
+	} catch { /* No remote/PID-only fallback. */ }
+	return null;
+}
+
+export function samePath(path: string, expected: string, platform: NodeJS.Platform): boolean {
+	if (platform !== "win32") return path === expected;
+	const canonical = (value: string): string => {
+		try {
+			return realpathSync.native(value).replaceAll("\\", "/").toLowerCase();
+		} catch {
+			return join(realpathSync.native(dirname(value)), basename(value)).replaceAll("\\", "/").toLowerCase();
+		}
+	};
+	return canonical(path) === canonical(expected);
+}
+
+export class PosixCandidateOwnerParentPrivacyError extends Error {
+	constructor() {
+		super("Candidate owner parent privacy check failed");
+		this.name = "PosixCandidateOwnerParentPrivacyError";
+	}
+}
+
+export class PosixCandidateOwnerParentChmodIneffectiveError extends Error {
+	constructor() {
+		super("Candidate owner parent POSIX chmod attestation is ineffective");
+		this.name = "PosixCandidateOwnerParentChmodIneffectiveError";
+	}
+}
+
+function posixPrivateModeProbe(path: string): boolean {
+	const probe = join(path, `.gentle-ai-chmod-probe-${randomUUID()}`);
+	try {
+		mkdirSync(probe, { mode: 0o700 });
+		return (lstatSync(probe).mode & 0o777) === 0o700;
+	} catch {
+		return true;
+	} finally {
+		try { rmdirSync(probe); } catch {}
+	}
+}
+
+function directory(path: string, privateMode = false, platform: NodeJS.Platform = process.platform, classifyParentPrivacy = false): string {
+	// 64-bit dev/ino may collide as Numbers; validate metadata and identity from one exact observation.
+	const stat = lstatSync(path, { bigint: true });
+	if (!stat.isDirectory() || stat.isSymbolicLink() || !samePath(realpathSync(path), path, platform)) throw new Error("Unsafe candidate owner directory");
+	if (privateMode && platform !== "win32") {
+		const uid = process.getuid?.();
+		if (uid === undefined) throw new Error("Unsafe candidate owner directory");
+		if (stat.uid !== BigInt(uid) || (stat.mode & 0o077n) !== 0n) {
+			if (classifyParentPrivacy) {
+				if (stat.uid === BigInt(uid) && (stat.mode & 0o077n) !== 0n && !posixPrivateModeProbe(path)) throw new PosixCandidateOwnerParentChmodIneffectiveError();
+				throw new PosixCandidateOwnerParentPrivacyError();
+			}
+			throw new Error("Unsafe candidate owner directory");
+		}
+	}
+	if (privateMode && platform === "win32") privateWindowsDacl(path, "directory", true);
+	return `${stat.dev}:${stat.ino}`;
+}
+
+function checkedCandidateOwnerParent(commonDir: string, platform: NodeJS.Platform): { parent: string; windowsIdentity?: WindowsAclIdentity } {
+	directory(commonDir, false, platform);
+	const control = join(commonDir, "gentle-ai");
+	directory(control, false, platform);
+	const parent = join(commonDir, "gentle-ai", "candidate-views");
+	if (platform === "win32") {
+		directory(parent, false, platform);
+		const windowsIdentity = privateWindowsCandidateOwnerBoundary(commonDir);
+		return { parent, windowsIdentity };
+	}
+	directory(parent, true, platform, true);
+	return { parent };
+}
+
+export function assertCandidateOwnerParent(commonDir: string, platform: NodeJS.Platform = process.platform): string {
+	return checkedCandidateOwnerParent(commonDir, platform).parent;
+}
+
+export function prepareCandidateOwnerParent(commonDir: string, platform: NodeJS.Platform = process.platform): string {
+	directory(commonDir, false, platform);
+	const control = join(commonDir, "gentle-ai");
+	directory(control, false, platform);
+	const parent = join(commonDir, "gentle-ai", "candidate-views");
+	directory(parent, false, platform);
+	if (platform === "win32") {
+		privateWindowsCandidateOwnerBoundary(commonDir, true);
+		return parent;
+	}
+	return assertCandidateOwnerParent(commonDir, platform);
+}
+
+function regular(path: string, privateMode = false, platform: NodeJS.Platform = process.platform, windowsIdentity?: WindowsAclIdentity): string {
+	// Keep 64-bit identity exact without a second stat lookup racing the privacy checks.
+	const stat = lstatSync(path, { bigint: true });
+	const uid = process.getuid?.();
+	if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n || !samePath(realpathSync(path), path, platform) || stat.size > 16384n ||
+		(privateMode && platform !== "win32" && (uid === undefined || stat.uid !== BigInt(uid) || (stat.mode & 0o777n) !== 0o600n))) throw new Error("Unsafe candidate owner file");
+	if (privateMode && platform === "win32") privateWindowsDacl(path, "file", false, windowsIdentity);
+	return `${stat.dev}:${stat.ino}`;
+}
+
+function syncDirectory(path: string): void {
+	// Windows does not permit fsync on directory handles; the marker file itself
+	// remains fsynced before this platform-specific no-op.
+	if (process.platform === "win32") return;
+	const fd = openSync(path, "r");
+	try { fsyncSync(fd); } finally { closeSync(fd); }
+}
+
+function removeExactPrivateFile(path: string, identity: string, platform: NodeJS.Platform, windowsIdentity?: WindowsAclIdentity): void {
+	try {
+		if (regular(path, true, platform, windowsIdentity) !== identity) return;
+		unlinkSync(path);
+		syncDirectory(dirname(path));
+	} catch { /* An unproven or replaced file survives. */ }
+}
+
+function exclusiveFile(path: string, content: string, platform: NodeJS.Platform = process.platform, rollbackOnFailure = false, windowsIdentity?: WindowsAclIdentity): string {
+	let identity: string | undefined;
+	try {
+		const fd = openSync(path, "wx", 0o600);
+		try {
+			identity = regular(path, true, platform, windowsIdentity);
+			writeFileSync(fd, content);
+			fsyncSync(fd);
+		} finally { closeSync(fd); }
+		syncDirectory(dirname(path));
+		return identity;
+	} catch (error) {
+		if (rollbackOnFailure && identity !== undefined) removeExactPrivateFile(path, identity, platform, windowsIdentity);
+		throw error;
+	}
+}
+
+function markerPath(root: string): string { return `${root}.owner.json`; }
+
+export function createCandidateOwner(commonDir: string, root: string, platform: NodeJS.Platform = process.platform): CandidateViewOwner {
+	// Reuse only identity within this module-controlled synchronous creation.
+	// Owner/DACL observations stay fresh, including rollback. Nothing is retained
+	// across calls or passed into callback-based removal/sweeping operations.
+	const { parent, windowsIdentity } = checkedCandidateOwnerParent(commonDir, platform);
+	const uuid = basename(root);
+	if (!UUID.test(uuid) || root !== join(parent, uuid) || lstatSync(root, { throwIfNoEntry: false })) throw new Error("Unsafe candidate owner root");
+	const owner: CandidateViewOwner = { version: 1, uuid, token: randomUUID(), pid: process.pid, host: localHost(), root, commonDir };
+	// Any write/fsync failure aborts creation BEFORE Git can register the view.
+	const marker = markerPath(root);
+	let markerIdentity: string | undefined;
+	try {
+		markerIdentity = exclusiveFile(marker, JSON.stringify(owner), platform, true, windowsIdentity);
+		syncDirectory(dirname(parent));
+		syncDirectory(commonDir);
+	} catch (error) {
+		if (markerIdentity !== undefined) removeExactPrivateFile(marker, markerIdentity, platform, windowsIdentity);
+		throw error;
+	}
+	return Object.freeze(owner);
+}
+
+function readOwner(commonDir: string, root: string, platform: NodeJS.Platform = process.platform): CandidateViewOwner {
+	const parent = assertCandidateOwnerParent(commonDir, platform);
+	if (!UUID.test(basename(root)) || root !== join(parent, basename(root))) throw new Error("Candidate owner escaped parent");
+	regular(markerPath(root), true, platform);
+	const owner = JSON.parse(readFileSync(markerPath(root), "utf8")) as CandidateViewOwner;
+	if (!owner || Object.keys(owner).sort().join(",") !== "commonDir,host,pid,root,token,uuid,version" || owner.version !== 1 ||
+		owner.uuid !== basename(root) || !UUID.test(owner.token) || !Number.isSafeInteger(owner.pid) || owner.pid <= 0 ||
+		owner.root !== root || owner.commonDir !== commonDir || !(owner.host === null || typeof owner.host === "string")) throw new Error("Malformed candidate owner");
+	return owner;
+}
+
+function dead(owner: CandidateViewOwner): boolean {
+	return owner.host !== null && owner.host === localHost() && conservativeOwnerDeathProofV1({
+		pid: owner.pid, token: owner.token, owner_hash: "", repository_id: owner.commonDir, authority_id: owner.uuid,
+	});
+}
+
+function registration(root: string, commonDir: string, git: Git, platform: NodeJS.Platform = process.platform): string {
+	const rows = git(["worktree", "list", "--porcelain", "-z"]).split("\0\0");
+	const matching = rows.filter((row) => {
+		const worktree = row.split("\0")[0];
+		return worktree !== undefined && worktree.startsWith("worktree ") && samePath(worktree.slice(9), root, platform);
+	});
+	if (matching.length !== 1 || matching[0]!.split("\0").some((field) => /^(locked|prunable)( |$)/.test(field))) throw new Error("Candidate registration is ambiguous");
+	const gitFile = join(root, ".git");
+	regular(gitFile);
+	const pointer = readFileSync(gitFile, "utf8");
+	if (!pointer.startsWith("gitdir: ") || !pointer.endsWith("\n")) throw new Error("Unsafe candidate Git pointer");
+	const admin = pointer.slice(8, -1);
+	if (!samePath(dirname(admin), join(commonDir, "worktrees"), platform)) throw new Error("Candidate admin escaped common directory");
+	directory(join(commonDir, "worktrees"));
+	directory(admin);
+	regular(join(admin, "gitdir"));
+	regular(join(admin, "commondir"));
+	const gitdir = readFileSync(join(admin, "gitdir"), "utf8");
+	if (!gitdir.endsWith("\n") || !samePath(gitdir.slice(0, -1), gitFile, platform) ||
+		!samePath(resolve(admin, readFileSync(join(admin, "commondir"), "utf8").trim()), commonDir, platform)) throw new Error("Candidate Git backlinks changed");
+	return matching[0]! + pointer;
+}
+
+export function removeCandidateOwner(owner: CandidateViewOwner, git: Git, makeWritable: (root: string) => void, orphan = false, platform: NodeJS.Platform = process.platform): void {
+	const { root, commonDir } = owner;
+	const parent = assertCandidateOwnerParent(commonDir, platform);
+	const expected = JSON.stringify(owner);
+	const parentIdentity = directory(parent, true, platform);
+	const markerIdentity = regular(markerPath(root), true, platform);
+	const checkOwner = (): void => {
+		if (directory(parent, true, platform) !== parentIdentity || regular(markerPath(root), true, platform) !== markerIdentity ||
+			JSON.stringify(readOwner(commonDir, root, platform)) !== expected || (orphan ? !dead(owner) : owner.pid !== process.pid)) throw new Error("Candidate ownership changed");
+	};
+	checkOwner();
+	const lock = `${root}.reaper-lock`;
+	const token = randomUUID();
+	exclusiveFile(lock, token); // EEXIST is final; unknown/stale locks are never stolen.
+	const lockIdentity = regular(lock, true, platform);
+	const checkLock = (): void => {
+		if (regular(lock, true, platform) !== lockIdentity || readFileSync(lock, "utf8") !== token) throw new Error("Candidate reaper lock changed");
+	};
+	try {
+		checkOwner();
+		const identity = [directory(parent, true, platform), directory(root), regular(markerPath(root), true, platform)];
+		const registered = registration(root, commonDir, git, platform);
+		checkOwner();
+		checkLock();
+		makeWritable(root);
+		// Git and chmod are race boundaries: repeat path, owner, lock, and exact
+		// registration proofs immediately before asking Git to remove this root.
+		if (registration(root, commonDir, git, platform) !== registered ||
+			JSON.stringify([directory(parent, true, platform), directory(root), regular(markerPath(root), true, platform)]) !== JSON.stringify(identity)) throw new Error("Candidate cleanup identity changed");
+		checkOwner();
+		checkLock();
+		git(["worktree", "remove", "--force", root]);
+		// Git failure or incomplete removal must never trigger recursive rm.
+		if (lstatSync(root, { throwIfNoEntry: false }) || git(["worktree", "list", "--porcelain", "-z"]).split("\0\0").some((row) => {
+			const worktree = row.split("\0")[0];
+			return worktree !== undefined && worktree.startsWith("worktree ") && samePath(worktree.slice(9), root, platform);
+		})) throw new Error("Candidate removal is incomplete");
+		checkOwner();
+		checkLock();
+		unlinkSync(markerPath(root));
+		syncDirectory(parent);
+	} finally {
+		// Only release this exact lock, even when the deletion itself failed.
+		try { assertCandidateOwnerParent(commonDir, platform); checkLock(); unlinkSync(lock); syncDirectory(parent); } catch {}
+	}
+}
+
+export function sweepCandidateOwners(commonDir: string, git: Git, makeWritable: (root: string) => void, platform: NodeJS.Platform = process.platform): void {
+	// Windows has no localHost() provenance, so dead() cannot authorize reclamation.
+	// Avoid synchronous ACL probes for a sweep that must preserve every owner anyway.
+	// Explicit creation, validation, and cleanup retain their full ownership checks.
+	if (platform === "win32") return;
+	try {
+		const parent = assertCandidateOwnerParent(commonDir, platform);
+		for (const name of readdirSync(parent)) {
+			if (!name.endsWith(".owner.json")) continue;
+			try {
+				const owner = readOwner(commonDir, join(parent, name.slice(0, -11)), platform);
+				if (dead(owner)) removeCandidateOwner(owner, git, makeWritable, true, platform);
+			} catch { /* Unknown, legacy, unsafe, unregistered, and contended entries survive. */ }
+		}
+	} catch { /* Startup/materialization sweeps are best-effort; never create a store. */ }
+}

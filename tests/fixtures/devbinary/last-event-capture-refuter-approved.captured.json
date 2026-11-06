@@ -1,0 +1,20 @@
+{
+  "schema": "gentle-ai.review-last-event-closure/v1",
+  "operation": "review.capture-refuter",
+  "lineage_id": "review-61da8af1a89ff96a",
+  "state": "approved",
+  "action": "the approved review completed on the last admitted event and burned; delivery follows ordinary repository policy",
+  "advisory_findings": {
+    "statement": "This review is approved and its receipt stands. Every finding listed here is non-blocking: none opened a correction, none reopens this review, and no correction transition is offered for this candidate. Treat them as separate later work, never as a reason to re-run review on this candidate.",
+    "findings": [
+      {
+        "id": "R3-001",
+        "lens": "reliability",
+        "location": "src/value.js:2",
+        "severity": "BLOCKER",
+        "disposition": "refuted"
+      }
+    ]
+  },
+  "store_revision": "sha256:05588b2784a07c5619af879b97f6e023e35f5112185b42c173ed8f5064cf1b34"
+}

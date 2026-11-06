@@ -1,0 +1,1292 @@
+import { pickModel, sharedCooldown, shouldFallBack, type ModelCooldown } from "./model-fallback-policy.ts";
+import type { FallbackChain } from "./model-fallback-store.ts";
+import { fallbackContinuePrompt } from "./model-fallback-notice.ts";
+import { isSessionChangeEvidence, type SessionChangeEvidence } from "./session-changes.ts";
+import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { tmpdir, userInfo } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
+import { Duplex, type Readable, type Writable } from "node:stream";
+import { stripVTControlCharacters } from "node:util";
+import { withoutInteractiveHost } from "./rpc-host.ts";
+import { gentlePiConfigHome } from "./agent-home.ts";
+import { resolveBackgroundSubagentsPolicy } from "./background-subagents-policy.ts";
+import { childPackageExtensionArgs } from "./child-package-injection.ts";
+import { AGENT_MODE, formatModelRef, parseModelRef, type AgentDefinition, type AgentMode, type ModelRef } from "./agents-config.ts";
+import { CHILD_QUERY_MAX_INFLIGHT, CHILD_QUERY_TIMEOUT_MS, parseChildFrame, validChildMessage, validChildQueryId } from "./agents-messaging.ts";
+import { ParentStandingReviewPermissionBroker } from "./review-session-standing-permission-ipc.ts";
+import { isFinished, normalizeRpcEvent, ToolArgumentProgress, TASK_EVENT, TASK_STATUS, taskLabel, type AskRequest, type ChildResponseObservation, type TaskRecord, type TaskStore, type TerminalErrorCategory } from "./agents-protocol.ts";
+import { WriterSurfaceRegistry, writerSurfaceConflictMessage } from "./writer-surfaces.ts";
+import { holdSubagentScratch, releaseSubagentScratch, SUBAGENT_SCRATCH_PREFIX } from "./session-scratch.ts";
+
+// Gentle Agents runner. Every subagent is its own `pi --mode rpc` process:
+// the host never runs subagent work on the TUI thread. It writes JSON
+// commands, reads JSON lines, applies deltas to the store, answers dialogs,
+// and enforces an inactivity watchdog per task.
+
+export interface ChildLike {
+	pid?: number;
+	connected?: boolean;
+	stdin: Writable | null;
+	stdout: Readable | null;
+	stderr: Readable | null | undefined;
+	stdio?: Array<Readable | Writable | null | undefined>;
+	kill(signal?: NodeJS.Signals): boolean;
+	send?(message: Record<string, unknown>, callback?: (error: Error | null) => void): boolean;
+	disconnect?(): void;
+	channel?: { unref?(): void };
+	on(event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown;
+	on(event: "error", listener: (error: Error) => void): unknown;
+	on(event: "spawn" | "message" | "disconnect", listener: (...args: unknown[]) => void): unknown;
+}
+
+export interface SpawnOptions {
+	cwd: string;
+	env: NodeJS.ProcessEnv;
+	detached?: boolean;
+	windowsHide?: boolean;
+	stdio?: Array<"pipe" | "ignore" | "inherit" | "ipc" | "overlapped">;
+}
+
+export type Spawn = (command: string, args: string[], options: SpawnOptions) => ChildLike;
+
+export interface ProcessControl {
+	platform: NodeJS.Platform;
+	kill(pid: number, signal: NodeJS.Signals | 0): void;
+}
+
+export interface PiCommand {
+	command: string;
+	args: string[];
+}
+
+export interface RunnerDeps {
+	spawn: Spawn;
+	now(): number;
+	schedule(fn: () => void, ms: number): () => void;
+	pi: PiCommand;
+	resolvePi?(): PiCommand;
+	process?: ProcessControl;
+	/** Models that recently ran out; the process-wide registry when absent. */
+	cooldown?: ModelCooldown;
+}
+
+export interface RunnerLimits {
+	maxConcurrency: number;
+	stallTimeoutMs: number;
+	// Longer ceiling used while an announced tool call is in flight. Optional so
+	// callers that only bound silence keep the idle budget as the tool ceiling.
+	toolStallTimeoutMs?: number;
+	// Bounded asynchronous cleanup window allowed after settlement before escalating to SIGTERM/SIGKILL.
+	cleanupTimeoutMs?: number;
+}
+
+export interface AskAnswer {
+	value?: string;
+	confirmed?: boolean;
+	cancelled?: boolean;
+}
+
+export interface TaskQuery {
+	taskId: string;
+	requestId: string;
+	message: string;
+}
+
+export const MAX_CHILD_RESPONSE_OBSERVATIONS = 128;
+
+/** Local producer snapshot only; never native workflow success or export authority.
+ * Scope excludes tools, compaction, hidden provider retries and history replay.
+ * Each message_end is retained separately; RPC supplies no stable dedupe key.
+ * Unsettled shutdown may lose in-flight responses even when droppedResponses is 0.
+ */
+export interface ChildObservationSnapshot {
+	readonly coverage: "final_assistant_messages_only";
+	readonly agentSettled: boolean;
+	readonly responses: readonly ChildResponseObservation[];
+	readonly droppedResponses: number;
+}
+interface ChildObservationBuffer {
+	agentSettled: boolean;
+	responses: ChildResponseObservation[];
+	droppedResponses: number;
+}
+
+export interface RunnerHooks {
+	askUser(taskId: string, request: AskRequest, raw: Record<string, unknown>): Promise<AskAnswer>;
+	/** Optional immutable snapshot, delivered once at existing finalization.
+	 * Undefined when collection was disabled or no child handle was created.
+	 * Parent must check task.status AND agentSettled; observations are not success.
+	 */
+	onFinish?(task: TaskRecord, observations?: ChildObservationSnapshot): void;
+	// Accepts a child notification only while the originating parent session is active.
+	onNotification?(task: TaskRecord, message: string): boolean | void;
+	onQuery?(task: TaskRecord, requestId: string, message: string): boolean | void;
+	onQuerySettled?(taskId: string, requestId: string, outcome: "replied" | "expired"): void;
+	// Parent-only observation of a paired successful filesystem tool, not prose.
+	onSuccessfulMutation?(task: TaskRecord, tool: { toolName: "write" | "edit"; toolCallId: string; path: string; evidence?: SessionChangeEvidence }): void | Promise<void>;
+	/** The child moved to the next model of its fallback chain and keeps going. */
+	onFallback?(task: TaskRecord, change: { from: string; to: string; category: TerminalErrorCategory; launch?: boolean }): void;
+}
+
+export interface TaskRequest {
+	agent: AgentDefinition;
+	prompt: string;
+	label: string | undefined;
+	context: string | undefined;
+	mode: AgentMode;
+	cwd: string;
+	parentSessionId: string;
+	model: ModelRef | undefined;
+	thinking: string | undefined;
+	/** Ordered fallbacks for when `model` runs out or keeps failing; only models the user chose. */
+	fallbacks?: FallbackChain;
+	sessionDir: string;
+	resumeSessionPath: string | undefined;
+	env: NodeJS.ProcessEnv;
+	// Host-provided only: the launcher's package injection signal (#1690) or
+	// the curated fallback. Never derived from tool input or agent definitions.
+	extensionPaths?: string[];
+	// Host-computed launch-layer token for the card (#2180): which profile layer
+	// supplied `model` (`binding`, `frozen:*`, `pin:*`, `declaration`, `profile`,
+	// `definition`, `default`). Same host-only provenance as `extensionPaths`:
+	// never derived from tool input or agent definitions.
+	modelSource?: string;
+	// Same host-only provenance as extensionPaths (#1690).
+	noExtensions?: boolean;
+	// Parsed `## Allowed edit surfaces` of a bounded writer. While the task is
+	// queued or running it claims them in `cwd`; run() rejects an overlapping
+	// claim (gentle-shell#1731). Read-only agents leave this unset.
+	writerSurfaces?: readonly string[];
+	// Canonical worktree root the claim is keyed to; the parent computes it before
+	// run() so admission stays synchronous. Defaults to `cwd`.
+	writerRoot?: string;
+	// Synchronous admission recheck at dequeue, before any OS spawn. Throws fail
+	// only this task; unlike onLaunch, it must never persist Changes evidence.
+	beforeSpawn?: () => void;
+	// Captures the originating session; invoked only after successful OS spawn.
+	onLaunch?: () => void;
+	/** Default off. Parent owns policy before opting into bounded local buffering,
+	 * and must recheck policy/catalog privacy before recording or forwarding.
+	 * This flag does not authorize telemetry export or perform policy subprocesses.
+	 */
+	collectResponseObservations?: boolean;
+	/** Optional parallel preparation after dequeue; never delays OS spawn.
+	 * Unready at the first observation checkpoint permanently drops collection. */
+	prepareResponseObservations?: () => Promise<boolean>;
+	/** Optional synchronous parent-local grant check; never perform I/O here.
+	 * Parent checks environment, known revocation and a monotonic expiry against
+	 * its fresh native policy grant. False/throw permanently discards this task's
+	 * buffer. Checked once ready, on RPC values, and finish; this is not a watcher.
+	 * Omission preserves the explicit opt-in producer API, not policy authority.
+	 */
+	canCollectResponseObservations?: () => boolean;
+	// This closure stays only in the parent process. Its presence creates an
+	// inherited fd, never an environment boolean or model-visible permission.
+	authorizeParentStandingReviewPermission?: (repositoryIdentity: string) => boolean;
+}
+
+interface ProcessLike {
+	execPath: string;
+	argv: string[];
+	env: NodeJS.ProcessEnv;
+}
+
+interface Pending {
+	resolve(value: Record<string, unknown>): void;
+}
+
+interface PendingQuery {
+	cancel: () => void;
+	replying: boolean;
+}
+
+interface PendingReply {
+	resolve(value: boolean): void;
+}
+
+interface LiveTask {
+	child: ChildLike;
+	sawRunEvent: boolean;
+	/** The category of the last failed final response, for the fallback decision. */
+	errorCategory?: TerminalErrorCategory;
+	/** Models this run already used or tried, so a chain never loops. */
+	triedModels?: Set<string>;
+	observations?: ChildObservationBuffer;
+	observationGuard?: () => boolean;
+	observationPreparation?: () => boolean;
+	pending: Map<string, Pending>;
+	queries: Map<string, PendingQuery>;
+	replies: Map<string, PendingReply>;
+	cancelStall: () => void;
+	cancelGrace: () => void;
+	processGroup: number | undefined;
+	terminal: { status: TaskRecord["status"]; error: string | null } | undefined;
+	childExit: number | null | undefined;
+	childExitSignal?: string | null;
+	instructionsTransportDir?: string;
+	/** The child's own TMPDIR, removed when the child ends unless its exit is unconfirmed. */
+	scratchDir?: string;
+	cleanupDeadlineAt: number | undefined;
+	quarantined: boolean;
+	nextId: number;
+	permissionBroker?: ParentStandingReviewPermissionBroker;
+	ipcClosed: boolean;
+	acknowledgedIpcIds: Set<string>;
+	acknowledgedIpcOrder: string[];
+	mutationStarts: Map<string, { toolName: "write" | "edit"; toolCallId: string; path: string }>;
+	// Tool calls the child announced and has not ended yet. A call in flight is
+	// live work, so the watchdog gives it the tool ceiling instead of the idle
+	// silence budget. Keyed by call id, holding the announced tool name.
+	inFlightTools: Map<string, string>;
+	argumentProgress: ToolArgumentProgress;
+	// Bounded ring buffer of the child's raw stderr output, capped to the last
+	// STDERR_TAIL_MAX characters. Only surfaced on the stall and pre-settle exit
+	// terminal paths, never on completed, cancelled, or other failure reasons.
+	stderrTail: string;
+}
+
+const STDERR_TAIL_MAX = 512;
+const DIR_MODE = 0o700;
+const FILE_MODE = 0o600;
+// UTF-8 bytes, not characters: argv size is what kills the child on macOS.
+export const MAX_INLINE_INSTRUCTIONS_BYTES = 1000;
+const MAX_TRANSPORT_PREFIX_CHARS = 64;
+const CHILD_MARKER = "GENTLE_PI_AGENTS_CHILD";
+const IPC_MARKER = "GENTLE_PI_AGENTS_OWNED_IPC";
+const PARENT_NOTIFICATION_TOOL = "subagent_parent_message";
+/** The exact --tools list, so the child can report requested names Pi dropped silently (#1690). */
+export const REQUESTED_TOOLS_ENV = "GENTLE_PI_AGENTS_REQUESTED_TOOLS";
+const DEFAULT_TOOLS: readonly string[] = [];
+const TERMINATION_GRACE_MS = 250;
+const GROUP_CONFIRM_MS = 25;
+const GROUP_CONFIRM_DEADLINE_MS = 1_000;
+const QUARANTINE_PROBE_MS = 1_000;
+export const DEFAULT_CLEANUP_TIMEOUT_MS = 5_000;
+const QUERY_REJECTION_ERRORS = new Set([
+	"invalid child IPC frame",
+	"invalid child IPC correlation",
+	"unsupported child IPC kind",
+	"invalid child IPC message",
+	"task is not a live owned recipient",
+	"task parent cannot accept queries",
+	"task parent is not the active host session",
+	"duplicate query request",
+	"too many pending parent queries",
+	"parent query timed out",
+	"parent rejected query",
+]);
+const QUERY_REJECTION = Symbol("query rejection");
+
+function rejectQuery(error: string): never {
+	throw { [QUERY_REJECTION]: error };
+}
+
+function queryRejection(error: unknown): string {
+	if (error && typeof error === "object" && QUERY_REJECTION in error) {
+		const value = (error as { [QUERY_REJECTION]?: unknown })[QUERY_REJECTION];
+		if (typeof value === "string" && QUERY_REJECTION_ERRORS.has(value)) return value;
+	}
+	return "parent rejected query";
+}
+
+export function formatChildExit(code: number | null | undefined, signal?: string | null): string {
+	if (typeof code === "number") return `code ${code}`;
+	if (signal) return `signal ${signal}`;
+	return `code ${code ?? "unknown"}`;
+}
+
+const hostProcess: ProcessControl = { platform: process.platform, kill: (pid, signal) => process.kill(pid, signal) };
+
+// The --tools value, or undefined when Pi keeps its default tools.
+function requestedTools(request: TaskRequest): string | undefined {
+	const tools = request.agent.tools.length > 0 ? [...new Set([...request.agent.tools, PARENT_NOTIFICATION_TOOL])] : DEFAULT_TOOLS;
+	return tools.length > 0 ? tools.join(",") : undefined;
+}
+
+const WEB_TOOL_NAMES = ["web_enable", "web_search", "source_check", "fetch_content", "get_search_content"];
+
+/** Resolve one already installed, explicitly requested package. Pi's own loader
+ * follows its manifest and supplies SDK aliases; no install or ambient discovery. */
+function requestedWebPackagePaths(request: TaskRequest): string[] {
+	if (!WEB_TOOL_NAMES.every(name => request.agent.tools.includes(name))) return [];
+	try {
+		let agentDir = request.env.PI_CODING_AGENT_DIR;
+		if (!agentDir || /^~(?:$|[/\\])/.test(agentDir)) {
+			const home = (process.platform === "win32" ? request.env.USERPROFILE : request.env.HOME) || userInfo().homedir;
+			agentDir = agentDir ? agentDir.replace(/^~/, home) : join(home, ".pi", "agent");
+		}
+		const manager = new DefaultPackageManager({
+			cwd: request.cwd,
+			agentDir,
+			settingsManager: SettingsManager.inMemory(),
+		});
+		const installed = manager.getInstalledPath("npm:pi-web-access", "user");
+		return installed ? [realpathSync(installed)] : [];
+	} catch {
+		// Missing/incompatible package remains an observable child capability gap.
+		return [];
+	}
+}
+
+export function childArguments(request: TaskRequest, instructionsPath?: string): string[] {
+	const args = ["--mode", "rpc", "--session-dir", request.sessionDir];
+	const extensionPaths = [...new Set(request.extensionPaths ?? [])];
+	for (const packagePath of requestedWebPackagePaths(request)) {
+		const injected = extensionPaths.some(path => {
+			try { return realpathSync(resolve(request.cwd, path)) === packagePath; }
+			catch { return false; }
+		});
+		if (!injected) extensionPaths.push(packagePath);
+	}
+	args.push(...childPackageExtensionArgs({ noExtensions: request.noExtensions === true, extensionPaths }));
+	if (request.resumeSessionPath) args.push("--session", request.resumeSessionPath);
+	if (request.model) args.push("--model", request.thinking ? `${formatModelRef(request.model)}:${request.thinking}` : formatModelRef(request.model));
+	else if (request.thinking) args.push("--thinking", request.thinking);
+	const tools = requestedTools(request);
+	if (tools !== undefined) args.push("--tools", tools);
+	if (instructionsPath) {
+		args.push("--append-system-prompt", instructionsPath);
+	} else if (request.agent.instructions.length > 0) {
+		args.push("--append-system-prompt", request.agent.instructions);
+	}
+	return args;
+}
+
+// Reuse the running pi entry while it exists; upgrades may remove it.
+// GENTLE_PI_AGENTS_PI overrides it with a command line.
+export function piCommand(proc: ProcessLike = process, exists: (path: string) => boolean = existsSync): PiCommand {
+	const override = proc.env.GENTLE_PI_AGENTS_PI?.trim();
+	if (override) {
+		const [command, ...args] = override.split(/\s+/);
+		return { command, args };
+	}
+	const entry = proc.argv[1];
+	if (entry && /(^|[\\/])cli\.js$/.test(entry) && exists(entry)) return { command: proc.execPath, args: [entry] };
+	return { command: "pi", args: [] };
+}
+
+// RPC framing is strict JSONL: LF only, optional CR. Lines that do not parse
+// are dropped (pi's own parse errors arrive as responses anyway).
+export class JsonLines {
+	private buffer = "";
+	private readonly onValue: (value: unknown) => void;
+
+	constructor(onValue: (value: unknown) => void) {
+		this.onValue = onValue;
+	}
+
+	push(chunk: string): void {
+		this.buffer += chunk;
+		const lines = this.buffer.split("\n");
+		this.buffer = lines.pop() ?? "";
+		for (const raw of lines) {
+			const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+			if (line.length === 0) continue;
+			try {
+				this.onValue(JSON.parse(line));
+			} catch {
+				// not JSON: ignore
+			}
+		}
+	}
+}
+
+export function promptText(request: TaskRequest): string {
+	return request.context ? `${request.prompt}\n\n## Context\n${request.context}` : request.prompt;
+}
+
+export class AgentRunner {
+	private readonly store: TaskStore;
+	private readonly limits: RunnerLimits;
+	private readonly deps: RunnerDeps;
+	private readonly hooks: RunnerHooks;
+	private readonly processControl: ProcessControl;
+	private readonly queue: Array<{ task: TaskRecord; request: TaskRequest }> = [];
+	private readonly live = new Map<string, LiveTask>();
+	private readonly waiters = new Map<string, Array<(task: TaskRecord) => void>>();
+	private readonly queryWaiters = new Map<string, Array<(query: TaskQuery | undefined) => void>>();
+	private readonly firstQueries = new Map<string, TaskQuery>();
+	private readonly writers = new WriterSurfaceRegistry();
+	private counter = 0;
+
+	constructor(store: TaskStore, limits: RunnerLimits, deps: RunnerDeps, hooks: RunnerHooks) {
+		this.store = store;
+		this.limits = limits;
+		this.deps = deps;
+		this.hooks = hooks;
+		this.processControl = deps.process ?? hostProcess;
+	}
+
+	private createTask(request: TaskRequest): TaskRecord {
+		const now = this.deps.now();
+		this.counter += 1;
+		const task: TaskRecord = {
+			id: `${now.toString(36)}-${this.counter.toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+			agent: request.agent.name,
+			mode: request.mode,
+			prompt: request.prompt,
+			label: taskLabel(request.prompt, request.label),
+			cwd: request.cwd,
+			parentSessionId: request.parentSessionId,
+			status: TASK_STATUS.QUEUED,
+			createdAt: now,
+			startedAt: null,
+			endedAt: null,
+			model: formatModelRef(request.model),
+			// Copied, never recomputed: the layer token was resolved once at the seam (#2180).
+			...(request.modelSource === undefined ? {} : { modelSource: request.modelSource }),
+			thinking: request.thinking,
+			sessionPath: request.resumeSessionPath ?? null,
+			error: null,
+			result: null,
+			lastStep: "queued",
+			lastActivityAt: now,
+			turns: 0,
+			toolCalls: 0,
+			tokens: 0,
+			cost: 0,
+		};
+		this.store.add(task);
+		return task;
+	}
+
+	// Check and claim happen in this one synchronous call, so two launches can
+	// never both pass admission for overlapping surfaces; finish() releases.
+	run(request: TaskRequest): TaskRecord {
+		if (request.writerSurfaces) {
+			const conflicts = this.writers.conflicts(request.writerRoot ?? request.cwd, request.writerSurfaces);
+			if (conflicts.length) throw new Error(writerSurfaceConflictMessage(conflicts));
+		}
+		const task = this.createTask(request);
+		if (request.writerSurfaces) this.writers.claim(task.id, request.writerRoot ?? request.cwd, request.writerSurfaces);
+		this.queue.push({ task, request });
+		queueMicrotask(() => this.pump());
+		return task;
+	}
+
+	waitFor(id: string): Promise<TaskRecord> {
+		const current = this.store.get(id);
+		if (!current) return Promise.reject(new Error(`no task ${id}`));
+		if (isFinished(current.status)) return Promise.resolve(current);
+		return new Promise((resolve) => {
+			const list = this.waiters.get(id) ?? [];
+			list.push(resolve);
+			this.waiters.set(id, list);
+		});
+	}
+
+	waitForQuery(id: string): Promise<TaskQuery | undefined> {
+		const current = this.store.get(id);
+		if (!current || isFinished(current.status)) return Promise.resolve(undefined);
+		const first = this.firstQueries.get(id);
+		if (first) return Promise.resolve(first);
+		return new Promise((resolve) => {
+			const list = this.queryWaiters.get(id) ?? [];
+			list.push(resolve);
+			this.queryWaiters.set(id, list);
+		});
+	}
+
+	async reply(id: string, requestId: string, message: string, parentSessionId: string): Promise<boolean> {
+		const task = this.store.get(id);
+		const live = this.live.get(id);
+		if (!task || !live || live.terminal || task.parentSessionId !== parentSessionId || !validChildMessage(message)) return false;
+		const query = live.queries.get(requestId);
+		if (!query || query.replying) return false;
+		query.replying = true;
+		const accepted = await this.sendReply(live, requestId, { id: requestId, kind: "reply", message });
+		if (live.queries.get(requestId) === query) {
+			query.cancel();
+			live.queries.delete(requestId);
+			this.hooks.onQuerySettled?.(id, requestId, "replied");
+		}
+		return accepted;
+	}
+
+	cancel(id: string, reason = "cancelled"): boolean {
+		const queued = this.queue.findIndex((entry) => entry.task.id === id);
+		if (queued >= 0) {
+			this.queue.splice(queued, 1);
+			this.finish(id, TASK_STATUS.CANCELLED, `${reason} before start`);
+			return true;
+		}
+		if (!this.live.has(id)) return false;
+		this.requestStop(id, TASK_STATUS.CANCELLED, reason, true);
+		return true;
+	}
+
+	/** Parent-known revocation clears buffered metadata immediately, including
+	 * during an idle provider call. No task/store/status mutation. */
+	discardResponseObservations(id: string): void {
+		const live = this.live.get(id);
+		if (live) { live.observations = undefined; live.observationGuard = undefined; }
+	}
+
+	cancelAll(reason = "cancelled"): number {
+		const ids = [...this.queue.map((entry) => entry.task.id), ...this.live.keys()];
+		return ids.filter((id) => this.cancel(id, reason)).length;
+	}
+
+	steer(id: string, message: string): boolean {
+		if (!this.live.has(id)) return false;
+		void this.send(id, { type: "steer", message });
+		this.store.apply(id, { type: TASK_EVENT.NOTE, text: `steered: ${message}` }, this.deps.now());
+		return true;
+	}
+
+	private pump(): void {
+		while (this.live.size < this.limits.maxConcurrency && this.queue.length > 0) {
+			const entry = this.queue.shift();
+			if (!entry) continue;
+			const { task, request } = entry;
+			this.launch(task.id, request);
+		}
+	}
+
+	// A child that cannot start (missing pi, bad cwd) fails only its task:
+	// spawn exceptions and process errors settle without uncaught host errors.
+	private launch(id: string, request: TaskRequest): void {
+		try { request.beforeSpawn?.(); }
+		catch (error) {
+			this.store.update(id, { status: TASK_STATUS.RUNNING, startedAt: this.deps.now(), lastStep: "starting" });
+			this.finish(id, TASK_STATUS.FAILED, `could not start pi: ${error instanceof Error ? error.message : String(error)}`);
+			return;
+		}
+		const detached = this.processControl.platform !== "win32";
+		const hasParentPermissionChannel = request.authorizeParentStandingReviewPermission !== undefined;
+		const permissionChannelStdio = this.processControl.platform === "win32" ? "overlapped" : "pipe";
+		// Subagent children are always headless: strip the desktop app's
+		// interactive-host signal even if it leaked into `request.env`, so a
+		// child spawned from an interactive RPC host never mistakes itself for
+		// one (`lib/rpc-host.ts`).
+		const env = withoutInteractiveHost({
+			...request.env,
+			[CHILD_MARKER]: "1",
+			[IPC_MARKER]: `${this.deps.now()}-${Math.random().toString(36).slice(2)}`,
+			...(hasParentPermissionChannel ? { GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3" } : {}),
+		});
+		// Do not forward stale legacy child selection or authorization.
+		delete env.GENTLE_PI_SDD_REMEDIATION_PLAN;
+		delete env.GENTLE_PI_RESEARCH_SELECTION;
+		const tools = requestedTools(request);
+		if (request.agent.tools.includes("bash_background")) {
+			const policy = resolveBackgroundSubagentsPolicy(request.cwd, { env: request.env, gentlePiConfigHome: gentlePiConfigHome(request.env) });
+			if (policy.policy === "off") {
+				const file = policy.source === "global_file" ? policy.globalFile : policy.projectFile;
+				this.store.update(id, { status: TASK_STATUS.RUNNING, startedAt: this.deps.now(), lastStep: "starting" });
+				this.finish(id, TASK_STATUS.FAILED, `could not start pi: explicit tool bash_background requires background-subagents policy on. Set ${file} to {"schema":"gentle-pi.background-subagents/v1","policy":"on"}; inspect or change policy with /gentle:background-subagents enable|disable|status.`);
+				return;
+			}
+		}
+		if (tools !== undefined) env[REQUESTED_TOOLS_ENV] = tools;
+		else delete env[REQUESTED_TOOLS_ENV];
+		let instructionsTransportDir: string | undefined;
+		let instructionsTransportPath: string | undefined;
+		if (Buffer.byteLength(request.agent.instructions, "utf8") > MAX_INLINE_INSTRUCTIONS_BYTES) {
+			try {
+				const prefix = (request.agent.name || "instructions").replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, MAX_TRANSPORT_PREFIX_CHARS);
+				instructionsTransportDir = mkdtempSync(join(tmpdir(), `gentle-pi-subagent-${prefix}-`));
+				try { chmodSync(instructionsTransportDir, DIR_MODE); } catch { /* best effort */ }
+				instructionsTransportPath = join(instructionsTransportDir, "instructions.md");
+				writeFileSync(instructionsTransportPath, request.agent.instructions, { mode: FILE_MODE, encoding: "utf8" });
+				try { chmodSync(instructionsTransportPath, FILE_MODE); } catch { /* best effort */ }
+			} catch (error) {
+				if (instructionsTransportDir) {
+					try { rmSync(instructionsTransportDir, { recursive: true, force: true }); } catch { /* best effort */ }
+				}
+				this.store.update(id, { status: TASK_STATUS.RUNNING, startedAt: this.deps.now(), lastStep: "starting" });
+				this.finish(id, TASK_STATUS.FAILED, `could not write agent instructions: ${error instanceof Error ? error.message : String(error)}`);
+				return;
+			}
+		}
+		// Harness roadmap T3: scratch the child makes with mktemp lands in its own
+		// TMPDIR, under the inherited one, so the runtime removes it at the end
+		// instead of asking the parent. Best effort: without it the child keeps
+		// the inherited TMPDIR.
+		let scratchDir: string | undefined;
+		try {
+			const inherited = request.env.TMPDIR?.trim();
+			// A relative TMPDIR would resolve against this process, not the child cwd.
+			// A short name and no real path: socket paths under TMPDIR are capped near 104 bytes.
+			scratchDir = mkdtempSync(join(inherited && isAbsolute(inherited) ? inherited : tmpdir(), SUBAGENT_SCRATCH_PREFIX));
+			// Session shutdown keeps it while it is held (extensions/session-scratch.ts).
+			holdSubagentScratch(scratchDir);
+			try { chmodSync(scratchDir, DIR_MODE); } catch { /* best effort */ }
+			env.TMPDIR = scratchDir;
+			if (this.processControl.platform === "win32") { env.TMP = scratchDir; env.TEMP = scratchDir; }
+		} catch { scratchDir = undefined; }
+		let child: ChildLike;
+		const launch = this.launchRequest(id, request);
+		try {
+			const pi = this.deps.resolvePi?.() ?? this.deps.pi;
+			child = this.deps.spawn(pi.command, [...pi.args, ...childArguments(launch.request, instructionsTransportPath)], {
+				cwd: request.cwd,
+				env,
+				detached,
+				windowsHide: true,
+				stdio: hasParentPermissionChannel ? ["pipe", "pipe", "pipe", permissionChannelStdio, "ipc"] : ["pipe", "pipe", "pipe", "ipc"],
+			});
+		} catch (error) {
+			for (const dir of [instructionsTransportDir, scratchDir]) {
+				if (dir) try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+			}
+			if (scratchDir) releaseSubagentScratch(scratchDir);
+			this.store.update(id, { status: TASK_STATUS.RUNNING, startedAt: this.deps.now(), lastStep: "starting" });
+			this.finish(id, TASK_STATUS.FAILED, `could not start pi: ${error instanceof Error ? error.message : String(error)}`);
+			return;
+		}
+		launch.announce?.();
+		const processGroup = detached && typeof child.pid === "number" && child.pid > 0 ? child.pid : undefined;
+		const live: LiveTask = { child, sawRunEvent: false, mutationStarts: new Map(), inFlightTools: new Map(), argumentProgress: new ToolArgumentProgress(), pending: new Map(), queries: new Map(), replies: new Map(), cancelStall: () => {}, cancelGrace: () => {}, processGroup, terminal: undefined, childExit: undefined, childExitSignal: undefined, instructionsTransportDir, scratchDir, cleanupDeadlineAt: undefined, quarantined: false, nextId: 0, ipcClosed: false, acknowledgedIpcIds: new Set(), acknowledgedIpcOrder: [], stderrTail: "" };
+		if (request.prepareResponseObservations) {
+			let ready = false;
+			live.observationPreparation = () => ready;
+			void Promise.resolve().then(() => this.live.get(id) === live && !live.terminal
+				? request.prepareResponseObservations!() : false).then(allowed => { ready = allowed === true; }).catch(() => {});
+		}
+		if (request.collectResponseObservations === true || request.prepareResponseObservations) {
+			live.observationGuard = request.canCollectResponseObservations;
+			live.observations = { agentSettled: false, responses: [], droppedResponses: 0 };
+			if (!request.prepareResponseObservations) this.checkObservationGrant(live);
+		}
+		this.live.set(id, live);
+		const permissionPipe = child.stdio?.[3];
+		if (hasParentPermissionChannel && permissionPipe instanceof Duplex) {
+			live.permissionBroker = new ParentStandingReviewPermissionBroker(
+				{ readable: permissionPipe, writable: permissionPipe },
+				(repositoryIdentity) => this.live.get(id) === live && !live.terminal && request.authorizeParentStandingReviewPermission?.(repositoryIdentity) === true,
+			);
+		}
+		this.store.update(id, { status: TASK_STATUS.RUNNING, startedAt: this.deps.now(), lastStep: "starting" });
+		child.channel?.unref?.();
+		child.on("error", (error) => this.childError(id, error));
+		child.on("message", (value) => this.receiveChildMessage(id, value));
+		child.on("disconnect", () => this.closeIpc(live));
+		let announced = false;
+		child.on("spawn", () => {
+			if (announced || this.live.get(id) !== live || live.terminal) return;
+			announced = true;
+			try { request.onLaunch?.(); }
+			catch (error) { this.requestStop(id, TASK_STATUS.FAILED, `could not register launched worktree: ${error instanceof Error ? error.message : String(error)}`); }
+		});
+		child.on("exit", (code, signal) => this.exited(id, code, signal));
+		if (!child.stdin || !child.stdout) {
+			this.requestStop(id, TASK_STATUS.FAILED, "could not start pi: missing RPC streams");
+			return;
+		}
+		child.stdin.on("error", () => {});
+		this.armStall(id, live);
+		const lines = new JsonLines((value) => this.receive(id, request, value));
+		child.stdout.setEncoding("utf8");
+		child.stdout.on("data", (chunk: string) => lines.push(chunk));
+		child.stderr?.setEncoding("utf8");
+		child.stderr?.on("data", (chunk: string) => {
+			const tail = live.stderrTail + chunk;
+			live.stderrTail = tail.length > STDERR_TAIL_MAX ? tail.slice(-STDERR_TAIL_MAX) : tail;
+		});
+		void this.send(id, { type: "get_state" }).then((response) => {
+			const data = response.data as { sessionFile?: unknown; model?: { provider?: unknown; id?: unknown } | null; thinkingLevel?: unknown } | undefined;
+			if (response.success !== true || live.terminal || this.live.get(id) !== live || !data) return;
+			const resolved: Partial<TaskRecord> = {};
+			if (this.canAdvanceLastStep(id, ["starting"])) resolved.lastStep = "pi ready";
+			if (typeof data.sessionFile === "string" && data.sessionFile) resolved.sessionPath = data.sessionFile;
+			if (data.model === null) resolved.model = "default";
+			else if (typeof data.model?.provider === "string" && data.model.provider && typeof data.model.id === "string" && data.model.id) {
+				resolved.model = formatModelRef({ provider: data.model.provider, id: data.model.id });
+			}
+			if (typeof data.thinkingLevel === "string" && ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(data.thinkingLevel)) resolved.thinking = data.thinkingLevel;
+			this.store.update(id, resolved);
+		});
+		void this.send(id, { type: "prompt", message: promptText(request) }).then((response) => {
+			if (response.success === false) {
+				this.requestStop(id, TASK_STATUS.FAILED, String(response.error ?? "prompt rejected"));
+				return;
+			}
+			if (!live.terminal && this.live.get(id) === live && this.canAdvanceLastStep(id, ["starting", "pi ready"])) this.store.update(id, { lastStep: "prompt accepted" });
+		});
+	}
+
+	// A late get_state/prompt reply must never overwrite a stage that a child
+	// event (or the other reply) has already advanced lastStep past.
+	private canAdvanceLastStep(id: string, from: readonly string[]): boolean {
+		const current = this.store.get(id)?.lastStep;
+		return current !== undefined && from.includes(current);
+	}
+
+	// Cleaned for display only: raw bytes stay in live.stderrTail so later
+	// appends keep working from the unstripped ring buffer.
+	private stderrSuffix(live: LiveTask): string {
+		const cleaned = stripVTControlCharacters(live.stderrTail).replace(/\s+/g, " ").trim();
+		return cleaned ? `; stderr: ${cleaned}` : "";
+	}
+
+	// An idle child is bounded by the silence budget; a child whose announced
+	// tool call is still running is live work and bounded by the longer tool
+	// ceiling. These are renewable silence budgets, not total duration limits.
+	// A finished tool call returns the task to idle silence.
+	private armStall(id: string, live: LiveTask): void {
+		live.cancelStall();
+		const tool = live.inFlightTools.values().next().value;
+		const budget = tool === undefined ? this.limits.stallTimeoutMs : Math.max(this.limits.toolStallTimeoutMs ?? this.limits.stallTimeoutMs, this.limits.stallTimeoutMs);
+		live.cancelStall = this.deps.schedule(() => {
+			const lastStep = this.store.get(id)?.lastStep ?? "starting";
+			const minutes = Math.round(budget / 60_000);
+			if (tool === undefined) {
+				const boundary = lastStep === "prompt accepted" && !live.sawRunEvent ? `; no first run event received for model: ${this.store.get(id)?.model}` : "";
+				this.requestStop(id, TASK_STATUS.TIMED_OUT, `stalled for ${minutes} min after: ${lastStep}${boundary}${this.stderrSuffix(live)}`);
+			}
+			else this.requestStop(id, TASK_STATUS.TIMED_OUT, `stalled for ${minutes} min with tool "${tool}" still running after: ${lastStep}${this.stderrSuffix(live)}`);
+		}, budget);
+	}
+
+	/** The request a child starts with: a primary model that is cooling down gives way to its first usable fallback. */
+	private launchRequest(id: string, request: TaskRequest): { request: TaskRequest; announce?: () => void } {
+		const chain = request.fallbacks ?? [];
+		if (!chain.length || !request.model) return { request };
+		const cooldown = this.deps.cooldown ?? sharedCooldown();
+		const now = this.deps.now();
+		const primary = formatModelRef(request.model);
+		const pick = pickModel(primary, chain, { cooldown, now });
+		const model = pick?.fallback && pick.model ? parseModelRef(pick.model) : undefined;
+		if (!model?.provider || !pick?.model) return { request };
+		const updated = this.store.update(id, { model: pick.model, fallbackFrom: primary, ...(pick.thinking ? { thinking: pick.thinking } : {}) });
+		const category = cooldown.reason(primary, now);
+		const to = pick.model;
+		// Announced by the caller once the child actually started.
+		const announce = () => {
+			try { if (updated && category) this.hooks.onFallback?.(this.store.get(id) ?? updated, { from: primary, to, category, launch: true }); }
+			catch { /* A notice failure must not stop the launch. */ }
+		};
+		return { request: { ...request, model, thinking: pick.thinking ?? request.thinking }, announce };
+	}
+
+	/**
+	 * After a failed final response, moves the live child to the next usable
+	 * model of its chain and asks it to continue the same conversation. False
+	 * when the error would repeat on any model or nothing is left: the caller
+	 * then fails the task as before.
+	 */
+	private fallBack(id: string, request: TaskRequest, live: LiveTask): boolean {
+		const chain = request.fallbacks ?? [];
+		const category = live.errorCategory;
+		if (!chain.length || live.terminal || !shouldFallBack(category)) return false;
+		const cooldown = this.deps.cooldown ?? sharedCooldown();
+		const now = this.deps.now();
+		const task = this.store.get(id);
+		const current = task?.model && task.model !== "default" ? task.model : request.model ? formatModelRef(request.model) : undefined;
+		const tried = (live.triedModels ??= new Set());
+		if (current) {
+			tried.add(current);
+			cooldown.mark(current, category!, now);
+		}
+		// The next selectable step: one with a provider, untried and not cooling down.
+		const next = () => {
+			for (;;) {
+				const pick = pickModel(current, chain, { cooldown, now: this.deps.now(), tried });
+				if (!pick?.fallback || !pick.model) return undefined;
+				tried.add(pick.model);
+				if (parseModelRef(pick.model)?.provider) return pick;
+			}
+		};
+		let pick = next();
+		if (!pick) return false;
+		live.errorCategory = undefined;
+		this.store.update(id, { error: null, result: null, lastStep: `↪ ${pick.model}` });
+		const alive = () => this.live.get(id) === live && !live.terminal;
+		const fail = (reason: string) => { if (alive()) this.settleOrderly(id, TASK_STATUS.FAILED, reason); };
+		void (async () => {
+			// Pi may refuse a step (no key, unknown model): the next one gets its turn.
+			for (;;) {
+				const target = parseModelRef(pick.model!)!;
+				const switched = await this.send(id, { type: "set_model", provider: target.provider, modelId: target.id });
+				if (!alive()) return;
+				if (switched.success !== false) break;
+				const refused = `could not switch to ${pick.model}: ${String(switched.error ?? "rejected")}`;
+				const following = next();
+				if (!following) return fail(refused);
+				pick = following;
+				this.store.update(id, { lastStep: `↪ ${pick.model}` });
+			}
+			const to = pick.model!;
+			// Pi accepted the model: the record follows at once, even if the run stops next.
+			const level = pick.thinking ?? request.thinking;
+			this.store.update(id, { model: to, fallbackFrom: this.store.get(id)?.fallbackFrom ?? current ?? "default", ...(level ? { thinking: level } : {}) });
+			// A step without its own effort runs at the agent's configured effort, not the previous step's.
+			if (level) await this.send(id, { type: "set_thinking_level", level });
+			if (!alive()) return;
+			const updated = this.store.get(id);
+			try { if (updated) this.hooks.onFallback?.(updated, { from: current ?? "default", to, category: category! }); }
+			catch { /* A notice failure must not stop the switch. */ }
+			const resumed = await this.send(id, { type: "prompt", message: fallbackContinuePrompt(current, to, category!) });
+			if (resumed.success === false) fail(`could not continue on ${to}: ${String(resumed.error ?? "prompt rejected")}`);
+		})().catch((error) => fail(`could not continue: ${error instanceof Error ? error.message : String(error)}`));
+		return true;
+	}
+
+	private send(id: string, command: Record<string, unknown>): Promise<Record<string, unknown>> {
+		const live = this.live.get(id);
+		if (!live) return Promise.resolve({ success: false, error: "task is not running" });
+		live.nextId += 1;
+		const requestId = `r${live.nextId}`;
+		return new Promise((resolve) => {
+			live.pending.set(requestId, { resolve });
+			this.write(live, { id: requestId, ...command });
+		});
+	}
+
+	private receiveChildMessage(id: string, value: unknown): void {
+		const live = this.live.get(id);
+		if (!live || live.ipcClosed) return;
+		const parsed = parseChildFrame(value);
+		if (!parsed.frame) {
+			if (parsed.id && validChildQueryId(parsed.id)) this.sendQueryError(live, parsed.id, parsed.error ?? "invalid child IPC frame");
+			else if (parsed.id) this.acknowledge(live, parsed.id, false, parsed.error ?? "invalid child IPC frame");
+			return;
+		}
+		const task = this.store.get(id);
+		if (!task || live.terminal || isFinished(task.status) || task.parentSessionId === "") {
+			if (parsed.frame.kind === "notification") this.acknowledge(live, parsed.frame.id, false, "task is not a live owned recipient");
+			else this.sendQueryError(live, parsed.frame.id, "task is not a live owned recipient");
+			return;
+		}
+		if (parsed.frame.kind === "notification") {
+			if (live.acknowledgedIpcIds.has(parsed.frame.id)) return;
+			try {
+				if (this.hooks.onNotification?.(task, parsed.frame.message) === false) this.acknowledge(live, parsed.frame.id, false, "task parent is not the active host session");
+				else this.acknowledge(live, parsed.frame.id, true);
+			} catch { this.acknowledge(live, parsed.frame.id, false, "parent rejected notification"); }
+			return;
+		}
+		let query: PendingQuery | undefined;
+		try {
+			if (live.queries.has(parsed.frame.id)) rejectQuery("duplicate query request");
+			if (live.queries.size >= CHILD_QUERY_MAX_INFLIGHT) rejectQuery("too many pending parent queries");
+			query = { replying: false, cancel: this.deps.schedule(() => this.expireQuery(id, live, parsed.frame!.id), CHILD_QUERY_TIMEOUT_MS) };
+			live.queries.set(parsed.frame.id, query);
+			if (!this.hooks.onQuery) rejectQuery("task parent cannot accept queries");
+			if (this.hooks.onQuery(task, parsed.frame.id, parsed.frame.message) === false) rejectQuery("task parent is not the active host session");
+			if (task.mode === AGENT_MODE.TASK && !this.firstQueries.has(id)) {
+				const first = { taskId: id, requestId: parsed.frame.id, message: parsed.frame.message };
+				this.firstQueries.set(id, first);
+				for (const resolve of this.queryWaiters.get(id) ?? []) resolve(first);
+				this.queryWaiters.delete(id);
+			}
+		} catch (error) {
+			if (query && live.queries.get(parsed.frame.id) === query) {
+				query.cancel();
+				live.queries.delete(parsed.frame.id);
+			}
+			this.sendQueryError(live, parsed.frame.id, queryRejection(error));
+		}
+	}
+
+	private expireQuery(taskId: string, live: LiveTask, id: string): void {
+		const query = live.queries.get(id);
+		if (!query) return;
+		live.queries.delete(id);
+		this.hooks.onQuerySettled?.(taskId, id, "expired");
+		if (query.replying) this.settleReply(live, id, false);
+		else this.sendQueryError(live, id, "parent query timed out");
+	}
+
+	private sendQueryError(live: LiveTask, id: string, error: string): void {
+		const safeError = QUERY_REJECTION_ERRORS.has(error) ? error : "parent rejected query";
+		try { live.child.send?.({ id, kind: "reply", error: safeError }, () => {}); }
+		catch { /* Child-owned IPC callback reports transport failure. */ }
+	}
+
+	private acknowledge(live: LiveTask, id: string, accepted: boolean, error?: string): void {
+		if (live.ipcClosed || live.acknowledgedIpcIds.has(id) || !live.child.send) return;
+		live.acknowledgedIpcIds.add(id);
+		live.acknowledgedIpcOrder.push(id);
+		if (live.acknowledgedIpcOrder.length > 64) live.acknowledgedIpcIds.delete(live.acknowledgedIpcOrder.shift()!);
+		try { live.child.send({ id, kind: "ack", accepted, ...(error ? { error } : {}) }, () => {}); }
+		catch { /* Child-owned IPC callback reports transport failure. */ }
+	}
+
+	private sendReply(live: LiveTask, id: string, frame: Record<string, unknown>): Promise<boolean> {
+		return new Promise((resolve) => {
+			live.replies.set(id, { resolve });
+			try {
+				if (!live.child.send) this.settleReply(live, id, false);
+				else live.child.send(frame, (error) => this.settleReply(live, id, !error));
+			} catch { this.settleReply(live, id, false); }
+		});
+	}
+
+	private settleReply(live: LiveTask, id: string, accepted: boolean): void {
+		const pending = live.replies.get(id);
+		if (!pending) return;
+		live.replies.delete(id);
+		pending.resolve(accepted);
+	}
+
+	private closeIpc(live: LiveTask): void {
+		if (live.ipcClosed) return;
+		live.ipcClosed = true;
+		for (const query of live.queries.values()) query.cancel();
+		live.queries.clear();
+		for (const pending of live.replies.values()) pending.resolve(false);
+		live.replies.clear();
+		live.child.channel?.unref?.();
+		if (live.child.connected !== false) {
+			try { live.child.disconnect?.(); }
+			catch { /* Channel may already be disconnected. */ }
+		}
+	}
+
+	private write(live: LiveTask, payload: Record<string, unknown>): void {
+		try {
+			live.child.stdin?.write(`${JSON.stringify(payload)}\n`);
+		} catch {
+			// the child is gone; the exit handler settles the task
+		}
+	}
+
+	private checkObservationGrant(live: LiveTask): void {
+		if (live.observationPreparation) {
+			if (!live.observationPreparation()) live.observations = undefined;
+			live.observationPreparation = undefined; // One chance; late readiness cannot attach.
+		}
+		if (!live.observations || !live.observationGuard) return;
+		try {
+			if (live.observationGuard() === true) return;
+		} catch { /* Policy bookkeeping must not interrupt child execution. */ }
+		live.observations = undefined;
+		live.observationGuard = undefined;
+	}
+
+	private receive(id: string, request: TaskRequest, value: unknown): void {
+		const live = this.live.get(id);
+		if (!live || live.terminal || !value || typeof value !== "object") return;
+		const raw = value as Record<string, unknown>;
+		if (raw.type === "response") {
+			this.armStall(id, live);
+			if (!live.observationPreparation) this.checkObservationGrant(live);
+			const pending = typeof raw.id === "string" ? live.pending.get(raw.id) : undefined;
+			if (pending) {
+				live.pending.delete(raw.id as string);
+				pending.resolve(raw);
+			}
+			return;
+		}
+		this.checkObservationGrant(live);
+		const events = normalizeRpcEvent(raw, { observeResponses: live.observations !== undefined });
+		// A parsed object is not progress by itself. Only a recognized run event
+		// renews the watchdog here, so fire-and-forget UI traffic that normalizes
+		// to nothing cannot keep a child that never started its run alive forever
+		// (#1034); the pre-existing timer stays armed until real progress arrives.
+		const argumentProgress = live.argumentProgress.observe(raw);
+		if (argumentProgress) {
+			live.sawRunEvent = true;
+			this.store.update(id, { lastStep: "generating tool arguments", lastActivityAt: this.deps.now() });
+		}
+		const progress = events.length > 0 || argumentProgress;
+		for (const event of events) {
+			if (event.type === TASK_EVENT.RESPONSE_OBSERVATION) {
+				const buffer = live.observations;
+				if (buffer) {
+					if (buffer.responses.length < MAX_CHILD_RESPONSE_OBSERVATIONS) buffer.responses.push(event.observation);
+					else buffer.droppedResponses = Math.min(Number.MAX_SAFE_INTEGER, buffer.droppedResponses + 1);
+				}
+				continue; // Separate from store persistence, UI totals and notifications.
+			}
+			live.sawRunEvent = true;
+			if (event.type === TASK_EVENT.AGENT_END) live.errorCategory = event.outcome === "error" ? event.errorCategory : undefined;
+			this.store.apply(id, event, this.deps.now());
+			if (event.type === TASK_EVENT.TOOL_START && event.callId) {
+				live.inFlightTools.set(event.callId, event.name);
+				live.mutationStarts.delete(event.callId);
+				if ((event.name === "write" || event.name === "edit") && typeof event.args.path === "string" && event.args.path.trim()) {
+					live.mutationStarts.set(event.callId, { toolName: event.name, toolCallId: event.callId, path: event.args.path });
+				}
+			}
+			if (event.type === TASK_EVENT.TOOL_END) {
+				live.inFlightTools.delete(event.callId);
+				const mutation = live.mutationStarts.get(event.callId);
+				live.mutationStarts.delete(event.callId);
+				const task = this.store.get(id);
+				if (mutation && task && raw.isError === false && !event.isError) {
+					try {
+						const evidence = (raw.result as { details?: { gentleSessionChange?: unknown } } | undefined)?.details?.gentleSessionChange;
+						const observed = isSessionChangeEvidence(evidence) && evidence.id === mutation.toolCallId ? { ...mutation, evidence: structuredClone(evidence) } : mutation;
+						void Promise.resolve(this.hooks.onSuccessfulMutation?.(task, observed)).catch(() => {});
+					}
+					catch { /* Bookkeeping failure must not rewrite a successful tool or stop the child. */ }
+				}
+			}
+			if (event.type === TASK_EVENT.ASK) void this.answer(id, request, live, event.request, raw);
+			if (event.type === TASK_EVENT.AGENT_SETTLED) {
+				if (live.observations) live.observations.agentSettled = true;
+				const terminal = this.store.get(id);
+				if (terminal?.error && this.fallBack(id, request, live)) { /* The child keeps going on its next model. */ }
+				else if (terminal?.error) this.settleOrderly(id, TASK_STATUS.FAILED, terminal.error);
+				else if (terminal?.result) this.settleOrderly(id, TASK_STATUS.COMPLETED, null);
+				else this.settleOrderly(id, TASK_STATUS.FAILED, "assistant settled without a final report");
+			}
+		}
+		if (!live.terminal && progress) this.armStall(id, live);
+	}
+
+	// Task-mode subagents may ask the human through the host; background ones
+	// get their dialog cancelled so they never block on nobody.
+	private async answer(id: string, request: TaskRequest, live: LiveTask, ask: AskRequest, raw: Record<string, unknown>): Promise<void> {
+		let answer: AskAnswer = { cancelled: true };
+		if (request.mode === "task") {
+			try {
+				answer = await this.hooks.askUser(id, ask, raw);
+			} catch {
+				answer = { cancelled: true };
+			}
+		}
+		if (this.live.get(id) !== live || live.terminal) return;
+		this.write(live, { type: "extension_ui_response", id: ask.id, ...answer });
+		const current = this.store.get(id);
+		if (current?.status === TASK_STATUS.WAITING) this.store.update(id, { status: TASK_STATUS.RUNNING, lastStep: answer.cancelled ? "question dismissed" : "answered" });
+	}
+
+	// POSIX children start detached, so their PID is the owned process-group ID.
+	// Windows uses ChildProcess.kill only: Node has no equivalent tree guarantee.
+	private signal(live: LiveTask, signal: NodeJS.Signals): void {
+		if (live.processGroup !== undefined) {
+			try {
+				this.processControl.kill(-live.processGroup, signal);
+				return;
+			} catch {
+				// The owned group is already gone; the child handle may still observe exit.
+			}
+		}
+		try {
+			live.child.kill(signal);
+		} catch {
+			// already gone
+		}
+	}
+
+	/**
+	 * Requests orderly child shutdown via stdin upon settlement and schedules
+	 * bounded signal escalation if the child process does not exit within cleanupTimeoutMs.
+	 */
+	private settleOrderly(id: string, status: TaskRecord["status"], error: string | null): void {
+		const live = this.live.get(id);
+		if (!live || live.terminal) return;
+		live.terminal = { status, error };
+		live.mutationStarts.clear();
+		live.inFlightTools.clear();
+		live.permissionBroker?.close();
+		this.closeIpc(live);
+		live.cancelStall();
+		const current = this.store.get(id);
+		if (current && !isFinished(current.status)) {
+			this.store.update(id, { lastStep: "cleaning up" });
+		}
+		try {
+			live.child.stdin.end();
+		} catch {
+			this.signal(live, "SIGTERM");
+		}
+		const cleanupTimeoutMs = this.limits.cleanupTimeoutMs ?? DEFAULT_CLEANUP_TIMEOUT_MS;
+		live.cancelGrace = this.deps.schedule(() => {
+			if (this.live.get(id) !== live) return;
+			this.signal(live, "SIGTERM");
+			live.cancelGrace = this.deps.schedule(() => {
+				if (this.live.get(id) !== live) return;
+				live.cleanupDeadlineAt = this.deps.now() + GROUP_CONFIRM_DEADLINE_MS;
+				this.signal(live, "SIGKILL");
+				this.confirmGroupExit(id, live);
+			}, TERMINATION_GRACE_MS);
+		}, cleanupTimeoutMs);
+	}
+
+	private requestStop(id: string, status: TaskRecord["status"], error: string | null, abort = false): void {
+		const live = this.live.get(id);
+		if (!live || live.terminal) return;
+		live.terminal = { status, error };
+		live.mutationStarts.clear();
+		live.inFlightTools.clear();
+		live.cleanupDeadlineAt = this.deps.now() + GROUP_CONFIRM_DEADLINE_MS;
+		live.permissionBroker?.close();
+		this.closeIpc(live);
+		live.cancelStall();
+		if (abort) void this.send(id, { type: "abort" });
+		this.signal(live, "SIGTERM");
+		live.cancelGrace = this.deps.schedule(() => {
+			if (this.live.get(id) !== live) return;
+			this.signal(live, "SIGKILL");
+			this.confirmGroupExit(id, live);
+		}, TERMINATION_GRACE_MS);
+	}
+
+	// A false result is ambiguous, so the probe reports which one it is: an ESRCH
+	// result proves the group is gone, while an absent process group means the
+	// question cannot be asked at all. Only the first justifies treating the exit as
+	// complete without an observed exit event.
+	private probeGroup(live: LiveTask): "present" | "gone" | "unavailable" {
+		if (live.processGroup === undefined) return "unavailable";
+		try {
+			this.processControl.kill(-live.processGroup, 0);
+			return "present";
+		} catch (error) {
+			return (error as NodeJS.ErrnoException).code === "ESRCH" ? "gone" : "present";
+		}
+	}
+
+	private groupExists(live: LiveTask): boolean {
+		return this.probeGroup(live) === "present";
+	}
+
+	private confirmGroupExit(id: string, live: LiveTask): void {
+		if (this.live.get(id) !== live) return;
+		const group = this.probeGroup(live);
+		if (group === "present") {
+			if (this.deps.now() >= (live.cleanupDeadlineAt ?? 0)) {
+				live.cancelGrace();
+				live.quarantined = true;
+				this.cleanupLive(live);
+				this.finish(id, TASK_STATUS.FAILED, `process cleanup unconfirmed after ${GROUP_CONFIRM_DEADLINE_MS}ms; capacity quarantined`, live);
+				return;
+			}
+			live.cancelGrace = this.deps.schedule(() => this.confirmGroupExit(id, live), GROUP_CONFIRM_MS);
+			return;
+		}
+		if (group === "gone") {
+			// No process remains in the group, so the exit is complete whether or not
+			// the child's own exit event was ever observed. Completing here also frees
+			// the concurrency slot; finishing without it would leave the task recorded
+			// while its slot stayed occupied and queued work never pumped.
+			this.completeExit(id, live);
+			return;
+		}
+		if (live.childExit !== undefined) {
+			this.completeExit(id, live);
+			return;
+		}
+		// With no process group to probe, an observed exit is the only confirmation
+		// available. Wait for it within the deadline, then quarantine instead of
+		// completing on an assumption, and never return without either.
+		if (this.deps.now() >= (live.cleanupDeadlineAt ?? 0)) {
+			live.cancelGrace();
+			live.quarantined = true;
+			this.cleanupLive(live);
+			this.finish(id, TASK_STATUS.FAILED, `child exit unconfirmed after ${GROUP_CONFIRM_DEADLINE_MS}ms; capacity quarantined`, live);
+			return;
+		}
+		live.cancelGrace = this.deps.schedule(() => this.confirmGroupExit(id, live), GROUP_CONFIRM_MS);
+	}
+
+	/** `exitProven` is true only in completeExit, after the child's exit was observed or its group is gone. */
+	private cleanupLive(live: LiveTask, exitProven = false): void {
+		live.permissionBroker?.close();
+		this.closeIpc(live);
+		live.cancelStall();
+		live.cancelGrace();
+		if (live.instructionsTransportDir) {
+			try { rmSync(live.instructionsTransportDir, { recursive: true, force: true }); } catch { /* best effort */ }
+			live.instructionsTransportDir = undefined;
+		}
+		// A quarantined child's exit is unconfirmed: a live descendant may still
+		// hold files there, so its scratch stays until the exit is proven.
+		if (live.scratchDir && (!live.quarantined || exitProven)) {
+			try { rmSync(live.scratchDir, { recursive: true, force: true }); } catch { /* best effort */ }
+			releaseSubagentScratch(live.scratchDir);
+			live.scratchDir = undefined;
+		}
+	}
+
+	private childError(id: string, error: Error): void {
+		const live = this.live.get(id);
+		if (!live) return;
+		// Node leaves pid undefined when spawn failed; a live PID must still exit
+		// before its slot is released, even if its handle later emits an error.
+		if (live.child.pid !== undefined) {
+			this.requestStop(id, TASK_STATUS.FAILED, `pi process error: ${error.message}`);
+			return;
+		}
+		this.cleanupLive(live);
+		this.live.delete(id);
+		this.finish(id, TASK_STATUS.FAILED, `could not start pi: ${error.message}`, live);
+	}
+
+	private exited(id: string, code: number | null, signal?: NodeJS.Signals | string | null): void {
+		const live = this.live.get(id);
+		if (!live) return;
+		live.childExit = code;
+		live.childExitSignal = signal ?? null;
+		const exitDesc = formatChildExit(code, signal);
+		if (this.groupExists(live)) {
+			if (!live.terminal) this.requestStop(id, TASK_STATUS.FAILED, `pi exited with ${exitDesc} before agent_settled${this.stderrSuffix(live)}`);
+			else if (live.quarantined) live.cancelGrace = this.deps.schedule(() => this.awaitQuarantinedGroup(id, live), QUARANTINE_PROBE_MS);
+			return;
+		}
+		this.completeExit(id, live);
+	}
+
+	// Quarantine stopped probing, and a descendant outlives the child's observed
+	// exit: no later event reports the group's end, so keep probing until it is
+	// gone, then release the slot and scratch.
+	private awaitQuarantinedGroup(id: string, live: LiveTask): void {
+		if (this.live.get(id) !== live) return;
+		if (this.groupExists(live)) {
+			live.cancelGrace = this.deps.schedule(() => this.awaitQuarantinedGroup(id, live), QUARANTINE_PROBE_MS);
+			return;
+		}
+		this.completeExit(id, live);
+	}
+
+	private completeExit(id: string, live: LiveTask): void {
+		this.cleanupLive(live, true);
+		this.live.delete(id);
+		// Quarantine already notified completion, but its retained slot is now free.
+		if (live.quarantined) {
+			this.writers.release(id);
+			queueMicrotask(() => this.pump());
+			return;
+		}
+		const terminal = live.terminal;
+		const exitDesc = formatChildExit(live.childExit, live.childExitSignal);
+		this.finish(id, terminal ? terminal.status : TASK_STATUS.FAILED, terminal ? terminal.error : `pi exited with ${exitDesc} before agent_settled${this.stderrSuffix(live)}`, live);
+	}
+
+	private finish(id: string, status: TaskRecord["status"], error: string | null, live?: LiveTask): void {
+		// A quarantined child may still be writing: its claim lives as long as its
+		// reserved slot and is released in completeExit on proven exit.
+		if (!live?.quarantined) this.writers.release(id);
+		const current = this.store.get(id);
+		if (!current || isFinished(current.status)) return;
+		const finished = this.store.update(id, { status, endedAt: this.deps.now(), error, lastStep: error ?? "done" });
+		if (finished) {
+			if (live) this.checkObservationGrant(live);
+			const buffer = live?.observations;
+			const snapshot: ChildObservationSnapshot | undefined = buffer ? Object.freeze({
+				coverage: "final_assistant_messages_only", agentSettled: buffer.agentSettled,
+				responses: Object.freeze(buffer.responses.slice()), droppedResponses: buffer.droppedResponses,
+			}) : undefined;
+			if (live) {
+				live.observations = undefined; // Also release quarantined buffers.
+				live.observationGuard = undefined;
+			}
+			this.hooks.onFinish?.(finished, snapshot);
+			for (const resolve of this.waiters.get(id) ?? []) resolve(finished);
+			this.waiters.delete(id);
+			for (const resolve of this.queryWaiters.get(id) ?? []) resolve(undefined);
+			this.queryWaiters.delete(id);
+			this.firstQueries.delete(id);
+		}
+		queueMicrotask(() => this.pump());
+	}
+}
+
+// Human-readable suffix for an abort signal's reason, so a cancelled tool call is
+// distinguishable in the record and the notification rather than reported only as
+// "aborted". Returns an empty string when there is no usable reason.
+export function abortReasonText(reason: unknown): string {
+	if (reason === undefined) return "";
+	const message =
+		reason instanceof Error && reason.message.length > 0
+			? reason.message
+			: typeof reason === "string" && reason.length > 0
+				? reason
+				: "";
+	return message.length > 0 ? ` (${message})` : "";
+}

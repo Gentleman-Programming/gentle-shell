@@ -138,10 +138,7 @@ async function runController(
 	return await __testing.executeReviewControllerOperation(
 		parameters,
 		cwd,
-		new Map(),
 		native,
-		undefined,
-		undefined,
 		undefined,
 		candidateViews,
 	) as Record<string, unknown>;
@@ -199,48 +196,4 @@ test("STATUS discovery never hydrates without pending reviewer-result collection
 	const registry = new CandidateViewRegistry();
 	await runController({ operation: "status", lineageId: successor }, cwd, native, registry);
 	assert.equal(registry.hasCurrentBinding(), false, "an execute transition offers no reviewer dispatch and must not hydrate");
-});
-
-// --- DEFECT B: finalize routes strictly from the provider transition ---
-
-test("finalize at reviewer_results_required surfaces capture-result and never enters evidence ordering", async (t) => {
-	const cwd = repository(t);
-	const lineageId = "recovered-lineage";
-	const status = () => recoveredStatus({
-		lineageId,
-		baseTree: "3".repeat(40),
-		currentCandidateTree: "4".repeat(40),
-		paths: ["tracked.txt"],
-		inputs: [reviewerResultCollectInput(lineageId, "review-reliability", 0)],
-	});
-
-	// Plain finalize with no negotiated collection answers.
-	const plainHarness = statusOnlyNative([status()]);
-	const plain = await runController({ operation: "finalize", lineageId, input: JSON.stringify({}) }, cwd, plainHarness.native, new CandidateViewRegistry());
-	assert.equal(plain.status, "blocked");
-	assert.equal(plain.outcome, "reviewer-results-required");
-	assert.match(String(plain.reason), /capture the reviewer result first/i);
-	assert.match(String(plain.reason), /review\.capture-result/);
-	assert.equal(plain.mutation_performed, false);
-	assert.equal(plain.mutation_outcome, "none");
-	assert.deepEqual(plain.pending_lenses, ["review-reliability"]);
-	assert.equal(plainHarness.finalizeCalls(), 0, "raw native finalize must never run while reviewer results are outstanding");
-	assert.doesNotMatch(JSON.stringify(plain), /evidence-first-ordering/);
-
-	// The live misroute shape: finalize carrying final evidence must not fall
-	// into the correction evidence-first-ordering lane either.
-	const evidenceHarness = statusOnlyNative([status()]);
-	const misrouted = await runController(
-		{ operation: "finalize", lineageId, input: JSON.stringify({ final_evidence: "all checks green", final_verification_passed: true }) },
-		cwd,
-		evidenceHarness.native,
-		new CandidateViewRegistry(),
-	);
-	assert.equal(misrouted.status, "blocked");
-	assert.equal(misrouted.outcome, "reviewer-results-required");
-	assert.match(String(misrouted.reason), /capture the reviewer result first/i);
-	assert.equal(misrouted.mutation_performed, false);
-	assert.equal(misrouted.mutation_outcome, "none");
-	assert.equal(evidenceHarness.finalizeCalls(), 0);
-	assert.doesNotMatch(JSON.stringify(misrouted), /evidence-first-ordering/);
 });

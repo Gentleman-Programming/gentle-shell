@@ -1,28 +1,26 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { VERSION } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, VERSION } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import * as os from "node:os";
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
+import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { resolveAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
+import { PI_SUBCOMMANDS } from "../lib/gentle-shell-launcher.ts";
+import { gentlePiConfigHome } from "../lib/agent-home.ts";
 
-const execAsync = promisify(exec);
-const PI_AGENT_DIR = join(os.homedir(), ".pi", "agent");
-const PI_NPM_DIR = join(PI_AGENT_DIR, "npm", "node_modules");
 
-type BannerColor = "pink" | "cyan" | "yellow" | "green";
-interface BannerConfig {
+export type BannerColor = "pink" | "cyan" | "yellow" | "green";
+export interface BannerConfig {
   showRose: boolean;
   showTextLogo: boolean;
   color: BannerColor;
 }
-const DEFAULT_BANNER_CONFIG: BannerConfig = {
+export const DEFAULT_BANNER_CONFIG: BannerConfig = {
   showRose: true,
   showTextLogo: true,
   color: "pink",
 };
-const BANNER_COLORS: BannerColor[] = ["pink", "cyan", "yellow", "green"];
+export const BANNER_COLORS: BannerColor[] = ["pink", "cyan", "yellow", "green"];
 const BANNER_PALETTES: Record<BannerColor, { rose: [number, number, number]; label: [number, number, number]; value: [number, number, number]; logoFresh: [number, number, number]; logoDim: [number, number, number] }> = {
   pink: { rose: [255, 118, 195], label: [200, 100, 160], value: [255, 140, 210], logoFresh: [255, 138, 206], logoDim: [95, 30, 60] },
   cyan: { rose: [95, 210, 255], label: [85, 170, 205], value: [130, 225, 255], logoFresh: [105, 220, 255], logoDim: [25, 80, 100] },
@@ -31,14 +29,14 @@ const BANNER_PALETTES: Record<BannerColor, { rose: [number, number, number]; lab
 };
 
 const TEXT_LOGO = [
-  "                  ▄▄▄▀▀▀▀▀██                                ▄▄▀▄▄           ▄▄█▀▀▀██   ▀▀█▄    ▄▄▄",
-  "              ▄▄█▀▀▒▒▒▒▒▄▄█▀▒                   ▄██     ▄▄█▀█▄█▀▒▒      ▄█▀▀ ▒▒▒▄█▀▀▒   ▄██▒ ▄█▀▒▒▒",
-  "          ▄▄██▀▒▒▒▒▒▄▄▄▀▀▒▒▒▒        ▄▄▄  ▀▀▀▀██▀▀▀▀▀███▀█▄▀▀▒▒▒▒      ██▒▒▒▒▄▄█▀▒▒▒▒▄▄█▀▀▄██▀▒▒▒",
-  "        ▄██▀▒▒▒▒     ▒▒▄▄█ ▄▄▄▀██ ▄▄▄▀▀▀▄  ▄██▀▒▒▒▒▄██▀▀▀▒▄▄███         ▒▒ ▄███▄▄▄█▀▀▀▒▒▄██▀▒▒▒",
-  "       ██▀▒▒▒     ▄▄▄███▀▄██▀▀▀▄▄██▀▀▄█▀▄▄██▀▒▒▒▄▄██▀▒▒▄██▀▀▀▄▄▀▀▀▀▀▀▀▀▀ ▄█▀▀▒▒▒▒▒▒▒▒▒▄██▒▒▒▒",
-  "       ▀█▄▄▄▄▄▀▀▀█▄▄███▄▒▀▀▀▀▀▀▒▀▀▒▒▀▀▀▀▒██▄▄▀▀▀ ▀█▄▀▀▀ ▀▀▀▀▀▒▒▒▒▒▒▒▒▒▒▄██▀▒▒▒       ███▒▒",
-  "        ▒▄▄▄█▀▀▀█▄█▀▀▒▒▒▒ ▒▒▒▒▒▒ ▒▒  ▒▒▒▒ ▒▒▒▒▒▒▒ ▒▒▒▒▒▒ ▒▒▒▒▒        ▀▀▀▒▒▒          ▒▒▒",
-  "     ▄▄▀▀ ▒▒▒▒▄██▀▒▒▒▒                                                 ▒▒▒",
+  "                  ▄▄▄▀▀▀▀▀██                                ▄▄▀▄▄          ▄▄█▀▀▀██   ▄▄▀██               ▄▄▀▄▄   ▄▄▀▄▄",
+  "              ▄▄█▀▀▒▒▒▒▒▄▄█▀▒                   ▄██     ▄▄█▀█▄█▀▒▒       ▄█▀▀▒▒▒▄█▀▒ ▄██▄█▀▒           ▄▄█▀█▄█▀▄▄█▀█▄█▀▒",
+  "          ▄▄██▀▒▒▒▒▒▄▄▄▀▀▒▒▒▒        ▄▄▄  ▀▀▀▀██▀▀▀▀▀███▀█▄▀▀▒▒▒▒      ██▄▄▒▒▒▒▒▒▒ ▄██▀▀▒▒▒          ▄██▀█▄▀▀▄██▀█▄▀▀▒▒▒",
+  "        ▄██▀▒▒▒▒     ▒▒▄▄█ ▄▄▄▀██ ▄▄▄▀▀▀▄  ▄██▀▒▒▒▒▄██▀▀▀▒▄▄███         ▀▀▀██▄▄  ▄██▀▒▄▄▀██   ▄▄▀▀██ ██▀▀▀▒▒▒██▀▀▀▒▒▒",
+  "       ██▀▒▒▒     ▄▄▄███▀▄██▀▀▀▄▄██▀▀▄█▀▄▄██▀▒▒▒▄▄██▀▒▒▄██▀▀▀▄▄      ▄▄     ▀██▄▄██▀▄██▀██▒  ▄██▄▄▀▒ █▀▒▒▒   █▀▒▒▒",
+  "       ▀█▄▄▄▄▄▀▀▀█▄▄███▄▒▀▀▀▀▀▀▒▀▀▒▒▀▀▀▀▒██▄▄▀▀▀ ▀█▄▀▀▀ ▀▀▀▀▀▒▒      ▀█▄▄▄▄█▀▀▒▒▀▀▒▒▀▀▒ ██▄▄▀▀█▄▄▄▄▀▀█▄▄▀▀▀▄▄▀█▄▄▀▀▀",
+  "        ▒▄▄▄█▀▀▀█▄█▀▀▒▒▒▒ ▒▒▒▒▒▒ ▒▒  ▒▒▒▒ ▒▒▒▒▒▒▒ ▒▒▒▒▒▒ ▒▒▒▒▒        ▒▀▀▀▀▒▒▒▒  ▒▒▒▒▒▒ ▒▒▒▒▒ ▒▒▒▒▒▒  ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒",
+  "     ▄▄▀▀ ▒▒▒▒▄██▀▒▒▒▒",
   "   ▄█ ▒▒▒▄▄██▀▀▒▒▒▒",
   "    ▀▀▀▀▀▀▒▒▒▒▒▒",
   "     ▒▒▒▒▒▒",
@@ -69,11 +67,11 @@ function rgb(r: number, g: number, b: number, text: string): string {
 }
 
 function gentleAiConfigHome(): string {
-  return process.env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai");
+  return gentlePiConfigHome(process.env);
 }
 
-function bannerConfigPath(): string {
-  return join(gentleAiConfigHome(), "banner.json");
+function bannerConfigPath(configHome = gentleAiConfigHome()): string {
+  return join(configHome, "banner.json");
 }
 
 function normalizeBannerConfig(value: unknown): BannerConfig {
@@ -86,16 +84,37 @@ function normalizeBannerConfig(value: unknown): BannerConfig {
   };
 }
 
-async function readBannerConfig(): Promise<BannerConfig> {
+// Modal mutations must not turn an unreadable or malformed existing file into defaults.
+// Legacy banner commands retain their original tolerant read behavior below.
+export async function readBannerConfigForEdit(configHome = gentleAiConfigHome()): Promise<BannerConfig> {
+  const path = bannerConfigPath(configHome);
+  let raw: string;
   try {
-    return normalizeBannerConfig(JSON.parse(await readFile(bannerConfigPath(), "utf8")));
+    raw = await readFile(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ...DEFAULT_BANNER_CONFIG };
+    throw new Error(`Cannot edit unreadable banner file: ${path}`, { cause: error });
+  }
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { throw new Error(`Cannot edit malformed banner file: ${path}`); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`Cannot edit malformed banner file: ${path}`);
+  const config = value as Record<string, unknown>;
+  if (typeof config.showRose !== "boolean" || typeof config.showTextLogo !== "boolean" || !BANNER_COLORS.includes(config.color as BannerColor)) {
+    throw new Error(`Cannot edit malformed banner file: ${path}`);
+  }
+  return { showRose: config.showRose, showTextLogo: config.showTextLogo, color: config.color as BannerColor };
+}
+
+export async function readBannerConfig(configHome = gentleAiConfigHome()): Promise<BannerConfig> {
+  try {
+    return normalizeBannerConfig(JSON.parse(await readFile(bannerConfigPath(configHome), "utf8")));
   } catch {
     return { ...DEFAULT_BANNER_CONFIG };
   }
 }
 
-async function writeBannerConfig(config: BannerConfig): Promise<void> {
-  const path = bannerConfigPath();
+export async function writeBannerConfig(config: BannerConfig, configHome = gentleAiConfigHome()): Promise<void> {
+  const path = bannerConfigPath(configHome);
   await mkdir(join(path, ".."), { recursive: true });
   await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 }
@@ -185,7 +204,8 @@ function buildLetterSpans(bounds: Span, weights: number[]): Span[] {
 }
 
 const LOGO_BOUNDS = computeLogoBounds(TEXT_LOGO);
-const LETTER_WEIGHTS = [14, 10, 11, 10, 9, 11, 6, 13, 12]; // G E N T L E - P I
+// Variable-width script regions, including the gap before Shell and shadows.
+const LETTER_WEIGHTS = [22, 9, 8, 9, 8, 9, 10, 13, 8, 8, 13]; // G E N T L E S H E L L
 const LETTER_SPANS = buildLetterSpans(LOGO_BOUNDS, LETTER_WEIGHTS);
 
 function letterIndexAtX(x: number): number {
@@ -342,13 +362,23 @@ type LetterStroke = { orderMap: Map<string, number>; maxOrder: number };
 
 const WRITING_START_TICK = 6;
 const FALLBACK_LETTER_TICKS = 8;
-// The rose pulse advances one step every N ticks instead of every tick.
-// The pulse repaints every rose cell per step, which drives the TUI diff to
-// redraw the whole header region and teleport the hardware cursor on every
-// render. On fast terminals (ghostty) that churn shows as flicker/ghosting.
-// Quantizing the step to ~100ms keeps the gentle wave look while cutting
-// repaints by 4x after the fade-in/flash phases settle.
-const ROSE_PULSE_TICKS = 4;
+// Every rose pulse step repaints every rose cell, which drives the TUI diff to
+// redraw the whole header region and teleport the hardware cursor; on fast
+// terminals (ghostty) that churn reads as flicker/ghosting (ghostty#12685).
+// The resolved animation policy owns the step, so the cadence table in
+// docs/readme-reference.md stays authoritative: quality paints every 25ms and
+// takes the coarser ~100ms wave, while performance already paints every 250ms
+// and keeps the merge-base 2-tick step instead of freezing the wave.
+const ROSE_PULSE_TICKS: Record<AnimationPolicy, number> = {
+  quality: 4,
+  performance: 2,
+  potato: 2,
+};
+
+/** Ticks per rose pulse step under the resolved animation policy. */
+export function rosePulseTicks(policy: AnimationPolicy): number {
+  return ROSE_PULSE_TICKS[policy];
+}
 
 const LETTER_STROKES: Array<LetterStroke | null> = LETTER_SPANS.map(() => null);
 const LETTER_TICKS: number[] = LETTER_SPANS.map(() => FALLBACK_LETTER_TICKS);
@@ -498,10 +528,10 @@ function currentIntroMode(): IntroMode {
   return pickIntroMode(rows, cols);
 }
 
-async function countSddAgents(): Promise<number> {
+async function countBackgroundAgents(): Promise<number> {
   try {
-    const entries = await readdir(join(PI_AGENT_DIR, "agents"), { withFileTypes: true });
-    return entries.filter((entry) => entry.isFile() && /^sdd-.*\.md$/.test(entry.name)).length;
+    const entries = await readdir(join(getAgentDir(), "agents"), { withFileTypes: true });
+    return entries.filter((entry) => entry.isFile() && entry.name.endsWith(".md") && !/^sdd-/.test(entry.name)).length;
   } catch {
     return 0;
   }
@@ -518,23 +548,59 @@ function packageNameFromSpec(spec: unknown): string | undefined {
 }
 
 async function countPackageExtensions(packages: unknown[]): Promise<number> {
+  const npmDir = join(getAgentDir(), "npm", "node_modules");
   let count = 0;
   for (const spec of packages) {
     const name = packageNameFromSpec(spec);
     if (!name) continue;
     try {
-      const raw = await readFile(join(PI_NPM_DIR, name, "package.json"), "utf8");
+      const raw = await readFile(join(npmDir, name, "package.json"), "utf8");
       const pkg = JSON.parse(raw);
       const extensions = pkg?.pi?.extensions;
       if (Array.isArray(extensions)) count += extensions.length;
     } catch {
-      // Packages installed from non-npm sources may not live in PI_NPM_DIR.
+      // Packages installed from non-npm sources may not live in the npm dir.
     }
   }
   return count;
 }
 
+// A repository rooted at HOME can make even this lookup crawl; a timeout reads
+// as the ordinary failure instead of holding the banner stats.
+const GIT_BRANCH_TIMEOUT_MS = 3000;
+
+export function readGitBranch(cwd: string, run: typeof execFile = execFile, timeoutMs = GIT_BRANCH_TIMEOUT_MS): Promise<string> {
+  return new Promise((resolve) => {
+    run("git", ["-C", cwd, "branch", "--show-current"], {
+      encoding: "utf8",
+      shell: false,
+      windowsHide: true,
+      timeout: timeoutMs,
+    }, (error, stdout) => {
+      if (error) {
+        resolve("Not a git repo");
+        return;
+      }
+      const branch = String(stdout).trim();
+      resolve(branch ? `On branch ${branch}` : "Detached HEAD");
+    });
+  });
+}
+
+// Pi dispatches its subcommands purely on the first argument, so only that
+// token decides. Flag values such as the package directory the Gentle Shell
+// launcher injects with `-e <dir>` must not be mistaken for a subcommand.
+const GUIDE_COMMAND = "gentle:guide";
+export const GUIDE_REMINDER = "Tip: run /gentle:guide for a guided tour of Gentle Shell";
+
+export function isPiCliSubcommandInvocation(argv: readonly string[]): boolean {
+  const first = argv[2];
+  return first !== undefined && (PI_SUBCOMMANDS as readonly string[]).includes(first);
+}
+
 export default function (pi: ExtensionAPI) {
+  let disposeHeader = () => {};
+  pi.on("session_shutdown", () => disposeHeader());
   const notifyBannerConfig = (ctx: any, config: BannerConfig) => {
     ctx.ui.notify(
       [
@@ -604,40 +670,41 @@ export default function (pi: ExtensionAPI) {
   registerColorCommand("gentle:banner-color");
 
   pi.on("session_start", async (_event, ctx) => {
+    disposeHeader();
     if (!ctx.hasUI) return;
+    // Delegated rpc children report hasUI=true but have no terminal to paint
+    // (gentle-shell#1690); do not rely on a piped stdout lacking rows/columns.
+    if (process.env.GENTLE_PI_AGENTS_CHILD === "1") return;
 
-    // Si se está ejecutando un comando de CLI como "pi update" o "pi install", no mostramos la intro animada.
-    const isCLICommand =
-      process.argv.length > 2 &&
-      !process.argv.every((arg) => arg.startsWith("-") || arg.endsWith(".ts"));
-    if (isCLICommand) return;
+    // CLI subcommands such as `pi update` or `pi install` skip the animated intro.
+    if (isPiCliSubcommandInvocation(process.argv)) return;
 
-    // On /reload, session.reload() re-fires session_start with reason
-    // "reload". The intro must not run there: the raw screen clear and a
-    // second overlay splash interleave with the reload's own rendering and
-    // left the editor region blank (TUI cursor model diverged from the
-    // terminal). The splash is a first-start experience only.
-    if ((_event as { reason?: string })?.reason === "reload") return;
+    // /reload re-fires session_start with reason "reload". The splash is a
+    // first-start experience, so the intro must not run again; but the
+    // disposeHeader() above already dropped the previous header, and banner
+    // changes are documented to apply on the next session or /reload. Returning
+    // early here would leave the editor without a header, so a reload repaints
+    // the complete static artwork instead (see the header factory below).
+    const reload = (_event as { reason?: string })?.reason === "reload";
     if (currentIntroMode() === "skip") return;
 
-    // Fire-and-forget: el setup geométrico de cada letra corre en background
-    // para que la animación arranque en el primer frame sin bloquear el event loop.
-    void warmupLetterStrokes();
-
-    process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
-
+    // Pi has already started its renderer. Let setHeader schedule the paint;
+    // clearing stdout here would leave its previous-frame cache out of sync.
     const bannerConfig = await readBannerConfig();
     const palette = BANNER_PALETTES[bannerConfig.color];
     const roseBase = padLines(normalizeAscii(ROSE_LARGE_RAW));
     const logoBase = padLines(TEXT_LOGO);
+    void warmupLetterStrokes();
 
     let gitBranch = "Not a git repo";
     let mcpServersCount = 0;
     let extensionsCount = 0;
     let packagesCount = 0;
-    let sddAgentsCount = 0;
+    let backgroundAgentsCount = 0;
 
     const allCommands = pi.getCommands();
+    // A one-line reminder under the banner on every start, while the tour exists.
+    const guideReminder = allCommands.some((c) => c.name === GUIDE_COMMAND) ? GUIDE_REMINDER : undefined;
     const skills = allCommands.filter((c) => c.source === "skill");
     const allTools = pi.getAllTools();
     const customTools = allTools.filter(
@@ -645,19 +712,18 @@ export default function (pi: ExtensionAPI) {
     );
 
     setTimeout(() => {
-      execAsync(`git -C "${ctx.cwd}" branch --show-current`)
-        .then(({ stdout }) => {
-          const b = stdout.trim();
-          gitBranch = b ? `On branch ${b}` : "Detached HEAD";
-        })
-        .catch(() => {});
+      readGitBranch(ctx.cwd)
+        .then((branch) => { gitBranch = branch; })
+        .finally(() => refreshStats());
     }, 100);
 
     setTimeout(() => {
       (async () => {
         try {
+          // Same global mcp.json Pi itself loads: <agentDir>/mcp.json, which
+          // follows PI_CODING_AGENT_DIR (for example the Gentle Shell home).
           const raw = await readFile(
-            join(os.homedir(), ".pi", "agent", "mcp.json"),
+            join(getAgentDir(), "mcp.json"),
             "utf8",
           );
           const cfg = JSON.parse(raw);
@@ -665,15 +731,17 @@ export default function (pi: ExtensionAPI) {
         } catch {
           mcpServersCount = 0;
         }
+        refreshStats();
       })();
     }, 150);
 
     setTimeout(() => {
       (async () => {
         try {
-          sddAgentsCount = await countSddAgents();
+          backgroundAgentsCount = await countBackgroundAgents();
+          // Active agent dir settings, like mcp.json above.
           const raw = await readFile(
-            join(PI_AGENT_DIR, "settings.json"),
+            join(getAgentDir(), "settings.json"),
             "utf8",
           );
           const cfg = JSON.parse(raw);
@@ -684,10 +752,13 @@ export default function (pi: ExtensionAPI) {
           extensionsCount = 0;
           packagesCount = 0;
         }
+        refreshStats();
       })();
     }, 200);
 
     let tick = 0;
+    let refreshStats = () => {};
+    let headerCache: { key: string; out: string[] } | null = null;
     const state = {
       timer: null as NodeJS.Timeout | null,
       mode: currentIntroMode() as IntroMode,
@@ -696,6 +767,7 @@ export default function (pi: ExtensionAPI) {
     };
 
     const cleanup = () => {
+      refreshStats = () => {};
       if (state.timer) {
         clearInterval(state.timer);
         state.timer = null;
@@ -710,36 +782,37 @@ export default function (pi: ExtensionAPI) {
       }
     };
 
+    disposeHeader = cleanup;
     setTimeout(() => {
-      void ctx.ui.custom((tui, theme, _keybindings, done) => {
+      ctx.ui.setHeader((tui, theme) => {
         if (state.timer) clearInterval(state.timer);
+        headerCache = null;
 
+        refreshStats = () => tui.requestRender();
+        // Capture once: a command changes the live prompt, not this intro.
+        const animationPolicy = resolveAnimationPolicy().policy;
+        const rosePulse = rosePulseTicks(animationPolicy);
         const animStart = Date.now();
-        const HARD_TIMEOUT_MS = 5000;
-
-        state.timer = setInterval(() => {
-          tick++;
-          const elapsed = Date.now() - animStart;
-          const finishedAnimation =
-            allStrokesReady() && tick > WRITING_END_TICK + 22;
-          if (finishedAnimation || elapsed > HARD_TIMEOUT_MS) {
-            cleanup();
-            done(undefined);
-            return;
-          }
-          // Render on every other tick (~20fps instead of 40fps): the intro
-          // still reads as smooth while halving the per-tick full-header
-          // repaints and hardware-cursor teleports that ghostty shows as
-          // flicker/ghosting (ghostty#12685). Timing stays tick-based, so
-          // the animation duration is unchanged.
-          if (tick % 2 === 0) {
-            try {
-              tui.requestRender();
-            } catch {
-              cleanup();
+        if (reload || animationPolicy === "potato") {
+          // Completed static artwork, no animation interval: potato asks for no
+          // periodic animation, and a /reload repaint has no intro to replay.
+          tick = Number.MAX_SAFE_INTEGER;
+          state.timer = null;
+        } else {
+          const performance = animationPolicy === "performance";
+          state.timer = setInterval(() => {
+            tick += performance ? 10 : 1;
+            const finished = allStrokesReady() && tick > WRITING_END_TICK + 22;
+            if (finished || Date.now() - animStart > 5000) {
+              clearInterval(state.timer!);
+              state.timer = null;
+              if (!finished) {
+                tick = Number.MAX_SAFE_INTEGER;
+              }
             }
-          }
-        }, 25);
+            try { tui.requestRender(); } catch { cleanup(); }
+          }, performance ? 250 : 25);
+        }
 
         // Grace period: pi-tui emite resizes transitorios mientras compone su layout inicial.
         const bootStart = Date.now();
@@ -751,12 +824,7 @@ export default function (pi: ExtensionAPI) {
             const next = currentIntroMode();
             if (next === state.mode) return;
             state.mode = next;
-            if (next === "skip") {
-              cleanup();
-              done(undefined);
-              process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
-              return;
-            }
+            // Pi owns removal in skip mode; keep listening for later expansion.
             try {
               tui.requestRender();
             } catch {
@@ -768,8 +836,11 @@ export default function (pi: ExtensionAPI) {
         process.stdout.on("resize", resizeHandler);
 
         return {
+          /** Renders the persistent header grid; memoized per width, tick, mode and stats so static passes reuse the built lines. */
           render(width: number): string[] {
             if (state.mode === "skip") return [];
+            const headerKey = `${width}|${tick}|${state.mode}|${gitBranch}|${mcpServersCount}|${extensionsCount}|${packagesCount}|${backgroundAgentsCount}|${ctx.cwd}|${skills.length}|${customTools.length}`;
+            if (headerCache?.key === headerKey) return headerCache.out;
 
             const flashStartTick = 10;
             const roseOpacity = Math.min(1, tick / 10);
@@ -777,12 +848,12 @@ export default function (pi: ExtensionAPI) {
               tick >= flashStartTick
                 ? Math.max(0, 1 - (tick - flashStartTick) / 12)
                 : 0;
-            const frame = Math.floor(tick / ROSE_PULSE_TICKS);
+            const frame = Math.floor(tick / rosePulse);
 
             const sideBySideMinWidth = roseBase.width + 3 + logoBase.width + 4;
-            const wideStatsMinWidth = 122;
             const horizontal =
               state.mode === "full" && bannerConfig.showRose && bannerConfig.showTextLogo && width >= sideBySideMinWidth;
+            const wideStatsMinWidth = 122;
             const wideStats = width >= wideStatsMinWidth;
 
             const b = new LayoutBuilder();
@@ -790,56 +861,41 @@ export default function (pi: ExtensionAPI) {
             b.center(width);
 
             if (state.mode === "minimal") {
-              if (bannerConfig.showTextLogo) for (let logoI = 0; logoI < logoBase.lines.length; logoI++) {
-                const logoLine = logoBase.lines[logoI];
-                b.addRow();
-                b.lines[b.lines.length - 1].push(
-                  ...buildPenLogoLine(
-                    logoLine,
-                    logoI,
-                    logoBase.lines.length,
-                    tick,
-                  ),
-                );
-                b.center(width);
+              if (bannerConfig.showTextLogo) {
+                if (width >= logoBase.width + 2) {
+                  for (let logoI = 0; logoI < logoBase.lines.length; logoI++) {
+                    const logoLine = logoBase.lines[logoI];
+                    b.addRow();
+                    b.lines[b.lines.length - 1].push(
+                      ...buildPenLogoLine(logoLine, logoI, logoBase.lines.length, tick),
+                    );
+                    b.center(width);
+                  }
+                } else {
+                  b.addRow();
+                  b.add("accent", "✿ ");
+                  b.add("value", "Gentle Shell");
+                  b.add("accent", " ✿");
+                  b.center(width);
+                }
               }
             } else if (horizontal) {
-              const rowCount = Math.max(
-                roseBase.lines.length,
-                logoBase.lines.length,
-              );
-              const roseOffset = Math.max(
-                0,
-                Math.floor((rowCount - roseBase.lines.length) / 2),
-              );
-              const logoOffset = Math.max(
-                0,
-                Math.floor((rowCount - logoBase.lines.length) / 2),
-              );
-
+              const rowCount = Math.max(roseBase.lines.length, logoBase.lines.length);
+              const roseOffset = Math.max(0, Math.floor((rowCount - roseBase.lines.length) / 2));
+              const logoOffset = Math.max(0, Math.floor((rowCount - logoBase.lines.length) / 2));
               for (let i = 0; i < rowCount; i++) {
                 const roseI = i - roseOffset;
                 const logoI = i - logoOffset;
-                const roseLine =
-                  roseI >= 0 && roseI < roseBase.lines.length
-                    ? roseBase.lines[roseI]
-                    : " ".repeat(roseBase.width);
-                const logoLine =
-                  logoI >= 0 && logoI < logoBase.lines.length
-                    ? logoBase.lines[logoI]
-                    : " ".repeat(logoBase.width);
-
+                const roseLine = roseI >= 0 && roseI < roseBase.lines.length
+                  ? roseBase.lines[roseI] : " ".repeat(roseBase.width);
+                const logoLine = logoI >= 0 && logoI < logoBase.lines.length
+                  ? logoBase.lines[logoI] : " ".repeat(logoBase.width);
                 b.addRow();
                 b.add("rose", roseLine);
                 b.add("none", "   ");
                 if (logoI >= 0 && logoI < logoBase.lines.length) {
                   b.lines[b.lines.length - 1].push(
-                    ...buildPenLogoLine(
-                      logoLine,
-                      logoI,
-                      logoBase.lines.length,
-                      tick,
-                    ),
+                    ...buildPenLogoLine(logoLine, logoI, logoBase.lines.length, tick),
                   );
                 } else {
                   b.add("none", " ".repeat(logoBase.width));
@@ -854,15 +910,20 @@ export default function (pi: ExtensionAPI) {
                   const logoLine = logoBase.lines[logoI];
                   b.addRow();
                   b.lines[b.lines.length - 1].push(
-                    ...buildPenLogoLine(
-                      logoLine,
-                      logoI,
-                      logoBase.lines.length,
-                      tick,
-                    ),
+                    ...buildPenLogoLine(logoLine, logoI, logoBase.lines.length, tick),
                   );
                   b.center(width);
                 }
+                if (showRose) {
+                  b.addRow();
+                  b.center(width);
+                }
+              } else if (bannerConfig.showTextLogo) {
+                b.addRow();
+                b.add("accent", "✿ ");
+                b.add("value", "Gentle Shell");
+                b.add("accent", " ✿");
+                b.center(width);
                 if (showRose) {
                   b.addRow();
                   b.center(width);
@@ -907,7 +968,7 @@ export default function (pi: ExtensionAPI) {
                 ["GIT:", gitBranch],
                 ["PATH:", ctx.cwd],
                 ["MCP:", `${mcpServersCount} server(s)`],
-                ["AGENTS:", `${sddAgentsCount} phases`],
+                ["AGENTS:", `${backgroundAgentsCount} agents`],
                 ["PLUGINS:", `${packagesCount} package(s)`],
                 ["SKILLS:", `${skills.length} loaded`],
                 ["EXTENSIONS:", `${extensionsCount} active`],
@@ -940,7 +1001,7 @@ export default function (pi: ExtensionAPI) {
                 );
                 addWideRow(
                   "AGENTS:",
-                  `${sddAgentsCount} phases`,
+                  `${backgroundAgentsCount} agents`,
                   "EXTENSIONS:",
                   `${extensionsCount} active`,
                 );
@@ -956,7 +1017,7 @@ export default function (pi: ExtensionAPI) {
                 addNarrowRow("PATH:", ctx.cwd);
                 addNarrowRow("MCP:", `${mcpServersCount} server(s)`);
                 addNarrowRow("PLUGINS:", `${packagesCount} package(s)`);
-                addNarrowRow("AGENTS:", `${sddAgentsCount} phases`);
+                addNarrowRow("AGENTS:", `${backgroundAgentsCount} agents`);
                 addNarrowRow("SKILLS:", `${skills.length} loaded`);
                 addNarrowRow("EXTENSIONS:", `${extensionsCount} active`);
                 addNarrowRow("VER:", `v${VERSION}`);
@@ -1095,33 +1156,19 @@ export default function (pi: ExtensionAPI) {
               out.push(truncateToWidth(line, Math.max(1, width), ""));
             }
 
+            if (guideReminder) {
+              const pad = " ".repeat(Math.max(0, Math.floor((width - guideReminder.length) / 2)));
+              out.push(truncateToWidth(theme.fg("muted", pad + guideReminder), Math.max(1, width), ""));
+            }
+            headerCache = { key: headerKey, out };
             return out;
           },
-          invalidate() {
-            // pi-tui invalidates all components on theme changes, resizes and
-            // the terminal cell-size report (CSI 6;H;W t) that arrives right
-            // after startup. Killing the ticker here froze the intro mid-flight
-            // (logo half-written, rose stuck invisible). Keep the animation
-            // running; the ticker self-cleans once the intro finishes.
-          },
+          invalidate() { headerCache = null; },
           dispose() {
-            // Real teardown when the header is replaced by another extension.
             cleanup();
           },
         };
-      }, {
-        overlay: true,
-        // Splash: full-width overlay anchored to the center of the terminal,
-        // rendered on top of the chat. Non-capturing so the editor keeps
-        // focus; the overlay hides itself once the intro finishes.
-        overlayOptions: () => ({
-          width: "100%",
-          maxHeight: "100%",
-          anchor: "center",
-          nonCapturing: true,
-          visible: (w, h) => pickIntroMode(h, w) !== "skip",
-        }),
-      }).catch(() => {});
+      });
     }, 50);
   });
 }

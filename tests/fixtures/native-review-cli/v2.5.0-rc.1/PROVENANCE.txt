@@ -1,0 +1,15 @@
+Captured from a real gentle-ai binary, not hand-authored.
+
+binary:  gentle-ai 2.5.0-rc.1.0.20260827194839-f654764e231f (published prerelease channel)
+date:    2026-08-28
+command: gentle-ai sdd-status agent-builder --cwd <repo> --json --instructions
+repo:    a gentle-ai checkout with an OpenSpec-backed change present
+
+Why this fixture exists: gentle-ai commit 3c4c7fb6 (2026-08-24, "refactor(sdd)!:
+replace status v1 with clean v2") moved SchemaVersion from 1 to 2. gentle-pi had
+no v2 decoder, so lib/native-review-cli.ts rejected every current status with
+IDENTITY_MISMATCH on `body.schemaVersion !== 1`.
+
+The v2 object shape is key-compatible with the v1 decoder's exactObject list:
+17 required keys plus the optional phaseInstructions. Only the version value and
+the widened artifactStore domain (which gains "hybrid") differ.

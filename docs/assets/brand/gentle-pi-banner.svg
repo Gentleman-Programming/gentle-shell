@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="400" viewBox="0 0 1200 400" role="img" aria-labelledby="banner-title banner-desc">
+  <title id="banner-title">GENTLE-PI — Pi-native development environment</title>
+  <desc id="banner-desc">A dark plum banner with a narrow monospaced GENTLE-PI wordmark, a geometric terminal symbol without rose imagery, and the promise of clear, human-directed development.</desc>
+  <defs>
+    <linearGradient id="banner-bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#120d16"/><stop offset=".55" stop-color="#251124"/><stop offset="1" stop-color="#0b0910"/></linearGradient>
+    <linearGradient id="banner-rule" x1="0" x2="1"><stop stop-color="#f095c8" stop-opacity="0"/><stop offset=".18" stop-color="#f095c8"/><stop offset=".72" stop-color="#d7a0b8"/><stop offset="1" stop-color="#f095c8" stop-opacity="0"/></linearGradient>
+    <radialGradient id="banner-glow"><stop stop-color="#f095c8" stop-opacity=".28"/><stop offset="1" stop-color="#f095c8" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect width="1200" height="400" rx="20" fill="url(#banner-bg)"/>
+  <path d="M54 74H1146M54 328H1146" stroke="url(#banner-rule)" stroke-width="2"/>
+  <path d="M58 126H540" stroke="#f095c8" stroke-opacity=".35" stroke-width="2"/>
+  <g aria-label="GENTLE-PI" fill="none" stroke="#fff7f1" stroke-width="6" stroke-linecap="square" stroke-linejoin="miter">
+    <path d="M98 144H68V206H98V182H84"/>
+    <path d="M150 144H120V206H150M120 175H145"/>
+    <path d="M172 206V144L202 206V144"/>
+    <path d="M220 144H262M241 144V206"/>
+    <path d="M284 144V206H316"/>
+    <path d="M368 144H338V206H368M338 175H363"/>
+    <path d="M390 175H432"/>
+    <path d="M454 206V144H477L486 153V170L477 179H454"/>
+    <path d="M508 144H538M523 144V206M508 206H538"/>
+  </g>
+  <text x="62" y="267" fill="#d7a0b8" font-family="Arial, Helvetica, sans-serif" font-size="30">Powerful agents. One complete workspace.</text>
+  <g transform="translate(838 74)">
+    <circle cx="142" cy="126" r="142" fill="url(#banner-glow)"/>
+    <circle cx="142" cy="126" r="105" fill="none" stroke="#f095c8" stroke-opacity=".28" stroke-width="2"/>
+    <circle cx="142" cy="126" r="76" fill="none" stroke="#f095c8" stroke-opacity=".55" stroke-width="3" stroke-dasharray="4 11"/>
+    <path d="M142 5V28M142 224V247M21 126H44M240 126H263" stroke="#f095c8" stroke-width="3" stroke-linecap="round"/>
+    <rect x="76" y="75" width="132" height="102" rx="10" fill="#120d16" stroke="#f095c8" stroke-width="3"/>
+    <path d="M103 105l22 21-22 21M143 147h38" fill="none" stroke="#fff7f1" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M91 58L106 43M193 58l-15-15M91 194l15 15M193 194l-15 15" stroke="#d7a0b8" stroke-width="3" stroke-linecap="round"/>
+  </g>
+</svg>

@@ -1,0 +1,1568 @@
+# README technical reference
+
+This reference preserves detailed installation, configuration, ODD, runtime, and contributor material previously carried by the README. Start with the [README](../README.md) for the product overview; use this document when you need operational detail. Historical compatibility and authority passages remain reference material, not newly endorsed operator instructions.
+
+
+## Organic Driven Development
+
+Organic Driven Development (ODD) keeps explore → implement → proportionate checks as the development workflow. For large authorized implementation (its resume test fails), the parent automatically tracks feature progress after exploration, without asking for task-tracking or storage permission. Small, understood work creates no durable task artifact; investigation and proposal-only work stay read-only.
+
+### The ODD protocol
+
+ODD runs on every request, without the user asking for a workflow, a plan, or task tracking.
+
+The primary-session prompt renders steps 1-7, the phase-reporting line, and the resume line verbatim from Gentle AI's ODD routing block for Pi, published in the provider contract bundle as `routing/pi.md` (contract 1.4.0) and mirrored in `contracts/review-provider-contract-mirror/`. The prompt verifies the mirrored file against the mirror lock's SHA-256 and fails closed when it is missing, tampered, or reshaped. The list below summarizes those steps.
+
+1. **Authorize** — read-only unless implementation is authorized; ask one clarification when intent is ambiguous.
+2. **Explore** — read existing code and requirements first, proportionately to the request.
+3. **Resolve uncertainty** — optional research or one focused product question only for a real unresolved decision.
+4. **Classify** — use only small or large by the Task Size section: small when understood, risk is contained, and the work could be resumed from the request plus `git diff`; large only when that resume test fails. Counts never classify. Reassess cumulative discovery after each batch: a fired evidence-budget trigger takes precedence over initial size, including for read-only requests. Preparation for an already understood inline write stays inline; further discovery does not use that exception.
+5. **Track before the first write** — create the feature document and Engram mirror automatically for large work, and tell the user in one line.
+6. **Implement task by task** — route each task through the smallest safe workflow, with configured TDD and applicable checks. Commit work units in reviewable slices of about 400 authored changed lines on the feature branch (branch first when on the default branch), with tests and docs alongside the behavior and a Conventional Commit message; a unit whose Risk line names a high-risk item gets its own commit so native review can take it alone, and the last slice closes the feature; the feature document records the commit that holds each task as evidence.
+7. **Close** — report the verified outcome, failed/pending checks, and the next step. The native review candidate is a work-unit commit or a PR slice, never a TODO checkbox and never the accumulated feature branch.
+
+- **One feature document:** `odd/tasks/<feature-name>.md` holds objective, problem, why, scope, constraints, actionable checklist with stable IDs and acceptance criteria, verification evidence, progress, and next step. Project-scoped Engram topic `odd/<feature-name>/tasks` mirrors the full document and repository-relative locator. Keep concise rationale for meaningful accepted changes here, not a separate plan or exhaustive journal. Accepted user, review, or verification changes update intent and tasks together; preserve valid completed work, add new tasks or reopen invalidated items with reasons. Findings alone do not authorize expansion or acceptance. Routine corrections stay with their tasks; checkoffs require observed proof.
+- **Recovery:** write local progress first and read back both copies; writes are not atomic. Unavailable Engram leaves an explicit pending mirror, not invented success or a block on unrelated safe work. Before implementation or resume, the parent reads full feature memory and the actual task file, reconciles code and evidence, and preserves conflicting versions. Pass the locator and relevant context; workers read the document before edits. The existing Todo UI is a projection, not another authority.
+- **Task size:** about 400 authored changed lines (additions plus deletions) is advisory only, not a cap, acceptance criterion, automatic stop, forced split, or RDD trigger. Keep coherent behavior with tests and docs, explain natural overages, and continue under existing PR policy. Forward this instruction to workers; never remove whitespace, comments, or tests, minify, invent abstractions, or split artificially for cosmetic savings.
+- **Delegation boundary:** the parent delegates a writer for tracked tasks only for a reason (parallel units or context), never for size, file count, or a price ratio, and a second direct path alone is not a runtime refusal. The runtime cannot infer whether an edit is mechanical from write history. Validate consequential premises before building, reuse relevant sibling findings, run focused checks while iterating, then the applicable full suite at closure. This is effort guidance, not a hard token or line budget.
+- **Research:** optional research addresses a named uncertainty. Establish problem, intended outcome, constraints, and current evidence; inspect code and adapt depth to consequence, not fixed questionnaires or rounds. The parent asks one focused product question only when needed, then waits; workers return gaps. Use available authorized documentation/web tools, prefer primary sources, and attribute claims to URLs/code locations. Distinguish facts, assumptions, contradictions, freshness, and gaps; return a recommendation, tradeoffs, open questions, and implementation implications. Forward these instructions to a fresh general worker. Unavailable evidence pauses only unsafe dependent decisions. Research stays read-only; a brief proposal is needed only for a real decision.
+- **Assumptions:** at most one scoped independent read-only challenge for a high-consequence unproven premise, including a small security-critical change. Deterministic failures need fixes, not debate. Native RDD claims stay with its refuter.
+- **TDD:** resolve on/off from existing project/session configuration or explicit user choice; retain source and exact runner in the feature document when present and forward all three on every implementation delegation, refreshing on resume. Test presence does not enable TDD. Enabled requires observed RED before implementation → GREEN → REFACTOR; disabled still requires ordinary functional checks. Unknown/conflicting mode or a missing runner needs only the clarification affecting the next action, never invented precedence or commands.
+- **Checks:** functional checks run per task; a TODO checkbox never triggers a review cycle. The native review candidate is a work-unit commit or a PR slice, never a TODO checkbox and never the accumulated feature branch. After each work-unit commit, when RDD is enabled, assess it with `gentle_review` `{"operation":"assess"}` and `{"baseRef":"<last reviewed boundary>","committedOnly":true}`. Passive or low stays silent and the boundary advances. High, or an unavailable or failed assessment, reviews the commit itself right away at that base. Medium defers to the PR slice, the commits accumulated since the last reviewed boundary, bounded by the delivery budget of about 400 authored changed lines, and reviews at slice close. The first boundary is the branch point, and every reviewed boundary becomes the next base. Record the assessed tier and outcome per task: granted, declined, passive, deferred to slice, or unavailable. Existing risk, consent, and authority stay unchanged; never infer low risk from a failed assessment. Never skip an existing delivery gate.
+- **Delivery:** at feature-document creation, forecast authored changed lines (additions plus deletions, generated files excluded) from the task list, and keep a running count from work-unit commits. Choose one delivery strategy per feature: `ask-on-risk` (default), `auto-chain`, `single-pr`, or `exception-ok`. When the forecast or running count exceeds about 400 authored changed lines, apply the chosen strategy before the next commit. `ask-on-risk` asks once using the ordered oversized-delivery menu; `auto-chain` asks only for a missing chain strategy and slices automatically with a cached choice. When either chaining path needs a choice, offer exactly these three semantic outcomes:
+
+1. **Feature/tracker branch chain** — `chain_strategy=feature-branch-chain`; integrate the feature after reviewing child slices.
+2. **Verified default/main branch chain** — `chain_strategy=stacked-to-main`; land slices in order on the verified destination default branch, not an assumed name.
+3. **One single PR — least recommended** — `delivery_strategy=single-pr`; review the entire oversized change together.
+
+In a session where no human can answer questions (`pi -p`, `pi --mode json`, or `pi --mode rpc` without `GENTLE_SHELL_INTERACTIVE_HOST=1`, the same rule `ask_user_question` applies), `ask-on-risk` does not ask: the harness tells the orchestrator to use `feature-branch-chain`, record the choice in the feature document's `## Log`, and continue. Consent, maintenance, and opaque-token prompts keep their own rules.
+
+Generate the complete user-facing question and every option label, description, and recommendation marker in the active user's conversation language (English for an English user, Spanish for a Spanish user, etc.). Machine strategy tokens remain unchanged and untranslated. These English examples are illustrative and localizable, not mandatory copy.
+
+The third choice overrides the pending chaining path: clear the chain choice as inapplicable and suppress later chain prompts. `single-pr` is not a `chain_strategy` token; do not automatically select `exception-ok`. Least recommended is scoped to the oversized menu: larger single PRs increase reviewer load, slow feedback, and couple rollback. A focused ≤400-line single PR remains reasonable. Follow the destination repository's documented contribution/size policy; `size:exception` is a Gentle-owned repository policy, not a universal label requirement. Do not request or add it for generic users unless the destination policy uses it; keep applicable maintainer acceptance and protected-label authorization gates. Single-PR output requires no tracker, child dependency diagram, or Chain Context. Choosing shape does not authorize push, PR creation, merge, or review-mode/consent changes. Cache both choices, and record slice boundaries (which commits each PR holds) in the feature document for chains, or the whole-PR scope for single PR. Resolve the `work-unit-commits` and `chained-pr` skills by registry name before planning or creating any PR.
+
+```mermaid
+flowchart TD
+    A[Request] --> B{Implementation authorized?}
+    B -->|No| C[Read-only exploration; no task artifacts]
+    B -->|Yes| D[Explore existing code and requirements]
+    D --> E{Named uncertainty and research selected?}
+    E -->|Yes| F[Adaptive read-only research with existing workers]
+    E -->|No| G[Resolve real product decisions only]
+    F --> G
+    G --> H{High-consequence unproven premise?}
+    H -->|Yes| I[One independent assumption challenge]
+    H -->|No| J{Substantial work?}
+    I --> J
+    J -->|Yes| K[One feature document and full Engram mirror]
+    J -->|No| L[Small work without durable tasks]
+    K --> TC[Resolve configured TDD, source and runner]
+    L --> TC
+    TC --> M[Implement next authorized task]
+    M --> N[Applicable functional checks]
+    N --> O[Record truthful results; update tracked intent, tasks and mirror]
+    O --> OC[Commit at a slice boundary; a high-risk unit alone]
+    OC --> P{Authorized work remains?}
+    P -->|Yes| M
+    P -->|No| Q{RDD enabled at work-unit commit boundary?}
+    Q -->|No| R[Ordinary checks and policy]
+    Q -->|Yes| S{Native candidate risk per commit}
+    S -->|Passive or low| T[Silent structural checks; boundary advances]
+    S -->|Medium| U{Existing candidate consent for PR slice}
+    S -->|High or unavailable| V[Review the commit now at that base]
+    U -->|Granted| W[Native review plan and authority]
+    U -->|Declined| R
+    V --> X[Existing delivery gates]
+    W --> X
+    T --> X
+    R --> X
+    X --> AG{Running authored lines over 400?}
+    AG -->|Yes| AH{Apply selected delivery strategy}
+    AG -->|No| Y[Deliver]
+    AH -->|Chain selected| CH[Chained PR slice]
+    AH -->|Single PR selected| SP[Single PR; no chain artifacts]
+    CH --> DP[Destination policy and existing authorization gates]
+    SP --> DP
+    DP --> Y
+    Z[Resume] --> AA[Full feature memory and actual task file]
+    AA --> AB[Reconcile requirements, code, proof and conflicts]
+    AB --> TC
+```
+
+This is guidance through existing tools, not a new CLI, phase, state engine, or execution harness. Static prompt tests and scripted hook checks prove instruction delivery, not autonomous model adherence; actual create/update/resume behavior requires observed Pi sessions.
+
+## Herdr active-work summary
+
+Under Herdr, root interactive Pi sessions publish only the `in_progress` Todo
+title, prefixed with `◐`. No phase, working/verifying label or tool fallback is
+used; prompts, tool arguments, output and Todo notes never supply text. Missing,
+invalid or empty active titles clear the display. Children, RPC/print modes and
+missing Herdr/socket contexts do not publish. The packaged extension loads through
+`gentle-shell`, including its isolated home; loading does not change your config.
+
+Herdr 0.8.2/protocol 20 needs **two separate rows**, not a newline inside a token:
+add `['$summary'], ['$summary2']` to the Agents sidebar rows in your config.
+Inside a Herdr pane, `/gentle:doctor` shows whether publishing is active and this
+read-only setup hint; Gentle Shell never edits Herdr config. Configure the Herdr
+client that displays the session (also over SSH), then reload or restart Herdr.
+The first row is `◐ title`; the extension prefixes the optional continuation with
+two spaces, though Herdr may normalize leading whitespace.
+Text wraps by display cells, preferring word boundaries unless a grapheme-safe
+word split avoids unnecessary truncation across the two rows. Ellipsis appears
+only on the last overflowing row, or on an extremely narrow first row. Each token
+is capped at 80 Unicode scalar characters, including icon, spaces and ellipsis,
+before Herdr normalizes it; both tokens together are capped at 256 UTF-8 bytes
+(excluding private newline framing). ANSI/bidi controls are removed while emoji
+ZWJ sequences are preserved. Pathological oversized graphemes may be replaced by
+an ellipsis.
+
+Width comes from root `sidebar_width` in `session.json` beside `HERDR_SOCKET_PATH`,
+less five columns for divider, possible scrollbar and the detail-row prefix.
+Snapshots are bounded to 256 KiB and cached for five seconds while active; persisted
+width can itself lag resize by five seconds. This is not live geometry. Missing,
+malformed, oversized or unsupported snapshots fall back to 24 available columns;
+other layouts may need manual adjustment. No CLI/socket query measures width.
+
+Source `gentle:activity` owns only `summary`/`summary2`, not lifecycle. Updates are
+latest-only, serialized and best-effort offline, with a 30-second TTL refreshed every
+10 seconds while active. Each report clears an unused second row; idle, session
+changes and shutdown clear both. TTL expiry covers abrupt exits. The pane's lifecycle
+reporter (Gentle Shell's own, or Herdr's managed bridge; see [Herdr lifecycle bridge](#herdr-lifecycle-bridge))
+remains lifecycle authority, and summaries carry its agent label (`gentle-shell` or `pi`). Reports invoke `HERDR_BIN_PATH` when supplied,
+otherwise `herdr` from `PATH`, without a shell.
+
+## Navigation
+
+- [Capabilities](#capability-reference)
+- [Installation and release policy](#install)
+- [ODD workflow and recovery](#organic-driven-development)
+- [Review architecture](#review-authority-architecture-reference-only)
+- [Configuration, commands, skills, memory, and telemetry](#persona-modes)
+- [Package contents and development](#package-contents)
+
+## Capability reference
+
+| Capability                     | What it does                                                                                                                                  |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| **el Gentleman persona**       | Makes Pi behave like a senior architect and teacher, not a generic chatbot. Spanish responses use Rioplatense voseo by default; neutral mode is saved globally with project overrides. |
+| **Configurable startup intro** | Adds a rose/text-logo startup intro, compact runtime panel, color presets, and commands to hide or show the decorative parts.                  |
+| **Work routing discipline**    | ODD keeps small tasks inline and delegates context-heavy work. |
+| **Subagent orchestration**     | Keeps one parent session responsible while child agents explore, implement, test, or review with focused context.                             |
+| **Strict TDD support**         | TDD mode, source, and runner come from configuration or explicit choice in ODD. Enabled TDD requires observed evidence; a test command alone does not enable it.                   |
+| **Closed choice prompts** | Per-option hover/click/wheel in fullscreen; keyboard selection in either TUI mode. |
+| **Native pointer regions** | Compose hover, press, click, and wheel behavior around public TUI components. |
+| **Agent overlay close control** | Adds a header close button that adapts to available width. |
+| **Reviewer protection**        | Surfaces review workload risk before a task turns into an oversized PR.                                                                       |
+| **Per-agent model assignment** | Pi-native modal for assigning stronger or cheaper models to packaged and custom agents.                                                       |
+| **Skill discovery registry**   | Maintains `.atl/skill-registry.md` from project and user skills so review/comment/PR workflows do not silently miss the right skill.          |
+| **Skill creation workflow**    | Provides the `gentle-ai-skill-creator`/`gentle-ai-skill-improver` skills, `/skill-creation` prompt, and packaged style guide for LLM-first skills. |
+| **Delivery skills**            | Includes issue-first PRs, chained PRs, work-unit commits, cognitive docs, comment writing, and Judgment Day review.                           |
+| **Bounded native review**      | Freezes one candidate, dispatches only controller-selected lenses, and records native authority. Review outcomes are informational; delivery follows ordinary repository policy. |
+| **Verified native runtime**    | The current source checkout provisions the exact package-local Gentle AI v4.3.1 runtime: signed, SHA-256-pinned release archives on Darwin/Linux and a Go SumDB-verified source build on Windows x64/arm64. It validates package-local integrity and rejects PATH, global, sibling, symlink, and mode fallbacks. |
+| **Runtime safety**             | Blocks destructive shell commands, asks for confirmation for sensitive operations, and blocks direct read/write/edit/grep/find/ls access to sensitive paths (the guard checks the tool's `path` input, so a search scoped to a directory still reads whatever that directory contains, and bash is not covered). Blocks writing a test file that reads git history at a literal commit or points `TMPDIR` inside the working directory (including a relative path such as `.tmp`, `./.tmp`, or `tmp/x`), in the primary session and in subagents. Refuses native review tools (`gentle_review*`) called from inside another tool, such as a codemode script: they run only as direct tool calls. |
+
+## TPS notifications
+
+Gentle Shell and the `gentle-pi` Pi package automatically load the TPS extension; no separate installation or command is needed. In UI-enabled sessions it shows an informational notification such as `TPS 410.0 tok/s. out 1,025, in 1,750, cache r/w 4,100/50, total 6,925, 2.5s` at the end of a run.
+
+The notification sums the reported usage of assistant messages in that run. TPS is output tokens divided by elapsed wall time from `agent_start` to `agent_end`, including tool execution and waits within the run; it is not model-only streaming speed. Automatic retries and queued follow-ups can start separate runs and produce separate notifications. Runs without a start, positive elapsed time, positive output, or a UI do not produce a notification.
+
+An old manually installed `tps.ts` (for example, `.pi/extensions/tps.ts`) may produce duplicate notifications alongside the bundled extension. Disable or remove that manual copy yourself if you do not want both; Gentle Shell does not delete it.
+
+## Audio notifications
+
+Audio is off by default. `/gentle:customize` → **Notifications** shows audio controls directly in the same customization modal, separate from visual settings and profiles: global enable/disable, three independent type groups (**Success**, **Error**, **Attention**) that each own a builtin tone or a validated absolute local WAV, per-event exceptions folded behind **Advanced**, explicit preview, and process mute/resume. Enter cycles a type/event sound; `f` edits its local WAV path inline and `p` previews it. Preview does not enable or save automatic audio. Invalid/unreadable configuration requires fresh explicit replacement confirmation. RPC (including interactive hosts) and children remain silent. Linux/macOS listening and manual lifecycle verification are pending; Windows audio is unavailable. See [sound notifications](sound-notifications.md) for the complete schema, defaults, file security, retention costs and manual matrix.
+
+## Native pointer regions
+
+Compose pointer behavior around public `Text`, `Box`, or custom content without making it a keyboard target:
+
+```ts
+const scope = createNativePointerScope();
+const openInput = scope.wrap(new Text("Open input", 0, 0), {
+  onClick: () => {
+    openInputEditor();
+    return { handled: true };
+  },
+});
+const panel = new Container();
+panel.addChild(openInput);
+const observer = scope.createMouseObserver(() => tui.requestRender());
+```
+
+Pass `observer` around the root's native mouse dispatch; reuse `panel` as custom or overlay content.
+Pointer input is fullscreen-only. Regions preserve a consuming child's native result and do not focus
+`Text`, activate on press or wheel, synthesize outside leave events, or alter terminal tracking.
+Callers own keyboard policy, theme state, and business actions.
+
+**Bash UI tradeoff:** `quiet-tools` leaves Bash execution and UI to Pi, preserving configured `shellPath` and shell prefixes. Bash no longer uses Gentle's quiet cards or direct-command lifecycle renderer; the six other quiet tool cards and codemode remain unchanged.
+
+**Migration note:** Do not enable `pi-tool-cards` and `quiet-tools` together: Pi rejects duplicate `read`, `edit`, and `write` registrations. Disable or remove the standalone package during migration; gentle-pi does not change those package registrations or delete that repository. The global fullscreen setting described below is a separate install-time change.
+
+## Install
+
+Two paths reach the same package. Path A stays standalone; Path B installs into an existing pi.
+
+### Path A: standalone `gentle-shell` (recommended, no pi changes)
+
+```bash
+npm i -g gentle-pi
+
+# Own home, never touches your pi install
+gentle-shell
+
+# Reuse your pi sign-ins, models and chats instead
+gentle-shell --link
+```
+
+`gentle-shell` alone starts in its own home, `~/.gentle-shell/agent`, with its own settings in `~/.gentle-shell/gentle-ai` ([config home](#config-home)). `gentle-shell --link` reuses `~/.pi/agent` as-is. Run `gentle-shell home link` to make `--link` the default, or `gentle-shell home import-pi` to copy your pi sign-ins into the separate home instead ([`home` subcommand](#home-subcommand-and-gentle-shellconfigjson)). Full flags, env vars, and modes: [gentle-shell launcher](#gentle-shell-launcher).
+
+### Path B: inside an existing pi
+
+```bash
+pi install npm:gentle-pi
+```
+
+This installs the current npm release from the `latest` dist-tag. For a reproducible pin, use `pi install npm:gentle-pi@<version>` with a published version. Restart Pi after installation, then run `gentle-ai sync`. Check the [published releases](https://github.com/Gentleman-Programming/gentle-shell/releases) for version-specific runtime and provider-contract pairing.
+
+### Source checkout
+
+This checkout declares its `gentle-pi` version in [`package.json`](../package.json), with a package-local Gentle AI `v4.3.1` pin. Checkout metadata alone is not proof of npm publication; verify the registry version and its release workflow.
+
+### Pi compatibility
+
+The current package requires Pi 1.2.0 or newer and Node >=22.19.0. Development tests resolve Pi through the open `>=1.0.0` development range. The private Vim editor adapter admits only the audited Pi `0.99.1`, `0.99.2`, `1.0.0`, `1.1.0`, `1.2.0`, `1.3.0`, `1.4.0`, and `1.5.0` releases; any other release keeps ordinary prompt editing until its editor is audited. Use the latest Pi release; gentle-pi does not update your installed Pi automatically. Children, including any `GENTLE_PI_AGENTS_PI` override, must emit `agent_settled`: `agent_end` records a run's output but is not completion because retries or queued continuations may follow.
+
+The [`v2.6.0` release](https://github.com/Gentleman-Programming/gentle-shell/releases/tag/v2.6.0) added persistent registered worktrees and grouped `/gentle:changes` views; fuller workspace interaction details are in the [Gentle Shell reference](gentle-shell.md). It also adds named atomic `/gentle:profiles`, native review intended-untracked selection and provider continuations, and opt-in custom ask responses. Pi recognizes its global Git-managed package path; subsystems install with explicit recovery guidance when npm lifecycle work was skipped. Windows keeps child consoles hidden and fixes ownership mode; Gentle Todo keeps the next pending task visible when collapsed.
+
+### Install-time fullscreen
+
+A successful postinstall in Pi's **global npm-managed** `agent-home/npm/node_modules/gentle-pi` or exact **global Pi Git-managed** `agent-home/git/github.com/Gentleman-Programming/gentle-pi` installation persists `"tuiMode": "fullscreen"` in `agent-home/settings.json`, preserving other settings. Agent home resolves through `GENTLE_PI_AGENT_HOME`, then `PI_CODING_AGENT_DIR`, then `~/.pi/agent`. Use `/settings` to switch back to regular; rerunning a recognized postinstall resets it to fullscreen. Existing project overrides still take precedence.
+
+Project-local installs (`pi install -l`), Git installs outside that exact global Pi path, local-path installs, temporary packages, development checkouts, ordinary npm consumers, and pnpm symlink-store packages do **not** receive this change. Updates or installs that do not execute postinstall cannot reassert it; this is not a universal install/update guarantee or a change to historical releases.
+
+Malformed/nonobject JSON, symlink/nonregular settings, unsafe paths, or a busy settings lock fail without replacing settings. The installer coordinates with Pi's cooperative settings lock and uses atomic replacement; it does not guarantee safety against noncooperating writers or malicious concurrent directory replacement. Already-fullscreen settings remain byte-identical. Native installation failure leaves settings untouched; `GENTLE_PI_SKIP_GENTLE_AI_INSTALL=1` skips only native provisioning, not the recognized global fullscreen setting.
+
+### RDD history and default
+
+Native RDD was introduced in `gentle-pi` `v0.15.0` on 2026-07-10 with bounded review transactions. Current releases include native RDD; use the [installation guidance above](#path-b-inside-an-existing-pi) for the current npm release or an explicit version pin. The introduction version is historical context, not a separate stable/unstable release line.
+
+RDD is optional and on by default (since Gentle AI v4.0.0). Open `/gentle:rdd` to inspect the effective mode and deciding source, then explicitly select a repository or machine-wide action. The RDD entry in `/gentle:customize` shows the state checked when the card opened; explicitly applying it closes Customize and opens the same selector with fresh status. Highlighting the entry does not change RDD. Cancelling leaves both unchanged. Repository enable clears a clone-local off but cannot override machine-wide off; machine-wide enable does not clear a clone-local off. `/gentle:review-mode status|enable|disable` retains its existing clone-local behavior. These controls neither grant provider review consent nor change permission modes. The `.git/gentle-ai/candidate-views` parent must sit on a filesystem that honors private POSIX modes (or equivalent Windows ACLs); WSL DrvFS mounts without metadata can reject START before lineage creation.
+
+The source checkout's RDD integration installs Gentle AI only into its private `.gentle-ai/` directory. Darwin and Linux use pinned release assets with asset and executable SHA-256 verification (signed archives for source pin `v4.3.1`; raw prerelease binaries only under a prerelease pin). Windows x64 and arm64 build the exact `v4.3.1` source tag with a local Go 1.25.10+ toolchain, a sealed Go environment, `GOTOOLCHAIN=local`, and `GOSUMDB=sum.golang.org`; it does not download Go automatically (the [installation wizard](install-wizard.md#pinned-go) can put its own pinned Go first on PATH for that build). Go runs in a short private directory under the system temp directory, never inside the package, because a deep pnpm store path pushes Go's working directories past MAX_PATH; a failed build prints its whole cause chain with the failing command's output tail. Windows provenance is Go-toolchain plus SumDB evidence and postinstall tamper detection, **not** Authenticode or protection against a malicious joint binary-and-manifest replacement. Package-private locks coordinate cooperative concurrent or crashed installers; their tombstones fail closed. A malicious same-user process with write access to package-private `node_modules` is outside that protocol because it can already replace package code, binary, or manifest, and portable Node has no pathname-delete CAS. It never uses `PATH` or a global `gentle-ai` installation. For development or offline installs only, set `GENTLE_PI_SKIP_GENTLE_AI_INSTALL=1`; native review operations then fail closed with an actionable `package-local-binary-missing` error. To recover explicitly, if `GENTLE_PI_SKIP_GENTLE_AI_INSTALL` is set, remove or unset it before changing to the installed `gentle-pi` package directory. Then run `node scripts/install-gentle-ai.mjs`. This invokes the package-owned installer without relying on a global binary or npm configuration change. A missing binary can result from skipped lifecycle scripts, but does not prove that lifecycle scripts were disabled.
+
+Recommended companion packages, into the standalone `gentle-shell` home:
+
+```bash
+gentle-shell install npm:pi-intercom
+gentle-shell install npm:gentle-engram
+gentle-shell install npm:pi-web-access
+gentle-shell install npm:pi-lens
+gentle-shell install npm:@juicesharp/rpiv-ask-user-question
+```
+
+`--link` before the subcommand (for example `gentle-shell --link install npm:pi-intercom`) targets `~/.pi/agent` instead of the isolated home.
+
+Or, when `gentle-pi` is installed inside an existing pi:
+
+```bash
+pi install npm:pi-intercom
+pi install npm:gentle-engram
+pi install npm:pi-web-access
+pi install npm:pi-lens
+pi install npm:@juicesharp/rpiv-ask-user-question
+```
+
+Then start Pi in a project:
+
+```bash
+pi
+```
+
+`gentle-pi` installs delegation and review agents at startup. Substantial ODD work tracks progress in a project feature document; no separate workflow setup is required.
+
+### Base references for review
+
+An explicit `baseRef` accepts one of these forms:
+
+- `HEAD`.
+- A full 40- or 64-character commit id.
+- A ref name: a branch, a tag, a remote-tracking ref, or an explicit `refs/...` path.
+
+Abbreviated commit ids are rejected as `base-ref-unresolvable`; a rejected `baseRef` names its accepted forms in the response. Explicit tree ids are not accepted today.
+
+Under the ODD contract, the orchestrator passes the last reviewed boundary as `baseRef` for each work-unit commit or slice, so base refs are routine input, not an edge case.
+
+An orphan branch with commits and no parent has no branch point to name as `baseRef`. Before the first work-unit commit, either:
+
+- Create an empty root commit to open the branch: `git commit --allow-empty -m "chore: open the feature branch"`. The next commit can then use that root commit as its `baseRef`.
+- Omit `baseRef` while the branch is still unborn (no commits yet); the review uses Git's empty tree as the base automatically.
+
+## gentle-shell launcher
+
+`gentle-shell` (installed by `npm i -g gentle-pi`, exposed as the package's `bin`) opens pi with the Gentle Shell package loaded, without installing it into your pi agent or touching its `settings.json`. It is a thin `bin/gentle-shell.mjs` wrapper around the pure, unit-tested `lib/gentle-shell-launcher.ts` (built to `runtime/gentle-shell-launcher.mjs`); the wrapper owns process, filesystem, and child-process wiring only.
+
+```bash
+gentle-shell [options] [-- pi-args...]
+gentle-shell home [link|isolated|<path>]
+gentle-shell [home selectors] setup [--dry-run]
+gentle-shell upgrade [--channel release|main]
+gentle-shell upgrade --rollback
+gentle-shell update [pi|self|--self|--all] [--latest]
+gentle-shell self-uninstall [--dry-run] [--yes] [--include-shared]
+```
+
+### Flags
+
+| Flag | Effect |
+| --- | --- |
+| `--link` | Home is your own pi home: `GENTLE_SHELL_USER_PI_HOME` when a Gentle Shell session recorded it (so `--link` run from inside an isolated session reaches your original pi, not the isolated home), otherwise `PI_CODING_AGENT_DIR` or `~/.pi/agent`. Reuses your existing pi sign-ins, models, and chats; never writes to its `settings.json`. |
+| `--isolated` | Home is `GENTLE_SHELL_HOME` or `~/.gentle-shell/agent`, with its own settings in `~/.gentle-shell/gentle-ai` ([config home](#config-home)); a custom `GENTLE_SHELL_HOME` outside a `.gentle-shell` folder keeps `~/.pi/gentle-ai`. No credential seeding. Default when nothing else is configured. |
+| `--home <path>` | Home is the given directory. |
+| `--package-root <dir>` | Force this directory as the gentle-pi package to load, taking over from any conflicting package the target `settings.json` already declares (see "Loading the package" below). |
+| `--help`, `-h` | Print usage (flags, commands, env vars) and exit 0. |
+| `--version` | Print `gentle-shell <version>`, `pi <version>`, and `home <mode> <dir>`, then exit 0. |
+| `--` | Everything after is forwarded to pi verbatim, even text that looks like a `gentle-shell` flag. |
+
+`--link`, `--isolated`, and `--home` are mutually exclusive; combining two is a usage error, as is `--home` or `--home=` with an empty value. Effective-home precedence: an explicit flag wins, then the persisted `home` subcommand choice, then the `--isolated` default. Every argument gentle-shell does not recognize — `--mode rpc`, `-p "..."`, etc. — is forwarded to pi unchanged.
+
+### Config home
+
+Gentle Shell keeps its settings (profiles, models, banner, vim, permission mode
+and the other `/gentle:*` preferences) in one config home. Every reader uses the
+same rule, in this order:
+
+1. A bundled install: `<prefix>/config/gentle-ai`.
+2. `GENTLE_PI_CONFIG_HOME`, when set and not empty.
+3. The isolated home (`--isolated`, the default) at `<dir>/.gentle-shell/agent`:
+   the `gentle-ai` folder next to it, `~/.gentle-shell/gentle-ai` by default. The
+   launcher tells Pi through `GENTLE_SHELL_CONFIG_HOME`.
+4. Otherwise `~/.pi/gentle-ai`: `--link`, a custom `--home <path>`, a custom
+   `GENTLE_SHELL_HOME` outside a `.gentle-shell` folder (its parent may be any
+   folder, such as your home, so Gentle Shell never claims a `gentle-ai` folder
+   there), and gentle-pi installed inside Pi (Path B).
+
+So a standalone install and a Pi install with gentle-pi no longer share one
+store. Wherever this document names `~/.pi/gentle-ai` for a user setting, the
+isolated home uses `~/.gentle-shell/gentle-ai` instead.
+
+**First launch after the move.** When `~/.gentle-shell/gentle-ai` does not exist
+yet, the launcher creates it (mode `0700`) and copies the regular files from
+`~/.pi/gentle-ai` into it once, printing one line that names both folders. It
+never overwrites, never changes or deletes the source (Pi still uses it), and
+skips symbolic links and subfolders. A failed copy is reported and the launch
+continues. Once the folder exists, nothing is copied again. With an explicit
+`GENTLE_PI_CONFIG_HOME` nothing is copied.
+
+**Files that stay in `~/.pi/gentle-ai`.** The main channel's install-level state
+(`channel.json`, `dev-binary.json`, `main/` and `tools/go`) is written by the
+installer and `gentle-shell upgrade`, outside any session, so it keeps
+`GENTLE_PI_CONFIG_HOME` or `~/.pi/gentle-ai` for every home and is not copied.
+Gentle AI runs that Gentle Shell starts from the isolated home get the same
+folder the bundled way (`GENTLE_AI_PI_CONFIG_DIR`, plus `GENTLE_PI_CONFIG_HOME`
+set to its parent for Gentle AI 4.0.0). A Gentle AI release that ignores both
+still writes `persona.json` to `~/.pi/gentle-ai`, so `setup` restores both
+persona files.
+
+### `home` subcommand and `~/.gentle-shell/config.json`
+
+`gentle-shell home` alone prints the effective mode and directory (`<mode> <dir>`) without persisting anything. `gentle-shell home link`, `gentle-shell home isolated`, or `gentle-shell home <path>` persists that choice to `~/.gentle-shell/config.json` as `{"home": "link" | "isolated" | "<path>"}`, so a later plain `gentle-shell` picks it up; a flag on a given invocation still overrides the persisted config without rewriting it.
+
+`gentle-shell [--isolated | --home <path>] home import-pi [--dry-run]` copies your pi sign-ins into a separate home instead of sharing them with `--link`. The source is your own pi home, resolved like `--link` (`GENTLE_SHELL_USER_PI_HOME`, then `PI_CODING_AGENT_DIR`, then `~/.pi/agent`); the target is the resolved home (a flag, then the persisted choice, then the isolated default). It copies only:
+
+- `auth.json`, written with mode `0600`, and `mcp.json`, with its source mode, each only when the target has no such file;
+- `defaultProvider`, `defaultModel` and `defaultThinkingLevel` from the source `settings.json`, each only when the target `settings.json` lacks that key. Every other target key stays as it was; the file is rewritten atomically, and only when a key is added.
+
+It never overwrites, never follows a symbolic link, never copies `packages`, `extensions`, `theme`, `npmCommand`, caches (`mcp-cache.json`, `mcp-npx-cache.json`), `AGENTS.md` or sessions, and never writes to the source. A target that does not exist yet (or is empty) is first set up exactly as a first launch would ([first run](#first-run-in-an-isolated-or-custom-home)), so the imported files never make it look foreign and the next launch still provisions it. It prints one line per item (`copied`, `already present, kept`, `not found`, `skipped: <reason>`, `failed: <reason>`) and a summary; `--dry-run` prints the same plan and writes nothing. It exits 0 when it succeeds or has nothing to do, 1 when a write fails (items already copied stay) or when the target is your pi home itself (`--link`, or a `--home` pointing at it), and 2 on any other argument. Running it again is safe.
+
+Tradeoff: `--link` shares one credential store with pi; `import-pi` duplicates it. A provider that rotates refresh tokens on use may sign out whichever copy refreshes second; run `/login` again in that home.
+
+### Managing packages
+
+`gentle-shell install npm:<pkg>`, `gentle-shell remove ...`, `gentle-shell list`, `gentle-shell update ...`, `gentle-shell config`, and `gentle-shell auth ...` run pi's own commands against the resolved home — the `--isolated` home by default, or your own pi home with `--link`. A launcher flag before the subcommand (`--link`, `--isolated`, `--home <path>`) still selects which home the subcommand runs against. Running `gentle-shell install npm:gentle-pi` inside the isolated home is unnecessary: the launcher already loads the Gentle Shell package itself (see "Loading the package" below).
+
+`gentle-shell list` and extension updates follow that same home selection. `gentle-shell update --extensions-only` preserves Pi's extension-only command; `--extensions`, package targets, and model updates also stay with Pi. In a bundled Shell-owned home, `gentle-shell update --extensions` also updates the unversioned Shell-managed `gentle-engram` Pi package. Pi's normal startup package-update notice lists it when newer; opening Shell does not install that update. The native Engram executable is separate.
+
+`gentle-shell update` updates the selected Pi through its verified npm or pnpm global owner, avoiding Pi's self-update refusal for pnpm v11 linked stores. Ownership requires successful global listing JSON, an exact canonical listed package-root/CLI match, and binding to the selected runtime. An adjacent peer (the launcher's `bundled` runtime) is supplied by the exact listed `gentle-pi` package: that Shell package is reinstalled at its current version so the manager re-resolves the peer (a main-channel `<version>-main.<sha12>` Shell, which is never published, from the tarball `gentle-shell upgrade --channel main` packed under `<config home>/main/packages/` (an absolute `GENTLE_PI_CONFIG_HOME`, else `~/.pi/gentle-ai`; a relative override is refused), refusing without installation when it is missing and naming `gentle-shell upgrade --channel release` then `--channel main` as the rebuild path), and a separate global Pi is never the target, because updating it leaves the peer a Shell install runs unchanged. A `PATH` or `GENTLE_SHELL_PI` runtime is supplied only by its own listed global Pi package; when that executable is a package-manager shim (pnpm's POSIX shim, a `.cmd`), Shell follows the single `dist/bundle/cli.js` it names, relative to the shim's directory, and refuses shims naming none or several. Pi and Shell are never installed together in a comma group, and unrelated packages are never reinstalled. Merely residing under `PNPM_HOME` proves nothing. Adjacent peers resolve where the package manager places them: nested under the Shell package (npm), beside it in pnpm's linked store, or in the global group's own `node_modules`. Linked Pi entries remain rejected. A source-linked Shell instead updates its exact checkout's local Pi, without replacing its global link: single-project Git roots only, an npm/pnpm `packageManager` declaration (pnpm at least that version; npm exact) and matching available version, a direct registry Pi range, and one matching lockfile are required. Multi-project/ancestor workspaces and conflicting lockfiles refuse before installation. Root-only pnpm configuration is retained after read-only manager queries prove a sole root project; updates do not ignore or rewrite its security policy. The named update disables lifecycle scripts and range changes, but may update Pi's transitive lockfile graph. pnpm updates additionally require that the actual old global group contains only the target top-level package: aggregated listings may contain other, separate groups, but shared groups are rejected because pnpm can remove the whole old group. Unknown, malformed, failed, or ambiguous ownership refuses before installation; update unsupported layouts with their supplying package manager.
+
+After a successful install, Shell reads the supplied Pi version back from a fresh global listing and reports it, naming the previous version when it changed. An unchanged pnpm result also names pnpm's `minimumReleaseAge` setting: pnpm installs only releases older than that age (pnpm 11 defaults to 4320 minutes), so a very recent Pi release is picked up once it is old enough; Shell reports the rule rather than overriding it. Global listings, manager version probes and global installations run from the system temporary directory, so a project's `packageManager` pin in the current directory never changes which pnpm answers. A verified source update alone runs from the checkout and rechecks the Shell link, unchanged manifest and adjacent Pi there instead of reading a separate global Pi. When the version cannot be read back, the output says so and points at `gentle-shell --version`.
+
+Prefix-bundled `gentle-shell update` selects the newest published stable Pi without the release's verified lockfile; `--latest` is an alias (see [`upgrade`](#upgrade-subcommand-and-channels)). Outside a bundled install `--latest` uses the ordinary managed update, including a source checkout's declared range. `update --all` forwards extension updates after the Pi attempt, and reports a Pi failure even if extensions succeed. Explicit extension pins remain pinned. Managed Pi self updates reject `--force`; ownership refusals stop without mutation.
+
+### `setup` subcommand
+
+**Bundled Engram safety:** Shell shares the global Engram server on `127.0.0.1:7437`, like other agents' hooks. A running server is reused only through Engram's exact `GET /compatibility` ready contract; when nothing listens, Shell starts the checksum-pinned Engram 3.5.2 core as a detached `engram serve` (Engram's default port and `~/.engram`, no update check, no GitHub tokens) and waits up to 10 seconds for that same contract, so you never start the server yourself. An existing store does not disable memory by itself, whoever created it; only a database header from a newer Engram schema keeps Shell from starting its older core on it. Anything else (a server that does not verify, a token-protected or unknown server, a start that fails or never reports ready) disables memory for that launch with an explanation of the missing safety evidence and backup precautions (matching versions or updating alone do not prove compatibility); Shell never stops or replaces a listening server. Shell always points `ENGRAM_BIN` at its own guard (`bin/engram-guard`), which fails before any store access for every gentle-engram from 0.4.1 on, whichever Pi route loaded it, so memory reaches the store only through the verified server's `ENGRAM_URL`. No compatibility is inferred from versions. An explicit `ENGRAM_BIN` or `ENGRAM_URL` is never replaced and bypasses the guard. Shell verifies the selected companion's `engram.startupPolicy: 1`; a failed check is reported and Shell still starts. In a Shell-owned home, the old `npm:gentle-engram@0.4.2` registration is migrated to unversioned `npm:gentle-engram` through Pi's package manager without installing an update. Linked/foreign homes and other pinned or local selections are preserved. See [bundled startup safety](bundled-install.md#engram-startup-safety) for the full rules and known limits.
+
+The memory decision never skips or fails bundled setup: it publishes the verified core and runs Gentle AI, then only selects the Engram environment (the guard as `ENGRAM_BIN`, plus `ENGRAM_URL` when memory is allowed) for setup children and the launched Pi. `--dry-run` installs nothing. Non-bundled setup keeps the existing behavior described below.
+
+`gentle-shell setup` provisions the resolved home — the same home selection as any other invocation, `--isolated` by default, or `--link`/`--home <path>` when given before `setup` — with the same companion packages a regular `gentle-ai install --agent pi` installs into a Pi agent home: `npm:gentle-pi`, `npm:gentle-engram`, `npm:@juicesharp/rpiv-ask-user-question`, `npm:pi-web-access`, `npm:pi-btw`, plus running `pi-engram init`. It never touches `~/.pi/agent` unless you pass `--link`.
+
+It resolves the home and the pi runtime exactly as a normal run does (including the isolated/`--home` bootstrap and the pi version gate), then runs the package-local pinned gentle-ai binary — `gentleAiBinaryPath()` from `lib/gentle-ai-binary.ts`, never a `gentle-ai` found on `PATH` — as:
+
+```bash
+<package>/.gentle-ai/v<version>/gentle-ai install --agent pi --scope global [--dry-run]
+```
+
+with `PI_CODING_AGENT_DIR` and `GENTLE_PI_AGENT_HOME` set to the resolved home, and the resolved pi runtime's directory prepended to `PATH`. Gentle AI requires a `pi` on its `PATH` and runs `pi install npm:gentle-pi` with it, so when the resolved Pi is not itself that `pi` (the Pi package next to gentle-pi, run as `node <cli>`, or one given through `GENTLE_SHELL_PI`), `setup` first writes a private temporary `pi` (`pi.cmd` on Windows) that runs exactly that runtime, puts its folder first, and removes it when gentle-ai exits; Gentle AI then never needs another `pi` on your `PATH`. `--dry-run` is forwarded to gentle-ai unchanged. Output streams straight through (`stdio: "inherit"`), and `gentle-shell setup` exits with gentle-ai's own exit code. If the package-local gentle-ai binary is missing, `setup` installs it itself (by running its own `scripts/install-gentle-ai.mjs` postinstall) before giving up — the postinstall never runs when `npm install`'s lifecycle scripts were disabled (for example under `ignore-scripts=true`) — unless `GENTLE_PI_SKIP_GENTLE_AI_INSTALL=1`, in which case it exits 1 with the same actionable message it always did.
+
+Requires the package-local gentle-ai pin at v3.6.0 or newer — the pin that adds `PI_CODING_AGENT_DIR` support to `gentle-ai install`. `setup` enforces this before spawning anything: an older pinned gentle-ai ignores that variable and would silently install into `~/.pi/agent` instead of the target home, so `setup` exits 1 with `gentle-shell: setup needs the package-local gentle-ai v3.6.0 or newer (pinned: <version>); this build cannot provision a home without touching ~/.pi/agent` instead of spawning it.
+
+`setup` runs gentle-ai with `GENTLE_AI_PI_EXCLUDE_PACKAGES=npm:gentle-pi` (merged with any value you already set), so a Gentle AI that supports package exclusion (gentle-ai #5503) never installs the launcher-owned `npm:gentle-pi` at all. An older Gentle AI ignores the variable and its managed Pi stack declares `npm:gentle-pi` itself in the home's `settings.json` as part of that install. Once gentle-ai exits 0, `setup` removes any such declaration again immediately: this launcher always loads its own gentle-pi (its own package root, or a take-over — see "Loading the package" below), never the one gentle-ai's stack just installed, so leaving that declaration in place would let the home drift onto whatever gentle-pi npm last installed — or, for a developer running from a source checkout, onto the published npm package — instead of the running launcher's own copy. `setup` also removes `npm:@juicesharp/rpiv-ask-user-question` the same way, if gentle-ai declared it: that package conflicts with gentle-pi's own first-party `ask_user_question` tool, and Pi refuses to load two providers for the same tool name (tracked upstream as gentle-ai #4820). `--dry-run` only reports both pending removals instead of running them. A home only ever keeps a `npm:gentle-pi` declaration — and so only ever stops getting the launcher's own injection (see "Loading the package" below) — when something puts it back after `setup` runs: a hand-edited `settings.json`, or `gentle-shell install npm:gentle-pi` run manually; in that case the home behaves like a regular Pi agent home with gentle-pi installed, and `gentle-shell update npm:gentle-pi` updates it like any other package.
+
+**Configuring MCP servers**: `gentle-shell mcp <command>` runs Pi's own `mcp` command against the resolved home, so a standalone install configures MCP without a separate `pi` command. For example, `gentle-shell mcp add <name> -- <command> [args...]` adds a stdio server, `gentle-shell mcp add <name> --url <url>` adds a remote one, and `gentle-shell mcp list` shows what the home's `mcp.json` defines. Restart Gentle Shell to load new servers.
+
+**MCP connection status for extensions**: [Observe native MCP status](mcp-status.md) documents the sanitized snapshot/event API, feature detection on older Pi builds, and the isolated maintainer integration check. Configured counts and registered tools are not connectivity evidence.
+
+**MCP migration**: Pi >= 0.99.0 provides built-in MCP; gentle-ai retires `pi-mcp-adapter` instead of installing it. After successful setup and package cleanup, Gentle Shell warns on stderr if `settings.json` still contains `"-builtin:mcp"`, `mcp.json` defines servers, and no active adapter remains. The warning names both files and the entry to remove. Setup never removes that entry or edits `mcp.json`: disabling MCP may be intentional. To enable those servers, remove only `"-builtin:mcp"` from `extensions` in the named `settings.json`, preserve other entries, and restart Pi. A declaration with `autoload: false` and no enabling extension patterns, an empty `extensions` list, or an ordinary `extensions: ["!**"]` filter without force-includes is inactive. Other nonempty filters require matching actual package resources, so setup reports uncertain adapter activity instead of silently treating the adapter as active. This read-only check also runs after automatic provisioning, but not during `--dry-run`. Errors encountered by the diagnostic produce an inspection warning without changing a successful setup's exit code; existing install and cleanup failures still propagate normally.
+
+**Known limitation**: the pinned gentle-ai writes its persona file to the shared `~/.pi/gentle-ai/persona.json` without honoring `PI_CODING_AGENT_DIR` (for the isolated home it may also write `~/.gentle-shell/gentle-ai/persona.json`; both are restored), so the persona is shared across every home `gentle-shell setup` provisions, not per-home. `setup` keeps that file byte-identical across the run regardless — snapshotting it before spawning gentle-ai and restoring it afterward, in manual, `--dry-run`, and automatic first-run modes alike — because the pinned gentle-ai still writes the Pi persona outside `PI_CODING_AGENT_DIR`. gentle-ai also records the running binary's managed-asset digest in the shared `~/.gentle-ai/state.json` (`managed_asset_digest`), again regardless of `PI_CODING_AGENT_DIR`, so a `setup` run otherwise leaves the user's own (unrelated, on-`PATH`) gentle-ai reporting its managed assets as outdated and demanding `gentle-ai sync`. `setup` restores just that one field afterward, the same way and in the same modes — but never the whole file, since `state.json` also carries fields (like the installed-agents list) the pinned gentle-ai is meant to update, and it never creates or deletes `state.json` itself.
+
+**Test/development only**: `GENTLE_SHELL_GENTLE_AI_BIN` overrides which gentle-ai executable `setup` runs, bypassing the pinned package-local resolution. `GENTLE_SHELL_GENTLE_AI_PIN` overrides the pin version `setup` (and automatic first-run provisioning, below) checks against `MIN_SETUP_GENTLE_AI_VERSION` (3.6.0), independent of `GENTLE_SHELL_GENTLE_AI_BIN`. `GENTLE_SHELL_GENTLE_AI_INSTALLER` overrides the script path `setup` runs to self-heal a missing package-local binary, instead of the real `scripts/install-gentle-ai.mjs`. `GENTLE_SHELL_CONFIG` overrides the launcher config.json path (normally `<homedir>/.gentle-shell/config.json`), read and written by the `home` subcommand and by automatic first-run provisioning's marker. `GENTLE_SHELL_AUTO_SETUP_TIMEOUT_MS` overrides automatic first-run provisioning's 15-minute per-child timeout ceiling (manual `setup` never has one). All five exist for the test suite and for exercising a different gentle-ai build/pin/installer/config/timeout; end users never need them.
+
+**Where the plugin list comes from**: the companion list above is not maintained in gentle-shell itself — it is the managed Pi stack of the pinned package-local gentle-ai (gentle-ai's own managed sources, plus whatever it has already retired). Over time, third-party plugins in that stack get replaced by native Gentle Shell features — already done for `rpiv-todo` and `npm:@juicesharp/rpiv-ask-user-question` — so a gentle-ai release retires a plugin, gentle-pi bumps its pinned gentle-ai version, and the next `gentle-shell` launch sees the pin change (see "First run in an isolated or custom home" below), re-runs the setup flow, and gentle-ai prunes the retired package from the home. `gentle-shell`'s own post-install removal of `npm:@juicesharp/rpiv-ask-user-question` above is a stopgap for homes provisioned before that gentle-ai retirement ships.
+
+### pi runtime resolution
+
+1. `GENTLE_SHELL_PI` — path to a pi executable, when set to a non-empty value.
+2. The bundled `@earendil-works/pi-coding-agent` resolved next to gentle-pi (`dist/bundle/cli.js`, run with the current `node`), when installed as its optional peer dependency.
+3. `pi` on `PATH`.
+
+Adjacent resolution uses Pi's public ESM entry, then verifies the canonical package root, package name and declared `pi` bin. Only a genuinely absent optional peer permits PATH fallback; an invalid installed package fails rather than silently selecting another runtime. Pi AI and TUI are optional `"*"` host peers, not runtime dependencies, so managed extensions use the host's classes and registries. The launcher still gates the actual runtime version before home bootstrap. This is a one-time baseline upgrade, not an auto-updater.
+
+If none resolve, `gentle-shell` exits 1 naming all three options. Once a runtime is found, its `pi --version` must be at least `1.2.0` (the coding-agent peer minimum): an older version exits 1 naming the found and required versions, and unparsable `--version` output exits 1 naming the required minimum.
+
+### Environment variables
+
+| Variable | Effect |
+| --- | --- |
+| `GENTLE_SHELL_PI` | Overrides pi runtime resolution (see above). |
+| `GENTLE_SHELL_HOME` | Overrides the isolated home directory (default `~/.gentle-shell/agent`). |
+| `PI_CODING_AGENT_DIR` | Read to resolve the `--link` home when `GENTLE_SHELL_USER_PI_HOME` is unset; also set on the pi child process to the effective home. |
+| `GENTLE_SHELL_USER_PI_HOME` | Set on the pi child process to your own pi home (recorded before isolating). Read back first to resolve the `--link` home and by `/gentle:stats`, so a nested `gentle-shell` keeps pointing at your original pi. |
+| `GENTLE_PI_AGENT_HOME` | Set on the pi child process to the effective home; gentle-pi's own home resolution reads it back. |
+| `GENTLE_SHELL_CONFIG_HOME` | Set on the pi child process only for the isolated home, to its config folder ([config home](#config-home)); removed for `--link`, `--home` and bundled launches. |
+| `GENTLE_PI_CONFIG_HOME` | Your own override of the config home for every mode except a bundled install; outranks the isolated home's folder. |
+| `GENTLE_SHELL_NO_AUTO_SETUP` | Set to `1` to skip automatic first-run provisioning (see "First run in an isolated or custom home" below). |
+| `ENGRAM_STARTUP_POLICY` | Bundled startup recomputes `allow` or `disabled` from safety evidence. Explicit empty/invalid values remain disabled; user `allow` does not override unknown data. Standalone provider behavior with the variable absent is unchanged. |
+| `ENGRAM_STARTUP_NOTICE` | Display-only recovery guidance; never executed. |
+| `ENGRAM_BIN`, `ENGRAM_URL`, `ENGRAM_PORT`, `ENGRAM_DATA_DIR`, `ENGRAM_DATABASE_URL`, `ENGRAM_SERVER_MODE` | Explicit selections are not probed by Shell and keep bundled memory disabled. An explicit `ENGRAM_BIN` or `ENGRAM_URL` is never replaced and bypasses the guard (an `ENGRAM_URL` alone still gets the verified core, or the guard, as `ENGRAM_BIN`); without them, bundled Shell sets `ENGRAM_BIN` to the guard and, for verified reuse, `ENGRAM_URL`. |
+
+### Loading the package
+
+Unless the target home's `settings.json` already declares gentle-pi, every invocation injects `-e <package root> --theme <root>/themes --skill <root>/skills --prompt-template <root>/prompts` ahead of the forwarded arguments, so the Gentle Shell extensions, themes, skills, and prompt templates load without a separate `pi install`. Every mode — `--link`, `--isolated`, and `--home <path>` — consults the home's own `settings.json` for a declaration; an isolated or `--home` home only ever carries one by running `gentle-shell setup` (see above), which installs `npm:gentle-pi` into it, or by hand-editing `settings.json`. A home without any declaration always gets the plain injection — except when the forwarded arguments start with one of pi's own subcommands (`install`, `remove`, `uninstall`, `update`, `list`, `config`, `auth`): pi dispatches those on `argv[0]` before it parses any flags, so the injection — and any take-over below — is skipped entirely and pi sees the bare subcommand, e.g. `gentle-shell install npm:x` runs exactly `pi install npm:x`. A subcommand never triggers a take-over, even against a home whose settings declare a conflicting gentle-pi; see "Managing packages" above.
+
+A declaration is recognized either as `npm:gentle-pi[@version]` in the `packages` array, or as a local path package (string or `{"source": "..."}` entry, relative or absolute) whose own `package.json` names it `"gentle-pi"` — the shape produced when gentle-pi is developed from a checkout and referenced by path in `settings.json` instead of installed via `pi install npm:gentle-pi`.
+
+- **A pi subcommand as the first forwarded argument**: no injection and no take-over at all, regardless of any declaration — pi must see the bare subcommand as `argv[0]`.
+- **npm declaration matching this launcher's own install**: no injection — pi already loads gentle-pi from the declared package.
+- **No declaration at all, or a path declaration that resolves (after `realpath`) to this launcher's own package root**: the same plain injection as above.
+- **A declaration that resolves to a *different* gentle-pi** (a different checkout declared by path, for example) **— take-over**: `gentle-shell` prints `taking over gentle-pi from <declared source> for this run (settings unchanged; its skills, prompts, and themes still load alongside this launcher's)` to stderr, then runs pi with `--no-extensions` followed by an explicit `-e <dir>` for every *other* package already in settings (npm entries resolve to `<agent dir>/npm/node_modules/<name>`; path entries resolve relative to the settings file), then loose extension entries for `<agent dir>/extensions` and the project-local `<cwd>/.pi/extensions` (each candidate directory only consulted when it already exists), and finally its own `-e <package root> --theme ... --skill ... --prompt-template ...`. `settings.json` itself is never modified, and every `-e` path — including the launcher's own package root — is injected at most once even if it would otherwise repeat.
+
+  A declared *other* package whose resolved directory does not actually exist (a hand-edited `settings.json`, a failed or interrupted `pi install`, or an npm store laid out anywhere other than `<agent dir>/npm/node_modules`) is skipped with a stderr warning naming the source and the resolved path, instead of being handed to pi as an unresolvable `-e` that would fail the whole launch with "Cannot find module".
+
+  `--no-extensions` disables pi's normal directory-discovery pass, and pi's `-e` flag hands a path straight to its module loader with no discovery of its own — passing a loose extensions directory as-is via `-e <dir>` fails with "Cannot find module" unless that directory is itself a self-contained extension. So each loose candidate directory is resolved before injection: a directory that is itself a self-contained extension (a `package.json` declaring a `pi.extensions` manifest) is passed through as a single `-e <dir>`; otherwise its direct `*.ts`/`*.js`/`*.mjs` files — including a root-level `index.ts`/`index.js`, which is just another loose file — and any `<subdir>/index.ts`/`index.js` are discovered individually — mirroring pi's own directory scan — and each is injected as its own `-e <file>`. Hidden entries (dotfiles) and `*.d.ts` declaration files are skipped, since neither was ever a runnable extension.
+
+  A git-sourced other package is skipped with a stderr warning, since its install directory cannot be derived without pi's own package manager; an object entry with `extensions` or `autoload` filters is still included but warned about, because the take-over cannot honor those filters for extension discovery — that package's skills, prompts, and themes still load normally through settings discovery, which `--no-extensions` does not affect.
+
+  **Known limitation**: the take-over never removes the original declaration from `settings.json`, so its skills, prompt templates, and themes are still discovered alongside this launcher's own — only its extensions are replaced by `--no-extensions` plus the injected `-e` flags above.
+- **`--package-root <dir>`**: forces a take-over using `<dir>` as the package root, even when settings already declare a matching `npm:gentle-pi`, or when there is no declaration at all. Use it to test a different gentle-pi checkout against a home whose settings already point at another one. Has no effect when the forwarded arguments start with a pi subcommand, since a subcommand skips the take-over entirely. This *forcing* behavior — a take-over with no matching declaration required — is only ever reached for `--link`: with `--isolated` or `--home <path>`, `--package-root` still changes which directory is injected, but on its own it goes through the same plain injection as "no declaration at all" above — no `--no-extensions`, and no other-package or loose-extension re-injection. A settings.json declaration in an isolated or `--home` home (one `gentle-shell setup` installed, or a hand-edited path entry) still triggers its own take-over there exactly as it would for `--link`, independent of `--package-root`. When that declaration is present and the home is not `--link`, `--package-root` has no effect at all — `gentle-shell` prints one stderr warning naming both the home and the ignored directory instead of silently dropping the flag. `--package-root` must also name an existing directory; a missing or non-directory path fails fast with a clear error instead of launching pi with unresolvable flags.
+
+This take-over exists because two gentle-pi copies loaded at once — the declared one plus this launcher's own injection — register the same tools and extensions twice, which pi reports as tool conflicts (for example `Tool ask_user_choice conflicts with ...`).
+
+### `upgrade` subcommand and channels
+
+**Availability:** this subcommand was added on main in commit `96ff045a8`.
+No published `gentle-pi` release through v4.0.0 contains it; a minimum supported
+release version has not been published yet. Package version alone is not enough:
+a main build with the change can still be based on version 4.0.0. Older launchers
+forward `upgrade` to Pi as an ordinary argument, opening a session with it as the
+initial prompt. The `--channel` examples below also require a supporting build.
+
+#### Updating an installation without `upgrade`
+
+Use the installer from a fresh main checkout rather than invoking the old launcher:
+
+```bash
+git clone --branch main https://github.com/Gentleman-Programming/gentle-shell.git
+cd gentle-shell
+
+# macOS and Linux
+sh scripts/bootstrap.sh
+
+# Windows (cmd)
+scripts\bootstrap.cmd
+```
+
+Use a new checkout directory if `gentle-shell` already exists. The bootstrap
+opens the browser installation wizard; it detects the installed Gentle Shell
+and shows the update plan before you confirm. Choose **Latest release** to stay
+on stable, or **Latest main** to install the command from main. Updating to the
+current release does not add `upgrade`; switching back to it from main also
+removes access to the command. Repeat this bootstrap procedure for releases
+without it. If the installer cannot attribute the existing installation to npm
+or pnpm (for example, an `npm link` checkout), it leaves that installation
+untouched and explains why; see the [installation wizard](install-wizard.md).
+
+Do not substitute `gentle-shell update`: that updates the selected Pi owner,
+not this Gentle Shell channel upgrade/bootstrap operation.
+
+#### Behavior on supporting builds
+
+`gentle-shell upgrade` updates Gentle Shell along its channel, recorded in
+`channel.json` under `GENTLE_PI_CONFIG_HOME` (default `~/.pi/gentle-ai`); no record
+means **release**. It runs before any Pi runtime check, since it may replace this
+package.
+
+- **release**: installs the latest `gentle-pi` from the npm registry with the
+  package manager that owns this installation (`pnpm add -g … --allow-build=gentle-pi`
+  under PNPM_HOME, otherwise `npm install -g …`). Already current: it says so and
+  changes nothing.
+- **Pi with pnpm**: pnpm 11 installs each global add as its own group, and it may
+  give `gentle-pi` a newer Pi as an adjacent peer than the one the installer
+  pins; Gentle Shell runs that adjacent Pi when it meets the minimum. Pi and
+  Gentle Shell stay in separate groups, so Pi's own `pi update` never removes
+  Gentle Shell.
+- **main**: builds Gentle AI from the latest `main` commit with Go and installs
+  Gentle Shell packed from the latest `main` commit (`<version>-main.<sha12>`),
+  rebuilding only what moved since the recorded commits. The Gentle AI build is
+  used through the dev-binary override. Needs pnpm on PATH. Gentle AI builds with
+  your Go when it reports a stable version that meets the minimum (1.25.10);
+  otherwise (missing, older, or a version it cannot check) with the pinned Go
+  under `<config home>/tools/go`, which `upgrade` downloads and verifies there
+  when the installation wizard did not publish it yet.
+- `--channel release|main` (or `--channel=…`) switches first. Switching to release
+  removes the dev-binary override only when it points at a main build this
+  command made; a binary you registered yourself is kept.
+- On Windows npm and pnpm are `.cmd` shims, which never run through a shell:
+  `upgrade` runs what a recognized shim runs (Node.js with npm's or pnpm's own
+  JavaScript entry, or a native `pnpm.exe`). A package manager that resolves only
+  to an unrecognized shim counts as missing. macOS and Linux are unchanged.
+
+- **Bundled install** (the web installer's own Node, pnpm and Pi): `upgrade`
+  follows the release channel only and refuses `--channel main`. It installs the
+  latest release beside the active version, checks that the new launcher reports
+  exactly that release's Gentle Shell and Pi, and only then switches `current`,
+  keeping two versions. An already current release changes nothing, and a failure
+  leaves `current` untouched. `--rollback` switches back to the previous kept
+  version. Details: [Bundled install](bundled-install.md#gentle-shell-upgrade-in-a-bundled-install).
+- **Migration to the bundled install**: on release, when the latest release
+  publishes the bundled distribution, a global pnpm or npm installation moves to
+  the bundled one. `upgrade` explains the move, installs the bundled prefix and
+  checks its launcher. Then it asks once whether to remove the old global
+  `gentle-pi` with its own manager (default No; without a terminal it only prints
+  the command). If the move fails, it names the step and why, leaves the global
+  package as it is, and updates it the usual way for that run. Your Pi and
+  `~/.gentle-shell/agent` are not touched. An `npm link`
+  is named and keeps the path above. Details:
+  [Migration](bundled-install.md#migration-from-a-global-install).
+
+`gentle-shell update` updates the selected Pi; package updates reach Pi in the
+resolved home. In a bundled install, self-update forms (no target, `--self`,
+`self`, `pi`, `--all`, or `self`/`pi` with `--extensions`) select the newest
+published stable Pi. `--latest` is an alias. The command warns that features
+relying on audited Pi internals (such as Vim) may turn off, then installs without
+the release's verified lockfile, verifies and activates the pair, and keeps the
+previous version for rollback. If the latest tag moves backwards, it changes
+nothing. A later Shell release keeps a newer active Pi without applying the
+release's lockfile to it. `--all` still forwards extensions on Pi failure and
+returns nonzero; explicit extension pins remain pinned. Source-linked updates
+remain constrained by the checkout's declared Pi range.
+In a bundled install Pi and the agent's commands keep your own environment;
+Pi installs packages with Gentle Shell's npm through the `npmCommand` setting
+of its own home. Details: [Bundled install](bundled-install.md#launcher-in-a-bundled-install).
+The browser installation wizard offers the same main channel; see
+[Installation wizard](install-wizard.md#main-channel).
+
+### `self-uninstall` subcommand
+
+`gentle-shell self-uninstall` prints its plan, asks, then removes Gentle Shell's
+own data (`main/`, `channel.json`, its own `dev-binary.json` and `tools/go` under
+the config home, the isolated home and `~/.gentle-shell/config.json`), then the
+`gentle-pi` package with the package manager that owns it, then `~/.gentle-shell`
+when empty. Like `upgrade`, it runs before any Pi runtime check.
+
+- `--dry-run` only prints the plan; `--yes` skips the question (required without
+  a terminal, otherwise it exits 2).
+- The shared Gentle AI configuration in the config home is kept unless you accept
+  a separate question (default No) or pass `--include-shared`.
+- It never touches your Pi home, custom `--home` homes, `~/.gentle-ai` or the
+  tools the web installer added; the plan lists the latter with how to remove them.
+- An installation neither pnpm nor npm owns (an `npm link`, for example) is
+  refused before anything is removed.
+- From the bundled launcher it removes the bundled install instead: the PATH
+  entry its receipt records, then the prefix's own folders; your Gentle Shell
+  home stays unless you accept or pass `--include-shared`. Details:
+  [Bundled install](bundled-install.md#self-uninstall).
+
+`gentle-shell uninstall <source>` stays Pi's own alias for `remove`. Details,
+refusals and exit codes: [Removing Gentle Shell](gentle-shell-uninstall.md).
+
+### First run in an isolated or custom home
+
+The first time `gentle-shell` resolves to an isolated or `--home <path>` home that does not already exist, it creates the directory, writes `"tuiMode": "fullscreen"` and, unless the home's `settings.json` already declares one, `"theme": "Gentleman-Cute"` into its `settings.json`, writes a small ownership marker file at `<home>/.gentle-shell-home` (a one-line JSON object naming the `gentle-pi` version that created it), and prints one hint to stderr pointing at `--link` (and at `gentle-shell home import-pi` when your pi home has an `auth.json`). A `--link` home is never bootstrapped this way — it is assumed to already exist as your pi agent home. Later runs against the same home skip the write and the hint. The default theme is also re-applied after automatic or manual setup if gentle-ai's own managed install wrote a different theme into a home that had none before that run; a home (or `--link`) that already declares its own theme is never touched.
+
+Right after that bootstrap, and on every later launch, a plain `gentle-shell` against an isolated or `--home <path>` home (never `--link`, and never a pi subcommand like `gentle-shell install/remove/list/...`) also runs the same flow as `gentle-shell setup` automatically before starting pi, so you never have to know `setup` exists. It runs when the home has never been provisioned, was provisioned with a gentle-ai pin different from the package-local pin this `gentle-pi` ships — for example after upgrading `gentle-pi` to a version pinned to a newer gentle-ai — or was provisioned by a different `gentle-pi` version than the one now running — for example after `npm i -g gentle-pi` upgrades the launcher itself, so the home re-syncs to match it. A completed run is recorded as `provisioned: {"<realpath of the home>": {"gentleAi": "<pin>", "gentlePi": "<running gentle-pi version>", "at": "<ISO timestamp>"}}` in the launcher's config.json (`~/.gentle-shell/config.json` by default, or `GENTLE_SHELL_CONFIG` when overridden — see "Environment variables" above), preserving every other key already in that file (including the persisted `home` mode and any other home's marker). A marker written before this `gentlePi` field existed always counts as needing provisioning too, so the very next launch backfills it.
+
+Every child process the flow spawns (the gentle-ai installer self-heal, the package-local gentle-ai binary, and the `pi remove` post-install cleanup) has its stdout routed to this launcher's own stderr, together with the flow's own notices, so a headless consumer's stdout — `gentle-shell --mode rpc` or `gentle-shell -p "..."` — stays exactly what it always was: pi's own output, nothing else. The first time it runs in a home you see `gentle-shell: first run in <home>: installing the Gentle AI companion packages (one time; set GENTLE_SHELL_NO_AUTO_SETUP=1 to skip)`; on a gentle-ai pin change you see `gentle-shell: gentle-ai pin changed (<old> -> <new>): updating <home>`; on a gentle-pi version change you see `gentle-shell: gentle-pi changed (<old> -> <new>): updating <home>`; when both changed at once, one line names both.
+
+Automatic provisioning only ever touches a home `gentle-shell` itself owns: the dedicated isolated home, a `--home <path>` (or persisted `home <path>`) that is new or already empty, one carrying the `.gentle-shell-home` ownership marker the bootstrap above wrote (so a `--home` directory whose *first* auto-provision attempt failed — leaving only the bootstrapped `settings.json` and marker behind — is still retried on the next launch instead of being mistaken for a foreign, pre-existing directory), or one this same config marker already recorded as provisioned before (so a later gentle-ai/gentle-pi re-sync still runs). A `--home` that already has content and neither marker — for example pointing at an existing, unrelated directory — is left alone, with one stderr hint (`` gentle-shell: <dir> already has content and was not set up by gentle-shell; run `gentle-shell <home flags> setup` to provision it ``) instead of a silent skip; pointing it at pi's own default agent home is refused the same way even when that directory is empty. `gentle-shell setup` run manually still works against any home — that is explicit intent, not automatic provisioning. A successful manual `setup` (not `--dry-run`) records the same marker, but only for a home automatic provisioning would own by the rules above, so the first launch after the installers' own `setup` does not install the packages again; pi's own default agent home and an unrelated directory are never recorded, and so are never provisioned automatically later.
+
+A failed flow (a non-zero gentle-ai or pi exit, a pin gate refusal, a self-heal that still can't find the binary, or a gentle-ai/`pi remove` child that runs past its timeout ceiling — 15 minutes by default — and gets killed) never blocks the launch: `gentle-shell` prints `` gentle-shell: automatic setup failed (exit <n>); starting anyway and retrying next run. Run `gentle-shell <home flags> setup` to see the full output. ``, followed by the underlying reason on the next line when one is known (a timeout's reason names the *effective* ceiling that fired — `` timed out after 15 minutes `` by default, or in seconds for a shorter override), writes no marker, and starts pi with today's plain injection (the home has no `npm:gentle-pi` declaration to skip it for). The next launch against the same home retries automatically. Manual `setup` never has that ceiling. A spawned child dying by a signal on its own — a crash, an OOM kill, an external `kill`, anything gentle-shell itself did not ask for — is just another failure reported the same way; pi still launches. Only an interrupt actually reaching `gentle-shell` itself (Ctrl-C, or SIGTERM/SIGHUP delivered to the launcher process) is different: it forwards that signal to whichever child is running, kills it, and exits `gentle-shell` itself immediately with the matching signal exit code, without starting pi — you asked the process to stop, not to fall back. This launcher-interrupt tracking covers the package-local gentle-ai install and each `pi remove` cleanup step (both driven through the same async spawn helper); the installer self-heal step that recovers a missing package-local gentle-ai binary runs synchronously and does not carry the same tracking — an interrupt reaching the launcher during that narrow step falls back to Node's default signal handling instead. An otherwise-unexpected failure anywhere in the flow itself (for example an unwritable config.json directory) is also never fatal: it is reported the same way and the launch continues.
+
+Concurrent first runs against the same home are serialized with an exclusive lock file at `<home>/.gentle-shell-setup.lock`: a second `gentle-shell` process started while the first is still provisioning skips auto-provisioning for that run instead of racing gentle-ai's own installer, with one stderr notice. A lock older than 15 minutes is treated as stale — left over from a run that crashed or was killed before it could clean up — and is removed (after re-confirming it is still stale right before removal, so a lock a concurrent process just refreshed is never deleted out from under it) so provisioning can proceed. The lock is always removed once the flow finishes, successfully or not.
+
+Set `GENTLE_SHELL_NO_AUTO_SETUP=1` to skip automatic provisioning entirely and keep today's plain-injection behavior on every launch; `gentle-shell setup` (see above) still works as a manual, explicit step. `--link` is never auto-provisioned — it reuses your existing pi agent home as-is, credentials included.
+
+**Known limitation**: like `gentle-shell setup`, automatic provisioning never copies credentials into the home it provisions — a freshly auto-provisioned isolated or `--home` home still needs its own `/login` (or equivalent) inside pi.
+
+### Windows shims
+
+On win32, when the resolved pi command ends in `.cmd` or `.bat` — the shape an npm-installed `pi` or a `GENTLE_SHELL_PI` override commonly takes — `gentle-shell` runs it through `cmd.exe` as one quoted command line instead of spawning it directly, because current Node releases refuse to spawn a batch file without `shell: true`. This applies to both the version probe and the real launch.
+
+### Postinstall fullscreen guard
+
+gentle-pi's postinstall only writes the global `tuiMode: fullscreen` setting when the running package directory is a pi-managed install: under an `npm/node_modules` segment, or the exact `git/github.com/Gentleman-Programming` Git layout. `npm i -g gentle-pi`, a development checkout, and other layouts are recognized and skipped, logging `gentle-pi skipped enabling fullscreen in global Pi settings: <dir> is not a pi-managed install (npm install -g, a git checkout, and npx all land here).`
+
+### Interactive RPC hosts
+
+Setting `GENTLE_SHELL_INTERACTIVE_HOST=1` on a `pi --mode rpc` process turns on two things a plain headless RPC host does not get: dialogs for `ask_user_question` and `ask_user_choice` (one `ctx.ui.select` prompt per question, looped for multiSelect), and Gentle Agents' helper activity pushed live through `setWidget`. A subagent child spawned by such a host never inherits the variable, so nested children stay headless regardless of their parent. See the [activity payload reference](gentle-agents-activity.md) for the exact schema, field bounds, and shrink order.
+
+### Herdr lifecycle bridge
+
+For an interactive isolated-home launch inside Herdr, Gentle Shell reports its own agent identity: Herdr lists the pane as `gentle-shell`, while plain Pi sessions keep Herdr's managed Pi integration and still show as `pi`. Herdr's managed `extensions/herdr-agent-state.ts` bridge always reports `agent: "pi"`, so `gentle-shell` no longer loads it from the incoming `PI_CODING_AGENT_DIR` or `~/.pi/agent`. Instead it sets `GENTLE_SHELL_HERDR_REPORTER=1`, and the bundled `gentle-herdr-agent` extension sends the same lifecycle reports (session, `working`, `blocked`, `idle`) with source and agent `gentle-shell`, following Herdr's custom-agent contract. Herdr's Pi integration does not need to be installed. The activity summary (`gentle:activity`) uses the same agent label.
+
+Exactly one reporter owns a pane, because Herdr rejects a second source once a session has an owner. When the selected Gentle Shell home already contains the bridge, Pi discovers it anyway: the launcher declares that canonical file as before, does not enable its own reporter, and the pane shows as `pi`. An explicit `-e` that resolves to the bridge is treated the same way. A home whose `settings.json` declares its own `gentle-pi` loads that installed copy instead of this package, and the copy may predate the reporter, so that launch keeps loading the managed bridge exactly as before. Nothing is installed into Herdr, and the launcher never copies the bridge or rewrites home configuration.
+
+Tradeoffs of a custom agent name on Herdr 0.9.3: Herdr keeps no session reference for a custom agent, so it cannot restore a Gentle Shell pane after a Herdr server restart (Pi panes are restored as Pi sessions). Custom resume commands require Herdr 0.10.0 or later and are not reported yet. Herdr operations that need a known agent kind, such as `agent.prompt`, may not apply to `gentle-shell` panes.
+
+The Gentle Shell reporter requires `HERDR_ENV=1`, a nonempty `HERDR_PANE_ID`, an existing Unix socket at `HERDR_SOCKET_PATH`, and terminal stdin/stdout. It is skipped for `--no-extensions`/`-ne`, print/JSON/RPC modes (including interactive RPC hosts), export/model listing, package commands, and Gentle Agents children; the launcher also removes an inherited `GENTLE_SHELL_HERDR_REPORTER` there. `--mode text` still permits an interactive TUI. Linked and explicit custom homes keep their own resource policy, so they keep whatever Herdr integration that home discovers and show as `pi`. User-supplied extension paths remain unchanged, including under `--no-extensions`.
+
+### Herdr native working detection
+
+Outside Herdr, the petal prompt frame replaces Pi's standard loader row. Inside a Herdr pane (`HERDR_ENV=1`, root sessions only), Gentle Shell keeps Pi's native `⠋ Working...` row visible, because Herdr's native Pi manifest detects activity from that row and otherwise reports idle during real runs. Pi shows the row only while the agent is working, so no local `pi.toml` override is needed.
+
+### Herdr blocker events
+
+The Gentle AI adapter projects native `gentle-pi:ask-user-question:blocked`, legacy `rpiv:ask-user:blocked`, choice blockers, guarded confirmations, and every `gentle_review` authorization dialog (review consent and maintenance approvals, labeled `Review authorization awaiting input`) into one balanced `herdr:blocked` interval. It emits one activation when blocking begins and one release after the last source clears, retaining the initial generic label without relabel pulses. Native and legacy questionnaires are tracked independently; duplicate or malformed source events are ignored. Questionnaire answers, prompts, and commands are not included in the projection. This adapter emits local events; transport availability is a separate concern.
+
+## Diagnose STATUS timing without retrying it
+
+Use `/gentle:status-timing enable` to arm an in-memory observer. It does **not** run STATUS, grant review consent, or authorize replay of a stopped review. The next separately authorized review tool call that reaches native STATUS consumes the arm; calls without STATUS leave it armed. Plain and negotiated STATUS are both observed, including STATUS reached inside the controller or capture tools. Background checks outside those tool calls are not observed.
+
+After that call finishes, `/gentle:status-timing show` (or no argument) manually displays the last completed JSON summary. Nothing is automatically exported, published, persisted in settings, or appended to the existing elapsed-timing ledger. `/gentle:status-timing disable` clears the summary and any pending observations. Session replacement, tree navigation, shutdown, and reload also clear the diagnostic and require a fresh opt-in.
+
+| Measurement | Boundary |
+| --- | --- |
+| `host_total_ms` | Wrapped tool dispatch through completion, including synchronous sidebar publication. |
+| `dispatch_ms` | Tool dispatch to the first observed STATUS entry. |
+| `resolution_ms` | Existing executable resolution, including its existing integrity checks; no extra hashing or version process. |
+| `adapter_ms` | Adapter invocation through Promise settlement, including process startup, execution, and Node callback handling. **Not** a measured subprocess lifetime or Node timer-firing instant. |
+| `decode_ms` | JSON parsing and typed response decoding. |
+| `total_ms` | One STATUS entry through return or throw; may also include validation/classification outside the measured sub-stages. |
+| `sidebar_ms` | Synchronous sidebar event emission across the wrapped tool call. |
+| `completion_ms` | Last observed STATUS settlement through wrapped tool completion; can include sidebar time. |
+
+Durations use a monotonic clock. Measurements overlap (`completion_ms` can include `sidebar_ms`) and are not an additive allocation of all host time. A zero stage means it was not reached or had no measurable duration. `clock_unavailable: true` marks unreliable timing if the observer clock fails; the original result or error remains unchanged.
+
+Only durations, effective adapter timeouts, and allowlisted typed outcomes are recorded. Unknown extensible native codes become `other`; arbitrary next actions are omitted. Paths, arguments, credentials, raw output/error text, and session/lineage identifiers are excluded. One summary retains at most eight STATUS samples; further samples set `truncated: true`. At most eight overlapping tool observations are admitted; excess calls run unchanged without diagnostic capture. Overlapping calls never share stage records. Deadlines, retries, protocol bytes, reviewer admission, and authority are unchanged.
+
+Synthetic tests prove the observer's behavior, not the cause of issue #213. A new authorized observation can localize a delay; it does not repair an incomplete authority inventory or justify retrying a non-retryable STATUS.
+
+## Quick start
+
+```text
+/gentle:status          Check package assets and global model config.
+/gentle:doctor          Run read-only diagnostics for assets, config, tools, guards, and Herdr setup.
+/gentle:profiles           Open the models screen on this repository's profile. Subcommands: export <name>, import, publish <name>, export-routing, restore-routing, clear.
+/gentle:persona            Switch between gentleman and neutral persona modes.
+/gentle:background-subagents  Show or set the managed background-subagents policy, with its deciding source.
+/gentle:rdd                  Open the interactive RDD selector for this repository or an explicit machine-wide choice.
+/gentle:review-mode          Show or set the receipt-driven development mode (status|enable|disable).
+/gentle:status-timing        Arm, clear, or inspect session-only STATUS diagnostics (enable|disable|show).
+/gentle:animations         Show or set global animations: quality, performance, or potato.
+/gentle:banner             Configure startup rose, text logo, and color preset.
+```
+
+Typical flow:
+
+1. Open Pi in your repo.
+2. Run `/gentle:status`.
+3. Describe the outcome, for example: "Add CSV export using the existing report filters." ODD explores, implements authorized changes, and checks the result.
+4. For large work, inspect the feature document and evidence; resume reconciles the full file and Engram copy.
+
+## Core workflow
+
+1. **Install and inspect.** Install `gentle-pi`, open Pi in the target repository, then run `/gentle:status` or `/gentle:doctor`.
+2. **Use ODD.** Explore and clarify proportionately; track large work in one feature document with a full Engram recovery copy.
+3. **Build with evidence.** One focused writer implements authorized scope using the forwarded TDD mode/source/runner. Enabled TDD requires observed RED → GREEN → REFACTOR; disabled still runs functional checks. Test presence is not activation.
+4. **Use runtime-owned RDD only when enabled by the user.** Gentle AI supplies any runtime-specific review instructions; this package does not recreate a lifecycle in documentation or prompts.
+5. **Deliver through ordinary repository policy.** Review and Judgment Day evidence is informational only; Pi never creates a delivery route, authorization, target rederivation, or receipt gate.
+
+> **Trust what the system can derive, not what an agent claims.** Agents analyze the candidate. The package-local Gentle AI runtime owns scope, risk, findings, and review authority. Review outcomes inform delivery; ordinary repository policy decides delivery commands. Dangerous-command safety and destructive-review consent remain independent. See Gentle AI's [review authority threat model](https://github.com/Gentleman-Programming/gentle-ai/blob/main/docs/review-authority-threat-model.md) and [Chapter 21 — Verifiable Trust](https://the-amazing-gentleman-programming-book.vercel.app/en/book/Chapter21_Verifiable-Trust).
+
+## How the harness decides what to do
+
+`gentle-pi` routes through the smallest safe workflow:
+
+| Request shape                                                               | Harness                      |
+| --------------------------------------------------------------------------- | ---------------------------- |
+| Small, clear, local edit                                                    | Inline direct work.          |
+| Unknown codebase area or context-heavy investigation                        | Focused subagent delegation. |
+| Substantial authorized work needing recoverable progress | ODD with a feature document and focused workers. |
+
+Size and uncertainty can call for scoped exploration or delegation within ODD. The delegation triggers below select execution topology, not a different development method.
+
+### Delegation triggers
+
+`gentle-pi` keeps the parent session thin and delegates at the narrowest useful point. When the Pi Subagents extension is installed, the preferred runtime is the `subagent_*` tool family because it runs the user's configured project/global subagent definitions and preserves history/background behavior. With the background policy on, delegations default to background mode: the terminal stays free and each result comes back as a message that starts a new turn; task mode is the bounded print-mode alternative and also supports delegations that must ask the user something mid-flight. Background work requires a live interactive/RPC parent; `subagent_run` and `subagent_continue` reject background mode in the single-shot modes `pi -p` and `pi --mode json`, which exit before a later result can be received. If those tools are unavailable, the parent should fall back to Pi's native `Agent` tool or another available delegation mechanism. The requirement is delegation; the runtime is capability-dependent.
+
+| Trigger                                                                                                                     | Required behavior                                                             |
+| --------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Understanding needs more than the evidence budget (one parallel batch of at most 3 calls, ~10k tokens) or more than ~5 sequential lookups | Launch `scout`, `context-builder`, or the closest read-only mapping subagent; it returns a handoff of at most ~2k tokens with `path:line` evidence. Never force delegation for a small targeted question. |
+| A large (tracked) task                                                                                                      | Track it in the logbook; delegate a writer only for a reason (parallel units or context), never for size, file count, or a price ratio. A parallel unit is one independent piece of behavior (its code, tests, and docs together) that needs several minutes of work; smaller or dependent changes stay inline. Each writer prompt names the existing helpers and invariants its unit must reuse. |
+| A change that touches a named high-risk item (assess `escalate`)                                                            | Run an independent verifier after the change's own checks; otherwise the focused test and suite run inline. A native high tier, a failed assessment, or the writer's model never adds one by itself. |
+| Commit, push, or PR after code changes                                                                                      | Follow the loaded native instruction, or ordinary repository policy when none is supplied. |
+| Wrong cwd, worktree/git accident, merge recovery, confusing test/env issue                                                  | Stop, preserve the affected scope, and investigate separately before resuming. |
+| The runtime signals the context backstop | Pause and delegate the next bounded unit that needs several steps (its reads, edits, and checks), or stop and explain the exact blocker. Single small edits and state checks stay inline; keep command output bounded; a small task still runs its focused test and suite inline. |
+
+The primary session also receives a one-shot, nonblocking `Exploration budget:` notice when successful tracked discovery in one request exceeds three lookups or 40,000 UTF-8 output text bytes. Bytes are an approximate evidence-budget signal, not a token count. The covered tools are `read`, `grep`, `find`, `ls`, `mem_search`, `mem_get_observation`, `mem_context`, `codegraph` with `query` or `explore` operation, `codegraph_query`, `codegraph_explore`, and their `mcp__codegraph__`-prefixed CodeGraph names. Bash and PowerShell commands count only when the existing pure phase inference classifies them as `exploring`; commands classified as checking or unknown are excluded. This is an accounting heuristic, never permission to execute a command. Other memory tool names or aliases are not counted. Local CodeGraph init and failure fallback results do not count. Nested discovery counts only under a direct `codemode` or `mcp` call, not inside review, mutation, or verification tools. Counters span tool turns and automatic retries and reset at the next primary request; child and failed results are excluded. Direct and nested results remain untouched; the notice is a separate context message steered into an already-active run before its next model step. It is never sent while idle and never starts a new agent run. It is guidance, not a gate, a delegation guarantee, or permission to bypass mutation guards. Preparation for an already understood authorized inline write remains exempt.
+
+The intended balanced loop for a bounded bugfix is:
+
+```text
+parent git/status + clarify → one worker writes authorized fixes → focused verification → parent reports
+```
+
+`scout`/`context-builder` save parent context by compressing broad exploration. `worker` runs one bounded writer thread; parallel writers only with disjoint Allowed edit surfaces (runtime-enforced) or isolated worktrees.
+
+"Runtime-enforced" means an admission-time check inside one Pi process: when `subagent_run` or `subagent_continue` queues a bounded writer, it is rejected if a queued or running writer of the same parent process, in the same worktree, has an overlapping `## Allowed edit surfaces` entry. Writers are keyed by their canonical worktree root (the realpath of the Git worktree root, or the realpath of the cwd outside Git), so a subdirectory cwd, the root itself, and a symlinked spelling count as one worktree. It is not a write-time guard: it does not stop a writer from editing outside its declared surfaces, and separate Pi parent processes do not coordinate with each other. Overlap is conservative: an entry also covers everything under it, a whole-segment `**` covers any depth, while `**` inside a segment (for example `src/**.ts`) matches within that one segment, like minimatch. Entries compare in Unicode NFC. Entries with bracket classes, extglob groups, backslashes, or nested, unbalanced, or `/`-spanning braces overlap every other entry, and a wildcard never proves two entries disjoint when either contains non-ASCII characters. A quarantined writer whose process exit is unconfirmed keeps its surfaces until the exit is confirmed; a process that survives quarantine keeps both its surface claim and its concurrency slot until its exit is observed, which can last for the parent's lifetime. Any RDD-specific actor behavior belongs to the runtime instruction supplied by Gentle AI, not to this README.
+
+A second admission check stops small-task delegation: in the primary session, a `gentle-ai-worker` or `worker` launch is admitted only when its task or context has a line that starts with `Spec: odd/tasks/<feature>.md` and names a task `T<n>` later on that line (for example `, T2, S3` or the delegation card's `(read until "## Log"). Do T2; S3.`), where the document is a regular file under the writer root's `odd/tasks/` after resolving symlinks, or when the parent's measured context reaches the context backstop described below. Otherwise the launch is rejected with an instruction to write the unit inline. Judgment Day fix agents, read-only subagents, and continuations are not affected.
+
+A third admission check keeps the independent verifier for high-risk changes: in the primary session, a `gentle-ai-verify` launch is admitted only when its task or context has a declaration that starts a line (optionally as a list item) or a sentence (after `.`, `!` or `?` and a space) with `Risk:` and names a Task Size high-risk item first, in the form `Risk: item N` with N from 1 to 6 (several items are allowed, for example `Risk: item 2, item 3 (reason)`), or when it carries a feature-document task line the writer check above accepts, or when the parent's measured context reaches the context backstop. `Risk: none`, a mention inside a sentence, or no declaration is rejected with a message that says no supported `Risk: item N` declaration was recognized in the launch `task` or `context`, and an instruction to run the change's focused test and suite inline, not to retry the launch, and never to add a Risk line or create a feature document only to get a verifier admitted. Subagent children, continuations, writers, Judgment Day agents, native review relays, and read-only explorers are not affected.
+
+The admission only sees launches that happen, so a settle reminder covers the run that declares a high-risk item and never launches the verifier. At `agent_before_settle` in the primary session, when the run's final assistant message declares `Risk: item N` with the same grammar and no `subagent_run` call for `gentle-ai-verify` was attempted during the current user prompt (an admitted or a rejected launch both count), Gentle AI appends one visible reminder and requests one continuation. The reminder names the item, says to launch `gentle-ai-verify` with the `Risk: item N` line in its `task`, states that a user's visual or manual approval does not replace technical verification, and says to close with **Needs your decision** naming the missing proof when verification is unavailable. It is sent at most once per user prompt, so the continuation never loops; a new user prompt resets it, a steer during the run does not. `Risk: none`, no declared item, an aborted or failed run, and subagent children get no reminder.
+
+Every subagent child runs with its own `TMPDIR` (also `TMP` and `TEMP` on Windows): a fresh `gaXXXXXX` directory created under the inherited temp directory (joined to the inherited value as given, never its real path), so scratch the child makes with `mktemp` stays out of the worktree. The runtime removes that directory and everything in it when the child ends, including a failed launch. A quarantined child, whose process exit is unconfirmed, keeps its directory under the system temp directory, because a surviving descendant may still use it; once its exit is proven, including a process group that ends after the child's own exit, the directory is removed and the slot is freed. Each continuation is a new child with a new directory.
+
+After a successful `git commit` run through `bash` in the primary session, the runtime appends one line to the tool result with the branch's authored changed lines since its merge base with the default branch (`origin/HEAD`, else `main` or `master`), counting additions plus deletions (a moved file counts only the lines the move changed) and excluding lock files and binary files, whatever characters their paths hold, and the commit count. The count runs in the directory of `git -C <dir>` under any `cd <dir>` that precedes the commit through `;`, `&&`, `||`, or a new line. Below about 400 lines it says how many remain; past them it says to apply the feature's delivery strategy before the next commit. Commits on the default branch, outside Git, or from subagents get no line, and neither do commits run as background jobs (their result arrives before the commit exists) or a count whose `git` query fails or times out. Only a `git` invocation that starts a shell command or segment is a commit; text that mentions `git commit` (an `echo`, a message) is not. The count runs asynchronously, so the parent stays responsive while `git` answers.
+
+The context backstop is measured, not estimated. Pi's `getContextUsage()` reports the parent's context tokens and the model's context window, and the backstop is `min(absolute cap, fraction × context window)`: 150,000 tokens and 0.15 by default, overridable with `GENTLE_PI_CONTEXT_BACKSTOP_TOKENS` (a positive number of tokens) and `GENTLE_PI_CONTEXT_BACKSTOP_FRACTION` (greater than 0, at most 1); invalid values keep the defaults. The cap holds for any model because carried context is paid again on every remaining turn whatever the provider; the fraction holds because answer quality and headroom depend on how full the window is, so a window reaches the backstop at 15% of its size until the cap applies (about 41k for a 272k window; the 150,000-token cap from a 1M window up). The 0.15 default comes from the bench: on a wide five-feature task, delegating at that point cost less and finished sooner, while small tasks never reached it. An unknown window leaves only the cap; unknown tokens (for example right after compaction, before the next response) never count as reaching it. In the primary session, the first tool result after the measured context reaches the backstop gets one appended notice with the measured tokens, the percent of the window, and the threshold, telling the parent to delegate the next bounded unit that needs several steps with a short handoff while single small edits and state checks stay inline. The tool output and structured content are kept and the error flag is never changed; a commit result carries the slice line first. The notice is sent once per crossing and re-armed when the measured context drops below the backstop again, for example after compaction. Subagents never get it. The writer and verifier admission checks above use the same threshold.
+
+### Session scratch and artifact ledger
+
+At primary session start the runtime creates a private `gpXXXXXX` directory under the inherited temp directory and points the Pi process's `TMPDIR` (also `TMP` and `TEMP` on Windows) at it, spelled as the inherited value joined with that name, never its real path, so every `mktemp` the model runs and every subagent's own `TMPDIR` land under it. Delegated children never create one. If the directory cannot be created, the session keeps the inherited `TMPDIR`. A reload keeps the same directory: Pi re-evaluates extension modules on reload, so the runtime recovers the live scratch from the ledger when it names this process, the directory passes the removal checks below, and `TMPDIR` still points into it. When a reload cannot recover it, the new scratch is not nested in the old one: the runtime uses the recorded `inherited` values of this process's ledger, else `TMPDIR` when it is not a `gpXXXXXX` directory, and the parent of that directory when it is. Startup never removes a scratch of its own process.
+
+The runtime records the session in a ledger outside Engram: `<config home>/scratch/<session id>.json` (the config home is `GENTLE_PI_CONFIG_HOME` when set), written atomically (temp file, then rename) with private permissions. It holds `version`, `sessionId`, `pid`, `processStartedAt` and `processStartToken` of the owning process (the start token is the OS's own record of when the process started: the start tick from `/proc/<pid>/stat` on Linux, the `ps -o lstart=` text on macOS and the BSDs; absent on Windows or when it cannot be read), `cwd`, `tempRoot` (the real temp directory the scratch was created directly under), `inherited` (the temp variables before the session changed them, restored at shutdown), `scratchDir`, and `artifacts`: each clone or worktree as `kind` (`clone` or `worktree`), its real `path`, the `command` that created it, and `recordedAt`. Before a foreground `bash` command in the primary session runs, the runtime resolves the destination of `git clone ... [<dir>]` (git's default directory name when omitted) and the path of `git worktree add ... <path>` against the command's `cd` segments and `git -C`; after the command succeeds it records each one that did not exist before the command and is a directory afterwards, so a fallback such as `git clone URL dir || (cd dir && git pull)` over an existing clone records nothing. The session directory, the home directory, the config home, and their ancestors are never recorded.
+
+Cleanup is automatic for scratch only. At session shutdown (other than a reload) the runtime removes its scratch dir, restores the inherited `TMPDIR`, and deletes the ledger when no artifacts remain. The `TMPDIR` of a live or quarantined subagent (still running, or its exit not yet confirmed) stays, with the scratch dir around it, while the rest of the scratch is removed; the ledger then keeps the scratch for a later startup sweep. At the next primary session start it sweeps ledgers of ended sessions, whose owning process is not alive or has a start token other than the one its ledger recorded (the OS may reuse a pid; tokens are compared as recorded, never through the wall clock, so a clock step cannot make a live session look ended), and whose ledger is older than one hour. When the ledger has no start token or the current one cannot be read, as on Windows, a live pid counts as the ledger's process. The sweep removes their scratch dirs and keeps their artifact entries for the command. A scratch dir is removed only when it is the exact real directory its ledger recorded, lies directly under the temp root its ledger recorded (a temp root inside the home directory only when it is the current session's own), is named `gpXXXXXX`, is a directory rather than a symlink, and belongs to the current user; removal never follows symlinks, and a scratch dir that holds a recorded artifact is kept. The name carries no session id, so a scratch dir recorded by the ledger of a live session (its owning process alive with the start token its ledger recorded, or the current session) is never removed through another session's ledger, by the sweep or by `clean`, and neither is a directory that holds one.
+
+The names are short because Unix socket paths created under `TMPDIR` are limited to 104 bytes on macOS, including the terminating NUL (108 on Linux), and a macOS real path adds `/private`. With a 48-byte inherited `TMPDIR` such as `/var/folders/xx/<30 characters>/T`, a subagent's `TMPDIR` is 66 bytes, which leaves room for a 32-byte socket name such as Python multiprocessing's `pymp-XXXXXXXX/listener-XXXXXXXX` (98 of at most 103 bytes).
+
+`/gentle:scratch list` shows the session's scratch dir with its size and every recorded artifact of this and ended sessions; ledgers of other live sessions are not shown. `/gentle:scratch clean` removes ended sessions' scratch dirs and empties this session's (keeping subagent scratch, the scratch of other live sessions, and entries with anything changed in the last minute before the command started, which a running command may be using) without asking. After one confirmation that lists them and warns that ignored files inside them are deleted too, it removes recorded worktrees and clones with no uncommitted changes and no unpushed commits (every commit of a clone is on a remote; a detached worktree's commits are on a branch); a clone that has linked worktrees other than prunable ones is kept as "has linked worktrees", since removing it would orphan them; the others are reported with the reason and kept. Worktrees are removed with `git worktree remove` and then pruned; clones with a recursive delete of the recorded path only, refused when the path is now a symlink or no longer the recorded Git root. Without a UI, `clean` removes scratch only and reports the artifacts.
+
+### Review authority recovery and reset safety
+
+Legacy pre-graph authority is never migrated. `gentle_review inspect` reports an exact repository-bound destructive reset challenge for legacy corruption; after that fresh interactive authorization, RESET and RECOVER_LOCK route to the audited native `gentle-ai review reclaim` operation and RECOVER routes to native `gentle-ai review recover`, so every destructive transition is executed and audited by the native authority store. Native inputs the request did not carry return a `native-input-required` envelope instead of being invented. Existing graph-v1 ordinary lineages remain readable and gate-validatable but are read-only; Judgment Day remains mutable on graph-v1.
+
+`gentle_review abandon`, `quarantine-legacy`, and `reconcile-authority` remain explicit v2.1.11 maintenance routes. For `abandon` the caller supplies only lineage, actor, and reason (`operator_disposition` or `retired_schema`). Free-text reasons are rejected locally with both accepted values before any inventory read, approval prompt, or native launch. For a valid reason, Pi freshly reads the native authority inventory, locates the single eligible compact-v2 entry for that lineage, derives its revision, snapshot identity, and discarded-work summary, and displays the exact eight-line `gentle-ai.review-abandon-authorization/v2` binding for fresh interactive approval; inventory-derived fields supplied by the caller are rejected, and the native CLI re-derives non-terminal compact-v2 eligibility and the exact discarded work before accepting it. Legacy quarantine accepts only `historical findings freeze changed unrelated transaction state` with disposition `quarantine-malformed-freeze-event` and uses its exact eight-line binding. Both require fresh interactive approval and fail closed headlessly.
+
+`gentle_review reconcile-authority` accepts one predecessor lineage and revision, one successor lineage and revision, an actor, and a reason. Pi derives the exact seven-line `gentle-ai.review-reconcile-authorization/v1` binding, or appends exactly `anomalies=unchanged_target,malformed_recovery_authorization` for the published dual anomaly in that order. Native code re-derives every anomaly; malformed bindings, changed revisions, unavailable native support, cancellation, and native refusal fail closed through typed envelopes.
+
+Reconciliation is intentionally narrow: native code may quarantine only the bound invalid compact-v2 recovery successor and persists the returned audit record; the predecessor stays untouched. Pi never recreates the retired `prepare-supersession`/`supersede` authority writer and never falls back to RESET or RECOVER.
+
+`gentle_review repair-legacy-alias` is the sole v2.1.11 route for `unsupported historical v1 operation alias`. The model supplies only lineage, actor, and reason. Pi freshly reads the native inventory, derives the canonical repository, exact legacy revision, fixed diagnostic, and fixed `quarantine-approved-historical-alias` disposition, displays the LF-only eight-line binding, and requires a new interactive approval. Native re-derives eligibility and quarantines rather than rewriting or validating the historical chain.
+
+`review dispose-result` is deliberately unsupported by Pi pending a separate design; it has no controller operation or fallback. All maintenance routes fail closed headlessly and never auto-run against legacy history.
+
+Native lifecycle status remains informational. VALIDATE does not authorize delivery; commit, push, PR, and release commands follow ordinary repository policy. Recovery grants no new budget, and legacy graph bundle export/import is retired.
+
+This is the post-U8 boundary, not the final architecture. [Issue #191](https://github.com/Gentleman-Programming/gentle-shell/issues/191) is the immediate final unit in this same delivery: extract the remaining Pi command-projection and lifecycle-gate surface from `review-transaction.ts`, repoint runtime enforcement, then delete only dependencies proven unreachable without weakening graph-v1 Judgment Day. The branch-wide High-tier 4R runs after that extraction, before the single size-exception PR.
+
+### Review Lens Selection (architecture reference)
+
+`reviewer` is not an installed subagent name. It is historical routing vocabulary, not a static instruction. When a runtime-specific Gentle AI instruction applies, it alone determines whether any concrete lens is used:
+
+| Context | Review lens |
+| --- | --- |
+| Clear naming, structure, maintainability, small refactors | `review-readability` |
+| Behavior, state, tests, determinism, regressions | `review-reliability` |
+| Shell/process integration, partial failures, recovery, degraded dependencies | `review-resilience` |
+| Security, permissions, data exposure/loss, architecture, dependencies | `review-risk` |
+| Large PR, hot path, or >400 changed lines | Full 4R: `review-risk`, `review-resilience`, `review-readability`, `review-reliability` |
+
+The former compact controller classified documentation/comment/formatting-only changes as zero-lens, standard changes as one dominant lens, and higher-risk paths as full 4R. This describes compatibility architecture only; never derive or run those choices from this README.
+
+### Review authority architecture (reference only)
+
+Gentle AI dynamically supplies runtime-specific RDD instructions. `gentle-pi` does not define an RDD lifecycle, command route, approval path, recovery sequence, or fallback. The historical compact-controller material below documents architecture and compatibility boundaries only; it is not an operator instruction.
+
+Concretely: `gentle-pi` mirrors the Gentle AI provider contract bundle's `orchestration/pi.md` locally (`contracts/review-provider-contract-mirror/`, verified against the mirror lock's recorded SHA-256 before injection) and injects that mirrored text into the primary session's system prompt at session start. Gentle AI does not write anything into Pi's system prompt; when the mirrored contract is absent, unreadable, or fails digest verification, `gentle-pi` invents no fallback lifecycle.
+
+```mermaid
+flowchart TD
+    A["Clarify scope and acceptance criteria"] --> B{"Choose the smallest safe workflow"}
+    B -->|Small and local| C["Inline implementation"]
+    B -->|Context-heavy or multi-file| D["Focused subagent"]
+    C --> F["Implement with test evidence"]
+    D --> F
+    F --> G["Independent verification"]
+    G --> H["Target-scoped native status"]
+    H -->|Ambiguous or corrupted| X["Blocked: native maintainer action"]
+    H -->|Unrelated| I["START freezes candidate, scope, tier, lenses, and budget"]
+
+    subgraph Ordinary_review["Ordinary bounded review"]
+        I --> R["reviewing"]
+        R --> J["Run each selected lens once"]
+        J --> K{"Severe candidate-caused blocker?"}
+        K -->|No| A1["approved"]
+        K -->|Yes| C1["correction_required"]
+        C1 --> C2["Forecast bounded correction"]
+        C2 --> C3["Apply scoped fix"]
+        C3 --> V["validating"]
+        V -->|Validator passes| A1
+		V -->|Fails, malformed, or out of scope| E1["escalated"]
+    end
+
+    A1 --> O["Review outcome is informational"]
+    E1 --> O
+```
+
+VALIDATE is informational. Commit, push, PR, and release commands follow ordinary repository policy; RDD never authorizes, rewrites, consumes review state for, or blocks them. Dangerous-command safety and destructive-review consent remain independent.
+
+For the source checkout, native contract pairing is exact: this adapter resolves only the integrity-verified package-local Gentle AI v4.3.1 executable, independently hashes it, then negotiates `gentle-ai.review-integration/v2` outside the repository. Capabilities are cached by that executable digest. Every START, target status, FINALIZE, and validate request passes the same contract identifier. Negotiated envelopes decode exactly against the vendored schemas; `recover` routes only the provider-selected `action_disposition`, and optional additions require a future compatible schema/minor that the provider explicitly advertises and the consumer negotiates.
+
+Contract `/v2` replaces the Base64 `candidate_diff` reviewer transport of `/v1` with immutable `base_tree`/`candidate_tree` plus an ordered `changed_path_manifest` and never an inline patch. `gentle-pi` negotiates `/v2` only, with no dual-lane fallback; the cutover landed as one atomic commit against gentle-ai v2.2.2 (tracked by the `migrate-review-integration-v2` change), and the `/v1` schemas stay packaged because the `/v2` schemas `$ref` into their fragments. This provider contract version is unrelated to Pi's own internal "compact-v2" review-authority naming used below — the shared digit is coincidental, not a version pairing.
+
+Target status owns `current_target`, `unrelated`, `ambiguous`, and `corrupted` applicability and returns one native action. Pi does not reconstruct ordinary authority from provider-private files or choose a lineage from repository-wide history. Restart recovery rebuilds only the derived candidate view from the native Git/content projection, including intended-untracked paths, symlinks, and immutable gitlink identities. Native failure envelopes retain their exact mutation outcome, replayability, required inputs, request digest, and next action. After an unknown or lost mutating result, Pi calls target status before any replay decision and returns only the provider-declared action.
+
+Candidate views materialize tracked Git symlinks from their frozen blobs even when `core.symlinks=false`, including unchanged links outside the changed scope. Unsafe targets fail before any link is created; a host without native symlink capability fails closed with `symlink-materialization-failed`. Pi does not alter the contributor's Git configuration or install symlink privileges. Before `inspect` advertises a ready `review.start`, it runs the same non-persistent capability check over the frozen candidate tree (the probe creates and removes a temporary directory under the candidate-views parent, or its nearest existing ancestor), so a host that cannot create the tracked symlinks sees the refusal at inspect time instead of a START that cannot begin (gentle-ai#2196).
+
+Windows skips automatic candidate-owner sweeping during startup and candidate materialization: local owner provenance is unavailable, so that sweep cannot safely reclaim owners and would only repeat synchronous ACL probes. Candidate creation, verification, and explicit cleanup still enforce their existing ownership and permission checks. Existing orphan candidates are preserved; this does not add automatic Windows orphan reclamation.
+
+On POSIX, if START rejects a group- or world-accessible `.git/gentle-ai/candidate-views` parent, Pi reports `candidate-owner-parent-privacy` before native START. When a sanitized probe shows the filesystem cannot represent private POSIX modes (for example WSL DrvFS mounts without `metadata`), Pi instead reports `candidate-owner-parent-chmod-ineffective` with guidance to move the Git common directory to a POSIX-metadata filesystem or enable metadata support. Inspect that parent's ownership and permissions and correct them out of band before retrying; Pi does not change them automatically. Other owner-preparation failures retain a generic diagnostic rather than exposing filesystem errors. `inspect` runs the same read-only privacy assert before advertising a ready `review.start` and withholds the advertisement with the identical typed diagnostic under `candidate-view-preflight-blocked`, so STATUS and START stop disagreeing about a candidate whose view cannot materialize (gentle-ai#2196).
+
+Once the source checkout's pinned gentle-ai runtime (currently v4.3.1) has written review authority, rollback MUST preserve every native store and receipt and MUST NOT run a downgraded binary against that repository. Disable the Pi route or roll forward to a compatible authority-aware release instead; deleting authority data or reinstalling an older binary is not a rollback path.
+
+### FINALIZE wrapper input
+
+`gentle_review` accepts `input` as a JSON-serialized object string. For initial results, provide `review_result.lens_results[]`; each selected lens appears exactly once with `lens`, `findings`, and non-empty `evidence`. A clean lens uses `findings: []`. Pair `final_evidence` with exactly one of `final_verification_passed` or `final_verification_outcome`.
+
+```json
+{
+  "review_result": {
+    "lens_results": [
+      {
+        "lens": "review-reliability",
+        "findings": [],
+        "evidence": ["complete candidate reviewed"]
+      }
+    ]
+  }
+}
+```
+
+This is the Pi wrapper contract, not the native CLI file contract. The native command receives separate `--result`, `--refuter`, `--validation`, and `--evidence` files from the wrapper.
+
+START derives the complete Git/untracked snapshot, lineage, persisted `low | medium | high` tier, zero/one/four lenses, authored changed lines, and correction budget `min(200, ceil(original_changed_lines / 2))`. Generated `testdata/golden/**` stays in snapshot identity but does not count as authored risk lines.
+
+`gentle_review inspect` may stop pre-lineage on the intended-untracked selection, and that stop names its own continuation in `nextStep`. The stop's `expected_untracked_inventory` digest covers untracked path names only (`git ls-files --others --exclude-standard`); nothing is read or hashed at inventory time, and file content is hashed only for the paths actually selected, at candidate freeze. Resolve the stop either with `select-intended-untracked` (empty `intendedUntracked` excludes every eligible path; a subset includes only those paths) or in one call by passing `untrackedScope` to `inspect`: use `"exclude"` without `intendedUntracked`, or `"select"` with it. The retained selection is bound to the resolved native target/candidate and is adopted only by a matching plain START; a fresh inspect invalidates an older pre-lineage selection. To keep a path out of the inventory permanently, ignore it through `.gitignore` or `.git/info/exclude`.
+
+Every finding requires `evidence_class`, `causal_disposition`, and concrete changed-hunk, candidate-created-path, differential-test, or before/after proof. Missing IDs are assigned natively and selected-lens results are canonicalized deterministically.
+
+Actor output is untrusted data and cannot authorize transitions, fixes, receipts, gates, or delivery.
+
+Only severe `introduced`, `behavior-activated`, or `worsened` findings with valid proof enter correction IDs. `pre-existing` and `base-only` become follow-ups; `unknown`, insufficient, malformed, or inconclusive severe claims escalate. WARNING and SUGGESTION are informational.
+
+Deterministic blockers need no refuter. Inferential blockers use exactly one complete read-only refuter batch.
+
+Refuter proof may be independent concrete reproduction evidence; it does not need to duplicate reviewer `proof_refs`. Invalid, empty, malformed, missing, duplicate, unknown, or inconclusive refuter output escalates without a replacement refuter.
+
+When native IDs are assigned to inferential findings, the first FINALIZE returns their canonical rows and a content-derived request hash without mutation; the second replays identical lens input with that hash and one complete refuter batch.
+
+Ordinary permits one correction transaction within the original budget. FINALIZE requires a positive forecast before editing and derives actual correction lines from Git; one targeted validator and final verification close that transaction. Initial lenses are never rerun, while frozen findings and genesis scope remain unchanged.
+
+The validator checks original criteria and correction regression only and cannot add scope or findings. Final evidence is hashed during FINALIZE, never at START.
+
+Compact ordinary has five states: `reviewing`, `correction_required`, `validating`, `approved`, and `escalated`.
+
+The validator cannot change claims, add findings, request fixes, launch actors, or request another attempt. A failed correction escalates instead of opening another review budget.
+
+Compact authority uses content-derived CAS under the Git common directory. Exact retries are idempotent; stale/semantic retries, terminal mutation, and same-lineage graph-v1/compact-v2 ambiguity fail closed.
+
+Trust boundary: The local orchestrator and same-user process are trusted to execute selected actors and submit their exact outputs. Native code owns scope, risk, IDs, canonicalization, state, receipts, and gates, and rejects malformed or inconsistent results structurally and causally. Malicious same-user host/process authenticity is a non-goal because that actor can replace the extension or mutate local authority; externally trusted attestation would require a separately privileged signer/service and is not claimed.
+
+Ordinary ends only as `approved` or `escalated`.
+
+Judgment Day starts only when explicitly requested and replaces ordinary review for that lineage.
+
+Judgment Day starts with exactly two blind judges and zero refuters.
+
+Judgment Day alone may iterate discovery and scoped re-judgment, for at most two rounds.
+
+Findings surviving round two escalate; no third-round transition exists.
+
+Native review mode and the two candidate choices remain provider-owned lifecycle semantics. For a validated `consent/v3` envelope in the interactive parent TUI, Pi displays those two choices unchanged and adds a clearly separate host-owned action: **Run this review and allow reviews for this Pi session**. Only direct human selection creates this process-memory grant. Its scope is the coordinating live SessionManager session and the canonical Git common-directory identity of the selected repository: it runs the current envelope's exact provider `granted` invocation through the existing one-shot `answer-consent` path, then does the same for later fresh validated envelopes in sibling worktrees of that same clone, including package-owned children. An unrelated repository requires a separate explicit human grant. Reload preserves it; `/tree` retains it; revoke removes the current repository grant; quit, new, resume, fork, or process restart removes all session grants. The command's `status` action reports the in-memory state without changing provider mode or authority.
+
+The host grant is held only in a schema-checked `globalThis[Symbol.for(...)]` WeakMap registry keyed by session and canonical Git common-directory digest. It is never written through session entries, settings, environment variables, or the old asked latch. A package-owned Gentle Agents child can request one bounded parent-owned stdio authorization for its own validated pending ordinary START; it sends only that target's canonical repository digest, and the parent rechecks the live task, digest, and current parent session grant before the child replays its exact provider grant locally. No candidate bytes, provider vectors, paths, local child grant, or delivery authority crosses that channel. External or legacy `pi-subagents` launchers do not receive this channel and remain unsupported. Headless/RPC/unsupported UI, external processes, model prose, tool arguments, cancellation, identity drift, malformed identity, and uncertain native results cannot create or consume the grant. Native workspace binding remains canonical and target-specific; session-wide consent never authorizes an unselected target or an unrelated repository. The grant conveys no review verdict, forecast/cost approval, acknowledgement, maintenance, delivery, or cross-repository authority. When the host cannot resolve the choice, `gentle_review` returns the original unresolved two-choice provider envelope unchanged for the normal lossless relay. SessionManager binding isolates simultaneous SDK sessions; Pi does not claim universal same-process agent-principal isolation because the SDK exposes no principal identity.
+
+When RDD is on and an agent loop ends with an unreviewed candidate that the native assessment reports `review_due` (high risk), `gentle-pi` sends one read-only reminder pointing the agent back to `gentle_review {"operation":"inspect"}` before it reports completion. A candidate the assessment reports not due (medium or passive, already covered by verify) earns no reminder; an assessment that cannot answer keeps it. This nudge is idempotent (at most once per target identity per session), never fires for a headless session or a subagent's own loop, and never runs START or answers consent itself. Pi treats a child `agent_end` as a latest-answer update, not completion: queued retry, compaction, follow-up, required verification, and legitimate post-correction verification remain live until `agent_settled`. It does not claim ready or RDD-ready first, but this ordering rule does not impose a universal full-suite requirement or turn a receipt into a delivery gate. At session start, `gentle-pi` records the current target identity as a baseline, so a candidate that already existed before the session began (the user's own prior work, not this session's output) never draws the reminder.
+
+An ordinary `gentle_review` START input may carry the agent lens selection: `{"mode":"ordinary","lenses":["risk","reliability"],"lensesReason":"<what you touched and how>"}`. The agent names every 4R lens pertinent to what it touched and how (`risk`, `resilience`, `readability`, `reliability`), with one single-line reason of at most 500 bytes; both fields or neither, never with `focus`. Pi forwards the selection through the native STATUS preflight (`--lenses`, `--lenses-reason`) so the provider-issued START freezes exactly those lenses. A provider that predates lens selection refuses the flag before reading the repository; Pi then reruns STATUS without it and the review keeps the tier default.
+
+Review outcomes and receipt state are informational; commit, push, pull-request, and release delivery follow ordinary repository policy. No one-shot command authorization, publication-target revalidation, or receipt gate is required for delivery, and Pi does not inspect RDD mode or native authority to decide a Bash delivery command.
+
+When grouped review capture returns `native-status-failed`, a decoded native failure is preserved as `native_failure`, including its phase, code, retry policy, and optional cause/context. `replayability` and `next_action` expose the provider's guidance; they do not trigger a retry. Group progress and mutation reporting still describe reviewers already prepared/submitted. Untyped errors retain their message-only behavior; raw process stdout/stderr and arbitrary error fields are not exposed.
+
+Dangerous-command safety remains independent and authoritative. Destructive-review-maintenance consent remains separate from delivery. Review operations and informational VALIDATE perform no commit, push, pull-request, release, or publication operation.
+
+The Pi host relay bounds each locked-down reviewer subprocess by materialized prompt size rather than by one fixed number: a 15-minute floor plus 15 minutes per mebibyte of prompt, clamped to a 2-hour ceiling. Set `GENTLE_PI_REVIEW_RELAY_PI_TIMEOUT_MS` to a positive decimal to replace that derived bound with your own; malformed values are ignored and the same 2-hour ceiling still applies, so no configuration turns a foreground finalize into an unbounded child process. A reviewer killed by the bound reports `pi-host-relay-timeout` with the elapsed time and the limit it was measured against, and it explicitly does not ask you to relaunch the identical slot — that would re-spend the model tokens to reach the same wall. Reviewer results admitted earlier in the same finalize stay admitted and are not re-run.
+
+Adversarial review roles (the refuter and the targeted validator) are never Pi-authored: the provider renders self-contained `review.capture-refuter` / `review.capture-validation` vectors and Go runs its own locked-down `pi` process on them. Package agent assets remain a package-managed isolated installation. Project and user overrides may shadow a package asset; `gentle-pi` preserves those definitions and does not claim their effective permissions are package-compliant.
+
+## Package-managed agents and optional research
+
+At startup, `gentle-pi` installs and refreshes only hash-proven delegation and review agents. User-edited files and project overrides remain untouched. Refresh a selected owner explicitly when needed:
+
+```text
+/gentle:install-delegation --force
+/gentle:install-review --force
+```
+
+Saved model routing is applied separately; these installation commands do not change model settings. Optional ODD research depends on active, authorized tools. Verify source-backed findings, cite the sources actually retrieved, and disclose unavailable evidence instead of treating tool inventory as proof or inventing citations. Research is read-only; unavailable evidence pauses only decisions that depend on it. A source checkout edit does not activate an already installed package; activate the updated package separately before expecting changes in a new session.
+
+## Skill registry
+
+`gentle-pi` keeps a local registry at:
+
+```text
+.atl/skill-registry.md
+```
+
+The registry scans project and user skill roots, not package-owned skills. It exists to catch workflow skills that are present on disk but not visible in Pi's injected skill list.
+
+It scans common roots such as:
+
+```text
+./skills
+.opencode/skills
+.claude/skills
+.gemini/skills
+.cursor/skills
+.github/skills
+.codex/skills
+.qwen/skills
+.kiro/skills
+.openclaw/skills
+.pi/skills
+.agent/skills
+.agents/skills
+.atl/skills
+~/.pi/agent/skills
+~/.config/agents/skills
+~/.agents/skills
+~/.kimi/skills
+~/.config/opencode/skills
+~/.config/kilo/skills
+~/.claude/skills
+~/.gemini/skills
+~/.gemini/antigravity/skills
+~/.cursor/skills
+~/.copilot/skills
+~/.codex/skills
+~/.codeium/windsurf/skills
+~/.qwen/skills
+~/.kiro/skills
+~/.openclaw/skills
+```
+
+Behavior:
+
+- `.atl/.gitignore` receives a `*` rule when needed; the root `.gitignore` is unchanged;
+- the registry refreshes on session start, but automatic writes (including watcher refreshes) preserve Git-tracked targets;
+- skipped writes warn with the protected paths and `/skill-registry:refresh` as the deliberate regeneration path; Git detection failures skip automatic writes rather than assuming files are untracked;
+- startup refresh is skipped when Pi starts with `--no-skills` / `-ns`, `--no-skill-registry`, or `GENTLE_PI_NO_SKILL_REGISTRY=1`;
+- `/skill-registry:refresh` intentionally regenerates the registry and cache and updates the child ignore, even when tracked; review the resulting Git diff;
+- a best-effort watcher refreshes when skill files change;
+- the registry indexes skill names, full descriptions, scope, and exact `SKILL.md` paths without copying skill body rules.
+
+Skill discovery is a guardrail, not a workflow router: it helps Pi load the right skill without forcing extra ceremony.
+
+`gentle-pi` also ships package-owned `gentle-ai-skill-creator` and `gentle-ai-skill-improver` skills plus the `/skill-creation` prompt for creating or updating project skills. Both skills use `docs/skill-style-guide.md` as their normative style contract. The workflow checks for duplicates, keeps `SKILL.md` concise, uses one-line trigger-rich frontmatter, and reminds maintainers to refresh the registry after skill changes.
+
+Packaged skills include `gentle-ui-design` for web and product interface guidance, `cognitive-doc-design`, `comment-writer`, `gentle-ai-judgment-day`, `gentle-ai-skill-creator`, `gentle-ai-skill-improver`, and the other delivery/review skills under `skills/`.
+
+Compatibility: the package keeps the existing skill folders (`skills/branch-pr`, `skills/cognitive-doc-design`, `skills/comment-writer`, `skills/judgment-day`, `skills/skill-creator`, `skills/skill-registry`, and `skills/work-unit-commits`) but their exported frontmatter names are prefixed to avoid collisions with user/global skills. Treat former package names such as `branch-pr`, `cognitive-doc-design`, `comment-writer`, `judgment-day`, `skill-creator`, `skill-registry`, and `work-unit-commits` as legacy aliases in prose; runtime skill selection should use `gentle-ai-branch-pr`, `gentle-ai-cognitive-doc-design`, `gentle-ai-comment-writer`, `gentle-ai-judgment-day`, `gentle-ai-skill-creator`, `gentle-ai-skill-registry`, and `gentle-ai-work-unit-commits`.
+
+Delegation contract:
+
+- parent/orchestrator resolves project/user skills from the registry and passes matching paths under `## Skills to load before work`;
+- during normal runtime, subagents should not independently discover additional project/user `SKILL.md` files or the registry;
+- fallback loading is degraded self-healing and must be reported via `skill_resolution` as `fallback-registry`, `fallback-path`, or `none`.
+
+## Persona modes
+
+```text
+/gentle:persona
+```
+
+| Persona     | Behavior                                                                                                      |
+| ----------- | ------------------------------------------------------------------------------------------------------------- |
+| `gentleman` | Senior architect, teacher, direct technical feedback, Rioplatense Spanish/voseo when the user writes Spanish. |
+| `neutral`   | Same discipline, warmer professional language, no regional expression, no voseo in any verb form.             |
+
+Both modes reply in the language of the user's latest message and never default to Spanish, so an English message gets an English reply even after context compaction.
+
+Saved globally at:
+
+```text
+~/.pi/gentle-ai/persona.json
+```
+
+A project can still override the global default with:
+
+```text
+.pi/gentle-ai/persona.json
+```
+
+`/gentle:persona` writes the global config and updates an existing project override when one is present, so the current project does not stay stale. Run `/reload` or start a new Pi session after switching persona.
+
+## Model and effort assignment
+
+```text
+/gentle:profiles
+```
+
+`/gentle:profiles` opens the models screen on the profile this repository resolves: one table, with your profiles as tabs across the top. It replaces the retired `/gentle:models`, which opened the same screen.
+
+```text
+╭──────────────────────────────────────────────────────────────────────────────╮
+│   current ◉★ ▾    before-nan-202609…    nan    GPT-Max   + New               │
+│ ─━━━━━━━━━━━━━━───────────────────────────────────────────────────────────── │
+│  current   Used in this session. Default for new sessions.                   │
+│                                                                              │
+│ ▸ Orchestrator        openai-codex/gpt-6.1-sol                max            │
+│  ──────────────────────────────────────────────────────────────              │
+│   Agent               Model ▾                                 Effort ▾       │
+│   gentle-ai-explore   nan/deepseek-v4-flash                   high           │
+│   gentle-ai-worker    nan/glm5.3-flash                        high           │
+│                                                                              │
+│  [ Use in this session ]  [ Make default ]  [ Save ]                 Saved   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+- **Tabs are profiles.** Click a tab or press `←` `→` to show another one; the screen redraws in place. Symbols show where a profile is in effect: `◉` this session, `★` the default for new sessions, `⌂` this repository. `◉` marks the profile this session's launches use: the one chosen with **Use in this session**, or the one it took at startup (see **Session profile frozen at startup**), so it can differ from `★` and `⌂` after they change. The screen opens on that profile. Leaving a profile with unsaved changes asks first: **Save and switch**, **Discard**, or **Stay**.
+- **The table is that profile's routing.** The orchestrator is the first row; agents follow. Click a model or press `enter` to choose from a searchable list (the current one is marked `✓`; **Custom model id…** takes any `provider/model`). Click an effort or press `e` to pick from a single row of levels: only the levels that row's model supports, as its provider's catalog declares them (every level when the row inherits its model or the model is not in the catalog). Pi lands an unsupported level on the nearest supported one at launch, and the table says where: `max → high`. Click `Model ▾` or `Effort ▾`, or move the cursor to that header, to change every agent at once; the orchestrator is never part of that.
+- **Three buttons decide where it applies.** **Use in this session** (`u`) binds what you see to this Pi session only and switches its orchestrator; nothing shared is written. **Make default** (`d`) makes it the default for new sessions through the guarded global apply (diff confirmation, pin honesty, rollback). **Save** (`s` or `ctrl+s`) writes what you see into the profile. Use and Make default save pending edits first and say so.
+- **The profile menu**, `▾` on the active tab (`m`), holds **Rename**, **Duplicate**, **Use in this repo** (the clone pin; it reads **Stop using in this repo** when it already applies), and **Delete**. **+ New** (`n`) starts a profile as a copy of the current one, from what is running now, or empty.
+- Problems the screen will not hide appear under the profile name with `⚠`: a pin file that is not a valid pin or names a profile that does not exist (either way it is ignored), routing keys no agent matches (ignored at launch), with the agent name it probably meant when there is one, and a session profile that was deleted from `profiles.json` after this session took it (its launches keep that routing), or edited there since (the table shows the saved routing, the launches keep the one they took, and Use in this session adopts the table). When the session profile record cannot be read, the screen says its launches are blocked, marks no tab with `◉`, and refuses From what's running now until Use in this session selects a profile.
+- Edited values are highlighted until saved, and the footer counts them (`● 2 unsaved`). `esc` closes; with unsaved edits the first press warns and the second closes without saving. Every action reports on the line under the footer.
+- Everything clickable highlights under the pointer, and a click runs one action. Keys: `←→` profile, `↑↓` agent, `enter` model, `e` effort, `s` save, `u` use, `d` default, `n` new, `m` the profile menu, `esc` close.
+
+The editor discovers:
+
+- project agents in `.pi/subagents/`, `.pi/agents/`, and `.agents/`;
+- user agents in `~/.pi/agent/subagents/`, `~/.pi/agent/agents/`, and `~/.agents/`.
+
+When **Make default** applies a profile, project agents write runtime profiles to `.pi/subagents.json`; global and built-in agents write profiles to `~/.pi/agent/subagents.json`.
+
+Recommended model/effort shape:
+
+| Agent kind                 | Recommended model                                    | Recommended effort (`thinking`) |
+| -------------------------- | ---------------------------------------------------- | ------------------------------- |
+| Explore and mapping        | Fast and cheap is usually enough.                    | `off` to `low`                  |
+| Implementation             | Strong coding and tool-use model.                    | `medium` to `high`              |
+| Verify / review            | Strong fresh-context model.                          | `high`                          |
+| Tiny utilities             | Inherit active/default model unless they bottleneck. | `inherit`                       |
+
+Saved globally at:
+
+```text
+~/.pi/gentle-ai/models.json
+```
+
+Global routing is owned by profiles: edit a profile's routing on the models screen and apply it with **Make default**. Applying writes the shared global config at `~/.pi/gentle-ai/models.json`. Existing project-local `.pi/gentle-ai/models.json` files are still read as a legacy source and merged under the global config: an agent entry present only in the project file still applies, while an entry present in both prefers the global one. This merge is skipped while a pinned or active profile exists and the global file is present, so an agent a profile deliberately omits cannot be resurrected by a stale project-local entry; routing then comes from the global file (and, from the profile's own stored snapshot, when the global file is still missing) alone.
+
+Startup and reload materialize saved non-empty routing, but never treat a saved empty agent entry (`{}`) as permission to delete an existing `subagents.json` model profile or agent frontmatter. This also preserves previously materialized routes and routes whose agent definition is missing. To clear routing, make a profile whose entries are inherit the default (or confirm a profile replacement) on the models screen. Activation needs no ownership sidecar or lock.
+
+`/gentle:profiles export-routing` writes the saved routing to `~/.pi/gentle-ai/models.export.json`, and `/gentle:profiles restore-routing` restores from that file after confirmation. They carry `-routing` because they move the global `models.json` routing, not a profile: `/gentle:profiles export <name>` and `import` move one profile through `profiles.export.json`. Export uses a versioned envelope and restore writes the normal `models.json` shape before applying routing to agents.
+
+Config shape (per agent):
+
+```json
+{
+  "gentle-ai-worker": {
+    "model": "anthropic/claude-sonnet-4",
+    "thinking": "high"
+  },
+  "gentle-ai-explore": {
+    "model": "openai/gpt-5-mini"
+  }
+}
+```
+
+Legacy string entries are still accepted and treated as `model`-only config.
+
+## Agent-model profiles
+
+```text
+/gentle:profiles
+```
+
+Profiles are named, switchable snapshots of the agent-model routing, including the orchestrator. They are the tabs of the models screen described above; everything about choosing, editing, and applying them happens there.
+
+The file operations are subcommands:
+
+| Command                              | Action |
+| ------------------------------------ | ------ |
+| `/gentle:profiles export <name>`     | Export a profile to `~/.pi/gentle-ai/profiles.export.json`. |
+| `/gentle:profiles import`            | Import the profile in `~/.pi/gentle-ai/profiles.export.json`, asking before it replaces one with the same name. |
+| `/gentle:profiles publish <name>`    | Publish the shared repository declaration at `<worktree-root>/.pi/gentle-ai/profile.json` so the whole team starts from that profile; run it again to remove the declaration. |
+
+The binding made by **Use in this session** writes no shared routing: not `models.json`, Pi's global `settings.json`, agent frontmatter, `subagents.json`, or repository pins. When the table has unsaved edits, they are saved to the profile in `profiles.json` first, exactly as **Save** would, and the screen says so; with no pending edits nothing is written at all. Other open sessions keep their own bindings and live orchestrators. The session binding overrides pins and global routing as a complete snapshot, including reviewer routing; omitted roles do not fall back to another profile. The selection is appended to the session file as its own record, so start, resume, reload, fork and tree navigation restore it from the current branch without selecting it again. Re-selecting re-copies the profile definition from `profiles.json`; later edits to `subagents.json` or agent frontmatter never reach a bound session, in that session or through a re-selection.
+
+| Outcome | What happens |
+| --- | --- |
+| Persisted | The selected record is corroborated on disk before routing is published. |
+| Not yet persisted | Use in this session explicitly reports a preflush selection. It is usable now, but detach/reload does not restore it without later disk corroboration. |
+| Append failure | No success or live-model effect. Keep only returned disk-corroborated state; otherwise block affected launches. |
+| Invalid, future or unavailable authority | Do not fall through to shared routing; affected subagent launches are blocked. An explicit successful selection or fresh corroboration can restore availability. |
+
+`/gentle:profiles clear` removes this session's selection and returns the session to the state it started with, when that state is known:
+
+| Situation | What clear appends | New launches use |
+| --- | --- | --- |
+| The session started on a profile | A startup record of that profile, with the definition it had at startup | That profile, labeled with its origin, for example `team (local)` |
+| The session started with no profile | A clear marked "started with no profile" | No session profile, as at startup |
+| The startup state is unknown (a session resumed in a new process without a recorded startup state), or `follow` mode | A plain clear | The routing without a session profile (pins, repository declaration, global) |
+
+The startup state comes from the newest record of the session, else from the profile the session froze when it started in this process. The notice names where launches go back, for example: `New launches go back to the profile this session started with, "team (local)", and use it.` Resume and reload keep the result. The live orchestrator, `profiles.json`, `models.json`, pins and Pi settings are untouched. A session that never selected a profile, or is already back on its startup state or cleared, writes nothing and says so. Clear is also the recovery path for an invalid or newer-version record: on start, resume, reload and tree navigation such a record raises a warning with the session file and entry index, and affected launches stay blocked until Use in this session or clear replaces it.
+
+Start, resume, reload, fork and tree navigation restore only the current corroborated branch state. Restoration never applies the profile's orchestrator. Fork capture is read-only until a confirmed transition; cancellation/rejection preserves current authority. Pending Use in this session live operations settle before fork-copy, tree movement or detach.
+
+Outside a pinned repository, **Make default** writes `~/.pi/gentle-ai/models.json`, then reconciles agent frontmatter and `subagents.json` with the shared materialization rules. When a valid pin wins, it only re-pins this clone to the profile and writes none of `models.json`, materialized routing, `settings.json`, or the active marker (see **Per-repository pins**). A profile is a complete snapshot: every discoverable agent it omits returns to inherit, so routing materialized by a previous profile, by an earlier apply, or by a migration never survives a switch silently. The active profile is persisted so `/gentle:profiles` reopens with the applied profile marked.
+
+A profile also carries the orchestrator under the reserved routing key `orchestrator`. Outside a pinned repository, **Make default** on a profile that defines one writes `defaultProvider`, `defaultModel`, and `defaultThinkingLevel` to Pi's global `settings.json` (preserving every other key; an unreadable `settings.json` aborts that part and is reported instead of being overwritten) and switches the session you are in to that model and thinking level right away, so the orchestrator answers with the profile's model from the next turn. **Use in this session** skips the settings write and switches only the session you are in: same live move, nothing persisted. When the model is not in Pi's catalog or its provider has no authentication, **Make default** still records the default for new sessions and says this session kept its current model, while **Use in this session** simply reports the refusal. Applying or binding a profile without an `orchestrator` entry never moves the orchestrator, and **+ New › From what's running now** captures the orchestrator the session actually runs together with the routing. `orchestrator` is reserved: it is not a subagent name, is never written to `subagents.json`, and is not counted as a role.
+
+**From what's running now** captures what this session's launches use: its `◉` profile when it has one, otherwise the global routing below. A pin written after the session started does not reach its launches, so it is not captured. The `current` seed reads the routing in effect: a valid local pin or repository declaration wins first, so inside a pinned repository it reads the pinned profile's routing. Otherwise both read `models.json` where it has an entry, and the `subagents.json` model profile or frontmatter routing the runtime actually resolves for agents it omits. A sparse `models.json` therefore never hides routing that is still live. When `profiles.json` is missing, the command seeds one profile named `current` captured from that effective routing, marked active only when it has routing entries. Profiles or routing entries dropped by normalization are named in a warning instead of being lost silently.
+
+Saved globally at:
+
+```text
+~/.pi/gentle-ai/profiles.json
+```
+
+Store shape:
+
+```json
+{
+  "kind": "gentle-pi.agent_model_profiles",
+  "version": 1,
+  "active": "deep-work",
+  "profiles": {
+    "deep-work": {
+      "orchestrator": {
+        "model": "anthropic/claude-sonnet-4",
+        "thinking": "high"
+      },
+      "gentle-ai-worker": {
+        "model": "anthropic/claude-sonnet-4",
+        "thinking": "high"
+      }
+    },
+    "current": {}
+  }
+}
+```
+
+The `profiles` values use the same per-agent shape as `models.json`. Profile names are slugs of 1-64 ASCII characters (letters, numbers, `.`, `_`, `-`, starting with a letter or number); names outside ASCII are rejected, as are the reserved object keys `__proto__`, `constructor`, and `prototype`. A rename or duplicate onto an existing name is refused, renaming the active profile keeps it active, and deleting the active profile is refused. Export and import use a single-profile envelope (`kind: "gentle-pi.agent_model_profile"`, `version: 1`) at `~/.pi/gentle-ai/profiles.export.json`.
+
+The store is replaced atomically through a sibling temp file and a rename, so an interrupted write cannot leave truncated JSON behind. **Make default** writes `profiles.json` first and then materializes routing; if materialization fails, the previous active marker is restored, and the previous routing is restored when a profile was active before. With no previously active profile there is no routing to restore: `models.json` keeps the new routing and the warning says so. Anything that could not be restored is named in the warning.
+
+### Model fallback chains
+
+Each profile can give every agent an ordered list of fallback models, kept in `profile-fallbacks.json` next to `profiles.json` (older versions keep reading `profiles.json` and simply never fall back):
+
+```json
+{
+  "kind": "gentle-pi.profile_model_fallbacks",
+  "version": 1,
+  "profiles": {
+    "work": {
+      "orchestrator": [{ "model": "openai/gpt-5.5", "thinking": "high" }],
+      "*": [{ "model": "anthropic/claude-sonnet-5-5" }, { "model": "qwen/qwen3.8" }]
+    }
+  }
+}
+```
+
+Edit them in `/gentle:profiles`: on an agent row (or the `set every agent` row, for `*`), `f` opens its chain; there `f` adds a model from the catalog (the row's own model and models already in the chain are not offered), `e` sets the step's effort, shift+↑/↓ move a step, `x` removes it and `esc` goes back. Each change is saved at once, apart from the profile's `s save`, and only for a profile already saved (save a new one with `s` first); a row with a chain shows `↪ first-model +N`. Renaming or deleting a profile takes its chains along. An agent without its own chain uses the profile's `*` chain. A chain holds at most eight unique `provider/model` ids, each with an optional effort. A launch uses the chain of the profile it resolved (a session binding, a frozen or pinned profile), else the active profile's.
+
+When a run's final response fails, its error category decides:
+
+- `quota` (usage limit, billing) and `auth` move on at once.
+- `rate_limit`, `provider_unavailable`, `timeout` and `network` move on too. Pi already retried them on the same model before the run failed.
+- `context_length`, `invalid_request`, unknown errors and aborts never move on, because another model would fail the same way.
+
+The orchestrator uses its `orchestrator` chain once the run settles (after Pi's own retries; a run you abort never moves on): the session switches to the next model (and its effort) and a follow-up message resumes the work; a model Pi refuses or cannot log in to is skipped. The chain is walked once per episode, which ends when a turn succeeds. A subagent switches its live child to the next model (`set_model`, plus the step's effort, or the agent's configured effort when the step has none) and is asked to continue the same conversation, so finished steps are not repeated. A model that failed is skipped by every agent of the session for a while: 30 minutes after a limit or auth error, 2 minutes after a transient one. A launch whose primary model is cooling down starts on the first usable fallback. When `/gentle:usage` reads a spent limit, the model it names waits until that limit resets (providers such as NaN report one limit per model), and the whole provider waits only when every one of its limits is spent, until the earliest reset; so a subagent starts on its next fallback instead of failing first. A later reading with room releases the provider; a model cooled by its own spent limit waits until that limit resets. A full window whose reset already passed is treated as stale. A limit that covers the whole provider (Codex's main limit) holds every model of it while spent; other limits name one model (NaN reports one per model, Codex extras use display names such as `GPT-5.3 Codex_Spark`, matched as `gpt-5.3-codex-spark`). Each switch shows a warning naming the agent, the reason, the new model and, when it costs more, how much (`2.0x the price`), and is recorded in the session as `gentle-pi.model-fallback/v1`; the agent's row in the sidebar then reads `↪ <task> · <model>`, the model shown when the rail has room (failed rows keep their failure note instead). Only models you put in a chain are ever used; when the chain runs out, the run fails as before.
+
+### Per-repository pins
+
+A profile can be pinned to one repository, so that repository's subagent launches use that profile regardless of which profile is globally active. This is what keeps parallel repositories independent: without a pin, switching the active profile in one repository changes the routing every other repository will use for its next subagent launch.
+
+Two pin layers exist, and both hold only a profile name:
+
+| Layer | Path | Written by | Git impact |
+| ----- | ---- | ---------- | ---------- |
+| Local pin | `<git-common-dir>/gentle-ai/profile-pin.json` | Profile menu `▾` › **Use in this repo** | Invisible to git; every worktree of the clone shares it. |
+| Repository declaration | `<worktree-root>/.pi/gentle-ai/profile.json` | `/gentle:profiles publish <name>` | An ordinary repository file; commit it to share the pin with the team. |
+
+Both use the same shape, and both are a separate artifact from `profiles.json`:
+
+```json
+{
+  "kind": "gentle-pi.agent_model_profile_pin",
+  "version": 1,
+  "profile": "deep-work"
+}
+```
+
+The fullscreen shell header and Status → Project → Profile show the effective profile for the session
+repository: `name (session)` for a profile selected in this session, `name (local)` for a clone-local
+pin, `name (repo)` for a repository declaration, or the global active name without a suffix. Invalid
+or stale pins fall through to the next valid layer. A session shows the profile it froze at startup
+(see **Session profile frozen at startup** below); a selection in this session, or any default change
+in `follow` mode, appears within about two seconds while the UI session is active. The indicator is
+omitted if no valid profile remains.
+
+For a given working directory the winner is the local pin, then the repository declaration, then the globally active profile. A session resolves these layers once, when it starts, and keeps the result. Both are toggles: using one on the profile that already holds that layer removes it (the menu then reads **Stop using in this repo**), and either one outside a Git worktree writes nothing and says so.
+
+In a pinned repository the pinned profile governs subagent launches: the agents it names take its model and effort, and the agents it omits return to inherit (their own definition, then the default model). The default profile does not reach those launches, which `/gentle:profiles` reports when it runs inside a pinned repository. **Make default** follows the same boundary: when a valid pin wins it re-pins this clone (the clone-local pin) instead of writing the global routing; a malformed pin or one naming a missing profile is ignored, and Make default applies globally as it would outside a pinned repository, so it can never move another repository's routing. A committed repository declaration is never rewritten; when one still names another profile, the clone-local pin takes precedence and the screen says so. **Use in this session** writes no pin or shared routing (only pending table edits, saved to the profile first): it binds the profile to the current session, which outranks the pin for this session's launches. The tab of the pinned profile carries `⌂`.
+
+To share a pin, commit the repository declaration. When `.pi/` is ignored, Git cannot re-include a nested file until its parent directories are visible. The panel therefore prints these ordered root `.gitignore` rules, which keep unrelated `.pi` content ignored while making only the declaration committable:
+
+```gitignore
+!.pi/
+.pi/*
+!.pi/gentle-ai/
+.pi/gentle-ai/*
+!.pi/gentle-ai/profile.json
+```
+
+Renaming the profile that is this repository's local pin rewrites the local pin; a repository declaration is never rewritten behind a commit, and the rename note says to run `/gentle:profiles publish <name>` again when it still names the old profile. Deleting a profile is refused while it is the global active profile, this repository's local pin, or this repository's repository declaration. Pins held by other repositories cannot be enumerated from here and are not checked.
+
+A pin that cannot be honored never blocks work and is never destroyed by a read. Running outside a Git worktree, an unreadable or unparseable pin file, and a pin naming a profile the global store does not have are reported in the panel, and the repository falls back to the globally active profile. A missing pin layer is the ordinary no-pin state and stays silent.
+
+The orchestrator sits deliberately outside the pin. Its `defaultProvider`, `defaultModel`, and `defaultThinkingLevel` live in Pi's global `settings.json`, and a pin never writes them. Pi supports project settings, where `.pi/settings.json` overrides the global file, so a per-repository orchestrator is possible in principle; it is not done here because it would make Pi treat the repository as having project settings and ask for trust at startup, and because it would only affect new sessions.
+
+One limitation is worth stating. When a pinned profile omits an agent, that agent's own frontmatter still applies, so a model that an earlier global apply materialized into a user agent's frontmatter can still be inherited. Frontmatter cannot be told apart from content an author wrote, so a pin does not clear it.
+
+### Session profile frozen at startup
+
+Every parent session uses one profile for its subagent launches, the footer and Status profile, and the Usage provider scope. All three read the same rule:
+
+1. The profile selected in this session (`name (session)`).
+2. Otherwise, the profile the session froze when it started.
+3. Otherwise, only in `follow` mode, the current defaults.
+
+A session that never selected a profile resolves the shared defaults once, at startup: the local pin (`p`), then the repository declaration (`P`), then the globally active profile in `profiles.json`. It keeps that profile's name, routing, and origin (`local`, `repo`, or `global`). Changing a pin, the repository declaration, the active profile, or the profile's content afterwards affects new sessions only, the same way Pi's "set as default" for the orchestrator model leaves open sessions alone. Outside a Git worktree the repository declaration is still read, as non-Git writer admission does.
+
+**Behavior change for unpinned sessions.** Without a pin or declaration, launches now use the globally active profile from `profiles.json`, replacing the materialized `subagents.json` routing wholesale like a pin does. Before, an unpinned launch read the materialized stores. When nothing is pinned and no profile is active, the session freezes "no profile" and keeps routing through the materialized stores, as before; a pin added later does not change it.
+
+**Drift notice.** On each subagent launch, a session with a frozen profile compares it with the current defaults of its own directory, without applying them. When they differ, it shows one line:
+
+```text
+el Gentleman: the default profile changed to "local" (local), this session keeps "frontier" (local). Open /gentle:profiles and choose Use in this session to adopt one.
+```
+
+The notice appears once per distinct change: further launches stay quiet until the defaults change again. The same profile reached through another layer is not a change; an edit of the profile's content is. Sessions with a profile selected in the session, `follow` sessions, and subagent children never show it.
+
+**Foreign repositories.** A selected or frozen profile belongs to the session and also routes launches into a foreign `repository_root`. A session frozen without a profile leaves a foreign repository on its own local pin and repository declaration; the globally active profile does not apply there.
+
+**`follow` mode.** Start Pi with `GENTLE_PI_PROFILE_FOLLOW=1` (CI and headless runs) to skip the freeze: every launch resolves the current defaults of its target, and no drift notice is shown. Any other value, or no value, freezes. Selecting a profile with Enter still makes it the session's profile. Limitation: the orchestrator model is chosen when the session starts and does not follow later default changes, so after one the orchestrator and the subagents can follow different profiles.
+
+**Subagent children** never freeze, compare, or warn: their model comes from the parent's launch.
+
+**Task card layer token.** Every agents task card shows which layer supplied the launch's model, right after the model itself (for example `nan/glm5.3 · binding`): `binding` (selected in this session), `frozen:local` / `frozen:repo` / `frozen:global` (the startup snapshot and its origin), `pin:local` / `pin:repo` (a repository pin won), `declaration` (a non-Git repository declaration won), `profile` (the globally active profile routing), `definition` (the agent's own frontmatter), or `default` (Pi's default model). This makes staleness visible: a launch through a frozen session keeps showing its frozen token even after the editable layers below it change on disk.
+
+**Current limits.** The frozen profile is kept in memory for the life of the Pi process, so `/reload` keeps it. A session whose newest record holds its startup state (written by `/gentle:profiles clear`) resumes on that state instead. Otherwise the limit applies to the startup-frozen profile: resuming a session in a new process (`--resume`, `--continue`, `--session`), `/new`, and `/fork` freeze it again from the defaults current at that moment, and the drift notice memory starts empty, so a pending change is announced once more. A profile chosen with **Use in this session** is not affected: it is restored from the current branch of the session file, and it records the startup state when the session knows it, so a later clear can return there. Recording the frozen profile at every startup is planned.
+
+## Commands
+
+| Command                          | What it does                                                        |
+| -------------------------------- | ------------------------------------------------------------------- |
+| `/gentle:status`              | Shows package assets and global model config status. |
+| `/gentle:doctor`              | Runs read-only diagnostics for assets, model/persona config, memory tools, safety guards, and (inside Herdr) the task-summary sidebar setup. |
+| `/gentle:profiles`               | Opens the models screen on this repository's profile. `export <name>`, `import`, and `publish <name>` handle profile files and the repository declaration; `export-routing` and `restore-routing` move the saved global routing through `models.export.json`. |
+| `/gentle:commands`               | Opens the command palette (default `alt+k`): a curated, grouped menu (Configuration, Session, Diagnostics, Skills) of registered Gentle commands; search and run by label. |
+| `/gentle:persona`                | Switches global persona mode, with project override support.        |
+| `/gentle:background-subagents`   | Shows or sets the managed background-subagents policy (`status\|enable\|disable`), naming the source that decided it. |
+| `/gentle:double-esc-cancel`      | Shows or sets the double-esc-cancel preference (`status\|enable\|disable`); no argument toggles it. |
+| `/gentle:animations`            | Shows or sets global animations (`status\|quality\|performance\|potato`); no argument opens a selector. |
+| `/gentle:vim`                   | Shows or sets opt-in prompt Vim mode (`status\|enable\|disable`); no argument opens a selector. |
+| `/gentle:telemetry`              | Shows or changes the local Gentle AI telemetry trigger (`status\|enable\|disable\|preview`).  |
+| `/gentle:rdd`                    | Shows effective RDD mode and source, with explicit repository and machine-wide choices; cancellation changes nothing. |
+| `/gentle:review-mode`            | Shows or sets the receipt-driven development mode (`status\|enable\|disable`); user-initiated only, Pi automation never toggles it. |
+| `/gentle:scratch`               | Lists (`list`, the default) or cleans (`clean`) this session's scratch dir and the clones and worktrees recorded by this and ended sessions; see [Session scratch and artifact ledger](#session-scratch-and-artifact-ledger). |
+| `/gentle:status-timing`          | Arms timing for the next authorized STATUS-bearing tool call, clears it, or manually shows the last summary (`enable\|disable\|show`). Off by default, session-only, no native invocation. |
+| `/gentle:banner`                 | Configures startup banner rose, text logo, and color preset.        |
+| `/gentle:toggle-rose`            | Toggles the startup rose.                                           |
+| `/gentle:toggle-text-logo`       | Toggles the startup text logo.                                      |
+| `/gentle:banner-color`           | Selects a startup banner color preset.                              |
+| `/gentle:install-delegation` | Installs missing global delegation agents only; `--force` refreshes managed copies. |
+| `/gentle:install-review`     | Installs missing global review agents and chains only; `--force` refreshes managed copies. |
+| `/skill-registry:refresh`        | Regenerates `.atl/skill-registry.md`.                               |
+| `/skill-creation`                | Creates or updates an LLM-first skill using the packaged `gentle-ai-skill-creator` contract and style guide. |
+
+Startup installs and refreshes delegation and review assets. Status and doctor identify missing or stale managed assets and the relevant repair command. User and project overrides are reported separately from package drift. Package refresh preserves overrides; explicit saved model settings may still update packaged or custom-agent routing at startup. A packaged agent with outdated instructions that still match a shipped version is refreshed even when its frontmatter was edited (for example a hand-set `model:`/`thinking:` or a tool that reformatted `tools:`): refresh installs the current agent and keeps its `model:`/`thinking:` lines. An agent with edited instructions, or with frontmatter edits on the current instructions, stays as a user override. After changing any `assets/agents` file, run `node scripts/update-agent-body-history.mjs` to record the new instructions.
+
+### Native cache warming (Pi 0.86.1+)
+
+To allow warming while the parent waits for background results, explicitly set `"cacheWarming": "idle"` in Pi's `settings.json` (user scope: `~/.pi/agent/settings.json`, or project scope: `.pi/settings.json`). Gentle Shell never changes this setting. Native `"streaming"` mode stops when the agent settles: no idle decision is offered for this hook to override. `"off"` remains an opt-out.
+
+Pi owns provider cache-lifetime eligibility, safe replay, scheduling, and the fixed 30-minute idle / one-hour streaming horizons. Unknown provider lifetimes do not get inferred. Real provider requests replace Pi's schedule; Gentle Shell adds no timer or maintenance message. Refresh usage stays outside model context. Warming is best-effort, not a guarantee of a future cache hit.
+
+Ordinary idle decisions retain Pi's 15% continuation assumption. When the active parent owns queued or running background tasks, Gentle Shell treats continuation probability as 1, but still requires estimated cache-miss savings minus refresh cost to be at least $0.05. Restored, foreign-session, foreground, waiting-for-input, and finished tasks do not strengthen that decision. This only overrides candidates Pi actually offers; it never starts, inspects, polls, steers, or duplicates children.
+
+Completion remains push-driven through `gentle-agents.result`. Retain the task ID, end the parent turn when independent work is done, and never sleep or periodically poll status/results to maintain cache or detect completion. Status inspection is for a concrete orchestration decision, not a heartbeat.
+
+### Background subagents policy
+
+Background delegation requires a live interactive/RPC parent and is rejected in the single-shot modes `pi -p` and `pi --mode json`, even when the policy is on. Use task mode for bounded single-shot work.
+
+With the policy `on`, `subagent_run` defaults to `mode: "background"` at the runtime level in interactive and RPC sessions; print and json modes keep `task` regardless of the policy, since `pi -p` and `pi --mode json` exit before a parent session can receive a background result. `mode: "task"` remains available as an explicit opt-in for work that must ask the human mid-flight, such as a dialog-driven task or one the caller wants to wait on.
+
+Background delegation is off unless you turn it on. The policy is user-owned: only an explicit `/gentle:background-subagents enable` or `disable` writes it, and Pi automation never toggles it.
+
+An agent whose explicit `tools` frontmatter includes `bash_background` fails before spawn when the effective background-subagents policy is `off`, in either task or background mode. Admission resolves policy at dispatch using the request's environment and config home, including queued tasks. The error names the policy file, the exact opt-in shape `{"schema":"gentle-pi.background-subagents/v1","policy":"on"}`, and `/gentle:background-subagents enable|disable|status`. Agents without explicit tools are unchanged; the child missing-tools check remains the backstop for other names. Policy `on` passes this admission check only: it does not implement child background tools (future Slices 2–3).
+
+```text
+/gentle:background-subagents           Report the effective policy, the deciding source, and the resolved capability.
+/gentle:background-subagents enable    Write "on" to the global file.
+/gentle:background-subagents disable   Write "off" to the global file.
+```
+
+Four sources can decide the policy, and the first hit wins:
+
+| Priority | Source                                            | Notes                                                        |
+| -------- | ------------------------------------------------- | ------------------------------------------------------------ |
+| 1        | `<cwd>/.pi/gentle-ai/background-subagents.json`   | Project file. Outranks everything, including a global write.  |
+| 2        | `<configHome>/background-subagents.json`          | Global file, written by `enable`/`disable`. `configHome` honors `GENTLE_PI_CONFIG_HOME` and defaults to `~/.pi/gentle-ai`. |
+| 3        | `GENTLE_PI_BACKGROUND_SUBAGENTS`                  | Exactly `on` or `off`. Any other value is ignored.            |
+| 4        | Built-in default                                  | `off`.                                                        |
+
+Both files use the strict shape `{"schema":"gentle-pi.background-subagents/v1","policy":"on"}`. A file that is present but malformed fails closed to `off` and is **not** skipped in favor of a lower-priority source, so a typo in the project file disables background subagents rather than silently handing the decision to the global file. The command reports that case as a warning instead of an ordinary `off`.
+
+Because the project file outranks the global one, `enable` still writes the global file but reports plainly when a project file keeps the effective policy unchanged. The resolved capability (`ready` or `absent`) reports whether `subagent_run` is actually callable in this session; a policy of `on` with capability `absent` means Gentle Agents is disabled or the retired subagents package is still installed.
+
+### Esc behavior
+
+The Gentle prompt matches Claude Code's Esc model on top of Pi's own. Four flows share the frame's single hint slot on the bottom rule, each decided by its own state:
+
+1. **Working: cancel keeps the queue moving.** Esc aborts the running turn (a single Esc by default, or the confirming second Esc when double-esc-cancel below is enabled). Any steer or follow-up messages queued while the turn ran are sent as the next turn once the abort settles, instead of being dumped back into the editor for the user to notice and resend by hand; if another turn starts first (for example the user sends the restored draft before the abort has fully settled), the queued text simply waits and is sent once that turn settles, so it is never lost and never injected mid-turn. The user's own unsent draft stays in the editor untouched. Completed work before the abort is preserved, as Pi already does. Images inside a queued message are dropped, because Pi's own restore already drops them before this code ever sees the text. If Pi ever restores a shape this code does not recognize, Pi's own text is left exactly as written and nothing is dispatched, rather than guessing.
+2. **Working: double-esc-cancel (opt-in, off by default).** While the prompt is working (autocomplete hidden), a single Esc still aborts the turn immediately by default, exactly like Pi's own escape. Once enabled, the first Esc is swallowed and the prompt frame shows `esc again to cancel`; a second Esc within 1000ms falls through so Pi's own `onEscape` performs the abort (and flow 1 above still applies to that second Esc). Letting the window expire treats the next Esc as a first press again.
+3. **Idle with a draft: double Esc clears it.** With the prompt idle, autocomplete hidden, and non-empty editor text, the first Esc shows `esc again to clear` instead of doing nothing; a second Esc within 500ms, on the exact same text, adds the draft to history (recoverable with the Up arrow) and clears it. Editing the draft between the two presses starts a fresh first press on the new text instead of clearing the edit away. Letting the window expire treats the next Esc as a first press again. A bash-mode draft (starting with `!`) is never touched by this gate; Pi's own bash-mode Esc keeps deciding it.
+4. **Idle, empty editor: unchanged.** Pi's own idle double-Esc (`/tree` or `/fork`, 500ms) keeps deciding this case entirely; the prompt never intercepts it.
+
+Overlays, autocomplete cancel, and bash mode all consume the first Esc locally and are unaffected by any of the four flows above.
+
+Double-esc-cancel's policy is user-owned: only an explicit `/gentle:double-esc-cancel enable` or `disable` writes it, and Pi automation never toggles it.
+
+```text
+/gentle:double-esc-cancel           Toggle the effective policy (on -> off, off -> on).
+/gentle:double-esc-cancel status    Report the effective policy and the deciding source.
+/gentle:double-esc-cancel enable    Write "on" to the global file.
+/gentle:double-esc-cancel disable   Write "off" to the global file.
+```
+
+Unlike `/gentle:background-subagents`, no argument here reports status; it toggles the effective policy instead, since this preference has only one file layer and nothing else can outrank a write.
+
+Three sources can decide the policy, and the first hit wins:
+
+| Priority | Source                                     | Notes                                                        |
+| -------- | ------------------------------------------- | ------------------------------------------------------------ |
+| 1        | `<configHome>/double-esc-cancel.json`       | Global file, written by `enable`/`disable`. `configHome` honors `GENTLE_PI_CONFIG_HOME` and defaults to `~/.pi/gentle-ai`. There is no project-level override: this preference changes what a keypress does, and per-project overrides would make the same key do two different things depending on which repo is open. |
+| 2        | `GENTLE_PI_DOUBLE_ESC_CANCEL`               | Exactly `on` or `off`. Any other value is ignored, and it decides only when the global file does not exist. |
+| 3        | Built-in default                            | `off`.                                                        |
+
+The file uses the strict shape `{"schema":"gentle-pi.double-esc-cancel/v1","policy":"on"}`. A file that is present but malformed fails closed to `off` instead of falling through to the environment variable, and the command reports that case as a warning instead of an ordinary `off`. The extension resolves the policy once at startup and updates it in memory when the command runs; the prompt never re-reads the file on every keypress.
+
+### Animation modes
+
+Use `/gentle:animations performance` to reduce redraw frequency, or `/gentle:animations potato` to stop Gentle-owned periodic animation. Find **Animation mode** under the command palette's **Configuration** group. `/gentle:animations` and `/gentle:animations status` report the effective mode and deciding source without writing; `/gentle:animations quality` restores the default.
+
+| Mode | Working prompt | Startup banner |
+|------|----------------|----------------|
+| `quality` (default) | Existing frames every 80ms | Existing animation every 25ms |
+| `performance` | One animation pulse every 1000ms | One paint every 250ms, advancing 10 logical ticks to retain approximately the original duration |
+| `potato` | Static idle/working/queued state, no animation interval | Completed static artwork immediately, no animation interval |
+
+The selection is global: `<configHome>/animations.json`, where `configHome` honors `GENTLE_PI_CONFIG_HOME` and defaults to `~/.pi/gentle-ai`. The strict file shape is `{"schema":"gentle-pi.animations/v1","policy":"quality"}`. There is no project or environment mode override. Missing files use `quality`; malformed or unreadable files also fall back to `quality`, with an attributable warning in status, and are not silently rewritten.
+
+A successful command applies to the live prompt immediately, including while working. Starting and settling still request immediate renders. Pi owns enqueue repaint scheduling; Gentle shows the current queued state on the next host render without requiring an animation tick. A running startup banner retains its creation-time policy; the new selection applies at the next banner creation. Operational polling, refresh/debounce timers, Pi core animations, and install-time `tuiMode` are unchanged.
+
+### Vim prompt editing
+
+`/gentle:vim enable` opts only the Gentle-owned prompt into modal editing; `/gentle:vim disable` restores ordinary Pi editing. `/gentle:vim status` reads the persisted preference and deciding source without writing, and reports the effective mode of the current Gentle prompt separately. With no argument, an interactive selector offers enable, disable, and status; headless use reports status. The global `<configHome>/vim.json` (default config home `~/.pi/gentle-ai`, overridable with `GENTLE_PI_CONFIG_HOME`) uses the strict shape `{"schema":"gentle-pi.vim/v1","policy":"on"}` or `off`. Missing means off; malformed or unreadable files warn and fall back to off without being rewritten. Enable/disable persist globally; compatible owned prompts apply the preference immediately. On compatibility rejection the on preference remains saved, but the active prompt stays in ordinary editing and the command never claims it applies now. Without an active Gentle prompt, the command reports that the preference will be tried at next prompt creation. A foreign editor is never replaced.
+
+The frame labels INSERT, NORMAL, VISUAL (characterwise), or VISUAL LINE (linewise); narrow frames may omit the hint. INSERT uses Pi's normal input. Escape first leaves INSERT for NORMAL **without** aborting a running turn or clearing a draft. Escape in VISUAL or with a pending command cancels that selection/command first; a later Escape in plain NORMAL follows Gentle's existing working-cancel/queue or idle-draft clear behavior (including the configured double-Escape confirmation). Autocomplete and `!` bash drafts retain Pi's input/Escape handling. `Ctrl+[` acts as Escape only where Pi delivers it as Escape.
+
+| Mode | Supported keys in this prompt |
+| --- | --- |
+| NORMAL → INSERT | `i/I/a/A` insert at cursor/first nonblank/after cursor/end; `o/O` open a line below/above. |
+| NORMAL navigation | Counts where accepted; `h/j/k/l`, Space, `w/e/b`, `0/^/$`, `gg/G`, and same-line `f/F/t/T` with `;/,` repeat. Motions use grapheme boundaries on Unicode and multiline drafts; they do not search prompt history. |
+| NORMAL editing | `x`, `s/S`, `J`, `p/P`, `d/c/y` with repeat for whole lines, word/line/find motions, and supported text objects (`iw/aw`, `iW/aW`, paired quotes/backticks/brackets); `>>/<<` and supported motion-based `>/<` indent/dedent lines. A yank fills this prompt's register. |
+| VISUAL | `v` selects characters, `V` selects lines; motions and `o` adjust the range. `d/x`, `c/s`, `y`, `p`, `>/<`, `J`, `~/u/U`, and `r` act on the selection; `i/a` with word/WORD or quote/bracket selects a text object in characterwise VISUAL. No blockwise visual selection. |
+| Undo/repeat | NORMAL `u` undoes prompt editor changes; `.` repeats supported completed NORMAL edits and insert/change sessions at the current cursor (counts supported). Each supported insert session or repeat is grouped as one undo unit. VISUAL `u` lowercases the selection instead of undoing. VISUAL edits are not dot-repeatable. |
+
+**Deliberate `/` divergence from Claude Code:** NORMAL `/` hands off to **Pi's native slash commands and skills**, enters INSERT, and inserts `/` at the existing cursor. Pi offers slash completion only at the start of the first line; elsewhere it inserts a literal slash without moving or replacing the draft. There is **no reverse prompt-history search**. Pi's explicit history shortcuts still work, transferring to INSERT first. Unknown NORMAL printable input, encoded text and bracketed paste do not silently insert; application shortcuts can transfer to INSERT before acting.
+
+This is a bounded command subset, not full Claude Code/Vim parity. The private editor adapter supports only the audited Pi coding-agent/TUI `0.99.1`, `0.99.2`, `1.0.0`, `1.1.0`, `1.2.0`, `1.3.0`, `1.4.0`, and `1.5.0` package pairs. The two 0.99 releases have byte-identical editor and undo-stack sources. Pi 1.0.0, 1.1.0 and 1.2.0 are separately audited against the touched state, paste/history, cursor/layout, autocomplete and undo-snapshot contracts. Pi 1.2.0's paired APC fake-cursor markers remain intact so the host can suppress software cursors when hardware cursors are visible; selection inversion and empty-prompt hints support both these markers and legacy SGR cursors. Pi 1.5.0 keeps undo-stack.js and editor-component.js byte-identical to 1.2.0; its editor.js adds a read-only `capturesViewportInput` getter and autocomplete pageUp/pageDown matching, and its keys.js adds Kitty F1-F12 mappings plus the functional PUA filter — all additive to input handling, leaving the audited state, paste, layout and autocomplete contracts unchanged. Current bundled and unbundled 1.2.0 tests prove identity, edit/undo, paste, selection, wrapping/scroll and autocomplete behavior, not old/new byte identity. Fabricated metadata tests preserve exact-version admission coverage for the older audited releases. Version metadata must come from a canonical candidate host package root whose actual `CustomEditor` and `Editor` classes match the loaded classes, never from the extension's local metadata or CLI path alone. Unknown versions, mismatched prototypes, or invalid layouts fail closed: a single compatibility warning is shown and the prompt continues with ordinary editing instead of silently entering inert NORMAL mode. Operations that would cross a registered collapsed paste marker, or encounter duplicate occurrences of a registered marker ID, are rejected without editing it. Visual highlighting relies on Pi's render layout and may be omitted if its geometry cannot be validated. No live-terminal proof of every layout or complete parity is claimed.
+
+Startup banner settings remain global in `banner.json` under `GENTLE_PI_CONFIG_HOME` (default `~/.pi/gentle-ai`). Existing `showRose` and `showTextLogo` opt-outs independently control the main startup artwork; both default to enabled. Changes apply on the next session or `/reload`. Color presets are `pink` (default), `cyan`, `yellow`, and `green`. The static sidebar heading is independent of these preferences and follows the active theme.
+
+Startup flag:
+
+```text
+pi --no-skill-registry
+```
+
+Use it when you want skills available normally but do not want Gentle AI to refresh/watch `.atl/skill-registry.md` on startup. `pi -ns` / `pi --no-skills` also skip the registry startup work because Pi is already disabling skill loading.
+
+## Included skills
+
+- `gentle-ai` — harness discipline for controlled Pi work.
+- `gentle-ai-branch-pr` — issue-first PR preparation.
+- `gentle-ai-chained-pr` — split oversized changes into reviewable PR chains.
+- `work-unit-commits` — commits as reviewable work units.
+- `gentle-ai-judgment-day` — blind dual review, fixes, and re-judgment.
+- `cognitive-doc-design` — documentation that reduces cognitive load.
+- `comment-writer` — concise, warm, postable collaboration comments.
+- `gentle-ai-issue-creation` — issue workflow with checks before creation.
+- `gentle-ai-skill-creator` — create LLM-first skills with valid frontmatter.
+- `gentle-ai-skill-improver` — audit and upgrade existing LLM-first skills.
+
+## Memory
+
+`gentle-pi` does **not** provide persistent memory by itself.
+
+For memory, install the companion package:
+
+```bash
+pi install npm:gentle-engram
+```
+
+When memory tools are actually active, el Gentleman can save decisions, bug fixes, discoveries, user prompts, and session summaries across Pi sessions.
+
+For large ODD work, the parent reconciles the full `odd/tasks/<feature-name>.md` document with its `odd/<feature-name>/tasks` Engram mirror when memory is available. It passes relevant context to subagents; subagents save significant verified discoveries and completed work before returning, without independently searching unrelated memory.
+
+## Telemetry
+
+`gentle-pi` observes approved sanitized runtime usage fields in memory and asynchronously invokes `gentle-ai telemetry runtime send --json` once per accepted event. It never persists metric data, retries, or waits for delivery in provider callbacks; busy or failed attempts are silently discarded. [gentle-ai](https://github.com/Gentleman-Programming/gentle-ai) owns native delivery and the existing opt-out policy. See [Telemetry](telemetry.md) for fields and source limitations.
+
+Separately, at primary session start (never for a named subagent), Gentle Pi asks the local `gentle-ai` binary to handle its own install/heartbeat telemetry: it spawns `gentle-ai telemetry trigger --json` detached, with a 3 s deadline, discards its output, and never blocks session start or surfaces an error — an older binary without the verb is silently treated as nothing to do. This runs at most once per process.
+
+Install counts for `gentle-pi` and `gentle-engram` come from npm download statistics; the package itself never emits an install event.
+
+To opt out:
+
+- `/gentle:telemetry disable` — asks the local `gentle-ai` binary to disable telemetry (also `status` and `preview` to inspect it without leaving Pi).
+- `DO_NOT_TRACK=1` — Gentle Pi suppresses runtime usage telemetry and the install/heartbeat trigger; `gentle-ai` also honors this standard independently.
+- `GENTLE_AI_TELEMETRY=0` — same effect, `gentle-ai`'s own environment switch.
+
+`CI=true` also suppresses runtime usage telemetry and the trigger, since automated runs are not a real usage signal.
+
+## Package contents
+
+| Path                           | Purpose                                                                                                    |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| `extensions/gentle-ai.ts`      | Injects identity, orchestrates native review authority, refreshes delegation/review assets at startup, registers commands, applies model/persona config, and enforces runtime safety. |
+| `lib/native-review-cli.ts`     | Strict package-local adapter for Gentle AI review and status contracts. |
+| `lib/review-integration-v2.ts` | Strict consumer decoder for negotiated capabilities, operations, target status, projections, repair, and failures against contract `review-integration/v2` (active today).  |
+| `lib/review-candidate-view.ts` | Builds immutable changed-scope actor views while preserving full-tree, path, mode, symlink, and index integrity. |
+| `lib/review-canonical.ts`      | Permanent Pi-owned canonical JSON and domain-hash primitives for consumer-side identities.                   |
+| `lib/review-repository.ts`     | Permanent Pi-owned Git common-directory identity, safe Git environment, and authority-root binding.          |
+| `lib/gentle-ai-binary.ts`      | Resolves and verifies the confined package-local Gentle AI runtime without global or PATH fallback.          |
+| `scripts/gentle-ai-installer.mjs` | Installs signed Darwin/Linux archives or exact Go SumDB-verified Windows source builds into the package-local runtime. |
+| `contracts/review-integration/v1/` | Byte-identical provider schemas and conformance fixtures for contract `review-integration/v1`, hash-checked before packaging; retained on disk permanently because `/v2`'s schemas `$ref` into these fragments. |
+| `contracts/review-integration/v2/` | Byte-identical provider schemas and conformance fixtures for contract `review-integration/v2` (immutable `base_tree`/`candidate_tree`, ordered `changed_path_manifest`, no inline candidate diff), hash-checked before packaging. |
+| `extensions/startup-banner.ts` | Shows and configures the startup intro, color presets, and compact runtime panel.     |
+| `extensions/skill-registry.ts` | Maintains `.atl/skill-registry.md` from project/user skills and closes file watchers on shutdown.          |
+| `extensions/codegraph-tools.ts` | Runs workspace-scoped CodeGraph init/query/explore and keeps `.codegraph/` out of git through the worktree's local `info/exclude` (never a tracked file). |
+| `contracts/review-provider-contract-mirror/` | Verified mirror of the Gentle AI provider contract bundle: the `orchestration/pi.md` review execution contract and the `routing/pi.md` ODD steps. Refresh it only with `node scripts/mirror-provider-contract.mjs --bundle <local archive or tree>`; `pnpm run check:provider-contract` checks it offline against its lock. |
+| `assets/orchestrator.md`       | Parent-session orchestration contract (always-on core).                                                    |
+| `assets/orchestrator-delegation.md` | Lazy-loaded delegation card read when the parent delegates: the mirrored gentle-ai triggers, handoff, launch, and Key Learnings rules. |
+| `assets/orchestrator-delegation-reference.md` | Lazy-loaded delegation reference read only when named: per-action table, Work Routing Ladder, background policy, runtime bindings, canonical workflows. |
+| `assets/orchestrator-tracking.md` | Lazy-loaded large-task ODD tracking: authorization, research, checks and consent, phase signaling, RDD assess, delivery. |
+| `assets/orchestrator-verification.md` | Lazy-loaded Verification rule, native risk tiers, and writer verification contract. |
+| `assets/orchestrator-writer.md` | Lazy-loaded allowed edit surfaces and Judgment Day fix dispatch. |
+| `assets/orchestrator-prompts.md` | Lazy-loaded lossless blocking-prompt relays and Gentle AI provider defect handoff. |
+| `assets/orchestrator-memory.md` | Lazy-loaded ODD feature continuity and memory lifecycle rules. |
+| `assets/orchestrator-skills.md` | Lazy-loaded skill registry fallback semantics and intent-driven skill discovery.                          |
+| `assets/agents/`               | Delegation and review agents installed as global Pi runtime assets. |
+| `assets/chains/`               | Review chains installed as global Pi runtime assets. |
+| `assets/support/`              | Strict TDD support docs for delegated implementation and verification. |
+| `skills/`                      | Gentle AI delivery and collaboration skills.                                                               |
+| `prompts/`                     | The `/skill-creation` prompt template.                                                                     |
+| `docs/skill-style-guide.md`    | Normative style guide used by the packaged skill creation/improvement skills.                              |
+| `docs/native-authority-architecture.md` | Post-U8 ownership boundary, reproducible slimming metrics, Windows evidence, exact #191 seam, and the `review-integration/v1`→`v2` migration status, including the "compact-v2" naming disambiguation.     |
+| `docs/review-integration.md`   | Negotiated provider/consumer contract and the current Gentle Pi adoption boundary.                         |
+
+## Development
+
+Install from this repo:
+
+```bash
+pi install .
+```
+
+Validate before publishing:
+
+```bash
+pnpm test
+bun build extensions/skill-registry.ts --target=node --format=esm --outfile=/tmp/skill-registry.js
+node --experimental-strip-types --check extensions/gentle-ai.ts
+node --experimental-strip-types --check extensions/startup-banner.ts
+npm pack --dry-run
+```
+
+`pnpm test` isolates the `unit-tests` stage from inherited `GIT_*` and
+`GENTLE_PI_AGENTS_*` variables and supplies an empty temporary
+`GENTLE_PI_CONFIG_HOME`, removed when the stage exits. Other environment
+variables and the provider-contract/runtime-harness stages remain unchanged.
+Direct `node --test` invocations bypass this isolation. Product Git-environment
+safety checks are unchanged.
+
+### Cross-lane checks
+
+`tests/crosslane/cross-lane.mjs` (run with `pnpm test:cross-lane`) is a single fixture parity check, not a live battery. It imports `decodeReviewLastEventClosureV1` from the pinned decoder lane, decodes the vendored fixture `tests/fixtures/devbinary/last-event-capture-result-approved.captured.json`, asserts the approved `review/capture-result` closure shape (operation, state, and the `sha256:` store revision), and exits. It needs no `gentle-ai` binary and runs offline; the pinned decoder lane only ever sees vendored fixtures.
+
+The live cross-lane battery — end-to-end lifecycle checks against a real `gentle-ai` binary, out of CI on purpose — is a contributor tool of the provider repository: `scripts/cross-lane-battery.sh` in [Gentleman-Programming/gentle-ai](https://github.com/Gentleman-Programming/gentle-ai). Run it from a checkout or worktree of that repository, not from this one.
+
+Publish npm through GitHub Actions only:
+
+```bash
+version="$(node -p "require('./package.json').version")"
+tag="v${version}"
+git fetch --no-tags origin "refs/tags/${tag}"
+test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$(git rev-parse "${tag}^{commit}")"
+gh workflow run publish.yml \
+  --repo Gentleman-Programming/gentle-shell \
+  --ref main \
+  -f tag="${tag}"
+gh run watch <run-id> --repo Gentleman-Programming/gentle-shell --exit-status
+npm view gentle-pi@<version> version --registry=https://registry.npmjs.org/
+npm dist-tag ls gentle-pi --registry=https://registry.npmjs.org/
+```
+
+Do not run `npm publish` locally for `gentle-pi`. Dispatch the trusted workflow definition only from protected default `main` and provide its sole `tag` input. The workflow requires an exact annotated `vSemVer` tag whose peeled commit, current remote `main`, dispatch/main workflow commit, checkout, and `package.json` version are identical. It rechecks remote tag and `main` immediately before publishing through OIDC with provenance and environment protection; an advanced `main` requires a new release version, never a moved tag.
+
+## Principles
+
+- Human control over agent momentum.
+- Concepts before code.
+- Artifacts over floating chat context.
+- ODD for development work, with recoverable progress for large changes.
+- TDD from configured mode or explicit choice, not test presence.
+- One parent orchestrator, focused subagents.
+- Reviewable changes over giant diffs.

@@ -1,0 +1,895 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { TuiAltScreen, visibleWidth, type Terminal, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { CHANGE_STATUS, DIFF_TOO_LARGE, changesModel, type ChangedFile } from "../lib/shell-changes.ts";
+import { WorktreeChangesView, ChangesView, colorDiff, type ChangesViewDeps } from "../lib/shell-changes-view.ts";
+import { stripAnsi } from "../lib/terminal-theme.ts";
+import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
+
+// The changes overlay: files on the left, the selected file's diff on the
+// right, keys at the bottom. Rendering is pure; git access is injected.
+
+const plainTheme = {
+	fg(_color: string, text: string) {
+		return text;
+	},
+};
+
+const taggedTheme = {
+	fg(color: string, text: string) {
+		return `<${color}>${text}</${color}>`;
+	},
+};
+
+function file(path: string, added: number, deleted: number, status: ChangedFile["status"] = CHANGE_STATUS.MODIFIED): ChangedFile {
+	return { path, added, deleted, status };
+}
+
+const DIFF_A = ["diff --git a/lib/a.ts b/lib/a.ts", "index 1..2 100644", "--- a/lib/a.ts", "+++ b/lib/a.ts", "@@ -1,2 +1,3 @@", " const a = 1;", "-const b = 2;", "+const b = 3;", "+const c = 4;"].join("\n");
+
+function view(overrides: Partial<ChangesViewDeps> = {}, files = [file("lib/a.ts", 2, 1), file("lib/b.ts", 10, 0, CHANGE_STATUS.ADDED)]) {
+	const calls: string[] = [];
+	const events: string[] = [];
+	const deps: ChangesViewDeps = {
+		theme: plainTheme,
+		rows: 12,
+		async loadDiff(target) {
+			calls.push(target.path);
+			return target.path === "lib/a.ts" ? DIFF_A : "";
+		},
+		onOpen(target) {
+			events.push(`open:${target.path}`);
+		},
+		onClose() {
+			events.push("close");
+		},
+		requestRender() {
+			events.push("render");
+		},
+		...overrides,
+	};
+	return { view: new ChangesView(changesModel(files), deps), calls, events };
+}
+
+async function settle(): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function mouse(type: TuiMouseEvent["type"], x: number, y: number, wheelDelta?: number, height = 12): TuiMouseEvent {
+	return { type, button: type === "wheel" ? "none" : "left", x, y, screenX: x, screenY: y, width: 80, height, shift: false, alt: false, ctrl: false, wheelDelta };
+}
+
+function mouseButton(type: TuiMouseEvent["type"], button: TuiMouseEvent["button"], x: number, y: number, height: number): TuiMouseEvent {
+	return { type, button, x, y, screenX: x, screenY: y, width: 80, height, shift: false, alt: false, ctrl: false };
+}
+
+// H1 (odd/tasks/usage-click-and-changes-attribution.md): the same shared
+// hover role every other clickable surface uses, and it never overrides the
+// already-selected row's own role.
+test("WorktreeChangesView paints the shared hover role over an unselected row, never the selected one", async () => {
+	const trees = ["/main", "/linked"].map((root) => ({ root, branch: root === "/main" ? "main" : undefined, model: changesModel([file("same.ts", 1, 0)]) }));
+	const component = new WorktreeChangesView(trees, {
+		theme: taggedTheme, rows: 10,
+		loadDiff: async () => "",
+		onOpen: () => {},
+		onClose: () => {}, requestRender() {}, onRefresh() {},
+	});
+	component.render(80);
+	// Row y=1 is the selected group header (/main, index 0); row y=2 is /linked's header.
+	const hoverOther = component.handleMouse(mouseButton("move", "none", 3, 2, 10));
+	assert.deepEqual(hoverOther, { handled: true, render: true });
+	assert.match(component.render(80)[2]!, /<warning>[^<]*detached/, "hovering the unselected row paints the shared hover role");
+	assert.doesNotMatch(component.render(80)[1]!, /<warning>/, "the selected row keeps its own role");
+
+	const hoverSelected = component.handleMouse(mouseButton("move", "none", 3, 1, 10));
+	assert.deepEqual(hoverSelected, { handled: true, render: true });
+	assert.doesNotMatch(component.render(80)[1]!, /<warning>/, "hovering the selected row still never paints the hover role");
+	assert.doesNotMatch(component.render(80)[2]!, /<warning>/, "leaving the other row clears its hover");
+});
+
+test("worktree accordion keeps groups and nested files beside a framed lazy diff", async () => {
+	const trees = ["/main", "/linked"].map((root) => ({ root, branch: root === "/main" ? "main" : undefined, model: changesModel([file("same.ts", 1, 0)]) }));
+	const loaded: string[] = [];
+	const opened: string[] = [];
+	let closed = 0;
+	const component = new WorktreeChangesView(trees, {
+		theme: plainTheme, rows: 10,
+		loadDiff: async (root, target) => { loaded.push(root); return `+${root}:${target.path}`; },
+		onOpen: (root, target) => { opened.push(`${root}:${target.path}`); },
+		onClose: () => { closed++; }, requestRender() {}, onRefresh() {},
+	});
+	assert.deepEqual(loaded, [], "list must not eagerly load diffs");
+	assert.match(component.render(100).join("\n"), /detached · linked/);
+	component.handleInput("\r");
+	assert.deepEqual(loaded, [], "expanding a header must not select a file");
+	component.handleInput("j");
+	await settle();
+	const lines = component.render(100);
+	assert.equal(lines.length, 10);
+	assert.match(lines[0], /^╭─ ✎ Changes/);
+	assert.match(lines[1], /^│   ▾ main · main +│ M same.ts +│$/);
+	assert.match(lines[2], /^│ ▸   M same.ts +\+1 -0 +│ \+\/main:same.ts +│$/);
+	assert.match(lines[3], /^│   ▸ detached · linked +│/);
+	assert.match(lines[9], /^╰─+╯$/);
+	for (const line of lines) assert.equal(visibleWidth(line), 100);
+	assert.match(component.render(100).join("\n"), /\+\/main:same.ts/);
+	component.handleInput("o");
+	component.handleInput("j");
+	assert.doesNotMatch(component.render(100).join("\n"), /\+\/main:same.ts/, "header selection clears unrelated preview");
+	assert.match(component.render(100)[2], /^│     M same.ts +\+1 -0 +│/, "unselected children retain their fixed marker and indentation");
+	component.handleInput(" ");
+	component.handleInput("j");
+	await settle();
+	assert.match(component.render(100).join("\n"), /▾ main · main/, "multiple groups remain expanded");
+	assert.match(component.render(100).join("\n"), /\+\/linked:same.ts/);
+	assert.doesNotMatch(component.render(100).join("\n"), /\+\/main:same.ts/);
+	component.handleInput("\r");
+	assert.deepEqual(opened, ["/main:same.ts", "/linked:same.ts"]);
+	assert.deepEqual(loaded, ["/main", "/linked"]);
+	component.update([trees[0]]);
+	assert.match(component.render(100).join("\n"), /main · main/);
+	component.handleInput("\x1b");
+	assert.equal(closed, 1);
+});
+
+// Long paths were clipped to `tools/linkedin-automation/scr…`, hiding the file
+// name. Rows lead with the name and trail the directory; the diff pane shows
+// the full path, clipped from the left so the name always survives.
+test("changes rows lead with the file name and the diff pane shows the full path", async () => {
+	const path = "tools/linkedin-automation/scripts/connect.mjs";
+	const trees = [{ root: "/main", branch: "feat/linkedin", model: changesModel([file(path, 214, 0, CHANGE_STATUS.ADDED)]) }];
+	const component = new WorktreeChangesView(trees, {
+		theme: plainTheme, rows: 10,
+		loadDiff: async () => "@@ -0,0 +1,1 @@\n+# Scheduled",
+		onOpen: () => {}, onClose: () => {}, requestRender() {}, onRefresh() {},
+	});
+	component.handleInput("\r");
+	component.handleInput("j");
+	await settle();
+	const lines = component.render(120);
+	assert.match(lines[2]!, /^│ ▸   A connect\.mjs  \+214 -0  tools/, "the file name leads the row");
+	assert.match(lines[1]!, /│ A tools\/linkedin-automation\/scripts\/connect\.mjs +│$/, "the diff pane starts with the full path");
+	assert.match(lines[2]!, /│ @@ -0,0 \+1,1 @@ +│$/, "the diff follows the path line");
+	assert.match(component.render(70)[1]!, /│ A …[^│]*\/connect\.mjs *│$/, "a narrow pane clips the path from the left");
+
+	const standalone = view({ loadDiff: async () => "+x" }, [file(path, 1, 0, CHANGE_STATUS.ADDED)]).view;
+	await settle();
+	const single = standalone.render(120);
+	assert.match(single[1]!, /│ ▸ A connect\.mjs  \+1 -0  tools/);
+	assert.match(single[1]!, /│ A tools\/linkedin-automation\/scripts\/connect\.mjs +│$/);
+	assert.match(single[2]!, /│ \+x +│$/);
+});
+
+test("worktree accordion selects a clicked file without opening its editor", () => {
+	const opened: string[] = [];
+	const component = new WorktreeChangesView([{ root: "/main", branch: "main", model: changesModel([file("a.ts", 1, 0), file("b.ts", 1, 0)]) }], {
+		theme: plainTheme, rows: 8, loadDiff: async () => "+preview",
+		onOpen: (_root, target) => { opened.push(target.path); }, onClose() {}, onRefresh() {}, requestRender() {},
+	});
+	component.handleInput("\r");
+	component.render(80);
+	const result = component.handleMouse({ type: "click", button: "left", x: 3, y: 3, screenX: 3, screenY: 3, width: 80, height: 8, shift: false, alt: false, ctrl: false });
+	assert.deepEqual(result, { handled: true, render: true });
+	assert.match(component.render(80)[3], /▸   M b\.ts/);
+	assert.deepEqual(opened, []);
+});
+
+test("worktree accordion receives native fullscreen press and release as a file click", async () => {
+	let onInput: ((data: string) => void) | undefined;
+	const terminalFixture = {
+		start(input: Parameters<Terminal["start"]>[0]) { onInput = input; }, stop() {}, async drainInput() {}, write() {}, get columns() { return 80; }, get rows() { return 8; }, get kittyProtocolActive() { return false; }, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
+	};
+	const terminal: Terminal = terminalFixture;
+	const opened: string[] = [];
+	const component = new WorktreeChangesView([{ root: "/main", branch: "main", model: changesModel([file("a.ts", 1, 0), file("b.ts", 1, 0)]) }], {
+		theme: plainTheme, rows: 8, loadDiff: async () => "+preview",
+		onOpen: (_root, target) => { opened.push(target.path); }, onClose() {}, onRefresh() {}, requestRender() {},
+	});
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
+	tui.setLayoutRoot(component);
+	tui.start();
+	component.handleInput("\r");
+	tui.renderNow(true);
+	try {
+		onInput?.("\x1b[<0;4;4M");
+		onInput?.("\x1b[<0;4;4m");
+		assert.match(component.render(80)[3], /▸   M b\.ts/);
+		assert.deepEqual(opened, []);
+	} finally {
+		tui.stop();
+	}
+});
+
+test("worktree pointer regions scroll independently and expire on refresh or dispose", async () => {
+	const files = Array.from({ length: 8 }, (_, index) => file(`file-${index}.ts`, 1, 0));
+	const long = Array.from({ length: 20 }, (_, index) => `+line ${index}`).join("\n");
+	const trees = [{ root: "/main", branch: "main", model: changesModel(files) }];
+	const component = new WorktreeChangesView(trees, {
+		theme: plainTheme, rows: 8, loadDiff: async () => `@@ -0,0 +1,20 @@\n${long}`,
+		onOpen() {}, onClose() {}, onRefresh() {}, requestRender() {},
+	});
+	component.handleInput("\r");
+	component.handleInput("j");
+	await settle();
+	component.render(80);
+	assert.deepEqual(component.handleMouse(mouse("move", 3, 2, undefined, 8)), undefined, "hover must not select");
+	assert.deepEqual(component.handleMouse(mouse("wheel", 3, 1, 2, 8)), { handled: true, render: true });
+	assert.match(component.render(80)[1], /M file-1\.ts/);
+	component.update(trees);
+	assert.deepEqual(component.handleMouse(mouse("wheel", 3, 1, 1, 8)), { handled: true, render: false }, "refresh invalidates stale pointer geometry");
+	assert.match(component.render(80)[1], /M file-1\.ts/, "unchanged polling keeps the manual list viewport");
+	assert.deepEqual(component.handleMouse(mouse("wheel", 50, 1, 2, 8)), { handled: true, render: true });
+	assert.doesNotMatch(component.render(80)[1], /@@/);
+	component.dispose();
+	assert.deepEqual(component.handleMouse(mouse("click", 3, 1, undefined, 8)), { handled: true, render: false });
+});
+
+test("file-list pointer capture is limited to an active left gesture in both views", () => {
+	const { view: standalone } = view();
+	const accordion = new WorktreeChangesView([{ root: "/main", branch: "main", model: changesModel([file("a.ts", 1, 0)]) }], {
+		theme: plainTheme, rows: 8, loadDiff: async () => "+preview", onOpen() {}, onClose() {}, onRefresh() {}, requestRender() {},
+	});
+	accordion.handleInput("\r");
+	standalone.render(80);
+	accordion.render(80);
+	for (const [component, y, height] of [[standalone, 1, 12], [accordion, 2, 8]] as const) {
+		for (const button of ["right", "middle"] as const) {
+			assert.equal(component.handleMouse(mouseButton("press", button, 3, y, height)), undefined, `${button} press must reach pi-tui fallback`);
+			assert.equal(component.handleMouse(mouseButton("release", button, 3, y, height)), undefined, `${button} release must reach pi-tui fallback`);
+		}
+		assert.deepEqual(component.handleMouse(mouseButton("press", "left", 3, y, height)), { handled: true, capture: true, render: false });
+		assert.deepEqual(component.handleMouse(mouseButton("release", "none", 3, y, height)), { handled: true, render: false });
+	}
+	standalone.handleMouse(mouseButton("press", "left", 3, 1, 12));
+	standalone.update(changesModel([file("a.ts", 1, 0)]));
+	standalone.render(80);
+	assert.equal(standalone.handleMouse(mouseButton("release", "none", 3, 1, 12)), undefined, "update clears a captured left gesture");
+	accordion.handleMouse(mouseButton("press", "left", 3, 2, 8));
+	accordion.invalidate();
+	accordion.render(80);
+	assert.equal(accordion.handleMouse(mouseButton("release", "none", 3, 2, 8)), undefined, "invalidate clears a captured left gesture");
+});
+
+test("an outside release clears an active left gesture in both views", () => {
+	const { view: standalone } = view();
+	const accordion = new WorktreeChangesView([{ root: "/main", branch: "main", model: changesModel([file("a.ts", 1, 0)]) }], {
+		theme: plainTheme, rows: 8, loadDiff: async () => "+preview", onOpen() {}, onClose() {}, onRefresh() {}, requestRender() {},
+	});
+	accordion.handleInput("\r");
+	standalone.render(80);
+	accordion.render(80);
+	for (const [component, y, height] of [[standalone, 1, 12], [accordion, 2, 8]] as const) {
+		assert.deepEqual(component.handleMouse(mouseButton("press", "left", 3, y, height)), { handled: true, capture: true, render: false });
+		assert.deepEqual(component.handleMouse(mouseButton("release", "none", 50, y, height)), { handled: true, render: false }, "captured release outside the file pane clears state");
+		assert.equal(component.handleMouse(mouseButton("release", "none", 3, y, height)), undefined, "a later unrelated release must not consume stale state");
+	}
+});
+
+test("a stale-layout release clears an active left gesture in both views", () => {
+	let standaloneRows = 12;
+	let accordionRows = 8;
+	const { view: standalone } = view({ rows: () => standaloneRows });
+	const accordion = new WorktreeChangesView([{ root: "/main", branch: "main", model: changesModel([file("a.ts", 1, 0)]) }], {
+		theme: plainTheme, rows: () => accordionRows, loadDiff: async () => "+preview", onOpen() {}, onClose() {}, onRefresh() {}, requestRender() {},
+	});
+	accordion.handleInput("\r");
+	standalone.render(80);
+	accordion.render(80);
+	for (const [component, y, beforeHeight, afterHeight, resize] of [
+		[standalone, 1, 12, 8, () => { standaloneRows = 8; }],
+		[accordion, 2, 8, 6, () => { accordionRows = 6; }],
+	] as const) {
+		assert.deepEqual(component.handleMouse(mouseButton("press", "left", 3, y, beforeHeight)), { handled: true, capture: true, render: false });
+		resize();
+		for (const button of ["right", "middle"] as const) assert.equal(component.handleMouse(mouseButton("release", button, 3, y, afterHeight)), undefined, `${button} release must still reach pi-tui with stale geometry`);
+		assert.deepEqual(component.handleMouse(mouseButton("release", "none", 3, y, afterHeight)), { handled: true, render: false }, "the captured release is accepted despite stale geometry");
+		component.render(80);
+		assert.equal(component.handleMouse(mouseButton("release", "none", 3, y, afterHeight)), undefined, "a later unrelated release must not consume stale state");
+	}
+});
+
+test("non-left gestures pass through with current, stale, and missing layouts in both views", () => {
+	let standaloneRows = 12;
+	let accordionRows = 8;
+	const { view: standalone } = view({ rows: () => standaloneRows });
+	const accordion = new WorktreeChangesView([{ root: "/main", branch: "main", model: changesModel([file("a.ts", 1, 0)]) }], {
+		theme: plainTheme, rows: () => accordionRows, loadDiff: async () => "+preview", onOpen() {}, onClose() {}, onRefresh() {}, requestRender() {},
+	});
+	accordion.handleInput("\r");
+	standalone.render(80);
+	accordion.render(80);
+	for (const [component, y, currentHeight, staleHeight, resize] of [
+		[standalone, 1, 12, 8, () => { standaloneRows = 8; }],
+		[accordion, 2, 8, 6, () => { accordionRows = 6; }],
+	] as const) {
+		resize();
+		assert.deepEqual(component.handleMouse(mouseButton("press", "left", 3, y, staleHeight)), { handled: true, render: false }, "stale geometry does not capture a left press");
+		for (const button of ["right", "middle"] as const) {
+			assert.equal(component.handleMouse(mouseButton("press", button, 3, y, staleHeight)), undefined, `${button} press must reach pi-tui with stale geometry`);
+			assert.equal(component.handleMouse(mouseButton("release", button, 3, y, staleHeight)), undefined, `${button} release must reach pi-tui with stale geometry`);
+		}
+		component.render(80);
+		assert.deepEqual(component.handleMouse(mouseButton("press", "left", 3, y, staleHeight)), { handled: true, capture: true, render: false }, "current geometry captures a left press");
+		assert.deepEqual(component.handleMouse(mouseButton("release", "none", 3, y, staleHeight)), { handled: true, render: false }, "current geometry clears the active left release");
+		for (const button of ["right", "middle"] as const) {
+			assert.equal(component.handleMouse(mouseButton("press", button, 3, y, staleHeight)), undefined, `${button} press must reach pi-tui with current geometry`);
+			assert.equal(component.handleMouse(mouseButton("release", button, 3, y, staleHeight)), undefined, `${button} release must reach pi-tui with current geometry`);
+		}
+		component.invalidate();
+		assert.deepEqual(component.handleMouse(mouseButton("press", "left", 3, y, currentHeight)), { handled: true, render: false }, "missing geometry does not capture a left press");
+		for (const button of ["right", "middle"] as const) {
+			assert.equal(component.handleMouse(mouseButton("press", button, 3, y, currentHeight)), undefined, `${button} press must reach pi-tui without geometry`);
+			assert.equal(component.handleMouse(mouseButton("release", button, 3, y, currentHeight)), undefined, `${button} release must reach pi-tui without geometry`);
+		}
+	}
+});
+
+test("right press reaches the native Windows paste fallback when eligible", () => {
+	let onInput: ((data: string) => void) | undefined;
+	let pasted = 0;
+	const terminalFixture = {
+		start(input: Parameters<Terminal["start"]>[0]) { onInput = input; }, stop() {}, async drainInput() {}, write() {}, get columns() { return 80; }, get rows() { return 12; }, get kittyProtocolActive() { return false; }, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
+	};
+	const terminal: Terminal = terminalFixture;
+	const { view: component } = view();
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true, onRightClickPaste: () => { pasted++; } });
+	const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+	const termProgram = process.env.TERM_PROGRAM;
+	Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+	delete process.env.TERM_PROGRAM;
+	tui.setLayoutRoot(component);
+	tui.start();
+	tui.renderNow(true);
+	try {
+		onInput?.("\x1b[<2;4;2M");
+		assert.equal(pasted, 1);
+	} finally {
+		tui.stop();
+		Object.defineProperty(process, "platform", platform);
+		if (termProgram === undefined) delete process.env.TERM_PROGRAM;
+		else process.env.TERM_PROGRAM = termProgram;
+	}
+});
+
+test("worktree list keeps selection visible, preserves root across reorder and refreshes from either level", async () => {
+	const trees = Array.from({ length: 15 }, (_, index) => ({ root: `/tree-${index}`, branch: `branch-${index}`, model: changesModel([file("a.ts", 1, 0)]) }));
+	let refreshed = 0;
+	const loaded: string[] = [];
+	const component = new WorktreeChangesView(trees, {
+		theme: plainTheme, rows: 8, loadDiff: async (root) => { loaded.push(root); return ""; },
+		onOpen() {}, onClose() {}, requestRender() {}, onRefresh() { refreshed++; },
+	});
+	for (let index = 0; index < 14; index++) component.handleInput("j");
+	assert.match(component.render(100).join("\n"), /▸ ▸ branch-14/);
+	component.update([...trees].reverse());
+	component.handleInput("r");
+	component.handleInput("\r");
+	component.handleInput("j");
+	component.handleInput("r");
+	await settle();
+	assert.deepEqual(loaded, ["/tree-14"]);
+	assert.equal(refreshed, 2);
+	for (const line of component.render(30)) assert.ok(visibleWidth(line) <= 30);
+	component.update([]);
+	assert.match(component.render(100).join("\n"), /No dirty worktrees/);
+	component.handleInput("\r");
+	assert.equal(loaded.length, 1);
+});
+
+test("worktree labels remove terminal controls without changing diff or editor roots", async () => {
+	const root = "/repo\nline\tcolumn\r\x07\x1b[31mred\x1b[0m\x1b]0;injected title\x07";
+	const routed: string[] = [];
+	const component = new WorktreeChangesView([{ root, branch: "main", model: changesModel([file("a.ts", 1, 0)]) }], {
+		theme: plainTheme, rows: 8,
+		loadDiff: async (actualRoot) => { routed.push(actualRoot); return "+safe"; },
+		onOpen: (actualRoot) => { routed.push(actualRoot); },
+		onClose() {}, onRefresh() {}, requestRender() {},
+	});
+	const assertSafe = (lines: string[]) => {
+		for (const line of lines) {
+			assert.doesNotMatch(line, /[\x00-\x1f\x7f-\x9f]/);
+			assert.ok(visibleWidth(line) <= 100);
+		}
+		assert.match(lines.join("\n"), /main · repo line columnred/);
+		assert.doesNotMatch(lines.join("\n"), /injected title/);
+	};
+	assertSafe(component.render(100));
+	component.handleInput("\r");
+	component.handleInput("j");
+	await settle();
+	assertSafe(component.render(100));
+	component.handleInput("o");
+	assert.deepEqual(routed, [root, root], "display sanitization must not alter raw root identity");
+});
+
+test("accordion refresh preserves expanded roots and selected file; left returns to parent then collapses", async () => {
+	const trees = ["/parent/one", "/parent/two"].map((root) => ({ root, branch: "main", model: changesModel([file("a.ts", 1, 0), file("b.ts", 1, 0)]) }));
+	const opened: string[] = [];
+	const component = new WorktreeChangesView(trees, {
+		theme: plainTheme, rows: 12, loadDiff: async () => "+preview",
+		onOpen: (root, target) => { opened.push(`${root}/${target.path}`); },
+		onClose() {}, onRefresh() {}, requestRender() {},
+	});
+	component.handleInput("\x1b[C");
+	component.handleInput("j");
+	component.handleInput("j");
+	component.update([trees[1], trees[0]]);
+	component.handleInput("o");
+	assert.deepEqual(opened, ["/parent/one/b.ts"]);
+	assert.match(component.render(100).join("\n"), /▾ main · one/);
+	component.handleInput("\x1b[D");
+	assert.match(component.render(100).join("\n"), /▸ ▾ main · one/);
+	component.handleInput("\x1b[D");
+	assert.doesNotMatch(component.render(100).join("\n"), /b.ts/);
+	component.handleInput("\r");
+	component.handleInput("j");
+	component.update([{ ...trees[0], model: changesModel([file("b.ts", 1, 0)]) }]);
+	assert.match(component.render(100).join("\n"), /▸ ▾ main · one/, "removed file falls back to its parent header");
+	component.handleInput("o");
+	assert.equal(opened.length, 1, "header must not open a file");
+	component.update([]);
+	await settle();
+	assert.match(component.render(100).join("\n"), /No dirty worktrees/);
+});
+
+test("accordion selection scrolls flattened rows and diff scrolling does not open the editor", async () => {
+	let opened = 0;
+	const component = new WorktreeChangesView([{ root: "/long/root", branch: "main", model: changesModel(Array.from({ length: 20 }, (_, index) => file(`file-${String(index).padStart(2, "0")}.ts`, 1, 0))) }], {
+		theme: plainTheme, rows: 8,
+		loadDiff: async () => Array.from({ length: 30 }, (_, index) => `+line ${index}`).join("\n"),
+		onOpen() { opened++; }, onClose() {}, onRefresh() {}, requestRender() {},
+	});
+	component.handleInput(" ");
+	for (let index = 0; index < 20; index++) component.handleInput("j");
+	await settle();
+	assert.match(component.render(100).join("\n"), /▸   M file-19.ts/);
+	component.handleInput("\x0a");
+	assert.match(component.render(100)[1], /M file-19\.ts/, "the path line stays fixed while the diff scrolls");
+	assert.match(component.render(100)[2], /\+line 4/, "a page is the diff rows below the path line");
+	component.handleInput("\x0b");
+	assert.match(component.render(100)[2], /\+line 0/);
+	assert.equal(opened, 0);
+	for (const width of [1, 8, 20, 40, 100]) {
+		for (const line of component.render(width)) assert.ok(visibleWidth(line) <= width);
+	}
+});
+
+const statusCases = [
+	[CHANGE_STATUS.MODIFIED, "M", 2, 1],
+	[CHANGE_STATUS.ADDED, "A", 3, 0],
+	[CHANGE_STATUS.DELETED, "D", 0, 4],
+	[CHANGE_STATUS.RENAMED, "R", 0, 0],
+	[CHANGE_STATUS.UNTRACKED, "U", 5, 0],
+] as const;
+
+for (const [status, code, added, deleted] of statusCases) {
+	test(`both file lists render ${status} with colored signed counts`, () => {
+		const theme = {
+			fg(role: string, text: string) {
+				const color = role === "success" ? 32 : role === "error" ? 31 : 36;
+				return `\x1b[${color}m${text}\x1b[39m`;
+			},
+		};
+		const target = file("a.ts", added, deleted, status);
+		const accordion = new WorktreeChangesView([{ root: "/main", branch: "main", model: changesModel([target]) }], {
+			theme, rows: 10, loadDiff: async () => "", onOpen() {}, onClose() {}, onRefresh() {}, requestRender() {},
+		});
+		accordion.handleInput("\r");
+		const standalone = view({ theme }, [target]).view;
+		for (const selected of [false, true]) {
+			if (selected) accordion.handleInput("j");
+			for (const [component, row] of [[accordion, 2], [standalone, 1]] as const) {
+				const line = component.render(100)[row];
+				assert.ok(stripAnsi(line).includes(`${code} a.ts  +${added} -${deleted}`));
+				assert.ok(line.includes(`\x1b[32m+${added}\x1b[39m`), "addition uses success color");
+				assert.ok(line.includes(`\x1b[31m-${deleted}\x1b[39m`), "deletion uses error color");
+				for (const width of [8, 20, 40, 100]) {
+					for (const rendered of component.render(width)) assert.ok(visibleWidth(rendered) <= width);
+				}
+			}
+		}
+	});
+}
+
+test("colorDiff drops git headers and colors hunks, additions, and removals by role", () => {
+	const lines = colorDiff(DIFF_A, taggedTheme);
+	assert.deepEqual(lines, [
+		"<customMessageLabel>@@ -1,2 +1,3 @@</customMessageLabel>",
+		"<toolDiffContext> const a = 1;</toolDiffContext>",
+		"<toolDiffRemoved>-const b = 2;</toolDiffRemoved>",
+		"<toolDiffAdded>+const b = 3;</toolDiffAdded>",
+		"<toolDiffAdded>+const c = 4;</toolDiffAdded>",
+	]);
+});
+
+test("colorDiff sanitizes control characters, strips carriage returns, and expands tabs", () => {
+	const raw = [
+		"diff --git a/file.ts b/file.ts\r",
+		"index 1..2 100644\r",
+		"--- a/file.ts\r",
+		"+++ b/file.ts\r",
+		"@@ -1,3 +1,3 @@\r",
+		" \tconst before = 1;\r",
+		"-\tconst removed = 2;\x1b[31minjected\x1b[0m\r",
+		"+\t\tconst added = 3;\x07\r",
+	].join("\n");
+	const lines = colorDiff(raw, taggedTheme);
+	assert.deepEqual(lines, [
+		"<customMessageLabel>@@ -1,3 +1,3 @@</customMessageLabel>",
+		"<toolDiffContext>   const before = 1;</toolDiffContext>",
+		"<toolDiffRemoved>-  const removed = 2;injected</toolDiffRemoved>",
+		"<toolDiffAdded>+    const added = 3;</toolDiffAdded>",
+	]);
+	for (const line of lines) {
+		assert.ok(!line.includes("\t"), "tabs must be expanded to spaces");
+		assert.ok(!line.includes("\r"), "carriage returns must be stripped");
+	}
+});
+
+test("ChangesView renders a framed two-pane layout at the requested size", async () => {
+	const { view: component } = view();
+	await settle();
+	const lines = component.render(80);
+	assert.equal(lines.length, 12);
+	for (const line of lines) assert.equal(visibleWidth(line), 80, `"${stripAnsi(line)}" is not 80 wide`);
+	const plain = lines.map(stripAnsi);
+	assert.match(plain[0], /^╭─ ✎ Changes · 2 files · \+12 −1 ─+╮$/);
+	assert.match(plain[1], /^│ ▸ M a\.ts  \+2 -1  lib +│ M lib\/a\.ts +│$/);
+	assert.match(plain[2], /^│   A b\.ts  \+10 -0  lib +│ @@ -1,2 \+1,3 @@ +│$/);
+	assert.match(plain[3], /^│ +│  const a = 1; +│$/);
+	assert.match(plain[11], /^╰─+╯$/);
+	assert.match(plain[10], /j\/k file .* o open in editor .* esc close/);
+});
+
+test("ChangesView renders tabbed CRLF modified diffs with aligned frame columns", async () => {
+	const tabbedDiff = [
+		"diff --git a/lib/a.ts b/lib/a.ts\r",
+		"index 1..2 100644\r",
+		"--- a/lib/a.ts\r",
+		"+++ b/lib/a.ts\r",
+		"@@ -1,2 +1,3 @@\r",
+		" \tconst a = 1;\r",
+		"-\tconst b = 2;\r",
+		"+\tconst b = 3;\r",
+		"+\t\tconst c = 4;\r",
+	].join("\n");
+	const { view: component } = view({
+		loadDiff: async () => tabbedDiff,
+	});
+	await settle();
+	const lines = component.render(80);
+	assert.equal(lines.length, 12);
+	for (const line of lines) {
+		assert.equal(visibleWidth(line), 80, `"${stripAnsi(line)}" is not 80 wide`);
+		assert.ok(!line.includes("\r"), "carriage return must not leak into rendered line");
+		assert.ok(!line.includes("\t"), "raw tab must not leak into rendered line");
+	}
+	const plain = lines.map(stripAnsi);
+	assert.match(plain[1], /^│ ▸ M a\.ts  \+2 -1  lib +│ M lib\/a\.ts +│$/);
+	assert.match(plain[2], /^│   A b\.ts  \+10 -0  lib +│ @@ -1,2 \+1,3 @@ +│$/);
+	assert.match(plain[3], /^│ +│ +const a = 1; +│$/);
+});
+
+test("ChangesView loads the selected diff lazily and moves with j/k and arrows", async () => {
+	const { view: component, calls, events } = view();
+	await settle();
+	assert.deepEqual(calls, ["lib/a.ts"]);
+	component.handleInput("j");
+	await settle();
+	assert.deepEqual(calls, ["lib/a.ts", "lib/b.ts"]);
+	assert.match(stripAnsi(component.render(80)[2]), /^│ ▸ A b\.ts/);
+	component.handleInput("\x1b[A");
+	assert.match(stripAnsi(component.render(80)[1]), /^│ ▸ M a\.ts/);
+	component.handleInput("k");
+	assert.match(stripAnsi(component.render(80)[1]), /^│ ▸ M a\.ts/);
+	assert.ok(events.filter((event) => event === "render").length >= 2);
+});
+
+test("ChangesView scrolls the diff pane and shows an empty state for files without a diff", async () => {
+	const long = Array.from({ length: 40 }, (_, index) => `+line ${index}`).join("\n");
+	const { view: component } = view({ async loadDiff() { return `@@ -0,0 +1,40 @@\n${long}`; } });
+	await settle();
+	component.handleInput("\x1b[6~");
+	const plain = component.render(80).map(stripAnsi);
+	assert.doesNotMatch(plain[2], /@@/);
+	assert.match(plain[2], /\+line \d+/);
+	component.handleInput("\x0b");
+	assert.match(stripAnsi(component.render(80)[2]), /@@/, "ctrl+k scrolls back to the top");
+	component.handleInput("\x0a");
+	assert.doesNotMatch(stripAnsi(component.render(80)[2]), /@@/, "ctrl+j scrolls a page down");
+
+	const empty = view({ async loadDiff() { return ""; } });
+	await settle();
+	assert.match(stripAnsi(empty.view.render(80)[2]), /no diff for this file/);
+});
+
+test("ChangesView shows an oversized diff as one plain open-in-editor line and stays responsive", async () => {
+	const tagged = view({ theme: taggedTheme, async loadDiff() { return DIFF_TOO_LARGE; } }).view;
+	await settle();
+	const rendered = tagged.render(100).join("\n");
+	assert.match(rendered, /<dim>Diff too large/, "one plain line instead of a colored diff");
+	assert.doesNotMatch(rendered, /<toolDiff\w+>Diff too large/);
+	const { view: component, events } = view({ async loadDiff(target) { return target.path === "lib/a.ts" ? DIFF_TOO_LARGE : DIFF_A; } });
+	await settle();
+	assert.match(stripAnsi(component.render(140).join("\n")), /Diff too large — press o to open in editor\./);
+	component.handleInput("j");
+	await settle();
+	assert.match(stripAnsi(component.render(140).join("\n")), /\+const c = 4;/);
+	component.handleInput("k");
+	component.handleInput("o");
+	assert.ok(events.includes("open:lib/a.ts"));
+});
+
+test("ChangesView opens the selected file and closes on escape or q", async () => {
+	const { view: component, events } = view();
+	await settle();
+	component.handleInput("o");
+	assert.ok(events.includes("open:lib/a.ts"));
+	component.handleInput("\x1b");
+	component.handleInput("q");
+	assert.equal(events.filter((event) => event === "close").length, 2);
+});
+
+// H1 (odd/tasks/usage-click-and-changes-attribution.md): the same shared
+// hover role every other clickable surface uses, and it never overrides the
+// already-selected row's own role.
+test("ChangesView paints the shared hover role over an unselected file row, never the selected one", async () => {
+	const { view: component } = view({ theme: taggedTheme });
+	await settle();
+	component.render(80);
+	// Row y=1 is the selected file (lib/a.ts, index 0); row y=2 is lib/b.ts.
+	const hoverOther = component.handleMouse(mouseButton("move", "none", 3, 2, 12));
+	assert.deepEqual(hoverOther, { handled: true, render: true });
+	assert.match(component.render(80)[2]!, /<warning>A b\.ts/, "the hovered, unselected row paints the shared hover role");
+	assert.doesNotMatch(component.render(80)[1]!, /<warning>/, "the selected row keeps its own role instead");
+
+	const hoverSelected = component.handleMouse(mouseButton("move", "none", 3, 1, 12));
+	assert.deepEqual(hoverSelected, { handled: true, render: true });
+	assert.doesNotMatch(component.render(80)[1]!, /<warning>/, "hovering the selected row still never paints the hover role");
+	assert.doesNotMatch(component.render(80)[2]!, /<warning>/, "leaving lib/b.ts clears its hover paint");
+
+	const left = component.handleMouse(mouseButton("move", "none", 60, 1, 12)); // outside the list pane entirely
+	assert.deepEqual(left, { handled: true, render: true });
+	assert.doesNotMatch(component.render(80).join("\n"), /<warning>/, "moving off the list clears any hover");
+});
+
+test("ChangesView click selects a file without opening it", async () => {
+	const { view: component, events } = view();
+	await settle();
+	component.render(80);
+	component.handleMouse(mouse("press", 3, 2));
+	component.handleMouse(mouse("release", 3, 2));
+	component.handleMouse(mouse("click", 3, 2));
+	await settle();
+	assert.match(stripAnsi(component.render(80)[2]), /^│ ▸ A b\.ts/);
+	assert.deepEqual(events.filter((event) => event.startsWith("open:")), []);
+});
+
+test("ChangesView receives native fullscreen press and release as a click", async () => {
+	let onInput: ((data: string) => void) | undefined;
+	const terminalFixture = {
+		start(input: Parameters<Terminal["start"]>[0]) { onInput = input; }, stop() {}, async drainInput() {}, write() {}, get columns() { return 80; }, get rows() { return 12; }, get kittyProtocolActive() { return false; }, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
+	};
+	const terminal: Terminal = terminalFixture;
+	const { view: component, events } = view();
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
+	tui.setLayoutRoot(component);
+	tui.start();
+	tui.renderNow(true);
+	try {
+		onInput?.("\x1b[<0;4;3M");
+		onInput?.("\x1b[<0;4;3m");
+		assert.match(stripAnsi(component.render(80)[2]), /^│ ▸ A b\.ts/);
+		assert.deepEqual(events.filter((event) => event.startsWith("open:")), []);
+	} finally {
+		tui.stop();
+	}
+});
+
+test("ChangesView rebuilds pointer geometry when its overlay height changes", async () => {
+	let rows = 12;
+	const { view: component } = view({ rows: () => rows });
+	await settle();
+	component.render(80);
+	rows = 8;
+	assert.deepEqual(component.handleMouse(mouse("click", 3, 2, undefined, 8)), { handled: true, render: false });
+	component.render(80);
+	assert.deepEqual(component.handleMouse(mouse("click", 3, 2, undefined, 8)), { handled: true, render: true });
+	assert.match(stripAnsi(component.render(80)[2]), /^│ ▸ A b\.ts/);
+});
+
+test("ChangesView scrolls the file list and diff independently, ignores hover, and clears stale pointer layouts", async () => {
+	const files = Array.from({ length: 8 }, (_, index) => file(`lib/${index}.ts`, 1, 0));
+	const long = Array.from({ length: 20 }, (_, index) => `+line ${index}`).join("\n");
+	const { view: component, events } = view({ rows: 8, async loadDiff() { return `@@ -0,0 +1,20 @@\n${long}`; } }, files);
+	await settle();
+	component.render(80);
+	component.handleMouse(mouse("move", 3, 2, undefined, 8));
+	assert.match(stripAnsi(component.render(80)[1]), /^│ ▸ M 0\.ts/);
+	assert.deepEqual(events.filter((event) => event.startsWith("open:")), []);
+
+	assert.deepEqual(component.handleMouse(mouse("wheel", 3, 1, 2, 8)), { handled: true, render: true });
+	assert.match(stripAnsi(component.render(80)[1]), /^│   M 2\.ts/);
+	component.update(changesModel(files));
+	assert.match(stripAnsi(component.render(80)[1]), /^│   M 2\.ts/, "an unchanged live refresh preserves the independently scrolled file viewport");
+	assert.deepEqual(component.handleMouse(mouse("wheel", 50, 1, 2, 8)), { handled: true, render: true });
+	assert.doesNotMatch(stripAnsi(component.render(80)[2]), /@@/);
+	assert.deepEqual(component.handleMouse(mouse("wheel", 50, 1, -100, 8)), { handled: true, render: true });
+	assert.deepEqual(component.handleMouse(mouse("wheel", 50, 1, -1, 8)), { handled: true, render: false });
+
+	component.update(changesModel([file("lib/new.ts", 1, 0)]));
+	assert.deepEqual(component.handleMouse(mouse("click", 3, 1, undefined, 8)), { handled: true, render: false });
+	component.render(80);
+	component.dispose();
+	assert.deepEqual(component.handleMouse(mouse("click", 3, 1, undefined, 8)), { handled: true, render: false });
+});
+
+test("ChangesView keeps keyboard selection visible after file-list scrolling", async () => {
+	const files = Array.from({ length: 8 }, (_, index) => file(`lib/${index}.ts`, 1, 0));
+	const { view: component } = view({ rows: 8 }, files);
+	await settle();
+	component.render(80);
+	component.handleMouse(mouse("wheel", 3, 1, 2, 8));
+	component.handleInput("j");
+	assert.match(stripAnsi(component.render(80)[1]), /^│ ▸ M 1\.ts/);
+	component.update(changesModel(files.slice(0, 3)));
+	assert.match(stripAnsi(component.render(80)[1]), /^│   M 0\.ts/);
+});
+
+test("ChangesView.update keeps the selected file, reloads moved diffs, and survives an empty tree", async () => {
+	const { view: component, calls } = view();
+	await settle();
+	component.handleInput("j");
+	await settle();
+	assert.deepEqual(calls, ["lib/a.ts", "lib/b.ts"]);
+
+	component.update(changesModel([file("lib/a.ts", 5, 1), file("lib/b.ts", 10, 0, CHANGE_STATUS.ADDED), file("lib/c.ts", 1, 0)]));
+	await settle();
+	assert.match(stripAnsi(component.render(80)[2]), /^│ ▸ A b\.ts/);
+	assert.deepEqual(calls, ["lib/a.ts", "lib/b.ts"], "unchanged selected file must not reload");
+	component.handleInput("k");
+	await settle();
+	assert.deepEqual(calls, ["lib/a.ts", "lib/b.ts", "lib/a.ts"], "moved counts must reload the diff");
+
+	component.update(changesModel([]));
+	const plain = component.render(80).map(stripAnsi);
+	assert.match(plain[0], /0 files · \+0 −0/);
+	assert.match(plain[1], /working tree is clean/);
+	component.handleInput("j");
+	component.handleInput("o");
+});
+
+// Diff-only mode (F): the file column and its separator leave so the diff
+// spans the whole inner width; j/k still walk files, esc returns first.
+function diffOnlyView(overrides: { rows?: number; loadDiff?: (root: string, target: ChangedFile) => Promise<string> } = {}) {
+	const trees = [
+		{ root: "/main", branch: "main", model: changesModel([file("a.ts", 1, 0), file("b.ts", 1, 0)]) },
+		{ root: "/linked", branch: "agent", model: changesModel([file("c.ts", 1, 0)]) },
+	];
+	const events: string[] = [];
+	const component = new WorktreeChangesView(trees, {
+		theme: plainTheme, rows: overrides.rows ?? 10,
+		loadDiff: overrides.loadDiff ?? (async (root, target) => `+${root}:${target.path} ${"x".repeat(80)}`),
+		onOpen: (root, target) => { events.push(`open:${root}:${target.path}`); },
+		onClose: () => { events.push("close"); },
+		onRefresh: () => { events.push("refresh"); },
+		requestRender() {},
+	});
+	return { component, events };
+}
+
+test("F hides the file list and its separator so the diff spans the full inner width", async () => {
+	const { component } = diffOnlyView();
+	component.handleInput("\r");
+	component.handleInput("j");
+	await settle();
+	const normal = component.render(100);
+	assert.match(normal[1]!, /^│ +▾ main · main +│ M a\.ts +│$/, "the normal view keeps the two-pane layout");
+	assert.match(stripAnsi(normal[2]!), /^│ ▸   M a\.ts .*│ \+\/main:a\.ts x+…│$/, "the narrow diff pane clips a long line");
+	assert.match(normal[8]!, /F diff only/);
+	component.handleInput("F");
+	await settle();
+	const wide = component.render(100);
+	assert.equal(wide.length, 10);
+	for (const line of wide) assert.equal(visibleWidth(line), 100);
+	assert.match(wide[1]!, /^│ M a\.ts +│$/, "the path header starts at the frame edge");
+	assert.equal(wide[2]!, `│ ${`+/main:a.ts ${"x".repeat(80)}`.padEnd(96)} │`, "the diff uses the full inner width");
+	assert.doesNotMatch(wide.slice(1, 8).join("\n"), /main · main|│.*│.*│/, "no list column and no separator remain");
+	assert.match(wide[8]!, /F files/);
+	component.handleInput("F");
+	assert.match(component.render(100)[1]!, /▾ main · main/, "F toggles back to the file list");
+});
+
+test("j/k in diff-only mode walk files across worktrees and the path header follows", async () => {
+	const { component } = diffOnlyView();
+	component.handleInput("F");
+	await settle();
+	assert.match(component.render(100)[1]!, /^│ M a\.ts +│$/, "entering on a group header jumps to its first file");
+	component.handleInput("j");
+	await settle();
+	assert.match(component.render(100)[1]!, /^│ M b\.ts +│$/);
+	component.handleInput("j");
+	await settle();
+	assert.match(component.render(100)[1]!, /^│ M c\.ts +│$/, "j crosses into the next worktree's files");
+	assert.match(component.render(100)[2]!, /\+\/linked:c\.ts/);
+	component.handleInput("j");
+	assert.match(component.render(100)[1]!, /^│ M c\.ts +│$/, "the last file stays selected");
+	component.handleInput("k");
+	await settle();
+	assert.match(component.render(100)[1]!, /^│ M b\.ts +│$/);
+	component.handleInput("j");
+	component.handleInput("\x1b");
+	assert.match(component.render(100).join("\n"), /▸   M c\.ts/, "the files view shows the file chosen in diff-only mode");
+});
+
+test("esc leaves diff-only mode before closing; q, o and r keep working there", async () => {
+	const { component, events } = diffOnlyView();
+	component.handleInput("F");
+	component.handleInput("\x1b");
+	assert.deepEqual(events, [], "the first esc only returns to the file list");
+	assert.match(component.render(100)[1]!, /main · main/);
+	component.handleInput("\x1b");
+	assert.deepEqual(events, ["close"]);
+	component.handleInput("F");
+	component.handleInput("o");
+	component.handleInput("r");
+	component.handleInput("q");
+	assert.deepEqual(events, ["close", "open:/main:a.ts", "refresh", "close"]);
+});
+
+test("diff-only mode has no list mouse zone; the wheel scrolls the widened diff", async () => {
+	const long = Array.from({ length: 30 }, (_, index) => `+line ${index}`).join("\n");
+	const { component } = diffOnlyView({ rows: 8, loadDiff: async () => `@@ -0,0 +1,30 @@\n${long}` });
+	component.handleInput("F");
+	await settle();
+	component.render(80);
+	assert.equal(component.handleMouse(mouseButton("move", "none", 3, 2, 8)), undefined, "no hover target");
+	assert.equal(component.handleMouse(mouseButton("click", "left", 3, 2, 8)), undefined, "no click target");
+	assert.match(component.render(80)[1]!, /^│ M a\.ts +│$/, "a click where the list was does not select");
+	assert.deepEqual(component.handleMouse(mouse("wheel", 3, 2, 3, 8)), { handled: true, render: true });
+	assert.doesNotMatch(component.render(80)[2]!, /@@/, "the left edge now scrolls the diff");
+	component.handleInput("\x1b");
+	component.render(80);
+	assert.deepEqual(component.handleMouse(mouse("click", 3, 3, undefined, 8)), { handled: true, render: true }, "leaving diff-only restores the list zone");
+	assert.match(component.render(80)[3]!, /▸   M b\.ts/);
+});
+
+test("the native fullscreen wrapper keeps keyboard, hover, click and wheel on the changes view", async () => {
+	let onInput: ((data: string) => void) | undefined;
+	const terminal: Terminal = {
+		start(input: Parameters<Terminal["start"]>[0]) { onInput = input; }, stop() {}, async drainInput() {}, write() {}, get columns() { return 80; }, get rows() { return 8; }, get kittyProtocolActive() { return false; }, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
+	};
+	const long = Array.from({ length: 30 }, (_, index) => `+line ${index}`).join("\n");
+	let renders = 0;
+	const trees = [{ root: "/main", branch: "main", model: changesModel([file("a.ts", 1, 0), file("b.ts", 1, 0)]) }];
+	const component = new WorktreeChangesView(trees, {
+		theme: { fg: (color: string, text: string) => color === "warning" ? `\x1b[33m${text}\x1b[39m` : text }, rows: 8, loadDiff: async () => `@@ -0,0 +1,30 @@\n${long}`,
+		onOpen() {}, onClose() {}, onRefresh() {}, requestRender() {},
+	});
+	const interaction = createNativeFullscreenInteraction({ keyboardTarget: component, requestRender: () => { renders++; } });
+	interaction.addChild(component);
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
+	tui.setLayoutRoot(interaction);
+	tui.start();
+	interaction.handleInput("\r");
+	assert.ok(renders > 0, "keys reach the view and request a render");
+	tui.renderNow(true);
+	try {
+		onInput?.("\x1b[<35;4;4M");
+		assert.match(interaction.render(80)[3]!, /\x1b\[33mM b\.ts/, "hover paints the row under the pointer");
+		onInput?.("\x1b[<0;4;4M");
+		onInput?.("\x1b[<0;4;4m");
+		assert.match(stripAnsi(interaction.render(80)[3]!), /▸   M b\.ts/, "a click selects the file");
+		await settle();
+		tui.renderNow(true);
+		onInput?.("\x1b[<65;60;3M");
+		assert.doesNotMatch(stripAnsi(interaction.render(80)[2]!), /@@/, "the wheel scrolls the diff");
+		interaction.handleInput("F");
+		tui.renderNow(true);
+		onInput?.("\x1b[<0;4;3M");
+		onInput?.("\x1b[<0;4;3m");
+		assert.match(stripAnsi(interaction.render(80)[1]!), /^│ M b\.ts +│$/, "diff-only mode ignores clicks where the list was");
+	} finally {
+		tui.stop();
+	}
+});

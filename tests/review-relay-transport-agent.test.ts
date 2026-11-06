@@ -4,10 +4,13 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { REVIEW_HOST_RELAY_FAILURE, ReviewHostRelayError } from "../lib/review-host-relay.ts";
+import { runInProcessReviewer } from "../lib/inprocess-reviewer.ts";
 import { NativeReviewIntegrationError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
-import type { ReviewCollectInputV3, ReviewStatusV3 } from "../lib/review-integration-v2.ts";
+import type { ReviewArtifactSubjectV2, ReviewCollectInputV3, ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import type { ReviewHostRelayRequest } from "../lib/review-host-relay.ts";
 
 // Third field failure on the recovered-lineage defect (2026-08-16, gentle-pi
@@ -28,8 +31,9 @@ import type { ReviewHostRelayRequest } from "../lib/review-host-relay.ts";
 // reviewHostRelaySlots() returned 0 for every real lineage, and the host relay
 // was unreachable. The prior fixes all exercised dispatch-shaped slots.
 //
-// The pinned 2.2.3 binary refuses `--agent pi` outright, so the agent is
-// probed and the typed refusal must reach the user instead of being swallowed.
+// Binaries older than v2.4.0 do not define `--agent` on `review status` and
+// refuse it outright, so the agent is probed rather than version-sniffed and
+// the typed refusal must reach the user instead of being swallowed.
 
 const SHA = `sha256:${"1".repeat(64)}`;
 const TRANSPORT_REFUSAL_CODE = "immutable_review_transport_unsupported";
@@ -90,8 +94,7 @@ function recoveredStatus(lineageId: string, materialize: boolean): ReviewStatusV
 		contract: "gentle-ai.review-integration/v2",
 		applicability: "current_target",
 		authority: { version: "compact-v2", lineageId, state: "reviewer_results_required", generation: 2, revision: SHA },
-		receipt: { status: "expected_missing" },
-		action: "finalize",
+		action: "stop",
 		replayability: "not_replayable",
 		targetIdentity: SHA,
 		projection: {
@@ -110,7 +113,7 @@ function recoveredStatus(lineageId: string, materialize: boolean): ReviewStatusV
 		},
 		candidates: [],
 		nextTransition: { kind: "collect", reasonCode: "reviewer_results_required", collect: { inputs: [collectInput(lineageId, materialize)] } },
-		raw: { schema: "gentle-ai.review-integration.status/v5", action: "finalize", lineage_id: lineageId },
+		raw: { schema: "gentle-ai.review-integration.status/v5", action: "stop", lineage_id: lineageId },
 	} as unknown as ReviewStatusV3;
 }
 
@@ -118,18 +121,21 @@ function recoveredStatus(lineageId: string, materialize: boolean): ReviewStatusV
  * Mirrors the MEASURED live provider: the materialize-marked relay slot is
  * offered only when the caller asks for the pi agent.
  */
-function transportAwareNative(options: { refusePiAgent?: boolean } = {}): { native: NativeReviewCli; agents: Array<string | undefined> } {
+function transportAwareNative(options: { refusalCode?: string } = {}): {
+	native: NativeReviewCli;
+	agents: Array<string | undefined>;
+} {
 	const agents: Array<string | undefined> = [];
 	const native = {
 		targetStatus: async (request: { lineageId?: string; agent?: string }) => {
 			agents.push(request.agent);
-			if (request.agent === "pi" && options.refusePiAgent === true) {
+			if (request.agent === "pi" && options.refusalCode !== undefined) {
 				throw new NativeReviewIntegrationError({
 					schema: "gentle-ai.review-integration.failure/v2",
 					contract: "gentle-ai.review-integration/v2",
 					operation: "review.status",
 					phase: "pre_native",
-					code: TRANSPORT_REFUSAL_CODE,
+					code: options.refusalCode,
 					message: "supported immutable review runtimes: claude-code, opencode, codex",
 					mutationOutcome: "none",
 					authorityApplicability: "current_target",
@@ -141,15 +147,23 @@ function transportAwareNative(options: { refusePiAgent?: boolean } = {}): { nati
 			}
 			return recoveredStatus(request.lineageId ?? "relay-lineage", request.agent === "pi");
 		},
-		finalize: async () => { throw new Error("native finalize must not run while reviewer results are outstanding"); },
 	} as unknown as NativeReviewCli;
 	return { native, agents };
 }
 
-async function runFinalize(cwd: string, native: NativeReviewCli, lineageId: string, input: Record<string, unknown> = { reviewer_run_acknowledged: true }): Promise<Record<string, unknown>> {
+async function runCapture(cwd: string, native: NativeReviewCli, lineageId: string, input: Record<string, unknown> = { reviewerRunAcknowledged: true }, reviewerSessionId?: string): Promise<Record<string, unknown>> {
+	return await __testing.executeReviewCaptureOperation(
+		{ lineageId, collectBinding: JSON.stringify(collectInput(lineageId, true)), ...input },
+		cwd, native, undefined, new CandidateViewRegistry(),
+		undefined, undefined, undefined, reviewerSessionId,
+	) as Record<string, unknown>;
+}
+
+
+async function runStatus(cwd: string, native: NativeReviewCli, lineageId: string): Promise<Record<string, unknown>> {
 	return await __testing.executeReviewControllerOperation(
-		{ operation: "finalize", lineageId, input: JSON.stringify(input) },
-		cwd, new Map(), native, undefined, undefined, undefined, new CandidateViewRegistry(),
+		{ operation: "status", lineageId },
+		cwd, native, undefined, new CandidateViewRegistry(),
 	) as Record<string, unknown>;
 }
 
@@ -164,19 +178,230 @@ test("the negotiated status asks for the pi agent so the provider offers its mat
 		return { promptByteLength: 128, resultByteLength: 64, submission: '{"admission_decision":"completed"}' };
 	});
 
-	const result = await runFinalize(cwd, native, lineageId);
+	const result = await runCapture(cwd, native, lineageId);
 
-	assert.ok(agents.includes("pi"), "the controller must negotiate STATUS for the pi reviewer transport");
+	assert.equal(agents.at(0), "pi", "the successful Pi route starts with pi-bound STATUS negotiation");
+	assert.ok(agents.every((agent) => agent === "pi"), "the selected capture performs no post-success agent-less STATUS re-query");
 	assert.equal(relayed.length, 1, "the materialize-marked slot must reach the host relay");
 	assert.ok(relayed[0]!.captureArgumentTokens.includes("--materialize=true"));
 	assert.ok(relayed[0]!.submission !== undefined, "the provider submission drives the completing form");
-	const hostRelay = result.host_relay as { transport: string; captured_slots: readonly unknown[] } | undefined;
-	assert.ok(hostRelay !== undefined, "the envelope reports the relay capture");
+	const hostRelay = result.host_relay as { transport: string } | undefined;
+	assert.ok(hostRelay !== undefined, "the envelope reports the one relay capture");
 	assert.equal(hostRelay.transport, "pi_host_relay");
-	assert.equal(hostRelay.captured_slots.length, 1);
 });
 
-test("finalize forecasts the reviewer model run once and spends nothing until it is acknowledged", async (t) => {
+// gentle-pi#311 P2 (superseding gentle-shell#1136 / #1158): the lens's
+// user-owned completion selection (agent model routing config) rides the
+// relay request alongside the live model registry; there is no extension
+// allowlist and no ambient default model to fall back to.
+test("capture forwards the lens's user-owned selection and thinking level to the relay request", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const configHome = mkdtempSync(join(tmpdir(), "gentle-pi-relay-config-"));
+	const cwd = repository(t);
+	t.after(() => rmSync(configHome, { recursive: true, force: true }));
+	writeFileSync(join(configHome, "models.json"), JSON.stringify({ "review-reliability": { model: "minimax/MiniMax-M3", thinking: "high" } }), "utf8");
+	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = configHome;
+	t.after(() => {
+		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+	});
+	const { native } = transportAwareNative();
+	const relayed: ReviewHostRelayRequest[] = [];
+	__testing.setReviewHostRelayRunnerForTesting(async (request: ReviewHostRelayRequest) => {
+		relayed.push(request);
+		return { promptByteLength: 128, resultByteLength: 64, submission: '{"admission_decision":"completed"}' };
+	});
+
+	await runCapture(cwd, native, "selection-lineage");
+	assert.equal(relayed.length, 1);
+	assert.equal(relayed[0]!.selection, "minimax/MiniMax-M3", "the lens's routing entry must name the completion's selection");
+	assert.equal(relayed[0]!.thinking, "high");
+	assert.equal(relayed[0]!.routingKey, "review-reliability");
+});
+
+// The live session id threads from the extension context through both
+// request builders, so an OpenCode-routed reviewer model carries its
+// attribution headers (a side-call bypasses pi's main agent loop, where pi
+// adds them itself). A absent session id adds nothing and is never an error.
+test("capture threads the caller's live session id into the relay request", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const cwd = repository(t);
+	const { native } = transportAwareNative();
+	const relayed: ReviewHostRelayRequest[] = [];
+	__testing.setReviewHostRelayRunnerForTesting(async (request: ReviewHostRelayRequest) => {
+		relayed.push(request);
+		return { promptByteLength: 128, resultByteLength: 64, submission: '{"admission_decision":"completed"}' };
+	});
+
+	await runCapture(cwd, native, "session-lineage", { reviewerRunAcknowledged: true }, "ses-live-1");
+	assert.equal(relayed.length, 1);
+	assert.equal(relayed[0]!.reviewerSessionId, "ses-live-1");
+});
+
+test("capture with no live session id adds no reviewer session id to the relay request", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const cwd = repository(t);
+	const { native } = transportAwareNative();
+	const relayed: ReviewHostRelayRequest[] = [];
+	__testing.setReviewHostRelayRunnerForTesting(async (request: ReviewHostRelayRequest) => {
+		relayed.push(request);
+		return { promptByteLength: 128, resultByteLength: 64, submission: '{"admission_decision":"completed"}' };
+	});
+
+	await runCapture(cwd, native, "no-session-lineage");
+	assert.equal(relayed.length, 1);
+	assert.equal(relayed[0]!.reviewerSessionId, undefined);
+});
+
+function groupInput(lineageId: string, lens: string, order: number): ReviewCollectInputV3 {
+	const subjectHash = `sha256:${String(order + 1).repeat(64)}`;
+	const base = collectInput(lineageId, true);
+	const arguments_ = base.arguments.map((argument) => {
+		if (argument.name === "lens") return { ...argument, value: lens, token: `--lens=${lens}` };
+		if (argument.name === "order") return { ...argument, value: String(order), token: `--order=${order}` };
+		if (argument.name === "subject-hash") return { ...argument, value: subjectHash, token: `--subject-hash=${subjectHash}` };
+		return argument;
+	});
+	return { ...base, arguments: arguments_, artifactSubject: { ...base.artifactSubject, subjectHash, lens: lens as ReviewArtifactSubjectV2["lens"], selectedOrder: order } };
+}
+
+function groupStatus(lineageId: string, inputs: readonly ReviewCollectInputV3[]): ReviewStatusV3 {
+	const status = recoveredStatus(lineageId, false) as ReviewStatusV3 & { repositoryContext?: Record<string, unknown>; nextTransition?: { kind: string; reasonCode: string; collect: { inputs: ReviewCollectInputV3[] } } };
+	// The reviewer group binds one repository context per slot; reuse the same
+	// opaque handle shape the finalizeStatus fixtures in the routing tests use.
+	status.repositoryContext = { capability: "review.opaque_repository_context", handle: `rctx1_${"e".repeat(64)}`, revision: SHA, targetIdentity: SHA };
+	status.nextTransition = { kind: "collect", reasonCode: "reviewer_results_required", collect: { inputs: [...inputs] } };
+	return status;
+}
+
+function queueNative(statuses: readonly ReviewStatusV3[]): { native: NativeReviewCli; agents: Array<string | undefined> } {
+	const agents: Array<string | undefined> = [];
+	const queue = [...statuses];
+	const native = {
+		targetStatus: async (request: { agent?: string }) => {
+			agents.push(request.agent);
+			const next = queue.shift();
+			if (next === undefined) throw new Error("status queue exhausted");
+			return next;
+		},
+	} as unknown as NativeReviewCli;
+	return { native, agents };
+}
+
+function prepared(request: ReviewHostRelayRequest) {
+	return { request, promptByteLength: 64, resultByteLength: 32 };
+}
+
+test("capture group threads the caller's live session id into every relay request", async (t) => {
+	t.after(() => __testing.setReviewHostRelayGroupRunnersForTesting());
+	const cwd = repository(t);
+	const lineageId = "group-session-lineage";
+	const inputs = [groupInput(lineageId, "review-risk", 0), groupInput(lineageId, "review-resilience", 1)];
+	// The final reconciliation STATUS must no longer offer the submitted
+	// reviewer suffix; a STATUS without a collect transition reconciles the
+	// drained group instead of replaying the submitted set.
+	const finalStatus = groupStatus(lineageId, []) as ReviewStatusV3 & { nextTransition?: { kind: string; reasonCode: string; collect: { inputs: ReviewCollectInputV3[] } } };
+	delete finalStatus.nextTransition;
+	const { native } = queueNative([groupStatus(lineageId, inputs), groupStatus(lineageId, inputs), groupStatus(lineageId, inputs.slice(1)), finalStatus]);
+	const relayed: ReviewHostRelayRequest[] = [];
+	__testing.setReviewHostRelayGroupRunnersForTesting(
+		async (requests: readonly ReviewHostRelayRequest[]) => {
+			relayed.push(...requests);
+			return requests.map(prepared);
+		},
+		async (result: { promptByteLength: number; resultByteLength: number }) => ({ promptByteLength: result.promptByteLength, resultByteLength: result.resultByteLength, submission: "{}" }),
+	);
+
+	const result = await __testing.executeReviewCaptureGroupOperation(
+		{ lineageId, collectBindings: inputs.map((input) => JSON.stringify(input)), reviewerRunAcknowledged: true },
+		cwd, native, undefined, new CandidateViewRegistry(),
+		undefined, undefined, undefined, "ses-live-1",
+	) as Record<string, unknown>;
+
+	assert.equal(relayed.length, 2);
+	assert.ok(relayed.every((request) => request.reviewerSessionId === "ses-live-1"), "every grouped reviewer request must carry the live session id");
+	assert.equal(result.outcome, "native-reviewer-group-status-reconciled");
+});
+
+// gentle-pi#311 P2 decision (flagged for confirmation): the in-process path
+// has no ambient default model. A routing entry with no configured model used
+// to launch the child selection-free (inheriting pi's own default); the real
+// relay now refuses it typed instead, since there is no child to inherit a
+// default from (lib/review-host-relay.ts's own tests exercise that refusal
+// through the real, unfaked runner). This extension layer only forwards
+// whatever the routing config yields — it never validates the selection
+// itself — so with the runner faked here the request still reaches it, and
+// its `selection` field is simply absent.
+test("capture forwards no selection when the lens has no configured model, leaving the missing-model refusal to the relay", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const configHome = mkdtempSync(join(tmpdir(), "gentle-pi-relay-config-empty-"));
+	const cwd = repository(t);
+	t.after(() => rmSync(configHome, { recursive: true, force: true }));
+	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = configHome;
+	t.after(() => {
+		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+	});
+	const { native } = transportAwareNative();
+	const relayed: ReviewHostRelayRequest[] = [];
+	__testing.setReviewHostRelayRunnerForTesting(async (request: ReviewHostRelayRequest) => {
+		relayed.push(request);
+		return { promptByteLength: 128, resultByteLength: 64, submission: '{"admission_decision":"completed"}' };
+	});
+
+	await runCapture(cwd, native, "default-lineage");
+	assert.equal(relayed.length, 1);
+	assert.equal(relayed[0]!.selection, undefined);
+	assert.equal(relayed[0]!.routingKey, "review-reliability");
+});
+
+test("a relayed empty-output failure carries the child's own evidence in the failure report", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const cwd = repository(t);
+	const { native } = transportAwareNative();
+	__testing.setReviewHostRelayRunnerForTesting(async () => {
+		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_EMPTY_OUTPUT, "pi", "pi subprocess produced no assistant text (stdout kind: no-assistant-text; a tool call was attempted)", {
+			reviewerEvidence: { stdoutKind: "no-assistant-text", reviewerModel: "nan/deepseek-v4-flash", toolCallAttempted: true },
+		});
+	});
+
+	const result = await runCapture(cwd, native, "evidence-lineage");
+	assert.equal(result.outcome, "pi-host-relay-transport-failure");
+	const failure = result.failure as { reviewer?: { stdoutKind?: string; reviewerModel?: string; toolCallAttempted?: boolean } } | undefined;
+	assert.ok(failure !== undefined, "the envelope carries the failure report");
+	assert.equal(failure.reviewer?.stdoutKind, "no-assistant-text");
+	assert.equal(failure.reviewer?.reviewerModel, "nan/deepseek-v4-flash");
+	assert.equal(failure.reviewer?.toolCallAttempted, true);
+});
+
+test("public empty-output report preserves only safe in-process completion facts", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const cwd = repository(t);
+	const { native } = transportAwareNative();
+	const outcome = await runInProcessReviewer({ selection: "nan/deepseek-v4-flash", prompt: Buffer.from("offline"), timeoutMs: 1_000, routingKey: "review-risk" }, {
+		registry: {
+			find: () => ({ provider: "nan", id: "deepseek-v4-flash" }) as never,
+			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "PRIVATE AUTH" }),
+		},
+		complete: async () => ({ content: [{ type: "thinking", thinking: "PRIVATE THINKING" }], stopReason: "length", errorMessage: "PRIVATE ERROR", usage: { output: 64, reasoning: 64, unknown: "PRIVATE USAGE" } }) as never,
+	});
+	assert.equal(outcome.kind, "refused");
+	if (outcome.kind !== "refused") return;
+	__testing.setReviewHostRelayRunnerForTesting(async () => {
+		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.REVIEWER_EMPTY_OUTPUT, "pi", outcome.message, { reviewerEvidence: outcome.evidence });
+	});
+	const result = await runCapture(cwd, native, "safe-evidence-lineage");
+	assert.equal(result.outcome, "pi-host-relay-transport-failure");
+	assert.deepEqual((result.failure as { reviewer: unknown }).reviewer, {
+		reviewerModel: "nan/deepseek-v4-flash", stopReason: "length", usage: { output: 64, reasoning: 64 },
+		content: { blocks: 1, textBlocks: 0, thinkingBlocks: 1, textChars: 0, thinkingChars: 16 },
+	});
+	assert.doesNotMatch(JSON.stringify(result), /PRIVATE|errorMessage|unknown|authorization/);
+});
+
+test("capture forecasts the reviewer model run once and spends nothing until it is acknowledged", async (t) => {
 	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
 	const cwd = repository(t);
 	const lineageId = "forecast-lineage";
@@ -187,62 +412,190 @@ test("finalize forecasts the reviewer model run once and spends nothing until it
 		return { promptByteLength: 128, resultByteLength: 64, submission: '{"admission_decision":"completed"}' };
 	});
 
-	// An unacknowledged finalize must forecast, never spend.
-	const forecast = await runFinalize(cwd, native, lineageId, {});
+	// An unacknowledged capture must forecast, never spend.
+	const forecast = await runCapture(cwd, native, lineageId, {});
 	assert.equal(launches, 0, "no reviewer model run may start before the forecast is acknowledged");
 	assert.equal(forecast.status, "blocked");
 	assert.equal(forecast.outcome, "reviewer-model-run-forecast");
 	assert.equal(forecast.mutation_performed, false);
 	assert.equal(forecast.mutation_outcome, "none");
-	const cost = forecast.cost_forecast as { transport: string; model_runs: number; lenses: readonly string[]; side_effects: readonly string[] };
+	const cost = forecast.cost_forecast as { transport: string; model_runs: number; lenses: readonly string[] };
 	assert.equal(cost.transport, "pi_host_relay");
 	assert.equal(cost.model_runs, 1, "one model run per outstanding lens, forecast once before launch");
 	assert.deepEqual(cost.lenses, ["review-reliability"]);
-	assert.ok(cost.side_effects.length > 0);
-	assert.match(String(forecast.reason), /model run/i);
-	assert.match(String(forecast.next_action), /reviewer_run_acknowledged/);
 
-	// The acknowledged finalize runs exactly the forecast work.
-	const acknowledged = await runFinalize(cwd, native, lineageId, { reviewer_run_acknowledged: true });
-	assert.equal(launches, 1, "the acknowledged finalize runs the forecast model run");
-	assert.equal((acknowledged.host_relay as { captured_slots: readonly unknown[] }).captured_slots.length, 1);
+	// The acknowledged capture runs exactly the forecast work.
+	const acknowledged = await runCapture(cwd, native, lineageId, { reviewerRunAcknowledged: true });
+	assert.equal(launches, 1, "the acknowledged capture runs the forecast model run");
+	assert.equal(acknowledged.status, "captured");
 });
 
-test("a provider that refuses the pi transport surfaces the typed cause and still returns status", async (t) => {
+test("a provider that refuses the pi transport blocks immediately without an agent-less lifecycle fallback", async (t) => {
 	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
 	const cwd = repository(t);
 	const lineageId = "legacy-transport-lineage";
-	const { native, agents } = transportAwareNative({ refusePiAgent: true });
+	const { native, agents } = transportAwareNative({ refusalCode: TRANSPORT_REFUSAL_CODE });
 	let relayCalls = 0;
 	__testing.setReviewHostRelayRunnerForTesting(async () => {
 		relayCalls += 1;
 		return { promptByteLength: 1, resultByteLength: 1, submission: "{}" };
 	});
 
-	const result = await runFinalize(cwd, native, lineageId);
+	const result = await runCapture(cwd, native, lineageId);
 
-	assert.ok(agents.includes("pi"), "the transport is probed once");
-	assert.ok(agents.includes(undefined), "a refusal falls back to the agent-less status instead of failing the operation");
-	assert.equal(relayCalls, 0, "no relay slot exists on a provider without the pi transport");
-	// Deliverable: the user sees the real typed cause, never a generic
-	// candidate-view message.
+	assert.deepEqual(agents, ["pi"], "the refusal path issues one pi-bound STATUS and never falls back to an agent-less STATUS");
+	assert.equal(relayCalls, 0, "a refused transport must not launch a relay capture");
 	const transport = result.relay_transport as { supported: boolean; code: string; message: string } | undefined;
-	assert.ok(transport !== undefined, "the envelope must report the transport refusal");
+	assert.ok(transport !== undefined, "the blocked envelope must report the typed transport refusal");
 	assert.equal(transport.supported, false);
 	assert.equal(transport.code, TRANSPORT_REFUSAL_CODE);
 	assert.match(transport.message, /immutable review runtimes/i);
+	assert.equal(result.status, "blocked");
+	assert.equal(result.outcome, "pi-host-relay-transport-unavailable");
+	assert.equal(result.mutation_performed, false);
+	assert.equal(result.mutation_outcome, "none");
+	assert.match(String(result.next_action), /support.*--agent pi/i);
 	assert.doesNotMatch(JSON.stringify(result), /no current controller-owned candidate view/);
-	// The lifecycle still routes: reviewer results remain outstanding.
-	assert.equal(result.outcome, "reviewer-results-required");
+	assert.doesNotMatch(JSON.stringify(result), /"status":"(?:approved|allowed)"/);
 });
 
-test("the pi transport is probed once per provider and the refusal is remembered", async (t) => {
-	const cwd = repository(t);
-	const { native, agents } = transportAwareNative({ refusePiAgent: true });
-	await runFinalize(cwd, native, "probe-lineage");
-	const afterFirst = agents.filter((agent) => agent === "pi").length;
-	await runFinalize(cwd, native, "probe-lineage");
-	const afterSecond = agents.filter((agent) => agent === "pi").length;
-	assert.equal(afterFirst, 1, "the first flow probes the pi transport exactly once");
-	assert.equal(afterSecond, 1, "a remembered refusal is never re-probed for the same provider");
+test("a transport refusal names the runnable wrapper continuation, never a raw CLI command as the only exit", async (t) => {
+	// #535: a provider-printed raw `gentle-ai review ...` continuation is a dead
+	// end in this runtime — Pi is not in the provider's immutable review runtime
+	// list — so the refusal envelope itself must name the exit that runs in this
+	// surface: the gentle_review / gentle_review_capture wrapper tools. The
+	// provider's diagnostic stays intact as evidence alongside the runnable exit.
+	const captureCwd = repository(t);
+	const { native: captureNative } = transportAwareNative({ refusalCode: TRANSPORT_REFUSAL_CODE });
+	const capture = await runCapture(captureCwd, captureNative, "continuation-capture-lineage");
+	__testing.clearReviewTransportProbeForTesting(captureNative);
+	assert.equal(capture.outcome, "pi-host-relay-transport-unavailable");
+	const captureNextAction = String(capture.next_action);
+	assert.match(captureNextAction, /gentle_review \{"operation":"inspect"\}/, "the capture refusal re-enters negotiated STATUS through the wrapper controller");
+	assert.match(captureNextAction, /gentle_review_capture/, "the capture refusal names the wrapper resubmission, not a CLI command");
+	assert.doesNotMatch(captureNextAction, /gentle-ai review/, "a raw `gentle-ai review ...` invocation is not a runnable exit in this runtime");
+	assert.deepEqual(capture.wrapper_continuation, { tool: "gentle_review", operation: "inspect", then: "gentle_review_capture" });
+	assert.match(String((capture.relay_transport as { message: string }).message), /immutable review runtimes/i, "the provider diagnostic remains intact in the envelope");
+
+	const statusCwd = repository(t);
+	const { native: statusNative } = transportAwareNative({ refusalCode: TRANSPORT_REFUSAL_CODE });
+	const status = await runStatus(statusCwd, statusNative, "continuation-status-lineage");
+	__testing.clearReviewTransportProbeForTesting(statusNative);
+	assert.equal(status.outcome, "pi-host-relay-transport-unavailable");
+	const statusNextAction = String(status.next_action);
+	assert.match(statusNextAction, /gentle_review \{"operation":"inspect"\}/, "the controller refusal re-enters negotiated STATUS through the wrapper controller");
+	assert.doesNotMatch(statusNextAction, /gentle-ai review/, "a raw `gentle-ai review ...` invocation is not a runnable exit in this runtime");
+	assert.deepEqual(status.wrapper_continuation, { tool: "gentle_review", operation: "inspect" });
 });
+
+test("a remembered pi transport refusal remains blocked without re-probing or lifecycle continuation", async (t) => {
+	const cwd = repository(t);
+	const { native, agents } = transportAwareNative({ refusalCode: TRANSPORT_REFUSAL_CODE });
+	const first = await runCapture(cwd, native, "probe-lineage");
+	const second = await runCapture(cwd, native, "probe-lineage");
+	assert.equal(first.outcome, "pi-host-relay-transport-unavailable");
+	assert.equal(second.outcome, "pi-host-relay-transport-unavailable");
+	assert.deepEqual(agents, ["pi"], "a cached refusal must not re-probe or issue an agent-less STATUS");
+	__testing.clearReviewTransportProbeForTesting(native);
+});
+
+test("every typed Pi transport refusal code fails closed", async (t) => {
+	const refusalCodes = [
+		"immutable_review_transport_unsupported",
+		"unsupported_agent",
+		"unknown_flag",
+	];
+	for (const refusalCode of refusalCodes) {
+		const cwd = repository(t);
+		const { native, agents } = transportAwareNative({ refusalCode });
+		const result = await runCapture(cwd, native, `refusal-${refusalCode}`);
+		assert.equal(result.status, "blocked", `${refusalCode} must be blocked`);
+		assert.equal(result.outcome, "pi-host-relay-transport-unavailable", `${refusalCode} must use the unavailable envelope`);
+		assert.equal((result.relay_transport as { code: string }).code, refusalCode);
+		assert.deepEqual(agents, ["pi"], `${refusalCode} must not fall back to agent-less STATUS`);
+		__testing.clearReviewTransportProbeForTesting(native);
+	}
+});
+
+test("typed status errors outside the Pi transport refusal set remain native errors", async (t) => {
+	const cwd = repository(t);
+	const { native, agents } = transportAwareNative({ refusalCode: "provider_unavailable" });
+	const result = await runCapture(cwd, native, "non-transport-status-error");
+	assert.deepEqual(agents, ["pi"], "a non-transport error must not be retried as an agent-less lifecycle STATUS");
+	assert.equal(result.status, "blocked");
+	assert.equal(result.outcome, undefined, "a non-transport error must not be coerced into a transport refusal envelope");
+	assert.ok("native_failure" in result, "the native error envelope must remain available to the caller");
+	assert.equal(result.relay_transport, undefined);
+});
+
+test("ordinary STATUS inspection uses the Pi public collect-binding route", async (t) => {
+	const cwd = repository(t);
+	const { native, agents } = transportAwareNative();
+	const result = await runStatus(cwd, native, "ordinary-status-lineage");
+	assert.deepEqual(agents, ["pi"], "ordinary STATUS must request the Pi public collect-binding route");
+	assert.equal(result.operation, "status");
+});
+
+type CaptureTool = Parameters<ExtensionAPI["registerTool"]>[0];
+
+for (const grouped of [false, true]) {
+	for (const preference of ["sse", "websocket", "websocket-cached", "auto", "unset", "older-api"] as const) {
+		test(`registered ${grouped ? "group" : "individual"} capture reads effective transport ${preference} at execution time`, async (t) => {
+			t.after(() => {
+				__testing.setReviewHostRelayRunnerForTesting();
+				__testing.setReviewHostRelayGroupRunnersForTesting();
+			});
+			const cwd = repository(t);
+			const lineageId = "settings-transport-lineage";
+			const inputs = grouped
+				? [groupInput(lineageId, "review-risk", 0), groupInput(lineageId, "review-resilience", 1)]
+				: [collectInput(lineageId, true)];
+			const status = grouped ? groupStatus(lineageId, inputs) : recoveredStatus(lineageId, true);
+			const finalStatus = groupStatus(lineageId, []);
+			delete finalStatus.nextTransition;
+			const { native } = queueNative(grouped
+				? [status, status, status, status, groupStatus(lineageId, inputs.slice(1)), finalStatus]
+				: [status, status, status]);
+			const tools = new Map<string, CaptureTool>();
+			let transport: "sse" | "websocket" | "websocket-cached" | "auto" | undefined = "auto";
+			let settingsReads = 0;
+			const pi = {
+				on() {}, registerCommand() {},
+				registerTool(tool: CaptureTool) { tools.set(tool.name, tool); },
+				...(preference === "older-api" ? {} : {
+					getSettings() { settingsReads += 1; return { transport }; },
+				}),
+			} as unknown as ExtensionAPI;
+			createGentleAiExtension({ nativeReviewCli: native })(pi);
+			assert.equal(settingsReads, 0, "registration must not cache settings");
+			transport = preference === "unset" || preference === "older-api" ? undefined : preference;
+			const requests: ReviewHostRelayRequest[] = [];
+			__testing.setReviewHostRelayRunnerForTesting(async (request) => {
+				requests.push(request);
+				return { promptByteLength: 64, resultByteLength: 32, submission: "{}" };
+			});
+			__testing.setReviewHostRelayGroupRunnersForTesting(
+				async (group) => { requests.push(...group); return group.map(prepared); },
+				async (result) => ({ promptByteLength: result.promptByteLength, resultByteLength: result.resultByteLength, submission: "{}" }),
+			);
+			const ctx = { cwd, hasUI: false } as unknown as Parameters<CaptureTool["execute"]>[4];
+			await tools.get("gentle_review")!.execute("status", { operation: "status", lineageId }, undefined, undefined, ctx);
+			const tool = tools.get(grouped ? "gentle_review_capture_group" : "gentle_review_capture")!;
+			const parameters = grouped
+				? { lineageId, collectBindings: inputs.map((input) => JSON.stringify(input)) }
+				: { lineageId, collectBinding: JSON.stringify(inputs[0]) };
+			const forecast = await tool.execute("forecast", parameters, undefined, undefined, ctx);
+			assert.equal((forecast.details as Record<string, unknown>).outcome, "reviewer-model-run-forecast");
+			assert.equal(requests.length, 0);
+			assert.equal(settingsReads, 0, "an unacknowledged forecast must not read reviewer settings");
+			const result = await tool.execute("capture", { ...parameters, reviewerRunAcknowledged: true }, undefined, undefined, ctx);
+			assert.equal((result.details as Record<string, unknown>).outcome, grouped ? "native-reviewer-group-status-reconciled" : "native-reviewer-result-captured");
+			assert.equal(requests.length, inputs.length);
+			for (const request of requests) {
+				assert.equal(request.reviewerTransport, transport);
+				assert.equal(Object.hasOwn(request, "reviewerTransport"), transport !== undefined);
+			}
+			assert.equal(settingsReads, preference === "older-api" ? 0 : 1, "read the effective snapshot once per execution");
+		});
+	}
+}

@@ -2,18 +2,17 @@
 
 ← [Back to README](../README.md)
 
-U8 closed the U1-U7 slimming work. Issue [#191](https://github.com/Gentleman-Programming/gentle-pi/issues/191) then extracted Pi command projection and publication revalidation from graph-v1 authority storage. New ordinary review authority is native; Pi retains permanent consumer infrastructure and explicit graph-v1 Judgment Day.
+U8 closed the U1-U7 slimming work. New ordinary review authority is native; Pi retains permanent consumer infrastructure and explicit graph-v1 Judgment Day. Delivery commands remain ordinary repository-policy operations, not review gates.
 
 ## Current Ownership
 
 | Surface | Owner after #191 |
 | --- | --- |
-| Ordinary START, FINALIZE, target status, validation, SDD binding, recovery, and reconciliation | Package-local Gentle AI v2.2.3 through `gentle-ai.review-integration/v2` (migration complete, see below) |
+| Ordinary START, FINALIZE, target status, validation, recovery, and reconciliation | Package-local Gentle AI v2.4.0 through `gentle-ai.review-integration/v2` (migration complete, see below) |
 | Canonical consumer identities | Permanent Pi module `lib/review-canonical.ts` |
 | Git common-directory and repository identity | Permanent Pi module `lib/review-repository.ts` |
 | Immutable reviewer candidate views | Permanent Pi module `lib/review-candidate-view.ts` |
-| Typed command targets, remote binding, release projection, and publication rechecks | Permanent Pi module `lib/review-publication-gate.ts` |
-| Direct commit transaction and dangerous-command safety | Pi; independent of review authority |
+| Dangerous-command safety | Pi; independent of review authority and delivery decisions |
 | Explicit Judgment Day and historical graph semantic replay | Pi graph-v1 until a separately proven replacement exists |
 | Historical graph receipt validation | Pi graph-v1 transaction, reachable only for historical graph authority and explicit Judgment Day |
 
@@ -27,7 +26,7 @@ This document and `gentle_review`'s recovery/maintenance commands use "compact-v
 
 gentle-ai publishes two negotiated contracts side by side: `gentle-ai.review-integration/v1` (the Base64 candidate-diff transport Pi used to speak) and `gentle-ai.review-integration/v2` (immutable `base_tree`/`candidate_tree`, an ordered `changed_path_manifest`, mandatory `artifact_subjects`, and an evidence-first correction lifecycle). gentle-pi negotiates `/v2` only, with no dual-lane fallback — the pinned binary always answers exactly one exact version, so negotiating a version range would buy nothing and double the decoder surface permanently.
 
-The migration (tracked as the `migrate-review-integration-v2` OpenSpec change) landed in two stages:
+The `review-integration/v2` migration landed in two stages:
 
 - **Stage 1 (authorable without an external dependency):** the `lib/review-integration-v2.ts` decoder module, a pure evidence-first correction-lifecycle module, and a field-wise candidate-view manifest check were authored and unit-tested against the mirrored `contracts/review-integration/v2/` fixtures while `lib/native-review-cli.ts` still negotiated `/v1`.
 - **Stage 2 (gated on the pinned gentle-ai release advertising contract v2, landed against v2.2.2):** one atomic commit flipped the import, added the net-new negotiated `review repair` and `review capture-evidence` call sites, deleted `lib/review-integration-v1.ts` and its generated runtime and tests, and regenerated `runtime/*.mjs`. `contracts/review-integration/v1/**` stays on disk permanently because the `/v2` JSON schemas `$ref` into its fragments.
@@ -43,7 +42,6 @@ The permanent modules have direct production consumers after #191:
 | `review-canonical.ts` | `extensions/gentle-ai.ts` and eight live review modules |
 | `review-repository.ts` | `extensions/gentle-ai.ts`, graph object store, legacy detector, snapshot, and transaction |
 | `review-candidate-view.ts` | `extensions/gentle-ai.ts` |
-| `review-publication-gate.ts` | `extensions/gentle-ai.ts` and graph-v1 receipt validation in `review-transaction.ts` |
 
 The remaining ordinary reducer is not dead authority. Historical graph event replay calls it to validate semantic adjacency. Deleting it would weaken graph integrity even though controller mutation is read-only.
 
@@ -56,7 +54,7 @@ node scripts/measure-native-authority-slimming.mjs origin/main HEAD WORKTREE
 git diff --shortstat origin/main..HEAD
 git diff --shortstat HEAD
 git diff --shortstat origin/main
-wc -l docs/native-authority-architecture.md scripts/measure-native-authority-slimming.mjs lib/review-publication-gate.ts
+wc -l docs/native-authority-architecture.md scripts/measure-native-authority-slimming.mjs
 ```
 
 The measurement script defines package footprint as unpacked bytes selected by `package.json#files` plus npm's always-included `package.json`, `README.md`, and `LICENSE`. Source LOC is physical lines in `extensions/**/*.ts`, `lib/**/*.ts`, `runtime/**/*.mjs`, and `scripts/**/*.mjs`. Test LOC is physical lines in `tests/**/*.ts` and `tests/**/*.mjs`.
@@ -74,10 +72,10 @@ The committed U1-U4 baseline is `origin/main..HEAD`. U5-U8 and #191 are in the u
 | Diff boundary | Files | Additions | Deletions |
 | --- | ---: | ---: | ---: |
 | Committed U1-U4: `git diff --shortstat origin/main..HEAD` | 21 | 770 | 2,027 |
-| Unstaged U5-#191, including three untracked delivery artifacts | 33 | 1,591 | 6,940 |
-| Accumulated U1-#191, including three untracked delivery artifacts | 46 | 2,302 | 8,908 |
+| Unstaged U5-#191, including two untracked delivery artifacts | 33 | 1,591 | 6,940 |
+| Accumulated U1-#191, including two untracked delivery artifacts | 46 | 2,302 | 8,908 |
 
-The two unit ranges are intentionally reported separately. `git diff --shortstat` excludes untracked files, so the architecture report, measurement script, and publication-gate module contribute 726 added lines to the reported U5-#191 and accumulated totals. Unit-range additions and deletions are not arithmetically additive because U5-#191 also edits or removes paths already changed by U1-U4; the accumulated comparison is Git's final origin-to-worktree result.
+The two unit ranges are intentionally reported separately. `git diff --shortstat` excludes untracked files, so the architecture report and measurement script are outside the tracked shortstat totals. Unit-range additions and deletions are not arithmetically additive because U5-#191 also edits or removes paths already changed by U1-U4; the accumulated comparison is Git's final origin-to-worktree result.
 
 ## Retired Modules
 
@@ -94,9 +92,9 @@ The packaged `contracts/review-integration/v1/` schemas and fixtures plus `docs/
 
 ## Published Maintenance Boundary
 
-Gentle AI has exposed explicit, audited maintenance commands outside negotiated ordinary review since v2.1.11; the currently pinned v2.2.3 keeps them available under the same legacy version table. Pi invokes `review abandon`, `review quarantine-legacy`, and `review reconcile-authority` only after fresh interactive approval of exact LF-only authorization text; headless execution and absent, malformed, or stale bindings fail closed.
+Gentle AI has exposed explicit, audited maintenance commands outside negotiated ordinary review since v2.1.11; the currently pinned v2.4.0 keeps them available under the same legacy version table. Pi invokes `review abandon`, `review quarantine-legacy`, and `review reconcile-authority` only after fresh interactive approval of exact LF-only authorization text; headless execution and absent, malformed, or stale bindings fail closed.
 
-`abandon` is restricted by native re-derivation to a caller-named non-terminal compact-v2 lineage; its `gentle-ai.review-abandon-authorization/v2` binding additionally names the exact discarded work (captured lens results, findings presence, evidence-record presence) that the native gate re-derives before accepting. `quarantine-legacy` accepts only the published malformed freeze-findings diagnostic and disposition. Reconciliation accepts the exact dual anomaly suffix `anomalies=unchanged_target,malformed_recovery_authorization` only in that order. `repair-legacy-alias` derives repository, revision, diagnostic, and disposition from freshly read native inventory before its own approval and can only quarantine one qualified historical alias chain. `review dispose-result` remains unexposed pending design. Recovery routes only the provider-selected negotiated `action_disposition`.
+`abandon` is restricted by native re-derivation to a caller-named non-terminal compact-v2 lineage; the facade freshly reads the authoritative native inventory, requires a unique lineage entry, and derives the exact discarded-work summary before rendering the `gentle-ai.review-abandon-authorization/v2` binding, whose fields the native gate re-derives before accepting (captured lens results with their ordinal order, findings presence). `quarantine-legacy` accepts only the published malformed freeze-findings diagnostic and disposition. Reconciliation accepts the exact dual anomaly suffix `anomalies=unchanged_target,malformed_recovery_authorization` only in that order. `repair-legacy-alias` derives repository, revision, diagnostic, and disposition from freshly read native inventory before its own approval and can only quarantine one qualified historical alias chain. `review dispose-result` remains unexposed pending design. Recovery routes only the provider-selected negotiated `action_disposition`.
 
 ## Windows Evidence
 
@@ -114,10 +112,10 @@ The only platform-specific repository test is skipped outside Windows. U8 theref
 
 ## #191 Outcome
 
-#191 moved typed command targets, configured push destinations, push-ref probes, release projection, release fast-path evaluation, and publication rechecks into `review-publication-gate.ts`. The extension imports that module directly for ordinary native publication. `review-publication-gate.ts` imports no graph transaction, object store, graph schema, lock, or snapshot module.
+Issue #191 removed Pi-owned delivery authorization and publication-target revalidation from ordinary review. The extension does not import a publication-gate module or consult review authority to decide commit, push, pull-request, or release delivery.
 
-`review-transaction.ts` imports the shared target primitives only for historical graph receipt validation. Its reducer, replay, object-store, lock, snapshot, and ordinary semantic-replay dependencies remain reachable from explicit graph-v1 Judgment Day, so no additional module deletion is justified.
+`review-transaction.ts` retains its reducer, replay, object-store, lock, snapshot, and semantic-replay dependencies for explicit graph-v1 Judgment Day and historical compatibility; no additional module deletion is justified.
 
-The next delivery boundary is one branch-wide High-tier 4R, followed by the size-exception PR, merge readiness, and release.
+Review outcomes are informational: commit, push, PR, and release delivery follow ordinary repository policy. Dangerous-command safety and destructive-review consent remain independent.
 
 ← [Back to README](../README.md)

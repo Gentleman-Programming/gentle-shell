@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { discoverAndLoadExtensions } from "@earendil-works/pi-coding-agent";
@@ -11,14 +11,15 @@ import { matchesKey } from "@earendil-works/pi-tui";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { domainHashV1 } from "../lib/review-canonical.ts";
-import { NativeReviewCliV216, NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError } from "../lib/native-review-cli.ts";
+import { canonicalHash } from "../lib/review-transaction.ts";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+const { createGentleAiExtension } = await import(pathToFileURL(join(ROOT, "extensions/gentle-ai.ts")).href);
 const EXTENSIONS = [
 	"extensions/gentle-ai.ts",
+	"extensions/nan-provider.ts",
 	"extensions/quiet-tools.ts",
 	"extensions/skill-registry.ts",
-	"extensions/sdd-init.ts",
 	"extensions/startup-banner.ts",
 ];
 
@@ -30,24 +31,20 @@ const EXPECTED_BANNER_COMMANDS = [
 ];
 
 const EXPECTED_COMMANDS = [
-	"gentle:install-sdd",
-	"gentle:sdd-preflight",
-	"sdd-status",
-	"sdd-continue",
-	"gentle:models",
+	"gentle:install-delegation",
+	"gentle:install-review",
+	"gentle:profiles",
 	"gentle:persona",
 	"gentle:status",
 	"gentle:doctor",
-	"sdd-init",
 	"skill-registry:refresh",
 	...EXPECTED_BANNER_COMMANDS,
 ];
 
 const FORBIDDEN_COMPAT_COMMANDS = [
-	"gentle-ai:install-sdd",
-	"gentle-ai:sdd-preflight",
-	"gentle-ai:sdd-status",
-	"gentle-ai:sdd-continue",
+	"gentle:install-assets",
+	// Retired: /gentle:profiles opens the same models screen.
+	"gentle:models",
 	"gentle-ai:models",
 	"gentleman:models",
 	"gentle-ai:persona",
@@ -63,12 +60,31 @@ const FORBIDDEN_COMPAT_COMMANDS = [
 function createPi() {
 	const hooks = new Map();
 	const commands = new Map();
+	const providers = new Map();
 	const flags = new Map();
 	const tools = new Map();
+	const eventHandlers = new Map();
+	const emittedEvents = [];
 	const flagValues = new Map([["no-skill-registry", true]]);
+	const events = {
+		emit(channel, data) {
+			emittedEvents.push({ channel, data });
+			for (const handler of eventHandlers.get(channel) ?? []) handler(data);
+		},
+		on(channel, handler) {
+			const handlers = eventHandlers.get(channel) ?? new Set();
+			handlers.add(handler);
+			eventHandlers.set(channel, handlers);
+			return () => {
+				handlers.delete(handler);
+				if (handlers.size === 0) eventHandlers.delete(channel);
+			};
+		},
+	};
 	let activeTools = ["read", "bash", "edit", "write"];
 
 	const pi = {
+		events,
 		on(name, handler) {
 			const list = hooks.get(name) ?? [];
 			list.push(handler);
@@ -76,6 +92,10 @@ function createPi() {
 		},
 		registerCommand(name, definition) {
 			commands.set(name, definition);
+		},
+		registerProvider(name, config) {
+			if (typeof name === "object") providers.set(name.id, name);
+			else providers.set(name, config);
 		},
 		registerFlag(name, definition) {
 			flags.set(name, definition);
@@ -109,7 +129,7 @@ function createPi() {
 		},
 	};
 
-	return { pi, hooks, commands, flags, tools };
+	return { pi, hooks, commands, providers, flags, tools, emittedEvents };
 }
 
 function createUi() {
@@ -181,25 +201,178 @@ async function tempWorkspace() {
 	return mkdtemp(join(tmpdir(), "gentle-pi-runtime-"));
 }
 
-async function loadExtensions(pi) {
+function restoreWorkspaceWritePermissions(cwd) {
+	if (process.platform === "win32") return;
+	try {
+		execFileSync("chmod", ["-R", "u+w", cwd], { stdio: "ignore" });
+	} catch {
+		// A prior candidate-view cleanup may already have removed the workspace.
+	}
+}
+
+const ownedFixtureRoots = [];
+const previousFixtureEnvironment = new Map([
+	"HOME", "USERPROFILE", "XDG_CONFIG_HOME", "PI_CODING_AGENT_DIR",
+	"GENTLE_PI_CONFIG_HOME", "GENTLE_PI_AGENT_HOME", "GENTLE_PI_TEST_ASSETS_DIR",
+	"GENTLE_PI_AGENTS_PARENT_PERMISSION_FD",
+].map((key) => [key, process.env[key]]));
+
+async function loadExtensions(pi, fixtureDependencies) {
 	for (const [index, rel] of EXTENSIONS.entries()) {
 		const mod = await import(`${pathToFileURL(join(ROOT, rel)).href}?runtime-harness=${index}`);
 		assert.equal(typeof mod.default, "function", `${rel} must export a default function`);
-		mod.default(pi);
+		if (rel === "extensions/gentle-ai.ts") createGentleAiExtension(fixtureDependencies)(pi);
+		else mod.default(pi);
 	}
 }
 
 async function run() {
 	const globalConfigHome = await tempWorkspace();
+	ownedFixtureRoots.push(globalConfigHome);
 	const globalAgentHome = await tempWorkspace();
+	ownedFixtureRoots.push(globalAgentHome);
 	const ambientTestAssetsDir = await tempWorkspace();
+	ownedFixtureRoots.push(ambientTestAssetsDir);
 	process.env.GENTLE_PI_CONFIG_HOME = globalConfigHome;
 	process.env.GENTLE_PI_AGENT_HOME = globalAgentHome;
 	process.env.GENTLE_PI_TEST_ASSETS_DIR = ambientTestAssetsDir;
+	process.env.HOME = globalAgentHome;
+	process.env.USERPROFILE = globalAgentHome;
+	process.env.XDG_CONFIG_HOME = join(globalAgentHome, "xdg");
+	process.env.PI_CODING_AGENT_DIR = join(globalAgentHome, "pi");
+	// Discovery still exercises the default exports under the actual worker
+	// role, but must never acquire the worker's parent-permission channel.
+	delete process.env.GENTLE_PI_AGENTS_PARENT_PERMISSION_FD;
+	const fixtureDependencies = {
+		nativeReviewCli: {},
+		processEnv: {
+			HOME: globalAgentHome, USERPROFILE: globalAgentHome,
+			GENTLE_PI_CONFIG_HOME: globalConfigHome, GENTLE_PI_AGENT_HOME: globalAgentHome,
+			PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
+			XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+			GENTLE_PI_AGENTS_CHILD: "0", GENTLE_AI_TELEMETRY: "0",
+		},
+		resolveTelemetryTriggerBinary: () => join(globalAgentHome, "never-executed"),
+		telemetryTriggerSpawn: () => assert.fail("Runtime fixtures must not spawn telemetry"),
+	};
 	const globalModelsPath = join(globalConfigHome, "models.json");
 	const globalSubagentsPath = join(globalAgentHome, "subagents.json");
-	const { pi, hooks, commands, flags, tools } = createPi();
-	await loadExtensions(pi);
+	const { pi, hooks, commands, providers, flags, tools, emittedEvents } = createPi();
+	await loadExtensions(pi, fixtureDependencies);
+	assert.equal(providers.get("nan")?.getModels()[0]?.api, "openai-completions", "runtime extension loading registers the NaN provider");
+
+	// gentle-pi#404: a collect binding that returns the native last-event
+	// closure must terminate after one capture. It must not re-enter a public
+	// lifecycle mutation or synthesize a follow-up transition.
+	{
+		const lineageId = "runtime-last-event";
+		const sha = `sha256:${"a".repeat(64)}`;
+		const tree = "b".repeat(40);
+		const repositoryContext = `rctx1_${"c".repeat(64)}`;
+		const calls = [];
+		const arguments_ = [
+			{ name: "lineage", value: lineageId, token: `--lineage=${lineageId}` },
+			{ name: "expected-revision", value: sha, token: `--expected-revision=${sha}` },
+			{ name: "target", value: sha, token: `--target=${sha}` },
+			{ name: "repository-context", value: repositoryContext, token: `--repository-context=${repositoryContext}` },
+			{ name: "lens", value: "review-risk", token: "--lens=review-risk" },
+			{ name: "order", value: "0", token: "--order=0" },
+			{ name: "subject-hash", value: sha, token: `--subject-hash=${sha}` },
+		];
+		const input = {
+			name: "correction_plan",
+			schema: "gentle-ai.review-correction-plan/v1",
+			captureOperation: "review.capture-correction-plan",
+			arguments: arguments_,
+			submission: {
+				operationToken: "capture-correction-plan",
+				argumentTokens: [...arguments_.map((argument) => argument.token), "--correction-lines={{value}}"],
+				values: [{ slot: "correction_lines", domain: "positive_integer", substitutionLocation: 7, minimum: 1, maximum: 1 }],
+			},
+		};
+		const status = {
+			contract: "gentle-ai.review-integration/v2",
+			applicability: "current_target",
+			authority: { version: "compact-v2", lineageId, state: "correction_required", generation: 1, revision: sha },
+			receipt: { status: "expected_missing" },
+			action: "stop",
+			replayability: "not_replayable",
+			targetIdentity: sha,
+			projection: {
+				schema: "gentle-ai.review-candidate-projection/v1",
+				kind: "current-changes",
+				projection: "workspace",
+				baseTree: tree,
+				initialReviewTree: tree,
+				currentCandidateTree: tree,
+				pathsDigest: sha,
+				paths: ["app.ts"],
+				intendedUntracked: [],
+				intendedUntrackedProof: sha,
+				initialSnapshotIdentity: sha,
+				currentSnapshotIdentity: sha,
+			},
+			repair: { schema: "gentle-ai.review-authority-repair-assessment/v1", status: "unsupported", counts: { lineages: 0, compactLineages: 0, legacyLineages: 0, events: 0, bytes: 0, eligibleCandidates: 0, unsupportedLineages: 0, conflicts: 0 }, supportedOperations: ["review/complete-fix", "review/validate-fix"], authorizationSchema: "gentle-ai.review-repair-authorization/v1" },
+			candidates: [],
+			nextTransition: { kind: "collect", reasonCode: "correction_plan_required", collect: { inputs: [input] } },
+			raw: { schema: "gentle-ai.review-integration.status/v5" },
+		};
+		const nativeReviewCli = {
+			async targetStatus(request) {
+				calls.push({ operation: "status", request });
+				return status;
+			},
+			async captureCorrectionPlan(request) {
+				calls.push({ operation: "capture-correction-plan", request });
+				return {
+					schema: "gentle-ai.review-last-event-closure/v1",
+					operation: "review.capture-correction-plan",
+					lineageId,
+					state: "correction_required",
+					targetIdentity: sha,
+					requestHash: sha,
+					correctionLines: 1,
+					storeRevision: sha,
+				};
+			},
+		};
+		const lastEventPi = createPi();
+		createGentleAiExtension({ ...fixtureDependencies, nativeReviewCli })(lastEventPi.pi);
+		const controller = lastEventPi.tools.get("gentle_review");
+		const capture = lastEventPi.tools.get("gentle_review_capture");
+		assert.ok(controller, "runtime must register the public status controller");
+		assert.ok(capture, "runtime must register the one-slot capture tool");
+		assert.equal(lastEventPi.tools.get("gentle_review_capture_group")?.executionMode, "sequential", "runtime must register grouped capture with bounded foreground concurrency");
+		assert.equal(controller.parameters.properties.operation.enum.includes("finalize"), false);
+		assert.equal(controller.parameters.properties.operation.enum.includes("validate"), false);
+
+		const publicStatus = await controller.execute(
+			"runtime-status",
+			{ operation: "status", lineageId },
+			undefined,
+			undefined,
+			createCtx(ROOT, false, lineageId),
+		);
+		const collectBindings = publicStatus.details.collectBindings;
+		assert.equal(publicStatus.details.status, "blocked");
+		assert.equal(collectBindings.length, 1);
+
+		const captured = await capture.execute(
+			"runtime-capture",
+			{ lineageId, collectBinding: collectBindings[0].collectBinding, correctionLines: 1 },
+			undefined,
+			undefined,
+			createCtx(ROOT, false, lineageId),
+		);
+		assert.equal(captured.details.status, "closed");
+		assert.equal(captured.details.outcome, "native-last-event-closure");
+		assert.equal(captured.details.closure.operation, "review.capture-correction-plan");
+		assert.deepEqual(
+			calls.map(({ operation }) => operation),
+			["status", "status", "capture-correction-plan"],
+			"last-event closure must make no follow-up lifecycle mutation",
+		);
+	}
 
 	for (const name of EXPECTED_COMMANDS) {
 		assert.ok(commands.has(name), `missing command ${name}`);
@@ -207,15 +380,49 @@ async function run() {
 	for (const name of FORBIDDEN_COMPAT_COMMANDS) {
 		assert.equal(commands.has(name), false, `compat command should not be registered: ${name}`);
 	}
+	// Retired SDD command entry points must not register, regardless of unrelated prompt text.
+	for (const name of [
+		"gentle:install-sdd", "gentle:sdd-preflight", "gentle-sdd-status",
+		"gentle-sdd-continue", "gentle-sdd-init", "sdd-init", "sdd-continue",
+		"sdd-status", "gentle-ai:install-sdd", "gentle-ai:sdd-preflight",
+		"gentle-ai:sdd-status", "gentle-ai:sdd-continue",
+	]) {
+		assert.equal(commands.has(name), false, `retired SDD command registered: ${name}`);
+	}
 	assert.ok(flags.has("no-skill-registry"), "missing no-skill-registry flag");
 	assert.ok(hooks.has("session_start"), "missing session_start hook");
 	assert.ok(hooks.has("session_shutdown"), "missing session_shutdown hook");
-	assert.ok(hooks.has("input"), "missing input hook");
+	assert.ok(hooks.has("input"), "missing live input provenance hook");
+	for (const text of [
+		"/sdd-init", "/sdd-continue", "/sdd-status", "/gentle-sdd-init",
+		"/gentle-sdd-continue", "/gentle-sdd-status", "/gentle:install-sdd",
+		"/gentle:sdd-preflight", "/gentle-ai:install-sdd", "/gentle-ai:sdd-preflight",
+		"/gentle-ai:sdd-status", "/gentle-ai:sdd-continue",
+		"Inspect this project without changing files.", "/ordinary-unregistered-command",
+	]) {
+		const event = { text, source: "interactive", images: [] };
+		const before = structuredClone(event);
+		const emittedBefore = emittedEvents.length;
+		for (const handler of hooks.get("input")) {
+			assert.deepEqual(await handler(event, createCtx(ROOT)), { action: "continue" },
+				`input must pass through without slash interception: ${text}`);
+		}
+		assert.deepEqual(event, before, "input text and attachments must remain unchanged");
+		assert.equal(emittedEvents.length, emittedBefore, "input must not dispatch slash logic");
+	}
 	assert.ok(hooks.has("before_agent_start"), "missing before_agent_start hook");
 	assert.ok(hooks.has("tool_call"), "missing tool_call hook");
-	for (const toolName of ["read", "bash", "grep", "find", "ls", "edit", "write"]) {
+	for (const toolName of ["read", "grep", "find", "ls", "edit", "write"]) {
 		assert.ok(tools.has(toolName), `missing quiet built-in tool renderer ${toolName}`);
 	}
+	const codemode = tools.get("codemode");
+	assert.ok(codemode, "quiet-tools must decorate the upstream codemode registration");
+	assert.equal(codemode.defaultActive, false, "rendering must not activate codemode");
+	assert.equal(codemode.renderShell, "self");
+	assert.equal(typeof codemode.renderCall, "function");
+	assert.equal(typeof codemode.renderResult, "function");
+	assert.equal(typeof codemode.prepareLoadout, "function", "upstream loadout policy must survive decoration");
+	assert.deepEqual(pi.getActiveTools(), ["read", "bash", "edit", "write"], "card registration must not change tool activation");
 	assert.ok(tools.has("gentle_review"), "missing registered bounded review controller tool");
 	assert.ok(tools.has("gentle_review_scope"), "missing registered bounded review scope tool");
 	assert.deepEqual(
@@ -240,70 +447,90 @@ async function run() {
 		[],
 		"declared extension directory must load without invalid helper modules",
 	);
+	assert.ok(
+		discovered.extensions.some((extension) => extension.resolvedPath.endsWith(join("extensions", "nan-provider.ts"))),
+		"declared extension directory must discover the NaN provider",
+	);
+
+	const nativeNan = discovered.runtime.pendingNativeProviderRegistrations
+		.find((entry) => entry.provider.id === "nan")?.provider;
+	assert.ok(nativeNan, "actual Pi loader must queue native NaN registration");
+	assert.ok(!discovered.runtime.pendingProviderRegistrations.some((entry) => entry.name === "nan"),
+		"NaN must not fall back to the legacy empty-key login route");
+	await assert.rejects(nativeNan.auth.apiKey.login({
+		signal: new AbortController().signal, prompt: async () => "", notify() {},
+	}), /non-empty/);
+	assert.deepEqual(await nativeNan.auth.apiKey.login({
+		signal: new AbortController().signal, prompt: async () => " synthetic-loader-key ", notify() {},
+	}), { type: "api_key", key: "synthetic-loader-key" });
 
 	// orchestrator-lazy-diet: Pi Subagent Model Routing detail (the "do not
 	// pass the `model` parameter by default" / SDD-model-assignment-scoping
 	// rules) moved verbatim to assets/orchestrator-delegation.md; the
 	// always-on combined prompt now only carries a pointer to it. Union read
 	// so these assertions are repointed, not weakened.
-	const delegationDetail = await readFile(join(ROOT, "assets", "orchestrator-delegation.md"), "utf8");
+	const { DELEGATION_MODULES } = await import("./support/orchestrator-modules.ts");
+	const delegationDetail = (await Promise.all(DELEGATION_MODULES.map((file) => readFile(join(ROOT, "assets", file), "utf8")))).join("\n\n");
 
 	const promptCwd = await tempWorkspace();
 	try {
 		const promptHook = hooks.get("before_agent_start")[0];
-		const promptResult = await promptHook({ systemPrompt: "base" }, createCtx(promptCwd));
-		assert.match(promptResult.systemPrompt, /base/);
-		assert.match(promptResult.systemPrompt, /el Gentleman/);
-		assert.match(promptResult.systemPrompt + delegationDetail, /do not pass the `model` parameter by default/);
-		assert.match(
-			promptResult.systemPrompt + delegationDetail,
-			/SDD model assignment tables apply only to SDD\/Judgment-Day phase agents/,
-		);
-		assert.doesNotMatch(promptResult.systemPrompt, /Every Agent tool call MUST include `model`/);
-		assert.doesNotMatch(promptResult.systemPrompt, /default\s*\|\s*sonnet\s*\|\s*Non-SDD general delegation/);
-		assert.match(promptResult.systemPrompt, /openspec\/config\.yaml.*not session preflight/s);
-		assert.match(promptResult.systemPrompt, /Do not mark SDD preflight complete/);
-		assert.match(
-			promptResult.systemPrompt,
-			new RegExp(`${ROOT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}.*assets.*sdd-orchestrator-workflow\\.md`),
+		// gentle-shell#1485: pi-claude-bridge drops a handler-returned systemPrompt
+		// and forwards only structured systemPromptOptions, so the harness must
+		// land in appendSystemPrompt and the hook must never return a replacement.
+		const promptEvent = { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } };
+		const promptResult = await promptHook(promptEvent, createCtx(promptCwd));
+		assert.equal(promptResult, undefined, "before_agent_start must not return a replacement systemPrompt");
+		assert.equal(promptEvent.systemPrompt, "base", "the original systemPrompt field must be left untouched");
+		const promptAppended = promptEvent.systemPromptOptions.appendSystemPrompt;
+		assert.match(promptAppended, /el Gentleman/);
+		assert.match(promptAppended, /Organic Driven Development/);
+		assert.doesNotMatch(promptAppended, /## SDD Research Capabilities/);
+		assert.match(promptAppended, /review execution contract/);
+		assert.doesNotMatch(await readFile(join(ROOT, "extensions", "gentle-ai.ts"), "utf8"), /readCommandSddStatus/);
+		assert.match(promptAppended + delegationDetail, /do not pass the `model` parameter by default/);
+		assert.doesNotMatch(promptAppended, /Every Agent tool call MUST include `model`/);
+		assert.ok(
+			promptAppended.includes(
+				`Package assets root: \`${join(ROOT, "assets")}\`. Lazy asset paths below are relative to this root.`,
+			),
+			"parent prompt must declare the one absolute root for relative lazy asset paths",
 		);
 		assert.doesNotMatch(
-			promptResult.systemPrompt,
+			promptAppended,
 			new RegExp(ambientTestAssetsDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
 			"normal runtime must ignore ambient GENTLE_PI_TEST_ASSETS_DIR",
 		);
-		assert.doesNotMatch(promptResult.systemPrompt, /\{\{GENTLE_PI_SDD_WORKFLOW_PATH\}\}/);
 		delete process.env.GENTLE_PI_TEST_ASSETS_DIR;
 		await rm(ambientTestAssetsDir, { recursive: true, force: true });
 		await writeFile(
 			join(globalConfigHome, "persona.json"),
 			'{"mode":"neutral"}\n',
 		);
-		const neutralPromptResult = await promptHook({ systemPrompt: "base" }, createCtx(promptCwd));
-		assert.match(neutralPromptResult.systemPrompt, /Do not use slang or regional expressions/);
+		const neutralPromptEvent = { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } };
+		const neutralPromptResult = await promptHook(neutralPromptEvent, createCtx(promptCwd));
+		assert.equal(neutralPromptResult, undefined, "before_agent_start must not return a replacement systemPrompt");
+		const neutralAppended = neutralPromptEvent.systemPromptOptions.appendSystemPrompt;
+		assert.match(neutralAppended, /Do not use slang or regional expressions/);
 		assert.doesNotMatch(
-			neutralPromptResult.systemPrompt,
+			neutralAppended,
 			/When the user writes Spanish, answer in natural Rioplatense Spanish with voseo/,
 			"neutral persona prompt must not include unconditional voseo instructions after reload",
 		);
-		const subagentPromptResult = await promptHook(
-			{ agentName: "worker", systemPrompt: "worker base" },
-			createCtx(promptCwd),
-		);
-		assert.equal(subagentPromptResult.systemPrompt, "worker base");
-		assert.equal(
-			existsSync(join(promptCwd, ".pi", "agents", "sdd-apply.md")),
-			false,
-			"normal agent startup must not run SDD preflight",
-		);
+		const subagentEvent = { agentName: "worker", systemPrompt: "worker base", systemPromptOptions: { appendSystemPrompt: "" } };
+		const subagentPromptResult = await promptHook(subagentEvent, createCtx(promptCwd));
+		assert.equal(subagentPromptResult, undefined, "before_agent_start must not return a replacement systemPrompt");
+		assert.equal(subagentEvent.systemPromptOptions.appendSystemPrompt, "", "a named agent gets nothing appended");
 		await mkdir(join(promptCwd, ".pi", "gentle-ai"), { recursive: true });
 		await writeFile(
 			join(promptCwd, ".pi", "gentle-ai", "persona.json"),
 			'{"mode":"gentleman"}\n',
 		);
-		const localOverridePromptResult = await promptHook({ systemPrompt: "base" }, createCtx(promptCwd));
+		const localOverrideEvent = { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } };
+		const localOverridePromptResult = await promptHook(localOverrideEvent, createCtx(promptCwd));
+		assert.equal(localOverridePromptResult, undefined, "before_agent_start must not return a replacement systemPrompt");
 		assert.match(
-			localOverridePromptResult.systemPrompt,
+			localOverrideEvent.systemPromptOptions.appendSystemPrompt,
 			/When the user writes Spanish, answer in natural Rioplatense Spanish with voseo/,
 		);
 		const personaCtx = createCtx(promptCwd, true);
@@ -318,62 +545,31 @@ async function run() {
 			'{\n  "mode": "neutral"\n}\n',
 		);
 		assert.match(personaCtx.ui.notifications.at(-1).message, /Global config:/);
-		const onboardCtx = createCtx(promptCwd, true, "sdd-onboard-session");
-		onboardCtx.ui.select = async (_label, options) => options[0];
-		const onboardPromptResult = await promptHook(
-			{ agentName: "sdd-onboard", systemPrompt: "onboard base" },
-			onboardCtx,
-		);
-		assert.match(onboardPromptResult.systemPrompt, /onboard base/);
-		assert.match(onboardPromptResult.systemPrompt, /## SDD Session Preflight/);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-onboard.md")), true);
-		await mkdir(join(promptCwd, "openspec", "changes", "status-demo", "specs", "demo"), { recursive: true });
-		await writeFile(join(promptCwd, "openspec", "changes", "status-demo", "proposal.md"), "# Proposal\n");
-		await writeFile(join(promptCwd, "openspec", "changes", "status-demo", "specs", "demo", "spec.md"), "# Spec\n");
-		await writeFile(join(promptCwd, "openspec", "changes", "status-demo", "design.md"), "# Design\n");
-		await writeFile(join(promptCwd, "openspec", "changes", "status-demo", "tasks.md"), "# Tasks\n\n- [ ] 1.1 Implement demo\n");
-		const applyPromptResult = await promptHook(
-			{ agentName: "sdd-apply", systemPrompt: "apply base" },
-			createCtx(promptCwd, true, "sdd-apply-session"),
-		);
-		assert.match(applyPromptResult.systemPrompt, /## Native SDD Status Engine/);
-		assert.match(applyPromptResult.systemPrompt, /"changeName": "status-demo"/);
-		assert.match(applyPromptResult.systemPrompt, /### apply instructions/);
-		const statusCtx = createCtx(promptCwd, true);
-		await commands.get("sdd-status").handler("status-demo --json", statusCtx);
-		assert.match(statusCtx.ui.notifications.at(-1).message, /"schemaName": "gentle-pi\.sdd-status"/);
-		const continueCtx = createCtx(promptCwd, true);
-		await commands.get("sdd-continue").handler("status-demo", continueCtx);
-		assert.match(continueCtx.ui.notifications.at(-1).message, /Native SDD Dispatcher/);
-		assert.match(continueCtx.ui.notifications.at(-1).message, /nextPhase: sdd-apply/);
-		const { execFileSync } = await import("node:child_process");
-		execFileSync("git", ["init"], { cwd: promptCwd, stdio: "ignore" });
-		const recoveryRequiredDirectory = join(promptCwd, ".git", "gentle-ai", "reviews", "control", "recovery-required-v1");
-		await mkdir(recoveryRequiredDirectory, { recursive: true });
-		await writeFile(
-			join(recoveryRequiredDirectory, `${domainHashV1("openspec-change-name", "status-demo")}.json`),
-			'{"schema":"gentle-ai.recovery-required/v1","change_name":"status-demo"}',
-		);
-		const blockedContinueCtx = createCtx(promptCwd, true);
-		await commands.get("sdd-continue").handler("status-demo", blockedContinueCtx);
-		assert.doesNotMatch(blockedContinueCtx.ui.notifications.at(-1).message, /resolve-review:/);
-		assert.match(blockedContinueCtx.ui.notifications.at(-1).message, /nextPhase: sdd-apply/);
 	} finally {
 		await rm(promptCwd, { recursive: true, force: true });
 	}
 
 	const toolCwd = await tempWorkspace();
 	try {
+		execFileSync("git", ["init"], { cwd: toolCwd, stdio: "ignore" });
 		const toolHook = hooks.get("tool_call")[0];
+		const toolResultHook = hooks.get("tool_result")[0];
+		const promptHook = hooks.get("before_agent_start")[0];
+		const oddCtx = createCtx(toolCwd, false, "odd-runtime-gate");
+		await promptHook({ systemPrompt: "primary" }, oddCtx);
+		const firstOddPath = join(toolCwd, "first.ts");
+		assert.equal(await toolHook({ toolName: "write", input: { path: firstOddPath } }, oddCtx), undefined);
+		await toolResultHook({ toolName: "write", toolCallId: "odd-first", input: { path: firstOddPath }, isError: false }, oddCtx);
+		const secondOdd = await toolHook({ toolName: "edit", input: { path: join(toolCwd, "second.ts") } }, oddCtx);
+		assert.equal(secondOdd, undefined, "write history alone must not refuse a second direct file");
 		const ghPrCwd = await tempWorkspace();
 		try {
 			execFileSync("git", ["init"], { cwd: ghPrCwd, stdio: "ignore" });
-			const receiptGate = await toolHook(
+			const deliveryResult = await toolHook(
 				{ toolName: "bash", input: { command: "gh pr create --draft" } },
-				createCtx(ghPrCwd, true, "receipt-gate-session"),
+				createCtx(ghPrCwd, true, "ordinary-delivery-session"),
 			);
-			assert.equal(receiptGate.block, true);
-			assert.match(receiptGate.reason, /exactly derive.*--base/i);
+			assert.equal(deliveryResult, undefined, "ordinary delivery policy, not review authority, governs pull-request creation");
 		} finally {
 			await rm(ghPrCwd, { recursive: true, force: true });
 		}
@@ -386,6 +582,202 @@ async function run() {
 		assert.equal(missingReviewView.block, true);
 		assert.match(missingReviewView.reason, /candidate view/i);
 		assert.equal(reviewDispatch.task, "review", "blocked review dispatch must not mutate child input");
+
+		for (const [agent, label, task] of [
+			["gentle-ai-worker", "missing", "Implement the requested change."],
+			["gentle-ai-worker", "absolute", "## Allowed edit surfaces\n/tmp/outside.ts"],
+			["gentle-ai-worker", "Windows absolute", "## Allowed edit surfaces\nC:\\outside.ts"],
+			["gentle-ai-worker", "prose instead of paths", "## Allowed edit surfaces\nThe parent will determine the paths."],
+			["gentle-ai-worker", "repository root", "## Allowed edit surfaces\n."],
+			["gentle-ai-worker", "bare repository root", "## Allowed edit surfaces\n./"],
+			["gentle-ai-worker", "normalized bare repository root", "## Allowed edit surfaces\n.//"],
+			["gentle-ai-worker", "equivalent normalized bare repository root", "## Allowed edit surfaces\n././/"],
+			["worker", "generic writer missing", "Implement the requested change."],
+		]) {
+			const writerDispatch = { agent, task, mode: "task" };
+			const writerResult = await toolHook(
+				{ toolName: "subagent_run", input: writerDispatch },
+				createCtx(toolCwd),
+			);
+			assert.equal(writerResult?.block, true, `${label} writer scope must be blocked before dispatch`);
+			assert.match(writerResult?.reason ?? "", /derive|map/i);
+			assert.match(writerResult?.reason ?? "", /relaunch/i);
+			assert.match(writerResult?.reason ?? "", /do not ask.*human.*paths or globs/i);
+			assert.equal(writerDispatch.task, task, "writer guard must not mutate child input");
+		}
+
+		// S16: generic writers are admitted only for a task of an existing feature document (or at the measured
+		// context backstop); the accepted cases below name one, and an undocumented launch is told to work inline.
+		await mkdir(join(toolCwd, "odd", "tasks"), { recursive: true });
+		await writeFile(join(toolCwd, "odd", "tasks", "harness.md"), "# Harness\n");
+		const undocumentedWriter = await toolHook(
+			{ toolName: "subagent_run", input: { agent: "gentle-ai-worker", task: "Implement the requested change.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts", mode: "task" } },
+			createCtx(toolCwd),
+		);
+		assert.equal(undocumentedWriter?.block, true, "an undocumented writer must be blocked before dispatch");
+		assert.match(undocumentedWriter?.reason ?? "", /write this unit inline yourself/);
+		const scopedWriterDispatch = {
+			agent: "gentle-ai-worker",
+			task: "Spec: odd/tasks/harness.md, T1. Implement the requested change.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts\ntests/runtime-harness.mjs",
+			mode: "task",
+		};
+		assert.equal(
+			await toolHook({ toolName: "subagent_run", input: scopedWriterDispatch }, createCtx(toolCwd)),
+			undefined,
+			"a writer may dispatch with narrow task-scoped repository-relative paths",
+		);
+		assert.equal(
+			await toolHook(
+				{
+					toolName: "subagent_run",
+					input: {
+						agent: "worker",
+						task: "Spec: odd/tasks/harness.md, T2. Implement the requested change.",
+						context: "## Allowed edit surfaces\n- assets/orchestrator.md",
+						mode: "task",
+					},
+				},
+				createCtx(toolCwd),
+			),
+			undefined,
+			"a writer may dispatch when context carries narrow task-scoped repository-relative paths",
+		);
+
+		const canonicalFrozenFindingRow = '{"id":"JD-A-001","lens":"judgment-day","location":"extensions/gentle-ai.ts:1","severity":"CRITICAL","status_at_freeze":"open","evidence_class":"deterministic","evidence_claim":"The frozen finding has concrete user impact."}';
+		const canonicalFrozenFindingRows = [JSON.parse(canonicalFrozenFindingRow)];
+		const canonicalFrozenLedgerHash = canonicalHash(canonicalFrozenFindingRows);
+		const canonicalJdFixTask = [
+			"Apply the controller-authorized fix.",
+			"",
+			"## Judgment Day activation",
+			"User explicitly requested Judgment Day.",
+			"",
+			"## Exact authorized severe IDs",
+			"- `JD-A-001`",
+			"",
+			"## Judgment Day correction batch",
+			"Round: 1 of 2.",
+			`Frozen ledger SHA-256: \`${canonicalFrozenLedgerHash}\``,
+			"",
+			"## Exact frozen finding rows",
+			canonicalFrozenFindingRow,
+			"",
+			"## Allowed edit surfaces",
+			"extensions/gentle-ai.ts",
+			"tests/runtime-harness.mjs",
+		].join("\n");
+		const orderedFrozenFindingRows = [
+			...canonicalFrozenFindingRows,
+			{ ...canonicalFrozenFindingRows[0], id: "JD-B-002", location: "tests/runtime-harness.mjs:1" },
+		];
+		const reversedFrozenFindingRows = [...orderedFrozenFindingRows].reverse();
+		const rowOrderMismatchJdFixTask = canonicalJdFixTask
+			.replace("- `JD-A-001`", "- `JD-A-001`\n- `JD-B-002`")
+			.replace(canonicalFrozenLedgerHash, canonicalHash(reversedFrozenFindingRows))
+			.replace(canonicalFrozenFindingRow, reversedFrozenFindingRows.map((row) => JSON.stringify(row)).join("\n"));
+		const incorrectFrozenLedgerHash = `${canonicalFrozenLedgerHash.slice(0, -1)}${canonicalFrozenLedgerHash.endsWith("0") ? "1" : "0"}`;
+		for (const [label, input] of [
+			["missing activation", { agent: "jd-fix-agent", task: "## Allowed edit surfaces\nextensions/gentle-ai.ts", mode: "task" }],
+			["duplicate activation", { agent: "jd-fix-agent", task: `${canonicalJdFixTask}\n\n## Judgment Day activation\nUser explicitly requested Judgment Day.`, mode: "task" }],
+			["missing severe IDs", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("## Exact authorized severe IDs\n- `JD-A-001`\n", ""), mode: "task" }],
+			["duplicate severe ID bindings", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("- `JD-A-001`", "- `JD-A-001`\n- `JD-A-001`"), mode: "task" }],
+			["duplicate severe ID sections", { agent: "jd-fix-agent", task: canonicalJdFixTask, context: "## Exact authorized severe IDs\n- `JD-B-002`", mode: "task" }],
+			["malformed activation", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("User explicitly requested Judgment Day.", "Judgment Day is explicitly activated for this dispatch."), mode: "task" }],
+			["extra activation line", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("User explicitly requested Judgment Day.", "User explicitly requested Judgment Day.\nUnexpected activation detail."), mode: "task" }],
+			["malformed severe ID", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("- `JD-A-001`", "JD-A-001"), mode: "task" }],
+			["empty severe IDs", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("- `JD-A-001`", ""), mode: "task" }],
+			["missing correction batch", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace(`## Judgment Day correction batch\nRound: 1 of 2.\nFrozen ledger SHA-256: \`${canonicalFrozenLedgerHash}\`\n`, ""), mode: "task" }],
+			["duplicate correction batch", { agent: "jd-fix-agent", task: `${canonicalJdFixTask}\n## Judgment Day correction batch\nRound: 2 of 2.\nFrozen ledger SHA-256: \`bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\``, mode: "task" }],
+			["out-of-order correction batch", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace(`## Judgment Day correction batch\nRound: 1 of 2.\nFrozen ledger SHA-256: \`${canonicalFrozenLedgerHash}\`\n\n## Exact frozen finding rows\n${canonicalFrozenFindingRow}`, `## Exact frozen finding rows\n${canonicalFrozenFindingRow}\n\n## Judgment Day correction batch\nRound: 1 of 2.\nFrozen ledger SHA-256: \`${canonicalFrozenLedgerHash}\``), mode: "task" }],
+			["invalid correction round", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("Round: 1 of 2.", "Round: 3 of 2."), mode: "task" }],
+			["uppercase frozen ledger hash", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace(canonicalFrozenLedgerHash, canonicalFrozenLedgerHash.toUpperCase()), mode: "task" }],
+			["incorrect frozen ledger hash", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace(canonicalFrozenLedgerHash, incorrectFrozenLedgerHash), mode: "task" }],
+			["extra correction batch line", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("Round: 1 of 2.", "Round: 1 of 2.\nUnexpected line"), mode: "task" }],
+			["missing frozen rows", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace(`## Exact frozen finding rows\n${canonicalFrozenFindingRow}\n`, ""), mode: "task" }],
+			["malformed frozen row", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace(canonicalFrozenFindingRow, "{"), mode: "task" }],
+			["duplicate frozen row", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace(canonicalFrozenFindingRow, `${canonicalFrozenFindingRow}\n${canonicalFrozenFindingRow}`), mode: "task" }],
+			["mismatched frozen row ID", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace(canonicalFrozenFindingRow, canonicalFrozenFindingRow.replace("JD-A-001", "JD-B-002")), mode: "task" }],
+			["frozen row order mismatch", { agent: "jd-fix-agent", task: rowOrderMismatchJdFixTask, mode: "task" }],
+			["extra frozen row field", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace(canonicalFrozenFindingRow, canonicalFrozenFindingRow.replace("}", ",\"extra\":true}")), mode: "task" }],
+			["non-Judgment-Day frozen row", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("\"lens\":\"judgment-day\"", "\"lens\":\"review-risk\""), mode: "task" }],
+			["non-open frozen row", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("\"status_at_freeze\":\"open\"", "\"status_at_freeze\":\"closed\""), mode: "task" }],
+			["non-severe frozen row", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("\"severity\":\"CRITICAL\"", "\"severity\":\"WARNING\""), mode: "task" }],
+			["empty frozen evidence", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("\"evidence_claim\":\"The frozen finding has concrete user impact.\"", "\"evidence_claim\":\"\""), mode: "task" }],
+			["missing edit surface", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("## Allowed edit surfaces\nextensions/gentle-ai.ts\ntests/runtime-harness.mjs", ""), mode: "task" }],
+			["invalid edit surface", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("## Allowed edit surfaces\nextensions/gentle-ai.ts", "## Allowed edit surfaces\n."), mode: "task" }],
+			["mixed", { agent: ["jd-fix-agent", "gentle-ai-worker"], task: canonicalJdFixTask, mode: "task" }],
+			["agent array", { agent: ["jd-fix-agent"], task: canonicalJdFixTask, mode: "task" }],
+			["agents array", { agents: ["jd-fix-agent"], task: canonicalJdFixTask, mode: "task" }],
+			["duplicate agent binding", { agent: "jd-fix-agent", agents: "jd-fix-agent", task: canonicalJdFixTask, mode: "task" }],
+		]) {
+			const original = structuredClone(input);
+			const result = await toolHook({ toolName: "subagent_run", input }, createCtx(toolCwd));
+			assert.equal(result?.block, true, `${label} jd-fix-agent dispatch must be blocked`);
+			assert.match(result?.reason ?? "", /Judgment Day fix dispatch/i);
+			assert.deepEqual(input, original, `${label} jd-fix-agent rejection must not mutate input`);
+		}
+		assert.equal(
+			await toolHook(
+				{ toolName: "subagent_run", input: { agent: "jd-fix-agent", task: canonicalJdFixTask, mode: "task" } },
+				createCtx(toolCwd),
+			),
+			undefined,
+			"a canonical explicit Judgment Day fix dispatch with narrow edit surfaces may run",
+		);
+		for (const [label, input] of [
+			[
+				"valid scope followed by a repository-root scope",
+				{
+					agent: "gentle-ai-worker",
+					task: "Spec: odd/tasks/harness.md, T4.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts\n\n## Allowed edit surfaces\n.",
+					mode: "task",
+				},
+			],
+			[
+				"valid task scope plus invalid context scope",
+				{
+					agent: "gentle-ai-worker",
+					task: "Spec: odd/tasks/harness.md, T5.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts",
+					context: "## Allowed edit surfaces\n.",
+					mode: "task",
+				},
+			],
+			[
+				"conflicting valid task and context scopes",
+				{
+					agent: "gentle-ai-worker",
+					task: "Spec: odd/tasks/harness.md, T6.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts",
+					context: "## Allowed edit surfaces\ntests/runtime-harness.mjs",
+					mode: "task",
+				},
+			],
+		]) {
+			const writerResult = await toolHook({ toolName: "subagent_run", input }, createCtx(toolCwd));
+			assert.equal(writerResult?.block, true, `${label} must block writer dispatch`);
+		}
+		assert.equal(
+			await toolHook(
+				{
+					toolName: "subagent_run",
+					input: {
+						agent: "gentle-ai-worker",
+						task: "Spec: odd/tasks/harness.md, T3.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts\ntests/runtime-harness.mjs\n\n## Allowed edit surfaces\n- `tests/runtime-harness.mjs`\n- `extensions/gentle-ai.ts`",
+						mode: "task",
+					},
+				},
+				createCtx(toolCwd),
+			),
+			undefined,
+			"a writer may dispatch when multiple allowed edit surface sections are compatible",
+		);
+		assert.equal(
+			await toolHook(
+				{ toolName: "subagent_run", input: { agent: "scout", task: "Map the repository.", mode: "task" } },
+				createCtx(toolCwd),
+			),
+			undefined,
+			"non-writer subagents must remain unaffected",
+		);
 		const sensitiveRead = await toolHook({ toolName: "read", input: { path: join(toolCwd, ".env.local") } }, createCtx(toolCwd));
 		assert.equal(sensitiveRead.block, true);
 		assert.match(sensitiveRead.reason, /sensitive path/);
@@ -395,26 +787,83 @@ async function run() {
 		assert.equal(sensitiveEdit.block, true);
 		assert.equal(await toolHook({ toolName: "read", input: { path: join(toolCwd, "src", "index.ts") } }, createCtx(toolCwd)), undefined);
 		const dangerousReviewCtx = createCtx(toolCwd, true, "dangerous-review-session");
+		// Scoped confirmation dialogs offer Allow once/session/always/Deny; this fake
+		// declines (last choice) so the guarded-command flow still proves the denied path.
+		dangerousReviewCtx.ui.select = async (_label, options) => options[options.length - 1];
 		const needsConfirm = await toolHook(
 			{ toolName: "bash", input: { command: "git push" } },
 			dangerousReviewCtx,
 		);
 		assert.equal(needsConfirm.block, true);
 		assert.match(needsConfirm.reason, /not confirmed/);
+		assert.deepEqual(
+			emittedEvents.map(({ channel, data }) => ({
+				channel,
+				state: data.state,
+				active: data.active,
+				label: data.label,
+			})),
+			[
+				{
+					channel: "pi-permission-system:permission-request",
+					state: "waiting",
+					active: undefined,
+					label: undefined,
+				},
+				{
+					channel: "herdr:blocked",
+					state: undefined,
+					active: true,
+					label: "Guarded command confirmation",
+				},
+				{
+					channel: "pi-permission-system:permission-request",
+					state: "denied",
+					active: undefined,
+					label: undefined,
+				},
+				{
+					channel: "herdr:blocked",
+					state: undefined,
+					active: false,
+					label: undefined,
+				},
+			],
+			"guarded confirmation emits both lifecycle channels in order",
+		);
+		assert.equal(emittedEvents[0].data.requestId, emittedEvents[2].data.requestId);
+		emittedEvents.length = 0;
+		pi.events.emit("rpiv:ask-user:blocked", {
+			active: true,
+			question: "private runtime questionnaire",
+			answer: "private runtime answer",
+			path: "/private/runtime-path",
+			command: "private runtime command",
+		});
+		pi.events.emit("rpiv:ask-user:blocked", { active: true, duplicate: true });
+		pi.events.emit("rpiv:ask-user:blocked", { active: "true" });
+		pi.events.emit("rpiv:ask-user:other", { active: false });
+		pi.events.emit("rpiv:ask-user:blocked", { active: false });
+		const rpivHerdrEvents = emittedEvents.filter(({ channel }) => channel === "herdr:blocked");
+		assert.deepEqual(rpivHerdrEvents, [
+			{ channel: "herdr:blocked", data: { active: true, label: "Questionnaire awaiting input" } },
+			{ channel: "herdr:blocked", data: { active: false } },
+		]);
+		assert.doesNotMatch(JSON.stringify(rpivHerdrEvents), /private runtime/i);
+		emittedEvents.length = 0;
 		assert.equal(
 			dangerousReviewCtx.ui.notifications.length,
 			0,
-			"receipt validation must not launch or announce review actors",
+			"dangerous-command confirmation must not launch or announce review actors",
 		);
 		const commitCwd = await tempWorkspace();
 		try {
 			execFileSync("git", ["init"], { cwd: commitCwd, stdio: "ignore" });
-			const commitGate = await toolHook(
+			const deliveryResult = await toolHook(
 				{ toolName: "bash", input: { command: "git commit -m bounded tracked.txt" } },
 				createCtx(commitCwd),
 			);
-			assert.equal(commitGate.block, true);
-			assert.match(commitGate.reason, /exactly derive/i);
+			assert.equal(deliveryResult, undefined, "ordinary delivery policy, not review authority, governs commits");
 		} finally {
 			await rm(commitCwd, { recursive: true, force: true });
 		}
@@ -454,7 +903,7 @@ async function run() {
 		registry.bindCurrent({ token: view.token, lineageId: "harness-candidate-drift", selectedLenses: ["review-risk"] });
 
 		const dispatchPi = createPi();
-		createGentleAiExtension({ candidateViews: registry })(dispatchPi.pi);
+		createGentleAiExtension({ ...fixtureDependencies, candidateViews: registry })(dispatchPi.pi);
 		const dispatchToolHook = dispatchPi.hooks.get("tool_call")[0];
 
 		// The contributor edits the tracked file strictly after the candidate
@@ -478,129 +927,11 @@ async function run() {
 			/Controller-owned review lineage/,
 			"a failed-closed dispatch must never inject a substituted candidate view into the lens sub-agent's task",
 		);
+		await chmod(view.root, 0o700);
 		registry.cleanup(view.token);
 	} finally {
+		restoreWorkspaceWritePermissions(candidateDriftCwd);
 		await rm(candidateDriftCwd, { recursive: true, force: true });
-	}
-
-	// Corrective v2 lifecycle settling test: the real controller must call the
-	// native evidence surface before it accepts a targeted-validation document.
-	// This is intentionally controller-level rather than a pure resolver test;
-	// the ordered call trace proves production wiring and the fail-closed gate.
-	const correctionCwd = await tempWorkspace();
-	try {
-		const { createGentleAiExtension } = await import(pathToFileURL(join(ROOT, "extensions/gentle-ai.ts")).href);
-		const { CandidateViewRegistry } = await import(pathToFileURL(join(ROOT, "lib/review-candidate-view.ts")).href);
-		gitSync(correctionCwd, "init", "-b", "main");
-		await writeFile(join(correctionCwd, "app.ts"), "export const value = 1;\n");
-		gitSync(correctionCwd, "add", "app.ts");
-		gitSync(correctionCwd, "-c", "user.name=Runtime Harness", "-c", "user.email=runtime-harness@example.invalid", "commit", "-m", "base");
-		await writeFile(join(correctionCwd, "app.ts"), "export const value = 2;\n");
-		const frozen = new CandidateViewRegistry().create({ contributorRoot: correctionCwd });
-		const sha = (digit) => `sha256:${digit.repeat(64)}`;
-		const repair = { schema: "gentle-ai.review-authority-repair-assessment/v1", status: "unsupported", counts: { lineages: 0, compactLineages: 0, legacyLineages: 0, events: 0, bytes: 0, eligibleCandidates: 0, unsupportedLineages: 0, conflicts: 0 }, supportedOperations: ["review/complete-fix", "review/validate-fix"], authorizationSchema: "gentle-ai.review-repair-authorization/v1" };
-		const projection = { schema: "gentle-ai.review-integration.projection/v1", kind: "current-changes", projection: "workspace", baseTree: frozen.baseTree, initialReviewTree: frozen.candidateTree, currentCandidateTree: frozen.candidateTree, pathsDigest: sha("a"), paths: frozen.paths, intendedUntracked: [], intendedUntrackedProof: sha("b"), initialSnapshotIdentity: sha("c"), currentSnapshotIdentity: sha("c") };
-		const status = { contract: "gentle-ai.review-integration/v2", applicability: "current_target", authority: { version: "compact-v2", lineageId: "runtime-correction", state: "correction_required", generation: 1, revision: sha("d") }, receipt: { status: "expected_missing" }, action: "finalize", replayability: "not_replayable", frozen: { tier: "medium", originalChangedLines: 1, correctionBudget: 1 }, targetIdentity: sha("e"), projection, repair, candidates: [], nextTransition: { kind: "collect", reasonCode: "verification_evidence_required", collect: { inputs: [{ name: "verification_evidence", schema: "gentle-ai.review-verification-evidence/v2", captureOperation: "review.capture-evidence", arguments: [{ name: "lineage", value: "runtime-correction" }] }] } }, raw: {} };
-		const validationRequest = { schema: "gentle-ai.review-targeted-validation-request/v1", requestHash: sha("f"), lineageId: "runtime-correction", expectedRevision: sha("d"), targetIdentity: sha("e"), fixFindingIds: [], projection: "workspace", correctionCandidateTree: frozen.candidateTree, correctionTargetIdentity: sha("e"), correctionPaths: frozen.paths, correctionPathsDigest: sha("a") };
-		const afterCapture = { ...status, authority: { ...status.authority, state: "validating" }, validationRequest, nextTransition: { kind: "collect", reasonCode: "targeted_validation_required", collect: { inputs: [{ name: "targeted_validation", schema: validationRequest.schema, captureOperation: "external.run_targeted_validation", arguments: [{ name: "lineage", value: "runtime-correction" }], validationRequest }] } } };
-		frozen.cleanup();
-		const calls = [];
-		let statuses = 0;
-		const nativeReviewCli = {
-			async targetStatus() { calls.push("status"); statuses += 1; return statuses === 1 ? status : afterCapture; },
-			async captureEvidence(request) { calls.push("capture-evidence"); return { schema: "gentle-ai.review-verification-evidence/v2", version: 2, lineageId: "runtime-correction", authorityRevision: sha("d"), targetIdentity: sha("e"), candidateTree: frozen.candidateTree, pathsDigest: sha("a"), paths: frozen.paths, ledgerIds: [], rawPayloadSha256: sha("1"), rawPayloadBytes: request.evidenceDocument.length, outcome: "passed", recordDigest: sha("2") }; },
-			async finalize() { calls.push("finalize"); return { lineageId: "runtime-correction", state: "approved", action: "approved", storeRevision: sha("3") }; },
-			async start() { throw new Error("not expected"); }, async validate() { throw new Error("not expected"); }, async bindSdd() { throw new Error("not expected"); }, async sddStatus() { return { ready: false }; }, async reviewStatus() { throw new Error("not expected"); },
-		};
-		const correctionPi = createPi();
-		createGentleAiExtension({ nativeReviewCli, candidateViews: new CandidateViewRegistry() })(correctionPi.pi);
-		const controller = correctionPi.tools.get("gentle_review");
-		const response = await controller.execute("runtime-correction", { operation: "finalize", lineageId: "runtime-correction", input: JSON.stringify({ final_evidence: "focused verification passed", final_verification_outcome: "passed", validation: { request_hash: "f".repeat(64), correction_ids: [], original_criteria: { passed: true, evidence: ["acceptance passes"] }, correction_regression: { passed: true, evidence: ["regression passes"] }, fix_caused_findings: [], follow_ups: [] } }) }, undefined, undefined, createCtx(correctionCwd));
-		assert.deepEqual(calls, ["status", "capture-evidence", "status", "finalize"]);
-		assert.equal(response.details.result.state, "approved");
-	} finally {
-		await rm(correctionCwd, { recursive: true, force: true });
-	}
-
-	// Task 11.2 (migrate-review-integration-v2): an unimplemented
-	// next_transition.execute.operation (e.g. a future "dispose-result") must
-	// raise a typed, named unsupported-transition-operation refusal and stop —
-	// never fall through to a generic schema-incompatible error, and never
-	// synthesize an invocation for it. Drives the real negotiated STATUS decode
-	// path (NativeReviewCliV216.targetStatus) against a stubbed adapter, so no
-	// live binary needs to advertise the unimplemented operation to prove this.
-	{
-		const capabilitiesFixturePath = join(
-			ROOT, "contracts", "review-integration", "v2", "fixtures", "capabilities.fixture.json",
-		);
-		const capabilitiesFixture = JSON.parse(await readFile(capabilitiesFixturePath, "utf8"));
-		const executableDigest = "dcc846103b16d365eaeeb9d7f289c23fc4f2897f23def1cb3fe7f05557b64705";
-		const capabilitiesBody = {
-			...capabilitiesFixture,
-			package: { ...capabilitiesFixture.package, version: "2.2.3" },
-		};
-		const statusBody = {
-			schema: "gentle-ai.review-integration.status/v3",
-			contract: "gentle-ai.review-integration/v2",
-			operation: "review.status",
-			applicability: "unrelated",
-			receipt: { status: "not_applicable" },
-			action: "start",
-			replayability: "not_replayable",
-			target_identity: `sha256:${"a".repeat(64)}`,
-			repair: {
-				schema: "gentle-ai.review-authority-repair-assessment/v1",
-				status: "unsupported",
-				counts: { lineages: 0, compact_lineages: 0, legacy_lineages: 0, events: 0, bytes: 0, eligible_candidates: 0, unsupported_lineages: 0, conflicts: 0 },
-				supported_operations: ["review/complete-fix", "review/validate-fix"],
-				authorization_schema: "gentle-ai.review-repair-authorization/v1",
-			},
-			projection: {
-				schema: "gentle-ai.review-integration.projection/v1",
-				kind: "current-changes",
-				projection: "workspace",
-				base_tree: "b".repeat(40),
-				initial_review_tree: "b".repeat(40),
-				current_candidate_tree: "b".repeat(40),
-				paths_digest: `sha256:${"a".repeat(64)}`,
-				paths: [],
-				intended_untracked: [],
-				intended_untracked_proof: `sha256:${"a".repeat(64)}`,
-				initial_snapshot_identity: `sha256:${"a".repeat(64)}`,
-				current_snapshot_identity: `sha256:${"a".repeat(64)}`,
-			},
-			candidates: [],
-			next_transition: {
-				kind: "execute",
-				reason_code: "disposable_result_pending",
-				execute: {
-					operation: "review.dispose-result",
-					arguments: [],
-					preconditions: [],
-					binding: { target_identity: `sha256:${"a".repeat(64)}` },
-				},
-			},
-		};
-		const calls = [];
-		const adapter = async (request) => {
-			calls.push(request.arguments);
-			const body = calls.length === 1 ? capabilitiesBody : statusBody;
-			return { stdout: JSON.stringify(body), stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
-		};
-		const client = new NativeReviewCliV216(
-			adapter, "/package/.gentle-ai/gentle-ai", 30_000, 1024 * 1024,
-			async () => undefined, () => executableDigest,
-		);
-		let thrown;
-		try {
-			await client.targetStatus({ cwd: "/repo" });
-		} catch (error) {
-			thrown = error;
-		}
-		assert.ok(thrown instanceof NativeReviewCliError, "an unimplemented next_transition.execute.operation must raise a typed NativeReviewCliError");
-		assert.equal(thrown.code, NATIVE_REVIEW_ERROR_CODE.UNSUPPORTED_TRANSITION_OPERATION);
-		assert.match(thrown.message, /review\.dispose-result/, "the refusal must name the specific unimplemented operation");
-		assert.equal(calls.length, 2, "capabilities negotiation plus one STATUS call — never a third call synthesizing the unimplemented operation");
 	}
 
 	const bannerCwd = await tempWorkspace();
@@ -696,21 +1027,17 @@ async function run() {
 	}
 
 	const noUiCwd = await tempWorkspace();
+	const startupAgentHome = join(noUiCwd, "agent-home");
+	process.env.GENTLE_PI_AGENT_HOME = startupAgentHome;
 	try {
+		const globalAgentHome = startupAgentHome;
 		for (const handler of hooks.get("session_start")) {
 			await handler({ reason: "startup" }, createCtx(noUiCwd, false));
 		}
-		assert.equal(
-			existsSync(join(noUiCwd, ".pi", "agents", "sdd-apply.md")),
-			false,
-			"session_start must not install project-local SDD agents",
-		);
-		assert.equal(
-			existsSync(join(noUiCwd, ".pi", "chains", "sdd-full.chain.md")),
-			false,
-			"session_start must not install project-local SDD chains",
-		);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
+		for (const diagnostic of ["gentle:status", "gentle:doctor"]) {
+			const ctx = createCtx(noUiCwd, true);
+			await commands.get(diagnostic).handler("", ctx);
+		}
 		// gentle-pi#311 P5: the Pi-authored adversarial role agents are retired;
 		// installation must not (re)create them.
 		const installedRefuterPath = join(globalAgentHome, "agents", "review-refuter.md");
@@ -724,8 +1051,8 @@ async function run() {
 		assert.equal(existsSync(installedExplorePath), true);
 		assert.deepEqual(
 			readAgentDefinition(await readFile(installedExplorePath, "utf8")),
-			{ name: "gentle-ai-explore", tools: ["read", "grep", "find", "codegraph"] },
-			"isolated package installation must activate only the explorer inspection tools",
+			{ name: "gentle-ai-explore", tools: ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content"] },
+			"isolated package installation must declare the explorer's local and direct web scope",
 		);
 		const installedRiskSource = await readFile(
 			join(globalAgentHome, "agents", "review-risk.md"),
@@ -733,17 +1060,10 @@ async function run() {
 		);
 		assert.match(installedRiskSource, /exactly once against the supplied `initial_review_tree`/);
 		assert.match(installedRiskSource, /cannot authorize transitions, fixes, receipts, gates, or delivery/);
-		assert.equal(existsSync(join(globalAgentHome, "chains", "sdd-full.chain.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "gentle-ai", "support", "sdd-status-contract.md")), true);
 		const managedAssetsManifestPath = join(globalAgentHome, "gentle-ai", "managed-assets.json");
 		const managedAssetsManifest = JSON.parse(
 			await readFile(managedAssetsManifestPath, "utf8"),
 		);
-		const previousManagedApply = "stale global apply\n";
-		const previousManagedChain = "stale global chain\n";
-		const previousManagedSupport = "stale global status contract\n";
-		await writeFile(join(globalAgentHome, "agents", "sdd-apply.md"), previousManagedApply);
-		managedAssetsManifest.assets["agents/sdd-apply.md"] = sha256(previousManagedApply);
 		const samePathUserRefuter = [
 			"---",
 			"name: review-refuter",
@@ -766,45 +1086,24 @@ async function run() {
 		await mkdir(join(globalAgentHome, "subagents"), { recursive: true });
 		const userRefuterOverride = join(globalAgentHome, "subagents", "review-refuter.md");
 		await writeFile(userRefuterOverride, "user refuter override must stay\n");
-		await writeFile(join(globalAgentHome, "chains", "sdd-full.chain.md"), previousManagedChain);
-		managedAssetsManifest.assets["chains/sdd-full.chain.md"] = sha256(previousManagedChain);
-		await writeFile(join(globalAgentHome, "gentle-ai", "support", "sdd-status-contract.md"), previousManagedSupport);
-		managedAssetsManifest.assets["gentle-ai/support/sdd-status-contract.md"] = sha256(previousManagedSupport);
 		await writeFile(
 			managedAssetsManifestPath,
 			JSON.stringify(managedAssetsManifest, null, 2),
 		);
-		await mkdir(join(noUiCwd, ".pi", "agents"), { recursive: true });
-		await writeFile(join(noUiCwd, ".pi", "agents", "sdd-apply.md"), "project override must stay\n");
 		const projectRefuterOverride = join(noUiCwd, ".pi", "agents", "review-refuter.md");
+		await mkdir(dirname(projectRefuterOverride), { recursive: true });
 		await writeFile(projectRefuterOverride, "project refuter override must stay\n");
 		for (const handler of hooks.get("session_start")) {
 			await handler({ reason: "startup" }, createCtx(noUiCwd, false));
 		}
-		assert.notEqual(
-			await readFile(join(globalAgentHome, "agents", "sdd-apply.md"), "utf8"),
-			"stale global apply\n",
-			"session_start must refresh stale global SDD agents",
-		);
+		assert.equal(existsSync(retiredManagedValidatorPath), false, "review retirement still runs at startup");
+		const driftCtx = createCtx(noUiCwd, true);
+		await commands.get("gentle:status").handler("", driftCtx);
+		assert.doesNotMatch(driftCtx.ui.notifications.at(-1).message, /install-(delegation|review) --force/);
 		assert.equal(
 			await readFile(installedRefuterPath, "utf8"),
 			samePathUserRefuter,
 			"session refresh must preserve a same-path user-authored agent byte-for-byte",
-		);
-		assert.notEqual(
-			await readFile(join(globalAgentHome, "chains", "sdd-full.chain.md"), "utf8"),
-			"stale global chain\n",
-			"session_start must refresh stale global SDD chains",
-		);
-		assert.notEqual(
-			await readFile(join(globalAgentHome, "gentle-ai", "support", "sdd-status-contract.md"), "utf8"),
-			"stale global status contract\n",
-			"session_start must refresh stale global SDD support files",
-		);
-		assert.equal(
-			await readFile(join(noUiCwd, ".pi", "agents", "sdd-apply.md"), "utf8"),
-			"project override must stay\n",
-			"session_start must not overwrite project-local SDD overrides",
 		);
 		assert.equal(
 			await readFile(projectRefuterOverride, "utf8"),
@@ -835,445 +1134,136 @@ async function run() {
 			"a user-authored same-path retired asset must stay unowned",
 		);
 	} finally {
+		process.env.GENTLE_PI_AGENT_HOME = globalAgentHome;
 		await rm(noUiCwd, { recursive: true, force: true });
 	}
 
-	const lazySddCwd = await tempWorkspace();
-	try {
-		await writeFile(
-			globalModelsPath,
-			JSON.stringify({ "sdd-apply": { model: "openai/gpt-5", thinking: "high" } }, null, 2),
-		);
-		const ctx = createCtx(lazySddCwd, true);
-		const inputHook = hooks.get("input")[0];
-		assert.deepEqual(
-			await inputHook({ text: "hola, solo mirando", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "what is SDD?", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "what can I do with SDD?", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "how do I use SDD?", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "Can I use SDD?", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "don't use sdd for this", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "sin usar SDD por ahora", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "let's not use SDD for this", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "never use SDD here", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "no quiero usar SDD por ahora", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "I use SDD sometimes", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "I'm using SDD in another repo", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.equal(existsSync(join(lazySddCwd, ".pi", "agents", "sdd-apply.md")), false);
-
-		assert.deepEqual(
-			await inputHook({ text: "vamos con sdd", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.equal(existsSync(join(lazySddCwd, ".pi", "agents", "sdd-apply.md")), false);
-		assert.equal(existsSync(join(lazySddCwd, ".pi", "chains", "sdd-full.chain.md")), false);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-status.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-sync.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "gentle-ai", "support", "sdd-status-contract.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "chains", "sdd-full.chain.md")), true);
-		assert.equal(ctx.ui.selections.length, 3);
-		assert.equal(ctx.ui.selections[0].label, "SDD execution mode");
-		assert.equal(ctx.ui.selections[1].label, "SDD artifact store");
-		assert.deepEqual(ctx.ui.selections[1].options, ["openspec"]);
-		assert.equal(ctx.ui.selections[2].label, "SDD PR chaining");
-		assert.match(ctx.ui.notifications.at(-1).message, /Preference source: user prompt/);
-		assert.deepEqual(
-			await inputHook({ text: "please use sdd for this change", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.equal(ctx.ui.selections.length, 3, "natural SDD trigger should reuse session choices");
-		assert.deepEqual(
-			await inputHook({ text: "/sdd", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "/sdd plan", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.deepEqual(
-			await inputHook({ text: "/sdd:plan", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.equal(ctx.ui.selections.length, 3);
-
-		assert.deepEqual(
-			await inputHook({ text: "/sdd-plan this change", source: "interactive" }, ctx),
-			{ action: "continue" },
-		);
-		assert.equal(existsSync(join(lazySddCwd, ".pi", "agents", "sdd-apply.md")), false);
-		assert.equal(existsSync(join(lazySddCwd, ".pi", "chains", "sdd-full.chain.md")), false);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-status.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-sync.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "gentle-ai", "support", "sdd-status-contract.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "chains", "sdd-full.chain.md")), true);
-		const globalSddApply = await readFile(
-			join(globalAgentHome, "agents", "sdd-apply.md"),
-			"utf8",
-		);
-		assert.match(globalSddApply, /model: openai\/gpt-5/);
-		assert.match(globalSddApply, /thinking: high/);
-		const lazySettingsPath = join(lazySddCwd, ".pi", "settings.json");
-		if (existsSync(lazySettingsPath)) {
-			const lazySettings = JSON.parse(await readFile(lazySettingsPath, "utf8"));
-			assert.equal(
-				lazySettings.subagents?.agentOverrides?.["sdd-apply"],
-				undefined,
-				"global SDD model routing must be materialized in agent frontmatter, not project settings overrides",
-			);
-		}
-		assert.equal(ctx.ui.selections.length, 3);
-		assert.deepEqual(ctx.ui.selections[1].options, ["openspec"]);
-		assert.match(ctx.ui.notifications.at(-1).message, /SDD preflight complete/);
-		await commands.get("gentle:status").handler("", ctx);
-		assert.match(ctx.ui.notifications.at(-1).message, /Global SDD assets stale: 0 file\(s\)/);
-		assert.doesNotMatch(ctx.ui.notifications.at(-1).message, /install-sdd --force/);
-
-		await inputHook({ text: "/sdd-plan another change", source: "interactive" }, ctx);
-		assert.equal(ctx.ui.selections.length, 3, "preflight should run only once per session");
-		const promptHook = hooks.get("before_agent_start")[0];
-		const promptResult = await promptHook({ systemPrompt: "base" }, ctx);
-		assert.match(promptResult.systemPrompt, /SDD Session Preflight/);
-		assert.match(promptResult.systemPrompt, /Execution mode: interactive/);
-		const workerPromptResult = await promptHook(
-			{ agentName: "worker", systemPrompt: "worker base" },
-			ctx,
-		);
-		assert.equal(
-			workerPromptResult.systemPrompt,
-			"worker base",
-			"non-SDD subagents must not receive parent harness or SDD preflight prompts",
-		);
-	} finally {
-		await rm(lazySddCwd, { recursive: true, force: true });
-		await rm(globalModelsPath, { force: true });
-	}
-
-	for (const [index, text] of ["/sdd", "/sdd plan", "/sdd:plan", "/sdd-plan this change"].entries()) {
-		const slashSddCwd = await tempWorkspace();
+	for (const owner of ["delegation", "review"]) {
+		const fixture = await tempWorkspace();
+		const agentHome = join(fixture, "agent-home");
+		const representatives = {
+			delegation: "gentle-ai-worker.md",
+			review: "review-risk.md",
+		};
 		try {
-			const ctx = createCtx(slashSddCwd, true, `slash-sdd-session-${index}`);
-			const inputHook = hooks.get("input")[0];
-			assert.deepEqual(await inputHook({ text, source: "interactive" }, ctx), {
-				action: "continue",
-			});
-			assert.equal(existsSync(join(slashSddCwd, ".pi", "agents", "sdd-apply.md")), false);
-			assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
-			assert.equal(ctx.ui.selections.length, 3, `${text} should run canonical preflight`);
+			process.env.GENTLE_PI_AGENT_HOME = agentHome;
+			process.env.GENTLE_PI_CONFIG_HOME = join(fixture, "config");
+			await mkdir(process.env.GENTLE_PI_CONFIG_HOME);
+			await writeFile(join(process.env.GENTLE_PI_CONFIG_HOME, "models.json"),
+				JSON.stringify({ [representatives[owner].replace(/\.md$/, "")]: "test/installer-must-not-apply" }));
+			const ctx = createCtx(fixture, true);
+			const command = commands.get(`gentle:install-${owner}`);
+			assert.ok(command, `missing owner installer: ${owner}`);
+			await command.handler("", ctx);
+			for (const [candidate, name] of Object.entries(representatives)) {
+				assert.equal(existsSync(join(agentHome, "agents", name)), candidate === owner,
+					`${owner} installation must not install ${candidate} assets`);
+			}
+			assert.equal(existsSync(join(fixture, ".pi", "agents")), false);
+			assert.match(ctx.ui.notifications.at(-1).message, /assets installed: \d+ agent\(s\), \d+ chain\(s\), \d+ support file\(s\)/);
+			const selectedPath = join(agentHome, "agents", representatives[owner]);
+			const packaged = await readFile(selectedPath, "utf8");
+			assert.doesNotMatch(packaged, /test\/installer-must-not-apply/);
+			const manifestPath = join(agentHome, "gentle-ai", "managed-assets.json");
+			const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+			for (const [candidate, name] of Object.entries(representatives)) {
+				const stale = `stale managed ${candidate}\n`;
+				await writeFile(join(agentHome, "agents", name), stale);
+				manifest.assets[`agents/${name}`] = sha256(stale);
+			}
+			await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+			await command.handler("", ctx);
+			assert.equal(await readFile(selectedPath, "utf8"), `stale managed ${owner}\n`,
+				"repair without --force must preserve existing files");
+			await command.handler("--force", ctx);
+			assert.equal(await readFile(selectedPath, "utf8"), packaged);
+			const refreshed = JSON.parse(await readFile(manifestPath, "utf8"));
+			for (const [candidate, name] of Object.entries(representatives)) {
+				if (candidate === owner) continue;
+				assert.equal(await readFile(join(agentHome, "agents", name), "utf8"), `stale managed ${candidate}\n`);
+				assert.equal(refreshed.assets[`agents/${name}`], manifest.assets[`agents/${name}`]);
+			}
+			const userEdit = `${packaged}\nUser-owned instructions must survive.\n`;
+			await writeFile(selectedPath, userEdit);
+			await command.handler("--force", ctx);
+			assert.equal(await readFile(selectedPath, "utf8"), userEdit);
+			assert.equal(existsSync(join(agentHome, "subagents.json")), false,
+				"owner installers must not apply model routing");
+			await commands.get("gentle:status").handler("", ctx);
+			const label = owner;
+			assert.ok(ctx.ui.notifications.at(-1).message.includes(`Global ${label} user overrides: 1 file(s)`));
 		} finally {
-			await rm(slashSddCwd, { recursive: true, force: true });
+			process.env.GENTLE_PI_CONFIG_HOME = globalConfigHome;
+			process.env.GENTLE_PI_AGENT_HOME = globalAgentHome;
+			await rm(fixture, { recursive: true, force: true });
 		}
 	}
 
-	const commandSddCwd = await tempWorkspace();
+	const repairFixture = await tempWorkspace();
 	try {
-		const ctx = createCtx(commandSddCwd, true, "command-session");
-		await commands.get("gentle:sdd-preflight").handler("", ctx);
-		assert.equal(existsSync(join(commandSddCwd, ".pi", "agents", "sdd-apply.md")), false);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
-		assert.equal(ctx.ui.selections.length, 3);
-		await commands.get("gentle:sdd-preflight").handler("", ctx);
-		assert.equal(ctx.ui.selections.length, 3, "manual preflight command should reuse session choices");
+		process.env.GENTLE_PI_AGENT_HOME = join(repairFixture, "agent-home");
+		const ctx = createCtx(repairFixture, true);
+		for (const diagnostic of ["gentle:status", "gentle:doctor"]) {
+			await commands.get(diagnostic).handler("", ctx);
+			const message = ctx.ui.notifications.at(-1).message;
+			assert.match(message, /Global delegation assets stale: [1-9]\d* file\(s\).*\/gentle:install-delegation --force/,
+				`${diagnostic} must provide a repair for missing delegation assets`);
+			assert.match(message, /Global review assets stale: [1-9]\d* file\(s\).*\/gentle:install-review --force/,
+				`${diagnostic} must provide a repair for missing review assets`);
+			assert.doesNotMatch(message, /install-sdd --force/);
+		}
+		await commands.get("gentle:install-delegation").handler("", ctx);
+		await commands.get("gentle:install-review").handler("", ctx);
+		const manifest = JSON.parse(await readFile(join(process.env.GENTLE_PI_AGENT_HOME, "gentle-ai", "managed-assets.json"), "utf8"));
+		for (const key of Object.keys(manifest.assets)) {
+			await rm(join(process.env.GENTLE_PI_AGENT_HOME, key));
+		}
+		for (const diagnostic of ["gentle:status", "gentle:doctor"]) {
+			await commands.get(diagnostic).handler("", ctx);
+			const message = ctx.ui.notifications.at(-1).message;
+			assert.match(message, /Global delegation assets stale: [1-9]\d* file\(s\).*\/gentle:install-delegation --force/);
+			assert.match(message, /Global review assets stale: [1-9]\d* file\(s\).*\/gentle:install-review --force/);
+			assert.doesNotMatch(message, /install-sdd --force|on demand/,
+				"managed installation evidence must survive missing delegation and review files");
+		}
 	} finally {
-		await rm(commandSddCwd, { recursive: true, force: true });
-	}
-
-	const sddAgentGuardCwd = await tempWorkspace();
-	try {
-		const ctx = createCtx(sddAgentGuardCwd, true, "sdd-agent-guard-session");
-		const promptHook = hooks.get("before_agent_start")[0];
-		const promptResult = await promptHook(
-			{
-				systemPrompt: "You are the SDD proposal executor for Gentle AI.",
-			},
-			ctx,
-		);
-		assert.equal(existsSync(join(sddAgentGuardCwd, ".pi", "agents", "sdd-apply.md")), false);
-		assert.equal(existsSync(join(sddAgentGuardCwd, ".pi", "chains", "sdd-full.chain.md")), false);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "chains", "sdd-full.chain.md")), true);
-		assert.equal(ctx.ui.selections.length, 3);
-		assert.match(promptResult.systemPrompt, /SDD Session Preflight/);
-		assert.doesNotMatch(
-			promptResult.systemPrompt,
-			/el Gentleman Identity and Harness/,
-			"SDD executor startup must not receive the parent orchestrator prompt",
-		);
-		assert.doesNotMatch(
-			promptResult.systemPrompt,
-			/Work Routing Ladder/,
-			"SDD executor startup must not receive parent routing instructions",
-		);
-		assert.match(ctx.ui.notifications.at(-1).message, /SDD preflight complete/);
-
-		const reusedPromptResult = await promptHook(
-			{
-				agentName: "sdd-tasks",
-				systemPrompt: "You are the SDD tasks executor for Gentle AI.",
-			},
-			ctx,
-		);
-		assert.equal(ctx.ui.selections.length, 3, "SDD agent guard should reuse session choices");
-		assert.doesNotMatch(
-			reusedPromptResult.systemPrompt,
-			/el Gentleman Identity and Harness/,
-			"named SDD executor startup must not receive the parent orchestrator prompt",
-		);
-	} finally {
-		await rm(sddAgentGuardCwd, { recursive: true, force: true });
-	}
-
-	const noUiSddAgentCwd = await tempWorkspace();
-	try {
-		const ctx = createCtx(noUiSddAgentCwd, false, "no-ui-sdd-agent-session");
-		const promptHook = hooks.get("before_agent_start")[0];
-		const promptResult = await promptHook(
-			{
-				agentName: "sdd-proposal",
-				systemPrompt: "You are the SDD proposal executor for Gentle AI.",
-			},
-			ctx,
-		);
-		assert.match(promptResult.systemPrompt, /SDD Session Preflight/);
-		assert.match(promptResult.systemPrompt, /No interactive UI was available/);
-		assert.equal(ctx.ui.selections.length, 0);
-		assert.equal(existsSync(join(noUiSddAgentCwd, ".pi", "agents", "sdd-apply.md")), false);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
-	} finally {
-		await rm(noUiSddAgentCwd, { recursive: true, force: true });
-	}
-
-	const invalidPreflightCwd = await tempWorkspace();
-	try {
-		await writeFile(globalModelsPath, "{ invalid json");
-		const ctx = createCtx(invalidPreflightCwd, true, "invalid-preflight-session");
-		await commands.get("gentle:sdd-preflight").handler("", ctx);
-		assert.equal(ctx.ui.notifications.at(-1).level, "warning");
-		assert.match(ctx.ui.notifications.at(-1).message, /Model routing skipped:/);
-		assert.match(ctx.ui.notifications.at(-1).message, /invalid JSON or not an object/);
-	} finally {
-		await rm(invalidPreflightCwd, { recursive: true, force: true });
-		await rm(globalModelsPath, { force: true });
-	}
-
-	const engramSddCwd = await tempWorkspace();
-	try {
-		pi.setActiveTools(["read", "bash", "edit", "write", "mem_save"]);
-		const ctx = createCtx(engramSddCwd, true, "engram-session");
-		await commands.get("gentle:sdd-preflight").handler("", ctx);
-		assert.deepEqual(ctx.ui.selections[1].options, ["openspec", "engram", "both"]);
-	} finally {
-		pi.setActiveTools(["read", "bash", "edit", "write"]);
-		await rm(engramSddCwd, { recursive: true, force: true });
-	}
-
-	// Issue #64: selecting engram as the artifact store must not cause
-	// /sdd-init to create openspec/ or openspec/config.yaml.
-	const engramSddInitCwd = await tempWorkspace();
-	try {
-		pi.setActiveTools(["read", "bash", "edit", "write", "mem_save"]);
-		const ctx = createCtx(engramSddInitCwd, true, "engram-sdd-init-session");
-		ctx.ui.select = async (label, options) => {
-			if (label === "SDD artifact store") return "engram";
-			return options[0];
-		};
-		await commands.get("gentle:sdd-preflight").handler("", ctx);
-		await commands.get("sdd-init").handler("", ctx);
-		assert.equal(
-			existsSync(join(engramSddInitCwd, "openspec")),
-			false,
-			"/sdd-init must not create openspec/ when artifactStore is engram",
-		);
-		assert.equal(
-			existsSync(join(engramSddInitCwd, "openspec", "config.yaml")),
-			false,
-			"/sdd-init must not write openspec/config.yaml when artifactStore is engram",
-		);
-		assert.doesNotMatch(
-			ctx.ui.notifications.at(-1).message,
-			/Wrote openspec\/config\.yaml/,
-			"/sdd-init must not announce openspec/config.yaml when artifactStore is engram",
-		);
-		assert.match(
-			ctx.ui.notifications.at(-1).message,
-			/SDD initialized for engram:/,
-		);
-		assert.equal(ctx.ui.notifications.at(-1).level, "info");
-	} finally {
-		pi.setActiveTools(["read", "bash", "edit", "write"]);
-		await rm(engramSddInitCwd, { recursive: true, force: true });
-	}
-
-	// Issue #64 counterpart: the engram skip must stay narrow. Selecting both
-	// still has to create the full openspec/ scaffold and write config.yaml,
-	// so an over-broad skip is caught here instead of in the field.
-	const bothSddInitCwd = await tempWorkspace();
-	try {
-		pi.setActiveTools(["read", "bash", "edit", "write", "mem_save"]);
-		const ctx = createCtx(bothSddInitCwd, true, "both-sdd-init-session");
-		ctx.ui.select = async (label, options) => {
-			if (label === "SDD artifact store") return "both";
-			return options[0];
-		};
-		await commands.get("gentle:sdd-preflight").handler("", ctx);
-		await commands.get("sdd-init").handler("", ctx);
-		assert.equal(
-			existsSync(join(bothSddInitCwd, "openspec", "specs")),
-			true,
-			"/sdd-init must create openspec/specs when artifactStore is both",
-		);
-		assert.equal(
-			existsSync(join(bothSddInitCwd, "openspec", "changes", "archive")),
-			true,
-			"/sdd-init must create openspec/changes/archive when artifactStore is both",
-		);
-		assert.equal(
-			existsSync(join(bothSddInitCwd, "openspec", "config.yaml")),
-			true,
-			"/sdd-init must write openspec/config.yaml when artifactStore is both",
-		);
-		assert.match(
-			ctx.ui.notifications.at(-1).message,
-			/Wrote openspec\/config\.yaml/,
-			"/sdd-init must announce openspec/config.yaml when artifactStore is both",
-		);
-		assert.equal(ctx.ui.notifications.at(-1).level, "info");
-	} finally {
-		pi.setActiveTools(["read", "bash", "edit", "write"]);
-		await rm(bothSddInitCwd, { recursive: true, force: true });
-	}
-
-	const directEngramToolCwd = await tempWorkspace();
-	try {
-		pi.setActiveTools(["read", "bash", "edit", "write", "engram_mem_save"]);
-		const ctx = createCtx(directEngramToolCwd, true, "direct-engram-session");
-		await commands.get("gentle:sdd-preflight").handler("", ctx);
-		assert.deepEqual(ctx.ui.selections[1].options, ["openspec"]);
-	} finally {
-		pi.setActiveTools(["read", "bash", "edit", "write"]);
-		await rm(directEngramToolCwd, { recursive: true, force: true });
-	}
-
-	const installCwd = await tempWorkspace();
-	try {
-		const ctx = createCtx(installCwd, true);
-		await commands.get("gentle:install-sdd").handler("", ctx);
-		assert.match(ctx.ui.notifications.at(-1).message, /Global Gentle AI SDD assets installed/);
-		assert.equal(existsSync(join(installCwd, ".pi", "agents", "sdd-apply.md")), false);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-status.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "gentle-ai", "support", "sdd-status-contract.md")), true);
-	} finally {
-		await rm(installCwd, { recursive: true, force: true });
+		process.env.GENTLE_PI_AGENT_HOME = globalAgentHome;
+		await rm(repairFixture, { recursive: true, force: true });
 	}
 
 	const staleAssetsCwd = await tempWorkspace();
+	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
+	const previousHome = process.env.HOME;
+	const previousUserProfile = process.env.USERPROFILE;
 	try {
-		await mkdir(join(staleAssetsCwd, ".pi", "agents"), { recursive: true });
-		await mkdir(join(staleAssetsCwd, ".pi", "chains"), { recursive: true });
-		await mkdir(join(staleAssetsCwd, ".pi", "gentle-ai", "support"), { recursive: true });
-		await writeFile(join(staleAssetsCwd, ".pi", "agents", "sdd-apply.md"), "stale apply\n");
-		await writeFile(join(staleAssetsCwd, ".pi", "agents", "sdd-spec.md"), "stale spec\n");
-		await writeFile(join(staleAssetsCwd, ".pi", "agents", "sdd-custom-debug.md"), "custom debug agent\n");
-		await writeFile(join(staleAssetsCwd, ".pi", "chains", "sdd-full.chain.md"), "stale chain\n");
-		await writeFile(join(staleAssetsCwd, ".pi", "gentle-ai", "support", "sdd-status-contract.md"), "stale status contract\n");
+		process.env.GENTLE_PI_AGENT_HOME = join(staleAssetsCwd, "agent-home");
+		process.env.HOME = staleAssetsCwd;
+		process.env.USERPROFILE = staleAssetsCwd;
 		const ctx = createCtx(staleAssetsCwd, true);
-		await commands.get("gentle:status").handler("", ctx);
-		assert.match(ctx.ui.notifications.at(-1).message, /Project-local SDD agent overrides: 2 file\(s\)/);
-		assert.match(ctx.ui.notifications.at(-1).message, /local SDD agents shadow package assets/);
 		await commands.get("gentle:doctor").handler("", ctx);
 		assert.match(ctx.ui.notifications.at(-1).message, /el Gentleman doctor/);
 		assert.match(ctx.ui.notifications.at(-1).message, /Sensitive-path guard active/);
+		for (const diagnostic of ["gentle:status", "gentle:doctor"]) {
+			await commands.get(diagnostic).handler("", ctx);
+			const message = ctx.ui.notifications.at(-1).message;
+			assert.match(message, /Organic Driven Development \(ODD\): active/);
+			assert.doesNotMatch(message, /OpenSpec|openspec\/config\.yaml|SDD/);
+		}
 		pi.setActiveTools([{ name: "engram.mem_save" }]);
 		await commands.get("gentle:doctor").handler("", ctx);
 		assert.match(ctx.ui.notifications.at(-1).message, /Engram memory tools active/);
 		pi.setActiveTools([{ name: "engram_mem_save" }]);
 		await commands.get("gentle:doctor").handler("", ctx);
 		assert.match(ctx.ui.notifications.at(-1).message, /Engram memory tools not active in this session/);
+	} finally {
 		pi.setActiveTools(["read", "bash", "edit", "write"]);
-	} finally {
+		if (previousAgentHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
+		else process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
+		if (previousHome === undefined) delete process.env.HOME;
+		else process.env.HOME = previousHome;
+		if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+		else process.env.USERPROFILE = previousUserProfile;
 		await rm(staleAssetsCwd, { recursive: true, force: true });
-	}
-
-	const sddCwd = await tempWorkspace();
-	try {
-		const ctx = createCtx(sddCwd, true);
-		await commands.get("sdd-init").handler("", ctx);
-		assert.equal(existsSync(join(sddCwd, ".pi", "agents", "sdd-apply.md")), false);
-		assert.equal(existsSync(join(sddCwd, ".pi", "chains", "sdd-full.chain.md")), false);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-apply.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-status.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "agents", "sdd-sync.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "gentle-ai", "support", "sdd-status-contract.md")), true);
-		assert.equal(existsSync(join(globalAgentHome, "chains", "sdd-full.chain.md")), true);
-		assert.equal(ctx.ui.selections.length, 3);
-		assert.match(ctx.ui.notifications[0].message, /SDD preflight complete/);
-		assert.match(ctx.ui.notifications.at(-1).message, /Wrote openspec\/config\.yaml/);
-
-		await commands.get("gentle:sdd-preflight").handler("", ctx);
-		assert.equal(ctx.ui.selections.length, 3, "/sdd-init preflight should be reused by later manual preflight");
-	} finally {
-		await rm(sddCwd, { recursive: true, force: true });
-	}
-
-	const invalidSddInitCwd = await tempWorkspace();
-	try {
-		await mkdir(join(invalidSddInitCwd, ".pi", "agents"), { recursive: true });
-		await writeFile(
-			join(invalidSddInitCwd, ".pi", "agents", "sdd-apply.md"),
-			`---\nname: sdd-apply\ndescription: Apply phase\nmodel: keep/provider-model\n---\n\nbody\n`,
-		);
-		await writeFile(globalModelsPath, "{ invalid json");
-		const ctx = createCtx(invalidSddInitCwd, true, "invalid-sdd-init-session");
-		await commands.get("sdd-init").handler("", ctx);
-		assert.equal(ctx.ui.notifications[0].level, "warning");
-		assert.match(ctx.ui.notifications[0].message, /Model routing skipped:/);
-		assert.match(ctx.ui.notifications[0].message, /models\.json/);
-		assert.match(ctx.ui.notifications.at(-1).message, /Wrote openspec\/config\.yaml/);
-		const preservedAgent = await readFile(
-			join(invalidSddInitCwd, ".pi", "agents", "sdd-apply.md"),
-			"utf8",
-		);
-		assert.match(preservedAgent, /model: keep\/provider-model/);
-	} finally {
-		await rm(invalidSddInitCwd, { recursive: true, force: true });
-		await rm(globalModelsPath, { force: true });
 	}
 
 	const legacyModelsCwd = await tempWorkspace();
@@ -1316,16 +1306,16 @@ async function run() {
 		assert.doesNotMatch(invalidGlobalSkippedAgent, /model: legacy\/provider-model/);
 		assert.equal(legacyCtx.ui.notifications.at(-1).level, "warning");
 		assert.match(legacyCtx.ui.notifications.at(-1).message, /skipped model config/);
+		// An unreadable models.json does not block the models screen (Make default
+		// discloses it), and closing the screen leaves the file untouched.
 		let modelPanelOpened = false;
 		legacyCtx.ui.custom = () => {
 			modelPanelOpened = true;
-			return Promise.resolve({ type: "save", config: {} });
+			return Promise.resolve({ type: "close" });
 		};
-		await commands.get("gentle:models").handler("", legacyCtx);
-		assert.equal(modelPanelOpened, false);
+		await commands.get("gentle:profiles").handler("", legacyCtx);
+		assert.equal(modelPanelOpened, true);
 		assert.equal(await readFile(globalModelsPath, "utf8"), "{ invalid json");
-		assert.equal(legacyCtx.ui.notifications.at(-1).level, "warning");
-		assert.match(legacyCtx.ui.notifications.at(-1).message, /cannot open model config/);
 		await writeFile(globalModelsPath, JSON.stringify({}, null, 2));
 		await hooks.get("session_start")[0]({ reason: "startup" }, legacyCtx);
 		const emptyGlobalPreservesAgent = await readFile(
@@ -1359,15 +1349,15 @@ async function run() {
 		);
 		await writeFile(globalModelsPath, JSON.stringify({ "sdd-apply": {} }, null, 2));
 		await hooks.get("session_start")[0]({ reason: "startup" }, legacyCtx);
-		const explicitInheritClearsAgent = await readFile(
+		const savedInheritPreservesAgent = await readFile(
 			join(legacyModelsCwd, ".pi", "agents", "sdd-apply.md"),
 			"utf8",
 		);
-		assert.doesNotMatch(explicitInheritClearsAgent, /model:/);
-		const explicitInheritClearsProfiles = JSON.parse(
+		assert.match(savedInheritPreservesAgent, /model: global\/provider-model/);
+		const savedInheritPreservesProfiles = JSON.parse(
 			await readFile(join(legacyModelsCwd, ".pi", "subagents.json"), "utf8"),
 		);
-		assert.equal(explicitInheritClearsProfiles.model_profiles, undefined);
+		assert.equal(savedInheritPreservesProfiles.model_profiles["sdd-apply"].model, "global/provider-model");
 	} finally {
 		await rm(legacyModelsCwd, { recursive: true, force: true });
 		await rm(globalModelsPath, { force: true });
@@ -1389,10 +1379,12 @@ async function run() {
 		);
 		await writeFile(globalModelsPath, JSON.stringify({ worker: {} }, null, 2));
 		await hooks.get("session_start")[0]({ reason: "startup" }, createCtx(staleSettingsOnlyCwd, true));
-		const staleOnlyClearedProfiles = JSON.parse(
+		const staleOnlyPreservedProfiles = JSON.parse(
 			await readFile(globalSubagentsPath, "utf8"),
 		);
-		assert.equal(staleOnlyClearedProfiles.model_profiles, undefined);
+		assert.deepEqual(staleOnlyPreservedProfiles.model_profiles, {
+			worker: { model: "stale/model", effort: "high" },
+		});
 	} finally {
 		await rm(staleSettingsOnlyCwd, { recursive: true, force: true });
 		await rm(globalModelsPath, { force: true });
@@ -1608,22 +1600,29 @@ async function run() {
 		assert.match(preservedProjectSubagentWorker, /thinking: medium/);
 		await writeFile(globalModelsPath, JSON.stringify({ worker: {} }, null, 2));
 		await hooks.get("session_start")[0]({ reason: "startup" }, createCtx(modelsCwd, true));
-		const clearedProfiles = JSON.parse(
+		// gentle-ai#4946: startup/reload never treats persisted inherit as
+		// deletion approval, including for previously materialized routing.
+		// Explicit panel saves and confirmed profile replacement still clear.
+		const preservedClearProfiles = JSON.parse(
 			await readFile(join(modelsCwd, ".pi", "subagents.json"), "utf8"),
 		);
-		assert.equal(clearedProfiles.model_profiles, undefined);
+		assert.equal(
+			preservedClearProfiles.model_profiles.worker.model,
+			"existing/model",
+		);
+		assert.equal(preservedClearProfiles.model_profiles.worker.effort, "high");
 		const unchangedProjectWorker = await readFile(
 			join(modelsCwd, ".pi", "agents", "worker.md"),
 			"utf8",
 		);
 		assert.match(unchangedProjectWorker, /model: existing\/project-worker/);
 		assert.match(unchangedProjectWorker, /thinking: high/);
-		const clearedProjectSubagentWorker = await readFile(
+		const preservedClearProjectSubagentWorker = await readFile(
 			join(modelsCwd, ".pi", "subagents", "worker.md"),
 			"utf8",
 		);
-		assert.doesNotMatch(clearedProjectSubagentWorker, /model:/);
-		assert.doesNotMatch(clearedProjectSubagentWorker, /thinking:/);
+		assert.match(preservedClearProjectSubagentWorker, /model: existing\/project-subagent-worker/);
+		assert.match(preservedClearProjectSubagentWorker, /thinking: medium/);
 
 		await writeFile(
 			globalModelsPath,
@@ -1635,61 +1634,50 @@ async function run() {
 			{ provider: "safe", id: "model" },
 			{ provider: "evil\u001b]52;c;Zm9v\u0007", id: "model" },
 		];
-		ctx.ui.custom = (factory) => {
-			const panel = factory(null, null, null, () => undefined);
-			const initialLines = panel.render(120);
-			const plainInitialLines = initialLines.map(stripAnsi);
-			assert.ok(
-				plainInitialLines[0].startsWith("╭") && plainInitialLines.at(-1).startsWith("╰"),
-				"model panel should render inside a bordered card",
-			);
-			assert.ok(
-				initialLines.length <= 20,
-				"long model agent list should fit within a 24-row terminal 85% overlay budget",
-			);
-			assert.ok(
-				plainInitialLines.some((line) => /↓ \d+ more agent\(s\)/.test(line)),
-				"long model agent list should render a down-scroll indicator",
-			);
-			assert.ok(
-				plainInitialLines.some((line) => line.includes("Continue")),
-				"long model agent list should keep Continue visible",
-			);
-			assert.doesNotMatch(
-				initialLines.join("\n"),
-				/\u001b\]|\u0007/,
-				"model panel must strip unsafe terminal control sequences from agent labels",
-			);
-			assert.doesNotMatch(
-				plainInitialLines.join("\n"),
-				/\]52|\[31m/,
-				"model panel must strip user-provided terminal escapes from labels",
-			);
-			for (let i = 0; i < 20; i++) panel.handleInput("j");
-			const scrolledLines = panel.render(120);
-			const plainScrolledLines = scrolledLines.map(stripAnsi);
-			assert.ok(
-				scrolledLines.length <= 20,
-				"scrolled model agent list should stay within the overlay height budget",
-			);
-			assert.ok(
-				plainScrolledLines.some((line) => /↑ \d+ more agent\(s\)/.test(line)),
-				"long model agent list should render an up-scroll indicator after navigation",
-			);
-			panel.handleInput("G");
-			const bottomLines = panel.render(120);
-			const plainBottomLines = bottomLines.map(stripAnsi);
-			assert.ok(
-				bottomLines.length <= 20,
-				"bottom model agent list should stay within the overlay height budget",
-			);
-			assert.ok(
-				plainBottomLines.some((line) => line.includes("▸ ← Back")),
-				"G should jump to the Back action",
-			);
-			return Promise.resolve({ type: "cancel" });
-		};
-		await commands.get("gentle:models").handler("", ctx);
+		// /gentle:profiles opens the models screen on the profile this repository
+		// resolves: one table, profiles as tabs. Its render contract: a bordered
+		// card filling the terminal, scroll indicators for long agent lists, and
+		// sanitized labels everywhere, including the model card.
+		let panelVisits = 0;
+		ctx.ui.custom = (factory) =>
+			new Promise((resolve) => {
+				panelVisits += 1;
+				const panel = factory({ terminal: { rows: 24 }, requestRender() {} }, null, null, resolve);
+				const initialLines = panel.render(120);
+				const plainInitialLines = initialLines.map(stripAnsi);
+				assert.ok(
+					plainInitialLines[0].startsWith("╭") && plainInitialLines.at(-1).startsWith("╰"),
+					"the models screen should render inside a bordered card",
+				);
+				assert.equal(initialLines.length, 24, "the models screen should fill the 24-row terminal");
+				assert.match(plainInitialLines[1], /current/, "the tab line names the profile on screen");
+				assert.ok(
+					plainInitialLines.some((line) => /↓ \d+ more/.test(line)),
+					"a long agent list should render a down-scroll indicator",
+				);
+				assert.doesNotMatch(initialLines.join("\n"), /\u001b\]|\u0007/, "labels must not carry unsafe control sequences");
+				assert.doesNotMatch(plainInitialLines.join("\n"), /\]52|\[31m/, "labels must not carry user-provided escapes");
+				for (let i = 0; i < 20; i++) panel.handleInput("j");
+				const plainScrolledLines = panel.render(120).map(stripAnsi);
+				assert.equal(plainScrolledLines.length, 24, "the scrolled list keeps filling the terminal");
+				assert.ok(
+					plainScrolledLines.some((line) => /↑ \d+ more/.test(line)),
+					"navigation down should render an up-scroll indicator",
+				);
+				for (let i = 0; i < 40; i++) panel.handleInput("j");
+				assert.ok(
+					panel.render(120).map(stripAnsi).some((line) => /▸\s+worker\b/.test(line)),
+					"moving past the end lands on the last agent row",
+				);
+				panel.handleInput("\r"); // the model card lists the registry, sanitized
+				const card = panel.render(120);
+				assert.match(card.map(stripAnsi).join("\n"), /Model for worker/);
+				assert.doesNotMatch(card.join("\n"), /\u001b\]|\u0007/, "registry labels are sanitized in the model card");
+				panel.handleInput("\u001b"); // close the card
+				panel.handleInput("\u001b"); // close the screen: nothing changed, one esc is enough
+			});
+		await commands.get("gentle:profiles").handler("", ctx);
+		assert.equal(panelVisits, 1, "closing an unchanged screen ends the command");
 
 		await hooks.get("session_start")[0]({ reason: "startup" }, ctx);
 		const legacyAppliedAgent = await readFile(
@@ -1699,154 +1687,140 @@ async function run() {
 		assert.match(legacyAppliedAgent, /model: openai\/gpt-5/);
 		assert.doesNotMatch(legacyAppliedAgent, /thinking:/);
 
-		ctx.ui.custom = () =>
-			Promise.resolve({
-				type: "save",
-				config: {
-					"sdd-apply": { model: "openai/gpt-5", thinking: "high" },
-					worker: { model: "openai/gpt-5-mini", thinking: "low" },
-					researcher: { model: "openai/gpt-5-mini", thinking: "low" },
-					"project-special": { model: "openai/gpt-5-mini", thinking: "low" },
-					"global-special": { model: "openai/gpt-5-mini", thinking: "low" },
-				},
-			});
-		await commands.get("gentle:models").handler("", ctx);
-		assert.doesNotMatch(
-			ctx.ui.notifications.at(-1).message,
-			/[\u001b\u0007]/,
-			"model save notification must strip terminal control sequences from discovered agent names",
+		// Save writes the table into the profile store only (kind
+		// gentle-pi.agent_model_profiles). Global models.json, subagents.json, and
+		// agent frontmatter stay untouched — Make default is the guarded global apply.
+		const projectSubagentsBefore = await readFile(
+			join(modelsCwd, ".pi", "subagents.json"),
+			"utf8",
 		);
-
-		const savedConfig = JSON.parse(
-			await readFile(globalModelsPath, "utf8"),
-		);
-		assert.deepEqual(savedConfig["sdd-apply"], {
-			model: "openai/gpt-5",
-			thinking: "high",
-		});
-		assert.equal(
-			existsSync(join(modelsCwd, ".pi", "gentle-ai", "models.json")),
-			false,
-			"/gentle:models must save model routing globally, not per project",
-		);
-
-		const applyAgent = await readFile(
+		const agentFrontmatterBefore = await readFile(
 			join(modelsCwd, ".pi", "agents", "sdd-apply.md"),
 			"utf8",
 		);
-		assert.match(applyAgent, /model: openai\/gpt-5/);
-		assert.match(applyAgent, /thinking: high/);
+		const pickEffort = (panel, steps) => {
+			panel.handleInput("e");
+			for (let i = 0; i < 10; i++) panel.handleInput("\u001b[D"); // back to inherit
+			for (let i = 0; i < steps; i++) panel.handleInput("\u001b[C");
+			panel.handleInput("\r");
+		};
+		let saveVisits = 0;
+		ctx.ui.custom = (factory) =>
+			new Promise((resolve) => {
+				saveVisits += 1;
+				const panel = factory({ terminal: { rows: 24 }, requestRender() {} }, null, null, resolve);
+				if (saveVisits === 1) {
+					panel.handleInput("j"); // the Model ▾ / Effort ▾ header row: every agent
+					panel.handleInput("\r");
+					for (const character of "safe") panel.handleInput(character); // type-to-search
+					panel.handleInput("\r"); // safe/model for every agent
+					pickEffort(panel, 5); // inherit off minimal low medium [high]
+					panel.handleInput("\u0013"); // ctrl+s
+					return;
+				}
+				panel.handleInput("\u001b");
+			});
+		await commands.get("gentle:profiles").handler("", ctx);
+		assert.equal(saveVisits, 2, "Save reopens the screen once before it closes");
 
-		const projectSubagents = JSON.parse(
-			await readFile(join(modelsCwd, ".pi", "subagents.json"), "utf8"),
+		const profilesPath = join(globalConfigHome, "profiles.json");
+		const savedStore = JSON.parse(await readFile(profilesPath, "utf8"));
+		assert.equal(savedStore.kind, "gentle-pi.agent_model_profiles");
+		assert.equal(savedStore.version, 1);
+		assert.deepEqual(savedStore.profiles.current["sdd-apply"], { model: "safe/model", thinking: "high" });
+		assert.deepEqual(savedStore.profiles.current["project-special"], { model: "safe/model", thinking: "high" });
+		assert.equal(
+			await readFile(globalModelsPath, "utf8"),
+			JSON.stringify({ "sdd-apply": "openai/gpt-5" }, null, 2),
+			"Save must keep routing edits in the profile store, not write global models.json",
 		);
 		assert.equal(
-			projectSubagents.model_profiles["sdd-apply"].model,
-			"openai/gpt-5",
+			existsSync(join(modelsCwd, ".pi", "gentle-ai", "models.json")),
+			false,
+			"Save must keep routing edits in the profile store, not per project",
 		);
-		assert.equal(projectSubagents.model_profiles["sdd-apply"].effort, "high");
-		assert.equal(
-			projectSubagents.model_profiles.worker.model,
-			"openai/gpt-5-mini",
-		);
-		assert.equal(projectSubagents.model_profiles.worker.effort, "low");
-		const routedProjectSubagentWorker = await readFile(
-			join(modelsCwd, ".pi", "subagents", "worker.md"),
-			"utf8",
-		);
-		assert.match(routedProjectSubagentWorker, /model: openai\/gpt-5-mini/);
-		assert.match(routedProjectSubagentWorker, /thinking: low/);
-		const shadowedProjectAgentWorker = await readFile(
-			join(modelsCwd, ".pi", "agents", "worker.md"),
-			"utf8",
-		);
-		assert.match(shadowedProjectAgentWorker, /model: existing\/project-worker/);
-		assert.match(shadowedProjectAgentWorker, /thinking: high/);
-		assert.equal(
-			projectSubagents.model_profiles["project-special"].model,
-			"openai/gpt-5-mini",
-		);
-		assert.equal(projectSubagents.model_profiles["project-special"].effort, "low");
-		const globalSubagents = JSON.parse(await readFile(globalSubagentsPath, "utf8"));
-		assert.equal(
-			globalSubagents.model_profiles.researcher.model,
-			"openai/gpt-5-mini",
-		);
-		assert.equal(globalSubagents.model_profiles.researcher.effort, "low");
-		assert.equal(
-			globalSubagents.model_profiles["global-special"].model,
-			"openai/gpt-5-mini",
-		);
-		assert.equal(globalSubagents.model_profiles["global-special"].effort, "low");
+		assert.equal(await readFile(join(modelsCwd, ".pi", "subagents.json"), "utf8"), projectSubagentsBefore);
+		const untouchedAgent = await readFile(join(modelsCwd, ".pi", "agents", "sdd-apply.md"), "utf8");
+		assert.equal(untouchedAgent, agentFrontmatterBefore);
+		assert.doesNotMatch(untouchedAgent, /thinking:/);
 		assert.equal(existsSync(join(modelsCwd, ".pi", "settings.json")), false);
 
 		const kittyE = "\x1b[101u";
 		assert.notEqual(kittyE, "e");
 		assert.equal(matchesKey(kittyE, "e"), true);
 
-		let customPanelCalls = 0;
+		// Custom model ids: Custom model id… in the model card hands the draft back,
+		// ctx.ui.input asks for the id, the screen reopens with it, and Save stores it.
+		const chooseCustom = (panel) => {
+			panel.handleInput("\r");
+			for (const character of "zzzz") panel.handleInput(character); // nothing matches: only Custom model id… is left
+			panel.handleInput("\r");
+		};
+		let customVisits = 0;
 		ctx.ui.input = async () => "custom/provider-model";
 		ctx.ui.custom = (factory) =>
 			new Promise((resolve) => {
-				customPanelCalls += 1;
-				const panel = factory(null, null, null, resolve);
-				if (customPanelCalls === 1) {
-					panel.handleInput(kittyE); // effort picker for all agents
-					for (let i = 0; i < 4; i++) panel.handleInput("j"); // medium
+				customVisits += 1;
+				const panel = factory({ terminal: { rows: 24 }, requestRender() {} }, null, null, resolve);
+				if (customVisits === 1) {
+					panel.handleInput("j"); // every agent
+					panel.handleInput(kittyE); // the effort row (a kitty "e" still matches)
+					for (let i = 0; i < 10; i++) panel.handleInput("\u001b[D");
+					for (let i = 0; i < 4; i++) panel.handleInput("\u001b[C"); // medium
 					panel.handleInput("\r");
-					panel.handleInput("c"); // custom model from the same unsaved draft
+					chooseCustom(panel); // custom model for every agent, same unsaved draft
 					return;
 				}
-				panel.handleInput("\u0013"); // ctrl+s saves the draft reopened after custom model input
-			});
-		await commands.get("gentle:models").handler("", ctx);
-
-		const customSavedConfig = JSON.parse(
-			await readFile(globalModelsPath, "utf8"),
-		);
-		assert.deepEqual(customSavedConfig["sdd-apply"], {
-			model: "custom/provider-model",
-			thinking: "medium",
-		});
-
-		let invalidCustomCalls = 0;
-		ctx.ui.input = async () => "bad\nmodel: injected";
-		ctx.ui.custom = (factory) =>
-			new Promise((resolve) => {
-				invalidCustomCalls += 1;
-				const panel = factory(null, null, null, resolve);
-				if (invalidCustomCalls === 1) {
-					panel.handleInput("c");
+				if (customVisits === 2) {
+					panel.handleInput("\u0013"); // ctrl+s saves the draft reopened after the custom id
 					return;
 				}
 				panel.handleInput("\u001b");
 			});
-		await commands.get("gentle:models").handler("", ctx);
-		assert.match(
-			ctx.ui.notifications.at(-1).message,
-			/Custom model id must be a single-line/,
-		);
-		const rejectedCustomConfig = JSON.parse(
-			await readFile(globalModelsPath, "utf8"),
-		);
-		assert.deepEqual(rejectedCustomConfig["sdd-apply"], {
+		await commands.get("gentle:profiles").handler("", ctx);
+		assert.equal(customVisits, 3);
+		const customSavedStore = JSON.parse(await readFile(profilesPath, "utf8"));
+		assert.deepEqual(customSavedStore.profiles.current["sdd-apply"], {
 			model: "custom/provider-model",
 			thinking: "medium",
 		});
 
-		let exportPanelCalls = 0;
-		ctx.ui.custom = () => {
-			exportPanelCalls += 1;
-			return Promise.resolve(exportPanelCalls === 1 ? { type: "export", config: {} } : { type: "cancel" });
-		};
-		await commands.get("gentle:models").handler("", ctx);
-		const exported = JSON.parse(await readFile(join(globalConfigHome, "models.export.json"), "utf8"));
-		assert.equal(exported.kind, "gentle-pi.agent_model_routing");
-		assert.equal(exported.version, 1);
-		assert.deepEqual(exported.agents["sdd-apply"], {
+		// An invalid custom id is refused on the screen and changes nothing.
+		let invalidCustomVisits = 0;
+		ctx.ui.input = async () => "bad\nmodel: injected";
+		ctx.ui.custom = (factory) =>
+			new Promise((resolve) => {
+				invalidCustomVisits += 1;
+				const panel = factory({ terminal: { rows: 24 }, requestRender() {} }, null, null, resolve);
+				if (invalidCustomVisits === 1) {
+					panel.handleInput("j");
+					chooseCustom(panel);
+					return;
+				}
+				if (invalidCustomVisits === 2) {
+					assert.match(panel.render(120).map(stripAnsi).join(" "), /Custom model id must be one provider\/model line/);
+				}
+				panel.handleInput("\u001b"); // nothing changed: one esc closes
+			});
+		await commands.get("gentle:profiles").handler("", ctx);
+		assert.equal(invalidCustomVisits, 2);
+		const rejectedCustomStore = JSON.parse(await readFile(profilesPath, "utf8"));
+		assert.deepEqual(rejectedCustomStore.profiles.current["sdd-apply"], {
 			model: "custom/provider-model",
 			thinking: "medium",
 		});
+
+		// models.json export and restore are subcommands; neither opens the screen.
+		let screenOpened = false;
+		ctx.ui.custom = () => {
+			screenOpened = true;
+			return Promise.resolve({ type: "close" });
+		};
+		await commands.get("gentle:profiles").handler("export-routing", ctx);
+		const exported = JSON.parse(await readFile(join(globalConfigHome, "models.export.json"), "utf8"));
+		assert.equal(exported.kind, "gentle-pi.agent_model_routing");
+		assert.equal(exported.version, 1);
+		assert.deepEqual(exported.agents["sdd-apply"], { model: "openai/gpt-5" }, "export reads the saved global routing");
 
 		await writeFile(
 			join(globalConfigHome, "models.export.json"),
@@ -1856,59 +1830,47 @@ async function run() {
 				agents: { "sdd-apply": { model: "restore/provider", thinking: "high" } },
 			}, null, 2),
 		);
-		let restorePanelCalls = 0;
 		ctx.ui.confirm = async () => true;
-		ctx.ui.custom = () => {
-			restorePanelCalls += 1;
-			return Promise.resolve(restorePanelCalls === 1 ? { type: "restore", config: {} } : { type: "cancel" });
-		};
-		await commands.get("gentle:models").handler("", ctx);
+		await commands.get("gentle:profiles").handler("restore-routing", ctx);
+		assert.equal(screenOpened, false, "export and restore never open the screen");
 		const restoredConfig = JSON.parse(await readFile(globalModelsPath, "utf8"));
-		assert.deepEqual(restoredConfig["sdd-apply"], {
-			model: "restore/provider",
-			thinking: "high",
-		});
+		assert.deepEqual(restoredConfig["sdd-apply"], { model: "restore/provider", thinking: "high" });
 		const restoredAgent = await readFile(join(modelsCwd, ".pi", "agents", "sdd-apply.md"), "utf8");
 		assert.match(restoredAgent, /model: restore\/provider/);
 		assert.match(restoredAgent, /thinking: high/);
+		// Restore is global-only: the profile store keeps its own routing.
+		const afterRestoreStore = JSON.parse(await readFile(profilesPath, "utf8"));
+		assert.equal(afterRestoreStore.profiles.current["sdd-apply"].model, "custom/provider-model");
 
-		// issue #286: `thinking: "max"` must survive save normalization and
-		// reach both subagents.json (effort) and agent frontmatter (thinking).
-		ctx.ui.custom = () =>
-			Promise.resolve({
-				type: "save",
-				config: { "sdd-apply": { model: "openai/gpt-5", thinking: "max" } },
-			});
-		await commands.get("gentle:models").handler("", ctx);
-		const maxSavedConfig = JSON.parse(await readFile(globalModelsPath, "utf8"));
-		assert.equal(maxSavedConfig["sdd-apply"].thinking, "max");
-		const maxSubagents = JSON.parse(
-			await readFile(join(modelsCwd, ".pi", "subagents.json"), "utf8"),
-		);
-		assert.equal(maxSubagents.model_profiles["sdd-apply"].effort, "max");
-		const maxApplyAgent = await readFile(
-			join(modelsCwd, ".pi", "agents", "sdd-apply.md"),
-			"utf8",
-		);
-		assert.match(maxApplyAgent, /thinking: max/);
-
-		// issue #286: effort picker must offer `max` after `xhigh` and save it.
-		let maxPickerCalls = 0;
+		// issue #286: `thinking: "max"` must survive save normalization into the
+		// profile store, and the effort row must offer `max` after `xhigh`.
+		let maxVisits = 0;
 		ctx.ui.custom = (factory) =>
 			new Promise((resolve) => {
-				maxPickerCalls += 1;
-				const panel = factory(null, null, null, resolve);
-				if (maxPickerCalls === 1) {
-					panel.handleInput(kittyE); // open effort picker (set-all row)
-					for (let i = 0; i < 7; i++) panel.handleInput("j"); // max
+				maxVisits += 1;
+				const panel = factory({ terminal: { rows: 24 }, requestRender() {} }, null, null, resolve);
+				if (maxVisits === 1) {
+					panel.handleInput("j"); // every agent
+					panel.handleInput("e");
+					const strip = panel.render(120).map(stripAnsi).join("\n");
+					const xhighIndex = strip.indexOf("xhigh");
+					assert.ok(xhighIndex >= 0 && strip.indexOf("max", xhighIndex + 5) > xhighIndex, "the effort row must offer max after xhigh");
+					for (let i = 0; i < 10; i++) panel.handleInput("\u001b[C"); // to the last level: max
 					panel.handleInput("\r");
-					panel.handleInput("\u0013"); // ctrl+s saves the draft
+					panel.handleInput("\u0013");
 					return;
 				}
+				panel.handleInput("\u001b");
 			});
-		await commands.get("gentle:models").handler("", ctx);
-		const pickerMaxConfig = JSON.parse(await readFile(globalModelsPath, "utf8"));
-		assert.equal(pickerMaxConfig["sdd-apply"].thinking, "max");
+		await commands.get("gentle:profiles").handler("", ctx);
+		assert.equal(maxVisits, 2);
+		const maxStore = JSON.parse(await readFile(profilesPath, "utf8"));
+		assert.equal(maxStore.profiles.current["sdd-apply"].thinking, "max");
+		assert.equal(
+			maxStore.profiles.current["sdd-apply"].model,
+			"custom/provider-model",
+			"an effort-only save keeps the profile's saved model",
+		);
 	} finally {
 		await rm(modelsCwd, { recursive: true, force: true });
 		await rm(globalModelsPath, { force: true });
@@ -1925,7 +1887,25 @@ async function run() {
 	}
 }
 
-run().catch((error) => {
+// A run that awaits a promise nobody settles (a mocked panel that never
+// finishes) lets the event loop drain, and Node would exit 0 with every later
+// section skipped. Treat an unfinished run as a failure instead.
+let runCompleted = false;
+process.on("exit", () => {
+	if (runCompleted || process.exitCode) return;
+	console.error("runtime harness exited before run() completed: a section awaited a promise that never settled");
+	process.exitCode = 1;
+});
+
+run().then(() => {
+	runCompleted = true;
+}).catch((error) => {
 	console.error(error);
 	process.exitCode = 1;
+}).finally(async () => {
+	for (const [key, value] of previousFixtureEnvironment) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
+	for (const root of ownedFixtureRoots) await rm(root, { recursive: true, force: true });
 });

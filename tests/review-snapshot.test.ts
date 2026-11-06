@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
 	existsSync,
-	mkdtempSync,
 	mkdirSync,
+	mkdtempSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -60,7 +61,7 @@ function createRepository(t: test.TestContext): {
 	repository: string;
 	git: (...args: string[]) => string;
 } {
-	const parent = mkdtempSync(join(tmpdir(), "gentle-pi-snapshot-"));
+	const parent = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-snapshot-")));
 	const repository = join(parent, "repo");
 	mkdirSync(repository);
 	t.after(() => rmSync(parent, { recursive: true, force: true }));

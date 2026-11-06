@@ -1,32 +1,35 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, symlink } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+	decodeReviewConsentV3,
+} from "../lib/review-integration-v2.ts";
+import {
+	NATIVE_REVIEW_OPERATION,
 	NATIVE_REVIEW_DEFAULT_MAX_BUFFER_BYTES,
 	NATIVE_REVIEW_ERROR_CODE,
 	NativeReviewCliError,
-	NativeReviewCliV213 as NativeReviewCliV213Production,
 	NativeReviewCliV216,
+	NativeReviewIntegrationError,
+	NativeReviewConsentRequiredError,
+	createNativeReviewCli,
 	createNodeExecFileAdapter,
+	createWindowsProcessTreeKiller,
+	windowsTaskkillPath,
+	gentleAiProcessEnvironment,
+	isNativeReviewUnachievableVerbRefused,
 	type ExecFileAdapter,
-	type NativeStartRequest,
+	type NativeReviewModeRequest,
+	type NativeTargetStatusRequest,
 } from "../lib/native-review-cli.ts";
-import {
-	NativeReviewCliV214 as RuntimeNativeReviewCliV214,
-	NativeReviewCliV216 as RuntimeNativeReviewCliV216,
-} from "../runtime/native-review-cli.mjs";
+import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
 
-// The queued-adapter unit tests never execute a real process; default to a fixed
-// absolute package-local path so they do not depend on an installed binary
-// (for example while a re-pinned release's digests are still pending).
-class NativeReviewCliV213 extends NativeReviewCliV213Production {
-	constructor(...parameters: ConstructorParameters<typeof NativeReviewCliV213Production>) {
-		const [adapter, executable, ...rest] = parameters;
-		super(adapter, executable ?? "/package/.gentle-ai/gentle-ai", ...rest);
-	}
-}
+const fixture = (name: string): Record<string, unknown> => JSON.parse(
+	readFileSync(join(process.cwd(), "tests", "fixtures", "devbinary", name), "utf8"),
+) as Record<string, unknown>;
 
 interface QueuedResult {
 	stdout: string;
@@ -37,14 +40,18 @@ interface QueuedResult {
 	outputLimitExceeded?: boolean;
 }
 
-function queuedAdapter(results: QueuedResult[]): { adapter: ExecFileAdapter; calls: Array<{ file: string; arguments: readonly string[]; cwd: string; timeoutMs: number | undefined; maxBufferBytes: number }> } {
-	const calls: Array<{ file: string; arguments: readonly string[]; cwd: string; timeoutMs: number | undefined; maxBufferBytes: number }> = [];
+function queuedAdapter(results: readonly QueuedResult[]): {
+	adapter: ExecFileAdapter;
+	calls: Array<{ file: string; arguments: readonly string[]; cwd: string; timeoutMs: number | undefined }>;
+} {
+	const queue = [...results];
+	const calls: Array<{ file: string; arguments: readonly string[]; cwd: string; timeoutMs: number | undefined }> = [];
 	return {
 		calls,
 		adapter: async (request) => {
-			calls.push(request);
-			const result = results.shift();
-			if (!result) throw new Error("unexpected native invocation");
+			calls.push({ file: request.file, arguments: request.arguments, cwd: request.cwd, timeoutMs: request.timeoutMs });
+			const result = queue.shift();
+			if (result === undefined) throw new Error("unexpected native invocation");
 			return {
 				stdout: result.stdout,
 				stderr: result.stderr ?? "",
@@ -57,1064 +64,1351 @@ function queuedAdapter(results: QueuedResult[]): { adapter: ExecFileAdapter; cal
 	};
 }
 
-const VERSION = { stdout: "gentle-ai 2.1.4\n" };
-const STATUS_VERSION = { stdout: "gentle-ai 2.1.5\n" };
-const VERSION_219 = { stdout: "gentle-ai 2.1.9\n" };
-const START = { stdout: JSON.stringify({ operation: "review/start", lineage_id: "lineage-1", state: "reviewing", risk_level: "medium", selected_lenses: ["review-reliability"], changed_files: 1, changed_lines: 2, correction_budget: 1, action: "created", lenses_required: true, projection: "workspace" }) };
-const REVIEW_STATUS = {
-	stdout: JSON.stringify({
-		schema: "gentle-ai.review-authority-status/v1",
-		operation: "review/status",
-		repository: "C:\\repo with spaces",
-		complete: true,
-		authoritative: true,
-		status: "clean",
-		entries: [],
-		locks: [],
-		diagnostics: [],
-	}),
-};
-
-test("native START supports every declared version with the START capability and requires the workspace projection", async () => {
-	const start = JSON.parse(START.stdout) as Record<string, unknown>;
-	assert.equal((await new NativeReviewCliV213(queuedAdapter([VERSION, { stdout: JSON.stringify({ ...start, projection: "workspace" }) }]).adapter).start({ cwd: "/repo" })).lineageId, "lineage-1");
-	assert.equal((await new NativeReviewCliV213(queuedAdapter([STATUS_VERSION, { stdout: JSON.stringify({ ...start, projection: "workspace" }) }]).adapter).start({ cwd: "/repo" })).lineageId, "lineage-1");
-	const missing = Object.fromEntries(Object.entries(start).filter(([key]) => key !== "projection"));
-	for (const body of [missing, { ...start, projection: "repository" }]) {
-		const queue = queuedAdapter([VERSION, { stdout: JSON.stringify(body) }]);
-		await assert.rejects(() => new NativeReviewCliV213(queue.adapter).start({ cwd: "/repo" }), (error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE);
-	}
-});
-
-test("native client re-verifies the pinned version before every operation and uses argv without a shell", async () => {
-	const queue = queuedAdapter([VERSION, START, VERSION, START, VERSION, START, VERSION, START]);
-	const client = new NativeReviewCliV213(queue.adapter);
-	await client.start({ cwd: "/repo with spaces" });
-	await client.start({ cwd: "/repo with spaces", baseRef: "origin/main", committedOnly: true });
-	await client.start({ cwd: "/repo with spaces", policyPath: "/repo with spaces/.gentle-ai/policies/team policy.json" });
-	await client.start({ cwd: "/repo with spaces", policyHash: "legacy-policy" } as unknown as { cwd: string; policyPath?: string });
-	assert.deepEqual(queue.calls.map((call) => call.arguments), [
-		["version"],
-		["review", "start", "--cwd", "/repo with spaces"],
-		["version"],
-		["review", "start", "--cwd", "/repo with spaces", "--base-ref", "origin/main", "--committed-only"],
-		["version"],
-		["review", "start", "--cwd", "/repo with spaces", "--policy", "/repo with spaces/.gentle-ai/policies/team policy.json"],
-		["version"],
-		["review", "start", "--cwd", "/repo with spaces"],
-	]);
-	assert.equal(queue.calls.every((call) => call.cwd === "/repo with spaces"), true);
-});
-
-test("native START normalizes null selected lenses only for low-risk no-lens responses", async () => {
-	const start = JSON.parse(START.stdout) as Record<string, unknown>;
-	const valid = queuedAdapter([VERSION, {
-		stdout: JSON.stringify({
-			...start,
-			risk_level: "low",
-			selected_lenses: null,
-			lenses_required: false,
-		}),
-	}]);
-	assert.deepEqual((await new NativeReviewCliV213(valid.adapter).start({ cwd: "/repo" })).selectedLenses, []);
-
-	for (const scenario of [
-		{ risk_level: "low", lenses_required: true },
-		{ risk_level: "medium", lenses_required: false },
-		{ risk_level: "high", lenses_required: false },
-	]) {
-		const queue = queuedAdapter([VERSION, { stdout: JSON.stringify({ ...start, ...scenario, selected_lenses: null }) }]);
-		await assert.rejects(() => new NativeReviewCliV213(queue.adapter).start({ cwd: "/repo" }), NativeReviewCliError);
-	}
-});
-
-test("native START action/lenses_required matrix accepts only authoritative dispatch combinations", async () => {
-	const start = JSON.parse(START.stdout) as Record<string, unknown>;
-	const valid = [
-		{ action: "created", lenses_required: true, risk_level: "medium", selected_lenses: ["review-reliability"] },
-		{ action: "created", lenses_required: false, risk_level: "low", selected_lenses: [] },
-		{ action: "resumed", lenses_required: true, risk_level: "medium", selected_lenses: ["review-reliability"], state: "reviewing" },
-		{ action: "resumed", lenses_required: false, risk_level: "medium", selected_lenses: ["review-reliability"], state: "correction_required" },
-		{ action: "reuse-receipt", lenses_required: false, risk_level: "high", selected_lenses: ["review-risk", "review-resilience", "review-readability", "review-reliability"], state: "approved" },
-		{ action: "blocked-scope-action", lenses_required: false, risk_level: "low", selected_lenses: [] },
-	] as const;
-	for (const scenario of valid) {
-		const queue = queuedAdapter([VERSION, { stdout: JSON.stringify({ ...start, ...scenario }) }]);
-		const result = await new NativeReviewCliV213(queue.adapter).start({ cwd: "/repo" });
-		assert.equal(result.action, scenario.action);
-		assert.equal(result.lensesRequired, scenario.lenses_required);
-		assert.deepEqual(result.selectedLenses, scenario.selected_lenses);
-	}
-	for (const scenario of [
-		{ action: "created", lenses_required: false, risk_level: "medium", selected_lenses: [] },
-		{ action: "created", lenses_required: false, risk_level: "low", selected_lenses: ["review-reliability"] },
-		{ action: "reuse-receipt", lenses_required: true, risk_level: "medium", selected_lenses: ["review-reliability"] },
-		{ action: "blocked-scope-action", lenses_required: true, risk_level: "medium", selected_lenses: ["review-reliability"] },
-		{ action: "resumed", lenses_required: true, risk_level: "medium", selected_lenses: ["review-reliability"], state: "correction_required" },
-	] as const) {
-		const queue = queuedAdapter([VERSION, { stdout: JSON.stringify({ ...start, ...scenario }) }]);
-		await assert.rejects(() => new NativeReviewCliV213(queue.adapter).start({ cwd: "/repo" }), NativeReviewCliError);
-	}
-});
-
-test("native START binds every risk tier to canonical unique lenses before controller use", async () => {
-	const start = JSON.parse(START.stdout) as Record<string, unknown>;
-	const high = ["review-risk", "review-resilience", "review-readability", "review-reliability"];
-	const valid = queuedAdapter([VERSION, { stdout: JSON.stringify({ ...start, risk_level: "high", selected_lenses: high, lenses_required: false, action: "resumed", state: "validating" }) }]);
-	assert.deepEqual((await new NativeReviewCliV213(valid.adapter).start({ cwd: "/repo" })).selectedLenses, high);
-	for (const scenario of [
-		{ risk_level: "low", selected_lenses: [], lenses_required: true }, { risk_level: "medium", selected_lenses: ["review-risk", "review-reliability"], lenses_required: true },
-		{ risk_level: "medium", selected_lenses: ["review-reliability", "review-reliability"], lenses_required: true },
-		{ risk_level: "high", selected_lenses: high.slice(0, 3), lenses_required: true }, { risk_level: "high", selected_lenses: [...high, "review-risk"], lenses_required: true },
-		{ action: "created", risk_level: "high", selected_lenses: high, lenses_required: false },
-		{ action: "resumed", state: "approved", risk_level: "medium", selected_lenses: ["review-reliability"], lenses_required: true },
-	] as const) {
-		const queue = queuedAdapter([VERSION, { stdout: JSON.stringify({ ...start, ...scenario }) }]);
-		await assert.rejects(() => new NativeReviewCliV213(queue.adapter).start({ cwd: "/repo" }), NativeReviewCliError);
-	}
-});
-
-test("long-lived native client rejects a replaced incompatible executable before another operation", async () => {
-	const queue = queuedAdapter([VERSION, START, { stdout: "gentle-ai 2.1.0\n" }]);
-	const client = new NativeReviewCliV213(queue.adapter);
-	await client.start({ cwd: "/repo" });
-	await assert.rejects(
-		() => client.start({ cwd: "/repo" }),
-		(error: unknown) => error instanceof NativeReviewCliError
-			&& error.code === NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE
-			&& error.operation === "version",
-	);
-	assert.deepEqual(queue.calls.map((call) => call.arguments), [
-		["version"],
-		["review", "start", "--cwd", "/repo"],
-		["version"],
-	]);
-});
-
-test("native START rejects invalid committed-range combinations before any adapter invocation", async () => {
-	for (const baseRef of ["", "   ", " origin/main", "origin/main ", "origin\0main", "origin\nmain", "origin\rmain", "origin\tmain", "origin\u007fmain", 42, [], {}]) {
-		const queue = queuedAdapter([]);
-		const request = { cwd: "/repo", baseRef, committedOnly: true } as unknown as NativeStartRequest;
-		await assert.rejects(() => new NativeReviewCliV213(queue.adapter).start(request), TypeError);
-		assert.equal(queue.calls.length, 0);
-	}
-	for (const request of [
-		{ cwd: "/repo", baseRef: "origin/main" },
-		{ cwd: "/repo", baseRef: "origin/main", committedOnly: false },
-		{ cwd: "/repo", committedOnly: true },
-		{ cwd: "/repo", committedOnly: false },
-		{ cwd: "/repo", baseRef: "origin/main", committedOnly: "true" },
-	] as const) {
-		const queue = queuedAdapter([]);
-		await assert.rejects(() => new NativeReviewCliV213(queue.adapter).start(request as NativeStartRequest), TypeError);
-		assert.equal(queue.calls.length, 0);
-	}
-});
-
-test("native client accepts known versions only when they support the requested capability", async () => {
-	const accepted = queuedAdapter([VERSION_219, START]);
-	assert.equal((await new NativeReviewCliV213(accepted.adapter).start({ cwd: "/repo" })).lineageId, "lineage-1");
-	for (const rejectedVersion of ["2.1.1", "2.1.3"]) {
-		const incompatible = queuedAdapter([{ stdout: `gentle-ai ${rejectedVersion}\n` }]);
-		await assert.rejects(
-			() => new NativeReviewCliV213(incompatible.adapter).start({ cwd: "/repo" }),
-			(error: unknown) => error instanceof NativeReviewCliError
-				&& error.code === NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE,
-		);
-	}
-	const malformed = queuedAdapter([VERSION, { stdout: JSON.stringify({ ...JSON.parse(await fixture("validate-allow")), allowed: false }) }]);
-	await assert.rejects(
-		() => new NativeReviewCliV213(malformed.adapter).validate({ cwd: "/repo", gate: "post-apply", lineageId: "issue136-contract-runtime" }),
-		(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE,
-	);
-});
-
-test("native SDD status accepts an optional non-negative correction budget and preserves legacy absence", async () => {
-	const source = JSON.parse(await fixture("sdd-status")) as Record<string, unknown>;
-	const remediationState = source.remediationState as Record<string, unknown>;
-	for (const correctionBudget of [undefined, 0, 17]) {
-		const queue = queuedAdapter([VERSION_219, {
-			stdout: JSON.stringify({
-				...source,
-				remediationState: {
-					...remediationState,
-					...(correctionBudget === undefined ? {} : { correctionBudget }),
-				},
-			}),
-		}]);
-		const status = await new NativeReviewCliV213(queue.adapter).sddStatus({ cwd: "/repo", change: "native-review-authority-parity" });
-		assert.equal((status.remediationState as Record<string, unknown>).correctionBudget, correctionBudget);
-	}
-	for (const correctionBudget of [-1, 1.5]) {
-		const queue = queuedAdapter([VERSION_219, { stdout: JSON.stringify({ ...source, remediationState: { ...remediationState, correctionBudget } }) }]);
-		await assert.rejects(() => new NativeReviewCliV213(queue.adapter).sddStatus({ cwd: "/repo", change: "native-review-authority-parity" }), NativeReviewCliError);
-	}
-});
-
-test("version process failures retain their typed failure code", async () => {
-	for (const result of [
-		{ stdout: "", timedOut: true, code: NATIVE_REVIEW_ERROR_CODE.TIMEOUT },
-		{ stdout: "", exitCode: 2, code: NATIVE_REVIEW_ERROR_CODE.NON_ZERO },
-		{ stdout: "", signal: "SIGTERM" as NodeJS.Signals, code: NATIVE_REVIEW_ERROR_CODE.SIGNAL },
-		{ stdout: "", outputLimitExceeded: true, code: NATIVE_REVIEW_ERROR_CODE.OUTPUT_LIMIT },
-	]) {
-		const queue = queuedAdapter([result]);
-		await assert.rejects(
-			() => new NativeReviewCliV213(queue.adapter).start({ cwd: "/repo" }),
-			(error: unknown) => error instanceof NativeReviewCliError && error.code === result.code && error.operation === "version",
-		);
-	}
-});
-
-test("native output limits dominate killed timeout signals and expose the bounded configuration guidance", async () => {
-	const assertOutputLimit = (error: unknown): boolean => {
-		const value = error as { name?: unknown; code?: unknown; diagnostics?: { timed_out?: unknown; output_limit_exceeded?: unknown; max_buffer_bytes?: unknown; configuration_hint?: unknown } };
-		const diagnostics = value.diagnostics;
-		return value.name === "NativeReviewCliError"
-			&& value.code === NATIVE_REVIEW_ERROR_CODE.OUTPUT_LIMIT
-			&& diagnostics?.timed_out === false
-			&& diagnostics?.output_limit_exceeded === true
-			&& diagnostics?.max_buffer_bytes === NATIVE_REVIEW_DEFAULT_MAX_BUFFER_BYTES
-			&& diagnostics?.configuration_hint === "Inspect native review state before any new START; GENTLE_PI_REVIEW_MAX_BUFFER_BYTES accepts a positive decimal up to 67108864.";
-	};
-	const queue = queuedAdapter([VERSION, { stdout: "", timedOut: true, outputLimitExceeded: true }]);
-	await assert.rejects(() => new NativeReviewCliV213(queue.adapter).start({ cwd: "/repo" }), assertOutputLimit);
-	const runtimeQueue = queuedAdapter([VERSION, { stdout: "", timedOut: true, outputLimitExceeded: true }]);
-	await assert.rejects(() => new RuntimeNativeReviewCliV214(runtimeQueue.adapter).start({ cwd: "/repo" }), assertOutputLimit);
-});
-
-test("native mutation uncertainty requires target status before any replay decision", async () => {
-	const queue = queuedAdapter([VERSION, { stdout: "", timedOut: true }]);
-	await assert.rejects(
-		() => new NativeReviewCliV213(queue.adapter).start({ cwd: "/repo" }),
-		(error: unknown) => error instanceof NativeReviewCliError
-			&& error.code === NATIVE_REVIEW_ERROR_CODE.TIMEOUT
-			&& error.mutationOutcome === "unknown"
-			&& error.nextAction === "review.status",
-	);
-});
-
-test("native clients resolve a bounded review output buffer override at construction and propagate it to child processes", async () => {
-	const expectedDefault = 16 * 1024 * 1024;
-	const override = "2097152";
-	const invalidOverrides = ["", "0", "-1", "1.5", "not-a-number", "67108865"];
-	const withOverride = <T>(value: string | undefined, callback: () => T): T => {
-		const previous = process.env.GENTLE_PI_REVIEW_MAX_BUFFER_BYTES;
-		try {
-			if (value === undefined) delete process.env.GENTLE_PI_REVIEW_MAX_BUFFER_BYTES;
-			else process.env.GENTLE_PI_REVIEW_MAX_BUFFER_BYTES = value;
-			return callback();
-		} finally {
-			if (previous === undefined) delete process.env.GENTLE_PI_REVIEW_MAX_BUFFER_BYTES;
-			else process.env.GENTLE_PI_REVIEW_MAX_BUFFER_BYTES = previous;
-		}
-	};
-	for (const [name, overrideValue, expected] of [
-		["default", undefined, expectedDefault],
-		["valid override", override, Number(override)],
-		...invalidOverrides.map((value) => [`invalid override ${JSON.stringify(value)}`, value, expectedDefault] as const),
-	] as const) {
-		const queue = queuedAdapter([VERSION, START]);
-		const client = withOverride(overrideValue, () => new NativeReviewCliV213(queue.adapter));
-		const v216 = withOverride(overrideValue, () => new NativeReviewCliV216(queue.adapter, "/package/.gentle-ai/gentle-ai"));
-		const runtimeV214 = withOverride(overrideValue, () => new RuntimeNativeReviewCliV214(queue.adapter, "/package/.gentle-ai/gentle-ai"));
-		const runtimeV216 = withOverride(overrideValue, () => new RuntimeNativeReviewCliV216(queue.adapter, "/package/.gentle-ai/gentle-ai"));
-		assert.equal(Reflect.get(v216, "maxBufferBytes"), expected, name);
-		assert.equal(Reflect.get(runtimeV214, "maxBufferBytes"), expected, `${name} runtime v214`);
-		assert.equal(Reflect.get(runtimeV216, "maxBufferBytes"), expected, `${name} runtime v216`);
-		await client.start({ cwd: "/repo" });
-		assert.deepEqual(queue.calls.map((call) => call.maxBufferBytes), [expected, expected], name);
-	}
-});
-
-test("native mutating commands omit the automatic timeout while preserving output caps", async () => {
-	const queue = queuedAdapter([
-		VERSION,
-		START,
-		VERSION,
-		{ stdout: await fixture("finalize") },
-		VERSION,
-		{ stdout: await fixture("bind-sdd") },
-	]);
-	const client = new NativeReviewCliV213(queue.adapter, "/package/.gentle-ai/v2.1.4/gentle-ai", 321, 654);
-	await client.start({ cwd: "/repo" });
-	await client.finalize({ cwd: "/repo", lineageId: "lineage-1" });
-	await client.bindSdd({ cwd: "/repo", change: "native-review-authority-parity", lineage: "issue136-contract-runtime", expectedBindingRevision: "" });
-	assert.deepEqual(queue.calls.map((call) => call.timeoutMs), [321, undefined, 321, undefined, 321, undefined]);
-	assert.deepEqual(queue.calls.map((call) => call.maxBufferBytes), [654, 654, 654, 654, 654, 654]);
-});
-
-test("native read-only commands and version checks retain the automatic timeout", async () => {
-	const queue = queuedAdapter([VERSION, { stdout: await fixture("validate-allow") }]);
-	await new NativeReviewCliV213(queue.adapter, "/package/.gentle-ai/v2.1.4/gentle-ai", 321).validate({ cwd: "/repo", gate: "post-apply", lineageId: "issue136-contract-runtime" });
-	assert.deepEqual(queue.calls.map((call) => call.timeoutMs), [321, 321]);
-});
-
-test("native process failures retain bounded sanitized process diagnostics and parsed denial evidence", async () => {
-	const denial = JSON.parse(await fixture("validate-deny")) as Record<string, unknown>;
-	const queue = queuedAdapter([VERSION, {
-		stdout: JSON.stringify(denial),
-		stderr: "token=super-secret\nBearer another-secret\n".repeat(2_000),
-		exitCode: 2,
-	}]);
-	await assert.rejects(
-		() => new NativeReviewCliV213(queue.adapter).validate({ cwd: "/repo", gate: "post-apply" }),
-		(error: unknown) => {
-			if (!(error instanceof NativeReviewCliError)) return false;
-			const diagnostics = (error as unknown as { diagnostics?: Record<string, unknown> }).diagnostics;
-			return error.code === NATIVE_REVIEW_ERROR_CODE.NON_ZERO
-				&& diagnostics?.operation === "review/validate"
-				&& diagnostics.exit_code === 2
-				&& diagnostics.stderr !== undefined
-				&& !String(diagnostics.stderr).includes("super-secret")
-				&& String(diagnostics.stderr).length <= 4_096
-				&& (diagnostics.denial as Record<string, unknown> | undefined)?.result === "scope-changed";
-		},
-	);
-});
-
-test("native diagnostics deterministically redact OSC/control sequences and quoted JSON secret values", async () => {
-	const denial = JSON.parse(await fixture("validate-deny")) as Record<string, unknown>;
-	const secretDiagnostic = [
-		"\u001b]8;;https://example.invalid/token\u0007click\u001b]8;;\u0007",
-		"\u001bPprivate-control\u001b\\",
-		'{"token":"token-value","PASSWORD":"password-value","secret":"secret-value","api_key":"key-value","apiKey":"camel-key","authorization":"authorization-value","cookie":"cookie-value","private_key":"private-value"}',
-	].join("\n");
-	const queue = queuedAdapter([VERSION, { stdout: JSON.stringify(denial), stderr: secretDiagnostic, exitCode: 2 }]);
-	await assert.rejects(
-		() => new NativeReviewCliV213(queue.adapter).validate({ cwd: "/repo", gate: "post-apply" }),
-		(error: unknown) => {
-			if (!(error instanceof NativeReviewCliError)) return false;
-			const diagnostics = error.diagnostics as unknown as Record<string, unknown>;
-			const stderr = String(diagnostics.stderr);
-			return error.code === NATIVE_REVIEW_ERROR_CODE.NON_ZERO
-				&& !/[\u0000-\u001f\u007f]/.test(stderr)
-				&& !["token-value", "password-value", "secret-value", "key-value", "camel-key", "authorization-value", "cookie-value", "private-value", ].some((secret) => stderr.includes(secret))
-				&& (diagnostics.denial as Record<string, unknown> | undefined)?.action === "create-new-lineage";
-		},
-	);
-});
-
-test("structured denial fields redact token-shaped secrets and obey the 1 KiB field limit", async () => {
-	const denial = JSON.parse(await fixture("validate-deny")) as Record<string, unknown>;
-	const context = denial.context as Record<string, unknown>;
-	const nested = context.denial as Record<string, unknown>;
-	const secret = "GITHUB_TOKEN=github-secret ACCESS_TOKEN=access-secret access_token=lower-secret CUSTOM_TOKEN=custom-secret";
-	const queue = queuedAdapter([VERSION, {
-		stdout: JSON.stringify({ ...denial, reason: `${secret} ${"x".repeat(2_000)}`, context: { ...context, denial: { ...nested, stage: secret, code: secret } } }),
-		stderr: "denied",
-		exitCode: 2,
-	}]);
-	await assert.rejects(
-		() => new NativeReviewCliV213(queue.adapter).validate({ cwd: "/repo", gate: "post-apply" }),
-		(error: unknown) => {
-			if (!(error instanceof NativeReviewCliError)) return false;
-			const denial = error.diagnostics.denial;
-			return denial !== undefined
-				&& [denial.reason, denial.denial?.stage, denial.denial?.code].every((field) => field !== undefined && field.length <= 1_024)
-				&& !JSON.stringify(denial).includes("secret");
-		},
-	);
-});
-
-test("native validate redacts and bounds returned structured-denial fields", async () => {
-	const denial = JSON.parse(await fixture("validate-deny")) as Record<string, unknown>;
-	const context = denial.context as Record<string, unknown>;
-	const nested = context.denial as Record<string, unknown>;
-	const secret = "GITHUB_TOKEN=github-secret ACCESS_TOKEN=access-secret access_token=lower-secret CUSTOM_TOKEN=custom-secret";
-	const queue = queuedAdapter([VERSION, {
-		stdout: JSON.stringify({
-			...denial,
-			reason: `${secret} ${"x".repeat(2_000)}`,
-			context: { ...context, denial: { ...nested, stage: secret, code: secret } },
-		}),
-		stderr: "Error: review gate denied: scope-changed\n",
-		exitCode: 1,
-	}]);
-	const result = await new NativeReviewCliV213(queue.adapter).validate({ cwd: "/repo", gate: "post-apply" });
-	const returned = result.gateContext.raw.denial as Record<string, string>;
-	assert.equal(result.reason.length <= 1_024, true);
-	assert.equal(returned.stage.length <= 1_024, true);
-	assert.equal(returned.code.length <= 1_024, true);
-	assert.equal(JSON.stringify({ reason: result.reason, returned }).includes("secret"), false);
-});
-
-test("native diagnostics reject non-canonical or extra structured-denial fields", async () => {
-	const published = JSON.parse(await fixture("validate-deny")) as Record<string, unknown>;
-	const context = published.context as Record<string, unknown>;
-	for (const body of [
-		{ ...published, unexpected: true },
-		{ ...published, context: { ...context, unexpected: true } },
-		{ ...published, context: { ...context, denial: { ...(context.denial as Record<string, unknown>), unexpected: true } } },
-		{ ...published, action: " create-new-lineage" },
-		{ ...published, reason: "reason " },
-	]) {
-		const queue = queuedAdapter([VERSION, { stdout: JSON.stringify(body), stderr: "denied", exitCode: 2 }]);
-		await assert.rejects(
-			() => new NativeReviewCliV213(queue.adapter).validate({ cwd: "/repo", gate: "post-apply" }),
-			(error: unknown) => error instanceof NativeReviewCliError
-				&& error.code === NATIVE_REVIEW_ERROR_CODE.NON_ZERO
-				&& error.diagnostics.denial === undefined,
-		);
-	}
-});
-
-test("native validate requires a strict allow body", async () => {
-	const queue = queuedAdapter([VERSION, { stdout: await fixture("validate-allow") }]);
-	const result = await new NativeReviewCliV213(queue.adapter).validate({ cwd: "/repo", gate: "post-apply", lineageId: "issue136-contract-runtime" });
-	assert.equal(result.allowed, true);
-	assert.equal(result.action, "continue");
-	assert.equal(result.gateContext.lineageId, "issue136-contract-runtime");
-});
-
-test("native validate requires the returned gate context to equal the requested gate", async () => {
-	const published = JSON.parse(await fixture("validate-allow")) as Record<string, unknown>;
-	for (const gate of ["", "pre-push"]) {
-		const queue = queuedAdapter([VERSION, {
-			stdout: JSON.stringify({
-				...published,
-				context: { ...(published.context as Record<string, unknown>), gate },
-			}),
-		}]);
-		await assert.rejects(
-			() => new NativeReviewCliV213(queue.adapter).validate({ cwd: "/repo", gate: "post-apply", lineageId: "issue136-contract-runtime" }),
-			(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE,
-		);
-	}
-	const denial = JSON.parse(await fixture("validate-deny")) as Record<string, unknown>;
-	const mismatch = queuedAdapter([VERSION, {
-		stdout: JSON.stringify({
-			...denial,
-			context: { ...(denial.context as Record<string, unknown>), gate: "pre-push" },
-		}),
-		stderr: "Error: review gate denied: scope-changed\n",
-		exitCode: 1,
-	}]);
-	await assert.rejects(
-		() => new NativeReviewCliV213(mismatch.adapter).validate({ cwd: "/repo", gate: "post-apply", lineageId: "issue136-contract-runtime" }),
-		(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE,
-	);
-});
-
-test("native validate decodes published structured denials from exit code 1", async () => {
-	const published = JSON.parse(await fixture("validate-deny-empty-context")) as Record<string, unknown>;
-	for (const [result, action] of [
-		["scope-changed", "create-new-lineage"],
-		["invalidated", "explicit-maintainer-action"],
-		["escalated", "stop"],
-	] as const) {
-		const queue = queuedAdapter([VERSION, {
-			stdout: JSON.stringify({ ...published, result, action }),
-			stderr: `Error: review gate denied: ${result}\n`,
-			exitCode: 1,
-		}]);
-		const denial = await new NativeReviewCliV213(queue.adapter).validate({ cwd: "/repo", gate: "post-apply", lineageId: "issue136-contract-runtime" });
-		assert.deepEqual({ result: denial.result, allowed: denial.allowed, action: denial.action }, { result, allowed: false, action });
-		assert.equal(denial.gateContext.raw.gate, "");
-	}
-});
-
-test("native validate keeps malformed and unexpected nonzero exits typed", async () => {
-	const denial = await fixture("validate-deny");
-	for (const scenario of [
-		{ result: { stdout: "", exitCode: 1 }, code: NATIVE_REVIEW_ERROR_CODE.EMPTY_OUTPUT },
-		{ result: { stdout: "{", exitCode: 1 }, code: NATIVE_REVIEW_ERROR_CODE.MALFORMED_JSON },
-		{ result: { stdout: denial, exitCode: 2 }, code: NATIVE_REVIEW_ERROR_CODE.NON_ZERO },
-		{ result: { stdout: denial, exitCode: 1, timedOut: true }, code: NATIVE_REVIEW_ERROR_CODE.TIMEOUT },
-		{ result: { stdout: denial, exitCode: 1, signal: "SIGTERM" as NodeJS.Signals }, code: NATIVE_REVIEW_ERROR_CODE.SIGNAL },
-	]) {
-		const queue = queuedAdapter([VERSION, scenario.result]);
-		await assert.rejects(
-			() => new NativeReviewCliV213(queue.adapter).validate({ cwd: "/repo", gate: "post-apply", lineageId: "issue136-contract-runtime" }),
-			(error: unknown) => error instanceof NativeReviewCliError && error.code === scenario.code && error.operation === "review/validate",
-		);
-	}
-	const unavailable: ExecFileAdapter = async (request) => {
-		if (request.arguments[0] === "version") return { stdout: VERSION.stdout, stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
-		throw Object.assign(new Error("spawn"), { code: "ENOENT" });
-	};
-	await assert.rejects(
-		() => new NativeReviewCliV213(unavailable).validate({ cwd: "/repo", gate: "post-apply" }),
-		(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.UNAVAILABLE,
-	);
-});
-
-
-test("native decoders reject every one-field schema mutation", async () => {
-	const operations = [
-		{ fixtureName: "start", invoke: (client: NativeReviewCliV213) => client.start({ cwd: "/repo", lineageId: "lineage-1" }) },
-		{ fixtureName: "finalize", optionalKeys: ["receipt_path"], invoke: (client: NativeReviewCliV213) => client.finalize({ cwd: "/repo", lineageId: "lineage-1" }) },
-		{ fixtureName: "validate-allow", invoke: (client: NativeReviewCliV213) => client.validate({ cwd: "/repo", gate: "post-apply", lineageId: "issue136-contract-runtime" }) },
-		{ fixtureName: "bind-sdd", invoke: (client: NativeReviewCliV213) => client.bindSdd({ cwd: "/repo", change: "native-review-authority-parity", lineage: "issue136-contract-runtime", expectedBindingRevision: "" }) },
-		{ fixtureName: "sdd-status", optionalKeys: ["reviewGate", "reviewTransaction", "phaseInstructions"], invoke: (client: NativeReviewCliV213) => client.sddStatus({ cwd: "/repo", change: "native-review-authority-parity" }) },
-		{ fixtureName: "sdd-status-engram", optionalKeys: ["reviewGate", "reviewTransaction", "phaseInstructions"], invoke: (client: NativeReviewCliV213) => client.sddStatus({ cwd: "/repo", change: "native-review-authority-parity" }) },
-	];
-	for (const operation of operations) {
-		const fixtureBody = JSON.parse(await fixture(operation.fixtureName)) as Record<string, unknown>;
-		for (const [key, value] of Object.entries(fixtureBody)) {
-			const missing = { ...fixtureBody };
-			delete missing[key];
-			for (const mutated of [...(operation.optionalKeys?.includes(key) ? [] : [missing]), { ...fixtureBody, [key]: typeof value === "string" ? 1 : "wrong-type" }]) {
-				const queue = queuedAdapter([VERSION, { stdout: JSON.stringify(mutated) }]);
-				await assert.rejects(() => operation.invoke(new NativeReviewCliV213(queue.adapter)), NativeReviewCliError, `${operation.fixtureName}.${key}`);
-			}
-		}
-	}
-});
-
-test("native decoders reject nested mutations and unknown enums", async () => {
-	const validate = JSON.parse(await fixture("validate-allow")) as Record<string, unknown>;
-	const bind = JSON.parse(await fixture("bind-sdd")) as Record<string, unknown>;
-	const status = JSON.parse(await fixture("sdd-status")) as Record<string, unknown>;
-	const start = JSON.parse(await fixture("start")) as Record<string, unknown>;
-	const finalization = JSON.parse(await fixture("finalize")) as Record<string, unknown>;
-	const cases = [
-		{ body: { ...start, risk_level: "unknown" }, invoke: (client: NativeReviewCliV213) => client.start({ cwd: "/repo" }) },
-		{ body: { ...start, selected_lenses: ["unknown"] }, invoke: (client: NativeReviewCliV213) => client.start({ cwd: "/repo" }) },
-		{ body: { ...finalization, state: "unknown" }, invoke: (client: NativeReviewCliV213) => client.finalize({ cwd: "/repo" }) },
-		{ body: { ...validate, context: { ...(validate.context as Record<string, unknown>), extra: true } }, invoke: (client: NativeReviewCliV213) => client.validate({ cwd: "/repo", gate: "post-apply" }) },
-		{ body: { ...bind, gate_context: { ...(bind.gate_context as Record<string, unknown>), candidate_tree: 1 } }, invoke: (client: NativeReviewCliV213) => client.bindSdd({ cwd: "/repo", change: "native-review-authority-parity", lineage: "issue136-contract-runtime", expectedBindingRevision: "" }) },
-		{ body: { ...status, nextRecommended: "unknown" }, invoke: (client: NativeReviewCliV213) => client.sddStatus({ cwd: "/repo", change: "native-review-authority-parity" }) },
-		{ body: { ...status, actionContext: { ...(status.actionContext as Record<string, unknown>), allowedEditRoots: [1] } }, invoke: (client: NativeReviewCliV213) => client.sddStatus({ cwd: "/repo", change: "native-review-authority-parity" }) },
-		{ body: { ...status, reviewGate: { ...(status.reviewGate as Record<string, unknown>), result: "deny" } }, invoke: (client: NativeReviewCliV213) => client.sddStatus({ cwd: "/repo", change: "native-review-authority-parity" }) },
-		{ body: { ...status, reviewTransaction: { ...(status.reviewTransaction as Record<string, unknown>), mode: "ordinary" } }, invoke: (client: NativeReviewCliV213) => client.sddStatus({ cwd: "/repo", change: "native-review-authority-parity" }) },
-		{ body: { ...status, reviewTransaction: { ...(status.reviewTransaction as Record<string, unknown>), snapshot: { ...((status.reviewTransaction as Record<string, unknown>).snapshot as Record<string, unknown>), extra: true } } }, invoke: (client: NativeReviewCliV213) => client.sddStatus({ cwd: "/repo", change: "native-review-authority-parity" }) },
-	];
-	for (const item of cases) {
-		const queue = queuedAdapter([VERSION, { stdout: JSON.stringify(item.body) }]);
-		await assert.rejects(() => item.invoke(new NativeReviewCliV213(queue.adapter)), NativeReviewCliError);
-	}
-});
-
-test("native decoders reject every nested response-field mutation", async () => {
-	const cases = [
-		{ fixtureName: "validate-allow", nestedKey: "context", optionalNestedKeys: ["store_revision", "genesis_revision", "chain_identity", "bundle_digest"], invoke: (client: NativeReviewCliV213) => client.validate({ cwd: "/repo", gate: "post-apply", lineageId: "issue136-contract-runtime" }) },
-		{ fixtureName: "bind-sdd", nestedKey: "gate_context", optionalNestedKeys: ["genesis_revision", "chain_identity", "bundle_digest"], invoke: (client: NativeReviewCliV213) => client.bindSdd({ cwd: "/repo", change: "native-review-authority-parity", lineage: "issue136-contract-runtime", expectedBindingRevision: "" }) },
-		{ fixtureName: "sdd-status", nestedKey: "actionContext", invoke: (client: NativeReviewCliV213) => client.sddStatus({ cwd: "/repo", change: "native-review-authority-parity" }) },
-		{ fixtureName: "sdd-status", nestedKey: "reviewGate", invoke: (client: NativeReviewCliV213) => client.sddStatus({ cwd: "/repo", change: "native-review-authority-parity" }) },
-		{ fixtureName: "sdd-status", nestedKey: "reviewTransaction", invoke: (client: NativeReviewCliV213) => client.sddStatus({ cwd: "/repo", change: "native-review-authority-parity" }) },
-		{ fixtureName: "sdd-status-engram", nestedKey: "artifacts", invoke: (client: NativeReviewCliV213) => client.sddStatus({ cwd: "/repo", change: "native-review-authority-parity" }) },
-	];
-	for (const item of cases) {
-		const body = JSON.parse(await fixture(item.fixtureName)) as Record<string, Record<string, unknown>>;
-		for (const [field, value] of Object.entries(body[item.nestedKey]!)) {
-			const missingNested = { ...body[item.nestedKey] };
-			delete missingNested[field];
-			const mutations = [
-				...(item.optionalNestedKeys?.includes(field) ? [] : [missingNested]),
-				{ ...body[item.nestedKey], [field]: typeof value === "string" ? 1 : "wrong-type" },
-				{ ...body[item.nestedKey], extra: true },
-			];
-			for (const nested of mutations) {
-				const queue = queuedAdapter([VERSION, { stdout: JSON.stringify({ ...body, [item.nestedKey]: nested }) }]);
-				await assert.rejects(() => item.invoke(new NativeReviewCliV213(queue.adapter)), NativeReviewCliError, `${item.fixtureName}.${item.nestedKey}.${field}`);
-			}
-		}
-	}
-});
-
-test("native process failures are typed and never authorize mutation", async () => {
-	const cases: Array<{ result?: QueuedResult; throws?: Error; code: string }> = [
-		{ throws: Object.assign(new Error("spawn"), { code: "ENOENT" }), code: NATIVE_REVIEW_ERROR_CODE.UNAVAILABLE },
-		{ result: { stdout: "", timedOut: true }, code: NATIVE_REVIEW_ERROR_CODE.TIMEOUT },
-		{ result: { stdout: "", signal: "SIGTERM" }, code: NATIVE_REVIEW_ERROR_CODE.SIGNAL },
-		{ result: { stdout: "", exitCode: 2 }, code: NATIVE_REVIEW_ERROR_CODE.NON_ZERO },
-		{ result: { stdout: START.stdout, stderr: "unexpected" }, code: NATIVE_REVIEW_ERROR_CODE.UNEXPECTED_STDERR },
-		{ result: { stdout: "", outputLimitExceeded: true }, code: NATIVE_REVIEW_ERROR_CODE.OUTPUT_LIMIT },
-		{ result: { stdout: "" }, code: NATIVE_REVIEW_ERROR_CODE.EMPTY_OUTPUT },
-		{ result: { stdout: "{" }, code: NATIVE_REVIEW_ERROR_CODE.MALFORMED_JSON },
-	];
-	for (const scenario of cases) {
-		const adapter: ExecFileAdapter = async (request) => {
-			if (request.arguments[0] === "version") return { ...VERSION, stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
-			if (scenario.throws) throw scenario.throws;
-			return { stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false, ...scenario.result! };
-		};
-		await assert.rejects(
-			() => new NativeReviewCliV213(adapter).start({ cwd: "/repo" }),
-			(error: unknown) => error instanceof NativeReviewCliError && error.code === scenario.code && error.mutationOutcome === "unknown" && error.nextAction === "review.status",
-		);
-	}
-});
-
-test("finalize stages every optional document privately and cleans it after failures", async () => {
-	const observed: string[] = [];
-	let nativeCall = 0;
-	const adapter: ExecFileAdapter = async (request) => {
-		nativeCall += 1;
-		if (nativeCall === 1) return { ...VERSION, stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
-		for (const argument of request.arguments) if (argument.includes("gentle-ai-finalize-")) observed.push(argument);
-		return { stdout: "{", stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
-	};
-	await assert.rejects(
-		() => new NativeReviewCliV213(adapter).finalize({
-			cwd: "/repo",
-			lensResults: [{ lens: "review-risk", document: { id: "risk" } }],
-			refuterDocument: { id: "refuter" },
-			validationDocument: { id: "validation" },
-			evidenceDocument: "evidence",
-		}),
-		NativeReviewCliError,
-	);
-	assert.equal(observed.filter((argument) => argument.endsWith(".json")).length, 3);
-	await Promise.all(observed.filter((argument) => argument.endsWith(".json")).map(async (path) => assert.rejects(() => import("node:fs/promises").then(({ stat }) => stat(path)))));
-});
-test("native review status uses the anticipated v2.1.5 contract, preserves Windows paths, and never reports mutation", async () => {
-	const queue = queuedAdapter([STATUS_VERSION, REVIEW_STATUS]);
-	const result = await new NativeReviewCliV213(queue.adapter).reviewStatus({ cwd: "C:\\repo with spaces" });
-	assert.equal(result.status, "clean");
-	assert.equal(result.complete, true);
-	assert.equal(result.authoritative, true);
-	assert.deepEqual(queue.calls.map((call) => call.arguments), [
-		["version"],
-		["review", "status", "--cwd", "C:\\repo with spaces"],
-	]);
-	assert.equal(queue.calls.length, 2);
-
-	const wrongRepository = queuedAdapter([STATUS_VERSION, { stdout: JSON.stringify({ ...JSON.parse(REVIEW_STATUS.stdout), repository: "C:\\other repository" }) }]);
-	await assert.rejects(
-		() => new NativeReviewCliV213(wrongRepository.adapter).reviewStatus({ cwd: "C:\\repo with spaces" }),
-		(error: unknown) => error instanceof NativeReviewCliError
-			&& error.code === NATIVE_REVIEW_ERROR_CODE.IDENTITY_MISMATCH
-			&& error.operation === "review/status"
-			&& error.mutationOutcome === "none",
-	);
-
-	const incomplete = queuedAdapter([STATUS_VERSION, { stdout: JSON.stringify({ ...JSON.parse(REVIEW_STATUS.stdout), complete: false, authoritative: false, status: "invalid" }) }]);
-	assert.equal((await new NativeReviewCliV213(incomplete.adapter).reviewStatus({ cwd: "C:\\repo with spaces" })).complete, false);
-
-	const populated = queuedAdapter([STATUS_VERSION, { stdout: JSON.stringify({ ...JSON.parse(REVIEW_STATUS.stdout), status: "active", entries: [{ version: "compact-v2", lineage_id: "lineage", path: "C:\\repo\\.git\\gentle-ai", status: "active", revision: "r1", recovery: { predecessor_lineage_id: "old", predecessor_revision: "r0", disposition: "scope_changed", reason: "scope", actor: "maintainer", recovered_at: "2026-07-14T00:00:00Z" }, problems: ["stale"] }], locks: [{ version: "compact-v2", path: "C:\\repo\\.git\\gentle-ai\\LOCK", status: "owned", owner: { schema: "gentle-ai.review-store-lock/v1", owner_id: "owner", pid: 1, host: "host", acquired_at: "2026-07-14T00:00:00Z" } }], diagnostics: [{ path: "C:\\repo\\.git\\gentle-ai", problem: "stale" }] }) }]);
-	const decoded = await new NativeReviewCliV213(populated.adapter).reviewStatus({ cwd: "C:\\repo with spaces" });
-	assert.deepEqual(decoded.entries[0]?.recovery?.predecessorLineageId, "old");
-	assert.deepEqual(decoded.locks[0]?.owner?.ownerId, "owner");
-	assert.deepEqual(decoded.diagnostics, [{ path: "C:\\repo\\.git\\gentle-ai", problem: "stale" }]);
-
-	const unsupportedLockSchema = queuedAdapter([STATUS_VERSION, {
-		stdout: JSON.stringify({
-			...JSON.parse(REVIEW_STATUS.stdout),
-			locks: [{
-				version: "compact-v2",
-				path: "C:\\repo\\.git\\gentle-ai\\LOCK",
-				status: "owned",
-				owner: { schema: "unexpected", owner_id: "owner", pid: 2_147_483_647, host: "host", acquired_at: "2026-07-14T00:00:00Z" },
-			}],
-		}),
-	}]);
-	await assert.rejects(
-		() => new NativeReviewCliV213(unsupportedLockSchema.adapter).reviewStatus({ cwd: "C:\\repo with spaces" }),
-		(error: unknown) => error instanceof NativeReviewCliError
-			&& error.code === NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE
-			&& error.operation === "review/status"
-			&& error.mutationOutcome === "none",
-	);
-
-	for (const body of [
-		{ ...JSON.parse(REVIEW_STATUS.stdout), complete: false, authoritative: true },
-		{ ...JSON.parse(REVIEW_STATUS.stdout), entries: [{ version: "compact-v2", lineage_id: "lineage", path: "C:\\repo\\.git\\gentle-ai", status: "active", problems: [], unexpected: true }] },
-		{ ...JSON.parse(REVIEW_STATUS.stdout), status: "unknown" },
-	]) {
-		const malformed = queuedAdapter([STATUS_VERSION, { stdout: JSON.stringify(body) }]);
-		await assert.rejects(
-			() => new NativeReviewCliV213(malformed.adapter).reviewStatus({ cwd: "C:\\repo with spaces" }),
-			(error: unknown) => error instanceof NativeReviewCliError
-				&& error.code === NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE
-				&& error.operation === "review/status"
-				&& error.mutationOutcome === "none",
-		);
-	}
-});
-
-test("native review status decodes and retains the v2.2.2 compact snapshot identity", async () => {
-	const snapshotIdentity = "sha256:0586c3d40c3acf3db92214ddaf07afe44ad862518b48d608ae4157377ab2f3cc";
-	const entry = {
-		version: "compact-v2",
-		lineage_id: "issue-136-v2-1-2-final",
-		path: "C:\\repo with spaces\\.git\\gentle-ai\\review-transactions\\v2\\issue-136-v2-1-2-final",
-		status: "active",
-		state: "reviewing",
-		revision: "sha256:8103efb360d10d1717a4d22e38c8b75074f99680ed6a5eb3ab40e0ed9fb69931",
-		snapshot_identity: snapshotIdentity,
-		problems: [],
-	};
-	const status = { ...JSON.parse(REVIEW_STATUS.stdout), status: "active", entries: [entry] };
-	const queue = queuedAdapter([{ stdout: "gentle-ai 2.2.2\n" }, { stdout: JSON.stringify(status) }]);
-	const decoded = await new NativeReviewCliV213(queue.adapter).reviewStatus({ cwd: "C:\\repo with spaces" });
-	assert.equal(decoded.entries[0]?.snapshotIdentity, snapshotIdentity);
-
-	const malformed = queuedAdapter([{ stdout: "gentle-ai 2.2.2\n" }, { stdout: JSON.stringify({ ...status, entries: [{ ...entry, snapshot_identity: snapshotIdentity.slice("sha256:".length) }] }) }]);
-	await assert.rejects(
-		() => new NativeReviewCliV213(malformed.adapter).reviewStatus({ cwd: "C:\\repo with spaces" }),
-		(error: unknown) => error instanceof NativeReviewCliError
-			&& error.code === NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE
-			&& error.operation === "review/status"
-			&& error.mutationOutcome === "none",
-	);
-});
-
-test("native review status decodes 2.1.8 released lock residue and keeps unknown lock statuses fail-closed", async () => {
-	// gentle-ai 2.1.8 leaves review-transactions/v2/LOCK behind after ORDINARY
-	// successful operations and reports it as {"status":"released"} without
-	// owner metadata (issue #184; reproduced empirically against the system
-	// binary). The decoder must accept it or reviewStatus dead-ends with
-	// schema-incompatible on every repository that ever completed a review.
-	//
-	// Lock status stays a CLOSED enum extended by exactly `released` — unlike
-	// the cause_category widening in review-integration-v2 (diagnostic
-	// metadata nothing routes on), lock status routes blocking behavior in the
-	// controller, so an unknown future status must keep failing closed rather
-	// than being silently classified as blocking or non-blocking.
-	const releasedLock = { version: "compact-v2", path: "C:\\repo\\.git\\gentle-ai\\review-transactions\\v2\\LOCK", status: "released" };
-	const released = queuedAdapter([STATUS_VERSION, { stdout: JSON.stringify({ ...JSON.parse(REVIEW_STATUS.stdout), status: "approved", locks: [releasedLock] }) }]);
-	const decoded = await new NativeReviewCliV213(released.adapter).reviewStatus({ cwd: "C:\\repo with spaces" });
-	assert.equal(decoded.status, "approved");
-	assert.deepEqual(decoded.locks, [{ version: "compact-v2", path: "C:\\repo\\.git\\gentle-ai\\review-transactions\\v2\\LOCK", status: "released" }]);
-
-	// Residual dead-owner metadata may still accompany a released entry.
-	const releasedWithOwner = queuedAdapter([STATUS_VERSION, { stdout: JSON.stringify({ ...JSON.parse(REVIEW_STATUS.stdout), locks: [{ ...releasedLock, owner: { schema: "gentle-ai.review-store-lock/v1", owner_id: "dead-owner", pid: 1, host: "host", acquired_at: "2026-07-14T00:00:00Z" } }] }) }]);
-	assert.equal((await new NativeReviewCliV213(releasedWithOwner.adapter).reviewStatus({ cwd: "C:\\repo with spaces" })).locks[0]?.owner?.ownerId, "dead-owner");
-
-	for (const status of ["Released", "stale", "unknown-future-status", ""]) {
-		const malformed = queuedAdapter([STATUS_VERSION, { stdout: JSON.stringify({ ...JSON.parse(REVIEW_STATUS.stdout), locks: [{ ...releasedLock, status }] }) }]);
-		await assert.rejects(
-			() => new NativeReviewCliV213(malformed.adapter).reviewStatus({ cwd: "C:\\repo with spaces" }),
-			(error: unknown) => error instanceof NativeReviewCliError
-				&& error.code === NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE
-				&& error.operation === "review/status"
-				&& error.mutationOutcome === "none",
-		);
-	}
-});
-
-test("native review status accepts a canonical POSIX symlink repository identity", async (t) => {
-	if (process.platform === "win32") return t.skip("directory symlink creation requires elevated Windows privileges");
-	const repository = await mkdtemp(join(tmpdir(), "gentle-pi-native-status-"));
-	const alias = `${repository}-alias`;
-	await symlink(repository, alias);
-	t.after(async () => { await rm(alias); await rm(repository, { recursive: true }); });
-	const queue = queuedAdapter([STATUS_VERSION, { stdout: JSON.stringify({ ...JSON.parse(REVIEW_STATUS.stdout), repository }) }]);
-	assert.equal((await new NativeReviewCliV213(queue.adapter).reviewStatus({ cwd: alias })).repository, repository);
-});
-
-test("native review status keeps v2.1.4 truthfully unsupported", async () => {
-	const queue = queuedAdapter([VERSION]);
-	await assert.rejects(
-		() => new NativeReviewCliV213(queue.adapter).reviewStatus({ cwd: "/repo" }),
-		(error: unknown) => error instanceof NativeReviewCliError
-			&& error.code === NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE
-			&& error.operation === "version"
-			&& error.mutationOutcome === "none",
-	);
-	assert.deepEqual(queue.calls.map((call) => call.arguments), [["version"]]);
-});
-
-async function fixture(name: string): Promise<string> {
-	return readFile(new URL(`./fixtures/native-review-cli/v2.1.3/${name}.json`, import.meta.url), "utf8");
+function client(adapter: ExecFileAdapter): NativeReviewCliV216 {
+	return new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai", 30_000, 1024 * 1024);
 }
 
-test("finalize ignores injected cleanup failures after native completion", async () => {
-	for (const native of [{ stdout: await fixture("finalize") }, { stdout: "{" }]) {
-		let cleanupAttempts = 0;
-		const queue = queuedAdapter([VERSION, native]);
-		const client = new NativeReviewCliV213(
-			queue.adapter,
-			"/package/.gentle-ai/v2.1.3/gentle-ai",
-			30_000,
-			1024 * 1024,
-			async () => {
-				cleanupAttempts += 1;
-				throw new Error("cleanup failed");
-			},
-		);
-		const finalize = () => client.finalize({ cwd: "/repo", lensResults: [{ lens: "review-risk", document: { id: "risk" } }] });
-		if (native.stdout === "{") {
-			await assert.rejects(finalize, (error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.MALFORMED_JSON && error.mutationOutcome === "unknown");
-		} else {
-			assert.match((await finalize()).storeRevision, /^sha256:[0-9a-f]{64}$/);
-		}
-		assert.equal(cleanupAttempts, 1);
+const modeClients = [
+	["factory", (adapter: ExecFileAdapter, executable: () => string) => createNativeReviewCli(adapter, executable)],
+	["constructor", (adapter: ExecFileAdapter, executable: () => string) => new NativeReviewCliV216(adapter, executable)],
+] as const;
+const modeCwd = "/isolated-review-mode-test";
+const modeExecutable = "/package/.gentle-ai/gentle-ai";
+
+function modeOutput(operation: "status" | "enable" | "disable", scope: "clone" | "global" | "both", global: "on" | "off", cloneLocal: "" | "off") {
+	const effective = cloneLocal === "off" || global === "off" ? "off" : "on";
+	const source = cloneLocal === "off" ? "clone_local" : "global";
+	return {
+		wire: JSON.stringify({ schema: "gentle-ai.review-mode/v1", operation, scope, status: { schema: "gentle-ai.rdd-mode-status/v1", global, clone_local: cloneLocal, effective, source } }),
+		decoded: { operation, scope, status: { global, cloneLocal, effective, source } },
+	};
+}
+
+test("native mode mutations honor each explicit clone or global scope", async (t) => {
+	const cases = [
+		{ operation: "enable", scope: "clone", global: "off", cloneLocal: "" },
+		{ operation: "disable", scope: "clone", global: "on", cloneLocal: "off" },
+		{ operation: "enable", scope: "global", global: "on", cloneLocal: "off" },
+		{ operation: "disable", scope: "global", global: "off", cloneLocal: "" },
+	] as const;
+	for (const [name, makeClient] of modeClients) for (const scenario of cases) {
+		await t.test(`${name}: ${scenario.operation} ${scenario.scope}`, async () => {
+			const expected = modeOutput(scenario.operation, scenario.scope, scenario.global, scenario.cloneLocal);
+			const queue = queuedAdapter([{ stdout: expected.wire, stderr: "", exitCode: 0 }]);
+			const review = makeClient(queue.adapter, () => modeExecutable);
+			const result = await review.reviewMode!({ cwd: modeCwd, operation: scenario.operation, scope: scenario.scope });
+			assert.deepEqual(result, expected.decoded);
+			assert.deepEqual(queue.calls, [{ file: modeExecutable, arguments: ["review", "mode", scenario.operation, "--cwd", modeCwd, "--scope", scenario.scope, "--json"], cwd: modeCwd, timeoutMs: undefined }]);
+		});
 	}
 });
 
-test("finalize cleanup survives every native exit path", async () => {
-	for (const result of [
-		{ stdout: await fixture("finalize") },
-		{ stdout: await fixture("finalize"), exitCode: 1 },
-		{ stdout: "", timedOut: true },
-		{ stdout: "{" },
-	]) {
-		const staged: string[] = [];
-		let call = 0;
-		const adapter: ExecFileAdapter = async (request) => {
-			call += 1;
-			if (call === 1) return { ...VERSION, stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
-			for (const argument of request.arguments) if (argument.includes("gentle-ai-finalize-")) staged.push(argument);
-			return { stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false, ...result };
-		};
-		const finalize = () => new NativeReviewCliV213(adapter).finalize({ cwd: "/repo", lensResults: [{ lens: "review-risk", document: { id: "risk" } }], refuterDocument: { id: "refuter" }, validationDocument: { id: "validation" }, evidenceDocument: "evidence" });
-		if (result.exitCode === 1 || result.timedOut || result.stdout === "{") await assert.rejects(finalize, NativeReviewCliError);
-		else await finalize();
-		await Promise.all(staged.filter((path) => path.endsWith(".json")).map(async (path) => assert.rejects(() => import("node:fs/promises").then(({ stat }) => stat(path)))));
+test("native mode status and mutations without scope preserve their exact argv and decoded status", async (t) => {
+	for (const [name, makeClient] of modeClients) for (const operation of ["status", "enable", "disable"] as const) {
+		await t.test(`${name}: ${operation}`, async () => {
+			const expected = modeOutput(operation, operation === "status" ? "both" : "clone", "on", operation === "disable" ? "off" : "");
+			const queue = queuedAdapter([{ stdout: expected.wire, stderr: "", exitCode: 0 }]);
+			const review = makeClient(queue.adapter, () => modeExecutable);
+			assert.deepEqual(await review.reviewMode!({ cwd: modeCwd, operation }), expected.decoded);
+			assert.deepEqual(queue.calls, [{ file: modeExecutable, arguments: ["review", "mode", operation, "--cwd", modeCwd, ...(operation === "status" ? [] : ["--scope", "clone"]), "--json"], cwd: modeCwd, timeoutMs: operation === "status" ? 30_000 : undefined }]);
+		});
 	}
 });
 
-test("native client rejects historical v2.1.3 START while decoding compatible fixtures", async () => {
-	const queue = queuedAdapter([
-		VERSION,
-		{ stdout: await fixture("start") },
-		VERSION,
-		{ stdout: await fixture("finalize") },
-		VERSION,
-		{ stdout: await fixture("validate-allow") },
-		VERSION,
-		{ stdout: await fixture("bind-sdd") },
-		VERSION,
-		{ stdout: await fixture("sdd-status") },
+test("native mode rejects unsupported scopes and status scopes before cwd or native access", async (t) => {
+	const cases = [
+		...(["enable", "disable"] as const).flatMap(operation => ["both", "", "GLOBAL", " global", null, 17].map(scope => ({ operation, scope, message: "Native review mode scope must be clone or global" }))),
+		...(["clone", "global"] as const).map(scope => ({ operation: "status", scope, message: "Native review mode scope is only valid for enable or disable" })),
+	];
+	for (const [name, makeClient] of modeClients) for (const scenario of cases) {
+		await t.test(`${name}: ${scenario.operation} ${String(scenario.scope)}`, async () => {
+			let cwdReads = 0, binaryResolutions = 0;
+			const expected = modeOutput(scenario.operation as "status" | "enable" | "disable", "clone", "on", "");
+			const queue = queuedAdapter([{ stdout: expected.wire }]);
+			const review = makeClient(queue.adapter, () => { binaryResolutions++; return modeExecutable; });
+			const request = { get cwd() { cwdReads++; return modeCwd; }, operation: scenario.operation, scope: scenario.scope } as unknown as NativeReviewModeRequest;
+			await assert.rejects(() => review.reviewMode!(request), { name: "TypeError", message: scenario.message });
+			assert.deepEqual({ cwdReads, binaryResolutions, calls: queue.calls.length }, { cwdReads: 0, binaryResolutions: 0, calls: 0 });
+		});
+	}
+});
+
+test("native mode binds operation and scope before asynchronous cwd resolution", async (t) => {
+	for (const [name, makeClient] of modeClients) for (const operation of ["status", "enable"] as const) {
+		await t.test(`${name}: ${operation}`, async () => {
+			const expected = modeOutput(operation, operation === "status" ? "both" : "global", "on", "off");
+			const queue = queuedAdapter([{ stdout: expected.wire }]);
+			const review = makeClient(queue.adapter, () => modeExecutable);
+			const request: NativeReviewModeRequest = { cwd: modeCwd, operation, ...(operation === "enable" ? { scope: "global" } : {}) };
+			const pending = review.reviewMode!(request);
+			request.operation = "disable";
+			request.scope = "clone";
+			assert.deepEqual(await pending, expected.decoded);
+			assert.deepEqual(queue.calls.map(call => call.arguments), [["review", "mode", operation, "--cwd", modeCwd, ...(operation === "enable" ? ["--scope", "global"] : []), "--json"]]);
+		});
+	}
+});
+
+test("scoped native mode surfaces stderr, exit, and malformed responses without claiming success", async (t) => {
+	const expected = modeOutput("enable", "global", "on", "off");
+	const cases = [
+		{ name: "nonzero", result: { stdout: "{}", stderr: "native refused\n", exitCode: 17 }, code: NATIVE_REVIEW_ERROR_CODE.NON_ZERO, stderr: "native refused", exit: 17 },
+		{ name: "stderr", result: { stdout: expected.wire, stderr: "unexpected notice\n", exitCode: 0 }, code: NATIVE_REVIEW_ERROR_CODE.UNEXPECTED_STDERR, stderr: "unexpected notice", exit: 0 },
+		{ name: "malformed JSON", result: { stdout: "not-json", stderr: "", exitCode: 0 }, code: NATIVE_REVIEW_ERROR_CODE.MALFORMED_JSON, stderr: undefined, exit: 0 },
+		{ name: "foreign operation", result: { stdout: modeOutput("disable", "global", "off", "").wire, stderr: "", exitCode: 0 }, code: NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE, stderr: undefined, exit: undefined },
+	] as const;
+	for (const [name, makeClient] of modeClients) for (const scenario of cases) {
+		await t.test(`${name}: ${scenario.name}`, async () => {
+			const queue = queuedAdapter([scenario.result]);
+			const review = makeClient(queue.adapter, () => modeExecutable);
+			const request = { cwd: modeCwd, operation: "enable", scope: "global" } as const;
+			await assert.rejects(() => review.reviewMode!(request), (error: unknown) => {
+				assert.ok(error instanceof NativeReviewCliError);
+				assert.equal(error.code, scenario.code);
+				assert.equal(error.operation, NATIVE_REVIEW_OPERATION.MODE);
+				assert.equal(error.mutationOutcome, "unknown");
+				assert.equal(error.diagnostics.stderr, scenario.stderr);
+				assert.equal(error.diagnostics.exit_code, scenario.exit);
+				return true;
+			});
+			assert.deepEqual(queue.calls.map(call => call.arguments), [["review", "mode", "enable", "--cwd", modeCwd, "--scope", "global", "--json"]]);
+		});
+	}
+});
+
+test("negotiated STATUS accepts the pinned v5 receipt before routing its transition", async () => {
+	const status = fixture("status-v5.captured.json");
+	const queue = queuedAdapter([{ stdout: JSON.stringify(status) }]);
+	const result = await client(queue.adapter).targetStatus({ cwd: "/repo", lineageId: "review-status-fixture", agent: "pi" });
+	assert.deepEqual(result.receipt, { status: "not_applicable" });
+	assert.equal(result.nextTransition?.kind, "collect");
+	assert.deepEqual(queue.calls[0]?.arguments, [
+		"review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo",
+		"--projection", "workspace", "--lineage", "review-status-fixture", "--agent", "pi", "--next-transition",
 	]);
-	const client = new NativeReviewCliV213(queue.adapter);
-	await assert.rejects(() => client.start({ cwd: "/repo", lineageId: "lineage-1" }), NativeReviewCliError);
-	const finalized = await client.finalize({ cwd: "/repo", lineageId: "lineage-1" });
-	assert.match(finalized.storeRevision, /^sha256:[0-9a-f]{64}$/);
-	assert.equal(finalized.action, "validate delivery with gentle-ai review validate --gate <gate>");
-	assert.equal((await client.validate({ cwd: "/repo", gate: "post-apply", lineageId: "issue136-contract-runtime" })).allowed, true);
-	assert.match((await client.bindSdd({ cwd: "/repo", change: "native-review-authority-parity", lineage: "issue136-contract-runtime", expectedBindingRevision: "" })).revision, /^sha256:[0-9a-f]{64}$/);
-	assert.equal((await client.sddStatus({ cwd: "/repo", change: "native-review-authority-parity" })).ready, true);
+	assert.equal(queue.calls[0]?.timeoutMs, 30_000);
 });
 
-test("native SDD readiness requires an unblocked post-review action with published allow evidence", async () => {
-	const openspec = JSON.parse(await fixture("sdd-status")) as Record<string, unknown>;
-	const engram = JSON.parse(await fixture("sdd-status-engram")) as Record<string, unknown>;
-	const actions = ["apply", "verify", "remediate", "archive", "review", "resolve-review", "resolve-blockers", "sdd-new", "select-change", "propose", "spec", "design", "tasks"] as const;
-	for (const source of [openspec, engram]) {
-		for (const nextRecommended of actions) {
-			const body = {
-				...source,
-				nextRecommended,
-				blockedReasons: [],
-				reviewGate: { result: "allow", reason: "current bound authority allows delivery" },
-			};
-			const queue = queuedAdapter([VERSION, { stdout: JSON.stringify(body) }]);
-			assert.equal(
-				(await new NativeReviewCliV213(queue.adapter).sddStatus({ cwd: "/repo", change: "native-review-authority-parity" })).ready,
-				nextRecommended === "verify" || nextRecommended === "archive",
-				`${source.artifactStore as string}:${nextRecommended}`,
-			);
-		}
-	}
+test("a final reviewer capture returns its native last-event closure without a follow-up command", async () => {
+	const closure = fixture("last-event-capture-result-approved.captured.json");
+	const queue = queuedAdapter([{ stdout: JSON.stringify(closure) }]);
+	const result = await client(queue.adapter).captureResult({
+		argumentTokens: ["--repository-context=rctx1_" + "a".repeat(64), "--lineage=review-c7c923a031112dd7"],
+		resultDocument: "{\"subject_hash\":\"sha256:captured\"}",
+	});
 
-	for (const body of [
-		{ ...openspec, nextRecommended: "verify", blockedReasons: [], reviewGate: undefined },
-		{ ...openspec, nextRecommended: "archive", blockedReasons: ["stale authority"], reviewGate: { result: "allow", reason: "allow before drift" } },
-		{ ...openspec, nextRecommended: "verify", blockedReasons: [], reviewGate: { result: "scope-changed", reason: "candidate changed" } },
-		{ ...openspec, nextRecommended: "archive", blockedReasons: [], reviewGate: { result: "invalidated", reason: "authority is stale" } },
-	]) {
-		const queue = queuedAdapter([VERSION, { stdout: JSON.stringify(body) }]);
-		assert.equal((await new NativeReviewCliV213(queue.adapter).sddStatus({ cwd: "/repo", change: "native-review-authority-parity" })).ready, false);
-	}
+	assert.equal("operation" in result && result.operation, "review/capture-result");
+	assert.deepEqual(queue.calls[0]?.arguments.slice(0, 4), ["review", "capture-result", "--repository-context=rctx1_" + "a".repeat(64), "--lineage=review-c7c923a031112dd7"]);
+	assert.equal(queue.calls.length, 1);
+	assert.equal(queue.calls[0]?.arguments.includes("--contract"), false);
 });
 
-// Phase 13.13 (migrate-review-integration-v2): with the kill switch off,
-// gentle-ai's gate result can never become "allow" (delivery follows ordinary
-// repository policy instead), so gating `ready` on result==="allow" alone
-// deadlocked readiness forever. `delivery` also arrived on the reviewGate
-// struct itself (json:"delivery,omitempty") without a corresponding optional
-// key on the decoder, so that payload was previously rejected outright rather
-// than merely read as not-ready.
-test("native SDD readiness unblocks on disabled/unmanaged delivery instead of deadlocking on a permanently non-allow gate result", async () => {
-	const openspec = JSON.parse(await fixture("sdd-status")) as Record<string, unknown>;
+test("correction-plan capture substitutes only the provider slot and closes natively", async () => {
+	const closure = fixture("last-event-capture-correction-plan.captured.json");
+	const queue = queuedAdapter([{ stdout: JSON.stringify(closure) }]);
+	const result = await client(queue.adapter).captureCorrectionPlan({
+		argumentTokens: ["--lineage=review-c7c923a031112dd7", "--correction-lines={{value}}"],
+		correctionLines: 7,
+		cwd: "/repo",
+	});
 
-	for (const nextRecommended of ["verify", "archive"] as const) {
-		const body = {
-			...openspec,
-			nextRecommended,
-			blockedReasons: [],
-			reviewGate: { result: "invalidated", reason: "review-driven development is disabled and no receipt governs this candidate, so delivery follows ordinary repository policy", delivery: "disabled/unmanaged" },
-		};
-		const queue = queuedAdapter([VERSION, { stdout: JSON.stringify(body) }]);
-		const status = await new NativeReviewCliV213(queue.adapter).sddStatus({ cwd: "/repo", change: "native-review-authority-parity" });
-		assert.equal(status.ready, true, `${nextRecommended} must be ready under disabled/unmanaged delivery even though result is not "allow"`);
-	}
-
-	// Blocked reasons still take priority over a legitimate unmanaged delivery.
-	const stillBlocked = {
-		...openspec, nextRecommended: "verify", blockedReasons: ["stale authority"],
-		reviewGate: { result: "invalidated", reason: "delivery follows ordinary repository policy", delivery: "disabled/unmanaged" },
-	};
-	const blockedQueue = queuedAdapter([VERSION, { stdout: JSON.stringify(stillBlocked) }]);
-	assert.equal((await new NativeReviewCliV213(blockedQueue.adapter).sddStatus({ cwd: "/repo", change: "native-review-authority-parity" })).ready, false);
-
-	// An unrecognized delivery value must still fail closed (exact enum, not a
-	// free string).
-	const unknownDelivery = {
-		...openspec, nextRecommended: "verify", blockedReasons: [],
-		reviewGate: { result: "invalidated", reason: "delivery follows ordinary repository policy", delivery: "unmanaged" },
-	};
-	const unknownQueue = queuedAdapter([VERSION, { stdout: JSON.stringify(unknownDelivery) }]);
+	assert.equal(result.operation, "review.capture-correction-plan");
+	assert.deepEqual(queue.calls[0]?.arguments, ["review", "capture-correction-plan", "--lineage=review-c7c923a031112dd7", "--correction-lines=7"]);
 	await assert.rejects(
-		() => new NativeReviewCliV213(unknownQueue.adapter).sddStatus({ cwd: "/repo", change: "native-review-authority-parity" }),
-		(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE,
+		() => client(queuedAdapter([]).adapter).captureCorrectionPlan({ argumentTokens: ["--a={{value}}", "--b={{value}}"], correctionLines: 1, cwd: "/repo" }),
+		/CAPTURE_CORRECTION_PLAN requires exactly one/,
 	);
 });
 
-test("native client decodes the exact v2.1.3 Engram artifact map", async () => {
-	const queue = queuedAdapter([VERSION, { stdout: await fixture("sdd-status-engram") }]);
-	const status = await new NativeReviewCliV213(queue.adapter).sddStatus({ cwd: "/repo", change: "native-review-authority-parity" });
-	assert.equal(status.artifactStore, "engram");
-	assert.equal(status.artifacts.reviewPolicy, "done");
-	assert.equal(status.ready, false);
+test("provider-owned refuter and targeted-validator vectors accept only their mapped terminal closures", async () => {
+	const captures = [
+		{
+			captureOperation: "review.capture-refuter",
+			closure: fixture("last-event-capture-refuter-approved.captured.json"),
+			closureOperation: "review.capture-refuter",
+			commandOperation: "capture-refuter",
+		},
+		{
+			captureOperation: "review.capture-validation",
+			closure: fixture("last-event-capture-validation-approved.captured.json"),
+			closureOperation: "review/capture-validation",
+			commandOperation: "capture-validation",
+		},
+	] as const;
+
+	for (const capture of captures) {
+		const queue = queuedAdapter([{ stdout: JSON.stringify(capture.closure) }]);
+		const result = await client(queue.adapter).captureProviderRole({
+			captureOperation: capture.captureOperation,
+			argumentTokens: ["--repository-context=rctx1_" + "a".repeat(64), "--agent=pi", "--execute=true"],
+			cwd: "/repo",
+		});
+		assert.equal("operation" in result && result.operation, capture.closureOperation);
+		assert.deepEqual(queue.calls[0]?.arguments, ["review", capture.commandOperation, "--repository-context=rctx1_" + "a".repeat(64), "--agent=pi", "--execute=true"]);
+	}
+
+	await assert.rejects(
+		() => client(queuedAdapter([]).adapter).captureProviderRole({ captureOperation: "review.capture-result", argumentTokens: ["--agent=pi"], cwd: "/repo" }),
+		/CAPTURE_PROVIDER_ROLE supports only/,
+	);
 });
 
-test("native client decodes the exact published non-allow result and rejects stale aliases", async () => {
-	const queue = queuedAdapter([VERSION, { stdout: await fixture("validate-deny"), stderr: "Error: review gate denied: scope-changed\n", exitCode: 1 }]);
-	const result = await new NativeReviewCliV213(queue.adapter).validate({ cwd: "/repo", gate: "post-apply", lineageId: "issue136-contract-runtime" });
-	assert.equal(result.result, "scope-changed");
-	assert.equal(result.allowed, false);
-	assert.equal(result.action, "create-new-lineage");
+// gentle-pi#638: the host relay's deterministic-failure exit declares the
+// bound slot unachievable through the native verb instead of leaving the
+// operator to re-spend an identical reviewer run. The invocation names the
+// slot's frozen binding fields (--lineage/--target/--expected-revision/
+// --request-hash), the machine-readable --reason, an optional bounded
+// --detail, and the opaque --repository-context the slot carried; Go
+// verifies all of them against the frozen authority before recording
+// anything (internal/cli/review_capture_unachievable.go).
+const UNACHIEVABLE_TARGET = `sha256:${"1".repeat(64)}`;
+const UNACHIEVABLE_REVISION = `sha256:${"3".repeat(64)}`;
+const UNACHIEVABLE_REQUEST_HASH = `sha256:${"0".repeat(64)}`;
+const UNACHIEVABLE_ARTIFACT = { schema: "gentle-ai.review-capture-unachievable/v1", lineage_id: "relay-lineage", target_identity: UNACHIEVABLE_TARGET, lens: "review-reliability", selected_order: 0, reason: "relay_transport_bound_exceeded", recorded: true };
+function unachievableRequest(cwd = "/repo") {
+	return { cwd, lineageId: "relay-lineage", targetIdentity: UNACHIEVABLE_TARGET, expectedRevision: UNACHIEVABLE_REVISION, requestHash: UNACHIEVABLE_REQUEST_HASH, reason: "relay_transport_bound_exceeded" };
+}
 
-	for (const stale of [
-		{ schema: "gentle-ai.review-gate-result/v1", result: "deny", allowed: false, action: "blocked", reason: "stale", gate_context: {} },
-		{ schema: "gentle-ai.review-sdd-binding/v1", repository: "repo", change: "native-review-authority-parity", path: "openspec/changes/native-review-authority-parity", lineage_id: "issue136-contract-runtime", authority_revision: "revision", receipt_hash: "receipt", binding_revision: "binding", gate_context: {} },
+test("capture-unachievable declares the exact slot binding and decodes its recorded artifact", async () => {
+	const queue = queuedAdapter([{ stdout: JSON.stringify(UNACHIEVABLE_ARTIFACT) }]);
+	const result = await client(queue.adapter).captureUnachievableLens({ ...unachievableRequest(), detail: "killed after 2256004ms against a 2256000ms relay bound", repositoryContext: "rctx1_" + "e".repeat(64) });
+	assert.deepEqual(result, { schema: "gentle-ai.review-capture-unachievable/v1", lineageId: "relay-lineage", targetIdentity: UNACHIEVABLE_TARGET, lens: "review-reliability", selectedOrder: 0, reason: "relay_transport_bound_exceeded", recorded: true });
+	// gentle-pi#822: --repository-context is authoritative and mutually exclusive with a path, so a declaration carrying one names no --cwd; the process still runs from request.cwd.
+	assert.deepEqual(queue.calls[0]?.arguments, ["review", "capture-unachievable", "--lineage", "relay-lineage", "--target", UNACHIEVABLE_TARGET, "--expected-revision", UNACHIEVABLE_REVISION, "--request-hash", UNACHIEVABLE_REQUEST_HASH, "--reason", "relay_transport_bound_exceeded", "--detail", "killed after 2256004ms against a 2256000ms relay bound", "--repository-context", "rctx1_" + "e".repeat(64)]);
+	assert.equal(queue.calls[0]?.cwd, "/repo", "the process working directory stays request.cwd even when --cwd is not passed as an argument");
+	assert.equal(queue.calls[0]?.timeoutMs, undefined, "the mutating declaration runs without the read-only negotiation timeout");
+
+	// the optional detail and repository context are genuinely optional
+	const bare = queuedAdapter([{ stdout: JSON.stringify(UNACHIEVABLE_ARTIFACT) }]);
+	await client(bare.adapter).captureUnachievableLens(unachievableRequest());
+	assert.deepEqual(bare.calls[0]?.arguments, ["review", "capture-unachievable", "--lineage", "relay-lineage", "--target", UNACHIEVABLE_TARGET, "--expected-revision", UNACHIEVABLE_REVISION, "--request-hash", UNACHIEVABLE_REQUEST_HASH, "--reason", "relay_transport_bound_exceeded", "--cwd", "/repo"]);
+	assert.equal(bare.calls[0]?.cwd, "/repo");
+});
+
+test("capture-unachievable measures detail in UTF-8 bytes, not UTF-16 code units", async () => {
+	const atLimit = queuedAdapter([{ stdout: JSON.stringify(UNACHIEVABLE_ARTIFACT) }]);
+	await client(atLimit.adapter).captureUnachievableLens({ ...unachievableRequest(), detail: "é".repeat(256) });
+	assert.equal(atLimit.calls.length, 1, "256 two-byte characters are exactly the 512-byte limit and must pass");
+
+	const oneCharBeyond = queuedAdapter([]);
+	await assert.rejects(() => client(oneCharBeyond.adapter).captureUnachievableLens({ ...unachievableRequest(), detail: "é".repeat(257) }), TypeError);
+	assert.equal(oneCharBeyond.calls.length, 0, "257 two-byte characters are 514 bytes and are refused before any process launches");
+
+	const shortButHeavy = queuedAdapter([]);
+	await assert.rejects(() => client(shortButHeavy.adapter).captureUnachievableLens({ ...unachievableRequest(), detail: "é".repeat(300) }), TypeError);
+	assert.equal(shortButHeavy.calls.length, 0, "300 code units pass a .length check but encode to 600 bytes and must throw");
+});
+
+test("capture-unachievable validates its request and artifact shape before and after the invocation", async () => {
+	for (const request of [
+		{ ...unachievableRequest(), lineageId: "" },
+		{ ...unachievableRequest(), targetIdentity: "not-a-sha" },
+		{ ...unachievableRequest(), expectedRevision: " " },
+		{ ...unachievableRequest(), requestHash: "sha256:short" },
+		{ ...unachievableRequest(), reason: "" },
+		{ ...unachievableRequest(), detail: "x".repeat(513) },
+		{ ...unachievableRequest(), repositoryContext: "no\u0000context" },
 	]) {
-		const staleQueue = queuedAdapter([VERSION, { stdout: JSON.stringify(stale) }]);
-		const client = new NativeReviewCliV213(staleQueue.adapter);
-		await assert.rejects(
-			() => "result" in stale
-				? client.validate({ cwd: "/repo", gate: "post-apply", lineageId: "issue136-contract-runtime" })
-				: client.bindSdd({ cwd: "/repo", change: "native-review-authority-parity", lineage: "issue136-contract-runtime", expectedBindingRevision: "" }),
-			NativeReviewCliError,
-		);
+		const queue = queuedAdapter([]);
+		await assert.rejects(() => client(queue.adapter).captureUnachievableLens(request), TypeError);
+		assert.equal(queue.calls.length, 0, "a malformed declaration is refused before any process launches");
 	}
-});
 
-test("native client rejects mutations, trailing JSON, and process uncertainty", async () => {
-	const start = JSON.parse(await fixture("start")) as Record<string, unknown>;
-	for (const body of [
-		{},
-		{ ...start, extra: true },
-		{ ...start, changed_lines: Number.MAX_SAFE_INTEGER + 1 },
+	for (const artifact of [
+		{ ...UNACHIEVABLE_ARTIFACT, schema: "gentle-ai.review-capture-unachievable/v2" },
+		{ ...UNACHIEVABLE_ARTIFACT, recorded: false },
+		{ ...UNACHIEVABLE_ARTIFACT, selected_order: -1 },
 	]) {
-		const queue = queuedAdapter([VERSION, { stdout: JSON.stringify(body) }]);
-		await assert.rejects(() => new NativeReviewCliV213(queue.adapter).start({ cwd: "/repo" }), NativeReviewCliError);
-	}
-	const trailing = queuedAdapter([VERSION, { stdout: `${await fixture("start")} {}` }]);
-	await assert.rejects(() => new NativeReviewCliV213(trailing.adapter).start({ cwd: "/repo" }), NativeReviewCliError);
-	for (const result of [
-		{ stdout: "", stderr: "missing", exitCode: 1 },
-		{ stdout: await fixture("start"), stderr: "warning" },
-		{ stdout: "", timedOut: true },
-	]) {
-		const queue = queuedAdapter([VERSION, result]);
-		await assert.rejects(
-			() => new NativeReviewCliV213(queue.adapter).start({ cwd: "/repo" }),
-			(error: unknown) => error instanceof NativeReviewCliError && error.mutationOutcome === "unknown",
-		);
+		const queue = queuedAdapter([{ stdout: JSON.stringify(artifact) }]);
+		await assert.rejects(() => client(queue.adapter).captureUnachievableLens(unachievableRequest()));
+		assert.equal(queue.calls.length, 1);
 	}
 });
 
-test("native client rejects extra fields in finalize, bind, and bound SDD status fixtures", async () => {
-	const finalize = JSON.parse(await fixture("finalize")) as Record<string, unknown>;
-	const bind = JSON.parse(await fixture("bind-sdd")) as Record<string, unknown>;
-	const status = JSON.parse(await fixture("sdd-status")) as Record<string, unknown>;
-	const cases = [
-		{ invoke: (client: NativeReviewCliV213) => client.finalize({ cwd: "/repo", lineageId: "lineage-1" }), body: { ...finalize, extra: true } },
-		{ invoke: (client: NativeReviewCliV213) => client.bindSdd({ cwd: "/repo", change: "native-review-authority-parity", lineage: "lineage-1", expectedBindingRevision: "" }), body: { ...bind, extra: true } },
-		{ invoke: (client: NativeReviewCliV213) => client.sddStatus({ cwd: "/repo", change: "native-review-authority-parity" }), body: { ...status, extra: true } },
-	];
-	for (const item of cases) {
-		const queue = queuedAdapter([VERSION, { stdout: JSON.stringify(item.body) }]);
-		await assert.rejects(() => item.invoke(new NativeReviewCliV213(queue.adapter)), NativeReviewCliError);
-	}
+test("an older binary's unknown-verb refusal classifies as a capability signal, not a capture failure", async () => {
+	const queue = queuedAdapter([{ stdout: "", stderr: 'Error: unknown review command "capture-unachievable"\n', exitCode: 1 }]);
+	const error = await client(queue.adapter).captureUnachievableLens(unachievableRequest()).then(() => undefined, (caught: unknown) => caught);
+	assert.ok(error instanceof NativeReviewCliError, "an empty-stdout refusal rejects with the typed CLI error carrying stderr diagnostics");
+	assert.equal(isNativeReviewUnachievableVerbRefused(error), true);
+
+	// Every other stderr — a typed binding-mismatch refusal, a timeout, or a
+	// clean run — is a real outcome, never a capability signal.
+	assert.equal(isNativeReviewUnachievableVerbRefused(new Error('unknown review command "capture-unachievable"')), false, "only the captured native stderr classifies");
+	const typedRefusal = new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.NON_ZERO, "review/capture-unachievable", true, true, "native capture-unachievable refused", { operation: "review/capture-unachievable", error_code: NATIVE_REVIEW_ERROR_CODE.NON_ZERO, exit_code: 1, timed_out: false, output_limit_exceeded: false, stderr: "Error: review capture-unachievable binding does not match the current reviewing authority [invalid_request]" });
+	assert.equal(isNativeReviewUnachievableVerbRefused(typedRefusal), false);
 });
 
-test("native finalize stages ordered private result documents and removes them after decoding", async () => {
-	const observed: Array<{ flag: string; file: string; mode: number; content: string }> = [];
-	let finalizeArguments: readonly string[] = [];
-	let call = 0;
-	const adapter: ExecFileAdapter = async (request) => {
-		call += 1;
-		if (call === 1) return { ...VERSION, stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
-		finalizeArguments = request.arguments;
-		for (let index = 0; index < request.arguments.length; index += 1) {
-			if (["--result", "--refuter", "--validation", "--evidence"].includes(request.arguments[index]!)) {
-				const path = request.arguments[index + 1]!;
-				const { readFile, stat } = await import("node:fs/promises");
-				observed.push({ flag: request.arguments[index]!, file: path, mode: (await stat(path)).mode & 0o777, content: await readFile(path, "utf8") });
-			}
-		}
-		return { stdout: await fixture("finalize"), stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
+test("nonzero targeted-validator capture preserves its dot-form typed failure", async () => {
+	const failure = {
+		schema: "gentle-ai.review-integration.failure/v2",
+		contract: "gentle-ai.review-integration/v2",
+		operation: "review.capture-validation",
+		phase: "native_running",
+		code: "targeted_validation_failed",
+		message: "the targeted validator rejected the candidate",
+		mutation_outcome: "unknown",
+		authority_applicability: "current_target",
+		retry_safe: false,
+		replayability: "status_required",
+		required_inputs: [],
+		next_action: "review.status",
 	};
-	await new NativeReviewCliV213(adapter).finalize({
-		cwd: "/repo",
-		lineageId: "lineage-1",
-		lensResults: [{ lens: "review-risk", document: { lens: "risk", findings: [], evidence: ["complete candidate reviewed"] } }],
-		refuterDocument: { results: [{ finding_id: "RISK-001", outcome: "inconclusive", proof_refs: ["differential-test:candidate still fails"] }] },
-		validationDocument: { original_criteria: { passed: false, evidence: ["acceptance still fails"] }, correction_regression: { passed: true, evidence: ["regression suite passes"] }, follow_ups: [{ observation: "Track the remaining failure", proof_refs: ["differential-test:candidate still fails"] }] },
-		evidenceDocument: "  focused verification failed\n\n",
-		failed: true,
-	});
-	assert.deepEqual(observed.map((entry) => entry.mode), [0o600, 0o600, 0o600, 0o600]);
-	assert.deepEqual(observed.map((entry) => entry.flag), ["--result", "--refuter", "--validation", "--evidence"]);
-	assert.deepEqual(observed.slice(0, 3).map((entry) => JSON.parse(entry.content)), [
-		{ lens: "risk", findings: [], evidence: ["complete candidate reviewed"] },
-		{ results: [{ finding_id: "RISK-001", outcome: "inconclusive", proof_refs: ["differential-test:candidate still fails"] }] },
-		{ original_criteria: { passed: false, evidence: ["acceptance still fails"] }, correction_regression: { passed: true, evidence: ["regression suite passes"] }, follow_ups: [{ observation: "Track the remaining failure", proof_refs: ["differential-test:candidate still fails"] }] },
-	]);
-	assert.equal(observed[3]?.content, "  focused verification failed\n\n");
-	assert.equal(finalizeArguments.at(-1), "--failed");
-	await Promise.all(observed.map(async (entry) => assert.rejects(() => import("node:fs/promises").then(({ stat }) => stat(entry.file)))));
+	const queue = queuedAdapter([{ stdout: JSON.stringify(failure), exitCode: 1 }]);
+	await assert.rejects(
+		() => client(queue.adapter).captureProviderRole({
+			captureOperation: "review.capture-validation",
+			argumentTokens: ["--repository-context=rctx1_" + "a".repeat(64), "--agent=pi", "--execute=true"],
+			cwd: "/repo",
+		}),
+		(error: unknown) => {
+			if (!(error instanceof NativeReviewIntegrationError)) return false;
+			assert.equal(error.failureEnvelope.operation, "review.capture-validation");
+			assert.equal(error.mutationOutcome, "unknown");
+			assert.equal(error.nextAction, "review.status");
+			assert.deepEqual(error.failureEnvelope.raw, failure);
+			return true;
+		},
+	);
+	assert.deepEqual(queue.calls[0]?.arguments, ["review", "capture-validation", "--repository-context=rctx1_" + "a".repeat(64), "--agent=pi", "--execute=true"]);
 });
 
-test("native finalize rejects only zero-length staged evidence before launch", async () => {
+test("malformed closure output remains a typed schema failure and never authorizes a retry", async () => {
+	const queue = queuedAdapter([{ stdout: JSON.stringify({ schema: "gentle-ai.review-last-event-closure/v1", operation: "review/capture-result" }) }]);
+	await assert.rejects(
+		() => client(queue.adapter).captureResult({ argumentTokens: ["--repository-context=rctx1_" + "a".repeat(64)], resultDocument: "{}" }),
+		(error: unknown) => error instanceof NativeReviewCliError
+			&& error.code === NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE
+			&& error.mutationOutcome === "unknown",
+	);
+	assert.equal(queue.calls.length, 1);
+});
+
+function currentStatusFixture(): Record<string, unknown> {
+	return fixture("status-v5.captured.json");
+}
+
+function negotiatedStartStatus(targetIdentity: string, tokens: readonly string[]): Record<string, unknown> {
+	const status = currentStatusFixture();
+	status.target_identity = targetIdentity;
+	const projection = status.projection as Record<string, unknown>;
+	projection.initial_snapshot_identity = targetIdentity;
+	projection.current_snapshot_identity = targetIdentity;
+	status.next_transition = {
+		kind: "execute",
+		reason_code: "review_start_required",
+		execute: {
+			operation: "review.start",
+			arguments: tokens.map((token) => {
+				const separator = token.indexOf("=");
+				return { name: token.slice(2, separator), value: token.slice(separator + 1), token };
+			}),
+			preconditions: [],
+			binding: { target_identity: targetIdentity },
+		},
+	};
+	return status;
+}
+
+const TARGET = `sha256:${"b".repeat(64)}`;
+const REPOSITORY_CONTEXT = `rctx1_${"c".repeat(64)}`;
+
+function reviewingStartV4(targetIdentity: string): Record<string, unknown> {
+	const start = fixture("start-v3-consent-granted.captured.json");
+	start.schema = "gentle-ai.review-integration.start/v4";
+	(start.repository_context as Record<string, unknown>).target_identity = targetIdentity;
+	for (const subject of start.artifact_subjects as Record<string, unknown>[]) subject.target_identity = targetIdentity;
+	const baseTree = start.base_tree as string;
+	start.next_transition = {
+		kind: "execute",
+		reason_code: "review_status_required",
+		execute: {
+			operation: "review.status",
+			arguments: [
+				{ name: "contract", value: "gentle-ai.review-integration/v2", token: "--contract=gentle-ai.review-integration/v2" },
+				{ name: "next-transition", value: "true", token: "--next-transition=true" },
+				{ name: "lineage", value: start.lineage_id, token: `--lineage=${start.lineage_id}` },
+				{ name: "agent", value: "pi", token: "--agent=pi" },
+				{ name: "base-ref", value: baseTree, token: `--base-ref=${baseTree}` },
+				{ name: "committed-only", value: "true", token: "--committed-only=true" },
+			],
+			preconditions: [],
+			binding: { target_identity: targetIdentity },
+		},
+	};
+	const execute = (start.next_transition as Record<string, unknown>).execute as Record<string, unknown>;
+	execute.selector_arguments = (execute.arguments as Record<string, unknown>[]).slice(-2).map((argument) => ({ ...argument }));
+	return start;
+}
+
+test("negotiated STATUS forwards its exact ordered workspace, base, lineage, and untracked selection argv", async () => {
+	const queue = queuedAdapter([{ stdout: JSON.stringify(currentStatusFixture()) }]);
+	const result = await client(queue.adapter).targetStatus({
+		cwd: "/repo with spaces",
+		projection: "staged",
+		baseRef: "origin/main",
+		committedOnly: true,
+		lineageId: "review-current",
+		agent: "pi",
+		untrackedScope: "select",
+		expectedUntrackedInventory: "inventory-sha256",
+		intendedUntracked: ["new.txt", "nested/other.txt"],
+	});
+	assert.equal(result.action, "start");
+	assert.deepEqual(queue.calls[0]?.arguments, [
+		"review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo with spaces",
+		"--projection", "staged", "--untracked-scope=select", "--expected-untracked-inventory=inventory-sha256",
+		"--intended-untracked=new.txt", "--intended-untracked=nested/other.txt", "--base-ref", "origin/main", "--committed-only",
+		"--lineage", "review-current", "--agent", "pi", "--next-transition",
+	]);
+	assert.equal(queue.calls[0]?.timeoutMs, 30_000);
+});
+
+test("negotiated STATUS emits the explicit committed selector argv", async () => {
+	const queue = queuedAdapter([{ stdout: JSON.stringify(currentStatusFixture()) }]);
+	await client(queue.adapter).targetStatus({
+		cwd: "/repo",
+		baseRef: "refs/heads/main",
+		committedOnly: true,
+	});
+	assert.deepEqual(queue.calls[0]?.arguments, [
+		"review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo",
+		"--projection", "workspace", "--base-ref", "refs/heads/main", "--committed-only", "--next-transition",
+	]);
+});
+
+test("negotiated STATUS rejects malformed committed selectors before launching a process", async () => {
+	for (const request of [
+		{ cwd: "/repo", baseRef: "", committedOnly: true },
+		{ cwd: "/repo", baseRef: 42, committedOnly: true },
+		{ cwd: "/repo", committedOnly: true },
+		{ cwd: "/repo", baseRef: "refs/heads/main" },
+		{ cwd: "/repo", baseRef: "refs/heads/main", committedOnly: false },
+		{ cwd: "/repo", baseRef: "refs/heads/main", committedOnly: "true" },
+	]) {
+		const queue = queuedAdapter([]);
+		// gentle-pi#822: these fixtures are intentionally mistyped (a numeric baseRef, a string committedOnly) — the repo's `as unknown as` idiom keeps the invalid shapes reaching the validator instead of widening the request type.
+		await assert.rejects(() => client(queue.adapter).targetStatus(request as unknown as NativeTargetStatusRequest), TypeError);
+		assert.equal(queue.calls.length, 0);
+	}
+});
+
+test("negotiated STATUS rejects malformed untracked selection before launching a process", async () => {
 	const queue = queuedAdapter([]);
 	await assert.rejects(
-		() => new NativeReviewCliV213(queue.adapter).finalize({ cwd: "/repo", evidenceDocument: "" }),
-		TypeError,
+		() => client(queue.adapter).targetStatus({ cwd: "/repo", untrackedScope: "select", expectedUntrackedInventory: "inventory", intendedUntracked: ["../escape"] }),
+		/unique repository-relative paths/,
 	);
 	assert.equal(queue.calls.length, 0);
 });
 
-test("native cancellation fails closed and preserves mutating ambiguity", async () => {
-	const adapter: ExecFileAdapter = async (request) => {
-		if (request.arguments[0] === "version") return { stdout: "gentle-ai 2.1.4\n", stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
-		const error = new Error("cancelled");
-		error.name = "AbortError";
-		throw error;
+test("negotiated STATUS rejects an unsupported provider execute operation before argv synthesis", async () => {
+	const status = currentStatusFixture();
+	status.next_transition = {
+		kind: "execute",
+		reason_code: "future_operation",
+		execute: { operation: "review.dispose-result", arguments: [], preconditions: [], binding: { target_identity: TARGET } },
 	};
+	const queue = queuedAdapter([{ stdout: JSON.stringify(status) }]);
 	await assert.rejects(
-		() => new NativeReviewCliV213(adapter).start({ cwd: "/repo" }),
+		() => client(queue.adapter).targetStatus({ cwd: "/repo" }),
+		(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.UNSUPPORTED_TRANSITION_OPERATION,
+	);
+	assert.equal(queue.calls.length, 1);
+});
+
+test("native START queries STATUS then executes only the provider-rendered ordered transition", async () => {
+	const tokens = [
+		"--contract=gentle-ai.review-integration/v2", "--cwd=/repo", `--target=${TARGET}`,
+		"--projection=workspace", "--agent=pi", "--consent=relay",
+	];
+	const queue = queuedAdapter([
+		{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens)) },
+		{ stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) },
+	]);
+	const result = await client(queue.adapter).start({ cwd: "/repo", targetIdentity: TARGET });
+	assert.equal(result.action, "closed");
+	assert.equal(result.hint, undefined);
+	assert.deepEqual(queue.calls.map((call) => call.arguments), [
+		["review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo", "--projection", "workspace", "--agent", "pi", "--next-transition"],
+		["review", "start", ...tokens],
+	]);
+});
+
+// Captured from the released gentle-ai 4.0.0 binary, which predates START
+// lens selection (verify-always-rdd-high S8).
+const LENS_SELECTION_UNSUPPORTED_FAILURE = {
+	schema: "gentle-ai.review-integration.failure/v2", contract: "gentle-ai.review-integration/v2", operation: "review.status",
+	phase: "preflight", code: "invalid_request", message: "The negotiated review request is invalid.", mutation_outcome: "not_started",
+	authority_applicability: "not_evaluated", retry_safe: true, replayability: "not_replayable", required_inputs: [],
+	next_action: "correct_request", cause: "flag provided but not defined: -lenses",
+};
+
+function contextClient(responses: QueuedResult[], features = ["start_request_context", "start_options_preflight"], executable = join(process.cwd(), "package.json")) {
+ const capabilities = JSON.parse(readFileSync(join(process.cwd(), "contracts/review-integration/v2/fixtures/capabilities.fixture.json"), "utf8"));
+ capabilities.executable.sha256 = "sha256:" + createHash("sha256").update(readFileSync(executable)).digest("hex");
+ capabilities.features.optional.push(...features.map(name => ({ name, supported: true, requires: [] })));
+ const queue = queuedAdapter([{ stdout: JSON.stringify(capabilities) }, ...responses]);
+ return { ...queue, client: new NativeReviewCliV216(queue.adapter, executable) };
+}
+
+test("START discovers capabilities before forwarding the explicit request file unchanged", async () => {
+ const path = "/repo/spec with spaces.md";
+ const tokens = ["--contract=gentle-ai.review-integration/v2", "--cwd=/repo", "--target=" + TARGET, "--projection=workspace", "--agent=pi", "--consent=relay", "--request-context=" + path];
+ const host = contextClient([
+  { stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens)) },
+  { stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) },
+ ]);
+ await host.client.start({ cwd: "/repo", requestContextPath: path });
+ assert.deepEqual(host.calls[0].arguments, ["review", "capabilities", "--contract", "gentle-ai.review-integration/v2"]);
+ assert.deepEqual(host.calls[1].arguments.slice(-3), ["--request-context", path, "--next-transition"]);
+ assert.deepEqual(host.calls[2].arguments, ["review", "start", ...tokens]);
+});
+
+test("request context reuses capabilities while every STATUS remains fresh", async () => {
+ const host = contextClient([1, 2].map(() => ({ stdout: JSON.stringify(negotiatedStartStatus(TARGET, [])) })));
+ for (let i = 0; i < 2; i++) await host.client.targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" });
+ assert.deepEqual(host.calls.map(call => call.arguments[1]), ["capabilities", "status", "status"]);
+});
+
+test("request context invalidates capabilities when executable bytes change", async t => {
+ const directory = mkdtempSync(join(tmpdir(), "context-capabilities-"));
+ t.after(() => rmSync(directory, { recursive: true, force: true }));
+ const executable = join(directory, "native");
+ writeFileSync(executable, "first executable");
+ const replacementCapabilities = JSON.parse(readFileSync(join(process.cwd(), "contracts/review-integration/v2/fixtures/capabilities.fixture.json"), "utf8"));
+ replacementCapabilities.executable.sha256 = "sha256:" + createHash("sha256").update("replacement executable").digest("hex");
+ const host = contextClient([{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, [])) }, { stdout: JSON.stringify(replacementCapabilities) }], undefined, executable);
+ await host.client.targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" });
+ writeFileSync(executable, "replacement executable");
+ // The old capability result cannot authorize a STATUS with the replacement.
+ await assert.rejects(host.client.targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" }), /provider does not support request context/);
+ assert.deepEqual(host.calls.map(call => call.arguments[1]), ["capabilities", "status", "capabilities"]);
+});
+
+test("request context never caches malformed capability discovery", async () => {
+ const host = contextClient([]);
+ let discoveries = 0;
+ const adapter: ExecFileAdapter = async request => {
+  if (++discoveries === 1) return { stdout: "{}", stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
+  return host.adapter(request);
+ };
+ const subject = new NativeReviewCliV216(adapter, join(process.cwd(), "package.json"));
+ await assert.rejects(subject.targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" }));
+ // The second discovery succeeds; only the subsequent unqueued STATUS fails.
+ await assert.rejects(subject.targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" }));
+ assert.deepEqual(host.calls.map(call => call.arguments[1]), ["capabilities", "status"]);
+});
+
+test("Windows request paths preserve exact START and consent spelling and reject normalization drift", async () => {
+ for (const path of ["C:\\work\\spec with spaces.md", "C:\\work\\spec.md.", "C:\\work\\spec.md ", "\\\\?\\C:\\work\\spec.md"]) {
+  // A trailing space is an invalid process string even before negotiation.
+  if (path.endsWith(" ")) {
+   const queue = queuedAdapter([]);
+   await assert.rejects(client(queue.adapter).start({ cwd: "/repo", requestContextPath: path }));
+   assert.equal(queue.calls.length, 0);
+   continue;
+  }
+  const tokens = ["--contract=gentle-ai.review-integration/v2", "--cwd=/repo", "--target=" + TARGET, "--projection=workspace", "--agent=pi", "--consent=relay", "--request-context=" + path];
+  const host = contextClient([{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens)) }, { stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) }]);
+  await host.client.start({ cwd: "/repo", requestContextPath: path });
+  assert.ok(host.calls[2].arguments.includes("--request-context=" + path));
+  const changed = path.startsWith("\\\\?\\") ? path.slice(4) : path.endsWith(".") ? path.slice(0, -1) : path.replaceAll("\\", "/");
+  const drift = contextClient([{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens.slice(0, -1).concat("--request-context=" + changed))) }]);
+  await assert.rejects(drift.client.start({ cwd: "/repo", requestContextPath: path }), /context/);
+  assert.equal(drift.calls.length, 2);
+  const raw = requestContextConsent(path);
+  const queue = queuedAdapter([{ stdout: JSON.stringify(reviewingStartV4(raw.target_identity)) }]);
+  await client(queue.adapter).answerConsent({ cwd: "/repo", consent: decodeReviewConsentV3(raw, "pi"), answer: "granted", requestContextPath: path });
+  assert.ok(queue.calls[0].arguments.includes(path));
+  const refused = queuedAdapter([]);
+  await assert.rejects(client(refused.adapter).answerConsent({ cwd: "/repo", consent: decodeReviewConsentV3(raw, "pi"), answer: "granted", requestContextPath: changed }), /context/);
+  assert.equal(refused.calls.length, 0);
+ }
+});
+
+test("request context refuses absent or unsupported advertised capabilities before STATUS or START", async () => {
+ for (const features of [[], ["start_request_context"], ["start_options_preflight"]]) {
+  const host = contextClient([], features);
+  await assert.rejects(host.client.start({ cwd: "/repo", requestContextPath: "/spec.md" }), /provider does not support request context/);
+  assert.equal(host.calls.length, 1);
+ }
+ const host = contextClient([]);
+ const adapter: ExecFileAdapter = async request => {
+  const response = await host.adapter(request);
+  const body = JSON.parse(response.stdout);
+  body.features.optional.find((f: { name: string }) => f.name === "start_request_context").supported = false;
+  return { ...response, stdout: JSON.stringify(body) };
+ };
+ await assert.rejects(new NativeReviewCliV216(adapter, join(process.cwd(), "package.json")).targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" }), /provider does not support request context/);
+ assert.equal(host.calls.length, 1);
+});
+
+test("START never drops requested context from a malformed provider transition", async () => {
+ const host = contextClient([{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, [])) }]);
+ await assert.rejects(host.client.start({ cwd: "/repo", requestContextPath: "/spec.md" }), /did not retain the requested context/);
+ assert.equal(host.calls.length, 2);
+});
+
+test("invalid request context paths are refused before any native invocation", async () => {
+	for (const path of ["", " spaced ", "bad\0path"]) {
+		const queue = queuedAdapter([]);
+		await assert.rejects(client(queue.adapter).start({ cwd: "/repo", requestContextPath: path }), /requestContextPath/);
+		assert.equal(queue.calls.length, 0);
+	}
+});
+
+test("native START preflights the agent lens selection through STATUS", async () => {
+	const tokens = [
+		"--contract=gentle-ai.review-integration/v2", "--cwd=/repo", `--target=${TARGET}`,
+		"--projection=workspace", "--agent=pi", "--consent=relay",
+		"--lenses=review-risk,review-reliability", "--lenses-reason=changes token parsing",
+	];
+	const queue = queuedAdapter([
+		{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens)) },
+		{ stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) },
+	]);
+	await client(queue.adapter).start({ cwd: "/repo", targetIdentity: TARGET, lenses: ["review-risk", "review-reliability"], lensesReason: "changes token parsing" });
+	assert.deepEqual(queue.calls.map((call) => call.arguments), [
+		["review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo", "--projection", "workspace", "--agent", "pi",
+			"--lenses", "review-risk,review-reliability", "--lenses-reason", "changes token parsing", "--next-transition"],
+		["review", "start", ...tokens],
+	]);
+});
+
+test("native START falls back to the tier default when the provider predates lens selection", async () => {
+	const tokens = [
+		"--contract=gentle-ai.review-integration/v2", "--cwd=/repo", `--target=${TARGET}`,
+		"--projection=workspace", "--agent=pi", "--consent=relay",
+	];
+	const queue = queuedAdapter([
+		{ stdout: JSON.stringify(LENS_SELECTION_UNSUPPORTED_FAILURE), exitCode: 1 },
+		{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens)) },
+		{ stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) },
+	]);
+	const result = await client(queue.adapter).start({ cwd: "/repo", targetIdentity: TARGET, lenses: ["review-risk"], lensesReason: "changes token parsing" });
+	assert.equal(result.action, "closed");
+	assert.deepEqual(queue.calls.map((call) => call.arguments), [
+		["review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo", "--projection", "workspace", "--agent", "pi",
+			"--lenses", "review-risk", "--lenses-reason", "changes token parsing", "--next-transition"],
+		["review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo", "--projection", "workspace", "--agent", "pi", "--next-transition"],
+		["review", "start", ...tokens],
+	]);
+});
+
+test("native START never retries a selection refusal that is not an unknown lens flag", async () => {
+	const refusal = { ...LENS_SELECTION_UNSUPPORTED_FAILURE, cause: 'review status --lenses names unknown lens "security"' };
+	const queue = queuedAdapter([{ stdout: JSON.stringify(refusal), exitCode: 1 }]);
+	await assert.rejects(
+		() => client(queue.adapter).start({ cwd: "/repo", targetIdentity: TARGET, lenses: ["security"], lensesReason: "why" }),
+		(error: unknown) => error instanceof NativeReviewIntegrationError && error.failureEnvelope.cause === refusal.cause,
+	);
+	assert.equal(queue.calls.length, 1);
+});
+
+test("native START relays provider-owned intended-untracked selection and transition argv verbatim", async () => {
+	const selectionValue = JSON.stringify(["new.ts", "nested/other.ts"]);
+	const selectionTokens = ["--selection-kind=untracked", "--selection-json={{value}}", "--selection-proof=provider-issued"];
+	const startTokens = [
+		"--contract=gentle-ai.review-integration/v2", "--cwd=/repo", `--target=${TARGET}`,
+		"--projection=workspace", "--agent=pi", "--consent=relay",
+	];
+	const queue = queuedAdapter([
+		{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, startTokens)) },
+		{ stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) },
+	]);
+	await client(queue.adapter).start({
+		cwd: "/repo",
+		targetIdentity: TARGET,
+		intendedUntrackedSelection: { argumentTokens: selectionTokens, value: selectionValue },
+	});
+	assert.deepEqual(queue.calls.map((call) => call.arguments), [
+		["review", "status", "--cwd", "/repo", "--selection-kind=untracked", `--selection-json=${selectionValue}`, "--selection-proof=provider-issued"],
+		["review", "start", ...startTokens],
+	]);
+	for (const flag of ["--untracked-scope", "--expected-untracked-inventory", "--intended-untracked", "--contract", "--agent", "--projection"]) {
+		assert.equal(queue.calls[0]?.arguments.includes(flag), false, flag);
+	}
+
+	for (const argumentTokens of [["--selection-json=value"], ["--selection-json={{value}}", "--duplicate={{value}}"], ["--selection-json={{value}}{{value}}"]]) {
+		const rejected = queuedAdapter([]);
+		await assert.rejects(
+			() => client(rejected.adapter).start({ cwd: "/repo", targetIdentity: TARGET, intendedUntrackedSelection: { argumentTokens, value: selectionValue } }),
+			/exactly one provider-issued \{\{value\}\} token/,
+		);
+		assert.equal(rejected.calls.length, 0);
+	}
+});
+
+test("native START retains the provider-owned START/v4 status transition in exact argument order", async () => {
+	const tokens = [
+		"--contract=gentle-ai.review-integration/v2", "--cwd=/repo", `--target=${TARGET}`,
+		"--projection=workspace", "--agent=pi", "--consent=relay",
+	];
+	const start = reviewingStartV4(TARGET);
+	const queue = queuedAdapter([
+		{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens)) },
+		{ stdout: JSON.stringify(start) },
+	]);
+	const result = await client(queue.adapter).start({ cwd: "/repo", targetIdentity: TARGET });
+	assert.deepEqual(result.nextTransition?.execute?.arguments.map((argument) => argument.token), [
+		"--contract=gentle-ai.review-integration/v2",
+		"--next-transition=true",
+		`--lineage=${result.lineageId}`,
+		"--agent=pi",
+		`--base-ref=${start.base_tree}`,
+		"--committed-only=true",
+	]);
+	assert.deepEqual(result.nextTransition?.execute?.selectorArguments?.map((argument) => argument.token), [
+		`--base-ref=${start.base_tree}`,
+		"--committed-only=true",
+	]);
+	assert.deepEqual(queue.calls[1]?.arguments, ["review", "start", ...tokens]);
+});
+
+test("native consent completion decodes START/v4 and replays its provider argv unchanged", async () => {
+	const rawConsent = fixture("consent-v3.captured.json");
+	rawConsent.agent = "pi";
+	for (const choice of rawConsent.choices as Record<string, unknown>[]) {
+		choice.invocation = String(choice.invocation)
+			.replace(/--cwd \S+ --target/, "--cwd /repo --target")
+			.replace(" --consent ", " --agent pi --consent ");
+	}
+	const consent = decodeReviewConsentV3(rawConsent, "pi");
+	const queue = queuedAdapter([{ stdout: JSON.stringify(reviewingStartV4(consent.targetIdentity)) }]);
+	const answered = await client(queue.adapter).answerConsent({ cwd: "/repo", consent, answer: "granted" });
+	assert.equal(answered.kind, "started");
+	if (answered.kind !== "started") throw new Error("expected started consent result");
+	assert.equal(answered.start.nextTransition?.execute?.operation, "review.status");
+	assert.deepEqual(queue.calls[0]?.arguments, consent.choices[0].invocation.split(" ").slice(1));
+});
+
+// Builds a Pi-bound consent/v3 envelope whose choices carry `--lenses-reason`
+// rendered exactly as `rendered`, plus the argv Pi must replay for the granted
+// choice when that rendering splits into `reason`.
+function consentWithLensReason(rendered: string, reason: string): { consent: ReturnType<typeof decodeReviewConsentV3>; expected: readonly string[] } {
+	const rawConsent = fixture("consent-v3.captured.json");
+	rawConsent.agent = "pi";
+	const expected: string[][] = [];
+	for (const choice of rawConsent.choices as Record<string, unknown>[]) {
+		const bound = String(choice.invocation)
+			.replace(/--cwd \S+ --target/, "--cwd /repo --target")
+			.replace(" --consent ", " --agent pi --lenses-reason REASON --consent ");
+		choice.invocation = bound.replace("REASON", () => rendered);
+		expected.push(bound.split(" ").slice(1).map((word) => word === "REASON" ? reason : word));
+	}
+	const consent = decodeReviewConsentV3(rawConsent, "pi");
+	assert.ok(consent.choices[0].invocation.includes(` --lenses-reason ${rendered} `));
+	return { consent, expected: expected[0]! };
+}
+
+// Answers the granted choice and proves Pi launched the package binary exactly
+// once with the exact argv, through execFile and never through a shell.
+async function assertLensReasonReplay(rendered: string, reason: string): Promise<void> {
+	const { consent, expected } = consentWithLensReason(rendered, reason);
+	const queue = queuedAdapter([{ stdout: JSON.stringify(reviewingStartV4(consent.targetIdentity)) }]);
+	const answered = await client(queue.adapter).answerConsent({ cwd: "/repo", consent, answer: "granted" });
+	assert.equal(answered.kind, "started");
+	assert.equal(queue.calls.length, 1);
+	assert.equal(queue.calls[0]?.file, "/package/.gentle-ai/gentle-ai");
+	assert.deepEqual(queue.calls[0]?.arguments, expected);
+	const replayed = queue.calls[0]?.arguments ?? [];
+	const reasonIndex = replayed.indexOf("--lenses-reason");
+	assert.deepEqual(replayed.slice(reasonIndex, reasonIndex + 2), ["--lenses-reason", reason]);
+}
+
+// gentle-ai renders a lens reason with POSIX shell quoting, so an apostrophe
+// arrives as `'...'\''...'`. Pi splits it into exact argv and never runs a shell.
+test("native consent answer replays a POSIX-quoted apostrophe lens reason as one exact argument", async () => {
+	await assertLensReasonReplay("'touched the package'\\''s parser'", "touched the package's parser");
+});
+
+test("native consent answer treats a backslash before an apostrophe outside quotes as an escaped apostrophe", async () => {
+	await assertLensReasonReplay("package\\'s", "package's");
+});
+
+test("native consent answer treats a backslash before a double quote outside quotes as an escaped double quote", async () => {
+	await assertLensReasonReplay('say\\"x\\"', 'say"x"');
+});
+
+test("native consent answer joins a token across a backslash-escaped space outside quotes", async () => {
+	await assertLensReasonReplay("touched\\ parser", "touched parser");
+});
+
+test("native consent answer keeps a backslash before any other character verbatim outside quotes", async () => {
+	await assertLensReasonReplay("C:\\repo", "C:\\repo");
+	await assertLensReasonReplay("\\\\server\\share", "\\\\server\\share");
+	await assertLensReasonReplay("touched\\nparser", "touched\\nparser");
+});
+
+test("native consent answer keeps single quotes literal around double quotes and backslashes", async () => {
+	await assertLensReasonReplay("'say \"x\" and \\y'", 'say "x" and \\y');
+	await assertLensReasonReplay("'touched the package\\'", "touched the package\\");
+});
+
+test("native consent answer keeps backslashes verbatim inside double quotes", async () => {
+	await assertLensReasonReplay('"C:\\repo\\"', "C:\\repo\\");
+});
+
+test("native consent answer still rejects an unterminated quote before launching the provider", async () => {
+	for (const rendered of ["'touched the package'\\''s parser", "'touched the package", '"say x']) {
+		const { consent } = consentWithLensReason(rendered, "unused");
+		const queue = queuedAdapter([]);
+		await assert.rejects(
+			() => client(queue.adapter).answerConsent({ cwd: "/repo", consent, answer: "granted" }),
+			(error: unknown) => error instanceof TypeError && error.message === "Native consent invocation has invalid quoting",
+		);
+		assert.deepEqual(queue.calls, []);
+	}
+});
+
+test("native START refuses invalid committed-range and target bindings before STATUS", async () => {
+	for (const request of [
+		{ cwd: "/repo", baseRef: "origin/main" },
+		{ cwd: "/repo", committedOnly: true },
+		{ cwd: "/repo", baseRef: " origin/main", committedOnly: true },
+		{ cwd: "/repo", targetIdentity: "not-a-sha" },
+	]) {
+		const queue = queuedAdapter([]);
+		await assert.rejects(() => client(queue.adapter).start(request), TypeError);
+		assert.equal(queue.calls.length, 0);
+	}
+});
+
+test("capture-result stages a private input and preserves provider tokens without adding a contract", async () => {
+	const queue = queuedAdapter([{ stdout: JSON.stringify(fixture("last-event-capture-result-approved.captured.json")) }]);
+	const result = await client(queue.adapter).captureResult({
+		argumentTokens: [`--repository-context=${REPOSITORY_CONTEXT}`, "--lineage=review-c7c923a031112dd7", "--target=sha256:captured"],
+		resultDocument: "{\"subject_hash\":\"sha256:captured\"}",
+	});
+	assert.equal("operation" in result && result.operation, "review/capture-result");
+	assert.deepEqual(queue.calls[0]?.arguments.slice(0, 5), ["review", "capture-result", `--repository-context=${REPOSITORY_CONTEXT}`, "--lineage=review-c7c923a031112dd7", "--target=sha256:captured"]);
+	assert.equal(queue.calls[0]?.arguments.includes("--contract"), false);
+	assert.equal(queue.calls[0]?.arguments.at(-2), "--input");
+	assert.equal(queue.calls[0]?.timeoutMs, undefined);
+});
+
+test("capture-result rejects an empty document and a conflicting repository context before launch", async () => {
+	for (const request of [
+		{ argumentTokens: [`--repository-context=${REPOSITORY_CONTEXT}`], resultDocument: "" },
+		{ argumentTokens: [`--repository-context=${REPOSITORY_CONTEXT}`], resultDocument: "{}", cwd: "/repo" },
+	]) {
+		const queue = queuedAdapter([]);
+		await assert.rejects(() => client(queue.adapter).captureResult(request), TypeError);
+		assert.equal(queue.calls.length, 0);
+	}
+});
+
+test("terminal correction and provider-role captures preserve unknown mutation failure semantics", async () => {
+	for (const run of [
+		(review: NativeReviewCliV216) => review.captureCorrectionPlan({ argumentTokens: ["--lineage=review-c7c923a031112dd7", "--correction-lines={{value}}"], correctionLines: 1, cwd: "/repo" }),
+		(review: NativeReviewCliV216) => review.captureProviderRole({ captureOperation: "review.capture-refuter", argumentTokens: ["--lineage=review-c7c923a031112dd7"], cwd: "/repo" }),
+	]) {
+		const queue = queuedAdapter([{ stdout: "", timedOut: true }]);
+		await assert.rejects(
+			() => run(client(queue.adapter)),
+			(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.TIMEOUT && error.mutationOutcome === "unknown" && error.nextAction === "review.status",
+		);
+	}
+});
+
+test("read-only STATUS process failures remain typed and never claim mutation", async () => {
+	for (const [result, code] of [
+		[{ stdout: "", outputLimitExceeded: true }, NATIVE_REVIEW_ERROR_CODE.OUTPUT_LIMIT],
+		[{ stdout: "", timedOut: true }, NATIVE_REVIEW_ERROR_CODE.TIMEOUT],
+		[{ stdout: "", signal: "SIGTERM" as NodeJS.Signals }, NATIVE_REVIEW_ERROR_CODE.SIGNAL],
+		[{ stdout: "not-json" }, NATIVE_REVIEW_ERROR_CODE.MALFORMED_JSON],
+	] as const) {
+		const queue = queuedAdapter([result]);
+		await assert.rejects(
+			() => client(queue.adapter).targetStatus({ cwd: "/repo" }),
+			(error: unknown) => error instanceof NativeReviewCliError && error.code === code && error.mutationOutcome === "none",
+		);
+	}
+});
+
+test("read-only STATUS rejects unexpected stderr and nonzero failures without decoding authority", async () => {
+	for (const result of [
+		{ stdout: JSON.stringify(currentStatusFixture()), stderr: "unexpected provider noise" },
+		{ stdout: JSON.stringify({ schema: "gentle-ai.review-integration.failure/v2" }), exitCode: 1 },
+	]) {
+		const queue = queuedAdapter([result]);
+		await assert.rejects(
+			() => client(queue.adapter).targetStatus({ cwd: "/repo" }),
+			(error: unknown) => error instanceof NativeReviewCliError && error.mutationOutcome === "none",
+		);
+	}
+});
+
+test("negotiated STATUS accepts only exact provider forecast narration on stderr", async () => {
+	const narration = [
+		"Forecast horizon: partial",
+		"step 1: collect; reason_code=provider_refuter_required; description=run the provider-owned refuter",
+		"Re-query STATUS after completing this partial head.",
+	].join("\n");
+	const accepted = queuedAdapter([{ stdout: JSON.stringify(currentStatusFixture()), stderr: narration }]);
+	assert.equal((await client(accepted.adapter).targetStatus({ cwd: "/repo" })).action, "start");
+
+	for (const stderr of [
+		"Forecast horizon: unknown",
+		`prefix ${narration}`,
+		`${narration}\nunexpected provider noise`,
+	]) {
+		const rejected = queuedAdapter([{ stdout: JSON.stringify(currentStatusFixture()), stderr }]);
+		await assert.rejects(
+			() => client(rejected.adapter).targetStatus({ cwd: "/repo" }),
+			(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.UNEXPECTED_STDERR,
+		);
+	}
+});
+
+test("native client requires an absolute package-local executable before any invocation", () => {
+	assert.throws(() => new NativeReviewCliV216(queuedAdapter([]).adapter, "gentle-ai"), /absolute package-local executable/);
+	assert.throws(() => new NativeReviewCliV216(queuedAdapter([]).adapter, "relative/gentle-ai"), /absolute package-local executable/);
+});
+
+// O012 migrated from the retired per-operation version probe. V216 executes
+// negotiated argv directly; this test proves the argv boundary without
+// resurrecting NativeReviewCliV213 or capability/version negotiation.
+test("native client executes current negotiated argv without a shell", async () => {
+	const literal = "$GENTLE_PI_MUST_NOT_EXPAND";
+	const result = await createNodeExecFileAdapter()({
+		file: process.execPath,
+		arguments: ["-p", "process.argv[1]", literal],
+		cwd: process.cwd(),
+		timeoutMs: 30_000,
+		maxBufferBytes: 1024,
+	});
+	assert.equal(result.exitCode, 0);
+	assert.equal(result.stderr, "");
+	assert.equal(result.stdout.trim(), literal);
+});
+
+test("current STATUS preserves bounded output configuration and output-limit precedence", async () => {
+	const previous = process.env.GENTLE_PI_REVIEW_MAX_BUFFER_BYTES;
+	try {
+		for (const [environmentValue, expectedBuffer] of [[undefined, NATIVE_REVIEW_DEFAULT_MAX_BUFFER_BYTES], ["2097152", 2_097_152], ["invalid", NATIVE_REVIEW_DEFAULT_MAX_BUFFER_BYTES]] as const) {
+			if (environmentValue === undefined) delete process.env.GENTLE_PI_REVIEW_MAX_BUFFER_BYTES;
+			else process.env.GENTLE_PI_REVIEW_MAX_BUFFER_BYTES = environmentValue;
+			const calls: Array<{ timeoutMs: number | undefined; maxBufferBytes: number }> = [];
+			const adapter: ExecFileAdapter = async (request) => {
+				calls.push({ timeoutMs: request.timeoutMs, maxBufferBytes: request.maxBufferBytes });
+				return { stdout: JSON.stringify(currentStatusFixture()), stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
+			};
+			await new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai").targetStatus({ cwd: "/repo" });
+			assert.deepEqual(calls, [{ timeoutMs: 30_000, maxBufferBytes: expectedBuffer }]);
+		}
+	} finally {
+		if (previous === undefined) delete process.env.GENTLE_PI_REVIEW_MAX_BUFFER_BYTES;
+		else process.env.GENTLE_PI_REVIEW_MAX_BUFFER_BYTES = previous;
+	}
+
+	const outputLimited = new NativeReviewCliV216(async () => ({
+		stdout: "", stderr: "", exitCode: 0, signal: "SIGTERM", timedOut: true, outputLimitExceeded: true,
+	}), "/package/.gentle-ai/gentle-ai");
+	await assert.rejects(
+		() => outputLimited.targetStatus({ cwd: "/repo" }),
 		(error: unknown) => error instanceof NativeReviewCliError
-			&& error.code === NATIVE_REVIEW_ERROR_CODE.CANCELLED
-			&& error.mutationOutcome === "unknown"
-			&& error.nextAction === "review.status",
+			&& error.code === NATIVE_REVIEW_ERROR_CODE.OUTPUT_LIMIT
+			&& error.mutationOutcome === "none"
+			&& error.diagnostics.timed_out === false
+			&& error.diagnostics.output_limit_exceeded === true
+			&& error.diagnostics.max_buffer_bytes === NATIVE_REVIEW_DEFAULT_MAX_BUFFER_BYTES
+			&& error.diagnostics.configuration_hint === "Inspect native review state before any new START; GENTLE_PI_REVIEW_MAX_BUFFER_BYTES accepts a positive decimal up to 67108864.",
 	);
 });
 
 test("node execFile adapter passes AbortSignal to child_process", async () => {
 	const controller = new AbortController();
-	const pending = createNodeExecFileAdapter()({ file: process.execPath, arguments: ["-e", "setTimeout(() => {}, 10_000)"], cwd: process.cwd(), timeoutMs: 30_000, maxBufferBytes: 1024, signal: controller.signal });
+	const pending = createNodeExecFileAdapter()({
+		file: process.execPath,
+		arguments: ["-e", "setTimeout(() => {}, 10_000)"],
+		cwd: process.cwd(),
+		timeoutMs: 30_000,
+		maxBufferBytes: 1024,
+		signal: controller.signal,
+	});
 	controller.abort();
 	await assert.rejects(pending, (error: unknown) => error instanceof Error && error.name === "AbortError");
 });
 
-test("native adapter receives the controller AbortSignal without an automatic mutation timeout", async () => {
+// On Windows, killing gentle-ai alone leaves its git children running against
+// the repository index; abort and timeout must take the whole tree down.
+test("node execFile adapter kills the whole process tree on Windows abort and timeout", async () => {
+	const killed: number[] = [];
+	const killProcessTree = (pid: number) => { killed.push(pid); process.kill(pid); };
+	const adapter = createNodeExecFileAdapter({ platform: "win32", killProcessTree });
+	const request = { file: process.execPath, arguments: ["-e", "setTimeout(() => {}, 10_000)"], cwd: process.cwd(), maxBufferBytes: 1024 };
+
+	const controller = new AbortController();
+	const aborted = adapter({ ...request, timeoutMs: 30_000, signal: controller.signal });
+	setTimeout(() => controller.abort(), 50);
+	await assert.rejects(aborted, (error: unknown) => error instanceof Error && error.name === "AbortError");
+	assert.equal(killed.length, 1, "abort kills the tree once");
+
+	const timedOut = await adapter({ ...request, timeoutMs: 50 });
+	assert.equal(timedOut.timedOut, true);
+	assert.equal(killed.length, 2, "timeout kills the tree once");
+
+	const preAborted = new AbortController();
+	preAborted.abort();
+	await assert.rejects(adapter({ ...request, timeoutMs: 30_000, signal: preAborted.signal }), (error: unknown) => error instanceof Error && error.name === "AbortError");
+	assert.equal(killed.length, 2, "an already-aborted call spawns nothing");
+
+	const finished = await adapter({ ...request, arguments: ["-p", "'done'"], timeoutMs: 30_000 });
+	assert.deepEqual([finished.exitCode, finished.stdout.trim(), finished.timedOut], [0, "done", false]);
+	assert.equal(killed.length, 2, "a call that finishes kills nothing");
+});
+
+// taskkill can be unavailable (AppLocker, a broken PATH): the deadline must
+// still hold, through a direct kill of gentle-ai itself.
+test("node execFile adapter still enforces the timeout on Windows when the tree kill does nothing", async () => {
+	const adapter = createNodeExecFileAdapter({ platform: "win32", killProcessTree: () => {} });
+	const startedAt = Date.now();
+	const result = await adapter({ file: process.execPath, arguments: ["-e", "setTimeout(() => {}, 5_000)"], cwd: process.cwd(), maxBufferBytes: 1024, timeoutMs: 100 });
+	assert.equal(result.timedOut, true);
+	assert.ok(Date.now() - startedAt < 3_000, `settled after ${Date.now() - startedAt}ms`);
+});
+
+// A descendant that inherited gentle-ai's stdout/stderr keeps the pipes open
+// after gentle-ai itself exits; the deadline must still hold.
+test("node execFile adapter enforces the Windows timeout when a descendant holds the inherited pipes", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "gentle-pi-tree-kill-"));
+	const pidFile = join(directory, "descendant.pid");
+	const script = `const { spawn } = require("node:child_process"); const d = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "inherit" }); require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(d.pid)); d.unref();`;
+	try {
+		const adapter = createNodeExecFileAdapter({ platform: "win32", killProcessTree: () => {} });
+		const startedAt = Date.now();
+		const pending = adapter({ file: process.execPath, arguments: ["-e", script], cwd: process.cwd(), maxBufferBytes: 1024, timeoutMs: 300 });
+		const result = await Promise.race([pending, new Promise<"unsettled">((resolve) => setTimeout(() => resolve("unsettled"), 6_000).unref())]);
+		assert.notEqual(result, "unsettled", "the call settles while the descendant still holds the pipes");
+		if (result === "unsettled") return;
+		assert.equal(result.timedOut, true);
+		assert.ok(Date.now() - startedAt < 4_000, `settled after ${Date.now() - startedAt}ms`);
+	} finally {
+		try { process.kill(Number(readFileSync(pidFile, "utf8"))); } catch { /* Already gone. */ }
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+// A bare "taskkill" resolves from the current directory first on Windows, so a
+// repository shipping its own taskkill.exe would run on any abort or timeout.
+test("Windows tree kill runs taskkill by its absolute System32 path from a trusted cwd", () => {
+	const calls: Array<{ file: string; args: readonly string[]; cwd: string }> = [];
+	const kill = createWindowsProcessTreeKiller({ SystemRoot: "D:\\Windows" }, (file, args, options) => { calls.push({ file, args, cwd: options.cwd }); return { on() {} }; });
+	kill(42);
+	assert.deepEqual(calls, [{ file: "D:\\Windows\\System32\\taskkill.exe", args: ["/pid", "42", "/T", "/F"], cwd: "D:\\Windows\\System32" }]);
+	assert.equal(windowsTaskkillPath({}), "C:\\Windows\\System32\\taskkill.exe");
+	assert.equal(windowsTaskkillPath({ SystemRoot: "relative\\dir" }), "C:\\Windows\\System32\\taskkill.exe", "a relative SystemRoot is never trusted");
+});
+
+test("capture-result receives the controller AbortSignal without an automatic mutation timeout", async () => {
 	const controller = new AbortController();
 	controller.abort();
-	let mutationTimeoutMs: number | undefined;
+	let receivedSignal: AbortSignal | undefined;
+	let receivedTimeout: number | undefined;
 	const adapter: ExecFileAdapter = async (request) => {
-		if (request.arguments[0] === "version") return { stdout: "gentle-ai 2.1.4\n", stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
-		mutationTimeoutMs = request.timeoutMs;
-		if (request.signal?.aborted) {
-			const error = new Error("cancelled");
-			error.name = "AbortError";
-			throw error;
-		}
-		throw new Error("missing AbortSignal");
+		receivedSignal = request.signal;
+		receivedTimeout = request.timeoutMs;
+		const error = new Error("cancelled");
+		error.name = "AbortError";
+		throw error;
 	};
 	await assert.rejects(
-		() => new NativeReviewCliV213(adapter).start({ cwd: "/repo", signal: controller.signal }),
+		() => new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai").captureResult({
+			argumentTokens: [`--repository-context=${REPOSITORY_CONTEXT}`],
+			resultDocument: "{}",
+			signal: controller.signal,
+		}),
 		(error: unknown) => error instanceof NativeReviewCliError
 			&& error.code === NATIVE_REVIEW_ERROR_CODE.CANCELLED
 			&& error.mutationOutcome === "unknown"
 			&& error.nextAction === "review.status",
 	);
-	assert.equal(mutationTimeoutMs, undefined);
+	assert.equal(receivedSignal, controller.signal);
+	assert.equal(receivedTimeout, undefined);
+});
+
+test("native review transport has no SDD operations or methods", () => {
+	assert.equal(Object.values(NATIVE_REVIEW_OPERATION).some((operation) => operation.startsWith("sdd-")), false);
+	const transport = client(queuedAdapter([]).adapter) as unknown as Record<string, unknown>;
+	assert.equal("sddStatus" in transport, false);
+	assert.equal("sddContinue" in transport, false);
+});
+
+test("read-only authority inventory rejects a repository identity mismatch after decoding", async () => {
+	const queue = queuedAdapter([{ stdout: JSON.stringify({
+		schema: "gentle-ai.review-authority-status/v1", operation: "review/status", repository: "/foreign-repository",
+		complete: true, authoritative: true, status: "clean", entries: [], locks: [], diagnostics: [],
+	}) }]);
+	await assert.rejects(
+		() => client(queue.adapter).reviewStatus({ cwd: "/repo" }),
+		(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.IDENTITY_MISMATCH && error.mutationOutcome === "none",
+	);
+	assert.deepEqual(queue.calls[0]?.arguments, ["review", "status", "--cwd", "/repo"]);
+});
+
+
+test("current native process boundary preserves caps, timeout classes, and sanitized diagnostics", async () => {
+	const calls: Array<{ timeoutMs: number | undefined; maxBufferBytes: number }> = [];
+	const adapter: ExecFileAdapter = async (request) => {
+		calls.push({ timeoutMs: request.timeoutMs, maxBufferBytes: request.maxBufferBytes });
+		if (request.arguments[1] === "capture-result") {
+			return { stdout: JSON.stringify(fixture("last-event-capture-result-approved.captured.json")), stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
+		}
+		return { stdout: JSON.stringify(currentStatusFixture()), stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
+	};
+	const review = new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai", 321, 654);
+	await review.targetStatus({ cwd: "/repo" });
+	await review.captureResult({ argumentTokens: [`--repository-context=${REPOSITORY_CONTEXT}`], resultDocument: "{}" });
+	assert.deepEqual(calls, [{ timeoutMs: 321, maxBufferBytes: 654 }, { timeoutMs: undefined, maxBufferBytes: 654 }]);
+
+	const diagnostics = queuedAdapter([{ stdout: JSON.stringify(currentStatusFixture()), stderr: "\u001b]8;;https://example.invalid/token\u0007token=super-secret\n" }]);
+	await assert.rejects(
+		() => client(diagnostics.adapter).targetStatus({ cwd: "/repo" }),
+		(error: unknown) => error instanceof NativeReviewCliError
+			&& error.code === NATIVE_REVIEW_ERROR_CODE.UNEXPECTED_STDERR
+			&& !String(error.diagnostics.stderr).includes("super-secret")
+			&& !/[\u0000-\u001f\u007f]/.test(String(error.diagnostics.stderr)),
+	);
+});
+
+test("authority inventory accepts compact discarded work and historical entry statuses", async () => {
+	const repository = process.cwd();
+	const discardedWork = { captured_lens_results: [], findings_present: false };
+	const statuses = ["incomplete-store-entry", "historical-pre-receipt", "invalidated"] as const;
+	const body = {
+		schema: "gentle-ai.review-authority-status/v1",
+		operation: "review/status",
+		repository,
+		complete: true,
+		authoritative: true,
+		status: "active",
+		entries: statuses.map((status) => ({
+			version: "compact-v2",
+			lineage_id: `review-${status}`,
+			path: `${repository}/.git/gentle-ai/${status}`,
+			status,
+			discarded_work: discardedWork,
+			problems: [],
+		})),
+		locks: [],
+		diagnostics: [],
+	};
+	const decoded = await client(queuedAdapter([{ stdout: JSON.stringify(body) }]).adapter).reviewStatus({ cwd: repository });
+	assert.deepEqual(decoded.entries.map((entry) => ({ status: entry.status, discardedWork: entry.discardedWork })), statuses.map((status) => ({
+		status,
+		discardedWork: { capturedLensResults: [], findingsPresent: false },
+	})));
+
+	for (const entry of [
+		{ ...body.entries[0], discarded_work: { captured_lens_results: "not-an-array", findings_present: false } },
+		{ ...body.entries[0], discarded_work: { ...discardedWork, unexpected: true } },
+		{ ...body.entries[0], status: "future-status" },
+	]) {
+		await assert.rejects(
+			() => client(queuedAdapter([{ stdout: JSON.stringify({ ...body, entries: [entry] }) }]).adapter).reviewStatus({ cwd: repository }),
+			(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE,
+		);
+	}
+});
+
+test("current review STATUS retains compact snapshot and released-lock wire fields", async (t) => {
+	const repository = process.cwd();
+	const snapshotIdentity = `sha256:${"d".repeat(64)}`;
+	const body = {
+		schema: "gentle-ai.review-authority-status/v1",
+		operation: "review/status",
+		repository,
+		complete: true,
+		authoritative: true,
+		status: "active",
+		entries: [{ version: "compact-v2", lineage_id: "current-lineage", path: `${repository}/.git/gentle-ai`, status: "active", revision: `sha256:${"e".repeat(64)}`, snapshot_identity: snapshotIdentity, problems: [] }],
+		locks: [{ version: "compact-v2", path: `${repository}/.git/gentle-ai/LOCK`, status: "released" }],
+		diagnostics: [],
+	};
+	const queue = queuedAdapter([{ stdout: JSON.stringify(body) }]);
+	const status = await client(queue.adapter).reviewStatus({ cwd: repository });
+	assert.equal(status.entries[0]?.snapshotIdentity, snapshotIdentity);
+	assert.deepEqual(status.locks, [{ version: "compact-v2", path: `${repository}/.git/gentle-ai/LOCK`, status: "released" }]);
+	for (const lockStatus of ["Released", "stale", "future"]) {
+		const malformed = queuedAdapter([{ stdout: JSON.stringify({ ...body, locks: [{ ...body.locks[0], status: lockStatus }] }) }]);
+		await assert.rejects(
+			() => client(malformed.adapter).reviewStatus({ cwd: repository }),
+			(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE,
+		);
+	}
+	if (process.platform !== "win32") {
+		const root = mkdtempSync(join(tmpdir(), "gentle-pi-native-status-"));
+		const alias = `${root}-alias`;
+		symlinkSync(root, alias, "dir");
+		t.after(() => {
+			rmSync(alias, { force: true });
+			rmSync(root, { recursive: true, force: true });
+		});
+		const canonical = queuedAdapter([{ stdout: JSON.stringify({ ...body, repository: root }) }]);
+		assert.equal((await client(canonical.adapter).reviewStatus({ cwd: alias })).repository, root);
+	}
+});
+
+// ---------------------------------------------------------------------------
+// acknowledge-approved — gentle-ai #3947 made the burn print one typed
+// `gentle-ai.review-acknowledged/v1` envelope; every published release up to
+// v2.5.0-rc.3 burns in silence. Both are a successful burn; anything else on
+// stdout is not.
+// ---------------------------------------------------------------------------
+
+const ACKNOWLEDGED_LINEAGE = "review-3ec95251db75f626";
+const ACKNOWLEDGED_TARGET = "sha256:b505dcd8d82395c053c9786935e11e0e235cbdecca4f1f46f98c768ea6248d3d";
+const ACKNOWLEDGED_REVISION = "sha256:9732b1c3526bfecd3851093239241145c970cc126acea59bfaf14133214b60ee";
+const ACKNOWLEDGEMENT_TOKENS = [`--cwd=/repo`, `--lineage=${ACKNOWLEDGED_LINEAGE}`, `--target=${ACKNOWLEDGED_TARGET}`, `--expected-revision=${ACKNOWLEDGED_REVISION}`, "--token=provider-issued-once"] as const;
+const ACKNOWLEDGED_BINDING = { lineageId: ACKNOWLEDGED_LINEAGE, targetIdentity: ACKNOWLEDGED_TARGET, revision: ACKNOWLEDGED_REVISION } as const;
+
+test("acknowledge-approved keeps accepting the pinned silent burn byte-for-byte", async () => {
+	const queue = queuedAdapter([{ stdout: "" }]);
+	const result = await client(queue.adapter).acknowledgeApproved({ argumentTokens: ACKNOWLEDGEMENT_TOKENS, cwd: "/repo", binding: ACKNOWLEDGED_BINDING });
+	assert.equal(result, undefined);
+	assert.deepEqual(queue.calls[0]?.arguments, ["review", "acknowledge-approved", ...ACKNOWLEDGEMENT_TOKENS]);
+	assert.equal(queue.calls[0]?.cwd, "/repo");
+	assert.equal(queue.calls[0]?.timeoutMs, undefined);
+	assert.equal(queue.calls.length, 1);
+});
+
+test("acknowledge-approved decodes the captured review-acknowledged/v1 burn envelope", async () => {
+	const raw = readFileSync(join(process.cwd(), "tests", "fixtures", "devbinary", "review-acknowledged-v1.captured.json"), "utf8");
+	const queue = queuedAdapter([{ stdout: raw }]);
+	const result = await client(queue.adapter).acknowledgeApproved({ argumentTokens: ACKNOWLEDGEMENT_TOKENS, cwd: "/repo", binding: ACKNOWLEDGED_BINDING });
+	assert.equal(result?.schema, "gentle-ai.review-acknowledged/v1");
+	assert.deepEqual(
+		{ lineageId: result?.lineageId, targetIdentity: result?.targetIdentity, consumedRevision: result?.consumedRevision, authority: result?.authority },
+		{ lineageId: ACKNOWLEDGED_LINEAGE, targetIdentity: ACKNOWLEDGED_TARGET, consumedRevision: ACKNOWLEDGED_REVISION, authority: "burned" },
+	);
+	assert.deepEqual(queue.calls[0]?.arguments, ["review", "acknowledge-approved", ...ACKNOWLEDGEMENT_TOKENS]);
+	assert.equal(queue.calls.length, 1);
+
+	const unbound = await client(queuedAdapter([{ stdout: raw }]).adapter).acknowledgeApproved({ argumentTokens: ACKNOWLEDGEMENT_TOKENS, cwd: "/repo" });
+	assert.equal(unbound?.consumedRevision, ACKNOWLEDGED_REVISION);
+});
+
+test("acknowledge-approved fails closed on a foreign, drifted, or mismatched success body", async () => {
+	const raw = JSON.parse(readFileSync(join(process.cwd(), "tests", "fixtures", "devbinary", "review-acknowledged-v1.captured.json"), "utf8")) as Record<string, unknown>;
+	const bodies: Array<[string, string, { lineageId: string; targetIdentity: string; revision: string }]> = [
+		["a STATUS envelope", JSON.stringify(fixture("status-v5.captured.json")), ACKNOWLEDGED_BINDING],
+		["a last-event closure", JSON.stringify(fixture("last-event-capture-result-approved.captured.json")), ACKNOWLEDGED_BINDING],
+		["an envelope with an unknown field", JSON.stringify({ ...raw, receipt: {} }), ACKNOWLEDGED_BINDING],
+		["an envelope naming another lineage", JSON.stringify(raw), { ...ACKNOWLEDGED_BINDING, lineageId: "review-other" }],
+		["an envelope naming another revision", JSON.stringify(raw), { ...ACKNOWLEDGED_BINDING, revision: `sha256:${"c".repeat(64)}` }],
+		["non-JSON output", "acknowledged\n", ACKNOWLEDGED_BINDING],
+	];
+	for (const [name, stdout, binding] of bodies) {
+		const queue = queuedAdapter([{ stdout }]);
+		await assert.rejects(
+			() => client(queue.adapter).acknowledgeApproved({ argumentTokens: ACKNOWLEDGEMENT_TOKENS, cwd: "/repo", binding }),
+			(error: unknown) => error instanceof NativeReviewCliError
+				&& (error.code === NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE || error.code === NATIVE_REVIEW_ERROR_CODE.MALFORMED_JSON)
+				&& error.mutationOutcome === "unknown",
+			name,
+		);
+		assert.equal(queue.calls.length, 1, name);
+	}
+});
+
+test("acknowledge-approved keeps its fail-closed stderr and typed refusal discipline around the envelope", async () => {
+	const raw = readFileSync(join(process.cwd(), "tests", "fixtures", "devbinary", "review-acknowledged-v1.captured.json"), "utf8");
+	await assert.rejects(
+		() => client(queuedAdapter([{ stdout: raw, stderr: "note: burned\n" }]).adapter).acknowledgeApproved({ argumentTokens: ACKNOWLEDGEMENT_TOKENS, cwd: "/repo", binding: ACKNOWLEDGED_BINDING }),
+		(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.UNEXPECTED_STDERR,
+	);
+	await assert.rejects(
+		() => client(queuedAdapter([{ stdout: "", stderr: "note: burned\n" }]).adapter).acknowledgeApproved({ argumentTokens: ACKNOWLEDGEMENT_TOKENS, cwd: "/repo", binding: ACKNOWLEDGED_BINDING }),
+		(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.UNEXPECTED_STDERR,
+	);
+	const failure = {
+		schema: "gentle-ai.review-integration.failure/v2",
+		contract: "gentle-ai.review-integration/v2",
+		operation: "review.capture-result",
+		phase: "pre_native",
+		code: "gate_scope_changed",
+		message: "the target scope changed since START",
+		mutation_outcome: "not_started",
+		authority_applicability: "current_target",
+		retry_safe: true,
+		replayability: "manual_action_required",
+		required_inputs: [],
+		next_action: "explicit-maintainer-action",
+	};
+	await assert.rejects(
+		() => client(queuedAdapter([{ stdout: JSON.stringify(failure), exitCode: 1 }]).adapter).acknowledgeApproved({ argumentTokens: ACKNOWLEDGEMENT_TOKENS, cwd: "/repo", binding: ACKNOWLEDGED_BINDING }),
+		(error: unknown) => error instanceof Error && error.name === "NativeReviewIntegrationError",
+	);
+	await assert.rejects(
+		() => client(queuedAdapter([{ stdout: "", stderr: "Error: approved acknowledgement names no live compact authority\n", exitCode: 1 }]).adapter).acknowledgeApproved({ argumentTokens: ACKNOWLEDGEMENT_TOKENS, cwd: "/repo", binding: ACKNOWLEDGED_BINDING }),
+		(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.EMPTY_OUTPUT,
+	);
+});
+
+// S9: this package running from a bundled install (the testing overlay stands
+// in for its location; the detection itself is tested with real installs in
+// gentle-ai-binary-isolation.test.ts) and the launcher's GENTLE_SHELL_PREFIX.
+function bundledIsolation(t: { after: (fn: () => void) => void }): { prefix: string; env: NodeJS.ProcessEnv } {
+	const prefix = realpathSync(mkdtempSync(join(tmpdir(), "gentle-ai-isolation-site-")));
+	setBundledInstallForTesting({ root: prefix });
+	t.after(() => {
+		setBundledInstallForTesting(undefined);
+		rmSync(prefix, { recursive: true, force: true });
+	});
+	return { prefix, env: { PATH: "/usr/bin", GENTLE_SHELL_PREFIX: prefix } };
+}
+
+test("the central gentle-ai environment carries Gentle AI's isolation variables only in a bundled install", (t) => {
+	const { prefix, env } = bundledIsolation(t);
+	const bundled = gentleAiProcessEnvironment(env);
+	assert.equal(bundled.GENTLE_AI_HOME, join(prefix, "gentle-ai"));
+	assert.equal(bundled.GENTLE_AI_PI_CONFIG_DIR, join(prefix, "config", "gentle-ai"));
+	assert.equal(bundled.GENTLE_PI_CONFIG_HOME, join(prefix, "config"), "the parent Gentle AI 4.0.0 reads it as");
+	assert.equal(bundled.GENTLE_AI_NO_SELF_UPDATE, "1");
+	assert.equal(bundled.GENTLE_PI_REVIEW_RELAY_CONTRACT, "gentle-pi.review-relay/v1");
+	const ordinary = gentleAiProcessEnvironment({ PATH: "/usr/bin" });
+	assert.deepEqual(ordinary, { PATH: "/usr/bin", GENTLE_PI_REVIEW_RELAY_CONTRACT: "gentle-pi.review-relay/v1" });
+});
+
+function requestContextConsent(path: string): Record<string, any> {
+ const raw = fixture("consent-v3.captured.json") as Record<string, any>;
+ raw.agent = "pi";
+ for (const choice of raw.choices) choice.invocation = String(choice.invocation)
+  .replace(/--cwd \S+ --target/, "--cwd /repo --target")
+  .replace(" --consent ", " --agent pi --request-context '" + path + "' --consent ");
+ return raw;
+}
+
+test("request context is retained and checked before consent replay", async () => {
+ const path = "/repo/spec with spaces.md";
+ const raw = requestContextConsent(path);
+ const tokens = ["--contract=gentle-ai.review-integration/v2", "--cwd=/repo", "--target=" + raw.target_identity, "--projection=workspace", "--agent=pi", "--consent=relay", "--request-context=" + path];
+ const host = contextClient([{ stdout: JSON.stringify(negotiatedStartStatus(raw.target_identity, tokens)) }, { stdout: JSON.stringify(raw) }]);
+ let pending: NativeReviewConsentRequiredError | undefined;
+ try { await host.client.start({ cwd: "/repo", requestContextPath: path }); } catch (error) { assert.ok(error instanceof NativeReviewConsentRequiredError); pending = error; }
+ assert.ok(pending);
+ assert.equal(pending.requestContextPath, path);
+ for (const mutation of ["missing", "changed", "duplicate"]) {
+  const copy = requestContextConsent(path);
+  copy.choices[0].invocation = mutation === "missing" ? copy.choices[0].invocation.replace(" --request-context '" + path + "'", "")
+   : mutation === "changed" ? copy.choices[0].invocation.replace(path, "/other.md")
+   : copy.choices[0].invocation.replace(" --consent ", " --request-context '/other.md' --consent ");
+  const queue = queuedAdapter([]);
+  await assert.rejects(client(queue.adapter).answerConsent({ cwd: "/repo", consent: decodeReviewConsentV3(copy, "pi"), answer: "granted", requestContextPath: path }), /context/);
+  assert.equal(queue.calls.length, 0);
+ }
+ const queue = queuedAdapter([{ stdout: JSON.stringify(reviewingStartV4(raw.target_identity)) }]);
+ assert.equal((await client(queue.adapter).answerConsent({ cwd: "/repo", consent: pending.consent, answer: "granted", requestContextPath: path } as any)).kind, "started");
+ assert.ok(queue.calls[0].arguments.includes(path));
+});
+
+test("START refuses consent choices that lose the requested context before presenting consent", async () => {
+ const path = "/repo/spec.md";
+ const raw = requestContextConsent(path);
+ raw.choices[1].invocation = raw.choices[1].invocation.replace(" --request-context '" + path + "'", "");
+ const tokens = ["--contract=gentle-ai.review-integration/v2", "--cwd=/repo", "--target=" + raw.target_identity, "--projection=workspace", "--agent=pi", "--consent=relay", "--request-context=" + path];
+ const host = contextClient([{ stdout: JSON.stringify(negotiatedStartStatus(raw.target_identity, tokens)) }, { stdout: JSON.stringify(raw) }]);
+ await assert.rejects(host.client.start({ cwd: "/repo", requestContextPath: path }), /context/);
+ assert.equal(host.calls.length, 3);
 });

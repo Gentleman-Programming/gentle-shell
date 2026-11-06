@@ -1,26 +1,27 @@
 # Orchestrator — Memory Detail (lazy-loaded)
 
-Bind this to the parent Pi session only, on SDD phase memory reads/writes. Not always-on; loaded on demand from `assets/orchestrator.md`'s `## Memory Contract` pointer.
+Bind this to the parent Pi session only, on organic progress/recovery. Not always-on; loaded on demand from `assets/orchestrator.md`'s `## Memory Contract` pointer.
 
-### SDD phases
+### Organic feature continuity
 
-Each SDD phase subagent reads its own required inputs directly from the active backend; the parent passes artifact references (topic keys or file paths), NOT the content itself. Phase subagents persist their artifact before returning.
+For large authorized organic implementation (Task Size in `orchestrator.md`), the parent maintains `odd/tasks/<feature-name>.md` and an Engram recovery copy under topic `odd/<feature-name>/tasks`, scoped to the current project. Use a descriptive filename-safe feature name, reuse the same identity, and never overwrite another feature. Keep one feature document, not a separate plan file or topic. It is the specification subagents read by reference, so keep this fixed order, stable content first and the growing log last:
 
-| Phase          | Reads                                                   | Writes           |
-| -------------- | ------------------------------------------------------- | ---------------- |
-| `sdd-explore`  | nothing                                                 | `explore`        |
-| `sdd-proposal` | exploration (optional)                                  | `proposal`       |
-| `sdd-spec`     | proposal (required)                                     | `spec`           |
-| `sdd-design`   | proposal (required)                                     | `design`         |
-| `sdd-tasks`    | spec + design (required)                                | `tasks`          |
-| `sdd-apply`    | tasks + spec + design + `apply-progress` (if it exists) | `apply-progress` |
-| `sdd-verify`   | spec + tasks + `apply-progress`                         | `verify-report`  |
-| `sdd-sync`     | proposal + spec + design + tasks + `verify-report`      | `sync-report`    |
-| `sdd-archive`  | all artifacts                                           | `archive-report` |
-| `sdd-status`   | change artifacts (read-only)                            | nothing          |
+1. A header of two or three lines: objective, branch, delivery strategy, and test runner.
+2. `## Specs`: numbered `S1`..`Sn` requirements, constraints, and acceptance criteria with their checks. Quote the user's exact strings, error messages, commands, and examples verbatim, in the user's language; you may number and order them, but never summarize or reword those fragments. Do not add requirements the user never asked for; mark assumptions as assumptions.
+3. `## Tasks`: one line per task, using stable task IDs, with its linked `S#`, route (inline or delegated), status, and commit identity or RED/GREEN evidence.
+4. `## Log`: the logbook. `L1` holds the user's original request verbatim; later user corrections are logged verbatim with their date. Problem analysis, rationale for meaningful accepted changes, verification evidence, progress, and next step go here. Routine corrections stay brief; no exhaustive decision journal.
 
-- SDD artifact keys: in memory/hybrid mode, phase artifacts use stable topic keys such as `sdd/<change>/proposal`, `sdd/<change>/spec`, `sdd/<change>/design`, `sdd/<change>/tasks`, `sdd/<change>/apply-progress`, `sdd/<change>/verify-report`, `sdd/<change>/sync-report`, and `sdd/<change>/archive-report`.
-- If memory tools are unavailable, do not pretend persistence exists; return artifacts inline and/or write OpenSpec files.
+Mirror the full current document and repository-relative file locator, not only a summary or completion notice. Update the feature document with targeted edits; never rewrite the whole file to change a task line or append a log entry. When a code-execution tool such as `codemode` is available, refresh the Engram mirror inside one script that reads the file and saves its content, so the document is never re-emitted as output tokens.
+
+Accepted user, review, or verification changes automatically update affected intent and TODOs, unlike a process that regenerates every artifact: a requirement change appends its verbatim `## Log` entry, rewrites only the affected `S#`, and reopens only its linked task; preserve valid completed and unrelated work; add genuinely new tasks or reopen invalidated items with a reason, and revise their checks. Findings alone never authorize scope expansion or automatic acceptance. New business scope still requires user authorization. Check off only observed outcomes with applicable proof; record failed, unavailable, skipped, or pending checks honestly. The parent merges bounded worker results rather than replacing the entire feature with one worker's partial view.
+
+Persist local progress first, then mirror through the existing injected Engram save tool. Read back both writes; they are not atomic. If Engram is unavailable, preserve local progress and explicitly mark the mirror pending; do not claim persistence succeeded or block unrelated safe work. Resynchronize when available. If a file write is unsafe or unavailable, preserve existing state and report the limitation. Preserve both versions on irreconcilable edits and ask only about the real conflict; never silently prefer a newer timestamp.
+
+On resume, use `mem_context`, then project/feature-scoped `mem_search`, and `mem_get_observation` for the full saved document; read the actual task file. Do not infer active work from the newest global memory. Reconcile current requirements, code, and proof before continuing the next unfinished task. Preserve pending mirrors and conflicting edits; a missing copy is not permission to overwrite surviving progress. Use the injected equivalents of these existing memory tools, never invent availability.
+
+Before implementation or resume, the parent reads both the actual file and full observation, reconciles them, and passes the locator, task IDs, and linked `S#`; workers read the document until `## Log` before edits. Small work without a document still receives its authorized scope and checks.
+
+The existing `todo` tool is the required session/UI projection for large ODD, not a third authority. After reconciling and writing the durable file and Engram copy, create or rebuild the visible `todo` list from the same feature tasks before the first source write; after every task transition and material plan change, update both durable copies and the visible projection in the same turn; its replay or completed-list clearing must not delete or replace the durable file or Engram copy. If the projection is unavailable, record that limitation without pretending it is synchronized. When a change of direction makes tasks obsolete, mark them `dropped` in `## Tasks`, append the reason to `## Log`, and project them as `dropped` in the same turn; never mark them `done` or leave them `pending`. A dropped task never satisfies the tasks that depended on it: rework, reorder, or drop those too. When a task waits on something outside the list (a person, another team, an authorization), mark it `blocked` with a note naming what it waits for and the observable condition that unblocks it; return it to `pending` or `in_progress` once that holds, or `dropped` if abandoned. A prerequisite inside the list is ordering, not blocking: add it as a task and keep the dependent one `pending`. Small/read-only work does not acquire an ODD artifact or todo list merely because the UI can display tasks.
 
 Memory lifecycle rule (when Engram exposes lifecycle metadata/tooling):
 

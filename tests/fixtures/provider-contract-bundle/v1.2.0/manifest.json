@@ -1,0 +1,74 @@
+{
+  "schema": "gentle-ai.review-provider-contract-bundle/v1",
+  "contract_semver": "1.2.0",
+  "transport_capability": "gentle-ai.provider-transport/v1",
+  "runtimes": [
+    "claude-code",
+    "codex",
+    "opencode",
+    "pi"
+  ],
+  "readme": {
+    "path": "README.md",
+    "sha256": "18baab5ee79aefd0bc62a28da0dadcf2162544f57a940c5b859cd6bc4932a085"
+  },
+  "roles": [
+    {
+      "id": "lens",
+      "request_schema_id": "gentle-ai.review-lens-context/v1",
+      "result_schema_id": "https://gentle-ai.dev/schema/review/reviewer/v1",
+      "required_capabilities": [
+        "gentle-ai.provider-transport/v1"
+      ],
+      "schema": {
+        "path": "schemas/lens.schema.json",
+        "sha256": "ffef79cfb763333282285ff5c795a32b5a88d840b4a8d125ce012188b04cffe1"
+      },
+      "vector": {
+        "path": "vectors/lens.json",
+        "sha256": "7ef0b08404645eeb5dba92aba5f8e4780667b6ec775f43ed8547ff9f2a7148c8"
+      }
+    },
+    {
+      "id": "refuter",
+      "request_schema_id": "gentle-ai.review-provider-refuter-request/v1",
+      "result_schema_id": "https://gentle-ai.dev/schema/review/refuter/v1",
+      "required_capabilities": [
+        "gentle-ai.provider-transport/v1"
+      ],
+      "schema": {
+        "path": "schemas/refuter.schema.json",
+        "sha256": "36f8267c6c3f04600b8f1cb77df70d90858611af822cc81922efd6b3502fb646"
+      },
+      "vector": {
+        "path": "vectors/refuter.json",
+        "sha256": "f42d71906e49c4191660b2da7e70f01f1778b23d32089005bd2d7ae9cbb73039"
+      }
+    },
+    {
+      "id": "targeted-validator",
+      "request_schema_id": "gentle-ai.review-targeted-validation-request/v1",
+      "result_schema_id": "https://gentle-ai.dev/schema/review/validator/v1",
+      "required_capabilities": [
+        "gentle-ai.provider-transport/v1"
+      ],
+      "schema": {
+        "path": "schemas/targeted-validator.schema.json",
+        "sha256": "58f5efca0fb8089a51e998d5cf07209528a6b6e3782246b34ee1e825132063a8"
+      },
+      "vector": {
+        "path": "vectors/targeted-validator.json",
+        "sha256": "7b5a5165e3a913863fb98d2ba5387811860c21333b5c37e6ed3b4e0d121cf2fa"
+      }
+    }
+  ],
+  "orchestration": [
+    {
+      "runtime": "pi",
+      "file": {
+        "path": "orchestration/pi.md",
+        "sha256": "54fba57b11b280f56f7f15e91ddad3d844c70e0127e5c1adeff0a9d1b7a98e64"
+      }
+    }
+  ]
+}

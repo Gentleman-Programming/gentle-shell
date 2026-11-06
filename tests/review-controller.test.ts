@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,14 +11,9 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import gentleAi, { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import {
-	projectExactTagCreatePushAsReleaseV1,
-	setReleaseGhCommandRunnerForTestingV1,
-} from "../lib/review-publication-gate.ts";
-import {
 	REVIEW_MODE,
 	REVIEW_TRANSITION,
 	ReviewTransactionStore,
-	canonicalHash,
 	createReviewState,
 	setReviewMutationLockPlatformForTesting,
 	type ReviewBudgetV1,
@@ -31,19 +26,6 @@ import { qualifiedReviewLockPlatform, testSnapshot } from "./review-test-fixture
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 
 setReviewMutationLockPlatformForTesting(qualifiedReviewLockPlatform());
-// The release fast path independently derives required CI success via the
-// gh CLI; these controller-level fixtures are local bare clones with no real
-// GitHub remote, so a deterministic Check Runs response stands in for `gh`.
-// Legacy combined status stays pending to model Checks-only repositories.
-let releaseCheckRuns: { total_count: number; returned: number; checks: ReadonlyArray<readonly [string, string | null]> } = { total_count: 1, returned: 1, checks: [["completed", "success"]] };
-const releaseCheckRunArguments: string[][] = [];
-setReleaseGhCommandRunnerForTestingV1((args) => {
-	if (args[1]?.includes("/check-runs?")) {
-		releaseCheckRunArguments.push([...args]);
-		return { status: 0, stdout: JSON.stringify(releaseCheckRuns) };
-	}
-	return { status: 0, stdout: "pending" };
-});
 
 interface ReviewToolResult {
 	content: Array<{ type: string; text: string }>;
@@ -80,9 +62,6 @@ interface RepositoryFixture {
 	repository: string;
 	baseCommit: string;
 	baseTree: string;
-	finalCommit?: string;
-	finalTree?: string;
-	tagObject?: string;
 }
 
 function budget(): ReviewBudgetV1 {
@@ -140,8 +119,8 @@ function git(repository: string, ...args: string[]): string {
 	}).trim();
 }
 
-function createRepository(t: test.TestContext, commitFinal: boolean): RepositoryFixture {
-	const parent = mkdtempSync(join(tmpdir(), "gentle-pi-review-controller-"));
+function createRepository(t: test.TestContext): RepositoryFixture {
+	const parent = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-review-controller-")));
 	const repository = join(parent, "repo");
 	mkdirSync(repository);
 	t.after(() => rmSync(parent, { recursive: true, force: true }));
@@ -162,44 +141,7 @@ function createRepository(t: test.TestContext, commitFinal: boolean): Repository
 	const baseTree = git(repository, "rev-parse", "HEAD^{tree}");
 	git(repository, "branch", "base", baseCommit);
 	writeFileSync(join(repository, "app.ts"), "export const value = 2;\n");
-	if (!commitFinal) return { parent, repository, baseCommit, baseTree };
-	git(repository, "add", ".");
-	git(
-		repository,
-		"-c",
-		"user.name=Review Controller",
-		"-c",
-		"user.email=review-controller@example.invalid",
-		"commit",
-		"-m",
-		"final",
-	);
-	const finalCommit = git(repository, "rev-parse", "HEAD");
-	const finalTree = git(repository, "rev-parse", "HEAD^{tree}");
-	git(repository, "branch", "final", finalCommit);
-	git(
-		repository,
-		"-c",
-		"user.name=Review Controller",
-		"-c",
-		"user.email=review-controller@example.invalid",
-		"tag",
-		"-a",
-		"v1.2.3",
-		"-m",
-		"release",
-		finalCommit,
-	);
-	const tagObject = git(repository, "rev-parse", "refs/tags/v1.2.3^{object}");
-	return {
-		parent,
-		repository,
-		baseCommit,
-		baseTree,
-		finalCommit,
-		finalTree,
-		tagObject,
-	};
+	return { parent, repository, baseCommit, baseTree };
 }
 
 function details(result: ReviewToolResult): Record<string, unknown> {
@@ -215,8 +157,7 @@ async function controllerCall(
 	return details(await controller.execute("review-tool-call", params, undefined, undefined, ctx));
 }
 
-function createTerminalAuthority(fixture: RepositoryFixture, lineageId: string): void {
-	assert.ok(fixture.finalTree);
+function createTerminalAuthority(fixture: RepositoryFixture, lineageId: string, completeTree: string): void {
 	const store = ReviewTransactionStore.forRepository(fixture.repository, { mutationLockPlatform: qualifiedReviewLockPlatform() });
 	store.create(
 		createReviewState({
@@ -224,7 +165,7 @@ function createTerminalAuthority(fixture: RepositoryFixture, lineageId: string):
 			mode: REVIEW_MODE.ORDINARY,
 			snapshot: testSnapshot({
 				baseTree: fixture.baseTree,
-				completeTree: fixture.finalTree,
+				completeTree,
 				genesisPaths: ["app.ts"],
 				route: REVIEW_ROUTE.STANDARD,
 				lenses: [REVIEW_LENS.READABILITY],
@@ -248,52 +189,8 @@ function createTerminalAuthority(fixture: RepositoryFixture, lineageId: string):
 	}
 }
 
-test("controller SDD status treats removed OpenSpec recovery authority and deleted marker as blocking", async (t) => {
-	const fixture = createRepository(t, false);
-	const changeName = "recover-legacy-review-authority";
-	const changeRoot = join(fixture.repository, "openspec", "changes", changeName);
-	mkdirSync(changeRoot, { recursive: true });
-	writeFileSync(join(fixture.repository, "app.ts"), "export const value = 2;\n");
-	git(fixture.repository, "add", "app.ts");
-	fixture.finalTree = git(fixture.repository, "write-tree");
-	createTerminalAuthority(fixture, "archived-graph-source");
-	const supersessionRoot = join(resolveRepositoryAuthorityV1(fixture.repository).store_root, "control", "authority-supersession-v1");
-	const marker = join(supersessionRoot, "recovery-required-v1", `${domainHashV1("openspec-change-name", changeName)}.json`);
-	mkdirSync(join(supersessionRoot, "recovery-required-v1"), { recursive: true });
-	writeFileSync(marker, "recovery-required");
-	rmSync(changeRoot, { recursive: true, force: true });
-	unlinkSync(marker);
-
-	const status = await __testing.resolveControllerSddStatus(fixture.repository, changeName, false, "openspec");
-
-	assert.equal(status.dependencies.archive, "blocked");
-	assert.equal(status.nextRecommended, "Active change not found: recover-legacy-review-authority.");
-	assert.match(status.blockedReasons.join("\n"), /active change not found/i);
-});
-
-test("controller SDD status blocks archive for a recovery-required marker without a supersession record", async (t) => {
-	const fixture = createRepository(t, false);
-	const changeName = "recover-legacy-review-authority";
-	const changeRoot = join(fixture.repository, "openspec", "changes", changeName);
-	mkdirSync(join(changeRoot, "specs", "review"), { recursive: true });
-	writeFileSync(join(changeRoot, "proposal.md"), "# Proposal\n");
-	writeFileSync(join(changeRoot, "specs", "review", "spec.md"), "# Spec\n");
-	writeFileSync(join(changeRoot, "design.md"), "# Design\n");
-	writeFileSync(join(changeRoot, "tasks.md"), "- [x] 1.1 Done\n");
-	writeFileSync(join(changeRoot, "verify-report.md"), "PASS\n");
-	writeFileSync(join(changeRoot, "sync-report.md"), "PASS\n");
-	const markerDirectory = join(resolveRepositoryAuthorityV1(fixture.repository).store_root, "control", "authority-supersession-v1", "recovery-required-v1");
-	mkdirSync(markerDirectory, { recursive: true });
-	writeFileSync(join(markerDirectory, `${domainHashV1("openspec-change-name", changeName)}.json`), "recovery-required");
-
-	const status = await __testing.resolveControllerSddStatus(fixture.repository, changeName, false, "openspec");
-
-	assert.equal(status.dependencies.archive, "blocked");
-	assert.equal(status.nextRecommended, "parent-lifecycle");
-});
-
 test("controller keeps graph-v1 ordinary mutation read-only while preserving repository-file input confinement", async (t) => {
-	const fixture = createRepository(t, false);
+	const fixture = createRepository(t);
 	const lineageId = "controller-file-validator";
 	const store = ReviewTransactionStore.forRepository(fixture.repository, { mutationLockPlatform: qualifiedReviewLockPlatform() });
 	store.create(createReviewState({
@@ -376,7 +273,7 @@ test("controller keeps graph-v1 ordinary mutation read-only while preserving rep
 });
 
 test("controller rejects graph-style ADVANCE without graph-v1 authority", async (t) => {
-	const fixture = createRepository(t, false);
+	const fixture = createRepository(t);
 	const lineageId = "controller-correction-evidence";
 	const { controller } = registerRuntime();
 	const ctx = extensionContext(fixture.repository);
@@ -401,7 +298,7 @@ test("controller rejects graph-style ADVANCE without graph-v1 authority", async 
 
 
 test("controller successfully starts the explicitly supported judgment-day mode", async (t) => {
-	const fixture = createRepository(t, false);
+	const fixture = createRepository(t);
 	const { controller } = registerRuntime();
 	const started = await controllerCall(controller, extensionContext(fixture.repository), {
 		operation: "start",
@@ -422,6 +319,7 @@ test("general STATUS returns the typed native-status-unsupported boundary withou
 		mutation_performed: false,
 		inventory_complete: false,
 		next_action: "require-upstream-read-only-native-status-inventory",
+		remediation_command: "gentle-ai review status --cwd <repo> --contract gentle-ai.review-integration/v2 --agent pi --next-transition",
 		evidence: {
 			native_contract: "gentle-ai/2.1.4",
 			general_status: "unsupported",
@@ -430,8 +328,32 @@ test("general STATUS returns the typed native-status-unsupported boundary withou
 	});
 });
 
+test("gentle-pi#185: general STATUS on a non-negotiated native CLI names the exact status command to run", async (t) => {
+	// The legacy `correctionForecast` restoration guard this issue originally
+	// reported (extensions/gentle-ai.ts, then around line 5329) was scoped to
+	// `targetStatus !== undefined` and skipped restoring a candidate view when
+	// the native CLI lacked negotiated STATUS support, reproducing the #176
+	// empty-registry failure. That entire manual FINALIZE lifecycle (and the
+	// `correctionForecast` guard with it) has since been replaced by the
+	// STATUS/capture-driven flow: every operation now checks negotiated STATUS
+	// support up front, so no candidate-view restoration is ever attempted on
+	// a non-negotiated CLI. This test proves the current equivalent boundary
+	// (`nativeStatusUnsupported`) fails closed with an actionable envelope
+	// instead of a bare machine token, so a non-negotiated CLI can never
+	// surface as a silent empty-registry failure.
+	const fixture = createRepository(t);
+	const { controller } = registerRuntime();
+	const result = await controllerCall(controller, extensionContext(fixture.repository), { operation: "status" });
+	assert.equal(result.status, "blocked");
+	assert.equal(result.outcome, "native-status-unsupported");
+	assert.equal(
+		result.remediation_command,
+		"gentle-ai review status --cwd <repo> --contract gentle-ai.review-integration/v2 --agent pi --next-transition",
+	);
+});
+
 test("failed START gives exact mode and serialization guidance and creates no lineage", async (t) => {
-	const fixture = createRepository(t, false);
+	const fixture = createRepository(t);
 	const { controller } = registerRuntime();
 	const ctx = extensionContext(fixture.repository);
 
@@ -449,9 +371,9 @@ test("failed START gives exact mode and serialization guidance and creates no li
 			operation: "start",
 			lineageId: "nested-start-input",
 			idempotencyKey: "nested-start-input-key",
-			input: { mode: "ordinary" },
+			input: { mode: "standard" },
 		}, undefined, undefined, ctx),
-		/START input must be a JSON string.*no lineage was created.*do not call STATUS or ADVANCE/is,
+		/only "ordinary" or "judgment-day".*no lineage was created.*do not call STATUS or ADVANCE/is,
 	);
 	await assert.rejects(
 		controller.execute("invalid-json-start-input", {
@@ -466,7 +388,7 @@ test("failed START gives exact mode and serialization guidance and creates no li
 });
 
 
-test("shipped controller and orchestrator contracts specify inspect-first compact facade without cascade", () => {
+test("shipped controller fails closed while static prompts defer RDD lifecycle ownership to Gentle AI", () => {
 	const { controller } = registerRuntime();
 	const toolContract = [
 		controller.description,
@@ -474,750 +396,19 @@ test("shipped controller and orchestrator contracts specify inspect-first compac
 		...(controller.promptGuidelines ?? []),
 		JSON.stringify(controller.parameters),
 	].join("\n");
-	assert.match(toolContract, /operation.*start.*finalize.*validate.*input/is);
-	assert.match(toolContract, /mode\\?":\\?"ordinary|mode.*ordinary/is);
-	assert.match(toolContract, /ordinary.*Judgment Day/is);
-	assert.match(toolContract, /JSON(?:-serialized object)? string/is);
-	assert.match(toolContract, /blocked-legacy.*explicit.*authorization/is);
-	assert.match(toolContract, /RESET.*reclaim.*RECOVER.*recover/s);
+
 	assert.match(toolContract, /native-input-required.*never.*invent/is);
 	assert.match(toolContract, /output.*lost|response.*lost|ambiguous.*START/is);
-	assert.match(toolContract, /ambiguous START, answer-consent, or FINALIZE.*target-scoped native status.*declared action/is);
+	assert.match(toolContract, /ambiguous START output.*target-scoped native status.*declared action.*ambiguous gentle_review_capture.*never replays/is);
 	assert.doesNotMatch(toolContract, /START throws.*lineage does not exist/is);
 
-	for (const path of ["assets/orchestrator-delegation.md", "skills/gentle-ai/SKILL.md"]) {
+	const boundary = "This package injects the mirrored provider-bundle review execution contract into this session's system prompt at start; Gentle AI writes nothing into the Pi system prompt, and this package owns everything else here. Absent that mirrored contract, this package invents no lifecycle instructions.";
+	const core = readFileSync("assets/orchestrator.md", "utf8");
+	assert.match(core, new RegExp(boundary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+
+	for (const path of ["assets/orchestrator-delegation.md", "assets/orchestrator-delegation-reference.md", "skills/gentle-ai/SKILL.md"]) {
 		const contract = readFileSync(path, "utf8");
-		assert.match(contract, /INSPECT before START|inspect.*before.*start/is, path);
-		assert.match(contract, /mode `ordinary`|mode.*ordinary|ordinary review/is, path);
-		assert.match(contract, /Judgment Day.*explicit/is, path);
-		assert.match(contract, /before authority access.*no lineage|pre-authority.*no lineage/is, path);
-		assert.match(contract, /unknown.*target-scoped status.*before any retry|unknown.*immediately calls target-scoped status/is, path);
-		assert.match(contract, /exact_replay_safe/is, path);
+		assert.doesNotMatch(contract, /INSPECT before START|start -> finalize -> validate|next_transition|review\.capture-result/is, path);
 	}
-	for (const path of ["assets/orchestrator-delegation.md", "skills/gentle-ai/SKILL.md"]) {
-		const recoveryContract = readFileSync(path, "utf8");
-		assert.match(recoveryContract, /blocked-legacy.*explicit.*authoriz/is, path);
-		assert.match(recoveryContract, /RESET.*RECOVER.*native.*(reclaim|recover)/is, path);
-	}
-});
-
-
-test("controller binds push, PR, and release authorization to exact command arguments", async (t) => {
-	const fixture = createRepository(t, true);
-	assert.ok(fixture.finalCommit && fixture.finalTree && fixture.tagObject);
-	const remotePath = join(fixture.parent, "remote.git");
-	execFileSync("git", ["clone", "--bare", fixture.repository, remotePath], {
-		cwd: fixture.parent,
-		stdio: ["ignore", "pipe", "pipe"],
-	});
-	execFileSync("git", ["--git-dir", remotePath, "update-ref", "refs/heads/main", fixture.baseCommit]);
-	git(fixture.repository, "remote", "add", "origin", remotePath);
-	createTerminalAuthority(fixture, "controller-targets");
-	const { controller, toolCall } = registerRuntime();
-	const ctx = extensionContext(fixture.repository, true);
-
-	for (const [command, key] of [
-		["git push origin main:main", "push"],
-		["gh pr create --base base --head final", "pr"],
-		["gh release create v1.2.3 --notes bounded", "release"],
-	] as const) {
-		const validated = await controllerCall(controller, ctx, {
-			operation: "validate",
-			lineageId: "controller-targets",
-			idempotencyKey: `controller-targets-${key}`,
-			command,
-			input: JSON.stringify({ scopeBudget: budget() }),
-		});
-		assert.equal((validated.result as Record<string, unknown>).status, "allow", command);
-		assert.equal(await toolCall({ toolName: "bash", input: { command } }, ctx), undefined, command);
-	}
-
-	for (const command of [
-		"git push --all origin",
-		"git push origin main:main final:feature",
-		"git push --follow-tags origin main:main",
-		"git push origin --follow-tags main:main",
-		"git push origin main:main --follow-tags",
-	]) {
-		await assert.rejects(
-			controller.execute(
-				"unsupported-push",
-				{
-					operation: "validate",
-					lineageId: "controller-targets",
-					idempotencyKey: `unsupported-${command.length}`,
-					command,
-					input: JSON.stringify({ scopeBudget: budget() }),
-				},
-				undefined,
-				undefined,
-				ctx,
-			),
-			/exactly derive|unsupported.*push|complete ref update|force push refspec/i,
-		);
-	}
-	await t.test("rejects force refspecs and unsupported push --repo parsing", async () => {
-		for (const [command, pattern] of [
-			["git push origin +main:main", /force push refspec/i],
-			["git push --repo attacker origin main:main", /unsupported push option.*--repo/i],
-		] as const) {
-			await assert.rejects(
-				controller.execute(
-					"unsafe-push-form",
-					{
-						operation: "validate",
-						lineageId: "controller-targets",
-						idempotencyKey: `unsafe-push-form-${command.length}`,
-						command,
-						input: JSON.stringify({ scopeBudget: budget() }),
-					},
-					undefined,
-					undefined,
-					ctx,
-				),
-				pattern,
-			);
-		}
-	});
-	for (const [command, key] of [
-		["env SAFE=1 git push --follow-tags origin main:main", "env"],
-		["command git push origin --follow-tags main:main", "command"],
-		["sh -c 'git push origin main:main --follow-tags'", "shell"],
-	] as const) {
-		await assert.rejects(
-			controller.execute(
-				"unsupported-wrapped-follow-tags-push",
-				{
-					operation: "validate",
-					lineageId: "controller-targets",
-					idempotencyKey: `unsupported-wrapped-follow-tags-push-${key}`,
-					command,
-					input: JSON.stringify({ scopeBudget: budget() }),
-				},
-				undefined,
-				undefined,
-				ctx,
-			),
-			/compound or wrapped lifecycle command.*fail closed/i,
-		);
-	}
-	for (const [command, key] of [
-		["gh release create v1.2.3 --repo other/project", "long"],
-		["gh release create v1.2.3 -Rother/project", "short"],
-	] as const) {
-		await assert.rejects(
-			controller.execute(
-				"unsupported-release-repository",
-				{
-					operation: "validate",
-					lineageId: "controller-targets",
-					idempotencyKey: `unsupported-release-repository-${key}`,
-					command,
-					input: JSON.stringify({ scopeBudget: budget() }),
-				},
-				undefined,
-				undefined,
-				ctx,
-			),
-			/exact local review repository|--repo/i,
-		);
-	}
-
-	await controllerCall(controller, ctx, {
-		operation: "validate",
-		lineageId: "controller-targets",
-		idempotencyKey: "controller-targets-release-mismatch",
-		command: "gh release create v1.2.3",
-		input: JSON.stringify({ scopeBudget: budget() }),
-	});
-	git(
-		fixture.repository,
-		"-c",
-		"user.name=Review Controller",
-		"-c",
-		"user.email=review-controller@example.invalid",
-		"tag",
-		"-a",
-		"v9.9.9",
-		"-m",
-		"different release argument",
-		fixture.finalCommit,
-	);
-	const mismatchedRelease = await toolCall(
-		{
-			toolName: "bash",
-			input: {
-				command: "gh release create v9.9.9",
-				reviewGate: {
-					target: {
-						kind: "release",
-						tag_ref: "refs/tags/v1.2.3",
-						tag_object: fixture.tagObject,
-						peeled_commit: fixture.finalCommit,
-						tree: fixture.finalTree,
-					},
-				},
-			},
-		},
-		ctx,
-	);
-	assert.equal(mismatchedRelease?.block, true);
-	assert.match(mismatchedRelease?.reason ?? "", /registered review controller authorization/i);
-});
-
-test("controller authorizes the exact first push after an approved intended-commit receipt", async (t) => {
-	const fixture = createRepository(t, true);
-	assert.ok(fixture.finalCommit && fixture.finalTree);
-	const fetchRemotePath = join(fixture.parent, "fetch.git");
-	const pushRemotePath = join(fixture.parent, "push.git");
-	execFileSync("git", ["clone", "--bare", fixture.repository, fetchRemotePath], {
-		cwd: fixture.parent,
-		stdio: ["ignore", "pipe", "pipe"],
-	});
-	execFileSync("git", ["--git-dir", fetchRemotePath, "update-ref", "refs/heads/feature/first-push", fixture.finalCommit]);
-	execFileSync("git", ["clone", "--bare", fixture.repository, pushRemotePath], {
-		cwd: fixture.parent,
-		stdio: ["ignore", "pipe", "pipe"],
-	});
-	execFileSync("git", ["--git-dir", pushRemotePath, "update-ref", "refs/heads/main", fixture.baseCommit]);
-	git(fixture.repository, "remote", "add", "origin", fetchRemotePath);
-	git(fixture.repository, "remote", "set-url", "--add", "--push", "origin", pushRemotePath);
-	git(fixture.repository, "branch", "feature/first-push", fixture.finalCommit);
-	createTerminalAuthority(fixture, "controller-first-push");
-	const { controller, toolCall } = registerRuntime();
-	const ctx = extensionContext(fixture.repository, true);
-	const command = "git push -u origin feature/first-push";
-	const validated = await controllerCall(controller, ctx, {
-		operation: "validate",
-		lineageId: "controller-first-push",
-		idempotencyKey: "controller-first-push-gate",
-		command,
-		input: JSON.stringify({ scopeBudget: budget() }),
-	});
-
-	assert.equal((validated.result as Record<string, unknown>).status, "allow", JSON.stringify(validated));
-	const derivedTarget = validated.derived_target as Record<string, unknown>;
-	assert.equal((derivedTarget.updates as Array<Record<string, unknown>>)[0]?.kind, "create");
-	assert.equal(await toolCall({ toolName: "bash", input: { command } }, ctx), undefined);
-});
-
-test("controller resolves explicit abbreviated push destinations against advertised refs", async (t) => {
-	const fixture = createRepository(t, true);
-	assert.ok(fixture.finalCommit && fixture.finalTree);
-	const remotePath = join(fixture.parent, "destination-resolution.git");
-	execFileSync("git", ["clone", "--bare", fixture.repository, remotePath], {
-		cwd: fixture.parent,
-		stdio: ["ignore", "pipe", "pipe"],
-	});
-	execFileSync("git", ["--git-dir", remotePath, "update-ref", "refs/tags/publish-target", fixture.baseCommit]);
-	git(fixture.repository, "remote", "add", "origin", remotePath);
-	createTerminalAuthority(fixture, "controller-destination-resolution");
-	const { controller } = registerRuntime();
-	const ctx = extensionContext(fixture.repository, true);
-	const validated = await controllerCall(controller, ctx, {
-		operation: "validate",
-		lineageId: "controller-destination-resolution",
-		idempotencyKey: "controller-destination-tag",
-		command: "git push origin final:publish-target",
-		input: JSON.stringify({ scopeBudget: budget() }),
-	});
-	const update = (validated.derived_target as { updates: Array<Record<string, unknown>> }).updates[0];
-	assert.equal(update?.destination_ref, "refs/tags/publish-target");
-
-	execFileSync("git", ["--git-dir", remotePath, "update-ref", "refs/heads/ambiguous-target", fixture.baseCommit]);
-	execFileSync("git", ["--git-dir", remotePath, "update-ref", "refs/tags/ambiguous-target", fixture.baseCommit]);
-	await assert.rejects(
-		controller.execute(
-			"ambiguous-push-destination",
-			{
-				operation: "validate",
-				lineageId: "controller-destination-resolution",
-				idempotencyKey: "controller-destination-ambiguous",
-				command: "git push origin final:ambiguous-target",
-				input: JSON.stringify({ scopeBudget: budget() }),
-			},
-			undefined,
-			undefined,
-			ctx,
-		),
-		/ambiguous/i,
-	);
-});
-
-test("controller push probes preserve safe user URL rewriting and ordinary credentials", async (t) => {
-	const fixture = createRepository(t, true);
-	assert.ok(fixture.finalCommit && fixture.finalTree);
-	const fetchRemotePath = join(fixture.parent, "fetch.git");
-	const pushRemotePath = join(fixture.parent, "push.git");
-	const userHome = join(fixture.parent, "home");
-	mkdirSync(userHome);
-	execFileSync("git", ["init", "--bare", fetchRemotePath], { cwd: fixture.parent, stdio: ["ignore", "pipe", "pipe"] });
-	execFileSync("git", ["clone", "--bare", fixture.repository, pushRemotePath], { cwd: fixture.parent, stdio: ["ignore", "pipe", "pipe"] });
-	execFileSync("git", ["--git-dir", pushRemotePath, "update-ref", "refs/heads/main", fixture.baseCommit]);
-	const logicalPushUrl = "https://github.com/example/first-push.git";
-	execFileSync("git", ["config", "--global", `url.${pushRemotePath}.insteadOf`, logicalPushUrl], {
-		env: { ...process.env, HOME: userHome },
-	});
-	git(fixture.repository, "remote", "add", "origin", fetchRemotePath);
-	git(fixture.repository, "remote", "set-url", "--add", "--push", "origin", logicalPushUrl);
-	git(fixture.repository, "branch", "feature/safe-config", fixture.finalCommit);
-	createTerminalAuthority(fixture, "controller-safe-config");
-	const { controller } = registerRuntime();
-	const ctx = extensionContext(fixture.repository, true);
-	const originalEnvironment = new Map<string, string | undefined>();
-	for (const [key, value] of Object.entries({
-		HOME: userHome,
-		GIT_ASKPASS: join(fixture.parent, "askpass"),
-	})) {
-		originalEnvironment.set(key, process.env[key]);
-		process.env[key] = value;
-	}
-	t.after(() => {
-		for (const [key, value] of originalEnvironment) {
-			if (value === undefined) delete process.env[key];
-			else process.env[key] = value;
-		}
-	});
-
-	const validated = await controllerCall(controller, ctx, {
-		operation: "validate",
-		lineageId: "controller-safe-config",
-		idempotencyKey: "controller-safe-config-gate",
-		command: "git push -u origin feature/safe-config",
-		input: JSON.stringify({ scopeBudget: budget() }),
-	});
-	assert.equal((validated.result as Record<string, unknown>).status, "allow", JSON.stringify(validated));
-});
-
-test("controller blocks a previously authorized push when inherited Git config injection appears at execution", async (t) => {
-	const fixture = createRepository(t, true);
-	assert.ok(fixture.finalCommit && fixture.finalTree);
-	const pushRemotePath = join(fixture.parent, "execution-boundary-push.git");
-	execFileSync("git", ["clone", "--bare", fixture.repository, pushRemotePath], {
-		cwd: fixture.parent,
-		stdio: ["ignore", "pipe", "pipe"],
-	});
-	execFileSync("git", ["--git-dir", pushRemotePath, "update-ref", "refs/heads/main", fixture.baseCommit]);
-	git(fixture.repository, "remote", "add", "origin", pushRemotePath);
-	git(fixture.repository, "branch", "feature/execution-boundary", fixture.finalCommit);
-	createTerminalAuthority(fixture, "controller-execution-boundary");
-	const { controller, toolCall } = registerRuntime();
-	const ctx = extensionContext(fixture.repository, true);
-	const command = "git push -u origin feature/execution-boundary";
-	const validated = await controllerCall(controller, ctx, {
-		operation: "validate",
-		lineageId: "controller-execution-boundary",
-		idempotencyKey: "controller-execution-boundary-gate",
-		command,
-		input: JSON.stringify({ scopeBudget: budget() }),
-	});
-	assert.equal((validated.result as Record<string, unknown>).status, "allow");
-
-	const originalCount = process.env.GIT_CONFIG_COUNT;
-	const originalKey = process.env.GIT_CONFIG_KEY_0;
-	const originalValue = process.env.GIT_CONFIG_VALUE_0;
-	process.env.GIT_CONFIG_COUNT = "1";
-	process.env.GIT_CONFIG_KEY_0 = "remote.origin.pushurl";
-	process.env.GIT_CONFIG_VALUE_0 = join(fixture.parent, "attacker.git");
-	try {
-		const blocked = await toolCall({ toolName: "bash", input: { command } }, ctx);
-		assert.equal(blocked?.block, true);
-		assert.match(blocked?.reason ?? "", /Git.*environment|routing|configuration override/i);
-	} finally {
-		if (originalCount === undefined) delete process.env.GIT_CONFIG_COUNT;
-		else process.env.GIT_CONFIG_COUNT = originalCount;
-		if (originalKey === undefined) delete process.env.GIT_CONFIG_KEY_0;
-		else process.env.GIT_CONFIG_KEY_0 = originalKey;
-		if (originalValue === undefined) delete process.env.GIT_CONFIG_VALUE_0;
-		else process.env.GIT_CONFIG_VALUE_0 = originalValue;
-	}
-});
-
-test("controller fails closed when a configured remote has multiple pushurl destinations", async (t) => {
-	const fixture = createRepository(t, true);
-	assert.ok(fixture.finalCommit);
-	const fetchRemotePath = join(fixture.parent, "fetch.git");
-	const firstPushPath = join(fixture.parent, "push-one.git");
-	const secondPushPath = join(fixture.parent, "push-two.git");
-	for (const path of [fetchRemotePath, firstPushPath, secondPushPath]) {
-		execFileSync("git", ["init", "--bare", path], { cwd: fixture.parent, stdio: ["ignore", "pipe", "pipe"] });
-	}
-	git(fixture.repository, "remote", "add", "origin", fetchRemotePath);
-	git(fixture.repository, "remote", "set-url", "--add", "--push", "origin", firstPushPath);
-	git(fixture.repository, "remote", "set-url", "--add", "--push", "origin", secondPushPath);
-	git(fixture.repository, "branch", "feature/multiple-pushurl", fixture.finalCommit);
-	createTerminalAuthority(fixture, "controller-multiple-pushurl");
-	const { controller } = registerRuntime();
-
-	await assert.rejects(
-		controller.execute("multiple-pushurl", {
-			operation: "validate",
-			lineageId: "controller-multiple-pushurl",
-			idempotencyKey: "controller-multiple-pushurl-gate",
-			command: "git push -u origin feature/multiple-pushurl",
-			input: JSON.stringify({ scopeBudget: budget() }),
-		}, undefined, undefined, extensionContext(fixture.repository, true)),
-		/multiple pushurl|one effective push destination/i,
-	);
-});
-
-test("controller release fast path bypasses receipt validation only for the proven immutable origin/main SHA", async (t) => {
-	const fixture = createRepository(t, true);
-	assert.ok(fixture.finalCommit && fixture.finalTree && fixture.tagObject);
-	const remotePath = join(fixture.parent, "remote.git");
-	git(fixture.repository, "-c", "user.name=Review Controller", "-c", "user.email=review-controller@example.invalid", "tag", "-a", "v1.0.5", "-m", "patch release", fixture.finalCommit);
-	execFileSync("git", ["clone", "--bare", fixture.repository, remotePath], {
-		cwd: fixture.parent,
-		stdio: ["ignore", "pipe", "pipe"],
-	});
-	execFileSync("git", ["--git-dir", remotePath, "update-ref", "refs/heads/main", fixture.finalCommit]);
-	git(fixture.repository, "remote", "add", "origin", remotePath);
-	const { controller, toolCall } = registerRuntime();
-	const ctx = extensionContext(fixture.repository, true);
-	// Local publication inputs must be irrelevant: dirty worktree during validation.
-	writeFileSync(join(fixture.repository, "app.ts"), "export const value = 3; // dirty worktree\n");
-	const releaseEvidence = {
-		protected_ref: "refs/heads/main",
-		remote: "origin",
-		ci: { revision: fixture.finalCommit, status: "success" },
-		external_evidence: "none",
-		post_incident: false,
-	};
-
-	const command = "gh release create v1.0.5 --notes bounded";
-	const validated = await controllerCall(controller, ctx, {
-		operation: "validate",
-		idempotencyKey: "release-fast-path",
-		command,
-		input: JSON.stringify({ scopeBudget: budget(), release: releaseEvidence }),
-	});
-	const result = validated.result as Record<string, unknown>;
-	assert.equal(result.status, "allow", JSON.stringify(validated));
-	assert.equal(result.actor_count, 0);
-	const fastPath = validated.release_fast_path as Record<string, unknown>;
-	assert.equal(fastPath.eligible, true);
-	assert.equal(fastPath.remote_head, fixture.finalCommit);
-	assert.equal(typeof validated.authorization, "object");
-	assert.equal(await toolCall({ toolName: "bash", input: { command } }, ctx), undefined);
-
-	const revalidated = await controllerCall(controller, ctx, {
-		operation: "validate",
-		idempotencyKey: "release-fast-path-recheck",
-		command,
-		input: JSON.stringify({ scopeBudget: budget(), release: releaseEvidence }),
-	});
-	assert.equal((revalidated.result as Record<string, unknown>).status, "allow");
-	execFileSync("git", ["--git-dir", remotePath, "update-ref", "refs/heads/main", fixture.baseCommit]);
-	const advanced = await toolCall({ toolName: "bash", input: { command } }, ctx);
-	assert.equal(advanced?.block, true);
-	assert.match(advanced?.reason ?? "", /advanced|re-proven/i);
-});
-
-test("controller routes exact tag-create pushes through the release fast path before GitHub release creation", async (t) => {
-	t.after(() => { releaseCheckRuns = { total_count: 1, returned: 1, checks: [["completed", "success"]] }; });
-	const fixture = createRepository(t, true);
-	assert.ok(fixture.finalCommit && fixture.tagObject);
-	const remotePath = join(fixture.parent, "remote.git");
-	git(fixture.repository, "-c", "user.name=Review Controller", "-c", "user.email=review-controller@example.invalid", "tag", "-a", "v1.0.5", "-m", "patch release", fixture.finalCommit);
-	execFileSync("git", ["init", "--bare", remotePath], { cwd: fixture.parent, stdio: ["ignore", "pipe", "pipe"] });
-	git(fixture.repository, "remote", "add", "origin", remotePath);
-	git(fixture.repository, "push", "origin", `${fixture.finalCommit}:refs/heads/main`);
-	const { controller, toolCall } = registerRuntime();
-	const ctx = extensionContext(fixture.repository, true);
-	const releaseEvidence = {
-		protected_ref: "refs/heads/main",
-		remote: "origin",
-		ci: { revision: fixture.finalCommit, status: "success" },
-		external_evidence: "none",
-		post_incident: false,
-	};
-	const pushCommand = "git push origin refs/tags/v1.0.5";
-	const pushed = await controllerCall(controller, ctx, {
-		operation: "validate",
-		idempotencyKey: "tag-push-release-fast-path",
-		command: pushCommand,
-		input: JSON.stringify({ scopeBudget: budget(), release: releaseEvidence }),
-	});
-	assert.equal((pushed.result as Record<string, unknown>).status, "allow", JSON.stringify(pushed));
-	assert.equal((pushed.result as Record<string, unknown>).actor_count, 0);
-	assert.equal((pushed.derived_target as Record<string, unknown>).kind, "push");
-	assert.equal((pushed.authorization as Record<string, unknown>).target_hash, canonicalHash(pushed.derived_target));
-	const fastPathAuthorization = (pushed.authorization as { release_fast_path: Record<string, unknown> }).release_fast_path;
-	assert.equal(fastPathAuthorization.expected_ci_revision, fixture.finalCommit);
-	assert.equal(fastPathAuthorization.expected_ci_status, "success");
-	assert.equal(await toolCall({ toolName: "bash", input: { command: pushCommand } }, ctx), undefined);
-	assert.equal(releaseCheckRunArguments.at(-1)?.[1], `repos/{owner}/{repo}/commits/${fixture.finalCommit}/check-runs?per_page=100`);
-	git(fixture.repository, "push", "origin", "refs/tags/v1.0.5");
-	for (const [tag, checks] of [
-		["v1.0.6", [["completed", "failure"]]],
-		["v1.0.7", [["in_progress", null]]],
-	] as const) {
-		git(fixture.repository, "-c", "user.name=Review Controller", "-c", "user.email=review-controller@example.invalid", "tag", "-a", tag, "-m", "ci recheck", fixture.finalCommit);
-		releaseCheckRuns = { total_count: 1, returned: 1, checks: [["completed", "success"]] };
-		const command = `git push origin refs/tags/${tag}`;
-		await controllerCall(controller, ctx, {
-			operation: "validate", idempotencyKey: `tag-push-ci-${tag}`, command,
-			input: JSON.stringify({ scopeBudget: budget(), release: releaseEvidence }),
-		});
-		releaseCheckRuns = { total_count: 1, returned: 1, checks };
-		assert.equal((await toolCall({ toolName: "bash", input: { command } }, ctx))?.block, true);
-	}
-	releaseCheckRuns = { total_count: 1, returned: 1, checks: [["completed", "success"]] };
-	assert.equal(
-		execFileSync("git", ["--git-dir", remotePath, "rev-parse", "refs/tags/v1.0.5^{object}"], { encoding: "utf8" }).trim(),
-		git(fixture.repository, "rev-parse", "refs/tags/v1.0.5^{object}"),
-	);
-	assert.equal(
-		execFileSync("git", ["--git-dir", remotePath, "rev-parse", "refs/tags/v1.0.5^{commit}"], { encoding: "utf8" }).trim(),
-		fixture.finalCommit,
-	);
-
-	const releaseCommand = "gh release create v1.0.5 --title patch --notes-file notes.md";
-	const released = await controllerCall(controller, ctx, {
-		operation: "validate",
-		idempotencyKey: "remote-tag-release-fast-path",
-		command: releaseCommand,
-		input: JSON.stringify({ scopeBudget: budget(), release: releaseEvidence }),
-	});
-	assert.equal((released.result as Record<string, unknown>).status, "allow", JSON.stringify(released));
-	assert.equal((released.result as Record<string, unknown>).actor_count, 0);
-	assert.equal((released.derived_target as Record<string, unknown>).peeled_commit, fixture.finalCommit);
-	assert.equal(await toolCall({ toolName: "bash", input: { command: releaseCommand } }, ctx), undefined);
-	await controllerCall(controller, ctx, {
-		operation: "validate",
-		idempotencyKey: "remote-tag-release-fast-path-recheck",
-		command: releaseCommand,
-		input: JSON.stringify({ scopeBudget: budget(), release: releaseEvidence }),
-	});
-	execFileSync("git", ["--git-dir", remotePath, "update-ref", "refs/heads/main", fixture.baseCommit]);
-	const advanced = await toolCall({ toolName: "bash", input: { command: releaseCommand } }, ctx);
-	assert.equal(advanced?.block, true);
-	assert.match(advanced?.reason ?? "", /advanced|re-proven/i);
-});
-
-test("controller rejects ambiguous or ineligible tag pushes from the receipt-free release fast path", async (t) => {
-	const fixture = createRepository(t, true);
-	assert.ok(fixture.finalCommit);
-	const remotePath = join(fixture.parent, "remote.git");
-	execFileSync("git", ["init", "--bare", remotePath], { cwd: fixture.parent, stdio: ["ignore", "pipe", "pipe"] });
-	git(fixture.repository, "remote", "add", "origin", remotePath);
-	git(fixture.repository, "push", "origin", `${fixture.finalCommit}:refs/heads/main`);
-	git(fixture.repository, "-c", "user.name=Review Controller", "-c", "user.email=review-controller@example.invalid", "tag", "-a", "v1.0.5", "-m", "patch release", fixture.finalCommit);
-	git(fixture.repository, "-c", "user.name=Review Controller", "-c", "user.email=review-controller@example.invalid", "tag", "-a", "nightly", "-m", "nightly", fixture.finalCommit);
-	git(fixture.repository, "-c", "user.name=Review Controller", "-c", "user.email=review-controller@example.invalid", "tag", "-a", "v1.0.7", "-m", "base release", fixture.baseCommit);
-	git(fixture.repository, "tag", "v1.0.6", fixture.finalCommit);
-	const { controller, toolCall } = registerRuntime();
-	const ctx = extensionContext(fixture.repository, true);
-	const releaseEvidence = {
-		protected_ref: "refs/heads/main",
-		remote: "origin",
-		ci: { revision: fixture.finalCommit, status: "success" },
-		external_evidence: "none",
-		post_incident: false,
-	};
-	const validate = async (command: string, evidence = releaseEvidence): Promise<void> => {
-		await assert.rejects(controller.execute("ineligible-tag-push", {
-			operation: "validate",
-			idempotencyKey: `ineligible-${command}`,
-			command,
-			input: JSON.stringify({ scopeBudget: budget(), release: evidence }),
-		}, undefined, undefined, ctx));
-	};
-	const tagCreateTarget = (tag: string) => ({
-		kind: "push" as const,
-		remote: "origin",
-		destination_id: "a".repeat(64),
-		updates: [{
-			kind: "create" as const,
-			source_ref: `refs/tags/${tag}`,
-			destination_ref: `refs/tags/${tag}`,
-			old_object: null,
-			old_peeled_commit: null,
-			old_tree: null,
-			new_object: fixture.finalCommit!,
-			new_peeled_commit: fixture.finalCommit!,
-			new_tree: fixture.finalTree!,
-		}],
-	});
-
-	await validate("git push origin :refs/tags/v1.0.5");
-	await validate("git push origin refs/tags/v1.0.5:refs/tags/v1.0.6");
-	await validate("git push origin refs/tags/v1.0.5 refs/tags/v1.0.6");
-	await validate("git push origin refs/tags/nightly");
-	await validate("git push origin refs/tags/v1.0.7");
-	await validate("git push origin refs/tags/v1.0.5", { ...releaseEvidence, ci: { revision: fixture.finalCommit, status: "failure" } });
-	await validate("git push origin refs/tags/v1.0.5", { ...releaseEvidence, ci: { revision: fixture.finalCommit, status: "pending" } });
-	await validate("git push origin v1.0.5");
-	await validate("git push --force origin refs/tags/v1.0.5");
-	for (const command of [
-		"git push --exec git-receive-pack origin refs/tags/v1.0.5",
-		"git push --receive-pack git-receive-pack origin refs/tags/v1.0.5",
-	]) {
-		await validate(command);
-		assert.equal((await toolCall({ toolName: "bash", input: { command } }, ctx))?.block, true);
-	}
-
-	for (const tag of [
-		"v1.2.3+foo+bar",
-		"v1.2.3-foo..bar",
-		"v1.2.3-01",
-		"v01.2.3",
-		"v1.2.3-",
-		"v1.2.3+",
-	]) {
-		assert.equal(projectExactTagCreatePushAsReleaseV1(tagCreateTarget(tag)), null, tag);
-	}
-	assert.notEqual(projectExactTagCreatePushAsReleaseV1(tagCreateTarget("v1.2.3-rc.1+build.5")), null);
-	for (const tag of ["v1.2.3+foo+bar", "v1.2.3-01", "v01.2.3", "v1.2.3-", "v1.2.3+"]) {
-		git(fixture.repository, "-c", "user.name=Review Controller", "-c", "user.email=review-controller@example.invalid", "tag", "-a", tag, "-m", "invalid semver", fixture.finalCommit);
-		await validate(`git push origin refs/tags/${tag}`);
-	}
-	await validate("git push origin refs/tags/v1.2.3-foo..bar");
-
-	const lightweight = await controllerCall(controller, ctx, {
-		operation: "validate",
-		idempotencyKey: "lightweight-exact-tag-push",
-		command: "git push origin refs/tags/v1.0.6",
-		input: JSON.stringify({ scopeBudget: budget(), release: releaseEvidence }),
-	});
-	assert.equal((lightweight.result as Record<string, unknown>).status, "allow", JSON.stringify(lightweight));
-	assert.equal((lightweight.result as Record<string, unknown>).actor_count, 0);
-
-	git(fixture.repository, "push", "origin", "refs/tags/v1.0.5");
-	await validate("git push origin refs/tags/v1.0.5");
-});
-
-test("controller release tag-push fast path binds the evidence remote and re-proves one fetch/push destination at bash time", async (t) => {
-	const fixture = createRepository(t, true);
-	assert.ok(fixture.finalCommit);
-	const fetchRemotePath = join(fixture.parent, "fetch.git");
-	const pushRemotePath = join(fixture.parent, "push.git");
-	const alternateRemotePath = join(fixture.parent, "alternate.git");
-	for (const path of [fetchRemotePath, pushRemotePath, alternateRemotePath]) {
-		execFileSync("git", ["clone", "--bare", fixture.repository, path], { cwd: fixture.parent, stdio: ["ignore", "pipe", "pipe"] });
-	}
-	git(fixture.repository, "remote", "add", "origin", fetchRemotePath);
-	git(fixture.repository, "remote", "set-url", "--add", "--push", "origin", pushRemotePath);
-	git(fixture.repository, "remote", "add", "evidence", alternateRemotePath);
-	execFileSync("git", ["--git-dir", fetchRemotePath, "update-ref", "refs/heads/main", fixture.finalCommit]);
-	git(fixture.repository, "-c", "user.name=Review Controller", "-c", "user.email=review-controller@example.invalid", "tag", "-a", "v1.0.5", "-m", "patch release", fixture.finalCommit);
-	const { controller, toolCall } = registerRuntime();
-	const ctx = extensionContext(fixture.repository, true);
-	const evidence = {
-		protected_ref: "refs/heads/main",
-		remote: "origin",
-		ci: { revision: fixture.finalCommit, status: "success" },
-		external_evidence: "none",
-		post_incident: false,
-	};
-	const command = "git push origin refs/tags/v1.0.5";
-
-	await assert.rejects(
-		controller.execute("split-fetch-push-release-fast-path", {
-			operation: "validate",
-			idempotencyKey: "split-fetch-push-release-fast-path",
-			command,
-			input: JSON.stringify({ scopeBudget: budget(), release: evidence }),
-		}, undefined, undefined, ctx),
-		/fetch.*push|destination|identity/i,
-	);
-	await assert.rejects(
-		controller.execute("nonmatching-evidence-remote", {
-			operation: "validate",
-			idempotencyKey: "nonmatching-evidence-remote",
-			command,
-			input: JSON.stringify({ scopeBudget: budget(), release: { ...evidence, remote: "evidence" } }),
-		}, undefined, undefined, ctx),
-		/evidence remote.*match/i,
-	);
-
-	git(fixture.repository, "remote", "set-url", "--delete", "--push", "origin", pushRemotePath);
-	git(fixture.repository, "remote", "set-url", "--add", "--push", "origin", fetchRemotePath);
-	const validated = await controllerCall(controller, ctx, {
-		operation: "validate",
-		idempotencyKey: "pushurl-drift-release-fast-path",
-		command,
-		input: JSON.stringify({ scopeBudget: budget(), release: evidence }),
-	});
-	assert.equal((validated.result as Record<string, unknown>).status, "allow", JSON.stringify(validated));
-	git(fixture.repository, "remote", "set-url", "--delete", "--push", "origin", fetchRemotePath);
-	git(fixture.repository, "remote", "set-url", "--add", "--push", "origin", pushRemotePath);
-	const drifted = await toolCall({ toolName: "bash", input: { command } }, ctx);
-	assert.equal(drifted?.block, true);
-	assert.match(drifted?.reason ?? "", /target|destination|fetch.*push|binding/i);
-});
-
-test("failed or unprovable release fast-path conditions fall back to native receipt validation and fail closed", async (t) => {
-	const fixture = createRepository(t, true);
-	assert.ok(fixture.finalCommit && fixture.finalTree);
-	const remotePath = join(fixture.parent, "remote.git");
-	execFileSync("git", ["clone", "--bare", fixture.repository, remotePath], {
-		cwd: fixture.parent,
-		stdio: ["ignore", "pipe", "pipe"],
-	});
-	execFileSync("git", ["--git-dir", remotePath, "update-ref", "refs/heads/main", fixture.finalCommit]);
-	git(fixture.repository, "remote", "add", "origin", remotePath);
-	const { controller } = registerRuntime();
-	const ctx = extensionContext(fixture.repository, true);
-
-	for (const [key, release] of [
-		["failed-ci", { protected_ref: "refs/heads/main", remote: "origin", ci: { revision: fixture.finalCommit, status: "failure" }, external_evidence: "none", post_incident: false }],
-		["post-incident", { protected_ref: "refs/heads/main", remote: "origin", ci: { revision: fixture.finalCommit, status: "success" }, external_evidence: "none", post_incident: true }],
-		["escalating-evidence", { protected_ref: "refs/heads/main", remote: "origin", ci: { revision: fixture.finalCommit, status: "success" }, external_evidence: "escalating", post_incident: false }],
-	] as const) {
-		await assert.rejects(
-			controller.execute(
-				"release-fast-path-fallback",
-				{
-					operation: "validate",
-					idempotencyKey: `release-fast-path-fallback-${key}`,
-					command: "gh release create v1.2.3 --notes bounded",
-					input: JSON.stringify({ scopeBudget: budget(), release }),
-				},
-				undefined,
-				undefined,
-				ctx,
-			),
-			/lineageId/i,
-			key,
-		);
-	}
-
-	await assert.rejects(
-		controller.execute(
-			"release-evidence-wrong-event",
-			{
-				operation: "validate",
-				lineageId: "controller-fast-path-wrong-event",
-				idempotencyKey: "release-evidence-wrong-event",
-				command: "git commit -m bounded",
-				input: JSON.stringify({
-					scopeBudget: budget(),
-					release: { protected_ref: "refs/heads/main", remote: "origin", ci: { revision: fixture.finalCommit, status: "success" }, external_evidence: "none", post_incident: false },
-				}),
-			},
-			undefined,
-			undefined,
-			ctx,
-		),
-		/pre-release/i,
-	);
-
-	const receiptFallback = await (async () => {
-		createTerminalAuthority(fixture, "controller-fast-path-fallback");
-		return controllerCall(controller, ctx, {
-			operation: "validate",
-			lineageId: "controller-fast-path-fallback",
-			idempotencyKey: "release-fast-path-receipt-fallback",
-			command: "gh release create v1.2.3 --notes bounded",
-			input: JSON.stringify({
-				scopeBudget: budget(),
-				release: { protected_ref: "refs/heads/main", remote: "origin", ci: { revision: fixture.finalCommit, status: "failure" }, external_evidence: "none", post_incident: false },
-			}),
-		});
-	})();
-	assert.equal((receiptFallback.result as Record<string, unknown>).status, "allow");
-	const fallbackFastPath = receiptFallback.release_fast_path as Record<string, unknown>;
-	assert.equal(fallbackFastPath.eligible, false);
-	assert.match(String(fallbackFastPath.reason), /required CI/i);
+	assert.match(readFileSync("skills/gentle-ai/SKILL.md", "utf8"), /sole lifecycle authority/i);
 });

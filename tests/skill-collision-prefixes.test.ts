@@ -14,21 +14,20 @@ function readSkillName(dir: string): string | undefined {
 const PREFIXED_NAMES: Record<string, string> = {
 	"branch-pr": "gentle-ai-branch-pr",
 	"chained-pr": "gentle-ai-chained-pr",
+	"cognitive-doc-design": "gentle-ai-cognitive-doc-design",
+	"comment-writer": "gentle-ai-comment-writer",
 	"issue-creation": "gentle-ai-issue-creation",
 	"judgment-day": "gentle-ai-judgment-day",
 	"rdd-defect-workflow": "gentle-ai-rdd-defect-workflow",
 	"skill-creator": "gentle-ai-skill-creator",
 	"skill-improver": "gentle-ai-skill-improver",
+	"skill-registry": "gentle-ai-skill-registry",
+	"work-unit-commits": "gentle-ai-work-unit-commits",
 };
 
-const UNPREFIXED_DIRS = [
-	"skill-registry",
-	"release",
-	"work-unit-commits",
-	"gentle-ai",
-	"comment-writer",
-	"cognitive-doc-design",
-];
+// gentle-pi-owned skills that gentle-ai does not install keep their own
+// gentle- namespace, so they need no gentle-ai- prefix to avoid a collision.
+const UNPREFIXED_DIRS = ["gentle-ai", "design"];
 
 for (const [dir, expectedName] of Object.entries(PREFIXED_NAMES)) {
 	test(`skills/${dir}/SKILL.md frontmatter name is prefixed`, () => {
@@ -36,8 +35,8 @@ for (const [dir, expectedName] of Object.entries(PREFIXED_NAMES)) {
 	});
 }
 
-test("README documents legacy skill-name compatibility aliases", () => {
-	const readme = readFileSync(join(repoRoot, "README.md"), "utf8");
+test("technical reference documents legacy skill-name compatibility aliases", () => {
+	const readme = readFileSync(join(repoRoot, "docs", "readme-reference.md"), "utf8");
 	for (const [legacyName, prefixedName] of [
 		["branch-pr", "gentle-ai-branch-pr"],
 		["judgment-day", "gentle-ai-judgment-day"],

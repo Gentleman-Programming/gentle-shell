@@ -1,631 +1,1085 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import {
+	REVIEW_ACKNOWLEDGED_SCHEMA,
+	decodeReviewAcknowledgedV1,
 	decodeReviewCapabilitiesV2,
 	decodeReviewConsentV2,
 	decodeReviewConsentV3,
 	decodeReviewFailureV2,
-	decodeReviewOperationV2,
+	decodeReviewLastEventClosureV1,
+	decodeReviewNextTransitionV3,
+	decodeReviewRepairV2,
 	decodeReviewResultArtifactV2,
 	decodeReviewStartV3,
+	decodeReviewStartV4,
 	decodeReviewStatusV3,
 } from "../lib/review-integration-v2.ts";
+import { NativeReviewCliV216, type ExecFileAdapter } from "../lib/native-review-cli.ts";
 
-// Forward decoders for the gentle-ai main line (dev-binary field-test lane).
-//
-// Fixture provenance:
-// - capabilities-v2.2.captured.json and status-v5.captured.json were captured
-//   2026-08-15 from the real binary at /home/gentleman/.cargo/bin/gentle-ai
-//   reporting "gentle-ai 2.4.0-rc.8+fix.verify-attestation-recovery" (built
-//   from the gentle-ai main line), in a scratch git repository:
-//     gentle-ai review capabilities --contract gentle-ai.review-integration/v2
-//     GENTLE_PI_REVIEW_RELAY_CONTRACT=gentle-pi.review-relay/v1 \
-//       gentle-ai review status --contract gentle-ai.review-integration/v2 \
-//       --cwd <scratch> --projection workspace --next-transition
-// - capabilities-v2.1.derived.json is derived from the captured v2.2 payload
-//   plus gentle-ai origin/main contracts/review-integration/v2/schemas/
-//   capabilities-v2.1.schema.json (schema const v2.1, protocol minor 1,
-//   consent/v3 + status/v3 schema advertisements, 17 optional features): no
-//   installed binary emits v2.1 to capture from.
-// - The v5-only next_transition samples (correction_request, provider_task,
-//   submission descriptor forms) are constructed from gentle-ai origin/main
-//   contracts/review-integration/v2/schemas/status-v5.schema.json and
-//   contracts/review-integration/v1/schemas/correction-plan-request.schema.json.
-// - consent-v3.captured.json, start-v3-consent-granted.captured.json, and
-//   start-v3-consent-declined.captured.json were captured 2026-08-16 from the
-//   real binary at /home/gentleman/.cargo/bin/gentle-ai reporting
-//   "gentle-ai 2.4.0-main.b1afef46", in a scratch git repository holding a
-//   committed internal/runner/{runner.go,runner_test.go} baseline plus 12
-//   uncommitted changed lines that add a process-starting helper (risk signal
-//   shell_process, high tier):
-//     gentle-ai review status --contract gentle-ai.review-integration/v2 \
-//       --cwd <scratch> --projection workspace --next-transition   # target source
-//     gentle-ai review start --contract gentle-ai.review-integration/v2 \
-//       --cwd <scratch> --target <identity> --projection workspace \
-//       --consent relay                                            # consent-v3
-//   then the envelope's exact declined invocation (declined capture, which
-//   persists nothing) followed by its exact granted invocation (granted
-//   start/v3 capture). Note: the live granted/declined invocations carry no
-//   --agent token even though the envelope pins agent: claude-code — the
-//   published consent-v3.schema.json invocation pattern is narrower than the
-//   emitter, so the capture is authoritative (parity playbook, known traps).
-// - status-v5-repository-context.captured.json was captured 2026-08-16 from
-//   the real binary at /home/gentleman/.cargo/bin/gentle-ai reporting
-//   "gentle-ai 2.4.0-main.b1afef46", in a scratch git repository with one
-//   medium-tier lineage in state `reviewing` whose single reviewer result was
-//   already admitted (consent granted start, then review capture-result):
-//     gentle-ai review status --contract gentle-ai.review-integration/v2 \
-//       --cwd <scratch> --agent claude-code --lineage <lineage> \
-//       --projection workspace --next-transition
-//   The top-level `repository_context` reference it carries is emitted by the
-//   live binary but MISSING from the published status-v5.schema.json
-//   (additionalProperties: false) at the same commit — the capture is
-//   authoritative (parity playbook, known traps).
-// - result-artifact-v2.captured.json and result-artifact-v2-path.captured.json
-//   were captured 2026-08-16 from the real binary at
-//   /home/gentleman/.cargo/bin/gentle-ai reporting
-//   "gentle-ai 2.4.0-main.b1afef46", in a scratch git repository holding a
-//   committed src/greet.js baseline plus an uncommitted shout() helper
-//   (medium tier, one review-reliability lens): consent-granted START, then
-//   the STATUS transition's exact `review capture-result` collect arguments
-//   with a completed reviewer input document. The reference form is the
-//   stdout of the --repository-context invocation (opaque rart1_ locator);
-//   the path form re-ran the exact same admitted slot with --cwd instead,
-//   which discovers the identical canonical bytes and answers with the
-//   provider-owned store path. Both agree on every binding field.
-// - status-v5-capture-result-submission.captured.json was captured 2026-08-16
-//   from the real binary at /home/gentleman/.cargo/bin/gentle-ai reporting
-//   "gentle-ai 2.4.0-main.b1afef46", in a scratch git repository holding a
-//   committed src/add.js baseline plus an uncommitted double() helper
-//   (medium tier, one review-reliability lens), with
-//   GENTLE_PI_REVIEW_RELAY_CONTRACT=gentle-pi.review-relay/v1 exported:
-//   negotiated STATUS (--agent pi), the rendered consent/v3 START, its exact
-//   granted invocation, then
-//     gentle-ai review status --contract gentle-ai.review-integration/v2 \
-//       --cwd <scratch> --agent pi --next-transition
-//   at reviewer_results_required. Its materialize capture-result collect
-//   input carries the submission descriptor as a SINGULAR `value` object
-//   with a `schema` key (emitter: gentle-ai f1a95179, singular from its
-//   first commit) — not the `values` array this decoder was originally
-//   written against. The capture is authoritative.
-
-const fixtureRoot = join(import.meta.dirname, "fixtures", "devbinary");
-const fixture = <T = Record<string, unknown>>(name: string): T => JSON.parse(readFileSync(join(fixtureRoot, name), "utf8")) as T;
-const v2FixtureRoot = join(process.cwd(), "contracts", "review-integration", "v2", "fixtures");
-const v2Fixture = <T = Record<string, unknown>>(name: string): T => JSON.parse(readFileSync(join(v2FixtureRoot, name), "utf8")) as T;
-const capturedDigest = "ffc91d8fa79c869aba9aa3d1ec80edebb5b1744e5a06fef75d4c8b73c0e46bc1";
-const pinnedFixtureDigest = "dcc846103b16d365eaeeb9d7f289c23fc4f2897f23def1cb3fe7f05557b64705";
+const DEV_FIXTURES = join(process.cwd(), "tests", "fixtures", "devbinary");
+const V2_FIXTURES = join(process.cwd(), "contracts", "review-integration", "v2", "fixtures");
+const CAPTURED_DIGEST = "ffc91d8fa79c869aba9aa3d1ec80edebb5b1744e5a06fef75d4c8b73c0e46bc1";
 
 type JsonObject = Record<string, unknown>;
 const clone = <T>(value: T): T => structuredClone(value);
 const sha = (fill: string): string => `sha256:${fill.repeat(64)}`;
 
-test("the captured capabilities/v2.2 payload decodes and reports its own package version", () => {
-	const capabilities = decodeReviewCapabilitiesV2(fixture("capabilities-v2.2.captured.json"), capturedDigest);
+function fixture(root: string, name: string): unknown {
+	return JSON.parse(readFileSync(join(root, name), "utf8"));
+}
+
+function currentStatusFixture(name: string): Record<string, unknown> {
+	const body = structuredClone(fixture(DEV_FIXTURES, name)) as Record<string, unknown>;
+	if (body.action === "finalize") {
+		body.action = "stop";
+		const transition = body.next_transition as Record<string, unknown> | undefined;
+		if (transition?.kind === "execute") {
+			delete body.next_transition;
+			delete body.forecast;
+		}
+	}
+	return body;
+}
+
+function initialIntendedUntrackedStatusV6(): JsonObject {
+	const body = currentStatusFixture("status-v5.captured.json");
+	const projection = body.projection as JsonObject;
+	const schema = "gentle-ai.review-intended-untracked-selection/v1";
+	body.schema = "gentle-ai.review-integration.status/v6";
+	body.forecast = {
+		horizon: "partial", steps: [{ step: 1, kind: "collect", reason_code: "intended_untracked_selection_required", description: "initial intended-untracked selection required" }],
+	};
+	body.next_transition = {
+		kind: "collect",
+		reason_code: "intended_untracked_selection_required",
+		collect: { inputs: [{
+			name: "intended_untracked_selection", schema, capture_operation: "external.select_intended_untracked",
+			arguments: [
+				["target_identity", body.target_identity], ["projection", "workspace"], ["base_tree", projection.base_tree],
+				["candidate_tree", projection.current_candidate_tree], ["eligible_paths_json", '["docs/selected.md"]'], ["expected_untracked_inventory", sha("e")],
+			].map(([name, value]) => ({ name, value })),
+			submission: {
+				operation_token: "status",
+				argument_tokens: ["--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", "--intended-untracked-selection={{value}}"],
+				value: { slot: "intended_untracked_selection", domain: "schema_bound_json", schema, substitution_location: 4 },
+			},
+		}] },
+	};
+	return body;
+}
+
+test("captured capabilities retain their exact schema identity", () => {
+	const capabilities = decodeReviewCapabilitiesV2(
+		fixture(DEV_FIXTURES, "capabilities-v2.2.captured.json"),
+		CAPTURED_DIGEST,
+	);
 	assert.equal(capabilities.packageVersion, "2.4.0-rc.8+fix.verify-attestation-recovery");
 	assert.equal(capabilities.schemas.has("gentle-ai.review-integration.status/v5"), true);
-	assert.equal(capabilities.schemas.has("gentle-ai.review-integration.consent/v3"), true);
-	assert.equal(capabilities.optionalFeatures.has("provider_bound_native_git_context"), true);
+});
+
+test("historical v3 FINALIZE status remains rejected without rewriting fixture bytes", () => {
+	assert.throws(
+		() => decodeReviewStatusV3(fixture(V2_FIXTURES, "status.fixture.json")),
+		/receipt|finalize|status/i,
+	);
+});
+
+test("v5 STATUS rejects malformed receipt status, identity, and extra fields", () => {
+	const unsupported = currentStatusFixture("status-v5.captured.json");
+	(unsupported.receipt as JsonObject).status = "retired";
+	assert.throws(() => decodeReviewStatusV3(unsupported), /status\.receipt\.status/);
+
+	const invalidIdentity = currentStatusFixture("status-v5.captured.json");
+	(invalidIdentity.receipt as JsonObject).identity = "not-a-sha256";
+	assert.throws(() => decodeReviewStatusV3(invalidIdentity), /status\.receipt\.identity/);
+
+	const extra = currentStatusFixture("status-v5.captured.json");
+	(extra.receipt as JsonObject).unexpected = true;
+	assert.throws(() => decodeReviewStatusV3(extra), /status\.receipt\.unexpected is not allowed/);
+});
+
+test("legacy-v1 v5 STATUS accepts only its two compatible receipt states", () => {
+	const legacyStatus = (status: string, identity?: string): JsonObject => {
+		const body = currentStatusFixture("status-v5-capture-result-submission.captured.json");
+		(body.authority as JsonObject).version = "legacy-v1";
+		body.receipt = { status, ...(identity === undefined ? {} : { identity }) };
+		delete body.frozen;
+		delete body.authority_target_identity;
+		return body;
+	};
+
+	assert.deepEqual(decodeReviewStatusV3(legacyStatus("expected_missing")).receipt, { status: "expected_missing" });
+	assert.deepEqual(decodeReviewStatusV3(legacyStatus("present", sha("a"))).receipt, { status: "present", identity: sha("a") });
+	for (const status of ["publication_pending", "not_applicable"]) {
+		assert.throws(() => decodeReviewStatusV3(legacyStatus(status)), /legacy status receipt is incompatible/);
+	}
+});
+
+test("captured terminal closure decodes without a compatibility status projection", () => {
+	const closure = decodeReviewLastEventClosureV1(
+		fixture(DEV_FIXTURES, "last-event-capture-result-approved.captured.json"),
+	);
+	assert.equal(closure.operation, "review/capture-result");
+	assert.equal(closure.state, "approved");
+});
+
+test("derived and pinned capabilities remain separately schema-pinned", () => {
+	const derived = decodeReviewCapabilitiesV2(fixture(DEV_FIXTURES, "capabilities-v2.1.derived.json"), CAPTURED_DIGEST);
+	assert.equal(derived.schemas.has("gentle-ai.review-integration.consent/v3"), true);
+	const pinned = decodeReviewCapabilitiesV2(fixture(V2_FIXTURES, "capabilities.fixture.json"), "dcc846103b16d365eaeeb9d7f289c23fc4f2897f23def1cb3fe7f05557b64705");
+	assert.equal(pinned.schemas.has("gentle-ai.review-integration.consent/v2"), true);
+});
+
+test("capabilities reject a protocol minor that disagrees with their exact identity", () => {
+	const body = fixture(DEV_FIXTURES, "capabilities-v2.2.captured.json") as Record<string, unknown>;
+	const mutated = structuredClone(body) as Record<string, unknown>;
+	(mutated.protocol as Record<string, unknown>).minor = 1;
+	assert.throws(() => decodeReviewCapabilitiesV2(mutated, CAPTURED_DIGEST), /protocol/);
+});
+
+test("captured v5 STATUS preserves its provider forecast and collect binding", () => {
+	const decoded = decodeReviewStatusV3(currentStatusFixture("status-v5.captured.json"));
+	assert.equal(decoded.forecast?.horizon, "partial");
+	assert.equal(decoded.nextTransition?.kind, "collect");
+	assert.equal(decoded.nextTransition?.collect?.inputs[0]?.captureOperation, "external.select_base_ref");
+});
+
+test("v3 status identity rejects v5-only forecast fields", () => {
+	const body = currentStatusFixture("status-v5.captured.json");
+	body.schema = "gentle-ai.review-integration.status/v3";
+	delete body.receipt;
+	assert.throws(() => decodeReviewStatusV3(body), /forecast/);
+});
+
+test("captured v5 STATUS retains its opaque repository context reference", () => {
+	const decoded = decodeReviewStatusV3(currentStatusFixture("status-v5-repository-context.captured.json"));
+	assert.match(decoded.repositoryContext?.handle ?? "", /^rctx1_[0-9a-f]{64}$/);
+	assert.equal(decoded.repositoryContext?.targetIdentity, decoded.targetIdentity);
+});
+
+test("the singular v5 capture-result submission normalizes to one typed value", () => {
+	const decoded = decodeReviewStatusV3(currentStatusFixture("status-v5-capture-result-submission.captured.json"));
+	const input = decoded.nextTransition?.collect?.inputs[0];
+	assert.equal(input?.captureOperation, "review.capture-result");
+	assert.deepEqual(input?.submission?.values, [{ slot: "reviewer_result", domain: "artifact_path_or_stdin", schema: "https://gentle-ai.dev/schema/review/reviewer/v1", substitutionLocation: 7 }]);
+});
+
+test("the singular capture-result form rejects competing legacy values", () => {
+	const body = currentStatusFixture("status-v5-capture-result-submission.captured.json");
+	const input = (((body.next_transition as Record<string, unknown>).collect as Record<string, unknown>).inputs as Record<string, unknown>[])[0]!;
+	const submission = input.submission as Record<string, unknown>;
+	submission.values = [submission.value];
+	assert.throws(() => decodeReviewStatusV3(body), /value/);
+});
+
+test("consent/v3 accepts the Pi runtime only when its exact agent binding matches", () => {
+	const captured = fixture(DEV_FIXTURES, "consent-v3.captured.json") as Record<string, unknown>;
+	const piConsent = decodeReviewConsentV3({ ...captured, agent: "pi" }, "pi");
+	assert.equal(piConsent.agent, "pi");
+	assert.throws(() => decodeReviewConsentV3(captured, "pi"), /consent\.agent/);
+});
+
+test("consent identities remain cross-decoder incompatible", () => {
+	const v3 = fixture(DEV_FIXTURES, "consent-v3.captured.json");
+	const v2 = fixture(V2_FIXTURES, "consent.fixture.json");
+	assert.throws(() => decodeReviewConsentV2(v3), /agent|schema/);
+	assert.throws(() => decodeReviewConsentV3(v2), /agent|schema/);
+});
+
+test("captured granted START keeps its repository-context event binding", () => {
+	const start = decodeReviewStartV3(fixture(DEV_FIXTURES, "start-v3-consent-granted.captured.json"));
+	assert.equal(start.state, "reviewing");
+	assert.match(start.repositoryContext?.eventId ?? "", /^sha256:[0-9a-f]{64}$/);
+});
+
+test("result artifacts retain mutually exclusive reference and path locators", () => {
+	const reference = decodeReviewResultArtifactV2(fixture(DEV_FIXTURES, "result-artifact-v2.captured.json"));
+	const path = decodeReviewResultArtifactV2(fixture(DEV_FIXTURES, "result-artifact-v2-path.captured.json"));
+	assert.match(reference.reference ?? "", /^rart1_[0-9a-f]{64}$/);
+	assert.equal(reference.path, undefined);
+	assert.equal(path.reference, undefined);
+	assert.equal(path.sha256, reference.sha256);
+});
+
+test("result artifacts reject a second locator", () => {
+	const body = structuredClone(fixture(DEV_FIXTURES, "result-artifact-v2.captured.json")) as Record<string, unknown>;
+	body.path = "/store/reviewer-results/00-review-reliability.json";
+	assert.throws(() => decodeReviewResultArtifactV2(body), /exactly one/);
+});
+
+test("nonuniform role capture closures retain their exact upstream operation identities", () => {
+	assert.equal(decodeReviewLastEventClosureV1(fixture(DEV_FIXTURES, "last-event-capture-refuter-approved.captured.json")).operation, "review.capture-refuter");
+	assert.equal(decodeReviewLastEventClosureV1(fixture(DEV_FIXTURES, "last-event-capture-validation-approved.captured.json")).operation, "review/capture-validation");
 });
 
 test("the derived capabilities/v2.1 payload decodes with protocol minor 1", () => {
-	const capabilities = decodeReviewCapabilitiesV2(fixture("capabilities-v2.1.derived.json"), capturedDigest);
+	const capabilities = decodeReviewCapabilitiesV2(fixture(DEV_FIXTURES, "capabilities-v2.1.derived.json"), CAPTURED_DIGEST);
 	assert.equal(capabilities.packageVersion, "2.4.0-rc.8+fix.verify-attestation-recovery");
 	assert.equal(capabilities.schemas.has("gentle-ai.review-integration.status/v3"), true);
 	assert.equal(capabilities.schemas.has("gentle-ai.review-integration.consent/v3"), true);
 });
 
-test("the pinned capabilities/v2 fixture still decodes unchanged", () => {
-	const capabilities = decodeReviewCapabilitiesV2(v2Fixture("capabilities.fixture.json"), pinnedFixtureDigest);
-	assert.equal(capabilities.schemas.has("gentle-ai.review-integration.status/v3"), true);
-	assert.equal(capabilities.schemas.has("gentle-ai.review-integration.consent/v2"), true);
-});
-
-test("capabilities schema identity and protocol minor must agree", () => {
-	const base = fixture<JsonObject>("capabilities-v2.2.captured.json");
-	const wrongMinor = clone(base);
-	(wrongMinor.protocol as JsonObject).minor = 1;
-	assert.throws(() => decodeReviewCapabilitiesV2(wrongMinor, capturedDigest), /protocol/);
-	const wrongSchema = clone(base);
-	wrongSchema.schema = "gentle-ai.review-integration.capabilities/v2.3";
-	assert.throws(() => decodeReviewCapabilitiesV2(wrongSchema, capturedDigest), /schema/);
-	// The old identity never inherits the new advertisements: a v2 envelope
-	// advertising the v2.2 schema surface is missing its own required floor.
-	const crossed = clone(base);
-	crossed.schema = "gentle-ai.review-integration.capabilities/v2";
-	(crossed.protocol as JsonObject).minor = 0;
-	assert.throws(() => decodeReviewCapabilitiesV2(crossed, capturedDigest), /schemas/);
-});
-
-test("the captured status/v5 payload decodes with its forecast and base-ref collect input", () => {
-	const status = decodeReviewStatusV3(fixture("status-v5.captured.json"));
-	assert.equal(status.applicability, "unrelated");
-	assert.equal(status.action, "start");
-	assert.equal(status.forecast?.horizon, "partial");
-	assert.deepEqual(status.forecast?.steps, [{ step: 1, kind: "collect", reasonCode: "empty_candidate_base_ref_required", description: "empty candidate base ref required" }]);
-	assert.equal(status.nextTransition?.kind, "collect");
-	assert.equal(status.nextTransition?.collect?.inputs[0]?.captureOperation, "external.select_base_ref");
-});
-
-test("the pinned status/v3 fixture still decodes unchanged", () => {
-	const status = decodeReviewStatusV3(v2Fixture("status.fixture.json"));
-	assert.equal(status.contract, "gentle-ai.review-integration/v2");
-});
-
-test("the captured status/v5 payload decodes its top-level repository context reference", () => {
-	const status = decodeReviewStatusV3(fixture("status-v5-repository-context.captured.json"));
-	assert.equal(status.authority?.state, "reviewing");
-	assert.equal(status.repositoryContext?.capability, "review.opaque_repository_context");
-	assert.match(status.repositoryContext?.handle ?? "", /^rctx1_[0-9a-f]{64}$/);
-	assert.equal(status.repositoryContext?.revision, status.authority?.revision);
-	assert.equal(status.repositoryContext?.targetIdentity, status.targetIdentity);
-	assert.equal(status.repositoryContext?.outcome, "applied");
-});
-
 test("a status/v3 payload never carries a top-level repository context", () => {
-	const v5 = fixture<JsonObject>("status-v5-repository-context.captured.json");
-	const downgraded = clone(v5);
-	downgraded.schema = "gentle-ai.review-integration.status/v3";
-	delete downgraded.forecast; // forecast is rejected first; isolate the field under test
-	assert.throws(() => decodeReviewStatusV3(downgraded), /repository_context/);
-});
-
-test("a status/v3 payload never carries v5 fields", () => {
-	const v5 = fixture<JsonObject>("status-v5.captured.json");
-	const downgraded = clone(v5);
-	downgraded.schema = "gentle-ai.review-integration.status/v3";
-	// forecast is a v5 field; the v3 identity must keep rejecting it.
-	assert.throws(() => decodeReviewStatusV3(downgraded), /forecast/);
-	const withoutForecast = clone(downgraded);
-	delete withoutForecast.forecast;
-	const status = decodeReviewStatusV3(withoutForecast);
-	assert.equal(status.forecast, undefined);
+	const body = currentStatusFixture("status-v5-repository-context.captured.json");
+	body.schema = "gentle-ai.review-integration.status/v3";
+	delete body.receipt;
+	delete body.forecast;
+	assert.throws(() => decodeReviewStatusV3(body), /repository_context/);
 });
 
 test("a v5 forecast requires the next transition and a coherent horizon", () => {
-	const base = fixture<JsonObject>("status-v5.captured.json");
-	const orphanForecast = clone(base);
+	const orphanForecast = currentStatusFixture("status-v5.captured.json");
 	delete orphanForecast.next_transition;
 	assert.throws(() => decodeReviewStatusV3(orphanForecast), /forecast/);
-	const wrongHorizon = clone(base);
+	const wrongHorizon = currentStatusFixture("status-v5.captured.json");
 	(wrongHorizon.forecast as JsonObject).horizon = "terminal";
 	assert.throws(() => decodeReviewStatusV3(wrongHorizon), /horizon/);
-	const badStep = clone(base);
+	const badStep = currentStatusFixture("status-v5.captured.json");
 	((badStep.forecast as JsonObject).steps as JsonObject[])[0]!.step = 2;
 	assert.throws(() => decodeReviewStatusV3(badStep), /step/);
-	const extraKey = clone(base);
-	(extraKey.forecast as JsonObject).unadvertised = true;
-	assert.throws(() => decodeReviewStatusV3(extraKey), /not allowed/);
-});
-
-// --- v5-only next_transition surfaces, constructed per the vendored schemas ---
-
-function v5StatusWith(nextTransition: JsonObject, forecast?: JsonObject): JsonObject {
-	const base = fixture<JsonObject>("status-v5.captured.json");
-	base.next_transition = nextTransition;
-	if (forecast === undefined) delete base.forecast;
-	else base.forecast = forecast;
-	return base;
-}
-
-const correctionPlanRequest: JsonObject = {
-	schema: "gentle-ai.review-correction-plan-request/v1",
-	request_hash: sha("a"),
-	lineage_id: "review-1d5aadacc600e167",
-	expected_revision: sha("b"),
-	target_identity: sha("c"),
-	correction_budget: 25,
-	fix_finding_ids: ["risk-1"],
-	findings: [{
-		id: "risk-1",
-		lens: "risk",
-		location: "app.ts:10",
-		severity: "BLOCKER",
-		claim: "candidate-introduced credential exposure",
-		proof_refs: ["app.ts:10-14"],
-		evidence: "the candidate logs the raw token",
-		evidence_class: "deterministic",
-		causal_disposition: "introduced",
-	}],
-};
-
-test("a v5 correction_plan_required transition carries its correction request and plan submission", () => {
-	const transition: JsonObject = {
-		kind: "collect",
-		reason_code: "correction_plan_required",
-		correction_request: correctionPlanRequest,
-		collect: {
-			inputs: [{
-				name: "correction_plan",
-				schema: "gentle-ai.review-correction-plan/v1",
-				capture_operation: "external.plan_correction",
-				arguments: [{ name: "lineage", value: "review-1d5aadacc600e167" }],
-				submission: {
-					operation_token: "finalize",
-					argument_tokens: [
-						"--contract=gentle-ai.review-integration/v2",
-						"--lineage=review-1d5aadacc600e167",
-						`--expected-revision=${sha("b")}`,
-						`--target=${sha("c")}`,
-						`--request-hash=${sha("a")}`,
-						`--repository-context=rctx1_${"0".repeat(64)}`,
-						"--correction-lines={{value}}",
-					],
-					value: { slot: "correction_lines", domain: "positive_correction_lines", minimum: 1, maximum: 25, substitution_location: 6 },
-				},
-			}],
-		},
-	};
-	const status = decodeReviewStatusV3(v5StatusWith(transition));
-	assert.equal(status.nextTransition?.reasonCode, "correction_plan_required");
-	assert.equal(status.nextTransition?.correctionRequest?.correctionBudget, 25);
-	assert.equal(status.nextTransition?.collect?.inputs[0]?.submissionDescriptor?.operationToken, "finalize");
-	// The same reason code without its correction request is incomplete.
-	const missing = clone(transition);
-	delete missing.correction_request;
-	assert.throws(() => decodeReviewStatusV3(v5StatusWith(missing)), /correction_request/);
-	// And correction_request never rides an unrelated reason code.
-	const unrelated = clone(transition);
-	unrelated.reason_code = "verification_evidence_required";
-	assert.throws(() => decodeReviewStatusV3(v5StatusWith(unrelated)), /correction_request/);
-});
-
-test("a v5 capture-evidence transition decodes its evidence submission descriptor", () => {
-	const transition: JsonObject = {
-		kind: "collect",
-		reason_code: "verification_evidence_required",
-		collect: {
-			inputs: [{
-				name: "verification_evidence",
-				schema: "https://gentle-ai.dev/schema/review/verification-evidence/v1",
-				capture_operation: "review.capture-evidence",
-				arguments: [{ name: "lineage", value: "review-1d5aadacc600e167" }],
-				submission: {
-					operation_token: "capture-evidence",
-					argument_tokens: [
-						"--lineage=review-1d5aadacc600e167",
-						`--expected-revision=${sha("b")}`,
-						`--target=${sha("c")}`,
-						`--repository-context=rctx1_${"0".repeat(64)}`,
-						"--outcome={{outcome}}",
-						"--input={{input}}",
-					],
-					values: [
-						{ slot: "outcome", domain: "verification_outcome", allowed_values: ["passed", "verification_failed", "procedural_tooling_failed"], substitution_location: 4 },
-						{ slot: "input", domain: "artifact_path_or_stdin", schema: "https://gentle-ai.dev/schema/review/verification-evidence/v1", substitution_location: 5 },
-					],
-				},
-			}],
-		},
-	};
-	const status = decodeReviewStatusV3(v5StatusWith(transition));
-	const input = status.nextTransition?.collect?.inputs[0];
-	assert.equal(input?.submissionDescriptor?.operationToken, "capture-evidence");
-	assert.equal(input?.submission, undefined);
-	// Missing its required submission descriptor is incomplete.
-	const missing = clone(transition);
-	delete ((missing.collect as JsonObject).inputs as JsonObject[])[0]!.submission;
-	assert.throws(() => decodeReviewStatusV3(v5StatusWith(missing)), /submission/);
 });
 
 test("a v5 provider role task input decodes and is confined to external.run_provider_role", () => {
-	const providerTask = { agent: "review-refuter", role: "refuter", prompt: "GENTLE_AI_REVIEW_BINDING {}" };
-	const transition: JsonObject = {
-		kind: "collect",
-		reason_code: "refuter_batch_required",
-		collect: {
-			inputs: [{
-				name: "refuter_batch",
-				schema: "https://gentle-ai.dev/schema/review/refuter/v1",
-				capture_operation: "external.run_provider_role",
-				arguments: [{ name: "lineage", value: "review-1d5aadacc600e167" }],
-				provider_task: providerTask,
-			}],
-		},
-	};
-	const status = decodeReviewStatusV3(v5StatusWith(transition));
-	assert.deepEqual(status.nextTransition?.collect?.inputs[0]?.providerTask, { agent: "review-refuter", role: "refuter", prompt: "GENTLE_AI_REVIEW_BINDING {}" });
-	// The task is required on its own vector and forbidden anywhere else.
-	const missing = clone(transition);
-	delete ((missing.collect as JsonObject).inputs as JsonObject[])[0]!.provider_task;
-	assert.throws(() => decodeReviewStatusV3(v5StatusWith(missing)), /provider_task/);
-	const misplaced = fixture<JsonObject>("status-v5.captured.json");
-	(((misplaced.next_transition as JsonObject).collect as JsonObject).inputs as JsonObject[])[0]!.provider_task = providerTask;
-	assert.throws(() => decodeReviewStatusV3(misplaced), /provider_task/);
-});
-
-// --- v5 pi materialize capture-result submission: the singular `value` form ---
-
-test("the captured v5 materialize capture-result submission decodes its singular value form", () => {
-	const status = decodeReviewStatusV3(fixture("status-v5-capture-result-submission.captured.json"));
-	assert.equal(status.authority?.state, "reviewing");
-	assert.equal(status.nextTransition?.reasonCode, "reviewer_results_required");
-	const input = status.nextTransition?.collect?.inputs[0];
-	assert.equal(input?.captureOperation, "review.capture-result");
-	assert.equal(input?.submissionDescriptor, undefined);
-	assert.equal(input?.submission?.operationToken, "capture-result");
-	// The singular wire `value` normalizes into the typed one-entry values
-	// array the host relay already consumes.
-	assert.deepEqual(input?.submission?.values, [{
-		slot: "reviewer_result",
-		domain: "artifact_path_or_stdin",
-		schema: "https://gentle-ai.dev/schema/review/reviewer/v1",
-		substitutionLocation: 7,
-	}]);
-});
-
-test("the v5 singular capture-result value form is closed to its captured shape", () => {
-	const base = fixture<JsonObject>("status-v5-capture-result-submission.captured.json");
-	const withSubmission = (mutate: (submission: JsonObject) => void): JsonObject => {
-		const body = clone(base);
-		mutate((((body.next_transition as JsonObject).collect as JsonObject).inputs as JsonObject[])[0]!.submission as JsonObject);
-		return body;
-	};
-	// Carrying both wire forms at once matches no captured shape.
-	assert.throws(() => decodeReviewStatusV3(withSubmission((submission) => {
-		submission.values = [submission.value];
-	})), /value/);
-	// The singular form owns no numeric or enumerated domain: minimum,
-	// maximum, and allowed_values belong to the finalize/capture-evidence
-	// descriptor forms only.
-	for (const [key, smuggled] of [["minimum", 1], ["maximum", 2], ["allowed_values", ["x"]]] as const) {
-		assert.throws(() => decodeReviewStatusV3(withSubmission((submission) => {
-			(submission.value as JsonObject)[key] = smuggled;
-		})), /not allowed/);
-	}
-	// The captured form always names its reviewer schema and slot.
-	assert.throws(() => decodeReviewStatusV3(withSubmission((submission) => {
-		delete (submission.value as JsonObject).schema;
-	})), /schema/);
-	assert.throws(() => decodeReviewStatusV3(withSubmission((submission) => {
-		(submission.value as JsonObject).slot = "validation";
-	})), /slot/);
-	assert.throws(() => decodeReviewStatusV3(withSubmission((submission) => {
-		submission.operation_token = "finalize-relay";
-	})), /operation_token/);
-	// The legacy values-array rows stay exactly as they were: they never
-	// learned the schema key the singular form carries.
-	assert.throws(() => decodeReviewStatusV3(withSubmission((submission) => {
-		const row = submission.value as JsonObject;
-		delete submission.value;
-		submission.values = [row];
-	})), /not allowed/);
+	const body = currentStatusFixture("status-v5.captured.json");
+	const transition = body.next_transition as JsonObject;
+	const input = ((transition.collect as JsonObject).inputs as JsonObject[])[0]!;
+	input.name = "refuter_batch";
+	input.schema = "https://gentle-ai.dev/schema/review/refuter/v1";
+	input.capture_operation = "external.run_provider_role";
+	input.provider_task = { agent: "review-refuter", role: "refuter", prompt: "GENTLE_AI_REVIEW_BINDING {}" };
+	const decoded = decodeReviewStatusV3(body);
+	assert.deepEqual(decoded.nextTransition?.collect?.inputs[0]?.providerTask, { agent: "review-refuter", role: "refuter", prompt: "GENTLE_AI_REVIEW_BINDING {}" });
+	const missing = clone(body);
+	delete ((((missing.next_transition as JsonObject).collect as JsonObject).inputs as JsonObject[])[0]!).provider_task;
+	assert.throws(() => decodeReviewStatusV3(missing), /provider_task/);
 });
 
 test("the v3 identity keeps rejecting the singular capture-result value form", () => {
-	const body = clone(fixture<JsonObject>("status-v5-capture-result-submission.captured.json"));
+	const body = currentStatusFixture("status-v5-capture-result-submission.captured.json");
 	body.schema = "gentle-ai.review-integration.status/v3";
+	delete body.receipt;
 	delete body.forecast;
 	delete body.repository_context;
 	assert.throws(() => decodeReviewStatusV3(body), /values is required/);
 });
 
 test("the v3 next transition keeps rejecting every v5-only surface", () => {
-	const v5 = fixture<JsonObject>("status-v5.captured.json");
-	// Re-identify the captured envelope as v3 (drop the v5-only forecast) and
-	// then try to smuggle each v5 surface through the old identity.
-	const asV3 = (mutate: (transition: JsonObject) => void): JsonObject => {
-		const body = clone(v5);
-		body.schema = "gentle-ai.review-integration.status/v3";
-		delete body.forecast;
-		mutate(body.next_transition as JsonObject);
-		return body;
-	};
-	assert.throws(() => decodeReviewStatusV3(asV3((transition) => { transition.correction_request = correctionPlanRequest; })), /not allowed|correction_request/);
-	assert.throws(() => decodeReviewStatusV3(asV3((transition) => {
-		(((transition.collect as JsonObject).inputs as JsonObject[])[0]!).provider_task = { agent: "review-refuter", role: "refuter", prompt: "x" };
-	})), /not allowed|provider_task/);
-	assert.throws(() => decodeReviewStatusV3(asV3((transition) => {
-		(((transition.collect as JsonObject).inputs as JsonObject[])[0]!).submission = { operation_token: "finalize", argument_tokens: ["--correction-lines={{value}}"], value: { slot: "correction_lines", domain: "positive_correction_lines", minimum: 1, maximum: 25, substitution_location: 6 } };
-	})), /submission|values/);
+	const v5 = currentStatusFixture("status-v5.captured.json");
+	v5.schema = "gentle-ai.review-integration.status/v3";
+	delete v5.receipt;
+	delete v5.forecast;
+	const transition = v5.next_transition as JsonObject;
+	transition.correction_request = { schema: "gentle-ai.review-correction-plan-request/v1", request_hash: sha("a") };
+	assert.throws(() => decodeReviewStatusV3(v5), /not allowed|correction_request/);
 });
 
-// --- consent/v3 — the negotiated v2.1+ consent question (adds `agent`) ---
-
-test("the captured consent/v3 envelope decodes with its fixed agent binding", () => {
-	const consent = decodeReviewConsentV3(fixture("consent-v3.captured.json"));
-	assert.equal(consent.schema, "gentle-ai.review-integration.consent/v3");
-	assert.equal(consent.agent, "claude-code");
-	assert.equal(consent.action, "consent_required");
-	assert.equal(consent.blocking, true);
-	assert.equal(consent.riskLevel, "high");
-	assert.equal(consent.changedFiles, 2);
-	assert.equal(consent.changedLines, 12);
-	assert.equal(consent.choices[0].answer, "granted");
-	assert.equal(consent.choices[1].answer, "declined");
-	for (const choice of consent.choices) {
-		assert.ok(choice.invocation.includes(` --target ${consent.targetIdentity} `));
+test("consent/v3 keeps every v2 semantic guard and rejects agents outside the fixed runtime contract", () => {
+	const base = fixture(DEV_FIXTURES, "consent-v3.captured.json") as JsonObject;
+	for (const agent of ["kilocode", "future-runtime", ""] as const) {
+		assert.throws(() => decodeReviewConsentV3({ ...clone(base), agent }), /agent/);
 	}
-	assert.equal(consent.offPath.command, "gentle-ai review mode disable");
-});
-
-test("consent identities never cross-decode", () => {
-	const v3 = fixture<JsonObject>("consent-v3.captured.json");
-	const v2 = v2Fixture<JsonObject>("consent.fixture.json");
-	// The old identity never accepts the new surface, and vice versa.
-	assert.throws(() => decodeReviewConsentV2(clone(v3)), /agent|schema/);
-	assert.throws(() => decodeReviewConsentV3(clone(v2)), /agent|schema/);
-	// A schema-swapped v3 body keeps its agent key, which the v2 identity
-	// still rejects as an unadvertised surface.
-	const downgraded = clone(v3);
-	downgraded.schema = "gentle-ai.review-integration.consent/v2";
-	assert.throws(() => decodeReviewConsentV2(downgraded), /agent/);
-	// A schema-swapped v2 body is missing the agent key v3 requires.
-	const upgraded = clone(v2);
-	upgraded.schema = "gentle-ai.review-integration.consent/v3";
-	assert.throws(() => decodeReviewConsentV3(upgraded), /agent/);
-});
-
-test("consent/v3 keeps every v2 semantic guard and pins its agent constant", () => {
-	const base = fixture<JsonObject>("consent-v3.captured.json");
-	const wrongAgent = clone(base);
-	wrongAgent.agent = "opencode";
-	assert.throws(() => decodeReviewConsentV3(wrongAgent), /agent/);
 	const swapped = clone(base);
 	swapped.choices = [...(swapped.choices as JsonObject[])].reverse();
 	assert.throws(() => decodeReviewConsentV3(swapped), /answer/);
-	const badInvocation = clone(base);
-	((badInvocation.choices as JsonObject[])[0]!).invocation = "gentle-ai review finalize --consent granted";
-	assert.throws(() => decodeReviewConsentV3(badInvocation), /invocation/);
-	const differentTarget = clone(base);
-	differentTarget.target_identity = sha("d");
-	assert.throws(() => decodeReviewConsentV3(differentTarget), /target|invocation/);
-	const notBlocking = clone(base);
-	notBlocking.blocking = false;
-	assert.throws(() => decodeReviewConsentV3(notBlocking), /blocking/);
-	const extraKey = clone(base);
-	extraKey.unadvertised = true;
-	assert.throws(() => decodeReviewConsentV3(extraKey), /not allowed/);
-});
-
-test("the pinned consent/v2 fixture still decodes unchanged", () => {
-	const consent = decodeReviewConsentV2(v2Fixture("consent.fixture.json"));
-	assert.equal(consent.schema, "gentle-ai.review-integration.consent/v2");
-	assert.equal(consent.action, "consent_required");
-});
-
-// --- start/v3 — main extends repository_context with event_id/outcome ---
-
-test("the captured granted start/v3 decodes with its repository context event binding", () => {
-	const start = decodeReviewStartV3(fixture("start-v3-consent-granted.captured.json"));
-	assert.equal(start.lineageId, "review-377c60e10b852cfc");
-	assert.equal(start.state, "reviewing");
-	assert.equal(start.riskLevel, "high");
-	assert.equal(start.selectedLenses.length, 4);
-	assert.equal(start.correctionBudget, 6);
-	assert.equal(start.repositoryContext?.outcome, "applied");
-	assert.match(start.repositoryContext?.eventId ?? "", /^sha256:[0-9a-f]{64}$/);
+	const wrongTarget = clone(base);
+	wrongTarget.target_identity = sha("d");
+	assert.throws(() => decodeReviewConsentV3(wrongTarget), /target|invocation/);
 });
 
 test("start/v3 repository context event fields stay optional and exact", () => {
-	// The pinned fixture carries neither field and still decodes unchanged.
-	const pinned = decodeReviewStartV3(v2Fixture("start.fixture.json"));
+	const pinned = decodeReviewStartV3(fixture(V2_FIXTURES, "start.fixture.json"));
 	assert.equal(pinned.repositoryContext?.eventId, undefined);
 	assert.equal(pinned.repositoryContext?.outcome, undefined);
-	const base = fixture<JsonObject>("start-v3-consent-granted.captured.json");
-	const badEvent = clone(base);
+	const badEvent = clone(fixture(DEV_FIXTURES, "start-v3-consent-granted.captured.json") as JsonObject);
 	(badEvent.repository_context as JsonObject).event_id = "not-a-digest";
 	assert.throws(() => decodeReviewStartV3(badEvent), /event_id/);
-	const badOutcome = clone(base);
+	const badOutcome = clone(fixture(DEV_FIXTURES, "start-v3-consent-granted.captured.json") as JsonObject);
 	(badOutcome.repository_context as JsonObject).outcome = "unheard-of";
 	assert.throws(() => decodeReviewStartV3(badOutcome), /outcome/);
-	const extraKey = clone(base);
-	(extraKey.repository_context as JsonObject).unadvertised = true;
-	assert.throws(() => decodeReviewStartV3(extraKey), /not allowed/);
-});
-
-// --- result-artifact/v2: the `review capture-result` admission envelope ---
-
-test("the captured reference-form result artifact decodes with its rart1 locator", () => {
-	const artifact = decodeReviewResultArtifactV2(fixture("result-artifact-v2.captured.json"));
-	assert.equal(artifact.schema, "gentle-ai.review-result-artifact/v2");
-	assert.equal(artifact.capability, "review.native_result_artifact");
-	assert.match(artifact.reference ?? "", /^rart1_[0-9a-f]{64}$/);
-	assert.equal(artifact.path, undefined);
-	assert.equal(artifact.lineageId, "review-ceeb2b862bd39709");
-	assert.equal(artifact.lens, "review-reliability");
-	assert.equal(artifact.selectedOrder, 0);
-	assert.equal(artifact.admissionDecision, "completed");
-	assert.match(artifact.sha256, /^sha256:[0-9a-f]{64}$/);
-	assert.match(artifact.subjectHash, /^sha256:[0-9a-f]{64}$/);
-	assert.match(artifact.targetIdentity, /^sha256:[0-9a-f]{64}$/);
-});
-
-test("the captured path-form result artifact decodes with its provider-owned path", () => {
-	const artifact = decodeReviewResultArtifactV2(fixture("result-artifact-v2-path.captured.json"));
-	assert.equal(artifact.reference, undefined);
-	assert.match(artifact.path ?? "", /reviewer-results\/00-review-reliability\.json$/);
-	// Same admitted slot through both locator forms: every binding agrees.
-	const reference = decodeReviewResultArtifactV2(fixture("result-artifact-v2.captured.json"));
-	assert.equal(artifact.sha256, reference.sha256);
-	assert.equal(artifact.subjectHash, reference.subjectHash);
-	assert.equal(artifact.lineageId, reference.lineageId);
-	assert.equal(artifact.targetIdentity, reference.targetIdentity);
-});
-
-test("a result artifact carries exactly one locator", () => {
-	const base = fixture<JsonObject>("result-artifact-v2.captured.json");
-	const both = clone(base);
-	both.path = "/store/reviewer-results/00-review-reliability.json";
-	assert.throws(() => decodeReviewResultArtifactV2(both), /exactly one/);
-	const neither = clone(base);
-	delete neither.reference;
-	assert.throws(() => decodeReviewResultArtifactV2(neither), /exactly one/);
 });
 
 test("a result artifact rejects unknown keys and weakened bindings", () => {
-	const base = fixture<JsonObject>("result-artifact-v2.captured.json");
+	const base = fixture(DEV_FIXTURES, "result-artifact-v2.captured.json") as JsonObject;
 	const extra = clone(base);
 	extra.unadvertised = true;
 	assert.throws(() => decodeReviewResultArtifactV2(extra), /not allowed/);
 	const wrongCapability = clone(base);
 	wrongCapability.capability = "review.result_artifact";
 	assert.throws(() => decodeReviewResultArtifactV2(wrongCapability), /capability/);
-	const unadmitted = clone(base);
-	unadmitted.admission_decision = "quarantined";
-	assert.throws(() => decodeReviewResultArtifactV2(unadmitted), /admission_decision/);
 	const foreignLocator = clone(base);
 	foreignLocator.reference = `rref1_${"b".repeat(64)}`;
 	assert.throws(() => decodeReviewResultArtifactV2(foreignLocator), /reference/);
-	const outOfRange = clone(base);
-	outOfRange.selected_order = 4;
-	assert.throws(() => decodeReviewResultArtifactV2(outOfRange), /selected_order/);
 });
 
-test("result artifact identities never cross-decode", () => {
-	// A prior identity rejects the new surface (it carries no negotiated
-	// contract/operation identity pair at all)...
-	assert.throws(() => decodeReviewOperationV2(fixture("result-artifact-v2.captured.json")), /contract|schema/);
-	// ...the new decoder pins its own exact identity...
-	const downgraded = clone(fixture<JsonObject>("result-artifact-v2.captured.json"));
-	downgraded.schema = "gentle-ai.review-result-artifact/v1";
-	assert.throws(() => decodeReviewResultArtifactV2(downgraded), /schema/);
-	// ...and rejects prior surfaces wholesale.
-	assert.throws(() => decodeReviewResultArtifactV2({
-		schema: "gentle-ai.review-provider-role-capture/v1",
-		lineage_id: "review-1d5aadacc600e167",
-		target_identity: `sha256:${"9".repeat(64)}`,
-		role: "targeted-validator",
-		captured: true,
-	}));
-	assert.throws(() => decodeReviewResultArtifactV2(v2Fixture("status.fixture.json")));
+function reviewingStartV4(action: "created" | "replayed" = "created"): JsonObject {
+	const body = clone(fixture(DEV_FIXTURES, "start-v3-consent-granted.captured.json") as JsonObject);
+	body.schema = "gentle-ai.review-integration.start/v4";
+	body.action = action;
+	const targetIdentity = (body.repository_context as JsonObject).target_identity as string;
+	const baseTree = body.base_tree as string;
+	body.next_transition = {
+		kind: "execute",
+		reason_code: "review_status_required",
+		execute: {
+			operation: "review.status",
+			arguments: [
+				{ name: "contract", value: "gentle-ai.review-integration/v2", token: "--contract=gentle-ai.review-integration/v2" },
+				{ name: "next-transition", value: "true", token: "--next-transition=true" },
+				{ name: "lineage", value: body.lineage_id, token: `--lineage=${body.lineage_id}` },
+				{ name: "agent", value: "pi", token: "--agent=pi" },
+				{ name: "base-ref", value: baseTree, token: `--base-ref=${baseTree}` },
+				{ name: "committed-only", value: "true", token: "--committed-only=true" },
+			],
+			preconditions: [],
+			binding: { target_identity: targetIdentity },
+		},
+	};
+	const execute = (body.next_transition as JsonObject).execute as JsonObject;
+	execute.selector_arguments = (execute.arguments as JsonObject[]).slice(-2).map(clone);
+	return body;
+}
+
+test("capabilities/v2.3 retains status/v5 while v2.4 requires status/v6", () => {
+	const v23 = clone(fixture(DEV_FIXTURES, "capabilities-v2.2.captured.json") as JsonObject);
+	v23.schema = "gentle-ai.review-integration.capabilities/v2.3";
+	(v23.protocol as JsonObject).minor = 3;
+	v23.schemas = (v23.schemas as string[]).map((schema) => schema
+		.replace("capabilities/v2.2", "capabilities/v2.3")
+		.replace("start/v3", "start/v4"));
+	// The v2.3 provider contract retired these three mandatory features; the
+	// pinned v2.5.0-rc.3 runtime no longer advertises them.
+	const features = v23.features as JsonObject;
+	features.mandatory = (features.mandatory as JsonObject[]).filter((feature) =>
+		!["exact_receipt_replay", "five_delivery_gates", "sdd_receipt_binding"].includes(feature.name as string));
+	const decoded = decodeReviewCapabilitiesV2(v23, CAPTURED_DIGEST);
+	assert.equal(decoded.schemas.has("gentle-ai.review-integration.start/v4"), true);
+	assert.equal(decoded.schemas.has("gentle-ai.review-integration.start/v3"), false);
+	assert.equal(decoded.schemas.has("gentle-ai.review-integration.status/v5"), true);
+
+	const v24 = clone(v23);
+	v24.schema = "gentle-ai.review-integration.capabilities/v2.4";
+	(v24.protocol as JsonObject).minor = 4;
+	v24.schemas = [
+		...(v24.schemas as string[]).map((schema) => schema
+			.replace("capabilities/v2.3", "capabilities/v2.4")
+			.replace("status/v5", "status/v6")),
+		"gentle-ai.review-intended-untracked-selection/v1",
+	];
+	const v24Decoded = decodeReviewCapabilitiesV2(v24, CAPTURED_DIGEST);
+	assert.equal(v24Decoded.schemas.has("gentle-ai.review-integration.status/v6"), true);
+	assert.equal(v24Decoded.schemas.has("gentle-ai.review-integration.status/v5"), false);
+
+	const missingStatusV6 = clone(v24);
+	missingStatusV6.schemas = (missingStatusV6.schemas as string[]).map((schema) => schema.replace("status/v6", "status/v5"));
+	assert.throws(() => decodeReviewCapabilitiesV2(missingStatusV6, CAPTURED_DIGEST), /status\/v6/);
+
+	// Distinguishing case for the v2.3 retired-schema filter: the real rc.3
+	// provider no longer advertises these three identities, so a v2.3
+	// advertisement WITHOUT them must still negotiate. A no-op filter would
+	// keep requiring them and fail the superset assertion here.
+	const retiredSchemas = ["gentle-ai.review-final-verification-incident/v1", "gentle-ai.review-receipt/v2", "gentle-ai.review-verification-evidence/v2"];
+	const retiredRemoved = clone(v23);
+	retiredRemoved.schemas = (retiredRemoved.schemas as string[]).filter((schema) => !retiredSchemas.includes(schema));
+	assert.equal((v23.schemas as string[]).length - (retiredRemoved.schemas as string[]).length, 3, "fixture must actually carry and then remove the three retired identities");
+	const relaxed = decodeReviewCapabilitiesV2(retiredRemoved, CAPTURED_DIGEST);
+	for (const schema of retiredSchemas) assert.equal(relaxed.schemas.has(schema), false);
+
+	// Earlier minors keep the full common requirement: the same removal under
+	// the v2.2 identity must fail closed.
+	const v22Retired = clone(fixture(DEV_FIXTURES, "capabilities-v2.2.captured.json") as JsonObject);
+	v22Retired.schemas = (v22Retired.schemas as string[]).filter((schema) => !retiredSchemas.includes(schema));
+	assert.throws(() => decodeReviewCapabilitiesV2(v22Retired, CAPTURED_DIGEST), /schema/);
 });
 
-// Fixture provenance:
-// - failure-v2-capture-evidence.captured.json was captured 2026-08-16 from a
-//   binary built at gentle-ai commit a2d57117 (branch
-//   fix/capture-evidence-typed-refusal, `go build ./cmd/gentle-ai`, version
-//   banner "gentle-ai dev"), in a scratch git repository driven to the
-//   correction evidence-pending state (medium start with consent granted,
-//   one deterministic BLOCKER capture-result, rendered finalize transition,
-//   rendered plan-correction submission, bounded fix edit), then a
-//   deliberately misbound capture:
-//     gentle-ai review capture-evidence --cwd <scratch> --lineage <lineage> \
-//       --target <live workspace identity> --expected-revision <revision> \
-//       --outcome passed --input <evidence file>
-//   The live workspace identity instead of the slot's fix-diff --target is
-//   the exact fambig misbinding shape; the branch answers it with the typed
-//   failure/v2 envelope on stdout (operation review.capture-evidence, code
-//   verification_evidence_binding_mismatch, mutation_outcome not_started)
-//   instead of a bare stderr line.
-// - The other three capture-verb operations are constructed from the same
-//   captured envelope, grounded in that branch's
-//   contracts/review-integration/v2/schemas/failure.schema.json 12-value
-//   operation enum; no cheap live flow provokes them individually.
-test("failure/v2 decodes the four collect-capture operations the typed-refusal branch emits", () => {
-	const captured = JSON.parse(readFileSync(join(process.cwd(), "tests", "fixtures", "devbinary", "failure-v2-capture-evidence.captured.json"), "utf8")) as Record<string, unknown>;
-	const decoded = decodeReviewFailureV2(captured);
-	assert.equal(decoded.operation, "review.capture-evidence");
-	assert.equal(decoded.code, "verification_evidence_binding_mismatch");
-	assert.equal(decoded.mutationOutcome, "not_started");
-	assert.equal(decoded.nextAction, "review.status");
-	for (const operation of ["review.capture-result", "review.capture-refuter", "review.capture-validation"]) {
-		assert.equal(decodeReviewFailureV2({ ...captured, operation }).operation, operation, operation);
+test("capabilities/v2.5 negotiates the v2.6.0 advertisement and status/v7 decodes the eligible untracked inventory", () => {
+	// gentle-ai v2.6.0 advertises capabilities/v2.5: the v2.4 surface plus
+	// status/v7, with status/v6 still advertised for compatibility.
+	const v25 = clone(fixture(DEV_FIXTURES, "capabilities-v2.2.captured.json") as JsonObject);
+	v25.schema = "gentle-ai.review-integration.capabilities/v2.5";
+	(v25.protocol as JsonObject).minor = 5;
+	const features = v25.features as JsonObject;
+	features.mandatory = (features.mandatory as JsonObject[]).filter((feature) =>
+		!["exact_receipt_replay", "five_delivery_gates", "sdd_receipt_binding"].includes(feature.name as string));
+	v25.schemas = [
+		...(v25.schemas as string[]).map((schema) => schema
+			.replace("capabilities/v2.2", "capabilities/v2.5")
+			.replace("start/v3", "start/v4")
+			.replace("status/v5", "status/v6")),
+		"gentle-ai.review-intended-untracked-selection/v1",
+		"gentle-ai.review-integration.status/v7",
+	];
+	const decoded = decodeReviewCapabilitiesV2(v25, CAPTURED_DIGEST);
+	assert.equal(decoded.schemas.has("gentle-ai.review-integration.status/v6"), true);
+	// The negotiated set is the v2.5 requirement floor; status/v7 is additive
+	// and never required, so an advertisement without it still negotiates.
+	assert.equal(decoded.schemas.has("gentle-ai.review-integration.status/v7"), false);
+	const withoutStatusV7 = clone(v25);
+	withoutStatusV7.schemas = (withoutStatusV7.schemas as string[]).filter((schema) => schema !== "gentle-ai.review-integration.status/v7");
+	assert.equal(decodeReviewCapabilitiesV2(withoutStatusV7, CAPTURED_DIGEST).schemas.has("gentle-ai.review-integration.status/v6"), true);
+
+	// status/v6 stays required: v7 is an additive extension, not a replacement.
+	const missingStatusV6 = clone(v25);
+	missingStatusV6.schemas = (missingStatusV6.schemas as string[]).filter((schema) => schema !== "gentle-ai.review-integration.status/v6");
+	assert.throws(() => decodeReviewCapabilitiesV2(missingStatusV6, CAPTURED_DIGEST), /status\/v6/);
+
+	// status/v7 adds only the optional top-level eligible untracked inventory digest.
+	const v7 = initialIntendedUntrackedStatusV6();
+	v7.schema = "gentle-ai.review-integration.status/v7";
+	v7.eligible_untracked_inventory = sha("e");
+	assert.equal(decodeReviewStatusV3(v7).eligibleUntrackedInventory, sha("e"));
+
+	const v7Staged = initialIntendedUntrackedStatusV6();
+	v7Staged.schema = "gentle-ai.review-integration.status/v7";
+	assert.equal(decodeReviewStatusV3(v7Staged).eligibleUntrackedInventory, undefined);
+
+	// The digest is v7-only: a v6 envelope carrying it is still rejected.
+	const v6WithDigest = initialIntendedUntrackedStatusV6();
+	v6WithDigest.eligible_untracked_inventory = sha("e");
+	assert.throws(() => decodeReviewStatusV3(v6WithDigest), /eligible_untracked_inventory/);
+});
+
+test("capabilities/v2.6 negotiates the v3.4.0 advertisement on the same v2.5 requirement floor", () => {
+	// gentle-ai v3.4.0 advertises capabilities/v2.6: the v2.5 surface plus
+	// status/v8 (status/v6 and status/v7 stay advertised for compatibility).
+	// The `review assess` review_due/review_due_reason/next_transition
+	// additions are a separate schema (gentle-ai.review-assessment/v1),
+	// unrelated to this negotiated capabilities surface.
+	const v26 = clone(fixture(DEV_FIXTURES, "capabilities-v2.2.captured.json") as JsonObject);
+	v26.schema = "gentle-ai.review-integration.capabilities/v2.6";
+	(v26.protocol as JsonObject).minor = 6;
+	const features = v26.features as JsonObject;
+	features.mandatory = (features.mandatory as JsonObject[]).filter((feature) =>
+		!["exact_receipt_replay", "five_delivery_gates", "sdd_receipt_binding"].includes(feature.name as string));
+	v26.schemas = [
+		...(v26.schemas as string[]).map((schema) => schema
+			.replace("capabilities/v2.2", "capabilities/v2.6")
+			.replace("start/v3", "start/v4")
+			.replace("status/v5", "status/v6")),
+		"gentle-ai.review-intended-untracked-selection/v1",
+		"gentle-ai.review-integration.status/v7",
+		"gentle-ai.review-integration.status/v8",
+	];
+	const decoded = decodeReviewCapabilitiesV2(v26, CAPTURED_DIGEST);
+	assert.equal(decoded.schemas.has("gentle-ai.review-integration.status/v6"), true);
+	// The negotiated set is the v2.5 requirement floor unchanged; status/v7
+	// and status/v8 are additive and never required, so an advertisement
+	// without either still negotiates.
+	const withoutV7V8 = clone(v26);
+	withoutV7V8.schemas = (withoutV7V8.schemas as string[]).filter((schema) => !["gentle-ai.review-integration.status/v7", "gentle-ai.review-integration.status/v8"].includes(schema as string));
+	assert.equal(decodeReviewCapabilitiesV2(withoutV7V8, CAPTURED_DIGEST).schemas.has("gentle-ai.review-integration.status/v6"), true);
+
+	// status/v6 stays required: v7/v8 are additive extensions, not a replacement.
+	const missingStatusV6 = clone(v26);
+	missingStatusV6.schemas = (missingStatusV6.schemas as string[]).filter((schema) => schema !== "gentle-ai.review-integration.status/v6");
+	assert.throws(() => decodeReviewCapabilitiesV2(missingStatusV6, CAPTURED_DIGEST), /status\/v6/);
+});
+
+// status/v8 (gentle-ai main, PR #4765; the current released contract) only
+// extended the reviewer-result transition for OpenCode provider tasks -- no
+// new top-level key -- so it decodes on the exact v7 surface: same optional
+// eligible_untracked_inventory digest, same rejection of a v6 envelope
+// carrying it. status/v9 (the sibling gentle-ai branch's contract, ahead of
+// the released v8) adds nothing new at the top level either; its one
+// addition -- the host-mediated role submission -- lives in
+// next_transition.collect.inputs and is covered by
+// tests/review-integration-v2.test.ts's "v9 host-mediated" tests.
+test("status/v8 and status/v9 decode with their exact identity on the v7 surface", () => {
+	const v8 = initialIntendedUntrackedStatusV6();
+	v8.schema = "gentle-ai.review-integration.status/v8";
+	v8.eligible_untracked_inventory = sha("e");
+	const decodedV8 = decodeReviewStatusV3(v8);
+	assert.equal(decodedV8.raw.schema, "gentle-ai.review-integration.status/v8");
+	assert.equal(decodedV8.eligibleUntrackedInventory, sha("e"));
+
+	const v9 = initialIntendedUntrackedStatusV6();
+	v9.schema = "gentle-ai.review-integration.status/v9";
+	v9.eligible_untracked_inventory = sha("e");
+	const decodedV9 = decodeReviewStatusV3(v9);
+	assert.equal(decodedV9.raw.schema, "gentle-ai.review-integration.status/v9");
+	assert.equal(decodedV9.eligibleUntrackedInventory, sha("e"));
+});
+
+test("status/v6 decodes and enforces the intended-untracked selection submission", () => {
+	const decoded = decodeReviewStatusV3(initialIntendedUntrackedStatusV6());
+	const input = decoded.nextTransition?.collect?.inputs[0];
+	assert.deepEqual([input?.schema, input?.captureOperation, input?.arguments, input?.submission], [
+		"gentle-ai.review-intended-untracked-selection/v1", "external.select_intended_untracked", [
+			{ name: "target_identity", value: decoded.targetIdentity }, { name: "projection", value: "workspace" },
+			{ name: "base_tree", value: decoded.projection.baseTree }, { name: "candidate_tree", value: decoded.projection.currentCandidateTree },
+			{ name: "eligible_paths_json", value: '["docs/selected.md"]' }, { name: "expected_untracked_inventory", value: sha("e") },
+		], {
+			operationToken: "status",
+			argumentTokens: ["--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", "--intended-untracked-selection={{value}}"],
+			values: [{ slot: "intended_untracked_selection", domain: "schema_bound_json", schema: "gentle-ai.review-intended-untracked-selection/v1", substitutionLocation: 4 }],
+		},
+	]);
+	const submission = (body: JsonObject) => (((body.next_transition as JsonObject).collect as JsonObject).inputs as JsonObject[])[0]!.submission as JsonObject;
+	const cases: Array<[string, (value: JsonObject) => void, RegExp]> = [
+		["operation", (value) => { value.operation_token = "start"; }, /operation/],
+		["competing values", (value) => { value.values = [clone(value.value)]; }, /value/],
+		["slot", (value) => { delete (value.value as JsonObject).slot; }, /slot/],
+		["schema", (value) => { (value.value as JsonObject).schema = "gentle-ai.review-intended-untracked-selection/v2"; }, /schema/],
+		["placeholder", (value) => { (value.argument_tokens as string[])[4] = "--intended-untracked-selection={{selection}}"; }, /value|substitution/],
+		["location", (value) => { (value.value as JsonObject).substitution_location = 3; }, /substitution/],
+	];
+	for (const [name, mutate, pattern] of cases) {
+		const body = initialIntendedUntrackedStatusV6();
+		mutate(submission(body));
+		assert.throws(() => decodeReviewStatusV3(body), pattern, name);
 	}
-	// Cross-pinned rejection preserved: an operation outside the published
-	// 12-value enum never decodes.
-	assert.throws(() => decodeReviewFailureV2({ ...captured, operation: "review.capture-bogus" }), /failure\.operation/);
-	assert.throws(() => decodeReviewFailureV2({ ...captured, operation: "review.recover" }), /failure\.operation/);
+	const v5 = initialIntendedUntrackedStatusV6();
+	v5.schema = "gentle-ai.review-integration.status/v5";
+	assert.throws(() => decodeReviewStatusV3(v5), /submission/);
+
+	const collectInput = (body: JsonObject) => (((body.next_transition as JsonObject).collect as JsonObject).inputs as JsonObject[])[0]!;
+	const artifactSubject = { schema: "gentle-ai.review-artifact-subject/v2", subject_hash: sha("a"), lineage_id: "review-test", authority_revision: sha("b"), target_identity: sha("c"), base_tree: "a".repeat(40), candidate_tree: "b".repeat(40), changed_path_manifest_sha256: sha("d"), lens: "review-risk", selected_order: 0 };
+	const incompatibleCaptures: ReadonlyArray<readonly [string, JsonObject]> = [
+		["review.capture-result", { schema: "https://gentle-ai.dev/schema/review/reviewer/v1", artifact_subject: artifactSubject, base_tree: "a".repeat(40), candidate_tree: "b".repeat(40), changed_path_manifest: [{ path: "x.ts", status: "M", old_mode: "100644", new_mode: "100644", deleted: false, type_changed: false, mode_only: false, intended_untracked: false }] }],
+		["review.capture-correction-plan", { schema: "gentle-ai.review-correction-plan/v1" }],
+	];
+	for (const [captureOperation, fields] of incompatibleCaptures) {
+		const body = initialIntendedUntrackedStatusV6();
+		Object.assign(collectInput(body), { capture_operation: captureOperation, ...fields });
+		assert.throws(() => decodeReviewStatusV3(body), /operation_token/, captureOperation);
+	}
+
+	const mismatchedBindings: ReadonlyArray<readonly [string, string]> = [
+		["name", "renamed_selection"],
+		["schema", "gentle-ai.review-intended-untracked-selection/v0"],
+	];
+	for (const [field, value] of mismatchedBindings) {
+		const body = initialIntendedUntrackedStatusV6();
+		collectInput(body)[field] = value;
+		assert.throws(() => decodeReviewStatusV3(body), /intended_untracked_selection binding/, field);
+	}
+});
+
+function queuedTargetStatusAdapter(): { adapter: ExecFileAdapter; calls: string[][] } {
+	const calls: string[][] = [];
+	return {
+		calls,
+		adapter: async (request) => {
+			calls.push([...request.arguments]);
+			return { stdout: JSON.stringify(currentStatusFixture("status-v5.captured.json")), stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
+		},
+	};
+}
+
+function targetStatusClient(adapter: ExecFileAdapter): NativeReviewCliV216 {
+	return new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai", 30_000, 1024 * 1024);
+}
+
+const SUBMITTED_PROVIDER_TOKENS = ["--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", "--intended-untracked-selection={{value}}"];
+
+test("targetStatus appends the forwarded base-ref/committed-only pair after intended-untracked submission tokens", async () => {
+	const queue = queuedTargetStatusAdapter();
+	await targetStatusClient(queue.adapter).targetStatus({
+		cwd: "/repo",
+		baseRef: "deadbeef",
+		committedOnly: true,
+		intendedUntrackedSelection: { argumentTokens: SUBMITTED_PROVIDER_TOKENS, value: '{"selection":true}' },
+	});
+	assert.deepEqual(queue.calls[0], [
+		"review", "status", "--cwd", "/repo",
+		"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", '--intended-untracked-selection={"selection":true}',
+		"--base-ref", "deadbeef", "--committed-only",
+	]);
+});
+
+test("targetStatus leaves the intended-untracked submission argv unchanged when no baseRef is forwarded", async () => {
+	const queue = queuedTargetStatusAdapter();
+	await targetStatusClient(queue.adapter).targetStatus({
+		cwd: "/repo",
+		intendedUntrackedSelection: { argumentTokens: SUBMITTED_PROVIDER_TOKENS, value: '{"selection":true}' },
+	});
+	assert.deepEqual(queue.calls[0], [
+		"review", "status", "--cwd", "/repo",
+		"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", '--intended-untracked-selection={"selection":true}',
+	]);
+});
+
+test("targetStatus rejects a forwarded baseRef that conflicts with a base-ref the submission already carries", async () => {
+	const queue = queuedTargetStatusAdapter();
+	const tokensWithBaseRef = [...SUBMITTED_PROVIDER_TOKENS, "--base-ref=cafebabe"];
+	await assert.rejects(
+		() => targetStatusClient(queue.adapter).targetStatus({
+			cwd: "/repo", baseRef: "deadbeef", committedOnly: true,
+			intendedUntrackedSelection: { argumentTokens: tokensWithBaseRef, value: '{"selection":true}' },
+		}),
+		TypeError,
+	);
+	assert.equal(queue.calls.length, 0);
+
+	// Same value on both sides is not a conflict, but the submission still lacks
+	// --committed-only: T3 appends it so the selector stays complete.
+	const sameValueQueue = queuedTargetStatusAdapter();
+	await targetStatusClient(sameValueQueue.adapter).targetStatus({
+		cwd: "/repo", baseRef: "cafebabe", committedOnly: true,
+		intendedUntrackedSelection: { argumentTokens: tokensWithBaseRef, value: '{"selection":true}' },
+	});
+	assert.deepEqual(sameValueQueue.calls[0], [
+		"review", "status", "--cwd", "/repo",
+		"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", '--intended-untracked-selection={"selection":true}',
+		"--base-ref=cafebabe",
+		"--committed-only",
+	]);
+});
+
+test("targetStatus appends --committed-only when the submission's same base-ref is missing it, and skips it when already present", async () => {
+	const missingQueue = queuedTargetStatusAdapter();
+	const tokensWithBaseRefOnly = [...SUBMITTED_PROVIDER_TOKENS, "--base-ref", "cafebabe"];
+	await targetStatusClient(missingQueue.adapter).targetStatus({
+		cwd: "/repo", baseRef: "cafebabe", committedOnly: true,
+		intendedUntrackedSelection: { argumentTokens: tokensWithBaseRefOnly, value: '{"selection":true}' },
+	});
+	assert.deepEqual(missingQueue.calls[0], [
+		"review", "status", "--cwd", "/repo",
+		"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", '--intended-untracked-selection={"selection":true}',
+		"--base-ref", "cafebabe",
+		"--committed-only",
+	]);
+
+	const presentQueue = queuedTargetStatusAdapter();
+	const tokensWithBoth = [...SUBMITTED_PROVIDER_TOKENS, "--base-ref=cafebabe", "--committed-only=true"];
+	await targetStatusClient(presentQueue.adapter).targetStatus({
+		cwd: "/repo", baseRef: "cafebabe", committedOnly: true,
+		intendedUntrackedSelection: { argumentTokens: tokensWithBoth, value: '{"selection":true}' },
+	});
+	assert.deepEqual(presentQueue.calls[0], [
+		"review", "status", "--cwd", "/repo",
+		"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", '--intended-untracked-selection={"selection":true}',
+		"--base-ref=cafebabe", "--committed-only=true",
+	]);
+
+	const committedOnlyQueue = queuedTargetStatusAdapter();
+	const tokensWithCommittedOnly = [...SUBMITTED_PROVIDER_TOKENS, "--committed-only"];
+	await targetStatusClient(committedOnlyQueue.adapter).targetStatus({
+		cwd: "/repo", baseRef: "cafebabe", committedOnly: true,
+		intendedUntrackedSelection: { argumentTokens: tokensWithCommittedOnly, value: '{"selection":true}' },
+	});
+	assert.deepEqual(committedOnlyQueue.calls[0], [
+		"review", "status", "--cwd", "/repo",
+		"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", '--intended-untracked-selection={"selection":true}',
+		"--committed-only",
+		"--base-ref", "cafebabe",
+	]);
+});
+
+test("targetStatus forwards --lineage on the submitted branch, skips a matching value, and rejects a conflicting one", async () => {
+	const forwardedQueue = queuedTargetStatusAdapter();
+	await targetStatusClient(forwardedQueue.adapter).targetStatus({
+		cwd: "/repo", lineageId: "review-abc123",
+		intendedUntrackedSelection: { argumentTokens: SUBMITTED_PROVIDER_TOKENS, value: '{"selection":true}' },
+	});
+	assert.deepEqual(forwardedQueue.calls[0], [
+		"review", "status", "--cwd", "/repo",
+		"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", '--intended-untracked-selection={"selection":true}',
+		"--lineage", "review-abc123",
+	]);
+
+	const sameValueQueue = queuedTargetStatusAdapter();
+	const tokensWithLineage = [...SUBMITTED_PROVIDER_TOKENS, "--lineage=review-abc123"];
+	await targetStatusClient(sameValueQueue.adapter).targetStatus({
+		cwd: "/repo", lineageId: "review-abc123",
+		intendedUntrackedSelection: { argumentTokens: tokensWithLineage, value: '{"selection":true}' },
+	});
+	assert.deepEqual(sameValueQueue.calls[0], [
+		"review", "status", "--cwd", "/repo",
+		"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", '--intended-untracked-selection={"selection":true}',
+		"--lineage=review-abc123",
+	]);
+
+	const conflictQueue = queuedTargetStatusAdapter();
+	await assert.rejects(
+		() => targetStatusClient(conflictQueue.adapter).targetStatus({
+			cwd: "/repo", lineageId: "review-other",
+			intendedUntrackedSelection: { argumentTokens: tokensWithLineage, value: '{"selection":true}' },
+		}),
+		TypeError,
+	);
+	assert.equal(conflictQueue.calls.length, 0);
+});
+
+test("targetStatus forwards base-ref and lineage together on the submitted branch, base-ref first", async () => {
+	const queue = queuedTargetStatusAdapter();
+	await targetStatusClient(queue.adapter).targetStatus({
+		cwd: "/repo", baseRef: "deadbeef", committedOnly: true, lineageId: "review-abc123",
+		intendedUntrackedSelection: { argumentTokens: SUBMITTED_PROVIDER_TOKENS, value: '{"selection":true}' },
+	});
+	assert.deepEqual(queue.calls[0], [
+		"review", "status", "--cwd", "/repo",
+		"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", '--intended-untracked-selection={"selection":true}',
+		"--base-ref", "deadbeef", "--committed-only",
+		"--lineage", "review-abc123",
+	]);
+});
+
+test("targetStatus rejects a dangling or empty --base-ref/--lineage in the submitted tokens", async () => {
+	for (const tokens of [
+		[...SUBMITTED_PROVIDER_TOKENS, "--base-ref"],
+		[...SUBMITTED_PROVIDER_TOKENS, "--base-ref="],
+		[...SUBMITTED_PROVIDER_TOKENS, "--lineage"],
+		[...SUBMITTED_PROVIDER_TOKENS, "--lineage="],
+	]) {
+		const queue = queuedTargetStatusAdapter();
+		await assert.rejects(
+			() => targetStatusClient(queue.adapter).targetStatus({
+				cwd: "/repo",
+				intendedUntrackedSelection: { argumentTokens: tokens, value: '{"selection":true}' },
+			}),
+			TypeError,
+			JSON.stringify(tokens),
+		);
+		assert.equal(queue.calls.length, 0, JSON.stringify(tokens));
+	}
+});
+
+test("targetStatus rejects ambiguous or malformed provider selectors before executing STATUS", async () => {
+	for (const tokens of [
+		[...SUBMITTED_PROVIDER_TOKENS, "--committed-only=false"],
+		[...SUBMITTED_PROVIDER_TOKENS, "--committed-only=garbage"],
+		[...SUBMITTED_PROVIDER_TOKENS, "--committed-only=true", "--committed-only=true"],
+		[...SUBMITTED_PROVIDER_TOKENS, "--committed-only", "--committed-only=true"],
+		[...SUBMITTED_PROVIDER_TOKENS, "--base-ref=deadbeef", "--base-ref", "deadbeef"],
+		[...SUBMITTED_PROVIDER_TOKENS, "--lineage=review-a", "--lineage", "review-a"],
+		[...SUBMITTED_PROVIDER_TOKENS, "--base-ref", "--lineage=review-a"],
+		[...SUBMITTED_PROVIDER_TOKENS, "--lineage", "--base-ref=deadbeef"],
+	]) {
+		const queue = queuedTargetStatusAdapter();
+		await assert.rejects(() => targetStatusClient(queue.adapter).targetStatus({
+			cwd: "/repo", intendedUntrackedSelection: { argumentTokens: tokens, value: '{"selection":true}' },
+		}), TypeError, JSON.stringify(tokens));
+		assert.equal(queue.calls.length, 0, JSON.stringify(tokens));
+	}
+});
+
+test("START/v4 accepts only its reviewing status continuation and preserves v3 strictness", () => {
+	for (const action of ["created", "replayed"] as const) {
+		const start = reviewingStartV4(action);
+		const decoded = decodeReviewStartV4(start);
+		assert.equal(decoded.nextTransition?.execute?.operation, "review.status");
+		assert.deepEqual(decoded.nextTransition?.execute?.arguments, [
+			{ name: "contract", value: "gentle-ai.review-integration/v2", token: "--contract=gentle-ai.review-integration/v2" },
+			{ name: "next-transition", value: "true", token: "--next-transition=true" },
+			{ name: "lineage", value: decoded.lineageId, token: `--lineage=${decoded.lineageId}` },
+			{ name: "agent", value: "pi", token: "--agent=pi" },
+			{ name: "base-ref", value: decoded.baseTree, token: `--base-ref=${decoded.baseTree}` },
+			{ name: "committed-only", value: "true", token: "--committed-only=true" },
+		]);
+		assert.deepEqual(decoded.nextTransition?.execute?.selectorArguments, [
+			{ name: "base-ref", value: decoded.baseTree, token: `--base-ref=${decoded.baseTree}` },
+			{ name: "committed-only", value: "true", token: "--committed-only=true" },
+		]);
+	}
+
+	const v3 = reviewingStartV4();
+	v3.schema = "gentle-ai.review-integration.start/v3";
+	assert.throws(() => decodeReviewStartV3(v3), /next_transition is not allowed/);
+
+	const wrongOperation = reviewingStartV4();
+	((wrongOperation.next_transition as JsonObject).execute as JsonObject).operation = "review.start";
+	assert.throws(() => decodeReviewStartV4(wrongOperation), /review.status/);
+});
+
+test("START/v4 falls back to the frozen overlay target when repository_context is absent", () => {
+	// A replayed reviewing START must not carry repository_context, so the
+	// binding assert has to derive the frozen target from the overlay identity.
+	const start = reviewingStartV4("replayed");
+	const execute = (start.next_transition as JsonObject).execute as JsonObject;
+	const targetIdentity = (start.repository_context as JsonObject).target_identity as string;
+	delete start.repository_context;
+	start.target_mode = "base-workspace-overlay";
+	start.target_identity = targetIdentity;
+	const arguments_ = execute.arguments as JsonObject[];
+	const committedOnly = arguments_.find((argument) => argument.name === "committed-only")!;
+	committedOnly.name = "workspace-overlay";
+	committedOnly.token = "--workspace-overlay=true";
+	execute.selector_arguments = arguments_.slice(-2).map(clone);
+	const decoded = decodeReviewStartV4(start);
+	assert.equal(decoded.targetIdentity, targetIdentity);
+	assert.equal(decoded.repositoryContext, undefined);
+	assert.equal(decoded.nextTransition?.execute?.binding.targetIdentity, targetIdentity);
+
+	const unbound = reviewingStartV4("replayed");
+	delete unbound.repository_context;
+	assert.throws(() => decodeReviewStartV4(unbound), /repository_context is required/);
+});
+
+test("START/v4 rejects status vectors that drift from frozen bindings", () => {
+	const bindingTarget = reviewingStartV4();
+	(((bindingTarget.next_transition as JsonObject).execute as JsonObject).binding as JsonObject).target_identity = sha("d");
+	assert.throws(() => decodeReviewStartV4(bindingTarget), /binding/);
+
+	for (const [name, value] of [["lineage", "review-other"], ["base-ref", "a".repeat(40)]] as const) {
+		const start = reviewingStartV4();
+		const arguments_ = ((start.next_transition as JsonObject).execute as JsonObject).arguments as JsonObject[];
+		arguments_.find((argument) => argument.name === name)!.value = value;
+		assert.throws(() => decodeReviewStartV4(start), /binding/);
+	}
+
+	for (const [name, value, token] of [["projection", "staged", "--projection=staged"], ["target", sha("d"), `--target=${sha("d")}`]] as const) {
+		const start = reviewingStartV4();
+		const arguments_ = ((start.next_transition as JsonObject).execute as JsonObject).arguments as JsonObject[];
+		arguments_.push({ name, value, token });
+		assert.throws(() => decodeReviewStartV4(start), /binding/);
+	}
+
+	const bindingLineage = reviewingStartV4();
+	(((bindingLineage.next_transition as JsonObject).execute as JsonObject).binding as JsonObject).lineage_id = "review-other";
+	assert.throws(() => decodeReviewStartV4(bindingLineage), /binding/);
+
+	const outerTarget = reviewingStartV4();
+	outerTarget.target_mode = "base-workspace-overlay";
+	outerTarget.target_identity = sha("d");
+	assert.throws(() => decodeReviewStartV4(outerTarget), /binding/);
+
+	const artifactTarget = reviewingStartV4();
+	(artifactTarget.artifact_subjects as JsonObject[])[0]!.target_identity = sha("d");
+	assert.throws(() => decodeReviewStartV4(artifactTarget), /binding/);
+
+	const duplicate = reviewingStartV4();
+	const arguments_ = ((duplicate.next_transition as JsonObject).execute as JsonObject).arguments as JsonObject[];
+	arguments_.push(clone(arguments_.find((argument) => argument.name === "lineage")!));
+	assert.throws(() => decodeReviewStartV4(duplicate), /binding/);
+});
+
+test("START/v4 rejects incomplete or incoherent provider-owned status selectors", () => {
+	const execute = (start: JsonObject) => (start.next_transition as JsonObject).execute as JsonObject;
+	const rows = (start: JsonObject, field: "arguments" | "selector_arguments") => execute(start)[field] as JsonObject[];
+	for (const change of [
+		(start: JsonObject) => delete execute(start).selector_arguments,
+		(start: JsonObject) => rows(start, "selector_arguments").splice(1, 1),
+		(start: JsonObject) => {
+			for (const field of ["arguments", "selector_arguments"] as const) rows(start, field).find((row) => row.name === "committed-only")!.value = "false";
+		},
+		(start: JsonObject) => rows(start, "selector_arguments")[1]!.token = "--committed-only",
+	]) {
+		const start = reviewingStartV4();
+		change(start);
+		assert.throws(() => decodeReviewStartV4(start), /selector|binding/);
+	}
+	for (const [name, value] of [["contract", "other"], ["next-transition", "false"], ["lineage", "review-other"], ["agent", "other"]] as const) {
+		const missing = reviewingStartV4();
+		rows(missing, "arguments").splice(rows(missing, "arguments").findIndex((row) => row.name === name), 1);
+		assert.throws(() => decodeReviewStartV4(missing), /binding/);
+		const wrong = reviewingStartV4();
+		rows(wrong, "arguments").find((row) => row.name === name)!.value = value;
+		assert.throws(() => decodeReviewStartV4(wrong), /binding/);
+	}
+	const controlToken = reviewingStartV4(); rows(controlToken, "arguments")[0]!.token = "--contract=other";
+	assert.throws(() => decodeReviewStartV4(controlToken), /binding/);
+});
+
+test("START/v4 closed approval keeps acknowledgement but forbids a continuation", () => {
+	const closed = clone(fixture(DEV_FIXTURES, "start-v3-zero-lens-closed.captured.json") as JsonObject);
+	closed.schema = "gentle-ai.review-integration.start/v4";
+	closed.acknowledgement = { provider_owned: true };
+	assert.deepEqual(decodeReviewStartV4(closed).raw.acknowledgement, { provider_owned: true });
+
+	closed.next_transition = (reviewingStartV4().next_transition as JsonObject);
+	assert.throws(() => decodeReviewStartV4(closed), /closed approved zero-lens START cannot carry next_transition/);
+});
+
+// ---------------------------------------------------------------------------
+// review-acknowledged/v1 — gentle-ai #3947: the exact acknowledgement burn
+// prints one typed envelope instead of nothing. Provenance:
+// tests/fixtures/devbinary/review-acknowledged.provenance.md.
+// ---------------------------------------------------------------------------
+
+const ACKNOWLEDGED_FIXTURE = "review-acknowledged-v1.captured.json";
+
+function acknowledgedFixture(): JsonObject {
+	return clone(fixture(DEV_FIXTURES, ACKNOWLEDGED_FIXTURE) as JsonObject);
+}
+
+test("review-acknowledged/v1 decodes the captured burn envelope exactly", () => {
+	const raw = acknowledgedFixture();
+	const decoded = decodeReviewAcknowledgedV1(raw);
+	assert.deepEqual(decoded, {
+		schema: "gentle-ai.review-acknowledged/v1",
+		operation: "review/acknowledge-approved",
+		action: "acknowledged",
+		lineageId: "review-3ec95251db75f626",
+		targetIdentity: "sha256:b505dcd8d82395c053c9786935e11e0e235cbdecca4f1f46f98c768ea6248d3d",
+		consumedRevision: "sha256:9732b1c3526bfecd3851093239241145c970cc126acea59bfaf14133214b60ee",
+		authority: "burned",
+		raw,
+	});
+	assert.equal(decodeReviewAcknowledgedV1(raw, { lineageId: decoded.lineageId, targetIdentity: decoded.targetIdentity, revision: decoded.consumedRevision }).authority, "burned");
+	assert.equal(REVIEW_ACKNOWLEDGED_SCHEMA, "gentle-ai.review-acknowledged/v1");
+});
+
+test("review-acknowledged/v1 rejects identity drift, foreign fields, and a binding that names another burn", () => {
+	const cases: Array<[string, (body: JsonObject) => void, RegExp]> = [
+		["schema", (body) => { body.schema = "gentle-ai.review-acknowledged/v2"; }, /schema/],
+		["operation", (body) => { body.operation = "review.acknowledge-approved"; }, /operation/],
+		["action", (body) => { body.action = "replayed"; }, /action/],
+		["authority", (body) => { body.authority = "retained"; }, /authority/],
+		["unknown key", (body) => { body.receipt = { status: "created" }; }, /receipt/],
+		["missing consumed revision", (body) => { delete body.consumed_revision; }, /consumed_revision/],
+		["malformed target", (body) => { body.target_identity = "b505dcd8"; }, /target_identity/],
+		["malformed lineage", (body) => { body.lineage_id = "Review_3ec95251"; }, /lineage_id/],
+	];
+	for (const [name, mutate, pattern] of cases) {
+		const body = acknowledgedFixture();
+		mutate(body);
+		assert.throws(() => decodeReviewAcknowledgedV1(body), pattern, name);
+	}
+	const raw = acknowledgedFixture();
+	assert.throws(() => decodeReviewAcknowledgedV1(raw, { lineageId: "review-other" }), /lineage/);
+	assert.throws(() => decodeReviewAcknowledgedV1(raw, { targetIdentity: sha("b") }), /target/);
+	assert.throws(() => decodeReviewAcknowledgedV1(raw, { revision: sha("c") }), /revision/);
+	assert.throws(() => decodeReviewAcknowledgedV1(null), /object/);
+	assert.throws(() => decodeReviewAcknowledgedV1("{}"), /object/);
+});
+
+test("review-acknowledged/v1 is disjoint from every prior captured identity in both directions", () => {
+	const priorFixtures = readdirSync(DEV_FIXTURES).filter((name) => name.endsWith(".json") && name !== ACKNOWLEDGED_FIXTURE);
+	assert.ok(priorFixtures.length >= 15, "the prior captured corpus must be present");
+	for (const name of priorFixtures) {
+		assert.throws(() => decodeReviewAcknowledgedV1(fixture(DEV_FIXTURES, name)), /schema|object/, `${name} must not decode as an acknowledgement`);
+	}
+	const acknowledged = acknowledgedFixture();
+	const priorDecoders: Array<[string, (value: unknown) => unknown]> = [
+		["status/v3", decodeReviewStatusV3],
+		["start/v3", decodeReviewStartV3],
+		["start/v4", decodeReviewStartV4],
+		["capabilities/v2", (value) => decodeReviewCapabilitiesV2(value, CAPTURED_DIGEST)],
+		["consent/v2", decodeReviewConsentV2],
+		["consent/v3", decodeReviewConsentV3],
+		["last-event-closure/v1", decodeReviewLastEventClosureV1],
+		["result-artifact/v2", decodeReviewResultArtifactV2],
+		["failure/v2", decodeReviewFailureV2],
+		["next-transition/v3", decodeReviewNextTransitionV3],
+		["repair/v2", decodeReviewRepairV2],
+	];
+	for (const [name, decoder] of priorDecoders) {
+		assert.throws(() => decoder(clone(acknowledged)), `${name} must reject the acknowledged envelope`);
+	}
+});
+
+// Producer-shaped projection: gentle-ai d521b5e, target_status.go and
+// last-event-closure.schema.json#/properties/escalation (not a live capture).
+function escalatedStatusV7(): JsonObject {
+	const body = currentStatusFixture("status-v5-capture-result-submission.captured.json");
+	body.schema = "gentle-ai.review-integration.status/v7";
+	(body.authority as JsonObject).state = "escalated";
+	body.action = "stop";
+	body.replayability = "manual_action_required";
+	body.next_transition = { kind: "stop", reason_code: "escalated" };
+	delete body.forecast;
+	body.escalation = { cause: "unknown_causality", finding_ids: ["R1"] };
+	return body;
+}
+
+test("v7 escalation is typed metadata and preserves native stop authority", () => {
+	const body = escalatedStatusV7();
+	const decoded = decodeReviewStatusV3(body);
+	assert.deepEqual(decoded.escalation, { cause: "unknown_causality", findingIds: ["R1"] });
+	delete body.escalation;
+	const older = decodeReviewStatusV3(body);
+	assert.deepEqual({ ...decoded, escalation: undefined, raw: undefined }, { ...older, escalation: undefined, raw: undefined });
+	assert.equal(decoded.action, "stop");
+	assert.equal(decoded.authority?.state, "escalated");
+	assert.deepEqual(decoded.nextTransition, { kind: "stop", reasonCode: "escalated" });
+});
+
+test("v7 escalation strictly decodes all causes and optional refuter evidence", () => {
+	for (const cause of ["unknown_causality", "insufficient_evidence", "missing_refuter_outcome", "targeted_validator_rejected", "correction_budget_exceeded", "unresolved_severe_findings"]) {
+		const body = escalatedStatusV7();
+		const rows = ["corroborated", "refuted", "inconclusive"].map((outcome) => ({ finding_id: "R2", outcome, proof: "observed evidence" }));
+		body.escalation = { cause, finding_ids: [], refuter_outcomes: rows };
+		assert.deepEqual(decodeReviewStatusV3(body).escalation, { cause, findingIds: [], refuterOutcomes: rows.map(({ finding_id, ...row }) => ({ findingId: finding_id, ...row })) });
+	}
+	for (const escalation of [null, undefined, [], {}, { cause: "future", finding_ids: [] }, { cause: "unknown_causality" }, { cause: "unknown_causality", finding_ids: [""] }, { cause: "unknown_causality", finding_ids: "R1" }, { cause: "unknown_causality", finding_ids: [], extra: true }]) {
+		assert.throws(() => decodeReviewStatusV3({ ...escalatedStatusV7(), escalation }), /status\.escalation/);
+	}
+	for (const refuter_outcomes of [null, undefined, {}, [null], [{}], [{ finding_id: "R1", outcome: "future", proof: "proof" }], [{ finding_id: "", outcome: "refuted", proof: "proof" }], [{ finding_id: "R1", outcome: "refuted", proof: "" }], [{ finding_id: "R1", outcome: "refuted", proof: "proof", extra: true }]]) {
+		assert.throws(() => decodeReviewStatusV3({ ...escalatedStatusV7(), escalation: { cause: "missing_refuter_outcome", finding_ids: ["R1"], refuter_outcomes } }), /refuter_outcomes/);
+	}
+	for (const version of [3, 5, 6]) {
+		assert.throws(() => decodeReviewStatusV3({ ...escalatedStatusV7(), schema: `gentle-ai.review-integration.status/v${version}` }), /not allowed/);
+	}
+});
+
+test("START/v4 accepts every risk reason code and signal the published start schema allows", () => {
+	// gentle-ai publishes dangerous_sink (code and signal) and agent_escalation
+	// (code and signal) in start-v4.schema.json; a high-risk START that names
+	// them must decode instead of failing as schema-incompatible (#5374).
+	const start = reviewingStartV4();
+	start.risk_reasons = [
+		{ code: "dangerous_sink", signal: "dangerous_sink", path: "auth/session.py" },
+		{ code: "hot_path", signal: "auth", path: "auth/session.py" },
+		{ code: "process_boundary", signal: "shell_process", path: "auth/session.py" },
+		{ code: "agent_escalation", signal: "agent_escalation" },
+	];
+	const decoded = decodeReviewStartV4(start);
+	assert.deepEqual(decoded.riskReasons.map((reason) => reason.code), ["dangerous_sink", "hot_path", "process_boundary", "agent_escalation"]);
+	assert.deepEqual(decoded.riskReasons.map((reason) => reason.signal), ["dangerous_sink", "auth", "shell_process", "agent_escalation"]);
+
+	const unknown = reviewingStartV4();
+	unknown.risk_reasons = [{ code: "code_from_a_newer_cli" }];
+	assert.throws(() => decodeReviewStartV4(unknown), /risk_reasons\[0\]\.code is unsupported/);
+});
+
+// A base-diff target keeps its selector in the intended-untracked submission
+// (provider-issued, exact forms only), so re-entering STATUS resolves the same
+// target instead of the workspace candidate.
+const PROVIDER_PREFIX = ["--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi"];
+const SELECTION_TOKEN = "--intended-untracked-selection={{value}}";
+const TREE = "a".repeat(40);
+
+function intendedUntrackedSubmissionStatus(selector: readonly string[], location?: number): JsonObject {
+	const body = initialIntendedUntrackedStatusV6();
+	const input = ((body.next_transition as JsonObject).collect as JsonObject).inputs as JsonObject[];
+	const submission = input[0]!.submission as JsonObject;
+	const tokens = [...PROVIDER_PREFIX, ...selector, SELECTION_TOKEN];
+	submission.argument_tokens = tokens;
+	(submission.value as JsonObject).substitution_location = location ?? tokens.length - 1;
+	return body;
+}
+
+function decodedSubmissionTokens(body: JsonObject): readonly string[] {
+	const decoded = decodeReviewStatusV3(body);
+	const input = decoded.nextTransition?.kind === "collect" ? decoded.nextTransition.collect?.inputs[0] : undefined;
+	return input?.submission?.argumentTokens ?? [];
+}
+
+test("status/v6 intended-untracked submission accepts the workspace and provider-issued base-diff selectors", () => {
+	assert.deepEqual(decodedSubmissionTokens(intendedUntrackedSubmissionStatus(["--projection=workspace"])), [...PROVIDER_PREFIX, "--projection=workspace", SELECTION_TOKEN]);
+	for (const scope of ["--committed-only=true", "--workspace-overlay=true"]) {
+		const selector = [`--base-ref=${TREE}`, scope];
+		assert.deepEqual(decodedSubmissionTokens(intendedUntrackedSubmissionStatus(selector)), [...PROVIDER_PREFIX, ...selector, SELECTION_TOKEN]);
+	}
+	assert.deepEqual(decodedSubmissionTokens(intendedUntrackedSubmissionStatus([`--base-ref=${"b".repeat(64)}`, "--committed-only=true"])).length, 6);
+});
+
+test("status/v6 intended-untracked submission rejects any other selector or substitution location", () => {
+	for (const selector of [
+		["--projection=staged"],
+		["--base-ref=HEAD", "--committed-only=true"],
+		[`--base-ref=${TREE}`],
+		["--committed-only=true"],
+		[],
+		[`--base-ref=${TREE}`, "--committed-only=true", "--projection=workspace"],
+	]) {
+		assert.throws(() => decodeReviewStatusV3(intendedUntrackedSubmissionStatus(selector)), /argument_tokens|substitution/, selector.join(" "));
+	}
+	assert.throws(() => decodeReviewStatusV3(intendedUntrackedSubmissionStatus([`--base-ref=${TREE}`, "--committed-only=true"], 4)), /substitution_location/);
+});
+
+test("targetStatus runs a provider-issued base-diff submission as issued instead of re-forwarding the request base-ref", async () => {
+	const queue = queuedTargetStatusAdapter();
+	const tokens = [...PROVIDER_PREFIX, `--base-ref=${TREE}`, "--committed-only=true", SELECTION_TOKEN];
+	await targetStatusClient(queue.adapter).targetStatus({
+		cwd: "/repo", baseRef: "deadbeef", committedOnly: true,
+		intendedUntrackedSelection: { argumentTokens: tokens, value: '{"selection":true}' },
+	});
+	assert.deepEqual(queue.calls[0], [
+		"review", "status", "--cwd", "/repo",
+		...PROVIDER_PREFIX, `--base-ref=${TREE}`, "--committed-only=true", '--intended-untracked-selection={"selection":true}',
+	]);
 });

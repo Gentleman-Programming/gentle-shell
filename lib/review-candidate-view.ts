@@ -1,21 +1,27 @@
 import { execFileSync, type ExecFileSyncOptions } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, utimesSync, type Stats } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
+import { assertCandidateOwnerParent, createCandidateOwner, PosixCandidateOwnerParentChmodIneffectiveError, PosixCandidateOwnerParentPrivacyError, prepareCandidateOwnerParent, removeCandidateOwner, samePath, sweepCandidateOwners, type CandidateViewOwner } from "./review-candidate-view-owner.ts";
 
 const REVIEW_LENS = ["review-risk", "review-resilience", "review-readability", "review-reliability"] as const;
 export type ReviewLens = (typeof REVIEW_LENS)[number];
 const CANDIDATE_GIT_TIMEOUT_MS = 10_000;
 const CANDIDATE_GIT_TIMEOUT_MAX_MS = 120_000;
 const CANDIDATE_GIT_TIMEOUT_ENV = "GENTLE_PI_CANDIDATE_GIT_TIMEOUT_MS";
-const CANDIDATE_GIT_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+export const CANDIDATE_GIT_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+// Keep the copied index at least one timestamp tick behind its source. The
+// two-second target also clears filesystems whose mtime granularity is a second
+// or coarser without needlessly assigning an arbitrary historical timestamp.
+const PRIVATE_INDEX_RACY_SAFETY_NS = 1_000_000_000n;
+const PRIVATE_INDEX_RACY_BACKDATE_NS = 2_000_000_000n;
 
 // Candidate views may materialize full repository trees. Large repositories can
 // raise this bounded deadline without creating an unbounded child process.
-function resolveCandidateGitTimeoutMs(environment: NodeJS.ProcessEnv = process.env): number {
+export function resolveCandidateGitTimeoutMs(environment: NodeJS.ProcessEnv = process.env): number {
 	const value = environment[CANDIDATE_GIT_TIMEOUT_ENV];
 	if (value === undefined || !/^[1-9]\d*$/.test(value)) return CANDIDATE_GIT_TIMEOUT_MS;
 	const parsed = Number(value);
@@ -94,6 +100,7 @@ interface CandidateViewScope {
 }
 
 interface CandidateViewRecord {
+	owner: CandidateViewOwner;
 	token: string;
 	root: string;
 	parent: string;
@@ -101,8 +108,10 @@ interface CandidateViewRecord {
 	commonDir: string;
 	baseCommit: string;
 	baseTree: string;
+	providerBaseTree?: string;
 	candidateTree: string;
 	committedOnly: boolean;
+	intendedUntracked?: readonly string[];
 	entries: readonly CandidateViewEntry[];
 	gitlinks: readonly CandidateGitlink[];
 	scope: CandidateViewScope;
@@ -114,10 +123,13 @@ interface CandidateViewRecord {
 export interface CandidateView {
 	token: string;
 	root: string;
+	contributorRoot: string;
 	baseCommit: string;
 	baseTree: string;
+	providerBaseTree?: string;
 	candidateTree: string;
 	committedOnly: boolean;
+	intendedUntracked?: readonly string[];
 	paths: readonly string[];
 	modes: Readonly<Record<string, string>>;
 	gitlinks: Readonly<Record<string, string>>;
@@ -157,8 +169,10 @@ export interface FrozenCandidateProjection {
 	contributorRoot: string;
 	baseCommit: string;
 	baseTree: string;
+	providerBaseTree?: string;
 	candidateTree: string;
 	committedOnly: boolean;
+	intendedUntracked?: readonly string[];
 	paths: readonly string[];
 	modes: Readonly<Record<string, string>>;
 	gitlinks: Readonly<Record<string, string>>;
@@ -168,7 +182,11 @@ export interface FrozenCandidateProjection {
 export interface CreateCandidateViewRequest {
 	contributorRoot: string;
 	baseRef?: string;
+	/** Provider-validated tree, distinct from caller-supplied commit/ref baseRef. */
+	providerBaseTree?: string;
 	committedOnly?: boolean;
+	/** Undefined keeps legacy all-untracked capture; [] excludes untracked files. */
+	intendedUntracked?: readonly string[];
 	replayKey?: string;
 }
 
@@ -183,8 +201,10 @@ export interface AuthoritativeReviewingCandidateState {
 	contributorRoot: string;
 	baseCommit: string;
 	baseTree: string;
+	providerBaseTree?: string;
 	candidateTree: string;
 	committedOnly?: boolean;
+	intendedUntracked?: readonly string[];
 	paths: readonly string[];
 	modes: Readonly<Record<string, string>>;
 	gitlinks?: Readonly<Record<string, string>>;
@@ -212,6 +232,21 @@ export interface NativeCandidateProjectionDescriptor {
 	providerManifestHashVerified?: true;
 }
 
+export interface CandidateOwnerPrivacyDiagnostic {
+	code: "candidate-owner-parent-privacy";
+	message: typeof CANDIDATE_OWNER_PARENT_PRIVACY_MESSAGE;
+}
+
+export interface CandidateOwnerChmodIneffectiveDiagnostic {
+	code: "candidate-owner-parent-chmod-ineffective";
+	message: typeof CANDIDATE_OWNER_PARENT_CHMOD_INEFFECTIVE_MESSAGE;
+}
+
+export const CANDIDATE_OWNER_PARENT_PRIVACY_MESSAGE = "candidate-views parent must be owned by the current user and inaccessible to group and others; inspect its ownership and permissions, then correct them out of band before retrying START" as const;
+export const CANDIDATE_OWNER_PARENT_CHMOD_INEFFECTIVE_MESSAGE = "candidate-views parent filesystem does not honor POSIX permission changes; move this repository's Git common directory to a POSIX-metadata filesystem or enable metadata support before retrying START" as const;
+export const CANDIDATE_SYMLINK_MATERIALIZATION_MESSAGE = "candidate view cannot create native symlinks; enable symlink capability out of band before retrying START" as const;
+export const CANDIDATE_SYMLINK_CAPABILITY_UNCONFIRMED_MESSAGE = "candidate-view symlink capability could not be verified on the filesystem that will hold the candidate-views parent; make sure that filesystem is writable and can create symlinks before retrying START" as const;
+
 export interface CandidateViewDiagnostic {
 	phase: typeof CANDIDATE_VIEW_DIAGNOSTIC_PHASE;
 	category: CandidateViewGitFailureCategory;
@@ -223,9 +258,9 @@ export interface CandidateViewDiagnostic {
 
 export class CandidateViewError extends Error {
 	readonly reason: string;
-	readonly diagnostics?: CandidateViewDiagnostic;
-	constructor(message: string, reason = "candidate-view-invalid", diagnostics?: CandidateViewDiagnostic) {
-		super(message);
+	readonly diagnostics?: CandidateViewDiagnostic | CandidateOwnerPrivacyDiagnostic | CandidateOwnerChmodIneffectiveDiagnostic;
+	constructor(message: string, reason = "candidate-view-invalid", diagnostics?: CandidateViewDiagnostic | CandidateOwnerPrivacyDiagnostic | CandidateOwnerChmodIneffectiveDiagnostic, options?: ErrorOptions) {
+		super(message, options);
 		this.name = "CandidateViewError";
 		this.reason = reason;
 		this.diagnostics = diagnostics === undefined ? undefined : sanitizeCandidateViewDiagnostic(diagnostics);
@@ -267,7 +302,12 @@ function candidateGitDiagnostic(category: CandidateViewGitFailureCategory, argum
 	});
 }
 
-function sanitizeCandidateViewDiagnostic(diagnostics: CandidateViewDiagnostic): CandidateViewDiagnostic | undefined {
+function sanitizeCandidateViewDiagnostic(diagnostics: CandidateViewDiagnostic | CandidateOwnerPrivacyDiagnostic | CandidateOwnerChmodIneffectiveDiagnostic): CandidateViewDiagnostic | CandidateOwnerPrivacyDiagnostic | CandidateOwnerChmodIneffectiveDiagnostic | undefined {
+	if ("code" in diagnostics) {
+		if (diagnostics.code === "candidate-owner-parent-privacy" && diagnostics.message === CANDIDATE_OWNER_PARENT_PRIVACY_MESSAGE) return Object.freeze({ code: diagnostics.code, message: CANDIDATE_OWNER_PARENT_PRIVACY_MESSAGE });
+		if (diagnostics.code === "candidate-owner-parent-chmod-ineffective" && diagnostics.message === CANDIDATE_OWNER_PARENT_CHMOD_INEFFECTIVE_MESSAGE) return Object.freeze({ code: diagnostics.code, message: CANDIDATE_OWNER_PARENT_CHMOD_INEFFECTIVE_MESSAGE });
+		return undefined;
+	}
 	const { phase, category, git_subcommand, timeout_ms, max_buffer_bytes, message } = diagnostics;
 	if (
 		phase !== CANDIDATE_VIEW_DIAGNOSTIC_PHASE ||
@@ -326,10 +366,36 @@ function isMaterializedCandidateMode(mode: string): boolean {
 	return mode === "100644" || mode === "100755" || mode === "120000";
 }
 
+export function hasExpectedExecutableBits(filesystemMode: number, gitMode: string, platform: NodeJS.Platform = process.platform): boolean {
+	return gitMode === "100755" && platform === "win32"
+		|| (filesystemMode & 0o111) === (gitMode === "100755" ? 0o111 : 0);
+}
+
 function isCanonicalObjectId(objectId: string): boolean { return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(objectId); }
 function gitlinkMapsEqual(left: Readonly<Record<string, string>>, right: Readonly<Record<string, string>>): boolean {
 	const entries = Object.entries(left);
 	return entries.length === Object.keys(right).length && entries.every(([path, objectId]) => right[path] === objectId);
+}
+
+// Two materialized candidate views describe the exact same reviewable content
+// when their base, candidate tree, commit-state, and changed scope all match.
+// This is what makes a retried native START's freshly-materialized duplicate
+// view safely discardable in favor of an already-bound one (gentle-pi
+// candidate-view rebind defect, ga#4085 / ga#4050): the comparison never
+// trusts a caller-supplied claim, only Git-derived identity already computed
+// by materializeCandidateView for both records.
+function candidateRecordsShareIdentity(left: CandidateViewRecord, right: CandidateViewRecord): boolean {
+	return left.contributorRoot === right.contributorRoot &&
+		left.baseCommit === right.baseCommit &&
+		left.baseTree === right.baseTree &&
+		left.providerBaseTree === right.providerBaseTree &&
+		left.candidateTree === right.candidateTree &&
+		left.committedOnly === right.committedOnly &&
+		JSON.stringify(left.intendedUntracked ?? null) === JSON.stringify(right.intendedUntracked ?? null) &&
+		JSON.stringify(left.scope.paths) === JSON.stringify(right.scope.paths) &&
+		JSON.stringify(left.scope.modes) === JSON.stringify(right.scope.modes) &&
+		gitlinkMapsEqual(left.scope.gitlinks, right.scope.gitlinks) &&
+		JSON.stringify(left.scope.deletedPaths) === JSON.stringify(right.scope.deletedPaths);
 }
 
 function decodeCanonicalPath(value: Buffer): string {
@@ -342,6 +408,7 @@ function decodeCanonicalPath(value: Buffer): string {
 
 function assertSafeSymlinkTarget(root: string, entryPath: string, value: Buffer): void {
 	const target = value.toString("utf8");
+	const normalized = target.endsWith("/") ? target.slice(0, -1) : target;
 	if (
 		!Buffer.from(target, "utf8").equals(value) ||
 		target.length === 0 ||
@@ -349,7 +416,7 @@ function assertSafeSymlinkTarget(root: string, entryPath: string, value: Buffer)
 		/^[A-Za-z]:\//.test(target) ||
 		target.includes("\\") ||
 		/[\u0000-\u001f\u007f]/.test(target) ||
-		target.split("/").some((segment) => segment.length === 0 || segment === ".")
+		normalized.split("/").some((segment) => segment.length === 0 || segment === ".")
 	) {
 		throw new CandidateViewError("candidate view symlink target is unsafe");
 	}
@@ -416,23 +483,30 @@ export interface ChangedPathEntry {
 	readonly modeOnly: boolean;
 }
 
+//
+// gentle-pi#518: both derivations diff with `--no-renames`, exactly as the
+// native provider does. A rename is then its source deletion plus its
+// destination addition, one path each, so the projection identity Pi freezes
+// is the identity native STATUS projects. Rename detection here previously
+// kept only the destination, and an exact staged rename was rejected before
+// native admission with candidate-target-projection-drift.
 export function deriveChangedPathManifest(cwd: string, baseTree: string, candidateTree: string, executor: CandidateGitExecutor = defaultCandidateGitExecutor): readonly ChangedPathEntry[] {
-	const tokens = gitPathTokens(cwd, ["diff", "--raw", "-z", "--abbrev=40", "--no-ext-diff", "--find-renames=100%", baseTree, candidateTree], executor);
+	const tokens = gitPathTokens(cwd, ["diff", "--raw", "-z", "--abbrev=40", "--no-ext-diff", "--no-renames", baseTree, candidateTree], executor);
 	const entries: ChangedPathEntry[] = [];
 	for (let index = 0; index < tokens.length;) {
 		const header = tokens[index++]?.toString("ascii");
 		if (header === undefined) break;
-		// `:<old_mode> <new_mode> <old_sha> <new_sha> <status>`
-		const match = /^:([0-7]{6}) ([0-7]{6}) ([0-9a-f]{7,64}) ([0-9a-f]{7,64}) ([AMDT]|R[0-9]{3})$/.exec(header);
+		// `:<old_mode> <new_mode> <old_sha> <new_sha> <status>`; with rename
+		// detection off, Git never emits a two-path R or C record here.
+		const match = /^:([0-7]{6}) ([0-7]{6}) ([0-9a-f]{7,64}) ([0-9a-f]{7,64}) ([AMDT])$/.exec(header);
 		if (match === null) throw new CandidateViewError("candidate manifest Git output contains an unsafe raw header", "manifest-derivation-invalid");
 		const [, oldMode, newMode, oldSha, newSha, status] = match;
-		const firstPath = tokens[index++];
-		if (firstPath === undefined) throw new CandidateViewError("candidate manifest Git output is incomplete", "manifest-derivation-invalid");
-		// A rename emits both the old and the new path; the new one is the scope.
-		const path = status.startsWith("R") ? decodeCanonicalPath(tokens[index++] ?? firstPath) : decodeCanonicalPath(firstPath);
+		const rawPath = tokens[index++];
+		if (rawPath === undefined) throw new CandidateViewError("candidate manifest Git output is incomplete", "manifest-derivation-invalid");
+		const path = decodeCanonicalPath(rawPath);
 		entries.push(Object.freeze({
 			path,
-			status: status.startsWith("R") ? "A" : status,
+			status,
 			oldMode,
 			newMode,
 			deleted: status === "D",
@@ -508,20 +582,16 @@ function deriveChangedScope(cwd: string, baseTree: string, candidateTree: string
 	const present = new Map(entries.map((entry) => [entry.path, entry]));
 	const paths = new Set<string>();
 	const deleted = new Set<string>();
-	const tokens = gitPathTokens(cwd, ["diff", "--name-status", "-z", "--no-ext-diff", "--find-renames=100%", baseTree, candidateTree], executor);
+	// `--no-renames` mirrors the native projection: a rename is one deleted
+	// path plus one added path (gentle-pi#518), and every record carries
+	// exactly one path.
+	const tokens = gitPathTokens(cwd, ["diff", "--name-status", "-z", "--no-ext-diff", "--no-renames", baseTree, candidateTree], executor);
 	for (let index = 0; index < tokens.length;) {
 		const status = tokens[index++]?.toString("ascii");
-		if (status === undefined || !/^(?:[AMDT]|R[0-9]{3})$/.test(status)) throw new CandidateViewError("candidate scope Git output contains an unsafe status");
-		const oldPath = tokens[index++];
-		if (oldPath === undefined) throw new CandidateViewError("candidate scope Git output is incomplete");
-		const firstPath = decodeCanonicalPath(oldPath);
-		const path = status.startsWith("R")
-			? (() => {
-				const newPath = tokens[index++];
-				if (newPath === undefined) throw new CandidateViewError("candidate scope rename output is incomplete");
-				return decodeCanonicalPath(newPath);
-			})()
-			: firstPath;
+		if (status === undefined || !/^[AMDT]$/.test(status)) throw new CandidateViewError("candidate scope Git output contains an unsafe status");
+		const rawPath = tokens[index++];
+		if (rawPath === undefined) throw new CandidateViewError("candidate scope Git output is incomplete");
+		const path = decodeCanonicalPath(rawPath);
 		if (paths.has(path) || deleted.has(path)) throw new CandidateViewError("candidate scope Git output contains duplicate paths");
 		if (status === "D") {
 			if (present.has(path)) throw new CandidateViewError("candidate scope deletion is present in the candidate tree");
@@ -551,7 +621,9 @@ function entryContentHash(root: string, entry: CandidateTreeEntry): string {
 	if (entry.mode === "120000") {
 		if (!item.isSymbolicLink()) throw new CandidateViewError("candidate view symlink does not match its frozen tree");
 		const target = readlinkSync(path, "buffer");
-		const bytes = Buffer.isBuffer(target) ? target : Buffer.from(target);
+		const nativeBytes = Buffer.isBuffer(target) ? target : Buffer.from(target);
+		// Windows readlink may spell a relative Git target with native separators.
+		const bytes = process.platform === "win32" ? Buffer.from(nativeBytes.toString("utf8").replaceAll("\\", "/")) : nativeBytes;
 		assertSafeSymlinkTarget(root, entry.path, bytes);
 		return createHash("sha256").update(bytes).digest("hex");
 	}
@@ -581,6 +653,32 @@ function makeReadonly(root: string, entries: readonly CandidateViewEntry[]): voi
 	for (const directory of candidateDirectories(root, entries)) chmodSync(directory, 0o555);
 }
 
+// macOS File Provider (iCloud-synced Desktop/Documents) asynchronously resets
+// directory modes to exactly 0700 while leaving file modes intact, so a view
+// made read-only at creation later reads as writable. Only that exact shape on
+// a directory this user owns is re-tightened; any group or other bit still
+// refuses. Owner-only write grants nothing a same-user process could not do by
+// chmod anyway, and the caller then proves the directory holds exactly the
+// frozen children, closing the ignored-file injection the untracked scan misses.
+function repairFileProviderDirectoryMode(directory: string, metadata: Stats, platform: NodeJS.Platform): boolean {
+	if (platform === "win32" || !metadata.isDirectory() || metadata.isSymbolicLink() || (metadata.mode & 0o7777) !== 0o700) return false;
+	if (typeof process.getuid !== "function" || metadata.uid !== process.getuid()) return false;
+	chmodSync(directory, 0o555);
+	return true;
+}
+
+function expectedDirectoryChildren(root: string, entries: readonly CandidateViewEntry[]): ReadonlyMap<string, ReadonlySet<string>> {
+	const children = new Map<string, Set<string>>([[root, new Set([".git"])]]);
+	for (const entry of entries) {
+		for (let path = join(root, entry.path); path !== root && isWithin(root, path); path = dirname(path)) {
+			const parent = dirname(path);
+			if (!children.has(parent)) children.set(parent, new Set());
+			children.get(parent)!.add(basename(path));
+		}
+	}
+	return children;
+}
+
 function makeWritableForCleanup(path: string): void {
 	const entry = lstatSync(path, { throwIfNoEntry: false });
 	if (!entry || entry.isSymbolicLink()) return;
@@ -592,12 +690,33 @@ function makeWritableForCleanup(path: string): void {
 	chmodSync(path, 0o644);
 }
 
-function candidateViewParent(commonDir: string): string {
-	const parent = join(commonDir, "gentle-ai", "candidate-views");
+export function candidateOwnerPreparationError(error: unknown): CandidateViewError {
+	// Surface the bounded errno of the underlying failure directly in the
+	// message so CI logs are self-diagnosing without TAP printing the cause.
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	const safeCode = typeof code === "string" && /^(?:EACCES|EPERM|ENOENT|EIO|ETIMEDOUT)$/.test(code) ? code : undefined;
+	const diagnostics = error instanceof PosixCandidateOwnerParentPrivacyError
+		? { code: "candidate-owner-parent-privacy" as const, message: CANDIDATE_OWNER_PARENT_PRIVACY_MESSAGE }
+		: error instanceof PosixCandidateOwnerParentChmodIneffectiveError
+			? { code: "candidate-owner-parent-chmod-ineffective" as const, message: CANDIDATE_OWNER_PARENT_CHMOD_INEFFECTIVE_MESSAGE }
+			: undefined;
+	return new CandidateViewError(`candidate view owner preparation failed${safeCode ? ` (${safeCode})` : ""}`, "candidate-owner-preparation-failed", diagnostics, { cause: error });
+}
+
+function candidateViewParent(commonDir: string, platform: NodeJS.Platform): string {
+	const control = join(commonDir, "gentle-ai");
+	mkdirSync(control, { recursive: true, mode: 0o700 });
+	const controlStat = lstatSync(control);
+	if (!controlStat.isDirectory() || controlStat.isSymbolicLink() || realpathSync(control) !== control) throw new CandidateViewError("candidate view ancestor is unsafe");
+	const parent = join(control, "candidate-views");
 	mkdirSync(parent, { recursive: true, mode: 0o700 });
 	const stat = lstatSync(parent);
 	if (!stat.isDirectory() || stat.isSymbolicLink()) throw new CandidateViewError("candidate view parent is unsafe");
-	return realpathSync(parent);
+	try {
+		return prepareCandidateOwnerParent(commonDir, platform);
+	} catch (error) {
+		throw candidateOwnerPreparationError(error);
+	}
 }
 
 export interface ResolvedCandidateBase {
@@ -608,6 +727,8 @@ export interface ResolvedCandidateBase {
 function isFullCommitId(selector: string): boolean {
 	return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(selector);
 }
+
+export const BASE_REF_ACCEPTED_FORMS = "HEAD, a full 40- or 64-character commit id, or a ref name (branch, tag, remote, or refs/...); abbreviated commit ids are not accepted";
 
 function explicitBaseRefCandidates(cwd: string, selector: string, env: NodeJS.ProcessEnv, executor: CandidateGitExecutor): string[] {
 	if (selector === "HEAD" || isFullCommitId(selector)) return [selector];
@@ -669,8 +790,27 @@ function resolveEmptyTree(cwd: string, env: NodeJS.ProcessEnv, executor: Candida
 	return git(cwd, ["mktree"], env, executor);
 }
 
+// Resolves `<selector>^{commit}` to a commit id. For an explicit (caller-
+// supplied) baseRef, a nonzero exit is reported as base-ref-unresolvable with
+// the accepted forms rather than as a generic git failure: the selector may
+// be well-formed (a full commit id, a resolvable ref) and still not name a
+// commit, e.g. a full hex id that names a tree object. Timeouts and output-
+// limit failures still propagate as real git failures through
+// probeCandidateGit, the same way isUnbornSymbolicHead handles them. The
+// implicit default (HEAD, no baseRef) keeps the original fail-closed
+// git-failure behavior, since HEAD not resolving signals repository
+// corruption rather than a caller mistake.
+function resolveCommitSelector(cwd: string, selector: string, env: NodeJS.ProcessEnv, executor: CandidateGitExecutor, explicit: boolean): string {
+	const arguments_ = ["rev-parse", "--verify", "--end-of-options", `${selector}^{commit}`];
+	if (!explicit) return git(cwd, arguments_, env, executor);
+	const probe = probeCandidateGit(cwd, arguments_, env, executor);
+	if (probe.status !== 0) throw new CandidateViewError(`candidate base reference is unresolvable; it does not name a commit; accepted forms: ${BASE_REF_ACCEPTED_FORMS}`, "base-ref-unresolvable");
+	return probe.stdout;
+}
+
 function resolveCandidateBase(cwd: string, baseRef: string | undefined, env: NodeJS.ProcessEnv, executor: CandidateGitExecutor): ResolvedCandidateBase {
 	const selector = baseRef ?? "HEAD";
+	const explicit = baseRef !== undefined;
 	// An unborn repository has a symbolic HEAD pointing at a branch with no
 	// commits yet. Its review base is Git's repository-native empty tree, not a
 	// missing or malformed commit. Only the default/HEAD selector is entitled to
@@ -679,21 +819,21 @@ function resolveCandidateBase(cwd: string, baseRef: string | undefined, env: Nod
 		return { commit: "HEAD", tree: resolveEmptyTree(cwd, env, executor) };
 	}
 	try {
-		if (baseRef !== undefined) {
+		if (explicit) {
 			const candidates = explicitBaseRefCandidates(cwd, selector, env, executor);
-			if (candidates.length > 1) throw new CandidateViewError("candidate base reference is ambiguous", "base-ref-ambiguous");
-			if (candidates.length === 0) throw new CandidateViewError("candidate base reference is unresolvable", "base-ref-unresolvable");
+			if (candidates.length > 1) throw new CandidateViewError(`candidate base reference is ambiguous (matches more than one ref); accepted forms: ${BASE_REF_ACCEPTED_FORMS}`, "base-ref-ambiguous");
+			if (candidates.length === 0) throw new CandidateViewError(`candidate base reference is unresolvable; accepted forms: ${BASE_REF_ACCEPTED_FORMS}`, "base-ref-unresolvable");
 		}
-		const firstCommit = git(cwd, ["rev-parse", "--verify", "--end-of-options", `${selector}^{commit}`], env, executor);
+		const firstCommit = resolveCommitSelector(cwd, selector, env, executor, explicit);
 		const tree = git(cwd, ["rev-parse", "--verify", "--end-of-options", `${firstCommit}^{tree}`], env, executor);
-		const confirmedCommit = git(cwd, ["rev-parse", "--verify", "--end-of-options", `${selector}^{commit}`], env, executor);
+		const confirmedCommit = resolveCommitSelector(cwd, selector, env, executor, explicit);
 		if (firstCommit !== confirmedCommit) throw new CandidateViewError("candidate base reference moved during resolution", "base-ref-moved");
 		const confirmedTree = git(cwd, ["rev-parse", "--verify", "--end-of-options", `${confirmedCommit}^{tree}`], env, executor);
 		if (tree !== confirmedTree) throw new CandidateViewError("candidate base tree changed during resolution", "base-ref-moved");
 		return { commit: confirmedCommit, tree: confirmedTree };
 	} catch (error) {
 		if (error instanceof CandidateViewError && (error.diagnostics !== undefined || error.reason === "base-ref-ambiguous" || error.reason === "base-ref-moved" || error.reason === "base-ref-unresolvable")) throw error;
-		throw new CandidateViewError("candidate base reference is unresolvable", "base-ref-unresolvable");
+		throw new CandidateViewError(`candidate base reference is unresolvable; accepted forms: ${BASE_REF_ACCEPTED_FORMS}`, "base-ref-unresolvable");
 	}
 }
 
@@ -711,6 +851,36 @@ export function resolveCanonicalCandidateBase(contributorRoot: string, baseRef: 
 	return resolveCandidateBase(realpathSync(contributorRoot), baseRef, process.env, defaultCandidateGitExecutor);
 }
 
+/** Classifies a full provider-owned object id without resolving it as a caller commit/ref. */
+export function isProviderCandidateBaseTree(contributorRoot: string, objectId: string): boolean {
+	if (!isFullCommitId(objectId)) return false;
+	const cwd = realpathSync(contributorRoot);
+	const probe = probeCandidateGit(cwd, ["cat-file", "-t", objectId], process.env, defaultCandidateGitExecutor);
+	return probe.status === 0 && probe.stdout === "tree";
+}
+
+function materializeSymlinkEntries(root: string, entries: readonly CandidateTreeEntry[], executor: CandidateGitExecutor): ReadonlyMap<string, string> {
+	// Validate every original blob before any symlink is created. In particular,
+	// never use Git's core.symlinks-dependent regular-file checkout for mode 120000.
+	const links = entries.filter((entry) => entry.mode === "120000").map((entry) => {
+		const bytes = candidateGit(root, ["cat-file", "blob", entry.objectId], process.env, "buffer", executor) as Buffer;
+		assertSafeSymlinkTarget(root, entry.path, bytes);
+		return { path: entry.path, target: bytes.toString("utf8") };
+	});
+	for (const link of links) {
+		const path = join(root, link.path);
+		mkdirSync(dirname(path), { recursive: true });
+		try {
+			const targetPath = resolve(dirname(path), link.target);
+			const targetType = process.platform === "win32" && lstatSync(targetPath, { throwIfNoEntry: false })?.isDirectory() ? "dir" : "file";
+			symlinkSync(link.target, path, targetType);
+		} catch (error) {
+			throw new CandidateViewError(CANDIDATE_SYMLINK_MATERIALIZATION_MESSAGE, "symlink-materialization-failed", undefined, { cause: error });
+		}
+	}
+	return new Map(links.map((link) => [link.path, createHash("sha256").update(Buffer.from(link.target, "utf8")).digest("hex")]));
+}
+
 function checkoutMaterializedEntries(root: string, entries: readonly CandidateTreeEntry[], executor: CandidateGitExecutor): void {
 	let batch: string[] = [];
 	let bytes = 0;
@@ -720,6 +890,7 @@ function checkoutMaterializedEntries(root: string, entries: readonly CandidateTr
 		batch = []; bytes = 0;
 	};
 	for (const entry of entries) {
+		if (entry.mode === "120000") continue;
 		const size = Buffer.byteLength(entry.path, "utf8") + 1;
 		if (batch.length > 0 && bytes + size > 16_384) flush();
 		batch.push(entry.path); bytes += size;
@@ -758,31 +929,101 @@ function addUnbornWorktree(cwd: string, root: string, branch: string, env: NodeJ
 	git(root, ["symbolic-ref", "HEAD", `refs/heads/${branch}`], env, executor);
 }
 
-function materializeCandidateView(request: CreateCandidateViewRequest, executor: CandidateGitExecutor): CandidateViewRecord {
+function normalizeIntendedUntracked(paths: readonly string[] | undefined): readonly string[] | undefined {
+	if (paths === undefined) return undefined;
+	if (!Array.isArray(paths) || paths.some((path) => !isSafeCandidatePath(path)) || new Set(paths).size !== paths.length) {
+		throw new CandidateViewError("candidate intended-untracked selection is invalid");
+	}
+	return Object.freeze([...paths]);
+}
+
+function isErrnoCode(error: unknown, code: string): boolean {
+	return typeof error === "object" && error !== null && "code" in error && error.code === code;
+}
+
+function timestampSeconds(timestampNs: bigint): number {
+	// Node's utimes API takes Unix seconds as a number. Splitting the value keeps
+	// the seconds conversion exact; the explicit racy-clean backdate below is far
+	// larger than the fractional precision a Number can represent at this epoch.
+	return Number(timestampNs / 1_000_000_000n) + Number(timestampNs % 1_000_000_000n) / 1_000_000_000;
+}
+
+function seedPrivateIndexFromLiveIndex(cwd: string, indexPath: string, executor: CandidateGitExecutor): boolean {
+	const liveIndex = resolve(cwd, git(cwd, ["rev-parse", "--path-format=absolute", "--git-path", "index"], process.env, executor));
+	const entry = lstatSync(liveIndex, { bigint: true, throwIfNoEntry: false });
+	if (entry === undefined) return false; if (!entry.isFile()) throw new CandidateViewError("candidate live Git index is not a regular file");
+	if (entry.mtimeNs < PRIVATE_INDEX_RACY_BACKDATE_NS) throw new CandidateViewError("candidate live Git index timestamp is too early for racy-clean protection");
+	copyFileSync(liveIndex, indexPath);
+	// Git's racy-clean check compares index and tracked-file mtimes. copyFileSync
+	// gives the private index a new timestamp; restoring a Date can also lose
+	// nanoseconds. Backdate the bigint live timestamp instead, then verify the
+	// filesystem applied enough of that bounded interval for Git to refresh
+	// content rather than trusting a racy-clean stat match.
+	utimesSync(indexPath, timestampSeconds(entry.atimeNs), timestampSeconds(entry.mtimeNs - PRIVATE_INDEX_RACY_BACKDATE_NS));
+	const privateMtimeNs = lstatSync(indexPath, { bigint: true }).mtimeNs;
+	if (privateMtimeNs >= entry.mtimeNs || entry.mtimeNs - privateMtimeNs < PRIVATE_INDEX_RACY_SAFETY_NS) {
+		throw new CandidateViewError("candidate private Git index timestamp cannot preserve racy-clean protection");
+	}
+	for (const name of readdirSync(dirname(liveIndex))) if (/^sharedindex\.[0-9a-f]+$/.test(name)) {
+		try {
+			const sharedIndex = join(dirname(liveIndex), name);
+			if (lstatSync(sharedIndex).isFile()) copyFileSync(sharedIndex, join(dirname(indexPath), name));
+		} catch (error) {
+			if (!isErrnoCode(error, "ENOENT")) throw error;
+		}
+	}
+	return true;
+}
+
+function materializeCandidateView(request: CreateCandidateViewRequest, executor: CandidateGitExecutor, platform: NodeJS.Platform = process.platform): CandidateViewRecord {
 	const contributorRoot = realpathSync(request.contributorRoot);
 	if (!lstatSync(contributorRoot).isDirectory()) throw new CandidateViewError("contributor root is not a directory");
-	if (request.committedOnly === true && request.baseRef === undefined) throw new CandidateViewError("committed-only candidate views require an explicit base reference", "committed-only-base-required");
+	if (request.committedOnly === true && request.baseRef === undefined && request.providerBaseTree === undefined) throw new CandidateViewError("committed-only candidate views require an explicit base reference", "committed-only-base-required");
+	if (request.providerBaseTree !== undefined && (request.baseRef !== undefined || request.committedOnly !== true || !isFullCommitId(request.providerBaseTree))) throw new CandidateViewError("provider candidate base tree is invalid", "provider-base-tree-invalid");
 	const commonDir = resolve(contributorRoot, git(contributorRoot, ["rev-parse", "--git-common-dir"], process.env, executor));
 	const canonicalCommonDir = realpathSync(commonDir);
-	const base = resolveCandidateBase(contributorRoot, request.baseRef, process.env, executor);
+	// A provider tree is a diff base, not a commit selector. Anchor the private
+	// worktree to HEAD without searching for a commit with a matching tree.
+	const anchor = resolveCandidateBase(contributorRoot, request.providerBaseTree === undefined ? request.baseRef : "HEAD", process.env, executor);
+	const providerBaseTree = request.providerBaseTree;
+	if (providerBaseTree !== undefined && (git(contributorRoot, ["cat-file", "-t", providerBaseTree], process.env, executor) !== "tree" || providerBaseTree.length !== anchor.tree.length)) throw new CandidateViewError("provider candidate base is not a tree", "provider-base-tree-invalid");
+	const base = providerBaseTree === undefined ? anchor : { commit: anchor.commit, tree: providerBaseTree };
 	const committedOnly = request.committedOnly === true;
+	const intendedUntracked = normalizeIntendedUntracked(request.intendedUntracked);
 	const candidateCommit = committedOnly
 		? resolveCandidateBase(contributorRoot, "HEAD", process.env, executor)
 		: base;
-	const parent = candidateViewParent(canonicalCommonDir);
+	const parent = candidateViewParent(canonicalCommonDir, platform);
+	sweepCandidateOwners(canonicalCommonDir, (args) => git(canonicalCommonDir, args, process.env, executor), makeWritableForCleanup, platform);
 	const index = mkdtempSync(join(tmpdir(), "gentle-ai-candidate-index-"));
 	const indexPath = join(index, "index");
 	const environment = { ...process.env, GIT_INDEX_FILE: indexPath };
 	try {
 		const baseCommit = base.commit;
 		const unborn = baseCommit === "HEAD";
-		// For an unborn repository the base tree is Git's empty tree, so seed the
-		// private candidate index from `--empty` instead of a non-existent commit.
-		if (unborn) git(contributorRoot, ["read-tree", "--empty"], environment, executor);
-		else git(contributorRoot, ["read-tree", candidateCommit.commit], environment, executor);
-		if (!committedOnly) git(contributorRoot, ["add", "-A"], environment, executor);
+		// Workspace candidates seed their isolated index from the resolved live index; missing indexes use the frozen base.
+		const seededFromLiveIndex = !committedOnly && intendedUntracked !== undefined && seedPrivateIndexFromLiveIndex(contributorRoot, indexPath, executor);
+		if (!seededFromLiveIndex) {
+			// For an unborn repository the base tree is Git's empty tree, so seed the
+			// private candidate index from `--empty` instead of a non-existent commit.
+			if (unborn) git(contributorRoot, ["read-tree", "--empty"], environment, executor);
+			else git(contributorRoot, ["read-tree", candidateCommit.commit], environment, executor);
+		}
+		if (!committedOnly) {
+			if (intendedUntracked === undefined) git(contributorRoot, ["add", "-A"], environment, executor);
+			else {
+				git(contributorRoot, ["add", "-u"], environment, executor);
+				if (intendedUntracked.length > 0) git(contributorRoot, ["add", "--", ...intendedUntracked], { ...environment, GIT_LITERAL_PATHSPECS: "1" }, executor);
+			}
+		}
 		const candidateTree = git(contributorRoot, ["write-tree"], environment, executor);
 		const root = join(parent, randomUUID());
+		let owner: CandidateViewOwner;
+		try {
+			owner = createCandidateOwner(canonicalCommonDir, root, platform);
+		} catch (error) {
+			throw candidateOwnerPreparationError(error);
+		}
 		// The worktree is created under the same try/catch cleanup boundary as
 		// the read-tree materialization that follows. addUnbornWorktree's
 		// fallback path can register a worktree with `worktree add` and then
@@ -799,13 +1040,18 @@ function materializeCandidateView(request: CreateCandidateViewRequest, executor:
 			git(root, ["read-tree", candidateTree], process.env, executor);
 			const tree = parseTree(root, candidateTree, executor);
 			checkoutMaterializedEntries(root, tree.entries, executor);
-			const entries = tree.entries.map((entry) => ({ ...entry, contentHash: entryContentHash(root, entry) }));
+			const symlinkHashes = materializeSymlinkEntries(root, tree.entries, executor);
+			const entries = tree.entries.map((entry) => {
+				const contentHash = entryContentHash(root, entry);
+				if (entry.mode === "120000" && contentHash !== symlinkHashes.get(entry.path)) throw new CandidateViewError("candidate view symlink does not match its frozen blob");
+				return { ...entry, contentHash };
+			});
 			const scope = deriveChangedScope(contributorRoot, base.tree, candidateTree, [...tree.entries, ...tree.gitlinks], executor);
 			for (const gitlink of tree.gitlinks) if (lstatSync(join(root, gitlink.path), { throwIfNoEntry: false })) throw new CandidateViewError("candidate view materialized a metadata-only gitlink");
 			makeReadonly(root, entries);
-			return { token: basename(root), root: realpathSync(root), parent, contributorRoot, commonDir: canonicalCommonDir, baseCommit, baseTree: base.tree, candidateTree, committedOnly, entries, gitlinks: tree.gitlinks, scope, gitExecutor: executor };
+			return { owner, token: basename(root), root: realpathSync(root), parent, contributorRoot, commonDir: canonicalCommonDir, baseCommit, baseTree: base.tree, ...(providerBaseTree === undefined ? {} : { providerBaseTree }), candidateTree, committedOnly, intendedUntracked, entries, gitlinks: tree.gitlinks, scope, gitExecutor: executor };
 		} catch (error) {
-			try { git(contributorRoot, ["worktree", "remove", "--force", root], process.env, executor); } catch { rmSync(root, { recursive: true, force: true }); }
+			try { removeCandidateOwner(owner, (args) => git(canonicalCommonDir, args, process.env, executor), makeWritableForCleanup, false, platform); } catch { /* Preserve the marker and any partial worktree for conservative recovery. */ }
 			throw error;
 		}
 	} finally {
@@ -813,13 +1059,36 @@ function materializeCandidateView(request: CreateCandidateViewRequest, executor:
 	}
 }
 
-function assertRecordSafe(record: CandidateViewRecord): void {
+function assertRecordSafe(record: CandidateViewRecord, platform: NodeJS.Platform = process.platform): void {
+	try {
+		const contributor = lstatSync(record.contributorRoot);
+		if (!contributor.isDirectory() || contributor.isSymbolicLink() || realpathSync(record.contributorRoot) !== record.contributorRoot) {
+			throw new CandidateViewError("candidate contributor root identity changed", "contributor-root-drift");
+		}
+		const toplevel = realpathSync(git(record.contributorRoot, ["rev-parse", "--show-toplevel"], process.env, record.gitExecutor));
+		const commonDir = realpathSync(resolve(record.contributorRoot, git(record.contributorRoot, ["rev-parse", "--git-common-dir"], process.env, record.gitExecutor)));
+		if (!samePath(toplevel, record.contributorRoot, platform) || !samePath(commonDir, record.commonDir, platform)) {
+			throw new CandidateViewError("candidate contributor root Git identity changed", "contributor-root-drift");
+		}
+	} catch (error) {
+		if (error instanceof CandidateViewError) throw error;
+		throw new CandidateViewError("candidate contributor root identity cannot be verified", "contributor-root-drift");
+	}
 	const root = record.root;
+	assertCandidateOwnerParent(record.commonDir, platform);
 	if (!isWithin(record.parent, root) || !existsSync(root)) throw new CandidateViewError("candidate view is missing or moved");
 	const rootStat = lstatSync(root);
 	if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || realpathSync(root) !== root) throw new CandidateViewError("candidate view root is unsafe");
+	let expectedChildren: ReadonlyMap<string, ReadonlySet<string>> | undefined;
 	for (const directory of candidateDirectories(root, record.entries)) {
-		const metadata = lstatSync(directory);
+		let metadata = lstatSync(directory);
+		if (repairFileProviderDirectoryMode(directory, metadata, platform)) {
+			expectedChildren ??= expectedDirectoryChildren(root, record.entries);
+			const expected = expectedChildren.get(directory) ?? new Set<string>();
+			const actual = readdirSync(directory);
+			if (actual.length !== expected.size || actual.some((name) => !expected.has(name))) throw new CandidateViewError("candidate view directory contains unexpected entries");
+			metadata = lstatSync(directory);
+		}
 		if (!metadata.isDirectory() || metadata.isSymbolicLink() || (metadata.mode & 0o222) !== 0) throw new CandidateViewError("candidate view directory is unsafe or writable");
 	}
 	const gitFile = lstatSync(join(root, ".git"));
@@ -839,7 +1108,7 @@ function assertRecordSafe(record: CandidateViewRecord): void {
 		if (!item) throw new CandidateViewError("candidate view entry is missing or moved");
 		if (entry.mode === "120000") {
 			if (!item.isSymbolicLink()) throw new CandidateViewError("candidate view symlink is unsafe or changed");
-		} else if (!item.isFile() || item.isSymbolicLink() || (item.mode & 0o222) !== 0 || ((item.mode & 0o111) !== (entry.mode === "100755" ? 0o111 : 0))) {
+		} else if (!item.isFile() || item.isSymbolicLink() || (item.mode & 0o222) !== 0 || !hasExpectedExecutableBits(item.mode, entry.mode, platform)) {
 			throw new CandidateViewError("candidate view entry is unsafe, writable, or has a changed mode");
 		}
 		const actualHash = entryContentHash(root, entry);
@@ -850,30 +1119,126 @@ function assertRecordSafe(record: CandidateViewRecord): void {
 export class CandidateViewRegistry {
 	private readonly records = new Map<string, CandidateViewRecord>();
 	private readonly gitExecutor: CandidateGitExecutor;
-	constructor(gitExecutor: CandidateGitExecutor = defaultCandidateGitExecutor) {
+	private readonly platform: NodeJS.Platform;
+	constructor(gitExecutor: CandidateGitExecutor = defaultCandidateGitExecutor, platform: NodeJS.Platform = process.platform) {
 		this.gitExecutor = gitExecutor;
+		this.platform = platform;
 	}
+	// Lifecycle state is scoped to the canonical target worktree as well as the
+	// provider lineage. Lineage text is repository-local and may legitimately be
+	// identical in two repositories owned by one Pi session.
 	private readonly lineages = new Map<string, string>();
 	private readonly projections = new Map<string, FrozenCandidateProjection>();
 	private readonly replays = new Map<string, string>();
-	private current: { lineageId: string; token: string } | undefined;
+	private readonly current = new Map<string, { lineageId: string; token: string }>();
 	// The last dispatch-binding hydration that was attempted and failed. A
 	// swallowed hydration failure is its own defect (field report 2026-08-16):
 	// without it the later dispatch refusal claims no binding was ever
 	// available instead of naming the attempt and its typed cause.
-	private lastHydrationFailure: { lineageId: string; reason: string; message: string } | undefined;
+	private readonly lastHydrationFailures = new Map<string, { lineageId: string; reason: string; message: string }>();
+
+	private canonicalRoot(contributorRoot: string): string {
+		try {
+			return realpathSync(contributorRoot);
+		} catch {
+			throw new CandidateViewError("candidate contributor root could not be resolved", "contributor-root-unresolvable");
+		}
+	}
+
+	private lineageKey(contributorRoot: string, lineageId: string): string {
+		return `${this.canonicalRoot(contributorRoot)}\u0000${lineageId}`;
+	}
+
+	private replayKey(contributorRoot: string, replayKey: string): string {
+		return `${this.canonicalRoot(contributorRoot)}\u0000${replayKey}`;
+	}
+
+	private uniqueKey(
+		entries: ReadonlyMap<string, unknown>,
+		lineageId: string,
+		contributorRoot: string | undefined,
+	): string | undefined {
+		if (contributorRoot !== undefined) {
+			const key = this.lineageKey(contributorRoot, lineageId);
+			return entries.has(key) ? key : undefined;
+		}
+		const suffix = `\u0000${lineageId}`;
+		const matches = [...entries.keys()].filter((key) => key.endsWith(suffix));
+		if (matches.length === 0) return undefined;
+		if (matches.length !== 1) {
+			throw new CandidateViewError(`candidate lifecycle lineage ${lineageId} is ambiguous across target roots; pass an explicit workspaceRoot`, "lineage-root-ambiguous");
+		}
+		return matches[0]!;
+	}
+
+	private requireKey(
+		entries: ReadonlyMap<string, unknown>,
+		lineageId: string,
+		contributorRoot: string | undefined,
+		missing: string,
+	): string {
+		return this.uniqueKey(entries, lineageId, contributorRoot)
+			?? (() => { throw new CandidateViewError(missing); })();
+	}
+
+	/**
+	 * Returns the one active target root bound to a lineage, or undefined.
+	 * Throws when that lineage is bound across multiple roots; callers must pass
+	 * an explicit workspaceRoot to resolve the ambiguity.
+	 */
+	resolveWorkspaceRoot(lineageId: string): string | undefined {
+		const key = this.uniqueKey(this.lineages, lineageId, undefined);
+		return key === undefined ? undefined : key.slice(0, key.lastIndexOf("\u0000"));
+	}
+
+	assertWorkspaceRoot(lineageId: string, contributorRoot: string): void {
+		const root = this.canonicalRoot(contributorRoot);
+		const exactKey = this.lineageKey(root, lineageId);
+		if (this.lineages.has(exactKey)) {
+			this.assertLineageRootIdentity(lineageId, root);
+			return;
+		}
+		const bound = this.resolveWorkspaceRoot(lineageId);
+		if (bound !== undefined) {
+			throw new CandidateViewError(`candidate lifecycle lineage ${lineageId} is bound to ${bound}, not the requested workspaceRoot ${root}`, "lineage-root-drift");
+		}
+	}
+
+	private assertLineageRootIdentity(lineageId: string, contributorRoot: string): void {
+		const key = this.lineageKey(contributorRoot, lineageId);
+		const token = this.lineages.get(key);
+		const record = token === undefined ? undefined : this.records.get(token);
+		if (record !== undefined) assertRecordSafe(record, this.platform);
+	}
 
 	create(request: CreateCandidateViewRequest): CandidateView {
 		return this.createOrReuse(request);
 	}
 
+	sweepOrphans(contributorRoot: string): void {
+		try {
+			const cwd = realpathSync(contributorRoot);
+			const common = realpathSync(resolve(cwd, git(cwd, ["rev-parse", "--git-common-dir"], process.env, this.gitExecutor)));
+			sweepCandidateOwners(common, (args) => git(common, args, process.env, this.gitExecutor), makeWritableForCleanup, this.platform);
+		} catch { /* Non-repositories and unavailable ownership are preserved. */ }
+	}
+
+	cleanupAll(): void {
+		for (const token of [...this.records.keys()]) {
+			try { this.cleanup(token); } catch { /* Continue other owned views; failed records remain retryable. */ }
+		}
+	}
+
 	createOrReuse(request: CreateCandidateViewRequest): CandidateView {
-		const token = request.replayKey === undefined ? undefined : this.replays.get(request.replayKey);
+		const contributorRoot = this.canonicalRoot(request.contributorRoot);
+		const normalizedRequest = { ...request, contributorRoot };
+		const scopedReplayKey = normalizedRequest.replayKey === undefined ? undefined : this.replayKey(contributorRoot, normalizedRequest.replayKey);
+		const token = scopedReplayKey === undefined ? undefined : this.replays.get(scopedReplayKey);
 		const existing = token === undefined ? undefined : this.records.get(token);
-		if (existing) { assertRecordSafe(existing); return this.expose(existing); }
-		const record = materializeCandidateView(request, this.gitExecutor);
+		if (existing) { assertRecordSafe(existing, this.platform); return this.expose(existing); }
+		const record = materializeCandidateView(normalizedRequest, this.gitExecutor, this.platform);
 		this.records.set(record.token, record);
-		if (request.replayKey !== undefined) this.replays.set(request.replayKey, record.token);
+		if (scopedReplayKey !== undefined) this.replays.set(scopedReplayKey, record.token);
 		return this.expose(record);
 	}
 
@@ -883,36 +1248,64 @@ export class CandidateViewRegistry {
 
 	bindCurrent(request: BindCandidateViewRequest): void {
 		const selectedLenses = this.validateSelectedLenses(request.selectedLenses);
-		this.bindRecord(request.token, request.lineageId, selectedLenses);
-		this.current = { lineageId: request.lineageId, token: request.token };
+		const candidate = this.records.get(request.token);
+		const key = candidate === undefined ? undefined : this.lineageKey(candidate.contributorRoot, request.lineageId);
+		const existingToken = key === undefined ? undefined : this.lineages.get(key);
+		// A retried native START for a lineage this controller already bound
+		// (native reports it "resumed") re-materializes a fresh, content-
+		// identical candidate view under a new token before it reaches here.
+		// Rebinding that duplicate to the same lineage key used to fail closed
+		// with "candidate view lineage binding is missing or ambiguous" even
+		// though nothing is actually ambiguous: it is the exact same reviewable
+		// content, re-verified from Git. Discard the redundant duplicate and
+		// keep the already-bound view current instead of failing the retry
+		// (gentle-pi candidate-view rebind defect, ga#4085 / ga#4050).
+		if (candidate !== undefined && existingToken !== undefined && existingToken !== request.token) {
+			const existing = this.records.get(existingToken);
+			let existingSafe = false;
+			if (existing !== undefined && existing.lineageId === request.lineageId) {
+				try { assertRecordSafe(existing, this.platform); existingSafe = true; } catch { existingSafe = false; }
+			}
+			if (existing !== undefined && existingSafe && candidateRecordsShareIdentity(existing, candidate)) {
+				existing.selectedLenses = selectedLenses;
+				this.remove(candidate);
+				this.forget(candidate);
+				this.current.set(existing.contributorRoot, { lineageId: request.lineageId, token: existingToken });
+				return;
+			}
+		}
+		const record = this.bindRecord(request.token, request.lineageId, selectedLenses);
+		this.current.set(record.contributorRoot, { lineageId: request.lineageId, token: request.token });
 	}
 
 	retain(token: string, lineageId: string): void {
-		this.bindRecord(token, lineageId, []);
-		this.current = { lineageId, token };
+		const record = this.bindRecord(token, lineageId, []);
+		this.current.set(record.contributorRoot, { lineageId, token });
 	}
 
 	restoreCurrentFromNativeStart(request: BindCandidateViewRequest): void {
-		if (this.current !== undefined) throw new CandidateViewError("candidate view already has a current lineage binding", "current-binding-already-established");
 		const record = this.records.get(request.token);
 		if (!record || record.lineageId !== undefined) throw new CandidateViewError("native reviewing candidate view is missing or already bound", "authoritative-current-match-missing");
-		assertRecordSafe(record);
+		if (this.current.has(record.contributorRoot)) throw new CandidateViewError("candidate view already has a current lineage binding", "current-binding-already-established");
+		assertRecordSafe(record, this.platform);
 		this.assertCurrentBindingMatchesLiveCandidate(record);
 		this.bindCurrent(request);
 	}
 
-	hasCurrentBinding(): boolean {
-		return this.current !== undefined;
+	hasCurrentBinding(contributorRoot?: string): boolean {
+		return contributorRoot === undefined ? this.current.size > 0 : this.current.has(this.canonicalRoot(contributorRoot));
 	}
 
 	restoreCurrentFromAuthoritativeReviewingStates(
 		contributorRoot: string,
 		states: readonly AuthoritativeReviewingCandidateState[],
 	): void {
-		if (this.current !== undefined) throw new CandidateViewError("candidate view already has a current lineage binding", "current-binding-already-established");
+		const root = this.canonicalRoot(contributorRoot);
+		if (this.current.has(root)) throw new CandidateViewError("candidate view already has a current lineage binding", "current-binding-already-established");
 		if (states.length === 0) throw new CandidateViewError("no authoritative reviewing lineage exactly matches the live candidate", "authoritative-current-match-missing");
 		if (states.length !== 1) throw new CandidateViewError("multiple authoritative reviewing lineages exactly match the live candidate", "authoritative-current-match-ambiguous");
-		const live = materializeCandidateView({ contributorRoot, baseRef: states[0]!.baseCommit, committedOnly: states[0]!.committedOnly === true }, this.gitExecutor);
+		const state = states[0]!;
+		const live = materializeCandidateView({ contributorRoot: root, ...(state.providerBaseTree === undefined ? { baseRef: state.baseCommit } : { providerBaseTree: state.providerBaseTree }), committedOnly: state.committedOnly === true, ...(state.intendedUntracked === undefined ? {} : { intendedUntracked: state.intendedUntracked }) }, this.gitExecutor, this.platform);
 		try {
 			const matches = states.filter((state) => this.matchesAuthoritativeState(live, state));
 			if (matches.length === 0) throw new CandidateViewError("no authoritative reviewing lineage exactly matches the live candidate", "authoritative-current-match-missing");
@@ -921,28 +1314,31 @@ export class CandidateViewRegistry {
 			const selectedLenses = this.validateSelectedLenses(state.selectedLenses);
 			this.records.set(live.token, live);
 			this.bindRecord(live.token, state.lineageId, selectedLenses);
-			this.current = { lineageId: state.lineageId, token: live.token };
+			this.current.set(root, { lineageId: state.lineageId, token: live.token });
 		} catch (error) {
-			if (!this.records.has(live.token)) this.remove(live);
+			this.records.delete(live.token);
+			this.remove(live);
 			throw error;
 		}
 	}
 
 	createCorrected(lineageId: string, contributorRoot: string, replayKey: string): CandidateView {
-		const projection = this.resolveProjection(lineageId, contributorRoot);
-		const existingToken = this.replays.get(replayKey);
+		const root = this.canonicalRoot(contributorRoot);
+		const projection = this.resolveProjection(lineageId, root);
+		const scopedReplayKey = this.replayKey(root, replayKey);
+		const existingToken = this.replays.get(scopedReplayKey);
 		const existing = existingToken === undefined ? undefined : this.records.get(existingToken);
 		if (existing) {
 			if (existing.lineageId !== undefined) throw new CandidateViewError("corrected candidate replay is no longer pending");
-			assertRecordSafe(existing);
+			assertRecordSafe(existing, this.platform);
 			return this.expose(existing);
 		}
-		const record = materializeCandidateView({ contributorRoot, baseRef: projection.baseCommit, committedOnly: projection.committedOnly }, this.gitExecutor);
+		const record = materializeCandidateView({ contributorRoot: root, ...(projection.providerBaseTree === undefined ? { baseRef: projection.baseCommit } : { providerBaseTree: projection.providerBaseTree }), committedOnly: projection.committedOnly, ...(projection.intendedUntracked === undefined ? {} : { intendedUntracked: projection.intendedUntracked }) }, this.gitExecutor, this.platform);
 		try {
 			if (record.baseCommit !== projection.baseCommit || record.baseTree !== projection.baseTree) throw new CandidateViewError("corrected candidate base does not match the frozen genesis base");
 			if (!record.scope.paths.every((path) => projection.paths.includes(path))) throw new CandidateViewError("corrected candidate scope escapes the frozen genesis paths");
 			this.records.set(record.token, record);
-			this.replays.set(replayKey, record.token);
+			this.replays.set(scopedReplayKey, record.token);
 			return this.expose(record);
 		} catch (error) {
 			this.remove(record);
@@ -950,44 +1346,51 @@ export class CandidateViewRegistry {
 		}
 	}
 
-	promoteCorrected(lineageId: string, token: string): void {
+	promoteCorrected(lineageId: string, token: string, contributorRoot?: string): void {
 		const replacement = this.records.get(token);
-		const projection = this.projections.get(lineageId);
-		const currentToken = this.lineages.get(lineageId);
+		const root = contributorRoot === undefined ? replacement?.contributorRoot : this.canonicalRoot(contributorRoot);
+		const key = root === undefined ? undefined : this.uniqueKey(this.projections, lineageId, root);
+		const projection = key === undefined ? undefined : this.projections.get(key);
+		const currentToken = key === undefined ? undefined : this.lineages.get(key);
 		const current = currentToken === undefined ? undefined : this.records.get(currentToken);
-		if (!replacement || replacement.lineageId !== undefined || !projection || (currentToken !== undefined && (!current || current.lineageId !== lineageId))) {
+		if (!replacement || replacement.lineageId !== undefined || !key || !projection || (currentToken !== undefined && (!current || current.lineageId !== lineageId))) {
 			throw new CandidateViewError("corrected candidate replacement is missing or ambiguous");
 		}
-		if (this.current !== undefined && this.current.lineageId !== lineageId) {
+		const currentBinding = this.current.get(root);
+		if (currentBinding !== undefined && currentBinding.lineageId !== lineageId) {
 			throw new CandidateViewError("corrected candidate replacement conflicts with the current lineage binding");
 		}
-		assertRecordSafe(replacement);
-		if (current) assertRecordSafe(current);
+		assertRecordSafe(replacement, this.platform);
+		if (current) assertRecordSafe(current, this.platform);
 		if (
 			replacement.contributorRoot !== projection.contributorRoot ||
 			replacement.baseCommit !== projection.baseCommit ||
 			replacement.baseTree !== projection.baseTree ||
+			replacement.providerBaseTree !== projection.providerBaseTree ||
 			replacement.committedOnly !== projection.committedOnly ||
+			JSON.stringify(replacement.intendedUntracked ?? null) !== JSON.stringify(projection.intendedUntracked ?? null) ||
 			!replacement.scope.paths.every((path) => projection.paths.includes(path))
 		) {
 			throw new CandidateViewError("corrected candidate replacement does not preserve its frozen lineage projection");
 		}
 		replacement.lineageId = lineageId;
 		replacement.selectedLenses = [];
-		this.lineages.set(lineageId, token);
-		for (const [key, pendingToken] of this.replays) if (pendingToken === token) this.replays.delete(key);
-		this.projections.set(lineageId, {
+		this.lineages.set(key, token);
+		for (const [pendingKey, pendingToken] of this.replays) if (pendingToken === token) this.replays.delete(pendingKey);
+		this.projections.set(key, {
 			contributorRoot: replacement.contributorRoot,
 			baseCommit: replacement.baseCommit,
 			baseTree: replacement.baseTree,
+			...(replacement.providerBaseTree === undefined ? {} : { providerBaseTree: replacement.providerBaseTree }),
 			candidateTree: replacement.candidateTree,
 			committedOnly: replacement.committedOnly,
+			intendedUntracked: replacement.intendedUntracked,
 			paths: replacement.scope.paths,
 			modes: replacement.scope.modes,
 			gitlinks: replacement.scope.gitlinks,
 			deletedPaths: replacement.scope.deletedPaths,
 		});
-		this.current = { lineageId, token };
+		this.current.set(root, { lineageId, token });
 		if (current) {
 			this.remove(current);
 			this.forget(current);
@@ -1005,8 +1408,10 @@ export class CandidateViewRegistry {
 			return realpathSync(state.contributorRoot) === record.contributorRoot &&
 				state.baseCommit === record.baseCommit &&
 				state.baseTree === record.baseTree &&
+				state.providerBaseTree === record.providerBaseTree &&
 				state.candidateTree === record.candidateTree &&
 				(state.committedOnly ?? false) === record.committedOnly &&
+				(state.intendedUntracked === undefined || JSON.stringify(state.intendedUntracked) === JSON.stringify(record.intendedUntracked)) &&
 				JSON.stringify(state.paths) === JSON.stringify(record.scope.paths) &&
 				JSON.stringify(state.modes) === JSON.stringify(record.scope.modes) &&
 				gitlinkMapsEqual(state.gitlinks ?? {}, record.scope.gitlinks) &&
@@ -1016,46 +1421,54 @@ export class CandidateViewRegistry {
 		}
 	}
 
-	private bindRecord(token: string, lineageId: string, selectedLenses: readonly ReviewLens[]): void {
+	private bindRecord(token: string, lineageId: string, selectedLenses: readonly ReviewLens[]): CandidateViewRecord {
 		const record = this.records.get(token);
-		if (!record || record.lineageId !== undefined || this.lineages.has(lineageId)) throw new CandidateViewError("candidate view lineage binding is missing or ambiguous");
-		assertRecordSafe(record);
+		const key = record === undefined ? undefined : this.lineageKey(record.contributorRoot, lineageId);
+		if (!record || record.lineageId !== undefined || !key || this.lineages.has(key)) throw new CandidateViewError("candidate view lineage binding is missing or ambiguous");
+		assertRecordSafe(record, this.platform);
 		record.lineageId = lineageId;
 		record.selectedLenses = selectedLenses;
-		this.lineages.set(lineageId, record.token);
-		this.projections.set(lineageId, {
+		this.lineages.set(key, record.token);
+		this.projections.set(key, {
 			contributorRoot: record.contributorRoot,
 			baseCommit: record.baseCommit,
 			baseTree: record.baseTree,
+			...(record.providerBaseTree === undefined ? {} : { providerBaseTree: record.providerBaseTree }),
 			candidateTree: record.candidateTree,
 			committedOnly: record.committedOnly,
+			intendedUntracked: record.intendedUntracked,
 			paths: record.scope.paths,
 			modes: record.scope.modes,
 			gitlinks: record.scope.gitlinks,
 			deletedPaths: record.scope.deletedPaths,
 		});
-		for (const [key, pendingToken] of this.replays) if (pendingToken === token) this.replays.delete(key);
+		for (const [replayKey, pendingToken] of this.replays) if (pendingToken === token) this.replays.delete(replayKey);
+		return record;
 	}
 
-	hasProjection(lineageId: string): boolean {
-		return this.projections.has(lineageId);
+	hasProjection(lineageId: string, contributorRoot?: string): boolean {
+		return this.uniqueKey(this.projections, lineageId, contributorRoot) !== undefined;
 	}
 
 	restoreProjection(lineageId: string, contributorRoot: string, baseCommit: string, baseTree: string, candidateTree: string, paths: readonly string[]): void {
-		const root = realpathSync(contributorRoot);
+		const root = this.canonicalRoot(contributorRoot);
+		const key = this.lineageKey(root, lineageId);
 		const base = resolveCandidateBase(root, baseCommit, process.env, this.gitExecutor);
-		if (!lineageId || this.projections.has(lineageId) || base.commit !== baseCommit || base.tree !== baseTree || !isFullCommitId(candidateTree) || paths.some((path) => !isSafeCandidatePath(path)) || new Set(paths).size !== paths.length) throw new CandidateViewError("frozen correction projection is invalid or already restored");
-		this.projections.set(lineageId, { contributorRoot: root, baseCommit, baseTree, candidateTree, committedOnly: false, paths: [...paths], modes: {}, gitlinks: {}, deletedPaths: [] });
+		if (!lineageId || this.projections.has(key) || base.commit !== baseCommit || base.tree !== baseTree || !isFullCommitId(candidateTree) || paths.some((path) => !isSafeCandidatePath(path)) || new Set(paths).size !== paths.length) throw new CandidateViewError("frozen correction projection is invalid or already restored");
+		this.projections.set(key, { contributorRoot: root, baseCommit, baseTree, candidateTree, committedOnly: false, paths: [...paths], modes: {}, gitlinks: {}, deletedPaths: [] });
 	}
 
-	restoreProjectionFromNative(lineageId: string, contributorRoot: string, descriptor: NativeCandidateProjectionDescriptor): void {
-		const root = realpathSync(contributorRoot);
-		if (!lineageId || this.projections.has(lineageId) || !isFullCommitId(descriptor.baseTree) || !isFullCommitId(descriptor.currentCandidateTree)) throw new CandidateViewError("native frozen projection is invalid or already restored");
+	restoreProjectionFromNative(lineageId: string, contributorRoot: string, descriptor: NativeCandidateProjectionDescriptor, providerBaseTree?: string): void {
+		const root = this.canonicalRoot(contributorRoot);
+		const key = this.lineageKey(root, lineageId);
+		if (!lineageId || this.projections.has(key) || !isFullCommitId(descriptor.baseTree) || !isFullCommitId(descriptor.currentCandidateTree)) throw new CandidateViewError("native frozen projection is invalid or already restored");
 		if (descriptor.paths.some((path) => !isSafeCandidatePath(path)) || new Set(descriptor.paths).size !== descriptor.paths.length) throw new CandidateViewError("native frozen projection paths are invalid");
 		if (descriptor.intendedUntracked.some((path) => !descriptor.paths.includes(path)) || new Set(descriptor.intendedUntracked).size !== descriptor.intendedUntracked.length) throw new CandidateViewError("native intended-untracked projection is invalid");
 		const head = resolveCandidateBase(root, "HEAD", process.env, this.gitExecutor);
-		const base = head.tree === descriptor.baseTree ? head : resolveCandidateBaseTree(root, descriptor.baseTree, this.gitExecutor);
+		if (providerBaseTree !== undefined && providerBaseTree !== descriptor.baseTree) throw new CandidateViewError("provider base tree does not match the native frozen projection", "provider-base-tree-invalid");
+		const base = head.tree === descriptor.baseTree ? head : providerBaseTree === undefined ? resolveCandidateBaseTree(root, descriptor.baseTree, this.gitExecutor) : { commit: head.commit, tree: providerBaseTree };
 		const committedOnly = head.tree === descriptor.currentCandidateTree && base.tree !== head.tree;
+		if (providerBaseTree !== undefined && !committedOnly) throw new CandidateViewError("provider base tree requires a committed frozen projection", "provider-base-tree-invalid");
 		if (!committedOnly && head.tree !== descriptor.baseTree) throw new CandidateViewError("native projection base no longer matches HEAD");
 		// Native `staged` covers both a committed HEAD range and the exact current
 		// index over HEAD. Re-derive the latter from Git instead of trusting the
@@ -1079,12 +1492,14 @@ export class CandidateViewRegistry {
 		} else if (JSON.stringify(scope.paths) !== JSON.stringify([...descriptor.paths].sort())) {
 			throw new CandidateViewError("native projection paths do not match Git content");
 		}
-		this.projections.set(lineageId, {
+		this.projections.set(key, {
 			contributorRoot: root,
 			baseCommit: base.commit,
 			baseTree: descriptor.baseTree,
+			...(providerBaseTree === undefined ? {} : { providerBaseTree }),
 			candidateTree: descriptor.currentCandidateTree,
 			committedOnly,
+			intendedUntracked: Object.freeze([...descriptor.intendedUntracked]),
 			paths: scope.paths,
 			modes: scope.modes,
 			gitlinks: scope.gitlinks,
@@ -1112,31 +1527,47 @@ export class CandidateViewRegistry {
 	 * here on purpose — the lenses that consumed it finished before the
 	 * correction.
 	 */
-	rebindForFinalizeFromNative(lineageId: string, contributorRoot: string, descriptor: NativeCandidateProjectionDescriptor): CandidateView {
-		const staleToken = this.lineages.get(lineageId);
-		const stale = staleToken === undefined ? undefined : this.records.get(staleToken);
-		this.projections.delete(lineageId);
-		if (stale !== undefined) {
-			this.remove(stale);
-			this.forget(stale);
-		}
-		return this.restoreForFinalizeFromNative(lineageId, contributorRoot, descriptor);
+	rebindForFinalizeFromNative(lineageId: string, contributorRoot: string, descriptor: NativeCandidateProjectionDescriptor, providerBaseTree?: string): CandidateView {
+		return this.restoreForFinalizeFromNative(lineageId, contributorRoot, descriptor, providerBaseTree);
 	}
 
-	restoreForFinalizeFromNative(lineageId: string, contributorRoot: string, descriptor: NativeCandidateProjectionDescriptor): CandidateView {
-		this.restoreProjectionFromNative(lineageId, contributorRoot, descriptor);
-		const projection = this.resolveProjection(lineageId, contributorRoot);
-		const record = materializeCandidateView({ contributorRoot, baseRef: projection.baseCommit, committedOnly: projection.committedOnly }, this.gitExecutor);
+	/**
+	 * Restores a lineage's FINALIZE binding (gentle-pi #185): the stale entry
+	 * is only detached, not destroyed, so a failed restore can undo it.
+	 */
+	restoreForFinalizeFromNative(lineageId: string, contributorRoot: string, descriptor: NativeCandidateProjectionDescriptor, providerBaseTree?: string): CandidateView {
+		const root = this.canonicalRoot(contributorRoot);
+		const key = this.lineageKey(root, lineageId);
+		const staleToken = this.lineages.get(key), staleProjection = this.projections.get(key);
+		this.lineages.delete(key); this.projections.delete(key);
+		let projectionRestored = false;
+		let record: CandidateViewRecord | undefined;
 		try {
-			if (record.baseTree !== projection.baseTree || record.candidateTree !== projection.candidateTree || JSON.stringify(record.scope.paths) !== JSON.stringify(projection.paths)) {
-				throw new CandidateViewError("live candidate does not match the native frozen projection");
+			this.restoreProjectionFromNative(lineageId, root, descriptor, providerBaseTree);
+			projectionRestored = true;
+			const projection = this.resolveProjection(lineageId, root);
+			const matchesProjection = (candidate: CandidateViewRecord): boolean => candidate.baseTree === projection.baseTree && candidate.candidateTree === projection.candidateTree && JSON.stringify(candidate.scope.paths) === JSON.stringify(projection.paths);
+			const emptyIntendedUntracked = projection.intendedUntracked?.length === 0;
+			record = materializeCandidateView({ contributorRoot: root, ...(projection.providerBaseTree === undefined ? { baseRef: projection.baseCommit } : { providerBaseTree: projection.providerBaseTree }), committedOnly: projection.committedOnly, ...(!emptyIntendedUntracked && projection.intendedUntracked !== undefined ? { intendedUntracked: projection.intendedUntracked } : {}) }, this.gitExecutor, this.platform);
+			if (!matchesProjection(record) && emptyIntendedUntracked) {
+				this.remove(record);
+				record = undefined;
+				record = materializeCandidateView({ contributorRoot: root, ...(projection.providerBaseTree === undefined ? { baseRef: projection.baseCommit } : { providerBaseTree: projection.providerBaseTree }), committedOnly: projection.committedOnly, intendedUntracked: [] }, this.gitExecutor, this.platform);
 			}
+			if (!matchesProjection(record)) throw new CandidateViewError("live candidate does not match the native frozen projection");
 			this.records.set(record.token, record);
 			this.bindRecord(record.token, lineageId, []);
+			const stale = staleToken === undefined ? undefined : this.records.get(staleToken);
+			if (stale !== undefined) { this.remove(stale); this.forget(stale); }
 			return this.expose(record);
 		} catch (error) {
-			this.projections.delete(lineageId);
-			this.remove(record);
+			if (projectionRestored) this.projections.delete(key);
+			if (record !== undefined) {
+				this.forget(record);
+				this.remove(record);
+			}
+			if (staleToken !== undefined) this.lineages.set(key, staleToken);
+			if (staleProjection !== undefined) this.projections.set(key, staleProjection);
 			throw error;
 		}
 	}
@@ -1150,56 +1581,66 @@ export class CandidateViewRegistry {
 	 * dispatch-facing current binding is established with the provider-named
 	 * pending lenses.
 	 */
-	restoreCurrentForDispatchFromNative(lineageId: string, contributorRoot: string, descriptor: NativeCandidateProjectionDescriptor, selectedLenses: readonly string[]): void {
-		if (this.current !== undefined) throw new CandidateViewError("candidate view already has a current lineage binding", "current-binding-already-established");
+	restoreCurrentForDispatchFromNative(lineageId: string, contributorRoot: string, descriptor: NativeCandidateProjectionDescriptor, selectedLenses: readonly string[], providerBaseTree?: string): void {
+		const root = this.canonicalRoot(contributorRoot);
+		const key = this.lineageKey(root, lineageId);
+		if (this.current.has(root)) throw new CandidateViewError("candidate view already has a current lineage binding", "current-binding-already-established");
+		let projectionRestored = false;
+		let record: CandidateViewRecord | undefined;
 		try {
 			const lenses = this.validateSelectedLenses(selectedLenses);
-			this.restoreProjectionFromNative(lineageId, contributorRoot, descriptor);
-			const projection = this.resolveProjection(lineageId, contributorRoot);
-			const record = materializeCandidateView({ contributorRoot, baseRef: projection.baseCommit, committedOnly: projection.committedOnly }, this.gitExecutor);
-			try {
-				if (record.baseTree !== projection.baseTree || record.candidateTree !== projection.candidateTree || JSON.stringify(record.scope.paths) !== JSON.stringify(projection.paths)) {
-					throw new CandidateViewError("live candidate does not match the native frozen projection");
-				}
-				this.records.set(record.token, record);
-				this.bindRecord(record.token, lineageId, lenses);
-				this.current = { lineageId, token: record.token };
-			} catch (error) {
-				this.projections.delete(lineageId);
-				this.records.delete(record.token);
-				this.remove(record);
-				throw error;
+			// A fresh STATUS descriptor alone cannot assert provider-tree provenance.
+			// Without a separately authenticated offer, restoreProjectionFromNative
+			// resolves only its existing commit-backed or live-HEAD path.
+			this.restoreProjectionFromNative(lineageId, root, descriptor, providerBaseTree);
+			projectionRestored = true;
+			const projection = this.resolveProjection(lineageId, root);
+			record = materializeCandidateView({ contributorRoot: root, ...(projection.providerBaseTree === undefined ? { baseRef: projection.baseCommit } : { providerBaseTree: projection.providerBaseTree }), committedOnly: projection.committedOnly, ...(projection.intendedUntracked === undefined ? {} : { intendedUntracked: projection.intendedUntracked }) }, this.gitExecutor, this.platform);
+			if (record.baseTree !== projection.baseTree || record.candidateTree !== projection.candidateTree || JSON.stringify(record.scope.paths) !== JSON.stringify(projection.paths)) {
+				throw new CandidateViewError("live candidate does not match the native frozen projection");
 			}
-			this.lastHydrationFailure = undefined;
+			this.records.set(record.token, record);
+			this.bindRecord(record.token, lineageId, lenses);
+			this.current.set(root, { lineageId, token: record.token });
+			this.lastHydrationFailures.delete(root);
 		} catch (error) {
-			this.lastHydrationFailure = {
+			if (projectionRestored) this.projections.delete(key);
+			if (record !== undefined) {
+				this.forget(record);
+				this.remove(record);
+			}
+			this.lastHydrationFailures.set(root, {
 				lineageId,
 				reason: error instanceof CandidateViewError ? error.reason : "candidate-view-invalid",
 				message: error instanceof Error ? error.message : String(error),
-			};
+			});
 			throw error;
 		}
 	}
 
 	resolveProjection(lineageId: string, contributorRoot: string): FrozenCandidateProjection {
-		const projection = this.projections.get(lineageId);
-		if (!projection || realpathSync(contributorRoot) !== projection.contributorRoot) {
-			throw new CandidateViewError("candidate projection is missing, ambiguous, or belongs to a different contributor root");
-		}
+		const key = this.lineageKey(contributorRoot, lineageId);
+		const projection = this.projections.get(key);
+		if (!projection) throw new CandidateViewError("candidate projection is missing, ambiguous, or belongs to a different contributor root");
+		this.assertLineageRootIdentity(lineageId, contributorRoot);
 		return projection;
 	}
 
-	resolveForLens(lineageId: string, lens: string): CandidateView {
-		const token = this.lineages.get(lineageId);
+	resolveForLens(lineageId: string, lens: string, contributorRoot?: string): CandidateView {
+		const key = this.requireKey(this.lineages, lineageId, contributorRoot, "candidate view context is missing, ambiguous, stale, or lens-unselected");
+		const token = this.lineages.get(key);
 		const record = token === undefined ? undefined : this.records.get(token);
 		if (!record || record.lineageId !== lineageId || !record.selectedLenses?.includes(lens as ReviewLens)) throw new CandidateViewError("candidate view context is missing, ambiguous, stale, or lens-unselected");
-		assertRecordSafe(record);
+		assertRecordSafe(record, this.platform);
 		return this.expose(record);
 	}
 
-	currentLineageId(): string {
-		if (this.current === undefined) {
-			const failure = this.lastHydrationFailure;
+	private currentBinding(contributorRoot?: string): { root: string; lineageId: string; token: string } {
+		if (contributorRoot !== undefined) {
+			const root = this.canonicalRoot(contributorRoot);
+			const binding = this.current.get(root);
+			if (binding !== undefined) return { root, ...binding };
+			const failure = this.lastHydrationFailures.get(root);
 			if (failure !== undefined) {
 				throw new CandidateViewError(
 					`review subagent dispatch has no current controller-owned candidate view lineage binding: hydration for lineage ${failure.lineageId} was attempted from authoritative native status and failed (${failure.reason}): ${failure.message}`,
@@ -1208,31 +1649,47 @@ export class CandidateViewRegistry {
 			}
 			throw new CandidateViewError("review subagent dispatch has no current controller-owned candidate view lineage binding", "current-binding-missing");
 		}
-		return this.current.lineageId;
+		if (this.current.size !== 1) {
+			if (this.current.size > 1) throw new CandidateViewError("review subagent dispatch has multiple current lineage bindings across target roots; pass an explicit workspaceRoot", "current-binding-root-ambiguous");
+			const failure = [...this.lastHydrationFailures.values()][0];
+			if (failure !== undefined) {
+				throw new CandidateViewError(
+					`review subagent dispatch has no current controller-owned candidate view lineage binding: hydration for lineage ${failure.lineageId} was attempted from authoritative native status and failed (${failure.reason}): ${failure.message}`,
+					"current-binding-hydration-failed",
+				);
+			}
+			throw new CandidateViewError("review subagent dispatch has no current controller-owned candidate view lineage binding", "current-binding-missing");
+		}
+		const [root, binding] = this.current.entries().next().value as [string, { lineageId: string; token: string }];
+		return { root, ...binding };
+	}
+
+	currentLineageId(contributorRoot?: string): string {
+		return this.currentBinding(contributorRoot).lineageId;
 	}
 
 	/** The last failed dispatch-binding hydration, for controller envelopes. */
-	lastDispatchHydrationFailure(): Readonly<{ lineageId: string; reason: string; message: string }> | undefined {
-		return this.lastHydrationFailure;
+	lastDispatchHydrationFailure(contributorRoot?: string): Readonly<{ lineageId: string; reason: string; message: string }> | undefined {
+		if (contributorRoot !== undefined) return this.lastHydrationFailures.get(this.canonicalRoot(contributorRoot));
+		return this.lastHydrationFailures.size === 1 ? [...this.lastHydrationFailures.values()][0] : undefined;
 	}
 
-	resolveCurrentForLens(lens: string): CandidateView {
-		return this.resolveCurrentForLenses([lens])[0]!;
+	resolveCurrentForLens(lens: string, contributorRoot?: string): CandidateView {
+		return this.resolveCurrentForLenses([lens], contributorRoot)[0]!;
 	}
 
-	resolveCurrentForLenses(lenses: readonly string[]): CandidateView[] {
-		const lineageId = this.currentLineageId();
-		const token = this.current?.token;
-		const record = token === undefined ? undefined : this.records.get(token);
-		if (!record || record.lineageId !== lineageId || this.lineages.get(lineageId) !== token) throw new CandidateViewError("review subagent dispatch current lineage binding is stale or ambiguous", "current-binding-stale");
-		assertRecordSafe(record);
+	resolveCurrentForLenses(lenses: readonly string[], contributorRoot?: string): CandidateView[] {
+		const current = this.currentBinding(contributorRoot);
+		const record = this.records.get(current.token);
+		if (!record || record.lineageId !== current.lineageId || this.lineages.get(this.lineageKey(current.root, current.lineageId)) !== current.token) throw new CandidateViewError("review subagent dispatch current lineage binding is stale or ambiguous", "current-binding-stale");
+		assertRecordSafe(record, this.platform);
 		this.assertCurrentBindingMatchesLiveCandidate(record);
 		if (!lenses.every((lens) => record.selectedLenses?.includes(lens as ReviewLens))) throw new CandidateViewError("candidate view context is missing, ambiguous, stale, or lens-unselected", "current-binding-lens-unselected");
 		return lenses.map(() => this.expose(record));
 	}
 
 	private assertCurrentBindingMatchesLiveCandidate(record: CandidateViewRecord): void {
-		const live = materializeCandidateView({ contributorRoot: record.contributorRoot, baseRef: record.baseCommit, committedOnly: record.committedOnly }, this.gitExecutor);
+		const live = materializeCandidateView({ contributorRoot: record.contributorRoot, ...(record.providerBaseTree === undefined ? { baseRef: record.baseCommit } : { providerBaseTree: record.providerBaseTree }), committedOnly: record.committedOnly, ...(record.intendedUntracked === undefined ? {} : { intendedUntracked: record.intendedUntracked }) }, this.gitExecutor, this.platform);
 		try {
 			if (
 				live.baseCommit !== record.baseCommit ||
@@ -1249,11 +1706,12 @@ export class CandidateViewRegistry {
 		}
 	}
 
-	resolveForFinalize(lineageId: string): CandidateView {
-		const token = this.lineages.get(lineageId);
+	resolveForFinalize(lineageId: string, contributorRoot?: string): CandidateView {
+		const key = this.requireKey(this.lineages, lineageId, contributorRoot, "candidate view context is missing or ambiguous for FINALIZE");
+		const token = this.lineages.get(key);
 		const record = token === undefined ? undefined : this.records.get(token);
 		if (!record || record.lineageId !== lineageId) throw new CandidateViewError("candidate view context is missing or ambiguous for FINALIZE");
-		assertRecordSafe(record);
+		assertRecordSafe(record, this.platform);
 		return this.expose(record);
 	}
 
@@ -1264,45 +1722,50 @@ export class CandidateViewRegistry {
 		this.forget(record);
 	}
 
-	cleanupTerminal(lineageId: string, state: string): void {
+	cleanupTerminal(lineageId: string, state: string, contributorRoot?: string): void {
 		if (state !== "approved" && state !== "escalated") return;
-		const token = this.lineages.get(lineageId); if (token) this.cleanup(token);
-		if (state === "escalated") this.projections.delete(lineageId);
+		const key = this.uniqueKey(this.lineages, lineageId, contributorRoot);
+		const token = key === undefined ? undefined : this.lineages.get(key);
+		if (token) this.cleanup(token);
+		if (state === "escalated" && key !== undefined) this.projections.delete(key);
 	}
 
 	private remove(record: CandidateViewRecord): void {
 		if (!isWithin(record.parent, record.root)) throw new CandidateViewError("candidate view cleanup escaped its owned parent");
-		try { makeWritableForCleanup(record.root); } catch {}
-		try { git(record.contributorRoot, ["worktree", "remove", "--force", record.root], process.env, record.gitExecutor); } catch {
-			try { makeWritableForCleanup(record.root); } catch {}
-			rmSync(record.root, { recursive: true, force: true });
-		}
+		removeCandidateOwner(record.owner, (args) => git(record.commonDir, args, process.env, record.gitExecutor), makeWritableForCleanup, false, this.platform);
 	}
 
 	private forget(record: CandidateViewRecord): void {
 		this.records.delete(record.token);
-		if (record.lineageId && this.lineages.get(record.lineageId) === record.token) this.lineages.delete(record.lineageId);
-		if (this.current?.token === record.token) this.current = undefined;
-		for (const [key, pendingToken] of this.replays) if (pendingToken === record.token) this.replays.delete(key);
+		if (record.lineageId) {
+			const key = this.lineageKey(record.contributorRoot, record.lineageId);
+			if (this.lineages.get(key) === record.token) this.lineages.delete(key);
+		}
+		if (this.current.get(record.contributorRoot)?.token === record.token) this.current.delete(record.contributorRoot);
+		for (const [replayKey, pendingToken] of this.replays) if (pendingToken === record.token) this.replays.delete(replayKey);
 	}
 
-	consumeProjection(lineageId: string): void {
-		this.projections.delete(lineageId);
+	consumeProjection(lineageId: string, contributorRoot?: string): void {
+		const key = this.uniqueKey(this.projections, lineageId, contributorRoot);
+		if (key !== undefined) this.projections.delete(key);
 	}
 
 	private expose(record: CandidateViewRecord): CandidateView {
 		return {
 			token: record.token,
 			root: record.root,
+			contributorRoot: record.contributorRoot,
 			baseCommit: record.baseCommit,
 			baseTree: record.baseTree,
+			...(record.providerBaseTree === undefined ? {} : { providerBaseTree: record.providerBaseTree }),
 			candidateTree: record.candidateTree,
 			committedOnly: record.committedOnly,
+			intendedUntracked: record.intendedUntracked,
 			paths: record.scope.paths,
 			modes: record.scope.modes,
 			gitlinks: record.scope.gitlinks,
 			deletedPaths: record.scope.deletedPaths,
-			verify: () => assertRecordSafe(record),
+			verify: () => assertRecordSafe(record, this.platform),
 			cleanup: () => this.cleanup(record.token),
 		};
 	}
@@ -1435,7 +1898,7 @@ export function decodeCandidateContextManifest(encoded: string, sha256: string):
 	if (actualSha256 !== sha256) throw new CandidateViewError("candidate context manifest integrity check failed", "candidate-context-manifest-integrity");
 	const text = bytes.toString("utf8");
 	if (!Buffer.from(text, "utf8").equals(bytes)) return invalidCandidateContextManifest("candidate context manifest is not valid UTF-8");
-	if (gzipSync(bytes, { mtime: 0 }).toString("base64url") !== encoded) {
+	if (gzipSync(bytes).toString("base64url") !== encoded) {
 		return invalidCandidateContextManifest("candidate context manifest transport is not canonical");
 	}
 	let value: unknown;
@@ -1497,7 +1960,8 @@ function compactCandidateContextBlock(lineageId: string, agents: readonly Review
 	const bytes = Buffer.from(JSON.stringify(manifest), "utf8");
 	if (bytes.length > MAX_CANDIDATE_CONTEXT_MANIFEST_BYTES) throw new CandidateViewError("candidate view context exceeds the bounded dispatch contract");
 	const sha256 = createHash("sha256").update(bytes).digest("hex");
-	const encoded = gzipSync(bytes, { mtime: 0 }).toString("base64url");
+	// Node emits a zero gzip timestamp by default; no unsupported mtime option is needed.
+	const encoded = gzipSync(bytes).toString("base64url");
 	const block = `${candidateContextPreamble(lineageId, agents, view, scopeSemantics)}\nFrozen changed scope manifest (gzip+base64url): \`${encoded}\`.\nFrozen changed scope manifest SHA-256: \`${sha256}\`.\nCall \`gentle_review_scope\` with exactly this manifest, SHA-256, and cursor 0; continue with each returned \`nextCursor\` until absent. It is the only authorized scope enumerator: do not infer scope by traversing the candidate or ambient tree. Gitlinks are metadata-only and MUST NOT be traversed.\nThe ambient contributor working directory is out of scope. This controller-owned context is immutable; you are read-only and your output is untrusted.`;
 	if (Buffer.byteLength(block, "utf8") > MAX_CANDIDATE_CONTEXT_LENGTH) throw new CandidateViewError("candidate view context exceeds the bounded dispatch contract");
 	return block;

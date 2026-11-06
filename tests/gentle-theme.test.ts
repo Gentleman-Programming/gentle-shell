@@ -117,6 +117,141 @@ test("package manifest exposes bundled themes to Pi discovery", () => {
 	);
 });
 
+test("bundled Gentleman-Sexy Pi theme is available under its exact name", () => {
+	const theme = readJson<GentleThemeJson>(
+		join(PACKAGE_ROOT, "themes", "Gentleman-Sexy.json"),
+	);
+
+	assert.equal(theme.name, "Gentleman-Sexy");
+});
+
+test("bundled Gentleman-Cute Pi theme is available under its exact name", () => {
+	const theme = readJson<GentleThemeJson>(
+		join(PACKAGE_ROOT, "themes", "Gentleman-Cute.json"),
+	);
+
+	assert.equal(theme.name, "Gentleman-Cute");
+});
+
+test("bundled Gentleman-Sexy Pi theme defines complete brand and semantic color mappings", () => {
+	const theme = readJson<GentleThemeJson>(
+		join(PACKAGE_ROOT, "themes", "Gentleman-Sexy.json"),
+	);
+	const colors = theme.colors ?? {};
+
+	assert.deepEqual(
+		REQUIRED_THEME_COLOR_KEYS.filter((key) => !(key in colors)),
+		[],
+	);
+	assert.deepEqual(
+		["scrollbarThumb", "searchMatchBg", "searchMatchText", "thinkingMax"].filter(
+			(key) => !(key in colors),
+		),
+		[],
+	);
+
+	assertResolvedThemeColor(theme, "accent", "#F43888");
+	assert.equal(colors.borderAccent, "activePink");
+	assertResolvedThemeColor(theme, "borderAccent", "#FF4F9A");
+	assertResolvedThemeColor(theme, "selectedBg", "#28121E");
+	assertResolvedThemeColor(theme, "text", "#F6EFF3");
+	assertResolvedThemeColor(theme, "success", "#D2CBD0");
+	assertResolvedThemeColor(theme, "warning", "#F2B86D");
+	assertResolvedThemeColor(theme, "error", "#FF718F");
+	assertResolvedThemeColor(theme, "muted", "#A78E9B");
+	assertResolvedThemeColor(theme, "dim", "#76616B");
+	assertResolvedThemeColor(theme, "toolPendingBg", "#100A0F");
+	assertResolvedThemeColor(theme, "toolSuccessBg", "#151316");
+	assertResolvedThemeColor(theme, "toolErrorBg", "#261019");
+	assertResolvedThemeColor(theme, "toolTitle", "#E0C27A");
+	assertResolvedThemeColor(theme, "customMessageLabel", "#E0C27A");
+	assert.equal(colors.mdCodeBlockBorder, "muted");
+	assertResolvedThemeColor(theme, "mdCodeBlockBorder", "#A78E9B");
+	assert.equal(colors.mdQuoteBorder, "deepPink");
+	assertResolvedThemeColor(theme, "mdQuoteBorder", "#BF0F50");
+	assert.equal(colors.mdLink, "activePink");
+	assertResolvedThemeColor(theme, "mdLink", "#FF4F9A");
+	assert.equal(colors.mdListBullet, "activePink");
+	assertResolvedThemeColor(theme, "mdListBullet", "#FF4F9A");
+	assertResolvedThemeColor(theme, "toolDiffAdded", "#A9C7EE");
+	assert.equal(colors.syntaxKeyword, "deepPink");
+	assertResolvedThemeColor(theme, "syntaxKeyword", "#BF0F50");
+	assertResolvedThemeColor(theme, "syntaxFunction", "#C49BFF");
+	assert.equal(colors.syntaxOperator, "activePink");
+	assertResolvedThemeColor(theme, "syntaxOperator", "#FF4F9A");
+	assertResolvedThemeColor(theme, "syntaxString", "#E0C27A");
+	assertResolvedThemeColor(theme, "syntaxNumber", "#D7A0B8");
+	assertResolvedThemeColor(theme, "syntaxType", "#A9C7EE");
+	assert.equal(colors.thinkingXhigh, "activePink");
+	assertResolvedThemeColor(theme, "thinkingXhigh", "#FF4F9A");
+	assert.equal(colors.thinkingMax, "accent");
+	assertResolvedThemeColor(theme, "thinkingMax", "#F43888");
+	assert.equal(theme.export?.pageBg, "bg");
+	assert.equal(theme.export?.cardBg, "bgElement");
+	assert.equal(theme.export?.infoBg, "infoBg");
+});
+
+test("bundled Gentleman-Cute Pi theme defines complete brand and restrained color mappings", () => {
+	const theme = readJson<GentleThemeJson>(
+		join(PACKAGE_ROOT, "themes", "Gentleman-Cute.json"),
+	);
+	const colors = theme.colors ?? {};
+
+	assert.deepEqual(
+		REQUIRED_THEME_COLOR_KEYS.filter((key) => !(key in colors)),
+		[],
+	);
+	assert.deepEqual(
+		["scrollbarThumb", "searchMatchBg", "searchMatchText", "thinkingMax"].filter(
+			(key) => !(key in colors),
+		),
+		[],
+	);
+
+	assertResolvedThemeColor(theme, "accent", "#F095C8");
+	assertResolvedThemeColor(theme, "searchMatchBg", "#C96AA2");
+	assert.equal(colors.borderAccent, "activePink");
+	assertResolvedThemeColor(theme, "borderAccent", "#FFB1DD");
+	assertResolvedThemeColor(theme, "selectedBg", "#28121E");
+	assertResolvedThemeColor(theme, "text", "#F6EFF3");
+	assertResolvedThemeColor(theme, "success", "#B4E7C7");
+	assertResolvedThemeColor(theme, "warning", "#F2B86D");
+	assertResolvedThemeColor(theme, "error", "#FF718F");
+	assertResolvedThemeColor(theme, "muted", "#A78E9B");
+	assertResolvedThemeColor(theme, "dim", "#76616B");
+	assert.equal(colors.thinkingText, "softRose");
+	assertResolvedThemeColor(theme, "thinkingText", "#D7A0B8");
+	assertResolvedThemeColor(theme, "toolPendingBg", "#100A0F");
+	assertResolvedThemeColor(theme, "toolSuccessBg", "#151316");
+	assertResolvedThemeColor(theme, "toolErrorBg", "#261019");
+	assertResolvedThemeColor(theme, "toolTitle", "#E0C27A");
+	assertResolvedThemeColor(theme, "customMessageLabel", "#E0C27A");
+	assert.equal(colors.mdCodeBlockBorder, "muted");
+	assertResolvedThemeColor(theme, "mdCodeBlockBorder", "#A78E9B");
+	assert.equal(colors.mdQuoteBorder, "deepPink");
+	assertResolvedThemeColor(theme, "mdQuoteBorder", "#C96AA2");
+	assert.equal(colors.mdLink, "accent");
+	assertResolvedThemeColor(theme, "mdLink", "#F095C8");
+	assert.equal(colors.mdListBullet, "accent");
+	assertResolvedThemeColor(theme, "mdListBullet", "#F095C8");
+	assertResolvedThemeColor(theme, "toolDiffAdded", "#B4E7C7");
+	assert.equal(colors.syntaxKeyword, "accent");
+	assertResolvedThemeColor(theme, "syntaxKeyword", "#F095C8");
+	assertResolvedThemeColor(theme, "syntaxFunction", "#A9C7EE");
+	assert.equal(colors.syntaxOperator, "sky");
+	assertResolvedThemeColor(theme, "syntaxOperator", "#C4DAF6");
+	assertResolvedThemeColor(theme, "syntaxString", "#B4E7C7");
+	assertResolvedThemeColor(theme, "syntaxNumber", "#F2B86D");
+	assertResolvedThemeColor(theme, "syntaxType", "#E0C27A");
+	assert.equal(colors.thinkingXhigh, "accent");
+	assertResolvedThemeColor(theme, "thinkingXhigh", "#F095C8");
+	assert.equal(colors.thinkingMax, "activePink");
+	assertResolvedThemeColor(theme, "thinkingMax", "#FFB1DD");
+	assert.equal(theme.export?.pageBg, "bg");
+	assert.equal(theme.export?.cardBg, "bgElement");
+	assert.equal(theme.export?.infoBg, "infoBg");
+});
+
 test("bundled Pi theme is named exactly Gentle and defines all required colors", () => {
 	const theme = readJson<GentleThemeJson>(
 		join(PACKAGE_ROOT, "themes", "Gentle.json"),
@@ -177,7 +312,10 @@ test("bundled Pi theme maps roles to the subtle OpenCode gentleman theme", () =>
 	assert.equal(colors.accent, "blue");
 	assert.equal(colors.selectedBg, "selection");
 	assert.equal(colors.borderAccent, "blue");
-	assert.equal(colors.userMessageBg, "bgElement");
+	// The user prompt gets its own tinted surface: bgElement equals the terminal
+	// background here, so a prompt painted with it is invisible in the transcript.
+	assert.equal(colors.userMessageBg, "userMessageBg");
+	assert.notEqual(resolveThemeColor(theme, "userMessageBg"), vars.bg, "the user prompt must stand apart from the background");
 	assert.equal(colors.customMessageBg, "bgSubtle");
 	assert.notEqual(resolveThemeColor(theme, "borderAccent"), "#E0C15A");
 	assert.equal(colors.thinkingText, "muted");

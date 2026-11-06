@@ -1,0 +1,43 @@
+name: Feature Request
+description: Suggest an improvement to gentle-pi.
+labels:
+  - enhancement
+  - status:needs-review
+body:
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched open and closed issues and did not find a request for this feature.
+          required: true
+        - label: I reviewed this request and removed credentials, tokens, private paths, hostnames, and other sensitive data.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or opportunity
+      description: Describe the need and who would benefit.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Proposed outcome
+      description: Describe what should become possible or improve.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe any workarounds or other approaches you considered.
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add any relevant examples or supporting information.
+    validations:
+      required: false

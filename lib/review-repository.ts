@@ -50,13 +50,18 @@ export function inheritedUnsafeGitEnvironmentKeys(
 export function reviewGitEnvironment(): NodeJS.ProcessEnv {
 	for (const key of Object.keys(process.env)) {
 		const normalizedKey = key.toUpperCase();
+		// The three config-file keys are pinned unconditionally below, so an
+		// inherited value cannot redirect these Git calls; the unit-test runner
+		// pins them for hermeticity (gentle-shell#2552). Routing-critical keys
+		// still fail closed.
+		if (normalizedKey === "GIT_CONFIG_GLOBAL" || normalizedKey === "GIT_CONFIG_SYSTEM" || normalizedKey === "GIT_CONFIG_NOSYSTEM") continue;
 		if (UNSAFE_GIT_ENVIRONMENT.has(normalizedKey) || /^GIT_CONFIG_(?:KEY|VALUE)_/.test(normalizedKey)) throw new ReviewRepositoryError("REVIEW_GIT_ENV_UNSAFE: inherited Git routing/configuration override is present");
 	}
 	const environment: NodeJS.ProcessEnv = {};
 	for (const [key, value] of Object.entries(process.env)) if (!key.startsWith("GIT_")) environment[key] = value;
 	environment.GIT_CONFIG_NOSYSTEM = "1";
-	environment.GIT_CONFIG_GLOBAL = process.platform === "win32" ? "NUL" : "/dev/null";
-	environment.GIT_CONFIG_SYSTEM = process.platform === "win32" ? "NUL" : "/dev/null";
+	environment.GIT_CONFIG_GLOBAL = "/dev/null";
+	environment.GIT_CONFIG_SYSTEM = "/dev/null";
 	environment.GIT_OPTIONAL_LOCKS = "0";
 	environment.LC_ALL = "C";
 	environment.LANG = "C";
@@ -75,7 +80,7 @@ export function publicationProbeGitEnvironment(): NodeJS.ProcessEnv {
 function gitLines(cwd: string, args: string[]): string[] {
 	let output: string;
 	try {
-		output = execFileSync("git", ["-C", resolve(cwd), ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], shell: false, env: reviewGitEnvironment() });
+		output = execFileSync("git", ["-C", resolve(cwd), ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], shell: false, env: reviewGitEnvironment(), windowsHide: true });
 	} catch (error) {
 		if (error instanceof ReviewRepositoryError) throw error;
 		throw new ReviewRepositoryError("Unable to resolve Git repository authority");

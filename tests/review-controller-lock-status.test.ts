@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -47,7 +47,7 @@ function context(cwd: string): ExtensionContext {
 }
 
 function repository(t: test.TestContext): string {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-lock-status-"));
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-lock-status-")));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	execFileSync("git", ["init", "-b", "main"], { cwd });
 	writeFileSync(join(cwd, "app.ts"), "export const value = 1;\n");
@@ -101,7 +101,6 @@ function fakeNative(status: NativeReviewStatusResult, onStart?: (request: Parame
 		finalize: async () => { throw new Error("finalize must not run"); },
 		validate: async () => { throw new Error("validate must not run"); },
 		bindSdd: async () => { throw new Error("bindSdd must not run"); },
-		sddStatus: async () => ({ ready: false }),
 		reviewStatus: async () => { throw new Error("inventory status must not run"); },
 		targetStatus: async () => ({
 			applicability: blocking ? "corrupted" : "unrelated",

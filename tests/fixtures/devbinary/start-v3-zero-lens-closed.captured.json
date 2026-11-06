@@ -1,0 +1,21 @@
+{
+  "schema": "gentle-ai.review-integration.start/v3",
+  "contract": "gentle-ai.review-integration/v2",
+  "operation": "review.start",
+  "action": "closed",
+  "lenses_required": false,
+  "lineage_id": "review-95b756a05f2e82b1",
+  "state": "approved",
+  "risk_level": "low",
+  "selected_lenses": [],
+  "projection": "workspace",
+  "changed_files": 1,
+  "changed_lines": 2,
+  "correction_budget": 1,
+  "risk_reasons": [
+    {
+      "code": "non_executable_only"
+    }
+  ],
+  "artifact_subjects": []
+}

@@ -1,0 +1,5 @@
+{
+  "note": "Recorded TypeScript diagnostics. Regenerate with `node scripts/check-types.mjs --update` after fixing or deliberately accepting diagnostics. This file may only shrink without a review decision.",
+  "total": 0,
+  "byFileAndCode": {}
+}

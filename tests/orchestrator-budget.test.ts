@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -9,8 +9,8 @@ import test, { after } from "node:test";
 // orchestrator-lazy-diet migration tests
 //
 // Locks the split of the always-on `assets/orchestrator.md` into a thin core
-// plus three path-substituted lazy reference files (see design.md "Core
-// budget rebuilt from measured drafts" and "Appendix: drafted core texts").
+// plus lazy reference files (see design.md "Core budget rebuilt from measured
+// drafts" and "Appendix: drafted core texts").
 //
 // `getOrchestratorPrompt`'s rendered return value is memoized in a
 // module-level cache (first-read-wins for the process lifetime — see design.md
@@ -19,61 +19,86 @@ import test, { after } from "node:test";
 // ambient environment variables, so production runtime asset resolution stays
 // deterministic. The representative production assets directory below is
 // populated by COPYING the real repo assets (dynamically, at test-run time)
-// into a short-path tmpdir — this isolates byte-budget measurement from the
-// real repo's absolute path length while keeping content representative of
-// production. Tests that need to inspect the real repo files directly (the
-// disposition-mapped union sweep, the core-alone token assertions) read
-// `assets/*.md` directly via `readFileSync`, sidestepping the cache entirely.
+// into short and deliberately long tmpdir paths. This isolates byte-budget
+// measurement from the real repo's absolute path length while keeping content
+// representative of production. Tests that need to inspect the real repo files
+// directly (the disposition-mapped union sweep, the core-alone token
+// assertions) read `assets/*.md` directly via `readFileSync`, sidestepping the
+// cache entirely.
 // ---------------------------------------------------------------------------
 
 const REPO_ROOT = join(import.meta.dirname, "..");
 const REAL_ASSETS_DIR = join(REPO_ROOT, "assets");
 const FIXTURE_PATH = join(import.meta.dirname, "fixtures", "orchestrator.pre-diet.md");
-const BUDGET_BYTES = 10240;
+// gentle-shell#1731 T10 (user decision): 8,192 -> 8,400 B for the narrowed high-risk items 1 and 3.
+// Verification by named risk (escalate-only rule 3) and the writer-rule fix (triggers hold only when
+// their condition holds; a unit is independent behavior over a size floor), user decision 2026-10-14: 8,400 -> 9,100 B.
+// Weak-model economy (small path reads one batch with no todo; item 1 excludes rebuildable dev/test data), measured in
+// gentle-shell-bench 1321c60 (DeepSeek -24-30% time on x2/x5, -70% on a dev-database rename; Sol unchanged), user decision
+// 2026-10-22: 9,100 -> 9,250 B.
+// Issue #2935 (user decision 2026-11-06): 9,250 -> 9,350 B so the confinement clause keeps its full wording
+// (registered same-clone worktrees, never-blanket grants) while adding the resolved-skill-read exception; the
+// controlled 128-char assets root needs the headroom for platform-independent rendering.
+const BUDGET_BYTES = 9350;
+const MIN_CONTROLLED_LONG_ASSETS_ROOT_CHARS = 93;
 
 const LAZY_ASSET_NAMES = [
 	"orchestrator.md",
-	"sdd-orchestrator-workflow.md",
 	"orchestrator-delegation.md",
+	"orchestrator-delegation-reference.md",
 	"orchestrator-memory.md",
 	"orchestrator-skills.md",
 ] as const;
+const LAZY_REFERENCE_FILE_NAMES = LAZY_ASSET_NAMES.slice(1);
+
+function copyRequiredLazyAssets(destination: string): void {
+	for (const name of LAZY_ASSET_NAMES) {
+		const source = join(REAL_ASSETS_DIR, name);
+		assert.ok(existsSync(source), `missing packaged lazy asset: ${name}`);
+		copyFileSync(source, join(destination, name));
+	}
+}
 
 const representativeProductionAssetsDir = mkdtempSync(join(tmpdir(), "gp-b-"));
-for (const name of LAZY_ASSET_NAMES) {
-	const src = join(REAL_ASSETS_DIR, name);
-	writeFileSync(
-		join(representativeProductionAssetsDir, name),
-		existsSync(src) ? readFileSync(src) : `stub placeholder for ${name} (not authored yet)\n`,
-	);
-}
+copyRequiredLazyAssets(representativeProductionAssetsDir);
 const { __testing } = await import("../extensions/gentle-ai.ts");
 
-const MIN_REALISTIC_INSTALL_ASSETS_PATH_CHARS = 59;
-
-// Realistic-length assets path: mirrors an actual installed path such as
-// `~/.pi/agent/npm/node_modules/gentle-pi/assets`, so the budget assertion is
-// not laundered through an artificially short mkdtemp path. The helper is also
-// exercised in a fresh child process (`tests/fixtures/measure-orchestrator-prompt.mjs`)
-// to keep production cache behavior separate from fixture measurements.
-const realisticBaseDir = mkdtempSync(join(tmpdir(), "gp-realistic-"));
-const realisticDir = join(realisticBaseDir, ".pi", "agent", "npm", "node_modules", "gentle-pi", "assets");
-mkdirSync(realisticDir, { recursive: true });
+// A controlled long assets root proves the parent prompt remains within the
+// canonical budget independently of the checkout or installed-package path.
+// The child-process measurement keeps production cache behavior separate from
+// fixture measurements.
+// The root is built to one exact length rather than "tmpdir plus a long
+// suffix". The prompt declares the absolute root once, so it grows one byte
+// per root character, and a 48-character macOS tmpdir pushed the previous
+// construction to 164 characters where a 4-character Linux /tmp gave 121.
+// A fixed length makes every platform measure the same budget claim.
+const CONTROLLED_LONG_ASSETS_ROOT_CHARS = 128;
+const controlledLongBaseDir = mkdtempSync(join(tmpdir(), "gp-long-"));
+const controlledLongSegmentChars = CONTROLLED_LONG_ASSETS_ROOT_CHARS - join(controlledLongBaseDir, "x", "assets").length + 1;
 assert.ok(
-	realisticDir.length >= MIN_REALISTIC_INSTALL_ASSETS_PATH_CHARS,
-	`realistic scratch assets path is only ${realisticDir.length} chars, need >= ${MIN_REALISTIC_INSTALL_ASSETS_PATH_CHARS} to mirror a real install path`,
+	controlledLongSegmentChars >= 1,
+	`tmpdir ${tmpdir()} is too long to build a ${CONTROLLED_LONG_ASSETS_ROOT_CHARS}-char controlled assets root`,
 );
-for (const name of LAZY_ASSET_NAMES) {
-	const src = join(REAL_ASSETS_DIR, name);
-	writeFileSync(
-		join(realisticDir, name),
-		existsSync(src) ? readFileSync(src) : `stub placeholder for ${name} (not authored yet)\n`,
-	);
-}
+const controlledLongAssetsDir = join(
+	controlledLongBaseDir,
+	"path-independent-prompt-budget-".repeat(Math.ceil(controlledLongSegmentChars / 31)).slice(0, controlledLongSegmentChars),
+	"assets",
+);
+mkdirSync(controlledLongAssetsDir, { recursive: true });
+assert.equal(
+	controlledLongAssetsDir.length,
+	CONTROLLED_LONG_ASSETS_ROOT_CHARS,
+	`controlled long assets root is ${controlledLongAssetsDir.length} chars, want exactly ${CONTROLLED_LONG_ASSETS_ROOT_CHARS}`,
+);
+assert.ok(
+	controlledLongAssetsDir.length >= MIN_CONTROLLED_LONG_ASSETS_ROOT_CHARS,
+	`controlled long assets root is only ${controlledLongAssetsDir.length} chars, need >= ${MIN_CONTROLLED_LONG_ASSETS_ROOT_CHARS}`,
+);
+copyRequiredLazyAssets(controlledLongAssetsDir);
 
 after(() => {
 	rmSync(representativeProductionAssetsDir, { recursive: true, force: true });
-	rmSync(realisticBaseDir, { recursive: true, force: true });
+	rmSync(controlledLongBaseDir, { recursive: true, force: true });
 });
 
 function readRealAsset(name: string): string {
@@ -98,8 +123,21 @@ function measureOrchestratorPromptBytes(assetsDir: string): number {
 // 2.2 — Byte budget (Spec: Always-On Injection Byte Budget)
 // ---------------------------------------------------------------------------
 
-test("getOrchestratorPrompt return value stays within the 10,240 B budget (short-path stub sanity check)", () => {
+// gentle-pi#661: `renderOrchestratorPrompt`/`getOrchestratorPrompt` default
+// `rddStatusLine` to the "unknown (native status unavailable)" line -- the
+// longest of the three renderable RDD status lines -- precisely so that a
+// no-argument call renders the worst case this budget measures, not a
+// smaller placeholder that production would later exceed. Assert that line
+// is actually present so a future default change cannot silently start
+// measuring a shorter render again.
+const RDD_WORST_CASE_LINE = "Receipt-driven development: unknown (native status unavailable)";
+
+test("getOrchestratorPrompt return value stays within the canonical 9,350 B budget at a short assets root", () => {
 	const rendered = __testing.renderOrchestratorPrompt(representativeProductionAssetsDir);
+	assert.ok(
+		rendered.includes(RDD_WORST_CASE_LINE),
+		"the default render must include the worst-case RDD status line to measure the real production budget",
+	);
 	const bytes = Buffer.byteLength(rendered, "utf8");
 	assert.ok(
 		bytes <= BUDGET_BYTES,
@@ -107,33 +145,50 @@ test("getOrchestratorPrompt return value stays within the 10,240 B budget (short
 	);
 });
 
-test(`getOrchestratorPrompt return value stays within the 10,240 B budget at a realistic (>= ${MIN_REALISTIC_INSTALL_ASSETS_PATH_CHARS} char) install path length`, () => {
-	const bytes = measureOrchestratorPromptBytes(realisticDir);
+test(`getOrchestratorPrompt keeps a controlled long (>= ${MIN_CONTROLLED_LONG_ASSETS_ROOT_CHARS} char) assets root within the canonical budget`, () => {
+	const rendered = __testing.renderOrchestratorPrompt(controlledLongAssetsDir);
+	assert.ok(
+		rendered.includes(RDD_WORST_CASE_LINE),
+		"the default render must include the worst-case RDD status line to measure the real production budget",
+	);
+	const bytes = measureOrchestratorPromptBytes(controlledLongAssetsDir);
+	assert.equal(bytes, Buffer.byteLength(rendered, "utf8"), "child-process and direct render byte counts must match");
 	assert.ok(
 		bytes <= BUDGET_BYTES,
-		`getOrchestratorPrompt() returned ${bytes} B at a realistic ${realisticDir.length}-char ASSETS_DIR path, exceeds the ${BUDGET_BYTES} B budget`,
+		`getOrchestratorPrompt() returned ${bytes} B at controlled ${controlledLongAssetsDir.length}-char assets root, exceeds the ${BUDGET_BYTES} B budget`,
 	);
+	assert.equal(
+		rendered.split(controlledLongAssetsDir).length - 1,
+		1,
+		"the absolute assets root must be declared exactly once",
+	);
+	assert.ok(
+		rendered.includes(`Package assets root: \`${controlledLongAssetsDir}\`. Lazy asset paths below are relative to this root.`),
+		"the parent prompt must declare how to resolve relative lazy asset paths",
+	);
+	for (const name of LAZY_REFERENCE_FILE_NAMES) {
+		assert.ok(rendered.includes(`\`${name}\``), `lazy asset filename is missing: ${name}`);
+	}
+	assert.doesNotMatch(rendered, /\{\{/, "unresolved {{...}} placeholder leaked into the rendered prompt");
 });
 
 // ---------------------------------------------------------------------------
 // 2.3 — Disposition-mapped union sweep (Spec: No Normative Content Loss +
 // Pointer reachability)
 //
-// Every normative line of the frozen pre-diet fixture is assigned to exactly
-// one documented disposition: CORE_VERBATIM (byte-identical in the new
-// core), LAZY_VERBATIM (byte-identical in one specific lazy file), or OBSOLETE
-// (intentionally absent from every live model-facing asset). Section headings
-// that are reused unchanged as the new core's summary heading are
-// CORE_VERBATIM; section bodies that are condensed away in core are
-// LAZY_VERBATIM against their one target lazy file — never a blanket union
-// across all three.
+// Every normative line of the frozen pre-diet fixture is assigned to a
+// documented disposition: CORE_VERBATIM (byte-identical in the core),
+// LAZY_VERBATIM (byte-identical in one specific lazy file), OBSOLETE
+// (intentionally absent), or REPLACED (superseded by the focused #3417 asset
+// policy ratchets below). REPLACED preserves the historical fixture without
+// treating a retired prompt mirror as a current normative source.
 // ---------------------------------------------------------------------------
 
 type Target = "core" | "delegation" | "memory" | "skills";
 
 interface DispositionRange {
 	lines: [number, number];
-	target: Target | "obsolete";
+	target: Target | "obsolete" | "replaced";
 	label: string;
 }
 
@@ -147,24 +202,33 @@ const TARGET_FILE: Record<Target, string> = {
 // Line numbers below are 1-indexed against tests/fixtures/orchestrator.pre-diet.md
 // (frozen byte-identical copy of assets/orchestrator.md at 23,047 B / 312 lines).
 const DISPOSITION_MAP: DispositionRange[] = [
-	{ lines: [1, 4], target: "core", label: "Header + bind" },
+	{ lines: [1, 4], target: "replaced", label: "Header + bind: retired phase qualification" },
 	{ lines: [5, 8], target: "core", label: "Identity Contract" },
 	{ lines: [9, 13], target: "core", label: "Core Role" },
 	{ lines: [15, 15], target: "core", label: "Language Boundary heading" },
 	{ lines: [17, 17], target: "core", label: "Language Boundary LB1 pointer" },
-	{ lines: [19, 19], target: "delegation", label: "Language Boundary LB2 (subagent-English)" },
-	{ lines: [21, 21], target: "core", label: "Language Boundary LB3 (artifact language)" },
+	{ lines: [19, 19], target: "replaced", label: "Language Boundary LB2: request translation replaced by spec-by-reference handoffs (gentle-shell#1713)" },
+	{ lines: [21, 21], target: "replaced", label: "Language Boundary LB3: retired artifact types" },
 	{ lines: [23, 23], target: "core", label: "Language Boundary LB4 (public comment language)" },
-	{ lines: [25, 29], target: "delegation", label: "Language Boundary LB5 (exceptions)" },
-	{ lines: [31, 40], target: "core", label: "Mental Model" },
-	{ lines: [42, 42], target: "core", label: "Work Routing Ladder heading" },
-	{ lines: [44, 97], target: "delegation", label: "Work Routing Ladder body + Pi Subagent Model Routing" },
+	{ lines: [25, 28], target: "delegation", label: "Language Boundary LB5 (exceptions)" },
+	{ lines: [29, 29], target: "obsolete", label: "Retired artifact exception" },
+	{ lines: [31, 40], target: "replaced", label: "Mental Model: ODD-only" },
+	{ lines: [42, 42], target: "replaced", label: "Work Routing Ladder heading replaced by Task Size and Mechanisms (gentle-shell#1494)" },
+	{
+		lines: [44, 97],
+		target: "replaced",
+		label: "Pre-RDD routing detail replaced by focused direct-delegation guidance (#3417)",
+	},
 	{
 		lines: [98, 107],
 		target: "obsolete",
 		label: "Size/risk-selected SDD tier replaced by explicit-request/accepted-proposal selection (#312)",
 	},
-	{ lines: [108, 108], target: "delegation", label: "SDD explicit-request trigger" },
+	{
+		lines: [108, 108],
+		target: "replaced",
+		label: "Earlier SDD trigger wording replaced by the focused SDD boundary (#3417)",
+	},
 	{
 		lines: [109, 110],
 		target: "obsolete",
@@ -179,8 +243,8 @@ const DISPOSITION_MAP: DispositionRange[] = [
 	},
 	{
 		lines: [128, 132],
-		target: "delegation",
-		label: "Mandatory Triggers heading + Pi trigger preamble + 4-file binding",
+		target: "replaced",
+		label: "Pre-RDD trigger wording replaced by focused direct-delegation guidance (#3417)",
 	},
 	{
 		lines: [133, 133],
@@ -189,21 +253,29 @@ const DISPOSITION_MAP: DispositionRange[] = [
 	},
 	{
 		lines: [134, 167],
-		target: "delegation",
-		label: "Mandatory Triggers remainder + Cost/Context Balance + Canonical Workflows",
+		target: "replaced",
+		label: "Pre-RDD trigger and workflow wording replaced by focused delegation guidance (#3417)",
 	},
 	{
 		lines: [169, 181],
 		target: "obsolete",
 		label: "Parent-selected review lens table replaced by native RAR lens ownership (#312)",
 	},
-	{ lines: [183, 191], target: "core", label: "SDD Workflow pointer" },
+	{ lines: [183, 191], target: "obsolete", label: "Retired workflow pointer" },
 	{ lines: [193, 193], target: "core", label: "Memory Contract heading" },
-	{ lines: [195, 195], target: "core", label: "Memory Contract intro" },
-	{ lines: [197, 201], target: "core", label: "Memory Contract Non-SDD delegation" },
-	{ lines: [203, 230], target: "memory", label: "Memory Contract SDD phases table + artifact keys + lifecycle rule" },
+	{
+		lines: [195, 195],
+		target: "replaced",
+		label: "Verbose memory introduction replaced by compact parent/subagent ownership (#3417)",
+	},
+	{
+		lines: [197, 201],
+		target: "replaced",
+		label: "Verbose non-SDD memory forwarding replaced by compact ownership (#3417)",
+	},
+	{ lines: [203, 230], target: "replaced", label: "Retired phase keys; memory lifecycle remains" },
 	{ lines: [232, 232], target: "core", label: "Skill Registry Protocol heading" },
-	{ lines: [234, 253], target: "skills", label: "Skill Registry Protocol detail" },
+	{ lines: [234, 253], target: "replaced", label: "Skill resolution retained without phase roles" },
 	{ lines: [255, 255], target: "core", label: "Intent-Driven Skill Discovery heading" },
 	{ lines: [257, 276], target: "skills", label: "Intent-Driven Skill Discovery detail" },
 	{ lines: [278, 283], target: "core", label: "Safety" },
@@ -219,6 +291,9 @@ function isNormativeLine(line: string): boolean {
 }
 
 const fixtureLines = readFileSync(FIXTURE_PATH, "utf8").split("\n");
+// Fixture line 36 is superseded by ODD (#1035); 187 and 191 predate
+// root-relative lazy assets and canonical-authority resolution. Keep coverage by asserting the
+// intentionally updated production wording instead of weakening the range.
 const SUPERSEDED_LIFECYCLE_REVIEW_LINES = new Set([
 	70,
 	// 74/77: the loose mode-choice background lines were replaced by the
@@ -237,9 +312,17 @@ const SUPERSEDED_LIFECYCLE_REVIEW_LINES = new Set([
 	154,
 	160,
 	166,
+	// 280: S11 T3 made the Safety commit line consistent with ODD step 6: it now
+	// excepts the work-unit commits of authorized large ODD implementation
+	// (asserted verbatim in tests/odd-routing-contract.test.ts).
+	280,
+	// 282: gentle-shell#1731 T4 relaxed the single-writer Safety line to disjoint
+	// Allowed edit surfaces (runtime-enforced) or isolated worktrees.
+	282,
 ]);
 
 for (const range of DISPOSITION_MAP) {
+	if (range.target === "replaced") continue;
 	test(
 		`disposition-mapped union: ${range.label} (fixture:${range.lines[0]}-${range.lines[1]}) -> ${range.target}`,
 		() => {
@@ -251,6 +334,11 @@ for (const range of DISPOSITION_MAP) {
 				const raw = fixtureLines[ln - 1];
 				if (raw === undefined || !isNormativeLine(raw)) continue;
 				const trimmed = raw.trim();
+				const expected =
+					// Preserve the synthesis rule while reserving core bytes for the RDD scope condition.
+					ln === 13 ? "Default to concise synthesis: decision, outcome, next action. Expand on request or when detail is needed." :
+					ln === 36 ? "- Substantial authorized work: use ODD; track feature progress automatically." :
+					trimmed;
 				if (SUPERSEDED_LIFECYCLE_REVIEW_LINES.has(ln)) {
 					assert.ok(
 						!targetContent.includes(trimmed),
@@ -266,8 +354,8 @@ for (const range of DISPOSITION_MAP) {
 					continue;
 				}
 				assert.ok(
-					targetContent.includes(trimmed),
-					`normative line lost: fixture:${ln} "${trimmed}" not found verbatim in ${TARGET_FILE[range.target]} (disposition: ${range.target}, section: ${range.label})`,
+					targetContent.includes(expected),
+					`normative line lost: fixture:${ln} "${expected}" not found verbatim in ${TARGET_FILE[range.target]} (disposition: ${range.target}, section: ${range.label})`,
 				);
 			}
 		},
@@ -279,36 +367,48 @@ for (const range of DISPOSITION_MAP) {
 // string alone, no lazy union.
 // ---------------------------------------------------------------------------
 
-test("core-alone: load-bearing delegation tokens present without lazy union", () => {
+test("core-alone: load-bearing direct-delegation tokens remain without lazy union", () => {
 	const core = readRealAsset("orchestrator.md");
-	assert.match(core, /4-file rule/);
-	assert.match(core, /Multi-file write rule/);
-	assert.match(core, /Lifecycle gate rule/);
+	assert.match(core, /Evidence-budget rule/);
+	assert.match(core, /Writer rule/);
 	assert.match(core, /Incident rule/);
-	assert.match(core, /Long-session rule/);
-	assert.match(core, /Review actor rule/);
+	assert.match(core, /Verification rule/);
+	assert.match(core, /Context backstop/);
 });
 
-test("core-alone: receipt-only lifecycle and independent safety are present without lazy union", () => {
+test("lazy coordination detail retains subject guidance without inflating the core", () => {
 	const core = readRealAsset("orchestrator.md");
-	assert.match(core, /start -> finalize -> validate/i);
-	assert.match(core, /Compact gates use zero actors/i);
-	assert.match(core, /Release from protected `main` may bypass receipt validation only when/i);
-	assert.match(core, /Major and post-incident releases require explicit extraordinary review/i);
-	assert.match(core, /Dangerous-command safety remains independent and authoritative/i);
-	assert.match(core, /SDD completion adds no review or Judgment Day pass/i);
+	// S11 T2: the card binds on delegation; the session subject rules are reference material.
+	const card = readRealAsset("orchestrator-delegation.md");
+	const detail = readRealAsset("orchestrator-delegation-reference.md");
+	assert.match(core, /Bind this to the parent Pi session only/);
+	assert.match(core, /orchestrator-delegation\.md/);
+	assert.match(card, /on delegation or routing triggers/);
+	assert.match(detail, /Once a meaningful task subject is clear, before delegation or cross-session coordination, call `orchestrator_session_id`/);
+	assert.match(detail, /short, non-sensitive `subject`/);
+	assert.match(detail, /Batch with setup if possible; no extra model call/);
+	assert.match(detail, /Skip tiny replies; exclude user prompts\/private detail/);
+	assert.match(detail, /preserves canonical names\/human renames; never ask humans to type aliases/);
+	assert.match(detail, /Names display only; stable IDs route/);
 });
 
-test("lazy bounded-review contract lists all four review lens names", () => {
-	const content = `${readRealAsset("orchestrator.md")}\n${readRealAsset("orchestrator-delegation.md")}`;
-	assert.match(content, /review-risk/);
-	assert.match(content, /review-reliability/);
-	assert.match(content, /review-resilience/);
-	assert.match(content, /review-readability/);
+test("core-alone: dynamic Gentle AI ownership replaces package lifecycle instructions", () => {
+	const core = readRealAsset("orchestrator.md");
+	assert.match(core, /injects the mirrored provider-bundle review execution contract into this session's system prompt at start/);
+	assert.match(core, /Absent that mirrored contract, this package invents no lifecycle instructions/);
+	assert.doesNotMatch(core, /start -> finalize -> validate/i);
+	assert.doesNotMatch(core, /receipt validation/i);
+});
+
+test("lazy delegation detail has no native RDD controller markers", () => {
+	const delegation = `${readRealAsset("orchestrator-delegation.md")}\n${readRealAsset("orchestrator-delegation-reference.md")}`;
+	for (const marker of ["next_transition", "review.capture-result", "reconcile-terminal-mirrors"]) {
+		assert.ok(!delegation.includes(marker), `stale RDD marker retained: ${marker}`);
+	}
 });
 
 test("live orchestrator assets remove the stale strong-gate retry contract", () => {
-	const content = `${readRealAsset("orchestrator.md")}\n${readRealAsset("orchestrator-delegation.md")}`;
+	const content = `${readRealAsset("orchestrator.md")}\n${readRealAsset("orchestrator-delegation.md")}\n${readRealAsset("orchestrator-delegation-reference.md")}`;
 	assert.doesNotMatch(content, /strong gate/i);
 	assert.doesNotMatch(content, /extension blocks.*gh pr create/i);
 	assert.doesNotMatch(content, /before the user retries the PR command/i);
@@ -335,7 +435,7 @@ test("relocated lazy bodies are not double-delivered in the always-on core", () 
 	);
 	assert.doesNotMatch(
 		rendered,
-		/### SDD phases/,
+		/### Organic feature continuity/,
 		"memory-only body leaked into the always-on core",
 	);
 	assert.doesNotMatch(
@@ -345,20 +445,11 @@ test("relocated lazy bodies are not double-delivered in the always-on core", () 
 	);
 });
 
-test("relocated lazy files are reachable via in-core pointer paths", () => {
+test("relocated lazy files are reachable via root-relative in-core filenames", () => {
 	const rendered = __testing.getOrchestratorPrompt();
-	assert.ok(
-		rendered.includes(join(REAL_ASSETS_DIR, "orchestrator-delegation.md")),
-		"core is missing a reachable pointer to orchestrator-delegation.md",
-	);
-	assert.ok(
-		rendered.includes(join(REAL_ASSETS_DIR, "orchestrator-memory.md")),
-		"core is missing a reachable pointer to orchestrator-memory.md",
-	);
-	assert.ok(
-		rendered.includes(join(REAL_ASSETS_DIR, "orchestrator-skills.md")),
-		"core is missing a reachable pointer to orchestrator-skills.md",
-	);
+	for (const name of LAZY_REFERENCE_FILE_NAMES) {
+		assert.ok(rendered.includes(`\`${name}\``), `core is missing a reachable pointer to ${name}`);
+	}
 });
 
 // ---------------------------------------------------------------------------
@@ -375,4 +466,58 @@ test("getOrchestratorPrompt memoizes the return across calls", () => {
 	const first = __testing.getOrchestratorPrompt();
 	const second = __testing.getOrchestratorPrompt();
 	assert.equal(second, first, "second call must return the memoized string");
+});
+
+// ---------------------------------------------------------------------------
+// gentle-pi#661 follow-up: byte-budget compression must not turn a pointer
+// into an opaque "Detail: `file.md`" -- each pointer line must still name
+// the lazy-loaded material it points to, in the shortest form that still
+// says what is over there.
+// ---------------------------------------------------------------------------
+
+test("every compressed lazy-file pointer in the core still names the material it points to", () => {
+	const core = readFileSync(join(REAL_ASSETS_DIR, "orchestrator.md"), "utf8");
+	// One-sentence "<named material>: `file.md`." pointers, compressed for the
+	// byte budget -- each must keep naming what is over there, not collapse
+	// to an opaque "Detail: `file.md`.".
+	const namedPointers: ReadonlyArray<{ file: string; mustName: readonly string[] }> = [
+		// S11 T2: this reference material moved out of the delegation card.
+		{
+			file: "orchestrator-delegation-reference.md",
+			mustName: ["Per-action table", "Work Routing Ladder", "Canonical Workflows"],
+		},
+		// gentle-shell#1494 per-mechanism modules.
+		{ file: "orchestrator-prompts.md", mustName: ["blocking-prompt relays", "provider defects"] },
+		{ file: "orchestrator-tracking.md", mustName: ["Track", "feature document"] },
+		// Verification by named risk: rule 3 names the escalated high-risk item.
+		{ file: "orchestrator-verification.md", mustName: ["Verification rule", "high-risk item"] },
+		{ file: "orchestrator-writer.md", mustName: ["Writer rule", "large task"] },
+		{
+			file: "orchestrator-memory.md",
+			mustName: ["ODD task continuity", "memory lifecycle"],
+		},
+		{
+			file: "orchestrator-skills.md",
+			mustName: ["Discovery order", "intent hints"],
+		},
+	];
+	for (const { file, mustName } of namedPointers) {
+		// The pointer sentence: from the previous sentence boundary up to and
+		// including the backtick-quoted filename. `orchestrator-delegation.md`
+		// is referenced more than once in the core (a language-boundary pointer
+		// earlier, this compressed per-action pointer later) -- take the LAST
+		// occurrence, which is the one under test here.
+		const fileToken = `\`${file}\``;
+		const fileIndex = core.lastIndexOf(fileToken);
+		assert.ok(fileIndex >= 0, `core is missing a pointer to ${file}`);
+		const sentenceStart = core.lastIndexOf(".", fileIndex);
+		const pointerSentence = core.slice(sentenceStart + 1, fileIndex + fileToken.length);
+		for (const name of mustName) {
+			assert.ok(
+				pointerSentence.includes(name),
+				`the pointer to ${file} must name "${name}", got: ${JSON.stringify(pointerSentence.trim())}`,
+			);
+		}
+	}
+	assert.doesNotMatch(core, /SDD|sdd-|OpenSpec|openspec/i);
 });

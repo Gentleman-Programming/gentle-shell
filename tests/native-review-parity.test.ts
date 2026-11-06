@@ -1,1014 +1,818 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after, before } from "node:test";
+import { setWindowsAclAuthorityForTesting } from "../lib/review-candidate-view-owner.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { __testing, createGentleAiExtension, PendingReviewConsentRegistry } from "../extensions/gentle-ai.ts";
+import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
 import {
 	NATIVE_REVIEW_ERROR_CODE,
+	NATIVE_REVIEW_MODE_OPERATION,
+	NATIVE_REVIEW_OPERATION,
 	NativeReviewCliError,
-	NativeReviewConsentBindingError,
+	NativeReviewCliV216,
+	NativeReviewIntegrationError,
 	NativeReviewConsentRequiredError,
-	NativeReviewCliV213 as NativeReviewCliV213Production,
+	nativeRiskEvidencePhrases,
 	normalizeNativeReviewCwd,
-	setNativeCliContractForTesting,
-	type ExecFileAdapter,
 	type NativeReviewCli,
-	type NativeReviewConsentAnswer,
-	type NativeReviewConsentAnswerRequest,
-	type NativeStartRequest,
+	type ExecFileAdapter,
 } from "../lib/native-review-cli.ts";
-import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
-import { readReviewConsentLatch, recordReviewConsentLatch } from "../lib/review-consent-latch.ts";
-import type { AuthorityRepairAssessmentV1, ReviewConsentV2, ReviewStatusV3 } from "../lib/review-integration-v2.ts";
+import {
+	decodeReviewConsentV3,
+	decodeReviewFailureV2,
+	decodeReviewLastEventClosureV1,
+	decodeReviewStartV3,
+	type ReviewStatusV3,
+} from "../lib/review-integration-v2.ts";
 
-// Queued-adapter clients never execute a real process; default to a fixed
-// absolute package-local path so these tests do not depend on an installed
-// binary.
-class NativeReviewCliV213 extends NativeReviewCliV213Production {
-	constructor(...parameters: ConstructorParameters<typeof NativeReviewCliV213Production>) {
-		const [adapter, executable, ...rest] = parameters;
-		super(adapter, executable ?? "/package/.gentle-ai/gentle-ai", ...rest);
+// Coordination tests use fixture authority; real Windows ACL coverage lives
+// in review-candidate-view.test.ts, in a separate test process.
+let fixtureAclChecks = 0;
+before(() => {
+	if (process.platform === "win32") {
+		setWindowsAclAuthorityForTesting(() => { fixtureAclChecks++; });
 	}
+});
+after(() => setWindowsAclAuthorityForTesting());
+
+test("coordination suites isolate Windows ACL authority with teardown", () => {
+	for (const file of ["native-review-parity", "review-controller-native-routing", "review-session-standing-permission-controller"]) {
+		const source = readFileSync(new URL(`./${file}.test.ts`, import.meta.url), "utf8");
+		assert.match(source, /import \{ setWindowsAclAuthorityForTesting \} from/, file);
+		assert.match(source, /after\(\(\) => setWindowsAclAuthorityForTesting\(\)\)/, file);
+	}
+});
+
+const CAPTURED_FIXTURES = join(process.cwd(), "tests", "fixtures", "devbinary");
+
+function captured(name: string): unknown {
+	return JSON.parse(readFileSync(join(CAPTURED_FIXTURES, name), "utf8"));
 }
 
-interface QueuedResult {
-	stdout: string;
-	stderr?: string;
-	exitCode?: number;
-	timedOut?: boolean;
-	signal?: NodeJS.Signals | null;
-	outputLimitExceeded?: boolean;
-}
+test("captured native start and terminal capture decode as one last-event lifecycle", () => {
+	const start = decodeReviewStartV3(captured("start-v3-zero-lens-closed.captured.json"));
+	const closure = decodeReviewLastEventClosureV1(captured("last-event-capture-result-approved.captured.json"));
+	assert.equal(start.action, "closed");
+	assert.equal(start.state, "approved");
+	assert.equal(closure.operation, "review/capture-result");
+	assert.equal(closure.state, "approved");
+	assert.notEqual(closure.operation, "review.finalize");
+});
 
-function queuedAdapter(results: QueuedResult[]): { adapter: ExecFileAdapter; calls: Array<{ file: string; arguments: readonly string[]; cwd: string }> } {
-	const calls: Array<{ file: string; arguments: readonly string[]; cwd: string }> = [];
+function queuedAdapter(stdout: readonly string[]): { adapter: ExecFileAdapter; calls: Array<readonly string[]> } {
+	const queue = [...stdout];
+	const calls: Array<readonly string[]> = [];
 	return {
 		calls,
 		adapter: async (request) => {
-			calls.push(request);
-			const result = results.shift();
-			if (!result) throw new Error("unexpected native invocation");
-			return {
-				stdout: result.stdout,
-				stderr: result.stderr ?? "",
-				exitCode: result.exitCode ?? 0,
-				signal: result.signal ?? null,
-				timedOut: result.timedOut ?? false,
-				outputLimitExceeded: result.outputLimitExceeded ?? false,
-			};
+			calls.push(request.arguments);
+			const body = queue.shift();
+			if (body === undefined) throw new Error("unexpected native invocation");
+			return { stdout: body, stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
 		},
 	};
 }
 
-// A synthetic testing-only version whose capability row (in the testing
-// overlay, never in the shipped NATIVE_CLI_CONTRACTS table) reports every
-// organic-parity column true, so decode paths that are dark for every real
-// shipped version — including the pinned 2.1.11 — can still be exercised.
-const CAPABLE_VERSION = "9.9.9";
-const CAPABLE_VERSION_LINE = { stdout: `gentle-ai ${CAPABLE_VERSION}\n` };
-const DARK_VERSION = { stdout: "gentle-ai 2.1.11\n" };
-
-test.beforeEach(() => {
-	setNativeCliContractForTesting(CAPABLE_VERSION, {
-		start: true, finalize: true, validate: true, bindSdd: true, sddStatus: true, status: true, inventory: true,
-		reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true,
-		mode: true, riskEvidence: true, hint: true, delivery: true,
-	});
-});
-test.afterEach(() => {
-	setNativeCliContractForTesting(CAPABLE_VERSION, undefined);
-});
-
-const START = { stdout: JSON.stringify({ operation: "review/start", lineage_id: "lineage-1", state: "reviewing", risk_level: "medium", selected_lenses: ["review-reliability"], changed_files: 1, changed_lines: 2, correction_budget: 1, action: "created", lenses_required: true, projection: "workspace" }) };
-
-function reviewModeStatusBody(effective: "on" | "off", overrides: Record<string, unknown> = {}): Record<string, unknown> {
-	return {
+function mode(
+	operation: "status" | "enable" | "disable",
+	effective: "on" | "off",
+	source: "default" | "global" | "clone_local",
+	reach?: "machine" | "this_build" | "future",
+): string {
+	const global = source === "global" ? (effective === "on" ? "on" : "off") : source === "clone_local" ? "on" : "";
+	const cloneLocal = source === "clone_local" ? "off" : "";
+	return JSON.stringify({
 		schema: "gentle-ai.review-mode/v1",
-		operation: "status",
-		scope: "both",
-		status: {
-			schema: "gentle-ai.rdd-mode-status/v1",
-			global: "",
-			clone_local: "",
-			effective,
-			source: "default",
-			...overrides,
-		},
-	};
-}
-
-test("reviewMode requires the mode capability and fails closed for a version without it", async () => {
-	const queue = queuedAdapter([DARK_VERSION]);
-	await assert.rejects(
-		() => new NativeReviewCliV213(queue.adapter).reviewMode({ cwd: "/repo", operation: "status" }),
-		(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE,
-	);
-});
-
-test("reviewMode status uses the exact fixed argv and decodes the effective mode", async () => {
-	const queue = queuedAdapter([CAPABLE_VERSION_LINE, { stdout: JSON.stringify(reviewModeStatusBody("on")) }]);
-	const result = await new NativeReviewCliV213(queue.adapter).reviewMode({ cwd: "/repo", operation: "status" });
-	assert.deepEqual(queue.calls[1]?.arguments, ["review", "mode", "status", "--cwd", "/repo", "--json"]);
-	assert.equal(result.status.effective, "on");
-	assert.equal(result.scope, "both");
-});
-
-test("reviewMode canonicalizes an existing repository cwd before the version probe and status argv", async (t) => {
-	if (process.platform === "win32") return t.skip("directory symlink creation requires elevated Windows privileges");
-	const repository = mkdtempSync(join(tmpdir(), "gentle-pi-review-mode-cwd-"));
-	const alias = `${repository}-alias`;
-	symlinkSync(repository, alias, "dir");
-	t.after(() => { rmSync(alias, { force: true }); rmSync(repository, { recursive: true, force: true }); });
-	const queue = queuedAdapter([CAPABLE_VERSION_LINE, { stdout: JSON.stringify(reviewModeStatusBody("off", { global: "off", source: "global" })) }]);
-	const result = await new NativeReviewCliV213(queue.adapter).reviewMode({ cwd: alias, operation: "status" });
-	assert.equal(result.status.effective, "off");
-	assert.equal(queue.calls.every((call) => call.cwd === repository), true);
-	assert.deepEqual(queue.calls[1]?.arguments, ["review", "mode", "status", "--cwd", repository, "--json"]);
-});
-
-test("native review cwd normalization unifies Git Bash and drive-form Windows paths", () => {
-	const expected = "C:\\Users\\Alan\\worktree B";
-	assert.equal(normalizeNativeReviewCwd("/c/Users/Alan/worktree B", "win32"), expected);
-	assert.equal(normalizeNativeReviewCwd("c:/Users/Alan/worktree B", "win32"), expected);
-	assert.equal(normalizeNativeReviewCwd("/c/Users/Alan/worktree B", "linux"), "/c/Users/Alan/worktree B");
-});
-
-test("reviewMode status decodes an off effective mode with its deciding source", async () => {
-	const queue = queuedAdapter([CAPABLE_VERSION_LINE, { stdout: JSON.stringify(reviewModeStatusBody("off", { clone_local: "off", source: "clone_local", revision: "sha256:deadbeef" })) }]);
-	const result = await new NativeReviewCliV213(queue.adapter).reviewMode({ cwd: "/repo", operation: "status" });
-	assert.equal(result.status.effective, "off");
-	assert.equal(result.status.source, "clone_local");
-	assert.equal(result.status.cloneLocal, "off");
-	assert.equal(result.status.revision, "sha256:deadbeef");
-});
-
-test("reviewMode enable and disable pass --scope clone and mutate without a timeout", async () => {
-	const queue = queuedAdapter([
-		CAPABLE_VERSION_LINE, { stdout: JSON.stringify({ schema: "gentle-ai.review-mode/v1", operation: "disable", scope: "clone", status: { schema: "gentle-ai.rdd-mode-status/v1", global: "", clone_local: "off", effective: "off", source: "clone_local" } }) },
-		CAPABLE_VERSION_LINE, { stdout: JSON.stringify({ schema: "gentle-ai.review-mode/v1", operation: "enable", scope: "clone", status: { schema: "gentle-ai.rdd-mode-status/v1", global: "", clone_local: "", effective: "on", source: "default" } }) },
-	]);
-	const client = new NativeReviewCliV213(queue.adapter);
-	const disabled = await client.reviewMode({ cwd: "/repo", operation: "disable" });
-	const enabled = await client.reviewMode({ cwd: "/repo", operation: "enable" });
-	assert.deepEqual(queue.calls[1]?.arguments, ["review", "mode", "disable", "--cwd", "/repo", "--scope", "clone", "--json"]);
-	assert.deepEqual(queue.calls[3]?.arguments, ["review", "mode", "enable", "--cwd", "/repo", "--scope", "clone", "--json"]);
-	assert.equal(disabled.status.effective, "off");
-	assert.equal(enabled.status.effective, "on");
-});
-
-test("reviewMode rejects a response whose operation discriminator does not match the request", async () => {
-	const queue = queuedAdapter([CAPABLE_VERSION_LINE, { stdout: JSON.stringify(reviewModeStatusBody("on")) }]);
-	await assert.rejects(
-		() => new NativeReviewCliV213(queue.adapter).reviewMode({ cwd: "/repo", operation: "disable" }),
-		(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE,
-	);
-});
-
-test("native START decodes optional riskEvidence (a phrase array, matching gentle-ai's []string wire shape) and hint only when present", async () => {
-	const start = JSON.parse(START.stdout) as Record<string, unknown>;
-	const withEvidence = queuedAdapter([CAPABLE_VERSION_LINE, { stdout: JSON.stringify({ ...start, risk_evidence: ["service credentials in .env.example"], hint: "no reviewable candidate: every changed path is documentation." }) }]);
-	const result = await new NativeReviewCliV213(withEvidence.adapter).start({ cwd: "/repo" });
-	assert.deepEqual(result.riskEvidence, ["service credentials in .env.example"]);
-	assert.equal(result.hint, "no reviewable candidate: every changed path is documentation.");
-
-	const withoutEvidence = queuedAdapter([CAPABLE_VERSION_LINE, { stdout: START.stdout }]);
-	const bare = await new NativeReviewCliV213(withoutEvidence.adapter).start({ cwd: "/repo" });
-	assert.equal(bare.riskEvidence, undefined);
-	assert.equal(bare.hint, undefined);
-});
-
-test("native START rejects a scalar risk_evidence: the wire shape is always a phrase array, even with one phrase", async () => {
-	const start = JSON.parse(START.stdout) as Record<string, unknown>;
-	const queue = queuedAdapter([CAPABLE_VERSION_LINE, { stdout: JSON.stringify({ ...start, risk_evidence: "not an array" }) }]);
-	await assert.rejects(
-		() => new NativeReviewCliV213(queue.adapter).start({ cwd: "/repo" }),
-		(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE,
-	);
-});
-
-test("native VALIDATE decodes the disabled/unmanaged delivery alternate discriminator at exit 0", async () => {
-	const body = {
-		schema: "gentle-ai.review-gate-result/v1",
-		result: "invalidated",
-		allowed: false,
-		action: "repository-policy",
-		reason: "receipt-driven development is disabled and no receipt governs this candidate, so delivery follows ordinary repository policy",
-		// gentle-ai's RDDDeliveryDisabledUnmanaged is a single literal
-		// "disabled/unmanaged" — never split into two separate enum values.
-		delivery: "disabled/unmanaged",
-		context: { gate: "pre-commit", lineage_id: "", generation: 0, base_tree: "", candidate_tree: "", paths_digest: "", fix_delta_hash: "", policy_hash: "", ledger_hash: "", evidence_hash: "", base_relationship_valid: true },
-	};
-	const queue = queuedAdapter([CAPABLE_VERSION_LINE, { stdout: JSON.stringify(body), exitCode: 0 }]);
-	const result = await new NativeReviewCliV213(queue.adapter).validate({ cwd: "/repo", gate: "pre-commit" });
-	assert.equal(result.result, "invalidated");
-	assert.equal(result.allowed, false);
-	assert.equal(result.action, "repository-policy");
-	assert.equal(result.delivery, "disabled/unmanaged");
-});
-
-test("native VALIDATE rejects a split disabled-only or unmanaged-only delivery value: the wire literal is always the combined string", async () => {
-	for (const delivery of ["disabled", "unmanaged"]) {
-		const body = {
-			schema: "gentle-ai.review-gate-result/v1", result: "invalidated", allowed: false, action: "repository-policy",
-			reason: "receipt-driven development is disabled and no receipt governs this candidate, so delivery follows ordinary repository policy",
-			delivery,
-			context: { gate: "pre-commit", lineage_id: "", generation: 0, base_tree: "", candidate_tree: "", paths_digest: "", fix_delta_hash: "", policy_hash: "", ledger_hash: "", evidence_hash: "", base_relationship_valid: true },
-		};
-		const queue = queuedAdapter([CAPABLE_VERSION_LINE, { stdout: JSON.stringify(body), exitCode: 0 }]);
-		await assert.rejects(
-			() => new NativeReviewCliV213(queue.adapter).validate({ cwd: "/repo", gate: "pre-commit" }),
-			(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE,
-			`delivery ${JSON.stringify(delivery)} must still fail closed`,
-		);
-	}
-});
-
-test("native VALIDATE without delivery keeps the strict exit-code/action pairing unchanged", async () => {
-	const body = {
-		schema: "gentle-ai.review-gate-result/v1",
-		result: "invalidated",
-		allowed: false,
-		action: "repository-policy",
-		reason: "should require exit 1 because delivery is absent",
-		context: { gate: "pre-commit", lineage_id: "", generation: 0, base_tree: "", candidate_tree: "", paths_digest: "", fix_delta_hash: "", policy_hash: "", ledger_hash: "", evidence_hash: "", base_relationship_valid: true },
-	};
-	// Without `delivery`, an "invalidated" result with exit 0 is not the
-	// alternate discriminator shape and must still fail closed.
-	const queue = queuedAdapter([CAPABLE_VERSION_LINE, { stdout: JSON.stringify(body), exitCode: 0 }]);
-	await assert.rejects(
-		() => new NativeReviewCliV213(queue.adapter).validate({ cwd: "/repo", gate: "pre-commit" }),
-		(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE,
-	);
-});
-
-test("START tolerates the exact review-consent-skipped stderr line only when the mode capability is true", async () => {
-	const start = JSON.parse(START.stdout) as Record<string, unknown>;
-	const notice = "Gentle AI reviewed this change without asking, because this session has no terminal to answer on. Run 'gentle-ai review mode disable' to turn reviews off, or 'gentle-ai review mode status' to see the current setting.";
-
-	const tolerated = queuedAdapter([CAPABLE_VERSION_LINE, { stdout: JSON.stringify(start), stderr: notice }]);
-	const result = await new NativeReviewCliV213(tolerated.adapter).start({ cwd: "/repo" });
-	assert.equal(result.lineageId, "lineage-1");
-
-	// Same exact stderr text, but the negotiated version's `mode` capability is
-	// false (the pinned 2.1.11 row), so the notice must still fail closed.
-	const notTolerated = queuedAdapter([DARK_VERSION, { stdout: JSON.stringify(start), stderr: notice }]);
-	await assert.rejects(
-		() => new NativeReviewCliV213(notTolerated.adapter).start({ cwd: "/repo" }),
-		(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.UNEXPECTED_STDERR,
-	);
-});
-
-test("START rejects near-miss, prefixed, or extra-line stderr even when the mode capability is true", async () => {
-	const start = JSON.parse(START.stdout) as Record<string, unknown>;
-	const notice = "Gentle AI reviewed this change without asking, because this session has no terminal to answer on. Run 'gentle-ai review mode disable' to turn reviews off, or 'gentle-ai review mode status' to see the current setting.";
-	for (const stderr of [
-		`prefix: ${notice}`,
-		`${notice}\nextra line`,
-		notice.slice(0, -1),
-	]) {
-		const queue = queuedAdapter([CAPABLE_VERSION_LINE, { stdout: JSON.stringify(start), stderr }]);
-		await assert.rejects(
-			() => new NativeReviewCliV213(queue.adapter).start({ cwd: "/repo" }),
-			(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.UNEXPECTED_STDERR,
-			`stderr ${JSON.stringify(stderr)} must still fail closed`,
-		);
-	}
-});
-
-// ---------------------------------------------------------------------------
-// Phase 3 (kill switch) + Phase 4 (consent) integration through the
-// `gentle_review` controller tool and the `gentle:review-mode` command,
-// against a fake NativeReviewCli (no binary needed).
-// ---------------------------------------------------------------------------
-
-function git(cwd: string, ...args: string[]): string {
-	return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
-}
-
-function repository(t: test.TestContext): string {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-organic-parity-"));
-	// A materialized (retained) candidate view chmods its worktree read-only
-	// (0o444/0o555) to prevent tampering while lenses run; restore write
-	// permission recursively before cleanup so a retained-but-never-cleaned-up
-	// candidate view does not leak an unremovable temp directory.
-	t.after(() => {
-		try { execFileSync("chmod", ["-R", "u+w", cwd]); } catch { /* best effort */ }
-		rmSync(cwd, { recursive: true, force: true });
+		operation,
+		scope: "clone",
+		status: { schema: "gentle-ai.rdd-mode-status/v1", global, clone_local: cloneLocal, effective, source, ...(reach === undefined ? {} : { reach }) },
 	});
-	git(cwd, "init", "-b", "main");
-	git(cwd, "config", "user.email", "tests@example.com");
-	git(cwd, "config", "user.name", "Tests");
-	writeFileSync(join(cwd, "app.ts"), "export const value = 1;\n");
-	git(cwd, "add", ".");
-	git(cwd, "commit", "-m", "initial");
-	writeFileSync(join(cwd, "app.ts"), "export const value = 2;\n");
-	return cwd;
 }
 
-const UNSUPPORTED_REPAIR_ASSESSMENT: AuthorityRepairAssessmentV1 = {
-	schema: "gentle-ai.review-authority-repair-assessment/v1",
-	status: "unsupported",
-	counts: { lineages: 0, compactLineages: 0, legacyLineages: 0, events: 0, bytes: 0, eligibleCandidates: 0, unsupportedLineages: 0, conflicts: 0 },
-	supportedOperations: ["review/complete-fix", "review/validate-fix"],
-	authorizationSchema: "gentle-ai.review-repair-authorization/v1",
-};
+test("review mode STATUS keeps the provider-decided default-off source", async () => {
+	const queue = queuedAdapter([mode("status", "off", "default")]);
+	const result = await new NativeReviewCliV216(queue.adapter, "/package/.gentle-ai/gentle-ai").reviewMode({ cwd: process.cwd(), operation: NATIVE_REVIEW_MODE_OPERATION.STATUS });
+	assert.equal(result.status.effective, "off");
+	assert.equal(result.status.source, "default");
+	assert.deepEqual(queue.calls[0], ["review", "mode", "status", "--cwd", process.cwd(), "--json"]);
+});
 
-function unrelatedStartTargetStatus(cwd: string): ReviewStatusV3 {
-	const sha = `sha256:${"a".repeat(64)}`;
-	const candidate = new CandidateViewRegistry().create({ contributorRoot: cwd });
-	const tree = candidate.candidateTree;
-	const baseTree = candidate.baseTree;
-	const paths = candidate.paths;
-	candidate.cleanup();
-	const projection = {
-		schema: "gentle-ai.review-integration.projection/v1" as const,
-		kind: "current-changes" as const,
-		projection: "workspace" as const,
-		baseTree,
-		initialReviewTree: tree,
-		currentCandidateTree: tree,
-		pathsDigest: sha,
-		paths,
-		intendedUntracked: [],
-		intendedUntrackedProof: sha,
-		initialSnapshotIdentity: sha,
-		currentSnapshotIdentity: sha,
-	};
-	const rawRepair = {
-		schema: UNSUPPORTED_REPAIR_ASSESSMENT.schema,
-		status: UNSUPPORTED_REPAIR_ASSESSMENT.status,
-		counts: {
-			lineages: 0, compact_lineages: 0, legacy_lineages: 0, events: 0, bytes: 0,
-			eligible_candidates: 0, unsupported_lineages: 0, conflicts: 0,
-		},
-		supported_operations: UNSUPPORTED_REPAIR_ASSESSMENT.supportedOperations,
-		authorization_schema: UNSUPPORTED_REPAIR_ASSESSMENT.authorizationSchema,
-	};
-	return {
-		contract: "gentle-ai.review-integration/v2",
-		applicability: "unrelated",
-		receipt: { status: "not_applicable" },
-		action: "start",
-		replayability: "not_replayable",
-		targetIdentity: sha,
-		projection,
-		repair: UNSUPPORTED_REPAIR_ASSESSMENT,
-		candidates: [],
-		raw: {
-			schema: "gentle-ai.review-integration.status/v3", contract: "gentle-ai.review-integration/v2", operation: "review.status",
-			applicability: "unrelated", receipt: { status: "not_applicable" }, action: "start", replayability: "not_replayable", target_identity: sha,
-			repair: rawRepair,
-			projection: { schema: projection.schema, kind: projection.kind, projection: projection.projection, base_tree: baseTree, initial_review_tree: tree, current_candidate_tree: tree, paths_digest: sha, paths, intended_untracked: [], intended_untracked_proof: sha, initial_snapshot_identity: sha, current_snapshot_identity: sha },
-			candidates: [],
-		},
-	};
-}
+test("review mode mutations remain clone-scoped and retain their exact operation discriminator", async () => {
+	const queue = queuedAdapter([mode("disable", "off", "clone_local"), mode("enable", "on", "global")]);
+	const review = new NativeReviewCliV216(queue.adapter, "/package/.gentle-ai/gentle-ai");
+	assert.equal((await review.reviewMode({ cwd: process.cwd(), operation: NATIVE_REVIEW_MODE_OPERATION.DISABLE })).operation, "disable");
+	assert.equal((await review.reviewMode({ cwd: process.cwd(), operation: NATIVE_REVIEW_MODE_OPERATION.ENABLE })).operation, "enable");
+	assert.deepEqual(queue.calls.map((arguments_) => arguments_.slice(-3)), [["--scope", "clone", "--json"], ["--scope", "clone", "--json"]]);
+});
 
-interface FakeOrganicNativeOptions {
-	reviewModeCapable?: boolean;
-	reviewModeEffective?: "on" | "off";
-	reviewModeSource?: "default" | "global" | "clone_local";
-	reviewModeThrows?: boolean;
-	lensesRequired?: boolean;
-	riskEvidence?: readonly string[];
-	hint?: string;
-}
+test("review mode rejects a response with a foreign operation discriminator", async () => {
+	const queue = queuedAdapter([mode("enable", "on", "global")]);
+	await assert.rejects(
+		() => new NativeReviewCliV216(queue.adapter, "/package/.gentle-ai/gentle-ai").reviewMode({ cwd: process.cwd(), operation: NATIVE_REVIEW_MODE_OPERATION.STATUS }),
+		/schema incompatible/,
+	);
+});
 
-function fakeOrganicNative(options: FakeOrganicNativeOptions = {}): { native: NativeReviewCli; state: { startCalls: number } } {
-	const state = { startCalls: 0 };
-	const reviewModeCapable = options.reviewModeCapable ?? true;
-	const native = {
-		async start() {
-			state.startCalls += 1;
-			return {
-				lineageId: "native-lineage", state: "reviewing", riskLevel: "high",
-				selectedLenses: ["review-risk", "review-resilience", "review-readability", "review-reliability"],
-				changedFiles: 1, changedLines: 1, correctionBudget: 1, action: "created",
-				lensesRequired: options.lensesRequired ?? true,
-				...(options.riskEvidence === undefined ? {} : { riskEvidence: options.riskEvidence }),
-				...(options.hint === undefined ? {} : { hint: options.hint }),
-			};
-		},
-		async finalize(): Promise<never> { throw new Error("finalize not used in this test"); },
-		async validate(): Promise<never> { throw new Error("validate not used in this test"); },
-		async bindSdd(): Promise<never> { throw new Error("bindSdd not used in this test"); },
-		async sddStatus(): Promise<never> { throw new Error("sddStatus not used in this test"); },
-		async reviewStatus(): Promise<never> { throw new Error("reviewStatus not used in this test"); },
-		async targetStatus(request: { cwd: string }) {
-			return unrelatedStartTargetStatus(request.cwd);
-		},
-		...(reviewModeCapable
-			? {
-				async reviewMode(request: { operation: string }) {
-					if (options.reviewModeThrows === true) throw new Error("native review mode process failed");
-					const effective = options.reviewModeEffective ?? "on";
-					const source = options.reviewModeSource ?? "default";
-					return {
-						operation: request.operation,
-						scope: "both",
-						status: {
-							global: source === "global" ? effective : "",
-							cloneLocal: source === "clone_local" && effective === "off" ? "off" : "",
-							effective,
-							source,
-						},
-					};
-				},
-			}
-			: {}),
-	} as unknown as NativeReviewCli;
-	return { native, state };
-}
+test("all terminal capture fixtures retain exact, non-interchangeable operation identities", () => {
+	assert.equal(decodeReviewLastEventClosureV1(captured("last-event-capture-refuter-approved.captured.json")).operation, "review.capture-refuter");
+	assert.equal(decodeReviewLastEventClosureV1(captured("last-event-capture-validation-approved.captured.json")).operation, "review/capture-validation");
+	assert.equal(decodeReviewLastEventClosureV1(captured("last-event-capture-result-approved.captured.json")).operation, "review/capture-result");
+});
 
-interface RegisteredTool {
+test("native risk evidence derives only published medium and high risk phrases", () => {
+	assert.deepEqual(nativeRiskEvidencePhrases("low", [{ code: "process_boundary", path: "runner.ts" }]), []);
+	assert.deepEqual(nativeRiskEvidencePhrases("medium", [{ code: "process_boundary", path: "runner.ts" }]), [
+		"this change is not purely passive documentation, so it gets one consolidated review.",
+		"code that starts other processes in runner.ts",
+	]);
+	assert.deepEqual(nativeRiskEvidencePhrases("high", [{ code: "hot_path", signal: "auth", path: "auth.ts" }, { code: "unknown", path: "ignored.ts" }]), ["authentication in auth.ts"]);
+});
+
+test("Windows native cwd normalization preserves drive identity without changing POSIX paths", () => {
+	assert.equal(normalizeNativeReviewCwd("/c/Users/example/repo", "win32"), "C:\\Users\\example\\repo");
+	assert.equal(normalizeNativeReviewCwd("c:\\Users\\example\\repo", "win32"), "C:\\Users\\example\\repo");
+	assert.equal(normalizeNativeReviewCwd("/repo with spaces", "linux"), "/repo with spaces");
+});
+
+test("current review mode keeps canonical reach values and rejects unrecognized wire values", async (t) => {
+	for (const reach of ["machine", "this_build"] as const) {
+		const queue = queuedAdapter([mode("status", "off", "clone_local", reach)]);
+		const result = await new NativeReviewCliV216(queue.adapter, "/package/.gentle-ai/gentle-ai").reviewMode({ cwd: process.cwd(), operation: NATIVE_REVIEW_MODE_OPERATION.STATUS });
+		assert.equal(result.status.reach, reach);
+	}
+	const malformed = queuedAdapter([mode("status", "off", "clone_local", "future")]);
+	await assert.rejects(
+		() => new NativeReviewCliV216(malformed.adapter, "/package/.gentle-ai/gentle-ai").reviewMode({ cwd: process.cwd(), operation: NATIVE_REVIEW_MODE_OPERATION.STATUS }),
+		(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE,
+	);
+	if (process.platform !== "win32") {
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-review-mode-")));
+		const alias = `${root}-alias`;
+		const { symlinkSync } = await import("node:fs");
+		symlinkSync(root, alias, "dir");
+		t.after(() => {
+			rmSync(alias, { force: true });
+			rmSync(root, { recursive: true, force: true });
+		});
+		const observed: string[] = [];
+		const adapter: ExecFileAdapter = async (request) => {
+			observed.push(request.cwd);
+			return { stdout: mode("status", "off", "global"), stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
+		};
+		await new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai").reviewMode({ cwd: alias, operation: NATIVE_REVIEW_MODE_OPERATION.STATUS });
+		assert.deepEqual(observed, [root]);
+	}
+});
+
+test("published start/v3 wire rejects scalar risk reasons without Pi lens policy", () => {
+	const start = captured("start-v3-zero-lens-closed.captured.json") as Record<string, unknown>;
+	assert.throws(() => decodeReviewStartV3({ ...start, risk_reasons: "not-an-array" }), /risk_reasons/);
+});
+
+interface RegisteredControllerTool {
 	execute: (
 		toolCallId: string,
-		params: unknown,
+		parameters: unknown,
 		signal: AbortSignal | undefined,
 		onUpdate: undefined,
-		ctx: ExtensionContext,
+		context: ExtensionContext,
 	) => Promise<{ details?: unknown }>;
 }
 
-interface RegisteredCommandFixture {
-	handler: (args: string, ctx: ExtensionContext) => Promise<void>;
+interface RegisteredCommand {
+	handler: (args: string, context: ExtensionContext) => Promise<void>;
 }
 
-interface RegisteredEventFixture {
-	(event: unknown, ctx: ExtensionContext): Promise<unknown> | unknown;
+interface RegisteredEvent {
+	(event: unknown, context: ExtensionContext): Promise<unknown> | unknown;
 }
 
-function runtime(
-	nativeReviewCli: NativeReviewCli | null,
-	writeReviewConsentLatch: typeof recordReviewConsentLatch = recordReviewConsentLatch,
-	clock?: { now?: () => number; scheduleTimer?: (callback: () => void, delayMs: number) => { unref: () => void } },
-): { controller: RegisteredTool; commands: Map<string, RegisteredCommandFixture>; events: Map<string, RegisteredEventFixture> } {
-	const tools = new Map<string, RegisteredTool>();
-	const commands = new Map<string, RegisteredCommandFixture>();
-	const events = new Map<string, RegisteredEventFixture>();
-	const dependencies = { nativeReviewCli, candidateViews: new CandidateViewRegistry(), ...clock } as unknown as Parameters<typeof createGentleAiExtension>[0];
-	__testing.createGentleAiExtension(dependencies, writeReviewConsentLatch)({
-		on(name: string, handler: RegisteredEventFixture) { events.set(name, handler); },
-		registerTool(definition: RegisteredTool & { name: string }) { tools.set(definition.name, definition); },
-		registerCommand(name: string, definition: RegisteredCommandFixture) { commands.set(name, definition); },
+interface ParityRuntime {
+	controller: RegisteredControllerTool;
+	commands: Map<string, RegisteredCommand>;
+	events: Map<string, RegisteredEvent>;
+}
+
+interface ParityRuntimeOptions {
+	candidateViews?: CandidateViewRegistry;
+	pendingReviewConsentRegistry?: PendingReviewConsentRegistry;
+}
+
+function parityRuntime(nativeReviewCli: NativeReviewCli | null, options: ParityRuntimeOptions = {}): ParityRuntime {
+	const tools = new Map<string, RegisteredControllerTool>();
+	const commands = new Map<string, RegisteredCommand>();
+	const events = new Map<string, RegisteredEvent>();
+	const dependencies = {
+		nativeReviewCli,
+		candidateViews: options.candidateViews ?? new CandidateViewRegistry(),
+		pendingReviewConsentRegistry: options.pendingReviewConsentRegistry ?? new PendingReviewConsentRegistry(),
+	} as unknown as Parameters<typeof createGentleAiExtension>[0];
+	__testing.createGentleAiExtension(dependencies)({
+		on(name: string, handler: RegisteredEvent) { events.set(name, handler); },
+		registerTool(definition: RegisteredControllerTool & { name: string }) { tools.set(definition.name, definition); },
+		registerCommand(name: string, definition: RegisteredCommand) { commands.set(name, definition); },
 	} as unknown as ExtensionAPI);
 	const controller = tools.get("gentle_review");
 	assert.ok(controller);
 	return { controller: controller!, commands, events };
 }
 
-function headlessContext(cwd: string, notices: Array<{ message: string; type?: string }> = []): ExtensionContext {
-	return { cwd, hasUI: false, ui: { notify: (message: string, type?: string) => { notices.push({ message, type }); } } } as unknown as ExtensionContext;
-}
-
-function confirmContext(cwd: string, answer: boolean): ExtensionContext {
-	return { cwd, hasUI: true, ui: { confirm: async () => answer, notify: () => {} } } as unknown as ExtensionContext;
-}
-
-function throwingConfirmContext(cwd: string): ExtensionContext {
-	return { cwd, hasUI: true, ui: { confirm: async () => { throw new Error("no answer available"); }, notify: () => {} } } as unknown as ExtensionContext;
-}
-
-const START_ORDINARY = { operation: "start", input: JSON.stringify({ mode: "ordinary" }) };
-
-async function execStart(controller: RegisteredTool, id: string, ctx: ExtensionContext): Promise<Record<string, unknown>> {
-	const { details } = await controller.execute(id, START_ORDINARY, undefined, undefined, ctx);
-	return details as Record<string, unknown>;
-}
-
-test("kill-switch: effective off returns a non-failure skipped envelope and never calls native start", async (t) => {
-	const cwd = repository(t);
-	const { native, state } = fakeOrganicNative({ reviewModeEffective: "off" });
-	const { controller } = runtime(native);
-	const result = await execStart(controller, "kill-switch-off", headlessContext(cwd));
-	assert.equal(result.status, "skipped");
-	assert.equal(result.outcome, "review-mode-disabled");
-	assert.equal(result.delivery, "disabled/unmanaged");
-	assert.equal(result.mutation_performed, false);
-	assert.equal(state.startCalls, 0, "native start must not be called once the kill switch reports off");
-});
-
-// Parity with gentle-ai's RDDDisabledError.Error()
-// (internal/reviewtransaction/rdd_mode.go): a refusal names the situation, the
-// source that actually decided, and a continuation scoped to that source. Pi
-// never blocks here — the envelope is a non-failure skip — but it must not
-// throw away which source decided, nor leave the caller without a way back on.
-test("kill-switch: a clone-local off names the deciding source and the Pi command that turns reviews back on", async (t) => {
-	const cwd = repository(t);
-	const { native } = fakeOrganicNative({ reviewModeEffective: "off", reviewModeSource: "clone_local" });
-	const { controller } = runtime(native);
-	const result = await execStart(controller, "kill-switch-clone-local", headlessContext(cwd));
-	assert.equal(result.status, "skipped");
-	assert.equal(result.outcome, "review-mode-disabled");
-	assert.equal(result.mode_source, "clone_local");
-	assert.equal(result.reason, "receipt-driven development is disabled: start is skipped because the clone_local mode source keeps it off");
-	assert.equal(result.next_action, "Run /gentle:review-mode enable to turn reviews back on for this clone.");
-});
-
-// gentle-ai maps RDDModeSourceGlobal onto `--scope=global`, and a clone-local
-// override may only ever disable (cloneLocalRDDOverrideValue rejects RDDModeOn).
-// Pi's own /gentle:review-mode always passes --scope clone, so it CANNOT clear a
-// global off. Naming it here would be naming a dead end, so the continuation has
-// to be the native command that actually resolves it.
-test("kill-switch: a global off names the native global-scope command, never Pi's clone-scope one", async (t) => {
-	const cwd = repository(t);
-	const { native } = fakeOrganicNative({ reviewModeEffective: "off", reviewModeSource: "global" });
-	const { controller } = runtime(native);
-	const result = await execStart(controller, "kill-switch-global", headlessContext(cwd));
-	assert.equal(result.mode_source, "global");
-	assert.equal(result.reason, "receipt-driven development is disabled: start is skipped because the global mode source keeps it off");
-	assert.equal(
-		result.next_action,
-		"Run `gentle-ai review mode enable --scope=global` to turn reviews back on; /gentle:review-mode enable only clears the clone-local setting, which cannot override a global off.",
-	);
-	assert.ok(!/\/gentle:review-mode enable to turn/.test(String(result.next_action)), "a global off must never be sent to Pi's clone-scope command");
-});
-
-// Parity with reviewModeScopeForSource: the default source expresses no opinion
-// and can never be what keeps reviews off, so it gets no guessed continuation.
-test("kill-switch: an off with the default source names no continuation rather than guessing one", async (t) => {
-	const cwd = repository(t);
-	const { native } = fakeOrganicNative({ reviewModeEffective: "off", reviewModeSource: "default" });
-	const { controller } = runtime(native);
-	const result = await execStart(controller, "kill-switch-default", headlessContext(cwd));
-	assert.equal(result.mode_source, "default");
-	assert.equal(result.next_action, undefined);
-});
-
-test("kill-switch: capability-absent (no reviewMode) leaves today's path unchanged", async (t) => {
-	const cwd = repository(t);
-	const { native } = fakeOrganicNative({ reviewModeCapable: false, lensesRequired: false });
-	const { controller } = runtime(native);
-	const result = await execStart(controller, "kill-switch-absent", headlessContext(cwd));
-	assert.notEqual(result.status, "skipped");
-	assert.ok(result.result);
-});
-
-test("kill-switch: an unexpected reviewMode failure maps to the existing native-operation-failed envelope", async (t) => {
-	const cwd = repository(t);
-	const { native } = fakeOrganicNative({ reviewModeThrows: true });
-	const { controller } = runtime(native);
-	const result = await execStart(controller, "kill-switch-error", headlessContext(cwd));
-	assert.equal(result.status, "blocked");
-	assert.equal(result.outcome, "native-operation-failed");
-});
-
-function candidateConsent(cwd: string): ReviewConsentV2 {
-	const targetIdentity = `sha256:${"a".repeat(64)}`;
-	const choices = [
-		{ answer: "granted" as const, label: "Run the review now", effect: "Review this exact candidate only.", invocation: `gentle-ai review start --contract gentle-ai.review-integration/v2 --cwd ${cwd} --target ${targetIdentity} --projection workspace --lineage native-lineage --consent granted` },
-		{ answer: "declined" as const, label: "Not now, just this once", effect: "Create no authority and ask again next candidate.", invocation: `gentle-ai review start --contract gentle-ai.review-integration/v2 --cwd ${cwd} --target ${targetIdentity} --projection workspace --lineage native-lineage --consent declined` },
-	] as const;
-	const raw = { schema: "gentle-ai.review-integration.consent/v2", contract: "gentle-ai.review-integration/v2", operation: "review.start", action: "consent_required", blocking: true, target_identity: targetIdentity, projection: "workspace", risk_level: "high", changed_files: 1, changed_lines: 1, headline: "Review this candidate", reason: "It changes a process boundary.", value: "Review catches regressions.", risk_evidence: ["shell process"], choices: choices.map((choice) => ({ ...choice })), off_path: { note: "Disable reviews separately.", command: "gentle-ai review mode disable" } };
-	return { schema: "gentle-ai.review-integration.consent/v2", contract: "gentle-ai.review-integration/v2", operation: "review.start", action: "consent_required", blocking: true, targetIdentity, projection: "workspace", riskLevel: "high", changedFiles: 1, changedLines: 1, headline: "Review this candidate", reason: "It changes a process boundary.", value: "Review catches regressions.", riskEvidence: ["shell process"], choices, offPath: { note: "Disable reviews separately.", command: "gentle-ai review mode disable" }, raw };
-}
-
-function relayedConsentNative(cwd: string): { native: NativeReviewCli; answers: NativeReviewConsentAnswer[]; startRequests: NativeStartRequest[]; answerRequests: NativeReviewConsentAnswerRequest[] } {
-	const { native } = fakeOrganicNative();
-	const consent = candidateConsent(cwd);
-	const answers: NativeReviewConsentAnswer[] = [];
-	const startRequests: NativeStartRequest[] = [];
-	const answerRequests: NativeReviewConsentAnswerRequest[] = [];
-	native.start = async (request) => {
-		startRequests.push(request);
-		throw new NativeReviewConsentRequiredError(consent);
-	};
-	native.answerConsent = async (request) => {
-		answers.push(request.answer);
-		answerRequests.push(request);
-		if (request.answer === "declined") return { kind: "declined", targetIdentity: consent.targetIdentity, projection: "workspace", riskLevel: "high", changedFiles: 1, changedLines: 1, consent: "declined_this_candidate", raw: { operation: "review/start", action: "declined", consent: "declined_this_candidate" } };
-		return { kind: "started", start: { lineageId: "native-lineage", state: "reviewing", riskLevel: "high", selectedLenses: ["review-risk", "review-resilience", "review-readability", "review-reliability"], changedFiles: 1, changedLines: 1, correctionBudget: 1, action: "created", lensesRequired: true } };
-	};
-	return { native, answers, startRequests, answerRequests };
-}
-
-async function answerConsent(controller: RegisteredTool, binding: unknown, answer: unknown, ctx: ExtensionContext): Promise<Record<string, unknown>> {
-	const { details } = await controller.execute("consent-answer", { operation: "answer-consent", input: JSON.stringify({ consentBinding: binding, answer }) }, undefined, undefined, ctx);
-	return details as Record<string, unknown>;
-}
-
-async function blockedConsent(controller: RegisteredTool, id: string, ctx: ExtensionContext): Promise<Record<string, unknown>> {
-	const result = await execStart(controller, id, ctx);
-	assert.equal(result.status, "blocked");
-	assert.equal(result.outcome, "native-review-consent-required");
-	assert.equal(typeof result.consent_binding, "string");
-	return result;
-}
-
-test("consent relay returns the identical complete parent-visible envelope with or without UI and never answers internally", async (t) => {
-	const cwd = repository(t);
-	recordReviewConsentLatch(cwd);
-	for (const ctx of [
-		{ cwd, hasUI: true, ui: { select: async () => { throw new Error("internal consent UI must not run"); }, notify: () => {} } } as unknown as ExtensionContext,
-		headlessContext(cwd),
-	]) {
-		const { native, answers } = relayedConsentNative(cwd);
-		const result = await blockedConsent(runtime(native).controller, "consent-blocked", ctx);
-		assert.deepEqual(result.consent, candidateConsent(cwd).raw);
-		assert.deepEqual(answers, []);
-		assert.equal(result.lineage_created, false);
-	}
-});
-
-test("explicit consent follow-up grants or declines exactly once", async (t) => {
-	for (const answer of ["granted", "declined"] as const) {
-		const repositoryCwd = repository(t);
-		const cwd = `${repositoryCwd}-alias`;
-		symlinkSync(repositoryCwd, cwd, process.platform === "win32" ? "junction" : "dir");
-		t.after(() => rmSync(cwd, { force: true }));
-		const canonicalCwd = realpathSync(cwd);
-		assert.equal(readReviewConsentLatch(cwd), false);
-		const { native, answers, startRequests, answerRequests } = relayedConsentNative(cwd);
-		const { controller } = runtime(native);
-		const blocked = await blockedConsent(controller, `consent-${answer}`, headlessContext(cwd));
-		const result = await answerConsent(controller, blocked.consent_binding, answer, headlessContext(cwd));
-		assert.deepEqual(answers, [answer]);
-		assert.equal(startRequests.length, 1);
-		assert.equal(startRequests[0]?.cwd, cwd);
-		assert.equal(startRequests[0]?.targetIdentity, candidateConsent(cwd).targetIdentity);
-		assert.equal(startRequests[0]?.projection, "workspace");
-		assert.equal(answerRequests.length, 1);
-		assert.equal(answerRequests[0]?.cwd, cwd);
-		assert.equal(answerRequests[0]?.consent.targetIdentity, startRequests[0]?.targetIdentity);
-		if (answer === "granted") {
-			const actorBinding = result.actor_binding as { workspace_root: string; candidate_root: string };
-			assert.equal(actorBinding.workspace_root, canonicalCwd);
-			assert.notEqual(actorBinding.candidate_root, canonicalCwd);
-			assert.equal(readReviewConsentLatch(cwd), true);
-		} else {
-			assert.equal(result.outcome, "consent-declined-this-candidate");
-			assert.equal(result.lineage_created, false);
-			assert.equal("actor_binding" in result, false);
-			assert.equal("result" in result, false);
-			assert.equal(readReviewConsentLatch(cwd), false);
-		}
-		await assert.rejects(() => answerConsent(controller, blocked.consent_binding, answer, headlessContext(cwd)), /unknown, expired, or already consumed/);
-	}
-});
-
-test("granted consent preserves the completed native start when local latch persistence fails", async (t) => {
-	const cwd = repository(t);
-	const { native, answers } = relayedConsentNative(cwd);
-	const notices: Array<{ message: string; type?: string }> = [];
-	let latchWrites = 0;
-	const { controller } = runtime(native, () => {
-		latchWrites += 1;
-		throw new Error("injected consent latch failure");
+function repository(t: test.TestContext): string {
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-native-parity-")));
+	t.after(() => {
+		try { execFileSync("chmod", ["-R", "u+w", cwd], { stdio: "ignore" }); } catch { /* best effort */ }
+		rmSync(cwd, { recursive: true, force: true });
 	});
-	const blocked = await blockedConsent(controller, "consent-latch-failure", headlessContext(cwd, notices));
-	const result = await answerConsent(controller, blocked.consent_binding, "granted", headlessContext(cwd, notices));
+	execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
+	writeFileSync(join(cwd, "app.ts"), "export const value = 1;\n");
+	execFileSync("git", ["add", "app.ts"], { cwd, stdio: "ignore" });
+	execFileSync("git", ["-c", "user.name=Parity Test", "-c", "user.email=parity@example.invalid", "commit", "-m", "base"], { cwd, stdio: "ignore" });
+	writeFileSync(join(cwd, "app.ts"), "export const value = 2;\n");
+	return cwd;
+}
 
-	assert.deepEqual(answers, ["granted"]);
-	assert.equal(latchWrites, 1);
-	assert.deepEqual(result.result, { lineage_id: "native-lineage", state: "reviewing", risk_tier: "high", selected_lenses: ["review-risk", "review-resilience", "review-readability", "review-reliability"], changed_files: 1, original_changed_lines: 1, correction_budget: 1, action: "created", lenses_required: true });
-	assert.equal((result.actor_binding as { workspace_root: string }).workspace_root, realpathSync(cwd));
-	assert.equal(readReviewConsentLatch(cwd), false);
-	assert.equal(notices.length, 1);
-	assert.equal(notices[0]?.type, "warning");
-	assert.match(notices[0]?.message ?? "", /native review start completed, but Pi could not record the local consent latch/i);
-});
+function startStatus(cwd: string): ReviewStatusV3 {
+	const candidates = new CandidateViewRegistry();
+	const checksBefore = fixtureAclChecks;
+	const candidate = candidates.create({ contributorRoot: cwd });
+	if (process.platform === "win32") assert.ok(fixtureAclChecks > checksBefore, "coordination candidates must use the fixture ACL authority");
+	try {
+		return {
+			contract: "gentle-ai.review-integration/v2",
+			applicability: "unrelated",
+			action: "start",
+			replayability: "not_replayable",
+			targetIdentity: `sha256:${"a".repeat(64)}`,
+			projection: {
+				schema: "gentle-ai.review-candidate-projection/v1",
+				kind: "current-changes",
+				projection: "workspace",
+				baseTree: candidate.baseTree,
+				initialReviewTree: candidate.candidateTree,
+				currentCandidateTree: candidate.candidateTree,
+				pathsDigest: `sha256:${"a".repeat(64)}`,
+				paths: [...candidate.paths],
+				intendedUntracked: [],
+				intendedUntrackedProof: `sha256:${"a".repeat(64)}`,
+				initialSnapshotIdentity: `sha256:${"a".repeat(64)}`,
+				currentSnapshotIdentity: `sha256:${"a".repeat(64)}`,
+			},
+			candidates: [],
+			raw: { schema: "gentle-ai.review-integration.status/v5" },
+		} as unknown as ReviewStatusV3;
+	} finally {
+		candidates.cleanup(candidate.token);
+	}
+}
 
-// Issue #247: a local binding mismatch was indistinguishable from a provider
-// outage, so the reporter diagnosed a missing --cwd that Pi does forward.
-test("a consent binding mismatch surfaces as an actionable local failure, not an opaque native operation failure", async (t) => {
-	const cwd = repository(t);
-	const { native, answers } = relayedConsentNative(cwd);
-	native.answerConsent = async () => {
-		throw new NativeReviewConsentBindingError("consent-invocation-cwd-changed", "Native consent invocation repository binding changed");
-	};
-	const { controller } = runtime(native);
-	const blocked = await blockedConsent(controller, "consent-binding", headlessContext(cwd));
-	const result = await answerConsent(controller, blocked.consent_binding, "granted", headlessContext(cwd));
-	assert.equal(result.status, "blocked");
-	assert.equal(result.outcome, "consent-binding-invalid");
-	assert.deepEqual(result.diagnostics, { code: "consent-invocation-cwd-changed", message: "Native consent invocation repository binding changed" });
-	assert.equal(result.native_invocation_attempted, false);
-	assert.equal(result.lineage_created, false);
-	assert.equal(result.mutation_performed, false);
-	assert.equal(result.mutation_outcome, "none");
-	assert.equal(result.next_action, "resolve-consent-binding");
-	assert.deepEqual(answers, []);
-	assert.equal(readReviewConsentLatch(cwd), false);
-});
-
-test("consent follow-up rejects invalid token, unknown id, changed cwd, and changed target binding", async (t) => {
-	const cwd = repository(t);
-	const consent = candidateConsent(cwd);
-	const { native, answers } = relayedConsentNative(cwd);
-	native.start = async () => { throw new NativeReviewConsentRequiredError(consent); };
-	const { controller } = runtime(native);
-	const blocked = await blockedConsent(controller, "consent-invalid", headlessContext(cwd));
-	await assert.rejects(() => controller.execute("malformed", { operation: "answer-consent", input: "not-json" }, undefined, undefined, headlessContext(cwd)), /input is not valid JSON/);
-	await assert.rejects(() => controller.execute("extra", { operation: "answer-consent", input: JSON.stringify({ consentBinding: blocked.consent_binding, answer: "granted", target: "substitute" }) }, undefined, undefined, headlessContext(cwd)), /exactly consentBinding and answer/);
-	await assert.rejects(() => answerConsent(controller, blocked.consent_binding, "yes", headlessContext(cwd)), /answer must be granted or declined/);
-	await assert.rejects(() => answerConsent(controller, "missing", "granted", headlessContext(cwd)), /unknown, expired, or already consumed/);
-	const other = repository(t);
-	await assert.rejects(() => answerConsent(controller, blocked.consent_binding, "granted", headlessContext(other)), /repository binding changed/);
-	const originalTarget = consent.targetIdentity;
-	(consent as { targetIdentity: string }).targetIdentity = `sha256:${"b".repeat(64)}`;
-	await assert.rejects(() => answerConsent(controller, blocked.consent_binding, "granted", headlessContext(cwd)), /consent envelope binding changed/);
-	(consent as { targetIdentity: string }).targetIdentity = originalTarget;
-	(consent as { projection: string }).projection = "staged";
-	await assert.rejects(() => answerConsent(controller, blocked.consent_binding, "granted", headlessContext(cwd)), /consent envelope binding changed/);
-	(consent as { projection: string }).projection = "workspace";
-	(consent.choices[0] as { invocation: string }).invocation = consent.choices[0].invocation.replace("native-lineage", "changed-lineage");
-	await assert.rejects(() => answerConsent(controller, blocked.consent_binding, "granted", headlessContext(cwd)), /consent envelope binding changed/);
-	assert.deepEqual(answers, []);
-	assert.equal(readReviewConsentLatch(cwd), false);
-});
-
-test("unavailable consent follow-up leaves the clone latch unset", async (t) => {
-	const cwd = repository(t);
-	const { native } = relayedConsentNative(cwd);
-	delete native.answerConsent;
-	const { controller } = runtime(native);
-	const blocked = await blockedConsent(controller, "consent-unavailable", headlessContext(cwd));
-	await assert.rejects(() => answerConsent(controller, blocked.consent_binding, "granted", headlessContext(cwd)), /consent follow-up is unavailable/);
-	assert.equal(readReviewConsentLatch(cwd), false);
-});
-
-test("ambiguous consent mutation consumes the one-shot binding and requires status instead of blind replay", async (t) => {
-	const cwd = repository(t);
-	const { native } = relayedConsentNative(cwd);
-	let statusCalls = 0;
-	const targetStatus = native.targetStatus!;
-	native.targetStatus = async (request) => { statusCalls += 1; return await targetStatus(request); };
-	native.answerConsent = async () => { throw Object.assign(new Error("ambiguous"), { mutationOutcome: "unknown", nextAction: "review.status" }); };
-	const { controller } = runtime(native);
-	const blocked = await blockedConsent(controller, "consent-ambiguous", headlessContext(cwd));
-	await answerConsent(controller, blocked.consent_binding, "granted", headlessContext(cwd));
-	assert.equal(statusCalls, 2, "ambiguous consent must reconcile through target status");
-	await assert.rejects(() => answerConsent(controller, blocked.consent_binding, "granted", headlessContext(cwd)), /unknown, expired, or already consumed/);
-	assert.equal(readReviewConsentLatch(cwd), false);
-});
-
-test("session shutdown clears pending candidate consent bindings and is idempotent", async (t) => {
-	const cwd = repository(t);
-	const { native, answers, startRequests } = relayedConsentNative(cwd);
-	const { controller, events } = runtime(native);
-	const blocked = await blockedConsent(controller, "consent-before-shutdown", headlessContext(cwd));
-	const shutdown = events.get("session_shutdown");
-	assert.ok(shutdown);
-	await shutdown({}, headlessContext(cwd));
-	await shutdown({}, headlessContext(cwd));
-	await assert.rejects(() => answerConsent(controller, blocked.consent_binding, "granted", headlessContext(cwd)), /unknown, expired, or already consumed/);
-	assert.deepEqual(answers, []);
-	const afterShutdown = await blockedConsent(controller, "consent-after-shutdown", headlessContext(cwd));
-	assert.notEqual(afterShutdown.consent_binding, blocked.consent_binding, "the same candidate gets a fresh binding after shutdown cleanup");
-	assert.equal(startRequests.length, 2, "shutdown loss requires a fresh native START instead of local replay");
-});
-
-test("extension reload gives the same candidate a fresh consent binding instead of replaying lost local state", async (t) => {
-	const cwd = repository(t);
-	const { native, startRequests } = relayedConsentNative(cwd);
-	const beforeReload = await blockedConsent(runtime(native).controller, "consent-before-reload", headlessContext(cwd));
-	const afterReload = await blockedConsent(runtime(native).controller, "consent-after-reload", headlessContext(cwd));
-	assert.notEqual(afterReload.consent_binding, beforeReload.consent_binding);
-	assert.equal(startRequests.length, 2, "reload loss requires a fresh native START instead of local replay");
-});
-
-test("successful explicit disable clears pending candidate consent binding even after re-enable", async (t) => {
-	const cwd = repository(t);
-	const { native, answers } = relayedConsentNative(cwd);
-	let effective: "on" | "off" = "on";
-	native.reviewMode = async (request) => {
-		if (request.operation === "disable") effective = "off";
-		if (request.operation === "enable") effective = "on";
-		return { operation: request.operation, scope: "clone", status: { global: "", cloneLocal: effective === "off" ? "off" : "", effective, source: effective === "off" ? "clone_local" : "default" } };
-	};
-	const { controller, commands } = runtime(native);
-	const blocked = await blockedConsent(controller, "consent-before-disable", headlessContext(cwd));
-	const command = commands.get("gentle:review-mode")!;
-	await command.handler("disable", headlessContext(cwd));
-	await command.handler("enable", headlessContext(cwd));
-	await assert.rejects(() => answerConsent(controller, blocked.consent_binding, "granted", headlessContext(cwd)), /unknown, expired, or already consumed/);
-	assert.deepEqual(answers, []);
-});
-
-// Issue #264: an unused consent binding and the candidate view retained
-// exclusively for that binding must expire as one lifecycle unit before any
-// later START may reuse the view. Cleanup is synchronous with respect to the
-// observable TTL; the queued cleanup macrotask is a safety net, not the
-// authority, so a fresh-candidate retry after expiry must get a new binding
-// rather than tripping candidate-target-projection-drift on a stale view.
-const REVIEW_CONSENT_TTL_MS = 10 * 60 * 1000;
-
-function fakeConsentClock(): { now: () => number; scheduleTimer: (callback: () => void, delayMs: number) => { unref: () => void }; advance: (ms: number) => void; scheduled: Array<() => void> } {
-	const start = Date.now();
-	let nowMs = start;
-	const scheduled: Array<() => void> = [];
+function context(cwd: string, sessionId = "parity-session", notices: Array<{ message: string; type?: string }> = []): ExtensionContext {
 	return {
-		now: () => nowMs,
-		// Never fires the callback: simulates a queued cleanup macrotask that
-		// has not yet gotten a turn on the event loop.
-		scheduleTimer: (callback) => { scheduled.push(callback); return { unref: () => {} }; },
-		advance: (ms) => { nowMs = start + ms; },
-		scheduled,
+		cwd,
+		hasUI: false,
+		ui: { notify: (message: string, type?: string) => { notices.push({ message, type }); } },
+		sessionManager: { getSessionId: () => sessionId },
+	} as unknown as ExtensionContext;
+}
+
+async function executeController(runtime: ParityRuntime, operation: unknown, cwd: string, sessionId = "parity-session"): Promise<Record<string, unknown>> {
+	const response = await runtime.controller.execute("parity-controller", operation, undefined, undefined, context(cwd, sessionId));
+	return response.details as Record<string, unknown>;
+}
+
+function consentNative(cwd: string): { native: NativeReviewCli; starts: { count: number }; answers: string[] } {
+	const consent = decodeReviewConsentV3(captured("consent-v3.captured.json"));
+	const starts = { count: 0 };
+	const answers: string[] = [];
+	return {
+		starts,
+		answers,
+		native: {
+			targetStatus: async () => startStatus(cwd),
+			start: async () => {
+				starts.count += 1;
+				throw new NativeReviewConsentRequiredError(consent);
+			},
+			answerConsent: async (request) => {
+				answers.push(request.answer);
+				if (request.answer === "declined") {
+					return {
+						kind: "declined",
+						targetIdentity: consent.targetIdentity,
+						projection: consent.projection,
+						riskLevel: consent.riskLevel,
+						changedFiles: consent.changedFiles,
+						changedLines: consent.changedLines,
+						consent: "declined_this_candidate",
+						raw: { operation: "review/start", action: "declined", consent: "declined_this_candidate" },
+					};
+				}
+				return {
+					kind: "started",
+					start: {
+						lineageId: "consent-lineage",
+						state: "approved",
+						riskLevel: "high",
+						selectedLenses: [],
+						changedFiles: consent.changedFiles,
+						changedLines: consent.changedLines,
+						correctionBudget: 0,
+						action: "closed",
+						lensesRequired: false,
+						riskReasons: [],
+					},
+				};
+			},
+			sddStatus: async () => ({ ready: false, artifactStore: "none", artifacts: {}, nextRecommended: "propose" }),
+			reviewStatus: async () => ({ schema: "gentle-ai.review-authority-status/v1", repository: cwd, complete: true, authoritative: true, status: "clean", entries: [], locks: [], diagnostics: [], raw: {} }),
+		} as unknown as NativeReviewCli,
 	};
 }
 
-test("an expired unused binding prunes synchronously so a fresh-candidate retry gets a new binding, not candidate-target-projection-drift", async (t) => {
+async function beginConsent(runtime: ParityRuntime, cwd: string, sessionId = "parity-session"): Promise<Record<string, unknown>> {
+	const blocked = await executeController(runtime, { operation: "start", input: JSON.stringify({ mode: "ordinary" }) }, cwd, sessionId);
+	assert.equal(blocked.outcome, "native-review-consent-required");
+	assert.equal(typeof blocked.consent_binding, "string");
+	return blocked;
+}
+
+async function answerConsent(runtime: ParityRuntime, cwd: string, binding: unknown, answer: "granted" | "declined", sessionId = "parity-session"): Promise<Record<string, unknown>> {
+	return await executeController(runtime, { operation: "answer-consent", input: JSON.stringify({ consentBinding: binding, answer }) }, cwd, sessionId);
+}
+
+// gentle-pi#516: an unknown or expired binding is a typed, blocked outcome
+// that names itself and its exit. It still carries the current negotiated
+// STATUS as reconciliation context, but it never reads as a healthy
+// pre-start "ready".
+function assertStaleConsentBinding(outcome: Record<string, unknown>, binding: unknown, code: "consent-binding-unknown" | "consent-binding-already-consumed"): void {
+	assert.equal(outcome.status, "blocked");
+	assert.equal(outcome.outcome, "consent-binding-stale");
+	assert.equal(outcome.consent_binding, binding);
+	assert.equal((outcome.diagnostics as { code?: unknown } | undefined)?.code, code);
+	assert.match(String((outcome.diagnostics as { message?: unknown } | undefined)?.message), /START again/);
+	assert.equal(outcome.native_invocation_attempted, false);
+	assert.equal(outcome.lineage_created, false);
+	assert.equal(outcome.mutation_performed, false);
+	assert.equal(outcome.mutation_outcome, "none");
+	assert.equal(outcome.provider_action, "start");
+	assert.equal(outcome.next_action, "restart-for-fresh-consent");
+}
+
+test("synthetic default-ON status reaches review consent without changing RDD mode", async (t) => {
 	const cwd = repository(t);
-	const { native, startRequests } = relayedConsentNative(cwd);
-	const clock = fakeConsentClock();
-	const { controller } = runtime(native, recordReviewConsentLatch, { now: clock.now, scheduleTimer: clock.scheduleTimer });
-	// First START: consent-required, binding T1 retained with a queued cleanup timer.
-	const first = await blockedConsent(controller, "expired-fresh-1", headlessContext(cwd));
-	const firstBinding = first.consent_binding;
-	assert.equal(clock.scheduled.length, 1, "the TTL cleanup macrotask is queued for T1");
-	// The candidate changes: a later START on a FRESH candidate must not reuse T1.
-	writeFileSync(join(cwd, "app.ts"), "export const value = 3;\n");
-	// Advance time to the exact TTL boundary without letting the queued cleanup macrotask fire.
-	clock.advance(REVIEW_CONSENT_TTL_MS);
-	assert.equal(clock.scheduled.length, 1, "the queued cleanup macrotask has not fired");
-	const second = await execStart(controller, "expired-fresh-2", headlessContext(cwd));
-	// The fix: a fresh consent-required binding, not candidate-target-projection-drift.
-	assert.equal(second.status, "blocked");
-	assert.equal(second.outcome, "native-review-consent-required", "the stale view must not trip candidate-target-projection-drift");
-	assert.equal(typeof second.consent_binding, "string");
-	assert.notEqual(second.consent_binding, firstBinding, "a fresh candidate gets a fresh binding, not the stale one");
-	assert.equal(startRequests.length, 2, "native start was attempted for both candidates");
-	assert.equal(clock.scheduled.length, 2, "the fresh binding queued its own cleanup macrotask");
+	const fixture = consentNative(cwd);
+	const operations: string[] = [];
+	fixture.native.reviewMode = async ({ operation }) => {
+		operations.push(operation);
+		return {
+			operation: "status",
+			scope: "clone",
+			status: { global: "", cloneLocal: "", effective: "on", source: "default" },
+		};
+	};
+	await beginConsent(parityRuntime(fixture.native), cwd);
+	assert.equal(fixture.starts.count, 1, "default ON must not skip native review START");
+	assert.ok(operations.length > 0);
+	assert.ok(operations.every((operation) => operation === "status"), "automation must only read RDD mode");
+	assert.deepEqual(fixture.answers, [], "default ON does not grant candidate consent");
 });
 
-test("an expired same-candidate consent request creates a fresh binding instead of replaying local state", async (t) => {
-	const cwd = repository(t);
-	const { native, startRequests } = relayedConsentNative(cwd);
-	const clock = fakeConsentClock();
-	const { controller } = runtime(native, recordReviewConsentLatch, { now: clock.now, scheduleTimer: clock.scheduleTimer });
-	const first = await blockedConsent(controller, "same-candidate-expired-1", headlessContext(cwd));
-	clock.advance(REVIEW_CONSENT_TTL_MS);
-	const second = await blockedConsent(controller, "same-candidate-expired-2", headlessContext(cwd));
-	assert.notEqual(second.consent_binding, first.consent_binding);
-	assert.equal(startRequests.length, 2, "expiry requires a fresh native START instead of local replay");
-	assert.equal(clock.scheduled.length, 2, "the fresh binding queues its own cleanup macrotask");
-});
-
-test("a non-expired same-candidate consent request reuses the same binding instead of creating a new one", async (t) => {
-	const cwd = repository(t);
-	const { native } = relayedConsentNative(cwd);
-	const clock = fakeConsentClock();
-	const { controller } = runtime(native, recordReviewConsentLatch, { now: clock.now, scheduleTimer: clock.scheduleTimer });
-	const first = await blockedConsent(controller, "dedup-1", headlessContext(cwd));
-	// Same candidate, same consent, still within TTL: the existing binding is reused.
-	const second = await blockedConsent(controller, "dedup-2", headlessContext(cwd));
-	assert.equal(second.consent_binding, first.consent_binding, "a non-expired same-candidate request deduplicates the binding");
-	assert.equal(clock.scheduled.length, 1, "no new cleanup macrotask is queued when the binding is reused");
-});
-
-test("an expired consent binding is rejected on answer-consent even before the queued cleanup macrotask fires", async (t) => {
-	const cwd = repository(t);
-	const { native } = relayedConsentNative(cwd);
-	const clock = fakeConsentClock();
-	const { controller } = runtime(native, recordReviewConsentLatch, { now: clock.now, scheduleTimer: clock.scheduleTimer });
-	const blocked = await blockedConsent(controller, "expired-answer-1", headlessContext(cwd));
-	// Advance to the exact TTL boundary without firing the queued cleanup macrotask.
-	clock.advance(REVIEW_CONSENT_TTL_MS);
-	assert.equal(clock.scheduled.length, 1, "the queued cleanup macrotask has not fired");
-	await assert.rejects(() => answerConsent(controller, blocked.consent_binding, "granted", headlessContext(cwd)), /unknown, expired, or already consumed/);
-	assert.equal(clock.scheduled.length, 1, "rejection was synchronous from the TTL observation, not from a fired macrotask");
-});
-
-test("candidate-scoped decline creates no authority and the next candidate asks again", async (t) => {
-	const cwd = repository(t);
-	const { native, answers } = relayedConsentNative(cwd);
-	const { controller } = runtime(native);
-	for (const id of ["decline-one", "decline-two"]) {
-		const blocked = await blockedConsent(controller, id, headlessContext(cwd));
-		const result = await answerConsent(controller, blocked.consent_binding, "declined", headlessContext(cwd));
-		assert.equal(result.outcome, "consent-declined-this-candidate");
-		assert.equal(result.lineage_created, false);
-		assert.equal("actor_binding" in result, false);
-		assert.equal("result" in result, false);
-		assert.equal(readReviewConsentLatch(cwd), false);
+test("review-mode gate retains every off-source continuation and fails closed on native errors", async () => {
+	for (const [source, expected] of [
+		["clone_local", /clear this clone-local override/],
+		["global", /cannot override a global off/],
+		["default", /RDD is on by default, but this install could not resolve the review mode and failed closed to off/],
+	] as const) {
+		const native = {
+			reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: source === "global" ? "off" : "", cloneLocal: source === "clone_local" ? "off" : "", effective: "off" as const, source } }),
+		} as unknown as NativeReviewCli;
+		const result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary" }) }, process.cwd(), native);
+		assert.equal(result.outcome, "review-mode-disabled");
+		assert.equal(result.mode_source, source);
+		assert.match(String(result.next_action), expected);
 	}
-	assert.deepEqual(answers, ["declined", "declined"]);
-});
-
-// Upstream gentle-ai.review-integration.consent/v3 consent is per-candidate:
-// the clone-local latch records only that the one-time question was already
-// put to the user, never that any later candidate is pre-approved. A fresh
-// START with the latch already recorded must still relay the complete
-// blocking envelope, and only an explicit ANSWER_CONSENT may resolve it.
-test("a pre-recorded consent latch never suppresses a later candidate's consent envelope or auto-answers it", async (t) => {
-	const cwd = repository(t);
-	recordReviewConsentLatch(cwd);
-	assert.equal(readReviewConsentLatch(cwd), true);
-	const { native, answers, startRequests } = relayedConsentNative(cwd);
-	const { controller } = runtime(native);
-	const blocked = await blockedConsent(controller, "consent-latched-fresh-start", headlessContext(cwd));
-	assert.deepEqual(blocked.consent, candidateConsent(cwd).raw, "the full consent envelope is relayed despite the pre-recorded latch");
-	assert.deepEqual(answers, [], "the latch must never auto-answer a later candidate's consent");
-	assert.equal(blocked.lineage_created, false);
-	assert.equal(startRequests.length, 1);
-	const result = await answerConsent(controller, blocked.consent_binding, "granted", headlessContext(cwd));
-	assert.deepEqual(answers, ["granted"], "explicit ANSWER_CONSENT is still required to proceed");
-	assert.ok(result.result);
-});
-
-test("low-risk zero-lens START remains silent", async (t) => {
-	const cwd = repository(t);
-	const { native } = fakeOrganicNative({ riskEvidence: undefined, lensesRequired: false });
-	const { controller } = runtime(native);
-	let selected = false;
-	const ctx = { cwd, hasUI: true, ui: { select: async () => { selected = true; return undefined; }, notify: () => {} } } as unknown as ExtensionContext;
-	const result = await execStart(controller, "consent-low-risk", ctx);
-	assert.equal(selected, false);
-	assert.ok(result.result);
-});
-
-// ---------------------------------------------------------------------------
-// Phase 5 (tier/hint/delivery passthrough): mapNativeStartResult renders
-// risk_tier/risk_evidence/hint verbatim from the native start result, with
-// zero local derivation (Design Decision #8, organic-rdd-parity).
-// ---------------------------------------------------------------------------
-
-test("mapNativeStartResult passes risk_evidence through verbatim as the native phrase array, alongside the unmodified risk_tier passthrough", async (t) => {
-	const cwd = repository(t);
-	const { native } = fakeOrganicNative({ riskEvidence: ["shell scripting in .github/workflows/deploy.yml"] });
-	const { controller } = runtime(native);
-	const result = await execStart(controller, "risk-evidence-passthrough", confirmContext(cwd, true));
-	const rendered = result.result as Record<string, unknown>;
-	assert.equal(rendered.risk_tier, "high", "risk_tier is native's riskLevel, verbatim, with no local recomputation");
-	assert.deepEqual(rendered.risk_evidence, ["shell scripting in .github/workflows/deploy.yml"]);
-});
-
-test("mapNativeStartResult surfaces the empty-candidate hint verbatim and omits risk_evidence when the native result carries none", async (t) => {
-	const cwd = repository(t);
-	const { native } = fakeOrganicNative({
-		lensesRequired: false,
-		riskEvidence: undefined,
-		hint: "the candidate has no pending changes; already-committed work can be reviewed by rerunning review start with --base-ref <commit> naming the base to compare against",
-	});
-	const { controller } = runtime(native);
-	const result = await execStart(controller, "hint-passthrough", headlessContext(cwd));
-	const rendered = result.result as Record<string, unknown>;
-	assert.equal(rendered.hint, "the candidate has no pending changes; already-committed work can be reviewed by rerunning review start with --base-ref <commit> naming the base to compare against");
-	assert.equal(rendered.risk_evidence, undefined, "no local risk_evidence is ever fabricated when the native result omits it");
-});
-
-test("mapNativeStartResult never fabricates risk_evidence or hint when the native result omits both", async (t) => {
-	const cwd = repository(t);
-	const { native } = fakeOrganicNative({ riskEvidence: undefined });
-	const { controller } = runtime(native);
-	const result = await execStart(controller, "no-evidence-no-hint", confirmContext(cwd, true));
-	const rendered = result.result as Record<string, unknown>;
-	assert.equal(rendered.risk_evidence, undefined);
-	assert.equal(rendered.hint, undefined);
-});
-
-test("gentle:review-mode command reports status, disables, and enables through explicit user invocation", async (t) => {
-	const cwd = repository(t);
-	const { native } = fakeOrganicNative({ reviewModeEffective: "off" });
-	const { commands } = runtime(native);
-	const command = commands.get("gentle:review-mode");
-	assert.ok(command, "gentle:review-mode must be registered");
-	const notices: Array<{ message: string; type?: string }> = [];
-	await command!.handler("status", headlessContext(cwd, notices) as unknown as ExtensionContext);
-	assert.ok(notices.at(-1)?.message.includes("off"));
-});
-
-// Ground-truthed against a real gentle-ai build: with the global source off,
-// `review mode enable --scope clone` exits 0, reports operation "enable", and
-// leaves effective "off" — because cloneLocalRDDOverrideValue maps "on" onto
-// "inherit" and a clone-local override may only ever disable. Pi hard-codes
-// --scope clone by design, so this request can never succeed; reporting the
-// bare status would let the user believe /gentle:review-mode enable is the way
-// back on when it is a dead end.
-test("gentle:review-mode: an enable that cannot take effect says so and names the command that can", async (t) => {
-	const cwd = repository(t);
-	const { native } = fakeOrganicNative({ reviewModeEffective: "off", reviewModeSource: "global" });
-	const { commands } = runtime(native);
-	const command = commands.get("gentle:review-mode")!;
-	const notices: Array<{ message: string; type?: string }> = [];
-	await command.handler("enable", headlessContext(cwd, notices) as unknown as ExtensionContext);
-	const notice = notices.at(-1)!;
-	assert.equal(notice.type, "warning", "a request that did not take effect is not an informational result");
-	assert.equal(
-		notice.message,
-		"receipt-driven development: off (decided by global)\nThat did not turn reviews back on: /gentle:review-mode only sets clone scope, and a clone-local setting can never override a global off. Run `gentle-ai review mode enable --scope=global` to turn them back on.",
+	const failed = await __testing.executeReviewControllerOperation(
+		{ operation: "start", input: JSON.stringify({ mode: "ordinary" }) },
+		process.cwd(),
+		{ reviewMode: async () => { throw new Error("native mode failure"); } } as unknown as NativeReviewCli,
 	);
+	assert.equal(failed.outcome, "native-operation-failed");
 });
 
-test("gentle:review-mode: an enable that does take effect keeps the existing informational report", async (t) => {
-	const cwd = repository(t);
-	const { native } = fakeOrganicNative({ reviewModeEffective: "on", reviewModeSource: "default" });
-	const { commands } = runtime(native);
-	const command = commands.get("gentle:review-mode")!;
+test("public gentle:review-mode handler reports current operations, global-off warnings, and unavailability", async () => {
+	const calls: string[] = [];
+	const native = {
+		reviewMode: async ({ operation }: { operation: "status" | "enable" | "disable" }) => {
+			calls.push(operation);
+			const globalOff = operation === "enable";
+			return {
+				operation,
+				scope: "clone",
+				status: { global: globalOff ? "off" : "", cloneLocal: operation === "disable" ? "off" : "", effective: globalOff || operation === "disable" ? "off" as const : "on" as const, source: globalOff ? "global" as const : operation === "disable" ? "clone_local" as const : "default" as const },
+			};
+		},
+	} as unknown as NativeReviewCli;
+	const runtime = parityRuntime(native);
+	const command = runtime.commands.get("gentle:review-mode");
+	assert.ok(command);
 	const notices: Array<{ message: string; type?: string }> = [];
-	await command.handler("enable", headlessContext(cwd, notices) as unknown as ExtensionContext);
-	assert.deepEqual(notices, [{ message: "receipt-driven development: on (decided by default)", type: "info" }]);
+	const ctx = context(process.cwd(), "review-mode-command", notices);
+	await command!.handler("status", ctx);
+	await command!.handler("disable", ctx);
+	await command!.handler("enable", ctx);
+	assert.deepEqual(calls, ["status", "disable", "enable"]);
+	assert.match(notices[0]?.message ?? "", /receipt-driven development: on/);
+	assert.match(notices[1]?.message ?? "", /receipt-driven development: off/);
+	assert.equal(notices[2]?.type, "warning");
+	assert.match(notices[2]?.message ?? "", /gentle-ai review mode enable --scope=global/);
+
+	const unavailable = parityRuntime({} as NativeReviewCli).commands.get("gentle:review-mode");
+	assert.ok(unavailable);
+	const unavailableNotices: Array<{ message: string; type?: string }> = [];
+	await unavailable!.handler("status", context(process.cwd(), "review-mode-unavailable", unavailableNotices));
+	assert.deepEqual(unavailableNotices, [{ message: "Gentle AI review mode is not available with the currently negotiated native version.", type: "info" }]);
 });
 
-test("gentle:review-mode command reports unavailability without throwing when the capability is dark", async (t) => {
+test("public consent relay allows any active session to resolve a live binding, is one-shot, and is candidate-scoped", async (t) => {
 	const cwd = repository(t);
-	const { native } = fakeOrganicNative({ reviewModeCapable: false });
-	const { commands } = runtime(native);
-	const command = commands.get("gentle:review-mode")!;
-	const notices: Array<{ message: string; type?: string }> = [];
-	await command.handler("status", headlessContext(cwd, notices) as unknown as ExtensionContext);
-	assert.equal(notices.length, 1);
+	const sharedRegistry = new PendingReviewConsentRegistry();
+	const fixture = consentNative(cwd);
+	const first = parityRuntime(fixture.native, { pendingReviewConsentRegistry: sharedRegistry });
+	const second = parityRuntime(fixture.native, { pendingReviewConsentRegistry: sharedRegistry });
+	const sameSession = await beginConsent(first, cwd, "same-session");
+	const sameSessionResult = await answerConsent(second, cwd, sameSession.consent_binding, "declined", "same-session");
+	assert.equal(sameSessionResult.outcome, "consent-declined-this-candidate");
+
+	// gentle-pi#455: a binding is answerable by whichever active Pi session
+	// presents it, not only the session whose START created it.
+	const blockedA = await beginConsent(first, cwd, "session-a");
+	assert.deepEqual(blockedA.consent, decodeReviewConsentV3(captured("consent-v3.captured.json")).raw);
+	const declinedFromOtherSession = await answerConsent(second, cwd, blockedA.consent_binding, "declined", "session-b");
+	assert.equal(declinedFromOtherSession.operation, "answer-consent");
+	assert.equal(declinedFromOtherSession.outcome, "consent-declined-this-candidate");
+	assert.deepEqual(fixture.answers, ["declined", "declined"]);
+
+	// Cross-session resolution still enforces single use: once answered, no
+	// session -- including the one whose START created it -- may answer it again.
+	const staleAfterCrossSessionAnswer = await answerConsent(first, cwd, blockedA.consent_binding, "declined", "session-a");
+	assert.equal(staleAfterCrossSessionAnswer.operation, "answer-consent");
+	assertStaleConsentBinding(staleAfterCrossSessionAnswer, blockedA.consent_binding, "consent-binding-already-consumed");
+	assert.deepEqual(fixture.answers, ["declined", "declined"]);
+
+	const blockedB = await beginConsent(second, cwd, "session-b");
+	const declined = await answerConsent(second, cwd, blockedB.consent_binding, "declined", "session-b");
+	assert.equal(declined.outcome, "consent-declined-this-candidate");
+	assert.equal(declined.lineage_created, false);
+	const staleConsumed = await answerConsent(second, cwd, blockedB.consent_binding, "declined", "session-b");
+	assert.equal(staleConsumed.operation, "answer-consent");
+	assertStaleConsentBinding(staleConsumed, blockedB.consent_binding, "consent-binding-already-consumed");
+	assert.deepEqual(fixture.answers, ["declined", "declined", "declined"]);
+
+	// A binding still pending when its owning session shuts down is discarded
+	// and becomes unreachable to every session -- cross-session resolution
+	// included.
+	const blockedShutdown = await beginConsent(first, cwd, "session-a");
+	const shutdown = first.events.get("session_shutdown");
+	assert.ok(shutdown);
+	await shutdown!({}, context(cwd, "session-a"));
+	await shutdown!({}, context(cwd, "session-a"));
+	const staleShutdown = await answerConsent(second, cwd, blockedShutdown.consent_binding, "declined", "session-b");
+	assert.equal(staleShutdown.operation, "answer-consent");
+	assertStaleConsentBinding(staleShutdown, blockedShutdown.consent_binding, "consent-binding-unknown");
+
+	writeFileSync(join(cwd, "app.ts"), "export const value = 3;\n");
+	const nextCandidate = await beginConsent(second, cwd, "session-b");
+	assert.notEqual(nextCandidate.consent_binding, blockedB.consent_binding);
+	fixture.native.reviewMode = async ({ operation }) => ({
+		operation,
+		scope: "clone",
+		status: { global: "", cloneLocal: "off", effective: "off", source: "clone_local" },
+	});
+	const disable = second.commands.get("gentle:review-mode");
+	assert.ok(disable);
+	await disable!.handler("disable", context(cwd, "session-b"));
+	const staleModeCleared = await answerConsent(second, cwd, nextCandidate.consent_binding, "declined", "session-b");
+	assert.equal(staleModeCleared.operation, "answer-consent");
+	assertStaleConsentBinding(staleModeCleared, nextCandidate.consent_binding, "consent-binding-unknown");
+	assert.equal(fixture.starts.count, 5);
+});
+
+test("already-consumed local consent bindings reconcile exactly once with the native status transition", async (t) => {
+	const cwd = repository(t);
+	const fixture = consentNative(cwd);
+	const nextTransition = {
+		kind: "execute",
+		reason_code: "fresh_start_available",
+		execute: { operation: "review.start", arguments: ["opaque-native-start-token"] },
+	};
+	const reconciledStatus = {
+		...startStatus(cwd),
+		raw: { schema: "gentle-ai.review-integration.status/v5", next_transition: nextTransition },
+	} as ReviewStatusV3;
+	const statusRequests: Array<{ agent?: string }> = [];
+	fixture.native.targetStatus = async (request) => {
+		statusRequests.push(request);
+		return reconciledStatus;
+	};
+	const runtime = parityRuntime(fixture.native);
+	const blocked = await beginConsent(runtime, cwd);
+	await answerConsent(runtime, cwd, blocked.consent_binding, "declined");
+
+	const reconciled = await answerConsent(runtime, cwd, blocked.consent_binding, "declined");
+	assert.equal(reconciled.operation, "answer-consent");
+	assertStaleConsentBinding(reconciled, blocked.consent_binding, "consent-binding-already-consumed");
+	assert.deepEqual(reconciled.result, reconciledStatus.raw);
+	assert.deepEqual((reconciled.result as { next_transition?: unknown }).next_transition, nextTransition);
+	assert.equal(statusRequests.length, 2, "the stale binding performs one reconciliation after the initial START status");
+	assert.equal(statusRequests[1]?.agent, "pi", "stale binding reconciliation must retain the Pi host transport identity");
+	assert.equal(fixture.starts.count, 1, "stale binding recovery must not start a new review automatically");
+	assert.deepEqual(fixture.answers, ["declined"], "stale binding recovery must not replay answer-consent");
+});
+
+test("launched answer-consent failures remain blocked after fresh-target STATUS reconciliation", async (t) => {
+	const cwd = repository(t);
+	const fixture = consentNative(cwd);
+	const statusRequests: Array<{ agent?: string }> = [];
+	const freshTargetStatus = {
+		...startStatus(cwd),
+		raw: { schema: "gentle-ai.review-integration.status/v5", next_transition: { kind: "execute", reason_code: "fresh_start_available" } },
+	} as ReviewStatusV3;
+	fixture.native.targetStatus = async (request) => {
+		statusRequests.push(request);
+		return freshTargetStatus;
+	};
+	let answerCalls = 0;
+	fixture.native.answerConsent = async () => {
+		answerCalls += 1;
+		throw {
+			name: "NativeReviewCliError",
+			code: NATIVE_REVIEW_ERROR_CODE.NON_ZERO,
+			mutationOutcome: "unknown",
+			nextAction: "review.status",
+			diagnostics: {
+				operation: NATIVE_REVIEW_OPERATION.START,
+				error_code: NATIVE_REVIEW_ERROR_CODE.NON_ZERO,
+				timed_out: false,
+				output_limit_exceeded: false,
+			},
+		};
+	};
+	const runtime = parityRuntime(fixture.native);
+	const blocked = await beginConsent(runtime, cwd);
+
+	const first = await answerConsent(runtime, cwd, blocked.consent_binding, "granted");
+	assert.equal(first.operation, "answer-consent");
+	assert.equal(first.status, "blocked");
+	assert.equal(first.outcome, "native-mutation-status-reconciled");
+	assert.deepEqual(first.diagnostics, {
+		operation: NATIVE_REVIEW_OPERATION.START,
+		error_code: NATIVE_REVIEW_ERROR_CODE.NON_ZERO,
+		timed_out: false,
+		output_limit_exceeded: false,
+	});
+	assert.deepEqual(first.reconciliation, freshTargetStatus.raw);
+	assert.match(String(first.required_status_action), /Run target-scoped review\.status/);
+	assert.equal(first.next_action, "start");
+	assert.equal(statusRequests.length, 2, "the launched failure reconciles exactly once after the initial START status");
+	assert.equal(answerCalls, 1, "reconciliation must not replay answer-consent");
+
+	const stale = await answerConsent(runtime, cwd, blocked.consent_binding, "granted");
+	assertStaleConsentBinding(stale, blocked.consent_binding, "consent-binding-already-consumed");
+	assert.equal(statusRequests.length, 3, "a later already-consumed binding performs one current STATUS read");
+	assert.equal(answerCalls, 1, "the stale binding must not replay answer-consent");
+});
+
+test("stale local consent bindings preserve a typed native STATUS failure", async (t) => {
+	const cwd = repository(t);
+	const fixture = consentNative(cwd);
+	const runtime = parityRuntime(fixture.native);
+	const blocked = await beginConsent(runtime, cwd);
+	await answerConsent(runtime, cwd, blocked.consent_binding, "declined");
+	fixture.native.targetStatus = async () => {
+		throw new NativeReviewCliError(
+			NATIVE_REVIEW_ERROR_CODE.TIMEOUT,
+			NATIVE_REVIEW_OPERATION.STATUS,
+			true,
+			false,
+			"native STATUS timed out",
+		);
+	};
+
+	const failed = await answerConsent(runtime, cwd, blocked.consent_binding, "declined");
+	assert.equal(failed.operation, "answer-consent");
+	assert.equal(failed.status, "blocked");
+	assert.equal(failed.outcome, "native-status-unavailable");
+	assert.deepEqual(failed.diagnostics, {
+		operation: NATIVE_REVIEW_OPERATION.STATUS,
+		error_code: NATIVE_REVIEW_ERROR_CODE.TIMEOUT,
+		timed_out: false,
+		output_limit_exceeded: false,
+	});
+	assert.equal(fixture.starts.count, 1, "native STATUS failure must not start a new review");
+	assert.deepEqual(fixture.answers, ["declined"], "native STATUS failure must not replay answer-consent");
+
+	delete fixture.native.targetStatus;
+	const unsupported = await answerConsent(runtime, cwd, blocked.consent_binding, "declined");
+	assert.equal(unsupported.operation, "answer-consent");
+	assert.equal(unsupported.status, "blocked");
+	assert.equal(unsupported.outcome, "native-status-unsupported");
+	assert.equal(fixture.starts.count, 1, "unavailable native STATUS must not start a new review");
+	assert.deepEqual(fixture.answers, ["declined"], "unavailable native STATUS must not replay answer-consent");
+});
+
+test("stale local consent bindings retain typed Pi transport refusal without an agentless retry", async (t) => {
+	const cwd = repository(t);
+	const fixture = consentNative(cwd);
+	const statusRequests: Array<{ agent?: string }> = [];
+	fixture.native.targetStatus = async (request) => {
+		statusRequests.push(request);
+		throw new NativeReviewIntegrationError(decodeReviewFailureV2({
+			schema: "gentle-ai.review-integration.failure/v2",
+			contract: "gentle-ai.review-integration/v2",
+			operation: "review.status",
+			phase: "preflight",
+			code: "unsupported_agent",
+			message: "The native provider does not support Pi host transport.",
+			mutation_outcome: "not_started",
+			authority_applicability: "not_evaluated",
+			retry_safe: true,
+			replayability: "not_replayable",
+			required_inputs: [],
+			next_action: "review.status",
+		}));
+	};
+	const runtime = parityRuntime(fixture.native);
+
+	const refused = await answerConsent(runtime, cwd, "missing-consent-binding", "declined");
+	assert.equal(refused.operation, "answer-consent");
+	assert.equal(refused.status, "blocked");
+	assert.equal(refused.outcome, "pi-host-relay-transport-unavailable");
+	assert.deepEqual(refused.relay_transport, {
+		supported: false,
+		code: "unsupported_agent",
+		message: "The native provider does not support Pi host transport.",
+	});
+	assert.equal(statusRequests.length, 1, "typed Pi transport refusal must not retry STATUS without an agent");
+	assert.equal(statusRequests[0]?.agent, "pi");
+	assert.equal(fixture.starts.count, 0, "stale binding transport refusal must not start a review");
+	assert.deepEqual(fixture.answers, [], "stale binding transport refusal must not replay answer-consent");
+});
+
+test("unavailable and ambiguous consent follow-ups never replay a consumed binding", async (t) => {
+	const cwd = repository(t);
+	const unavailableFixture = consentNative(cwd);
+	delete unavailableFixture.native.answerConsent;
+	const unavailableRuntime = parityRuntime(unavailableFixture.native);
+	const unavailable = await beginConsent(unavailableRuntime, cwd);
+	await assert.rejects(
+		() => answerConsent(unavailableRuntime, cwd, unavailable.consent_binding, "declined"),
+		/consent follow-up is unavailable/,
+	);
+
+	const ambiguousFixture = consentNative(cwd);
+	let statusCalls = 0;
+	const targetStatus = ambiguousFixture.native.targetStatus!;
+	ambiguousFixture.native.targetStatus = async (request) => {
+		statusCalls += 1;
+		return await targetStatus(request);
+	};
+	ambiguousFixture.native.answerConsent = async () => {
+		throw Object.assign(new Error("ambiguous provider mutation"), { mutationOutcome: "unknown", nextAction: "review.status" });
+	};
+	const ambiguousRuntime = parityRuntime(ambiguousFixture.native);
+	const ambiguous = await beginConsent(ambiguousRuntime, cwd);
+	const outcome = await answerConsent(ambiguousRuntime, cwd, ambiguous.consent_binding, "granted");
+	assert.equal(outcome.operation, "answer-consent");
+	assert.ok(statusCalls >= 2, "ambiguous consent re-enters read-only STATUS after the initial START status");
+	const callsBeforeStaleReconciliation = statusCalls;
+	const stale = await answerConsent(ambiguousRuntime, cwd, ambiguous.consent_binding, "granted");
+	assert.equal(stale.operation, "answer-consent");
+	assertStaleConsentBinding(stale, ambiguous.consent_binding, "consent-binding-already-consumed");
+	assert.equal(statusCalls, callsBeforeStaleReconciliation + 1, "already-consumed binding reconciliation performs exactly one additional STATUS call");
+});
+
+test("concurrent answers atomically claim consent before review-mode gating", async (t) => {
+	const cwd = repository(t);
+	const fixture = consentNative(cwd);
+	const candidateViews = new CandidateViewRegistry();
+	const cleanup = candidateViews.cleanup.bind(candidateViews);
+	let cleanupCalls = 0;
+	candidateViews.cleanup = (token) => {
+		cleanupCalls += 1;
+		cleanup(token);
+	};
+	let releaseModeGate: (() => void) | undefined;
+	const modeGate = new Promise<void>((resolve) => { releaseModeGate = resolve; });
+	let modeCalls = 0;
+	const statusRequests: Array<{ agent?: string }> = [];
+	fixture.native.targetStatus = async (request) => {
+		statusRequests.push(request);
+		return startStatus(cwd);
+	};
+	let releaseProvider: (() => void) | undefined;
+	const providerGate = new Promise<void>((resolve) => { releaseProvider = resolve; });
+	const nativeAnswer = fixture.native.answerConsent!;
+	let nativeAnswerCalls = 0;
+	fixture.native.answerConsent = async (request) => {
+		nativeAnswerCalls += 1;
+		assert.equal(cleanupCalls, 0, "candidate authority remains live before the provider answer");
+		await providerGate;
+		return await nativeAnswer(request);
+	};
+	const runtime = parityRuntime(fixture.native, {
+		candidateViews,
+	});
+	const blocked = await beginConsent(runtime, cwd);
+	fixture.native.reviewMode = async () => {
+		modeCalls += 1;
+		if (modeCalls === 1) await modeGate;
+		return {
+			operation: "status",
+			scope: "clone",
+			status: { global: "", cloneLocal: "", effective: "on", source: "default" },
+		};
+	};
+
+	const first = answerConsent(runtime, cwd, blocked.consent_binding, "declined");
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(modeCalls, 1, "the first answer pauses at the asynchronous review-mode gate");
+	const second = answerConsent(runtime, cwd, blocked.consent_binding, "declined");
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(cleanupCalls, 0, "claimed consent retains candidate authority until the answer settles");
+
+	releaseModeGate!();
+	releaseProvider!();
+	const [firstResult, secondResult] = await Promise.all([first, second]);
+	assert.equal(firstResult.outcome, "consent-declined-this-candidate");
+	assertStaleConsentBinding(secondResult, blocked.consent_binding, "consent-binding-already-consumed");
+	assert.equal(nativeAnswerCalls, 1, "only the atomically claimed answer may invoke native answer-consent");
+	assert.equal(statusRequests.length, 2, "the losing concurrent answer performs one STATUS reconciliation after the initial START status");
+	assert.equal(statusRequests[1]?.agent, "pi", "the losing answer keeps Pi host transport for STATUS reconciliation");
+	assert.equal(cleanupCalls, 1, "only the answered binding cleans candidate authority");
+});
+
+test("unanswered consent remains reusable after the former deadline and answers only once", async (t) => {
+	const cwd = repository(t);
+	const fixture = consentNative(cwd);
+	const runtime = parityRuntime(fixture.native);
+	let now = 1_000;
+	t.mock.method(Date, "now", () => now);
+	const first = await beginConsent(runtime, cwd);
+	now += 24 * 60 * 60 * 1000;
+	const reused = await beginConsent(runtime, cwd);
+	assert.equal(reused.consent_binding, first.consent_binding);
+	const answered = await answerConsent(runtime, cwd, first.consent_binding, "declined");
+	assert.equal(answered.outcome, "consent-declined-this-candidate");
+	assertStaleConsentBinding(await answerConsent(runtime, cwd, first.consent_binding, "declined"), first.consent_binding, "consent-binding-already-consumed");
+});
+
+test("native START maps only provider facts and omits absent evidence", async (t) => {
+	const cwd = repository(t);
+	const nextTransition = {
+		kind: "execute" as const,
+		reasonCode: "review_status_required",
+		execute: {
+			operation: "review.status",
+			arguments: [{ name: "lineage", value: "closed-lineage", token: "--lineage=closed-lineage" }],
+			preconditions: [],
+			binding: { targetIdentity: `sha256:${"d".repeat(64)}` },
+		},
+	};
+	const native = {
+		targetStatus: async () => startStatus(cwd),
+		start: async () => ({
+			lineageId: "closed-lineage",
+			state: "approved",
+			riskLevel: "low",
+			selectedLenses: [],
+			changedFiles: 0,
+			changedLines: 0,
+			correctionBudget: 0,
+			action: "closed",
+			lensesRequired: false,
+			riskReasons: [],
+			nextTransition,
+			hint: "provider empty-candidate hint",
+		}),
+	} as unknown as NativeReviewCli;
+	const result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary" }) }, cwd, native);
+	const rendered = result.result as Record<string, unknown>;
+	assert.equal(rendered.hint, "provider empty-candidate hint");
+	assert.equal(rendered.risk_evidence, undefined);
+	assert.equal(rendered.next_transition, nextTransition);
+});
+
+test("candidate consent completion writes no persistent asked latch", async (t) => {
+	const cwd = repository(t);
+	const fixture = consentNative(cwd);
+	const runtime = parityRuntime(fixture.native);
+	const blocked = await beginConsent(runtime, cwd);
+	const completed = await answerConsent(runtime, cwd, blocked.consent_binding, "granted");
+	assert.equal((completed.result as { lineage_id?: string }).lineage_id, "consent-lineage");
+	assert.deepEqual(fixture.answers, ["granted"]);
+	const commonDir = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, encoding: "utf8" }).trim();
+	assert.equal(existsSync(join(commonDir, "gentle-pi", "review-consent", "asked.json")), false);
 });

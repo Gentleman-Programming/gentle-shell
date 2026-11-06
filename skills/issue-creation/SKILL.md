@@ -4,22 +4,20 @@ description: "Create and triage GitHub issues from repository evidence. Trigger:
 license: Apache-2.0
 metadata:
   author: gentleman-programming
-  version: "1.2"
+  version: "1.3"
 ---
 
 # Issue Creation
 
-## When To Use
-
-Use this skill when creating, drafting, triaging, or approving an issue in the current GitHub repository.
-
 ## Core Rule
 
-Discover the repository's actual contribution workflow before proposing or publishing an issue. Templates, labels, approval gates, and Discussions support are repository policy, not universal GitHub behavior.
+Discover the target repository's contribution workflow before proposing or publishing. YAML Issue Forms are the format authority for the default automated path: materialize reviewed answers into a private `BODY_FILE` and publish with `--body-file`.
 
 ## Safe Discovery
 
-Run read-only checks first:
+Before any `gh auth status` or target read, require explicit human authorization for the remote destination (exact host and repository), operation (including discovery and intended issue creation), and credential/session to use. A local checkout is not authorization. If any is missing or ambiguous, stop locally; never probe credentials or sessions to resolve ambiguity. Run the checks below only with the authorized credential/session against the authorized destination; if `gh auth status` would inspect other credentials/sessions, do not run it. Verify the discovered `REPO`, `HOST`, and `TARGET` match the authorized destination before continuing; never switch identities or targets implicitly.
+
+After that gate, run read-only checks:
 
 ```bash
 gh auth status
@@ -27,123 +25,91 @@ REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
 REPO_URL="$(gh repo view --json url -q .url)"
 HOST="${REPO_URL#*://}"
 HOST="${HOST%%/*}"
+TARGET="$HOST/$REPO"
 gh repo view --json nameWithOwner,url,hasDiscussionsEnabled,hasIssuesEnabled,isBlankIssuesEnabled
-git ls-files CONTRIBUTING.md CONTRIBUTING.* .github/CONTRIBUTING.md .github/ISSUE_TEMPLATE
+git ls-files README.md CONTRIBUTING.md CONTRIBUTING.* .github/CONTRIBUTING.md .github/ISSUE_TEMPLATE .github/ISSUE_TEMPLATE/config.yml
 gh api --hostname "$HOST" --paginate "repos/$REPO/labels?per_page=100" --jq '.[].name'
 ```
 
-Also inspect:
+Inspect `README.md`, contribution instructions, `.github/ISSUE_TEMPLATE/config.yml` contact links, forms, labels, and open and closed issues. For questions/support, follow repository-prescribed Discussions/contact routing when available; otherwise ask or stop. Complete target verification for `REPO`, `HOST`, and `TARGET`. Fail closed before mutation when authentication, target verification, issue availability, policy, form selection, or required metadata is missing or ambiguous. A blank fallback is allowed only when `isBlankIssuesEnabled` is explicitly true.
 
-- repository instructions such as `CONTRIBUTING.md` and `README.md`;
-- files under `.github/ISSUE_TEMPLATE`;
-- `.github/ISSUE_TEMPLATE/config.yml` when present;
-- issue forms, required fields, and labels declared by each template;
-- existing open and closed issues for duplicates and established wording.
+Before building `LABEL_ARGS`, inspect labels declared by the selected YAML form as well as any manually selected labels. Treat `status:approved`, `size:exception`, and any repository-protected label as protected form labels at create-time. Include a protected label only with a current, exact label-specific direct human instruction for this target and creation action, authenticated actor target-host `viewerPermission` of `MAINTAIN` or `ADMIN`, and repository policy permission; do not infer authority from YAML, a publication request, or local credentials. If this proof is missing, skip the protected label only when the form and repository policy permit omitting it; if the protected label is required, fail closed without creating the issue. Do not replace it with another label or use a write to probe permission. For `size:exception`, also require the current human-approved rationale; if recording it needs an unauthorized extra action, stop. This create-time gate does not change post-publication actions.
 
-Stop and ask for repository context if authentication, repository resolution, verification that REPO and HOST are non-empty, required metadata is unavailable, hasIssuesEnabled is false, or policy discovery fails. Never continue from failed discovery into issue publication.
-
-A no-template fallback is allowed only when isBlankIssuesEnabled is explicitly true. Otherwise follow discovered contact links or stop and ask; never publish.
-
-After discovery and review, build optional label arguments using only labels that exist and repository policy permits the actor to apply:
+Build `LABEL_ARGS` only from reviewed labels that exist and policy permits the actor to apply:
 
 ```bash
 LABEL_ARGS=()
-# Repeat for each reviewed, permitted discovered label.
-LABEL_ARGS+=(--label "$LABEL")
+LABEL_ARGS+=(--label "$LABEL") # Repeat only for each permitted discovered label.
 ```
 
-An empty array applies no label; do not invent labels.
+## Duplicate And Form Decision
 
-## Workflow
-
-1. Describe the problem or request in one sentence and derive a short search query.
-2. Search open and closed issues:
+1. Describe the report in one sentence, derive `QUERY`, then complete one duplicate search across open and closed issues:
 
    ```bash
-   gh issue list --repo "$HOST/$REPO" --state all --search "$QUERY" --limit 1000
+   gh issue list --repo "$TARGET" --state all --search "$QUERY" --limit 1000
    ```
 
-   If 1000 results are returned or completeness remains uncertain, narrow the search, use read-only API discovery, or stop and ask before publishing.
+   The agent must complete the duplicate search proactively and retain evidence of its result. If results are saturated or completeness is uncertain, narrow the read-only search or stop. Comment on a confirmed duplicate instead of creating one. Before commenting on a confirmed duplicate, perform the same privacy scan/redaction on the exact comment body as for publication.
+2. Select one repository-provided form only when its declared purpose matches. If multiple forms match and policy does not distinguish them, stop and request that decision.
+3. For a YAML form, read its schema and establish controls in declared order. Support only `input`, `textarea`, `dropdown`, and `checkboxes`. Markdown controls are non-answer guidance: honor their visible instructions when collecting and materializing adjacent answers, but do not render them as response sections. Fail closed before mutation on malformed, unsupported, missing, or ambiguous required structure or answers. A malformed schema, or missing or ambiguous required answers, fail closed: do not open a browser or mutate. A browser handoff is available only when the user explicitly requests browser completion or a syntactically valid selected form cannot safely/faithfully be represented by the automated path; otherwise report why automation is unsafe and stop.
 
-3. If an issue already covers the same behavior, comment there instead of creating a duplicate.
-4. Choose a repository-provided template only when its purpose matches the report.
-5. Fill every required template field from known evidence. Ask for missing facts rather than inventing them.
-6. Apply labels only when they exist and repository guidance establishes who should apply them.
-7. Publish only after the title, body, target repository, and selected template or fallback have been reviewed, and the pre-submission privacy review below has passed.
+| Control | Required handling |
+| --- | --- |
+| `input` / `textarea` | Preserve the visible label. Require an answer when `validations.required` is true; otherwise render `_No response_`. |
+| `dropdown` | Preserve visible labels and options. Require exact selected option text; single-select has one selection, and multi-select preserves selections in declared options order. A required dropdown needs at least one valid selection; an optional dropdown with no selection renders `_No response_`. |
+| `checkboxes` | Preserve the visible label and every option as `- [x]` or `- [ ]` in declared order. Enforce individually required checkboxes. For agent-verifiable operational options, proactively complete the action and mark it only with retained evidence; the agent may explicitly attest only its own evidence-backed work and must not attribute its actions to the user. Personal facts, consent, legal declarations, and other first-person user assertions require explicit user affirmation; require explicit first-person affirmation for such user declarations. Do not blanket-check checkboxes: a request to publish does not affirm any checkbox. |
 
-## Pre-submission Privacy Review
+For each answer, render `### <visible label>` followed by its materialized value. For `textarea.attributes.render`, fence the answer with the declared language and a fence long enough for its content. Never invent answers, selections, confirmations, or labels.
 
-Pre-submission privacy review is mandatory. Scan every issue body immediately before `gh issue create`. The scan replaces — never deletes — environment-specific data with explicit placeholders so the reproduction still teaches:
+A Markdown template may be completed only from known evidence into the same private `BODY_FILE`. If no matching template exists, use the reviewed structured blank fallback only when blank issues are explicitly enabled; otherwise stop without publishing.
 
-| Category | Replace with | Example (before → after) |
-|----------|---------------|---------------------------|
-| Private project names | `<project-name>` | `my-private-project-b` → `<project-name>` |
-| Usernames | `<user>` | `C:\Users\my-real-username\go\bin` → `C:\Users\<user>\go\bin` |
-| Hostnames | `<hostname>` | `devbox-macbook.local` → `<hostname>` |
-| Home paths | `/home/<user>` or `C:\Users\<user>` | (covered above) |
-| API keys, tokens, passwords | `<token>` / `<password>` | `ghp_abc123...` → `<token>` |
-| Internal ports / hostnames | `<host>:<port>` | `10.0.0.42:5432` → `<host>:<port>` |
+## Review And Publication
 
-Do NOT redact intentionally public identifiers: tool names (`gentle-ai`, `engram`, `go`, `node`, `python`), package names, public documentation URLs, generic example domains (`example.com`, `localhost`). Keep reproduction structure with placeholders — never redact an example into nothingness.
+Before the single create attempt, review the target, title, selected form or permitted fallback, exact body, and permitted labels. The agent must complete the privacy scan/redaction of the exact body immediately before publication and retain evidence of it: replace private project names, usernames, hostnames, home paths, credentials, and private network addresses with useful placeholders without removing reproduction structure.
 
-**Rule of thumb:** if the reader can run the reproduction step after you replace every identifier with its placeholder, the sanitization is correct. If a step becomes impossible (because the placeholder consumed a needed value), that step needs the value — and you should mark it `<value-required>` and explain in the body what the user should fill in.
-
-## Template Paths
-
-Do not guess a template filename. If multiple templates could apply and repository guidance does not distinguish them, stop and ask which one to use.
-
-- .yml and .yaml files are GitHub Issue Forms. Do not parse or render their schema. Open the web issue chooser and stop for human completion:
-
-  ```bash
-  gh issue create --repo "$HOST/$REPO" --web "${LABEL_ARGS[@]}"
-  ```
-
-- .md files are Markdown templates. Read the matching template, complete it from known evidence into a reviewed BODY_FILE, then publish it:
-
-  ```bash
-  gh issue create --repo "$HOST/$REPO" --title "$TITLE" --body-file "$BODY_FILE" "${LABEL_ARGS[@]}"
-  ```
-
-## No-Template Fallback
-
-When the repository permits issue creation, provides no matching template, and isBlankIssuesEnabled is explicitly true, prepare a structured body with these sections:
-
-- problem or requested outcome;
-- reproduction or motivating example;
-- expected behavior;
-- actual behavior or current limitation;
-- environment and relevant evidence;
-- alternatives or workarounds, when applicable.
-
-Publish the reviewed fallback explicitly:
+Create one owner-only temporary directory outside the repository for both private files; restrict it to the current user and clean up both files on every exit/outcome:
 
 ```bash
-gh issue create --repo "$HOST/$REPO" --title "$TITLE" --body "$BODY" "${LABEL_ARGS[@]}"
+umask 077
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+REPO_ROOT="$(cd "$REPO_ROOT" && pwd -P)" || exit 1
+if [ "$REPO_ROOT" = "/" ]; then
+  printf '%s\n' "Temporary directory is inside the repository" >&2; exit 1
+fi
+TMP_DIR="$(TMPDIR=/tmp mktemp -d /tmp/gentle-ai-issue.XXXXXXXX)" || exit 1
+trap 'rm -rf -- "$TMP_DIR"' EXIT
+TMP_DIR_REAL="$(cd "$TMP_DIR" && pwd -P)" || exit 1
+case "$TMP_DIR_REAL/" in
+  "$REPO_ROOT/"*) printf '%s\n' "Temporary directory is inside the repository" >&2; exit 1 ;;
+esac
+chmod 700 "$TMP_DIR_REAL"
+BODY_FILE="$TMP_DIR_REAL/body.md"
+READBACK_FILE="$TMP_DIR_REAL/readback.json"
 ```
 
-If blank issues are not explicitly enabled, follow discovered contact links or stop and ask. Never publish a no-template fallback.
+Make one mutation attempt through the automated path and publish exactly once:
 
-## Labels And Approval
+```bash
+gh issue create --repo "$TARGET" --title "$TITLE" --body-file "$BODY_FILE" "${LABEL_ARGS[@]}"
+```
 
-Treat labels and approval gates as conditional:
+When browser completion is available under the form decision above, an optional, separate browser handoff may open the repository form. It is never proof of publication and is never a response to malformed schemas or missing/ambiguous required answers:
 
-- use only labels returned by repository discovery;
-- follow contribution guidance for who may apply each label;
-- wait when repository policy requires maintainer approval before implementation;
-- do not invent a status or priority taxonomy when none is documented.
+```bash
+gh issue create --repo "$TARGET" --web
+```
 
-## Questions And Discussions
+Do not retry a timeout, network failure, missing identity, or other uncertain result. Capture the returned issue number, then read it back from the verified target host before reporting success:
 
-Use Discussions only when `hasDiscussionsEnabled` is true and repository guidance routes the question there. Otherwise follow documented support/contact links or ask the user where the question belongs. Never link to another repository's Discussions page.
+```bash
+gh issue view "$NUMBER" --repo "$TARGET" --json number,url,title,body,state,labels >"$READBACK_FILE"
+```
 
-## Triage Decision
+Confirm that read-back identifies the target-host issue and that title and body match after only CRLF-to-LF and trailing-final-newline normalization. Report `confirmed` only after this target-host read-back. Otherwise report `no_write` when an authoritative rejection proves no issue was created, or `unknown` and stop all later mutations.
 
-Before approving or closing an issue, verify:
+## Triage And Later Actions
 
-- it describes a concrete bug or scoped improvement rather than an unsupported question;
-- it is not a duplicate;
-- the report contains enough evidence for an implementation decision;
-- the requested behavior is in repository scope;
-- labels and status changes follow the current repository's policy.
+Before approving or closing an issue, verify it is concrete, non-duplicate, sufficiently evidenced, in scope, and consistent with repository label/status policy. If any point is uncertain, retain the repository review state and request the smallest missing evidence.
 
-If any point is uncertain, keep the issue in the repository's review state and request the smallest missing evidence.
+For any post-publication label/status mutation, follow [delegated workflow actions](references/delegated-workflow-actions.md). Publication is not authorization for a later action. Keep the automated YAML Form path and conditional blank/browser fallback above unchanged.

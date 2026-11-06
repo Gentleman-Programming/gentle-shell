@@ -1,24 +1,27 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import codeGraphTools, {
 	createCodeGraphTool,
+	codeGraphNodeScript,
+	findCodeGraphNodeScriptOnPath,
+	isSameDirectory,
 	type CodeGraphRunner,
 } from "../extensions/codegraph-tools.ts";
 
 function workspace(t: test.TestContext): string {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-"));
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-")));
 	execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	return cwd;
 }
 
 test("CodeGraph tool rejects non-project, nested-project, HOME, and temporary workspaces before init", async (t) => {
-	const nonProject = mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-non-project-"));
+	const nonProject = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-non-project-")));
 	t.after(() => rmSync(nonProject, { recursive: true, force: true }));
 	const root = workspace(t);
 	const nested = join(root, "nested");
@@ -35,6 +38,115 @@ test("CodeGraph tool rejects non-project, nested-project, HOME, and temporary wo
 		);
 	}
 	assert.equal(calls, 0);
+});
+
+test("CodeGraph workspace guard compares directories by identity, not path spelling (#2558)", (t) => {
+	// A mapped drive and its UNC form name one directory; an alias reproduces that without a network share.
+	const root = workspace(t);
+	const holder = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-alias-")));
+	t.after(() => rmSync(holder, { recursive: true, force: true }));
+	const alias = join(holder, "root");
+	symlinkSync(root, alias, "junction");
+	t.after(() => rmSync(alias, { force: true }));
+	const nested = join(root, "nested");
+	mkdirSync(nested);
+	assert.notEqual(alias, root);
+	assert.equal(isSameDirectory(alias, root), true);
+	assert.equal(isSameDirectory(root, nested), false);
+	assert.equal(isSameDirectory(root, join(root, "missing")), false);
+});
+
+test("CodeGraph tool accepts the Git root reached through a different spelling of the same directory (#2558)", async (t) => {
+	// A mapped drive is one such spelling; on a case-insensitive filesystem a different letter case is another.
+	const root = workspace(t);
+	const respelled = [...root].map((char) => (char === char.toLowerCase() ? char.toUpperCase() : char.toLowerCase())).join("");
+	if (respelled === root || !existsSync(respelled)) {
+		t.skip("case-sensitive filesystem: no second spelling of the same directory");
+		return;
+	}
+	const cwds: string[] = [];
+	const tool = createCodeGraphTool(async (_args, options) => {
+		cwds.push(options.cwd);
+		return { stdout: "ok", stderr: "" };
+	});
+	await tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd: respelled } as ExtensionContext);
+	assert.deepEqual(cwds, [realpathSync(respelled)]);
+});
+
+test("CodeGraph workspace rejection names the compared paths and Git's own error (#2558)", async (t) => {
+	const nonProject = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-non-project-")));
+	t.after(() => rmSync(nonProject, { recursive: true, force: true }));
+	const root = workspace(t);
+	const nested = join(root, "nested");
+	mkdirSync(nested);
+	let calls = 0;
+	const tool = createCodeGraphTool(async () => {
+		calls += 1;
+		return { stdout: "unexpected", stderr: "" };
+	});
+	const rejection = async (cwd: string): Promise<string> => {
+		try {
+			await tool.execute("test", { operation: "init" }, undefined, undefined, { cwd } as ExtensionContext);
+		} catch (error) {
+			return (error as Error).message;
+		}
+		assert.fail(`expected ${cwd} to be rejected`);
+	};
+
+	assert.equal(
+		await rejection(nested),
+		`CodeGraph requires a real Git project root equal to the current workspace.\n  workspace: ${nested}\n  git toplevel: ${root}`,
+	);
+
+	const [prefix, workspaceLine, gitLine, ...rest] = (await rejection(nonProject)).split("\n");
+	assert.equal(prefix, "CodeGraph requires a real Git project root equal to the current workspace.");
+	assert.equal(workspaceLine, `  workspace: ${nonProject}`);
+	// Git's stderr, not Node's "Command failed" wrapper; Git may localize the text itself.
+	assert.match(gitLine, /^  git: \S/);
+	assert.doesNotMatch(gitLine, /Command failed/);
+	for (const line of rest) assert.match(line, /^    /);
+	assert.equal(calls, 0);
+});
+
+test("CodeGraph query timeout is reported distinctly from user abort and never bounds init (#1901)", async (t) => {
+	const cwd = workspace(t);
+	const ctx = { cwd } as ExtensionContext;
+	// Behaves like execFile: settles only when its signal aborts, then rejects with AbortError.
+	const hanging: CodeGraphRunner = (_args, options) => new Promise((_resolve, reject) => {
+		options.signal?.addEventListener("abort", () => reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError", code: "ABORT_ERR" })), { once: true });
+	});
+
+	const bounded = createCodeGraphTool(hanging, { queryTimeoutMs: 20 });
+	// AbortSignal.timeout is unref'd; on Node 22 nothing else keeps the loop alive while the hanging runner awaits it.
+	const keepalive = setTimeout(() => {}, 2000);
+	try {
+		for (const parameters of [{ operation: "query", query: "x" }, { operation: "explore", query: "x" }] as const) {
+			const result = await bounded.execute("test", parameters, undefined, undefined, ctx);
+			assert.match(result.content[0].text, /CodeGraph timed out after 20 ms/);
+			assert.match(result.content[0].text, /Use read, grep, and find/);
+			assert.equal((result.details as { status: string }).status, "failed");
+		}
+	} finally {
+		clearTimeout(keepalive);
+	}
+
+	// A user cancellation is not a timeout.
+	const user = new AbortController();
+	setTimeout(() => user.abort(), 5);
+	const cancelled = await createCodeGraphTool(hanging, { queryTimeoutMs: 60_000 }).execute("test", { operation: "query", query: "x" }, user.signal, undefined, ctx);
+	assert.doesNotMatch(cancelled.content[0].text, /timed out/);
+	assert.match(cancelled.content[0].text, /CodeGraph failed to run/);
+
+	// init is the legitimately slow first index: only the user's own signal bounds it.
+	let initSignal: AbortSignal | undefined = new AbortController().signal;
+	const slowInit = createCodeGraphTool(async (_args, options) => {
+		initSignal = options.signal;
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		return { stdout: "indexed", stderr: "" };
+	}, { queryTimeoutMs: 20 });
+	const init = await slowInit.execute("test", { operation: "init" }, undefined, undefined, ctx);
+	assert.deepEqual(init.content, [{ type: "text", text: "indexed" }]);
+	assert.equal(initSignal, undefined);
 });
 
 test("CodeGraph tool runs only fixed cwd-scoped init, query, and explore commands", async (t) => {
@@ -189,7 +301,7 @@ test("CodeGraph tool rejects incomplete or oversized query requests before runni
 });
 
 test("CodeGraph tool registration exposes a single constrained custom tool", () => {
-	const tools: Array<{ name: string; parameters: Record<string, unknown> }> = [];
+	const tools: Array<{ name: string; renderShell?: string; parameters: Record<string, unknown> }> = [];
 	const pi = {
 		registerTool(tool: { name: string; parameters: Record<string, unknown> }) {
 			tools.push(tool);
@@ -200,6 +312,7 @@ test("CodeGraph tool registration exposes a single constrained custom tool", () 
 
 	assert.equal(tools.length, 1);
 	assert.equal(tools[0]?.name, "codegraph");
+	assert.equal(tools[0]?.renderShell, "self", "CodeGraph must not inherit Pi's painted Box");
 	assert.deepEqual(tools[0]?.parameters, {
 		type: "object",
 		additionalProperties: false,
@@ -210,4 +323,232 @@ test("CodeGraph tool registration exposes a single constrained custom tool", () 
 			limit: { type: "integer", minimum: 1, maximum: 20 },
 		},
 	});
+});
+
+function writeCodeGraphPackage(binDir: string, scriptSource = "#!/usr/bin/env node\n"): string {
+	const pkgRoot = join(binDir, "node_modules", "@colbymchenry", "codegraph");
+	mkdirSync(pkgRoot, { recursive: true });
+	const scriptTarget = join(pkgRoot, "npm-shim.js");
+	writeFileSync(scriptTarget, scriptSource);
+	writeFileSync(
+		join(pkgRoot, "package.json"),
+		JSON.stringify({
+			name: "@colbymchenry/codegraph",
+			version: "1.0.0",
+			bin: { codegraph: "npm-shim.js" },
+		}),
+	);
+	writeFileSync(
+		join(binDir, "codegraph.cmd"),
+		"@ECHO off\nnode \"%~dp0\\node_modules\\@colbymchenry\\codegraph\\npm-shim.js\" %*\n",
+	);
+	return scriptTarget;
+}
+
+function withWindowsPath(t: test.TestContext, path: string): void {
+	const previousPath = process.env.PATH;
+	const previousWindowsPath = process.env.Path;
+	const windowsPath = process.platform === "win32"
+		? `${path};${previousWindowsPath ?? previousPath ?? ""}`
+		: path;
+	process.env.Path = windowsPath;
+	process.env.PATH = windowsPath;
+	t.after(() => {
+		if (previousPath === undefined) delete process.env.PATH;
+		else process.env.PATH = previousPath;
+		if (previousWindowsPath === undefined) delete process.env.Path;
+		else process.env.Path = previousWindowsPath;
+	});
+}
+
+test("Windows shim helpers skip stale PATH shims before resolving the npm script", (t) => {
+	const staleBinDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-stale-bin-")));
+	const validBinDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-valid-bin-")));
+	t.after(() => rmSync(staleBinDir, { recursive: true, force: true }));
+	t.after(() => rmSync(validBinDir, { recursive: true, force: true }));
+	writeFileSync(join(staleBinDir, "codegraph.cmd"), "@ECHO off\n");
+	const stalePkgRoot = join(staleBinDir, "node_modules", "@colbymchenry", "codegraph");
+	mkdirSync(stalePkgRoot, { recursive: true });
+	writeFileSync(join(stalePkgRoot, "package.json"), JSON.stringify({ bin: { codegraph: "." } }));
+	const scriptTarget = writeCodeGraphPackage(validBinDir);
+
+	withWindowsPath(t, `${staleBinDir};${validBinDir}`);
+
+	assert.equal(codeGraphNodeScript(join(staleBinDir, "codegraph.cmd")), undefined);
+	assert.equal(findCodeGraphNodeScriptOnPath(), scriptTarget);
+});
+
+test("Windows shim helpers resolve quoted PATH entries in order without stripping unmatched quotes", (t) => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-quoted-bin-")));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const firstBin = join(root, "Program Files", "nodejs");
+	const secondBin = join(root, "other-bin");
+	const firstScript = writeCodeGraphPackage(firstBin);
+	const secondScript = writeCodeGraphPackage(secondBin);
+	withWindowsPath(t, `"${firstBin}";${secondBin}`);
+
+	assert.equal(findCodeGraphNodeScriptOnPath(), firstScript);
+	for (const [path, expected] of [
+		[`${firstBin};"${secondBin}"`, firstScript],
+		[`"${firstBin};${secondBin}`, secondScript],
+		[`${firstBin}";${secondBin}`, secondScript],
+		[`${secondBin};"${firstBin}"`, secondScript],
+	]) {
+		process.env.Path = path;
+		process.env.PATH = path;
+		assert.equal(findCodeGraphNodeScriptOnPath(), expected);
+	}
+});
+
+test("Windows launcher passes command metacharacters as one literal argv value", async (t) => {
+	const binDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-bin-")));
+	t.after(() => rmSync(binDir, { recursive: true, force: true }));
+	writeCodeGraphPackage(binDir, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
+	const cwd = workspace(t);
+	if (process.platform !== "win32") {
+		const gitShim = join(binDir, "git");
+		writeFileSync(gitShim, "#!/bin/sh\nprintf '%s\\n' \"$PWD\"\n");
+		chmodSync(gitShim, 0o755);
+	}
+	withWindowsPath(t, binDir);
+
+	const previousPlatform = process.platform;
+	Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+	t.after(() => Object.defineProperty(process, "platform", { configurable: true, value: previousPlatform }));
+
+	const query = "literal & echo injected > shell-injection.txt";
+	const result = await createCodeGraphTool().execute(
+		"test",
+		{ operation: "query", query },
+		undefined,
+		undefined,
+		{ cwd } as ExtensionContext,
+	);
+
+	assert.deepEqual(result.content, [{
+		type: "text",
+		text: JSON.stringify(["query", "--path", cwd, "--limit", "10", "--", query]),
+	}]);
+	assert.equal(existsSync(join(cwd, "shell-injection.txt")), false);
+});
+
+// Real CodeGraph writes .codegraph/.gitignore with `*` and `!.gitignore`, so the
+// .gitignore itself stays untracked and would otherwise enter every diff.
+const writeIndex: CodeGraphRunner = async (_args, options) => {
+	mkdirSync(join(options.cwd, ".codegraph"), { recursive: true });
+	writeFileSync(join(options.cwd, ".codegraph", ".gitignore"), "*\n!.gitignore\n");
+	writeFileSync(join(options.cwd, ".codegraph", "codegraph.db"), "index");
+	return { stdout: "indexed", stderr: "" };
+};
+
+function gitOutput(cwd: string, ...args: string[]): string {
+	return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
+
+function excludeFile(cwd: string): string {
+	return realpathSync(resolve(cwd, gitOutput(cwd, "rev-parse", "--git-path", "info/exclude")));
+}
+
+function excludeLines(cwd: string): string[] {
+	return readFileSync(excludeFile(cwd), "utf8").split("\n").filter((line) => line.trim() === ".codegraph/");
+}
+
+test("CodeGraph init keeps the whole .codegraph index out of git through the local exclude file, idempotently", async (t) => {
+	const cwd = workspace(t);
+	writeFileSync(join(cwd, "tracked.txt"), "tracked\n");
+	execFileSync("git", ["add", "tracked.txt"], { cwd });
+	const tool = createCodeGraphTool(writeIndex);
+	const ctx = { cwd } as ExtensionContext;
+
+	const first = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
+	const second = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
+
+	assert.deepEqual(first.content, [{ type: "text", text: "indexed" }]);
+	assert.equal(gitOutput(cwd, "status", "--porcelain", "--untracked-files=all"), "A  tracked.txt");
+	assert.deepEqual(excludeLines(cwd), [".codegraph/"], "exactly one exclude line after repeated init");
+	assert.equal(existsSync(join(cwd, ".gitignore")), false, "never creates or edits a tracked .gitignore");
+	assert.deepEqual((first.details as { localExclude?: unknown }).localExclude, { status: "added", path: excludeFile(cwd) });
+	assert.deepEqual((second.details as { localExclude?: unknown }).localExclude, { status: "present", path: excludeFile(cwd) });
+});
+
+test("CodeGraph exclusion appends on a new line and recognizes an equivalent existing pattern", async (t) => {
+	const appended = workspace(t);
+	writeFileSync(excludeFile(appended), "# local\n*.log");
+	await createCodeGraphTool(writeIndex).execute("test", { operation: "init" }, undefined, undefined, { cwd: appended } as ExtensionContext);
+	assert.equal(readFileSync(excludeFile(appended), "utf8"), "# local\n*.log\n.codegraph/\n");
+
+	const equivalent = workspace(t);
+	writeFileSync(excludeFile(equivalent), "/.codegraph\n");
+	const result = await createCodeGraphTool(writeIndex).execute("test", { operation: "init" }, undefined, undefined, { cwd: equivalent } as ExtensionContext);
+	assert.equal(readFileSync(excludeFile(equivalent), "utf8"), "/.codegraph\n");
+	assert.equal((result.details as { localExclude?: { status: string } }).localExclude?.status, "present");
+	assert.equal(gitOutput(equivalent, "status", "--porcelain", "--untracked-files=all"), "");
+});
+
+test("CodeGraph exclusion uses the exclude file git resolves for a linked worktree", async (t) => {
+	const base = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-worktree-")));
+	t.after(() => rmSync(base, { recursive: true, force: true }));
+	const primary = join(base, "primary");
+	const linked = join(base, "linked");
+	mkdirSync(primary);
+	execFileSync("git", ["init", "-b", "main"], { cwd: primary, stdio: "ignore" });
+	execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "fixture"], { cwd: primary, stdio: "ignore" });
+	execFileSync("git", ["worktree", "add", "-b", "feature", linked], { cwd: primary, stdio: "ignore" });
+
+	const result = await createCodeGraphTool(writeIndex).execute("test", { operation: "init" }, undefined, undefined, { cwd: linked } as ExtensionContext);
+
+	assert.deepEqual(result.content, [{ type: "text", text: "indexed" }]);
+	assert.equal(gitOutput(linked, "status", "--porcelain", "--untracked-files=all"), "");
+	assert.deepEqual(excludeLines(linked), [".codegraph/"]);
+	assert.equal((result.details as { localExclude?: { path: string } }).localExclude?.path, excludeFile(linked));
+	assert.equal(existsSync(join(linked, ".git", "info")), false, "the linked worktree's .git file is never treated as a directory");
+});
+
+test("CodeGraph query excludes an index that already exists, and leaves the exclude file alone without one", async (t) => {
+	const indexed = workspace(t);
+	await writeIndex(["init", indexed], { cwd: indexed, maxBuffer: 1 });
+	const answer: CodeGraphRunner = async () => ({ stdout: "found", stderr: "" });
+	await createCodeGraphTool(answer).execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd: indexed } as ExtensionContext);
+	assert.deepEqual(excludeLines(indexed), [".codegraph/"]);
+	assert.equal(gitOutput(indexed, "status", "--porcelain", "--untracked-files=all"), "");
+
+	const bare = workspace(t);
+	const result = await createCodeGraphTool(answer).execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd: bare } as ExtensionContext);
+	assert.deepEqual(excludeLines(bare), []);
+	assert.equal((result.details as { localExclude?: unknown }).localExclude, undefined);
+});
+
+test("CodeGraph init still succeeds and reports when git is unavailable for the local exclusion", async (t) => {
+	const cwd = workspace(t);
+	const empty = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-nogit-")));
+	const originalPath = process.env.PATH;
+	t.after(() => {
+		process.env.PATH = originalPath;
+		rmSync(empty, { recursive: true, force: true });
+	});
+	const result = await createCodeGraphTool(async (args, options) => {
+		const output = await writeIndex(args, options);
+		process.env.PATH = empty; // git disappears after the workspace check
+		return output;
+	}).execute("test", { operation: "init" }, undefined, undefined, { cwd } as ExtensionContext);
+	process.env.PATH = originalPath;
+
+	assert.match(result.content[0].text, /^indexed\n\n/);
+	assert.match(result.content[0].text, /\.codegraph\/ is not excluded from git locally/);
+	assert.match(result.content[0].text, /keep \.codegraph\/ out of the change/i);
+	assert.equal((result.details as { localExclude?: { status: string } }).localExclude?.status, "failed");
+	assert.deepEqual(excludeLines(cwd), []);
+});
+
+test("CodeGraph excludes a partial index left behind by a failed init without changing the fallback text", async (t) => {
+	const cwd = workspace(t);
+	const result = await createCodeGraphTool(async (args, options) => {
+		await writeIndex(args, options);
+		throw new Error("CodeGraph exited with status 1");
+	}).execute("test", { operation: "init" }, undefined, undefined, { cwd } as ExtensionContext);
+
+	assert.deepEqual(result.content, [{ type: "text", text: "CodeGraph failed to run. Use read, grep, and find for this exploration." }]);
+	assert.equal((result.details as { status: string }).status, "failed");
+	assert.equal((result.details as { localExclude?: { status: string } }).localExclude?.status, "added");
+	assert.equal(gitOutput(cwd, "status", "--porcelain", "--untracked-files=all"), "");
 });

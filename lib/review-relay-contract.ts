@@ -14,3 +14,14 @@
 
 export const GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV = "GENTLE_PI_REVIEW_RELAY_CONTRACT";
 export const GENTLE_PI_REVIEW_RELAY_CONTRACT = "gentle-pi.review-relay/v1";
+
+// The host is this extension: every process the session starts (pi's shell
+// tools, Gentle Agents children) runs under it, so the handshake belongs in
+// the session environment too, not only in the extension's own invocations.
+// Without it the first `gentle-ai review status --agent pi` typed in the
+// session shell fails closed (gentle-pi#550). Returns whether anything changed.
+export function declareReviewRelayHandshake(env: NodeJS.ProcessEnv): boolean {
+	if (env[GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV] === GENTLE_PI_REVIEW_RELAY_CONTRACT) return false;
+	env[GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV] = GENTLE_PI_REVIEW_RELAY_CONTRACT;
+	return true;
+}

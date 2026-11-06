@@ -1,0 +1,515 @@
+// gentle-pi#662: pure decoding, tier mapping, and verification-plan logic for
+// the native read-only `gentle-ai review assess` command (gentle-ai#4295).
+// Kept independent of the native review CLI wrapper (`lib/native-review-cli.ts`)
+// so the decoder and the verificationPlan table can be unit-tested without a
+// child process, and so the parent tool and the delegation asset agree on one
+// deterministic mapping.
+//
+// Native reference (gentle-ai#4295, landing in parallel with this change):
+// `gentle-ai review assess --cwd <repo> [--base-ref <ref> --committed-only] --json`
+// prints `{"schema":"gentle-ai.review-assessment/v1","risk":"passive|medium|high",
+// "reasons":[{"code":"…","path":"…","detail":"…"}],"changed_paths":1,
+// "changed_lines":1,"candidate":{"kind":"current-changes|base-diff","base_ref":"…"}}`.
+// gentle-pi#1175: the native v2 `assess.schema.json` requires only `code` on a
+// reason (`path`/`detail` are optional) and adds `candidate.consumed`,
+// `review_due`, `review_due_reason`, and an opaque `next_transition`. Older
+// binaries (for example gentle-ai v3.7.0) predate those fields, so
+// they decode as optional and stay absent rather than being defaulted.
+// A non-zero exit or a failure envelope means the candidate could not be
+// assessed; hosts treat that as `high`. Older binaries without the verb (or
+// any other decode/process failure) fail closed the same way -- see
+// `verificationTierForUnassessable` below.
+
+export const REVIEW_ASSESSMENT_SCHEMA = "gentle-ai.review-assessment/v1" as const;
+
+export const REVIEW_ASSESSMENT_RISK = {
+	PASSIVE: "passive",
+	MEDIUM: "medium",
+	HIGH: "high",
+} as const;
+export type ReviewAssessmentRisk = (typeof REVIEW_ASSESSMENT_RISK)[keyof typeof REVIEW_ASSESSMENT_RISK];
+
+export const REVIEW_ASSESSMENT_CANDIDATE_KIND = {
+	CURRENT_CHANGES: "current-changes",
+	BASE_DIFF: "base-diff",
+} as const;
+export type ReviewAssessmentCandidateKind = (typeof REVIEW_ASSESSMENT_CANDIDATE_KIND)[keyof typeof REVIEW_ASSESSMENT_CANDIDATE_KIND];
+
+export const REVIEW_DUE_REASON = {
+	HIGH_RISK: "high_risk",
+	SLICE_BUDGET_REACHED: "slice_budget_reached",
+	PASSIVE: "passive",
+	UNDER_BUDGET: "under_budget",
+	ALREADY_REVIEWED: "already_reviewed",
+} as const;
+export type ReviewDueReason = (typeof REVIEW_DUE_REASON)[keyof typeof REVIEW_DUE_REASON];
+
+export const REVIEW_ASSESSMENT_NEXT_TRANSITION_OPERATION = "review.status" as const;
+
+export interface ReviewAssessmentReason {
+	readonly code: string;
+	readonly path?: string;
+	readonly detail?: string;
+}
+
+export interface ReviewAssessmentCandidate {
+	readonly kind: ReviewAssessmentCandidateKind;
+	readonly baseRef: string | undefined;
+	/** Present only when native reports it; never defaulted (gentle-pi#1175). */
+	readonly consumed?: boolean;
+}
+
+export interface ReviewAssessmentNextTransitionArgument {
+	readonly name: string;
+	readonly value: string;
+	readonly token?: string;
+}
+
+/**
+ * The native, literally runnable `review status ... --next-transition`
+ * preflight continuation. Carried verbatim as an opaque value: hosts never
+ * rebuild, reorder, or synthesize it.
+ */
+export interface ReviewAssessmentNextTransition {
+	readonly operation: typeof REVIEW_ASSESSMENT_NEXT_TRANSITION_OPERATION;
+	readonly command: string;
+	readonly arguments: readonly ReviewAssessmentNextTransitionArgument[];
+}
+
+export interface ReviewAssessmentV1 {
+	readonly schema: typeof REVIEW_ASSESSMENT_SCHEMA;
+	readonly risk: ReviewAssessmentRisk;
+	readonly reasons: readonly ReviewAssessmentReason[];
+	readonly changedPaths: number;
+	readonly changedLines: number;
+	readonly candidate: ReviewAssessmentCandidate;
+	/** Present together with `reviewDueReason`, or both absent on older binaries. */
+	readonly reviewDue?: boolean;
+	readonly reviewDueReason?: ReviewDueReason;
+	/** Present only when native reports it, and only with `reviewDue: true`. */
+	readonly nextTransition?: ReviewAssessmentNextTransition;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0;
+}
+
+function decodeReason(value: unknown): ReviewAssessmentReason {
+	if (!isRecord(value)) throw new TypeError("review assessment reason must be an object");
+	const { code, path, detail } = value;
+	if (!isNonEmptyString(code)) throw new TypeError("review assessment reason.code must be a non-empty string");
+	if (path !== undefined && !isNonEmptyString(path)) throw new TypeError("review assessment reason.path must be a non-empty string when present");
+	if (detail !== undefined && !isNonEmptyString(detail)) throw new TypeError("review assessment reason.detail must be a non-empty string when present");
+	// Absent path/detail stay absent: never synthesized (gentle-pi#1175).
+	return Object.freeze({
+		code,
+		...(path === undefined ? {} : { path: path as string }),
+		...(detail === undefined ? {} : { detail: detail as string }),
+	});
+}
+
+function decodeCandidate(value: unknown): ReviewAssessmentCandidate {
+	if (!isRecord(value)) throw new TypeError("review assessment candidate must be an object");
+	const { kind, base_ref: baseRef, consumed } = value;
+	if (kind !== REVIEW_ASSESSMENT_CANDIDATE_KIND.CURRENT_CHANGES && kind !== REVIEW_ASSESSMENT_CANDIDATE_KIND.BASE_DIFF) {
+		throw new TypeError("review assessment candidate.kind must be current-changes or base-diff");
+	}
+	if (baseRef !== undefined && !isNonEmptyString(baseRef)) {
+		throw new TypeError("review assessment candidate.base_ref must be a non-empty string when present");
+	}
+	if (consumed !== undefined && typeof consumed !== "boolean") {
+		throw new TypeError("review assessment candidate.consumed must be a boolean when present");
+	}
+	// An older binary omits consumed; it stays absent, never defaulted.
+	return Object.freeze({ kind, baseRef: baseRef as string | undefined, ...(consumed === undefined ? {} : { consumed: consumed as boolean }) });
+}
+
+function isReviewDueReason(value: unknown): value is ReviewDueReason {
+	return Object.values(REVIEW_DUE_REASON).includes(value as ReviewDueReason);
+}
+
+// The native schema fixes review_due by reason: due for high_risk and
+// slice_budget_reached, not due for passive, under_budget, and
+// already_reviewed (gentle-pi#1175).
+const DUE_REVIEW_REASONS: readonly ReviewDueReason[] = [REVIEW_DUE_REASON.HIGH_RISK, REVIEW_DUE_REASON.SLICE_BUDGET_REACHED];
+
+/**
+ * Rejects a review_due/review_due_reason/consumed combination the native
+ * schema can never produce. A consumed candidate must report
+ * `already_reviewed`, but that reason can also describe an acknowledged
+ * committed predecessor followed by a passive delta (#1954). It does not
+ * prove this exact candidate was consumed; preserve native's explicit false.
+ * Native v2 requires consumed, so missing evidence with already_reviewed is
+ * still rejected. Envelopes without the pair (older binaries) are unchecked.
+ */
+function validateReviewDueConsistency(reviewDue: boolean, reviewDueReason: ReviewDueReason, candidate: ReviewAssessmentCandidate): void {
+	if (reviewDue !== DUE_REVIEW_REASONS.includes(reviewDueReason)) {
+		throw new TypeError(`review assessment review_due ${reviewDue} contradicts review_due_reason ${reviewDueReason}`);
+	}
+	const alreadyReviewed = reviewDueReason === REVIEW_DUE_REASON.ALREADY_REVIEWED;
+	if (candidate.consumed === true && !alreadyReviewed) {
+		throw new TypeError("review assessment candidate.consumed true requires review_due_reason already_reviewed");
+	}
+	if (alreadyReviewed && candidate.consumed === undefined) {
+		throw new TypeError("review assessment review_due_reason already_reviewed requires explicit candidate.consumed evidence");
+	}
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+	return Object.keys(value).every((key) => allowed.includes(key));
+}
+
+function validateNextTransitionArgument(value: unknown): void {
+	if (!isRecord(value) || !hasOnlyKeys(value, ["name", "value", "token"])) {
+		throw new TypeError("review assessment next_transition argument must be an object with only name, value, and token");
+	}
+	if (!isNonEmptyString(value.name)) throw new TypeError("review assessment next_transition argument name must be a non-empty string");
+	if (typeof value.value !== "string") throw new TypeError("review assessment next_transition argument value must be a string");
+	if (value.token !== undefined && !isNonEmptyString(value.token)) {
+		throw new TypeError("review assessment next_transition argument token must be a non-empty string when present");
+	}
+}
+
+/**
+ * Validates `next_transition` exactly as the native schema declares it and
+ * returns the native value itself, frozen -- validated, never rebuilt,
+ * reordered, or synthesized (gentle-pi#1175).
+ */
+function decodeNextTransition(value: unknown): ReviewAssessmentNextTransition {
+	if (!isRecord(value) || !hasOnlyKeys(value, ["operation", "command", "arguments"])) {
+		throw new TypeError("review assessment next_transition must be an object with only operation, command, and arguments");
+	}
+	if (value.operation !== REVIEW_ASSESSMENT_NEXT_TRANSITION_OPERATION) {
+		throw new TypeError(`review assessment next_transition.operation must be ${REVIEW_ASSESSMENT_NEXT_TRANSITION_OPERATION}`);
+	}
+	if (!isNonEmptyString(value.command)) throw new TypeError("review assessment next_transition.command must be a non-empty string");
+	if (!Array.isArray(value.arguments)) throw new TypeError("review assessment next_transition.arguments must be an array");
+	for (const argument of value.arguments) validateNextTransitionArgument(argument);
+	for (const argument of value.arguments) Object.freeze(argument);
+	Object.freeze(value.arguments);
+	return Object.freeze(value) as unknown as ReviewAssessmentNextTransition;
+}
+
+/**
+ * Decodes and validates one `gentle-ai.review-assessment/v1` envelope. Rejects
+ * any other schema, an unrecognized risk value, or a malformed shape -- the
+ * native review CLI wrapper turns a thrown error here into the same
+ * schema-incompatible failure it already produces for every other decoded
+ * native response.
+ *
+ * `review_due` and `review_due_reason` were added together natively: both
+ * absent (an older binary) or both present are accepted; only one of them is
+ * rejected. When present, the pair must agree with each other and with
+ * `candidate.consumed` (see `validateReviewDueConsistency`).
+ * `next_transition` is accepted only alongside `review_due: true`.
+ * Unknown extra top-level fields are ignored and never projected, so a newer
+ * binary stays decodable (gentle-pi#1175).
+ */
+export function decodeReviewAssessmentV1(value: unknown): ReviewAssessmentV1 {
+	if (!isRecord(value)) throw new TypeError("review assessment must be an object");
+	if (value.schema !== REVIEW_ASSESSMENT_SCHEMA) throw new TypeError(`review assessment schema must be ${REVIEW_ASSESSMENT_SCHEMA}`);
+	const {
+		risk,
+		reasons,
+		changed_paths: changedPaths,
+		changed_lines: changedLines,
+		candidate,
+		review_due: reviewDue,
+		review_due_reason: reviewDueReason,
+		next_transition: nextTransition,
+	} = value;
+	if (risk !== REVIEW_ASSESSMENT_RISK.PASSIVE && risk !== REVIEW_ASSESSMENT_RISK.MEDIUM && risk !== REVIEW_ASSESSMENT_RISK.HIGH) {
+		throw new TypeError("review assessment risk must be passive, medium, or high");
+	}
+	if (!Array.isArray(reasons)) throw new TypeError("review assessment reasons must be an array");
+	if (!Number.isSafeInteger(changedPaths) || (changedPaths as number) < 0) throw new TypeError("review assessment changed_paths must be a non-negative integer");
+	if (!Number.isSafeInteger(changedLines) || (changedLines as number) < 0) throw new TypeError("review assessment changed_lines must be a non-negative integer");
+	if ((reviewDue === undefined) !== (reviewDueReason === undefined)) {
+		throw new TypeError("review assessment review_due and review_due_reason must be both present or both absent");
+	}
+	if (reviewDue !== undefined && typeof reviewDue !== "boolean") throw new TypeError("review assessment review_due must be a boolean when present");
+	if (reviewDueReason !== undefined && !isReviewDueReason(reviewDueReason)) {
+		throw new TypeError(`review assessment review_due_reason must be one of ${Object.values(REVIEW_DUE_REASON).join(", ")}`);
+	}
+	if (nextTransition !== undefined && reviewDue !== true) {
+		throw new TypeError("review assessment next_transition is only valid when review_due is true");
+	}
+	const decodedCandidate = decodeCandidate(candidate);
+	if (reviewDue !== undefined) validateReviewDueConsistency(reviewDue as boolean, reviewDueReason as ReviewDueReason, decodedCandidate);
+	return Object.freeze({
+		schema: REVIEW_ASSESSMENT_SCHEMA,
+		risk,
+		reasons: Object.freeze(reasons.map(decodeReason)),
+		changedPaths: changedPaths as number,
+		changedLines: changedLines as number,
+		candidate: decodedCandidate,
+		...(reviewDue === undefined ? {} : { reviewDue: reviewDue as boolean, reviewDueReason: reviewDueReason as ReviewDueReason }),
+		...(nextTransition === undefined ? {} : { nextTransition: decodeNextTransition(nextTransition) }),
+	});
+}
+
+// ---------------------------------------------------------------------------
+// Verification-plan tiering (gentle-pi#662).
+// ---------------------------------------------------------------------------
+
+export const VERIFICATION_TIER = {
+	PASSIVE: "passive",
+	MEDIUM: "medium",
+	HIGH: "high",
+	UNASSESSABLE: "unassessable",
+} as const;
+export type VerificationTier = (typeof VERIFICATION_TIER)[keyof typeof VERIFICATION_TIER];
+
+// ---------------------------------------------------------------------------
+// Agent-raised risk (gentle-shell#1494). The agent that made the change may
+// raise its risk to high by citing one item of the high-risk list in the
+// always-on Task Size section; it can never lower a tier. That escalation is
+// the only way a plan gets an independent verifier: a native high or a failed
+// assessment informs but never adds one by itself.
+// ---------------------------------------------------------------------------
+
+export const HIGH_RISK_ITEMS = Object.freeze({
+	1: "data or irreversible effects",
+	2: "security",
+	3: "changing or removing contracts others already consume",
+	4: "concurrency",
+	5: "delivery or environment",
+	6: "no test would catch a regression",
+} as const);
+export type HighRiskItem = keyof typeof HIGH_RISK_ITEMS;
+
+export interface AgentRiskEscalation {
+	readonly item: HighRiskItem;
+	readonly reason: string;
+}
+
+export const AGENT_RISK_ESCALATION_REASON_MAX = 500;
+
+export function decodeAgentRiskEscalation(value: unknown): AgentRiskEscalation {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error("escalate must be an object with item and reason");
+	}
+	const record = value as Record<string, unknown>;
+	const unexpected = Object.keys(record).find((key) => key !== "item" && key !== "reason");
+	if (unexpected !== undefined) throw new Error(`escalate does not accept ${unexpected}`);
+	const { item, reason } = record;
+	if (typeof item !== "number" || !Number.isInteger(item) || !(item in HIGH_RISK_ITEMS)) {
+		throw new Error("escalate item must be an integer from 1 to 6 naming a high-risk item");
+	}
+	if (typeof reason !== "string" || reason.trim() === "" || reason.length > AGENT_RISK_ESCALATION_REASON_MAX) {
+		throw new Error(`escalate reason must be a non-empty string of at most ${AGENT_RISK_ESCALATION_REASON_MAX} characters`);
+	}
+	return Object.freeze({ item: item as HighRiskItem, reason });
+}
+
+/**
+ * The risk tier the verification plan follows. The independent verifier is
+ * for concrete occasions only: the plan is high only when the agent escalated
+ * a named Task Size high-risk item. Without an escalation a native passive
+ * stays passive, and every other native tier -- medium, high, or unassessable
+ * (a failed or unavailable assessment) -- is medium: it informs, but adds no
+ * verifier by itself. The native tier stays visible to callers as `nativeRisk`.
+ */
+export function verificationRisk(nativeRisk: VerificationTier, escalation: AgentRiskEscalation | undefined): VerificationTier {
+	if (escalation !== undefined) return VERIFICATION_TIER.HIGH;
+	return nativeRisk === VERIFICATION_TIER.PASSIVE ? VERIFICATION_TIER.PASSIVE : VERIFICATION_TIER.MEDIUM;
+}
+
+export const RDD_LINE = {
+	ON: "on",
+	OFF: "off",
+	UNKNOWN: "unknown",
+} as const;
+export type RddLine = (typeof RDD_LINE)[keyof typeof RDD_LINE];
+
+export const WRITER_PROFILE = {
+	SMALL: "small",
+	LARGE: "large",
+} as const;
+export type WriterProfile = (typeof WRITER_PROFILE)[keyof typeof WRITER_PROFILE];
+
+// gentle-pi#668: whether the native review actually reached a terminal
+// outcome for the current candidate. The `on` branch of `verificationPlan`
+// (the writer self-verifies, the native review is the independent check, no
+// separate verifier) holds only for `CLOSED` -- a human decline for this
+// candidate, a clone-local RDD disable, a refused START/STATUS, or any other
+// non-terminal outcome falls back to the exact same risk-gated path as `off`.
+// `UNKNOWN` is the fail-closed default for an omitted outcome: never treated
+// as `CLOSED`.
+export const NATIVE_REVIEW_OUTCOME = {
+	CLOSED: "closed",
+	DECLINED: "declined",
+	UNAVAILABLE: "unavailable",
+	UNKNOWN: "unknown",
+} as const;
+export type NativeReviewOutcome = (typeof NATIVE_REVIEW_OUTCOME)[keyof typeof NATIVE_REVIEW_OUTCOME];
+
+export interface VerificationPlanInput {
+	readonly rddLine: RddLine;
+	/** The plan risk from `verificationRisk`, not the raw native tier. */
+	readonly risk: VerificationTier;
+	/** Reported context only: the writer's model or effort never changes the plan. */
+	readonly writerProfile: WriterProfile;
+	/**
+	 * Native review outcome for the current candidate. Only consulted when
+	 * `rddLine` is `"on"`; `"off"`/`"unknown"` lines ignore it entirely.
+	 * Omitted resolves to `NATIVE_REVIEW_OUTCOME.UNKNOWN` (gentle-pi#668).
+	 */
+	readonly nativeReviewOutcome?: NativeReviewOutcome;
+}
+
+export interface VerificationPlan {
+	readonly writerSelfVerification: boolean;
+	readonly structuralReadbackOnly: boolean;
+	readonly independentVerifier: boolean;
+	readonly reason: string;
+}
+
+/**
+ * Builds the risk-gated verification plan shared by the `off`/`unknown` RDD
+ * lines and by an `on` line whose native review did not close for this
+ * candidate (gentle-pi#668). `gatePrefix` supplies the sentence fragment
+ * naming which branch fired, up to and including the word "and"; the
+ * tier-specific clause is appended after it.
+ */
+function riskGatedPlan(gatePrefix: string, risk: VerificationTier): VerificationPlan {
+	if (risk === VERIFICATION_TIER.PASSIVE) {
+		return Object.freeze({
+			writerSelfVerification: false,
+			structuralReadbackOnly: true,
+			independentVerifier: false,
+			reason: `${gatePrefix} the native assessment reports passive risk: a structural readback by the parent is the complete check, with no separate verifier and no tests.`,
+		});
+	}
+
+	if (risk === VERIFICATION_TIER.HIGH) {
+		return Object.freeze({
+			writerSelfVerification: true,
+			structuralReadbackOnly: false,
+			independentVerifier: true,
+			reason: `${gatePrefix} an agent escalation names a Task Size high-risk item: the writer self-verifies and a separate independent verifier runs.`,
+		});
+	}
+
+	// medium, or an unassessable tier that did not go through verificationRisk:
+	// both inform only.
+	return Object.freeze({
+		writerSelfVerification: true,
+		structuralReadbackOnly: false,
+		independentVerifier: false,
+		reason: `${gatePrefix} no Task Size high-risk item was escalated: the writer's self-verification stands and no separate verifier runs, whatever the native tier or the model that wrote the change.`,
+	});
+}
+
+// Names why an `on` line falls back to the risk-gated path, for every
+// non-closed native review outcome (gentle-pi#668). `UNKNOWN` covers both an
+// omitted outcome and a caller-supplied one this decoder does not
+// recognize -- both fail closed the same way.
+function nonClosedOutcomeClause(outcome: NativeReviewOutcome): string {
+	switch (outcome) {
+		case NATIVE_REVIEW_OUTCOME.DECLINED:
+			return "the native review was declined for this candidate";
+		case NATIVE_REVIEW_OUTCOME.UNAVAILABLE:
+			return "the native review is unavailable for this candidate";
+		default:
+			return "the native review outcome for this candidate is unknown";
+	}
+}
+
+/**
+ * Computes who verifies a delegated writer's change. Verification follows the
+ * plan risk tier whatever the RDD line and native review outcome
+ * (verify-always-rdd-high S1, superseding the gentle-pi#662/#668 on-path): the
+ * native review is an additional outside view and never replaces or skips the
+ * tier's verification. `nativeReviewOutcome` only shapes the reason text.
+ *
+ * `risk` is the plan risk from `verificationRisk`; `writerProfile` is never
+ * consulted, so the model or effort that wrote the change never adds a
+ * verifier.
+ *
+ * - `passive`: structural readback by the parent only; no verifier, no tests.
+ * - `medium` (also an `unassessable` tier passed directly): the writer
+ *   self-verifies; no separate verifier.
+ * - `high` (only through an agent escalation naming a Task Size high-risk
+ *   item): the writer self-verifies and an independent verifier runs.
+ */
+export function verificationPlan(input: VerificationPlanInput): VerificationPlan {
+	const { rddLine, risk } = input;
+
+	if (rddLine === RDD_LINE.ON) {
+		const outcome = input.nativeReviewOutcome ?? NATIVE_REVIEW_OUTCOME.UNKNOWN;
+		const clause = outcome === NATIVE_REVIEW_OUTCOME.CLOSED
+			? "the native review closed for this candidate"
+			: nonClosedOutcomeClause(outcome);
+		return riskGatedPlan(
+			`receipt-driven development is on and ${clause}; the native review is an additional outside view that never replaces verification, so the risk-gated path applies exactly as receipt-driven development off, and`,
+			risk,
+		);
+	}
+
+	// rddLine is "off" or "unknown" here -- both gate on the native risk
+	// assessment identically, so an unknown RDD line never lowers a tier, and
+	// neither line ever consults nativeReviewOutcome.
+	return riskGatedPlan(`receipt-driven development is ${rddLine} and`, risk);
+}
+
+// ---------------------------------------------------------------------------
+// Small-writer-profile predicate (gentle-pi#662).
+// ---------------------------------------------------------------------------
+
+/**
+ * The minimal shape of `lib/agents-config.ts`'s `ResolvedProfile` this
+ * predicate needs: the resolved model reference and its resolved effort
+ * (`ResolvedProfile.thinking`, one of `ThinkingLevel`).
+ */
+export interface WriterModelProfileLike {
+	readonly model?: { readonly id: string } | undefined;
+	readonly thinking?: string | undefined;
+}
+
+// Matches `mini` only as a whole token of the model id -- delimited by the
+// string start/end or one of `-_./:` or whitespace -- never a bare substring.
+// `gpt-5.4-mini`, `o4-mini`, `openai/gpt-5.4-mini`, `claude-mini`, and
+// `mini-high` all match; `gemini`, `gemini-2.5-pro`, and `gemini-2.5-flash`
+// do not, because their `mini` is preceded by `ge`, not a delimiter.
+const SMALL_MODEL_ID_TOKEN = /(?:^|[-_./:\s])mini(?:$|[-_./:\s])/i;
+
+/**
+ * A writer profile counts as a "small model" (reported by ASSESS as
+ * `writerProfile`; it never changes the verification plan) when:
+ * - its resolved effort is `low`, or
+ * - its resolved model id carries `mini` as a whole token (see
+ *   `SMALL_MODEL_ID_TOKEN`), or
+ * - it carries NO signal at all -- no profile object, or a profile with
+ *   neither a model id nor a resolved effort. An unknown or omitted writer
+ *   profile fails closed to small rather than defaulting to large. The
+ *   result is reported in the assessment only: the verification plan never
+ *   reads the writer profile, so it cannot add or remove a verifier.
+ *
+ * A profile that carries a model id or an effort, just not a matching one
+ * (for example `{model: {id: "claude-sonnet-5"}, thinking: "high"}`), is
+ * "known large" and returns `false` -- fail-closed applies only to a truly
+ * unknown/omitted profile, not to an explicitly resolved large one.
+ */
+export function isSmallWriterProfile(profile: WriterModelProfileLike | undefined): boolean {
+	if (profile === undefined) return true;
+	if (profile.thinking === "low") return true;
+	const modelId = profile.model?.id;
+	if (typeof modelId === "string") return SMALL_MODEL_ID_TOKEN.test(modelId);
+	// No model id was resolved. Fail closed to small only when effort is also
+	// unknown -- there is no signal at all to call this a known large model.
+	return profile.thinking === undefined;
+}
+
+/**
+ * Maps a resolved writer profile to the reported `writerProfile`. An unknown
+ * or omitted profile resolves to `"small"`, exactly like
+ * `isSmallWriterProfile` (gentle-pi#662).
+ */
+export function resolveWriterProfile(profile: WriterModelProfileLike | undefined): WriterProfile {
+	return isSmallWriterProfile(profile) ? WRITER_PROFILE.SMALL : WRITER_PROFILE.LARGE;
+}

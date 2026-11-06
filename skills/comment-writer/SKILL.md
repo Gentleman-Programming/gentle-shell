@@ -1,5 +1,5 @@
 ---
-name: comment-writer
+name: gentle-ai-comment-writer
 description: "Write warm, direct collaboration comments. Trigger: PR feedback, issue replies, reviews, Slack messages, or GitHub comments."
 license: Apache-2.0
 metadata:

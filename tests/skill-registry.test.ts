@@ -1957,7 +1957,7 @@ test("P2 the skill-registry skill names only existing references and no runtime 
 	const root = join(import.meta.dirname, "..");
 	const skill = readFileSync(join(root, "skills", "skill-registry", "SKILL.md"), "utf8");
 	const references = skill.slice(skill.indexOf("## References"));
-	for (const [, path] of references.matchAll(/`([^`]+\.md)`/g)) assert.ok(existsSync(join(root, path)), `missing reference: ${path}`);
+	for (const [, path] of references.matchAll(/`([^`]+\.md)`/g)) assert.ok(existsSync(join(root, "skills", "skill-registry", path)), `missing reference: ${path}`);
 	assert.doesNotMatch(skill, /systemPromptOptions|pi\.skills|node_modules/);
 	assert.match(skill, /`<available_skills>`/);
 });

@@ -2372,14 +2372,22 @@ function canConfirm(ctx: ExtensionContext): boolean {
 // directory as `<prefix>-<16 hex>.<ext>`; only those direct children are Pi's.
 const PI_OUTPUT_FILE_NAME = /^pi-[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-f]{16}\.[a-z0-9]+$/i;
 
-/** Harness-owned locations that read tools may use without consent (#1610):
- * the Pi agent home (minus credentials and other sessions' transcripts), the
- * user skill directory Pi loads from, and Pi's output files. Writes there stay
- * fenced. A location that cannot be resolved is left out, so it stays fenced. */
+/** Harness-owned locations that read tools may use without consent (#1610).
+ * An allowlist, default deny: the Pi agent home itself holds credentials
+ * (auth.json, mcp.json, settings.json, models*.json) and session transcripts,
+ * so it is never a root; only its skill and installed-package subtrees are.
+ * Writes there stay fenced. A location that cannot be resolved is left out,
+ * so it stays fenced. */
 function harnessReadOnlyRoots(env: NodeJS.ProcessEnv, cwd: string): ReadOnlyRoot[] {
+	const agentHome = resolveGentlePiAgentHome(env);
 	const candidates: Array<() => ReadOnlyRoot> = [
-		() => ({ dir: canonicalizeTarget(resolveGentlePiAgentHome(env), cwd), exclude: ["auth.json", "mcp.json", "sessions"] }),
+		// Skills Pi loads from <agentDir>/skills and ~/.agents/skills.
+		() => ({ dir: canonicalizeTarget(join(agentHome, "skills"), cwd) }),
 		() => ({ dir: canonicalizeTarget(join(homedir(), ".agents", "skills"), cwd) }),
+		// Pi's managed npm installs: <agentDir>/npm/node_modules/<package>.
+		() => ({ dir: canonicalizeTarget(join(agentHome, "npm", "node_modules"), cwd) }),
+		// The package assets root the orchestrator prompt tells children to read.
+		() => ({ dir: canonicalizeTarget(ASSETS_DIR, cwd) }),
 		() => ({ dir: canonicalizeTarget(tmpdir(), cwd), leaf: PI_OUTPUT_FILE_NAME }),
 	];
 	return candidates.flatMap((resolveRoot) => {

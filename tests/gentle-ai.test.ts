@@ -9,7 +9,7 @@ import test from "node:test";
 import { gzipSync } from "node:zlib";
 import { createAgentSession, createWriteToolDefinition, DefaultResourceLoader, initTheme, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import { SESSION_WORKTREE_ENTRY } from "../lib/session-worktree-registry.ts";
 import type {
@@ -5186,9 +5186,11 @@ function harnessReadFixture(t: import("node:test").TestContext) {
 	const home = join(root, "home");
 	const agentHome = join(root, "agent-home");
 	const skillFile = join(home, ".agents", "skills", "demo", "SKILL.md");
-	const assetFile = join(agentHome, "orchestrator-delegation.md");
+	const assetFile = join(agentHome, "npm", "node_modules", "gentle-pi", "assets", "orchestrator-delegation.md");
+	const agentSkillFile = join(agentHome, "skills", "demo", "SKILL.md");
 	const authFile = join(agentHome, "auth.json");
-	for (const file of [skillFile, assetFile, authFile]) {
+	const privateFiles = ["auth.json", "mcp.json", "settings.json", "models.json", "trust.json", "AGENTS.md", join("sessions", "s1", "log.jsonl"), join("agents", "worker.md"), join("npm", "package-lock.json")].map((name) => join(agentHome, name));
+	for (const file of [skillFile, assetFile, agentSkillFile, ...privateFiles]) {
 		mkdirSync(dirname(file), { recursive: true });
 		writeFileSync(file, "content");
 	}
@@ -5213,7 +5215,7 @@ function harnessReadFixture(t: import("node:test").TestContext) {
 		ui: { confirm: async (_title: string, preview: string) => { previews.push(preview); return false; } },
 		sessionManager: { getSessionId: () => "harness-read-fence", getEntries: () => [] },
 	}) as unknown as ExtensionContext;
-	return { f, toolCall, ctx, previews, skillFile, assetFile, authFile, outputFile, strayFile, agentHome, home };
+	return { f, toolCall, ctx, previews, skillFile, assetFile, agentSkillFile, privateFiles, authFile, outputFile, strayFile, agentHome, home };
 }
 
 const headlessFenceReason = (target: string) => `Gentle AI safety policy requires interactive confirmation before accessing paths outside the session worktree: ${target}. Ask the user for an explicit safer plan.`;
@@ -5233,7 +5235,11 @@ test("path fence lets a headless child read a skill file outside the worktree wh
 
 test("path fence lets reads of Pi agent-home assets and Pi output files pass while writes stay fenced", async (t) => {
 	const h = harnessReadFixture(t);
-	assert.equal(await h.toolCall({ toolName: "read", input: { path: h.assetFile } }, h.ctx(false)), undefined, "an agent-home asset read passes headless");
+	assert.equal(await h.toolCall({ toolName: "read", input: { path: h.assetFile } }, h.ctx(false)), undefined, "an installed package asset read passes headless");
+	assert.equal(await h.toolCall({ toolName: "read", input: { path: h.agentSkillFile } }, h.ctx(false)), undefined, "an agent-home skill read passes headless");
+	const packageAsset = join(dirname(fileURLToPath(import.meta.url)), "..", "assets", "orchestrator-delegation.md");
+	assert.equal(await h.toolCall({ toolName: "read", input: { path: packageAsset } }, h.ctx(false)), undefined, "the package assets root the orchestrator prompt names passes headless");
+	assert.equal((await h.toolCall({ toolName: "write", input: { path: packageAsset, content: "x" } }, h.ctx(false)))?.block, true, "a write to the package assets root stays fenced");
 	assert.equal(await h.toolCall({ toolName: "read", input: { path: h.outputFile } }, h.ctx(false)), undefined, "a Pi truncated-output file read passes headless");
 	assert.equal(await h.toolCall({ toolName: "read", input: { path: `@${h.assetFile}` } }, h.ctx(false)), undefined, "the @ spelling resolves to the same root");
 	assert.deepEqual(await h.toolCall({ toolName: "write", input: { path: h.assetFile, content: "x" } }, h.ctx(false)), { block: true, reason: headlessFenceReason(h.assetFile) }, "an agent-home write stays fenced");
@@ -5243,7 +5249,13 @@ test("path fence lets reads of Pi agent-home assets and Pi output files pass whi
 
 test("path fence keeps credentials, unrelated temp files and other outside reads fenced", async (t) => {
 	const h = harnessReadFixture(t);
-	assert.deepEqual(await h.toolCall({ toolName: "read", input: { path: h.authFile } }, h.ctx(false)), { block: true, reason: headlessFenceReason(h.authFile) }, "the agent-home credential file is not a harness read");
+	for (const file of h.privateFiles) {
+		assert.deepEqual(await h.toolCall({ toolName: "read", input: { path: file } }, h.ctx(false)), { block: true, reason: headlessFenceReason(file) }, `${file} is not a harness read`);
+	}
+	for (const [toolName, input] of [["grep", { pattern: "token", path: h.agentHome }], ["find", { pattern: "*.json", path: h.agentHome }], ["ls", { path: h.agentHome }], ["ls", { path: join(h.agentHome, "npm") }], ["grep", { pattern: "token", path: join(h.agentHome, "sessions") }]] as const) {
+		assert.equal((await h.toolCall({ toolName, input }, h.ctx(false)))?.block, true, `${toolName} of ${input.path} stays headless-blocked: the agent home is not itself a root`);
+	}
+	assert.equal(await h.toolCall({ toolName: "grep", input: { pattern: "x", path: join(h.agentHome, "skills") } }, h.ctx(false)), undefined, "recursive search inside the skills subtree passes");
 	assert.deepEqual(await h.toolCall({ toolName: "read", input: { path: h.strayFile } }, h.ctx(false)), { block: true, reason: headlessFenceReason(h.strayFile) }, "a temp file that is not a Pi output file stays fenced");
 	const secret = join(h.f.sibling, "secret.txt");
 	assert.deepEqual(await h.toolCall({ toolName: "read", input: { path: secret } }, h.ctx(false)), { block: true, reason: headlessFenceReason(secret) }, "an unrelated outside read still headless-blocks");

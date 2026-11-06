@@ -130,13 +130,15 @@ In Git-backed sessions, `read`, `write`, `edit`, `grep`, `find`, and `ls` requir
 
 The Gentle config home (`GENTLE_PI_CONFIG_HOME`, by default `~/.pi/gentle-ai`) is not fenced: its own policy already governs it. Authority files such as the permission mode and runtime guardrails stay blocked for model tools, and updater-owned companion files go through the current mode's ordinary checks. A config home that cannot be resolved stays fenced.
 
-Harness-owned locations are **read-only** exempt roots: `read`, `grep`, `find` and `ls` pass there without consent, so delegated runs can read what the harness tells them to read. `write` and `edit` to the same locations stay fenced (interactive confirmation, or a block when headless). The roots are:
+Harness-owned locations are **read-only** exempt roots: `read`, `grep`, `find` and `ls` pass there without consent, so delegated runs can read what the harness tells them to read. `write` and `edit` to the same locations stay fenced (interactive confirmation, or a block when headless). This is an allowlist with default deny, and nothing outside it is exempt:
 
-- the Pi agent home (`GENTLE_PI_AGENT_HOME`, else `PI_CODING_AGENT_DIR`, else `~/.pi/agent`), which holds package assets such as `orchestrator-*.md` and `<agent home>/skills`. `auth.json`, `mcp.json` and `sessions/` inside it stay fenced for reads too;
+- `<agent home>/skills`, where the agent home is `GENTLE_PI_AGENT_HOME`, else `PI_CODING_AGENT_DIR`, else `~/.pi/agent`;
+- `<agent home>/npm/node_modules`, where Pi installs packages, including Gentle Pi and its package skills;
+- the Gentle Pi package `assets/` directory, the root the orchestrator prompt names for `orchestrator-*.md` and the other lazy assets;
 - `~/.agents/skills`, the user skill directory Pi loads from;
 - Pi's output files, such as the full text of truncated tool output: only direct children of the OS temp directory named `pi-<name>-<16 hex>.<ext>`, never other temp files.
 
-As with the config home, a root that cannot be resolved is left out and stays fenced. Paths are judged by their canonical destination, so `..` segments and symlinks cannot leave a root.
+The agent home itself and everything else under it stay fenced for every tool, including `grep`, `find` and `ls` on the directory: `auth.json`, `mcp.json`, `settings.json`, `models*.json`, `trust.json`, `sessions/`, `agents/`, `AGENTS.md` and the rest. A listed root is exempt only from its own directory downward; its parents are never exempt. As with the config home, a root that cannot be resolved is left out and stays fenced. Paths are judged by their canonical destination, so `..` segments and symlinks cannot leave a root; a skill directory that is a symlink to a location outside these roots is fenced like any other outside path.
 
 If a symlink or requested target changes while the confirmation dialog is open, the call is blocked without storing a grant or reporting an approved permission event:
 

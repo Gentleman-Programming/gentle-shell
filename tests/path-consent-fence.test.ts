@@ -228,17 +228,25 @@ test("unclassifiedFenceInputKeys flags new top-level and nested keys", () => {
 	assert.deepEqual(unclassifiedFenceInputKeys({ type: "object", properties: { path: { type: "string" }, limit: { type: "number" } } }), []);
 });
 
-test("read-only roots exempt read tools only, honor exclusions and leaf filters", (t) => {
+test("read-only roots exempt read tools only, never an ancestor, and honor leaf filters", (t) => {
 	const f = fixture(t);
-	const roots = [{ dir: f.sibling, exclude: ["private"] }, { dir: join(f.dir, "shared"), leaf: /^out-[0-9a-f]+\.log$/ }];
-	mkdirSync(join(f.dir, "shared", "deep"), { recursive: true });
+	const home = join(f.dir, "home");
+	for (const dir of [join(home, "skills", "demo"), join(home, "npm", "node_modules", "pkg"), join(home, "sessions"), join(f.dir, "shared", "deep")]) mkdirSync(dir, { recursive: true });
+	const roots = [{ dir: join(home, "skills") }, { dir: join(home, "npm", "node_modules") }, { dir: join(f.dir, "shared"), leaf: /^out-[0-9a-f]+\.log$/ }];
 	const decide = (toolName: string, path: string, hasUI = false) => evaluatePathFence(toolName, { path }, f.root, [f.root], "s", grants(), hasUI, roots).kind;
-	for (const toolName of ["read", "grep", "find", "ls"]) assert.equal(decide(toolName, join(f.sibling, "nested")), "pass", `${toolName} passes inside a read-only root`);
-	for (const toolName of ["write", "edit"]) assert.equal(decide(toolName, join(f.sibling, "nested", "a.txt")), "headless-block", `${toolName} stays fenced inside a read-only root`);
-	assert.equal(decide("write", join(f.sibling, "nested", "a.txt"), true), "confirm");
-	assert.equal(decide("read", join(f.sibling, "private", "key")), "headless-block", "an excluded child stays fenced");
+	for (const toolName of ["read", "grep", "find", "ls"]) {
+		assert.equal(decide(toolName, join(home, "skills", "demo")), "pass", `${toolName} passes inside a read-only root`);
+		assert.equal(decide(toolName, join(home, "skills")), "pass", `${toolName} passes on the root directory itself`);
+		assert.equal(decide(toolName, join(home, "npm", "node_modules", "pkg", "a.md")), "pass");
+		assert.equal(decide(toolName, home), "headless-block", `${toolName} on the parent of a root stays fenced`);
+		assert.equal(decide(toolName, join(home, "npm")), "headless-block", `${toolName} on an ancestor of a root stays fenced`);
+	}
+	for (const name of ["auth.json", "settings.json", "models.json", "mcp.json", join("sessions", "x")]) assert.equal(decide("read", join(home, name)), "headless-block", `${name} beside the roots stays fenced`);
+	for (const toolName of ["write", "edit"]) assert.equal(decide(toolName, join(home, "skills", "demo", "a.txt")), "headless-block", `${toolName} stays fenced inside a read-only root`);
+	assert.equal(decide("write", join(home, "skills", "demo", "a.txt"), true), "confirm");
 	assert.equal(decide("read", join(f.dir, "shared", "out-ab12.log")), "pass", "a matching direct child passes");
 	assert.equal(decide("read", join(f.dir, "shared", "other.log")), "headless-block", "a non-matching child stays fenced");
 	assert.equal(decide("read", join(f.dir, "shared", "deep", "out-ab12.log")), "headless-block", "a leaf root never reaches nested directories");
-	assert.equal(evaluatePathFence("read", { path: join(f.sibling, "x") }, f.root, [f.root], "s", grants(), false).kind, "headless-block", "without read-only roots the previous behavior holds");
+	assert.equal(decide("read", join(home, "skills", "..", "auth.json")), "headless-block", "dot-dot out of a root is judged by its destination");
+	assert.equal(evaluatePathFence("read", { path: join(home, "skills", "x") }, f.root, [f.root], "s", grants(), false).kind, "headless-block", "without read-only roots the previous behavior holds");
 });

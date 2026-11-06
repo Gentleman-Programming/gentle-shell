@@ -83,7 +83,8 @@ test("repository identity, unsupported refs and missing verified context never s
 
 test("real Git loose and packed replacements are respected, including changes and removal", t => {
  const cwd = store(t);
- const git = (args: string[], input?: string) => childProcess.execFileSync("git", args, { cwd, encoding: "utf8", input, windowsHide: true }).trim();
+ const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+ const git = (args: string[], input?: string) => childProcess.execFileSync("git", args, { cwd, env, encoding: "utf8", input, windowsHide: true }).trim();
  git(["init", "--quiet"]);
  const common = realpathSync(resolve(cwd, git(["rev-parse", "--git-common-dir"])));
  const blob = git(["hash-object", "-w", "--stdin"], "fixture\n");

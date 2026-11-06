@@ -29,10 +29,12 @@ const metadata = join(
 );
 const version: string = JSON.parse(readFileSync(metadata, "utf8")).version;
 assert.match(version, /^\d+\.\d+\.\d+$/);
+const [major, minor] = version.split(".").map(Number);
 assert.ok(
- Number(version.split(".")[0]) >= 1,
+ major >= 1,
  `Public fixtures require Pi >=1.0.0, installed ${version}`,
 );
+const rollsBackFailedAppend = major > 1 || (major === 1 && minor >= 5);
 console.info(
  `Public append controller fixture API: ${version}; minimum tested baseline 1.0.0`,
 );
@@ -148,7 +150,7 @@ for (const prior of ["bound", "invalid", "future"] as const) {
 }
 for (const failure of ["bind", "clear"] as const) {
  for (const recovery of ["bind", "clear"] as const) {
-  test(`public EISDIR ${failure} rolls back; new ${recovery} survives intact and missing-parent reopen`, () => {
+  test(`public EISDIR ${failure} preserves authority; new ${recovery} survives reopen`, () => {
    const { manager, sessions, adapter, errors } = fixture();
    assert.equal(
     adapter.bind("good", {
@@ -173,8 +175,27 @@ for (const failure of ["bind", "clear"] as const) {
    assert.equal(failed.status, "indeterminate");
    assert.equal(errors.length, 1);
    assert.equal((errors[0] as NodeJS.ErrnoException).code, "EISDIR");
-   assert.deepEqual(manager.getBranch(), before, "SDK rolls back the failed entry and leaf");
-   assert.equal(manager.getLeafId(), retained);
+   const after = manager.getBranch();
+   let failedLeaf = retained;
+   if (rollsBackFailedAppend) {
+    assert.deepEqual(after, before, "SDK rolls back the failed entry and leaf");
+    assert.equal(manager.getLeafId(), retained);
+   } else {
+    assert.equal(after.length, before.length + 1);
+    assert.deepEqual(after.slice(0, before.length), before);
+    const ghost = after.at(-1);
+    assert.ok(ghost);
+    assert.equal(ghost.type, "custom");
+    assert.equal(ghost.customType, SESSION_PROFILE_CUSTOM_TYPE);
+    assert.deepEqual(ghost.data, failure === "bind"
+     ? { kind: "bind", origin: "user", name: "failed", modelProfiles: {} }
+     : { kind: "clear" });
+    assert.equal(ghost.parentId, retained);
+    assert.ok(ghost.id);
+    assert.notEqual(ghost.id, retained);
+    assert.equal(manager.getLeafId(), ghost.id);
+    failedLeaf = ghost.id;
+   }
    assert.equal(readFileSync(saved, "utf8"), original, "rejected append preserves stored bytes");
    // Recover fixture filesystem by moves, not history edits or private APIs.
    renameSync(file, `${file}.fault-directory`);
@@ -186,7 +207,7 @@ for (const failure of ["bind", "clear"] as const) {
    assert.ok(good);
    manager.branch(good.id);
    bound(adapter.refresh(), "good");
-   manager.branch(retained);
+   manager.branch(failedLeaf);
    bound(adapter.refresh(), "good");
    const recovered =
     recovery === "bind" ? adapter.bind("recovered", {}) : adapter.clear();
@@ -197,12 +218,13 @@ for (const failure of ["bind", "clear"] as const) {
    );
    const latest = manager.getBranch().at(-1);
    assert.ok(latest);
-   assert.equal(latest.parentId, retained);
+   assert.equal(latest.parentId, failedLeaf);
    const disk = readFileSync(file, "utf8")
     .trim()
     .split("\n")
     .map((line) => JSON.parse(line));
    assert.equal(disk.some((row) => row.id === retained), true);
+   if (!rollsBackFailedAppend) assert.equal(disk.some((row) => row.id === failedLeaf), false);
    assert.deepEqual(
     disk.find((row) => row.id === latest.id),
     JSON.parse(JSON.stringify(latest)),
@@ -211,22 +233,26 @@ for (const failure of ["bind", "clear"] as const) {
    const restored = controller(reopened).refresh();
    assert.equal(restored.status, "persisted");
    assert.equal(restored.state.status, recovery === "bind" ? "bound" : "cleared");
-   assert.deepEqual(reopened.getBranch(), manager.getBranch());
-   // An explicit disk gap is a separate test-owned source, not an SDK
-   // failed append: the current SDK correctly rolls those appends back.
-   const orphanFile = `${file}.orphan.jsonl`;
-   writeFileSync(orphanFile,
-    disk.filter((row) => row.id !== retained)
-     .map((row) => JSON.stringify(row)).join("\n") + "\n",
-   );
-   const orphan = SessionManager.open(orphanFile, sessions);
-   assert.equal(orphan.getBranch().length, 1);
-   assert.equal(orphan.getBranch()[0].id, latest.id);
-   const orphanRestored = controller(orphan).refresh();
-   assert.equal(orphanRestored.status, "persisted");
-   assert.equal(orphanRestored.state.status, recovery === "bind" ? "bound" : "cleared");
-   if (recovery === "bind") bound(orphanRestored, "recovered");
-   manager.branch(retained);
+   if (recovery === "bind") bound(restored, "recovered");
+   if (rollsBackFailedAppend) {
+    assert.deepEqual(reopened.getBranch(), manager.getBranch());
+    // With rollback, use a separately damaged test-owned file for a disk gap.
+    const orphanFile = `${file}.orphan.jsonl`;
+    writeFileSync(orphanFile,
+     disk.filter((row) => row.id !== retained)
+      .map((row) => JSON.stringify(row)).join("\n") + "\n",
+    );
+    const orphan = SessionManager.open(orphanFile, sessions);
+    assert.deepEqual(orphan.getBranch(), [JSON.parse(JSON.stringify(latest))]);
+    const orphanRestored = controller(orphan).refresh();
+    assert.equal(orphanRestored.status, "persisted");
+    assert.equal(orphanRestored.state.status, recovery === "bind" ? "bound" : "cleared");
+    if (recovery === "bind") bound(orphanRestored, "recovered");
+   } else {
+    // The real failed parent is absent on disk; Pi reopens the recovered suffix.
+    assert.deepEqual(reopened.getBranch(), [JSON.parse(JSON.stringify(latest))]);
+   }
+   manager.branch(failedLeaf);
    bound(adapter.refresh(), "good");
   });
  }
@@ -265,8 +291,8 @@ for (const failedOperation of ["bind", "clear"] as const) {
     : f.adapter.clear();
   assert.equal(failed.status, "indeterminate");
   assert.equal(readFileSync(`${file}.saved`, "utf8"), original);
-  const ghost = f.manager.getLeafId();
-  assert.ok(ghost);
+  const failedLeaf = f.manager.getLeafId();
+  assert.ok(failedLeaf);
   renameSync(file, `${file}.fault-directory`);
   renameSync(`${file}.saved`, file);
   f.adapter.detach();
@@ -286,7 +312,7 @@ for (const failedOperation of ["bind", "clear"] as const) {
   assert.equal(calls, 0);
   assert.equal(current.clear().status, "persisted");
   assert.equal(calls, 1);
-  f.manager.branch(ghost);
+  f.manager.branch(failedLeaf);
   bound(current.refresh(), "trusted");
   assert.equal(f.errors.length, 1);
  });

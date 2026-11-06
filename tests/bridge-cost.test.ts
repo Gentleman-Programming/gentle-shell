@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { priceBridgeMessage } from "../lib/bridge-cost.ts";
+
+const metadata = join(dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-ai"))), "..", "package.json");
+const version: string = JSON.parse(readFileSync(metadata, "utf8")).version;
+assert.match(version, /^\d+\.\d+\.\d+$/);
+const [major, minor] = version.split(".").map(Number);
+assert.ok(major >= 1, `Pi AI >=1.0.0 required, installed ${version}`);
+const hasProviderTotal = major > 1 || (major === 1 && minor >= 5);
 
 const OPUS = { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 };
 const zeroCost = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 });
@@ -17,8 +27,9 @@ test("priceBridgeMessage prices a zero-cost claude-bridge message at the Anthrop
 	const priced = priceBridgeMessage(message, catalog);
 	assert.ok(priced);
 	// 1M input * $4 + 100k output * $20 + 2M cache read * $0.2 + 200k cache write * $5
-	assert.deepEqual(priced.usage.cost, { input: 4, output: 2, cacheRead: 0.4, cacheWrite: 1, total: 7.4, totalFromProvider: false });
-	assert.equal(priced.usage.totalTokens, 3_300_000, "token counts stay as the bridge reported them");
+	const cost = { input: 4, output: 2, cacheRead: 0.4, cacheWrite: 1, total: 7.4, ...(hasProviderTotal ? { totalFromProvider: false } : {}) };
+	assert.deepEqual(priced.usage.cost, cost);
+	assert.deepEqual(priced.usage, { ...original.usage, cost }, "all token counts stay as the bridge reported them");
 	assert.deepEqual(message, original, "the original message is not mutated");
 });
 

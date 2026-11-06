@@ -61,7 +61,7 @@ const V014_MANAGED_ASSETS = join(
 // gentle-ai-explore.md as their exemplar (packaged, absent from the v0.13
 // manifest) after review-refuter.md was retired together with every
 // Pi-authored adversarial review verdict.
-const MANAGED_EXEMPLAR_TOOLS = ["read", "grep", "find", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "mcp__codegraph__codegraph_explore"];
+const MANAGED_EXEMPLAR_TOOLS = ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "mcp__codegraph__codegraph_explore"];
 const RETIRED_ADVERSARIAL_AGENTS = ["review-refuter.md", "review-validator.md"];
 
 interface ManagedAssetsManifest {
@@ -1828,7 +1828,7 @@ test("global model routing uses PI_CODING_AGENT_DIR for package-installed agents
 test("normal and forced installation copy generic agents with complete role contracts", () => {
 	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
 	const expectedTools = {
-		"gentle-ai-explore": ["read", "grep", "find", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "mcp__codegraph__codegraph_explore"],
+		"gentle-ai-explore": ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "mcp__codegraph__codegraph_explore"],
 		"gentle-ai-verify": ["read", "grep", "find", "bash", "mcp__codegraph__codegraph_explore"],
 	} as const;
 

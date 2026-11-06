@@ -7,18 +7,20 @@ import type { TaskStatus } from "./agents-protocol.ts";
 export const NOTIFICATION_SCHEMA = "gentle-shell.notifications/v1";
 /** Contract vocabulary, NOT proof of runtime support. Adapters must verify producers before UI exposure. */
 const SUBAGENT_STATUSES = ["queued", "running", "waiting", "completed", "failed", "cancelled", "timed_out"] as const satisfies readonly TaskStatus[];
-export type NotificationEvent = "session.started" | "session.shutdown"
+export type NotificationEvent = "session.started" | "session.shutdown" | "context.high"
 	| `agent.${"started" | "completed" | "failed" | "cancelled" | "attention"}` | `subagent.${TaskStatus}`;
 export const NOTIFICATION_EVENTS: readonly NotificationEvent[] = [
 	"session.started", "session.shutdown", "agent.started", "agent.completed", "agent.failed", "agent.cancelled", "agent.attention",
 	...SUBAGENT_STATUSES.map(status => `subagent.${status}` as const),
+	// Context is a main-process runtime signal, not a producer bus origin.
+	"context.high",
 ];
 export const BUILTIN_NOTIFICATION_IDS = ["success", "error", "attention"] as const;
 export type NotificationSound = `builtin:${typeof BUILTIN_NOTIFICATION_IDS[number]}` | `file:${string}` | null;
 /** Priority belongs to the event, never the selected sound. waiting does not imply attention. */
 export const NOTIFICATION_PRIORITY: Readonly<Record<NotificationEvent, number>> = Object.fromEntries(
 	NOTIFICATION_EVENTS.map(event => [event, event.endsWith(".failed") || event.endsWith(".timed_out") ? 3
-		: event === "agent.attention" ? 2 : event.endsWith(".completed") ? 1 : 0]),
+		: event === "agent.attention" || event === "context.high" ? 2 : event.endsWith(".completed") ? 1 : 0]),
 ) as Record<NotificationEvent, number>;
 /** Integer milliseconds, inclusive bounds. Zero permits disabling a timing window. TTL belongs to scheduler. */
 export const NOTIFICATION_TIMING_LIMITS = {

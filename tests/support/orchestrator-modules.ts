@@ -6,6 +6,7 @@ import { join } from "node:path";
 // so a moved clause stays pinned instead of silently disappearing.
 export const DELEGATION_MODULES = [
 	"orchestrator-delegation.md",
+	"orchestrator-delegation-reference.md",
 	"orchestrator-tracking.md",
 	"orchestrator-verification.md",
 	"orchestrator-writer.md",

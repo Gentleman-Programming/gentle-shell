@@ -67,21 +67,38 @@ test("native reclaim and recover preserve their exact authority bindings", async
 	]);
 });
 
-test("native abandon carries the exact discarded-work authorization and audit record", async () => {
+test("native ABANDON rejects free-text reasons before launching native", async () => {
+	const queue = queuedAdapter([]);
 	const request = {
-		cwd: "/repo",
-		lineage: "abandoned",
-		expectedRevision: "revision-1",
-		snapshotIdentity: SHA,
-		capturedLensResults: ["00-risk.json"],
-		findingsPresent: true,
-		actor: "maintainer",
-		reason: "discard candidate",
+		cwd: "/repo", lineage: "abandoned", expectedRevision: "revision-1", snapshotIdentity: SHA,
+		capturedLensResults: ["00-risk.json"], findingsPresent: true, actor: "maintainer",
+		reason: "discard candidate" as unknown as import("../lib/native-review-cli.ts").NativeReviewAbandonRequest["reason"],
 	};
-	const queue = queuedAdapter([{ stdout: JSON.stringify({ operation: "review/abandon", record: { schema: "gentle-ai.review-reclaim-audit/v1", lineage_id: "abandoned", status: "committed" } }) }]);
-	const result = await client(queue.adapter).abandon({ ...request, maintainerAuthorization: nativeReviewAbandonAuthorization(request) });
-	assert.equal(result.record.status, "committed");
-	assert.deepEqual(queue.calls[0]?.arguments.slice(0, 10), ["review", "abandon", "--cwd", "/repo", "--lineage", "abandoned", "--expected-revision", "revision-1", "--actor", "maintainer"]);
+	await assert.rejects(
+		() => client(queue.adapter).abandon({ ...request, maintainerAuthorization: nativeReviewAbandonAuthorization(request) }),
+		/Native ABANDON reason must be "operator_disposition" or "retired_schema"/,
+	);
+	assert.equal(queue.calls.length, 0);
+});
+
+test("native abandon carries the exact discarded-work authorization and audit record", async () => {
+	for (const reason of ["operator_disposition", "retired_schema"] as const) {
+		const request = {
+			cwd: "/repo",
+			lineage: "abandoned",
+			expectedRevision: "revision-1",
+			snapshotIdentity: SHA,
+			capturedLensResults: ["00-risk.json"],
+			findingsPresent: true,
+			actor: "maintainer",
+			reason,
+		};
+		const queue = queuedAdapter([{ stdout: JSON.stringify({ operation: "review/abandon", record: { schema: "gentle-ai.review-reclaim-audit/v1", lineage_id: "abandoned", status: "committed" } }) }]);
+		const result = await client(queue.adapter).abandon({ ...request, maintainerAuthorization: nativeReviewAbandonAuthorization(request) });
+		assert.equal(result.record.status, "committed");
+		assert.deepEqual(queue.calls[0]?.arguments.slice(0, 10), ["review", "abandon", "--cwd", "/repo", "--lineage", "abandoned", "--expected-revision", "revision-1", "--actor", "maintainer"]);
+		assert.deepEqual(queue.calls[0]?.arguments.slice(10, 12), ["--reason", reason]);
+	}
 });
 
 // gentle-ai 0ed9225f ("close on the last causal event") removed evidence records
@@ -257,7 +274,7 @@ test("native RECOVER rejects malformed or unacknowledged committed selectors bef
 test("partial maintenance failures preserve the provider audit record and unknown mutation outcome", async () => {
 	const request = {
 		cwd: "/repo", lineage: "abandoned", expectedRevision: "revision-1", snapshotIdentity: SHA,
-		capturedLensResults: ["00-risk.json"], findingsPresent: true, actor: "maintainer", reason: "discard candidate",
+		capturedLensResults: ["00-risk.json"], findingsPresent: true, actor: "maintainer", reason: "operator_disposition" as const,
 	};
 	const queue = queuedAdapter([{ exitCode: 1, stdout: JSON.stringify({ operation: "review/abandon", record: { schema: "gentle-ai.review-reclaim-audit/v1", lineage_id: request.lineage, status: "partial" } }) }]);
 	await assert.rejects(
@@ -306,7 +323,7 @@ test("native abandon rejects a legacy authorization before process launch", asyn
 		capturedLensResults: ["00-risk.json"],
 		findingsPresent: true,
 		actor: "maintainer",
-		reason: "discard candidate",
+		reason: "operator_disposition" as const,
 	};
 	const queue = queuedAdapter([]);
 	await assert.rejects(
@@ -364,6 +381,25 @@ function abandonedInventoryNative(calls: Array<Record<string, unknown>>): import
 		abandon: async (request: Record<string, unknown>) => { calls.push(request); return { record: { schema: "gentle-ai.review-reclaim-audit/v1", lineage_id: "stranded", status: "committed" } }; },
 	} as unknown as import("../lib/native-review-cli.ts").NativeReviewCli;
 }
+
+test("ABANDON rejects free-text reasons before inventory, confirmation, or mutation", async () => {
+	let statusCalls = 0;
+	let confirmCalls = 0;
+	let abandonCalls = 0;
+	const native = {
+		reviewStatus: async () => { statusCalls += 1; throw new Error("must not read inventory"); },
+		abandon: async () => { abandonCalls += 1; throw new Error("must not abandon"); },
+	} as unknown as import("../lib/native-review-cli.ts").NativeReviewCli;
+	const context = { hasUI: true, ui: { confirm: async () => { confirmCalls += 1; return true; } } } as unknown as ExtensionContext;
+	const result = await __testing.executeReviewControllerOperation({ operation: "abandon", input: JSON.stringify({ lineage: "stranded", actor: "maintainer", reason: "discard candidate" }) }, process.cwd(), native, undefined, undefined, context);
+	assert.equal(result.outcome, "native-input-invalid");
+	assert.deepEqual(result.allowed_reasons, ["operator_disposition", "retired_schema"]);
+	assert.equal(result.mutation_performed, false);
+	assert.equal(result.mutation_outcome, "none");
+	assert.equal(statusCalls, 0);
+	assert.equal(confirmCalls, 0);
+	assert.equal(abandonCalls, 0);
+});
 
 test("ABANDON derives its discarded-work inputs from fresh native inventory", async () => {
 	const calls: Array<Record<string, unknown>> = [];
@@ -467,7 +503,7 @@ test("maintenance cancellation preserves the exact signal and unknown mutation o
 	const request = {
 		cwd: "/repo", lineage: "abandoned", expectedRevision: "revision-1", snapshotIdentity: SHA,
 		capturedLensResults: ["00-risk.json"], findingsPresent: true,
-		actor: "maintainer", reason: "discard candidate",
+		actor: "maintainer", reason: "operator_disposition" as const,
 	};
 	const adapter: ExecFileAdapter = async (call) => {
 		assert.equal(call.signal, controller.signal);

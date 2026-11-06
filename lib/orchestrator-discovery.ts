@@ -1,14 +1,20 @@
 import { readCatalog, type CatalogPage } from "./orchestrator-catalog.ts";
 import type { PublishedWork } from "./orchestrator-work.ts";
 import type { PresenceRecord } from "./agents-session-transport.ts";
-import { activationHash, listPresence, readDiscovery, sessionHash, type DiscoveryMetadata } from "./orchestrator-presence.ts";
+import { activationHash, discoveryAbsent, listPresence, readDiscovery, sessionHash, type DiscoveryMetadata } from "./orchestrator-presence.ts";
 
 export interface OrchestratorCandidate {
 	sessionId: string;
 	reachability: "unknown";
 	freshness: "unknown" | "recent" | "stale";
 	label?: string;
+	/** Display-only label of a live peer whose code predates discovery publication:
+	 * its schema-1 header heartbeats, but it never writes a discovery sidecar. */
+	legacyLabel?: string;
 	aliases?: DiscoveryMetadata["aliases"];
+	/** stateOnly selection: whether this peer published owner-curated state. Boolean
+	 * only — curated state prose stays out of the default session list. */
+	statePublished?: boolean;
 	workspace?: string;
 	tasks?: DiscoveryMetadata["tasks"];
 	omitted?: number;
@@ -24,7 +30,7 @@ export interface OrchestratorCandidate {
 /** One bounded metadata page, no thread reads or transport probes. The registry
  * selects a canonical routing activation; metadata must bind to that exact one.
  * Incomplete scans and duplicate presence headers fail closed. */
-export function discoverOrchestrators(profile: string, peers: readonly PresenceRecord[], now = Date.now(), selection?: { recipientSessionId?: string; cursor?: string; consultation?: boolean; includeWork?: boolean }): OrchestratorCandidate[] {
+export function discoverOrchestrators(profile: string, peers: readonly PresenceRecord[], now = Date.now(), selection?: { recipientSessionId?: string; cursor?: string; consultation?: boolean; includeWork?: boolean; stateOnly?: boolean }): OrchestratorCandidate[] {
 	const page = listPresence(profile, now);
 	const ids = [...new Set(peers.map(peer => peer.sessionId))];
 	return ids.filter(id => selection?.recipientSessionId === undefined || selection.recipientSessionId === id).map(sessionId => {
@@ -36,6 +42,7 @@ export function discoverOrchestrators(profile: string, peers: readonly PresenceR
 		if (matches.length !== 1) return unknown;
 		const header = matches[0];
 		const metadata = readDiscovery(profile, header);
+		if (!metadata && header.recent && discoveryAbsent(profile, header)) return { ...unknown, legacyLabel: header.label };
 		if (metadata?.activation !== activationHash(activations[0])) return unknown;
 		if (!header.recent) return { ...unknown, freshness: "stale" };
 		const catalog = readCatalog(profile, header, metadata.activation, selection?.recipientSessionId === sessionId ? selection.cursor : undefined);
@@ -44,6 +51,7 @@ export function discoverOrchestrators(profile: string, peers: readonly PresenceR
 			...(selection?.consultation ? { publication: { incarnation: header.incarnation, activation: metadata.activation, heartbeat: header.heartbeat } } : {}),
 			...(selection?.includeWork && metadata.state?.sessionId === sessionId
 				? { workRecord: { work: metadata.state.state?.work ?? null, recordedAt: metadata.state.recordedAt } } : {}),
+			...(selection?.stateOnly ? { statePublished: metadata.state?.sessionId === sessionId } : {}),
 			...(!selection?.includeWork && selection?.recipientSessionId === sessionId && metadata.state?.sessionId === sessionId ? { state: metadata.state } : {}) };
 	});
 }

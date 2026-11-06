@@ -10,7 +10,7 @@
 // Then open the printed one-time session URL. Not part of the installer entry.
 
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { planPreflight, requirements } from "./installer-preflight.mjs";
+import { PI_INSTALL_VERSION, planPreflight, requirements } from "./installer-preflight.mjs";
 import { createInstallerServer } from "./installer-server.mjs";
 
 const BIN = "/home/you/.local/share/pnpm/bin";
@@ -36,7 +36,7 @@ const freshInventory = Object.freeze({
 // An earlier run installed the pinned stack, but its setup and `pnpm setup` did not finish.
 const recoveryInventory = Object.freeze({
 	...baseInventory,
-	pi: { available: true, version: "1.0.0", usable: true },
+	pi: { available: true, version: PI_INSTALL_VERSION, usable: true },
 	shell: { available: true, version: requirements.shell, usable: true, global: true },
 	gentleAi: { available: true, version: requirements.gentleAi, usable: true, compatible: true },
 	globalBin: { ...baseInventory.globalBin, onPath: false },

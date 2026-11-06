@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { THINKING_LEVELS as ROUTING_THINKING_LEVELS, type AgentModelConfig, type ThinkingLevel as RoutingThinkingLevel } from "./model-routing-authority.ts";
+import { THINKING_LEVELS as ROUTING_THINKING_LEVELS, isServiceTier, type AgentModelConfig, type ServiceTier, type ThinkingLevel as RoutingThinkingLevel } from "./model-routing-authority.ts";
 
 // Gentle Agents configuration. Agent definitions are markdown files with YAML
 // frontmatter (the format gentle-ai installs) and runtime settings come from
@@ -62,6 +62,7 @@ export interface AgentDefinitionError {
 export interface ModelProfile {
 	model: ModelRef | undefined;
 	thinking: ThinkingLevel | undefined;
+	tier?: ServiceTier;
 }
 
 export interface AgentsConfig {
@@ -83,6 +84,7 @@ export interface ProfileSources {
 export interface ResolvedProfile {
 	model: ModelRef | undefined;
 	thinking: ThinkingLevel | undefined;
+	tier?: ServiceTier;
 	source: ProfileSources;
 }
 
@@ -246,7 +248,7 @@ function parseProfiles(value: unknown): Record<string, ModelProfile> {
 		if (!raw || typeof raw !== "object") continue;
 		const entry = raw as Record<string, unknown>;
 		const thinking = parseThinking(entry.effort ?? entry.thinking);
-		profiles[name] = { model: parseModelRef(entry.model), thinking: thinking !== undefined && THINKING_LEVELS.includes(thinking) ? (thinking as ThinkingLevel) : undefined };
+		profiles[name] = { model: parseModelRef(entry.model), thinking: thinking !== undefined && THINKING_LEVELS.includes(thinking) ? (thinking as ThinkingLevel) : undefined, ...(isServiceTier(entry.tier) ? { tier: entry.tier } : {}) };
 	}
 	return profiles;
 }
@@ -316,6 +318,48 @@ function pick<T>(candidates: Array<[T | undefined, ProfileSource]>): [T | undefi
 	return candidates.find(([value]) => value !== undefined) ?? [undefined, PROFILE_SOURCE.UNRESOLVED];
 }
 
+export interface UnmatchedProfileKey {
+	key: string;
+	suggestion: string | undefined;
+}
+
+// Issue #2196: a role key that names no discovered agent was silently ignored,
+// so the child inherited the orchestrator model with no warning anywhere. The
+// alias approach (PR #2233) was rejected because applying a bundled agent's
+// profile to a user-owned same-short-name agent is the exact silence the
+// prefix exists to prevent; reporting the unmatched key keeps resolution
+// exact-match and makes the misconfiguration visible instead.
+/**
+ * Provider review roles (gentle-pi#2271): routed by key for the in-process
+ * reviewer, never installed as agent files, so a model_profiles entry for them
+ * is always matched.
+ */
+export const PROVIDER_REVIEW_ROLES = ["review-refuter", "review-validator"] as const;
+
+export function unmatchedProfileKeys(
+	modelProfiles: Record<string, ModelProfile>,
+	agents: ReadonlyArray<{ name: string }>,
+): UnmatchedProfileKey[] {
+	const names = new Set(agents.map((agent) => agent.name));
+	const lowerNames = new Set(agents.map((agent) => agent.name.toLowerCase()));
+	const suggestionFor = (key: string): string | undefined => {
+		const lowered = key.toLowerCase();
+		if (lowerNames.has(lowered)) return agents.find((agent) => agent.name.toLowerCase() === lowered)?.name;
+		const stripped = lowered.replace(/^gentle-ai-/, "");
+		for (const candidate of [lowered, stripped]) {
+			for (const name of lowerNames) {
+				if (name === candidate || name === `gentle-ai-${candidate}`) {
+					return agents.find((agent) => agent.name.toLowerCase() === name)?.name;
+				}
+			}
+		}
+		return undefined;
+	};
+	return Object.keys(modelProfiles)
+		.filter((key) => !names.has(key))
+		.map((key) => ({ key, suggestion: suggestionFor(key) }));
+}
+
 export function resolveAgentProfile(agent: AgentDefinition, config: AgentsConfig): ResolvedProfile {
 	const profile = config.modelProfiles[agent.name];
 	const [model, modelSource] = pick<ModelRef>([
@@ -328,7 +372,7 @@ export function resolveAgentProfile(agent: AgentDefinition, config: AgentsConfig
 		[agent.thinking, PROFILE_SOURCE.DEFINITION],
 		[config.defaultThinking, PROFILE_SOURCE.DEFAULT],
 	]);
-	return { model, thinking, source: { model: modelSource, thinking: thinkingSource } };
+	return { model, thinking, ...(profile?.tier === undefined ? {} : { tier: profile.tier }), source: { model: modelSource, thinking: thinkingSource } };
 }
 
 export function formatModelRef(model: ModelRef | undefined): string {

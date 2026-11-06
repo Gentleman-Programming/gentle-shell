@@ -205,6 +205,9 @@ test("required package paths include every browser installation wizard file", ()
 		"scripts/main-channel.mjs",
 		"scripts/installer-windows.mjs",
 		"scripts/installer-windows-artifacts.json",
+		// The bundled install the wizard runs for a new release installation (T1c).
+		"scripts/bundled-wizard.mjs",
+		"scripts/bundled-install.mjs",
 		"scripts/bootstrap.sh",
 		"scripts/bootstrap.cmd",
 		"assets/install-wizard/index.html",

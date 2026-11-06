@@ -10,7 +10,13 @@ import { INSTALLER_ASSETS, buildInstallerBundles, bundleFiles, relativeReference
 import { installerPaths } from "../scripts/verify-package-files.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const posixOnly = { skip: process.platform === "win32" };
+// The builder shells out to the zip binary for the archives. Repository CI
+// installs zip, but a dev machine without it cannot run the archive tests:
+// skip with a clear reason instead of failing on spawnSync ENOENT.
+const zipAvailable = spawnSync("zip", ["--version"], { stdio: "ignore" }).status === 0;
+const bundleArchive = {
+	skip: process.platform === "win32" ? "Windows host" : zipAvailable ? false : "the zip binary is not on PATH",
+};
 // Independent of the builder's scanner on purpose: imports and file URLs next to the module.
 const relativeImports = (text: string) => [...text.matchAll(/(?:from\s+|import\s*\(\s*|new URL\(\s*)["'](\.{1,2}\/[^"']+\.[a-z]+)["']/g)].map((match) => match[1]);
 
@@ -45,7 +51,7 @@ function build() {
 }
 const listing = (command: string, args: string[]) => spawnSync(command, args, { encoding: "utf8" }).stdout;
 
-test("one download per system, with stable names and SHA-256 checksums", posixOnly, () => {
+test("one download per system, with stable names and SHA-256 checksums", bundleArchive, () => {
 	const b = build();
 	try {
 		assert.deepEqual(INSTALLER_ASSETS, ["gentle-shell-installer-macos.zip", "gentle-shell-installer-windows.zip", "gentle-shell-installer-linux.tar.gz"]);
@@ -58,7 +64,7 @@ test("one download per system, with stable names and SHA-256 checksums", posixOn
 	} finally { b.cleanup(); }
 });
 
-test("macOS and Linux double-click launchers are executable and start the bundled bootstrap", posixOnly, () => {
+test("macOS and Linux double-click launchers are executable and start the bundled bootstrap", bundleArchive, () => {
 	const b = build();
 	try {
 		const mac = listing("zipinfo", [join(b.out, "gentle-shell-installer-macos.zip")]);
@@ -74,7 +80,7 @@ test("macOS and Linux double-click launchers are executable and start the bundle
 	} finally { b.cleanup(); }
 });
 
-test("the Windows launcher is a CRLF batch file that calls the bundled bootstrap and keeps its window open", posixOnly, () => {
+test("the Windows launcher is a CRLF batch file that calls the bundled bootstrap and keeps its window open", bundleArchive, () => {
 	const b = build();
 	try {
 		const zip = join(b.out, "gentle-shell-installer-windows.zip");
@@ -88,7 +94,7 @@ test("the Windows launcher is a CRLF batch file that calls the bundled bootstrap
 	} finally { b.cleanup(); }
 });
 
-test("an extracted bundle runs on its own: real files only, and every wizard module loads", posixOnly, () => {
+test("an extracted bundle runs on its own: real files only, and every wizard module loads", bundleArchive, () => {
 	const b = build();
 	const target = realpathSync(mkdtempSync(join(tmpdir(), "installer-extract-")));
 	try {
@@ -111,7 +117,7 @@ test("an extracted bundle runs on its own: real files only, and every wizard mod
 	}
 });
 
-test("the builder command writes the downloads to the requested folder", posixOnly, () => {
+test("the builder command writes the downloads to the requested folder", bundleArchive, () => {
 	const out = realpathSync(mkdtempSync(join(tmpdir(), "installer-cli-")));
 	try {
 		mkdirSync(join(out, "dist"));

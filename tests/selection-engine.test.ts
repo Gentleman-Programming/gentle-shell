@@ -2,11 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { CustomEditor } from "@earendil-works/pi-coding-agent";
 import { GentlePromptEditor } from "../extensions/gentle-shell.ts";
-import { SelectionEngine } from "../lib/selection-engine.ts";
+import { SelectionEngine, withReverseSpan } from "../lib/selection-engine.ts";
 import { decodePrintableKey } from "../lib/pi-tui-keys.ts";
-import { CURSOR_MARKER, visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, stripTerminalSequences as stripAnsi, TuiMainScreen, visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
-import { stripAnsi } from "../lib/terminal-theme.ts";
+import { withPromptHint } from "../lib/shell-prompt.ts";
+
+function resolveFakeCursors(rows: string[], hardware = false): string[] {
+	const host = TuiMainScreen.prototype as unknown as { resolveFakeCursors(rows: string[]): string[] };
+	return host.resolveFakeCursors.call({ showHardwareCursor: hardware }, rows);
+}
 
 // Native selection engine tests: drive a real CustomEditor through the
 // SelectionEngine the same way GentlePromptEditor wires it — engine.handleInput
@@ -45,6 +50,30 @@ const click = (x: number, y: number, width: number): TuiMouseEvent => ({
 	type: "click", button: "left", x, y, width, height: 30, screenX: x, screenY: y, shift: false, alt: false, ctrl: false,
 });
 
+test("legacy and APC cursors preserve native selection and empty hints", () => {
+	const legacy = `${CURSOR_MARKER}\x1b[7ma\x1b[0mbc`;
+	assert.equal(withReverseSpan(legacy, 0, 3), `\x1b[7m${CURSOR_MARKER}\x1b[7ma\x1b[0m\x1b[7mbc\x1b[27m`);
+	const apc = `${CURSOR_MARKER}\x1b_pi:fc\x07a\x1b_pi:/fc\x07bc`;
+	const selected = withReverseSpan(apc, 0, 3);
+	assert.ok(selected.includes(`${CURSOR_MARKER}\x1b_pi:fc\x07`));
+	for (const hardware of [false, true]) {
+		const resolved = resolveFakeCursors([selected], hardware)[0];
+		assert.ok(resolved.includes("\x1b[7mbc\x1b[27m"));
+		assert.equal(stripAnsi(resolved), "abc");
+	}
+	// Outside selection the host still suppresses only the focused fake cursor.
+	assert.equal(resolveFakeCursors([apc], true)[0], `${CURSOR_MARKER}abc`);
+	assert.ok(resolveFakeCursors([apc.replace(CURSOR_MARKER, "")], true)[0].includes("\x1b[7ma\x1b[27m"));
+	for (const cursor of ["\x1b[7m \x1b[0m", "\x1b_pi:fc\x07 \x1b_pi:/fc\x07"]) {
+		const row = `${CURSOR_MARKER}${cursor}${" ".repeat(30)}`;
+		const hinted = withPromptHint(row, "type here", (_role, text) => text);
+		assert.ok(hinted.startsWith(`${CURSOR_MARKER}${cursor}`));
+		assert.ok(hinted.includes("type here"));
+		assert.equal(visibleWidth(hinted), visibleWidth(row));
+		assert.equal(withPromptHint(row + "draft", "type here", (_role, text) => text), row + "draft");
+	}
+});
+
 test("T2 float prompt native cursor, selection, replacement and mouse share geometry", () => {
 	const previous = cardStyle();
 	setCardStyle(CARD_STYLE.FLOAT);
@@ -56,11 +85,12 @@ test("T2 float prompt native cursor, selection, replacement and mouse share geom
 		let rows = editor.render(80);
 		assert.match(rows[0], /\x1b\[35m▎\x1b\[39m/);
 		assert.equal(visibleWidth(rows[1].split(CURSOR_MARKER)[0]), 6);
-		assert.ok(rows[1].includes(`${CURSOR_MARKER}\x1b[7md\x1b[0m\x1b[44m`));
+		assert.ok(rows[1].includes(`${CURSOR_MARKER}\x1b_pi:fc\x07d\x1b_pi:/fc\x07`));
+		assert.ok(resolveFakeCursors(rows)[1].includes(`${CURSOR_MARKER}\x1b[7md\x1b[27m`));
 		editor.handleInput("\x1b[1;2H");
 		rows = editor.render(80);
 		assert.equal(stripAnsi(rows[1].replaceAll(CURSOR_MARKER, "")).trim(), "▎ abcd");
-		assert.ok(rows[1].includes(`${CURSOR_MARKER}\x1b[7ma\x1b[0m\x1b[44m\x1b[7mbc\x1b[27md`), "native selection inversion survives the software cursor reset");
+		assert.ok(rows[1].includes(`${CURSOR_MARKER}\x1b_pi:fc\x07a\x1b_pi:/fc\x07\x1b[7mbc\x1b[27md`), "native selection inversion survives the deferred software cursor reset");
 		assert.match(rows[2], /3 chars selected/);
 		assert.doesNotMatch(rows[2], /╯/);
 		assert.ok(rows[2].includes("\x1b[44m"));

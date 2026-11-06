@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test, { mock } from "node:test";
 import {
-	KeybindingsManager, stripTerminalSequences, Text, TUI_KEYBINDINGS,
-	type Component, type TuiMouseEvent, visibleWidth,
+	KeybindingsManager, stripTerminalSequences, Text, TUI_KEYBINDINGS, TuiAltScreen,
+	type Component, type Terminal, type TuiMouseEvent, visibleWidth,
 } from "@earendil-works/pi-tui";
 import { NativeChoiceList } from "../lib/native-choice-list.ts";
 import {
@@ -83,6 +83,81 @@ test("native choice list presents one hovered wrapped option without changing se
 	);
 	list.invalidate();
 	assert.doesNotMatch(list.render(56).join("\n"), new RegExp(hoverBackground.replace(/[\[\]]/g, "\\$&")));
+});
+
+const warningForeground = "\u001b[33m";
+const warningTheme = {
+	...theme,
+	fg: (role: string, text: string) => role === "warning" ? `${warningForeground}${text}\u001b[39m` : text,
+};
+
+test("native choice hover uses the shared warning foreground without selecting or activating", () => {
+	const items = [
+		{ id: "opaque-first", label: "First", description: "First detail." },
+		{ id: "opaque-second", label: "Second", description: "Second detail." },
+	];
+	const list = new NativeChoiceList(items, warningTheme);
+	const selected: string[] = [];
+	list.onSelect = (item) => selected.push(item.id);
+	let { lines, row } = layout(list, 40, "Second");
+	assert.equal(list.handleMouse(event("move", "none", row, 40, lines.length))?.render, true);
+	lines = list.render(40);
+	assert.match(lines[row]!, /\x1b\[33mSecond\x1b\[39m/);
+	assert.ok(!lines[row]!.includes(hoverBackground), "hover does not use toolPendingBg");
+	assert.equal(list.getSelectedItem(), items[0]);
+	assert.deepEqual(selected, []);
+	assert.equal(list.handleMouse(event("move", "none", row, 40, lines.length))?.render, false);
+	list.handleInput("\r");
+	assert.deepEqual(selected, ["opaque-first"], "Enter still selects the keyboard item");
+	list.invalidate();
+	assert.doesNotMatch(list.render(40).join("\n"), /\x1b\[33m/);
+	({ lines, row } = layout(list, 40, "Second"));
+	list.handleMouse(event("move", "none", row, 40, lines.length));
+	list.dispose();
+	assert.equal(list.handleMouse(event("click", "left", row, 40, lines.length)), undefined);
+	list.handleInput("\r");
+	assert.deepEqual(selected, ["opaque-first"]);
+});
+
+test("choice overlay uses real SGR coordinates and documents the outside-overlay leave boundary", () => {
+	let input: ((data: string) => void) | undefined;
+	const terminal: Terminal = {
+		start(onInput) { input = onInput; }, stop() {}, async drainInput() {}, write() {},
+		get columns() { return 120; }, get rows() { return 30; }, get kittyProtocolActive() { return false; },
+		moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {},
+		setTitle() {}, setProgress() {}, setProgramStatus() {},
+	};
+	const list = new NativeChoiceList([{ id: "first", label: "First" }, { id: "second", label: "Second" }], warningTheme);
+	const selected: string[] = [];
+	list.onSelect = (item) => selected.push(item.id);
+	const root = createNativeFullscreenInteraction({
+		keyboardTarget: list, requestRender() {}, mouseObserver: list.createMouseObserver(() => {}),
+	});
+	root.addChild(new Text("Heading", 0, 0));
+	root.addChild(list);
+	root.addChild(new Text("Footer", 0, 0));
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
+	const overlay = tui.showOverlay(root, { anchor: "center", width: 60, maxHeight: 15 });
+	tui.start(); tui.renderNow(true);
+	try {
+		let lines = root.render(60);
+		const bounds = overlay.getBounds();
+		assert.ok(bounds && bounds.col > 0 && bounds.row > 0);
+		const second = lines.findIndex((line) => stripTerminalSequences(line).includes("Second"));
+		assert.ok(second >= 0);
+		const x = bounds.col + 3, y = bounds.row + second + 1;
+		input?.(`\x1b[<35;${x};${y}M`);
+		lines = root.render(60);
+		assert.match(lines[second]!, /\x1b\[33mSecond\x1b\[39m/);
+		assert.deepEqual(selected, []);
+		input?.("\x1b[<35;1;1M");
+		assert.match(root.render(60)[second]!, /\x1b\[33mSecond\x1b\[39m/, "outside-overlay motion is not delivered to the root observer");
+		input?.(`\x1b[<35;${bounds.col + 1};${bounds.row + 1}M`);
+		assert.doesNotMatch(root.render(60).join("\n"), /\x1b\[33m/, "inside-root heading motion clears hover");
+		input?.(`\x1b[<0;${x};${y}M`);
+		input?.(`\x1b[<0;${x};${y}m`);
+		assert.deepEqual(selected, ["second"]);
+	} finally { tui.stop(); }
 });
 
 test("native choice list refreshes existing item content without changing selection", () => {

@@ -77,13 +77,14 @@ function monitorHarness() {
 		}),
 	};
 	const settled: JobRecord[] = [];
-	const registry = createJobRegistry({ outputDir: () => dir, now: () => clock, shell: () => ({ operations }), onSettled: (job) => settled.push(job) });
+	let notifySettled!: () => void;
+	const completion = new Promise<void>((resolve) => { notifySettled = resolve; });
+	const registry = createJobRegistry({ outputDir: () => dir, now: () => clock, shell: () => ({ operations }), onSettled: (job) => { settled.push(job); notifySettled(); } });
 	const notices: MonitorNotice[] = [];
 	const controller = createMonitorController({ registry, schedule, now: () => clock, deliver: (notice) => notices.push(notice) });
 	const line = (text: string) => runs.at(-1)!.onData(Buffer.from(`${text}\n`));
-	return { controller, registry, runs, notices, settled, advance, line, cleanup: () => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }) };
+	return { controller, registry, runs, notices, settled, completion, advance, line, cleanup: () => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }) };
 }
-const io = () => new Promise((done) => setTimeout(done, 50));
 
 test("a monitor delivers lines within one batch window as one events notice, and keeps running", () => {
 	const h = monitorHarness();
@@ -135,7 +136,7 @@ test("finish flushes pending lines before the exit notice; cancel drops timers w
 		const job = h.controller.start({ command: "watch", cwd: "/repo", ownerSessionId: "s1", timeoutSeconds: 60 });
 		h.line("last check: pass");
 		h.runs[0]!.exit(0);
-		await io();
+		await h.completion;
 		assert.equal(h.settled[0], job);
 		h.controller.finish(job);
 		assert.deepEqual(h.notices.map((notice) => notice.kind), ["events"]);
@@ -172,7 +173,7 @@ test("a timeout that fires after the command already exited reports nothing; the
 		assert.equal(job.status, "exited", "the exit is recorded before its log closes");
 		h.advance(100);
 		assert.deepEqual(h.notices, [], "no stopped notice for a monitor that ended on its own");
-		await io();
+		await h.completion;
 		assert.equal(h.settled[0], job);
 		h.controller.finish(job);
 		assert.deepEqual(h.notices, [{ job, kind: "events", batch: { lines: ["last line"], omitted: 0 } }], "its pending line still arrives");

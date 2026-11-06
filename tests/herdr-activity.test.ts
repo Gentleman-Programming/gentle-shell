@@ -4,7 +4,7 @@ import childProcess from "node:child_process";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { activitySummary, ActivityPublisher, createActivityColumns, metadataArgs, metadataTransport } from "../lib/herdr-activity.ts";
+import { activitySummary, ActivityPublisher, createActivityColumns, herdrDetected, herdrSetupHint, metadataArgs, metadataTransport } from "../lib/herdr-activity.ts";
 
 const tasks = [{ title: "Revisar integración Herdr", status: "in_progress" }];
 const project = (title: string, columns = 30) => activitySummary([{ title, status: "in_progress" }], columns);
@@ -240,4 +240,37 @@ test("geometry is cached, local/named, bounded and fail-safe without reading use
 		assert.equal(createActivityColumns("relative.sock")(), 24);
 		assert.equal(paths.length, before, "relative paths must not read arbitrary snapshots");
 	} finally { for (const stub of stubs) stub.mock.restore(); syncBuiltinESMExports(); }
+});
+
+const herdrEnv = { HERDR_ENV: "1", HERDR_PANE_ID: "pane", HERDR_SOCKET_PATH: "/herdr.sock" };
+
+test("Herdr detection uses the activity gate: HERDR_ENV=1 plus nonblank pane and socket", () => {
+	assert.equal(herdrDetected(herdrEnv), true);
+	for (const env of [{}, { ...herdrEnv, HERDR_ENV: "0" }, { ...herdrEnv, HERDR_PANE_ID: " " }, { ...herdrEnv, HERDR_SOCKET_PATH: "" }]) {
+		assert.equal(herdrDetected(env), false);
+		assert.deepEqual(herdrSetupHint(env, { interactive: true, isSocket: () => true }), []);
+	}
+});
+
+test("setup hint states active publishing and gives read-only sidebar guidance", () => {
+	const sockets: string[] = [];
+	const lines = herdrSetupHint(herdrEnv, { interactive: true, isSocket: (path) => { sockets.push(path); return true; } });
+	assert.deepEqual(sockets, ["/herdr.sock"]);
+	assert.deepEqual(lines, [
+		"Herdr",
+		"pass: Herdr task-summary publishing active",
+		"info: Herdr's default sidebar does not show task titles; add these two rows to the Agents sidebar rows in your Herdr config: ['$summary'], ['$summary2']",
+		"info: Sidebar rows belong to the config of the Herdr client that displays the session, including when Pi runs over SSH",
+		"info: After editing, reload or restart Herdr; Gentle Shell never changes Herdr config",
+		"info: Details: https://github.com/Gentleman-Programming/gentle-shell/blob/main/docs/readme-reference.md#herdr-active-work-summary",
+	]);
+});
+
+test("setup hint names why publishing is inactive and keeps the guidance", () => {
+	const reason = (env: NodeJS.ProcessEnv, interactive: boolean, socket: boolean) =>
+		herdrSetupHint(env, { interactive, isSocket: () => socket })[1];
+	assert.equal(reason({ ...herdrEnv, GENTLE_PI_AGENTS_CHILD: "1" }, true, true), "warn: Herdr task-summary publishing inactive: Gentle Agents child session");
+	assert.equal(reason(herdrEnv, false, true), "warn: Herdr task-summary publishing inactive: requires the interactive Pi TUI");
+	assert.equal(reason(herdrEnv, true, false), "warn: Herdr task-summary publishing inactive: HERDR_SOCKET_PATH is not a Unix socket");
+	assert.equal(herdrSetupHint(herdrEnv, { interactive: false, isSocket: () => true }).length, 6);
 });

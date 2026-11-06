@@ -13,9 +13,16 @@ export const THINKING_LEVELS = [
 
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
+export type ServiceTier = "standard" | "fast";
+
+export function isServiceTier(value: unknown): value is ServiceTier {
+	return value === "standard" || value === "fast";
+}
+
 export interface AgentRoutingEntry {
 	model?: string;
 	thinking?: ThinkingLevel;
+	tier?: ServiceTier;
 }
 
 export type AgentModelConfig = Record<string, AgentRoutingEntry>;
@@ -27,6 +34,11 @@ export type ModelConfigFileResult =
 
 export const SAFE_MODEL_ID_PATTERN = /^[A-Za-z0-9._~:@/+%-]+$/;
 const SAFE_AGENT_NAME_PATTERN = /^[A-Za-z0-9._:@/+%-]+$/;
+
+/** Shared agent-name policy; the same test normalizeModelConfig applies per key. */
+export function isSafeAgentName(name: string): boolean {
+	return SAFE_AGENT_NAME_PATTERN.test(name);
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -68,17 +80,18 @@ export function normalizeRoutingEntry(value: unknown): AgentRoutingEntry | undef
 		: isThinkingLevel(value.effort)
 			? value.effort
 			: undefined;
-	if (!model && !thinking) {
+	const tier = isServiceTier(value.tier) ? value.tier : undefined;
+	if (!model && !thinking && !tier) {
 		return Object.keys(value).length === 0 ? {} : undefined;
 	}
-	return { model, thinking };
+	return { model, thinking, ...(tier === undefined ? {} : { tier }) };
 }
 
 export function normalizeModelConfig(value: unknown): AgentModelConfig | undefined {
 	if (!isRecord(value)) return undefined;
 	const cleaned: AgentModelConfig = {};
 	for (const [name, entryValue] of Object.entries(value)) {
-		if (!SAFE_AGENT_NAME_PATTERN.test(name)) continue;
+		if (!isSafeAgentName(name)) continue;
 		const entry = normalizeRoutingEntry(entryValue);
 		if (entry) cleaned[name] = entry;
 	}

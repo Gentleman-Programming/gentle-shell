@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { stripAnsi } from "../lib/terminal-theme.ts";
-import gentleStats, { STATS_COMMAND_NAME, statsSessionRoots, statsViewKey } from "../extensions/gentle-stats.ts";
+import installGentleStats, { STATS_COMMAND_NAME, statsSessionRoots, statsViewKey } from "../extensions/gentle-stats.ts";
+import { isolatedConfigEnv, keymapsConfigHome, removeIsolatedConfigHomes } from "./isolated-config-home.ts";
+
+const gentleStats: typeof installGentleStats = (pi, deps = {}) => installGentleStats(pi, { ...deps, env: isolatedConfigEnv(deps.env ?? {}) });
+after(removeIsolatedConfigHomes);
 
 // /gentle:stats wiring: the command (and optional shortcut) opens the stats
 // panel as a full-terminal overlay, loads sessions after it opens, closes
@@ -61,6 +65,15 @@ async function until(check: () => boolean, attempts = 200) {
 	for (let attempt = 0; attempt < attempts && !check(); attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
 	assert.ok(check(), "condition not reached");
 }
+
+test("a saved keymap gives /gentle:stats a shortcut, and the environment still wins", () => {
+	const keyed = fakePi();
+	gentleStats(keyed.pi, { env: { GENTLE_PI_CONFIG_HOME: keymapsConfigHome({ "stats.view": "alt+t" }) } });
+	assert.deepEqual([...keyed.shortcuts.keys()], ["alt+t"]);
+	const envWins = fakePi();
+	gentleStats(envWins.pi, { env: { GENTLE_PI_CONFIG_HOME: keymapsConfigHome({ "stats.view": "alt+t" }), GENTLE_PI_STATS_VIEW_KEY: "off" } });
+	assert.deepEqual([...envWins.shortcuts.keys()], []);
+});
 
 test("statsViewKey is off by default and honors an explicit key", () => {
 	assert.equal(statsViewKey({}), undefined);

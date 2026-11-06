@@ -131,7 +131,10 @@ export function withReverseSpan(row: string, startCu: number, endCu: number): st
 			// A nested SGR reset (e.g. the cursor block's own, when the cursor
 			// sits inside the span) clears reverse for everything after it:
 			// re-arm reverse right after it.
-			if (opened && cu < endCu && isSgrReset(seq)) out += "\x1b[7m";
+			// Pi 1.2 resolves the APC fake-cursor end to SGR 27 later in
+			// the host TUI. Preserve the marker for hardware-cursor suppression,
+			// but rearm our selection after it just as after a legacy reset.
+			if (opened && cu < endCu && (isSgrReset(seq) || seq === "\x1b_pi:/fc\x07")) out += "\x1b[7m";
 			i += seq.length;
 			continue;
 		}

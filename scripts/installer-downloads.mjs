@@ -38,6 +38,42 @@ const go = Object.freeze({
 });
 /** The Go version acquireGo publishes. */
 export const goPinVersion = go.version;
+// Engram for the bundled install (GENTLE_AI_ENGRAM_BIN and the agent's memory):
+// the Gentleman-Programming/engram release gentle-ai 4.x installs (it takes the
+// latest core release). Each sha256 and size comes from the release's
+// checksums.txt and GitHub's asset digests; every archive was downloaded and
+// re-hashed before pinning. GitHub serves the assets from its asset hosts.
+const engram = Object.freeze({
+	version: "3.5.2",
+	redirectHosts: Object.freeze(["objects.githubusercontent.com", "release-assets.githubusercontent.com"]),
+	archives: Object.freeze({
+		"darwin-arm64": ["darwin_arm64.tar.gz", "43d398b2fe3327a4a6436c26b2a17d3285ba80bf2f11a22d0796ea2a7fd2b78c", 7749520],
+		"darwin-x64": ["darwin_amd64.tar.gz", "aea28ebf461a4ea86c52b793c29311539d7123875354ed7411eae982fc82ec87", 8181300],
+		"linux-x64": ["linux_amd64.tar.gz", "106a43ca8f43a27c2c260a6787151c3be6d91c5ed3d5e454e6140527adf92e01", 8064598],
+		"linux-arm64": ["linux_arm64.tar.gz", "b0ba49cf5a7d5af436c9744a9a0d638b3f9ebb2a7321c8736d30e96305c2993c", 7472279],
+		"win32-x64": ["windows_amd64.zip", "ba56a36d37b2da85fcb1581bbdbed9ae1ee690e642aab8dbe1e18209bf264afe", 8272809],
+		"win32-arm64": ["windows_arm64.zip", "df5acc5dd6ee407d484074e570c77a79567c0b8dccf55e25ae25a644c1e7db5f", 7530282],
+	}),
+});
+/** The Engram version the bundled install publishes under runtime/. */
+export const engramPinVersion = engram.version;
+// uv for the /gentle:music offer (installMusicPlayer), never part of the default
+// install: the astral-sh/uv release. Each sha256 and size comes from GitHub's
+// asset digests; every archive was downloaded and re-hashed before pinning.
+const uv = Object.freeze({
+	version: "0.13.6",
+	redirectHosts: engram.redirectHosts,
+	archives: Object.freeze({
+		"darwin-arm64": ["uv-aarch64-apple-darwin.tar.gz", "60fbd5c8a1ed681845eea28d9d622fcde03c51e91a43465b64a1e17db1ed3472", 14235670],
+		"darwin-x64": ["uv-x86_64-apple-darwin.tar.gz", "63ba17fdda55ad1a230d4b37fc6017ffa10c23688c83818bd3bfdf914c652a02", 17004934],
+		"linux-x64": ["uv-x86_64-unknown-linux-gnu.tar.gz", "f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645", 16799024],
+		"linux-arm64": ["uv-aarch64-unknown-linux-gnu.tar.gz", "229e194255c7958d86d56e8790d969a6f74736592133f0dfd0076f754c642c1d", 15794886],
+		"win32-x64": ["uv-x86_64-pc-windows-msvc.zip", "a2a8820d5eea32f08ef467ef3b7f66883a9b076d5737a2fc2fbb5f458d1bb50f", 15239500],
+		"win32-arm64": ["uv-aarch64-pc-windows-msvc.zip", "c2426c0c8e28b53d8c440e47a18d96ad4db51e159866c0e81435b196d7f0081c", 15439263],
+	}),
+});
+/** The uv version the music offer publishes under runtime/. */
+export const uvPinVersion = uv.version;
 
 /** Fixed allowlist; callers cannot supply download URLs, checksums or commands. */
 export function artifactFor(name, platform, arch) {
@@ -49,6 +85,21 @@ export function artifactFor(name, platform, arch) {
 			throw new Error("Windows artifact metadata rejected");
 		}
 		return Object.freeze({ name, version: pin.version, platform, arch, url: target.url, integrity: `sha256-${target.sha256}`, maxBytes: pin.maxBytes });
+	}
+	if (name === "engram") {
+		const pin = Object.hasOwn(engram.archives, `${platform}-${arch}`) ? engram.archives[`${platform}-${arch}`] : null;
+		if (!pin) throw new Error("Unsupported acquisition target");
+		const [suffix, sha256, size] = pin;
+		return Object.freeze({ name, version: engram.version, platform, arch,
+			url: `https://github.com/Gentleman-Programming/engram/releases/download/v${engram.version}/engram_${engram.version}_${suffix}`,
+			integrity: `sha256-${sha256}`, size, maxBytes: size, redirectHosts: engram.redirectHosts });
+	}
+	if (name === "uv") {
+		const pin = Object.hasOwn(uv.archives, `${platform}-${arch}`) ? uv.archives[`${platform}-${arch}`] : null;
+		if (!pin) throw new Error("Unsupported acquisition target");
+		const [asset, sha256, size] = pin;
+		return Object.freeze({ name, version: uv.version, platform, arch, url: `https://github.com/astral-sh/uv/releases/download/${uv.version}/${asset}`,
+			integrity: `sha256-${sha256}`, size, maxBytes: size, redirectHosts: uv.redirectHosts });
 	}
 	if (name === "go") {
 		const pin = Object.hasOwn(go.archives, `${platform}-${arch}`) ? go.archives[`${platform}-${arch}`] : null;
@@ -64,9 +115,34 @@ export function artifactFor(name, platform, arch) {
 		integrity: `sha256-${hash}`, maxBytes: 100 * 1024 * 1024 });
 }
 
-async function download(descriptor) {
-	const response = await fetch(descriptor.url, { redirect: "error", signal: AbortSignal.timeout(60000) });
-	if (!response.ok || !response.body) throw new Error("Download failed");
+/** The bytes at descriptor.url, at most descriptor.maxBytes. Redirects are
+ * refused, except up to 5 to an https host in descriptor.redirectHosts (GitHub
+ * serves release assets from another host). A non-2xx answer throws with its
+ * HTTP `status`.
+ */
+export async function download(descriptor) {
+	// identity: fetch would otherwise accept gzip and decode it, so the advertised
+	// length (dl.google.com gzips archives on request) would not match the bytes.
+	const hosts = Array.isArray(descriptor.redirectHosts) ? descriptor.redirectHosts : null;
+	let url = descriptor.url;
+	let response;
+	for (let hops = 0; ; hops += 1) {
+		response = await fetch(url, { redirect: hosts ? "manual" : "error", headers: { "accept-encoding": "identity" }, signal: AbortSignal.timeout(60000) });
+		if (!hosts || ![301, 302, 303, 307, 308].includes(response.status)) break;
+		await response.body?.cancel();
+		const next = new URL(response.headers.get("location") ?? "", url);
+		if (hops >= 5 || next.protocol !== "https:" || !hosts.includes(next.hostname)) throw new Error("Download redirect rejected");
+		url = next.href;
+	}
+	if (!response.ok || !response.body) {
+		await response.body?.cancel();
+		throw Object.assign(new Error(`Download responded ${response.status}`), { status: response.status });
+	}
+	const encoding = response.headers.get("content-encoding");
+	if (encoding && encoding.toLowerCase() !== "identity") {
+		await response.body.cancel();
+		throw new Error(`Download was encoded (${encoding}) although identity was requested`);
+	}
 	const advertised = response.headers.get("content-length");
 	if (advertised && (!/^\d+$/.test(advertised) || Number(advertised) > descriptor.maxBytes)) {
 		await response.body.cancel();
@@ -100,7 +176,7 @@ export async function verifiedDownload(name, adapters = {}, platform, arch) {
 	const descriptor = (adapters.artifact ?? artifactFor)(name, platform, arch);
 	let bytes;
 	try { bytes = await (adapters.download ?? download)(descriptor); }
-	catch { throw new Error("Download failed"); }
+	catch (cause) { throw new Error("Download failed", { cause }); }
 	if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > descriptor.maxBytes) throw new Error("Download size rejected");
 	if (descriptor.size !== undefined && bytes.length !== descriptor.size) throw new Error("Download size rejected");
 	const [algorithm, encoded] = descriptor.integrity.split("-");
@@ -169,10 +245,16 @@ function head(path, size) {
 // symlink. pnpm 11 names its target in a `# cmd-shim-target=` comment; older
 // shims only run the single `"$basedir/<target>" "$@"` next to the shim. The
 // target is a starting point for the evidence search, not proof: the command
-// itself still has to print the version that evidence names.
+// itself still has to print the version that evidence names. A shim is a
+// script read whole, up to 64 KiB; a larger one fails closed. Anything else,
+// such as a native pnpm, is not a shim.
+const SHIM_LIMIT = 64 * 1024;
 function shimTarget(command) {
 	if (!regular(command)) return null;
-	const text = head(command, 4096).toString("utf8");
+	const bytes = head(command, SHIM_LIMIT + 1);
+	if (bytes.subarray(0, 2).toString("latin1") !== "#!") return null;
+	if (bytes.length > SHIM_LIMIT) throw new Error("Existing pnpm compatibility is unknown: shim larger than 64 KiB");
+	const text = bytes.toString("utf8");
 	const match = /^# cmd-shim-target=(\/[^\r\n]+)$/m.exec(text);
 	if (match) return stat(match[1]) ? match[1] : null;
 	const targets = new Set([...text.matchAll(/"\$basedir\/([^"$`\\]+)"[ \t]+"\$@"/g)]
@@ -257,8 +339,8 @@ export function removeOwnedTools(tools, home) {
 	}
 }
 
-/** The pnpm the installer runs: the pinned major (the runner's argv is verified
- * for it, as installer-probes checks) at the pinned version or newer.
+/** The pnpm the bootstraps run: the pinned major at the pinned version or newer.
+ * A user's pnpm of a newer major is left as it is and used by the plan (installer-probes).
  */
 export function pinnedPnpmCompatible(version) {
 	const actual = parts(version);

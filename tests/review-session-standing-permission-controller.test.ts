@@ -4,7 +4,8 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import test from "node:test";
+import test, { after, before } from "node:test";
+import { setWindowsAclAuthorityForTesting } from "../lib/review-candidate-view-owner.ts";
 import { Text, visibleWidth } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
@@ -18,6 +19,16 @@ import {
 	formatReviewConsentUi,
 	presentReviewConsentUi,
 } from "../lib/review-consent-ui.ts";
+
+// Coordination tests use fixture authority; real Windows ACL coverage lives
+// in review-candidate-view.test.ts, in a separate test process.
+let fixtureAclChecks = 0;
+before(() => {
+	if (process.platform === "win32") {
+		setWindowsAclAuthorityForTesting(() => { fixtureAclChecks++; });
+	}
+});
+after(() => setWindowsAclAuthorityForTesting());
 
 function consentFixture(): Record<string, unknown> {
 	const path = join(process.cwd(), "tests", "fixtures", "devbinary", "consent-v3.captured.json");
@@ -173,10 +184,12 @@ function siblingWorktree(t: test.TestContext, parentRoot: string): string {
 
 function startStatus(cwd: string, intendedUntracked: readonly string[] = []): ReviewStatusV3 {
 	const views = new CandidateViewRegistry();
+	const checksBefore = fixtureAclChecks;
 	const candidate = views.create({
 		contributorRoot: cwd,
 		...(intendedUntracked.length === 0 ? {} : { intendedUntracked }),
 	});
+	if (process.platform === "win32") assert.ok(fixtureAclChecks > checksBefore, "coordination candidates must use the fixture ACL authority");
 	try {
 		return {
 			contract: "gentle-ai.review-integration/v2",

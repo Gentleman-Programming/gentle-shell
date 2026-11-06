@@ -23,11 +23,11 @@ function containsAll(text: string, clauses: readonly string[], label: string): v
 	for (const clause of clauses) assert.ok(text.includes(clause), `${label} is missing: ${clause}`);
 }
 
-test("T11.1: verify derives its own probes from every numbered rule and never trusts the writer's tests", () => {
-	assert.ok(verify.includes("The writer's tests and examples are never evidence of correctness"), "verify must not treat the writer's tests as evidence");
+test("T11.1: verify reuses valid evidence without replacing independent spec-derived probes", () => {
+	assert.ok(verify.includes("they are evidence, not a substitute for the independent probes required by the risk tier"));
 	containsAll(checklistItem(1), [
 		"verbatim request",
-		"every numbered rule or requirement",
+		"every in-scope numbered rule or requirement",
 		"derive your own probes",
 		"positive examples",
 		"negative and boundary cases",
@@ -54,13 +54,13 @@ test("T11.4: verify runs the typecheck or build and flags scope creep", () => {
 	containsAll(checklistItem(4), ["typecheck or build", "when the project has one", "outside the request's scope"], "build and scope item");
 });
 
-test("T11.5: verify returns a verdict for every spec item with no partial-scope carve-out", () => {
+test("T11.5: verify distinguishes unit exclusions from unmet spec items", () => {
 	containsAll(checklistItem(5), [
 		"verdict for EVERY spec item",
-		"met, unmet, or not implemented",
-		"no partial-scope carve-out",
-		"even when the parent named one task or unit",
-		"the parent resolves every unmet item before closing, with one correction batch and one recheck limited to the reported blockers",
+		"met, unmet, not implemented, or out of scope",
+		"assess only its requirements and affected interactions",
+		"unrelated future work must not block that unit",
+		"the parent resolves every in-scope unmet item before closing, with one correction batch and one recheck limited to the reported blockers",
 	], "verdict item");
 	assert.ok(verify.includes("verdict per `S#`"), "the feature-document verdict per S# must stay");
 });

@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { TuiAltScreen, visibleWidth, type Terminal, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { loadThemeFromPath } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import type { JobRecord } from "../lib/background-jobs.ts";
-import { JobsView } from "../lib/jobs-view.ts";
+import { JobsView, type JobsViewDeps } from "../lib/jobs-view.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
 const theme = { fg: (_role: string, text: string) => text };
@@ -22,12 +23,12 @@ function job(overrides: Partial<JobRecord> & Pick<JobRecord, "id">): JobRecord {
 	};
 }
 
-function harness(jobs: JobRecord[], rows = 14) {
+function harness(jobs: JobRecord[], rows = 14, colors: JobsViewDeps["theme"] = theme) {
 	const stopped: string[] = [];
 	let closed = 0;
 	let renders = 0;
 	const view = new JobsView({
-		theme,
+		theme: colors,
 		rows: () => rows,
 		jobs: () => jobs,
 		now: () => 125_000,
@@ -35,9 +36,26 @@ function harness(jobs: JobRecord[], rows = 14) {
 		onClose: () => { closed += 1; },
 		requestRender: () => { renders += 1; },
 	});
-	const screen = (width = 100) => view.render(width).map(stripAnsi);
-	return { view, screen, stopped, closed: () => closed, renders: () => renders };
+	const interaction = view;
+	const frame = (width = 100) => interaction.render(width);
+	const screen = (width = 100) => frame(width).map(stripAnsi);
+	return { view, interaction, frame, screen, stopped, closed: () => closed, renders: () => renders, setRows: (next: number) => { rows = next; } };
 }
+
+function mouse(frame: string[], text: string, type: TuiMouseEvent["type"] = "click", button: TuiMouseEvent["button"] = type === "move" ? "none" : "left"): TuiMouseEvent {
+	const lines = frame.map(stripAnsi);
+	const y = lines.findIndex((line) => line.includes(text));
+	assert.ok(y >= 0, `Missing ${text}:\n${lines.join("\n")}`);
+	const x = visibleWidth(lines[y]!.slice(0, lines[y]!.indexOf(text)));
+	return { type, button, x, y, screenX: x, screenY: y, width: visibleWidth(lines[0]!), height: lines.length, shift: false, alt: false, ctrl: false };
+}
+
+function click(h: ReturnType<typeof harness>, frame: string[], text: string): void {
+	h.interaction.handleMouse(mouse(frame, text, "press"));
+	h.interaction.handleMouse(mouse(frame, text));
+}
+
+const gentleTheme = loadThemeFromPath("themes/Gentle.json", "truecolor");
 
 test("the split view lists this session's jobs beside the selected job's details and output tail", () => {
 	const h = harness([
@@ -157,4 +175,240 @@ test("a monitor shows its kind and event count in the list and details", () => {
 		assert.match(text, /◉ errors/);
 		assert.match(text, /Status +running · .* · 3 events/);
 	} finally { h.view.dispose(); }
+});
+
+test("pointer hover uses the shared warning role without selecting, stopping or repeatedly redrawing", () => {
+	const h = harness([job({ id: "first" }), job({ id: "second" })], 14, gentleTheme);
+	try {
+		let frame = h.frame();
+		const event = mouse(frame, "second", "move");
+		const before = h.renders();
+		assert.equal(h.interaction.handleMouse(event)?.render, true);
+		frame = h.frame();
+		const hovered = frame[event.y]!;
+		assert.ok(hovered.includes(gentleTheme.getFgAnsi("warning")), "the rendered job row uses the warning token");
+		assert.match(frame.map(stripAnsi).join("\n"), /› ◐ first/);
+		assert.deepEqual(h.stopped, []);
+		assert.equal(h.closed(), 0);
+		assert.equal(h.interaction.handleMouse(event)?.render, false, "the same target does not redraw");
+		assert.equal(h.renders(), before);
+		const blank = { ...event, x: 3, screenX: 3, y: 7, screenY: 7 };
+		h.interaction.handleMouse(blank);
+		assert.equal(h.renders(), before + 1, "moving to a blank row clears the hover");
+		assert.ok(!h.frame()[event.y]!.includes(gentleTheme.getFgAnsi("warning")));
+	} finally { h.view.dispose(); }
+});
+
+test("clicking a visible row selects its exact job and never implicitly stops it", () => {
+	const h = harness([job({ id: "first" }), job({ id: "second", tail: ["second output"] })]);
+	try {
+		let frame = h.frame();
+		h.interaction.handleMouse(mouse(frame, "second", "press"));
+		assert.match(h.screen().join("\n"), /› ◐ first/, "press alone does not select");
+		frame = h.frame();
+		h.interaction.handleMouse(mouse(frame, "second", "click", "right"));
+		assert.match(h.screen().join("\n"), /› ◐ first/, "right click does nothing");
+		frame = h.frame();
+		click(h, frame, "second");
+		assert.match(h.screen().join("\n"), /› ◐ second/);
+		assert.match(h.screen().join("\n"), /second output/);
+		assert.deepEqual(h.stopped, []);
+		assert.equal(h.closed(), 0);
+	} finally { h.view.dispose(); }
+});
+
+test("stale rows, hidden rows and invalid geometry never select or stop a different job", () => {
+	const jobs = [job({ id: "first", startedAt: 20 }), job({ id: "second", startedAt: 10 })];
+	const h = harness(jobs);
+	try {
+		const frame = h.frame();
+		const stale = mouse(frame, "second");
+		jobs.push(job({ id: "newest", startedAt: 30 }));
+		h.interaction.handleMouse(stale);
+		assert.match(h.screen().join("\n"), /› ◐ first/, "a reordered row is rejected");
+		const fresh = h.frame();
+		const title = mouse(fresh, "Jobs");
+		const blank = { ...title, x: 3, screenX: 3, y: 8, screenY: 8 };
+		h.interaction.handleMouse(title);
+		h.interaction.handleMouse(blank);
+		h.interaction.handleMouse({ ...mouse(fresh, "second"), width: 99 });
+		assert.match(h.screen().join("\n"), /› ◐ first/);
+		assert.deepEqual(h.stopped, []);
+		assert.equal(h.closed(), 0);
+	} finally { h.view.dispose(); }
+});
+
+test("the explicit stop control rechecks the rendered identity and current running status", () => {
+	const first = job({ id: "first" });
+	const second = job({ id: "second" });
+	const h = harness([first, second], 14, gentleTheme);
+	try {
+		let frame = h.frame();
+		const stop = mouse(frame, "s Stop");
+		h.interaction.handleMouse({ ...stop, type: "move", button: "none" });
+		assert.ok(h.frame()[stop.y]!.includes(gentleTheme.getFgAnsi("warning")));
+		assert.deepEqual(h.stopped, []);
+		h.interaction.handleMouse({ ...stop, type: "press" });
+		h.view.handleInput("j");
+		frame = h.frame();
+		h.interaction.handleMouse(mouse(frame, "s Stop"));
+		assert.deepEqual(h.stopped, [], "a press on first cannot stop second after selection changes");
+		click(h, frame, "s Stop");
+		assert.deepEqual(h.stopped, ["second"]);
+		frame = h.frame();
+		const staleStop = mouse(frame, "s Stop");
+		second.status = "exited";
+		h.interaction.handleMouse(staleStop);
+		assert.deepEqual(h.stopped, ["second"], "a finished job cannot be stopped using an old control");
+		assert.doesNotMatch(h.screen().at(-2)!, /s Stop/);
+		assert.equal(first.status, "running");
+	} finally { h.view.dispose(); }
+});
+
+test("narrow details/list and close controls work by click while hidden controls stay inert", () => {
+	const h = harness([job({ id: "first" }), job({ id: "second", command: "show second" })], 14, gentleTheme);
+	try {
+		let frame = h.frame(40);
+		click(h, frame, "second");
+		frame = h.frame(40);
+		assert.match(frame.map(stripAnsi).join("\n"), /show second/);
+		assert.doesNotMatch(frame.map(stripAnsi).join("\n"), /› ◐ second/);
+		const back = mouse(frame, "tab list", "move");
+		h.interaction.handleMouse(back);
+		assert.ok(h.frame(40)[back.y]!.includes(gentleTheme.getFgAnsi("warning")));
+		frame = h.frame(40);
+		click(h, frame, "tab list");
+		frame = h.frame(40);
+		assert.match(frame.map(stripAnsi).join("\n"), /› ◐ second/);
+		click(h, frame, "tab details");
+		frame = h.frame(40);
+		assert.match(frame.map(stripAnsi).join("\n"), /show second/);
+		const close = mouse(frame, "q close", "move");
+		h.interaction.handleMouse(close);
+		assert.ok(h.frame(40)[close.y]!.includes(gentleTheme.getFgAnsi("warning")));
+		assert.equal(h.closed(), 0, "hovering close does not close the overlay");
+		click(h, h.frame(40), "q close");
+		assert.equal(h.closed(), 1);
+		assert.deepEqual(h.stopped, []);
+	} finally { h.view.dispose(); }
+});
+
+test("very narrow details retain visible mouse back and close controls", () => {
+	for (const width of [12, 14, 20, 24, 30, 40]) {
+		const h = harness([job({ id: "first" }), job({ id: "second", command: "second detail" })]);
+		try {
+			h.frame(width);
+			h.view.handleInput("\t");
+			let frame = h.frame(width);
+			const footer = stripAnsi(frame.at(-2)!);
+			const back = footer.includes("tab list") ? "tab list" : "←";
+			const close = footer.includes("q close") ? "q close" : "×";
+			assert.ok(footer.includes(back) && footer.includes(close), `${width} columns: ${footer}`);
+			click(h, frame, back);
+			frame = h.frame(width);
+			const listFooter = stripAnsi(frame.at(-2)!);
+			assert.ok(listFooter.includes("tab details") || listFooter.includes("→"), `${width} columns: ${listFooter}`);
+			assert.deepEqual(h.stopped, []);
+			assert.equal(h.closed(), 0);
+		} finally { h.view.dispose(); }
+	}
+});
+
+test("a changed row under a pending press cannot select the replacement", () => {
+	const jobs = [job({ id: "first", startedAt: 20 }), job({ id: "second", startedAt: 10 })];
+	const h = harness(jobs);
+	try {
+		const before = h.frame();
+		const row = mouse(before, "second");
+		h.interaction.handleMouse({ ...row, type: "press" });
+		jobs.push(job({ id: "newest", startedAt: 30 }));
+		h.frame();
+		h.interaction.handleMouse(row);
+		assert.match(h.screen().join("\n"), /› ◐ first/);
+		assert.deepEqual(h.stopped, []);
+		assert.equal(h.closed(), 0);
+	} finally { h.view.dispose(); }
+});
+
+test("scrolled lists target only the visible job identities and fallback close remains clickable", () => {
+	const h = harness(Array.from({ length: 6 }, (_, index) => job({ id: `job-${index}`, startedAt: 6 - index })), 6);
+	try {
+		const stale = mouse(h.frame(), "job-1");
+		for (let index = 0; index < 4; index += 1) h.view.handleInput("j");
+		h.interaction.handleMouse(stale);
+		let frame = h.frame();
+		assert.match(frame.map(stripAnsi).join("\n"), /› ◐ job-4/);
+		assert.ok(!frame.map(stripAnsi).some((line) => line.includes("job-0")));
+		click(h, frame, "job-3");
+		assert.match(h.screen().join("\n"), /› ◐ job-3/);
+		assert.deepEqual(h.stopped, []);
+		frame = h.frame(8);
+		click(h, frame, "×");
+		assert.equal(h.closed(), 1);
+	} finally { h.view.dispose(); }
+});
+
+test("resize, invalidation and disposal discard pointer geometry and hover", () => {
+	const h = harness([job({ id: "first" }), job({ id: "second" })], 14, gentleTheme);
+	try {
+		let frame = h.frame();
+		const row = mouse(frame, "second");
+		h.interaction.handleMouse({ ...row, type: "move", button: "none" });
+		h.setRows(8);
+		h.interaction.handleMouse(row);
+		assert.deepEqual(h.stopped, []);
+		frame = h.frame(80);
+		assert.ok(!frame.join("\n").includes(gentleTheme.getFgAnsi("warning")));
+		assert.match(frame.map(stripAnsi).join("\n"), /› ◐ first/);
+		const fresh = mouse(frame, "second");
+		h.interaction.handleMouse({ ...fresh, type: "move", button: "none" });
+		assert.ok(h.frame(80)[fresh.y]!.includes(gentleTheme.getFgAnsi("warning")));
+		h.view.invalidate();
+		h.interaction.handleMouse(fresh);
+		frame = h.frame(80);
+		assert.ok(!frame.join("\n").includes(gentleTheme.getFgAnsi("warning")));
+		assert.match(frame.map(stripAnsi).join("\n"), /› ◐ first/);
+		h.interaction.handleMouse({ ...fresh, type: "move", button: "none" });
+		h.view.dispose();
+		h.interaction.handleMouse(fresh);
+		assert.ok(!h.frame(80).join("\n").includes(gentleTheme.getFgAnsi("warning")));
+		assert.deepEqual(h.stopped, []);
+		assert.equal(h.closed(), 0);
+	} finally { h.view.dispose(); }
+});
+
+test("real centered TuiAltScreen SGR events hover, select and stop the visible job", () => {
+	let input: ((data: string) => void) | undefined;
+	const terminal: Terminal = {
+		start(onInput) { input = onInput; }, stop() {}, async drainInput() {}, write() {}, get columns() { return 120; }, get rows() { return 30; }, get kittyProtocolActive() { return false; }, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
+	};
+	const h = harness([job({ id: "first" }), job({ id: "second" })], 14, gentleTheme);
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
+	const overlay = tui.showOverlay(h.interaction, { anchor: "center", width: 80, maxHeight: 14 });
+	tui.start();
+	tui.renderNow(true);
+	try {
+		const bounds = overlay.getBounds();
+		assert.ok(bounds && bounds.col > 0 && bounds.row > 0);
+		let frame = h.frame(80);
+		const row = mouse(frame, "second");
+		const x = bounds.col + row.x + 1, y = bounds.row + row.y + 1;
+		input?.(`\x1b[<35;${x};${y}M`);
+		frame = h.frame(80);
+		assert.ok(frame[row.y]!.includes(gentleTheme.getFgAnsi("warning")));
+		assert.match(frame.map(stripAnsi).join("\n"), /› ◐ first/);
+		input?.("\x1b[<35;1;1M");
+		assert.ok(h.frame(80)[row.y]!.includes(gentleTheme.getFgAnsi("warning")), "native overlay dispatch does not deliver outside-card motion");
+		input?.(`\x1b[<0;${x};${y}M`);
+		input?.(`\x1b[<0;${x};${y}m`);
+		tui.renderNow(true);
+		frame = h.frame(80);
+		assert.match(frame.map(stripAnsi).join("\n"), /› ◐ second/);
+		assert.deepEqual(h.stopped, []);
+		const stop = mouse(frame, "s Stop");
+		const sx = bounds.col + stop.x + 1, sy = bounds.row + stop.y + 1;
+		input?.(`\x1b[<0;${sx};${sy}M`);
+		input?.(`\x1b[<0;${sx};${sy}m`);
+		assert.deepEqual(h.stopped, ["second"]);
+	} finally { tui.stop(); h.view.dispose(); }
 });

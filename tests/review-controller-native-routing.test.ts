@@ -3529,7 +3529,7 @@ test("request context survives unrelated untracked selection and its START conti
 });
 
 test("START options survive intended-untracked continuation with and without request context", async t => {
- for (const withContext of [false, true]) for (const selection of ["lenses", "focus"]) await t.test(`${selection}, context=${withContext}`, async t => {
+ for (const withContext of [false, true]) for (const selection of ["lenses", "focus"]) for (const includeFile of [false, true]) await t.test(`${selection}, context=${withContext}, include=${includeFile}`, async t => {
   const { cwd, eligible, initial, target } = untrackedStopFixture(t);
   const retained = new Map(), starts: Array<Record<string, unknown>> = [];
   mkdirSync(join(cwd, ".gentle-ai", "policies"), { recursive: true });
@@ -3542,9 +3542,11 @@ test("START options survive intended-untracked continuation with and without req
   const requested = selection === "lenses" ? { lenses: ["risk"], lensesReason: "permission checks" } : { focus: "reliability" };
   const stopped = await run({ operation: "start", input: JSON.stringify({ mode: "ordinary", ...requested, policyPath: ".gentle-ai/policies/review.json", ...(withContext ? { requestContextPath: "spec.md" } : {}) }) });
   assert.equal(typeof stopped.selectionBinding, "string", JSON.stringify(stopped));
-  const resumed = await run({ operation: "select-intended-untracked", selectionBinding: stopped.selectionBinding, intendedUntracked: [eligible] });
+  const resumed = await run({ operation: "select-intended-untracked", selectionBinding: stopped.selectionBinding, intendedUntracked: includeFile ? [eligible] : [] });
   assert.equal(starts.length, 1, JSON.stringify(resumed));
   assert.equal(starts[0].policyPath, policyPath);
+  assert.equal(starts[0].untrackedScope, includeFile ? "select" : "exclude");
+  assert.deepEqual(starts[0].intendedUntracked, includeFile ? [eligible] : []);
   assert.equal(starts[0].requestContextPath, withContext ? join(cwd, "spec.md") : undefined);
   if (selection === "lenses") { assert.deepEqual(starts[0].lenses, ["review-risk"]); assert.equal(starts[0].lensesReason, "permission checks"); }
   else assert.equal(starts[0].focus, "reliability");

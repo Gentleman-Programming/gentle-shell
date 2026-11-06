@@ -248,11 +248,8 @@ export default function askUserQuestion(pi: ExtensionAPI): void {
 		description: "Ask one to four structured questions in a single call, each with two to four ordered options, and read the user's answers back in one result.",
 		promptGuidelines: [
 			"Use ask_user_question to collect decisions in one batch: ask one to four questions at a time, each with two to four options.",
-			"Keep each header a short chip of at most 16 characters and each option label at most 60 characters.",
-			"Add a preview to an option when the user needs to compare rich detail side-by-side with the options.",
-			"Set multiSelect when the choices are not mutually exclusive.",
-			"The free-text \"Type something.\" row is always available and is also how the user bails out into a normal conversation; never rely on it as a hidden escape hatch.",
-			"Never use this tool for decisions that must not be delegated to the user.",
+			"Keep each header a short chip of at most 16 characters and each option label at most 60 characters; add a preview when the user needs to compare rich detail side-by-side with the options. Set multiSelect when the choices are not mutually exclusive.",
+			"The free-text \"Type something.\" row is always available and is also how the user bails out into a normal conversation; never rely on it as a hidden escape hatch. Never use this tool for decisions that must not be delegated to the user.",
 		],
 		parameters: QuestionParamsSchema,
 		executionMode: "sequential",

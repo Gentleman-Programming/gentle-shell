@@ -25,8 +25,9 @@ import type {
 //    primary session's `before_agent_start` handler injects) delivers BOTH
 //    halves of the read duty at the composition boundary: the subagent-directed
 //    clause ("subagents read those `SKILL.md` files first") AND the parent's
-//    own inline duty ("inline, the parent reads them too"). The
-//    always-on core clause is the delivery path; the execution detail
+//    pointer to its own inline duty ("inline/fallbacks:
+//    `orchestrator-skills.md`"). The always-on core clause is the delivery
+//    path, kept to a pointer to fit the core prompt budget; the execution detail
 //    (attribution line, contract markers, unreadable-path fallback) lives in
 //    the lazy `assets/orchestrator-skills.md` `### Parent inline execution`
 //    section and is bound by tests/orchestrator-skills-inline-contract.test.ts.
@@ -91,17 +92,18 @@ export default function (pi) {
 
 // --- composition-boundary delivery guards ---------------------------------
 
-// c-check: the composed parent prompt must deliver the core clause binding the
+// c-check: the composed parent prompt must deliver the core clause routing the
 // parent's OWN inline path to the same exact-file read subagents owe (landed
-// in assets/orchestrator.md, Skill Registry Protocol sentence). Anchored on
-// the exact landed wording; the execution detail (attribution line, contract
+// in assets/orchestrator.md, Skill Registry Protocol sentence, as a pointer to
+// fit the core budget). Anchored on the exact landed wording; the execution
+// detail and the read duty itself (attribution line, contract
 // markers, unreadable-path fallback) is delivered via the lazy
 // `orchestrator-skills.md` section bound by the slice-2 contract test.
 function assertParentPromptCarriesInlineSkillReadObligation(prompt: string): void {
 	assert.match(
 		prompt,
-		/; inline, the parent reads them too\./,
-		"composed parent prompt must bind the parent's own inline path to the same exact-file SKILL.md read subagents owe",
+		/; inline\/fallbacks: `orchestrator-skills\.md`\./,
+		"composed parent prompt must route the parent's own inline path to the orchestrator-skills.md inline-execution duty",
 	);
 }
 

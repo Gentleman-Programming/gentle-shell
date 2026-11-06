@@ -45,7 +45,7 @@ export function createAgentStatusExtension(options: Options = {}) {
 			if (time < retryAt || (key === last && time - refreshed < REFRESH_MS)) return;
 			let written = false;
 			try { written = store.write(agentStatus(input, time)); } catch { /* Retry after backoff. */ }
-			if (written) { last = key; refreshed = time; retryAt = -Infinity; } else retryAt = time + RETRY_MS;
+			if (written) { last = key; refreshed = time; retryAt = -Infinity; } else retryAt = now() + RETRY_MS;
 		};
 		const publish = () => {
 			if (!owner || cancel) return;

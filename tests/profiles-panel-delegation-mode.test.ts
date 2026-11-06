@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import type { ExtensionContext, Theme, ThinkingLevel } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { __testing } from "../extensions/gentle-ai.ts";
 import { PROFILES_KIND, PROFILES_VERSION, bootstrapProfilesFile, readProfilesFileResult, type AgentProfilesFile } from "../lib/agent-profiles.ts";
 import type { AgentModelConfig } from "../lib/model-routing-authority.ts";
@@ -44,7 +44,7 @@ function panelFile(workflow?: Record<string, { orchestratorMode: string }>): Age
 function renderPanel(
 	inputs: string[],
 	file: AgentProfilesFile,
-	results: unknown[] = [],
+	results: PanelResult[] = [],
 	width = 100,
 	theme?: Theme,
 	options: { fallbacks?: unknown; fastModels?: string[] } = {},
@@ -59,7 +59,9 @@ function renderPanel(
 		30,
 		inputs,
 		[],
-		results,
+		// The panel records its actions into this array; the test reads them through
+		// its own narrower shape rather than importing the panel's internal type.
+		results as unknown as Parameters<typeof __testing.routingTablePanel>[8],
 		{ file, profileName: "team", ...(options.fallbacks !== undefined ? { fallbacks: options.fallbacks as never } : {}), ...(options.fastModels ? { fastModels: options.fastModels } : {}) },
 	);
 	return lines.map(stripAnsi);
@@ -272,7 +274,7 @@ function actionManager(root: string): SessionManager {
 const LIVE = {
 	setModel: async (_model: unknown) => true,
 	setThinkingLevel() {},
-	getThinkingLevel: (): ThinkingLevel => "medium",
+	getThinkingLevel: () => "medium" as const,
 };
 
 /** Drives the loop: scripted actions fill the panel visits; a `{ drive }` entry feeds real keys to the real panel instead. */

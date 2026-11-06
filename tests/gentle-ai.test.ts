@@ -5180,6 +5180,102 @@ test("path fence leaves the Gentle config home to its own permission policy", as
 	assert.deepEqual(states, ["waiting", "denied", "waiting", "denied"]);
 });
 
+function harnessReadFixture(t: import("node:test").TestContext) {
+	const f = fenceFixture(t);
+	const root = dirname(f.repo);
+	const home = join(root, "home");
+	const agentHome = join(root, "agent-home");
+	const skillFile = join(home, ".agents", "skills", "demo", "SKILL.md");
+	const assetFile = join(agentHome, "orchestrator-delegation.md");
+	const authFile = join(agentHome, "auth.json");
+	for (const file of [skillFile, assetFile, authFile]) {
+		mkdirSync(dirname(file), { recursive: true });
+		writeFileSync(file, "content");
+	}
+	const outputFile = join(realpathSync(tmpdir()), `pi-output-${"ab12cd34ef56ab78"}.log`);
+	const strayFile = join(realpathSync(tmpdir()), "pi-notes-unrelated.txt");
+	writeFileSync(outputFile, "full output");
+	writeFileSync(strayFile, "stray");
+	const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+	process.env.HOME = home;
+	process.env.USERPROFILE = home;
+	t.after(() => {
+		for (const [key, value] of Object.entries(saved)) {
+			if (value === undefined) delete process.env[key]; else process.env[key] = value;
+		}
+		rmSync(outputFile, { force: true });
+		rmSync(strayFile, { force: true });
+	});
+	const { toolCall } = pathFenceHook({ ...process.env, HOME: home, USERPROFILE: home, GENTLE_PI_AGENT_HOME: agentHome, GENTLE_PI_CONFIG_HOME: join(root, "config-home") });
+	const previews: string[] = [];
+	const ctx = (hasUI: boolean) => ({
+		cwd: f.repo, hasUI,
+		ui: { confirm: async (_title: string, preview: string) => { previews.push(preview); return false; } },
+		sessionManager: { getSessionId: () => "harness-read-fence", getEntries: () => [] },
+	}) as unknown as ExtensionContext;
+	return { f, toolCall, ctx, previews, skillFile, assetFile, authFile, outputFile, strayFile, agentHome, home };
+}
+
+const headlessFenceReason = (target: string) => `Gentle AI safety policy requires interactive confirmation before accessing paths outside the session worktree: ${target}. Ask the user for an explicit safer plan.`;
+
+test("path fence lets a headless child read a skill file outside the worktree while writes there still block", async (t) => {
+	const h = harnessReadFixture(t);
+	assert.equal(await h.toolCall({ toolName: "read", input: { path: h.skillFile } }, h.ctx(false)), undefined, "a skill read passes headless");
+	assert.equal(await h.toolCall({ toolName: "ls", input: { path: dirname(h.skillFile) } }, h.ctx(false)), undefined, "listing the skill directory passes headless");
+	assert.equal(await h.toolCall({ toolName: "grep", input: { pattern: "x", path: dirname(h.skillFile) } }, h.ctx(false)), undefined, "grep inside the skill directory passes headless");
+	assert.equal(await h.toolCall({ toolName: "find", input: { pattern: "*.md", path: dirname(dirname(h.skillFile)) } }, h.ctx(false)), undefined, "find inside the skills root passes headless");
+	for (const toolName of ["write", "edit"]) {
+		assert.deepEqual(await h.toolCall({ toolName, input: { path: h.skillFile, content: "x" } }, h.ctx(false)), { block: true, reason: headlessFenceReason(h.skillFile) }, `${toolName} of the same skill file still blocks headless`);
+	}
+	assert.deepEqual(await h.toolCall({ toolName: "write", input: { path: join(dirname(h.skillFile), "NEW.md"), content: "x" } }, h.ctx(false)), { block: true, reason: headlessFenceReason(join(dirname(h.skillFile), "NEW.md")) }, "a new file in the skill directory is a write and stays fenced");
+	assert.deepEqual(h.previews, []);
+});
+
+test("path fence lets reads of Pi agent-home assets and Pi output files pass while writes stay fenced", async (t) => {
+	const h = harnessReadFixture(t);
+	assert.equal(await h.toolCall({ toolName: "read", input: { path: h.assetFile } }, h.ctx(false)), undefined, "an agent-home asset read passes headless");
+	assert.equal(await h.toolCall({ toolName: "read", input: { path: h.outputFile } }, h.ctx(false)), undefined, "a Pi truncated-output file read passes headless");
+	assert.equal(await h.toolCall({ toolName: "read", input: { path: `@${h.assetFile}` } }, h.ctx(false)), undefined, "the @ spelling resolves to the same root");
+	assert.deepEqual(await h.toolCall({ toolName: "write", input: { path: h.assetFile, content: "x" } }, h.ctx(false)), { block: true, reason: headlessFenceReason(h.assetFile) }, "an agent-home write stays fenced");
+	assert.deepEqual(await h.toolCall({ toolName: "edit", input: { path: h.outputFile, edits: [] } }, h.ctx(false)), { block: true, reason: headlessFenceReason(h.outputFile) }, "an output-file edit stays fenced");
+	assert.deepEqual(h.previews, []);
+});
+
+test("path fence keeps credentials, unrelated temp files and other outside reads fenced", async (t) => {
+	const h = harnessReadFixture(t);
+	assert.deepEqual(await h.toolCall({ toolName: "read", input: { path: h.authFile } }, h.ctx(false)), { block: true, reason: headlessFenceReason(h.authFile) }, "the agent-home credential file is not a harness read");
+	assert.deepEqual(await h.toolCall({ toolName: "read", input: { path: h.strayFile } }, h.ctx(false)), { block: true, reason: headlessFenceReason(h.strayFile) }, "a temp file that is not a Pi output file stays fenced");
+	const secret = join(h.f.sibling, "secret.txt");
+	assert.deepEqual(await h.toolCall({ toolName: "read", input: { path: secret } }, h.ctx(false)), { block: true, reason: headlessFenceReason(secret) }, "an unrelated outside read still headless-blocks");
+	const lookalike = `${h.agentHome}-other/notes.txt`;
+	mkdirSync(dirname(lookalike), { recursive: true });
+	assert.deepEqual(await h.toolCall({ toolName: "read", input: { path: lookalike } }, h.ctx(false)), { block: true, reason: headlessFenceReason(lookalike) }, "a sibling sharing the agent home's name prefix stays fenced");
+	const escape = join(h.agentHome, "..", "sibling", "secret.txt");
+	assert.deepEqual(await h.toolCall({ toolName: "read", input: { path: escape } }, h.ctx(false)), { block: true, reason: headlessFenceReason(secret) }, "dot-dot out of a harness root is judged by its destination");
+});
+
+test("path fence asks no consent for harness reads in an interactive session but still asks for writes", async (t) => {
+	const h = harnessReadFixture(t);
+	assert.equal(await h.toolCall({ toolName: "read", input: { path: h.skillFile } }, h.ctx(true)), undefined);
+	assert.equal(await h.toolCall({ toolName: "read", input: { path: h.assetFile } }, h.ctx(true)), undefined);
+	assert.equal(await h.toolCall({ toolName: "read", input: { path: h.outputFile } }, h.ctx(true)), undefined);
+	assert.deepEqual(h.previews, [], "no prompt for any harness read");
+	assert.deepEqual(await h.toolCall({ toolName: "write", input: { path: h.skillFile, content: "x" } }, h.ctx(true)), { block: true, reason: "Gentle AI safety policy blocked the path access because it was not confirmed." });
+	assert.deepEqual(h.previews, [h.skillFile], "a write to a skill file still prompts");
+});
+
+test("path fence keeps an unresolvable agent home fenced", async (t) => {
+	const f = fenceFixture(t);
+	const blocker = join(dirname(f.repo), "not-a-directory");
+	writeFileSync(blocker, "file");
+	const agentHome = join(blocker, "agent");
+	const { toolCall } = pathFenceHook({ ...process.env, GENTLE_PI_AGENT_HOME: agentHome, GENTLE_PI_CONFIG_HOME: join(dirname(f.repo), "config-home") });
+	const ctx = { cwd: f.repo, hasUI: false, sessionManager: { getSessionId: () => "harness-read-unresolvable", getEntries: () => [] } } as unknown as ExtensionContext;
+	const target = join(f.sibling, "asset.md");
+	assert.deepEqual(await toolCall({ toolName: "read", input: { path: target } }, ctx), { block: true, reason: headlessFenceReason(target) }, "other outside reads stay fenced");
+	assert.equal((await toolCall({ toolName: "read", input: { path: join(agentHome, "asset.md") } }, ctx))?.block, true, "an unresolvable agent home exempts nothing");
+});
+
 const changedPathReason = "Gentle AI safety policy blocked the path access because its target changed during confirmation. Retry the tool call to request fresh consent.";
 
 test("path fence checks @ and file URLs against the actual built-in write target", async (t) => {

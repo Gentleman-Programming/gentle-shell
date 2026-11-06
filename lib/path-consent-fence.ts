@@ -108,11 +108,32 @@ function insideBoundary(target: string, roots: readonly string[]): boolean {
 	return roots.some((root) => target === root || target.startsWith(root + sep));
 }
 
-export function resolveOutsidePaths(paths: readonly string[], cwd: string, roots: readonly string[]): string[] {
+// Locations the harness itself owns. They exempt read tools only; a write or
+// edit there still needs consent. `leaf` limits the root to direct children
+// whose name matches (Pi's output files share the OS temp directory with
+// unrelated files); `exclude` names direct children that stay fenced.
+export interface ReadOnlyRoot {
+	dir: string;
+	leaf?: RegExp;
+	exclude?: readonly string[];
+}
+
+export const READ_ONLY_PATH_TOOL_NAMES: ReadonlySet<string> = new Set(["read", "grep", "find", "ls"]);
+
+function insideReadOnlyRoot(target: string, readOnlyRoots: readonly ReadOnlyRoot[]): boolean {
+	return readOnlyRoots.some(({ dir, leaf, exclude }) => {
+		if (leaf) return dirname(target) === dir && leaf.test(basename(target));
+		if (target !== dir && !target.startsWith(dir + sep)) return false;
+		const [first] = target.slice(dir.length + 1).split(sep);
+		return target === dir || !exclude?.includes(first);
+	});
+}
+
+export function resolveOutsidePaths(paths: readonly string[], cwd: string, roots: readonly string[], readOnlyRoots: readonly ReadOnlyRoot[] = []): string[] {
 	const outside = new Set<string>();
 	for (const path of paths) {
 		const canonical = canonicalizeTarget(path, cwd);
-		if (!insideBoundary(canonical, roots)) outside.add(canonical);
+		if (!insideBoundary(canonical, roots) && !insideReadOnlyRoot(canonical, readOnlyRoots)) outside.add(canonical);
 	}
 	return [...outside].sort();
 }
@@ -130,13 +151,14 @@ export function evaluatePathFence(
 	sessionKey: string,
 	grants: PathTargetGrants,
 	hasUI: boolean,
+	readOnlyRoots: readonly ReadOnlyRoot[] = [],
 ): PathFenceDecision {
 	if (!PATH_FENCE_TOOL_NAMES.has(toolName) || roots.length === 0) return { kind: "pass" };
 	let paths = collectStringPaths(input);
 	if (paths.length === 0 && (toolName === "grep" || toolName === "find" || toolName === "ls")) paths = ["."];
 	let targets: string[];
 	try {
-		targets = resolveOutsidePaths(paths, cwd, roots);
+		targets = resolveOutsidePaths(paths, cwd, roots, READ_ONLY_PATH_TOOL_NAMES.has(toolName) ? readOnlyRoots : []);
 	} catch {
 		return {
 			kind: "headless-block",

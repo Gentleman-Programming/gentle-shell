@@ -19,7 +19,7 @@ import { createReviewSidebarPublisher } from "../lib/review-sidebar-state.ts";
 import { parseReviewCoordinatorInput, runReviewCoordinator } from "../lib/review-coordinator.ts";
 import { StatusTimingDiagnostics } from "../lib/status-timing-diagnostics.ts";
 import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
-import { canonicalizeTarget, collectStringPaths, evaluatePathFence, resolveOutsidePaths, PathTargetGrants, PATH_FENCE_TOOL_NAMES } from "../lib/path-consent-fence.ts";
+import { canonicalizeTarget, collectStringPaths, evaluatePathFence, resolveOutsidePaths, PathTargetGrants, PATH_FENCE_TOOL_NAMES, type ReadOnlyRoot } from "../lib/path-consent-fence.ts";
 import { registeredRootsForSession, resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { shellEnabled } from "../lib/shell-bar.ts";
 import { declareReviewRelayHandshake } from "../lib/review-relay-contract.ts";
@@ -50,7 +50,7 @@ import {
 	readdir,
 	writeFile,
 } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { PROVIDER_REVIEW_ROLES, discoverAgents, loadAgentsConfig, unmatchedProfileKeys } from "../lib/agents-config.ts";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -2368,6 +2368,30 @@ function canConfirm(ctx: ExtensionContext): boolean {
 	return ctx.hasUI && typeof ctx.ui?.confirm === "function";
 }
 
+// Pi writes truncated tool output and other output files to the OS temp
+// directory as `<prefix>-<16 hex>.<ext>`; only those direct children are Pi's.
+const PI_OUTPUT_FILE_NAME = /^pi-[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-f]{16}\.[a-z0-9]+$/i;
+
+/** Harness-owned locations that read tools may use without consent (#1610):
+ * the Pi agent home (minus credentials and other sessions' transcripts), the
+ * user skill directory Pi loads from, and Pi's output files. Writes there stay
+ * fenced. A location that cannot be resolved is left out, so it stays fenced. */
+function harnessReadOnlyRoots(env: NodeJS.ProcessEnv, cwd: string): ReadOnlyRoot[] {
+	const candidates: Array<() => ReadOnlyRoot> = [
+		() => ({ dir: canonicalizeTarget(resolveGentlePiAgentHome(env), cwd), exclude: ["auth.json", "mcp.json", "sessions"] }),
+		() => ({ dir: canonicalizeTarget(join(homedir(), ".agents", "skills"), cwd) }),
+		() => ({ dir: canonicalizeTarget(tmpdir(), cwd), leaf: PI_OUTPUT_FILE_NAME }),
+	];
+	return candidates.flatMap((resolveRoot) => {
+		try {
+			return [resolveRoot()];
+		} catch {
+			// Fail closed: keep this location behind the fence.
+			return [];
+		}
+	});
+}
+
 /** #1305 slice 2: path-tool consent fence. Outside the session worktree and
  * registered same-clone worktrees requires per-target, per-session consent;
  * headless sessions fail closed. Bash coverage is slice 3. */
@@ -2379,6 +2403,7 @@ async function confirmOutsideBoundaryTargets(
 	herdrLifecycle: HerdrConfirmationLifecycle,
 	grants: PathTargetGrants,
 	configHome: string,
+	env: NodeJS.ProcessEnv,
 ): Promise<ToolCallEventResult | undefined> {
 	// A missing manager (a non-session caller) or a non-Git cwd keeps the fence
 	// silent. A manager whose session id is not assigned yet is different: the
@@ -2399,7 +2424,7 @@ async function confirmOutsideBoundaryTargets(
 	} catch {
 		// Fail closed: keep the config home behind the fence.
 	}
-	const decision = evaluatePathFence(toolName, input, ctx.cwd, roots, sessionKey ?? "", sessionKey ? grants : new PathTargetGrants(), canConfirm(ctx));
+	const decision = evaluatePathFence(toolName, input, ctx.cwd, roots, sessionKey ?? "", sessionKey ? grants : new PathTargetGrants(), canConfirm(ctx), harnessReadOnlyRoots(env, ctx.cwd));
 	if (decision.kind === "pass") return undefined;
 	if (decision.kind === "headless-block") return { block: true, reason: decision.reason };
 	if (!sessionKey) return { block: true, reason: "Session identity is unavailable; access outside the session worktree is blocked." };
@@ -12336,7 +12361,7 @@ function createGentleAiExtensionForTesting(
 		const deliveredTestDenied = evaluateDeliveredTestTool(event.toolName, event.input, ctx.cwd);
 		if (deliveredTestDenied) return deliveredTestDenied;
 		if (PATH_FENCE_TOOL_NAMES.has(event.toolName)) {
-			const outsideDenied = await confirmOutsideBoundaryTargets(event.toolName, event.input, ctx, pi.events, herdrLifecycle, pathTargetGrants, gentlePiConfigHome(permissionEnvironment));
+			const outsideDenied = await confirmOutsideBoundaryTargets(event.toolName, event.input, ctx, pi.events, herdrLifecycle, pathTargetGrants, gentlePiConfigHome(permissionEnvironment), permissionEnvironment);
 			if (outsideDenied) return outsideDenied;
 		}
 		if (event.toolName === "subagent_run") {

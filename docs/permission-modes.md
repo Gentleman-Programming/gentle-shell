@@ -130,6 +130,14 @@ In Git-backed sessions, `read`, `write`, `edit`, `grep`, `find`, and `ls` requir
 
 The Gentle config home (`GENTLE_PI_CONFIG_HOME`, by default `~/.pi/gentle-ai`) is not fenced: its own policy already governs it. Authority files such as the permission mode and runtime guardrails stay blocked for model tools, and updater-owned companion files go through the current mode's ordinary checks. A config home that cannot be resolved stays fenced.
 
+Harness-owned locations are **read-only** exempt roots: `read`, `grep`, `find` and `ls` pass there without consent, so delegated runs can read what the harness tells them to read. `write` and `edit` to the same locations stay fenced (interactive confirmation, or a block when headless). The roots are:
+
+- the Pi agent home (`GENTLE_PI_AGENT_HOME`, else `PI_CODING_AGENT_DIR`, else `~/.pi/agent`), which holds package assets such as `orchestrator-*.md` and `<agent home>/skills`. `auth.json`, `mcp.json` and `sessions/` inside it stay fenced for reads too;
+- `~/.agents/skills`, the user skill directory Pi loads from;
+- Pi's output files, such as the full text of truncated tool output: only direct children of the OS temp directory named `pi-<name>-<16 hex>.<ext>`, never other temp files.
+
+As with the config home, a root that cannot be resolved is left out and stays fenced. Paths are judged by their canonical destination, so `..` segments and symlinks cannot leave a root.
+
 If a symlink or requested target changes while the confirmation dialog is open, the call is blocked without storing a grant or reporting an approved permission event:
 
 > Gentle AI safety policy blocked the path access because its target changed during confirmation. Retry the tool call to request fresh consent.

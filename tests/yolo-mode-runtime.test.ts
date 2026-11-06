@@ -158,8 +158,10 @@ for (const shellFirst of [false, true]) test(`SDK loads both extensions on one b
 	assert.ok(command); assert.ok(customize);
 	const menu = customize.handler("", ctx);
 	await ready; assert.ok(view);
-	for (let i = 0; i < 3; i++) view.handleInput?.("j");
-	view.handleInput?.("\x1b[C"); view.handleInput?.("j"); view.handleInput?.("j");
+	// Inline settings change row counts; focus the explicit choice without applying it.
+	const menuView = view as Component & { focus(label: string): boolean };
+	assert.ok(menuView.focus("YOLO: ON"));
+	assert.equal(statuses.get(YOLO_STATUS_KEY), undefined, "focusing ON only previews the choice");
 	assert.match(text(), /YOLO: OFF · session only/);
 	const onRendered = rendered(/YOLO: ON/);
 	view.handleInput?.("\r");

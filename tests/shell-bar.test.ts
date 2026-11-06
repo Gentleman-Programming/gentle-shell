@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test, { after, before, type TestContext } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { DEFAULT_VISUAL_SETTINGS } from "../lib/visual-customization-policy.ts";
+import { collectSessionStats } from "../lib/shell-stats.ts";
 import {
 	buildShellHeaderModel,
 	formatCost,
@@ -11,6 +12,9 @@ import {
 	renderShellBar,
 	renderShellBottomOnlyBar,
 	renderShellBelowInputFloat,
+	renderShellChromeBar,
+	renderShellStatusBar,
+	renderShellTitleRow,
 	renderShellHeaderBar,
 	renderShellHeaderChrome,
 	renderShellHeaderRule,
@@ -103,11 +107,11 @@ test("visual visibility hides only selected optional status segments", () => {
 	const settings = { ...DEFAULT_VISUAL_SETTINGS, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility, changes: false, modelDetails: false, usageCost: false } };
 	const data = model({ changes: { files: 2, added: 1, deleted: 1 } });
 	assert.doesNotMatch(renderShellBar(data, plainTheme, 160, settings).join(""), /gpt-5\.5|ctx|\$9\.49/);
-	assert.doesNotMatch(renderShellSidebarBar(data, plainTheme, 50, settings).join(""), /Changes|2 files/);
+	assert.doesNotMatch(renderShellSidebarBar(data, plainTheme, 50, settings).join(""), /CHANGES|2 files/);
 	assert.doesNotMatch(renderShellHeaderBar(buildShellHeaderModel(data), plainTheme, 160, undefined, settings).text, /gpt-5\.5|ctx|\$9\.49|usage/);
 });
 
-test("Status groups running job descriptions beside RDD without a compact count", () => {
+test("Status keeps the Review section beside Changes while running jobs live in their own section", () => {
 	const data = model({ jobs: [
 		{ id: "job-2", label: "CI for PR 1860", startedAt: 2 },
 		{ id: "job-1", label: "Build runtime", startedAt: 1 },
@@ -115,12 +119,12 @@ test("Status groups running job descriptions beside RDD without a compact count"
 	for (const width of [30, 60]) {
 		const lines = renderShellSidebarBar(data, plainTheme, width);
 		const text = lines.join("\n");
-		assert.match(text, /Jobs[\s\S]*CI for PR 1860[\s\S]*Build runtime/);
-		assert.match(text, /🌹 RDD/);
-		assert.doesNotMatch(text, /2 jobs/);
+		// Running jobs live in their own rail section; Status never prints
+		// them, so the two surfaces cannot duplicate one job.
+		assert.doesNotMatch(text, /JOBS|CI for PR 1860|Build runtime/);
+		assert.match(text, /▾ REVIEW/);
 		assert.ok(lines.every((line) => visibleWidth(line) <= width));
 	}
-	assert.doesNotMatch(renderShellSidebarBar(model({ jobs: [] }), plainTheme, 60).join("\n"), /Jobs/);
 });
 
 test("header shows only the running job count when requested and preserves it at mobile widths", () => {
@@ -147,33 +151,33 @@ test("bottom-only and hidden below-input chrome retain a compact jobs count", (t
 	assert.ok(rows.every((line) => visibleWidth(line) <= 80));
 });
 
-test("Status title stays plain without an active review", () => {
+test("Status opens with Changes and shows no Review section without an active review", () => {
 	const lines = renderShellSidebarBar(model(), plainTheme, 60);
-	assert.match(lines[0], /^╭─ ✿ Status ─+╮$/);
-	assert.doesNotMatch(lines.slice(1).join("\n"), /🌹 RDD/);
+	assert.match(lines[0], /^▾ CHANGES/);
+	assert.doesNotMatch(lines.slice(1).join("\n"), /REVIEW/);
 });
 
-test("Status title stays plain above the review lifecycle block", () => {
+test("the Review section lists the lifecycle state and the candidate scope", () => {
 	const lines = renderShellSidebarBar(model({ review: { state: "reviewing", scope: "first.ts +2 files" } }), plainTheme, 60);
-	assert.match(lines[0], /^╭─ ✿ Status ─+╮$/);
-	assert.match(lines.slice(1).join("\n"), /🌹 RDD[\s\S]*Reviewers running…[\s\S]*first\.ts \+2 files/);
+	assert.match(lines[0], /^▾ CHANGES/);
+	assert.match(lines.slice(1).join("\n"), /▾ REVIEW[\s\S]*Reviewers running…[\s\S]*first\.ts \+2 files/);
 });
 
 test("review lifecycle block omits the scope line when the candidate scope is unknown", () => {
 	const known = renderShellSidebarBar(model({ review: { state: "checking", scope: "first.ts" } }), plainTheme, 60);
 	const unknown = renderShellSidebarBar(model({ review: { state: "checking", scope: REVIEW_SCOPE_UNAVAILABLE } }), plainTheme, 60);
 	const text = unknown.join("\n");
-	assert.match(text, /🌹 RDD[\s\S]*Updating…/);
+	assert.match(text, /▾ REVIEW[\s\S]*Updating…/);
 	assert.doesNotMatch(text, /Candidate scope unavailable/);
 	assert.equal(unknown.length, known.length - 1);
 });
 
 test("rdd visibility hides only the review lifecycle block", () => {
 	const data = model({ review: { state: "reviewing", scope: "first.ts +2" }, changes: { files: 2, added: 1, deleted: 1 } });
-	assert.match(renderShellSidebarBar(data, plainTheme, 60, DEFAULT_VISUAL_SETTINGS).join("\n"), /🌹 RDD[\s\S]*Reviewers running…/);
+	assert.match(renderShellSidebarBar(data, plainTheme, 60, DEFAULT_VISUAL_SETTINGS).join("\n"), /▾ REVIEW[\s\S]*Reviewers running…/);
 	const hidden = renderShellSidebarBar(data, plainTheme, 60, { ...DEFAULT_VISUAL_SETTINGS, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility, rdd: false } }).join("\n");
-	assert.doesNotMatch(hidden, /🌹 RDD|Reviewers running|first\.ts \+2 files/);
-	assert.match(hidden, /Changes[\s\S]*2 files/);
+	assert.doesNotMatch(hidden, /REVIEW|Reviewers running|first\.ts \+2 files/);
+	assert.match(hidden, /CHANGES[\s\S]*2 files/);
 });
 
 test("Status and review lifecycle block respect terminal width", () => {
@@ -181,7 +185,7 @@ test("Status and review lifecycle block respect terminal width", () => {
 		for (const review of [undefined, { state: "reviewing" as const, scope: "first.ts +2 files" }, { state: "approved" as const, scope: REVIEW_SCOPE_UNAVAILABLE }]) {
 			const lines = renderShellSidebarBar(model({ review }), plainTheme, width);
 			for (const line of lines) assert.ok(visibleWidth(line) <= width, `${width}: ${line}`);
-			if (width >= 20) assert.match(lines[0], /^╭─ ✿ Status ─+╮$/);
+			if (width >= 20) assert.match(lines[0], /^▾ CHANGES/);
 		}
 	}
 });
@@ -347,48 +351,86 @@ test("shellEnabled honors GENTLE_PI_SHELL=0", () => {
 	assert.equal(shellEnabled({ GENTLE_PI_SHELL: "false" }), false);
 });
 
-test("renderShellSidebarBar paints the Status card frame with border and the title with accent", () => {
-	const lines = renderShellSidebarBar(model(), taggedTheme, 46);
-	assert.match(lines[0], /^<border>╭<\/border>/);
-	assert.match(lines[0], /<accent>✿ Status<\/accent>/);
-	assert.match(lines[lines.length - 1], /^<border>╰<\/border>/);
+test("renderShellSidebarBar draws panel section headers, never a card frame", () => {
+	const lines = renderShellSidebarBar(model(), taggedTheme, 160);
+	assert.match(lines[0], /^<muted>▾<\/muted> <text>.*CHANGES.*<\/text>/);
+	assert.doesNotMatch(lines.join("\n"), /[╭╮╰╯│]/u);
 });
 
-test("sidebar unifies project, captured changes and integrations in one frame", () => {
-	const data = model({ changes: { files: 2, added: 7, deleted: 3, notice: "capture warning" }, statuses: ["MCP connected"] });
+test("the rail Status orders Changes before Integrations and keeps the location out", () => {
+	const data = model({ changes: { files: 2, added: 7, deleted: 3 }, statuses: ["MCP connected"] });
 	const lines = renderShellSidebarBar(data, plainTheme, 46);
 	const text = lines.join("\n");
-	assert.equal(lines.filter((line) => line.startsWith("╭")).length, 1);
 	let previous = -1;
-	for (const heading of ["Status", "Project", "Changes", "Integrations"]) {
+	for (const heading of ["CHANGES", "INTEGRATIONS"]) {
 		const index = text.indexOf(heading);
 		assert.ok(index > previous, heading);
 		previous = index;
 	}
-	assert.match(text, /2 files.*\+7.*−3/);
-	assert.match(text, /capture warning/);
+	assert.match(text, /2 files/);
+	assert.match(text, /\+7 −3/);
 	assert.match(text, /\/gentle:changes/);
-	assert.match(text, /main/);
+	assert.match(text, /MCP connected/);
+	assert.doesNotMatch(text, /main|Branch|Project/, "location lives in the header row, once");
 	for (const width of [1, 8, 24, 46]) assert.ok(renderShellSidebarBar(data, plainTheme, width).every((line) => visibleWidth(line) <= width));
 	const empty = renderShellSidebarBar(model(), plainTheme, 46).join("\n");
-	assert.match(empty, /No captured changes/);
-	assert.match(empty, /Integrations/);
+	assert.match(empty, /no captured changes/);
+	assert.match(empty, /INTEGRATIONS/);
 });
 
-test("sidebar profile wraps long names without changing the compact bar", () => {
-	const profile = "team-" + "x".repeat(59);
-	const base = model();
-	const active = model({ profile });
-	for (const width of [24, 46]) {
-		const lines = renderShellSidebarBar(active, plainTheme, width);
-		assert.ok(lines.every((line) => visibleWidth(line) <= width));
-		assert.match(lines.join("\n"), /Profile/);
-		assert.ok(lines.join("").replace(/[│\s]/g, "").includes(profile));
+test("the agent profile opens Stats and never touches Integrations' rows, count or order", () => {
+	const stats = collectSessionStats([]);
+	const data = model({
+		profile: "alpha (session)",
+		permission: { mode: "AUTO", detail: "confirm before action" },
+		statuses: ["compact status"],
+		integrations: ["MCP connected", "Engram ready"],
+		stats,
+	});
+	const rows = () => renderShellSidebarBar(data, plainTheme, 60).map((line) => line.trimEnd());
+	const section = (lines: string[], title: string) => {
+		const at = lines.findIndex((line) => line.startsWith(`▾ ${title}`));
+		const end = lines.findIndex((line, index) => index > at && line.startsWith("▾ "));
+		return lines.slice(at, end < 0 ? undefined : end).filter((line) => line.trim() !== "");
+	};
+	const initial = rows();
+	assert.match(section(initial, "INTEGRATIONS")[0]!, /INTEGRATIONS\s+3$/);
+	assert.deepEqual(section(initial, "INTEGRATIONS").slice(1), ["  - permissions confirm before action", "  - MCP connected", "  - Engram ready"]);
+	assert.equal(section(initial, "STATS")[1], "  profile alpha (session)", "Stats opens with the profile");
+	data.profile = "beta (repo)";
+	assert.equal(section(rows(), "STATS")[1], "  profile beta (repo)");
+	assert.doesNotMatch(rows().join("\n"), /alpha \(session\)/);
+	data.profile = undefined;
+	const absent = rows();
+	assert.doesNotMatch(section(absent, "STATS").join("\n"), /profile/);
+	for (const profile of ["", " \t\n", "\x1b[31m\x1b[0m"]) {
+		data.profile = profile;
+		assert.deepEqual(rows(), absent, "an empty sanitized profile leaves prior output unchanged");
 	}
+	const onlyProfile = renderShellSidebarBar(model({ profile: "solo (local)" }), plainTheme, 60).map((line) => line.trimEnd());
+	assert.deepEqual(section(onlyProfile, "INTEGRATIONS").slice(1), ["  no status reported"], "Integrations never lists the profile");
+});
+
+test("Stats clips and sanitizes a long agent profile on one row, leaving the compact bar unchanged", () => {
+	const profile = `team-${"x".repeat(59)}\x1b[31m\nops\t界unit\x07\x1b[0m (repo)`;
+	const base = model();
+	const active = model({ profile, stats: collectSessionStats([]) });
+	const settings = { ...DEFAULT_VISUAL_SETTINGS, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility, changes: false } };
+	for (const width of [16, 24, 46]) {
+		const lines = renderShellSidebarBar(active, plainTheme, width, settings);
+		assert.ok(lines.every((line) => visibleWidth(line) <= width));
+		assert.ok(lines.every((line) => !/[\x00-\x1f\x7f-\x9f]/.test(line)), "profile controls must not reach the terminal");
+		const row = lines.find((line) => line.includes("profile"))!;
+		assert.match(row, /profile team-x*…/, "the profile clips with an ellipsis on its one row");
+	}
+	const ansiTheme = { ...plainTheme, fg: (role: string, value: string) => `\x1b[${role === "muted" ? 90 : 37}m${value}\x1b[0m` };
+	const colored = renderShellSidebarBar(active, ansiTheme, 24, settings);
+	assert.ok(colored.every((line) => visibleWidth(line) <= 24));
+	assert.match(colored.join(""), /\x1b\[90mprofile\x1b\[0m/, "the label is muted like the other Stats labels");
 	assert.deepEqual(renderShellBar(active, plainTheme, 120), renderShellBar(base, plainTheme, 120));
 });
 
-test("sidebar Status card drops Model, Effort, Context, Cost and Usage, keeping Project, Changes and Integrations", () => {
+test("the rail Status drops model, usage and session identity, keeping Changes and Integrations", () => {
 	const usage = {
 		provider: "openai-codex",
 		plan: "pro",
@@ -397,17 +439,8 @@ test("sidebar Status card drops Model, Effort, Context, Cost and Usage, keeping 
 	};
 	const data = model({ profile: "team", sessionName: "session", usage, changes: { files: 1, added: 2, deleted: 1 }, statuses: ["MCP connected"] });
 	const text = renderShellSidebarBar(data, plainTheme, 60).join("\n");
-	assert.doesNotMatch(text, /Usage/);
-	assert.doesNotMatch(text, /Model/);
-	assert.doesNotMatch(text, /Effort/);
-	assert.doesNotMatch(text, /Context/);
-	assert.doesNotMatch(text, /Cost/);
-	assert.doesNotMatch(text, /\$9\.49/);
-	assert.doesNotMatch(text, /codex 5h/);
-	for (const heading of ["Status", "Project", "Changes", "Integrations"]) assert.match(text, new RegExp(heading));
-	assert.match(text, /Branch.*main/);
-	assert.match(text, /Session.*session/);
-	assert.match(text, /Profile.*team/);
+	for (const absent of [/Usage/, /Model/, /Effort/, /Context/, /Cost/, /\$9\.49/, /codex 5h/, /Branch/, /Session/]) assert.doesNotMatch(text, absent);
+	for (const heading of ["CHANGES", "INTEGRATIONS"]) assert.match(text, new RegExp(heading));
 });
 
 // The live header row above the fullscreen rail: identity on the left (brand,
@@ -522,6 +555,160 @@ test("renderShellHeaderBar shows every usage window with its gauge and the short
 	assert.equal(text.slice(usageSpan.start, usageSpan.end), "usage 5h ▰▰▱▱▱▱▱▱ 26% · week ▰▱▱▱▱▱▱▱ 12% · alt+u");
 });
 
+test("header retains effort without location when it fits beside full usage windows", () => {
+	const header = buildShellHeaderModel(model({ cwd: "~/work/" + "x".repeat(80), profile: "current", usage: USAGE_TWO_WINDOWS }));
+	for (const density of ["minimal", "compact", "comfortable"] as const) {
+		const settings = { ...DEFAULT_VISUAL_SETTINGS, density };
+		const right = density === "minimal"
+			? "ctx 45% ⟡ $9.49 sub ⟡ usage 5h 26% · week 12%"
+			: "ctx ▰▰▰▰▱▱▱▱ 45% ⟡ $9.49 sub ⟡ usage 5h ▰▰▱▱▱▱▱▱ 26% · week ▰▱▱▱▱▱▱▱ 12% · alt+u";
+		const left = density === "minimal" ? "gpt-5.5 · medium" : "✿ Gentle Shell ⟡ gpt-5.5 · medium";
+		const width = visibleWidth(left) + 2 + visibleWidth(right);
+		const result = renderShellHeaderBar(header, plainTheme, width, "alt+u", settings);
+		assert.equal(result.text, left + "  " + right, density);
+		assert.ok(result.usageSpan);
+		assert.equal(result.text.slice(result.usageSpan.start, result.usageSpan.end), right.slice(right.indexOf("usage")));
+
+		const narrower = renderShellHeaderBar(header, plainTheme, width - 1, "alt+u", settings).text;
+		assert.match(narrower, /gpt-5\.5/);
+		assert.doesNotMatch(narrower, /medium|current|~\/work/);
+		assert.ok(narrower.endsWith(right), "model-only fallback preserves full usage");
+		assert.equal(visibleWidth(narrower), width - 1);
+
+		const withoutEffort = renderShellHeaderBar({ ...header, effort: undefined }, plainTheme, width, "alt+u", settings).text;
+		assert.doesNotMatch(withoutEffort, /medium|current|~\/work/);
+		assert.ok(withoutEffort.endsWith(right));
+		assert.equal(visibleWidth(withoutEffort), width);
+	}
+});
+
+test("single top and below-input chrome includes the project identity without duplicating split", () => {
+	const cwd = "~/work/gentle-pi/.worktrees/庫-shell-ui-feedback";
+	const data = model({ cwd, branch: "feature/main", dirty: 3, permission: { mode: "SUPER-YOLO" }, profile: "current", profileTier: "fast", usage: USAGE_TWO_WINDOWS, jobs: [{ id: "one", label: "job", startedAt: 1 }] });
+	for (const headerPlacement of ["top", "below-input"] as const) for (const density of ["comfortable", "compact", "minimal"] as const) {
+		const settings = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement, density };
+		const chrome = renderShellChromeBar(data, plainTheme, 240, "alt+u", settings, undefined, { jobs: true });
+		const row = chrome.rows[chrome.headerRow]!;
+		assert.match(row, /✿ 庫-shell-ui-feedback  ~\/work\/gentle-pi\/\.worktrees\/庫-shell-ui-feedback/, `${headerPlacement}/${density}: folder and abbreviated path`);
+		assert.match(row, /feature\/main ±3/);
+		assert.match(row, /💥 SUPER-YOLO/);
+		assert.match(row, /⧗ 1 job/);
+		assert.match(row, /gpt-5\.5 · medium · Fast · current/);
+		assert.match(row, /45%/);
+		assert.match(row, /\$9\.49 sub/);
+		assert.match(row, /usage.*5h.*26%.*week.*12%/);
+		if (density === "minimal") assert.doesNotMatch(row, /[▰▱]|alt\+u/);
+		else assert.match(row, /[▰▱].*alt\+u/);
+		assert.equal(visibleWidth(row), 240);
+		const start = visibleWidth(row.slice(0, row.indexOf("usage")));
+		assert.deepEqual(chrome.usageSpan, { start, end: 239 }, `${headerPlacement}/${density}: wide glyphs do not shift the target`);
+		assert.equal(shellHeaderUsageHit(chrome, start, chrome.headerRow), true);
+		assert.equal(shellHeaderUsageHit(chrome, start - 1, chrome.headerRow), false);
+		assert.equal(shellHeaderUsageHit(chrome, 239, chrome.headerRow), false);
+		if (density === "comfortable") assert.equal(shellHeaderUsageHit(chrome, start, 0), false);
+	}
+	const split = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "split" as const };
+	const title = renderShellTitleRow(data, plainTheme, 240);
+	const bar = renderShellChromeBar(data, plainTheme, 240, "alt+u", split, undefined).rows.join("\n");
+	assert.match(title, /✿ 庫-shell-ui-feedback  ~\/work\/gentle-pi\/\.worktrees\/庫-shell-ui-feedback/);
+	assert.doesNotMatch(bar, /庫-shell-ui-feedback|~\/work/);
+	assert.match(bar, /gpt-5\.5 · medium · Fast · current/);
+});
+
+test("project identity yields before live values, and folder text is terminal-safe", () => {
+	const data = model({ cwd: "~/work/\x1b[31mproject\x1b[0m\nname", branch: "feature/" + "long-".repeat(20), dirty: 3, permission: { mode: "YOLO" }, profileTier: "fast", usage: USAGE_TWO_WINDOWS });
+	const settings = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "top" as const, density: "minimal" as const };
+	const wide = renderShellChromeBar(data, plainTheme, 300, "alt+u", settings, undefined);
+	assert.match(wide.rows[0]!, /✿ project name  ~\/work\/project name/);
+	assert.doesNotMatch(wide.rows[0]!, /\x1b|\n/);
+	const narrow = renderShellChromeBar(data, plainTheme, 105, "alt+u", settings, undefined);
+	const row = narrow.rows[0]!;
+	assert.doesNotMatch(row, /~\/work/);
+	assert.match(row, /feature\/.*… ±3/);
+	assert.match(row, /🔥 YOLO/);
+	assert.match(row, /gpt-5\.5 · medium · Fast/);
+	assert.match(row, /ctx 45%/);
+	assert.match(row, /\$9\.49 sub/);
+	assert.equal(visibleWidth(row), 105);
+});
+
+test("project path then name yield without displacing existing live values at any width", () => {
+	const data = model({ cwd: "~/work/gentle-pi/.worktrees/folder", branch: "feature/main", dirty: 3, permission: { mode: "YOLO" }, profile: "current", profileTier: "fast", usage: USAGE_TWO_WINDOWS });
+	for (const headerPlacement of ["top", "below-input"] as const) for (const density of ["comfortable", "compact", "minimal"] as const) {
+		let full = false, nameOnly = false, noIdentity = false;
+		for (let width = 1; width <= 240; width++) {
+			const settings = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement, density };
+			const chrome = renderShellChromeBar(data, plainTheme, width, "alt+u", settings, undefined);
+			const row = chrome.rows[chrome.headerRow]!;
+			const prior = renderShellChromeBar(data, plainTheme, width, "alt+u", { ...settings, headerPlacement: "split" }, undefined).rows[chrome.headerRow]!;
+			assert.equal(visibleWidth(row), width, `${headerPlacement}/${density}/${width}`);
+			for (const value of ["feature/main", "±3", "🔥 YOLO", "gpt-5.5", "medium", "Fast", "current", "45%", "$9.49 sub", "usage", "26%", "12%"]) {
+				if (prior.includes(value)) assert.ok(row.includes(value), `${headerPlacement}/${density}/${width}: identity must not displace ${value}`);
+			}
+			if (row.includes("✿ folder  ~/work/gentle-pi/.worktrees/folder")) full = true;
+			else if (row.includes("✿ folder")) nameOnly = true;
+			else noIdentity = true;
+		}
+		assert.ok(full && nameOnly && noIdentity, `${headerPlacement}/${density}: full → name → absent as the available space falls`);
+	}
+	const mobile = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "top" as const };
+	const title = renderShellTitleRow(data, plainTheme, 120, { model: true });
+	const bottom = renderShellStatusBar(data, plainTheme, 120, "alt+u", mobile, undefined, { jobs: true }).rows[0]!;
+	assert.match(title, /✿ folder  ~\/work\/gentle-pi\/\.worktrees\/folder/);
+	assert.doesNotMatch(bottom, /folder|~\/work/, "the narrow mobile title already owns the identity");
+});
+
+test("project identity respects model and usage visibility", () => {
+	const data = model({ cwd: "~/work/project", profileTier: "fast", usage: USAGE_TWO_WINDOWS });
+	for (const headerPlacement of ["top", "below-input"] as const) {
+		const hiddenModel = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility, modelDetails: false } };
+		const row = renderShellChromeBar(data, plainTheme, 160, "alt+u", hiddenModel, undefined).rows[1]!;
+		assert.match(row, /✿ project  ~\/work\/project/);
+		assert.doesNotMatch(row, /gpt-5\.5|medium|Fast/);
+		assert.match(row, /ctx.*45%.*\$9\.49 sub.*usage/);
+		const hiddenUsage = { ...hiddenModel, visibility: { ...hiddenModel.visibility, modelDetails: true, usageCost: false } };
+		const chrome = renderShellChromeBar(data, plainTheme, 160, "alt+u", hiddenUsage, undefined);
+		assert.match(chrome.rows[chrome.headerRow]!, /✿ project  ~\/work\/project.*gpt-5\.5 · medium · Fast/);
+		assert.doesNotMatch(chrome.rows[chrome.headerRow]!, /ctx|\$9\.49|usage|alt\+u/);
+		assert.equal(chrome.usageSpan, undefined);
+	}
+});
+
+test("below-input float and narrow fallback keep the same folder and path identity", (t) => {
+	const settings = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "below-input" as const };
+	const data = model({ cwd: "~/work/gentle-pi/.worktrees/shell-ui-feedback", usage: USAGE_TWO_WINDOWS });
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const chrome = renderShellBelowInputFloat(data, withBackground(plainTheme), 240, "alt+u", settings);
+	assert.ok(chrome);
+	const row = stripAnsi(chrome.rows[chrome.headerRow]!);
+	assert.match(row, /✿ shell-ui-feedback  ~\/work\/gentle-pi\/\.worktrees\/shell-ui-feedback/);
+	assert.match(row, /main/);
+	assert.match(row, /gpt-5\.5 · medium/);
+	assert.ok(chrome.usageSpan);
+	assert.match(row.slice(chrome.usageSpan.start, chrome.usageSpan.end), /^usage/);
+	assert.equal(shellHeaderUsageHit(chrome, chrome.usageSpan.start, chrome.headerRow), true);
+	assert.equal(shellHeaderUsageHit(chrome, chrome.usageSpan.start, chrome.headerRow - 1), false);
+	const neon = renderShellBottomOnlyBar(data, plainTheme, 240, "alt+u", settings);
+	assert.equal(neon.length, 1);
+	assert.match(neon[0]!, /✿ shell-ui-feedback  ~\/work\/gentle-pi\/\.worktrees\/shell-ui-feedback/);
+	assert.match(neon[0]!, /main.*gpt-5\.5 · medium/);
+});
+
+test("long branches shorten before model, counters, badges and usage give way", () => {
+	const data = model({ branch: "feature/" + "long-".repeat(25), dirty: 3, permission: { mode: "SUPER-YOLO" }, profile: "current", profileTier: "fast", usage: USAGE_TWO_WINDOWS, jobs: [{ id: "one", label: "job", startedAt: 1 }] });
+	const settings = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "split" as const, density: "minimal" as const };
+	const chrome = renderShellChromeBar(data, plainTheme, 150, "alt+u", settings, undefined, { jobs: true });
+	const row = chrome.rows[chrome.headerRow]!;
+	assert.match(row, /feature\/.*… ±3/);
+	assert.match(row, /💥 SUPER-YOLO.*⧗ 1 job/);
+	assert.match(row, /gpt-5\.5 · medium · Fast · current/);
+	assert.match(row, /ctx 45%.*\$9\.49 sub.*usage 5h 26% · week 12%/);
+	assert.doesNotMatch(row, /[▰▱]|alt\+u/);
+	assert.equal(visibleWidth(row), 150);
+	assert.ok(chrome.usageSpan);
+	assert.equal(shellHeaderUsageHit(chrome, chrome.usageSpan.start, chrome.headerRow), true);
+});
+
 test("renderShellHeaderBar shows 'usage · <shortcut>' with no data, and drops the hint when the shortcut is disabled", () => {
 	const withHint = renderShellHeaderBar(buildShellHeaderModel(model({ usage: undefined })), plainTheme, 140, "alt+u");
 	assert.match(withHint.text, /usage · alt\+u$/);
@@ -574,16 +761,14 @@ test("renderShellHeaderRule paints one full-width line in the editor frame color
 	assert.equal(renderShellHeaderRule(plainTheme, -3), "", "negative widths clamp to an empty rule");
 });
 
-test("the sidebar Status card in the float style is a float panel two rows taller than neon, with a separator row after the header", (t) => {
+test("the rail Status is the same panel in the neon and float card styles", (t) => {
+	// Card styles dress transcript cards; the rail panel has its own surface.
 	const theme = withBackground(plainTheme);
-	const neon = renderShellSidebarBar(model({ review: { state: "reviewing", scope: "first.ts +2 files" } }), theme, 60);
+	const data = model({ review: { state: "reviewing", scope: "first.ts +2 files" } });
+	const neon = renderShellSidebarBar(data, theme, 60);
 	useCardStyle(t, CARD_STYLE.FLOAT);
-	const float = renderShellSidebarBar(model({ review: { state: "reviewing", scope: "first.ts +2 files" } }), theme, 60);
-	assert.equal(float.length, neon.length + 2);
-	assert.equal(stripAnsi(float[1]!), ` ▎ ✿ Status${" ".repeat(49)}`);
-	assert.equal(stripAnsi(float[2]!), ` ▎${" ".repeat(57)} `, "a blank separator row follows the header");
-	assertFloatRows(float, 60);
-	assert.deepEqual(float.slice(3, -1).map(bodyText), neon.slice(1, -1).map(bodyText));
+	assert.deepEqual(renderShellSidebarBar(data, theme, 60), neon);
+	assert.match(stripAnsi(neon[0]!), /^▾ CHANGES/);
 });
 
 // The float top bar has full-width painted padding above and below its
@@ -753,9 +938,10 @@ test("below-input float chrome mirrors only the edge and moves usage clicks to r
 	for (const width of [10, 40, 90, 100, 140, 140.9]) {
 		const above = renderShellHeaderChrome(header, theme, width, "alt+u");
 		const below = renderShellHeaderChrome(header, theme, width, "alt+u", presentation);
-		assert.deepEqual(below.rows, ["▁".repeat(Math.floor(width)), ...above.rows.slice(0, 3)]);
+		const belowBar = renderShellHeaderBar(header, theme, width, "alt+u", presentation);
+		assert.deepEqual(below.rows, ["▁".repeat(Math.floor(width)), above.rows[0], belowBar.text, above.rows[2]], "the edge and padding stay unchanged around the below-input identity");
 		assert.equal(below.headerRow, 2);
-		assert.deepEqual(below.usageSpan, above.usageSpan);
+		assert.deepEqual(below.usageSpan, belowBar.usageSpan);
 		if (!below.usageSpan) {
 			assert.equal(shellHeaderUsageHit(below, 0, 2), false);
 			continue;
@@ -769,17 +955,18 @@ test("below-input float chrome mirrors only the edge and moves usage clicks to r
 	}
 });
 
-test("below-input placement preserves neon and float fallback bytes", (t) => {
+test("below-input placement preserves neon and float fallback geometry with its project identity", (t) => {
 	const header = buildShellHeaderModel(model());
 	const presentation = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "below-input" as const };
 	useCardStyle(t, CARD_STYLE.NEON);
 	for (const width of [0, 9, 10, 100, 140]) {
 		const theme = withBackground(plainTheme);
-		const neon = renderShellHeaderChrome(header, theme, width, "alt+u");
+		const neon = renderShellHeaderChrome(header, theme, width, "alt+u", presentation);
 		const data = model({ statuses: ["mcp ok"] });
-		const bottom = renderShellBottomOnlyBar(data, theme, width, "alt+u");
-		assert.deepEqual(renderShellHeaderChrome(header, theme, width, "alt+u", presentation), neon);
-		assert.deepEqual(renderShellBottomOnlyBar(data, theme, width, "alt+u", presentation), bottom);
+		const bottom = renderShellBottomOnlyBar(data, theme, width, "alt+u", presentation);
+		assert.deepEqual(neon.rows, [renderShellHeaderBar(header, theme, width, "alt+u", presentation).text, renderShellHeaderRule(theme, width)]);
+		assert.equal(neon.headerRow, 0);
+		assert.deepEqual(bottom, [neon.rows[0]]);
 		setCardStyle(CARD_STYLE.FLOAT);
 		assert.deepEqual(renderShellHeaderChrome(header, plainTheme, width, "alt+u", presentation), neon);
 		assert.deepEqual(renderShellBottomOnlyBar(data, plainTheme, width, "alt+u", presentation), bottom);
@@ -791,7 +978,7 @@ test("below-input placement preserves neon and float fallback bytes", (t) => {
 	}
 });
 
-test("below-input bottom-only float bar retains mirrored padding and extension statuses", (t) => {
+test("below-input bottom-only float bar retains mirrored padding and leaves extension statuses to the rail", (t) => {
 	useCardStyle(t, CARD_STYLE.FLOAT);
 	const theme = withBackground(plainTheme);
 	const presentation = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "below-input" as const };
@@ -801,18 +988,15 @@ test("below-input bottom-only float bar retains mirrored padding and extension s
 			const rows = renderShellBottomOnlyBar(data, theme, width, "alt+u", presentation);
 			const chrome = renderShellHeaderChrome(buildShellHeaderModel(data), theme, width, "alt+u", presentation);
 			assert.deepEqual(rows.slice(0, 3), chrome.rows.slice(0, 3));
-			assert.equal(rows.length, statuses.length ? 5 : 4);
+			assert.equal(rows.length, 4, "integrations live only in the rail, so no statuses row");
 			assert.equal(rows.at(-1), chrome.rows.at(-1), "padding closes the entire group");
-			if (statuses.length) {
-				assert.match(stripAnsi(rows[3]!), width === 10 ? /^  mcp o…/ : /^  mcp ok/);
-				assert.ok(rows[3]!.startsWith(BG_OPEN), "statuses share the full-width background");
-			}
+			assert.doesNotMatch(rows.map(stripAnsi).join("\n"), /mcp ok|notice/);
 			assert.ok(rows.every((row) => visibleWidth(row) <= width));
 		}
 	}
 });
 
-test("unified below-input float includes optional Changes and sanitized statuses inside one painted group", (t) => {
+test("unified below-input float includes optional Changes inside one painted group and leaves statuses to the rail", (t) => {
 	useCardStyle(t, CARD_STYLE.FLOAT);
 	const theme = withBackground({ ...plainTheme, fg: (_role: string, text: string) => `\x1b[31m${text}\x1b[0m` });
 	const presentation = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "below-input" as const };
@@ -823,7 +1007,7 @@ test("unified below-input float includes optional Changes and sanitized statuses
 				const chrome = renderShellBelowInputFloat(model({ statuses }), theme, width, "alt+u", presentation, captured)!;
 				const hasChanges = Boolean(captured?.files.length);
 				assert.equal(chrome.headerRow, hasChanges ? 3 : 2);
-				assert.equal(chrome.rows.length, 4 + Number(hasChanges) + Number(statuses.length > 0));
+				assert.equal(chrome.rows.length, 4 + Number(hasChanges), "integrations live only in the rail");
 				assert.equal(stripAnsi(chrome.rows[0]!), "▁".repeat(width));
 				for (const row of chrome.rows.slice(1)) {
 					let painted = false;
@@ -835,7 +1019,7 @@ test("unified below-input float includes optional Changes and sanitized statuses
 					assert.equal(visibleWidth(row), width);
 				}
 				if (width === 240 && hasChanges) assert.match(stripAnsi(chrome.rows[2]!), /^  .*lib\/live.ts/);
-				if (width >= 40 && statuses.length) assert.match(stripAnsi(chrome.rows.at(-2)!), /^  MCP ready now ⟡ notice/);
+				assert.doesNotMatch(chrome.rows.map(stripAnsi).join("\n"), /MCP ready|notice/);
 				if (chrome.usageSpan) {
 					assert.equal(shellHeaderUsageHit(chrome, chrome.usageSpan.start, chrome.headerRow), true);
 					for (let y = 0; y < chrome.rows.length; y++) if (y !== chrome.headerRow) assert.equal(shellHeaderUsageHit(chrome, chrome.usageSpan.start, y), false);
@@ -856,10 +1040,40 @@ test("unified below-input float includes optional Changes and sanitized statuses
 	assert.equal(renderShellBelowInputFloat(model(), theme, 140, "alt+u", presentation, changes), undefined);
 });
 
+// The idle Changes row exists only when files are actually tracked; an empty
+// capture — including an unborn-only root, which the tracker never scans — is
+// silence (explained by /gentle:changes on demand), never an instruction row.
+test("the below-input float shows no Changes row without tracked files", (t) => {
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const theme = withBackground(plainTheme);
+	const presentation = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "below-input" as const };
+	const empty = { files: [], added: 0, deleted: 0 };
+	const chrome = renderShellBelowInputFloat(model(), theme, 140, "alt+u", presentation, empty)!;
+	assert.equal(chrome.headerRow, 2, "an empty capture is silence, not a Changes row");
+	assert.doesNotMatch(stripAnsi(chrome.rows.join("\n")), /make a commit to start tracking/);
+});
+
 test("the narrow-layout bottom-only bar stays unchanged in the float style", (t) => {
 	const theme = withBackground(taggedTheme);
 	const data = model({ usage: USAGE_TWO_WINDOWS, statuses: ["mcp ok"] });
 	const neon = renderShellBottomOnlyBar(data, theme, 100, "alt+u");
 	useCardStyle(t, CARD_STYLE.FLOAT);
 	assert.deepEqual(renderShellBottomOnlyBar(data, theme, 100, "alt+u"), neon);
+});
+
+test("fullscreen bars outside the rail never list the integrations: they live only in the rail", (t) => {
+	const previous = cardStyle();
+	t.after(() => setCardStyle(previous));
+	const painted = { ...plainTheme, bg: (_role: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
+	const data = model({ statuses: ["🧠 gentle-pi · ready", "MCP connected"] });
+	const presentation = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "below-input" as const };
+	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
+		setCardStyle(style);
+		const rows = renderShellBottomOnlyBar(data, painted as never, 120, "alt+u", presentation).map(stripAnsi).join("\n");
+		assert.doesNotMatch(rows, /gentle-pi · ready|MCP connected/, `${style}: no integrations in the bottom bar`);
+		assert.match(rows, /ctx/, `${style}: the bar itself stays`);
+	}
+	setCardStyle(CARD_STYLE.FLOAT);
+	const float = renderShellBelowInputFloat(data, painted as never, 120, "alt+u", presentation)!;
+	assert.doesNotMatch(float.rows.map(stripAnsi).join("\n"), /gentle-pi · ready|MCP connected/, "no integrations under the input");
 });

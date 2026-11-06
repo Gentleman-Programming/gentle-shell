@@ -82,7 +82,14 @@ for (const code of ["ENOENT", "EMFILE"]) {
 						return nativeReaddir(path, options);
 					};
 					fs.mkdirSync(join(assets, "trigger"));
-					await waitFor(() => reachedRescan);
+					// The rescan race needs live recursive-watch events. Where the OS
+					// cannot deliver them (an exhausted inotify budget, some WSL2
+					// setups), waiting the full waitFor budget is pointless: settle
+					// briefly for the natural race, then exercise the public error
+					// listener directly, as the manual fallback below always did.
+					const raceDeadline = Date.now() + 2000;
+					while (!reachedRescan && Date.now() < raceDeadline) await new Promise((resolve) => setTimeout(resolve, 25));
+					fs.readdirSync = nativeReaddir;
 					// Newer Node versions swallow rescan ENOENT themselves. Still
 					// exercise our public error listener without requiring Node's bug.
 					if (!notices.some(({ message, level }) => level === "warning" && message.includes(code))) {

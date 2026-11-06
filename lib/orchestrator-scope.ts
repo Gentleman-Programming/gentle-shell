@@ -62,6 +62,16 @@ export class OrchestratorScopeCache {
 		this.facts.clear();
 		this.snapshot = undefined;
 	}
+	/** Snapshot for deferred (render-cadence trailing) publications: it never
+	 * touches the resolver. A deferred publish reuses the last event-time
+	 * projection as-is even when membership changed since — its Git resolution
+	 * must never race a peer metadata query, whose contract adds no caller Git
+	 * probes. Returns undefined when nothing has been projected yet (or the
+	 * cache was cleared), in which case the caller omits the scope rather than
+	 * probing; the next event-time publication refreshes the facts. */
+	cachedScope(): RecordedScope | undefined {
+		return this.snapshot;
+	}
 	project(cwd: string, tasks: readonly { id: string; cwd: string }[], roots: readonly string[]): RecordedScope {
 		const registered = [...new Set(roots)];
 		const key = createHash("sha256").update(JSON.stringify([cwd, tasks.map(t => [t.id, t.cwd]), registered])).digest("hex");

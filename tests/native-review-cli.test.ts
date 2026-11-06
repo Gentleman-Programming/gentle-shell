@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -13,12 +14,15 @@ import {
 	NativeReviewCliError,
 	NativeReviewCliV216,
 	NativeReviewIntegrationError,
+	NativeReviewConsentRequiredError,
+	createNativeReviewCli,
 	createNodeExecFileAdapter,
 	createWindowsProcessTreeKiller,
 	windowsTaskkillPath,
 	gentleAiProcessEnvironment,
 	isNativeReviewUnachievableVerbRefused,
 	type ExecFileAdapter,
+	type NativeReviewModeRequest,
 	type NativeTargetStatusRequest,
 } from "../lib/native-review-cli.ts";
 import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
@@ -63,6 +67,114 @@ function queuedAdapter(results: readonly QueuedResult[]): {
 function client(adapter: ExecFileAdapter): NativeReviewCliV216 {
 	return new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai", 30_000, 1024 * 1024);
 }
+
+const modeClients = [
+	["factory", (adapter: ExecFileAdapter, executable: () => string) => createNativeReviewCli(adapter, executable)],
+	["constructor", (adapter: ExecFileAdapter, executable: () => string) => new NativeReviewCliV216(adapter, executable)],
+] as const;
+const modeCwd = "/isolated-review-mode-test";
+const modeExecutable = "/package/.gentle-ai/gentle-ai";
+
+function modeOutput(operation: "status" | "enable" | "disable", scope: "clone" | "global" | "both", global: "on" | "off", cloneLocal: "" | "off") {
+	const effective = cloneLocal === "off" || global === "off" ? "off" : "on";
+	const source = cloneLocal === "off" ? "clone_local" : "global";
+	return {
+		wire: JSON.stringify({ schema: "gentle-ai.review-mode/v1", operation, scope, status: { schema: "gentle-ai.rdd-mode-status/v1", global, clone_local: cloneLocal, effective, source } }),
+		decoded: { operation, scope, status: { global, cloneLocal, effective, source } },
+	};
+}
+
+test("native mode mutations honor each explicit clone or global scope", async (t) => {
+	const cases = [
+		{ operation: "enable", scope: "clone", global: "off", cloneLocal: "" },
+		{ operation: "disable", scope: "clone", global: "on", cloneLocal: "off" },
+		{ operation: "enable", scope: "global", global: "on", cloneLocal: "off" },
+		{ operation: "disable", scope: "global", global: "off", cloneLocal: "" },
+	] as const;
+	for (const [name, makeClient] of modeClients) for (const scenario of cases) {
+		await t.test(`${name}: ${scenario.operation} ${scenario.scope}`, async () => {
+			const expected = modeOutput(scenario.operation, scenario.scope, scenario.global, scenario.cloneLocal);
+			const queue = queuedAdapter([{ stdout: expected.wire, stderr: "", exitCode: 0 }]);
+			const review = makeClient(queue.adapter, () => modeExecutable);
+			const result = await review.reviewMode!({ cwd: modeCwd, operation: scenario.operation, scope: scenario.scope });
+			assert.deepEqual(result, expected.decoded);
+			assert.deepEqual(queue.calls, [{ file: modeExecutable, arguments: ["review", "mode", scenario.operation, "--cwd", modeCwd, "--scope", scenario.scope, "--json"], cwd: modeCwd, timeoutMs: undefined }]);
+		});
+	}
+});
+
+test("native mode status and mutations without scope preserve their exact argv and decoded status", async (t) => {
+	for (const [name, makeClient] of modeClients) for (const operation of ["status", "enable", "disable"] as const) {
+		await t.test(`${name}: ${operation}`, async () => {
+			const expected = modeOutput(operation, operation === "status" ? "both" : "clone", "on", operation === "disable" ? "off" : "");
+			const queue = queuedAdapter([{ stdout: expected.wire, stderr: "", exitCode: 0 }]);
+			const review = makeClient(queue.adapter, () => modeExecutable);
+			assert.deepEqual(await review.reviewMode!({ cwd: modeCwd, operation }), expected.decoded);
+			assert.deepEqual(queue.calls, [{ file: modeExecutable, arguments: ["review", "mode", operation, "--cwd", modeCwd, ...(operation === "status" ? [] : ["--scope", "clone"]), "--json"], cwd: modeCwd, timeoutMs: operation === "status" ? 30_000 : undefined }]);
+		});
+	}
+});
+
+test("native mode rejects unsupported scopes and status scopes before cwd or native access", async (t) => {
+	const cases = [
+		...(["enable", "disable"] as const).flatMap(operation => ["both", "", "GLOBAL", " global", null, 17].map(scope => ({ operation, scope, message: "Native review mode scope must be clone or global" }))),
+		...(["clone", "global"] as const).map(scope => ({ operation: "status", scope, message: "Native review mode scope is only valid for enable or disable" })),
+	];
+	for (const [name, makeClient] of modeClients) for (const scenario of cases) {
+		await t.test(`${name}: ${scenario.operation} ${String(scenario.scope)}`, async () => {
+			let cwdReads = 0, binaryResolutions = 0;
+			const expected = modeOutput(scenario.operation as "status" | "enable" | "disable", "clone", "on", "");
+			const queue = queuedAdapter([{ stdout: expected.wire }]);
+			const review = makeClient(queue.adapter, () => { binaryResolutions++; return modeExecutable; });
+			const request = { get cwd() { cwdReads++; return modeCwd; }, operation: scenario.operation, scope: scenario.scope } as unknown as NativeReviewModeRequest;
+			await assert.rejects(() => review.reviewMode!(request), { name: "TypeError", message: scenario.message });
+			assert.deepEqual({ cwdReads, binaryResolutions, calls: queue.calls.length }, { cwdReads: 0, binaryResolutions: 0, calls: 0 });
+		});
+	}
+});
+
+test("native mode binds operation and scope before asynchronous cwd resolution", async (t) => {
+	for (const [name, makeClient] of modeClients) for (const operation of ["status", "enable"] as const) {
+		await t.test(`${name}: ${operation}`, async () => {
+			const expected = modeOutput(operation, operation === "status" ? "both" : "global", "on", "off");
+			const queue = queuedAdapter([{ stdout: expected.wire }]);
+			const review = makeClient(queue.adapter, () => modeExecutable);
+			const request: NativeReviewModeRequest = { cwd: modeCwd, operation, ...(operation === "enable" ? { scope: "global" } : {}) };
+			const pending = review.reviewMode!(request);
+			request.operation = "disable";
+			request.scope = "clone";
+			assert.deepEqual(await pending, expected.decoded);
+			assert.deepEqual(queue.calls.map(call => call.arguments), [["review", "mode", operation, "--cwd", modeCwd, ...(operation === "enable" ? ["--scope", "global"] : []), "--json"]]);
+		});
+	}
+});
+
+test("scoped native mode surfaces stderr, exit, and malformed responses without claiming success", async (t) => {
+	const expected = modeOutput("enable", "global", "on", "off");
+	const cases = [
+		{ name: "nonzero", result: { stdout: "{}", stderr: "native refused\n", exitCode: 17 }, code: NATIVE_REVIEW_ERROR_CODE.NON_ZERO, stderr: "native refused", exit: 17 },
+		{ name: "stderr", result: { stdout: expected.wire, stderr: "unexpected notice\n", exitCode: 0 }, code: NATIVE_REVIEW_ERROR_CODE.UNEXPECTED_STDERR, stderr: "unexpected notice", exit: 0 },
+		{ name: "malformed JSON", result: { stdout: "not-json", stderr: "", exitCode: 0 }, code: NATIVE_REVIEW_ERROR_CODE.MALFORMED_JSON, stderr: undefined, exit: 0 },
+		{ name: "foreign operation", result: { stdout: modeOutput("disable", "global", "off", "").wire, stderr: "", exitCode: 0 }, code: NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE, stderr: undefined, exit: undefined },
+	] as const;
+	for (const [name, makeClient] of modeClients) for (const scenario of cases) {
+		await t.test(`${name}: ${scenario.name}`, async () => {
+			const queue = queuedAdapter([scenario.result]);
+			const review = makeClient(queue.adapter, () => modeExecutable);
+			const request = { cwd: modeCwd, operation: "enable", scope: "global" } as const;
+			await assert.rejects(() => review.reviewMode!(request), (error: unknown) => {
+				assert.ok(error instanceof NativeReviewCliError);
+				assert.equal(error.code, scenario.code);
+				assert.equal(error.operation, NATIVE_REVIEW_OPERATION.MODE);
+				assert.equal(error.mutationOutcome, "unknown");
+				assert.equal(error.diagnostics.stderr, scenario.stderr);
+				assert.equal(error.diagnostics.exit_code, scenario.exit);
+				return true;
+			});
+			assert.deepEqual(queue.calls.map(call => call.arguments), [["review", "mode", "enable", "--cwd", modeCwd, "--scope", "global", "--json"]]);
+		});
+	}
+});
 
 test("negotiated STATUS accepts the pinned v5 receipt before routing its transition", async () => {
 	const status = fixture("status-v5.captured.json");
@@ -430,6 +542,120 @@ const LENS_SELECTION_UNSUPPORTED_FAILURE = {
 	authority_applicability: "not_evaluated", retry_safe: true, replayability: "not_replayable", required_inputs: [],
 	next_action: "correct_request", cause: "flag provided but not defined: -lenses",
 };
+
+function contextClient(responses: QueuedResult[], features = ["start_request_context", "start_options_preflight"], executable = join(process.cwd(), "package.json")) {
+ const capabilities = JSON.parse(readFileSync(join(process.cwd(), "contracts/review-integration/v2/fixtures/capabilities.fixture.json"), "utf8"));
+ capabilities.executable.sha256 = "sha256:" + createHash("sha256").update(readFileSync(executable)).digest("hex");
+ capabilities.features.optional.push(...features.map(name => ({ name, supported: true, requires: [] })));
+ const queue = queuedAdapter([{ stdout: JSON.stringify(capabilities) }, ...responses]);
+ return { ...queue, client: new NativeReviewCliV216(queue.adapter, executable) };
+}
+
+test("START discovers capabilities before forwarding the explicit request file unchanged", async () => {
+ const path = "/repo/spec with spaces.md";
+ const tokens = ["--contract=gentle-ai.review-integration/v2", "--cwd=/repo", "--target=" + TARGET, "--projection=workspace", "--agent=pi", "--consent=relay", "--request-context=" + path];
+ const host = contextClient([
+  { stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens)) },
+  { stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) },
+ ]);
+ await host.client.start({ cwd: "/repo", requestContextPath: path });
+ assert.deepEqual(host.calls[0].arguments, ["review", "capabilities", "--contract", "gentle-ai.review-integration/v2"]);
+ assert.deepEqual(host.calls[1].arguments.slice(-3), ["--request-context", path, "--next-transition"]);
+ assert.deepEqual(host.calls[2].arguments, ["review", "start", ...tokens]);
+});
+
+test("request context reuses capabilities while every STATUS remains fresh", async () => {
+ const host = contextClient([1, 2].map(() => ({ stdout: JSON.stringify(negotiatedStartStatus(TARGET, [])) })));
+ for (let i = 0; i < 2; i++) await host.client.targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" });
+ assert.deepEqual(host.calls.map(call => call.arguments[1]), ["capabilities", "status", "status"]);
+});
+
+test("request context invalidates capabilities when executable bytes change", async t => {
+ const directory = mkdtempSync(join(tmpdir(), "context-capabilities-"));
+ t.after(() => rmSync(directory, { recursive: true, force: true }));
+ const executable = join(directory, "native");
+ writeFileSync(executable, "first executable");
+ const replacementCapabilities = JSON.parse(readFileSync(join(process.cwd(), "contracts/review-integration/v2/fixtures/capabilities.fixture.json"), "utf8"));
+ replacementCapabilities.executable.sha256 = "sha256:" + createHash("sha256").update("replacement executable").digest("hex");
+ const host = contextClient([{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, [])) }, { stdout: JSON.stringify(replacementCapabilities) }], undefined, executable);
+ await host.client.targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" });
+ writeFileSync(executable, "replacement executable");
+ // The old capability result cannot authorize a STATUS with the replacement.
+ await assert.rejects(host.client.targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" }), /provider does not support request context/);
+ assert.deepEqual(host.calls.map(call => call.arguments[1]), ["capabilities", "status", "capabilities"]);
+});
+
+test("request context never caches malformed capability discovery", async () => {
+ const host = contextClient([]);
+ let discoveries = 0;
+ const adapter: ExecFileAdapter = async request => {
+  if (++discoveries === 1) return { stdout: "{}", stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
+  return host.adapter(request);
+ };
+ const subject = new NativeReviewCliV216(adapter, join(process.cwd(), "package.json"));
+ await assert.rejects(subject.targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" }));
+ // The second discovery succeeds; only the subsequent unqueued STATUS fails.
+ await assert.rejects(subject.targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" }));
+ assert.deepEqual(host.calls.map(call => call.arguments[1]), ["capabilities", "status"]);
+});
+
+test("Windows request paths preserve exact START and consent spelling and reject normalization drift", async () => {
+ for (const path of ["C:\\work\\spec with spaces.md", "C:\\work\\spec.md.", "C:\\work\\spec.md ", "\\\\?\\C:\\work\\spec.md"]) {
+  // A trailing space is an invalid process string even before negotiation.
+  if (path.endsWith(" ")) {
+   const queue = queuedAdapter([]);
+   await assert.rejects(client(queue.adapter).start({ cwd: "/repo", requestContextPath: path }));
+   assert.equal(queue.calls.length, 0);
+   continue;
+  }
+  const tokens = ["--contract=gentle-ai.review-integration/v2", "--cwd=/repo", "--target=" + TARGET, "--projection=workspace", "--agent=pi", "--consent=relay", "--request-context=" + path];
+  const host = contextClient([{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens)) }, { stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) }]);
+  await host.client.start({ cwd: "/repo", requestContextPath: path });
+  assert.ok(host.calls[2].arguments.includes("--request-context=" + path));
+  const changed = path.startsWith("\\\\?\\") ? path.slice(4) : path.endsWith(".") ? path.slice(0, -1) : path.replaceAll("\\", "/");
+  const drift = contextClient([{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens.slice(0, -1).concat("--request-context=" + changed))) }]);
+  await assert.rejects(drift.client.start({ cwd: "/repo", requestContextPath: path }), /context/);
+  assert.equal(drift.calls.length, 2);
+  const raw = requestContextConsent(path);
+  const queue = queuedAdapter([{ stdout: JSON.stringify(reviewingStartV4(raw.target_identity)) }]);
+  await client(queue.adapter).answerConsent({ cwd: "/repo", consent: decodeReviewConsentV3(raw, "pi"), answer: "granted", requestContextPath: path });
+  assert.ok(queue.calls[0].arguments.includes(path));
+  const refused = queuedAdapter([]);
+  await assert.rejects(client(refused.adapter).answerConsent({ cwd: "/repo", consent: decodeReviewConsentV3(raw, "pi"), answer: "granted", requestContextPath: changed }), /context/);
+  assert.equal(refused.calls.length, 0);
+ }
+});
+
+test("request context refuses absent or unsupported advertised capabilities before STATUS or START", async () => {
+ for (const features of [[], ["start_request_context"], ["start_options_preflight"]]) {
+  const host = contextClient([], features);
+  await assert.rejects(host.client.start({ cwd: "/repo", requestContextPath: "/spec.md" }), /provider does not support request context/);
+  assert.equal(host.calls.length, 1);
+ }
+ const host = contextClient([]);
+ const adapter: ExecFileAdapter = async request => {
+  const response = await host.adapter(request);
+  const body = JSON.parse(response.stdout);
+  body.features.optional.find((f: { name: string }) => f.name === "start_request_context").supported = false;
+  return { ...response, stdout: JSON.stringify(body) };
+ };
+ await assert.rejects(new NativeReviewCliV216(adapter, join(process.cwd(), "package.json")).targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" }), /provider does not support request context/);
+ assert.equal(host.calls.length, 1);
+});
+
+test("START never drops requested context from a malformed provider transition", async () => {
+ const host = contextClient([{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, [])) }]);
+ await assert.rejects(host.client.start({ cwd: "/repo", requestContextPath: "/spec.md" }), /did not retain the requested context/);
+ assert.equal(host.calls.length, 2);
+});
+
+test("invalid request context paths are refused before any native invocation", async () => {
+	for (const path of ["", " spaced ", "bad\0path"]) {
+		const queue = queuedAdapter([]);
+		await assert.rejects(client(queue.adapter).start({ cwd: "/repo", requestContextPath: path }), /requestContextPath/);
+		assert.equal(queue.calls.length, 0);
+	}
+});
 
 test("native START preflights the agent lens selection through STATUS", async () => {
 	const tokens = [
@@ -1143,4 +1369,46 @@ test("the central gentle-ai environment carries Gentle AI's isolation variables 
 	assert.equal(bundled.GENTLE_PI_REVIEW_RELAY_CONTRACT, "gentle-pi.review-relay/v1");
 	const ordinary = gentleAiProcessEnvironment({ PATH: "/usr/bin" });
 	assert.deepEqual(ordinary, { PATH: "/usr/bin", GENTLE_PI_REVIEW_RELAY_CONTRACT: "gentle-pi.review-relay/v1" });
+});
+
+function requestContextConsent(path: string): Record<string, any> {
+ const raw = fixture("consent-v3.captured.json") as Record<string, any>;
+ raw.agent = "pi";
+ for (const choice of raw.choices) choice.invocation = String(choice.invocation)
+  .replace(/--cwd \S+ --target/, "--cwd /repo --target")
+  .replace(" --consent ", " --agent pi --request-context '" + path + "' --consent ");
+ return raw;
+}
+
+test("request context is retained and checked before consent replay", async () => {
+ const path = "/repo/spec with spaces.md";
+ const raw = requestContextConsent(path);
+ const tokens = ["--contract=gentle-ai.review-integration/v2", "--cwd=/repo", "--target=" + raw.target_identity, "--projection=workspace", "--agent=pi", "--consent=relay", "--request-context=" + path];
+ const host = contextClient([{ stdout: JSON.stringify(negotiatedStartStatus(raw.target_identity, tokens)) }, { stdout: JSON.stringify(raw) }]);
+ let pending: NativeReviewConsentRequiredError | undefined;
+ try { await host.client.start({ cwd: "/repo", requestContextPath: path }); } catch (error) { assert.ok(error instanceof NativeReviewConsentRequiredError); pending = error; }
+ assert.ok(pending);
+ assert.equal(pending.requestContextPath, path);
+ for (const mutation of ["missing", "changed", "duplicate"]) {
+  const copy = requestContextConsent(path);
+  copy.choices[0].invocation = mutation === "missing" ? copy.choices[0].invocation.replace(" --request-context '" + path + "'", "")
+   : mutation === "changed" ? copy.choices[0].invocation.replace(path, "/other.md")
+   : copy.choices[0].invocation.replace(" --consent ", " --request-context '/other.md' --consent ");
+  const queue = queuedAdapter([]);
+  await assert.rejects(client(queue.adapter).answerConsent({ cwd: "/repo", consent: decodeReviewConsentV3(copy, "pi"), answer: "granted", requestContextPath: path }), /context/);
+  assert.equal(queue.calls.length, 0);
+ }
+ const queue = queuedAdapter([{ stdout: JSON.stringify(reviewingStartV4(raw.target_identity)) }]);
+ assert.equal((await client(queue.adapter).answerConsent({ cwd: "/repo", consent: pending.consent, answer: "granted", requestContextPath: path } as any)).kind, "started");
+ assert.ok(queue.calls[0].arguments.includes(path));
+});
+
+test("START refuses consent choices that lose the requested context before presenting consent", async () => {
+ const path = "/repo/spec.md";
+ const raw = requestContextConsent(path);
+ raw.choices[1].invocation = raw.choices[1].invocation.replace(" --request-context '" + path + "'", "");
+ const tokens = ["--contract=gentle-ai.review-integration/v2", "--cwd=/repo", "--target=" + raw.target_identity, "--projection=workspace", "--agent=pi", "--consent=relay", "--request-context=" + path];
+ const host = contextClient([{ stdout: JSON.stringify(negotiatedStartStatus(raw.target_identity, tokens)) }, { stdout: JSON.stringify(raw) }]);
+ await assert.rejects(host.client.start({ cwd: "/repo", requestContextPath: path }), /context/);
+ assert.equal(host.calls.length, 3);
 });

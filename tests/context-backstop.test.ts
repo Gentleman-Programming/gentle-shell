@@ -11,6 +11,8 @@ import {
 	CONTEXT_BACKSTOP_TOKENS_ENV,
 	contextBackstopReached,
 	contextBackstopThreshold,
+	createThrottledContextMeasure,
+	type MeasuredContext,
 } from "../lib/context-backstop.ts";
 
 // Harness roadmap R1: the parent-context backstop was a fixed "~150k tokens" in prompt text, so the model had to
@@ -63,7 +65,7 @@ test("unknown tokens never count as reaching the backstop", () => {
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 type Patch = { content?: Array<{ type: string; text?: string }>; structuredContent?: unknown; isError?: boolean } | undefined;
 
-function session(t: TestContext, child: boolean) {
+function session(t: TestContext, child: boolean, options: { now?: () => number; minIntervalMs?: number } = {}) {
 	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "context-backstop-")));
 	const configHome = mkdtempSync(join(tmpdir(), "context-backstop-config-"));
 	const previous = process.env.GENTLE_PI_CONFIG_HOME;
@@ -76,10 +78,19 @@ function session(t: TestContext, child: boolean) {
 	});
 	const handlers = new Map<string, Handler>();
 	const pi = { on: (name: string, handler: Handler) => { handlers.set(name, handler); }, events: { on() {}, emit() {} }, registerCommand() {}, registerTool() {} } as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli: null, processEnv: { GENTLE_PI_AGENTS_CHILD: child ? "1" : "0", GENTLE_AI_TELEMETRY: "0" } })(pi);
+	// Semantic tests without options keep per-call measuring (minIntervalMs 0); callers that pass
+	// options (a fake clock) keep the production window resolution.
+	const measureOptions = Object.keys(options).length === 0 ? { minIntervalMs: 0 } : options;
+	createGentleAiExtension({
+		nativeReviewCli: null,
+		processEnv: { GENTLE_PI_AGENTS_CHILD: child ? "1" : "0", GENTLE_AI_TELEMETRY: "0" },
+		contextBackstopMeasure: measureOptions,
+	})(pi);
 	let usage: ContextUsage | undefined = { tokens: 10_000, contextWindow: 1_000_000, percent: 1 };
+	let measures = 0;
 	const sessionManager = { getSessionId: () => "session-backstop", getCwd: () => cwd, getEntries: () => [], getBranch: () => [] };
-	const ctx = { cwd, hasUI: false, ui: { notify() {} }, sessionManager, getContextUsage: () => usage } as unknown as ExtensionContext;
+	const ctx = { cwd, hasUI: false, ui: { notify() {} }, sessionManager, getContextUsage: () => { measures++; return usage; } } as unknown as ExtensionContext;
+	const measureCount = () => measures;
 	const setTokens = (tokens: number | null, contextWindow = 1_000_000) => {
 		usage = { tokens, contextWindow, percent: tokens === null ? null : (tokens / contextWindow) * 100 };
 	};
@@ -87,7 +98,7 @@ function session(t: TestContext, child: boolean) {
 		toolName: "read", toolCallId: "call-read", isError: false, input: { path: "a.ts" },
 		content: [{ type: "text", text: "file body" }], structuredContent: { lines: 1 }, ...overrides,
 	}, ctx) as Promise<Patch>;
-	return { cwd, ctx, handlers, setTokens, read };
+	return { cwd, ctx, handlers, setTokens, read, measureCount, options };
 }
 
 test("the primary session gets one notice when its measured context first reaches the backstop", async (t) => {
@@ -156,4 +167,59 @@ test("a parent write result carries the notice after its own bookkeeping", async
 	}, s.ctx) as Patch;
 	assert.equal(result?.content?.[0]?.text, "Wrote src/a.ts");
 	assert.match(result?.content?.[1]?.text ?? "", /Context backstop/);
+});
+
+// The measurement behind the backstop (ctx.getContextUsage()) rebuilds the whole session
+// projection, so it is sampled at most once per window per session instead of once per
+// tool result. The window never decides the notice: it only decides when the context is
+// looked at again.
+test("the throttled measure samples once per window and the first sample of a session is immediate", () => {
+	let clock = 1_000;
+	const measure = createThrottledContextMeasure({ now: () => clock });
+	let calls = 0;
+	const sample = (value: MeasuredContext | undefined) => measure("session-a", () => { calls++; return value; });
+	assert.deepEqual(sample({ tokens: 10_000 }), { tokens: 10_000 }, "the first sample of a session measures immediately");
+	assert.equal(calls, 1);
+	clock = 2_000;
+	sample({ tokens: 10_000 });
+	assert.equal(calls, 1, "a sample inside the window skips the measurement");
+	clock = 6_001;
+	sample({ tokens: 10_000 });
+	assert.equal(calls, 2, "the window expired: measure again");
+	clock = 6_002;
+	sample({ tokens: 10_000 });
+	assert.equal(calls, 2, "the window restarts at every measurement");
+});
+
+test("the throttled measure is per session and a throwing measure never poisons the window", () => {
+	let clock = 0;
+	const measure = createThrottledContextMeasure({ now: () => clock });
+	assert.ok(measure("session-a", () => ({ tokens: 1 })), "session a measures");
+	assert.ok(measure("session-b", () => ({ tokens: 2 })), "session b inside the same window still measures");
+	assert.equal(measure("session-a", () => ({ tokens: 3 })), undefined, "session a inside its own window skips");
+	clock = 5_001;
+	let boom = false;
+	assert.equal(measure("session-a", () => { boom = true; throw new Error("boom"); }), undefined, "a throwing measure returns undefined");
+	assert.equal(boom, true, "the measure itself actually ran");
+	assert.equal(measure("session-a", () => ({ tokens: 4 }))?.tokens, undefined, "the failed measurement still consumed its window");
+	clock = 10_002;
+	assert.equal(measure("session-a", () => ({ tokens: 4 }))?.tokens, 4, "the next window measures again");
+});
+
+test("the extension samples the backstop context at most once per window per session", async (t) => {
+	let clock = 0;
+	const s = session(t, false, { now: () => clock });
+	assert.equal(s.measureCount(), 0);
+	await s.read();
+	assert.equal(s.measureCount(), 1, "the first tool result measures immediately");
+	await s.read();
+	await s.read();
+	assert.equal(s.measureCount(), 1, "tool results inside the window skip the measurement");
+	clock = 5_001;
+	s.setTokens(160_000);
+	const crossed = await s.read();
+	assert.equal(s.measureCount(), 2, "the window expired: measure again");
+	assert.match(crossed?.content?.[1]?.text ?? "", /Context backstop/, "a crossing is announced on the next sampled result");
+	await s.read();
+	assert.equal(s.measureCount(), 2, "and the window restarts after that sample");
 });

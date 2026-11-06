@@ -1,10 +1,20 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { stream as streamAnthropic } from "@earendil-works/pi-ai/api/anthropic-messages";
 import { normalizeContext, validateToolArguments, type Model, type ToolCall } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 import { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
+
+const metadata = join(dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-ai"))), "..", "package.json");
+const version: string = JSON.parse(readFileSync(metadata, "utf8")).version;
+assert.match(version, /^\d+\.\d+\.\d+$/);
+const [major, minor] = version.split(".").map(Number);
+assert.ok(major >= 1, `Pi AI >=1.0.0 required, installed ${version}`);
+const coercesStringNull = major > 1 || (major === 1 && minor >= 5);
 
 function registeredTools(): Map<string, any> {
 	const tools = new Map<string, any>();
@@ -126,9 +136,10 @@ test("serialized inputs remain byte-for-byte unchanged at validation and facade 
 	assert.equal(__testing.parseReviewCaptureParameters(validate("gentle_review_capture", { lineageId: "l", collectBinding })).collectBinding, collectBinding);
 });
 
-test("actual validation rejects arrays, null and coerced primitives rather than admitting native calls", async () => {
-	for (const value of [[], 123, true, "123", "null", "[]"]) {
-		for (const operation of ["start", "assess", "answer-consent", "inspect", "reset", "recover"]) {
+test("validation and facade keep arrays, primitives and null fail-closed", async () => {
+	const operations = ["start", "assess", "answer-consent", "inspect", "reset", "recover"];
+	for (const value of [[], 123, true, "123", "[]"]) {
+		for (const operation of operations) {
 			assert.throws(() => validate("gentle_review", { operation, input: value }), /Validation failed/);
 		}
 		assert.throws(() => validate("gentle_review_capture", { lineageId: "l", collectBinding: value }), /Validation failed/);
@@ -136,14 +147,22 @@ test("actual validation rejects arrays, null and coerced primitives rather than 
 	}
 	let calls = 0;
 	const native = new Proxy({}, { get() { return async () => { calls++; throw new Error("unexpected native execution"); }; } }) as NativeReviewCli;
-	for (const value of [null, false]) {
-		for (const operation of ["start", "assess", "answer-consent", "inspect", "reset", "recover"]) {
-			const validated = validate("gentle_review", { operation, input: value });
-			assert.equal(validated.input, null, "nullable shell preserves null instead of stripping it to omitted");
-			await assert.rejects(__testing.executeReviewControllerOperation(validated, process.cwd(), native));
+	// SDK coercion admits the nullable shell, not native operation input.
+	for (const value of [null, false, "null"]) {
+		for (const operation of operations) {
+			if (value === "null" && !coercesStringNull) {
+				assert.throws(() => validate("gentle_review", { operation, input: value }), /Validation failed/);
+			} else {
+				const validated = validate("gentle_review", { operation, input: value });
+				assert.equal(validated.input, null, "nullable shell preserves null instead of stripping it to omitted");
+				await assert.rejects(__testing.executeReviewControllerOperation(validated, process.cwd(), native));
+			}
 		}
 		assert.throws(() => validate("gentle_review_capture", { lineageId: "l", collectBinding: value }), /Validation failed/);
 		assert.throws(() => validate("gentle_review_capture_group", { lineageId: "l", collectBindings: [binding, value] }), /Validation failed/);
+	}
+	for (const operation of operations) {
+		await assert.rejects(__testing.executeReviewControllerOperation({ operation, input: "null" }, process.cwd(), native), /input must be a JSON object/);
 	}
 	assert.equal(calls, 0);
 });

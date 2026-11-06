@@ -6,6 +6,7 @@ import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-inte
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
 import { createStatsLoader, currentSessionStats, type StatsLoader } from "../lib/stats-collector.ts";
 import { StatsView } from "../lib/stats-view.ts";
+import { effectiveKey, loadKeymaps, type KeymapBindings } from "../lib/keymaps.ts";
 
 // Gentle Stats: /gentle:stats opens a full-terminal panel over local Pi
 // session history (tokens, cost, models, activity). It only reads the
@@ -19,10 +20,9 @@ import { StatsView } from "../lib/stats-view.ts";
 
 export const STATS_COMMAND_NAME = "gentle:stats";
 
-/** Optional shortcut; there is no default key because the common alt+ keys are taken. */
-export function statsViewKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_STATS_VIEW_KEY?.trim();
-	return !value || value.toLowerCase() === "off" ? undefined : value;
+/** Optional shortcut; there is no default key because the common alt+ keys are taken. A key saved in keymaps.json applies when the variable is unset. */
+export function statsViewKey(env: NodeJS.ProcessEnv = process.env, bindings: KeymapBindings = {}): string | undefined {
+	return effectiveKey("stats.view", env, bindings);
 }
 
 /** The sessions roots /gentle:stats reads: the active home and the user's original Pi home. */
@@ -87,7 +87,7 @@ export default function gentleStats(pi: ExtensionAPI, deps: GentleStatsDeps = {}
 		description: "Show local Pi usage stats: activity heatmap, tokens, cost, models, and this session. r cycles the range, s the project scope.",
 		handler: async (_args, ctx) => openOverlay(ctx),
 	});
-	const viewKey = statsViewKey(env);
+	const viewKey = statsViewKey(env, loadKeymaps(env).bindings);
 	if (viewKey) {
 		pi.registerShortcut(viewKey as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Show local Pi usage stats",

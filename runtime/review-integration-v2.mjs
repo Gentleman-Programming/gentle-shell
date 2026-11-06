@@ -1646,7 +1646,8 @@ export function decodeReviewTargetedValidationRequestV1(value         , label = 
 		expectedRevision: sha256(body.expected_revision, `${label}.expected_revision`),
 		targetIdentity: sha256(body.target_identity, `${label}.target_identity`),
 		fixFindingIds,
-		policyContent: nonempty(body.policy_content, `${label}.policy_content`),
+		// A frozen empty policy is valid; missing historical policy is not.
+		policyContent: text(body.policy_content, `${label}.policy_content`),
 		fixFindings,
 		fixClassifications,
 		projection: enumeration(body.projection, REQUIRED_PROJECTIONS, `${label}.projection`),

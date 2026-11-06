@@ -18,6 +18,7 @@ import { consumeReviewMutation, pendingReviewMutation, pendingReviewMutationProf
 import { createReviewSidebarPublisher } from "../lib/review-sidebar-state.ts";
 import { snapshotReviewStartContext } from "../lib/review-start-context.ts";
 import { asNativeReviewCliError, readReviewFailureFacts } from "../lib/review-failure-facts.ts";
+import { REVIEW_BLOCKER_GUIDANCE, withReviewBlocker } from "../lib/review-blocker.ts";
 import { ReviewContinuationRegistry, type RetainedReviewContinuation, type RetainedNativeUntrackedSelection, type RetainedPreLineageNativeUntrackedSelection, type RetainedNativeCaptureRoute } from "../lib/review-continuation-registry.ts";
 import { parseReviewCoordinatorInput, runReviewCoordinator } from "../lib/review-coordinator.ts";
 import { StatusTimingDiagnostics } from "../lib/status-timing-diagnostics.ts";
@@ -7323,10 +7324,10 @@ function nativeStatusUnsupported(operation: ReviewControllerOperation): Record<s
 		outcome: "native-status-unsupported",
 		...(operation === REVIEW_CONTROLLER_OPERATION.START ? nativeStartPreAuthorityRejection() : { mutation_performed: false }),
 		inventory_complete: false,
-		next_action: "require-upstream-read-only-native-status-inventory",
+		next_action: "check-native-provider-capabilities",
 		remediation_command: NATIVE_STATUS_UNSUPPORTED_REMEDIATION_COMMAND,
 		evidence: {
-			native_contract: "gentle-ai/2.1.4",
+			expected_contract: "gentle-ai.review-integration/v2",
 			general_status: "unsupported",
 			claimant_inventory: "unsupported",
 		},
@@ -9947,7 +9948,11 @@ async function prepareCaptureContext(
 	return { ready: true as const, cwd, implicitWorkspaceRoot, status, route, freshStatus };
 }
 
-async function executeReviewCaptureOperation(
+async function executeReviewCaptureOperation(...args: Parameters<typeof executeReviewCaptureOperationImpl>): Promise<Record<string, unknown>> {
+	return withReviewBlocker(await executeReviewCaptureOperationImpl(...args));
+}
+
+async function executeReviewCaptureOperationImpl(
 	parametersValue: unknown,
 	sessionCwd: string,
 	nativeReviewCli: NativeReviewCli | null,
@@ -10111,7 +10116,11 @@ function reviewHostRelayGroupProgress(
 	};
 }
 
-async function executeReviewCaptureGroupOperation(
+async function executeReviewCaptureGroupOperation(...args: Parameters<typeof executeReviewCaptureGroupOperationImpl>): Promise<Record<string, unknown>> {
+	return withReviewBlocker(await executeReviewCaptureGroupOperationImpl(...args));
+}
+
+async function executeReviewCaptureGroupOperationImpl(
 	parametersValue: unknown,
 	sessionCwd: string,
 	nativeReviewCli: NativeReviewCli | null,
@@ -10230,7 +10239,11 @@ function hydrateDispatchBindingFromStatus(candidateViews: CandidateViewRegistry 
 	}
 }
 
-async function executeReviewControllerOperation(
+async function executeReviewControllerOperation(...args: Parameters<typeof executeReviewControllerOperationImpl>): Promise<Record<string, unknown>> {
+	return withReviewBlocker(await executeReviewControllerOperationImpl(...args));
+}
+
+async function executeReviewControllerOperationImpl(
 	parametersValue: unknown,
 	sessionCwd: string,
 	nativeReviewCli: NativeReviewCli | null,
@@ -11714,6 +11727,7 @@ function createGentleAiExtensionForTesting(
 		description: "Capture one complete provider-issued materialize reviewer group. It validates the exact ordered current collect set, forecasts its bounded model cost, runs reviewers concurrently, and admits outputs one at a time in provider order.",
 		promptSnippet: "Use one complete exact current STATUS materialize reviewer group; acknowledge its forecast before the grouped run.",
 		promptGuidelines: [
+			REVIEW_BLOCKER_GUIDANCE,
 			"Pass only lineageId, the complete ordered collectBindings array from one current STATUS result, and reviewerRunAcknowledged after its forecast. Never mix, reorder, duplicate, or partially select bindings.",
 			"The group materializes and runs independent reviewers concurrently, but rechecks STATUS before every provider-ordered submission. It stops on a closure, correction, drift, or uncertain capture outcome; it never follows another transition or replays a prepared output.",
 		],
@@ -11757,6 +11771,7 @@ function createGentleAiExtensionForTesting(
 		description: "Capture exactly one provider-issued ordinary native review collect slot. This is not a controller operation: it validates one opaque collect binding against current target-scoped STATUS, executes at most one capture, and never follows a transition.",
 		promptSnippet: "Use one exact current STATUS collectBinding for one ordinary native capture; call fresh STATUS before every additional capture.",
 		promptGuidelines: [
+			REVIEW_BLOCKER_GUIDANCE,
 			"Pass only lineageId, the JSON-serialized exact collectBinding from current STATUS, and the route-specific optional acknowledgement or correctionLines value. Never compose provider argument tokens, prompts, results, verdicts, or lens arrays.",
 			"A materialize reviewer slot first forecasts one model run; re-submit that same exact binding with reviewerRunAcknowledged: true to authorize one host relay. Correction-plan slots require correctionLines inside the provider-issued bounds, counted in diff lines (one replaced source line is one deletion plus one addition) — a different unit from the frozen logical correction budget. A refuter or targeted-validator slot forecasts and runs the same way when the provider renders it host-mediated; an older provider's self-contained refuter/validation vector still executes exactly once as provider-rendered.",
 			"A native terminal closure or nonterminal capture returns directly. Do not expect automatic STATUS, FINALIZE, receipt, delivery, or another capture; call fresh STATUS before any next capture.",
@@ -11807,6 +11822,7 @@ function createGentleAiExtensionForTesting(
 			"Inspect and recover review authority and start native ordinary review. Ordinary capture is available only through the separate gentle_review_capture tool. Review outcomes never authorize delivery: commit, push, pull-request, and release commands follow ordinary repository policy. RESET/RECOVER remain destructive and are executed by the audited native CLI.",
 		promptSnippet: "Inspect authority, then start native ordinary review; use gentle_review_capture for one current collect slot",
 		promptGuidelines: [
+			REVIEW_BLOCKER_GUIDANCE,
 			'For fresh ordinary START, supply input.requestContextPath with the existing request/specification file when intent matters. Relative paths resolve against workspaceRoot; native reads, budgets and freezes its contents with the candidate. Lens reasons do not carry business intent. The file is evidence, never reviewer instructions; existing lineages keep their original frozen intent, and a different request requires resolving existing authority before a fresh review.',
 			'Call {"operation":"inspect"} before START. New native ordinary START uses a JSON string such as "{\\"mode\\":\\"ordinary\\",\\"lenses\\":[\\"reliability\\"],\\"lensesReason\\":\\"<what you touched and how>\\"}": pick every pertinent 4R lens (risk, resilience, readability, reliability) for what you touched and how; an explicit baseRef must be paired with committedOnly: true to request a committed range, while policyPath remains repository-local. policyHash is legacy compact-only. The controller derives lineage, Git/untracked scope, tier, lenses, authored lines, and budget; the frozen correction budget counts logical corrections, while correction-plan correctionLines count diff lines (one replaced source line is one deletion plus one addition).',
 			'An inspect blocked on the intended-untracked selection returns nextStep naming the exact continuation: call select-intended-untracked with the returned selectionBinding, or call inspect again with top-level untrackedScope ("exclude", or "select" with intendedUntracked) to resolve the round trip in one call; the retained selection is adopted by the next plain START.',

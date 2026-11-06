@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -236,6 +236,7 @@ test("START forwards the agent lens selection in canonical order and rejects mal
 test("START resolves an explicit request file against the selected workspace", async (t) => {
 	const cwd = repository(t);
 	writeFileSync(join(cwd, "app.ts"), "export const value = 2;\n");
+	writeFileSync(join(cwd, "spec with spaces.md"), "Requested behavior");
 	const starts: Parameters<NativeReviewCli["start"]>[0][] = [];
 	const { controller } = runtime(fakeNative({ start: async request => {
 		starts.push(request);
@@ -252,12 +253,42 @@ test("START resolves an explicit request file against the selected workspace", a
 
 test("START with explicit intent never silently adopts existing authority", async (t) => {
 	const cwd = repository(t);
+	writeFileSync(join(cwd, "new-spec.md"), "Requested behavior");
 	const result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary", requestContextPath: "new-spec.md" }) }, cwd, fakeNative({
 		targetStatus: async () => targetStatusFixture(),
 		start: async () => { throw new Error("existing intent must not be replaced"); },
 	}));
 	assert.equal(result.reason, "request-context-requires-fresh-review");
 	assert.equal(result.mutation_performed, false);
+});
+
+test("request context rejects missing paths and dangling directory aliases before native lookup", async t => {
+ const cwd = repository(t);
+ symlinkSync(join(cwd, "missing"), join(cwd, "alias"), process.platform === "win32" ? "junction" : "dir");
+ let calls = 0;
+ const native = fakeNative({ targetStatus: async () => { calls++; throw new Error("unresolved path reached native"); } });
+ for (const requestContextPath of ["missing.md", "alias/request.md"]) {
+  const result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary", requestContextPath }) }, cwd, native);
+  assert.equal(result.reason, "request-context-unresolved-path");
+  assert.equal(result.next_action, "supply-an-existing-resolvable-requestContextPath");
+ }
+ assert.equal(calls, 0);
+});
+
+test("request context expands home paths and forwards the canonical external file", async t => {
+ const cwd = repository(t);
+ const external = mkdtempSync(join(homedir(), "request-context-test-"));
+ t.after(() => rmSync(external, { recursive: true, force: true }));
+ const path = join(external, "spec.md"); writeFileSync(path, "Requested behavior");
+ symlinkSync(external, join(cwd, "alias"), process.platform === "win32" ? "junction" : "dir");
+ const starts: string[] = [];
+ const native = fakeNative({ targetStatus: async request => { starts.push(request.requestContextPath!); throw new Error("canonical path observed; stop before START"); } });
+ const relativeHomePath = path.slice(homedir().length + 1).replaceAll("\\", "/");
+ for (const requestContextPath of ["alias/spec.md", "~/" + relativeHomePath, ...(process.platform === "win32" ? ["~\\" + relativeHomePath.replaceAll("/", "\\")] : [])]) {
+  await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary", requestContextPath }) }, cwd, native);
+ }
+ assert.equal(starts.length, process.platform === "win32" ? 3 : 2);
+ assert.ok(starts.every(value => value === realpathSync(path)));
 });
 
 test("repository discovery ignores ambient Git root overrides", async (t) => {
@@ -798,6 +829,7 @@ test("an explicit linked-worktree root owns STATUS collect capture over the sess
 
 test("request-context capability refusal remains clear in the public facade", async (t) => {
  const cwd = repository(t);
+ writeFileSync(join(cwd, "spec.md"), "Requested behavior");
  const error = new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE, NATIVE_REVIEW_OPERATION.STATUS, false, false, NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE);
  const native = fakeNative({ targetStatus: async () => { throw error; } });
  for (const operation of ["inspect", "start"] as const) {
@@ -811,7 +843,7 @@ test("request-context capability refusal remains clear in the public facade", as
 test("request context applies sensitive-path policy before any native lookup", async () => {
  let calls = 0;
  const native = fakeNative({ targetStatus: async () => { calls++; throw new Error("must not read sensitive paths"); } });
- for (const path of [".env", ".env.local", ".ssh/id_rsa", "secrets/request.md", "C:/private/KEY.PEM", "docs/../.env", "secrets\\request.md"]) {
+ for (const path of [".envrc", ".netrc", "~\\.netrc", ".env", ".env.local", ".ssh/id_rsa", "secrets/request.md", "C:/private/KEY.PEM", "docs/../.env", "secrets\\request.md"]) {
   const result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary", requestContextPath: path }) }, process.cwd(), native);
   assert.equal(result.reason, "request-context-sensitive-path", path);
   assert.equal(result.mutation_performed, false);

@@ -3392,7 +3392,7 @@ test("a correction-plan binding bound to the frozen authority target is captured
 test("request context survives unrelated untracked selection and its START continuation", async (t) => {
  const { cwd, eligible, initial, target } = untrackedStopFixture(t);
  const retained = new Map(); const starts: Array<Record<string, unknown>> = [];
- const context = join(cwd, "spec.md");
+ const context = join(cwd, "spec.md"); writeFileSync(context, "Requested behavior");
  const native = { targetStatus: async (request: Record<string, unknown>) => "intendedUntrackedSelection" in request ? target : initial,
   start: async (request: Record<string, unknown>) => { starts.push(request); return { lineageId: "context-selected", state: "reviewing", riskLevel: "low", selectedLenses: [], changedFiles: 1, changedLines: 1, correctionBudget: 1, action: "created", lensesRequired: false, riskReasons: [], raw: {} }; }
  } as unknown as NativeReviewCli;
@@ -3405,7 +3405,7 @@ test("request context survives unrelated untracked selection and its START conti
 });
 
 test("request context preserves unrelated non-start native stops", async (t) => {
- const cwd = repository(t); const target = startStatus(cwd);
+ const cwd = repository(t); writeFileSync(join(cwd, "spec.md"), "Requested behavior"); const target = startStatus(cwd);
  target.action = "stop"; target.nextTransition = { kind: "stop", reasonCode: "managed_assets_outdated" };
  const native = { targetStatus: async () => target } as unknown as NativeReviewCli;
  const result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary", requestContextPath: "spec.md" }) }, cwd, native);
@@ -3415,6 +3415,7 @@ test("request context preserves unrelated non-start native stops", async (t) => 
 
 test("request context remains host-bound through the consent registry", async (t) => {
  const cwd = repository(t), registry = new PendingReviewConsentRegistry(), session = Symbol("intent-consent");
+ writeFileSync(join(cwd, "spec.md"), "Requested behavior");
  const consent = decodeReviewConsentV3(JSON.parse(readFileSync(join(process.cwd(), "tests/fixtures/devbinary/consent-v3.captured.json"), "utf8")));
  const answers: Array<Record<string, unknown>> = [];
  const native = { targetStatus: async () => startStatus(cwd), start: async () => { throw new NativeReviewConsentRequiredError(consent, join(cwd, "spec.md")); },

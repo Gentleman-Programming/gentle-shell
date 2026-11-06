@@ -1,10 +1,9 @@
 import { execFile, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
-import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, posix, win32 } from "node:path";
 import { promisify } from "node:util";
-import { gentleAiIsolationEnv, PackageLocalGentleAiBinaryMissingError, resolveGentleAiBinary } from "./gentle-ai-binary.ts";
+import { binaryDigest, gentleAiIsolationEnv, PackageLocalGentleAiBinaryMissingError, resolveGentleAiBinary } from "./gentle-ai-binary.ts";
 import { GENTLE_PI_REVIEW_RELAY_CONTRACT, GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV } from "./review-relay-contract.ts";
 import { decodeReviewAssessmentV1, type ReviewAssessmentV1 } from "./review-risk-assessment.ts";
 import {
@@ -2198,6 +2197,8 @@ function decodeNativeUnachievableLensCaptureArtifact(value: unknown): NativeRevi
 }
 
 export class NativeReviewCliV216 implements NativeReviewCli {
+	// Only executable capabilities are reusable. STATUS and authority remain fresh.
+	private contextCapabilities?: { executable: string; digest: string; value: ReturnType<typeof decodeReviewCapabilitiesV2> };
 	private readonly plain: NativeReviewPlainCli;
 	private readonly adapter: ExecFileAdapter;
 	private readonly executable: string | (() => string);
@@ -2469,10 +2470,18 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		let contextExecutable: string | undefined;
 		if (requestContextArguments.length > 0) {
 			contextExecutable = this.executablePath(NATIVE_REVIEW_OPERATION.STATUS, false);
-			const digest = createHash("sha256").update(await readFile(contextExecutable)).digest("hex");
-			const discovery = await this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd,
-				["review", "capabilities", "--contract", REVIEW_INTEGRATION_CONTRACT], false, request.signal, contextExecutable);
-			const capabilities = decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewCapabilitiesV2(discovery.body, digest));
+			const digest = binaryDigest(contextExecutable);
+			let capabilities = this.contextCapabilities?.executable === contextExecutable && this.contextCapabilities.digest === digest
+				? this.contextCapabilities.value : undefined;
+			if (capabilities === undefined) {
+				this.contextCapabilities = undefined;
+				const discovery = await this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd,
+					["review", "capabilities", "--contract", REVIEW_INTEGRATION_CONTRACT], false, request.signal, contextExecutable);
+				capabilities = decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewCapabilitiesV2(discovery.body, digest));
+				if (binaryDigest(contextExecutable) !== digest) throw nativeError(NATIVE_REVIEW_ERROR_CODE.IDENTITY_MISMATCH,
+					NATIVE_REVIEW_OPERATION.STATUS, false, "native executable changed during capability discovery", undefined, false);
+				this.contextCapabilities = { executable: contextExecutable, digest, value: capabilities };
+			}
 			if (!["start_request_context", "start_options_preflight"].every(feature => capabilities.optionalFeatures.has(feature))) {
 				throw nativeError(NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE, NATIVE_REVIEW_OPERATION.STATUS, false,
 					NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE, undefined, false);

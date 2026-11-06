@@ -267,8 +267,8 @@ export function bundledPi(install                , input                        
 // given explicitly, and its npm through the home's npmCommand setting), plus
 // only no Pi override, subagents on the same node and Pi (the subagent runner
 // splits GENTLE_PI_AGENTS_PI on whitespace, so a spaced path is left to its
-// default, the running node and cli.js), and no Pi update check, since Pi only
-// updates with Gentle Shell (S5). S9: the prefix (GENTLE_SHELL_PREFIX, from
+// default, the running node and cli.js), and no separate Pi update check, since
+// Shell handles Pi updates. S9: the prefix (GENTLE_SHELL_PREFIX, from
 // which gentle-pi derives its config folder and gives its own gentle-ai runs
 // Gentle AI's variables, never set here because the agent's shell would pass
 // them to a gentle-ai the user runs), and the published Engram as
@@ -276,7 +276,7 @@ export function bundledPi(install                , input                        
 // (S2, S6): the startup policy, and ENGRAM_BIN is the Shell-owned guard, so no
 // provider, whatever loaded it, runs an Engram binary against a store; allowed
 // memory reaches the shared server through ENGRAM_URL only.
-export const ENGRAM_COMPANION_SOURCE = "npm:gentle-engram@0.4.2";
+export const ENGRAM_COMPANION_SOURCE = "npm:gentle-engram";
 export const ENGRAM_RECOVERY_NOTICE = "Engram memory disabled: Shell could not verify safe server reuse. Matching versions or updating alone do not prove compatibility. Reuse requires a server on 127.0.0.1:7437 with verified /compatibility evidence; Shell never stops or replaces a server already listening there. Back up existing Engram data before manual changes; do not delete it or bypass the safety check. Shell rechecks on every launch and remains usable without memory.";
 export const ENGRAM_START_FAILED_NOTICE = "Engram memory disabled for this launch: Shell could not start the shared Engram server, or it did not report ready in time. Restart Shell to retry; if another program holds 127.0.0.1:7437, stop it first. Shell remains usable without memory.";
 export const ENGRAM_NEWER_SCHEMA_NOTICE = "Engram memory disabled: ~/.engram was migrated by a newer Engram than Shell's bundled core, so Shell will not start a server on it. Start that newer Engram's server yourself (engram serve); Shell reuses a running server with verified /compatibility evidence. Back up the store; do not delete or downgrade it. Shell remains usable without memory.";
@@ -614,27 +614,14 @@ export function bundledUpdatePlan(passthrough          )                    {
 	return { self: true, ...marked };
 }
 
-// What `gentle-shell update` does after the redirected upgrade or the
-// `--latest` Pi update (`upgradeCode` is undefined when it did not run): with
-// nothing left for Pi it exits with that code; otherwise Pi still runs, so
-// `update --all` updates the extensions even when that step could not complete.
+// Forward extension updates even when the latest Pi update failed; the caller
+// retains that failure code while Pi handles the remaining arguments.
 export function bundledUpdateNext(plan                   , upgradeCode                    )                                                             {
 	if (plan.piArgs === undefined) return { exitCode: upgradeCode ?? 0 };
 	if (plan.self && upgradeCode !== undefined && upgradeCode !== 0) {
-		const step = plan.latest ? "latest Pi update" : "Gentle Shell upgrade";
-		return { piArgs: plan.piArgs, note: `gentle-shell: the ${step} did not complete; updating the extensions anyway.` };
+		return { piArgs: plan.piArgs, note: "gentle-shell: the latest Pi update did not complete; updating the extensions anyway." };
 	}
 	return { piArgs: plan.piArgs };
-}
-
-export function bundledUpdateNotice(input                                             )           {
-	return [
-		`Pi ships pinned with Gentle Shell (Pi ${input.piVersion}): a newer Pi arrives with a Gentle Shell release.`,
-		input.interactive
-			? "Running 'gentle-shell upgrade'..."
-			: "Run 'gentle-shell upgrade' to install the latest Gentle Shell release and its Pi.",
-		"Run 'gentle-shell update --latest' to install the newest published Pi now, without the release's verified lockfile.",
-	];
 }
 
 

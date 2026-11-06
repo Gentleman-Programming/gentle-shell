@@ -1,6 +1,6 @@
 # Choose how permission questions are handled
 
-Use **Normal**, **Auto**, or **YOLO** for the current primary session. Optionally save any of them as the user-global default for future sessions. These modes do not redesign Gentle Shell delegation, expand the task you authorized, or replace independent safety and consent.
+Use **Normal**, **Auto**, **YOLO**, or **Super Yolo** for the current primary session. Optionally save any of them as the user-global default for future sessions. These modes do not redesign Gentle Shell delegation, expand the task you authorized, or replace independent safety and consent.
 
 ## Tool context in Auto
 
@@ -62,7 +62,8 @@ Changing the default does **not** change the current session. To return this ses
 | `/gentle:mode normal`, `auto`, `yolo`, or `super-yolo` | Select exactly one mode for the current interactive primary session. |
 | `/gentle:mode status` or `/gentle:mode` | Show current mode and saved default. |
 | `/gentle:mode default normal`, `auto`, `yolo`, or `super-yolo` | Save the default for new primary sessions, leaving the current mode unchanged. |
-| `/gentle:yolo enable`, `disable`, or `status` | Existing shortcut; enable selects YOLO, disable selects Normal. |
+| `/gentle:yolo` | Choose the session mode interactively; cancellation does not grant permission or save a default. Noninteractive callers see status. |
+| `/gentle:yolo enable`, `disable`, or `status` | Existing shortcut; enable selects YOLO, disable selects Normal, and status distinguishes Super Yolo. |
 
 In `/gentle:customize` → **Editor**, use **Session permissions** to change the current mode, or **Default permissions** to save a future-session preference. The original **YOLO: ON/OFF · session only** row still toggles the live mode; it does not save a default. Browsing, previews, and closing the menu do not grant permission.
 

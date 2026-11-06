@@ -143,7 +143,7 @@ Review the exact change, not a moving target. Native review keeps one candidate 
 
 Review is proportionate: an independent verifier runs only for a named high-risk item in every RDD state, a review is only due for high-risk work, and the agent forwards the 4R lenses that fit what it touched — with its reason — instead of paying for all four.
 
-> ℹ️ **RDD is optional and on by default:** turn native receipt-driven development off anytime with `/gentle:review-mode disable` (this clone) or `gentle-ai review mode disable` (machine-wide); `/gentle:review-mode status` shows the current mode. The `.git/gentle-ai/candidate-views` parent must sit on a filesystem that honors private POSIX modes (or equivalent Windows ACLs); WSL DrvFS mounts without metadata can reject START before lineage creation.
+> ℹ️ **RDD is optional and on by default:** open `/gentle:rdd` to see the effective mode and its source, then choose a repository change or an explicitly named machine-wide change. Cancelling changes nothing. Repository enable only clears its local off override; it cannot override a machine-wide off. The existing `/gentle:review-mode status|enable|disable` remains clone-scoped. Changing RDD does not grant review consent or change permissions. The `.git/gentle-ai/candidate-views` parent must sit on a filesystem that honors private POSIX modes (or equivalent Windows ACLs); WSL DrvFS mounts without metadata can reject START before lineage creation.
 
 <details>
 <summary><kbd>More</kbd> <strong>Reviewer transport</strong> — how review completions follow Pi's transport setting</summary>
@@ -204,6 +204,8 @@ Delegating work should not mean losing it. Every subagent runs as its own proces
 
 Model, effort, and who does what should be choices, not accidents. Named profiles route the orchestrator atomically and independently from packaged and review roles; a repository can pin its profile so its subagents stop following the globally active one, and the panel always shows the routing the runtime actually uses.
 
+Each profile can also give every agent, the orchestrator included, an ordered list of fallback models (`f` on its row in `/gentle:profiles`). When a model hits its usage limit, an auth error, or provider trouble Pi already retried, the run switches to the next model you listed and continues the same conversation; a model that ran out is skipped by every agent for a while, and a full `/gentle:usage` window skips its provider before anything fails. Each switch warns you, with a price note when the next model costs more. See [Model fallback chains](docs/readme-reference.md#model-fallback-chains).
+
 **[Docs →](docs/readme-reference.md#agent-model-profiles)**
 
 ---
@@ -220,7 +222,7 @@ Extension commands are only useful if you can find them. `alt+k` opens a curated
 
 ### Customize — Look, layout, and editor in one panel
 
-`/gentle:customize` opens an interactive panel to set animation quality, startup banner rose, text logo and color, or choose an installed Pi theme.
+`/gentle:customize` uses one line per setting with its options inline across appearance, themes, Editor, History, Notifications, Layout, Cards, and Sections. `●` marks the current value and `›` a different highlighted option; `↑`/`↓` move between settings. The footer tells you whether `←`/`→` applies a live appearance change immediately or previews an option for **Enter** to apply. Themes, permissions, privacy, audio, and the newly grouped toggles require Enter: browsing never changes authority or saves those preferences. `←` past the first value returns to the categories; Tab also switches panes. Focused previews retain warnings, effective-state diagnostics and Layout's schematic. Profile and reset actions keep their explicit controls and confirmations.
 
 <details>
 <summary><kbd>More</kbd> <strong>Everything <code>/gentle:customize</code> controls</strong> — themes, status layout, Vim, history, and visual profiles</summary>
@@ -228,7 +230,7 @@ Extension commands are only useful if you can find them. `alt+k` opens a curated
 <br>
 
 - **Themes:** Highlighting a theme previews its source palette without changing the active theme; press Enter or Space to apply it through Pi. If its source is unreadable, the preview is unavailable.
-- **Status layout:** Status defaults to a right rail in fullscreen terminals at least 140 columns wide, and to a bottom bar otherwise. Choose right, bottom, or hidden (which removes both the rail and the bottom status bar at every width), move the fullscreen header below the input (below the 140-column breakpoint only one status row paints: a top header replaces the bottom bar, while with the header below the input the bottom bar alone carries the header's context, cost, and usage plus extension statuses), select comfortable/compact/minimal density, and toggle Changes, Agents, TODO, usage/cost, and model details independently. Layout changes and reset take effect immediately; banner changes appear on the next startup.
+- **Status layout:** Status defaults to a right rail in fullscreen terminals at least 140 columns wide, and to a bottom bar otherwise. Choose right, bottom, or hidden (which removes both the rail and the bottom status bar at every width), place the fullscreen header on top of the conversation column (`top`), below the input, or split into a title row and a bottom status bar (`split`; Gentle Shell versions older than this one reject a file that stores it and fall back to the defaults) (below the 140-column breakpoint only one status row paints: a top header replaces the bottom bar, while with the header below the input the bottom bar alone carries the header's context, cost, and usage (integrations show only in the rail and the `/gentle:panel` sheet)), select comfortable/compact/minimal density (rail and header spacing; minimal also drops the brand and the key hints), choose a transparent (default) or tinted chrome surface (transparent leaves the rail, title row, status bar and panel unpainted so a terminal background image shows through), and toggle Changes, Agents, TODO, usage/cost, model details, and Stats independently. Presets set the visibility switches and keep the header placement, the density and the surface (changing the density keeps the preset selected): **Light** is the minimal edition (no sidebar rail, Status at the bottom; model, context, agent questions and review only; on terminals 140 columns or wider it keeps the chrome bars and the Agents and Todos cards, and `[ Panel ]` opens the Status sections), **Neutral** is the default and **Power user** adds a **Stats** section (session spend, input/output tokens, cache hit rate, tool calls and failures, subagent spend, and one row per model with its turns, tokens and cost); leaving Light brings the rail back. The menu marks the preset your settings match, and any switch still overrides it. The Stats switch is stored as `stats` in `visual-customization.json`: Gentle Shell versions older than this one reject a file that has it and fall back to the defaults, and a Power user setup saved before it (no Stats) now reads as Neutral, so pick Power user again. `alt+l` cycles Light → Neutral → Power user from anywhere (a hand-tuned mix starts on Neutral); set `GENTLE_PI_SHELL_PRESET_KEY` to another key, or to `off` to drop it. `/gentle:panel` opens the sidebar sections as a full-width sheet at any width. The effective agent profile, with its source suffix when present, follows the model in the status bar and opens the Stats section. Layout changes and reset take effect immediately; banner changes appear on the next startup.
 - **Vim:** The Editor category offers explicit Vim enable/disable controls for the global prompt preference; highlighting shows the persisted preference and effective prompt state without changing either. Enter or Space saves it and updates the live prompt; unsupported editors keep ordinary editing even when the saved preference is on. Vim is not included in visual profiles or visual reset.
 - **History:** The History category turns prompt-history capture on or off; it is off by default, applies to the next prompt without a restart, and never deletes stored history. An explicit `GENTLE_PI_HISTORY_CAPTURE` value overrides the saved choice, and the panel marks that override (see [Prompt history](docs/prompt-history.md)).
 - **Reset and profiles:** The panel can reset visual, banner, and animation settings to defaults. Press `p` for named visual profiles: `s` saves the current installed theme, banner, animation and layout; select a profile with ↑/↓, then use `r` to replace, `a` to apply, or `d` to delete. `z` clears only the profile catalog. Confirm destructive/apply actions with `y`, or cancel with any other key; Esc returns without applying a preview. Applying independent stores is not atomic: partial failures identify what changed.
@@ -252,7 +254,7 @@ Open `/gentle:customize` → **Notifications** (the card header reads **Audio no
 
 <br>
 
-- **Controls:** Enter toggles the master switch or cycles a type/event through silence/success/error/attention, `f` assigns a literal absolute local WAV/OGG/FLAC sound (≤2 MiB, ≤10 seconds) to the highlighted **Success**, **Error** or **Attention** type (each type keeps its own sound), and `p` previews its assigned sound. **Advanced** folds per-event exceptions; the type choices stay independent.
+- **Controls:** Each audio setting has inline options: use `←`/`→` to choose and Enter to apply the master switch, process mute, type/event sound or Advanced visibility. Sound options include silence, the builtin tones and custom audio. `f` assigns a literal absolute local WAV/OGG/FLAC sound (≤2 MiB, ≤10 seconds) to the highlighted **Success**, **Error** or **Attention** type (each keeps its own sound); `p` previews its currently configured sound. **Advanced** folds per-event exceptions; the type choices stay independent. Navigation alone never writes audio preferences.
 
 - **Quick answer (Linux/WSLg):** on plain Linux the installed package prefers the native WAV backend and needs no external player — it talks to a local PulseAudio/PipeWire-Pulse Unix socket and requires a running server with a default sink.
 - Inside **WSL** the Windows system `SoundPlayer` is preferred instead: the validated WAV snapshot is mapped to a `\\wsl.localhost\<distro>\...` UNC path, so no Pulse server or RDP audio dependency is required; it does depend on the default `/mnt/c` automount and the standard `C:\Windows` root and otherwise falls back to the trusted Linux CLI before any playback.
@@ -271,7 +273,7 @@ Open `/gentle:customize` → **Notifications** (the card header reads **Audio no
 
 ### Background jobs — Inspect what runs in the background
 
-Use `/gentle:jobs` to inspect this session's background commands and monitors. Running jobs appear first; each group is ordered newest first. Arrow keys select a job, `Tab` opens details on narrow terminals, `s` stops a running job, and `q` closes the modal.
+Use `/gentle:jobs` to inspect this session's background commands and monitors. Running jobs appear first; each group is ordered newest first. Arrow keys select a job, `Tab` opens details on narrow terminals, `s` stops a running job, and `q` closes the modal. In fullscreen, click a job or a visible details, Stop or close control; actionable targets use the shared orange hover role without changing the selection on hover.
 
 The Status panel has a **Jobs** section with each running job's description. When the panel is hidden or unavailable in the compact/mobile layout, the top or bottom bar shows only the running count (`⧗ 1 job`). The count and descriptions disappear when no jobs remain active; `/gentle:jobs` retains completed jobs for inspection.
 
@@ -320,12 +322,12 @@ Save `/gentle:mode default auto` or `/gentle:mode default yolo` to use either op
 <br>
 
 - **Default:** **OFF** unless selected or saved as the global default, with interactive primary TUI controls and live session/workspace binding; `/gentle:yolo disable` revokes it and `/gentle:yolo status` checks it.
-- **Menu:** With no argument, `/gentle:yolo` opens a menu (`enable`, `disable`, `status`) showing the current state; cancelling changes nothing, and without an interactive menu it reports status.
+- **Menu:** With no argument, `/gentle:yolo` chooses Normal, Auto, YOLO or Super Yolo for this session. Cancelling grants nothing; outside an interactive primary TUI it reports status. Session choices never save defaults.
 - **Lifetime:** Reload and session replacement revoke live grants; new primary instances may apply the saved global default.
-- **Status:** Active status plus a separate widget show **🚀 YOLO ON 🔥 — destructive confirmations remain**.
+- **Status:** Active YOLO status plus a separate widget show **🚀 YOLO ON 🔥 — destructive confirmations remain**; Super Yolo is identified separately.
 - **Still mandatory:** Explicit restrictions, configured confirmations/blocks, consequential unresolved choices, destination/credential ambiguity and native consent/recovery decisions remain mandatory. Children get no independent delivery grant. This is not a sandbox.
 
-- **From Customize:** Or open `/gentle:customize` → **Editor** and select **YOLO: OFF · session only**, immediately below Vim. Enter or Space toggles the same live-session permission as `/gentle:yolo`; browsing and previews never activate it. This live toggle does not save a preference. The separate **Session permissions** and **Default permissions** rows select a current mode or save a user-global default, respectively; repository settings and visual profiles cannot grant either mode.
+- **From Customize:** Or open `/gentle:customize` → **Editor**, choose **ON** or **OFF** on the **YOLO** line below Vim, then press Enter or Space to apply that live-session value. Browsing and previews never activate it; the native permission and consent boundaries remain the same as `/gentle:yolo`. This live toggle does not save a preference. The separate **Session permissions** and **Default permissions** rows select a current mode or save a user-global default, respectively; repository settings and visual profiles cannot grant either mode.
 
 </details>
 
@@ -354,6 +356,7 @@ Save `/gentle:mode default auto` or `/gentle:mode default yolo` to use either op
 | Native interactive tools | Built-in questions, choices, and review captures — no third-party dependency. |
 | Gentle Todo | A plan card that turns amber when the model lets it go stale. |
 | Subscription usage | Per-window meters and resets for supported provider accounts. |
+| OpenAI Fast | Save Standard or Fast per compatible model route in `/gentle:profiles`. Availability depends on account and plan, and Fast uses more quota. [Details and pricing caveats](docs/fast-mode.md). |
 | Gentle Stats | `/gentle:stats` shows local usage history: activity heatmap, tokens, cost, streaks, and per-model share. |
 | Gentle Design | Ask for a design in plain language, or run `/gentle:design <brief>`: the session model writes several self-contained HTML design directions to `design/<slug>/`, with any provider, and the canvas opens on its own. `open` shows them side by side on a local canvas, where a comment on any element, optionally with a pasted screenshot of an animation or transition state, is saved to `comments.json` and sent to the session now or in one batch; `stop` closes it. `sync` captures the project's tokens in `design/system.md` and `design/system.html`, which later designs follow and the canvas shows first; it runs on its own before the first design when the project has design sources, and the model warns when they changed since. `implement <slug>/<artboard>` (or the canvas Implement button) hands an artboard and its open comments to the session to build in the project's real stack, tracked in the design's linked ODD feature when it has one; the canvas marks it as the chosen direction, shows its handoff state live, and offers Compare with the running app once it is implemented. [Details](docs/gentle-shell.md#gentle-design). |
 | Gentle Music | `/gentle:music [mood]` opens the gentle-stream player full screen; `b` returns to Pi with the music playing. `next`, `pause`, `play`, `stop`, and `status` control it in place. [Details](docs/gentle-music.md). |
@@ -380,7 +383,7 @@ The first-party `nan` provider is included; no third-party provider package is r
 - **Login:** Both login routes await explicit API-key input; blank or whitespace-only entries fail without saving a credential, and surrounding whitespace is trimmed. Cancellation leaves the stored key unchanged. Stored keys take precedence over `NAN_API_KEY`.
 - **Streaming:** Pi streams chat completions through its OpenAI-compatible provider.
 - **Model discovery:** Model discovery intersects NaN's authenticated `/v1/models` response with a maintained subset of known chat IDs from the [official model documentation](https://nan.builders/docs/models); unknown and non-chat IDs are omitted. A successful response with no known chat IDs stays empty. Documented context, reasoning, and text/image capabilities are preserved with conservative numeric bounds for abbreviated limits; audio input is not advertised by Pi.
-- **Output caps:** The provider configures `maxTokens` caps rather than claiming undocumented model maxima: 32,768 for GLM 5.3, GLM 5.3 Flash, and MiMo; 16,384 for DeepSeek V4 Flash; 65,536 for Gemma 4 and Qwen 3.6; and 131,000 for Qwen 3.8 Flash (NaN documents 131K). Reasoning shares the output budget.
+- **Output caps:** The provider configures `maxTokens` caps rather than claiming undocumented model maxima: 32,768 for GLM 5.3, GLM 5.3 Flash, and MiMo; 131,072 for DeepSeek V4 Flash; 65,536 for Gemma 4 and Qwen 3.6; and 131,000 for Qwen 3.8 Flash (NaN documents 131K). Reasoning shares the output budget, and dense prompts can reason past 16K tokens, so DeepSeek gets a generous budget (NaN documents up to 393,216).
 - **Offline fallback:** Before a successful refresh, all seven documented chat models are available as the offline fallback in `/gentle:profiles`: `glm5.3`, `deepseek-v4-flash`, `glm5.3-flash`, `qwen3.8-flash`, `mimo-v2.6-flash`, `gemma4`, and `qwen3.6`. This fallback declares documented support, not proof of access for your key. Once refreshed, the successful live key-scoped list remains authoritative (including an empty list), even offline or after a failed refresh. Changing credentials resets the catalog to the full documented fallback until discovery succeeds for the new key.
 - **Not included:** NaN MCP search and media bridges are not included.
 
@@ -518,11 +521,10 @@ Every other argument is forwarded to pi unchanged, for example `gentle-shell --m
 
 ### Path B: inside an existing pi
 
-Install the stable release into an existing pi agent, restart Pi, then synchronize the installed assets.
+Install the current npm release into an existing pi agent, restart Pi, then synchronize the installed assets.
 
 ```bash
-# Published stable release: v4.1.0
-pi install npm:gentle-pi@4.1.0
+pi install npm:gentle-pi
 
 # Restart Pi, then run:
 gentle-ai sync
@@ -531,7 +533,7 @@ gentle-ai sync
 pi
 ```
 
-See the [v4.1.0 release notes](https://github.com/Gentleman-Programming/gentle-shell/releases/tag/v4.1.0) for version-specific changes.
+For a reproducible pin, use `pi install npm:gentle-pi@<version>` with a published version. Check the [published releases](https://github.com/Gentleman-Programming/gentle-shell/releases) for version-specific changes and runtime pairing; the unpinned command follows npm's `latest` dist-tag.
 
 <details>
 <summary><kbd>More</kbd> <strong>Seeing a builtin codemode warning?</strong> — why it appears and how to silence it</summary>
@@ -575,7 +577,7 @@ gentle-shell upgrade --channel release
 gentle-shell upgrade --rollback
 ```
 
-`gentle-shell upgrade` uses the package manager that owns your installation.
+`gentle-shell upgrade` uses the package manager that owns your installation. To update Pi packages, including Shell's managed `gentle-engram`, run `gentle-shell update --extensions`. When Pi detects a newer package, it appears in Pi's normal startup update notice; it is not installed automatically.
 
 <details>
 <summary><kbd>More</kbd> <strong>Channels, bundled installs, and rollback</strong> — what each channel builds and how rollback works</summary>
@@ -585,7 +587,7 @@ gentle-shell upgrade --rollback
 - **Main channel:** On the main channel it rebuilds Gentle AI and Gentle Shell from the latest `main` commits (only what changed) and needs pnpm and Go (a Go older than the minimum is replaced, for the build only, by the pinned Go the installer left in its own folder); switching back to release restores the pinned Gentle AI binary. When the Gentle AI build fails but Gentle Shell moved, the new Gentle Shell is still installed and the command exits with an error asking you to run `gentle-shell upgrade --channel main` again. The retry rebuilds Gentle AI with the new Shell's code, and finishes once the cause of the original error is resolved.
 - **Your Pi:** With pnpm 11, the updated Gentle Shell may run a newer Pi that pnpm puts next to it (always at least the minimum); your own Pi is never changed.
 - **Bundled install:** A bundled install (the web installer's own Node, pnpm and Pi) follows the release channel only: it installs the new version beside the current one, verifies it, then switches, keeping the previous version for `--rollback`. On release, once the latest release publishes the bundled distribution, `upgrade` moves a global pnpm or npm installation to the bundled one and asks once before removing the old global `gentle-pi`.
-- **`update` vs `upgrade`:** `gentle-shell update` updates the Pi this launcher runs. A verified source-linked Shell updates its checkout's local Pi without replacing the link; it requires a declared npm/pnpm (pnpm may be newer than its pin), one matching lockfile and a single-project Git root ([requirements](docs/gentle-shell.md#updating-pi-safely)). In a bundled install Pi ships pinned with Gentle Shell, so updating Pi itself runs `gentle-shell upgrade` instead. `gentle-shell update --latest` (also with `pi`, `self`, `--self` or `--all`) installs the newest published stable Pi with the active Gentle Shell instead, without the release's verified lockfile: it first warns that Gentle Shell features relying on audited Pi internals (such as the Vim editor) may turn off until a Gentle Shell release verifies that Pi, then verifies and switches to it like `upgrade`, keeping the previous version for `gentle-shell upgrade --rollback`. Afterwards `gentle-shell upgrade` never downgrades that Pi: a release of the same Gentle Shell with an older verified Pi changes nothing, and a newer Gentle Shell release upgrades as usual.
+- **`update` vs `upgrade`:** `gentle-shell update` updates the Pi this launcher runs; `upgrade` updates Gentle Shell. A verified source-linked Shell updates its checkout's local Pi within its declared range, without replacing the link ([requirements](docs/gentle-shell.md#updating-pi-safely)). In a bundled install `update` selects the newest published stable Pi (`--latest` is an alias); `--all` also updates extensions, while explicit extension pins stay pinned. The Pi update warns before installing without the release's verified lockfile: features relying on audited Pi internals (such as Vim) may turn off. It verifies and activates the new pair, retaining rollback. A Shell release upgrade keeps any newer active Pi, also without that release's lockfile. Managed Pi self updates reject `--force`.
 
 </details>
 

@@ -644,6 +644,7 @@ for (const incompatible of [false, true]) {
    const live = createSessionProfileIntegration().start(manager, () => { calls++; }, { reason: "startup" });
    assert.equal(live.outcome.status, "indeterminate");
    ${incompatible ? 'assert.equal(live.attachment.bind("rejected", {}).status, "indeterminate");' : ""}
+   ${incompatible ? 'assert.deepEqual(live.attachment.bindStartup("repo", "rejected", {}), { status: "indeterminate", state: { status: "indeterminate", reason: "unavailable-lifecycle" } });' : ""}
    assert.equal(JSON.stringify(manager.getEntries()), before);
    process.stdout.write(JSON.stringify({ status: live.outcome.status, calls, unchanged: true }));
   `;

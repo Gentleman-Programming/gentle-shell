@@ -215,6 +215,9 @@ function linkDir(env                                    , homedir        )      
 // launched from inside a Gentle Shell session sees the outer isolated home as
 // PI_CODING_AGENT_DIR, so `--link` must not re-select it (#2015).
 export const USER_PI_HOME_ENV = "GENTLE_SHELL_USER_PI_HOME";
+// Set by bin/gentle-shell.mjs only when Gentle Shell, not Herdr's Pi bridge,
+// owns the pane's Herdr agent reports (extensions/gentle-herdr-agent.ts).
+export const HERDR_REPORTER_ENV = "GENTLE_SHELL_HERDR_REPORTER";
 
 export function userPiHome(env                                    , homedir        )         {
 	return env[USER_PI_HOME_ENV] || linkDir(env, homedir);
@@ -1089,6 +1092,7 @@ export function buildPiInvocation(input                        )               {
 	const env                                     = {
 		...input.baseEnv,
 		PI_CODING_AGENT_DIR: input.home.dir,
+		PI_PROGRAM_STATUS_APP: "gentle-shell",
 		GENTLE_PI_AGENT_HOME: input.home.dir,
 		[USER_PI_HOME_ENV]: userPiHome(input.baseEnv, input.homedir),
 	};
@@ -1354,11 +1358,11 @@ export function helpText()         {
 		"  gentle-shell install npm:<pkg>   Run pi's own 'install' against the resolved home.",
 		"  gentle-shell remove <source>     Run pi's own 'remove' against the resolved home.",
 		"  gentle-shell list                Run pi's own 'list' against the resolved home.",
-		"  gentle-shell update [target]     Run pi's own 'update' against the resolved home.",
-		"                                   In a bundled install Pi ships pinned: 'update' without a package",
-		"                                   runs 'gentle-shell upgrade' instead of updating Pi.",
-		"                                   'update --latest' installs the newest published Pi instead,",
-		"                                   without the release's verified lockfile.",
+		"  gentle-shell update [target]     Update Pi through its supported owner, or packages in the resolved home.",
+		"                                   In a bundled install 'update' installs the newest stable Pi",
+		"                                   without the release's verified lockfile; --latest is an alias.",
+		"                                   --all also updates extensions; explicit package pins remain pinned.",
+		"                                   --force is not supported for managed Pi self updates.",
 		"  gentle-shell config              Run pi's own 'config' against the resolved home.",
 		"  gentle-shell auth <command>      Run pi's own 'auth' against the resolved home.",
 		"  gentle-shell mcp <command>       Run pi's own 'mcp' (add, list, login, logout) against the",

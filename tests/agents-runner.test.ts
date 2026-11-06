@@ -34,7 +34,7 @@ interface Harness {
 	advance(ms: number): void;
 }
 
-function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boolean; process?: RunnerDeps["process"]; pid?: number; maxConcurrency?: number; stallTimeoutMs?: number; toolStallTimeoutMs?: number; cleanupTimeoutMs?: number; answer?: Record<string, unknown>; exitOnKill?: boolean; exitOnStdinEnd?: boolean; state?: Record<string, unknown>; stateSuccess?: boolean; onNotification?: RunnerHooks["onNotification"]; onSuccessfulMutation?: RunnerHooks["onSuccessfulMutation"]; onFinish?: RunnerHooks["onFinish"] } = {}): Harness {
+function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boolean; process?: RunnerDeps["process"]; pid?: number; maxConcurrency?: number; stallTimeoutMs?: number; toolStallTimeoutMs?: number; cleanupTimeoutMs?: number; answer?: Record<string, unknown>; exitOnKill?: boolean; exitOnStdinEnd?: boolean; state?: Record<string, unknown>; stateSuccess?: boolean; onNotification?: RunnerHooks["onNotification"]; onSuccessfulMutation?: RunnerHooks["onSuccessfulMutation"]; onFinish?: RunnerHooks["onFinish"]; onFallback?: RunnerHooks["onFallback"]; reject?: (command: Record<string, unknown>) => boolean; hold?: (command: Record<string, unknown>) => boolean } = {}): Harness {
 	const children: FakeChild[] = [];
 	const timers: Harness["timers"] = [];
 	const asks: Harness["asks"] = [];
@@ -54,8 +54,10 @@ function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boo
 				fake.child.stdin.on("data", (chunk) => {
 					const command = JSON.parse(String(chunk));
 					fake.written.push(command);
-					fake.emit({ type: "response", id: command.id, success: command.type !== "get_state" || options.stateSuccess !== false,
-						data: command.type === "get_state" ? options.state : undefined });
+					if (options.hold?.(command)) return;
+					const rejected = options.reject?.(command) === true;
+					fake.emit({ type: "response", id: command.id, success: !rejected && (command.type !== "get_state" || options.stateSuccess !== false),
+						...(rejected ? { error: "No API key for provider" } : {}), data: command.type === "get_state" ? options.state : undefined });
 				});
 			}
 			children.push(fake);
@@ -81,6 +83,7 @@ function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boo
 		onFinish: (task, observations) => { finishes.push(task.id); options.onFinish?.(task, observations); },
 		onNotification: options.onNotification,
 		onSuccessfulMutation: options.onSuccessfulMutation,
+		onFallback: options.onFallback,
 	});
 	return { store, runner, children, timers, asks, finishes, spawnOptions, advance(ms) {
 		clock += ms;
@@ -2255,4 +2258,166 @@ test("advisories S2: session shutdown keeps a running or quarantined subagent's 
 	next.start();
 	assert.equal(existsSync(scratch), false, "the startup sweep removes the kept scratch once its owner ended");
 	next.shutdown();
+});
+
+const quotaEnd = { type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "error", errorMessage: "429 insufficient_quota: monthly usage limit reached" }] };
+
+test("a subagent that runs out of quota switches its child to the next model in place and continues", async () => {
+	const fallbacks: Array<{ task: string; from: string; to: string; category: string }> = [];
+	const h = harness({ state: { model: { provider: "fb-a", id: "primary" } }, onFallback: (task, change) => { fallbacks.push({ task: task.id, ...change }); } });
+	const task = h.runner.run(request({ model: { provider: "fb-a", id: "primary" }, thinking: "high", fallbacks: [{ model: "fb-b/second", thinking: "medium" }, { model: "fb-c/third" }] }));
+	await tick();
+	h.children[0].emit(quotaEnd);
+	h.children[0].emit({ type: "agent_settled" });
+	await tick(); await tick(); await tick();
+	assert.notEqual(h.store.get(task.id)?.status, TASK_STATUS.FAILED, "the task is still alive");
+	const sent = h.children[0].written.map((command) => command.type);
+	assert.deepEqual(h.children[0].written.filter((command) => command.type === "set_model").map((command) => [command.provider, command.modelId]), [["fb-b", "second"]]);
+	assert.deepEqual(h.children[0].written.filter((command) => command.type === "set_thinking_level").map((command) => command.level), ["medium"]);
+	assert.ok(sent.lastIndexOf("prompt") > sent.indexOf("set_model"), "the continue prompt follows the switch");
+	assert.match(String(h.children[0].written.at(-1)?.message), /continue/i);
+	assert.equal(h.store.get(task.id)?.model, "fb-b/second");
+	assert.deepEqual(fallbacks, [{ task: task.id, from: "fb-a/primary", to: "fb-b/second", category: "quota" }]);
+	assert.equal(h.spawnOptions.length, 1, "the same child keeps going");
+	h.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done on the fallback" }], stopReason: "stop" }] });
+	h.children[0].emit({ type: "agent_settled" });
+	const done = await h.runner.waitFor(task.id);
+	assert.equal(done.status, TASK_STATUS.COMPLETED);
+	assert.equal(done.result, "done on the fallback");
+});
+
+test("errors another model would repeat, or an exhausted chain, fail the subagent as before", async () => {
+	const context = harness({ state: {} });
+	const contextTask = context.runner.run(request({ model: { provider: "fb-d", id: "one" }, fallbacks: [{ model: "fb-e/two" }] }));
+	await tick();
+	context.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "error", errorMessage: "prompt is too long: maximum context length" }] });
+	context.children[0].emit({ type: "agent_settled" });
+	const failed = await context.runner.waitFor(contextTask.id);
+	assert.equal(failed.status, TASK_STATUS.FAILED);
+	assert.equal(context.children[0].written.some((command) => command.type === "set_model"), false);
+
+	const none = harness({ state: {} });
+	const noneTask = none.runner.run(request({ model: { provider: "fb-f", id: "only" } }));
+	await tick();
+	none.children[0].emit(quotaEnd);
+	none.children[0].emit({ type: "agent_settled" });
+	assert.equal((await none.runner.waitFor(noneTask.id)).status, TASK_STATUS.FAILED, "no chain, no fallback");
+
+	const spent = harness({ state: {} });
+	const spentTask = spent.runner.run(request({ model: { provider: "fb-g", id: "one" }, fallbacks: [{ model: "fb-h/two" }] }));
+	await tick();
+	spent.children[0].emit(quotaEnd);
+	spent.children[0].emit({ type: "agent_settled" });
+	await tick(); await tick(); await tick();
+	spent.children[0].emit(quotaEnd);
+	spent.children[0].emit({ type: "agent_settled" });
+	const exhausted = await spent.runner.waitFor(spentTask.id);
+	assert.equal(exhausted.status, TASK_STATUS.FAILED, "the last model failing ends the task");
+	assert.match(exhausted.error ?? "", /quota/);
+	assert.equal(spent.children[0].written.filter((command) => command.type === "set_model").length, 1);
+});
+
+test("a launch whose primary model is cooling down starts on the first usable fallback", async () => {
+	const first = harness({ state: {} });
+	const task = first.runner.run(request({ model: { provider: "fb-i", id: "cool" }, fallbacks: [{ model: "fb-j/warm" }] }));
+	await tick();
+	first.children[0].emit(quotaEnd);
+	first.children[0].emit({ type: "agent_settled" });
+	await tick(); await tick();
+	const next = harness({ state: {} });
+	next.runner.run(request({ model: { provider: "fb-i", id: "cool" }, thinking: "low", fallbacks: [{ model: "fb-j/warm", thinking: "high" }] }));
+	await tick();
+	const args = next.spawnOptions[0]!.args;
+	assert.equal(args[args.indexOf("--model") + 1], "fb-j/warm:high", "the cooled primary is skipped at launch");
+	assert.ok(task.id);
+});
+
+test("a fallback Pi refuses (no key, unknown model) gives way to the next one, and only the model actually used is announced", async () => {
+	const announced: string[] = [];
+	const h = harness({ state: {}, reject: (command) => command.type === "set_model" && command.provider === "fb-l", onFallback: (_task, change) => { announced.push(`${change.from}->${change.to}`); } });
+	const task = h.runner.run(request({ model: { provider: "fb-k", id: "one" }, fallbacks: [{ model: "fb-l/two" }, { model: "fb-m/three" }] }));
+	await tick();
+	h.children[0].emit(quotaEnd);
+	h.children[0].emit({ type: "agent_settled" });
+	for (let i = 0; i < 6; i++) await tick();
+	assert.deepEqual(h.children[0].written.filter((command) => command.type === "set_model").map((command) => `${command.provider}/${command.modelId}`), ["fb-l/two", "fb-m/three"]);
+	assert.deepEqual(announced, ["fb-k/one->fb-m/three"]);
+	assert.equal(h.store.get(task.id)?.model, "fb-m/three");
+	assert.notEqual(h.store.get(task.id)?.status, TASK_STATUS.FAILED);
+	const none = harness({ state: {}, reject: (command) => command.type === "set_model" });
+	const lost = none.runner.run(request({ model: { provider: "fb-n", id: "one" }, fallbacks: [{ model: "fb-o/two" }] }));
+	await tick();
+	none.children[0].emit(quotaEnd);
+	none.children[0].emit({ type: "agent_settled" });
+	const failed = await none.runner.waitFor(lost.id);
+	assert.equal(failed.status, TASK_STATUS.FAILED);
+	assert.match(failed.error ?? "", /could not switch to fb-o\/two: No API key/);
+});
+
+test("starting on a fallback because the primary is cooling down is announced like any other switch", async () => {
+	const first = harness({ state: {} });
+	first.runner.run(request({ model: { provider: "fb-p", id: "cool" }, fallbacks: [{ model: "fb-q/warm" }] }));
+	await tick();
+	first.children[0].emit(quotaEnd);
+	first.children[0].emit({ type: "agent_settled" });
+	await tick(); await tick();
+	const announced: Array<{ from: string; to: string; category: string; launch?: boolean }> = [];
+	const next = harness({ state: {}, onFallback: (_task, change) => { announced.push(change); } });
+	next.runner.run(request({ model: { provider: "fb-p", id: "cool" }, fallbacks: [{ model: "fb-q/warm" }] }));
+	await tick();
+	assert.deepEqual(announced, [{ from: "fb-p/cool", to: "fb-q/warm", category: "quota", launch: true }]);
+});
+
+test("the task record remembers the model a fallback moved away from", async () => {
+	const h = harness({ state: {} });
+	const task = h.runner.run(request({ model: { provider: "fb-r", id: "one" }, fallbacks: [{ model: "fb-s/two" }] }));
+	await tick();
+	h.children[0].emit(quotaEnd);
+	h.children[0].emit({ type: "agent_settled" });
+	for (let i = 0; i < 4; i++) await tick();
+	assert.equal(h.store.get(task.id)?.fallbackFrom, "fb-r/one");
+	assert.equal(h.store.get(task.id)?.model, "fb-s/two");
+});
+
+test("a fallback step without its own effort runs at the agent's configured effort", async () => {
+	const h = harness({ state: {} });
+	h.runner.run(request({ model: { provider: "fb-u", id: "one" }, thinking: "high", fallbacks: [{ model: "fb-v/two", thinking: "low" }, { model: "fb-w/three" }] }));
+	await tick();
+	for (let round = 0; round < 2; round++) {
+		h.children[0].emit(quotaEnd);
+		h.children[0].emit({ type: "agent_settled" });
+		for (let i = 0; i < 6; i++) await tick();
+	}
+	assert.deepEqual(h.children[0].written.filter((command) => command.type === "set_thinking_level").map((command) => command.level), ["low", "high"]);
+});
+
+test("a launch fallback is announced only once the child actually started", async () => {
+	const first = harness({ state: {} });
+	first.runner.run(request({ model: { provider: "fb-x", id: "cool" }, fallbacks: [{ model: "fb-y/warm" }] }));
+	await tick();
+	first.children[0].emit(quotaEnd);
+	first.children[0].emit({ type: "agent_settled" });
+	await tick(); await tick();
+	const announced: string[] = [];
+	const failing = harness({ failStart: true, onFallback: (_task, change) => { announced.push(change.to); } });
+	const task = failing.runner.run(request({ model: { provider: "fb-x", id: "cool" }, fallbacks: [{ model: "fb-y/warm" }] }));
+	await failing.runner.waitFor(task.id);
+	assert.deepEqual(announced, [], "a spawn that failed announces nothing");
+	const starting = harness({ state: {}, onFallback: (_task, change) => { announced.push(change.to); } });
+	starting.runner.run(request({ model: { provider: "fb-x", id: "cool" }, fallbacks: [{ model: "fb-y/warm" }] }));
+	await tick();
+	assert.deepEqual(announced, ["fb-y/warm"]);
+});
+
+test("a task cancelled after Pi accepted the new model records that model", async () => {
+	const h = harness({ state: {}, hold: (command) => command.type === "set_thinking_level" });
+	const task = h.runner.run(request({ model: { provider: "fb-z", id: "one" }, fallbacks: [{ model: "fb-za/two", thinking: "low" }] }));
+	await tick();
+	h.children[0].emit(quotaEnd);
+	h.children[0].emit({ type: "agent_settled" });
+	for (let i = 0; i < 4; i++) await tick();
+	h.runner.cancel(task.id);
+	const done = await h.runner.waitFor(task.id);
+	assert.equal(done.model, "fb-za/two");
+	assert.equal(done.fallbackFrom, "fb-z/one");
 });

@@ -504,12 +504,30 @@ test("evaluateGuardedCommand: repeated forced branch deletions remain separate m
 	);
 });
 
-test("classifyGuardedCommand: git push plain still confirm when autonomousMode=false even with gitPush=allow in config", () => {
+// Explicit allow in the user config is honored in normal mode too: the
+// permission-allowlist feature writes exactly this entry when the user picks
+// "Always allow" in the confirmation dialog.
+test("classifyGuardedCommand: git push honors explicit allow when autonomousMode=false", () => {
 	const result = classifyGuardedCommand("git push origin feature/test", {
 		autonomousMode: false,
 		guardedCommands: { gitPush: "allow" },
 	});
-	assert.equal(result, "confirm");
+	assert.equal(result, "allow");
+});
+
+// Explicit allow in the user config is honored in normal mode too (see the
+// permission-allowlist feature); explicit confirm keeps asking.
+test("classifyGuardedCommand: pi remove honors explicit allow when autonomousMode=false", () => {
+	const result = classifyGuardedCommand("pi remove my-package", {
+		autonomousMode: false,
+		guardedCommands: { piRemove: "allow" },
+	});
+	assert.equal(result, "allow");
+	const confirmResult = classifyGuardedCommand("pi remove my-package", {
+		autonomousMode: false,
+		guardedCommands: { piRemove: "confirm" },
+	});
+	assert.equal(confirmResult, "confirm");
 });
 
 // ---------------------------------------------------------------------------
@@ -699,14 +717,6 @@ test("loadRuntimeGuardrailsConfig: invalid project config fails safe (autonomous
 // ---------------------------------------------------------------------------
 // When autonomous mode is OFF nothing changes vs current behavior
 // ---------------------------------------------------------------------------
-
-test("classifyGuardedCommand: pi remove confirm when autonomousMode=false", () => {
-	const result = classifyGuardedCommand("pi remove my-package", {
-		autonomousMode: false,
-		guardedCommands: { piRemove: "allow" },
-	});
-	assert.equal(result, "confirm");
-});
 
 test("classifyGuardedCommand: pi remove allowed when autonomousMode=true and piRemove=allow", () => {
 	const result = classifyGuardedCommand("pi remove my-package", {

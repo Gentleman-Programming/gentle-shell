@@ -64,7 +64,12 @@ function unavailable(): SessionProfileAppendOutcome {
  };
 }
 function inactive(): SessionProfileAttachment {
- return { bind: unavailable, clear: unavailable, refresh: unavailable };
+ return {
+  bind: unavailable,
+  bindStartup: unavailable,
+  clear: unavailable,
+  refresh: unavailable,
+ };
 }
 /** Read/revalidate the existing owner without adopting its adapter identity. */
 export function readCurrentSessionProfileOutcome(

@@ -4831,32 +4831,38 @@ class RoutingTablePanel implements OverlayComponent {
 			const model = this.modelValue(key);
 			const effort = this.effortValue(key);
 			const tier = this.draft[key]?.model && this.fastModels.has(this.draft[key]!.model!) ? `  ${this.draft[key]?.tier === "fast" ? "Fast" : "Standard"} ▾` : "";
-			// The shown profile's orchestrator mode is a read-only chip on its row,
-			// after the tier and before the fallback chain. It outranks the chain: the
-			// chain shortens or drops first. The chip degrades its wording before it
-			// disappears, so the mode stays readable beside a tier; it drops only when
-			// even the last resort does not fit. No mouse region: the chip is a reference.
-			const chip = key === PROFILE_ORCHESTRATOR_KEY
-				? ORCHESTRATOR_MODE_CHIP_FORMS
-					.filter((form) => form.mode === this.modeDraft)
-					.find((form) => effortStart + visibleWidth(effort + tier) + visibleWidth(form.text) <= inner)
-				: undefined;
+			// The shown profile's orchestrator mode is a read-only chip on its row.
+			// It sits after the fallback chain, not between the tier and the chain:
+			// that adjacency is existing, asserted behaviour of the row, and a new
+			// reference does not get to move it. The chain therefore keeps the room it
+			// always had, and the chip degrades its own wording before it disappears so
+			// the mode stays readable beside a tier. No mouse region: it is a reference.
 			const modelTone: PanelTone = this.isEdited(key, "model")
 				? "edited"
 				: model === LEAVE_ORCHESTRATOR_UNTOUCHED || model === "inherit" || model === ROUTING_PI_DEFAULT ? "dim" : "text";
 			const effortTone: PanelTone = this.isEdited(key, "thinking") ? "edited" : effort === "inherit" || effort === ROUTING_PI_DEFAULT ? "dim" : "status";
 			const chain = this.fallbacks ? this.chain(key) : [];
-			const room = inner - effortStart - visibleWidth(effort + tier) - (chip ? visibleWidth(chip.text) : 0) - 3;
+			const chips = key === PROFILE_ORCHESTRATOR_KEY
+				? ORCHESTRATOR_MODE_CHIP_FORMS.filter((form) => form.mode === this.modeDraft)
+				: [];
+			// The chip is a reference the profile always shows, so the chain is sized
+			// around its shortest WORD form (the ladder's second rung) instead of the
+			// chip competing for whatever is left. A truncatable chain yielding a few
+			// columns is cheaper than a mode that silently disappears.
+			const reserved = chips.length > 1 ? visibleWidth(chips[1]!.text) : 0;
+			const room = inner - effortStart - visibleWidth(effort + tier) - reserved - 3;
 			const fallback = chain.length && room > 4 ? truncateToWidth(`↪ ${sanitizeTerminalText(chain[0]!.model)}${chain.length > 1 ? ` +${chain.length - 1}` : ""}`, room, "…") : "";
-			const plain = `${focused ? "▸ " : "  "}${padLabel(label)}${truncateToWidth(model, modelCol - 1, "…").padEnd(modelCol)}${effort}${tier}${chip?.text ?? ""}${fallback ? `   ${fallback}` : ""}`;
+			const chipRoom = inner - effortStart - visibleWidth(effort + tier) - (fallback ? visibleWidth(fallback) + 3 : 0);
+			const chip = chips.find((form) => visibleWidth(form.text) <= chipRoom);
+			const plain = `${focused ? "▸ " : "  "}${padLabel(label)}${truncateToWidth(model, modelCol - 1, "…").padEnd(modelCol)}${effort}${tier}${fallback ? `   ${fallback}` : ""}${chip?.text ?? ""}`;
 			const styled =
 				this.renderText(focused ? "▸ " : "  ", "accent")
 				+ this.renderText(padLabel(label), labelTone)
 				+ this.renderText(truncateToWidth(model, modelCol - 1, "…").padEnd(modelCol), modelTone)
 				+ this.renderText(effort, effortTone)
 				+ this.renderText(tier, this.isEdited(key, "tier") ? "edited" : "status")
-				+ (chip ? this.renderText(chip.text, ORCHESTRATOR_MODE_CHIP_TONE) : "")
-				+ (fallback ? `   ${this.renderText(fallback, "dim")}` : "");
+				+ (fallback ? `   ${this.renderText(fallback, "dim")}` : "")
+				+ (chip ? this.renderText(chip.text, ORCHESTRATOR_MODE_CHIP_TONE) : "");
 			if (tier) region({ kind: "tier", row: key }, effortStart + visibleWidth(effort), Math.min(inner, effortStart + visibleWidth(effort + tier)));
 			if (effort) region({ kind: "effort", row: key }, effortStart, inner);
 			region({ kind: "row", row: key }, 0, inner);

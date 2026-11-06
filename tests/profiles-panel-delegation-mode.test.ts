@@ -178,19 +178,31 @@ test("only the last-resort form fitting renders it, and never for the wrong mode
 	assert.doesNotMatch(orchestratorRow(renderPanel([], panelFile(), [], 64, TONE_THEME)), /⇄/, "an organic profile never renders the bolt");
 });
 
-test("short space shortens or drops the fallback chain before the chip, and drops the chip last", () => {
+test("the mode chip sits after the fallback chain and the chain is sized around it", () => {
 	const fallbacks = { chain: () => [{ model: "provider/very-long-model-name-that-is-long" }], save: () => undefined };
-	const roomy = orchestratorRow(renderPanel([], panelFile(), [], 100, undefined, { fallbacks }));
-	assert.match(roomy, /organic/, "the chip is never given up at default width");
-	assert.match(roomy, /↪ /, "the chain still fits, shortened first");
-	assert.doesNotMatch(roomy, /very-long-model-name-that-is-long/, "the chain is the segment that gives way");
-	// The ladder degrades before dropping: at 60 columns the last-resort shape
-	// remains (and it costs the chain its slot), below that the chip is gone.
-	const tight = orchestratorRow(renderPanel([], panelFile(), [], 60, undefined, { fallbacks }));
-	assert.match(tight, /◎ org(?![a-z])/, "the last-resort ladder survives where the word did not");
-	assert.doesNotMatch(tight, /◎ organic|↪/, "the chain yields before the chip degrades");
-	const dropped = orchestratorRow(renderPanel([], panelFile(), [], 50, undefined, { fallbacks }));
-	assert.doesNotMatch(dropped, /◎|⇄|org/, "only when even the last resort cannot fit is the chip gone");
+	const fastModels = ["openai/gpt-6.1-sol"];
+	const row = (width: number) => orchestratorRow(renderPanel([], panelFile(), [], width, undefined, { fallbacks, fastModels }));
+
+	// Default width: the chain and the mode coexist, in that order.
+	const roomy = row(100);
+	assert.match(roomy, /◎ (?:organic|org)\b/, "the chip keeps a readable form at default width");
+	assert.match(roomy, /↪ /, "the chain keeps its slot at default width");
+	assert.doesNotMatch(roomy, /very-long-model-name-that-is-long/, "the long chain model is what shortens");
+	// Existing row behaviour this feature must not move: the chain sits directly
+	// after the tier, and the chip follows it instead of pushing in between.
+	assert.match(roomy, /(?:Standard|Fast) ▾\s+↪ /, "the tier-to-chain adjacency stays exactly where it was");
+
+	// Narrowing: the chain is what the chip's reserved slot takes, so the chain
+	// goes first and the mode stays readable for as long as any of the row fits.
+	const narrowed = row(70);
+	assert.match(narrowed, /◎ org\b/, "the mode survives where the chain no longer fits");
+	assert.doesNotMatch(narrowed, /↪/, "the chain is what the chip's slot displaced");
+
+	// Very narrow: the row has no room for a reference at all, and the model name
+	// wins, exactly as it did before this feature existed.
+	const tight = row(60);
+	assert.doesNotMatch(tight, /◎|⇄/, "no mode chip once the row cannot hold one");
+	assert.match(tight, /gpt-6\.1-sol/, "the model name is never what gives way");
 });
 
 // ---- focused-Orchestrator mode explainer ----------------------------------

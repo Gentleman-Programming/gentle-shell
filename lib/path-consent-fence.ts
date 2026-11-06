@@ -109,24 +109,19 @@ function insideBoundary(target: string, roots: readonly string[]): boolean {
 }
 
 // Locations the harness itself owns. They exempt read tools only; a write or
-// edit there still needs consent. `leaf` limits the root to direct children
-// whose name matches (Pi's output files share the OS temp directory with
-// unrelated files); `exclude` names direct children that stay fenced.
+// edit there still needs consent. Default deny: only `dir` and what is below it
+// pass, never an ancestor, so a parent that also holds private files is never
+// listed itself. `leaf` limits the root to direct children whose name matches
+// (Pi's output files share the OS temp directory with unrelated files).
 export interface ReadOnlyRoot {
 	dir: string;
 	leaf?: RegExp;
-	exclude?: readonly string[];
 }
 
 export const READ_ONLY_PATH_TOOL_NAMES: ReadonlySet<string> = new Set(["read", "grep", "find", "ls"]);
 
 function insideReadOnlyRoot(target: string, readOnlyRoots: readonly ReadOnlyRoot[]): boolean {
-	return readOnlyRoots.some(({ dir, leaf, exclude }) => {
-		if (leaf) return dirname(target) === dir && leaf.test(basename(target));
-		if (target !== dir && !target.startsWith(dir + sep)) return false;
-		const [first] = target.slice(dir.length + 1).split(sep);
-		return target === dir || !exclude?.includes(first);
-	});
+	return readOnlyRoots.some(({ dir, leaf }) => (leaf ? dirname(target) === dir && leaf.test(basename(target)) : target === dir || target.startsWith(dir + sep)));
 }
 
 export function resolveOutsidePaths(paths: readonly string[], cwd: string, roots: readonly string[], readOnlyRoots: readonly ReadOnlyRoot[] = []): string[] {

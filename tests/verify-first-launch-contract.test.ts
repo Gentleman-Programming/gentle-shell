@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, before } from "node:test";
+import { blockChildDestructiveCommand } from "../extensions/child-safety.ts";
 import { __testing } from "../extensions/gentle-ai.ts";
+import { recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
 
 // gentle-shell#1731 T16 (S5; L33-L34): in the after3 bench (B x4/x5) the first
 // verify launch ran no probes because the handoff said only "read-only" and
@@ -132,6 +135,46 @@ test("T16/W1: the scratch copy method cannot write outside the scratch directory
 		"never `git worktree`, `git stash`, or a symlink into the workspace",
 		"set `HOME` and `TMPDIR` inside the scratch directory",
 	], "scratch copy method");
+});
+
+// gentle-shell#2818: the prompt asked for a copy without `.git` but named only
+// `cp -a --reflink=auto`, which cannot exclude anything. Verifiers then ran
+// `rm -rf "$s/work/.git"` (blocked by child safety) or `cp --exclude` (no such
+// option), so no probe ran. The prompt names one exact guard-compatible form.
+const SCRATCH_COPY = /`(mkdir -p "\$s\/work" && tar --exclude=\.\/\.git [^`]+)`/;
+
+test("#2818: the scratch copy names one exact command the child guard allows", () => {
+	const command = verify.match(SCRATCH_COPY)?.[1];
+	assert.ok(command, "verify must name the exact tar scratch copy command");
+	assert.deepEqual(recognizeDestructiveCommands(command), []);
+	assert.equal(blockChildDestructiveCommand(command), undefined);
+	assert.ok(!verify.includes("for example `cp -a --reflink=auto`"), "the cp example cannot exclude `.git`");
+	containsAll(verify, [
+		"never copy `.git` and delete it afterwards",
+		"`cp` has no `--exclude` option",
+	], "scratch copy method");
+});
+
+test("#2818: the named scratch copy omits top-level .git and keeps dotfiles, dependencies and symlinks", () => {
+	const command = verify.match(SCRATCH_COPY)?.[1];
+	assert.ok(command);
+	const workspace = join(scratch, "workspace");
+	mkdirSync(join(workspace, ".git", "objects"), { recursive: true });
+	writeFileSync(join(workspace, ".git", "HEAD"), "ref: refs/heads/main\n");
+	writeFileSync(join(workspace, ".env.example"), "KEY=\n");
+	mkdirSync(join(workspace, "node_modules", "dep"), { recursive: true });
+	writeFileSync(join(workspace, "node_modules", "dep", "index.js"), "module.exports = 1;\n");
+	mkdirSync(join(workspace, "node_modules", ".bin"));
+	symlinkSync("../dep/index.js", join(workspace, "node_modules", ".bin", "dep"));
+	const s = mkdtempSync(join(scratch, "probe-"));
+	const result = spawnSync("bash", ["-c", command], { cwd: workspace, env: { ...process.env, s }, encoding: "utf8" });
+	assert.equal(result.status, 0, result.stderr);
+	const work = join(s, "work");
+	assert.equal(existsSync(join(work, ".git")), false);
+	assert.equal(readFileSync(join(work, ".env.example"), "utf8"), "KEY=\n");
+	assert.equal(readFileSync(join(work, "node_modules", "dep", "index.js"), "utf8"), "module.exports = 1;\n");
+	assert.equal(readlinkSync(join(work, "node_modules", ".bin", "dep")), "../dep/index.js");
+	assert.equal(existsSync(join(workspace, ".git", "HEAD")), true);
 });
 
 // T21 (L44): in after4, verify reported a behavior already present at the

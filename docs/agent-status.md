@@ -49,11 +49,12 @@ Pi. Children and noninteractive sessions do not publish. Herdr remains unchanged
 
 ## Privacy
 
-On POSIX the directory is created 0700 and files 0600; an existing status
-directory with looser permissions, a config home that another account owns or
-that is world-writable, and symlinked directories or files found when writing are
-refused (nothing is written). The config home's parent directories are trusted to
-belong to you. Windows has no extra ACL check: the files inherit the config home's
+A symlinked config home, status directory, or status file is refused (nothing is
+written). Directories above the config home are trusted and may be symlinks.
+On POSIX the status directory is created 0700 and files 0600; an existing status
+directory with any group/other permissions, or a config home owned by another
+account or writable by group or others, is refused. Windows has no extra ACL
+check: the files inherit the config home's
 permissions, which are private under the default user profile. The files contain workspace paths,
 session IDs and Todo titles: do not put secrets in titles or expose this directory
 through a public server. Prompts, tool arguments/results and Todo notes are not

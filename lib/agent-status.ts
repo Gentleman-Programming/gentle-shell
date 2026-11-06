@@ -18,31 +18,33 @@ export function agentStatus(input: Omit<AgentStatus, "schema" | "updatedAt">, no
 
 /** Private, best-effort store. No destination file is ever opened for writing. */
 export function createAgentStatusStore(home: string, session: string) {
-	const root = join(resolve(home), "agent-status");
+	const configHome = resolve(home);
+	const root = join(configHome, "agent-status");
 	const path = join(root, `${createHash("sha256").update(session).digest("hex")}.json`);
 	const owned = (stat: fs.Stats) => process.platform === "win32" || stat.uid === process.getuid?.();
 	const directory = (create: boolean) => {
-		// Validate ancestors before creation: recursive mkdir must not traverse links.
+		// Validate through the config home only; its ancestors are trusted.
 		const ensure = (dir: string): void => {
 			try {
 				const stat = fs.lstatSync(dir);
 				if (!stat.isDirectory() || stat.isSymbolicLink()) throw Error("unsafe-directory");
 			} catch (error) {
 				if (!create || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-				ensure(dirname(dir)); fs.mkdirSync(dir, { mode: 0o700 });
+				if (dir === configHome) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+				else { ensure(dirname(dir)); fs.mkdirSync(dir, { mode: 0o700 }); }
 			}
-			if (dirname(dir) !== dir) ensureExisting(dirname(dir));
+			if (dir !== configHome) ensureExisting(dirname(dir));
 		};
 		const ensureExisting = (dir: string): void => {
 			const stat = fs.lstatSync(dir);
 			if (!stat.isDirectory() || stat.isSymbolicLink()) throw Error("unsafe-directory");
-			if (dirname(dir) !== dir) ensureExisting(dirname(dir));
+			if (dir !== configHome) ensureExisting(dirname(dir));
 		};
-		// Ancestors are user-controlled (same model as orchestrator presence); still refuse a
-		// foreign or world-writable config home, where another account could swap the root.
+		// Same trust boundary as orchestrator presence: refuse a foreign-owned or
+		// group/other-writable config home, where another account could swap the root.
 		const home = () => {
 			const parent = fs.lstatSync(dirname(root));
-			if (!owned(parent) || (process.platform !== "win32" && (parent.mode & 0o002) !== 0)) throw Error("unsafe-home");
+			if (!parent.isDirectory() || parent.isSymbolicLink() || !owned(parent) || (process.platform !== "win32" && (parent.mode & 0o022) !== 0)) throw Error("unsafe-home");
 		};
 		try { home(); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 		ensure(root); home();

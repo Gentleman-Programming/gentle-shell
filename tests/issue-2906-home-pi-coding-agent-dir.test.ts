@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,13 +14,21 @@ function ownGentlePiVersion(): string {
 	return JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")).version;
 }
 
+/**
+ * Creates an executable script fixture for testing launcher execution.
+ *
+ * @param path - Destination file path for the script.
+ * @param content - Script file contents.
+ * @returns Executable path (cmd wrapper on Windows, script path on POSIX).
+ */
 function makeExecutableScript(path: string, content: string): string {
-	writeFileSync(path, content, "utf8");
+	writeFileSync(path, content, { encoding: "utf8", mode: 0o755 });
 	if (process.platform === "win32") {
 		const cmdPath = `${path}.cmd`;
 		writeFileSync(cmdPath, `@echo off\r\n"${process.execPath}" "${path}" %*\r\nexit /b %errorlevel%\r\n`, "utf8");
 		return cmdPath;
 	}
+	chmodSync(path, 0o755);
 	return path;
 }
 

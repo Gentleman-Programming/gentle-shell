@@ -1482,6 +1482,11 @@ const SETUP_LOCK_STALE_MS = 15 * 60 * 1000;
 // path home that is new (does not exist yet) or empty — or one this launcher
 // has already provisioned before, per the config marker — is fair game;
 // everything else (R1-001) is left alone with a one-time hint instead.
+/**
+ * Resolves the canonical default directory for Pi agent home (~/.pi/agent).
+ *
+ * @returns {string} The canonical default path.
+ */
 function defaultPiAgentDir() {
 	return join(homedir(), ".pi", "agent");
 }

@@ -16,7 +16,7 @@ test("priceBridgeMessage prices a zero-cost claude-bridge message at the Anthrop
 	const priced = priceBridgeMessage(message, catalog);
 	assert.ok(priced);
 	// 1M input * $4 + 100k output * $20 + 2M cache read * $0.2 + 200k cache write * $5
-	assert.deepEqual(priced.usage.cost, { input: 4, output: 2, cacheRead: 0.4, cacheWrite: 1, total: 7.4 });
+	assert.deepEqual(priced.usage.cost, { input: 4, output: 2, cacheRead: 0.4, cacheWrite: 1, total: 7.4, totalFromProvider: false }, "a catalog estimate, not a provider-billed total");
 	assert.equal(priced.usage.totalTokens, 3_300_000, "token counts stay as the bridge reported them");
 	assert.equal(message.usage.cost.total, 0, "the original message is not mutated");
 });

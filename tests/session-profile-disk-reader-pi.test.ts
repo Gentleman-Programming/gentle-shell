@@ -33,6 +33,10 @@ assert.ok(
 console.info(
 	`Public SessionManager fixture API: ${version}; minimum tested baseline 1.0.0`,
 );
+// Pi 1.5 rolls a failed session write back out of memory (#11460); older Pi
+// keeps it on the branch as a ghost entry absent from disk.
+const [major, minor] = version.split(".").map(Number);
+const rollsBackFailedWrites = major > 1 || minor >= 5;
 
 function fixture(t: TestContext) {
 	const root = mkdtempSync(join(tmpdir(), "profile-reader-pi-"));
@@ -131,6 +135,8 @@ for (const recovery of ["bind", "clear"] as const) {
 		const saved = `${file}.saved`;
 		renameSync(file, saved);
 		mkdirSync(file);
+		const goodId = manager.getLeafId();
+		assert.ok(goodId);
 		assert.throws(
 			() => manager.appendCustomEntry(customType, bind("failed")),
 			(error: unknown) => {
@@ -138,13 +144,17 @@ for (const recovery of ["bind", "clear"] as const) {
 				return true;
 			},
 		);
-		const failedId = manager.getLeafId();
-		assert.ok(failedId);
+		const failedId = rollsBackFailedWrites ? undefined : manager.getLeafId();
+		if (rollsBackFailedWrites) assert.equal(manager.getLeafId(), goodId);
+		else assert.ok(failedId && failedId !== goodId);
 		assert.equal(readSessionProfileDisk(manager).status, "indeterminate");
 		renameSync(file, `${file}.fault-directory`);
 		renameSync(saved, file);
-		assert.equal(readSessionProfileDisk(manager).status, "indeterminate");
-		const knownFailedEntryIds = new Set([failedId]);
+		// Without a ghost the leaf is the persisted good record, so the disk corroborates it.
+		const unquarantined = readSessionProfileDisk(manager);
+		assert.equal(unquarantined.status, rollsBackFailedWrites ? "bound" : "indeterminate");
+		if (unquarantined.status === "bound") assert.equal(unquarantined.binding.name, "good");
+		const knownFailedEntryIds = new Set(failedId ? [failedId] : []);
 		const old = readSessionProfileDisk(manager, { knownFailedEntryIds });
 		assert.equal(old.status, "bound");
 		if (old.status === "bound") assert.equal(old.binding.name, "good");
@@ -154,7 +164,7 @@ for (const recovery of ["bind", "clear"] as const) {
 		);
 		const latest = manager.getBranch().at(-1);
 		assert.ok(latest);
-		assert.equal(latest.parentId, failedId);
+		assert.equal(latest.parentId, failedId ?? goodId);
 		const disk = readFileSync(file, "utf8")
 			.trim()
 			.split("\n")
@@ -172,8 +182,10 @@ for (const recovery of ["bind", "clear"] as const) {
 			recovery === "bind" ? "bound" : "cleared",
 		);
 		const reopened = SessionManager.open(file, sessions);
-		assert.equal(reopened.getBranch().length, 1);
-		assert.equal(reopened.getBranch()[0].id, latest.id);
+		assert.equal(reopened.getBranch().at(-1)?.id, latest.id);
+		// Pi truncates the resumed branch at a missing failed parent; without one it keeps the good parent.
+		if (failedId) assert.equal(reopened.getBranch().length, 1);
+		else assert.equal(reopened.getBranch().at(-1)?.parentId, goodId);
 		assert.equal(
 			readSessionProfileDisk(reopened).status,
 			recovery === "bind" ? "bound" : "cleared",

@@ -35,6 +35,10 @@ assert.ok(
 console.info(
  `Public append controller fixture API: ${version}; minimum tested baseline 1.0.0`,
 );
+// Pi 1.5 rolls a failed session write back out of memory (#11460); older Pi
+// keeps it on the branch as a ghost entry absent from disk.
+const [major, minor] = version.split(".").map(Number);
+const rollsBackFailedWrites = major > 1 || minor >= 5;
 function controller(manager: SessionManager, errors: unknown[] = []) {
  // Extension appendEntry is void; the actual public manager's ID is ignored.
  return createSessionProfileAppendController(manager, (type, data): void => {
@@ -163,14 +167,21 @@ for (const failure of ["bind", "clear"] as const) {
    const saved = `${file}.saved`;
    renameSync(file, saved);
    mkdirSync(file);
+   const leafBefore = manager.getLeafId();
+   const lengthBefore = manager.getBranch().length;
    const failed =
     failure === "bind" ? adapter.bind("failed", {}) : adapter.clear();
    assert.equal(failed.status, "indeterminate");
    assert.equal(errors.length, 1);
    assert.equal((errors[0] as NodeJS.ErrnoException).code, "EISDIR");
-   const ghost = manager.getBranch().at(-1);
-   assert.ok(ghost);
-   assert.equal(ghost.type, "custom");
+   const ghost = rollsBackFailedWrites ? undefined : manager.getBranch().at(-1);
+   if (rollsBackFailedWrites) {
+    assert.equal(manager.getLeafId(), leafBefore);
+    assert.equal(manager.getBranch().length, lengthBefore);
+   } else {
+    assert.ok(ghost);
+    assert.equal(ghost.type, "custom");
+   }
    // Recover fixture filesystem by moves, not history edits or private APIs.
    renameSync(file, `${file}.fault-directory`);
    renameSync(saved, file);
@@ -179,13 +190,15 @@ for (const failure of ["bind", "clear"] as const) {
    bound(preserved, "good");
    const branch = manager.getBranch();
    const good = branch.find(
-    (entry) => entry.type === "custom" && entry.id !== ghost.id,
+    (entry) => entry.type === "custom" && entry.id !== ghost?.id,
    );
    assert.ok(good);
    manager.branch(good.id);
    bound(adapter.refresh(), "good");
-   manager.branch(ghost.id);
-   bound(adapter.refresh(), "good");
+   if (ghost) {
+    manager.branch(ghost.id);
+    bound(adapter.refresh(), "good");
+   }
    const recovered =
     recovery === "bind" ? adapter.bind("recovered", {}) : adapter.clear();
    assert.equal(recovered.status, "persisted");
@@ -195,15 +208,17 @@ for (const failure of ["bind", "clear"] as const) {
    );
    const latest = manager.getBranch().at(-1);
    assert.ok(latest);
-   assert.equal(latest.parentId, ghost.id);
+   assert.equal(latest.parentId, (ghost ?? good).id);
    const disk = readFileSync(file, "utf8")
     .trim()
     .split("\n")
     .map((line) => JSON.parse(line));
-   assert.equal(
-    disk.some((row) => row.id === ghost.id),
-    false,
-   );
+   if (ghost) {
+    assert.equal(
+     disk.some((row) => row.id === ghost.id),
+     false,
+    );
+   }
    assert.deepEqual(
     disk.find((row) => row.id === latest.id),
     JSON.parse(JSON.stringify(latest)),
@@ -215,16 +230,25 @@ for (const failure of ["bind", "clear"] as const) {
     restored.state.status,
     recovery === "bind" ? "bound" : "cleared",
    );
-   // Pi truncates the resumed branch at the missing failed parent. The new
-   // selected record is valid authority without history repair/full ancestry.
-   assert.equal(reopened.getBranch().length, 1);
-   assert.equal(
-    reopened.getBranch().some((entry) => entry.id === ghost.id),
-    false,
-   );
    assert.equal(reopened.getBranch().at(-1)?.id, latest.id);
-   manager.branch(ghost.id);
-   bound(adapter.refresh(), "good");
+   if (ghost) {
+    // Pi truncates the resumed branch at the missing failed parent. The new
+    // selected record is valid authority without history repair/full ancestry.
+    assert.equal(reopened.getBranch().length, 1);
+    assert.equal(
+     reopened.getBranch().some((entry) => entry.id === ghost.id),
+     false,
+    );
+    manager.branch(ghost.id);
+    bound(adapter.refresh(), "good");
+   } else {
+    // With nothing rolled back, the resumed branch keeps the good parent.
+    assert.equal(
+     reopened.getBranch().find((entry) => entry.id === latest.id)?.parentId,
+     good.id,
+    );
+    assert.ok(reopened.getBranch().some((entry) => entry.id === good.id));
+   }
   });
  }
 }

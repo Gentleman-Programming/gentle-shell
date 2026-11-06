@@ -11,7 +11,14 @@ export interface NanProviderOptions {
 	timeoutMs?: number;
 }
 
-type NanChatModelConfig = Extract<ProviderModelConfig, { type?: "chat" }>;
+// Pi 1.5 derives its compat and thinking-map types from pi-schema, which collapse to
+// `unknown` without strictNullChecks; NaN declares the fields it sets.
+export type NanThinkingLevelMap = Partial<Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max", string | null>>;
+export interface NanCompat { maxTokensField?: "max_completion_tokens" | "max_tokens" }
+type NanChatModelConfig = Omit<Extract<ProviderModelConfig, { type?: "chat" }>, "compat" | "thinkingLevelMap"> & {
+	compat?: NanCompat;
+	thinkingLevelMap?: NanThinkingLevelMap;
+};
 
 // Pi requires numeric rates; NaN access is quota-based, so zero avoids inventing per-token pricing.
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };

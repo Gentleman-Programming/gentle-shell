@@ -127,7 +127,7 @@ test("serialized inputs remain byte-for-byte unchanged at validation and facade 
 });
 
 test("actual validation rejects arrays, null and coerced primitives rather than admitting native calls", async () => {
-	for (const value of [[], 123, true, "123", "null", "[]"]) {
+	for (const value of [[], 123, true, "123", "[]"]) {
 		for (const operation of ["start", "assess", "answer-consent", "inspect", "reset", "recover"]) {
 			assert.throws(() => validate("gentle_review", { operation, input: value }), /Validation failed/);
 		}
@@ -136,11 +136,12 @@ test("actual validation rejects arrays, null and coerced primitives rather than 
 	}
 	let calls = 0;
 	const native = new Proxy({}, { get() { return async () => { calls++; throw new Error("unexpected native execution"); }; } }) as NativeReviewCli;
-	for (const value of [null, false]) {
+	// Pi 1.5 coerces "null", "0", "", 0 and "NULL" to null like TypeBox did for false; the facade still rejects them.
+	for (const value of [null, false, "null", "0", "", 0, "NULL"]) {
 		for (const operation of ["start", "assess", "answer-consent", "inspect", "reset", "recover"]) {
 			const validated = validate("gentle_review", { operation, input: value });
 			assert.equal(validated.input, null, "nullable shell preserves null instead of stripping it to omitted");
-			await assert.rejects(__testing.executeReviewControllerOperation(validated, process.cwd(), native));
+			await assert.rejects(__testing.executeReviewControllerOperation(validated, process.cwd(), native), operation === "start" || operation === "assess" || operation === "answer-consent" ? /Review JSON argument must be a serialized object string or JSON object/ : /Review controller input must be a string/);
 		}
 		assert.throws(() => validate("gentle_review_capture", { lineageId: "l", collectBinding: value }), /Validation failed/);
 		assert.throws(() => validate("gentle_review_capture_group", { lineageId: "l", collectBindings: [binding, value] }), /Validation failed/);

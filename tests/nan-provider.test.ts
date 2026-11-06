@@ -6,6 +6,11 @@ import type { Provider } from "@earendil-works/pi-ai";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import nanProviderExtension from "../extensions/nan-provider.ts";
 import { createNanProviderConfig as createNativeProvider, isNanAdaptiveReasoningModel, NAN_PROVIDER_BASE_URL, NAN_PROVIDER_ID } from "../lib/nan-provider.ts";
+import type { NanCompat, NanThinkingLevelMap } from "../lib/nan-provider.ts";
+
+// Pi 1.5's schema-derived compat and thinking-map types are `unknown` without strictNullChecks.
+const compatOf = (model: { compat?: unknown }) => model.compat as NanCompat | undefined;
+const levelsOf = (model: { thinkingLevelMap?: unknown }) => model.thinkingLevelMap as NanThinkingLevelMap | undefined;
 
 // Keep catalog assertions independent of the native refresh's void return contract.
 function createNanProviderConfig(options: Parameters<typeof createNativeProvider>[0] = {}) {
@@ -215,7 +220,7 @@ test("only NaN DeepSeek serializes its unchanged output cap as max_tokens", asyn
 	assert.ok(!Object.hasOwn(body!, "max_completion_tokens"));
 	assert.equal(body?.reasoning_effort, "minimal");
 	assert.equal(model.maxTokens, 131_072);
-	assert.equal(model.compat?.maxTokensField, "max_tokens");
+	assert.equal(compatOf(model)?.maxTokensField, "max_tokens");
 	assert.ok(models.filter((candidate) => candidate.id !== model.id).every((candidate) => candidate.compat === undefined));
 });
 
@@ -224,10 +229,10 @@ test("DeepSeek compat is isolated across snapshots, providers, and live refreshe
 	for (const live of [false, true]) {
 		if (live) await provider.refreshModels!(refreshContext({ type: "api_key", key: "synthetic-key" }));
 		const model = provider.getModels().find((model) => model.id === "deepseek-v4-flash")!;
-		assert.equal(model.compat?.maxTokensField, "max_tokens");
-		model.compat!.maxTokensField = "max_completion_tokens";
-		assert.equal(provider.getModels().find((candidate) => candidate.id === model.id)!.compat?.maxTokensField, "max_tokens");
-		assert.equal(createNativeProvider().getModels().find((model) => model.id === "deepseek-v4-flash")!.compat?.maxTokensField, "max_tokens");
+		assert.equal(compatOf(model)?.maxTokensField, "max_tokens");
+		compatOf(model)!.maxTokensField = "max_completion_tokens";
+		assert.equal(compatOf(provider.getModels().find((candidate) => candidate.id === model.id)!)?.maxTokensField, "max_tokens");
+		assert.equal(compatOf(createNativeProvider().getModels().find((model) => model.id === "deepseek-v4-flash")!)?.maxTokensField, "max_tokens");
 	}
 });
 
@@ -280,17 +285,19 @@ test("thinking maps are isolated across snapshots, providers, and live catalog r
 	});
 	const baseline = provider.getModels();
 	for (const model of provider.getModels()) {
-		assert.ok(model.thinkingLevelMap);
-		model.thinkingLevelMap.off = "mutated";
-		model.thinkingLevelMap.medium = null;
+		const levels = levelsOf(model);
+		assert.ok(levels);
+		levels.off = "mutated";
+		levels.medium = null;
 	}
 	assert.deepEqual(provider.getModels(), baseline);
 	assert.deepEqual(createNativeProvider().getModels(), baseline);
 	await provider.refreshModels!(refreshContext({ type: "api_key", key: "map-key" }));
 	assert.deepEqual(provider.getModels(), baseline);
 	for (const model of provider.getModels()) {
-		assert.ok(model.thinkingLevelMap);
-		model.thinkingLevelMap.xhigh = "mutated";
+		const levels = levelsOf(model);
+		assert.ok(levels);
+		levels.xhigh = "mutated";
 	}
 	assert.deepEqual(provider.getModels(), baseline);
 	await provider.refreshModels!(refreshContext({ type: "api_key", key: "map-key" }));

@@ -91,7 +91,24 @@ flowchart TD
 
 This is guidance through existing tools, not a new CLI, phase, state engine, or execution harness. Static prompt tests and scripted hook checks prove instruction delivery, not autonomous model adherence; actual create/update/resume behavior requires observed Pi sessions.
 
+## Universal agent-status file
+
+Interactive top-level sessions publish private, per-session JSON status files for
+small adapters in any terminal tool, independently of Herdr. See
+[agent-status format and reader example](agent-status.md) for the location, fields,
+heartbeat/staleness rules and privacy guidance. The task-summary preference also
+controls titles in these files; existing Herdr behavior is unchanged.
+
 ## Herdr active-work summary
+
+Choose `/gentle:customize` → **Layout** → **Task summary: on/off** to show or
+hide the active-task summary published to terminal tools (for example Herdr's
+sidebar). On is the default. Highlighting a choice does not save it; press Enter
+or Space to apply it now. The preference is stored as `enabled` in
+`herdr-task-summary.json` in the active launch's Gentle Pi config home (including
+any `GENTLE_PI_CONFIG_HOME` override). Existing summary colors are preserved. Malformed or
+unreadable preferences are refused with an error and left unchanged. This option
+does not edit Herdr config or change the local Todo list.
 
 Under Herdr, root interactive Pi sessions publish only the `in_progress` Todo
 title, prefixed with `◐`. No phase, working/verifying label or tool fallback is
@@ -161,6 +178,14 @@ otherwise `herdr` from `PATH`, without a shell.
 | **Verified native runtime**    | The current source checkout provisions the exact package-local Gentle AI v4.3.1 runtime: signed, SHA-256-pinned release archives on Darwin/Linux and a Go SumDB-verified source build on Windows x64/arm64. It validates package-local integrity and rejects PATH, global, sibling, symlink, and mode fallbacks. |
 | **Runtime safety**             | Blocks destructive shell commands, asks for confirmation for sensitive operations, and blocks direct read/write/edit/grep/find/ls access to sensitive paths (the guard checks the tool's `path` input, so a search scoped to a directory still reads whatever that directory contains, and bash is not covered). Blocks writing a test file that reads git history at a literal commit or points `TMPDIR` inside the working directory (including a relative path such as `.tmp`, `./.tmp`, or `tmp/x`), in the primary session and in subagents. Refuses native review tools (`gentle_review*`) called from inside another tool, such as a codemode script: they run only as direct tool calls. |
 
+## TPS notifications
+
+Gentle Shell and the `gentle-pi` Pi package automatically load the TPS extension; no separate installation or command is needed. In UI-enabled sessions it shows an informational notification such as `TPS 410.0 tok/s. out 1,025, in 1,750, cache r/w 4,100/50, total 6,925, 2.5s` at the end of a run.
+
+The notification sums the reported usage of assistant messages in that run. TPS is output tokens divided by elapsed wall time from `agent_start` to `agent_end`, including tool execution and waits within the run; it is not model-only streaming speed. Automatic retries and queued follow-ups can start separate runs and produce separate notifications. Runs without a start, positive elapsed time, positive output, or a UI do not produce a notification.
+
+An old manually installed `tps.ts` (for example, `.pi/extensions/tps.ts`) may produce duplicate notifications alongside the bundled extension. Disable or remove that manual copy yourself if you do not want both; Gentle Shell does not delete it.
+
 ## Audio notifications
 
 Audio is off by default. `/gentle:customize` → **Notifications** shows audio controls directly in the same customization modal, separate from visual settings and profiles: global enable/disable, three independent type groups (**Success**, **Error**, **Attention**) that each own a builtin tone or a validated absolute local WAV, per-event exceptions folded behind **Advanced**, explicit preview, and process mute/resume. Enter cycles a type/event sound; `f` edits its local WAV path inline and `p` previews it. Preview does not enable or save automatic audio. Invalid/unreadable configuration requires fresh explicit replacement confirmation. RPC (including interactive hosts) and children remain silent. Linux/macOS listening and manual lifecycle verification are pending; Windows audio is unavailable. See [sound notifications](sound-notifications.md) for the complete schema, defaults, file security, retention costs and manual matrix.
@@ -215,11 +240,11 @@ gentle-shell --link
 pi install npm:gentle-pi
 ```
 
-This installs the current npm release; select an explicit version if you need a reproducible pin. Restart Pi after installation, then run `gentle-ai sync`. Check the [published releases](https://github.com/Gentleman-Programming/gentle-shell/releases) for version-specific runtime and provider-contract pairing.
+This installs the current npm release from the `latest` dist-tag. For a reproducible pin, use `pi install npm:gentle-pi@<version>` with a published version. Restart Pi after installation, then run `gentle-ai sync`. Check the [published releases](https://github.com/Gentleman-Programming/gentle-shell/releases) for version-specific runtime and provider-contract pairing.
 
 ### Source checkout
 
-This checkout declares `gentle-pi` `4.0.0` with a package-local Gentle AI `v4.3.1` pin. Checkout metadata alone is not proof of npm publication; verify the registry version and its release workflow.
+This checkout declares its `gentle-pi` version in [`package.json`](../package.json), with a package-local Gentle AI `v4.3.1` pin. Checkout metadata alone is not proof of npm publication; verify the registry version and its release workflow.
 
 ### Pi compatibility
 
@@ -237,14 +262,9 @@ Malformed/nonobject JSON, symlink/nonregular settings, unsafe paths, or a busy s
 
 ### RDD history and default
 
-Native RDD was introduced in `gentle-pi` `v0.15.0` on 2026-07-10 with bounded review transactions. The current stable release, [`v3.5.1`](https://github.com/Gentleman-Programming/gentle-shell/releases/tag/v3.5.1), includes native RDD:
+Native RDD was introduced in `gentle-pi` `v0.15.0` on 2026-07-10 with bounded review transactions. Current releases include native RDD; use the [installation guidance above](#path-b-inside-an-existing-pi) for the current npm release or an explicit version pin. The introduction version is historical context, not a separate stable/unstable release line.
 
-```bash
-# Stable release
-pi install npm:gentle-pi@3.5.1
-```
-
-RDD is optional and on by default (since Gentle AI v4.0.0). Turn it off anytime with `/gentle:review-mode disable` for this clone or `gentle-ai review mode disable` machine-wide; `/gentle:review-mode enable` only clears a clone-local off, and `status` lets you inspect the mode without changing it. The `.git/gentle-ai/candidate-views` parent must sit on a filesystem that honors private POSIX modes (or equivalent Windows ACLs); WSL DrvFS mounts without metadata can reject START before lineage creation.
+RDD is optional and on by default (since Gentle AI v4.0.0). Open `/gentle:rdd` to inspect the effective mode and deciding source, then explicitly select a repository or machine-wide action. The RDD entry in `/gentle:customize` shows the state checked when the card opened; explicitly applying it closes Customize and opens the same selector with fresh status. Highlighting the entry does not change RDD. Cancelling leaves both unchanged. Repository enable clears a clone-local off but cannot override machine-wide off; machine-wide enable does not clear a clone-local off. `/gentle:review-mode status|enable|disable` retains its existing clone-local behavior. These controls neither grant provider review consent nor change permission modes. The `.git/gentle-ai/candidate-views` parent must sit on a filesystem that honors private POSIX modes (or equivalent Windows ACLs); WSL DrvFS mounts without metadata can reject START before lineage creation.
 
 The source checkout's RDD integration installs Gentle AI only into its private `.gentle-ai/` directory. Darwin and Linux use pinned release assets with asset and executable SHA-256 verification (signed archives for source pin `v4.3.1`; raw prerelease binaries only under a prerelease pin). Windows x64 and arm64 build the exact `v4.3.1` source tag with a local Go 1.25.10+ toolchain, a sealed Go environment, `GOTOOLCHAIN=local`, and `GOSUMDB=sum.golang.org`; it does not download Go automatically (the [installation wizard](install-wizard.md#pinned-go) can put its own pinned Go first on PATH for that build). Go runs in a short private directory under the system temp directory, never inside the package, because a deep pnpm store path pushes Go's working directories past MAX_PATH; a failed build prints its whole cause chain with the failing command's output tail. Windows provenance is Go-toolchain plus SumDB evidence and postinstall tamper detection, **not** Authenticode or protection against a malicious joint binary-and-manifest replacement. Package-private locks coordinate cooperative concurrent or crashed installers; their tombstones fail closed. A malicious same-user process with write access to package-private `node_modules` is outside that protocol because it can already replace package code, binary, or manifest, and portable Node has no pathname-delete CAS. It never uses `PATH` or a global `gentle-ai` installation. For development or offline installs only, set `GENTLE_PI_SKIP_GENTLE_AI_INSTALL=1`; native review operations then fail closed with an actionable `package-local-binary-missing` error. To recover explicitly, if `GENTLE_PI_SKIP_GENTLE_AI_INSTALL` is set, remove or unset it before changing to the installed `gentle-pi` package directory. Then run `node scripts/install-gentle-ai.mjs`. This invokes the package-owned installer without relying on a global binary or npm configuration change. A missing binary can result from skipped lifecycle scripts, but does not prove that lifecycle scripts were disabled.
 
@@ -305,7 +325,7 @@ gentle-shell home [link|isolated|<path>]
 gentle-shell [home selectors] setup [--dry-run]
 gentle-shell upgrade [--channel release|main]
 gentle-shell upgrade --rollback
-gentle-shell update [pi|self|--self|--all] --latest
+gentle-shell update [pi|self|--self|--all] [--latest]
 gentle-shell self-uninstall [--dry-run] [--yes] [--include-shared]
 ```
 
@@ -378,19 +398,19 @@ Tradeoff: `--link` shares one credential store with pi; `import-pi` duplicates i
 
 `gentle-shell install npm:<pkg>`, `gentle-shell remove ...`, `gentle-shell list`, `gentle-shell update ...`, `gentle-shell config`, and `gentle-shell auth ...` run pi's own commands against the resolved home — the `--isolated` home by default, or your own pi home with `--link`. A launcher flag before the subcommand (`--link`, `--isolated`, `--home <path>`) still selects which home the subcommand runs against. Running `gentle-shell install npm:gentle-pi` inside the isolated home is unnecessary: the launcher already loads the Gentle Shell package itself (see "Loading the package" below).
 
-`gentle-shell list` and extension updates follow that same home selection. `gentle-shell update --extensions-only` preserves Pi's extension-only command; `--extensions`, package targets, and model updates also stay with Pi.
+`gentle-shell list` and extension updates follow that same home selection. `gentle-shell update --extensions-only` preserves Pi's extension-only command; `--extensions`, package targets, and model updates also stay with Pi. In a bundled Shell-owned home, `gentle-shell update --extensions` also updates the unversioned Shell-managed `gentle-engram` Pi package. Pi's normal startup package-update notice lists it when newer; opening Shell does not install that update. The native Engram executable is separate.
 
 `gentle-shell update` updates the selected Pi through its verified npm or pnpm global owner, avoiding Pi's self-update refusal for pnpm v11 linked stores. Ownership requires successful global listing JSON, an exact canonical listed package-root/CLI match, and binding to the selected runtime. An adjacent peer (the launcher's `bundled` runtime) is supplied by the exact listed `gentle-pi` package: that Shell package is reinstalled at its current version so the manager re-resolves the peer (a main-channel `<version>-main.<sha12>` Shell, which is never published, from the tarball `gentle-shell upgrade --channel main` packed under `<config home>/main/packages/` (an absolute `GENTLE_PI_CONFIG_HOME`, else `~/.pi/gentle-ai`; a relative override is refused), refusing without installation when it is missing and naming `gentle-shell upgrade --channel release` then `--channel main` as the rebuild path), and a separate global Pi is never the target, because updating it leaves the peer a Shell install runs unchanged. A `PATH` or `GENTLE_SHELL_PI` runtime is supplied only by its own listed global Pi package; when that executable is a package-manager shim (pnpm's POSIX shim, a `.cmd`), Shell follows the single `dist/bundle/cli.js` it names, relative to the shim's directory, and refuses shims naming none or several. Pi and Shell are never installed together in a comma group, and unrelated packages are never reinstalled. Merely residing under `PNPM_HOME` proves nothing. Adjacent peers resolve where the package manager places them: nested under the Shell package (npm), beside it in pnpm's linked store, or in the global group's own `node_modules`. Linked Pi entries remain rejected. A source-linked Shell instead updates its exact checkout's local Pi, without replacing its global link: single-project Git roots only, an npm/pnpm `packageManager` declaration (pnpm at least that version; npm exact) and matching available version, a direct registry Pi range, and one matching lockfile are required. Multi-project/ancestor workspaces and conflicting lockfiles refuse before installation. Root-only pnpm configuration is retained after read-only manager queries prove a sole root project; updates do not ignore or rewrite its security policy. The named update disables lifecycle scripts and range changes, but may update Pi's transitive lockfile graph. pnpm updates additionally require that the actual old global group contains only the target top-level package: aggregated listings may contain other, separate groups, but shared groups are rejected because pnpm can remove the whole old group. Unknown, malformed, failed, or ambiguous ownership refuses before installation; update unsupported layouts with their supplying package manager.
 
 After a successful install, Shell reads the supplied Pi version back from a fresh global listing and reports it, naming the previous version when it changed. An unchanged pnpm result also names pnpm's `minimumReleaseAge` setting: pnpm installs only releases older than that age (pnpm 11 defaults to 4320 minutes), so a very recent Pi release is picked up once it is old enough; Shell reports the rule rather than overriding it. Global listings, manager version probes and global installations run from the system temporary directory, so a project's `packageManager` pin in the current directory never changes which pnpm answers. A verified source update alone runs from the checkout and rechecks the Shell link, unchanged manifest and adjacent Pi there instead of reading a separate global Pi. When the version cannot be read back, the output says so and points at `gentle-shell --version`.
 
-Prefix-bundled installations keep their existing `gentle-shell upgrade` route for Pi, or `gentle-shell update --latest` for the newest published Pi without the release's verified lockfile (see [`upgrade`](#upgrade-subcommand-and-channels)). Outside a bundled install `--latest` changes nothing: `update` already installs the latest Pi. `update --all` updates the verified owner before forwarding extension updates; an ownership refusal stops without mutation. Shell's `upgrade` and `self-uninstall` ownership behavior is unchanged.
+Prefix-bundled `gentle-shell update` selects the newest published stable Pi without the release's verified lockfile; `--latest` is an alias (see [`upgrade`](#upgrade-subcommand-and-channels)). Outside a bundled install `--latest` uses the ordinary managed update, including a source checkout's declared range. `update --all` forwards extension updates after the Pi attempt, and reports a Pi failure even if extensions succeed. Explicit extension pins remain pinned. Managed Pi self updates reject `--force`; ownership refusals stop without mutation.
 
 ### `setup` subcommand
 
-**Bundled Engram safety:** Shell shares the global Engram server on `127.0.0.1:7437`, like other agents' hooks. A running server is reused only through Engram's exact `GET /compatibility` ready contract; when nothing listens, Shell starts the checksum-pinned Engram 3.5.2 core as a detached `engram serve` (Engram's default port and `~/.engram`, no update check, no GitHub tokens) and waits up to 10 seconds for that same contract, so you never start the server yourself. An existing store does not disable memory by itself, whoever created it; only a database header from a newer Engram schema keeps Shell from starting its older core on it. Anything else (a server that does not verify, a token-protected or unknown server, a start that fails or never reports ready) disables memory for that launch with an explanation of the missing safety evidence and backup precautions (matching versions or updating alone do not prove compatibility); Shell never stops or replaces a listening server. Shell always points `ENGRAM_BIN` at its own guard (`bin/engram-guard`), which fails before any store access for every gentle-engram from 0.4.1 on, whichever Pi route loaded it, so memory reaches the store only through the verified server's `ENGRAM_URL`. No compatibility is inferred from versions. An explicit `ENGRAM_BIN` or `ENGRAM_URL` is never replaced and bypasses the guard. Every launch also pins `npm:gentle-engram@0.4.2` through Pi's own `install` command and verifies `engram.startupPolicy: 1`; a failed check is reported and Shell still starts. See [bundled startup safety](bundled-install.md#engram-startup-safety) for the full rules and known limits.
+**Bundled Engram safety:** Shell shares the global Engram server on `127.0.0.1:7437`, like other agents' hooks. A running server is reused only through Engram's exact `GET /compatibility` ready contract; when nothing listens, Shell starts the checksum-pinned Engram 3.5.2 core as a detached `engram serve` (Engram's default port and `~/.engram`, no update check, no GitHub tokens) and waits up to 10 seconds for that same contract, so you never start the server yourself. An existing store does not disable memory by itself, whoever created it; only a database header from a newer Engram schema keeps Shell from starting its older core on it. Anything else (a server that does not verify, a token-protected or unknown server, a start that fails or never reports ready) disables memory for that launch with an explanation of the missing safety evidence and backup precautions (matching versions or updating alone do not prove compatibility); Shell never stops or replaces a listening server. Shell always points `ENGRAM_BIN` at its own guard (`bin/engram-guard`), which fails before any store access for every gentle-engram from 0.4.1 on, whichever Pi route loaded it, so memory reaches the store only through the verified server's `ENGRAM_URL`. No compatibility is inferred from versions. An explicit `ENGRAM_BIN` or `ENGRAM_URL` is never replaced and bypasses the guard. Shell verifies the selected companion's `engram.startupPolicy: 1`; a failed check is reported and Shell still starts. In a Shell-owned home, the old `npm:gentle-engram@0.4.2` registration is migrated to unversioned `npm:gentle-engram` through Pi's package manager without installing an update. Linked/foreign homes and other pinned or local selections are preserved. See [bundled startup safety](bundled-install.md#engram-startup-safety) for the full rules and known limits.
 
-The memory decision never skips or fails bundled setup: it always publishes the verified core, runs Gentle AI and pins the companion, then only selects the Engram environment (the guard as `ENGRAM_BIN`, plus `ENGRAM_URL` when memory is allowed) for setup children and the launched Pi. `--dry-run` installs nothing. Non-bundled setup keeps the existing behavior described below.
+The memory decision never skips or fails bundled setup: it publishes the verified core and runs Gentle AI, then only selects the Engram environment (the guard as `ENGRAM_BIN`, plus `ENGRAM_URL` when memory is allowed) for setup children and the launched Pi. `--dry-run` installs nothing. Non-bundled setup keeps the existing behavior described below.
 
 `gentle-shell setup` provisions the resolved home — the same home selection as any other invocation, `--isolated` by default, or `--link`/`--home <path>` when given before `setup` — with the same companion packages a regular `gentle-ai install --agent pi` installs into a Pi agent home: `npm:gentle-pi`, `npm:gentle-engram`, `npm:@juicesharp/rpiv-ask-user-question`, `npm:pi-web-access`, `npm:pi-btw`, plus running `pi-engram init`. It never touches `~/.pi/agent` unless you pass `--link`.
 
@@ -553,13 +573,17 @@ package.
   is named and keeps the path above. Details:
   [Migration](bundled-install.md#migration-from-a-global-install).
 
-`gentle-shell update` is different: it is Pi's own `update`, forwarded to the
-resolved home. In a bundled install Pi ships pinned with Gentle Shell, so
-every `update` form that updates Pi itself explains that and runs
-`gentle-shell upgrade` (in a terminal) or names it. Those forms are no target,
-`--self`, `self` or `pi`, `--all`, and `self` or `pi` with `--extensions`. The
-extension part of an "all" form, and every package update, still reaches Pi.
-`gentle-shell update --latest` (also with `pi`, `self`, `--self` or `--all`) installs the newest published stable Pi with the active Gentle Shell instead, without the release's verified lockfile: it first warns that Gentle Shell features relying on audited Pi internals (such as the Vim editor) may turn off until a Gentle Shell release verifies that Pi, then verifies and switches to it like `upgrade`, keeping the previous version for `gentle-shell upgrade --rollback`. Afterwards `gentle-shell upgrade` never downgrades that Pi: a release of the same Gentle Shell with an older verified Pi changes nothing, and a newer Gentle Shell release upgrades as usual. When the active Pi is already newer than the published `latest` (the dist-tag moved back), `--latest` changes nothing. Outside a bundled install, `gentle-shell update --latest` is the ordinary managed Pi update, which already installs the newest published Pi.
+`gentle-shell update` updates the selected Pi; package updates reach Pi in the
+resolved home. In a bundled install, self-update forms (no target, `--self`,
+`self`, `pi`, `--all`, or `self`/`pi` with `--extensions`) select the newest
+published stable Pi. `--latest` is an alias. The command warns that features
+relying on audited Pi internals (such as Vim) may turn off, then installs without
+the release's verified lockfile, verifies and activates the pair, and keeps the
+previous version for rollback. If the latest tag moves backwards, it changes
+nothing. A later Shell release keeps a newer active Pi without applying the
+release's lockfile to it. `--all` still forwards extensions on Pi failure and
+returns nonzero; explicit extension pins remain pinned. Source-linked updates
+remain constrained by the checkout's declared Pi range.
 In a bundled install Pi and the agent's commands keep your own environment;
 Pi installs packages with Gentle Shell's npm through the `npmCommand` setting
 of its own home. Details: [Bundled install](bundled-install.md#launcher-in-a-bundled-install).
@@ -636,7 +660,7 @@ Outside Herdr, the petal prompt frame replaces Pi's standard loader row. Inside 
 
 ### Herdr blocker events
 
-The Gentle AI adapter projects native `gentle-pi:ask-user-question:blocked`, legacy `rpiv:ask-user:blocked`, choice blockers, and guarded confirmations into one balanced `herdr:blocked` interval. It emits one activation when blocking begins and one release after the last source clears, retaining the initial generic label without relabel pulses. Native and legacy questionnaires are tracked independently; duplicate or malformed source events are ignored. Questionnaire answers, prompts, and commands are not included in the projection. This adapter emits local events; transport availability is a separate concern.
+The Gentle AI adapter projects native `gentle-pi:ask-user-question:blocked`, legacy `rpiv:ask-user:blocked`, choice blockers, guarded confirmations, and every `gentle_review` authorization dialog (review consent and maintenance approvals, labeled `Review authorization awaiting input`) into one balanced `herdr:blocked` interval. It emits one activation when blocking begins and one release after the last source clears, retaining the initial generic label without relabel pulses. Native and legacy questionnaires are tracked independently; duplicate or malformed source events are ignored. Questionnaire answers, prompts, and commands are not included in the projection. This adapter emits local events; transport availability is a separate concern.
 
 ## Diagnose STATUS timing without retrying it
 
@@ -669,6 +693,7 @@ Synthetic tests prove the observer's behavior, not the cause of issue #213. A ne
 /gentle:profiles           Open the models screen on this repository's profile. Subcommands: export <name>, import, publish <name>, export-routing, restore-routing, clear.
 /gentle:persona            Switch between gentleman and neutral persona modes.
 /gentle:background-subagents  Show or set the managed background-subagents policy, with its deciding source.
+/gentle:rdd                  Open the interactive RDD selector for this repository or an explicit machine-wide choice.
 /gentle:review-mode          Show or set the receipt-driven development mode (status|enable|disable).
 /gentle:status-timing        Arm, clear, or inspect session-only STATUS diagnostics (enable|disable|show).
 /gentle:animations         Show or set global animations: quality, performance, or potato.
@@ -1073,7 +1098,7 @@ Saved globally at:
 ~/.pi/gentle-ai/models.json
 ```
 
-Global routing is owned by profiles: edit a profile's routing on the models screen and apply it with **Make default**. Applying writes the shared global config at `~/.pi/gentle-ai/models.json`; existing project-local `.pi/gentle-ai/models.json` files are still read as a legacy fallback when no global model config exists.
+Global routing is owned by profiles: edit a profile's routing on the models screen and apply it with **Make default**. Applying writes the shared global config at `~/.pi/gentle-ai/models.json`. Existing project-local `.pi/gentle-ai/models.json` files are still read as a legacy source and merged under the global config: an agent entry present only in the project file still applies, while an entry present in both prefers the global one. This merge is skipped while a pinned or active profile exists and the global file is present, so an agent a profile deliberately omits cannot be resurrected by a stale project-local entry; routing then comes from the global file (and, from the profile's own stored snapshot, when the global file is still missing) alone.
 
 Startup and reload materialize saved non-empty routing, but never treat a saved empty agent entry (`{}`) as permission to delete an existing `subagents.json` model profile or agent frontmatter. This also preserves previously materialized routes and routes whose agent definition is missing. To clear routing, make a profile whose entries are inherit the default (or confirm a profile replacement) on the models screen. Activation needs no ownership sidecar or lock.
 
@@ -1293,6 +1318,7 @@ The notice appears once per distinct change: further launches stay quiet until t
 | `/gentle:animations`            | Shows or sets global animations (`status\|quality\|performance\|potato`); no argument opens a selector. |
 | `/gentle:vim`                   | Shows or sets opt-in prompt Vim mode (`status\|enable\|disable`); no argument opens a selector. |
 | `/gentle:telemetry`              | Shows or changes the local Gentle AI telemetry trigger (`status\|enable\|disable\|preview`).  |
+| `/gentle:rdd`                    | Shows effective RDD mode and source, with explicit repository and machine-wide choices; cancellation changes nothing. |
 | `/gentle:review-mode`            | Shows or sets the receipt-driven development mode (`status\|enable\|disable`); user-initiated only, Pi automation never toggles it. |
 | `/gentle:scratch`               | Lists (`list`, the default) or cleans (`clean`) this session's scratch dir and the clones and worktrees recorded by this and ended sessions; see [Session scratch and artifact ledger](#session-scratch-and-artifact-ledger). |
 | `/gentle:status-timing`          | Arms timing for the next authorized STATUS-bearing tool call, clears it, or manually shows the last summary (`enable\|disable\|show`). Off by default, session-only, no native invocation. |

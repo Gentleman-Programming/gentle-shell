@@ -416,14 +416,16 @@ function sectionTaskRows(task: TodoTask, theme: TodoTheme, width: number): strin
 	return [...rows, ...wrapTextWithAnsi(task.note, noteWidth).map((line, index) => renderPanelRow(width, `${index === 0 ? theme.fg("dim", "└") : " "} ${theme.fg(NOTE_ROLE, line)}`, "", PANEL_ROW_INDENT + 2))];
 }
 
-export function renderTodoSection(state: TodoState, theme: TodoTheme, width: number, options: Pick<TodoRenderOptions, "collapsed" | "staleTurns" | "hovered">): TodoSection {
+export function renderTodoSection(state: TodoState, theme: TodoTheme, width: number, options: Pick<TodoRenderOptions, "collapsed" | "staleTurns" | "hovered" | "collapseKey">): TodoSection {
 	if (state.tasks.length === 0) return { header: "", body: [] };
 	const { done, total } = todoSummary(state);
 	const planned = total - countStatus(state, TODO_STATUS.DROPPED);
 	const stale = options.staleTurns >= STALE_AFTER_TURNS;
+	// The collapse key rides the header, small and dim, as the only rail key hint.
+	const keyHint = options.collapseKey ? `${theme.fg("dim", options.collapseKey)}  ` : "";
 	const header = renderPanelHeader(theme, width, {
 		title: "Todos",
-		count: `${stale ? `stale · ${options.staleTurns} turns · ` : ""}${done}/${planned}`,
+		count: `${keyHint}${stale ? `stale · ${options.staleTurns} turns · ` : ""}${done}/${planned}`,
 		countRole: stale ? "warning" : "muted",
 		open: !options.collapsed,
 		hovered: options.hovered,

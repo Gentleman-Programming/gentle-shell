@@ -50,6 +50,11 @@ test("bottom bar places configured Fast or Standard beside effort without changi
 		assert.deepEqual(renderShellBar(configured, theme, 120), renderShellBar(base, theme, 120));
 	}
 	assert.doesNotMatch(renderShellStatusBar(base, theme, 120).rows[0]!, /No tier|Fast|Standard|server/);
+	const both = { ...base, profileTier: "fast" as const, profile: "team (session)" };
+	assert.match(renderShellStatusBar(both, theme, 140).rows[0]!, /gpt-6\.1-sol · xhigh · Fast · team \(session\) │/, "the profile follows the tier");
+	const tight = renderShellStatusBar(both, theme, 72).rows[0]!;
+	assert.match(tight, /gpt-6\.1-sol · xhigh · Fast/, "the profile gives way before the tier");
+	assert.doesNotMatch(tight, /team \(session\)/);
 });
 
 test("legacy tier integration is excluded while permission warnings and other statuses survive", () => {

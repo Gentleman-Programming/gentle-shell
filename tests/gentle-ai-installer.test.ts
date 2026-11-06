@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
+import fsPromises from "node:fs/promises";
+import pathModule from "node:path";
+import { syncBuiltinESMExports } from "node:module";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { chmod, copyFile, mkdtemp, mkdir, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
@@ -172,6 +175,58 @@ test("win32 x64 and arm64 install the exact Go SumDB source tag without archive 
 		assert.deepEqual(fixture.calls.filter((call) => call.file === goPath).map((call) => call.arguments_.slice(0, 2)), [
 			["version"], ["install", "github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai@v4.3.1"], ["version", "-m"],
 		]);
+	}
+});
+
+test("long Windows staging prefixes publish and reuse a verified package-local bundle", async () => {
+	const root = await mkdtemp(join(tmpdir(), "gentle-pi-long-staging-"));
+	const temporaryDirectory = await mkdtemp(join(tmpdir(), "gentle-pi-long-staging-temp-"));
+	let packageRoot = root;
+	const stagingSuffix = join(".gentle-ai", `.v${INSTALLER_VERSION}.staging-`);
+	while (join(packageRoot, stagingSuffix).length + 6 <= 260) packageRoot = join(packageRoot, "deep".repeat(12));
+	assert.ok(join(packageRoot, stagingSuffix).length + 6 > 260, "the final mkdtemp path must exceed the legacy Windows bound");
+	const goPath = join(root, "go.exe");
+	const originalMkdtemp = fsPromises.mkdtemp;
+	const originalNamespace = pathModule.toNamespacedPath;
+	let longStagingCalls = 0;
+	try {
+		await writeFile(goPath, "trusted local Go executable");
+		// POSIX uses // as a filesystem-equivalent marker for the simulated
+		// Windows namespace. Native Windows uses its real path and filesystem APIs.
+		if (process.platform !== "win32") {
+			pathModule.toNamespacedPath = (value: string) => value.startsWith("/") ? `/${value}` : value;
+			fsPromises.mkdtemp = ((prefix: string, options?: Parameters<typeof originalMkdtemp>[1]) => {
+				if (prefix.includes(`.v${INSTALLER_VERSION}.staging-`) && prefix.length + 6 > 260) {
+					longStagingCalls += 1;
+					if (!prefix.startsWith("//")) return Promise.reject(Object.assign(new Error("long Windows mkdtemp prefix"), { code: "ENOENT" }));
+				}
+				return originalMkdtemp(prefix, options);
+			}) as typeof fsPromises.mkdtemp;
+			syncBuiltinESMExports();
+		}
+		const fixture = windowsGoFixture();
+		fixture.setGoExecutable(goPath);
+		const options = { packageRoot, platform: "win32", arch: "x64", execFile: fixture.run, resolveGoExecutable: async () => goPath, temporaryDirectory };
+		const runtimeRoot = join(packageRoot, ".gentle-ai");
+		const failing = windowsGoFixture({ installError: new Error("fake Go failed") });
+		failing.setGoExecutable(goPath);
+		await assert.rejects(() => installGentleAi({ ...options, execFile: failing.run }), { code: "GENTLE_AI_GO_INSTALL_FAILED" });
+		assert.deepEqual(await readdir(runtimeRoot), [], "failed installs remove staging and their owned lock");
+		const installed = await installGentleAi(options);
+		assert.equal(installed.installed, true);
+		assert.equal(await readFile(join(runtimeRoot, `v${INSTALLER_VERSION}`, "gentle-ai.exe"), "utf8"), "trusted Windows source build");
+		const manifest = JSON.parse(await readFile(join(runtimeRoot, `v${INSTALLER_VERSION}`, "integrity.json"), "utf8"));
+		assert.equal(manifest.moduleChecksum, GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM);
+		assert.equal(manifest.binarySha256, createHash("sha256").update("trusted Windows source build").digest("hex"));
+		assert.equal((await installGentleAi(options)).installed, false);
+		assert.deepEqual(await readdir(runtimeRoot), [`v${INSTALLER_VERSION}`]);
+		if (process.platform !== "win32") assert.ok(longStagingCalls >= 2, "the simulated long-path boundary must be exercised");
+	} finally {
+		fsPromises.mkdtemp = originalMkdtemp;
+		pathModule.toNamespacedPath = originalNamespace;
+		syncBuiltinESMExports();
+		await rm(root, { recursive: true, force: true });
+		await rm(temporaryDirectory, { recursive: true, force: true });
 	}
 });
 
@@ -1411,4 +1466,32 @@ test("Windows source build bounds go install separately from the Go toolchain pr
 	const probes = goCalls.filter((call) => call.arguments_[0] === "version");
 	assert.ok(probes.length >= 2, "go version probes must run");
 	for (const probe of probes) assert.equal(probe.options.timeout, 120_000, `go ${probe.arguments_.join(" ")} keeps the probe bound`);
+});
+
+test("download reports progress per chunk with the declared total", async (t) => {
+	const directory = await mkdtemp(join(tmpdir(), "gentle-pi-progress-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const request = (_url: URL, _options: unknown, callback: (response: PassThrough & { statusCode?: number; headers: Record<string, string> }) => void) => {
+		const response = Object.assign(new PassThrough(), { statusCode: 200, headers: { "content-length": "6" } });
+		queueMicrotask(() => { callback(response); response.write("abc"); response.end("def"); });
+		return pendingRequest();
+	};
+	const seen: Array<{ received: number; total: number | undefined }> = [];
+	await downloadGentleAiAsset("https://example.invalid/archive", join(directory, "archive"), 1024, 0, { request, maxAttempts: 1, retryDelayMs: 0, onProgress: (progress: { received: number; total: number | undefined }) => seen.push(progress) });
+	assert.deepEqual(seen, [{ received: 3, total: 6 }, { received: 6, total: 6 }]);
+	assert.equal(await readFile(join(directory, "archive"), "utf8"), "abcdef");
+});
+
+test("download reports an unknown total as undefined and a throwing reporter never breaks it", async (t) => {
+	const directory = await mkdtemp(join(tmpdir(), "gentle-pi-progress-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const request = (_url: URL, _options: unknown, callback: (response: PassThrough & { statusCode?: number; headers: Record<string, string> }) => void) => {
+		const response = Object.assign(new PassThrough(), { statusCode: 200, headers: {} });
+		queueMicrotask(() => { callback(response); response.end("xy"); });
+		return pendingRequest();
+	};
+	const totals: Array<number | undefined> = [];
+	await downloadGentleAiAsset("https://example.invalid/archive", join(directory, "archive"), 1024, 0, { request, maxAttempts: 1, retryDelayMs: 0, onProgress: ({ total }: { total: number | undefined }) => { totals.push(total); throw new Error("reporter bug"); } });
+	assert.deepEqual(totals, [undefined]);
+	assert.equal(await readFile(join(directory, "archive"), "utf8"), "xy");
 });

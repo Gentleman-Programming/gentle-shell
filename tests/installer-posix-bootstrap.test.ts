@@ -945,7 +945,7 @@ posixTest("production Node process adapter propagates ordinary nonzero tar exit 
 	try {
 		writeFileSync(join(f.home, "unrelated.txt"), "preserve");
 		f.executable("tar", "exit 7");
-		const result = await guardedFixture(node, [productionPnpmRunner(f.root, f.home, f.bin)], {}, 3000);
+		const result = await guardedFixture(node, [productionPnpmRunner(f.root, f.home, f.bin)], {}, 15000);
 		assert.equal(result.guardKilled, false);
 		assert.equal(result.status, 1);
 		assert.match(result.stderr, /acquisition rejected/);

@@ -179,6 +179,95 @@ test("guarded words inside data-command arguments are not guarded operations (#2
 	] as const) assert.equal(classifyGuardedCommand(command, config), expected, command);
 });
 
+// gentle-shell#1202: a read-only git or gh segment elsewhere on the line does not
+// make the data commands' arguments executable. Anything that can run or re-route
+// text keeps the lexical guard.
+test("guarded words inside data-command arguments stay prose next to read-only git and gh segments (#1202)", () => {
+	const config = { autonomousMode: false, guardedCommands: {} };
+	for (const command of [
+		"git -C /repo log -1 --oneline; tail -c 300000 f.jsonl | grep -oE 'git push origin [A-Za-z0-9]+' | tail -1",
+		"grep -oE 'git push origin' f.jsonl; git -C /repo status --short",
+		"gh pr view 1251 --json headRefOid; grep -n 'git push' f",
+		"cat > file <<'X'\nremember to git push later\nX\ngit -C /repo status --short",
+		"git status && grep -rn 'git reset --hard' docs",
+		"git diff --stat | wc -l; grep -l 'npm publish' a.md",
+		"git log --oneline | head -3; echo 'git rebase main'",
+		"grep 'pi remove' notes.md && gh pr list --state open",
+	]) assert.equal(classifyGuardedCommand(command, config), "not-guarded", command);
+	for (const [command, expected] of [
+		["git push", "confirm"],
+		["cd x && git push", "confirm"],
+		["grep a f; git push origin b", "confirm"],
+		["git -C r push", "confirm"],
+		["git -C r log; git push", "confirm"],
+		["git -C r log; grep 'git push' f; git push origin b", "confirm"],
+		["bash -c 'git push'", "confirm"],
+		["git status; bash -c 'git push'", "confirm"],
+		["eval \"git push\"", "confirm"],
+		["git status; eval \"git push\"", "confirm"],
+		["echo b | xargs git push origin", "confirm"],
+		["git status; echo b | xargs git push origin", "confirm"],
+		["git status; $(echo git push)", "confirm"],
+		["env git push", "confirm"],
+		["sudo git push", "confirm"],
+		["git status; grep x f; env git push", "confirm"],
+		["git status; cat <<'EOF' | bash\ngit push origin main\nEOF", "confirm"],
+		["git status; bash <<'EOF'\ngit push origin main\nEOF", "confirm"],
+		["git status; sh <<EOF\ngit push origin main\nEOF", "confirm"],
+		["git status; git rebase main", "confirm"],
+		["git status; git branch -D old", "confirm"],
+		["git status; npm publish", "confirm"],
+		["git status; pi remove foo", "confirm"],
+		["git status; git reset --hard", "block"],
+		// A git or gh segment that can run text stays opaque.
+		["git -C r log; grep 'git push' f | git -c alias.x='!sh' x", "confirm"],
+		["grep 'git push origin main' f | git log", "confirm"],
+		["git status; grep 'git push origin main' f | gh pr view", "confirm"],
+		["git -c alias.x='!sh' status; grep 'git push origin main' f", "confirm"],
+		["GIT_PAGER=sh git log; grep 'git push origin main' f", "confirm"],
+		["git status; grep 'git push origin main' f | git foo", "confirm"],
+		["git $(grep 'git push origin main' f); grep 'git push origin main' f", "confirm"],
+		["git alias-x; grep 'git push origin main' f", "confirm"],
+		["gh api repos/x; grep 'git push origin main' f", "confirm"],
+		["git status; grep 'git push origin main' f |& git log", "confirm"],
+		["git log $(echo git push); git status", "confirm"],
+		["git status; git rebase -x \"$(grep 'git push origin' f)\" main", "confirm"],
+	] as const) assert.equal(classifyGuardedCommand(command, config), expected, command);
+});
+
+// gentle-shell#1202 S6/S7: through the same evaluation path the extension uses.
+test("YOLO still waives a reversible push on a line whose grep pattern mentions the phrase (#1202)", () => {
+	const config = { autonomousMode: false, guardedCommands: {} };
+	const waived = (command: string) => isReversibleYoloCommand(command, evaluateGuardedCommand(command, config));
+	for (const command of [
+		"git -C /repo log -1 --oneline; git push origin main; grep -n 'git push origin' f.jsonl",
+		"git -C /repo log -1 --oneline; grep -n 'git push origin' f.jsonl; git push origin main",
+		"git -C /repo status --short && git push -u origin feature/x && tail -c 300000 f.jsonl | grep -oE 'git push origin [A-Za-z0-9]+' | tail -1",
+	]) assert.equal(waived(command), true, command);
+	for (const command of [
+		"git -C /repo log -1 --oneline; git push -o ci.skip origin main; grep -n 'git push origin' f.jsonl",
+		"git -C /repo log -1 --oneline; grep -n 'git push origin' f.jsonl; git push --delete origin main",
+		"git -C /repo log -1 --oneline; grep -n 'git push origin' f.jsonl; git push origin :main",
+		"git -C /repo log -1 --oneline; grep -n 'git push origin' f.jsonl; git push --force origin main",
+		"git -C /repo log -1 --oneline; grep -n 'git push origin' f.jsonl; git push origin main | sh",
+	]) assert.equal(waived(command), false, command);
+});
+
+// By design: a quoted variable in a refspec is not in the push grammar, so the
+// confirmation stays. Do not loosen YOLO_PUSH_SEGMENT_RE to "fix" this.
+test("YOLO keeps the confirmation for a push whose refspec holds a quoted variable (#1202)", () => {
+	const config = { autonomousMode: false, guardedCommands: {} };
+	for (const command of [
+		`git push origin HEAD:refs/heads/"$REF"`,
+		`git -C /repo log -1; git push origin HEAD:refs/heads/"$REF"`,
+		`git -C /repo log -1; grep -n 'git push origin' f.jsonl; git push origin HEAD:refs/heads/"$REF"`,
+	]) {
+		const evaluation = evaluateGuardedCommand(command, config);
+		assert.equal(evaluation.action, "confirm", command);
+		assert.equal(isReversibleYoloCommand(command, evaluation), false, command);
+	}
+});
+
 test("YOLO preserves explicit push restrictions in either config layer independently of persistent autonomy", () => {
 	const root = makeTmpDir();
 	const cwd = join(root, "repo");
@@ -504,12 +593,30 @@ test("evaluateGuardedCommand: repeated forced branch deletions remain separate m
 	);
 });
 
-test("classifyGuardedCommand: git push plain still confirm when autonomousMode=false even with gitPush=allow in config", () => {
+// Explicit allow in the user config is honored in normal mode too: the
+// permission-allowlist feature writes exactly this entry when the user picks
+// "Always allow" in the confirmation dialog.
+test("classifyGuardedCommand: git push honors explicit allow when autonomousMode=false", () => {
 	const result = classifyGuardedCommand("git push origin feature/test", {
 		autonomousMode: false,
 		guardedCommands: { gitPush: "allow" },
 	});
-	assert.equal(result, "confirm");
+	assert.equal(result, "allow");
+});
+
+// Explicit allow in the user config is honored in normal mode too (see the
+// permission-allowlist feature); explicit confirm keeps asking.
+test("classifyGuardedCommand: pi remove honors explicit allow when autonomousMode=false", () => {
+	const result = classifyGuardedCommand("pi remove my-package", {
+		autonomousMode: false,
+		guardedCommands: { piRemove: "allow" },
+	});
+	assert.equal(result, "allow");
+	const confirmResult = classifyGuardedCommand("pi remove my-package", {
+		autonomousMode: false,
+		guardedCommands: { piRemove: "confirm" },
+	});
+	assert.equal(confirmResult, "confirm");
 });
 
 // ---------------------------------------------------------------------------
@@ -699,14 +806,6 @@ test("loadRuntimeGuardrailsConfig: invalid project config fails safe (autonomous
 // ---------------------------------------------------------------------------
 // When autonomous mode is OFF nothing changes vs current behavior
 // ---------------------------------------------------------------------------
-
-test("classifyGuardedCommand: pi remove confirm when autonomousMode=false", () => {
-	const result = classifyGuardedCommand("pi remove my-package", {
-		autonomousMode: false,
-		guardedCommands: { piRemove: "allow" },
-	});
-	assert.equal(result, "confirm");
-});
 
 test("classifyGuardedCommand: pi remove allowed when autonomousMode=true and piRemove=allow", () => {
 	const result = classifyGuardedCommand("pi remove my-package", {
@@ -907,6 +1006,243 @@ test("loadRuntimeGuardrailsConfig: autonomousMode:{} (object) in JSON does NOT a
 		});
 		assert.equal(config.autonomousMode, false);
 	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+// evaluateBashPolicies — ordered bash command policy seam (gentle-pi#405 S1)
+// ---------------------------------------------------------------------------
+
+type BashPolicySeamArgs = Parameters<typeof __testing.evaluateBashPolicies>;
+
+function makeBashPolicySeamHarness(cwd: string) {
+	return {
+		ctx: { cwd, hasUI: false, ui: {} } as BashPolicySeamArgs[1],
+		events: {
+			emit: (_channel: string, _data: unknown) => {},
+			on: (_channel: string, _handler: (data: unknown) => void) => () => {},
+		},
+		herdrLifecycle: {
+			begin: () => {},
+			settle: () => {},
+		} as BashPolicySeamArgs[3],
+	};
+}
+
+function makeStubBashPolicy(
+	name: string,
+	verdict: { block: true; reason: string } | undefined,
+	calls: string[],
+): NonNullable<BashPolicySeamArgs[5]>[number] {
+	return {
+		name,
+		async evaluate(_command: string) {
+			calls.push(name);
+			return verdict;
+		},
+	};
+}
+
+test("evaluateBashPolicies: forwards yoloActive to every policy", async () => {
+	const seen: boolean[] = [];
+	const seam = makeBashPolicySeamHarness("/stub-cwd");
+	const result = await __testing.evaluateBashPolicies(
+		"git push",
+		seam.ctx,
+		seam.events,
+		seam.herdrLifecycle,
+		true,
+		[
+			{
+				name: "yolo-recorder",
+				async evaluate(_command, _ctx, _events, _herdrLifecycle, yoloActive) {
+					seen.push(yoloActive);
+					return undefined;
+				},
+			},
+		],
+	);
+	assert.equal(result, undefined);
+	assert.deepEqual(seen, [true], "the seam must thread yoloActive into policies");
+});
+
+test("evaluateBashPolicies: forwards the Auto permission gate to every policy", async () => {
+	const autoGate = async () => undefined;
+	const seen: unknown[] = [];
+	const seam = makeBashPolicySeamHarness("/stub-cwd");
+	const result = await __testing.evaluateBashPolicies(
+		"echo hello",
+		seam.ctx,
+		seam.events,
+		seam.herdrLifecycle,
+		false,
+		[
+			{
+				name: "auto-gate-recorder",
+				async evaluate(_command, _ctx, _events, _herdrLifecycle, _yoloActive, gate) {
+					seen.push(gate);
+					return undefined;
+				},
+			},
+		],
+		autoGate,
+	);
+	assert.equal(result, undefined);
+	assert.deepEqual(seen, [autoGate], "the seam must thread the Auto gate into policies");
+});
+
+test("evaluateBashPolicies: forwards superYoloActive to every policy", async () => {
+	const seen: boolean[] = [];
+	const seam = makeBashPolicySeamHarness("/stub-cwd");
+	const result = await __testing.evaluateBashPolicies(
+		"git push --force origin main",
+		seam.ctx,
+		seam.events,
+		seam.herdrLifecycle,
+		false,
+		[
+			{
+				name: "super-yolo-recorder",
+				async evaluate(_command, _ctx, _events, _herdrLifecycle, _yoloActive, _autoGate, superYoloActive) {
+					seen.push(superYoloActive);
+					return undefined;
+				},
+			},
+		],
+		undefined,
+		true,
+	);
+	assert.equal(result, undefined);
+	assert.deepEqual(seen, [true], "the seam must thread superYoloActive into policies");
+});
+
+test("evaluateBashPolicies: real runtime-guardrails policy defers a non-guarded command to the Auto gate", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "gentle-ai-bash-policy-auto-"));
+	try {
+		const seam = makeBashPolicySeamHarness(cwd);
+		let gateCalls = 0;
+		const denied = { block: true as const, reason: "auto-mode classifier denied" };
+		const result = await __testing.evaluateBashPolicies(
+			"echo hello",
+			seam.ctx,
+			seam.events,
+			seam.herdrLifecycle,
+			false,
+			undefined,
+			async () => {
+				gateCalls += 1;
+				return denied;
+			},
+		);
+		assert.deepEqual(result, denied, "the Auto gate verdict must reach the caller through the seam");
+		assert.equal(gateCalls, 1);
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test('evaluateBashPolicies: ordered policy list is exactly ["runtime-guardrails"]', () => {
+	assert.deepEqual(
+		__testing.BASH_COMMAND_POLICIES.map((policy) => policy.name),
+		["runtime-guardrails"],
+	);
+	assert.ok(
+		__testing.BASH_COMMAND_POLICIES.every(
+			(policy) => typeof policy.evaluate === "function",
+		),
+		"every policy must expose an evaluate function",
+	);
+});
+
+test("evaluateBashPolicies: short-circuits on the first verdict (later policies are not evaluated)", async () => {
+	const calls: string[] = [];
+	const firstVerdict = { block: true, reason: "first policy verdict" } as const;
+	const seam = makeBashPolicySeamHarness("/stub-cwd");
+	const result = await __testing.evaluateBashPolicies(
+		"ignored by stubs",
+		seam.ctx,
+		seam.events,
+		seam.herdrLifecycle,
+		false,
+		[
+			makeStubBashPolicy("first", firstVerdict, calls),
+			makeStubBashPolicy(
+				"second",
+				{ block: true, reason: "second policy verdict" },
+				calls,
+			),
+		],
+	);
+	assert.deepEqual(result, firstVerdict);
+	assert.deepEqual(
+		calls,
+		["first"],
+		"the second policy must not run after a verdict",
+	);
+});
+
+test("evaluateBashPolicies: allow verdict from the last policy returns undefined overall", async () => {
+	const calls: string[] = [];
+	const seam = makeBashPolicySeamHarness("/stub-cwd");
+	const result = await __testing.evaluateBashPolicies(
+		"ignored by stubs",
+		seam.ctx,
+		seam.events,
+		seam.herdrLifecycle,
+		false,
+		[
+			makeStubBashPolicy("first-allow", undefined, calls),
+			makeStubBashPolicy("last-allow", undefined, calls),
+		],
+	);
+	assert.equal(result, undefined);
+	assert.deepEqual(
+		calls,
+		["first-allow", "last-allow"],
+		"an allow must not short-circuit remaining policies",
+	);
+});
+
+test("evaluateBashPolicies: real runtime-guardrails policy blocks hard-deny commands through the seam", async () => {
+	const dir = makeTmpDir();
+	const originalConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = join(dir, "config-home");
+	try {
+		const seam = makeBashPolicySeamHarness(dir);
+		const result = await __testing.evaluateBashPolicies(
+			"rm -rf /",
+			seam.ctx,
+			seam.events,
+			seam.herdrLifecycle,
+			false,
+		);
+		assert.equal(result?.block, true);
+		assert.match(result?.reason ?? "", /destructive/);
+	} finally {
+		if (originalConfigHome === undefined)
+			delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = originalConfigHome;
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("evaluateBashPolicies: real runtime-guardrails policy allows a non-guarded command through the seam", async () => {
+	const dir = makeTmpDir();
+	const originalConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = join(dir, "config-home");
+	try {
+		const seam = makeBashPolicySeamHarness(dir);
+		const result = await __testing.evaluateBashPolicies(
+			"echo hello",
+			seam.ctx,
+			seam.events,
+			seam.herdrLifecycle,
+			false,
+		);
+		assert.equal(result, undefined);
+	} finally {
+		if (originalConfigHome === undefined)
+			delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = originalConfigHome;
 		rmSync(dir, { recursive: true, force: true });
 	}
 });

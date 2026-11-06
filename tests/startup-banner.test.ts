@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import startup, { isPiCliSubcommandInvocation, readBannerConfig, readGitBranch } from "../extensions/startup-banner.ts";
+import startup, { isPiCliSubcommandInvocation, readBannerConfig, readGitBranch, rosePulseTicks } from "../extensions/startup-banner.ts";
 import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
@@ -566,4 +566,155 @@ test("the banner ends with a /gentle:guide reminder on every start, only when th
 	assert.equal(withGuide.filter((line) => line.trim() !== "").at(-1)?.trim(), "Tip: run /gentle:guide for a guided tour of Gentle Shell");
 	assert.equal((await render([{ name: "gentle:guide" }])).filter((line) => line.includes("/gentle:guide")).length, 1, "shown again on the next start, once");
 	assert.equal((await render([])).some((line) => line.includes("/gentle:guide")), false);
+});
+
+// Every rose pulse step repaints every rose cell, which drives the TUI diff to
+// redraw the whole header region and teleport the hardware cursor; on fast
+// terminals that churn reads as flicker/ghosting (ghostty#12685). The step must
+// come from the resolved animation policy so the cadence table in
+// docs/readme-reference.md stays authoritative: quality paints every 25ms and
+// needs the coarser ~100ms wave, while performance already paints every 250ms.
+test("the rose pulse step follows the resolved animation policy", async (t) => {
+	assert.deepEqual(["quality", "performance", "potato"].map((policy) => rosePulseTicks(policy as never)), [4, 2, 2],
+		"quality quantizes the wave; performance and potato keep the merge-base step");
+	const home = mkdtempSync(join(tmpdir(), "gp-banner-pulse-"));
+	const previousHome = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = home;
+	t.after(() => {
+		if (previousHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previousHome;
+		rmSync(home, { recursive: true, force: true });
+	});
+	// Rose only: with the logo off, a rendered header varies with tick solely
+	// through the rose pulse once the fade-in and flash phases have settled.
+	t.mock.method(fs, "readFile", async () => JSON.stringify({ showRose: true, showTextLogo: false, color: "pink" }));
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const argv = process.argv;
+	process.argv = ["node"];
+	t.after(() => { process.argv = argv; });
+	for (const [key, value] of [["rows", 40], ["columns", 200]] as const) {
+		const descriptor = Object.getOwnPropertyDescriptor(process.stdout, key);
+		Object.defineProperty(process.stdout, key, { configurable: true, writable: true, value });
+		t.after(() => descriptor ? Object.defineProperty(process.stdout, key, descriptor) : Reflect.deleteProperty(process.stdout, key));
+	}
+	let boot: () => void;
+	let pulse: () => void;
+	let active = false;
+	let delay = 0;
+	let clock = 0;
+	t.mock.method(Date, "now", () => clock);
+	t.mock.method(globalThis, "setTimeout", (callback: () => void, ms: number) => {
+		if (ms === 50) boot = callback; // Never run operational stats/home reads.
+		return {};
+	});
+	t.mock.method(globalThis, "setInterval", (callback: () => void, ms: number) => {
+		pulse = callback; delay = ms; active = true; return {};
+	});
+	t.mock.method(globalThis, "clearInterval", () => { active = false; });
+	let start: (event: unknown, ctx: unknown) => Promise<void>;
+	let shutdown: () => void;
+	let header: { render(width: number): string[]; dispose(): void };
+	// Stroke warmup is module-global; a dedicated instance keeps the settle count deterministic.
+	const { default: isolatedStartup } = await import(new URL("../extensions/startup-banner.ts?pulse", import.meta.url).href) as typeof import("../extensions/startup-banner.ts");
+	isolatedStartup({ on: (name: string, fn: typeof start) => {
+		if (name === "session_start") start = fn;
+		if (name === "session_shutdown") shutdown = fn as unknown as () => void;
+	}, registerCommand() {}, getCommands: () => [], getAllTools: () => [] } as unknown as ExtensionAPI);
+	const ctx = { hasUI: true, cwd: "/fixture", ui: { setHeader(factory: (tui: unknown, theme: unknown) => typeof header) {
+		header = factory({ requestRender() {} }, { fg: (_role: string, text: string) => text });
+	} } };
+	const startBanner = async (policy: string) => {
+		writeFileSync(join(home, "animations.json"), JSON.stringify({ schema: "gentle-pi.animations/v1", policy }));
+		await start!({}, ctx); boot!();
+		for (let i = 0; i < 15; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(active, true, `${policy} starts its animation interval`);
+	};
+	const advance = () => { clock += delay; pulse!(); };
+	try {
+		await startBanner("quality");
+		assert.equal(delay, 25);
+		for (let i = 0; i < 32; i++) advance(); // Past the fade-in (10) and flash (22) phases.
+		const frames = [header!.render(200).join("\n")];
+		for (let i = 0; i < 4; i++) { advance(); frames.push(header!.render(200).join("\n")); }
+		const settled = frames[0];
+		assert.deepEqual(frames.slice(0, 4), [settled, settled, settled, settled],
+			"quality holds one rose pulse step across its 4-tick (~100ms) quantum");
+		assert.notEqual(frames[4], settled, "quality advances the pulse on the next quantum");
+		header!.dispose();
+		await startBanner("performance");
+		assert.equal(delay, 250);
+		for (let i = 0; i < 4; i++) advance();
+		const performanceFrame = header!.render(200).join("\n");
+		advance();
+		assert.notEqual(header!.render(200).join("\n"), performanceFrame,
+			"performance keeps painting a new pulse step on every 250ms paint");
+	} finally { header!.dispose(); shutdown!(); }
+});
+
+// docs/readme-reference.md: banner changes apply on the next session or
+// /reload. session_start disposes the previous header before its guards, so a
+// /reload that returned early would leave the editor without a header at all.
+test("/reload repaints the complete static banner instead of replaying the intro", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "gp-banner-reload-"));
+	const previousHome = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = home;
+	t.after(() => {
+		if (previousHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previousHome;
+		rmSync(home, { recursive: true, force: true });
+	});
+	t.mock.method(fs, "readFile", async () => JSON.stringify({ showRose: true, showTextLogo: true, color: "pink" }));
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const argv = process.argv;
+	process.argv = ["node"];
+	t.after(() => { process.argv = argv; });
+	for (const [key, value] of [["rows", 40], ["columns", 200]] as const) {
+		const descriptor = Object.getOwnPropertyDescriptor(process.stdout, key);
+		Object.defineProperty(process.stdout, key, { configurable: true, writable: true, value });
+		t.after(() => descriptor ? Object.defineProperty(process.stdout, key, descriptor) : Reflect.deleteProperty(process.stdout, key));
+	}
+	const save = (policy: string) => writeFileSync(join(home, "animations.json"), JSON.stringify({ schema: "gentle-pi.animations/v1", policy }));
+	let boot: () => void;
+	let active = false;
+	let clock = 0;
+	t.mock.method(Date, "now", () => clock);
+	t.mock.method(globalThis, "setTimeout", (callback: () => void, ms: number) => {
+		if (ms === 50) boot = callback; // Never run operational stats/home reads.
+		return {};
+	});
+	t.mock.method(globalThis, "setInterval", () => { active = true; return {}; });
+	t.mock.method(globalThis, "clearInterval", () => { active = false; });
+	let start: (event: unknown, ctx: unknown) => Promise<void>;
+	let header: { render(width: number): string[]; dispose(): void };
+	let headers = 0;
+	const { default: isolatedStartup } = await import(new URL("../extensions/startup-banner.ts?reload", import.meta.url).href) as typeof import("../extensions/startup-banner.ts");
+	isolatedStartup({ on: (name: string, fn: typeof start) => {
+		if (name === "session_start") start = fn;
+	}, registerCommand() {}, getCommands: () => [], getAllTools: () => [] } as unknown as ExtensionAPI);
+	const ctx = { hasUI: true, cwd: "/fixture", ui: { setHeader(factory: (tui: unknown, theme: unknown) => typeof header) {
+		headers++;
+		header = factory({ requestRender() {} }, { fg: (_role: string, text: string) => text });
+	} } };
+	try {
+		// Potato renders the completed static artwork immediately: its glyphs are
+		// the reference for "complete", independent of the pulse phase.
+		save("potato");
+		await start!({}, ctx); boot!();
+		assert.equal(headers, 1);
+		assert.equal(active, false, "potato starts no animation interval");
+		const staticGlyphs = stripAnsi(header!.render(200).join("\n"));
+		header!.dispose();
+		save("quality");
+		await start!({ reason: "reload" }, ctx);
+		boot!();
+		assert.equal(headers, 2, "/reload installs a header instead of leaving the editor without one");
+		assert.equal(active, false, "/reload starts no intro animation interval");
+		const reloaded = header!.render(200).join("\n");
+		assert.equal(stripAnsi(reloaded), staticGlyphs,
+			"/reload repaints the complete artwork instead of replaying the letter-writing intro");
+		assert.match(reloaded, /\x1b\[38;2;255;140;210m/, "/reload paints the settled logo palette");
+		assert.match(reloaded, /\x1b\[38;2;95;30;60m▒/, "/reload paints the settled rose shadow");
+	} finally { header!.dispose(); }
 });

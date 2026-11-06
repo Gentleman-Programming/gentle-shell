@@ -38,7 +38,7 @@ type BranchItem = {id: string; type: string; message?: {role: string; content: u
 type AuthoredInput = {text: string; order:number; before: Set<string>; entryId?: string; prompt?: string};
 // These are independent authority/dialog/delegation surfaces, not Auto approvals.
 const OWNED_CONTROL_TOOLS = new Set([
- "ask_user_choice", "ask_user_question", "gentle_review", "gentle_review_capture", "gentle_review_capture_group",
+ "ask_user_choice", "ask_user_question", "gentle_review", "gentle_review_capture", "gentle_review_capture_group", "gentle_review_run",
  "subagent_run", "subagent_continue", "subagent_reply", "subagent_cancel", "subagent_send_message",
  "subagent_status", "subagent_result", "subagent_list_tasks", "subagent_list_agents",
  "gentle_odd_phase", "todo",

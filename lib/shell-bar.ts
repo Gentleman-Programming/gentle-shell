@@ -4,8 +4,8 @@ import { renderUsageBar, selectUsageLimit, type ProviderUsage, type UsageWindow 
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { HOVER_ROLE } from "./shell-hover.ts";
 import { renderStatsRows, type SessionStats } from "./shell-stats.ts";
-import { CARD_TONE, floatRows, paintSurfaceRow, panelInnerWidth, renderCard, surfaceOpener } from "./shell-card.ts";
-import { clipPanelText, fitPanelLine, PANEL_ROW_INDENT, PANEL_SURFACE_ROLE, renderPanelHeader, renderPanelRow } from "./shell-panel.ts";
+import { CARD_TONE, floatRows, paintSurfaceRow, panelInnerWidth, renderCard } from "./shell-card.ts";
+import { chromeSurface, clipPanelText, fitPanelLine, PANEL_ROW_INDENT, panelSurfaceOpener, renderPanelHeader, renderPanelRow, sectionGap } from "./shell-panel.ts";
 import { REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_LABELS, type ReviewSidebarSnapshot } from "./review-sidebar-state.ts";
 import type { VisualSettings } from "./visual-customization-policy.ts";
 import { renderChangesWidget, type ChangesModel } from "./shell-changes.ts";
@@ -170,9 +170,10 @@ function executionSegment(modelId: string, effort: string | undefined, theme: Sh
 		: theme.fg(ROLE.MODEL, modelId);
 }
 
-function contextSegment(contextPercent: number | null, theme: ShellBarTheme, paint?: GaugePaint): string {
+function contextSegment(contextPercent: number | null, theme: ShellBarTheme, paint?: GaugePaint, withGauge = true): string {
 	const percentText = contextPercent === null ? "?%" : `${Math.round(contextPercent)}%`;
-	return `${theme.fg(ROLE.LABEL, "ctx")} ${paintGauge(contextPercent, theme, GAUGE_CELLS, paint)} ${theme.fg(ROLE.VALUE, percentText)}`;
+	const gauge = withGauge ? `${paintGauge(contextPercent, theme, GAUGE_CELLS, paint)} ` : "";
+	return `${theme.fg(ROLE.LABEL, "ctx")} ${gauge}${theme.fg(ROLE.VALUE, percentText)}`;
 }
 
 function costSegment(costTotal: number, subscription: boolean, theme: ShellBarTheme): string {
@@ -224,9 +225,9 @@ function joinSegments(segments: string[], theme: ShellBarTheme): string {
 // or inferred meanings from opaque extension status strings.
 // The fullscreen rail's Status, drawn as panel sections (design/shell-rework/02-proposal.html):
 // Changes, Review (only with current-session RDD evidence) and Integrations.
-// Location and model live in the header row; Integrations also identifies the
-// effective agent profile. Opaque integration statuses wrap so none of their
-// meaning is clipped, and the optional key hints close the rail.
+// Location and model live in the header row; the effective agent profile opens
+// Stats when that section is enabled. Opaque integration statuses wrap so none
+// of their meaning is clipped; callers can still supply optional legacy hints.
 export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation, hints?: string, options: StatusSectionsOptions = {}): string[] {
 	return renderShellStatusSections(model, theme, width, presentation, hints, options).lines;
 }
@@ -243,7 +244,7 @@ export interface StatusSectionsOptions {
 }
 
 /** The rail Status with its click targets: section headers collapse them and the Changes row opens /gentle:changes. */
-export function renderShellStatusSections(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation, hints?: string, options: StatusSectionsOptions = {}): { lines: string[]; targets: StatusTarget[] } {
+export function renderShellStatusSections(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation, hints?: string, options: StatusSectionsOptions = {}): { lines: string[]; targets: StatusTarget[]; groups: Array<{ start: number; end: number }>; loose: number[] } {
 	const label = (text: string) => theme.fg(ROLE.LABEL, text);
 	const wrapped = (text: string, role: string) => wrapTextWithAnsi(text, Math.max(1, width - PANEL_ROW_INDENT)).map((line) => renderPanelRow(width, theme.fg(role, line)));
 	type Section = { key?: StatusSection; header?: string; rows: string[]; openChangesRow?: number };
@@ -278,7 +279,10 @@ export function renderShellStatusSections(model: ShellBarModel, theme: ShellBarT
 	}
 	// Power user (compact density) adds what the session spent, per model.
 	if (model.stats) {
-		sections.push({ key: "stats", header: header("stats", "Stats", formatCost(model.stats.cost, model.subscription)), rows: renderStatsRows(model.stats, theme, width, model.subscription) });
+		// The agent profile opens Stats: it decides which models the session's spend went to.
+		const profile = model.profile ? sanitizeStatus(model.profile) : "";
+		const profileRow = profile ? [renderPanelRow(width, clipPanelText(`${label("profile")} ${theme.fg(ROLE.VALUE, profile)}`, Math.max(1, width - PANEL_ROW_INDENT)))] : [];
+		sections.push({ key: "stats", header: header("stats", "Stats", formatCost(model.stats.cost, model.subscription)), rows: [...profileRow, ...renderStatsRows(model.stats, theme, width, model.subscription)] });
 	}
 	// The status bar shows the permission mode once; Integrations only says
 	// what it means, so neither the mode nor its banner repeats here.
@@ -286,94 +290,140 @@ export function renderShellStatusSections(model: ShellBarModel, theme: ShellBarT
 	const integrationRows = (text: string) => wrapTextWithAnsi(text, Math.max(1, width - PANEL_ROW_INDENT - 2))
 		.map((line, index) => renderPanelRow(width, `${label(index === 0 ? "- " : "  ")}${line}`));
 	const permission = model.permission?.detail ? integrationRows(`${label("permissions")} ${theme.fg(ROLE.STATUS, sanitizeStatus(model.permission.detail))}`) : [];
-	const profile = model.profile ? sanitizeStatus(model.profile) : "";
-	const profileRows = profile
-		? wrapTextWithAnsi(`${label("Agent profile:")} ${theme.fg(ROLE.VALUE, profile)}`, Math.max(1, width - PANEL_ROW_INDENT)).map((line) => renderPanelRow(width, line))
-		: [];
 	const count = integrations.length + (permission.length ? 1 : 0);
 	sections.push({
 		key: "integrations",
 		header: header("integrations", "Integrations", count ? String(count) : "none"),
-		rows: [...profileRows, ...permission, ...(integrations.length ? integrations.flatMap((status) => integrationRows(theme.fg(ROLE.STATUS, sanitizeStatus(status)))) : permission.length ? [] : [renderPanelRow(width, label("no status reported"))])],
+		rows: [...permission, ...(integrations.length ? integrations.flatMap((status) => integrationRows(theme.fg(ROLE.STATUS, sanitizeStatus(status)))) : permission.length ? [] : [renderPanelRow(width, label("no status reported"))])],
 	});
-	if (hints) sections.push({ rows: [renderPanelRow(width, label(hints))] });
-	const gap = !presentation || presentation.density === "comfortable" ? [" ".repeat(Math.max(0, width))] : [];
+	// Minimal density keeps only the sections: the key hints row goes.
+	if (hints && presentation?.density !== "minimal") sections.push({ rows: [renderPanelRow(width, label(hints))] });
+	const gap = sectionGap(presentation?.density) ? [" ".repeat(Math.max(0, width))] : [];
 	const lines: string[] = [];
 	const targets: StatusTarget[] = [];
+	// Each headed section's row range, and the unheaded rows (key hints), so a
+	// transparent rail can draw every section as its own card.
+	const groups: Array<{ start: number; end: number }> = [];
+	const loose: number[] = [];
 	sections.forEach((section, index) => {
 		if (index) lines.push(...gap);
+		const start = lines.length;
 		if (section.key && section.header) {
 			targets.push({ row: lines.length, kind: "toggle", section: section.key });
 			lines.push(section.header);
-			if (options.collapsed?.has(section.key)) return;
+			if (options.collapsed?.has(section.key)) { groups.push({ start, end: lines.length }); return; }
 		}
 		if (section.openChangesRow !== undefined) targets.push({ row: lines.length + section.openChangesRow, kind: "open-changes" });
 		lines.push(...section.rows);
+		if (section.key && section.header) groups.push({ start, end: lines.length });
+		else for (let row = start; row < lines.length; row++) loose.push(row);
 	});
-	return { lines, targets };
+	return { lines, targets, groups, loose };
 }
 
 // The wide fullscreen chrome (design/shell-rework/02-proposal.html): a title row
 // with the project identity above the transcript and the rail, and one status
 // bar row below them. Both sit on the rail's panel surface.
 const STATUS_BAR_DIVIDER = "│";
-const paintChromeRow = (theme: ShellBarTheme, row: string) => paintSurfaceRow(row, surfaceOpener(theme, PANEL_SURFACE_ROLE));
+const paintChromeRow = (theme: ShellBarTheme, row: string) => paintSurfaceRow(row, panelSurfaceOpener(theme));
 
-/** `✿ name  path` left, the session name and profile right; the path gives way first, so the profile always shows. */
+// `cwd` is already abbreviated by the footer model; never consult the filesystem
+// while rendering. Strip terminal controls before displaying either copy.
+function projectIdentity(cwd: string, theme: ShellBarTheme): { name: string; full: string } {
+	const path = sanitizeStatus(cwd);
+	const name = path.split("/").filter((part) => part.length > 0).pop() ?? path;
+	const label = `${theme.fg(ROLE.BRAND, "✿")} ${theme.fg(ROLE.VALUE, theme.bold(name))}`;
+	return { name: label, full: `${label}  ${theme.fg(ROLE.PATH, path)}` };
+}
+
+/** `✿ name  path` left; the session name, or the model and profile on mobile, right. */
 export function renderShellTitleRow(model: ShellBarModel, theme: ShellBarTheme, width: number, options: { model?: boolean } = {}): string {
 	const target = Math.max(0, Math.floor(width));
-	const name = model.cwd.split("/").filter((part) => part.length > 0).pop() ?? model.cwd;
-	const left = `${theme.fg(ROLE.BRAND, "✿")} ${theme.fg(ROLE.VALUE, theme.bold(name))}  ${theme.fg(ROLE.PATH, model.cwd)}`;
-	// Mobile: the narrow status bar leaves the model out, so the title row carries it.
+	const left = projectIdentity(model.cwd, theme).full;
+	// Mobile: the narrow status bar leaves the model out, so the title row carries
+	// it with the agent profile; wide, the status bar carries both and this row keeps the session.
+	const profileName = model.profile ? sanitizeStatus(model.profile) : "";
+	const profile = profileName ? ` ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.LABEL, profileName)}` : "";
 	const right = options.model
-		? executionSegment(model.modelId, model.effort, theme)
-		: [model.sessionName ? theme.fg(ROLE.VALUE, sanitizeStatus(model.sessionName)) : "", model.profile ? theme.fg(ROLE.LABEL, sanitizeStatus(model.profile)) : ""]
-			.filter(Boolean).join(theme.fg(ROLE.SEPARATOR, " · "));
+		? `${executionSegment(model.modelId, model.effort, theme)}${profile}`
+		: model.sessionName ? theme.fg(ROLE.VALUE, sanitizeStatus(model.sessionName)) : "";
 	return paintChromeRow(theme, ` ${fitPanelLine(left, right, Math.max(0, target - 2))} `);
 }
 
+// The status bar replaces the YOLO banners, so it keeps their icons.
+const MODE_GLYPHS: Record<string, string> = { YOLO: "🔥", "SUPER-YOLO": "💥" };
+function modeBadge(mode: string): string {
+	const glyph = MODE_GLYPHS[mode];
+	return glyph ? `${glyph} ${mode}` : mode;
+}
 /**
  * The status bar: branch, dirty count and a non-default permission mode on
- * the left; model · effort, context, cost and usage on the right. Usage gives
- * way first (gauges, secondary windows, the segment), then the model; the
- * usage segment stays the click target that opens the usage view.
+ * the left; model · effort, context, cost and usage on the right. A long
+ * branch shortens before the model and counters give way; usage and its
+ * click target degrade with the available space.
  */
-export function renderShellStatusBar(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: Presentation, paint?: GaugePaint, extras: { jobs?: boolean } = {}): ShellHeaderChrome {
+export function renderShellStatusBar(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: Presentation, paint?: GaugePaint, extras: { jobs?: boolean; project?: boolean } = {}): ShellHeaderChrome {
 	const target = Math.max(0, Math.floor(width));
+	if (target < 2) return { rows: [paintChromeRow(theme, " ".repeat(target))], headerRow: 0 };
+	const room = target - 2;
 	const divider = ` ${theme.fg(ROLE.SEPARATOR, STATUS_BAR_DIVIDER)} `;
 	const join = (segments: string[]) => segments.filter(Boolean).join(divider);
 	const dirty = model.dirty ? theme.fg(ROLE.DIRTY, `±${model.dirty}`) : "";
 	const branch = [model.branch ? theme.fg(ROLE.BRANCH, model.branch) : "", dirty].filter(Boolean).join(" ");
-	const mode = model.permission && model.permission.mode !== "NORMAL" ? theme.fg("warning", theme.bold(sanitizeStatus(model.permission.mode))) : "";
+	const mode = model.permission && model.permission.mode !== "NORMAL" ? theme.fg("warning", theme.bold(modeBadge(sanitizeStatus(model.permission.mode)))) : "";
 	// Without a rail (mobile) the running jobs keep their compact count here.
 	const runningJobs = extras.jobs ? (model.jobs?.filter((job) => job.status === undefined).length ?? 0) : 0;
 	const tail = join([mode, runningJobs ? theme.fg(ROLE.STATUS, shellJobsCount(runningJobs)) : ""]);
 	const left = join([branch, tail]);
+	const minimal = presentation?.density === "minimal";
 	const showCounters = presentation?.visibility.usageCost !== false;
+	// The configured tier stays beside the effort and yields only at the end; the
+	// agent profile follows it and gives way before the usage does.
 	const tier = model.profileTier ? ` ${theme.fg(ROLE.LABEL, "·")} ${theme.fg(model.profileTier === "fast" ? "warning" : ROLE.LABEL, model.profileTier === "fast" ? "Fast" : "Standard")}` : "";
+	const profileName = model.profile ? sanitizeStatus(model.profile) : "";
+	const profile = profileName ? ` ${theme.fg(ROLE.LABEL, "·")} ${theme.fg(ROLE.LABEL, profileName)}` : "";
 	const exec = presentation?.visibility.modelDetails === false ? "" : executionSegment(model.modelId, model.effort, theme);
-	const counters = showCounters ? [contextSegment(model.contextPercent, theme, paint), costSegment(model.costTotal, model.subscription, theme)] : [];
+	const counters = showCounters ? [contextSegment(model.contextPercent, theme, paint, !minimal), costSegment(model.costTotal, model.subscription, theme)] : [];
 	const windows = model.usage ? (selectUsageLimit(model.usage, model.modelId)?.windows ?? []) : [];
-	const stages: Array<UsageStage | undefined> = showCounters ? ["full", "text", "primary", undefined] : [undefined];
-	const attempts = [...stages.map((stage) => ({ stage, withExec: true, withTier: true })),
-		...(tier ? [{ stage: undefined, withExec: true, withTier: false }] : []), { stage: undefined, withExec: false, withTier: false }];
-	for (const { stage, withExec, withTier } of attempts) {
-		const usage = stage ? usageSegmentText(windows, theme, stage, usageHint, paint) : "";
-		const right = join([withExec ? exec + (exec && withTier ? tier : "") : "", ...counters, usage]);
-		const room = target - 2;
-		if (visibleWidth(left) + (right ? RIGHT_PADDING : 0) + visibleWidth(right) > room) continue;
-		const row = ` ${left}${" ".repeat(room - visibleWidth(left) - visibleWidth(right))}${right} `;
+	const stages: Array<UsageStage | undefined> = !showCounters ? [undefined] : minimal ? ["text", "primary", undefined] : ["full", "text", "primary", undefined];
+	const attempts = [...stages.flatMap((stage) => [{ stage, withExec: true, withTier: true, withProfile: true }, ...(profile ? [{ stage, withExec: true, withTier: true, withProfile: false }] : [])]),
+		...(tier ? [{ stage: undefined, withExec: true, withTier: false, withProfile: false }] : []), { stage: undefined, withExec: false, withTier: false, withProfile: false }];
+	for (const { stage, withExec, withTier, withProfile } of attempts) {
+		const usage = stage ? usageSegmentText(windows, theme, stage, minimal ? undefined : usageHint, paint) : "";
+		const right = join([withExec ? exec + (exec && withTier ? tier : "") + (exec && withProfile ? profile : "") : "", ...counters, usage]);
+		let shownLeft = left;
+		if (visibleWidth(shownLeft) + (right ? RIGHT_PADDING : 0) + visibleWidth(right) > room) {
+			if (!model.branch || visibleWidth(model.branch) <= COMPACT_BRANCH_WIDTH) continue;
+			// Reserve the dirty count and the permission/job badges before clipping
+			// the branch itself. Keep a recognizable prefix while usage is present;
+			// after usage gives way, a shorter prefix can still save model and effort.
+			const protectedWidth = visibleWidth(join([dirty, tail])) + (dirty ? 1 : tail ? visibleWidth(divider) : 0);
+			const branchRoom = room - visibleWidth(right) - (right ? RIGHT_PADDING : 0) - protectedWidth;
+			if (branchRoom < (stage ? COMPACT_BRANCH_WIDTH : 4)) continue;
+			const shortened = theme.fg(ROLE.BRANCH, clipPanelText(model.branch, branchRoom));
+			shownLeft = join([[shortened, dirty].filter(Boolean).join(" "), tail]);
+			if (visibleWidth(shownLeft) + (right ? RIGHT_PADDING : 0) + visibleWidth(right) > room) continue;
+		}
+		if (extras.project) {
+			// Add identity only in spare cells, so path and name never displace
+			// model, effort, tier, badges or counters selected by the existing fit.
+			const identity = projectIdentity(model.cwd, theme);
+			const available = room - visibleWidth(shownLeft) - visibleWidth(right) - (right ? RIGHT_PADDING : 0) - (shownLeft ? visibleWidth(divider) : 0);
+			const project = [identity.full, identity.name].find((candidate) => visibleWidth(candidate) <= available);
+			if (project) shownLeft = join([project, shownLeft]);
+		}
+		const row = ` ${shownLeft}${" ".repeat(room - visibleWidth(shownLeft) - visibleWidth(right))}${right} `;
 		const usageSpan = usage ? { start: target - 1 - visibleWidth(usage), end: target - 1 } : undefined;
 		return { rows: [paintChromeRow(theme, row)], headerRow: 0, ...(usageSpan ? { usageSpan } : {}) };
 	}
-	// Still too wide (a phone, a long branch): the branch gives way before the
-	// context and cost, which give way last, context after cost.
-	const room = Math.max(0, target - 2);
+	// Still too wide: the branch gives way before context and cost, which give
+	// way last, context after cost. Keep the badges when only they fit.
 	const tailWidth = tail ? visibleWidth(tail) + (branch ? visibleWidth(divider) : 0) : 0;
 	for (const right of [join(counters), counters[0] ?? "", ""]) {
 		const leftRoom = room - visibleWidth(right) - (right ? RIGHT_PADDING : 0);
 		const branchRoom = leftRoom - tailWidth;
 		if (branch && branchRoom < 4 && right) continue;
+		if (branch && branchRoom < 1 && !right && tail) return { rows: [paintChromeRow(theme, ` ${fitPanelLine(tail, "", room)} `)], headerRow: 0 };
 		const fitted = join([branch ? clipPanelText(branch, Math.max(1, branchRoom)) : "", tail]);
 		if (visibleWidth(fitted) > leftRoom && right) continue;
 		return { rows: [paintChromeRow(theme, ` ${fitPanelLine(fitted, right, room)} `)], headerRow: 0 };
@@ -420,7 +470,7 @@ function usageWindowText(window: UsageWindow, theme: ShellBarTheme, withGauge: b
 // Three degrading shapes for the same windows, narrowest last: every window
 // with its gauge, every window as text only, or just the first window as
 // text only. A provider with no usage data at all has no windows to shape,
-// so all three collapse to the bare "usage" label plus the shortcut hint.
+// so all three collapse to the "usage" label and an optional shortcut hint.
 type UsageStage = "full" | "text" | "primary";
 function usageSegmentText(windows: UsageWindow[], theme: ShellBarTheme, stage: UsageStage, hint: string | undefined, paint?: GaugePaint): string {
 	const label = theme.fg(USAGE_LABEL_ROLE, "usage");
@@ -450,7 +500,7 @@ function fitHeaderContent(text: string, width: number): string {
 	return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
 }
 
-export function renderShellHeaderBar(model: ShellHeaderModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: Presentation, paint?: GaugePaint): ShellHeaderResult {
+export function renderShellHeaderBar(model: ShellHeaderModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: HeaderPresentation, paint?: GaugePaint): ShellHeaderResult {
 	const targetWidth = Math.max(0, Math.floor(width));
 	let content: ShellHeaderResult | undefined;
 	let contentWidth = targetWidth;
@@ -483,21 +533,49 @@ export function renderShellHeaderChrome(model: ShellHeaderModel, theme: ShellBar
 	return { rows: [padding, text, padding, rule], headerRow: 1, usageSpan };
 }
 
+/** One blank row on the chrome surface: the margin a chrome bar keeps toward the content in comfortable density. */
+export function renderShellChromePad(theme: ShellBarTheme, width: number): string {
+	return paintChromeRow(theme, " ".repeat(Math.max(0, Math.floor(width))));
+}
+
+/**
+ * A chrome bar: the split status bar row (branch, permission mode, model,
+ * context, cost, usage). In comfortable density it is centered between two
+ * margin rows on the chrome surface; compact and minimal draw the bar row
+ * alone, with minimal omitting gauges and shortcut hints. The top, below-input
+ * and split bars share this design; a transparent surface leaves it unpainted.
+ */
+export function renderShellChromeBar(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint: string | undefined, presentation: HeaderPresentation | undefined, paint: GaugePaint | undefined, extras: { jobs?: boolean } = {}): ShellHeaderChrome {
+	const project = presentation?.headerPlacement === "top" || presentation?.headerPlacement === "below-input";
+	const bar = renderShellStatusBar(model, theme, width, usageHint, presentation, paint, { ...extras, project });
+	if (presentation !== undefined && presentation.density !== "comfortable") return bar;
+	// Comfortable centers the text: one margin row on each side of the bar row.
+	const pad = renderShellChromePad(theme, width);
+	return { ...bar, rows: [pad, ...bar.rows, pad], headerRow: bar.headerRow + 1 };
+}
+
 /** The usage segment is interactive only on the content row, never padding or the edge. */
 export function shellHeaderUsageHit(chrome: ShellHeaderChrome, x: number, y: number): boolean {
 	const { usageSpan } = chrome;
 	return y === chrome.headerRow && usageSpan !== undefined && x >= usageSpan.start && x < usageSpan.end;
 }
 
-function headerContent(model: ShellHeaderModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: Presentation, paint?: GaugePaint): ShellHeaderResult {
+function headerContent(model: ShellHeaderModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: HeaderPresentation, paint?: GaugePaint): ShellHeaderResult {
 	const targetWidth = Math.max(0, Math.floor(width));
 	const jobs = model.jobs ? theme.fg(ROLE.STATUS, shellJobsCount(model.jobs)) : undefined;
+	const minimal = presentation?.density === "minimal";
 	const ctxCost = joinSegments([
 		...(jobs ? [jobs] : []),
-		...(presentation?.visibility.usageCost === false ? [] : [contextSegment(model.contextPercent, theme, paint), costSegment(model.costTotal, model.subscription, theme)]),
+		...(presentation?.visibility.usageCost === false ? [] : [contextSegment(model.contextPercent, theme, paint, !minimal), costSegment(model.costTotal, model.subscription, theme)]),
 	], theme);
 	const windows = model.usage ? (selectUsageLimit(model.usage, model.modelId)?.windows ?? []) : [];
-	const leftStages = headerLeftStages(model, theme, presentation?.visibility.modelDetails !== false)
+	const belowInput = presentation?.headerPlacement === "below-input";
+	const safeModel = belowInput ? { ...model, cwd: sanitizeStatus(model.cwd), branch: model.branch === null ? null : sanitizeStatus(model.branch) } : model;
+	const location = locationSegment(safeModel, theme);
+	const leftStages = headerLeftStages(safeModel, theme, presentation?.visibility.modelDetails !== false)
+		.flatMap((stage) => belowInput && stage[1] === location
+			? [[stage[0]!, `${projectIdentity(safeModel.cwd, theme).name}  ${location}`, ...stage.slice(2)], stage]
+			: [stage])
 		.map((stage) => presentation?.density === "minimal" ? stage.slice(1) : stage);
 	const minimalLeft = Math.max(0, leftStages.length - 2); // brand + bare model id, before dropping the model too
 	// One flat, ordered cascade — never a per-stage nested search — so the
@@ -506,16 +584,16 @@ function headerContent(model: ShellHeaderModel, theme: ShellBarTheme, width: num
 	// windows → the whole segment) before ctx/cost is touched: every window
 	// with its gauge, then text-only, then the first window only, then gone.
 	// Unlike the compact bar's usage meter (hidden with no data), this is a
-	// standing, clickable affordance — even with nothing to report it still
-	// reads "usage" plus the shortcut hint, unless disabled, width permitting.
-	const usageStages: Array<UsageStage | undefined> = presentation?.visibility.usageCost === false ? [undefined] : ["full", "text", "primary", undefined];
+	// standing, clickable affordance: it reads "usage" even with no data, plus
+	// the shortcut hint outside minimal density, unless disabled or too narrow.
+	const usageStages: Array<UsageStage | undefined> = presentation?.visibility.usageCost === false ? [undefined] : minimal ? ["text", "primary", undefined] : ["full", "text", "primary", undefined];
 	const attempts: Array<{ leftIndex: number; usageStage: UsageStage | undefined }> = [
 		...leftStages.slice(0, minimalLeft).map((_, leftIndex) => ({ leftIndex, usageStage: usageStages[0] })),
 		...usageStages.map((usageStage) => ({ leftIndex: minimalLeft, usageStage })),
 		{ leftIndex: leftStages.length - 1, usageStage: undefined },
 	];
 	for (const { leftIndex, usageStage } of attempts) {
-		const usageText = usageStage ? usageSegmentText(windows, theme, usageStage, usageHint, paint) : undefined;
+		const usageText = usageStage ? usageSegmentText(windows, theme, usageStage, minimal ? undefined : usageHint, paint) : undefined;
 		const right = usageText ? joinSegments([ctxCost, usageText], theme) : ctxCost;
 		const left = joinSegments(leftStages[leftIndex]!, theme);
 		if (visibleWidth(left) + (right ? RIGHT_PADDING : 0) + visibleWidth(right) > targetWidth) continue;
@@ -544,9 +622,9 @@ export function renderShellBelowInputFloat(model: ShellBarModel, theme: ShellBar
 	const changesRow = Boolean(changes && changes.files.length > 0) && presentation.visibility.changes !== false
 		? floatHeaderRow(theme, targetWidth, (inner) => renderChangesWidget(changes, theme, inner)[0] ?? "")
 		: undefined;
+	// Integrations live only in the rail; this row keeps the running jobs count.
 	const statuses = presentation.statusPlacement === "hidden" ? [] : [
 		...(model.jobs?.length ? [shellJobsCount(model.jobs.length)] : []),
-		...model.statuses.map(sanitizeStatus).filter(Boolean),
 	];
 	const statusRow = statuses.length
 		? floatHeaderRow(theme, targetWidth, () => joinSegments(statuses.map((status) => theme.fg(ROLE.STATUS, status)), theme))
@@ -575,9 +653,8 @@ export function renderShellBottomOnlyBar(model: ShellBarModel, theme: ShellBarTh
 	if (grouped) return grouped.rows;
 	const headerModel = buildShellHeaderModel(model, true);
 	// Neon, missing backgrounds and sub-minimum widths keep the old row count.
-	const rows = [headerContent(headerModel, theme, width, usageHint, presentation, paint).text];
-	const statuses = model.statuses.map(sanitizeStatus).filter((status) => status.length > 0).map((status) => theme.fg(ROLE.STATUS, status));
-	return statuses.length ? [...rows, truncateToWidth(joinSegments(statuses, theme), Math.max(0, Math.floor(width)), "…")] : rows;
+	// Integrations live only in the rail (and the [ Panel ] sheet), never in this bar.
+	return [headerContent(headerModel, theme, width, usageHint, presentation, paint).text];
 }
 
 // The rule row painted directly under the header bar: one full-width horizontal
@@ -594,7 +671,8 @@ const BG_RESET = "\x1b[49m";
 // Paints the header content with floatRows and returns the row without its
 // transparent margins plus the background opener. The painted row is
 // `<open> <content> <reset>`; the opener has no spaces, so the first space ends
-// it. Undefined when the float style does not apply.
+// it. Undefined when the float style does not apply. A transparent chrome
+// surface keeps the same geometry with an empty opener and no background.
 function floatHeaderPaint(theme: ShellBarTheme, width: number, content: (width: number) => string): { inner: string; open: string } | undefined {
 	let floated = false;
 	const [row] = floatRows(CARD_TONE.INFO, theme, width, (inner) => {
@@ -603,8 +681,12 @@ function floatHeaderPaint(theme: ShellBarTheme, width: number, content: (width: 
 	});
 	if (!floated || row === undefined) return undefined;
 	const inner = row.slice(1, -1);
+	// Callers slice the trailing reset off `inner`, so the unpainted row keeps one.
+	if (chromeSurface() === "transparent") return { inner: `${inner.replace(BG_SGR, "")}${BG_RESET}`, open: "" };
 	return { inner, open: inner.slice(0, inner.indexOf(" ")) };
 }
+// Background openers (`48;…`) and resets (`49`), which a transparent surface drops.
+const BG_SGR = /\x1b\[(?:48(?:;[0-9]+)*|49)m/g;
 
 // In the float style the rule closes the hanging header tab with an upper
 // one-eighth block line. Box-drawing lines sit mid-cell: a transparent `└──┘`

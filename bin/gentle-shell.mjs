@@ -26,9 +26,9 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { constants as osConstants, homedir, tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve as resolvePath } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
 	buildPiInvocation,
 	checkPiVersion,
@@ -83,7 +83,6 @@ import {
 	bundledPi,
 	bundledSetupEnv,
 	bundledUpdateNext,
-	bundledUpdateNotice,
 	bundledUpdatePlan,
 	nodeBundledFs,
 	parseBundledUpgradeArgs,
@@ -138,14 +137,14 @@ function resolveBundledCli() {
 	const expectedEntry = join(root, "dist", "index.js");
 	const metadata = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 	if (entry !== expectedEntry || metadata.name !== "@earendil-works/pi-coding-agent" ||
-		metadata.bin?.pi !== "dist/bundle/cli.js") {
+		metadata.bin?.pi !== "dist/bundle/cli.js" || typeof metadata.version !== "string") {
 		throw new Error("Unsupported adjacent Pi package entry/name/bin metadata");
 	}
 	const cliPath = join(root, metadata.bin.pi);
 	if (realpathSync(cliPath) !== cliPath || !statSync(cliPath).isFile()) {
 		throw new Error("Unsupported adjacent Pi CLI path");
 	}
-	return cliPath;
+	return { path: cliPath, version: metadata.version };
 }
 
 function findOnPath(name) {
@@ -263,9 +262,71 @@ async function startSharedEngram() {
 	return failed;
 }
 
-// Use Pi's supported configuration-only install command, never an alternate
-// extension loader. Verify advertised enforcement before trusting the policy.
-async function ensureEngramCompanion(home, runtime, stdio, timeoutMs) {
+const LEGACY_ENGRAM_COMPANION_SOURCE = "npm:gentle-engram@0.4.2";
+const companionSource = (entry) => typeof entry === "string" ? entry : entry?.source;
+
+function ownsCompanionHome(home, homeHadContentBeforeBootstrap) {
+	if (home.mode === "link") return false;
+	const previous = provisionedEntry(readRawConfig(resolveConfigPath()), safeRealpath(home.dir));
+	return !homeIsForeign(home, previous, homeHadContentBeforeBootstrap);
+}
+
+// The old launcher itself registered this exact pin. In a Shell-owned home,
+// migrate only that legacy selection, using the selected Pi's own package
+// manager to keep source identity, filters, ordering and settings locking. This
+// changes configuration only: Pi's normal startup notice and explicit update
+// command remain responsible for discovering and installing newer packages.
+async function migrateManagedEngramCompanion(home, homeHadContentBeforeBootstrap) {
+	if (!ownsCompanionHome(home, homeHadContentBeforeBootstrap)) return { ok: true };
+	try {
+		const settingsPath = join(home.dir, "settings.json");
+		const packages = JSON.parse(readJsonIfExists(settingsPath) ?? "{}").packages ?? [];
+		if (!Array.isArray(packages)) return { ok: true };
+		const npmSources = packages.map(companionSource).filter((source) => typeof source === "string" && /^npm:gentle-engram(?:@|$)/.test(source));
+		if (npmSources.length !== 1 || npmSources[0] !== LEGACY_ENGRAM_COMPANION_SOURCE) return { ok: true };
+		// Do not take over an explicitly selected local companion, or infer
+		// ownership from a missing/unverified npm installation.
+		if (packages.some((entry) => {
+			const source = companionSource(entry);
+			return typeof source === "string" && !source.startsWith("npm:") && readPackageName(resolvePath(home.dir, source)) === "gentle-engram";
+		})) return { ok: true };
+		const metadata = join(home.dir, "npm", "node_modules", "gentle-engram", "package.json");
+		const metadataText = readJsonIfExists(metadata);
+		if (!supportsEngramStartupPolicy(metadataText) || JSON.parse(metadataText).version !== "0.4.2") throw new Error("the legacy companion installation could not be verified");
+		const piRoot = dirname(dirname(dirname(bundledCli)));
+		const main = JSON.parse(readJsonIfExists(join(piRoot, "package.json")) ?? "{}").main;
+		if (typeof main !== "string" || !main) throw new Error("the selected Pi does not expose its package manager");
+		const sdkPath = resolvePath(piRoot, main);
+		const sdkRelative = relative(piRoot, sdkPath);
+		if (!sdkRelative || sdkRelative === ".." || sdkRelative.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(sdkRelative)) throw new Error("the selected Pi package manager is outside its package");
+		const { DefaultPackageManager, SettingsManager } = await import(pathToFileURL(sdkPath).href);
+		const settings = SettingsManager.create(process.cwd(), home.dir, { projectTrusted: false });
+		const loadErrors = settings.drainErrors();
+		if (loadErrors.length) throw loadErrors[0].error;
+		const selected = settings.getGlobalSettings().packages ?? [];
+		const currentNpmSources = selected.map(companionSource).filter((source) => typeof source === "string" && /^npm:gentle-engram(?:@|$)/.test(source));
+		const localSelected = selected.some((entry) => {
+			const source = companionSource(entry);
+			return typeof source === "string" && !source.startsWith("npm:") && readPackageName(resolvePath(home.dir, source)) === "gentle-engram";
+		});
+		if (localSelected || currentNpmSources.length !== 1 || currentNpmSources[0] !== LEGACY_ENGRAM_COMPANION_SOURCE) throw new Error("companion selection changed");
+		const manager = new DefaultPackageManager({ cwd: process.cwd(), agentDir: home.dir, settingsManager: settings });
+		manager.addSourceToSettings(ENGRAM_COMPANION_SOURCE);
+		await settings.flush();
+		const errors = settings.drainErrors();
+		if (errors.length) throw errors[0].error;
+		const persisted = JSON.parse(readJsonIfExists(settingsPath) ?? "{}").packages;
+		if (!Array.isArray(persisted) || !persisted.some((entry) => companionSource(entry) === ENGRAM_COMPANION_SOURCE)) throw new Error("companion selection was not saved");
+		return { ok: true };
+	} catch (error) {
+		return { ok: false, exitCode: 1, message: `gentle-shell: could not prepare the managed gentle-engram package for updates (${error.message}); review its selection before retrying` };
+	}
+}
+
+// Use Pi's install command, never an alternate extension loader. A user's
+// selected companion stays selected; missing or unverified capability is only
+// warned about, while the guard continues to protect unverified stores.
+async function ensureEngramCompanion(home, runtime, stdio, timeoutMs, homeHadContentBeforeBootstrap) {
 	const metadata = join(home.dir, "npm", "node_modules", "gentle-engram", "package.json");
 	let packages;
 	try {
@@ -274,15 +335,12 @@ async function ensureEngramCompanion(home, runtime, stdio, timeoutMs) {
 		return { ok: false, exitCode: 1, message: "gentle-shell: cannot verify Engram startupPolicy from malformed settings; repair settings and recheck" };
 	}
 	if (!Array.isArray(packages)) return { ok: false, exitCode: 1, message: "gentle-shell: cannot verify Engram startupPolicy from non-array packages" };
-	let pinned = false;
 	let local = false;
-	let npmSelected = false;
+	const npmSelections = [];
 	for (const entry of packages) {
-		const source = typeof entry === "string" ? entry : entry?.source;
-		if (source === ENGRAM_COMPANION_SOURCE) pinned = true;
-		if (typeof source === "string" && /^npm:gentle-engram(?:@|$)/.test(source)) npmSelected = true;
+		const source = companionSource(entry);
+		if (typeof source === "string" && /^npm:gentle-engram(?:@|$)/.test(source)) npmSelections.push(source);
 		if (typeof source !== "string" || source.startsWith("npm:")) continue;
-		// Preserve an explicit local companion selection rather than overwrite it.
 		const selected = resolvePath(home.dir, source);
 		if (readPackageName(selected) !== "gentle-engram") continue;
 		if (!supportsEngramStartupPolicy(readJsonIfExists(join(selected, "package.json")))) {
@@ -290,14 +348,25 @@ async function ensureEngramCompanion(home, runtime, stdio, timeoutMs) {
 		}
 		local = true;
 	}
-	if (local && !npmSelected) return { ok: true };
-	if (pinned && supportsEngramStartupPolicy(readJsonIfExists(metadata))) return { ok: true };
+	if (npmSelections.length) {
+		const metadataText = readJsonIfExists(metadata);
+		if (supportsEngramStartupPolicy(metadataText)) {
+			const installedVersion = JSON.parse(metadataText).version;
+			const mismatch = npmSelections.some((source) => {
+				const exact = /^npm:gentle-engram@v?((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$/.exec(source);
+				return exact && exact[1] !== installedVersion;
+			});
+			if (!mismatch) return { ok: true };
+			return { ok: false, exitCode: 1, message: "gentle-shell: selected gentle-engram does not match its installed version; recheck its startupPolicy (selection preserved)" };
+		}
+		return { ok: false, exitCode: 1, message: "gentle-shell: selected gentle-engram lacks engram.startupPolicy=1; update it and recheck (selection preserved)" };
+	}
+	if (local || !ownsCompanionHome(home, homeHadContentBeforeBootstrap)) return { ok: true };
 	process.stderr.write(`gentle-shell: installing policy-capable companion ${ENGRAM_COMPANION_SOURCE} through Pi\n`);
 	const result = await spawnAndWait(runtime.command, [...runtime.args, "install", ENGRAM_COMPANION_SOURCE], buildSetupEnv(home, runtime), stdio, timeoutMs);
 	let declared = false;
 	try {
-		declared = JSON.parse(readJsonIfExists(join(home.dir, "settings.json")) ?? "{}").packages?.some((entry) =>
-			(typeof entry === "string" ? entry : entry?.source) === ENGRAM_COMPANION_SOURCE) === true;
+		declared = JSON.parse(readJsonIfExists(join(home.dir, "settings.json")) ?? "{}").packages?.some((entry) => companionSource(entry) === ENGRAM_COMPANION_SOURCE) === true;
 	} catch { /* Missing or malformed readback cannot establish enforcement. */ }
 	if (!result.ok || result.timedOut || !declared || !supportsEngramStartupPolicy(readJsonIfExists(metadata))) {
 		return { ok: false, exitCode: 1, message: "gentle-shell: companion installation did not establish engram.startupPolicy=1; the Engram guard still keeps unverified stores closed. Repair gentle-engram, then restart Shell." };
@@ -316,6 +385,22 @@ function bundledProcessEnv() {
 function ownPackageVersion() {
 	const packageJson = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
 	return packageJson.version;
+}
+
+// The real spawn, only ever needed for a runtime with no in-memory version
+// (env override, PATH pi): kind "bundled" always has runtime.version set and
+// skips this entirely (#2096).
+function probePiVersion(runtime) {
+	const versionProbePlan = planSpawn({ command: runtime.command, args: [...runtime.args, "--version"], platform: process.platform });
+	const versionProbe = spawnSync(versionProbePlan.command, versionProbePlan.args, {
+		stdio: ["ignore", "pipe", "pipe"],
+		timeout: 15000,
+		encoding: "utf8",
+		shell: versionProbePlan.shell,
+		env: bundledEnv ?? process.env,
+	});
+	if (versionProbe.error) fail(`Could not run the pi runtime at "${runtime.command}": ${versionProbe.error.message}`, 1);
+	return checkPiVersion(versionProbe.stdout ?? "");
 }
 
 function emptyArgs() {
@@ -1133,7 +1218,7 @@ function ensureBuiltinCodemodeExcluded(settingsPath) {
 // rpc`/`-p` consumers. `timeoutMs` is threaded into every child this flow
 // spawns (see spawnAndWait's own doc comment) — manual `setup` never passes
 // it, so it never times out; the automatic flow does (S9).
-async function runSetupFlow(home, runtime, { dryRun, stdio, timeoutMs }) {
+async function runSetupFlow(home, runtime, { dryRun, stdio, timeoutMs, homeHadContentBeforeBootstrap }) {
 	const pinnedVersion = resolveSetupGentleAiPin();
 	if (!isSetupCapablePin(pinnedVersion)) {
 		return {
@@ -1203,19 +1288,43 @@ async function runSetupFlow(home, runtime, { dryRun, stdio, timeoutMs }) {
 			process.stderr.write(`gentle-shell: kept your Pi theme unchanged (gentle-ai rewrote ${settingsPath}; tracked upstream)\n`);
 		}
 	}
-	if (installResult.timedOut) {
-		return { ok: false, exitCode: 1, message: `gentle-shell: gentle-ai install timed out after ${formatTimeoutCeiling(timeoutMs)}` };
-	}
 	if (installResult.error) {
 		return { ok: false, exitCode: 1, message: `Could not start the gentle-ai binary: ${installResult.error.message}` };
 	}
-	if (!installResult.ok) return installResult;
+	if (!installResult.ok || installResult.timedOut) {
+		// Run post-install cleanup even on failure or timeout so a failed setup
+		// does not leave npm:gentle-pi declared in settings.json, which would make
+		// subsequent launches silently run the published npm package instead of
+		// the launcher's own package (#1647).
+		if (!dryRun && !installResult.interrupted) {
+			// A cleanup that throws (e.g. an unreadable settings.json) must not
+			// replace the install's own failure; it only adds a diagnostic.
+			let cleanupResult;
+			try {
+				cleanupResult = await runPostInstallCleanup(home, runtime, false, stdio, timeoutMs);
+			} catch (error) {
+				cleanupResult = { ok: false, exitCode: 1, message: `gentle-shell: post-install cleanup failed: ${error.message}` };
+			}
+			if (cleanupResult.interrupted) return cleanupResult;
+			if (!cleanupResult.ok && cleanupResult.message !== undefined) {
+				const baseMessage = installResult.timedOut
+					? `gentle-shell: gentle-ai install timed out after ${formatTimeoutCeiling(timeoutMs)}`
+					: installResult.message;
+				const message = baseMessage ? `${baseMessage}\n${cleanupResult.message}` : cleanupResult.message;
+				return { ok: false, exitCode: installResult.exitCode, message };
+			}
+		}
+		if (installResult.timedOut) {
+			return { ok: false, exitCode: 1, message: `gentle-shell: gentle-ai install timed out after ${formatTimeoutCeiling(timeoutMs)}` };
+		}
+		return installResult;
+	}
 
 	const cleanupResult = await runPostInstallCleanup(home, runtime, dryRun, stdio, timeoutMs);
 	if (cleanupResult.ok && !dryRun) {
 		warnDisabledMCP(home);
 		// The guard and policy protect memory, so the companion check only warns.
-		const companion = bundledInstall ? await ensureEngramCompanion(home, runtime, stdio, timeoutMs) : { ok: true };
+		const companion = bundledInstall ? await ensureEngramCompanion(home, runtime, stdio, timeoutMs, homeHadContentBeforeBootstrap) : { ok: true };
 		if (!companion.ok) process.stderr.write(`${companion.message}\n`);
 	}
 	return cleanupResult;
@@ -1361,7 +1470,7 @@ async function handleSetupCommand(commandArgs, home, runtime, { homeHadContentBe
 		fail(`Unrecognized argument for 'gentle-shell setup': ${arg}\nRun 'gentle-shell --help' for usage.`, 2);
 	}
 
-	const result = await runSetupFlow(home, runtime, { dryRun, stdio: "inherit" });
+	const result = await runSetupFlow(home, runtime, { dryRun, stdio: "inherit", homeHadContentBeforeBootstrap });
 	if (!result.ok && result.message !== undefined) process.stderr.write(`${result.message}\n`);
 	if (result.ok && !dryRun && (home.mode === "isolated" || home.mode === "path")) {
 		const configPath = resolveConfigPath();
@@ -1599,7 +1708,7 @@ async function maybeAutoProvisionHome(home, runtime, { homeHadContentBeforeBoots
 			}
 		}
 
-		const result = await runSetupFlow(home, runtime, { dryRun: false, stdio: ["ignore", 2, 2], timeoutMs: resolveAutoSetupTimeoutMs() });
+		const result = await runSetupFlow(home, runtime, { dryRun: false, stdio: ["ignore", 2, 2], timeoutMs: resolveAutoSetupTimeoutMs(), homeHadContentBeforeBootstrap });
 		// Abort the whole launch only for a launcher-forwarded interrupt
 		// (R3-002); a child that exited via signal on its own (crash, OOM kill,
 		// external kill) falls through to the ordinary-failure branch below,
@@ -1712,7 +1821,7 @@ async function handleBundledUpgrade(bundled, commandArgs) {
 	}
 }
 
-// `gentle-shell update --latest` in a bundled install: the newest published
+// `gentle-shell update` in a bundled install: the newest published
 // Pi installed with this Gentle Shell beside the active version, without the
 // release's verified lockfile (after a warning), verified, then `current`
 // switched. Returns the exit code like handleBundledUpgrade; a failure leaves
@@ -1948,7 +2057,7 @@ async function main() {
 		// S8: only the version's own Pi, never GENTLE_SHELL_PI, an adjacent fallback or PATH.
 		const pi = bundledPi(bundled, { platform: process.platform, fs: bundledFs });
 		if (!pi.ok) fail(pi.message, 1);
-		runtime = { kind: "bundled", command: process.execPath, args: [pi.cli] };
+		runtime = { kind: "bundled", command: process.execPath, args: [pi.cli], version: pi.version };
 		bundledInstall = bundled;
 		bundledCli = pi.cli;
 		bundledMemory = engramQuiet ? { policy: "disabled", notice: ENGRAM_RECOVERY_NOTICE } : await classifyBundledMemory();
@@ -1964,16 +2073,11 @@ async function main() {
 		if (runtime === undefined) fail(missingPiMessage(), 1);
 	}
 
-	const versionProbePlan = planSpawn({ command: runtime.command, args: [...runtime.args, "--version"], platform: process.platform });
-	const versionProbe = spawnSync(versionProbePlan.command, versionProbePlan.args, {
-		stdio: ["ignore", "pipe", "pipe"],
-		timeout: 15000,
-		encoding: "utf8",
-		shell: versionProbePlan.shell,
-		env: bundledEnv ?? process.env,
-	});
-	if (versionProbe.error) fail(`Could not run the pi runtime at "${runtime.command}": ${versionProbe.error.message}`, 1);
-	const versionCheck = checkPiVersion(versionProbe.stdout ?? "");
+	// Bundled runtimes already carry their version in memory (package.json /
+	// the pinned dependency): spawning a whole process just to print it back
+	// is the redundant cost issue #2096 reports, so only env/path runtimes
+	// (which have no such in-memory source) still pay for a real probe.
+	const versionCheck = runtime.version !== undefined ? checkPiVersion(runtime.version) : probePiVersion(runtime);
 	// A managed self update is how an old Pi gets replaced, so the minimum-version
 	// gate must not block it; everything else still requires the minimum.
 	const managedSelfUpdate = !bundled && args.piSubcommand === "update" && versionCheck.version !== undefined
@@ -1985,24 +2089,16 @@ async function main() {
 		process.exit(0);
 	}
 
-	// S5: in a bundled install Pi updates only with Gentle Shell, so Pi's own
-	// update becomes `gentle-shell upgrade` (run when interactive, named
-	// otherwise), or with `--latest` the newest published Pi without the
-	// release's lockfile (run even when not interactive: it was asked for);
-	// package updates still reach Pi.
+	// Self updates select the latest published Pi in a bundled prefix; package
+	// updates still go to Pi. A self failure must survive a successful child.
 	let passthrough = args.passthrough;
+	let updateExitCode = 0;
 	if (bundled && args.piSubcommand === "update") {
 		const plan = bundledUpdatePlan(args.passthrough);
 		if (plan.self) {
-			let code;
-			if (plan.latest) {
-				code = await handleBundledPiLatest(bundled);
-			} else {
-				const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
-				for (const line of bundledUpdateNotice({ piVersion: versionCheck.version, interactive })) process.stdout.write(`${line}\n`);
-				code = interactive ? await handleBundledUpgrade(bundled, []) : undefined;
-			}
-			const next = bundledUpdateNext(plan, code);
+			if (args.passthrough.includes("--force")) fail("gentle-shell update: --force is not supported for managed Pi updates.", 2);
+			updateExitCode = await handleBundledPiLatest(bundled);
+			const next = bundledUpdateNext(plan, updateExitCode);
 			if ("exitCode" in next) process.exit(next.exitCode);
 			if (next.note) process.stderr.write(`${next.note}\n`);
 		}
@@ -2011,9 +2107,10 @@ async function main() {
 		const { managedUpdatePlan, updateSelectedPi } = await import("../scripts/pi-update.mjs");
 		const plan = managedUpdatePlan(args.passthrough);
 		if (plan.self) {
-			process.exitCode = await updateSelectedPi({ runtime, packageRoot, platform: process.platform, currentVersion: versionCheck.version, cwd: tmpdir(), env: process.env, home: homedir(),
+			if (args.passthrough.includes("--force")) fail("gentle-shell update: --force is not supported for managed Pi updates.", 2);
+			updateExitCode = await updateSelectedPi({ runtime, packageRoot, platform: process.platform, currentVersion: versionCheck.version, cwd: tmpdir(), env: process.env, home: homedir(),
 				adapters: await packageManagerAdapters(), out: (line) => process.stdout.write(`${line}\n`) });
-			if (plan.piArgs === undefined) return;
+			if (plan.piArgs === undefined) { process.exitCode = updateExitCode; return; }
 		}
 		passthrough = plan.piArgs;
 	}
@@ -2065,6 +2162,15 @@ async function main() {
 		} catch (error) {
 			process.stderr.write(`gentle-shell: could not repair the npmCommand in ${join(home.dir, "settings.json")} (${error.message}); continuing\n`);
 		}
+	}
+
+	// Only a valid extension-only update gets the configuration migration. All
+	// rejected forms must reach Pi without changing a package selection.
+	const extensionUpdate = args.piSubcommand === "update" && passthrough?.[0] === "update" && passthrough.includes("--extensions")
+		&& passthrough.slice(1).every((arg) => ["--extensions", "--approve", "-a", "--no-approve", "-na", "--force"].includes(arg));
+	if (bundled && extensionUpdate) {
+		const migrated = await migrateManagedEngramCompanion(home, homeHadContentBeforeBootstrap);
+		if (!migrated.ok) fail(migrated.message, migrated.exitCode);
 	}
 
 	if (args.command === "setup") {
@@ -2204,7 +2310,9 @@ async function main() {
 			bundledEnv = bundledProcessEnv();
 			// The guard protects memory whatever provider loads, so a companion that
 			// could not be verified is reported, never a reason to stop Shell.
-			const companion = await ensureEngramCompanion(home, runtime, ["ignore", 2, 2], 10000);
+			const migrated = await migrateManagedEngramCompanion(home, homeHadContentBeforeBootstrap);
+			if (!migrated.ok) process.stderr.write(`${migrated.message}\n`);
+			const companion = await ensureEngramCompanion(home, runtime, ["ignore", 2, 2], 10000, homeHadContentBeforeBootstrap);
 			if (!companion.ok) process.stderr.write(`${companion.message}\n`);
 			// Only this final decision starts the shared server, and Pi gets its
 			// URL only once the server verified.
@@ -2264,7 +2372,7 @@ async function main() {
 		fail(`Could not start pi: ${error.message}`, 1);
 	});
 	child.on("exit", (code, signal) => {
-		const exitCode = signal ? signalExitCode(signal) : (code ?? 1);
+		const exitCode = signal ? signalExitCode(signal) : ((code ?? 1) || updateExitCode);
 		if (resumeHandoff) {
 			const hint = planResumeHint({
 				handoff: resumeHandoff.read(),

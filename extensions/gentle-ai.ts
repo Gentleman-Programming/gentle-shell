@@ -35,9 +35,11 @@ import {
 	readdirSync,
 	readFileSync,
 	realpathSync,
+	renameSync,
 	rmSync,
 	statSync,
 	symlinkSync,
+	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import {
@@ -1650,7 +1652,9 @@ const SAFE_GUARDRAILS_CONFIG: RuntimeGuardrailsConfig = {
  *
  * Ordering (non-negotiable):
  *   1. Hard-deny patterns → "block" (always, cannot be overridden by config)
- *   2. If autonomousMode is false → mirror the legacy CONFIRM_BASH_PATTERNS result
+ *   2. If autonomousMode is false → mirror the legacy CONFIRM_BASH_PATTERNS
+ *      result, except an explicit "allow" in guardedCommands (written by the
+ *      permission-allowlist "Always allow" choice) grants the command
  *   3. If autonomousMode is true → use configured GuardAction for the matched key
  *      (applying AUTONOMOUS_DEFAULT_ACTIONS for any key not set in guardedCommands)
  *   4. No match → "not-guarded"
@@ -1671,7 +1675,9 @@ function collectGuardedMatches(
 			if (inDataArgument(dataRanges, match.index)) continue;
 			const action = config.autonomousMode
 				? (config.guardedCommands[key] ?? AUTONOMOUS_DEFAULT_ACTIONS[key])
-				: "confirm";
+				: config.guardedCommands[key] === GUARD_ACTION.ALLOW
+					? GUARD_ACTION.ALLOW
+					: GUARD_ACTION.CONFIRM;
 			matches.push({
 				key,
 				action,
@@ -2147,6 +2153,72 @@ function evaluateSuperYoloCommand(command: string): GuardAction {
 	return evaluateGuardedCommand(command, SUPER_YOLO_GUARDRAILS).action === "block" ? "block" : "allow";
 }
 
+// ---------------------------------------------------------------------------
+// Permission allowlist — session and always scopes for confirmations
+// ---------------------------------------------------------------------------
+
+/** Session-scoped exact-command allows, keyed by session manager identity. */
+const sessionAllowedCommands = new WeakMap<object, Set<string>>();
+
+function normalizeAllowedCommand(command: string): string {
+	return command.trim().replace(/\s+/g, " ");
+}
+
+function sessionAllowedScope(ctx: ExtensionContext): object | undefined {
+	try { return ctx.sessionManager ?? undefined; } catch { return undefined; }
+}
+
+function sessionAllowedCheck(ctx: ExtensionContext, command: string): boolean {
+	const scope = sessionAllowedScope(ctx);
+	if (scope === undefined) return false;
+	return sessionAllowedCommands.get(scope)?.has(normalizeAllowedCommand(command)) ?? false;
+}
+
+function sessionAllowedRemember(ctx: ExtensionContext, command: string): void {
+	const scope = sessionAllowedScope(ctx);
+	if (scope === undefined) return;
+	const granted = sessionAllowedCommands.get(scope) ?? new Set<string>();
+	granted.add(normalizeAllowedCommand(command));
+	sessionAllowedCommands.set(scope, granted);
+}
+
+/**
+ * Persist one guarded-key allow into the user-level runtime-guardrails config.
+ * Malformed or unreadable existing config refuses the write: human repair, never
+ * a silent rewrite. Atomic same-directory replacement, private file mode.
+ */
+function saveGuardedCommandAllowAlways(
+	key: GuardedCommandKey,
+	options: LoadGuardrailsOptions = {},
+): boolean {
+	const configHome = options.gentlePiConfigHome ?? gentleAiConfigHome();
+	const configPath = join(configHome, "runtime-guardrails.json");
+	let autonomousMode = false;
+	let guardedCommands: GuardedCommandsConfig = {};
+	try {
+		const parsed = parseGuardrailsConfigFile(readFileSync(configPath, "utf8"));
+		if (!parsed) return false;
+		autonomousMode = parsed.autonomousMode;
+		guardedCommands = parsed.guardedCommands;
+	} catch (error) {
+		if (!(typeof error === "object" && error !== null && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT")) return false;
+	}
+	const updated: RuntimeGuardrailsConfig = {
+		autonomousMode,
+		guardedCommands: { ...guardedCommands, [key]: GUARD_ACTION.ALLOW },
+	};
+	const temporary = `${configPath}.${randomUUID()}.tmp`;
+	try {
+		mkdirSync(configHome, { recursive: true });
+		writeFileSync(temporary, `${JSON.stringify(updated, null, "\t")}\n`, { flag: "wx", mode: 0o600 });
+		renameSync(temporary, configPath);
+	} catch {
+		try { unlinkSync(temporary); } catch { /* best effort cleanup */ }
+		return false;
+	}
+	return true;
+}
+
 async function confirmCommand(
 	command: string,
 	ctx: ExtensionContext,
@@ -2188,8 +2260,12 @@ async function confirmCommand(
 
 	if (classification === "not-guarded") return autoGate?.();
 
-	// classification is "allow" or "confirm" from this point on
+	// classification === "allow" or "confirm" from this point on
 	if (classification === "allow") return autoGate?.();
+
+	// Session-scoped exact-command allow: this exact command was approved earlier
+	// in the same session, so the confirmation dialog is not repeated.
+	if (sessionAllowedCheck(ctx, command)) return autoGate?.();
 
 	// Auto may replace only a default confirmation, never an explicit user/project
 	// ask/block rule or the independent data-loss confirmation.
@@ -2242,7 +2318,30 @@ async function confirmCommand(
 	emitPermissionRequest("waiting");
 	herdrLifecycle.begin();
 	try {
-		approved = (await ctx.ui.confirm(title, preview)) === true;
+		if (typeof (ctx.ui as { select?: unknown }).select === "function") {
+			// Scoped confirmation: the ask dialog itself carries the allowlist choices.
+			const canAlwaysAllow = !evaluation.dataLoss && typeof evaluation.key === "string";
+			const alwaysLabel = canAlwaysAllow
+				? `Always allow ${GUARDED_COMMAND_LABELS[evaluation.key as GuardedCommandKey]}`
+				: undefined;
+			const sessionScopeAvailable = sessionAllowedScope(ctx) !== undefined;
+			const choices = [
+				"Allow once",
+				...(sessionScopeAvailable ? ["Allow for this session"] : []),
+				...(alwaysLabel ? [alwaysLabel] : []),
+				"Deny",
+			];
+			const selection = await (ctx.ui as unknown as {
+				select: (title: string, options: string[]) => Promise<string | undefined>;
+			}).select(`${title}\n${preview}`, choices);
+			if (selection === "Allow for this session") sessionAllowedRemember(ctx, command);
+			if (alwaysLabel !== undefined && selection === alwaysLabel && !saveGuardedCommandAllowAlways(evaluation.key as GuardedCommandKey)) {
+				try { ctx.ui.notify?.("Could not save the always-allow preference; the command is approved once only.", true); } catch { /* display only */ }
+			}
+			approved = selection === "Allow once" || selection === "Allow for this session" || (alwaysLabel !== undefined && selection === alwaysLabel);
+		} else {
+			approved = (await ctx.ui.confirm(title, preview)) === true;
+		}
 	} catch (error) {
 		confirmationFailed = true;
 		confirmationError = error;
@@ -11090,6 +11189,10 @@ export const __testing = {
 	guardedCommandPreview,
 	guardedCommandTitle,
 	loadRuntimeGuardrailsConfig,
+	confirmCommand,
+	saveGuardedCommandAllowAlways,
+	sessionAllowedCheck,
+	sessionAllowedRemember,
 	isReversibleYoloCommand,
 	evaluateSuperYoloCommand,
 	yoloConfiguredRestriction,

@@ -16,7 +16,7 @@ import { createAssistantMessageEventStream, type AssistantMessage } from "@earen
 import { visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sidebarState } from "../lib/shell-sidebar.ts";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection } from "../lib/child-package-injection.ts";
-import installGentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
+import installGentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, HOLD_RECHECK_MS, INPUT_PROMPT_GRACE_MS, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry, type PresenceRecord } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener } from "../lib/windows-session-transport.ts";
 import { historyDir, loadHistory, loadStoredTask, saveTask } from "../lib/agents-history.ts";
@@ -5642,7 +5642,7 @@ test("session transport selects a peer for outbound delivery and rejects stale c
 	Object.assign(ctx.sessionManager, { getSessionName: () => "Backend" });
 	const result = await h.tools.get("orchestrator_send_message")!.execute("send", { message: "hello peer", reason: "because the peer needs an update" }, undefined, undefined, ctx);
 	assert.deepEqual(dialogs, [
-		"select:Select recipient orchestrator:Orchestrator alpha|Orchestrator beta",
+		"select:Select recipient orchestrator:Orchestrator · alpha|Orchestrator · beta",
 		"select:Authorize cross-orchestrator message to alpha?\nReason: because the peer needs an update\nMessage: hello peer:Allow once|Allow for this session|Deny",
 	]);
 	assert.deepEqual(sent, [{ recipient: "alpha", message: "hello peer", expectedActivation: records[0] }]);
@@ -5668,6 +5668,95 @@ test("session transport selects a peer for outbound delivery and rejects stale c
 	assert.equal(closed, 2, "replacement closes the old client and listener before activating its successor");
 	await assert.rejects(original({ id: "late", senderSessionId: "alpha", message: "late callback" }), /stale session transport/);
 	await h.fire("session_shutdown", ctx);
+});
+
+test("recipient picker uses published labels and grows the suffix until every label is unique", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	// Three long ids share their last four characters, and two peers share the same
+	// published label, so only a grown suffix can tell the whole list apart.
+	const alphaId = "11111111-1111-4111-8111-11111111abcd";
+	const betaId = "22222222-2222-4222-8222-22222222abcd";
+	const gammaId = "33333333-3333-4333-8333-33333333abcd";
+	const activations: PresenceRecord[] = [
+		{ version: 1, sessionId: alphaId, endpoint: "/alpha.sock", createdAt: 1 },
+		{ version: 1, sessionId: betaId, endpoint: "/beta.sock", createdAt: 2 },
+		{ version: 1, sessionId: gammaId, endpoint: "/gamma.sock", createdAt: 3 },
+	];
+	const profile = realpathSync(mkdtempSync(join(tmpdir(), "gentle-agents-labels-")));
+	const publishers = [
+		PresencePublisher.start({ profile, sessionId: alphaId, label: "api", activity: [] }),
+		PresencePublisher.start({ profile, sessionId: betaId, label: "api", activity: [] }),
+		PresencePublisher.start({ profile, sessionId: gammaId, label: "database", activity: [] }),
+	];
+	publishers[0]!.updateDiscovery(activations[0]!, { workspace: "/repo/api", tasks: [] });
+	publishers[1]!.updateDiscovery(activations[1]!, { workspace: "/repo/api", tasks: [] });
+	publishers[2]!.updateDiscovery(activations[2]!, { workspace: "/repo/melia/db", tasks: [] });
+	const sent: Array<{ recipient: string }> = [];
+	const registry = { list: async () => [], listActivations: async () => activations };
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: () => ({ registry, start: async () => {}, close: async () => {} }),
+		createClient: () => ({ close: () => {}, sendNotification: async (recipient: string) => { sent.push({ recipient }); return { id: "accepted-1", accepted: true }; } }),
+	} as never;
+	let chosen = 0;
+	const { ctx, dialogs } = fakeContext(undefined, undefined, undefined, undefined, async (title, options) => title.startsWith("Select recipient") ? options[chosen] : options[0]);
+	gentleAgents(h.pi, {}, { ...runtime.deps, agentHome: profile });
+	try {
+		await h.fire("session_start", ctx);
+		const tool = h.tools.get("orchestrator_send_message")!;
+		const params = { message: "hello", reason: "because the peer needs an update" };
+		for (chosen = 0; chosen < 3; chosen += 1) await tool.execute("send", params, undefined, undefined, ctx);
+	} finally {
+		for (const publisher of publishers) publisher.dispose();
+		rmSync(profile, { recursive: true, force: true });
+	}
+	// The published label leads, the workspace basename follows only when it adds
+	// something, and the shared four-character tail forces the suffix to grow to six.
+	assert.equal(dialogs[0], "select:Select recipient orchestrator:api · 11abcd|api · 22abcd|database (db) · 33abcd");
+	assert.deepEqual(sent, [{ recipient: alphaId }, { recipient: betaId }, { recipient: gammaId }], "each displayed label must send to its own session");
+});
+
+test("recipient picker keeps one row per session when a transport repeats an activation", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	const alphaId = "11111111-1111-4111-8111-111111111111";
+	const betaId = "22222222-2222-4222-8222-222222222222";
+	// The canonical activation is the one the publication binds to, and it comes last, so a
+	// deduplication that keeps only one record would resolve the label of an ambiguous peer.
+	const activations: PresenceRecord[] = [
+		{ version: 1, sessionId: alphaId, endpoint: "/alpha-again.sock", createdAt: 1 },
+		{ version: 1, sessionId: alphaId, endpoint: "/alpha.sock", createdAt: 2 },
+		{ version: 1, sessionId: betaId, endpoint: "/beta.sock", createdAt: 3 },
+	];
+	const profile = realpathSync(mkdtempSync(join(tmpdir(), "gentle-agents-dedupe-")));
+	const publishers = [
+		PresencePublisher.start({ profile, sessionId: alphaId, label: "api", activity: [] }),
+		PresencePublisher.start({ profile, sessionId: betaId, label: "database", activity: [] }),
+	];
+	publishers[0]!.updateDiscovery(activations[1]!, { workspace: "/repo/api", tasks: [] });
+	publishers[1]!.updateDiscovery(activations[2]!, { workspace: "/repo/melia/db", tasks: [] });
+	const sent: Array<{ recipient: string }> = [];
+	const registry = { list: async () => [], listActivations: async () => activations };
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: () => ({ registry, start: async () => {}, close: async () => {} }),
+		createClient: () => ({ close: () => {}, sendNotification: async (recipient: string) => { sent.push({ recipient }); return { id: "accepted-1", accepted: true }; } }),
+	} as never;
+	let chosen = 1;
+	const { ctx, dialogs } = fakeContext(undefined, undefined, undefined, undefined, async (title, options) => title.startsWith("Select recipient") ? options[chosen] : options[0]);
+	gentleAgents(h.pi, {}, { ...runtime.deps, agentHome: profile });
+	try {
+		await h.fire("session_start", ctx);
+		await h.tools.get("orchestrator_send_message")!.execute("send", { message: "hello", reason: "because the peer needs an update" }, undefined, undefined, ctx);
+	} finally {
+		for (const publisher of publishers) publisher.dispose();
+		rmSync(profile, { recursive: true, force: true });
+	}
+	// One row per session, and the duplicated session stays unlabelled: discovery still
+	// sees both activations and fails closed instead of guessing which one it is.
+	assert.equal(dialogs[0], "select:Select recipient orchestrator:Orchestrator · 1111|database (db) · 2222");
+	assert.deepEqual(sent, [{ recipient: betaId }], "the second row must still be the second session");
 });
 
 test("all orchestrator tools own compact and expanded card rendering", () => {
@@ -5883,7 +5972,7 @@ test("orchestrator_send_message snapshots message and reason before recipient an
 	await eventually(() => dialogs.length === 1, "recipient selector opens");
 	params.message = "mutated during recipient selection";
 	params.reason = "mutated reason one";
-	chooseRecipient("Orchestrator alpha");
+	chooseRecipient("Orchestrator · alpha");
 	await eventually(() => dialogs.length === 2, "consent selector opens");
 	params.message = "mutated during consent selection";
 	params.reason = "mutated reason two";
@@ -7155,6 +7244,11 @@ test("a busy parent gets the exit notice steered into its run at the next turn b
 		await jobIo();
 		assert.equal(sent.length, 0, "a busy parent is not interrupted mid-tool-call");
 		await fire("turn_end", ctx);
+		// The notice lands when the job log closes, which can outlast this boundary under load; a later turn boundary then delivers it.
+		for (let boundary = 0; boundary < 40 && sent.length === 0; boundary++) {
+			await new Promise((resolve) => setTimeout(resolve, 25));
+			await fire("turn_end", ctx);
+		}
 		assert.equal(sent.length, 1);
 		assert.deepEqual(sent[0]!.options, { deliverAs: "steer", triggerTurn: true });
 		assert.match(String(sent[0]!.message.content), /job-1 \("make build"\) exited with code 0/);
@@ -7218,7 +7312,8 @@ test("/gentle:jobs opens this session's jobs overlay, stops the selected job, an
 		assert.equal(jobs.runs[0]!.signal?.aborted, true, "s stops the selected job");
 		assert.equal(statuses.at(-1), undefined, "the footer count clears when nothing runs");
 		assert.deepEqual(snapshots.at(-1)?.snapshot.jobs.map(({ status }) => status), ["stopped"], "the finished tail keeps the stopped job visible once the count clears");
-		await jobIo();
+		// The stop notice follows the job log close, which can outlast a fixed wait under load.
+		await eventually(() => sent.some((entry) => entry.message.customType === "gentle-jobs.notice"), "the stopped job must report its stop notice");
 		const notices = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
 		assert.equal(notices.length, 1, "the agent was told it would be notified, so a human stop is reported once");
 		assert.match(String(notices[0]!.message.content), /job-1 \("CI"\) was stopped by the user/);
@@ -7261,7 +7356,7 @@ test("/gentle:jobs mouse controls route the chosen running job through the exist
 		overlay.handleMouse?.(eventFor("s Stop", "click"));
 		assert.equal(jobs.runs[0]!.signal?.aborted, false);
 		assert.equal(jobs.runs[1]!.signal?.aborted, true, "the selected job alone is stopped");
-		await jobIo();
+		await eventually(() => sent.some((entry) => entry.message.customType === "gentle-jobs.notice"), "the stopped job must report its stop notice");
 		const notices = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
 		assert.equal(notices.length, 1);
 		assert.match(String(notices[0]!.message.content), /job-2 \("second job"\) was stopped by the user/);
@@ -7289,9 +7384,13 @@ test("a job exit notice whose forwarding throws while the parent is idle is retr
 		await jobIo();
 		assert.equal(sent.length, 0);
 		assert.equal(userMessages.length, 0);
+		assert.equal(sent.length, 0);
+		assert.equal(userMessages.length, 0);
+		// Forwarding keeps throwing until the job settles: the failed flush is what arms the bounded retry.
+		await eventually(() => timers.pending(PARENT_WAKE_GRACE_MS) >= 1, "the failed flush arms the bounded retry timer");
 		Object.assign(pi, { sendMessage });
 		// No turn boundary is coming for an idle parent, so the retry is a timer.
-		assert.equal(timers.run(PARENT_WAKE_GRACE_MS), 1, "one bounded retry flush is armed");
+		assert.equal(timers.run(PARENT_WAKE_GRACE_MS), 1, "exactly one bounded retry flush is armed");
 		await tick();
 		const notices = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
 		assert.equal(notices.length, 1, "the requeued notice reaches the idle parent");
@@ -7326,7 +7425,8 @@ for (const boundary of ["session_compact", "session_compact_failed"] as const) {
 			assert.equal(sent.length, 0, "the boundary handler runs before Pi leaves the compacting state");
 			setIdle(true);
 			assert.equal(timers.run(0), 1, "one deferred flush is scheduled for the compaction boundary");
-			await tick();
+			// The flush only succeeds once the job log close settles, which can outlast the boundary under load.
+			await eventually(() => sent.length >= 1, "the held notice is flushed after the compaction boundary");
 			assert.deepEqual(sent.map((entry) => entry.options), [{ triggerTurn: false }], "the held notice is stored without a direct turn");
 			assert.deepEqual(delivery, ["custom:gentle-jobs.notice", "user"], "one wake follows the held notice");
 		} finally {
@@ -7395,7 +7495,8 @@ test("monitor delivers line events to an idle parent with one wake, and reports 
 		assert.match(renderers.get("gentle-jobs.notice")!(events[0]!.message, { expanded: true }, plainTheme).render(70).map(stripAnsi).join("\n"), /unit: fail/);
 		jobs.runs[0]!.onData(Buffer.from("e2e: pass\n"));
 		jobs.runs[0]!.exit(1);
-		await jobIo();
+		// Pending lines and the end notice follow the job log close, which can outlast a fixed wait under load.
+		await eventually(() => sent.filter((entry) => entry.message.customType === "gentle-jobs.notice").length >= 3, "the closed monitor log must deliver its pending lines and end notice");
 		const contents = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice").map((entry) => String(entry.message.content));
 		assert.equal(contents.length, 3, "pending lines are delivered before the end notice");
 		assert.match(contents[1]!, /reported 1 new line:\ne2e: pass/);
@@ -8000,4 +8101,247 @@ test("the orchestrator's usage limit moves the session to the profile's orchestr
 	assert.match(String(parent.userMessages[0]!.content), /continue/i);
 	const child = await run({ GENTLE_PI_AGENTS_CHILD: "1" });
 	assert.deepEqual(child.selected, [], "a child leaves its fallback to the parent's runner");
+});
+
+// Held content is released by lifecycle events (the fast path), and by a
+// held-only re-check that does not depend on any event: a cancelled `/tree`
+// summarization emits none.
+test("session_tree releases content held while the parent summarized a branch", async () => {
+	const { fire, ctx, sent, userMessages, notify, setIdle, timers } = await orchestratorHost();
+	setIdle(false);
+	await notify("hello tree");
+	assert.equal(sent.length, 0, "nothing is sent while the parent is busy without a run");
+	await fire("session_tree", ctx);
+	setIdle(true);
+	assert.equal(timers.run(0), 1, "one deferred flush is scheduled for the tree boundary");
+	await tick();
+	assert.deepEqual(sent.map((entry) => entry.options), [{ triggerTurn: false }]);
+	assert.equal(userMessages.length, 1, "one wake follows the held content");
+	await fire("session_shutdown", ctx);
+});
+
+test("a held-only re-check releases content when the busy state ends without any event", async () => {
+	const { fire, ctx, sent, userMessages, notify, setIdle, timers } = await orchestratorHost();
+	setIdle(false);
+	await notify("hello cancelled summary");
+	assert.equal(timers.pending(HOLD_RECHECK_MS), 1, "holding content arms exactly one re-check");
+	assert.equal(timers.run(HOLD_RECHECK_MS), 1);
+	assert.equal(sent.length, 0, "still busy: nothing is delivered");
+	assert.equal(timers.pending(HOLD_RECHECK_MS), 1, "a still-busy parent keeps one re-check armed");
+	setIdle(true);
+	assert.equal(timers.run(HOLD_RECHECK_MS), 1);
+	await tick();
+	assert.deepEqual(sent.map((entry) => entry.options), [{ triggerTurn: false }]);
+	assert.equal(userMessages.length, 1);
+	assert.equal(timers.pending(HOLD_RECHECK_MS), 0, "the re-check stops once the content was delivered");
+	await fire("session_shutdown", ctx);
+});
+
+test("the held-only re-check also releases child completions and child messages", async () => {
+	const { pi, tools, fire, sent, userMessages, setIdle } = fakePi();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Asks while busy", mode: "background" }, undefined, undefined, ctx);
+	await tools.get("subagent_run")!.execute("c2", { agent: "explore", task: "Ends while busy", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	// The runner's own clock tick shares HOLD_RECHECK_MS, so count against it.
+	const clockTicks = timers.pending(HOLD_RECHECK_MS);
+	setIdle(false);
+	harness.children[0].message({ id: "q1", kind: "query", message: "Which branch?" });
+	harness.children[1].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] });
+	harness.children[1].emit({ type: "agent_settled" });
+	await tick();
+	assert.equal(sent.length, 0);
+	const armed = timers.pending(HOLD_RECHECK_MS) - clockTicks;
+	assert.equal(armed, 1, "held child content arms exactly one re-check");
+	setIdle(true);
+	timers.run(HOLD_RECHECK_MS);
+	await tick();
+	assert.equal(sent.length, 2, "the query and the completion are both delivered");
+	assert.equal(userMessages.length, 1);
+	assert.equal(timers.pending(HOLD_RECHECK_MS) <= clockTicks, true, "the re-check stops once the content was delivered");
+	await fire("session_shutdown", ctx);
+});
+
+test("a completion re-queued after a failed forward still arms the held-only re-check", async () => {
+	const { pi, tools, fire, sent, setIdle } = fakePi();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Fails to forward", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	const sendMessage = pi.sendMessage;
+	Object.assign(pi, { sendMessage: () => { throw new Error("host busy"); } });
+	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Requeued answer." }] }] });
+	harness.children[0].emit({ type: "agent_settled" });
+	await tick();
+	assert.equal(sent.length, 0, "the idle forward failed and the completion was re-queued");
+	Object.assign(pi, { sendMessage });
+	// The runner's own clock tick shares HOLD_RECHECK_MS, so count against it.
+	const clockTicks = timers.pending(HOLD_RECHECK_MS);
+	// The bounded retry fires while the parent compacts without a run, so the
+	// re-queued completion is held and only the re-check can release it.
+	setIdle(false);
+	assert.equal(timers.run(PARENT_WAKE_GRACE_MS), 1, "the idle failure armed one bounded retry");
+	await tick();
+	assert.equal(sent.length, 0, "still busy: nothing is delivered");
+	assert.equal(timers.pending(HOLD_RECHECK_MS) - clockTicks, 1, "the re-queued completion arms exactly one re-check");
+	setIdle(true);
+	timers.run(HOLD_RECHECK_MS);
+	await tick();
+	const results = sent.filter((entry) => entry.message.customType === "gentle-agents.result");
+	assert.equal(results.length, 1, "the re-check delivers the re-queued completion");
+	assert.match(String(results[0]!.message.content), /Requeued answer\./);
+	await fire("session_shutdown", ctx);
+});
+
+test("no held-only re-check is armed when nothing is held", async () => {
+	const { fire, ctx, notify, setIdle, timers } = await orchestratorHost();
+	setIdle(false);
+	await fire("turn_end", ctx);
+	await fire("session_tree", ctx);
+	timers.run(0);
+	assert.equal(timers.pending(HOLD_RECHECK_MS), 0, "a busy parent with nothing held is never polled");
+	setIdle(true);
+	await notify("hello idle");
+	await tick();
+	assert.equal(timers.pending(HOLD_RECHECK_MS), 0, "an idle parent is never polled");
+	await fire("agent_start", ctx);
+	await notify("hello run");
+	await tick();
+	assert.equal(timers.pending(HOLD_RECHECK_MS), 0, "a running parent is never polled");
+	await fire("session_shutdown", ctx);
+});
+
+test("a boundary flush that delivers held content cancels the re-check", async () => {
+	const { fire, ctx, sent, notify, setIdle, timers } = await orchestratorHost();
+	setIdle(false);
+	await notify("hello boundary");
+	assert.equal(timers.pending(HOLD_RECHECK_MS), 1);
+	await fire("agent_start", ctx);
+	await fire("turn_end", ctx);
+	assert.equal(sent.length, 1, "the boundary flush delivered the held message");
+	assert.equal(timers.pending(HOLD_RECHECK_MS), 0, "nothing is left to re-check");
+	await fire("session_shutdown", ctx);
+});
+
+test("a session change cancels the held-only re-check and drops the held content", async () => {
+	const { fire, ctx, sent, notify, setIdle, timers } = await orchestratorHost();
+	setIdle(false);
+	await notify("hello replaced");
+	assert.equal(timers.pending(HOLD_RECHECK_MS), 1);
+	await fire("session_start", fakeContext().ctx);
+	assert.equal(timers.pending(HOLD_RECHECK_MS), 0, "the old session's re-check is cancelled");
+	setIdle(true);
+	timers.run(HOLD_RECHECK_MS);
+	await tick();
+	assert.equal(sent.length, 0, "the old session's message is not replayed into the new one");
+	await fire("session_shutdown", ctx);
+});
+
+// A user prompt is "starting" from `input` until `before_agent_start`, while
+// the host still reports idle. A wake dispatched in that window races the
+// user's prompt into Agent.prompt().
+test("content stored while a user prompt is starting sends no wake and rides that prompt's run", async () => {
+	const { fire, ctx, sent, userMessages, notify, timers } = await orchestratorHost();
+	await fire("input", ctx, { type: "input", text: "hi", source: "interactive" });
+	assert.equal(timers.pending(INPUT_PROMPT_GRACE_MS), 1, "the starting prompt is bounded by its own grace");
+	await notify("hello starting");
+	await tick();
+	assert.deepEqual(sent.map((entry) => entry.options), [{ triggerTurn: false }], "the message is stored");
+	assert.equal(userMessages.length, 0, "no wake races the starting prompt");
+	await fire("before_agent_start", ctx, { prompt: "hi" });
+	await fire("agent_start", ctx);
+	assert.equal(timers.pending(INPUT_PROMPT_GRACE_MS), 0);
+	assert.equal(timers.pending(PARENT_WAKE_GRACE_MS), 0);
+	await fire("agent_settled", ctx);
+	await tick();
+	assert.equal(userMessages.length, 0, "the run that started carried the content, so no wake is owed");
+	await fire("session_shutdown", ctx);
+});
+
+test("an input that never starts a run lets the owed wake go out after INPUT_PROMPT_GRACE_MS", async () => {
+	const { fire, ctx, userMessages, notify, timers } = await orchestratorHost();
+	await fire("input", ctx, { type: "input", text: "handled elsewhere", source: "interactive" });
+	await notify("hello expired");
+	await tick();
+	assert.equal(userMessages.length, 0);
+	assert.equal(timers.run(INPUT_PROMPT_GRACE_MS), 1);
+	await tick();
+	assert.equal(userMessages.length, 1, "the owed wake is sent once the starting state expires");
+	await fire("session_shutdown", ctx);
+});
+
+// A dispatched wake is itself a prompt: it reaches `input` too. That must not
+// shorten the wake's own PARENT_WAKE_GRACE_MS window to INPUT_PROMPT_GRACE_MS,
+// or content arriving while the wake is still in its pre-run phase would send
+// a second wake that races the first into Agent.prompt().
+test("the dispatched wake's own input does not shorten its start window", async () => {
+	const { fire, ctx, userMessages, notify, timers } = await orchestratorHost();
+	await notify("first");
+	await tick();
+	assert.equal(userMessages.length, 1, "the idle wake is dispatched");
+	await fire("input", ctx, { type: "input", text: String(userMessages[0]!.content), source: "extension" });
+	await notify("second");
+	await tick();
+	timers.run(INPUT_PROMPT_GRACE_MS);
+	await tick();
+	assert.equal(userMessages.length, 1, "no second wake while the first is still starting");
+	assert.equal(timers.pending(PARENT_WAKE_GRACE_MS), 1, "the wake keeps its own start window");
+	await fire("session_shutdown", ctx);
+});
+
+test("an input during a run or with a streaming behavior changes nothing", async () => {
+	const { fire, ctx, userMessages, notify, timers } = await orchestratorHost();
+	await fire("input", ctx, { type: "input", text: "queued", source: "interactive", streamingBehavior: "steer" });
+	assert.equal(timers.pending(INPUT_PROMPT_GRACE_MS), 0, "a queued input is not a starting prompt");
+	await notify("hello idle");
+	await tick();
+	assert.equal(userMessages.length, 1, "the idle wake is unaffected");
+	await fire("agent_start", ctx);
+	await fire("input", ctx, { type: "input", text: "mid-run", source: "interactive" });
+	assert.equal(timers.pending(INPUT_PROMPT_GRACE_MS), 0, "an input during a run is not a starting prompt");
+	await fire("session_shutdown", ctx);
+});
+
+// A job notice is held content too: one stored while the parent is busy
+// without a run (a cancelled `/tree` summarization emits no event) must arm the
+// held-only re-check like any other held content.
+test("a job notice held for a parent busy without a run is delivered by the held-only re-check", async () => {
+	const { pi, tools, fire, sent, userMessages, setIdle } = fakePi();
+	const jobs = fakeJobShell();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	gentleAgents(pi, {}, { ...harness.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		await tools.get("bash_background")!.execute("b1", { command: "make build" }, undefined, undefined, ctx);
+		// The runner's own clock tick shares HOLD_RECHECK_MS, so count against it.
+		const clockTicks = timers.pending(HOLD_RECHECK_MS);
+		setIdle(false);
+		jobs.runs[0]!.exit(0);
+		await jobIo();
+		assert.equal(sent.length, 0, "a parent busy without a run gets nothing yet");
+		// The notice arms the re-check when the job settles, which can outlast a fixed wait under load.
+		await eventually(() => timers.pending(HOLD_RECHECK_MS) > clockTicks, "the held job notice arms the re-check once it settles");
+		assert.equal(timers.pending(HOLD_RECHECK_MS) - clockTicks, 1, "the held job notice arms exactly one re-check");
+		setIdle(true);
+		timers.run(HOLD_RECHECK_MS);
+		await tick();
+		const notices = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
+		assert.equal(notices.length, 1, "the re-check delivers the held job notice");
+		assert.deepEqual(notices[0]!.options, { triggerTurn: false });
+		assert.match(String(notices[0]!.message.content), /job-1 \("make build"\) exited with code 0/);
+		assert.equal(userMessages.length, 1, "one wake follows the notice");
+		assert.equal(timers.pending(HOLD_RECHECK_MS) <= clockTicks, true, "the re-check stops once the notice was delivered");
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
 });

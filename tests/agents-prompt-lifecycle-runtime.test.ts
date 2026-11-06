@@ -66,6 +66,8 @@ interface Host {
 	notify(message: string): Promise<void>;
 	/** Hold the next non-summarization (summarization when `summary`) provider response until released. */
 	hold(kind: "turn" | "summary"): { reached: Promise<void>; release(): void };
+	/** Park the next user input inside a probe `input` handler, i.e. in the prompt's pre-run phase. */
+	holdInput(): { reached: Promise<void>; release(): void };
 	until(label: string, condition: () => boolean): Promise<void>;
 	settleChild(index: number, text: string): Promise<void>;
 	launchBackgroundChild(task: string): Promise<void>;
@@ -123,6 +125,7 @@ async function createHost(t: TestContext): Promise<Host> {
 		createClient: () => ({ close() {}, sendNotification: async () => { throw new Error("the lifecycle host never sends notifications"); } }),
 	};
 	const beforeAgentStarts: string[] = [];
+	const inputHolds: Array<{ reached: () => void; released: Promise<void> }> = [];
 	const probe = (pi: ExtensionAPI) => {
 		pi.on("before_agent_start", (event) => {
 			beforeAgentStarts.push(event.messageType === "user" ? event.prompt : `custom:${event.message.customType}`);
@@ -131,6 +134,18 @@ async function createHost(t: TestContext): Promise<Host> {
 	};
 	let clock = 1000;
 	const env = { PATH: process.env.PATH ?? "/bin" };
+	// Input handlers run in extension order, so the gate sits after Gentle Agents:
+	// its `input` handler has already run while the prompt stays parked.
+	const inputGate = (pi: ExtensionAPI) => {
+		pi.on("input", async () => {
+			const entry = inputHolds.shift();
+			if (entry) {
+				entry.reached();
+				await entry.released;
+			}
+			return { action: "continue" };
+		});
+	};
 	const agents = (pi: ExtensionAPI) => gentleAgents(pi, env, {
 		home,
 		agentHome: agentDir,
@@ -155,7 +170,7 @@ async function createHost(t: TestContext): Promise<Host> {
 	});
 	const resourceLoader = new DefaultResourceLoader({
 		cwd, agentDir, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-		extensionFactories: [probe, agents],
+		extensionFactories: [probe, agents, inputGate],
 	});
 	await resourceLoader.reload();
 	assert.deepEqual(resourceLoader.getExtensions().errors, []);
@@ -192,6 +207,12 @@ async function createHost(t: TestContext): Promise<Host> {
 			const reached = deferred();
 			const released = deferred();
 			holds.push({ kind, reached: reached.resolve, released: released.promise });
+			return { reached: reached.promise, release: released.resolve };
+		},
+		holdInput: () => {
+			const reached = deferred();
+			const released = deferred();
+			inputHolds.push({ reached: reached.resolve, released: released.promise });
 			return { reached: reached.promise, release: released.resolve };
 		},
 		launchBackgroundChild: async (task) => {
@@ -271,4 +292,85 @@ test("an orchestrator session message during compaction without a run waits for 
 	await host.until("the delivered message turn", () => mainRequests(host).length > baseline && host.session.isIdle);
 	assertEveryTurnCarriesTheMarker(host);
 	assert.equal(occurrences(mainRequests(host).slice(baseline).map((request) => request.conversation).join("\n"), ORCHESTRATOR_TEXT) > 0, true, "the model saw the message after compaction");
+});
+
+// `/tree` branch summarization makes the host busy without an agent run, like
+// compaction, but it ends with `session_tree` (or with no event at all when it
+// is cancelled). Held content must reach the parent without waiting for an
+// unrelated user prompt.
+const startBranchSummary = async (host: Host) => {
+	await host.session.prompt("seed the transcript");
+	await host.session.prompt("seed it once more");
+	const baseline = mainRequests(host).length;
+	const target = host.session.sessionManager.getEntries().find((entry) => entry.type === "message" && entry.message.role === "user");
+	assert.ok(target, "the transcript has an earlier user entry to navigate to");
+	const summary = host.hold("summary");
+	const navigation = host.session.navigateTree(target.id, { summarize: true });
+	await summary.reached;
+	assert.equal(host.session.isIdle, false, "the host reports branch summarization as busy");
+	assert.equal(host.session.isStreaming, false, "there is no agent run while summarizing a branch");
+	return { baseline, summary, navigation };
+};
+const assertDeliveredThroughMarkedTurn = async (host: Host, baseline: number, text: string) => {
+	await host.until("the delivered turn", () => mainRequests(host).length > baseline && host.session.isIdle);
+	assertEveryTurnCarriesTheMarker(host);
+	assert.equal(occurrences(mainRequests(host).slice(baseline).map((request) => request.conversation).join("\n"), text) > 0, true, "the model saw the held content");
+};
+
+test("content held during /tree branch summarization is delivered through a marked turn once it completes", async (t) => {
+	const host = await createHost(t);
+	await host.launchBackgroundChild("report back");
+	const { baseline, summary, navigation } = await startBranchSummary(host);
+	await host.notify(ORCHESTRATOR_TEXT);
+	await host.settleChild(0, COMPLETION_TEXT);
+	for (let tick = 0; tick < 20; tick += 1) await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(mainRequests(host).length, baseline, "no provider request is issued while the branch is summarized");
+	summary.release();
+	assert.equal((await navigation).cancelled, false);
+	await assertDeliveredThroughMarkedTurn(host, baseline, ORCHESTRATOR_TEXT);
+	assert.equal(occurrences(mainRequests(host).slice(baseline).map((request) => request.conversation).join("\n"), COMPLETION_TEXT) > 0, true, "the child completion arrives too");
+});
+
+test("content held during a cancelled /tree branch summarization is delivered through a marked turn within a bounded time", async (t) => {
+	const host = await createHost(t);
+	const { baseline, summary, navigation } = await startBranchSummary(host);
+	await host.notify(ORCHESTRATOR_TEXT);
+	host.session.abortBranchSummary();
+	summary.release();
+	const outcome = await navigation;
+	assert.equal(outcome.cancelled, true, "the summarization was cancelled, which emits no session_tree");
+	await assertDeliveredThroughMarkedTurn(host, baseline, ORCHESTRATOR_TEXT);
+});
+
+// A user prompt is "starting" from `input` until `before_agent_start`, while
+// the host still reports idle. Content arriving in that window must not race
+// the user's prompt with a wake prompt: both would reach Agent.prompt().
+const USER_PROMPT = "user-prompt-in-pre-run-phase-2d5f";
+
+test("child content arriving while a user prompt is in its pre-run phase rides that prompt's run without a racing wake", async (t) => {
+	const host = await createHost(t);
+	await host.launchBackgroundChild("report back");
+	const gate = host.holdInput();
+	const prompt = host.session.prompt(USER_PROMPT).then(() => undefined, (error: unknown) => { host.errors.push(error); });
+	await gate.reached;
+	assert.equal(host.session.isIdle, true, "the host still reports idle in the pre-run phase");
+	// Whichever prompt starts a run first is parked in its provider request, so
+	// the other one meets a busy agent exactly as in the real race.
+	const turn = host.hold("turn");
+	await host.settleChild(0, COMPLETION_TEXT);
+	for (let tick = 0; tick < 20; tick += 1) await new Promise((resolve) => setImmediate(resolve));
+	gate.release();
+	await turn.reached;
+	for (let tick = 0; tick < 20; tick += 1) await new Promise((resolve) => setImmediate(resolve));
+	turn.release();
+	await prompt;
+	await host.until("the run to settle", () => mainRequests(host).length >= 1 && host.session.isIdle);
+	for (let tick = 0; tick < 20; tick += 1) await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(host.errors, [], "no caller sees a concurrent-prompt error");
+	assertEveryTurnCarriesTheMarker(host);
+	assert.equal(host.beforeAgentStarts.length, 1, "exactly one run starts");
+	assert.equal(host.beforeAgentStarts[0], USER_PROMPT, "the single run is the user's prompt");
+	const conversation = mainRequests(host).map((request) => request.conversation).join("\n");
+	assert.equal(occurrences(conversation, USER_PROMPT) > 0, true, "the user's prompt reaches the provider");
+	assert.equal(occurrences(mainRequests(host)[0]!.conversation, COMPLETION_TEXT), 1, "the stored completion reaches the provider in the user's run");
 });

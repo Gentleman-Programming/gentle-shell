@@ -179,6 +179,95 @@ test("guarded words inside data-command arguments are not guarded operations (#2
 	] as const) assert.equal(classifyGuardedCommand(command, config), expected, command);
 });
 
+// gentle-shell#1202: a read-only git or gh segment elsewhere on the line does not
+// make the data commands' arguments executable. Anything that can run or re-route
+// text keeps the lexical guard.
+test("guarded words inside data-command arguments stay prose next to read-only git and gh segments (#1202)", () => {
+	const config = { autonomousMode: false, guardedCommands: {} };
+	for (const command of [
+		"git -C /repo log -1 --oneline; tail -c 300000 f.jsonl | grep -oE 'git push origin [A-Za-z0-9]+' | tail -1",
+		"grep -oE 'git push origin' f.jsonl; git -C /repo status --short",
+		"gh pr view 1251 --json headRefOid; grep -n 'git push' f",
+		"cat > file <<'X'\nremember to git push later\nX\ngit -C /repo status --short",
+		"git status && grep -rn 'git reset --hard' docs",
+		"git diff --stat | wc -l; grep -l 'npm publish' a.md",
+		"git log --oneline | head -3; echo 'git rebase main'",
+		"grep 'pi remove' notes.md && gh pr list --state open",
+	]) assert.equal(classifyGuardedCommand(command, config), "not-guarded", command);
+	for (const [command, expected] of [
+		["git push", "confirm"],
+		["cd x && git push", "confirm"],
+		["grep a f; git push origin b", "confirm"],
+		["git -C r push", "confirm"],
+		["git -C r log; git push", "confirm"],
+		["git -C r log; grep 'git push' f; git push origin b", "confirm"],
+		["bash -c 'git push'", "confirm"],
+		["git status; bash -c 'git push'", "confirm"],
+		["eval \"git push\"", "confirm"],
+		["git status; eval \"git push\"", "confirm"],
+		["echo b | xargs git push origin", "confirm"],
+		["git status; echo b | xargs git push origin", "confirm"],
+		["git status; $(echo git push)", "confirm"],
+		["env git push", "confirm"],
+		["sudo git push", "confirm"],
+		["git status; grep x f; env git push", "confirm"],
+		["git status; cat <<'EOF' | bash\ngit push origin main\nEOF", "confirm"],
+		["git status; bash <<'EOF'\ngit push origin main\nEOF", "confirm"],
+		["git status; sh <<EOF\ngit push origin main\nEOF", "confirm"],
+		["git status; git rebase main", "confirm"],
+		["git status; git branch -D old", "confirm"],
+		["git status; npm publish", "confirm"],
+		["git status; pi remove foo", "confirm"],
+		["git status; git reset --hard", "block"],
+		// A git or gh segment that can run text stays opaque.
+		["git -C r log; grep 'git push' f | git -c alias.x='!sh' x", "confirm"],
+		["grep 'git push origin main' f | git log", "confirm"],
+		["git status; grep 'git push origin main' f | gh pr view", "confirm"],
+		["git -c alias.x='!sh' status; grep 'git push origin main' f", "confirm"],
+		["GIT_PAGER=sh git log; grep 'git push origin main' f", "confirm"],
+		["git status; grep 'git push origin main' f | git foo", "confirm"],
+		["git $(grep 'git push origin main' f); grep 'git push origin main' f", "confirm"],
+		["git alias-x; grep 'git push origin main' f", "confirm"],
+		["gh api repos/x; grep 'git push origin main' f", "confirm"],
+		["git status; grep 'git push origin main' f |& git log", "confirm"],
+		["git log $(echo git push); git status", "confirm"],
+		["git status; git rebase -x \"$(grep 'git push origin' f)\" main", "confirm"],
+	] as const) assert.equal(classifyGuardedCommand(command, config), expected, command);
+});
+
+// gentle-shell#1202 S6/S7: through the same evaluation path the extension uses.
+test("YOLO still waives a reversible push on a line whose grep pattern mentions the phrase (#1202)", () => {
+	const config = { autonomousMode: false, guardedCommands: {} };
+	const waived = (command: string) => isReversibleYoloCommand(command, evaluateGuardedCommand(command, config));
+	for (const command of [
+		"git -C /repo log -1 --oneline; git push origin main; grep -n 'git push origin' f.jsonl",
+		"git -C /repo log -1 --oneline; grep -n 'git push origin' f.jsonl; git push origin main",
+		"git -C /repo status --short && git push -u origin feature/x && tail -c 300000 f.jsonl | grep -oE 'git push origin [A-Za-z0-9]+' | tail -1",
+	]) assert.equal(waived(command), true, command);
+	for (const command of [
+		"git -C /repo log -1 --oneline; git push -o ci.skip origin main; grep -n 'git push origin' f.jsonl",
+		"git -C /repo log -1 --oneline; grep -n 'git push origin' f.jsonl; git push --delete origin main",
+		"git -C /repo log -1 --oneline; grep -n 'git push origin' f.jsonl; git push origin :main",
+		"git -C /repo log -1 --oneline; grep -n 'git push origin' f.jsonl; git push --force origin main",
+		"git -C /repo log -1 --oneline; grep -n 'git push origin' f.jsonl; git push origin main | sh",
+	]) assert.equal(waived(command), false, command);
+});
+
+// By design: a quoted variable in a refspec is not in the push grammar, so the
+// confirmation stays. Do not loosen YOLO_PUSH_SEGMENT_RE to "fix" this.
+test("YOLO keeps the confirmation for a push whose refspec holds a quoted variable (#1202)", () => {
+	const config = { autonomousMode: false, guardedCommands: {} };
+	for (const command of [
+		`git push origin HEAD:refs/heads/"$REF"`,
+		`git -C /repo log -1; git push origin HEAD:refs/heads/"$REF"`,
+		`git -C /repo log -1; grep -n 'git push origin' f.jsonl; git push origin HEAD:refs/heads/"$REF"`,
+	]) {
+		const evaluation = evaluateGuardedCommand(command, config);
+		assert.equal(evaluation.action, "confirm", command);
+		assert.equal(isReversibleYoloCommand(command, evaluation), false, command);
+	}
+});
+
 test("YOLO preserves explicit push restrictions in either config layer independently of persistent autonomy", () => {
 	const root = makeTmpDir();
 	const cwd = join(root, "repo");

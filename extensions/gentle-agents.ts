@@ -41,9 +41,9 @@ import { requireSessionProfileAuthority } from "../lib/session-profile-authority
 import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
 import { installBackgroundCacheWarming } from "../lib/background-cache-warming.ts";
 import { isFinished, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
-import { AgentRunner, piCommand, abortReasonText, REQUESTED_TOOLS_ENV, type AskAnswer, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
+import { AgentRunner, piCommand, abortReasonText, CHILD_JOBS_ENV, REQUESTED_TOOLS_ENV, type AskAnswer, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
 import { parseChildPackageInjection } from "../lib/child-package-injection.ts";
-import { ChildMessenger, type IpcEndpoint } from "../lib/agents-messaging.ts";
+import { ChildMessenger, formatChildJobState, type IpcEndpoint } from "../lib/agents-messaging.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, WindowsSessionRegistryPhaseSequence, type WindowsSessionRegistryPhaseObserver } from "../lib/windows-session-transport.ts";
 import { hasReviewSessionPermission, resolveCanonicalGitRepositoryIdentitySync, type ReviewSessionManager } from "../lib/review-session-standing-permission.ts";
@@ -415,6 +415,46 @@ function registerChildMessaging(pi: ExtensionAPI, ipc: IpcEndpoint): void {
 	});
 }
 
+// gentle-shell#2266: a child admitted for background jobs registers the tools
+// against its own private registry and reports its job state back over owned
+// IPC, so the runner can drain one bounded window at settlement instead of
+// killing a job mid-flight. The monitor stays parent-only.
+function registerChildBackgroundJobs(pi: ExtensionAPI, env: NodeJS.ProcessEnv, overrides: Partial<AgentsDeps>, ipc: IpcEndpoint): void {
+	const home = overrides.home ?? os.homedir();
+	const agentHome = overrides.agentHome ?? resolveAgentHomeDirectory({ env, home, agentHome: overrides.agentHome, homeOverridden: overrides.home !== undefined });
+	const now = overrides.now ?? (() => Date.now());
+	let outputDir: string | undefined;
+	let nextFrame = 0;
+	const reportJobs = (): void => {
+		const running = jobs.running();
+		try { ipc.send({ id: `j${++nextFrame}`, kind: "job", message: formatChildJobState({ running, pending: running > 0 }) }); }
+		catch { /* A lost report only costs the drain, never the job. */ }
+	};
+	const jobs = createJobRegistry({
+		outputDir: overrides.jobOutputDir ?? (() => (outputDir ??= mkdtempSync(join(os.tmpdir(), "gentle-jobs-")))),
+		now,
+		shell: overrides.jobShell ?? ((cwd) => {
+			const settings = SettingsManager.create(cwd, agentHome);
+			return { operations: createLocalBashOperations({ shellPath: settings.getShellPath() }), commandPrefix: settings.getShellCommandPrefix() };
+		}),
+		onSettled: (job: JobRecord) => {
+			reportJobs();
+			try { pi.sendMessage({ customType: JOB_NOTICE_TYPE, content: jobNoticeText(job), display: true, details: jobDetails(job) }, { deliverAs: "steer", triggerTurn: true }); }
+			catch { /* The notice is best-effort; the job outcome and the drain still stand. */ }
+		},
+	});
+	registerBackgroundJobTools(pi, { registry: jobs, sessionId: (ctx) => ctx.sessionManager.getSessionId() ?? "", now, onChange: reportJobs });
+	// agent_settled reports the jobs still running so the runner can drain before
+	// it requests the orderly shutdown.
+	pi.on("agent_settled", () => reportJobs());
+	pi.on("session_shutdown", () => {
+		if (!outputDir) return;
+		const dir = outputDir;
+		outputDir = undefined;
+		try { rmSync(dir, { recursive: true, force: true }); } catch { /* A leftover temp directory is harmless. */ }
+	});
+}
+
 const posixSessionTransport: SessionTransportFactory = {
 	createRegistry(agentHome) { return SessionPresenceRegistry.create(agentHome); },
 	createListener(registry: SessionPresenceRegistry, sessionId, onNotification) { return Object.assign(new ActiveSessionListener(registry, sessionId, onNotification), { closesRegistry: false }); },
@@ -713,7 +753,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			pi.on("tool_call", () => ({ block: true, reason: "Retired SDD child launch is not supported." }));
 			return;
 		}
-		if (childIpc) registerChildMessaging(pi, childIpc);
+		if (childIpc) {
+			registerChildMessaging(pi, childIpc);
+			if (env[CHILD_JOBS_ENV] === "1") registerChildBackgroundJobs(pi, env, overrides, childIpc);
+		}
 		registerMissingToolsCheck(pi, env);
 		return;
 	}

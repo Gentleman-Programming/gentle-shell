@@ -1204,6 +1204,65 @@ test("child parent-message tooling admits notifications and the active parent pr
 	assert.deepEqual(runtime.children[0].sent, [{ id: "n1", kind: "ack", accepted: true }, { id: "n2", kind: "ack", accepted: false, error: "task parent is not the active host session" }]);
 	await parent.fire("session_shutdown", ctx);
 });
+
+// #2266: a child with the forwarded job capability and owned IPC registers the
+// background job tools for its own session; the monitor stays parent-only.
+function childJobsChild(env: NodeJS.ProcessEnv, overrides: Partial<AgentsDeps> = {}) {
+	const child = fakePi();
+	const listeners = new Map<string, Array<(value: Record<string, unknown>) => void>>();
+	const frames: Array<Record<string, unknown>> = [];
+	gentleAgents(child.pi, { GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: "fixture", ...env }, {
+		childIpc: {
+			send: (frame: Record<string, unknown>) => { frames.push(frame); return true; },
+			on: (event: string, listener: (value: Record<string, unknown>) => void) => listeners.set(event, [...(listeners.get(event) ?? []), listener]),
+		},
+		...overrides,
+	});
+	return { child, frames, listeners };
+}
+
+test("a child with the forwarded job capability registers bash_background/job_list/job_stop privately, never the monitor", () => {
+	const jobs = fakeJobShell();
+	const { child } = childJobsChild({ GENTLE_PI_AGENTS_CHILD_JOBS: "1" }, { jobShell: jobs.shell, jobOutputDir: () => jobs.dir, now: () => 1_000 });
+	try {
+		assert.deepEqual([...child.tools.keys()].sort(), ["bash_background", "job_list", "job_stop", "subagent_parent_message"]);
+		assert.equal(child.tools.has("monitor"), false, "the monitor stays parent-only");
+	} finally { jobs.cleanup(); }
+});
+
+test("a child without the forwarded job capability keeps only parent messaging", () => {
+	const child = fakePi();
+	gentleAgents(child.pi, { GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: "fixture" }, {
+		childIpc: { send: () => true, on: () => undefined },
+	});
+	assert.deepEqual([...child.tools.keys()], ["subagent_parent_message"]);
+});
+
+test("a child without owned IPC never registers background job tools even with the forwarded capability", () => {
+	const child = fakePi();
+	gentleAgents(child.pi, { GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_CHILD_JOBS: "1" });
+	assert.deepEqual([...child.tools.keys()], []);
+});
+
+test("a child reports its background job state to the parent and delivers the exit notice to its own session", async () => {
+	const jobs = fakeJobShell();
+	const { child, frames } = childJobsChild({ GENTLE_PI_AGENTS_CHILD_JOBS: "1" }, { jobShell: jobs.shell, jobOutputDir: () => jobs.dir, now: () => 1_000 });
+	const { ctx } = fakeContext();
+	try {
+		await child.tools.get("bash_background")!.execute("b1", { command: "gh run watch 1 --exit-status", label: "CI" }, undefined, undefined, ctx);
+		assert.deepEqual(frames.at(-1), { id: "j1", kind: "job", message: JSON.stringify({ running: 1, pending: true }) });
+		await child.fire("agent_settled", ctx);
+		assert.deepEqual(frames.at(-1), { id: "j2", kind: "job", message: JSON.stringify({ running: 1, pending: true }) }, "settlement reports the still-running job");
+		jobs.runs[0]!.exit(0);
+		await eventually(() => child.sent.some((entry) => entry.message.customType === "gentle-jobs.notice"), "the child delivers its own job exit notice");
+		assert.deepEqual(frames.at(-1), { id: "j3", kind: "job", message: JSON.stringify({ running: 0, pending: false }) }, "the settlement report clears the running count");
+		const notice = child.sent.find((entry) => entry.message.customType === "gentle-jobs.notice")!;
+		assert.deepEqual(notice.options, { deliverAs: "steer", triggerTurn: true });
+		assert.equal(notice.message.display, true);
+		assert.match(String(notice.message.content), /Background job job-1/);
+	} finally { jobs.cleanup(); }
+});
+
 for (const boundary of ["allowed", "env", "session", "replacement", "bus-throws", "no-spawn", "long-running"] as const) {
 	test(`local child composition through real extensions and RPC runner: ${boundary}`, async (t) => {
 		const discarded: number[] = [];

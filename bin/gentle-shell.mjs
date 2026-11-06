@@ -1460,7 +1460,7 @@ async function handleSetupCommand(commandArgs, home, runtime, { homeHadContentBe
 		const configPath = resolveConfigPath();
 		const homeKey = safeRealpath(home.dir);
 		const config = readRawConfig(configPath);
-		if (!homeIsForeign(home, provisionedEntry(config, homeKey), homeHadContentBeforeBootstrap)) {
+		if (safeRealpath(home.dir) !== safeRealpath(defaultPiAgentDir())) {
 			try {
 				writeRawConfig(configPath, recordProvisioned(config, homeKey, resolveSetupGentleAiPin(), ownPackageVersion(), new Date().toISOString()));
 			} catch (error) {
@@ -1483,7 +1483,7 @@ const SETUP_LOCK_STALE_MS = 15 * 60 * 1000;
 // has already provisioned before, per the config marker — is fair game;
 // everything else (R1-001) is left alone with a one-time hint instead.
 function defaultPiAgentDir() {
-	return process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
+	return join(homedir(), ".pi", "agent");
 }
 
 function printForeignHomeHint(home, reason) {

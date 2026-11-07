@@ -107,7 +107,7 @@ test("manual setup records a --home matching PI_CODING_AGENT_DIR so subsequent r
 	const launchResult = run(env, ["--home", customHome, "--mode", "rpc"]);
 	assert.equal(launchResult.status, 0, launchResult.stderr);
 	assert.equal(
-		launchResult.stderr.includes("is pi's own default agent home"),
+		launchResult.stderr.includes(`gentle-shell: ${customHome}`),
 		false,
 		"subsequent launch must not repeat the foreign home hint",
 	);
@@ -120,8 +120,8 @@ test("manual setup never records pi's own default agent home (~/.pi/agent)", (t)
 
 	const env = {
 		...f.env,
-		PI_CODING_AGENT_DIR: undefined,
 	};
+	delete env.PI_CODING_AGENT_DIR;
 
 	// 1. Run setup on pi's own default home
 	const setupResult = run(env, ["--home", defaultPiHome, "setup"]);
@@ -136,4 +136,25 @@ test("manual setup never records pi's own default agent home (~/.pi/agent)", (t)
 	const launchResult = run(env, ["--home", defaultPiHome, "--mode", "rpc"]);
 	assert.equal(launchResult.status, 0, launchResult.stderr);
 	assert.match(launchResult.stderr, /is pi's own default agent home; gentle-shell never auto-provisions it/);
+});
+
+test("manual setup never records an unrelated pre-existing directory that had content", (t) => {
+	const f = fixture(t);
+	const unrelatedHome = join(f.root, "unrelated-space");
+	mkdirSync(unrelatedHome, { recursive: true });
+	writeFileSync(join(unrelatedHome, "pre-existing.txt"), "pre-existing content", "utf8");
+
+	// 1. Run setup on the unrelated directory
+	const setupResult = run(f.env, ["--home", unrelatedHome, "setup"]);
+	assert.equal(setupResult.status, 0, setupResult.stderr);
+
+	// 2. Verify config does NOT record the unrelated directory as provisioned
+	const configPath = join(f.home, ".gentle-shell", "config.json");
+	const provisioned = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")).provisioned ?? {} : {};
+	assert.deepEqual(provisioned, {}, "unrelated pre-existing directory must never be recorded in config.json");
+
+	// 3. Launching against the unrelated directory prints the pre-existing content hint
+	const launchResult = run(f.env, ["--home", unrelatedHome, "--mode", "rpc"]);
+	assert.equal(launchResult.status, 0, launchResult.stderr);
+	assert.match(launchResult.stderr, /already has content and was not set up by gentle-shell/);
 });

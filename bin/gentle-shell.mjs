@@ -1460,7 +1460,9 @@ async function handleSetupCommand(commandArgs, home, runtime, { homeHadContentBe
 		const configPath = resolveConfigPath();
 		const homeKey = safeRealpath(home.dir);
 		const config = readRawConfig(configPath);
-		if (safeRealpath(home.dir) !== safeRealpath(defaultPiAgentDir())) {
+		const isCanonicalPiHome = safeRealpath(home.dir) === safeRealpath(canonicalPiAgentDir());
+		const isUnrelatedDir = homeHadContentBeforeBootstrap && !existsSync(homeOwnershipMarkerPath(home));
+		if (!isCanonicalPiHome && !isUnrelatedDir) {
 			try {
 				writeRawConfig(configPath, recordProvisioned(config, homeKey, resolveSetupGentleAiPin(), ownPackageVersion(), new Date().toISOString()));
 			} catch (error) {
@@ -1487,8 +1489,17 @@ const SETUP_LOCK_STALE_MS = 15 * 60 * 1000;
  *
  * @returns {string} The canonical default path.
  */
-function defaultPiAgentDir() {
+function canonicalPiAgentDir() {
 	return join(homedir(), ".pi", "agent");
+}
+
+/**
+ * Resolves the default directory for Pi agent home, respecting PI_CODING_AGENT_DIR.
+ *
+ * @returns {string} The default Pi agent home directory.
+ */
+function defaultPiAgentDir() {
+	return process.env.PI_CODING_AGENT_DIR || canonicalPiAgentDir();
 }
 
 function printForeignHomeHint(home, reason) {

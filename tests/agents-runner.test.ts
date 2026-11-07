@@ -34,7 +34,7 @@ interface Harness {
 	advance(ms: number): void;
 }
 
-function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boolean; process?: RunnerDeps["process"]; pid?: number; maxConcurrency?: number; stallTimeoutMs?: number; toolStallTimeoutMs?: number; cleanupTimeoutMs?: number; answer?: Record<string, unknown>; exitOnKill?: boolean; exitOnStdinEnd?: boolean; state?: Record<string, unknown>; stateSuccess?: boolean; onNotification?: RunnerHooks["onNotification"]; onSuccessfulMutation?: RunnerHooks["onSuccessfulMutation"]; onFinish?: RunnerHooks["onFinish"]; onFallback?: RunnerHooks["onFallback"]; reject?: (command: Record<string, unknown>) => boolean; hold?: (command: Record<string, unknown>) => boolean } = {}): Harness {
+function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boolean; process?: RunnerDeps["process"]; pid?: number; maxConcurrency?: number; stallTimeoutMs?: number; toolStallTimeoutMs?: number; cleanupTimeoutMs?: number; drainTimeoutMs?: number; answer?: Record<string, unknown>; exitOnKill?: boolean; exitOnStdinEnd?: boolean; state?: Record<string, unknown>; stateSuccess?: boolean; onNotification?: RunnerHooks["onNotification"]; onSuccessfulMutation?: RunnerHooks["onSuccessfulMutation"]; onFinish?: RunnerHooks["onFinish"]; onFallback?: RunnerHooks["onFallback"]; reject?: (command: Record<string, unknown>) => boolean; hold?: (command: Record<string, unknown>) => boolean } = {}): Harness {
 	const children: FakeChild[] = [];
 	const timers: Harness["timers"] = [];
 	const asks: Harness["asks"] = [];
@@ -75,7 +75,7 @@ function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boo
 		pi: { command: "pi", args: [] },
 	};
 	const store = new TaskStore();
-	const runner = new AgentRunner(store, { maxConcurrency: options.maxConcurrency ?? 2, stallTimeoutMs: options.stallTimeoutMs ?? 10_000, toolStallTimeoutMs: options.toolStallTimeoutMs, cleanupTimeoutMs: options.cleanupTimeoutMs }, deps, {
+	const runner = new AgentRunner(store, { maxConcurrency: options.maxConcurrency ?? 2, stallTimeoutMs: options.stallTimeoutMs ?? 10_000, toolStallTimeoutMs: options.toolStallTimeoutMs, cleanupTimeoutMs: options.cleanupTimeoutMs, drainTimeoutMs: options.drainTimeoutMs }, deps, {
 		askUser: async (taskId, ask) => {
 			asks.push({ taskId, method: ask.method });
 			return options.answer ?? { value: "yes" };
@@ -178,6 +178,26 @@ test("background capability admission refreshes project policy when queued work 
 	assert.equal(h.children.length, 1);
 	assert.equal(readFileSync(file, "utf8"), raw);
 });
+
+for (const { tools, forwarded } of [
+	{ tools: ["read", "bash_background"], forwarded: true },
+	{ tools: ["read", "bash_background", "job_list", "job_stop"], forwarded: true },
+	{ tools: ["read", "grep"], forwarded: false },
+	{ tools: [], forwarded: false },
+]) {
+	test(`background capability forwards the child job marker only for a declared bash_background (${tools.join(",") || "default tools"})`, async (t) => {
+		const root = fs.mkdtempSync(join(tmpdir(), "child-jobs-"));
+		t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+		const h = harness();
+		const env = { GENTLE_PI_CONFIG_HOME: join(root, "config"), GENTLE_PI_BACKGROUND_SUBAGENTS: "on" };
+		const task = h.runner.run(request({ cwd: root, env, agent: { ...explorer, tools } }));
+		await tick();
+		assert.equal(h.store.get(task.id)?.status, TASK_STATUS.RUNNING);
+		assert.equal(h.spawnOptions[0].env.GENTLE_PI_AGENTS_CHILD_JOBS, forwarded ? "1" : undefined);
+		h.runner.cancel(task.id);
+		await tick();
+	});
+}
 
 const FOUR_MIN_MS = 4 * 60_000;
 
@@ -1143,6 +1163,80 @@ test("AgentRunner escalates to SIGTERM and SIGKILL if orderly cleanup exceeds cl
 	await tick();
 
 	assert.deepEqual(children[0].killed, ["SIGTERM", "SIGKILL"]);
+});
+
+test("a child that reports a running background job drains one bounded window before the orderly shutdown", async () => {
+	const { store, runner, children, timers, advance } = harness({ exitOnKill: false, drainTimeoutMs: 2_000, cleanupTimeoutMs: 3_000 });
+	const task = runner.run(request({ agent: { ...explorer, tools: ["read", "bash_background"] }, env: { GENTLE_PI_BACKGROUND_SUBAGENTS: "on" } }));
+	await tick();
+	const child = children[0];
+	child.message({ id: "j1", kind: "job", message: JSON.stringify({ running: 1, pending: true }) });
+	assert.deepEqual(child.sent.at(-1), { id: "j1", kind: "ack", accepted: true });
+	child.emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "waiting on CI" }] }] });
+	child.emit({ type: "agent_settled" });
+	await tick();
+
+	// The drain holds the orderly shutdown open; nothing has been signalled yet.
+	assert.equal(store.get(task.id)?.status, TASK_STATUS.RUNNING);
+	assert.equal(store.get(task.id)?.lastStep, "draining background jobs");
+	assert.equal(child.child.stdin.writableEnded, false, "stdin stays open while the job drains");
+	assert.deepEqual(child.killed, []);
+	const drainTimer = timers.find((timer) => !timer.cancelled && timer.ms === 2_000);
+	assert.ok(drainTimer, "one bounded drain window is scheduled");
+
+	// The bounded window expires: the ordinary orderly shutdown begins and escalates.
+	advance(2_000);
+	await tick();
+	assert.ok(drainTimer!.cancelled);
+	assert.equal(child.child.stdin.writableEnded, true, "the drain is bounded and ends by settling");
+	const cleanupTimer = timers.find((timer) => !timer.cancelled && timer.ms === 3_000);
+	assert.ok(cleanupTimer, "the ordinary cleanup window follows the drain");
+	cleanupTimer!.fn();
+	await tick();
+	assert.deepEqual(child.killed, ["SIGTERM"]);
+	const killTimer = timers.find((timer) => !timer.cancelled && timer.ms === 250);
+	assert.ok(killTimer, "SIGKILL follows the drain like today");
+	killTimer!.fn();
+	await tick();
+	assert.deepEqual(child.killed, ["SIGTERM", "SIGKILL"]);
+});
+
+test("a child job that finishes inside the drain ends it early and only one extension is allowed", async () => {
+	const { store, runner, children, timers } = harness({ exitOnKill: false, drainTimeoutMs: 2_000, cleanupTimeoutMs: 3_000 });
+	const task = runner.run(request({ agent: { ...explorer, tools: ["read", "bash_background"] }, env: { GENTLE_PI_BACKGROUND_SUBAGENTS: "on" } }));
+	await tick();
+	const child = children[0];
+	child.message({ id: "j1", kind: "job", message: JSON.stringify({ running: 1, pending: true }) });
+	child.emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "waiting" }] }] });
+	child.emit({ type: "agent_settled" });
+	await tick();
+	const drainTimer = timers.find((timer) => !timer.cancelled && timer.ms === 2_000)!;
+	assert.ok(drainTimer);
+
+	child.message({ id: "j2", kind: "job", message: JSON.stringify({ running: 0, pending: false }) });
+	await tick();
+	assert.ok(drainTimer.cancelled, "the drain ends early when the child reports no running jobs");
+	assert.equal(child.child.stdin.writableEnded, true);
+
+	// A later report cannot open a second extension.
+	const before = timers.filter((timer) => !timer.cancelled && timer.ms === 2_000).length;
+	child.message({ id: "j3", kind: "job", message: JSON.stringify({ running: 1, pending: true }) });
+	await tick();
+	assert.equal(timers.filter((timer) => !timer.cancelled && timer.ms === 2_000).length, before, "no unbounded re-drain after the first extension");
+});
+
+test("a job frame that is not a valid child state is refused and does not open a drain", async () => {
+	const { runner, children, timers } = harness({ exitOnKill: false, drainTimeoutMs: 2_000 });
+	runner.run(request({ agent: { ...explorer, tools: ["read", "bash_background"] }, env: { GENTLE_PI_BACKGROUND_SUBAGENTS: "on" } }));
+	await tick();
+	const child = children[0];
+	child.message({ id: "j1", kind: "job", message: "not json" });
+	assert.deepEqual(child.sent.at(-1), { id: "j1", kind: "ack", accepted: false, error: "invalid child job state" });
+	child.emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] });
+	child.emit({ type: "agent_settled" });
+	await tick();
+	assert.equal(child.child.stdin.writableEnded, true, "an unparseable job report does not delay settlement");
+	assert.equal(timers.filter((timer) => !timer.cancelled && timer.ms === 2_000).length, 0);
 });
 
 test("orderly cleanup escalation retains the full exit confirmation deadline after SIGKILL (#1740)", async () => {

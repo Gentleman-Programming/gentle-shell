@@ -30,7 +30,7 @@ interface Harness {
 	timers: Array<{ fn: () => void; ms: number; cancelled: boolean }>;
 	asks: Array<{ taskId: string; method: string }>;
 	finishes: string[];
-	spawnOptions: Array<{ command: string; args: string[]; env: NodeJS.ProcessEnv; stdio?: string[]; shell?: boolean | string }>;
+	spawnOptions: Array<{ command: string; args: string[]; env: NodeJS.ProcessEnv; stdio?: string[] }>;
 	advance(ms: number): void;
 }
 
@@ -47,7 +47,7 @@ function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boo
 		resolvePi: options.resolvePi,
 		spawn: (command, args, launchOptions) => {
 			if (options.failStart) throw new Error("fixture spawn failed");
-			spawnOptions.push({ command, args, env: launchOptions.env, stdio: launchOptions.stdio, shell: launchOptions.shell });
+			spawnOptions.push({ command, args, env: launchOptions.env, stdio: launchOptions.stdio });
 			const fake = fakeChild({ exitOnKill: options.exitOnKill, exitOnStdinEnd: options.exitOnStdinEnd, pid: options.pid });
 			if (options.state !== undefined) {
 				fake.child.stdin.removeAllListeners("data");
@@ -975,36 +975,86 @@ test("runner resolves the pi command at each spawn after the entry disappears", 
 	assert.deepEqual(h.spawnOptions[1].args, childArguments(request()));
 });
 
-test("piCommand fallback on win32 includes shell: true to avoid ENOENT on .cmd shims (#2887)", () => {
+test("piCommand fallback on win32 re-resolves cli.js via pi.cmd from PATH without shell (#2887)", () => {
 	const procWin = {
 		execPath: "C:\\Program Files\\nodejs\\node.exe",
 		argv: ["C:\\Program Files\\nodejs\\node.exe", "C:\\pnpm\\global\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli.js"],
-		env: {},
+		env: { Path: "C:\\pnpm;C:\\Windows\\System32" },
 		platform: "win32" as const,
 	};
-	assert.deepEqual(piCommand(procWin, (entry) => entry === procWin.argv[1]), { command: procWin.execPath, args: [procWin.argv[1]] });
-	assert.deepEqual(piCommand(procWin, () => false), { command: "pi", args: [], shell: true });
+	const newCli = "C:\\pnpm\\global\\5\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli.js";
+	const cmdContent = `@ECHO off\r\nnode "${newCli}" %*\r\n`;
+	const exists = (p: string) => p === "C:\\pnpm\\pi.cmd" || p === newCli;
+	const readFile = (p: string) => (p === "C:\\pnpm\\pi.cmd" ? cmdContent : "");
+
+	// While original cli.js still exists, reuses it
+	assert.deepEqual(piCommand(procWin, (p) => p === procWin.argv[1]), { command: procWin.execPath, args: [procWin.argv[1]] });
+	// When original cli.js disappears after upgrade, resolves the new cli.js from pi.cmd on PATH
+	assert.deepEqual(piCommand(procWin, exists, readFile), { command: procWin.execPath, args: [newCli] });
 });
 
-test("runner spawns fallback pi with shell on win32 after upgrade (#2887)", async () => {
-	let exists = true;
+test("piCommand resolves npm and pnpm cmd-shims with relative paths on win32 (#2887)", () => {
+	const procWin = {
+		execPath: "C:\\Program Files\\nodejs\\node.exe",
+		argv: ["C:\\Program Files\\nodejs\\node.exe", "C:\\missing\\cli.js"],
+		env: { PATH: "C:\\AppData\\npm" },
+		platform: "win32" as const,
+	};
+	// npm cmd-shim style with %dp0%
+	const npmShim = `@ECHO off\r\n"%_prog%"  "%dp0%\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli.js" %*\r\n`;
+	const targetJs = "C:\\AppData\\npm\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli.js";
+	const exists = (p: string) => p === "C:\\AppData\\npm\\pi.cmd" || p === targetJs;
+	const readFile = (p: string) => (p === "C:\\AppData\\npm\\pi.cmd" ? npmShim : "");
+
+	assert.deepEqual(piCommand(procWin, exists, readFile), { command: procWin.execPath, args: [targetJs] });
+});
+
+test("piCommand honors GENTLE_PI_AGENTS_PI pointing to a .cmd shim by resolving its JS target (#2887)", () => {
+	const procWin = {
+		execPath: "C:\\Program Files\\nodejs\\node.exe",
+		argv: ["C:\\Program Files\\nodejs\\node.exe", "C:\\missing\\cli.js"],
+		env: { GENTLE_PI_AGENTS_PI: "C:\\custom\\pi.cmd --model gpt-5" },
+		platform: "win32" as const,
+	};
+	const customShim = `@ECHO off\r\nnode "%~dp0pi-launcher.js" %*\r\n`;
+	const targetLauncher = "C:\\custom\\pi-launcher.js";
+	const exists = (p: string) => p === "C:\\custom\\pi.cmd" || p === targetLauncher;
+	const readFile = (p: string) => (p === "C:\\custom\\pi.cmd" ? customShim : "");
+
+	assert.deepEqual(piCommand(procWin, exists, readFile), {
+		command: procWin.execPath,
+		args: [targetLauncher, "--model", "gpt-5"],
+	});
+});
+
+test("runner spawns fallback pi through Node on win32 after upgrade without shell (#2887)", async () => {
+	let existsOld = true;
+	const newCli = "C:\\pnpm\\dist\\cli.js";
 	const procWin = {
 		execPath: "C:\\Program Files\\nodejs\\node.exe",
 		argv: ["C:\\Program Files\\nodejs\\node.exe", "C:\\pi\\dist\\cli.js"],
-		env: {},
+		env: { Path: "C:\\pnpm" },
 		platform: "win32" as const,
 	};
-	const h = harness({ resolvePi: () => piCommand(procWin, () => exists) });
-	h.runner.run(request());
+	const cmdContent = `@ECHO off\r\nnode "%~dp0dist\\cli.js" %*\r\n`;
+	const exists = (p: string) => (existsOld && p === procWin.argv[1]) || p === "C:\\pnpm\\pi.cmd" || p === newCli;
+	const readFile = (p: string) => (p === "C:\\pnpm\\pi.cmd" ? cmdContent : "");
+
+	const h = harness({ resolvePi: () => piCommand(procWin, exists, readFile) });
+	// First run before upgrade
+	h.runner.run(request({ agent: { ...explorer, instructions: "audit & verify | status %VAR%" } }));
 	await tick();
 	assert.equal(h.spawnOptions[0].command, procWin.execPath);
-	assert.equal(h.spawnOptions[0].shell, undefined);
+	assert.equal(h.spawnOptions[0].args[0], procWin.argv[1]);
 
-	exists = false;
-	h.runner.run(request());
+	// Upgrade: old cli.js disappears, piCommand re-resolves via pi.cmd
+	existsOld = false;
+	h.runner.run(request({ agent: { ...explorer, instructions: "audit & verify | status %VAR%" } }));
 	await tick();
-	assert.equal(h.spawnOptions[1].command, "pi");
-	assert.equal(h.spawnOptions[1].shell, true);
+	assert.equal(h.spawnOptions[1].command, procWin.execPath);
+	assert.equal(h.spawnOptions[1].args[0], newCli);
+	// Arguments with &, |, % and spaces are preserved verbatim in argv, never joined by a shell
+	assert.ok(h.spawnOptions[1].args.includes("audit & verify | status %VAR%"));
 });
 
 test("JsonLines splits on LF only, tolerates CRLF, and skips lines that are not JSON", () => {

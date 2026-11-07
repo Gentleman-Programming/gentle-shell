@@ -1,0 +1,13 @@
+# Host delivery preflight
+
+Shell's host workflow now checks recognizable `git push`, `gh pr create` and `gh pr merge` calls before execution (issue #2997). This changes Shell's previous unconditional delivery bypass. It does not restore the provider's retired receipt/gate APIs or change its byte-pinned contract artifacts. The vendored `review-integration.md` remains an exact upstream snapshot; this document describes the newer Shell-owned ordering policy.
+
+With RDD on, use `gentle_review` assess with explicit `baseRef` and `committedOnly: true` for the actual delivery slice. `workspaceRoot` selects its worktree. The host retains only this scope hint, bound to the session, canonical worktree, HEAD and resolved base. It reassesses that committed range immediately before the command. Native `reviewDue: false` preserves ordinary policy. A due review requires following the facade transitions or an exact host-recorded human decline; caller-supplied outcomes never create that decline. Scope hints are not receipts or delivery permission.
+
+Separate commit and delivery calls. With RDD on, grouped/wrapped delivery and background/monitor delivery are refused: finish the commit or wait first, assess the resulting range, then issue a standalone foreground delivery call. A changed HEAD/base, new session, cancelled read or unavailable preflight requires assessment again. RDD off retains ordinary command policy. The preflight runs no review, consent answer, acknowledgement, mode change or network lookup. Existing command safety still applies afterward.
+
+This covers recognizable shell invocations, including common shell wrappers and substitutions. It is not a shell sandbox or an installed Git hook. Script files, arbitrary interpreter programs and external actors are outside its detection boundary. The caller owns the actual slice selection and PR/remote destination: local preflight does not prove that an arbitrary PR number identifies local HEAD or prevent later remote edits after auto-merge scheduling. Remote-repository overrides and multi-ref pushes are not accepted as standalone local deliveries.
+
+The provider's assessment policy, including `under_budget`, remains unchanged. The companion provider report #6028 remains separate; this host change does not claim to resolve inconsistent outcomes between provider assessment and other hosts' Stop hooks.
+
+Regression coverage uses the real Shell tool hook and isolated Git repositories with stubbed native answers. It checks the ordering boundary, fresh assessment, exact scope, cancellation, session changes, pending replacement scopes, and preservation of native non-due and human-decline paths. It does not perform a real remote push/merge or claim a complete live-model journey.

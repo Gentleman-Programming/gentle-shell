@@ -113,9 +113,9 @@ test("canonical contract defines compact risk, causal admission, correction, CAS
 		/--agent=pi --materialize=true/,
 		/provider-owned submission form/i,
 		/self-contained authority-advancing vectors/i,
-		/Commit, push, pull-request creation, and release creation are not RDD gates/i,
-		/Review outcomes and receipt state are informational and never authorize, consume, rewrite, or block a Bash delivery command/i,
-		/Pi does not inspect RDD mode or native authority for those commands/i,
+		/Commit, push, pull-request creation, and release creation are not provider receipt gates/i,
+		/Review outcomes and receipt state never authorize delivery/i,
+		/reassess it immediately before delivery/i,
 		/Review transactions, validation, and SDD never perform delivery commands themselves/i,
 		/local orchestrator and same-user process are trusted/i,
 		/reviewer and validator outputs remain semantically untrusted/i,
@@ -123,7 +123,7 @@ test("canonical contract defines compact risk, causal admission, correction, CAS
 		/untrusted repository content.*malformed inputs.*stale authority.*path drift.*external callers/i,
 		...JUDGMENT_DAY_DISCOVERY_PATTERNS,
 	]);
-	assert.match(read(TECHNICAL_REFERENCE), /Review outcomes and receipt state are informational; commit, push, pull-request, and release delivery follow ordinary repository policy\./);
+	assert.match(read(TECHNICAL_REFERENCE), /Review outcomes never authorize delivery; commit, push, pull-request and release actions follow ordinary repository policy\./);
 	assert.match(read(README), /\]\(docs\/readme-reference\.md(?:#[^)]+)?\)/);
 	assert.doesNotMatch(read(README), /one one-shot authorization for the exact command/i);
 	assert.doesNotMatch(read(README), /review-publication-gate/i);

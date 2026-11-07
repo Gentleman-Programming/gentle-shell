@@ -3014,8 +3014,10 @@ function readReviewerRouting(cwd: string, sessionId: string | undefined, session
 		: sessionProfileRoutingAt(resolution, { cwd, configHome: gentleAiConfigHome(), foreignRepository });
 	// Without a binding, pin or frozen profile the reviewer reads the global
 	// effective routing the models panel shows and launches use (gentle-shell#2163,
-	// #1731); an explicit snapshot stays whole and never borrows from it.
-	const config = routed === undefined ? readGlobalEffectiveModelConfig(cwd) : cloneModelConfig(routed);
+	// #1731); an explicit snapshot stays whole and never borrows from it. It is
+	// read from the session's directory, as the launcher does, never from the
+	// target's: the reviewed candidate never selects its own reviewer.
+	const config = routed === undefined ? readGlobalEffectiveModelConfig(sessionCwd) : cloneModelConfig(routed);
 	const source = routed === undefined ? `global effective routing (saved store ${modelConfigPath(cwd)}, then subagents.json and agent frontmatter)`
 		: resolution.kind === "explicit" ? "session profile binding"
 		: resolution.kind === "inherited" && resolution.profile !== undefined ? "frozen session profile"

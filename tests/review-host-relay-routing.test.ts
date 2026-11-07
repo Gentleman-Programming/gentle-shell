@@ -1710,3 +1710,34 @@ test("a frozen startup profile that omits a lens keeps its whole snapshot over t
 	assert.deepEqual(routing, { "review-risk": { model: "team/risk-model" } });
 	assert.deepEqual(__testing.reviewHostRelaySelection("resilience", routing), { routingKey: "review-resilience" }, "lens roles stay fail-closed");
 });
+
+// The reviewed candidate never selects its own reviewer: the unpinned reviewer
+// reads the global effective routing from the session's directory, as the
+// launcher does, never from the target's project agents or subagents.json.
+function plantCandidateReviewer(target: string): void {
+	mkdirSync(join(target, ".pi", "agents"), { recursive: true });
+	writeFileSync(join(target, ".pi", "agents", "review-risk.md"), "---\nname: review-risk\ndescription: x\nmodel: candidate/chosen-model\n---\nx\n");
+}
+
+test("an unpinned reviewer never reads routing from the reviewed target's own project agents", (t) => {
+	const session = pinFixture(t, "absent");
+	agentHomeRouting(t, { "review-risk": {} });
+	const target = repository(t);
+	plantCandidateReviewer(target);
+	const routing = __testing.readReviewerModelConfig(target, "sid-target-agents", session);
+	assert.deepEqual(routing["review-risk"], __testing.readEffectiveModelConfig(session)["review-risk"], "the reviewer reads the session's routing, not the candidate's");
+	assert.equal(__testing.reviewHostRelaySelection("risk", routing).selection, undefined, "the lens stays fail-closed");
+});
+
+test("an unpinned reviewer never reads routing from a same-clone worktree target's project agents", (t) => {
+	const session = pinFixture(t, "absent");
+	agentHomeRouting(t, { "review-risk": {} });
+	const parent = mkdtempSync(join(tmpdir(), "gentle-pi-relay-worktree-"));
+	t.after(() => rmSync(parent, { recursive: true, force: true }));
+	const target = join(parent, "writer");
+	execFileSync("git", ["worktree", "add", "-q", "-b", "writer", target], { cwd: session });
+	plantCandidateReviewer(target);
+	const routing = __testing.readReviewerModelConfig(target, "sid-worktree-agents", session);
+	assert.deepEqual(routing["review-risk"], __testing.readEffectiveModelConfig(session)["review-risk"], "the reviewer reads the session's routing, not the writer worktree's");
+	assert.equal(__testing.reviewHostRelaySelection("risk", routing).selection, undefined, "the lens stays fail-closed");
+});

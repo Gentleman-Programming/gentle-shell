@@ -7,7 +7,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 
 type Handler = (event: any, ctx: ExtensionContext) => any;
-function fixture(t: TestContext, child = false) {
+function fixture(t: TestContext, child = false, extraEnv: Record<string, string> = {}) {
 	const cwd = mkdtempSync(join(tmpdir(), "exploration-budget-"));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	const handlers = new Map<string, Handler>();
@@ -22,7 +22,7 @@ function fixture(t: TestContext, child = false) {
 	createGentleAiExtension({
 		nativeReviewCli: null,
 		contextBackstopMeasure: { minIntervalMs: 0 },
-		processEnv: { GENTLE_PI_CONFIG_HOME: join(cwd, "config"), GENTLE_PI_AGENTS_CHILD: child ? "1" : "0" },
+		processEnv: { GENTLE_PI_CONFIG_HOME: join(cwd, "config"), GENTLE_PI_AGENTS_CHILD: child ? "1" : "0", ...extraEnv },
 		resolveTelemetryTriggerBinary: () => "/usr/bin/true", telemetryTriggerSpawn: (() => undefined) as never,
 	})(pi);
 	const ctx = { cwd, hasUI: false, mode: "interactive", ui: { notify() {} },
@@ -133,3 +133,19 @@ test("child sessions and stale calls cannot contribute to a new primary request"
 	assert.equal(await f.result("new"), undefined);
 	assert.match(f.messages[0].message.content, /Exploration budget:/);
 });
+
+// full-delegation-mode-conflicts S5: the hook hands both notices the session's mode, so a full delegation session is
+// never told to keep a write inline. The organic texts are pinned by the tests above.
+test("S5: in full delegation mode both notices drop their inline wording through the real hook", async (t) => {
+	const f = fixture(t, false, { GENTLE_PI_ORCHESTRATOR_MODE: "full-delegation" });
+	await f.start();
+	for (let i = 0; i < 3; i++) { await f.call(String(i)); await f.result(String(i)); }
+	(f.ctx as any).getContextUsage = () => ({ tokens: 160_000, contextWindow: 1_000_000 });
+	await f.call("3");
+	const patch = await f.result("3");
+	assert.match(patch.content[1].text, /Context backstop:.*keep only state checks in this context\./);
+	assert.doesNotMatch(patch.content[1].text, /stays? inline/);
+	assert.match(f.messages[0].message.content, /Reading that prepares a writer belongs in that writer's prompt\./);
+	assert.doesNotMatch(f.messages[0].message.content, /inline write/);
+});
+

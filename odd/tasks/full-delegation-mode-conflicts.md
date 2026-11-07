@@ -21,7 +21,7 @@ Branch: `fix/full-delegation-mode-conflicts` (from `origin/main` `bac4c4a3f`) ·
 | --- | --- | --- | --- | --- |
 | T1 | S1, S7 | inline | done | `rejectUndocumentedWriterLaunch` takes `orchestratorMode`; the call site resolves it from the session environment like the prompt does. RED 3 of 15 → GREEN 15/15; neighbours 51/51; typecheck 0. Risk: item 2 (guard) — own commit |
 | T2 | S2, S3, S4, S6, S8 | inline | done | projected ODD steps (2, 4, 6, resume pointer) and shared tail; generated `orchestrator-full-delegation-card.md` with drift check; variant Task Size (risk list spliced from the organic core) and switch line; three shared lazy assets made mode-neutral. Closure test RED 4/6 → GREEN 7/7; mode tests 17/17; 198/201 → 201 after updating three superseded assertions; typecheck 0; full core 7423 B at a 128-char root |
-| T3 | S5 | inline | pending | mode-aware runtime notices |
+| T3 | S5 | inline | done | context backstop, exploration budget and todo block read the mode through a thunk resolved only when a notice is emitted; organic texts unchanged. Lib tests RED 4/7 → GREEN 7/7; wiring tests through the real `gentle-todo` and `gentle-ai` hooks fail with the wiring stashed and pass with it; typecheck 0 |
 | T4 | S1-S8 | delegated | pending | independent verifier over the whole branch (Risk: item 2) |
 | T5 | S4 | inline | pending | docs |
 

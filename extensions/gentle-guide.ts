@@ -132,7 +132,7 @@ export default function gentleGuide(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	pi.registerTool({
 		name: GUIDE_TOOL_NAME,
 		label: "Gentle guide",
-		description: "Drive the /gentle:guide tour of Gentle Shell: start shows the first step as a popover beside the part of the screen it describes and returns its text to explain; next, previous and show (with a step id) move; end closes the popover. Show one step per turn and let the user ask questions between steps.",
+		description: "Drive the /gentle:guide tour of Gentle Shell: start shows the first step as a popover beside the part of the screen it describes and returns its text to explain; next, previous and show move; end closes the popover. Show one step per turn and let the user ask questions between steps.",
 		promptSnippet: "Show the Gentle Shell guided tour one step at a time and explain each step.",
 		parameters: GuideParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

@@ -41,6 +41,8 @@ Package static assets intentionally omit lifecycle instructions, candidate routi
 
 ## Integration constraints
 
+After acknowledging a committed candidate, a selectorless STATUS may inspect the empty workspace and return `empty_candidate_base_ref_required`. Its `blocked` label describes that candidate selection request; it does not establish that the earlier review failed or remains open. To check the previously acknowledged candidate, use ASSESS with its original `baseRef` and `committedOnly: true`, and rely on the returned native `candidate.consumed` evidence. Do not infer closure from the empty workspace or repeat the acknowledgement.
+
 - Keep the completion frozen: raw prompt bytes in as one user message, the completion's text or a typed, evidenced error out.
 - Preserve Go-issued materialize and submission tokens exactly; they are the only authority-bearing inputs the host may execute.
 - Keep the reviewer completion selection user-owned: it never invents a model or falls back to another provider or an ambient default; it only forwards the validated caller-owned selection and thinking level, or refuses typed.

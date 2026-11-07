@@ -5,6 +5,37 @@ import { NativeReviewCliError, NativeReviewIntegrationError, NATIVE_REVIEW_ERROR
 import { decodeReviewFailureV2 } from "../lib/review-integration-v2.ts";
 import { withReviewBlocker } from "../lib/review-blocker.ts";
 
+test("empty workspace requests the intended range without diagnosing a failed earlier review", () => {
+	const before = { operation: "status", status: "blocked", result: {
+		applicability: "unrelated", projection: { kind: "current-changes", paths: [] },
+		next_transition: { kind: "collect", reason_code: "empty_candidate_base_ref_required" },
+	}, collectBindings: [] };
+	const after = withReviewBlocker(before);
+	const { blocker, ...preserved } = after;
+	assert.deepEqual(preserved, before);
+	const diagnosis = blocker as Record<string, unknown>;
+	assert.equal(diagnosis.category, "input");
+	assert.equal(diagnosis.actor, "caller");
+	assert.equal(diagnosis.automatic_retry, false);
+	assert.match(String(diagnosis.next_step), /baseRef.*committedOnly/);
+	assert.match(String(diagnosis.next_step), /ASSESS.*original committed range/);
+	assert.match(String(diagnosis.next_step), /does not establish.*failed/);
+	assert.equal("nativeReviewOutcome" in after, false);
+	assert.equal("next_action" in after, false);
+});
+
+test("empty-candidate guidance preserves unknown mutations and explicit provider stops", () => {
+	const transition = { kind: "collect", reason_code: "empty_candidate_base_ref_required" };
+	for (const mutation_outcome of ["unknown", "partial_unknown"]) {
+		const result = withReviewBlocker({ status: "blocked", mutation_outcome, result: { next_transition: transition } });
+		assert.equal((result.blocker as Record<string, unknown>).category, "authority-unavailable");
+	}
+	const stopped = withReviewBlocker({ status: "blocked", result: { next_transition: { ...transition, kind: "stop" } } });
+	assert.equal((stopped.blocker as Record<string, unknown>).category, "provider-stop");
+	const failed = withReviewBlocker({ status: "blocked", outcome: "native-status-failed", result: { next_transition: transition } });
+	assert.equal((failed.blocker as Record<string, unknown>).category, "provider-unavailable");
+});
+
 test("unsupported STATUS suggests local capability diagnosis before upstream escalation", async () => {
 	const result = await __testing.executeReviewControllerOperation({ operation: "status" }, process.cwd(), {} as NativeReviewCli);
 	assert.equal(result.status, "blocked");

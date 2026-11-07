@@ -1948,9 +1948,9 @@ test("pi-pretty wrapper uses cached ESM loading for compiled and pnpm symlink in
 	assert.match(wrapper, /quietToolsEnabled/);
 });
 
-test("Gentle Shell v4.6.0 package manifest declares the release version", () => {
+test("Gentle Shell v4.7.0 package manifest declares the release version", () => {
 	const packageJson = readPackageJson();
-	assert.equal(packageJson.version, "4.6.0", "the release manifest must be explicitly pinned to v4.6.0");
+	assert.equal(packageJson.version, "4.7.0", "the release manifest must be explicitly pinned to v4.7.0");
 	assert.equal(packageJson.scripts?.test, "node scripts/run-test-suite.mjs");
 	assert.ok(packageJson.files?.includes("assets/"));
 	assert.ok(packageJson.files?.includes("contracts/"));

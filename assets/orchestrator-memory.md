@@ -1,10 +1,10 @@
 # Orchestrator — Memory Detail (lazy-loaded)
 
-Bind this to the parent Pi session only, on organic progress/recovery. Not always-on; loaded on demand from `assets/orchestrator.md`'s `## Memory Contract` pointer.
+Bind this to the parent Pi session only, on organic progress/recovery. Not always-on; loaded on demand from the always-on core's `## Memory Contract` pointer.
 
 ### Organic feature continuity
 
-For large authorized organic implementation (Task Size in `orchestrator.md`), the parent maintains `odd/tasks/<feature-name>.md` and an Engram recovery copy under topic `odd/<feature-name>/tasks`, scoped to the current project. Use a descriptive filename-safe feature name, reuse the same identity, and never overwrite another feature. Keep one feature document, not a separate plan file or topic. It is the specification subagents read by reference, so keep this fixed order, stable content first and the growing log last:
+For large authorized implementation (Task Size in the always-on core), the parent maintains `odd/tasks/<feature-name>.md` and an Engram recovery copy under topic `odd/<feature-name>/tasks`, scoped to the current project. Use a descriptive filename-safe feature name, reuse the same identity, and never overwrite another feature. Keep one feature document, not a separate plan file or topic. It is the specification subagents read by reference, so keep this fixed order, stable content first and the growing log last:
 
 1. A header of two or three lines: objective, branch, delivery strategy, and test runner.
 2. `## Specs`: numbered `S1`..`Sn` requirements, constraints, and acceptance criteria with their checks. Quote the user's exact strings, error messages, commands, and examples verbatim, in the user's language; you may number and order them, but never summarize or reword those fragments. Do not add requirements the user never asked for; mark assumptions as assumptions.

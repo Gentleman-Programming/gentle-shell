@@ -79,6 +79,7 @@ export const requiredPaths = [
   "assets/orchestrator.md",
   "assets/orchestrator-delegation.md",
   "assets/orchestrator-full-delegation.md",
+  "assets/orchestrator-full-delegation-card.md",
   "assets/orchestrator-delegation-reference.md",
   "assets/orchestrator-tracking.md",
   "assets/orchestrator-verification.md",

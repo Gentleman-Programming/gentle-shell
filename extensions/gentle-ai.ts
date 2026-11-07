@@ -1333,7 +1333,57 @@ function applyDelegationMode(assetsDir: string, text: string, mode: Orchestrator
 		return text;
 	}
 	if (variant.length === 0) return text;
-	return `${text.slice(0, start)}${variant}\n\n${text.slice(end)}`;
+	// The high-risk items keep one definition: the variant takes the organic paragraph
+	// itself instead of a copy that could drift. Without it the variant would decide
+	// risk with no list, so a missing paragraph falls back to the organic rules whole.
+	const highRisk = text.split("\n").find((line) => line.startsWith(HIGH_RISK_PARAGRAPH_PREFIX));
+	if (highRisk === undefined || !variant.includes(HIGH_RISK_PLACEHOLDER)) return text;
+	const spliced = `${text.slice(0, start)}${variant.replace(HIGH_RISK_PLACEHOLDER, highRisk)}\n\n${text.slice(end)}`;
+	// The shared tail points at the organic routing reference; in this mode those
+	// pointers name the card instead, so the reference never reaches the session.
+	return FULL_DELEGATION_TAIL_PROJECTION.reduce((projected, [from, to]) => projected.replace(from, to), spliced);
+}
+
+const HIGH_RISK_PARAGRAPH_PREFIX = "**High risk**:";
+const HIGH_RISK_PLACEHOLDER = "{{GENTLE_PI_HIGH_RISK_ITEMS}}";
+const FULL_DELEGATION_CARD_FILE = "orchestrator-full-delegation-card.md";
+const FULL_DELEGATION_TAIL_PROJECTION: ReadonlyArray<readonly [string, string]> = [
+	["; rules: delegation background-subagents block.", `; rules: the background block in \`${FULL_DELEGATION_CARD_FILE}\`.`],
+	[
+		"Per-action table, Work Routing Ladder, Canonical Workflows: `orchestrator-delegation-reference.md`; blocking-prompt relays and provider defects: `orchestrator-prompts.md`.",
+		"Blocking-prompt relays and provider defects: `orchestrator-prompts.md`.",
+	],
+];
+
+// full-delegation-mode-conflicts S2: the mirrored ODD steps are a provider contract
+// whose bytes are digest-verified on disk and stay untouched. What the session reads
+// is already a projection of them (extractOddProtocolLines), and in full delegation
+// mode that projection also replaces the parts that route work inline. Steps are
+// addressed by their number, the shape extractOddProtocolLines already enforces;
+// sentences inside a step by their exact text. A sentence the mirror no longer
+// contains is left alone here and caught by tests/full-delegation-closure.test.ts.
+const FULL_DELEGATION_STEP_REPLACEMENTS: ReadonlyArray<{ step: number; line: string }> = [
+	{
+		step: 4,
+		line: "4. **Classify.** Size the task by the orchestrator's Task Size section: it decides tracking and risk, never who writes, and every authorized change goes to a writer.",
+	},
+];
+const FULL_DELEGATION_SENTENCE_REPLACEMENTS: ReadonlyArray<readonly [string, string]> = [
+	["Do not delegate exploration of files you will read anyway to work inline; explore only", "Explore only"],
+	[
+		"Route each task through the orchestrator's Mechanisms, honoring its delegation triggers when their conditions truly hold, with applicable test-first development and checks. No trigger holds by default and, when in doubt, work inline; executing past a fired trigger inline is a routing defect even if the work succeeds.",
+		"Route every task to a bounded writer through the orchestrator's Mechanisms, with applicable test-first development and checks.",
+	],
+	["Detail for steps 3–7: `orchestrator-delegation.md` and", `Detail for steps 3–7: \`${FULL_DELEGATION_CARD_FILE}\` and`],
+];
+
+function projectOddStepsForMode(steps: string, mode: OrchestratorMode): string {
+	if (mode === DEFAULT_ORCHESTRATOR_MODE) return steps;
+	const lines = steps.split("\n").map((line) => {
+		const replacement = FULL_DELEGATION_STEP_REPLACEMENTS.find(({ step }) => line.startsWith(`${step}. **`));
+		return replacement === undefined ? line : replacement.line;
+	});
+	return FULL_DELEGATION_SENTENCE_REPLACEMENTS.reduce((projected, [from, to]) => projected.replace(from, to), lines.join("\n"));
 }
 
 // Rendered prompts are memoized per background policy/capability/RDD-status/mode
@@ -1600,13 +1650,13 @@ For background work, launch the bounded action and end the turn when no independ
 
 Default workflow: Organic Driven Development (MANDATORY)
 Organic Driven Development (ODD) is the predefined workflow of this orchestrator. Every request enters it, without the user asking for a workflow, a plan, or task tracking. Never describe this workflow only when asked about it: run it. Run these steps in this order on every request:
-${oddProtocolSteps()}
+${projectOddStepsForMode(oddProtocolSteps(), delegationMode)}
 
 Harness principles:
 - el Gentleman is not prompt engineering. It is runtime discipline around powerful agents.
 - Clarify scope, constraints, acceptance criteria, and non-goals when needed for the human to understand the action or to resolve consequential uncertainty. Reuse what is already established; after informed approval, proceed without repeating the clarification unless new consequential uncertainty appears.
 - Use subagents when available for exploration, planning, implementation, and review, while keeping one parent session responsible for orchestration.
-- For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks. Write one RED test per requested rule. For every existing command or option the change touches, add one test proving its previous behavior still holds; add no other cases. An existing behavior counts as touched when it shares the code you changed (options, parsers, helpers, validation). Only when your diff changes shared code (options, parsers, helpers) that an existing command the request did not name also uses, run one differential check before finishing, as a single script: for each such command, run it with the new or changed input (for example a new option passed to a sibling subcommand) against the previous code (a copy of the base commit in a \`mktemp -d\` scratch directory, never committed as a test; committed tests never read git history or a fixed commit) and against your change, and compare stdout, stderr, and exit code; any difference nobody asked for is a regression to fix and pin with a test. Test presence alone does not establish applicability; no chat or TUI toggle activates it. For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, explain why and run proportionate ordinary functional or structural verification. Never invent lifecycle evidence or skip checks. Follow orchestrator-delegation.md for ODD forwarding and evidence.
+- For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks. Write one RED test per requested rule. For every existing command or option the change touches, add one test proving its previous behavior still holds; add no other cases. An existing behavior counts as touched when it shares the code you changed (options, parsers, helpers, validation). Only when your diff changes shared code (options, parsers, helpers) that an existing command the request did not name also uses, run one differential check before finishing, as a single script: for each such command, run it with the new or changed input (for example a new option passed to a sibling subcommand) against the previous code (a copy of the base commit in a \`mktemp -d\` scratch directory, never committed as a test; committed tests never read git history or a fixed commit) and against your change, and compare stdout, stderr, and exit code; any difference nobody asked for is a regression to fix and pin with a test. Test presence alone does not establish applicability; no chat or TUI toggle activates it. For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, explain why and run proportionate ordinary functional or structural verification. Never invent lifecycle evidence or skip checks. Follow ${delegationMode === DEFAULT_ORCHESTRATOR_MODE ? "orchestrator-delegation.md" : FULL_DELEGATION_CARD_FILE} for ODD forwarding and evidence.
 - Protect the human reviewer: avoid oversized changes, surface review workload risk, and ask before turning one task into a large multi-area change.
 - Never claim persistent memory is available because of this package. Memory is provided by separate packages or MCP tools when installed and callable.
 

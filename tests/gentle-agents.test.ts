@@ -11,7 +11,7 @@ import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
 import { SessionChanges, type SessionChangeEvidence } from "../lib/session-changes.ts";
 import test, { after, afterEach, before, mock } from "node:test";
 import type { TestContext } from "node:test";
-import { generateUnifiedPatch, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { generateUnifiedPatch, initTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js";
 import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import { visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
@@ -35,6 +35,8 @@ import { bindSessionProfile, resetSessionProfileBindingsForTesting } from "../li
 import { taskHeader } from "../lib/agents-view.ts";
 import { readFrozenInheritedProfile, resetFrozenInheritedProfilesForTesting } from "../lib/session-profile-freeze.ts";
 import { CHILD_METRICS_EVENT } from "../lib/runtime-metrics-children.ts";
+import { AGENTS_VIEW_STYLE_SCHEMA, resolveAgentsViewStyle, writeAgentsViewStyle } from "../lib/agents-view-style-policy.ts";
+import productionQuietTools from "../extensions/quiet-tools.ts";
 import { CARD_STYLE, CARD_TONE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { AGENT_MESSAGE, agentCardParts, agentMessageCard, agentTheme } from "../lib/agents-message-card.ts";
 import { isolatedConfigEnv, keymapsConfigHome, removeIsolatedConfigHomes } from "./isolated-config-home.ts";
@@ -1394,8 +1396,14 @@ function liveProfile(name: string): string {
 	return profile;
 }
 
-function liveInstance(t: test.TestContext, profile: string, sessionId: string, metadata = false, keybindings: unknown = {}) {
+function liveInstance(t: test.TestContext, profile: string, sessionId: string, metadata = false, keybindings: unknown = {}, env: NodeJS.ProcessEnv = {}) {
 	const h = fakePi();
+	// Every live instance reads its own config home: the overlay's renderer is a
+	// saved preference, so an ambient home would let a developer's file decide
+	// what these tests draw.
+	const configHome = mkdtempSync(join(tmpdir(), "gentle-agents-config-"));
+	t.after(() => rmSync(configHome, { recursive: true, force: true }));
+	const configEnv = { GENTLE_PI_CONFIG_HOME: configHome, ...env };
 	const runtime = deps();
 	const context = fakeContext(undefined, undefined, undefined, undefined, undefined, keybindings);
 	if (metadata) {
@@ -1414,7 +1422,7 @@ function liveInstance(t: test.TestContext, profile: string, sessionId: string, m
 		timer.unref();
 		return () => clearTimeout(timer);
 	};
-	gentleAgents(h.pi, {}, { ...runtime.deps, agentHome: profile });
+	gentleAgents(h.pi, configEnv, { ...runtime.deps, agentHome: profile });
 	t.after(async () => {
 		for (const overlay of context.overlays) overlay.handleInput("q");
 		await h.fire("session_shutdown", context.ctx, { reason: "quit" });
@@ -1428,6 +1436,31 @@ async function liveOverlay(instance: ReturnType<typeof liveInstance>) {
 	const overlay = instance.overlays.at(-1)!;
 	const frame = () => overlay.render(160).map(stripAnsi).join("\n");
 	return { overlay, frame, opened };
+}
+
+// The cards are only real when the chat's renderers are registered, so this loads
+// the production quiet tools against a minimal host, as a live session does. The
+// cards draw through pi's global theme, so this installs one for the test and puts
+// the previous state back on teardown: a theme left behind paints escapes into
+// every later card a test compares.
+const THEME_SLOT = Symbol.for("@earendil-works/pi-coding-agent:theme");
+function installQuietToolCards(t: test.TestContext): void {
+	const state = globalThis as typeof globalThis & { [THEME_SLOT]?: unknown };
+	const installed = THEME_SLOT in state;
+	const previousTheme = state[THEME_SLOT];
+	t.after(() => {
+		if (installed) state[THEME_SLOT] = previousTheme;
+		else delete state[THEME_SLOT];
+	});
+	initTheme("dark");
+	const previous = process.env.GENTLE_PI_QUIET_TOOLS;
+	delete process.env.GENTLE_PI_QUIET_TOOLS;
+	try {
+		productionQuietTools({ registerTool() {}, registerCommand() {}, on() {}, registerToolRenderer() {} } as never);
+	} finally {
+		if (previous === undefined) delete process.env.GENTLE_PI_QUIET_TOOLS;
+		else process.env.GENTLE_PI_QUIET_TOOLS = previous;
+	}
 }
 
 test("cards' detail levels open from the host's thinking visibility and tool expansion", (t) => {
@@ -1461,6 +1494,46 @@ test("the overlay's log keeps its original detail and ignores the cards' keys", 
 	assert.doesNotMatch(panel.frame(), /… hidden|… \d+ more lines|to expand|Thinking\.\.\./, "the log offers no detail control, hint, or hidden row");
 	panel.overlay.handleInput("q");
 	await panel.opened;
+});
+
+test("the saved agents renderer decides the presentation the overlay opens with", async (t) => {
+	installQuietToolCards(t);
+	const profile = liveProfile("renderer-profile");
+	const configHome = mkdtempSync(join(tmpdir(), "gentle-agents-renderer-"));
+	t.after(() => rmSync(configHome, { recursive: true, force: true }));
+	writeFileSync(join(profile, "settings.json"), JSON.stringify({ hideThinkingBlock: true }));
+	const instance = liveInstance(t, profile, "renderer-live", false, new KeybindingsManager(), { GENTLE_PI_CONFIG_HOME: configHome });
+	await instance.fire("session_start", instance.ctx, { reason: "startup" });
+	const panel = await liveOverlay(instance);
+	await instance.tools.get("subagent_run")!.execute("local", { agent: "local", task: "local", mode: "background" }, undefined, undefined, instance.ctx);
+	instance.children[0].emit({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "private reasoning" } });
+	instance.children[0].emit({ type: "tool_execution_start", toolCallId: "c", toolName: "read", args: { path: "src/a.ts" } });
+	instance.children[0].emit({ type: "tool_execution_end", toolCallId: "c", toolName: "read", result: { content: [{ type: "text", text: "file body" }] }, isError: false });
+	await eventually(() => /file body/.test(panel.frame()), "the finished call reaches the open overlay");
+	assert.equal(existsSync(join(configHome, "agents-view-style.json")), false, "the fixture starts without a saved renderer");
+	assert.match(panel.frame(), /Tool · read · Complete/, "no preference file keeps the overlay's own labelled log");
+	assert.doesNotMatch(panel.frame(), /≡ read/, "the log draws no card");
+	assert.match(panel.frame(), /private reasoning/, "the log always draws thinking whole");
+	panel.overlay.handleInput("q");
+	await panel.opened;
+
+	writeAgentsViewStyle("cards", { gentlePiConfigHome: configHome });
+	assert.deepEqual(JSON.parse(readFileSync(join(configHome, "agents-view-style.json"), "utf8")), { schema: AGENTS_VIEW_STYLE_SCHEMA, style: "cards" });
+	const cards = await liveOverlay(instance);
+	await eventually(() => /≡ read/.test(cards.frame()), "the reopened overlay draws with the saved cards choice");
+	assert.equal(resolveAgentsViewStyle({ gentlePiConfigHome: configHome }).style, "cards");
+	assert.doesNotMatch(cards.frame(), /Tool · read · Complete/, "the card replaces the generic block instead of stacking on it");
+	assert.match(cards.frame(), /Thinking\.\.\./, "the cards follow the host's hidden thinking");
+	assert.doesNotMatch(cards.frame(), /private reasoning/);
+	cards.overlay.handleInput("q");
+	await cards.opened;
+
+	writeAgentsViewStyle("log", { gentlePiConfigHome: configHome });
+	const log = await liveOverlay(instance);
+	await eventually(() => /Tool · read · Complete/.test(log.frame()), "the saved log choice draws the labelled rows again");
+	assert.doesNotMatch(log.frame(), /≡ read/);
+	log.overlay.handleInput("q");
+	await log.opened;
 });
 
 test("live-only extension instances discover same-profile peers across cwd boundaries without importing their tasks", async (t) => {

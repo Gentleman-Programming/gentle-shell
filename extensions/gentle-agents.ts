@@ -51,6 +51,8 @@ import { inheritedUnsafeGitEnvironmentKeys } from "../lib/review-repository.ts";
 import { historyDir, loadHistory, loadStoredTask, pruneHistory, saveTask, type StoredTask } from "../lib/agents-history.ts";
 import { sessionToMarkdown } from "../lib/agents-transcript.ts";
 import { AgentsView } from "../lib/agents-view.ts";
+import { THREAD_PRESENTATION } from "../lib/agents-thread-view.ts";
+import { AGENTS_VIEW_STYLE, resolveAgentsViewStyle } from "../lib/agents-view-style-policy.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
 import { PresencePublisher, sanitizeDisplayLabel, listPresence, sessionHash } from "../lib/orchestrator-presence.ts";
 import { incomingMessageCard, outgoingMessageCall, outgoingMessageResult, type OrchestratorMessageDetails } from "../lib/orchestrator-message-card.ts";
@@ -2054,6 +2056,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// Read once, so an opened overlay starts from the chat's state and later
 		// changes there neither follow into it nor get written back.
 		const cardDetail = threadDetailDefaults(ctx, agentHome);
+		// The renderer is read here too: /gentle:customize writes the preference and
+		// the next open draws with it, so a live thread never reads the disk per frame.
+		const presentation = resolveAgentsViewStyle({ gentlePiConfigHome: visualHome }).style === AGENTS_VIEW_STYLE.CARDS
+			? THREAD_PRESENTATION.CARDS
+			: THREAD_PRESENTATION.LOG;
 		const chosen = await ctx.ui.custom<TaskRecord | null>(
 			(tui, theme, keybindings, done) => {
 				const close = withOverlayRepaint(tui, done);
@@ -2064,6 +2071,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					store,
 					keybindings,
 					cardDetail,
+					threadPresentation: () => presentation,
 					sessionId: ctx.sessionManager.getSessionId() ?? "",
 					presence: {
 						profile: agentHome,

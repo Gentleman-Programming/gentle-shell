@@ -24,6 +24,7 @@ import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment
 import { CARD_STYLE, CARD_TONE, cardStyle, panelHeaderRow, renderCard, setCardStyle, type Card, type CardTheme } from "../lib/shell-card.ts";
 import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
 import { CARD_CONTENT, resolveCardContent, setCardContent, writeCardContent } from "../lib/card-content-policy.ts";
+import { AGENTS_VIEW_STYLE, resolveAgentsViewStyle, writeAgentsViewStyle } from "../lib/agents-view-style-policy.ts";
 import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { buildKeymapRows } from "../lib/keymaps-customize.ts";
@@ -3454,6 +3455,29 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				},
 				() => ({ title: `Cards · content ${content}`, sample: `${cardContentPreview[content]}${resolveCardContent(home).malformed ? " · malformed or unreadable file" : ""}` }),
 				{ setting: "Card content", value: content, current: () => { const current = resolveCardContent(home); return current.content === content && !current.malformed; }, hint: "Tool cards: result previews, or the command only" },
+			);
+			// Which renderer /gentle:agents draws its selected thread with: the labelled
+			// log it has always drawn (the default) or the chat's own card per tool call.
+			// The overlay reads the preference when it opens, so a choice made here
+			// leaves the conversation untouched and applies there on its next open. Each
+			// preview names only what that renderer really draws today: the cards view has
+			// no Markdown prose and no stored edit diff yet.
+			const agentsStylePreview = {
+				[AGENTS_VIEW_STYLE.LOG]: "= Text · Thinking · Note · Tool rows · output whole",
+				[AGENTS_VIEW_STYLE.CARDS]: "= chat's own tool cards · Thinking... when hidden · prose stays a Text block",
+			};
+			for (const style of Object.values(AGENTS_VIEW_STYLE)) add(
+				() => {
+					const current = resolveAgentsViewStyle(home);
+					return `Card agents: ${style}${current.style === style && !current.malformed ? " (current)" : ""}`;
+				},
+				`Card agents: ${style}. Applies the next time /gentle:agents opens.`,
+				() => {
+					writeAgentsViewStyle(style, home);
+					requestCustomizeRender?.();
+				},
+				() => ({ title: `Cards · agents ${style}`, sample: `${agentsStylePreview[style]}${resolveAgentsViewStyle(home).malformed ? " · malformed or unreadable file" : ""}` }),
+				explicitChoice("Card agents", style, () => { const current = resolveAgentsViewStyle(home); return current.style === style && !current.malformed; }),
 			);
 			category = "Sections";
 			for (const key of VISUAL_SECTION_KEYS) for (const shown of [true, false]) add(

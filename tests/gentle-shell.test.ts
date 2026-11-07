@@ -40,6 +40,7 @@ import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
 import { CARD_CONTENT, cardContent, resolveCardContent, setCardContent, writeCardContent } from "../lib/card-content-policy.ts";
+import { AGENTS_VIEW_STYLE_SCHEMA, resolveAgentsViewStyle, writeAgentsViewStyle } from "../lib/agents-view-style-policy.ts";
 import { claimNotificationOwner } from "../lib/notification-service.ts";
 import { DEFAULT_NOTIFICATION_SETTINGS } from "../lib/notification-policy.ts";
 import { SUPER_YOLO_STATUS_TEXT, yoloBannerContent } from "../lib/yolo-session-policy.ts";
@@ -3694,7 +3695,7 @@ test("customize Cards rows persist the card style and switch live conversation c
 	const pending = commands.get("gentle:customize")!.handler("", ctx);
 	await overlayReady;
 	assert.ok(findCustomizeRow(ui, "Card style: float (current)"));
-	assert.match(ui.overlayView!.render(90).join("\n"), /Cards · 1\/2/, "Card style and Card content are one line each");
+	assert.match(ui.overlayView!.render(90).join("\n"), /Cards · 1\/3/, "Card style, Card content and Card agents are one line each");
 	assert.match(ui.overlayView!.render(90).join("\n"), /Card style\s+○ neon\s+● float/);
 	assert.ok(findCustomizeRow(ui, "Card style: neon"));
 	assert.ok(ui.overlayView!.render(90).some((line) => /Card style\s+› neon\s+● float/.test(line)), "the cursor is on neon, but float stays current without a saved preference");
@@ -3743,6 +3744,80 @@ test("customize Cards rows persist the card content level and switch the live qu
 	assert.equal(resolveCardContent({ gentlePiConfigHome: home }).content, "minimal");
 	assert.equal(cardContent(), CARD_CONTENT.MINIMAL);
 	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("customize draws the agents renderer as one grouped Cards choice and persists it", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	assert.equal(resolveAgentsViewStyle({ gentlePiConfigHome: home }).style, "log", "no preference file means the log view");
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	const frame = () => ui.overlayView!.render(90).join("\n");
+	assert.equal(existsSync(join(home, "agents-view-style.json")), false, "opening the panel never writes the preference");
+	assert.ok(findCustomizeRow(ui, "Card agents: log (current)"), "the default is the log view");
+	assert.match(frame(), /Card agents\s+● log\s+○ cards/, "one grouped line carries both values");
+	assert.match(frame(), /Tool rows · output whole/, "the log preview names the rows it really draws");
+	assert.doesNotMatch(frame(), /Markdown|diff/i, "no preview claims a renderer this build does not draw");
+	assert.ok(findCustomizeRow(ui, "Card agents: cards"), "the cards view is the second value of the same line");
+	assert.equal(existsSync(join(home, "agents-view-style.json")), false, "highlighting never applies");
+	await customizeAction(ui, "Card agents: cards");
+	assert.equal(resolveAgentsViewStyle({ gentlePiConfigHome: home }).style, "cards");
+	assert.deepEqual(JSON.parse(readFileSync(join(home, "agents-view-style.json"), "utf8")), { schema: AGENTS_VIEW_STYLE_SCHEMA, style: "cards" });
+	assert.match(ui.notices.at(-1)!, /Card agents: cards/);
+	assert.ok(findCustomizeRow(ui, "Card agents: cards (current)"));
+	assert.match(frame(), /chat's own tool cards/, "the cards preview names the card the overlay really draws");
+	assert.doesNotMatch(frame(), /Markdown|diff/i, "the cards preview claims neither Markdown nor a stored diff");
+	await customizeAction(ui, "Card agents: log");
+	assert.equal(resolveAgentsViewStyle({ gentlePiConfigHome: home }).style, "log");
+	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("customize refuses to overwrite a malformed agents renderer preference", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	writeFileSync(join(home, "agents-view-style.json"), "{");
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	assert.ok(findCustomizeRow(ui, "Card agents: log"));
+	assert.match(ui.overlayView!.render(90).join("\n"), /malformed or unreadable file/i);
+	ui.overlayView!.handleInput("\r");
+	for (let attempt = 0; attempt < 100 && !ui.notices.some(n => /agents view style/i.test(n)); attempt++) await new Promise<void>((resolve) => setTimeout(resolve, 5));
+	assert.ok(ui.notices.some(n => /Cannot update malformed or unreadable agents view style preference/i.test(n)), ui.notices.join("\n"));
+	assert.equal(readFileSync(join(home, "agents-view-style.json"), "utf8"), "{", "the hand edit is preserved");
+	assert.equal(resolveAgentsViewStyle({ gentlePiConfigHome: home }).style, "log");
+	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("the agents renderer choice survives visual reset and a visual profile", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const options = { gentlePiConfigHome: home };
+	writeAgentsViewStyle("cards", options);
+	const visual = { ...resolveVisualSettings(options).settings, statusPlacement: "hidden" as const };
+	saveVisualProfile("night", { themeName: "dark", animationPolicy: "performance", banner: { showRose: false, showTextLogo: true, color: "cyan" }, visual }, options);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	await customizeAction(ui, "Reset visual, banner and animation defaults");
+	assert.match(ui.notices.at(-1)!, /Defaults saved/);
+	assert.equal(resolveAgentsViewStyle(options).style, "cards", "reset leaves the renderer choice alone");
+	const view = ui.overlayView!;
+	view.handleInput("p");
+	view.render(90);
+	view.handleInput("a");
+	view.render(90);
+	view.handleInput("y");
+	for (let attempt = 0; attempt < 100 && !ui.notices.some(n => /profile night applied/.test(n)); attempt++) await new Promise<void>((resolve) => setTimeout(resolve, 5));
+	assert.match(ui.notices.at(-1)!, /profile night applied/i);
+	assert.equal(resolveAgentsViewStyle(options).style, "cards", "a visual profile never carries the renderer choice");
+	view.handleInput("\x1b");
+	view.handleInput("\x1b");
+	await pending;
 });
 
 test("T3 live style Cards action refreshes cached TODO and Status in both directions while the wide chrome stays", async (t) => {

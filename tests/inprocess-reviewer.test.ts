@@ -875,7 +875,7 @@ test("refuses instead of falling back when getProvider returns undefined for a m
 	const refused = expectRefused(outcome);
 	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.MODEL_NOT_FOUND);
 	assert.match(refused.message, /review-risk/);
-	assert.deepEqual(refused.evidence, { provider: "openai", api: "openai-responses" }, "the evidence separates this cause from a plain unresolved selection");
+	assert.deepEqual(refused.evidence, { provider: "openai", api: "openai-responses", reviewerModel: "openai/gpt-5" }, "the evidence preserves the model already resolved before provider refusal");
 });
 
 // ---------------------------------------------------------------------------

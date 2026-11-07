@@ -69,25 +69,49 @@ export async function withFullscreenOverlay<R>(
 export class FullscreenActivityMonitor {
 	private readonly openCounts = new Map<string, number>();
 	private readonly waiters = new Set<() => void>();
+	private unsubscribe: (() => void) | undefined;
 
-	/** Subscribe once per extension from the shared bus. */
-	attach(events: EventBus | undefined): void {
-		events?.on?.(FULLSCREEN_ACTIVITY_EVENT, (data) => {
-			const event = asFullscreenActivityEvent(data);
-			if (event === undefined) return;
-			if (event.active) {
-				this.openCounts.set(event.source, (this.openCounts.get(event.source) ?? 0) + 1);
-			}
-			else {
-				const remaining = (this.openCounts.get(event.source) ?? 0) - 1;
-				if (remaining > 0) this.openCounts.set(event.source, remaining);
-				else this.openCounts.delete(event.source);
-			}
-			if (this.openCounts.size === 0) {
-				for (const waiter of [...this.waiters]) waiter();
-				this.waiters.clear();
-			}
-		});
+	/**
+	 * Subscribe once per extension from the shared bus. A repeated call reuses the
+	 * existing subscription and hands back the same unsubscribe, so a reload or a
+	 * second registration can never stack listeners on the bus. Unsubscribing
+	 * stops tracking and releases any wait: a torn-down monitor must never leave
+	 * an ask deferred forever. A store-only bus (no `on`, which profile-flow and
+	 * test fixtures legitimately provide) subscribes to nothing and defers nothing.
+	 */
+	attach(events: EventBus | undefined): (() => void) | undefined {
+		if (events === undefined) return undefined;
+		if (this.unsubscribe !== undefined) return this.unsubscribe;
+		const off: (() => void) | undefined = typeof events.on === "function"
+			? events.on(FULLSCREEN_ACTIVITY_EVENT, (data) => this.observe(data))
+			: undefined;
+		if (off === undefined) return undefined;
+		this.unsubscribe = () => {
+			off();
+			this.unsubscribe = undefined;
+			this.openCounts.clear();
+			this.releaseWaiters();
+		};
+		return this.unsubscribe;
+	}
+
+	private observe(data: unknown): void {
+		const event = asFullscreenActivityEvent(data);
+		if (event === undefined) return;
+		if (event.active) {
+			this.openCounts.set(event.source, (this.openCounts.get(event.source) ?? 0) + 1);
+		}
+		else {
+			const remaining = (this.openCounts.get(event.source) ?? 0) - 1;
+			if (remaining > 0) this.openCounts.set(event.source, remaining);
+			else this.openCounts.delete(event.source);
+		}
+		if (this.openCounts.size === 0) this.releaseWaiters();
+	}
+
+	private releaseWaiters(): void {
+		for (const waiter of [...this.waiters]) waiter();
+		this.waiters.clear();
 	}
 
 	isActive(): boolean {
@@ -106,22 +130,41 @@ export class FullscreenActivityMonitor {
 	async waitIfActive(signal?: AbortSignal): Promise<"released" | "aborted"> {
 		while (this.openCounts.size > 0) {
 			if (signal?.aborted) return "aborted";
-			let waitAborted = false;
-			await new Promise<void>((resolve) => {
-				if (this.openCounts.size === 0) {
-					resolve();
-					return;
-				}
-				this.waiters.add(resolve);
-				if (signal !== undefined) {
-					signal.addEventListener("abort", () => {
-						waitAborted = true;
-						resolve();
-					}, { once: true });
-				}
-			});
-			if (waitAborted) return "aborted";
+			const outcome = await this.waitForRelease(signal);
+			if (outcome === "aborted") return "aborted";
 		}
 		return "released";
+	}
+
+	/**
+	 * One wait step: `released` when the activity set empties, `aborted` when the
+	 * caller's signal fires. Both exits drop the waiter and remove the abort
+	 * listener they installed, so repeated defers on one long-lived signal never
+	 * accumulate listeners on it.
+	 */
+	private waitForRelease(signal?: AbortSignal): Promise<"released" | "aborted"> {
+		return new Promise<"released" | "aborted">((resolve) => {
+			if (this.openCounts.size === 0) {
+				resolve("released");
+				return;
+			}
+			let settled = false;
+			let onAbort: (() => void) | undefined;
+			const finish = (result: "released" | "aborted"): void => {
+				if (settled) return;
+				settled = true;
+				this.waiters.delete(waiter);
+				if (onAbort !== undefined) signal?.removeEventListener("abort", onAbort);
+				resolve(result);
+			};
+			const waiter = (): void => {
+				if (this.openCounts.size === 0) finish("released");
+			};
+			this.waiters.add(waiter);
+			if (signal !== undefined) {
+				onAbort = () => finish("aborted");
+				signal.addEventListener("abort", onAbort, { once: true });
+			}
+		});
 	}
 }

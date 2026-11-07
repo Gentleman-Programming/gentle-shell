@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { getEventListeners } from "node:events";
 import test from "node:test";
 import {
 	FULLSCREEN_ACTIVITY_EVENT,
@@ -230,3 +231,65 @@ test("FullscreenActivityEvent payload contract stays narrow", () => {
 	const sample: FullscreenActivityEvent = { active: true, source: "gentle-shell:profiles" };
 	assert.deepEqual(Object.keys(sample).sort(), ["active", "source"]);
 });
+
+test("attach subscribes once even when it is called twice", () => {
+	const emitter = recordedEmitter();
+	const monitor = new FullscreenActivityMonitor();
+
+	const first = monitor.attach(emitter.events);
+	const second = monitor.attach(emitter.events);
+
+	assert.equal((emitter.handlers.get(FULLSCREEN_ACTIVITY_EVENT) ?? []).length, 1, "a repeated attach must reuse its subscription instead of leaking a second listener");
+	assert.equal(typeof first, "function", "attach hands back the unsubscribe it installed");
+	assert.equal(second, first, "a repeated attach hands back the same unsubscribe");
+});
+
+test("the attach unsubscribe releases a pending wait instead of hanging it", async () => {
+	const emitter = recordedEmitter();
+	const monitor = new FullscreenActivityMonitor();
+	const unsubscribe = monitor.attach(emitter.events);
+
+	assert.equal(typeof unsubscribe, "function", "attach must return an unsubscribe so a torn-down extension stops listening");
+	emitter.listen(FULLSCREEN_ACTIVITY_EVENT, { active: true, source: "gentle-shell:profiles" });
+	const waiting = monitor.waitIfActive();
+	unsubscribe?.();
+
+	assert.equal(await waiting, "released", "a detached monitor must not leave a deferred ask waiting forever");
+	assert.equal(monitor.isActive(), false, "a detached monitor tracks no activity");
+	assert.equal((emitter.handlers.get(FULLSCREEN_ACTIVITY_EVENT) ?? []).length, 0, "the listener is gone from the bus");
+});
+
+test("a released wait leaves no abort listener on the caller's signal", async () => {
+	const emitter = recordedEmitter();
+	const monitor = new FullscreenActivityMonitor();
+	monitor.attach(emitter.events);
+	const controller = new AbortController();
+
+	emitter.listen(FULLSCREEN_ACTIVITY_EVENT, { active: true, source: "gentle-shell:profiles" });
+	const waiting = monitor.waitIfActive(controller.signal);
+	await Promise.resolve();
+	emitter.listen(FULLSCREEN_ACTIVITY_EVENT, { active: false, source: "gentle-shell:profiles" });
+
+	assert.equal(await waiting, "released");
+	assert.equal(getEventListeners(controller.signal, "abort").length, 0, "a released wait must remove its abort listener, not abandon it on the caller's signal");
+});
+
+test("repeated defers on one signal do not accumulate abort listeners", async () => {
+	const emitter = recordedEmitter();
+	const monitor = new FullscreenActivityMonitor();
+	monitor.attach(emitter.events);
+	const controller = new AbortController();
+
+	for (let round = 0; round < 3; round += 1) {
+		const source = `gentle-shell:menu-${round}`;
+		emitter.listen(FULLSCREEN_ACTIVITY_EVENT, { active: true, source });
+		const waiting = monitor.waitIfActive(controller.signal);
+		await Promise.resolve();
+		assert.equal(getEventListeners(controller.signal, "abort").length, 1, "one listener per in-flight wait, never more");
+		emitter.listen(FULLSCREEN_ACTIVITY_EVENT, { active: false, source });
+		assert.equal(await waiting, "released");
+	}
+
+	assert.equal(getEventListeners(controller.signal, "abort").length, 0, "three released waits must not leave three listeners behind");
+});
+

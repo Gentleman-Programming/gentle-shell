@@ -10,6 +10,7 @@ export interface ReviewBlocker {
 	native_next_action?: string;
 }
 
+/** Read object-shaped diagnostic fields without interpreting scalars or arrays. */
 function record(value: unknown): Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -34,7 +35,7 @@ export function withReviewBlocker(result: Record<string, unknown>): Record<strin
 	if (nativeAction === "explicit-maintainer-action") {
 		return diagnose("authority-unavailable", "authorized-operator", "Use the provider-supported maintenance route with its required fresh authorization. Do not infer permission to repair or replay.");
 	}
-	if (result.outcome === "native-status-unsupported" || result.outcome === "request-context-unsupported" || failure.kind === "relay-unavailable" || failure.kind === "handshake-refused" || result.outcome === "pi-host-relay-handshake-refused" || result.outcome === "pi-host-relay-unavailable" || result.outcome === "pi-host-relay-transport-unavailable") {
+	if (nativeAction !== "stop" && transition.kind !== "stop" && (result.outcome === "native-status-unsupported" || result.outcome === "request-context-unsupported" || failure.kind === "relay-unavailable" || failure.kind === "handshake-refused" || result.outcome === "pi-host-relay-handshake-refused" || result.outcome === "pi-host-relay-unavailable" || result.outcome === "pi-host-relay-transport-unavailable")) {
 		return diagnose("provider-capability", "user", "Check the package-selected native provider, its supported capabilities and the host handshake; reload the host after a supported installation change. Escalate only if the required capability is still unavailable.");
 	}
 	if (result.outcome === "native-status-package-binary-missing" || native.code === "managed_assets_outdated") {

@@ -8,6 +8,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { NativeReviewIntegrationError, NativeReviewCliError, NATIVE_REVIEW_ERROR_CODE, NATIVE_REVIEW_OPERATION, NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
+import { ReviewContinuationRegistry } from "../lib/review-continuation-registry.ts";
+import { prepareBoundSessionRepository } from "../lib/bounded-writer-admission.ts";
 import { decodeReviewFailureV2, type AuthorityRepairAssessmentV1, type ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 
 interface RegisteredTool {
@@ -56,6 +58,56 @@ function runtime(
 function context(cwd: string): ExtensionContext {
 	return { cwd, hasUI: false, ui: { confirm: async () => true } } as unknown as ExtensionContext;
 }
+
+test("repository preparation retains capture routes in the session registry used by later STATUS", async t => {
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-preparation-registry-")));
+	const cwd = join(fixture, "project");
+	mkdirSync(cwd);
+	const homes = { HOME: join(fixture, "home"), USERPROFILE: join(fixture, "home"), GENTLE_PI_AGENT_HOME: join(fixture, "agents"), PI_CODING_AGENT_DIR: join(fixture, "agents"), GENTLE_PI_CONFIG_HOME: join(fixture, "config"), GENTLE_PI_GENTLE_AI_DEV_BINARY: "" };
+	for (const path of new Set(Object.values(homes).filter(Boolean))) mkdirSync(path, { recursive: true });
+	const previous = Object.fromEntries(Object.keys(homes).map(key => [key, process.env[key]]));
+	Object.assign(process.env, homes);
+	t.after(() => {
+		for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+		rmSync(fixture, { recursive: true, force: true });
+	});
+	const reads: Array<{ owner: ReviewContinuationRegistry; found: boolean }> = [];
+	const read = ReviewContinuationRegistry.prototype.readCapture;
+	t.mock.method(ReviewContinuationRegistry.prototype, "readCapture", function(this: ReviewContinuationRegistry, binding: string) {
+		const value = read.call(this, binding);
+		reads.push({ owner: this, found: value !== undefined });
+		return value;
+	});
+	const status = targetStatusFixture({ authorityState: "correction_required" });
+	const input = { name: "correction_plan", schema: "https://gentle-ai.dev/schema/review/correction-plan/v1", captureOperation: "review.capture-correction-plan", arguments: [{ name: "lineage", value: "native-lineage", token: "--lineage=native-lineage" }, { name: "target", value: status.targetIdentity, token: `--target=${status.targetIdentity}` }] };
+	status.nextTransition = { kind: "collect", reasonCode: "correction_plan_required", collect: { inputs: [input] } };
+	status.raw = { ...status.raw, next_transition: { kind: "collect", reason_code: "correction_plan_required" } };
+	const emptyConfig = join(fixture, "empty.gitconfig");
+	writeFileSync(emptyConfig, "");
+	const gitEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_"))), GIT_CONFIG_GLOBAL: emptyConfig, GIT_CONFIG_NOSYSTEM: "1" };
+	const native = fakeNative({
+		reviewMode: async () => ({ operation: "status", scope: "global", status: { global: "on", cloneLocal: "", effective: "on", source: "global" } }),
+		targetStatus: async () => {
+			if (!existsSync(join(cwd, ".git"))) execFileSync("git", ["init", "--quiet", cwd], { env: gitEnv, windowsHide: true });
+			return status;
+		},
+	});
+	const h = runtime(native);
+	const manager = { getSessionId: () => "preparation-registry", getCwd: () => cwd, getEntries: () => [], getBranch: () => [] };
+	const session = { ...context(cwd), sessionManager: manager } as unknown as ExtensionContext;
+	try {
+		await h.lifecycle("session_start", { reason: "startup" }, session);
+		assert.equal(reads.length, 0);
+		assert.equal(await prepareBoundSessionRepository(manager, cwd), true);
+		assert.ok(reads.length > 0, "native preparation must actually retain capture routing");
+		const prepared = reads[0].owner;
+		const beforeStatus = reads.length;
+		await h.controller.execute("after-preparation", { operation: "status", lineageId: "native-lineage" }, undefined, undefined, session);
+		assert.ok(reads.length > beforeStatus);
+		assert.equal(reads[beforeStatus].owner, prepared, "later STATUS must reuse the preparation registry");
+		assert.equal(reads[beforeStatus].found, true, "preparation routing must still exist before STATUS refreshes it");
+	} finally { await h.lifecycle("session_shutdown", { reason: "quit" }, session); }
+});
 
 function repository(t: test.TestContext, prefix = "gentle-pi-workspace-root-"): string {
 	const cwd = realpathSync(mkdtempSync(join(tmpdir(), prefix)));

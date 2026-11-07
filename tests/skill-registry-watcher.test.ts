@@ -129,3 +129,82 @@ for (const code of ["ENOENT", "EMFILE"]) {
 		assert.match(child.stdout, new RegExp(`SURVIVED ${code}`));
 	});
 }
+
+test("shutdown drops a debounced refresh before it reaches a stale ctx", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "gentle-skill-watch-stale-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", `
+		import assert from "node:assert/strict";
+		import fs from "node:fs";
+		import { join } from "node:path";
+		const root = ${JSON.stringify(root)};
+		const cwd = join(root, "workspace");
+		const home = join(root, "home");
+		process.env.HOME = home;
+		process.env.USERPROFILE = home;
+		delete process.env.GENTLE_PI_AGENTS_CHILD;
+		delete process.env.GENTLE_PI_NO_SKILL_REGISTRY;
+		fs.mkdirSync(join(cwd, "skills", "local"), { recursive: true });
+		fs.writeFileSync(join(cwd, "skills", "local", "SKILL.md"), "---\\nname: local\\ndescription: Debounce fixture.\\n---\\n");
+		// Capture the fallback poll so the debounce the watcher and the poll share
+		// can be armed on demand instead of racing a real fs event.
+		const polls = [];
+		const nativeSetInterval = globalThis.setInterval;
+		globalThis.setInterval = function (fn, ms, ...rest) {
+			polls.push(fn);
+			return nativeSetInterval(fn, ms, ...rest);
+		};
+		const { default: skillRegistry, __testing } = await import(${JSON.stringify(extensionUrl)});
+		const events = new Map();
+		skillRegistry({
+			on: (name, handler) => events.set(name, handler),
+			registerCommand: () => {},
+			registerFlag: () => {},
+			getFlag: () => false,
+		});
+		const notices = [];
+		const ctx = { cwd, hasUI: true, ui: { notify: (message, level) => notices.push({ message, level }) } };
+		let staleNotifyCalls = 0;
+		const throwIfStale = () => {
+			// Mirrors Pi's ExtensionRunner.assertActive getter on a replaced session.
+			staleNotifyCalls += 1;
+			throw new Error("This extension ctx is stale after session replacement or reload.");
+		};
+		const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+		// Debounce is 500 ms; leave room for the async refresh body to run.
+		const expireDebounce = () => delay(800);
+		await events.get("session_start")(undefined, ctx);
+		await __testing.startupSettled();
+		const refresh = polls.at(-1);
+		assert.equal(typeof refresh, "function", "fixture must capture the shared watcher/poll refresh");
+		// A refresh only notifies when the scan actually regenerates, so change a
+		// skill before each arm; otherwise the notify path is never reached and
+		// this test would prove nothing.
+		const rewriteSkill = (description) =>
+			fs.writeFileSync(join(cwd, "skills", "local", "SKILL.md"), "---\\nname: local\\ndescription: " + description + ".\\n---\\n");
+		// 1. Armed before shutdown: watcher cleanup must clear this timer.
+		rewriteSkill("Changed before shutdown");
+		refresh();
+		ctx.ui.notify = throwIfStale;
+		await events.get("session_shutdown")(undefined, ctx);
+		await expireDebounce();
+		assert.equal(staleNotifyCalls, 0, "a refresh armed before shutdown must not reach the replaced session's UI");
+		// 2. Armed after shutdown: no cleanup can see this timer, so the generation
+		// guard alone must drop the notice instead of throwing out of the extension.
+		ctx.ui.notify = (message, level) => notices.push({ message, level });
+		rewriteSkill("Changed after shutdown");
+		refresh();
+		ctx.ui.notify = throwIfStale;
+		await expireDebounce();
+		assert.equal(staleNotifyCalls, 0, "a refresh armed after shutdown must not reach the stale UI");
+		console.log("SURVIVED stale-ctx debounce");
+		process.exit(0);
+	`], {
+		encoding: "utf8",
+		timeout: 20_000,
+		env: { ...process.env, GIT_CEILING_DIRECTORIES: root },
+	});
+	assert.equal(child.error, undefined, `${child.error?.message}\n${child.stderr}`);
+	assert.equal(child.status, 0, child.stderr);
+	assert.match(child.stdout, /SURVIVED stale-ctx debounce/);
+});

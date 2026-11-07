@@ -3455,6 +3455,7 @@ const PROVIDER_ROUTING_DEFAULT_LABELS = {
 type RoutingDefaultField = keyof typeof PROVIDER_ROUTING_DEFAULT_LABELS;
 
 function routingDefaultLabel(name: string, field: RoutingDefaultField): string {
+	if (NATIVE_START_LENSES.some((lens) => lens === name)) return field === "model" ? "not configured" : "off";
 	return isProviderReviewRole(name) ? PROVIDER_ROUTING_DEFAULT_LABELS[field] : "inherit";
 }
 
@@ -4128,7 +4129,7 @@ class RoutingTablePanel implements OverlayComponent {
 
 	private inheritLabel(key: string): string {
 		if (key === PROFILE_ORCHESTRATOR_KEY) return LEAVE_ORCHESTRATOR_UNTOUCHED;
-		if (key !== ROUTING_ALL_ROW && isProviderReviewRole(key)) return routingDefaultLabel(key, "model");
+		if (key !== ROUTING_ALL_ROW) return routingDefaultLabel(key, "model");
 		return "inherit";
 	}
 

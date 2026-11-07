@@ -37,6 +37,7 @@ import { completeSimple } from "@earendil-works/pi-ai/compat";
 import { gentleAiIsolationEnv, resolveGentleAiBinary } from "./gentle-ai-binary.ts";
 import {
 	INPROCESS_REVIEWER_FAILURE,
+	resolveInProcessReviewerModel,
 	runInProcessReviewer,
 	type InProcessReviewerFailureCode,
 	type InProcessReviewerOutcome,
@@ -618,6 +619,15 @@ function validateReviewerSelectionConfiguration(request: ReviewHostRelayRequest)
 			`Pi host relay reviewer launch configuration is invalid: no model is configured for ${routingKey}; assign it a model in the agent model routing config`,
 		);
 	}
+	const model = resolveInProcessReviewerModel({ selection: request.selection, routingKey }, request.reviewerRegistry);
+	if (model.kind === "refused") {
+		throw new ReviewHostRelayError(
+			model.code === INPROCESS_REVIEWER_FAILURE.MODEL_NOT_FOUND ? REVIEW_HOST_RELAY_FAILURE.REVIEWER_MODEL_NOT_FOUND : REVIEW_HOST_RELAY_FAILURE.REVIEWER_CONFIG_INVALID,
+			"pi",
+			model.message,
+			model.evidence === undefined ? {} : { reviewerEvidence: model.evidence },
+		);
+	}
 	return {
 		reviewerRegistry: request.reviewerRegistry,
 		selection: request.selection,
@@ -796,6 +806,10 @@ export async function runReviewHostRelayReviewerGroup(
 	if (requests.length === 0) {
 		throw new TypeError("Pi host relay reviewer group requires at least one provider-bound request");
 	}
+	// Validate the complete caller-owned routing set before any sibling can
+	// materialize a prompt or spend a model run. Completion rechecks its live
+	// registry later; this preflight does not freeze provider or auth authority.
+	for (const request of requests) validateReviewerSelectionConfiguration(request);
 	const settled = await Promise.allSettled(requests.map(async (request) => await prepare(request)));
 	const failed = settled.find((result) => result.status === "rejected");
 	if (failed?.status === "rejected") throw failed.reason;

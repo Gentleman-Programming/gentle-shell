@@ -14,6 +14,7 @@ Branch: `fix/full-delegation-mode-conflicts` (from `origin/main` `bac4c4a3f`) ·
 - **S6** A closure test pins S2: the full delegation render, and every lazy asset it names, contain none of the organic routing phrases. It fails the day the mirrored contract or a named asset reintroduces one.
 - **S7** An integration test reproduces the reported deadlock: a full delegation profile, a small task with no feature document, a writer launch, and the launch is admitted.
 - **S8** Organic mode renders byte-identical to before this change.
+- **S9** The orchestrator keeps replying in the human's language when a subagent result, written in English, arrives in the conversation. User's words: "Hay veces que el orquestador está hablando en el idioma del usuario, pero cuando recibe un mensaje en inglés del subagente, lo toma como mensaje del usuario y sigue hablando en inglés." The harness records the human's own typed input and, when the model is about to answer right after an automated message, persists one hidden anchor quoting the start of it.
 
 ## Tasks
 
@@ -23,7 +24,8 @@ Branch: `fix/full-delegation-mode-conflicts` (from `origin/main` `bac4c4a3f`) ·
 | T2 | S2, S3, S4, S6, S8 | inline | done | projected ODD steps (2, 4, 6, resume pointer) and shared tail; generated `orchestrator-full-delegation-card.md` with drift check; variant Task Size (risk list spliced from the organic core) and switch line; three shared lazy assets made mode-neutral. Closure test RED 4/6 → GREEN 7/7; mode tests 17/17; 198/201 → 201 after updating three superseded assertions; typecheck 0; full core 7423 B at a 128-char root |
 | T3 | S5 | inline | done | context backstop, exploration budget and todo block read the mode through a thunk resolved only when a notice is emitted; organic texts unchanged. Lib tests RED 4/7 → GREEN 7/7; wiring tests through the real `gentle-todo` and `gentle-ai` hooks fail with the wiring stashed and pass with it; typecheck 0 |
 | T4 | S1-S8 | delegated | pending | independent verifier over the whole branch (Risk: item 2) |
-| T5 | S4 | inline | pending | docs |
+| T5 | S4 | inline | done | `9c300916a` |
+| T6 | S9 | inline | done | `lib/reply-language-anchor.ts` + `context`/`input` hooks in `extensions/gentle-ai.ts`. RED (module missing) → lib 9/9; hook tests fail with the wiring stashed and pass with it (11/11); typecheck 0 |
 
 ## Log
 
@@ -44,4 +46,10 @@ Branch: `fix/full-delegation-mode-conflicts` (from `origin/main` `bac4c4a3f`) ·
 **L8** (finding, T2): the closure test had to be transitive. Three shared lazy assets (`orchestrator-memory.md`, `orchestrator-prompts.md`, `orchestrator-skills.md`) named the raw `orchestrator.md`, which leads to every organic card. Their references were provenance ("loaded from `orchestrator.md`'s pointer", "Task Size in `orchestrator.md`") and now say "the always-on core", which is exact in both modes. `orchestrator-prompts.md` also said "small tasks never need it", false in full delegation, where a writer's edit-surface candidate list is relayed through its Lossless Blocking Prompts; the load conditions alone already state when to read it.
 
 **L9** (superseded assertions): three tests in `tests/orchestrator-delegation-mode.test.ts` from PR #2976 pinned the old design (no `## Task Size` in full delegation, `orchestrator-delegation-reference.md` named in both modes, the variant injected verbatim). They were rewritten to S3 and S2 rather than kept, because they asserted exactly the behaviour this fix removes.
+
+**L10** (user requirement, verbatim): "Una cosa más que quiero que agregues a esto es lo siguiente. Hay una problemática, y es que nosotros tenemos puesto una instrucción para que el orquestador, cada vez que habla con el usuario, lo haga en el idioma del usuario y que todo lo que son assets y después comunicación interna se hace en inglés. ¿Cuál es el problema? Hay veces que el orquestador está hablando en el idioma del usuario, pero cuando recibe un mensaje en inglés del subagente, lo toma como mensaje del usuario y sigue hablando en inglés."
+
+**L11** (evidence, T6): the existing wake already said "Reply in the language of the human's own last message", yet the drift happened, for three reasons found in the code: the Bridge wake (`bridgeWakeText`) and two fallbacks send `PARENT_WAKE_TEXT` without that sentence; subagent results, job notices and summaries reach the model with the user role and carry no label; and Pi compaction drops entries before `firstKeptEntryId`, so "the human's own last message" can stop existing in context. A rule that points at something the model cannot see cannot hold.
+
+**L12** (design, T6): two designs were rejected on evidence. Anchoring in the system prompt would change the conversation prefix on every human message and invalidate the prompt cache each turn. A per-request trailing anchor would break caching too: `extensions/gentle-todo.ts` documents (gentle-shell#1662, #2195) that providers cache up to the last message or send only the delta, so a trailing message the next request drops breaks both. The chosen design records the human's text from the `input` event (`source !== "extension"`, which excludes Bridge wakes and resumes), adds the anchor only when the context tail is automated (todo snapshots and reminders excluded), and persists it once with `display: false` and `triggerTurn: false`, like the todo snapshot, so requests stay append-only. It quotes the human's words instead of detecting a language.
 

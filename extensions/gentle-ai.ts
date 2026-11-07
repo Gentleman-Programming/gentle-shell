@@ -10,6 +10,7 @@ import { evaluateDeliveredTestTool } from "../lib/delivered-test-lint.ts";
 import { commitSliceToolResult } from "../lib/commit-slice-signal.ts";
 import { appendContextBackstopNotice, createContextBackstopSignal, createThrottledContextMeasure } from "../lib/context-backstop.ts";
 import { createExplorationBudget } from "../lib/exploration-budget.ts";
+import { REPLY_LANGUAGE_ANCHOR_TYPE, isHumanInput, replyLanguageAnchor } from "../lib/reply-language-anchor.ts";
 import { blockChildDestructiveCommand } from "./child-safety.ts";
 import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, isHomeOrBroadUserDirectory, prepareBoundSessionRepository, rejectUndocumentedWriterLaunch, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sourcePathWithinProject } from "../lib/bounded-writer-admission.ts";
 import { rejectUnriskedVerifierLaunch } from "../lib/verifier-admission.ts";
@@ -11778,7 +11779,31 @@ function createGentleAiExtensionForTesting(
 	pi.on("tool_result", (event, ctx) => {
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") auto.toolResult(event, ctx);
 	});
+	// full-delegation-mode-conflicts S9: the human's own last words, per session, so
+	// a reply after an English subagent result can be anchored to their language even
+	// when that message is far up the transcript or compacted away.
+	const humanReplyTexts = new Map<PendingReviewConsentSessionKey, string>();
+	const persistedReplyAnchors = new Map<PendingReviewConsentSessionKey, string>();
+	pi.on("context", (event, ctx) => {
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") return undefined;
+		const key = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
+		const anchor = replyLanguageAnchor(event.messages, humanReplyTexts.get(key));
+		if (anchor === undefined) return undefined;
+		// Persisted once, like the todo snapshot, so the next request carries it and
+		// stays append-only instead of dropping a trailing message the cache keyed on.
+		if (persistedReplyAnchors.get(key) !== anchor) {
+			persistedReplyAnchors.set(key, anchor);
+			try { pi.sendMessage({ customType: REPLY_LANGUAGE_ANCHOR_TYPE, content: anchor, display: false }, { triggerTurn: false }); } catch { /* The trailing copy below still serves this request. */ }
+		}
+		return { messages: [...event.messages, { role: "custom", customType: REPLY_LANGUAGE_ANCHOR_TYPE, content: anchor, display: false, timestamp: Date.now() }] };
+	});
+
 	pi.on("input", (event, ctx) => {
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && isHumanInput(event.source, event.text)) {
+			const key = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
+			humanReplyTexts.set(key, event.text);
+			persistedReplyAnchors.delete(key);
+		}
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") auto.input(event, ctx);
 		// #2652: a new user prompt resets the settle reminder; a steer joins the running prompt.
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && event.streamingBehavior !== "steer") {

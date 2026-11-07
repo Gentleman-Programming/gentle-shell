@@ -263,7 +263,7 @@ export default function askUserChoice(pi: ExtensionAPI): void {
 						description: (text) => theme.fg("muted", text),
 						fg: (_role, text) => theme.fg("warning", text),
 						hoverBackground: (text) => theme.bg("toolPendingBg", text),
-					}, keybindings);
+					}, keybindings, { confirmOnSecondClick: true });
 					let completed = false;
 					const finish = (result: ChoiceResult | undefined) => {
 						if (completed) return;

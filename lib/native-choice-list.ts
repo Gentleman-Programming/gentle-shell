@@ -26,6 +26,11 @@ export interface NativeChoiceListTheme {
 	hoverBackground(text: string): string;
 }
 
+export interface NativeChoiceListOptions {
+	/** Require a prior completed click on the same row; keyboard confirmation is unchanged. */
+	confirmOnSecondClick?: boolean;
+}
+
 interface Row<T extends NativeChoiceItem> {
 	item: T;
 	text: Text;
@@ -40,16 +45,22 @@ export class NativeChoiceList<T extends NativeChoiceItem> extends Container {
 	private readonly theme: NativeChoiceListTheme;
 	private readonly keybindings: KeybindingsManager | undefined;
 	private selected = 0;
+	private pointerSelected: string | undefined;
+	private readonly confirmOnSecondClick: boolean;
 	private hovered: string | undefined;
 	private disabled = false;
 	private readonly pointerScope = new NativePointerScope();
 	private renderedWidth: number | undefined;
 
-	constructor(items: readonly T[], theme: NativeChoiceListTheme, keybindings?: KeybindingsManager) {
+	constructor(
+		items: readonly T[], theme: NativeChoiceListTheme, keybindings?: KeybindingsManager,
+		options: NativeChoiceListOptions = {},
+	) {
 		super();
 		this.items = items;
 		this.theme = theme;
 		this.keybindings = keybindings;
+		this.confirmOnSecondClick = options.confirmOnSecondClick ?? false;
 		for (const item of items) this.addRow(item);
 		this.refreshRows();
 	}
@@ -59,6 +70,7 @@ export class NativeChoiceList<T extends NativeChoiceItem> extends Container {
 	}
 
 	setSelectedIndex(index: number): void {
+		this.pointerSelected = undefined;
 		const next = Math.max(0, Math.min(this.items.length - 1, index));
 		if (next === this.selected) return;
 		this.selected = next;
@@ -80,6 +92,7 @@ export class NativeChoiceList<T extends NativeChoiceItem> extends Container {
 
 	setDisabled(disabled: boolean): void {
 		this.disabled = disabled;
+		this.pointerSelected = undefined;
 		this.pointerScope.setDisabled(disabled);
 		if (disabled) this.clearHover();
 	}
@@ -114,6 +127,7 @@ export class NativeChoiceList<T extends NativeChoiceItem> extends Container {
 		if (this.matches(data, "tui.select.up")) this.setSelectedIndex(this.selected - 1);
 		else if (this.matches(data, "tui.select.down")) this.setSelectedIndex(this.selected + 1);
 		else if (this.matches(data, "tui.select.confirm")) {
+			this.pointerSelected = undefined;
 			const item = this.getSelectedItem();
 			if (item) this.onSelect?.(item);
 		}
@@ -164,13 +178,16 @@ export class NativeChoiceList<T extends NativeChoiceItem> extends Container {
 		}
 		if (event.button !== "left") return undefined;
 		if (event.type === "press") {
+			if (this.pointerSelected !== item.id) this.pointerSelected = undefined;
 			const changed = this.selectItem(item.id);
 			return { handled: true, focus: true, render: changed };
 		}
 		if (event.type === "click") {
-			this.selectItem(item.id);
-			this.onSelect?.(item);
-			return { handled: true };
+			const confirm = !this.confirmOnSecondClick || this.pointerSelected === item.id;
+			const changed = this.selectItem(item.id);
+			this.pointerSelected = confirm ? undefined : item.id;
+			if (confirm) this.onSelect?.(item);
+			return { handled: true, render: changed };
 		}
 		return undefined;
 	}

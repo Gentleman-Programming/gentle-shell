@@ -1604,6 +1604,7 @@ function decodeCorrectionPlanRequestV1(value         , label        )           
 	};
 }
 
+/** Decode frozen validation evidence, preserving an explicit empty policy and rejecting absence. */
 export function decodeReviewTargetedValidationRequestV1(value         , label = "targeted_validation_request")                                    {
 	const body = exactRecord(value, label, [
 		"schema", "request_hash", "lineage_id", "expected_revision", "target_identity", "fix_finding_ids", "policy_content", "fix_findings", "fix_classifications",
@@ -1646,7 +1647,8 @@ export function decodeReviewTargetedValidationRequestV1(value         , label = 
 		expectedRevision: sha256(body.expected_revision, `${label}.expected_revision`),
 		targetIdentity: sha256(body.target_identity, `${label}.target_identity`),
 		fixFindingIds,
-		policyContent: nonempty(body.policy_content, `${label}.policy_content`),
+		// A frozen empty policy is valid; missing historical policy is not.
+		policyContent: text(body.policy_content, `${label}.policy_content`),
 		fixFindings,
 		fixClassifications,
 		projection: enumeration(body.projection, REQUIRED_PROJECTIONS, `${label}.projection`),

@@ -752,3 +752,47 @@ test("Windows host late guards prevent unhandled errors without external error l
 	assert.equal(child.stdout.listenerCount("error"), 0);
 	assert.equal(child.stderr.listenerCount("error"), 0);
 });
+
+test("Windows host classifies known bootstrap stderr markers into sanitized codes and drops unknown lines", async () => {
+	const cases: Array<{ chunks: string[]; expected: string[] }> = [
+		// Split across chunks with a CRLF terminator, as Console.Error.WriteLine writes on Windows.
+		{ chunks: ['{"kind":"windows-session-bootstrap-diagnostic","category":"comp', 'iler","compilerCodes":["CS1001"],"reason":"source-code-error","languageMode":"full"}\r\n'], expected: ["diagnostic-compiler"] },
+		{ chunks: ['{"kind":"windows-session-bootstrap-rejection","stage":"transport-assert-owned","ntstatus":3221225524}\n'], expected: ["rejection-transport-assert-owned"] },
+		// Unknown, private, malformed, and oversized lines are consumed and dropped; only the first known marker is reported.
+		{ chunks: [
+			"plain stderr C:\\Users\\secret\\token\n",
+			'{"kind":"windows-session-bootstrap-rejection","stage":"transport-assert-owned","ntstatus":0,"sid":"S-1-5-18"}\n',
+			'{"kind":"windows-session-bootstrap-rejection","stage":"SECRET","ntstatus":null}\n',
+			'{"kind":"windows-session-bootstrap-diagnostic","category":"other","compilerCodes":[],"reason":"unknown"}\n',
+			`${"x".repeat(20_000)}`, '{"kind":"windows-session-bootstrap-rejection","stage":"volume-open","ntstatus":null}\n',
+			'{"kind":"windows-session-bootstrap-diagnostic","category":"security","compilerCodes":[],"reason":"unknown","languageMode":"constrained"}\n',
+			'{"kind":"windows-session-bootstrap-rejection","stage":"ancestor-open","ntstatus":null}\n',
+		], expected: ["diagnostic-security"] },
+		{ chunks: ["unrelated warning\n", "{}\n"], expected: [] },
+	];
+	for (const { chunks, expected } of cases) {
+		const child = new FakeTransportChild();
+		const codes: string[] = [];
+		const host = new WindowsSessionTransportHost({ spawnProcess: () => child as never, onBootstrapDiagnostic: (code) => { codes.push(code); return undefined; } });
+		const starting = host.start();
+		assert.equal(child.stderr.listenerCount("data"), 1, "stderr stays consumed by the host");
+		for (const chunk of chunks) child.stderr.emit("data", Buffer.from(chunk));
+		assert.deepEqual(codes, expected);
+		assert.equal(host.bootstrapDiagnostic, expected[0] ?? null);
+		child.stdout.emit("data", Buffer.from('{"requestId":"start-1","ok":true,"result":{"state":"partial"}}\n'));
+		await starting;
+		child.emit("exit", 1, null);
+		child.emit("close", 1, null);
+		assert.equal(child.stderr.listenerCount("data"), 0, "the owned stderr data listener is disposed with the child");
+	}
+	// A throwing observer never disturbs the helper.
+	const child = new FakeTransportChild();
+	const host = new WindowsSessionTransportHost({ spawnProcess: () => child as never, onBootstrapDiagnostic: () => { throw new Error("observer"); } });
+	const starting = host.start();
+	assert.doesNotThrow(() => child.stderr.emit("data", Buffer.from('{"kind":"windows-session-bootstrap-rejection","stage":"unknown","ntstatus":null}\n')));
+	child.stdout.emit("data", Buffer.from('{"requestId":"start-1","ok":true,"result":{"state":"partial"}}\n'));
+	await starting;
+	assert.equal(host.bootstrapDiagnostic, "rejection-unknown");
+	child.emit("exit", 1, null);
+	child.emit("close", 1, null);
+});

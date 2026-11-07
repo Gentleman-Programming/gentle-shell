@@ -1,7 +1,7 @@
 import { Container, ScrollView, VStack, truncateToWidth, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { setSidebarHover, sidebarState, type SidebarRail } from "./shell-sidebar.ts";
 import type { ShellBarTheme } from "./shell-bar.ts";
-import { CARD_STYLE, CARD_TONE, cardBottom, cardLine, cardStyle, cardTop, floatRows, paintSurfaceRow, panelInnerWidth, type CardStyle } from "./shell-card.ts";
+import { CARD_STYLE, CARD_TONE, cardBottom, cardLine, cardStyle, cardTop, floatRows, paintSurfaceRow, panelInnerWidth, type CardStyle, type CardTheme } from "./shell-card.ts";
 import { chromeSurface, PANEL_ROW_INDENT, panelSurfaceOpener, sectionGap } from "./shell-panel.ts";
 import { renderSidebarBanner } from "./shell-sidebar-banner.ts";
 import type { Density, HeaderPlacement, StatusPlacement } from "./visual-customization-policy.ts";
@@ -42,7 +42,11 @@ function sectionCardRows(header: { glyph?: string; title: string; count?: string
 const CARD_PROBE = "\u2063probe";
 const geometryCache = new Map<string, CardGeometry>();
 function cardGeometry(theme: ShellBarTheme, width: number, style: CardStyle): CardGeometry {
-	const key = `${style}:${width}:${themeSignature(theme)}`;
+	// Float geometry depends on whether this theme can paint its background,
+	// not just on the foreground roles used by the rail's frame cache.
+	let background = "";
+	try { background = (theme as CardTheme).bg?.("customMessageBg", "·") ?? ""; } catch { /* No background support. */ }
+	const key = `${style}:${width}:${themeSignature(theme)}:${background}`;
 	const cached = geometryCache.get(key);
 	if (cached) return cached;
 	const rows = sectionCardRows({ glyph: "▾", title: "HEADER" }, [CARD_PROBE], theme, width).map((row) => row.replace(/\x1b\[[0-9;]*m/g, ""));
@@ -68,6 +72,9 @@ function headerParts(line: string): { glyph?: string; title: string; count?: str
 }
 type SidebarPresentation = { scrollTop: number; output: LayoutNode };
 type PreparedRail = {
+	activeRail: SidebarRail | undefined;
+	destinations: SidebarDestination[];
+	destination: string;
 	revision: number;
 	width: number;
 	mode: string | undefined;
@@ -81,6 +88,7 @@ type PreparedRail = {
 	parts: Array<[string, SidebarRail]>;
 	digests: Array<string | undefined>;
 	contentWidth: number;
+	viewportOverhead: number;
 	active: boolean;
 	lines: string[];
 	hits: RailHit[];
@@ -154,8 +162,11 @@ export function narrowStatusOwner(input: StatusOwnerInput): StatusOwner | undefi
 	return input.headerPlacement !== "below-input" || input.statusPlacement === "hidden" ? STATUS_OWNER.HEADER : STATUS_OWNER.BOTTOM;
 }
 
-/** Installs the fullscreen rail: wraps the host layout root with the [rail, transcript] hstack and returns a disposer restoring the original layout. */
-export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => StatusPlacement = () => "auto", headerPlacement: () => HeaderPlacement = () => "split", density: () => Density = () => "comfortable"): () => void {
+export type SidebarDestination = { id: string; label: string; rail?: SidebarRail };
+export type SidebarNavigationProvider = () => readonly SidebarDestination[] | undefined;
+
+/** Installs the fullscreen rail and returns a disposer restoring the original layout. */
+export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => StatusPlacement = () => "auto", headerPlacement: () => HeaderPlacement = () => "split", density: () => Density = () => "comfortable", navigationProvider: SidebarNavigationProvider = () => undefined, onDestination: (id: string | undefined) => void = () => {}, onViewport: (id: string, height: number) => void = () => {}): () => void {
 	if (!tui.terminal) return () => {};
 	const host = tui as Host;
 	const state = sidebarState(tui);
@@ -169,6 +180,17 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	let headerLines: string[] = [];
 	let statusLines: string[] = [];
 	let prepared: PreparedRail | undefined;
+	let selected = "main";
+	const destinations = (): SidebarDestination[] => {
+		try {
+			const value = navigationProvider();
+			if (!value) return [];
+			const seen = new Set<string>();
+			return value.filter(item => item && item.id && item.label && (item.id === "main" || item.rail) && !seen.has(item.id) && !!seen.add(item.id));
+		} catch { return []; }
+	};
+	const sameDestinations = (a: readonly SidebarDestination[], b: readonly SidebarDestination[]) => a.length === b.length && a.every((item, i) => item.id === b[i]?.id && item.label === b[i]?.label && item.rail === b[i]?.rail);
+	const destination = (items: readonly SidebarDestination[]) => items.some(item => item.id === selected) ? selected : items[0]?.id ?? "main";
 	// One rendered-lines cache per rail section key, independent of the
 	// whole-rail `prepared` memo below: a section with its own digest is
 	// revalidated by that digest alone, so a sibling's ticking digest (the
@@ -194,6 +216,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	// not content, so they never add scroll range or hit targets.
 	const rail: Component = {
 		render: () => {
+			if (prepared?.activeRail) onViewport(prepared.destination, Math.max(1, scroll.viewportHeight - prepared.viewportOverhead));
 			const room = scroll.viewportHeight - railLines.length;
 			return fillRow && room > 0 ? [...railLines, ...Array.from({ length: room }, () => fillRow)] : railLines;
 		},
@@ -241,16 +264,44 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 		scrollbarTrackStyle: (text) => theme.fg("border", text),
 		scrollbarThumbStyle: (text) => theme.fg("accent", text),
 	});
+	const tabGeometry = (items: readonly SidebarDestination[]) => {
+		let start = 0;
+		return items.map(item => { const tab = { ...item, start, end: start + visibleWidth(item.label) + 2 }; start = tab.end + 3; return tab; });
+	};
+	const navigation: Component = {
+		render(width) {
+			if (!prepared || prepared.destinations.length < 2) return [];
+			const tabs = tabGeometry(prepared.destinations);
+			if (tabs.at(-1)!.end > width) return [];
+			const active = tabs.find(tab => tab.id === prepared!.destination)!;
+			const labels = tabs.map(tab => theme.fg(tab.id === active.id ? "accent" : "muted", tab.id === active.id ? `[${tab.label}]` : ` ${tab.label} `)).join("   ");
+			const rule = theme.fg("border", "─".repeat(active.start)) + theme.fg("accent", "─".repeat(active.end - active.start)) + theme.fg("border", "─".repeat(width - active.end));
+			return [labels + " ".repeat(width - visibleWidth(labels)), rule, " ".repeat(width)].map(row => paintSurfaceRow(row, panelSurfaceOpener(theme)));
+		},
+		invalidate() {},
+		handleMouse(event) {
+			const current = prepared;
+			if (event.type !== "click" || event.button !== "left" || event.y !== 0 || !current || current.destinations.length < 2 || !sameDestinations(current.destinations, destinations()) || stopped || failed || !state.active || !state.ownsHost?.() || current.width !== tui.terminal.columns || current.root !== host.layoutRoot || current.revision !== cache.revision) return undefined;
+			const tabs = tabGeometry(current.destinations);
+			if (tabs.at(-1)!.end > event.width) return undefined;
+			const hit = tabs.find(tab => event.x >= tab.start && event.x < tab.end);
+			if (!hit) return undefined;
+			if (selected !== hit.id) { selected = hit.id; onDestination(selected); setSidebarHover(tui); scroll.scrollTo(0); tui.requestRender(); }
+			return { handled: true, render: true };
+		},
+	};
+	const tabbedRail = new VStack([{ component: navigation }, { component: scroll, basis: 0, grow: 1, shrink: 1, minSize: 1 }]);
 	const nativeMouse = scroll.handleMouse.bind(scroll);
 	const dispatchPartMouse = (event: TuiMouseEvent) => {
 		const current = prepared;
-		if (!current || stopped || failed || !current.active || current.revision !== cache.revision ||
+		const items = destinations();
+		if (!current || !sameDestinations(current.destinations, items) || current.destination !== destination(items) || stopped || failed || !current.active || current.revision !== cache.revision ||
 			host.mode !== "fullscreen" || tui.terminal.columns !== current.width || host.layoutRoot !== current.root ||
 			scroll.getContentWidth(event.width) !== current.contentWidth || event.x < 0 ||
 			event.x >= current.contentWidth || event.y < 0 || event.y >= event.height) return undefined;
 		const contentY = scroll.scrollTop + event.y;
 		const hit = current.hits.find((candidate) => contentY >= candidate.startY && contentY < candidate.startY + candidate.height);
-		if (!hit || state.parts.get(hit.key) !== hit.component) return undefined;
+		if (!hit || (hit.key === "$destination" ? items.find(item => item.id === current.destination)?.rail : state.parts.get(hit.key)) !== hit.component) return undefined;
 		if (!hit.wholeRow && (event.x < hit.x || event.x >= hit.x + hit.width)) return undefined;
 		// The part sees the event in the frame it rendered: its own width and all its rows.
 		return hit.component.handleMouse?.({
@@ -263,10 +314,17 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	};
 	scroll.handleMouse = (event) => {
 		if (event.type === "wheel") {
+			const current = prepared, items = destinations();
+			if (!current || !sameDestinations(current.destinations, items) || current.destination !== destination(items) || current.revision !== cache.revision || stopped || failed || !current.active || current.width !== tui.terminal.columns || current.root !== host.layoutRoot || !state.ownsHost?.()) return { handled: true, render: false };
 			// A bounded section (Todo) owns its inner viewport. Only wheel
 			// events it declines should move the surrounding rail.
 			const sectionResult = dispatchPartMouse(event);
 			if (sectionResult?.handled) return sectionResult;
+			// Git owns the whole card, including its border and padding. Never
+			// turn a wheel over that chrome into outer sidebar scrolling.
+			if (current.destination === "git" && current.activeRail) {
+				return current.activeRail.handleMouse?.({ ...event, x: 0, y: 0 }) ?? { handled: true };
+			}
 			// Consume even at the boundary or over blank rail space: Pi 0.85.1
 			// can send unconsumed delta to the primary transcript despite containment.
 			scroll.scrollBy(event.wheelDelta ?? 0);
@@ -283,6 +341,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	const prepare = (width: number, root: LayoutRoot): boolean => {
 		state.active = false;
 		if (stopped || failed || host.mode !== "fullscreen") {
+			onDestination(undefined);
 			prepared = undefined;
 			headerLines = [];
 			statusLines = [];
@@ -290,6 +349,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 		}
 		const railEligible = width >= SIDEBAR_BREAKPOINT && placement() !== "bottom" && placement() !== "hidden";
 		if (!railEligible) {
+			onDestination(undefined);
 			prepared = undefined;
 			statusLines = [];
 			try {
@@ -308,13 +368,19 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			return false;
 		}
 		const style = cardStyle();
-		const parts = [...state.parts.entries()];
+		const items = destinations();
+		const activeDestination = destination(items);
+		onDestination(activeDestination);
+		if (selected !== activeDestination) { selected = activeDestination; scroll.scrollTo(0); }
+		const activeRail = items.find(item => item.id === activeDestination)?.rail;
+		const parts = [...state.parts.entries()].filter(([key]) => activeDestination === "main" || key === "header" || key === "statusbar");
+		if (activeRail) parts.push(["$destination", activeRail]);
 		// Digest closures read live session state, so they must be evaluated once
 		// per frame and stored for the next comparison (issue #1681): the sections
 		// loop below reuses this pass instead of calling each digest a second time.
 		const digests = parts.map(([, rail]) => railDigest(rail));
 		const signature = themeSignature(theme);
-		const unchanged = prepared?.revision === cache.revision &&
+		const unchanged = prepared !== undefined && prepared.activeRail === activeRail && sameDestinations(prepared.destinations, items) && prepared.destination === activeDestination && prepared.revision === cache.revision &&
 			prepared.width === width && prepared.mode === host.mode && prepared.headerPlacement === headerPlacement() && prepared.density === density() && prepared.surface === chromeSurface() && prepared.cardStyle === style && prepared.root === root && prepared.theme === theme && prepared.themeSignature === signature &&
 			prepared.parts.length === parts.length && prepared.parts.every(([key, part], index) => parts[index]?.[0] === key && parts[index]?.[1] === part) &&
 			prepared.digests.length === digests.length && prepared.digests.every((digest, index) => digest === digests[index]);
@@ -341,8 +407,8 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			// A carded section renders one indent wider; its body rows drop that indent inside the card.
 			const renderWidth = carded ? panelInnerWidth(theme, contentWidth) + PANEL_ROW_INDENT : contentWidth - RAIL_PADDING * 2;
 			// Live work first, then the session Status sections (design/shell-rework/02-proposal.html).
-			const sections = ["todo", "jobs", "agents", "footer"].filter((key) => key !== "todo" || state.visibility?.todo !== false).map((key) => {
-				const component = state.parts.get(key);
+			const sections = (activeDestination !== "main" ? ["$destination"] : ["todo", "jobs", "agents", "footer"]).filter((key) => key !== "todo" || state.visibility?.todo !== false).map((key) => {
+				const component = key === "$destination" ? activeRail : state.parts.get(key);
 				if (!component) {
 					sectionCache.delete(key);
 					return { key, component, lines: [] as string[] };
@@ -363,12 +429,12 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			}).filter((section) => section.component !== undefined && section.lines.length > 0) as Array<{ key: string; component: Component; lines: string[] }>;
 			// The header carries the brand once it is active; the banner is the
 			// rail's fallback identity when no header is wired up.
-			const branding = headerActive ? [] : renderSidebarBanner(theme, contentWidth - RAIL_PADDING * 2);
+			const branding = headerActive || items.length >= 2 || activeRail ? [] : renderSidebarBanner(theme, contentWidth - RAIL_PADDING * 2);
 			const hits: RailHit[] = [];
 			railLines = [];
 			fillRow = "";
 			const surface = panelSurfaceOpener(theme);
-			if (sections.length && headerActive && headerPlacement() !== "below-input") {
+			if (sections.length && headerActive && headerPlacement() !== "below-input" && items.length < 2) {
 				// Tinted spacing continues the rail background; transparent spacing
 				// leaves a clear row above the first card. Count it before recording hits.
 				railLines.push(paintSurfaceRow(" ".repeat(contentWidth), surface));
@@ -420,7 +486,8 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const statusPart = state.parts.get("statusbar");
 			const preparedStatusLines = active && statusPart ? [...(statusPart.render(Math.max(0, width)) ?? [])] : [];
 			statusLines = preparedStatusLines.some((line) => line.trim() !== "") ? preparedStatusLines : [];
-			prepared = { revision: cache.revision, width, mode: host.mode, headerPlacement: headerPlacement(), density: density(), surface: chromeSurface(), cardStyle: style, root, theme, themeSignature: signature, parts, digests, contentWidth, active, lines: railLines, hits, headerLines, statusLines, fillRow, headerActive: headerLines.length > 0 };
+			const viewportOverhead = activeDestination === "git" && activeRail ? Math.max(0, railLines.length - (sections.find(section => section.key === "$destination")?.lines.length ?? 0)) : 0;
+			prepared = { activeRail, destinations: items, destination: activeDestination, revision: cache.revision, width, mode: host.mode, headerPlacement: headerPlacement(), density: density(), surface: chromeSurface(), cardStyle: style, root, theme, themeSignature: signature, parts, digests, contentWidth, viewportOverhead, active, lines: railLines, hits, headerLines, statusLines, fillRow, headerActive: headerLines.length > 0 };
 			state.active = active;
 			return active;
 		} catch {
@@ -430,7 +497,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	};
 	const attach = () => {
 		if (stopped || failed) return;
-		if (host.mode !== "fullscreen") { state.active = false; return; }
+		if (host.mode !== "fullscreen") { state.active = false; onDestination(undefined); return; }
 		try {
 			const root = host.layoutRoot;
 			if (!root || typeof root[NODE] !== "function") { state.active = false; return; }
@@ -489,7 +556,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 				invalidate() {},
 				[NODE]: () => ({ type: "hstack", gap: GAP, align: "stretch", entries: [
 					{ component: left, basis: 0, grow: 1, shrink: 1, minSize: 1 },
-					{ component: scroll, basis: RAIL_WIDTH, grow: 0, shrink: 0, minSize: RAIL_WIDTH },
+					{ component: (prepared?.destinations.length ?? 0) >= 2 ? tabbedRail : scroll, basis: RAIL_WIDTH, grow: 0, shrink: 0, minSize: RAIL_WIDTH },
 				] }),
 			};
 			const replacement = () => {
@@ -541,6 +608,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	timer.unref();
 	return () => {
 		stopped = true;
+		onDestination(undefined);
 		setSidebarHover(tui);
 		state.active = false;
 		clearInterval(timer);

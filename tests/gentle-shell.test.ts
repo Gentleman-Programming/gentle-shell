@@ -7,6 +7,7 @@ import { join } from "node:path";
 import test, { after, afterEach, type TestContext } from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
 import { CURSOR_MARKER, matchesKey, stripTerminalSequences as stripAnsi, TuiAltScreen, TuiMainScreen, VStack, visibleWidth, type Terminal, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { renderLayoutFrame, type LayoutBox } from "@earendil-works/pi-tui/dist/layout.js";
 import installGentleShell, { backgroundChangeRefreshesSettled, buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { CODEX_USAGE_URL, NAN_QUOTA_URL, USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA } from "../lib/shell-usage.ts";
 import { bindSessionProfile, clearSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
@@ -356,6 +357,192 @@ test("a session that starts on a self-managing NaN model announces it once", asy
 	(ctx as unknown as { model: unknown }).model = { id: "gemma4", provider: "nan", name: "Gemma 4", reasoning: true };
 	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
 	assert.equal(ui.notices.filter((notice) => notice.includes("automatically")).length, 1);
+});
+
+test("legacy preview environment variable does not enable demo tabs", async () => {
+	for (const value of [undefined, "0", "true", "1"]) {
+		const { pi, handlers } = fakePi();
+		gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off", ...(value === undefined ? {} : { GENTLE_SHELL_TABS_PREVIEW: value }) }, { activeProfile: () => undefined });
+		const { ctx, ui } = fakeContext();
+		(ctx.model as { provider: string }).provider = "test";
+		await fire(handlers, "session_start", ctx);
+		const root = new VStack([{ component: { render: () => ["TRANSCRIPT"], invalidate() {} }, basis: 0, grow: 1 }]);
+		const host = { mode: "fullscreen", terminal: { rows: 24, columns: 160 }, layoutRoot: root, requestRender() {} };
+		// Distinguish this identity-background fixture from painted themes in the
+		// sidebar's process-wide geometry cache, whose signature uses foregrounds.
+		const fixtureTheme = { ...plainTheme, fg: (_role: string, text: string) => `\x1b[35m${text}\x1b[39m` };
+		const footer = (ui.footerFactory as (host: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void })(host, fixtureTheme,
+			{ getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+		try {
+			const frame = () => renderLayoutFrame(root, 160, 24, () => {});
+			const first = frame();
+			const text = stripAnsi(first.lines.join("\n"));
+			assert.match(text, /TRANSCRIPT/);
+			assert.doesNotMatch(text, /\[MAIN\]|\[GIT\]|GIT PREVIEW|Demo only/);
+		} finally {
+			footer.dispose();
+			await fire(handlers, "session_shutdown", ctx);
+		}
+	}
+});
+
+test("GIT tab loads bounded HEAD history only while selected", async t => {
+ const home = scopedDoubleEscCancelConfigHome(t);
+ writeFileSync(join(home, "sidebar-tabs.json"), JSON.stringify({ schema: "gentle-pi.sidebar-tabs/v1", policy: "on" }));
+ const calls: Array<{ cwd: string; limit: number | undefined; args: string[] }> = [];
+ const { pi, handlers } = fakePi();
+ gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
+  activeProfile: () => undefined,
+  gitRunner: (cwd, limit) => async args => {
+   calls.push({ cwd, limit, args });
+   if (args[0] === "symbolic-ref") return { code: 0, stdout: "feature\n" };
+   if (args[0] === "rev-parse") return { code: 0, stdout: "abc\n" };
+   if (args[0] === "-c") return { code: 0, stdout: "* \x1eabc\x1fHEAD -> feature\x1ffeat: real history\x1e\n" };
+   return { code: 0, stdout: "" };
+  },
+ });
+ const { ctx, ui } = fakeContext(); await fire(handlers, "session_start", ctx);
+ const root = new VStack([{ component: { render: () => ["TRANSCRIPT"], invalidate() {} }, basis: 0, grow: 1 }]);
+ const host = { mode: "fullscreen", terminal: { rows: 24, columns: 160 }, layoutRoot: root, requestRender() {} };
+ const footer = (ui.footerFactory as (host: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void })(host, plainTheme, { getGitBranch: () => "feature", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+ try {
+  const frame = () => renderLayoutFrame(root, 160, 24, () => {});
+  const boxes = (box: any): any[] => [box, ...box.children.flatMap(boxes)];
+  const initial = frame(); assert.match(stripAnsi(initial.lines.join("\n")), /\[MAIN\].*GIT/);
+  assert.equal(calls.filter(c => c.args[0] === "-c").length, 0);
+  const nav = boxes(initial.root).find(box => stripAnsi(box.component.render(box.rect.width)[0] ?? "").includes("[MAIN]"));
+  nav.component.handleMouse({ type: "click", button: "left", x: 10, y: 0, screenX: 120, screenY: 0, width: 50, height: 3, shift: false, alt: false, ctrl: false });
+  frame(); await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
+  assert.match(stripAnsi(frame().lines.join("\n")), /real history/);
+  let current = frame();
+  const scroll = boxes(current.root).find(box => typeof box.component.getContentWidth === "function").component;
+  const clickHeader = () => {
+   const rows = scroll.render(50).map(stripAnsi);
+   const y = rows.findIndex((row: string) => /GIT[^\n]*feature/.test(row));
+   assert.ok(y >= 0, "Git heading remains visible");
+   assert.equal(scroll.handleMouse({ type: "click", button: "left", x: 8, y, screenX: 118, screenY: y, width: 50, height: 20, shift: false, alt: false, ctrl: false })?.handled, true);
+  };
+  assert.match(stripAnsi(current.lines.join("\n")), /▾ GIT[^\n]*feature/);
+  clickHeader(); current = frame();
+  assert.match(stripAnsi(current.lines.join("\n")), /▸ GIT[^\n]*feature/);
+  assert.doesNotMatch(stripAnsi(current.lines.join("\n")), /real history/);
+  clickHeader(); current = frame();
+  assert.match(stripAnsi(current.lines.join("\n")), /▾ GIT[^\n]*feature/);
+  assert.match(stripAnsi(current.lines.join("\n")), /real history/);
+  const log = calls.find(c => c.args[0] === "-c")!;
+  assert.equal(log.cwd, ctx.cwd); assert.equal(log.limit, 1024 * 1024); assert.equal(log.args.at(-1), "HEAD");
+ } finally { footer.dispose(); await fire(handlers, "session_shutdown", ctx); }
+});
+
+test("Git heading folds after history scroll on tinted and transparent rails", async t => {
+ const previousStyle = cardStyle(); t.after(() => setCardStyle(previousStyle));
+ for (const surface of ["tinted", "transparent"] as const) for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
+  const home = scopedDoubleEscCancelConfigHome(t);
+  writeCardStyle(style, { gentlePiConfigHome: home });
+  writeFileSync(join(home, "sidebar-tabs.json"), JSON.stringify({ schema: "gentle-pi.sidebar-tabs/v1", policy: "on" }));
+  writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, surface }, { gentlePiConfigHome: home });
+  const { pi, handlers } = fakePi();
+  gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { activeProfile: () => undefined, gitRunner: () => async args => ({ code: 0, stdout: args[0] === "symbolic-ref" ? "feature" : args[0] === "rev-parse" ? "abc" : args[0] === "-c" ? Array.from({ length: 50 }, (_, i) => `* \x1eabc\x1f\x1ffeat: history ${i}\x1e`).join("\n") : "" }) });
+  const { ctx, ui } = fakeContext(); await fire(handlers, "session_start", ctx);
+  const root = new VStack([{ component: { render: () => ["TRANSCRIPT"], invalidate() {} }, basis: 0, grow: 1 }]);
+  const host = { mode: "fullscreen", terminal: { rows: 24, columns: 160 }, layoutRoot: root, requestRender() {} };
+  const theme = { ...plainTheme, fg: (role: string, text: string) => `\x1b[${role === "warning" ? 33 : 37}m${text}\x1b[39m`, bg: (_role: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
+  const footer = (ui.footerFactory as (host: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void })(host, theme, { getGitBranch: () => "feature", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+  try {
+   const frame = () => renderLayoutFrame(root, 160, 24, () => {});
+   const boxes = (box: any): any[] => [box, ...box.children.flatMap(boxes)];
+   const nav = boxes(frame().root).find(box => stripAnsi(box.component.render(box.rect.width)[0] ?? "").includes("[MAIN]"));
+   nav.component.handleMouse({ type: "click", button: "left", x: 10, y: 0, screenX: 120, screenY: 0, width: 50, height: 3, shift: false, alt: false, ctrl: false });
+   frame(); await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
+   const scroll = boxes(frame().root).find(box => typeof box.component.getContentWidth === "function").component;
+   const heading = () => scroll.render(50).map(stripAnsi).findIndex((row: string) => /GIT[^\n]*feature/.test(row));
+   const event = (type: string, y: number, delta = 0) => ({ type, button: type === "click" ? "left" : "none", x: 8, y, screenX: 118, screenY: y, width: 50, height: 20, shift: false, alt: false, ctrl: false, wheelDelta: delta });
+   assert.match(stripAnsi(frame().lines.join("\n")), /history 0/, surface);
+   assert.doesNotMatch(frame().lines.join("\n"), /\x1b\[33mGIT/, surface);
+   assert.equal(scroll.handleMouse(event("move", heading()))?.handled, true);
+   assert.match(frame().lines.join("\n"), /\x1b\[33mGIT/, surface);
+   assert.equal(scroll.handleMouse(event("move", heading() + 1))?.handled, true);
+   assert.doesNotMatch(frame().lines.join("\n"), /\x1b\[33mGIT/, surface);
+   assert.equal(scroll.handleMouse(event("move", heading()))?.handled, true);
+   assert.match(frame().lines.join("\n"), /\x1b\[33mGIT/, surface);
+   root.handleMouse({ ...event("move", 0), type: "move", button: "none" });
+   assert.doesNotMatch(frame().lines.join("\n"), /\x1b\[33mGIT/, surface);
+   const before = stripAnsi(frame().lines.join("\n"));
+   const headerLine = before.split("\n").findIndex(line => /▾ GIT/.test(line));
+   const tabsLine = before.split("\n").findIndex(line => /\[GIT\]/.test(line));
+   assert.equal(scroll.handleMouse({ ...event("wheel", heading() + 1, 3), x: 0 })?.handled, true);
+   const after = stripAnsi(frame().lines.join("\n"));
+   assert.match(after, /history 3/, `${surface}/${style}: border wheel scrolls history`);
+   assert.equal(scroll.scrollTop, 0, `${surface}/${style}: outer rail stays fixed`);
+   assert.equal(after.split("\n").findIndex(line => /▾ GIT/.test(line)), headerLine);
+   assert.equal(after.split("\n").findIndex(line => /\[GIT\]/.test(line)), tabsLine);
+   assert.doesNotMatch(after, /[▐█]/, `${surface}/${style}: no outer scrollbar`);
+   assert.equal(scroll.handleMouse({ ...event("wheel", heading() + 1, 999), x: 49 })?.handled, true);
+   const last = stripAnsi(frame().lines.join("\n"));
+   assert.match(last, /history 49/, `${surface}/${style}: last commit is reachable`);
+   assert.equal(scroll.scrollTop, 0);
+   assert.equal(scroll.handleMouse(event("wheel", heading(), -999))?.handled, true);
+   assert.match(stripAnsi(frame().lines.join("\n")), /history 0/);
+   assert.equal(scroll.handleMouse(event("wheel", heading(), 3))?.handled, true);
+   frame();
+   assert.equal(scroll.handleMouse(event("click", heading()))?.handled, true);
+   let text = stripAnsi(frame().lines.join("\n"));
+   assert.match(text, /▸ GIT[^\n]*feature/, surface); assert.doesNotMatch(text, /history \d/, surface);
+   assert.equal(scroll.handleMouse(event("click", heading()))?.handled, true);
+   text = stripAnsi(frame().lines.join("\n"));
+   assert.match(text, /▾ GIT[^\n]*feature/, surface); assert.match(text, /history 3/, surface);
+  } finally { footer.dispose(); await fire(handlers, "session_shutdown", ctx); }
+ }
+});
+
+test("disabled destinations fall back to MAIN without changing saved preferences", async t => {
+ const home = scopedDoubleEscCancelConfigHome(t);
+ const path = join(home, "sidebar-tabs.json");
+ const saved = JSON.stringify({ schema: "gentle-pi.sidebar-tabs/v1", policy: "on", main: "off", git: "off" });
+ writeFileSync(path, saved);
+ const { pi, handlers } = fakePi();
+ gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { activeProfile: () => undefined });
+ const { ctx, ui } = fakeContext(); await fire(handlers, "session_start", ctx);
+ const root = new VStack([{ component: { render: () => ["TRANSCRIPT"], invalidate() {} }, basis: 0, grow: 1 }]);
+ const host = { mode: "fullscreen", terminal: { rows: 24, columns: 160 }, layoutRoot: root, requestRender() {} };
+ const footer = (ui.footerFactory as (host: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void })(host, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map([["test", "fallback integration"]]), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+ try {
+  const text = stripAnsi(renderLayoutFrame(root, 160, 24, () => {}).lines.join("\n"));
+  assert.match(text, /INTEGRATIONS/);
+  assert.doesNotMatch(text, /\[MAIN\]|\[GIT\]/);
+  assert.equal(readFileSync(path, "utf8"), saved);
+ } finally { footer.dispose(); await fire(handlers, "session_shutdown", ctx); }
+});
+
+test("live Tabs choices preserve production fallback", async (t) => {
+	{
+		const home = scopedDoubleEscCancelConfigHome(t);
+		const { pi, handlers, commands } = fakePi();
+		gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { activeProfile: () => undefined });
+		const { ctx, ui, overlayReady } = fakeContext();
+		(ctx.model as { provider: string }).provider = "test";
+		await fire(handlers, "session_start", ctx);
+		const root = new VStack([{ component: { render: () => ["TRANSCRIPT"], invalidate() {} }, basis: 0, grow: 1 }]);
+		let renders = 0;
+		const host = { mode: "fullscreen", terminal: { rows: 24, columns: 160 }, layoutRoot: root, requestRender() { renders++; } };
+		const fixtureTheme = { ...plainTheme, fg: (_role: string, text: string) => `\x1b[35m${text}\x1b[39m` };
+		const footer = (ui.footerFactory as (host: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void })(host, fixtureTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+		try {
+			const text = () => stripAnsi(renderLayoutFrame(root, 160, 24, () => {}).lines.join("\n"));
+			const check = () => assert.doesNotMatch(text(), /\[MAIN\]|\[GIT\]|GIT PREVIEW/);
+			check();
+			const pending = commands.get("gentle:customize")!.handler("", ctx); await overlayReady;
+			for (const [choice, policy] of [["shown", "on"], ["hidden", "off"]] as const) {
+				const before = renders;
+				await customizeAction(ui, `Tabs: ${choice}`);
+				assert.equal(JSON.parse(readFileSync(join(home, "sidebar-tabs.json"), "utf8")).policy, policy);
+				assert.ok(renders > before, "the installed sidebar requests a live redraw");
+				if (policy === "on") assert.match(text(), /\[MAIN\].*GIT/);
+				else check();
+			}
+			ui.overlayView!.handleInput("\x1b"); await pending;
+		} finally { footer.dispose(); await fire(handlers, "session_shutdown", ctx); }
+	}
 });
 
 test("gentleShell installs the footer on session_start when a UI exists", () => {
@@ -3563,6 +3750,122 @@ test("customize Editor rows preview global preference without applying until Ent
 	await new Promise<void>((resolve) => setImmediate(resolve));
 	assert.equal(resolveVimPolicy({ gentlePiConfigHome: home }).policy, "off");
 	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("customize Layout persists global Tabs and preserves Task summary", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	assert.ok(findCustomizeRow(ui, "Task summary: on (current)"));
+	assert.ok(findCustomizeRow(ui, "Tabs: shown"));
+	let frame = ui.overlayView!.render(90).join("\n");
+	assert.match(frame, /Layout ·/);
+	assert.doesNotMatch(frame, /Configure tabs/);
+	assert.equal(existsSync(join(home, "sidebar-tabs.json")), false);
+	await customizeAction(ui, "Tabs: shown");
+	assert.equal(JSON.parse(readFileSync(join(home, "sidebar-tabs.json"), "utf8")).policy, "on");
+	frame = ui.overlayView!.render(90).join("\n");
+	assert.match(frame, /Surface[\s\S]*Tabs\s+● shown\s+○ hidden[\s\S]*Configure tabs/);
+	assert.ok(findCustomizeRow(ui, "Configure tabs"));
+	ui.overlayView!.handleInput("\r");
+	frame = ui.overlayView!.render(90).join("\n");
+	for (const name of ["MAIN", "GIT", "TREE", "PROFILE", "MEMORY", "STATS"]) assert.match(frame, new RegExp(name));
+	assert.match(frame, /MAIN\s+● on\s+○ off/);
+	assert.match(frame, /GIT\s+● on\s+○ off/);
+	assert.match(frame, /Git history · active/);
+	assert.doesNotMatch(frame, /\[.\] Git history|Diff/);
+	ui.overlayView!.handleInput("\x1b[C");
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(JSON.parse(readFileSync(join(home, "sidebar-tabs.json"), "utf8")).main, "off");
+	ui.overlayView!.handleInput("\x1b[B"); ui.overlayView!.handleInput("\x1b[C");
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(JSON.parse(readFileSync(join(home, "sidebar-tabs.json"), "utf8")).git, "off");
+	assert.doesNotMatch(ui.overlayView!.render(90).join("\n"), /Git history · active/);
+	ui.overlayView!.handleInput("\x1b");
+	assert.match(ui.overlayView!.render(90).join("\n"), /▸\s+Configure tabs/);
+	await customizeAction(ui, "Tabs: hidden");
+	assert.equal(JSON.parse(readFileSync(join(home, "sidebar-tabs.json"), "utf8")).policy, "off");
+	assert.doesNotMatch(ui.overlayView!.render(90).join("\n"), /Configure tabs/);
+	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("Tabs survive fresh instances and profile changes without exposing empty production navigation", async (t) => {
+	const previousStyle = cardStyle();
+	const previousSurface = chromeSurface();
+	const previousContent = cardContent();
+	t.after(() => { setCardStyle(previousStyle); setChromeSurface(previousSurface); setCardContent(previousContent); });
+	const home = scopedDoubleEscCancelConfigHome(t);
+	let profile = "first";
+	for (const policy of ["on", "off"] as const) {
+		const setup = fakePi();
+		gentleShell(setup.pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { activeProfile: () => profile });
+		const { ctx, ui, overlayReady } = fakeContext();
+		(ctx.model as { provider: string }).provider = "test";
+		await fire(setup.handlers, "session_start", ctx);
+		const pending = setup.commands.get("gentle:customize")!.handler("", ctx);
+		await overlayReady;
+		await customizeAction(ui, `Tabs: ${policy === "on" ? "shown" : "hidden"}`);
+		ui.overlayView!.handleInput("\x1b"); await pending;
+		profile = "second";
+		const root = new VStack([{ component: { render: () => ["TRANSCRIPT"], invalidate() {} }, basis: 0, grow: 1 }]);
+		const host = { mode: "fullscreen", terminal: { rows: 24, columns: 160 }, layoutRoot: root, requestRender() {} };
+		// Use a distinct theme signature so this fixture does not populate the shared
+		// geometry cache under the signature of another test's differently painted theme.
+		const fixtureTheme = { ...plainTheme, fg: (_role: string, text: string) => `\x1b[36m${text}\x1b[39m` };
+		const footer = (ui.footerFactory as (host: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void })(host, fixtureTheme,
+			{ getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+		const text = stripAnsi(renderLayoutFrame(root, 160, 24, () => {}).lines.join("\n"));
+		assert.match(text, /TRANSCRIPT/);
+		if (policy === "on") assert.match(text, /\[MAIN\].*GIT/);
+		else assert.doesNotMatch(text, /\[MAIN\]|\[GIT\]/);
+		assert.doesNotMatch(text, /GIT PREVIEW|Demo only/);
+		footer.dispose(); await fire(setup.handlers, "session_shutdown", ctx);
+		const fresh = fakePi();
+		gentleShell(fresh.pi, { GENTLE_PI_CONFIG_HOME: home }, { activeProfile: () => "third" });
+		const next = fakeContext();
+		const reopened = fresh.commands.get("gentle:customize")!.handler("", next.ctx);
+		await next.overlayReady;
+		assert.ok(findCustomizeRow(next.ui, `Tabs: ${policy === "on" ? "shown" : "hidden"}`));
+		assert.match(next.ui.overlayView!.render(90).join("\n"), new RegExp(`Tabs\\s+.*● ${policy === "on" ? "shown" : "hidden"}`));
+		next.ui.overlayView!.handleInput("\x1b"); await reopened;
+	}
+});
+
+test("Tabs malformed policy is visible and cannot be overwritten through Customize", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const path = join(home, "sidebar-tabs.json");
+	writeFileSync(path, "broken");
+	const { pi, commands } = fakePi(); gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx); await overlayReady;
+	assert.ok(findCustomizeRow(ui, "Tabs: shown"));
+	assert.match(ui.overlayView!.render(90).join("\n"), /malformed or unreadable/i);
+	assert.doesNotMatch(ui.overlayView!.render(90).join("\n"), /Configure tabs/);
+	await customizeAction(ui, "Tabs: shown");
+	assert.match(ui.notices.at(-1)!, /malformed or unreadable/i);
+	assert.equal(readFileSync(path, "utf8"), "broken");
+	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("Tabs write failure reports an error and preserves the saved preference", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const path = join(home, "sidebar-tabs.json");
+	writeFileSync(path, '{"schema":"gentle-pi.sidebar-tabs/v1","policy":"off"}\n');
+	const original = readFileSync(path, "utf8");
+	const { pi, commands } = fakePi(); gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx); await overlayReady;
+	chmodSync(home, 0o500);
+	try {
+		// Root can bypass directory permissions; never claim EACCES in that case.
+		if (process.getuid?.() === 0) { t.skip("root bypasses directory write permissions"); return; }
+		await customizeAction(ui, "Tabs: shown");
+		assert.match(ui.notices.at(-1)!, /EACCES|permission denied/i);
+		assert.equal(readFileSync(path, "utf8"), original);
+	} finally { chmodSync(home, 0o700); ui.overlayView!.handleInput("\x1b"); await pending; }
 });
 
 test("customize History rows persist prompt history capture and keep stored history", async (t) => {

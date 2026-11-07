@@ -49,6 +49,7 @@ import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { isNanAdaptiveReasoningModel } from "../lib/nan-provider.ts";
 import { resolveAnimationPolicy, writeAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy, type VimPolicy } from "../lib/vim-policy.ts";
+import { resolveSidebarTabs, writeSidebarTabs } from "../lib/sidebar-tabs-policy.ts";
 import { resolveHistoryCapture, writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
 import { HERDR_TASK_SUMMARY_CHANGED, resolveHerdrTaskSummarySettings, writeHerdrTaskSummarySettings } from "../lib/herdr-task-summary-policy.ts";
 import { createRequire } from "node:module";
@@ -133,6 +134,7 @@ import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { releaseSidebarHover, setSidebarHover, sidebarHeader, sidebarPart, sidebarState, sidebarStatusBar, VISUAL_SETTINGS_CHANGED, type SidebarRail } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar, narrowStatusOwner, SIDEBAR_BREAKPOINT, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
+import { SidebarGitFrameCache, SidebarGitHistory } from "../lib/sidebar-git-graph.ts";
 import { panelSheetBackHit, renderPanelSheet, renderWorkRow, setChromeSurface, workRowLead } from "../lib/shell-panel.ts";
 import { installPagePaint, type PageTheme } from "../lib/shell-page.ts";
 import { layoutSchematic } from "../lib/visual-layout-preview.ts";
@@ -2431,6 +2433,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const animationOptions = { gentlePiConfigHome: doubleEscCancelConfigHome };
 	let animationPolicy = resolveAnimationPolicy(animationOptions).policy;
 	let vimPolicy = resolveVimPolicy(animationOptions).policy;
+	let tabsSettings = resolveSidebarTabs(animationOptions);
 	// Conversation cards read the style from a process-wide slot; the saved
 	// preference fills it at startup and again on every session start.
 	const applyCardStyle = () => setCardStyle(resolveCardStyle(animationOptions).style);
@@ -2467,6 +2470,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let registry: SessionWorktreeRegistry | undefined;
 	let currentContext: ExtensionContext | undefined;
 	let disposeFooter: (() => void) | undefined;
+	let gitHistory: SidebarGitHistory | undefined;
 	let review: ReviewSidebarSnapshot | undefined;
 	let runningJobs: RunningJobDisplay[] | undefined;
 	let jobsCollapsed = false;
@@ -2513,7 +2517,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const refreshChanges = async (ctx: ExtensionContext) => {
 		const tracker = changes;
 		if (!tracker || !ctx.hasUI || registry?.sessionId !== ctx.sessionManager.getSessionId()) return;
-		const model = await tracker.refresh();
+		const [model] = await Promise.all([tracker.refresh(), gitHistory?.refresh()]);
 		if (changes === tracker) applyChanges(ctx, model);
 	};
 	pi.registerTool({
@@ -2574,11 +2578,51 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		}
 		changes = changesTracker(ctx);
 		const tracker = changes;
+		const hasGitRoot = !!deps.resolveWorktree(ctx.cwd, ctx.cwd);
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			disposeFooter?.();
 			sidebarTui = tui;
 			if (tui.terminal) sidebarState(tui).visibility = { todo: visualSettings.visibility.todo };
 			renderHost = { requestRender: () => tui.requestRender(), invalidateSidebar: () => invalidateSidebar(tui) };
+			const history = new SidebarGitHistory(deps.gitRunner(ctx.cwd, 1024 * 1024), async () => tracker.model.digest, () => tui.requestRender());
+			gitHistory = history;
+			const historyFrame = new SidebarGitFrameCache();
+			let historyViewport = 1, historyOffset = 0, historyCollapsed = false, historyHovered = false;
+			const clearHistoryHover = () => {
+				releaseSidebarHover(tui, gitRail);
+				if (!historyHovered) return;
+				historyHovered = false;
+				tui.requestRender();
+			};
+			const maxHistoryOffset = () => Math.max(0, (history.graph.state === "ready" ? history.graph.lines.length : 0) - Math.max(1, historyViewport - 1));
+			const gitRail: SidebarRail = {
+				surface: "panel",
+				digest: () => `${history.revision}:${historyViewport}:${historyOffset}:${historyCollapsed}:${historyHovered}`,
+				render: width => historyFrame.render(history.graph, history.revision, theme, width, historyViewport, Math.min(historyOffset, maxHistoryOffset()), historyCollapsed, historyHovered),
+				invalidate() {},
+				handleMouse(event) {
+					if (event.type === "move" && event.button === "none") {
+						const next = event.y === 0;
+						if (next) setSidebarHover(tui, gitRail, clearHistoryHover);
+						else setSidebarHover(tui);
+						if (next === historyHovered) return { handled: true };
+						historyHovered = next;
+						return { handled: true, render: true };
+					}
+					if (event.type === "click" && event.button === "left" && event.y === 0) {
+						historyCollapsed = !historyCollapsed;
+						invalidateSidebar(tui);
+						tui.requestRender();
+						return { handled: true, render: true };
+					}
+					if (event.type !== "wheel") return undefined;
+					if (historyCollapsed) return { handled: true };
+					const next = Math.max(0, Math.min(maxHistoryOffset(), historyOffset + (event.wheelDelta ?? 0)));
+					if (next === historyOffset) return { handled: true };
+					historyOffset = next;
+					return { handled: true, render: true };
+				},
+			};
 			const bottom = createShellBarComponent(pi, ctx, renderHost, theme, footerData, () => tracker.model.files.length, () => usage.get(ctx.model?.provider ?? ""), () => visualSettings);
 			// The Status card paints live session state that no event re-registers a
 			// part for: model, effort, context, cost, session name and extension
@@ -2846,7 +2890,12 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return { handled: true, render: true };
 				},
 			});
-			const uninstall = installSidebar(tui, theme, () => visualSettings.statusPlacement, () => visualSettings.headerPlacement, () => visualSettings.density);
+			const uninstall = installSidebar(tui, theme, () => visualSettings.statusPlacement, () => visualSettings.headerPlacement, () => visualSettings.density, () => tabsSettings.policy === "on" ? [...(tabsSettings.main === "on" ? [{ id: "main", label: "MAIN" }] : []), ...(hasGitRoot && tabsSettings.git === "on" ? [{ id: "git", label: "GIT", rail: gitRail }] : [])] : [], id => history.setActive(id === "git"), (id, height) => {
+				if (id !== "git" || height === historyViewport) return;
+				historyViewport = Math.max(1, height);
+				historyOffset = Math.min(historyOffset, maxHistoryOffset());
+				queueMicrotask(() => tui.requestRender());
+			});
 			// A light theme paints the whole fullscreen frame (prose, gaps, the
 			// column beside the rail) instead of leaving the terminal's dark cells.
 			const unpaintPage = installPagePaint(tui as never, () => ((tui as TUI & { mode?: string }).mode === "fullscreen" ? ctx.ui.theme as PageTheme : {}));
@@ -2891,6 +2940,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				disposeStatusBar();
 				statusRegion.dispose();
 				uninstall();
+				if (gitHistory === history) gitHistory = undefined;
 				unpaintPage();
 				part.dispose();
 				if (sidebarTui === tui) { sidebarTui = undefined; renderHost = undefined; groupedChangesOwner = () => false; }
@@ -3415,6 +3465,21 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				layoutChoice("Density", value, () => visual().density === value, "Spacing: comfortable adds gaps between rail sections and a padding row under a top header; compact removes them; minimal also drops the brand and the key hints"));
 			for (const value of Object.values(CHROME_SURFACE)) add(() => `Surface: ${value}${visual().surface === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, surface: value })), () => layoutPreview({ ...visual(), surface: value }),
 				layoutChoice("Surface", value, () => visual().surface === value, "Chrome background: transparent (default) lets the terminal background show through; tinted paints the rail, header rows and panel"));
+			const saveTabs = (policy: "on" | "off", destination?: "main" | "git") => {
+				const current = resolveSidebarTabs(animationOptions);
+				writeSidebarTabs(destination ? current.policy : policy, animationOptions, { main: destination === "main" ? policy : current.main, git: destination === "git" ? policy : current.git });
+				tabsSettings = resolveSidebarTabs(animationOptions);
+				if (sidebarTui) { invalidateSidebar(sidebarTui); sidebarTui.requestRender(); }
+			};
+			for (const [label, policy] of [["shown", "on"], ["hidden", "off"]] as const) add(
+				() => `Tabs: ${label}`, pending, () => saveTabs(policy),
+				() => { const result = resolveSidebarTabs(animationOptions); return { title: "Tabs · global", sample: result.malformed ? "Malformed or unreadable Tabs preference; not overwritten." : `Preference: ${result.policy}. Destinations appear only when real content is available.` }; },
+				explicitChoice("Tabs", label, () => resolveSidebarTabs(animationOptions).policy === policy),
+			);
+			rows.push({ category, label: "Configure tabs", indent: 2, visible: () => { const result = resolveSidebarTabs(animationOptions); return !result.malformed && result.policy === "on"; }, action: () => {}, children: [
+				...(["main", "git"] as const).flatMap(destination => (["on", "off"] as const).map(policy => ({ label: `${destination.toUpperCase()}: ${policy}`, choice: { setting: destination.toUpperCase(), value: policy, current: () => resolveSidebarTabs(animationOptions)[destination] === policy }, action: () => saveTabs(policy, destination) })).concat(destination === "git" ? [{ label: "Git history · active", indent: 2, inert: true, visible: () => resolveSidebarTabs(animationOptions).git === "on", action: () => {} } as never] : [])),
+				...["TREE", "PROFILE", "MEMORY", "STATS"].map(name => ({ label: `${name} · coming soon`, inert: true, action: () => {} })),
+			] });
 			category = "Cards";
 			// One live style for conversation cards, panels, header/footer and prompt.
 			const cardStylePreview = { [CARD_STYLE.NEON]: "╭─ ✿ read ─╮  outlined chrome + prompt", [CARD_STYLE.FLOAT]: "▎ ✿ read  painted chrome + prompt" };

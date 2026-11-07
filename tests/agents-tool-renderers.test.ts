@@ -1,0 +1,285 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { initTheme } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
+import { CARD_CONTENT, cardContent, setCardContent } from "../lib/card-content-policy.ts";
+import type { ToolItem } from "../lib/agents-protocol.ts";
+import productionQuietTools from "../extensions/quiet-tools.ts";
+import {
+	agentToolRowRenderer,
+	isReusableAgentToolRenderer,
+	renderAgentToolItem,
+	type AgentToolRendererTheme,
+} from "../lib/agents-tool-renderers.ts";
+
+initTheme("dark");
+
+const plainTheme: AgentToolRendererTheme = {
+	fg: (_color, text) => text,
+	bold: (text) => text,
+};
+
+// The roles a card names, so an assertion can see which tone drew a row.
+const taggedTheme: AgentToolRendererTheme = {
+	fg: (color, text) => `[${color}]${text}`,
+	bold: (text) => text,
+};
+
+// Every quiet tool's own retained arguments: the boundary must draw each one
+// with the chat's renderer, so an availability test needs a real call per tool.
+const CALL_ARGS: Record<string, Record<string, unknown>> = {
+	read: { path: "src/a.ts" },
+	grep: { pattern: "needle", path: "src" },
+	find: { pattern: "*.ts", path: "src" },
+	ls: { path: "src" },
+	edit: { path: "src/b.ts", edits: [] },
+	write: { path: "src/c.ts", content: "body" },
+	bash: { command: "printf hi" },
+};
+
+function toolItem(overrides: Partial<ToolItem> & { name: string }): ToolItem {
+	return {
+		kind: "tool",
+		callId: "call-1",
+		args: CALL_ARGS[overrides.name] ?? {},
+		output: "",
+		running: false,
+		isError: false,
+		...overrides,
+	};
+}
+
+function textResult(text: string) {
+	return { content: [{ type: "text", text }], details: undefined };
+}
+
+function plainComponent() {
+	return { render: () => [], invalidate() {} };
+}
+
+interface QuietToolsHost {
+	tools: Map<string, any>;
+	resolvers: Array<(toolName: string, next: () => unknown) => unknown>;
+}
+
+/** Loads the production quiet-tools extension against a fake pi, capturing what it actually registers. */
+function registeredQuietTools(env: { quietTools?: string } = {}): QuietToolsHost {
+	const tools = new Map<string, any>();
+	const resolvers: Array<(toolName: string, next: () => unknown) => unknown> = [];
+	const pi = {
+		registerTool(tool: any) {
+			tools.set(tool.name, tool);
+		},
+		registerCommand() {},
+		on() {},
+		registerToolRenderer(resolver: (toolName: string, next: () => unknown) => unknown) {
+			resolvers.push(resolver);
+		},
+	};
+	const previous = process.env.GENTLE_PI_QUIET_TOOLS;
+	if (env.quietTools === undefined) delete process.env.GENTLE_PI_QUIET_TOOLS;
+	else process.env.GENTLE_PI_QUIET_TOOLS = env.quietTools;
+	try {
+		productionQuietTools(pi as any);
+	} finally {
+		if (previous === undefined) delete process.env.GENTLE_PI_QUIET_TOOLS;
+		else process.env.GENTLE_PI_QUIET_TOOLS = previous;
+	}
+	return { tools, resolvers };
+}
+
+function useCardContent(t: { after(fn: () => void): void }, level: (typeof CARD_CONTENT)[keyof typeof CARD_CONTENT]): void {
+	const previous = cardContent();
+	t.after(() => setCardContent(previous));
+	setCardContent(level);
+}
+
+test("the row draws with the very renderer the chat's canvas was handed", (t) => {
+	const { tools } = registeredQuietTools();
+	const row = agentToolRowRenderer("read");
+	assert.notEqual(row, undefined, "the chat's read renderer is offered");
+	const handed = tools.get("read");
+	assert.equal(row!.renderCall, handed.renderCall, "the call slot is the function the host was handed, not a lookalike");
+	assert.equal(row!.renderResult, handed.renderResult, "the result slot is the function the host was handed");
+	assert.equal(row!.renderShell, "self", "the offered renderer owns its frame");
+
+	useCardContent(t, CARD_CONTENT.MINIMAL);
+	const minimal = registeredQuietTools();
+	const native = { native: true };
+	const bash = minimal.resolvers.at(-1)!("bash", () => native) as any;
+	assert.notEqual(bash, native, "minimal content takes over bash drawing");
+	const bashRow = agentToolRowRenderer("bash");
+	assert.equal(bashRow!.renderCall, bash.renderCall, "the offered bash renderer is the object the resolver handed the host");
+	assert.equal(bashRow!.renderResult, bash.renderResult);
+});
+
+test("the bash renderer is offered as soon as minimal content is active, before the host resolves it", (t) => {
+	useCardContent(t, CARD_CONTENT.MINIMAL);
+	const { resolvers } = registeredQuietTools();
+	// No resolver call has been made yet: the host has not asked for bash.
+	const row = agentToolRowRenderer("bash");
+	assert.notEqual(row, undefined, "the chat's bash renderer is offered before the host asks for it");
+	const lines = renderAgentToolItem(toolItem({ name: "bash", output: "hi" }), plainTheme, 80, { expanded: false });
+	assert.match(lines!.join("\n"), /printf hi/, "and it draws the chat's bash card");
+
+	const native = { native: true };
+	const handed = resolvers.at(-1)!("bash", () => native) as any;
+	assert.notEqual(handed, native, "the host takes over bash drawing under minimal content");
+	assert.equal(handed, row, "the host is handed the very object that was offered, not a copy");
+});
+
+test("the bash offer follows the Card content preference live", (t) => {
+	useCardContent(t, CARD_CONTENT.MINIMAL);
+	const { resolvers } = registeredQuietTools();
+	const native = { native: true };
+	const offered = agentToolRowRenderer("bash");
+	assert.notEqual(offered, undefined, "minimal content offers bash");
+	assert.notEqual(resolvers.at(-1)!("bash", () => native), native, "and the host defers nothing while minimal content is active");
+
+	setCardContent(CARD_CONTENT.DEFAULT);
+	assert.equal(agentToolRowRenderer("bash"), undefined, "the offer withdraws when the chat goes back to pi's drawing");
+	assert.equal(resolvers.at(-1)!("bash", () => native), native, "and the host defers to pi again");
+
+	setCardContent(CARD_CONTENT.MINIMAL);
+	assert.equal(agentToolRowRenderer("bash"), offered, "returning to minimal content offers the same object again");
+});
+
+test("a disabled extension publishes no renderer to reuse", () => {
+	const host = registeredQuietTools({ quietTools: "0" });
+	assert.equal(host.tools.size, 0, "a disabled extension registers no tool");
+	assert.equal(agentToolRowRenderer("read"), undefined, "and offers no renderer");
+	assert.equal(renderAgentToolItem(toolItem({ name: "read", output: "line one" }), plainTheme, 80, { expanded: false }), undefined);
+});
+
+test("native bash is not claimed while quiet-tools keeps pi's own drawing", () => {
+	const { resolvers } = registeredQuietTools();
+	const native = { native: true };
+	assert.equal(resolvers.at(-1)!("bash", () => native), native, "the default content preference leaves bash to pi");
+	assert.equal(agentToolRowRenderer("bash"), undefined, "so no bash renderer is offered as reusable");
+	assert.equal(renderAgentToolItem(toolItem({ name: "bash", output: "hi" }), plainTheme, 80, { expanded: false }), undefined);
+});
+
+test("the row gate requires a frame the renderer owns and a call slot", () => {
+	assert.equal(isReusableAgentToolRenderer(undefined), false, "nothing registered is nothing to reuse");
+	assert.equal(isReusableAgentToolRenderer({ renderShell: "default", renderCall: plainComponent } as any), false, "a renderer that does not own its frame cannot draw a whole row");
+	assert.equal(isReusableAgentToolRenderer({ renderShell: "self" } as any), false, "a renderer with no call slot cannot draw the call");
+	assert.equal(isReusableAgentToolRenderer({ renderShell: "self", renderCall: plainComponent } as any), true, "a self-shelled renderer with a call slot is reusable");
+	// A renderer that says nothing about the result is still reusable: it draws its
+	// call slot alone, which is different from a tool with no card at all.
+	assert.equal(isReusableAgentToolRenderer({ renderShell: "self", renderCall: plainComponent, renderResult: undefined } as any), true);
+	assert.equal(renderAgentToolItem(toolItem({ name: "webfetch", output: "page" }), plainTheme, 80, { expanded: false }), undefined, "a tool with no registered card keeps the generic block");
+});
+
+test("every renderer quiet-tools actually registers is offered, and nothing else is", (t) => {
+	const { tools } = registeredQuietTools();
+	const registeredNames = [...tools.keys()].sort();
+	const offered = registeredNames.filter((name) => agentToolRowRenderer(name) !== undefined);
+	assert.deepEqual(offered, ["edit", "find", "grep", "ls", "read", "write"], "every quiet tool card is offered, derived from what was registered");
+	assert.equal(registeredNames.includes("codemode"), true, "the extension also decorates the compact codemode tool");
+	// Its renderer wraps a tool definition only the codemode extension can build, so
+	// there is no registered quiet renderer to reuse here.
+	assert.equal(agentToolRowRenderer("codemode"), undefined);
+	assert.equal(agentToolRowRenderer("webfetch"), undefined);
+	for (const name of offered) {
+		assert.ok(renderAgentToolItem(toolItem({ name, output: "retained output" }), plainTheme, 80, { expanded: false })!.length > 0, `${name}: the card is not empty`);
+	}
+});
+
+test("a finished item draws through the extension's registered renderer, not a copy", () => {
+	const { tools } = registeredQuietTools();
+	const registered = tools.get("grep");
+	const item = toolItem({ name: "grep", args: { pattern: "needle", path: "src" }, output: "src/a.ts:1:needle\nsrc/b.ts:7:needle" });
+	// A transcript row renders the call slot and then the result slot; the same
+	// two components pi handed the chat, at the same width, are the contract.
+	const context = {
+		args: item.args,
+		toolCallId: item.callId,
+		cwd: "",
+		executionStarted: true,
+		argsComplete: true,
+		isPartial: false,
+		isError: false,
+		expanded: false,
+		lastComponent: undefined,
+		invalidate() {},
+	};
+	const expected = [
+		...registered.renderCall(item.args, plainTheme, context).render(80),
+		...registered.renderResult(textResult(item.output), { expanded: false, isPartial: false }, plainTheme, context).render(80),
+	];
+	assert.deepEqual(renderAgentToolItem(item, plainTheme, 80, { expanded: false }), expected);
+	assert.match(expected.join("\n"), /needle/, "the expected rows carry the real match");
+});
+
+test("the offered card keeps running, final, error, and expanded states distinct", () => {
+	registeredQuietTools();
+	const running = renderAgentToolItem(toolItem({ name: "read", running: true, output: "" }), plainTheme, 60, { expanded: false })!;
+	assert.match(running.join("\n"), /running…/, "a running call says it is still waiting");
+	assert.equal(running.at(-1)!.startsWith("╰"), true, "a running call closes its own frame");
+	assert.doesNotMatch(running.join("\n"), /line one/, "no result rows before output arrives");
+
+	const output = "line one\nline two\nline three\nline four";
+	const finished = renderAgentToolItem(toolItem({ name: "read", output }), plainTheme, 60, { expanded: false })!;
+	assert.match(finished[0], /^╭─ ≡ read src\/a\.ts/, "the finished row still names the call");
+	assert.match(finished.join("\n"), /line one/, "the collapsed card previews the result");
+	assert.doesNotMatch(finished.join("\n"), /line four/, "a collapsed preview stays bounded");
+	assert.equal(finished.at(-1)!.startsWith("╰"), true, "the result slot closes the frame");
+
+	const expanded = renderAgentToolItem(toolItem({ name: "read", output }), plainTheme, 60, { expanded: true })!;
+	assert.match(expanded.join("\n"), /line four/, "expanding reveals the rest of the result");
+
+	const failed = renderAgentToolItem(toolItem({ name: "read", isError: true, output: "boom one\nboom two" }), taggedTheme, 80, { expanded: false })!;
+	assert.match(failed.join("\n"), /\[error\]/, "a failed call is drawn in the error tone");
+	assert.match(failed.join("\n"), /boom one/, "a failed call says why while collapsed");
+});
+
+test("the minimal Card content preference is honored by the offered card", (t) => {
+	useCardContent(t, CARD_CONTENT.MINIMAL);
+	registeredQuietTools();
+	const lines = renderAgentToolItem(toolItem({ name: "read", output: "line one\nline two" }), plainTheme, 60, { expanded: false })!;
+	assert.match(lines.join("\n"), /read src\/a\.ts/, "the command alone is still named");
+	assert.doesNotMatch(lines.join("\n"), /line one/, "minimal content draws no result rows while collapsed");
+});
+
+test("retained input reaches the card cleaned, and the item itself is never mutated", () => {
+	registeredQuietTools();
+	const written = toolItem({
+		name: "write",
+		args: { path: "/repo/\u001b[31msecret.ts", content: "body\u0007" },
+		output: "Successfully wrote 4 bytes",
+	});
+	const painted = renderAgentToolItem(written, plainTheme, 80, { expanded: true })!.join("\n");
+	assert.equal(painted.includes("\u001b"), false, "escape sequences never reach the terminal");
+	assert.equal(painted.includes("\u0007"), false, "control bytes never reach the terminal");
+	assert.match(painted, /body/, "the written content is drawn cleaned");
+	assert.equal(written.args.path, "/repo/\u001b[31msecret.ts", "the retained item is the caller's, not a scratch copy to clean");
+
+	const read = toolItem({ name: "read", args: { path: "/repo/\u001b[31msecret.ts" }, output: "\u001b[2Jvisible" });
+	const visible = renderAgentToolItem(read, plainTheme, 80, { expanded: false })!.join("\n");
+	assert.equal(visible.includes("\u001b"), false, "the retained output is cleaned too");
+	assert.match(visible, /visible/, "the clean text is still drawn");
+	assert.equal(read.output, "\u001b[2Jvisible", "the retained output is forwarded, not rewritten in place");
+});
+
+test("a renderer that cannot draw leaves the row to the generic fallback", () => {
+	registeredQuietTools();
+	const brokenTheme: AgentToolRendererTheme = {
+		fg: () => {
+			throw new Error("theme cannot paint");
+		},
+	};
+	assert.equal(renderAgentToolItem(toolItem({ name: "read", output: "line one" }), brokenTheme, 80, { expanded: false }), undefined, "a throwing card returns the row to its fallback instead of breaking it");
+	assert.deepEqual(renderAgentToolItem(toolItem({ name: "read" }), plainTheme, 0, { expanded: false }), [], "a zero-width row draws nothing");
+});
+
+test("the offered card fits every terminal width it is drawn at", () => {
+	registeredQuietTools();
+	const output = Array.from({ length: 8 }, (_, index) => `line ${index} of the retained result`).join("\n");
+	for (const width of [8, 12, 20, 40, 80, 120]) {
+		for (const running of [true, false]) {
+			const lines = renderAgentToolItem(toolItem({ name: "read", output, running }), plainTheme, width, { expanded: false })!;
+			assert.ok(lines.length > 0, `width ${width}: the card draws`);
+			for (const line of lines) assert.ok(visibleWidth(line) <= width, `"${line}" fits width ${width}`);
+		}
+	}
+});

@@ -12352,7 +12352,8 @@ function createGentleAiExtensionForTesting(
 				const existing = resolveSessionWorktree(originalCwd, originalCwd);
 				if (existing) return existing.root === root;
 				const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
-				const retained = processRetainedNativeStatusSelections.get(sessionKey) ?? new ReviewContinuationRegistry();
+				const retained = processRetainedNativeStatusSelections.get(sessionKey)
+					?? processRetainedNativeStatusSelections.set(sessionKey, new ReviewContinuationRegistry()).get(sessionKey)!;
 				const negotiated = await negotiatedStatusForHostTransport(nativeReviewCli, { cwd: root, signal }, retained, root);
 				const identity = resolveSessionWorktree(originalCwd, originalCwd);
 				return negotiated.status !== undefined && current() && safeBootstrapDirectory(originalCwd) === root && identity?.root === root;

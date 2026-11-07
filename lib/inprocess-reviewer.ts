@@ -311,10 +311,16 @@ export function resolveInProcessReviewerModel(request: Pick<InProcessReviewerReq
 	// which a native or OAuth-modified extension provider is free not to do.
 	const provider = registry.getProvider?.(parsed.provider);
 	if (registry.getProvider !== undefined && provider === undefined) {
+		const evidence: Record<string, unknown> = { provider: parsed.provider, api: model.api };
+		// Preserve already resolved identity when configuration refuses before auth.
+		if (typeof model.provider === "string" && typeof model.id === "string") {
+			evidence.reviewerModel = `${model.provider}/${model.id}`.slice(0, 512);
+			evidence.provider = model.provider.slice(0, 256);
+		}
 		return refuse(
 			INPROCESS_REVIEWER_FAILURE.MODEL_NOT_FOUND,
 			`The model registry resolved ${JSON.stringify(request.selection)} for ${request.routingKey} but owns no provider for ${JSON.stringify(parsed.provider)}; reassign ${request.routingKey} to a model whose provider the interactive pi can actually dispatch.`,
-			{ provider: parsed.provider, api: model.api },
+			evidence,
 		);
 	}
 	return { kind: "resolved", model, ...(provider === undefined ? {} : { provider }), providerId: parsed.provider };

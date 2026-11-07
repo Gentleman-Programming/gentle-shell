@@ -43,6 +43,7 @@ export function parseReviewCoordinatorInput(value: unknown): ReviewCoordinatorIn
 	return input as ReviewCoordinatorInput;
 }
 
+/** Follow bounded native continuations while retaining informational reviewer facts. */
 export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinatorDeps): Promise<Body> {
  const input = parseReviewCoordinatorInput(value);
  const now = deps.now ?? (() => performance.now());
@@ -62,6 +63,7 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
  };
  const acknowledged = (body: Body) => body.outcome === "native-approved-acknowledgement-completed"
   && body.status === "closed" && body.authority === "burned";
+ /** Record facade timing and evidence without changing routing or native authority. */
  const invoke = async (tool: ReviewCoordinatorTool, parameters: Body) => {
   checkCancelled();
   const start = now();

@@ -9449,6 +9449,7 @@ function reviewerAuthorityBlocked(tool: string, manager: SessionProfileLifecycle
 	}
 }
 
+/** Relay one bound capture and preserve execution facts through admission or closure. */
 async function executeReviewHostRelayCapture(
 	slot: ReviewHostRelaySlot,
 	nativeReviewCli: NativeReviewCli,
@@ -10336,6 +10337,7 @@ function reviewHostRelayGroupDiagnostics(slots: readonly ReviewHostRelaySlot[], 
 	}));
 }
 
+/** Report prepared-run evidence separately from submitted progress and mutation certainty. */
 function reviewHostRelayGroupProgress(
 	slots: readonly ReviewHostRelaySlot[],
 	prepared: readonly ReviewHostRelayPreparedResult[],

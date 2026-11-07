@@ -16,11 +16,13 @@ const deps = (overrides: Record<string, unknown> = {}): InProcessReviewerDeps =>
 	registry: { find: () => model, getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "PRIVATE KEY", headers: { private: "PRIVATE HEADER" }, env: { private: "PRIVATE ENV" } }) },
 	complete: async () => assistant(), ...overrides,
 } as unknown as InProcessReviewerDeps);
+/** Require host evidence without narrowing away refused reviewer outcomes. */
 function evidence(outcome: InProcessReviewerOutcome): Record<string, any> {
 	const value = (outcome as { evidence?: Record<string, unknown> }).evidence;
 	assert.ok(value, "a resolved reviewer run must carry host evidence");
 	return value;
 }
+/** Check available phase measurements while preserving unknown completion time. */
 function timings(value: Record<string, any>, completion: boolean) {
 	assert.equal(typeof value.durationMs, "number"); assert.ok(value.durationMs >= 0);
 	assert.equal(typeof value.authDurationMs, "number"); assert.ok(value.authDurationMs >= 0);
@@ -70,6 +72,34 @@ test("auth failure and non-cooperative auth timeout carry auth phase without fab
 	}
 });
 
+test("timeout and abort snapshots keep each phase within the total duration", async t => {
+	for (const phase of ["auth", "completion"] as const) for (const stop of ["timeout", "abort"] as const) {
+		await t.test(`${phase} ${stop}`, async child => {
+			child.mock.timers.enable({ apis: ["setTimeout"] });
+			let advancing = false, clock = 0, entered!: () => void;
+			child.mock.method(performance, "now", () => advancing ? clock++ : 0);
+			const started = new Promise<void>(resolve => { entered = resolve; });
+			const hold = async () => { entered(); return await new Promise<never>(() => {}); };
+			const controller = new AbortController();
+			const pending = runInProcessReviewer({ ...request, timeoutMs: 1000, signal: controller.signal }, deps({
+				registry: { find: () => model, getApiKeyAndHeaders: phase === "auth" ? hold : async () => ({ ok: true, apiKey: "fixture" }) },
+				complete: phase === "completion" ? hold : async () => assistant(),
+			}));
+			await started;
+			advancing = true; clock = stop === "timeout" ? 1000 : 100;
+			if (stop === "timeout") child.mock.timers.tick(1000); else controller.abort();
+			const outcome = await pending;
+			assert.equal(outcome.kind, "refused");
+			if (outcome.kind === "refused") assert.equal(outcome.code, stop === "timeout" ? "timed-out" : "aborted");
+			const value = evidence(outcome);
+			assert.equal(value.phase, phase);
+			for (const key of ["authDurationMs", "completionDurationMs"]) if (typeof value[key] === "number") {
+				assert.ok(value.durationMs >= value[key], `${key} must fit within durationMs`);
+			}
+		});
+	}
+});
+
 test("evidence observers cannot mutate returned facts, change classification, throw or delay settlement", async () => {
 	let observed: unknown;
 	const outcome = await runInProcessReviewer(request, deps({ onEvidence: (value: Record<string, any>) => { observed = value; value.usage.input = 999; throw new Error("PRIVATE OBSERVER ERROR"); } }));
@@ -108,6 +138,7 @@ test("malformed diagnostic getters cannot invalidate an otherwise usable complet
 	assert.doesNotMatch(JSON.stringify(evidence(outcome)), /PRIVATE/);
 });
 
+/** Build a disposable Node-backed native transport fixture with no model calls. */
 function relayFixture(t: test.TestContext, rejectSubmission = false): ReviewHostRelayRequest {
 	const cwd = mkdtempSync(join(tmpdir(), "reviewer-evidence-"));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));

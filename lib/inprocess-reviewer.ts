@@ -352,14 +352,17 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 	let authStarted: number | undefined, completionStarted: number | undefined;
 	let authDurationMs: number | undefined, completionDurationMs: number | undefined;
 	let finalEvidence: Record<string, unknown> | undefined;
+	/** Capture allowlisted facts at one instant, including unfinished phase durations. */
 	const snapshot = (): Record<string, unknown> => {
 		const evidence: Record<string, unknown> = { phase };
+		/** Omit unavailable or invalid measurements rather than inventing a duration. */
 		const duration = (key: string, value: number | undefined) => {
 			if (typeof value === "number" && Number.isFinite(value) && value >= 0) evidence[key] = value;
 		};
-		duration("durationMs", performance.now() - began);
-		duration("authDurationMs", authDurationMs ?? (authStarted === undefined ? undefined : performance.now() - authStarted));
-		duration("completionDurationMs", completionDurationMs ?? (completionStarted === undefined ? undefined : performance.now() - completionStarted));
+		const now = performance.now();
+		duration("durationMs", now - began);
+		duration("authDurationMs", authDurationMs ?? (authStarted === undefined ? undefined : now - authStarted));
+		duration("completionDurationMs", completionDurationMs ?? (completionStarted === undefined ? undefined : now - completionStarted));
 		if (resolvedModel !== undefined) {
 			if (typeof resolvedModel.provider === "string" && typeof resolvedModel.id === "string") {
 				evidence.reviewerModel = `${resolvedModel.provider}/${resolvedModel.id}`.slice(0, 512);
@@ -370,6 +373,7 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 		}
 		return evidence;
 	};
+	/** Freeze the final evidence before phase cleanup or late provider settlement. */
 	const finish = (outcome: InProcessReviewerOutcome): InProcessReviewerOutcome => {
 		finalEvidence = { ...outcome.evidence, ...snapshot() };
 		return { ...outcome, evidence: finalEvidence };

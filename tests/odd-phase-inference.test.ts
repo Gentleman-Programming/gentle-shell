@@ -491,7 +491,7 @@ test("MCP-prefixed tool names are normalized before mapping", () => {
 // role could not be drawn, and one the phase enum also owned would move the
 // working label it must never touch.
 test("the activity vocabulary names each card identity once", () => {
-	assert.deepEqual([...SHELL_ACTIVITIES], ["destructive", "checking", "formatting", "preparing", "publishing", "versioning", "exploring"]);
+	assert.deepEqual([...SHELL_ACTIVITIES], ["destructive", "checking", "formatting", "preparing", "publishing", "versioning", "codegraph", "exploring"]);
 	assert.deepEqual(Object.keys(SHELL_ACTIVITY_IDENTITY).sort(), [...SHELL_ACTIVITIES].sort());
 });
 
@@ -508,6 +508,8 @@ test("every activity wears its own mark and theme role", () => {
 		preparing: { glyph: "⚒ ", titleRole: "syntaxFunction" },
 		publishing: { glyph: "↑", titleRole: "success" },
 		versioning: { glyph: "⎇", titleRole: "warning" },
+		// The tool's own mark, worn by both of its cards.
+		codegraph: { glyph: "󰆼", titleRole: "mdCode" },
 		exploring: { glyph: "⌕", titleRole: "mdLink" },
 	});
 	const marks = SHELL_ACTIVITIES.map((activity) => SHELL_ACTIVITY_IDENTITY[activity].glyph);
@@ -516,6 +518,25 @@ test("every activity wears its own mark and theme role", () => {
 		const glyph = SHELL_ACTIVITY_IDENTITY[activity].glyph;
 		assert.equal(visibleWidth(glyph), activity === "preparing" ? 2 : 1, `${activity}: one counted column plus its own gap`);
 	}
+});
+
+// CodeGraph is its own card identity: the same program the native tool runs is
+// recognizable through the shell. Only a segment whose command-position program is
+// `codegraph` is read, so prose that mentions the tool never claims the card.
+test("a codegraph call names its own card identity and no phase", () => {
+	const calls = ["codegraph init", "codegraph init /tmp/ws", "codegraph query --path . -- alpha", "codegraph explore --path . -- alpha", "cd /tmp/ws && codegraph init", "/usr/local/bin/codegraph init"];
+	for (const command of calls) {
+		assert.equal(inferShellActivity(command), "codegraph", command);
+		assert.equal(inferOddPhase("bash", { command }), undefined, `${command}: presentation only, never a phase`);
+	}
+	for (const command of ["codegraph", "codegraph --version", "codegraph --help", "echo codegraph init", "mytool codegraph init", "codegraph init && ./script", "codegraph init > build.log"]) {
+		assert.equal(inferShellActivity(command), undefined, command);
+	}
+	// A read that merely searches for the word is still the read it is.
+	assert.equal(inferShellActivity("git log --grep codegraph"), "exploring");
+	// A check beside a CodeGraph call still takes the card.
+	assert.equal(inferShellActivity("codegraph init && pnpm test"), "checking");
+	assert.equal(inferShellActivity("git status && codegraph init"), "codegraph");
 });
 
 // The card's own reader: an exploration card names what the call does, which is

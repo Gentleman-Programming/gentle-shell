@@ -16,6 +16,10 @@ import { CARD_CONTENT, cardContent } from "../lib/card-content-policy.ts";
 import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
 import { inferOddPhase, inferShellActivity, SHELL_ACTIVITY_IDENTITY } from "../lib/odd-phase-inference.ts";
 import type { OddPhase } from "../lib/odd-phase.ts";
+import {
+	CODEGRAPH_MARK, CODEGRAPH_TITLE_ROLE, CODEGRAPH_TOOL, codeGraphCollapsedRows, codeGraphPreview,
+	codegraphCallDetail, codegraphCallFromCommand,
+} from "../lib/codegraph-card-preview.ts";
 import { versioningCardPreview } from "../lib/versioning-card-preview.ts";
 import { quietToolsEnabled } from "../lib/quiet-tools-config.ts";
 import { registerCompactCodemode } from "../lib/codemode-renderer.ts";
@@ -502,11 +506,23 @@ interface CommandPreviewInput {
 }
 
 // The shared previews, in the order a card tries them: local history
-// (lib/versioning-card-preview.ts). A shared preview owns one command family and
-// answers nothing for another, so the card wires it once.
+// (lib/versioning-card-preview.ts) and CodeGraph (lib/codegraph-card-preview.ts).
+// A shared preview owns one command family and answers nothing for another, so the
+// card wires it once.
 const COMMAND_PREVIEWS: ReadonlyArray<(input: CommandPreviewInput) => CommandPreview | undefined> = [
 	versioningCardPreview,
+	codegraphCommandPreview,
 ];
+
+/** The CodeGraph summary a bash card collapses to, or undefined when the command runs something else. */
+function codegraphCommandPreview({ command, output, failed, limit }: CommandPreviewInput): CommandPreview | undefined {
+	const call = codegraphCallFromCommand(command);
+	if (call === undefined) return undefined;
+	const rows = codeGraphCollapsedRows(call.operation, output, failed, false, limit);
+	if (rows === undefined) return undefined;
+	const whole = output.replace(/\r\n/g, "\n").replace(/(?:\n[ \t]*)+$/, "");
+	return { text: rows.text, tail: rows.tail, reveals: rows.text !== whole };
+}
 
 // pi re-renders every visible card each frame, so a shared preview is parsed once
 // per retained result: the command and the output of one call never change, and
@@ -637,19 +653,24 @@ function bashHeading(args: Record<string, unknown>, theme: ThemeLike, expanded: 
 	// heads its card instead of hiding behind a phase it never had.
 	const activity = inferShellActivity(command);
 	const identity = activity === undefined ? BASH_IDENTITY : SHELL_ACTIVITY_IDENTITY[activity];
+	// A CodeGraph call heads with the operation and query it ran, through the same
+	// helper the native tool's card uses, so one program reads as one card.
+	const codegraph = activity === "codegraph" ? codegraphCallFromCommand(command) : undefined;
 	// Only a composition every segment of which is a read or a check names a
 	// principal action; anything else keeps the whole command, so nothing
 	// consequential is hidden behind a detail line.
 	const phaseLike = activity === "exploring" || activity === "checking" ? activity : undefined;
 	const named = phaseLike === undefined ? undefined : bashPrincipalAction(command, phaseLike);
-	const detail = named ?? command;
+	const detail = codegraph !== undefined
+		? codegraphCallDetail(codegraph)
+		: named ?? command;
 	return {
 		title: theme.bold(activity ?? "bash"),
 		subtitle: `${detail}${timeout}`,
 		// A composition the inference cannot name keeps its whole command, so collapsed it
 		// folds to the one row that says what the command does and how much folds behind.
 		// A composed gentle-ai call is never compacted: the card must show the whole call.
-		...(named === undefined && !/(^|[\s;&|])gentle-ai($|[\s;&|])/u.test(command) ? { collapsedDetail: (room: number) => `${bashSummary(command, Math.max(1, room - visibleWidth(timeout)))}${timeout}` } : {}),
+		...(named === undefined && codegraph === undefined && !/(^|[\s;&|])gentle-ai($|[\s;&|])/u.test(command) ? { collapsedDetail: (room: number) => `${bashSummary(command, Math.max(1, room - visibleWidth(timeout)))}${timeout}` } : {}),
 		glyph: identity.glyph,
 		titleRole: identity.titleRole,
 		singleLine: !expanded,
@@ -1129,9 +1150,8 @@ export function createQuietToolRenderer(
 			// the full result. Failures keep their bounded error tail so a red
 			// card always says why. The default preference keeps the previews.
 			const withheld = COMMAND_ONLY_TOOLS.has(toolName) && !isError && cardContent() === CARD_CONTENT.MINIMAL;
-			// Both expansion levels are known here, so the card can tell whether
-			// expanding it would show anything its preview does not, measured where
-			// the rows are drawn (wrapping at a narrow width hides rows too).
+			// Both levels are known here, so the card knows whether expanding shows more,
+			// measured where the rows are drawn (wrapping at a narrow width hides rows too).
 			const collapsedRows = quietResultRows(toolName, safeResult, text, { expanded: false, isError, args: renderContext?.args, withheld });
 			const expandedRows = quietResultRows(toolName, safeResult, text, { expanded: true, isError, args: renderContext?.args, withheld });
 			// A versioning preview judges its own text, so its `reveals` is authoritative
@@ -1172,6 +1192,85 @@ export function createQuietToolRenderer(
 			}
 			// The card top rule carries the expand key, so an empty result only closes the frame.
 			return carded(() => new Text("", 0, 0));
+		},
+	};
+}
+
+// CodeGraph draws its own row (`renderShell: "self"`) and ships no card, so quiet
+// tools supplies one through the same resolver that redraws bash. The tool keeps its
+// execution, schema and timeouts; only the drawing is Gentle's, and the summary it
+// collapses to is shared with the same program run through bash.
+/** The CodeGraph heading: the tool's own mark and name, with the operation and query from the call's arguments. */
+function codeGraphHeading(args: Record<string, unknown>, theme: ThemeLike, expanded: boolean): ToolCardHeading {
+	const operation = asString(args.operation, "...");
+	const query = asString(args.query);
+	return {
+		title: theme.bold(CODEGRAPH_TOOL),
+		subtitle: codegraphCallDetail({ operation, ...(query.length > 0 ? { query } : {}) }),
+		glyph: CODEGRAPH_MARK,
+		titleRole: CODEGRAPH_TITLE_ROLE,
+		singleLine: !expanded,
+	};
+}
+
+/** Rendering-only factory for the CodeGraph card; the tool keeps its own execution, schema, and timeouts. */
+export function createCodeGraphCardRenderer(): Pick<ToolDefinition, "renderShell" | "renderCall" | "renderResult"> {
+	return {
+		renderShell: "self",
+		renderCall(args, theme, context) {
+			const renderContext = sanitizedRenderContext(context);
+			const tone = toolTone(renderContext.isPartial !== false, renderContext.isError === true);
+			const expanded = renderContext.expanded === true;
+			// Same rule as every quiet card: only the final result says the call finished,
+			// because a host replaying a stored transcript never starts it.
+			const hint = renderContext.isPartial === false
+				? stripAnsi(keyHint("app.tools.expand", expanded ? "to collapse" : "to expand"))
+				: undefined;
+			const heading = codeGraphHeading(isRenderArgs(args) ? args : {}, theme, expanded);
+			const reveal = cardReveal(renderContext.state);
+			if (reveal) reveal.heading = (rowWidth) => !sameText(headingRows(heading, tone, theme, true, rowWidth).join("\n"), headingRows(heading, tone, theme, false, rowWidth).join("\n"));
+			return new ToolCardTop(heading, tone, theme, hint, renderContext, reveal);
+		},
+		renderResult(result, options, theme, context) {
+			const renderContext = context ? sanitizedRenderContext(context) : undefined;
+			markCardResult(renderContext?.state);
+			const cacheKey = typeof result === "object" && result !== null ? result : undefined;
+			const safeResult = sanitizedResult(result);
+			const details = detailsRecord(safeResult);
+			const operation = asString(renderContext?.args?.operation) || asString(details.operation);
+			const text = safeText(extractTextContent(safeResult));
+			// The tool reports a failed or unavailable run as an ordinary result with a
+			// recorded status, while the host flags a thrown call on its context (older
+			// hosts still put the flag on the options). Either one is a failure here.
+			const legacyError = "isError" in options && options.isError === true;
+			const failed = (renderContext?.isError ?? legacyError) || typeof details.status === "string";
+			const tone = toolTone(options.isPartial === true, failed);
+			const elapsed = cardElapsed(renderContext?.durationMs);
+			const expanded = options.expanded;
+			const reveal = cardReveal(renderContext?.state);
+			const carded = (component: () => Component, cacheable = options.isPartial !== true): Component => new ToolCardBody(component, tone, theme, cacheable, elapsed, reveal);
+			// Both levels are known here, so the card knows whether expanding shows more,
+			// measured where the rows are drawn (wrapping at a narrow width hides rows too).
+			const withheld = cardContent() === CARD_CONTENT.MINIMAL;
+			const collapsed = codeGraphCollapsedRows(operation, text, failed, withheld);
+			if (reveal) reveal.body = (rowWidth) => {
+				const rows = collapsed?.text ?? "";
+				return !sameText(rows, text) || contentRows(rows, cardInnerWidth(rowWidth)) > (collapsed?.rows ?? PREVIEW_LINE_LIMIT);
+			};
+			// Minimal cards keep the heading alone; a failure always says why.
+			if (withheld && !expanded && !failed) return carded(() => new Text("", 0, 0));
+			if (options.isPartial) {
+				const visible = codeGraphPreview(text);
+				if (reveal) reveal.body = (rowWidth) => !sameText(visible, text) || contentRows(visible, cardInnerWidth(rowWidth)) > PREVIEW_LINE_LIMIT;
+				return carded(() => new BoundedRows([
+					...(visible ? [{ text: theme.fg("muted", visible), rows: PREVIEW_LINE_LIMIT, tail: true }] : []),
+				], cacheKey));
+			}
+			if (expanded) return carded(() => new Text(text ? theme.fg(failed ? "error" : "toolOutput", text) : "", 0, 0));
+			if (collapsed === undefined) return carded(() => new Text("", 0, 0));
+			return carded(() => new BoundedRows([
+				{ text: theme.fg(failed ? "error" : "muted", collapsed.text), rows: collapsed.rows, tail: collapsed.tail },
+			], cacheKey));
 		},
 	};
 }
@@ -1230,8 +1329,11 @@ export default function quietTools(
 	// probed structurally; hosts without it keep pi's native bash rendering.
 	const host = pi as typeof pi & { registerToolRenderer?: (resolver: (toolName: string, next: () => unknown) => unknown) => void };
 	if (typeof host.registerToolRenderer === "function") {
-		host.registerToolRenderer((toolName, next) =>
-			toolName === "bash" ? createQuietToolRenderer("bash", resolveOverride, () => elapsedTiming) : next());
+		host.registerToolRenderer((toolName, next) => {
+			if (toolName === "bash") return createQuietToolRenderer("bash", resolveOverride, () => elapsedTiming);
+			if (toolName === CODEGRAPH_TOOL) return createCodeGraphCardRenderer();
+			return next();
+		});
 	}
 	return registerCompactCodemode(pi);
 }

@@ -15,9 +15,10 @@ import { isDestructiveCommand, isDestructiveSegment } from "./destructive-card-a
  * The activity a shell call names on its own card. `exploring` and `checking` are
  * ODD phases; the rest are presentation only — installing, reformatting, deleting,
  * a commit or a push is not a step of the ODD protocol, so none of them reaches the
- * phase label, the global phase enum, or the exploration budget.
+ * phase label, the global phase enum, or the exploration budget. `codegraph` names
+ * the native tool's own program, so one tool reads as one card on either surface.
  */
-export const SHELL_ACTIVITIES = ["destructive", "checking", "formatting", "preparing", "publishing", "versioning", "exploring"] as const;
+export const SHELL_ACTIVITIES = ["destructive", "checking", "formatting", "preparing", "publishing", "versioning", "codegraph", "exploring"] as const;
 
 export type ShellActivity = (typeof SHELL_ACTIVITIES)[number];
 
@@ -33,7 +34,8 @@ export type ShellActivity = (typeof SHELL_ACTIVITIES)[number];
  * six colours a heading can wear, and the two maintenance identities are told
  * apart by their mark and their word rather than by a colour no theme has. The
  * mark still tells an identity apart from a status tone, and the frame keeps
- * painting the call's own state.
+ * painting the call's own state. `mdCode` is the one slot a CodeGraph call wears on
+ * both of its cards, whose mark is the tool's own icon.
  *
  * A mark carries its own gap where a font may paint it wider than pi-tui counts:
  * U+2692 is drawn two cells wide by an emoji-fallback font while pi-tui counts it
@@ -49,6 +51,7 @@ export const SHELL_ACTIVITY_IDENTITY: Record<ShellActivity, { glyph: string; tit
 	preparing: { glyph: "⚒ ", titleRole: "syntaxFunction" },
 	publishing: { glyph: "↑", titleRole: "success" },
 	versioning: { glyph: "⎇", titleRole: "warning" },
+	codegraph: { glyph: "󰆼", titleRole: "mdCode" },
 	exploring: { glyph: "⌕", titleRole: "mdLink" },
 };
 
@@ -340,9 +343,9 @@ function inferShellPhase(command: string | undefined): OddPhase | undefined {
 /**
  * The activity a shell command names for its own card, or undefined when some
  * segment carries no reliable signal. Preparing, formatting, destructive,
- * versioning and
- * publishing are card identities, not ODD phases: the working label and the
- * exploration budget read inferOddPhase, which never returns them.
+ * versioning, publishing and codegraph are card identities, not ODD phases: the
+ * working label and the exploration budget read inferOddPhase, which never
+ * returns them.
  *
  * The card keeps every segment honest: a segment nothing can name keeps the whole
  * call generic — a check printed beside an unknown script never claims the card —
@@ -365,6 +368,7 @@ export function inferShellActivity(command: string | undefined): ShellActivity |
 	if (activities.includes("versioning")) return "versioning";
 	if (activities.includes("formatting")) return "formatting";
 	if (activities.includes("preparing")) return "preparing";
+	if (activities.includes("codegraph")) return "codegraph";
 	return "exploring";
 }
 
@@ -398,6 +402,7 @@ function segmentActivity(segment: string): ShellActivity | undefined {
 	if (isPreparingSegment(segment)) return "preparing";
 	if (matchesAny(VERSIONING_COMMANDS, segment)) return "versioning";
 	if (matchesAny(PUBLISHING_COMMANDS, segment)) return "publishing";
+	if (codeGraphCommandWords(segment) !== undefined) return "codegraph";
 	return undefined;
 }
 
@@ -781,6 +786,20 @@ function stripSegment(segment: string): string {
 // A segment that writes a file (`echo x > out`) is never a no-op.
 function isNeutral(segment: string): boolean {
 	return !writesFile(segment) && matchesAny(NEUTRAL_COMMANDS, segment);
+}
+
+/**
+ * The words after a command-position `codegraph` program, or undefined when the
+ * segment runs something else: only the command position names a program, so
+ * `echo codegraph init` never matches, and a flag-only invocation keeps the generic card.
+ */
+export function codeGraphCommandWords(segment: string): string[] | undefined {
+	const words = shellWords(segment);
+	let index = 0;
+	while (index < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index] ?? "")) index += 1;
+	if (!/^(?:\S*\/)?codegraph$/.test(words[index] ?? "")) return undefined;
+	const rest = words.slice(index + 1);
+	return rest.some((word) => !word.startsWith("-")) ? rest : undefined;
 }
 
 function isReadOnlyInspection(segment: string): boolean {

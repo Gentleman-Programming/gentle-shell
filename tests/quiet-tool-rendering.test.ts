@@ -16,6 +16,7 @@ import { stripAnsi } from "../lib/terminal-theme.ts";
 import { CARD_CONTENT, cardContent, setCardContent } from "../lib/card-content-policy.ts";
 import piPretty from "../extensions/pi-pretty.ts";
 import productionQuietTools, {
+	createCodeGraphCardRenderer,
 	createQuietToolRenderer,
 	countNonEmptyLines,
 	extractTextContent,
@@ -1586,11 +1587,11 @@ test("the card styles exactly the activities the classifier can produce", async 
 	// wider than the two ODD phases, because a deletion or a history change is a
 	// presentation identity the phase label never takes.
 	const reachable = new Set<string>();
-	for (const command of ["git status", "pnpm test", "rm -rf build", "git commit -m x", "gh pr create", "npm install", "gofmt -w ."]) {
+	for (const command of ["git status", "pnpm test", "rm -rf build", "git commit -m x", "gh pr create", "npm install", "gofmt -w .", "codegraph init"]) {
 		const activity = inferShellActivity(command);
 		if (activity) reachable.add(activity);
 	}
-	assert.deepEqual([...reachable].sort(), ["checking", "destructive", "exploring", "formatting", "preparing", "publishing", "versioning"], "the reachable activities stay the delivered vocabulary");
+	assert.deepEqual([...reachable].sort(), ["checking", "codegraph", "destructive", "exploring", "formatting", "preparing", "publishing", "versioning"], "the reachable activities stay the delivered vocabulary");
 	assert.deepEqual(Object.keys(SHELL_ACTIVITY_IDENTITY).sort(), [...SHELL_ACTIVITIES].sort(), "every activity has one identity");
 	// Only the two ODD phases may reach the phase label; the rest stay presentation.
 	assert.deepEqual([...reachable].filter((activity) => (ODD_PHASES as readonly string[]).includes(activity)).sort(), ["checking", "exploring"]);
@@ -2355,7 +2356,8 @@ test("elapsed time stays on the bash card and leaves the other quiet cards uncha
 // file list, nothing at all for a silent add, and the raw rows for a sentence or
 // a stack the card refuses to read. Everything the preview leaves out stays one
 // expansion away, and a failure keeps its own cause.
-test("a versioning card previews its own family's output and expands to the whole result", () => {
+test("a versioning card previews its own family's output and expands to the whole result", (t) => {
+	useCardContent(t, CARD_CONTENT.DEFAULT);
 	const bash = registeredQuietTools().get("bash");
 	const output = [
 		"[main 1a2b3c4] feat: add the thing",
@@ -2376,7 +2378,8 @@ test("a versioning card previews its own family's output and expands to the whol
 	for (const line of output.split("\n")) assert.ok(expanded.includes(line), `expanding keeps "${line}"`);
 });
 
-test("a versioning card offers no key when its result is already whole", () => {
+test("a versioning card offers no key when its result is already whole", (t) => {
+	useCardContent(t, CARD_CONTENT.DEFAULT);
 	const bash = registeredQuietTools().get("bash");
 	// A rebase prints one sentence; expanding it would draw the same row again.
 	const rebase = hostRow(bash, { command: "git rebase main" }, textResult("Successfully rebased and updated refs/heads/main.\n")).rows().join("\n");
@@ -2391,7 +2394,8 @@ test("a versioning card offers no key when its result is already whole", () => {
 	}
 });
 
-test("a versioning card's failure keeps its cause and claims no success", () => {
+test("a versioning card's failure keeps its cause and claims no success", (t) => {
+	useCardContent(t, CARD_CONTENT.DEFAULT);
 	const bash = registeredQuietTools().get("bash");
 	const output = [
 		"[main 1a2b3c4] feat: add the thing",
@@ -2538,4 +2542,65 @@ test("the minimal Card content keeps a versioning heading and withholds its prev
 	assert.match(row, /⎇ versioning · git commit -m x/);
 	assert.doesNotMatch(row, /1 file changed/);
 	assert.match(row, /to expand/, "the key still reveals the withheld preview");
+});
+
+// CodeGraph draws through the same card machinery as every other quiet tool: one
+// heading, a collapsed summary of the facts its output stated, and the complete
+// retained output once expanded. Fixtures are rows the real binary printed.
+const CODEGRAPH_QUERY = ['Search Results for "alpha":', "", "function    alpha", "  src/a.ts:1", "", "import      ./a.ts", "  src/b.ts:1"].join("\n");
+const CODEGRAPH_INIT = ["┌  Initializing CodeGraph", "│", "◆  Initialized in /tmp/ws", "└  Done"].join("\n");
+const CODEGRAPH_INIT_ALREADY = "▲  Already initialized in /tmp/ws";
+
+test("the native codegraph tool draws its own card at both expansion levels", (t) => {
+	useCardContent(t, CARD_CONTENT.DEFAULT);
+	const codegraph: any = createCodeGraphCardRenderer();
+	const args = { operation: "query", query: "alpha", limit: 5 };
+	const render = (result: any, options: any, context: any) => renderToString(codegraph.renderResult(result, options, passthroughTheme, context));
+	assert.equal(renderToString(codegraph.renderCall(args, passthroughTheme, routineRenderContext({ args, isPartial: false, executionStarted: true }))).trimEnd(), "codegraph · query alpha");
+
+	const collapsed = render(textResult(CODEGRAPH_QUERY), { expanded: false, isPartial: false }, routineRenderContext({ args }));
+	assert.match(collapsed, /→ 2 results/, "the collapsed card summarizes the count its own output stated");
+
+	const expanded = render(textResult(CODEGRAPH_QUERY), { expanded: true, isPartial: false }, routineRenderContext({ args, expanded: true }));
+	for (const line of CODEGRAPH_QUERY.split("\n")) if (line.trim().length > 0) assert.ok(expanded.includes(line), `expanding keeps "${line}"`);
+
+	const init = render(textResult(CODEGRAPH_INIT), { expanded: false, isPartial: false }, routineRenderContext({ args: { operation: "init" } }));
+	assert.match(init, /→ initialized/, "an init collapses to the sentence it printed");
+	const already = render(textResult(CODEGRAPH_INIT_ALREADY), { expanded: false, isPartial: false }, routineRenderContext({ args: { operation: "init" } }));
+	assert.match(already, /→ already initialized/);
+});
+
+test("a codegraph command draws the same card as the native tool at both levels", (t) => {
+	useCardContent(t, CARD_CONTENT.DEFAULT);
+	const bash = registeredQuietTools().get("bash");
+	const command = "codegraph query --path /tmp/ws --limit 5 -- alpha";
+	const row = hostRow(bash, { command }, textResult(CODEGRAPH_QUERY));
+
+	const collapsed = row.rows().join("\n");
+	assert.match(collapsed, /codegraph · query alpha/, "the bash card wears the same identity and call");
+	assert.match(collapsed, /→ 2 results/, "and the same summary");
+	assert.match(collapsed, /to expand/, "the card says the whole output is there");
+
+	row.component.setExpanded(true);
+	const expanded = row.rows().join("\n");
+	for (const line of CODEGRAPH_QUERY.split("\n")) if (line.trim().length > 0) assert.ok(expanded.includes(line), `expanding keeps "${line}"`);
+
+	const init = (output: string) => hostRow(bash, { command: "codegraph init /tmp/ws" }, textResult(output)).rows().join("\n");
+	assert.match(init(CODEGRAPH_INIT), /codegraph · init/);
+	assert.match(init(CODEGRAPH_INIT), /→ initialized/);
+	assert.match(init(CODEGRAPH_INIT_ALREADY), /→ already initialized/);
+});
+
+test("quiet tools registers the CodeGraph card through the same resolver as bash", () => {
+	const { pi } = createPi();
+	const resolvers: Array<(toolName: string, next: () => unknown) => unknown> = [];
+	(pi as any).registerToolRenderer = (resolver: (toolName: string, next: () => unknown) => unknown) => resolvers.push(resolver);
+	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
+	const native = { marker: "native" };
+	const codegraph = resolvers.at(-1)!("codegraph", () => native) as any;
+	assert.notEqual(codegraph, native, "the tool keeps its execution; only its drawing is Gentle's");
+	assert.equal(codegraph.renderShell, "self");
+	assert.equal(typeof codegraph.renderCall, "function");
+	assert.equal(typeof codegraph.renderResult, "function");
+	assert.equal(resolvers.at(-1)!("read", () => native), native, "every other tool still defers");
 });

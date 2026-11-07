@@ -12044,6 +12044,7 @@ function createGentleAiExtensionForTesting(
 
 	pi.registerTool({
 		name: "gentle_review_scope",
+		exposure: "model-only",
 		renderShell: "self",
 		label: "Gentle Review Scope",
 		description: "Read one bounded, integrity-checked page of the controller-owned frozen changed scope. This read-only tool never inspects the ambient or candidate tree.",
@@ -12087,6 +12088,7 @@ function createGentleAiExtensionForTesting(
 
 	const reviewCaptureGroupTool = observedReviewTool({
 		name: "gentle_review_capture_group",
+		exposure: "model-only",
 		renderShell: "self",
 		label: "Gentle Review Capture Group",
 		description: "Capture one complete provider-issued materialize reviewer group: validates the exact ordered current collect set, forecasts its bounded model cost, runs reviewers concurrently, admits outputs one at a time in provider order.",
@@ -12130,6 +12132,7 @@ function createGentleAiExtensionForTesting(
 
 	const reviewCaptureTool = observedReviewTool({
 		name: "gentle_review_capture",
+		exposure: "model-only",
 		renderShell: "self",
 		label: "Gentle Review Capture",
 		description: "Capture exactly one provider-issued ordinary native review collect slot: it validates one opaque collect binding against current target-scoped STATUS, executes at most one capture, and never follows a transition.",
@@ -12179,6 +12182,7 @@ function createGentleAiExtensionForTesting(
 
 	const reviewControllerTool = observedReviewTool({
 		name: "gentle_review",
+		exposure: "model-only",
 		renderShell: "self",
 		label: "Gentle Review Controller",
 		description:
@@ -12801,7 +12805,12 @@ function createGentleAiExtensionForTesting(
 			if (primaryToolCall) {
 				const launch = event.input as Record<string, unknown>;
 				const selected = [launch.workspace_root, launch.repository_root].find((value): value is string => typeof value === "string" && value.trim() !== "");
-				const root = selected ? resolve(ctx.cwd, selected) : ctx.cwd;
+				const target = selected ? resolve(ctx.cwd, selected) : ctx.cwd;
+				// Spec paths are repository-relative even when Pi starts in a subdirectory.
+				// Resolve the selected target itself; never borrow the session's document
+				// for a different repository. Non-Git/bootstrap directories keep their path.
+				const needsDocument = ["gentle-ai-worker", "worker", "gentle-ai-verify"].includes(String(launch.agent));
+				const root = needsDocument ? resolveSessionWorktree(target, ctx.cwd)?.root ?? target : target;
 				// The guard reads the same mode the prompt was built with, from the session's own environment, so the
 				// two can never disagree about whether a small change belongs to a writer.
 				const orchestratorMode = resolveSessionDelegationMode(ctx, permissionEnvironment);

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -124,9 +125,33 @@ test("S16: the delegation card format and a comma-free task reference are admitt
 		'Spec: odd/tasks/ledger.md (read until "## Log"). Do T2; S3.',
 		"Spec: odd/tasks/ledger.md T1 S1; read through Tasks before Log.",
 		"- Spec: `odd/tasks/ledger.md`, T4",
+		"Spec: odd/tasks/ledger.md, T2–T4, S1",
+		"Spec: odd/tasks/ledger.md, T2..T4, S1",
 	]) {
 		assert.equal(rejectUndocumentedWriterLaunch({ agent: "gentle-ai-worker", task: `${line}\nImplement it.${surfaces}` }, { root, contextUsage: { tokens: 0, contextWindow: 400_000 } }), undefined, line);
 	}
+});
+
+test("canonical Spec launches from a repository subdirectory use its Git root for writers and verifiers", async t => {
+	const root = workspace(true);
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	execFileSync("git", ["init", "--quiet", root]);
+	const cwd = join(root, "frontend");
+	mkdirSync(cwd);
+	for (const agent of ["gentle-ai-worker", "gentle-ai-verify"]) {
+		const result = await launchThroughHook({ agent, task: `Spec: odd/tasks/ledger.md, T2–T4, S1${surfaces}` }, cwd, 0);
+		assert.equal(result?.block, undefined, `${agent}: ${result?.reason}`);
+	}
+});
+
+test("an explicit repository target never borrows the session repository's document", async t => {
+	const root = workspace(true);
+	const other = workspace(false);
+	t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(other, { recursive: true, force: true }); });
+	execFileSync("git", ["init", "--quiet", root]);
+	execFileSync("git", ["init", "--quiet", other]);
+	const result = await launchThroughHook({ agent: "gentle-ai-worker", repository_root: other, task: `Spec: odd/tasks/ledger.md, T1${surfaces}` }, root, 0);
+	assert.equal(result?.block, true);
 });
 
 test("S16: a Spec mention inside prose, outside odd/tasks, or through a symlink leaving the root is rejected", (t) => {

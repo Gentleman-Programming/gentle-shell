@@ -38,6 +38,8 @@ const REVIEW_FAMILY_TOOLS = [
 // The original trim measured 16,638 B; rebasing onto main added the requestContextPath
 // guideline and the abandon parameter prose (+~0.5 KB of new upstream capability text),
 // so the cap tracks that state rather than the earlier main.
+// Shared guidance (REVIEW_BLOCKER_GUIDANCE) is declared once on gentle_review:
+// Pi dedupes identical guidelines, so per-tool copies only inflate this count.
 const REVIEW_FAMILY_PROSE_BUDGET_BYTES = 17300;
 
 function registerReviewFamily(): Map<string, RegisteredDeclaration> {

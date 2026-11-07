@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
+import { withFullscreenOverlay } from "../lib/fullscreen-activity.ts";
 import { guidePlacement, GuidePopover, guideStepText, guideSteps, GuideTour, type GuideMode, type GuideResult } from "../lib/gentle-guide.ts";
 import { sidebarState } from "../lib/shell-sidebar.ts";
 
@@ -69,7 +70,9 @@ export default function gentleGuide(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		active?.close("ended");
 		const session: Session = { tour, mode, ctx, close: () => {}, placement: "", settled: Promise.resolve(undefined) };
 		active = session;
-		const settled = ctx.ui.custom<GuideResult | undefined>((tui, theme, _keybindings, done) => {
+		// Fullscreen activity event: dialog tools (ask_user_*) defer while the
+		// guide popover paints, so they never mount hidden beneath it.
+		const settled = withFullscreenOverlay(pi, "gentle-guide:tour", () => ctx.ui.custom<GuideResult | undefined>((tui, theme, _keybindings, done) => {
 			session.tui = tui;
 			let closed = false;
 			session.close = (result) => { if (!closed) { closed = true; done(result); } };
@@ -83,7 +86,7 @@ export default function gentleGuide(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const placement = placementOf(session);
 			session.placement = JSON.stringify(placement);
 			return placement;
-		} });
+		} }));
 		session.settled = settled.finally(() => { if (active === session) active = undefined; });
 		return session.settled;
 	};

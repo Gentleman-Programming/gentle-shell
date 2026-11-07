@@ -51,6 +51,7 @@ import { inheritedUnsafeGitEnvironmentKeys } from "../lib/review-repository.ts";
 import { historyDir, loadHistory, loadStoredTask, pruneHistory, saveTask, type StoredTask } from "../lib/agents-history.ts";
 import { sessionToMarkdown } from "../lib/agents-transcript.ts";
 import { AgentsView } from "../lib/agents-view.ts";
+import { withFullscreenOverlay } from "../lib/fullscreen-activity.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
 import { PresencePublisher, sanitizeDisplayLabel, listPresence, sessionHash } from "../lib/orchestrator-presence.ts";
 import { incomingMessageCard, outgoingMessageCall, outgoingMessageResult, type OrchestratorMessageDetails } from "../lib/orchestrator-message-card.ts";
@@ -1051,9 +1052,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				if (closePromise) return closePromise;
 				closePromise = Promise.resolve().then(async () => {
 					await Promise.allSettled([
-						(async () => { try { client?.close(); } catch {} })(),
-						(async () => { try { await listener?.close(); } catch {} })(),
-						(async () => { try { if (registry && (!listener || !listener.closesRegistry)) await registry.close?.(); } catch {} })(),
+						(async () => { try { client?.close(); } catch { /* best-effort: the登场 always unblocks */ } })(),
+						(async () => { try { await listener?.close(); } catch { /* best-effort: the登场 always unblocks */ } })(),
+						(async () => { try { if (registry && (!listener || !listener.closesRegistry)) await registry.close?.(); } catch { /* best-effort: the登场 always unblocks */ } })(),
 					]);
 				});
 				return closePromise;
@@ -1103,7 +1104,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					const diagnostic = startupPhase === "registry" && observation.availability === "observed" && observation.firstFailurePhase !== null
 						? `phase=${observation.firstFailurePhase} class=${observation.firstFailureClass} code=${observation.firstFailureCode} lastStartupMarker=${observation.lastStartupMarker ?? "unavailable"}`
 						: `phase=${startupPhase} diagnostics=unavailable`;
-					try { ctx.ui.notify(`Session transport startup failed: ${diagnostic}${bootstrap ? ` bootstrap=${bootstrap}` : ""}.`, "warning"); } catch {}
+					try { ctx.ui.notify(`Session transport startup failed: ${diagnostic}${bootstrap ? ` bootstrap=${bootstrap}` : ""}.`, "warning"); } catch { /* best-effort: never block the transport boot */ }
 				}
 				await closeStartupTransport();
 				// Armed only after cleanup, so the re-arm never overlaps the failed helper.
@@ -2054,7 +2055,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		}
 		let view: AgentsView | undefined;
 		let overlayHost: { requestRender(force?: boolean): void; stop(): void; start(): void } | undefined;
-		const chosen = await ctx.ui.custom<TaskRecord | null>(
+		// Fullscreen activity event: dialog tools (ask_user_*) defer while an
+		// overlay menu holds the keyboard so they never mount hidden beneath it.
+		const chosen = await withFullscreenOverlay(pi, "gentle-agents:tasks", () => ctx.ui.custom<TaskRecord | null>(
 			(tui, theme, _keybindings, done) => {
 				const close = withOverlayRepaint(tui, done);
 				overlayHost = tui;
@@ -2085,10 +2088,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				return interaction;
 			},
 			{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } },
-		).finally(() => {
-			view?.dispose();
-			if (view) overlays.delete(view);
-		});
+		));
+		if (!chosen || !overlayHost) return;
 		if (!chosen || !overlayHost) return;
 		if (!chosen.sessionPath) {
 			ctx.ui.notify("This task has no session file yet.", "warning");
@@ -3150,7 +3151,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				return;
 			}
 			let view: JobsView | undefined;
-			await ctx.ui.custom<null>((tui, theme, _keybindings, done) => {
+			await withFullscreenOverlay(pi, "gentle-agents:jobs", () => ctx.ui.custom<null>((tui, theme, _keybindings, done) => {
 				const close = withOverlayRepaint(tui, done);
 				view = new JobsView({
 					theme,
@@ -3169,7 +3170,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					requestRender: () => tui.requestRender(),
 				});
 				return view;
-			}, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } }).finally(() => view?.dispose());
+			}, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } }));
 		},
 	});
 	pi.registerCommand(AGENTS_COMMAND_NAME, {
@@ -3240,7 +3241,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		} catch {
 			presence = undefined;
 			// Fixed text only: the failure may carry a profile path or session id.
-			try { ctx.ui.notify("Session presence unavailable: phase=presence class=transport code=presence-cleared.", "warning"); } catch {}
+			try { ctx.ui.notify("Session presence unavailable: phase=presence class=transport code=presence-cleared.", "warning"); } catch { /* best-effort: never block the teardown */ }
 		}
 		// /reload and /resume recompute busy from live owned work only: a task
 		// restored from disk never enters ownedTaskIds, so counting it would

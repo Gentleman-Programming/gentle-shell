@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { USER_PI_HOME_ENV } from "../lib/gentle-shell-launcher.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
+import { withFullscreenOverlay } from "../lib/fullscreen-activity.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
 import { createStatsLoader, currentSessionStats, type StatsLoader } from "../lib/stats-collector.ts";
 import { StatsView } from "../lib/stats-view.ts";
@@ -53,7 +54,9 @@ export default function gentleStats(pi: ExtensionAPI, deps: GentleStatsDeps = {}
 			return;
 		}
 		let view: StatsView | undefined;
-		await ctx.ui.custom<null>(
+		// Fullscreen activity event: dialog tools (ask_user_*) defer while an
+		// overlay menu holds the keyboard so they never mount hidden beneath it.
+		await withFullscreenOverlay(pi, "gentle-stats:summary", () => ctx.ui.custom<null>(
 			(tui, theme, _keybindings, done) => {
 				const close = withOverlayRepaint(tui, done);
 				view = new StatsView({
@@ -77,7 +80,7 @@ export default function gentleStats(pi: ExtensionAPI, deps: GentleStatsDeps = {}
 				return interaction;
 			},
 			{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } },
-		).finally(() => {
+		)).finally(() => {
 			view?.dispose();
 			if (view) overlays.delete(view);
 		});

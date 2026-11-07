@@ -1,5 +1,6 @@
 import { emptyFallbacksFile, fallbacksFilePath, followProfileRename, readFallbacksFile, setChain, writeFallbacksFile, type FallbackStep } from "../lib/model-fallback-store.ts";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import { withFullscreenOverlay, type FullscreenActivityEmitter } from "../lib/fullscreen-activity.ts";
 import { PROFILE_TIER_EVENT, supportsOpenAIFast } from "../lib/openai-fast-tier.ts";
 import { isDeepStrictEqual } from "node:util";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
@@ -5517,6 +5518,9 @@ function routingScreenNotices(
 async function showRoutingTablePanel(
 	ctx: ExtensionContext,
 	request: RoutingTablePanelRequest,
+	// LiveSession-style callers pass the pi object: its shared event bus is
+	// what makes ask_user_* defer while this fullscreen panel is open.
+	activity: FullscreenActivityEmitter,
 ): Promise<RoutingTableResult> {
 	const modelOptions = await getPiModelOptions(ctx);
 	const thinkingSupport = await getPiThinkingSupport(ctx);
@@ -5525,7 +5529,9 @@ async function showRoutingTablePanel(
 		fastModels = (await ctx.modelRegistry.getAvailable()).filter(supportsOpenAIFast).map((model) => `${model.provider}/${model.id}`);
 	} catch { /* Unknown catalog entries do not claim Fast compatibility. */ }
 	const agents = modelAssignmentNames(ctx.cwd);
-	return ctx.ui.custom<RoutingTableResult>(
+	// Fullscreen activity event: dialog tools (ask_user_*) defer while the
+	// routing panel holds the keyboard so they never mount hidden beneath it.
+	return withFullscreenOverlay(activity, "gentle-ai:routing-table", () => ctx.ui.custom<RoutingTableResult>(
 		(tui, theme, _keybindings, done) => {
 			const panel = new RoutingTablePanel(
 				request.config,
@@ -5564,7 +5570,7 @@ async function showRoutingTablePanel(
 				margin: 0,
 			},
 		},
-	);
+	));
 }
 
 /**
@@ -6717,7 +6723,7 @@ async function openProfilesPanelLoop(
 				feedback,
 				notices: routingScreenNotices(ctx, file, shown, launch?.name, launch?.modelProfiles, authorityAvailable),
 				switchProfile,
-			}));
+			}, live));
 			draftOverride = undefined;
 			feedback = undefined;
 			modeDraftOverride = undefined;

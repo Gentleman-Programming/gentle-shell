@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, matchesKey, type Component, type TUI } from "@earendil-works/pi-tui";
+import { withFullscreenOverlay, type FullscreenActivityEmitter } from "./fullscreen-activity.ts";
 import { withOverlayRepaint } from "./overlay-repaint.ts";
 import { PARAKEET_MODEL_MANIFEST, VOICE_NOTICES, voiceRuntimeManifest, type VoiceTarget } from "./voice-artifacts.ts";
 import { installVoiceModel, installVoiceRuntime, readVoiceStatus, VoiceInstallError, type VoiceComponentStatus, type VoiceInstallErrorCode, type VoiceInstallProgress, type VoiceInstallResult } from "./voice-install.ts";
@@ -224,19 +225,21 @@ interface Overlay<V> {
 	close(): Promise<void>;
 }
 
-function openOverlay<V extends Component & { dispose(): void }>(ctx: ExtensionCommandContext, make: (theme: VoiceViewTheme, requestRender: () => void) => V): Overlay<V> {
+function openOverlay<V extends Component & { dispose(): void }>(ctx: ExtensionCommandContext, activity: FullscreenActivityEmitter, make: (theme: VoiceViewTheme, requestRender: () => void) => V): Overlay<V> {
 	let view: V | undefined;
 	let tui: TUI | undefined;
 	let finish: ((value: undefined) => void) | undefined;
 	let closing = false;
-	const closed = ctx.ui
+	// Fullscreen activity event: dialog tools (ask_user_*) defer while a
+	// voice overlay paints, so they never mount hidden beneath it.
+	const closed = withFullscreenOverlay(activity, "gentle-voice:overlay", () => ctx.ui
 		.custom<undefined>((t, theme, _keybindings, done) => {
 			tui = t;
 			finish = withOverlayRepaint(t, done);
 			view = make(theme as VoiceViewTheme, () => t.requestRender());
 			if (closing) queueMicrotask(() => finish?.(undefined));
 			return view;
-		}, OVERLAY)
+		}, OVERLAY))
 		.catch(() => undefined)
 		.finally(() => view?.dispose());
 	return {
@@ -355,7 +358,7 @@ export function registerVoiceCommand(pi: ExtensionAPI, deps: VoiceCommandDeps = 
 		if (run.generation !== generation) return;
 		const controller = new AbortController();
 		run.abort = () => controller.abort();
-		const overlay = openOverlay(ctx, (theme, requestRender) => new VoiceProgressView({ theme, requestRender, onCancel: () => controller.abort() }));
+		const overlay = openOverlay(ctx, pi, (theme, requestRender) => new VoiceProgressView({ theme, requestRender, onCancel: () => controller.abort() }));
 		const onProgress = (progress: VoiceInstallProgress) => overlay.view()?.update(progress);
 		let failure: unknown;
 		try {
@@ -392,7 +395,7 @@ export function registerVoiceCommand(pi: ExtensionAPI, deps: VoiceCommandDeps = 
 		const dictation = runDictation(createSession, target, (state) => overlay?.view()?.setState(state));
 		const { session } = dictation;
 		run.abort = dictation.cancel;
-		overlay = openOverlay(ctx, (theme, requestRender) => {
+		overlay = openOverlay(ctx, pi, (theme, requestRender) => {
 			const view = new VoiceDictationView({ theme, requestRender, onStop: dictation.stop, onCancel: dictation.cancel });
 			// The factory may run after the session has already moved on.
 			if (session.state !== "idle") view.setState(session.state);

@@ -76,16 +76,18 @@ export class FullscreenActivityMonitor {
 	 * existing subscription and hands back the same unsubscribe, so a reload or a
 	 * second registration can never stack listeners on the bus. Unsubscribing
 	 * stops tracking and releases any wait: a torn-down monitor must never leave
-	 * an ask deferred forever. A store-only bus (no `on`, which profile-flow and
-	 * test fixtures legitimately provide) subscribes to nothing and defers nothing.
+	 * an ask deferred forever. A missing bus (profile-flow and store-only fixtures
+	 * pass `events: undefined`) subscribes to nothing and defers nothing, but a
+	 * bus that is present and cannot subscribe is a contract violation and fails
+	 * loudly here, because swallowing it would silently disable the defer.
 	 */
 	attach(events: EventBus | undefined): (() => void) | undefined {
 		if (events === undefined) return undefined;
 		if (this.unsubscribe !== undefined) return this.unsubscribe;
-		const off: (() => void) | undefined = typeof events.on === "function"
-			? events.on(FULLSCREEN_ACTIVITY_EVENT, (data) => this.observe(data))
-			: undefined;
-		if (off === undefined) return undefined;
+		if (typeof events.on !== "function") {
+			throw new TypeError("FullscreenActivityMonitor.attach requires an EventBus with on(): a bus that cannot subscribe would silently disable the defer");
+		}
+		const off = events.on(FULLSCREEN_ACTIVITY_EVENT, (data) => this.observe(data));
 		this.unsubscribe = () => {
 			off();
 			this.unsubscribe = undefined;

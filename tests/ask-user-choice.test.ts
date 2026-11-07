@@ -112,6 +112,11 @@ function registerChoiceTool(
 				emittedEvents.push(event);
 				onLifecycleEvent?.(event);
 			},
+			// The ask tools subscribe their fullscreen-activity monitor here: this
+			// fixture stays store-only by handing back a no-op unsubscribe.
+			on() {
+				return () => {};
+			},
 		},
 	};
 	askUserChoice(pi as never);

@@ -293,3 +293,14 @@ test("repeated defers on one signal do not accumulate abort listeners", async ()
 	assert.equal(getEventListeners(controller.signal, "abort").length, 0, "three released waits must not leave three listeners behind");
 });
 
+test("attach refuses a bus that cannot subscribe instead of silently disabling the defer", () => {
+	const monitor = new FullscreenActivityMonitor();
+
+	assert.throws(
+		() => monitor.attach({ emit() {} } as never),
+		/requires an EventBus with on\(\)/,
+		"a bus that cannot subscribe is a contract violation: failing loudly beats a defer that silently never happens",
+	);
+	assert.equal(monitor.isActive(), false, "a refused attach tracks no activity");
+});
+

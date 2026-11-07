@@ -1,7 +1,7 @@
 import { sharedCooldown, syncUsageCooldown } from "../lib/model-fallback-policy.ts";
 import { CustomEditor, keyHint, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { isHomeOrBroadUserDirectory } from "../lib/bounded-writer-admission.ts";
-import { Editor, Image, Key, decodeKittyPrintable, getCapabilities, isKeyRelease, matchesKey, parseKey, truncateToWidth, visibleWidth, type Component, type EditorTheme, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { Editor, Image, Key, decodeKittyPrintable, getCapabilities, isKeyRelease, matchesKey, parseKey, truncateToWidth, visibleWidth, type Component, type EditorTheme, type OverlayHandle, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { readClipboardImage, type ClipboardImage } from "../lib/clipboard-image.ts";
 import { readPastedImagePaths } from "../lib/pasted-image-paths.ts";
 import { describeAttachment, ImageAttachments } from "../lib/image-attachments.ts";
@@ -26,6 +26,7 @@ import { CARD_CONTENT, resolveCardContent, setCardContent, writeCardContent } fr
 import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { buildKeymapRows } from "../lib/keymaps-customize.ts";
+import { holdOverlayKeyboard, restorePendingAgentPrompt } from "../lib/prompt-keyboard-ownership.ts";
 import { discoverYoloUiAdapter, MODE_STATUS_KEY, YOLO_DISPLAY, YOLO_STATUS_KEY, type YoloDisplay, type YoloUiAdapter } from "../lib/yolo-session-policy.ts";
 import { discoverRddModeControl, type RddModeControl } from "../lib/rdd-mode-control.ts";
 import { NATIVE_REVIEW_MODE_SOURCE } from "../lib/native-review-cli.ts";
@@ -1876,16 +1877,42 @@ async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext, env: 
 		ctx.ui.notify("No Gentle commands are registered.", "info");
 		return;
 	}
+	let overlayHandle: OverlayHandle | undefined;
+	let releaseKeyboard: (() => void) | undefined;
+	let paletteTui: TUI | undefined;
 	let piKeybindings: PiKeybindings | undefined;
-	const result = await ctx.ui.custom<CommandPaletteResult>(
-		(tui, theme, keybindings, done) => {
-			if (typeof (keybindings as Partial<PiKeybindings> | undefined)?.getKeys === "function") piKeybindings = keybindings as PiKeybindings;
-			return new CommandPalette(groups, withOverlayRepaint(tui, done), theme, () => Math.max(0, tui.terminal.rows));
-		},
-		{ overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "85%" } },
-	);
-	if (result?.type === "run") pi.sendUserMessage(`/${result.name}`, { expandPromptTemplates: true });
-	if (result?.type === "bind") await bindFromPalette(ctx, env, result.name, result.data, piKeybindings);
+	try {
+		const result = await ctx.ui.custom<CommandPaletteResult>(
+			(tui, theme, keybindings, done) => {
+				if (typeof (keybindings as Partial<PiKeybindings> | undefined)?.getKeys === "function") piKeybindings = keybindings as PiKeybindings;
+				paletteTui = tui;
+				const palette = new CommandPalette(groups, withOverlayRepaint(tui, done), theme, () => Math.max(0, tui.terminal.rows));
+				// The palette is the topmost visible UI: an agent prompt that
+				// arrives while it is open must not steal the keyboard.
+				releaseKeyboard = holdOverlayKeyboard({ tui, focusOverlay: () => overlayHandle?.focus() });
+				return palette;
+			},
+			{
+				overlay: true,
+				overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "85%" },
+				onHandle: (handle) => { overlayHandle = handle; },
+			},
+		);
+		if (result?.type === "run") pi.sendUserMessage(`/${result.name}`, { expandPromptTemplates: true });
+		// The bind path stays inside the try: the palette closed, but the
+		// keyboard is only handed back to the waiting prompt once the whole
+		// palette flow is done.
+		if (result?.type === "bind") await bindFromPalette(ctx, env, result.name, result.data, piKeybindings);
+	}
+	finally {
+		// Released even when the palette failed to open: a listener that
+		// outlives the overlay would keep claiming the keyboard.
+		releaseKeyboard?.();
+		releaseKeyboard = undefined;
+		// The closed overlay gave the keyboard back to a stale pre-focus; the
+		// prompt that waited below it is the component the user must drive now.
+		if (paletteTui) restorePendingAgentPrompt(paletteTui);
+	}
 }
 
 function showChanges(ctx: ExtensionContext, model: ChangesModel, visible = true, grouped: (width: number) => boolean = () => false): void {

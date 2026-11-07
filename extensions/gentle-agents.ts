@@ -2088,8 +2088,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				return interaction;
 			},
 			{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } },
-		));
-		if (!chosen || !overlayHost) return;
+		)).finally(() => {
+			view?.dispose();
+			if (view) overlays.delete(view);
+		});
 		if (!chosen || !overlayHost) return;
 		if (!chosen.sessionPath) {
 			ctx.ui.notify("This task has no session file yet.", "warning");
@@ -3170,7 +3172,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					requestRender: () => tui.requestRender(),
 				});
 				return view;
-			}, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } }));
+			}, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } })).finally(() => view?.dispose());
 		},
 	});
 	pi.registerCommand(AGENTS_COMMAND_NAME, {

@@ -38,6 +38,7 @@ import {
   truncateToWidth,
 } from "@earendil-works/pi-tui";
 import { bundledGentlePiAgentHome, gentlePiConfigHome } from "../../lib/agent-home.ts";
+import { withFullscreenOverlay, type FullscreenActivityEmitter } from "../../lib/fullscreen-activity.ts";
 import {
   historyCaptureEnabled,
   historyCaptureEnvOverride,
@@ -1183,13 +1184,17 @@ function createPromptHistorySelectorFactory(
 async function runPromptHistorySelection(
   ctx: Pick<ExtensionCommandContext, "ui">,
   records: PromptRecord[],
+  activity: FullscreenActivityEmitter,
   store?: SelectorStore,
 ): Promise<PromptRecord | null> {
   const historyGlobals: PiHistoryGlobals = globalThis as Record<
     string,
     unknown
   >;
+  // Fullscreen activity event: dialog tools (ask_user_*) defer while the
+  // history selector paints, so they never mount hidden beneath it.
   return withExpandedHistoryGlobals(historyGlobals, async () =>
+    withFullscreenOverlay(activity, "gentle-history:selector", () =>
     ctx.ui.custom<PromptRecord | null>(
       createPromptHistorySelectorFactory(
         records,
@@ -1224,6 +1229,7 @@ async function runPromptHistorySelection(
         },
       },
     ),
+    ),
   );
 }
 
@@ -1252,6 +1258,7 @@ function createOpenFlow(
   configHome: string,
   root: string,
   cwd: string,
+  activity: FullscreenActivityEmitter,
 ) {
   /**
    * Scope drain for the selector: project scope drains the project's store
@@ -1296,7 +1303,7 @@ function createOpenFlow(
     }
 
     const records = recordsFromEntries(entries);
-    const selected = await runPromptHistorySelection(ctx, records, store);
+    const selected = await runPromptHistorySelection(ctx, records, activity, store);
     if (selected) {
       // pasteToEditor routes through the editor's input pipeline (bracketed
       // paste), so the text renders immediately (a22588fc).
@@ -1410,7 +1417,7 @@ export default function promptHistoryExtension(
   });
 
   // Selector open flow (slice 3, stage 3): both entry points share it.
-  const { openHistorySelector } = createOpenFlow(env, configHome, root, cwd);
+  const { openHistorySelector } = createOpenFlow(env, configHome, root, cwd, pi);
 
   pi.registerShortcut(SHORTCUT, {
     description: "Search prompt history",

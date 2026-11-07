@@ -254,10 +254,14 @@ export default function askUserChoice(pi: ExtensionAPI): void {
 			// Fullscreen activity defer: hold while any overlay menu keeps the
 			// keyboard, then mount. A wait-stage abort returns the tool's own
 			// cancelled shape without mounting and without any blocked event.
-			const fullscreen = await fullscreenActivity.waitIfActive(_signal);
-			if (fullscreen === "aborted") {
-				captureAnswer(undefined);
-				return choiceToolResult(params, undefined);
+			// Guarded by isActive so the idle path keeps today's synchronous
+			// same-tick mount (no microtask boundary for existing callers).
+			if (fullscreenActivity.isActive()) {
+				const fullscreen = await fullscreenActivity.waitIfActive(_signal);
+				if (fullscreen === "aborted") {
+					captureAnswer(undefined);
+					return choiceToolResult(params, undefined);
+				}
 			}
 
 			const items = params.options.map((option, index) => ({

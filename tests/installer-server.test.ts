@@ -10,7 +10,7 @@ import test from "node:test";
 import { exitCodeFor, openBrowser, openerFor, redirectPage, runnerEnvironment, upgradeEnvironment, wizardHandlers, writeRedirect } from "../bin/gentle-shell-install.mjs";
 import { planPreflight, requirements } from "../scripts/installer-preflight.mjs";
 import { PI_INSTALL_VERSION, blockedReasons, failedSteps } from "../scripts/installer-runner.mjs";
-import { createInstallerServer, guidance } from "../scripts/installer-server.mjs";
+import { createInstallerServer, guidance, windowsCodeIntegrityKey } from "../scripts/installer-server.mjs";
 import { distributionAsset, prefixLayout } from "../scripts/bundled-install.mjs";
 import { bundledBlockedReasons, bundledFailedSteps, bundledPlan } from "../scripts/bundled-wizard.mjs";
 
@@ -968,6 +968,16 @@ test("a failed setup passes only its bounded detail through, with rate-limit gui
 	assert.match(guidance.codeIntegrityBlocked, /WSL/);
 	assert.match(guidance.codeIntegrityBlocked, /cannot be turned back on/);
 	assert.doesNotMatch(guidance.codeIntegrityBlocked, /network|registry/);
+	// Windows 10 has no Smart App Control, so its guidance names the policy
+	// families that can actually block the built program there.
+	assert.match(guidance.codeIntegrityBlockedWindows10, /WDAC or AppLocker/);
+	assert.match(guidance.codeIntegrityBlockedWindows10, /WSL/);
+	assert.doesNotMatch(guidance.codeIntegrityBlockedWindows10, /Smart App Control|network|registry/);
+	assert.equal(windowsCodeIntegrityKey("win32", 19045), "codeIntegrityBlockedWindows10");
+	assert.equal(windowsCodeIntegrityKey("win32", 22000), "codeIntegrityBlocked");
+	assert.equal(windowsCodeIntegrityKey("win32", 26200), "codeIntegrityBlocked");
+	assert.equal(windowsCodeIntegrityKey("linux", 0), "codeIntegrityBlocked");
+	assert.equal(windowsCodeIntegrityKey("win32", 0), "codeIntegrityBlockedWindows10");
 	assert.match(guidance.goDestinationConflict, /earlier/);
 	assert.match(guidance.goDestinationConflict, /Remove that folder/);
 	assert.doesNotMatch(guidance.goDestinationConflict, /network/);

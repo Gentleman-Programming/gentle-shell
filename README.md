@@ -440,7 +440,7 @@ A small window opens, then the installer appears in your browser. Use the tab it
 
 A new installation gets Gentle Shell as one self-contained product. Its own Node.js, npm, pnpm and Pi live in `~/.gentle-shell`, and your own tools are not used or changed ([bundled installation](docs/install-wizard.md#bundled-installation)).
 
-The installer is a preview: it is tested on Linux and in CI, while clean-machine runs on macOS and Windows are still being verified. How it works and what it changes: **[installation wizard](docs/install-wizard.md)**.
+The installer is a preview: it is tested on Linux and in CI, while clean-machine runs on macOS and Windows — both Windows 10 and Windows 11 — are still being verified. Windows 10 and Windows 11 on x64 and arm64 are both supported targets: every prerequisite the installer checks (Node.js ≥ 24.3, pnpm 11, and Go ≥ 1.25.10 when a build needs it) is available on Windows 10. How it works and what it changes: **[installation wizard](docs/install-wizard.md)**.
 
 ### Path C: browser installer from a checkout
 

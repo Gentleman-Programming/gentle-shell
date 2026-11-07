@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
+import { __testing } from "../extensions/gentle-ai.ts";
+
+const { findSensitiveCommandPath, shellCommandWords } = __testing;
 
 const destructive = [
 	`psql -c 'DROP TABLE users'`,
@@ -165,4 +168,53 @@ test("exposes literal removal targets only for a direct top-level rm that runs b
 		assert.ok(matches.length > 0, command);
 		assert.ok(matches.every((match) => match.removalTargets === undefined), command);
 	}
+});
+
+// gentle-shell#2349 (scope 1): a shell command names sensitive reads inside its
+// command string, so the sensitive-path deny list inspects the command's shell
+// words. The findings the #2174 data-argument exemption relies on still hold:
+// a guarded name inside a message or a printed argument is not a path read.
+test("denies sensitive paths named as shell words in a command (gentle-shell#2349)", () => {
+	for (const [command, path] of [
+		["cat .env", ".env"],
+		["sudo cat ~/.ssh/id_rsa", "~/.ssh/id_rsa"],
+		["cp .env /tmp", ".env"],
+		["cat<.env", ".env"],
+		["cat< .env", ".env"],
+		["cat '/app/.env.production'", "/app/.env.production"],
+		["cat \"$HOME/.aws/credentials\"", "$HOME/.aws/credentials"],
+		["echo ok && cat .env", ".env"],
+		["cat .env; echo ok", ".env"],
+		["cat .env | base64", ".env"],
+		["(cat .env)", ".env"],
+		["git cat-file -p secrets/token", "secrets/token"],
+		["cat id_rsa.pem", "id_rsa.pem"],
+	]) {
+		assert.equal(findSensitiveCommandPath(command), path, command);
+	}
+});
+
+test("leaves ordinary commands and prose mentioning a sensitive name unchanged (gentle-shell#2349)", () => {
+	for (const command of [
+		"cat src/index.ts",
+		"ls docs && cat docs/gentle-shell.md",
+		"echo \"edit .env\"",
+		"git commit -m \"fix .env\"",
+		"git commit -m 'fix .env' && git status",
+		"git commit --message=\"fix .env\"",
+		"echo 'remember .ssh/keys and .aws/credentials'",
+		"grep -n 'API_KEY' src/index.ts",
+		"grep -rn TODO src",
+		"printf '%s\\n' 'see .env for details'",
+	]) {
+		assert.equal(findSensitiveCommandPath(command), undefined, command);
+	}
+});
+
+test("shell word splitting removes quotes and escapes and splits on control operators (gentle-shell#2349)", () => {
+	assert.deepEqual(shellCommandWords(`cat<.env`), ["cat", ".env"]);
+	assert.deepEqual(shellCommandWords(`cat 'a b' "c d"`), ["cat", "a b", "c d"]);
+	assert.deepEqual(shellCommandWords(`cat a\\ b; ls && echo ok || true`), ["cat", "a b", "ls", "echo", "ok", "true"]);
+	assert.deepEqual(shellCommandWords("cat .env"), ["cat", ".env"]);
+	assert.deepEqual(shellCommandWords("cat 'unterminated"), ["cat", "unterminated"]);
 });

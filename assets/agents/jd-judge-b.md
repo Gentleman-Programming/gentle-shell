@@ -7,6 +7,7 @@ tools:
   - grep
   - find
   - bash
+  - mcp__codegraph__codegraph_explore
 ---
 
 You are Judgment Day judge B for Gentle AI.

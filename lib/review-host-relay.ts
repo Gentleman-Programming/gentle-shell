@@ -406,6 +406,14 @@ export interface ReviewHostRelayRequest {
 	/** Names the routing config key (e.g. "review-risk") in refusal messages; defaults to a generic label when absent. */
 	readonly routingKey?: string;
 	/**
+	 * Fixed name of where the reviewer routing snapshot came from (binding, pin,
+	 * frozen profile, or the global effective routing and its saved store path),
+	 * named in the missing-model refusal (gentle-shell#2163). Never a secret.
+	 */
+	readonly routingSource?: string;
+	/** Whether the snapshot has no entry at all for {@link ReviewHostRelayRequest.routingKey}, as opposed to an entry without a model. */
+	readonly routingEntryMissing?: boolean;
+	/**
 	 * Overrides the reviewer bound entirely. Production leaves it unset and the
 	 * relay derives the bound from the materialized prompt bytes and
 	 * {@link REVIEW_HOST_RELAY_PI_TIMEOUT_ENV}; this seam exists so tests can
@@ -619,10 +627,12 @@ function validateReviewerSelectionConfiguration(request: ReviewHostRelayRequest)
 		);
 	}
 	if (typeof request.selection !== "string" || request.selection.length === 0) {
+		const origin = request.routingSource === undefined ? ""
+			: ` (routing source: ${request.routingSource}; the ${routingKey} entry ${request.routingEntryMissing === true ? "is missing" : "has no model"})`;
 		throw new ReviewHostRelayError(
 			REVIEW_HOST_RELAY_FAILURE.REVIEWER_CONFIG_INVALID,
 			"pi",
-			`Pi host relay reviewer launch configuration is invalid: no model is configured for ${routingKey}; assign it a model in the agent model routing config`,
+			`Pi host relay reviewer launch configuration is invalid: no model is configured for ${routingKey}${origin}; assign it a model in the agent model routing config`,
 		);
 	}
 	const model = resolveInProcessReviewerModel({ selection: request.selection, routingKey }, request.reviewerRegistry);

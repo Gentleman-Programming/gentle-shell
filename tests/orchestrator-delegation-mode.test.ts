@@ -57,9 +57,11 @@ test("full delegation mode replaces the organic rules instead of adding to them"
 	const dir = assetsDirWith();
 	const rendered = full(dir);
 	const variant = readFileSync(join(REAL_ASSETS_DIR, VARIANT_FILE), "utf8").trim();
-	assert.ok(rendered.includes(variant), "the variant block must be injected verbatim");
+	const [beforeRisk, afterRisk] = variant.split("{{GENTLE_PI_HIGH_RISK_ITEMS}}");
+	assert.ok(rendered.includes(beforeRisk!.trim()) && rendered.includes(afterRisk!.trim()), "the variant block must be injected around its high-risk items");
 	assert.equal(rendered.includes(ORGANIC_START), false, "the organic role text must be gone, not merely followed");
-	assert.equal(rendered.includes("## Task Size"), false, "no inline-versus-delegate deliberation remains");
+	// Task Size survives as tracking and risk only; its inline route does not.
+	assert.match(rendered, /## Task Size\n\nTask size decides tracking and risk, never who writes\./);
 	assert.equal(rendered.includes("Small path: inline"), false);
 	assert.equal(rendered.split("in full delegation mode: you never implement").length - 1, 1, "exactly one mode block");
 });
@@ -69,9 +71,27 @@ test("both modes keep the shared sections, the lazy pointers and the rendered to
 		for (const shared of ["## Memory Contract", "## Safety", "## Skill Registry Protocol"]) {
 			assert.ok(rendered.includes(shared), `missing shared section: ${shared}`);
 		}
-		assert.ok(rendered.includes("orchestrator-delegation-reference.md"), "the lazy routing pointers stay reachable");
+		assert.ok(rendered.includes("orchestrator-prompts.md"), "the shared lazy pointers stay reachable");
 		assert.equal(rendered.includes("{{"), false, "no unrendered token may leak into the prompt");
 	}
+	// Each mode names its own routing detail and never the other's.
+	assert.ok(organic(assetsDirWith()).includes("orchestrator-delegation-reference.md"));
+	assert.equal(full(assetsDirWith()).includes("orchestrator-delegation-reference.md"), false);
+	assert.ok(full(assetsDirWith()).includes("orchestrator-full-delegation-card.md"));
+});
+
+test("the high-risk items keep one definition, taken from the organic core", () => {
+	const dir = assetsDirWith();
+	const highRisk = readFileSync(join(REAL_ASSETS_DIR, "orchestrator.md"), "utf8").split("\n").find((line) => line.startsWith("**High risk**:"));
+	assert.ok(highRisk);
+	assert.ok(full(dir).includes(highRisk), "the variant carries the organic paragraph itself, not a copy");
+});
+
+test("a missing high-risk paragraph falls back to the organic rules instead of a variant with no risk list", () => {
+	const dir = assetsDirWith((files) => ({ ...files, "orchestrator.md": files["orchestrator.md"].replace("**High risk**:", "**Risk, reworded upstream**:") }));
+	const rendered = full(dir);
+	assert.ok(rendered.includes("Small path: inline"), "the organic rules stay whole when the variant cannot be completed");
+	assert.equal(rendered.includes("in full delegation mode: you never implement"), false);
 });
 
 test("full delegation mode is not more expensive in context than the rules it replaces", () => {
@@ -114,8 +134,8 @@ test("the memoized core is keyed by the mode, so a switch cannot serve stale rul
 	const organicPrompt = __testing.getOrchestratorPrompt(cwd);
 	const fullPrompt = __testing.getOrchestratorPrompt(cwd, undefined, undefined, undefined, "full-delegation");
 	assert.notEqual(organicPrompt, fullPrompt, "a stale cache entry would return the previous profile's rules");
-	assert.ok(organicPrompt.includes("## Task Size"));
-	assert.equal(fullPrompt.includes("## Task Size"), false);
+	assert.ok(organicPrompt.includes("Small path: inline"));
+	assert.equal(fullPrompt.includes("Small path: inline"), false);
 	// Repeating each call still hits its own cache entry and never mixes them.
 	assert.equal(__testing.getOrchestratorPrompt(cwd), organicPrompt);
 	assert.equal(__testing.getOrchestratorPrompt(cwd, undefined, undefined, undefined, "full-delegation"), fullPrompt);

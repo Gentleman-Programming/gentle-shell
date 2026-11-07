@@ -143,9 +143,12 @@ test("STATUS renders the managed_assets_outdated continuation command as the act
 test("caller-relative STATUS approved guidance preserves selected root against a different session", async () => {
 	const lineageId = "caller-relative-status";
 	const root = realpathSync(process.cwd());
-	const native = { targetStatus: async () => approvedAcknowledgementStatus(lineageId, root) } as unknown as NativeReviewCli;
+	const offered = approvedAcknowledgementStatus(lineageId, root);
+	offered.raw = { ...offered.raw, next_transition: { kind: "execute", execute: { operation: "review.acknowledge-approved" } } };
+	const native = { targetStatus: async () => offered } as unknown as NativeReviewCli;
 	const result = await __testing.executeReviewControllerOperation({ operation: "status", lineageId, workspaceRoot: root }, dirname(root), native);
 	assert.equal(result.next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${lineageId}","workspaceRoot":${JSON.stringify(root)}}`);
+	assert.equal((result.blocker as Record<string, unknown>).category, "continuation");
 });
 
 test("caller-relative approved closure guidance preserves selected root and canonical omission", async () => {
@@ -3526,6 +3529,74 @@ test("request context survives unrelated untracked selection and its START conti
  const selected = await run({ operation: "select-intended-untracked", selectionBinding: stopped.selectionBinding, intendedUntracked: [eligible] });
  assert.equal(starts.length, 1, JSON.stringify(selected));
  assert.equal(starts[0].requestContextPath, context);
+});
+
+test("START options survive intended-untracked continuation with and without request context", async t => {
+ for (const withContext of [false, true]) for (const selection of ["lenses", "focus"]) for (const includeFile of [false, true]) await t.test(`${selection}, context=${withContext}, include=${includeFile}`, async t => {
+  const { cwd, eligible, initial, target } = untrackedStopFixture(t);
+  const retained = new Map(), starts: Array<Record<string, unknown>> = [];
+  mkdirSync(join(cwd, ".gentle-ai", "policies"), { recursive: true });
+  const policyPath = join(cwd, ".gentle-ai", "policies", "review.json"); writeFileSync(policyPath, "{}\n");
+  if (withContext) writeFileSync(join(cwd, "spec.md"), "Requested behavior");
+  const native = { targetStatus: async (request: Record<string, unknown>) => "intendedUntrackedSelection" in request ? target : initial,
+   start: async (request: Record<string, unknown>) => { starts.push(request); return { lineageId: "options-selected", state: "reviewing", riskLevel: "low", selectedLenses: [], changedFiles: 1, changedLines: 1, correctionBudget: 1, action: "created", lensesRequired: false, riskReasons: [], raw: {} }; }
+  } as unknown as NativeReviewCli;
+  const run = (parameters: Record<string, unknown>) => __testing.executeReviewControllerOperation(parameters, cwd, native, undefined, undefined, undefined, retained);
+  const requested = selection === "lenses" ? { lenses: ["risk"], lensesReason: "permission checks" } : { focus: "reliability" };
+  const stopped = await run({ operation: "start", input: JSON.stringify({ mode: "ordinary", ...requested, policyPath: ".gentle-ai/policies/review.json", ...(withContext ? { requestContextPath: "spec.md" } : {}) }) });
+  assert.equal(typeof stopped.selectionBinding, "string", JSON.stringify(stopped));
+  const resumed = await run({ operation: "select-intended-untracked", selectionBinding: stopped.selectionBinding, intendedUntracked: includeFile ? [eligible] : [] });
+  assert.equal(starts.length, 1, JSON.stringify(resumed));
+  assert.equal(starts[0].policyPath, policyPath);
+  assert.equal(starts[0].untrackedScope, includeFile ? "select" : "exclude");
+  assert.deepEqual(starts[0].intendedUntracked, includeFile ? [eligible] : []);
+  assert.equal(starts[0].requestContextPath, withContext ? join(cwd, "spec.md") : undefined);
+  if (selection === "lenses") { assert.deepEqual(starts[0].lenses, ["review-risk"]); assert.equal(starts[0].lensesReason, "permission checks"); }
+  else assert.equal(starts[0].focus, "reliability");
+ });
+});
+
+test("retained START options reject a changed target before resuming", async t => {
+ const { cwd, eligible, initial } = untrackedStopFixture(t);
+ let changed = false, starts = 0;
+ const native = { targetStatus: async () => changed ? { ...initial, targetIdentity: `sha256:${"f".repeat(64)}` } : initial,
+  start: async () => { starts++; throw new Error("changed target must not start"); } } as unknown as NativeReviewCli;
+ const retained = new Map();
+ const run = (parameters: Record<string, unknown>) => __testing.executeReviewControllerOperation(parameters, cwd, native, undefined, undefined, undefined, retained);
+ const stopped = await run({ operation: "start", input: JSON.stringify({ mode: "ordinary", lenses: ["risk"], lensesReason: "permission checks" }) });
+ changed = true;
+ const result = await run({ operation: "select-intended-untracked", selectionBinding: stopped.selectionBinding, intendedUntracked: [eligible] });
+ assert.equal(result.outcome, "intended-untracked-selection-binding-rejected"); assert.equal(result.field, "target_identity"); assert.equal(starts, 0);
+});
+
+test("capture routes retain a verified selector when identical offers alternate explicit and omitted selectors", async t => {
+ for (const { explicitFirst, frozenDrift } of [{ explicitFirst: true, frozenDrift: false }, { explicitFirst: false, frozenDrift: false }, { explicitFirst: true, frozenDrift: true }]) await t.test(`explicitFirst=${explicitFirst}, frozenDrift=${frozenDrift}`, async t => {
+  const cwd = repository(t), lineageId = "same-offer", routes = new Map(), requests: Array<Record<string, unknown>> = [];
+  const baseRef = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+  const input = correctionPlanInput(lineageId);
+  const native = { targetStatus: async (request: Record<string, unknown>) => { requests.push(request); return { ...status(lineageId, [input], "correction_required"), ...(frozenDrift ? { authorityTargetIdentity: SHA, targetIdentity: requests.length > 1 ? `sha256:${"f".repeat(64)}` : SHA } : {}) }; },
+   captureCorrectionPlan: async () => ({ schema: "gentle-ai.review-last-event-closure/v1", operation: "review.capture-correction-plan", lineageId, state: "correction_required", storeRevision: SHA }) } as unknown as NativeReviewCli;
+  let observed: Record<string, unknown> = {};
+  for (const explicit of [explicitFirst, !explicitFirst]) {
+   observed = await __testing.executeReviewControllerOperation({ operation: "status", lineageId, ...(explicit ? { input: JSON.stringify({ baseRef, committedOnly: true }) } : {}) }, cwd, native, undefined, undefined, undefined, routes);
+   assert.notEqual(observed.outcome, "capture-route-registration-rejected", JSON.stringify(observed));
+  }
+  const captured = await __testing.executeReviewCaptureOperation({ lineageId, collectBinding: bindingOf(observed), correctionLines: 1 }, cwd, native, undefined, undefined, routes, true);
+  assert.equal(captured.outcome, "native-last-event-closure", JSON.stringify(captured));
+  assert.equal(requests.at(-1)?.baseRef, baseRef); assert.equal(requests.at(-1)?.committedOnly, true);
+ });
+});
+
+test("capture route registration reports safe reasons for target and selector conflicts", async () => {
+ for (const conflict of ["selector", "target", "unverifiable"]) {
+  const lineageId = "conflicting-offer", input = correctionPlanInput(lineageId), routes = new Map();
+  let calls = 0;
+  const native = { targetStatus: async () => { calls++; return { ...status(lineageId, [input]), targetIdentity: conflict === "unverifiable" ? "not-a-target-hash" : conflict === "target" && calls > 1 ? `sha256:${"f".repeat(64)}` : SHA }; } } as unknown as NativeReviewCli;
+  await __testing.executeReviewControllerOperation({ operation: "status", lineageId, input: JSON.stringify({ baseRef: "base-a", committedOnly: true }) }, process.cwd(), native, undefined, undefined, undefined, routes);
+  const rejected = await __testing.executeReviewControllerOperation({ operation: "status", lineageId, ...(conflict === "selector" ? { input: JSON.stringify({ baseRef: "base-b", committedOnly: true }) } : {}) }, process.cwd(), native, undefined, undefined, undefined, routes);
+  assert.equal(rejected.outcome, "capture-route-registration-rejected");
+  assert.equal(rejected.reason, `${conflict === "unverifiable" ? "target-unverifiable" : conflict + "-mismatch"}`);
+ }
 });
 
 test("request context preserves unrelated non-start native stops", async (t) => {

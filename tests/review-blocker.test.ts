@@ -36,6 +36,28 @@ test("empty-candidate guidance preserves unknown mutations and explicit provider
 	assert.equal((failed.blocker as Record<string, unknown>).category, "provider-unavailable");
 });
 
+test("native stops outrank capability remediation without changing provider evidence", () => {
+	for (const blocked of [{ outcome: "request-context-unsupported" }, { failure: { kind: "handshake-refused" } }]) {
+		for (const stop of [{ native_failure: { next_action: "stop" } }, { result: { next_transition: { kind: "stop" } } }]) {
+			const before = { status: "blocked", ...blocked, ...stop };
+			const { blocker, ...preserved } = withReviewBlocker(before);
+			assert.deepEqual(preserved, before);
+			assert.equal((blocker as Record<string, unknown>).category, "provider-stop");
+			assert.equal((blocker as Record<string, unknown>).automatic_retry, false);
+			assert.doesNotMatch(String((blocker as Record<string, unknown>).next_step), /reload/);
+		}
+	}
+});
+
+test("timed_out diagnostics use timeout guidance without granting a retry", () => {
+	const before = { status: "blocked", diagnostics: { timed_out: true } };
+	const { blocker, ...preserved } = withReviewBlocker(before);
+	assert.deepEqual(preserved, before);
+	assert.equal((blocker as Record<string, unknown>).category, "provider-unavailable");
+	assert.equal((blocker as Record<string, unknown>).automatic_retry, false);
+	assert.match(String((blocker as Record<string, unknown>).next_step), /timed out/);
+});
+
 test("unsupported STATUS suggests local capability diagnosis before upstream escalation", async () => {
 	const result = await __testing.executeReviewControllerOperation({ operation: "status" }, process.cwd(), {} as NativeReviewCli);
 	assert.equal(result.status, "blocked");

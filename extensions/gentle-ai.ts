@@ -3044,6 +3044,14 @@ function readEffectiveModelConfig(cwd: string): AgentModelConfig {
  * resolves now. A reviewer never runs on routing the session no longer uses.
  */
 function readReviewerModelConfig(cwd: string, sessionId: string | undefined, sessionCwd: string = cwd): AgentModelConfig {
+	return readReviewerRouting(cwd, sessionId, sessionCwd).config;
+}
+
+/**
+ * The reviewer routing snapshot and the fixed name of where it came from, so a
+ * fail-closed refusal can say which routing omitted the lens (gentle-shell#2163).
+ */
+function readReviewerRouting(cwd: string, sessionId: string | undefined, sessionCwd: string = cwd): { config: AgentModelConfig; source: string } {
 	const resolution = resolveSessionProfile({ sessionId, cwd: sessionCwd, configHome: gentleAiConfigHome() });
 	// A target in another Git repository keeps its own pin layers, as launches do.
 	const target = readProfilePinStatus(cwd)?.commonDir;
@@ -3057,7 +3065,17 @@ function readReviewerModelConfig(cwd: string, sessionId: string | undefined, ses
 	const routed = resolution.kind === "live" ? pinnedEffectiveModelConfig(cwd)
 		: resolution.kind === "explicit" ? resolution.modelProfiles
 		: sessionProfileRoutingAt(resolution, { cwd, configHome: gentleAiConfigHome(), foreignRepository });
-	const config = routed === undefined ? readModelConfig(cwd) : cloneModelConfig(routed);
+	// Without a binding, pin or frozen profile the reviewer reads the global
+	// effective routing the models panel shows and launches use (gentle-shell#2163,
+	// #1731); an explicit snapshot stays whole and never borrows from it. It is
+	// read from the session's directory, as the launcher does, never from the
+	// target's: the reviewed candidate never selects its own reviewer.
+	const config = routed === undefined ? readGlobalEffectiveModelConfig(sessionCwd) : cloneModelConfig(routed);
+	const source = routed === undefined ? `global effective routing (saved store ${modelConfigPath(cwd)}, then subagents.json and agent frontmatter)`
+		: resolution.kind === "explicit" ? "session profile binding"
+		: resolution.kind === "inherited" && resolution.profile !== undefined ? "frozen session profile"
+		: resolution.kind === "follow" ? "followed session profile"
+		: "repository profile pin";
 	// Only a profile chosen with Use in this session, or recorded as the session's
 	// startup profile, carries its orchestrator to the provider review roles; an
 	// in-memory freeze, pinned and global routing leave them on Pi's persisted
@@ -3065,7 +3083,7 @@ function readReviewerModelConfig(cwd: string, sessionId: string | undefined, ses
 	if (resolution.kind !== "explicit") delete config.orchestrator;
 	const recorded = resolution.kind === "inherited" ? readSessionProfileBinding(sessionId)?.modelProfiles.orchestrator : undefined;
 	if (recorded !== undefined) config.orchestrator = { ...recorded };
-	return config;
+	return { config, source };
 }
 
 /** The routing in effect once the pin is set aside: what a global save materializes. */
@@ -9350,7 +9368,11 @@ function reviewHostRelayFailureReport(error: ReviewHostRelayError): Record<strin
 // never carry them. For those two keys only, a snapshot with no model falls
 // back to Pi's persisted default model and effort, the default the routing
 // panel already labels them with. Lens keys keep the fail-closed rule.
-function reviewHostRelaySelection(lens: string | undefined, config: AgentModelConfig): { selection?: string; thinking?: string; tier?: AgentRoutingEntry["tier"]; routingKey: string } {
+//
+// gentle-shell#2163: a caller that knows where the snapshot came from passes
+// it, so the relay's refusal names the routing source and whether the entry
+// is missing or only lacks a model.
+function reviewHostRelaySelection(lens: string | undefined, config: AgentModelConfig, source?: string): { selection?: string; thinking?: string; tier?: AgentRoutingEntry["tier"]; routingKey: string; routingSource?: string; routingEntryMissing?: boolean } {
 	const routingKey = lens === undefined || lens.length === 0 ? "review capture" : lens.startsWith("review-") ? lens : `review-${lens}`;
 	const entry = config[routingKey];
 	let model = typeof entry === "object" && entry !== null && typeof (entry as AgentRoutingEntry).model === "string" && (entry as AgentRoutingEntry).model!.length > 0 ? (entry as AgentRoutingEntry).model : undefined;
@@ -9377,6 +9399,7 @@ function reviewHostRelaySelection(lens: string | undefined, config: AgentModelCo
 		...(thinking === undefined ? {} : { thinking }),
 		...(entry?.tier === undefined ? {} : { tier: entry.tier }),
 		routingKey,
+		...(source === undefined ? {} : { routingSource: source, routingEntryMissing: typeof entry !== "object" || entry === null }),
 	};
 }
 
@@ -9542,7 +9565,8 @@ async function executeReviewHostRelayCapture(
 			// global routing. A pin that omits a required role stays omitted: the
 			// typed reviewer-config-invalid refusal below is fail-closed, never a
 			// silent per-role fallback to another account's routing.
-			const launch = reviewHostRelaySelection(slot.routingKey ?? slot.lens, readReviewerModelConfig(cwd, reviewerSessionId, sessionCwd));
+			const reviewerRouting = readReviewerRouting(cwd, reviewerSessionId, sessionCwd);
+			const launch = reviewHostRelaySelection(slot.routingKey ?? slot.lens, reviewerRouting.config, reviewerRouting.source);
 			return {
 				captureArgumentTokens: slot.captureArgumentTokens,
 				targetCwd: cwd,
@@ -10443,13 +10467,13 @@ async function executeReviewCaptureGroupOperationImpl(
 	if (blocked !== undefined) return blocked;
 	// Resolve session-over-pin-over-global once for the entire reviewer group,
 	// so every slot uses the same complete routing snapshot.
-	const reviewerRouting = readReviewerModelConfig(cwd, reviewerSessionId, sessionCwd);
+	const reviewerRouting = readReviewerRouting(cwd, reviewerSessionId, sessionCwd);
 	const reviewerTransport = getReviewerTransport?.();
 	const requests: readonly ReviewHostRelayRequest[] = group.slots.map((slot) => ({
 		captureArgumentTokens: slot.captureArgumentTokens,
 		targetCwd: cwd,
 		submission: slot.submission!,
-		...reviewHostRelaySelection(slot.lens, reviewerRouting),
+		...reviewHostRelaySelection(slot.lens, reviewerRouting.config, reviewerRouting.source),
 		...(modelRegistry === undefined ? {} : { reviewerRegistry: modelRegistry }),
 		...(reviewerSessionId === undefined ? {} : { reviewerSessionId }),
 		...(reviewerTransport === undefined ? {} : { reviewerTransport }),

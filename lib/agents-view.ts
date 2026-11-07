@@ -539,8 +539,10 @@ export class AgentsView {
 		return matchesKey(data, FALLBACK_BINDING[binding]);
 	}
 
-	private expandHint(binding: DetailBinding): string | undefined {
-		const key = this.bindingKeys(binding)[0];
+	// Cards only: the key a collapsed tool result offers to open it. Hidden thinking
+	// never advertises a key, exactly as the chat's own hidden row does not.
+	private outputExpandHint(): string | undefined {
+		const key = this.bindingKeys("app.tools.expand")[0];
 		return key === undefined ? undefined : `${key} to expand`;
 	}
 
@@ -847,7 +849,7 @@ export class AgentsView {
 		// Cards carry the detail levels; the log is drawn once, whole, at any width.
 		const detail = cards ? `${this.thinkingExpanded}\u0000${this.cardToolsExpanded}` : "log";
 		const key = `${width}\u0000${presentation}\u0000${detail}`;
-		const expandHint = cards ? { thinking: this.expandHint("app.thinking.toggle"), output: this.expandHint("app.tools.expand") } : undefined;
+		const expandHint = cards ? this.outputExpandHint() : undefined;
 		// Rows the thread itself contributes. The input card above is not thread
 		// content, so it never stands in for the state line below.
 		let retained = 0;

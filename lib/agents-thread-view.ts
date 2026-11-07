@@ -27,12 +27,12 @@ export interface ThreadItemRenderOptions {
 	 */
 	expanded?: boolean;
 	/**
-	 * Cards only: draws thinking whole. `false` hides it behind a placeholder that
-	 * names the key; the log always shows thinking whole.
+	 * Cards only: draws thinking whole. `false` draws the chat's own `Thinking...` row
+	 * instead; the log always shows thinking whole.
 	 */
 	thinkingExpanded?: boolean;
-	/** Cards only: key text a collapsed block offers, e.g. `ctrl+o to expand`. */
-	expandHint?: { thinking?: string; output?: string };
+	/** Cards only: key text a collapsed tool result offers, e.g. `ctrl+o to expand`. */
+	expandHint?: string;
 }
 
 /** How much of a long block a collapsed row keeps before it counts the rest. */
@@ -98,13 +98,11 @@ function toolBlock(item: ToolItem, theme: AgentsThreadTheme, width: number, expa
 	return [header, line(theme, ROLE.OUTPUT, "  Output", width), ...contentLines(theme, ROLE.OUTPUT, preview.text, width, 4), ...marker];
 }
 
-function thinkingBlock(text: string, theme: AgentsThreadTheme, width: number, expanded: boolean, hint: string | undefined): string[] {
-	const label = line(theme, ROLE.LABEL, "Thinking", width);
-	if (expanded) return [label, ...contentLines(theme, ROLE.THINKING, text, width, 2)];
-	// Hiding thinking hides all of it: the placeholder says the block is hidden and
-	// names the key that shows it again, never the reasoning it withholds.
-	if (text.length === 0) return [label];
-	return [label, line(theme, ROLE.NOTE, `${" ".repeat(indentWidth(width, 2))}… hidden${hint ? ` · ${hint}` : ""}`, width)];
+function thinkingBlock(text: string, theme: AgentsThreadTheme, width: number, expanded: boolean): string[] {
+	// Hidden thinking is one neutral row, exactly the label the chat draws when it
+	// hides thinking: no reasoning, however short, and no hint of its own.
+	if (!expanded) return [line(theme, ROLE.THINKING, "Thinking...", width)];
+	return [line(theme, ROLE.LABEL, "Thinking", width), ...contentLines(theme, ROLE.THINKING, text, width, 2)];
 }
 
 /** Render already-sanitized, bounded protocol items without inferring content roles. */
@@ -119,7 +117,7 @@ export function renderThreadItem(item: ThreadItem, theme: AgentsThreadTheme, wid
 		case THREAD_ITEM.TEXT:
 			return [line(theme, ROLE.LABEL, "Text", width), ...contentLines(theme, ROLE.TEXT, item.text, width, 2)];
 		case THREAD_ITEM.THINKING:
-			return thinkingBlock(item.text, theme, width, showThinking, options.expandHint?.thinking);
+			return thinkingBlock(item.text, theme, width, showThinking);
 		case THREAD_ITEM.NOTE: {
 			// A message delivered to the child is chat content, so cards draw it as the
 			// chat's messaging card; the log keeps every note as the labelled block it
@@ -134,7 +132,7 @@ export function renderThreadItem(item: ThreadItem, theme: AgentsThreadTheme, wid
 			// renderer, a renderer that does not own its frame, and one that threw.
 			return (cards
 				? renderAgentToolItem(item, theme, width, { expanded: options.expanded === true })
-				: undefined) ?? toolBlock(item, theme, width, showWhole, options.expandHint?.output);
+				: undefined) ?? toolBlock(item, theme, width, showWhole, options.expandHint);
 		default:
 			return [];
 	}

@@ -1458,7 +1458,7 @@ test("the overlay's log keeps its original detail and ignores the cards' keys", 
 	panel.overlay.handleInput("\x05");
 	panel.overlay.handleInput("\x14");
 	assert.match(panel.frame(), /thought 5/, "the log never hides thinking, whatever the global setting or key says");
-	assert.doesNotMatch(panel.frame(), /… hidden|… \d+ more lines|to expand/, "the log offers no detail control or hint");
+	assert.doesNotMatch(panel.frame(), /… hidden|… \d+ more lines|to expand|Thinking\.\.\./, "the log offers no detail control, hint, or hidden row");
 	panel.overlay.handleInput("q");
 	await panel.opened;
 });

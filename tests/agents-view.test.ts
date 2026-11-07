@@ -856,7 +856,7 @@ test("the log keeps its original detail whatever the host bindings or card state
 		assert.match(text(), /long five/, "the log draws every thinking line");
 		assert.match(text(), /short single thought/, "short reasoning stays visible in the log");
 		assert.match(text(), /output 5/, "the log draws every retained output line");
-		assert.doesNotMatch(text(), /… hidden|… \d+ more lines|to expand/, "the log offers no detail control or hint");
+		assert.doesNotMatch(text(), /… hidden|… \d+ more lines|to expand|Thinking\.\.\./, "the log offers no detail control, hint, or hidden row");
 	};
 
 	whole();
@@ -880,8 +880,9 @@ for (const [label, detail, hidden, expanded] of [
 
 		assert.equal(/thought zero/.test(reading()), !hidden, "cards follow the host's thinking visibility when the overlay opens");
 		assert.equal(/a5/.test(reading()), expanded, "cards follow the host's tool expansion when the overlay opens");
-		if (hidden) assert.match(reading(), /… hidden · ctrl\+t to expand/, "a hidden block names the host's key");
-		else assert.doesNotMatch(reading(), /… hidden/);
+		if (hidden) assert.match(reading(), /Thinking\.\.\./, "hidden thinking renders the chat's own row");
+		else assert.doesNotMatch(reading(), /Thinking\.\.\./);
+		assert.doesNotMatch(reading(), /… hidden/, "no separate hidden hint is drawn");
 
 		view.handleInput("\x14");
 		view.handleInput("\x0f");
@@ -910,14 +911,14 @@ test("cards: hiding thinking hides short and long reasoning whole and shows it a
 	view.handleInput("\x14");
 	const hidden = text();
 	assert.doesNotMatch(hidden, /long |short single thought/, "no reasoning line survives hiding");
-	assert.equal((hidden.match(/Thinking/g) ?? []).length, 2, "each thinking item keeps its label");
-	assert.equal((hidden.match(/… hidden · ctrl\+t to expand/g) ?? []).length, 2, "each hidden block names the key");
+	assert.equal((hidden.match(/Thinking\.\.\./g) ?? []).length, 2, "each hidden block renders the chat's own Thinking... row");
+	assert.doesNotMatch(hidden, /to expand/, "hidden thinking carries no key hint");
 	assert.deepEqual(store.thread("a"), retained, "hiding never mutates retention");
 
 	view.handleInput("\x14");
 	assert.match(text(), /long five/);
 	assert.match(text(), /short single thought/, "showing thinking again restores every line");
-	assert.doesNotMatch(text(), /… hidden/);
+	assert.doesNotMatch(text(), /… hidden|Thinking\.\.\./);
 	view.dispose();
 });
 
@@ -947,7 +948,7 @@ test("cards toggle from the documented host defaults when no manager was handed 
 	assert.doesNotMatch(text(), /a3/, "a card starts collapsed without a host state");
 	view.handleInput("\x14");
 	assert.doesNotMatch(text(), /thought zero/, "ctrl+t is the documented thinking default");
-	assert.match(text(), /… hidden · ctrl\+t to expand/);
+	assert.match(text(), /Thinking\.\.\./, "hidden thinking renders the chat's own row under the documented key");
 	view.handleInput("\x0f");
 	assert.match(text(), /a3/, "ctrl+o is the documented tool-output default");
 	view.handleInput("\x0f");

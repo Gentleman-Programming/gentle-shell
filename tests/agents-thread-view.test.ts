@@ -100,9 +100,9 @@ test("the log draws thinking and every retained output line whole, whatever deta
 
 	assert.deepEqual(renderThreadItem(resolved, plainTheme, 40), whole, "the log keeps its original whole result");
 	assert.deepEqual(renderThreadItem(resolved, plainTheme, 40, { presentation: "log", expanded: false }), whole, "the log has no collapsed result");
-	assert.deepEqual(renderThreadItem(resolved, plainTheme, 40, { presentation: "log", expanded: false, expandHint: { output: "ctrl+o to expand" } }), whole, "the log advertises no detail key");
+	assert.deepEqual(renderThreadItem(resolved, plainTheme, 40, { presentation: "log", expanded: false, expandHint: "ctrl+o to expand" }), whole, "the log advertises no detail key");
 	assert.deepEqual(renderThreadItem(reasoning, plainTheme, 40, { presentation: "log", thinkingExpanded: false }), ["Thinking", ...Array.from({ length: 6 }, (_, index) => `  thought ${index}`)], "the log never hides thinking");
-	assert.deepEqual(renderThreadItem(reasoning, plainTheme, 40, { presentation: "log", thinkingExpanded: false, expandHint: { thinking: "ctrl+t to expand" } }), ["Thinking", ...Array.from({ length: 6 }, (_, index) => `  thought ${index}`)], "a hint alone never hides thinking in the log");
+	assert.deepEqual(renderThreadItem(reasoning, plainTheme, 40, { presentation: "log", thinkingExpanded: false }), ["Thinking", ...Array.from({ length: 6 }, (_, index) => `  thought ${index}`)], "nothing hides thinking in the log");
 	assert.deepEqual(renderThreadItem({ kind: "thinking", text: "short single thought" }, plainTheme, 40, { thinkingExpanded: false }), ["Thinking", "  short single thought"], "short reasoning stays visible in the log too");
 });
 
@@ -112,18 +112,18 @@ test("cards bound a collapsed result and hide thinking while expansion keeps eve
 	const toolLines = (indent: string, count: number): string[] => Array.from({ length: count }, (_, index) => `${indent}output line ${index}`);
 
 	assert.deepEqual(renderThreadItem(resolved, plainTheme, 40, { presentation: "cards", expanded: false }), ["Tool · bash · Complete", "  Output", ...toolLines("    ", 3), "    … 5 more lines"], "a collapsed card result keeps its bounded preview and the count it withholds");
-	assert.deepEqual(renderThreadItem(resolved, plainTheme, 40, { presentation: "cards", expanded: false, expandHint: { output: "ctrl+o to expand" } }), ["Tool · bash · Complete", "  Output", ...toolLines("    ", 3), "    … 5 more lines · ctrl+o to expand"], "the preview names the key that draws the rest");
+	assert.deepEqual(renderThreadItem(resolved, plainTheme, 40, { presentation: "cards", expanded: false, expandHint: "ctrl+o to expand" }), ["Tool · bash · Complete", "  Output", ...toolLines("    ", 3), "    … 5 more lines · ctrl+o to expand"], "the preview names the key that draws the rest");
 	assert.deepEqual(renderThreadItem(resolved, plainTheme, 40, { presentation: "cards", expanded: true }), ["Tool · bash · Complete", "  Output", ...toolLines("    ", 8)], "expanding draws every retained line");
 
-	assert.deepEqual(renderThreadItem(reasoning, plainTheme, 40, { presentation: "cards", thinkingExpanded: false }), ["Thinking", "  … hidden"], "cards hide thinking behind a neutral placeholder, not a preview of the reasoning");
-	assert.deepEqual(renderThreadItem(reasoning, plainTheme, 40, { presentation: "cards", thinkingExpanded: false, expandHint: { thinking: "ctrl+t to expand" } }), ["Thinking", "  … hidden · ctrl+t to expand"], "the placeholder names the key that shows it again");
+	assert.deepEqual(renderThreadItem(reasoning, plainTheme, 40, { presentation: "cards", thinkingExpanded: false }), ["Thinking..."], "hidden thinking is exactly the chat's own row, never a preview of the reasoning");
 	assert.deepEqual(renderThreadItem(reasoning, plainTheme, 40, { presentation: "cards", thinkingExpanded: true }), ["Thinking", ...Array.from({ length: 6 }, (_, index) => `  thought ${index}`)], "cards show every thinking line when shown");
 
 	for (const text of ["only thought", "first thought\nsecond thought", "a\nb\nc"]) {
-		assert.deepEqual(renderThreadItem({ kind: "thinking", text }, plainTheme, 40, { presentation: "cards", thinkingExpanded: false }), ["Thinking", "  … hidden"], "a short reasoning is hidden whole, never previewed");
+		assert.deepEqual(renderThreadItem({ kind: "thinking", text }, plainTheme, 40, { presentation: "cards", thinkingExpanded: false }), ["Thinking..."], "a short reasoning is hidden whole, never previewed");
 		assert.deepEqual(renderThreadItem({ kind: "thinking", text }, plainTheme, 40, { presentation: "cards", thinkingExpanded: true }), ["Thinking", ...text.split("\n").map((line) => `  ${line}`)], "showing it again restores every line");
 	}
-	assert.deepEqual(renderThreadItem({ kind: "thinking", text: "" }, plainTheme, 40, { presentation: "cards", thinkingExpanded: false }), ["Thinking"], "a thinking item with nothing retained claims nothing hidden");
+	assert.deepEqual(renderThreadItem({ kind: "thinking", text: "" }, plainTheme, 40, { presentation: "cards", thinkingExpanded: false }), ["Thinking..."], "an empty thinking item is hidden the same way, with no content and no hint");
+	assert.deepEqual(renderThreadItem(reasoning, plainTheme, 40, { presentation: "cards", thinkingExpanded: false, expandHint: "ctrl+o to expand" }), ["Thinking..."], "a collapsed tool hint never leaks onto hidden thinking");
 
 	const short: ToolItem = { ...resolved, output: "one\ntwo" };
 	assert.deepEqual(renderThreadItem(short, plainTheme, 40, { presentation: "cards", expanded: false }), ["Tool · bash · Complete", "  Output", "    one", "    two"], "a short result is never cut, so no remainder is invented");
@@ -133,7 +133,7 @@ test("cards bound a collapsed result and hide thinking while expansion keeps eve
 		for (const lines of [
 			renderThreadItem(resolved, plainTheme, width, { presentation: "cards", expanded: false }),
 			renderThreadItem(reasoning, plainTheme, width, { presentation: "cards", thinkingExpanded: false }),
-			renderThreadItem(reasoning, plainTheme, width, { presentation: "cards", thinkingExpanded: false, expandHint: { thinking: "ctrl+t to expand" } }),
+			renderThreadItem(reasoning, plainTheme, width, { presentation: "cards", thinkingExpanded: false, expandHint: "ctrl+o to expand" }),
 		]) {
 			for (const rendered of lines) assert.ok(visibleWidth(rendered) <= width, `"${rendered}" fits width ${width}`);
 		}

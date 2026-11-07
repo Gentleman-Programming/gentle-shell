@@ -25,6 +25,15 @@ function readItem(overrides: Partial<ToolItem> = {}): ToolItem {
 	return { kind: "tool", callId: "call", name: "read", args: { path: "src/a.ts" }, output: "line 0\nline 1\nline 2\nline 3\nline 4", running: false, isError: false, ...overrides };
 }
 
+test("cards draw reasoning in the chat's own token and italic, and the log keeps its tone", () => {
+	const theme = { fg: (color: string, text: string) => `[${color}]${text}`, italic: (text: string) => `<i>${text}</i>` };
+	const reasoning = { kind: "thinking" as const, text: "why" };
+	assert.deepEqual(renderThreadItem(reasoning, theme, 40, { presentation: "cards", thinkingExpanded: false }), ["<i>[thinkingText]Thinking...</i>"], "hidden reasoning wears the transcript's token and italic");
+	assert.deepEqual(renderThreadItem(reasoning, theme, 40, { presentation: "cards", thinkingExpanded: true }), ["[customMessageLabel]Thinking", "<i>[thinkingText]  why</i>"], "shown reasoning is italic too");
+	assert.deepEqual(renderThreadItem(reasoning, theme, 40), ["[customMessageLabel]Thinking", "[dim]  why"], "the labeled log keeps the tone it always had");
+	assert.deepEqual(renderThreadItem(reasoning, { fg: (color: string, text: string) => `[${color}]${text}` }, 40, { presentation: "cards", thinkingExpanded: false }), ["[thinkingText]Thinking..."], "a theme without italic still draws the row");
+});
+
 test("renderThreadItem presents every protocol kind as labeled, indented blocks", () => {
 	assert.deepEqual(renderThreadItem({ kind: "text", text: "alpha\n\n  code" }, plainTheme, 30), ["Text", "  alpha", "  ", "    code"]);
 	assert.deepEqual(renderThreadItem({ kind: "thinking", text: "first\nsecond\nthird" }, plainTheme, 30), ["Thinking", "  first", "  second", "  third"]);

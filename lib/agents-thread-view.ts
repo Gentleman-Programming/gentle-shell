@@ -5,6 +5,8 @@ import { renderAgentToolItem } from "./agents-tool-renderers.ts";
 
 export interface AgentsThreadTheme {
 	fg(color: string, text: string): string;
+	/** Pi themes carry it; the chat draws reasoning in italic. */
+	italic?(text: string): string;
 }
 
 /**
@@ -40,7 +42,10 @@ const COLLAPSED_PREVIEW_LINES = 3;
 
 const ROLE = {
 	TEXT: "text",
+	/** The labeled log's own tone, unchanged from before. */
 	THINKING: "dim",
+	/** The chat's own reasoning token, so cards read like the transcript. */
+	THINKING_CHAT: "thinkingText",
 	TOOL: "accent",
 	TOOL_ERROR: "error",
 	OUTPUT: "muted",
@@ -48,18 +53,28 @@ const ROLE = {
 	LABEL: "customMessageLabel",
 } as const;
 
-function line(theme: AgentsThreadTheme, role: string, text: string, width: number): string {
-	return theme.fg(role, truncateToWidth(text, Math.max(1, width), "…"));
+/**
+ * Paints one row in a role, in italic when the theme carries the attribute —
+ * the chat italicizes reasoning, so a card that mirrors it must too. A theme
+ * without `italic` keeps the row plain instead of failing to draw.
+ */
+function paint(theme: AgentsThreadTheme, role: string, text: string, italic: boolean): string {
+	const colored = theme.fg(role, text);
+	return italic && typeof theme.italic === "function" ? theme.italic(colored) : colored;
 }
 
-function contentLines(theme: AgentsThreadTheme, role: string, text: string, width: number, requestedIndent: number): string[] {
+function line(theme: AgentsThreadTheme, role: string, text: string, width: number, italic = false): string {
+	return paint(theme, role, truncateToWidth(text, Math.max(1, width), "…"), italic);
+}
+
+function contentLines(theme: AgentsThreadTheme, role: string, text: string, width: number, requestedIndent: number, italic = false): string[] {
 	const indent = indentWidth(width, requestedIndent);
 	const prefix = " ".repeat(indent);
 	const contentWidth = Math.max(1, width - indent);
 	return text.split("\n").flatMap((source) => {
-		if (source.length === 0) return [theme.fg(role, prefix)];
+		if (source.length === 0) return [paint(theme, role, prefix, italic)];
 		const wrapped = wrapTextWithAnsi(source, contentWidth);
-		return (wrapped.length > 0 ? wrapped : [source]).map((part) => theme.fg(role, `${prefix}${part}`));
+		return (wrapped.length > 0 ? wrapped : [source]).map((part) => paint(theme, role, `${prefix}${part}`, italic));
 	});
 }
 
@@ -98,11 +113,16 @@ function toolBlock(item: ToolItem, theme: AgentsThreadTheme, width: number, expa
 	return [header, line(theme, ROLE.OUTPUT, "  Output", width), ...contentLines(theme, ROLE.OUTPUT, preview.text, width, 4), ...marker];
 }
 
-function thinkingBlock(text: string, theme: AgentsThreadTheme, width: number, expanded: boolean): string[] {
-	// Hidden thinking is one neutral row, exactly the label the chat draws when it
-	// hides thinking: no reasoning, however short, and no hint of its own.
-	if (!expanded) return [line(theme, ROLE.THINKING, "Thinking...", width)];
-	return [line(theme, ROLE.LABEL, "Thinking", width), ...contentLines(theme, ROLE.THINKING, text, width, 2)];
+/** The label Pi itself puts in place of a thinking run while thinking is hidden. */
+const HIDDEN_THINKING_LABEL = "Thinking...";
+
+function thinkingBlock(text: string, theme: AgentsThreadTheme, width: number, expanded: boolean, chatStyle: boolean): string[] {
+	// A card mirrors the transcript: the chat's own reasoning token, italic, and
+	// its hidden label. The labeled log keeps the tone and plain rows it always
+	// had, so switching to cards never restyles the original view.
+	const role = chatStyle ? ROLE.THINKING_CHAT : ROLE.THINKING;
+	if (!expanded) return [line(theme, role, HIDDEN_THINKING_LABEL, width, chatStyle)];
+	return [line(theme, ROLE.LABEL, "Thinking", width), ...contentLines(theme, role, text, width, 2, chatStyle)];
 }
 
 /** Render already-sanitized, bounded protocol items without inferring content roles. */
@@ -117,7 +137,7 @@ export function renderThreadItem(item: ThreadItem, theme: AgentsThreadTheme, wid
 		case THREAD_ITEM.TEXT:
 			return [line(theme, ROLE.LABEL, "Text", width), ...contentLines(theme, ROLE.TEXT, item.text, width, 2)];
 		case THREAD_ITEM.THINKING:
-			return thinkingBlock(item.text, theme, width, showThinking);
+			return thinkingBlock(item.text, theme, width, showThinking, cards);
 		case THREAD_ITEM.NOTE: {
 			// A message delivered to the child is chat content, so cards draw it as the
 			// chat's messaging card; the log keeps every note as the labelled block it

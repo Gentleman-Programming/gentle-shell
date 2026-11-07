@@ -7,6 +7,7 @@ export type CandidateTreeSymlinkScan = "tracks-symlinks" | "no-symlinks" | "unco
 type DefinitiveScan = Exclude<CandidateTreeSymlinkScan, "unconfirmed">;
 const MAX_REF_METADATA_BYTES = 1024 * 1024;
 
+/** Read exactly the inspected size; concurrent size changes make eligibility unknown. */
 function readBoundedFile(path: string, size: number): string | undefined {
 	const fd = openSync(path, "r");
 	try {
@@ -18,11 +19,13 @@ function readBoundedFile(path: string, size: number): string | undefined {
 	} finally { closeSync(fd); }
 }
 
+/** Fingerprint ref/config metadata without following a symbolic link. */
 function identity(path: string): string | undefined {
 	const value = lstatSync(path, { bigint: true, throwIfNoEntry: false });
 	return value === undefined ? undefined : [value.dev, value.ino, value.size, value.mtimeNs, value.ctimeNs].join(":");
 }
 
+/** Accept only the bounded, sorted files-backend format with no replacement refs. */
 function isCanonicalPackedRefs(contents: string): boolean {
 	if (!contents.endsWith("\n")) return false;
 	const lines = contents.split("\n");
@@ -86,6 +89,7 @@ export class CandidateTreeSymlinkScanner {
 		this.capacity = capacity;
 	}
 
+	/** Reuse definitive literal-tree scans only while fresh local metadata proves eligibility. */
 	scan(cwd: string, candidateTree: string, verifiedCommonDir?: string): CandidateTreeSymlinkScan {
 		const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
 		const options = { cwd, env, encoding: "utf8" as const, windowsHide: true,
@@ -126,6 +130,7 @@ export class CandidateTreeSymlinkScanner {
 }
 
 const scanner = new CandidateTreeSymlinkScanner();
+/** Classify a tree for discovery; an unconfirmed scan never authorizes materialization. */
 export function scanCandidateTreeForSymlinks(cwd: string, candidateTree: string, verifiedCommonDir?: string): CandidateTreeSymlinkScan {
 	return scanner.scan(cwd, candidateTree, verifiedCommonDir);
 }

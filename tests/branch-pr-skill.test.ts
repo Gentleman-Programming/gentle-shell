@@ -5,10 +5,19 @@ import test from "node:test";
 
 const skill = readFileSync(join(import.meta.dirname, "..", "skills/branch-pr/SKILL.md"), "utf8");
 
-test("target-host reads require explicit destination, operation and credential/session authorization", () => {
+test("target-host reads use established destination, operation and credential/session authorization", () => {
 	assert.match(skill, /explicit.*(?:destination|target).*operation.*credential\/session.*before.*target-host reads/i);
+	assert.match(skill, /Reuse authorization already supplied in this session/);
 	assert.match(skill, /reuse fresh target-bound.*issue.*default branch.*type.*labels.*checks/i);
 	assert.match(skill, /(?:do not|never).*ambient SSH/i);
+});
+
+test("repositories without issue or type-label conventions can prepare a PR without invented gates", () => {
+	assert.match(skill, /Without such a requirement, continue without an issue or approval label/);
+	assert.match(skill, /Reuse the user's stated approval convention/);
+	assert.match(skill, /Exactly one `type:\*` label is required only where that convention applies/);
+	assert.match(skill, /Do not create missing labels/);
+	assert.doesNotMatch(skill, /Every PR MUST|no exceptions|linked issue MUST have/);
 });
 
 test("issue linkage and protected labels retain human decisions without extra proof", () => {

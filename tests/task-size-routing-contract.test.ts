@@ -77,6 +77,16 @@ test("AC3: small work runs its checks inline and keeps test-first", () => {
 	}
 });
 
+test("small requested task lists and long checks do not force extra ODD machinery", () => {
+	const size = sectionOf(core, "## Task Size");
+	assert.match(size, /`todo` on request/);
+	assert.doesNotMatch(size, /no `todo`/);
+	const reference = read("assets/orchestrator-delegation-reference.md");
+	assert.doesNotMatch(reference, /or long suites, builds, or installs of a large task/);
+	assert.match(reference, /duration alone never triggers a verifier/);
+	assert.match(read("assets/orchestrator-tracking.md"), /a requested session task list alone needs no durable ODD document or memory mirror/);
+});
+
 test("AC4: each mechanism turns on only by its own trigger and size is re-evaluated after", () => {
 	const triggers = sectionOf(core, "## Mechanisms");
 	for (const clause of [

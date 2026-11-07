@@ -45,7 +45,7 @@ import { AgentRunner, piCommand, abortReasonText, CHILD_JOBS_ENV, REQUESTED_TOOL
 import { parseChildPackageInjection } from "../lib/child-package-injection.ts";
 import { ChildMessenger, formatChildJobState, type IpcEndpoint } from "../lib/agents-messaging.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
-import { WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, WindowsSessionRegistryPhaseSequence, type WindowsSessionRegistryPhaseObserver } from "../lib/windows-session-transport.ts";
+import { WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, WindowsSessionRegistryPhaseSequence, isWindowsSessionBootstrapDiagnosticCode, type WindowsSessionBootstrapDiagnosticCode, type WindowsSessionBootstrapDiagnosticObserver, type WindowsSessionRegistryPhaseObserver } from "../lib/windows-session-transport.ts";
 import { hasReviewSessionPermission, resolveCanonicalGitRepositoryIdentitySync, type ReviewSessionManager } from "../lib/review-session-standing-permission.ts";
 import { inheritedUnsafeGitEnvironmentKeys } from "../lib/review-repository.ts";
 import { historyDir, loadHistory, loadStoredTask, pruneHistory, saveTask, type StoredTask } from "../lib/agents-history.ts";
@@ -184,7 +184,7 @@ export interface SessionTransportClient {
 }
 
 export interface SessionTransportFactory {
-	createRegistry(agentHome: string, observeWindowsPhase?: WindowsSessionRegistryPhaseObserver): Promise<SessionTransportRegistry>;
+	createRegistry(agentHome: string, observeWindowsPhase?: WindowsSessionRegistryPhaseObserver, observeWindowsBootstrap?: WindowsSessionBootstrapDiagnosticObserver): Promise<SessionTransportRegistry>;
 	createListener(registry: SessionTransportRegistry, sessionId: string, onNotification: (notification: ReceivedNotification) => Promise<void>): SessionTransportListener;
 	createClient(registry: SessionTransportRegistry, sessionId: string): SessionTransportClient;
 }
@@ -462,7 +462,7 @@ const posixSessionTransport: SessionTransportFactory = {
 };
 
 const windowsSessionTransport: SessionTransportFactory = {
-	createRegistry(agentHome, observeWindowsPhase) { return WindowsSessionPresenceRegistry.create(agentHome, observeWindowsPhase); },
+	createRegistry(agentHome, observeWindowsPhase, observeWindowsBootstrap) { return WindowsSessionPresenceRegistry.create(agentHome, observeWindowsPhase, observeWindowsBootstrap); },
 	createListener(registry: WindowsSessionPresenceRegistry, sessionId, onNotification) { return Object.assign(new WindowsActiveSessionListener(registry, sessionId, onNotification), { closesRegistry: true }); },
 	createClient(registry: WindowsSessionPresenceRegistry, sessionId) { return new WindowsActiveSessionClient(registry, sessionId); },
 };
@@ -1018,6 +1018,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	type SessionTransport = { generation: number; sessionId: string; sessionManager: ExtensionContext["sessionManager"]; client: SessionTransportClient; listener: SessionTransportListener; registry: SessionTransportRegistry; close(): Promise<void> };
 	let transportGeneration = 0;
 	let activeSessionTransport: SessionTransport | undefined;
+	// A session whose first startup failed gets exactly one later re-arm attempt.
+	let transportRearm: { sessionManager: ExtensionContext["sessionManager"]; sessionId: string; ctx: ExtensionContext } | undefined;
 	const pendingTransportStartups = new Set<Promise<void>>();
 	const validTransportSessionId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value);
 	const closeSessionTransport = async (transport: SessionTransport | undefined) => {
@@ -1029,11 +1031,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		operation.then(() => { pendingTransportStartups.delete(operation); }, () => { pendingTransportStartups.delete(operation); });
 		return operation;
 	};
-	const startSessionTransport = (ctx: ExtensionContext) => {
+	const startSessionTransport = (ctx: ExtensionContext, rearm = false) => {
 		const previous = activeSessionTransport;
 		const generation = ++transportGeneration;
 		const sessionManager = ctx.sessionManager;
 		activeSessionTransport = undefined;
+		transportRearm = undefined;
 		const operation = (async () => {
 			let registry: SessionTransportRegistry | undefined;
 			let listener: SessionTransportListener | undefined;
@@ -1042,6 +1045,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			let sessionId: string | undefined;
 			let startupPhase: "registry" | "listener" = "registry";
 			const phases = new WindowsSessionRegistryPhaseSequence();
+			let bootstrap: WindowsSessionBootstrapDiagnosticCode | undefined;
+			const observeBootstrap = (code: WindowsSessionBootstrapDiagnosticCode) => { if (bootstrap === undefined && isWindowsSessionBootstrapDiagnosticCode(code)) bootstrap = code; return undefined; };
 			const closeStartupTransport = () => {
 				if (closePromise) return closePromise;
 				closePromise = Promise.resolve().then(async () => {
@@ -1057,7 +1062,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				if (previous) trackTransportOperation(closeSessionTransport(previous));
 				sessionId = sessionManager.getSessionId();
 				if (!validTransportSessionId(sessionId) || sessions !== sessionManager || generation !== transportGeneration) return;
-				registry = await sessionTransport.createRegistry(agentHome, (event) => phases.observe(event));
+				registry = await sessionTransport.createRegistry(agentHome, (event) => phases.observe(event), observeBootstrap);
 				if (sessions !== sessionManager || generation !== transportGeneration) {
 					await closeStartupTransport();
 					return;
@@ -1092,22 +1097,33 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				if (activeSessionTransport?.generation === generation) activeSessionTransport = undefined;
 				// Only fixed, validated observer fields cross the UI boundary. Never
 				// interpolate the exception or report a retired session's failure.
-				if (sessions === sessionManager && generation === transportGeneration && validTransportSessionId(sessionId) && activeSessionId() === sessionId) {
+				const current = () => sessions === sessionManager && generation === transportGeneration && validTransportSessionId(sessionId) && activeSessionId() === sessionId;
+				if (current()) {
 					const observation = phases.snapshot();
 					const diagnostic = startupPhase === "registry" && observation.availability === "observed" && observation.firstFailurePhase !== null
 						? `phase=${observation.firstFailurePhase} class=${observation.firstFailureClass} code=${observation.firstFailureCode} lastStartupMarker=${observation.lastStartupMarker ?? "unavailable"}`
 						: `phase=${startupPhase} diagnostics=unavailable`;
-					try { ctx.ui.notify(`Session transport startup failed: ${diagnostic}.`, "warning"); } catch {}
+					try { ctx.ui.notify(`Session transport startup failed: ${diagnostic}${bootstrap ? ` bootstrap=${bootstrap}` : ""}.`, "warning"); } catch {}
 				}
 				await closeStartupTransport();
+				// Armed only after cleanup, so the re-arm never overlaps the failed helper.
+				if (!rearm && current()) transportRearm = { sessionManager, sessionId: sessionId!, ctx };
 			}
 		})();
 		trackTransportOperation(operation);
 		return operation;
 	};
+	// The single re-arm runs on a later session event of the same session while it
+	// still has no transport; its own failure warns again and arms nothing.
+	const rearmSessionTransport = (ctx: ExtensionContext | undefined) => {
+		const pending = transportRearm;
+		if (!pending || ctx?.sessionManager !== pending.sessionManager || sessions !== pending.sessionManager || activeSessionId() !== pending.sessionId || activeSessionTransport) return;
+		void startSessionTransport(pending.ctx, true);
+	};
 	const shutdownSessionTransport = async () => {
 		const active = activeSessionTransport;
 		activeSessionTransport = undefined;
+		transportRearm = undefined;
 		transportGeneration++;
 		if (active) await closeSessionTransport(active);
 		while (pendingTransportStartups.size > 0) {
@@ -3221,7 +3237,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			presence = startPresence(ctx.sessionManager);
 			resetActivityPublish();
 			publishActivityPrompt();
-		} catch { presence = undefined; }
+		} catch {
+			presence = undefined;
+			// Fixed text only: the failure may carry a profile path or session id.
+			try { ctx.ui.notify("Session presence unavailable: phase=presence class=transport code=presence-cleared.", "warning"); } catch {}
+		}
 		// /reload and /resume recompute busy from live owned work only: a task
 		// restored from disk never enters ownedTaskIds, so counting it would
 		// report working for work this runtime no longer owns. An unchanged
@@ -3252,6 +3272,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			rpcActivityPublisher.start();
 		}
 	});
+	pi.on("agent_start", (_event, ctx) => rearmSessionTransport(ctx));
+	pi.on("turn_end", (_event, ctx) => rearmSessionTransport(ctx));
 	pi.on("session_shutdown", async () => {
 		completions.dropAll();
 		messages.dropAll();

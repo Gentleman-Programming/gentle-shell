@@ -1604,6 +1604,7 @@ function decodeCorrectionPlanRequestV1(value         , label        )           
 	};
 }
 
+/** Decode frozen validation evidence, preserving an explicit empty policy and rejecting absence. */
 export function decodeReviewTargetedValidationRequestV1(value         , label = "targeted_validation_request")                                    {
 	const body = exactRecord(value, label, [
 		"schema", "request_hash", "lineage_id", "expected_revision", "target_identity", "fix_finding_ids", "policy_content", "fix_findings", "fix_classifications",

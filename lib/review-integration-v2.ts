@@ -1603,6 +1603,7 @@ function decodeCorrectionPlanRequestV1(value: unknown, label: string): ReviewCor
 	};
 }
 
+/** Decode frozen validation evidence, preserving an explicit empty policy and rejecting absence. */
 export function decodeReviewTargetedValidationRequestV1(value: unknown, label = "targeted_validation_request"): ReviewTargetedValidationRequestV1 {
 	const body = exactRecord(value, label, [
 		"schema", "request_hash", "lineage_id", "expected_revision", "target_identity", "fix_finding_ids", "policy_content", "fix_findings", "fix_classifications",

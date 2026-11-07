@@ -1,5 +1,6 @@
 import { NativeReviewCliError, NativeReviewConsentBindingError, NativeReviewIntegrationError, sanitizeForeignNativeReviewDiagnostics, type NativeReviewProcessDiagnostics } from "./native-review-cli.ts";
 
+/** Narrow decoded objects before reading error facts. */
 function record(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -12,6 +13,7 @@ export function asNativeReviewCliError(error: unknown): { code: string; diagnost
 	return diagnostics === undefined || error.code !== diagnostics.error_code ? undefined : { code: error.code, diagnostics };
 }
 
+/** Read consent-binding failures across source and bundled module boundaries. */
 function consentBindingFailure(error: unknown): { reason: string; message: string } | undefined {
 	if (error instanceof NativeReviewConsentBindingError) return { reason: error.reason, message: error.message };
 	if (!(error instanceof Error) || error.name !== "NativeReviewConsentBindingError") return undefined;

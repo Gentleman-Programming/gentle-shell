@@ -35,7 +35,10 @@ const REVIEW_FAMILY_TOOLS = [
 // the historical unbudgeted surface was ~21.3 KB and the trimmed surface
 // lands ~16.6 KB. Regrowth past 16.8 KB fails here. Prose-only bytes are
 // reported in the diagnostic for visibility.
-const REVIEW_FAMILY_PROSE_BUDGET_BYTES = 16800;
+// The original trim measured 16,638 B; rebasing onto main added the requestContextPath
+// guideline and the abandon parameter prose (+~0.5 KB of new upstream capability text),
+// so the cap tracks that state rather than the earlier main.
+const REVIEW_FAMILY_PROSE_BUDGET_BYTES = 17300;
 
 function registerReviewFamily(): Map<string, RegisteredDeclaration> {
 	const tools = new Map<string, RegisteredDeclaration>();
@@ -70,7 +73,11 @@ function reviewSurface(tool: RegisteredDeclaration | undefined): string {
 test("review-family tool declarations fit the always-on prose budget", t => {
 	const tools = registerReviewFamily();
 	const bytes = surfaceBytes(tools);
-	t.diagnostic(`review-family declarations: ${bytes} B (budget ${REVIEW_FAMILY_PROSE_BUDGET_BYTES} B)`);
+	const proseBytes = REVIEW_FAMILY_TOOLS.reduce((sum, name) => {
+		const tool = tools.get(name)!;
+		return sum + Buffer.byteLength([tool.description ?? "", tool.promptSnippet ?? "", ...(tool.promptGuidelines ?? [])].join("\n"), "utf8");
+	}, 0);
+	t.diagnostic(`review-family declarations: ${bytes} B (budget ${REVIEW_FAMILY_PROSE_BUDGET_BYTES} B); prose-only ${proseBytes} B`);
 	assert.ok(
 		bytes <= REVIEW_FAMILY_PROSE_BUDGET_BYTES,
 		`review-family declarations ${bytes} B exceed the always-on budget ${REVIEW_FAMILY_PROSE_BUDGET_BYTES} B`,

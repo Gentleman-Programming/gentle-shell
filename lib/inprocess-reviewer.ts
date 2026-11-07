@@ -151,7 +151,7 @@ function sanitizeErrorExcerpt(error: unknown): string {
 	return collapsed.length <= ERROR_EXCERPT_MAX_CHARS ? collapsed : `${collapsed.slice(0, ERROR_EXCERPT_MAX_CHARS - 1)}…`;
 }
 
-function refuse(code: InProcessReviewerFailureCode, message: string, evidence?: Record<string, unknown>): InProcessReviewerOutcome {
+function refuse(code: InProcessReviewerFailureCode, message: string, evidence?: Record<string, unknown>): Extract<InProcessReviewerOutcome, { kind: "refused" }> {
 	return { kind: "refused", code, message, ...(evidence === undefined ? {} : { evidence }) };
 }
 
@@ -282,6 +282,63 @@ function reviewerDeadline(request: InProcessReviewerRequest) {
 	};
 }
 
+type InProcessReviewerModelResolution =
+	| { readonly kind: "resolved"; readonly model: Model<Api>; readonly provider?: InProcessReviewerProvider; readonly providerId: string }
+	| Extract<InProcessReviewerOutcome, { kind: "refused" }>;
+
+/** Resolve only caller-owned model routing; no authentication or completion. */
+export function resolveInProcessReviewerModel(request: Pick<InProcessReviewerRequest, "selection" | "routingKey">, registry: InProcessReviewerRegistry): InProcessReviewerModelResolution {
+	const parsed = parseSelection(request.selection);
+	if (parsed === undefined) {
+		return refuse(
+			INPROCESS_REVIEWER_FAILURE.SELECTION_INVALID,
+			`Invalid model selection ${JSON.stringify(request.selection)} for ${request.routingKey}; expected the "provider/id" shape.`,
+		);
+	}
+
+	const model = registry.find(parsed.provider, parsed.modelId);
+	if (model === undefined) {
+		return refuse(
+			INPROCESS_REVIEWER_FAILURE.MODEL_NOT_FOUND,
+			`No model matches selection ${JSON.stringify(request.selection)} configured for ${request.routingKey}; assign ${request.routingKey} a model that the interactive pi's model list actually shows.`,
+		);
+	}
+
+	// pi's composed provider is the only layer that honors extension-registered
+	// providers (core/provider-composer.ts: `extension.streamSimple` when
+	// `model.api === extension.api`). pi-ai's `completeSimple` resolves against
+	// its own builtin-only registry and throws for any extension api, so a seam
+	// that carries `getProvider` is always preferred; a seam without it at all
+	// (a test double with no composition layer) still uses `deps.complete`.
+	// A registry that has `getProvider` yet owns no provider for a model its
+	// own `find` just resolved is incoherent: refuse, never route past it.
+	//
+	// The lookup deliberately uses `parsed.provider` — the key `find` was
+	// called with — and not `model.provider`, which is a field of the object
+	// `find` returned. In pi's registry both reads hit one provider map
+	// (core/model-runtime.ts `getProvider`/`getModel` -> pi-ai models.ts, where
+	// `getModels(provider)` returns [] for an unknown id), so a resolved model
+	// always has a provider under its own key and this branch is unreachable by
+	// construction. Keying on the returned field instead would make that
+	// guarantee depend on every provider's `getModels()` echoing its own id,
+	// which a native or OAuth-modified extension provider is free not to do.
+	const provider = registry.getProvider?.(parsed.provider);
+	if (registry.getProvider !== undefined && provider === undefined) {
+		const evidence: Record<string, unknown> = { provider: parsed.provider, api: model.api };
+		// Preserve already resolved identity when configuration refuses before auth.
+		if (typeof model.provider === "string" && typeof model.id === "string") {
+			evidence.reviewerModel = `${model.provider}/${model.id}`.slice(0, 512);
+			evidence.provider = model.provider.slice(0, 256);
+		}
+		return refuse(
+			INPROCESS_REVIEWER_FAILURE.MODEL_NOT_FOUND,
+			`The model registry resolved ${JSON.stringify(request.selection)} for ${request.routingKey} but owns no provider for ${JSON.stringify(parsed.provider)}; reassign ${request.routingKey} to a model whose provider the interactive pi can actually dispatch.`,
+			evidence,
+		);
+	}
+	return { kind: "resolved", model, ...(provider === undefined ? {} : { provider }), providerId: parsed.provider };
+}
+
 /**
  * Runs one reviewer completion in-process: resolve the model, authenticate,
  * map the routing thinking label, and complete exactly one frozen prompt as
@@ -318,49 +375,10 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 		return { ...outcome, evidence: finalEvidence };
 	};
 	try {
-		const parsed = parseSelection(request.selection);
-		if (parsed === undefined) {
-			return finish(refuse(
-				INPROCESS_REVIEWER_FAILURE.SELECTION_INVALID,
-				`Invalid model selection ${JSON.stringify(request.selection)} for ${request.routingKey}; expected the "provider/id" shape.`,
-			));
-		}
-
-		const model = deps.registry.find(parsed.provider, parsed.modelId);
+		const resolved = resolveInProcessReviewerModel(request, deps.registry);
+		if (resolved.kind === "refused") return finish(resolved);
+		const { model, provider, providerId } = resolved;
 		resolvedModel = model;
-		if (model === undefined) {
-			return finish(refuse(
-				INPROCESS_REVIEWER_FAILURE.MODEL_NOT_FOUND,
-				`No model matches selection ${JSON.stringify(request.selection)} configured for ${request.routingKey}; assign ${request.routingKey} a model that the interactive pi's model list actually shows.`,
-			));
-		}
-
-		// pi's composed provider is the only layer that honors extension-registered
-		// providers (core/provider-composer.ts: `extension.streamSimple` when
-		// `model.api === extension.api`). pi-ai's `completeSimple` resolves against
-		// its own builtin-only registry and throws for any extension api, so a seam
-		// that carries `getProvider` is always preferred; a seam without it at all
-		// (a test double with no composition layer) still uses `deps.complete`.
-		// A registry that has `getProvider` yet owns no provider for a model its
-		// own `find` just resolved is incoherent: refuse, never route past it.
-		//
-		// The lookup deliberately uses `parsed.provider` — the key `find` was
-		// called with — and not `model.provider`, which is a field of the object
-		// `find` returned. In pi's registry both reads hit one provider map
-		// (core/model-runtime.ts `getProvider`/`getModel` -> pi-ai models.ts, where
-		// `getModels(provider)` returns [] for an unknown id), so a resolved model
-		// always has a provider under its own key and this branch is unreachable by
-		// construction. Keying on the returned field instead would make that
-		// guarantee depend on every provider's `getModels()` echoing its own id,
-		// which a native or OAuth-modified extension provider is free not to do.
-		const provider = deps.registry.getProvider?.(parsed.provider);
-		if (deps.registry.getProvider !== undefined && provider === undefined) {
-			return finish(refuse(
-				INPROCESS_REVIEWER_FAILURE.MODEL_NOT_FOUND,
-				`The model registry resolved ${JSON.stringify(request.selection)} for ${request.routingKey} but owns no provider for ${JSON.stringify(parsed.provider)}; reassign ${request.routingKey} to a model whose provider the interactive pi can actually dispatch.`,
-				{ provider: parsed.provider, api: model.api },
-			));
-		}
 
 		// Authentication and completion share one monotonic host deadline. Do not
 		// restart its budget after auth or rely on a provider to settle on abort.
@@ -383,7 +401,7 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 			if (auth.ok === false) {
 				return finish(refuse(
 					INPROCESS_REVIEWER_FAILURE.AUTH_UNAVAILABLE,
-					`No credentials available for provider ${JSON.stringify(parsed.provider)} (used by ${request.routingKey}): ${auth.error}`,
+					`No credentials available for provider ${JSON.stringify(providerId)} (used by ${request.routingKey}): ${auth.error}`,
 				));
 			}
 

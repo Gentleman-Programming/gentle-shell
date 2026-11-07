@@ -37,6 +37,7 @@ import { completeSimple } from "@earendil-works/pi-ai/compat";
 import { gentleAiIsolationEnv, resolveGentleAiBinary } from "./gentle-ai-binary.ts";
 import {
 	INPROCESS_REVIEWER_FAILURE,
+	resolveInProcessReviewerModel,
 	runInProcessReviewer,
 	type InProcessReviewerFailureCode,
 	type InProcessReviewerOutcome,
@@ -45,6 +46,7 @@ import {
 } from "./inprocess-reviewer.ts";
 import { REVIEW_PROVIDER_ROLE_CAPTURE_OPERATION, REVIEW_PROVIDER_ROLE_CAPTURE_OPERATIONS, type ReviewCaptureSubmissionV1, type ReviewCollectInputV3 } from "./review-integration-v2.ts";
 import { GENTLE_PI_REVIEW_RELAY_CONTRACT, GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV } from "./review-relay-contract.ts";
+import { observeReviewRelayPhase, type ReviewRelayPhaseObserver } from "./review-relay-phase-timing.ts";
 
 export const REVIEW_HOST_RELAY_UNAVAILABLE_MESSAGE =
 	"provider relay requires a gentle-ai build with the pi host relay surface";
@@ -361,6 +363,8 @@ export function resolveReviewHostRelaySubmission(submission: ReviewCaptureSubmis
 // ---------------------------------------------------------------------------
 
 export interface ReviewHostRelayRequest {
+	/** Optional host-only diagnostics; never receives prompts, outputs or binding data. */
+	readonly observePhase?: ReviewRelayPhaseObserver;
 	readonly captureArgumentTokens: readonly string[];
 	/** Canonical target worktree for coordinator-only native materialize/submit calls. */
 	readonly targetCwd?: string;
@@ -621,6 +625,15 @@ function validateReviewerSelectionConfiguration(request: ReviewHostRelayRequest)
 			`Pi host relay reviewer launch configuration is invalid: no model is configured for ${routingKey}; assign it a model in the agent model routing config`,
 		);
 	}
+	const model = resolveInProcessReviewerModel({ selection: request.selection, routingKey }, request.reviewerRegistry);
+	if (model.kind === "refused") {
+		throw new ReviewHostRelayError(
+			model.code === INPROCESS_REVIEWER_FAILURE.MODEL_NOT_FOUND ? REVIEW_HOST_RELAY_FAILURE.REVIEWER_MODEL_NOT_FOUND : REVIEW_HOST_RELAY_FAILURE.REVIEWER_CONFIG_INVALID,
+			"pi",
+			model.message,
+			model.evidence === undefined ? {} : { reviewerEvidence: model.evidence },
+		);
+	}
 	return {
 		reviewerRegistry: request.reviewerRegistry,
 		selection: request.selection,
@@ -697,12 +710,12 @@ export async function prepareReviewHostRelaySlot(
 	// materialize and the submit leg of one slot.
 	let materialized: ProcessCapture;
 	try {
-		materialized = await collectGentleAiProcess(preparedRequest.gentleAiExecutable!, ["review", preparedRequest.submission!.operationToken, ...preparedRequest.captureArgumentTokens], {
+		materialized = await observeReviewRelayPhase(preparedRequest.observePhase, "materialize", () => collectGentleAiProcess(preparedRequest.gentleAiExecutable!, ["review", preparedRequest.submission!.operationToken, ...preparedRequest.captureArgumentTokens], {
 			cwd: preparedRequest.targetCwd!,
 			env: { ...preparedRequest.environment!, [GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV]: GENTLE_PI_REVIEW_RELAY_CONTRACT },
 			timeoutMs: preparedRequest.gentleAiTimeoutMs!,
 			...(preparedRequest.signal === undefined ? {} : { signal: preparedRequest.signal }),
-		});
+		}), (result) => result.exitCode === 0 && !result.timedOut && result.stdout.length > 0);
 	} catch (error) {
 		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.MATERIALIZE_FAILED, "materialize", `gentle-ai prompt materialization could not start: ${error instanceof Error ? error.message : String(error)}`);
 	}
@@ -802,6 +815,10 @@ export async function runReviewHostRelayReviewerGroup(
 	if (requests.length === 0) {
 		throw new TypeError("Pi host relay reviewer group requires at least one provider-bound request");
 	}
+	// Validate the complete caller-owned routing set before any sibling can
+	// materialize a prompt or spend a model run. Completion rechecks its live
+	// registry later; this preflight does not freeze provider or auth authority.
+	for (const request of requests) validateReviewerSelectionConfiguration(request);
 	const settled = await Promise.allSettled(requests.map(async (request) => await prepare(request)));
 	const failed = settled.find((result) => result.status === "rejected");
 	if (failed?.status === "rejected") throw failed.reason;
@@ -833,12 +850,12 @@ export async function submitReviewHostRelayPreparedResult(prepared: ReviewHostRe
 		);
 		let submission: ProcessCapture;
 		try {
-			submission = await collectGentleAiProcess(request.gentleAiExecutable!, ["review", submissionBinding.operationToken, ...submitTokens], {
+			submission = await observeReviewRelayPhase(request.observePhase, "submit", () => collectGentleAiProcess(request.gentleAiExecutable!, ["review", submissionBinding.operationToken, ...submitTokens], {
 				cwd: request.targetCwd!,
 				env: { ...request.environment!, [GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV]: GENTLE_PI_REVIEW_RELAY_CONTRACT },
 				timeoutMs: request.gentleAiTimeoutMs!,
 				...(request.signal === undefined ? {} : { signal: request.signal }),
-			});
+			}), (result) => result.exitCode === 0 && !result.timedOut && result.stdout.length > 0);
 		} catch (error) {
 			throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED, "submit", `gentle-ai capture submission could not start: ${error instanceof Error ? error.message : String(error)}`, reviewerFacts);
 		}
@@ -868,7 +885,7 @@ export async function submitReviewHostRelayPreparedResult(prepared: ReviewHostRe
 		throw error;
 	} finally {
 		try {
-			await rm(stagingDirectory, { recursive: true, force: true });
+			await observeReviewRelayPhase(request.observePhase, "cleanup", () => rm(stagingDirectory, { recursive: true, force: true }));
 		} catch (error) {
 			if (!primaryFailure) {
 				throw new ReviewHostRelayError(

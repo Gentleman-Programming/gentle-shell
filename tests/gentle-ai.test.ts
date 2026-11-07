@@ -1371,6 +1371,13 @@ test("models screen render does not auto-apply the Gentle theme and sanitizes ag
 	assert.doesNotMatch(plain, /\[31m/);
 });
 
+test("unconfigured review lenses show a missing model rather than inherited routing", () => {
+	const plain = __testing.routingTablePanel({}, ["openai/gpt-5.5"], ["review-risk", "review-refuter", "worker"], 100, undefined, 40).map(stripAnsi).join("\n");
+	assert.match(plain, /review-risk\s+not configured\s+off/);
+	assert.match(plain, /worker\s+inherit\s+inherit/);
+	assert.match(plain, /review-refuter\s+Pi default/);
+});
+
 test("models screen fills the terminal height and keeps every line inside the frame", () => {
 	const lines = renderScreen([], [], [], { width: 72, rows: 40 });
 	assert.equal(lines.length, 40);

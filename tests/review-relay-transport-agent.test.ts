@@ -461,6 +461,7 @@ test("a provider that refuses the pi transport blocks immediately without an age
 	assert.match(transport.message, /immutable review runtimes/i);
 	assert.equal(result.status, "blocked");
 	assert.equal(result.outcome, "pi-host-relay-transport-unavailable");
+	assert.equal((result.blocker as Record<string, unknown>).category, "provider-capability");
 	assert.equal(result.mutation_performed, false);
 	assert.equal(result.mutation_outcome, "none");
 	assert.match(String(result.next_action), /support.*--agent pi/i);

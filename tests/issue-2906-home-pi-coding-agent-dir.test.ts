@@ -158,3 +158,52 @@ test("manual setup never records an unrelated pre-existing directory that had co
 	assert.equal(launchResult.status, 0, launchResult.stderr);
 	assert.match(launchResult.stderr, /already has content and was not set up by gentle-shell/);
 });
+
+test("manual setup records an isolated home even if it had content before bootstrap", (t) => {
+	const f = fixture(t);
+	const isolatedHome = join(f.root, "isolated-space");
+	mkdirSync(isolatedHome, { recursive: true });
+	writeFileSync(join(isolatedHome, "pre-existing.txt"), "pre-existing content", "utf8");
+
+	const env = { ...f.env, GENTLE_SHELL_HOME: isolatedHome };
+	const setupResult = run(env, ["--isolated", "setup"]);
+	assert.equal(setupResult.status, 0, setupResult.stderr);
+
+	const configPath = join(f.home, ".gentle-shell", "config.json");
+	const config = JSON.parse(readFileSync(configPath, "utf8"));
+	const isolatedHomeKey = realpathSync(isolatedHome);
+	assert.ok(config.provisioned?.[isolatedHomeKey], "isolated home with content must still be recorded");
+});
+
+test("manual setup re-records and updates an already-recorded provisioned home", (t) => {
+	const f = fixture(t);
+	const targetHome = join(f.root, "re-setup-space");
+	mkdirSync(targetHome, { recursive: true });
+	writeFileSync(join(targetHome, "content.txt"), "some content", "utf8");
+
+	const configDir = join(f.home, ".gentle-shell");
+	mkdirSync(configDir, { recursive: true });
+	const configPath = join(configDir, "config.json");
+	const targetHomeKey = realpathSync(targetHome);
+	writeFileSync(
+		configPath,
+		JSON.stringify({
+			provisioned: {
+				[targetHomeKey]: {
+					gentleAi: "0.0.1",
+					gentlePi: "0.0.1",
+					setupAt: "2026-01-01T00:00:00.000Z",
+				},
+			},
+		}),
+		"utf8",
+	);
+
+	const setupResult = run(f.env, ["--home", targetHome, "setup"]);
+	assert.equal(setupResult.status, 0, setupResult.stderr);
+
+	const updatedConfig = JSON.parse(readFileSync(configPath, "utf8"));
+	const entry = updatedConfig.provisioned?.[targetHomeKey];
+	assert.ok(entry, "existing provisioned entry must be preserved/updated");
+	assert.equal(entry.gentlePi, ownGentlePiVersion(), "gentlePi version must be updated to current");
+});

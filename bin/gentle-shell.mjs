@@ -1460,9 +1460,10 @@ async function handleSetupCommand(commandArgs, home, runtime, { homeHadContentBe
 		const configPath = resolveConfigPath();
 		const homeKey = safeRealpath(home.dir);
 		const config = readRawConfig(configPath);
+		const previous = config.provisioned?.[homeKey];
 		const isCanonicalPiHome = safeRealpath(home.dir) === safeRealpath(canonicalPiAgentDir());
 		const isUnrelatedDir = homeHadContentBeforeBootstrap && !existsSync(homeOwnershipMarkerPath(home));
-		if (!isCanonicalPiHome && !isUnrelatedDir) {
+		if (home.mode === "isolated" || previous !== undefined || (!isCanonicalPiHome && !isUnrelatedDir)) {
 			try {
 				writeRawConfig(configPath, recordProvisioned(config, homeKey, resolveSetupGentleAiPin(), ownPackageVersion(), new Date().toISOString()));
 			} catch (error) {

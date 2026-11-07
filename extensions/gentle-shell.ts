@@ -5,6 +5,7 @@ import { Editor, Image, Key, decodeKittyPrintable, getCapabilities, isKeyRelease
 import { readClipboardImage, type ClipboardImage } from "../lib/clipboard-image.ts";
 import { readPastedImagePaths } from "../lib/pasted-image-paths.ts";
 import { describeAttachment, ImageAttachments } from "../lib/image-attachments.ts";
+import { defaultCacheRoot, ImageDiskCache } from "../lib/image-disk-cache.ts";
 import { execFile, spawnSync } from "node:child_process";
 import { openInExternalEditor, type ExternalEditorHost } from "../lib/external-editor.ts";
 import { existsSync, realpathSync, statSync } from "node:fs";
@@ -1637,6 +1638,7 @@ function renderDoubleEscCancelReport(
 const CHANGES_WIDGET_KEY = "gentle-shell-changes";
 const HEADER_WIDGET_KEY = "gentle-shell-below-input-header";
 const CHANGES_COMMAND_NAME = "gentle:changes";
+const IMAGES_COMMAND_NAME = "gentle:images";
 const CHANGES_POLL_DEFAULT_MS = 2000;
 const GIT_TIMEOUT_MS = 5000;
 const COMMANDS_COMMAND_NAME = "gentle:commands";
@@ -2408,6 +2410,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let prompt: GentlePromptEditor | undefined;
 	// Images pasted into the current draft; emptied on every submit.
 	const imageAttachments = new ImageAttachments();
+	// Opt-in disk cache for tools that need a real file path. Off unless the user
+	// asks for it: `GENTLE_PI_IMAGES_DISK_CACHE=session`. The path is never put in
+	// the prompt; it is readable through /gentle:images only.
+	const imagesDiskCachePolicy = (env.GENTLE_PI_IMAGES_DISK_CACHE ?? "off").trim().toLowerCase() === "session" ? "session" : "off";
 	// Set by abortAndDispatchQueued via dispatchQueuedText when an Esc aborts
 	// a turn with a non-empty queue; sent exactly once, from agent_settled,
 	// once the aborted run has fully settled (issue #1218). Several aborts
@@ -2525,6 +2531,15 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	});
 	pi.on("session_start", async (_event, ctx) => {
 		customizeGeneration++;
+		if (imagesDiskCachePolicy === "session") {
+			const cacheRoot = defaultCacheRoot(env);
+			try {
+				ImageDiskCache.sweepStale(cacheRoot, 7 * 24 * 60 * 60 * 1000);
+			} catch {
+				// A sweep that cannot run must never block the session.
+			}
+			imageAttachments.setCache(new ImageDiskCache({ root: cacheRoot, sessionId: ctx.sessionManager.getSessionId() }));
+		}
 		closeCustomize?.();
 		runningJobs = undefined;
 		adaptiveReasoningNotices.clear();
@@ -2962,6 +2977,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	pi.on("session_shutdown", (_event, ctx) => {
 		customizeGeneration++;
 		disposeFooter?.();
+		imageAttachments.dispose();
+		imageAttachments.setCache(undefined);
 		closeCustomize?.();
 		if (review) {
 			review = undefined;
@@ -3011,6 +3028,21 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		if (failed > 0) ctx.ui.notify(`Git status failed for ${failed} ${failed === 1 ? "root" : "roots"}; ${failed === 1 ? "its" : "their"} changes are not listed.`, "warning");
 		await showChangesOverlay(ctx, { loadDiff: (root, file) => loadFileDiff(deps.gitRunner(root, DIFF_MAX_BYTES), file), worktrees: () => tracker.worktrees, refresh: () => tracker.refresh(), apply: applyChanges, pollMs: changesPollMs(env) });
 	};
+	pi.registerCommand(IMAGES_COMMAND_NAME, {
+		description: "List the on-disk paths of images pasted in this draft (needs GENTLE_PI_IMAGES_DISK_CACHE=session).",
+		handler: async (_args, ctx) => {
+			if (imagesDiskCachePolicy !== "session") {
+				ctx.ui.notify("Image disk cache is off. Set GENTLE_PI_IMAGES_DISK_CACHE=session to enable it.", "info");
+				return;
+			}
+			const cached = imageAttachments.cachedPaths(prompt?.getText() ?? "");
+			if (cached.length === 0) {
+				ctx.ui.notify("No pasted images are cached in this draft.", "info");
+				return;
+			}
+			for (const entry of cached) ctx.ui.notify(`${entry.token} ${entry.path}`, "info");
+		},
+	});
 	pi.registerCommand(CHANGES_COMMAND_NAME, {
 		description: "Browse uncommitted Git changes (working tree vs HEAD, untracked included) in this session's repository and its subagents' worktrees. Press o to open $EDITOR.",
 		handler: async (_args, ctx) => openChanges(ctx),

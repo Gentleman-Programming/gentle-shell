@@ -217,6 +217,7 @@ test("review tools called from inside another tool are refused; direct calls and
 	await h.handlers.get("session_start")!({ reason: "startup" }, h.ctx);
 	const call = (toolName: string, parentToolCallId?: string) => h.handlers.get("tool_call")!({ toolName, toolCallId: "call-1", input: { operation: "status" }, ...(parentToolCallId ? { parentToolCallId } : {}) }, h.ctx) as Promise<{ block?: boolean; reason?: string } | undefined>;
 	for (const tool of ["gentle_review", "gentle_review_capture", "gentle_review_capture_group", "gentle_review_scope"]) {
+		assert.equal(h.tools.get(tool)?.exposure, "model-only", `${tool} must not advertise a codemode route`);
 		const nested = await call(tool, "codemode-1");
 		assert.equal(nested?.block, true, tool);
 		assert.match(nested?.reason ?? "", /call it directly, never from codemode or another tool/, tool);

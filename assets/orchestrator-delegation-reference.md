@@ -53,7 +53,9 @@ Progress is published automatically from the todo list: never call `orchestrator
 | Write a unit with a Writer rule reason | — | ✅ one bounded writer per unit |
 | Bash for state (`git`, `gh`) | ✅ | — |
 | Focused test and suite of the change being made | ✅ in one command | — |
-| Named high-risk item (assess `escalate` when RDD is on or unknown), or long suites, builds, or installs of a large task | — | ✅ independent `gentle-ai-verify` |
+| Named high-risk item (assess `escalate` when RDD is on or unknown) | — | ✅ independent `gentle-ai-verify` |
+
+Check duration alone never triggers a verifier.
 
 Use the platform's native bounded worker for delegated-direct work.
 

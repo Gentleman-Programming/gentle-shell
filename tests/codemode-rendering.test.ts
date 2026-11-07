@@ -4,7 +4,6 @@ import {
 	createCodemodeExtension,
 	initTheme,
 	keyHint,
-	keyText,
 	type AgentToolResult,
 	type ExtensionAPI,
 	type ExtensionFactory,
@@ -47,7 +46,7 @@ function context(overrides: Partial<ToolRenderContext> = {}): ToolRenderContext 
 		args: { code: "await tools.read({path: '/private/argument'});" },
 		toolCallId: "code-1", invalidate() {}, lastComponent: undefined, state: {}, cwd: "/fixture",
 		executionStarted: true, argsComplete: true, isPartial: false, expanded: false, showImages: false,
-		isError: false, durationMs: undefined, outputPad: 0, keyText, keyHint, ...overrides,
+		isError: false, durationMs: undefined, outputPad: 0, ...overrides,
 	};
 	return fixture;
 }

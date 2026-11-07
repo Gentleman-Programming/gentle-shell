@@ -621,6 +621,45 @@ test("a routing entry with no configured model is refused typed, naming the rout
 	assert.match(error.message, /review-risk/);
 });
 
+test("invalid or unavailable reviewer models refuse before materialization or completion", async (t) => {
+	const cases = [
+		{ name: "invalid selection", override: { selection: "not-a-provider-model" }, kind: REVIEW_HOST_RELAY_FAILURE.REVIEWER_CONFIG_INVALID, expectedEvidence: undefined },
+		{ name: "missing model", override: { reviewerRegistry: { find: () => undefined, getApiKeyAndHeaders: async () => { throw new Error("must not authenticate"); } } }, kind: REVIEW_HOST_RELAY_FAILURE.REVIEWER_MODEL_NOT_FOUND, expectedEvidence: undefined },
+		{ name: "missing provider", override: { reviewerRegistry: { find: () => ({ provider: "extension", id: "model", api: "custom" }) as never, getProvider: () => undefined, getApiKeyAndHeaders: async () => { throw new Error("must not authenticate"); } } }, kind: REVIEW_HOST_RELAY_FAILURE.REVIEWER_MODEL_NOT_FOUND, expectedEvidence: { provider: "extension", api: "custom", reviewerModel: "extension/model" } },
+	];
+	for (const item of cases) await t.test(item.name, async (t) => {
+		const fixture = harness(t), reviewer = textReviewer(REVIEWER_TEXT);
+		const error = await rejectsWithRelayError(runRelay(fixture, item.override, reviewer.runReviewer), item.kind, "pi");
+		assert.deepEqual(error.reviewerEvidence, item.expectedEvidence);
+		assert.equal(error.mutationOutcome, "none");
+		assert.equal(readLog(fixture.logPath).length, 0, "no native materialize or submit may run");
+		assert.equal(reviewer.calls.length, 0, "no completion may run");
+		assert.equal(existsSync(fixture.submitCapturePath), false);
+	});
+});
+
+test("a group checks every model before preparing any sibling reviewer", async (t) => {
+	for (const invalid of ["missing selection", "missing registry", "invalid selection", "missing model", "missing provider"]) await t.test(invalid, async (t) => {
+		const fixture = harness(t), requests = reviewerGroupRequests(fixture), reviewer = textReviewer(REVIEWER_TEXT);
+		requests[2] = { ...requests[2], ...(invalid === "missing selection" ? { selection: undefined }
+			: invalid === "missing registry" ? { reviewerRegistry: undefined }
+			: invalid === "invalid selection" ? { selection: "invalid" }
+			: invalid === "missing provider" ? { reviewerRegistry: { find: () => ({ provider: "extension", id: "model", api: "custom" }) as never, getProvider: () => undefined, getApiKeyAndHeaders: async () => { throw new Error("must not authenticate"); } } }
+			: { reviewerRegistry: { find: () => undefined, getApiKeyAndHeaders: async () => { throw new Error("must not authenticate"); } } }) };
+		let preparations = 0;
+		const kind = ["missing model", "missing provider"].includes(invalid) ? REVIEW_HOST_RELAY_FAILURE.REVIEWER_MODEL_NOT_FOUND : REVIEW_HOST_RELAY_FAILURE.REVIEWER_CONFIG_INVALID;
+		const error = await rejectsWithRelayError(runReviewHostRelayReviewerGroup(requests, async (request) => {
+			preparations++;
+			return prepareReviewHostRelaySlot(request, reviewer.runReviewer);
+		}), kind, "pi");
+		assert.deepEqual(error.reviewerEvidence, invalid === "missing provider" ? { provider: "extension", api: "custom", reviewerModel: "extension/model" } : undefined);
+		assert.equal(preparations, 0, "no sibling preparation may begin");
+		assert.equal(readLog(fixture.logPath).length, 0, "no native materialize or submit may run");
+		assert.equal(reviewer.calls.length, 0, "no completion may run");
+		assert.equal(existsSync(fixture.submitCapturePath), false);
+	});
+});
+
 test("a tool call's cancelled signal maps to REVIEWER_ABORTED and forwards the caller's own signal to the completion", async (t) => {
 	const fixture = harness(t);
 	const controller = new AbortController();

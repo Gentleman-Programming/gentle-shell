@@ -1,17 +1,20 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { resolve, join } from "node:path";
+import test, { after } from "node:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createHerdrActivityExtension } from "../extensions/gentle-herdr-activity.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { herdrAgentLabel, metadataArgs } from "../lib/herdr-activity.ts";
 
 type Handler = (event: any, ctx: ExtensionContext) => void;
+// Config homes live under the system temp directory, never inside the worktree.
+const scratch = mkdtempSync(join(tmpdir(), "gentle-herdr-activity-"));
+after(() => rmSync(scratch, { recursive: true, force: true }));
+
 function harness(overrides: NodeJS.ProcessEnv = {}, socket = true) {
-	const home = resolve("odd/work/herdr-auto-apply-B/activity");
-	mkdirSync(home, { recursive: true });
-	const configHome = mkdtempSync(join(home, "session-"));
+	const configHome = mkdtempSync(join(scratch, "session-"));
 	const subscribers = new Set<(data: unknown) => void>();
 	const handlers = new Map<string, Handler>();
 	const values: Array<string | null> = [];

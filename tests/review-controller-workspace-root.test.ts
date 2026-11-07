@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
-import { NativeReviewIntegrationError, type NativeReviewCli } from "../lib/native-review-cli.ts";
+import { NativeReviewIntegrationError, NativeReviewCliError, NATIVE_REVIEW_ERROR_CODE, NATIVE_REVIEW_OPERATION, NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
+import { ReviewContinuationRegistry } from "../lib/review-continuation-registry.ts";
+import { prepareBoundSessionRepository } from "../lib/bounded-writer-admission.ts";
 import { decodeReviewFailureV2, type AuthorityRepairAssessmentV1, type ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 
 interface RegisteredTool {
@@ -56,6 +58,56 @@ function runtime(
 function context(cwd: string): ExtensionContext {
 	return { cwd, hasUI: false, ui: { confirm: async () => true } } as unknown as ExtensionContext;
 }
+
+test("repository preparation retains capture routes in the session registry used by later STATUS", async t => {
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-preparation-registry-")));
+	const cwd = join(fixture, "project");
+	mkdirSync(cwd);
+	const homes = { HOME: join(fixture, "home"), USERPROFILE: join(fixture, "home"), GENTLE_PI_AGENT_HOME: join(fixture, "agents"), PI_CODING_AGENT_DIR: join(fixture, "agents"), GENTLE_PI_CONFIG_HOME: join(fixture, "config"), GENTLE_PI_GENTLE_AI_DEV_BINARY: "" };
+	for (const path of new Set(Object.values(homes).filter(Boolean))) mkdirSync(path, { recursive: true });
+	const previous = Object.fromEntries(Object.keys(homes).map(key => [key, process.env[key]]));
+	Object.assign(process.env, homes);
+	t.after(() => {
+		for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+		rmSync(fixture, { recursive: true, force: true });
+	});
+	const reads: Array<{ owner: ReviewContinuationRegistry; found: boolean }> = [];
+	const read = ReviewContinuationRegistry.prototype.readCapture;
+	t.mock.method(ReviewContinuationRegistry.prototype, "readCapture", function(this: ReviewContinuationRegistry, binding: string) {
+		const value = read.call(this, binding);
+		reads.push({ owner: this, found: value !== undefined });
+		return value;
+	});
+	const status = targetStatusFixture({ authorityState: "correction_required" });
+	const input = { name: "correction_plan", schema: "https://gentle-ai.dev/schema/review/correction-plan/v1", captureOperation: "review.capture-correction-plan", arguments: [{ name: "lineage", value: "native-lineage", token: "--lineage=native-lineage" }, { name: "target", value: status.targetIdentity, token: `--target=${status.targetIdentity}` }] };
+	status.nextTransition = { kind: "collect", reasonCode: "correction_plan_required", collect: { inputs: [input] } };
+	status.raw = { ...status.raw, next_transition: { kind: "collect", reason_code: "correction_plan_required" } };
+	const emptyConfig = join(fixture, "empty.gitconfig");
+	writeFileSync(emptyConfig, "");
+	const gitEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_"))), GIT_CONFIG_GLOBAL: emptyConfig, GIT_CONFIG_NOSYSTEM: "1" };
+	const native = fakeNative({
+		reviewMode: async () => ({ operation: "status", scope: "global", status: { global: "on", cloneLocal: "", effective: "on", source: "global" } }),
+		targetStatus: async () => {
+			if (!existsSync(join(cwd, ".git"))) execFileSync("git", ["init", "--quiet", cwd], { env: gitEnv, windowsHide: true });
+			return status;
+		},
+	});
+	const h = runtime(native);
+	const manager = { getSessionId: () => "preparation-registry", getCwd: () => cwd, getEntries: () => [], getBranch: () => [] };
+	const session = { ...context(cwd), sessionManager: manager } as unknown as ExtensionContext;
+	try {
+		await h.lifecycle("session_start", { reason: "startup" }, session);
+		assert.equal(reads.length, 0);
+		assert.equal(await prepareBoundSessionRepository(manager, cwd), true);
+		assert.ok(reads.length > 0, "native preparation must actually retain capture routing");
+		const prepared = reads[0].owner;
+		const beforeStatus = reads.length;
+		await h.controller.execute("after-preparation", { operation: "status", lineageId: "native-lineage" }, undefined, undefined, session);
+		assert.ok(reads.length > beforeStatus);
+		assert.equal(reads[beforeStatus].owner, prepared, "later STATUS must reuse the preparation registry");
+		assert.equal(reads[beforeStatus].found, true, "preparation routing must still exist before STATUS refreshes it");
+	} finally { await h.lifecycle("session_shutdown", { reason: "quit" }, session); }
+});
 
 function repository(t: test.TestContext, prefix = "gentle-pi-workspace-root-"): string {
 	const cwd = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
@@ -231,6 +283,64 @@ test("START forwards the agent lens selection in canonical order and rejects mal
 		assert.equal(result.outcome, "native-start-input-invalid", JSON.stringify(input));
 	}
 	assert.equal(statusCalls, 0);
+});
+
+test("START resolves an explicit request file against the selected workspace", async (t) => {
+	const cwd = repository(t);
+	writeFileSync(join(cwd, "app.ts"), "export const value = 2;\n");
+	writeFileSync(join(cwd, "spec with spaces.md"), "Requested behavior");
+	const starts: Parameters<NativeReviewCli["start"]>[0][] = [];
+	const { controller } = runtime(fakeNative({ start: async request => {
+		starts.push(request);
+		return { lineageId: "intent-lineage", state: "reviewing", riskLevel: "medium", selectedLenses: ["review-risk"], changedFiles: 1, changedLines: 1, correctionBudget: 1, action: "created", lensesRequired: true };
+	} }));
+	await controller.execute("request-start", { operation: "start", input: JSON.stringify({ mode: "ordinary", requestContextPath: "spec with spaces.md" }) }, undefined, undefined, context(cwd));
+	assert.equal(starts.length, 1);
+	assert.equal(starts[0].requestContextPath, join(cwd, "spec with spaces.md"));
+	for (const requestContextPath of [42, "", " spaced ", "nul\0path"]) {
+		const result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary", requestContextPath }) }, cwd, fakeNative());
+		assert.equal(result.reason, "request-context-invalid");
+	}
+});
+
+test("START with explicit intent never silently adopts existing authority", async (t) => {
+	const cwd = repository(t);
+	writeFileSync(join(cwd, "new-spec.md"), "Requested behavior");
+	const result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary", requestContextPath: "new-spec.md" }) }, cwd, fakeNative({
+		targetStatus: async () => targetStatusFixture(),
+		start: async () => { throw new Error("existing intent must not be replaced"); },
+	}));
+	assert.equal(result.reason, "request-context-requires-fresh-review");
+	assert.equal(result.mutation_performed, false);
+});
+
+test("request context rejects missing paths and dangling directory aliases before native lookup", async t => {
+ const cwd = repository(t);
+ symlinkSync(join(cwd, "missing"), join(cwd, "alias"), process.platform === "win32" ? "junction" : "dir");
+ let calls = 0;
+ const native = fakeNative({ targetStatus: async () => { calls++; throw new Error("unresolved path reached native"); } });
+ for (const requestContextPath of ["missing.md", "alias/request.md"]) {
+  const result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary", requestContextPath }) }, cwd, native);
+  assert.equal(result.reason, "request-context-unresolved-path");
+  assert.equal(result.next_action, "supply-an-existing-resolvable-requestContextPath");
+ }
+ assert.equal(calls, 0);
+});
+
+test("request context expands home paths and forwards the canonical external file", async t => {
+ const cwd = repository(t);
+ const external = mkdtempSync(join(homedir(), "request-context-test-"));
+ t.after(() => rmSync(external, { recursive: true, force: true }));
+ const path = join(external, "spec.md"); writeFileSync(path, "Requested behavior");
+ symlinkSync(external, join(cwd, "alias"), process.platform === "win32" ? "junction" : "dir");
+ const starts: string[] = [];
+ const native = fakeNative({ targetStatus: async request => { starts.push(request.requestContextPath!); throw new Error("canonical path observed; stop before START"); } });
+ const relativeHomePath = path.slice(homedir().length + 1).replaceAll("\\", "/");
+ for (const requestContextPath of ["alias/spec.md", "~/" + relativeHomePath, ...(process.platform === "win32" ? ["~\\" + relativeHomePath.replaceAll("/", "\\")] : [])]) {
+  await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary", requestContextPath }) }, cwd, native);
+ }
+ assert.equal(starts.length, process.platform === "win32" ? 3 : 2);
+ assert.ok(starts.every(value => value === realpathSync(path)));
 });
 
 test("repository discovery ignores ambient Git root overrides", async (t) => {
@@ -767,4 +877,37 @@ test("an explicit linked-worktree root owns STATUS collect capture over the sess
 	const result = await __testing.executeReviewCaptureOperation({ lineageId, workspaceRoot: worktree, collectBinding: JSON.stringify(binding) }, sessionCwd, native);
 	assert.equal(result.outcome, "native-last-event-closure");
 	assert.deepEqual(observedRoots, [realpathSync(worktree)]);
+});
+
+test("request-context capability refusal remains clear in the public facade", async (t) => {
+ const cwd = repository(t);
+ writeFileSync(join(cwd, "spec.md"), "Requested behavior");
+ const error = new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE, NATIVE_REVIEW_OPERATION.STATUS, false, false, NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE);
+ const native = fakeNative({ targetStatus: async () => { throw error; } });
+ for (const operation of ["inspect", "start"] as const) {
+  const result = await __testing.executeReviewControllerOperation({ operation, ...(operation === "start" ? { input: JSON.stringify({ mode: "ordinary", requestContextPath: "spec.md" }) } : {}) }, cwd, native);
+  assert.equal(result.status, "blocked");
+  assert.equal(result.reason, NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE);
+  assert.equal(result.mutation_performed, false);
+ }
+});
+
+test("request context applies sensitive-path policy before any native lookup", async () => {
+ let calls = 0;
+ const native = fakeNative({ targetStatus: async () => { calls++; throw new Error("must not read sensitive paths"); } });
+ for (const path of [".envrc", ".netrc", "~\\.netrc", ".env", ".env.local", ".ssh/id_rsa", "secrets/request.md", "C:/private/KEY.PEM", "docs/../.env", "secrets\\request.md"]) {
+  const result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary", requestContextPath: path }) }, process.cwd(), native);
+  assert.equal(result.reason, "request-context-sensitive-path", path);
+  assert.equal(result.mutation_performed, false);
+ }
+ assert.equal(calls, 0);
+});
+
+test("request context rejects a harmless alias resolving into a sensitive directory", async (t) => {
+ const cwd = repository(t); mkdirSync(join(cwd, "secrets")); writeFileSync(join(cwd, "secrets", "request.md"), "private fixture");
+ symlinkSync(join(cwd, "secrets"), join(cwd, "alias"), process.platform === "win32" ? "junction" : "dir");
+ let calls = 0;
+ const native = fakeNative({ targetStatus: async () => { calls++; throw new Error("must not read aliased secrets"); } });
+ const result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary", requestContextPath: "alias/request.md" }) }, cwd, native);
+ assert.equal(result.reason, "request-context-sensitive-path"); assert.equal(calls, 0);
 });

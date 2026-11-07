@@ -26,7 +26,7 @@ import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { isValidProfileName, profileRoleEntries, profilesFilePath, readProfilesFileResult, writeJsonFileAtomicallySync } from "./agent-profiles.ts";
 import type { AgentModelConfig } from "./model-routing-authority.ts";
-import { resolveSessionWorktreeWithGit, type WorktreeIdentity, type WorktreeResolver } from "./session-worktree-registry.ts";
+import { resolveSessionWorktree, type WorktreeIdentity, type WorktreeResolver } from "./session-worktree-registry.ts";
 
 export const PROFILE_PIN_KIND = "gentle-pi.agent_model_profile_pin";
 export const PROFILE_PIN_VERSION = 1;
@@ -178,7 +178,7 @@ export function readProfilePin(path: string): string | undefined {
 	return result.status === "valid" ? result.profile : undefined;
 }
 
-let profilePinWorktreeResolver: WorktreeResolver = resolveSessionWorktreeWithGit;
+let profilePinWorktreeResolver: WorktreeResolver = resolveSessionWorktree;
 
 /**
  * Test seam, mirroring the other injectable seams in `lib/`: the `/gentle:profiles`
@@ -187,7 +187,7 @@ let profilePinWorktreeResolver: WorktreeResolver = resolveSessionWorktreeWithGit
  * passes its own resolver instead, so it needs no seam.
  */
 export function setProfilePinWorktreeResolverForTesting(resolver?: WorktreeResolver): void {
-	profilePinWorktreeResolver = resolver ?? resolveSessionWorktreeWithGit;
+	profilePinWorktreeResolver = resolver ?? resolveSessionWorktree;
 }
 
 function gentlePiWorktreeIdentity(

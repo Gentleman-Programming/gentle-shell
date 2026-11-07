@@ -217,6 +217,8 @@ const CAPABILITIES_SCHEMA_IDENTITIES: Readonly<Record<string, { protocolMinor: n
 	}),
 });
 const OPTIONAL_FEATURE_NAMES = Object.freeze([
+	"start_request_context",
+	"start_options_preflight",
 	"base_ref_workspace_overlay",
 	"bounded_process_waits",
 	"classified_authority_repair",
@@ -236,6 +238,8 @@ const OPTIONAL_FEATURE_NAMES = Object.freeze([
 	"validating_result_reopen",
 ] as const);
 const FEATURE_NAMES = Object.freeze([
+	"start_request_context",
+	"start_options_preflight",
 	"base_ref_workspace_overlay",
 	"bounded_process_waits",
 	"classified_authority_repair",
@@ -1599,6 +1603,7 @@ function decodeCorrectionPlanRequestV1(value: unknown, label: string): ReviewCor
 	};
 }
 
+/** Decode frozen validation evidence, preserving an explicit empty policy and rejecting absence. */
 export function decodeReviewTargetedValidationRequestV1(value: unknown, label = "targeted_validation_request"): ReviewTargetedValidationRequestV1 {
 	const body = exactRecord(value, label, [
 		"schema", "request_hash", "lineage_id", "expected_revision", "target_identity", "fix_finding_ids", "policy_content", "fix_findings", "fix_classifications",
@@ -1641,7 +1646,8 @@ export function decodeReviewTargetedValidationRequestV1(value: unknown, label = 
 		expectedRevision: sha256(body.expected_revision, `${label}.expected_revision`),
 		targetIdentity: sha256(body.target_identity, `${label}.target_identity`),
 		fixFindingIds,
-		policyContent: nonempty(body.policy_content, `${label}.policy_content`),
+		// A frozen empty policy is valid; missing historical policy is not.
+		policyContent: text(body.policy_content, `${label}.policy_content`),
 		fixFindings,
 		fixClassifications,
 		projection: enumeration(body.projection, REQUIRED_PROJECTIONS, `${label}.projection`),

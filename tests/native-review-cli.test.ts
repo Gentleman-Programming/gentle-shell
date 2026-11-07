@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -13,6 +14,7 @@ import {
 	NativeReviewCliError,
 	NativeReviewCliV216,
 	NativeReviewIntegrationError,
+	NativeReviewConsentRequiredError,
 	createNativeReviewCli,
 	createNodeExecFileAdapter,
 	createWindowsProcessTreeKiller,
@@ -540,6 +542,120 @@ const LENS_SELECTION_UNSUPPORTED_FAILURE = {
 	authority_applicability: "not_evaluated", retry_safe: true, replayability: "not_replayable", required_inputs: [],
 	next_action: "correct_request", cause: "flag provided but not defined: -lenses",
 };
+
+function contextClient(responses: QueuedResult[], features = ["start_request_context", "start_options_preflight"], executable = join(process.cwd(), "package.json")) {
+ const capabilities = JSON.parse(readFileSync(join(process.cwd(), "contracts/review-integration/v2/fixtures/capabilities.fixture.json"), "utf8"));
+ capabilities.executable.sha256 = "sha256:" + createHash("sha256").update(readFileSync(executable)).digest("hex");
+ capabilities.features.optional.push(...features.map(name => ({ name, supported: true, requires: [] })));
+ const queue = queuedAdapter([{ stdout: JSON.stringify(capabilities) }, ...responses]);
+ return { ...queue, client: new NativeReviewCliV216(queue.adapter, executable) };
+}
+
+test("START discovers capabilities before forwarding the explicit request file unchanged", async () => {
+ const path = "/repo/spec with spaces.md";
+ const tokens = ["--contract=gentle-ai.review-integration/v2", "--cwd=/repo", "--target=" + TARGET, "--projection=workspace", "--agent=pi", "--consent=relay", "--request-context=" + path];
+ const host = contextClient([
+  { stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens)) },
+  { stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) },
+ ]);
+ await host.client.start({ cwd: "/repo", requestContextPath: path });
+ assert.deepEqual(host.calls[0].arguments, ["review", "capabilities", "--contract", "gentle-ai.review-integration/v2"]);
+ assert.deepEqual(host.calls[1].arguments.slice(-3), ["--request-context", path, "--next-transition"]);
+ assert.deepEqual(host.calls[2].arguments, ["review", "start", ...tokens]);
+});
+
+test("request context reuses capabilities while every STATUS remains fresh", async () => {
+ const host = contextClient([1, 2].map(() => ({ stdout: JSON.stringify(negotiatedStartStatus(TARGET, [])) })));
+ for (let i = 0; i < 2; i++) await host.client.targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" });
+ assert.deepEqual(host.calls.map(call => call.arguments[1]), ["capabilities", "status", "status"]);
+});
+
+test("request context invalidates capabilities when executable bytes change", async t => {
+ const directory = mkdtempSync(join(tmpdir(), "context-capabilities-"));
+ t.after(() => rmSync(directory, { recursive: true, force: true }));
+ const executable = join(directory, "native");
+ writeFileSync(executable, "first executable");
+ const replacementCapabilities = JSON.parse(readFileSync(join(process.cwd(), "contracts/review-integration/v2/fixtures/capabilities.fixture.json"), "utf8"));
+ replacementCapabilities.executable.sha256 = "sha256:" + createHash("sha256").update("replacement executable").digest("hex");
+ const host = contextClient([{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, [])) }, { stdout: JSON.stringify(replacementCapabilities) }], undefined, executable);
+ await host.client.targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" });
+ writeFileSync(executable, "replacement executable");
+ // The old capability result cannot authorize a STATUS with the replacement.
+ await assert.rejects(host.client.targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" }), /provider does not support request context/);
+ assert.deepEqual(host.calls.map(call => call.arguments[1]), ["capabilities", "status", "capabilities"]);
+});
+
+test("request context never caches malformed capability discovery", async () => {
+ const host = contextClient([]);
+ let discoveries = 0;
+ const adapter: ExecFileAdapter = async request => {
+  if (++discoveries === 1) return { stdout: "{}", stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
+  return host.adapter(request);
+ };
+ const subject = new NativeReviewCliV216(adapter, join(process.cwd(), "package.json"));
+ await assert.rejects(subject.targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" }));
+ // The second discovery succeeds; only the subsequent unqueued STATUS fails.
+ await assert.rejects(subject.targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" }));
+ assert.deepEqual(host.calls.map(call => call.arguments[1]), ["capabilities", "status"]);
+});
+
+test("Windows request paths preserve exact START and consent spelling and reject normalization drift", async () => {
+ for (const path of ["C:\\work\\spec with spaces.md", "C:\\work\\spec.md.", "C:\\work\\spec.md ", "\\\\?\\C:\\work\\spec.md"]) {
+  // A trailing space is an invalid process string even before negotiation.
+  if (path.endsWith(" ")) {
+   const queue = queuedAdapter([]);
+   await assert.rejects(client(queue.adapter).start({ cwd: "/repo", requestContextPath: path }));
+   assert.equal(queue.calls.length, 0);
+   continue;
+  }
+  const tokens = ["--contract=gentle-ai.review-integration/v2", "--cwd=/repo", "--target=" + TARGET, "--projection=workspace", "--agent=pi", "--consent=relay", "--request-context=" + path];
+  const host = contextClient([{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens)) }, { stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) }]);
+  await host.client.start({ cwd: "/repo", requestContextPath: path });
+  assert.ok(host.calls[2].arguments.includes("--request-context=" + path));
+  const changed = path.startsWith("\\\\?\\") ? path.slice(4) : path.endsWith(".") ? path.slice(0, -1) : path.replaceAll("\\", "/");
+  const drift = contextClient([{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens.slice(0, -1).concat("--request-context=" + changed))) }]);
+  await assert.rejects(drift.client.start({ cwd: "/repo", requestContextPath: path }), /context/);
+  assert.equal(drift.calls.length, 2);
+  const raw = requestContextConsent(path);
+  const queue = queuedAdapter([{ stdout: JSON.stringify(reviewingStartV4(raw.target_identity)) }]);
+  await client(queue.adapter).answerConsent({ cwd: "/repo", consent: decodeReviewConsentV3(raw, "pi"), answer: "granted", requestContextPath: path });
+  assert.ok(queue.calls[0].arguments.includes(path));
+  const refused = queuedAdapter([]);
+  await assert.rejects(client(refused.adapter).answerConsent({ cwd: "/repo", consent: decodeReviewConsentV3(raw, "pi"), answer: "granted", requestContextPath: changed }), /context/);
+  assert.equal(refused.calls.length, 0);
+ }
+});
+
+test("request context refuses absent or unsupported advertised capabilities before STATUS or START", async () => {
+ for (const features of [[], ["start_request_context"], ["start_options_preflight"]]) {
+  const host = contextClient([], features);
+  await assert.rejects(host.client.start({ cwd: "/repo", requestContextPath: "/spec.md" }), /provider does not support request context/);
+  assert.equal(host.calls.length, 1);
+ }
+ const host = contextClient([]);
+ const adapter: ExecFileAdapter = async request => {
+  const response = await host.adapter(request);
+  const body = JSON.parse(response.stdout);
+  body.features.optional.find((f: { name: string }) => f.name === "start_request_context").supported = false;
+  return { ...response, stdout: JSON.stringify(body) };
+ };
+ await assert.rejects(new NativeReviewCliV216(adapter, join(process.cwd(), "package.json")).targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" }), /provider does not support request context/);
+ assert.equal(host.calls.length, 1);
+});
+
+test("START never drops requested context from a malformed provider transition", async () => {
+ const host = contextClient([{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, [])) }]);
+ await assert.rejects(host.client.start({ cwd: "/repo", requestContextPath: "/spec.md" }), /did not retain the requested context/);
+ assert.equal(host.calls.length, 2);
+});
+
+test("invalid request context paths are refused before any native invocation", async () => {
+	for (const path of ["", " spaced ", "bad\0path"]) {
+		const queue = queuedAdapter([]);
+		await assert.rejects(client(queue.adapter).start({ cwd: "/repo", requestContextPath: path }), /requestContextPath/);
+		assert.equal(queue.calls.length, 0);
+	}
+});
 
 test("native START preflights the agent lens selection through STATUS", async () => {
 	const tokens = [
@@ -1253,4 +1369,46 @@ test("the central gentle-ai environment carries Gentle AI's isolation variables 
 	assert.equal(bundled.GENTLE_PI_REVIEW_RELAY_CONTRACT, "gentle-pi.review-relay/v1");
 	const ordinary = gentleAiProcessEnvironment({ PATH: "/usr/bin" });
 	assert.deepEqual(ordinary, { PATH: "/usr/bin", GENTLE_PI_REVIEW_RELAY_CONTRACT: "gentle-pi.review-relay/v1" });
+});
+
+function requestContextConsent(path: string): Record<string, any> {
+ const raw = fixture("consent-v3.captured.json") as Record<string, any>;
+ raw.agent = "pi";
+ for (const choice of raw.choices) choice.invocation = String(choice.invocation)
+  .replace(/--cwd \S+ --target/, "--cwd /repo --target")
+  .replace(" --consent ", " --agent pi --request-context '" + path + "' --consent ");
+ return raw;
+}
+
+test("request context is retained and checked before consent replay", async () => {
+ const path = "/repo/spec with spaces.md";
+ const raw = requestContextConsent(path);
+ const tokens = ["--contract=gentle-ai.review-integration/v2", "--cwd=/repo", "--target=" + raw.target_identity, "--projection=workspace", "--agent=pi", "--consent=relay", "--request-context=" + path];
+ const host = contextClient([{ stdout: JSON.stringify(negotiatedStartStatus(raw.target_identity, tokens)) }, { stdout: JSON.stringify(raw) }]);
+ let pending: NativeReviewConsentRequiredError | undefined;
+ try { await host.client.start({ cwd: "/repo", requestContextPath: path }); } catch (error) { assert.ok(error instanceof NativeReviewConsentRequiredError); pending = error; }
+ assert.ok(pending);
+ assert.equal(pending.requestContextPath, path);
+ for (const mutation of ["missing", "changed", "duplicate"]) {
+  const copy = requestContextConsent(path);
+  copy.choices[0].invocation = mutation === "missing" ? copy.choices[0].invocation.replace(" --request-context '" + path + "'", "")
+   : mutation === "changed" ? copy.choices[0].invocation.replace(path, "/other.md")
+   : copy.choices[0].invocation.replace(" --consent ", " --request-context '/other.md' --consent ");
+  const queue = queuedAdapter([]);
+  await assert.rejects(client(queue.adapter).answerConsent({ cwd: "/repo", consent: decodeReviewConsentV3(copy, "pi"), answer: "granted", requestContextPath: path }), /context/);
+  assert.equal(queue.calls.length, 0);
+ }
+ const queue = queuedAdapter([{ stdout: JSON.stringify(reviewingStartV4(raw.target_identity)) }]);
+ assert.equal((await client(queue.adapter).answerConsent({ cwd: "/repo", consent: pending.consent, answer: "granted", requestContextPath: path } as any)).kind, "started");
+ assert.ok(queue.calls[0].arguments.includes(path));
+});
+
+test("START refuses consent choices that lose the requested context before presenting consent", async () => {
+ const path = "/repo/spec.md";
+ const raw = requestContextConsent(path);
+ raw.choices[1].invocation = raw.choices[1].invocation.replace(" --request-context '" + path + "'", "");
+ const tokens = ["--contract=gentle-ai.review-integration/v2", "--cwd=/repo", "--target=" + raw.target_identity, "--projection=workspace", "--agent=pi", "--consent=relay", "--request-context=" + path];
+ const host = contextClient([{ stdout: JSON.stringify(negotiatedStartStatus(raw.target_identity, tokens)) }, { stdout: JSON.stringify(raw) }]);
+ await assert.rejects(host.client.start({ cwd: "/repo", requestContextPath: path }), /context/);
+ assert.equal(host.calls.length, 3);
 });

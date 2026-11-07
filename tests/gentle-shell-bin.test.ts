@@ -86,6 +86,30 @@ test("a genuinely absent adjacent peer falls back to PATH", (t) => {
 	assert.match(result.stdout, /pi 1\.2\.1/);
 });
 
+test("a bundled runtime launch performs zero real version-probe spawns", (t) => {
+	const f = standaloneLauncher(t);
+	const peer = join(f.root, "node_modules", "@earendil-works", "pi-coding-agent");
+	mkdirSync(join(peer, "dist", "bundle"), { recursive: true });
+	writeFileSync(join(peer, "dist", "index.js"), "");
+	writeFileSync(join(peer, "package.json"), JSON.stringify({
+		name: "@earendil-works/pi-coding-agent", type: "module", version: "1.2.5",
+		exports: { ".": { import: "./dist/index.js" } }, bin: { pi: "dist/bundle/cli.js" },
+	}));
+	const log = join(f.root, "version-probes.log");
+	writeFileSync(log, "");
+	writeFileSync(join(peer, "dist", "bundle", "cli.js"), [
+		"import { appendFileSync } from 'node:fs';",
+		"const args = process.argv.slice(2);",
+		`if (args.length === 1 && args[0] === '--version') { appendFileSync(${JSON.stringify(log)}, 'x'); console.error('unexpected-version-probe'); process.exit(77); }`,
+		"console.log('bundled-session-ok');",
+	].join("\n"));
+	const result = spawnSync(process.execPath, [f.launcher], { env: f.env, encoding: "utf8" });
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(result.stdout, "bundled-session-ok\n");
+	assert.doesNotMatch(result.stderr, /unexpected-version-probe/);
+	assert.equal(readFileSync(log, "utf8"), "", "only --version invocations record a probe");
+});
+
 test("malformed adjacent metadata never silently falls back to PATH; env override still wins", (t) => {
 	const f = standaloneLauncher(t);
 	const peer = join(f.root, "node_modules", "@earendil-works", "pi-coding-agent");
@@ -505,6 +529,29 @@ function writeGentleAiScriptDeclaringGentlePi(path: string, extraSources: string
 			"const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));",
 			`settings.packages = [...${JSON.stringify(extraSources)}, 'npm:gentle-pi@3.5.1'];`,
 			"writeFileSync(settingsPath, JSON.stringify(settings));",
+			"process.stdout.write(JSON.stringify({ args }) + '\\n');",
+			`process.exit(${exitCode});`,
+			"",
+		].join("\n"),
+	);
+	chmodSync(path, 0o755);
+}
+
+// Test/development-only stub for the setup subcommand's gentle-ai binary
+// that replaces the provisioned home's settings.json with a directory and
+// then fails, so the failure-path post-install cleanup's settings read throws
+// EISDIR instead of reporting a missing file (#1647 hardening).
+function writeGentleAiScriptReplacingSettingsWithDirectory(path: string, exitCode: number) {
+	writeFileSync(
+		path,
+		[
+			"#!/usr/bin/env node",
+			"import { mkdirSync, rmSync } from 'node:fs';",
+			"import { join } from 'node:path';",
+			"const args = process.argv.slice(2);",
+			"const settingsPath = join(process.env.PI_CODING_AGENT_DIR, 'settings.json');",
+			"rmSync(settingsPath, { force: true });",
+			"mkdirSync(settingsPath, { recursive: true });",
 			"process.stdout.write(JSON.stringify({ args }) + '\\n');",
 			`process.exit(${exitCode});`,
 			"",
@@ -1369,6 +1416,39 @@ test("gentle-shell setup removes both the conflicting rpiv package and npm:gentl
 	assert.deepEqual(JSON.parse(lines[2]).args, ["remove", "npm:gentle-pi"]);
 });
 
+test("gentle-shell setup removes npm:gentle-pi that gentle-ai declared even when gentle-ai exits non-zero", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptDeclaringGentlePi(gentleAiScript, [], 3);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript };
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 3);
+	assert.match(
+		result.stderr,
+		new RegExp(
+			`gentle-shell: removing npm:gentle-pi from .+: this launcher loads its own gentle-pi ${ownGentlePiVersion().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}, so the home always matches it`,
+		),
+	);
+
+	const lines = result.stdout.trim().split("\n").filter((line) => line.length > 0);
+	assert.equal(lines.length, 2, result.stdout);
+	assert.deepEqual(JSON.parse(lines[0]).args, ["install", "--agent", "pi", "--scope", "global"]);
+	assert.deepEqual(JSON.parse(lines[1]).args, ["remove", "npm:gentle-pi"]);
+});
+
+test("gentle-shell setup keeps the gentle-ai exit code when failure-path cleanup cannot read settings.json", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptReplacingSettingsWithDirectory(gentleAiScript, 3);
+	const env = { ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript };
+
+	const result = run(env, ["setup"]);
+	assert.equal(result.status, 3, result.stderr);
+	assert.match(result.stderr, /gentle-shell: post-install cleanup failed: EISDIR/);
+	assert.doesNotMatch(result.stderr, /^\s+at /m);
+});
+
 // A --dry-run gentle-ai install writes nothing, so reading settings.json
 // afterwards would only ever report whatever pre-existed the run (e.g. the
 // isolated-home bootstrap this fixture's fake-gentle-ai script never
@@ -1868,6 +1948,23 @@ test("a failing auto-provision flow warns, still launches pi, and writes no mark
 	}
 });
 
+// The launch that follows still reads the same unreadable settings.json, so
+// only the setup outcome is pinned here: the install's own exit code reaches
+// the ordinary "starting anyway" branch instead of the unexpected-error one.
+test("a failing auto-provision flow keeps the install exit code when failure-path cleanup cannot read settings.json", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptReplacingSettingsWithDirectory(gentleAiScript, 5);
+	const env = enableAutoProvision({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript, GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0" });
+
+	const result = run(env, ["--mode", "rpc"]);
+	assert.match(
+		result.stderr,
+		/gentle-shell: automatic setup failed \(exit 5\); starting anyway and retrying next run\. Run `gentle-shell setup` to see the full output\.\ngentle-shell: post-install cleanup failed: EISDIR/,
+	);
+	assert.doesNotMatch(result.stderr, /automatic setup failed unexpectedly/);
+});
+
 test("a failing auto-provision flow names the --home selector in its retry remediation", (t) => {
 	const f = fixture(t);
 	const target = join(f.root, "custom-home");
@@ -1881,6 +1978,32 @@ test("a failing auto-provision flow names the --home selector in its retry remed
 		result.stderr,
 		new RegExp(`Run \`gentle-shell --home ${target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} setup\` to see the full output\\.`),
 	);
+});
+
+test("a failing auto-provision flow removes declared npm:gentle-pi and injects the local package on continuation", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeGentleAiScriptDeclaringGentlePi(gentleAiScript, [], 5);
+	writePiScriptEditingSettingsOnRemove(f.piScript);
+	const env = enableAutoProvision({
+		...f.env,
+		GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript,
+		GENTLE_SHELL_GENTLE_AI_PIN: "3.6.0",
+	});
+
+	const result = run(env, ["--mode", "rpc"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(
+		result.stderr,
+		/gentle-shell: automatic setup failed \(exit 5\); starting anyway and retrying next run\. Run `gentle-shell setup` to see the full output\./,
+	);
+	assert.match(result.stderr, /gentle-shell: removing npm:gentle-pi/);
+
+	const settings = JSON.parse(readFileSync(join(f.gentleShellHome, "settings.json"), "utf8"));
+	assert.deepEqual(settings.packages, []);
+
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, ["-e", packageRoot, "--mode", "rpc"]);
 });
 
 test("GENTLE_SHELL_NO_AUTO_SETUP=1 skips auto-provisioning entirely", (t) => {

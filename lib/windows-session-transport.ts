@@ -47,6 +47,7 @@ export type WindowsSessionTransportHostOptions = Readonly<{
 	callback?: WindowsHostCallback;
 	rpcDeadlineMs?: number;
 	startupDeadlineMs?: number;
+	onBootstrapDiagnostic?: WindowsSessionBootstrapDiagnosticObserver;
 }>;
 export type WindowsSessionRegistryPhase = "start" | "initialize" | "cleanup";
 export type WindowsSessionStartupMarker = "script-entered" | "native-ready";
@@ -55,6 +56,24 @@ export type WindowsSessionRegistryPhaseError = Readonly<{ class: "timed-out" | "
 /** Receives one fixed, synchronous result event for an operation on this registry's own host. */
 export type WindowsSessionRegistryPhaseEvent = Readonly<{ phase: WindowsSessionRegistryPhase; status: "succeeded" | "failed"; error: WindowsSessionRegistryPhaseError | null; lastStartupMarker: WindowsSessionStartupMarker | null }>;
 export type WindowsSessionRegistryPhaseObserver = (event: WindowsSessionRegistryPhaseEvent) => undefined;
+const bootstrapDiagnosticCategories = ["compiler", "argument", "invalid-operation", "not-supported", "security", "assembly-load", "type-load", "other"] as const;
+const bootstrapRejectionStages = ["volume-open", "ancestor-open", "routing-open", "transport-create-or-open", "transport-assert-owned", "presence-create-or-open", "presence-assert-owned", "unknown"] as const;
+/** A fixed code derived from the helper's known bootstrap stderr markers; no stderr text, path, SID, or status crosses it. */
+export type WindowsSessionBootstrapDiagnosticCode = `diagnostic-${typeof bootstrapDiagnosticCategories[number]}` | `rejection-${typeof bootstrapRejectionStages[number]}`;
+export type WindowsSessionBootstrapDiagnosticObserver = (code: WindowsSessionBootstrapDiagnosticCode) => undefined;
+const bootstrapDiagnosticCodes: ReadonlySet<string> = new Set([...bootstrapDiagnosticCategories.map((category) => `diagnostic-${category}`), ...bootstrapRejectionStages.map((stage) => `rejection-${stage}`)]);
+export const isWindowsSessionBootstrapDiagnosticCode = (value: unknown): value is WindowsSessionBootstrapDiagnosticCode => typeof value === "string" && bootstrapDiagnosticCodes.has(value);
+/** Classify one helper stderr line. Anything but an exact known marker is dropped. */
+function classifyBootstrapStderr(line: string): WindowsSessionBootstrapDiagnosticCode | undefined {
+	let value: unknown;
+	try { value = JSON.parse(line); } catch { return undefined; }
+	if (!plainRecord(value) || Object.getPrototypeOf(value) !== Object.prototype) return undefined;
+	const keys = Object.keys(value).sort().join(",");
+	let code: string | undefined;
+	if (value.kind === "windows-session-bootstrap-diagnostic" && keys === "category,compilerCodes,kind,languageMode,reason") code = `diagnostic-${String(value.category)}`;
+	else if (value.kind === "windows-session-bootstrap-rejection" && keys === "kind,ntstatus,stage") code = `rejection-${String(value.stage)}`;
+	return isWindowsSessionBootstrapDiagnosticCode(code) ? code : undefined;
+}
 export type WindowsSessionRegistryObservation = Readonly<{
 	availability: "unavailable" | "observed";
 	provenance: "unavailable" | "ambiguous" | "owned-instance";
@@ -253,6 +272,10 @@ export class WindowsSessionTransportHost {
 	private started?: Promise<void>;
 	private startupMarker: WindowsSessionStartupMarker | null = null;
 	private startupReplyObserved = false;
+	private readonly onBootstrapDiagnostic?: WindowsSessionBootstrapDiagnosticObserver;
+	private bootstrapDiagnosticCode: WindowsSessionBootstrapDiagnosticCode | null = null;
+	private diagnosticOutput = Buffer.alloc(0);
+	private diagnosticOverflow = false;
 	private sequence = 0;
 	private output = Buffer.alloc(0);
 	private readonly pending = new Map<string, Pending>();
@@ -279,6 +302,7 @@ export class WindowsSessionTransportHost {
 	private readonly onStdoutError = () => this.abort("Windows transport host unavailable", true, "stream");
 	private readonly onStdinError = () => this.abort("Windows transport host unavailable", true, "stream");
 	private readonly onStderrError = () => this.abort("Windows transport host unavailable", true, "stream");
+	private readonly onStderrData = (chunk: Buffer) => this.onDiagnosticOutput(chunk);
 	private readonly onChildError = () => this.abort("Windows transport host unavailable", true, "process");
 	private readonly onChildExit = () => this.abort("Windows transport host exited", false, "exit");
 	private readonly onChildClose = () => this.handleChildClose();
@@ -291,11 +315,14 @@ export class WindowsSessionTransportHost {
 		this.callback = options.callback;
 		this.deadline = options.rpcDeadlineMs ?? RPC_DEADLINE_MS;
 		this.startupDeadline = options.startupDeadlineMs ?? STARTUP_DEADLINE_MS;
+		this.onBootstrapDiagnostic = options.onBootstrapDiagnostic;
 		if (!Number.isInteger(this.deadline) || this.deadline < 1 || this.deadline > RPC_DEADLINE_MS) throw new RangeError("invalid Windows transport deadline");
 		if (!Number.isInteger(this.startupDeadline) || this.startupDeadline < 1 || this.startupDeadline > STARTUP_DEADLINE_MS) throw new RangeError("invalid Windows transport startup deadline");
 	}
 
 	get lastStartupMarker() { return this.startupMarker; }
+	/** The first classified bootstrap stderr marker of this host, or null. */
+	get bootstrapDiagnostic() { return this.bootstrapDiagnosticCode; }
 
 	start(): Promise<void> {
 		if (this.started) return this.started;
@@ -307,6 +334,7 @@ export class WindowsSessionTransportHost {
 		this.child.stdout.on("error", this.onStdoutError);
 		this.child.stdin.on("error", this.onStdinError);
 		this.child.stderr.on("error", this.onStderrError);
+		this.child.stderr.on("data", this.onStderrData);
 		this.child.stderr.resume?.();
 		this.child.once("error", this.onChildError);
 		this.child.once("exit", this.onChildExit);
@@ -401,6 +429,27 @@ export class WindowsSessionTransportHost {
 		this.startupMarker = marker;
 		return true;
 	}
+	// stderr is always consumed. Only the first exact known bootstrap marker becomes a
+	// fixed code; unknown, malformed, or oversized lines are dropped unread.
+	private onDiagnosticOutput(chunk: Buffer) {
+		if (!Buffer.isBuffer(chunk)) return;
+		const output = this.diagnosticOutput.length === 0 ? chunk : Buffer.concat([this.diagnosticOutput, chunk]);
+		let offset = 0;
+		for (let newline = output.indexOf(10, offset); newline >= 0; newline = output.indexOf(10, offset)) {
+			const bytes = output.subarray(offset, newline);
+			offset = newline + 1;
+			const overflowed = this.diagnosticOverflow;
+			this.diagnosticOverflow = false;
+			if (overflowed || this.bootstrapDiagnosticCode !== null || bytes.length > MAX_CONTROL_BYTES) continue;
+			const code = classifyBootstrapStderr(bytes.toString("utf8").replace(/\r$/, ""));
+			if (!code) continue;
+			this.bootstrapDiagnosticCode = code;
+			try { this.onBootstrapDiagnostic?.(code); } catch { /* an observer never disturbs the helper */ }
+		}
+		const partial = output.subarray(offset);
+		if (partial.length > MAX_CONTROL_BYTES) { this.diagnosticOverflow = true; this.diagnosticOutput = Buffer.alloc(0); }
+		else this.diagnosticOutput = Buffer.from(partial);
+	}
 	private onOutput(chunk: Buffer) {
 		if (!Buffer.isBuffer(chunk)) { this.abort("Windows transport host unavailable", true, "protocol"); return; }
 		const output = this.output.length === 0 ? chunk : Buffer.concat([this.output, chunk]);
@@ -487,6 +536,7 @@ export class WindowsSessionTransportHost {
 		child.stdout.removeListener("error", this.onStdoutError);
 		child.stdin.removeListener("error", this.onStdinError);
 		child.stderr.removeListener("error", this.onStderrError);
+		child.stderr.removeListener("data", this.onStderrData);
 		child.removeListener("error", this.onChildError);
 		child.removeListener("exit", this.onChildExit);
 		if (!keepClose) child.removeListener("close", this.onChildClose);
@@ -511,6 +561,7 @@ export class WindowsSessionTransportHost {
 		this.rejectCleanup = undefined;
 		this.cleanup = undefined;
 		this.output = Buffer.alloc(0);
+		this.diagnosticOutput = Buffer.alloc(0);
 		this.child = undefined;
 		resolve?.();
 	}
@@ -643,11 +694,11 @@ export class WindowsSessionPresenceRegistry {
 		this.observer = observer;
 		this.host.setListenerFailure((generation) => this.listenerFailure?.(generation));
 	}
-	static async create(agentHome: string, observePhase?: WindowsSessionRegistryPhaseObserver) {
+	static async create(agentHome: string, observePhase?: WindowsSessionRegistryPhaseObserver, observeBootstrap?: WindowsSessionBootstrapDiagnosticObserver) {
 		if (process.platform !== "win32") throw new SessionPresenceError("io_error", "transport I/O failed");
 		if (typeof agentHome !== "string" || !/^[A-Za-z]:\\/.test(agentHome)) throw new SessionPresenceError("unsafe_path", "unsafe transport path");
 		let registry: WindowsSessionPresenceRegistry | undefined;
-		const host = new WindowsSessionTransportHost({ callback: async (notification) => registry?.notification?.(notification) ?? false });
+		const host = new WindowsSessionTransportHost({ callback: async (notification) => registry?.notification?.(notification) ?? false, onBootstrapDiagnostic: observeBootstrap });
 		const observer = observePhase === undefined ? undefined : new WindowsSessionRegistryObserver(observePhase, () => host.lastStartupMarker);
 		const run = <T>(phase: WindowsSessionRegistryPhase, operation: () => Promise<T>) => observer ? observer.run(phase, operation) : operation();
 		try {

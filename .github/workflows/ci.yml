@@ -77,6 +77,9 @@ jobs:
       - name: Run Darwin session transport tests
         run: pnpm exec node --experimental-strip-types --test tests/agents-session-transport.test.ts tests/agents-session-transport-process.test.ts tests/gentle-agents.test.ts
 
+      - name: Run coordinator portability tests
+        run: pnpm exec node --experimental-strip-types --test tests/review-coordinator-runtime.test.ts
+
       - name: Verify generated runtime modules
         run: pnpm run check:runtime-modules
 

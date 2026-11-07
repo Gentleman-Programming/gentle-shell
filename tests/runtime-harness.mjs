@@ -787,6 +787,9 @@ async function run() {
 		assert.equal(sensitiveEdit.block, true);
 		assert.equal(await toolHook({ toolName: "read", input: { path: join(toolCwd, "src", "index.ts") } }, createCtx(toolCwd)), undefined);
 		const dangerousReviewCtx = createCtx(toolCwd, true, "dangerous-review-session");
+		// Scoped confirmation dialogs offer Allow once/session/always/Deny; this fake
+		// declines (last choice) so the guarded-command flow still proves the denied path.
+		dangerousReviewCtx.ui.select = async (_label, options) => options[options.length - 1];
 		const needsConfirm = await toolHook(
 			{ toolName: "bash", input: { command: "git push" } },
 			dangerousReviewCtx,
@@ -1048,7 +1051,7 @@ async function run() {
 		assert.equal(existsSync(installedExplorePath), true);
 		assert.deepEqual(
 			readAgentDefinition(await readFile(installedExplorePath, "utf8")),
-			{ name: "gentle-ai-explore", tools: ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content"] },
+			{ name: "gentle-ai-explore", tools: ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "mcp__codegraph__codegraph_explore"] },
 			"isolated package installation must declare the explorer's local and direct web scope",
 		);
 		const installedRiskSource = await readFile(

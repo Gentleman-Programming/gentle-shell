@@ -41,6 +41,7 @@ export type RetainedReviewContinuation =
 const lifecycleKey = (root: string, lineage: string) => `${root}\u0000${lineage}`;
 const captureKey = (binding: string) => `capture\u0000${binding}`;
 const MAX_RETAINED_CONTINUATIONS = 64;
+/** Strip the private discriminator from a retained routing payload. */
 function payload<T extends RetainedReviewContinuation>(entry: T): Omit<T, "kind"> {
 	const { kind: _kind, ...value } = entry;
 	return value;
@@ -52,10 +53,12 @@ export class ReviewContinuationRegistry {
 	// Optional backing map keeps the existing __testing seam on this same store,
 	// without copying state or maintaining a second representation.
 	constructor(entries = new Map<string, RetainedReviewContinuation>()) { this.entries = entries; }
+	/** Reuse a registry or wrap the legacy backing map without copying state. */
 	static from(value: ReviewContinuationRegistry | Map<string, RetainedReviewContinuation>): ReviewContinuationRegistry {
 		return value instanceof ReviewContinuationRegistry ? value : new ReviewContinuationRegistry(value);
 	}
 	get size(): number { return this.entries.size; }
+	/** Bound retained hints by evicting the oldest key before a new insertion. */
 	private retain(key: string, entry: RetainedReviewContinuation): void {
 		if (!this.entries.has(key)) while (this.entries.size >= MAX_RETAINED_CONTINUATIONS) this.entries.delete(this.entries.keys().next().value!);
 		this.entries.set(key, Object.freeze(entry));

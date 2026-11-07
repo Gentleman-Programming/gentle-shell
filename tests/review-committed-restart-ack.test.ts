@@ -77,7 +77,7 @@ writeFileSync(output,JSON.stringify({pid:process.pid,result,requests,burns:state
 function fixture(t: test.TestContext, decoy = false) {
 	const scratch = realpathSync(mkdtempSync(join(tmpdir(), "gentle-committed-restart-")));
 	t.after(() => rmSync(scratch, { recursive: true, force: true }));
-	const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+	const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")));
 	const git = (...args: string[]) => execFileSync("git", ["-c", "core.hooksPath=", "-c", "commit.gpgSign=false", "-c", "core.autocrlf=false", ...args], { cwd: scratch, env, encoding: "utf8", windowsHide: true }).trim();
 	git("init", "-b", "main");
 	writeFileSync(join(scratch, "candidate.ts"), "export const value = 1;\n");

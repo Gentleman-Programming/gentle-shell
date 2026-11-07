@@ -1,5 +1,6 @@
 import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { THREAD_ITEM, type ThreadItem, type ToolItem } from "./agents-protocol.ts";
+import { agentMessageCard, steeredMessage } from "./agents-message-card.ts";
 import { renderAgentToolItem } from "./agents-tool-renderers.ts";
 
 export interface AgentsThreadTheme {
@@ -114,8 +115,15 @@ export function renderThreadItem(item: ThreadItem, theme: AgentsThreadTheme, wid
 			return [line(theme, ROLE.LABEL, "Text", width), ...contentLines(theme, ROLE.TEXT, item.text, width, 2)];
 		case THREAD_ITEM.THINKING:
 			return thinkingBlock(item.text, theme, width, options.thinkingExpanded !== false, options.expandHint?.thinking);
-		case THREAD_ITEM.NOTE:
-			return [line(theme, ROLE.NOTE, "Note", width), ...contentLines(theme, ROLE.NOTE, item.text, width, 2)];
+		case THREAD_ITEM.NOTE: {
+			// A message delivered to the child is chat content, so cards draw it as the
+			// chat's messaging card; the log keeps every note as the labelled block it
+			// always drew. Anything the runner did not mark as a delivered message — and
+			// a marker with nothing behind it — stays a note, never a message.
+			const received = options.presentation === THREAD_PRESENTATION.CARDS ? steeredMessage(item.text) : undefined;
+			const card = received !== undefined && received.trim().length > 0 ? agentMessageCard(received, theme, width) : [];
+			return card.length > 0 ? card : [line(theme, ROLE.NOTE, "Note", width), ...contentLines(theme, ROLE.NOTE, item.text, width, 2)];
+		}
 		case THREAD_ITEM.TOOL:
 			// A card owns its frame when the chat offered one; `undefined` covers no
 			// renderer, a renderer that does not own its frame, and one that threw.

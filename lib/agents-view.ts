@@ -3,6 +3,7 @@ import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { measureAgentsViewLayout, type AgentsViewLayout } from "./agents-view-layout.ts";
 import { HOVER_ROLE, paintHoverable } from "./shell-hover.ts";
 import { emptyThread, isFinished, TASK_STATUS, THREAD_ITEM, type TaskRecord, type TaskStore, type TaskThread, type ThreadItem } from "./agents-protocol.ts";
+import { agentMessageCard } from "./agents-message-card.ts";
 import { renderThreadItem, THREAD_PRESENTATION, type AgentsThreadTheme, type ThreadPresentation } from "./agents-thread-view.ts";
 import { formatElapsed } from "./agents-widget.ts";
 import { createNativePointerScope, type NativePointerRegion } from "./native-pointer-region.ts";
@@ -820,6 +821,14 @@ export class AgentsView {
 		this.pruneCardExpansion(task, thread);
 		const lines: string[] = [];
 		const owners: Array<string | undefined> = [];
+		// The message the subagent was asked is the one input outside the thread — a
+		// delivery to the child is retained as a note, this is not. Only cards draw
+		// it; the log never showed it and still does not.
+		if (cards && task.prompt.trim().length > 0) {
+			const prompt = agentMessageCard(task.prompt, this.deps.theme, width);
+			lines.push(...prompt);
+			for (let index = 0; index < prompt.length; index += 1) owners.push(undefined);
+		}
 		if (thread.dropped > 0) {
 			lines.push(this.deps.theme.fg(ROLE.META, `… ${thread.dropped} earlier items not kept`));
 			owners.push(undefined);
@@ -831,6 +840,9 @@ export class AgentsView {
 		// would have to name every such preference.
 		const key = `${width}\u0000${presentation}\u0000${this.thinkingExpanded}\u0000${this.toolsExpanded(presentation)}`;
 		const expandHint = { thinking: this.expandHint("app.thinking.toggle"), output: this.expandHint("app.tools.expand") };
+		// Rows the thread itself contributes. The input card above is not thread
+		// content, so it never stands in for the state line below.
+		let retained = 0;
 		for (const item of thread.items) {
 			const card = cards && item.kind === THREAD_ITEM.TOOL ? this.cardKey(task, item.callId) : undefined;
 			const expanded = card === undefined ? this.toolsExpanded(presentation) : this.cardExpansion.get(card) ?? this.toolsExpanded(presentation);
@@ -839,6 +851,13 @@ export class AgentsView {
 			if (card === undefined && cached?.key !== key) this.cache.set(item, { key, lines: rendered });
 			lines.push(...rendered);
 			for (let index = 0; index < rendered.length; index += 1) owners.push(card);
+			retained += rendered.length;
+		}
+		// A task with nothing retained still says what it recorded — the error it
+		// ended with, or that it is waiting — exactly as the empty thread always did.
+		if (retained === 0 && thread.dropped === 0) {
+			lines.push(this.deps.theme.fg(ROLE.EMPTY, task.error ?? EMPTY_THREAD));
+			owners.push(undefined);
 		}
 		return { lines, owners, cards };
 	}
@@ -849,7 +868,6 @@ export class AgentsView {
 		const theme = this.deps.theme;
 		const header = theme.fg(ROLE.META, truncateToWidth(taskHeader(task, this.deps.now()), width, "…"));
 		const { lines, owners, cards } = this.threadRows(task, this.remoteThreads.get(task.id) ?? this.deps.store.thread(task.id), width);
-		if (lines.length === 0) return [header, theme.fg(ROLE.EMPTY, task.error ?? EMPTY_THREAD)];
 		const visible = Math.max(0, rows - 1);
 		const maxScroll = Math.max(0, lines.length - visible);
 		if (this.follow) this.scroll = maxScroll;

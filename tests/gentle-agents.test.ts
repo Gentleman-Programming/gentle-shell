@@ -35,11 +35,11 @@ import { bindSessionProfile, resetSessionProfileBindingsForTesting } from "../li
 import { taskHeader } from "../lib/agents-view.ts";
 import { readFrozenInheritedProfile, resetFrozenInheritedProfilesForTesting } from "../lib/session-profile-freeze.ts";
 import { CHILD_METRICS_EVENT } from "../lib/runtime-metrics-children.ts";
-import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
+import { CARD_STYLE, CARD_TONE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
+import { AGENT_MESSAGE, agentCardParts, agentMessageCard, agentTheme } from "../lib/agents-message-card.ts";
 import { isolatedConfigEnv, keymapsConfigHome, removeIsolatedConfigHomes } from "./isolated-config-home.ts";
 
 const gentleAgents: typeof installGentleAgents = (pi, env, overrides) => installGentleAgents(pi, isolatedConfigEnv(env), overrides);
-after(removeIsolatedConfigHomes);
 // The card style defaults to float; these assertions pin the outlined (neon)
 // panels unless a test switches the style itself.
 const initialCardStyle = cardStyle();
@@ -4019,6 +4019,42 @@ test("the iris float tint stays on agent info cards and leaves success cards on 
 	} finally {
 		setCardStyle(CARD_STYLE.NEON);
 	}
+});
+
+test("the chat's Messaging agent card and the Agents thread message card share one identity and one drawing boundary", () => {
+	const { pi, tools } = fakePi();
+	gentleAgents(pi, {}, deps().deps);
+	const taggedTheme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>` };
+	const call = (name: string, args: Record<string, unknown>, width = 80): string[] =>
+		tools.get(name)!.renderCall(args, taggedTheme, { expanded: false, state: {} } as never).render(width);
+	const result = (name: string, text: string, expanded: boolean, width: number): string[] =>
+		tools.get(name)!.renderResult({ content: [{ type: "text", text }], details: {} }, { expanded }, taggedTheme, { expanded, state: {} } as never).render(width);
+
+	const sent = call("subagent_send_message", { task_id: "t1" });
+	const head = stripAnsi(sent[0] ?? "");
+	assert.equal(head.includes(`${AGENT_MESSAGE.glyph} ${AGENT_MESSAGE.title}`), true, "the chat's card draws the shared title, glyph and its gap");
+	assert.match(head, /✉ {2}Messaging agent/, "the envelope never sits against the title in the chat either");
+	assert.ok(sent.join("\n").includes("\x1b[38;2;185;167;242m"), "the chat's card keeps the iris accent");
+	assert.ok(sent.join("\n").includes("\x1b[38;2;143;122;217m"), "the chat's card keeps the iris border");
+	assert.match(stripAnsi(sent.at(-1) ?? ""), /╰/, "the call still closes its own frame while it waits");
+	assert.match(stripAnsi(call("subagent_reply", { task_id: "t1" }).join("\n")), /✉ {2}Replying to agent/, "the reply action shares the envelope identity");
+
+	const iris = agentTheme(taggedTheme, CARD_TONE.INFO);
+	assert.equal(iris.fg("border", "x"), "\x1b[38;2;143;122;217mx\x1b[39m", "the thread card reads the same chrome the chat's agent cards do");
+	for (const width of [20, 80]) {
+		// Both surfaces draw their rows from the one shared card boundary: the chat's
+		// result continues the card it did not head, the thread wraps the same parts
+		// in one card of its own.
+		const parts = agentCardParts({ title: AGENT_MESSAGE.title, glyph: AGENT_MESSAGE.glyph, tone: CARD_TONE.INFO, body: ["hi"], expanded: true }, iris, width);
+		assert.deepEqual(result("subagent_send_message", "hi", true, width), [...(parts.body ?? []), parts.bottom], `width ${width}: the chat's messaging body and frame are the shared parts`);
+		assert.deepEqual(agentMessageCard("hi", taggedTheme, width), [...(parts.head ?? []), ...(parts.body ?? []), parts.bottom], `width ${width}: the received card is the same shared parts behind its heading`);
+	}
+
+	const long = "a\nb\nc\nd\ne\nf";
+	assert.match(stripAnsi(result("subagent_send_message", long, true, 80).join("\n")), /f/, "an expanded chat card draws the whole message");
+	assert.doesNotMatch(stripAnsi(result("subagent_send_message", long, false, 80).join("\n")), /f/, "a collapsed chat card keeps its own three-row preview");
+	assert.match(stripAnsi(agentMessageCard(long, plainTheme, 80).join("\n")), /f/, "the thread's received message is never previewed away");
+	assert.equal(stripAnsi(agentMessageCard("hi", plainTheme, 80).join("\n")).includes(`${AGENT_MESSAGE.glyph} ${AGENT_MESSAGE.title}`), true, "both cards answer to one shared identity, so a design change reaches both");
 });
 
 test("the Agents card moves to the fullscreen rail like Todos and its header toggles collapse on left click", async () => {

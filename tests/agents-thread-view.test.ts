@@ -5,6 +5,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { emptyThread, TASK_EVENT, applyTaskEvent, type ToolItem } from "../lib/agents-protocol.ts";
 import { renderThreadItem } from "../lib/agents-thread-view.ts";
 import { renderAgentToolItem } from "../lib/agents-tool-renderers.ts";
+import { stripAnsi } from "../lib/terminal-theme.ts";
 import productionQuietTools from "../extensions/quiet-tools.ts";
 
 const plainTheme = { fg: (_color: string, text: string) => text };
@@ -129,6 +130,60 @@ test("the log bounds a collapsed result and thinking while expansion keeps every
 			for (const rendered of lines) assert.ok(visibleWidth(rendered) <= width, `"${rendered}" fits width ${width}`);
 		}
 	}
+});
+
+test("a delivered message draws as the chat's Messaging agent card in cards only", () => {
+	const note = { kind: "note" as const, text: "steered: also update the docs" };
+	const cards = renderThreadItem(note, plainTheme, 60, { presentation: "cards" });
+	const frame = stripAnsi(cards.join("\n"));
+	assert.match(frame, /✉ {2}Messaging agent/, "a delivered message wears the chat's messaging identity, envelope gap included");
+	assert.match(frame, /also update the docs/, "the delivered text is the card body");
+	assert.doesNotMatch(frame, /^Note$/m, "the note label is replaced, not stacked on");
+	assert.doesNotMatch(frame, /steered: also/, "the runner's marker is not part of the message");
+
+	const log = ["Note", "  steered: also update the docs"];
+	assert.deepEqual(renderThreadItem(note, plainTheme, 60), log, "the log keeps its labeled note");
+	assert.deepEqual(renderThreadItem(note, plainTheme, 60, { presentation: "log" }), log, "naming the log changes nothing");
+
+	for (const width of [10, 12, 20, 40, 60]) {
+		for (const rendered of renderThreadItem(note, plainTheme, width, { presentation: "cards" })) {
+			assert.ok(visibleWidth(rendered) <= width, `"${rendered}" fits width ${width}`);
+		}
+	}
+});
+
+test("a note that is not a delivered message keeps its own labeled block in card mode", () => {
+	for (const text of [
+		"asked: choose a target file",
+		"retrying (1/2)",
+		"error: the child crashed",
+		"gentle-agents: requested tools missing in child: codegraph",
+		"steered:   ",
+	]) {
+		assert.deepEqual(
+			renderThreadItem({ kind: "note", text }, plainTheme, 60, { presentation: "cards" }),
+			["Note", `  ${text}`],
+			`"${text}" keeps its own label and its retained text`,
+		);
+	}
+});
+
+test("only a marker that leads the whole note makes it a received message", () => {
+	const nested = { kind: "note" as const, text: "line one\nsteered: not a marker here" };
+	assert.deepEqual(renderThreadItem(nested, plainTheme, 60, { presentation: "cards" }), ["Note", "  line one", "  steered: not a marker here"], "a marker on a later line is note text, not a message");
+	const inline = { kind: "note" as const, text: "note about steered: text" };
+	assert.deepEqual(renderThreadItem(inline, plainTheme, 60, { presentation: "cards" }), ["Note", "  note about steered: text"], "a marker inside a sentence is note text");
+
+	const multiline = { kind: "note" as const, text: "steered: first line\nsteered: second line" };
+	const rows = renderThreadItem(multiline, plainTheme, 60, { presentation: "cards" });
+	const frame = stripAnsi(rows.join("\n"));
+	assert.match(frame, /✉ {2}Messaging agent/, "a multiline delivery is still one received message");
+	assert.match(frame, /first line/);
+	assert.match(frame, /steered: second line/, "only the leading marker is removed; a later marker is message text");
+	assert.doesNotMatch(frame, /^Note$/m);
+
+	const spaced = { kind: "note" as const, text: "steered:  two spaces are the body" };
+	assert.match(stripAnsi(renderThreadItem(spaced, plainTheme, 60, { presentation: "cards" }).join("\n")), /two spaces are the body/, "the marker is exactly `steered: ` and the rest is the body");
 });
 
 test("renderThreadItem renders actual sanitized retention markers and error status color", () => {

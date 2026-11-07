@@ -77,7 +77,7 @@ function loadQuietTools(): void {
 	registerQuietTools();
 }
 
-function presentationHarness(presentation: () => "log" | "cards", rows = 14) {
+function presentationHarness(presentation: () => "log" | "cards", rows = 14, overrides: Partial<TaskRecord> = {}) {
 	const store = new TaskStore();
 	const view = new AgentsView({
 		theme: plainTheme,
@@ -91,7 +91,7 @@ function presentationHarness(presentation: () => "log" | "cards", rows = 14) {
 		onClose() {},
 		requestRender() {},
 	});
-	store.add(task("a"));
+	store.add(task("a", overrides));
 	return { store, view };
 }
 
@@ -1007,6 +1007,83 @@ test("a tool the chat offers no card for keeps the generic block in card mode", 
 	assert.match(frame, /Tool · webfetch · Complete/, "an unsupported tool keeps the labeled block");
 	assert.match(frame, /page body/, "and its retained output");
 	assert.doesNotMatch(frame, /≡ read/, "no other tool's card is impersonated");
+	view.dispose();
+});
+
+test("cards draw the launch prompt and each delivered message as the chat's Messaging agent card", () => {
+	loadQuietTools();
+	const { store, view } = presentationHarness(() => "cards", 24, { prompt: "Map the shared card code" });
+	store.apply("a", { type: TASK_EVENT.NOTE, text: "steered: also cover the pane" }, 2000);
+	store.apply("a", { type: TASK_EVENT.NOTE, text: "retrying (2/3)" }, 2000);
+	const frame = (width = 70): string => stripAnsi(view.render(width).join("\n"));
+
+	const drawn = frame();
+	assert.match(drawn, /Map the shared card code/, "the launch prompt is the first thing the subagent received");
+	assert.match(drawn, /also cover the pane/, "a delivered message is drawn as a message, without its runner marker");
+	assert.doesNotMatch(drawn, /steered: also/, "the marker stays out of the message body");
+	assert.match(drawn, /retrying \(2\/3\)/, "a retry note keeps its text");
+	assert.match(drawn, /Note/, "a retry note keeps its own label");
+	assert.equal((drawn.match(/✉ {2}Messaging agent/g) ?? []).length, 2, "the prompt and the delivered message are the two message cards");
+
+	for (const width of [20, 40, 70]) {
+		for (const row of view.render(width)) assert.ok(visibleWidth(row) <= width, `"${row}" fits width ${width}`);
+	}
+	view.dispose();
+});
+
+test("a prompt never hides the thread's own failed or waiting state", () => {
+	const open = (overrides: Partial<TaskRecord>) => presentationHarness(() => "cards", 24, overrides);
+	const frame = (view: AgentsView): string => stripAnsi(view.render(70).join("\n"));
+
+	const failed = open({ prompt: "Map the shared card code", status: TASK_STATUS.FAILED, error: "child crashed" });
+	assert.match(frame(failed.view), /Map the shared card code/, "the prompt is still the first thing the subagent received");
+	assert.match(frame(failed.view), /child crashed/, "a thread with no events still names the failure the task records");
+	failed.view.dispose();
+
+	const waiting = open({ prompt: "Map the shared card code", status: TASK_STATUS.WAITING });
+	assert.match(frame(waiting.view), /Map the shared card code/);
+	assert.match(frame(waiting.view), /waiting for the first event/, "a task with no events still says it is waiting");
+	waiting.view.dispose();
+
+	const cancelled = open({ prompt: "Map the shared card code", status: TASK_STATUS.CANCELLED, error: "cancelled: the tool call was aborted" });
+	assert.match(frame(cancelled.view), /cancelled: the tool call was aborted/, "a cancelled task keeps its recorded reason");
+	assert.match(frame(cancelled.view), /Map the shared card code/);
+	cancelled.view.dispose();
+
+	// The state line belongs to an empty thread only: a thread with events keeps
+	// drawing its events, and nothing is appended to them.
+	const ran = open({ prompt: "Map the shared card code", status: TASK_STATUS.FAILED, error: "child crashed" });
+	ran.store.apply("a", { type: TASK_EVENT.TEXT, text: "first retained line" }, 2000);
+	assert.match(frame(ran.view), /first retained line/);
+	assert.doesNotMatch(frame(ran.view), /child crashed/, "a thread with rows is never given an invented state line");
+	ran.view.dispose();
+});
+
+test("scroll reaches both the prompt and the state of an empty failed thread", () => {
+	const { view } = presentationHarness(() => "cards", 6, { prompt: "line a\nline b\nline c\nline d\nline e", status: TASK_STATUS.FAILED, error: "child crashed" });
+	const frame = (): string => stripAnsi(view.render(70).join("\n"));
+	assert.match(frame(), /child crashed/, "follow keeps the state row on screen");
+	for (let page = 0; page < 3; page += 1) view.handleInput("\x1b[5~");
+	assert.match(frame(), /line a/, "paging up still reaches the message the task was given");
+	view.dispose();
+});
+
+test("the log keeps showing a failed task's state and never the prompt", () => {
+	const { view } = presentationHarness(() => "log", 24, { prompt: "Map the shared card code", status: TASK_STATUS.FAILED, error: "child crashed" });
+	const drawn = stripAnsi(view.render(70).join("\n"));
+	assert.match(drawn, /child crashed/, "the log's empty-thread state is unchanged");
+	assert.doesNotMatch(drawn, /Map the shared card code/, "the log still draws no prompt block");
+	view.dispose();
+});
+
+test("the log keeps the rows it always drew: no prompt block and no message cards", () => {
+	const { store, view } = presentationHarness(() => "log", 24, { prompt: "Map the shared card code" });
+	store.apply("a", { type: TASK_EVENT.NOTE, text: "steered: also cover the pane" }, 2000);
+	const drawn = stripAnsi(view.render(70).join("\n"));
+	assert.doesNotMatch(drawn, /Messaging agent/, "the log draws no message card");
+	assert.doesNotMatch(drawn, /Map the shared card code/, "the log never showed the prompt and still does not");
+	assert.match(drawn, /Note/, "every note keeps its label");
+	assert.match(drawn, /steered: also cover the pane/, "a delivered note keeps its retained text");
 	view.dispose();
 });
 

@@ -14,6 +14,7 @@ const TARGET = `sha256:${"1".repeat(64)}`;
 const REVISION = `sha256:${"2".repeat(64)}`;
 const LINEAGE = "committed-restart-ack";
 
+/** Build a fresh controller process with a file-backed, single-use provider fixture. */
 function workerSource() {
 	const extension = pathToFileURL(join(import.meta.dirname, "../extensions/gentle-ai.ts")).href;
 	const registry = pathToFileURL(join(import.meta.dirname, "../lib/review-candidate-view.ts")).href;
@@ -72,6 +73,7 @@ writeFileSync(output,JSON.stringify({pid:process.pid,result,requests,burns:state
 `;
 }
 
+/** Create an isolated committed range and workers sharing only simulated provider state. */
 function fixture(t: test.TestContext, decoy = false) {
 	const scratch = realpathSync(mkdtempSync(join(tmpdir(), "gentle-committed-restart-")));
 	t.after(() => rmSync(scratch, { recursive: true, force: true }));

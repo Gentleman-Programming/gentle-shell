@@ -91,7 +91,7 @@ export class CandidateTreeSymlinkScanner {
 
 	/** Reuse definitive literal-tree scans only while fresh local metadata proves eligibility. */
 	scan(cwd: string, candidateTree: string, verifiedCommonDir?: string): CandidateTreeSymlinkScan {
-		const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+		const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")));
 		const options = { cwd, env, encoding: "utf8" as const, windowsHide: true,
 			stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
 			timeout: resolveCandidateGitTimeoutMs(), maxBuffer: CANDIDATE_GIT_MAX_BUFFER_BYTES };

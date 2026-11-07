@@ -16,6 +16,27 @@ function store(t: test.TestContext): string {
  return root;
 }
 
+test("workspace identity and tree scans remove mixed-case Git overrides before dispatch", async () => {
+ const previousEnv = process.env, original = childProcess.execFileSync;
+ const seen: NodeJS.ProcessEnv[] = [];
+ const cwd = realpathSync(process.cwd());
+ process.env = { ...previousEnv, git_dir: "fixture-must-not-select-a-repository", GiT_WoRk_TrEe: "fixture-must-not-select-a-worktree" };
+ childProcess.execFileSync = ((_file, args, options) => {
+  assert.equal(args[0], "rev-parse");
+  seen.push(options.env);
+  return cwd + "\n";
+ }) as typeof childProcess.execFileSync;
+ syncBuiltinESMExports();
+ try {
+  const scanner = new CandidateTreeSymlinkScanner((_file, _args, options) => { seen.push(options.env); return ""; });
+  assert.equal(scanner.scan(cwd, "f".repeat(40)), "no-symlinks");
+  const result = await __testing.executeReviewControllerOperation({ operation: "status", workspaceRoot: cwd }, cwd, {} as any);
+  assert.equal(result.outcome, "native-status-unsupported");
+  assert.equal(seen.length, 3, "one tree scan and both workspace identity queries exercised");
+  for (const env of seen) assert.deepEqual(Object.keys(env).filter(key => /^git_/i.test(key)), []);
+ } finally { process.env = previousEnv; childProcess.execFileSync = original; syncBuiltinESMExports(); }
+});
+
 test("repeated inspect scans reuse an unchanged literal tree without launching another Git process", t => {
  const common = store(t), original = childProcess.execFileSync;
  let listings = 0;
@@ -83,15 +104,18 @@ test("repository identity, unsupported refs and missing verified context never s
 
 test("real Git loose and packed replacements are respected, including changes and removal", t => {
  const cwd = store(t);
- const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+ const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")));
  const git = (args: string[], input?: string) => childProcess.execFileSync("git", args, { cwd, env, encoding: "utf8", input, windowsHide: true }).trim();
- git(["init", "--quiet"]);
+ git(["-c", "init.defaultRefFormat=files", "init", "--quiet"]);
  const common = realpathSync(resolve(cwd, git(["rev-parse", "--git-common-dir"])));
  const blob = git(["hash-object", "-w", "--stdin"], "fixture\n");
  const regular = git(["mktree"], `100644 blob ${blob}\tfile.txt\n`);
  const link = git(["mktree"], `120000 blob ${blob}\tlink\n`);
- const scanner = new CandidateTreeSymlinkScanner();
+ let listings = 0;
+ const scanner = new CandidateTreeSymlinkScanner((file, args, options) => { listings++; return childProcess.execFileSync(file, args, options); });
  assert.equal(scanner.scan(cwd, regular, common), "no-symlinks");
+ assert.equal(scanner.scan(cwd, regular, common), "no-symlinks");
+ assert.equal(listings, 1, "the real-Git fixture must hit the cache before replacements");
  git(["replace", regular, link]);
  assert.equal(scanner.scan(cwd, regular, common), "tracks-symlinks");
  git(["pack-refs", "--all"]);

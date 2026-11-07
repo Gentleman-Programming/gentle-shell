@@ -8711,7 +8711,7 @@ async function reconcileNativeMutationFailure(
 function reviewWorkspaceGitIdentity(cwd: string): { toplevel: string; commonDir: string } {
 	// Discovery must describe the selected directory, never an ambient Git
 	// override pointing at a different repository or worktree.
-	const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+	const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")));
 	const git = (...arguments_: string[]): string =>
 		execFileSync("git", arguments_, { cwd, env, encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }).trim();
 	const toplevel = realpathSync(git("rev-parse", "--show-toplevel"));

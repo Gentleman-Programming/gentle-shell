@@ -8,6 +8,7 @@ export interface ReviewRelayPhaseTiming {
 }
 export type ReviewRelayPhaseObserver = (sample: ReviewRelayPhaseTiming) => unknown;
 
+/** Ignore invalid or throwing clocks so instrumentation cannot alter settlement. */
 function readClock(clock: () => number): number | undefined {
 	try {
 		const value = clock();

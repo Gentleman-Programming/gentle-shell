@@ -7663,6 +7663,23 @@ function nativeStatusUnsupported(operation: ReviewControllerOperation): Record<s
 	};
 }
 
+// gentle-shell#213: the host-side budget on a read-only STATUS/inspect read
+// (no repair or recovery authorization behind it) is not evidence of corrupt
+// authority, yet it used to share that dead-end outcome. Name the same
+// read-only status command the user can rerun; Pi never retries it itself.
+// A native failure envelope keeps its own retry fields and never reaches here.
+function nativeReadOnlyStatusTimedOut(operation: ReviewControllerOperation, error: unknown, facts = readReviewFailureFacts(error)): Record<string, unknown> | undefined {
+	if (operation !== REVIEW_CONTROLLER_OPERATION.STATUS && operation !== REVIEW_CONTROLLER_OPERATION.INSPECT) return undefined;
+	if (facts.cli?.code !== NATIVE_REVIEW_ERROR_CODE.TIMEOUT || facts.mutationOutcome !== "none") return undefined;
+	return {
+		...nativeOperationFailure(operation, error, facts),
+		outcome: "native-status-timed-out",
+		inventory_complete: false,
+		next_action: "rerun-native-status",
+		remediation_command: NATIVE_STATUS_UNSUPPORTED_REMEDIATION_COMMAND,
+	};
+}
+
 function nativeStatusPackageBinaryMissing(operation: ReviewControllerOperation | "gentle_review_capture", diagnostics: NativeReviewProcessDiagnostics): Record<string, unknown> {
 	return {
 		operation,
@@ -7692,6 +7709,8 @@ function nativeStatusFailed(operation: ReviewControllerOperation, error: unknown
 	const cliError = facts.cli;
 	if (cliError?.code === NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE) return nativeStatusUnsupported(operation);
 	if (cliError?.code === NATIVE_REVIEW_ERROR_CODE.PACKAGE_BINARY_MISSING) return nativeStatusPackageBinaryMissing(operation, cliError.diagnostics);
+	const timedOut = nativeReadOnlyStatusTimedOut(operation, error, facts);
+	if (timedOut !== undefined) return timedOut;
 	if (cliError !== undefined) {
 		return {
 			...nativeOperationFailure(operation, error, facts),
@@ -11634,7 +11653,7 @@ async function executeReviewControllerOperationImpl(
 				hydrateDispatchBindingFromStatus(candidateViews, defaultCwd, status);
 				return { ...mapNativeTargetStatus(parameters.operation, status, parameters.lineageId, includeWorkspaceRoot ? defaultCwd : undefined), ...(includeWorkspaceRoot ? { workspace_root: defaultCwd } : {}) };
 			} catch (error) {
-				return nativeOperationFailure(parameters.operation, error);
+				return nativeReadOnlyStatusTimedOut(parameters.operation, error) ?? nativeOperationFailure(parameters.operation, error);
 			}
 		}
 		return nativeStatusUnsupported(parameters.operation);

@@ -586,6 +586,90 @@ test("inspect without workspaceRoot preserves the native invalid_request cause f
 	assert.equal(details.next_action, "correct_request");
 });
 
+// gentle-shell#213: the host-side 30 s budget on a read-only STATUS/inspect
+// read used to dead-end in the corrupt-authority outcome with no runnable
+// step. A read-only inventory timeout names the read-only command to rerun.
+function hostStatusTimeout(): NativeReviewCliError {
+	return new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.TIMEOUT, NATIVE_REVIEW_OPERATION.STATUS, true, false, "native process timed out", {
+		operation: NATIVE_REVIEW_OPERATION.STATUS, error_code: NATIVE_REVIEW_ERROR_CODE.TIMEOUT, timed_out: true, output_limit_exceeded: false,
+	});
+}
+
+for (const operation of ["status", "inspect"] as const) test(`a host timeout on read-only ${operation} returns a rerunnable status command`, async (t) => {
+	const sessionCwd = repository(t);
+	let calls = 0;
+	const { controller } = runtime(fakeNative({ targetStatus: async () => { calls++; throw hostStatusTimeout(); } }));
+	const result = await controller.execute(`timeout-${operation}`, { operation }, undefined, undefined, context(sessionCwd));
+	const details = result.details as Record<string, unknown>;
+	assert.equal(calls, 1);
+	assert.equal(details.status, "blocked");
+	assert.equal(details.outcome, "native-status-timed-out");
+	assert.equal(details.inventory_complete, false);
+	assert.equal(details.mutation_performed, false);
+	assert.equal(details.mutation_outcome, "none");
+	assert.equal(details.next_action, "rerun-native-status");
+	assert.equal(details.remediation_command, "gentle-ai review status --cwd <repo> --contract gentle-ai.review-integration/v2 --agent pi --next-transition");
+	assert.equal((details.diagnostics as Record<string, unknown>)?.timed_out, true);
+	const blocker = details.blocker as Record<string, unknown>;
+	assert.equal(blocker.category, "provider-unavailable");
+	assert.equal(blocker.actor, "user");
+	assert.equal(blocker.automatic_retry, false);
+	assert.equal(blocker.next_step, "The read-only review inventory read timed out before it completed. Nothing was mutated; rerun the returned remediation_command when ready. Pi does not retry automatically.");
+});
+
+test("a host timeout on the STATUS read behind a recovery authorization keeps the inventory-unavailable outcome", () => {
+	for (const operation of ["recover", "repair", "start"] as const) {
+		const result = __testing.nativeStatusFailed(operation, hostStatusTimeout());
+		assert.equal(result.outcome, "native-status-unavailable");
+		assert.equal(result.next_action, "require-complete-native-authority-inventory");
+		assert.equal("remediation_command" in result, false);
+	}
+	assert.deepEqual(__testing.nativeStatusFailed("recover", hostStatusTimeout()), {
+		operation: "recover", status: "blocked", outcome: "native-status-unavailable",
+		lineage_created: false, mutation_performed: false, mutation_outcome: "none",
+		diagnostics: { operation: NATIVE_REVIEW_OPERATION.STATUS, error_code: NATIVE_REVIEW_ERROR_CODE.TIMEOUT, timed_out: true, output_limit_exceeded: false },
+		inventory_complete: false, next_action: "require-complete-native-authority-inventory",
+	});
+});
+
+test("corrupt-authority STATUS failures keep the inventory-unavailable outcome", () => {
+	for (const code of [NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE, NATIVE_REVIEW_ERROR_CODE.NON_ZERO]) {
+		const result = __testing.nativeStatusFailed("status", new NativeReviewCliError(code, NATIVE_REVIEW_OPERATION.STATUS, true, false, "corrupt"));
+		assert.equal(result.outcome, "native-status-unavailable");
+		assert.equal(result.next_action, "require-complete-native-authority-inventory");
+		assert.equal("remediation_command" in result, false);
+	}
+	assert.deepEqual(__testing.nativeStatusFailed("status", new Error("opaque")), {
+		operation: "status", status: "blocked", outcome: "native-status-unavailable",
+		lineage_created: false, mutation_performed: false, mutation_outcome: "none",
+		inventory_complete: false, next_action: "require-complete-native-authority-inventory",
+	});
+});
+
+for (const operation of ["status", "inspect"] as const) test(`a native ${operation} timeout envelope is forwarded as-is and read once`, async (t) => {
+	const sessionCwd = repository(t);
+	let calls = 0;
+	const { controller } = runtime(fakeNative({
+		targetStatus: async () => {
+			calls++;
+			throw new NativeReviewIntegrationError(decodeReviewFailureV2({
+				schema: "gentle-ai.review-integration.failure/v2", contract: "gentle-ai.review-integration/v2",
+				operation: "review.status", phase: "native_running", code: "timeout", message: "The review status read timed out.",
+				mutation_outcome: "not_started", authority_applicability: "not_evaluated", retry_safe: true,
+				replayability: "not_replayable", required_inputs: [], next_action: "retry",
+			}));
+		},
+	}));
+	const result = await controller.execute(`native-timeout-${operation}`, { operation }, undefined, undefined, context(sessionCwd));
+	const details = result.details as Record<string, unknown>;
+	assert.equal(calls, 1);
+	assert.equal(details.outcome, operation === "inspect" ? "native-status-unavailable" : undefined);
+	assert.equal(details.next_action, "retry");
+	assert.equal((details.native_failure as Record<string, unknown>)?.retry_safe, true);
+	assert.equal((details.native_failure as Record<string, unknown>)?.code, "timeout");
+	assert.equal("remediation_command" in details, false);
+});
+
 test("START freezes the candidate from the explicit workspace root and returns the actor binding envelope", async (t) => {
 	const sessionCwd = repository(t);
 	writeFileSync(join(sessionCwd, "unrelated.ts"), "export const unrelated = true;\n");

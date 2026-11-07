@@ -58,6 +58,18 @@ test("timed_out diagnostics use timeout guidance without granting a retry", () =
 	assert.match(String((blocker as Record<string, unknown>).next_step), /timed out/);
 });
 
+test("a read-only inventory timeout says the read can be rerun without granting an automatic retry", () => {
+	const before = { status: "blocked", outcome: "native-status-timed-out", inventory_complete: false, diagnostics: { timed_out: true }, next_action: "rerun-native-status", remediation_command: "gentle-ai review status --cwd <repo> --contract gentle-ai.review-integration/v2 --agent pi --next-transition" };
+	const { blocker, ...preserved } = withReviewBlocker(before);
+	assert.deepEqual(preserved, before);
+	assert.deepEqual(blocker, {
+		category: "provider-unavailable", scope: "review-step", actor: "user", automatic_retry: false,
+		next_step: "The read-only review inventory read timed out before it completed. Nothing was mutated; rerun the returned remediation_command when ready. Pi does not retry automatically.",
+	});
+	const stopped = withReviewBlocker({ ...before, native_failure: { next_action: "stop" } });
+	assert.equal((stopped.blocker as Record<string, unknown>).category, "provider-stop");
+});
+
 test("unsupported STATUS suggests local capability diagnosis before upstream escalation", async () => {
 	const result = await __testing.executeReviewControllerOperation({ operation: "status" }, process.cwd(), {} as NativeReviewCli);
 	assert.equal(result.status, "blocked");
@@ -174,6 +186,8 @@ test("STATUS timeout is diagnosed without inventing lock contention or retry per
 	assert.equal((result.blocker as Record<string, unknown>)?.automatic_retry, false);
 	assert.equal(result.mutation_outcome, "none");
 	assert.deepEqual(result.diagnostics, diagnostics);
-	assert.equal((result.blocker as Record<string, unknown>)?.actor, "unknown");
+	assert.equal(result.outcome, "native-status-timed-out");
+	assert.equal((result.blocker as Record<string, unknown>)?.actor, "user");
+	assert.doesNotMatch(String((result.blocker as Record<string, unknown>)?.next_step), /lock/);
 	assert.equal((result.blocker as Record<string, unknown>)?.scope, "review-step");
 });

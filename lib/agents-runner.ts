@@ -5,7 +5,7 @@ import { isSessionChangeEvidence, type SessionChangeEvidence } from "./session-c
 import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { tmpdir, userInfo } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve, win32 } from "node:path";
 import { Duplex, type Readable, type Writable } from "node:stream";
 import { stripVTControlCharacters } from "node:util";
 import { withoutInteractiveHost } from "./rpc-host.ts";
@@ -365,7 +365,7 @@ export function resolvePiScriptFromCmd(
 	exists: (path: string) => boolean = existsSync,
 	readFile: (path: string) => string = (p) => readFileSync(p, "utf8"),
 ): string | undefined {
-	const baseDir = dirname(cmdPath);
+	const baseDir = win32.dirname(cmdPath);
 	let text = "";
 	try {
 		text = readFile(cmdPath);
@@ -377,28 +377,28 @@ export function resolvePiScriptFromCmd(
 		const targetMatch = /^#\s*cmd-shim-target\s*=\s*([^\r\n]+)$/m.exec(text);
 		if (targetMatch) {
 			const candidate = targetMatch[1].trim();
-			const resolved = isAbsolute(candidate) ? candidate : resolve(baseDir, candidate);
+			const resolved = win32.isAbsolute(candidate) ? candidate : win32.resolve(baseDir, candidate);
 			if (exists(resolved)) return resolved;
 		}
 
-		const scriptMatches = text.matchAll(/(?:["'])([^"']+\.[cm]?js)(?:["'])|(?:^|\s)(%~?dp0\\?[^\s"']+\.[cm]?js)(?:\s|$)/gi);
+		const scriptMatches = text.matchAll(/(?:["'])([^"']+\.[cm]?js)(?:["'])|(?:^|\s)((?:%~?dp0|%dp0%)\\?[^\s"']+\.[cm]?js)(?:\s|$)/gi);
 		for (const m of scriptMatches) {
 			const raw = (m[1] ?? m[2])?.trim();
 			if (!raw) continue;
-			const stripped = raw.replace(/^%~?dp0\\?/i, "").replace(/^%dp0%\\?/i, "");
-			const candidate = raw.startsWith("%") || !isAbsolute(stripped)
-				? resolve(baseDir, stripped)
+			const stripped = raw.replace(/^(?:%~?dp0|%dp0%)\\?/i, "");
+			const candidate = /^(?:%~?dp0|%dp0%)/i.test(raw) || !win32.isAbsolute(stripped)
+				? win32.resolve(baseDir, stripped)
 				: stripped;
 			if (exists(candidate)) return candidate;
 		}
 	}
 
 	const standardPaths = [
-		join(baseDir, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"),
-		join(baseDir, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js"),
-		join(baseDir, "pi-launcher.js"),
-		join(baseDir, "dist", "cli.js"),
-		join(baseDir, "dist", "bundle", "cli.js"),
+		win32.join(baseDir, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"),
+		win32.join(baseDir, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js"),
+		win32.join(baseDir, "pi-launcher.js"),
+		win32.join(baseDir, "dist", "cli.js"),
+		win32.join(baseDir, "dist", "bundle", "cli.js"),
 	];
 	for (const candidate of standardPaths) {
 		if (exists(candidate)) return candidate;
@@ -423,13 +423,13 @@ export function findWindowsPiCommand(
 			: entry;
 		if (!dir) continue;
 
-		const candidateExe = join(dir, "pi.exe");
+		const candidateExe = win32.join(dir, "pi.exe");
 		if (exists(candidateExe)) {
 			return { command: candidateExe, args: [] };
 		}
 
 		for (const ext of [".cmd", ".bat"]) {
-			const candidateCmd = join(dir, `pi${ext}`);
+			const candidateCmd = win32.join(dir, `pi${ext}`);
 			if (exists(candidateCmd)) {
 				const script = resolvePiScriptFromCmd(candidateCmd, exists, readFile);
 				if (script) {

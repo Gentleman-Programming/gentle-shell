@@ -1,6 +1,7 @@
 import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, parse, relative, resolve } from "node:path";
+import type { OrchestratorMode } from "./agent-profiles.ts";
 import { contextBackstopReached, type MeasuredContext } from "./context-backstop.ts";
 import { resolveSessionWorktree, type WorktreeResolver } from "./session-worktree-registry.ts";
 
@@ -120,11 +121,22 @@ export function namesExistingFeatureDocumentTask(values: readonly unknown[], roo
 
 export function rejectUndocumentedWriterLaunch(
 	input: unknown,
-	options: { root: string; contextUsage: MeasuredContext | undefined; env?: Readonly<Record<string, string | undefined>> },
+	options: {
+		root: string;
+		contextUsage: MeasuredContext | undefined;
+		env?: Readonly<Record<string, string | undefined>>;
+		/**
+		 * The parent's workflow mode. In full delegation mode the orchestrator never implements, so every authorized
+		 * change, small ones included, belongs to a writer: rejecting it here would leave the task with no legal route.
+		 * Omitted means organic, the admission above.
+		 */
+		orchestratorMode?: OrchestratorMode;
+	},
 ): { block: true; reason: string } | undefined {
 	if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
 	const record = input as Record<string, unknown>;
 	if (typeof record.agent !== "string" || !isGenericBoundedWriter(record.agent)) return undefined;
+	if (options.orchestratorMode === "full-delegation") return undefined;
 	if (namesExistingFeatureDocumentTask([record.task, record.context], options.root)) return undefined;
 	if (contextBackstopReached(options.contextUsage, options.env)) return undefined;
 	return { block: true, reason: WRITER_FEATURE_DOCUMENT_REJECTION };

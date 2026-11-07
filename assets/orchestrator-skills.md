@@ -1,6 +1,6 @@
 # Orchestrator — Skills Detail (lazy-loaded)
 
-Bind this to the parent Pi session only, on skill resolution/discovery. Not always-on; loaded on demand from `assets/orchestrator.md`'s `## Skill Registry Protocol` and `## Intent-Driven Skill Discovery` pointers.
+Bind this to the parent Pi session only, on skill resolution/discovery. Not always-on; loaded on demand from the always-on core's `## Skill Registry Protocol` and `## Intent-Driven Skill Discovery` pointers.
 
 ## Skill Registry Protocol
 

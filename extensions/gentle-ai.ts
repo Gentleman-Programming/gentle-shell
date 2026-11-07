@@ -10,6 +10,7 @@ import { evaluateDeliveredTestTool } from "../lib/delivered-test-lint.ts";
 import { commitSliceToolResult } from "../lib/commit-slice-signal.ts";
 import { appendContextBackstopNotice, createContextBackstopSignal, createThrottledContextMeasure } from "../lib/context-backstop.ts";
 import { createExplorationBudget } from "../lib/exploration-budget.ts";
+import { REPLY_LANGUAGE_ANCHOR_TYPE, isHumanInput, replyLanguageAnchorFor } from "../lib/reply-language-anchor.ts";
 import { blockChildDestructiveCommand } from "./child-safety.ts";
 import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, isHomeOrBroadUserDirectory, prepareBoundSessionRepository, rejectUndocumentedWriterLaunch, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sourcePathWithinProject } from "../lib/bounded-writer-admission.ts";
 import { rejectUnriskedVerifierLaunch } from "../lib/verifier-admission.ts";
@@ -1333,7 +1334,57 @@ function applyDelegationMode(assetsDir: string, text: string, mode: Orchestrator
 		return text;
 	}
 	if (variant.length === 0) return text;
-	return `${text.slice(0, start)}${variant}\n\n${text.slice(end)}`;
+	// The high-risk items keep one definition: the variant takes the organic paragraph
+	// itself instead of a copy that could drift. Without it the variant would decide
+	// risk with no list, so a missing paragraph falls back to the organic rules whole.
+	const highRisk = text.split("\n").find((line) => line.startsWith(HIGH_RISK_PARAGRAPH_PREFIX));
+	if (highRisk === undefined || !variant.includes(HIGH_RISK_PLACEHOLDER)) return text;
+	const spliced = `${text.slice(0, start)}${variant.replace(HIGH_RISK_PLACEHOLDER, highRisk)}\n\n${text.slice(end)}`;
+	// The shared tail points at the organic routing reference; in this mode those
+	// pointers name the card instead, so the reference never reaches the session.
+	return FULL_DELEGATION_TAIL_PROJECTION.reduce((projected, [from, to]) => projected.replace(from, to), spliced);
+}
+
+const HIGH_RISK_PARAGRAPH_PREFIX = "**High risk**:";
+const HIGH_RISK_PLACEHOLDER = "{{GENTLE_PI_HIGH_RISK_ITEMS}}";
+const FULL_DELEGATION_CARD_FILE = "orchestrator-full-delegation-card.md";
+const FULL_DELEGATION_TAIL_PROJECTION: ReadonlyArray<readonly [string, string]> = [
+	["; rules: delegation background-subagents block.", `; rules: the background block in \`${FULL_DELEGATION_CARD_FILE}\`.`],
+	[
+		"Per-action table, Work Routing Ladder, Canonical Workflows: `orchestrator-delegation-reference.md`; blocking-prompt relays and provider defects: `orchestrator-prompts.md`.",
+		"Blocking-prompt relays and provider defects: `orchestrator-prompts.md`.",
+	],
+];
+
+// full-delegation-mode-conflicts S2: the mirrored ODD steps are a provider contract
+// whose bytes are digest-verified on disk and stay untouched. What the session reads
+// is already a projection of them (extractOddProtocolLines), and in full delegation
+// mode that projection also replaces the parts that route work inline. Steps are
+// addressed by their number, the shape extractOddProtocolLines already enforces;
+// sentences inside a step by their exact text. A sentence the mirror no longer
+// contains is left alone here and caught by tests/full-delegation-closure.test.ts.
+const FULL_DELEGATION_STEP_REPLACEMENTS: ReadonlyArray<{ step: number; line: string }> = [
+	{
+		step: 4,
+		line: "4. **Classify.** Size the task by the orchestrator's Task Size section: it decides tracking and risk, never who writes, and every authorized change goes to a writer.",
+	},
+];
+const FULL_DELEGATION_SENTENCE_REPLACEMENTS: ReadonlyArray<readonly [string, string]> = [
+	["Do not delegate exploration of files you will read anyway to work inline; explore only", "Explore only"],
+	[
+		"Route each task through the orchestrator's Mechanisms, honoring its delegation triggers when their conditions truly hold, with applicable test-first development and checks. No trigger holds by default and, when in doubt, work inline; executing past a fired trigger inline is a routing defect even if the work succeeds.",
+		"Route every task to a bounded writer through the orchestrator's Mechanisms, with applicable test-first development and checks.",
+	],
+	["Detail for steps 3–7: `orchestrator-delegation.md` and", `Detail for steps 3–7: \`${FULL_DELEGATION_CARD_FILE}\` and`],
+];
+
+function projectOddStepsForMode(steps: string, mode: OrchestratorMode): string {
+	if (mode === DEFAULT_ORCHESTRATOR_MODE) return steps;
+	const lines = steps.split("\n").map((line) => {
+		const replacement = FULL_DELEGATION_STEP_REPLACEMENTS.find(({ step }) => line.startsWith(`${step}. **`));
+		return replacement === undefined ? line : replacement.line;
+	});
+	return FULL_DELEGATION_SENTENCE_REPLACEMENTS.reduce((projected, [from, to]) => projected.replace(from, to), lines.join("\n"));
 }
 
 // Rendered prompts are memoized per background policy/capability/RDD-status/mode
@@ -1533,12 +1584,14 @@ const NEUTRAL_PERSONA_PROMPT = `Persona:
  */
 function resolveSessionDelegationMode(
 	ctx: Pick<ExtensionContext, "cwd"> & { sessionManager?: { getSessionId?: () => string | undefined } },
+	env?: NodeJS.ProcessEnv,
 ): OrchestratorMode {
 	try {
 		return resolveOrchestratorMode({
 			cwd: ctx.cwd,
 			configHome: gentleAiConfigHome(),
 			sessionId: ctx.sessionManager?.getSessionId?.(),
+			...(env === undefined ? {} : { env }),
 		}).mode;
 	} catch {
 		return DEFAULT_ORCHESTRATOR_MODE;
@@ -1598,13 +1651,13 @@ For background work, launch the bounded action and end the turn when no independ
 
 Default workflow: Organic Driven Development (MANDATORY)
 Organic Driven Development (ODD) is the predefined workflow of this orchestrator. Every request enters it, without the user asking for a workflow, a plan, or task tracking. Never describe this workflow only when asked about it: run it. Run these steps in this order on every request:
-${oddProtocolSteps()}
+${projectOddStepsForMode(oddProtocolSteps(), delegationMode)}
 
 Harness principles:
 - el Gentleman is not prompt engineering. It is runtime discipline around powerful agents.
 - Clarify scope, constraints, acceptance criteria, and non-goals when needed for the human to understand the action or to resolve consequential uncertainty. Reuse what is already established; after informed approval, proceed without repeating the clarification unless new consequential uncertainty appears.
 - Use subagents when available for exploration, planning, implementation, and review, while keeping one parent session responsible for orchestration.
-- For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks. Write one RED test per requested rule. For every existing command or option the change touches, add one test proving its previous behavior still holds; add no other cases. An existing behavior counts as touched when it shares the code you changed (options, parsers, helpers, validation). Only when your diff changes shared code (options, parsers, helpers) that an existing command the request did not name also uses, run one differential check before finishing, as a single script: for each such command, run it with the new or changed input (for example a new option passed to a sibling subcommand) against the previous code (a copy of the base commit in a \`mktemp -d\` scratch directory, never committed as a test; committed tests never read git history or a fixed commit) and against your change, and compare stdout, stderr, and exit code; any difference nobody asked for is a regression to fix and pin with a test. Test presence alone does not establish applicability; no chat or TUI toggle activates it. For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, explain why and run proportionate ordinary functional or structural verification. Never invent lifecycle evidence or skip checks. Follow orchestrator-delegation.md for ODD forwarding and evidence.
+- For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks. Write one RED test per requested rule. For every existing command or option the change touches, add one test proving its previous behavior still holds; add no other cases. An existing behavior counts as touched when it shares the code you changed (options, parsers, helpers, validation). Only when your diff changes shared code (options, parsers, helpers) that an existing command the request did not name also uses, run one differential check before finishing, as a single script: for each such command, run it with the new or changed input (for example a new option passed to a sibling subcommand) against the previous code (a copy of the base commit in a \`mktemp -d\` scratch directory, never committed as a test; committed tests never read git history or a fixed commit) and against your change, and compare stdout, stderr, and exit code; any difference nobody asked for is a regression to fix and pin with a test. Test presence alone does not establish applicability; no chat or TUI toggle activates it. For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, explain why and run proportionate ordinary functional or structural verification. Never invent lifecycle evidence or skip checks. Follow ${delegationMode === DEFAULT_ORCHESTRATOR_MODE ? "orchestrator-delegation.md" : FULL_DELEGATION_CARD_FILE} for ODD forwarding and evidence.
 - Protect the human reviewer: avoid oversized changes, surface review workload risk, and ask before turning one task into a large multi-area change.
 - Never claim persistent memory is available because of this package. Memory is provided by separate packages or MCP tools when installed and callable.
 
@@ -11726,7 +11779,32 @@ function createGentleAiExtensionForTesting(
 	pi.on("tool_result", (event, ctx) => {
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") auto.toolResult(event, ctx);
 	});
+	// full-delegation-mode-conflicts S9: the human's own last words, per session, so
+	// a reply after an English subagent result can be anchored to their language even
+	// when that message is far up the transcript or compacted away.
+	const humanReplyTexts = new Map<PendingReviewConsentSessionKey, string>();
+	const persistedReplyAnchors = new Map<PendingReviewConsentSessionKey, string>();
+	pi.on("context", (event, ctx) => {
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") return undefined;
+		const key = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
+		const anchor = replyLanguageAnchorFor(event.messages, humanReplyTexts.get(key));
+		if (anchor === undefined) return undefined;
+		// Persisted once per automated tail, like the todo snapshot, so the next request
+		// carries it and stays append-only instead of dropping a trailing message the
+		// cache keyed on.
+		if (persistedReplyAnchors.get(key) !== anchor.tail) {
+			persistedReplyAnchors.set(key, anchor.tail);
+			try { pi.sendMessage({ customType: REPLY_LANGUAGE_ANCHOR_TYPE, content: anchor.text, display: false }, { triggerTurn: false }); } catch { /* The trailing copy below still serves this request. */ }
+		}
+		return { messages: [...event.messages, { role: "custom", customType: REPLY_LANGUAGE_ANCHOR_TYPE, content: anchor.text, display: false, timestamp: Date.now() }] };
+	});
+
 	pi.on("input", (event, ctx) => {
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && isHumanInput(event.source, event.text)) {
+			const key = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
+			humanReplyTexts.set(key, event.text);
+			persistedReplyAnchors.delete(key);
+		}
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") auto.input(event, ctx);
 		// #2652: a new user prompt resets the settle reminder; a steer joins the running prompt.
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && event.streamingBehavior !== "steer") {
@@ -12474,7 +12552,7 @@ function createGentleAiExtensionForTesting(
 					// on another profile changes these rules on the next turn, and pressing
 					// Enter back restores them. A child or named-agent session keeps the
 					// organic rules: its own instructions are the bounded task it received.
-					isPrimarySession ? resolveSessionDelegationMode(ctx) : DEFAULT_ORCHESTRATOR_MODE,
+					isPrimarySession ? resolveSessionDelegationMode(ctx, permissionEnvironment) : DEFAULT_ORCHESTRATOR_MODE,
 				)}`;
 		// gentle-pi#560 / gentle-ai#4056, #4057: inject the mirrored provider
 		// contract bundle's review execution contract for the primary session
@@ -12610,14 +12688,14 @@ function createGentleAiExtensionForTesting(
 		// so a crossing is announced on the next sampled result — never later than one window past it.
 		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
 		const primary = permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && (processAgentEndSubagentDepth.get(sessionKey) ?? 0) === 0;
-		const explorationNotice = explorationBudget.result(sessionKey, event, primary, ctx.signal?.aborted === true);
+		const explorationNotice = explorationBudget.result(sessionKey, event, primary, ctx.signal?.aborted === true, () => resolveSessionDelegationMode(ctx, permissionEnvironment));
 		// Keep discovery payloads intact. Steer only an already-active run so the
 		// next model step sees the notice without starting a new run while idle.
 		if (explorationNotice && typeof ctx.isIdle === "function" && !ctx.isIdle()) {
 			try { pi.sendMessage({ customType: "gentle-pi.exploration-budget", content: explorationNotice, details: explorationBudget.facts(sessionKey), display: true }, { deliverAs: "steer", triggerTurn: true }); } catch { /* Advisory only. */ }
 		}
 		let notice: string | undefined;
-		try { notice = primary ? contextBackstopSignal(sessionKey, contextBackstopMeasure(sessionKey, () => ctx.getContextUsage?.())) : undefined; } catch { notice = undefined; }
+		try { notice = primary ? contextBackstopSignal(sessionKey, contextBackstopMeasure(sessionKey, () => ctx.getContextUsage?.()), () => resolveSessionDelegationMode(ctx, permissionEnvironment)) : undefined; } catch { notice = undefined; }
 		const withNotice = (patch: ToolResultEventResult | undefined) => notice ? appendContextBackstopNotice(event, patch, notice) : patch;
 		// Harness roadmap T4: a parent commit reports the branch's authored
 		// changed lines so delivery slicing reads a number, not an estimate.
@@ -12660,7 +12738,10 @@ function createGentleAiExtensionForTesting(
 				const launch = event.input as Record<string, unknown>;
 				const selected = [launch.workspace_root, launch.repository_root].find((value): value is string => typeof value === "string" && value.trim() !== "");
 				const root = selected ? resolve(ctx.cwd, selected) : ctx.cwd;
-				const undocumentedWriter = rejectUndocumentedWriterLaunch(event.input, { root, contextUsage: ctx.getContextUsage?.(), env: permissionEnvironment });
+				// The guard reads the same mode the prompt was built with, from the session's own environment, so the
+				// two can never disagree about whether a small change belongs to a writer.
+				const orchestratorMode = resolveSessionDelegationMode(ctx, permissionEnvironment);
+				const undocumentedWriter = rejectUndocumentedWriterLaunch(event.input, { root, contextUsage: ctx.getContextUsage?.(), env: permissionEnvironment, orchestratorMode });
 				if (undocumentedWriter) return undocumentedWriter;
 				const unriskedVerifier = rejectUnriskedVerifierLaunch(event.input, { root, contextUsage: ctx.getContextUsage?.(), env: permissionEnvironment });
 				if (unriskedVerifier) return unriskedVerifier;

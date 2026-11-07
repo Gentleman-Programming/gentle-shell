@@ -848,3 +848,20 @@ test("a todo write emits the session's progress; list and errors emit nothing", 
 	await todo({ action: "update", id: 2, status: "done" });
 	assert.deepEqual(emitted.at(-1)?.data, { sessionId: "s1", done: 2, total: 3, current: null });
 });
+
+// full-delegation-mode-conflicts S5: the todo rules block follows the session's orchestrator mode, so a full
+// delegation session is told to delegate a small task instead of doing it. Organic stays byte-identical above.
+test("S5: a full delegation session gets the delegate wording; the organic wording is unchanged", async () => {
+	const full = fakePi();
+	gentleTodo(full.pi, { GENTLE_PI_ORCHESTRATOR_MODE: "full-delegation" });
+	const fullEvent = promptEvent();
+	await full.fire("before_agent_start", { ...fakeContext().ctx, cwd: process.cwd() } as ExtensionContext, fullEvent);
+	assert.match(fullEvent.systemPromptOptions.appendSystemPrompt, /uses no todo list: delegate it and report\./);
+	assert.doesNotMatch(fullEvent.systemPromptOptions.appendSystemPrompt, /do it and report/);
+
+	const organic = fakePi();
+	gentleTodo(organic.pi, { GENTLE_PI_ORCHESTRATOR_MODE: "organic" });
+	const organicEvent = promptEvent();
+	await organic.fire("before_agent_start", { ...fakeContext().ctx, cwd: process.cwd() } as ExtensionContext, organicEvent);
+	assert.match(organicEvent.systemPromptOptions.appendSystemPrompt, /uses no todo list: do it and report\./);
+});

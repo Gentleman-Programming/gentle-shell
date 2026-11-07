@@ -154,3 +154,95 @@ test("S16: child sessions are exempt and an empty workspace_root falls back to t
 	const emptyRoot = await launchThroughHook({ agent: "gentle-ai-worker", mode: "background", workspace_root: "", task: `Spec: odd/tasks/ledger.md, T1${surfaces}` }, documented, 0);
 	assert.equal(emptyRoot?.block, undefined, "an empty workspace_root means the session cwd");
 });
+
+// full-delegation-mode-conflicts S1/S7. In full delegation mode the orchestrator never implements, so the admission
+// above would deadlock every small task: the prompt forbids the inline write and this guard forbids the writer.
+// The mode admits the generic writer; the edit-surface guard, which runs first, still applies.
+
+test("S1: full delegation mode admits a writer with no feature document, below the backstop", (t) => {
+	const root = workspace(false);
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const input = { agent: "gentle-ai-worker", task: `Change the accent colors.${surfaces}` };
+	const contextUsage = { tokens: 20_000, contextWindow: 400_000 };
+	assert.equal(rejectUndocumentedWriterLaunch(input, { root, contextUsage, orchestratorMode: "full-delegation" }), undefined);
+	// Organic mode, stated explicitly, keeps today's rejection word for word.
+	const organic = rejectUndocumentedWriterLaunch(input, { root, contextUsage, orchestratorMode: "organic" });
+	assert.equal(organic?.block, true);
+	assert.match(organic?.reason ?? "", /write this unit inline yourself/);
+});
+
+test("S1: full delegation mode admits only generic writers, never widens other agents", (t) => {
+	const root = workspace(false);
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const contextUsage = { tokens: 20_000, contextWindow: 400_000 };
+	for (const agent of ["gentle-ai-explore", "jd-fix-agent"]) {
+		assert.equal(rejectUndocumentedWriterLaunch({ agent, task: "x" }, { root, contextUsage, orchestratorMode: "full-delegation" }), undefined, agent);
+	}
+});
+
+function withConfigHome<T>(workflowMode: string | undefined, run: (home: string) => Promise<T>): Promise<T> {
+	const home = mkdtempSync(join(tmpdir(), "writer-admission-home-"));
+	writeFileSync(join(home, "profiles.json"), JSON.stringify({
+		kind: "gentle-pi.agent_model_profiles",
+		version: 1,
+		active: "frontier-local",
+		profiles: { "frontier-local": { orchestrator: { model: "openai/gpt-6.1-terra" } } },
+		...(workflowMode === undefined ? {} : { workflow: { "frontier-local": { orchestratorMode: workflowMode } } }),
+	}));
+	const previous = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = home;
+	return run(home).finally(() => {
+		if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previous;
+		rmSync(home, { recursive: true, force: true });
+	});
+}
+
+test("S7: the reported deadlock — a full delegation profile delegates a small task through the real hook", async (t) => {
+	const bare = workspace(false);
+	t.after(() => rmSync(bare, { recursive: true, force: true }));
+	await withConfigHome("full-delegation", async () => {
+		const admitted = await launchThroughHook({ agent: "gentle-ai-worker", mode: "background", task: `Change the accent colors.${surfaces}` }, bare, 20_000);
+		assert.equal(admitted?.block, undefined, "the small task reaches the writer instead of being sent back inline");
+		// The mode never lifts the edit-surface requirement: that guard runs before admission.
+		const unscoped = await launchThroughHook({ agent: "gentle-ai-worker", mode: "background", task: "Change the accent colors." }, bare, 20_000);
+		assert.equal(unscoped?.block, true, "a writer without allowed edit surfaces is still refused");
+		assert.doesNotMatch(unscoped?.reason ?? "", /write this unit inline yourself/);
+	});
+});
+
+test("S1: an organic profile keeps the undocumented-writer rejection through the real hook", async (t) => {
+	const bare = workspace(false);
+	t.after(() => rmSync(bare, { recursive: true, force: true }));
+	await withConfigHome(undefined, async () => {
+		const blocked = await launchThroughHook({ agent: "gentle-ai-worker", mode: "background", task: `Change the accent colors.${surfaces}` }, bare, 20_000);
+		assert.equal(blocked?.block, true);
+		assert.match(blocked?.reason ?? "", /write this unit inline yourself/);
+	});
+});
+
+test("S1: the session environment override reaches the guard, as it reaches the prompt", async (t) => {
+	const bare = workspace(false);
+	t.after(() => rmSync(bare, { recursive: true, force: true }));
+	await withConfigHome(undefined, async () => {
+		const admitted = await launchThroughHook({ agent: "gentle-ai-worker", mode: "background", task: `Change the accent colors.${surfaces}` }, bare, 20_000, { GENTLE_PI_ORCHESTRATOR_MODE: "full-delegation" });
+		assert.equal(admitted?.block, undefined);
+	});
+});
+
+// Independent verification probe (B-S1): an omitted and an organic mode decide exactly alike for every agent and
+// context, and full delegation widens only the two generic writers.
+test("S1: an omitted or organic mode decides exactly alike; full delegation widens only generic writers", (t) => {
+	const root = workspace(false);
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	for (const agent of ["gentle-ai-worker", "worker", "gentle-ai-explore", "gentle-ai-verify", "jd-fix-agent", "unknown"]) {
+		for (const contextUsage of [undefined, { tokens: 20_000, contextWindow: 400_000 }, { tokens: 150_000, contextWindow: 1_000_000 }]) {
+			const input = { agent, task: `Do it.${surfaces}` };
+			const omitted = rejectUndocumentedWriterLaunch(input, { root, contextUsage });
+			assert.deepEqual(rejectUndocumentedWriterLaunch(input, { root, contextUsage, orchestratorMode: "organic" }), omitted, agent);
+			const full = rejectUndocumentedWriterLaunch(input, { root, contextUsage, orchestratorMode: "full-delegation" });
+			assert.deepEqual(full, agent === "gentle-ai-worker" || agent === "worker" ? undefined : omitted, agent);
+		}
+	}
+});
+

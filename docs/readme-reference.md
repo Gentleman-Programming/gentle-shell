@@ -1207,6 +1207,14 @@ On the models screen, `w` toggles the shown profile's mode and `s` saves it toge
 
 The mode travels with the profile and is resolved on every prompt build, so switching profiles changes the orchestrator's rules on the next turn in both directions, with no restart. It is stored beside the profiles in `profiles.json`, under `workflow` keyed by profile name: `organic` needs no entry, so a profile that never opted in serializes exactly as before, and only a `full-delegation` mode is written. `GENTLE_PI_ORCHESTRATOR_MODE=organic|full-delegation` overrides the profile for the process, which is meant for CI and headless runs.
 
+The mode changes the runtime as well as the prompt, so the two never disagree:
+
+- **Writer admission.** Organic mode admits a generic writer only for a task of an existing feature document or past the context backstop. Full delegation mode admits it for any authorized change, small ones included. Allowed edit surfaces stay mandatory in both modes.
+- **What the orchestrator reads.** In full delegation mode the organic routing rules are removed, not annotated: the ODD steps are projected without their inline route, and the session's lazy detail is `assets/orchestrator-full-delegation-card.md` instead of the organic delegation and writer cards. Task Size still decides tracking and risk, never who writes.
+- **Runtime notices.** The context backstop, exploration budget and todo rules drop their inline wording in full delegation mode.
+
+`assets/orchestrator-full-delegation-card.md` is generated: it projects the rules both modes share out of `orchestrator-delegation.md`, `orchestrator-writer.md` and `orchestrator-delegation-reference.md`, which stay their single source. After editing any of them, run `node scripts/build-full-delegation-card.mjs --write`; `tests/full-delegation-closure.test.ts` fails while the card is out of date, and also fails if a full delegation session could reach an organic routing rule through any asset it names.
+
 ### Model fallback chains
 
 Each profile can give every agent an ordered list of fallback models, kept in `profile-fallbacks.json` next to `profiles.json` (older versions keep reading `profiles.json` and simply never fall back):

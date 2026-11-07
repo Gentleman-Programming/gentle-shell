@@ -12,7 +12,7 @@ export interface DestructiveCommandMatch {
 	 */
 	removalTargets?: readonly string[];
 }
-interface Token {
+export interface Token {
 	value: string;
 	raw: string;
 	operator: boolean;
@@ -25,7 +25,7 @@ const separators = new Set([";", "&&", "||", "|", "&", "\n", "(", ")"]);
 const SEQUENTIAL_SEPARATORS = new Set(["", ";", "&&", "||", "\n"]);
 
 /** Literal, named heredocs are data, not executable shell segments; offsets are preserved. */
-function blankHeredocs(command: string): string {
+export function blankHeredocs(command: string): string {
 	return command.replace(/<<-?\s*(['"]?)([A-Za-z_]\w*)\1[^\n]*\n[\s\S]*?\n\2(?=\n|$)/g, (raw) => {
 		const headerLength = raw.indexOf("\n") + 1;
 		return raw.slice(0, headerLength) + " ".repeat(raw.length - headerLength);
@@ -33,7 +33,7 @@ function blankHeredocs(command: string): string {
 }
 
 /** Keep quoted arguments intact so harmless prose is never treated as a command. */
-function tokenize(command: string, blank = true): Token[] {
+export function tokenize(command: string, blank = true): Token[] {
 	const tokens: Token[] = [];
 	if (blank) command = blankHeredocs(command);
 	const pattern = /(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s;&|()'"\\])+|&&|\|\||[;&|()\n]/g;
@@ -63,7 +63,7 @@ const WRAPPERS = ["env", "sudo", "command", "exec", "nohup", "timeout", "xargs"]
 const RESERVED_WORDS = new Set(["then", "else", "elif", "do", "{", "!", "if", "while", "until"]);
 
 /** Index of the executable token after reserved words, assignments and familiar wrappers. */
-function headCursor(segment: readonly Token[]): number {
+export function headCursor(segment: readonly Token[]): number {
 	let cursor = 0;
 	while (cursor < segment.length && segment[cursor].raw === segment[cursor].value && RESERVED_WORDS.has(segment[cursor].value)) cursor++;
 	while (cursor < segment.length) {
@@ -260,7 +260,7 @@ function removalTargets(args: readonly Token[]): string[] | undefined {
  * backtick. An unterminated substitution is a shell syntax error and runs
  * nothing, so it yields no body. Heredoc bodies stay data, as elsewhere.
  */
-function backtickBodies(command: string): Array<{ body: string; index: number }> {
+export function backtickBodies(command: string): Array<{ body: string; index: number }> {
 	const bodies: Array<{ body: string; index: number }> = [];
 	const text = blankHeredocs(command);
 	let quote: "'" | '"' | undefined;

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { SHELL_ACTIVITIES, SHELL_ACTIVITY_IDENTITY, inferOddPhase, inferShellActivity } from "../lib/odd-phase-inference.ts";
+import { SHELL_ACTIVITIES, SHELL_ACTIVITY_IDENTITY, inferOddPhase, inferShellActivity, shellCommandSegments } from "../lib/odd-phase-inference.ts";
 
 // Deterministic, conservative tool -> ODD phase mapping for the Gentle Shell
 // working label. Unknown tools and ambiguous shell commands never change it.
@@ -867,4 +867,165 @@ test("systemd-run names no activity and infers no phase", () => {
 		assert.equal(inferShellActivity(command), undefined, command);
 		assert.equal(inferOddPhase("bash", { command }), undefined, command);
 	}
+});
+
+// `--help` asks a program to print its usage and stop, which is a query on any
+// command family. The flag is read only from a segment's own unquoted text and
+// only for a program this classifier already knows.
+test("a genuine help flag on a known command is inspection", () => {
+	for (const command of [
+		"git --help",
+		"git push --help",
+		"git commit --help",
+		"git add --help",
+		"git rebase --help",
+		"gh --help",
+		"gh pr create --help",
+		"gh issue edit --help",
+		"gh stack --help",
+		"gh stack submit --help",
+		"gh stack init --help",
+		"pnpm test --help",
+		"cargo clippy --help",
+		"make install --help",
+		"git push --help | head -40",
+	]) {
+		assert.equal(inferShellActivity(command), "exploring", command);
+		assert.equal(inferOddPhase("bash", { command }), "exploring", command);
+	}
+});
+
+test("help detection never masks a mutation or a payload it cannot read", () => {
+	// The flag belongs to one segment; a neighbouring mutation still names the card.
+	assert.equal(inferShellActivity("git add -A && git commit --help"), "versioning");
+	assert.equal(inferShellActivity("git commit -m x && gh pr create --help"), "versioning");
+	// A quoted flag is text, not a request, so the command keeps its own activity.
+	assert.equal(inferShellActivity(`git commit -m "--help"`), "versioning");
+	assert.equal(inferShellActivity(`git commit -m 'docs: mention --help'`), "versioning");
+	assert.equal(inferShellActivity(`printf 'git push --help'`), undefined);
+	assert.equal(inferShellActivity(`echo "--help"`), undefined);
+	// An unknown program's help flag is a guess, and a payload flag can swallow the
+	// help flag, so neither is a query.
+	for (const command of [
+		"unknown-tool --help",
+		"./scripts/deploy.sh --help",
+		"bash -c 'git status' --help",
+		"node -e 'process.exit(0)' --help",
+		"python -c 'print(1)' --help",
+		"git commit --help > help.txt",
+		"git push --help `date`",
+	]) {
+		assert.equal(inferShellActivity(command), undefined, command);
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
+	}
+});
+
+test("an escaped space keeps a help flag inside the value it belongs to", () => {
+	// The shell joins `foo\ --help` into one word, so git commits the message
+	// `foo --help`, gh posts it, and no usage page is printed.
+	for (const [command, activity] of [
+		["git commit -m foo\\ --help", "versioning"],
+		["gh issue comment 7 --body foo\\ --help", "publishing"],
+		["gh pr create --title foo\\ --help", "publishing"],
+		// The escape can sit on the other side of the word as well.
+		["git commit -m --help\\ foo", "versioning"],
+		// A word that may expand to an option (`$OPTS`) is no proof of a query either.
+		["git commit -m $OPTS --help", "versioning"],
+	] as const) {
+		assert.equal(inferShellActivity(command), activity, command);
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
+	}
+	// A value that holds escaped whitespace still leaves a real help flag after it.
+	for (const command of [
+		"git commit -m foo\\ bar --help",
+		"gh issue comment 7 --body foo\\ bar --help",
+		"git commit -m 'foo bar' --help",
+		"git commit -m \"foo bar\" --help",
+	]) {
+		assert.equal(inferShellActivity(command), "exploring", command);
+		assert.equal(inferOddPhase("bash", { command }), "exploring", command);
+	}
+	// An escaped backslash is a literal backslash, not a word boundary: `a\\b` is one
+	// word, so the help flag after it is still its own argument.
+	assert.equal(inferShellActivity("git commit -m a\\\\b --help"), "exploring");
+	assert.equal(inferShellActivity("git commit -m a\\\\ --help"), "exploring");
+	assert.equal(inferShellActivity("git commit -m a\\\\b\\ --help"), "versioning");
+	// A line continuation joins the lines, so the help flag after it is still its own
+	// argument — but a value that holds the escaped space keeps the flag inside it.
+	assert.equal(inferShellActivity("git commit -m foo \\\n--help"), "exploring");
+	assert.equal(inferOddPhase("bash", { command: "git commit -m foo \\\n--help" }), "exploring");
+	assert.equal(inferShellActivity("git commit -m foo\\ \\\n--help"), "versioning");
+	assert.equal(inferOddPhase("bash", { command: "git commit -m foo\\ \\\n--help" }), undefined);
+});
+
+test("a help flag an option consumed as its value is not a query", () => {
+	// `--help` right after a flag may be that flag's value: git commits a message
+	// spelled `--help`, and gh posts it as a comment body. Nothing is printed, so
+	// the segment keeps its own verb's activity and never becomes a query.
+	for (const [command, activity] of [
+		["git commit -m --help", "versioning"],
+		["git commit --message --help", "versioning"],
+		["git commit -m -m --help", "versioning"],
+		["git commit -a -m --help", "versioning"],
+		["gh issue comment 7 --body --help", "publishing"],
+		["gh pr create --title --help", "publishing"],
+		["gh pr edit 12 --add-label --help", "publishing"],
+		["git push --force --help", "publishing"],
+	] as const) {
+		assert.equal(inferShellActivity(command), activity, command);
+		// Neither reading reaches the phase label, so a commit-or-comment never
+		// becomes a tracked lookup.
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
+	}
+	// A flag separated from the help flag by its value is still a genuine request.
+	for (const command of [
+		`git commit -m "x" --help`,
+		`gh issue comment 7 --body "hi" --help`,
+		"git commit --help",
+		"git push --help",
+		"gh stack submit --help",
+		"pnpm test --help",
+	]) {
+		assert.equal(inferShellActivity(command), "exploring", command);
+		assert.equal(inferOddPhase("bash", { command }), "exploring", command);
+	}
+	// A quoted value that is itself an option still consumes the help flag that
+	// follows it, whatever quoting style wrote it, so both stay on the safe side.
+	for (const command of [`git commit -m '--help' --help`, `git commit -m "--help" --help`]) {
+		assert.equal(inferShellActivity(command), "versioning", command);
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
+	}
+});
+
+// A quoted `>` is text the shell hands to the program, never a redirect, so it
+// must not turn a command into a write. An unquoted one still does.
+test("quoted text never turns a command into a write", () => {
+	for (const [command, activity] of [
+		[`git commit -m "fix: a > b"`, "versioning"],
+		[`git commit -m 'x > y' --amend`, "versioning"],
+		[`gh issue comment 7 --body "before > after"`, "publishing"],
+	] as const) {
+		assert.equal(inferShellActivity(command), activity, command);
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
+	}
+	// A quoted `>` in a read-only command is still inspection.
+	for (const command of [`git log --format="%h > %s" -3`, `printf '%s\n' "a > b" | cat`]) {
+		assert.equal(inferShellActivity(command), "exploring", command);
+		assert.equal(inferOddPhase("bash", { command }), "exploring", command);
+	}
+	// The redirect guard itself is unchanged: an unquoted `>` is a write.
+	for (const command of ["git commit -m x > out.txt", "cat src/a > out", "echo 'a > b' > out.txt"]) {
+		assert.equal(inferShellActivity(command), undefined, command);
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
+	}
+});
+// The quote-aware splitter is the one segmenter, so a reader that needs the same
+// split reads this one and never a second, quoting-blind copy: a separator inside
+// quoted text is the program's argument, not a boundary between two commands.
+test("the shared segmenter splits only where the shell would", () => {
+	assert.deepEqual(shellCommandSegments(`git commit -m "a && b"`), [`git commit -m "a && b"`]);
+	assert.deepEqual(shellCommandSegments(`git log --format="%h; %s" -3`), [`git log --format="%h; %s" -3`]);
+	assert.deepEqual(shellCommandSegments("git status && git diff"), ["git status ", " git diff"]);
+	// A substitution contributes its own commands and leaves a placeholder behind.
+	assert.deepEqual(shellCommandSegments("echo $(git status && git diff)"), ["git status ", " git diff", "echo $_"]);
 });

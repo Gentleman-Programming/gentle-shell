@@ -226,6 +226,28 @@ const PUBLISHING_COMMANDS: readonly RegExp[] = [
 	/^gh\s+stack\s+(submit|push|merge|link|unstack|sync)\b/,
 ];
 
+// `--help` prints a program's usage and stops, so it is a query on any command
+// family. Only a program this classifier already names is asked: an unknown
+// program's flag is a guess, and a runner that executes the rest of the segment
+// can swallow the flag as an argument to the code it runs.
+const HELP_AWARE_COMMANDS = new Set([
+	"git", "gh",
+	"node", "npx", "pnpx", "bunx", "pnpm", "npm", "yarn", "bun", "deno",
+	"go", "cargo", "ruff", "python", "python3", "pytest", "vitest", "jest",
+	"mocha", "tsc", "eslint", "make",
+	// The families that delete or rewrite files print their usage the same way.
+	"rm", "find", "shred", "truncate", "dd",
+	"prettier", "biome", "dprint", "stylelint", "oxlint", "standard", "markdownlint",
+	"black", "rustfmt", "swiftformat", "clang-format", "gofmt", "gofumpt", "shfmt",
+	"mix", "dart", "terraform", "uv", "poetry", "pip", "pip3",
+	// Containers and clusters print their usage the same way.
+	"docker", "kubectl",
+]);
+// Programs that run the code they are handed. Only for these does a payload flag
+// make the rest of the segment unreadable.
+const SCRIPT_RUNNERS = new Set(["node", "deno", "bun", "python", "python3"]);
+const PAYLOAD_FLAGS = new Set(["-e", "--eval", "-p", "--print", "-c"]);
+
 // Git listing flags that may take one non-flag argument (`--contains <rev>`)
 // without turning `git branch`/`git tag` into a create.
 const GIT_LIST_FLAG = String.raw`(\s+(-a|-r|-l|-v|-vv|-n\d*|--all|--remotes|--list|--show-current|--contains|--merged|--no-merged|--points-at|--sort=\S+)(\s+[^-\s]\S*)?)*$`;
@@ -343,18 +365,21 @@ export function inferShellActivity(command: string | undefined): ShellActivity |
 /** The command split into the simple commands the classifier reads, with the ones that do nothing dropped. */
 function shellSegments(command: string | undefined): string[] {
 	if (command === undefined) return [];
-	return splitShellCommands(command)
+	return shellCommandSegments(command)
 		.map(stripSegment)
 		.filter((segment) => segment.length > 0 && !isNeutral(segment));
 }
 
 /**
- * What one simple command does. A formatter that rewrites files and a build-up
- * that installs or scaffolds name their own identity, a read-only segment
- * inspects, and a rewrite of local history or of the remote names the family it
- * belongs to.
+ * What one simple command does. A help flag outranks the verb it qualifies —
+ * `git push --help` prints usage — a help flag an option consumed leaves the verb
+ * to name the segment, and a help flag this classifier cannot read as a query
+ * leaves the segment unnamed rather than naming the verb beside it.
  */
 function segmentActivity(segment: string): ShellActivity | undefined {
+	const help = helpFlag(segment);
+	if (help === "request") return "exploring";
+	if (help === "unreadable") return undefined;
 	if (isCheckingSegment(segment)) return "checking";
 	if (isFormattingSegment(segment)) return "formatting";
 	if (isReadOnlyInspection(segment)) return "exploring";
@@ -365,6 +390,121 @@ function segmentActivity(segment: string): ShellActivity | undefined {
 	if (matchesAny(VERSIONING_COMMANDS, segment)) return "versioning";
 	if (matchesAny(PUBLISHING_COMMANDS, segment)) return "publishing";
 	return undefined;
+}
+
+/**
+ * Whether a segment asks a known program for its own usage page: a request, a
+ * flag the segment's own text merely mentions or an option consumed, or an
+ * unreadable one this classifier refuses to guess about.
+ */
+function helpFlag(segment: string): "request" | "unreadable" | "absent" {
+	const words = shellWordTokens(segment);
+	const at = words.findIndex((word) => !word.quoted && word.text === "--help");
+	if (at < 0) return "absent";
+	// An option may take the help flag as its own value: `git commit -m --help`
+	// commits a message spelled `--help` and `gh issue comment --body --help` posts
+	// it, printing nothing. Escaped whitespace keeps the two in one word —
+	// `git commit -m foo\ --help` commits `foo --help` — and a word that may expand
+	// to an option (`$OPTS`) can consume it too. Which options take a value cannot be
+	// known here, so a help flag directly after such a word is read as that word's
+	// value and the segment keeps its own verb's activity. The reading only ever
+	// removes a query, never adds one, so a genuine usage page beside an option stays
+	// with the verb instead of turning a mutation into exploration.
+	const previous = words[at - 1];
+	if (previous !== undefined && (previous.text.startsWith("-") || previous.text.startsWith("$"))) return "absent";
+	const program = (words[0]?.text ?? "").split("/").pop() ?? "";
+	if (!HELP_AWARE_COMMANDS.has(program)) return "unreadable";
+	// `node -e '…' --help` runs the payload with `--help` as its own argument.
+	if (SCRIPT_RUNNERS.has(program) && words.slice(1).some((word) => PAYLOAD_FLAGS.has(word.text))) return "unreadable";
+	if (writesFile(segment) || HIDDEN_SUBSTITUTION.test(segment)) return "unreadable";
+	return "request";
+}
+
+/** One word of a segment, with the quotes the shell would have removed and whether it carried any. */
+interface ShellWord {
+	text: string;
+	quoted: boolean;
+}
+
+/**
+ * Splits a segment into the words the program receives, dropping the quoting
+ * characters the shell would drop. A quoted `--help` is text handed to the
+ * program, and a quoted `-m` is still an option, so both the text and whether the
+ * word was quoted are kept.
+ */
+function shellWordTokens(segment: string): ShellWord[] {
+	const words: ShellWord[] = [];
+	let text = "";
+	let quoted = false;
+	let started = false;
+	const push = () => {
+		if (started) words.push({ text, quoted });
+		text = "";
+		quoted = false;
+		started = false;
+	};
+	for (let i = 0; i < segment.length; i++) {
+		const char = segment[i] ?? "";
+		if (char === "\\") {
+			// `\X` is the literal X and `\<newline>` is a line continuation, so an
+			// escaped space never ends a word: `foo\ --help` is one argument.
+			const next = segment[i + 1];
+			if (next === undefined) {
+				text += char;
+				started = true;
+				continue;
+			}
+			i++;
+			if (next !== "\n") text += next;
+			started = true;
+			continue;
+		}
+		if (char === "'") {
+			// Nothing is escaped inside single quotes.
+			const end = segment.indexOf("'", i + 1);
+			text += segment.slice(i + 1, end < 0 ? segment.length : end);
+			quoted = true;
+			started = true;
+			i = end < 0 ? segment.length : end;
+			continue;
+		}
+		if (char === '"') {
+			// A double-quoted span is one word whatever spaces it holds, and only `\X`
+			// and a continuation escape; the quotes the shell would drop are dropped, so
+			// a `--help` inside it stays text.
+			let inner = "";
+			let end = i + 1;
+			while (end < segment.length && segment[end] !== '"') {
+				const innerChar = segment[end] ?? "";
+				if (innerChar !== "\\") {
+					inner += innerChar;
+					end++;
+					continue;
+				}
+				const next = segment[end + 1];
+				if (next === undefined) {
+					inner += innerChar;
+					end++;
+					continue;
+				}
+				end += 2;
+				if (next !== "\n") inner += next;
+			}
+			text += inner;
+			quoted = true;
+			started = true;
+			i = end;
+			continue;
+		}
+		if (/\s/.test(char)) {
+			push();
+			continue;
+		}
+		text += char;
+		started = true;
+	}
+	push();
+	return words;
 }
 
 /** A formatter or a lint fixer rewrites what it reads; its read-only form never does. */
@@ -432,25 +572,10 @@ function timeoutCommand(segment: string): string | undefined {
 /**
  * The words a simple command passes, with each quoted span folded into the word
  * that carries it: `black "--check" .` passes the flag `--check`, while
- * `prettier 'a --write b.ts'` passes one file name whose text is that name. Not
- * a full shell parser: an escape inside quotes is left as written.
+ * `prettier 'a --write b.ts'` passes one file name whose text is that name.
  */
 function shellWords(segment: string): string[] {
-	const words: string[] = [];
-	let word = "";
-	let quote: "'" | '"' | undefined;
-	for (const char of segment) {
-		if (quote !== undefined) {
-			if (char === quote) quote = undefined;
-			else word += char;
-		} else if (char === "'" || char === '"') quote = char;
-		else if (/\s/.test(char)) {
-			if (word !== "") words.push(word);
-			word = "";
-		} else word += char;
-	}
-	if (word !== "") words.push(word);
-	return words;
+	return shellWordTokens(segment).map((word) => word.text);
 }
 
 /**
@@ -565,8 +690,14 @@ function isMakeCheck(segment: string): boolean {
  * `$(...)` substitution contributes its own commands, leaving a `$_`
  * placeholder behind. Not a full shell parser: whatever it cannot follow
  * lands in a segment that matches no pattern, so the label stays unchanged.
+ *
+ * This is the one segmenter: the activity and phase inference above read it,
+ * and so does any other reader that needs the same quote-aware split. A second
+ * splitter that ignored quoting would read a separator inside a commit message
+ * as a segment boundary and disagree with the card's own identity for the same
+ * call.
  */
-function splitShellCommands(command: string): string[] {
+export function shellCommandSegments(command: string): string[] {
 	const commands: string[] = [];
 	let current = "";
 	let quote: "'" | '"' | undefined;
@@ -581,7 +712,7 @@ function splitShellCommands(command: string): string[] {
 		} else if (char === "$" && command[i + 1] === "(") {
 			const end = findSubstitutionEnd(command, i + 2);
 			if (end < 0) return [...commands, current + command.slice(i)];
-			commands.push(...splitShellCommands(command.slice(i + 2, end)));
+			commands.push(...shellCommandSegments(command.slice(i + 2, end)));
 			current += "$_";
 			i = end;
 		} else if (quote === '"') {
@@ -674,10 +805,13 @@ function isGoEnvRead(segment: string): boolean {
 // Stream merges and discarded output; neither writes a file.
 const HARMLESS_REDIRECTS = /\s*(\d?>&\d|&?\d?>\s*\/dev\/null)/g;
 
-// Output redirection to a file is a write. Deliberately naive: a `>` inside
-// quoted text also counts, which only ever leaves the label unchanged.
+// Output redirection to a file is a write. A `>` inside a quoted span is the
+// program's own argument (`git commit -m "a > b"`, `git log --format="%h > %s"`),
+// never a redirect, so only the text the shell would act on counts. Deliberately
+// naive beyond that: an unbalanced quote keeps its `>`, which only ever leaves the
+// label unchanged.
 function writesFile(segment: string): boolean {
-	return segment.replace(HARMLESS_REDIRECTS, "").includes(">");
+	return unquotedSegment(segment).replace(HARMLESS_REDIRECTS, "").includes(">");
 }
 
 function matchesAny(patterns: readonly RegExp[], segment: string): boolean {

@@ -76,6 +76,9 @@ export function withReviewBlocker(result: Record<string, unknown>): Record<strin
 	if (nativeAction === "stop" || transition.kind === "stop") {
 		return diagnose("provider-stop", "unknown", "The provider stopped this review step. Use only a recovery or continuation it explicitly offers; otherwise preserve the diagnostic for investigation.");
 	}
+	if (result.outcome === "native-status-timed-out") {
+		return diagnose("provider-unavailable", "user", "The read-only review inventory read timed out before it completed. Nothing was mutated; rerun the returned remediation_command when ready. Pi does not retry automatically.");
+	}
 	if (record(result.diagnostics).timed_out === true) {
 		return diagnose("provider-unavailable", "unknown", "The native process timed out; its internal phase is not established. Follow the returned action without assuming lock contention, deleting locks or retrying automatically.");
 	}

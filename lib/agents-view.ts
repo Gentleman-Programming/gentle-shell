@@ -1,4 +1,5 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { measureAgentsViewLayout, type AgentsViewLayout } from "./agents-view-layout.ts";
 import { HOVER_ROLE, paintHoverable } from "./shell-hover.ts";
 import { emptyThread, isFinished, TASK_STATUS, THREAD_ITEM, type TaskRecord, type TaskStore, type TaskThread, type ThreadItem } from "./agents-protocol.ts";
@@ -40,6 +41,12 @@ export interface AgentsViewDeps {
 	 * instead of being copied when the overlay opens.
 	 */
 	threadPresentation?(): ThreadPresentation;
+	/**
+	 * The host's live keybindings. Thinking and tool-detail collapse are the host's
+	 * own actions, so a reader's rebinding applies here and an action left unbound
+	 * has no key; without a manager the documented defaults still work.
+	 */
+	keybindings?: KeybindingsManager;
 	onOpen(task: TaskRecord): void;
 	onClose(): void;
 	requestRender(): void;
@@ -100,6 +107,15 @@ const EMPTY_COMPONENT: Component = {
 	render: () => [],
 	invalidate() {},
 };
+
+// The host owns both actions; these are its documented defaults, used only when
+// no keybinding manager was handed down.
+const FALLBACK_BINDING = {
+	"app.thinking.toggle": "ctrl+t",
+	"app.tools.expand": "ctrl+o",
+} as const;
+
+type DetailBinding = keyof typeof FALLBACK_BINDING;
 
 interface PointerButtonLayout {
 	x: number;
@@ -169,6 +185,10 @@ export class AgentsView {
 	private readonly actionRegions = new Map<string, NativePointerRegion>();
 	private readonly expanded = new Map<string, boolean>();
 	private readonly cardExpansion = new Map<string, boolean>();
+	// Local to this overlay: the reader's chosen detail, never the thread's
+	// content and never a global chat setting.
+	private thinkingExpanded = true;
+	private toolsExpansion: boolean | undefined;
 	private readonly observedActiveGroups = new Set<string>();
 	private listScroll = 0;
 	private readonly manualListOffsets = new Map<string, number>();
@@ -338,6 +358,8 @@ export class AgentsView {
 		if (this.closed) return;
 		if (data === "q") return this.close();
 		if (matchesKey(data, Key.escape)) return this.back();
+		if (this.matchesBinding(data, "app.thinking.toggle")) return this.toggleThinking();
+		if (this.matchesBinding(data, "app.tools.expand")) return this.toggleToolOutput();
 		if (data === "F" && !this.isNarrow()) {
 			this.setNarrowView(this.narrowView === "list" ? "details" : "list");
 			return;
@@ -492,8 +514,48 @@ export class AgentsView {
 		return this.deps.threadPresentation?.() ?? THREAD_PRESENTATION.LOG;
 	}
 
-	private isCardExpanded(card: string): boolean {
-		return this.cardExpansion.get(card) === true;
+	// The host owns both actions: a configured binding replaces its documented
+	// default, and one a reader unbound has no key at all.
+	private bindingKeys(binding: DetailBinding): readonly string[] {
+		const configured = typeof this.deps.keybindings?.getKeys === "function" ? this.deps.keybindings.getKeys(binding) : undefined;
+		return configured ?? [FALLBACK_BINDING[binding]];
+	}
+
+	private matchesBinding(data: string, binding: DetailBinding): boolean {
+		if (typeof this.deps.keybindings?.matches === "function") return this.deps.keybindings.matches(data, binding);
+		return matchesKey(data, FALLBACK_BINDING[binding]);
+	}
+
+	private expandHint(binding: DetailBinding): string | undefined {
+		const key = this.bindingKeys(binding)[0];
+		return key === undefined ? undefined : `${key} to expand`;
+	}
+
+	// Until the reader asks, each presentation keeps the default it always had:
+	// the log draws the whole result, a card draws its own preview.
+	private toolsExpanded(presentation: ThreadPresentation): boolean {
+		return this.toolsExpansion ?? presentation === THREAD_PRESENTATION.LOG;
+	}
+
+	private toggleThinking(): void {
+		this.thinkingExpanded = !this.thinkingExpanded;
+		this.clearFooterLayout();
+		this.deps.requestRender();
+	}
+
+	private toggleToolOutput(): void {
+		this.toolsExpansion = !this.toolsExpanded(this.threadPresentation());
+		// The control speaks for the whole thread, so a card's own level must not
+		// outvote it; clicking a card afterwards sets that card's level again.
+		this.cardExpansion.clear();
+		this.clearFooterLayout();
+		this.deps.requestRender();
+	}
+
+	// A click flips what the reader sees, so a card still following the thread's
+	// own level starts from that level rather than from a stale default.
+	private flipCardExpansion(card: string): void {
+		this.cardExpansion.set(card, !(this.cardExpansion.get(card) ?? this.toolsExpanded(this.threadPresentation())));
 	}
 
 	// A card belongs to one task's call: two tasks may reuse a callId, and each
@@ -767,12 +829,13 @@ export class AgentsView {
 		// nothing here can observe (a content or style preference, a renderer's own
 		// state), so a card row is drawn fresh rather than cached under a key that
 		// would have to name every such preference.
-		const key = `${width}\u0000${presentation}`;
+		const key = `${width}\u0000${presentation}\u0000${this.thinkingExpanded}\u0000${this.toolsExpanded(presentation)}`;
+		const expandHint = { thinking: this.expandHint("app.thinking.toggle"), output: this.expandHint("app.tools.expand") };
 		for (const item of thread.items) {
 			const card = cards && item.kind === THREAD_ITEM.TOOL ? this.cardKey(task, item.callId) : undefined;
-			const expanded = card !== undefined && this.isCardExpanded(card);
+			const expanded = card === undefined ? this.toolsExpanded(presentation) : this.cardExpansion.get(card) ?? this.toolsExpanded(presentation);
 			const cached = card === undefined ? this.cache.get(item) : undefined;
-			const rendered = cached?.key === key ? cached.lines : renderThreadItem(item, this.deps.theme, width, { presentation, expanded });
+			const rendered = cached?.key === key ? cached.lines : renderThreadItem(item, this.deps.theme, width, { presentation, expanded, thinkingExpanded: this.thinkingExpanded, expandHint });
 			if (card === undefined && cached?.key !== key) this.cache.set(item, { key, lines: rendered });
 			lines.push(...rendered);
 			for (let index = 0; index < rendered.length; index += 1) owners.push(card);
@@ -1024,7 +1087,7 @@ export class AgentsView {
 		if (event.button !== "left") return undefined;
 		const card = this.pointerLayout?.threadCards?.[event.y - 1];
 		if (card === undefined) return undefined;
-		this.cardExpansion.set(card, !this.isCardExpanded(card));
+		this.flipCardExpansion(card);
 		this.clearFooterLayout();
 		this.deps.requestRender();
 		return { handled: true, render: true };

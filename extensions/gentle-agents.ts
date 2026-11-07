@@ -2055,13 +2055,14 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		let view: AgentsView | undefined;
 		let overlayHost: { requestRender(force?: boolean): void; stop(): void; start(): void } | undefined;
 		const chosen = await ctx.ui.custom<TaskRecord | null>(
-			(tui, theme, _keybindings, done) => {
+			(tui, theme, keybindings, done) => {
 				const close = withOverlayRepaint(tui, done);
 				overlayHost = tui;
 				view = new AgentsView({
 					theme,
 					rows: () => Math.max(0, tui.terminal.rows),
 					store,
+					keybindings,
 					sessionId: ctx.sessionManager.getSessionId() ?? "",
 					presence: {
 						profile: agentHome,

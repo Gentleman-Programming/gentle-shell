@@ -12,6 +12,7 @@ import { SessionChanges, type SessionChangeEvidence } from "../lib/session-chang
 import test, { after, afterEach, before, mock } from "node:test";
 import type { TestContext } from "node:test";
 import { generateUnifiedPatch, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { KeybindingsManager } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js";
 import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import { visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sidebarState } from "../lib/shell-sidebar.ts";
@@ -201,7 +202,7 @@ function fakePi(initialProvider: string = "claude-bridge") {
 	return { pi, tools, shortcuts, commands, fire, sent, userMessages, delivery, setIdle, setProvider, renderers, entryRenderers, entries, events, listeners, transformers };
 }
 
-function fakeContext(tui: { requestRender(): void } = fakeTui, confirmResult: (title: string, message: string) => Promise<boolean> = async () => true, inputResult: (title: string, placeholder: string | undefined) => Promise<string | undefined> = async () => undefined, overlayTui: { terminal: { rows: number }; requestRender(): void } = { terminal: { rows: 30 }, requestRender() {} }, selectResult: (title: string, options: string[]) => Promise<string | undefined> = async (_title, options) => options[0]) {
+function fakeContext(tui: { requestRender(): void } = fakeTui, confirmResult: (title: string, message: string) => Promise<boolean> = async () => true, inputResult: (title: string, placeholder: string | undefined) => Promise<string | undefined> = async () => undefined, overlayTui: { terminal: { rows: number }; requestRender(): void } = { terminal: { rows: 30 }, requestRender() {} }, selectResult: (title: string, options: string[]) => Promise<string | undefined> = async (_title, options) => options[0], keybindings: unknown = {}) {
 	const widgets = new Map<string, (tui: unknown, theme: unknown) => { render(width: number): string[] }>();
 	const dialogs: string[] = [];
 	const overlays: Overlay[] = [];
@@ -221,7 +222,7 @@ function fakeContext(tui: { requestRender(): void } = fakeTui, confirmResult: (t
 						customCompletions.push(value);
 						resolve(value);
 					};
-					const component = factory(overlayTui, plainTheme, {}, done);
+					const component = factory(overlayTui, plainTheme, keybindings, done);
 					overlays.push(component);
 				}),
 			setWidget(key: string, content: ((tui: unknown, theme: unknown) => { render(width: number): string[] }) | undefined) {
@@ -1393,10 +1394,10 @@ function liveProfile(name: string): string {
 	return profile;
 }
 
-function liveInstance(t: test.TestContext, profile: string, sessionId: string, metadata = false) {
+function liveInstance(t: test.TestContext, profile: string, sessionId: string, metadata = false, keybindings: unknown = {}) {
 	const h = fakePi();
 	const runtime = deps();
-	const context = fakeContext();
+	const context = fakeContext(undefined, undefined, undefined, undefined, undefined, keybindings);
 	if (metadata) {
 		runtime.deps.sessionTransport = {
 			...inertSessionTransport,
@@ -1428,6 +1429,23 @@ async function liveOverlay(instance: ReturnType<typeof liveInstance>) {
 	const frame = () => overlay.render(160).map(stripAnsi).join("\n");
 	return { overlay, frame, opened };
 }
+
+test("the overlay reads the host's thinking collapse key", async (t) => {
+	const profile = liveProfile("bindings-profile");
+	const instance = liveInstance(t, profile, "bindings-live", false, new KeybindingsManager({ "app.thinking.toggle": "ctrl+e" }));
+	await instance.fire("session_start", instance.ctx, { reason: "startup" });
+	const panel = await liveOverlay(instance);
+	await instance.tools.get("subagent_run")!.execute("local", { agent: "local", task: "local", mode: "background" }, undefined, undefined, instance.ctx);
+	for (let index = 0; index < 6; index += 1) instance.children[0].emit({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: `thought ${index}\n` } });
+	await eventually(() => /thought 5/.test(panel.frame()), "thinking reaches the open overlay");
+	panel.overlay.handleInput("\x14");
+	assert.match(panel.frame(), /thought 5/, "the host default is replaced, not added to");
+	panel.overlay.handleInput("\x05");
+	assert.doesNotMatch(panel.frame(), /thought \d/, "the host's configured key hides thinking whole");
+	assert.match(panel.frame(), /… hidden · ctrl\+e to expand/, "the hidden block names the host's key");
+	panel.overlay.handleInput("q");
+	await panel.opened;
+});
 
 test("live-only extension instances discover same-profile peers across cwd boundaries without importing their tasks", async (t) => {
 	const profile = liveProfile("live-peer-profile");

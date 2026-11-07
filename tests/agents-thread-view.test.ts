@@ -91,6 +91,46 @@ test("cards keep running, final, error, expansion, and width from the chat's dra
 	}
 });
 
+test("the log bounds a collapsed result and thinking while expansion keeps every retained line", () => {
+	const resolved: ToolItem = { kind: "tool", callId: "call", name: "bash", args: {}, output: Array.from({ length: 8 }, (_, index) => `output line ${index}`).join("\n"), running: false, isError: false };
+	const reasoning = { kind: "thinking" as const, text: Array.from({ length: 6 }, (_, index) => `thought ${index}`).join("\n") };
+	const toolLines = (indent: string, count: number): string[] => Array.from({ length: count }, (_, index) => `${indent}output line ${index}`);
+
+	assert.deepEqual(renderThreadItem(resolved, plainTheme, 40, { presentation: "log", expanded: false }), ["Tool · bash · Complete", "  Output", ...toolLines("    ", 3), "    … 5 more lines"], "a collapsed result is a bounded preview with the count it withholds");
+	assert.deepEqual(renderThreadItem(resolved, plainTheme, 40, { expanded: false, expandHint: { output: "ctrl+o to expand" } }), ["Tool · bash · Complete", "  Output", ...toolLines("    ", 3), "    … 5 more lines · ctrl+o to expand"], "the marker carries the key that draws the rest");
+	assert.deepEqual(renderThreadItem(resolved, plainTheme, 40, { presentation: "log", expanded: true }), ["Tool · bash · Complete", "  Output", ...toolLines("    ", 8)], "expanding draws every retained line");
+	assert.deepEqual(renderThreadItem(resolved, plainTheme, 40), ["Tool · bash · Complete", "  Output", ...toolLines("    ", 8)], "the log keeps drawing the whole retained result unless collapse is asked for");
+
+	assert.deepEqual(renderThreadItem(reasoning, plainTheme, 40, { presentation: "log", thinkingExpanded: false }), ["Thinking", "  … hidden"], "hiding thinking keeps a neutral placeholder, not a preview of the reasoning");
+	assert.deepEqual(renderThreadItem(reasoning, plainTheme, 40, { thinkingExpanded: false, expandHint: { thinking: "ctrl+t to expand" } }), ["Thinking", "  … hidden · ctrl+t to expand"], "the placeholder names the key that shows it again");
+	assert.deepEqual(renderThreadItem(reasoning, plainTheme, 40, { thinkingExpanded: true }), ["Thinking", ...Array.from({ length: 6 }, (_, index) => `  thought ${index}`)], "thinking is shown whole when expanded");
+	assert.deepEqual(renderThreadItem(reasoning, plainTheme, 40), ["Thinking", ...Array.from({ length: 6 }, (_, index) => `  thought ${index}`)], "thinking stays whole by default");
+	assert.deepEqual(renderThreadItem(reasoning, plainTheme, 40, { presentation: "cards", thinkingExpanded: false }), ["Thinking", "  … hidden"], "both presentations hide thinking the same way");
+
+	for (const text of ["only thought", "first thought\nsecond thought", "a\nb\nc"]) {
+		for (const presentation of ["log", "cards"] as const) {
+			const hidden = renderThreadItem({ kind: "thinking", text }, plainTheme, 40, { presentation, thinkingExpanded: false });
+			assert.deepEqual(hidden, ["Thinking", "  … hidden"], `${presentation}: a short reasoning is hidden whole, never previewed`);
+			assert.deepEqual(renderThreadItem({ kind: "thinking", text }, plainTheme, 40, { presentation, thinkingExpanded: true }), ["Thinking", ...text.split("\n").map((line) => `  ${line}`)], `${presentation}: showing it again restores every line`);
+		}
+	}
+	assert.deepEqual(renderThreadItem({ kind: "thinking", text: "" }, plainTheme, 40, { thinkingExpanded: false }), ["Thinking"], "a thinking item with nothing retained claims nothing hidden");
+
+	const short: ToolItem = { ...resolved, output: "one\ntwo" };
+	assert.deepEqual(renderThreadItem(short, plainTheme, 40, { presentation: "log", expanded: false }), ["Tool · bash · Complete", "  Output", "    one", "    two"], "a short result is never cut, so no remainder is invented");
+	const empty: ToolItem = { ...resolved, output: "" };
+	assert.deepEqual(renderThreadItem(empty, plainTheme, 40, { presentation: "log", expanded: false }), ["Tool · bash · Complete"], "a call with nothing retained still claims no output");
+	for (const width of [4, 8, 10, 20, 40, 80]) {
+		for (const lines of [
+			renderThreadItem(resolved, plainTheme, width, { expanded: false }),
+			renderThreadItem(reasoning, plainTheme, width, { thinkingExpanded: false }),
+			renderThreadItem(reasoning, plainTheme, width, { thinkingExpanded: false, expandHint: { thinking: "ctrl+t to expand" } }),
+		]) {
+			for (const rendered of lines) assert.ok(visibleWidth(rendered) <= width, `"${rendered}" fits width ${width}`);
+		}
+	}
+});
+
 test("renderThreadItem renders actual sanitized retention markers and error status color", () => {
 	let thread = emptyThread({ maxOutputChars: 24 });
 	thread = applyTaskEvent(thread, { type: TASK_EVENT.TOOL_START, callId: "call", name: "bash", args: {} });

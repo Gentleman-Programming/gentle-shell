@@ -20,9 +20,22 @@ export type ThreadPresentation = (typeof THREAD_PRESENTATION)[keyof typeof THREA
 export interface ThreadItemRenderOptions {
 	/** Defaults to `log`, the presentation this overlay has always drawn. */
 	presentation?: ThreadPresentation;
-	/** Asks a card for its whole result instead of its collapsed preview. */
+	/**
+	 * Draws a tool's whole retained result. Left out, each presentation keeps its
+	 * own default: the log has always drawn every line, a card previews itself.
+	 */
 	expanded?: boolean;
+	/**
+	 * Draws thinking whole. Left out, thinking is shown whole — the log's own
+	 * default — and `false` hides it behind a placeholder that names the key.
+	 */
+	thinkingExpanded?: boolean;
+	/** Key text a collapsed block offers, e.g. `ctrl+o to expand`; omit when unbound. */
+	expandHint?: { thinking?: string; output?: string };
 }
+
+/** How much of a long block a collapsed row keeps before it counts the rest. */
+const COLLAPSED_PREVIEW_LINES = 3;
 
 const ROLE = {
 	TEXT: "text",
@@ -39,7 +52,7 @@ function line(theme: AgentsThreadTheme, role: string, text: string, width: numbe
 }
 
 function contentLines(theme: AgentsThreadTheme, role: string, text: string, width: number, requestedIndent: number): string[] {
-	const indent = Math.min(requestedIndent, Math.max(0, width - 1));
+	const indent = indentWidth(width, requestedIndent);
 	const prefix = " ".repeat(indent);
 	const contentWidth = Math.max(1, width - indent);
 	return text.split("\n").flatMap((source) => {
@@ -47,6 +60,22 @@ function contentLines(theme: AgentsThreadTheme, role: string, text: string, widt
 		const wrapped = wrapTextWithAnsi(source, contentWidth);
 		return (wrapped.length > 0 ? wrapped : [source]).map((part) => theme.fg(role, `${prefix}${part}`));
 	});
+}
+
+function indentWidth(width: number, requested: number): number {
+	return Math.min(requested, Math.max(0, width - 1));
+}
+
+/**
+ * The leading lines a collapsed tool result keeps, with the count it withholds. A
+ * result that already fits is returned whole, so a preview never invents a
+ * remainder; `hint` names the key that draws the rest, when the action has one.
+ */
+function previewBlock(text: string, expanded: boolean, hint: string | undefined): { text: string; marker: string } {
+	const lines = text.split("\n");
+	if (expanded || lines.length <= COLLAPSED_PREVIEW_LINES) return { text, marker: "" };
+	const hidden = lines.length - COLLAPSED_PREVIEW_LINES;
+	return { text: lines.slice(0, COLLAPSED_PREVIEW_LINES).join("\n"), marker: `… ${hidden} more ${hidden === 1 ? "line" : "lines"}${hint ? ` · ${hint}` : ""}` };
 }
 
 function toolStatus(item: ToolItem): "Running" | "Error" | "Complete" {
@@ -59,11 +88,22 @@ function toolStatus(item: ToolItem): "Running" | "Error" | "Complete" {
  * for every tool on purpose: a supported tool draws through the chat's own
  * renderer, and no second per-tool drawing is kept here.
  */
-function toolBlock(item: ToolItem, theme: AgentsThreadTheme, width: number): string[] {
+function toolBlock(item: ToolItem, theme: AgentsThreadTheme, width: number, expanded: boolean, hint: string | undefined): string[] {
 	const role = item.isError ? ROLE.TOOL_ERROR : ROLE.TOOL;
 	const header = line(theme, role, `Tool · ${item.name} · ${toolStatus(item)}`, width);
 	if (item.output.length === 0) return [header];
-	return [header, line(theme, ROLE.OUTPUT, "  Output", width), ...contentLines(theme, ROLE.OUTPUT, item.output, width, 4)];
+	const preview = previewBlock(item.output, expanded, hint);
+	const marker = preview.marker ? [line(theme, ROLE.NOTE, `${" ".repeat(indentWidth(width, 4))}${preview.marker}`, width)] : [];
+	return [header, line(theme, ROLE.OUTPUT, "  Output", width), ...contentLines(theme, ROLE.OUTPUT, preview.text, width, 4), ...marker];
+}
+
+function thinkingBlock(text: string, theme: AgentsThreadTheme, width: number, expanded: boolean, hint: string | undefined): string[] {
+	const label = line(theme, ROLE.LABEL, "Thinking", width);
+	if (expanded) return [label, ...contentLines(theme, ROLE.THINKING, text, width, 2)];
+	// Hiding thinking hides all of it: the placeholder says the block is hidden and
+	// names the key that shows it again, never the reasoning it withholds.
+	if (text.length === 0) return [label];
+	return [label, line(theme, ROLE.NOTE, `${" ".repeat(indentWidth(width, 2))}… hidden${hint ? ` · ${hint}` : ""}`, width)];
 }
 
 /** Render already-sanitized, bounded protocol items without inferring content roles. */
@@ -73,7 +113,7 @@ export function renderThreadItem(item: ThreadItem, theme: AgentsThreadTheme, wid
 		case THREAD_ITEM.TEXT:
 			return [line(theme, ROLE.LABEL, "Text", width), ...contentLines(theme, ROLE.TEXT, item.text, width, 2)];
 		case THREAD_ITEM.THINKING:
-			return [line(theme, ROLE.LABEL, "Thinking", width), ...contentLines(theme, ROLE.THINKING, item.text, width, 2)];
+			return thinkingBlock(item.text, theme, width, options.thinkingExpanded !== false, options.expandHint?.thinking);
 		case THREAD_ITEM.NOTE:
 			return [line(theme, ROLE.NOTE, "Note", width), ...contentLines(theme, ROLE.NOTE, item.text, width, 2)];
 		case THREAD_ITEM.TOOL:
@@ -81,7 +121,7 @@ export function renderThreadItem(item: ThreadItem, theme: AgentsThreadTheme, wid
 			// renderer, a renderer that does not own its frame, and one that threw.
 			return (options.presentation === THREAD_PRESENTATION.CARDS
 				? renderAgentToolItem(item, theme, width, { expanded: options.expanded === true })
-				: undefined) ?? toolBlock(item, theme, width);
+				: undefined) ?? toolBlock(item, theme, width, options.expanded ?? true, options.expandHint?.output);
 		default:
 			return [];
 	}

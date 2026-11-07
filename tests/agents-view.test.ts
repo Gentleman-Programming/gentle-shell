@@ -4,7 +4,8 @@ import { initTheme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { emptyThread, TASK_EVENT, TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
 import { renderThreadItem } from "../lib/agents-thread-view.ts";
-import { AgentsView, taskHeader } from "../lib/agents-view.ts";
+import { AgentsView, taskHeader, type AgentsViewDeps } from "../lib/agents-view.ts";
+import { KeybindingsManager } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js";
 import { CARD_CONTENT, cardContent, setCardContent } from "../lib/card-content-policy.ts";
 import productionQuietTools from "../extensions/quiet-tools.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
@@ -35,6 +36,22 @@ function harness(rows: number | (() => number) = 8, sessionId = "s", canCancel?:
 		requestRender: () => (renders += 1),
 	});
 	return { store, view, events, renders: () => renders };
+}
+
+// The thinking/output controls are overlay-local, so these harnesses keep the
+// deps around: a second view over the same store proves the first one's state
+// never leaked into the task or the chat.
+function detailHarness(extra: Partial<AgentsViewDeps> = {}, rows = 14) {
+	const store = new TaskStore();
+	const deps: AgentsViewDeps = { theme: plainTheme, rows, store, sessionId: "s", now: () => 61_000, onCancel() {}, onOpen() {}, onClose() {}, requestRender() {}, ...extra };
+	const view = new AgentsView(deps);
+	store.add(task("a"));
+	return { store, deps, view, text: (width = 100) => stripAnsi(view.render(width).join("\n")) };
+}
+
+function fillDetail(store: TaskStore): void {
+	store.apply("a", { type: TASK_EVENT.THINKING, text: "thought 0\nthought 1\nthought 2\nthought 3\nthought 4\nthought 5" }, 2000);
+	applyTool(store, "bash", { command: "run" }, "output 0\noutput 1\noutput 2\noutput 3\noutput 4\noutput 5");
 }
 
 // The card path is only real when the chat's renderers are actually registered,
@@ -824,6 +841,122 @@ test("cards expand one at a time from the row under the pointer", () => {
 	assert.doesNotMatch(frame().join("\n"), /a5/, "clicking again collapses only that card");
 	assert.match(frame().join("\n"), /b5/, "the sibling keeps its own level");
 	assert.deepEqual(store.thread("a"), retained, "card expansion never mutates retention");
+	view.dispose();
+});
+
+test("the overlay collapses thinking and tool output from the host's own keybindings", () => {	const { store, deps, view, text } = detailHarness({ keybindings: new KeybindingsManager() });
+	fillDetail(store);
+	const retained = store.thread("a");
+	const markers = (): number => (text().match(/… \d+ more lines/g) ?? []).length;
+
+	assert.match(text(), /thought 5/);
+	assert.match(text(), /output 5/);
+	assert.equal(markers(), 0, "the log opens whole, as it always has");
+
+	view.handleInput("\x14");
+	assert.doesNotMatch(text(), /thought /, "hiding thinking hides every retained line, short or long");
+	assert.match(text(), /… hidden · ctrl\+t to expand/, "the hidden block names the host's key");
+	assert.match(text(), /output 5/, "the thinking toggle leaves tool output alone");
+	assert.equal(markers(), 0, "a hidden block previews nothing, so it counts nothing");
+
+	view.handleInput("\x0f");
+	assert.match(text(), /output 2/);
+	assert.doesNotMatch(text(), /output 3/, "the output toggle bounds the retained result");
+	assert.match(text(), /… 3 more lines · ctrl\+o to expand/);
+	assert.match(text(), /… hidden · ctrl\+t to expand/, "both controls keep their own state");
+	assert.equal(markers(), 1, "only the collapsed result keeps a preview");
+
+	view.handleInput("\x14");
+	view.handleInput("\x0f");
+	assert.match(text(), /thought 5/);
+	assert.match(text(), /output 5/);
+	assert.equal(markers(), 0, "toggling back restores every retained line");
+
+	assert.deepEqual(store.thread("a"), retained, "the controls never mutate retention");
+	const reopened = new AgentsView({ ...deps });
+	assert.match(stripAnsi(reopened.render(100).join("\n")), /thought 5/, "the controls are local to one overlay, not global chat state");
+	reopened.dispose();
+	view.dispose();
+});
+
+for (const presentation of ["log", "cards"] as const) {
+	test(`${presentation}: hiding thinking hides short and long reasoning whole and shows it again`, () => {
+		const { store, view, text } = detailHarness({ keybindings: new KeybindingsManager(), threadPresentation: () => presentation }, 24);
+		store.apply("a", { type: TASK_EVENT.THINKING, text: "long zero\nlong one\nlong two\nlong three\nlong four\nlong five" }, 2000);
+		store.apply("a", { type: TASK_EVENT.TEXT, text: "between" }, 2000);
+		store.apply("a", { type: TASK_EVENT.THINKING, text: "short single thought" }, 2000);
+		const retained = store.thread("a");
+		assert.match(text(), /long five/);
+		assert.match(text(), /short single thought/);
+
+		view.handleInput("\x14");
+		const hidden = text();
+		assert.doesNotMatch(hidden, /long |short single thought/, "no reasoning line survives hiding");
+		assert.equal((hidden.match(/Thinking/g) ?? []).length, 2, "each thinking item keeps its label");
+		assert.equal((hidden.match(/… hidden · ctrl\+t to expand/g) ?? []).length, 2, "each hidden block names the key");
+		assert.deepEqual(store.thread("a"), retained, "hiding never mutates retention");
+
+		view.handleInput("\x14");
+		assert.match(text(), /long five/);
+		assert.match(text(), /short single thought/, "showing thinking again restores every line");
+		assert.doesNotMatch(text(), /… hidden/);
+		view.dispose();
+	});
+}
+
+test("a configured keybinding replaces the default and an unbound action has no key", () => {
+	const { store, view, text } = detailHarness({ keybindings: new KeybindingsManager({ "app.tools.expand": "ctrl+e", "app.thinking.toggle": [] }) });
+	fillDetail(store);
+
+	view.handleInput("\x0f");
+	assert.match(text(), /output 5/, "the host's replaced default is inert");
+	view.handleInput("\x14");
+	assert.match(text(), /thought 5/, "an unbound action leaves the thinking it can no longer toggle untouched");
+	view.handleInput("\x05");
+	assert.doesNotMatch(text(), /output 3/, "the configured key toggles the retained result");
+	assert.match(text(), /· ctrl\+e to expand/, "the collapsed block names the configured key");
+	assert.doesNotMatch(text(), /ctrl\+[to] to expand/, "neither the replaced default nor an unbound action is advertised");
+	view.dispose();
+});
+
+test("without a host keybinding manager the documented defaults still toggle", () => {
+	const { store, view, text } = detailHarness();
+	fillDetail(store);
+	view.handleInput("\x14");
+	assert.doesNotMatch(text(), /thought 0/, "ctrl+t is the documented thinking default");
+	assert.match(text(), /… hidden · ctrl\+t to expand/);
+	view.handleInput("\x0f");
+	assert.doesNotMatch(text(), /output 3/, "ctrl+o is the documented tool-output default");
+	assert.match(text(), /… 3 more lines · ctrl\+o to expand/, "the fallback key is the one the collapsed block advertises");
+	view.dispose();
+});
+
+test("cards follow the same controls while a clicked card keeps its own level", () => {
+	loadQuietTools();
+	const { store, view } = detailHarness({ keybindings: new KeybindingsManager(), threadPresentation: () => "cards" }, 20);
+	applyTool(store, "read", { path: "src/a.ts" }, "a0\na1\na2\na3\na4\na5", false, "first");
+	applyTool(store, "read", { path: "src/b.ts" }, "b0\nb1\nb2\nb3\nb4\nb5", false, "second");
+	const frame = (): string[] => view.render(60).map(stripAnsi);
+	const text = (): string => frame().join("\n");
+	const clickRow = (needle: string): void => {
+		const rows = frame();
+		const y = rows.findIndex((line) => line.includes(needle));
+		assert.ok(y >= 0, `"${needle}" is drawn so its card can be clicked`);
+		assert.equal(view.handleMouse(mouse(50, y, 60, rows.length, "click"))?.handled, true, `${needle}: the card consumes its click`);
+	};
+
+	assert.doesNotMatch(text(), /a5|b5/, "a card keeps its own collapsed default");
+	view.handleInput("\x0f");
+	assert.match(text(), /a5/);
+	assert.match(text(), /b5/, "the control expands every card, not just one");
+	clickRow("a0");
+	assert.doesNotMatch(text(), /a5/, "a pointer click still collapses only its own card");
+	assert.match(text(), /b5/);
+	view.handleInput("\x0f");
+	assert.doesNotMatch(text(), /a5|b5/, "the control speaks for the whole thread again");
+	clickRow("b0");
+	assert.match(text(), /b5/, "a card stays individually expandable afterwards");
+	assert.doesNotMatch(text(), /a5/);
 	view.dispose();
 });
 

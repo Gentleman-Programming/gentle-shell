@@ -1196,6 +1196,17 @@ The `profiles` values use the same per-agent shape as `models.json`. Profile nam
 
 The store is replaced atomically through a sibling temp file and a rename, so an interrupted write cannot leave truncated JSON behind. **Make default** writes `profiles.json` first and then materializes routing; if materialization fails, the previous active marker is restored, and the previous routing is restored when a profile was active before. With no previously active profile there is no routing to restore: `models.json` keeps the new routing and the warning says so. Anything that could not be restored is named in the warning.
 
+### Orchestrator workflow mode
+
+Every profile also carries an orchestrator workflow mode: `organic` or `full-delegation`. They are peers, not a better and a worse option — the mode decides **who writes**, nothing else.
+
+- **organic** — the orchestrator may implement inline, and delegates to a writer when a delegation trigger fires.
+- **full-delegation** — the orchestrator never implements. Every authorized mutation goes to a bounded writer with its code, tests and docs together, while the orchestrator keeps authorize, explore-for-routing, decide, ask, track, commit, verify and report.
+
+On the models screen, `w` toggles the shown profile's mode and `s` saves it together with that profile's routing. The Orchestrator row shows the mode beside the tier indicator, both modes with the same weight and differenced only by glyph and label, and its description line states what each mode does.
+
+The mode travels with the profile and is resolved on every prompt build, so switching profiles changes the orchestrator's rules on the next turn in both directions, with no restart. It is stored beside the profiles in `profiles.json`, under `workflow` keyed by profile name: `organic` needs no entry, so a profile that never opted in serializes exactly as before, and only a `full-delegation` mode is written. `GENTLE_PI_ORCHESTRATOR_MODE=organic|full-delegation` overrides the profile for the process, which is meant for CI and headless runs.
+
 ### Model fallback chains
 
 Each profile can give every agent an ordered list of fallback models, kept in `profile-fallbacks.json` next to `profiles.json` (older versions keep reading `profiles.json` and simply never fall back):
@@ -1351,7 +1362,7 @@ With the policy `on`, `subagent_run` defaults to `mode: "background"` at the run
 
 Background delegation is off unless you turn it on. The policy is user-owned: only an explicit `/gentle:background-subagents enable` or `disable` writes it, and Pi automation never toggles it.
 
-An agent whose explicit `tools` frontmatter includes `bash_background` fails before spawn when the effective background-subagents policy is `off`, in either task or background mode. Admission resolves policy at dispatch using the request's environment and config home, including queued tasks. The error names the policy file, the exact opt-in shape `{"schema":"gentle-pi.background-subagents/v1","policy":"on"}`, and `/gentle:background-subagents enable|disable|status`. Agents without explicit tools are unchanged; the child missing-tools check remains the backstop for other names. Policy `on` passes this admission check only: it does not implement child background tools (future Slices 2–3).
+An agent whose explicit `tools` frontmatter includes `bash_background` fails before spawn when the effective background-subagents policy is `off`, in either task or background mode. Admission resolves policy at dispatch using the request's environment and config home, including queued tasks. The error names the policy file, the exact opt-in shape `{"schema":"gentle-pi.background-subagents/v1","policy":"on"}`, and `/gentle:background-subagents enable|disable|status`. Agents without explicit tools are unchanged; the child missing-tools check remains the backstop for other names. Policy `on` passes this admission check and forwards the job capability to the child, which registers `bash_background`, `job_list`, and `job_stop` for its own session and reports its job state so a running job gets one bounded drain window at settlement before the ordinary orderly shutdown. The `monitor` tool stays parent-only, and child jobs are never routed through the parent.
 
 ```text
 /gentle:background-subagents           Report the effective policy, the deciding source, and the resolved capability.

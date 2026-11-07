@@ -106,19 +106,24 @@ import {
 	unmatchedRoutingNotes,
 	profilesFilePath,
 	readProfileOrchestrator,
+	readProfileWorkflow,
 	readProfilesFileResult,
 	renameProfile,
 	routingColumnWidths,
 	serializeProfileExport,
 	setActiveProfile,
+	setProfileOrchestratorMode,
 	updateProfile,
 	writeProfilesFileSync,
+	DEFAULT_ORCHESTRATOR_MODE,
 	type AgentProfilesFile,
+	type OrchestratorMode,
 	type ProfileListItem,
 	type ProfileRoutingRow,
 	type ProfilesFileReadResult,
 	type ProfilesParseDrops,
 } from "../lib/agent-profiles.ts";
+import { resolveOrchestratorMode } from "../lib/orchestrator-mode-policy.ts";
 import {
 	clearProfilePinSync,
 	evaluateProfilePin,
@@ -1292,11 +1297,47 @@ async function resolveRddStatusLine(
 	return renderRddStatusLine(await resolveRddModeStatus(nativeReviewCli, cwd, signal, now, ctx));
 }
 
-// Rendered prompts are memoized per background policy/capability/RDD-status
+// full-delegation-mode S1/S3/S4: the always-on core carries exactly ONE workflow
+// block, selected per active profile. The organic rules stay where they are in
+// `assets/orchestrator.md` and a profile that did not opt in renders that asset
+// byte for byte, so the mode cannot leak into a session nobody switched. In full
+// delegation mode the single span below is REPLACED by the variant asset, never
+// appended beside the organic text: two contradictory rule sets in one prompt are
+// worse than either one alone, and the orchestrator would have to guess.
+const DELEGATION_MODE_REGION_START = "You are a COORDINATOR, not the default executor for substantial work.";
+// The region ends at the background-policy placeholder, so the status line and
+// the lazy pointers that follow it stay in both modes.
+const DELEGATION_MODE_REGION_END = "{{GENTLE_PI_BACKGROUND_POLICY}}";
+const FULL_DELEGATION_VARIANT_FILE = "orchestrator-full-delegation.md";
+
+/**
+ * Swap the organic workflow span for the supervisor-only variant.
+ *
+ * Fails safe in every degraded case — missing variant asset, empty variant, or an
+ * anchor the asset no longer contains — by returning the organic text unchanged.
+ * A half-spliced prompt mixes "implement inline" with "never implement", which is
+ * exactly the ambiguity this mode exists to remove.
+ */
+function applyDelegationMode(assetsDir: string, text: string, mode: OrchestratorMode): string {
+	if (mode === DEFAULT_ORCHESTRATOR_MODE) return text;
+	const start = text.indexOf(DELEGATION_MODE_REGION_START);
+	const end = text.indexOf(DELEGATION_MODE_REGION_END);
+	if (start < 0 || end <= start) return text;
+	let variant: string;
+	try {
+		variant = readFileSync(join(assetsDir, FULL_DELEGATION_VARIANT_FILE), "utf8").trim();
+	} catch {
+		return text;
+	}
+	if (variant.length === 0) return text;
+	return `${text.slice(0, start)}${variant}\n\n${text.slice(end)}`;
+}
+
+// Rendered prompts are memoized per background policy/capability/RDD-status/mode
 // key for the process lifetime; the assets bytes themselves are read once
 // per key. `rddStatusLine` defaults to the "unknown" fallback line (the
 // longest of the three renderable forms), not "", so the default no-argument
-// render IS the worst case the canonical 8 KiB budget in
+// render IS the worst case the canonical budget in
 // tests/orchestrator-budget.test.ts measures; assets/orchestrator.md is
 // sized with that worst case already included. Production still resolves
 // and passes the real line (on/off/unknown) via resolveRddStatusLine.
@@ -1306,16 +1347,19 @@ function getOrchestratorPrompt(
 	activeTools?: readonly string[],
 	rddStatusLine: string = renderRddStatusLine(undefined),
 	hostMode?: string,
+	delegationMode: OrchestratorMode = DEFAULT_ORCHESTRATOR_MODE,
 ): string {
 	const background: BackgroundSubagentsRendering = {
 		policy: loadBackgroundSubagentsPolicy(cwd),
 		capability: resolveBackgroundSubagentsCapability(cwd, activeTools),
 		singleShot: isSingleShotHostMode(hostMode),
 	};
-	const cacheKey = `${background.policy}:${background.capability}:${background.singleShot}:${rddStatusLine}`;
+	// The workflow mode is part of the key: without it a profile switch would keep
+	// serving the previous profile's rules for the rest of the process.
+	const cacheKey = `${background.policy}:${background.capability}:${background.singleShot}:${rddStatusLine}:${delegationMode}`;
 	let prompt = orchestratorPromptCache.get(cacheKey);
 	if (prompt === undefined) {
-		prompt = renderOrchestratorPrompt(ASSETS_DIR, background, rddStatusLine);
+		prompt = renderOrchestratorPrompt(ASSETS_DIR, background, rddStatusLine, delegationMode);
 		orchestratorPromptCache.set(cacheKey, prompt);
 	}
 	return prompt;
@@ -1325,9 +1369,10 @@ function renderOrchestratorPrompt(
 	assetsDir: string,
 	background: BackgroundSubagentsRendering = DEFAULT_BACKGROUND_SUBAGENTS_RENDERING,
 	rddStatusLine: string = renderRddStatusLine(undefined),
+	delegationMode: OrchestratorMode = DEFAULT_ORCHESTRATOR_MODE,
 ): string {
 	const backgroundPolicyBlock = `${renderBackgroundSubagentsStatusLine(background)}\n${rddStatusLine}`;
-	return readFileSync(join(assetsDir, "orchestrator.md"), "utf8")
+	return applyDelegationMode(assetsDir, readFileSync(join(assetsDir, "orchestrator.md"), "utf8"), delegationMode)
 		.replaceAll("{{GENTLE_PI_ASSETS_ROOT}}", assetsDir)
 		.replaceAll(
 			"{{GENTLE_PI_BACKGROUND_POLICY}}",
@@ -1477,12 +1522,33 @@ const NEUTRAL_PERSONA_PROMPT = `Persona:
 - Push back when the user asks for code without enough context or understanding.
 - Correct errors directly, explain why, and show the better path.`;
 
+/**
+ * The workflow mode this primary session runs under (full-delegation-mode S2).
+ * Read through the live session profile on every prompt build, never from the
+ * startup freeze, so a profile switch is visible on the very next turn. Any
+ * failure here degrades to the organic rules instead of breaking the prompt.
+ */
+function resolveSessionDelegationMode(
+	ctx: Pick<ExtensionContext, "cwd"> & { sessionManager?: { getSessionId?: () => string | undefined } },
+): OrchestratorMode {
+	try {
+		return resolveOrchestratorMode({
+			cwd: ctx.cwd,
+			configHome: gentleAiConfigHome(),
+			sessionId: ctx.sessionManager?.getSessionId?.(),
+		}).mode;
+	} catch {
+		return DEFAULT_ORCHESTRATOR_MODE;
+	}
+}
+
 function buildGentlePrompt(
 	persona: PersonaMode,
 	cwd: string = process.cwd(),
 	activeTools?: readonly string[],
 	rddStatusLine: string = renderRddStatusLine(undefined),
 	hostMode?: string,
+	delegationMode: OrchestratorMode = DEFAULT_ORCHESTRATOR_MODE,
 ): string {
 	const personaPrompt =
 		persona === "neutral" ? NEUTRAL_PERSONA_PROMPT : GENTLEMAN_PERSONA_PROMPT;
@@ -1539,7 +1605,7 @@ Harness principles:
 - Protect the human reviewer: avoid oversized changes, surface review workload risk, and ask before turning one task into a large multi-area change.
 - Never claim persistent memory is available because of this package. Memory is provided by separate packages or MCP tools when installed and callable.
 
-${getOrchestratorPrompt(cwd, activeTools, rddStatusLine, hostMode)}${headlessDeliveryNote(hostMode)}`;
+${getOrchestratorPrompt(cwd, activeTools, rddStatusLine, hostMode, delegationMode)}${headlessDeliveryNote(hostMode)}`;
 }
 
 // Bench gate-p53-r1-BS40 x6 run 3: in a headless RPC session the ask-on-risk
@@ -1882,9 +1948,10 @@ const BASH_COMMAND_POLICIES: readonly BashCommandPolicy[] = [
 
 // Tools whose `path` input names the file or directory they reach. The guard
 // sees only that input: a search scoped to a directory (grep over ".", with or
-// without a glob) still reads whatever the directory contains, and bash is not
-// covered here. Keeping secret bytes out of those results is a separate design
-// (gentle-shell#2349).
+// without a glob) still reads whatever the directory contains. Shell tools take
+// no `path` at all, so they are guarded from their command instead (see
+// findSensitiveCommandPath below, gentle-shell#2349). Keeping the secret bytes
+// out of a decoded or variable-built read is a separate design.
 const PATH_GUARDED_TOOL_NAMES = new Set(["read", "write", "edit", "grep", "find", "ls"]);
 const PATH_INPUT_KEYS = new Set([
 	"path",
@@ -2004,17 +2071,110 @@ function hasWritableEngramTool(pi: ExtensionAPI): boolean {
 	}
 }
 
-function evaluateSensitivePathTool(
-	toolName: string,
-	input: unknown,
-): ToolCallEventResult | undefined {
-	if (!PATH_GUARDED_TOOL_NAMES.has(toolName)) return undefined;
-	const sensitivePath = collectPathInputs(input).find(isSensitivePath);
-	if (!sensitivePath) return undefined;
+// gentle-shell#2349 (scope 1): bash, bash_background and monitor carry no
+// `path` input, so the deny list never saw `cat .env` while `read .env` was
+// blocked. A command is a shell string, not a path, so the patterns run over
+// its words instead: quotes and backslash escapes are removed and shell control
+// operators split words. The pattern's own path boundary then does the prose
+// filtering for free: `git commit -m "fix .env"` yields the single word
+// `fix .env`, where `.env` has no `/` or string start before it, so a message
+// that mentions a sensitive name stays allowed.
+//
+// The #2174 data-argument exemption (dataArgumentRanges) is deliberately NOT
+// reused here, although it keeps guarded git words out of messages: for a data
+// command its ranges cover the arguments of `cat`, `head`, `tail` and `grep`,
+// which are exactly the paths this guard exists to deny. `dataArgumentRanges("cat
+// .env")` is `[[3, 8]]`, so skipping those spans would re-open `cat .env`,
+// while the raw patterns never match `git commit -m "fix .env"` anyway (no `/`
+// or start before `.env`). Word matching is the form that satisfies both.
+//
+// Deliberate limits, kept fail-open rather than hidden (option 3, a fail-closed
+// typed extractor of read targets, is gentle-shell#2349 follow-up):
+//   - globs: `cat .e*` and `rm -r ./proj/*` never spell the sensitive word.
+//   - `$VAR` indirection: `cat "$DIR/x"` is a variable, and an unexpanded
+//     `$HOME/.ssh/id_rsa` is only caught because the literal tail matches.
+//   - `cd dir && cat .env`: a relative path resolves against a directory a
+//     previous segment changed, which this lexical guard cannot follow.
+//   - decoded or interpreted reads: `base64 -d .env | cat`, `python -c
+//     read('.env')`, `$(...)` output, and paths assembled inside a script.
+//   - nested interpreters: `bash -c 'cat .env'` and `bash -c "cat .env"` keep
+//     the whole program in one quoted word, where `.env` has no path boundary
+//     before it, so the inner read stays allowed.
+// Over-denial is accepted where it protects the deny: a word that matches is
+// denied even inside a heredoc body, and prose that spells a path after a `/`
+// such as `git commit -m "add ./.env.example"` is denied too.
+const SHELL_WORD_SEPARATOR_CHARACTERS = new Set([";", "|", "&", "(", ")", "<", ">", "\n", "\r"]);
+
+function shellCommandWords(command: string): string[] {
+	const words: string[] = [];
+	let word = "";
+	let started = false;
+	const flush = (): void => {
+		if (started) words.push(word);
+		word = "";
+		started = false;
+	};
+	for (let index = 0; index < command.length; index += 1) {
+		const character = command[index] as string;
+		if (character === "'") {
+			started = true;
+			const closing = command.indexOf("'", index + 1);
+			// An unterminated quote keeps the rest of the line as one word: the
+			// shell would reject the command, and the literal text stays denied.
+			word += command.slice(index + 1, closing < 0 ? command.length : closing);
+			index = closing < 0 ? command.length : closing;
+			continue;
+		}
+		if (character === '\"') {
+			started = true;
+			let closing = command.indexOf('\"', index + 1);
+			// A backslash-escaped quote inside a double-quoted word stays literal.
+			while (closing > 0 && command[closing - 1] === "\\") closing = command.indexOf('\"', closing + 1);
+			word += command.slice(index + 1, closing < 0 ? command.length : closing);
+			index = closing < 0 ? command.length : closing;
+			continue;
+		}
+		if (character === "\\" && index + 1 < command.length) {
+			index += 1;
+			word += command[index] as string;
+			started = true;
+			continue;
+		}
+		if (SHELL_WORD_SEPARATOR_CHARACTERS.has(character) || /\s/.test(character)) {
+			flush();
+			continue;
+		}
+		word += character;
+		started = true;
+	}
+	flush();
+	return words;
+}
+
+function findSensitiveCommandPath(command: string): string | undefined {
+	return shellCommandWords(command).find(isSensitivePath);
+}
+
+function sensitivePathBlock(sensitivePath: string): ToolCallEventResult {
 	return {
 		block: true,
 		reason: `Gentle AI safety policy blocked access to sensitive path: ${sanitizeTerminalText(sensitivePath)}. Ask the user for an explicit safer plan.`,
 	};
+}
+
+function evaluateSensitivePathTool(
+	toolName: string,
+	input: unknown,
+): ToolCallEventResult | undefined {
+	const sensitivePath = PATH_GUARDED_TOOL_NAMES.has(toolName)
+		? collectPathInputs(input).find(isSensitivePath)
+		: undefined;
+	if (sensitivePath !== undefined) return sensitivePathBlock(sensitivePath);
+	if (!SHELL_COMMAND_TOOLS.has(toolName)) return undefined;
+	const command = readStringPath(input, ["command"]);
+	if (command === undefined) return undefined;
+	const commandPath = findSensitiveCommandPath(command);
+	return commandPath === undefined ? undefined : sensitivePathBlock(commandPath);
 }
 
 const ASK_USER_CHOICE_BLOCKED_EVENT = "gentle-pi:ask-user-choice:blocked";
@@ -3617,6 +3777,10 @@ const ROUTING_TABLE_HINTS: Array<{ text: string; keep: number }> = [
 	{ text: "e effort", keep: 2 },
 	{ text: "f fallbacks", keep: 6.5 },
 	{ text: "t tier", keep: 6.25 },
+	// The orchestrator mode hint stands beside the tier toggle in display order;
+	// its keep sits just past `u use` so it is the first hint to yield on narrow
+	// terminals instead of displacing a hint the screen relies on.
+	{ text: "w mode", keep: 7.25 },
 	{ text: "s save", keep: 3 },
 	{ text: "u use", keep: 7 },
 	{ text: "d default", keep: 8 },
@@ -3631,9 +3795,9 @@ const ROUTING_MODEL_CARD_CHROME_ROWS = 11;
 type RoutingTableAction =
 	| { type: "load"; name: string }
 	| { type: "custom"; target: string; config: AgentModelConfig }
-	| { type: "use-session"; name: string; config?: AgentModelConfig }
+	| { type: "use-session"; name: string; config?: AgentModelConfig; orchestratorMode?: OrchestratorMode }
 	| { type: "apply-global"; name: string; config: AgentModelConfig }
-	| { type: "save"; name: string; config: AgentModelConfig }
+	| { type: "save"; name: string; config: AgentModelConfig; orchestratorMode?: OrchestratorMode }
 	| { type: "create" }
 	| { type: "create-live" }
 	| { type: "duplicate"; name: string }
@@ -3650,7 +3814,14 @@ type RoutingTableAction =
  * edits across actions that keep the same profile on screen (rename, pin, a
  * declined delete), so managing a profile never throws away what you typed.
  */
-type RoutingTableResult = RoutingTableAction & { saveFirst?: AgentModelConfig; draft?: AgentModelConfig };
+type RoutingTableResult = RoutingTableAction & {
+	saveFirst?: AgentModelConfig;
+	draft?: AgentModelConfig;
+	/** The mode draft riding with a switch-save so a tab change commits it too. */
+	saveFirstMode?: OrchestratorMode;
+	/** The unsaved mode draft carried across a reopen that keeps the routing draft (custom prompt). */
+	modeDraft?: OrchestratorMode;
+};
 
 type RoutingTableButton = "use" | "default" | "save" | "switch-save" | "switch-discard" | "switch-stay";
 
@@ -3668,7 +3839,7 @@ type RoutingProfileSwitch =
  * the next tab let the terminal paint the screen beneath for a frame (and wait
  * on the async model catalog before the new frame), which is the tab flicker.
  */
-type RoutingProfileSwitcher = (name: string, saveFirst?: AgentModelConfig) => RoutingProfileSwitch;
+type RoutingProfileSwitcher = (name: string, saveFirst?: AgentModelConfig, saveFirstMode?: OrchestratorMode) => RoutingProfileSwitch;
 
 type RoutingTableMouseAction =
 	| { kind: "tab"; name: string }
@@ -3697,6 +3868,31 @@ const ROUTING_TABLE_BUTTONS: Record<RoutingTableButton, string> = {
 	"switch-discard": "Discard",
 	"switch-stay": "Stay",
 };
+
+/**
+ * The orchestrator row's mode chip, widest form first. Each form carries only
+ * its mode — never a tone — because the two modes are peers, not ranks: one
+ * shared tone below renders every form alike, and a later edit cannot
+ * reintroduce a per-mode ranking through this table.
+ */
+const ORCHESTRATOR_MODE_CHIP_FORMS: Array<{ text: string; mode: OrchestratorMode }> = [
+	{ text: "  ⇄ full delegation", mode: "full-delegation" },
+	{ text: "  ◎ organic", mode: "organic" },
+	{ text: "  ⇄ full", mode: "full-delegation" },
+	{ text: "  ◎ org", mode: "organic" },
+	{ text: "  ⇄", mode: "full-delegation" },
+	{ text: "  ◎", mode: "organic" },
+];
+/** One tone for every mode form: the modes are peers, never ranked. */
+const ORCHESTRATOR_MODE_CHIP_TONE: PanelTone = "status";
+/**
+ * The focused-Orchestrator explainer, appended to the description slot only
+ * while that row is the focused one. Symmetric by construction: one line
+ * states both behaviours and the key, so neither mode reads as the special
+ * case. Sized to fit beside the scope sentence at 100 columns (35 chars of
+ * budget on the fixtures' titles); it drops before it displaces the sentence.
+ */
+const ORCHESTRATOR_MODE_EXPLAINER = "◎ inline · ⇄ writer · w switches";
 
 /**
  * `/gentle:profiles` — one screen, one table, profiles as
@@ -3763,6 +3959,9 @@ class RoutingTablePanel implements OverlayComponent {
 	private newColumn = 0;
 	private draft: AgentModelConfig;
 	private stored: AgentModelConfig;
+	/** The shown profile's committed and drafted orchestrator workflow; `w` drafts, a commit lands it. */
+	private committedMode: OrchestratorMode;
+	private modeDraft: OrchestratorMode;
 	private readonly rows: string[];
 	private readonly agents: string[];
 	private readonly catalog: string[];
@@ -3797,6 +3996,7 @@ class RoutingTablePanel implements OverlayComponent {
 			notices?: string[];
 			switchProfile?: RoutingProfileSwitcher;
 			fallbacks?: RoutingFallbacks;
+			modeDraft?: OrchestratorMode;
 		} = {},
 	) {
 		this.switchProfile = options.switchProfile;
@@ -3809,6 +4009,9 @@ class RoutingTablePanel implements OverlayComponent {
 		this.profileName = hasOwnProfile(this.file.profiles, profileName) ? profileName : (names[0] ?? profileName);
 		this.stored = cloneModelConfig(normalizeModelConfig(this.file.profiles[this.profileName]) ?? {});
 		this.draft = cloneModelConfig(draft);
+		this.committedMode = readProfileWorkflow(this.file, this.profileName).orchestratorMode;
+		// A carried draft keeps its unsaved mode across the reopen; a fresh open starts at the committed mode.
+		this.modeDraft = options.modeDraft ?? this.committedMode;
 		this.agents = [...agents];
 		this.rows = [PROFILE_ORCHESTRATOR_KEY, ROUTING_ALL_ROW, ...agents];
 		// The control entries of the old panel (keep current, custom id) are not
@@ -3839,6 +4042,8 @@ class RoutingTablePanel implements OverlayComponent {
 			if (this.isEdited(key, "thinking")) count += 1;
 			if (this.isEdited(key, "tier")) count += 1;
 		}
+		// The drafted orchestrator mode is one unsaved change, like a routing edit.
+		if (this.modeDraft !== this.committedMode) count += 1;
 		return count;
 	}
 
@@ -3959,7 +4164,7 @@ class RoutingTablePanel implements OverlayComponent {
 	private finish(result: RoutingTableResult): void {
 		if (this.completed) return;
 		if (result.type === "load" && this.switchProfile) {
-			this.showProfile(result.name, result.saveFirst);
+			this.showProfile(result.name, result.saveFirst, result.saveFirstMode);
 			return;
 		}
 		this.completed = true;
@@ -3967,8 +4172,8 @@ class RoutingTablePanel implements OverlayComponent {
 	}
 
 	/** Replaces the shown profile on this same screen, as a fresh open on that tab would. */
-	private showProfile(name: string, saveFirst?: AgentModelConfig): void {
-		const next = this.switchProfile!(name, saveFirst);
+	private showProfile(name: string, saveFirst?: AgentModelConfig, saveFirstMode?: OrchestratorMode): void {
+		const next = this.switchProfile!(name, saveFirst, saveFirstMode);
 		this.closeOverlay();
 		if ("error" in next) {
 			this.say(next.error);
@@ -3978,6 +4183,8 @@ class RoutingTablePanel implements OverlayComponent {
 		this.profileName = hasOwnProfile(this.file.profiles, name) ? name : (this.profileNames()[0] ?? name);
 		this.stored = cloneModelConfig(normalizeModelConfig(this.file.profiles[this.profileName]) ?? {});
 		this.draft = cloneModelConfig(this.stored);
+		this.committedMode = readProfileWorkflow(this.file, this.profileName).orchestratorMode;
+		this.modeDraft = this.committedMode;
 		this.sessionBoundName = next.sessionBoundName;
 		this.pinWinner = next.pinWinner;
 		this.notices = next.notices;
@@ -4148,6 +4355,12 @@ class RoutingTablePanel implements OverlayComponent {
 		this.say(`${this.rowLabel(key)}: ${entry.tier === "fast" ? "Fast" : "Standard"}. Save keeps it in ${this.profileName}.${entry.tier === "fast" ? " Fast depends on plan/model; subscription usage 2.5x or purchased credits 2x. API pricing differs." : ""}`);
 	}
 
+	/** `w` drafts the shown profile's orchestrator workflow; saving or using the profile commits it. */
+	private toggleOrchestratorMode(): void {
+		this.modeDraft = this.modeDraft === "full-delegation" ? "organic" : "full-delegation";
+		this.say(`Orchestrator mode ${this.modeDraft}. Save keeps it in ${this.profileName}.`);
+	}
+
 	private setAllFast(): void {
 		let count = 0;
 		for (const key of [PROFILE_ORCHESTRATOR_KEY, ...this.agents]) {
@@ -4175,7 +4388,7 @@ class RoutingTablePanel implements OverlayComponent {
 			return;
 		}
 		if (option === ROUTING_CUSTOM_MODEL) {
-			this.finish({ type: "custom", target: this.target, config: cloneModelConfig(this.draft) });
+			this.finish({ type: "custom", target: this.target, config: cloneModelConfig(this.draft), modeDraft: this.modeDraft });
 			return;
 		}
 		const model = option === this.inheritLabel(this.target) ? undefined : option;
@@ -4260,7 +4473,7 @@ class RoutingTablePanel implements OverlayComponent {
 		const config = cloneModelConfig(this.draft);
 		switch (button) {
 			case "use":
-				this.finish({ type: "use-session", name: this.profileName, config });
+				this.finish({ type: "use-session", name: this.profileName, config, orchestratorMode: this.modeDraft });
 				return;
 			case "default":
 				this.finish({ type: "apply-global", name: this.profileName, config });
@@ -4270,10 +4483,10 @@ class RoutingTablePanel implements OverlayComponent {
 					this.say("Nothing to save.");
 					return;
 				}
-				this.finish({ type: "save", name: this.profileName, config });
+				this.finish({ type: "save", name: this.profileName, config, orchestratorMode: this.modeDraft });
 				return;
 			case "switch-save":
-				if (this.pending) this.finish({ ...this.pending, saveFirst: config });
+				if (this.pending) this.finish({ ...this.pending, saveFirst: config, saveFirstMode: this.modeDraft });
 				return;
 			case "switch-discard":
 				if (this.pending) this.finish(this.pending);
@@ -4339,6 +4552,7 @@ class RoutingTablePanel implements OverlayComponent {
 		if (matchesKey(data, "e")) return this.openEffort(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
 		if (matchesKey(data, "f")) return this.openFallbacks(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
 		if (matchesKey(data, "t")) return this.toggleTier(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
+		if (matchesKey(data, "w")) return this.toggleOrchestratorMode();
 		if (matchesKey(data, "a")) return this.setAllFast();
 		if (matchesKey(data, "s") || matchesKey(data, "ctrl+s")) return this.pressButton("save");
 		if (matchesKey(data, "u")) return this.pressButton("use");
@@ -4588,7 +4802,16 @@ class RoutingTablePanel implements OverlayComponent {
 		const room = inner - 1 - visibleWidth(title) - 3;
 		const sentence = [this.scopeSentence(this.profileName), this.shortScope(this.profileName)]
 			.find((candidate) => visibleWidth(candidate) <= room) ?? "";
-		lines.push(` ${this.renderText(title, "title")}${sentence ? `   ${this.renderText(sentence, "muted")}` : ""}`);
+		// While the Orchestrator row is the focused row, the description slot also
+		// states what each orchestrator mode does — the same line for both modes.
+		// It appends after the scope sentence and yields to it: it never displaces
+		// the sentence nor wraps the line into an extra body row.
+		let described = sentence;
+		if (this.rows[this.cursor] === PROFILE_ORCHESTRATOR_KEY) {
+			const combined = described ? `${described}   ${ORCHESTRATOR_MODE_EXPLAINER}` : ORCHESTRATOR_MODE_EXPLAINER;
+			if (visibleWidth(combined) <= room) described = combined;
+		}
+		lines.push(` ${this.renderText(title, "title")}${described ? `   ${this.renderText(described, "muted")}` : ""}`);
 		const notices = this.noticeLines(inner);
 		for (const notice of notices) lines.push(this.renderText(notice, "edited"));
 		lines.push("");
@@ -4608,21 +4831,38 @@ class RoutingTablePanel implements OverlayComponent {
 			const model = this.modelValue(key);
 			const effort = this.effortValue(key);
 			const tier = this.draft[key]?.model && this.fastModels.has(this.draft[key]!.model!) ? `  ${this.draft[key]?.tier === "fast" ? "Fast" : "Standard"} ▾` : "";
+			// The shown profile's orchestrator mode is a read-only chip on its row.
+			// It sits after the fallback chain, not between the tier and the chain:
+			// that adjacency is existing, asserted behaviour of the row, and a new
+			// reference does not get to move it. The chain therefore keeps the room it
+			// always had, and the chip degrades its own wording before it disappears so
+			// the mode stays readable beside a tier. No mouse region: it is a reference.
 			const modelTone: PanelTone = this.isEdited(key, "model")
 				? "edited"
 				: model === LEAVE_ORCHESTRATOR_UNTOUCHED || model === "inherit" || model === ROUTING_PI_DEFAULT ? "dim" : "text";
 			const effortTone: PanelTone = this.isEdited(key, "thinking") ? "edited" : effort === "inherit" || effort === ROUTING_PI_DEFAULT ? "dim" : "status";
 			const chain = this.fallbacks ? this.chain(key) : [];
-			const room = inner - effortStart - visibleWidth(effort + tier) - 3;
+			const chips = key === PROFILE_ORCHESTRATOR_KEY
+				? ORCHESTRATOR_MODE_CHIP_FORMS.filter((form) => form.mode === this.modeDraft)
+				: [];
+			// The chip is a reference the profile always shows, so the chain is sized
+			// around its shortest WORD form (the ladder's second rung) instead of the
+			// chip competing for whatever is left. A truncatable chain yielding a few
+			// columns is cheaper than a mode that silently disappears.
+			const reserved = chips.length > 1 ? visibleWidth(chips[1]!.text) : 0;
+			const room = inner - effortStart - visibleWidth(effort + tier) - reserved - 3;
 			const fallback = chain.length && room > 4 ? truncateToWidth(`↪ ${sanitizeTerminalText(chain[0]!.model)}${chain.length > 1 ? ` +${chain.length - 1}` : ""}`, room, "…") : "";
-			const plain = `${focused ? "▸ " : "  "}${padLabel(label)}${truncateToWidth(model, modelCol - 1, "…").padEnd(modelCol)}${effort}${tier}${fallback ? `   ${fallback}` : ""}`;
+			const chipRoom = inner - effortStart - visibleWidth(effort + tier) - (fallback ? visibleWidth(fallback) + 3 : 0);
+			const chip = chips.find((form) => visibleWidth(form.text) <= chipRoom);
+			const plain = `${focused ? "▸ " : "  "}${padLabel(label)}${truncateToWidth(model, modelCol - 1, "…").padEnd(modelCol)}${effort}${tier}${fallback ? `   ${fallback}` : ""}${chip?.text ?? ""}`;
 			const styled =
 				this.renderText(focused ? "▸ " : "  ", "accent")
 				+ this.renderText(padLabel(label), labelTone)
 				+ this.renderText(truncateToWidth(model, modelCol - 1, "…").padEnd(modelCol), modelTone)
 				+ this.renderText(effort, effortTone)
 				+ this.renderText(tier, this.isEdited(key, "tier") ? "edited" : "status")
-				+ (fallback ? `   ${this.renderText(fallback, "dim")}` : "");
+				+ (fallback ? `   ${this.renderText(fallback, "dim")}` : "")
+				+ (chip ? this.renderText(chip.text, ORCHESTRATOR_MODE_CHIP_TONE) : "");
 			if (tier) region({ kind: "tier", row: key }, effortStart + visibleWidth(effort), Math.min(inner, effortStart + visibleWidth(effort + tier)));
 			if (effort) region({ kind: "effort", row: key }, effortStart, inner);
 			region({ kind: "row", row: key }, 0, inner);
@@ -5100,6 +5340,8 @@ interface RoutingTablePanelRequest {
 	name: string;
 	config: AgentModelConfig;
 	file: AgentProfilesFile;
+	/** An unsaved orchestrator mode draft carried across a reopen (custom prompt). */
+	modeDraft?: OrchestratorMode;
 	sessionBoundName?: string;
 	pinWinner?: string;
 	feedback?: string;
@@ -5212,6 +5454,7 @@ async function showRoutingTablePanel(
 					notices: request.notices,
 					switchProfile: request.switchProfile,
 					fallbacks: fileRoutingFallbacks(gentleAiConfigHome()),
+					modeDraft: request.modeDraft,
 				},
 			);
 			const container = createNativeFullscreenInteraction({
@@ -6295,13 +6538,19 @@ async function openProfilesPanelLoop(
 		?? Object.keys(file.profiles)[0];
 	let feedback: string | undefined;
 	let draftOverride: AgentModelConfig | undefined;
+	// The unsaved mode draft carried across a reopen that keeps the routing draft.
+	let modeDraftOverride: OrchestratorMode | undefined;
 	// Read once per visit: the opening read serves the first one.
 	let authorityAvailable = true;
-	const writeDraft = (name: string, config: AgentModelConfig): boolean => {
+	const writeDraft = (name: string, config: AgentModelConfig, orchestratorMode?: OrchestratorMode): boolean => {
 		try {
-			const next = hasOwnProfile(file.profiles, name)
+			let next = hasOwnProfile(file.profiles, name)
 				? updateProfile(file, name, cloneModelConfig(config))
 				: createProfile(file, name, cloneModelConfig(config));
+			// The mode lands in the same write as the routing: the two never drift apart.
+			if (orchestratorMode !== undefined && hasOwnProfile(next.profiles, name)) {
+				next = setProfileOrchestratorMode(next, name, orchestratorMode);
+			}
 			writeProfilesFileSync(path, next);
 			file = next;
 			return true;
@@ -6310,9 +6559,9 @@ async function openProfilesPanelLoop(
 			return false;
 		}
 	};
-	const switchProfile: RoutingProfileSwitcher = (name, saveFirst) => {
+	const switchProfile: RoutingProfileSwitcher = (name, saveFirst, saveFirstMode) => {
 		const previous = selectedName!;
-		if (saveFirst && !writeDraft(previous, saveFirst)) {
+		if (saveFirst && !writeDraft(previous, saveFirst, saveFirstMode)) {
 			const error = feedback ?? `"${previous}" was not saved.`;
 			feedback = undefined;
 			return { error };
@@ -6371,6 +6620,7 @@ async function openProfilesPanelLoop(
 				name: shown,
 				config: draftOverride ?? stored,
 				file,
+				modeDraft: modeDraftOverride,
 				sessionBoundName: launch?.name,
 				pinWinner: pinWinner(),
 				feedback,
@@ -6379,8 +6629,9 @@ async function openProfilesPanelLoop(
 			}));
 			draftOverride = undefined;
 			feedback = undefined;
+			modeDraftOverride = undefined;
 			const previous = selectedName;
-			if (result.saveFirst && !writeDraft(previous, result.saveFirst)) {
+			if (result.saveFirst && !writeDraft(previous, result.saveFirst, result.saveFirstMode)) {
 				draftOverride = result.saveFirst;
 				continue;
 			}
@@ -6398,6 +6649,7 @@ async function openProfilesPanelLoop(
 						: result.target === ROUTING_ALL_ROW ? "every agent" : sanitizeTerminalText(result.target);
 					const answer = await step(() => ctx.ui.input(`Custom model id for ${label}`, "provider/model"));
 					draftOverride = cloneModelConfig(result.config);
+					modeDraftOverride = result.modeDraft;
 					if (answer === undefined || answer.trim() === "") {
 						feedback = "No custom model set.";
 						continue;
@@ -6413,7 +6665,7 @@ async function openProfilesPanelLoop(
 					continue;
 				}
 				case "save":
-					if (writeDraft(previous, result.config)) feedback = `Saved "${previous}".`;
+					if (writeDraft(previous, result.config, result.orchestratorMode)) feedback = `Saved "${previous}".`;
 					else draftOverride = result.config;
 					continue;
 				case "use-session": {
@@ -6421,13 +6673,17 @@ async function openProfilesPanelLoop(
 					// A tab switch may have changed the shown profile since this visit opened.
 					const config = result.config ?? cloneModelConfig(normalizeModelConfig(file.profiles[previous]) ?? {});
 					const saved = differsFromStore(previous, config);
-					if (saved && !writeDraft(previous, config)) {
+					// A toggled mode persists before the bind: Enter never leaves it behind,
+					// and the status line says so.
+					const modeChanged = result.orchestratorMode !== undefined
+						&& result.orchestratorMode !== readProfileWorkflow(file, previous).orchestratorMode;
+					if ((saved || modeChanged) && !writeDraft(previous, config, result.orchestratorMode)) {
 						draftOverride = config;
 						continue;
 					}
 					const report: ProfilesPanelReport = {};
 					file = await step(() => runProfilesPanelAction(ctx, live, path, file, { type: "use-session", name: previous, config }, report));
-					feedback = `${saved ? `Saved "${previous}". ` : ""}${report.status ?? ""}`.trim() || undefined;
+					feedback = `${saved ? `Saved "${previous}". ` : ""}${modeChanged ? `"${previous}" now keeps its orchestrator in ${result.orchestratorMode} mode. ` : ""}${report.status ?? ""}`.trim() || undefined;
 					continue;
 				}
 				case "apply-global": {
@@ -6728,7 +6984,7 @@ const REVIEW_CONTROLLER_PARAMETER_FIELDS = {
 		},
 		input: {
 			type: "string",
-			description: "A JSON object or serialized object string for START/ASSESS/answer-consent/abandon; every other operation requires a serialized object string. New native ordinary START uses {\"mode\":\"ordinary\"}, plus the agent lens selection {\"lenses\":[\"risk\",...],\"lensesReason\":\"<what you touched and how>\"} (both or neither, 1-4 of risk, resilience, readability, reliability; never with focus; providers that predate it keep the tier default); answer-consent uses exactly {\"consentBinding\":\"<opaque id>\",\"answer\":\"granted|declined\"}. Ordinary provider capture belongs only to gentle_review_capture. An explicit baseRef requires committedOnly: true and requests a committed range, while repository-local policyPath remains optional. baseRef must be HEAD, a full 40- or 64-character commit id, or a ref name; abbreviated commit ids are rejected as base-ref-unresolvable. ASSESS accepts an optional object with baseRef, committedOnly, writerModelId, writerEffort, nativeReviewOutcome, and escalate (gentle-pi#662/#668/#1175/#2647); escalate is {\"item\":N,\"reason\":\"...\"} with item an integer from 1 to 6 and a non-empty reason of at most 500 characters; any other shape is rejected, and omitting it means no escalation. The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); writerModelId and writerEffort are only a fallback when no runtime evidence exists (caller), and with neither the profile fails closed to small (fallback). The writer profile is reported but never adds a verifier: the plan adds the independent verifier only when escalate names a Task Size high-risk item. ASSESS derives `closed` only from the native candidate.consumed fact for this exact candidate, which native records only when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown. Every outcome yields the exact risk-gated plan ASSESS returns when RDD is off: a closed review never removes the separate verifier the tier requires (verify-always-rdd-high S1), unknown is never treated as closed, and a decline is candidate-scoped and never lowers the bar below the RDD-off path. A declined or unavailable outcome, stated explicitly or recorded by this process for this exact candidate (never a different one, and never from repository state alone), wins over closure. The returned outcome_source (explicit|derived|unknown) says which of these produced the value. Legacy controller input remains separate.",
+			description: "A JSON object or serialized object string for START/ASSESS/answer-consent/abandon/STATUS; every other operation requires a serialized object string. New native ordinary START uses {\"mode\":\"ordinary\"}, plus the agent lens selection {\"lenses\":[\"risk\",...],\"lensesReason\":\"<what you touched and how>\"} (both or neither, 1-4 of risk, resilience, readability, reliability; never with focus; providers that predate it keep the tier default); answer-consent uses exactly {\"consentBinding\":\"<opaque id>\",\"answer\":\"granted|declined\"}. Ordinary provider capture belongs only to gentle_review_capture. An explicit baseRef requires committedOnly: true and requests a committed range, while repository-local policyPath remains optional. baseRef must be HEAD, a full 40- or 64-character commit id, or a ref name; abbreviated commit ids are rejected as base-ref-unresolvable. ASSESS accepts an optional object with baseRef, committedOnly, writerModelId, writerEffort, nativeReviewOutcome, and escalate (gentle-pi#662/#668/#1175/#2647); escalate is {\"item\":N,\"reason\":\"...\"} with item an integer from 1 to 6 and a non-empty reason of at most 500 characters; any other shape is rejected, and omitting it means no escalation. The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); writerModelId and writerEffort are only a fallback when no runtime evidence exists (caller), and with neither the profile fails closed to small (fallback). The writer profile is reported but never adds a verifier: the plan adds the independent verifier only when escalate names a Task Size high-risk item. ASSESS derives `closed` only from the native candidate.consumed fact for this exact candidate, which native records only when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown. Every outcome yields the exact risk-gated plan ASSESS returns when RDD is off: a closed review never removes the separate verifier the tier requires (verify-always-rdd-high S1), unknown is never treated as closed, and a decline is candidate-scoped and never lowers the bar below the RDD-off path. A declined or unavailable outcome, stated explicitly or recorded by this process for this exact candidate (never a different one, and never from repository state alone), wins over closure. The returned outcome_source (explicit|derived|unknown) says which of these produced the value. Legacy controller input remains separate.",
 		},
 		outputPath: { type: "string", description: "Retired with legacy bundle export; ignored. Export returns legacy-operation-retired." },
 		inputPath: { type: "string", description: "Repository-local JSON input file for the separate legacy controller flow (alternative to input). Legacy bundle import is retired." },
@@ -6999,7 +7255,7 @@ function parseReviewControllerParameters(value: unknown): ReviewControllerParame
 	};
 	for (const key of ["changeName", "idempotencyKey", "transition", "input", "outputPath", "inputPath", "operationId", "lineageIds", "acknowledgeUntrustedBundleSource", "workspaceRoot"] as const) {
 		const optional = value[key];
-		if (key === "input" && key in value && (value.operation === REVIEW_CONTROLLER_OPERATION.START || value.operation === REVIEW_CONTROLLER_OPERATION.ASSESS || value.operation === REVIEW_CONTROLLER_OPERATION.ANSWER_CONSENT || value.operation === REVIEW_CONTROLLER_OPERATION.ABANDON)) {
+		if (key === "input" && key in value && (value.operation === REVIEW_CONTROLLER_OPERATION.START || value.operation === REVIEW_CONTROLLER_OPERATION.ASSESS || value.operation === REVIEW_CONTROLLER_OPERATION.ANSWER_CONSENT || value.operation === REVIEW_CONTROLLER_OPERATION.ABANDON || value.operation === REVIEW_CONTROLLER_OPERATION.STATUS)) {
 			parameters.input = serializeReviewJsonArgument(optional);
 			continue;
 		}
@@ -7997,17 +8253,31 @@ interface RetainedPreLineageNativeUntrackedSelection {
 	readonly committedOnly?: true;
 }
 
-interface RetainedNativeCaptureRoute { readonly workspaceRoot: string; readonly lineageId: string; readonly baseRef?: string; readonly committedOnly?: true; }
+interface RetainedNativeCaptureRoute { readonly workspaceRoot: string; readonly lineageId: string; readonly targetIdentity: string; readonly baseRef?: string; readonly committedOnly?: true; }
+
+interface PendingNativeStartOptions {
+	readonly focus?: NativeStartFocus;
+	readonly lenses?: readonly string[];
+	readonly lensesReason?: string;
+	readonly policyPath?: string;
+}
 
 // An inspect that stops before submission has no resolved untracked selection
 // yet. Retain its selector and explicit request file, bound to the exact
 // provider collect input.
-interface RetainedNativeUntrackedStopSelector { readonly selectionBinding: string; readonly targetIdentity: string; readonly baseRef?: string; readonly committedOnly?: true; readonly requestContextPath?: string; }
+interface RetainedNativeUntrackedStopSelector { readonly selectionBinding: string; readonly targetIdentity: string; readonly baseRef?: string; readonly committedOnly?: true; readonly requestContextPath?: string; readonly startOptions?: PendingNativeStartOptions; }
 
 type RetainedNativeStatusSelection = RetainedNativeUntrackedSelection | RetainedPreLineageNativeUntrackedSelection | RetainedNativeCaptureRoute | RetainedNativeUntrackedStopSelector;
 
 const MAX_RETAINED_NATIVE_STATUS_SELECTIONS = 64;
-class NativeCaptureRouteRegistrationError extends Error {}
+type NativeCaptureRouteConflict = "workspace-mismatch" | "lineage-mismatch" | "target-mismatch" | "selector-mismatch" | "target-unverifiable";
+class NativeCaptureRouteRegistrationError extends Error {
+	readonly reason: NativeCaptureRouteConflict;
+	constructor(reason: NativeCaptureRouteConflict) {
+		super("Provider collectBinding collides with a different registered route");
+		this.reason = reason;
+	}
+}
 
 function isNativeStartUntrackedPath(value: unknown): value is string {
 	return isCanonicalProcessString(value)
@@ -8583,6 +8853,7 @@ function nativeOperationFailure(operation: ReviewControllerOperation | "gentle_r
 			operation,
 			status: "blocked",
 			outcome: "capture-route-registration-rejected",
+			reason: error.reason,
 			mutation_performed: false,
 			mutation_outcome: "none",
 		};
@@ -9010,14 +9281,31 @@ function isRetainedNativeCaptureRoute(selection: RetainedNativeStatusSelection |
 function retainNativeCaptureRoutes(selections: Map<string, RetainedNativeStatusSelection>, workspaceRoot: string, status: ReviewStatusV3, baseRef: string | undefined): void {
 	const lineageId = status.authority?.lineageId;
 	if (!canOfferNativeCaptureBindings(status) || !isCanonicalProcessString(lineageId)) return;
-	const routes = (status.nextTransition?.kind === "collect" ? status.nextTransition.collect?.inputs ?? [] : []).map((input) => ({ key: reviewCaptureSelectionStorageKey(canonicalReviewCaptureBinding(input)), route: Object.freeze({ workspaceRoot, lineageId, ...(baseRef === undefined ? {} : { baseRef, committedOnly: true as const }) }) }));
+	const routes = (status.nextTransition?.kind === "collect" ? status.nextTransition.collect?.inputs ?? [] : []).map((input) => {
+		// Match the provider target accepted by capture admission: correction
+		// roles may remain bound to frozen evidence while the live tree moves.
+		const targetIdentity = input.validationRequest?.correctionTargetIdentity
+			?? (input.captureOperation === "review.capture-correction-plan" ? status.authorityTargetIdentity : undefined)
+			?? status.targetIdentity;
+		return { key: reviewCaptureSelectionStorageKey(canonicalReviewCaptureBinding(input)), route: Object.freeze({ workspaceRoot, lineageId, targetIdentity, ...(baseRef === undefined ? {} : { baseRef, committedOnly: true as const }) }) };
+	});
 	for (const { key, route } of routes) {
 		const existing = selections.get(key);
-		if (isRetainedNativeCaptureRoute(existing) && (existing.workspaceRoot !== route.workspaceRoot || existing.lineageId !== route.lineageId || existing.baseRef !== route.baseRef || existing.committedOnly !== route.committedOnly)) throw new NativeCaptureRouteRegistrationError("Provider collectBinding collides with a different registered route");
+		if (!isRetainedNativeCaptureRoute(existing)) continue;
+		if (existing.workspaceRoot !== route.workspaceRoot) throw new NativeCaptureRouteRegistrationError("workspace-mismatch");
+		if (existing.lineageId !== route.lineageId) throw new NativeCaptureRouteRegistrationError("lineage-mismatch");
+		if (existing.targetIdentity !== route.targetIdentity) throw new NativeCaptureRouteRegistrationError("target-mismatch");
+		if (existing.baseRef !== undefined && route.baseRef !== undefined && existing.baseRef !== route.baseRef) throw new NativeCaptureRouteRegistrationError("selector-mismatch");
+		// Only a fresh offer for the identical verified target can add or omit
+		// its selector. A missing selector must never erase a known one.
+		if ((existing.baseRef === undefined) !== (route.baseRef === undefined) && !/^sha256:[0-9a-f]{64}$/.test(route.targetIdentity)) throw new NativeCaptureRouteRegistrationError("target-unverifiable");
 	}
 	const current = new Set(routes.map(({ key }) => key));
 	for (const [key, selection] of selections) if (isRetainedNativeCaptureRoute(selection) && selection.workspaceRoot === workspaceRoot && selection.lineageId === lineageId && !current.has(key)) selections.delete(key);
-	for (const { key, route } of routes) if (!selections.has(key)) retainNativeStatusSelection(selections, key, route);
+	for (const { key, route } of routes) {
+		const existing = selections.get(key);
+		if (existing === undefined || (isRetainedNativeCaptureRoute(existing) && existing.baseRef === undefined && route.baseRef !== undefined)) retainNativeStatusSelection(selections, key, route);
+	}
 }
 
 function readRetainedNativeCaptureRoute(selections: Map<string, RetainedNativeStatusSelection>, collectBinding: string): RetainedNativeCaptureRoute | undefined {
@@ -10025,7 +10313,7 @@ async function executeReviewCaptureOperation(
 	if (!isSelectedReviewCapture(selected)) return selected;
 	// Exact fresh native admission validates this routing snapshot independently
 	// of cache capacity. Carry its trusted selector into every downstream path.
-	route = { workspaceRoot: cwd, lineageId: parameters.lineageId, ...(baseRef === undefined ? {} : { baseRef, committedOnly: true }) };
+	route = { workspaceRoot: cwd, lineageId: parameters.lineageId, targetIdentity: status.targetIdentity, ...(baseRef === undefined ? {} : { baseRef, committedOnly: true }) };
 
 	// During correction the flow carries both the original authority target
 	// identity and a distinct provider-issued correction target identity
@@ -10198,7 +10486,7 @@ async function executeReviewCaptureGroupOperation(
 	}
 	const group = selectExactReviewCaptureGroup(status, parameters.lineageId, canonicalBindings);
 	if (!isSelectedReviewCaptureGroup(group)) return group;
-	route = { workspaceRoot: cwd, lineageId: parameters.lineageId, ...(baseRef === undefined ? {} : { baseRef, committedOnly: true }) };
+	route = { workspaceRoot: cwd, lineageId: parameters.lineageId, targetIdentity: status.targetIdentity, ...(baseRef === undefined ? {} : { baseRef, committedOnly: true }) };
 	if (parameters.reviewerRunAcknowledged !== true) {
 		return {
 			tool: "gentle_review_capture_group",
@@ -10943,7 +11231,7 @@ async function executeReviewControllerOperation(
 			: intendedUntrackedSelectionRejection(input, canonicalBinding, status, eligible, selected);
 		if (rejected !== undefined) return { operation: parameters.operation, status: "blocked", outcome: "intended-untracked-selection-binding-rejected", reason: rejected.reason, ...(rejected.field === undefined ? {} : { field: rejected.field }), mutation_performed: false, mutation_outcome: "none" };
 		const submission = { argumentTokens: input.submission!.argumentTokens, value: JSON.stringify({ schema: "gentle-ai.review-intended-untracked-selection/v1", untracked_scope: scope, expected_untracked_inventory: inventory, intended_untracked: selected.intendedUntracked }) };
-		const result = await executeReviewControllerOperation({ operation: REVIEW_CONTROLLER_OPERATION.START, ...(parameters.workspaceRoot === undefined ? {} : { workspaceRoot: parameters.workspaceRoot }), input: JSON.stringify({ mode: REVIEW_MODE.ORDINARY, ...committedSelector, ...requestContext, untrackedScope: scope, expectedUntrackedInventory: inventory, intendedUntracked: selected.intendedUntracked }) }, sessionCwd, nativeReviewCli, signal, candidateViews, context, retainedUntrackedSelections, pendingReviewConsentRegistry, pendingReviewConsentFallbackKey, submission);
+		const result = await executeReviewControllerOperation({ operation: REVIEW_CONTROLLER_OPERATION.START, ...(parameters.workspaceRoot === undefined ? {} : { workspaceRoot: parameters.workspaceRoot }), input: JSON.stringify({ mode: REVIEW_MODE.ORDINARY, ...committedSelector, ...requestContext, ...stopSelector?.startOptions, untrackedScope: scope, expectedUntrackedInventory: inventory, intendedUntracked: selected.intendedUntracked }) }, sessionCwd, nativeReviewCli, signal, candidateViews, context, retainedUntrackedSelections, pendingReviewConsentRegistry, pendingReviewConsentFallbackKey, submission);
 		return { ...result, operation: parameters.operation };
 	}
 	if (parameters.operation === REVIEW_CONTROLLER_OPERATION.START) {
@@ -11129,8 +11417,9 @@ async function executeReviewControllerOperation(
 					// new request file was applied by merely returning its STATUS.
 					if (requestContext.requestContextPath !== undefined && target.applicability !== "unrelated") return nativeStartRejection("request-context-requires-fresh-review");
 					const mapped = mapNativeTargetStatus(parameters.operation, target, parameters.lineageId, includeWorkspaceRoot ? defaultCwd : undefined);
-					if (requestContext.requestContextPath !== undefined && typeof mapped.selectionBinding === "string") {
+					if (target.applicability === "unrelated" && typeof mapped.selectionBinding === "string") {
 						retainNativeStatusSelection(retainedUntrackedSelections, reviewLifecycleStorageKey(defaultCwd, ""), Object.freeze({ selectionBinding: mapped.selectionBinding, targetIdentity: target.targetIdentity, ...requestContext,
+							startOptions: Object.freeze({ ...lensSelection, ...(lensSelection.lenses === undefined ? {} : { lenses: Object.freeze([...lensSelection.lenses]) }), ...(focus === undefined ? {} : { focus: focus as NativeStartFocus }), ...(policy.policyPath === undefined ? {} : { policyPath: policy.policyPath }) }),
 							...(canonicalBaseRef === undefined ? {} : { baseRef: canonicalBaseRef, committedOnly: true as const }) }));
 					}
 					return mapped;
@@ -11416,6 +11705,8 @@ export const __testing = {
 	orderDiscoverableAgents,
 	classifyGuardedCommand,
 	evaluateGuardedCommand,
+	findSensitiveCommandPath,
+	shellCommandWords,
 	guardedCommandPreview,
 	guardedCommandTitle,
 	loadRuntimeGuardrailsConfig,
@@ -12286,6 +12577,11 @@ function createGentleAiExtensionForTesting(
 					readActiveToolNames(pi),
 					rddStatusLine,
 					ctx.mode,
+					// full-delegation-mode S2: resolved per prompt build, so pressing Enter
+					// on another profile changes these rules on the next turn, and pressing
+					// Enter back restores them. A child or named-agent session keeps the
+					// organic rules: its own instructions are the bounded task it received.
+					isPrimarySession ? resolveSessionDelegationMode(ctx) : DEFAULT_ORCHESTRATOR_MODE,
 				)}`;
 		// gentle-pi#560 / gentle-ai#4056, #4057: inject the mirrored provider
 		// contract bundle's review execution contract for the primary session

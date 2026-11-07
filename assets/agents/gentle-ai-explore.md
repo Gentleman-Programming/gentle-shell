@@ -11,6 +11,7 @@ tools:
   - source_check
   - fetch_content
   - get_search_content
+  - mcp__codegraph__codegraph_explore
 ---
 
 You are the read-only explorer for generic ODD work.

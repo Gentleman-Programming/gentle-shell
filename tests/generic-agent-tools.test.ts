@@ -5,9 +5,9 @@ import test from "node:test";
 
 const agents = join(process.cwd(), "assets", "agents");
 const roles: Record<string, string[]> = {
-	"gentle-ai-explore.md": ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content"],
-	"gentle-ai-worker.md": ["read", "grep", "find", "edit", "write", "bash", "mem_save"],
-	"gentle-ai-verify.md": ["read", "grep", "find", "bash"],
+	"gentle-ai-explore.md": ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "mcp__codegraph__codegraph_explore"],
+	"gentle-ai-worker.md": ["read", "grep", "find", "edit", "write", "bash", "mem_save", "mcp__codegraph__codegraph_explore"],
+	"gentle-ai-verify.md": ["read", "grep", "find", "bash", "mcp__codegraph__codegraph_explore"],
 };
 
 function tools(file: string): string[] {

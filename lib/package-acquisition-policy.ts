@@ -123,7 +123,8 @@ function parseSegment(manager: Manager, form: PackageAcquisition["form"] | undef
 
 /** Every npm/pnpm acquisition (specs present or undeterminable) in the command; lockfile installs are not included. */
 export function recognizePackageAcquisitions(command: string, depth = 0): PackageAcquisition[] {
-	if (depth > 4) return [];
+	// Past the limit the payload is not inspected, so it can hide anything: ask.
+	if (depth > 4) return [{ manager: "npm", form: "install", global: false, specs: [], undetermined: ["shell nesting deeper than 4 levels"], triggerIndex: 0 }];
 	const tokens = tokenize(command);
 	const found: PackageAcquisition[] = [];
 	let start = 0;

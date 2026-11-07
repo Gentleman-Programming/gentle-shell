@@ -185,3 +185,13 @@ test("an unknown option's scan stops at the segment operator", () => {
 	assert.equal(packageAcquisitionVerdict("npm --foo bar run y; npm i lodash@1.2.3").action, "pass");
 	assert.equal(packageAcquisitionVerdict("npm --foo bar run y; npm i lodash").action, "confirm");
 });
+
+test("shell nesting past the inspection limit asks instead of passing", () => {
+	const nest = (inner: string, levels: number): string => levels === 0 ? inner : nest(`sh -c ${JSON.stringify(inner)}`, levels - 1);
+	const deep = packageAcquisitionVerdict(nest("npm install left-pad", 6));
+	assert.equal(deep.action, "confirm");
+	assert.ok(deep.offending.some((word) => word.includes("nesting")), deep.offending.join(", "));
+	assert.equal(packageAcquisitionVerdict(nest("npm install left-pad", 3)).action, "confirm");
+	assert.equal(packageAcquisitionVerdict(nest("npm install left-pad@1.3.0", 3)).action, "pass");
+	assert.equal(packageAcquisitionVerdict(nest("echo hi", 3)).action, "pass");
+});

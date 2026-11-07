@@ -136,10 +136,13 @@ test("native stop remains authoritative even when an invalid request has a diagn
 });
 
 test("STATUS timeout is diagnosed without inventing lock contention or retry permission", async () => {
-	const native = { targetStatus: async () => { throw new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.TIMEOUT, "review/status", true, false, "timed out"); } } as unknown as NativeReviewCli;
+	const diagnostics = { operation: "review/status" as const, error_code: NATIVE_REVIEW_ERROR_CODE.TIMEOUT, timed_out: true, output_limit_exceeded: false };
+	const native = { targetStatus: async () => { throw new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.TIMEOUT, "review/status", true, false, "timed out", diagnostics); } } as unknown as NativeReviewCli;
 	const result = await __testing.executeReviewControllerOperation({ operation: "status" }, process.cwd(), native);
 	assert.equal((result.blocker as Record<string, unknown>)?.category, "provider-unavailable");
 	assert.equal((result.blocker as Record<string, unknown>)?.automatic_retry, false);
 	assert.equal(result.mutation_outcome, "none");
-	assert.doesNotMatch(JSON.stringify(result.blocker), /lock contention|delete.*lock/i);
+	assert.deepEqual(result.diagnostics, diagnostics);
+	assert.equal((result.blocker as Record<string, unknown>)?.actor, "unknown");
+	assert.equal((result.blocker as Record<string, unknown>)?.scope, "review-step");
 });

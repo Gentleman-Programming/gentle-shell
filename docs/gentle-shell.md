@@ -493,5 +493,9 @@ This is **TUI-only suppression**: the generated user-role message remains in ses
 
 The Gentle AI harness (ODD workflow, identity, review contract) and the open-tasks block are appended to `before_agent_start`'s `systemPromptOptions.appendSystemPrompt` instead of being returned as a replacement `systemPrompt` (gentle-shell#1485). Provider bridges such as `pi-claude-bridge` forward only those structured sections after their own preset and drop a returned `systemPrompt`, so this route reaches every provider, bridged or not.
 
+### Empty review scope after acknowledgement
+
+After acknowledging a committed candidate, a selectorless STATUS may inspect the empty workspace and return `empty_candidate_base_ref_required`. The `blocked` label describes that candidate selection request; it does not establish that the earlier review failed or remains open. To check the previously acknowledged candidate, use ASSESS with its original `baseRef` and `committedOnly: true`, and rely on the returned native `candidate.consumed` evidence. Do not infer closure from the empty workspace or repeat the acknowledgement.
+
 Set `GENTLE_PI_SHELL=0` to keep pi's built-in footer and editor.
 

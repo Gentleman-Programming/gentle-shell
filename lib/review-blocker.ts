@@ -61,6 +61,9 @@ export function withReviewBlocker(result: Record<string, unknown>): Record<strin
 	}
 	// A blocked facade response can be a normal offer awaiting its next host
 	// operation. Do not diagnose a ready ACK or collect offer as an unknown error.
+	if (result.outcome === undefined && result.failure === undefined && result.native_failure === undefined && result.reconciliation_failure === undefined && result.reconciliation === undefined && transition.kind === "collect" && transition.reason_code === "empty_candidate_base_ref_required") {
+		return diagnose("input", "caller", "The current candidate needs an explicit baseRef with committedOnly: true if a committed range is intended. To check a previously acknowledged candidate, use ASSESS with its original committed range and follow the returned evidence. This input request does not establish that an earlier review failed or remains open; it does not authorize another review, acknowledgement or maintenance operation.");
+	}
 	if (result.outcome === undefined && result.failure === undefined && result.native_failure === undefined && result.reconciliation_failure === undefined && result.reconciliation === undefined && (
 		(transition.kind === "execute" && ["review.start", "review.status", "review.acknowledge-approved"].includes(String(record(transition.execute).operation))) ||
 		(Array.isArray(result.collectBindings) && result.collectBindings.length > 0)

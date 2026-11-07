@@ -1,8 +1,8 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { measureAgentsViewLayout, type AgentsViewLayout } from "./agents-view-layout.ts";
 import { HOVER_ROLE, paintHoverable } from "./shell-hover.ts";
-import { emptyThread, isFinished, TASK_STATUS, type TaskRecord, type TaskStore, type TaskThread, type ThreadItem } from "./agents-protocol.ts";
-import { renderThreadItem, type AgentsThreadTheme } from "./agents-thread-view.ts";
+import { emptyThread, isFinished, TASK_STATUS, THREAD_ITEM, type TaskRecord, type TaskStore, type TaskThread, type ThreadItem } from "./agents-protocol.ts";
+import { renderThreadItem, THREAD_PRESENTATION, type AgentsThreadTheme, type ThreadPresentation } from "./agents-thread-view.ts";
 import { formatElapsed } from "./agents-widget.ts";
 import { createNativePointerScope, type NativePointerRegion } from "./native-pointer-region.ts";
 import { formatCost, formatTokens } from "./shell-bar.ts";
@@ -34,6 +34,12 @@ export interface AgentsViewDeps {
 	onCancel(task: TaskRecord): void;
 	canCancel?(task: TaskRecord): boolean;
 	isLocalTask?(task: TaskRecord): boolean;
+	/**
+	 * Presentation for the selected thread: the overlay's labeled log (the default)
+	 * or the chat's own tool cards. Read as a hook so a preference applies live
+	 * instead of being copied when the overlay opens.
+	 */
+	threadPresentation?(): ThreadPresentation;
 	onOpen(task: TaskRecord): void;
 	onClose(): void;
 	requestRender(): void;
@@ -106,6 +112,8 @@ interface PointerLayout extends AgentsViewLayout {
 	closeButton?: PointerButtonLayout;
 	modeButton?: PointerButtonLayout;
 	actions?: Array<PointerButtonLayout & { region: NativePointerRegion }>;
+	/** Per body row, the card key drawn there; only in cards mode. */
+	threadCards?: Array<string | undefined>;
 }
 
 interface SessionGroup {
@@ -160,6 +168,7 @@ export class AgentsView {
 	private footerPage = 0;
 	private readonly actionRegions = new Map<string, NativePointerRegion>();
 	private readonly expanded = new Map<string, boolean>();
+	private readonly cardExpansion = new Map<string, boolean>();
 	private readonly observedActiveGroups = new Set<string>();
 	private listScroll = 0;
 	private readonly manualListOffsets = new Map<string, number>();
@@ -183,8 +192,7 @@ export class AgentsView {
 	private unsubscribeTask: (() => void) | undefined;
 	private subscribedTaskId: string | undefined;
 	private readonly unsubscribeSummary: () => void;
-	private cache = new WeakMap<ThreadItem, string[]>();
-	private cacheWidth = -1;
+	private cache = new WeakMap<ThreadItem, { key: string; lines: string[] }>();
 	private peers: SessionGroup[] = [];
 	private remoteThreads = new Map<string, TaskThread>();
 	private presenceCursor?: PresenceCursor;
@@ -275,6 +283,7 @@ export class AgentsView {
 		});
 		this.threadRegion = this.pointerScope.wrap(EMPTY_COMPONENT, {
 			onWheel: (event) => this.wheelThread(event),
+			onClick: (event) => this.clickThread(event),
 		});
 		this.followRegion = this.pointerScope.wrap(EMPTY_COMPONENT, {
 			onHover: () => this.hoverControl("follow"),
@@ -375,7 +384,8 @@ export class AgentsView {
 			const row = event.y - 1;
 			if (layout.mode === "narrow" && event.x >= layout.listX && event.x < layout.listX + layout.listWidth) {
 				if (event.type === "wheel") return this.narrowView === "list" ? this.listRegion.handleMouse(event) : this.threadRegion.handleMouse(event);
-				const visible = this.narrowView === "list" ? this.visibleRows()[this.listScroll + row] : undefined;
+				if (this.narrowView === "details") return this.threadRegion.handleMouse(event);
+				const visible = this.visibleRows()[this.listScroll + row];
 				return visible ? this.taskRegion(row).handleMouse(event) : undefined;
 			}
 			if (layout.mode === "panes" && event.x >= layout.listX && event.x < layout.listX + layout.listWidth) {
@@ -383,7 +393,7 @@ export class AgentsView {
 				const visible = this.visibleRows()[this.listScroll + row];
 				return visible ? this.taskRegion(row).handleMouse(event) : undefined;
 			}
-			if (layout.mode === "panes" && event.x >= layout.threadX && event.x < layout.threadX + layout.threadWidth && event.type === "wheel") return this.threadRegion.handleMouse(event);
+			if (layout.mode === "panes" && event.x >= layout.threadX && event.x < layout.threadX + layout.threadWidth) return this.threadRegion.handleMouse(event);
 		}
 		if (event.y === layout.footerY) {
 			for (const action of layout.actions ?? []) if (this.isInButton(event.x, action)) return action.region.handleMouse(event);
@@ -476,6 +486,30 @@ export class AgentsView {
 		const stop = task && this.canCancel(task) ? [["s", "Stop selected"]] as const : [];
 		const scope = this.deps.sessionId === undefined ? [] : [["a", SCOPE_KEY[this.scope]]] as const;
 		return [...KEYS.slice(0, 1), ...details, ...KEYS.slice(1, 3), ...stop, ...scope, ...KEYS.slice(3)];
+	}
+
+	private threadPresentation(): ThreadPresentation {
+		return this.deps.threadPresentation?.() ?? THREAD_PRESENTATION.LOG;
+	}
+
+	private isCardExpanded(card: string): boolean {
+		return this.cardExpansion.get(card) === true;
+	}
+
+	// A card belongs to one task's call: two tasks may reuse a callId, and each
+	// keeps its own level. The task id is the namespace, so switching tasks never
+	// shares or drops the other's state.
+	private cardKey(task: TaskRecord, callId: string): string {
+		return `${task.id}\u0000${callId}`;
+	}
+
+	// Only this task's cards are pruned: their override lasts while their call is
+	// retained, and no other task's cards are touched by this thread's renders.
+	private pruneCardExpansion(task: TaskRecord, thread: TaskThread): void {
+		if (this.cardExpansion.size === 0) return;
+		const prefix = `${task.id}\u0000`;
+		const retained = new Set(thread.items.flatMap((item) => (item.kind === THREAD_ITEM.TOOL ? [this.cardKey(task, item.callId)] : [])));
+		for (const card of this.cardExpansion.keys()) if (card.startsWith(prefix) && !retained.has(card)) this.cardExpansion.delete(card);
 	}
 
 	// A new scope reads from the top: selection, list window, and thread reset.
@@ -593,6 +627,7 @@ export class AgentsView {
 		if (!this.selectedTask()) this.narrowView = "list";
 		this.listScroll = Math.max(0, Math.min(this.listScroll, Math.max(0, rows.length - this.bodyRows())));
 		if (this.hoveredId && !rows.some((row) => row.id === this.hoveredId)) this.hoveredId = undefined;
+		for (const card of this.cardExpansion.keys()) if (!this.tasks.some((task) => card.startsWith(`${task.id}\u0000`))) this.cardExpansion.delete(card);
 		this.subscribeSelected();
 	}
 
@@ -717,22 +752,32 @@ export class AgentsView {
 		return `Orchestrator ${group.sessionId.slice(0, 8)}`;
 	}
 
-	private threadLines(thread: TaskThread, width: number): string[] {
-		if (this.cacheWidth !== width) {
-			this.cache = new WeakMap();
-			this.cacheWidth = width;
-		}
+	private threadRows(task: TaskRecord, thread: TaskThread, width: number): { lines: string[]; owners: Array<string | undefined>; cards: boolean } {
+		const presentation = this.threadPresentation();
+		const cards = presentation === THREAD_PRESENTATION.CARDS;
+		this.pruneCardExpansion(task, thread);
 		const lines: string[] = [];
-		if (thread.dropped > 0) lines.push(this.deps.theme.fg(ROLE.META, `… ${thread.dropped} earlier items not kept`));
-		for (const item of thread.items) {
-			let rendered = this.cache.get(item);
-			if (!rendered) {
-				rendered = renderThreadItem(item, this.deps.theme, width);
-				this.cache.set(item, rendered);
-			}
-			lines.push(...rendered);
+		const owners: Array<string | undefined> = [];
+		if (thread.dropped > 0) {
+			lines.push(this.deps.theme.fg(ROLE.META, `… ${thread.dropped} earlier items not kept`));
+			owners.push(undefined);
 		}
-		return lines;
+		// Rows of prose are the pane's own drawing, so they stay cached. A card is
+		// drawn by the chat's live renderer, whose output can change for a reason
+		// nothing here can observe (a content or style preference, a renderer's own
+		// state), so a card row is drawn fresh rather than cached under a key that
+		// would have to name every such preference.
+		const key = `${width}\u0000${presentation}`;
+		for (const item of thread.items) {
+			const card = cards && item.kind === THREAD_ITEM.TOOL ? this.cardKey(task, item.callId) : undefined;
+			const expanded = card !== undefined && this.isCardExpanded(card);
+			const cached = card === undefined ? this.cache.get(item) : undefined;
+			const rendered = cached?.key === key ? cached.lines : renderThreadItem(item, this.deps.theme, width, { presentation, expanded });
+			if (card === undefined && cached?.key !== key) this.cache.set(item, { key, lines: rendered });
+			lines.push(...rendered);
+			for (let index = 0; index < rendered.length; index += 1) owners.push(card);
+		}
+		return { lines, owners, cards };
 	}
 
 	private threadWindow(rows: number, width: number): string[] {
@@ -740,13 +785,16 @@ export class AgentsView {
 		if (!task) return [this.deps.theme.fg(ROLE.EMPTY, "Select a task to inspect its thread")];
 		const theme = this.deps.theme;
 		const header = theme.fg(ROLE.META, truncateToWidth(taskHeader(task, this.deps.now()), width, "…"));
-		const lines = this.threadLines(this.remoteThreads.get(task.id) ?? this.deps.store.thread(task.id), width);
+		const { lines, owners, cards } = this.threadRows(task, this.remoteThreads.get(task.id) ?? this.deps.store.thread(task.id), width);
 		if (lines.length === 0) return [header, theme.fg(ROLE.EMPTY, task.error ?? EMPTY_THREAD)];
 		const visible = Math.max(0, rows - 1);
 		const maxScroll = Math.max(0, lines.length - visible);
 		if (this.follow) this.scroll = maxScroll;
 		// A taller/wider presentation may clamp its window, not the saved position.
 		const start = Math.min(this.scroll, maxScroll);
+		// Only a cards view has a card under the pointer; the log's rows belong to
+		// no call, so a click there stays as inert as it always was.
+		if (this.pointerLayout) this.pointerLayout.threadCards = cards ? [undefined, ...owners.slice(start, start + visible)] : undefined;
 		return [header, ...lines.slice(start, start + visible)];
 	}
 
@@ -780,7 +828,7 @@ export class AgentsView {
 	private scrollBy(delta: number): void {
 		const task = this.selectedTask();
 		const layout = this.layout();
-		const lines = task ? this.threadLines(this.remoteThreads.get(task.id) ?? this.deps.store.thread(task.id), layout.threadWidth) : [];
+		const lines = task ? this.threadRows(task, this.remoteThreads.get(task.id) ?? this.deps.store.thread(task.id), layout.threadWidth).lines : [];
 		const maxScroll = Math.max(0, lines.length - Math.max(0, layout.bodyRows - 1));
 		this.follow = false;
 		// Clamp the current visible position before moving, including after resize.
@@ -966,6 +1014,19 @@ export class AgentsView {
 		const delta = event.wheelDelta ?? 0;
 		if (delta === 0) return { handled: true, render: false };
 		this.scrollBy(delta);
+		return { handled: true, render: true };
+	}
+
+	// A click belongs to the card under it, not to the whole pane: only that
+	// card's expansion changes, so one call can be opened without losing the
+	// collapsed overview around it.
+	private clickThread(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (event.button !== "left") return undefined;
+		const card = this.pointerLayout?.threadCards?.[event.y - 1];
+		if (card === undefined) return undefined;
+		this.cardExpansion.set(card, !this.isCardExpanded(card));
+		this.clearFooterLayout();
+		this.deps.requestRender();
 		return { handled: true, render: true };
 	}
 }

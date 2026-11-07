@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { emptyThread, TASK_EVENT, TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
 import { renderThreadItem } from "../lib/agents-thread-view.ts";
 import { AgentsView, taskHeader } from "../lib/agents-view.ts";
+import { CARD_CONTENT, cardContent, setCardContent } from "../lib/card-content-policy.ts";
+import productionQuietTools from "../extensions/quiet-tools.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
 // Gentle Agents overlay: list left, selected thread right, tail-following,
@@ -32,6 +35,52 @@ function harness(rows: number | (() => number) = 8, sessionId = "s", canCancel?:
 		requestRender: () => (renders += 1),
 	});
 	return { store, view, events, renders: () => renders };
+}
+
+// The card path is only real when the chat's renderers are actually registered,
+// so this loads the production extension against a minimal host. A second load
+// replaces whatever an earlier one published, exactly as a reload would.
+function registerQuietTools(env: { quietTools?: string } = {}): void {
+	initTheme("dark");
+	const previous = process.env.GENTLE_PI_QUIET_TOOLS;
+	if (env.quietTools === undefined) delete process.env.GENTLE_PI_QUIET_TOOLS;
+	else process.env.GENTLE_PI_QUIET_TOOLS = env.quietTools;
+	try {
+		productionQuietTools({ registerTool() {}, registerCommand() {}, on() {}, registerToolRenderer() {} } as any);
+	} finally {
+		if (previous === undefined) delete process.env.GENTLE_PI_QUIET_TOOLS;
+		else process.env.GENTLE_PI_QUIET_TOOLS = previous;
+	}
+}
+
+let quietToolsLoaded = false;
+function loadQuietTools(): void {
+	if (quietToolsLoaded) return;
+	quietToolsLoaded = true;
+	registerQuietTools();
+}
+
+function presentationHarness(presentation: () => "log" | "cards", rows = 14) {
+	const store = new TaskStore();
+	const view = new AgentsView({
+		theme: plainTheme,
+		rows,
+		store,
+		sessionId: "s",
+		now: () => 61_000,
+		threadPresentation: presentation,
+		onCancel() {},
+		onOpen() {},
+		onClose() {},
+		requestRender() {},
+	});
+	store.add(task("a"));
+	return { store, view };
+}
+
+function applyTool(store: TaskStore, name: string, args: Record<string, unknown>, output: string, isError = false, callId = "call", taskId = "a"): void {
+	store.apply(taskId, { type: TASK_EVENT.TOOL_START, callId, name, args }, 2000);
+	store.apply(taskId, { type: TASK_EVENT.TOOL_END, callId, output, isError }, 2000);
 }
 
 function clickLabel(view: AgentsView, label: string, width = 60): void {
@@ -724,5 +773,166 @@ test("AgentsView rejects cached-height pointer input before the live resize rend
 	assert.match(stripAnsi(resized[3] ?? ""), /l0/, "the stale wheel leaves manual thread scroll unchanged");
 	assert.equal(view.handleMouse(mouse(50, 2, 80, resized.length, "wheel", 1))?.handled, true, "the new-height wheel reaches the rendered thread region");
 	assert.match(stripAnsi(view.render(80)[2] ?? ""), /l0/, "the live wheel scrolls past the semantic block label after the new frame");
+	view.dispose();
+});
+
+test("the view keeps the labeled log by default and swaps live to the chat's cards", () => {
+	loadQuietTools();
+	let presentation: "log" | "cards" = "log";
+	const { store, view } = presentationHarness(() => presentation);
+	applyTool(store, "read", { path: "src/a.ts" }, "line 0\nline 1\nline 2\nline 3\nline 4");
+	const logFrame = view.render(60).map(stripAnsi).join("\n");
+	assert.match(logFrame, /Tool · read · Complete/, "the default presentation is the existing log");
+	assert.doesNotMatch(logFrame, /≡ read/, "no card chrome is drawn while the log is selected");
+	view.handleInput("e");
+	assert.match(view.render(60).map(stripAnsi).join("\n"), /Tool · read · Complete/, "card keys leave the log view untouched");
+
+	presentation = "cards";
+	const cards = view.render(60).map(stripAnsi);
+	assert.match(cards.join("\n"), /≡ read/, "the offered card draws the call");
+	assert.match(cards.join("\n"), /src\/a\.ts/, "the retained argument reaches the card");
+	assert.doesNotMatch(cards.join("\n"), /Tool · read/, "the generic block is replaced, not stacked on");
+	for (const line of cards) assert.ok(visibleWidth(line) <= 60, `"${line}" fits the frame`);
+
+	presentation = "log";
+	assert.match(view.render(60).map(stripAnsi).join("\n"), /Tool · read · Complete/, "returning to the log re-renders the cached item");
+	view.dispose();
+});
+
+test("cards expand one at a time from the row under the pointer", () => {
+	loadQuietTools();
+	const { store, view } = presentationHarness(() => "cards", 20);
+	applyTool(store, "read", { path: "src/a.ts" }, "a0\na1\na2\na3\na4\na5", false, "first");
+	applyTool(store, "read", { path: "src/b.ts" }, "b0\nb1\nb2\nb3\nb4\nb5", false, "second");
+	const retained = store.thread("a");
+	const frame = (): string[] => view.render(60).map(stripAnsi);
+	const clickRow = (needle: string): void => {
+		const rows = frame();
+		const y = rows.findIndex((line) => line.includes(needle));
+		assert.ok(y >= 0, `"${needle}" is drawn so its card can be clicked`);
+		assert.equal(view.handleMouse(mouse(50, y, 60, rows.length, "click"))?.handled, true, `${needle}: the card consumes its click`);
+	};
+
+	assert.doesNotMatch(frame().join("\n"), /a5|b5/, "both cards start collapsed");
+	clickRow("a0");
+	assert.match(frame().join("\n"), /a5/, "clicking a card expands that card");
+	assert.doesNotMatch(frame().join("\n"), /b5/, "its sibling stays collapsed");
+	clickRow("b0");
+	assert.match(frame().join("\n"), /b5/, "the sibling expands on its own click");
+	assert.match(frame().join("\n"), /a5/, "expanding one card leaves the other expanded");
+	clickRow("a0");
+	assert.doesNotMatch(frame().join("\n"), /a5/, "clicking again collapses only that card");
+	assert.match(frame().join("\n"), /b5/, "the sibling keeps its own level");
+	assert.deepEqual(store.thread("a"), retained, "card expansion never mutates retention");
+	view.dispose();
+});
+
+test("cards follow the renderer the chat offers live", (t) => {
+	loadQuietTools();
+	const previousContent = cardContent();
+	t.after(() => setCardContent(previousContent));
+	const { store, view } = presentationHarness(() => "cards", 20);
+	applyTool(store, "read", { path: "src/a.ts" }, "line 0\nline 1\nline 2");
+	const readsCard = (): boolean => /≡ read/.test(stripAnsi(view.render(60).join("\n")));
+	assert.equal(readsCard(), true, "the offered card draws");
+
+	registerQuietTools({ quietTools: "0" });
+	assert.equal(readsCard(), false, "a withdrawn renderer falls back on the same retained item");
+	assert.match(stripAnsi(view.render(60).join("\n")), /Tool · read · Complete/, "the generic block takes over");
+	registerQuietTools();
+	assert.equal(readsCard(), true, "a re-offered renderer redraws the card without a resize or a new item");
+
+	// bash is offered only while the chat draws it as a card (minimal content).
+	applyTool(store, "bash", { command: "printf hi" }, "hi", false, "bash-call");
+	const bashCard = (): boolean => /\$ printf hi/.test(stripAnsi(view.render(60).join("\n")));
+	assert.equal(bashCard(), false, "the default content preference leaves bash to the generic block");
+	setCardContent(CARD_CONTENT.MINIMAL);
+	assert.equal(bashCard(), true, "the card appears as soon as the chat offers it");
+	setCardContent(CARD_CONTENT.DEFAULT);
+	assert.equal(bashCard(), false, "and withdraws when the chat stops offering it");
+	view.dispose();
+});
+
+test("a card keeps its running state inside the view", () => {
+	loadQuietTools();
+	const { store, view } = presentationHarness(() => "cards");
+	store.apply("a", { type: TASK_EVENT.TOOL_START, callId: "call", name: "read", args: { path: "src/a.ts" } }, 2000);
+	const frame = view.render(60).map(stripAnsi).join("\n");
+	assert.match(frame, /running…/, "a running card says it is still waiting");
+	assert.doesNotMatch(frame, /Tool · read · Running/, "and it is the card, not the generic block");
+	for (const width of [12, 23, 40, 60]) {
+		for (const line of view.render(width)) assert.ok(visibleWidth(line) <= width, `a card frame fits width ${width}`);
+	}
+	view.dispose();
+});
+
+test("a tool the chat offers no card for keeps the generic block in card mode", () => {
+	loadQuietTools();
+	const { store, view } = presentationHarness(() => "cards");
+	applyTool(store, "webfetch", {}, "page body");
+	const frame = view.render(60).map(stripAnsi).join("\n");
+	assert.match(frame, /Tool · webfetch · Complete/, "an unsupported tool keeps the labeled block");
+	assert.match(frame, /page body/, "and its retained output");
+	assert.doesNotMatch(frame, /≡ read/, "no other tool's card is impersonated");
+	view.dispose();
+});
+
+test("a card also toggles on its own in the narrow details view", () => {
+	loadQuietTools();
+	const { store, view } = presentationHarness(() => "cards", 20);
+	applyTool(store, "read", { path: "src/a.ts" }, "a0\na1\na2\na3\na4\na5");
+	view.render(40);
+	view.handleInput("\t");
+	const frame = (): string[] => view.render(40).map(stripAnsi);
+	const y = frame().findIndex((line) => line.includes("a0"));
+	assert.ok(y >= 0, "the card is drawn in the details view");
+	assert.equal(view.handleMouse(mouse(20, y, 40, frame().length, "click"))?.handled, true, "the card consumes the click");
+	assert.match(frame().join("\n"), /a5/, "the same per-card level applies in the narrow presentation");
+	view.dispose();
+});
+
+test("a retained card redraws when a live rendering preference changes", (t) => {
+	loadQuietTools();
+	const previousContent = cardContent();
+	t.after(() => setCardContent(previousContent));
+	const { store, view } = presentationHarness(() => "cards", 20);
+	applyTool(store, "read", { path: "src/a.ts" }, "line 0\nline 1\nline 2");
+	const retained = store.thread("a");
+	const text = (): string => stripAnsi(view.render(60).join("\n"));
+	assert.match(text(), /line 0/, "the default content preference previews the result");
+	setCardContent(CARD_CONTENT.MINIMAL);
+	assert.doesNotMatch(text(), /line 0/, "the same retained item and renderer redraw for the new preference");
+	setCardContent(CARD_CONTENT.DEFAULT);
+	assert.match(text(), /line 0/, "and redraw again when the preference returns");
+	assert.deepEqual(store.thread("a"), retained, "the preference never mutates retention");
+	view.dispose();
+});
+
+test("two tasks with the same callId expand their own cards", () => {
+	loadQuietTools();
+	const { store, view } = presentationHarness(() => "cards", 20);
+	store.add(task("b", { createdAt: 900, lastActivityAt: 900 }));
+	applyTool(store, "read", { path: "src/a.ts" }, "a0\na1\na2\na3\na4\na5", false, "call", "a");
+	applyTool(store, "read", { path: "src/b.ts" }, "b0\nb1\nb2\nb3\nb4\nb5", false, "call", "b");
+	const frame = (): string[] => view.render(60).map(stripAnsi);
+	const clickRow = (needle: string): void => {
+		const rows = frame();
+		const y = rows.findIndex((line) => line.includes(needle));
+		assert.ok(y >= 0, `"${needle}" is drawn on the selected task`);
+		assert.equal(view.handleMouse(mouse(50, y, 60, rows.length, "click"))?.handled, true, `${needle}: the card consumes its click`);
+	};
+
+	assert.equal(view.selectedTask()?.id, "a");
+	clickRow("a0");
+	assert.match(frame().join("\n"), /a5/, "the first task's card expands");
+	view.handleInput("j");
+	assert.equal(view.selectedTask()?.id, "b");
+	assert.doesNotMatch(frame().join("\n"), /b5/, "the second task's card with the same callId stays collapsed");
+	clickRow("b0");
+	assert.match(frame().join("\n"), /b5/, "the second task's card expands on its own");
+	view.handleInput("k");
+	assert.equal(view.selectedTask()?.id, "a");
+	assert.match(frame().join("\n"), /a5/, "the first task keeps its level after switching away and back");
+	assert.doesNotMatch(frame().join("\n"), /b5/);
 	view.dispose();
 });

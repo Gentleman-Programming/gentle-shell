@@ -29,7 +29,9 @@ The packaged `gentle-agent-status` extension loads automatically.
   invalid, or task summaries are disabled. Live preference changes apply immediately.
   Titles are bounded to a 4096 UTF-16-unit sample, preserve whole graphemes,
   and strip terminal/control/bidi sequences; no icon, row layout or added ellipsis.
-- `updatedAt`: ISO 8601 UTC heartbeat, refreshed at least every 10 seconds.
+- `updatedAt`: ISO 8601 UTC heartbeat, normally refreshed at least every 10 seconds.
+  After a failed write, the 30-second retry delay can leave it stale until a later
+  write succeeds.
 
 ## Minimal adapter
 
@@ -45,7 +47,7 @@ jq -r 'select(.schema == "gentle-shell.agent-status/v1") |
 Treat timestamps older than 30 seconds as stale, even if the PID exists. Files
 are replaced atomically on coalesced status changes and heartbeats, then removed
 on shutdown. Crashes may leave stale files. Failed writes/removals never interrupt
-Pi. Children and noninteractive sessions do not publish. Herdr remains unchanged.
+Pi; after a failed write the next attempt waits 30 seconds. Children and noninteractive sessions do not publish. Herdr remains unchanged.
 
 ## Privacy
 

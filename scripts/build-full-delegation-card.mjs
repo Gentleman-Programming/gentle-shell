@@ -102,6 +102,7 @@ export function renderFullDelegationCard(assetsDir) {
 	const launch = rewrite(section(delegation, "## Launch", delegationSource), [
 		[" before launching a writer (`orchestrator-writer.md`).", " before launching a writer (below)."],
 		["Otherwise run in the foreground. Detail: reference.", "Otherwise run in the foreground. Detail: below."],
+		["report the capability gap; a fired trigger is never replaced by inline work.", "report the capability gap; never do the work yourself instead."],
 	], delegationSource);
 	const surfaces = section(writer, "#### Allowed edit surfaces (MANDATORY)", writerSource);
 	const background = marked(reference, "gentle-pi:background-subagents", referenceSource);

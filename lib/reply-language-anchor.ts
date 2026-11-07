@@ -67,6 +67,25 @@ export function replyLanguageAnchorText(excerpt: string): string {
 }
 
 /**
+ * The anchor this request needs, with the identity of the automated tail it
+ * follows, or `undefined`. The caller persists one anchor per tail: keyed by the
+ * anchor text alone, a second result after the same human message would only ever
+ * get a trailing copy that the next request drops.
+ */
+export function replyLanguageAnchorFor(
+	messages: readonly AgentMessage[],
+	recorded: string | undefined,
+): { text: string; tail: string } | undefined {
+	const list = messages as readonly (Message & { timestamp?: unknown })[];
+	let tail = list.length - 1;
+	while (tail >= 0 && isPassive(list[tail]!)) tail--;
+	const text = replyLanguageAnchor(messages, recorded);
+	if (text === undefined) return undefined;
+	const message = list[tail]!;
+	return { text, tail: `${String(message.role)}|${String(message.customType ?? "")}|${String(message.timestamp ?? "")}|${tail}` };
+}
+
+/**
  * The anchor this request needs, or `undefined`. `recorded` is the human's last
  * typed text, when known; otherwise the latest human message still in context.
  */

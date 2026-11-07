@@ -229,3 +229,20 @@ test("S1: the session environment override reaches the guard, as it reaches the 
 		assert.equal(admitted?.block, undefined);
 	});
 });
+
+// Independent verification probe (B-S1): an omitted and an organic mode decide exactly alike for every agent and
+// context, and full delegation widens only the two generic writers.
+test("S1: an omitted or organic mode decides exactly alike; full delegation widens only generic writers", (t) => {
+	const root = workspace(false);
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	for (const agent of ["gentle-ai-worker", "worker", "gentle-ai-explore", "gentle-ai-verify", "jd-fix-agent", "unknown"]) {
+		for (const contextUsage of [undefined, { tokens: 20_000, contextWindow: 400_000 }, { tokens: 150_000, contextWindow: 1_000_000 }]) {
+			const input = { agent, task: `Do it.${surfaces}` };
+			const omitted = rejectUndocumentedWriterLaunch(input, { root, contextUsage });
+			assert.deepEqual(rejectUndocumentedWriterLaunch(input, { root, contextUsage, orchestratorMode: "organic" }), omitted, agent);
+			const full = rejectUndocumentedWriterLaunch(input, { root, contextUsage, orchestratorMode: "full-delegation" });
+			assert.deepEqual(full, agent === "gentle-ai-worker" || agent === "worker" ? undefined : omitted, agent);
+		}
+	}
+});
+

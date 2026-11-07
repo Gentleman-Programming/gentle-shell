@@ -145,3 +145,29 @@ test("S9: child sessions are never anchored", async (t) => {
 	assert.equal(await f.context([user(HUMAN), assistant(), custom("gentle-agents.result")]), undefined);
 	assert.equal(f.sent.length, 0);
 });
+
+// Independent verification advisory 1: keyed by the anchor text alone, a second automated result after the same
+// human message got only a trailing copy, never persisted. One anchor is now persisted per automated tail.
+test("S9: a second subagent result after the same human message gets its own persisted anchor", async (t) => {
+	const f = hookFixture(t);
+	await f.input(HUMAN);
+	const firstTail = [user(HUMAN), assistant(), custom("gentle-agents.result")];
+	const first = await f.context(firstTail);
+	assert.equal(f.sent.length, 1);
+	const persisted = first!.messages!.at(-1);
+	const second = [...firstTail, persisted, assistant(), toolResult(), { ...custom("gentle-agents.result"), timestamp: 9 }];
+	const result = await f.context(second);
+	assert.equal((result?.messages?.at(-1) as { customType?: string })?.customType, REPLY_LANGUAGE_ANCHOR_TYPE);
+	assert.equal(f.sent.length, 2, "the new automated tail is anchored and persisted too");
+	assert.equal(await f.context([...second, result!.messages!.at(-1)]), undefined, "and only once");
+	assert.equal(f.sent.length, 2);
+});
+
+// Independent verification probe: Pi flushes a persisted custom message at turn_end, after the turn's assistant
+// message and tool results, so the anchor lands there rather than where the trailing copy sat.
+test("S9: the anchor Pi flushes at turn_end, after the tool round, is not re-added", () => {
+	const first = replyLanguageAnchor([user(HUMAN), assistant(), custom("gentle-agents.result")] as never, HUMAN)!;
+	const flushed = [user(HUMAN), assistant(), custom("gentle-agents.result"), assistant(), toolResult(), { role: "custom", customType: REPLY_LANGUAGE_ANCHOR_TYPE, content: first, display: false, timestamp: 6 }];
+	assert.equal(replyLanguageAnchor(flushed as never, HUMAN), undefined);
+});
+

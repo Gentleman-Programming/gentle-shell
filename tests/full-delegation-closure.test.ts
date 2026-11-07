@@ -22,7 +22,22 @@ const { __testing } = await import("../extensions/gentle-ai.ts");
  * Phrases that route work inline, or decide delegation by size. "Task Size" is deliberately absent: it defines
  * tracking and risk in both modes, and the full delegation core keeps that section.
  */
-const ORGANIC_ROUTING = /small path|work inline|stays? inline|faster inline|inline execution|small edits|never delegates|direct inline|inline writes?\b|Writer (?:rule|trigger)/i;
+const ORGANIC_ROUTING = /\binline\b|small path|small edits|never delegates|Writer (?:rule|trigger)/i;
+
+test("S6: the closure rule recognises the organic sentences a narrower pattern let through", () => {
+	// Independent verification B1: each of these, inserted into a reachable asset, passed an earlier,
+	// phrase-by-phrase pattern. Any "inline" now fails the closure, with no allowlist to maintain.
+	for (const sentence of [
+		"Units of about 100 changed lines or less always run inline: the parent edits them.",
+		"Without a reason, the parent works inline, following the logbook.",
+		"Is the change small? If no, delegate it. If no, do it inline.",
+		"Small task pattern: parent edits inline, then reports.",
+		"6. **Implement task by task.** Implement inline unless a trigger fires.",
+		"A large task alone never delegates.",
+	]) {
+		assert.ok(ORGANIC_ROUTING.test(sentence), sentence);
+	}
+});
 
 function render(mode: "organic" | "full-delegation"): string {
 	return __testing.buildGentlePrompt("gentleman", REPO_ROOT, undefined, undefined, undefined, mode);

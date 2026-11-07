@@ -1476,8 +1476,8 @@ test("bash cards head with the ODD phase their command implies and keep the call
 
 	// The phase names the card, its own mark leads it, and the command rides beside it.
 	for (const [command, phase, glyph] of [
-		["git status --short", "exploring", "◎"],
-		["ls -la src", "exploring", "◎"],
+		["git status --short", "exploring", "⌕"],
+		["ls -la src", "exploring", "⌕"],
 		// A verification runner checks, even alongside inspection.
 		["pnpm test", "checking", "✓"],
 		// A composition names the segment that decided its phase.
@@ -1488,7 +1488,7 @@ test("bash cards head with the ODD phase their command implies and keep the call
 	}
 
 	// Each label paints itself in its own color while the frame keeps the call's status.
-	assert.match(header({ command: "git status" }, statusTheme), /^<warning>╭<\/warning>.*<mdLink>◎ exploring<\/mdLink>/);
+	assert.match(header({ command: "git status" }, statusTheme), /^<warning>╭<\/warning>.*<mdLink>⌕ exploring<\/mdLink>/);
 	assert.match(header({ command: "pnpm test" }, statusTheme), /<mdHeading>✓ checking<\/mdHeading>/);
 	// The timeout chip stays part of the call detail.
 	assert.match(header({ command: "git status", timeout: 5 }), /· git status \(timeout 5s\) ─+╮$/);
@@ -1498,12 +1498,12 @@ test("bash cards name the principal action of a shell composition", () => {
 	const bash = registeredQuietTools().get("bash");
 	const heading = (command: string) => frameLines(bash.renderCall({ command }, passthroughTheme, routineRenderContext({ args: { command } })), 120)[0] ?? "";
 
-	assert.match(heading("git status"), /^╭─ ◎ exploring · git status ─+╮$/, "a single command has nothing to abbreviate");
-	assert.match(heading("cd repo && git diff"), /^╭─ ◎ exploring · git diff ─+╮$/, "the neutral segment is dropped");
+	assert.match(heading("git status"), /^╭─ ⌕ exploring · git status ─+╮$/, "a single command has nothing to abbreviate");
+	assert.match(heading("cd repo && git diff"), /^╭─ ⌕ exploring · git diff ─+╮$/, "the neutral segment is dropped");
 	assert.match(heading("git log --oneline && pnpm test"), /^╭─ ✓ checking · pnpm test ─+╮$/, "checking names the runner that decided it");
 	assert.match(heading("npx vitest run src"), /^╭─ ✓ checking · npx vitest run src ─+╮$/);
 	// An unreadable composition keeps the whole command instead of guessing at it.
-	assert.match(heading('git diff "$(cat list.txt)"'), /^╭─ ◎ exploring · git diff "\$\(cat list\.txt\)" ─+╮$/);
+	assert.match(heading('git diff "$(cat list.txt)"'), /^╭─ ⌕ exploring · git diff "\$\(cat list\.txt\)" ─+╮$/);
 });
 
 test("a composition with a consequential extra action keeps the whole command", () => {
@@ -1511,26 +1511,29 @@ test("a composition with a consequential extra action keeps the whole command", 
 	const heading = (command: string) => frameLines(bash.renderCall({ command }, passthroughTheme, routineRenderContext({ args: { command } })), 120)[0] ?? "";
 
 	// A mutation or an unknown program must never be hidden behind a test run.
-	assert.match(heading("pnpm test && rm -rf dist"), /✓ checking · pnpm test && rm -rf dist/);
+	// A deletion outranks the check beside it: it is the one consequence the
+	// reader cannot undo, so the card names it and still shows the whole command.
+	assert.match(heading("pnpm test && rm -rf dist"), /⚠ destructive · pnpm test && rm -rf dist/);
 	assert.match(heading("pnpm test && npm install"), /✓ checking · pnpm test && npm install/);
 	// A mutation makes the whole command ambiguous, so it is generic and shows all of it.
 	assert.match(heading("git status && node scripts/deploy.mjs"), /\$ bash · git status && node scripts\/deploy\.mjs/);
 
-	// A redirection in an otherwise neutral segment writes a file: show everything.
-	assert.match(heading("pnpm test && echo ok > out.txt"), /✓ checking · pnpm test && echo ok > out\.txt/);
-	assert.match(heading("pnpm test; echo done >> test.log"), /✓ checking · pnpm test; echo done >> test\.log/);
+	// A redirection in an otherwise neutral segment writes a file: the segment is
+	// unnameable, so the card claims no activity and shows everything.
+	assert.match(heading("pnpm test && echo ok > out.txt"), /\$ bash · pnpm test && echo ok > out\.txt/);
+	assert.match(heading("pnpm test; echo done >> test.log"), /\$ bash · pnpm test; echo done >> test\.log/);
 
 	// A pipeline routes output into another program, so no part of it is the whole story.
-	assert.match(heading("pnpm test && echo done | tee log.txt"), /✓ checking · pnpm test && echo done \| tee log\.txt/);
+	assert.match(heading("pnpm test && echo done | tee log.txt"), /\$ bash · pnpm test && echo done \| tee log\.txt/);
 	assert.match(heading("git status || pnpm test"), /✓ checking · git status \|\| pnpm test/);
 
 	// Harmless no-ops may still be skipped, and the preserved cases stay abbreviated.
 	assert.match(heading("pnpm test && echo done"), /✓ checking · pnpm test ─+/);
 	assert.match(heading("git log --oneline && pnpm test"), /✓ checking · pnpm test ─+/);
-	assert.match(heading("cd repo && git diff"), /◎ exploring · git diff ─+/);
+	assert.match(heading("cd repo && git diff"), /⌕ exploring · git diff ─+/);
 	// Discarded output and stream merges are not writes, so they may still be skipped.
 	assert.match(heading("pnpm test && echo ok 2>/dev/null"), /✓ checking · pnpm test ─+/);
-	assert.match(heading("cd repo && echo ok 2>&1"), /\$ bash|◎ exploring|✓ checking/);
+	assert.match(heading("cd repo && echo ok 2>&1"), /\$ bash|⌕ exploring|✓ checking/);
 });
 
 test("a partial bash result never draws an elapsed time the host supplied", () => {
@@ -1568,31 +1571,32 @@ test("a command with no inferable phase heads as the generic bash card", () => {
 		frameLines(bash.renderCall(args, theme, routineRenderContext({ args })), 120)[0] ?? "";
 
 	// Ambiguous commands keep the generic bash identity: its mark, its title, its color.
-	for (const command of ["printf output", "rm -rf build", "node scripts/release.mjs"]) {
+	for (const command of ["printf output", "mytool --flag", "node scripts/release.mjs"]) {
 		const escaped = command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 		assert.match(header({ command }), new RegExp(`^╭─ \\$ bash · ${escaped} ─+╮$`), command);
 	}
 	assert.match(header({ command: "printf output" }, statusTheme), /<bashMode>\$ bash<\/bashMode>/);
 });
 
-test("only the phases a bash command can produce carry a card style", async () => {
-	const { PHASE_IDENTITY, BASH_IDENTITY } = await import("../extensions/quiet-tools.ts") as any;
-	const { inferOddPhase } = await import("../lib/odd-phase-inference.ts");
+test("the card styles exactly the activities the classifier can produce", async () => {
+	const { BASH_IDENTITY } = await import("../extensions/quiet-tools.ts") as any;
+	const { inferShellActivity, SHELL_ACTIVITIES, SHELL_ACTIVITY_IDENTITY } = await import("../lib/odd-phase-inference.ts");
 	const { ODD_PHASES } = await import("../lib/odd-phase.ts");
-	// Evidence for the narrow table: shell inference can only return these two.
+	// The card names the activity, so the reachable set is the vocabulary itself —
+	// wider than the two ODD phases, because a deletion or a history change is a
+	// presentation identity the phase label never takes.
 	const reachable = new Set<string>();
-	for (const command of ["git status", "ls -la", "pnpm test", "npx vitest run", "rm -rf build", "node x.mjs", "printf hi"]) {
-		const phase = inferOddPhase("bash", { command });
-		if (phase) reachable.add(phase);
+	for (const command of ["git status", "pnpm test", "rm -rf build", "git commit -m x", "gh pr create", "npm install", "gofmt -w ."]) {
+		const activity = inferShellActivity(command);
+		if (activity) reachable.add(activity);
 	}
-	assert.deepEqual([...reachable].sort(), ["checking", "exploring"]);
-	assert.deepEqual(Object.keys(PHASE_IDENTITY).sort(), [...reachable].sort(), "the card styles exactly the reachable phases");
-	assert.deepEqual(Object.keys(PHASE_IDENTITY).filter((phase) => !(ODD_PHASES as readonly string[]).includes(phase)), []);
-	const marks = Object.values(PHASE_IDENTITY).map((identity: any) => identity.glyph);
-	assert.equal(new Set(marks).size, 2, "each reachable phase has its own mark");
-	const roles = Object.values(PHASE_IDENTITY).map((identity: any) => identity.titleRole);
-	assert.equal(new Set(roles).size, 2, "each reachable phase has its own color");
-	assert.notEqual(BASH_IDENTITY.titleRole, PHASE_IDENTITY.exploring.titleRole, "the generic fallback is never a phase look");
+	assert.deepEqual([...reachable].sort(), ["checking", "destructive", "exploring", "formatting", "preparing", "publishing", "versioning"], "the reachable activities stay the delivered vocabulary");
+	assert.deepEqual(Object.keys(SHELL_ACTIVITY_IDENTITY).sort(), [...SHELL_ACTIVITIES].sort(), "every activity has one identity");
+	// Only the two ODD phases may reach the phase label; the rest stay presentation.
+	assert.deepEqual([...reachable].filter((activity) => (ODD_PHASES as readonly string[]).includes(activity)).sort(), ["checking", "exploring"]);
+	const marks = Object.values(SHELL_ACTIVITY_IDENTITY).map((identity: any) => identity.glyph);
+	assert.equal(new Set(marks.map((mark: string) => mark.trim())).size, marks.length, "each activity has its own mark");
+	assert.notEqual(BASH_IDENTITY.titleRole, SHELL_ACTIVITY_IDENTITY.exploring.titleRole, "the generic fallback is never an activity look");
 });
 
 test("the bash card draws its result below the heading, collapsed or expanded", (t) => {
@@ -1601,7 +1605,7 @@ test("the bash card draws its result below the heading, collapsed or expanded", 
 	const context = routineRenderContext({ args: { command }, executionStarted: true, isPartial: false });
 
 	const rows = frameLines(bash.renderCall({ command }, passthroughTheme, context), 120);
-	assert.match(rows[0] ?? "", /^╭─ ◎ exploring · git status ─+ .*to expand.*╮$/);
+	assert.match(rows[0] ?? "", /^╭─ ⌕ exploring · git status ─+ .*to expand.*╮$/);
 	assert.match(cardHint(rows.join("\n")) ?? "", /to expand$/);
 
 	const collapsed = renderToolResult(bash, textResult("one\ntwo\nthree\nfour"), { expanded: false, isPartial: false }, context);
@@ -1611,7 +1615,7 @@ test("the bash card draws its result below the heading, collapsed or expanded", 
 
 	// Minimal keeps the same heading and only withholds the preview rows.
 	useCardContent(t, CARD_CONTENT.MINIMAL);
-	assert.match(frameLines(bash.renderCall({ command }, passthroughTheme, context), 120)[0] ?? "", /^╭─ ◎ exploring · git status ─+/);
+	assert.match(frameLines(bash.renderCall({ command }, passthroughTheme, context), 120)[0] ?? "", /^╭─ ⌕ exploring · git status ─+/);
 	assert.equal(renderToolResult(bash, textResult("one\ntwo"), { expanded: false, isPartial: false }, context), "");
 });
 
@@ -1623,7 +1627,7 @@ test("a narrow bash card keeps its heading and wraps the call detail below it", 
 	for (const width of [30, 44, 60]) {
 		const rows = frameLines(bash.renderCall({ command }, passthroughTheme, context), width);
 		assert.equal(rows.length, 1, `width ${width}: the collapsed heading is one line`);
-		assert.ok(rows[0]?.includes("◎ exploring"), `width ${width}: ${rows[0]}`);
+		assert.ok(rows[0]?.includes("⌕ exploring"), `width ${width}: ${rows[0]}`);
 		assert.match(rows[0] ?? "", /git st/, `width ${width}: the detail stays readable`);
 		assert.ok(rows.every((row) => visibleWidth(row) <= width));
 	}
@@ -1649,9 +1653,9 @@ function hostView(component: any, width: number) {
 		component,
 		rows: render,
 		expanded: () => component.expanded === true,
-		/** The drawn row that carries the call (`▎ ◎ exploring · git status ── …`). */
+		/** The drawn row that carries the call (`▎ ⌕ exploring · git status ── …`). */
 		heading: () => {
-			const marked = lineOf(/[◎≡$✎☷⌕⌖+]/);
+			const marked = lineOf(/[⌕≡$✎☷⌕⌖+]/);
 			return Math.max(1, marked > 0 ? marked : render().findIndex((row: string) => row.trim() !== ""));
 		},
 		/** The closing row of the card, owned by the result component's click region. */

@@ -491,7 +491,7 @@ test("MCP-prefixed tool names are normalized before mapping", () => {
 // role could not be drawn, and one the phase enum also owned would move the
 // working label it must never touch.
 test("the activity vocabulary names each card identity once", () => {
-	assert.deepEqual([...SHELL_ACTIVITIES], ["checking", "formatting", "preparing", "publishing", "versioning", "exploring"]);
+	assert.deepEqual([...SHELL_ACTIVITIES], ["destructive", "checking", "formatting", "preparing", "publishing", "versioning", "exploring"]);
 	assert.deepEqual(Object.keys(SHELL_ACTIVITY_IDENTITY).sort(), [...SHELL_ACTIVITIES].sort());
 });
 
@@ -502,6 +502,7 @@ test("the activity vocabulary names each card identity once", () => {
 // Exactly one mark carries a trailing gap of its own; see SHELL_ACTIVITY_IDENTITY.
 test("every activity wears its own mark and theme role", () => {
 	assert.deepEqual(SHELL_ACTIVITY_IDENTITY, {
+		destructive: { glyph: "⚠", titleRole: "error" },
 		checking: { glyph: "✓", titleRole: "mdHeading" },
 		formatting: { glyph: "≋", titleRole: "syntaxFunction" },
 		preparing: { glyph: "⚒ ", titleRole: "syntaxFunction" },

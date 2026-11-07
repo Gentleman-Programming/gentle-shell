@@ -14,7 +14,7 @@ import { isAbsolute } from "node:path";
 import { resolveGentleAiDevBinaryOverride, type GentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { CARD_CONTENT, cardContent } from "../lib/card-content-policy.ts";
 import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
-import { inferOddPhase } from "../lib/odd-phase-inference.ts";
+import { inferOddPhase, inferShellActivity, SHELL_ACTIVITY_IDENTITY } from "../lib/odd-phase-inference.ts";
 import type { OddPhase } from "../lib/odd-phase.ts";
 import { quietToolsEnabled } from "../lib/quiet-tools-config.ts";
 import { registerCompactCodemode } from "../lib/codemode-renderer.ts";
@@ -53,20 +53,17 @@ const TOOL_GLYPH = {
 	write: "+",
 } as const satisfies Record<QuietToolName, string>;
 
-// A bash command's phase inference can only return these two phases
-// (lib/odd-phase-inference.ts inferShellPhase: a checker segment checks, every
-// read-only segment explores, anything else is undefined), so a card style
-// exists for exactly those two and generic bash covers the rest. edit, write,
-// todo and the choice tools keep their own existing cards.
+// A bash command's activity decides the card's identity. `exploring` and
+// `checking` are ODD phases; every other activity (a deletion, a history change,
+// a publish, a rewrite, a build-up) is presentation only, so it names and paints
+// the card without ever reaching the phase label, the global phase enum or the
+// exploration budget. edit, write, todo and the choice tools keep their own
+// existing cards.
 export type BashCardPhase = Extract<OddPhase, "exploring" | "checking">;
 
-// Each reachable phase leads with its own mark and paints itself in its own
-// theme role, so an exploring row never looks like a checking one.
-export const PHASE_IDENTITY = {
-	exploring: { glyph: "◎", titleRole: "mdLink" },
-	checking: { glyph: "✓", titleRole: "mdHeading" },
-} as const satisfies Record<BashCardPhase, { glyph: string; titleRole: string }>;
-
+// Each activity leads with its own mark and paints itself in its own theme role,
+// so a deletion never looks like a check. The table lives beside the classifier
+// so one call never reads as two activities.
 /** The identity of a command whose phase the inference cannot tell: the tool's own mark and role, never a borrowed phase. */
 export const BASH_IDENTITY = { glyph: TOOL_GLYPH.bash, titleRole: "bashMode" } as const;
 
@@ -570,12 +567,18 @@ function bashPrincipalAction(command: string, phase: BashCardPhase): string | un
 function bashHeading(args: Record<string, unknown>, theme: ThemeLike, expanded: boolean): ToolCardHeading {
 	const command = safeText(asString(args.command, "..."));
 	const timeout = typeof args.timeout === "number" ? ` (timeout ${args.timeout}s)` : "";
-	const phase = inferOddPhase("bash", args);
-	const identity = phase === undefined ? BASH_IDENTITY : PHASE_IDENTITY[phase as BashCardPhase];
-	const named = phase === undefined ? undefined : bashPrincipalAction(command, phase as BashCardPhase);
+	// The activity the call's own command does, so a deletion or a history change
+	// heads its card instead of hiding behind a phase it never had.
+	const activity = inferShellActivity(command);
+	const identity = activity === undefined ? BASH_IDENTITY : SHELL_ACTIVITY_IDENTITY[activity];
+	// Only a composition every segment of which is a read or a check names a
+	// principal action; anything else keeps the whole command, so nothing
+	// consequential is hidden behind a detail line.
+	const phaseLike = activity === "exploring" || activity === "checking" ? activity : undefined;
+	const named = phaseLike === undefined ? undefined : bashPrincipalAction(command, phaseLike);
 	const detail = named ?? command;
 	return {
-		title: theme.bold(phase ?? "bash"),
+		title: theme.bold(activity ?? "bash"),
 		subtitle: `${detail}${timeout}`,
 		// A composition the inference cannot name keeps its whole command, so collapsed it
 		// folds to the one row that says what the command does and how much folds behind.

@@ -9,6 +9,7 @@
 // imports); precedence against explicit reports lives in OddPhaseRegistry.
 
 import type { OddPhase } from "./odd-phase.ts";
+import { isDestructiveCommand, isDestructiveSegment } from "./destructive-card-activity.ts";
 
 /**
  * The activity a shell call names on its own card. `exploring` and `checking` are
@@ -16,7 +17,7 @@ import type { OddPhase } from "./odd-phase.ts";
  * a commit or a push is not a step of the ODD protocol, so none of them reaches the
  * phase label, the global phase enum, or the exploration budget.
  */
-export const SHELL_ACTIVITIES = ["checking", "formatting", "preparing", "publishing", "versioning", "exploring"] as const;
+export const SHELL_ACTIVITIES = ["destructive", "checking", "formatting", "preparing", "publishing", "versioning", "exploring"] as const;
 
 export type ShellActivity = (typeof SHELL_ACTIVITIES)[number];
 
@@ -42,6 +43,7 @@ export type ShellActivity = (typeof SHELL_ACTIVITIES)[number];
  * heading's counted width matches what the terminal paints.
  */
 export const SHELL_ACTIVITY_IDENTITY: Record<ShellActivity, { glyph: string; titleRole: string }> = {
+	destructive: { glyph: "⚠", titleRole: "error" },
 	checking: { glyph: "✓", titleRole: "mdHeading" },
 	formatting: { glyph: "≋", titleRole: "syntaxFunction" },
 	preparing: { glyph: "⚒ ", titleRole: "syntaxFunction" },
@@ -337,7 +339,8 @@ function inferShellPhase(command: string | undefined): OddPhase | undefined {
 
 /**
  * The activity a shell command names for its own card, or undefined when some
- * segment carries no reliable signal. Preparing, formatting, versioning and
+ * segment carries no reliable signal. Preparing, formatting, destructive,
+ * versioning and
  * publishing are card identities, not ODD phases: the working label and the
  * exploration budget read inferOddPhase, which never returns them.
  *
@@ -354,6 +357,9 @@ export function inferShellActivity(command: string | undefined): ShellActivity |
 	// Beside a segment nothing can name the card stays generic: the heading never
 	// claims a check — or any other identity — for work the call also did silently.
 	if (activities.includes(undefined)) return undefined;
+	// A deletion outranks every other identity on the same call: it is the one
+	// consequence the reader cannot undo, so a check beside it never takes the card.
+	if (activities.includes("destructive") || (command !== undefined && isDestructiveCommand(command))) return "destructive";
 	if (activities.includes("checking")) return "checking";
 	if (activities.includes("publishing")) return "publishing";
 	if (activities.includes("versioning")) return "versioning";
@@ -380,6 +386,9 @@ function segmentActivity(segment: string): ShellActivity | undefined {
 	const help = helpFlag(segment);
 	if (help === "request") return "exploring";
 	if (help === "unreadable") return undefined;
+	// A command-position word that names a deleting program decides the segment
+	// before any other family reads it, so a deletion is never filed as a check.
+	if (isDestructiveSegment(segment)) return "destructive";
 	if (isCheckingSegment(segment)) return "checking";
 	if (isFormattingSegment(segment)) return "formatting";
 	if (isReadOnlyInspection(segment)) return "exploring";

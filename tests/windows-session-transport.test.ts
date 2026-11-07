@@ -796,3 +796,85 @@ test("Windows host classifies known bootstrap stderr markers into sanitized code
 	child.emit("exit", 1, null);
 	child.emit("close", 1, null);
 });
+
+const startBootstrapHost = async (child: FakeTransportChild = new FakeTransportChild()) => {
+	const codes: string[] = [];
+	const host = new WindowsSessionTransportHost({ spawnProcess: () => child as never, onBootstrapDiagnostic: (code) => { codes.push(code); return undefined; } });
+	const starting = host.start();
+	const finish = async () => {
+		child.stdout.emit("data", Buffer.from('{"requestId":"start-1","ok":true,"result":{"state":"partial"}}\n'));
+		await starting;
+		child.emit("exit", 1, null);
+		child.emit("close", 1, null);
+	};
+	return { child, host, codes, finish };
+};
+
+test("Windows bootstrap stderr classifier rejects prototype keys, case variants, and extra or missing keys", async () => {
+	const { child, host, codes, finish } = await startBootstrapHost();
+	for (const line of [
+		'{"kind":"windows-session-bootstrap-rejection","stage":"constructor","ntstatus":null}',
+		'{"kind":"windows-session-bootstrap-rejection","stage":"toString","ntstatus":null}',
+		'{"kind":"windows-session-bootstrap-rejection","stage":"unknown","ntstatus":null,"__proto__":{}}',
+		'{"kind":"windows-session-bootstrap-diagnostic","category":"__proto__","compilerCodes":[],"reason":"unknown","languageMode":"full"}',
+		'{"kind":"Windows-Session-Bootstrap-Rejection","stage":"unknown","ntstatus":null}',
+		'{"kind":"windows-session-bootstrap-rejection","stage":"Unknown","ntstatus":null}',
+		'{"kind":"windows-session-bootstrap-diagnostic","category":"Compiler","compilerCodes":[],"reason":"unknown","languageMode":"full"}',
+		'{"kind":"windows-session-bootstrap-rejection","stage":"unknown","ntstatus":null,"extra":1}',
+		'{"kind":"windows-session-bootstrap-rejection","stage":"unknown"}',
+		'{"kind":"windows-session-bootstrap-diagnostic","category":"other","compilerCodes":[],"reason":"unknown","languageMode":"full","extra":1}',
+		'["windows-session-bootstrap-rejection"]',
+		"null",
+	]) child.stderr.emit("data", Buffer.from(`${line}\n`));
+	assert.deepEqual(codes, []);
+	assert.equal(host.bootstrapDiagnostic, null);
+	child.stderr.emit("data", Buffer.from('{"kind":"windows-session-bootstrap-rejection","stage":"routing-open","ntstatus":null}\n'));
+	assert.deepEqual(codes, ["rejection-routing-open"]);
+	await finish();
+});
+
+test("Windows bootstrap stderr classifier accepts a 16384-byte line, drops 16385 bytes, and resets overflow across chunks", async () => {
+	const marker = '{"kind":"windows-session-bootstrap-rejection","stage":"volume-open","ntstatus":null}';
+	const padded = (bytes: number) => marker + " ".repeat(bytes - Buffer.byteLength(marker));
+	const exact = await startBootstrapHost();
+	exact.child.stderr.emit("data", Buffer.from(`${padded(16_384)}\n`));
+	assert.deepEqual(exact.codes, ["rejection-volume-open"]);
+	await exact.finish();
+	const over = await startBootstrapHost();
+	over.child.stderr.emit("data", Buffer.from(`${padded(16_385)}\n`));
+	assert.deepEqual(over.codes, []);
+	over.child.stderr.emit("data", Buffer.from('{"kind":"windows-session-bootstrap-rejection","stage":"ancestor-open","ntstatus":null}\n'));
+	assert.deepEqual(over.codes, ["rejection-ancestor-open"], "the next line is classified after an oversized one");
+	await over.finish();
+	const split = await startBootstrapHost();
+	split.child.stderr.emit("data", Buffer.from(" ".repeat(10_000)));
+	split.child.stderr.emit("data", Buffer.from(" ".repeat(7_000)));
+	// The tail of an overflowed line is dropped even when it looks like a marker.
+	split.child.stderr.emit("data", Buffer.from(`${marker}\n`));
+	assert.deepEqual(split.codes, []);
+	split.child.stderr.emit("data", Buffer.from('{"kind":"windows-session-bootstrap-rejection","stage":"presence-assert-owned","ntstatus":null}\n'));
+	assert.deepEqual(split.codes, ["rejection-presence-assert-owned"], "overflow resets at the next newline");
+	await split.finish();
+});
+
+test("Windows bootstrap stderr classifier ignores non-Buffer chunks without disturbing the helper", async () => {
+	const { child, host, codes, finish } = await startBootstrapHost();
+	assert.doesNotThrow(() => child.stderr.emit("data", '{"kind":"windows-session-bootstrap-rejection","stage":"unknown","ntstatus":null}\n' as never));
+	assert.deepEqual(codes, []);
+	assert.equal(host.bootstrapDiagnostic, null);
+	child.stderr.emit("data", Buffer.from('{"kind":"windows-session-bootstrap-diagnostic","category":"type-load","compilerCodes":[],"reason":"unknown","languageMode":"full"}\n'));
+	assert.deepEqual(codes, ["diagnostic-type-load"]);
+	await finish();
+});
+
+test("Windows bootstrap stderr listeners do not accumulate across repeated host create and close", async () => {
+	const child = new FakeTransportChild();
+	for (let index = 0; index < 5; index++) {
+		const { finish } = await startBootstrapHost(child);
+		assert.equal(child.stderr.listenerCount("data"), 1);
+		await finish();
+		assert.equal(child.stderr.listenerCount("data"), 0);
+		assert.equal(child.stderr.listenerCount("error"), 0);
+		assert.equal(child.stdout.listenerCount("data"), 0);
+	}
+});

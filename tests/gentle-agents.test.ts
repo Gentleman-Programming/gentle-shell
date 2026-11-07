@@ -5135,6 +5135,91 @@ test("session transport startup failure re-arms exactly once on a later session 
 	}
 });
 
+test("session transport re-arm stays bounded across shutdown, pending close, and session replacement races", async (t) => {
+	for (const mode of ["shutdown", "close-pending", "session-switch", "changed-id"] as const) {
+		await t.test(mode, async () => {
+			const h = fakePi(), runtime = deps(), { ctx } = fakeContext(), { ctx: other } = fakeContext();
+			Object.assign(other.sessionManager, { getSessionId: () => "s2" });
+			const notices: string[] = [];
+			ctx.ui.notify = (message) => { notices.push(message); };
+			other.ui.notify = (message) => { notices.push(message); };
+			const starts = new Map<string, number>();
+			let registries = 0, closes = 0;
+			let releaseClose: (() => void) | undefined;
+			const closeGate = mode === "close-pending" ? new Promise<void>((resolve) => { releaseClose = resolve; }) : undefined;
+			const registry = { list: async () => [], listActivations: async () => [] };
+			runtime.deps.sessionTransport = {
+				createRegistry: async () => { registries++; return registry; },
+				createListener: (_registry, sessionId) => ({ registry, start: async () => {
+					starts.set(sessionId, (starts.get(sessionId) ?? 0) + 1);
+					throw new Error("SECRET");
+				}, close: async () => { closes++; if (closes === 1) await closeGate; } }),
+				createClient: inertSessionTransport.createClient,
+			};
+			gentleAgents(h.pi, {}, runtime.deps);
+			await h.fire("session_start", ctx);
+			await eventually(() => notices.length === 1, "first startup failure");
+			const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+			if (mode === "shutdown") {
+				await Promise.all([h.fire("session_shutdown", ctx), h.fire("agent_start", ctx), h.fire("turn_end", ctx)]);
+				const after = registries;
+				for (const event of ["agent_start", "turn_end"]) await h.fire(event, ctx);
+				await settle();
+				assert.equal(starts.get("s1"), 1, "no listener starts after shutdown");
+				assert.equal(registries, after, "no startup begins after shutdown completed");
+				return;
+			}
+			if (mode === "close-pending") {
+				try {
+					await h.fire("turn_end", ctx);
+					await h.fire("agent_start", ctx);
+					await settle();
+					assert.equal(registries, 1, "no re-arm while the failed startup is still closing");
+				} finally {
+					// A failed assertion must not leave shutdown waiting on the gated close.
+					releaseClose!();
+				}
+				await settle();
+				await h.fire("turn_end", ctx);
+				await eventually(() => starts.get("s1") === 2, "exactly one re-arm after close resolves");
+				await eventually(() => notices.length === 2, "re-arm failure warns");
+				for (const event of ["turn_end", "agent_start"]) await h.fire(event, ctx);
+				await settle();
+				assert.equal(registries, 2);
+			}
+			if (mode === "session-switch") {
+				await settle();
+				await h.fire("session_start", other);
+				await eventually(() => notices.length === 2, "replacement session startup failure");
+				await settle();
+				await h.fire("turn_end", ctx);
+				await h.fire("agent_start", ctx);
+				await settle();
+				assert.equal(starts.get("s1"), 1, "the retired session is never re-armed");
+				assert.equal(starts.get("s2"), 1);
+				await h.fire("turn_end", other);
+				await eventually(() => starts.get("s2") === 2, "the replacement session gets its own single re-arm");
+				await eventually(() => notices.length === 3, "replacement re-arm failure warns");
+				for (const event of ["turn_end", "agent_start"]) await h.fire(event, other);
+				await settle();
+				assert.equal(starts.get("s2"), 2);
+				assert.equal(starts.get("s1"), 1);
+				await h.fire("session_shutdown", other);
+				return;
+			}
+			if (mode === "changed-id") {
+				await settle();
+				Object.assign(ctx.sessionManager, { getSessionId: () => "replacement" });
+				for (const event of ["turn_end", "agent_start"]) await h.fire(event, ctx);
+				await settle();
+				assert.equal(registries, 1, "a changed session id on the same manager is never re-armed");
+				assert.equal(notices.length, 1);
+			}
+			await h.fire("session_shutdown", ctx);
+		});
+	}
+});
+
 test("a failed presence start at session_start warns with a fixed code and clears presence", async (t) => {
 	const start = t.mock.method(PresencePublisher, "start", () => { throw new Error("SECRET C:\\Users\\private token"); });
 	const h = fakePi(), runtime = deps(), { ctx } = fakeContext();

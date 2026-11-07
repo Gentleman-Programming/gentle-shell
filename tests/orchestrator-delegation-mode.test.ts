@@ -140,3 +140,14 @@ test("the memoized core is keyed by the mode, so a switch cannot serve stale rul
 	assert.equal(__testing.getOrchestratorPrompt(cwd), organicPrompt);
 	assert.equal(__testing.getOrchestratorPrompt(cwd, undefined, undefined, undefined, "full-delegation"), fullPrompt);
 });
+
+// gentle-shell#379: delegation stays inside the current runtime. The open
+// "another available delegation mechanism" fallback is gone from the routing
+// detail and the reference docs, and each names the stop rule instead.
+test("delegation fallback never leaves the current runtime", () => {
+	for (const path of [join(REAL_ASSETS_DIR, "orchestrator-delegation-reference.md"), join(REPO_ROOT, "docs", "readme-reference.md")]) {
+		const text = readFileSync(path, "utf8");
+		assert.equal(text.includes("another available delegation mechanism"), false, path);
+		assert.match(text, /never fall back to an external pane, terminal, session, window, or remote worker/, path);
+	}
+});

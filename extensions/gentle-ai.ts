@@ -12,6 +12,7 @@ import { appendContextBackstopNotice, createContextBackstopSignal, createThrottl
 import { createExplorationBudget } from "../lib/exploration-budget.ts";
 import { REPLY_LANGUAGE_ANCHOR_TYPE, isHumanInput, replyLanguageAnchorFor } from "../lib/reply-language-anchor.ts";
 import { blockChildDestructiveCommand } from "./child-safety.ts";
+import { evaluateExecutionSurfaceTool } from "../lib/execution-surface-guard.ts";
 import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, isHomeOrBroadUserDirectory, prepareBoundSessionRepository, rejectUndocumentedWriterLaunch, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sourcePathWithinProject } from "../lib/bounded-writer-admission.ts";
 import { rejectUnriskedVerifierLaunch } from "../lib/verifier-admission.ts";
 import { VERIFIER_SETTLE_REMINDER_TYPE, createVerifierSettleReminders, finalAssistantText } from "../lib/verifier-settle-reminder.ts";
@@ -12788,6 +12789,8 @@ function createGentleAiExtensionForTesting(
 			event.input,
 		);
 		if (sensitivePathDenied) return sensitivePathDenied;
+		const surfaceDenied = evaluateExecutionSurfaceTool(event.toolName, event.input);
+		if (surfaceDenied) return surfaceDenied;
 		const deliveredTestDenied = evaluateDeliveredTestTool(event.toolName, event.input, ctx.cwd);
 		if (deliveredTestDenied) return deliveredTestDenied;
 		if (event.toolName === "subagent_run") {

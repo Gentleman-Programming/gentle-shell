@@ -3,6 +3,7 @@ import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Container, Input, isKeyRelease, matchesKey, Text, type KeybindingsManager, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import { captureChoiceAnswer } from "../lib/auto-permission-answers.ts";
+import { FullscreenActivityMonitor } from "../lib/fullscreen-activity.ts";
 import { NativeChoiceList } from "../lib/native-choice-list.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { isInteractiveMode, isInteractiveRpcHost } from "../lib/rpc-host.ts";
@@ -215,6 +216,12 @@ async function askThroughDialogs(
 }
 
 export default function askUserChoice(pi: ExtensionAPI): void {
+	// Fullscreen overlay menus own the keyboard while they are open; the ask
+	// dialog defers behind them instead of mounting hidden beneath them. The
+	// activity comes only from the shared event bus, so the defer stays
+	// stateless across turns and free of any concrete menu import.
+	const fullscreenActivity = new FullscreenActivityMonitor();
+	fullscreenActivity.attach(pi.events);
 	pi.registerTool({
 		name: CHOICE_TOOL_NAME,
 		renderShell: "self",
@@ -242,6 +249,15 @@ export default function askUserChoice(pi: ExtensionAPI): void {
 				}
 				captureAnswer(rpcSelection);
 				return choiceToolResult(params, rpcSelection);
+			}
+
+			// Fullscreen activity defer: hold while any overlay menu keeps the
+			// keyboard, then mount. A wait-stage abort returns the tool's own
+			// cancelled shape without mounting and without any blocked event.
+			const fullscreen = await fullscreenActivity.waitIfActive(_signal);
+			if (fullscreen === "aborted") {
+				captureAnswer(undefined);
+				return choiceToolResult(params, undefined);
 			}
 
 			const items = params.options.map((option, index) => ({

@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { captureQuestionnaireAnswers } from "../lib/auto-permission-answers.ts";
+import { FullscreenActivityMonitor } from "../lib/fullscreen-activity.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { type QuestionData, type QuestionParams, QuestionParamsSchema } from "../lib/questionnaire/schema.ts";
 import {
@@ -241,6 +242,12 @@ function truncate(text: string, limit: number): string {
  *   precedence choice.
  */
 export default function askUserQuestion(pi: ExtensionAPI): void {
+	// Fullscreen overlay menus own the keyboard while they are open; the
+	// questionnaire defers behind them instead of mounting hidden beneath
+	// them. The activity comes only from the shared event bus, so the defer
+	// stays stateless across turns and free of any concrete menu import.
+	const fullscreenActivity = new FullscreenActivityMonitor();
+	fullscreenActivity.attach(pi.events);
 	pi.registerTool({
 		name: QUESTION_TOOL_NAME,
 		renderShell: "self",
@@ -278,6 +285,12 @@ export default function askUserQuestion(pi: ExtensionAPI): void {
 					pi.events.emit(ASK_USER_QUESTION_BLOCKED_EVENT, { active: false });
 				}
 			}
+
+			// Fullscreen activity defer: hold while any overlay menu keeps the
+			// keyboard, then mount. A wait-stage abort returns the tool's own
+			// cancelled shape without mounting and without any blocked event.
+			const fullscreen = await fullscreenActivity.waitIfActive(_signal);
+			if (fullscreen === "aborted") return cancelledResult();
 
 			let selection: QuestionnaireResult | undefined;
 			try {

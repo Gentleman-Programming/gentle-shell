@@ -13,7 +13,7 @@ import { gentlePiConfigHome } from "./agent-home.ts";
 import { resolveBackgroundSubagentsPolicy } from "./background-subagents-policy.ts";
 import { childPackageExtensionArgs } from "./child-package-injection.ts";
 import { AGENT_MODE, formatModelRef, parseModelRef, type AgentDefinition, type AgentMode, type ModelRef } from "./agents-config.ts";
-import { CHILD_QUERY_MAX_INFLIGHT, CHILD_QUERY_TIMEOUT_MS, parseChildFrame, validChildMessage, validChildQueryId } from "./agents-messaging.ts";
+import { CHILD_QUERY_MAX_INFLIGHT, CHILD_QUERY_TIMEOUT_MS, parseChildFrame, parseChildJobState, validChildMessage, validChildQueryId } from "./agents-messaging.ts";
 import { ParentStandingReviewPermissionBroker } from "./review-session-standing-permission-ipc.ts";
 import { isFinished, normalizeRpcEvent, ToolArgumentProgress, TASK_EVENT, TASK_STATUS, taskLabel, type AskRequest, type ChildResponseObservation, type TaskRecord, type TaskStore, type TerminalErrorCategory } from "./agents-protocol.ts";
 import { WriterSurfaceRegistry, writerSurfaceConflictMessage } from "./writer-surfaces.ts";
@@ -79,6 +79,8 @@ export interface RunnerLimits {
 	toolStallTimeoutMs?: number;
 	// Bounded asynchronous cleanup window allowed after settlement before escalating to SIGTERM/SIGKILL.
 	cleanupTimeoutMs?: number;
+	// One bounded drain granted when agent_settled arrives while a child background job still runs.
+	drainTimeoutMs?: number;
 }
 
 export interface AskAnswer {
@@ -228,6 +230,10 @@ interface LiveTask {
 	/** The child's own TMPDIR, removed when the child ends unless its exit is unconfirmed. */
 	scratchDir?: string;
 	cleanupDeadlineAt: number | undefined;
+	/** The child's last reported background-job state, if any (#2266). */
+	childJobState?: { running: number; pending: boolean };
+	/** One bounded post-settlement drain while the child's background jobs finish (#2266). */
+	drain?: { status: TaskRecord["status"]; error: string | null; cancel: () => void };
 	quarantined: boolean;
 	nextId: number;
 	permissionBroker?: ParentStandingReviewPermissionBroker;
@@ -254,6 +260,8 @@ export const MAX_INLINE_INSTRUCTIONS_BYTES = 1000;
 const MAX_TRANSPORT_PREFIX_CHARS = 64;
 const CHILD_MARKER = "GENTLE_PI_AGENTS_CHILD";
 const IPC_MARKER = "GENTLE_PI_AGENTS_OWNED_IPC";
+/** Forwarded to the child only when a declared `bash_background` admitted its policy (#2266). */
+export const CHILD_JOBS_ENV = "GENTLE_PI_AGENTS_CHILD_JOBS";
 const PARENT_NOTIFICATION_TOOL = "subagent_parent_message";
 /** The exact --tools list, so the child can report requested names Pi dropped silently (#1690). */
 export const REQUESTED_TOOLS_ENV = "GENTLE_PI_AGENTS_REQUESTED_TOOLS";
@@ -263,6 +271,8 @@ const GROUP_CONFIRM_MS = 25;
 const GROUP_CONFIRM_DEADLINE_MS = 1_000;
 const QUARANTINE_PROBE_MS = 1_000;
 export const DEFAULT_CLEANUP_TIMEOUT_MS = 5_000;
+// One bounded drain window for a child's own background jobs at settlement (#2266).
+export const DEFAULT_DRAIN_TIMEOUT_MS = 5_000;
 const QUERY_REJECTION_ERRORS = new Set([
 	"invalid child IPC frame",
 	"invalid child IPC correlation",
@@ -578,7 +588,10 @@ export class AgentRunner {
 				this.finish(id, TASK_STATUS.FAILED, `could not start pi: explicit tool bash_background requires background-subagents policy on. Set ${file} to {"schema":"gentle-pi.background-subagents/v1","policy":"on"}; inspect or change policy with /gentle:background-subagents enable|disable|status.`);
 				return;
 			}
-		}
+			// Admission passed: the child registers its own private job tools and is
+			// trusted to report job state for the settlement drain.
+			env[CHILD_JOBS_ENV] = "1";
+		} else delete env[CHILD_JOBS_ENV];
 		if (tools !== undefined) env[REQUESTED_TOOLS_ENV] = tools;
 		else delete env[REQUESTED_TOOLS_ENV];
 		let instructionsTransportDir: string | undefined;
@@ -846,8 +859,8 @@ export class AgentRunner {
 		}
 		const task = this.store.get(id);
 		if (!task || live.terminal || isFinished(task.status) || task.parentSessionId === "") {
-			if (parsed.frame.kind === "notification") this.acknowledge(live, parsed.frame.id, false, "task is not a live owned recipient");
-			else this.sendQueryError(live, parsed.frame.id, "task is not a live owned recipient");
+			if (parsed.frame.kind === "query") this.sendQueryError(live, parsed.frame.id, "task is not a live owned recipient");
+			else this.acknowledge(live, parsed.frame.id, false, "task is not a live owned recipient");
 			return;
 		}
 		if (parsed.frame.kind === "notification") {
@@ -856,6 +869,18 @@ export class AgentRunner {
 				if (this.hooks.onNotification?.(task, parsed.frame.message) === false) this.acknowledge(live, parsed.frame.id, false, "task parent is not the active host session");
 				else this.acknowledge(live, parsed.frame.id, true);
 			} catch { this.acknowledge(live, parsed.frame.id, false, "parent rejected notification"); }
+			return;
+		}
+		if (parsed.frame.kind === "job") {
+			const state = parseChildJobState(parsed.frame.message);
+			if (!state) {
+				this.acknowledge(live, parsed.frame.id, false, "invalid child job state");
+				return;
+			}
+			// Ack before the report can open a drain that closes IPC.
+			this.acknowledge(live, parsed.frame.id, true);
+			live.childJobState = state;
+			if (live.drain && state.running === 0 && !state.pending) this.beginSettle(id, live);
 			return;
 		}
 		let query: PendingQuery | undefined;
@@ -1021,9 +1046,9 @@ export class AgentRunner {
 				if (live.observations) live.observations.agentSettled = true;
 				const terminal = this.store.get(id);
 				if (terminal?.error && this.fallBack(id, request, live)) { /* The child keeps going on its next model. */ }
-				else if (terminal?.error) this.settleOrderly(id, TASK_STATUS.FAILED, terminal.error);
-				else if (terminal?.result) this.settleOrderly(id, TASK_STATUS.COMPLETED, null);
-				else this.settleOrderly(id, TASK_STATUS.FAILED, "assistant settled without a final report");
+				else if (terminal?.error) this.settleOrDrain(id, TASK_STATUS.FAILED, terminal.error, live);
+				else if (terminal?.result) this.settleOrDrain(id, TASK_STATUS.COMPLETED, null, live);
+				else this.settleOrDrain(id, TASK_STATUS.FAILED, "assistant settled without a final report", live);
 			}
 		}
 		if (!live.terminal && progress) this.armStall(id, live);
@@ -1065,12 +1090,42 @@ export class AgentRunner {
 	}
 
 	/**
+	 * Settles a task, but when the child still reports running background jobs
+	 * (#2266) it grants one bounded drain window first so the jobs can finish;
+	 * the drain ends early when the child reports nothing left.
+	 */
+	private settleOrDrain(id: string, status: TaskRecord["status"], error: string | null, live: LiveTask): void {
+		if (live.drain || live.terminal) return;
+		const state = live.childJobState;
+		// No child job work, or the child already reports none: settle as before.
+		if (!state || (state.running === 0 && !state.pending)) {
+			this.settleOrderly(id, status, error);
+			return;
+		}
+		// One bounded extension: the child keeps running its jobs, and the drain
+		// ends early on a report with nothing left. A late report cannot re-open it.
+		const cancel = this.deps.schedule(() => this.beginSettle(id, live), this.limits.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS);
+		live.drain = { status, error, cancel };
+		if (this.store.get(id)?.status === TASK_STATUS.RUNNING) this.store.update(id, { lastStep: "draining background jobs" });
+	}
+
+	private beginSettle(id: string, live: LiveTask): void {
+		const drain = live.drain;
+		if (!drain || this.live.get(id) !== live) return;
+		live.drain = undefined;
+		drain.cancel();
+		this.settleOrderly(id, drain.status, drain.error);
+	}
+
+	/**
 	 * Requests orderly child shutdown via stdin upon settlement and schedules
 	 * bounded signal escalation if the child process does not exit within cleanupTimeoutMs.
 	 */
 	private settleOrderly(id: string, status: TaskRecord["status"], error: string | null): void {
 		const live = this.live.get(id);
 		if (!live || live.terminal) return;
+		live.drain?.cancel();
+		live.drain = undefined;
 		live.terminal = { status, error };
 		live.mutationStarts.clear();
 		live.inFlightTools.clear();
@@ -1102,6 +1157,8 @@ export class AgentRunner {
 	private requestStop(id: string, status: TaskRecord["status"], error: string | null, abort = false): void {
 		const live = this.live.get(id);
 		if (!live || live.terminal) return;
+		live.drain?.cancel();
+		live.drain = undefined;
 		live.terminal = { status, error };
 		live.mutationStarts.clear();
 		live.inFlightTools.clear();
@@ -1181,6 +1238,8 @@ export class AgentRunner {
 		this.closeIpc(live);
 		live.cancelStall();
 		live.cancelGrace();
+		live.drain?.cancel();
+		live.drain = undefined;
 		if (live.instructionsTransportDir) {
 			try { rmSync(live.instructionsTransportDir, { recursive: true, force: true }); } catch { /* best effort */ }
 			live.instructionsTransportDir = undefined;
@@ -1213,6 +1272,9 @@ export class AgentRunner {
 		if (!live) return;
 		live.childExit = code;
 		live.childExitSignal = signal ?? null;
+		// A child that exits mid-drain still settles on the run agent_settled already
+		// produced; the ordinary orderly shutdown then owns the exit.
+		if (live.drain) this.beginSettle(id, live);
 		const exitDesc = formatChildExit(code, signal);
 		if (this.groupExists(live)) {
 			if (!live.terminal) this.requestStop(id, TASK_STATUS.FAILED, `pi exited with ${exitDesc} before agent_settled${this.stderrSuffix(live)}`);

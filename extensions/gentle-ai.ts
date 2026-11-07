@@ -16,6 +16,7 @@ import { rejectUnriskedVerifierLaunch } from "../lib/verifier-admission.ts";
 import { VERIFIER_SETTLE_REMINDER_TYPE, createVerifierSettleReminders, finalAssistantText } from "../lib/verifier-settle-reminder.ts";
 import { consumeReviewMutation, pendingReviewMutation, pendingReviewMutationProfiles, recordReviewMutation, type ReceiptSession } from "../lib/review-reminder-receipt.ts";
 import { createReviewSidebarPublisher } from "../lib/review-sidebar-state.ts";
+import { snapshotReviewStartContext, type ReviewStartContext } from "../lib/review-start-context.ts";
 import { parseReviewCoordinatorInput, runReviewCoordinator } from "../lib/review-coordinator.ts";
 import { StatusTimingDiagnostics } from "../lib/status-timing-diagnostics.ts";
 import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
@@ -8255,17 +8256,10 @@ interface RetainedPreLineageNativeUntrackedSelection {
 
 interface RetainedNativeCaptureRoute { readonly workspaceRoot: string; readonly lineageId: string; readonly targetIdentity: string; readonly baseRef?: string; readonly committedOnly?: true; }
 
-interface PendingNativeStartOptions {
-	readonly focus?: NativeStartFocus;
-	readonly lenses?: readonly string[];
-	readonly lensesReason?: string;
-	readonly policyPath?: string;
-}
-
 // An inspect that stops before submission has no resolved untracked selection
 // yet. Retain its selector and explicit request file, bound to the exact
 // provider collect input.
-interface RetainedNativeUntrackedStopSelector { readonly selectionBinding: string; readonly targetIdentity: string; readonly baseRef?: string; readonly committedOnly?: true; readonly requestContextPath?: string; readonly startOptions?: PendingNativeStartOptions; }
+interface RetainedNativeUntrackedStopSelector { readonly selectionBinding: string; readonly targetIdentity: string; readonly baseRef?: string; readonly committedOnly?: true; readonly startContext?: ReviewStartContext; }
 
 type RetainedNativeStatusSelection = RetainedNativeUntrackedSelection | RetainedPreLineageNativeUntrackedSelection | RetainedNativeCaptureRoute | RetainedNativeUntrackedStopSelector;
 
@@ -11202,7 +11196,7 @@ async function executeReviewControllerOperation(
 		const stopSelector = retainedStop !== undefined && "selectionBinding" in retainedStop ? retainedStop : undefined;
 		if (stopSelector !== undefined && stopSelector.selectionBinding !== canonicalBinding) return { operation: parameters.operation, status: "blocked", outcome: "intended-untracked-selection-binding-rejected", reason: "binding-mismatch", mutation_performed: false, mutation_outcome: "none" };
 		const committedSelector = stopSelector?.baseRef === undefined ? {} : { baseRef: stopSelector.baseRef, committedOnly: true as const };
-		const requestContext = stopSelector?.requestContextPath === undefined ? {} : { requestContextPath: stopSelector.requestContextPath };
+		const requestContext = stopSelector?.startContext?.requestContextPath === undefined ? {} : { requestContextPath: stopSelector.startContext.requestContextPath };
 		if (requestContext.requestContextPath !== undefined && isSensitiveRequestContextPath(requestContext.requestContextPath)) return { ...nativeStartRejection("request-context-sensitive-path"), operation: parameters.operation };
 		let status: ReviewStatusV3;
 		try {
@@ -11222,7 +11216,7 @@ async function executeReviewControllerOperation(
 			: intendedUntrackedSelectionRejection(input, canonicalBinding, status, eligible, selected);
 		if (rejected !== undefined) return { operation: parameters.operation, status: "blocked", outcome: "intended-untracked-selection-binding-rejected", reason: rejected.reason, ...(rejected.field === undefined ? {} : { field: rejected.field }), mutation_performed: false, mutation_outcome: "none" };
 		const submission = { argumentTokens: input.submission!.argumentTokens, value: JSON.stringify({ schema: "gentle-ai.review-intended-untracked-selection/v1", untracked_scope: scope, expected_untracked_inventory: inventory, intended_untracked: selected.intendedUntracked }) };
-		const result = await executeReviewControllerOperation({ operation: REVIEW_CONTROLLER_OPERATION.START, ...(parameters.workspaceRoot === undefined ? {} : { workspaceRoot: parameters.workspaceRoot }), input: JSON.stringify({ mode: REVIEW_MODE.ORDINARY, ...committedSelector, ...requestContext, ...stopSelector?.startOptions, untrackedScope: scope, expectedUntrackedInventory: inventory, intendedUntracked: selected.intendedUntracked }) }, sessionCwd, nativeReviewCli, signal, candidateViews, context, retainedUntrackedSelections, pendingReviewConsentRegistry, pendingReviewConsentFallbackKey, submission);
+		const result = await executeReviewControllerOperation({ operation: REVIEW_CONTROLLER_OPERATION.START, ...(parameters.workspaceRoot === undefined ? {} : { workspaceRoot: parameters.workspaceRoot }), input: JSON.stringify({ mode: REVIEW_MODE.ORDINARY, ...committedSelector, ...stopSelector?.startContext, untrackedScope: scope, expectedUntrackedInventory: inventory, intendedUntracked: selected.intendedUntracked }) }, sessionCwd, nativeReviewCli, signal, candidateViews, context, retainedUntrackedSelections, pendingReviewConsentRegistry, pendingReviewConsentFallbackKey, submission);
 		return { ...result, operation: parameters.operation };
 	}
 	if (parameters.operation === REVIEW_CONTROLLER_OPERATION.START) {
@@ -11253,6 +11247,7 @@ async function executeReviewControllerOperation(
 				? {}
 				: validateNativeStartPolicyPath(defaultCwd, rawStart.policyPath);
 			if (policy.reason !== undefined) return nativeStartRejection(policy.reason);
+			const startContext = snapshotReviewStartContext({ ...requestContext, ...lensSelection, ...(isNativeStartFocus(focus) ? { focus } : {}), ...(policy.policyPath === undefined ? {} : { policyPath: policy.policyPath }) });
 			const baseRef = rawStart.baseRef;
 			if (baseRef !== undefined && !isCanonicalProcessString(baseRef)) return nativeStartRejection("base-ref-invalid");
 			if (baseRef !== undefined && rawStart.committedOnly !== true) return nativeStartRejection("committed-only-required");
@@ -11409,8 +11404,7 @@ async function executeReviewControllerOperation(
 					if (requestContext.requestContextPath !== undefined && target.applicability !== "unrelated") return nativeStartRejection("request-context-requires-fresh-review");
 					const mapped = mapNativeTargetStatus(parameters.operation, target, parameters.lineageId, includeWorkspaceRoot ? defaultCwd : undefined);
 					if (target.applicability === "unrelated" && typeof mapped.selectionBinding === "string") {
-						retainNativeStatusSelection(retainedUntrackedSelections, reviewLifecycleStorageKey(defaultCwd, ""), Object.freeze({ selectionBinding: mapped.selectionBinding, targetIdentity: target.targetIdentity, ...requestContext,
-							startOptions: Object.freeze({ ...lensSelection, ...(lensSelection.lenses === undefined ? {} : { lenses: Object.freeze([...lensSelection.lenses]) }), ...(focus === undefined ? {} : { focus: focus as NativeStartFocus }), ...(policy.policyPath === undefined ? {} : { policyPath: policy.policyPath }) }),
+						retainNativeStatusSelection(retainedUntrackedSelections, reviewLifecycleStorageKey(defaultCwd, ""), Object.freeze({ selectionBinding: mapped.selectionBinding, targetIdentity: target.targetIdentity, startContext,
 							...(canonicalBaseRef === undefined ? {} : { baseRef: canonicalBaseRef, committedOnly: true as const }) }));
 					}
 					return mapped;
@@ -11440,7 +11434,7 @@ async function executeReviewControllerOperation(
 					nativeStartAttempted = true;
 					result = await nativeReviewCli.start({
 						cwd: defaultCwd,
-						...requestContext,
+						...startContext,
 						...(canonicalBaseRef === undefined
 							? {}
 							: { baseRef: candidateView?.baseCommit ?? canonicalBaseRef, committedOnly: true }),
@@ -11450,9 +11444,6 @@ async function executeReviewControllerOperation(
 						...(untrackedSelection.untrackedScope === undefined ? {} : untrackedSelection),
 						...(untrackedSubmission === undefined ? {} : { intendedUntrackedSelection: untrackedSubmission }),
 						...(parameters.lineageId === undefined ? {} : { lineageId: parameters.lineageId }),
-						...(policy.policyPath === undefined ? {} : { policyPath: policy.policyPath }),
-						...(isNativeStartFocus(focus) ? { focus } : {}),
-						...lensSelection,
 						...(signal === undefined ? {} : { signal }),
 					});
 				} catch (error) {

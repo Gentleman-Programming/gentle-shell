@@ -54,6 +54,13 @@ const REDIRECT_RE = /^(?:\d*|&)(?:>>?|<)/;
 const REDIRECT_ONLY_RE = /^(?:\d*|&)(?:>>?|<)$/;
 const SHELLS = new Set(["sh", "bash", "zsh", "dash"]);
 
+function subcommandAhead(manager: Manager, args: readonly Token[], from: number): boolean {
+	for (let index = from; index < args.length && !args[index].operator; index++) {
+		if (FORMS[manager][args[index].value] !== undefined) return true;
+	}
+	return false;
+}
+
 function parseSegment(manager: Manager, form: PackageAcquisition["form"] | undefined, args: readonly Token[]): Omit<PackageAcquisition, "triggerIndex"> | undefined {
 	const specs: string[] = [];
 	const packages: string[] = [];
@@ -95,9 +102,10 @@ function parseSegment(manager: Manager, form: PackageAcquisition["form"] | undef
 		}
 		if (form === undefined) {
 			form = FORMS[manager][value];
-			if (form === undefined && unknownBeforeForm !== undefined && FORMS[manager][args[index + 1]?.value ?? ""] !== undefined) {
+			// After an unknown option, any word ahead of a later subcommand may be one of
+			// its values: keep looking for the subcommand and record the word as undetermined.
+			if (form === undefined && unknownBeforeForm !== undefined && subcommandAhead(manager, args, index + 1)) {
 				undetermined.push(`${unknownBeforeForm} ${value}`);
-				unknownBeforeForm = undefined;
 				continue;
 			}
 			if (form === undefined) return undefined;

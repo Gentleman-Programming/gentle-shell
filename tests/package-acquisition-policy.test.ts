@@ -172,3 +172,16 @@ test("an unknown option before the subcommand never hides the acquisition", () =
 	assert.equal(packageAcquisitionVerdict("npm --no-color install lodash@1.2.3").action, "pass");
 	assert.equal(packageAcquisitionVerdict("npm --no-color run build").action, "pass");
 });
+
+test("several unknown options or values before the subcommand never hide the acquisition", () => {
+	for (const command of ["npm --foo bar --baz qux install lodash", "npm --foo bar baz install lodash", "npm --foo bar -g install lodash", "pnpm --foo bar --baz qux add lodash"]) {
+		assert.equal(packageAcquisitionVerdict(command).action, "confirm", command);
+	}
+	assert.equal(packageAcquisitionVerdict("npm --foo bar --baz qux run build").action, "pass");
+	assert.equal(packageAcquisitionVerdict("npm --foo bar baz run build && echo done").action, "pass");
+});
+
+test("an unknown option's scan stops at the segment operator", () => {
+	assert.equal(packageAcquisitionVerdict("npm --foo bar run y; npm i lodash@1.2.3").action, "pass");
+	assert.equal(packageAcquisitionVerdict("npm --foo bar run y; npm i lodash").action, "confirm");
+});

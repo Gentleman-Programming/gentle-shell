@@ -61,7 +61,7 @@ Keep each delegated writer bounded, with a short synthesized handoff. Delegation
 
 #### Pi Trigger Runtime Bindings
 
-Once a trigger fires, the parent MUST delegate through the best available subagent runtime. Prefer `subagent_run` when present; otherwise use Pi's native `Agent` or another available delegation mechanism. Do not replace a required delegation with inline execution. Do not inject these as child-agent permission to spawn subagents; children receive concrete role work and must not orchestrate.
+Once a trigger fires, the parent MUST delegate through the best available subagent runtime. Prefer `subagent_run` when present; otherwise use Pi's native `Agent`; never fall back to an external pane, terminal, session, window, or remote worker. Do not replace a required delegation with inline execution. Do not inject these as child-agent permission to spawn subagents; children receive concrete role work and must not orchestrate.
 
 The canonical Writer rule under Delegation Triggers overrides this general runtime preference.
 
@@ -111,7 +111,7 @@ The canonical Writer rule under Delegation Triggers overrides the general runtim
 
 Delegate generic verification that executes or delegates commands per the RDD-aware Verification rule (trigger 3 under Delegation Triggers, gentle-pi#661) -- the normative on/off/unknown routing lives in `orchestrator-verification.md`, not here: the bounded writer always self-verifies via `## Verification`; a named high-risk item also requires `gentle-ai-verify` (or the native `Agent` fallback, with the same read-only verification constraints, exact parent-authorized commands, and fallback reporting). When RDD is on or unknown, use the `gentle_review` `assess` plan and named `escalate` item; validated off does not require assessment (gentle-pi#662). `## Known environmental failures` follows the same definition as `gentle-ai-worker`'s Verification contract: exact pre-existing base failures reported as evidence, never blockers -- any other failing required command still forces `status: partial`. The change's own focused test and suite run inline. Separate exploration stays reserved for when the parent needs the map to decide or route; reading that prepares a write belongs with the writer making the change, consistent with the Delegation Rules table above.
 
-For delegation other than a large task's bounded writes, use the generic fallback: if `subagent_*` tools are unavailable, fall back to Pi's native `Agent` tool or another available delegation mechanism. The delegation trigger remains mandatory; the fallback changes the runtime, not the requirement to delegate. If no delegation mechanism is available, stop the complex work and explain the blocker instead of silently continuing inline.
+For delegation other than a large task's bounded writes, use the generic fallback: if `subagent_*` tools are unavailable, fall back to Pi's native `Agent` tool in the current runtime; never fall back to an external pane, terminal, session, window, or remote worker. The delegation trigger remains mandatory. If no delegation mechanism is available, stop the complex work and tell the user instead of silently continuing inline.
 
 #### Pi Subagent Model Routing
 

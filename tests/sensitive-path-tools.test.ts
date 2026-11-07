@@ -219,3 +219,32 @@ test("bash accepts over-denial of prose that spells a path after a slash (gentle
 		reason: reason("add ./.env.example"),
 	});
 });
+
+// gentle-shell#379: a call asking to open an external project pane is blocked
+// by its own input property in every mode and in children, before any UI. The
+// same hook leaves ordinary calls and subagent_run exactly as they were.
+const surfaceReason = (toolName: string) => `Gentle AI blocked an execution-surface escalation. code=gentle-ai.execution-surface.external-fallback-prohibited tool=${toolName} property=openProjectPaneIfMissing next=Run the work through subagent_* or the native Agent in the current runtime; if neither is available, stop and tell the user.`;
+const surfaceModes = [["normal", {}], ["yolo", { mode: "yolo" }], ["super-yolo", { mode: "super-yolo" }], ["child", { child: true }]] as const;
+
+for (const [label, options] of surfaceModes) {
+	test(`${label} blocks an external pane fallback by its input property (gentle-shell#379)`, async () => {
+		let prompts = 0;
+		const call = toolCall({ ...options, onApprovalPrompt: () => { prompts += 1; } });
+		for (const toolName of ["intercom", "synthetic_surface"]) {
+			for (const value of [true, "yes"]) {
+				assert.deepEqual(await call(toolName, { action: "ask", cwd: "/tmp/other-repo", message: "do work", openProjectPaneIfMissing: value }), { block: true, reason: surfaceReason(toolName) }, `${toolName} ${String(value)}`);
+			}
+		}
+		assert.equal(prompts, 0, "the block never reaches an approval dialog");
+	});
+
+	test(`${label} leaves calls without a pane request untouched (gentle-shell#379)`, async () => {
+		const call = toolCall(options);
+		assert.equal(await call("synthetic_surface", { action: "send", cwd: "/tmp/other-repo" }), undefined);
+		assert.equal(await call("synthetic_surface", { action: "send", cwd: "/tmp/other-repo", openProjectPaneIfMissing: false }), undefined);
+		assert.equal(await call("read", { path: "src/index.ts" }), undefined);
+		assert.equal(await call("bash", { command: "cat src/index.ts" }), undefined);
+		const subagent = await call("subagent_run", { agent: "scout", task: "map src" });
+		assert.equal(subagent?.reason?.includes("execution-surface") ?? false, false, "subagent_run is never classified as a surface escalation");
+	});
+}

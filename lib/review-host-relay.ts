@@ -428,6 +428,8 @@ export interface ReviewHostRelayResult {
 	readonly resultByteLength: number;
 	/** Raw submission stdout (the provider's admitted-manifest JSON), opaque. */
 	readonly submission: string;
+	/** Host-only reviewer facts. Never part of the submitted native artifact. */
+	readonly reviewerEvidence?: Readonly<Record<string, unknown>>;
 }
 
 /** Opaque materialize-and-review result, not yet submitted to the provider. */
@@ -436,6 +438,7 @@ export interface ReviewHostRelayPreparedResult {
 	readonly request: ReviewHostRelayRequest;
 	readonly promptByteLength: number;
 	readonly resultByteLength: number;
+	readonly reviewerEvidence?: Readonly<Record<string, unknown>>;
 }
 
 const preparedResultBytes = new WeakMap<ReviewHostRelayPreparedResult, Buffer>();
@@ -771,6 +774,7 @@ export async function prepareReviewHostRelaySlot(
 	// child used to.
 	const startedAt = Date.now();
 	let outcome: InProcessReviewerOutcome;
+	let reviewerEvidence: Record<string, unknown> | undefined;
 	try {
 		outcome = await runReviewer(
 			{
@@ -784,14 +788,15 @@ export async function prepareReviewHostRelaySlot(
 				...(preparedRequest.signal === undefined ? {} : { signal: preparedRequest.signal }),
 				routingKey: preparedRequest.routingKey!,
 			},
-			{ registry: preparedRequest.reviewerRegistry!, complete: completeSimple },
+			{ registry: preparedRequest.reviewerRegistry!, complete: completeSimple,
+				onEvidence: (evidence) => { reviewerEvidence = evidence; } },
 		);
 	} catch (error) {
 		throw new ReviewHostRelayError(
 			REVIEW_HOST_RELAY_FAILURE.PI_FAILED,
 			"pi",
 			`the reviewer completion could not run: ${error instanceof Error ? error.message : String(error)}`,
-			{ elapsedMs: Date.now() - startedAt, timeoutMs: piTimeoutMs },
+			{ elapsedMs: Date.now() - startedAt, timeoutMs: piTimeoutMs, ...(reviewerEvidence === undefined ? {} : { reviewerEvidence }) },
 		);
 	}
 	if (outcome.kind === "refused") {
@@ -802,6 +807,7 @@ export async function prepareReviewHostRelaySlot(
 		request: preparedRequest,
 		promptByteLength: promptBytes.length,
 		resultByteLength: resultBytes.length,
+		...(outcome.evidence === undefined && reviewerEvidence === undefined ? {} : { reviewerEvidence: structuredClone(outcome.evidence ?? reviewerEvidence!) }),
 	});
 	preparedResultBytes.set(prepared, resultBytes);
 	return prepared;
@@ -837,6 +843,7 @@ export async function submitReviewHostRelayPreparedResult(prepared: ReviewHostRe
 	const resultBytes = preparedResultBytes.get(prepared);
 	if (resultBytes === undefined) throw new TypeError("Pi host relay requires a recognized prepared result");
 	const { request } = prepared;
+	const reviewerFacts = prepared.reviewerEvidence === undefined ? {} : { reviewerEvidence: structuredClone(prepared.reviewerEvidence) };
 	assertTokens("capture", request.captureArgumentTokens);
 	const submissionBinding = resolveReviewHostRelaySubmission(request.submission);
 	const stagingDirectory = await mkdtemp(join(tmpdir(), "gentle-pi-host-relay-result-"));
@@ -860,11 +867,11 @@ export async function submitReviewHostRelayPreparedResult(prepared: ReviewHostRe
 				...(request.signal === undefined ? {} : { signal: request.signal }),
 			}), (result) => result.exitCode === 0 && !result.timedOut && result.stdout.length > 0);
 		} catch (error) {
-			throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED, "submit", `gentle-ai capture submission could not start: ${error instanceof Error ? error.message : String(error)}`);
+			throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED, "submit", `gentle-ai capture submission could not start: ${error instanceof Error ? error.message : String(error)}`, reviewerFacts);
 		}
 		if (submission.exitCode !== 0 || submission.timedOut || submission.stdout.length === 0) {
 			const stderr = submission.stderr.toString("utf8");
-			const details = { exitCode: submission.exitCode, stderr, timedOut: submission.timedOut, elapsedMs: submission.elapsedMs, timeoutMs: request.gentleAiTimeoutMs! };
+			const details = { exitCode: submission.exitCode, stderr, timedOut: submission.timedOut, elapsedMs: submission.elapsedMs, timeoutMs: request.gentleAiTimeoutMs!, ...reviewerFacts };
 			// A typed admission refusal proves the provider consumed no slot.
 			// Every other launched submission stays unknown pending fresh STATUS.
 			if (isReviewHostRelayAdmissionRefusal(submission, stderr)) {
@@ -880,6 +887,7 @@ export async function submitReviewHostRelayPreparedResult(prepared: ReviewHostRe
 		return {
 			promptByteLength: prepared.promptByteLength,
 			resultByteLength: prepared.resultByteLength,
+			...reviewerFacts,
 			submission: submission.stdout.toString("utf8"),
 		};
 	} catch (error) {
@@ -894,6 +902,7 @@ export async function submitReviewHostRelayPreparedResult(prepared: ReviewHostRe
 					REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED,
 					"submit",
 					`Pi host relay result staging cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+					reviewerFacts,
 				);
 			}
 		}

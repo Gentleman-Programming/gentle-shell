@@ -6,6 +6,7 @@ import { __testing } from "../extensions/gentle-ai.ts";
 import { reconcileUnknownReviewLastEventCapture } from "../lib/review-last-event-controller.ts";
 import * as nativeReviewCliModule from "../lib/native-review-cli.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
+import { ReviewHostRelayError, REVIEW_HOST_RELAY_FAILURE } from "../lib/review-host-relay.ts";
 import {
 	decodeReviewLastEventClosureV1,
 	decodeReviewStartV3,
@@ -16,6 +17,49 @@ import {
 const SHA = `sha256:${"a".repeat(64)}`;
 const TREE = "b".repeat(40);
 const CAPTURED_FIXTURES = join(process.cwd(), "tests", "fixtures", "devbinary");
+
+test("host reviewer facts survive both ordinary capture and terminal closure without changing native output", async t => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	for (const terminal of [false, true]) {
+		const lineageId = `facts-single-${terminal}`, input = materializeInput(lineageId);
+		const reviewer = { reviewerModel: "fixture/model", phase: "completion", usage: { input: 10 }, cost: { total: 0.01 } };
+		const native = { targetStatus: async () => status(lineageId, [input]) } as unknown as NativeReviewCli;
+		__testing.setReviewHostRelayRunnerForTesting(async () => ({ promptByteLength: 30, resultByteLength: 20, reviewerEvidence: reviewer,
+			submission: terminal ? JSON.stringify(closure("review/capture-result", lineageId)) : '{"admission_decision":"completed"}' }));
+		const result = await __testing.executeReviewCaptureOperation({ lineageId, collectBinding: JSON.stringify(input), reviewerRunAcknowledged: true }, process.cwd(), native);
+		assert.equal(result.outcome, terminal ? "native-last-event-closure" : "native-reviewer-result-captured");
+		assert.deepEqual((result.host_relay as any)?.reviewer, reviewer);
+		const before = structuredClone((result.host_relay as any).reviewer);
+		reviewer.usage.input = 999;
+		assert.deepEqual((result.host_relay as any).reviewer, before, "host facts are snapshots rather than a runner's mutable object");
+		if (terminal) assert.equal((result.closure as any).lineage_id, lineageId);
+	}
+});
+
+test("group reviewer runs retain every prepared completion after early closure or later admission refusal", async t => {
+	t.after(() => __testing.setReviewHostRelayGroupRunnersForTesting());
+	for (const terminal of [true, false]) {
+		const lineageId = `facts-group-${terminal}`;
+		const inputs = Array.from({ length: 4 }, (_, index) => materializeInput(lineageId, String(index), `sha256:${String(index + 1).repeat(64)}`));
+		const facts = inputs.map((_, index) => ({ reviewerModel: `fixture/model-${index}`, phase: "completion", ...(index === 1 ? {} : { usage: { input: index + 1 }, cost: { total: 0.01 * (index + 1) } }) }));
+		let submitted = 0;
+		const native = { targetStatus: async () => ({ ...status(lineageId, inputs.slice(submitted)), repositoryContext: { capability: "review.opaque_repository_context", handle: `rctx1_${"c".repeat(64)}`, revision: SHA, targetIdentity: SHA } }) } as unknown as NativeReviewCli;
+		__testing.setReviewHostRelayGroupRunnersForTesting(async requests => requests.map((request, index) => ({ request, promptByteLength: 30, resultByteLength: 20, reviewerEvidence: facts[index] })), async () => {
+			if (submitted === 1) throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED, "submit", "fixture refused", { mutationOutcome: "none", reviewerEvidence: facts[1] });
+			submitted++;
+			return { promptByteLength: 30, resultByteLength: 20, submission: terminal ? JSON.stringify(closure("review/capture-result", lineageId)) : '{"admission_decision":"completed"}' };
+		});
+		const result = await __testing.executeReviewCaptureGroupOperation({ lineageId, collectBindings: inputs, reviewerRunAcknowledged: true }, process.cwd(), native);
+		assert.equal(result.submitted_reviewers, 1, JSON.stringify(result)); assert.equal(result.prepared_reviewers, 4);
+		const diagnostics = result.host_relay as any;
+		assert.equal(diagnostics.reviewers.length, 1, "legacy reviewer diagnostics remain limited to confirmed submissions");
+		assert.equal(diagnostics.reviewer_runs.length, 4, "all prepared completions already spent their reported usage");
+		assert.deepEqual(diagnostics.reviewer_runs.map((run: any) => run.reviewer), facts);
+		assert.equal(Object.hasOwn(diagnostics.reviewer_runs[1].reviewer, "usage"), false, "missing usage remains unknown");
+		assert.equal(Object.hasOwn(diagnostics.reviewers[0], "reviewer"), false, "do not copy cost into both legacy and run diagnostics");
+		assert.equal(result.outcome, terminal ? "native-last-event-closure" : "pi-host-relay-transport-failure");
+	}
+});
 
 function captured(name: string): unknown {
 	return JSON.parse(readFileSync(join(CAPTURED_FIXTURES, name), "utf8"));

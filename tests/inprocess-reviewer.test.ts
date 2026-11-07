@@ -223,6 +223,11 @@ test("refuses when the reviewer attempts a tool call", async () => {
 	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.TOOL_CALL_ATTEMPTED);
 });
 
+function withoutRunTiming(evidence: Record<string, unknown> | undefined): Record<string, unknown> {
+	const { durationMs, authDurationMs, completionDurationMs, ...facts } = evidence ?? {};
+	return facts;
+}
+
 test("refuses empty assistant text with safe completion evidence", async () => {
 	const assistant = assistantText("", { content: [], stopReason: "stop" });
 	const outcome = await runInProcessReviewer(baseRequest(), {
@@ -231,9 +236,11 @@ test("refuses empty assistant text with safe completion evidence", async () => {
 	});
 	const refused = expectRefused(outcome);
 	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT);
-	assert.deepEqual(refused.evidence, {
+	assert.deepEqual(withoutRunTiming(refused.evidence), {
+		phase: "completion", provider: "openai",
 		reviewerModel: "openai/gpt-5", stopReason: "stop",
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		content: { blocks: 0, textBlocks: 0, thinkingBlocks: 0, textChars: 0, thinkingChars: 0 },
 	});
 });
@@ -251,7 +258,8 @@ test("empty-output diagnostics allowlist facts, not provider secrets, and comple
 	}));
 	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT);
 	assert.equal(calls.length, 1);
-	assert.deepEqual(refused.evidence, {
+	assert.deepEqual(withoutRunTiming(refused.evidence), {
+		phase: "completion", provider: "nan",
 		reviewerModel: "nan/deepseek-v4-flash", stopReason: "length",
 		usage: { input: 12, output: 64, reasoning: 64, cacheRead: 0, cacheWrite: 0, totalTokens: 76 },
 		content: { blocks: 2, textBlocks: 1, thinkingBlocks: 1, textChars: 0, thinkingChars: 16 },
@@ -875,7 +883,7 @@ test("refuses instead of falling back when getProvider returns undefined for a m
 	const refused = expectRefused(outcome);
 	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.MODEL_NOT_FOUND);
 	assert.match(refused.message, /review-risk/);
-	assert.deepEqual(refused.evidence, { provider: "openai", api: "openai-responses", reviewerModel: "openai/gpt-5" }, "the evidence preserves the model already resolved before provider refusal");
+	assert.deepEqual(withoutRunTiming(refused.evidence), { provider: "openai", api: "openai-responses", reviewerModel: "openai/gpt-5", phase: "configuration" }, "the evidence separates this cause from a plain unresolved selection");
 });
 
 // ---------------------------------------------------------------------------
@@ -995,7 +1003,9 @@ for (const transport of ["sse", "websocket", "websocket-cached", "auto", undefin
 				streamSimple: (model, context, options) => ({ result: () => captured.complete(model, context, options) }),
 			});
 			const outcome = await runInProcessReviewer(baseRequest({ transport }), { registry, complete: captured.complete });
-			assert.deepEqual(outcome, { kind: "text", text: "review result", reviewerModel: "openai/gpt-5" });
+			const { evidence, ...completion } = outcome;
+			assert.deepEqual(completion, { kind: "text", text: "review result", reviewerModel: "openai/gpt-5" });
+			assert.equal(evidence?.phase, "completion");
 			assert.equal(captured.calls.length, 1);
 			assert.equal(captured.calls[0]!.options?.transport, transport);
 			assert.equal(Object.hasOwn(captured.calls[0]!.options!, "transport"), transport !== undefined);

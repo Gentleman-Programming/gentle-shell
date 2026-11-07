@@ -26,4 +26,8 @@ Historical measurements, candidate identities and their limitations live in [iss
 
 SDK event accounting sees the outer coordinator call. Its returned metrics.steps describe internal facade calls; those direct calls emit no additional tool_call/tool_result or timing events.
 
+When the relay supplies execution evidence, the final reviewer_runs array retains snapshots of the resolved reviewer model, phase, durations and available reported usage/cost. Groups include all prepared runs, even when submission later stops; legacy submitted-only diagnostics are not counted again. Missing usage stays unknown. This is not a billing ledger: sibling runs can remain unreported when group preparation fails before returning its results, and thrown/cancelled calls retain their existing behavior. The coordinator computes no cost total and emits no additional SDK accounting events.
+
+Reviewer authentication and completion share a host deadline. Cancellation or an expired deadline prevents further dispatch, and late results are not admitted. A provider that ignores cancellation may continue consuming resources after the host stops waiting.
+
 Related delivery: [issue #2881](https://github.com/Gentleman-Programming/gentle-shell/issues/2881). Keep the feature default-off until independent security/reliability review and an opt-in real-use pilot complete.

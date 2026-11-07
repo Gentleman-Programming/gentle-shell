@@ -8,7 +8,7 @@
 // reviewer completion: it resolves
 // the caller's "provider/id" selection through pi's live model registry,
 // authenticates through the registry's own resolver, and completes exactly
-// one frozen prompt as a single user message â€” no systemPrompt, no tools, no
+// one frozen prompt as a single user message — no systemPrompt, no tools, no
 // session, and none of pi's tool/skill/prompt extension hooks. Extension
 // *providers* are the opposite: they are explicitly in scope. Reading the
 // earlier "no extension hooks" wording as "no extension providers" is what
@@ -27,7 +27,7 @@ import { SAFE_MODEL_ID_PATTERN, type ServiceTier } from "./model-routing-authori
 import { applyOpenAITier, supportsOpenAIFast } from "./openai-fast-tier.ts";
 
 // ---------------------------------------------------------------------------
-// Registry seam â€” a structural subset of pi's live ModelRegistry
+// Registry seam — a structural subset of pi's live ModelRegistry
 // (@earendil-works/pi-coding-agent core/model-registry.ts). `find` and
 // `getApiKeyAndHeaders` are required. `getProvider` is optional and selects
 // the dispatch path: when present, the completion goes through the composed
@@ -90,7 +90,7 @@ export interface InProcessReviewerRequest {
 	 * is separate: it isolates provider conversations and is never this id.)
 	 */
 	readonly sessionId?: string;
-	/** e.g. "review-risk" â€” only used to name the routing config key in refusal messages. */
+	/** e.g. "review-risk" — only used to name the routing config key in refusal messages. */
 	readonly routingKey: string;
 }
 
@@ -132,7 +132,7 @@ type ReasoningResolution = { readonly ok: true; readonly reasoning?: ThinkingLev
 /**
  * "off" (or an omitted label) omits `reasoning` entirely; every other pi-ai
  * level is forwarded verbatim; an unrecognized label is a typed refusal. A model with
- * `reasoning === false` never receives the field, regardless of the label â€”
+ * `reasoning === false` never receives the field, regardless of the label —
  * checked last so an unknown label is still refused even for a non-reasoning
  * model, instead of silently passing validation because it would be dropped
  * anyway.
@@ -146,7 +146,7 @@ function resolveReasoning(thinking: string | undefined, model: Model<Api>): Reas
 function sanitizeErrorExcerpt(error: unknown): string {
 	const raw = error instanceof Error ? error.message : String(error);
 	const collapsed = raw.replace(/\s+/g, " ").trim();
-	return collapsed.length <= ERROR_EXCERPT_MAX_CHARS ? collapsed : `${collapsed.slice(0, ERROR_EXCERPT_MAX_CHARS - 1)}â€¦`;
+	return collapsed.length <= ERROR_EXCERPT_MAX_CHARS ? collapsed : `${collapsed.slice(0, ERROR_EXCERPT_MAX_CHARS - 1)}…`;
 }
 
 function refuse(code: InProcessReviewerFailureCode, message: string, evidence?: Record<string, unknown>): Extract<InProcessReviewerOutcome, { kind: "refused" }> {
@@ -193,7 +193,7 @@ function emptyOutputEvidence(model: Model<Api>, assistant: AssistantMessage): Re
  * `opencode` or `opencode-go`, or its baseUrl host is `opencode.ai`. Returns
  * the `{ x-opencode-session, x-opencode-client }` attribution pair, or
  * undefined when the model is not OpenCode-routed or there is no live session
- * id â€” a missing session id is never an error and never invents a header.
+ * id — a missing session id is never an error and never invents a header.
  * The URL parse is guarded: an unparseable baseUrl follows the provider
  * condition alone.
  */
@@ -300,8 +300,8 @@ export function resolveInProcessReviewerModel(request: Pick<InProcessReviewerReq
 	// A registry that has `getProvider` yet owns no provider for a model its
 	// own `find` just resolved is incoherent: refuse, never route past it.
 	//
-	// The lookup deliberately uses `parsed.provider` â€” the key `find` was
-	// called with â€” and not `model.provider`, which is a field of the object
+	// The lookup deliberately uses `parsed.provider` — the key `find` was
+	// called with — and not `model.provider`, which is a field of the object
 	// `find` returned. In pi's registry both reads hit one provider map
 	// (core/model-runtime.ts `getProvider`/`getModel` -> pi-ai models.ts, where
 	// `getModels(provider)` returns [] for an unknown id), so a resolved model
@@ -324,7 +324,7 @@ export function resolveInProcessReviewerModel(request: Pick<InProcessReviewerReq
  * Runs one reviewer completion in-process: resolve the model, authenticate,
  * map the routing thinking label, and complete exactly one frozen prompt as
  * a single user message. Never retries, never falls back to another model,
- * never reads process.env â€” every seam is injected through `deps`.
+ * never reads process.env — every seam is injected through `deps`.
  */
 export async function runInProcessReviewer(request: InProcessReviewerRequest, deps: InProcessReviewerDeps): Promise<InProcessReviewerOutcome> {
 	const resolved = resolveInProcessReviewerModel(request, deps.registry);
@@ -403,7 +403,7 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 		};
 
 		// `SimpleStreamOptions` is identical on both paths; only the return shape
-		// differs (an event stream versus a promise), hence `.result()` â€” which is
+		// differs (an event stream versus a promise), hence `.result()` — which is
 		// exactly what pi-ai's own compat layer does with the same stream.
 		let assistant: AssistantMessage;
 		try {

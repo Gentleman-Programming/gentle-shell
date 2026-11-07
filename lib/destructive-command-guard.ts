@@ -51,10 +51,10 @@ function tokenize(command: string, blank = true): Token[] {
 }
 const executable = (value: string) => value.split("/").at(-1) ?? value;
 
-/** Recognizable delivery commands, sharing the guard's quote/command-position rules. */
-export function recognizeDeliveryCommands(command: string, depth = 0): Array<{ standalone: boolean; directories?: readonly string[] }> {
+/** Delivery and candidate changes share the guard's existing command-position rules. */
+export function recognizeReviewDeliveryActions(command: string, depth = 0): Array<{ kind: "change" | "delivery"; directories?: readonly string[] }> {
 	if (depth > 8) return [];
-	const matches: Array<{ standalone: boolean; directories?: readonly string[] }> = [];
+	const matches: Array<{ kind: "change" | "delivery"; directories?: readonly string[] }> = [];
 	const tokens = tokenize(command);
 	const directories: string[] = [];
 	let start = 0;
@@ -67,7 +67,6 @@ export function recognizeDeliveryCommands(command: string, depth = 0): Array<{ s
 		const args = segment.slice(cursor + 1).map(token => token.value);
 		let index = 0;
 		const gitDirectories: string[] = [];
-		let remoteTarget = false;
 		if (name === "cd" && args.length === 1 && !/[\n\r$`~]/.test(args[0]) && !args[0].startsWith("-")) directories.push(args[0]);
 		while (name === "git" && index < args.length && args[index].startsWith("-")) {
 			if (args[index] === "-C") { gitDirectories.push(args[index + 1]); index += 2; }
@@ -75,20 +74,17 @@ export function recognizeDeliveryCommands(command: string, depth = 0): Array<{ s
 			else index++;
 		}
 		while (name === "gh" && index < args.length && args[index].startsWith("-")) {
-			if (["-R", "--repo"].includes(args[index])) { remoteTarget = true; index += 2; }
-			else { remoteTarget ||= /^(?:-R.|--repo=)/.test(args[index]); index++; }
+			index += ["-R", "--repo"].includes(args[index]) ? 2 : 1;
 		}
-		remoteTarget ||= name === "gh" && args.some(arg => /^(?:-R|--repo)(?:$|=)/.test(arg));
 		if (name === "git" && args[index] === "push" && args.slice(index + 1).some(arg => ["--dry-run", "-n", "--delete", "-d"].includes(arg))) continue;
+		if (name === "git" && ["commit", "merge", "rebase", "reset", "checkout", "switch", "cherry-pick", "am", "pull", "update-ref"].includes(args[index])) matches.push({ kind: "change" });
 		if ((name === "git" && args[index] === "push") || (name === "gh" && args[index] === "pr" && ["create", "merge"].includes(args[index + 1]))) {
-			matches.push({ standalone: cursor === 0 && segment.length === tokens.length && !/[\n\r$`]/.test(command) &&
-				!remoteTarget && !args.some(arg => ["--all", "--mirror", "--tags"].includes(arg)) &&
-				!segment.some(token => token.value.startsWith("@")) && args.filter(arg => arg === "-C").length <= 1,
+			matches.push({ kind: "delivery",
 				...(!directories.length && !gitDirectories.length ? {} : { directories: [...directories, ...gitDirectories] }) });
 		}
 		if (["sh", "bash", "zsh", "dash"].includes(name)) {
 			const flag = args.findIndex(arg => /^-[a-z]*c[a-z]*$/.test(arg));
-			if (flag >= 0 && args[flag + 1]) matches.push(...recognizeDeliveryCommands(args[flag + 1], depth + 1).map(match => ({ ...match, directories: [...directories, ...(match.directories ?? [])], standalone: false })));
+			if (flag >= 0 && args[flag + 1]) matches.push(...recognizeReviewDeliveryActions(args[flag + 1], depth + 1).map(match => ({ ...match, directories: [...directories, ...(match.directories ?? [])] })));
 		}
 	}
 	for (const match of command.matchAll(/\$\(([^()]*)\)/g)) {
@@ -100,9 +96,9 @@ export function recognizeDeliveryCommands(command: string, depth = 0): Array<{ s
 			else if (char === "'" && quote === undefined) quote = "'";
 			else if (char === '"') quote = quote === '"' ? undefined : '"';
 		}
-		if (quote !== "'") matches.push(...recognizeDeliveryCommands(match[1], depth + 1).map(match => ({ ...match, standalone: false })));
+		if (quote !== "'") matches.push(...recognizeReviewDeliveryActions(match[1], depth + 1));
 	}
-	for (const { body } of backtickBodies(command)) matches.push(...recognizeDeliveryCommands(body, depth + 1).map(match => ({ ...match, standalone: false })));
+	for (const { body } of backtickBodies(command)) matches.push(...recognizeReviewDeliveryActions(body, depth + 1));
 	return matches;
 }
 

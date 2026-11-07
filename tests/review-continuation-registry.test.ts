@@ -7,6 +7,22 @@ const preStart = { ...selection, targetIdentity: "target", candidateTree: "tree"
 const stop = { selectionBinding: "selection", targetIdentity: "target" };
 const route = { workspaceRoot: "/repo", lineageId: "lineage", targetIdentity: "target" };
 
+test("committed base hints reuse the session registry without replacing lifecycle continuations", () => {
+	const backing = new Map<string, RetainedReviewContinuation>();
+	const registry = ReviewContinuationRegistry.from(backing);
+	registry.retainPreStart("/repo", preStart);
+	registry.retainCommittedRange("/repo", "base");
+	assert.equal(registry.readPreStart("/repo")?.targetIdentity, "target");
+	assert.equal(ReviewContinuationRegistry.from(backing).readCommittedRange("/repo"), "base");
+	assert.equal(new ReviewContinuationRegistry().readCommittedRange("/repo"), undefined);
+	assert.equal(registry.readCommittedRange("/other"), undefined);
+	registry.retainCommittedRange("/repo", "new-base");
+	assert.equal(registry.readCommittedRange("/repo"), "new-base");
+	for (let index = 0; index < 64; index++) registry.retainCapture(`extra-${index}`, route);
+	assert.equal(registry.size, 64);
+	assert.equal(registry.readCommittedRange("/repo"), undefined, "the existing capacity bound also covers hints");
+});
+
 test("four continuation kinds share one capacity and replacement does not refresh insertion order", () => {
 	const registry = new ReviewContinuationRegistry();
 	registry.retainSelection("/repo", "first", selection);

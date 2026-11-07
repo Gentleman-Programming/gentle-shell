@@ -33,6 +33,7 @@ export interface RetainedNativeUntrackedStopSelector {
 }
 
 export type RetainedReviewContinuation =
+	| { readonly kind: "committed-range"; readonly baseRef: string }
 	| (RetainedNativeUntrackedSelection & { readonly kind: "selection" })
 	| (RetainedPreLineageNativeUntrackedSelection & { readonly kind: "pre-start" })
 	| (RetainedNativeCaptureRoute & { readonly kind: "capture" })
@@ -58,6 +59,13 @@ export class ReviewContinuationRegistry {
 		return value instanceof ReviewContinuationRegistry ? value : new ReviewContinuationRegistry(value);
 	}
 	get size(): number { return this.entries.size; }
+	readCommittedRange(root: string): string | undefined {
+		const entry = this.entries.get(`committed-range\u0000${root}`);
+		return entry?.kind === "committed-range" ? entry.baseRef : undefined;
+	}
+	retainCommittedRange(root: string, baseRef: string): void {
+		this.retain(`committed-range\u0000${root}`, { kind: "committed-range", baseRef });
+	}
 	/** Bound retained hints by evicting the oldest key before a new insertion. */
 	private retain(key: string, entry: RetainedReviewContinuation): void {
 		if (!this.entries.has(key)) while (this.entries.size >= MAX_RETAINED_CONTINUATIONS) this.entries.delete(this.entries.keys().next().value!);

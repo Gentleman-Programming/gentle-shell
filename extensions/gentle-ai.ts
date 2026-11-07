@@ -8,7 +8,7 @@ import { defaultTempScratchFs, isTempScratchRemoval, type TempScratchFs } from "
 import { SHELL_COMMAND_TOOLS } from "../lib/background-jobs.ts";
 import { evaluateDeliveredTestTool } from "../lib/delivered-test-lint.ts";
 import { commitSliceToolResult } from "../lib/commit-slice-signal.ts";
-import { ReviewDeliveryPreflight } from "../lib/review-delivery-preflight.ts";
+import { checkReviewDeliveryPreflight } from "../lib/review-delivery-preflight.ts";
 import { appendContextBackstopNotice, createContextBackstopSignal, createThrottledContextMeasure } from "../lib/context-backstop.ts";
 import { createExplorationBudget } from "../lib/exploration-budget.ts";
 import { REPLY_LANGUAGE_ANCHOR_TYPE, isHumanInput, replyLanguageAnchorFor } from "../lib/reply-language-anchor.ts";
@@ -10635,6 +10635,8 @@ async function executeReviewControllerOperationImpl(
 		// authorizeDestructiveReviewOperation (it returns early for any
 		// operation that is neither RESET nor a maintenance operation).
 		const input = parseReviewAssessInput(parameters.operation, parameters.input);
+		// Routing hint only; delivery always obtains a fresh native assessment.
+		if (input.baseRef !== undefined) retainedUntrackedSelections.retainCommittedRange(defaultCwd, input.baseRef);
 		const details = await resolveReviewAssessmentPlan(nativeReviewCli, defaultCwd, input, signal, context?.sessionManager as ReceiptSession | undefined);
 		return { operation: parameters.operation, ...details, ...(includeWorkspaceRoot ? { workspace_root: defaultCwd } : {}) };
 	}
@@ -11809,7 +11811,6 @@ function createGentleAiExtensionForTesting(
 	const resolveTelemetryTriggerBinary = dependencies.resolveTelemetryTriggerBinary ?? resolveGentleAiBinary;
 	const telemetryExecFileAdapter = dependencies.telemetryExecFileAdapter ?? createNodeExecFileAdapter();
 	return function gentleAi(pi: ExtensionAPI): void {
-	const reviewDelivery = new ReviewDeliveryPreflight();
 	declareReviewRelayHandshake(dependencies.processEnv ?? process.env);
 	const pendingReviewConsentFallbackKey = Symbol("pending-review-consent-fallback");
 	const candidateViews = dependencies.candidateViews === undefined ? new CandidateViewRegistry() : dependencies.candidateViews;
@@ -11926,7 +11927,6 @@ function createGentleAiExtensionForTesting(
 	let activeRddContext: ExtensionContext | undefined;
 	let unbindPreparation: (() => void) | undefined;
 	pi.on("session_shutdown", (event, context) => {
-		reviewDelivery.clear();
 		// A pending Enter selection settles before the profile owner shuts down;
 		// without one the whole shutdown stays synchronous, so terminal cleanup
 		// (child permission transport, sidebars) is never deferred a turn.
@@ -12243,16 +12243,8 @@ function createGentleAiExtensionForTesting(
 			const acknowledgementEpoch = reminderEpoch;
 			let acknowledgementRoot: string | undefined;
 			let acknowledgementMutation: string | undefined;
-			let deliveryScope: Awaited<ReturnType<ReviewDeliveryPreflight["capture"]>>;
 			try {
 				const parsed = parseReviewControllerParameters(parameters);
-				if (parsed.operation === REVIEW_CONTROLLER_OPERATION.ASSESS) {
-					const input = parseReviewAssessInput(parsed.operation, parsed.input);
-					if (input.baseRef !== undefined && input.committedOnly === true) {
-						const root = resolveReviewControllerWorkspaceRoot(parsed.workspaceRoot, ctx.cwd, candidateViews, parsed.lineageId);
-						deliveryScope = await reviewDelivery.capture(sessionKey, root, input.baseRef);
-					}
-				}
 				if (parsed.operation === REVIEW_CONTROLLER_OPERATION.ACKNOWLEDGE_APPROVED) {
 					acknowledgementRoot = resolveReviewControllerWorkspaceRoot(parsed.workspaceRoot, ctx.cwd, candidateViews, parsed.lineageId);
 					acknowledgementMutation = pendingReviewMutation(ctx.sessionManager, acknowledgementRoot);
@@ -12269,11 +12261,6 @@ function createGentleAiExtensionForTesting(
 				pendingReviewConsentRegistry,
 				pendingReviewConsentFallbackKey,
 			);
-			if (deliveryScope && details.operation === REVIEW_CONTROLLER_OPERATION.ASSESS && details.rddLine === "on" &&
-				isRecord(details.candidate) && details.candidate.kind === "base-diff" && details.candidate.baseRef === deliveryScope.baseRef &&
-				!signal?.aborted && pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey) === sessionKey) {
-				await reviewDelivery.remember(deliveryScope);
-			}
 			if (details.operation === REVIEW_CONTROLLER_OPERATION.ACKNOWLEDGE_APPROVED &&
 				details.outcome === "native-approved-acknowledgement-completed" &&
 				details.status === "closed" && details.authority === "burned" &&
@@ -12417,7 +12404,6 @@ function createGentleAiExtensionForTesting(
 	}
 
 	pi.on("session_start", async (event, ctx) => {
-		reviewDelivery.clear();
 		const startupEpoch = reminderEpoch;
 		const profileSessionId = ctx.sessionManager?.getSessionId?.();
 		if (profileSessionId) clearSessionProfileBinding(profileSessionId);
@@ -12874,8 +12860,11 @@ function createGentleAiExtensionForTesting(
 		if (commandDenied) return commandDenied;
 		// Check after any command-authorization dialog, so the human's wait
 		// cannot leave an earlier candidate assessment stale at execution.
-		const deliveryDenied = await reviewDelivery.check(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey),
-			ctx.cwd, event.toolName, command, nativeReviewCli, (root, target) => readNativeReviewOutcome(root, target) === "declined", ctx.signal);
+		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey), deliveryEpoch = reminderEpoch;
+		const deliveryDenied = await checkReviewDeliveryPreflight(ctx.cwd, event.toolName, command, nativeReviewCli,
+			root => processRetainedNativeStatusSelections.get(sessionKey)?.readCommittedRange(root),
+			(root, target) => readNativeReviewOutcome(root, target) === "declined", ctx.signal,
+			() => deliveryEpoch === reminderEpoch && modeEpoch === yolo.epoch() && pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey) === sessionKey);
 		if (primaryToolCall && modeEpoch !== yolo.epoch()) return { block: true, reason: "Permission mode changed during delivery preflight. This action was not run; retry under the current mode." };
 		return deliveryDenied;
 	});

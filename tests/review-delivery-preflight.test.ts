@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
-import { ReviewDeliveryPreflight } from "../lib/review-delivery-preflight.ts";
-import { recognizeDeliveryCommands } from "../lib/destructive-command-guard.ts";
+import { checkReviewDeliveryPreflight } from "../lib/review-delivery-preflight.ts";
+import { recognizeReviewDeliveryActions } from "../lib/destructive-command-guard.ts";
+import { ReviewContinuationRegistry } from "../lib/review-continuation-registry.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 
 test("#2997: a foreground or background delivery cannot precede an explicit committed-range assessment", async t => {
@@ -24,11 +27,12 @@ test("#2997: a foreground or background delivery cannot precede an explicit comm
 	const handlers = new Map<string, Function>();
 	const tools = new Map<string, { execute: Function }>();
 	let nativeDue = false;
+	let assessments = 0;
 	let duringConfirmation = () => {};
 	const cli = {
 		reviewMode: async () => ({ status: { effective: "on", global: "on", cloneLocal: "", source: "global" } }),
-		assess: async (request: { baseRef?: string }) => ({ schema: "gentle-ai.review-assessment/v1", risk: nativeDue ? "high" : "medium", reasons: [], changedPaths: 1, changedLines: 2,
-			candidate: { kind: "base-diff", baseRef: request.baseRef, consumed: false }, reviewDue: nativeDue, reviewDueReason: nativeDue ? "high_risk" : "under_budget" }),
+		assess: async (request: { baseRef?: string }) => { assessments++; return ({ schema: "gentle-ai.review-assessment/v1", risk: nativeDue ? "high" : "medium", reasons: [], changedPaths: 1, changedLines: 2,
+			candidate: { kind: "base-diff", baseRef: request.baseRef, consumed: false }, reviewDue: nativeDue, reviewDueReason: nativeDue ? "high_risk" : "under_budget" }); },
 	};
 	const pi = { on: (name: string, handler: Function) => handlers.set(name, handler), events: { emit() {} }, registerCommand() {}, registerTool(tool: { name: string; execute: Function }) { tools.set(tool.name, tool); } };
 	createGentleAiExtension({ nativeReviewCli: cli as never, processEnv: { GENTLE_AI_TELEMETRY: "0" } })(pi as never);
@@ -44,15 +48,31 @@ test("#2997: a foreground or background delivery cannot precede an explicit comm
 	}
 	const baseRef = git("rev-parse", "HEAD");
 	writeFileSync(join(root, "app.ts"), "export const value = 2;\n"); git("commit", "-qam", "change");
-	const assessed = await tools.get("gentle_review")!.execute("assess-committed", { operation: "assess", input: { baseRef, committedOnly: true } }, undefined, undefined, ctx);
-	assert.equal(assessed.details.reviewDue, false);
+	const gitReads = t.mock.method(childProcess, "execFile");
+	syncBuiltinESMExports();
+	try {
+		const assessed = await tools.get("gentle_review")!.execute("assess-committed", { operation: "assess", input: { baseRef, committedOnly: true } }, undefined, undefined, ctx);
+		assert.equal(assessed.details.reviewDue, false);
+		assert.equal(gitReads.mock.calls.filter(call => call.arguments[0] === "git").length, 0, "retaining the base adds no asynchronous Git snapshot reads");
+	} finally { gitReads.mock.restore(); syncBuiltinESMExports(); }
 	const admitted = await handlers.get("tool_call")!({ toolName: "bash", toolCallId: "push-after-assess", input: { command: "git push origin HEAD" } }, ctx);
 	assert.equal(admitted?.block, undefined, "the real controller remembers the explicit range for fresh delivery checks");
+	const beforeBatch = assessments;
+	const batch = await handlers.get("tool_call")!({ toolName: "bash", toolCallId: "batch-delivery", input: { command: "git push origin HEAD && gh pr create" } }, ctx);
+	assert.equal(batch?.block, undefined, "a non-due candidate can push and create its PR in one call");
+	assert.equal(assessments - beforeBatch, 1, "the batch gets one fresh assessment, not one per action");
+	const wrapped = await handlers.get("tool_call")!({ toolName: "bash", toolCallId: "wrapped-delivery", input: { command: "sh -c 'git push origin HEAD'" } }, ctx);
+	assert.equal(wrapped?.block, undefined, "a shell wrapper alone is not a review blocker");
+	for (const command of ["git commit -am fix && git push", "sh -c 'git commit -am fix && git push'", "git switch other && git push"]) {
+		const result = await handlers.get("tool_call")!({ toolName: "bash", toolCallId: command, input: { command } }, ctx);
+		assert.equal(result?.block, true, "a candidate-changing command still needs its own boundary");
+	}
 	let confirmationObserved = false;
 	duringConfirmation = () => {
 		confirmationObserved = true;
 		duringConfirmation = () => {};
 		writeFileSync(join(root, "app.ts"), "export const value = 3;\n"); git("commit", "-qam", "changed during consent");
+		nativeDue = true;
 	};
 	const changed = await handlers.get("tool_call")!({ toolName: "bash", toolCallId: "changed-while-confirming", input: { command: "git push origin HEAD" } }, ctx);
 	assert.equal(confirmationObserved, true);
@@ -65,10 +85,10 @@ test("#2997: a foreground or background delivery cannot precede an explicit comm
 
 test("delivery recognition distinguishes executable commands from text and covers grouped shell forms", () => {
 	for (const command of ["git push origin HEAD", "git -C './repo with space' push origin HEAD", "git commit -am fix && git push", "gh pr create", "gh pr merge 42 --auto", "gh -R owner/repo pr create", "until true; do gh pr merge 42; done", "sh -c 'git push'", "echo $(git push)"]) {
-		assert.ok(recognizeDeliveryCommands(command).length, command);
+		assert.ok(recognizeReviewDeliveryActions(command).some(action => action.kind === "delivery"), command);
 	}
 	for (const command of ["git status", "git push --dry-run origin HEAD", "git push --delete origin old", "gh pr checks 42 --watch", "echo 'git push'", "echo '$(git push)'", "printf '%s' 'gh pr merge'", "cat <<'TEXT'\ngit push\nTEXT"]) {
-		assert.equal(recognizeDeliveryCommands(command).length, 0, command);
+		assert.equal(recognizeReviewDeliveryActions(command).filter(action => action.kind === "delivery").length, 0, command);
 	}
 });
 
@@ -79,7 +99,9 @@ test("preflight rechecks the actual assessed range, preserves native non-due/dec
 	git("init", "-q"); writeFileSync(join(root, "app.ts"), "base\n"); git("add", "."); git("commit", "-qm", "base");
 	const baseRef = git("rev-parse", "HEAD");
 	writeFileSync(join(root, "app.ts"), "changed\n"); git("commit", "-qam", "change");
-	const preflight = new ReviewDeliveryPreflight();
+	const registry = new ReviewContinuationRegistry();
+	const scope = (path: string) => registry.readCommittedRange(path);
+	let active = true;
 	let mode = "on", due = false, consumed = false, seenBase: string | undefined;
 	let duringAssessment = () => {};
 	const native = {
@@ -87,40 +109,40 @@ test("preflight rechecks the actual assessed range, preserves native non-due/dec
 		assess: async (request: { baseRef?: string }) => { seenBase = request.baseRef; duringAssessment(); return { candidate: { kind: "base-diff", baseRef, consumed }, reviewDue: due }; },
 		targetStatus: async () => ({ applicability: "current_target", targetIdentity: "exact-target", projection: { kind: "base-diff" } }),
 	} as unknown as NativeReviewCli;
-	const check = (declined = false, key = "session") => preflight.check(key, root, "bash", "git push origin HEAD", native, (_root, target) => declined && target === "exact-target");
+	const check = (declined = false, selectedScope = scope) => checkReviewDeliveryPreflight(root, "bash", "git push origin HEAD", native, selectedScope, (_root, target) => declined && target === "exact-target", undefined, () => active);
 	assert.equal((await check())?.block, true, "an empty dirty tree is no substitute for a committed range");
-	const captured = await preflight.capture("session", root, baseRef);
-	assert.ok(captured, "Git must identify the actual committed range");
-	await preflight.remember(captured);
+	registry.retainCommittedRange(root, baseRef);
 	assert.equal(await check(), undefined, "native under-budget/passive outcomes do not force review");
 	assert.equal(seenBase, baseRef);
 	due = true;
 	assert.equal((await check())?.block, true, "a due unacknowledged review pauses delivery");
 	assert.equal(await check(true), undefined, "the exact host-recorded human decline preserves ordinary policy");
-	const replaced = await preflight.capture("session", root, baseRef);
-	const latest = await preflight.capture("session", root, baseRef);
-	await preflight.remember(replaced);
-	assert.equal((await check())?.block, true, "an older completion cannot bless a newer unconfirmed scope");
-	await preflight.remember(latest);
-	assert.equal((await check(false, "other-session"))?.block, true);
+	const otherSession = new ReviewContinuationRegistry();
+	assert.equal((await check(false, path => otherSession.readCommittedRange(path)))?.block, true);
 	consumed = true; due = false;
 	assert.equal(await check(), undefined, "fresh native acknowledged evidence can proceed to ordinary delivery checks");
-	duringAssessment = () => preflight.clear();
+	duringAssessment = () => { active = false; };
 	assert.equal((await check())?.block, true, "session invalidation during native await cannot allow delivery");
 	duringAssessment = () => {};
-	await preflight.remember(await preflight.capture("session", root, baseRef));
+	active = true;
 	writeFileSync(join(root, "app.ts"), "new change\n"); git("commit", "-qam", "new change");
-	assert.equal((await check())?.block, true, "a new HEAD requires reassessment");
+	assert.equal(await check(), undefined, "a new HEAD is assessed freshly without a manual re-registration cycle");
+	duringAssessment = () => { duringAssessment = () => {}; writeFileSync(join(root, "app.ts"), "raced change\n"); git("commit", "-qam", "changed during assessment"); };
+	assert.equal((await check())?.block, true, "HEAD drift during the fresh read still blocks delivery");
+	duringAssessment = () => { registry.retainCommittedRange(root, "HEAD"); };
+	assert.equal((await check())?.block, true, "replacement of the selected range during assessment blocks delivery");
+	duringAssessment = () => {};
+	registry.retainCommittedRange(root, baseRef);
 	mode = "off";
 	assert.equal(await check(), undefined, "RDD off preserves ordinary delivery policy");
 	mode = "on";
 	const other = join(root, "other"); mkdirSync(other); git("-C", other, "init", "-q");
 	const mixedModes = { ...native, reviewMode: async (request: { cwd: string }) => ({ status: { effective: request.cwd === root ? "off" : "on" } }) } as NativeReviewCli;
-	assert.equal((await preflight.check("session", root, "bash", `cd "${other}" && git push origin HEAD`, mixedModes, () => false))?.block, true, "cd selects its target's RDD mode rather than the session mode");
-	assert.equal((await preflight.check("session", root, "bash", `git push origin HEAD; git -C "${other}" push origin HEAD`, mixedModes, () => false))?.block, true, "a first off repository cannot bypass a second on repository");
+	assert.equal((await checkReviewDeliveryPreflight(root, "bash", `cd "${other}" && git push origin HEAD`, mixedModes, scope, () => false))?.block, true, "cd selects its target's RDD mode rather than the session mode");
+	assert.equal((await checkReviewDeliveryPreflight(root, "bash", `git push origin HEAD; git -C "${other}" push origin HEAD`, mixedModes, scope, () => false))?.block, true, "a first off repository cannot bypass a second on repository");
 	const abort = new AbortController();
 	const uncooperative = { reviewMode: () => new Promise(() => {}), assess: () => assert.fail("No assessment after cancellation") } as unknown as NativeReviewCli;
-	const pending = preflight.check("session", root, "bash", "git push origin HEAD", uncooperative, () => false, abort.signal);
+	const pending = checkReviewDeliveryPreflight(root, "bash", "git push origin HEAD", uncooperative, scope, () => false, abort.signal);
 	abort.abort();
 	assert.equal((await pending)?.block, true, "an uncooperative native reader cannot retain admission after abort");
 });

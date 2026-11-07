@@ -1052,9 +1052,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				if (closePromise) return closePromise;
 				closePromise = Promise.resolve().then(async () => {
 					await Promise.allSettled([
-						(async () => { try { client?.close(); } catch { /* best-effort: the登场 always unblocks */ } })(),
-						(async () => { try { await listener?.close(); } catch { /* best-effort: the登场 always unblocks */ } })(),
-						(async () => { try { if (registry && (!listener || !listener.closesRegistry)) await registry.close?.(); } catch { /* best-effort: the登场 always unblocks */ } })(),
+						(async () => { try { client?.close(); } catch { /* best-effort: the boot always unblocks */ } })(),
+						(async () => { try { await listener?.close(); } catch { /* best-effort: the boot always unblocks */ } })(),
+						(async () => { try { if (registry && (!listener || !listener.closesRegistry)) await registry.close?.(); } catch { /* best-effort: the boot always unblocks */ } })(),
 					]);
 				});
 				return closePromise;

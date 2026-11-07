@@ -1533,12 +1533,14 @@ const NEUTRAL_PERSONA_PROMPT = `Persona:
  */
 function resolveSessionDelegationMode(
 	ctx: Pick<ExtensionContext, "cwd"> & { sessionManager?: { getSessionId?: () => string | undefined } },
+	env?: NodeJS.ProcessEnv,
 ): OrchestratorMode {
 	try {
 		return resolveOrchestratorMode({
 			cwd: ctx.cwd,
 			configHome: gentleAiConfigHome(),
 			sessionId: ctx.sessionManager?.getSessionId?.(),
+			...(env === undefined ? {} : { env }),
 		}).mode;
 	} catch {
 		return DEFAULT_ORCHESTRATOR_MODE;
@@ -12474,7 +12476,7 @@ function createGentleAiExtensionForTesting(
 					// on another profile changes these rules on the next turn, and pressing
 					// Enter back restores them. A child or named-agent session keeps the
 					// organic rules: its own instructions are the bounded task it received.
-					isPrimarySession ? resolveSessionDelegationMode(ctx) : DEFAULT_ORCHESTRATOR_MODE,
+					isPrimarySession ? resolveSessionDelegationMode(ctx, permissionEnvironment) : DEFAULT_ORCHESTRATOR_MODE,
 				)}`;
 		// gentle-pi#560 / gentle-ai#4056, #4057: inject the mirrored provider
 		// contract bundle's review execution contract for the primary session
@@ -12660,7 +12662,10 @@ function createGentleAiExtensionForTesting(
 				const launch = event.input as Record<string, unknown>;
 				const selected = [launch.workspace_root, launch.repository_root].find((value): value is string => typeof value === "string" && value.trim() !== "");
 				const root = selected ? resolve(ctx.cwd, selected) : ctx.cwd;
-				const undocumentedWriter = rejectUndocumentedWriterLaunch(event.input, { root, contextUsage: ctx.getContextUsage?.(), env: permissionEnvironment });
+				// The guard reads the same mode the prompt was built with, from the session's own environment, so the
+				// two can never disagree about whether a small change belongs to a writer.
+				const orchestratorMode = resolveSessionDelegationMode(ctx, permissionEnvironment);
+				const undocumentedWriter = rejectUndocumentedWriterLaunch(event.input, { root, contextUsage: ctx.getContextUsage?.(), env: permissionEnvironment, orchestratorMode });
 				if (undocumentedWriter) return undocumentedWriter;
 				const unriskedVerifier = rejectUnriskedVerifierLaunch(event.input, { root, contextUsage: ctx.getContextUsage?.(), env: permissionEnvironment });
 				if (unriskedVerifier) return unriskedVerifier;

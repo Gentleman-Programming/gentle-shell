@@ -2,10 +2,10 @@ import { pickModel, sharedCooldown, shouldFallBack, type ModelCooldown } from ".
 import type { FallbackChain } from "./model-fallback-store.ts";
 import { fallbackContinuePrompt } from "./model-fallback-notice.ts";
 import { isSessionChangeEvidence, type SessionChangeEvidence } from "./session-changes.ts";
-import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { tmpdir, userInfo } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve, win32 } from "node:path";
 import { Duplex, type Readable, type Writable } from "node:stream";
 import { stripVTControlCharacters } from "node:util";
 import { withoutInteractiveHost } from "./rpc-host.ts";
@@ -192,6 +192,7 @@ interface ProcessLike {
 	execPath: string;
 	argv: string[];
 	env: NodeJS.ProcessEnv;
+	platform?: NodeJS.Platform;
 }
 
 interface Pending {
@@ -363,16 +364,124 @@ export function childArguments(request: TaskRequest, instructionsPath?: string):
 	return args;
 }
 
-// Reuse the running pi entry while it exists; upgrades may remove it.
-// GENTLE_PI_AGENTS_PI overrides it with a command line.
-export function piCommand(proc: ProcessLike = process, exists: (path: string) => boolean = existsSync): PiCommand {
+/**
+ * Resolves the underlying JavaScript entry point targeted by a Windows .cmd or .bat shim.
+ *
+ * Scans the shim text for referenced .js/.mjs/.cjs files (such as npm or pnpm cmd-shims)
+ * or inspects adjacent package metadata without invoking cmd.exe or a shell.
+ */
+export function resolvePiScriptFromCmd(
+	cmdPath: string,
+	exists: (path: string) => boolean = existsSync,
+	readFile: (path: string) => string = (p) => readFileSync(p, "utf8"),
+): string | undefined {
+	const baseDir = win32.dirname(cmdPath);
+	let text = "";
+	try {
+		text = readFile(cmdPath);
+	} catch {
+		text = "";
+	}
+
+	if (text) {
+		const targetMatch = /^#\s*cmd-shim-target\s*=\s*([^\r\n]+)$/m.exec(text);
+		if (targetMatch) {
+			const candidate = targetMatch[1].trim();
+			const resolved = win32.isAbsolute(candidate) ? candidate : win32.resolve(baseDir, candidate);
+			if (exists(resolved)) return resolved;
+		}
+
+		const scriptMatches = text.matchAll(/(?:["'])([^"']+\.[cm]?js)(?:["'])|(?:^|\s)((?:%~?dp0|%dp0%)\\?[^\s"']+\.[cm]?js)(?:\s|$)/gi);
+		for (const m of scriptMatches) {
+			const raw = (m[1] ?? m[2])?.trim();
+			if (!raw) continue;
+			const stripped = raw.replace(/^(?:%~?dp0|%dp0%)\\?/i, "");
+			const candidate = /^(?:%~?dp0|%dp0%)/i.test(raw) || !win32.isAbsolute(stripped)
+				? win32.resolve(baseDir, stripped)
+				: stripped;
+			if (exists(candidate)) return candidate;
+		}
+	}
+
+	const standardPaths = [
+		win32.join(baseDir, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"),
+		win32.join(baseDir, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js"),
+		win32.join(baseDir, "pi-launcher.js"),
+		win32.join(baseDir, "dist", "cli.js"),
+		win32.join(baseDir, "dist", "bundle", "cli.js"),
+	];
+	for (const candidate of standardPaths) {
+		if (exists(candidate)) return candidate;
+	}
+
+	return undefined;
+}
+
+/**
+ * Searches the Windows PATH and known locations for an installed pi command,
+ * resolving .cmd shims to their direct Node script entry points to avoid cmd.exe shell invocation.
+ */
+export function findWindowsPiCommand(
+	proc: ProcessLike = process,
+	exists: (path: string) => boolean = existsSync,
+	readFile: (path: string) => string = (p) => readFileSync(p, "utf8"),
+): PiCommand | undefined {
+	const pathEnv = proc.env.Path ?? proc.env.PATH ?? "";
+	for (const entry of pathEnv.split(";")) {
+		const dir = entry.length >= 2 && entry.startsWith('"') && entry.endsWith('"')
+			? entry.slice(1, -1)
+			: entry;
+		if (!dir) continue;
+
+		const candidateExe = win32.join(dir, "pi.exe");
+		if (exists(candidateExe)) {
+			return { command: candidateExe, args: [] };
+		}
+
+		for (const ext of [".cmd", ".bat"]) {
+			const candidateCmd = win32.join(dir, `pi${ext}`);
+			if (exists(candidateCmd)) {
+				const script = resolvePiScriptFromCmd(candidateCmd, exists, readFile);
+				if (script) {
+					return { command: proc.execPath, args: [script] };
+				}
+			}
+		}
+	}
+	return undefined;
+}
+
+/**
+ * Resolves the pi invocation command for subagent execution.
+ *
+ * Reuses the running pi CLI entry point while it exists on disk.
+ * When the running entry point disappears (e.g. after a package upgrade on Windows),
+ * re-resolves the current installation from PATH and returns Node plus the target script
+ * so arguments are never passed through an unescaped shell wrapper.
+ */
+export function piCommand(
+	proc: ProcessLike = process,
+	exists: (path: string) => boolean = existsSync,
+	readFile: (path: string) => string = (p) => readFileSync(p, "utf8"),
+): PiCommand {
 	const override = proc.env.GENTLE_PI_AGENTS_PI?.trim();
 	if (override) {
 		const [command, ...args] = override.split(/\s+/);
+		if (/\.(?:cmd|bat)$/i.test(command) && exists(command)) {
+			const script = resolvePiScriptFromCmd(command, exists, readFile);
+			if (script) return { command: proc.execPath, args: [script, ...args] };
+		}
 		return { command, args };
 	}
 	const entry = proc.argv[1];
 	if (entry && /(^|[\\/])cli\.js$/.test(entry) && exists(entry)) return { command: proc.execPath, args: [entry] };
+	const isWin32 = proc.platform !== undefined
+		? proc.platform === "win32"
+		: (proc === process ? process.platform === "win32" : /^[a-zA-Z]:\\/i.test(proc.execPath) || /\\/.test(proc.execPath));
+	if (isWin32) {
+		const resolved = findWindowsPiCommand(proc, exists, readFile);
+		if (resolved) return resolved;
+	}
 	return { command: "pi", args: [] };
 }
 

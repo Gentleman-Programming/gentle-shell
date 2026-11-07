@@ -7,6 +7,7 @@ import { renderThreadItem } from "../lib/agents-thread-view.ts";
 import { AgentsView, taskHeader, type AgentsViewDeps } from "../lib/agents-view.ts";
 import { KeybindingsManager } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js";
 import { CARD_CONTENT, cardContent, setCardContent } from "../lib/card-content-policy.ts";
+import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import productionQuietTools from "../extensions/quiet-tools.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
@@ -844,90 +845,113 @@ test("cards expand one at a time from the row under the pointer", () => {
 	view.dispose();
 });
 
-test("the overlay collapses thinking and tool output from the host's own keybindings", () => {	const { store, deps, view, text } = detailHarness({ keybindings: new KeybindingsManager() });
-	fillDetail(store);
+test("the log keeps its original detail whatever the host bindings or card state say", () => {
+	const { store, view, text } = detailHarness({ keybindings: new KeybindingsManager({ "app.thinking.toggle": "j", "app.tools.expand": "k" }), cardDetail: { thinkingExpanded: false, toolsExpanded: false } }, 30);
+	store.apply("a", { type: TASK_EVENT.THINKING, text: "long zero\nlong one\nlong two\nlong three\nlong four\nlong five" }, 2000);
+	store.apply("a", { type: TASK_EVENT.TEXT, text: "between" }, 2000);
+	store.apply("a", { type: TASK_EVENT.THINKING, text: "short single thought" }, 2000);
+	applyTool(store, "bash", { command: "run" }, "output 0\noutput 1\noutput 2\noutput 3\noutput 4\noutput 5");
 	const retained = store.thread("a");
-	const markers = (): number => (text().match(/… \d+ more lines/g) ?? []).length;
+	const whole = (): void => {
+		assert.match(text(), /long five/, "the log draws every thinking line");
+		assert.match(text(), /short single thought/, "short reasoning stays visible in the log");
+		assert.match(text(), /output 5/, "the log draws every retained output line");
+		assert.doesNotMatch(text(), /… hidden|… \d+ more lines|to expand/, "the log offers no detail control or hint");
+	};
 
-	assert.match(text(), /thought 5/);
-	assert.match(text(), /output 5/);
-	assert.equal(markers(), 0, "the log opens whole, as it always has");
-
-	view.handleInput("\x14");
-	assert.doesNotMatch(text(), /thought /, "hiding thinking hides every retained line, short or long");
-	assert.match(text(), /… hidden · ctrl\+t to expand/, "the hidden block names the host's key");
-	assert.match(text(), /output 5/, "the thinking toggle leaves tool output alone");
-	assert.equal(markers(), 0, "a hidden block previews nothing, so it counts nothing");
-
-	view.handleInput("\x0f");
-	assert.match(text(), /output 2/);
-	assert.doesNotMatch(text(), /output 3/, "the output toggle bounds the retained result");
-	assert.match(text(), /… 3 more lines · ctrl\+o to expand/);
-	assert.match(text(), /… hidden · ctrl\+t to expand/, "both controls keep their own state");
-	assert.equal(markers(), 1, "only the collapsed result keeps a preview");
-
-	view.handleInput("\x14");
-	view.handleInput("\x0f");
-	assert.match(text(), /thought 5/);
-	assert.match(text(), /output 5/);
-	assert.equal(markers(), 0, "toggling back restores every retained line");
-
-	assert.deepEqual(store.thread("a"), retained, "the controls never mutate retention");
-	const reopened = new AgentsView({ ...deps });
-	assert.match(stripAnsi(reopened.render(100).join("\n")), /thought 5/, "the controls are local to one overlay, not global chat state");
-	reopened.dispose();
+	whole();
+	for (const key of ["\x14", "\x0f", "j", "k"]) view.handleInput(key);
+	whole();
+	assert.deepEqual(store.thread("a"), retained, "the log never mutates retention");
 	view.dispose();
 });
 
-for (const presentation of ["log", "cards"] as const) {
-	test(`${presentation}: hiding thinking hides short and long reasoning whole and shows it again`, () => {
-		const { store, view, text } = detailHarness({ keybindings: new KeybindingsManager(), threadPresentation: () => presentation }, 24);
-		store.apply("a", { type: TASK_EVENT.THINKING, text: "long zero\nlong one\nlong two\nlong three\nlong four\nlong five" }, 2000);
-		store.apply("a", { type: TASK_EVENT.TEXT, text: "between" }, 2000);
-		store.apply("a", { type: TASK_EVENT.THINKING, text: "short single thought" }, 2000);
+for (const [label, detail, hidden, expanded] of [
+	["hidden thinking and expanded tools", { thinkingExpanded: false, toolsExpanded: true }, true, true],
+	["shown thinking and collapsed tools", { thinkingExpanded: true, toolsExpanded: false }, false, false],
+] as const) {
+	test(`cards open from the host's global state: ${label}`, () => {
+		loadQuietTools();
+		const { store, deps, view, text } = detailHarness({ keybindings: new KeybindingsManager(), threadPresentation: () => "cards", cardDetail: { ...detail } }, 24);
+		store.apply("a", { type: TASK_EVENT.THINKING, text: "thought zero\nthought one\nthought two\nthought three" }, 2000);
+		applyTool(store, "read", { path: "src/a.ts" }, "a0\na1\na2\na3\na4\na5");
 		const retained = store.thread("a");
-		assert.match(text(), /long five/);
-		assert.match(text(), /short single thought/);
+		const reading = (): string => text();
+
+		assert.equal(/thought zero/.test(reading()), !hidden, "cards follow the host's thinking visibility when the overlay opens");
+		assert.equal(/a5/.test(reading()), expanded, "cards follow the host's tool expansion when the overlay opens");
+		if (hidden) assert.match(reading(), /… hidden · ctrl\+t to expand/, "a hidden block names the host's key");
+		else assert.doesNotMatch(reading(), /… hidden/);
 
 		view.handleInput("\x14");
-		const hidden = text();
-		assert.doesNotMatch(hidden, /long |short single thought/, "no reasoning line survives hiding");
-		assert.equal((hidden.match(/Thinking/g) ?? []).length, 2, "each thinking item keeps its label");
-		assert.equal((hidden.match(/… hidden · ctrl\+t to expand/g) ?? []).length, 2, "each hidden block names the key");
-		assert.deepEqual(store.thread("a"), retained, "hiding never mutates retention");
+		view.handleInput("\x0f");
+		assert.equal(/thought zero/.test(reading()), hidden, "the thinking key flips the cards' own level");
+		assert.equal(/a5/.test(reading()), !expanded, "the output key flips the cards' own level");
+		assert.deepEqual(store.thread("a"), retained, "the cards' levels never mutate retention");
 
-		view.handleInput("\x14");
-		assert.match(text(), /long five/);
-		assert.match(text(), /short single thought/, "showing thinking again restores every line");
-		assert.doesNotMatch(text(), /… hidden/);
+		const reopened = new AgentsView({ ...deps });
+		const fresh = stripAnsi(reopened.render(100).join("\n"));
+		assert.equal(/thought zero/.test(fresh), !hidden, "a reopened overlay opens from the host state again, not the previous level");
+		assert.equal(/a5/.test(fresh), expanded, "the reopened overlay re-seeds tool expansion too");
+		reopened.dispose();
 		view.dispose();
 	});
 }
 
-test("a configured keybinding replaces the default and an unbound action has no key", () => {
-	const { store, view, text } = detailHarness({ keybindings: new KeybindingsManager({ "app.tools.expand": "ctrl+e", "app.thinking.toggle": [] }) });
-	fillDetail(store);
+test("cards: hiding thinking hides short and long reasoning whole and shows it again", () => {
+	const { store, view, text } = detailHarness({ keybindings: new KeybindingsManager(), threadPresentation: () => "cards" }, 24);
+	store.apply("a", { type: TASK_EVENT.THINKING, text: "long zero\nlong one\nlong two\nlong three\nlong four\nlong five" }, 2000);
+	store.apply("a", { type: TASK_EVENT.TEXT, text: "between" }, 2000);
+	store.apply("a", { type: TASK_EVENT.THINKING, text: "short single thought" }, 2000);
+	const retained = store.thread("a");
+	assert.match(text(), /long five/);
+	assert.match(text(), /short single thought/);
+
+	view.handleInput("\x14");
+	const hidden = text();
+	assert.doesNotMatch(hidden, /long |short single thought/, "no reasoning line survives hiding");
+	assert.equal((hidden.match(/Thinking/g) ?? []).length, 2, "each thinking item keeps its label");
+	assert.equal((hidden.match(/… hidden · ctrl\+t to expand/g) ?? []).length, 2, "each hidden block names the key");
+	assert.deepEqual(store.thread("a"), retained, "hiding never mutates retention");
+
+	view.handleInput("\x14");
+	assert.match(text(), /long five/);
+	assert.match(text(), /short single thought/, "showing thinking again restores every line");
+	assert.doesNotMatch(text(), /… hidden/);
+	view.dispose();
+});
+
+test("cards honor a configured binding and advertise nothing for an unbound action", () => {
+	loadQuietTools();
+	const { store, view, text } = detailHarness({ keybindings: new KeybindingsManager({ "app.tools.expand": "ctrl+e", "app.thinking.toggle": [] }), threadPresentation: () => "cards", cardDetail: { thinkingExpanded: true, toolsExpanded: true } }, 24);
+	store.apply("a", { type: TASK_EVENT.THINKING, text: "thought zero\nthought one\nthought two" }, 2000);
+	applyTool(store, "webfetch", {}, "a0\na1\na2\na3\na4\na5");
 
 	view.handleInput("\x0f");
-	assert.match(text(), /output 5/, "the host's replaced default is inert");
+	assert.match(text(), /a5/, "the host's replaced default is inert");
 	view.handleInput("\x14");
-	assert.match(text(), /thought 5/, "an unbound action leaves the thinking it can no longer toggle untouched");
+	assert.match(text(), /thought zero/, "an unbound action leaves the thinking it can no longer toggle visible");
 	view.handleInput("\x05");
-	assert.doesNotMatch(text(), /output 3/, "the configured key toggles the retained result");
-	assert.match(text(), /· ctrl\+e to expand/, "the collapsed block names the configured key");
+	assert.doesNotMatch(text(), /a3/, "the configured key collapses the card");
+	assert.match(text(), /· ctrl\+e to expand/, "the collapsed card names the configured key");
 	assert.doesNotMatch(text(), /ctrl\+[to] to expand/, "neither the replaced default nor an unbound action is advertised");
 	view.dispose();
 });
 
-test("without a host keybinding manager the documented defaults still toggle", () => {
-	const { store, view, text } = detailHarness();
-	fillDetail(store);
+test("cards toggle from the documented host defaults when no manager was handed down", () => {
+	loadQuietTools();
+	const { store, view, text } = detailHarness({ threadPresentation: () => "cards" }, 24);
+	store.apply("a", { type: TASK_EVENT.THINKING, text: "thought zero\nthought one\nthought two" }, 2000);
+	applyTool(store, "webfetch", {}, "a0\na1\na2\na3\na4\na5");
+
+	assert.doesNotMatch(text(), /a3/, "a card starts collapsed without a host state");
 	view.handleInput("\x14");
-	assert.doesNotMatch(text(), /thought 0/, "ctrl+t is the documented thinking default");
+	assert.doesNotMatch(text(), /thought zero/, "ctrl+t is the documented thinking default");
 	assert.match(text(), /… hidden · ctrl\+t to expand/);
 	view.handleInput("\x0f");
-	assert.doesNotMatch(text(), /output 3/, "ctrl+o is the documented tool-output default");
-	assert.match(text(), /… 3 more lines · ctrl\+o to expand/, "the fallback key is the one the collapsed block advertises");
+	assert.match(text(), /a3/, "ctrl+o is the documented tool-output default");
+	view.handleInput("\x0f");
+	assert.match(text(), /… \d+ more lines · ctrl\+o to expand/, "the fallback key is the one the collapsed card advertises");
 	view.dispose();
 });
 
@@ -957,6 +981,33 @@ test("cards follow the same controls while a clicked card keeps its own level", 
 	clickRow("b0");
 	assert.match(text(), /b5/, "a card stays individually expandable afterwards");
 	assert.doesNotMatch(text(), /a5/);
+	view.dispose();
+});
+
+test("cards keep the shared card style and content preference at any detail level", (t) => {
+	loadQuietTools();
+	const previousStyle = cardStyle();
+	const previousContent = cardContent();
+	t.after(() => {
+		setCardStyle(previousStyle);
+		setCardContent(previousContent);
+	});
+	// Float paints a tone background, so the theme has to carry one for the
+	// style preference to be visible at all.
+	const bgTheme = { fg: (_color: string, text: string) => text, bg: (role: string, text: string) => `<${role}>${text}</>` };
+	const { store, view } = detailHarness({ keybindings: new KeybindingsManager(), threadPresentation: () => "cards", theme: bgTheme, cardDetail: { toolsExpanded: false } }, 20);
+	applyTool(store, "read", { path: "src/a.ts" }, "a0\na1\na2\na3\na4\na5");
+	const text = (): string => stripAnsi(view.render(60).join("\n"));
+
+	setCardStyle(CARD_STYLE.NEON);
+	const neon = text();
+	setCardStyle(CARD_STYLE.FLOAT);
+	assert.notEqual(text(), neon, "the overlay's cards still follow the shared card style");
+	setCardContent(CARD_CONTENT.MINIMAL);
+	assert.doesNotMatch(text(), /a0/, "the shared content preference still applies");
+	setCardContent(CARD_CONTENT.DEFAULT);
+	view.handleInput("\x0f");
+	assert.match(text(), /a5/, "an expanded level draws the full result under the default content preference");
 	view.dispose();
 });
 

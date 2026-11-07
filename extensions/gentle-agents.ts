@@ -343,6 +343,24 @@ function legacySubagentsInstalledAt(agentHome: string): boolean {
 
 export { agentsViewKey, agentsCollapseKey, agentsStopKey };
 
+/**
+ * The cards' detail levels as the host holds them when the overlay opens: its
+ * own thinking visibility (`hideThinkingBlock`) and its tool-output expansion.
+ * A host that cannot answer keeps the overlay's defaults — thinking shown and
+ * cards collapsed — and nothing here writes the chat's state back.
+ */
+export function threadDetailDefaults(ctx: Pick<ExtensionContext, "cwd" | "ui">, agentHome: string): { thinkingExpanded: boolean; toolsExpanded: boolean } {
+	let hiddenThinking = false;
+	try {
+		hiddenThinking = SettingsManager.create(ctx.cwd, agentHome).getSettings().hideThinkingBlock === true;
+	} catch { /* unreadable settings keep thinking visible */ }
+	let toolsExpanded = false;
+	try {
+		toolsExpanded = typeof ctx.ui?.getToolsExpanded === "function" && ctx.ui.getToolsExpanded() === true;
+	} catch { /* a host without a working probe keeps cards collapsed */ }
+	return { thinkingExpanded: !hiddenThinking, toolsExpanded };
+}
+
 function sanitizeTerminalText(value: string): string {
 	return value.replace(/[\x00-\x08\x0B-\x1F\x7F-\x9F]/g, (control) => `\\x${control.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
 }
@@ -2033,6 +2051,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		}
 		let view: AgentsView | undefined;
 		let overlayHost: { requestRender(force?: boolean): void; stop(): void; start(): void } | undefined;
+		// Read once, so an opened overlay starts from the chat's state and later
+		// changes there neither follow into it nor get written back.
+		const cardDetail = threadDetailDefaults(ctx, agentHome);
 		const chosen = await ctx.ui.custom<TaskRecord | null>(
 			(tui, theme, keybindings, done) => {
 				const close = withOverlayRepaint(tui, done);
@@ -2042,6 +2063,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					rows: () => Math.max(0, tui.terminal.rows),
 					store,
 					keybindings,
+					cardDetail,
 					sessionId: ctx.sessionManager.getSessionId() ?? "",
 					presence: {
 						profile: agentHome,

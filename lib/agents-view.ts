@@ -43,11 +43,18 @@ export interface AgentsViewDeps {
 	 */
 	threadPresentation?(): ThreadPresentation;
 	/**
-	 * The host's live keybindings. Thinking and tool-detail collapse are the host's
-	 * own actions, so a reader's rebinding applies here and an action left unbound
-	 * has no key; without a manager the documented defaults still work.
+	 * The host's live keybindings. The cards' thinking and tool-detail actions are
+	 * the host's own, so a reader's rebinding applies there and an action left
+	 * unbound has no key; without a manager the documented defaults still work.
 	 */
 	keybindings?: KeybindingsManager;
+	/**
+	 * The cards' detail levels as the host holds them when the overlay opens: its
+	 * thinking visibility and its tool-output expansion. Seeds the cards only; the
+	 * labeled log has no detail controls. They are read once here, never followed
+	 * live and never written back to the chat's state.
+	 */
+	cardDetail?: { thinkingExpanded?: boolean; toolsExpanded?: boolean };
 	onOpen(task: TaskRecord): void;
 	onClose(): void;
 	requestRender(): void;
@@ -186,10 +193,11 @@ export class AgentsView {
 	private readonly actionRegions = new Map<string, NativePointerRegion>();
 	private readonly expanded = new Map<string, boolean>();
 	private readonly cardExpansion = new Map<string, boolean>();
-	// Local to this overlay: the reader's chosen detail, never the thread's
-	// content and never a global chat setting.
+	// Cards only, and local to this overlay: seeded from the host's thinking
+	// visibility and tool expansion when it opened, never the thread's content and
+	// never a global chat setting. The log always draws thinking and output whole.
 	private thinkingExpanded = true;
-	private toolsExpansion: boolean | undefined;
+	private cardToolsExpanded = false;
 	private readonly observedActiveGroups = new Set<string>();
 	private listScroll = 0;
 	private readonly manualListOffsets = new Map<string, number>();
@@ -298,6 +306,8 @@ export class AgentsView {
 
 	constructor(deps: AgentsViewDeps) {
 		this.deps = deps;
+		this.thinkingExpanded = deps.cardDetail?.thinkingExpanded !== false;
+		this.cardToolsExpanded = deps.cardDetail?.toolsExpanded === true;
 		this.scope = VIEW_SCOPE.SESSION;
 		this.listRegion = this.pointerScope.wrap(EMPTY_COMPONENT, {
 			onWheel: (event) => this.wheelList(event),
@@ -359,8 +369,10 @@ export class AgentsView {
 		if (this.closed) return;
 		if (data === "q") return this.close();
 		if (matchesKey(data, Key.escape)) return this.back();
-		if (this.matchesBinding(data, "app.thinking.toggle")) return this.toggleThinking();
-		if (this.matchesBinding(data, "app.tools.expand")) return this.toggleToolOutput();
+		// These detail actions belong to the cards; the log keeps every key it always
+		// had, so it never consumes them.
+		if (this.threadPresentation() === THREAD_PRESENTATION.CARDS && this.matchesBinding(data, "app.thinking.toggle")) return this.toggleThinking();
+		if (this.threadPresentation() === THREAD_PRESENTATION.CARDS && this.matchesBinding(data, "app.tools.expand")) return this.toggleToolOutput();
 		if (data === "F" && !this.isNarrow()) {
 			this.setNarrowView(this.narrowView === "list" ? "details" : "list");
 			return;
@@ -532,12 +544,6 @@ export class AgentsView {
 		return key === undefined ? undefined : `${key} to expand`;
 	}
 
-	// Until the reader asks, each presentation keeps the default it always had:
-	// the log draws the whole result, a card draws its own preview.
-	private toolsExpanded(presentation: ThreadPresentation): boolean {
-		return this.toolsExpansion ?? presentation === THREAD_PRESENTATION.LOG;
-	}
-
 	private toggleThinking(): void {
 		this.thinkingExpanded = !this.thinkingExpanded;
 		this.clearFooterLayout();
@@ -545,7 +551,7 @@ export class AgentsView {
 	}
 
 	private toggleToolOutput(): void {
-		this.toolsExpansion = !this.toolsExpanded(this.threadPresentation());
+		this.cardToolsExpanded = !this.cardToolsExpanded;
 		// The control speaks for the whole thread, so a card's own level must not
 		// outvote it; clicking a card afterwards sets that card's level again.
 		this.cardExpansion.clear();
@@ -553,10 +559,10 @@ export class AgentsView {
 		this.deps.requestRender();
 	}
 
-	// A click flips what the reader sees, so a card still following the thread's
-	// own level starts from that level rather than from a stale default.
+	// A click flips what the reader sees, so a card still following the cards' own
+	// level starts from that level rather than from a stale default.
 	private flipCardExpansion(card: string): void {
-		this.cardExpansion.set(card, !(this.cardExpansion.get(card) ?? this.toolsExpanded(this.threadPresentation())));
+		this.cardExpansion.set(card, !(this.cardExpansion.get(card) ?? this.cardToolsExpanded));
 	}
 
 	// A card belongs to one task's call: two tasks may reuse a callId, and each
@@ -838,14 +844,16 @@ export class AgentsView {
 		// nothing here can observe (a content or style preference, a renderer's own
 		// state), so a card row is drawn fresh rather than cached under a key that
 		// would have to name every such preference.
-		const key = `${width}\u0000${presentation}\u0000${this.thinkingExpanded}\u0000${this.toolsExpanded(presentation)}`;
-		const expandHint = { thinking: this.expandHint("app.thinking.toggle"), output: this.expandHint("app.tools.expand") };
+		// Cards carry the detail levels; the log is drawn once, whole, at any width.
+		const detail = cards ? `${this.thinkingExpanded}\u0000${this.cardToolsExpanded}` : "log";
+		const key = `${width}\u0000${presentation}\u0000${detail}`;
+		const expandHint = cards ? { thinking: this.expandHint("app.thinking.toggle"), output: this.expandHint("app.tools.expand") } : undefined;
 		// Rows the thread itself contributes. The input card above is not thread
 		// content, so it never stands in for the state line below.
 		let retained = 0;
 		for (const item of thread.items) {
 			const card = cards && item.kind === THREAD_ITEM.TOOL ? this.cardKey(task, item.callId) : undefined;
-			const expanded = card === undefined ? this.toolsExpanded(presentation) : this.cardExpansion.get(card) ?? this.toolsExpanded(presentation);
+			const expanded = card === undefined ? this.cardToolsExpanded : this.cardExpansion.get(card) ?? this.cardToolsExpanded;
 			const cached = card === undefined ? this.cache.get(item) : undefined;
 			const rendered = cached?.key === key ? cached.lines : renderThreadItem(item, this.deps.theme, width, { presentation, expanded, thinkingExpanded: this.thinkingExpanded, expandHint });
 			if (card === undefined && cached?.key !== key) this.cache.set(item, { key, lines: rendered });

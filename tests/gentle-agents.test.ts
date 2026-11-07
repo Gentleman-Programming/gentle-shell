@@ -17,7 +17,7 @@ import { createAssistantMessageEventStream, type AssistantMessage } from "@earen
 import { visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sidebarState } from "../lib/shell-sidebar.ts";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection } from "../lib/child-package-injection.ts";
-import installGentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, HOLD_RECHECK_MS, INPUT_PROMPT_GRACE_MS, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
+import installGentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, HOLD_RECHECK_MS, INPUT_PROMPT_GRACE_MS, PARENT_WAKE_GRACE_MS, threadDetailDefaults, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry, type PresenceRecord } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener } from "../lib/windows-session-transport.ts";
 import { historyDir, loadHistory, loadStoredTask, saveTask } from "../lib/agents-history.ts";
@@ -1430,19 +1430,35 @@ async function liveOverlay(instance: ReturnType<typeof liveInstance>) {
 	return { overlay, frame, opened };
 }
 
-test("the overlay reads the host's thinking collapse key", async (t) => {
-	const profile = liveProfile("bindings-profile");
-	const instance = liveInstance(t, profile, "bindings-live", false, new KeybindingsManager({ "app.thinking.toggle": "ctrl+e" }));
+test("cards' detail levels open from the host's thinking visibility and tool expansion", (t) => {
+	const home = mkdtempSync(join(tmpdir(), "gentle-agents-detail-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	const ctx = (ui: Record<string, unknown>) => ({ cwd: home, ui } as unknown as ExtensionContext);
+
+	writeFileSync(join(home, "settings.json"), JSON.stringify({ hideThinkingBlock: true }));
+	assert.deepEqual(threadDetailDefaults(ctx({ getToolsExpanded: () => true }), home), { thinkingExpanded: false, toolsExpanded: true }, "hidden thinking and expanded tools reach the cards");
+	writeFileSync(join(home, "settings.json"), JSON.stringify({ hideThinkingBlock: false }));
+	assert.deepEqual(threadDetailDefaults(ctx({ getToolsExpanded: () => false }), home), { thinkingExpanded: true, toolsExpanded: false }, "shown thinking and collapsed tools reach the cards");
+	writeFileSync(join(home, "settings.json"), "{ not json");
+	assert.equal(threadDetailDefaults(ctx({ getToolsExpanded: () => false }), home).thinkingExpanded, true, "unreadable settings keep thinking visible");
+	assert.equal(threadDetailDefaults(ctx({}), home).toolsExpanded, false, "a host without the probe keeps cards collapsed");
+	assert.equal(threadDetailDefaults(ctx({ getToolsExpanded: () => { throw new Error("boom"); } }), home).toolsExpanded, false, "a failing probe keeps cards collapsed");
+	assert.equal(threadDetailDefaults(ctx({ getToolsExpanded: () => true }), home).toolsExpanded, true, "the probe is read, not guessed");
+});
+
+test("the overlay's log keeps its original detail and ignores the cards' keys", async (t) => {
+	const profile = liveProfile("detail-profile");
+	writeFileSync(join(profile, "settings.json"), JSON.stringify({ hideThinkingBlock: true }));
+	const instance = liveInstance(t, profile, "detail-live", false, new KeybindingsManager({ "app.thinking.toggle": "ctrl+e" }));
 	await instance.fire("session_start", instance.ctx, { reason: "startup" });
 	const panel = await liveOverlay(instance);
 	await instance.tools.get("subagent_run")!.execute("local", { agent: "local", task: "local", mode: "background" }, undefined, undefined, instance.ctx);
 	for (let index = 0; index < 6; index += 1) instance.children[0].emit({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: `thought ${index}\n` } });
 	await eventually(() => /thought 5/.test(panel.frame()), "thinking reaches the open overlay");
-	panel.overlay.handleInput("\x14");
-	assert.match(panel.frame(), /thought 5/, "the host default is replaced, not added to");
 	panel.overlay.handleInput("\x05");
-	assert.doesNotMatch(panel.frame(), /thought \d/, "the host's configured key hides thinking whole");
-	assert.match(panel.frame(), /… hidden · ctrl\+e to expand/, "the hidden block names the host's key");
+	panel.overlay.handleInput("\x14");
+	assert.match(panel.frame(), /thought 5/, "the log never hides thinking, whatever the global setting or key says");
+	assert.doesNotMatch(panel.frame(), /… hidden|… \d+ more lines|to expand/, "the log offers no detail control or hint");
 	panel.overlay.handleInput("q");
 	await panel.opened;
 });

@@ -22,16 +22,16 @@ export interface ThreadItemRenderOptions {
 	/** Defaults to `log`, the presentation this overlay has always drawn. */
 	presentation?: ThreadPresentation;
 	/**
-	 * Draws a tool's whole retained result. Left out, each presentation keeps its
-	 * own default: the log has always drawn every line, a card previews itself.
+	 * Cards only: draws a tool's whole retained result. The labeled log always
+	 * draws every retained line, so it ignores this and the two options below.
 	 */
 	expanded?: boolean;
 	/**
-	 * Draws thinking whole. Left out, thinking is shown whole — the log's own
-	 * default — and `false` hides it behind a placeholder that names the key.
+	 * Cards only: draws thinking whole. `false` hides it behind a placeholder that
+	 * names the key; the log always shows thinking whole.
 	 */
 	thinkingExpanded?: boolean;
-	/** Key text a collapsed block offers, e.g. `ctrl+o to expand`; omit when unbound. */
+	/** Cards only: key text a collapsed block offers, e.g. `ctrl+o to expand`. */
 	expandHint?: { thinking?: string; output?: string };
 }
 
@@ -110,26 +110,31 @@ function thinkingBlock(text: string, theme: AgentsThreadTheme, width: number, ex
 /** Render already-sanitized, bounded protocol items without inferring content roles. */
 export function renderThreadItem(item: ThreadItem, theme: AgentsThreadTheme, width: number, options: ThreadItemRenderOptions = {}): string[] {
 	if (width <= 0) return [];
+	// The labeled log is the overlay's original drawing: thinking and tool output
+	// are always whole there, and only the cards offer these detail levels.
+	const cards = options.presentation === THREAD_PRESENTATION.CARDS;
+	const showThinking = cards ? options.thinkingExpanded !== false : true;
+	const showWhole = cards ? options.expanded !== false : true;
 	switch (item.kind) {
 		case THREAD_ITEM.TEXT:
 			return [line(theme, ROLE.LABEL, "Text", width), ...contentLines(theme, ROLE.TEXT, item.text, width, 2)];
 		case THREAD_ITEM.THINKING:
-			return thinkingBlock(item.text, theme, width, options.thinkingExpanded !== false, options.expandHint?.thinking);
+			return thinkingBlock(item.text, theme, width, showThinking, options.expandHint?.thinking);
 		case THREAD_ITEM.NOTE: {
 			// A message delivered to the child is chat content, so cards draw it as the
 			// chat's messaging card; the log keeps every note as the labelled block it
 			// always drew. Anything the runner did not mark as a delivered message — and
 			// a marker with nothing behind it — stays a note, never a message.
-			const received = options.presentation === THREAD_PRESENTATION.CARDS ? steeredMessage(item.text) : undefined;
+			const received = cards ? steeredMessage(item.text) : undefined;
 			const card = received !== undefined && received.trim().length > 0 ? agentMessageCard(received, theme, width) : [];
 			return card.length > 0 ? card : [line(theme, ROLE.NOTE, "Note", width), ...contentLines(theme, ROLE.NOTE, item.text, width, 2)];
 		}
 		case THREAD_ITEM.TOOL:
 			// A card owns its frame when the chat offered one; `undefined` covers no
 			// renderer, a renderer that does not own its frame, and one that threw.
-			return (options.presentation === THREAD_PRESENTATION.CARDS
+			return (cards
 				? renderAgentToolItem(item, theme, width, { expanded: options.expanded === true })
-				: undefined) ?? toolBlock(item, theme, width, options.expanded ?? true, options.expandHint?.output);
+				: undefined) ?? toolBlock(item, theme, width, showWhole, options.expandHint?.output);
 		default:
 			return [];
 	}

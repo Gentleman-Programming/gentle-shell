@@ -6,7 +6,10 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createPostMergeCloseExtension } from "../extensions/post-merge-close.ts";
-import { CLOSE_CHANGE_USAGE, POST_MERGE_CLOSE_ENTRY, PULL_REQUEST_FIELDS } from "../lib/post-merge-close.ts";
+import {
+	CLOSE_CHANGE_USAGE, POST_MERGE_CLOSE_ENTRY, PULL_REQUEST_FIELDS,
+	type RemoteBranchInput, type RemoteBranchOps, type RemoteBranchState,
+} from "../lib/post-merge-close.ts";
 import { SESSION_WORKTREE_ENTRY } from "../lib/session-worktree-registry.ts";
 
 // Safe post-merge change closure (odd/tasks/post-merge-close.md T1): the
@@ -93,6 +96,8 @@ function mergedView(headSha: string, mergeSha: string): Record<string, unknown> 
 interface HarnessOptions {
 	sessionId?: string; hasUI?: boolean; child?: boolean; confirm?: boolean; cwd?: string;
 	registeredWorktrees?: readonly string[];
+	/** Injectable fake remote branch operations, so tests never touch a network. */
+	remoteBranchOps?: RemoteBranchOps;
 }
 
 function harness(t: TestContext, fx: ReturnType<typeof fixture>, options: HarnessOptions = {}) {
@@ -103,7 +108,7 @@ function harness(t: TestContext, fx: ReturnType<typeof fixture>, options: Harnes
 	const notes: Array<{ message: string; style?: string }> = [];
 	const confirms: Array<{ title: string; message: string }> = [];
 	const sessionId = { id: options.sessionId ?? "session-1" };
-	const state = { confirm: options.confirm ?? true, duringConfirm: undefined as undefined | (() => void) };
+	const state = { confirm: options.confirm ?? true, duringConfirm: undefined as undefined | (() => void), confirmQueue: undefined as boolean[] | undefined };
 	const env: NodeJS.ProcessEnv = { PATH: `${fx.bin}:${PATH_FALLBACK}`, HOME: fx.home, GH_CALL_LOG: fx.ghLog, GH_RESPONSE: fx.ghResponse, ...(options.child ? { GENTLE_PI_AGENTS_CHILD: "1" } : {}) };
 	const sessionManager = {
 		getSessionId: () => sessionId.id,
@@ -122,15 +127,17 @@ function harness(t: TestContext, fx: ReturnType<typeof fixture>, options: Harnes
 			notify: (message: string, style?: string) => { notes.push({ message, style }); },
 			confirm: async (title: string, message: string) => {
 				confirms.push({ title, message });
+				const queued = state.confirmQueue;
+				const answer = queued !== undefined && queued.length > 0 ? queued.shift()! : state.confirm;
 				state.duringConfirm?.();
-				return state.confirm;
+				return answer;
 			},
 		},
 	} as unknown as ExtensionContext;
 	for (const path of options.registeredWorktrees ?? []) {
 		entries.push({ type: "custom", customType: SESSION_WORKTREE_ENTRY, data: { sessionId: sessionId.id, root: path, evidence: "explicit" } });
 	}
-	createPostMergeCloseExtension({ env })(pi);
+	createPostMergeCloseExtension({ env, remoteBranchOps: options.remoteBranchOps })(pi);
 	const run = async (args: string) => {
 		await commands.get("gentle:close-change")!.handler(args, ctx);
 		return notes.at(-1)?.message ?? "";
@@ -148,6 +155,32 @@ const ghWorktrees = (fx: ReturnType<typeof fixture>): string[] => existsSync(fx.
 const closeEntries = (s: { entries: Array<Entry> }): unknown[] => s.entries.filter((entry) => entry.customType === POST_MERGE_CLOSE_ENTRY).map((entry) => entry.data);
 const references = (fx: ReturnType<typeof fixture>): string =>
 	`${fx.git(fx.main, "for-each-ref", "--format=%(refname)")}\n${fx.git(fx.main, "worktree", "list", "--porcelain")}\n${fx.git(fx.clean, "status", "--porcelain")}`;
+const refState = (fx: ReturnType<typeof fixture>, kind: "heads" | "remotes", name: string): string =>
+	fx.git(fx.main, "for-each-ref", `refs/${kind}/${name}`, "--format=%(refname)").trim();
+const refsSnapshot = (fx: ReturnType<typeof fixture>): string =>
+	`${fx.git(fx.main, "for-each-ref", "--format=%(refname)")}\n${fx.git(fx.main, "worktree", "list", "--porcelain")}`;
+const worktreePattern = (fx: ReturnType<typeof fixture>): string => fx.clean.replace(/[\\/.]/g, "\\$&");
+
+/** Fake remote ops that answer from a fixed queue and record every call. */
+function fakeRemoteOps(states: readonly RemoteBranchState[]) {
+	const reads: RemoteBranchInput[] = [];
+	const deletions: RemoteBranchInput[] = [];
+	let read = 0, removed = 0;
+	const ops: RemoteBranchOps = {
+		async readHead(input) {
+			reads.push(input);
+			const state = states[Math.min(read, states.length - 1)];
+			read += 1;
+			return state;
+		},
+		async deleteBranch(input) {
+			deletions.push(input);
+			removed += 1;
+			return { ok: true };
+		},
+	};
+	return { ops, reads, deletions, count: () => ({ read, removed }) };
+}
 
 test("help, an empty command and unknown input only print the usage and never read anything", async (t) => {
 	const fx = fixture(t);
@@ -319,8 +352,8 @@ test("a merged squash pull request previews exact states and pins the registered
 	const message = await s.run(`preview ${fx.url}`);
 	assert.match(message, /Post-merge preview for octocat\/widget#7/);
 	assert.match(message, /merged at 2024-05-01T10:00:00Z/);
-	assert.match(message, new RegExp(`worktree ${fx.clean.replace(/[\\/.]/g, "\\$&")}: removable — clean git worktree`));
-	assert.match(message, new RegExp(`local branch feature: removable — still points at the registered head commit ${fx.headSha}`));
+	assert.match(message, new RegExp(`worktree ${worktreePattern(fx)}: removable — clean git worktree`));
+	assert.match(message, /local branch feature: kept — nothing proves its commit exists anywhere else yet; a cleanup that reads the remote branch may prove it/);
 	assert.match(message, /remote branch origin\/feature: unknown — the local tracking ref caches [0-9a-f]{40}, which is stale evidence only/);
 	assert.match(message, /destination branch main: kept — a later cleanup may fast-forward it to the merge commit/);
 	assert.match(message, /No deletion or update has run/);
@@ -334,8 +367,8 @@ test("a dirty registered worktree is kept, not removable", async (t) => {
 	await s.run(`register ${fx.url}`);
 	writeFileSync(join(fx.clean, "draft.txt"), "uncommitted\n");
 	const message = await s.run(`preview ${fx.url}`);
-	assert.match(message, new RegExp(`worktree ${fx.clean.replace(/[\\/.]/g, "\\$&")}: kept — has uncommitted changes`));
-	assert.match(message, new RegExp(`local branch feature: removable — still points at the registered head commit ${fx.headSha}`));
+	assert.match(message, new RegExp(`worktree ${worktreePattern(fx)}: kept — has uncommitted changes`));
+	assert.match(message, /local branch feature: kept — nothing proves its commit exists anywhere else yet; a cleanup that reads the remote branch may prove it/);
 	assert.equal(ghCalls(fx).length, 2);
 });
 
@@ -440,4 +473,201 @@ test("moved, gone and unprovable resources are reported precisely", async (t) =>
 	assert.match(message, /local branch feature: kept — has commits beyond the registered head commit/);
 	assert.match(message, /remote branch origin\/feature: unknown — no local tracking ref is cached; the remote branch is not provable until a future cleanup performs a fresh authorized read/);
 	assert.match(message, /destination branch main: kept — has commits the merge commit does not include, so a later cleanup would refuse to update it/);
+});
+
+// The confirmed cleanup (T2). Every deletion below runs against the injected
+// fake remote ops (never a network) and real disposable Git fixtures, and
+// every refusal is checked to leave every ref, worktree and entry as it was.
+
+test("clean removes exactly the proven plan and reports one line per action", async (t) => {
+	const fx = fixture(t);
+	const ops = fakeRemoteOps([{ state: "at", sha: fx.headSha }]);
+	const s = harness(t, fx, { registeredWorktrees: [fx.clean], remoteBranchOps: ops.ops });
+	await s.run(`register ${fx.url}`);
+	const registration = closeEntries(s).map((entry) => structuredClone(entry));
+	s.state.confirmQueue = [true, true, true];
+	const message = await s.run(`clean ${fx.url}`);
+	// One line per planned action, nothing else touched.
+	assert.match(message, /Post-merge cleanup for octocat\/widget#7/);
+	assert.match(message, new RegExp(`worktree ${worktreePattern(fx)}: removed`));
+	assert.match(message, /local branch feature: deleted/);
+	assert.match(message, /remote branch origin\/feature: deleted/);
+	assert.match(message, new RegExp(`destination branch main: fast-forwarded to ${fx.mergeSha}`));
+	assert.match(message, /The registration and the pull request are unchanged\./);
+	// One confirmation listed the exact actions before any of them ran.
+	assert.equal(s.confirms.length, 4, "register grant, pull request read, remote read, one cleanup confirmation");
+	assert.match(s.confirms[3].title, /Run this cleanup\?/);
+	assert.match(s.confirms[3].message, /Exactly these actions will run/);
+	assert.match(s.confirms[3].message, new RegExp(`remove worktree ${worktreePattern(fx)}`));
+	assert.match(s.confirms[3].message, /delete local branch feature/);
+	assert.match(s.confirms[3].message, /delete remote branch origin\/feature/);
+	assert.match(s.confirms[3].message, new RegExp(`fast-forward main to ${fx.mergeSha}`));
+	// Observable effects: worktree directory gone, local branch gone, one remote deletion.
+	assert.equal(existsSync(fx.clean), false, "the worktree directory is gone");
+	assert.equal(refState(fx, "heads", "feature"), "", "refs/heads/feature is gone");
+	assert.equal(fx.git(fx.main, "rev-parse", "refs/heads/main"), fx.mergeSha, "main fast-forwarded to the merge commit");
+	assert.equal(ops.deletions.length, 1, "exactly one remote deletion");
+	assert.deepEqual({ remote: ops.deletions[0]?.remote, branch: ops.deletions[0]?.branch }, { remote: "origin", branch: "feature" });
+	assert.equal(ops.reads.length, 2, "one read for the plan and one recheck immediately before the deletion");
+	assert.deepEqual(closeEntries(s), registration, "the registration entry is unchanged");
+});
+
+test("a declined cleanup confirmation removes nothing", async (t) => {
+	const fx = fixture(t);
+	const ops = fakeRemoteOps([{ state: "at", sha: fx.headSha }]);
+	const s = harness(t, fx, { registeredWorktrees: [fx.clean], remoteBranchOps: ops.ops });
+	await s.run(`register ${fx.url}`);
+	const registration = closeEntries(s).map((entry) => structuredClone(entry));
+	const refsBefore = refsSnapshot(fx);
+	s.state.confirmQueue = [true, true, false];
+	const message = await s.run(`clean ${fx.url}`);
+	assert.match(message, /Cleanup declined; nothing was removed and nothing changed\./);
+	assert.equal(existsSync(fx.clean), true, "the worktree was not removed");
+	assert.equal(refsSnapshot(fx), refsBefore, "every ref and worktree is unchanged");
+	assert.equal(ops.deletions.length, 0, "no remote deletion happened");
+	assert.equal(ops.reads.length, 1, "only the single granted remote read happened");
+	assert.deepEqual(closeEntries(s), registration, "the registration entry is unchanged");
+});
+
+test("a moved or reused remote ref keeps the remote and local branches while the clean worktree is still removed", async (t) => {
+	for (const answer of [{ state: "moved", sha: "e".repeat(40) }, { state: "at", sha: "d".repeat(40) }] as const) {
+		const fx = fixture(t);
+		const ops = fakeRemoteOps([answer]);
+		const s = harness(t, fx, { registeredWorktrees: [fx.clean], remoteBranchOps: ops.ops });
+		await s.run(`register ${fx.url}`);
+		const localBranchBefore = refState(fx, "heads", "feature");
+		s.state.confirmQueue = [true, true, true];
+		const message = await s.run(`clean ${fx.url}`);
+		// The kept states are listed in the confirmation; the removal report stays accurate.
+		assert.match(s.confirms[3].message, new RegExp(`remote branch origin\\/feature: kept — the remote branch now points at ${answer.sha}, not the registered head commit`));
+		assert.match(s.confirms[3].message, /local branch feature: kept — nothing proves its commit exists anywhere else yet; a cleanup that reads the remote branch may prove it/);
+		assert.doesNotMatch(message, /remote branch .*: deleted/);
+		assert.doesNotMatch(message, /local branch .*: deleted/);
+		assert.match(message, new RegExp(`worktree ${worktreePattern(fx)}: removed`));
+		assert.equal(existsSync(fx.clean), false, "the clean worktree is still removed");
+		assert.equal(refState(fx, "heads", "feature"), localBranchBefore, "the local branch is kept");
+		assert.equal(ops.deletions.length, 0, "the remote branch was never deleted");
+		assert.equal(ops.reads.length, 1);
+		assert.equal(s.confirms.length, 4);
+	}
+});
+
+test("an absent remote branch is idempotent: already gone, proven local cleanup still runs, no deletion", async (t) => {
+	const fx = fixture(t);
+	// The pull request was squash-merged, but the destination already contains
+	// the head commit because main was fast-forwarded to it: that alone proves
+	// the local branch's commit lives elsewhere.
+	fx.git(fx.main, "merge", "--ff-only", "feature");
+	const ops = fakeRemoteOps([{ state: "absent" }]);
+	const s = harness(t, fx, { registeredWorktrees: [fx.clean], remoteBranchOps: ops.ops });
+	await s.run(`register ${fx.url}`);
+	s.state.confirmQueue = [true, true, true];
+	const message = await s.run(`clean ${fx.url}`);
+	assert.match(s.confirms[3].message, /remote branch origin\/feature: already gone/);
+	assert.match(message, new RegExp(`worktree ${worktreePattern(fx)}: removed`));
+	assert.match(message, /local branch feature: deleted/);
+	assert.doesNotMatch(message, /remote branch .*: deleted/);
+	assert.equal(existsSync(fx.clean), false, "the worktree was removed");
+	assert.equal(refState(fx, "heads", "feature"), "", "the local branch, proven by its ancestor destination, is gone");
+	assert.equal(fx.git(fx.main, "rev-parse", "refs/heads/main"), fx.headSha, "the destination tip is unchanged");
+	assert.equal(ops.deletions.length, 0, "an absent remote branch is never deleted");
+	assert.equal(ops.reads.length, 1);
+});
+
+test("a dirty worktree is kept with the reason and never removed while the other planned actions still run", async (t) => {
+	const fx = fixture(t);
+	const ops = fakeRemoteOps([{ state: "at", sha: fx.headSha }]);
+	const s = harness(t, fx, { registeredWorktrees: [fx.clean], remoteBranchOps: ops.ops });
+	await s.run(`register ${fx.url}`);
+	writeFileSync(join(fx.clean, "draft.txt"), "uncommitted\n");
+	s.state.confirmQueue = [true, true, true];
+	const message = await s.run(`clean ${fx.url}`);
+	assert.match(s.confirms[3].message, new RegExp(`worktree ${worktreePattern(fx)}: kept — has uncommitted changes`));
+	assert.doesNotMatch(message, new RegExp(`worktree ${worktreePattern(fx)}: removed`));
+	// The branch stays checked out in the retained dirty worktree, so git refuses
+	// the planned local deletion and the report says so instead of forcing it.
+	assert.match(message, /local branch feature: kept — git refused to delete it/);
+	assert.match(message, /remote branch origin\/feature: deleted/);
+	assert.match(message, new RegExp(`destination branch main: fast-forwarded to ${fx.mergeSha}`));
+	assert.equal(existsSync(fx.clean), true, "the dirty worktree was never removed");
+	assert.equal(readFileSync(join(fx.clean, "draft.txt"), "utf8"), "uncommitted\n", "its files are untouched");
+	assert.match(refState(fx, "heads", "feature"), /refs\/heads\/feature/, "the local branch that git refused to delete still exists");
+	assert.equal(ops.deletions.length, 1);
+});
+
+test("the destination is only ever updated by fast-forward, never by a merge, reset or deletion", async (t) => {
+	// Fast-forwardable: main holds an ancestor of the merge commit in a clean worktree.
+	{
+		const fx = fixture(t);
+		const ops = fakeRemoteOps([{ state: "at", sha: fx.headSha }]);
+		const s = harness(t, fx, { registeredWorktrees: [fx.clean], remoteBranchOps: ops.ops });
+		await s.run(`register ${fx.url}`);
+		s.state.confirmQueue = [true, true, true];
+		const message = await s.run(`clean ${fx.url}`);
+		assert.match(message, new RegExp(`destination branch main: fast-forwarded to ${fx.mergeSha}`));
+		assert.equal(fx.git(fx.main, "rev-parse", "refs/heads/main"), fx.mergeSha, "main advanced exactly to the merge commit");
+	}
+	// Not fast-forwardable: main holds commits the merge commit does not include.
+	{
+		const fx = fixture(t);
+		writeFileSync(join(fx.main, "other.txt"), "other\n");
+		fx.git(fx.main, "add", "other.txt");
+		fx.git(fx.main, "commit", "-q", "-m", "other");
+		const mainTip = fx.git(fx.main, "rev-parse", "refs/heads/main");
+		const ops = fakeRemoteOps([{ state: "at", sha: fx.headSha }]);
+		const s = harness(t, fx, { registeredWorktrees: [fx.clean], remoteBranchOps: ops.ops });
+		await s.run(`register ${fx.url}`);
+		s.state.confirmQueue = [true, true, true];
+		const message = await s.run(`clean ${fx.url}`);
+		assert.match(s.confirms[3].message, /destination branch main: kept — has commits the merge commit does not include, so a later cleanup would refuse to update it/);
+		assert.doesNotMatch(message, /destination branch .*: fast-forwarded/);
+		assert.equal(fx.git(fx.main, "rev-parse", "refs/heads/main"), mainTip, "the destination tip is unchanged");
+		assert.match(refState(fx, "heads", "main"), /refs\/heads\/main/, "the destination branch still exists");
+	}
+});
+
+test("session or repository drift during the cleanup confirmation removes nothing", async (t) => {
+	const fx = fixture(t);
+	const ops = fakeRemoteOps([{ state: "at", sha: fx.headSha }]);
+	const s = harness(t, fx, { registeredWorktrees: [fx.clean], remoteBranchOps: ops.ops });
+	await s.run(`register ${fx.url}`);
+	const refsBefore = refsSnapshot(fx);
+	let confirmed = 0;
+	s.state.duringConfirm = () => { confirmed += 1; if (confirmed === 3) s.ctx.cwd = fx.clone2; };
+	s.state.confirmQueue = [true, true, true];
+	const message = await s.run(`clean ${fx.url}`);
+	assert.match(message, /changed while the confirmation was open; nothing was removed\./);
+	assert.equal(existsSync(fx.clean), true, "the worktree was not removed");
+	assert.equal(refsSnapshot(fx), refsBefore, "every ref and worktree is unchanged");
+	assert.equal(ops.deletions.length, 0, "no remote deletion happened");
+	assert.equal(ops.reads.length, 1, "only the single granted read ran, before the drift");
+});
+
+test("a declined remote-branch read runs no read and performs no deletion", async (t) => {
+	const fx = fixture(t);
+	const ops = fakeRemoteOps([{ state: "at", sha: fx.headSha }]);
+	const s = harness(t, fx, { registeredWorktrees: [fx.clean], remoteBranchOps: ops.ops });
+	await s.run(`register ${fx.url}`);
+	const refsBefore = refsSnapshot(fx);
+	s.state.confirmQueue = [true, false];
+	const message = await s.run(`clean ${fx.url}`);
+	assert.match(message, /Remote branch read declined; nothing was read from the remote and nothing changed\./);
+	assert.equal(ops.reads.length, 0, "no remote read ran at all");
+	assert.equal(ops.deletions.length, 0, "no remote deletion happened");
+	assert.equal(refsSnapshot(fx), refsBefore, "every ref and worktree is unchanged");
+	assert.equal(existsSync(fx.clean), true, "the worktree was not removed");
+});
+
+test("clean in a headless session fails closed without reads or changes", async (t) => {
+	const fx = fixture(t);
+	const ops = fakeRemoteOps([{ state: "at", sha: fx.headSha }]);
+	const s = harness(t, fx, { registeredWorktrees: [fx.clean], hasUI: false, remoteBranchOps: ops.ops });
+	const refsBefore = refsSnapshot(fx);
+	const message = await s.run(`clean ${fx.url}`);
+	assert.match(message, /needs an interactive session UI/);
+	assert.equal(ops.reads.length, 0, "no remote read ran");
+	assert.equal(ops.deletions.length, 0, "no remote deletion happened");
+	assert.equal(s.confirms.length, 0, "nothing was ever asked");
+	assert.equal(existsSync(fx.clean), true, "the worktree was not removed");
+	assert.equal(refsSnapshot(fx), refsBefore, "every ref and worktree is unchanged");
 });

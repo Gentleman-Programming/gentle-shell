@@ -7,18 +7,19 @@ import { worktreeGitEnvironment } from "./session-worktree-registry.ts";
 // Safe post-merge change closure (odd/tasks/post-merge-close.md, T1): parse
 // pull request URLs fail-closed, validate what `gh pr view` answers, and keep
 // the durable session registration shape. The extension owns the command flow;
-// the actual cleanup belongs to a later, separately confirmed task.
+// the confirmed cleanup deletes only what a freshly checked plan proves.
 
 export const POST_MERGE_CLOSE_ENTRY = "gentle-pi.post-merge-close/v1";
 
 export const PULL_REQUEST_FIELDS = "state,number,url,headRefName,headRefOid,baseRefName,mergedAt,mergeCommit,isCrossRepository";
 
 export const CLOSE_CHANGE_USAGE = [
-	"Usage: /gentle:close-change [register <PR URL>|preview [PR URL]|help]",
+	"Usage: /gentle:close-change [register <PR URL>|preview [PR URL]|clean [PR URL]|help]",
 	"  register <https://github.com/owner/repo/pull/N>  associate one merged GitHub pull request with this session's worktrees for a later cleanup",
 	"  preview [PR URL]                                 show exactly what a later cleanup would keep or remove; nothing is changed",
+	"  clean [PR URL]                                   after one explicit confirmation, remove only what the preview proved removable and fast-forward the destination",
 	"  help                                             show this help",
-	"Only same-repository (non-fork) pull requests are accepted; the actual deletion is a separate, later, explicitly confirmed step.",
+	"Only same-repository (non-fork) pull requests are accepted; every remote read and every deletion asks for its own consent.",
 ].join("\n");
 
 export interface PullRequestRef { owner: string; repo: string; number: number; url: string }
@@ -154,12 +155,13 @@ export function worktreeCloseFingerprint(root: string, commonDir: string): strin
 	} catch { return undefined; }
 }
 
-// Reads of the current Git state run without a shell and without the ambient
-// Git routing or SSH agent environment, exactly like worktree registration.
+// Git never prompts for credentials: a cleanup that cannot authenticate fails
+// closed instead of waiting on a terminal that does not exist.
 export function postMergeCloseEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
 	const cleaned = worktreeGitEnvironment(env);
 	delete cleaned.SSH_AUTH_SOCK;
 	delete cleaned.SSH_AGENT_PID;
+	cleaned.GIT_TERMINAL_PROMPT = "0";
 	return cleaned;
 }
 
@@ -245,4 +247,70 @@ export interface PreviewEntry { kind: "worktree" | "local branch" | "remote bran
 
 export function formatPreviewEntries(entries: readonly PreviewEntry[]): string[] {
 	return entries.map((entry) => `${entry.kind} ${entry.name}: ${entry.state}${entry.detail ? ` — ${entry.detail}` : ""}`);
+}
+
+// The live remote branch is only knowable by asking the remote. A cached
+// tracking ref, the local branch or the pull request response never counts.
+export type RemoteBranchState =
+	| { state: "at"; sha: string }
+	| { state: "absent" }
+	| { state: "moved"; sha: string }
+	| { state: "unknown"; reason: string };
+
+export interface RemoteBranchInput {
+	directory: string;
+	remote: string;
+	branch: string;
+	env: NodeJS.ProcessEnv;
+	timeoutMs: number;
+}
+
+// Injected in tests so the public command behavior is pinned without network.
+export interface RemoteBranchOps {
+	readHead(input: RemoteBranchInput): Promise<RemoteBranchState>;
+	deleteBranch(input: RemoteBranchInput): Promise<{ ok: true } | { ok: false; reason: string }>;
+}
+
+const remoteFailure = (error: unknown, verb: string): string => {
+	const failure = error as { code?: unknown; stderr?: unknown; message?: unknown };
+	if (failure.code === "ENOENT") return "git is not installed or not runnable";
+	const detail = typeof failure.stderr === "string" && failure.stderr.trim().length > 0 ? failure.stderr.trim().split("\n")[0] : "";
+	return `git ${verb} failed${detail ? `: ${detail}` : ` with status ${typeof failure.code === "number" ? failure.code : "unknown"}`}`;
+};
+
+// Reading the remote runs without a shell, with credentials prompts disabled
+// and a bounded timeout, so an unauthenticated or slow remote fails closed.
+export const defaultRemoteBranchOps: RemoteBranchOps = {
+	async readHead(input) {
+		try {
+			const { stdout } = await execFileAsync("git", ["ls-remote", "--heads", input.remote, `refs/heads/${input.branch}`], { cwd: input.directory, env: postMergeCloseEnvironment(input.env), shell: false, windowsHide: true, timeout: input.timeoutMs, maxBuffer: 4 * 1024 * 1024 });
+			const lines = stdout.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
+			if (lines.length === 0) return { state: "absent" };
+			if (lines.length > 1) return { state: "unknown", reason: "the remote answered with more than one head for that branch" };
+			const [sha, name, ...rest] = lines[0].split(/\s+/);
+			if (rest.length > 0 || name !== `refs/heads/${input.branch}` || typeof sha !== "string" || !SHA_PATTERN.test(sha)) return { state: "unknown", reason: "the remote answer could not be read as one branch head" };
+			return { state: "at", sha: sha.toLowerCase() };
+		} catch (error) {
+			return { state: "unknown", reason: remoteFailure(error, "ls-remote") };
+		}
+	},
+	async deleteBranch(input) {
+		try {
+			await execFileAsync("git", ["push", "--delete", input.remote, `refs/heads/${input.branch}`], { cwd: input.directory, env: postMergeCloseEnvironment(input.env), shell: false, windowsHide: true, timeout: input.timeoutMs, maxBuffer: 4 * 1024 * 1024 });
+			return { ok: true };
+		} catch (error) {
+			return { ok: false, reason: remoteFailure(error, "push --delete") };
+		}
+	},
+};
+
+// The caller compares the live sha against the registered head itself, so a
+// moved or reused remote ref can never be read as the pull request's branch.
+export function remoteBranchEntry(name: string, state: RemoteBranchState, headSha: string): PreviewEntry {
+	if (state.state === "absent") return { kind: "remote branch", name, state: "already gone" };
+	if (state.state === "unknown") return { kind: "remote branch", name, state: "unknown", detail: state.reason };
+	if (state.state === "moved") return { kind: "remote branch", name, state: "kept", detail: `the remote branch now points at ${state.sha}, not the registered head commit ${headSha}` };
+	return state.sha === headSha
+		? { kind: "remote branch", name, state: "removable", detail: `the remote branch still points at the registered head commit ${state.sha}` }
+		: { kind: "remote branch", name, state: "kept", detail: `the remote branch now points at ${state.sha}, not the registered head commit ${headSha}` };
 }

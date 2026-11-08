@@ -2695,6 +2695,7 @@ const RENDERER_SLOT = Symbol.for("gentle-pi.quiet-tool-renderers");
 interface PublishedCard {
 	renderer: any;
 	active(): boolean;
+	rowStable?: boolean;
 }
 
 function rendererSlot(): Map<string, PublishedCard> | undefined {
@@ -2754,6 +2755,8 @@ test("quiet tools publishes every card it can draw before the host asks for one"
 	assert.equal(bashCard.renderer.renderResult, bash.renderResult, "the result slot is that object's own function");
 	assert.equal(codegraphCard.renderer.renderCall, codegraph.renderCall);
 	assert.equal(codegraphCard.renderer.renderResult, codegraph.renderResult);
+	assert.equal(bashCard.rowStable, true, "the bash card declares its rows stable, so a reader may cache them");
+	assert.equal(codegraphCard.rowStable, true, "and so does the CodeGraph card");
 
 	// The chat draws both cards whatever the Card content preference says, so the
 	// published answer has to stay the same at either level.

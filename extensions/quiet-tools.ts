@@ -1307,6 +1307,8 @@ export function createCodeGraphCardRenderer(): QuietToolRenderer {
 interface PublishedQuietToolRenderer {
 	renderer: QuietToolRenderer;
 	active(): boolean;
+	/** Whether a reader may cache the rows this card draws; only a card that always draws the same thing for the same result may set it. */
+	rowStable?: boolean;
 }
 
 // Pi loads extensions with `moduleCache: false`, so one process can hold two copies
@@ -1334,7 +1336,7 @@ function publishQuietToolRenderer(toolName: string, card: () => QuietToolRendere
 	const published = publishedQuietToolRenderers();
 	const existing = published.get(toolName);
 	if (existing !== undefined) return existing;
-	const created: PublishedQuietToolRenderer = { renderer: card(), active: drawing };
+	const created: PublishedQuietToolRenderer = { renderer: card(), active: drawing, rowStable: true };
 	published.set(toolName, created);
 	return created;
 }

@@ -99,6 +99,8 @@ interface Resumed {
 	authority: boolean;
 	options: { sessionId: string; cwd: string; configHome: string; resolveWorktree: () => WorktreeIdentity; env: NodeJS.ProcessEnv };
 	foreign: WorktreeIdentity;
+	/** An empty agent home, so ambient agents and subagents.json never reach the replay. */
+	agentHome: string;
 }
 
 /** Resume `transcript` under one version, with that version's process state reset first. */
@@ -117,7 +119,7 @@ function resume<T>(version: Version, transcript: Transcript, observe: (resumed: 
 		const authority = modules.authority.readSessionProfileAuthority(manager);
 		const options = { sessionId: SESSION_ID, cwd: home.root, configHome, resolveWorktree: () => home, env: transcript.env ?? {} };
 		modules.freeze.freezeSessionProfileAtStartup(options);
-		return observe({ authority: authority.available, options, foreign });
+		return observe({ authority: authority.available, options, foreign, agentHome: join(base, "agent-home") });
 	} finally {
 		rmSync(base, { recursive: true, force: true });
 	}
@@ -148,8 +150,8 @@ export function replay(version: Version, transcript: Transcript): ReplayObservat
  * defaults, so the environment the tests run in never leaks into the replay.
  */
 export function replayReviewerRouting(version: Version, transcript: Transcript): AgentModelConfig {
-	return resume(version, transcript, ({ options }) => {
-		const replayed: NodeJS.ProcessEnv = { GENTLE_PI_AGENTS_CHILD: undefined, GENTLE_PI_PROFILE_FOLLOW: undefined, ...options.env, GENTLE_PI_CONFIG_HOME: options.configHome };
+	return resume(version, transcript, ({ options, agentHome }) => {
+		const replayed: NodeJS.ProcessEnv = { GENTLE_PI_AGENTS_CHILD: undefined, GENTLE_PI_PROFILE_FOLLOW: undefined, ...options.env, GENTLE_PI_CONFIG_HOME: options.configHome, GENTLE_PI_AGENT_HOME: agentHome };
 		const previous = Object.fromEntries(Object.keys(replayed).map((key) => [key, process.env[key]]));
 		const assign = (values: NodeJS.ProcessEnv) => {
 			for (const [key, value] of Object.entries(values)) {

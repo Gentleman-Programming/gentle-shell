@@ -20,9 +20,17 @@ Specifically authorized compilation or implementation can continue only when act
 
 This is prompt policy, not a runtime-enforced limit; contract tests establish instruction delivery, not agent compliance or a measured speedup.
 
+## Verifier launch admission and post-denial disposition (gentle-shell#2478)
+
+The `gentle-ai-verify` launch is admitted only when its `task` or `context` declares a named high-risk item, names a task of an existing feature document, or the parent's measured context reaches the backstop. The declaration grammar is strict: `Risk: item N (reason)` must start a line (optionally after a list marker like `- `) or start a sentence (after `.`, `!` or `?` and a space). A declaration after another separator such as `; ` or `,` inside a sentence is not recognized. Keep the risk evidence tied to the actual change; never add a Risk line only to gain admission.
+
+Assessment and admission are separate gates. A `gentle_review assess` plan (or its native `review assess` source) may name an independent verifier in the verification plan; it does not grant launch admission. Admission re-validates the actual launch envelope at `tool_call` time and does not receive the assessment result, so a plan that names the verifier can still be rejected when the envelope carries no supported declaration.
+
+After a rejection, no gate-level disposition exists for the same launch: do not retry it, and do not substitute another agent for the verifier. The rejection is launch-scoped, not feature-scoped: it does not make the verifier unavailable for the whole feature, does not mean the change has no risk, and does not by itself keep later required proof unavailable. A new verifier launch requires the user's explicit decision in a new prompt, with a conforming envelope whose risk declaration reflects the actual change. Inline tests, the writer's self-verification, and a user's visual approval never replace the missing independent verification; when it stays unavailable, close with **Needs your decision** naming the missing proof.
+
 ## Background capability admission
 
-An explicit agent `tools` declaration containing `bash_background` requires the background-subagents policy to resolve to `on` at dispatch, for both task and background launches. Otherwise the runner fails the task before spawn and reports the policy file, opt-in schema, and `/gentle:background-subagents enable|disable|status`. Fix the deciding policy explicitly; automation must not toggle it. Passing admission does not promise child background-tool support (future Slices 2–3); ordinary missing-tool reporting remains the backstop. See the [policy contract](readme-reference.md#capability-reference).
+An explicit agent `tools` declaration containing `bash_background` requires the background-subagents policy to resolve to `on` at dispatch, for both task and background launches. Otherwise the runner fails the task before spawn and reports the policy file, opt-in schema, and `/gentle:background-subagents enable|disable|status`. Fix the deciding policy explicitly; automation must not toggle it. Passing admission forwards the job capability to the child, which registers `bash_background`, `job_list`, and `job_stop` for its own session; the runner then gives a running child job one bounded drain window at settlement instead of killing it immediately. The `monitor` tool stays parent-only, child jobs are never routed through the parent, and no new persisted state is added. Ordinary missing-tool reporting remains the backstop. See the [policy contract](readme-reference.md#capability-reference).
 
 ## Receipt-driven development on
 

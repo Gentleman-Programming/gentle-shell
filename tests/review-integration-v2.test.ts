@@ -16,6 +16,7 @@ import {
 	decodeReviewStartV3,
 	decodeReviewStartV4,
 	decodeReviewStatusV3,
+	decodeReviewTargetedValidationRequestV1,
 } from "../lib/review-integration-v2.ts";
 
 const fixtureRoot = join(process.cwd(), "contracts", "review-integration", "v2", "fixtures");
@@ -951,6 +952,37 @@ test("next_transition decodes the v9 host-mediated provider role submission form
 	);
 });
 
+test("targeted validation preserves an explicitly frozen empty policy without accepting absent or non-string policy", () => {
+	// Gentle AI v4.3.1 CompactState explicitly distinguishes a non-nil empty
+	// policy from missing historical policy; both the constructor and request
+	// serializer retain the empty string. It is evidence, not a required label.
+	const sha = `sha256:${"a".repeat(64)}`;
+	const request = {
+		schema: "gentle-ai.review-targeted-validation-request/v1", request_hash: sha,
+		lineage_id: "review-fixture", expected_revision: sha, target_identity: sha,
+		fix_finding_ids: ["R1-001"], policy_content: "",
+		fix_findings: [{ id: "R1-001", lens: "risk", location: "selected.txt:1", severity: "CRITICAL",
+			claim: "restore the requested behavior", proof_refs: ["selected.txt:1"], evidence_class: "deterministic", causal_disposition: "introduced" }],
+		fix_classifications: [{ finding_id: "R1-001", class: "deterministic", causal_disposition: "introduced", proof: "selected.txt:1" }],
+		projection: "workspace", correction_candidate_tree: "b".repeat(40), correction_target_identity: sha,
+		correction_paths: ["selected.txt"], correction_paths_digest: sha,
+	};
+	for (const policy_content of ["", "\n \t", "Frozen policy\n"]) {
+		const input = { ...request, policy_content };
+		const before = structuredClone(input);
+		assert.equal(decodeReviewTargetedValidationRequestV1(input).policyContent, policy_content);
+		assert.deepEqual(input, before, "frozen policy bytes and request bindings must remain unchanged");
+	}
+	for (const policy_content of [undefined, null, false, 0, [], {}]) {
+		assert.throws(() => decodeReviewTargetedValidationRequestV1({ ...request, policy_content }), /policy_content/);
+	}
+	const absent: Record<string, unknown> = { ...request };
+	delete absent.policy_content;
+	assert.throws(() => decodeReviewTargetedValidationRequestV1(absent), /policy_content is required/);
+	assert.throws(() => decodeReviewTargetedValidationRequestV1({ ...request, request_hash: "invalid" }), /request_hash/);
+	assert.throws(() => decodeReviewTargetedValidationRequestV1({ ...request, base_tree: "c".repeat(40) }), /base_tree is not allowed/);
+});
+
 test("v5 targeted-validator collect inputs carry the exact provider-owned validation request", () => {
 	const requestHash = `sha256:${"a".repeat(64)}`;
 	const expectedRevision = `sha256:${"b".repeat(64)}`;
@@ -1077,9 +1109,12 @@ test("v5 targeted-validator collect inputs carry the exact provider-owned valida
 	((malformedRequest.collect.inputs[0] as JsonObject).validation_request as JsonObject).unadvertised = true;
 	assert.throws(() => decodeReviewNextTransitionV3(malformedRequest, { v5: true }), /not allowed/);
 
-	const weakenedRequest = clone(transition);
-	((weakenedRequest.collect.inputs[0] as JsonObject).validation_request as JsonObject).policy_content = "";
-	assert.throws(() => decodeReviewNextTransitionV3(weakenedRequest, { v5: true }), /policy_content/);
+	const emptyPolicyRequest = clone(transition);
+	((emptyPolicyRequest.collect.inputs[0] as JsonObject).validation_request as JsonObject).policy_content = "";
+	assert.equal(decodeReviewNextTransitionV3(emptyPolicyRequest, { v5: true }).collect?.inputs[0]?.validationRequest?.policyContent, "");
+	const malformedPolicyRequest = clone(transition);
+	((malformedPolicyRequest.collect.inputs[0] as JsonObject).validation_request as JsonObject).policy_content = null;
+	assert.throws(() => decodeReviewNextTransitionV3(malformedPolicyRequest, { v5: true }), /policy_content/);
 });
 
 test("status.frozen carries the optional frozen manifest digest", () => {

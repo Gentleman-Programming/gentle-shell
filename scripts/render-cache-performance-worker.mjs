@@ -4,12 +4,12 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
+import { validatePiRoot } from "./render-cache-host.mjs";
 
 const config = JSON.parse(process.argv[2]);
-const piVersion = JSON.parse(readFileSync(resolve(config.piRoot, "package.json"), "utf8")).version;
-const tuiVersion = JSON.parse(readFileSync(resolve(config.piRoot, "node_modules/@earendil-works/pi-tui/package.json"), "utf8")).version;
-assert.equal(piVersion, "1.1.0", "private frame API audited only on Pi 1.1.0");
-assert.equal(tuiVersion, piVersion, "host TUI package must match");
+const { host, hostTui } = validatePiRoot(config.piRoot);
+const piVersion = host.version;
+const tuiVersion = hostTui.version;
 const hostImport = (path) => import(pathToFileURL(resolve(config.piRoot, "dist", path)).href);
 const { createJiti } = await hostImport("core/extensions/jiti-loader.js");
 const { VIRTUAL_MODULES } = await hostImport("core/extensions/virtual-modules.js");
@@ -54,6 +54,7 @@ function fixture(spec, live = false) {
 	manager.getEntries = () => { counts.entries++; return getEntries(); };
 	const model = { id: "synthetic-model", provider: "synthetic", reasoning: true, contextWindow: 200000 };
 	const ctx = { model, sessionManager: manager, modelRegistry: { isUsingOAuth: () => false },
+		ui: { theme: { name: "performance" }, getAllThemes: () => [] },
 		getContextUsage() { counts.projections++; return pi.AgentSession.prototype.getContextUsage.call({ sessionManager: manager, _limitsModel: () => model }); } };
 	const api = { getThinkingLevel: () => "high" };
 	const footerData = { getGitBranch: () => "performance", getExtensionStatuses: () => new Map(), onBranchChange: () => () => {} };

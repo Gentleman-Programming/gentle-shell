@@ -394,8 +394,17 @@ test("public empty-output report preserves only safe in-process completion facts
 	});
 	const result = await runCapture(cwd, native, "safe-evidence-lineage");
 	assert.equal(result.outcome, "pi-host-relay-transport-failure");
-	assert.deepEqual((result.failure as { reviewer: unknown }).reviewer, {
-		reviewerModel: "nan/deepseek-v4-flash", stopReason: "length", usage: { output: 64, reasoning: 64 },
+	const reviewer = (result.failure as { reviewer: Record<string, unknown> }).reviewer;
+	const { durationMs, authDurationMs, completionDurationMs, ...facts } = reviewer;
+	for (const [key, value] of Object.entries({ durationMs, authDurationMs, completionDurationMs })) {
+		assert.equal(typeof value, "number", key);
+		assert.ok(Number.isFinite(value) && Number(value) >= 0, key);
+		assert.equal(value, outcome.evidence?.[key], `${key} is relayed unchanged`);
+	}
+	assert.ok(Number(durationMs) >= Number(authDurationMs));
+	assert.ok(Number(durationMs) >= Number(completionDurationMs));
+	assert.deepEqual(facts, {
+		phase: "completion", provider: "nan", reviewerModel: "nan/deepseek-v4-flash", stopReason: "length", usage: { output: 64, reasoning: 64 },
 		content: { blocks: 1, textBlocks: 0, thinkingBlocks: 1, textChars: 0, thinkingChars: 16 },
 	});
 	assert.doesNotMatch(JSON.stringify(result), /PRIVATE|errorMessage|unknown|authorization/);
@@ -452,6 +461,7 @@ test("a provider that refuses the pi transport blocks immediately without an age
 	assert.match(transport.message, /immutable review runtimes/i);
 	assert.equal(result.status, "blocked");
 	assert.equal(result.outcome, "pi-host-relay-transport-unavailable");
+	assert.equal((result.blocker as Record<string, unknown>).category, "provider-capability");
 	assert.equal(result.mutation_performed, false);
 	assert.equal(result.mutation_outcome, "none");
 	assert.match(String(result.next_action), /support.*--agent pi/i);

@@ -44,9 +44,9 @@ The [v2.6.0 release](https://github.com/Gentleman-Programming/gentle-pi/releases
 - Registered worktrees survive reloads. `/gentle:changes` groups each dirty root (the session's repository and its subagents' worktrees) and shows Git status, line counts, and lazy diffs against HEAD without conflating identical paths from different worktrees.
 - Fullscreen pointer navigation and the responsive sidebar keep changes, agents, and TODO usable at changing terminal widths; cached frames avoid redrawing inactive sidebar content while live status still updates.
 - The Agents List and Details views preserve the orchestrator/session hierarchy and completion, abort, and lost-exit history. Parent-child queries and notifications have an explicit handoff path, while model, effort, and usage stay observable per task.
-- Named `/gentle:profiles` atomically route the orchestrator separately from packaged and review roles; see the [technical reference](readme-reference.md#agent-model-profiles) for the profile model.
+- Named `/gentle:profiles` atomically route the orchestrator separately from packaged and review roles, and carry a per-profile orchestrator workflow mode (`w` on the models screen: organic, where the orchestrator may implement inline, or full delegation, where every implementation goes to a subagent); see the [technical reference](readme-reference.md#agent-model-profiles) for the profile model.
 
-The source checkout prepares `gentle-pi` `4.0.0` with a package-local Gentle AI `v4.3.1` pin; this does not imply that the package release has been published.
+The source checkout prepares `gentle-pi` `4.0.0` with a package-local Gentle AI `v4.4.0` pin; this does not imply that the package release has been published.
 
 ## Shell interactions and runtime behavior
 
@@ -69,8 +69,9 @@ In regular mode the terminal owns mouse input, so use the keyboard instead. Revi
 
 ### Fullscreen layout
 
-Open `/gentle:customize` → **Layout** to adjust the existing placements and spacing:
+Open `/gentle:customize` → **Layout** to adjust placements, spacing and task-summary publishing:
 
+- **Task summary:** `on` (the default) or `off` controls the active-task summary published to terminal tools, such as Herdr's sidebar. Highlighting a choice does not save it; Enter or Space saves and applies it now. The `enabled` preference lives in `herdr-task-summary.json` in the Gentle Pi config home, separate from visual profiles. Existing colors are preserved; malformed or unreadable files are not overwritten. This does not edit Herdr config or hide the local Todo list.
 - **Header:** `top` (the default) puts the full-width status bar above both the conversation and the rail. `below-input` puts it below the editor; beside a rail it becomes a full-width row below both columns. `split` puts a title above the conversation and a status bar below it.
 - **Status:** `auto` and `right` use the rail at 140 columns or wider; `bottom` removes the rail and keeps the Status sections available through `[ Panel ]`; `hidden` suppresses Status. This controls the rail and its fallback, not an independent position for every bar.
 - **Density:** `comfortable` adds spacing around the bars and between rail sections. `compact` removes those gaps except between transparent float cards; `minimal` also removes gauges and usage shortcut hints from the fullscreen bars while retaining their values when space permits.
@@ -484,13 +485,17 @@ The canvas server binds `127.0.0.1` on a random port and needs a random per-serv
 
 ### Bridge providers
 
-Idle Claude Bridge continuation uses the normal user-prompt lifecycle so prompt preparation and tool declarations are retained. Gentle Agents hides only its exact, uniquely generated reserved wake in Pi's interactive transcript; child result and query cards remain visible. Native providers keep their hidden `display: false` custom wake. Pi gives custom messages to the model with the user role, so the native wake carries the same "not written by the user" label as the Bridge wake and asks for a reply in the language of the human's own last message, never the language of the notification or of the subagent output. The Bridge wake text is unchanged because persisted wake identities embed it.
+Idle Claude Bridge continuation uses the normal user-prompt lifecycle so prompt preparation and tool declarations are retained. Gentle Agents hides only its exact, uniquely generated reserved wake in Pi's interactive transcript; child result and query cards remain visible. Native providers keep their hidden `display: false` custom wake. Pi gives custom messages to the model with the user role, so the native wake carries the same "not written by the user" label as the Bridge wake and asks for a reply in the language of the human's own last message, never the language of the notification or of the subagent output. The Bridge wake text is unchanged because persisted wake identities embed it. That label alone does not hold in long sessions, where the human's message sits far up the transcript or has been compacted away, so the harness also anchors the reply language itself: it records the human's own typed input (interactive or RPC, never extension-sent text such as Bridge wakes) and, when the primary session is about to answer right after an automated message, adds one hidden `gentle-pi.reply-language` note quoting the start of that input. The note is added only when the request ends with an automated message, so a plain tool round adds nothing, and it is persisted once per such message, so requests stay append-only for the provider's prompt cache; child sessions never receive it.
 
 The reserved identity is stored once per session as a non-context custom entry and reconstructed on reload/resume, including identities on abandoned branches. It is session-owned: switching sessions releases the previous identity. Ordinary text quoting the old notification, prefixes, substrings, and whitespace variations is not hidden. Pi's transformer exposes no author/message ID, so an exact copy of the current reserved identity is indistinguishable from its generated wake.
 
 This is **TUI-only suppression**: the generated user-role message remains in session history, model context, and RPC. It does not fix the SDK's idle custom-message lifecycle. Older runtimes without the Markdown transformer API, or failed identity persistence, retain visible continuation and emit a warning rather than dropping the wake. Existing unreserved wakes are not retroactively hidden.
 
 The Gentle AI harness (ODD workflow, identity, review contract) and the open-tasks block are appended to `before_agent_start`'s `systemPromptOptions.appendSystemPrompt` instead of being returned as a replacement `systemPrompt` (gentle-shell#1485). Provider bridges such as `pi-claude-bridge` forward only those structured sections after their own preset and drop a returned `systemPrompt`, so this route reaches every provider, bridged or not.
+
+### Empty review scope after acknowledgement
+
+After acknowledging a committed candidate, a selectorless STATUS may inspect the empty workspace and return `empty_candidate_base_ref_required`. The `blocked` label describes that candidate selection request; it does not establish that the earlier review failed or remains open. To check the previously acknowledged candidate, use ASSESS with its original `baseRef` and `committedOnly: true`, and rely on the returned native `candidate.consumed` evidence. Do not infer closure from the empty workspace or repeat the acknowledgement.
 
 Set `GENTLE_PI_SHELL=0` to keep pi's built-in footer and editor.
 

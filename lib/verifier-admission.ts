@@ -13,7 +13,7 @@ export const VERIFIER_NAMES = ["gentle-ai-verify"];
 // sentence ("Do not write Risk: item 3") do not start one. The capture is the first named item.
 const HIGH_RISK_ITEM_LINE = /(?:^[ \t]*(?:[-*+][ \t]+)?|[.!?][ \t]+)Risk:[ \t]*item[ \t]+([1-6])(?!\d)/m;
 export const VERIFIER_RISK_REJECTION =
-	"An independent verifier runs only for a change that declares a named high-risk item (`Risk: item N` from the Task Size list in the task). No supported `Risk: item N` declaration was recognized in the launch `task` or `context`: run its focused test and suite inline yourself now; do not retry the launch, and never add a Risk line or create a feature document only to get a verifier admitted.";
+	"An independent verifier runs only for a change that declares a named high-risk item (`Risk: item N` from the Task Size list in the task). A supported `Risk: item N` declaration starts a line (optionally after a list marker like `- `) or a sentence (after `.`, `!` or `?` and a space), for example `Risk: item 2 (authorization tokens)`; a declaration after another separator such as `; ` or `,` is not recognized. No supported `Risk: item N` declaration was recognized in the launch `task` or `context`: run its focused test and suite inline yourself now; do not retry the launch, and never add a Risk line or create a feature document only to get a verifier admitted.";
 
 // The first high-risk item a text declares with the admission grammar, or undefined when it declares none.
 export function declaredHighRiskItem(text: string): number | undefined {

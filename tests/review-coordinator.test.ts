@@ -13,6 +13,48 @@ const approved = { result: { target_identity: target, authority: { lineage_id: l
 const closed = { outcome: "native-approved-acknowledgement-completed", status: "closed", authority: "burned", target_identity: target, lineage_id: lineage };
 const captured = { outcome: "native-last-event-closure" };
 const stopped = { result: { ...collect.result, next_transition: { kind: "stop", reason_code: "corrected_candidate_unavailable" } } };
+
+test("coordinator snapshots single/group reviewer runs through terminal ACK without double-counting legacy diagnostics", async () => {
+	const first = { reviewer: { reviewerModel: "fixture/first", usage: { input: 4 }, cost: { total: 0.1 } }, lens: "review-risk" };
+	const second = { reviewer: { reviewerModel: "fixture/second", phase: "completion" }, lens: "review-reliability" };
+	const group = { ...captured, host_relay: { transport: "pi_host_relay", reviewer_runs: [first, second], reviewers: [first] } };
+	const single = { ...captured, host_relay: { transport: "pi_host_relay", reviewer: { reviewerModel: "fixture/third", usage: { input: 2 } }, role: "provider_refuter", submission: "opaque native response, not reviewer facts" } };
+	const next = { ...collect, collectBindings: [{ collectBinding: "next-opaque" }] };
+	const host = backend([collect, group, next, single, approved, closed]);
+	const expected = structuredClone([first, second, { role: "provider_refuter", reviewer: single.host_relay.reviewer }]);
+	const result = await runReviewCoordinator({ lineageId: lineage }, { invoke: async (tool, parameters) => {
+		if (host.calls.length === 2) first.reviewer.usage.input = 999;
+		return await host.invoke(tool, parameters);
+	} });
+	assert.equal(result.outcome, "closed"); assert.deepEqual(result.reviewer_runs, expected);
+	assert.equal((result.metrics as Body).reviewer_cost, undefined, "host evidence is not a second SDK accounting total");
+	assert.doesNotMatch(JSON.stringify(result.reviewer_runs), /opaque native response/);
+});
+
+test("coordinator retains earlier runs and a failed reviewer attempt without duplicating grouped failure evidence", async () => {
+	const first = { reviewer: { reviewerModel: "fixture/first", usage: { output: 3 } } };
+	const next = { ...collect, collectBindings: [{ collectBinding: "next-opaque" }] };
+	const failure = { outcome: "pi-host-relay-transport-failure", failure: { reviewer: { reviewerModel: "fixture/failed", phase: "auth" } } };
+	const result = await runReviewCoordinator({ lineageId: lineage }, backend([collect, { ...captured, host_relay: { reviewer_runs: [first], reviewers: [first] } }, next, failure]));
+	assert.equal(result.outcome, "blocked");
+	assert.deepEqual(result.reviewer_runs, [first, { reviewer: failure.failure.reviewer }]);
+	const groupedFailure = { ...failure, host_relay: { reviewer_runs: [first, { reviewer: failure.failure.reviewer }], reviewers: [first] } };
+	const grouped = await runReviewCoordinator({ lineageId: lineage }, backend([collect, groupedFailure]));
+	assert.deepEqual(grouped.reviewer_runs, [first, { reviewer: failure.failure.reviewer }], "group evidence supersedes the same reviewer repeated in failure diagnostics");
+});
+
+test("reviewer evidence snapshots stay within the existing transition limit and do not persist across invocations", async () => {
+	let captures = 0;
+	const result = await runReviewCoordinator({ lineageId: lineage }, { invoke: async tool => {
+		if (tool === "gentle_review") return { ...collect, collectBindings: Array.from({ length: 4 }, (_, i) => ({ collectBinding: `opaque-${captures}-${i}` })) };
+		captures++;
+		return { ...captured, host_relay: { reviewer_runs: Array.from({ length: 4 }, () => ({ reviewer: { reviewerModel: "fixture/model", phase: "completion" } })) } };
+	} });
+	assert.equal(result.outcome, "transition-limit"); assert.equal(captures, 24);
+	assert.equal((result.reviewer_runs as Body[]).length, 96);
+	const next = await runReviewCoordinator({ lineageId: lineage }, backend([stopped]));
+	assert.deepEqual(next.reviewer_runs, []);
+});
 function backend(responses: Body[]) {
  const calls: { tool: ReviewCoordinatorTool; parameters: Body }[] = [];
  return { calls, async invoke(tool: ReviewCoordinatorTool, parameters: Body) {

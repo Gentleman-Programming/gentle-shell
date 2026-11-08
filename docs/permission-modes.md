@@ -93,6 +93,10 @@ An allow verdict only returns control to the original executor and remaining gua
 - The mode does not choose an unknown remote destination, account or credential, or authorize ambient credential discovery.
 - Calls that execute outside Pi's intercepted tool pipeline are outside this hook's coverage. A custom tool is inspected by its name and arguments, not by executing or proving its implementation.
 
+### Execution-surface guard
+
+A tool call whose input sets `openProjectPaneIfMissing` to anything but `false` is blocked before any prompt or execution, in every mode including YOLO and super-YOLO, and in child sessions. The reason carries the stable code `gentle-ai.execution-surface.external-fallback-prohibited`; run the work through `subagent_*` or the native `Agent` in the current runtime instead, or stop and tell the user.
+
 ## Failure behavior and cost
 
 Auto uses the **current session model and existing model registry/authentication** in an independent request. Ordinary checks remain tool-free; an eligible script check can inspect at most two complete 8 KB files, with at most three provider calls and a 60-second overall limit. Each provider call has a 20-second deadline. Only explicit script operands in simple shell commands, or `package.json` for supported package-script commands, are eligible. Compound commands, cwd-changing options (such as `bun --cwd nested check.ts`), substitutions and globs are not expanded; Auto does not crawl directories or execute a script to assess it. See [inspection limits and accounting](auto-permission-evidence.md). It does not ask the acting conversation to approve itself. Enabling or saving Auto discloses this additional inference; individual actions do not each ask for inference consent. Depending on the provider, these checks add token cost and latency.

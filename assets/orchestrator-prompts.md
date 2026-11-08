@@ -1,6 +1,6 @@
 # Orchestrator — Delegation Prompts and Provider Defects (lazy-loaded)
 
-Bind this to the parent Pi session only. Load it for source handoffs or when a tool or subagent returns a user-facing blocking prompt or menu, or a Gentle AI provider defect appears; small tasks never need it (see `orchestrator.md` Task Size).
+Bind this to the parent Pi session only. Load it for source handoffs or when a tool or subagent returns a user-facing blocking prompt or menu, or a Gentle AI provider defect appears.
 
 ### Online Sources
 

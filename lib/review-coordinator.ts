@@ -43,12 +43,14 @@ export function parseReviewCoordinatorInput(value: unknown): ReviewCoordinatorIn
 	return input as ReviewCoordinatorInput;
 }
 
+/** Follow bounded native continuations while retaining informational reviewer facts. */
 export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinatorDeps): Promise<Body> {
  const input = parseReviewCoordinatorInput(value);
  const now = deps.now ?? (() => performance.now());
  const began = now();
  const steps: Body[] = [];
  const forecasts: Body[] = [];
+ const reviewerRuns: Body[] = [];
  const workspace = input.workspaceRoot === undefined ? {} : { workspaceRoot: input.workspaceRoot };
  const selector = input.baseRef === undefined ? {} : { baseRef: input.baseRef, committedOnly: true };
  const selectorInput = input.baseRef === undefined ? {} : { input: JSON.stringify(selector) };
@@ -61,17 +63,30 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
  };
  const acknowledged = (body: Body) => body.outcome === "native-approved-acknowledgement-completed"
   && body.status === "closed" && body.authority === "burned";
+ /** Record facade timing and evidence without changing routing or native authority. */
  const invoke = async (tool: ReviewCoordinatorTool, parameters: Body) => {
   checkCancelled();
   const start = now();
   const result = await deps.invoke(tool, { ...workspace, ...parameters });
   if (result.outcome === "reviewer-model-run-forecast") forecasts.push(structuredClone(result));
+  if (tool !== "gentle_review" && result.outcome !== "reviewer-model-run-forecast") {
+   // Informational snapshots only: never route or total SDK cost from these.
+   // The transition limit bounds retention to this invocation. A group's new
+   // all-prepared records supersede its submitted-only legacy reviewers array.
+   const relay = record(result.host_relay);
+   if (Array.isArray(relay.reviewer_runs) && relay.reviewer_runs.length > 0) reviewerRuns.push(...structuredClone(relay.reviewer_runs.map(record)));
+   else if (relay.reviewer !== undefined) {
+    const facts = Object.fromEntries(["lens", "order", "subject_hash", "role", "prompt_bytes", "result_bytes"]
+     .filter(key => relay[key] !== undefined).map(key => [key, relay[key]]));
+    reviewerRuns.push(structuredClone({ ...facts, reviewer: relay.reviewer }));
+   } else if (record(result.failure).reviewer !== undefined) reviewerRuns.push(structuredClone({ reviewer: record(result.failure).reviewer }));
+  }
   steps.push({ tool, operation: parameters.operation, elapsed_ms: now() - start,
    request_bytes: Buffer.byteLength(JSON.stringify({ ...workspace, ...parameters })), response_bytes: Buffer.byteLength(JSON.stringify(result)) });
   if (!acknowledged(result)) checkCancelled();
   return result;
  };
- const finish = (outcome: string, result: Body) => ({ schema: "gentle-pi.review-coordinator-experiment/v1", outcome, result, forecasts,
+ const finish = (outcome: string, result: Body) => ({ schema: "gentle-pi.review-coordinator-experiment/v1", outcome, result, forecasts, reviewer_runs: reviewerRuns,
   ...(lineage === undefined ? {} : { lineage_id: lineage }), metrics: { elapsed_ms: now() - began, facade_calls: steps.length, steps } });
  const status = () => invoke("gentle_review", { operation: "status", lineageId: lineage, ...selectorInput });
  let details: Body;

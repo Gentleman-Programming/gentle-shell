@@ -671,3 +671,130 @@ test("clean in a headless session fails closed without reads or changes", async 
 	assert.equal(existsSync(fx.clean), true, "the worktree was not removed");
 	assert.equal(refsSnapshot(fx), refsBefore, "every ref and worktree is unchanged");
 });
+
+// Bounded correction batch (S2): ignored content counts as work, the cleanup
+// re-proves the branch commit at action time, and nothing is ever pruned.
+
+test("ignored files count as work: a worktree holding only ignored files is kept and they survive", async (t) => {
+	const fx = fixture(t);
+	const ops = fakeRemoteOps([{ state: "at", sha: fx.headSha }]);
+	const s = harness(t, fx, { registeredWorktrees: [fx.clean], remoteBranchOps: ops.ops });
+	await s.run(`register ${fx.url}`);
+	// A real ignore mechanism: the clone's common info/exclude governs every
+	// worktree, so .env in the worktree is ignored, never untracked.
+	writeFileSync(join(fx.main, ".git", "info", "exclude"), ".env\n");
+	writeFileSync(join(fx.clean, ".env"), "secret\n");
+	s.state.confirmQueue = [true, true, true];
+	const message = await s.run(`clean ${fx.url}`);
+	assert.match(s.confirms[3].message, new RegExp(`worktree ${worktreePattern(fx)}: kept — has ignored files that its removal would delete \\(1 ignored file\\)`));
+	assert.doesNotMatch(message, new RegExp(`worktree ${worktreePattern(fx)}: removed`));
+	assert.doesNotMatch(message, new RegExp(`worktree ${worktreePattern(fx)}: `), "no worktree action ran at all");
+	assert.equal(existsSync(fx.clean), true, "the worktree was not removed");
+	assert.equal(readFileSync(join(fx.clean, ".env"), "utf8"), "secret\n", "the ignored file survives");
+});
+
+test("the destination worktree's ignored files block the fast-forward and keep their content", async (t) => {
+	const fx = fixture(t);
+	const ops = fakeRemoteOps([{ state: "at", sha: fx.headSha }]);
+	const s = harness(t, fx, { registeredWorktrees: [fx.clean], remoteBranchOps: ops.ops });
+	await s.run(`register ${fx.url}`);
+	writeFileSync(join(fx.main, ".git", "info", "exclude"), ".env\n");
+	writeFileSync(join(fx.main, ".env"), "secret\n");
+	const mainTip = fx.git(fx.main, "rev-parse", "refs/heads/main");
+	s.state.confirmQueue = [true, true, true];
+	const message = await s.run(`clean ${fx.url}`);
+	assert.match(message, /destination branch main: kept — the worktree holding it has ignored files/);
+	assert.doesNotMatch(message, /destination branch .*: fast-forwarded/);
+	assert.equal(fx.git(fx.main, "rev-parse", "refs/heads/main"), mainTip, "the destination tip is unchanged");
+	assert.equal(readFileSync(join(fx.main, ".env"), "utf8"), "secret\n", "the ignored file keeps its content");
+});
+
+test("drift inside the action-time remote read deletes nothing and changes no ref", async (t) => {
+	const fx = fixture(t);
+	const reads: RemoteBranchInput[] = [];
+	const deletions: RemoteBranchInput[] = [];
+	const box: { drift?: () => void } = {};
+	const ops: RemoteBranchOps = {
+		async readHead(input) {
+			reads.push(input);
+			if (reads.length === 2) box.drift?.();
+			return { state: "at", sha: fx.headSha };
+		},
+		async deleteBranch(input) { deletions.push(input); return { ok: true }; },
+	};
+	const s = harness(t, fx, { registeredWorktrees: [fx.clean], remoteBranchOps: ops });
+	box.drift = () => { s.ctx.cwd = fx.clone2; };
+	await s.run(`register ${fx.url}`);
+	const refsBefore = fx.git(fx.main, "for-each-ref", "--format=%(refname)");
+	s.state.confirmQueue = [true, true, true];
+	const message = await s.run(`clean ${fx.url}`);
+	assert.match(message, /local branch feature: kept — the session or repository changed during the recheck/);
+	assert.match(message, /remote branch origin\/feature: kept — the session or repository changed during the recheck/);
+	assert.equal(deletions.length, 0, "no remote deletion happened");
+	assert.equal(fx.git(fx.main, "for-each-ref", "--format=%(refname)"), refsBefore, "no ref changed");
+});
+
+// A deletion that already happened must never be reported as kept: the report
+// is the only record the operator has of a completed remote change.
+test("a completed remote deletion is reported as deleted even when drift follows it", async (t) => {
+	const fx = fixture(t);
+	const deletions: RemoteBranchInput[] = [];
+	const box: { drift?: () => void } = {};
+	const ops: RemoteBranchOps = {
+		async readHead() { return { state: "at", sha: fx.headSha }; },
+		async deleteBranch(input) { deletions.push(input); box.drift?.(); return { ok: true }; },
+	};
+	const s = harness(t, fx, { registeredWorktrees: [fx.clean], remoteBranchOps: ops });
+	box.drift = () => { s.ctx.cwd = fx.clone2; };
+	await s.run(`register ${fx.url}`);
+	s.state.confirmQueue = [true, true, true];
+	const message = await s.run(`clean ${fx.url}`);
+	assert.equal(deletions.length, 1, "the authorized deletion ran exactly once");
+	assert.match(message, /remote branch origin\/feature: deleted, but the session or repository changed during the recheck/);
+	assert.doesNotMatch(message, /remote branch origin\/feature: kept/);
+});
+
+test("the local branch is deleted only on action-time proof: a remote branch present in the plan but absent at action time keeps refs/heads/feature", async (t) => {
+	const fx = fixture(t);
+	const ops = fakeRemoteOps([{ state: "at", sha: fx.headSha }, { state: "absent" }]);
+	const s = harness(t, fx, { registeredWorktrees: [fx.clean], remoteBranchOps: ops.ops });
+	await s.run(`register ${fx.url}`);
+	s.state.confirmQueue = [true, true, true];
+	const message = await s.run(`clean ${fx.url}`);
+	assert.match(message, /local branch feature: kept — nothing proves its commit exists elsewhere any more/);
+	assert.match(message, /remote branch origin\/feature: already gone/);
+	assert.equal(refState(fx, "heads", "feature"), "refs/heads/feature", "the local branch is kept");
+	assert.equal(ops.deletions.length, 0, "no remote deletion happened");
+	assert.equal(ops.reads.length, 2, "one read for the plan and one fresh read taken at action time");
+});
+
+test("a clean never prunes: an unrelated removed worktree keeps its admin entry", async (t) => {
+	const fx = fixture(t);
+	const unrelated = join(fx.root, "wt-unrelated");
+	fx.git(fx.main, "worktree", "add", "-q", unrelated, "merge-line");
+	rmSync(unrelated, { recursive: true, force: true });
+	const ops = fakeRemoteOps([{ state: "at", sha: fx.headSha }]);
+	const s = harness(t, fx, { registeredWorktrees: [fx.clean], remoteBranchOps: ops.ops });
+	await s.run(`register ${fx.url}`);
+	s.state.confirmQueue = [true, true, true];
+	const message = await s.run(`clean ${fx.url}`);
+	assert.match(message, new RegExp(`worktree ${worktreePattern(fx)}: removed`));
+	const listing = fx.git(fx.main, "worktree", "list", "--porcelain");
+	assert.match(listing, new RegExp(unrelated.replace(/[\\/.]/g, "\\$&")), "the unrelated worktree's admin entry survives");
+});
+
+test("a second clean of an already clean tree reports no fast-forward", async (t) => {
+	const fx = fixture(t);
+	const states: RemoteBranchState[] = [{ state: "at", sha: fx.headSha }];
+	const ops = fakeRemoteOps(states);
+	const s = harness(t, fx, { registeredWorktrees: [fx.clean], remoteBranchOps: ops.ops });
+	await s.run(`register ${fx.url}`);
+	s.state.confirmQueue = [true, true, true];
+	const first = await s.run(`clean ${fx.url}`);
+	assert.match(first, new RegExp(`destination branch main: fast-forwarded to ${fx.mergeSha}`));
+	states[0] = { state: "absent" };
+	const second = await s.run(`clean ${fx.url}`);
+	assert.doesNotMatch(second, /fast-forwarded/);
+	assert.match(second, /Nothing is provable as removable right now, so nothing was removed and nothing changed\./);
+	assert.equal(fx.git(fx.main, "rev-parse", "refs/heads/main"), fx.mergeSha, "the destination tip did not move");
+});

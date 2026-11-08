@@ -256,6 +256,11 @@ export function createPostMergeCloseExtension(options: PostMergeCloseOptions = {
 			if (runGit(circle.cwd, ["rev-parse", "--verify", "--quiet", `${mergeCommitSha}^{commit}`], env) === undefined) {
 				return { detail: "the merge commit is not present locally, so no fast-forward answer is possible", fastForward: false };
 			}
+			// A destination already sitting at the merge commit has nothing to
+			// fast-forward: planning or reporting an update for it would be a lie.
+			if (readBranchTip(circle.cwd, record.baseBranch, env)?.toLowerCase() === mergeCommitSha) {
+				return { detail: "already sits at the merge commit, so there is nothing to fast-forward", fastForward: false };
+			}
 			const ancestor = gitIsAncestor(circle.cwd, `refs/heads/${record.baseBranch}`, mergeCommitSha, env);
 			if (ancestor === undefined) return { detail: "the fast-forward state could not be checked locally", fastForward: false };
 			return ancestor
@@ -267,6 +272,14 @@ export function createPostMergeCloseExtension(options: PostMergeCloseOptions = {
 		// preview and the cleanup can never disagree about it. Every blocker is
 		// re-evaluated against live state, never against the registration alone.
 		type WorktreeVerdict = { state: "removable" } | { state: "kept" | "unknown" | "already gone"; detail?: string };
+		// Ignored files count as work: removing the worktree or fast-forwarding the
+		// destination would both destroy them, and a plain `--porcelain` status
+		// never shows them. Returns undefined when git could not answer.
+		const fullStatus = (directory: string): readonly string[] | undefined => {
+			const status = runGit(directory, ["status", "--porcelain", "--untracked-files=all", "--ignored=matching"], env);
+			if (status === undefined) return undefined;
+			return status.length === 0 ? [] : status.split("\n");
+		};
 		const worktreeVerdict = (worktree: RegisteredWorktree, record: PostMergeCloseRecord, circle: SessionCircle, sessionDirectory: string | undefined): WorktreeVerdict => {
 			let present = true;
 			try { lstatSync(worktree.path); } catch { present = false; }
@@ -278,9 +291,12 @@ export function createPostMergeCloseExtension(options: PostMergeCloseOptions = {
 			if (sessionDirectory !== undefined && (sessionDirectory === worktree.path || sessionDirectory.startsWith(`${worktree.path}${sep}`))) {
 				return { state: "kept", detail: "this session's current directory is inside it" };
 			}
-			const status = runGit(identity.root, ["status", "--porcelain"], env);
+			const status = fullStatus(identity.root);
 			if (status === undefined) return { state: "unknown", detail: "git could not read the worktree state" };
-			if (status.length > 0) return { state: "kept", detail: "has uncommitted changes" };
+			if (status.length > 0) {
+				if (status.some((line) => !line.startsWith("!! "))) return { state: "kept", detail: "has uncommitted changes" };
+				return { state: "kept", detail: `has ignored files that its removal would delete (${status.length} ignored ${status.length === 1 ? "file" : "files"})` };
+			}
 			// A clean worktree is only removable while its checked-out branch still
 			// sits exactly at the registered head commit; anything else (an extra
 			// commit, a branch switch) is kept with the reason.
@@ -478,45 +494,71 @@ export function createPostMergeCloseExtension(options: PostMergeCloseOptions = {
 
 		// Every action rechecks its own precondition immediately before it mutates
 		// anything, so a change during the confirmation window can only turn an
-		// action into "kept", never into a wider deletion.
-		const runAction = async (action: CleanAction, record: PostMergeCloseRecord, circle: SessionCircle, ctx: ExtensionContext, view: PullRequestView): Promise<string> => {
+		// action into "kept", never into a wider deletion. The batch's one fresh
+		// remote read is taken lazily at action time and shared by the local-branch
+		// proof and the remote-branch recheck, so no deletion can run on the plan's
+		// stale evidence.
+		const runAction = async (action: CleanAction, record: PostMergeCloseRecord, circle: SessionCircle, ctx: ExtensionContext, view: PullRequestView, readBatchRemote: () => Promise<RemoteBranchState>): Promise<string> => {
 			const sessionDirectory = (() => { try { return realpathSync(circle.cwd); } catch { return undefined; } })();
 			if (action.kind === "worktree") {
 				const verdict = worktreeVerdict({ path: action.path, fingerprint: action.fingerprint }, record, circle, sessionDirectory);
 				if (verdict.state === "already gone") return `worktree ${action.path}: already gone`;
 				if (verdict.state !== "removable") return `worktree ${action.path}: kept — ${verdict.detail}`;
 				if (runGit(circle.root, ["worktree", "remove", action.path], env) === undefined) return `worktree ${action.path}: kept — git refused to remove it`;
-				runGit(circle.root, ["worktree", "prune"], env);
+				// No `git worktree prune` here: `git worktree remove` already drops this
+				// worktree's own admin entry, and a clone-wide prune would touch
+				// unrelated worktree entries the plan never proved.
 				return `worktree ${action.path}: removed`;
 			}
 			if (action.kind === "local branch") {
 				const tip = readBranchTip(circle.cwd, action.name, env);
 				if (tip === undefined) return `local branch ${action.name}: already gone`;
 				if (tip.toLowerCase() !== record.headSha) return `local branch ${action.name}: kept — it moved to ${tip} since the plan was checked`;
+				// Action-time proof: the plan's evidence is stale once the
+				// confirmation closes, so the commit must still be provably held
+				// elsewhere right now — by the destination or by a fresh remote read.
+				if (gitIsAncestor(circle.cwd, record.headSha, `refs/heads/${record.baseBranch}`, env) !== true) {
+					const state = await readBatchRemote();
+					if (!bindingHolds(circle, ctx)) return `local branch ${action.name}: kept — the session or repository changed during the recheck`;
+					if (!(state.state === "at" && state.sha === record.headSha)) return `local branch ${action.name}: kept — nothing proves its commit exists elsewhere any more`;
+				}
 				if (runGit(circle.cwd, ["branch", "-D", action.name], env) === undefined) return `local branch ${action.name}: kept — git refused to delete it`;
 				return `local branch ${action.name}: deleted`;
 			}
 			if (action.kind === "remote branch") {
 				const input: RemoteBranchInput = { directory: circle.cwd, remote: action.remote, branch: record.headBranch, env, timeoutMs: ghTimeoutMs };
-				const state = await remoteBranchOps.readHead(input);
+				const state = await readBatchRemote();
+				if (!bindingHolds(circle, ctx)) return `remote branch ${action.name}: kept — the session or repository changed during the recheck`;
 				if (state.state === "absent") return `remote branch ${action.name}: already gone`;
 				if (state.state === "unknown") return `remote branch ${action.name}: kept — ${state.reason}`;
 				if (state.sha !== record.headSha) return `remote branch ${action.name}: kept — it now points at ${state.sha}, not the registered head commit`;
 				const outcome = await remoteBranchOps.deleteBranch(input);
 				// `strict` is off in tsconfig, so only the explicit `=== true` check
 				// narrows this boolean-literal union; truthiness would keep both arms.
-				if (outcome.ok === true) return `remote branch ${action.name}: deleted`;
-				return `remote branch ${action.name}: kept — ${outcome.reason}`;
+				if (outcome.ok !== true) return `remote branch ${action.name}: kept — ${outcome.reason}`;
+				// The deletion already happened, so the report must say so: claiming the
+				// branch was kept would hide a real, completed remote change.
+				if (!bindingHolds(circle, ctx)) return `remote branch ${action.name}: deleted, but the session or repository changed during the recheck`;
+				return `remote branch ${action.name}: deleted`;
 			}
 			const destinationTip = readBranchTip(circle.cwd, record.baseBranch, env);
 			if (destinationTip === undefined) return `destination branch ${action.name}: kept — it is absent locally`;
 			if (!destinationDetail(record, circle, view).fastForward) return `destination branch ${action.name}: kept — a fast-forward is no longer provable`;
-			const holder = [circle.root, ...registeredRoots(circle, ctx)].find((candidate) => {
+			const holders = [circle.root, ...registeredRoots(circle, ctx)].flatMap((candidate) => {
 				const identity = resolveWorktree(candidate, circle.cwd);
-				if (!identity || identity.commonDir !== circle.commonDir) return false;
-				return checkedOutHeadAt(identity.root, record.baseBranch, destinationTip, env) && runGit(identity.root, ["status", "--porcelain"], env) === "";
+				if (!identity || identity.commonDir !== circle.commonDir) return [];
+				if (!checkedOutHeadAt(identity.root, record.baseBranch, destinationTip, env)) return [];
+				// The stricter status decides: the fast-forward must never overwrite
+				// ignored files in the retained worktree holding the destination.
+				const status = fullStatus(identity.root);
+				if (status === undefined) return [];
+				return [{ path: identity.root, clean: status.length === 0, ignoredOnly: status.length > 0 && status.every((line) => line.startsWith("!! ")) }];
 			});
-			if (holder === undefined) return `destination branch ${action.name}: kept — no clean worktree of this session holds it checked out`;
+			const holder = holders.find((candidate) => candidate.clean)?.path;
+			if (holder === undefined) {
+				if (holders.some((candidate) => candidate.ignoredOnly)) return `destination branch ${action.name}: kept — the worktree holding it has ignored files`;
+				return `destination branch ${action.name}: kept — no clean worktree of this session holds it checked out`;
+			}
 			if (runGit(holder, ["merge", "--ff-only", action.mergeSha], env) === undefined) return `destination branch ${action.name}: kept — the fast-forward was refused`;
 			return `destination branch ${action.name}: fast-forwarded to ${action.mergeSha}`;
 		};
@@ -572,7 +614,20 @@ export function createPostMergeCloseExtension(options: PostMergeCloseOptions = {
 			if (!confirmed) return refuse(ctx, "Cleanup declined; nothing was removed and nothing changed.");
 			if (!bindingHolds(circle, ctx)) return refuse(ctx, "The session or repository changed while the confirmation was open; nothing was removed.");
 			const results: string[] = [];
-			for (const action of actions) results.push(await runAction(action, record, circle, ctx, view));
+			// One fresh remote read per action batch, taken lazily at action time: the
+			// plan's evidence is stale once the confirmation closes, and this is the
+			// read the local-branch proof and the remote-branch recheck both consume.
+			let batchRead: Promise<RemoteBranchState> | undefined;
+			const readBatchRemote = (): Promise<RemoteBranchState> => {
+				if (batchRead === undefined) {
+					const remote = findGitHubRemote(circle.cwd, record.pr.owner, record.pr.repo, env);
+					batchRead = "name" in remote
+						? remoteBranchOps.readHead({ directory: circle.cwd, remote: remote.name, branch: record.headBranch, env, timeoutMs: ghTimeoutMs })
+						: Promise.resolve<RemoteBranchState>({ state: "unknown", reason: remote.problem });
+				}
+				return batchRead;
+			};
+			for (const action of actions) results.push(await runAction(action, record, circle, ctx, view, readBatchRemote));
 			notify(ctx, [header, ...results, "The registration and the pull request are unchanged."].join("\n"), "info");
 		};
 

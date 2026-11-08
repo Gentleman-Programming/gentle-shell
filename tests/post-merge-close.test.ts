@@ -725,13 +725,16 @@ test("drift inside the action-time remote read deletes nothing and changes no re
 	const s = harness(t, fx, { registeredWorktrees: [fx.clean], remoteBranchOps: ops });
 	box.drift = () => { s.ctx.cwd = fx.clone2; };
 	await s.run(`register ${fx.url}`);
-	const refsBefore = fx.git(fx.main, "for-each-ref", "--format=%(refname)");
+	const refsBefore = fx.git(fx.main, "for-each-ref", "--format=%(refname) %(objectname)");
 	s.state.confirmQueue = [true, true, true];
 	const message = await s.run(`clean ${fx.url}`);
 	assert.match(message, /local branch feature: kept — the session or repository changed during the recheck/);
-	assert.match(message, /remote branch origin\/feature: kept — the session or repository changed during the recheck/);
+	// Drift ends the batch: the remote action never runs, so it reports nothing.
+	assert.doesNotMatch(message, /remote branch origin\/feature: (deleted|kept|already gone)/);
+	assert.match(message, /cleanup stopped: the session or repository changed, so the remaining actions did not run/);
 	assert.equal(deletions.length, 0, "no remote deletion happened");
-	assert.equal(fx.git(fx.main, "for-each-ref", "--format=%(refname)"), refsBefore, "no ref changed");
+	// Names alone would hide a moved tip, so every ref must keep its object id.
+	assert.equal(fx.git(fx.main, "for-each-ref", "--format=%(refname) %(objectname)"), refsBefore, "no ref name or target changed");
 });
 
 // A deletion that already happened must never be reported as kept: the report

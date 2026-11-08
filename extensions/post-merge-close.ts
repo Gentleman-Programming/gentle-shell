@@ -627,7 +627,18 @@ export function createPostMergeCloseExtension(options: PostMergeCloseOptions = {
 				}
 				return batchRead;
 			};
-			for (const action of actions) results.push(await runAction(action, record, circle, ctx, view, readBatchRemote));
+			// Drift detected by one action ends the batch: continuing would let a later
+			// action act for a session or clone the command no longer speaks for.
+			for (const action of actions) {
+				if (!bindingHolds(circle, ctx)) {
+					results.push("cleanup stopped: the session or repository changed, so the remaining actions did not run");
+					break;
+				}
+				results.push(await runAction(action, record, circle, ctx, view, readBatchRemote));
+			}
+			if (!results.some((line) => line.startsWith("cleanup stopped:")) && !bindingHolds(circle, ctx)) {
+				results.push("cleanup stopped: the session or repository changed after the last action");
+			}
 			notify(ctx, [header, ...results, "The registration and the pull request are unchanged."].join("\n"), "info");
 		};
 

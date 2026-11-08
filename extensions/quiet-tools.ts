@@ -867,9 +867,12 @@ export type QuietToolRenderer = Pick<ToolDefinition, "renderShell" | "renderCall
 // `active` is read at call time: a tool the chat draws only under some condition
 // (bash, under the minimal Card content preference) must not be offered while
 // that condition is off, because the host is then drawing it some other way.
+// `rowStable` says what these cards do: the same call and result always draw the
+// same rows, so a second consumer may keep one drawing of them.
 interface PublishedQuietToolRenderer {
 	renderer: QuietToolRenderer;
 	active(): boolean;
+	rowStable: true;
 }
 
 const QUIET_TOOL_RENDERER_SLOT = Symbol.for("gentle-pi.quiet-tool-renderers");
@@ -884,7 +887,7 @@ function publishQuietToolRenderer(
 	renderer: QuietToolRenderer,
 	active: () => boolean = () => true,
 ): QuietToolRenderer {
-	publishedQuietToolRenderers().set(toolName, { renderer, active });
+	publishedQuietToolRenderers().set(toolName, { renderer, active, rowStable: true });
 	return renderer;
 }
 

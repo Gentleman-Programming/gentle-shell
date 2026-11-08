@@ -6,6 +6,7 @@ import { CARD_CONTENT, cardContent, setCardContent } from "../lib/card-content-p
 import { applyTaskEvent, emptyThread, RETAINED_DIFF_MAX_BYTES, RETAINED_DIFF_MAX_LINES, TASK_EVENT, type ToolItem } from "../lib/agents-protocol.ts";
 import productionQuietTools from "../extensions/quiet-tools.ts";
 import {
+	agentToolRowCard,
 	agentToolRowRenderer,
 	isReusableAgentToolRenderer,
 	renderAgentToolItem,
@@ -182,7 +183,27 @@ test("every renderer quiet-tools actually registers is offered, and nothing else
 	assert.equal(agentToolRowRenderer("webfetch"), undefined);
 	for (const name of offered) {
 		assert.ok(renderAgentToolItem(toolItem({ name, output: "retained output" }), plainTheme, 80, { expanded: false })!.length > 0, `${name}: the card is not empty`);
+		// These cards draw the same call and result into the same rows every pass, so
+		// they say so and a consumer of the slot may keep one drawing.
+		assert.equal(agentToolRowCard(name).rowStable, true, `${name}: the card declares its rows stable`);
 	}
+	useCardContent(t, CARD_CONTENT.MINIMAL);
+	assert.equal(agentToolRowCard("bash").renderer !== undefined, true, "bash is offered while the chat draws it as a card");
+	assert.equal(agentToolRowCard("bash").rowStable, true, "and declares its rows stable as well");
+});
+
+test("a record without the stability flag is still a card, and never a reusable one", (t) => {
+	registeredQuietTools();
+	const slot = ((globalThis as any)[PUBLISHED_RENDERERS] ??= new Map<string, any>()) as Map<string, any>;
+	const production = slot.get("read");
+	t.after(() => slot.set("read", production));
+	slot.set("read", { ...production, rowStable: undefined });
+	const record = agentToolRowCard("read");
+	assert.equal(record.renderer, production.renderer, "a record that says nothing about its rows is still offered");
+	assert.equal(record.rowStable, false, "but it names something a consumer must not reuse");
+	slot.set("read", { renderer: production.renderer });
+	assert.equal(agentToolRowCard("read").renderer, production.renderer, "a record with neither an active flag nor a stability flag is offered as it always was");
+	assert.equal(agentToolRowCard("read").rowStable, false, "and is never cached");
 });
 
 test("a finished item draws through the extension's registered renderer, not a copy", () => {

@@ -196,10 +196,11 @@ function thinkingBlock(text: string, theme: AgentsThreadTheme, width: number, ex
 export interface ThreadItemDrawing {
 	lines: string[];
 	/**
-	 * Cards only: this block draws its own frame, so two such blocks in a row need
-	 * a seam between them. It is answered by the branch that drew the block, not by
-	 * the item's kind: a note the runner did not mark as a message, a tool whose
-	 * renderer threw, and prose all fall back to rows and are not cards.
+	 * Cards only: whether a card drew these rows rather than the pane's plain block —
+	 * a tool's published renderer, the memory design, or a message card. It reports
+	 * what drew the block, so a caller can tell a card from fallback rows; it no
+	 * longer decides separators, because every pair of drawn blocks is separated
+	 * whether or not either one owns a frame.
 	 */
 	card: boolean;
 }

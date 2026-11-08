@@ -34,21 +34,24 @@ type ReusableCardRenderer = CardRendererSlots & {
  * The process-wide slot extensions publish tool cards into, keyed by tool name.
  *
  * A publisher satisfies this contract: `globalThis[Symbol.for("gentle-pi.quiet-tool-renderers")]`
- * holds a `Map` from tool name to `{ renderer, active? }`; `renderer` draws its own
- * frame (`renderShell: "self"`) and carries a `renderCall`; and an optional
+ * holds a `Map` from tool name to `{ renderer, active?, rowStable? }`; `renderer`
+ * draws its own frame (`renderShell: "self"`) and carries a `renderCall`; an optional
  * `active()` says whether that publisher is drawing the tool this way right now, so
- * a record with no `active` is always offered. Anything else in the slot — a value
- * that is not a `Map`, a record of another shape, a lookup or an `active()` that
- * throws — offers nothing, because a broken publisher must not break a frame.
+ * a record with no `active` is always offered; and an optional `rowStable: true` says
+ * the same call and result always draw the same rows, which lets a consumer keep one
+ * drawing instead of drawing every frame. Anything else in the slot — a value that is
+ * not a `Map`, a record of another shape, a lookup or an `active()` that throws —
+ * offers nothing, because a broken publisher must not break a frame.
  */
 const CARD_RENDERER_SLOT = Symbol.for("gentle-pi.quiet-tool-renderers");
 
 interface PublishedCardRecord {
 	renderer?: unknown;
 	active?: unknown;
+	rowStable?: unknown;
 }
 
-function publishedCard(toolName: string): Record<string, unknown> | undefined {
+function publishedRecord(toolName: string): PublishedCardRecord | undefined {
 	try {
 		const slot = (globalThis as Record<symbol, unknown>)[CARD_RENDERER_SLOT];
 		if (!(slot instanceof Map)) return undefined;
@@ -58,8 +61,7 @@ function publishedCard(toolName: string): Record<string, unknown> | undefined {
 			if (typeof record.active !== "function") return undefined;
 			if (record.active.call(record) !== true) return undefined;
 		}
-		const renderer = record.renderer;
-		return renderer !== null && typeof renderer === "object" ? (renderer as Record<string, unknown>) : undefined;
+		return record;
 	} catch {
 		return undefined;
 	}
@@ -96,8 +98,32 @@ export function isReusableAgentToolRenderer(renderer: unknown): renderer is Reus
  * very functions the chat is rendering with.
  */
 export function agentToolRowRenderer(toolName: string): Readonly<ReusableCardRenderer> | undefined {
-	const renderer = publishedCard(toolName);
-	return isReusableAgentToolRenderer(renderer) ? renderer : undefined;
+	return agentToolRowCard(toolName).renderer;
+}
+
+/** A tool's card slot as a consumer that keeps one drawing of its rows needs it. */
+export interface AgentToolRowCard {
+	/** The renderer the chat draws this tool with right now, or `undefined` when there is none to reuse. */
+	renderer: Readonly<ReusableCardRenderer> | undefined;
+	/**
+	 * The publisher declares its rows stable: the same call and result always draw
+	 * the same rows, so a consumer may keep one drawing of them. A card that draws
+	 * live geometry — an image's own measurements, a preview that repaints — leaves
+	 * this absent: its record stays valid and simply names something never cached.
+	 */
+	rowStable: boolean;
+}
+
+/**
+ * The card that would draw this tool right now, with the reuse it allows. Read it
+ * rather than the slot: which renderer draws, whether it is offered at all, and
+ * whether its rows may be kept are one answer about one moment.
+ */
+export function agentToolRowCard(toolName: string): AgentToolRowCard {
+	const record = publishedRecord(toolName);
+	const published = record?.renderer;
+	const renderer = isReusableAgentToolRenderer(published) ? published : undefined;
+	return { renderer, rowStable: renderer !== undefined && record?.rowStable === true };
 }
 
 /**

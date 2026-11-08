@@ -4,6 +4,11 @@ import { measureAgentsViewLayout, type AgentsViewLayout } from "./agents-view-la
 import { HOVER_ROLE, paintHoverable } from "./shell-hover.ts";
 import { emptyThread, isFinished, TASK_STATUS, THREAD_ITEM, type TaskRecord, type TaskStore, type TaskThread, type ThreadItem } from "./agents-protocol.ts";
 import { agentMessageCard } from "./agents-message-card.ts";
+import { isMemoryToolName } from "./agents-memory-card.ts";
+import { agentToolRowCard, type AgentToolRowCard } from "./agents-tool-renderers.ts";
+import { cardContent } from "./card-content-policy.ts";
+import { resolveGentleAiDevBinaryOverride } from "./gentle-ai-binary.ts";
+import { cardStyle } from "./shell-card.ts";
 import { drawThreadItem, THREAD_PRESENTATION, type AgentsThreadTheme, type ThreadItemDrawing, type ThreadPresentation } from "./agents-thread-view.ts";
 import { formatElapsed } from "./agents-widget.ts";
 import { createNativePointerScope, type NativePointerRegion } from "./native-pointer-region.ts";
@@ -155,6 +160,36 @@ function rule(length: number): string {
 	return "─".repeat(Math.max(0, length));
 }
 
+// A published card names itself in a cache key by a per-process ordinal: a
+// drawing belongs to that exact renderer, so a republication (a new object) or a
+// withdrawn card never reuses rows the previous one drew. The WeakMap holds the
+// publisher's object weakly; nothing here keeps it alive.
+const cardIds = new WeakMap<object, number>();
+let nextCardId = 0;
+
+function cardId(card: object | undefined): string {
+	if (card === undefined) return "none";
+	const known = cardIds.get(card);
+	if (known !== undefined) return String(known);
+	const assigned = (nextCardId += 1);
+	cardIds.set(card, assigned);
+	return String(assigned);
+}
+
+// A registered dev-binary override changes how a bash card reads its command, so
+// its identity is part of what a frame's rows were drawn under. Resolving it reads
+// the binary — and hashes it once an override is registered — so a frame resolves
+// it once and never once per item; an override that cannot be resolved is its own
+// identity instead of a frame-breaking error.
+function devBinaryIdentity(): string {
+	try {
+		const override = resolveGentleAiDevBinaryOverride();
+		return override === undefined ? "none" : `${override.source}\u0000${override.path}`;
+	} catch {
+		return "invalid";
+	}
+}
+
 function fit(text: string, width: number): string {
 	const clipped = truncateToWidth(text, width, "…");
 	return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
@@ -221,7 +256,7 @@ export class AgentsView {
 	private unsubscribeTask: (() => void) | undefined;
 	private subscribedTaskId: string | undefined;
 	private readonly unsubscribeSummary: () => void;
-	private cache = new WeakMap<ThreadItem, { key: string; lines: string[]; card: boolean }>();
+	private cache = new WeakMap<ThreadItem, ThreadItemDrawing & { key: string }>();
 	private peers: SessionGroup[] = [];
 	private remoteThreads = new Map<string, TaskThread>();
 	private presenceCursor?: PresenceCursor;
@@ -497,6 +532,10 @@ export class AgentsView {
 
 	invalidate(): void {
 		this.clearFooterLayout();
+		// Every retained drawing was painted with the theme this pane was handed and
+		// no theme is part of its key, so a theme change has to drop the cache: the
+		// log served rows painted by the previous theme before this was cleared here.
+		this.cache = new WeakMap();
 	}
 
 	private counts(): string {
@@ -868,14 +907,15 @@ export class AgentsView {
 		// it; the log never showed it and still does not.
 		if (cards && task.prompt.trim().length > 0) pushBlock({ lines: agentMessageCard(task.prompt, this.deps.theme, width), card: true });
 		if (thread.dropped > 0) pushBlock({ lines: [this.deps.theme.fg(ROLE.META, `… ${thread.dropped} earlier items not kept`)], card: false });
-		// Rows of prose are the pane's own drawing, so they stay cached. A card is
-		// drawn by the chat's live renderer, whose output can change for a reason
-		// nothing here can observe (a content or style preference, a renderer's own
-		// state), so a card row is drawn fresh rather than cached under a key that
-		// would have to name every such preference.
-		// Cards carry the detail levels; the log is drawn once, whole, at any width.
-		const detail = cards ? `${this.thinkingExpanded}\u0000${this.cardToolsExpanded}` : "log";
-		const key = `${width}\u0000${presentation}\u0000${detail}`;
+		// A retained item's rows are drawn once and reused on a full match. The frame
+		// part names what every card in it was drawn under — width, the two detail
+		// levels, the shared card style and content preference, the pane's own expand
+		// binding, and the dev-binary override a bash card reads — and is resolved once
+		// per frame. The item part adds what this one row adds on top: its kind, its
+		// resolved level, the hint text, and the identity of the card that will draw it.
+		// The labeled log keeps the plain key it always had: its rows depend on the
+		// width alone, and it has no cards, detail levels or hints to vary.
+		const frame = cards ? this.cardFrame(width) : `${width}\u0000${presentation}\u0000log`;
 		const expandHint = cards ? this.outputExpandHint() : undefined;
 		// Rows the thread itself contributes. The input card above is not thread
 		// content, so it never stands in for the state line below.
@@ -883,9 +923,16 @@ export class AgentsView {
 		for (const item of thread.items) {
 			const card = cards && item.kind === THREAD_ITEM.TOOL ? this.cardKey(task, item.callId) : undefined;
 			const expanded = card === undefined ? this.cardToolsExpanded : this.cardExpansion.get(card) ?? this.cardToolsExpanded;
-			const cached = card === undefined ? this.cache.get(item) : undefined;
+			// Only a tool has a card to read; anything else was drawn by this pane alone.
+			const slot = cards && item.kind === THREAD_ITEM.TOOL ? agentToolRowCard(item.name) : undefined;
+			// The labeled log keeps the one key it always had: its rows depend on the
+			// width alone, so nothing per item belongs in it.
+			const key = cards ? `${frame}\u0000${item.kind}\u0000${expanded}\u0000${expandHint ?? ""}\u0000${cardId(slot?.renderer)}` : frame;
+			// A call still receiving output is never reused: its rows are being written.
+			const finished = item.kind !== THREAD_ITEM.TOOL || !item.running;
+			const cached = finished ? this.cache.get(item) : undefined;
 			const drawing = cached?.key === key ? cached : drawThreadItem(item, this.deps.theme, width, { presentation, expanded, thinkingExpanded: this.thinkingExpanded, expandHint });
-			if (card === undefined && cached?.key !== key) this.cache.set(item, { ...drawing, key });
+			if (finished && cached?.key !== key && this.reusableRow(item, slot)) this.cache.set(item, { ...drawing, key });
 			pushBlock(drawing, card);
 			retained += drawing.lines.length;
 		}
@@ -895,6 +942,34 @@ export class AgentsView {
 			pushBlock({ lines: [this.deps.theme.fg(ROLE.EMPTY, task.error ?? EMPTY_THREAD)], card: false });
 		}
 		return { lines, owners, cards };
+	}
+
+	// Everything one frame's cards were drawn under, resolved once: repeating any of
+	// it per item would resolve the dev-binary override for every retained call.
+	private cardFrame(width: number): string {
+		return [
+			String(width),
+			THREAD_PRESENTATION.CARDS,
+			String(this.thinkingExpanded),
+			String(this.cardToolsExpanded),
+			cardStyle(),
+			cardContent(),
+			this.bindingKeys("app.tools.expand").join("\u0000"),
+			devBinaryIdentity(),
+		].join("\u0000");
+	}
+
+	// The pane's own drawings — prose, thinking, notes, the memory design — depend on
+	// the item and the frame alone, so they are always reusable. A published card is
+	// reused only where its publisher declares its rows stable; a card that declares
+	// nothing stays valid and is simply drawn again, and a tool the pane drew because
+	// no record published a stable card keeps being drawn per frame.
+	private reusableRow(item: ThreadItem, slot: AgentToolRowCard | undefined): boolean {
+		if (slot === undefined) return true;
+		if (slot.rowStable) return true;
+		// An external memory plugin publishes no card for this pane, so its compact
+		// design is this pane's own pure drawing.
+		return item.kind === THREAD_ITEM.TOOL && slot.renderer === undefined && isMemoryToolName(item.name);
 	}
 
 	private threadWindow(rows: number, width: number): string[] {

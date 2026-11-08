@@ -51,11 +51,6 @@ function detailHarness(extra: Partial<AgentsViewDeps> = {}, rows = 14) {
 	return { store, deps, view, text: (width = 100) => stripAnsi(view.render(width).join("\n")) };
 }
 
-function fillDetail(store: TaskStore): void {
-	store.apply("a", { type: TASK_EVENT.THINKING, text: "thought 0\nthought 1\nthought 2\nthought 3\nthought 4\nthought 5" }, 2000);
-	applyTool(store, "bash", { command: "run" }, "output 0\noutput 1\noutput 2\noutput 3\noutput 4\noutput 5");
-}
-
 // The card path is only real when the chat's renderers are actually registered,
 // so this loads the production extension against a minimal host. A second load
 // replaces whatever an earlier one published, exactly as a reload would.
@@ -1613,4 +1608,387 @@ test("an edit card in the pane draws the same diff the chat draws", () => {
 	assert.match(frame, /\+added line/, "the added row is drawn");
 	assert.match(frame, /-removed line/, "the removed row is drawn");
 	view.dispose();
+});
+
+// The pane keeps one drawing per retained item, so a frame that changes nothing
+// must not redraw it. A card comes from another extension and may draw live
+// geometry, so it is reused only when its own record declares its rows stable;
+// these tests publish both kinds of record into the shared slot.
+const PUBLISHED_CARDS = Symbol.for("gentle-pi.quiet-tool-renderers");
+
+interface CardSlot {
+	/** How many times anything this record published has drawn. */
+	draws(): number;
+	/** Publishes (or, with `undefined`, withdraws) this tool's card for the rest of the test. */
+	publish(card: { label: string; rowStable?: boolean; throwing?: boolean } | undefined): void;
+}
+
+function cardSlot(t: { after(fn: () => void): void }, toolName: string): CardSlot {
+	const state = globalThis as Record<symbol, unknown>;
+	const slot = (state[PUBLISHED_CARDS] ??= new Map<string, unknown>()) as Map<string, unknown>;
+	const had = slot.has(toolName);
+	const previous = slot.get(toolName);
+	let draws = 0;
+	t.after(() => {
+		if (had) slot.set(toolName, previous);
+		else slot.delete(toolName);
+	});
+	const component = (rows: () => string[]) => ({
+		render: () => {
+			draws += 1;
+			return rows();
+		},
+		invalidate() {},
+	});
+	return {
+		draws: () => draws,
+		publish(card) {
+			if (card === undefined) {
+				slot.delete(toolName);
+				return;
+			}
+			const record: Record<string, unknown> = {
+				renderer: {
+					renderShell: "self",
+					renderCall: () => {
+						if (card.throwing === true) throw new Error("no drawing for this call");
+						return component(() => [`call ${card.label}`]);
+					},
+					renderResult: (_result: unknown, options: { expanded?: boolean }) => component(() => [`${options.expanded === true ? "whole" : "preview"} ${card.label}`]),
+				},
+				active: () => true,
+			};
+			if (card.rowStable !== undefined) record.rowStable = card.rowStable;
+			slot.set(toolName, record);
+		},
+	};
+}
+
+/** A pane over an existing store; a view built here starts with an empty cache. */
+function paneOver(store: TaskStore, extra: Partial<AgentsViewDeps> = {}, rows = 20): AgentsView {
+	return new AgentsView({ theme: plainTheme, rows, store, sessionId: "s", now: () => 61_000, threadPresentation: () => "cards", onCancel() {}, onOpen() {}, onClose() {}, requestRender() {}, ...extra });
+}
+
+test("a settled card is drawn once and every later frame reuses those rows", (t) => {
+	const read = cardSlot(t, "read");
+	read.publish({ label: "alpha", rowStable: true });
+	const { store, view } = presentationHarness(() => "cards", 20);
+	applyTool(store, "read", { path: "src/a.ts" }, "a0\na1");
+	const cold = view.render(60);
+	assert.equal(read.draws(), 2, "the first frame draws the call and its result");
+	assert.match(stripAnsi(cold.join("\n")), /preview alpha/);
+	for (let frame = 0; frame < 5; frame += 1) assert.deepEqual(view.render(60), cold, `warm frame ${frame} keeps the same rows`);
+	assert.equal(read.draws(), 2, "and no warm frame draws the card again");
+
+	const fresh = paneOver(store);
+	assert.deepEqual(fresh.render(60), cold, "a freshly built view draws byte-identical rows");
+	fresh.dispose();
+	assert.equal(read.draws(), 4, "the cold view is what proves the reused rows are the drawn ones");
+
+	const wide = view.render(80);
+	assert.equal(read.draws(), 6, "a new width draws the card again");
+	assert.notDeepEqual(wide, cold, "and the frame it draws is a different one");
+	view.render(60);
+	assert.equal(read.draws(), 8, "returning to the earlier width draws it once more instead of recalling the older key");
+	view.dispose();
+});
+
+test("one card's expansion redraws only that card", (t) => {
+	const read = cardSlot(t, "read");
+	const edit = cardSlot(t, "edit");
+	read.publish({ label: "alpha", rowStable: true });
+	edit.publish({ label: "beta", rowStable: true });
+	const { store, view } = presentationHarness(() => "cards", 24);
+	applyTool(store, "read", { path: "src/a.ts" }, "a0", false, "first");
+	applyTool(store, "edit", { path: "src/b.ts" }, "done", false, "second");
+	const frame = (): string[] => view.render(60).map(stripAnsi);
+	const cold = frame();
+	assert.equal(read.draws(), 2);
+	assert.equal(edit.draws(), 2);
+	const y = cold.findIndex((line) => line.includes("preview alpha"));
+	assert.ok(y >= 0, "the read card's collapsed result is drawn");
+	assert.equal(view.handleMouse(mouse(50, y, 60, frame().length, "click"))?.handled, true, "the read card consumes its click");
+	frame();
+	assert.equal(read.draws(), 4, "the clicked card redraws at its own level");
+	assert.equal(edit.draws(), 2, "the card nobody touched reuses its drawn rows");
+	assert.match(frame().join("\n"), /whole alpha/, "the clicked card shows its whole result");
+	assert.match(frame().join("\n"), /preview beta/, "its sibling keeps the level it has");
+	view.dispose();
+});
+
+test("a card style or content change draws new rows instead of the cached ones", (t) => {
+	loadQuietTools();
+	const previousStyle = cardStyle();
+	const previousContent = cardContent();
+	t.after(() => {
+		setCardStyle(previousStyle);
+		setCardContent(previousContent);
+	});
+	const store = new TaskStore();
+	store.add(task("a"));
+	applyTool(store, "read", { path: "src/a.ts" }, "a0\na1", false, "read-a");
+	applyTool(store, "bash", { command: "printf hi" }, "hi", false, "bash-call");
+	const view = paneOver(store, { theme: surfaceTheme, rows: 24 });
+	const text = (): string => stripAnsi(view.render(60).join("\n"));
+
+	setCardStyle(CARD_STYLE.FLOAT);
+	const float = text();
+	assert.match(float, /a0/, "the default content preference previews the read result");
+	setCardStyle(CARD_STYLE.NEON);
+	const neon = text();
+	assert.notEqual(neon, float, "the overlay's cards still follow the shared card style");
+	setCardStyle(CARD_STYLE.FLOAT);
+	assert.equal(text(), float, "and returning to it draws those very rows again");
+
+	setCardContent(CARD_CONTENT.MINIMAL);
+	const minimal = text();
+	assert.doesNotMatch(minimal, /a0/, "the shared content preference still applies to a cached card");
+	assert.match(minimal, /\$ printf hi/, "bash draws its card while the chat offers it");
+	setCardContent(CARD_CONTENT.DEFAULT);
+	assert.match(text(), /a0/, "returning to the default previews the result again");
+	assert.match(text(), /Tool · bash · Complete/, "and bash falls back to the plain block");
+	assert.equal((minimal.match(/\$ printf hi/g) ?? []).length, 1, "the card replaces the plain block instead of stacking on it");
+	setCardContent(CARD_CONTENT.MINIMAL);
+	assert.equal(text(), minimal, "switching back draws the card exactly as before");
+	view.dispose();
+});
+
+test("a keybinding change redraws the expand hint of a cached tool row", (t) => {
+	loadQuietTools();
+	// A card published without a drawing throws on every call, so this retained
+	// item is drawn by the pane's own block — which is where the hint lives — and
+	// the record still declares its rows stable, so the rows are the cached ones.
+	const failing = cardSlot(t, "webfetch");
+	failing.publish({ label: "alpha", rowStable: true, throwing: true });
+	const { store, deps, view } = detailHarness({ keybindings: new KeybindingsManager(), threadPresentation: () => "cards" }, 20);
+	applyTool(store, "webfetch", {}, "one\ntwo\nthree\nfour\nfive\nsix");
+	const text = (): string => stripAnsi(view.render(70).join("\n"));
+	assert.match(text(), /Tool · webfetch · Complete/, "the falling card keeps the pane's own block");
+	assert.match(text(), /ctrl\+o to expand/, "the collapsed block offers the host's default key");
+	deps.keybindings = new KeybindingsManager({ "app.tools.expand": "ctrl+e" });
+	const rebound = text();
+	assert.match(rebound, /ctrl\+e to expand/, "a rebound key is drawn instead of the cached hint");
+	assert.doesNotMatch(rebound, /ctrl\+o to expand/, "the replaced default is gone from the block too");
+	view.dispose();
+});
+
+test("a theme change with invalidate() redraws both the log and the cards", () => {
+	let tone = "old";
+	const theme = { fg: (_role: string, text: string) => `${tone}:${text}` };
+	const store = new TaskStore();
+	store.add(task("a", { prompt: "" }));
+	store.apply("a", { type: TASK_EVENT.TEXT, text: "prose answer" }, 2000);
+	store.apply("a", { type: TASK_EVENT.THINKING, text: "reasoning run" }, 2000);
+	applyTool(store, "webfetch", {}, "page body", false, "fetch");
+	for (const presentation of ["log", "cards"] as const) {
+		const deps: AgentsViewDeps = { theme, rows: 24, store, sessionId: "s", now: () => 61_000, threadPresentation: () => presentation, onCancel() {}, onOpen() {}, onClose() {}, requestRender() {} };
+		const view = new AgentsView(deps);
+		tone = "old";
+		assert.match(stripAnsi(view.render(80).join("\n")), /old:.*prose answer/, `${presentation}: the first frame is painted in the first theme`);
+		tone = "new";
+		view.invalidate();
+		const after = view.render(80);
+		assert.doesNotMatch(stripAnsi(after.join("\n")), /old:/, `${presentation}: no cached row keeps the previous theme`);
+		const fresh = new AgentsView(deps);
+		assert.deepEqual(after, fresh.render(80), `${presentation}: the invalidated frame equals a newly built one`);
+		fresh.dispose();
+		view.dispose();
+	}
+});
+
+test("a card that declares no stable rows is drawn on every frame", (t) => {
+	const webfetch = cardSlot(t, "webfetch");
+	webfetch.publish({ label: "alpha" });
+	const { store, view } = presentationHarness(() => "cards", 20);
+	applyTool(store, "webfetch", {}, "page body");
+	view.render(60);
+	assert.equal(webfetch.draws(), 2, "the first frame draws the card");
+	for (let frame = 0; frame < 3; frame += 1) view.render(60);
+	assert.equal(webfetch.draws(), 8, "a record without rowStable is never reused");
+	view.dispose();
+});
+
+test("a memory card, prose, thinking and notes are reused without a stability flag", () => {
+	let paints = 0;
+	const theme = { fg: (_role: string, text: string) => { paints += 1; return text; } };
+	const store = new TaskStore();
+	store.add(task("a", { prompt: "" }));
+	applyTool(store, "mem_save", { title: "Design notes" }, '{"ok":true}');
+	store.apply("a", { type: TASK_EVENT.TEXT, text: "prose answer" }, 2000);
+	store.apply("a", { type: TASK_EVENT.THINKING, text: "reasoning run" }, 2000);
+	store.apply("a", { type: TASK_EVENT.NOTE, text: "retrying (2/3)" }, 2000);
+
+	const warm = paneOver(store, { theme, rows: 24 });
+	warm.render(60);
+	const start = paints;
+	warm.render(60);
+	const warmFrame = paints - start;
+	assert.match(stripAnsi(warm.render(60).join("\n")), /🧠 save “Design notes”/, "the memory card and the framed blocks are drawn");
+
+	const fresh = paneOver(store, { theme, rows: 24 });
+	const freshStart = paints;
+	fresh.render(60);
+	const coldFrame = paints - freshStart;
+	assert.ok(warmFrame < coldFrame, `a warm frame repaints only the frame chrome (${warmFrame} < ${coldFrame})`);
+	warm.dispose();
+	fresh.dispose();
+});
+
+test("republishing or withdrawing a card changes what is drawn", (t) => {
+	const read = cardSlot(t, "read");
+	read.publish({ label: "alpha", rowStable: true });
+	const { store, view } = presentationHarness(() => "cards", 20);
+	applyTool(store, "read", { path: "src/a.ts" }, "a0");
+	const text = (): string => stripAnsi(view.render(60).join("\n"));
+	assert.match(text(), /preview alpha/, "the published card is drawn");
+	assert.equal(read.draws(), 2, "and reused while it stays published");
+
+	read.publish({ label: "beta", rowStable: true });
+	const republished = text();
+	assert.match(republished, /preview beta/, "a republication is drawn instead of the rows cached for the previous renderer");
+	assert.doesNotMatch(republished, /alpha/, "and none of the previous card's rows survive");
+	assert.equal(read.draws(), 4, "the new renderer draws once");
+
+	read.publish(undefined);
+	const withdrawn = text();
+	assert.match(withdrawn, /Tool · read · Complete/, "a withdrawn card falls back on the plain block");
+	assert.doesNotMatch(withdrawn, /beta/, "and its card rows leave the frame");
+	view.dispose();
+});
+
+test("a running item is never cached and settles into its reused rows", (t) => {
+	const read = cardSlot(t, "read");
+	read.publish({ label: "alpha", rowStable: true });
+	const { store, view } = presentationHarness(() => "cards", 20);
+	store.apply("a", { type: TASK_EVENT.TOOL_START, callId: "call", name: "read", args: { path: "src/a.ts" } }, 2000);
+	view.render(60);
+	assert.equal(read.draws(), 1, "a running call with nothing retained draws its call row alone");
+	view.render(60);
+	assert.equal(read.draws(), 2, "and draws it again on the next frame");
+	store.apply("a", { type: TASK_EVENT.TOOL_UPDATE, callId: "call", output: "partial" }, 2000);
+	view.render(60);
+	assert.equal(read.draws(), 4, "a running item whose output moved is drawn afresh");
+	store.apply("a", { type: TASK_EVENT.TOOL_END, callId: "call", output: "a0\na1", isError: false }, 2000);
+	const settled = view.render(60);
+	assert.equal(read.draws(), 6, "the settled call draws once with its result");
+	assert.match(stripAnsi(settled.join("\n")), /preview alpha/);
+	view.render(60);
+	assert.equal(read.draws(), 6, "and is reused from then on");
+	view.dispose();
+});
+
+test("the cached cards match a freshly built view after every mutation", (t) => {
+	loadQuietTools();
+	const previousStyle = cardStyle();
+	const previousContent = cardContent();
+	t.after(() => {
+		setCardStyle(previousStyle);
+		setCardContent(previousContent);
+	});
+	const width = 80;
+	const store = new TaskStore();
+	store.add(task("a", { prompt: "" }));
+	store.apply("a", { type: TASK_EVENT.THINKING, text: "reasoning run" }, 2000);
+	store.apply("a", { type: TASK_EVENT.TEXT, text: "Prose answer" }, 2000);
+	applyTool(store, "read", { path: "src/a.ts" }, "a0\na1\na2\na3\na4\na5", false, "read-a");
+	store.apply("a", { type: TASK_EVENT.NOTE, text: "retrying (2/3)" }, 2000);
+	applyTool(store, "edit", { path: "src/b.ts" }, "done", false, "edit-b");
+	applyTool(store, "mem_save", { title: "notes" }, '{"ok":true}', false, "mem-c");
+	const deps = (detailLevel: { thinkingExpanded: boolean; toolsExpanded: boolean }): AgentsViewDeps => ({ theme: surfaceTheme, rows: 12, store, sessionId: "s", now: () => 61_000, threadPresentation: () => "cards", cardDetail: detailLevel, onCancel() {}, onOpen() {}, onClose() {}, requestRender() {} });
+	let detailLevel = { thinkingExpanded: true, toolsExpanded: false };
+	const warm = new AgentsView(deps(detailLevel));
+	// Three windows stand in for the whole scrollable thread: the following tail,
+	// the start, and one page down, so a different row count shows up as a
+	// different window even though maxScroll is not observable directly.
+	const windows = (subject: AgentsView, at = width): { tail: string[]; start: string[]; page: string[] } => {
+		const tail = subject.render(at);
+		subject.handleInput("\x1b[7^");
+		const start = subject.render(at);
+		subject.handleInput("\x0a");
+		const page = subject.render(at);
+		subject.handleInput("\x1b[8^");
+		return { tail, start, page };
+	};
+	const compare = (label: string, at = width): void => {
+		const fresh = new AgentsView(deps(detailLevel));
+		assert.deepEqual(windows(warm, at), windows(fresh, at), `${label}: the cached thread draws the fresh view's rows`);
+		fresh.dispose();
+	};
+
+	warm.render(width);
+	compare("a warm frame");
+	const narrow = 60;
+	assert.notDeepEqual(warm.render(narrow), warm.render(width), "a resized frame is a different one");
+	compare("a width change", narrow);
+	compare("the restored width");
+
+	setCardStyle(CARD_STYLE.NEON);
+	compare("a card style change");
+	setCardContent(CARD_CONTENT.MINIMAL);
+	compare("a content change");
+	setCardContent(CARD_CONTENT.DEFAULT);
+	detailLevel = { thinkingExpanded: true, toolsExpanded: true };
+	warm.handleInput("\x0f");
+	compare("expanding the thread's output");
+	detailLevel = { thinkingExpanded: false, toolsExpanded: true };
+	warm.handleInput("\x14");
+	compare("hiding thinking");
+
+	// The click mapping is observable at a scroll position: at the row that names
+	// the read card, the same row must belong to it in both views.
+	const clickParity = (): void => {
+		const scrollToCard = (subject: AgentsView): number => {
+			subject.handleInput("\x1b[7^");
+			for (let page = 0; page < 6; page += 1) {
+				const y = subject.render(width).findIndex((line) => /≡ read src\/a\.ts/.test(stripAnsi(line)));
+				if (y >= 0) return y;
+				subject.handleInput("\x0a");
+			}
+			return -1;
+		};
+		const fresh = new AgentsView(deps(detailLevel));
+		const warmY = scrollToCard(warm);
+		const freshY = scrollToCard(fresh);
+		assert.ok(warmY >= 0, "the read card is drawn at some scroll position");
+		assert.equal(warmY, freshY, "both views put the read card on the same row");
+		assert.equal(warm.handleMouse(mouse(60, warmY, width, warm.render(width).length, "click"))?.handled, true);
+		assert.equal(fresh.handleMouse(mouse(60, freshY, width, fresh.render(width).length, "click"))?.handled, true);
+		assert.deepEqual(warm.render(width), fresh.render(width), "both views expanded the card under that row");
+		fresh.dispose();
+	};
+	clickParity();
+	warm.dispose();
+});
+
+test("the labeled log is byte-identical at every width and height", () => {
+	const store = new TaskStore();
+	store.add(task("a", { prompt: "Map the shared card code" }));
+	store.apply("a", { type: TASK_EVENT.THINKING, text: "reasoning run\nsecond line" }, 2000);
+	store.apply("a", { type: TASK_EVENT.TEXT, text: "Prose answer" }, 2000);
+	store.apply("a", { type: TASK_EVENT.NOTE, text: "retrying (2/3)" }, 2000);
+	applyTool(store, "read", { path: "src/a.ts" }, Array.from({ length: 20 }, (_, index) => `line ${index}`).join("\n"), false, "read-a");
+	store.apply("a", { type: TASK_EVENT.TEXT, text: "Closing prose" }, 2000);
+	const deps = (rows: number): AgentsViewDeps => ({ theme: plainTheme, rows, store, sessionId: "s", now: () => 61_000, onCancel() {}, onOpen() {}, onClose() {}, requestRender() {} });
+	for (const width of [60, 72, 100, 120, 160]) {
+		for (const height of [6, 14, 30]) {
+			const warm = new AgentsView(deps(height));
+			warm.render(width);
+			const frame = warm.render(width);
+			const cold = new AgentsView(deps(height));
+			assert.deepEqual(frame, cold.render(width), `${width}x${height}: a warm log frame is byte-identical to a cold one`);
+			cold.dispose();
+			// The pane's own drawing is every item's rows, back to back and sliced
+			// to the window the log follows: the cache never stands in for a line.
+			const layout = measureAgentsViewLayout(width, height);
+			const visible = layout.bodyRows - 1;
+			const reference = store.thread("a").items.flatMap((item) => renderThreadItem(item, plainTheme, layout.threadWidth));
+			const start = Math.max(0, reference.length - visible);
+			for (let row = 0; row < visible; row += 1) {
+				const expected = reference[start + row] ?? "";
+				if (stripAnsi(expected).trim() === "") continue;
+				assert.ok(stripAnsi(frame[2 + row] ?? "").includes(stripAnsi(expected)), `${width}x${height}: log row ${row} keeps ${JSON.stringify(stripAnsi(expected))}`);
+			}
+			warm.dispose();
+		}
+	}
 });

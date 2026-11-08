@@ -845,19 +845,23 @@ export class AgentsView {
 		this.pruneCardExpansion(task, thread);
 		const lines: string[] = [];
 		const owners: Array<string | undefined> = [];
-		// The layout keeps one unpainted row between two cards -- whatever kind drew
-		// them, in whichever style, and never inside a card -- because each block
-		// reports whether its own drawing owns a frame. The labeled log and a card
-		// next to a row keep the spacing they always had.
-		let previousCard = false;
+		// The layout keeps exactly one unpainted row between two drawn blocks -- a
+		// tool card, prose, thinking, a note, whatever -- in the cards presentation.
+		// The seam is layout, not part of a block's drawing, so it never depends on a
+		// block owning a frame or on the style that drew the frame: a block that
+		// falls back to plain rows is separated exactly like a card. Nothing is added
+		// inside a block, before the first one or after the last, and the labeled log
+		// keeps the spacing it always had.
+		let drawn = 0;
 		const pushBlock = (drawing: ThreadItemDrawing, owner?: string): void => {
-			if (cards && drawing.card && previousCard && drawing.lines.length > 0) {
+			if (drawing.lines.length === 0) return;
+			if (cards && drawn > 0) {
 				lines.push("");
 				owners.push(undefined);
 			}
 			lines.push(...drawing.lines);
 			for (let index = 0; index < drawing.lines.length; index += 1) owners.push(owner);
-			if (drawing.lines.length > 0) previousCard = drawing.card;
+			drawn += 1;
 		};
 		// The message the subagent was asked is the one input outside the thread — a
 		// delivery to the child is retained as a note, this is not. Only cards draw
@@ -888,8 +892,7 @@ export class AgentsView {
 		// A task with nothing retained still says what it recorded — the error it
 		// ended with, or that it is waiting — exactly as the empty thread always did.
 		if (retained === 0 && thread.dropped === 0) {
-			lines.push(this.deps.theme.fg(ROLE.EMPTY, task.error ?? EMPTY_THREAD));
-			owners.push(undefined);
+			pushBlock({ lines: [this.deps.theme.fg(ROLE.EMPTY, task.error ?? EMPTY_THREAD)], card: false });
 		}
 		return { lines, owners, cards };
 	}

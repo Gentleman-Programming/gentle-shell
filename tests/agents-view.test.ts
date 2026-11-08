@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import { emptyThread, TASK_EVENT, TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
+import { emptyThread, TASK_EVENT, TASK_STATUS, TaskStore, THREAD_ITEM, type TaskRecord } from "../lib/agents-protocol.ts";
 import { renderThreadItem } from "../lib/agents-thread-view.ts";
 import { AgentsView, taskHeader, type AgentsViewDeps } from "../lib/agents-view.ts";
+import { measureAgentsViewLayout } from "../lib/agents-view-layout.ts";
 import { KeybindingsManager } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js";
 import { CARD_CONTENT, cardContent, setCardContent } from "../lib/card-content-policy.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
@@ -867,7 +868,7 @@ function drawnRow(rows: string[], pattern: RegExp, label: string): number {
 }
 
 for (const style of [CARD_STYLE.FLOAT, CARD_STYLE.NEON] as const) {
-	test(`cards keep one unpainted row between any two card kinds: ${style}`, (t) => {
+	test(`cards keep one unpainted row between any two drawn blocks: ${style}`, (t) => {
 		loadQuietTools();
 		const previous = cardStyle();
 		t.after(() => setCardStyle(previous));
@@ -900,10 +901,48 @@ for (const style of [CARD_STYLE.FLOAT, CARD_STYLE.NEON] as const) {
 			assert.doesNotMatch(rows[between[0]], /\x1b\[48/, "the separating row is unpainted: no card surface and no rail");
 		}
 
-		// A generic block owns no frame, so it neither gains nor gives a seam.
+		// The seam belongs to the layout, not to a frame: a block that owns none is
+		// separated exactly like a card, both above and below.
 		for (const [above, below] of [[order.grep, order.generic], [order.generic, order.tail]] as const) {
-			assert.deepEqual(bareRows(rows).filter((y) => y > above && y < below), [], `the non-card row at ${above} or ${below} gains no separator in ${style}`);
+			const between = bareRows(rows).filter((y) => y > above && y < below);
+			assert.equal(between.length, 1, `the unframed block at ${order.generic} is one blank row from ${above} and ${below} in ${style}`);
+			assert.doesNotMatch(rows[between[0]], /\x1b\[48/, "the separator around an unframed block is unpainted too");
 		}
+		view.dispose();
+	});
+
+	test(`prose, thinking and notes are separated like cards: ${style}`, (t) => {
+		loadQuietTools();
+		const previous = cardStyle();
+		t.after(() => setCardStyle(previous));
+		setCardStyle(style);
+		const { store, view } = detailHarness({ threadPresentation: () => "cards", theme: surfaceTheme, cardDetail: { thinkingExpanded: false, toolsExpanded: true } }, 24);
+		store.apply("a", { type: TASK_EVENT.THINKING, text: "reasoning run" }, 2000);
+		store.apply("a", { type: TASK_EVENT.TEXT, text: "Prose answer" }, 2000);
+		store.apply("a", { type: TASK_EVENT.NOTE, text: "retrying (2/3)" }, 2000);
+		applyTool(store, "read", { path: "src/a.ts" }, "a0", false, "read-a");
+		store.apply("a", { type: TASK_EVENT.TEXT, text: "Closing prose" }, 2000);
+		const rows = view.render(80);
+
+		const order = {
+			prompt: drawnRow(rows, /Messaging agent/, "the launch prompt card"),
+			thinking: drawnRow(rows, /Thinking\.\.\./, "the hidden thinking row"),
+			prose: drawnRow(rows, /Prose answer/, "the prose drawn as Markdown"),
+			note: drawnRow(rows, /retrying \(2\/3\)/, "the labelled note"),
+			card: drawnRow(rows, /≡ read src\/a\.ts/, "the read card"),
+			tail: drawnRow(rows, /Closing prose/, "the prose after the card"),
+		};
+		const positions = Object.values(order);
+		assert.deepEqual(positions, [...positions].sort((a, b) => a - b), "the blocks are drawn in thread order");
+
+		// A frame is not what earns the seam: a text row, a thinking line and a note
+		// are separated from their neighbours exactly like a card is.
+		for (const [above, below] of [[order.prompt, order.thinking], [order.thinking, order.prose], [order.prose, order.note], [order.note, order.card], [order.card, order.tail]] as const) {
+			const between = bareRows(rows).filter((y) => y > above && y < below);
+			assert.equal(between.length, 1, `the blocks at rows ${above} and ${below} are one blank row apart in ${style}`);
+			assert.doesNotMatch(rows[between[0]], /\x1b\[48/, "the separating row is unpainted");
+		}
+		assert.ok(!bareRows(rows).includes(2), "the thread opens on its first block, never on a separator");
 		view.dispose();
 	});
 
@@ -923,6 +962,136 @@ for (const style of [CARD_STYLE.FLOAT, CARD_STYLE.NEON] as const) {
 		view.dispose();
 	});
 }
+
+test("the separated cards keep their rows, maxScroll and click mapping in step", () => {
+	loadQuietTools();
+	const rows = 12;
+	const width = 80;
+	const store = new TaskStore();
+	// No launch prompt here: the reference lays out the retained thread alone.
+	const view = new AgentsView({ theme: surfaceTheme, rows, store, sessionId: "s", now: () => 61_000, threadPresentation: () => "cards", cardDetail: { thinkingExpanded: false, toolsExpanded: false }, onCancel() {}, onOpen() {}, onClose() {}, requestRender() {} });
+	store.add(task("a", { prompt: "" }));
+	store.apply("a", { type: TASK_EVENT.THINKING, text: "reasoning run" }, 2000);
+	store.apply("a", { type: TASK_EVENT.TEXT, text: "Prose answer" }, 2000);
+	store.apply("a", { type: TASK_EVENT.NOTE, text: "retrying (2/3)" }, 2000);
+	applyTool(store, "read", { path: "src/a.ts" }, "a0\na1\na2\na3\na4\na5", false, "read-a");
+	store.apply("a", { type: TASK_EVENT.TEXT, text: "Closing prose" }, 2000);
+	applyTool(store, "read", { path: "src/b.ts" }, "b0\nb1\nb2\nb3\nb4\nb5", false, "read-b");
+	// The reference is each block's own drawing laid out the way the pane has to
+	// lay it out: one unpainted row between every pair, none inside a block and
+	// none at either end.
+	const layout = measureAgentsViewLayout(width, rows);
+	const visible = layout.bodyRows - 1;
+	const reference = (expanded: (callId: string) => boolean): string[] =>
+		store.thread("a").items.flatMap((item, index) => {
+			const lines = renderThreadItem(item, surfaceTheme, layout.threadWidth, { presentation: "cards", expanded: item.kind === THREAD_ITEM.TOOL ? expanded(item.callId) : false, thinkingExpanded: false, expandHint: "ctrl+o to expand" });
+			return index === 0 ? lines : ["", ...lines];
+		});
+	const bare = (row: string | undefined): boolean => stripAnsi(row ?? "").replaceAll("│", "").trim() === "";
+	const window = (expected: string[], start: number, label: string): void => {
+		const drawn = view.render(width);
+		for (let row = 0; row < visible; row += 1) {
+			const drawnRow = drawn[2 + row];
+			const line = expected[start + row] ?? "";
+			if (stripAnsi(line).trim() === "") assert.ok(bare(drawnRow), `${label}: row ${row + start} is the unpainted separator`);
+			else assert.ok(stripAnsi(drawnRow ?? "").includes(stripAnsi(line)), `${label}: row ${row + start} draws ${JSON.stringify(stripAnsi(line))}`);
+		}
+	};
+	const tail = (expanded: (callId: string) => boolean, label: string): void => {
+		const expected = reference(expanded);
+		window(expected, Math.max(0, expected.length - visible), label);
+	};
+	const clickRow = (needle: string): void => {
+		const drawn = view.render(width).map(stripAnsi);
+		const y = drawn.findIndex((line) => line.includes(needle));
+		assert.ok(y >= 0, `"${needle}" is drawn so its card can be clicked`);
+		assert.equal(view.handleMouse(mouse(60, y, width, drawn.length, "click"))?.handled, true, `"${needle}": the card consumes its click`);
+	};
+
+	const collapsed = reference(() => false);
+	assert.ok(collapsed.length > visible, "the thread is longer than its window, so the tail is a scrolled window");
+	tail(() => false, "following the tail");
+	assert.ok(!bare(view.render(width)[layout.bodyRows]), "the thread ends on its last block, never on a separator");
+
+	// A card expands from the row the pointer is over after scrolling, and the
+	// separator rows the layout inserted keep every clickable region on its item.
+	clickRow("≡ read src/b.ts");
+	const bOnly = (callId: string): boolean => callId === "read-b";
+	tail(bOnly, "the expanded second card");
+	let drawn = stripAnsi(view.render(width).join("\n"));
+	assert.match(drawn, /b5/, "the card under the pointer is the one that expanded");
+	assert.doesNotMatch(drawn, /a5/, "its sibling keeps its own level");
+
+	clickRow("b5");
+	tail(() => false, "the collapsed second card");
+
+	// The first block is the first row of the window: no separator opens the thread.
+	view.handleInput("\x1b[7^");
+	window(collapsed, 0, "the start of the thread");
+	assert.ok(!bare(view.render(width)[2]), "the first row is the first block, never a separator");
+
+	// One page down is enough to put the first card under the pointer: the
+	// separator rows the layout inserted never shift which item a row belongs to.
+	view.handleInput("\x0a");
+	clickRow("≡ read src/a.ts");
+	drawn = stripAnsi(view.render(width).join("\n"));
+	assert.match(drawn, /a5/, "the clicked card expanded");
+	assert.doesNotMatch(drawn, /b5/, "the sibling nobody clicked keeps its own level");
+	window(reference((callId) => callId === "read-a"), visible, "the expanded first card");
+	view.handleInput("\x1b[8^");
+	assert.match(stripAnsi(view.render(width).join("\n")), /≡ read src\/b\.ts/, "following the tail still lands on the last block after the thread grew");
+	view.dispose();
+});
+
+test("a single block opens and closes the thread with no separator", () => {
+	const { store, view } = presentationHarness(() => "cards", 5, { prompt: "" });
+	store.apply("a", { type: TASK_EVENT.TEXT, text: "solo prose" }, 2000);
+	const rows = view.render(80);
+	const detail = rows[2];
+	assert.match(stripAnsi(detail ?? ""), /solo prose/, "the only block is the only row, so a separator would push it out of the window");
+	assert.ok(!bareRows([detail ?? ""]).length, "the thread neither opens nor ends on a separator");
+	view.dispose();
+});
+
+test("the empty-thread state line is one more block, separated like any other", () => {
+	const empty = presentationHarness(() => "cards", 14, { prompt: "Map the shared card code", status: TASK_STATUS.FAILED, error: "child crashed" });
+	const rows = empty.view.render(80);
+	const prompt = drawnRow(rows, /Map the shared card code/, "the prompt card");
+	const state = drawnRow(rows, /child crashed/, "the state line");
+	assert.equal(bareRows(rows).filter((y) => y > prompt && y < state).length, 1, "the state line is separated from the card above it");
+	assert.ok(!bareRows(rows).includes(2), "the thread still opens on the prompt card");
+	empty.view.dispose();
+});
+
+test("width 0 draws nothing, so it gains no separator either", () => {
+	loadQuietTools();
+	const { store, view } = presentationHarness(() => "cards", 14, { prompt: "p" });
+	store.apply("a", { type: TASK_EVENT.THINKING, text: "reasoning run" }, 2000);
+	store.apply("a", { type: TASK_EVENT.TEXT, text: "Prose answer" }, 2000);
+	applyTool(store, "read", { path: "src/a.ts" }, "a0");
+	assert.deepEqual(view.render(0), [], "a width-0 pane renders no rows at all");
+	assert.match(stripAnsi(view.render(80).join("\n")), /Prose answer/, "the same thread still draws once it has a width");
+	view.dispose();
+});
+
+test("the log keeps the rows it always had for thinking, prose, notes and tools", () => {
+	const rows = 24;
+	const width = 80;
+	const { store, view } = presentationHarness(() => "log", rows, { prompt: "" });
+	store.apply("a", { type: TASK_EVENT.THINKING, text: "reasoning run" }, 2000);
+	store.apply("a", { type: TASK_EVENT.TEXT, text: "Prose answer" }, 2000);
+	store.apply("a", { type: TASK_EVENT.NOTE, text: "retrying (2/3)" }, 2000);
+	applyTool(store, "read", { path: "src/a.ts" }, "a0", false, "read-a");
+	// The log is drawn whole at any width: every block's own rows, back to back,
+	// with no separator the cards presentation would insert.
+	const layout = measureAgentsViewLayout(width, rows);
+	const expected = store.thread("a").items.flatMap((item) => renderThreadItem(item, plainTheme, layout.threadWidth));
+	assert.ok(expected.length <= layout.bodyRows - 1, "the whole log fits its window");
+	const drawn = view.render(width).map(stripAnsi);
+	for (let row = 0; row < expected.length; row += 1) assert.ok((drawn[2 + row] ?? "").includes(stripAnsi(expected[row])), `log row ${row} keeps its own line`);
+	assert.deepEqual(bareRows(drawn).filter((y) => y >= 2 && y < 2 + expected.length), [], "the log inserts no separator between blocks");
+	view.dispose();
+});
 
 test("the labeled log keeps the row spacing it always had between tool blocks", () => {
 	const { store, view } = detailHarness({}, 26);

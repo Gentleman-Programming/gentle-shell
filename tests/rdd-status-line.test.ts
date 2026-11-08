@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { createGentleAiExtension, __testing } from "../extensions/gentle-ai.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	NATIVE_REVIEW_ERROR_CODE,
 	NATIVE_REVIEW_MODE_OPERATION,
@@ -40,6 +44,7 @@ const {
 	getOrchestratorPrompt,
 	clearRddStatusMemoForTesting,
 	RDD_STATUS_TIMEOUT_MS,
+	resolveRddStatusTimeoutMs,
 	RDD_STATUS_MEMO_TTL_MS,
 } = __testing;
 
@@ -168,6 +173,94 @@ test("resolveRddModeStatus resolves to undefined when the native reviewMode call
 		"/repo-rejecting",
 	);
 	assert.equal(status, undefined);
+});
+
+test("an expired startup budget does not dispatch another native status read", async () => {
+	clearRddStatusMemoForTesting();
+	const { cli, calls } = countingReviewMode(modeResult("on", NATIVE_REVIEW_MODE_SOURCE.GLOBAL));
+	const controller = new AbortController();
+	controller.abort(new DOMException("The operation was aborted", "AbortError"));
+	const first = await resolveRddStatusLine(cli, "/repo-already-aborted", controller.signal);
+	assert.match(first, /unknown/);
+	assert.equal(calls(), 0, "waiting for an existing startup read must not spawn again after its budget expired");
+	assert.equal(await resolveRddModeStatus(cli, "/repo-already-aborted"), undefined);
+	assert.equal(calls(), 0, "the failed-read memo also prevents a retry storm on following turns");
+});
+
+test("cancellation is reported separately from a native timeout without inventing a duration", async () => {
+	clearRddStatusMemoForTesting();
+	const cancelled = captureNotices();
+	const controller = new AbortController();
+	controller.abort();
+	await resolveRddModeStatus(fakeReviewMode(modeResult("on", NATIVE_REVIEW_MODE_SOURCE.GLOBAL)), "/repo-cancelled", controller.signal, Date.now, cancelled.ctx as never);
+	assert.match(cancelled.messages[0], /was cancelled/);
+	assert.doesNotMatch(cancelled.messages[0], /did not answer within/);
+	clearRddStatusMemoForTesting();
+	const timedOut = captureNotices();
+	const cli = fakeReviewMode(() => { throw new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.TIMEOUT, NATIVE_REVIEW_OPERATION.MODE, true, false, "timeout"); });
+	await resolveRddModeStatus(cli, "/repo-native-timeout", undefined, Date.now, timedOut.ctx as never);
+	assert.match(timedOut.messages[0], /reported a native timeout/);
+	assert.doesNotMatch(timedOut.messages[0], /did not answer within/);
+});
+
+test("RDD status timeout configuration stays bounded and rejects invalid values", () => {
+	assert.equal(resolveRddStatusTimeoutMs({}), 3000);
+	for (const value of ["0", "-1", "1.5", " 4000", "1e3", "10001", "Infinity", "999999999999999999999"]) {
+		assert.equal(resolveRddStatusTimeoutMs({ GENTLE_PI_RDD_STATUS_TIMEOUT_MS: value }), 3000, value);
+	}
+	for (const value of ["1", "4000", "10000"]) {
+		assert.equal(resolveRddStatusTimeoutMs({ GENTLE_PI_RDD_STATUS_TIMEOUT_MS: value }), Number(value));
+	}
+});
+
+test("a provider that aborts synchronously cannot publish its immediately resolved off status", async () => {
+	clearRddStatusMemoForTesting();
+	const controller = new AbortController();
+	const cli: Pick<NativeReviewCli, "reviewMode"> = { reviewMode: () => {
+		controller.abort();
+		return Promise.resolve(modeResult("off", NATIVE_REVIEW_MODE_SOURCE.GLOBAL));
+	} };
+	assert.match(await resolveRddStatusLine(cli, "/repo-aborting-provider", controller.signal), /unknown/);
+});
+
+test("primary prompt uses its configured deadline and memoizes an unresponsive provider", async t => {
+	clearRddStatusMemoForTesting();
+	const home = mkdtempSync(join(tmpdir(), "rdd-status-deadline-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<unknown>>();
+	const notices: string[] = [];
+	const deadlines: number[] = [];
+	const controller = new AbortController();
+	let entered!: () => void, calls = 0;
+	const started = new Promise<void>(resolve => { entered = resolve; });
+	const cli = { reviewMode: async ({ signal }: NativeReviewModeRequest) => {
+		calls++;
+		assert.equal(signal, controller.signal);
+		entered();
+		return new Promise<NativeReviewModeResult>(() => {});
+	} } as NativeReviewCli;
+	const pi = { on: (name: string, fn: (event: unknown, ctx: ExtensionContext) => Promise<unknown>) => handlers.set(name, fn),
+		registerCommand() {}, registerTool() {}, registerMessageRenderer() {}, registerFlag() {},
+		events: { emit() {}, on: () => () => {} }, getActiveTools: () => [],
+	} as unknown as ExtensionAPI;
+	createGentleAiExtension({ nativeReviewCli: cli, candidateViews: null,
+		processEnv: { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_RDD_STATUS_TIMEOUT_MS: "7000" },
+		resolveTelemetryTriggerBinary: () => { throw new Error("disabled in test"); },
+	})(pi);
+	t.mock.method(AbortSignal, "timeout", (ms: number) => { deadlines.push(ms); return controller.signal; });
+	const ctx = { cwd: home, hasUI: true, mode: "tui", sessionManager: { getSessionId: () => "deadline-session" },
+		ui: { notify: (message: string) => notices.push(message), setStatus() {}, setWidget() {} },
+	} as unknown as ExtensionContext;
+	const event = { prompt: "task", systemPromptOptions: { appendSystemPrompt: "base" } };
+	const pending = handlers.get("before_agent_start")!(event, ctx);
+	await started;
+	controller.abort(new DOMException("deadline", "TimeoutError"));
+	await pending;
+	assert.match(event.systemPromptOptions.appendSystemPrompt, /Receipt-driven development: unknown/);
+	assert.match(notices.join("\n"), /did not answer within 7000 ms/);
+	await handlers.get("before_agent_start")!(event, ctx);
+	assert.deepEqual(deadlines, [7000, 7000]);
+	assert.equal(calls, 1, "the failed-read memo prevents another provider invocation");
 });
 
 test("resolveRddModeStatus resolves to undefined within the deadline when reviewMode never settles", async () => {

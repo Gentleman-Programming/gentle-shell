@@ -12329,14 +12329,26 @@ function createGentleAiExtensionForTesting(
 						if (initialEpoch !== undefined && confirmedIdentity !== undefined && sameReviewSessionIdentity(initialIdentity, confirmedIdentity) && reviewSessionPermissionEpoch(confirmedIdentity) === initialEpoch) {
 							const answer = selection.kind === "provider" ? selection.answer : "granted";
 							details = await answerPendingConsent(answer);
-							if (!permissionAlreadyActive && selection.kind === "host-session" && completedGrantedReviewConsent(details)) {
-								if (grantReviewSessionPermission(confirmedIdentity, initialEpoch)) {
+							if (!permissionAlreadyActive && selection.kind === "host-session") {
+								const started = completedGrantedReviewConsent(details);
+								const grantedIdentity = started
+									? await capturePermissionIdentity(ctx, permissionWorkspaceRoot) : undefined;
+								const liveSession = reviewSessionManagerAndId(ctx);
+								if (!started) {
+									try { ctx.ui.notify("Review session permission was not stored because the native response did not confirm an eligible review start. Later candidates will ask again.", "warning"); } catch { /* Best effort. */ }
+								} else if (grantedIdentity === undefined || !sameReviewSessionIdentity(confirmedIdentity, grantedIdentity) ||
+									liveSession?.manager !== grantedIdentity.sessionManager || liveSession.sessionId !== grantedIdentity.sessionId ||
+									reviewSessionPermissionEpoch(grantedIdentity) !== initialEpoch) {
+									try { ctx.ui.notify("Review session permission was not stored because the session or repository changed while the review was starting. Later candidates will ask again.", "warning"); } catch { /* Best effort. */ }
+								} else if (grantReviewSessionPermission(grantedIdentity, initialEpoch)) {
 									setReviewSessionPermissionStatus(ctx, true);
 									try { ctx.ui.notify("Reviews are allowed for this Pi session and this Git repository.", "info"); } catch { /* Nonblocking indication only. */ }
 								} else {
 									try { ctx.ui.notify("This review started, but the in-memory session permission registry was incompatible, so later candidates will ask again.", "warning"); } catch { /* Best effort. */ }
 								}
 							}
+						} else if (!permissionAlreadyActive && selection.kind === "host-session") {
+							try { ctx.ui.notify("Review session permission was not stored because the session or repository changed while consent was open. Reopen review consent for the current session.", "warning"); } catch { /* Best effort. */ }
 						}
 					}
 				}

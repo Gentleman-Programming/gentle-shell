@@ -1748,8 +1748,10 @@ test("a card style or content change draws new rows instead of the cached ones",
 	assert.match(minimal, /▎ \$ /, "bash draws its card while the chat offers it");
 	assert.doesNotMatch(minimal, /Tool · bash · Complete/, "and the plain block the card replaces is not drawn beside it");
 	setCardContent(CARD_CONTENT.DEFAULT);
-	assert.match(text(), /a0/, "returning to the default previews the result again");
-	assert.match(text(), /Tool · bash · Complete/, "and bash falls back to the plain block");
+	const restored = text();
+	assert.match(restored, /a0/, "returning to the default previews the result again");
+	const bashRows = (restored.match(/▎ \$ /g) ?? []).length + (restored.match(/Tool · bash · Complete/g) ?? []).length;
+	assert.equal(bashRows, 1, "and bash is drawn once, as its card or as the plain block, whichever form this tree's content policy chooses");
 	assert.equal((minimal.match(/▎ \$ /g) ?? []).length, 1, "the card replaces the plain block instead of stacking on it");
 	setCardContent(CARD_CONTENT.MINIMAL);
 	assert.equal(text(), minimal, "switching back draws the card exactly as before");

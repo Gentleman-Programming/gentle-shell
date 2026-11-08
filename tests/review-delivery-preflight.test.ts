@@ -10,7 +10,30 @@ import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { checkReviewDeliveryPreflight } from "../lib/review-delivery-preflight.ts";
 import { recognizeReviewDeliveryActions } from "../lib/destructive-command-guard.ts";
 import { ReviewContinuationRegistry } from "../lib/review-continuation-registry.ts";
-import type { NativeReviewCli } from "../lib/native-review-cli.ts";
+import { NativeReviewCliV216, type NativeReviewCli } from "../lib/native-review-cli.ts";
+
+test("committed delivery requests pass the real native client validation without an untracked inventory", async t => {
+	const root = mkdtempSync(join(tmpdir(), "review-delivery-native-validation-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "-c", "commit.gpgsign=false", ...args], { cwd: root, encoding: "utf8" }).trim();
+	git("init", "-q"); writeFileSync(join(root, "app.ts"), "base\n"); git("add", "."); git("commit", "-qm", "base");
+	const baseRef = git("rev-parse", "HEAD");
+	const commands: string[][] = [];
+	const client = new NativeReviewCliV216(async request => {
+		commands.push([...request.arguments]);
+		if (request.arguments[1] === "status") throw new Error("process boundary reached after STATUS request validation");
+		return { stdout: JSON.stringify({ schema: "gentle-ai.review-assessment/v1", risk: "high", reasons: [], changed_paths: 1, changed_lines: 1,
+			candidate: { kind: "base-diff", base_ref: baseRef, consumed: false }, review_due: true, review_due_reason: "high_risk" }), stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
+	}, join(root, "native-fixture.exe"));
+	const cli = { reviewMode: async () => ({ status: { effective: "on" } }), assess: client.assess.bind(client), targetStatus: client.targetStatus.bind(client) } as unknown as NativeReviewCli;
+	await checkReviewDeliveryPreflight(root, "bash", "git push", cli, () => baseRef, () => false);
+	assert.deepEqual(commands.map(args => args[1]), ["assess", "status"], "both real client validators accept the committed-only request and reach the process adapter");
+	for (const args of commands) {
+		assert.ok(args.includes("--committed-only"));
+		assert.ok(args.includes(baseRef));
+		assert.ok(!args.some(arg => /untracked/.test(arg)), "committed-only requires no untracked inventory flags");
+	}
+});
 
 test("#2997: a foreground or background delivery cannot precede an explicit committed-range assessment", async t => {
 	const root = mkdtempSync(join(tmpdir(), "review-delivery-"));
@@ -28,10 +51,11 @@ test("#2997: a foreground or background delivery cannot precede an explicit comm
 	const tools = new Map<string, { execute: Function }>();
 	let nativeDue = false;
 	let assessments = 0;
+	let assessmentBase: string | undefined;
 	let duringConfirmation = () => {};
 	const cli = {
 		reviewMode: async () => ({ status: { effective: "on", global: "on", cloneLocal: "", source: "global" } }),
-		assess: async (request: { baseRef?: string }) => { assessments++; return ({ schema: "gentle-ai.review-assessment/v1", risk: nativeDue ? "high" : "medium", reasons: [], changedPaths: 1, changedLines: 2,
+		assess: async (request: { baseRef?: string }) => { assessments++; assessmentBase = request.baseRef; return ({ schema: "gentle-ai.review-assessment/v1", risk: nativeDue ? "high" : "medium", reasons: [], changedPaths: 1, changedLines: 2,
 			candidate: { kind: "base-diff", baseRef: request.baseRef, consumed: false }, reviewDue: nativeDue, reviewDueReason: nativeDue ? "high_risk" : "under_budget" }); },
 	};
 	const pi = { on: (name: string, handler: Function) => handlers.set(name, handler), events: { emit() {} }, registerCommand() {}, registerTool(tool: { name: string; execute: Function }) { tools.set(tool.name, tool); } };
@@ -63,7 +87,7 @@ test("#2997: a foreground or background delivery cannot precede an explicit comm
 	assert.equal(assessments - beforeBatch, 1, "the batch gets one fresh assessment, not one per action");
 	const wrapped = await handlers.get("tool_call")!({ toolName: "bash", toolCallId: "wrapped-delivery", input: { command: "sh -c 'git push origin HEAD'" } }, ctx);
 	assert.equal(wrapped?.block, undefined, "a shell wrapper alone is not a review blocker");
-	for (const command of ["git commit -am fix && git push", "sh -c 'git commit -am fix && git push'", "git switch other && git push"]) {
+	for (const command of ["git commit -am fix && git push", "sh -c 'git commit -am fix && git push'", "git switch other && git push", "eval 'git revert HEAD && git push'"]) {
 		const result = await handlers.get("tool_call")!({ toolName: "bash", toolCallId: command, input: { command } }, ctx);
 		assert.equal(result?.block, true, "a candidate-changing command still needs its own boundary");
 	}
@@ -81,10 +105,27 @@ test("#2997: a foreground or background delivery cannot precede an explicit comm
 	await tools.get("gentle_review")!.execute("claimed-decline", { operation: "assess", input: { baseRef, committedOnly: true, nativeReviewOutcome: "declined" } }, undefined, undefined, ctx);
 	const refused = await handlers.get("tool_call")!({ toolName: "bash", toolCallId: "untrusted-decline", input: { command: "git push origin HEAD" } }, ctx);
 	assert.equal(refused?.block, true, "a model-declared decline cannot bypass a due native review");
+	nativeDue = false;
+	const selectedHead = git("rev-parse", "HEAD");
+	const selected = await tools.get("gentle_review")!.execute("select-head", { operation: "assess", input: { baseRef: "HEAD", committedOnly: true } }, undefined, undefined, ctx);
+	assert.equal(selected.details.candidate.baseRef, selectedHead, "selection assesses and retains the resolved commit, not mutable HEAD");
+	writeFileSync(join(root, "app.ts"), "export const value = 4;\n"); git("commit", "-qam", "after selection");
+	assert.equal((await handlers.get("tool_call")!({ toolName: "bash", toolCallId: "after-new-commit", input: { command: "git push" } }, ctx))?.block, undefined);
+	assert.equal(assessmentBase, selectedHead, "new commits remain in the selected delivery range");
+	git("branch", "delivery-base", selectedHead);
+	await tools.get("gentle_review")!.execute("select-branch", { operation: "assess", input: { baseRef: "delivery-base", committedOnly: true } }, undefined, undefined, ctx);
+	git("branch", "-f", "delivery-base", "HEAD");
+	await handlers.get("tool_call")!({ toolName: "bash", toolCallId: "after-base-branch-moved", input: { command: "git push" } }, ctx);
+	assert.equal(assessmentBase, selectedHead, "moving a selected branch does not shrink the delivery range");
+	for (const input of [{ baseRef, committedOnly: false }, { baseRef: "missing-delivery-base", committedOnly: true }]) {
+		try { await tools.get("gentle_review")!.execute("invalid-selection", { operation: "assess", input }, undefined, undefined, ctx); } catch { /* Rejected selectors must not replace the existing hint. */ }
+		await handlers.get("tool_call")!({ toolName: "bash", toolCallId: "after-invalid-selection", input: { command: "git push" } }, ctx);
+		assert.equal(assessmentBase, selectedHead, "invalid or unresolvable selection preserves the valid pinned range");
+	}
 });
 
 test("delivery recognition distinguishes executable commands from text and covers grouped shell forms", () => {
-	for (const command of ["git push origin HEAD", "git -C './repo with space' push origin HEAD", "git commit -am fix && git push", "gh pr create", "gh pr merge 42 --auto", "gh -R owner/repo pr create", "until true; do gh pr merge 42; done", "sh -c 'git push'", "echo $(git push)"]) {
+	for (const command of ["git push origin HEAD", "git -C './repo with space' push origin HEAD", "git commit -am fix && git push", "gh pr create", "gh pr merge 42 --auto", "gh -R owner/repo pr create", "until true; do gh pr merge 42; done", "sh -c 'git push'", "echo $(git push)", "eval 'git push'", "eval -- git push"]) {
 		assert.ok(recognizeReviewDeliveryActions(command).some(action => action.kind === "delivery"), command);
 	}
 	for (const command of ["git status", "git push --dry-run origin HEAD", "git push --delete origin old", "gh pr checks 42 --watch", "echo 'git push'", "echo '$(git push)'", "printf '%s' 'gh pr merge'", "cat <<'TEXT'\ngit push\nTEXT"]) {
@@ -135,7 +176,13 @@ test("preflight rechecks the actual assessed range, preserves native non-due/dec
 	registry.retainCommittedRange(root, baseRef);
 	mode = "off";
 	assert.equal(await check(), undefined, "RDD off preserves ordinary delivery policy");
+	for (const command of ["cd ~/other && git push", 'cd "$REPO" && git push', "cd && git push", 'git -C "$REPO" push', "sh -c 'cd ~/other && git push'"]) {
+		const modeCalls = t.mock.fn(native.reviewMode!);
+		assert.equal((await checkReviewDeliveryPreflight(root, "bash", command, { ...native, reviewMode: modeCalls }, scope, () => false))?.block, true, "unresolved directory must not inherit session repository mode");
+		assert.equal(modeCalls.mock.callCount(), 0, "do not query mode for an unresolved target");
+	}
 	mode = "on";
+	assert.equal((await checkReviewDeliveryPreflight(root, "bash", "git revert HEAD && git push", native, scope, () => false))?.block, true, "revert changes the candidate before delivery");
 	const other = join(root, "other"); mkdirSync(other); git("-C", other, "init", "-q");
 	const mixedModes = { ...native, reviewMode: async (request: { cwd: string }) => ({ status: { effective: request.cwd === root ? "off" : "on" } }) } as NativeReviewCli;
 	assert.equal((await checkReviewDeliveryPreflight(root, "bash", `cd "${other}" && git push origin HEAD`, mixedModes, scope, () => false))?.block, true, "cd selects its target's RDD mode rather than the session mode");

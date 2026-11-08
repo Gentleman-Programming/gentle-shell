@@ -10635,9 +10635,20 @@ async function executeReviewControllerOperationImpl(
 		// authorizeDestructiveReviewOperation (it returns early for any
 		// operation that is neither RESET nor a maintenance operation).
 		const input = parseReviewAssessInput(parameters.operation, parameters.input);
-		// Routing hint only; delivery always obtains a fresh native assessment.
-		if (input.baseRef !== undefined) retainedUntrackedSelections.retainCommittedRange(defaultCwd, input.baseRef);
-		const details = await resolveReviewAssessmentPlan(nativeReviewCli, defaultCwd, input, signal, context?.sessionManager as ReceiptSession | undefined);
+		// Pin only a valid committed selector. Delivery obtains a fresh verdict,
+		// but new commits must not move a selected HEAD/branch base forwards.
+		let canonicalBaseRef: string | undefined;
+		if (input.baseRef !== undefined && input.committedOnly === true) {
+			try {
+				const commit = resolveCanonicalCandidateBase(defaultCwd, input.baseRef).commit;
+				if (/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commit)) canonicalBaseRef = commit;
+			} catch { /* The normal assessment below reports the unresolved selection. */ }
+		}
+		const details = await resolveReviewAssessmentPlan(nativeReviewCli, defaultCwd,
+			canonicalBaseRef === undefined ? input : { ...input, baseRef: canonicalBaseRef }, signal, context?.sessionManager as ReceiptSession | undefined);
+		if (canonicalBaseRef !== undefined && details.candidate?.kind === "base-diff" && details.candidate.baseRef === canonicalBaseRef) {
+			retainedUntrackedSelections.retainCommittedRange(defaultCwd, canonicalBaseRef);
+		}
 		return { operation: parameters.operation, ...details, ...(includeWorkspaceRoot ? { workspace_root: defaultCwd } : {}) };
 	}
 	if (parameters.operation === REVIEW_CONTROLLER_OPERATION.REPAIR_LEGACY_ALIAS) {

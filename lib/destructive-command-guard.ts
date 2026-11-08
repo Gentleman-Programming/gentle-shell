@@ -52,11 +52,12 @@ function tokenize(command: string, blank = true): Token[] {
 const executable = (value: string) => value.split("/").at(-1) ?? value;
 
 /** Delivery and candidate changes share the guard's existing command-position rules. */
-export function recognizeReviewDeliveryActions(command: string, depth = 0): Array<{ kind: "change" | "delivery"; directories?: readonly string[] }> {
+export function recognizeReviewDeliveryActions(command: string, depth = 0): Array<{ kind: "change" | "delivery"; directories?: readonly string[]; unresolvedDirectory?: true }> {
 	if (depth > 8) return [];
-	const matches: Array<{ kind: "change" | "delivery"; directories?: readonly string[] }> = [];
+	const matches: ReturnType<typeof recognizeReviewDeliveryActions> = [];
 	const tokens = tokenize(command);
 	const directories: string[] = [];
+	let unresolvedDirectory = false;
 	let start = 0;
 	for (let end = 0; end <= tokens.length; end++) {
 		if (end < tokens.length && !tokens[end].operator) continue;
@@ -67,9 +68,17 @@ export function recognizeReviewDeliveryActions(command: string, depth = 0): Arra
 		const args = segment.slice(cursor + 1).map(token => token.value);
 		let index = 0;
 		const gitDirectories: string[] = [];
-		if (name === "cd" && args.length === 1 && !/[\n\r$`~]/.test(args[0]) && !args[0].startsWith("-")) directories.push(args[0]);
+		let unresolvedGitDirectory = false;
+		if (name === "cd") {
+			if (args.length === 1 && !/[\n\r$`~]/.test(args[0]) && !args[0].startsWith("-")) directories.push(args[0]);
+			else unresolvedDirectory = true;
+		}
 		while (name === "git" && index < args.length && args[index].startsWith("-")) {
-			if (args[index] === "-C") { gitDirectories.push(args[index + 1]); index += 2; }
+			if (args[index] === "-C") {
+				if (!args[index + 1] || /[\n\r$`~]/.test(args[index + 1])) unresolvedGitDirectory = true;
+				else gitDirectories.push(args[index + 1]);
+				index += 2;
+			}
 			else if (args[index] === "-c") index += 2;
 			else index++;
 		}
@@ -77,14 +86,17 @@ export function recognizeReviewDeliveryActions(command: string, depth = 0): Arra
 			index += ["-R", "--repo"].includes(args[index]) ? 2 : 1;
 		}
 		if (name === "git" && args[index] === "push" && args.slice(index + 1).some(arg => ["--dry-run", "-n", "--delete", "-d"].includes(arg))) continue;
-		if (name === "git" && ["commit", "merge", "rebase", "reset", "checkout", "switch", "cherry-pick", "am", "pull", "update-ref"].includes(args[index])) matches.push({ kind: "change" });
+		if (name === "git" && ["commit", "merge", "rebase", "reset", "checkout", "switch", "cherry-pick", "revert", "am", "pull", "update-ref"].includes(args[index])) matches.push({ kind: "change" });
 		if ((name === "git" && args[index] === "push") || (name === "gh" && args[index] === "pr" && ["create", "merge"].includes(args[index + 1]))) {
 			matches.push({ kind: "delivery",
+				...(unresolvedDirectory || unresolvedGitDirectory ? { unresolvedDirectory: true as const } : {}),
 				...(!directories.length && !gitDirectories.length ? {} : { directories: [...directories, ...gitDirectories] }) });
 		}
-		if (["sh", "bash", "zsh", "dash"].includes(name)) {
+		if (["sh", "bash", "zsh", "dash", "eval"].includes(name)) {
 			const flag = args.findIndex(arg => /^-[a-z]*c[a-z]*$/.test(arg));
-			if (flag >= 0 && args[flag + 1]) matches.push(...recognizeReviewDeliveryActions(args[flag + 1], depth + 1).map(match => ({ ...match, directories: [...directories, ...(match.directories ?? [])] })));
+			const payload = name === "eval" ? (args[0] === "--" ? args.slice(1) : args).join(" ") : flag >= 0 ? args[flag + 1] : undefined;
+			if (payload) matches.push(...recognizeReviewDeliveryActions(payload, depth + 1).map(match => ({ ...match,
+				...(unresolvedDirectory ? { unresolvedDirectory: true as const } : {}), directories: [...directories, ...(match.directories ?? [])] })));
 		}
 	}
 	for (const match of command.matchAll(/\$\(([^()]*)\)/g)) {

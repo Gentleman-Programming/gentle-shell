@@ -23,6 +23,7 @@ export async function checkReviewDeliveryPreflight(cwd: string, toolName: string
 	signal?: AbortSignal, current: () => boolean = () => true): Promise<Denial | undefined> {
 	const actions = recognizeReviewDeliveryActions(command), deliveries = actions.filter(action => action.kind === "delivery");
 	if (!deliveries.length || !cli?.reviewMode) return undefined;
+	if (deliveries.some(delivery => delivery.unresolvedDirectory)) return deny("The delivery repository cannot be resolved from a dynamic directory; use an explicit literal target.");
 	if (signal?.aborted || !current()) return deny("Preflight was cancelled or its session changed.");
 	const bounded = AbortSignal.any([AbortSignal.timeout(10_000), ...(signal ? [signal] : [])]);
 	let abort!: () => void;
@@ -45,11 +46,11 @@ export async function checkReviewDeliveryPreflight(cwd: string, toolName: string
 				const before = await identity(root, baseRef);
 				if (!before || !cli.assess) return deny("The selected base or native assessment is unavailable; resolve it before delivery.");
 				if (bounded.aborted || !current()) return deny("Session changed during preflight; assess again.");
-				const assessment = await cli.assess({ cwd: root, baseRef, committedOnly: true, untrackedScope: "exclude", signal: bounded });
+				const assessment = await cli.assess({ cwd: root, baseRef, committedOnly: true, signal: bounded });
 				if (bounded.aborted || !current()) return deny("Session changed during preflight; assess again.");
 				if (assessment.candidate.kind !== "base-diff" || assessment.candidate.baseRef !== baseRef || typeof assessment.reviewDue !== "boolean") return deny("Native assessment did not confirm the selected committed range.");
 				if (assessment.reviewDue) {
-					const status = await cli.targetStatus?.({ cwd: root, baseRef, committedOnly: true, untrackedScope: "exclude", agent: "pi", signal: bounded });
+					const status = await cli.targetStatus?.({ cwd: root, baseRef, committedOnly: true, agent: "pi", signal: bounded });
 					if (!status || status.applicability !== "current_target" || status.projection.kind !== "base-diff" || !declined(root, status.targetIdentity)) return deny("Native assessment reports a due review. Resume the bound review or inspect and follow its native transitions and human consent before delivery.");
 				}
 				checked.push({ root, baseRef, before });

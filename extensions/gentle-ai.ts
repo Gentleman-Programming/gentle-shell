@@ -8,6 +8,7 @@ import { defaultTempScratchFs, isTempScratchRemoval, type TempScratchFs } from "
 import { SHELL_COMMAND_TOOLS } from "../lib/background-jobs.ts";
 import { evaluateDeliveredTestTool } from "../lib/delivered-test-lint.ts";
 import { commitSliceToolResult } from "../lib/commit-slice-signal.ts";
+import { checkReviewDeliveryPreflight } from "../lib/review-delivery-preflight.ts";
 import { appendContextBackstopNotice, createContextBackstopSignal, createThrottledContextMeasure } from "../lib/context-backstop.ts";
 import { createExplorationBudget } from "../lib/exploration-budget.ts";
 import { REPLY_LANGUAGE_ANCHOR_TYPE, isHumanInput, replyLanguageAnchorFor } from "../lib/reply-language-anchor.ts";
@@ -10648,7 +10649,20 @@ async function executeReviewControllerOperationImpl(
 		// authorizeDestructiveReviewOperation (it returns early for any
 		// operation that is neither RESET nor a maintenance operation).
 		const input = parseReviewAssessInput(parameters.operation, parameters.input);
-		const details = await resolveReviewAssessmentPlan(nativeReviewCli, defaultCwd, input, signal, context?.sessionManager as ReceiptSession | undefined);
+		// Pin only a valid committed selector. Delivery obtains a fresh verdict,
+		// but new commits must not move a selected HEAD/branch base forwards.
+		let canonicalBaseRef: string | undefined;
+		if (input.baseRef !== undefined && input.committedOnly === true) {
+			try {
+				const commit = resolveCanonicalCandidateBase(defaultCwd, input.baseRef).commit;
+				if (/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commit)) canonicalBaseRef = commit;
+			} catch { /* The normal assessment below reports the unresolved selection. */ }
+		}
+		const details = await resolveReviewAssessmentPlan(nativeReviewCli, defaultCwd,
+			canonicalBaseRef === undefined ? input : { ...input, baseRef: canonicalBaseRef }, signal, context?.sessionManager as ReceiptSession | undefined);
+		if (canonicalBaseRef !== undefined && details.candidate?.kind === "base-diff" && details.candidate.baseRef === canonicalBaseRef) {
+			retainedUntrackedSelections.retainCommittedRange(defaultCwd, canonicalBaseRef);
+		}
 		return { operation: parameters.operation, ...details, ...(includeWorkspaceRoot ? { workspace_root: defaultCwd } : {}) };
 	}
 	if (parameters.operation === REVIEW_CONTROLLER_OPERATION.REPAIR_LEGACY_ALIAS) {
@@ -12882,7 +12896,7 @@ function createGentleAiExtensionForTesting(
 			return { block: true, reason: "Permission mode changed during tool admission. This action was not run; retry under the current mode." };
 		}
 		const autoGate = permissionMode === "auto" ? gate : undefined;
-		return await evaluateBashPolicies(
+		const commandDenied = await evaluateBashPolicies(
 			command,
 			ctx,
 			pi.events,
@@ -12892,6 +12906,16 @@ function createGentleAiExtensionForTesting(
 			autoGate,
 			superYoloActive,
 		);
+		if (commandDenied) return commandDenied;
+		// Check after any command-authorization dialog, so the human's wait
+		// cannot leave an earlier candidate assessment stale at execution.
+		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey), deliveryEpoch = reminderEpoch;
+		const deliveryDenied = await checkReviewDeliveryPreflight(ctx.cwd, event.toolName, command, nativeReviewCli,
+			root => processRetainedNativeStatusSelections.get(sessionKey)?.readCommittedRange(root),
+			(root, target) => readNativeReviewOutcome(root, target) === "declined", ctx.signal,
+			() => deliveryEpoch === reminderEpoch && modeEpoch === yolo.epoch() && pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey) === sessionKey);
+		if (primaryToolCall && modeEpoch !== yolo.epoch()) return { block: true, reason: "Permission mode changed during delivery preflight. This action was not run; retry under the current mode." };
+		return deliveryDenied;
 	});
 
 	for (const owner of ["delegation", "review"] as const) {

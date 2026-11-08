@@ -456,3 +456,75 @@ test("reusing one result object changes no drawn row", (t) => {
 	const minimalBash = toolItem({ name: "bash", output: "hi" });
 	assert.deepEqual(renderAgentToolItem(minimalBash, plainTheme, 80, { expanded: false }), chatRows(minimalBash, undefined), "a bash card under minimal content draws the same rows on both frames");
 });
+
+/** Writes the shared slot as a third party would, restored once after the test. */
+function rawSlot(t: { after(fn: () => void): void }): { set(value: unknown): void } {
+	const state = globalThis as any;
+	const had = Object.prototype.hasOwnProperty.call(state, PUBLISHED_RENDERERS);
+	const previous = state[PUBLISHED_RENDERERS];
+	t.after(() => {
+		if (had) state[PUBLISHED_RENDERERS] = previous;
+		else delete state[PUBLISHED_RENDERERS];
+	});
+	return {
+		set(value: unknown) {
+			state[PUBLISHED_RENDERERS] = value;
+		},
+	};
+}
+
+/** A card another extension could publish with no quiet-tools involved at all. */
+const foreignCard = { renderShell: "self", renderCall: plainComponent };
+
+test("a card published into the shared slot by another extension is offered, with no active flag needed", (t) => {
+	const slot = new Map<string, any>();
+	rawSlot(t).set(slot);
+	slot.set("codegraph", { renderer: foreignCard });
+	assert.equal(agentToolRowRenderer("codegraph"), foreignCard, "the pane reads the shared slot itself, so a publisher needs nothing from quiet-tools");
+	assert.deepEqual(renderAgentToolItem(toolItem({ name: "codegraph", output: "graph" }), plainTheme, 80, { expanded: false }), [], "and the item draws through that card");
+
+	slot.set("codegraph", { renderer: foreignCard, active: () => true });
+	assert.equal(agentToolRowRenderer("codegraph"), foreignCard, "an active flag that says yes offers the card");
+	slot.set("codegraph", { renderer: foreignCard, active: () => false });
+	assert.equal(agentToolRowRenderer("codegraph"), undefined, "an active flag that says no withdraws it");
+	assert.equal(renderAgentToolItem(toolItem({ name: "codegraph", output: "graph" }), plainTheme, 80, { expanded: false }), undefined, "and the item falls back");
+});
+
+test("a shared slot holding garbage offers nothing and never breaks a frame", (t) => {
+	const slot = rawSlot(t);
+	const cases: Array<[string, unknown]> = [
+		["a string slot", "not a map"],
+		["a plain object slot", { codegraph: { renderer: foreignCard } }],
+		["a null slot", null],
+	];
+	for (const [label, value] of cases) {
+		slot.set(value);
+		assert.equal(agentToolRowRenderer("codegraph"), undefined, `${label}: nothing is offered`);
+		assert.equal(renderAgentToolItem(toolItem({ name: "codegraph", output: "graph" }), plainTheme, 80, { expanded: false }), undefined, `${label}: the pane draws its own fallback instead of throwing`);
+	}
+
+	const throwingLookup = new Map<string, any>();
+	throwingLookup.get = () => {
+		throw new Error("third party broke its own map");
+	};
+	slot.set(throwingLookup);
+	assert.equal(agentToolRowRenderer("codegraph"), undefined, "a lookup that throws offers nothing");
+
+	const records: Array<[string, unknown]> = [
+		["a null record", null],
+		["a string record", "card"],
+		["a record naming no renderer", {}],
+		["a renderer that is not an object", { renderer: "card" }],
+		["an active flag that is not a function", { renderer: foreignCard, active: true }],
+		["an active flag that throws", { renderer: foreignCard, active: () => { throw new Error("boom"); } }],
+		["a renderer without a call slot", { renderer: { renderShell: "self" } }],
+		["a renderer that does not own its frame", { renderer: { renderShell: "default", renderCall: plainComponent } }],
+	];
+	const map = new Map<string, any>();
+	slot.set(map);
+	for (const [label, record] of records) {
+		map.set("codegraph", record);
+		assert.equal(agentToolRowRenderer("codegraph"), undefined, `${label}: nothing is offered`);
+		assert.equal(renderAgentToolItem(toolItem({ name: "codegraph", output: "graph" }), plainTheme, 80, { expanded: false }), undefined, `${label}: the pane draws its own fallback`);
+	}
+});

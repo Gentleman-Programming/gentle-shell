@@ -1,5 +1,4 @@
-import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
-import { registeredQuietToolRenderer, type QuietToolRenderer } from "../extensions/quiet-tools.ts";
+import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import type { ToolItem } from "./agents-protocol.ts";
 
@@ -19,10 +18,52 @@ export interface AgentToolRenderOptions {
 	expanded: boolean;
 }
 
-type ReusableQuietToolRenderer = QuietToolRenderer & {
+/**
+ * The drawing slots a card brings, as far as drawing a whole tool row needs them.
+ * A card is published by another extension rather than imported from it, so the
+ * shape is structural here: this boundary never depends on a publisher's module.
+ */
+type CardRendererSlots = Pick<ToolDefinition, "renderShell" | "renderCall" | "renderResult">;
+
+type ReusableCardRenderer = CardRendererSlots & {
 	renderShell: "self";
-	renderCall: NonNullable<QuietToolRenderer["renderCall"]>;
+	renderCall: NonNullable<CardRendererSlots["renderCall"]>;
 };
+
+/**
+ * The process-wide slot extensions publish tool cards into, keyed by tool name.
+ *
+ * A publisher satisfies this contract: `globalThis[Symbol.for("gentle-pi.quiet-tool-renderers")]`
+ * holds a `Map` from tool name to `{ renderer, active? }`; `renderer` draws its own
+ * frame (`renderShell: "self"`) and carries a `renderCall`; and an optional
+ * `active()` says whether that publisher is drawing the tool this way right now, so
+ * a record with no `active` is always offered. Anything else in the slot — a value
+ * that is not a `Map`, a record of another shape, a lookup or an `active()` that
+ * throws — offers nothing, because a broken publisher must not break a frame.
+ */
+const CARD_RENDERER_SLOT = Symbol.for("gentle-pi.quiet-tool-renderers");
+
+interface PublishedCardRecord {
+	renderer?: unknown;
+	active?: unknown;
+}
+
+function publishedCard(toolName: string): Record<string, unknown> | undefined {
+	try {
+		const slot = (globalThis as Record<symbol, unknown>)[CARD_RENDERER_SLOT];
+		if (!(slot instanceof Map)) return undefined;
+		const record = slot.get(toolName) as PublishedCardRecord | undefined;
+		if (record === null || typeof record !== "object") return undefined;
+		if (record.active !== undefined) {
+			if (typeof record.active !== "function") return undefined;
+			if (record.active.call(record) !== true) return undefined;
+		}
+		const renderer = record.renderer;
+		return renderer !== null && typeof renderer === "object" ? (renderer as Record<string, unknown>) : undefined;
+	} catch {
+		return undefined;
+	}
+}
 
 function chatTheme(theme: AgentToolRendererTheme): AgentToolRendererTheme {
 	return {
@@ -40,20 +81,22 @@ function chatTheme(theme: AgentToolRendererTheme): AgentToolRendererTheme {
  * is a different case from a tool with no shared renderer at all, and the
  * difference is kept rather than collapsed into one "unsupported" answer.
  */
-export function isReusableAgentToolRenderer(renderer: QuietToolRenderer | undefined): renderer is ReusableQuietToolRenderer {
-	return renderer?.renderShell === "self" && typeof renderer.renderCall === "function";
+export function isReusableAgentToolRenderer(renderer: unknown): renderer is ReusableCardRenderer {
+	if (renderer === null || typeof renderer !== "object") return false;
+	const slots = renderer as Partial<CardRendererSlots>;
+	return slots.renderShell === "self" && typeof slots.renderCall === "function";
 }
 
 /**
  * The renderer the chat's canvas was actually handed for `toolName`, or
- * `undefined` when there is none to reuse: quiet-tools published no card for it
+ * `undefined` when there is none to reuse: no extension published a card for it
  * (another host keeps its own drawing, which this boundary never claims), the
  * published card does not draw its own frame, or it is not what the chat draws
  * this tool with right now. Treat the returned slots as read-only: they are the
  * very functions the chat is rendering with.
  */
-export function agentToolRowRenderer(toolName: string): Readonly<ReusableQuietToolRenderer> | undefined {
-	const renderer = registeredQuietToolRenderer(toolName);
+export function agentToolRowRenderer(toolName: string): Readonly<ReusableCardRenderer> | undefined {
+	const renderer = publishedCard(toolName);
 	return isReusableAgentToolRenderer(renderer) ? renderer : undefined;
 }
 
@@ -125,7 +168,7 @@ function retainedResult(item: ToolItem, output: string): AgentToolResult<unknown
  * that closes the row. That renderer owns its frame (`renderShell: "self"`), so
  * the caller adds no frame of its own.
  *
- * `undefined` means there is nothing to reuse — quiet-tools published no card for
+ * `undefined` means there is nothing to reuse — no extension published a card for
  * this tool, the card does not draw its own frame, or it threw while drawing (a
  * preview theme, or a host that has not initialized pi's theme). The caller then
  * draws its generic block: there is deliberately no per-tool fallback here,

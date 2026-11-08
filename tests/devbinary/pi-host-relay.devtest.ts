@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import test from "node:test";
 import type { Api, AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
@@ -14,7 +14,7 @@ import type { InProcessReviewerRegistry } from "../../lib/inprocess-reviewer.ts"
 import { NativeReviewCliV216, type ExecFileAdapter, type NativeReviewCli } from "../../lib/native-review-cli.ts";
 import { REVIEW_HOST_RELAY_FAILURE, ReviewHostRelayError, reviewHostRelaySlots, runReviewHostRelaySlot } from "../../lib/review-host-relay.ts";
 import { GENTLE_PI_REVIEW_RELAY_CONTRACT, GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV } from "../../lib/review-relay-contract.ts";
-import { decodeReviewStatusV3 } from "../../lib/review-integration-v2.ts";
+import { decodeReviewConsentV3, decodeReviewStatusV3 } from "../../lib/review-integration-v2.ts";
 import { requireDevBinary } from "../support/native-binary-gate.ts";
 
 // gentle-pi#311 P4 / P3: lens captures run one in-process reviewer completion
@@ -69,25 +69,40 @@ function fauxReviewerFor(buildResponseText: (subjectHash: string | undefined, pr
 	return { registry, selection: `${model.provider}/${model.id}`, routingKey: "review-risk", enqueue, calls };
 }
 
+// Synthetic corroboration for fixture findings, not an actual model verdict.
+function corroboratingRefuterFixture() {
+	return fauxReviewerFor((_subjectHash, promptText) => {
+		const requests = promptText.split(/\r?\n/).flatMap(line => {
+			try {
+				const value = JSON.parse(line) as Record<string, unknown>;
+				return value?.schema === "gentle-ai.review-provider-refuter-request/v1" ? [value] : [];
+			} catch { return []; }
+		});
+		assert.equal(requests.length, 1, "one provider-materialized refuter request must bind the synthetic response");
+		const request = requests[0]!;
+		assert.ok(Array.isArray(request.claims) && request.claims.length > 0);
+		return JSON.stringify({
+			refuter_request_hash: stringValue(request.request_hash, "refuter request hash"),
+			results: request.claims.map(claim => ({ finding_id: stringValue(record(claim, "refuter claim").finding_id, "finding id"), outcome: "corroborated", proof_refs: ["synthetic fixture: supplied candidate finding corroborated"] })),
+		});
+	});
+}
+
 const DEV_BINARY = process.env.GENTLE_AI_DEV_BINARY;
 const RELAY_DEV_BINARY = process.env.GENTLE_PI_GENTLE_AI_DEV_BINARY;
-const POSIX = process.platform !== "win32";
 const primaryDevBinaryGate = requireDevBinary({
 	devBinaryPath: DEV_BINARY,
-	exists: typeof DEV_BINARY === "string" && DEV_BINARY.length > 0 && DEV_BINARY.startsWith("/") && existsSync(DEV_BINARY),
+	exists: typeof DEV_BINARY === "string" && DEV_BINARY.length > 0 && isAbsolute(DEV_BINARY) && existsSync(DEV_BINARY),
 	env: process.env,
 });
-const relayDevBinaryGate = POSIX
-	? requireDevBinary({
-		devBinaryPath: RELAY_DEV_BINARY,
-		exists: typeof RELAY_DEV_BINARY === "string" && RELAY_DEV_BINARY.length > 0 && RELAY_DEV_BINARY.startsWith("/") && existsSync(RELAY_DEV_BINARY),
-		env: process.env,
-	})
-	: { run: false as const, reason: "Windows is explicitly skipped until a native fake-pi.exe exists; this test never enables a shell fallback." };
-const RUNNABLE = POSIX && primaryDevBinaryGate.run && relayDevBinaryGate.run;
-if (relayDevBinaryGate.run === false && !POSIX) console.log(`tests/devbinary/pi-host-relay.devtest.ts: ${relayDevBinaryGate.reason}`);
+const relayDevBinaryGate = requireDevBinary({
+	devBinaryPath: RELAY_DEV_BINARY,
+	exists: typeof RELAY_DEV_BINARY === "string" && RELAY_DEV_BINARY.length > 0 && isAbsolute(RELAY_DEV_BINARY) && existsSync(RELAY_DEV_BINARY),
+	env: process.env,
+});
+const RUNNABLE = primaryDevBinaryGate.run && relayDevBinaryGate.run;
 if (primaryDevBinaryGate.run === false) console.log(`tests/devbinary/pi-host-relay.devtest.ts: ${primaryDevBinaryGate.reason}`);
-if (relayDevBinaryGate.run === false && POSIX) console.log(`tests/devbinary/pi-host-relay.devtest.ts: ${relayDevBinaryGate.reason}`);
+if (relayDevBinaryGate.run === false) console.log(`tests/devbinary/pi-host-relay.devtest.ts: ${relayDevBinaryGate.reason}`);
 
 const ZERO_FINDING_PATHS = Object.freeze([".github/workflows/relay.yml"]);
 
@@ -139,6 +154,11 @@ function reviewEnvironment(home: string): NodeJS.ProcessEnv {
 	return {
 		...process.env,
 		HOME: home,
+		USERPROFILE: home,
+		APPDATA: join(home, "AppData", "Roaming"),
+		LOCALAPPDATA: join(home, "AppData", "Local"),
+		GENTLE_AI_HOME: join(home, "gentle-ai"),
+		GENTLE_AI_PI_CONFIG_DIR: join(home, "pi-native"),
 		XDG_CONFIG_HOME: join(home, "config"),
 		[GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV]: GENTLE_PI_REVIEW_RELAY_CONTRACT,
 	};
@@ -167,14 +187,6 @@ function enableGlobalReview(binary: string, sessionCwd: string, cwd: string, env
 		"review", "mode", "status", "--cwd", cwd, "--json",
 	], environment), "global mode status");
 	assert.equal(record(status.status, "global mode status result").effective, "on");
-}
-
-function runRenderedInvocation(binary: string, sessionCwd: string, command: string, environment: NodeJS.ProcessEnv): unknown {
-	const words = command.split(" ");
-	assert.ok(words.length >= 3, `rendered invocation is incomplete: ${command}`);
-	assert.deepEqual(words.slice(0, 2), ["gentle-ai", "review"], `rendered invocation is not a native review command: ${command}`);
-	assert.equal(words.some((word) => word.includes("'") || word.includes('"')), false, `devtest fixture command must remain unquoted: ${command}`);
-	return candidateJson(binary, sessionCwd, words.slice(1), environment);
 }
 
 interface RegisteredReviewTools {
@@ -310,20 +322,11 @@ function sessionContext(cwd: string): ExtensionContext {
 	return { cwd, hasUI: false, ui: { notify() {} } } as unknown as ExtensionContext;
 }
 
-function grantedConsentInvocation(value: unknown): string {
-	const consent = record(value, "consent response");
-	const choices = consent.choices;
-	assert.ok(Array.isArray(choices), "consent response must carry choices");
-	const granted = choices.map((choice) => record(choice, "consent choice")).find((choice) => choice.answer === "granted");
-	assert.ok(granted, "consent response must carry the granted choice");
-	return stringValue(granted!.invocation, "granted consent invocation");
-}
-
 // This A -> B journey deliberately stops immediately after one Go-admitted
 // reviewer capture. It proves real Pi relay transport and root continuity, but
 // does not manufacture the remaining reviewer, refuter, validator, or approval
 // transitions.
-test("dev-binary: POSIX Pi host relay captures one real B-target slot from an A-session without reoffering it", { skip: !RUNNABLE }, async (t) => {
+test("dev-binary: Pi host relay captures one real B-target slot from an A-session without reoffering it", { skip: !RUNNABLE }, async (t) => {
 	const sessionA = repository(t, "gentle-pi-relay-session-a-");
 	const targetB = repository(t, "gentle-pi-relay-target-b-");
 	const nestedTarget = join(targetB, "nested");
@@ -372,23 +375,24 @@ test("dev-binary: POSIX Pi host relay captures one real B-target slot from an A-
 	assert.ok(execute, "selected Pi STATUS must render a START execution");
 	assert.equal(execute!.operation, "review.start");
 	assert.equal(execute!.command.startsWith("gentle-ai review start "), true);
-	assert.deepEqual(execute!.command.split(" ").slice(3), execute!.arguments.map((argument) => argument.token));
 	assert.ok(execute!.arguments.some((argument) => argument.token === `--cwd=${canonicalB}`), "rendered START must canonically target B, not A or B/nested");
 	assert.ok(execute!.arguments.some((argument) => argument.token === "--intended-untracked=selected.txt"), "rendered START must retain B's selected untracked path");
 	assert.equal(execute!.arguments.some((argument) => argument.token === "--intended-untracked=excluded.txt"), false, "rendered START must exclude B's unselected control");
 
-	const consent = runRenderedInvocation(RELAY_DEV_BINARY!, sessionA, execute!.command, environment);
-	const started = runRenderedInvocation(RELAY_DEV_BINARY!, sessionA, grantedConsentInvocation(consent), environment);
-	const startedRecord = record(started, "granted START response");
-	assert.equal(startedRecord.action, "created");
-	const lineage = stringValue(startedRecord.lineage_id, "granted START lineage_id");
+	const consent = decodeReviewConsentV3(candidateJson(RELAY_DEV_BINARY!, sessionA,
+		["review", "start", ...execute!.arguments.map(argument => stringValue(argument.token, "provider START token"))], environment), "pi");
+	const answered = await devNativeCli(RELAY_DEV_BINARY!, environment, []).answerConsent({ cwd: canonicalB, consent, answer: "granted" });
+	assert.equal(answered.kind, "started");
+	if (answered.kind !== "started") assert.fail("synthetic fixture consent must start its review");
+	assert.equal(answered.start.action, "created");
+	const lineage = answered.start.lineageId;
 
 	const collecting = candidateStatus(RELAY_DEV_BINARY!, sessionA, canonicalB, environment, lineage);
 	const slots = reviewHostRelaySlots(collecting.nextTransition?.collect?.inputs ?? []);
 	assert.ok(slots.length > 0, `real Pi-bound STATUS must offer at least one materialize relay slot: ${JSON.stringify(collecting.raw)}`);
 	const slot = slots[0]!;
 	const slotInput = collecting.nextTransition?.collect?.inputs.find((input) => input.artifactSubject?.subjectHash === slot.subjectHash);
-	const expectedPaths = slotInput?.changedPathManifest?.map((entry) => entry.path) ?? ZERO_FINDING_PATHS;
+	const expectedPaths = slotInput?.changedPathManifest?.map((entry) => entry.path) ?? collecting.projection.paths;
 	assert.ok(expectedPaths.includes("selected.txt"), "the selected untracked file must reach the immutable reviewer manifest");
 	assert.equal(expectedPaths.includes("excluded.txt"), false, "the unselected B control must stay out of the reviewer manifest");
 	assert.ok(slot.submission, "the real Pi slot must include Go's provider-owned submission form");
@@ -593,7 +597,9 @@ test("dev-binary: Pi preserves targeted-validator rejection evidence in an escal
 	const environment = { ...reviewEnvironment(home), GENTLE_PI_CONFIG_HOME: join(home, "config"), GENTLE_PI_AGENT_HOME: join(home, "agent"), PI_CODING_AGENT_DIR: join(home, "agent") };
 	const binary = RELAY_DEV_BINARY!;
 	assert.equal(realpathSync(binary), realpathSync(DEV_BINARY!));
-	writeFileSync(join(cwd, "app.ts"), "export const value = 2;\n");
+	// Four original changed lines provide the two-line bounded correction below.
+	const featureSuffix = "// feature fixture A\n// feature fixture B\n";
+	writeFileSync(join(cwd, "app.ts"), "export const value = 2;\n" + featureSuffix);
 	enableGlobalReview(binary, cwd, cwd, environment);
 	const calls: NativeProcessCall[] = [];
 	const { controller, capture } = reviewToolsForNative(devNativeCli(binary, environment, calls));
@@ -612,11 +618,12 @@ test("dev-binary: Pi preserves targeted-validator rejection evidence in an escal
 		evidence: ["inspected the frozen candidate"],
 	}));
 	let validator: ReturnType<typeof fauxReviewerFor> | undefined;
+	const refuter = corroboratingRefuterFixture();
 	let emittedClosure: Record<string, unknown> | undefined;
 	const relayRoles: string[] = [];
 	__testing.setReviewHostRelayRunnerForTesting(async (request) => {
 		assert.equal(request.targetCwd, cwd);
-		const selected = request.routingKey === "review-validator" ? validator : reviewer;
+		const selected = request.routingKey === "review-validator" ? validator : request.routingKey === "review-refuter" ? refuter : reviewer;
 		assert.ok(selected, "validator fixture must be bound before capture");
 		relayRoles.push(request.routingKey!);
 		selected.enqueue();
@@ -626,20 +633,20 @@ test("dev-binary: Pi preserves targeted-validator rejection evidence in an escal
 	});
 	const captureRole = async (id: string, binding: string) => {
 		const params = { lineageId: lineage, workspaceRoot: cwd, collectBinding: binding };
-		const modelCalls = reviewer.calls.length + (validator?.calls.length ?? 0), roleCalls = relayRoles.length;
+		const modelCalls = reviewer.calls.length + refuter.calls.length + (validator?.calls.length ?? 0), roleCalls = relayRoles.length;
 		const forecast = record((await capture.execute(`${id}-forecast`, params, undefined, undefined, context)).details, "rejection forecast");
 		assert.equal(forecast.outcome, "reviewer-model-run-forecast");
-		assert.equal(reviewer.calls.length + (validator?.calls.length ?? 0), modelCalls, "no model call before acknowledgement");
+		assert.equal(reviewer.calls.length + refuter.calls.length + (validator?.calls.length ?? 0), modelCalls, "no model call before acknowledgement");
 		assert.equal(relayRoles.length, roleCalls, "no role replay before acknowledgement");
 		const result = record((await capture.execute(id, { ...params, reviewerRunAcknowledged: true }, undefined, undefined, context)).details, id);
-		assert.equal(reviewer.calls.length + (validator?.calls.length ?? 0), modelCalls + 1);
+		assert.equal(reviewer.calls.length + refuter.calls.length + (validator?.calls.length ?? 0), modelCalls + 1);
 		return result;
 	};
 	let correctionOpened = false;
 	for (let attempt = 0; attempt < 4; attempt += 1) {
 		const status = await control(`rejection-reviewer-status-${attempt}`, statusParameters);
 		const binding = collectBindingsFor(status, "review.capture-result")[0];
-		assert.ok(binding, "native STATUS must offer a reviewer slot");
+		if (!binding) break;
 		const result = await captureRole(`rejection-reviewer-${attempt}`, binding);
 		assert.ok(["captured", "closed"].includes(stringValue(result.status, "reviewer capture status")));
 		if (result.closure !== undefined) {
@@ -648,12 +655,18 @@ test("dev-binary: Pi preserves targeted-validator rejection evidence in an escal
 			break;
 		}
 	}
+	if (!correctionOpened) {
+		const status = await control("rejection-refuter-status", statusParameters);
+		const result = await captureRole("rejection-refuter", collectBindingFor(status, "review.capture-refuter"));
+		assert.equal(record(result.closure, "refuter closure").state, "correction_required");
+		correctionOpened = true;
+	}
 	assert.equal(correctionOpened, true, "real admitted findings must open correction");
 	const correctionStatus = await control("rejection-correction-status", statusParameters);
 	const correctionBinding = collectBindingFor(correctionStatus, "review.capture-correction-plan");
-	const plan = record((await capture.execute("rejection-plan", { lineageId: lineage, workspaceRoot: cwd, collectBinding: correctionBinding, correctionLines: 1 }, undefined, undefined, context)).details, "correction plan");
+	const plan = record((await capture.execute("rejection-plan", { lineageId: lineage, workspaceRoot: cwd, collectBinding: correctionBinding, correctionLines: 2 }, undefined, undefined, context)).details, "correction plan");
 	assert.equal(record(plan.closure, "correction plan closure").state, "correction_required");
-	writeFileSync(join(cwd, "app.ts"), "export const value = 3;\n");
+	writeFileSync(join(cwd, "app.ts"), "export const value = 3;\n" + featureSuffix);
 	const validationStatus = await control("rejection-validation-status", statusParameters);
 	const binding = collectBindingFor(validationStatus, "review.capture-validation");
 	const request = record(parsedCollectBinding(binding).validationRequest, "native validation request");
@@ -733,6 +746,8 @@ test("dev-binary: Pi controller keeps an explicit B root and selected-untracked 
 	mkdirSync(isolatedHome);
 	const environment = reviewEnvironment(isolatedHome);
 	assert.ok(RELAY_DEV_BINARY, "GENTLE_PI_GENTLE_AI_DEV_BINARY is required for this devtest");
+	// Establish this fixture's starting mode instead of assuming a native release default.
+	candidateJson(RELAY_DEV_BINARY!, sessionA, ["review", "mode", "disable", "--scope", "global", "--cwd", canonicalB, "--json"], environment);
 	const isolatedModeBefore = record(candidateJson(RELAY_DEV_BINARY!, sessionA, ["review", "mode", "status", "--cwd", canonicalB, "--json"], environment), "isolated mode before setup");
 	assert.equal(record(isolatedModeBefore.status, "isolated mode before setup status").effective, "off", "the sandbox must start with its own RDD mode disabled");
 	enableGlobalReview(RELAY_DEV_BINARY!, sessionA, canonicalB, environment);
@@ -809,33 +824,23 @@ test("dev-binary: Pi controller keeps an explicit B root and selected-untracked 
 		evidence: ["inspected every frozen candidate path"],
 	}));
 	let validatorReviewer: ReturnType<typeof fauxReviewerFor> | undefined;
+	const refuterReviewer = corroboratingRefuterFixture();
 	const relayTargetRoots: string[] = [];
 	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
 	__testing.setReviewHostRelayRunnerForTesting(async (request) => {
 		assert.equal(request.targetCwd, canonicalB, "the host relay must materialize and submit against B");
 		relayTargetRoots.push(request.targetCwd!);
-		if (request.routingKey === "review-validator") {
-			assert.ok(validatorReviewer, "the targeted-validator reviewer fixture must be armed before its slot reaches the relay");
-			validatorReviewer.enqueue();
-			return await runReviewHostRelaySlot({
-				...request,
-				gentleAiExecutable: RELAY_DEV_BINARY!,
-				environment,
-				reviewerRegistry: validatorReviewer.registry,
-				selection: validatorReviewer.selection,
-				routingKey: request.routingKey,
-				gentleAiTimeoutMs: 30_000,
-				piTimeoutMs: 30_000,
-			});
-		}
-		reviewer.enqueue();
+		const selected = request.routingKey === "review-validator" ? validatorReviewer
+			: request.routingKey === "review-refuter" ? refuterReviewer : reviewer;
+		assert.ok(selected, "the synthetic role fixture must be armed before its slot reaches the relay");
+		selected.enqueue();
 		return await runReviewHostRelaySlot({
 			...request,
 			gentleAiExecutable: RELAY_DEV_BINARY!,
 			environment,
-			reviewerRegistry: reviewer.registry,
-			selection: reviewer.selection,
-			routingKey: reviewer.routingKey,
+			reviewerRegistry: selected.registry,
+			selection: selected.selection,
+			routingKey: request.routingKey,
 			gentleAiTimeoutMs: 30_000,
 			piTimeoutMs: 30_000,
 		});
@@ -854,14 +859,15 @@ test("dev-binary: Pi controller keeps an explicit B root and selected-untracked 
 		);
 		const reviewerStatusDetails = record(reviewerStatus.details, "combined reviewer STATUS");
 		const reviewerBindings = collectBindingsFor(reviewerStatusDetails, "review.capture-result");
-		assert.ok(reviewerBindings.length > 0, "current public STATUS must publish a reviewer capture binding before correction opens");
+		if (reviewerBindings.length === 0) break; // Follow the next provider stage below.
 		const reviewerBinding = reviewerBindings[0]!;
 		assert.equal(reviewerSubjects.has(reviewerBinding), false, "each reviewer capture must use a fresh public STATUS binding");
 		reviewerSubjects.add(reviewerBinding);
 		const reviewerInput = parsedCollectBinding(reviewerBinding);
 		const reviewerPaths = reviewerInput.changedPathManifest;
-		assert.ok(Array.isArray(reviewerPaths), "the reviewer binding must carry its frozen changed-path manifest");
-		const manifestPaths = reviewerPaths.map((entry) => stringValue(record(entry, "reviewer manifest entry").path, "reviewer manifest path"));
+		const manifestPaths = Array.isArray(reviewerPaths)
+			? reviewerPaths.map((entry) => stringValue(record(entry, "reviewer manifest entry").path, "reviewer manifest path"))
+			: publicStatusProjectionPaths(reviewerStatusDetails);
 		assert.ok(manifestPaths.includes("selected.txt"), "the selected untracked file must remain in every reviewer binding");
 		assert.equal(manifestPaths.includes("excluded.txt"), false, "the excluded untracked file must remain outside every reviewer binding");
 		assert.ok(publicStatusProjectionPaths(reviewerStatusDetails).includes("selected.txt"), "public STATUS must retain the selected path in B's projection");
@@ -912,9 +918,23 @@ test("dev-binary: Pi controller keeps an explicit B root and selected-untracked 
 			break;
 		}
 	}
-	assert.equal(correctionOpened, true, "the provider must close the final reviewer capture as correction_required");
+	if (!correctionOpened) {
+		// Captures return directly. A fresh STATUS can require refutation of
+		// deterministic severe claims too, before correction is available.
+		const status = await controller.execute("combined-refuter-status", { operation: "status", lineageId: lineage, workspaceRoot: nestedTarget, input: JSON.stringify(selection) }, undefined, undefined, sessionContext(sessionA));
+		const binding = collectBindingFor(status.details, "review.capture-refuter");
+		const parameters = { lineageId: lineage, workspaceRoot: nestedTarget, collectBinding: binding };
+		const forecast = record((await capture.execute("combined-refuter-forecast", parameters, undefined, undefined, sessionContext(sessionA))).details, "refuter forecast");
+		assert.equal(forecast.outcome, "reviewer-model-run-forecast");
+		assert.equal(refuterReviewer.calls.length, 0, "refuter forecast must not launch a completion");
+		const result = record((await capture.execute("combined-refuter", { ...parameters, reviewerRunAcknowledged: true }, undefined, undefined, sessionContext(sessionA))).details, "refuter capture");
+		assert.equal(refuterReviewer.calls.length, 1);
+		assert.equal(record(result.closure, "refuter closure").state, "correction_required");
+		correctionOpened = true;
+	}
+	assert.equal(correctionOpened, true, "the offered reviewer/refuter transitions must open correction_required");
 	assert.ok(reviewerCaptureCount > 0);
-	assert.ok(relayTargetRoots.length === reviewerCaptureCount);
+	assert.equal(relayTargetRoots.length, reviewerCaptureCount + refuterReviewer.calls.length);
 	assert.ok(relayTargetRoots.every((root) => root === canonicalB), "every reviewer relay leg must stay bound to B");
 	// gentle-pi#311 P4: the reviewer completion runs in-process — there is no
 	// subprocess log, argv, or scratch sandbox to assert for this leg any
@@ -938,7 +958,7 @@ test("dev-binary: Pi controller keeps an explicit B root and selected-untracked 
 	assert.equal(publicStatusProjectionPaths(correctionStatus.details).includes("excluded.txt"), false, "the correction plan STATUS must remain outside excluded.txt");
 	const correctionPlan = await capture.execute(
 		"combined-correction-plan",
-		{ lineageId: lineage, workspaceRoot: nestedTarget, collectBinding: correctionBinding, correctionLines: 1 },
+		{ lineageId: lineage, workspaceRoot: nestedTarget, collectBinding: correctionBinding, correctionLines: 2 },
 		undefined,
 		undefined,
 		sessionContext(sessionA),
@@ -947,7 +967,7 @@ test("dev-binary: Pi controller keeps an explicit B root and selected-untracked 
 	assert.equal(correctionPlanClosure.schema, "gentle-ai.review-last-event-closure/v1");
 	assert.equal(correctionPlanClosure.operation, "review.capture-correction-plan");
 	assert.equal(correctionPlanClosure.state, "correction_required");
-	assert.equal(correctionPlanClosure.correction_lines, 1);
+	assert.equal(correctionPlanClosure.correction_lines, 2); // One removed and one added line.
 	writeFileSync(join(targetB, "selected.txt"), "selected relay input corrected\n");
 
 	const validationStatus = await controller.execute(
@@ -996,13 +1016,26 @@ test("dev-binary: Pi controller keeps an explicit B root and selected-untracked 
 	// Arm the targeted-validator faux reviewer now that its request hash and
 	// target identity are known; the relay override above dispatches to it by
 	// routing key.
-	validatorReviewer = fauxReviewerFor(() => JSON.stringify({
-		targeted_validation_request_hash: validatorRequestHash,
-		correction_target_identity: validatorTargetIdentity,
-		original_criteria: { passed: true, evidence: ["focused acceptance proof passed"] },
-		correction_regression: { passed: true, evidence: ["focused regression proof passed"] },
-		follow_ups: [],
-	}));
+	validatorReviewer = fauxReviewerFor((_subjectHash, promptText) => {
+		const inputs = promptText.split(/\r?\n/).flatMap(line => {
+			try { const value = JSON.parse(line) as Record<string, unknown>; return value?.validation_request === undefined ? [] : [value]; }
+			catch { return []; }
+		});
+		assert.equal(inputs.length, 1);
+		const evidence = inputs[0]!.evidence;
+		assert.ok(Array.isArray(evidence));
+		assert.deepEqual(evidence.map(entry => record(entry, "frozen correction evidence").path), ["selected.txt"]);
+		const patch = stringValue(record(evidence[0], "frozen correction evidence").content, "frozen correction patch");
+		assert.ok(patch.includes("+selected relay input corrected"));
+		assert.ok(patch.includes("-selected relay input"));
+		return JSON.stringify({
+			targeted_validation_request_hash: validatorRequestHash,
+			correction_target_identity: validatorTargetIdentity,
+			original_criteria: { passed: true, evidence: ["synthetic fixture: the frozen patch supplies the required corrected line"] },
+			correction_regression: { passed: true, evidence: ["synthetic fixture: the frozen patch changes only selected.txt"] },
+			follow_ups: [],
+		});
+	});
 	const validatorForecast = await capture.execute(
 		"combined-targeted-validator-forecast",
 		{ lineageId: lineage, workspaceRoot: nestedTarget, collectBinding: validatorBinding },

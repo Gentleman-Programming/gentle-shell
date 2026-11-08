@@ -14,6 +14,7 @@ import { ToolExecutionComponent } from "../node_modules/@earendil-works/pi-codin
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { CARD_CONTENT, cardContent, setCardContent } from "../lib/card-content-policy.ts";
+import { CODEGRAPH_TOOL } from "../lib/codegraph-card-preview.ts";
 import piPretty from "../extensions/pi-pretty.ts";
 import productionQuietTools, {
 	createCodeGraphCardRenderer,
@@ -2684,6 +2685,132 @@ test("a bash card's left rail carries the label's own color while the frame keep
 		assert.equal(visibleWidth(row), 40);
 		assert.ok(row.includes(`\x1b[38;5;${RAIL_FG.mdLink}m▎`), `every bar cell keeps the rail color: ${JSON.stringify(row)}`);
 	}
+});
+
+// quiet tools hands the host one card per tool it draws and keeps that card in a
+// process-wide slot, so a second extension can draw with the same renderer instead
+// of a lookalike. These tests read the slot the way that consumer does.
+const RENDERER_SLOT = Symbol.for("gentle-pi.quiet-tool-renderers");
+
+interface PublishedCard {
+	renderer: any;
+	active(): boolean;
+}
+
+function rendererSlot(): Map<string, PublishedCard> | undefined {
+	return (globalThis as any)[RENDERER_SLOT];
+}
+
+function publishedToolNames(): string[] {
+	return [...(rendererSlot()?.keys() ?? [])].sort();
+}
+
+/** Restores the process-wide slot, so the cards one test hands the host never reach the next. */
+function useRendererSlot(t: { after(fn: () => void): void }): void {
+	const previous = rendererSlot();
+	const entries = previous === undefined ? undefined : [...previous.entries()];
+	t.after(() => {
+		if (previous === undefined) {
+			delete (globalThis as any)[RENDERER_SLOT];
+			return;
+		}
+		previous.clear();
+		for (const [toolName, card] of entries!) previous.set(toolName, card);
+		(globalThis as any)[RENDERER_SLOT] = previous;
+	});
+}
+
+/** One quiet-tools load against a fake host, with the preference restored so no test leaks it. */
+function loadQuietTools(env?: string) {
+	const { pi } = createPi();
+	const resolvers: Array<(toolName: string, next: () => unknown) => unknown> = [];
+	(pi as any).registerToolRenderer = (resolver: (toolName: string, next: () => unknown) => unknown) => {
+		resolvers.push(resolver);
+	};
+	withEnv({ GENTLE_PI_QUIET_TOOLS: env }, () => productionQuietTools(pi as any));
+	return { pi, resolvers };
+}
+
+test("quiet tools publishes every card it can draw before the host asks for one", (t) => {
+	useCardContent(t, CARD_CONTENT.DEFAULT);
+	useRendererSlot(t);
+	const { resolvers } = loadQuietTools();
+	// No resolver call first: the cards exist because the load ran, so a pane drawing a
+	// child's bash or CodeGraph call already finds them.
+	assert.deepEqual(publishedToolNames(), ["bash", CODEGRAPH_TOOL].sort(), "the slot already holds exactly the cards this load draws");
+
+	const slot = rendererSlot()!;
+	const bashCard = slot.get("bash")!;
+	const codegraphCard = slot.get(CODEGRAPH_TOOL)!;
+	const resolver = resolvers.at(-1)!;
+	const native = { marker: "native" };
+	const bash = resolver("bash", () => native) as any;
+	const codegraph = resolver(CODEGRAPH_TOOL, () => native) as any;
+	assert.notEqual(bash, native, "the resolver still draws bash itself");
+	assert.notEqual(codegraph, native, "and the CodeGraph card");
+	assert.equal(bash, bashCard.renderer, "the host is handed the very card the load published");
+	assert.equal(codegraph, codegraphCard.renderer, "and so is CodeGraph");
+	assert.equal(bashCard.renderer.renderCall, bash.renderCall, "the call slot is that object's own function");
+	assert.equal(bashCard.renderer.renderResult, bash.renderResult, "the result slot is that object's own function");
+	assert.equal(codegraphCard.renderer.renderCall, codegraph.renderCall);
+	assert.equal(codegraphCard.renderer.renderResult, codegraph.renderResult);
+
+	// The chat draws both cards whatever the Card content preference says, so the
+	// published answer has to stay the same at either level.
+	for (const level of [CARD_CONTENT.MINIMAL, CARD_CONTENT.DEFAULT]) {
+		setCardContent(level);
+		assert.equal(bashCard.active(), true, `${level}: the chat draws the bash card`);
+		assert.equal(codegraphCard.active(), true, `${level}: the chat always draws the CodeGraph card`);
+	}
+});
+
+test("resolving the same tool twice hands the host the card it already published", (t) => {
+	useRendererSlot(t);
+	const { resolvers } = loadQuietTools();
+	const resolver = resolvers.at(-1)!;
+	const native = () => ({ marker: "native" });
+	const first = resolver("bash", native) as any;
+	assert.equal(first, rendererSlot()!.get("bash")!.renderer, "the first resolve hands over the card the load published");
+	const second = resolver("bash", native) as any;
+	assert.equal(second, first, "one object per tool, not a fresh renderer every resolve");
+	assert.equal(rendererSlot()!.get("bash")!.renderer, first, "the slot keeps serving that one object");
+	const firstCodegraph = resolver(CODEGRAPH_TOOL, native) as any;
+	assert.equal(firstCodegraph, rendererSlot()!.get(CODEGRAPH_TOOL)!.renderer);
+	const secondCodegraph = resolver(CODEGRAPH_TOOL, native) as any;
+	assert.equal(secondCodegraph, firstCodegraph);
+});
+
+test("a disabled load leaves the slot empty", (t) => {
+	useRendererSlot(t);
+	loadQuietTools();
+	assert.deepEqual(publishedToolNames(), ["bash", CODEGRAPH_TOOL].sort(), "an enabled load publishes the cards it can draw");
+
+	const disabled = loadQuietTools("0");
+	assert.equal(disabled.resolvers.length, 0, "a disabled load registers no resolver");
+	assert.equal(rendererSlot()?.size ?? 0, 0, "and withdraws what an earlier load published");
+});
+
+test("a reload republishes a new card and withdraws the one before it", (t) => {
+	useRendererSlot(t);
+	loadQuietTools();
+	const previousCard = rendererSlot()!.get("bash")!.renderer;
+	const reloaded = loadQuietTools();
+	const reloadedCard = rendererSlot()!.get("bash")!.renderer;
+	assert.notEqual(reloadedCard, previousCard, "a reload publishes a new card");
+	const resolver = reloaded.resolvers.at(-1)!;
+	assert.equal(resolver("bash", () => ({ marker: "native" })), reloadedCard, "the reloaded card is the one the host and a reader share");
+	assert.notEqual(rendererSlot()!.get("bash")!.renderer, previousCard, "and the slot no longer serves the one before it");
+});
+
+test("tools this extension does not draw stay out of the slot", (t) => {
+	useRendererSlot(t);
+	const { resolvers } = loadQuietTools();
+	const resolver = resolvers.at(-1)!;
+	const native = { marker: "native" };
+	for (const toolName of ["read", "grep", "edit", "serpapi"]) {
+		assert.equal(resolver(toolName, () => native), native, `${toolName} keeps the next renderer`);
+	}
+	assert.deepEqual(publishedToolNames(), ["bash", CODEGRAPH_TOOL].sort(), "the slot holds only the cards this resolver draws");
 });
 
 test("a CodeGraph card's left rail carries the tool's own color while the frame keeps the call's status", (t) => {

@@ -38,6 +38,9 @@ type ThemeLike = {
 	fg(color: string, value: string): string;
 };
 
+/** One quiet card's drawing slots: the shape pi's own tool definitions carry. */
+type QuietToolRenderer = Pick<ToolDefinition, "renderShell" | "renderCall" | "renderResult">;
+
 const TOOL_CREATORS = {
 	read: createReadToolDefinition,
 	grep: createGrepTool,
@@ -1091,7 +1094,7 @@ export function createQuietToolRenderer(
 	resolveOverride: GentleAiDevBinaryOverrideResolver = () => undefined,
 	timing: () => GentleAiElapsedTimingLedger | undefined = () => undefined,
 	officialRenderResult?: ToolDefinition["renderResult"],
-): Pick<ToolDefinition, "renderShell" | "renderCall" | "renderResult"> {
+): QuietToolRenderer {
 	const commandArguments = () => createGentleAiCommandArguments(resolveQuietToolsDevBinaryPath(resolveOverride));
 	const withElapsedTiming = (context: GentleAiRenderContext): GentleAiRenderContext => {
 		const ledger = timing();
@@ -1236,7 +1239,7 @@ function codeGraphHeading(args: Record<string, unknown>, theme: ThemeLike, expan
 }
 
 /** Rendering-only factory for the CodeGraph card; the tool keeps its own execution, schema, and timeouts. */
-export function createCodeGraphCardRenderer(): Pick<ToolDefinition, "renderShell" | "renderCall" | "renderResult"> {
+export function createCodeGraphCardRenderer(): QuietToolRenderer {
 	return {
 		renderShell: "self",
 		renderCall(args, theme, context) {
@@ -1300,6 +1303,42 @@ export function createCodeGraphCardRenderer(): Pick<ToolDefinition, "renderShell
 	};
 }
 
+/** A card this load handed the host, with the answer to whether the chat draws it right now. */
+interface PublishedQuietToolRenderer {
+	renderer: QuietToolRenderer;
+	active(): boolean;
+}
+
+// Pi loads extensions with `moduleCache: false`, so one process can hold two copies
+// of this module; the process-wide slot is where they meet. A consumer that wants
+// this extension's drawing finds the very card handed to the host there, never a
+// lookalike of its own that could drift from the registration.
+const PUBLISHED_TOOL_RENDERERS = Symbol.for("gentle-pi.quiet-tool-renderers");
+const publishedRendererState = globalThis as typeof globalThis & { [PUBLISHED_TOOL_RENDERERS]?: Map<string, PublishedQuietToolRenderer> };
+
+function publishedQuietToolRenderers(): Map<string, PublishedQuietToolRenderer> {
+	const existing = publishedRendererState[PUBLISHED_TOOL_RENDERERS];
+	if (existing !== undefined) return existing;
+	const created = new Map<string, PublishedQuietToolRenderer>();
+	publishedRendererState[PUBLISHED_TOOL_RENDERERS] = created;
+	return created;
+}
+
+/**
+ * Stores the one card this load draws for `toolName` and returns that stored
+ * record, so every later resolve and every other consumer hold one object instead
+ * of a fresh card per call. `drawing` answers whether the chat draws the card right
+ * now; a card whose resolve always returns it keeps the default.
+ */
+function publishQuietToolRenderer(toolName: string, card: () => QuietToolRenderer, drawing: () => boolean = () => true): PublishedQuietToolRenderer {
+	const published = publishedQuietToolRenderers();
+	const existing = published.get(toolName);
+	if (existing !== undefined) return existing;
+	const created: PublishedQuietToolRenderer = { renderer: card(), active: drawing };
+	published.set(toolName, created);
+	return created;
+}
+
 function registerQuietTool(pi: ExtensionAPI, toolName: RegisteredToolName, resolveOverride: GentleAiDevBinaryOverrideResolver, timing: () => GentleAiElapsedTimingLedger | undefined): void {
 	const registrationTool = getBuiltInTools(process.cwd())[toolName];
 	pi.registerTool({
@@ -1316,8 +1355,20 @@ export default function quietTools(
 	resolveOverride: GentleAiDevBinaryOverrideResolver = () => resolveGentleAiDevBinaryOverride(),
 	codemodeOptOut: Omit<BuiltinCodemodeOptOutOptions, "effectiveExtensions"> = {},
 ): ReturnType<ExtensionFactory> {
+	// A fresh load replaces whatever an earlier instance published, so a disabled
+	// extension leaves nothing behind for a second consumer to reuse.
+	publishedQuietToolRenderers().clear();
 	if (!quietToolsEnabled()) return;
 	let elapsedTiming: GentleAiElapsedTimingLedger | undefined;
+	// Every card this load can draw, by the name pi asks the resolver for, created and
+	// published now: another extension drawing a child's bash or CodeGraph call reads
+	// them before the chat itself resolves one. A tool added to this table is published
+	// by the same step, and the resolver below hands over what it stored here.
+	const cards: Record<string, () => QuietToolRenderer> = {
+		bash: () => createQuietToolRenderer("bash", resolveOverride, () => elapsedTiming),
+		[CODEGRAPH_TOOL]: () => createCodeGraphCardRenderer(),
+	};
+	for (const [toolName, card] of Object.entries(cards)) publishQuietToolRenderer(toolName, card);
 	let codemodeOptOutOffered = false;
 	pi.on("session_start", (_event, ctx) => {
 		elapsedTiming = new GentleAiElapsedTimingLedger(ctx.sessionManager, pi);
@@ -1355,9 +1406,8 @@ export default function quietTools(
 	const host = pi as typeof pi & { registerToolRenderer?: (resolver: (toolName: string, next: () => unknown) => unknown) => void };
 	if (typeof host.registerToolRenderer === "function") {
 		host.registerToolRenderer((toolName, next) => {
-			if (toolName === "bash") return createQuietToolRenderer("bash", resolveOverride, () => elapsedTiming);
-			if (toolName === CODEGRAPH_TOOL) return createCodeGraphCardRenderer();
-			return next();
+			const card = cards[toolName];
+			return card === undefined ? next() : publishQuietToolRenderer(toolName, card).renderer;
 		});
 	}
 	return registerCompactCodemode(pi);

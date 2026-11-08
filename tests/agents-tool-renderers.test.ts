@@ -3,7 +3,7 @@ import test from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { CARD_CONTENT, cardContent, setCardContent } from "../lib/card-content-policy.ts";
-import type { ToolItem } from "../lib/agents-protocol.ts";
+import { applyTaskEvent, emptyThread, RETAINED_DIFF_MAX_BYTES, RETAINED_DIFF_MAX_LINES, TASK_EVENT, type ToolItem } from "../lib/agents-protocol.ts";
 import productionQuietTools from "../extensions/quiet-tools.ts";
 import {
 	agentToolRowRenderer,
@@ -282,4 +282,93 @@ test("the offered card fits every terminal width it is drawn at", () => {
 			for (const line of lines) assert.ok(visibleWidth(line) <= width, `"${line}" fits width ${width}`);
 		}
 	}
+});
+
+/** A retained edit item exactly as the protocol leaves one after its tool_end. */
+function retainedEdit(diff: string | undefined, overrides: Partial<ToolItem> = {}): ToolItem {
+	let thread = applyTaskEvent(emptyThread(), { type: TASK_EVENT.TOOL_START, callId: "call-1", name: "edit", args: CALL_ARGS.edit! });
+	thread = applyTaskEvent(thread, { type: TASK_EVENT.TOOL_END, callId: "call-1", output: "Successfully replaced 1 block", isError: false, ...(diff === undefined ? {} : { diff }) });
+	return { ...(thread.items[0] as ToolItem), ...overrides };
+}
+
+/** The rows the chat draws for this item, with the details the chat itself was handed. */
+function chatRows(item: ToolItem, details: unknown): string[] {
+	const renderer = agentToolRowRenderer(item.name)!;
+	const context = { args: item.args, toolCallId: item.callId, cwd: "", executionStarted: true, argsComplete: true,
+		isPartial: item.running, isError: item.isError, expanded: false, lastComponent: undefined, invalidate() {} };
+	const rows = renderer.renderCall(item.args, plainTheme as any, context as any).render(80);
+	if (item.running && item.output.length === 0) return rows;
+	return [...rows, ...renderer.renderResult!({ content: [{ type: "text", text: item.output }], details },
+		{ expanded: false, isPartial: item.running }, plainTheme as any, context as any).render(80)];
+}
+
+test("an edit card draws the retained diff through the chat's renderer, counters included", () => {
+	registeredQuietTools();
+	const diff = "+added line\n-removed line";
+	const item = retainedEdit(diff);
+	assert.deepEqual(renderAgentToolItem(item, plainTheme, 80, { expanded: false }), chatRows(item, { diff }), "the chat's own result slot is handed the diff, and nothing is drawn around it");
+	const painted = renderAgentToolItem(item, plainTheme, 80, { expanded: false })!.join("\n");
+	assert.match(painted, /✓ \+1 \/ -1/, "the counters the chat derives from the diff are drawn");
+	assert.match(painted, /\+added line/, "an added row is drawn");
+	assert.match(painted, /-removed line/, "a removed row is drawn");
+});
+
+test("a running edit with no diff yet draws only its call row", () => {
+	registeredQuietTools();
+	const item = toolItem({ name: "edit", running: true, output: "" });
+	const renderer = agentToolRowRenderer("edit")!;
+	const context = { args: item.args, toolCallId: item.callId, cwd: "", executionStarted: true, argsComplete: true,
+		isPartial: true, isError: false, expanded: false, lastComponent: undefined, invalidate() {} };
+	const lines = renderAgentToolItem(item, plainTheme, 80, { expanded: false })!;
+	assert.deepEqual(lines, renderer.renderCall(item.args, plainTheme as any, context as any).render(80), "the call slot closes the frame until a result arrives");
+	assert.doesNotMatch(lines.join("\n"), /✓/, "no result summary is drawn");
+});
+
+test("a result without details.diff keeps today's card exactly", () => {
+	registeredQuietTools();
+	const plainEdit = retainedEdit(undefined);
+	assert.deepEqual(renderAgentToolItem(plainEdit, plainTheme, 80, { expanded: false }), chatRows(plainEdit, undefined), "no details are invented for an edit that carried no diff");
+	assert.match(renderAgentToolItem(plainEdit, plainTheme, 80, { expanded: false })!.join("\n"), /✓ applied/, "and the card says applied, as it does today");
+});
+
+test("an oversized diff is never retained or drawn, and the card falls back to the plain result", () => {
+	registeredQuietTools();
+	const atLineCap = Array.from({ length: RETAINED_DIFF_MAX_LINES }, () => "+x").join("\n");
+	const lineKept = retainedEdit(atLineCap);
+	assert.equal(lineKept.diff, atLineCap, "a diff exactly at the line cap is kept");
+	assert.match(renderAgentToolItem(lineKept, plainTheme, 80, { expanded: false })!.join("\n"), /✓ \+400 \/ -0/, "and its counters are drawn");
+	const overLines = retainedEdit(`${atLineCap}\n+x`);
+	assert.equal(overLines.diff, undefined, "one line over the cap is dropped whole");
+	assert.match(renderAgentToolItem(overLines, plainTheme, 80, { expanded: false })!.join("\n"), /✓ applied/, "the card falls back to the plain result");
+
+	const atByteCap = `+${"x".repeat(RETAINED_DIFF_MAX_BYTES - 1)}`;
+	const byteKept = retainedEdit(atByteCap);
+	assert.equal(byteKept.diff, atByteCap, "a diff exactly at the byte cap is kept");
+	assert.match(renderAgentToolItem(byteKept, plainTheme, 200, { expanded: false })!.join("\n"), /✓ \+1 \/ -0/, "and its counters are drawn");
+	const overBytes = retainedEdit(`${atByteCap}x`);
+	assert.equal(overBytes.diff, undefined, "one byte over the cap is dropped whole");
+	assert.match(renderAgentToolItem(overBytes, plainTheme, 80, { expanded: false })!.join("\n"), /✓ applied/, "no partial diff and no marker row is drawn");
+});
+
+test("a retained diff reaches the card cleaned, and the item itself is never rewritten", () => {
+	registeredQuietTools();
+	const diff = "\u001b[31m+red\u001b[0m\n\u0007-blue";
+	const item = toolItem({ name: "edit", diff });
+	const painted = renderAgentToolItem(item, plainTheme, 80, { expanded: false })!.join("\n");
+	assert.equal(painted.includes("\u001b"), false, "escape sequences in a restored diff never reach the terminal");
+	assert.equal(painted.includes("\u0007"), false, "control bytes in a restored diff never reach the terminal");
+	assert.match(painted, /\+red/, "the clean row is still drawn");
+	assert.equal(item.diff, diff, "the retained item is the caller's, not a scratch copy to clean");
+});
+
+test("the edit diff changes no other result: errors and non-edit cards stay as they are", (t) => {
+	registeredQuietTools();
+	const failed = retainedEdit("+x", { isError: true, output: "boom one\nboom two" });
+	assert.deepEqual(renderAgentToolItem(failed, plainTheme, 80, { expanded: false }), chatRows(failed, undefined), "an errored edit keeps the chat's error drawing");
+	assert.match(renderAgentToolItem(failed, plainTheme, 80, { expanded: false })!.join("\n"), /boom one/);
+	const read = toolItem({ name: "read", output: "line one" });
+	assert.deepEqual(renderAgentToolItem(read, plainTheme, 80, { expanded: false }), chatRows(read, undefined), "a read card is byte-identical to the chat's drawing without details");
+	useCardContent(t, CARD_CONTENT.MINIMAL);
+	const bash = toolItem({ name: "bash", output: "hi" });
+	assert.deepEqual(renderAgentToolItem(bash, plainTheme, 80, { expanded: false }), chatRows(bash, undefined), "a bash card is byte-identical to the chat's drawing without details");
 });

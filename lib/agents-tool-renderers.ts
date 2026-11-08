@@ -134,7 +134,7 @@ export function renderAgentToolItem(
 		// transcript draws it: the call closes its own frame until output arrives.
 		if (item.running && output.length === 0) return rows;
 		if (typeof renderer.renderResult !== "function") return rows;
-		const result: AgentToolResult<unknown> = { content: [{ type: "text", text: output }], details: undefined };
+		const result: AgentToolResult<unknown> = { content: [{ type: "text", text: output }], details: typeof item.diff === "string" ? { diff: sanitizeTerminalText(item.diff) } : undefined };
 		const body = renderer.renderResult(
 			result,
 			{ expanded: options.expanded, isPartial: item.running } as any,

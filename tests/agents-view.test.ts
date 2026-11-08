@@ -1432,3 +1432,16 @@ test("cards name the keys the host actually resolved and omit an unbound action"
 	assert.doesNotMatch(unbound.text(200), /thinking/, "an unbound action has no key, so it gets no hint");
 	unbound.view.dispose();
 });
+
+test("an edit card in the pane draws the same diff the chat draws", () => {
+	loadQuietTools();
+	const { store, view } = detailHarness({ threadPresentation: () => "cards" }, 30);
+	store.add(task("a"));
+	store.apply("a", { type: TASK_EVENT.TOOL_START, callId: "edit-1", name: "edit", args: { path: "src/b.ts", edits: [] } }, 2000);
+	store.apply("a", { type: TASK_EVENT.TOOL_END, callId: "edit-1", output: "Successfully replaced 1 block", isError: false, diff: "+added line\n-removed line" }, 2000);
+	const frame = stripAnsi(view.render(120).join("\n"));
+	assert.match(frame, /✓ \+1 \/ -1/, "the chat's counters are drawn in the pane");
+	assert.match(frame, /\+added line/, "the added row is drawn");
+	assert.match(frame, /-removed line/, "the removed row is drawn");
+	view.dispose();
+});

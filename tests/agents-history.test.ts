@@ -80,6 +80,23 @@ test("pruneHistory preserves in-flight unfinished tasks regardless of history ca
 	assert.ok(!remaining.some((entry) => entry.task.id === "c1"), "older completed task is pruned");
 });
 
+test("a retained edit diff round-trips through the task file, and an older task without one still loads", async () => {
+	const diffDir = join(root, "diff-tasks");
+	let thread = applyTaskEvent(emptyThread(), { type: TASK_EVENT.TOOL_START, callId: "c1", name: "edit", args: { path: "src/b.ts" } });
+	thread = applyTaskEvent(thread, { type: TASK_EVENT.TOOL_END, callId: "c1", output: "ok", isError: false, diff: "+added\n-removed" });
+	await saveTask(diffDir, task("d1", 1000), thread);
+	assert.match(readFileSync(join(diffDir, "d1.json"), "utf8"), /\+added\\n-removed/, "the diff is persisted with the thread");
+	assert.deepEqual((await loadStoredTask(diffDir, "d1"))?.thread.items, thread.items, "the retained diff restores unchanged");
+
+	// A task file written before the field existed has no `diff` key and still loads.
+	const legacyThread = applyTaskEvent(emptyThread(), { type: TASK_EVENT.TOOL_START, callId: "c1", name: "edit", args: {} });
+	await saveTask(diffDir, task("d0", 900), legacyThread);
+	assert.equal(readFileSync(join(diffDir, "d0.json"), "utf8").includes("\"diff\""), false);
+	const legacy = await loadStoredTask(diffDir, "d0");
+	assert.deepEqual(legacy?.thread.items, [{ kind: "tool", callId: "c1", name: "edit", args: {}, output: "", running: true, isError: false }], "an item without the field is unchanged");
+	assert.equal("diff" in (legacy!.thread.items[0] as object), false, "and it gains no diff key on load");
+});
+
 test("concurrent saves of one task land on disk in call order, so a later terminal write always wins", async () => {
 	const orderedDir = join(root, "ordered-tasks");
 	const running: TaskRecord = { ...task("ordered", 3000), status: TASK_STATUS.RUNNING, endedAt: null, result: null };

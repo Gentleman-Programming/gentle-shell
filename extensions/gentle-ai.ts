@@ -818,11 +818,18 @@ function renderRddStatusLine(
 // start, so an unbounded native read would stall session start behind a
 // hung `gentle-ai` child (gentle-pi#661 native-review escalation). The
 // production call site (before_agent_start) passes
-// `AbortSignal.timeout(RDD_STATUS_TIMEOUT_MS)`; resolveRddModeStatus also
+// a bounded `AbortSignal.timeout` (3000 ms by default); resolveRddModeStatus also
 // races the call against that same signal itself (not just the CLI's own
 // signal handling) so an abort is honored even against a stub/mock
 // reviewMode that ignores its `signal` argument, as tests do.
 const RDD_STATUS_TIMEOUT_MS = 3000;
+const RDD_STATUS_TIMEOUT_MAX_MS = 10_000;
+function resolveRddStatusTimeoutMs(environment: NodeJS.ProcessEnv): number {
+	const value = environment.GENTLE_PI_RDD_STATUS_TIMEOUT_MS;
+	if (value === undefined || !/^[1-9]\d*$/.test(value)) return RDD_STATUS_TIMEOUT_MS;
+	const parsed = Number(value);
+	return Number.isSafeInteger(parsed) && parsed <= RDD_STATUS_TIMEOUT_MAX_MS ? parsed : RDD_STATUS_TIMEOUT_MS;
+}
 // Repeated session/agent-start builds within this window reuse the last
 // resolved status instead of respawning the native binary. Deliberately
 // memoizes a failed/undefined resolution too (a sustained outage should not
@@ -936,24 +943,29 @@ async function readRddModeStatusWithCause(
 	nativeReviewCli: Pick<NativeReviewCli, "reviewMode"> | null | undefined,
 	cwd: string,
 	signal?: AbortSignal,
+	timeoutMs = RDD_STATUS_TIMEOUT_MS,
 ): Promise<{ readonly status: NativeReviewModeStatus } | { readonly cause: string }> {
 	if (!nativeReviewCli?.reviewMode) return { cause: "the native gentle-ai review CLI is not available" };
 	try {
+		signal?.throwIfAborted();
 		const call = nativeReviewCli.reviewMode({ cwd, operation: NATIVE_REVIEW_MODE_OPERATION.STATUS, signal });
 		const result = signal === undefined ? await call : await Promise.race([call, rddAbortRejection(signal)]);
+		signal?.throwIfAborted();
 		return { status: result.status };
 	} catch (error) {
-		return { cause: describeRddStatusFailure(error, signal) };
+		return { cause: describeRddStatusFailure(error, signal, timeoutMs) };
 	}
 }
 
 const RDD_STATUS_CAUSE_LIMIT = 300;
 
-function describeRddStatusFailure(error: unknown, signal: AbortSignal | undefined): string {
+function describeRddStatusFailure(error: unknown, signal: AbortSignal | undefined, timeoutMs: number): string {
 	const command = "native `gentle-ai review mode status`";
-	if (signal?.aborted || (error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.TIMEOUT)) {
-		return `${command} did not answer within ${RDD_STATUS_TIMEOUT_MS} ms`;
+	if (signal?.aborted && signal.reason?.name !== "TimeoutError") return `${command} was cancelled`;
+	if (signal?.aborted) {
+		return `${command} did not answer within ${timeoutMs} ms`;
 	}
+	if (error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.TIMEOUT) return `${command} reported a native timeout`;
 	if (error instanceof NativeReviewCliError) {
 		const exit = error.diagnostics.exit_code === undefined ? "" : `, exit ${error.diagnostics.exit_code}`;
 		const detail = (error.diagnostics.stderr ?? "").replace(/\s+/g, " ").trim() || error.message;
@@ -1220,6 +1232,7 @@ async function resolveRddModeStatus(
 	signal?: AbortSignal,
 	now: () => number = Date.now,
 	ctx?: Pick<ExtensionContext, "hasUI" | "ui">,
+	timeoutMs = RDD_STATUS_TIMEOUT_MS,
 ): Promise<NativeReviewModeStatus | undefined> {
 	const nowMs = now();
 	const cached = rddStatusMemo.get(cwd);
@@ -1227,7 +1240,7 @@ async function resolveRddModeStatus(
 	const generation = rddStatusGeneration(cwd);
 	// An off loadout suppresses mandatory assessment, so only a fresh off read
 	// can retain it. Known-on and unknown lines keep their existing memo policy.
-	const outcome = await readRddModeStatusWithCause(nativeReviewCli, cwd, signal);
+	const outcome = await readRddModeStatusWithCause(nativeReviewCli, cwd, signal, timeoutMs);
 	// Neither cache nor return an obsolete read: in particular, an old off
 	// must never suppress review guidance after an explicit mode change.
 	if (rddStatusGeneration(cwd) !== generation) return undefined;
@@ -1298,8 +1311,9 @@ async function resolveRddStatusLine(
 	signal?: AbortSignal,
 	now: () => number = Date.now,
 	ctx?: Pick<ExtensionContext, "hasUI" | "ui">,
+	timeoutMs = RDD_STATUS_TIMEOUT_MS,
 ): Promise<string> {
-	return renderRddStatusLine(await resolveRddModeStatus(nativeReviewCli, cwd, signal, now, ctx));
+	return renderRddStatusLine(await resolveRddModeStatus(nativeReviewCli, cwd, signal, now, ctx, timeoutMs));
 }
 
 // full-delegation-mode S1/S3/S4: the always-on core carries exactly ONE workflow
@@ -11748,6 +11762,7 @@ export const __testing = {
 	resolveRddModeStatus,
 	resolveRddStatusLine,
 	RDD_STATUS_TIMEOUT_MS,
+	resolveRddStatusTimeoutMs,
 	RDD_STATUS_MEMO_TTL_MS,
 	clearRddStatusMemoForTesting,
 	async startupNegotiationSettled(): Promise<void> {
@@ -12567,10 +12582,11 @@ function createGentleAiExtensionForTesting(
 		// reviewContractPrompt condition below -- named agents never reach
 		// this branch, so no line is resolved or computed for them.
 		// resolveRddStatusLine never throws and never hangs past
-		// RDD_STATUS_TIMEOUT_MS: an absent/timed-out/aborted/failing native
+		// the configured bounded deadline: an absent/timed-out/aborted/failing native
 		// binary keeps the last known line for this cwd, or renders the
 		// fail-closed "unknown" line when none was ever read (gentle-shell#1029).
-		const rddStatusSignal = AbortSignal.timeout(RDD_STATUS_TIMEOUT_MS);
+		const rddStatusTimeoutMs = resolveRddStatusTimeoutMs(permissionEnvironment);
+		const rddStatusSignal = AbortSignal.timeout(rddStatusTimeoutMs);
 		const promptCwd = ctx.cwd;
 		const promptEpoch = reminderEpoch;
 		const promptManager = ctx.sessionManager;
@@ -12589,7 +12605,7 @@ function createGentleAiExtensionForTesting(
 		}
 		const promptGeneration = rddStatusGeneration(promptCwd);
 		const nextRddStatusLine = isPrimarySession
-			? await resolveRddStatusLine(nativeReviewCli, promptCwd, rddStatusSignal, undefined, ctx)
+			? await resolveRddStatusLine(nativeReviewCli, promptCwd, rddStatusSignal, undefined, ctx, rddStatusTimeoutMs)
 			: undefined;
 		if (!currentPrompt()) {
 			updateYoloPrompt(event.systemPromptOptions, false, false);

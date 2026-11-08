@@ -100,6 +100,26 @@ function callContext(item: ToolItem, args: Record<string, unknown>, options: Age
 }
 
 /**
+ * The result object one retained item was drawn with, computed once. A card is
+ * drawn again on every frame, and the shared helpers behind the cards keep their
+ * parsed rows and tokenized previews keyed on the result object they are handed,
+ * so a fresh object per frame threw that work away every time. The retained item
+ * is the invalidation: the protocol replaces the item object on every change, so
+ * a changed output, a settled call, a restored diff or a different call is a
+ * different item and never reads a result left over from the previous one. It is
+ * deliberately not shared between items, and no drawn rows are kept here.
+ */
+const retainedResults = new WeakMap<ToolItem, AgentToolResult<unknown>>();
+
+function retainedResult(item: ToolItem, output: string): AgentToolResult<unknown> {
+	const retained = retainedResults.get(item);
+	if (retained !== undefined) return retained;
+	const result: AgentToolResult<unknown> = { content: [{ type: "text", text: output }], details: typeof item.diff === "string" ? { diff: sanitizeTerminalText(item.diff) } : undefined };
+	retainedResults.set(item, result);
+	return result;
+}
+
+/**
  * Draws one retained tool call with the renderer the chat itself was handed: the
  * call slot, then — once output exists or the call is final — the result slot
  * that closes the row. That renderer owns its frame (`renderShell: "self"`), so
@@ -134,9 +154,8 @@ export function renderAgentToolItem(
 		// transcript draws it: the call closes its own frame until output arrives.
 		if (item.running && output.length === 0) return rows;
 		if (typeof renderer.renderResult !== "function") return rows;
-		const result: AgentToolResult<unknown> = { content: [{ type: "text", text: output }], details: typeof item.diff === "string" ? { diff: sanitizeTerminalText(item.diff) } : undefined };
 		const body = renderer.renderResult(
-			result,
+			retainedResult(item, output),
 			{ expanded: options.expanded, isPartial: item.running } as any,
 			drawingTheme as any,
 			context as any,

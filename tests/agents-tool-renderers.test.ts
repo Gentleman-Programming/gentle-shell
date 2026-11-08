@@ -372,3 +372,87 @@ test("the edit diff changes no other result: errors and non-edit cards stay as t
 	const bash = toolItem({ name: "bash", output: "hi" });
 	assert.deepEqual(renderAgentToolItem(bash, plainTheme, 80, { expanded: false }), chatRows(bash, undefined), "a bash card is byte-identical to the chat's drawing without details");
 });
+
+/** The slot quiet-tools publishes its cards through; a test can publish one the way the extension does. */
+const PUBLISHED_RENDERERS = Symbol.for("gentle-pi.quiet-tool-renderers");
+
+/** Publishes a card that records every result object it is handed, restoring the slot afterwards. */
+function recordingRenderer(t: { after(fn: () => void): void }, toolName: string): Array<Record<string, any>> {
+	const slot = ((globalThis as any)[PUBLISHED_RENDERERS] ??= new Map<string, any>()) as Map<string, any>;
+	const previous = slot.get(toolName);
+	const results: Array<Record<string, any>> = [];
+	slot.set(toolName, {
+		renderer: {
+			renderShell: "self",
+			renderCall: plainComponent,
+			renderResult(result: Record<string, any>) {
+				results.push(result);
+				return plainComponent();
+			},
+		},
+		active: () => true,
+	});
+	t.after(() => {
+		if (previous === undefined) slot.delete(toolName);
+		else slot.set(toolName, previous);
+	});
+	return results;
+}
+
+test("the same retained item is handed the same result object on every frame", (t) => {
+	const seen = recordingRenderer(t, "read");
+	const item = toolItem({ name: "read", output: "line one" });
+	renderAgentToolItem(item, plainTheme, 80, { expanded: false });
+	renderAgentToolItem(item, plainTheme, 80, { expanded: false });
+	assert.equal(seen.length, 2, "the card's result slot draws on both frames");
+	assert.equal(seen[0], seen[1], "so a cache keyed on the result object can hit on the second frame");
+	assert.deepEqual(seen[0], textResult("line one"), "and the object handed over is the chat's own result");
+	// The width and the expanded flag are drawn per frame, so neither changes the object.
+	renderAgentToolItem(item, plainTheme, 40, { expanded: true });
+	assert.equal(seen[2], seen[0], "a resize or an expansion reuses the same retained result");
+});
+
+test("two retained items never share one result object", (t) => {
+	const seen = recordingRenderer(t, "read");
+	const first = toolItem({ name: "read", output: "line one" });
+	const second = toolItem({ name: "read", output: "line one", callId: "call-2" });
+	renderAgentToolItem(first, plainTheme, 80, { expanded: false });
+	renderAgentToolItem(second, plainTheme, 80, { expanded: false });
+	assert.equal(seen.length, 2, "both items drew a result");
+	assert.notEqual(seen[0], seen[1], "identical text from two calls is still two results");
+	assert.deepEqual(seen[0], seen[1], "with the same content each");
+});
+
+test("an item whose output changed is handed a different result object", (t) => {
+	const seen = recordingRenderer(t, "read");
+	let thread = applyTaskEvent(emptyThread(), { type: TASK_EVENT.TOOL_START, callId: "call-1", name: "read", args: CALL_ARGS.read! });
+	thread = applyTaskEvent(thread, { type: TASK_EVENT.TOOL_END, callId: "call-1", output: "line one", isError: false });
+	const first = thread.items[0] as ToolItem;
+	renderAgentToolItem(first, plainTheme, 80, { expanded: false });
+	const updated = applyTaskEvent(thread, { type: TASK_EVENT.TOOL_UPDATE, callId: "call-1", output: "line one\nline two" });
+	const second = updated.items[0] as ToolItem;
+	assert.notEqual(second, first, "the protocol replaces the item when its output changes");
+	renderAgentToolItem(second, plainTheme, 80, { expanded: false });
+	assert.notEqual(seen[1], seen[0], "so the replacement item reads its own result instead of the stale one");
+	assert.equal(seen[1]!.content[0].text, "line one\nline two", "and the new output is the one handed over");
+});
+
+test("reusing one result object changes no drawn row", (t) => {
+	registeredQuietTools();
+	const diff = "+added line\n-removed line";
+	const cases: Array<{ label: string; item: ToolItem; details: unknown }> = [
+		{ label: "edit with a retained diff", item: retainedEdit(diff), details: { diff } },
+		{ label: "bash", item: toolItem({ name: "bash", output: "printf hi\nhi" }), details: undefined },
+		{ label: "read", item: toolItem({ name: "read", output: "line one\nline two" }), details: undefined },
+		{ label: "an error result", item: toolItem({ name: "read", isError: true, output: "boom one\nboom two" }), details: undefined },
+	];
+	for (const { label, item, details } of cases) {
+		const expected = chatRows(item, details);
+		assert.ok(expected.length > 0, `${label}: the chat draws rows for this call`);
+		assert.deepEqual(renderAgentToolItem(item, plainTheme, 80, { expanded: false }), expected, `${label}: the first frame draws the chat's rows`);
+		assert.deepEqual(renderAgentToolItem(item, plainTheme, 80, { expanded: false }), expected, `${label}: a frame reusing the result draws those same rows`);
+	}
+	useCardContent(t, CARD_CONTENT.MINIMAL);
+	const minimalBash = toolItem({ name: "bash", output: "hi" });
+	assert.deepEqual(renderAgentToolItem(minimalBash, plainTheme, 80, { expanded: false }), chatRows(minimalBash, undefined), "a bash card under minimal content draws the same rows on both frames");
+});

@@ -5277,6 +5277,24 @@ test("path fence lets reads of Pi agent-home assets and Pi output files pass whi
 	assert.deepEqual(h.previews, []);
 });
 
+test("path fence lets a headless child read gentle-pi's own package skills while writes there stay fenced", async (t) => {
+	const h = harnessReadFixture(t);
+	const pkgSkill = join(dirname(fileURLToPath(import.meta.url)), "..", "skills", "gentle-ai", "SKILL.md");
+	assert.equal(await h.toolCall({ toolName: "read", input: { path: pkgSkill } }, h.ctx(false)), undefined);
+	assert.equal((await h.toolCall({ toolName: "write", input: { path: pkgSkill, content: "x" } }, h.ctx(false)))?.block, true);
+	const pkgReadme = join(dirname(fileURLToPath(import.meta.url)), "..", "package.json");
+	assert.equal((await h.toolCall({ toolName: "read", input: { path: pkgReadme } }, h.ctx(false)))?.block, true, "the package root itself is not a root, only its skills");
+});
+
+test("path fence lets a headless child read git-installed Pi packages while writes there stay fenced", async (t) => {
+	const h = harnessReadFixture(t);
+	const gitSkill = join(h.agentHome, "git", "github.com", "owner", "pkg", "skills", "demo", "SKILL.md");
+	mkdirSync(dirname(gitSkill), { recursive: true });
+	writeFileSync(gitSkill, "content");
+	assert.equal(await h.toolCall({ toolName: "read", input: { path: gitSkill } }, h.ctx(false)), undefined, "a git-installed package skill read passes headless");
+	assert.deepEqual(await h.toolCall({ toolName: "write", input: { path: gitSkill, content: "x" } }, h.ctx(false)), { block: true, reason: headlessFenceReason(gitSkill) }, "a write there stays fenced");
+});
+
 test("path fence keeps credentials, unrelated temp files and other outside reads fenced", async (t) => {
 	const h = harnessReadFixture(t);
 	for (const file of h.privateFiles) {

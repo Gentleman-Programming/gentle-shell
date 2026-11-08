@@ -137,8 +137,10 @@ The Gentle config home (`GENTLE_PI_CONFIG_HOME`, by default `~/.pi/gentle-ai`) i
 Harness-owned locations are **read-only** exempt roots: `read`, `grep`, `find` and `ls` pass there without consent, so delegated runs can read what the harness tells them to read. `write` and `edit` to the same locations stay fenced (interactive confirmation, or a block when headless). This is an allowlist with default deny, and nothing outside it is exempt:
 
 - `<agent home>/skills`, where the agent home is `GENTLE_PI_AGENT_HOME`, else `PI_CODING_AGENT_DIR`, else `~/.pi/agent`;
-- `<agent home>/npm/node_modules`, where Pi installs packages, including Gentle Pi and its package skills;
+- `<agent home>/npm/node_modules`, where Pi installs npm packages;
+- `<agent home>/git`, where Pi installs git packages;
 - the Gentle Pi package `assets/` directory, the root the orchestrator prompt names for `orchestrator-*.md` and the other lazy assets;
+- the Gentle Pi package `skills/` directory, wherever the package is installed. A bundled Gentle Shell install keeps the package under `~/.gentle-shell/versions/<id>/`, outside `<agent home>/npm`, so its skills need their own root. The package root itself is not exempt;
 - `~/.agents/skills`, the user skill directory Pi loads from;
 - Pi's output files, such as the full text of truncated tool output: only direct children of the OS temp directory named `pi-<name>-<16 hex>.<ext>`, never other temp files.
 

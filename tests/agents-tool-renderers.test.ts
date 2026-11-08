@@ -442,7 +442,7 @@ test("reusing one result object changes no drawn row", (t) => {
 	const diff = "+added line\n-removed line";
 	const cases: Array<{ label: string; item: ToolItem; details: unknown }> = [
 		{ label: "edit with a retained diff", item: retainedEdit(diff), details: { diff } },
-		{ label: "bash", item: toolItem({ name: "bash", output: "printf hi\nhi" }), details: undefined },
+		{ label: "grep", item: toolItem({ name: "grep", output: "src/a.ts:1:needle\nsrc/b.ts:7:needle" }), details: undefined },
 		{ label: "read", item: toolItem({ name: "read", output: "line one\nline two" }), details: undefined },
 		{ label: "an error result", item: toolItem({ name: "read", isError: true, output: "boom one\nboom two" }), details: undefined },
 	];

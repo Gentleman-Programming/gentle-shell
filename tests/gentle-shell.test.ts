@@ -3759,7 +3759,7 @@ test("customize draws the agents renderer as one grouped Cards choice and persis
 	assert.ok(findCustomizeRow(ui, "Card agents: log (current)"), "the default is the log view");
 	assert.match(frame(), /Card agents\s+● log\s+○ cards/, "one grouped line carries both values");
 	assert.match(frame(), /Tool rows · output whole/, "the log preview names the rows it really draws");
-	assert.doesNotMatch(frame(), /Markdown|diff/i, "no preview claims a renderer this build does not draw");
+	assert.doesNotMatch(frame(), /Markdown|diff/i, "the log preview claims neither Markdown prose nor a stored diff");
 	assert.ok(findCustomizeRow(ui, "Card agents: cards"), "the cards view is the second value of the same line");
 	assert.equal(existsSync(join(home, "agents-view-style.json")), false, "highlighting never applies");
 	await customizeAction(ui, "Card agents: cards");
@@ -3768,7 +3768,8 @@ test("customize draws the agents renderer as one grouped Cards choice and persis
 	assert.match(ui.notices.at(-1)!, /Card agents: cards/);
 	assert.ok(findCustomizeRow(ui, "Card agents: cards (current)"));
 	assert.match(frame(), /chat's own tool cards/, "the cards preview names the card the overlay really draws");
-	assert.doesNotMatch(frame(), /Markdown|diff/i, "the cards preview claims neither Markdown nor a stored diff");
+	assert.match(frame(), /prose as Markdown/, "the cards preview names the prose it really draws");
+	assert.doesNotMatch(frame(), /diff/i, "the cards preview claims no stored diff");
 	await customizeAction(ui, "Card agents: log");
 	assert.equal(resolveAgentsViewStyle({ gentlePiConfigHome: home }).style, "log");
 	ui.overlayView!.handleInput("\x1b"); await pending;

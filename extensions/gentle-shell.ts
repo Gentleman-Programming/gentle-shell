@@ -3460,11 +3460,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// log it has always drawn (the default) or the chat's own card per tool call.
 			// The overlay reads the preference when it opens, so a choice made here
 			// leaves the conversation untouched and applies there on its next open. Each
-			// preview names only what that renderer really draws today: the cards view has
-			// no Markdown prose and no stored edit diff yet.
+			// preview names only what that renderer really draws today: the cards view
+			// keeps no stored edit diff yet.
 			const agentsStylePreview = {
 				[AGENTS_VIEW_STYLE.LOG]: "= Text · Thinking · Note · Tool rows · output whole",
-				[AGENTS_VIEW_STYLE.CARDS]: "= chat's own tool cards · Thinking... when hidden · prose stays a Text block",
+				[AGENTS_VIEW_STYLE.CARDS]: "= chat's own tool cards · Thinking... when hidden · prose as Markdown",
 			};
 			for (const style of Object.values(AGENTS_VIEW_STYLE)) add(
 				() => {

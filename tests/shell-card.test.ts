@@ -204,7 +204,7 @@ test("renderCard never exceeds extremely narrow supplied widths", () => {
 // Float style: the same rows become a borderless panel. Content cells keep a
 // tone-matched background, the frame turns into a tone accent bar and spaces,
 // and a one-column margin stays outside the panel on both sides.
-const FG_CODE: Record<string, number> = { border: 240, accent: 211, success: 114, warning: 221, error: 203, dim: 245, muted: 244, text: 252 };
+const FG_CODE: Record<string, number> = { border: 240, accent: 211, success: 114, warning: 221, error: 203, dim: 245, muted: 244, text: 252, mdLink: 111 };
 const BG_CODE: Record<string, number> = { toolSuccessBg: 22, toolPendingBg: 58, toolErrorBg: 52 };
 const floatTheme = {
 	fg(color: string, text: string) {
@@ -517,6 +517,43 @@ test("a title role paints the glyph and title while the frame keeps the call's t
 	// Without an override every card keeps painting its title in the tone.
 	const plain = renderCard(card({ subtitle: undefined, tone: CARD_TONE.SUCCESS }), taggedTheme, 80, { expanded: true });
 	assert.match(plain[0], /<success>✿ Gentle AI<\/success>/);
+});
+
+test("a rail role paints the left rail in the heading's own color while the frame keeps the call's status", () => {
+	// A quiet bash card names its ODD phase in that phase's color. The rail that
+	// runs down the card carries the same color as the label it leads, and every
+	// other part of the frame keeps the status tone, so a pending or failed call
+	// is still readable from the card itself.
+	const value = card({ glyph: "⌕", title: "exploring", subtitle: "git status", tone: CARD_TONE.WARNING, titleRole: "mdLink", railRole: "mdLink", body: ["clean"] });
+	const neon = renderCard(value, taggedTheme, 40, { expanded: true });
+	assert.match(neon[0]!, /^<warning>╭<\/warning>/, "the top rule keeps the status tone");
+	assert.match(neon[0]!, /<mdLink>⌕ exploring<\/mdLink>/);
+	assert.match(neon[1]!, /^<mdLink>│<\/mdLink> .* <warning>│<\/warning>$/, "the left rail carries the label's color and the right rail the status");
+	assert.match(neon.at(-1)!, /^<warning>╰<\/warning>/, "the bottom rule keeps the status tone");
+
+	// The outlined frame has no rail role of its own, so a card without one keeps
+	// the tone rails it always had, exactly like the title override above.
+	const plainRails = renderCard({ ...value, railRole: undefined }, taggedTheme, 40, { expanded: true });
+	assert.match(plainRails[1]!, /^<warning>│<\/warning> /);
+
+	// In the float style the accent bar is one continuous rail, so every row —
+	// heading, padding and body — takes the label's color while the background
+	// tint keeps reporting the status.
+	const floated = withCardStyle(CARD_STYLE.FLOAT, () => renderCard({ ...value, body: ["alpha", "beta"] }, floatTheme, 40, { expanded: true, previewRows: 3 }));
+	assert.ok(floated.length > 3, "the panel has padding, heading and body rows");
+	for (const row of floated) {
+		assert.ok(row.includes(`\x1b[38;5;${FG_CODE.mdLink}m▎`), `every bar cell keeps the rail color: ${JSON.stringify(row)}`);
+		assert.deepEqual(cellBackgrounds(row).slice(1, -1), Array(38).fill(BG_CODE.toolPendingBg), "the status tint stays behind the rail");
+	}
+
+	// Narrow panels keep the same rail rather than falling back to the tone.
+	for (const width of [10, 12, 20, 40]) {
+		const rows = withCardStyle(CARD_STYLE.FLOAT, () => renderCard({ ...value, body: ["clean"] }, floatTheme, width, { expanded: true, previewRows: 3 }));
+		for (const row of rows) {
+			assert.equal(visibleWidth(row), width);
+			assert.ok(row.includes(`\x1b[38;5;${FG_CODE.mdLink}m▎`), `width ${width}: ${JSON.stringify(row)}`);
+		}
+	}
 });
 
 test("a heading detail that cannot share the top rule continues below it", () => {

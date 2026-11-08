@@ -26,6 +26,14 @@ export interface Card {
 	 * failed call.
 	 */
 	titleRole?: string;
+	/**
+	 * Theme color role for the card's left rail, overriding the tone's frame
+	 * role. A quiet bash card names its ODD phase in that phase's color and
+	 * paints the rail that leads its rows in the same one, so the rail reads as
+	 * part of the label it belongs to; every other edge keeps the status tone.
+	 * A card that does not set it keeps the tone's rail.
+	 */
+	railRole?: string;
 }
 
 export interface CardTheme {
@@ -110,12 +118,19 @@ interface CardChrome {
 	rail: string;
 	bottomLeft: string;
 	bottomRight: string;
+	/**
+	 * Whether the left edge is one continuous accent bar (`▎`, float) rather than
+	 * the left corners of an outlined frame. A rail role can only reach the whole
+	 * left edge where that edge is a bar; in the outlined frame it reaches the
+	 * vertical side, which is the only left line the layout has.
+	 */
+	bar: boolean;
 }
 
-const OUTLINE_CHROME: CardChrome = { topLeft: "╭", topLead: "─ ", topRight: "╮", rule: "─", side: "│", rail: "│", bottomLeft: "╰", bottomRight: "╯" };
+const OUTLINE_CHROME: CardChrome = { topLeft: "╭", topLead: "─ ", topRight: "╮", rule: "─", side: "│", rail: "│", bottomLeft: "╰", bottomRight: "╯", bar: false };
 // `▎ ` is one cell narrower than `╭─ `: the spare cell moves to the right end
 // so the heading glyph starts in the same column as the body text.
-const FLOAT_CHROME: CardChrome = { topLeft: "▎", topLead: " ", topRight: "  ", rule: " ", side: "▎", rail: " ", bottomLeft: "▎", bottomRight: " " };
+const FLOAT_CHROME: CardChrome = { topLeft: "▎", topLead: " ", topRight: "  ", rule: " ", side: "▎", rail: " ", bottomLeft: "▎", bottomRight: " ", bar: true };
 let chrome = OUTLINE_CHROME;
 
 function withChrome<T>(next: CardChrome, run: () => T): T {
@@ -130,6 +145,34 @@ function withChrome<T>(next: CardChrome, run: () => T): T {
 
 function rule(length: number): string {
 	return chrome.rule.repeat(Math.max(0, length));
+}
+
+// The role the left rail is painted in, when the card at hand names one. The
+// rail runs the height of a card, so it is a scope around a whole card's rows
+// rather than a parameter each row helper would have to carry.
+let railRole: string | undefined;
+
+function withRailRole<T>(role: string | undefined, run: () => T): T {
+	const previous = railRole;
+	railRole = role;
+	try {
+		return run();
+	} finally {
+		railRole = previous;
+	}
+}
+
+function leftRole(tone: CardTone): string {
+	return railRole ?? FRAME_ROLE[tone];
+}
+
+/** The left edge's text: a rail role owns the whole bar, but only the vertical side of an outlined frame. */
+function leftText(tone: CardTone, theme: CardTheme, text: string): string {
+	return theme.fg(leftRole(tone), text);
+}
+
+function edgeText(tone: CardTone, theme: CardTheme, text: string): string {
+	return chrome.bar ? leftText(tone, theme, text) : theme.fg(FRAME_ROLE[tone], text);
 }
 
 function titleRole(card: Card): string {
@@ -155,7 +198,7 @@ function frame(theme: CardTheme, tone: CardTone, text: string): string {
 export function cardTop(card: Card, theme: CardTheme, width: number, hint?: string): string {	const targetWidth = Math.max(0, Math.floor(width));
 	if (targetWidth === 0) return "";
 	if (targetWidth < 5) {
-		const left = theme.fg(FRAME_ROLE[card.tone], "╭");
+		const left = edgeText(card.tone, theme, "╭");
 		if (targetWidth === 1) return left;
 		return left + frame(theme, card.tone, `${rule(targetWidth - 2)}╮`);
 	}
@@ -169,7 +212,7 @@ export function cardTop(card: Card, theme: CardTheme, width: number, hint?: stri
 	const styledTitleWidth = title.width <= titleWidth ? title.width : visibleWidth(styledTitle);
 	const fill = rule(targetWidth - styledTitleWidth - 5 - hintWidth);
 	const tail = shownHint ? ` ${theme.fg(HINT_ROLE, shownHint)} ` : "";
-	return theme.fg(FRAME_ROLE[card.tone], chrome.topLeft) + frame(theme, card.tone, chrome.topLead) + styledTitle + frame(theme, card.tone, ` ${fill}`) + tail + frame(theme, card.tone, chrome.topRight);
+	return edgeText(card.tone, theme, chrome.topLeft) + frame(theme, card.tone, chrome.topLead) + styledTitle + frame(theme, card.tone, ` ${fill}`) + tail + frame(theme, card.tone, chrome.topRight);
 }
 
 /**
@@ -186,7 +229,7 @@ export function headingFits(card: Card, hint: string | undefined, width: number)
 export function cardLine(text: string, tone: CardTone, theme: CardTheme, width: number): string {
 	const targetWidth = Math.max(0, Math.floor(width));
 	if (targetWidth === 0) return "";
-	const left = theme.fg(FRAME_ROLE[tone], chrome.side);
+	const left = leftText(tone, theme, chrome.side);
 	if (targetWidth === 1) return left;
 	if (targetWidth === 2) return left + frame(theme, tone, "│");
 	if (targetWidth === 3) return `${left} ${frame(theme, tone, "│")}`;
@@ -200,7 +243,7 @@ export function cardLine(text: string, tone: CardTone, theme: CardTheme, width: 
 export function cardBottom(tone: CardTone, theme: CardTheme, width: number, content?: string): string {
 	const targetWidth = Math.max(0, Math.floor(width));
 	if (targetWidth === 0) return "";
-	const left = theme.fg(FRAME_ROLE[tone], chrome.bottomLeft);
+	const left = edgeText(tone, theme, chrome.bottomLeft);
 	if (targetWidth === 1) return left;
 	if (content === undefined || visibleWidth(content) === 0) return left + frame(theme, tone, `${rule(targetWidth - 2)}${chrome.bottomRight}`);
 	const contentWidth = visibleWidth(content) + 2;
@@ -390,9 +433,14 @@ function panelOpener(theme: CardTheme, tone: CardTone): string {
  * Draws one conversation card component in the active style. The outlined
  * style returns the parts unchanged; the float style renders them one margin
  * narrower with the float chrome and paints a tone background behind every
- * row. A blank row sits above the heading and between it and the body.
+ * row. A blank row sits above the heading and between it and the body. A
+ * `rail` role paints the card's left rail in that role instead of the tone.
  */
-export function floatRows(tone: CardTone, theme: CardTheme, width: number, render: (width: number) => CardParts): string[] {
+export function floatRows(tone: CardTone, theme: CardTheme, width: number, render: (width: number) => CardParts, rail?: string): string[] {
+	return withRailRole(rail, () => styleRows(tone, theme, width, render));
+}
+
+function styleRows(tone: CardTone, theme: CardTheme, width: number, render: (width: number) => CardParts): string[] {
 	const target = Math.max(0, Math.floor(width));
 	const open = floatOpener(theme, tone, target);
 	if (!open) {
@@ -460,14 +508,16 @@ export function renderCard(card: Card, theme: CardTheme, width: number, options:
 		head: [cardTop(card, theme, inner, options.hint)],
 		body: cardBodyRows(card.body.map((line) => theme.fg(BODY_ROLE, line)), card.tone, theme, inner, options),
 		bottom: cardBottom(card.tone, theme, inner),
-	}));
+	}), card.railRole);
 	// Without the panel opt-in, legacy cards always keep the outlined frame.
 	if (chrome !== OUTLINE_CHROME) return withChrome(OUTLINE_CHROME, () => renderCard(card, theme, width, options));
 	const open = options.panel ? floatOpener(theme, card.tone, width) : "";
-	if (open) return paintFloat(withChrome(FLOAT_CHROME, () => floatPanel(card, theme, Math.floor(width) - FLOAT_MARGIN * 2, options)), open);
-	const top = cardTop(card, theme, width, options.hint);
-	const bottom = cardBottom(card.tone, theme, width);
-	return [top, ...cardText(card, theme, cardInnerWidth(width), options.expanded).map((line) => cardLine(line, card.tone, theme, width)), bottom];
+	if (open) return paintFloat(withChrome(FLOAT_CHROME, () => withRailRole(card.railRole, () => floatPanel(card, theme, Math.floor(width) - FLOAT_MARGIN * 2, options))), open);
+	return withRailRole(card.railRole, () => {
+		const top = cardTop(card, theme, width, options.hint);
+		const bottom = cardBottom(card.tone, theme, width);
+		return [top, ...cardText(card, theme, cardInnerWidth(width), options.expanded).map((line) => cardLine(line, card.tone, theme, width)), bottom];
+	});
 }
 
 /** Body text of a legacy card or panel, wrapped to its content columns, before the side rails. */

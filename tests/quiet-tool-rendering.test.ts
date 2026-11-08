@@ -584,6 +584,7 @@ test("quiet tool rendering previews direct Gentle AI results and preserves expan
 	assert.match(expandedFailure, /review status failed: authority unavailable/);
 	assert.match(expandedFailure, /lineage=secret/);
 	assert.doesNotMatch(expandedFailure, /to expand/);
+	assert.equal(expandedFailure.split(expandHint).length - 1, 0, "an expanded failure carries no expand hint");
 	assert.doesNotMatch(cardBody(expandedFailure), /\x1b\[/);
 	assert.equal(cardBody(empty), "");
 	assert.equal(cardBody(nonText), "");
@@ -1874,7 +1875,9 @@ test("quiet tool calls draw a rounded petal card in the lifecycle tone", () => {
 	]);
 	const failed = bash.renderResult(textResult("boom"), { expanded: true, isPartial: false, isError: true }, statusTheme, { args, isError: true }).render(width);
 	assert.match(failed.at(-1) ?? "", /^<error>╰<\/error><error>─+╯<\/error>$/);
-	assert.ok(failed.slice(0, -1).every((line) => line.startsWith("<error>│</error> ")), failed.join("\n"));
+	// The left rail belongs to the label this card leads (`$ bash` here) and only the
+	// right rail and the closing rule keep the failure's own tone.
+	assert.ok(failed.slice(0, -1).every((line) => line.startsWith("<bashMode>│</bashMode> ") && line.endsWith("<error>│</error>")), failed.join("\n"));
 
 	const empty = tools.get("grep").renderResult(textResult("No matches found"), { expanded: false, isPartial: false }, passthroughTheme, {}).render(width);
 	assert.deepEqual(empty, [`╰${"─".repeat(28)}╯`], "an empty result still closes the card");
@@ -2603,4 +2606,112 @@ test("quiet tools registers the CodeGraph card through the same resolver as bash
 	assert.equal(typeof codegraph.renderCall, "function");
 	assert.equal(typeof codegraph.renderResult, "function");
 	assert.equal(resolvers.at(-1)!("read", () => native), native, "every other tool still defers");
+});
+
+test("the CodeGraph card the resolver hands the host still draws the card it drew before", (t) => {
+	useCardContent(t, CARD_CONTENT.DEFAULT);
+	const { pi } = createPi();
+	const resolvers: Array<(toolName: string, next: () => unknown) => unknown> = [];
+	(pi as any).registerToolRenderer = (resolver: (toolName: string, next: () => unknown) => unknown) => resolvers.push(resolver);
+	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
+	const codegraph = resolvers.at(-1)!("codegraph", () => ({ marker: "native" })) as any;
+	const args = { operation: "query", query: "alpha", limit: 5 };
+	const call = codegraph.renderCall(args, passthroughTheme, routineRenderContext({ args, isPartial: false, executionStarted: true }));
+	assert.equal(renderToString(call).trimEnd(), "codegraph · query alpha", "the heading still names the operation and query");
+	const collapsed = renderToString(codegraph.renderResult(textResult(CODEGRAPH_QUERY), { expanded: false, isPartial: false }, passthroughTheme, routineRenderContext({ args })));
+	assert.match(collapsed, /→ 2 results/, "the collapsed card still summarizes the count its output stated");
+	const init = renderToString(codegraph.renderResult(textResult(CODEGRAPH_INIT), { expanded: false, isPartial: false }, passthroughTheme, routineRenderContext({ args: { operation: "init" } })));
+	assert.match(init, /→ initialized/, "an init still collapses to the sentence it printed");
+	const explore = renderToString(codegraph.renderResult(textResult("**Exploration: alpha**\n\nFound 2 symbols across 1 file."), { expanded: false, isPartial: false }, passthroughTheme, routineRenderContext({ args: { operation: "explore", query: "alpha" } })));
+	assert.match(explore, /→ 2 symbols in 1 file/, "an explore still summarizes the symbols and files it found");
+});
+
+// A card's left rail belongs to the label that leads it: the tool's own identity
+// paints the left edge while every other edge keeps the call's status tone.
+const RAIL_FG: Record<string, number> = { mdLink: 111, mdHeading: 178, mdCode: 141, bashMode: 114, warning: 221, success: 114, error: 203, muted: 245, toolTitle: 114, accent: 114, toolOutput: 245 };
+const phaseRailTheme = {
+	bold(value: string) {
+		return value;
+	},
+	fg(color: string, value: string) {
+		return `\x1b[38;5;${RAIL_FG[color] ?? 250}m${value}\x1b[39m`;
+	},
+	bg(color: string, value: string) {
+		return `\x1b[48;5;${color === "toolErrorBg" ? 52 : color === "toolPendingBg" ? 58 : 22}m${value}\x1b[49m`;
+	},
+};
+
+test("a bash card's left rail carries the label's own color while the frame keeps the call's status", (t) => {
+	useCardContent(t, CARD_CONTENT.DEFAULT);
+	const bash = registeredQuietTools().get("bash");
+	const args = { command: "git status" };
+	// Running: the frame is the pending tone and the rail already belongs to the label.
+	const running = frameLines(bash.renderCall(args, statusTheme, routineRenderContext({ args, state: {} })), 80);
+	assert.match(running[0]!, /^<warning>╭<\/warning>.*<mdLink>⌕ exploring<\/mdLink>/);
+	assert.match(running[1]!, /^<mdLink>│<\/mdLink> .*<warning>│<\/warning>$/, "the left rail matches the label, the right rail the status");
+	assert.match(running.at(-1)!, /^<warning>╰<\/warning>/);
+
+	// Finished, the status turns success and the rail keeps the label's color;
+	// failed, the frame turns red for the same rail.
+	const finished = frameLines(bash.renderResult(textResult("clean"), { expanded: false, isPartial: false }, statusTheme, routineRenderContext({ args, executionStarted: true, isPartial: false, state: {} })), 80);
+	assert.match(finished[0]!, /^<mdLink>│<\/mdLink> /);
+	assert.match(finished.at(-1)!, /^<success>╰<\/success>/);
+
+	const failed = frameLines(bash.renderResult(textResult("boom"), { expanded: false, isPartial: false, isError: true }, statusTheme, routineRenderContext({ args, executionStarted: true, isPartial: false, isError: true, state: {} })), 80);
+	assert.match(failed[0]!, /^<mdLink>│<\/mdLink> /);
+	assert.match(failed.at(-1)!, /^<error>╰<\/error>/);
+
+	// A checking label keeps its own color, and the generic fallback its own, so
+	// the rail never claims a phase the heading does not name.
+	const checking = frameLines(bash.renderCall({ command: "pnpm test" }, statusTheme, routineRenderContext({ args: { command: "pnpm test" }, state: {} })), 80);
+	assert.match(checking[1]!, /^<mdHeading>│<\/mdHeading> /);
+	const generic = frameLines(bash.renderCall({ command: "printf output" }, statusTheme, routineRenderContext({ args: { command: "printf output" }, state: {} })), 80);
+	assert.match(generic[1]!, /^<bashMode>│<\/bashMode> /);
+
+	// Every other quiet tool keeps the rail it always had: the tone, not a label role.
+	const read = registeredQuietTools().get("read");
+	const readRows = frameLines(read.renderCall({ path: "a.md" }, statusTheme, routineRenderContext({ args: { path: "a.md" }, state: {} })), 80);
+	assert.match(readRows[1]!, /^<warning>│<\/warning> /, "a non-phase tool never borrows a phase color");
+
+	// The float style draws one continuous bar, so every row takes the rail color
+	// while its background tint keeps stating the status.
+	const floated = withFloatCards(() => [
+		...bash.renderCall(args, phaseRailTheme, routineRenderContext({ args, state: {} })).render(40),
+		...bash.renderResult(textResult("clean"), { expanded: false, isPartial: false }, phaseRailTheme, routineRenderContext({ args, executionStarted: true, isPartial: false, state: {} })).render(40),
+	]);
+	assert.ok(floated.length > 4);
+	for (const row of floated) {
+		assert.equal(visibleWidth(row), 40);
+		assert.ok(row.includes(`\x1b[38;5;${RAIL_FG.mdLink}m▎`), `every bar cell keeps the rail color: ${JSON.stringify(row)}`);
+	}
+});
+
+test("a CodeGraph card's left rail carries the tool's own color while the frame keeps the call's status", (t) => {
+	useCardContent(t, CARD_CONTENT.DEFAULT);
+	const codegraph: any = createCodeGraphCardRenderer();
+	const args = { operation: "query", query: "alpha" };
+
+	const running = frameLines(codegraph.renderCall(args, statusTheme, routineRenderContext({ args, state: {} })), 80);
+	assert.match(running[0]!, /^<warning>╭<\/warning>.*<mdCode>󰆼 codegraph<\/mdCode>/);
+	assert.match(running[1]!, /^<mdCode>│<\/mdCode> .*<warning>│<\/warning>$/, "the left rail matches the label, the right rail the status");
+	assert.match(running.at(-1)!, /^<warning>╰<\/warning>/);
+
+	const finished = frameLines(codegraph.renderResult(textResult(CODEGRAPH_QUERY), { expanded: false, isPartial: false }, statusTheme, routineRenderContext({ args, executionStarted: true, isPartial: false, state: {} })), 80);
+	assert.match(finished[0]!, /^<mdCode>│<\/mdCode> /);
+	assert.match(finished.at(-1)!, /^<success>╰<\/success>/);
+
+	const failed = frameLines(codegraph.renderResult(textResult(CODEGRAPH_QUERY), { expanded: false, isPartial: false, isError: true }, statusTheme, routineRenderContext({ args, executionStarted: true, isPartial: false, isError: true, state: {} })), 80);
+	assert.match(failed[0]!, /^<mdCode>│<\/mdCode> /);
+	assert.match(failed.at(-1)!, /^<error>╰<\/error>/);
+
+	// The float style's continuous bar carries the same color on every row.
+	const floated = withFloatCards(() => [
+		...codegraph.renderCall(args, phaseRailTheme, routineRenderContext({ args, state: {} })).render(40),
+		...codegraph.renderResult(textResult(CODEGRAPH_QUERY), { expanded: false, isPartial: false }, phaseRailTheme, routineRenderContext({ args, executionStarted: true, isPartial: false, state: {} })).render(40),
+	]);
+	assert.ok(floated.length > 4);
+	for (const row of floated) {
+		assert.equal(visibleWidth(row), 40);
+		assert.ok(row.includes(`\x1b[38;5;${RAIL_FG.mdCode}m▎`), `every bar cell keeps the tool's color: ${JSON.stringify(row)}`);
+	}
 });

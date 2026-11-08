@@ -14,7 +14,7 @@ import { isAbsolute } from "node:path";
 import { resolveGentleAiDevBinaryOverride, type GentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { CARD_CONTENT, cardContent } from "../lib/card-content-policy.ts";
 import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
-import { inferOddPhase, inferShellActivity, SHELL_ACTIVITY_IDENTITY } from "../lib/odd-phase-inference.ts";
+import { inferOddPhase, inferShellActivity, SHELL_ACTIVITY_IDENTITY, type ShellActivity } from "../lib/odd-phase-inference.ts";
 import type { OddPhase } from "../lib/odd-phase.ts";
 import {
 	CODEGRAPH_MARK, CODEGRAPH_TITLE_ROLE, CODEGRAPH_TOOL, codeGraphCollapsedRows, codeGraphPreview,
@@ -640,32 +640,32 @@ function bashPrincipalAction(command: string, phase: BashCardPhase): string | un
 }
 
 /**
- * The bash heading: the phase its own command implies (with that phase's mark
- * and color) over the composition's principal action, or the unconditional
- * generic `bash` fallback with the command itself for anything the inference
- * does not label. Collapsed it stays one row; expanded it carries the complete
- * command.
+ * The bash heading: the activity its own command names (with that activity's mark
+ * and color), or the unconditional generic `bash` fallback, over the command the
+ * call actually runs. The detail is always that complete command — never a
+ * shortened substitute — so nothing the call does is hidden: collapsed the
+ * heading stays one row and an over-wide command ends in an ellipsis, and
+ * expanded the whole command continues on the rows below. The rail that leads
+ * the card is painted in the same role as the label, so the card's left edge
+ * belongs to its heading.
  */
 function bashHeading(args: Record<string, unknown>, theme: ThemeLike, expanded: boolean): ToolCardHeading {
 	const command = safeText(asString(args.command, "..."));
 	const timeout = typeof args.timeout === "number" ? ` (timeout ${args.timeout}s)` : "";
-	// The activity the call's own command does, so a deletion or a history change
-	// heads its card instead of hiding behind a phase it never had.
-	const activity = inferShellActivity(command);
-	const identity = activity === undefined ? BASH_IDENTITY : SHELL_ACTIVITY_IDENTITY[activity];
+	const identity = bashIdentity(args);
 	// A CodeGraph call heads with the operation and query it ran, through the same
 	// helper the native tool's card uses, so one program reads as one card.
-	const codegraph = activity === "codegraph" ? codegraphCallFromCommand(command) : undefined;
+	const codegraph = identity.activity === "codegraph" ? codegraphCallFromCommand(command) : undefined;
 	// Only a composition every segment of which is a read or a check names a
 	// principal action; anything else keeps the whole command, so nothing
 	// consequential is hidden behind a detail line.
-	const phaseLike = activity === "exploring" || activity === "checking" ? activity : undefined;
+	const phaseLike = identity.activity === "exploring" || identity.activity === "checking" ? identity.activity : undefined;
 	const named = phaseLike === undefined ? undefined : bashPrincipalAction(command, phaseLike);
 	const detail = codegraph !== undefined
 		? codegraphCallDetail(codegraph)
 		: named ?? command;
 	return {
-		title: theme.bold(activity ?? "bash"),
+		title: theme.bold(identity.activity ?? "bash"),
 		subtitle: `${detail}${timeout}`,
 		// A composition the inference cannot name keeps its whole command, so collapsed it
 		// folds to the one row that says what the command does and how much folds behind.
@@ -673,8 +673,22 @@ function bashHeading(args: Record<string, unknown>, theme: ThemeLike, expanded: 
 		...(named === undefined && codegraph === undefined && !/(^|[\s;&|])gentle-ai($|[\s;&|])/u.test(command) ? { collapsedDetail: (room: number) => `${bashSummary(command, Math.max(1, room - visibleWidth(timeout)))}${timeout}` } : {}),
 		glyph: identity.glyph,
 		titleRole: identity.titleRole,
+		railRole: identity.titleRole,
 		singleLine: !expanded,
 	};
+}
+
+/**
+ * The identity a bash call wears: the activity its own command names, or the
+ * generic `$ bash` fallback's. The heading and the rail its result continues are
+ * two halves of one card, so both derive it from the retained call the same way —
+ * and without a theme, so a result drawn alone reaches the same role.
+ */
+function bashIdentity(args: Record<string, unknown> | undefined): { activity: ShellActivity | undefined; glyph: string; titleRole: string } {
+	const command = asString(args?.command);
+	const activity = command.length > 0 ? inferShellActivity(command) : undefined;
+	const identity = activity === undefined ? BASH_IDENTITY : SHELL_ACTIVITY_IDENTITY[activity];
+	return { activity, glyph: identity.glyph, titleRole: identity.titleRole };
 }
 
 /** The parts of a tool card heading: what it says, the mark that leads it, the theme role that paints it, and whether it must fit one row. */
@@ -685,6 +699,8 @@ interface ToolCardHeading {
 	collapsedDetail?: (room: number) => string;
 	glyph: string;
 	titleRole?: string;
+	/** Theme role for the card's left rail; a labelled card names its identity there, so the rail matches the label. */
+	railRole?: string;
 	singleLine?: boolean;
 }
 
@@ -954,7 +970,7 @@ class ToolCardTop implements Component {
 				body: running ? [cardRunningLine(this.tone, this.theme, inner)] : undefined,
 				bottom: running ? cardBottom(this.tone, this.theme, inner) : undefined,
 			};
-		}));
+		}, this.heading.railRole));
 	}
 
 	invalidate(): void { this.rows.invalidate(); }
@@ -969,16 +985,18 @@ class ToolCardBody implements Component {
 	private readonly cacheable: boolean;
 	private readonly elapsed: string | undefined;
 	private readonly reveal: CardReveal | undefined;
+	private readonly railRole: string | undefined;
 	/** What the last drawn frame showed; a card with nothing left keeps the click with the host. */
 	private showsMore = true;
 
-	constructor(inner: () => Component, tone: ToolTone, theme: CardTheme, cacheable = true, elapsed?: string, reveal?: CardReveal) {
+	constructor(inner: () => Component, tone: ToolTone, theme: CardTheme, cacheable = true, elapsed?: string, reveal?: CardReveal, railRole?: string) {
 		this.inner = inner;
 		this.tone = tone;
 		this.theme = theme;
 		this.cacheable = cacheable;
 		this.elapsed = elapsed;
 		this.reveal = reveal;
+		this.railRole = railRole;
 	}
 
 	/** A left click on the result rows toggles the card through the same state as its heading. */
@@ -998,7 +1016,7 @@ class ToolCardBody implements Component {
 				bottom: cardBottom(this.tone, this.theme, inner, this.elapsed),
 				afterHeading: true,
 			};
-		});
+		}, this.railRole);
 		return this.cacheable ? this.rows.render(target, false, build) : build();
 	}
 
@@ -1144,7 +1162,10 @@ export function createQuietToolRenderer(
 			const expanded = options.expanded;
 			const revealOf = toolName === "bash" ? () => cardReveal(renderContext?.state) : undefined;
 			const reveal = revealOf?.();
-			const carded = (component: () => Component, cacheable = options.isPartial !== true): Component => new ToolCardBody(component, resultTone, theme, cacheable, elapsed, reveal);
+			// The result continues the heading's card, so a card whose heading names a rail
+			// keeps that rail, derived from the same retained call the heading read.
+			const railRole = toolName === "bash" ? bashIdentity(renderContext?.args).titleRole : undefined;
+			const carded = (component: () => Component, cacheable = options.isPartial !== true): Component => new ToolCardBody(component, resultTone, theme, cacheable, elapsed, reveal, railRole);
 			// Under the minimal Card content preference, every quiet tool draws
 			// the command alone while collapsed; the expand key still reveals
 			// the full result. Failures keep their bounded error tail so a red
@@ -1200,7 +1221,7 @@ export function createQuietToolRenderer(
 // tools supplies one through the same resolver that redraws bash. The tool keeps its
 // execution, schema and timeouts; only the drawing is Gentle's, and the summary it
 // collapses to is shared with the same program run through bash.
-/** The CodeGraph heading: the tool's own mark and name, with the operation and query from the call's arguments. */
+/** The CodeGraph heading: the tool's own mark, name and role, with the operation and query from the call's arguments. */
 function codeGraphHeading(args: Record<string, unknown>, theme: ThemeLike, expanded: boolean): ToolCardHeading {
 	const operation = asString(args.operation, "...");
 	const query = asString(args.query);
@@ -1209,6 +1230,7 @@ function codeGraphHeading(args: Record<string, unknown>, theme: ThemeLike, expan
 		subtitle: codegraphCallDetail({ operation, ...(query.length > 0 ? { query } : {}) }),
 		glyph: CODEGRAPH_MARK,
 		titleRole: CODEGRAPH_TITLE_ROLE,
+		railRole: CODEGRAPH_TITLE_ROLE,
 		singleLine: !expanded,
 	};
 }
@@ -1248,7 +1270,10 @@ export function createCodeGraphCardRenderer(): Pick<ToolDefinition, "renderShell
 			const elapsed = cardElapsed(renderContext?.durationMs);
 			const expanded = options.expanded;
 			const reveal = cardReveal(renderContext?.state);
-			const carded = (component: () => Component, cacheable = options.isPartial !== true): Component => new ToolCardBody(component, tone, theme, cacheable, elapsed, reveal);
+			// The result continues the heading's card, so it keeps the rail the tool's
+			// own label paints instead of falling back to the call's status tone.
+			const railRole = CODEGRAPH_TITLE_ROLE;
+			const carded = (component: () => Component, cacheable = options.isPartial !== true): Component => new ToolCardBody(component, tone, theme, cacheable, elapsed, reveal, railRole);
 			// Both levels are known here, so the card knows whether expanding shows more,
 			// measured where the rows are drawn (wrapping at a narrow width hides rows too).
 			const withheld = cardContent() === CARD_CONTENT.MINIMAL;

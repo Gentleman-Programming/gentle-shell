@@ -100,6 +100,42 @@ test("cards draw assistant prose as the chat's Markdown, and the log keeps its l
 	assert.deepEqual(renderThreadItem({ kind: "text", text: "alpha" }, theme, 10, { presentation: "cards" }).map((row) => row.trimEnd()), ["[text] alpha"], "below the Markdown renderer's own chrome the pane keeps plain wrapped prose");
 });
 
+test("a memory tool no renderer is published for draws the compact memory card, and only in cards", () => {
+	loadQuietTools();
+	const item = readItem({ name: "mem_get_observation", args: { id: 9692 }, output: "payload" });
+	assert.deepEqual(renderThreadItem(item, plainTheme, 60), ["Tool · mem_get_observation · Complete", "  Output", "    payload"], "the labelled log is unchanged");
+	const cards = ["🧠 get observation #9692 …", "↳ ✓ observation #9692"];
+	assert.deepEqual(renderThreadItem(item, plainTheme, 60, { presentation: "cards" }), cards, "the memory call reads as exactly the plugin's two rows");
+	assert.deepEqual(renderThreadItem(item, plainTheme, 60, { presentation: "cards", expanded: true }), cards, "expanding a memory card changes nothing");
+	assert.deepEqual(renderThreadItem(item, plainTheme, 60, { presentation: "cards", expanded: false, expandHint: "ctrl+o to expand" }), cards, "and it advertises no detail key");
+	assert.equal(drawThreadItem(item, plainTheme, 60, { presentation: "cards" }).card, true, "a memory card owns its block");
+	assert.equal(drawThreadItem(item, plainTheme, 60).card, false, "the log stays rows");
+	assert.deepEqual(renderThreadItem(readItem({ name: "mem_search", args: { query: "phase" }, output: '[{"id":1}]' }), plainTheme, 60, { presentation: "cards" }), ["🧠 search “phase” …", "↳ ✓ results"], "a search call prints no count it was never given");
+	assert.deepEqual(renderThreadItem(readItem({ name: "mem_search", args: { query: "phase" }, output: "", running: true }), plainTheme, 60, { presentation: "cards" }), ["🧠 search “phase” …"], "a running memory call claims no result");
+	assert.match(renderThreadItem(readItem({ name: "mem_search", args: { query: "phase" }, output: "boom", isError: true }), taggedTheme, 60, { presentation: "cards" })[0], /^\[error\]/, "a failed memory call keeps the theme's error tone");
+	for (const name of ["memory_save", "memories", "webfetch"]) {
+		const other = readItem({ name, args: { title: "Design notes" }, output: '{"ok":true}' });
+		assert.deepEqual(renderThreadItem(other, plainTheme, 60, { presentation: "cards" }), ["Tool · " + name + " · Complete", "  Output", '    {"ok":true}'], `${name} keeps the generic block`);
+	}
+});
+
+test("a real renderer published for a memory tool wins over the fallback card", (t) => {
+	loadQuietTools();
+	// Tests share the process-wide publication slot quiet-tools hands its own
+	// renderers through; seeding a memory renderer there is the same seam another
+	// extension would use to offer one.
+	const RENDERER_SLOT = Symbol.for("gentle-pi.quiet-tool-renderers");
+	const state = globalThis as typeof globalThis & { [RENDERER_SLOT]?: Map<string, unknown> };
+	const published = state[RENDERER_SLOT] ??= new Map();
+	published.set("mem_save", {
+		renderer: { renderShell: "self", renderCall: () => ({ render: () => ["[real memory card]"], invalidate() {} }) },
+		active: () => true,
+	});
+	t.after(() => published.delete("mem_save"));
+	const item = readItem({ name: "mem_save", args: { title: "Design notes" }, output: '{"ok":true}' });
+	assert.deepEqual(renderThreadItem(item, plainTheme, 60, { presentation: "cards" }), ["[real memory card]"], "the chat's own renderer is reused, never replaced by the fallback");
+});
+
 test("a tool the chat offered no renderer keeps the generic block in card mode", () => {
 	loadQuietTools();
 	const item = readItem({ name: "webfetch", args: {}, output: "page body" });

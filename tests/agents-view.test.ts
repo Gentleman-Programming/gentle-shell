@@ -1166,6 +1166,25 @@ test("a card keeps its running state inside the view", () => {
 	view.dispose();
 });
 
+test("a memory tool draws the compact memory card in cards and keeps the log", () => {
+	loadQuietTools();
+	const cards = presentationHarness(() => "cards");
+	applyTool(cards.store, "mem_save", { title: "Design notes" }, '{"ok":true}');
+	const frame = stripAnsi(cards.view.render(60).join("\n"));
+	assert.match(frame, /🧠 save “Design notes” …/, "the call reads as the plugin's compact chrome");
+	assert.match(frame, /↳ ✓ saved/, "the finished call reports its status");
+	assert.doesNotMatch(frame, /\{"ok":true\}/, "the retained body is never printed");
+	assert.doesNotMatch(frame, /Tool · mem_save/, "the generic block is replaced, not stacked on");
+	cards.view.handleInput("e");
+	assert.match(stripAnsi(cards.view.render(60).join("\n")), /↳ ✓ saved/, "a memory card has no second expansion state");
+	cards.view.dispose();
+
+	const labeled = presentationHarness(() => "log");
+	applyTool(labeled.store, "mem_save", { title: "Design notes" }, '{"ok":true}');
+	assert.match(stripAnsi(labeled.view.render(60).join("\n")), /Tool · mem_save · Complete/, "the labelled log is unchanged");
+	labeled.view.dispose();
+});
+
 test("a tool the chat offers no card for keeps the generic block in card mode", () => {
 	loadQuietTools();
 	const { store, view } = presentationHarness(() => "cards");

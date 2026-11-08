@@ -1,6 +1,7 @@
 import { Markdown, truncateToWidth, wrapTextWithAnsi, type MarkdownTheme } from "@earendil-works/pi-tui";
 import { THREAD_ITEM, type ThreadItem, type ToolItem } from "./agents-protocol.ts";
 import { agentMessageCard, steeredMessage } from "./agents-message-card.ts";
+import { isMemoryToolName, memoryToolCard } from "./agents-memory-card.ts";
 import { renderAgentToolItem } from "./agents-tool-renderers.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 
@@ -167,7 +168,8 @@ function toolStatus(item: ToolItem): "Running" | "Error" | "Complete" {
 /**
  * The generic tool block, drawn when no reusable card is offered. It is one block
  * for every tool on purpose: a supported tool draws through the chat's own
- * renderer, and no second per-tool drawing is kept here.
+ * renderer, and the only per-tool drawing kept here is the memory design, for a
+ * tool whose renderer lives in a plugin that publishes nothing to reuse.
  */
 function toolBlock(item: ToolItem, theme: AgentsThreadTheme, width: number, expanded: boolean, hint: string | undefined): string[] {
 	const role = item.isError ? ROLE.TOOL_ERROR : ROLE.TOOL;
@@ -236,9 +238,15 @@ export function drawThreadItem(item: ThreadItem, theme: AgentsThreadTheme, width
 			// A card owns its frame when the chat offered one; `undefined` covers no
 			// renderer, a renderer that does not own its frame, and one that threw.
 			const card = cards ? renderAgentToolItem(item, theme, width, { expanded: options.expanded === true }) : undefined;
-			return card !== undefined
-				? { lines: card, card: true }
-				: { lines: toolBlock(item, theme, width, showWhole, options.expandHint), card: false };
+			if (card !== undefined) return { lines: card, card: true };
+			// An external memory plugin registers its renderers with the host and
+			// publishes none for this pane, so its calls keep the compact memory design
+			// drawn from the retained call alone. A real renderer, above, always wins.
+			if (cards && isMemoryToolName(item.name)) {
+				const memory = memoryToolCard(item, theme, width);
+				if (memory.length > 0) return { lines: memory, card: true };
+			}
+			return { lines: toolBlock(item, theme, width, showWhole, options.expandHint), card: false };
 		}
 		default:
 			return { lines: [], card: false };

@@ -160,6 +160,51 @@ test("repository redirects remain delivery commands but cannot borrow the sessio
 	assert.deepEqual(recognizeReviewDeliveryActions("git -C/other push"), [{ kind: "delivery", directories: ["/other"] }]);
 });
 
+test("ambiguous directory control flow cannot borrow another repository's off mode", async t => {
+	const root = mkdtempSync(join(tmpdir(), "review-delivery-directory-flow-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const other = join(root, "other");
+	mkdirSync(other);
+	for (const cwd of [root, other]) execFileSync("git", ["init", "-q"], { cwd });
+	const seen: string[] = [];
+	const cli = { reviewMode: async ({ cwd }: { cwd: string }) => {
+		seen.push(cwd);
+		return { status: { effective: cwd === other ? "off" : "on" } };
+	} } as unknown as NativeReviewCli;
+	for (const command of [
+		`(cd "${other}" && pwd); git push`,
+		`bash -c '(cd "${other}" && pwd); git push'`,
+		`false && cd "${other}"; git push`,
+		`if false; then cd "${other}"; fi; git push`,
+		`cd "${other}" || true; git push`,
+		`cd "${other}" && pwd; git push`,
+		`cd "${other}" && git push; gh pr create`,
+		`pushd "${other}" && git push`,
+		'pushd "$OTHER" && git push',
+		"popd && git push",
+	]) {
+		seen.length = 0;
+		const result = await checkReviewDeliveryPreflight(root, "bash", command, cli, () => undefined, () => false);
+		assert.equal(result?.block, true, command);
+		assert.deepEqual(seen, [], "ambiguous directory state must be rejected before querying any repository's mode");
+	}
+	for (const command of [
+		`cd "${other}" && git push`, `git -C "${other}" push`, `sh -c 'cd "${other}" && git push'`,
+		`cd "${root}" && cd "${other}" && git push`,
+		`cd "${root}" && bash -c 'cd "${other}" && git push'`,
+		`cd "${other}" && echo '(quoted text)' && git push`,
+	]) {
+		seen.length = 0;
+		assert.equal(await checkReviewDeliveryPreflight(root, "bash", command, cli, () => undefined, () => false), undefined, command);
+		assert.deepEqual(seen, [other], "direct literal directory selection keeps the intended repository");
+	}
+	for (const command of ["git push && gh pr create", "bash -c 'git push'"]) {
+		seen.length = 0;
+		assert.equal((await checkReviewDeliveryPreflight(root, "bash", command, cli, () => undefined, () => false))?.block, true);
+		assert.deepEqual(seen, [root], "ordinary batching and wrappers continue to assess their session repository");
+	}
+});
+
 test("preflight rechecks the actual assessed range, preserves native non-due/decline and rejects drift", async t => {
 	const root = mkdtempSync(join(tmpdir(), "review-delivery-scope-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));

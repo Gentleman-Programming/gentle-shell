@@ -58,6 +58,8 @@ export function recognizeReviewDeliveryActions(command: string, depth = 0): Arra
 	const tokens = tokenize(command);
 	const directories: string[] = [];
 	let unresolvedDirectory = false;
+	let leadingCdChain = true;
+	const ambiguousCdScope = tokens.some(token => token.operator && token.raw !== "&&");
 	let start = 0;
 	for (let end = 0; end <= tokens.length; end++) {
 		if (end < tokens.length && !tokens[end].operator) continue;
@@ -71,9 +73,12 @@ export function recognizeReviewDeliveryActions(command: string, depth = 0): Arra
 		const gitDirectories: string[] = [];
 		let unresolvedGitDirectory = false;
 		if (name === "cd") {
-			if (args.length === 1 && !/[\n\r$`~]/.test(args[0]) && !args[0].startsWith("-")) directories.push(args[0]);
+			if (leadingCdChain && !ambiguousCdScope && cursor === 0 && tokens[end]?.raw === "&&" &&
+				args.length === 1 && !/[\n\r$`~]/.test(args[0]) && !args[0].startsWith("-")) directories.push(args[0]);
 			else unresolvedDirectory = true;
 		}
+		if (name === "pushd" || name === "popd") unresolvedDirectory = true;
+		if (segment.length && name !== "cd") leadingCdChain = false;
 		while (name === "git" && index < args.length && args[index].startsWith("-")) {
 			if (args[index] === "-C") {
 				if (!args[index + 1] || /[\n\r$`~]/.test(args[index + 1])) unresolvedGitDirectory = true;

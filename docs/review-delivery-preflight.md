@@ -10,6 +10,8 @@ Commands that change the candidate (commit, revert, switch, rebase, etc.) must f
 
 This covers recognizable shell invocations, including common shell wrappers and substitutions. It is not a shell sandbox or an installed Git hook. Script files, arbitrary interpreter programs and external actors are outside its detection boundary. The caller owns the actual slice, every pushed ref and the PR/remote destination: checking a local candidate does not verify an explicit remote override, prove an arbitrary PR number matches local HEAD or prevent later remote edits after auto-merge scheduling.
 
+Literal `cd` is resolved only in a direct leading `&&` chain without other control operators, including inside a supported shell wrapper. A later `;` or other control operator also makes the directory state ambiguous if the `cd` fails. `cd` in subshells, pipelines, background syntax or ambiguous conditional flow, and any `pushd`/`popd`, make the delivery target unresolved. Split those steps and issue delivery from the intended repository or use literal `git -C`; the host does not simulate shell directory state.
+
 Two shell-state limitations also apply:
 
 - A foreground `bash` call can still background delivery internally, for example `sleep 30 && git push &`. The recognizer does not preserve that scheduling information, so the delivery may run after its assessment is stale. Do not background delivery inside shell syntax; finish any waits separately, then issue a new foreground delivery call.

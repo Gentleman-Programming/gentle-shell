@@ -55,6 +55,13 @@ test("renderThreadItem keeps multiline content and every retained tool-output li
 	assert.deepEqual(renderThreadItem({ kind: "thinking", text: "one\n\ntwo\n  code" }, plainTheme, 40), ["Thinking", "  one", "  ", "  two", "    code"]);
 });
 
+test("the labelled log draws Markdown prose exactly as it always did", () => {
+	loadQuietTools();
+	for (const width of [20, 40, 80]) {
+		assert.deepEqual(renderThreadItem({ kind: "text", text: "## Handoff\n\nplain words" }, plainTheme, width), ["Text", "  ## Handoff", "  ", "  plain words"], `the log keeps its label and its source at width ${width}`);
+	}
+});
+
 test("the thread keeps its labeled log unless the caller selects cards", () => {
 	loadQuietTools();
 	const item = readItem();
@@ -65,7 +72,32 @@ test("the thread keeps its labeled log unless the caller selects cards", () => {
 	assert.deepEqual(cards, renderAgentToolItem(item, plainTheme, 40, { expanded: false }), "cards are the chat's own renderer output, not a second drawing");
 	assert.match(cards.join("\n"), /≡ read/, "the offered read card draws the call");
 	assert.equal(cards.includes("Tool · read · Complete"), false, "a card replaces the generic block instead of stacking on it");
-	assert.deepEqual(renderThreadItem({ kind: "text", text: "alpha" }, plainTheme, 40, { presentation: "cards" }), ["Text", "  alpha"], "prose keeps its labeled block in card mode");
+	const prose = renderThreadItem({ kind: "text", text: "alpha" }, plainTheme, 40, { presentation: "cards" }).map((row) => row.trimEnd());
+	assert.deepEqual(prose, [" alpha"], "prose is Markdown prose in card mode, with no label of its own");
+});
+
+test("cards draw assistant prose as the chat's Markdown, and the log keeps its labelled source", () => {
+	const theme = {
+		fg: (color: string, text: string) => `[${color}]${text}`,
+		bold: (text: string) => `<b>${text}</b>`,
+		italic: (text: string) => `<i>${text}</i>`,
+	};
+	const prose = { kind: "text" as const, text: "## Handoff\n\nsome *prose* here\n\n- one\n- two" };
+	const cards = renderThreadItem(prose, theme, 40, { presentation: "cards" }).join("\n");
+	assert.match(cards, /\[mdHeading\].*Handoff/, "a heading is drawn in the chat's heading role");
+	assert.match(cards, /<b>Handoff<\/b>/, "and in the heading's own weight");
+	assert.match(cards, /<i>prose<\/i>/, "inline emphasis is drawn, not echoed as source");
+	assert.match(cards, /\[mdListBullet\]/, "a list keeps the chat's bullet role");
+	assert.doesNotMatch(cards, /## Handoff|\*prose\*/, "the raw Markdown source never reaches a card");
+	assert.doesNotMatch(cards, /\[customMessageLabel\]Text/, "a card carries no Text label");
+
+	const log = renderThreadItem(prose, theme, 40, { presentation: "log" });
+	assert.deepEqual(log, ["[customMessageLabel]Text", "[text]  ## Handoff", "[text]  ", "[text]  some *prose* here", "[text]  ", "[text]  - one", "[text]  - two"], "the log is byte-identical to the labelled source it always drew");
+
+	for (const width of [12, 20, 40, 80]) {
+		for (const row of renderThreadItem(prose, plainTheme, width, { presentation: "cards" })) assert.ok(visibleWidth(row) <= width, `"${row}" fits width ${width}`);
+	}
+	assert.deepEqual(renderThreadItem({ kind: "text", text: "alpha" }, theme, 10, { presentation: "cards" }).map((row) => row.trimEnd()), ["[text] alpha"], "below the Markdown renderer's own chrome the pane keeps plain wrapped prose");
 });
 
 test("a tool the chat offered no renderer keeps the generic block in card mode", () => {

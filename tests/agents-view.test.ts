@@ -1198,3 +1198,103 @@ test("two tasks with the same callId expand their own cards", () => {
 	assert.doesNotMatch(frame().join("\n"), /b5/);
 	view.dispose();
 });
+
+test("ctrl+shift+j and ctrl+shift+k page the thread exactly where ctrl+j and ctrl+k do", () => {
+	const { store, view } = presentationHarness(() => "log", 14);
+	for (let index = 0; index < 30; index += 1) store.apply("a", { type: TASK_EVENT.TEXT, text: `l${index}\n` }, 2000);
+	const frame = (): string[] => view.render(100).map(stripAnsi);
+	const tail = frame();
+	assert.match(tail.join("\n"), /l29/, "the thread starts by following its tail");
+
+	view.handleInput("\x1b[107;6u");
+	const shiftedUp = frame();
+	assert.doesNotMatch(shiftedUp.join("\n"), /l29/, "a terminal that reports ctrl+shift+k leaves the tail");
+	assert.notDeepEqual(shiftedUp, tail);
+	view.handleInput("\x1b[106;6u");
+	assert.deepEqual(frame(), tail, "ctrl+shift+j pages back to the tail");
+
+	view.handleInput("\x0b");
+	assert.deepEqual(frame(), shiftedUp, "the shifted key pages exactly where ctrl+k pages");
+	view.handleInput("\x0a");
+	assert.deepEqual(frame(), tail, "and ctrl+j returns to the same tail");
+
+	assert.doesNotMatch(stripAnsi(view.render(200).join("\n")), /shift/, "the extra binding is never advertised in the footer");
+	view.dispose();
+});
+
+test("ctrl+home reaches the first thread row and ctrl+end resumes following the tail", () => {
+	const { store, view } = presentationHarness(() => "log", 14);
+	for (let index = 0; index < 30; index += 1) store.apply("a", { type: TASK_EVENT.TEXT, text: `l${index}\n` }, 2000);
+	const text = (): string => stripAnsi(view.render(100).join("\n"));
+	assert.match(text(), /l29/, "the thread starts at its tail");
+
+	view.handleInput("\x1b[7^");
+	assert.match(text(), /l0/, "ctrl+home reaches the first retained row");
+	assert.doesNotMatch(text(), /l10|l29/, "and no later row stands in for it");
+
+	store.apply("a", { type: TASK_EVENT.TEXT, text: "l30\n" }, 2000);
+	assert.doesNotMatch(text(), /l30/, "reading from the top is not pulled back down by a live event");
+
+	view.handleInput("\x1b[8^");
+	assert.match(text(), /l30/, "ctrl+end returns to the last row");
+	store.apply("a", { type: TASK_EVENT.TEXT, text: "l31\n" }, 2000);
+	assert.match(text(), /l31/, "ctrl+end resumes following the tail rather than only moving it once");
+
+	view.handleInput("\x1b[1;5H");
+	assert.match(text(), /l0/, "the modern ctrl+home sequence reaches the first row too");
+	view.handleInput("\x1b[1;5F");
+	assert.match(text(), /l31/, "the modern ctrl+end sequence returns to the tail");
+	assert.doesNotMatch(text(), /ctrl\+home|ctrl\+end/, "neither key is advertised in the footer");
+	view.dispose();
+});
+
+test("cards draw assistant prose as Markdown, and only the log keeps the labelled source", () => {
+	for (const presentation of ["cards", "log"] as const) {
+		const { store, view } = presentationHarness(() => presentation, 20);
+		store.apply("a", { type: TASK_EVENT.TEXT, text: "## Handoff\n\nsome *prose* here" }, 2000);
+		const frame = stripAnsi(view.render(80).join("\n"));
+		assert.match(frame, /Handoff/, `${presentation}: the prose is drawn`);
+		assert.match(frame, /some/, `${presentation}: with its words`);
+		if (presentation === "cards") {
+			assert.doesNotMatch(frame, /## Handoff|\*prose\*/, "cards draw the rendered prose, not its Markdown source");
+			assert.doesNotMatch(frame, /│ Text +│/, "cards carry no Text label");
+		} else {
+			assert.match(frame, /## Handoff/, "the log still echoes the retained source");
+			assert.match(frame, /│ Text +│/, "the log keeps its label");
+		}
+		view.dispose();
+	}
+});
+
+test("cards advertise the host's detail keys and the log never gains them", () => {
+	const cards = detailHarness({ keybindings: new KeybindingsManager(), threadPresentation: () => "cards" }, 24);
+	const cardsText = (): string => cards.text(200);
+	assert.match(cardsText(), /ctrl\+t hide thinking/, "shown thinking offers the key that hides it");
+	assert.match(cardsText(), /ctrl\+o expand/, "collapsed output offers the key that expands it");
+	cards.view.handleInput("\x14");
+	assert.match(cardsText(), /ctrl\+t show thinking/, "hidden thinking offers the key that shows it");
+	assert.doesNotMatch(cardsText(), /hide thinking/, "the hint names the state the key leads to, never the one it leaves");
+	cards.view.handleInput("\x0f");
+	assert.match(cardsText(), /ctrl\+o collapse/, "expanded output offers the key that collapses it");
+	cards.view.dispose();
+
+	const log = detailHarness({ keybindings: new KeybindingsManager() }, 24);
+	assert.doesNotMatch(log.text(200), /thinking|ctrl\+o/, "the log has no detail level, so it advertises no detail key");
+	log.view.handleInput("\x14");
+	log.view.handleInput("\x0f");
+	assert.doesNotMatch(log.text(200), /thinking|ctrl\+o/, "and pressing them leaves the log footer as it was");
+	log.view.dispose();
+});
+
+test("cards name the keys the host actually resolved and omit an unbound action", () => {
+	const rebound = detailHarness({ keybindings: new KeybindingsManager({ "app.tools.expand": "ctrl+e" }), threadPresentation: () => "cards", cardDetail: { thinkingExpanded: false } }, 24);
+	assert.match(rebound.text(200), /ctrl\+e expand/, "a rebound action is advertised under its own key");
+	assert.doesNotMatch(rebound.text(200), /ctrl\+o/, "the replaced default is not advertised");
+	assert.match(rebound.text(200), /ctrl\+t show thinking/, "hidden thinking offers to show it");
+	rebound.view.dispose();
+
+	const unbound = detailHarness({ keybindings: new KeybindingsManager({ "app.thinking.toggle": [] }), threadPresentation: () => "cards" }, 24);
+	assert.match(unbound.text(200), /ctrl\+o expand/, "a bound action keeps its hint");
+	assert.doesNotMatch(unbound.text(200), /thinking/, "an unbound action has no key, so it gets no hint");
+	unbound.view.dispose();
+});

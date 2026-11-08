@@ -394,8 +394,10 @@ export class AgentsView {
 		else if (data === "k" || matchesKey(data, Key.up)) this.select(index - 1, rows);
 		else if (matchesKey(data, Key.left) && selected?.kind === "heading") this.setExpanded(selected.group, false);
 		else if (matchesKey(data, Key.right) && selected?.kind === "heading") this.setExpanded(selected.group, true);
-		else if (matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("j"))) this.scrollBy(this.pageRows());
-		else if (matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("k"))) this.scrollBy(-this.pageRows());
+		else if (matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("j")) || matchesKey(data, Key.ctrlShift("j"))) this.scrollBy(this.pageRows());
+		else if (matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("k")) || matchesKey(data, Key.ctrlShift("k"))) this.scrollBy(-this.pageRows());
+		else if (matchesKey(data, Key.ctrl("home"))) this.scrollToStart();
+		else if (matchesKey(data, Key.ctrl("end"))) this.scrollToEnd();
 		else if (data === "f" && task) {
 			this.follow = true;
 			this.deps.requestRender();
@@ -520,7 +522,21 @@ export class AgentsView {
 		const details = narrow && task ? [["tab", this.narrowView === "list" ? "details" : "back"]] as const : [];
 		const stop = task && this.canCancel(task) ? [["s", "Stop selected"]] as const : [];
 		const scope = this.deps.sessionId === undefined ? [] : [["a", SCOPE_KEY[this.scope]]] as const;
-		return [...KEYS.slice(0, 1), ...details, ...KEYS.slice(1, 3), ...stop, ...scope, ...KEYS.slice(3)];
+		return [...KEYS.slice(0, 1), ...details, ...KEYS.slice(1, 3), ...stop, ...scope, ...this.detailHints(), ...KEYS.slice(3)];
+	}
+
+	// The two detail hints belong to the cards alone: the log has no cards to
+	// expand and no thinking to hide, so it never advertises a key that would
+	// draw nothing. Each names the state its key leads to, and an action the host
+	// left unbound has no key, so it gets no hint.
+	private detailHints(): ReadonlyArray<readonly [string, string]> {
+		if (this.threadPresentation() !== THREAD_PRESENTATION.CARDS) return [];
+		const thinking = this.bindingKeys("app.thinking.toggle")[0];
+		const expand = this.bindingKeys("app.tools.expand")[0];
+		return [
+			...(thinking === undefined ? [] : [[thinking, this.thinkingExpanded ? "hide thinking" : "show thinking"] as const]),
+			...(expand === undefined ? [] : [[expand, this.cardToolsExpanded ? "collapse" : "expand"] as const]),
+		];
 	}
 
 	private threadPresentation(): ThreadPresentation {
@@ -924,6 +940,20 @@ export class AgentsView {
 		this.follow = false;
 		// Clamp the current visible position before moving, including after resize.
 		this.scroll = Math.max(0, Math.min(maxScroll, Math.min(this.scroll, maxScroll) + delta));
+		this.deps.requestRender();
+	}
+
+	// Ctrl+Home leaves follow at the thread's first row, so a live event cannot
+	// pull the reader back down while they are reading from the start.
+	private scrollToStart(): void {
+		this.follow = false;
+		this.scroll = 0;
+		this.deps.requestRender();
+	}
+
+	// Ctrl+End returns to the tail and resumes following it.
+	private scrollToEnd(): void {
+		this.follow = true;
 		this.deps.requestRender();
 	}
 

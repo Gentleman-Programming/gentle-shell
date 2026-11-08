@@ -1,12 +1,16 @@
-import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Markdown, truncateToWidth, wrapTextWithAnsi, type MarkdownTheme } from "@earendil-works/pi-tui";
 import { THREAD_ITEM, type ThreadItem, type ToolItem } from "./agents-protocol.ts";
 import { agentMessageCard, steeredMessage } from "./agents-message-card.ts";
 import { renderAgentToolItem } from "./agents-tool-renderers.ts";
+import { sanitizeTerminalText } from "./terminal-theme.ts";
 
 export interface AgentsThreadTheme {
 	fg(color: string, text: string): string;
-	/** Pi themes carry it; the chat draws reasoning in italic. */
+	/** Pi themes carry these; the chat draws reasoning in italic and Markdown in them. */
+	bold?(text: string): string;
 	italic?(text: string): string;
+	underline?(text: string): string;
+	strikethrough?(text: string): string;
 }
 
 /**
@@ -39,6 +43,67 @@ export interface ThreadItemRenderOptions {
 
 /** How much of a long block a collapsed row keeps before it counts the rest. */
 const COLLAPSED_PREVIEW_LINES = 3;
+
+// Pi's Markdown renderer asks for one role per element; the chat maps them to
+// these theme names, so prose in a card reads like the transcript's.
+const MARKDOWN_ROLES = {
+	heading: "mdHeading",
+	link: "mdLink",
+	linkUrl: "mdLinkUrl",
+	code: "mdCode",
+	codeBlock: "mdCodeBlock",
+	codeBlockBorder: "mdCodeBlockBorder",
+	quote: "mdQuote",
+	quoteBorder: "mdQuoteBorder",
+	hr: "mdHr",
+	listBullet: "mdListBullet",
+} as const;
+
+// The renderer's own chrome — a padding column, fence rules — needs room before
+// the text does, so a narrower pane keeps plain wrapped prose instead.
+const MARKDOWN_MIN_WIDTH = 12;
+
+const markdownThemes = new WeakMap<AgentsThreadTheme, MarkdownTheme>();
+
+/** Pi's Markdown theme, built from the theme the pane was handed. */
+function markdownTheme(theme: AgentsThreadTheme): MarkdownTheme {
+	const cached = markdownThemes.get(theme);
+	if (cached) return cached;
+	const color = (role: string) => (text: string) => theme.fg(role, text);
+	const attribute = (name: "bold" | "italic" | "underline" | "strikethrough") => (text: string) => {
+		const apply = theme[name];
+		return typeof apply === "function" ? apply.call(theme, text) : text;
+	};
+	const built: MarkdownTheme = {
+		heading: color(MARKDOWN_ROLES.heading),
+		link: color(MARKDOWN_ROLES.link),
+		linkUrl: color(MARKDOWN_ROLES.linkUrl),
+		code: color(MARKDOWN_ROLES.code),
+		codeBlock: color(MARKDOWN_ROLES.codeBlock),
+		codeBlockBorder: color(MARKDOWN_ROLES.codeBlockBorder),
+		quote: color(MARKDOWN_ROLES.quote),
+		quoteBorder: color(MARKDOWN_ROLES.quoteBorder),
+		hr: color(MARKDOWN_ROLES.hr),
+		listBullet: color(MARKDOWN_ROLES.listBullet),
+		bold: attribute("bold"),
+		italic: attribute("italic"),
+		underline: attribute("underline"),
+		strikethrough: attribute("strikethrough"),
+	};
+	markdownThemes.set(theme, built);
+	return built;
+}
+
+/**
+ * Assistant prose drawn the way the chat draws it: Pi's Markdown renderer over
+ * the theme the pane was handed, so a heading, a list or an emphasis reads as
+ * Markdown instead of echoing its source under a `Text` label.
+ */
+function proseLines(text: string, theme: AgentsThreadTheme, width: number): string[] {
+	const source = sanitizeTerminalText(text);
+	if (width < MARKDOWN_MIN_WIDTH) return contentLines(theme, ROLE.TEXT, source, width, 1);
+	return new Markdown(source, 1, 0, markdownTheme(theme)).render(width);
+}
 
 const ROLE = {
 	TEXT: "text",
@@ -135,7 +200,9 @@ export function renderThreadItem(item: ThreadItem, theme: AgentsThreadTheme, wid
 	const showWhole = cards ? options.expanded !== false : true;
 	switch (item.kind) {
 		case THREAD_ITEM.TEXT:
-			return [line(theme, ROLE.LABEL, "Text", width), ...contentLines(theme, ROLE.TEXT, item.text, width, 2)];
+			// A card is chat content, so it draws prose as the chat does; the labeled
+			// log keeps the labeled block it always drew.
+			return cards ? proseLines(item.text, theme, width) : [line(theme, ROLE.LABEL, "Text", width), ...contentLines(theme, ROLE.TEXT, item.text, width, 2)];
 		case THREAD_ITEM.THINKING:
 			return thinkingBlock(item.text, theme, width, showThinking, cards);
 		case THREAD_ITEM.NOTE: {

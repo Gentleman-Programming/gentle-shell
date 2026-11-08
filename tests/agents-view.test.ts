@@ -1743,11 +1743,14 @@ test("a card style or content change draws new rows instead of the cached ones",
 	setCardContent(CARD_CONTENT.MINIMAL);
 	const minimal = text();
 	assert.doesNotMatch(minimal, /a0/, "the shared content preference still applies to a cached card");
-	assert.match(minimal, /\$ printf hi/, "bash draws its card while the chat offers it");
+	// The bash card's heading names the tool and the activity in the other trees and the bare
+	// command here, so the shared marker is the card's own `$` prompt glyph on its top rule.
+	assert.match(minimal, /▎ \$ /, "bash draws its card while the chat offers it");
+	assert.doesNotMatch(minimal, /Tool · bash · Complete/, "and the plain block the card replaces is not drawn beside it");
 	setCardContent(CARD_CONTENT.DEFAULT);
 	assert.match(text(), /a0/, "returning to the default previews the result again");
 	assert.match(text(), /Tool · bash · Complete/, "and bash falls back to the plain block");
-	assert.equal((minimal.match(/\$ printf hi/g) ?? []).length, 1, "the card replaces the plain block instead of stacking on it");
+	assert.equal((minimal.match(/▎ \$ /g) ?? []).length, 1, "the card replaces the plain block instead of stacking on it");
 	setCardContent(CARD_CONTENT.MINIMAL);
 	assert.equal(text(), minimal, "switching back draws the card exactly as before");
 	view.dispose();

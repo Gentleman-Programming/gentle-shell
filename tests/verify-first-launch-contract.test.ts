@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import test, { after, before } from "node:test";
 import { blockChildDestructiveCommand } from "../extensions/child-safety.ts";
@@ -141,7 +142,7 @@ test("T16/W1: the scratch copy method cannot write outside the scratch directory
 // `cp -a --reflink=auto`, which cannot exclude anything. Verifiers then ran
 // `rm -rf "$s/work/.git"` (blocked by child safety) or `cp --exclude` (no such
 // option), so no probe ran. The prompt names one exact guard-compatible form.
-const SCRATCH_COPY = /`(mkdir -p "\$s\/work" && tar --exclude=\.\/\.git [^`]+)`/;
+const SCRATCH_COPY = /`((?:set -o pipefail && )?mkdir -p "\$s\/work" && tar --exclude=\.\/\.git [^`]+)`/;
 
 test("#2818: the scratch copy names one exact command the child guard allows", () => {
 	const command = verify.match(SCRATCH_COPY)?.[1];
@@ -155,7 +156,7 @@ test("#2818: the scratch copy names one exact command the child guard allows", (
 	], "scratch copy method");
 });
 
-test("#2818: the named scratch copy omits top-level .git and keeps dotfiles, dependencies and symlinks", () => {
+test("#2818: the named scratch copy omits top-level .git and keeps dotfiles, dependencies and symlinks", (t) => {
 	const command = verify.match(SCRATCH_COPY)?.[1];
 	assert.ok(command);
 	const workspace = join(scratch, "workspace");
@@ -164,17 +165,80 @@ test("#2818: the named scratch copy omits top-level .git and keeps dotfiles, dep
 	writeFileSync(join(workspace, ".env.example"), "KEY=\n");
 	mkdirSync(join(workspace, "node_modules", "dep"), { recursive: true });
 	writeFileSync(join(workspace, "node_modules", "dep", "index.js"), "module.exports = 1;\n");
+	mkdirSync(join(workspace, "app"));
+	mkdirSync(join(workspace, "shared"));
+	writeFileSync(join(workspace, "shared", "value.cjs"), "module.exports = 2;\n");
+	writeFileSync(join(workspace, "app", "intended-untracked.cjs"), 'if (require("dep") + require("../shared/value.cjs") !== 3) process.exit(1);\n');
 	mkdirSync(join(workspace, "node_modules", ".bin"));
 	symlinkSync("../dep/index.js", join(workspace, "node_modules", ".bin", "dep"));
 	const s = mkdtempSync(join(scratch, "probe-"));
+	const started = performance.now();
 	const result = spawnSync("bash", ["-c", command], { cwd: workspace, env: { ...process.env, s }, encoding: "utf8" });
+	const elapsedMs = performance.now() - started;
 	assert.equal(result.status, 0, result.stderr);
 	const work = join(s, "work");
 	assert.equal(existsSync(join(work, ".git")), false);
 	assert.equal(readFileSync(join(work, ".env.example"), "utf8"), "KEY=\n");
 	assert.equal(readFileSync(join(work, "node_modules", "dep", "index.js"), "utf8"), "module.exports = 1;\n");
 	assert.equal(readlinkSync(join(work, "node_modules", ".bin", "dep")), "../dep/index.js");
+	const probe = spawnSync(process.execPath, [join(work, "app", "intended-untracked.cjs")], { cwd: work, encoding: "utf8" });
+	assert.equal(probe.status, 0, probe.stderr);
 	assert.equal(existsSync(join(workspace, ".git", "HEAD")), true);
+	const payloadBytes = [".env.example", "node_modules/dep/index.js", "shared/value.cjs", "app/intended-untracked.cjs"]
+		.reduce((bytes, path) => bytes + readFileSync(join(workspace, path)).byteLength, 0);
+	t.diagnostic(`fixture copy: ${elapsedMs.toFixed(1)} ms, ${payloadBytes} regular-file bytes plus one symlink; no production throughput claim`);
+});
+
+// #3009: a producer read failure can still leave a valid partial tar stream.
+// Without pipefail, a successful extractor hides that failure and admits probes
+// against missing candidate inputs. Reproduced on Windows with a locked file;
+// a missing required input gives the same deterministic producer failure here.
+test("#3009: a failed archive producer cannot run probes against its partial payload", () => {
+	const command = verify.match(SCRATCH_COPY)?.[1];
+	assert.ok(command);
+	const workspace = mkdtempSync(join(scratch, "producer-source-"));
+	writeFileSync(join(workspace, "intended-untracked.txt"), "candidate\n");
+	const s = mkdtempSync(join(scratch, "producer-copy-"));
+	const producerFailure = 'tar() { if [[ "$*" == *"-cf -"* ]]; then command tar "$@" missing-required-input; else command tar "$@"; fi; }';
+	const result = spawnSync("bash", ["-c", `${producerFailure}\n${command} && printf probe-ran > "$s/probe-ran"`], {
+		cwd: workspace, env: { ...process.env, s }, encoding: "utf8",
+	});
+	assert.notEqual(result.status, 0, "a successful extractor must not mask its failed producer");
+	assert.match(result.stderr, /missing-required-input/);
+	assert.equal(readFileSync(join(s, "work", "intended-untracked.txt"), "utf8"), "candidate\n", "the failure produced a readable but incomplete copy");
+	assert.equal(existsSync(join(s, "probe-ran")), false, "no verification runs after setup failure");
+});
+
+test("#3009: a failed extractor cannot run probes", () => {
+	const command = verify.match(SCRATCH_COPY)?.[1];
+	assert.ok(command);
+	const workspace = mkdtempSync(join(scratch, "extractor-source-"));
+	writeFileSync(join(workspace, "candidate.txt"), "candidate\n");
+	const s = mkdtempSync(join(scratch, "extractor-copy-"));
+	const extractorFailure = 'tar() { if [[ "$*" == *"-xf -"* ]]; then cat > /dev/null; return 2; else command tar "$@"; fi; }';
+	const result = spawnSync("bash", ["-c", `${extractorFailure}\n${command} && printf probe-ran > "$s/probe-ran"`], {
+		cwd: workspace, env: { ...process.env, s }, encoding: "utf8",
+	});
+	assert.notEqual(result.status, 0);
+	assert.equal(existsSync(join(s, "probe-ran")), false);
+});
+
+test("#3009: the prescribed tar copy skips a live Unix socket and keeps candidate input", { skip: process.platform === "win32" }, async (t) => {
+	const command = verify.match(SCRATCH_COPY)?.[1];
+	assert.ok(command);
+	const workspace = mkdtempSync(join(scratch, "socket-source-"));
+	mkdirSync(join(workspace, ".codegraph"));
+	writeFileSync(join(workspace, "intended-untracked.txt"), "candidate\n");
+	const socket = join(workspace, ".codegraph", "daemon.sock");
+	const server = createServer();
+	await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(socket, resolve); });
+	t.after(() => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
+	const s = mkdtempSync(join(scratch, "socket-copy-"));
+	const result = spawnSync("bash", ["-c", command], { cwd: workspace, env: { ...process.env, s }, encoding: "utf8" });
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(existsSync(join(s, "work", ".codegraph", "daemon.sock")), false);
+	assert.equal(readFileSync(join(s, "work", "intended-untracked.txt"), "utf8"), "candidate\n");
+	assert.equal(existsSync(socket), true, "the live source socket is untouched");
 });
 
 // T21 (L44): in after4, verify reported a behavior already present at the

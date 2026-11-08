@@ -7,6 +7,15 @@ import { isMemoryToolName, memoryToolArgument, memoryToolCard, memoryToolLabel }
 const plainTheme = { fg: (_color: string, text: string) => text };
 const taggedTheme = { fg: (color: string, text: string) => `[${color}]${text}` };
 
+/** A theme that paints nothing but records the role of each row, in draw order. */
+function recordingTheme(): { roles: string[]; fg: (color: string, text: string) => string } {
+	const roles: string[] = [];
+	return { roles, fg: (color: string, text: string) => { roles.push(color); return text; } };
+}
+
+/** The one role tag `taggedTheme` put in front of a row. */
+const ROLE_TAG = /^\[(?:accent|text|muted|error)\]/;
+
 function memoryItem(overrides: Partial<ToolItem> = {}): ToolItem {
 	return { kind: "tool", callId: "call", name: "mem_save", args: { title: "Design notes", content: "a body" }, output: '{"ok":true}', running: false, isError: false, ...overrides };
 }
@@ -116,6 +125,36 @@ test("a review call composes its argument the way the plugin does", () => {
 	assert.equal(memoryToolArgument("mem_review", { id: 7 }), "#7", "an observation id falls back to the call's id");
 	assert.equal(memoryToolArgument("mem_review", { project: "p" }), "“p”", "a missing part is skipped, never filled in");
 	assert.equal(memoryToolArgument("mem_review", {}), undefined);
+});
+
+test("a memory call paints its rows in the theme's plain text, never the pane's tool accent", () => {
+	const theme = recordingTheme();
+	const item = memoryItem({ name: "mem_get_observation", args: { id: 9692 }, output: "payload" });
+	assert.deepEqual(memoryToolCard(item, theme, 60), ["🧠 get observation #9692 …", "↳ ✓ observation #9692"], "the rows read as before once a role is applied");
+	assert.deepEqual(theme.roles, ["text", "muted"], "the call row is plain text, the result row stays muted");
+	assert.equal(theme.roles.includes("accent"), false, "an Engram call never borrows the accent the pane uses for other tools");
+});
+
+test("a failed memory call keeps the error role on its call row", () => {
+	const theme = recordingTheme();
+	const rows = memoryToolCard(memoryItem({ isError: true, output: "boom: bad input" }), theme, 80);
+	assert.deepEqual(rows, ["🧠 save “Design notes” …", "↳ ✗ boom: bad input"]);
+	assert.deepEqual(theme.roles, ["error", "muted"], "a failure still reports itself in the error role");
+});
+
+test("stripping the roles leaves every memory row byte-identical", () => {
+	const items = [
+		memoryItem(),
+		memoryItem({ name: "mem_get_observation", args: { id: 9692 }, output: "payload" }),
+		memoryItem({ isError: true, output: "boom: bad input" }),
+		memoryItem({ running: true, output: "" }),
+	];
+	for (const item of items) {
+		const painted = memoryToolCard(item, taggedTheme, 60);
+		const plain = memoryToolCard(item, plainTheme, 60);
+		assert.equal(painted.length, plain.length, `"${item.name}" keeps its row count`);
+		painted.forEach((row, index) => assert.equal(row.replace(ROLE_TAG, ""), plain[index], `"${item.name}" row ${index} is unchanged once its role is stripped`));
+	}
 });
 
 test("a failed call reports the first line of what it retained, bounded", () => {

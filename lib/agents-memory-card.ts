@@ -23,6 +23,8 @@ const ARGUMENT_WIDTH = 48;
 const FAILURE_WIDTH = 64;
 
 const RESULT_MARKER = "↳ ";
+/** The chat's own memory chrome is uncolored, so a memory call is plain text, not the pane's tool accent. */
+const CALL_ROLE = "text";
 const RESULT_ROLE = "muted";
 const SUCCESS_GLYPH = "✓";
 const FAILURE_GLYPH = "✗";
@@ -187,7 +189,7 @@ export function memoryToolCard(item: ToolItem, theme: MemoryCardTheme, width: nu
 	if (target === 0) return [];
 	const argument = memoryToolArgument(item.name, item.args);
 	const head = [MEMORY_GLYPH, memoryToolLabel(item.name), ...(argument === undefined ? [] : [argument])].join(" ");
-	const rows = [painted(theme, item.isError ? "error" : "accent", `${head} ${CALL_ELLIPSIS}`, target)];
+	const rows = [painted(theme, item.isError ? "error" : CALL_ROLE, `${head} ${CALL_ELLIPSIS}`, target)];
 	if (item.running) return rows;
 	const status = item.isError
 		? [FAILURE_GLYPH, failureSummary(sanitizeTerminalText(item.output))].filter((part) => part.length > 0).join(" ")

@@ -3,7 +3,7 @@ import test from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { emptyThread, TASK_EVENT, applyTaskEvent, type ToolItem } from "../lib/agents-protocol.ts";
-import { renderThreadItem } from "../lib/agents-thread-view.ts";
+import { drawThreadItem, renderThreadItem } from "../lib/agents-thread-view.ts";
 import { renderAgentToolItem } from "../lib/agents-tool-renderers.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import productionQuietTools from "../extensions/quiet-tools.ts";
@@ -106,6 +106,19 @@ test("a tool the chat offered no renderer keeps the generic block in card mode",
 	assert.equal(renderAgentToolItem(item, plainTheme, 40, { expanded: false }), undefined, "the chat registers no webfetch card");
 	assert.deepEqual(renderThreadItem(item, plainTheme, 40, { presentation: "cards" }), ["Tool · webfetch · Complete", "  Output", "    page body"], "the generic fallback is the existing labeled block, not a per-tool copy");
 	assert.deepEqual(renderThreadItem({ ...item, isError: true }, plainTheme, 40, { presentation: "cards" })[0], "Tool · webfetch · Error");
+});
+
+test("drawThreadItem reports a frame only where the drawing owns one", () => {
+	loadQuietTools();
+	const ownsFrame = (item: Parameters<typeof drawThreadItem>[0]): boolean => drawThreadItem(item, plainTheme, 40, { presentation: "cards" }).card;
+	assert.equal(ownsFrame({ kind: "text", text: "alpha" }), false, "prose is a row");
+	assert.equal(ownsFrame({ kind: "thinking", text: "why" }), false, "reasoning is a row");
+	assert.equal(ownsFrame({ kind: "note", text: "keep this" }), false, "a note the runner did not mark is a row");
+	assert.equal(ownsFrame({ kind: "note", text: "steered: sent down" }), true, "a delivered message draws the messaging card");
+	assert.equal(ownsFrame(readItem()), true, "a tool the chat offered a renderer for draws its card");
+	assert.equal(ownsFrame(readItem({ name: "webfetch", args: {}, output: "page body" })), false, "a tool with no renderer keeps the generic row");
+	assert.equal(drawThreadItem(readItem(), plainTheme, 40, { presentation: "log" }).card, false, "the labeled log is all rows");
+	assert.deepEqual(drawThreadItem(readItem(), plainTheme, 40).lines, renderThreadItem(readItem(), plainTheme, 40), "the lines are the same drawing renderThreadItem returns");
 });
 
 test("cards keep running, final, error, expansion, and width from the chat's drawing", () => {

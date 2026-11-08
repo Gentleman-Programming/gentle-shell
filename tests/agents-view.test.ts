@@ -845,6 +845,121 @@ test("cards expand one at a time from the row under the pointer", () => {
 	view.dispose();
 });
 
+// The surface a float card paints with. A style that separates cards by its
+// background instead of a closing border needs the presentation to keep them
+// apart, so this theme is what makes the two styles differ at all here.
+const surfaceTheme = { fg: (_color: string, text: string) => text, bg: (_role: string, text: string) => `\x1b[48;5;236m${text}\x1b[49m` };
+
+// Rows of one rendered frame that carry nothing but the pane's own columns: a
+// blank row is the separator when the cards presentation draws one.
+function bareRows(rows: string[]): number[] {
+	return rows.flatMap((row, y) => (stripAnsi(row).replaceAll("│", "").trim() === "" ? [y] : []));
+}
+
+function rowsMatching(rows: string[], pattern: RegExp): number[] {
+	return rows.flatMap((row, y) => (pattern.test(stripAnsi(row)) ? [y] : []));
+}
+
+function drawnRow(rows: string[], pattern: RegExp, label: string): number {
+	const [y] = rowsMatching(rows, pattern);
+	assert.ok(y !== undefined, `${label} is drawn`);
+	return y;
+}
+
+for (const style of [CARD_STYLE.FLOAT, CARD_STYLE.NEON] as const) {
+	test(`cards keep one unpainted row between any two card kinds: ${style}`, (t) => {
+		loadQuietTools();
+		const previous = cardStyle();
+		t.after(() => setCardStyle(previous));
+		setCardStyle(style);
+		const { store, view } = detailHarness({ threadPresentation: () => "cards", theme: surfaceTheme }, 40);
+		store.add(task("a", { prompt: "Map the shared card code" }));
+		store.apply("a", { type: TASK_EVENT.NOTE, text: "steered: also cover the pane" }, 2000);
+		applyTool(store, "read", { path: "src/a.ts" }, "a0", false, "read-a");
+		applyTool(store, "grep", { pattern: "needle", path: "src" }, "src/a.ts:1: needle", false, "grep-a");
+		applyTool(store, "webfetch", {}, "page body", false, "fetch-a");
+		store.apply("a", { type: TASK_EVENT.NOTE, text: "steered: final word" }, 2000);
+		const rows = view.render(80);
+
+		const order = {
+			prompt: drawnRow(rows, /Map the shared card code/, "the launch prompt card"),
+			message: drawnRow(rows, /also cover the pane/, "the delivered message card"),
+			read: drawnRow(rows, /≡ read src\/a\.ts/, "the read card"),
+			grep: drawnRow(rows, /⌕ grep \/needle\/ in src/, "the grep card"),
+			generic: drawnRow(rows, /Tool · webfetch · Complete/, "the webfetch row"),
+			tail: drawnRow(rows, /final word/, "the closing message card"),
+		};
+		const positions = Object.values(order);
+		assert.deepEqual(positions, [...positions].sort((a, b) => a - b), "the blocks are drawn in thread order");
+
+		// The prompt, a delivered message, and two different tool cards: every
+		// adjacent pair is exactly one unpainted row apart, whichever kind drew it.
+		for (const [above, below] of [[order.prompt, order.message], [order.message, order.read], [order.read, order.grep]] as const) {
+			const between = bareRows(rows).filter((y) => y > above && y < below);
+			assert.equal(between.length, 1, `adjacent cards at rows ${above} and ${below} are one blank row apart in ${style}`);
+			assert.doesNotMatch(rows[between[0]], /\x1b\[48/, "the separating row is unpainted: no card surface and no rail");
+		}
+
+		// A generic block owns no frame, so it neither gains nor gives a seam.
+		for (const [above, below] of [[order.grep, order.generic], [order.generic, order.tail]] as const) {
+			assert.deepEqual(bareRows(rows).filter((y) => y > above && y < below), [], `the non-card row at ${above} or ${below} gains no separator in ${style}`);
+		}
+		view.dispose();
+	});
+
+	test(`a card keeps its own rows together: ${style}`, (t) => {
+		loadQuietTools();
+		const previous = cardStyle();
+		t.after(() => setCardStyle(previous));
+		setCardStyle(style);
+		const { store, view } = detailHarness({ threadPresentation: () => "cards", theme: surfaceTheme }, 26);
+		applyTool(store, "read", { path: "src/a.ts" }, "a0", false, "first");
+		const rows = view.render(70);
+		const head = drawnRow(rows, /≡ read src\/a\.ts/, "the card head");
+		const body = drawnRow(rows, /a0/, "the card body");
+		// Float and neon draw a card differently, but neither may put a seam inside one.
+		assert.ok(body > head, "the body sits under the head");
+		assert.deepEqual(bareRows(rows).filter((y) => y > head && y < body), [], `nothing separates a card from its own body in ${style}`);
+		view.dispose();
+	});
+}
+
+test("the labeled log keeps the row spacing it always had between tool blocks", () => {
+	const { store, view } = detailHarness({}, 26);
+	applyTool(store, "read", { path: "src/a.ts" }, "a0", false, "first");
+	applyTool(store, "read", { path: "src/b.ts" }, "b0", false, "second");
+	const rows = view.render(70);
+	const first = drawnRow(rows, /Tool · read · Complete/, "the first log block");
+	const second = rowsMatching(rows, /Tool · read · Complete/)[1];
+	assert.ok(second !== undefined && second > first, "both log blocks are drawn");
+	assert.deepEqual(bareRows(rows).filter((y) => y > first && y < second), [], "the log never gains a card separator");
+	view.dispose();
+});
+
+test("the separating row belongs to no card and following the tail still works", () => {
+	loadQuietTools();
+	const { store, view } = detailHarness({ threadPresentation: () => "cards", theme: surfaceTheme }, 26);
+	applyTool(store, "read", { path: "src/a.ts" }, "a0\na1\na2\na3\na4\na5", false, "first");
+	applyTool(store, "read", { path: "src/b.ts" }, "b0\nb1\nb2\nb3\nb4\nb5", false, "second");
+	const frame = (): string[] => view.render(70);
+	const rows = frame();
+	const first = drawnRow(rows, /≡ read src\/a\.ts/, "the first card");
+	const second = drawnRow(rows, /≡ read src\/b\.ts/, "the second card");
+	const [separator] = bareRows(rows).filter((y) => y > first && y < second);
+	assert.ok(separator !== undefined, "the two cards are separated");
+	assert.notEqual(view.handleMouse(mouse(40, separator, 70, rows.length, "click"))?.handled, true, "the separating row belongs to no card");
+	assert.doesNotMatch(stripAnsi(frame().join("\n")), /a5|b5/, "clicking the separator expands nothing");
+
+	const secondBody = frame().findIndex((row) => stripAnsi(row).includes("b0"));
+	assert.equal(view.handleMouse(mouse(40, secondBody, 70, rows.length, "click"))?.handled, true, "the second card still owns the rows under it");
+	assert.match(stripAnsi(frame().join("\n")), /b5/, "the click expands the card that was clicked");
+	assert.doesNotMatch(stripAnsi(frame().join("\n")), /a5/, "the first card keeps its own level");
+
+	store.apply("a", { type: TASK_EVENT.TEXT, text: "tail line" }, 2000);
+	assert.match(stripAnsi(frame().join("\n")), /tail line/, "a new event still follows the tail through the separated cards");
+	view.dispose();
+});
+
 test("the log keeps its original detail whatever the host bindings or card state say", () => {
 	const { store, view, text } = detailHarness({ keybindings: new KeybindingsManager({ "app.thinking.toggle": "j", "app.tools.expand": "k" }), cardDetail: { thinkingExpanded: false, toolsExpanded: false } }, 30);
 	store.apply("a", { type: TASK_EVENT.THINKING, text: "long zero\nlong one\nlong two\nlong three\nlong four\nlong five" }, 2000);

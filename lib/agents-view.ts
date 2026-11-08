@@ -4,7 +4,7 @@ import { measureAgentsViewLayout, type AgentsViewLayout } from "./agents-view-la
 import { HOVER_ROLE, paintHoverable } from "./shell-hover.ts";
 import { emptyThread, isFinished, TASK_STATUS, THREAD_ITEM, type TaskRecord, type TaskStore, type TaskThread, type ThreadItem } from "./agents-protocol.ts";
 import { agentMessageCard } from "./agents-message-card.ts";
-import { renderThreadItem, THREAD_PRESENTATION, type AgentsThreadTheme, type ThreadPresentation } from "./agents-thread-view.ts";
+import { drawThreadItem, THREAD_PRESENTATION, type AgentsThreadTheme, type ThreadItemDrawing, type ThreadPresentation } from "./agents-thread-view.ts";
 import { formatElapsed } from "./agents-widget.ts";
 import { createNativePointerScope, type NativePointerRegion } from "./native-pointer-region.ts";
 import { formatCost, formatTokens } from "./shell-bar.ts";
@@ -221,7 +221,7 @@ export class AgentsView {
 	private unsubscribeTask: (() => void) | undefined;
 	private subscribedTaskId: string | undefined;
 	private readonly unsubscribeSummary: () => void;
-	private cache = new WeakMap<ThreadItem, { key: string; lines: string[] }>();
+	private cache = new WeakMap<ThreadItem, { key: string; lines: string[]; card: boolean }>();
 	private peers: SessionGroup[] = [];
 	private remoteThreads = new Map<string, TaskThread>();
 	private presenceCursor?: PresenceCursor;
@@ -845,18 +845,25 @@ export class AgentsView {
 		this.pruneCardExpansion(task, thread);
 		const lines: string[] = [];
 		const owners: Array<string | undefined> = [];
+		// The layout keeps one unpainted row between two cards -- whatever kind drew
+		// them, in whichever style, and never inside a card -- because each block
+		// reports whether its own drawing owns a frame. The labeled log and a card
+		// next to a row keep the spacing they always had.
+		let previousCard = false;
+		const pushBlock = (drawing: ThreadItemDrawing, owner?: string): void => {
+			if (cards && drawing.card && previousCard && drawing.lines.length > 0) {
+				lines.push("");
+				owners.push(undefined);
+			}
+			lines.push(...drawing.lines);
+			for (let index = 0; index < drawing.lines.length; index += 1) owners.push(owner);
+			if (drawing.lines.length > 0) previousCard = drawing.card;
+		};
 		// The message the subagent was asked is the one input outside the thread — a
 		// delivery to the child is retained as a note, this is not. Only cards draw
 		// it; the log never showed it and still does not.
-		if (cards && task.prompt.trim().length > 0) {
-			const prompt = agentMessageCard(task.prompt, this.deps.theme, width);
-			lines.push(...prompt);
-			for (let index = 0; index < prompt.length; index += 1) owners.push(undefined);
-		}
-		if (thread.dropped > 0) {
-			lines.push(this.deps.theme.fg(ROLE.META, `… ${thread.dropped} earlier items not kept`));
-			owners.push(undefined);
-		}
+		if (cards && task.prompt.trim().length > 0) pushBlock({ lines: agentMessageCard(task.prompt, this.deps.theme, width), card: true });
+		if (thread.dropped > 0) pushBlock({ lines: [this.deps.theme.fg(ROLE.META, `… ${thread.dropped} earlier items not kept`)], card: false });
 		// Rows of prose are the pane's own drawing, so they stay cached. A card is
 		// drawn by the chat's live renderer, whose output can change for a reason
 		// nothing here can observe (a content or style preference, a renderer's own
@@ -873,11 +880,10 @@ export class AgentsView {
 			const card = cards && item.kind === THREAD_ITEM.TOOL ? this.cardKey(task, item.callId) : undefined;
 			const expanded = card === undefined ? this.cardToolsExpanded : this.cardExpansion.get(card) ?? this.cardToolsExpanded;
 			const cached = card === undefined ? this.cache.get(item) : undefined;
-			const rendered = cached?.key === key ? cached.lines : renderThreadItem(item, this.deps.theme, width, { presentation, expanded, thinkingExpanded: this.thinkingExpanded, expandHint });
-			if (card === undefined && cached?.key !== key) this.cache.set(item, { key, lines: rendered });
-			lines.push(...rendered);
-			for (let index = 0; index < rendered.length; index += 1) owners.push(card);
-			retained += rendered.length;
+			const drawing = cached?.key === key ? cached : drawThreadItem(item, this.deps.theme, width, { presentation, expanded, thinkingExpanded: this.thinkingExpanded, expandHint });
+			if (card === undefined && cached?.key !== key) this.cache.set(item, { ...drawing, key });
+			pushBlock(drawing, card);
+			retained += drawing.lines.length;
 		}
 		// A task with nothing retained still says what it recorded — the error it
 		// ended with, or that it is waiting — exactly as the empty thread always did.

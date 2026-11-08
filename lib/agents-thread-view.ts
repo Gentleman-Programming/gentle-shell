@@ -190,9 +190,25 @@ function thinkingBlock(text: string, theme: AgentsThreadTheme, width: number, ex
 	return [line(theme, ROLE.LABEL, "Thinking", width), ...contentLines(theme, role, text, width, 2, chatStyle)];
 }
 
-/** Render already-sanitized, bounded protocol items without inferring content roles. */
-export function renderThreadItem(item: ThreadItem, theme: AgentsThreadTheme, width: number, options: ThreadItemRenderOptions = {}): string[] {
-	if (width <= 0) return [];
+/** One protocol item's drawing, and whether that drawing owns a frame of its own. */
+export interface ThreadItemDrawing {
+	lines: string[];
+	/**
+	 * Cards only: this block draws its own frame, so two such blocks in a row need
+	 * a seam between them. It is answered by the branch that drew the block, not by
+	 * the item's kind: a note the runner did not mark as a message, a tool whose
+	 * renderer threw, and prose all fall back to rows and are not cards.
+	 */
+	card: boolean;
+}
+
+/**
+ * Draw one protocol item and report whether its drawing owns a frame. A caller
+ * that lays blocks out uses this instead of keeping its own catalogue of card
+ * kinds, so a card added later is recognized wherever its drawing decides it.
+ */
+export function drawThreadItem(item: ThreadItem, theme: AgentsThreadTheme, width: number, options: ThreadItemRenderOptions = {}): ThreadItemDrawing {
+	if (width <= 0) return { lines: [], card: false };
 	// The labeled log is the overlay's original drawing: thinking and tool output
 	// are always whole there, and only the cards offer these detail levels.
 	const cards = options.presentation === THREAD_PRESENTATION.CARDS;
@@ -202,9 +218,9 @@ export function renderThreadItem(item: ThreadItem, theme: AgentsThreadTheme, wid
 		case THREAD_ITEM.TEXT:
 			// A card is chat content, so it draws prose as the chat does; the labeled
 			// log keeps the labeled block it always drew.
-			return cards ? proseLines(item.text, theme, width) : [line(theme, ROLE.LABEL, "Text", width), ...contentLines(theme, ROLE.TEXT, item.text, width, 2)];
+			return { lines: cards ? proseLines(item.text, theme, width) : [line(theme, ROLE.LABEL, "Text", width), ...contentLines(theme, ROLE.TEXT, item.text, width, 2)], card: false };
 		case THREAD_ITEM.THINKING:
-			return thinkingBlock(item.text, theme, width, showThinking, cards);
+			return { lines: thinkingBlock(item.text, theme, width, showThinking, cards), card: false };
 		case THREAD_ITEM.NOTE: {
 			// A message delivered to the child is chat content, so cards draw it as the
 			// chat's messaging card; the log keeps every note as the labelled block it
@@ -212,15 +228,24 @@ export function renderThreadItem(item: ThreadItem, theme: AgentsThreadTheme, wid
 			// a marker with nothing behind it — stays a note, never a message.
 			const received = cards ? steeredMessage(item.text) : undefined;
 			const card = received !== undefined && received.trim().length > 0 ? agentMessageCard(received, theme, width) : [];
-			return card.length > 0 ? card : [line(theme, ROLE.NOTE, "Note", width), ...contentLines(theme, ROLE.NOTE, item.text, width, 2)];
+			return card.length > 0
+				? { lines: card, card: true }
+				: { lines: [line(theme, ROLE.NOTE, "Note", width), ...contentLines(theme, ROLE.NOTE, item.text, width, 2)], card: false };
 		}
-		case THREAD_ITEM.TOOL:
+		case THREAD_ITEM.TOOL: {
 			// A card owns its frame when the chat offered one; `undefined` covers no
 			// renderer, a renderer that does not own its frame, and one that threw.
-			return (cards
-				? renderAgentToolItem(item, theme, width, { expanded: options.expanded === true })
-				: undefined) ?? toolBlock(item, theme, width, showWhole, options.expandHint);
+			const card = cards ? renderAgentToolItem(item, theme, width, { expanded: options.expanded === true }) : undefined;
+			return card !== undefined
+				? { lines: card, card: true }
+				: { lines: toolBlock(item, theme, width, showWhole, options.expandHint), card: false };
+		}
 		default:
-			return [];
+			return { lines: [], card: false };
 	}
+}
+
+/** The lines one item draws; see `drawThreadItem` when the caller also needs the frame answer. */
+export function renderThreadItem(item: ThreadItem, theme: AgentsThreadTheme, width: number, options: ThreadItemRenderOptions = {}): string[] {
+	return drawThreadItem(item, theme, width, options).lines;
 }

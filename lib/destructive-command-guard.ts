@@ -63,7 +63,8 @@ export function recognizeReviewDeliveryActions(command: string, depth = 0): Arra
 		if (end < tokens.length && !tokens[end].operator) continue;
 		const segment = tokens.slice(start, end);
 		start = end + 1;
-		const cursor = headCursor(segment);
+		let unresolvedPrefix = false;
+		const cursor = headCursor(segment, () => { unresolvedPrefix = true; });
 		const name = executable(segment[cursor]?.value ?? "").replace(/\.exe$/i, "");
 		const args = segment.slice(cursor + 1).map(token => token.value);
 		let index = 0;
@@ -79,7 +80,14 @@ export function recognizeReviewDeliveryActions(command: string, depth = 0): Arra
 				else gitDirectories.push(args[index + 1]);
 				index += 2;
 			}
+			else if (args[index].startsWith("-C") && args[index].length > 2) {
+				const directory = args[index++].slice(2);
+				if (/[\n\r$`~]/.test(directory)) unresolvedGitDirectory = true;
+				else gitDirectories.push(directory);
+			}
 			else if (args[index] === "-c") index += 2;
+			else if (["--git-dir", "--work-tree", "--namespace"].includes(args[index])) { unresolvedGitDirectory = true; index += 2; }
+			else if (/^--(?:git-dir|work-tree|namespace)=/.test(args[index])) { unresolvedGitDirectory = true; index++; }
 			else index++;
 		}
 		while (name === "gh" && index < args.length && args[index].startsWith("-")) {
@@ -89,14 +97,14 @@ export function recognizeReviewDeliveryActions(command: string, depth = 0): Arra
 		if (name === "git" && ["commit", "merge", "rebase", "reset", "checkout", "switch", "cherry-pick", "revert", "am", "pull", "update-ref"].includes(args[index])) matches.push({ kind: "change" });
 		if ((name === "git" && args[index] === "push") || (name === "gh" && args[index] === "pr" && ["create", "merge"].includes(args[index + 1]))) {
 			matches.push({ kind: "delivery",
-				...(unresolvedDirectory || unresolvedGitDirectory ? { unresolvedDirectory: true as const } : {}),
+				...(unresolvedDirectory || unresolvedGitDirectory || unresolvedPrefix ? { unresolvedDirectory: true as const } : {}),
 				...(!directories.length && !gitDirectories.length ? {} : { directories: [...directories, ...gitDirectories] }) });
 		}
 		if (["sh", "bash", "zsh", "dash", "eval"].includes(name)) {
 			const flag = args.findIndex(arg => /^-[a-z]*c[a-z]*$/.test(arg));
 			const payload = name === "eval" ? (args[0] === "--" ? args.slice(1) : args).join(" ") : flag >= 0 ? args[flag + 1] : undefined;
 			if (payload) matches.push(...recognizeReviewDeliveryActions(payload, depth + 1).map(match => ({ ...match,
-				...(unresolvedDirectory ? { unresolvedDirectory: true as const } : {}), directories: [...directories, ...(match.directories ?? [])] })));
+				...(unresolvedDirectory || unresolvedPrefix ? { unresolvedDirectory: true as const } : {}), directories: [...directories, ...(match.directories ?? [])] })));
 		}
 	}
 	for (const match of command.matchAll(/\$\(([^()]*)\)/g)) {
@@ -116,7 +124,7 @@ export function recognizeReviewDeliveryActions(command: string, depth = 0): Arra
 
 const WRAPPER_VALUE_OPTIONS: Record<string, readonly string[]> = {
 	env: ["-u", "--unset", "-C", "--chdir"],
-	sudo: ["-u", "-g", "-h", "-p", "-C", "--user", "--group", "--host", "--prompt", "--chdir"],
+	sudo: ["-u", "-g", "-h", "-p", "-C", "-D", "--user", "--group", "--host", "--prompt", "--chdir"],
 	timeout: ["-s", "--signal", "-k", "--kill-after"],
 	xargs: ["-n", "-I", "-P", "--max-args", "--replace", "--max-procs"],
 };
@@ -126,12 +134,13 @@ const WRAPPERS = ["env", "sudo", "command", "exec", "nohup", "timeout", "xargs"]
 const RESERVED_WORDS = new Set(["then", "else", "elif", "do", "{", "!", "if", "while", "until"]);
 
 /** Index of the executable token after reserved words, assignments and familiar wrappers. */
-function headCursor(segment: readonly Token[]): number {
+function headCursor(segment: readonly Token[], onTargetRedirect?: () => void): number {
 	let cursor = 0;
 	while (cursor < segment.length && segment[cursor].raw === segment[cursor].value && RESERVED_WORDS.has(segment[cursor].value)) cursor++;
 	while (cursor < segment.length) {
 		const value = segment[cursor].value;
 		if (/^[A-Za-z_][A-Za-z_0-9]*=/.test(value)) {
+			if (/^GIT_(?:DIR|WORK_TREE|COMMON_DIR|NAMESPACE)=/.test(value)) onTargetRedirect?.();
 			cursor++;
 			continue;
 		}
@@ -141,6 +150,8 @@ function headCursor(segment: readonly Token[]): number {
 		while (cursor < segment.length && segment[cursor].value.startsWith("-")) {
 			const flag = segment[cursor++].value;
 			if (flag === "--") break;
+			if (name === "env" && /^(?:-C.*|--chdir(?:=|$))/.test(flag)) onTargetRedirect?.();
+			if (name === "sudo" && /^(?:-D.*|--chdir(?:=|$))/.test(flag)) onTargetRedirect?.();
 			if (WRAPPER_VALUE_OPTIONS[name]?.includes(flag)) cursor++;
 		}
 		if (name === "timeout") cursor++;

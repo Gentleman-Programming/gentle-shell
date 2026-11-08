@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -154,12 +155,13 @@ test("validated abandon objects reach the mocked native facade and still fail cl
 
 test("validated ASSESS objects reach the mocked native facade with parsed fields", async () => {
 	const requests: unknown[] = [];
+	const baseRef = execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim();
 	const native = { assess: async (request: unknown) => { requests.push(request); throw new Error("mock assessment unavailable"); } } as unknown as NativeReviewCli;
 	for (const input of [{ baseRef: "HEAD", committedOnly: true, nativeReviewOutcome: "unknown" }, ' { "baseRef": "HEAD", "committedOnly": true, "nativeReviewOutcome": "unknown" } ']) {
 		await __testing.executeReviewControllerOperation(validate("gentle_review", { operation: "assess", input }), process.cwd(), native);
 	}
 	assert.equal(requests.length, 2);
-	assert.deepEqual(requests[0], { cwd: process.cwd(), baseRef: "HEAD", committedOnly: true });
+	assert.deepEqual(requests[0], { cwd: process.cwd(), baseRef, committedOnly: true });
 	assert.deepEqual(requests[1], requests[0]);
 });
 

@@ -133,6 +133,33 @@ test("delivery recognition distinguishes executable commands from text and cover
 	}
 });
 
+test("repository redirects remain delivery commands but cannot borrow the session repository", async () => {
+	const commands = [
+		"git --git-dir /other/.git push", "git --git-dir=/other/.git push",
+		"git --work-tree /other push", "git --work-tree=/other push",
+		"git --namespace other push", "git --namespace=other push",
+		"GIT_DIR=/other/.git git push", "GIT_WORK_TREE=/other git push", "GIT_COMMON_DIR=/other/.git git push", "GIT_NAMESPACE=other git push",
+		"env GIT_DIR=/other/.git git push", "env -C /other git push", "env --chdir /other git push", "env --chdir=/other git push", "env -C/other git push",
+		"env -C /other sh -c 'git push'", "GIT_WORK_TREE=/other eval 'git push'",
+		"sudo --chdir /other git push", "sudo --chdir=/other git push", "sudo -D /other git push", "sudo -D/other git push",
+	];
+	let modeCalls = 0;
+	const cli = { reviewMode: async () => { modeCalls++; return { status: { effective: "off" } }; } } as unknown as NativeReviewCli;
+	for (const command of commands) {
+		const deliveries = recognizeReviewDeliveryActions(command).filter(action => action.kind === "delivery");
+		assert.equal(deliveries.length, 1, command);
+		assert.equal(deliveries[0].unresolvedDirectory, true, command);
+		const result = await checkReviewDeliveryPreflight(process.cwd(), "bash", command, cli, () => "HEAD", () => false);
+		assert.equal(result?.block, true, command);
+		assert.match(result!.reason, /literal cd or git -C/);
+	}
+	assert.equal(modeCalls, 0, "an unrelated off session repository cannot authorize a redirected target");
+	for (const command of ["env -u GIT_DIR git push", "sudo -C 3 git push", "CI=1 git push", "env CI=1 git push"]) {
+		assert.equal(recognizeReviewDeliveryActions(command).find(action => action.kind === "delivery")?.unresolvedDirectory, undefined, command);
+	}
+	assert.deepEqual(recognizeReviewDeliveryActions("git -C/other push"), [{ kind: "delivery", directories: ["/other"] }]);
+});
+
 test("preflight rechecks the actual assessed range, preserves native non-due/decline and rejects drift", async t => {
 	const root = mkdtempSync(join(tmpdir(), "review-delivery-scope-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));

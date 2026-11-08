@@ -23,7 +23,7 @@ export async function checkReviewDeliveryPreflight(cwd: string, toolName: string
 	signal?: AbortSignal, current: () => boolean = () => true): Promise<Denial | undefined> {
 	const actions = recognizeReviewDeliveryActions(command), deliveries = actions.filter(action => action.kind === "delivery");
 	if (!deliveries.length || !cli?.reviewMode) return undefined;
-	if (deliveries.some(delivery => delivery.unresolvedDirectory)) return deny("The delivery repository cannot be resolved from a dynamic directory; use an explicit literal target.");
+	if (deliveries.some(delivery => delivery.unresolvedDirectory)) return deny("The delivery repository cannot be resolved from this directory or Git/environment redirect; run delivery inside its repository or use literal cd or git -C.");
 	if (signal?.aborted || !current()) return deny("Preflight was cancelled or its session changed.");
 	const bounded = AbortSignal.any([AbortSignal.timeout(10_000), ...(signal ? [signal] : [])]);
 	let abort!: () => void;

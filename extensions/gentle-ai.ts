@@ -2708,8 +2708,6 @@ function harnessReadOnlyRoots(env: NodeJS.ProcessEnv, cwd: string): ReadOnlyRoot
 		() => ({ dir: canonicalizeTarget(join(homedir(), ".agents", "skills"), cwd) }),
 		// Pi's managed npm installs: <agentDir>/npm/node_modules/<package>.
 		() => ({ dir: canonicalizeTarget(join(agentHome, "npm", "node_modules"), cwd) }),
-		// Pi's git-installed packages: <agentDir>/git/<host>/<owner>/<repo>.
-		() => ({ dir: canonicalizeTarget(join(agentHome, "git"), cwd) }),
 		// The package assets root the orchestrator prompt tells children to read,
 		// and this package's own skills: a bundled Gentle Shell install keeps the
 		// package outside <agentDir>/npm (~/.gentle-shell/versions/<id>/).

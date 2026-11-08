@@ -138,7 +138,6 @@ Harness-owned locations are **read-only** exempt roots: `read`, `grep`, `find` a
 
 - `<agent home>/skills`, where the agent home is `GENTLE_PI_AGENT_HOME`, else `PI_CODING_AGENT_DIR`, else `~/.pi/agent`;
 - `<agent home>/npm/node_modules`, where Pi installs npm packages;
-- `<agent home>/git`, where Pi installs git packages;
 - the Gentle Pi package `assets/` directory, the root the orchestrator prompt names for `orchestrator-*.md` and the other lazy assets;
 - the Gentle Pi package `skills/` directory, wherever the package is installed. A bundled Gentle Shell install keeps the package under `~/.gentle-shell/versions/<id>/`, outside `<agent home>/npm`, so its skills need their own root. The package root itself is not exempt;
 - `~/.agents/skills`, the user skill directory Pi loads from;

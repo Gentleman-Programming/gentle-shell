@@ -1,0 +1,26 @@
+# Canvas compare overlay: implement design/canvas-features/04-compare-overlay.html (without difference detection)
+
+Objective: the Compare view (artboard vs running app) gains Overlay (with app opacity) and Slider modes next to today's Side by side. Visual spec: `design/canvas-features/04-compare-overlay.html` minus the Difference mode and the "areas differ" list (L2). Tokens: `design/system.md`.
+Branch: `feat/canvas-compare-overlay`, started after the queued canvas features (same files; one writer at a time). Work-unit commits only; push/PR are the user's decision.
+
+## Specs
+
+- **S1 Compare modes.** User (artboard tradeoff): "overlay, slider and difference modes catch small mismatches between design and app". Per L2, only these modes: **Side by side** (today's), **Overlay** and **Slider**, as a segmented control in the Compare bar; Side by side stays the default; the last mode is remembered while the canvas runs.
+- **S2 Overlay.** The app frame is drawn over the artboard frame at the same position and size, with an **App opacity** slider (0–100%, default 50%, keyboard operable, value announced). Scale to fit applies to the stacked pair.
+- **S3 Slider.** Artboard and app stacked; a vertical handle reveals the artboard on the left and the app on the right; draggable with pointer and arrow keys (Shift for larger steps), with an accessible name and value; labels "Design" and "App" on each side.
+- **S4 Unchanged safety.** Both frames keep today's sandboxing (artboard `allow-scripts`; preview `PREVIEW_SANDBOX`), loopback-only preview rules, no referrer, and the IPv6 / refused-framing hints. Overlay and Slider never read either frame's pixels or DOM.
+- **S5 Docs, accessibility, tests.** `docs/gentle-shell.md` describes the modes and says the canvas cannot detect differences by itself (each frame is its own origin). WCAG AA, visible focus, reduced motion; tokens only from `design/system.md`. Tests cover mode switching, opacity and slider values from pointer and keys, and that frames keep their sandbox attributes in every mode.
+
+## Tasks
+
+- [x] T1 S1-S5 — modes, overlay opacity, slider, docs, tests. Route: gentle-ai-worker. Commit: 0fa66c113
+- [x] T2 S1-S5 — full suite, visual check, handoff implemented with a preview canvas URL. Route: inline. Commit: (this record)
+
+## Log
+
+- L1 (user, verbatim): "Implement the design artboard design/canvas-features/04-compare-overlay.html / Artboard: design/canvas-features/04-compare-overlay.html / Title: Compare with overlay / Tradeoff: Idea 4: overlay, slider and difference modes catch small mismatches between design and app; differences are only as good as both render at the same size / Implement it in the project's real stack. Use the artboard as the visual spec: map its parts to the project's existing components and styles, and do not copy the artboard HTML verbatim. Take colors, typography, spacing, radius and shadows from design/system.md, the project's token source. Report progress with the gentle_design tool: action \"handoff\", target \"canvas-features/04-compare-overlay.html\", status \"in_progress\" when you start; status \"implemented\" when it is done, with previewUrl set to the running app's loopback URL (localhost, 127.0.0.1 or [::1]) when one is running, so the canvas can compare it with the artboard. This design is not linked to an ODD feature document: size it under the project's ODD rules as usual. This handoff itself commits nothing."
+- L2 (user choice, verbatim option): "Superposición y deslizador, sin detección (recomendado)" — Difference mode and the differences list are out: cross-origin frames cannot be read, and screenshot capture would need a headless browser dependency.
+- L3: Queue order: screen sizes → token inspector → version history → compare overlay.
+- L4: Started on feat/canvas-compare-overlay from feat/canvas-version-history (3fbcbbe5c) after version history closed. Run tests/design-canvas-assets.test.ts only under a memory cap (see canvas-version-history L6). The review tab row now scrolls (e3a47ed91).
+- L5: T1 by gentle-ai-worker, committed 0fa66c113 (548 lines, 339 of them tests; 14 of 15 new tests RED first, the S4 ones made to fail by asserting the switch). Parent re-ran design-canvas-assets 184, design-canvas-server 82, gentle-design 81: all pass. Worker decisions accepted: opacity and split reset to 50% on each Compare (only the mode is remembered); opacity uses a native range input (browser keys); Overlay keeps the app frame interactive (no shield), only Slider shields; shared split helpers extracted from the version comparison with its tests unchanged.
+- L6: T2 — full suite 7982 pass, 4 fail (the env-dependent agent-home tests). Live check on a demo copy of canvas-chrome with a loopback "app" (the artboard shifted 6px/4px): Overlay at 50% shows the shift as ghosting, opacity control only in Overlay; Slider Shift+ArrowLeft 50→40 announced "40%: Design on the left, App on the right", the split shows the mismatch; frames keep allow-scripts / PREVIEW_SANDBOX and no-referrer. Same session applied the user's tab row choice (canvas-version-history L10, A2): f189295f8, and fixed its missing fade on first layout found live (40af981f4, ResizeObserver on the row, RED first). Demo servers stopped, so the handoff carries no preview URL. Feature complete; push/PR remain the user's decision.

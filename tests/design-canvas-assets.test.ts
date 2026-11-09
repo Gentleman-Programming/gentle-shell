@@ -582,7 +582,7 @@ test("navigation pan leaves secondary buttons and interactive descendants to the
 	assert.equal(secondary.defaultPrevented, false);
 	canvas.viewport.dispatch("pointermove", { pointerId: 1, clientX: 40, clientY: 25 });
 	assert.equal(canvas.world.style.transform, before);
-	for (const name of ["button", "a", "input", "select", "textarea", "iframe", "editable", "plaintext-only"]) {
+	for (const name of ["button", "a", "input", "select", "textarea", "label", "iframe", "editable", "plaintext-only"]) {
 		const control = canvas.document.createElement(name === "editable" || name === "plaintext-only" ? "div" : name);
 		if (name === "editable" || name === "plaintext-only") control.setAttribute("contenteditable", name === "editable" ? "true" : name);
 		const child = canvas.document.createElement("span");

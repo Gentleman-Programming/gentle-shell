@@ -153,6 +153,7 @@ export const requiredPaths = [
   "scripts/gentle-ai-installer.mjs",
   "scripts/install-gentle-ai.mjs",
   "scripts/install-tui-mode-setting.mjs",
+  "scripts/prepare-verifier.mjs",
   "scripts/mirror-provider-contract.mjs",
   "tests/fixtures/native-review-cli/v2.1.3/start.json",
   "tests/fixtures/provider-contract-bundle/v1.1.0/README.md",

@@ -21,17 +21,19 @@ export interface Card {
 	glyph?: string;
 	/**
 	 * Theme color role for the glyph and title, overriding the tone's role. A
-	 * quiet bash card names its ODD phase in that phase's color while the frame
-	 * keeps the call's status tone, so the heading never hides a pending or
-	 * failed call.
+	 * quiet bash card names its ODD phase in that phase's color while the box
+	 * keeps the call's status until it finishes, so the heading never hides a
+	 * pending or failed call.
 	 */
 	titleRole?: string;
 	/**
-	 * Theme color role for the card's left rail, overriding the tone's frame
+	 * Theme color role for the card's closed box, overriding the tone's frame
 	 * role. A quiet bash card names its ODD phase in that phase's color and
-	 * paints the rail that leads its rows in the same one, so the rail reads as
-	 * part of the label it belongs to; every other edge keeps the status tone.
-	 * A card that does not set it keeps the tone's rail.
+	 * paints the whole box — corners, rules, sides and rail — in the same one,
+	 * so the box reads as part of the label it belongs to. The identity speaks
+	 * only for a card with nothing left to report: while the call is still
+	 * running or has failed, the status tone owns the box and only the label
+	 * keeps the identity color. A card that does not set it keeps the tone.
 	 */
 	railRole?: string;
 }
@@ -90,6 +92,18 @@ const FRAME_ROLE: Record<CardTone, string> = {
 	[CARD_TONE.WARNING]: "warning",
 	[CARD_TONE.ERROR]: "error",
 };
+/**
+ * Which tones own the whole box instead of letting an idle card wear its own
+ * identity there. An active state speaks for the call: amber while it runs, red
+ * once it has failed. Every tone is decided here, so a new tone cannot compile
+ * without an answer.
+ */
+export const TONE_OWNS_BOX: Record<CardTone, boolean> = {
+	[CARD_TONE.INFO]: false,
+	[CARD_TONE.SUCCESS]: false,
+	[CARD_TONE.WARNING]: true,
+	[CARD_TONE.ERROR]: true,
+};
 const TITLE_ROLE: Record<CardTone, string> = {
 	[CARD_TONE.INFO]: "accent",
 	[CARD_TONE.SUCCESS]: "success",
@@ -118,19 +132,12 @@ interface CardChrome {
 	rail: string;
 	bottomLeft: string;
 	bottomRight: string;
-	/**
-	 * Whether the left edge is one continuous accent bar (`▎`, float) rather than
-	 * the left corners of an outlined frame. A rail role can only reach the whole
-	 * left edge where that edge is a bar; in the outlined frame it reaches the
-	 * vertical side, which is the only left line the layout has.
-	 */
-	bar: boolean;
 }
 
-const OUTLINE_CHROME: CardChrome = { topLeft: "╭", topLead: "─ ", topRight: "╮", rule: "─", side: "│", rail: "│", bottomLeft: "╰", bottomRight: "╯", bar: false };
+const OUTLINE_CHROME: CardChrome = { topLeft: "╭", topLead: "─ ", topRight: "╮", rule: "─", side: "│", rail: "│", bottomLeft: "╰", bottomRight: "╯" };
 // `▎ ` is one cell narrower than `╭─ `: the spare cell moves to the right end
 // so the heading glyph starts in the same column as the body text.
-const FLOAT_CHROME: CardChrome = { topLeft: "▎", topLead: " ", topRight: "  ", rule: " ", side: "▎", rail: " ", bottomLeft: "▎", bottomRight: " ", bar: true };
+const FLOAT_CHROME: CardChrome = { topLeft: "▎", topLead: " ", topRight: "  ", rule: " ", side: "▎", rail: " ", bottomLeft: "▎", bottomRight: " " };
 let chrome = OUTLINE_CHROME;
 
 function withChrome<T>(next: CardChrome, run: () => T): T {
@@ -147,9 +154,9 @@ function rule(length: number): string {
 	return chrome.rule.repeat(Math.max(0, length));
 }
 
-// The role the left rail is painted in, when the card at hand names one. The
-// rail runs the height of a card, so it is a scope around a whole card's rows
-// rather than a parameter each row helper would have to carry.
+// The identity role a card's closed box is painted in, when the card names one.
+// The frame runs around every row, so it is a scope around a whole card rather
+// than a parameter each row helper would have to carry.
 let railRole: string | undefined;
 
 function withRailRole<T>(role: string | undefined, run: () => T): T {
@@ -162,17 +169,20 @@ function withRailRole<T>(role: string | undefined, run: () => T): T {
 	}
 }
 
-function leftRole(tone: CardTone): string {
-	return railRole ?? FRAME_ROLE[tone];
-}
-
-/** The left edge's text: a rail role owns the whole bar, but only the vertical side of an outlined frame. */
-function leftText(tone: CardTone, theme: CardTheme, text: string): string {
-	return theme.fg(leftRole(tone), text);
-}
-
-function edgeText(tone: CardTone, theme: CardTheme, text: string): string {
-	return chrome.bar ? leftText(tone, theme, text) : theme.fg(FRAME_ROLE[tone], text);
+/**
+ * The one role every closed-frame cell is painted in: both top corners, the
+ * lead and rule of the top, the left side, the right rail, the bottom rule and
+ * both bottom corners. A tone that owns the box keeps its own frame role;
+ * otherwise an idle card wears the identity role it names, falling back to the
+ * tone. One role per card, so no row shows two colors side by side.
+ *
+ * Both decisions are table edits, never a branch here. A new activity is one
+ * SHELL_ACTIVITY_IDENTITY entry (glyph and titleRole, lib/odd-phase-inference.ts)
+ * and the card paints its label and its whole box in that role. A new tone is
+ * one FRAME_ROLE entry, one TITLE_ROLE entry and one TONE_OWNS_BOX answer.
+ */
+function frameRole(tone: CardTone): string {
+	return TONE_OWNS_BOX[tone] ? FRAME_ROLE[tone] : railRole ?? FRAME_ROLE[tone];
 }
 
 function titleRole(card: Card): string {
@@ -192,13 +202,13 @@ function bodyLines(card: Card, innerWidth: number): string[] {
 }
 
 function frame(theme: CardTheme, tone: CardTone, text: string): string {
-	return theme.fg(FRAME_ROLE[tone], text);
+	return theme.fg(frameRole(tone), text);
 }
 
 export function cardTop(card: Card, theme: CardTheme, width: number, hint?: string): string {	const targetWidth = Math.max(0, Math.floor(width));
 	if (targetWidth === 0) return "";
 	if (targetWidth < 5) {
-		const left = edgeText(card.tone, theme, "╭");
+		const left = frame(theme, card.tone, "╭");
 		if (targetWidth === 1) return left;
 		return left + frame(theme, card.tone, `${rule(targetWidth - 2)}╮`);
 	}
@@ -212,7 +222,7 @@ export function cardTop(card: Card, theme: CardTheme, width: number, hint?: stri
 	const styledTitleWidth = title.width <= titleWidth ? title.width : visibleWidth(styledTitle);
 	const fill = rule(targetWidth - styledTitleWidth - 5 - hintWidth);
 	const tail = shownHint ? ` ${theme.fg(HINT_ROLE, shownHint)} ` : "";
-	return edgeText(card.tone, theme, chrome.topLeft) + frame(theme, card.tone, chrome.topLead) + styledTitle + frame(theme, card.tone, ` ${fill}`) + tail + frame(theme, card.tone, chrome.topRight);
+	return frame(theme, card.tone, chrome.topLeft) + frame(theme, card.tone, chrome.topLead) + styledTitle + frame(theme, card.tone, ` ${fill}`) + tail + frame(theme, card.tone, chrome.topRight);
 }
 
 /**
@@ -229,7 +239,7 @@ export function headingFits(card: Card, hint: string | undefined, width: number)
 export function cardLine(text: string, tone: CardTone, theme: CardTheme, width: number): string {
 	const targetWidth = Math.max(0, Math.floor(width));
 	if (targetWidth === 0) return "";
-	const left = leftText(tone, theme, chrome.side);
+	const left = frame(theme, tone, chrome.side);
 	if (targetWidth === 1) return left;
 	if (targetWidth === 2) return left + frame(theme, tone, "│");
 	if (targetWidth === 3) return `${left} ${frame(theme, tone, "│")}`;
@@ -243,7 +253,7 @@ export function cardLine(text: string, tone: CardTone, theme: CardTheme, width: 
 export function cardBottom(tone: CardTone, theme: CardTheme, width: number, content?: string): string {
 	const targetWidth = Math.max(0, Math.floor(width));
 	if (targetWidth === 0) return "";
-	const left = edgeText(tone, theme, chrome.bottomLeft);
+	const left = frame(theme, tone, chrome.bottomLeft);
 	if (targetWidth === 1) return left;
 	if (content === undefined || visibleWidth(content) === 0) return left + frame(theme, tone, `${rule(targetWidth - 2)}${chrome.bottomRight}`);
 	const contentWidth = visibleWidth(content) + 2;
@@ -434,7 +444,9 @@ function panelOpener(theme: CardTheme, tone: CardTone): string {
  * style returns the parts unchanged; the float style renders them one margin
  * narrower with the float chrome and paints a tone background behind every
  * row. A blank row sits above the heading and between it and the body. A
- * `rail` role paints the card's left rail in that role instead of the tone.
+ * `rail` role is the card's identity role: it paints the float accent bar
+ * instead of the tone, except while the card still reports a pending or
+ * failed call, and the tone background keeps stating that status behind it.
  */
 export function floatRows(tone: CardTone, theme: CardTheme, width: number, render: (width: number) => CardParts, rail?: string): string[] {
 	return withRailRole(rail, () => styleRows(tone, theme, width, render));
@@ -550,7 +562,7 @@ function fitRow(text: string, width: number): string {
 // `▎ <glyph> <title>  <subtitle>` left and the hint right, ending in the same
 // two columns the body rows keep for their right edge.
 function panelHeader(card: Card, theme: CardTheme, width: number, hint?: string): string {
-	const lead = theme.fg(FRAME_ROLE[card.tone], chrome.topLeft) + chrome.topLead;
+	const lead = theme.fg(frameRole(card.tone), chrome.topLeft) + chrome.topLead;
 	const subtitle = card.subtitle ? `  ${theme.fg(SUBTITLE_ROLE, card.subtitle)}` : "";
 	const left = `${lead}${theme.fg(titleRole(card), `${card.glyph ?? CARD_GLYPH} ${card.title}`)}${subtitle}`;
 	const right = hint ? `${theme.fg(SUBTITLE_ROLE, hint)}${chrome.topRight}` : "";

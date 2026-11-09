@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
-	CARD_STYLE, CARD_TONE, cardAwaitingResult, cardElapsed, cardRunningLine, cardStyle, cardTopLine, cardTopRows, headingFits, markCardResult, panelExtraRows, panelHeaderRow, renderCard, setCardStyle,
+	CARD_STYLE, CARD_TONE, TONE_OWNS_BOX, cardAwaitingResult, cardElapsed, cardRunningLine, cardStyle, cardTopLine, cardTopRows, headingFits, markCardResult, panelExtraRows, panelHeaderRow, renderCard, setCardStyle,
 	type Card, type CardStyle, type CardTone,
 } from "../lib/shell-card.ts";
+import { SHELL_ACTIVITY_IDENTITY } from "../lib/odd-phase-inference.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
 // Cards are how Gentle notices look: the same rounded frame as the prompt,
@@ -243,6 +244,24 @@ function cellBackgrounds(line: string): (number | undefined)[] {
 }
 
 const floatCard = (overrides: Partial<Card> = {}) => card({ title: "read", subtitle: undefined, glyph: "⌖", body: ["alpha", "beta"], tone: CARD_TONE.SUCCESS, ...overrides });
+
+/** Foreground code of every frame cell, following resets exactly as a terminal does. */
+function frameForegrounds(row: string): number[] {
+	const found: number[] = [];
+	let fg: number | undefined;
+	for (const token of row.match(/\x1b\[[\d;]*m|[^\x1b]/gu) ?? []) {
+		if (!token.startsWith("\x1b")) {
+			if ("╭╮╰╯│─".includes(token)) found.push(fg ?? -1);
+			continue;
+		}
+		const codes = token.slice(2, -1).split(";").map((code) => (code === "" ? 0 : Number(code)));
+		for (let index = 0; index < codes.length; index++) {
+			if (codes[index] === 0 || codes[index] === 39) fg = undefined;
+			if (codes[index] === 38 && codes[index + 1] === 5) fg = codes[index + 2]!;
+		}
+	}
+	return found;
+}
 
 test("card style defaults to the float style and lives in a process-wide slot", () => {
 	const slot = Symbol.for("gentle-pi.card-style");
@@ -519,40 +538,136 @@ test("a title role paints the glyph and title while the frame keeps the call's t
 	assert.match(plain[0], /<success>✿ Gentle AI<\/success>/);
 });
 
-test("a rail role paints the left rail in the heading's own color while the frame keeps the call's status", () => {
-	// A quiet bash card names its ODD phase in that phase's color. The rail that
-	// runs down the card carries the same color as the label it leads, and every
-	// other part of the frame keeps the status tone, so a pending or failed call
-	// is still readable from the card itself.
-	const value = card({ glyph: "⌕", title: "exploring", subtitle: "git status", tone: CARD_TONE.WARNING, titleRole: "mdLink", railRole: "mdLink", body: ["clean"] });
-	const neon = renderCard(value, taggedTheme, 40, { expanded: true });
-	assert.match(neon[0]!, /^<warning>╭<\/warning>/, "the top rule keeps the status tone");
-	assert.match(neon[0]!, /<mdLink>⌕ exploring<\/mdLink>/);
-	assert.match(neon[1]!, /^<mdLink>│<\/mdLink> .* <warning>│<\/warning>$/, "the left rail carries the label's color and the right rail the status");
-	assert.match(neon.at(-1)!, /^<warning>╰<\/warning>/, "the bottom rule keeps the status tone");
+test("one frame role paints the whole closed box: the identity while idle, the status while a call runs or fails", () => {
+	// A quiet bash card names its ODD phase in that phase's color. An idle card
+	// has nothing left to report, so the whole box — both corners, the lead, the
+	// rule, the left side, the right rail and the bottom rule — wears that
+	// identity, instead of leaving the frame in the status tone beside it.
+	const idle = card({ glyph: "⌕", title: "exploring", subtitle: "git status", tone: CARD_TONE.SUCCESS, titleRole: "mdLink", railRole: "mdLink", body: ["clean"] });
+	const neon = renderCard(idle, taggedTheme, 40, { expanded: true });
+	assert.match(neon[0]!, /^<mdLink>╭<\/mdLink><mdLink>─ <\/mdLink><mdLink>⌕ exploring<\/mdLink> <muted>·<\/muted> <muted>git status<\/muted><mdLink> ─+<\/mdLink><mdLink>╮<\/mdLink>$/, "the corner, lead, rule and top-right corner all wear the identity");
+	assert.match(neon[1]!, /^<mdLink>│<\/mdLink> <text>clean<\/text> +<mdLink>│<\/mdLink>$/, "the left side and the right rail wear the identity");
+	assert.match(neon.at(-1)!, /^<mdLink>╰<\/mdLink><mdLink>─+╯<\/mdLink>$/, "the bottom corner and the bottom rule close the same box");
+	assert.doesNotMatch(neon.join("\n"), /<success>/, "no cell of the box keeps the status tone beside the identity");
 
-	// The outlined frame has no rail role of its own, so a card without one keeps
-	// the tone rails it always had, exactly like the title override above.
-	const plainRails = renderCard({ ...value, railRole: undefined }, taggedTheme, 40, { expanded: true });
-	assert.match(plainRails[1]!, /^<warning>│<\/warning> /);
+	// A running call still reports its status: the whole box — corners
+	// included — is amber while the label keeps the identity color it names.
+	const running = renderCard({ ...idle, tone: CARD_TONE.WARNING }, taggedTheme, 40, { expanded: true });
+	assert.match(running[0]!, /^<warning>╭<\/warning><warning>─ <\/warning><mdLink>⌕ exploring<\/mdLink>/, "the pending call owns the box and the label keeps its identity");
+	assert.match(running[1]!, /^<warning>│<\/warning> <text>clean<\/text> +<warning>│<\/warning>$/, "the left side and the right rail both report the pending call");
+	assert.match(running.at(-1)!, /^<warning>╰<\/warning><warning>─+╯<\/warning>$/);
+	assert.doesNotMatch(running.join("\n"), /<mdLink>[╭╮╰╯│─]/, "no frame cell keeps the identity while the call is pending");
 
-	// In the float style the accent bar is one continuous rail, so every row —
-	// heading, padding and body — takes the label's color while the background
-	// tint keeps reporting the status.
-	const floated = withCardStyle(CARD_STYLE.FLOAT, () => renderCard({ ...value, body: ["alpha", "beta"] }, floatTheme, 40, { expanded: true, previewRows: 3 }));
+	// A failed call reports it the same way, in red, and the label still says
+	// which identity the card leads.
+	const failed = renderCard({ ...idle, tone: CARD_TONE.ERROR }, taggedTheme, 40, { expanded: true });
+	assert.match(failed[0]!, /^<error>╭<\/error><error>─ <\/error><mdLink>⌕ exploring<\/mdLink>/, "the failed call owns the box and the label keeps its identity");
+	assert.match(failed[1]!, /^<error>│<\/error> <text>clean<\/text> +<error>│<\/error>$/);
+	assert.match(failed.at(-1)!, /^<error>╰<\/error><error>─+╯<\/error>$/);
+	assert.doesNotMatch(failed.join("\n"), /<mdLink>[╭╮╰╯│─]/, "no frame cell keeps the identity while the call has failed");
+
+	// Without a rail role there is no identity to wear, so the tone paints the
+	// whole box exactly as it always did.
+	const plainRails = renderCard({ ...idle, railRole: undefined }, taggedTheme, 40, { expanded: true });
+	assert.match(plainRails[0]!, /^<success>╭<\/success><success>─ <\/success><mdLink>⌕ exploring<\/mdLink> <muted>·<\/muted> <muted>git status<\/muted><success> ─+<\/success><success>╮<\/success>$/);
+	assert.match(plainRails[1]!, /^<success>│<\/success> <text>clean<\/text> +<success>│<\/success>$/);
+	assert.match(plainRails.at(-1)!, /^<success>╰<\/success><success>─+╯<\/success>$/);
+	assert.doesNotMatch(plainRails.join("\n"), /<mdLink>[╭╮╰╯│─]/, "no frame cell takes the label role without a rail role");
+
+	// Narrow outlined cards keep their exact width and the same single role.
+	for (const width of [1, 2, 3, 4, 5, 8, 40]) {
+		const rows = renderCard(idle, floatTheme, width, { expanded: true });
+		for (const row of rows) {
+			assert.equal(visibleWidth(row), width, `width ${width}: ${JSON.stringify(row)}`);
+			const cells = frameForegrounds(row);
+			assert.ok(cells.length > 0, `width ${width}: the frame is drawn`);
+			assert.deepEqual([...new Set(cells)], [FG_CODE.mdLink], `width ${width}: every frame cell wears the identity: ${JSON.stringify(row)}`);
+		}
+	}
+
+	// In the float style the accent bar is one continuous rail, so an idle card's
+	// every row — heading, padding and body — takes the label's color while the
+	// background tint keeps reporting the status.
+	const floated = withCardStyle(CARD_STYLE.FLOAT, () => renderCard({ ...idle, body: ["alpha", "beta"] }, floatTheme, 40, { expanded: true, previewRows: 3 }));
 	assert.ok(floated.length > 3, "the panel has padding, heading and body rows");
 	for (const row of floated) {
 		assert.ok(row.includes(`\x1b[38;5;${FG_CODE.mdLink}m▎`), `every bar cell keeps the rail color: ${JSON.stringify(row)}`);
-		assert.deepEqual(cellBackgrounds(row).slice(1, -1), Array(38).fill(BG_CODE.toolPendingBg), "the status tint stays behind the rail");
+		assert.deepEqual(cellBackgrounds(row).slice(1, -1), Array(38).fill(BG_CODE.toolSuccessBg), "the status tint stays behind the rail");
 	}
 
 	// Narrow panels keep the same rail rather than falling back to the tone.
 	for (const width of [10, 12, 20, 40]) {
-		const rows = withCardStyle(CARD_STYLE.FLOAT, () => renderCard({ ...value, body: ["clean"] }, floatTheme, width, { expanded: true, previewRows: 3 }));
+		const rows = withCardStyle(CARD_STYLE.FLOAT, () => renderCard({ ...idle, body: ["clean"] }, floatTheme, width, { expanded: true, previewRows: 3 }));
 		for (const row of rows) {
 			assert.equal(visibleWidth(row), width);
 			assert.ok(row.includes(`\x1b[38;5;${FG_CODE.mdLink}m▎`), `width ${width}: ${JSON.stringify(row)}`);
 		}
+	}
+
+	// The float bar reports a pending or failed call exactly like the outlined
+	// edge does, and the label keeps its own color on the heading row.
+	const floatPending = withCardStyle(CARD_STYLE.FLOAT, () => renderCard({ ...idle, tone: CARD_TONE.WARNING, body: ["alpha"] }, floatTheme, 40, { expanded: true, previewRows: 3 }));
+	for (const row of floatPending) {
+		assert.ok(row.includes(`\x1b[38;5;${FG_CODE.warning}m▎`), `the pending bar keeps the status color: ${JSON.stringify(row)}`);
+		assert.deepEqual(cellBackgrounds(row).slice(1, -1), Array(38).fill(BG_CODE.toolPendingBg), "the status tint stays behind the bar");
+	}
+	assert.ok(floatPending.some((row) => row.includes(`\x1b[38;5;${FG_CODE.mdLink}m⌕ exploring`)), "the heading keeps the identity color");
+	const floatFailed = withCardStyle(CARD_STYLE.FLOAT, () => renderCard({ ...idle, tone: CARD_TONE.ERROR, body: ["boom"] }, floatTheme, 40, { expanded: true, previewRows: 3 }));
+	for (const row of floatFailed) {
+		assert.ok(row.includes(`\x1b[38;5;${FG_CODE.error}m▎`), `the failed bar keeps the status color: ${JSON.stringify(row)}`);
+		assert.deepEqual(cellBackgrounds(row).slice(1, -1), Array(38).fill(BG_CODE.toolErrorBg), "the status tint stays behind the bar");
+	}
+		assert.ok(floatFailed.some((row) => row.includes(`\x1b[38;5;${FG_CODE.mdLink}m⌕ exploring`)), "the heading keeps the identity color");
+});
+
+/** The role tag of the box a tagged outline card paints, read from its top-left corner. */
+function boxRole(rows: readonly string[]): string {
+	const found = /^<([^>]+)>╭/.exec(rows[0] ?? "");
+	assert.ok(found, `the top-left corner names its role: ${JSON.stringify(rows[0])}`);
+	return found[1]!;
+}
+
+/** Asserts the closed frame is one role: corners, lead, rule, sides, rail and bottom rule. */
+function assertOneRoleBox(rows: readonly string[], role: string, where: string): void {
+	const top = rows[0] ?? "";
+	const bottom = rows.at(-1) ?? "";
+	assert.match(top, new RegExp(`^<${role}>╭</${role}><${role}>─ </${role}>`), `${where}: the top-left corner and lead wear ${role}`);
+	assert.match(top, new RegExp(`<${role}> ─+</${role}><${role}>╮</${role}>$`), `${where}: the top rule and top-right corner wear ${role}`);
+	assert.match(bottom, new RegExp(`^<${role}>╰</${role}><${role}>─+╯</${role}>$`), `${where}: the bottom rule and both bottom corners wear ${role}`);
+	const body = rows.slice(1, -1);
+	assert.ok(body.length > 0, `${where}: the card has a body row to read`);
+	for (const row of body) assert.match(row, new RegExp(`^<${role}>│</${role}> .*<${role}>│</${role}>$`), `${where}: the left side and the right rail wear ${role}: ${JSON.stringify(row)}`);
+	const frameRoles = new Set<string>();
+	for (const row of rows) for (const found of row.matchAll(/<([^>]+)>([╭╮╰╯│─])/gu)) frameRoles.add(found[1]!);
+	assert.deepEqual([...frameRoles], [role], `${where}: every closed-frame cell is painted in the one role`);
+}
+
+test("every activity the identity table declares paints its finished card's whole box in that identity", () => {
+	// The loop reads the table, so an activity added there is covered the day it
+	// lands: the card needs its glyph and its role and nothing else.
+	for (const [activity, identity] of Object.entries(SHELL_ACTIVITY_IDENTITY)) {
+		const finished = renderCard(
+			card({ glyph: identity.glyph, title: activity, subtitle: "git status", tone: CARD_TONE.SUCCESS, titleRole: identity.titleRole, railRole: identity.titleRole, body: ["clean"] }),
+			taggedTheme,
+			60,
+			{ expanded: true },
+		);
+		assertOneRoleBox(finished, identity.titleRole, `activity ${activity}`);
+		assert.ok(finished[0]!.includes(`<${identity.titleRole}>${identity.glyph} ${activity}`), `activity ${activity}: the label keeps the identity role`);
+	}
+});
+
+test("one table decides which tones own the box, and every tone is decided there", () => {
+	const tones = Object.values(CARD_TONE);
+	assert.deepEqual(Object.keys(TONE_OWNS_BOX).sort(), [...tones].sort(), "a new tone cannot compile without a decision, and the table names every one");
+	for (const tone of tones) {
+		// The tone's own role, read from a card that names no identity at all.
+		const bare = renderCard(card({ subtitle: undefined, tone, body: ["clean"] }), taggedTheme, 40, { expanded: true });
+		const toneRole = boxRole(bare);
+		const labelled = renderCard(card({ subtitle: undefined, tone, titleRole: "mdLink", railRole: "mdLink", body: ["clean"] }), taggedTheme, 40, { expanded: true });
+		const expected = TONE_OWNS_BOX[tone] ? toneRole : "mdLink";
+		assertOneRoleBox(labelled, expected, `tone ${tone}`);
+		assert.ok(labelled[0]!.includes("<mdLink>✿ Gentle AI</mdLink>"), `tone ${tone}: the label keeps its own role`);
 	}
 });
 

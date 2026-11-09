@@ -79,6 +79,7 @@ export const requiredPaths = [
   "lib/design-open-browser.ts",
   "lib/design-comments.ts",
   "lib/design-handoffs.ts",
+  "lib/design-system-tokens.ts",
   "lib/design-sources.ts",
   "assets/design-canvas/index.html",
   ...designCanvasAssetPaths,

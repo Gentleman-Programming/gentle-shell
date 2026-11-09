@@ -50,6 +50,7 @@ export const ODD_FILE_CARD: FileCardMark = {
 
 const SKILL_FOLDER = "skills";
 const ODD_FOLDER = "odd";
+const ODD_TASKS_FOLDER = "tasks";
 const SKILL_DOCUMENT = "skill.md";
 const MARKDOWN_NAME = /\.md$/i;
 
@@ -59,22 +60,31 @@ function pathComponents(path: string): string[] {
 }
 
 /**
- * The card a file path wears, or undefined for a path that is neither a skill nor
- * an ODD artifact. A document named `SKILL.md` is a skill wherever it sits — the
- * name is the file's own identity, not its folder's. Otherwise the innermost named
- * folder decides, so `odd/work/skills/x.md` is a skill and `skills/pack/odd/x.md`
- * is ODD.
+ * The card a file path wears, or undefined for a file that is neither a skill nor
+ * an ODD artifact.
+ *
+ * Identity is where the file sits together with what it is called. An ODD artifact
+ * is any file inside an `odd/tasks/` folder — the `odd` folder alone is not enough,
+ * so `odd/work/feature/design.md` is an ordinary file. A skill is a document whose
+ * own name is `SKILL.md` held by a `skills` folder — the folder alone is not enough,
+ * so the notes beside a skill are ordinary files, and a `SKILL.md` outside a
+ * `skills` folder is not a skill either.
+ *
+ * A path can name both, and then the marker closest to the file decides: a
+ * `SKILL.md` directly under `skills/` is a skill even when an `odd/tasks/` folder
+ * sits above it, while anything else below `odd/tasks/` is an ODD artifact.
  */
 export function fileCardIdentity(path: unknown): FileCardMark | undefined {
 	if (typeof path !== "string") return undefined;
 	const components = pathComponents(path);
 	if (components.length === 0) return undefined;
-	if ((components[components.length - 1] ?? "").toLowerCase() === SKILL_DOCUMENT) return SKILL_FILE_CARD;
+	const isSkillDocument = (components.at(-1) ?? "").toLowerCase() === SKILL_DOCUMENT;
 	// Only the folders decide; a file whose own name is `odd` is not inside one.
 	for (let index = components.length - 2; index >= 0; index -= 1) {
 		const component = (components[index] ?? "").toLowerCase();
-		if (component === SKILL_FOLDER) return SKILL_FILE_CARD;
-		if (component === ODD_FOLDER) return ODD_FILE_CARD;
+		const next = (components[index + 1] ?? "").toLowerCase();
+		if (component === SKILL_FOLDER && isSkillDocument) return SKILL_FILE_CARD;
+		if (component === ODD_FOLDER && next === ODD_TASKS_FOLDER) return ODD_FILE_CARD;
 	}
 	return undefined;
 }

@@ -7,35 +7,36 @@ import {
 	fileCardIdentity,
 	fileCardLineRange,
 	fileCardMarkdownRows,
+	fileCardMarkdownTheme,
 	fileCardName,
 	isMarkdownFile,
 	markdownDocumentSource,
 } from "../lib/skill-odd-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
-// A file card is chosen from the path the call names, so every boundary case is
-// pinned here: a folder called `skills` or `odd` is a path component, never a
-// substring, and a Windows path classifies exactly like a POSIX one.
-test("a skill and an ODD artifact are recognized by a whole path component", () => {
+// A file card is chosen from where the call says the file sits, so every boundary
+// case is pinned here: a folder called `skills` is a path component and never a
+// substring, `odd` only counts when `tasks` follows it, and a Windows path
+// classifies exactly like a POSIX one.
+test("a skill and an ODD artifact are recognized by the path the file sits in", () => {
+	// A skill is a document called SKILL.md that a `skills` folder holds.
 	assert.equal(fileCardIdentity("skills/gentle-ai/SKILL.md")?.identity, FILE_CARD_IDENTITY.SKILL);
-	assert.equal(fileCardIdentity("skills/gentle-ai/references/notes.md")?.identity, FILE_CARD_IDENTITY.SKILL);
 	assert.equal(fileCardIdentity("packages/gentle/skills/tdd/SKILL.md")?.identity, FILE_CARD_IDENTITY.SKILL);
-	// A document named SKILL.md is a skill wherever it sits: the name is the
-	// file's own identity, not its folder's.
-	assert.equal(fileCardIdentity("SKILL.md")?.identity, FILE_CARD_IDENTITY.SKILL);
-	assert.equal(fileCardIdentity("/home/dev/repo/SKILL.md")?.identity, FILE_CARD_IDENTITY.SKILL);
+	assert.equal(fileCardIdentity("skills/tdd/references/SKILL.md")?.identity, FILE_CARD_IDENTITY.SKILL);
 
-	assert.equal(fileCardIdentity("odd/work/feature/design.md")?.identity, FILE_CARD_IDENTITY.ODD);
-	assert.equal(fileCardIdentity("odd/work")?.identity, FILE_CARD_IDENTITY.ODD, "the folder itself is an ODD path");
+	// An ODD artifact is a file under `odd/tasks/`.
+	assert.equal(fileCardIdentity("odd/tasks/checkout.md")?.identity, FILE_CARD_IDENTITY.ODD);
+	assert.equal(fileCardIdentity("odd/tasks/checkout/design.md")?.identity, FILE_CARD_IDENTITY.ODD);
 
 	// Windows separators are the same components, not a different path.
 	assert.equal(fileCardIdentity("C:\\repo\\skills\\tdd\\SKILL.md")?.identity, FILE_CARD_IDENTITY.SKILL);
-	assert.equal(fileCardIdentity("C:\\repo\\odd\\work\\design.md")?.identity, FILE_CARD_IDENTITY.ODD);
-	assert.equal(fileCardIdentity("\\\\server\\share\\odd\\work\\design.md")?.identity, FILE_CARD_IDENTITY.ODD);
+	assert.equal(fileCardIdentity("C:\\repo\\odd\\tasks\\design.md")?.identity, FILE_CARD_IDENTITY.ODD);
+	assert.equal(fileCardIdentity("\\\\server\\share\\odd\\tasks\\design.md")?.identity, FILE_CARD_IDENTITY.ODD);
 });
 
-test("a path that merely contains the word is not a skill or an ODD artifact", () => {
+test("every other file wears no card identity", () => {
 	for (const path of [
+		// A folder name is never a substring.
 		"lib/skillset/index.ts",
 		"lib/my-skills/notes.md",
 		"docs/oddity.md",
@@ -45,6 +46,19 @@ test("a path that merely contains the word is not a skill or an ODD artifact", (
 		"lib/x.ts",
 		// A file whose own name is `odd` is not inside an ODD folder.
 		"docs/odd",
+		"odd/tasks.md",
+		// A `skills` folder holds skills, not every note written below it.
+		"skills/gentle-ai/references/notes.md",
+		"skills/notes.md",
+		// Only `odd/tasks/` is an ODD artifact folder.
+		"odd/work/feature/design.md",
+		"odd/features/design.md",
+		"odd/design.md",
+		// A SKILL.md outside a `skills` folder is an ordinary document.
+		"SKILL.md",
+		"/home/dev/repo/SKILL.md",
+		"docs/SKILL.md",
+		"odd/work/SKILL.md",
 	]) {
 		assert.equal(fileCardIdentity(path), undefined, path);
 	}
@@ -54,11 +68,12 @@ test("a path that merely contains the word is not a skill or an ODD artifact", (
 	}
 });
 
-test("the innermost named folder decides which card a nested path wears", () => {
-	assert.equal(fileCardIdentity("skills/pack/odd/notes.md")?.identity, FILE_CARD_IDENTITY.ODD);
-	assert.equal(fileCardIdentity("odd/work/skills/notes.md")?.identity, FILE_CARD_IDENTITY.SKILL);
-	// A SKILL.md keeps its own identity inside an ODD folder.
-	assert.equal(fileCardIdentity("odd/work/skills/SKILL.md")?.identity, FILE_CARD_IDENTITY.SKILL);
+test("a file both rules name is judged by the marker closest to it", () => {
+	// A SKILL.md directly under a `skills` folder stays a skill.
+	assert.equal(fileCardIdentity("odd/tasks/skills/tdd/SKILL.md")?.identity, FILE_CARD_IDENTITY.SKILL);
+	// Under `odd/tasks/` the ODD marker is the closest one, whatever the file is called.
+	assert.equal(fileCardIdentity("odd/tasks/skills/tdd/notes.md")?.identity, FILE_CARD_IDENTITY.ODD);
+	assert.equal(fileCardIdentity("skills/pack/odd/tasks/SKILL.md")?.identity, FILE_CARD_IDENTITY.ODD);
 });
 
 test("a skill keeps the read card's color and an ODD artifact wears the theme's heading role", () => {
@@ -76,10 +91,37 @@ test("a skill keeps the read card's color and an ODD artifact wears the theme's 
 	assert.doesNotMatch(ODD_FILE_CARD.titleRole, /^syntax/u, "not a code-palette role");
 	for (const role of ["warning", "error", "success", "toolTitle"]) assert.notEqual(ODD_FILE_CARD.titleRole, role, role);
 	assert.equal(fileCardIdentity("skills/a/SKILL.md")?.title, "skill");
-	assert.equal(fileCardIdentity("odd/work/a.md")?.title, "odd");
+	assert.equal(fileCardIdentity("odd/tasks/a.md")?.title, "odd");
 });
 
-test("every shipped theme defines both roles a file card names, so no card owns a color", async () => {
+// Every role a file card paints with: the heading, and every role the Markdown body
+// names. A theme missing one of them would leave part of a document unpainted.
+const FILE_CARD_ROLES = [
+	ODD_FILE_CARD.titleRole,
+	"mdLink",
+	"mdLinkUrl",
+	"mdCode",
+	"mdCodeBlock",
+	"mdCodeBlockBorder",
+	"mdQuote",
+	"mdQuoteBorder",
+	"mdHr",
+	"mdListBullet",
+];
+
+test("the Markdown theme asks the card's theme for exactly the roles a card paints with", () => {
+	const asked: string[] = [];
+	const theme = fileCardMarkdownTheme({
+		fg(role: string, text: string) {
+			asked.push(role);
+			return text;
+		},
+	});
+	for (const value of Object.values(theme)) if (typeof value === "function") value("text");
+	assert.deepEqual([...new Set(asked)].sort(), [...FILE_CARD_ROLES].sort());
+});
+
+test("every shipped theme defines every role a file card names, so no card owns a color", async () => {
 	// The ODD heading and the Markdown body both name theme roles, so the theme at hand
 	// decides what they look like and no card-local hex can disagree with it.
 	const { readFile } = await import("node:fs/promises");
@@ -87,7 +129,7 @@ test("every shipped theme defines both roles a file card names, so no card owns 
 	for (const name of ["Gentle", "Gentleman-Cute", "Gentleman-Sexy"]) {
 		const theme = JSON.parse(await readFile(fileURLToPath(new URL(`../themes/${name}.json`, import.meta.url)), "utf8"));
 		const resolve = (role: string) => String(theme.vars?.[theme.colors[role]] ?? theme.colors[role]).toLowerCase();
-		for (const role of [ODD_FILE_CARD.titleRole, "mdCode", "mdCodeBlock", "mdListBullet"]) {
+		for (const role of FILE_CARD_ROLES) {
 			assert.ok(Object.hasOwn(theme.colors, role), `${name} defines ${role}`);
 			assert.match(resolve(role), /^#[0-9a-f]{6}$/u, `${name}: ${role} resolves to a color`);
 		}

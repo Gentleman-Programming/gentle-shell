@@ -64,7 +64,7 @@ function routineRenderContext(overrides: Record<string, unknown> = {}) {
 // tool identity is asserted separately against the actual unmodified frame.
 // A pending call's `running…` row is frame chrome too, asserted separately.
 const TAG = "(?:</?[a-zA-Z]+>)*";
-const CARD_TOP = new RegExp(`^${TAG}╭─ ${TAG}(?:\\S|\u{1F300}-\u{1FAFF}){1,2}${TAG} (.*?) ${TAG}─+${TAG}(?: .*? )?${TAG}╮${TAG}$`);
+const CARD_TOP = new RegExp(`^${TAG}╭─ ${TAG}\\S{1,2}${TAG} (.*?) ${TAG}─+${TAG}(?: .*? )?${TAG}╮${TAG}$`, "u");
 const CARD_SIDE = new RegExp(`^${TAG}│${TAG} (.*) ${TAG}│${TAG}$`);
 const CARD_BOTTOM = new RegExp(`^${TAG}╰${TAG}─*${TAG}╯${TAG}$`);
 
@@ -1068,8 +1068,8 @@ test("a skill or an ODD file card heads as that file, and only a read names its 
 	assert.equal(callCardTitle(read, skill), "▤ skill · read skills/gentle-ai/SKILL.md:2-4");
 	// The range is the one the read asked for, wherever in the file it starts.
 	assert.equal(callCardTitle(read, { path: "skills/gentle-ai/SKILL.md", offset: 142, limit: 4 }), "▤ skill · read skills/gentle-ai/SKILL.md:142-145");
-	// A SKILL.md is a skill without a skills folder too, and a Windows path is the same path.
-	assert.equal(callCardTitle(read, { path: "/repo/SKILL.md" }), "▤ skill · read /repo/SKILL.md");
+	// A SKILL.md outside a skills folder is an ordinary card, and a Windows path is the same path.
+	assert.equal(callCardTitle(read, { path: "/repo/SKILL.md" }), "≡ read /repo/SKILL.md");
 	assert.equal(callCardTitle(read, { path: "C:\\repo\\skills\\tdd\\SKILL.md" }), "▤ skill · read C:\\repo\\skills\\tdd\\SKILL.md");
 	// A path that merely contains the word is an ordinary card.
 	assert.equal(callCardTitle(read, { path: "lib/skillset/x.ts" }), "≡ read lib/skillset/x.ts");
@@ -1085,17 +1085,17 @@ test("a skill or an ODD file card heads as that file, and only a read names its 
 	assert.match(tagged, /<toolTitle>▤<\/toolTitle> <toolTitle>skill<\/toolTitle>/);
 	assert.match(tagged, /<accent>skills\/gentle-ai\/SKILL\.md<\/accent><warning>:2-4<\/warning>/);
 	// An ODD artifact wears the theme's own `mdHeading` role, never a status color.
-	const odd = { path: "odd/work/x.md" };
+	const odd = { path: "odd/tasks/x.md" };
 	const oddTagged = read.renderCall(odd, statusTheme, { args: odd }).render(160).join("\n");
 	assert.match(oddTagged, /<mdHeading>📑<\/mdHeading> <mdHeading>odd<\/mdHeading>/);
 	assert.doesNotMatch(oddTagged, /<warning>📑/);
 
 	// Collapsed, an ODD card names the file itself; expanding it states the whole path.
-	const edit = { path: "odd/work/feat/design.md", oldText: "a", newText: "b" };
+	const edit = { path: "odd/tasks/feat/design.md", oldText: "a", newText: "b" };
 	assert.equal(callCardTitle(tools.get("edit"), edit), "📑 odd · edit design.md");
-	assert.equal(callCardTitle(tools.get("edit"), edit, true), "📑 odd · edit odd/work/feat/design.md");
+	assert.equal(callCardTitle(tools.get("edit"), edit, true), "📑 odd · edit odd/tasks/feat/design.md");
 	// A write states no file line range: how many lines it writes is not where they land.
-	const write = callCardTitle(tools.get("write"), { path: "odd/work/design.md", content: "one\ntwo\nthree" });
+	const write = callCardTitle(tools.get("write"), { path: "odd/tasks/design.md", content: "one\ntwo\nthree" });
 	assert.equal(write, "📑 odd · write design.md");
 	assert.doesNotMatch(write, /:\d/, "a line count never reads as a file line number");
 });
@@ -1159,7 +1159,7 @@ test("an expanded write of a Markdown file renders what it wrote; a skill's othe
 // change actually landed.
 test("a file card keeps the diff an edit applied and the cause a failure states", () => {
 	const tools = registeredQuietTools();
-	const args = { path: "odd/work/x.md", oldText: "old", newText: "new" };
+	const args = { path: "odd/tasks/x.md", oldText: "old", newText: "new" };
 	// The card wears the file's identity and names no range: the diff is where the change landed.
 	assert.equal(callCardTitle(tools.get("edit"), args), "📑 odd · edit x.md");
 	const result = textResult("Applied", { diff: "@@ -1 +1 @@\n-old\n+new" });
@@ -1170,7 +1170,7 @@ test("a file card keeps the diff an edit applied and the cause a failure states"
 	assert.match(collapsed, /✓ \+1 \/ -1/);
 	assert.match(collapsed, /-old\n\+new/);
 	// A failed edit keeps the error it carries instead of a diff.
-	const failed = renderToolResult(tools.get("edit"), textResult("-1 the edit failed"), { expanded: true, isPartial: false, isError: true }, { args: { path: "odd/work/x.md" }, isError: true });
+	const failed = renderToolResult(tools.get("edit"), textResult("-1 the edit failed"), { expanded: true, isPartial: false, isError: true }, { args: { path: "odd/tasks/x.md" }, isError: true });
 	assert.match(failed, /the edit failed/);
 });
 

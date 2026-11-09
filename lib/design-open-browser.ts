@@ -4,6 +4,7 @@ import { win32 } from "node:path";
 type SpawnedChild = {
 	once(event: "spawn", listener: () => void): unknown;
 	once(event: "error", listener: (error: Error) => void): unknown;
+	once(event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown;
 	unref(): void;
 };
 
@@ -11,7 +12,11 @@ export type OpenInBrowserDeps = {
 	platform?: NodeJS.Platform;
 	spawn?: (command: string, args: readonly string[], options: Record<string, unknown>) => SpawnedChild;
 	env?: NodeJS.ProcessEnv;
+	/** How long to watch for an early opener failure after it spawns. */
+	settleMs?: number;
 };
+
+const DEFAULT_SETTLE_MS = 1500;
 
 export type OpenInBrowserResult = { opened: boolean; error?: string };
 
@@ -51,8 +56,21 @@ export function openInBrowser(url: string, deps: OpenInBrowserDeps = {}): Promis
 			resolve({ opened: false, error: error instanceof Error ? error.message : String(error) });
 			return;
 		}
-		child.once("error", (error) => resolve({ opened: false, error: error.message }));
-		child.once("spawn", () => resolve({ opened: true }));
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const settle = (result: OpenInBrowserResult) => {
+			clearTimeout(timer);
+			resolve(result);
+		};
+		child.once("error", (error) => settle({ opened: false, error: error.message }));
+		// An opener such as xdg-open on a host without a display exits non-zero right after spawning.
+		child.once("exit", (code, signal) => {
+			if (code === 0) settle({ opened: true });
+			else settle({ opened: false, error: code === null ? `opener was killed by ${signal}` : `opener exited with code ${code}` });
+		});
+		// A launcher that is still running after the grace window is treated as having opened the browser.
+		child.once("spawn", () => {
+			timer = setTimeout(() => settle({ opened: true }), deps.settleMs ?? DEFAULT_SETTLE_MS);
+		});
 		child.unref();
 	});
 }

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { performance } from "node:perf_hooks";
 import test from "node:test";
-import { Container, Markdown, Spacer, TuiAltScreen, wrapTextWithAnsi, type Component, type MarkdownTheme } from "@earendil-works/pi-tui";
+import { Container, Markdown, Spacer, TuiAltScreen, visibleWidth, wrapTextWithAnsi, type Component, type MarkdownTheme } from "@earendil-works/pi-tui";
 import { createChatViewport } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/chat-viewport.js";
-import { installSidebar } from "../lib/shell-sidebar-layout.ts";
-import { sidebarHeader, sidebarPart } from "../lib/shell-sidebar.ts";
+import { installSidebar, type SidebarDestination } from "../lib/shell-sidebar-layout.ts";
+import { sidebarHeader, sidebarPart, type SidebarRail } from "../lib/shell-sidebar.ts";
+import { SidebarGitFrameCache, SidebarGitHistory } from "../lib/sidebar-git-graph.ts";
 
 // Diagnostic baseline, not a speed gate. Keep the document settled: the same
 // prebuilt lines and component survive every native fullscreen scroll frame.
@@ -18,14 +19,22 @@ const leaf = (rows: string[]): Component => ({ render: () => rows, invalidate() 
 
 type Fixture = ReturnType<typeof createFixture>;
 type Workload = "plain" | "ansi" | "markdown";
+// A realistic over-long identity: the rail is 50 columns wide, so neither the
+// branch name nor a ref of `HEAD -> branch, origin/branch` fits in its card.
+const LONG_BRANCH = "feature/2750-git-sidebar-destination-with-a-very-long-branch-name-overflow";
+const historyLines = (refs: string, count = 12) => Array.from({ length: count }, (_, index) =>
+	`* \x1e${(0x8d2f1aa - index * 0x10101).toString(16)}\x1f${index === 0 ? refs : ""}\x1f${index === 0 ? "feat(sidebar): add the git history destination" : `fix(sidebar): keep the rail ${index}`}\x1e`);
+const REFRESHED_HISTORY = [...historyLines("HEAD -> main, origin/main"), `* \x1e9b0c4d2\x1f\x1ffix(sidebar): repaint only the git section\x1e`];
 const markdownTheme = Object.fromEntries([
 	"heading", "link", "linkUrl", "code", "codeBlock", "codeBlockBorder", "quote", "quoteBorder",
 	"hr", "listBullet", "bold", "italic", "strikethrough", "underline",
 ].map((key) => [key, (text: string) => `\x1b[36m${text}\x1b[39m`])) as unknown as MarkdownTheme;
 
-function createFixture(columns: number, rowCount: number, sidebar: boolean, workload: Workload = "plain") {
+function createFixture(columns: number, rowCount: number, sidebar: boolean, workload: Workload = "plain", tabs = false) {
 	const rows = Array.from({ length: rowCount }, (_, index) => `ROW-${String(index).padStart(5, "0")} settled transcript`);
-	const counts = { transcript: 0, header: 0, rail: 0, markdownMiss: 0, widthBuild: 0, lastWidth: 0 };
+	const counts = { transcript: 0, header: 0, rail: 0, railDigest: 0, git: 0, publish: 0, markdownMiss: 0, widthBuild: 0, lastWidth: 0 };
+	// The repository the GIT destination reads; a test mutates it to simulate a refresh.
+	const repository = { branch: "main", lines: historyLines("HEAD -> main, origin/main") };
 	const markdown = workload === "markdown" ? new Markdown(
 		rows.map((row) => `${row} **bold** and *italic* with a longer wrapped passage for the real Markdown parser.`).join("\n\n"),
 		0, 0, markdownTheme, undefined,
@@ -65,13 +74,52 @@ function createFixture(columns: number, rowCount: number, sidebar: boolean, work
 	const tui = new TuiAltScreen(terminal, false);
 	tui.setLayoutRoot(viewport.root);
 	let dispose = () => {};
-	if (sidebar) footer.addChild(sidebarPart(tui, "footer", { render: () => { counts.rail++; return ["Status card"]; }, invalidate() {} }));
+	// The production GIT destination: a real SidebarGitHistory over a fake Git
+	// runner, its frame cache, and the extension's publish wiring (request a
+	// render; never invalidate the rail). `tabs` mirrors the Tabs setting being
+	// on, so the navigation provider advertises MAIN and GIT.
+	let navigation: () => readonly SidebarDestination[] | undefined = () => undefined;
+	let onDestination: (id: string | undefined) => void = () => {};
+	let onViewport: (id: string, height: number) => void = () => {};
+	let history: SidebarGitHistory | undefined;
+	if (sidebar && tabs) {
+		const frame = new SidebarGitFrameCache();
+		let viewport = 1, offset = 0;
+		const maxOffset = () => Math.max(0, (history?.graph.state === "ready" ? history.graph.lines.length : 0) - Math.max(1, viewport - 1));
+		const gitRail: SidebarRail = {
+			surface: "panel",
+			digest: () => `${history!.revision}:${viewport}:${offset}:false:false`,
+			render: (width) => { counts.git++; return frame.render(history!.graph, history!.revision, theme, width, viewport, Math.min(offset, maxOffset()), false, false); },
+			invalidate() {},
+		};
+		const gitHistory = new SidebarGitHistory(async (args) => {
+			if (args[0] === "symbolic-ref") return { code: 0, stdout: `${repository.branch}\n` };
+			if (args[0] === "rev-parse") return { code: 0, stdout: "8d2f1aa\n" };
+			return { code: 0, stdout: `${repository.lines.join("\n")}\n` };
+		}, async () => "clean", () => { counts.publish++; tui.requestRender(); });
+		history = gitHistory;
+		navigation = () => [{ id: "main", label: "MAIN" }, { id: "git", label: "GIT", rail: gitRail }];
+		// The extension activates Git history only while its destination is shown,
+		// and republishes the rail viewport the frame it measured.
+		onDestination = (id) => gitHistory.setActive(id === "git");
+		onViewport = (id, height) => {
+			if (id !== "git" || height === viewport) return;
+			viewport = Math.max(1, height);
+			offset = Math.min(offset, maxOffset());
+			queueMicrotask(() => tui.requestRender());
+		};
+	}
+	if (sidebar) footer.addChild(sidebarPart(tui, "footer", {
+		digest: () => { counts.railDigest++; return "status"; },
+		render: () => { counts.rail++; return ["Status card"]; },
+		invalidate() {},
+	}));
 	else footer.addChild(leaf(["Status card"]));
 	// Main's narrow fallback keeps the header even without a rail. Give the
 	// width-matched fallback control the same header and native layout hook.
 	if (sidebar || columns === 100) {
 		sidebarHeader(tui, { render: (width: number) => { counts.header++; return [`HEADER ${width}`]; }, invalidate() {} });
-		dispose = installSidebar(tui, theme);
+		dispose = installSidebar(tui, theme, () => "auto", () => "split", () => "comfortable", navigation, onDestination, onViewport);
 	}
 	tui.start();
 	const render = () => {
@@ -80,11 +128,11 @@ function createFixture(columns: number, rowCount: number, sidebar: boolean, work
 		return [...((tui as unknown as { previousScreen: string[] }).previousScreen ?? [])];
 	};
 	render(); // establish native viewport height and scroll bounds before sampling
-	return { columns, rowCount, sidebar, workload, counts, document, viewport, render, stop: () => { dispose(); tui.stop(); } };
+	return { columns, rowCount, sidebar, workload, counts, document, viewport, tui, repository, history, render, stop: () => { dispose(); tui.stop(); } };
 }
 
 function measure(fixture: Fixture, invalidate = false, anchors?: number[]) {
-	const { transcript, header, rail, markdownMiss, widthBuild } = fixture.counts;
+	const { transcript, header, rail, railDigest, git, markdownMiss, widthBuild } = fixture.counts;
 	fixture.viewport.transcript.scrollToEnd();
 	const maxTop = fixture.viewport.transcript.scrollTop;
 	const positions = anchors ?? [0, Math.floor(maxTop / 4), Math.floor(maxTop / 2), Math.floor(maxTop * 3 / 4), maxTop];
@@ -110,6 +158,7 @@ function measure(fixture: Fixture, invalidate = false, anchors?: number[]) {
 		positions, screens, rawScreens, samplesMs: samples.map((time) => Number(time.toFixed(3))),
 		medianMs: Number(median(samples).toFixed(3)), medianCpuMs: Number(median(cpuSamples).toFixed(3)),
 		renderCalls: { transcript: fixture.counts.transcript - transcript, header: fixture.counts.header - header, rail: fixture.counts.rail - rail,
+			railDigest: fixture.counts.railDigest - railDigest, git: fixture.counts.git - git,
 			markdownMiss: fixture.counts.markdownMiss - markdownMiss, widthBuild: fixture.counts.widthBuild - widthBuild },
 		contentWidth: fixture.counts.lastWidth,
 		viewportHeight: fixture.viewport.transcript.viewportHeight,
@@ -251,5 +300,141 @@ test("wrapped ANSI and native Markdown distinguish width composition from settle
 				for (const fixture of fixtures) fixture.stop();
 			}
 		}
+	}
+});
+
+const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+// The navigation row is a leaf of the native layout tree, so the real
+// alt-screen mouse dispatch is the only public route into the GIT tab.
+function openGit(fixture: Fixture) {
+	const screen = fixture.render();
+	const row = screen.findIndex((line) => /(^|\s)GIT(\s|$)/.test(strip(line)));
+	assert.ok(row >= 0, "the GIT tab is painted in the rail");
+	const x = strip(screen[row]!).indexOf("GIT");
+	const result = (fixture.tui as unknown as { dispatchMouseToLayout(event: object): unknown }).dispatchMouseToLayout({
+		type: "click", button: "left", x, y: row, screenX: x, screenY: row, width: fixture.columns, height: 24,
+		shift: false, alt: false, ctrl: false,
+	});
+	assert.ok(result, "the GIT tab accepts the click");
+	return fixture.render();
+}
+const sectionCounts = (counts: Fixture["counts"]) => ({ header: counts.header, rail: counts.rail, railDigest: counts.railDigest, git: counts.git });
+
+test("the GIT destination keeps the transcript and header byte-identical to the disabled destination", async () => {
+	// Control: the Tabs setting off, so no navigation and no Git destination at all.
+	const disabled = createFixture(140, 120, true);
+	const enabled = createFixture(140, 120, true, "plain", true);
+	try {
+		disabled.render();
+		const clicked = openGit(enabled);
+		assert.match(clicked.join("\n"), /\[GIT\]/, "the click selects the GIT destination");
+		await settle(); // the activation capture publishes the first history snapshot
+		enabled.render();
+		await settle(); // the published viewport settles the visible history rows
+		const activated = enabled.render();
+		assert.match(activated.join("\n"), /▾ GIT/, "the GIT card is painted");
+		assert.match(activated.join("\n"), /feat\(side/);
+		assert.match(disabled.render().join("\n"), /Status card/);
+		const off = measure(disabled);
+		const on = measure(enabled, false, off.positions);
+		console.log("git destination", JSON.stringify({ off: off.renderCalls, on: on.renderCalls, contentWidth: on.contentWidth, viewportHeight: on.viewportHeight }));
+		// Both destinations do the same transcript work, and a settled GIT frame
+		// never re-renders the shared header.
+		assert.equal(on.renderCalls.transcript, off.renderCalls.transcript);
+		assert.equal(on.renderCalls.header, off.renderCalls.header);
+		assert.equal(on.renderCalls.transcript, off.positions.length * 3);
+		// MAIN's own sections are not even digested while GIT is the destination.
+		assert.equal(off.renderCalls.railDigest, off.positions.length * 3, "the control digests its MAIN section every frame");
+		assert.equal(on.renderCalls.railDigest, 0, "GIT never reads a MAIN section digest");
+		assert.equal(on.renderCalls.rail, 0, "GIT never renders a MAIN section");
+		assert.equal(on.renderCalls.git, 0, "a settled GIT frame reuses its cached rows");
+		// Visible output of the unrelated sections is identical frame by frame.
+		assert.deepEqual(on.positions, off.positions);
+		for (let frame = 0; frame < off.screens.length; frame++) {
+			const reference = off.screens[frame]!;
+			const screen = on.screens[frame]!;
+			assert.equal(screen.length, reference.length, "the GIT destination keeps the terminal height");
+			assert.equal(screen[0], reference[0], "the header row is unchanged");
+			assert.equal(screen[0], "HEADER 140");
+			assert.deepEqual(transcriptRows(screen), transcriptRows(reference), "the transcript is unchanged");
+			const column = (lines: string[], width: number) => lines.map((line) => line.slice(0, width).trimEnd());
+			assert.deepEqual(column(screen, on.contentWidth), column(reference, off.contentWidth), "the conversation column is byte-identical");
+			assert.ok(!screen.some((line) => line.includes("Status card")), "the GIT destination does not paint the MAIN footer");
+			assert.ok(!reference.some((line) => line.includes("GIT")), "the control has no GIT destination");
+		}
+	} finally {
+		disabled.stop();
+		enabled.stop();
+	}
+});
+
+test("a Git refresh repaints only its own section and renders nothing by itself", async () => {
+	const fixture = createFixture(140, 120, true, "plain", true);
+	try {
+		openGit(fixture);
+		await settle();
+		fixture.render();
+		await settle();
+		const settledFrame = fixture.render();
+		assert.doesNotMatch(settledFrame.join("\n"), /9b0c4d2/, "the new commit is not painted before the refresh");
+		// Settled: two frames cost two transcript renders and no section work.
+		const settled = { ...fixture.counts };
+		const frames = [fixture.render(), fixture.render()];
+		assert.equal(fixture.counts.transcript - settled.transcript, 2);
+		assert.deepEqual(sectionCounts(fixture.counts), sectionCounts(settled));
+		// A repository change publishes one fingerprint and only requests a render.
+		fixture.repository.lines = REFRESHED_HISTORY;
+		const beforeRefresh = { ...fixture.counts };
+		await fixture.history!.refresh();
+		assert.equal(fixture.counts.publish - beforeRefresh.publish, 1, "the refresh publishes one fingerprint");
+		assert.deepEqual(sectionCounts(fixture.counts), sectionCounts(beforeRefresh), "publishing and requesting a render paints nothing and invalidates nothing");
+		// The single requested frame repaints the GIT section and nothing else.
+		const refreshed = fixture.render();
+		const delta = { transcript: fixture.counts.transcript - beforeRefresh.transcript, header: fixture.counts.header - beforeRefresh.header, rail: fixture.counts.rail - beforeRefresh.rail, railDigest: fixture.counts.railDigest - beforeRefresh.railDigest, git: fixture.counts.git - beforeRefresh.git };
+		console.log("git refresh", JSON.stringify(delta));
+		assert.equal(delta.transcript, 1, "one frame renders the transcript once");
+		assert.equal(delta.git, 1, "only the GIT section repaints");
+		assert.equal(delta.rail, 0, "MAIN sections never render");
+		assert.equal(delta.railDigest, 0, "MAIN sections never read a digest");
+		assert.ok(delta.header <= 1, "the shared header stays live at most once per frame");
+		assert.match(refreshed.join("\n"), /9b0c4d2/, "the refreshed history is painted");
+		assert.deepEqual(transcriptRows(refreshed), transcriptRows(frames[1]!), "the transcript is untouched");
+		// The following frame is settled again: no section work at all.
+		const after = { ...fixture.counts };
+		fixture.render();
+		assert.equal(fixture.counts.transcript - after.transcript, 1, "the next frame renders the transcript once");
+		assert.deepEqual(sectionCounts(fixture.counts), sectionCounts(after), "the next frame is settled again: no section work at all");
+	} finally {
+		fixture.stop();
+	}
+});
+
+test("a very long branch and ref name clip inside the rail and keep it painted", async () => {
+	const fixture = createFixture(140, 120, true, "plain", true);
+	fixture.repository.branch = LONG_BRANCH;
+	fixture.repository.lines = historyLines(`HEAD -> ${LONG_BRANCH}, origin/${LONG_BRANCH}`);
+	try {
+		openGit(fixture);
+		await settle();
+		fixture.render();
+		await settle();
+		const screen = fixture.render();
+		const text = screen.join("\n");
+		// The rail stays painted: the conversation and the GIT card share the frame.
+		assert.ok(transcriptRows(screen).length > 0, "the transcript is still visible");
+		assert.match(text, /GIT/, "the GIT card is still visible");
+		assert.ok(screen.some((line) => line.includes("8d2f1aa")), "the history body is still visible");
+		// Nothing overflows the terminal, and the history identity is clipped.
+		for (const line of screen) assert.ok(visibleWidth(line) <= 140, `no frame row exceeds the terminal width: ${JSON.stringify(strip(line))}`);
+		// The rail is 50 columns wide and flush with the right edge (`RAIL_WIDTH`);
+		// the three columns before it are the conversation/rail gap.
+		const railColumn = screen.map((line) => strip(line).slice(140 - 50));
+		assert.ok(railColumn.some((row) => row.includes("8d2f1aa")), "the clipped card keeps its content");
+		assert.ok(railColumn.some((row) => row.includes("…")), "the over-long identity shows the truncation marker");
+		assert.ok(!text.includes(LONG_BRANCH), "the over-long branch name is not painted whole");
+		assert.ok(!railColumn.every((row) => row.trim() === ""), "the rail column is painted");
+		console.log("long branch", JSON.stringify({ rail: railColumn.map((row) => row.trimEnd()).filter(Boolean).slice(0, 8), width: railColumn.map(visibleWidth).slice(0, 4) }));
+	} finally {
+		fixture.stop();
 	}
 });

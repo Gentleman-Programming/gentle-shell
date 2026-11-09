@@ -52,3 +52,29 @@ test("history is inactive until enabled and discards work after deactivation", a
  assert.equal(history.graph.state, "ready"); assert.ok(publishes > 0);
  history.setActive(false);
 });
+
+test("a realistic long branch and ref name clip inside a narrow rail", () => {
+ // A real destination branch plus the ref shorthand Git prints for HEAD and
+ // its upstream: both far wider than the rail's card, which must truncate and
+ // keep every row inside the width instead of dropping the section.
+ const branch = "feature/2750-git-sidebar-destination-with-a-very-long-branch-name-overflow";
+ const refs = `HEAD -> ${branch}, origin/${branch}`;
+ const graph = { state: "ready" as const, branch, lines: [
+  `* \x1e8d2f1aa\x1f${refs}\x1ffeat(sidebar): add the git history destination\x1e`,
+  "* \x1e1f9c204\x1f\x1ffix(sidebar): keep the rail width stable\x1e",
+ ] };
+ const theme = { fg: (_role: string, text: string) => text, bold: (text: string) => text };
+ const cache = new SidebarGitFrameCache();
+ for (const width of [20, 24, 30]) {
+  const rows = renderSidebarGitGraph(graph, theme, width, 4);
+  assert.equal(rows.length, 3, `the narrow rail keeps its header and both commits at ${width}`);
+  assert.ok(rows.every(row => visibleWidth(row) <= width), `every row fits the ${width}-column rail`);
+  assert.ok(rows.every(row => !row.includes(branch)), `the branch name is clipped at ${width}`);
+  assert.ok(rows[1]!.includes("…") && rows[2]!.includes("…"), `the clipped rows show the truncation marker at ${width}`);
+  // The graph column and short hash are the identity that must survive clipping.
+  assert.match(rows[1]!, /^\* 8d2f1aa /);
+  // The rail's frame cache stores exactly those clipped rows and reuses them.
+  assert.deepEqual(cache.render(graph, 7, theme, width, 4), rows, "the frame cache keeps the clipped rows");
+  assert.strictEqual(cache.render(graph, 7, theme, width, 4), cache.render(graph, 7, theme, width, 4), "a settled frame is served from the cache");
+ }
+});

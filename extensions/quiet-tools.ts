@@ -917,15 +917,44 @@ function cardClickResult(event: TuiMouseEvent, showsMore: boolean): TuiMouseEven
 	return { handled: true, render: false };
 }
 
-/** One settled frame per component: bounded memory, including all card chrome. */
+/** A value the card fixed when it was built, or one a process-wide preference re-decides on every pass. */
+type Live<T> = T | (() => T);
+
+/** Whether the card asks for this value again on every pass instead of keeping the one it was built with. */
+function reDecided<T>(source: Live<T>): boolean {
+	return typeof source === "function";
+}
+
+/**
+ * Resolves a card value. pi repaints a retained card without asking its renderer
+ * again, and the Card bash preference switches while the transcript is on screen,
+ * so the identity a bash card heads with — and the rail it names — is asked for on
+ * every pass instead of being kept from the build.
+ */
+function live<T>(source: Live<T>): T {
+	return reDecided(source) ? (source as () => T)() : (source as T);
+}
+
+/**
+ * One settled frame per component: bounded memory, including all card chrome. The
+ * Card bash preference is part of the frame of the card it draws, so rows drawn
+ * under one identity are never handed back under the other, and a card it does not
+ * draw keeps the frame it has.
+ */
 class ToolCardRows {
-	private frame?: { width: number; style: ReturnType<typeof cardStyle>; running: boolean; lines: string[] };
+	private readonly bashDecides: boolean;
+	private frame?: { width: number; style: ReturnType<typeof cardStyle>; bash: ReturnType<typeof cardBash> | undefined; running: boolean; lines: string[] };
+
+	constructor(bashDecides: boolean) {
+		this.bashDecides = bashDecides;
+	}
 
 	render(width: number, running: boolean, build: () => string[]): string[] {
 		const style = cardStyle();
-		if (this.frame?.width === width && this.frame.style === style && this.frame.running === running) return this.frame.lines;
+		const bash = this.bashDecides ? cardBash() : undefined;
+		if (this.frame?.width === width && this.frame.style === style && this.frame.bash === bash && this.frame.running === running) return this.frame.lines;
 		const lines = build();
-		this.frame = { width, style, running, lines };
+		this.frame = { width, style, bash, running, lines };
 		return lines;
 	}
 
@@ -933,8 +962,8 @@ class ToolCardRows {
 }
 
 class ToolCardTop implements Component {
-	private readonly rows = new ToolCardRows();
-	private readonly heading: ToolCardHeading;
+	private readonly rows: ToolCardRows;
+	private readonly heading: Live<ToolCardHeading>;
 	private readonly tone: ToolTone;
 	private readonly theme: CardTheme;
 	private readonly hint: string | undefined;
@@ -944,7 +973,8 @@ class ToolCardTop implements Component {
 	private readonly revealOf: (() => CardReveal | undefined) | undefined;
 	private showsMore = true;
 
-	constructor(heading: ToolCardHeading, tone: ToolTone, theme: CardTheme, hint?: string, row?: CardRowContext, reveal?: CardReveal, revealOf?: () => CardReveal | undefined) {
+	constructor(heading: Live<ToolCardHeading>, tone: ToolTone, theme: CardTheme, hint?: string, row?: CardRowContext, reveal?: CardReveal, revealOf?: () => CardReveal | undefined) {
+		this.rows = new ToolCardRows(reDecided(heading));
 		this.heading = heading;
 		this.tone = tone;
 		this.theme = theme;
@@ -960,8 +990,8 @@ class ToolCardTop implements Component {
 	}
 
 	/** The heading at one expansion level; `singleLine` is the collapsed form, and `hint` rides its rule. */
-	private headRows(width: number, singleLine: boolean, hint: string | undefined): string[] {
-		return headingRows(this.heading, this.tone, this.theme, singleLine, width, hint);
+	private headRows(heading: ToolCardHeading, width: number, singleLine: boolean, hint: string | undefined): string[] {
+		return headingRows(heading, this.tone, this.theme, singleLine, width, hint);
 	}
 
 	/** Renders `╭─ <icon> <title> · <detail> ── <hint> ╮`. A single-line heading keeps the card one row and ends an over-wide detail in an ellipsis; an expandable heading continues the complete detail on the rows below so every line of the call stays visible. The key only rides the rule when expanding the card shows something else. */
@@ -969,25 +999,28 @@ class ToolCardTop implements Component {
 		const target = Math.max(0, Math.floor(width));
 		if (target === 0) return [];
 		const running = this.row !== undefined && cardAwaitingResult(this.row);
-		return this.rows.render(target, running, () => floatRows(this.tone, this.theme, target, (inner) => {
-			// Measured at the width this row is drawn at, with the chrome it is drawn in,
-			// so a heading that only truncates because the terminal is narrow still counts.
-			const measured = this.revealOf === undefined ? this.reveal : this.revealOf();
-			this.showsMore = cardShowsMore(measured, inner);
-			const hint = this.showsMore ? this.hint : undefined;
-			return {
-				head: this.headRows(inner, this.heading.singleLine === true, hint),
-				body: running ? [cardRunningLine(this.tone, this.theme, inner)] : undefined,
-				bottom: running ? cardBottom(this.tone, this.theme, inner) : undefined,
-			};
-		}, this.heading.railRole));
+		return this.rows.render(target, running, () => {
+			const heading = live(this.heading);
+			return floatRows(this.tone, this.theme, target, (inner) => {
+				// Measured at the width this row is drawn at, with the chrome it is drawn in,
+				// so a heading that only truncates because the terminal is narrow still counts.
+				const measured = this.revealOf === undefined ? this.reveal : this.revealOf();
+				this.showsMore = cardShowsMore(measured, inner);
+				const hint = this.showsMore ? this.hint : undefined;
+				return {
+					head: this.headRows(heading, inner, heading.singleLine === true, hint),
+					body: running ? [cardRunningLine(this.tone, this.theme, inner)] : undefined,
+					bottom: running ? cardBottom(this.tone, this.theme, inner) : undefined,
+				};
+			}, heading.railRole);
+		});
 	}
 
 	invalidate(): void { this.rows.invalidate(); }
 }
 
 class ToolCardBody implements Component {
-	private readonly rows = new ToolCardRows();
+	private readonly rows: ToolCardRows;
 	private readonly inner: () => Component;
 	private readonly tone: ToolTone;
 	private readonly theme: CardTheme;
@@ -995,11 +1028,12 @@ class ToolCardBody implements Component {
 	private readonly cacheable: boolean;
 	private readonly elapsed: string | undefined;
 	private readonly reveal: CardReveal | undefined;
-	private readonly railRole: string | undefined;
+	private readonly railRole: Live<string | undefined>;
 	/** What the last drawn frame showed; a card with nothing left keeps the click with the host. */
 	private showsMore = true;
 
-	constructor(inner: () => Component, tone: ToolTone, theme: CardTheme, cacheable = true, elapsed?: string, reveal?: CardReveal, railRole?: string) {
+	constructor(inner: () => Component, tone: ToolTone, theme: CardTheme, cacheable = true, elapsed?: string, reveal?: CardReveal, railRole?: Live<string | undefined>) {
+		this.rows = new ToolCardRows(reDecided(railRole));
 		this.inner = inner;
 		this.tone = tone;
 		this.theme = theme;
@@ -1026,7 +1060,7 @@ class ToolCardBody implements Component {
 				bottom: cardBottom(this.tone, this.theme, inner, this.elapsed),
 				afterHeading: true,
 			};
-		}, this.railRole);
+		}, live(this.railRole));
 		return this.cacheable ? this.rows.render(target, false, build) : build();
 	}
 
@@ -1128,8 +1162,10 @@ export function createQuietToolRenderer(
 			const expanded = renderContext.expanded === true;
 			const finished = renderContext.isPartial === false;
 			const hint = finished ? stripAnsi(keyHint("app.tools.expand", expanded ? "to collapse" : "to expand")) : undefined;
-			const heading = toolName === "bash"
-				? bashHeading(callArgs, theme, expanded)
+			// A retained bash card re-decides its heading on every pass, because the Card
+			// bash preference can switch while the card it was built under is on screen.
+			const heading: Live<ToolCardHeading> = toolName === "bash"
+				? () => bashHeading(callArgs, theme, expanded)
 				: { title: formatToolCall(toolName, callArgs, theme), glyph: TOOL_GLYPH[toolName] };
 			// Only the bash card withholds a no-op expansion; every other quiet card
 			// keeps the key and the click it has always had.
@@ -1138,10 +1174,13 @@ export function createQuietToolRenderer(
 			// A heading that folds its own detail always draws two different rows, so the
 			// comparison would always claim something to reveal. Such a card measures its
 			// body instead, which is where the rest of the call actually lives.
-			if (reveal) reveal.heading = (rowWidth) => !sameText(
-				headingRows({ ...heading, collapsedDetail: undefined }, tone, theme, true, rowWidth).join("\n"),
-				headingRows(heading, tone, theme, false, rowWidth).join("\n"),
-			);
+			if (reveal) reveal.heading = (rowWidth) => {
+				const current = live(heading);
+				return !sameText(
+					headingRows({ ...current, collapsedDetail: undefined }, tone, theme, true, rowWidth).join("\n"),
+					headingRows(current, tone, theme, false, rowWidth).join("\n"),
+				);
+			};
 			return new ToolCardTop(heading, tone, theme, hint, renderContext, reveal, revealOf);
 		},
 		/** Builds the card component for this render pass; collapsed cards delegate to the wrapped-line cache keyed by the tool result object. */
@@ -1173,8 +1212,9 @@ export function createQuietToolRenderer(
 			const revealOf = toolName === "bash" ? () => cardReveal(renderContext?.state) : undefined;
 			const reveal = revealOf?.();
 			// The result continues the heading's card, so a card whose heading names a rail
-			// keeps that rail, derived from the same retained call the heading read.
-			const railRole = toolName === "bash" ? bashIdentity(renderContext?.args).railRole : undefined;
+			// keeps that rail, derived from the same retained call the heading read — and
+			// re-derived on every pass, so a switch repaints the rail the heading drew.
+			const railRole = toolName === "bash" ? () => bashIdentity(renderContext?.args).railRole : undefined;
 			const carded = (component: () => Component, cacheable = options.isPartial !== true): Component => new ToolCardBody(component, resultTone, theme, cacheable, elapsed, reveal, railRole);
 			// Under the minimal Card content preference, every quiet tool draws
 			// the command alone while collapsed; the expand key still reveals

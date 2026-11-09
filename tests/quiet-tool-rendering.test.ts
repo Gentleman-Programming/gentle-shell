@@ -2923,3 +2923,66 @@ test("the Card bash preference heads a bash card with its activity, or the plain
 	const composition = { command: "cd repo && git diff" };
 	assert.match(frameLines(bash.renderCall(composition, statusTheme, finishedContext({ args: composition })), 80)[0]!, /<bashMode>\$ bash<\/bashMode> <muted>·<\/muted> <muted>git diff<\/muted>/, "the detail still names the principal action");
 });
+
+// pi repaints a retained card without asking its renderer again, so a card that
+// captured its heading keeps drawing the identity it was built with. The Card
+// bash preference is process-wide and switches while the transcript is on screen,
+// so the retained card must read it on every pass: the rows stay cached while the
+// preference holds, and a switch repaints the very same component either way.
+test("a retained bash card repaints when the Card bash preference switches", (t) => {
+	useCardContent(t, CARD_CONTENT.DEFAULT);
+	useCardBash(t, CARD_BASH.ACTIVITY);
+	const bash = registeredQuietTools().get("bash");
+	const args = { command: "git status" };
+	const finished = routineRenderContext({ args, executionStarted: true, isPartial: false, state: {} });
+	const call = bash.renderCall(args, statusTheme, finished);
+	const result = bash.renderResult(textResult("clean"), { expanded: false, isPartial: false }, statusTheme, finished);
+	const heading = () => frameLines(call, 80)[0]!;
+	const rail = () => frameLines(result, 80)[0]!;
+	const closing = () => frameLines(result, 80).at(-1)!;
+
+	assert.match(heading(), /^<mdLink>╭<\/mdLink><mdLink>─ <\/mdLink><mdLink>⌕ exploring<\/mdLink>/, "activity heads the retained card");
+	assert.match(rail(), /^<mdLink>│<\/mdLink> /, "and paints its rail");
+
+	// The same preference keeps the frame it already drew, so a repaint is not a redraw.
+	const retainedCall = call.render(80);
+	assert.strictEqual(call.render(80), retainedCall, "activity keeps reusing the call rows");
+	const retainedResult = result.render(80);
+	assert.strictEqual(result.render(80), retainedResult, "activity keeps reusing the result rows");
+
+	setCardBash(CARD_BASH.OUTPUT);
+	assert.match(heading(), /^<success>╭<\/success><success>─ <\/success><bashMode>\$ bash<\/bashMode>/, "output repaints the same card with the plain identity");
+	assert.doesNotMatch(frameLines(call, 80).join("\n"), /⌕|exploring|<mdLink>/, "no activity word or role survives the switch");
+	assert.match(rail(), /^<success>│<\/success> /, "the retained result follows the tone too");
+	assert.match(closing(), /^<success>╰<\/success><success>─+╯<\/success>$/);
+	assert.notStrictEqual(call.render(80), retainedCall, "the switch drops the activity call rows");
+	assert.notStrictEqual(result.render(80), retainedResult, "and the activity result rows");
+
+	setCardBash(CARD_BASH.ACTIVITY);
+	assert.match(heading(), /^<mdLink>╭<\/mdLink><mdLink>─ <\/mdLink><mdLink>⌕ exploring<\/mdLink>/, "switching back repaints the activity identity");
+	assert.match(rail(), /^<mdLink>│<\/mdLink> /, "and the activity rail");
+	assert.doesNotMatch(frameLines(call, 80).join("\n"), /bashMode|exploring.*bash/, "no plain identity survives the switch back");
+});
+
+// The preference belongs to bash alone, so the shared row cache it now keys on
+// never redraws another quiet card: a retained read card keeps the very rows it drew.
+test("a retained card of another quiet tool keeps its rows across the Card bash switch", (t) => {
+	useCardContent(t, CARD_CONTENT.DEFAULT);
+	useCardBash(t, CARD_BASH.ACTIVITY);
+	const read = registeredQuietTools().get("read");
+	const args = { path: "a.ts" };
+	const finished = routineRenderContext({ args, executionStarted: true, isPartial: false, state: {} });
+	const call = read.renderCall(args, statusTheme, finished);
+	const result = read.renderResult(textResult("first line\nsecond line"), { expanded: false, isPartial: false }, statusTheme, finished);
+	const frame = () => [frameLines(call, 80).join("\n"), frameLines(result, 80).join("\n")];
+	const retained = frame();
+	const retainedCall = call.render(80);
+	const retainedResult = result.render(80);
+
+	assert.match(retained[0]!, /^<success>╭<\/success><success>─ <\/success><success>≡ <toolTitle>read<\/toolTitle>/, "the finished read card heads with its own identity");
+
+	setCardBash(CARD_BASH.OUTPUT);
+	assert.strictEqual(call.render(80), retainedCall, "the heading keeps the rows it already drew");
+	assert.strictEqual(result.render(80), retainedResult, "and so does its result");
+	assert.deepEqual(frame(), retained, "the drawn card is the same card");
+});

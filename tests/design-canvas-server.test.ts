@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { TestContext } from "node:test";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { designCommentBatchContent, designCommentContent, formatDesignComment, formatDesignCommentBatch, startDesignCanvasServer, type DesignCanvasServerOptions, type DesignComment } from "../lib/design-canvas-server.ts";
+import { designCommentBatchContent, designCommentContent, formatDesignComment, formatDesignCommentBatch, startDesignCanvasServer, type DesignCanvasServerOptions, type DesignComment, type DesignImplementPartRequest } from "../lib/design-canvas-server.ts";
 
 const TOKEN = "test-token-0123456789abcdef";
 const ASSET_DIR = fileURLToPath(new URL("../assets/design-canvas/", import.meta.url));
@@ -74,21 +74,25 @@ function fixture(t: TestContext) {
 	return { root, outside };
 }
 
-async function start(t: TestContext, extra: { initialSlug?: string; onImplement?: DesignCanvasServerOptions["onImplement"] } = {}) {
+async function start(t: TestContext, extra: { initialSlug?: string; onComment?: DesignCanvasServerOptions["onComment"]; onImplement?: DesignCanvasServerOptions["onImplement"]; onVariant?: DesignCanvasServerOptions["onVariant"]; onImplementPart?: DesignCanvasServerOptions["onImplementPart"] } = {}) {
 	const { root } = fixture(t);
 	const comments: DesignComment[] = [];
 	const batches: DesignComment[][] = [];
 	const implements_: Array<{ slug: string; file: string }> = [];
+	const variants: Array<{ slug: string; file: string; instruction: string }> = [];
+	const parts: DesignImplementPartRequest[] = [];
 	const server = await startDesignCanvasServer({
 		designRoot: root,
 		onComment: (comment) => { comments.push(comment); },
 		onComments: (batch) => { batches.push(batch); },
 		onImplement: (request) => { implements_.push(request); },
+		onVariant: (request) => { variants.push(request); },
+		onImplementPart: (request) => { parts.push(request); },
 		randomToken: () => TOKEN,
 		...extra,
 	});
 	t.after(() => server.close());
-	return { server, root, comments, batches, implements: implements_, port: server.port, base: `/${TOKEN}/` };
+	return { server, root, comments, batches, implements: implements_, variants, parts, port: server.port, base: `/${TOKEN}/` };
 }
 
 test("start returns a loopback URL with a random base64url token by default", async (t) => {
@@ -154,11 +158,11 @@ test("the canvas page carries a strict CSP and a JSON config, never inline code"
 	assert.ok(!csp.includes("unsafe-inline") && !csp.includes("unsafe-eval"));
 	const config = /<script id="gd-config" type="application\/json">([^<]*)<\/script>/.exec(page.body);
 	assert.ok(config, "config script present");
-	assert.deepEqual(JSON.parse(config[1]), { base, slug: null });
+	assert.deepEqual(JSON.parse(config[1]), { base, slug: null, delivery: { comment: true, batch: true, implement: true, variant: true, part: true } });
 	assert.ok(page.body.includes(`src="${base}assets/canvas.js"`));
 	const slugPage = await rawRequest(port, `${base}d/alpha/`);
 	assert.equal(slugPage.status, 200);
-	assert.deepEqual(JSON.parse(/<script id="gd-config" type="application\/json">([^<]*)<\/script>/.exec(slugPage.body)![1]), { base, slug: "alpha" });
+	assert.deepEqual(JSON.parse(/<script id="gd-config" type="application\/json">([^<]*)<\/script>/.exec(slugPage.body)![1]), { base, slug: "alpha", delivery: { comment: true, batch: true, implement: true, variant: true, part: true } });
 	assert.equal((await rawRequest(port, `${base}d/Bad_Slug/`)).status, 404);
 	assert.equal((await rawRequest(port, `${base}d/alpha/extra`)).status, 404);
 	assert.equal((await rawRequest(port, base, { method: "POST" })).status, 405);
@@ -497,6 +501,34 @@ test("an excerpt of astral characters is truncated to the store limit without a 
 	assert.ok(second.isWellFormed());
 });
 
+// S5: the agent's resolution reaches the canvas through the comments route.
+
+test("S5: the comments route lists a comment's resolution, the status route clears it on reopen, and a malformed one is a 422", async (t) => {
+	const { port, root, base } = await start(t);
+	await postComment(port, { ...VALID, mode: "collect" });
+	await postComment(port, { ...VALID, mode: "collect" });
+	const path = join(root, "alpha", "comments.json");
+	const document = JSON.parse(readFileSync(path, "utf8"));
+	document.comments[0].status = "resolved";
+	document.comments[0].resolvedAt = "2026-10-28T10:00:00.000Z";
+	document.comments[0].resolution = "Made the title 32px.";
+	writeFileSync(path, JSON.stringify(document));
+	const listed = JSON.parse((await rawRequest(port, `${base}api/designs/alpha/comments`)).body).comments;
+	assert.equal(listed[0].resolution, "Made the title 32px.");
+	assert.equal("resolution" in listed[1], false);
+	const id = document.comments[0].id;
+	const reopened = await postJson(port, `api/designs/alpha/comments/${id}/status`, { status: "open" });
+	assert.equal(reopened.status, 200);
+	assert.equal("resolution" in JSON.parse(reopened.body).comment, false);
+	assert.equal("resolution" in storedComments(root)[0], false);
+	document.comments[1].resolution = 7;
+	writeFileSync(path, JSON.stringify(document));
+	const broken = await rawRequest(port, `${base}api/designs/alpha/comments`);
+	assert.equal(broken.status, 422);
+	assert.equal(JSON.parse(broken.body).error, "invalid-comments");
+	assert.match(JSON.parse(broken.body).reason, /resolution/);
+});
+
 test("the status route resolves and reopens one comment", async (t) => {
 	const { port, root } = await start(t);
 	await postComment(port, { ...VALID, mode: "collect" });
@@ -763,6 +795,211 @@ test("implement is 501 without onImplement and 500 when it throws", async (t) =>
 	assert.equal((await rawRequest(failing.port, `/${TOKEN}/api/designs`)).status, 200, "the server survives");
 });
 
+// T2/S3: "Try another direction from this…" posts to api/designs/<slug>/variant.
+
+const VARIANT = "api/designs/alpha/variant";
+
+test("T2/S3: variant delivers exactly one request with the source file and the instruction, and answers 202", async (t) => {
+	const { port, variants } = await start(t);
+	const ok = await postJson(port, VARIANT, { file: "01-hero.html", instruction: "  More compact\r\nfor phones  " });
+	assert.equal(ok.status, 202);
+	assert.deepEqual(JSON.parse(ok.body), { ok: true, slug: "alpha", file: "01-hero.html", queued: false });
+	assert.deepEqual(variants, [{ slug: "alpha", file: "01-hero.html", instruction: "More compact\nfor phones" }], "trimmed, with LF line ends");
+	const edge = await postJson(port, VARIANT, { file: "02-bare.html", instruction: "x".repeat(2000) });
+	assert.equal(edge.status, 202, "2000 characters are allowed");
+	assert.equal(variants.length, 2);
+	assert.equal(variants[1].instruction.length, 2000);
+});
+
+test("T2/S3: variant refuses an empty or over-long instruction, a file outside the manifest and a bad design, delivering nothing", async (t) => {
+	const { port, root, variants } = await start(t);
+	for (const instruction of ["", "   \n ", "x".repeat(2001), `  ${"x".repeat(2001)}  `, 7, null, ["a"], undefined]) {
+		const reply = await postJson(port, VARIANT, { file: "01-hero.html", instruction });
+		assert.equal(reply.status, 400, JSON.stringify(instruction)?.slice(0, 20));
+		assert.equal(JSON.parse(reply.body).error, "invalid-instruction");
+	}
+	// sub/inner.html exists but is not an artboard of the manifest.
+	for (const file of ["sub/inner.html", "missing.html", "../beta/01-a.html", "styles.css", "alias.html", 7, "", undefined]) {
+		const reply = await postJson(port, VARIANT, { file, instruction: "Bolder" });
+		assert.equal(reply.status, 400, String(file));
+		assert.equal(JSON.parse(reply.body).error, "invalid-file");
+	}
+	assert.equal((await postJson(port, "api/designs/missing/variant", { file: "01-hero.html", instruction: "Bolder" })).status, 404);
+	assert.equal((await postJson(port, "api/designs/broken/variant", { file: "01-a.html", instruction: "Bolder" })).status, 422);
+	assert.equal((await postJson(port, "api/designs/Alpha/variant", { file: "01-hero.html", instruction: "Bolder" })).status, 404);
+	assert.equal((await postJson(port, "api/designs/Not_A_Slug/variant", { file: "01-a.html", instruction: "Bolder" })).status, 404);
+	assert.equal((await postJson(port, "api/designs/..%2Falpha/variant", { file: "01-hero.html", instruction: "Bolder" })).status, 404);
+	assert.equal(variants.length, 0, "no refused request reaches onVariant");
+	assert.equal(existsSync(join(root, "alpha", "handoffs.json")), false, "a variant is not a handoff: nothing is written");
+});
+
+test("T2/S3: the variant route keeps the Host, token, Origin, content-type, JSON, size and method rules", async (t) => {
+	const { port, variants } = await start(t);
+	const path = `/${TOKEN}/${VARIANT}`;
+	const body = JSON.stringify({ file: "01-hero.html", instruction: "Bolder" });
+	const own = { Origin: `http://127.0.0.1:${port}`, "Content-Type": "application/json" };
+	assert.equal((await rawRequest(port, path, { method: "POST", headers: { "Content-Type": "application/json" }, body })).status, 403, "no Origin");
+	for (const origin of ["http://evil.example", "null", `http://localhost:${port + 1}`]) {
+		assert.equal((await rawRequest(port, path, { method: "POST", headers: { ...own, Origin: origin }, body })).status, 403, origin);
+	}
+	assert.equal((await rawRequest(port, path, { method: "POST", headers: { ...own, "Content-Type": "text/plain" }, body })).status, 415);
+	assert.equal((await rawRequest(port, path, { method: "POST", headers: { "Origin": own.Origin }, body })).status, 415, "no content type");
+	assert.equal((await rawRequest(port, `/wrong-token-0123456789/${VARIANT}`, { method: "POST", headers: own, body })).status, 404, "wrong token");
+	assert.equal((await rawRequest(port, `/${VARIANT}`, { method: "POST", headers: own, body })).status, 404, "missing token");
+	assert.equal((await rawRequest(port, path, { method: "POST", headers: own, body, host: `evil.example:${port}` })).status, 421);
+	for (const text of ["not json", "[1]", "null", "\"x\""]) {
+		const reply = await rawRequest(port, path, { method: "POST", headers: own, body: text });
+		assert.equal(reply.status, 400, text);
+	}
+	assert.equal(JSON.parse((await rawRequest(port, path, { method: "POST", headers: own, body: "not json" })).body).error, "invalid-json");
+	assert.equal((await rawRequest(port, path, { method: "POST", headers: own, body: JSON.stringify({ file: "01-hero.html", instruction: "x".repeat(17 * 1024) }) })).status, 413);
+	assert.equal((await rawRequest(port, path)).status, 405);
+	assert.equal((await rawRequest(port, path, { method: "PUT", headers: own, body })).status, 405);
+	assert.equal(variants.length, 0, "nothing refused reaches onVariant");
+	assert.equal((await rawRequest(port, path, { method: "POST", headers: { ...own, Origin: `http://localhost:${port}` }, body })).status, 202);
+	assert.equal(variants.length, 1);
+});
+
+test("T2/S3: variant answers queued from the delivery, 501 without onVariant and 500 when it throws", async (t) => {
+	const { root } = fixture(t);
+	const request = { file: "01-hero.html", instruction: "Bolder" };
+	const bare = await startDesignCanvasServer({ designRoot: root, onComment: () => {}, onImplement: () => {}, randomToken: () => TOKEN });
+	t.after(() => bare.close());
+	const none = await postJson(bare.port, VARIANT, request);
+	assert.equal(none.status, 501);
+	assert.deepEqual(JSON.parse(none.body), { error: "variant-unavailable" });
+
+	const states = [{ queued: true }, { queued: false }, undefined];
+	const seen: unknown[] = [];
+	const queueing = await startDesignCanvasServer({ designRoot: root, onComment: () => {}, onVariant: async (call) => { seen.push(call); return states[seen.length - 1]; }, randomToken: () => TOKEN });
+	t.after(() => queueing.close());
+	assert.equal(JSON.parse((await postJson(queueing.port, VARIANT, request)).body).queued, true);
+	assert.equal(JSON.parse((await postJson(queueing.port, VARIANT, request)).body).queued, false);
+	assert.equal(JSON.parse((await postJson(queueing.port, VARIANT, request)).body).queued, false, "no answer means not queued");
+
+	const failing = await startDesignCanvasServer({ designRoot: root, onComment: () => {}, onVariant: () => { throw new Error("boom"); }, randomToken: () => TOKEN });
+	t.after(() => failing.close());
+	const reply = await postJson(failing.port, VARIANT, request);
+	assert.equal(reply.status, 500);
+	assert.deepEqual(JSON.parse(reply.body), { error: "delivery-failed", slug: "alpha", file: "01-hero.html", reason: "boom" });
+	assert.equal((await rawRequest(failing.port, `/${TOKEN}/api/designs`)).status, 200, "the server survives");
+});
+
+// canvas-trim S4: Mix is gone; its former route is an unknown path like any other.
+
+test("canvas-trim S4: POST to the former mix route answers 404 not-found like an unknown route and reaches no session callback", async (t) => {
+	const { port, comments, batches, implements: implemented, variants, parts } = await start(t);
+	const body = { base: "01-hero.html", picks: [{ file: "02-bare.html", selector: "body > h1", excerpt: "Bare", note: "" }] };
+	const former = await postJson(port, "api/designs/alpha/mix", body);
+	const unknown = await postJson(port, "api/designs/alpha/no-such-route", body);
+	assert.equal(former.status, 404);
+	assert.deepEqual(JSON.parse(former.body), { error: "not-found" });
+	assert.deepEqual([former.status, former.body], [unknown.status, unknown.body], "the same answer as an unknown route");
+	assert.equal((await rawRequest(port, `/${TOKEN}/api/designs/alpha/mix`)).status, 404, "no method makes it a known route");
+	assert.deepEqual([comments, batches, implemented, variants, parts].map((calls) => calls.length), [0, 0, 0, 0, 0], "no session callback is called");
+});
+
+// canvas-implement-part S2, S4: "Implement only this" hands one element of an artboard to the session, recorded in
+// design/<slug>/parts.json before delivery; handoffs.json and the chosen artboard stay as they are.
+const PARTS = "api/designs/alpha/implement-part";
+const PARTS_LIST = "api/designs/alpha/parts";
+const SIDE = { file: "02-bare.html", selector: "  nav.side\n > ul ", excerpt: "  Home\n  Tours ", note: "  solo el menú\r\nsin la cabecera  " };
+
+test("implement-part S4: Implement only this records the part, delivers it once with its id, answers 202, and leaves handoffs.json alone", async (t) => {
+	const { port, root, parts } = await start(t);
+	const reply = await postJson(port, PARTS, SIDE);
+	assert.equal(reply.status, 202);
+	const body = JSON.parse(reply.body);
+	assert.deepEqual(Object.keys(body), ["ok", "id", "queued"]);
+	assert.equal(body.ok, true);
+	assert.equal(body.queued, false);
+	assert.match(body.id, /^[a-z0-9]{1,32}$/);
+	const onDisk = JSON.parse(readFileSync(join(root, "alpha", "parts.json"), "utf8"));
+	assert.equal(onDisk.parts.length, 1);
+	const [part] = onDisk.parts;
+	assert.deepEqual({ ...part, sentAt: "t" }, { id: body.id, file: "02-bare.html", selector: "nav.side > ul", excerpt: "Home Tours", instruction: "solo el menú\nsin la cabecera", status: "sent", queued: false, sentAt: "t", startedAt: null, implementedAt: null }, "selector and excerpt collapsed, the note trimmed with LF line ends");
+	assert.deepEqual(parts, [{ slug: "alpha", part }], "the session gets exactly the recorded part");
+	assert.equal(existsSync(join(root, "alpha", "handoffs.json")), false, "no direction is chosen");
+	const listed = await rawRequest(port, `/${TOKEN}/${PARTS_LIST}`);
+	assert.equal(listed.status, 200);
+	assert.deepEqual(JSON.parse(listed.body), onDisk);
+	const bare = await postJson(port, PARTS, { file: "01-hero.html", selector: "h1" });
+	assert.equal(bare.status, 202, "excerpt and note are optional");
+	assert.equal(JSON.parse(readFileSync(join(root, "alpha", "parts.json"), "utf8")).parts[1].instruction, undefined);
+});
+
+test("implement-part S4: the route takes a selector of 500 and a note of 2000 characters and cuts the excerpt to 300 (canvas-trim S6)", async (t) => {
+	const { port, parts } = await start(t);
+	const reply = await postJson(port, PARTS, { file: "02-bare.html", selector: "s".repeat(500), excerpt: "e".repeat(400), note: "n".repeat(2000) });
+	assert.equal(reply.status, 202);
+	assert.equal(parts.length, 1);
+	assert.equal(parts[0].part.selector.length, 500);
+	assert.equal(parts[0].part.excerpt.length, 300, "the excerpt is cut to its limit, like a comment's");
+	assert.equal(parts[0].part.instruction?.length, 2000);
+});
+
+test("implement-part S4: the route refuses a file outside the manifest and bad fields, delivering and recording nothing", async (t) => {
+	const { port, root, parts } = await start(t);
+	const refused = async (body: unknown, status: number, error: string, label: string) => {
+		const reply = await postJson(port, PARTS, body);
+		assert.equal(reply.status, status, label);
+		assert.equal(JSON.parse(reply.body).error, error, label);
+	};
+	for (const file of ["sub/inner.html", "missing.html", "../beta/01-a.html", "alias.html", 7, "", undefined]) await refused({ ...SIDE, file }, 400, "invalid-file", `file ${String(file)}`);
+	for (const selector of ["", "   ", "s".repeat(501), 7, undefined]) await refused({ ...SIDE, selector }, 400, "invalid-selector", `selector ${String(selector).slice(0, 10)}`);
+	await refused({ ...SIDE, excerpt: 7 }, 400, "invalid-excerpt", "excerpt not text");
+	for (const note of ["n".repeat(2001), 7]) await refused({ ...SIDE, note }, 400, "invalid-note", `note ${String(note).slice(0, 10)}`);
+	assert.equal((await postJson(port, "api/designs/missing/implement-part", SIDE)).status, 404);
+	assert.equal((await postJson(port, "api/designs/Not_A_Slug/implement-part", SIDE)).status, 404);
+	assert.equal(parts.length, 0, "nothing refused reaches the session");
+	assert.equal(existsSync(join(root, "alpha", "parts.json")), false, "and nothing is recorded");
+	writeFileSync(join(root, "alpha", "parts.json"), "not json");
+	const broken = await postJson(port, PARTS, { file: "01-hero.html", selector: "h1" });
+	assert.equal(broken.status, 422);
+	assert.equal(JSON.parse(broken.body).error, "invalid-parts");
+	assert.equal(readFileSync(join(root, "alpha", "parts.json"), "utf8"), "not json", "a broken file is never overwritten");
+	assert.equal((await rawRequest(port, `/${TOKEN}/${PARTS_LIST}`)).status, 422);
+});
+
+test("implement-part S4: the route answers queued from the delivery, 501 without onImplementPart, and 500 when the delivery throws, taking the part back", async (t) => {
+	const { root } = fixture(t);
+	const request = { file: "01-hero.html", selector: "h1" };
+	const bare = await startDesignCanvasServer({ designRoot: root, onComment: () => {}, randomToken: () => TOKEN });
+	t.after(() => bare.close());
+	const none = await postJson(bare.port, PARTS, request);
+	assert.equal(none.status, 501);
+	assert.deepEqual(JSON.parse(none.body), { error: "implement-part-unavailable" });
+	assert.equal(existsSync(join(root, "alpha", "parts.json")), false);
+
+	const queueing = await startDesignCanvasServer({ designRoot: root, onComment: () => {}, onImplementPart: () => ({ queued: true }), randomToken: () => TOKEN });
+	t.after(() => queueing.close());
+	const queued = await postJson(queueing.port, PARTS, request);
+	assert.equal(JSON.parse(queued.body).queued, true);
+	assert.equal(JSON.parse(readFileSync(join(root, "alpha", "parts.json"), "utf8")).parts[0].queued, true);
+
+	const failing = await startDesignCanvasServer({ designRoot: root, onComment: () => {}, onImplementPart: () => { throw new Error("session closed"); }, randomToken: () => TOKEN });
+	t.after(() => failing.close());
+	const reply = await postJson(failing.port, PARTS, request);
+	assert.equal(reply.status, 500);
+	assert.deepEqual(JSON.parse(reply.body), { error: "delivery-failed", slug: "alpha", file: "01-hero.html", reason: "session closed" });
+	assert.equal(JSON.parse(readFileSync(join(root, "alpha", "parts.json"), "utf8")).parts.length, 1, "the failed part is taken back, the queued one stays");
+});
+
+test("implement-part S4: the parts route keeps the Origin, content-type, JSON and method rules", async (t) => {
+	const { port, parts } = await start(t);
+	const path = `/${TOKEN}/${PARTS}`;
+	const body = JSON.stringify({ file: "01-hero.html", selector: "h1" });
+	const own = { Origin: `http://127.0.0.1:${port}`, "Content-Type": "application/json" };
+	assert.equal((await rawRequest(port, path, { method: "POST", headers: { "Content-Type": "application/json" }, body })).status, 403, "no Origin");
+	assert.equal((await rawRequest(port, path, { method: "POST", headers: { ...own, Origin: "http://evil.example" }, body })).status, 403);
+	assert.equal((await rawRequest(port, path, { method: "POST", headers: { ...own, "Content-Type": "text/plain" }, body })).status, 415);
+	assert.equal((await rawRequest(port, path, { method: "POST", headers: own, body: "not json" })).status, 400);
+	assert.equal((await rawRequest(port, path, { method: "PUT", headers: own, body })).status, 405);
+	assert.equal((await rawRequest(port, path)).status, 405, "the list is read from api/designs/<slug>/parts");
+	assert.equal((await rawRequest(port, `/${TOKEN}/${PARTS_LIST}`, { method: "POST", headers: own, body })).status, 405, "and written only through implement-part");
+	assert.equal(parts.length, 0);
+});
+
 // S15: the canvas Implement route records the handoff in design/<slug>/handoffs.json.
 
 const handoffsOf = (root: string, slug = "alpha") => JSON.parse(readFileSync(join(root, slug, "handoffs.json"), "utf8"));
@@ -883,7 +1120,8 @@ test("the canvas CSP frames only loopback previews, and the artboard CSP is unch
 		"style-src 'self'",
 		"img-src 'self' data:",
 		"connect-src 'self'",
-		"frame-src 'self' http://localhost:* http://127.0.0.1:* http://[::1]:* https://localhost:* https://127.0.0.1:* https://[::1]:*",
+		// No [::1]: CSP host sources have no IPv6 form, so browsers reject it and log an error on every load.
+		"frame-src 'self' http://localhost:* http://127.0.0.1:* https://localhost:* https://127.0.0.1:*",
 		"base-uri 'none'",
 		"form-action 'none'",
 		"frame-ancestors 'none'",
@@ -950,7 +1188,7 @@ test("formatDesignComment builds the exact session message with the comment id",
 		"Make the headline shorter.",
 		"",
 		"Edit only the artboard design/landing/02-bold.html, following the gentle-design skill.",
-		"When it is applied, mark it resolved with the gentle_design_comments tool (action \"resolve\", slug \"landing\", ids [\"k3x9p2\"]), or set its status to \"resolved\" in design/landing/comments.json.",
+		"When it is applied, mark it resolved with the gentle_design_comments tool (action \"resolve\", slug \"landing\", ids [\"k3x9p2\"], note \"<one line on what you changed>\"), or set its status to \"resolved\" in design/landing/comments.json.",
 	].join("\n"));
 	assert.match(formatDesignComment({ ...VALID, id: "a1", excerpt: "" }), /\nExcerpt: \(none\)\n/);
 });
@@ -979,7 +1217,7 @@ test("formatDesignCommentBatch builds one exact message listing every comment", 
 		"   And bolder.",
 		"",
 		"Apply each comment following the gentle-design skill, editing only the artboard it names.",
-		"When a comment is applied, mark it resolved with the gentle_design_comments tool (action \"resolve\", slug \"landing\", ids [\"aaa111\", \"bbb222\"]), or set its status to \"resolved\" in design/landing/comments.json.",
+		"When a comment is applied, mark it resolved with the gentle_design_comments tool (action \"resolve\", slug \"landing\", ids [\"aaa111\", \"bbb222\"], note \"<one line on what you changed>\"), or set its status to \"resolved\" in design/landing/comments.json.",
 	].join("\n"));
 });
 
@@ -1071,7 +1309,7 @@ test("formatDesignComment names the screenshot, and the session content attaches
 		"The button jumps mid-animation.",
 		"",
 		"Edit only the artboard design/landing/02-bold.html, following the gentle-design skill.",
-		"When it is applied, mark it resolved with the gentle_design_comments tool (action \"resolve\", slug \"landing\", ids [\"k3x9p2\"]), or set its status to \"resolved\" in design/landing/comments.json.",
+		"When it is applied, mark it resolved with the gentle_design_comments tool (action \"resolve\", slug \"landing\", ids [\"k3x9p2\"], note \"<one line on what you changed>\"), or set its status to \"resolved\" in design/landing/comments.json.",
 	].join("\n");
 	assert.equal(formatDesignComment(comment), text);
 	assert.deepEqual(designCommentContent(comment), [{ type: "text", text }, { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }]);
@@ -1097,4 +1335,327 @@ test("a batch attaches at most six screenshots, in order, and names the rest for
 	assert.deepEqual(content, [{ type: "text", text }, ...[0, 2, 3, 4, 5, 6].map((index) => ({ type: "image", data: `data${index}`, mimeType: "image/png" }))]);
 	const plain = batch.map(({ screenshot: _drop, ...rest }) => rest);
 	assert.equal(designCommentBatchContent(plain), formatDesignCommentBatch(plain));
+});
+
+test("the page config tells the canvas which deliveries exist, and the 501 checks stay", async (t) => {
+	const { root } = fixture(t);
+	const configOf = async (port: number, token: string) => JSON.parse(/<script id="gd-config" type="application\/json">([^<]*)<\/script>/.exec((await rawRequest(port, `/${token}/`)).body)![1]);
+
+	const bare = await startDesignCanvasServer({ designRoot: root, onComment: () => {}, randomToken: () => TOKEN });
+	t.after(() => bare.close());
+	assert.deepEqual((await configOf(bare.port, TOKEN)).delivery, { comment: true, batch: false, implement: false, variant: false, part: false });
+	const batchOnly = await postJson(bare.port, "api/designs/alpha/comments/send-all", {});
+	// Nothing unsent: the batch capability is only checked when there is something to deliver.
+	assert.equal(batchOnly.status, 200);
+	await postComment(bare.port, { ...VALID, mode: "collect" });
+	const refused = await postJson(bare.port, "api/designs/alpha/comments/send-all", {});
+	assert.equal(refused.status, 501);
+	assert.equal(JSON.parse(refused.body).error, "batch-delivery-unavailable");
+	const noImplement = await postJson(bare.port, "api/designs/alpha/implement", { file: "01-a.html" });
+	assert.equal(noImplement.status, 501);
+	assert.equal(JSON.parse(noImplement.body).error, "implement-unavailable");
+
+	const batch = await startDesignCanvasServer({ designRoot: root, onComment: () => {}, onComments: () => {}, randomToken: () => "b".repeat(32) });
+	t.after(() => batch.close());
+	assert.deepEqual((await configOf(batch.port, "b".repeat(32))).delivery, { comment: true, batch: true, implement: false, variant: false, part: false });
+	const implement = await startDesignCanvasServer({ designRoot: root, onComment: () => {}, onImplement: () => ({ queued: false }), randomToken: () => "i".repeat(32) });
+	t.after(() => implement.close());
+	assert.deepEqual((await configOf(implement.port, "i".repeat(32))).delivery, { comment: true, batch: false, implement: true, variant: false, part: false });
+	const variant = await startDesignCanvasServer({ designRoot: root, onComment: () => {}, onVariant: () => ({ queued: false }), randomToken: () => "v".repeat(32) });
+	t.after(() => variant.close());
+	assert.deepEqual((await configOf(variant.port, "v".repeat(32))).delivery, { comment: true, batch: false, implement: false, variant: true, part: false });
+	const noVariant = await postJson(bare.port, "api/designs/alpha/variant", { file: "01-a.html", instruction: "Bolder" });
+	assert.equal(noVariant.status, 501);
+	assert.equal(JSON.parse(noVariant.body).error, "variant-unavailable");
+	const part = await startDesignCanvasServer({ designRoot: root, onComment: () => {}, onImplementPart: () => ({ queued: false }), randomToken: () => "p".repeat(32) });
+	t.after(() => part.close());
+	assert.deepEqual((await configOf(part.port, "p".repeat(32))).delivery, { comment: true, batch: false, implement: false, variant: false, part: true });
+});
+
+// S7: the viewport a comment was made at.
+
+const VIEWPORT = { width: 390, height: 844 };
+
+test("S7: a comment with a viewport is stored with it and delivered with it; without one the key is absent", async (t) => {
+	const { port, root, comments } = await start(t);
+	const reply = await postComment(port, { ...VALID, viewport: VIEWPORT });
+	assert.equal(reply.status, 202);
+	const { id } = JSON.parse(reply.body);
+	assert.deepEqual(comments, [{ ...VALID, id, viewport: VIEWPORT }], "the session comment carries the viewport");
+	assert.deepEqual((storedComments(root)[0] as Stored & { viewport?: unknown }).viewport, VIEWPORT);
+	assert.equal((await postComment(port, VALID)).status, 202);
+	assert.equal("viewport" in comments[1], false);
+	assert.equal("viewport" in storedComments(root)[1], false, "never written when absent");
+	// Collected comments keep it too, and a Send all delivers it.
+	const collected = await postComment(port, { ...VALID, mode: "collect", viewport: { width: 720, height: 820 } });
+	assert.equal(collected.status, 201);
+	assert.deepEqual((storedComments(root)[2] as Stored & { viewport?: unknown }).viewport, { width: 720, height: 820 });
+});
+
+test("S7: an invalid viewport is refused with 400 invalid-viewport and leaves comments.json unchanged", async (t) => {
+	const { port, root, comments } = await start(t);
+	const invalid: unknown[] = [
+		{ width: 239, height: 844 }, { width: 4097, height: 844 }, { width: 390, height: 0 }, { width: 390, height: 20001 },
+		{ width: 390.5, height: 844 }, { width: "390", height: 844 }, { width: 390 }, {}, null, [], "390x844", 390,
+	];
+	for (const viewport of invalid) {
+		const reply = await postComment(port, { ...VALID, viewport });
+		assert.equal(reply.status, 400, JSON.stringify(viewport));
+		assert.equal(JSON.parse(reply.body).error, "invalid-viewport");
+	}
+	assert.deepEqual(comments, [], "nothing was delivered");
+	assert.equal(existsSync(join(root, "alpha", "comments.json")), false, "nothing was stored");
+	// A stored file stays byte for byte as it was.
+	assert.equal((await postComment(port, VALID)).status, 202);
+	const before = readFileSync(join(root, "alpha", "comments.json"), "utf8");
+	assert.equal((await postComment(port, { ...VALID, viewport: { width: 1, height: 1 } })).status, 400);
+	assert.equal(readFileSync(join(root, "alpha", "comments.json"), "utf8"), before);
+});
+
+test("S7: formatDesignComment names the viewport so the agent edits for that width, and says nothing without one", () => {
+	const comment: DesignComment = { id: "k3x9p2", slug: "landing", file: "02-bold.html", selector: "#cta", excerpt: "Go", comment: "Too wide.", viewport: { width: 390, height: 844 } };
+	const text = formatDesignComment(comment);
+	assert.match(text, /\nExcerpt: "Go"\nViewport: Phone 390 × 844 \(the comment was made at this size; make the change hold at this width\)\n\nComment:\n/);
+	assert.match(formatDesignComment({ ...comment, viewport: { width: 720, height: 820 } }), /\nViewport: 720 × 820 \(/);
+	const { viewport: _drop, ...plain } = comment;
+	assert.ok(!formatDesignComment(plain).includes("Viewport:"));
+});
+
+test("S7: formatDesignCommentBatch names each comment's viewport, and only those that have one", () => {
+	const batch: DesignComment[] = [
+		{ id: "aaa111", slug: "landing", file: "01-calm.html", selector: "#cta", excerpt: "Start", comment: "Make it green.", viewport: { width: 820, height: 1180 } },
+		{ id: "bbb222", slug: "landing", file: "02-bold.html", selector: "body > h1", excerpt: "", comment: "Shorter." },
+	];
+	const text = formatDesignCommentBatch(batch);
+	assert.match(text, /\n   Excerpt: "Start"\n   Viewport: Tablet 820 × 1180 \(the comment was made at this size; make the change hold at this width\)\n   Comment:\n/);
+	assert.equal(text.match(/Viewport:/g)?.length, 1);
+	assert.match(text, /\n   Excerpt: \(none\)\n   Comment:\n   Shorter\.\n/);
+});
+
+// Token inspector (T1): the tokens of design/system.md, read-only.
+
+const SYSTEM_MD = "# System\n\n## Colors\n\n| Token | Value |\n| --- | --- |\n| `--bg` | `#1a1218` |\n| `--accent` | `#f095c8` |\n";
+
+test("S1: GET api/system/tokens gives the tokens of design/system.md, and none when it is missing", async (t) => {
+	const { port, base, root } = await start(t);
+	const missing = await rawRequest(port, `${base}api/system/tokens`);
+	assert.equal(missing.status, 200);
+	assert.deepEqual(JSON.parse(missing.body), { exists: false, tokens: [] });
+	writeFileSync(join(root, "system.md"), SYSTEM_MD);
+	const present = await rawRequest(port, `${base}api/system/tokens`);
+	assert.equal(present.status, 200);
+	assert.match(String(present.headers["content-type"]), /^application\/json/);
+	assert.deepEqual(JSON.parse(present.body), { exists: true, tokens: [
+		{ name: "--bg", value: "#1a1218", section: "Colors", group: "color" },
+		{ name: "--accent", value: "#f095c8", section: "Colors", group: "color" },
+	] });
+	// The file is read on every request, so a change shows without restarting the server.
+	writeFileSync(join(root, "system.md"), `${SYSTEM_MD}| \`--text\` | \`#f6eff3\` |\n`);
+	assert.equal(JSON.parse((await rawRequest(port, `${base}api/system/tokens`)).body).tokens.length, 3);
+});
+
+test("S1: an empty, malformed, huge, linked or directory system.md never fails the route", async (t) => {
+	const { port, base, root } = await start(t);
+	const tokens = async () => rawRequest(port, `${base}api/system/tokens`);
+	writeFileSync(join(root, "system.md"), "");
+	assert.deepEqual(JSON.parse((await tokens()).body), { exists: true, tokens: [] });
+	writeFileSync(join(root, "system.md"), "| `--a\n|||`| `\u0000\n");
+	const malformed = await tokens();
+	assert.equal(malformed.status, 200);
+	assert.deepEqual(JSON.parse(malformed.body).tokens, []);
+	writeFileSync(join(root, "system.md"), `${SYSTEM_MD}${"x".repeat(300 * 1024)}`);
+	assert.deepEqual(JSON.parse((await tokens()).body), { exists: true, tokens: [], problem: "too-large" });
+	rmSync(join(root, "system.md"));
+	const outside = scratch(t, "gentle-design-tokens-outside-");
+	writeFileSync(join(outside, "system.md"), SYSTEM_MD);
+	symlinkSync(join(outside, "system.md"), join(root, "system.md"));
+	assert.deepEqual(JSON.parse((await tokens()).body), { exists: false, tokens: [] }, "a link out of the design root is not read");
+	rmSync(join(root, "system.md"));
+	mkdirSync(join(root, "system.md"));
+	assert.deepEqual(JSON.parse((await tokens()).body), { exists: false, tokens: [] });
+});
+
+test("S1: the tokens route keeps the Host, token, Origin and method rules, and system.md stays unserved", async (t) => {
+	const { port, base, root } = await start(t);
+	writeFileSync(join(root, "system.md"), SYSTEM_MD);
+	const path = "api/system/tokens";
+	assert.equal((await rawRequest(port, `${base}${path}`, { host: `evil.example:${port}` })).status, 421);
+	assert.equal((await rawRequest(port, `/wrong-token-0123456789/${path}`)).status, 404);
+	assert.equal((await rawRequest(port, `${base}${path}`, { headers: { Origin: "http://evil.example" } })).status, 403);
+	assert.equal((await rawRequest(port, `${base}${path}`, { headers: { Origin: "null" } })).status, 403, "a sandboxed artboard may not read the tokens");
+	assert.equal((await rawRequest(port, `${base}${path}`, { headers: { Origin: `http://localhost:${port}` } })).status, 200);
+	assert.equal((await rawRequest(port, `${base}${path}`, { method: "POST", headers: { Origin: `http://127.0.0.1:${port}`, "Content-Type": "application/json" }, body: "{}" })).status, 405);
+	for (const extra of ["api/system/tokens/x", "api/system/token", "system.md"]) assert.equal((await rawRequest(port, `${base}${extra}`)).status, 404, extra);
+});
+
+
+// canvas-trim S3: version history is gone; its routes answer like any unknown path.
+
+test("canvas-trim S3: the history routes are unknown paths (404 whatever the method) and seeing a design writes no .history", async (t) => {
+	const { server, port, base, root } = await start(t);
+	assert.equal((await rawRequest(port, `${base}api/designs/alpha`)).status, 200);
+	server.show("alpha");
+	for (const path of ["api/designs/alpha/history", "history/alpha/1/01-hero.html"]) {
+		const reply = await rawRequest(port, `${base}${path}`);
+		assert.equal(reply.status, 404, path);
+		assert.deepEqual(JSON.parse(reply.body), { error: "not-found" }, path);
+		assert.equal((await rawRequest(port, `${base}${path}`, { method: "POST", headers: { Origin: `http://127.0.0.1:${port}`, "Content-Type": "application/json" }, body: "{}" })).status, 404, `POST ${path}`);
+	}
+	const restore = await postJson(port, "api/designs/alpha/history/restore", { file: "01-hero.html", n: 1 });
+	assert.equal(restore.status, 404);
+	assert.deepEqual(JSON.parse(restore.body), { error: "not-found" });
+	assert.equal((await rawRequest(port, `${base}api/designs/alpha/history/restore`)).status, 404, "GET restore");
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	assert.equal(existsSync(join(root, "alpha", ".history")), false);
+});
+
+// canvas-layout S3: design/<slug>/layout.json, read and written whole by the canvas through the server.
+
+const LAYOUT_PATH = "api/designs/alpha/layout";
+const SAVED_LAYOUT = { arrangement: "free", positions: { system: { x: 0, y: 0 }, "01-hero.html": { x: 1520, y: 0 }, "02-bare.html": { x: 0, y: 1280 } } };
+
+test("canvas-layout S3: GET layout is null without layout.json; POST validates and saves it whole; GET gives it back", async (t) => {
+	const { port, base, root } = await start(t);
+	const missing = await rawRequest(port, `${base}${LAYOUT_PATH}`);
+	assert.equal(missing.status, 200);
+	assert.deepEqual(JSON.parse(missing.body), { layout: null });
+	const saved = await postJson(port, LAYOUT_PATH, SAVED_LAYOUT);
+	assert.equal(saved.status, 200);
+	assert.deepEqual(JSON.parse(saved.body), { ok: true, layout: SAVED_LAYOUT });
+	assert.equal(readFileSync(join(root, "alpha", "layout.json"), "utf8"), `${JSON.stringify(SAVED_LAYOUT, null, 2)}\n`);
+	const read = await rawRequest(port, `${base}${LAYOUT_PATH}`);
+	assert.equal(read.status, 200);
+	assert.deepEqual(JSON.parse(read.body), { layout: SAVED_LAYOUT });
+	// A broken file is no layout: the canvas opens in a row and the next save replaces it.
+	writeFileSync(join(root, "alpha", "layout.json"), "{ broken");
+	assert.deepEqual(JSON.parse((await rawRequest(port, `${base}${LAYOUT_PATH}`)).body), { layout: null });
+	assert.equal((await postJson(port, LAYOUT_PATH, SAVED_LAYOUT)).status, 200);
+	assert.deepEqual(JSON.parse(readFileSync(join(root, "alpha", "layout.json"), "utf8")), SAVED_LAYOUT);
+});
+
+test("canvas-layout S3: an invalid layout is refused with its reason and nothing is written", async (t) => {
+	const { port, root } = await start(t);
+	const refuse = async (body: unknown, reason: RegExp) => {
+		const reply = await postJson(port, LAYOUT_PATH, body);
+		assert.equal(reply.status, 400, JSON.stringify(body));
+		const answer = JSON.parse(reply.body);
+		assert.equal(answer.error, "invalid-layout");
+		assert.match(answer.reason, reason);
+	};
+	await refuse({ arrangement: "diagonal", positions: {} }, /^arrangement must be "row", "column", "grid" or "free"$/);
+	await refuse({ arrangement: "row", positions: { "01-hero.html": { x: 1.5, y: 0 } } }, /x and y must be integers/);
+	await refuse({ arrangement: "row", positions: { "../beta/01-a.html": { x: 0, y: 0 } } }, /keys must be relative \.html artboard paths/);
+	await refuse({ arrangement: "row", positions: {}, extra: true }, /unknown keys: extra/);
+	assert.equal(existsSync(join(root, "alpha", "layout.json")), false, "nothing is written");
+	assert.equal((await postJson(port, LAYOUT_PATH, SAVED_LAYOUT)).status, 200);
+	const before = readFileSync(join(root, "alpha", "layout.json"), "utf8");
+	await refuse({ arrangement: "row", positions: { "01-hero.html": { x: 0, y: 3_000_000 } } }, /between -2000000 and 2000000/);
+	assert.equal(readFileSync(join(root, "alpha", "layout.json"), "utf8"), before, "the saved layout stays as it was");
+	assert.equal((await postJson(port, "api/designs/missing/layout", SAVED_LAYOUT)).status, 404);
+	assert.equal((await postJson(port, "api/designs/Not_A_Slug/layout", SAVED_LAYOUT)).status, 404);
+	assert.equal(existsSync(join(root, "missing")), false);
+});
+
+test("canvas-layout S3: the layout route keeps the Origin, content-type, JSON and method rules", async (t) => {
+	const { port, base, root } = await start(t);
+	const path = `${base}${LAYOUT_PATH}`;
+	const body = JSON.stringify(SAVED_LAYOUT);
+	const own = { Origin: `http://127.0.0.1:${port}`, "Content-Type": "application/json" };
+	assert.equal((await rawRequest(port, path, { method: "POST", headers: { "Content-Type": "application/json" }, body })).status, 403, "no Origin");
+	assert.equal((await rawRequest(port, path, { method: "POST", headers: { ...own, Origin: "http://evil.example" }, body })).status, 403);
+	assert.equal((await rawRequest(port, path, { method: "POST", headers: { ...own, "Content-Type": "text/plain" }, body })).status, 415);
+	assert.equal((await rawRequest(port, path, { method: "POST", headers: own, body: "not json" })).status, 400);
+	const put = await rawRequest(port, path, { method: "PUT", headers: own, body });
+	assert.equal(put.status, 405);
+	assert.equal(put.headers.allow, "GET, POST");
+	assert.equal((await rawRequest(port, path, { headers: { Origin: "http://evil.example" } })).status, 403, "only this server's pages read it");
+	assert.equal((await rawRequest(port, path, { headers: { Origin: "null" } })).status, 403, "a sandboxed artboard may not read it");
+	assert.equal((await rawRequest(port, `${base}api/designs/missing/layout`)).status, 404);
+	assert.equal(existsSync(join(root, "alpha", "layout.json")), false);
+	// The other GET-only and POST-only routes keep answering 405 with their one method.
+	const comments = await rawRequest(port, `${base}api/designs/alpha/comments`, { method: "POST", headers: own, body: "{}" });
+	assert.equal(comments.status, 405);
+	assert.equal(comments.headers.allow, "GET");
+	const implement = await rawRequest(port, `${base}api/designs/alpha/implement`);
+	assert.equal(implement.status, 405);
+	assert.equal(implement.headers.allow, "POST");
+});
+
+test("canvas-layout S3: saving the layout streams one change for layout.json", async (t) => {
+	const { port } = await start(t);
+	const events = openEvents(port);
+	t.after(() => events.req.destroy());
+	await events.ready;
+	await events.waitFor(/: connected\n\n/);
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	assert.equal((await postJson(port, LAYOUT_PATH, SAVED_LAYOUT)).status, 200);
+	await events.waitFor(/event: change\ndata: \{"slug":"alpha","file":"layout\.json"\}\n\n/);
+});
+
+test("canvas-layout S17: the text route edits an open comment; a changed sent one reaches the session as an edit, an unsent one waits, a resolved, unknown, invalid or cross-origin edit is refused without writing", async (t) => {
+	const { port, root, comments } = await start(t);
+	await postComment(port, { ...VALID, mode: "collect" });
+	await postComment(port, { ...VALID, mode: "collect" });
+	await postComment(port, { ...VALID, mode: "collect" });
+	const [open, sent, resolved] = storedComments(root);
+	const path = join(root, "alpha", "comments.json");
+	const document = JSON.parse(readFileSync(path, "utf8"));
+	document.comments[1].sentAt = "2026-11-08T10:00:00.000Z";
+	document.comments[2].status = "resolved";
+	document.comments[2].resolvedAt = "2026-11-08T10:00:00.000Z";
+	writeFileSync(path, JSON.stringify(document));
+	const edited = await postJson(port, `api/designs/alpha/comments/${open.id}/text`, { comment: "  Make it\r\nmuch bigger  " });
+	assert.equal(edited.status, 200);
+	assert.equal(JSON.parse(edited.body).comment.comment, "Make it\nmuch bigger", "line endings normalized and trimmed like a new comment");
+	assert.equal(JSON.parse(edited.body).sent, false, "an unsent comment waits for Send all");
+	assert.equal(storedComments(root)[0].comment, "Make it\nmuch bigger");
+	assert.equal(comments.length, 0, "nothing reaches the session for an unsent comment");
+
+	const resent = await postJson(port, `api/designs/alpha/comments/${sent.id}/text`, { comment: "Smaller" });
+	assert.equal(resent.status, 200);
+	assert.equal(JSON.parse(resent.body).sent, true);
+	assert.equal(storedComments(root)[1].comment, "Smaller");
+	assert.equal(storedComments(root)[1].sentAt, "2026-11-08T10:00:00.000Z", "it stays sent");
+	assert.equal(comments.length, 1);
+	assert.deepEqual([comments[0].id, comments[0].comment, comments[0].edited], [sent.id, "Smaller", { previous: "Make it bigger" }]);
+	const same = await postJson(port, `api/designs/alpha/comments/${sent.id}/text`, { comment: "Smaller" });
+	assert.deepEqual([same.status, JSON.parse(same.body).sent], [200, false]);
+	assert.equal(comments.length, 1, "an unchanged text is not sent again");
+
+	const before = readFileSync(path, "utf8");
+	const refusal = async (id: string, body: unknown) => {
+		const reply = await postJson(port, `api/designs/alpha/comments/${id}/text`, body);
+		return [reply.status, JSON.parse(reply.body || "{}").error];
+	};
+	assert.deepEqual(await refusal(resolved.id, { comment: "New" }), [409, "comment-resolved"]);
+	assert.deepEqual(await refusal("zzzzzz", { comment: "New" }), [404, "not-found"]);
+	assert.deepEqual(await refusal(open.id, { comment: "   " }), [400, "invalid-comment"]);
+	assert.deepEqual(await refusal(open.id, { comment: "x".repeat(2001) }), [400, "invalid-comment"]);
+	assert.deepEqual(await refusal(open.id, { comment: 7 }), [400, "invalid-comment"]);
+	const foreign = await rawRequest(port, `/${TOKEN}/api/designs/alpha/comments/${open.id}/text`, { method: "POST", headers: { Origin: "http://evil.example", "Content-Type": "application/json" }, body: JSON.stringify({ comment: "New" }) });
+	assert.equal(foreign.status, 403);
+	assert.equal(readFileSync(path, "utf8"), before, "no refused edit writes comments.json");
+	assert.equal(comments.length, 1);
+});
+
+test("canvas-layout S17: when the session refuses the edit of a sent comment, the new text stays saved and the reply says it was not sent", async (t) => {
+	const { port, root } = await start(t, { onComment: () => { throw new Error("offline"); } });
+	await postComment(port, { ...VALID, mode: "collect" });
+	const [saved] = storedComments(root);
+	const path = join(root, "alpha", "comments.json");
+	const document = JSON.parse(readFileSync(path, "utf8"));
+	document.comments[0].sentAt = "2026-11-08T10:00:00.000Z";
+	writeFileSync(path, JSON.stringify(document));
+	const reply = await postJson(port, `api/designs/alpha/comments/${saved.id}/text`, { comment: "Smaller" });
+	assert.equal(reply.status, 500);
+	assert.deepEqual(JSON.parse(reply.body), { error: "edit-not-delivered", id: saved.id, saved: true, sent: false });
+	assert.equal(storedComments(root)[0].comment, "Smaller");
+});
+
+test("canvas-layout S17: an edited comment's message names it as an edit and quotes the previous text", () => {
+	const text = formatDesignComment({ id: "k3x9p2", slug: "landing", file: "02-bold.html", selector: "h1", excerpt: "", comment: "Make it shorter.", edited: { previous: "Make it bigger." } });
+	assert.ok(text.startsWith("Design comment edited for design/landing/02-bold.html\n"));
+	assert.ok(text.includes("\nComment (edited; it replaces the text you received earlier for this id):\nMake it shorter.\n"));
+	assert.ok(text.includes("\nPrevious text:\nMake it bigger.\n"));
+	assert.ok(!formatDesignComment({ id: "k3x9p2", slug: "landing", file: "02-bold.html", selector: "h1", excerpt: "", comment: "x" }).includes("edited"));
 });

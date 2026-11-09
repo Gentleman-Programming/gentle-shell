@@ -5,8 +5,11 @@ import { open, readFile, realpath, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, isAbsolute, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DESIGN_COMMENTS_FILE, DESIGN_COMMENT_LIMITS, DESIGN_SCREENSHOT_TYPES, DesignCommentsError, MAX_DESIGN_SCREENSHOT_BYTES, createDesignCommentStore, isDesignCommentId, truncateUtf16, type StoredDesignComment } from "./design-comments.ts";
+import { DESIGN_COMMENTS_FILE, DESIGN_COMMENT_LIMITS, DESIGN_SCREENSHOT_TYPES, DesignCommentsError, MAX_DESIGN_SCREENSHOT_BYTES, createDesignCommentStore, describeViewport, isDesignCommentId, truncateUtf16, viewportProblem, type DesignViewport, type StoredDesignComment } from "./design-comments.ts";
 import { DESIGN_FEATURE_PATH, DesignHandoffsError, createDesignHandoffStore, sendDesignHandoff, type DesignHandoffDelivery } from "./design-handoffs.ts";
+import { readSystemTokens } from "./design-system-tokens.ts";
+import { DesignLayoutError, createDesignLayoutStore } from "./design-layout.ts";
+import { DesignPartsError, createDesignPartStore, sendDesignPart, type DesignPart } from "./design-parts.ts";
 
 // Loopback canvas host for gentle-design (S4-S6). Every route lives under a
 // per-server random token, the Host header must name this server, POSTs need
@@ -41,6 +44,8 @@ const LIMITS = Object.freeze({
 	bodyBytes: 16 * 1024,
 	/** POST api/comments may carry one base64 screenshot; its other fields keep `bodyBytes`. */
 	commentBodyBytes: 8 * 1024 * 1024,
+	/** POST api/designs/<slug>/layout: up to 100 positions keyed by artboard paths of up to 512 characters. */
+	layoutBodyBytes: 64 * 1024,
 	...DESIGN_COMMENT_LIMITS,
 	manifestBytes: 256 * 1024,
 	fileBytes: 32 * 1024 * 1024,
@@ -69,8 +74,9 @@ const CANVAS_CSP = [
 	"style-src 'self'",
 	"img-src 'self' data:",
 	"connect-src 'self'",
-	// Compare (S15) frames the running app next to its artboard: loopback origins only.
-	`frame-src 'self' ${["http", "https"].flatMap((scheme) => ["localhost", "127.0.0.1", "[::1]"].map((host) => `${scheme}://${host}:*`)).join(" ")}`,
+	// Compare (S15) frames the running app next to its artboard: loopback origins only. No [::1]: CSP host sources
+	// have no IPv6 form, so browsers reject it (and log an error); Compare offers a new tab for such a preview.
+	`frame-src 'self' ${["http", "https"].flatMap((scheme) => ["localhost", "127.0.0.1"].map((host) => `${scheme}://${host}:*`)).join(" ")}`,
 	"base-uri 'none'",
 	"form-action 'none'",
 	"frame-ancestors 'none'",
@@ -83,7 +89,7 @@ const CANVAS_CSP = [
 export type DesignCommentScreenshot = { path: string; mimeType: string; data?: string };
 
 /** A comment as delivered to the session; `id` names it in design/<slug>/comments.json. */
-export type DesignComment = { id: string; slug: string; file: string; selector: string; excerpt: string; comment: string; screenshot?: DesignCommentScreenshot };
+export type DesignComment = { id: string; slug: string; file: string; selector: string; excerpt: string; comment: string; screenshot?: DesignCommentScreenshot; viewport?: DesignViewport; /** Set when the canvas edits a comment already sent (canvas-layout S17). */ edited?: { previous: string } };
 
 /** Session message content: plain text, or text followed by the attached screenshots. */
 export type DesignSessionContent = string | Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
@@ -104,6 +110,18 @@ export type DesignCanvasServerOptions = {
 	 * takes the record back and answers 500.
 	 */
 	onImplement?: (request: DesignImplementRequest) => DesignHandoffDelivery | Promise<DesignHandoffDelivery>;
+	/**
+	 * "Try another direction from this…": an artboard of the manifest and what should change, already
+	 * validated. It answers whether the message was queued behind a busy agent; a throw answers 500.
+	 * Nothing is recorded: the new artboard arrives through the manifest.
+	 */
+	onVariant?: (request: DesignVariantRequest) => DesignHandoffDelivery | Promise<DesignHandoffDelivery>;
+	/**
+	 * "Implement only this": one element of an artboard of the manifest, already validated and recorded in
+	 * parts.json (never handoffs.json, so no direction is chosen). It answers whether the message was queued
+	 * behind a busy agent; a throw takes the part back and answers 500.
+	 */
+	onImplementPart?: (request: DesignImplementPartRequest) => DesignHandoffDelivery | Promise<DesignHandoffDelivery>;
 	initialSlug?: string;
 	randomToken?: () => string;
 };
@@ -123,6 +141,14 @@ export type DesignArtboard = { file: string; title: string; tradeoff: string; wi
 /** `feature` is present only when valid; `warnings` only when something in design.json was dropped. */
 export type DesignManifest = { slug: string; title: string; brief: string; artboards: DesignArtboard[]; feature?: string; warnings?: string[] };
 export type DesignImplementRequest = { slug: string; file: string };
+/** `instruction` is trimmed, with LF line ends, 1 to `DESIGN_VARIANT_INSTRUCTION_MAX` characters. */
+export type DesignVariantRequest = { slug: string; file: string; instruction: string };
+
+/** The most characters one "another direction" instruction may have. */
+export const DESIGN_VARIANT_INSTRUCTION_MAX = 2000;
+
+/** One element of an artboard handed to the session on its own, as recorded in design/<slug>/parts.json. */
+export type DesignImplementPartRequest = { slug: string; part: DesignPart };
 
 export { DESIGN_FEATURE_PATH };
 
@@ -145,7 +171,24 @@ function storeFailure(error: unknown): never {
 	if (error.code === "invalid-file") throw new HttpError(422, "invalid-comments", { error: "invalid-comments", reason: error.message });
 	if (error.code === "limit") throw new HttpError(409, "too-many-comments", { error: "too-many-comments", reason: error.message });
 	if (error.code === "invalid-input") throw new HttpError(400, "invalid-comment", { error: "invalid-comment", reason: error.message });
+	if (error.code === "locked") throw new HttpError(409, "comment-resolved", { error: "comment-resolved", reason: error.message });
 	throw new HttpError(500, "internal");
+}
+
+/** parts.json failures as HTTP: a broken file is 422 and is never overwritten. */
+function partFailure(error: unknown): never {
+	if (!(error instanceof DesignPartsError)) throw error;
+	if (error.code === "not-found") throw new HttpError(404, "not-found");
+	if (error.code === "invalid-file") throw new HttpError(422, "invalid-parts", { error: "invalid-parts", reason: error.message });
+	if (error.code === "limit") throw new HttpError(409, "too-many-parts", { error: "too-many-parts", reason: error.message });
+	throw new HttpError(400, "invalid-part", { error: "invalid-part", reason: error.message });
+}
+
+/** layout.json failures as HTTP: an unknown design is 404, a refused layout 400 with its reason. */
+function layoutFailure(error: unknown): never {
+	if (!(error instanceof DesignLayoutError)) throw error;
+	if (error.code === "not-found") throw new HttpError(404, "not-found");
+	throw new HttpError(400, "invalid-layout", { error: "invalid-layout", reason: error.message });
 }
 
 /** handoffs.json failures as HTTP: a broken file is 422 and is never overwritten. */
@@ -159,11 +202,16 @@ function handoffFailure(error: unknown): never {
 
 function resolveInstruction(slug: string, ids: readonly string[]): string {
 	const list = ids.map((id) => JSON.stringify(id)).join(", ");
-	return `mark it resolved with the gentle_design_comments tool (action "resolve", slug "${slug}", ids [${list}]), or set its status to "resolved" in design/${slug}/${DESIGN_COMMENTS_FILE}.`;
+	return `mark it resolved with the gentle_design_comments tool (action "resolve", slug "${slug}", ids [${list}], note "<one line on what you changed>"), or set its status to "resolved" in design/${slug}/${DESIGN_COMMENTS_FILE}.`;
 }
 
 function excerptLine(excerpt: string): string {
 	return `Excerpt: ${excerpt ? JSON.stringify(excerpt) : "(none)"}`;
+}
+
+/** The size the comment was made at, so the agent edits for that width (S7). */
+function viewportLine(viewport: DesignViewport): string {
+	return `Viewport: ${describeViewport(viewport)} (the comment was made at this size; make the change hold at this width)`;
 }
 
 function screenshotLine(screenshot: DesignCommentScreenshot, attached: boolean): string {
@@ -194,17 +242,19 @@ export function designCommentBatchContent(batch: readonly DesignComment[]): Desi
 export function formatDesignComment(comment: DesignComment): string {
 	const artboard = `design/${comment.slug}/${comment.file}`;
 	return [
-		`Design comment for ${artboard}`,
+		`Design comment${comment.edited ? " edited" : ""} for ${artboard}`,
 		"",
 		`Design: ${comment.slug}`,
 		`Artboard: ${artboard}`,
 		`Comment id: ${comment.id}`,
 		`Element: ${comment.selector}`,
 		excerptLine(comment.excerpt),
+		...(comment.viewport ? [viewportLine(comment.viewport)] : []),
 		...(comment.screenshot ? [screenshotLine(comment.screenshot, comment.screenshot.data !== undefined)] : []),
 		"",
-		"Comment:",
+		comment.edited ? "Comment (edited; it replaces the text you received earlier for this id):" : "Comment:",
 		comment.comment,
+		...(comment.edited ? ["", "Previous text:", comment.edited.previous] : []),
 		"",
 		`Edit only the artboard ${artboard}, following the gentle-design skill.`,
 		`When it is applied, ${resolveInstruction(comment.slug, [comment.id])}`,
@@ -222,6 +272,7 @@ export function formatDesignCommentBatch(batch: readonly DesignComment[]): strin
 			`   Artboard: design/${comment.slug}/${comment.file}`,
 			`   Element: ${comment.selector}`,
 			`   ${excerptLine(comment.excerpt)}`,
+			...(comment.viewport ? [`   ${viewportLine(comment.viewport)}`] : []),
 			...(comment.screenshot ? [`   ${screenshotLine(comment.screenshot, attached.has(comment))}`] : []),
 			"   Comment:",
 			...comment.comment.split("\n").map((line) => `   ${line}`),
@@ -462,6 +513,8 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 	const designRoot = options.designRoot;
 	const store = createDesignCommentStore(designRoot);
 	const handoffs = createDesignHandoffStore(designRoot);
+	const partStore = createDesignPartStore(designRoot);
+	const layouts = createDesignLayoutStore(designRoot);
 	// Deliveries of one design run one at a time (send-now and send-all), so a
 	// comment is never delivered twice: a send-all waits for an in-flight send-now.
 	const sending = new Map<string, Promise<unknown>>();
@@ -557,7 +610,7 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 	function canvasPage(res: ServerResponse, slug: string | null): void {
 		const html = template
 			.replaceAll("{{BASE}}", escapeHtml(base))
-			.replace("{{CONFIG}}", () => scriptJson({ base, slug }));
+			.replace("{{CONFIG}}", () => scriptJson({ base, slug, delivery: { comment: true, batch: Boolean(options.onComments), implement: Boolean(options.onImplement), variant: Boolean(options.onVariant), part: Boolean(options.onImplementPart) } }));
 		reply(res, 200, html, { "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": CANVAS_CSP });
 	}
 
@@ -628,6 +681,7 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 	/** The stored comment as a session comment of design `slug`, with its screenshot loaded when it has one. */
 	async function toDesignComment(slug: string, stored: StoredDesignComment): Promise<DesignComment> {
 		const comment: DesignComment = { id: stored.id, slug, file: stored.file, selector: stored.selector, excerpt: stored.excerpt, comment: stored.comment };
+		if (stored.viewport) comment.viewport = stored.viewport;
 		if (stored.screenshot) {
 			const image = await store.readScreenshot(slug, stored.id).catch(() => undefined);
 			const ext = extname(stored.screenshot).toLowerCase();
@@ -648,6 +702,15 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 		const bytes = Buffer.from(data, "base64");
 		if (bytes.length > MAX_DESIGN_SCREENSHOT_BYTES) throw invalid(`screenshot must be at most ${MAX_DESIGN_SCREENSHOT_BYTES} bytes`);
 		return { mimeType, data: bytes };
+	}
+
+	/** The optional `viewport: { width, height }` of a comment body: whole px within the stored limits. */
+	function parseViewport(value: unknown): DesignViewport | undefined {
+		if (value === undefined) return undefined;
+		const problem = viewportProblem(value);
+		if (problem) throw new HttpError(400, "invalid-viewport", { error: "invalid-viewport", reason: problem });
+		const { width, height } = value as DesignViewport;
+		return { width, height };
 	}
 
 	async function receiveComment(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -673,7 +736,8 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 		if (!target || !info?.isFile() || extname(target).toLowerCase() !== ".html") throw new HttpError(400, "invalid-file");
 		const slug = body.slug;
 		const screenshot = parseScreenshot(body.screenshot);
-		const input = { file: segments.join("/"), selector, excerpt, comment, ...(screenshot ? { screenshot } : {}) };
+		const viewport = parseViewport(body.viewport);
+		const input = { file: segments.join("/"), selector, excerpt, comment, ...(screenshot ? { screenshot } : {}), ...(viewport ? { viewport } : {}) };
 		const add = () => store.add(slug, input).catch((error: unknown) => {
 			if (screenshot && error instanceof DesignCommentsError && error.code === "invalid-input") throw new HttpError(400, "invalid-screenshot", { error: "invalid-screenshot", reason: error.message });
 			return storeFailure(error);
@@ -738,6 +802,68 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 		reply(res, 202, { ok: true, slug, file, queued });
 	}
 
+	async function variant(req: IncomingMessage, res: ServerResponse, slug: string): Promise<void> {
+		const body = await readJsonObject(req);
+		const onVariant = options.onVariant;
+		if (!onVariant) throw new HttpError(501, "variant-unavailable");
+		const segments = relativeSegments(body.file);
+		if (!segments) throw new HttpError(400, "invalid-file");
+		const file = segments.join("/");
+		const manifest = await readManifest(slug);
+		if (!manifest.artboards.some((artboard) => artboard.file === file)) throw new HttpError(400, "invalid-file", { error: "invalid-file", reason: `${file} is not an artboard of design/${slug}` });
+		const instruction = typeof body.instruction === "string" ? body.instruction.replace(/\r\n?/g, "\n").trim() : "";
+		if (instruction.length < 1 || instruction.length > DESIGN_VARIANT_INSTRUCTION_MAX) {
+			throw new HttpError(400, "invalid-instruction", { error: "invalid-instruction", reason: `instruction must have 1 to ${DESIGN_VARIANT_INSTRUCTION_MAX} characters` });
+		}
+		let delivery: DesignHandoffDelivery;
+		try {
+			delivery = await onVariant({ slug, file, instruction });
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			throw new HttpError(500, "delivery-failed", { error: "delivery-failed", slug, file, reason });
+		}
+		reply(res, 202, { ok: true, slug, file, queued: typeof delivery === "object" && delivery !== null && delivery.queued === true });
+	}
+
+	/**
+	 * "Implement only this" (canvas-implement-part S4): one element of an artboard of the manifest (a selector of
+	 * 1 to 500 characters, the excerpt cut to 300, a note of at most 2000), recorded in parts.json before delivery and taken back when the delivery fails.
+	 */
+	async function implementPart(req: IncomingMessage, res: ServerResponse, slug: string): Promise<void> {
+		const body = await readJsonObject(req);
+		const onImplementPart = options.onImplementPart;
+		if (!onImplementPart) throw new HttpError(501, "implement-part-unavailable");
+		const manifest = await readManifest(slug);
+		const segments = relativeSegments(body.file);
+		const file = segments ? segments.join("/") : "";
+		if (!manifest.artboards.some((artboard) => artboard.file === file)) throw new HttpError(400, "invalid-file", { error: "invalid-file", reason: `${file || String(body.file)} is not an artboard of design/${slug}` });
+		const selector = typeof body.selector === "string" ? collapse(body.selector) : "";
+		if (selector.length < 1 || selector.length > LIMITS.selector) throw new HttpError(400, "invalid-selector", { error: "invalid-selector", reason: `selector must have 1 to ${LIMITS.selector} characters` });
+		if (body.excerpt !== undefined && typeof body.excerpt !== "string") throw new HttpError(400, "invalid-excerpt", { error: "invalid-excerpt", reason: "excerpt must be text" });
+		if (body.note !== undefined && typeof body.note !== "string") throw new HttpError(400, "invalid-note", { error: "invalid-note", reason: "note must be text" });
+		const note = typeof body.note === "string" ? body.note.replace(/\r\n?/g, "\n").trim() : "";
+		if (note.length > LIMITS.comment) throw new HttpError(400, "invalid-note", { error: "invalid-note", reason: `note must have at most ${LIMITS.comment} characters` });
+		const excerpt = typeof body.excerpt === "string" ? body.excerpt : "";
+		let deliveryFailed: HttpError | undefined;
+		const { part, queued } = await sendDesignPart(partStore, slug, { file, selector, excerpt, instruction: note }, async (recorded) => {
+			try {
+				return await onImplementPart({ slug, part: recorded });
+			} catch (error) {
+				const reason = error instanceof Error ? error.message : String(error);
+				deliveryFailed = new HttpError(500, "delivery-failed", { error: "delivery-failed", slug, file, reason });
+				throw deliveryFailed;
+			}
+		}).catch((error: unknown) => (deliveryFailed !== undefined && error === deliveryFailed ? Promise.reject(error) : partFailure(error)));
+		reply(res, 202, { ok: true, id: part.id, queued });
+	}
+
+	/** canvas-layout S3: the canvas saves where its artboards sit, validated whole before layout.json is replaced. */
+	async function saveLayout(req: IncomingMessage, res: ServerResponse, slug: string): Promise<void> {
+		const body = await readJsonObject(req, false, LIMITS.layoutBodyBytes);
+		const layout = await layouts.write(slug, body).catch(layoutFailure);
+		reply(res, 200, { ok: true, layout });
+	}
+
 	async function serveScreenshot(res: ServerResponse, slug: string, id: string): Promise<void> {
 		const image = await store.readScreenshot(slug, id).catch(storeFailure);
 		if (!image) throw new HttpError(404, "not-found");
@@ -750,6 +876,25 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 		const { updated } = await store.setStatus(slug, [id], body.status).catch(storeFailure);
 		if (updated.length === 0) throw new HttpError(404, "not-found");
 		reply(res, 200, { ok: true, comment: updated[0] });
+	}
+
+	async function changeText(req: IncomingMessage, res: ServerResponse, slug: string, id: string): Promise<void> {
+		const body = await readJsonObject(req);
+		if (typeof body.comment !== "string") throw new HttpError(400, "invalid-comment");
+		const comment = body.comment.replace(/\r\n?/g, "\n").trim();
+		if (comment.length < 1 || comment.length > LIMITS.comment) throw new HttpError(400, "invalid-comment");
+		// Inside the delivery lock, so an edit never lands between a send-all's read and its markSent.
+		return exclusive(slug, async () => {
+			const { comment: updated, previous } = await store.setText(slug, id, comment).catch(storeFailure);
+			// The session already has a sent comment's old text: a changed one goes to it as an edit.
+			if (updated.sentAt === null || previous === updated.comment) return reply(res, 200, { ok: true, comment: updated, sent: false });
+			try {
+				await options.onComment({ ...(await toDesignComment(slug, updated)), edited: { previous } });
+			} catch {
+				throw new HttpError(500, "edit-not-delivered", { error: "edit-not-delivered", id, saved: true, sent: false });
+			}
+			reply(res, 200, { ok: true, comment: updated, sent: true });
+		});
 	}
 
 	function broadcast(chunk: string): void {
@@ -820,11 +965,11 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 		const rest = parts.slice(2);
 		const method = req.method ?? "GET";
 		const post = postRoute(rest);
-		const get = post ? undefined : route(rest);
+		const get = route(rest);
 		// Unknown paths stay 404 whatever the method; only known routes answer 405.
 		if (!post && !get) return reply(res, 404, { error: "not-found" });
-		if (method !== (post ? "POST" : "GET")) return reply(res, 405, { error: "method-not-allowed" }, { Allow: post ? "POST" : "GET" });
-		if (post) {
+		if (!(method === "POST" && post) && !(method === "GET" && get)) return reply(res, 405, { error: "method-not-allowed" }, { Allow: [get ? "GET" : "", post ? "POST" : ""].filter(Boolean).join(", ") });
+		if (method === "POST" && post) {
 			// Every write needs this server's exact Origin and a JSON body, so no other page can forge one.
 			if (!ownOrigins.has(String(req.headers.origin))) return reply(res, 403, { error: "forbidden" });
 			if (mediaType(req) !== "application/json") return reply(res, 415, { error: "unsupported-media-type" });
@@ -848,6 +993,18 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 			const slug = safeSegment(rest[2]);
 			return slug && SLUG.test(slug) ? (req, res) => implement(req, res, slug) : undefined;
 		}
+		if (rest.length === 4 && rest[0] === "api" && rest[1] === "designs" && rest[3] === "variant") {
+			const slug = safeSegment(rest[2]);
+			return slug && SLUG.test(slug) ? (req, res) => variant(req, res, slug) : undefined;
+		}
+		if (rest.length === 4 && rest[0] === "api" && rest[1] === "designs" && rest[3] === "implement-part") {
+			const slug = safeSegment(rest[2]);
+			return slug && SLUG.test(slug) ? (req, res) => implementPart(req, res, slug) : undefined;
+		}
+		if (rest.length === 4 && rest[0] === "api" && rest[1] === "designs" && rest[3] === "layout") {
+			const slug = safeSegment(rest[2]);
+			return slug && SLUG.test(slug) ? (req, res) => saveLayout(req, res, slug) : undefined;
+		}
 		if (rest.length < 5 || rest[0] !== "api" || rest[1] !== "designs" || rest[3] !== "comments") return undefined;
 		const slug = safeSegment(rest[2]);
 		if (!slug || !SLUG.test(slug)) return undefined;
@@ -855,6 +1012,10 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 		if (rest.length === 6 && rest[5] === "status") {
 			const id = safeSegment(rest[4]);
 			return id && isDesignCommentId(id) ? (req, res) => changeStatus(req, res, slug, id) : undefined;
+		}
+		if (rest.length === 6 && rest[5] === "text") {
+			const id = safeSegment(rest[4]);
+			return id && isDesignCommentId(id) ? (req, res) => changeText(req, res, slug, id) : undefined;
 		}
 		return undefined;
 	}
@@ -872,6 +1033,10 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 		if (head === SYSTEM_FILE && tail.length === 0) return serveSystem;
 		if (head === "api" && tail.length === 1 && tail[0] === "system") {
 			return async (_req, res) => reply(res, 200, { exists: (await resolveSystem()) !== undefined, file: SYSTEM_FILE, ...SYSTEM_BOARD });
+		}
+		if (head === "api" && tail.length === 2 && tail[0] === "system" && tail[1] === "tokens") {
+			// The inspector's tokens: design/system.md read-only, per request; it never fails the canvas.
+			return async (_req, res) => reply(res, 200, await readSystemTokens(designRoot));
 		}
 		if (head === "api" && tail[0] === "designs") {
 			if (tail.length === 1) return async (_req, res) => reply(res, 200, { designs: listDesignEntries(designRoot) });
@@ -891,6 +1056,15 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 			if (tail.length === 3 && tail[2] === "handoffs") {
 				const slug = safeSegment(tail[1]);
 				return slug && SLUG.test(slug) ? async (_req, res) => reply(res, 200, await handoffs.read(slug).catch(handoffFailure)) : undefined;
+			}
+			if (tail.length === 3 && tail[2] === "parts") {
+				const slug = safeSegment(tail[1]);
+				return slug && SLUG.test(slug) ? async (_req, res) => reply(res, 200, await partStore.read(slug).catch(partFailure)) : undefined;
+			}
+			if (tail.length === 3 && tail[2] === "layout") {
+				// A missing, unreadable or invalid layout.json is `layout: null`: the canvas lays the artboards out in a row.
+				const slug = safeSegment(tail[1]);
+				return slug && SLUG.test(slug) ? async (_req, res) => reply(res, 200, { layout: await layouts.read(slug).catch(layoutFailure) }) : undefined;
 			}
 		}
 		if (head === "files" && tail.length >= 2) {

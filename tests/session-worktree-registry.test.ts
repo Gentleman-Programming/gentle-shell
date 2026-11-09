@@ -56,6 +56,29 @@ test("canonical roots include cwd, dedupe aliases immediately and reject unrelat
 	assert.equal(resolveSessionWorktree(f.alias, f.main)?.root, f.linked);
 });
 
+test("startup registers a cwd whose clone sets core.worktree outside the cwd", (t) => {
+	// A stray `D:\.git` with `core.worktree = E:/`: Git answers the cwd with a
+	// root it cannot rediscover from, which must not fail session startup.
+	const dir = realpathSync(mkdtempSync(join(tmpdir(), "session-worktrees-")));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const outer = join(dir, "outer");
+	const elsewhere = join(dir, "elsewhere");
+	const cwd = join(outer, "project");
+	mkdirSync(elsewhere);
+	const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+	Object.assign(env, { GIT_CONFIG_GLOBAL: join(elsewhere, "config"), GIT_CONFIG_NOSYSTEM: "1" });
+	writeFileSync(join(elsewhere, "config"), "");
+	execFileSync("git", ["init", outer], { env, stdio: ["ignore", "pipe", "pipe"] });
+	execFileSync("git", ["-C", outer, "config", "core.worktree", elsewhere], { env, stdio: ["ignore", "pipe", "pipe"] });
+	mkdirSync(cwd);
+	const h = host(cwd);
+	const registry = h.registry();
+	registry.start();
+	const entries = h.session.getEntries().filter((entry) => entry.type === "custom" && entry.customType === SESSION_WORKTREE_ENTRY);
+	assert.deepEqual(entries.map((entry) => entry.data), [{ sessionId: h.session.getSessionId(), root: elsewhere, evidence: "session:cwd" }]);
+	assert.throws(() => registry.register(elsewhere, "explicit"), /same Git clone/);
+});
+
 test("a registry constructed before Git init adopts only its original cwd in the same session", (t) => {
 	const f = fixture(t);
 	const cwd = join(f.dir, "bootstrap");

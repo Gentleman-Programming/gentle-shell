@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execSync } from "node:child_process";
+import { execSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -1615,3 +1615,331 @@ test("regenerateRegistry preserves the diagnostic for unexpected I/O errors", as
 		"unexpected I/O must keep its own diagnostic instead of a typed unavailable result",
 	);
 });
+
+// gentle-shell#3020: one shared `.atl/` cache is written by every Pi session in
+// the cwd, so the decisive evidence has to come from genuinely separate
+// processes. Each child imports the real extension and drives the public seam.
+const registryExtensionUrl = pathToFileURL(
+	join(import.meta.dirname, "..", "extensions", "skill-registry.ts"),
+).href;
+
+interface SharedCacheResult {
+	regenerated: boolean;
+	skillCount: number;
+	reason: string;
+	warning?: string;
+}
+
+interface ManagedFileSnapshot {
+	bytes: string;
+	ino: number;
+	mtimeMs: number;
+	size: number;
+}
+
+function managedFileSnapshot(path: string): ManagedFileSnapshot {
+	const info = statSync(path);
+	return { bytes: readFileSync(path, "utf8"), ino: info.ino, mtimeMs: info.mtimeMs, size: info.size };
+}
+
+function snapshotKey(snapshot: ManagedFileSnapshot | { bytes: string; ino: number; mtimeMs: number }): string {
+	return JSON.stringify([snapshot.bytes, snapshot.ino, snapshot.mtimeMs]);
+}
+
+function sharedCacheFixture() {
+	const root = mkdtempSync(join(tmpdir(), "gentle-pi-shared-cache-"));
+	const cwd = join(root, "workspace");
+	const skill = join(cwd, "skills", "loose", "SKILL.md");
+	mkdirSync(dirname(skill), { recursive: true });
+	writeFileSync(skill, "---\nname: loose\ndescription: Shared cache loose skill.\n---\n");
+	return {
+		root,
+		cwd,
+		skill,
+		home: join(root, "home"),
+		cache: join(cwd, ".atl", ".skill-registry.cache.json"),
+		registry: join(cwd, ".atl", "skill-registry.md"),
+	};
+}
+
+function runSharedCacheProcess(root: string, cwd: string, resolved: ResolvedSkill[]): SharedCacheResult {
+	const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", `
+		import { join } from "node:path";
+		const root = ${JSON.stringify(root)};
+		process.env.HOME = join(root, "home");
+		process.env.USERPROFILE = process.env.HOME;
+		const { __testing } = await import(${JSON.stringify(registryExtensionUrl)});
+		const result = await __testing.regenerateRegistry(${JSON.stringify(cwd)}, false, ${JSON.stringify(resolved)});
+		console.log("RESULT " + JSON.stringify(result));
+	`], {
+		encoding: "utf8",
+		timeout: 20_000,
+		env: { ...process.env, GIT_CEILING_DIRECTORIES: root },
+	});
+	assert.equal(child.error, undefined, `${child.error?.message}\n${child.stderr}`);
+	assert.equal(child.status, 0, child.stderr);
+	const line = child.stdout.split("\n").find((candidate) => candidate.startsWith("RESULT "));
+	assert.ok(line, `child printed no result:\n${child.stdout}\n${child.stderr}`);
+	return JSON.parse(line.slice("RESULT ".length)) as SharedCacheResult;
+}
+
+test("a process with no resolved skills cache-hits and preserves the published registry (#3020)", async (t) => {
+	const fixture = sharedCacheFixture();
+	t.after(() => rmSync(fixture.root, { recursive: true, force: true }));
+	const resolvedPath = join(fixture.root, "pkg", "skills", "prompted", "SKILL.md");
+	const resolved: ResolvedSkill[] = [
+		{
+			name: "prompted",
+			description: "Trigger: prompted session authority.",
+			filePath: resolvedPath,
+			sourceInfo: { scope: "project", origin: "package" },
+		},
+	];
+
+	const published = runSharedCacheProcess(fixture.root, fixture.cwd, resolved);
+	assert.equal(published.regenerated, true, "the first process must publish its resolved set");
+	assert.equal(published.reason, "fingerprint-changed");
+	assert.match(
+		readFileSync(fixture.registry, "utf8"),
+		new RegExp(escapeRegExp(resolvedPath)),
+		"the publishing process must write its Pi-resolved rows",
+	);
+
+	const registryBefore = managedFileSnapshot(fixture.registry);
+	const cacheBefore = managedFileSnapshot(fixture.cache);
+	await new Promise((resolve) => setTimeout(resolve, 25));
+
+	const idle = runSharedCacheProcess(fixture.root, fixture.cwd, []);
+	assert.equal(idle.regenerated, false, "a session with no resolved skills must not rewrite the shared registry");
+	assert.equal(idle.reason, "cache-hit");
+	assert.equal(idle.skillCount, 0);
+	assert.deepEqual(managedFileSnapshot(fixture.registry), registryBefore, "an idle poll must not rewrite the registry");
+	assert.deepEqual(managedFileSnapshot(fixture.cache), cacheBefore, "an idle poll must not rewrite the cache");
+	const registryAfterIdle = readFileSync(fixture.registry, "utf8");
+	assert.match(registryAfterIdle, new RegExp(escapeRegExp(resolvedPath)), "Pi-resolved rows must survive the idle session");
+	assert.match(
+		registryAfterIdle,
+		/Pi-resolved runtime authority \(before_agent_start\.systemPromptOptions\.skills\): 1 skill\(s\)/,
+	);
+
+	// An empty resolved set is "no opinion": a real skill change still writes,
+	// but it must not erase the peer's resolved section from the cache.
+	writeFileSync(fixture.skill, "---\nname: loose\ndescription: Changed loose skill.\n---\n");
+	const filesChanged = runSharedCacheProcess(fixture.root, fixture.cwd, []);
+	assert.equal(filesChanged.regenerated, true, "a skill byte change must still regenerate");
+	assert.match(readFileSync(fixture.registry, "utf8"), /Changed loose skill/);
+	const publishedResolvedFingerprint = (JSON.parse(cacheBefore.bytes) as { resolvedFingerprint?: string }).resolvedFingerprint;
+	assert.match(publishedResolvedFingerprint ?? "", /^[0-9a-f]{40}$/);
+	assert.equal(
+		(JSON.parse(readFileSync(fixture.cache, "utf8")) as { resolvedFingerprint?: string }).resolvedFingerprint,
+		publishedResolvedFingerprint,
+		"a no-opinion write must preserve the peer's resolved fingerprint",
+	);
+
+	const peerPoll = runSharedCacheProcess(fixture.root, fixture.cwd, resolved);
+	assert.equal(peerPoll.regenerated, false, "the publishing peer must not re-fight over the shared cache");
+	assert.equal(peerPoll.reason, "cache-hit");
+});
+
+const sharedCacheRoundsScript = `
+	import fs from "node:fs";
+	import { join } from "node:path";
+	const root = process.env.GS_ROOT;
+	const role = process.env.GS_ROLE;
+	const peer = role === "a" ? "b" : "a";
+	process.env.HOME = join(root, "home");
+	process.env.USERPROFILE = process.env.HOME;
+	const cwd = join(root, "workspace");
+	const cachePath = join(cwd, ".atl", ".skill-registry.cache.json");
+	const logPath = join(root, "rounds-" + role + ".jsonl");
+	const waitFor = async (name) => {
+		const deadline = Date.now() + 10000;
+		while (!fs.existsSync(join(root, name))) {
+			if (Date.now() > deadline) throw new Error("timed out waiting for " + name);
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		}
+	};
+	const { __testing } = await import(process.env.GS_EXTENSION);
+	const resolved = JSON.parse(process.env.GS_RESOLVED);
+	for (const round of [1, 2, 3]) {
+		const result = await __testing.regenerateRegistry(cwd, false, resolved);
+		const info = fs.statSync(cachePath);
+		fs.appendFileSync(logPath, JSON.stringify({
+			role,
+			round,
+			result,
+			cache: { bytes: fs.readFileSync(cachePath, "utf8"), ino: info.ino, mtimeMs: info.mtimeMs },
+		}) + "\\n");
+		fs.writeFileSync(join(root, "done-" + role + "-" + round), "");
+		await waitFor("done-" + peer + "-" + round);
+	}
+	console.log("ROUNDS_DONE " + role);
+`;
+
+function runSharedCacheRounds(
+	root: string,
+	role: "a" | "b",
+	resolved: ResolvedSkill[],
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+	return new Promise((resolve) => {
+		const child = spawn(
+			process.execPath,
+			["--experimental-strip-types", "--input-type=module", "-e", sharedCacheRoundsScript],
+			{
+				env: {
+					...process.env,
+					GIT_CEILING_DIRECTORIES: root,
+					GS_ROOT: root,
+					GS_ROLE: role,
+					GS_RESOLVED: JSON.stringify(resolved),
+					GS_EXTENSION: registryExtensionUrl,
+				},
+			},
+		);
+		let stdout = "";
+		let stderr = "";
+		child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+		child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+		child.on("error", (error) => resolve({ status: null, stdout, stderr: `${stderr}${error.message}` }));
+		child.on("close", (status) => resolve({ status, stdout, stderr }));
+	});
+}
+
+test("two processes with different resolved sets each publish once and then cache-hit (#3020)", { timeout: 30_000 }, async (t) => {
+	const fixture = sharedCacheFixture();
+	t.after(() => rmSync(fixture.root, { recursive: true, force: true }));
+	const resolvedFor = (role: "a" | "b"): ResolvedSkill[] => [
+		{
+			name: `session-${role}`,
+			description: `Trigger: session ${role}.`,
+			filePath: join(fixture.root, "pkg", "skills", `session-${role}`, "SKILL.md"),
+		},
+	];
+
+	const outcomes = await Promise.all([
+		runSharedCacheRounds(fixture.root, "a", resolvedFor("a")),
+		runSharedCacheRounds(fixture.root, "b", resolvedFor("b")),
+	]);
+	for (const outcome of outcomes) {
+		assert.equal(outcome.status, 0, outcome.stderr);
+		assert.match(outcome.stdout, /ROUNDS_DONE/);
+	}
+
+	type Round = { role: string; round: number; result: SharedCacheResult; cache: { bytes: string; ino: number; mtimeMs: number } };
+	const readRounds = (role: "a" | "b"): Round[] =>
+		readFileSync(join(fixture.root, `rounds-${role}.jsonl`), "utf8")
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line) as Round);
+	const rounds = [...readRounds("a"), ...readRounds("b")];
+	assert.equal(rounds.length, 6, "both processes must complete all three rounds");
+	const firstRound = rounds.filter((entry) => entry.round === 1);
+	const laterRounds = rounds.filter((entry) => entry.round > 1);
+	assert.equal(firstRound.length, 2);
+	assert.equal(laterRounds.length, 4);
+
+	for (const entry of firstRound) {
+		assert.equal(entry.result.regenerated, true, `session ${entry.role} must publish its own resolved set once`);
+		assert.equal(entry.result.reason, "fingerprint-changed");
+	}
+	for (const entry of laterRounds) {
+		assert.equal(entry.result.regenerated, false, `session ${entry.role} round ${entry.round} must be quiet`);
+		assert.equal(entry.result.reason, "cache-hit");
+	}
+
+	// Each prompt publishes its own resolved section, so exactly one publish per
+// session is what bounds the loop; the round-1 cache snapshot itself is racy
+// (a peer write can land inside the same window), so it proves nothing.
+	assert.equal(
+		rounds.filter((entry) => entry.result.regenerated).length,
+		2,
+		"exactly one publish per prompted session across all rounds",
+	);
+	const steadyStates = new Set(laterRounds.map((entry) => snapshotKey(entry.cache)));
+	assert.equal(steadyStates.size, 1, "the shared cache must stop changing after both publishes");
+	assert.match(
+		readFileSync(fixture.registry, "utf8"),
+		/Pi-resolved runtime authority \(before_agent_start\.systemPromptOptions\.skills\): 1 skill\(s\)/,
+	);
+});
+
+test("the cache records both digests and a legacy fingerprint-only cache upgrades once (#3020)", async (t) => {
+	const fixture = sharedCacheFixture();
+	t.after(() => rmSync(fixture.root, { recursive: true, force: true }));
+	const resolvedPath = join(fixture.root, "pkg", "skills", "recorded", "SKILL.md");
+	const resolved: ResolvedSkill[] = [
+		{ name: "recorded", description: "Trigger: recorded digests.", filePath: resolvedPath },
+	];
+
+	assert.equal(runSharedCacheProcess(fixture.root, fixture.cwd, resolved).regenerated, true);
+	const written = JSON.parse(readFileSync(fixture.cache, "utf8")) as { fingerprint?: string; resolvedFingerprint?: string };
+	assert.match(written.fingerprint ?? "", /^[0-9a-f]{40}$/, "a successful write must record the files digest");
+	assert.match(
+		written.resolvedFingerprint ?? "",
+		/^[0-9a-f]{40}$/,
+		"a successful write must record the resolved digest too",
+	);
+
+	// A cache written by an older build carries only the files digest.
+	writeFileSync(fixture.cache, JSON.stringify({ fingerprint: written.fingerprint }, null, 2));
+	await new Promise((resolve) => setTimeout(resolve, 25));
+	const legacyRegistry = managedFileSnapshot(fixture.registry);
+	const legacyCache = managedFileSnapshot(fixture.cache);
+
+	const noOpinion = runSharedCacheProcess(fixture.root, fixture.cwd, []);
+	assert.equal(noOpinion.regenerated, false, "the legacy fingerprint-only shape must still load");
+	assert.equal(noOpinion.reason, "cache-hit");
+	assert.deepEqual(managedFileSnapshot(fixture.registry), legacyRegistry);
+	assert.deepEqual(managedFileSnapshot(fixture.cache), legacyCache, "a loadable legacy cache must not be rewritten for no reason");
+
+	const upgrade = runSharedCacheProcess(fixture.root, fixture.cwd, resolved);
+	assert.equal(upgrade.regenerated, true, "the next resolved publish upgrades the legacy cache");
+	assert.equal(upgrade.reason, "fingerprint-changed");
+	const upgraded = JSON.parse(readFileSync(fixture.cache, "utf8")) as { fingerprint?: string; resolvedFingerprint?: string };
+	assert.equal(upgraded.fingerprint, written.fingerprint);
+	assert.equal(upgraded.resolvedFingerprint, written.resolvedFingerprint);
+	const upgradedCache = managedFileSnapshot(fixture.cache);
+	const upgradedRegistry = managedFileSnapshot(fixture.registry);
+	assert.notEqual(snapshotKey(upgradedCache), snapshotKey(legacyCache), "the upgrade writes the cache once");
+
+	await new Promise((resolve) => setTimeout(resolve, 25));
+	const settled = runSharedCacheProcess(fixture.root, fixture.cwd, resolved);
+	assert.equal(settled.regenerated, false, "one rewrite is all the upgrade needs");
+	assert.equal(settled.reason, "cache-hit");
+	assert.deepEqual(managedFileSnapshot(fixture.cache), upgradedCache);
+	assert.deepEqual(managedFileSnapshot(fixture.registry), upgradedRegistry);
+	assert.match(readFileSync(fixture.registry, "utf8"), new RegExp(escapeRegExp(resolvedPath)));
+});
+
+test("files-only fingerprint excludes resolved skills and an empty resolved set has no digest (#3020)", async (t) => {
+	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-digests-"));
+	t.after(() => rmSync(cwd, { recursive: true, force: true }));
+	const skill = join(cwd, "skills", "alpha", "SKILL.md");
+	mkdirSync(dirname(skill), { recursive: true });
+	writeFileSync(skill, "---\nname: alpha\ndescription: Alpha.\n---\n");
+	const filesFirst = await __testing.fingerprint([skill]);
+	assert.match(filesFirst, /^[0-9a-f]{40}$/);
+	assert.equal(await __testing.fingerprint([skill]), filesFirst, "an unchanged file set must hash identically");
+	writeFileSync(skill, "---\nname: alpha\ndescription: Alpha changed.\n---\n");
+	assert.notEqual(await __testing.fingerprint([skill]), filesFirst, "skill bytes must still drive the files digest");
+
+	const alpha: ResolvedSkill = { name: "alpha", description: "Trigger: alpha.", filePath: "/pkg/skills/alpha/SKILL.md" };
+	const beta: ResolvedSkill = { name: "beta", description: "Trigger: beta.", filePath: "/pkg/skills/beta/SKILL.md" };
+	assert.equal(
+		__testing.resolvedFingerprint([]),
+		undefined,
+		"an empty resolved set must yield no digest, never an empty-string digest",
+	);
+	assert.match(__testing.resolvedFingerprint([alpha]) ?? "", /^[0-9a-f]{40}$/);
+	assert.equal(
+		__testing.resolvedFingerprint([alpha]),
+		__testing.resolvedFingerprint([{ ...alpha, description: "  Trigger:   alpha. " }]),
+		"whitespace-only description changes must remain digest-equivalent",
+	);
+	assert.notEqual(
+		__testing.resolvedFingerprint([alpha, beta]),
+		__testing.resolvedFingerprint([beta, alpha]),
+		"arrival order stays significant",
+	);
+});
+

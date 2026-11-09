@@ -395,7 +395,16 @@ function markdownCell(value: string): string {
 	return trimmed.length > 0 ? trimmed : "—";
 }
 
-function isCacheFile(value: unknown): value is { fingerprint: string } {
+// R3 (gentle-shell#3020): two independent authorities share this record. The
+// files digest answers "did the skill files change"; the optional resolved
+// digest answers "which Pi-resolved set is already published". A legacy
+// `{ fingerprint }`-only record still parses and reads as "no resolved digest".
+interface CacheRecord {
+	fingerprint: string;
+	resolvedFingerprint?: string;
+}
+
+function isCacheFile(value: unknown): value is { fingerprint: string; resolvedFingerprint?: unknown } {
 	return (
 		typeof value === "object" &&
 		value !== null &&
@@ -404,18 +413,23 @@ function isCacheFile(value: unknown): value is { fingerprint: string } {
 	);
 }
 
-async function fingerprint(files: string[], resolved: ResolvedSkill[] = []): Promise<string> {
-	const resolvedLines = resolved.map((skill) =>
-		JSON.stringify([
-			"resolved",
-			skill.name,
-			normalizeSkillDescription(skill.description),
-			skill.filePath,
-			skill.disableModelInvocation === true,
-			skill.sourceInfo?.scope ?? "",
-			skill.sourceInfo?.origin ?? "",
-		]),
-	);
+function cachedResolvedFingerprint(value: unknown): string | undefined {
+	if (!isCacheFile(value)) return undefined;
+	return typeof value.resolvedFingerprint === "string" && value.resolvedFingerprint.length > 0
+		? value.resolvedFingerprint
+		: undefined;
+}
+
+// R5/R7: per process and per cwd, the last resolved digest this process
+// published. It is what keeps two prompted sessions with genuinely different
+// resolved sets from re-fighting over the shared cache on every poll.
+const publishedResolvedFingerprints = new Map<string, string>();
+
+// R1: only skill bytes decide whether the registry content is stale. Mixing the
+// resolved rows in here made an idle session (empty list) and a prompted one
+// (its own list) hash differently forever, so every poll rewrote the shared
+// cache and the registry alternated between the two skill sets.
+async function fingerprint(files: string[]): Promise<string> {
 	const fileLines: string[] = [];
 	for (const file of files) {
 		try {
@@ -433,7 +447,32 @@ async function fingerprint(files: string[], resolved: ResolvedSkill[] = []): Pro
 		}
 	}
 	return createHash("sha1")
-		.update([`schema:${REGISTRY_SCHEMA_VERSION}`, ...resolvedLines, ...fileLines.sort()].join("\n"))
+		.update([`schema:${REGISTRY_SCHEMA_VERSION}`, ...fileLines.sort()].join("\n"))
+		.digest("hex");
+}
+
+// R2: the resolved rows carry their own digest, in the same row shape and
+// arrival order the single mixed digest used, so order sensitivity survives.
+// An empty list is "no opinion" and therefore has no digest at all -- an
+// empty-string digest would read as if this process had published something.
+function resolvedFingerprint(resolved: ResolvedSkill[]): string | undefined {
+	if (resolved.length === 0) return undefined;
+	return createHash("sha1")
+		.update(
+			resolved
+				.map((skill) =>
+					JSON.stringify([
+						"resolved",
+						skill.name,
+						normalizeSkillDescription(skill.description),
+						skill.filePath,
+						skill.disableModelInvocation === true,
+						skill.sourceInfo?.scope ?? "",
+						skill.sourceInfo?.origin ?? "",
+					]),
+				)
+				.join("\n"),
+		)
 		.digest("hex");
 }
 
@@ -628,17 +667,33 @@ async function regenerateRegistry(
 	}
 	const cachePath = join(cwd, CACHE_REL_PATH);
 	const registryPath = join(cwd, REGISTRY_REL_PATH);
-	const fp = await fingerprint(files, resolved);
+	// R1: skill bytes alone decide whether the rendered registry is stale.
+	const fp = await fingerprint(files);
+	// R2/R4: an empty local set is "no opinion" and has no digest to publish.
+	const localResolvedFp = resolvedFingerprint(resolved);
 	let cached: string | undefined;
+	let cachedResolvedFp: string | undefined;
 	if (await pathExists(cachePath)) {
 		try {
 			const parsed: unknown = JSON.parse(await readFile(cachePath, "utf8"));
 			cached = isCacheFile(parsed) ? parsed.fingerprint : undefined;
+			cachedResolvedFp = cachedResolvedFingerprint(parsed);
 		} catch {
 			cached = undefined;
+			cachedResolvedFp = undefined;
 		}
 	}
-	if (!force && cached === fp && (await pathExists(registryPath))) {
+	const cwdKey = comparablePath(cwd);
+	// R5: publish the resolved section only for a set that is neither already
+	// published by a peer nor by this process, so two prompted sessions do not
+	// overwrite each other forever over a shared cache.
+	const shouldPublishResolved =
+		localResolvedFp !== undefined &&
+		localResolvedFp !== cachedResolvedFp &&
+		localResolvedFp !== publishedResolvedFingerprints.get(cwdKey);
+	// R6: cache hit means nothing to say -- no files change, an existing
+	// registry, and no pending resolved publish. `force` still bypasses it all.
+	if (!force && cached === fp && !shouldPublishResolved && (await pathExists(registryPath))) {
 		return { regenerated: false, skillCount: 0, reason: "cache-hit" };
 	}
 	if (!intentional) {
@@ -669,7 +724,13 @@ async function regenerateRegistry(
 	try {
 		await mkdir(join(cwd, ".atl"), { recursive: true });
 		await writeFile(registryPath, md);
-		await writeFile(cachePath, JSON.stringify({ fingerprint: fp }, null, 2));
+		// R3: record both digests. R4: a process with no opinion preserves the
+		// resolved section a peer already published instead of erasing it.
+		const recordedResolvedFp = localResolvedFp ?? cachedResolvedFp;
+		const record: CacheRecord = recordedResolvedFp === undefined
+			? { fingerprint: fp }
+			: { fingerprint: fp, resolvedFingerprint: recordedResolvedFp };
+		await writeFile(cachePath, JSON.stringify(record, null, 2));
 	} catch (error) {
 		if (isStorageUnavailableError(error)) {
 			// gentle-shell#373: an unwritable storage location must never
@@ -687,6 +748,8 @@ async function regenerateRegistry(
 		}
 		throw error;
 	}
+	// R7: remember what this process published for this cwd.
+	if (localResolvedFp !== undefined) publishedResolvedFingerprints.set(cwdKey, localResolvedFp);
 	return {
 		regenerated: true,
 		skillCount: deduped.length,
@@ -849,6 +912,8 @@ export const __testing = {
 	normalizeSkillDescription,
 	parseFrontmatter,
 	renderRegistry,
+	fingerprint,
+	resolvedFingerprint,
 	regenerateRegistry,
 	applyResolvedSkillsUpdate,
 	ensureAtlIgnored,
@@ -876,6 +941,8 @@ export default function (pi: ExtensionAPI) {
 		startupGeneration += 1;
 		closeSkillRegistryWatchers();
 		lastResolvedSkills = [];
+		// R7: a fresh session re-negotiates the shared cache from scratch.
+		publishedResolvedFingerprints.clear();
 	});
 
 	pi.registerFlag(NO_SKILL_REGISTRY_FLAG, {

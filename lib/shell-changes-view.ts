@@ -32,7 +32,7 @@ const ROLE = {
 	REMOVED: "error",
 	HUNK: "customMessageLabel",
 	KEY: "accent",
-	KEY_TEXT: "dim",
+	KEY_TEXT: "muted",
 	EMPTY: "dim",
 } as const;
 

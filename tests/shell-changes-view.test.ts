@@ -135,7 +135,7 @@ test("worktree accordion keeps groups and nested files beside a framed lazy diff
 // ANSI roles keep pi-tui's width math real, so a styled hint row is measured
 // and truncated the way a terminal sees it. Tagged markup would count as
 // visible characters.
-const SGR: Record<string, string> = { accent: "\x1b[36m", dim: "\x1b[2m", border: "\x1b[90m" };
+const SGR: Record<string, string> = { accent: "\x1b[36m", muted: "\x1b[37m", dim: "\x1b[2m", border: "\x1b[90m" };
 const ansiTheme = {
 	fg(color: string, text: string) {
 		return `${SGR[color] ?? "\x1b[0m"}${text}\x1b[0m`;
@@ -150,6 +150,20 @@ const WORKTREE_FOOTER = [
 	["r", "refresh"],
 	["F", "diff only"],
 	["esc", "close"],
+] as const;
+
+const CHANGES_FOOTER = [
+	["j/k", "file"],
+	["ctrl+j/k", "scroll"],
+	["o", "open in editor"],
+	["esc", "close"],
+] as const;
+
+const CHANGES_BACK_FOOTER = [
+	["j/k", "file"],
+	["ctrl+j/k", "scroll"],
+	["o", "open in editor"],
+	["esc", "files"],
 ] as const;
 
 const WORKTREE_DIFF_ONLY_FOOTER = [
@@ -177,7 +191,7 @@ function plainHints(keys: ReadonlyArray<readonly [string, string]>): string {
 }
 
 function paintedHints(keys: ReadonlyArray<readonly [string, string]>): string {
-	return keys.map(([key, label]) => `${SGR.accent}${key}\x1b[0m ${SGR.dim}${label}\x1b[0m`).join("   ");
+	return keys.map(([key, label]) => `${SGR.accent}${key}\x1b[0m ${SGR.muted}${label}\x1b[0m`).join("   ");
 }
 
 function assertFooter(line: string, keys: ReadonlyArray<readonly [string, string]>): void {
@@ -194,6 +208,20 @@ test("worktree footer keeps the same two roles in diff-only mode", () => {
 	const component = accordion(ansiTheme);
 	component.handleInput("F");
 	assertFooter(component.render(120)[8]!, WORKTREE_DIFF_ONLY_FOOTER);
+});
+
+test("ChangesView footer paints each key in the accent role and its description in the muted role", async () => {
+	const { view: component } = view({ theme: ansiTheme });
+	await settle();
+	const footer = component.render(120)[10]!;
+	assertFooter(footer, CHANGES_FOOTER);
+	assert.ok(!footer.includes(SGR.dim), "the descriptions must not fall back to the dim role");
+
+	const { view: backed } = view({ theme: ansiTheme, backLabel: "files" });
+	await settle();
+	const backedFooter = backed.render(120)[10]!;
+	assertFooter(backedFooter, CHANGES_BACK_FOOTER);
+	assert.ok(backedFooter.includes(`${SGR.accent}esc\x1b[0m ${SGR.muted}files\x1b[0m`), "the backLabel override keeps the muted role");
 });
 
 test("the worktree footer stays inside the frame at a narrow width, in both modes", () => {

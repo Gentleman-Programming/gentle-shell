@@ -27,6 +27,11 @@ export const installerPaths = Object.freeze([
   "assets/install-wizard/wizard.css",
 ]);
 
+// The canvas server serves exactly these files; one list keeps the server and
+// the package in sync.
+const { DESIGN_CANVAS_ASSETS } = await import(new URL("../lib/design-canvas-assets.ts", import.meta.url));
+export const designCanvasAssetPaths = Object.freeze(Object.keys(DESIGN_CANVAS_ASSETS).map((name) => `assets/design-canvas/${name}`));
+
 export const requiredPaths = [
   "bin/gentle-shell.mjs",
   ...installerPaths,
@@ -67,14 +72,13 @@ export const requiredPaths = [
   "lib/gentle-design.ts",
   // The design canvas server reads its page and scripts from assets/ by path.
   "lib/design-canvas-server.ts",
+  "lib/design-canvas-assets.ts",
   "lib/design-open-browser.ts",
   "lib/design-comments.ts",
   "lib/design-handoffs.ts",
   "lib/design-sources.ts",
   "assets/design-canvas/index.html",
-  "assets/design-canvas/canvas.js",
-  "assets/design-canvas/canvas.css",
-  "assets/design-canvas/inspector.js",
+  ...designCanvasAssetPaths,
   "scripts/npm-pack-result.mjs",
   "assets/orchestrator.md",
   "assets/orchestrator-delegation.md",

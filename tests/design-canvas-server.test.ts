@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { TestContext } from "node:test";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { DESIGN_CANVAS_ASSETS } from "../lib/design-canvas-assets.ts";
 import { designCommentBatchContent, designCommentContent, formatDesignComment, formatDesignCommentBatch, startDesignCanvasServer, type DesignCanvasServerOptions, type DesignComment } from "../lib/design-canvas-server.ts";
 
 const TOKEN = "test-token-0123456789abcdef";
@@ -140,6 +141,10 @@ test("sandboxed artboards load their subresources with Origin null, but nothing 
 	}
 	assert.equal((await rawRequest(port, `${base}assets/inspector.js`, { headers: { Origin: "http://evil.example" } })).status, 403);
 	assert.equal((await rawRequest(port, `${base}files/alpha/01-hero.html`, { headers: { Origin: "http://evil.example" } })).status, 403);
+	// Every canvas asset behaves like canvas.js at the Origin gate; only inspector.js runs inside the sandbox.
+	for (const name of Object.keys(DESIGN_CANVAS_ASSETS)) {
+		assert.equal((await rawRequest(port, `${base}assets/${name}`, nullOrigin)).status, name === "inspector.js" ? 200 : 403, name);
+	}
 });
 
 test("the canvas page carries a strict CSP and a JSON config, never inline code", async (t) => {
@@ -174,6 +179,12 @@ test("only the fixed canvas assets are served", async (t) => {
 	assert.equal((await rawRequest(port, `${base}assets/inspector.js`)).status, 200);
 	for (const name of ["index.html", "missing.js", "..%2Fpackage.json", "%2e%2e", "canvas.js/x"]) {
 		assert.equal((await rawRequest(port, `${base}assets/${name}`)).status, 404, name);
+	}
+	for (const [name, type] of Object.entries(DESIGN_CANVAS_ASSETS)) {
+		const asset = await rawRequest(port, `${base}assets/${name}`);
+		assert.equal(asset.status, 200, name);
+		assert.equal(asset.headers["content-type"], type, name);
+		assert.deepEqual(asset.bytes, readFileSync(join(ASSET_DIR, name)), `${name} is served byte for byte`);
 	}
 });
 
@@ -988,7 +999,7 @@ test("canvas assets sandbox artboards without allow-same-origin and reference no
 	assert.match(canvas, /setAttribute\("sandbox", "allow-scripts"\)/);
 	// The one allow-same-origin is the Compare preview of the running app, another loopback origin (S15).
 	assert.deepEqual(canvas.match(/"[^"\n]*allow-same-origin[^"\n]*"/g), ['"allow-scripts allow-same-origin allow-forms allow-popups"']);
-	for (const name of ["index.html", "canvas.css", "canvas.js", "inspector.js"]) {
+	for (const name of ["index.html", ...Object.keys(DESIGN_CANVAS_ASSETS)]) {
 		const source = readFileSync(join(ASSET_DIR, name), "utf8");
 		if (name !== "canvas.js") assert.ok(!source.includes("allow-same-origin"), `${name} must not grant allow-same-origin`);
 		assert.ok(!/https?:\/\//i.test(source), `${name} must not reference remote URLs`);

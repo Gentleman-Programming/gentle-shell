@@ -14,6 +14,7 @@ import { ToolExecutionComponent } from "../node_modules/@earendil-works/pi-codin
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { CARD_CONTENT, cardContent, setCardContent } from "../lib/card-content-policy.ts";
+import { CARD_BASH, cardBash, setCardBash } from "../lib/card-bash-policy.ts";
 import { CODEGRAPH_TOOL } from "../lib/codegraph-card-preview.ts";
 import piPretty from "../extensions/pi-pretty.ts";
 import productionQuietTools, {
@@ -2039,6 +2040,13 @@ function useCardContent(t: { after(fn: () => void): void }, level: (typeof CARD_
 	setCardContent(level);
 }
 
+// The Card bash slot is process-wide too.
+function useCardBash(t: { after(fn: () => void): void }, mode: (typeof CARD_BASH)[keyof typeof CARD_BASH]): void {
+	const previous = cardBash();
+	t.after(() => setCardBash(previous));
+	setCardBash(mode);
+}
+
 test("the Card content preference defaults to the result previews", () => {
 	assert.equal(cardContent(), CARD_CONTENT.DEFAULT);
 	const rendered = renderToolResult(registeredQuietTools().get("read"), textResult("first line\nsecond line"), { expanded: false, isPartial: false }, {});
@@ -2874,4 +2882,44 @@ test("a CodeGraph card's whole box reports a pending or failed call and takes th
 		assert.equal(visibleWidth(row), 40);
 		assert.ok(row.includes(`\x1b[38;5;${RAIL_FG.mdCode}m▎`), `every bar cell keeps the tool's color: ${JSON.stringify(row)}`);
 	}
+});
+
+// Card bash picks the heading identity only: `activity` (the default) heads the
+// card with the activity its command names, and `output` restores the plain
+// `bash` identity whose box follows the call's tone. The command, its detail and
+// the result preview are the same at both levels.
+test("the Card bash preference heads a bash card with its activity, or the plain bash identity in output mode", (t) => {
+	useCardContent(t, CARD_CONTENT.DEFAULT);
+	useCardBash(t, CARD_BASH.ACTIVITY);
+	const bash = registeredQuietTools().get("bash");
+	const args = { command: "git status" };
+	const finishedContext = (context: Record<string, unknown>) => routineRenderContext({ ...context, executionStarted: true, isPartial: false, state: {} });
+
+	// activity, the default: the heading names the activity and the card wears it.
+	const running = frameLines(bash.renderCall(args, statusTheme, routineRenderContext({ args, state: {} })), 80);
+	assert.match(running[0]!, /^<warning>╭<\/warning>.*<mdLink>⌕ exploring<\/mdLink>/, "a running call heads with its activity");
+	assert.match(running[1]!, /^<warning>│<\/warning> /, "a running call keeps the status edge");
+	const finishedCall = frameLines(bash.renderCall(args, statusTheme, finishedContext({ args })), 80);
+	assert.match(finishedCall[0]!, /^<mdLink>╭<\/mdLink><mdLink>─ <\/mdLink><mdLink>⌕ exploring<\/mdLink>/, "the finished box wears the activity role");
+	const finishedResult = frameLines(bash.renderResult(textResult("clean"), { expanded: false, isPartial: false }, statusTheme, finishedContext({ args })), 80);
+	assert.match(finishedResult[0]!, /^<mdLink>│<\/mdLink> /, "the result continues the activity rail");
+
+	setCardBash(CARD_BASH.OUTPUT);
+	const plainRunning = frameLines(bash.renderCall(args, statusTheme, routineRenderContext({ args, state: {} })), 80);
+	assert.match(plainRunning[0]!, /^<warning>╭<\/warning><warning>─ <\/warning><bashMode>\$ bash<\/bashMode>/, "a running call heads with the plain bash identity");
+	assert.match(plainRunning[1]!, /^<warning>│<\/warning> /, "the running box still reports the call");
+	assert.doesNotMatch(plainRunning.join("\n"), /exploring|<mdLink>/, "no activity word or role survives in the heading");
+
+	const plainFinishedCall = frameLines(bash.renderCall(args, statusTheme, finishedContext({ args })), 80);
+	assert.match(plainFinishedCall[0]!, /^<success>╭<\/success><success>─ <\/success><bashMode>\$ bash<\/bashMode>/, "the finished box follows the tone instead of an activity role");
+	const plainFinishedResult = frameLines(bash.renderResult(textResult("clean"), { expanded: false, isPartial: false }, statusTheme, finishedContext({ args })), 80);
+	assert.match(plainFinishedResult[0]!, /^<success>│<\/success> /, "the result closes the tone box");
+	assert.match(plainFinishedResult.at(-1)!, /^<success>╰<\/success><success>─+╯<\/success>$/, "the bottom corner and rule keep the tone");
+	assert.match(plainFinishedResult.join("\n"), /clean/, "the result preview is unchanged by the heading identity");
+	assert.doesNotMatch([...plainRunning, ...plainFinishedCall, ...plainFinishedResult].join("\n"), /⌕|<mdLink>/, "neither the call nor its result shows an activity mark or role");
+
+	// The command shown stays exactly what activity mode shows: the switch never
+	// hides a detail behind the plain heading.
+	const composition = { command: "cd repo && git diff" };
+	assert.match(frameLines(bash.renderCall(composition, statusTheme, finishedContext({ args: composition })), 80)[0]!, /<bashMode>\$ bash<\/bashMode> <muted>·<\/muted> <muted>git diff<\/muted>/, "the detail still names the principal action");
 });

@@ -40,6 +40,7 @@ import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
 import { CARD_CONTENT, cardContent, resolveCardContent, setCardContent, writeCardContent } from "../lib/card-content-policy.ts";
+import { CARD_BASH, cardBash, resolveCardBash, setCardBash, writeCardBash } from "../lib/card-bash-policy.ts";
 import { claimNotificationOwner } from "../lib/notification-service.ts";
 import { DEFAULT_NOTIFICATION_SETTINGS } from "../lib/notification-policy.ts";
 import { SUPER_YOLO_STATUS_TEXT, yoloBannerContent } from "../lib/yolo-session-policy.ts";
@@ -3694,7 +3695,7 @@ test("customize Cards rows persist the card style and switch live conversation c
 	const pending = commands.get("gentle:customize")!.handler("", ctx);
 	await overlayReady;
 	assert.ok(findCustomizeRow(ui, "Card style: float (current)"));
-	assert.match(ui.overlayView!.render(90).join("\n"), /Cards · 1\/2/, "Card style and Card content are one line each");
+	assert.match(ui.overlayView!.render(90).join("\n"), /Cards · 1\/3/, "Card style, Card content and Card bash are one line each");
 	assert.match(ui.overlayView!.render(90).join("\n"), /Card style\s+○ neon\s+● float/);
 	assert.ok(findCustomizeRow(ui, "Card style: neon"));
 	assert.ok(ui.overlayView!.render(90).some((line) => /Card style\s+› neon\s+● float/.test(line)), "the cursor is on neon, but float stays current without a saved preference");
@@ -3742,6 +3743,34 @@ test("customize Cards rows persist the card content level and switch the live qu
 	await customizeAction(ui, "Card content: minimal");
 	assert.equal(resolveCardContent({ gentlePiConfigHome: home }).content, "minimal");
 	assert.equal(cardContent(), CARD_CONTENT.MINIMAL);
+	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("customize Cards rows persist the Card bash mode and switch the live bash cards", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const previous = cardBash();
+	t.after(() => setCardBash(previous));
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	assert.equal(cardBash(), CARD_BASH.ACTIVITY, "no preference file means activity, the default");
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	assert.ok(findCustomizeRow(ui, "Card bash: activity (current)"));
+	assert.match(ui.overlayView!.render(90).join("\n"), /Card bash\s+● activity\s+○ output/, "both values are offered and activity is current");
+	assert.ok(findCustomizeRow(ui, "Card bash: output"));
+	assert.match(ui.overlayView!.render(90).join("\n"), /Card bash\s+● activity\s+› output/, "the cursor marks the other value without changing which one is current");
+	assert.equal(existsSync(join(home, "card-bash.json")), false, "highlighting never applies");
+	await customizeAction(ui, "Card bash: output");
+	await new Promise<void>(resolve => setImmediate(resolve));
+	assert.equal(resolveCardBash({ gentlePiConfigHome: home }).bash, "output");
+	assert.equal(cardBash(), CARD_BASH.OUTPUT, "the live slot follows the choice");
+	assert.match(ui.notices.at(-1)!, /Card bash: output/);
+	assert.ok(findCustomizeRow(ui, "Card bash: output (current)"));
+	assert.ok(findCustomizeRow(ui, "Card bash: activity"));
+	await customizeAction(ui, "Card bash: activity");
+	assert.equal(resolveCardBash({ gentlePiConfigHome: home }).bash, "activity");
+	assert.equal(cardBash(), CARD_BASH.ACTIVITY);
 	ui.overlayView!.handleInput("\x1b"); await pending;
 });
 
@@ -3892,6 +3921,20 @@ test("the saved card content applies at startup and on every session start", asy
 	const { ctx } = fakeContext({ hasUI: false });
 	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
 	assert.equal(cardContent(), CARD_CONTENT.DEFAULT);
+});
+
+test("the saved card bash mode applies at startup and on every session start", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const found = cardBash();
+	t.after(() => setCardBash(found));
+	writeCardBash("output", { gentlePiConfigHome: home });
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	assert.equal(cardBash(), CARD_BASH.OUTPUT);
+	writeCardBash("activity", { gentlePiConfigHome: home });
+	const { ctx } = fakeContext({ hasUI: false });
+	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
+	assert.equal(cardBash(), CARD_BASH.ACTIVITY);
 });
 
 test("customize Cards rows refuse to overwrite a malformed preference", async (t) => {

@@ -94,3 +94,35 @@ the menu. Chosen direction (user-approved): queue/defer `ask_user_choice` and
 - L5. Deferred-turn typecheck/smoke results: lib 14/14, defer suite 21/21,
   repo typecheck gate green (baseline 0) on the final wiring; full test-suite
   run is the acceptance check pending this log entry's commit.
+- L6. Upstream sync: main moved 4ee18723f -> f4cc69a33 (release 4.7.0) with 24
+  commits (review delivery preflight, bounded RDD startup, session consent,
+  execution-surface guard, design-canvas autofit, images disk cache). Nothing
+  upstream fixes #2995: the log for `4ee18723f..origin/main` filtered by
+  `ask_user|overlay|defer|fullscreen` is empty. pi-tui and pi-coding-agent stay
+  at 1.4.0 in the lockfile, so the mechanism this fix targets (focus dispatch
+  only to the focused component, overlay restore on unmount) is unchanged. The
+  eight commits were rebased onto f4cc69a33 with zero conflicts (backup tag
+  `backup/pre-main-sync` -> ac9927cdd); the only shared file is
+  extensions/gentle-ai.ts and the upstream hunks sit far from both touch points.
+  Re-verified on the new base: typecheck 0 diagnostics, the four feature suites
+  80/80, and the wrap inventory still 1:1 — 12 `overlay: true` sites against 12
+  `withFullscreenOverlay` calls — so no upstream menu slipped past the defer.
+  `build-runtime-modules.mjs --check` still matches its 16 generated modules.
+- L7. Field verification by the user on the rebased tree, launched with
+  `node bin/gentle-shell.mjs --link --package-root .` (loads this working tree as
+  the gentle-pi package against the real pi home). The menu exercised by hand was
+  `/gentle:profiles` (the routing-table panel, `gentle-ai:routing-table`): the
+  ask dialog deferred instead of mounting hidden beneath it and mounted once the
+  panel closed. User verdict: "funciona". That is the only menu field-tested; the
+  remaining eleven wraps are covered by the unit suites, not by hand.
+- L8. Scope audit before delivery: HEAD has 15 `ctx.ui.custom` call sites. Twelve
+  carry `overlay: true` and all twelve are wrapped, so the inventory is 1:1. The
+  other three (the two ask dialogs themselves and non-overlay docked dialogs such
+  as the music inherit prompt and the review-consent UI) do not take the
+  fullscreen overlay path, so the defer does not apply to them by design. The
+  documented residual race stands: a menu opening while an ask is already mounted
+  still covers it. The upstream repository ships no PULL_REQUEST_TEMPLATE, so the
+  PR body follows the branch-pr format directly.
+- L9. User approved delivery: push the branch and open the PR. The PR states
+  honestly that exactly one menu was verified by hand and that the rest rely on
+  the unit suites.

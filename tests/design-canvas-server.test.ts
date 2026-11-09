@@ -995,18 +995,19 @@ test("formatDesignCommentBatch builds one exact message listing every comment", 
 });
 
 test("canvas assets sandbox artboards without allow-same-origin and reference no remote URL", () => {
-	const canvas = readFileSync(join(ASSET_DIR, "canvas.js"), "utf8");
-	assert.match(canvas, /setAttribute\("sandbox", "allow-scripts"\)/);
+	const boards = readFileSync(join(ASSET_DIR, "canvas-boards.js"), "utf8");
+	assert.match(boards, /setAttribute\("sandbox", "allow-scripts"\)/);
 	// The one allow-same-origin is the Compare preview of the running app, another loopback origin (S15).
-	assert.deepEqual(canvas.match(/"[^"\n]*allow-same-origin[^"\n]*"/g), ['"allow-scripts allow-same-origin allow-forms allow-popups"']);
+	const compare = readFileSync(join(ASSET_DIR, "canvas-compare.js"), "utf8");
+	assert.deepEqual(compare.match(/"[^"\n]*allow-same-origin[^"\n]*"/g), ['"allow-scripts allow-same-origin allow-forms allow-popups"']);
 	for (const name of ["index.html", ...Object.keys(DESIGN_CANVAS_ASSETS)]) {
 		const source = readFileSync(join(ASSET_DIR, name), "utf8");
-		if (name !== "canvas.js") assert.ok(!source.includes("allow-same-origin"), `${name} must not grant allow-same-origin`);
+		if (name !== "canvas-compare.js") assert.ok(!source.includes("allow-same-origin"), `${name} must not grant allow-same-origin`);
 		assert.ok(!/https?:\/\//i.test(source), `${name} must not reference remote URLs`);
 	}
 	const inspector = readFileSync(join(ASSET_DIR, "inspector.js"), "utf8");
 	assert.match(inspector, /gd:pick/);
-	assert.match(canvas, /event\.source/);
+	assert.match(readFileSync(join(ASSET_DIR, "canvas-messages.js"), "utf8"), /event\.source/);
 });
 
 const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64 * 1024, 7)]);

@@ -9,7 +9,7 @@
 // imports); precedence against explicit reports lives in OddPhaseRegistry.
 
 import type { OddPhase } from "./odd-phase.ts";
-import { isDestructiveCommand, isDestructiveSegment } from "./destructive-card-activity.ts";
+import { isDestructiveCommand, isDestructiveSegment, isSqlClientSegment } from "./destructive-card-activity.ts";
 
 /**
  * The activity a shell call names on its own card. `exploring` and `checking` are
@@ -357,12 +357,18 @@ export function inferShellActivity(command: string | undefined): ShellActivity |
 	const segments = shellSegments(command);
 	if (segments.length === 0) return undefined;
 	const activities = segments.map(segmentActivity);
+	// A database client runs the statements a pipe or a heredoc hands it, so its own
+	// segment states none of them: the whole command proves that deletion, and the
+	// client with the payload it reads is what the proof names. Those segments count
+	// as named; a segment outside the payload still keeps the whole card generic.
+	const deletesData = command !== undefined && isDestructiveCommand(command);
+	const sqlPayload = deletesData ? sqlPayloadCoverage(segments) : [];
 	// Beside a segment nothing can name the card stays generic: the heading never
 	// claims a check — or any other identity — for work the call also did silently.
-	if (activities.includes(undefined)) return undefined;
+	if (activities.some((activity, index) => activity === undefined && sqlPayload[index] !== true)) return undefined;
 	// A deletion outranks every other identity on the same call: it is the one
 	// consequence the reader cannot undo, so a check beside it never takes the card.
-	if (activities.includes("destructive") || (command !== undefined && isDestructiveCommand(command))) return "destructive";
+	if (activities.includes("destructive") || deletesData) return "destructive";
 	if (activities.includes("checking")) return "checking";
 	if (activities.includes("publishing")) return "publishing";
 	if (activities.includes("versioning")) return "versioning";
@@ -378,6 +384,30 @@ function shellSegments(command: string | undefined): string[] {
 	return shellCommandSegments(command)
 		.map(stripSegment)
 		.filter((segment) => segment.length > 0 && !isNeutral(segment));
+}
+
+/** The `<<` a segment opens, and the delimiter whose own line ends the body it starts. */
+const HEREDOC_HEADER = /<<-?\s*(['"]?)([A-Za-z_]\w*)\1/;
+
+/**
+ * Which segments a deletion the whole command proves already names: a database
+ * client and the heredoc body it reads, which the segmenter splits into the lines
+ * the body's newlines delimit. The statements themselves are data, not commands,
+ * so nothing can name them on their own.
+ */
+function sqlPayloadCoverage(segments: readonly string[]): boolean[] {
+	const covered: boolean[] = [];
+	let body: string | undefined;
+	for (const [index, segment] of segments.entries()) {
+		if (body !== undefined) {
+			covered[index] = true;
+			if (segment === body) body = undefined;
+			continue;
+		}
+		covered[index] = isSqlClientSegment(segment);
+		if (covered[index]) body = HEREDOC_HEADER.exec(segment)?.[2];
+	}
+	return covered;
 }
 
 /**

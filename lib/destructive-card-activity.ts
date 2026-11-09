@@ -34,13 +34,16 @@ const WRAPPERS = new Set(["env", "sudo", "doas", "command", "exec", "nohup", "ti
 /** Programs whose own arguments name what they delete. */
 const DELETING_PROGRAMS = new Set(["rm", "shred", "truncate", "dd"]);
 
+/** Programs that run the SQL a pipe or a heredoc hands them. */
+const SQL_CLIENT_PROGRAMS: ReadonlySet<string> = new Set(["psql", "mysql", "mariadb", "sqlite3"]);
+
 /**
  * Programs whose payload the permission guard's recognizer already reads: a shell
  * body, an `eval`, a SQL client's statements, and `find`'s exec. Their reading is
  * reused rather than re-implemented, and the guard's broader git verdicts stay with
  * this module's own exemptions.
  */
-const PAYLOAD_PROGRAMS = new Set(["sh", "bash", "zsh", "dash", "eval", "psql", "mysql", "mariadb", "sqlite3", "find"]);
+const PAYLOAD_PROGRAMS = new Set(["sh", "bash", "zsh", "dash", "eval", ...SQL_CLIENT_PROGRAMS, "find"]);
 
 /** Git global options that consume the word after them. */
 const GIT_GLOBAL_VALUE_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace"]);
@@ -85,6 +88,16 @@ export function isDestructiveSegment(segment: string): boolean {
  */
 export function isDestructiveCommand(command: string): boolean {
 	return recognizeDestructiveCommands(command).some((match) => match.kind === "database");
+}
+
+/**
+ * Whether one segment runs a database client, whose statements arrive through a
+ * pipe or a heredoc rather than in the segment's own text.
+ */
+export function isSqlClientSegment(segment: string): boolean {
+	const command = commandArguments(segment);
+	if (command === undefined) return false;
+	return SQL_CLIENT_PROGRAMS.has(command[0].split("/").at(-1) ?? command[0]);
 }
 
 /** What one non-git, non-payload tool's own arguments say it deletes. */

@@ -2177,8 +2177,10 @@ test("a collapsed minimal bash card keeps a long, multi-line or timed-out comman
 });
 
 test("a finished card restored from the session history keeps its expand hint even though Pi never saw its execution start", (t) => {
+	const original = cardContent();
+	t.after(() => setCardContent(original));
 	for (const level of [CARD_CONTENT.MINIMAL, CARD_CONTENT.DEFAULT]) {
-		useCardContent(t, level);
+		setCardContent(level);
 		const tools = registeredQuietTools();
 		for (const [name, args] of [["read", { path: "a.ts" }], ["grep", { pattern: "x", path: "." }], ["bash", { command: "node scripts/build.mjs --check && git diff --check", timeout: 30 }]] as const) {
 			if (name === "bash" && level === CARD_CONTENT.DEFAULT) continue;
@@ -2190,7 +2192,8 @@ test("a finished card restored from the session history keeps its expand hint ev
 	}
 });
 
-test("a restored call keeps the expand key on the bash card alone", () => {
+test("a restored call keeps the expand key on the bash card alone", (t) => {
+	useCardContent(t, CARD_CONTENT.DEFAULT);
 	const tools = registeredQuietTools();
 	const replayed = (args: Record<string, unknown>) => routineRenderContext({ args, state: {}, executionStarted: false, argsComplete: false, isPartial: false });
 
@@ -2218,7 +2221,7 @@ test("a restored call keeps the expand key on the bash card alone", () => {
 	assert.match(cardHint(frameLines(bash.renderCall(bashArgs, passthroughTheme, revealing), 120).join("\n")) ?? "", /to expand$/);
 	const complete = replayed(bashArgs);
 	bash.renderResult(textResult("clean"), { expanded: false, isPartial: false }, passthroughTheme, complete);
-	assert.match(cardHint(frameLines(bash.renderCall(bashArgs, passthroughTheme, complete), 120).join("\n")) ?? "", /to expand$/, "a replayed finished call carries the key under the merged rule");
+	assert.doesNotMatch(cardHint(frameLines(bash.renderCall(bashArgs, passthroughTheme, complete), 120).join("\n")) ?? "", /to expand/, "a replayed preview that is already whole has nothing to reveal, so the card claims no key");
 });
 
 // pi replays a stored transcript without ever starting the call in this
@@ -2234,20 +2237,22 @@ test("a finished card restored from a session keeps its expand key", () => {
 
 // Expanding a card that already shows everything would be a no-op, so such a
 // card offers neither the key nor a click: the affordance is only there when it
-// actually reveals something.
-test("a quiet card with nothing to expand offers no key and no click", () => {
+// actually reveals something, and a quiet card only measures that claim on bash.
+test("a complete bash preview withholds the no-op expand key and the click", (t) => {
+	useCardContent(t, CARD_CONTENT.DEFAULT);
 	const bash = registeredQuietTools().get("bash");
-	// The merged rule keeps the key on any finished call; the slice that owns the
-	// no-op withholding measures it there, so this one asserts the merged rule only.
 	const complete = hostRow(bash, { command: "git status" }, textResult("clean"));
-	assert.ok(complete.rows().some((line) => /to expand/.test(line)), "a finished call carries the key");
+	const before = complete.rows();
+	assert.equal(before.some((line) => /to expand/.test(line)), false, "a preview that is already whole claims no key");
 	complete.click(complete.heading());
-	assert.equal(complete.expanded(), true, "and the click opens the card");
+	assert.equal(complete.expanded(), false, "so the heading takes no click");
+	assert.deepEqual(complete.rows(), before, "and the drawn row stays the row it drew");
 });
 
 // The card measures what it is about to draw, so output that only overflows its
 // three preview rows because the terminal is narrow still counts as truncated.
-test("a result truncated only by wrapping keeps the key and expands on click", () => {
+test("a result truncated only by wrapping keeps the key and expands on click", (t) => {
+	useCardContent(t, CARD_CONTENT.DEFAULT);
 	const bash = registeredQuietTools().get("bash");
 	const long = "word ".repeat(60).trim();
 
@@ -2255,9 +2260,9 @@ test("a result truncated only by wrapping keeps the key and expands on click", (
 	const wide = hostRow(bash, { command: "git status" }, textResult(long), { width: 200 });
 	const wideRows = wide.rows();
 	assert.ok(wideRows.filter((line) => line.includes("word")).length <= 3, "the whole line fits the preview budget");
-	assert.ok(wideRows.some((line) => /to expand/.test(line)), "a finished call carries the key");
+	assert.equal(wideRows.some((line) => /to expand/.test(line)), false, "so the whole preview claims no key");
 	wide.click(wide.heading());
-	assert.equal(wide.expanded(), true, "and the click opens the card");
+	assert.equal(wide.expanded(), false, "and the click reveals nothing to open");
 
 	// The same result at a narrow width wraps past the preview budget.
 	const narrow = hostRow(bash, { command: "git status" }, textResult(long), { width: 40 });
@@ -2321,7 +2326,8 @@ test("a quiet card whose result is truncated keeps its key and expands on click"
 	assert.ok(row.rows().some((line) => /to collapse/.test(line)));
 });
 
-test("an expanded card keeps the collapse key and collapses on click only when it hides rows", () => {
+test("an expanded card keeps the collapse key and collapses on click only when it hides rows", (t) => {
+	useCardContent(t, CARD_CONTENT.MINIMAL);
 	const bash = registeredQuietTools().get("bash");
 	const row = hostRow(bash, { command: "git status" }, textResult("one\ntwo\nthree\nfour"));
 	transcript([row]).pressExpandKey();

@@ -574,6 +574,30 @@ test("the strongest named segment decides the card, and an unnamed one keeps it 
 	}
 });
 
+// A database client runs the statements a pipe or a heredoc hands it, so its own
+// segment names nothing on its own. The whole command proves the deletion the
+// client performs, and the client with its payload counts as named.
+test("SQL a client is fed through a pipe or a heredoc names the destructive card", () => {
+	for (const command of [`echo 'DROP TABLE t' | psql`, "psql <<'SQL'\nDROP TABLE t;\nSQL"]) {
+		assert.equal(inferShellActivity(command), "destructive", command);
+		// A deletion is a card identity only, so it never moves the working label.
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
+	}
+	// A deletion outranks the other identities of the same call, as it does for
+	// every other segment that names one.
+	assert.equal(inferShellActivity(`echo 'DROP TABLE t' | psql && pnpm test`), "destructive");
+	assert.equal(inferOddPhase("bash", { command: `echo 'DROP TABLE t' | psql && pnpm test` }), "checking");
+	// A segment outside the payload is still unnamed, so the whole card stays
+	// generic instead of claiming a deletion the call also did silently.
+	for (const command of [
+		`psql -c 'DROP TABLE t' && ./scripts/unknown.sh`,
+		`echo 'DROP TABLE t' | psql && ./scripts/unknown.sh`,
+		"psql <<'SQL'\nDROP TABLE t;\nSQL\n./scripts/unknown.sh",
+	]) {
+		assert.equal(inferShellActivity(command), undefined, command);
+	}
+});
+
 // A call that changes nothing cannot name an activity, and neither can one with
 // no command at all: the card falls back to the tool's own identity.
 test("a neutral or empty command names no activity", () => {

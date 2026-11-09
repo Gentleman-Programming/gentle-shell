@@ -3068,3 +3068,67 @@ test("a card the Card content preference does not decide keeps its rows across t
 	assert.equal(frameLines(failed, 80).join("\n"), failedFrame, "the drawn failed card is the same card");
 	assert.equal(frameLines(expanded, 80).join("\n"), expandedFrame, "the drawn expanded card is the same card");
 });
+
+// The CodeGraph card captured its Card content level when it was built, so a
+// card already on screen kept the summary it was drawn with. The retained card
+// reads the level on every pass now: the rows stay cached while the level holds,
+// and a switch repaints the very same component either way.
+test("a retained CodeGraph card repaints when the Card content preference switches", (t) => {
+	useCardContent(t, CARD_CONTENT.DEFAULT);
+	const codegraph: any = createCodeGraphCardRenderer();
+	const args = { operation: "query", query: "alpha", limit: 5 };
+	const finished = routineRenderContext({ args, executionStarted: true, isPartial: false, state: {} });
+	const call = codegraph.renderCall(args, passthroughTheme, finished);
+	const result = codegraph.renderResult(textResult(CODEGRAPH_QUERY), { expanded: false, isPartial: false }, passthroughTheme, finished);
+	const heading = () => frameLines(call, 80).join("\n");
+	const body = () => frameLines(result, 80).join("\n");
+
+	assert.match(body(), /→ 2 results/, "default content previews the summary");
+	assert.match(heading(), /codegraph · query alpha/, "the card names the call");
+	const retained = result.render(80);
+	assert.strictEqual(result.render(80), retained, "the preview level keeps reusing the rows it drew");
+
+	setCardContent(CARD_CONTENT.MINIMAL);
+	assert.match(heading(), /codegraph · query alpha/, "the retained card still names the call");
+	assert.doesNotMatch(body(), /→ 2 results/, "minimal content withholds the preview from the retained card");
+	assert.notStrictEqual(result.render(80), retained, "the switch drops the preview rows");
+	const withheld = result.render(80);
+	assert.strictEqual(result.render(80), withheld, "the withheld level keeps reusing the rows it drew");
+
+	setCardContent(CARD_CONTENT.DEFAULT);
+	assert.match(body(), /→ 2 results/, "switching back previews the summary again");
+	assert.notStrictEqual(result.render(80), withheld, "the switch back drops the withheld rows");
+});
+
+// A failed CodeGraph card always says why and an expanded one already shows the
+// whole result, so the level decides neither of them: the row cache must hand
+// back the very rows they drew.
+test("a CodeGraph card the Card content preference does not decide keeps its rows", (t) => {
+	useCardContent(t, CARD_CONTENT.DEFAULT);
+	const codegraph: any = createCodeGraphCardRenderer();
+	const args = { operation: "query", query: "alpha", limit: 5 };
+	const failed = codegraph.renderResult(
+		textResult("boom one\nboom two"),
+		{ expanded: false, isPartial: false },
+		passthroughTheme,
+		routineRenderContext({ args, executionStarted: true, isPartial: false, state: {}, isError: true }),
+	);
+	const expanded = codegraph.renderResult(
+		textResult(CODEGRAPH_QUERY),
+		{ expanded: true, isPartial: false },
+		passthroughTheme,
+		routineRenderContext({ args, expanded: true, executionStarted: true, isPartial: false, state: {} }),
+	);
+	const failedFrame = frameLines(failed, 80).join("\n");
+	const expandedFrame = frameLines(expanded, 80).join("\n");
+	assert.match(failedFrame, /boom two/, "a failed card says why while collapsed");
+	assert.match(expandedFrame, /Search Results for "alpha":/, "an expanded card shows the whole result");
+	const retainedFailed = failed.render(80);
+	const retainedExpanded = expanded.render(80);
+
+	setCardContent(CARD_CONTENT.MINIMAL);
+	assert.strictEqual(failed.render(80), retainedFailed, "the failed card keeps the rows it already drew");
+	assert.strictEqual(expanded.render(80), retainedExpanded, "and so does the expanded card");
+	assert.equal(frameLines(failed, 80).join("\n"), failedFrame, "the drawn failed card is the same card");
+	assert.equal(frameLines(expanded, 80).join("\n"), expandedFrame, "the drawn expanded card is the same card");
+});

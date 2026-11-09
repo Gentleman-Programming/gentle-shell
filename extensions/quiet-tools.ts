@@ -1327,7 +1327,11 @@ export function createCodeGraphCardRenderer(): QuietToolRenderer {
 			const heading = codeGraphHeading(isRenderArgs(args) ? args : {}, theme, expanded);
 			const reveal = cardReveal(renderContext.state);
 			if (reveal) reveal.heading = (rowWidth) => !sameText(headingRows(heading, tone, theme, true, rowWidth).join("\n"), headingRows(heading, tone, theme, false, rowWidth).join("\n"));
-			return new ToolCardTop(heading, tone, theme, hint, renderContext, reveal);
+			// Whether the rule claims the key that reveals a withheld preview depends on the
+			// Card content level, so the heading's frame counts the level for the cards it
+			// decides: a card that can reveal rows and did not fail, and nothing else.
+			const contentDecides = reveal !== undefined && renderContext.isError !== true;
+			return new ToolCardTop(heading, tone, theme, hint, renderContext, reveal, undefined, contentDecides);
 		},
 		renderResult(result, options, theme, context) {
 			const renderContext = context ? sanitizedRenderContext(context) : undefined;
@@ -1349,29 +1353,47 @@ export function createCodeGraphCardRenderer(): QuietToolRenderer {
 			// The result continues the heading's card, so it keeps the rail the tool's
 			// own label paints instead of falling back to the call's status tone.
 			const railRole = CODEGRAPH_TITLE_ROLE;
-			const carded = (component: () => Component, cacheable = options.isPartial !== true): Component => new ToolCardBody(component, tone, theme, cacheable, elapsed, reveal, railRole);
+			// The level switches while the card it was built under is on screen, so it is
+			// asked for again on every pass instead of being kept from the build. A failure
+			// always says why, so the level never withholds a failed card's rows.
+			const withheld: Live<boolean> = failed ? false : () => cardContent() === CARD_CONTENT.MINIMAL;
+			// The collapsed rows follow that level, so their frame counts it. An expanded
+			// card already shows the whole result under either level, so its frame keeps
+			// the rows it drew.
+			const contentDecides = !failed && !expanded;
+			const carded = (component: () => Component, cacheable = options.isPartial !== true): Component => new ToolCardBody(component, tone, theme, cacheable, elapsed, reveal, railRole, contentDecides);
 			// Both levels are known here, so the card knows whether expanding shows more,
 			// measured where the rows are drawn (wrapping at a narrow width hides rows too).
-			const withheld = cardContent() === CARD_CONTENT.MINIMAL;
-			const collapsed = codeGraphCollapsedRows(operation, text, failed, withheld);
+			// The level is read again here, so a switch repaints the claim with it.
+			const collapsedRows = () => codeGraphCollapsedRows(operation, text, failed, live(withheld));
 			if (reveal) reveal.body = (rowWidth) => {
+				const collapsed = collapsedRows();
 				const rows = collapsed?.text ?? "";
 				return !sameText(rows, text) || contentRows(rows, cardInnerWidth(rowWidth)) > (collapsed?.rows ?? PREVIEW_LINE_LIMIT);
 			};
-			// Minimal cards keep the heading alone; a failure always says why.
-			if (withheld && !expanded && !failed) return carded(() => new Text("", 0, 0));
 			if (options.isPartial) {
 				const visible = codeGraphPreview(text);
-				if (reveal) reveal.body = (rowWidth) => !sameText(visible, text) || contentRows(visible, cardInnerWidth(rowWidth)) > PREVIEW_LINE_LIMIT;
-				return carded(() => new BoundedRows([
+				// A withheld card draws no rows at all, so expanding it shows whatever the
+				// expanded level holds; every other partial card measures its own preview.
+				if (reveal) reveal.body = (rowWidth) => {
+					if (!expanded && live(withheld)) return !sameText("", text);
+					return !sameText(visible, text) || contentRows(visible, cardInnerWidth(rowWidth)) > PREVIEW_LINE_LIMIT;
+				};
+				return carded(() => !expanded && live(withheld) ? new Text("", 0, 0) : new BoundedRows([
 					...(visible ? [{ text: theme.fg("muted", visible), rows: PREVIEW_LINE_LIMIT, tail: true }] : []),
 				], cacheKey));
 			}
 			if (expanded) return carded(() => new Text(text ? theme.fg(failed ? "error" : "toolOutput", text) : "", 0, 0));
-			if (collapsed === undefined) return carded(() => new Text("", 0, 0));
-			return carded(() => new BoundedRows([
-				{ text: theme.fg(failed ? "error" : "muted", collapsed.text), rows: collapsed.rows, tail: collapsed.tail },
-			], cacheKey));
+			// The rows follow the level this pass decides, so a retained card repaints the
+			// summary a switch asks for instead of the one it was built with.
+			return carded(() => {
+				if (live(withheld)) return new Text("", 0, 0);
+				const collapsed = collapsedRows();
+				if (collapsed === undefined) return new Text("", 0, 0);
+				return new BoundedRows([
+					{ text: theme.fg(failed ? "error" : "muted", collapsed.text), rows: collapsed.rows, tail: collapsed.tail },
+				], cacheKey);
+			});
 		},
 	};
 }

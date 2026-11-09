@@ -7,6 +7,7 @@ import { agentMessageCard } from "./agents-message-card.ts";
 import { isMemoryToolName } from "./agents-memory-card.ts";
 import { agentToolRowCard, type AgentToolRowCard } from "./agents-tool-renderers.ts";
 import { cardContent } from "./card-content-policy.ts";
+import { cardBash } from "./card-bash-policy.ts";
 import { resolveGentleAiDevBinaryOverride } from "./gentle-ai-binary.ts";
 import { cardStyle } from "./shell-card.ts";
 import { drawThreadItem, THREAD_PRESENTATION, type AgentsThreadTheme, type ThreadItemDrawing, type ThreadPresentation } from "./agents-thread-view.ts";
@@ -954,6 +955,8 @@ export class AgentsView {
 			String(this.cardToolsExpanded),
 			cardStyle(),
 			cardContent(),
+			// A bash card's heading is the preference's identity, so its rows belong to it.
+			cardBash(),
 			this.bindingKeys("app.tools.expand").join("\u0000"),
 			devBinaryIdentity(),
 		].join("\u0000");

@@ -7,6 +7,7 @@ import { renderThreadItem } from "../lib/agents-thread-view.ts";
 import { AgentsView, taskHeader, type AgentsViewDeps } from "../lib/agents-view.ts";
 import { measureAgentsViewLayout } from "../lib/agents-view-layout.ts";
 import { KeybindingsManager } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js";
+import { CARD_BASH, cardBash, setCardBash } from "../lib/card-bash-policy.ts";
 import { CARD_CONTENT, cardContent, setCardContent } from "../lib/card-content-policy.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import productionQuietTools from "../extensions/quiet-tools.ts";
@@ -1755,6 +1756,51 @@ test("a card style or content change draws new rows instead of the cached ones",
 	assert.equal((minimal.match(/▎ \$ /g) ?? []).length, 1, "the card replaces the plain block instead of stacking on it");
 	setCardContent(CARD_CONTENT.MINIMAL);
 	assert.equal(text(), minimal, "switching back draws the card exactly as before");
+	view.dispose();
+});
+
+test("a card bash preference change draws new rows instead of the cached ones", (t) => {
+	const bash = cardSlot(t, "bash");
+	const read = cardSlot(t, "read");
+	bash.publish({ label: "alpha", rowStable: true });
+	read.publish({ label: "beta", rowStable: true });
+	const previous = cardBash();
+	t.after(() => setCardBash(previous));
+	const store = new TaskStore();
+	store.add(task("a"));
+	applyTool(store, "bash", { command: "printf hi" }, "hi", false, "bash-call");
+	applyTool(store, "read", { path: "src/a.ts" }, "a0", false, "read-a");
+	const view = paneOver(store, { theme: plainTheme }, 24);
+	const rows = (): string[] => view.render(60).map(stripAnsi);
+
+	// This tree's bash card never shows the activity the preference picks, so a
+	// change of preference draws the very same text. The observable is the cache
+	// key moving instead: a retained drawing is drawn again rather than reused,
+	// which is exactly what the card's own draw count records.
+	const first = rows();
+	assert.equal(bash.draws(), 2, "the first frame draws the call and its result");
+	assert.equal(read.draws(), 2, "and the sibling card along with it");
+	assert.deepEqual(rows(), first, "a warm frame draws the same rows");
+	assert.equal(bash.draws(), 2, "which the bash card reuses instead of drawing again");
+	assert.equal(read.draws(), 2, "and so does the card next to it");
+
+	setCardBash(CARD_BASH.OUTPUT);
+	const other = rows();
+	assert.equal(bash.draws(), 4, "the changed preference draws the bash card again instead of its cached rows");
+	// The frame key is shared by every card, exactly as the card style and content
+	// preference already are, so the sibling is drawn under the new key as well.
+	assert.equal(read.draws(), 4, "the whole frame is redrawn, sibling card included");
+	assert.deepEqual(other, first, "and the rows are unchanged in this tree: only the key they were cached under moved");
+
+	assert.deepEqual(rows(), other, "the new value reuses the rows it drew");
+	assert.equal(bash.draws(), 4, "so the bash card is not drawn again while it stays chosen");
+	assert.equal(read.draws(), 4, "nor is its sibling");
+
+	setCardBash(previous);
+	assert.deepEqual(rows(), first, "returning to the previous value draws its rows again");
+	assert.equal(bash.draws(), 6, "the one-key cache keeps no entry for the value it came from");
+	rows();
+	assert.equal(bash.draws(), 6, "and those rows are reused from then on");
 	view.dispose();
 });
 

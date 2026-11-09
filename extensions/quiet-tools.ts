@@ -869,12 +869,16 @@ export type QuietToolRenderer = Pick<ToolDefinition, "renderShell" | "renderCall
 // that condition is off, because the host is then drawing it some other way.
 // `rowStable` says what these cards do: the same call and result always draw the
 // same rows, so a second consumer may keep one drawing of them.
+// `publisher` names whose record this is: the slot is shared with every other
+// extension, so a load withdraws the records it published and never another's.
 interface PublishedQuietToolRenderer {
 	renderer: QuietToolRenderer;
 	active(): boolean;
 	rowStable: true;
+	publisher: typeof QUIET_TOOL_RENDERER_PUBLISHER;
 }
 
+const QUIET_TOOL_RENDERER_PUBLISHER = "gentle-pi.quiet-tools";
 const QUIET_TOOL_RENDERER_SLOT = Symbol.for("gentle-pi.quiet-tool-renderers");
 const rendererState = globalThis as typeof globalThis & { [QUIET_TOOL_RENDERER_SLOT]?: Map<string, PublishedQuietToolRenderer> };
 
@@ -887,8 +891,15 @@ function publishQuietToolRenderer(
 	renderer: QuietToolRenderer,
 	active: () => boolean = () => true,
 ): QuietToolRenderer {
-	publishedQuietToolRenderers().set(toolName, { renderer, active, rowStable: true });
+	publishedQuietToolRenderers().set(toolName, { renderer, active, rowStable: true, publisher: QUIET_TOOL_RENDERER_PUBLISHER });
 	return renderer;
+}
+
+function withdrawPublishedQuietToolRenderers(): void {
+	const published = publishedQuietToolRenderers();
+	for (const [toolName, record] of published) {
+		if (record?.publisher === QUIET_TOOL_RENDERER_PUBLISHER) published.delete(toolName);
+	}
 }
 
 /**
@@ -917,8 +928,9 @@ export default function quietTools(
 	codemodeOptOut: Omit<BuiltinCodemodeOptOutOptions, "effectiveExtensions"> = {},
 ): ReturnType<ExtensionFactory> {
 	// A fresh load replaces whatever an earlier instance published, so a disabled
-	// extension leaves nothing behind for a second consumer to reuse.
-	publishedQuietToolRenderers().clear();
+	// extension leaves nothing behind for a second consumer to reuse. Only its own
+	// records go: another extension may have published into the same slot first.
+	withdrawPublishedQuietToolRenderers();
 	if (!quietToolsEnabled()) return;
 	let elapsedTiming: GentleAiElapsedTimingLedger | undefined;
 	let codemodeOptOutOffered = false;

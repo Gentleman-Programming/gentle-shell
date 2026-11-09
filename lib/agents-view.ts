@@ -1,5 +1,6 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
+import { statSync } from "node:fs";
 import { measureAgentsViewLayout, type AgentsViewLayout } from "./agents-view-layout.ts";
 import { HOVER_ROLE, paintHoverable } from "./shell-hover.ts";
 import { emptyThread, isFinished, TASK_STATUS, THREAD_ITEM, type TaskRecord, type TaskStore, type TaskThread, type ThreadItem } from "./agents-protocol.ts";
@@ -8,7 +9,7 @@ import { isMemoryToolName } from "./agents-memory-card.ts";
 import { agentToolRowCard, type AgentToolRowCard } from "./agents-tool-renderers.ts";
 import { cardContent } from "./card-content-policy.ts";
 import { cardBash } from "./card-bash-policy.ts";
-import { resolveGentleAiDevBinaryOverride } from "./gentle-ai-binary.ts";
+import { GENTLE_AI_DEV_BINARY_ENV, gentleAiDevBinaryRegistrationPath, resolveGentleAiDevBinaryOverride } from "./gentle-ai-binary.ts";
 import { cardStyle } from "./shell-card.ts";
 import { drawThreadItem, THREAD_PRESENTATION, type AgentsThreadTheme, type ThreadItemDrawing, type ThreadPresentation } from "./agents-thread-view.ts";
 import { formatElapsed } from "./agents-widget.ts";
@@ -179,15 +180,50 @@ function cardId(card: object | undefined): string {
 
 // A registered dev-binary override changes how a bash card reads its command, so
 // its identity is part of what a frame's rows were drawn under. Resolving it reads
-// the binary — and hashes it once an override is registered — so a frame resolves
-// it once and never once per item; an override that cannot be resolved is its own
-// identity instead of a frame-breaking error.
-function devBinaryIdentity(): string {
+// the binary — and hashes it once an override is registered — which no frame should
+// pay twice. The identity is therefore kept until what it was resolved from moves:
+// the declared override, the registration file that selects one, or the binary the
+// identity names. An override that cannot be resolved is its own identity instead
+// of a frame-breaking error.
+interface DevBinaryIdentity {
+	identity: string;
+	/** The binary the identity names, so its own file is one of the inputs re-checked. */
+	binary: string | undefined;
+	/** What the identity was resolved from, re-checked on every frame instead of resolved again. */
+	stamp: string;
+}
+
+function fileStamp(path: string | undefined): string {
+	if (path === undefined || path.length === 0) return "-";
+	try {
+		const details = statSync(path, { bigint: true });
+		return `${details.mtimeNs}:${details.size}:${details.mode}`;
+	} catch {
+		return "absent";
+	}
+}
+
+// The declared override is read from the process environment, which is the
+// resolver's ambient environment outside tests.
+function devBinaryStamp(binary: string | undefined): string {
+	const declared = process.env[GENTLE_AI_DEV_BINARY_ENV] ?? "";
+	let registration: string | undefined;
+	try {
+		registration = gentleAiDevBinaryRegistrationPath();
+	} catch {
+		registration = undefined;
+	}
+	return [declared, fileStamp(declared), fileStamp(registration), fileStamp(binary)].join("\u0000");
+}
+
+function resolveDevBinaryIdentity(): Pick<DevBinaryIdentity, "identity" | "binary"> {
 	try {
 		const override = resolveGentleAiDevBinaryOverride();
-		return override === undefined ? "none" : `${override.source}\u0000${override.path}`;
+		return override === undefined
+			? { identity: "none", binary: undefined }
+			: { identity: `${override.source}\u0000${override.path}`, binary: override.path };
 	} catch {
-		return "invalid";
+		return { identity: "invalid", binary: undefined };
 	}
 }
 
@@ -234,6 +270,8 @@ export class AgentsView {
 	// never a global chat setting. The log always draws thinking and output whole.
 	private thinkingExpanded = true;
 	private cardToolsExpanded = false;
+	/** The dev-binary identity this pane's frames are keyed on, with what it was resolved from. */
+	private devBinary: DevBinaryIdentity | undefined;
 	private readonly observedActiveGroups = new Set<string>();
 	private listScroll = 0;
 	private readonly manualListOffsets = new Map<string, number>();
@@ -537,6 +575,9 @@ export class AgentsView {
 		// no theme is part of its key, so a theme change has to drop the cache: the
 		// log served rows painted by the previous theme before this was cleared here.
 		this.cache = new WeakMap();
+		// The dev-binary identity is derived from the environment, so an invalidation
+		// drops it too and the next frame resolves it afresh.
+		this.devBinary = undefined;
 	}
 
 	private counts(): string {
@@ -958,8 +999,19 @@ export class AgentsView {
 			// A bash card's heading is the preference's identity, so its rows belong to it.
 			cardBash(),
 			this.bindingKeys("app.tools.expand").join("\u0000"),
-			devBinaryIdentity(),
+			this.devBinaryIdentity(),
 		].join("\u0000");
+	}
+
+	// The identity a frame is keyed on: resolving it reads and hashes the binary, so
+	// it is kept until one of its inputs moves and the frame re-checks three files
+	// instead.
+	private devBinaryIdentity(): string {
+		const stamp = devBinaryStamp(this.devBinary?.binary);
+		if (this.devBinary?.stamp === stamp) return this.devBinary.identity;
+		const resolved = resolveDevBinaryIdentity();
+		this.devBinary = { ...resolved, stamp: devBinaryStamp(resolved.binary) };
+		return resolved.identity;
 	}
 
 	// The pane's own drawings — prose, thinking, notes, the memory design — depend on

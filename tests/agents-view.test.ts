@@ -12,6 +12,17 @@ import { CARD_CONTENT, cardContent, setCardContent } from "../lib/card-content-p
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import productionQuietTools from "../extensions/quiet-tools.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+	GENTLE_AI_DEV_BINARY_ENV,
+	gentleAiDevBinaryRegistrationPath,
+	registerGentleAiDevBinary,
+	setGentleAiDevBinaryEnvironmentForTesting,
+	unregisterGentleAiDevBinary,
+	type GentleAiDevBinaryEnvironment,
+} from "../lib/gentle-ai-binary.ts";
 
 // Gentle Agents overlay: list left, selected thread right, tail-following,
 // and only the selected task subscribed.
@@ -2042,4 +2053,90 @@ test("the labeled log is byte-identical at every width and height", () => {
 			warm.dispose();
 		}
 	}
+});
+
+// A registered dev-binary override changes how a bash card reads its command, so a
+// frame is keyed on its identity — which costs a read and a hash of the binary. The
+// overlay must not pay that again for a frame whose inputs never moved.
+function devBinaryHarness(t: { after(fn: () => void): void }) {
+	const home = mkdtempSync(join(tmpdir(), "gentle-pi-agents-dev-binary-"));
+	const environment: GentleAiDevBinaryEnvironment = { env: {}, home };
+	setGentleAiDevBinaryEnvironmentForTesting(environment);
+	t.after(() => {
+		setGentleAiDevBinaryEnvironmentForTesting(undefined);
+		rmSync(home, { recursive: true, force: true });
+	});
+	return {
+		binary: (name: string): string => {
+			const path = join(home, name);
+			writeFileSync(path, `#!/bin/sh\necho ${name}\n`);
+			chmodSync(path, 0o755);
+			return path;
+		},
+		register: (path: string): string => {
+			registerGentleAiDevBinary(path, environment, process.platform);
+			return path;
+		},
+		unregister: (): boolean => unregisterGentleAiDevBinary(environment),
+	};
+}
+
+test("the overlay resolves the dev-binary override once instead of on every frame", (t) => {
+	// The resolver reads the override through the ambient environment, so every read
+	// of the declaration is one resolution the overlay paid for.
+	const reads: Array<string | symbol> = [];
+	const env = new Proxy({} as Record<string, string | undefined>, {
+		get: (_target, key) => {
+			reads.push(key);
+			return undefined;
+		},
+	});
+	const home = mkdtempSync(join(tmpdir(), "gentle-pi-agents-dev-binary-"));
+	setGentleAiDevBinaryEnvironmentForTesting({ env, home });
+	t.after(() => {
+		setGentleAiDevBinaryEnvironmentForTesting(undefined);
+		rmSync(home, { recursive: true, force: true });
+	});
+	const resolutions = (): number => reads.filter((key) => key === GENTLE_AI_DEV_BINARY_ENV).length;
+	const { store, view } = detailHarness({ threadPresentation: () => "cards" }, 20);
+	store.apply("a", { type: TASK_EVENT.TEXT, text: "prose" }, 2000);
+	view.render(80);
+	const cold = resolutions();
+	assert.ok(cold > 0, "the first frame resolves the override its rows are keyed on");
+	for (let frame = 0; frame < 3; frame += 1) view.render(80);
+	assert.equal(resolutions(), cold, "a frame whose inputs never moved resolves nothing again");
+	view.dispose();
+});
+
+test("a real dev-binary change draws the next frame, and an unchanged one keeps reusing its rows", (t) => {
+	const dev = devBinaryHarness(t);
+	const read = cardSlot(t, "read");
+	read.publish({ label: "alpha", rowStable: true });
+	const first = dev.register(dev.binary("gentle-ai-one"));
+	const { store, view } = detailHarness({ threadPresentation: () => "cards" }, 20);
+	applyTool(store, "read", { path: "src/a.ts" }, "a0");
+	const frame = (): string[] => view.render(80);
+
+	assert.match(stripAnsi(frame().join("\n")), /preview alpha/);
+	const cold = read.draws();
+	assert.ok(cold > 0, "the first frame draws the card");
+	frame();
+	assert.equal(read.draws(), cold, "an unchanged override reuses the rows it drew the frame under");
+
+	const second = dev.register(dev.binary("gentle-ai-second-binary"));
+	frame();
+	assert.ok(read.draws() > cold, "a registry rewritten to another binary is a new identity, so the card is drawn again");
+	const replaced = read.draws();
+	frame();
+	assert.equal(read.draws(), replaced, "and that identity is stable in turn");
+
+	rmSync(second);
+	frame();
+	assert.ok(read.draws() > replaced, "losing the binary it names is a different identity too");
+	const broken = read.draws();
+	assert.equal(dev.unregister(), true, "the registration is the one this test wrote");
+	frame();
+	assert.ok(read.draws() > broken, "so removing it draws the rows again");
+	assert.equal(first.length > 0, true, "the first binary was a real one");
+	view.dispose();
 });

@@ -549,3 +549,34 @@ test("a shared slot holding garbage offers nothing and never breaks a frame", (t
 		assert.equal(renderAgentToolItem(toolItem({ name: "codegraph", output: "graph" }), plainTheme, 80, { expanded: false }), undefined, `${label}: the pane draws its own fallback`);
 	}
 });
+
+// The slot is shared, so a load of quiet-tools may only withdraw the records it
+// published itself: another extension's card for another tool is not its to remove.
+test("a load withdraws only this extension's own cards and leaves another publisher's alone", (t) => {
+	const slot = new Map<string, any>();
+	rawSlot(t).set(slot);
+	slot.set("codegraph", { renderer: foreignCard });
+
+	registeredQuietTools();
+	assert.equal(agentToolRowRenderer("codegraph"), foreignCard, "another extension's card survives a load of this one");
+
+	registeredQuietTools();
+	assert.notEqual(agentToolRowRenderer("read"), undefined, "the reload published this extension's own cards again");
+	assert.equal(agentToolRowRenderer("codegraph"), foreignCard, "and did not take the other publisher's record with it");
+
+	registeredQuietTools({ quietTools: "0" });
+	assert.equal(agentToolRowRenderer("read"), undefined, "a disabled load still leaves nothing of its own behind");
+	assert.equal(agentToolRowRenderer("codegraph"), foreignCard, "while the record it never published stays as it was");
+});
+
+test("a reload replaces the renderer this extension published before it", (t) => {
+	rawSlot(t).set(new Map<string, any>());
+	const first = registeredQuietTools();
+	const previous = agentToolRowRenderer("read");
+	assert.equal(previous?.renderCall, first.tools.get("read").renderCall, "the first load published the renderer it handed the host");
+
+	const second = registeredQuietTools();
+	const current = agentToolRowRenderer("read");
+	assert.equal(current?.renderCall, second.tools.get("read").renderCall, "the reload's own renderer is what the slot holds");
+	assert.notEqual(current, previous, "not the record an earlier instance left behind");
+});

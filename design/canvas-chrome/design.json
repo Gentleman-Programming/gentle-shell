@@ -1,0 +1,9 @@
+{
+  "title": "Gentle Design canvas chrome",
+  "brief": "Redesign the Gentle Design canvas toolbar, comments panel and artboard headers: clearer hierarchy, SVG icons, keyboard shortcuts, design tokens",
+  "artboards": [
+    { "file": "01-three-zone-bar.html", "title": "Three-zone bar", "tradeoff": "Lowest-risk evolution of today's layout and palette; the canvas keeps a full-width bar", "width": 1440, "height": 900 },
+    { "file": "02-floating-dock.html", "title": "Floating dock", "tradeoff": "Canvas gets the whole window with a minimap; floating chrome can cover artboards", "width": 1440, "height": 900 },
+    { "file": "03-brand-rail.html", "title": "Brand rail", "tradeoff": "Unifies with the installer brand and adds a handoff timeline; biggest change and least canvas width", "width": 1440, "height": 900 }
+  ]
+}

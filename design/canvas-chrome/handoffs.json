@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "chosen": "03-brand-rail.html",
+  "handoffs": {
+    "03-brand-rail.html": {
+      "status": "implemented",
+      "queued": true,
+      "sentAt": "2026-10-28T14:27:51.782Z",
+      "startedAt": "2026-10-28T14:28:37.934Z",
+      "implementedAt": "2026-10-28T14:46:45.634Z",
+      "note": "Brand rail canvas on feat/canvas-brand-rail (4 commits); preview is a local canvas server running this branch.",
+      "previewUrl": "http://127.0.0.1:34037/1OOHughsJj3Uw7H1xaZN5DZyAHGCSgfn/d/canvas-chrome/"
+    }
+  }
+}

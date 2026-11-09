@@ -1,0 +1,48 @@
+{
+  "title": "Gentle Design: next features",
+  "brief": "Eleven proposed canvas features shown inside the Brand rail canvas: screen sizes, version history, token inspector, overlay compare, accessibility checks, agent replies, live thumbnails, minimap, another direction, PNG export and Spanish/English UI.",
+  "artboards": [
+    {
+      "file": "01-screen-sizes.html",
+      "title": "Screen sizes and live thumbnails",
+      "tradeoff": "Ideas 1 and 7: see one artboard at phone, tablet and desktop widths side by side; costs canvas space and needs designs that are responsive",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "02-version-history.html",
+      "title": "Version history and agent replies",
+      "tradeoff": "Ideas 2 and 6: compare and restore any earlier version, and read what the agent did per comment; adds a fourth tab and stored snapshots",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "03-token-inspector.html",
+      "title": "Token inspector and accessibility checks",
+      "tradeoff": "Ideas 3 and 5: spot colors, fonts and spacing off the system and contrast or target-size problems; one more panel to read",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "04-compare-overlay.html",
+      "title": "Compare with overlay",
+      "tradeoff": "Idea 4: overlay, slider and difference modes catch small mismatches between design and app; differences are only as good as both render at the same size",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "05-minimap-variants-export.html",
+      "title": "Minimap, another direction and export",
+      "tradeoff": "Ideas 8, 9 and 10: faster navigation, one-click variants and PNG export from an artboard menu; the menu hides actions that were one click away",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "06-language.html",
+      "title": "Spanish or English",
+      "tradeoff": "Idea 11: the whole canvas in Spanish or English, starting from the browser's language; every new label must be written twice",
+      "width": 1440,
+      "height": 900
+    }
+  ]
+}

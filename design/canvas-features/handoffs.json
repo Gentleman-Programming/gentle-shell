@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "chosen": "06-language.html",
+  "handoffs": {
+    "01-screen-sizes.html": {
+      "status": "implemented",
+      "queued": false,
+      "sentAt": "2026-10-28T16:12:10.031Z",
+      "startedAt": "2026-10-28T16:12:44.864Z",
+      "implementedAt": "2026-10-28T16:46:20.218Z",
+      "note": "On feat/canvas-screen-sizes (f62aa61e9, 20b1ee51c). Preview: a canvas server running this branch on a demo design."
+    },
+    "02-version-history.html": {
+      "status": "implemented",
+      "queued": true,
+      "sentAt": "2026-10-28T16:12:34.597Z",
+      "startedAt": "2026-10-28T17:24:20.746Z",
+      "implementedAt": "2026-10-28T18:44:30.056Z",
+      "note": "On feat/canvas-version-history (6865a5b70, a43fd0d5e, 096929e84, f680af92d, 47e6b6165 + tab-row fix). Preview: a canvas server running this branch on a demo copy of canvas-chrome with 3 versions and an agent reply."
+    },
+    "03-token-inspector.html": {
+      "status": "implemented",
+      "queued": true,
+      "sentAt": "2026-10-28T16:12:37.171Z",
+      "startedAt": "2026-10-28T16:50:27.210Z",
+      "implementedAt": "2026-10-28T17:22:59.005Z",
+      "note": "On feat/canvas-token-inspector (cc56d896b, c6eab03b6). Preview: canvas server running this branch on a demo design."
+    },
+    "04-compare-overlay.html": {
+      "status": "implemented",
+      "queued": true,
+      "sentAt": "2026-10-28T16:12:39.620Z",
+      "startedAt": "2026-10-28T18:48:21.257Z",
+      "implementedAt": "2026-10-28T18:59:10.947Z",
+      "note": "On feat/canvas-compare-overlay (0fa66c113). Overlay (app opacity) and Slider next to Side by side; no difference detection (each frame is its own origin). Checked live on a demo; no preview server left running."
+    },
+    "05-minimap-variants-export.html": {
+      "status": "implemented",
+      "queued": true,
+      "sentAt": "2026-10-28T16:12:41.608Z",
+      "startedAt": "2026-10-28T19:00:24.908Z",
+      "implementedAt": "2026-10-29T06:46:40.307Z",
+      "note": "Minimap, artboard menu, another direction and PNG export implemented (3ee74e483, aff188735, 9f81c708f, T4 docs). Real tab export in Chromium not yet verified; Firefox-based browsers cannot export a tab."
+    },
+    "06-language.html": {
+      "status": "implemented",
+      "queued": true,
+      "sentAt": "2026-10-28T16:12:43.838Z",
+      "startedAt": "2026-10-29T06:59:35.290Z",
+      "implementedAt": "2026-10-29T07:30:07.021Z",
+      "note": "Spanish/English canvas with a top-bar language switch (ba7deb821). Full suite green."
+    }
+  }
+}

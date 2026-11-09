@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1440">
+<title>Gentle Design · Brand rail</title>
+<style>
+	:root {
+		color-scheme: dark;
+		--bg: #1a1218; --bg-deep: #000000; --surface: #20161e; --surface-1: #241822; --surface-2: #342230;
+		--border: #342230; --border-soft: #ffffff17; --text: #f6eff3; --text-muted: #a78e9b; --text-faint: #76616b;
+		--accent: #f095c8; --accent-strong: #ff76c3; --accent-soft: #ffb1dd;
+		--success: #b4e7c7; --warning: #e0c27a; --error: #ff718f; --info: #a9c7ee;
+		--radius-sm: 8px; --radius-md: 12px; --radius-lg: 16px; --radius-pill: 999px;
+		--ease: cubic-bezier(.4, 0, .2, 1);
+		--glow: 0 10px 30px #f095c84d;
+		--shadow-panel: 0 24px 60px #00000073, 0 0 40px #f095c81a;
+		--font-sans: Inter, "SF Pro Text", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+		--font-mono: "IosevkaTerm NF", "Iosevka Term", "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+	}
+	* { box-sizing: border-box; }
+	html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); overflow: hidden; }
+	body { display: grid; grid-template-columns: 60px 240px 1fr 360px; grid-template-rows: 56px 1fr; width: 1440px; height: 900px; font: 14px/1.5 var(--font-sans); -webkit-font-smoothing: antialiased; }
+	svg.i { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+	button { font: inherit; color: var(--text); background: transparent; border: 1px solid transparent; border-radius: var(--radius-sm); min-height: 36px; min-width: 36px; padding: 4px 12px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer; white-space: nowrap; }
+	button:hover { border-color: var(--border-soft); color: var(--accent-soft); }
+	:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+	.primary { background: var(--accent); color: var(--bg); font-weight: 600; box-shadow: var(--glow); }
+	.primary:hover { color: var(--bg); background: var(--accent-strong); }
+	.secondary { border-color: var(--border); }
+	kbd { font: 11px/1 var(--font-mono); padding: 2px 5px; border: 1px solid var(--border-soft); border-bottom-width: 2px; border-radius: 4px; color: var(--text-muted); }
+	code { font: 12px var(--font-mono); color: var(--accent-soft); background: #ffffff0f; border: 1px solid var(--border-soft); border-radius: 6px; padding: 1px 6px; }
+
+	/* Tool rail */
+	.rail { grid-row: 1 / 3; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 0; background: var(--bg-deep); border-right: 1px solid var(--border); }
+	.mark { display: grid; place-items: center; width: 36px; height: 36px; margin-bottom: 10px; border-radius: 10px; background: var(--accent); color: var(--bg); font-weight: 800; font-size: 13px; box-shadow: var(--glow); }
+	.rail button { width: 40px; height: 40px; padding: 0; color: var(--text-muted); position: relative; }
+	.rail button[aria-pressed="true"] { background: var(--surface-2); color: var(--accent); border-color: var(--border); }
+	.rail button[aria-pressed="true"]::before { content: ""; position: absolute; left: -10px; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: var(--accent); }
+	.rail .sep { width: 24px; height: 1px; background: var(--border); margin: 4px 0; }
+	.rail .bottom { margin-top: auto; }
+
+	/* Top bar */
+	.top { grid-column: 2 / 5; display: flex; align-items: center; gap: 12px; padding: 0 16px; background: var(--surface); border-bottom: 1px solid var(--border); }
+	.crumbs { display: flex; align-items: center; gap: 8px; color: var(--text-muted); }
+	.crumbs strong { color: var(--text); }
+	.spacer { flex: 1; }
+	.zoom { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+	.zoom button { min-height: 30px; min-width: 30px; padding: 0 6px; color: var(--text-muted); }
+	.zoom output { min-width: 5ch; text-align: center; font-variant-numeric: tabular-nums; color: var(--text-muted); }
+	.status { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-muted); }
+	.status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 3px #b4e7c726; }
+
+	/* Artboard navigator */
+	.nav { grid-row: 2; display: flex; flex-direction: column; background: var(--surface); border-right: 1px solid var(--border); overflow: auto; }
+	.nav h2, .side h2 { margin: 0; padding: 16px 16px 8px; font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); }
+	.nav ol { margin: 0; padding: 0 8px; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+	.nav li a { display: grid; grid-template-columns: 44px 1fr; gap: 10px; align-items: center; padding: 8px; border-radius: var(--radius-sm); color: var(--text); text-decoration: none; border: 1px solid transparent; }
+	.nav li a:hover { border-color: var(--border-soft); }
+	.nav li a[aria-current="true"] { background: var(--surface-2); border-color: var(--border); }
+	.nav .thumb { width: 44px; height: 60px; border-radius: 4px; background: #fff; position: relative; overflow: hidden; }
+	.nav .thumb::before { content: ""; position: absolute; left: 6px; right: 6px; top: 10px; height: 4px; background: var(--bg); border-radius: 2px; box-shadow: 0 10px 0 var(--text-muted), 0 18px 0 var(--text-muted), 0 26px 0 var(--text-muted); }
+	.nav .thumb::after { content: ""; position: absolute; left: 6px; right: 6px; bottom: 8px; height: 8px; background: var(--bg); border-radius: 2px; }
+	.nav .title { font-weight: 600; font-size: 13px; }
+	.nav .sub { display: block; font-size: 12px; color: var(--text-muted); }
+	.nav .tag { display: inline-flex; align-items: center; gap: 4px; margin-top: 2px; padding: 0 8px; border-radius: var(--radius-pill); font-size: 11px; font-weight: 600; border: 1px solid var(--border-soft); color: var(--text-muted); }
+	.nav .tag.chosen { color: var(--accent); border-color: #f095c866; }
+	.nav .tag.chosen::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+	.nav .system { margin-top: auto; padding: 12px 16px; border-top: 1px solid var(--border); font-size: 13px; color: var(--text-muted); }
+
+	/* Viewport */
+	.viewport { grid-row: 2; position: relative; overflow: hidden; background-color: var(--bg); background-image: radial-gradient(var(--surface-2) 1px, transparent 1.2px); background-size: 22px 22px; cursor: crosshair; }
+	.focus { position: absolute; left: 50%; top: 40px; transform: translateX(-50%); width: 400px; }
+	.focus-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+	.focus-head h3 { margin: 0; font-size: 16px; }
+	.focus-head .num { color: var(--text-muted); font-weight: 400; margin-right: 4px; }
+	.state { display: inline-flex; align-items: center; gap: 6px; padding: 1px 10px; border-radius: var(--radius-pill); font-size: 12px; font-weight: 600; color: var(--info); border: 1px solid #a9c7ee66; }
+	.frame { position: relative; height: 560px; background: #fff; border-radius: 6px; box-shadow: 0 0 0 2px var(--accent), var(--shadow-panel); }
+	.pin { position: absolute; display: grid; place-items: center; min-width: 26px; height: 26px; padding: 0 6px; border-radius: 13px 13px 13px 2px; border: 2px solid var(--bg); background: var(--accent); color: var(--bg); font-weight: 700; font-size: 12px; transform: translate(-2px, -100%); box-shadow: 0 2px 8px #00000080; }
+	.pin.active { background: var(--warning); }
+	.hover-box { position: absolute; left: 21px; top: 323px; width: 358px; height: 46px; border: 2px solid var(--accent); border-radius: 4px; background: #f095c814; }
+	.hover-tag { position: absolute; left: 21px; top: 372px; padding: 1px 6px; border-radius: 4px; background: var(--accent); color: var(--bg); font: 11px var(--font-mono); }
+	.mock { padding: 24px; color: var(--bg); font-size: 12px; }
+	.mock .logo { width: 72px; height: 12px; background: var(--bg); border-radius: 2px; margin-bottom: 22px; }
+	.mock h4 { margin: 0 0 14px; font-size: 18px; }
+	.mock .line { height: 34px; border: 1px solid var(--text-muted); border-radius: 4px; margin-bottom: 10px; }
+	.mock .row { display: flex; gap: 10px; }
+	.mock .row .line { flex: 1; }
+	.mock .sum { display: flex; justify-content: space-between; padding: 12px 0; border-top: 1px solid var(--text-muted); margin-top: 8px; }
+	.mock .pay { height: 40px; border-radius: 4px; background: var(--bg); color: #fff; display: grid; place-items: center; font-weight: 600; margin-top: 8px; }
+	.peek { position: absolute; top: 80px; width: 200px; height: 420px; background: #fff; border-radius: 6px; opacity: .07; }
+	.peek.l { left: -120px; } .peek.r { right: -120px; }
+	.mode-chip { position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: var(--radius-pill); background: var(--surface-1); border: 1px solid var(--border); box-shadow: var(--shadow-panel); font-size: 13px; }
+	.mode-chip svg { color: var(--accent); }
+
+	/* Review side */
+	.side { grid-row: 2; display: flex; flex-direction: column; background: var(--surface); border-left: 1px solid var(--border); min-height: 0; }
+	.tabs { display: flex; gap: 4px; padding: 10px 12px 0; border-bottom: 1px solid var(--border); }
+	.tabs button { border-radius: var(--radius-sm) var(--radius-sm) 0 0; border-bottom: 2px solid transparent; color: var(--text-muted); padding: 6px 12px; }
+	.tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+	.tabs .n { font-size: 12px; padding: 0 6px; border-radius: var(--radius-pill); background: var(--surface-2); color: var(--accent-soft); }
+	.panel-body { flex: 1; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+	.card { padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-1); }
+	.card.active { border-color: #f095c899; box-shadow: 0 0 0 3px #f095c81a; }
+	.card header { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
+	.card header b { display: grid; place-items: center; min-width: 22px; height: 22px; border-radius: 11px 11px 11px 2px; background: var(--accent); color: var(--bg); font-size: 11px; }
+	.card.active header b { background: var(--warning); }
+	.card p { margin: 8px 0; }
+	.card .wait { margin-left: auto; color: var(--warning); font-weight: 600; }
+	.card footer { display: flex; gap: 6px; }
+	.card footer button { min-height: 30px; padding: 2px 10px; font-size: 12px; border-color: var(--border); color: var(--text-muted); }
+	.handoff { padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg); }
+	.handoff h3 { margin: 0 0 10px; font-size: 13px; }
+	.timeline { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 10px; }
+	.timeline li { display: grid; grid-template-columns: 14px 1fr; gap: 10px; font-size: 13px; }
+	.timeline li::before { content: ""; width: 10px; height: 10px; margin-top: 5px; border-radius: 50%; border: 2px solid var(--text-faint); }
+	.timeline li.done::before { background: var(--success); border-color: var(--success); }
+	.timeline li.now::before { background: var(--info); border-color: var(--info); box-shadow: 0 0 0 3px #a9c7ee33; }
+	.timeline small { display: block; color: var(--text-muted); }
+	.side-foot { padding: 12px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 10px; }
+	.sendmode { display: grid; grid-template-columns: 1fr 1fr; padding: 3px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+	.sendmode label { display: grid; place-items: center; min-height: 32px; border-radius: 6px; color: var(--text-muted); cursor: pointer; font-size: 13px; }
+	.sendmode input { position: absolute; opacity: 0; }
+	.sendmode input:checked + span { color: var(--text); }
+	.sendmode label:has(input:checked) { background: var(--surface-2); }
+	.sendmode label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+	.side-foot .primary { width: 100%; min-height: 46px; font-size: 15px; }
+	.note { position: absolute; left: 24px; bottom: 72px; max-width: 30ch; color: var(--text-muted); font-size: 12px; }
+
+	@media (prefers-reduced-motion: no-preference) {
+		button { transition: border-color .2s var(--ease), color .2s var(--ease), background-color .2s var(--ease); }
+	}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+	<symbol id="i-pointer" viewBox="0 0 24 24"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/></symbol>
+	<symbol id="i-comment" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+	<symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+	<symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></symbol>
+	<symbol id="i-fit" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></symbol>
+	<symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol>
+	<symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+	<symbol id="i-compare" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18"/></symbol>
+	<symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 2 10 5-10 5L2 7z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></symbol>
+	<symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+	<symbol id="i-keys" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></symbol>
+	<symbol id="i-palette" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="8" cy="10" r="1"/><circle cx="12" cy="7" r="1"/><circle cx="16" cy="10" r="1"/><path d="M12 21a3 3 0 0 1 0-6h2"/></symbol>
+</svg>
+
+<nav class="rail" aria-label="Tools">
+	<span class="mark" aria-hidden="true">GD</span>
+	<button type="button" aria-pressed="false" aria-label="Navigate" title="Navigate (V)"><svg class="i"><use href="#i-pointer"/></svg></button>
+	<button type="button" aria-pressed="true" aria-label="Comment" title="Comment (C)"><svg class="i"><use href="#i-comment"/></svg></button>
+	<span class="sep" aria-hidden="true"></span>
+	<button type="button" aria-pressed="false" aria-label="Overview: all artboards" title="Overview (O)"><svg class="i"><use href="#i-grid"/></svg></button>
+	<button type="button" aria-pressed="true" aria-label="Artboard list" title="Artboard list ([)"><svg class="i"><use href="#i-layers"/></svg></button>
+	<button type="button" aria-pressed="false" aria-label="Design system board" title="Design system"><svg class="i"><use href="#i-palette"/></svg></button>
+	<button type="button" class="bottom" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)"><svg class="i"><use href="#i-keys"/></svg></button>
+</nav>
+
+<header class="top">
+	<nav class="crumbs" aria-label="Design">
+		<strong>Gentle Design</strong><span aria-hidden="true">/</span>
+		<button type="button" class="secondary" aria-haspopup="listbox">Checkout page <svg class="i"><use href="#i-down"/></svg></button>
+		<code>odd/tasks/checkout-page.md</code>
+	</nav>
+	<span class="spacer"></span>
+	<div class="zoom" role="group" aria-label="Zoom">
+		<button type="button" aria-label="Zoom out"><svg class="i"><use href="#i-minus"/></svg></button>
+		<output aria-label="Zoom level">100%</output>
+		<button type="button" aria-label="Zoom in"><svg class="i"><use href="#i-plus"/></svg></button>
+		<button type="button" aria-label="Fit all"><svg class="i"><use href="#i-fit"/></svg></button>
+	</div>
+	<button type="button" class="secondary"><svg class="i"><use href="#i-compare"/></svg>Compare with app</button>
+	<span class="status" role="status"><span class="dot" aria-hidden="true"></span>Session connected</span>
+</header>
+
+<aside class="nav" aria-labelledby="nav-title">
+	<h2 id="nav-title">Artboards · 3</h2>
+	<ol>
+		<li><a href="#" aria-current="true"><span class="thumb" aria-hidden="true"></span><span><span class="title">01 Single column</span><span class="sub">2 open comments</span><span class="tag chosen">Chosen</span></span></a></li>
+		<li><a href="#"><span class="thumb" aria-hidden="true"></span><span><span class="title">02 Two-step</span><span class="sub">1 resolved</span><span class="tag">Alternative</span></span></a></li>
+		<li><a href="#"><span class="thumb" aria-hidden="true"></span><span><span class="title">03 Express first</span><span class="sub">No comments</span><span class="tag">Alternative</span></span></a></li>
+	</ol>
+	<p class="system">Design system board is always first in Overview.</p>
+</aside>
+
+<main class="viewport" aria-label="Focused artboard">
+	<p class="note">Direction 03 — adopts the Gentle brand palette from the installer, gives tools a left rail, lists artboards beside the canvas, and turns the right side into a review workspace with comments and the handoff timeline.</p>
+	<span class="peek l" aria-hidden="true"></span><span class="peek r" aria-hidden="true"></span>
+	<section class="focus" aria-labelledby="f-title">
+		<div class="focus-head">
+			<h3 id="f-title"><span class="num">01</span>Single column</h3>
+			<span class="state">In progress</span>
+		</div>
+		<div class="frame">
+			<div class="mock">
+				<div class="logo"></div>
+				<h4>Checkout</h4>
+				<div class="line"></div><div class="line"></div>
+				<div class="row"><div class="line"></div><div class="line"></div></div>
+				<div class="line"></div>
+				<div class="sum"><span>Total</span><strong>$48.00</strong></div>
+				<div class="pay">Pay $48.00</div>
+			</div>
+			<span class="hover-tag" aria-hidden="true">button.pay</span>
+			<span class="hover-box" aria-hidden="true"></span>
+			<span class="pin active" style="left:372px;top:326px">1</span>
+			<span class="pin" style="left:150px;top:248px">2</span>
+		</div>
+	</section>
+	<div class="mode-chip" role="status"><svg class="i"><use href="#i-comment"/></svg>Click an element to comment <kbd>Esc</kbd></div>
+</main>
+
+<aside class="side" aria-label="Review">
+	<div class="tabs" role="tablist" aria-label="Review">
+		<button type="button" role="tab" aria-selected="true">Comments <span class="n">2</span></button>
+		<button type="button" role="tab" aria-selected="false">Resolved <span class="n">1</span></button>
+		<button type="button" role="tab" aria-selected="false">Brief</button>
+	</div>
+	<div class="panel-body" role="tabpanel">
+		<article class="card active" aria-label="Comment 1">
+			<header><b>1</b> <code>main &gt; .summary &gt; strong</code><span class="wait">Waiting</span></header>
+			<p>Make the total stand out more; it reads like the other rows.</p>
+			<footer><button type="button">Show</button><button type="button">Resolve</button></footer>
+		</article>
+		<article class="card" aria-label="Comment 2">
+			<header><b>2</b> <code>main &gt; .row:nth-child(4)</code><span class="wait">Waiting</span></header>
+			<p>Expiry and CVC fields are too narrow for the hint text.</p>
+			<footer><button type="button">Show</button><button type="button">Resolve</button></footer>
+		</article>
+		<section class="handoff" aria-labelledby="h-title">
+			<h3 id="h-title">Handoff · 01 Single column</h3>
+			<ol class="timeline">
+				<li class="done"><span>Chosen<small>Today 10:42</small></span></li>
+				<li class="done"><span>Sent to the session<small>Today 10:42</small></span></li>
+				<li class="now"><span>In progress<small>“Building the summary block in CheckoutPage.tsx”</small></span></li>
+				<li><span>Implemented<small>Compare with the running app when ready</small></span></li>
+			</ol>
+		</section>
+	</div>
+	<div class="side-foot">
+		<div class="sendmode" role="radiogroup" aria-label="When a comment is sent to the session">
+			<label><input type="radio" name="sm"><span>Send now</span></label>
+			<label><input type="radio" name="sm" checked><span>Collect</span></label>
+		</div>
+		<button type="button" class="primary"><svg class="i"><use href="#i-send"/></svg>Send 2 comments</button>
+	</div>
+</aside>
+</body>
+</html>

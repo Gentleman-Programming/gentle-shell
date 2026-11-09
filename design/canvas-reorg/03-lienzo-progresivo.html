@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1440">
+<title>Gentle Design · Lienzo progresivo</title>
+<style>
+	:root {
+		color-scheme: dark;
+		--bg: #1a1218; --bg-deep: #000000; --surface: #20161e; --surface-1: #241822; --surface-2: #342230;
+		--border: #342230; --border-soft: #ffffff17; --text: #f6eff3; --text-muted: #a78e9b; --text-faint: #76616b;
+		--accent: #f095c8; --accent-strong: #ff76c3; --accent-soft: #ffb1dd;
+		--success: #b4e7c7; --warning: #e0c27a; --error: #ff718f; --info: #a9c7ee;
+		--accent-wash: #f095c814; --accent-line: #f095c899; --wash: #ffffff0f;
+		--success-halo: #b4e7c726; --success-line: #b4e7c766; --warning-line: #e0c27a66;
+		--scrim: #000000b3;
+		--rail-width: 60px; --bar-height: 56px; --nav-width: 240px; --side-width: 360px;
+		--radius-sm: 8px; --radius-md: 12px; --radius-lg: 16px; --radius-pill: 999px;
+		--ease: cubic-bezier(.4, 0, .2, 1);
+		--glow: 0 10px 30px #f095c84d;
+		--shadow-panel: 0 24px 60px #00000073, 0 0 40px #f095c81a;
+		--shadow-frame: 0 2px 16px #00000080;
+		--font-sans: Inter, "SF Pro Text", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+		--font-mono: "IosevkaTerm NF", "Iosevka Term", "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+	}
+	* { box-sizing: border-box; }
+	html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); overflow: hidden; }
+	body { position: relative; width: 1440px; height: 900px; display: grid; grid-template-columns: var(--rail-width) var(--nav-width) minmax(0, 1fr) var(--side-width); grid-template-rows: var(--bar-height) minmax(0, 1fr); font: 14px/1.5 var(--font-sans); -webkit-font-smoothing: antialiased; }
+	.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+	.i { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+	.i-s { width: 15px; height: 15px; }
+	button { font: inherit; color: var(--text); background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm); min-width: 36px; min-height: 36px; padding: 4px 12px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer; white-space: nowrap; }
+	button:hover:not(:disabled) { border-color: var(--border-soft); color: var(--accent-soft); }
+	:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+	.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; box-shadow: var(--glow); }
+	.primary:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--bg); }
+	.ghost { border-color: transparent; color: var(--text-muted); }
+	.small { min-height: 30px; padding: 2px 10px; font-size: 12px; }
+	kbd { font: 11px/1 var(--font-mono); padding: 2px 5px; border: 1px solid var(--border-soft); border-bottom-width: 2px; border-radius: 4px; color: var(--text-muted); }
+	.tag { display: inline-flex; align-items: center; gap: 4px; padding: 0 8px; border: 1px solid var(--border-soft); border-radius: var(--radius-pill); font-size: 11px; font-weight: 600; color: var(--text-muted); white-space: nowrap; }
+	.tag.ok { color: var(--success); border-color: var(--success-line); }
+	.tag.warn { color: var(--warning); border-color: var(--warning-line); }
+	.count { padding: 0 6px; border-radius: var(--radius-pill); background: var(--surface-2); color: var(--accent-soft); font-size: 12px; }
+	.spacer { flex: 1; }
+
+	/* Rail: fewer tools, each with a word under its icon */
+	.rail { grid-row: 1 / 3; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 0; background: var(--bg-deep); border-right: 1px solid var(--border); }
+	.mark { display: grid; place-items: center; width: 40px; height: 40px; margin-bottom: 8px; color: var(--accent); }
+	.mark svg { width: 28px; height: 28px; fill: currentColor; stroke: none; }
+	.tool { position: relative; flex-direction: column; gap: 2px; width: 52px; min-height: 52px; padding: 4px 0; border-color: transparent; color: var(--text-muted); font-size: 11px; }
+	.tool[aria-pressed="true"] { background: var(--surface-2); color: var(--text); border-color: var(--border); }
+	.tool[aria-pressed="true"] .i { color: var(--accent); }
+	.tool[aria-pressed="true"]::before { content: ""; position: absolute; left: -4px; top: 10px; bottom: 10px; width: 3px; border-radius: 0 3px 3px 0; background: var(--accent); }
+	.rail .sep { width: 24px; height: 1px; margin: 4px 0; background: var(--border); }
+	.rail .bottom { margin-top: auto; }
+
+	/* Top bar with the steps as a compact breadcrumb */
+	.top { grid-column: 2 / 5; display: flex; align-items: center; gap: 12px; padding: 0 16px; background: var(--surface); border-bottom: 1px solid var(--border); }
+	.title { margin: 0; font-size: 14px; font-weight: 600; white-space: nowrap; }
+	.slash { color: var(--text-muted); }
+	.design-pick small { color: var(--text-muted); font-size: 12px; }
+	.crumbsteps { display: flex; align-items: center; gap: 2px; margin: 0 0 0 8px; padding: 3px; list-style: none; border: 1px solid var(--border); border-radius: var(--radius-pill); }
+	.crumbsteps li { display: flex; align-items: center; }
+	.crumbsteps li + li::before { content: "›"; padding: 0 2px; color: var(--text-muted); }
+	.crumbsteps a { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 10px; border-radius: var(--radius-pill); color: var(--text-muted); font-size: 13px; text-decoration: none; }
+	.crumbsteps a:hover { color: var(--text); background: var(--wash); }
+	.crumbsteps a[aria-current="step"] { background: var(--accent); color: var(--bg); font-weight: 600; }
+	.crumbsteps b { font: 600 11px var(--font-mono); }
+	.zoom { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+	.zoom button { min-width: 30px; min-height: 30px; padding: 0 6px; border-color: transparent; color: var(--text-muted); }
+	.zoom output { min-width: 5ch; text-align: center; font-variant-numeric: tabular-nums; color: var(--text-muted); font-size: 13px; }
+	.status { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-muted); white-space: nowrap; }
+	.status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 3px var(--success-halo); }
+
+	/* Proposals list */
+	.nav { grid-row: 2; display: flex; flex-direction: column; background: var(--surface); border-right: 1px solid var(--border); overflow: hidden; }
+	.nav h2 { margin: 0; padding: 16px 16px 8px; font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); }
+	.nav ol { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0 8px; list-style: none; }
+	.prop { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 10px; align-items: center; width: 100%; padding: 8px; text-align: left; white-space: normal; border-color: transparent; }
+	.thumb { position: relative; width: 56px; height: 40px; border-radius: 4px; background: var(--bg-deep); box-shadow: 0 0 0 1px var(--border-soft); overflow: hidden; }
+	.thumb i { position: absolute; display: block; border-radius: 2px; background: var(--surface-2); }
+	.thumb i.a { background: var(--accent); }
+	.thumb i.n { background: var(--info); }
+	.prop-text { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
+	.prop-title { font-size: 13px; font-weight: 600; }
+	.prop-sub { font-size: 12px; color: var(--text-muted); }
+	.nav-note { margin: auto 0 0; padding: 12px 16px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-muted); }
+
+	/* Canvas */
+	.viewport { grid-row: 2; position: relative; overflow: hidden; background-color: var(--bg); background-image: radial-gradient(var(--surface-2) 1px, transparent 1.2px); background-size: 22px 22px; }
+	.world { position: absolute; left: 24px; top: 56px; display: flex; gap: 24px; }
+	.board { display: flex; flex-direction: column; gap: 6px; width: 228px; }
+	.board-head { display: flex; align-items: flex-start; gap: 8px; }
+	.board-head h3 { margin: 0; font-size: 14px; font-weight: 600; }
+	.board-head h3 span { color: var(--text-muted); font-weight: 400; margin-right: 4px; }
+	.board-trade { margin: 0; min-height: 36px; font-size: 12px; line-height: 1.5; color: var(--text-muted); }
+	.board-head button { margin-left: auto; }
+	.frame { position: relative; height: 143px; padding: 8px 10px; border-radius: 4px; background: var(--bg-deep); box-shadow: var(--shadow-frame); font-size: 10px; overflow: hidden; }
+	.pv-head { display: flex; justify-content: space-between; margin-bottom: 6px; }
+	.pv-head b { font-size: 11px; }
+	.pv-head span { color: var(--text-muted); }
+	.pv-row { display: flex; justify-content: space-between; padding: 2px 0; border-bottom: 1px solid var(--border); }
+	.pv-kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-bottom: 6px; }
+	.pv-kpi { padding: 4px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface-1); color: var(--text-muted); }
+	.pv-kpi strong { display: block; color: var(--text); font-size: 12px; }
+	.bars { display: flex; align-items: flex-end; gap: 3px; height: 46px; }
+	.bars i { flex: 1; border-radius: 2px 2px 0 0; background: var(--info); }
+	.bars i:nth-child(3n) { background: var(--accent); }
+	.frame svg { display: block; width: 100%; height: 86px; }
+	.mode-chip { position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface-1); box-shadow: var(--shadow-panel); font-size: 13px; white-space: nowrap; }
+	.mode-chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
+
+	/* Review side: three tabs and Más */
+	.side { grid-row: 2; display: flex; flex-direction: column; min-height: 0; background: var(--surface); border-left: 1px solid var(--border); }
+	.tabs { display: flex; gap: 2px; padding: 8px 10px 0; box-shadow: inset 0 -1px 0 var(--border); }
+	.tab { gap: 6px; padding: 6px 8px; border: 0; border-bottom: 2px solid transparent; border-radius: var(--radius-sm) var(--radius-sm) 0 0; color: var(--text-muted); }
+	.tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+	.tab.more { margin-left: auto; }
+	.side-body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding: 12px; }
+	.filter { display: flex; gap: 6px; }
+	.filter button { min-height: 30px; padding: 2px 12px; border-color: var(--border-soft); border-radius: var(--radius-pill); color: var(--text-muted); font-size: 12px; }
+	.filter button[aria-pressed="true"] { background: var(--surface-2); border-color: var(--accent-line); color: var(--text); }
+	.empty { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-top: 24px; padding: 20px; border: 1px dashed var(--border); border-radius: var(--radius-md); text-align: center; color: var(--text-muted); font-size: 13px; }
+	.empty .i { width: 28px; height: 28px; color: var(--accent); }
+	.empty strong { color: var(--text); font-size: 14px; }
+	.side-foot { display: flex; flex-direction: column; gap: 10px; padding: 12px; border-top: 1px solid var(--border); }
+	.sendmode { display: grid; grid-template-columns: 1fr 1fr; padding: 3px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+	.sendmode label { display: grid; place-items: center; min-height: 32px; padding: 0 6px; border-radius: 6px; color: var(--text-muted); font-size: 13px; text-align: center; cursor: pointer; }
+	.sendmode input { position: absolute; opacity: 0; }
+	.sendmode label:has(input:checked) { background: var(--surface-2); color: var(--text); }
+	.sendmode label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+	.side-foot .primary { width: 100%; min-height: 46px; font-size: 15px; }
+	.tech { width: 100%; justify-content: flex-start; border-color: transparent; color: var(--text-muted); font-size: 13px; }
+	.switch { margin-left: auto; width: 34px; height: 20px; padding: 2px; border-radius: var(--radius-pill); background: var(--surface-2); border: 1px solid var(--border-soft); display: inline-flex; }
+	.switch::before { content: ""; width: 14px; height: 14px; border-radius: 50%; background: var(--text-muted); }
+
+	/* First-run guide: a spotlight on the proposals and one short card */
+	.coach-scrim { position: absolute; left: 316px; top: 96px; width: 756px; height: 270px; border-radius: var(--radius-md); box-shadow: 0 0 0 2px var(--accent), 0 0 0 3000px var(--scrim); pointer-events: none; z-index: 20; }
+	.coach { position: absolute; left: 470px; top: 392px; z-index: 21; width: 452px; padding: 20px 22px 18px; background: var(--surface-1); border: 1px solid var(--accent-line); border-radius: var(--radius-lg); box-shadow: var(--shadow-panel); }
+	.coach::before { content: ""; position: absolute; top: -8px; left: 50%; width: 14px; height: 14px; margin-left: -7px; background: var(--surface-1); border-left: 1px solid var(--accent-line); border-top: 1px solid var(--accent-line); transform: rotate(45deg); }
+	.coach-eyebrow { margin: 0 0 6px; color: var(--accent); font: 600 12px/1.4 var(--font-mono); letter-spacing: .12em; text-transform: uppercase; }
+	.coach h2 { margin: 0 0 6px; font-size: 20px; font-weight: 700; letter-spacing: -.01em; }
+	.coach p { margin: 0 0 14px; color: var(--text-muted); }
+	.coach ol { display: flex; flex-direction: column; gap: 6px; margin: 0 0 16px; padding: 0; list-style: none; counter-reset: c; }
+	.coach li { display: flex; align-items: center; gap: 10px; color: var(--text-muted); font-size: 13px; counter-increment: c; }
+	.coach li::before { content: counter(c); display: inline-grid; place-items: center; width: 22px; height: 22px; border: 1px solid var(--border); border-radius: 50%; background: var(--surface); font: 600 11px/1 var(--font-mono); }
+	.coach li[aria-current="step"] { color: var(--text); font-weight: 600; }
+	.coach li[aria-current="step"]::before { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+	.coach-actions { display: flex; align-items: center; gap: 8px; }
+
+	@media (prefers-reduced-motion: no-preference) {
+		button { transition: border-color .2s var(--ease), color .2s var(--ease), background-color .2s var(--ease); }
+		.coach { animation: rise .3s var(--ease) both; }
+		@keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+	}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+	<symbol id="i-rose" viewBox="0 0 24 24"><circle cx="12" cy="9" r="5"/><circle cx="7" cy="14" r="3"/><circle cx="17" cy="14" r="3"/><rect x="11" y="15" width="2" height="7" rx="1"/></symbol>
+	<symbol id="i-hand" viewBox="0 0 24 24"><path d="M18 11V6a2 2 0 0 0-4 0M14 10V4a2 2 0 0 0-4 0v2M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.9-6-2.4l-3.6-3.6a2 2 0 0 1 2.8-2.8L7 15"/></symbol>
+	<symbol id="i-comment" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+	<symbol id="i-fit" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></symbol>
+	<symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 2 10 5-10 5L2 7z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></symbol>
+	<symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+	<symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+	<symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+	<symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></symbol>
+	<symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></symbol>
+	<symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 1.7-2.5 2-2.5 4M12 17h.01"/></symbol>
+	<symbol id="i-right" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+	<symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol>
+	<symbol id="i-code" viewBox="0 0 24 24"><path d="m8 7-5 5 5 5M16 7l5 5-5 5"/></symbol>
+</svg>
+
+<nav class="rail" aria-label="Herramientas">
+	<span class="mark" aria-hidden="true"><svg><use href="#i-rose"/></svg></span>
+	<button type="button" class="tool" aria-pressed="true" title="Mover por el lienzo (V)"><svg class="i"><use href="#i-hand"/></svg>Mover</button>
+	<button type="button" class="tool" aria-pressed="false" title="Comentar (C)"><svg class="i"><use href="#i-comment"/></svg>Comentar</button>
+	<span class="sep" aria-hidden="true"></span>
+	<button type="button" class="tool" aria-pressed="false" title="Ver todas las propuestas (F)"><svg class="i"><use href="#i-fit"/></svg>Ver todo</button>
+	<button type="button" class="tool" aria-pressed="true" title="Lista de propuestas ([)"><svg class="i"><use href="#i-layers"/></svg>Lista</button>
+	<button type="button" class="tool bottom" aria-haspopup="menu" title="Más: sistema de diseño, mapa, atajos (?)"><svg class="i"><use href="#i-more"/></svg>Más</button>
+</nav>
+
+<header class="top">
+	<h1 class="title">Gentle Design</h1>
+	<span class="slash" aria-hidden="true">/</span>
+	<button type="button" class="ghost design-pick" aria-haspopup="listbox" aria-label="Diseño: Uso, Mission Control. Cambiar de diseño">Uso <small>Mission Control</small><svg class="i i-s"><use href="#i-down"/></svg></button>
+	<nav aria-label="Pasos">
+		<ol class="crumbsteps">
+			<li><a href="#" aria-current="step"><b>1</b>Comparar</a></li>
+			<li><a href="#"><b>2</b>Revisar</a></li>
+			<li><a href="#"><b>3</b>Elegir</a></li>
+			<li><a href="#"><b>4</b>Implementar</a></li>
+		</ol>
+	</nav>
+	<span class="spacer"></span>
+	<div class="zoom" role="group" aria-label="Zoom">
+		<button type="button" aria-label="Alejar"><svg class="i i-s"><use href="#i-minus"/></svg></button>
+		<output aria-label="Nivel de zoom">16%</output>
+		<button type="button" aria-label="Acercar"><svg class="i i-s"><use href="#i-plus"/></svg></button>
+	</div>
+	<span class="status" role="status">Conectado</span>
+	<button type="button" class="ghost" aria-label="Idioma: Español"><svg class="i"><use href="#i-globe"/></svg>ES</button>
+	<button type="button" class="ghost" aria-label="Ayuda y guía de primeros pasos"><svg class="i"><use href="#i-help"/></svg></button>
+</header>
+
+<aside class="nav" aria-labelledby="nav-title">
+	<h2 id="nav-title">Propuestas · 3</h2>
+	<ol>
+		<li><button type="button" class="prop"><span class="thumb" aria-hidden="true"><i style="left:5px;top:5px;width:26px;height:4px"></i><i style="left:5px;top:13px;width:46px;height:3px"></i><i style="left:5px;top:19px;width:46px;height:3px"></i><i style="left:5px;top:25px;width:46px;height:3px"></i><i class="a" style="left:5px;top:31px;width:18px;height:3px"></i></span><span class="prop-text"><span class="prop-title">01 Tabla densa</span><span class="prop-sub">Sin comentarios</span><span class="tag ok">Accesible ✓</span></span></button></li>
+		<li><button type="button" class="prop"><span class="thumb" aria-hidden="true"><i style="left:5px;top:5px;width:14px;height:8px"></i><i style="left:21px;top:5px;width:14px;height:8px"></i><i style="left:37px;top:5px;width:14px;height:8px"></i><i class="n" style="left:5px;top:18px;width:14px;height:17px"></i><i class="n" style="left:21px;top:22px;width:14px;height:13px"></i><i class="a" style="left:37px;top:26px;width:14px;height:9px"></i></span><span class="prop-text"><span class="prop-title">02 Tarjetas por agente</span><span class="prop-sub">Sin comentarios</span><span class="tag warn">1 aviso</span></span></button></li>
+		<li><button type="button" class="prop"><span class="thumb" aria-hidden="true"><i style="left:5px;top:5px;width:26px;height:4px"></i><i class="n" style="left:5px;top:24px;width:46px;height:2px"></i><i class="a" style="left:12px;top:16px;width:2px;height:16px"></i><i class="a" style="left:30px;top:12px;width:2px;height:20px"></i><i class="a" style="left:44px;top:18px;width:2px;height:14px"></i></span><span class="prop-text"><span class="prop-title">03 Línea de tiempo</span><span class="prop-sub">Sin comentarios</span><span class="tag ok">Accesible ✓</span></span></button></li>
+	</ol>
+	<p class="nav-note">Abre una propuesta para comentarla, mezclarla o implementarla.</p>
+</aside>
+
+<main class="viewport" aria-labelledby="canvas-title">
+	<h2 id="canvas-title" class="sr">Propuestas en el lienzo</h2>
+	<div class="world">
+		<section class="board" aria-labelledby="b1">
+			<div class="board-head"><h3 id="b1"><span>01</span>Tabla densa</h3><button type="button" class="small" aria-label="Abrir la propuesta 01, Tabla densa">Abrir</button></div>
+			<p class="board-trade">Todo a la vista; cuesta más leerla de un vistazo.</p>
+			<div class="frame" aria-hidden="true">
+				<div class="pv-head"><b>Uso</b><span>7 días</span></div>
+				<div class="pv-row"><span>sdd-apply</span><span>812 k · 2,10 €</span></div>
+				<div class="pv-row"><span>judgment-day</span><span>455 k · 1,24 €</span></div>
+				<div class="pv-row"><span>explorer</span><span>301 k · 0,61 €</span></div>
+				<div class="pv-row"><span>design</span><span>212 k · 0,58 €</span></div>
+				<div class="pv-row"><span>reviewer</span><span>98 k · 0,29 €</span></div>
+				<div class="pv-row"><b>Total</b><b>1,9 M · 4,82 €</b></div>
+			</div>
+		</section>
+		<section class="board" aria-labelledby="b2">
+			<div class="board-head"><h3 id="b2"><span>02</span>Tarjetas por agente</h3><button type="button" class="small" aria-label="Abrir la propuesta 02, Tarjetas por agente">Abrir</button></div>
+			<p class="board-trade">Fácil de escanear por agente; menos detalle por sesión.</p>
+			<div class="frame" aria-hidden="true">
+				<div class="pv-head"><b>Uso</b><span>7 días</span></div>
+				<div class="pv-kpis"><div class="pv-kpi">Hoy<strong>4,82 €</strong></div><div class="pv-kpi">Tokens<strong>1,9 M</strong></div><div class="pv-kpi">Sesiones<strong>27</strong></div></div>
+				<div class="bars"><i style="height:40%"></i><i style="height:55%"></i><i style="height:35%"></i><i style="height:70%"></i><i style="height:60%"></i><i style="height:80%"></i><i style="height:95%"></i><i style="height:50%"></i><i style="height:30%"></i></div>
+			</div>
+		</section>
+		<section class="board" aria-labelledby="b3">
+			<div class="board-head"><h3 id="b3"><span>03</span>Línea de tiempo</h3><button type="button" class="small" aria-label="Abrir la propuesta 03, Línea de tiempo">Abrir</button></div>
+			<p class="board-trade">Muestra la tendencia; los totales pasan a segundo plano.</p>
+			<div class="frame" aria-hidden="true">
+				<div class="pv-head"><b>Uso</b><span>Coste por día</span></div>
+				<svg viewBox="0 0 200 86" preserveAspectRatio="none"><path d="M0 20h200M0 43h200M0 66h200" style="stroke:var(--border)" stroke-width="1" fill="none"/><polyline points="0,70 33,60 66,64 100,44 133,48 166,28 200,16" fill="none" style="stroke:var(--accent)" stroke-width="2.5"/><polyline points="0,78 33,74 66,70 100,68 133,62 166,60 200,54" fill="none" style="stroke:var(--info)" stroke-width="2"/></svg>
+			</div>
+		</section>
+	</div>
+	<div class="mode-chip" role="status">Moviéndote por el lienzo · rueda para acercar</div>
+</main>
+
+<aside class="side" aria-labelledby="side-title">
+	<h2 id="side-title" class="sr">Revisión</h2>
+	<div class="tabs" role="tablist" aria-label="Revisión">
+		<button type="button" class="tab" role="tab" aria-selected="true">Comentarios <span class="count">0</span></button>
+		<button type="button" class="tab" role="tab" aria-selected="false">Calidad <span class="count">1</span></button>
+		<button type="button" class="tab" role="tab" aria-selected="false">Mezcla</button>
+		<button type="button" class="tab more" aria-haspopup="menu">Más<svg class="i i-s"><use href="#i-down"/></svg></button>
+	</div>
+	<div class="side-body" role="tabpanel" aria-label="Comentarios">
+		<div class="filter" role="group" aria-label="Mostrar">
+			<button type="button" aria-pressed="true">Abiertos · 0</button>
+			<button type="button" aria-pressed="false">Resueltos · 0</button>
+			<button type="button" aria-pressed="false">Todos</button>
+		</div>
+		<div class="empty">
+			<svg class="i" aria-hidden="true"><use href="#i-comment"/></svg>
+			<strong>Aún no hay comentarios</strong>
+			Abre una propuesta y pulsa «Comentar» sobre lo que quieras cambiar.
+		</div>
+	</div>
+	<div class="side-foot">
+		<div class="sendmode" role="radiogroup" aria-label="Cuándo se envían los comentarios">
+			<label><input type="radio" name="sm" checked><span>Enviar al momento</span></label>
+			<label><input type="radio" name="sm"><span>Guardar para enviar luego</span></label>
+		</div>
+		<button type="button" class="tech" role="switch" aria-checked="false"><svg class="i i-s"><use href="#i-code"/></svg>Detalles técnicos<span class="switch" aria-hidden="true"></span></button>
+	</div>
+</aside>
+
+<div class="coach-scrim" aria-hidden="true"></div>
+<section class="coach" role="dialog" aria-modal="false" aria-labelledby="coach-title">
+	<p class="coach-eyebrow">Primera vez · 1 de 3</p>
+	<h2 id="coach-title">Estas son tus propuestas</h2>
+	<p>El agente ha resuelto tu petición de tres formas. Debajo de cada título verás en qué gana y en qué cede.</p>
+	<ol>
+		<li aria-current="step">Estas son tus propuestas</li>
+		<li>Ábrelas para revisarlas</li>
+		<li>Elige una y pulsa Implementar</li>
+	</ol>
+	<div class="coach-actions">
+		<button type="button" class="ghost">Saltar la guía</button>
+		<span class="spacer"></span>
+		<button type="button" class="primary">Siguiente<svg class="i i-s"><use href="#i-right"/></svg></button>
+	</div>
+</section>
+</body>
+</html>

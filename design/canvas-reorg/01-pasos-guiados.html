@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1440">
+<title>Gentle Design · Pasos que guían</title>
+<style>
+	:root {
+		color-scheme: dark;
+		--bg: #1a1218; --bg-deep: #000000; --surface: #20161e; --surface-1: #241822; --surface-2: #342230;
+		--border: #342230; --border-soft: #ffffff17; --text: #f6eff3; --text-muted: #a78e9b; --text-faint: #76616b;
+		--accent: #f095c8; --accent-strong: #ff76c3; --accent-soft: #ffb1dd;
+		--success: #b4e7c7; --warning: #e0c27a; --error: #ff718f; --info: #a9c7ee;
+		--accent-wash: #f095c814; --accent-line: #f095c899; --wash: #ffffff0f;
+		--success-halo: #b4e7c726; --success-line: #b4e7c766; --warning-line: #e0c27a66; --info-halo: #a9c7ee33; --info-line: #a9c7ee66;
+		--radius-sm: 8px; --radius-md: 12px; --radius-lg: 16px; --radius-pill: 999px;
+		--ease: cubic-bezier(.4, 0, .2, 1);
+		--glow: 0 10px 30px #f095c84d;
+		--shadow-panel: 0 24px 60px #00000073, 0 0 40px #f095c81a;
+		--shadow-frame: 0 2px 16px #00000080;
+		--font-sans: Inter, "SF Pro Text", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+		--font-mono: "IosevkaTerm NF", "Iosevka Term", "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+	}
+	* { box-sizing: border-box; }
+	html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); overflow: hidden; }
+	body { width: 1440px; height: 900px; display: grid; grid-template-rows: 56px 84px minmax(0, 1fr) 68px; font: 14px/1.5 var(--font-sans); -webkit-font-smoothing: antialiased; }
+	.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+	.i { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+	.i-s { width: 15px; height: 15px; }
+	button { font: inherit; color: var(--text); background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm); min-width: 36px; min-height: 36px; padding: 4px 12px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer; white-space: nowrap; }
+	button:hover:not(:disabled) { border-color: var(--border-soft); color: var(--accent-soft); }
+	button:disabled { opacity: .5; cursor: default; }
+	:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+	.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; box-shadow: var(--glow); }
+	.primary:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--bg); }
+	.ghost { border-color: transparent; color: var(--text-muted); }
+	.small { min-height: 30px; padding: 2px 10px; font-size: 12px; }
+	kbd { font: 11px/1 var(--font-mono); padding: 2px 5px; border: 1px solid var(--border-soft); border-bottom-width: 2px; border-radius: 4px; color: var(--text-muted); }
+	.tag { display: inline-flex; align-items: center; gap: 4px; padding: 0 8px; border: 1px solid var(--border-soft); border-radius: var(--radius-pill); font-size: 11px; font-weight: 600; color: var(--text-muted); white-space: nowrap; }
+	.tag.ok { color: var(--success); border-color: var(--success-line); }
+	.tag.warn { color: var(--warning); border-color: var(--warning-line); }
+	.count { padding: 0 6px; border-radius: var(--radius-pill); background: var(--surface-2); color: var(--accent-soft); font-size: 12px; }
+
+	/* Top bar */
+	.top { display: flex; align-items: center; gap: 12px; padding: 0 16px; background: var(--surface); border-bottom: 1px solid var(--border); }
+	.brand { display: inline-flex; align-items: center; gap: 10px; margin: 0; font-size: 14px; font-weight: 600; }
+	.brand svg { width: 26px; height: 26px; color: var(--accent); fill: currentColor; stroke: none; }
+	.crumb { color: var(--text-muted); }
+	.design-pick { border-color: var(--border); }
+	.design-pick small { color: var(--text-muted); font-size: 12px; }
+	.spacer { flex: 1; }
+	.status { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-muted); }
+	.status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 3px var(--success-halo); }
+	.more[aria-expanded="true"] { background: var(--surface-2); color: var(--text); border-color: var(--accent-line); }
+
+	/* Steps bar: the wizard's stage indicator drives the screen */
+	.steps { display: flex; align-items: center; padding: 0 32px; background: var(--surface); border-bottom: 1px solid var(--border); }
+	.stages { display: flex; gap: 8px; width: 100%; margin: 0; padding: 0; list-style: none; }
+	.stage { display: flex; flex: 1; align-items: center; gap: 12px; min-width: 0; color: var(--text-muted); }
+	.stage:not(:last-child)::after { content: ""; flex: 1; height: 1px; min-width: 16px; background: var(--border); }
+	.stage.done:not(:last-child)::after { background: var(--success-line); }
+	.stage a { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 4px 8px 4px 4px; border-radius: var(--radius-md); color: inherit; text-decoration: none; }
+	.stage a:hover { background: var(--wash); }
+	.dot { display: inline-grid; place-items: center; flex: none; width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 50%; background: var(--surface-1); font: 600 12px/1 var(--font-mono); }
+	.stage-text { display: flex; flex-direction: column; line-height: 1.3; }
+	.stage-name { font: 600 12px/1.3 var(--font-mono); letter-spacing: .1em; text-transform: uppercase; }
+	.stage-hint { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+	.stage.done { color: var(--success); }
+	.stage.done .dot { border-color: var(--success-line); background: var(--success-halo); color: var(--success); }
+	.stage.now { color: var(--text); }
+	.stage.now .dot { border-color: var(--accent); background: var(--accent); color: var(--bg); box-shadow: 0 0 0 4px var(--accent-wash), var(--glow); }
+	.stage.now .stage-hint { color: var(--text); }
+
+	/* Workspace: proposals | stage | review panel */
+	.work { display: grid; grid-template-columns: 248px minmax(0, 1fr) 360px; min-height: 0; }
+	.list { display: flex; flex-direction: column; gap: 4px; padding: 0 8px 12px; background: var(--surface); border-right: 1px solid var(--border); overflow: hidden; }
+	.list h2, .side h2 { margin: 0; padding: 16px 8px 8px; font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); }
+	.prop { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px; align-items: start; width: 100%; padding: 8px; text-align: left; white-space: normal; border-color: transparent; }
+	.prop[aria-current="true"] { background: var(--surface-2); border-color: var(--border); box-shadow: inset 3px 0 0 var(--accent); }
+	.thumb { position: relative; width: 64px; height: 44px; border-radius: 4px; background: var(--bg-deep); box-shadow: 0 0 0 1px var(--border-soft); overflow: hidden; }
+	.thumb i { position: absolute; display: block; border-radius: 2px; background: var(--surface-2); }
+	.thumb i.a { background: var(--accent); }
+	.thumb i.n { background: var(--info); }
+	.prop-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+	.prop-title { font-size: 13px; font-weight: 600; }
+	.prop-sub { font-size: 12px; color: var(--text-muted); }
+	.prop-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+	.list-foot { margin-top: auto; padding: 12px 8px 0; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-muted); }
+	.list-foot button { width: 100%; margin-top: 8px; }
+
+	.stage-area { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; background-color: var(--bg); background-image: radial-gradient(var(--surface-2) 1px, transparent 1.2px); background-size: 22px 22px; }
+	.toolbar { display: flex; align-items: center; gap: 10px; padding: 14px 20px 10px; }
+	.toolbar h2 { margin: 0; font-size: 16px; font-weight: 600; }
+	.toolbar h2 span { color: var(--text-muted); font-weight: 400; margin-right: 6px; }
+	.tradeoff { margin: 0 20px 12px; color: var(--text-muted); font-size: 13px; }
+	.seg { display: inline-grid; grid-auto-flow: column; padding: 3px; gap: 2px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+	.seg button { min-height: 30px; padding: 2px 12px; border-color: transparent; color: var(--text-muted); font-size: 13px; }
+	.seg button[aria-pressed="true"] { background: var(--surface-2); color: var(--text); }
+	.seg button[aria-pressed="true"] .i { color: var(--accent); }
+
+	.frame-wrap { position: relative; margin: 0 20px; }
+	.frame { position: relative; width: 780px; height: 470px; border-radius: 6px; background: var(--bg-deep); box-shadow: 0 0 0 2px var(--accent), var(--shadow-frame); overflow: hidden; outline: 2px dashed var(--accent); outline-offset: 5px; }
+	.pin { position: absolute; display: grid; place-items: center; min-width: 26px; height: 26px; padding: 0 6px; border-radius: 13px 13px 13px 2px; border: 2px solid var(--bg); background: var(--accent); color: var(--bg); font-weight: 700; font-size: 12px; transform: translate(-2px, -100%); box-shadow: var(--shadow-frame); z-index: 2; }
+	.pin.active { background: var(--warning); }
+	.hover-box { position: absolute; left: 24px; top: 88px; width: 236px; height: 104px; border: 2px solid var(--accent); border-radius: 6px; background: var(--accent-wash); pointer-events: none; }
+	.hover-tag { position: absolute; left: 24px; top: 196px; padding: 2px 8px; border-radius: var(--radius-pill); background: var(--accent); color: var(--bg); font-size: 12px; font-weight: 600; white-space: nowrap; }
+	.mode-chip { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface-1); box-shadow: var(--shadow-panel); font-size: 13px; white-space: nowrap; }
+	.mode-chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+
+	/* Mission Control "Uso" mock (proposal 02) */
+	.mc { display: grid; grid-template-columns: 150px 1fr; height: 100%; font-size: 12px; }
+	.mc-nav { padding: 16px 12px; border-right: 1px solid var(--border); background: var(--surface); }
+	.mc-nav b { display: block; margin-bottom: 14px; font-size: 13px; }
+	.mc-nav span { display: block; padding: 4px 8px; border-radius: 6px; color: var(--text-muted); }
+	.mc-nav span.on { background: var(--surface-2); color: var(--text); }
+	.mc-main { padding: 16px 20px; }
+	.mc-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+	.mc-head h3 { margin: 0; font-size: 18px; }
+	.mc-head span { padding: 2px 10px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-muted); }
+	.mc-kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 12px; }
+	.mc-kpi { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-1); }
+	.mc-kpi h4 { margin: 0; font-size: 12px; font-weight: 400; color: var(--text-muted); }
+	.mc-kpi strong { display: block; font-size: 20px; }
+	.mc-kpi small { color: var(--success); }
+	.mc-agents { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+	.mc-agent { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-1); }
+	.mc-agent h4 { margin: 0 0 2px; font: 600 12px var(--font-mono); color: var(--accent-soft); }
+	.mc-agent p { margin: 0 0 8px; color: var(--text-muted); }
+	.bars { display: flex; align-items: flex-end; gap: 4px; height: 52px; }
+	.bars i { flex: 1; border-radius: 2px 2px 0 0; background: var(--info); }
+	.bars i:last-child { background: var(--accent); }
+
+	/* Review panel */
+	.side { display: flex; flex-direction: column; min-height: 0; background: var(--surface); border-left: 1px solid var(--border); }
+	.tabs { display: flex; gap: 2px; padding: 0 10px; box-shadow: inset 0 -1px 0 var(--border); }
+	.tab { gap: 6px; padding: 6px 10px; border: 0; border-bottom: 2px solid transparent; border-radius: var(--radius-sm) var(--radius-sm) 0 0; color: var(--text-muted); }
+	.tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+	.side-body { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 10px; padding: 12px; }
+	.filter { display: flex; gap: 6px; }
+	.filter button { min-height: 30px; padding: 2px 12px; border-color: var(--border-soft); border-radius: var(--radius-pill); color: var(--text-muted); font-size: 12px; }
+	.filter button[aria-pressed="true"] { background: var(--surface-2); border-color: var(--accent-line); color: var(--text); }
+	.card { border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-1); padding: 12px; font-size: 13px; }
+	.card.active { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-wash); }
+	.card-meta { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 12px; }
+	.badge-pin { display: grid; place-items: center; min-width: 22px; height: 22px; padding: 0 4px; border-radius: 11px 11px 11px 2px; background: var(--accent); color: var(--bg); font-size: 11px; font-weight: 700; }
+	.card.active .badge-pin { background: var(--warning); }
+	.where { color: var(--text); }
+	.state { margin-left: auto; padding: 0 8px; border: 1px solid currentColor; border-radius: var(--radius-pill); font-weight: 600; white-space: nowrap; }
+	.state.unsent { color: var(--warning); }
+	.state.sent { color: var(--success); }
+	.card p { margin: 8px 0 10px; }
+	.card-actions { display: flex; justify-content: flex-end; gap: 6px; }
+	.card-actions button { min-height: 30px; padding: 2px 10px; font-size: 12px; color: var(--text-muted); }
+	.side-note { margin: 0; font-size: 12px; color: var(--text-muted); }
+	.side-foot { display: flex; flex-direction: column; gap: 10px; padding: 12px; border-top: 1px solid var(--border); }
+	.sendmode { display: grid; grid-template-columns: 1fr 1fr; padding: 3px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+	.sendmode label { display: grid; place-items: center; min-height: 32px; padding: 0 6px; border-radius: 6px; color: var(--text-muted); font-size: 13px; text-align: center; cursor: pointer; }
+	.sendmode input { position: absolute; opacity: 0; }
+	.sendmode label:has(input:checked) { background: var(--surface-2); color: var(--text); }
+	.sendmode label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+	.side-foot .primary { width: 100%; min-height: 46px; font-size: 15px; }
+
+	/* Footer actions: the step's way back and way forward */
+	.foot { display: flex; align-items: center; gap: 16px; padding: 0 24px; background: var(--surface); border-top: 1px solid var(--border); }
+	.foot p { margin: 0; color: var(--text-muted); font-size: 13px; }
+	.foot .primary { min-height: 46px; padding: 0 24px; font-size: 15px; }
+
+	/* The "Más" menu, open under its button */
+	.menu { position: absolute; top: 50px; right: 16px; z-index: 10; width: 330px; padding: 6px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); box-shadow: var(--shadow-panel); }
+	.menu-group { margin: 6px 10px 2px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); }
+	.mi { display: flex; align-items: center; justify-content: flex-start; gap: 10px; width: 100%; min-height: 36px; padding: 4px 10px; border-color: transparent; font-size: 13px; text-align: left; }
+	.mi:hover, .mi.hl { background: var(--surface-2); color: var(--text); }
+	.mi .i { color: var(--text-muted); }
+	.mi .end { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 12px; }
+	.mi[aria-disabled="true"] { color: var(--text-muted); cursor: not-allowed; }
+	.mi-note { display: block; padding: 0 10px 6px 38px; margin-top: -4px; color: var(--text-muted); font-size: 12px; }
+	.sep { height: 1px; margin: 4px 2px; background: var(--border); }
+	.switch { width: 34px; height: 20px; padding: 2px; border-radius: var(--radius-pill); background: var(--surface-2); border: 1px solid var(--border-soft); display: inline-flex; }
+	.switch::before { content: ""; width: 14px; height: 14px; border-radius: 50%; background: var(--text-muted); }
+
+	@media (prefers-reduced-motion: no-preference) {
+		button { transition: border-color .2s var(--ease), color .2s var(--ease), background-color .2s var(--ease); }
+	}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+	<symbol id="i-rose" viewBox="0 0 24 24"><circle cx="12" cy="9" r="5"/><circle cx="7" cy="14" r="3"/><circle cx="17" cy="14" r="3"/><rect x="11" y="15" width="2" height="7" rx="1"/></symbol>
+	<symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+	<symbol id="i-right" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+	<symbol id="i-left" viewBox="0 0 24 24"><path d="m15 6-6 6 6 6"/></symbol>
+	<symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+	<symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+	<symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+	<symbol id="i-comment" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+	<symbol id="i-mix" viewBox="0 0 24 24"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></symbol>
+	<symbol id="i-monitor" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+	<symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></symbol>
+	<symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 1.7-2.5 2-2.5 4M12 17h.01"/></symbol>
+	<symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+	<symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/></symbol>
+	<symbol id="i-compare" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18"/></symbol>
+	<symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></symbol>
+	<symbol id="i-doc" viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h5"/></symbol>
+	<symbol id="i-palette" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="8" cy="10" r="1"/><circle cx="12" cy="7" r="1"/><circle cx="16" cy="10" r="1"/><path d="M12 21a3 3 0 0 1 0-6h2"/></symbol>
+	<symbol id="i-map" viewBox="0 0 24 24"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2z"/><path d="M9 4v14M15 6v14"/></symbol>
+	<symbol id="i-keys" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></symbol>
+	<symbol id="i-code" viewBox="0 0 24 24"><path d="m8 7-5 5 5 5M16 7l5 5-5 5"/></symbol>
+	<symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol>
+</svg>
+
+<header class="top">
+	<h1 class="brand"><svg aria-hidden="true"><use href="#i-rose"/></svg>Gentle Design</h1>
+	<span class="crumb" aria-hidden="true">/</span>
+	<button type="button" class="design-pick" aria-haspopup="listbox" aria-label="Diseño: Uso, Mission Control. Cambiar de diseño">Uso <small>Mission Control</small><svg class="i i-s"><use href="#i-down"/></svg></button>
+	<span class="spacer"></span>
+	<span class="status" role="status">Conectado a la sesión</span>
+	<button type="button" class="ghost" aria-label="Idioma: Español"><svg class="i"><use href="#i-globe"/></svg>ES</button>
+	<button type="button" class="ghost"><svg class="i"><use href="#i-help"/></svg>Ayuda</button>
+	<button type="button" class="more" aria-haspopup="menu" aria-expanded="true" aria-controls="more-menu"><svg class="i"><use href="#i-more"/></svg>Más</button>
+</header>
+
+<nav class="steps" aria-label="Pasos">
+	<ol class="stages">
+		<li class="stage done"><a href="#"><span class="dot" aria-hidden="true"><svg class="i i-s"><use href="#i-check"/></svg></span><span class="stage-text"><span class="stage-name">1 Comparar</span><span class="stage-hint">3 propuestas vistas</span></span></a></li>
+		<li class="stage now"><a href="#" aria-current="step"><span class="dot" aria-hidden="true">2</span><span class="stage-text"><span class="stage-name">2 Revisar</span><span class="stage-hint">Propuesta 2 de 3 · 2 comentarios</span></span></a></li>
+		<li class="stage"><a href="#"><span class="dot" aria-hidden="true">3</span><span class="stage-text"><span class="stage-name">3 Elegir</span><span class="stage-hint">Marca la que más te guste</span></span></a></li>
+		<li class="stage"><a href="#"><span class="dot" aria-hidden="true">4</span><span class="stage-text"><span class="stage-name">4 Implementar</span><span class="stage-hint">Aquí verás el progreso del agente</span></span></a></li>
+	</ol>
+</nav>
+
+<div class="work">
+	<nav class="list" aria-labelledby="props-title">
+		<h2 id="props-title">Propuestas · 3</h2>
+		<button type="button" class="prop">
+			<span class="thumb" aria-hidden="true"><i style="left:6px;top:6px;width:30px;height:4px"></i><i style="left:6px;top:14px;width:52px;height:3px"></i><i style="left:6px;top:20px;width:52px;height:3px"></i><i style="left:6px;top:26px;width:52px;height:3px"></i><i class="a" style="left:6px;top:32px;width:20px;height:3px"></i></span>
+			<span class="prop-text"><span class="prop-title">01 Tabla densa</span><span class="prop-sub">Sin comentarios</span><span class="prop-tags"><span class="tag ok">Accesible ✓</span></span></span>
+		</button>
+		<button type="button" class="prop" aria-current="true">
+			<span class="thumb" aria-hidden="true"><i style="left:6px;top:6px;width:16px;height:8px"></i><i style="left:24px;top:6px;width:16px;height:8px"></i><i style="left:42px;top:6px;width:16px;height:8px"></i><i class="n" style="left:6px;top:20px;width:16px;height:18px"></i><i class="n" style="left:24px;top:24px;width:16px;height:14px"></i><i class="a" style="left:42px;top:28px;width:16px;height:10px"></i></span>
+			<span class="prop-text"><span class="prop-title">02 Tarjetas por agente</span><span class="prop-sub">2 comentarios abiertos</span><span class="prop-tags"><span class="tag warn">1 aviso</span></span></span>
+		</button>
+		<button type="button" class="prop">
+			<span class="thumb" aria-hidden="true"><i style="left:6px;top:6px;width:30px;height:4px"></i><i class="n" style="left:6px;top:26px;width:52px;height:2px"></i><i class="a" style="left:14px;top:18px;width:2px;height:16px"></i><i class="a" style="left:34px;top:14px;width:2px;height:20px"></i><i class="a" style="left:50px;top:20px;width:2px;height:14px"></i></span>
+			<span class="prop-text"><span class="prop-title">03 Línea de tiempo</span><span class="prop-sub">1 comentario resuelto</span><span class="prop-tags"><span class="tag ok">Accesible ✓</span></span></span>
+		</button>
+		<div class="list-foot">
+			<p style="margin:0">Pasa de una a otra sin salir de Revisar.</p>
+			<button type="button"><svg class="i"><use href="#i-left"/></svg>Verlas todas juntas</button>
+		</div>
+	</nav>
+
+	<main class="stage-area" aria-labelledby="prop-title">
+		<div class="toolbar">
+			<h2 id="prop-title"><span>02</span>Tarjetas por agente</h2>
+			<span class="spacer"></span>
+			<div class="seg" role="group" aria-label="Qué hace el clic">
+				<button type="button" aria-pressed="false"><svg class="i i-s"><use href="#i-eye"/></svg>Usar</button>
+				<button type="button" aria-pressed="true"><svg class="i i-s"><use href="#i-comment"/></svg>Comentar</button>
+			</div>
+			<button type="button"><svg class="i i-s"><use href="#i-mix"/></svg>Añadir a la mezcla</button>
+			<button type="button" aria-haspopup="menu" aria-label="Tamaño de pantalla: Ordenador"><svg class="i i-s"><use href="#i-monitor"/></svg>Ordenador<svg class="i i-s"><use href="#i-down"/></svg></button>
+		</div>
+		<p class="tradeoff">Fácil de escanear por agente; muestra menos detalle por sesión.</p>
+		<div class="frame-wrap">
+			<div class="frame" aria-label="Vista previa de la propuesta 02">
+				<div class="mc">
+					<div class="mc-nav" aria-hidden="true"><b>Mission Control</b><span>Inicio</span><span>Agentes</span><span class="on">Uso</span><span>Ajustes</span></div>
+					<div class="mc-main">
+						<div class="mc-head"><h3>Uso</h3><span>Últimos 7 días</span></div>
+						<div class="mc-kpis">
+							<div class="mc-kpi"><h4>Coste de hoy</h4><strong>4,82 €</strong><small>−12 % vs. ayer</small></div>
+							<div class="mc-kpi"><h4>Tokens</h4><strong>1,9 M</strong><small>dentro del límite</small></div>
+							<div class="mc-kpi"><h4>Sesiones</h4><strong>27</strong><small>3 activas</small></div>
+						</div>
+						<div class="mc-agents">
+							<div class="mc-agent"><h4>sdd-apply</h4><p>812 k tokens · 2,10 €</p><div class="bars" aria-hidden="true"><i style="height:40%"></i><i style="height:55%"></i><i style="height:35%"></i><i style="height:70%"></i><i style="height:60%"></i><i style="height:80%"></i><i style="height:95%"></i></div></div>
+							<div class="mc-agent"><h4>judgment-day</h4><p>455 k tokens · 1,24 €</p><div class="bars" aria-hidden="true"><i style="height:30%"></i><i style="height:20%"></i><i style="height:45%"></i><i style="height:50%"></i><i style="height:35%"></i><i style="height:60%"></i><i style="height:55%"></i></div></div>
+							<div class="mc-agent"><h4>explorer</h4><p>301 k tokens · 0,61 €</p><div class="bars" aria-hidden="true"><i style="height:15%"></i><i style="height:25%"></i><i style="height:20%"></i><i style="height:30%"></i><i style="height:40%"></i><i style="height:25%"></i><i style="height:35%"></i></div></div>
+						</div>
+					</div>
+				</div>
+				<span class="hover-box" aria-hidden="true" style="left:174px;top:96px;width:186px;height:84px"></span>
+				<span class="hover-tag" aria-hidden="true" style="left:174px;top:184px">Tarjeta «Coste de hoy» · clic para comentar</span>
+				<span class="pin active" style="left:352px;top:100px">1</span>
+				<span class="pin" style="left:560px;top:212px">2</span>
+			</div>
+		</div>
+		<div class="mode-chip" role="status">Haz clic en lo que quieras comentar <kbd>Esc</kbd></div>
+	</main>
+
+	<aside class="side" aria-labelledby="review-title">
+		<h2 id="review-title" class="sr">Revisar</h2>
+		<div class="tabs" role="tablist" aria-label="Revisar">
+			<button type="button" class="tab" role="tab" aria-selected="true">Comentarios <span class="count">2</span></button>
+			<button type="button" class="tab" role="tab" aria-selected="false">Calidad <span class="count">1</span></button>
+			<button type="button" class="tab" role="tab" aria-selected="false">Mezcla</button>
+		</div>
+		<div class="side-body" role="tabpanel" aria-label="Comentarios">
+			<div class="filter" role="group" aria-label="Mostrar">
+				<button type="button" aria-pressed="true">Abiertos · 2</button>
+				<button type="button" aria-pressed="false">Resueltos · 1</button>
+				<button type="button" aria-pressed="false">Todos</button>
+			</div>
+			<article class="card active" aria-label="Comentario 1">
+				<div class="card-meta"><span class="badge-pin">1</span><span class="where">Tarjeta «Coste de hoy»</span><span class="state unsent">Sin enviar</span></div>
+				<p>El coste debería ser lo primero que se ve; ahora pesa igual que las sesiones.</p>
+				<div class="card-actions"><button type="button">Ver</button><button type="button">Resolver</button></div>
+			</article>
+			<article class="card" aria-label="Comentario 2">
+				<div class="card-meta"><span class="badge-pin">2</span><span class="where">Tarjeta «judgment-day»</span><span class="state unsent">Sin enviar</span></div>
+				<p>Las barras no dicen qué día es cada una. Añade las iniciales de los días.</p>
+				<div class="card-actions"><button type="button">Ver</button><button type="button">Resolver</button></div>
+			</article>
+			<p class="side-note">Los comentarios se guardan en el diseño aunque no los envíes.</p>
+		</div>
+		<div class="side-foot">
+			<div class="sendmode" role="radiogroup" aria-label="Cuándo se envían los comentarios">
+				<label><input type="radio" name="sm"><span>Enviar al momento</span></label>
+				<label><input type="radio" name="sm" checked><span>Guardar para enviar luego</span></label>
+			</div>
+			<button type="button" class="primary"><svg class="i"><use href="#i-send"/></svg>Enviar 2 comentarios al agente</button>
+		</div>
+	</aside>
+</div>
+
+<footer class="foot">
+	<button type="button"><svg class="i"><use href="#i-left"/></svg>Volver a Comparar</button>
+	<span class="spacer"></span>
+	<p>Cuando termines de revisar, elige la propuesta que más te guste.</p>
+	<button type="button" class="primary">Siguiente: Elegir<svg class="i"><use href="#i-right"/></svg></button>
+</footer>
+
+<div class="menu" id="more-menu" role="menu" aria-label="Más">
+	<p class="menu-group" aria-hidden="true">Esta propuesta</p>
+	<button type="button" class="mi hl" role="menuitem"><svg class="i"><use href="#i-clock"/></svg>Historial de versiones<span class="end">4</span></button>
+	<button type="button" class="mi" role="menuitem"><svg class="i"><use href="#i-spark"/></svg>Probar otra dirección…</button>
+	<button type="button" class="mi" role="menuitem" aria-disabled="true"><svg class="i"><use href="#i-compare"/></svg>Comparar con la app</button>
+	<span class="mi-note">Disponible cuando esté implementada.</span>
+	<button type="button" class="mi" role="menuitem" aria-haspopup="menu"><svg class="i"><use href="#i-download"/></svg>Exportar<span class="end">PNG · PDF · HTML<svg class="i i-s"><use href="#i-right"/></svg></span></button>
+	<div class="sep" role="separator"></div>
+	<p class="menu-group" aria-hidden="true">Diseño</p>
+	<button type="button" class="mi" role="menuitem"><svg class="i"><use href="#i-doc"/></svg>Petición original</button>
+	<button type="button" class="mi" role="menuitem"><svg class="i"><use href="#i-palette"/></svg>Sistema de diseño</button>
+	<button type="button" class="mi" role="menuitem"><svg class="i"><use href="#i-map"/></svg>Mapa del lienzo<span class="end"><kbd>M</kbd></span></button>
+	<div class="sep" role="separator"></div>
+	<p class="menu-group" aria-hidden="true">Preferencias</p>
+	<button type="button" class="mi" role="menuitemcheckbox" aria-checked="false"><svg class="i"><use href="#i-code"/></svg>Detalles técnicos<span class="end"><span class="switch" aria-hidden="true"></span></span></button>
+	<span class="mi-note">Selectores, tokens y tamaños exactos.</span>
+	<button type="button" class="mi" role="menuitem"><svg class="i"><use href="#i-keys"/></svg>Atajos de teclado<span class="end"><kbd>?</kbd></span></button>
+</div>
+</body>
+</html>

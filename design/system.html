@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1440">
+<title>Gentle Shell design system</title>
+<style>
+	:root {
+		color-scheme: dark;
+		--bg: #1a1218; --bg-deep: #000000; --surface: #20161e; --surface-1: #241822; --surface-2: #342230;
+		--border: #342230; --border-soft: #ffffff17; --text: #f6eff3; --text-muted: #a78e9b; --text-faint: #76616b;
+		--accent: #f095c8; --accent-strong: #ff76c3; --accent-soft: #ffb1dd;
+		--success: #b4e7c7; --warning: #e0c27a; --error: #ff718f; --info: #a9c7ee;
+		--accent-wash: #f095c814; --accent-line: #f095c899; --wash: #ffffff0f; --paper: #ffffff;
+		--success-halo: #b4e7c726; --success-line: #b4e7c766; --error-halo: #ff718f26; --error-wash: #ff718f1a; --error-line: #ff718f80;
+		--info-halo: #a9c7ee33; --info-line: #a9c7ee66; --warning-line: #e0c27a66; --warning-halo: #e0c27a33; --scrim: #000000b3;
+		--radius-sm: 8px; --radius-md: 12px; --radius-lg: 16px; --radius-pill: 999px;
+		--ease: cubic-bezier(.4, 0, .2, 1);
+		--glow: 0 10px 30px #f095c84d; --glow-hover: 0 14px 36px #f095c86b;
+		--shadow-panel: 0 24px 60px #00000073, 0 0 40px #f095c81a;
+		--shadow-frame: 0 2px 16px #00000080; --shadow-pop: 0 4px 16px #00000099;
+		--font-sans: Inter, "SF Pro Text", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+		--font-mono: "IosevkaTerm NF", "Iosevka Term", "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+	}
+	* { box-sizing: border-box; }
+	body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 var(--font-sans); -webkit-font-smoothing: antialiased; }
+	main { width: 1440px; padding: 48px 64px 64px; }
+	h1 { margin: 0 0 4px; font-size: 28px; }
+	h2 { margin: 40px 0 16px; font-size: 18px; }
+	h3 { margin: 0 0 12px; font-size: 12px; color: var(--text-muted); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+	p.lead { margin: 0; color: var(--text-muted); }
+	code { font: 12px var(--font-mono); color: var(--accent-soft); background: var(--wash); border: 1px solid var(--border-soft); border-radius: 6px; padding: 1px 6px; }
+	.src { margin: 8px 0 0; font-size: 12px; color: var(--text-muted); }
+	.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
+	.set { padding: 24px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); }
+	.set + .set { margin-top: 16px; }
+	.swatches { display: grid; grid-template-columns: repeat(8, 1fr); gap: 12px; }
+	.sw { margin: 0; }
+	.sw span { display: block; height: 52px; border-radius: 6px; border: 1px solid var(--border-soft); }
+	.sw figcaption { margin-top: 6px; font-size: 12px; line-height: 1.35; }
+	.sw figcaption b { display: block; font: 11px var(--font-mono); color: var(--text-muted); font-weight: 400; }
+	.row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+	.row + .row, .row + .card, .card + .row { margin-top: 16px; }
+	.icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+	button { font: inherit; color: var(--text); background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm); min-width: 36px; min-height: 36px; padding: 4px 12px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer; }
+	button:hover:not(:disabled) { border-color: var(--border-soft); color: var(--accent-soft); }
+	button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+	button:disabled { opacity: .5; cursor: default; }
+	.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; box-shadow: var(--glow); }
+	.primary:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--bg); }
+	.small { min-height: 30px; padding: 2px 10px; font-size: 12px; }
+	.toggle { background: var(--surface-2); border-color: var(--accent-line); color: var(--accent); }
+	.brand { min-height: 46px; padding: 13px 24px; font: 600 15px/1.2 var(--font-sans); border-color: transparent; }
+	.brand.primary:hover { box-shadow: var(--glow-hover); }
+	.brand.secondary { border-color: var(--border); }
+	.brand.ghost { border-color: var(--border-soft); color: var(--text-muted); }
+	.chip { display: inline-flex; align-items: center; gap: 6px; padding: 1px 10px; border: 1px solid var(--border-soft); border-radius: var(--radius-pill); font-size: 12px; font-weight: 600; color: var(--text-muted); }
+	.chip.chosen { color: var(--bg); background: var(--accent); border-color: var(--accent); font-weight: 700; }
+	.chip.sent { color: var(--success); border-color: var(--success-line); }
+	.chip.wait { color: var(--warning); border-color: var(--warning-line); }
+	.chip.info { color: var(--info); border-color: var(--info-line); }
+	.chip.info::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--info); }
+	.chip.err { color: var(--error); border-color: var(--error-line); }
+	.tag { display: inline-flex; align-items: center; gap: 4px; padding: 0 8px; border: 1px solid var(--border-soft); border-radius: var(--radius-pill); font-size: 11px; font-weight: 600; color: var(--text-muted); }
+	.tag.chosen { color: var(--accent); border-color: var(--accent-line); }
+	.tag.chosen::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+	.tag.ok { color: var(--success); border-color: var(--success-line); }
+	.tag.warn { color: var(--warning); border-color: var(--warning-line); }
+	.pin { display: inline-grid; place-items: center; min-width: 26px; height: 26px; padding: 0 6px; border-radius: 13px 13px 13px 2px; border: 2px solid var(--bg); background: var(--accent); color: var(--bg); font-weight: 700; font-size: 12px; box-shadow: var(--shadow-frame); }
+	.pin.active { background: var(--warning); }
+	.pin.mix { background: var(--info); }
+	.pin.done { background: var(--text-muted); opacity: .75; }
+	kbd { font: 11px/1 var(--font-mono); padding: 3px 6px; border: 1px solid var(--border-soft); border-bottom-width: 2px; border-radius: 4px; color: var(--text-muted); }
+	.tabs { display: flex; gap: 2px; box-shadow: inset 0 -1px 0 var(--border); }
+	.tabs span { padding: 6px 8px; color: var(--text-muted); border-bottom: 2px solid transparent; }
+	.tabs span.on { color: var(--text); border-bottom-color: var(--accent); }
+	.count { padding: 0 6px; border-radius: var(--radius-pill); background: var(--surface-2); color: var(--accent-soft); font-size: 12px; margin-left: 6px; }
+	.alert { display: flex; gap: 8px; padding: 8px 8px 8px 10px; border: 1px solid var(--error-line); border-radius: var(--radius-sm); background: var(--error-wash); font-size: 13px; }
+	.alert .icon { color: var(--error); margin-top: 2px; }
+	.alert small { display: block; margin-top: 2px; font: 11px var(--font-mono); color: var(--text-muted); }
+	.walert { padding: 16px 20px; border: 1px solid var(--border); border-left: 3px solid var(--info); border-radius: var(--radius-md); background: var(--surface); }
+	.walert b { display: block; margin-bottom: 4px; color: var(--info); }
+	.walert.warn { border-left-color: var(--warning); } .walert.warn b { color: var(--warning); }
+	.walert.err { border-left-color: var(--error); } .walert.err b { color: var(--error); }
+	.walert p { margin: 0; color: var(--text-muted); }
+	.card { padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-1); font-size: 13px; }
+	.card.active { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-wash); }
+	.card.fail { border-color: var(--error-line); }
+	.card p { margin: 8px 0 0; }
+	.card .meta { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 12px; }
+	.rail { display: flex; gap: 8px; padding: 10px; background: var(--bg-deep); border-radius: var(--radius-sm); width: fit-content; }
+	.rail span { position: relative; width: 40px; height: 40px; display: grid; place-items: center; border-radius: var(--radius-sm); color: var(--text-muted); }
+	.rail span.on { background: var(--surface-2); color: var(--accent); }
+	.steps { display: flex; gap: 24px; }
+	.steps span { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
+	.steps span::before { content: ""; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--text-faint); box-sizing: border-box; }
+	.steps .done::before { background: var(--success); border-color: var(--success); }
+	.steps .now::before { background: var(--info); border-color: var(--info); box-shadow: 0 0 0 3px var(--info-halo); }
+	.ministep { display: flex; align-items: center; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 11px; color: var(--text-muted); }
+	.ministep li { display: inline-flex; align-items: center; gap: 4px; }
+	.ministep li + li::before { content: ""; width: 10px; height: 1px; margin-right: 2px; background: var(--text-faint); }
+	.ministep i { width: 8px; height: 8px; border: 1.5px solid var(--text-faint); border-radius: 50%; }
+	.ministep .done i { background: var(--success); border-color: var(--success); }
+	.ministep .now i { background: var(--info); border-color: var(--info); box-shadow: 0 0 0 3px var(--info-halo); }
+	.ministep .now { color: var(--text); font-weight: 600; }
+	.stages { display: flex; gap: 8px; margin: 0; padding: 0; list-style: none; }
+	.stage { display: flex; flex: 1; align-items: center; gap: 10px; color: var(--text-muted); font: 600 12px/1.2 var(--font-mono); letter-spacing: .1em; text-transform: uppercase; }
+	.stage:not(:last-child)::after { content: ""; flex: 1; height: 1px; min-width: 12px; background: var(--border); }
+	.stage b { display: inline-grid; place-items: center; width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 50%; background: var(--surface); letter-spacing: 0; font-weight: 600; }
+	.stage.done { color: var(--success); }
+	.stage.done b { border-color: var(--success-line); background: var(--success-halo); }
+	.stage.now { color: var(--text); }
+	.stage.now b { background: var(--accent); border-color: var(--accent); color: var(--bg); box-shadow: 0 0 0 4px var(--accent-wash), var(--glow); }
+	.work { display: inline-flex; align-items: center; gap: 8px; padding: 2px 4px 2px 10px; border: 1px solid var(--accent-line); border-radius: var(--radius-pill); font-size: 12px; color: var(--text-muted); }
+	.work i { width: 8px; height: 8px; border-radius: 50%; background: var(--info); }
+	.work b { color: var(--text); }
+	.work em { font-style: normal; color: var(--accent); font-weight: 600; }
+	.work .sep { color: var(--text-faint); }
+	.status { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-muted); }
+	.status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 3px var(--success-halo); }
+	.status.err { color: var(--error); }
+	.status.err::before { background: var(--error); box-shadow: 0 0 0 3px var(--error-halo); }
+	.menu { width: 260px; padding: 6px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); box-shadow: var(--shadow-panel); }
+	.menu div { display: flex; align-items: center; min-height: 36px; padding: 4px 12px; border-radius: var(--radius-sm); font-size: 13px; }
+	.menu div.hl { background: var(--surface-2); }
+	.menu hr { height: 1px; margin: 4px 2px; border: 0; background: var(--border); }
+	.segment { display: inline-grid; grid-template-columns: 1fr 1fr; padding: 3px; border: 1px solid var(--border); border-radius: var(--radius-sm); width: 240px; }
+	.segment span { display: grid; place-items: center; min-height: 32px; border-radius: 6px; font-size: 13px; color: var(--text-muted); }
+	.segment span.on { background: var(--surface-2); color: var(--text); }
+	.modechip { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface-1); box-shadow: var(--shadow-panel); font-size: 13px; }
+	.modechip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+	.ring { display: inline-block; position: relative; padding: 6px 12px; border: 2px solid var(--warning); border-radius: 6px; box-shadow: 0 0 0 4px var(--warning-halo); font-size: 13px; }
+	.ring.fail { border-color: var(--error); box-shadow: 0 0 0 4px var(--error-halo); }
+	.ring small { position: absolute; left: 0; bottom: calc(100% + 4px); padding: 1px 8px; border-radius: var(--radius-pill); background: var(--warning); color: var(--bg); font-size: 11px; font-weight: 700; white-space: nowrap; }
+	.ring.fail small { background: var(--error); }
+	.scale { display: flex; align-items: flex-end; gap: 16px; }
+	.scale div { text-align: center; font-size: 12px; color: var(--text-muted); }
+	.scale i { display: block; background: var(--accent); margin: 0 auto 6px; }
+	.radii { display: flex; gap: 16px; }
+	.radii div { width: 84px; height: 60px; display: grid; place-items: center; font-size: 12px; border: 1px solid var(--border); background: var(--surface-1); }
+	.shadows { display: flex; gap: 24px; }
+	.shadows div { width: 150px; height: 76px; display: grid; place-items: center; font-size: 12px; border-radius: var(--radius-sm); background: var(--surface-1); text-align: center; }
+	.dots { height: 76px; border-radius: var(--radius-sm); background-color: var(--bg); background-image: radial-gradient(var(--surface-2) 1px, transparent 1.2px); background-size: 22px 22px; border: 1px solid var(--border); }
+	.eyebrow { margin: 0 0 8px; color: var(--accent); font: 600 12px/1.4 var(--font-mono); letter-spacing: .12em; text-transform: uppercase; }
+	.wpill { display: inline-flex; padding: 3px 10px; border: 1px solid var(--border-soft); border-radius: var(--radius-pill); font: 600 12px/1.4 var(--font-mono); color: var(--text-muted); }
+	@media (prefers-reduced-motion: no-preference) {
+		button { transition: border-color .2s var(--ease), color .2s var(--ease), background-color .2s var(--ease), box-shadow .2s var(--ease); }
+	}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+	<symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></symbol>
+	<symbol id="i-pointer" viewBox="0 0 24 24"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/></symbol>
+	<symbol id="i-comment" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+	<symbol id="i-fit" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></symbol>
+</svg>
+<main>
+	<header>
+		<h1>Gentle Shell design system</h1>
+		<p class="lead">One dark brand set shared by <code>assets/install-wizard/wizard.css</code> and <code>assets/design-canvas/canvas.css</code>, plus the canvas's derived tokens. Read by the canvas through <code>lib/design-system-tokens.ts</code>.</p>
+	</header>
+
+	<h2>Colors</h2>
+	<section class="set" aria-labelledby="c-brand">
+		<h3 id="c-brand">Brand set · 17 tokens</h3>
+		<div class="swatches">
+			<figure class="sw"><span style="background:var(--bg-deep)"></span><figcaption>bg-deep<b>#000000</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--bg)"></span><figcaption>bg<b>#1a1218</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--surface)"></span><figcaption>surface<b>#20161e</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--surface-1)"></span><figcaption>surface-1<b>#241822</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--surface-2)"></span><figcaption>surface-2 / border<b>#342230</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--border-soft)"></span><figcaption>border-soft<b>#ffffff17</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--text)"></span><figcaption>text<b>#f6eff3</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--text-muted)"></span><figcaption>text-muted<b>#a78e9b</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--text-faint)"></span><figcaption>text-faint<b>#76616b</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--accent)"></span><figcaption>accent<b>#f095c8</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--accent-strong)"></span><figcaption>accent-strong<b>#ff76c3</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--accent-soft)"></span><figcaption>accent-soft<b>#ffb1dd</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--success)"></span><figcaption>success<b>#b4e7c7</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--warning)"></span><figcaption>warning<b>#e0c27a</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--error)"></span><figcaption>error<b>#ff718f</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--info)"></span><figcaption>info<b>#a9c7ee</b></figcaption></figure>
+		</div>
+		<p class="src">Source: both stylesheets' <code>:root</code>.</p>
+	</section>
+	<section class="set" aria-labelledby="c-derived">
+		<h3 id="c-derived">Canvas derived · 14 tokens</h3>
+		<div class="swatches">
+			<figure class="sw"><span style="background:var(--accent-wash)"></span><figcaption>accent-wash<b>#f095c814</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--accent-line)"></span><figcaption>accent-line<b>#f095c899</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--wash)"></span><figcaption>wash<b>#ffffff0f</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--paper)"></span><figcaption>paper<b>#ffffff</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--scrim)"></span><figcaption>scrim<b>#000000b3</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--success-halo)"></span><figcaption>success-halo<b>#b4e7c726</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--success-line)"></span><figcaption>success-line<b>#b4e7c766</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--warning-halo)"></span><figcaption>warning-halo<b>#e0c27a33</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--warning-line)"></span><figcaption>warning-line<b>#e0c27a66</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--error-halo)"></span><figcaption>error-halo<b>#ff718f26</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--error-wash)"></span><figcaption>error-wash<b>#ff718f1a</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--error-line)"></span><figcaption>error-line<b>#ff718f80</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--info-halo)"></span><figcaption>info-halo<b>#a9c7ee33</b></figcaption></figure>
+			<figure class="sw"><span style="background:var(--info-line)"></span><figcaption>info-line<b>#a9c7ee66</b></figcaption></figure>
+		</div>
+		<p class="src">Source: <code>assets/design-canvas/canvas.css</code> <code>:root</code>.</p>
+	</section>
+
+	<h2>Typography</h2>
+	<div class="cols">
+		<section class="set" aria-label="Sans">
+			<h3>--font-sans (Inter stack)</h3>
+			<p style="margin:0 0 8px;font-size:34px;font-weight:800;line-height:1.08;letter-spacing:-.022em">Display 34–58 / 800 (wizard)</p>
+			<p style="margin:0 0 8px;font-size:18px;font-weight:700">Section title 18 / 700 (wizard)</p>
+			<p style="margin:0 0 8px;font-size:16px;font-weight:600">Artboard and dialog title 16 / 600</p>
+			<p style="margin:0 0 8px">Body 14 / 1.5 (canvas) · 16 / 1.6 (wizard)</p>
+			<p style="margin:0 0 8px;font-size:13px">Cards, alerts, menu items 13</p>
+			<p style="margin:0;font-size:12px;color:var(--text-muted)">Meta and chips 12 · tags, kbd, mini stepper 11</p>
+		</section>
+		<section class="set" aria-label="Mono">
+			<h3>--font-mono (Iosevka stack)</h3>
+			<p class="eyebrow">Eyebrow · 600 12 mono uppercase</p>
+			<div class="row"><code>odd/tasks/checkout-page.md</code><code>#total</code><code>390 × 844</code><span class="wpill">pill 12 mono</span></div>
+			<div class="row"><kbd>V</kbd><kbd>C</kbd><kbd>F</kbd><kbd>M</kbd><kbd>[</kbd><kbd>]</kbd><kbd>?</kbd><kbd>Shift</kbd><kbd>Esc</kbd></div>
+		</section>
+	</div>
+
+	<h2>Steps and status</h2>
+	<div class="cols">
+		<section class="set" aria-label="Wizard stage indicator">
+			<h3>Stage indicator (wizard.css)</h3>
+			<ol class="stages">
+				<li class="stage done"><b>1</b>Check</li>
+				<li class="stage now" aria-current="step"><b>2</b>Plan</li>
+				<li class="stage"><b>3</b>Install</li>
+				<li class="stage"><b>4</b>Done</li>
+			</ol>
+		</section>
+		<section class="set" aria-label="Canvas steps">
+			<h3>Mini stepper, timeline, work pill (canvas.css)</h3>
+			<ol class="ministep" aria-label="Step 3 of 4: In progress"><li class="done"><i></i>Chosen</li><li class="done"><i></i>Sent</li><li class="now"><i></i>In progress</li><li><i></i>Implemented</li></ol>
+			<div class="row"><div class="steps"><span class="done">Chosen</span><span class="done">Sent</span><span class="now">In progress</span><span>Implemented</span></div></div>
+			<div class="row"><span class="work"><i></i><b>Implementing</b><em>01 Single column</em><span class="sep">·</span>In progress since 09:48<button class="small" type="button">Show</button></span></div>
+			<div class="row"><span class="status">Session connected</span><span class="status err">Server stopped</span></div>
+		</section>
+	</div>
+
+	<h2>Components</h2>
+	<div class="cols">
+		<section class="set" aria-label="Controls">
+			<h3>Controls and states</h3>
+			<div class="row">
+				<button class="primary" type="button">Send all (2)</button>
+				<button type="button">Implement this</button>
+				<button type="button" class="toggle" aria-pressed="true">Toggle on</button>
+				<button type="button" class="small">Small</button>
+				<button type="button" disabled>Disabled</button>
+			</div>
+			<div class="row">
+				<button type="button" class="brand primary">Install (wizard)</button>
+				<button type="button" class="brand secondary">Secondary</button>
+				<button type="button" class="brand ghost">Ghost</button>
+			</div>
+			<div class="row">
+				<span class="chip chosen">Chosen</span><span class="chip">Alternative</span><span class="chip sent">Implemented ✓</span><span class="chip wait">Queued</span><span class="chip info">In progress</span><span class="chip err">Detached</span>
+			</div>
+			<div class="row">
+				<span class="tag chosen">Chosen</span><span class="tag ok">A11y ✓</span><span class="tag warn">2 checks</span>
+				<span class="pin">1</span><span class="pin active">2</span><span class="pin mix">3</span><span class="pin done">4</span>
+			</div>
+			<div class="row">
+				<div class="rail" aria-hidden="true"><span><svg class="icon"><use href="#i-pointer"/></svg></span><span class="on"><svg class="icon"><use href="#i-comment"/></svg></span><span><svg class="icon"><use href="#i-fit"/></svg></span></div>
+				<div class="segment" aria-hidden="true"><span>Send now</span><span class="on">Collect</span></div>
+			</div>
+			<div class="row"><div class="tabs" style="flex:1"><span class="on">Comments<span class="count">3</span></span><span>Resolved<span class="count">1</span></span><span>History<span class="count">4</span></span><span>Checks<span class="count">2</span></span><span>Mix</span><span>Brief</span></div></div>
+			<div class="row"><span class="modechip">Click an element to comment · Esc</span></div>
+		</section>
+		<section class="set" aria-label="Feedback">
+			<h3>Cards, menus and feedback</h3>
+			<div class="card active"><div class="meta"><span class="pin" style="min-width:22px;height:22px;border-radius:11px 11px 11px 2px;font-size:11px;border:0;box-shadow:none">1</span><code>#total</code><span class="chip wait" style="margin-left:auto">Waiting</span></div><p>Make the total stand out more; it reads like the other rows.</p></div>
+			<div class="card fail" style="margin-top:10px"><div class="meta"><svg class="icon" style="color:var(--error)"><use href="#i-alert"/></svg><span class="chip err">Problem</span>Text contrast under AA</div><p style="color:var(--text-muted);font-size:12px">2.9 : 1 on #f6eff3; needs 4.5 : 1.</p></div>
+			<div class="row">
+				<div class="menu" aria-hidden="true"><div class="hl">Try another direction from this…</div><div>Export as PNG</div><div>Export as PDF</div><hr><div>Implement this</div></div>
+				<div style="display:flex;flex-direction:column;gap:20px;padding-top:16px">
+					<span class="ring"><small>Target under 44 × 44</small>Advice ring</span>
+					<span class="ring fail"><small>Contrast under AA</small>Problem ring</span>
+				</div>
+			</div>
+			<div class="row"><div class="alert" role="img" aria-label="Alert example"><svg class="icon"><use href="#i-alert"/></svg><div>The session did not accept the message. Your comments stay saved and unsent.<small>delivery-failed</small></div></div></div>
+			<div class="row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+				<div class="walert"><b>Info (wizard)</b><p>3px left border in the state color.</p></div>
+				<div class="walert err"><b>Error (wizard)</b><p>Title in the same color, actions below.</p></div>
+			</div>
+		</section>
+	</div>
+
+	<h2>Spacing, radius, shadows, canvas</h2>
+	<div class="cols">
+		<section class="set" aria-label="Spacing and radius">
+			<h3>Spacing in use (no tokens)</h3>
+			<div class="scale">
+				<div><i style="width:2px;height:2px"></i>2</div><div><i style="width:4px;height:4px"></i>4</div><div><i style="width:6px;height:6px"></i>6</div><div><i style="width:8px;height:8px"></i>8</div><div><i style="width:10px;height:10px"></i>10</div><div><i style="width:12px;height:12px"></i>12</div><div><i style="width:16px;height:16px"></i>16</div><div><i style="width:20px;height:20px"></i>20</div><div><i style="width:24px;height:24px"></i>24</div><div><i style="width:28px;height:28px"></i>28</div><div><i style="width:36px;height:36px"></i>36</div>
+			</div>
+			<h3 style="margin-top:24px">Radius</h3>
+			<div class="radii"><div style="border-radius:4px">4</div><div style="border-radius:6px">6</div><div style="border-radius:var(--radius-sm)">8 sm</div><div style="border-radius:var(--radius-md)">12 md</div><div style="border-radius:var(--radius-lg)">16 lg</div><div style="border-radius:var(--radius-pill)">pill</div></div>
+		</section>
+		<section class="set" aria-label="Shadows">
+			<h3>Shadows</h3>
+			<div class="shadows"><div style="box-shadow:var(--shadow-frame)">shadow-frame</div><div style="box-shadow:var(--shadow-pop)">shadow-pop</div><div style="box-shadow:var(--shadow-panel)">shadow-panel</div><div style="box-shadow:var(--glow-hover)">glow-hover</div></div>
+			<h3 style="margin-top:24px">Viewport dot grid</h3>
+			<div class="dots"></div>
+		</section>
+	</div>
+</main>
+</body>
+</html>

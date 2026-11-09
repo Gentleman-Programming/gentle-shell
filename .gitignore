@@ -35,5 +35,8 @@ tmp/
 # CodeGraph index (recreated by pi on session start)
 .codegraph/
 
+# gentle-design local canvas screenshots
+design/*/showcase/
+
 # Scratch directories written by the herdr activity tests
 odd/work/

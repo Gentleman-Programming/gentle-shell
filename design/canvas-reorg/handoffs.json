@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "chosen": "03-lienzo-progresivo.html",
+  "handoffs": {
+    "03-lienzo-progresivo.html": {
+      "status": "implemented",
+      "queued": false,
+      "sentAt": "2026-10-30T13:36:09.440Z",
+      "startedAt": "2026-10-30T13:36:19.830Z",
+      "implementedAt": "2026-10-30T16:29:57.515Z",
+      "note": "On feat/canvas-progressive: labeled rail, steps, connection chip, Abrir/Implement split, Revisión panel with ⋯, first-run guide. 584/584 tests; checked in Chrome."
+    }
+  }
+}

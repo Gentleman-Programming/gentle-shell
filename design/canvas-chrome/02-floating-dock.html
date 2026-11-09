@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1440">
+<title>Gentle Design · Floating dock</title>
+<style>
+	:root {
+		color-scheme: dark;
+		--gd-bg: #111214; --gd-stage: #1a1b1e; --gd-panel: #222327; --gd-border: #3a3b40;
+		--gd-text: #ececee; --gd-muted: #a9abb2; --gd-accent: #8ab4ff; --gd-accent-text: #0b1220;
+		--gd-danger: #ff9b9b; --gd-focus: #ffd479; --gd-pin: #8ab4ff; --gd-pin-resolved: #7d8a7f; --gd-success: #9be0a8;
+		--gd-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+		--gd-float: 0 8px 32px rgba(0,0,0,.6);
+		font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+		font-size: 14px;
+	}
+	* { box-sizing: border-box; }
+	html, body { margin: 0; height: 100%; background: var(--gd-bg); color: var(--gd-text); overflow: hidden; }
+	body { position: relative; width: 1440px; height: 900px; }
+	svg.i { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+	button { font: inherit; color: var(--gd-text); background: transparent; border: 1px solid transparent; border-radius: 8px; min-height: 36px; min-width: 36px; padding: 4px 10px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; white-space: nowrap; }
+	button:hover { background: var(--gd-stage); }
+	button:focus-visible { outline: 2px solid var(--gd-focus); outline-offset: 2px; }
+	.primary { background: var(--gd-accent); color: var(--gd-accent-text); font-weight: 600; }
+	.primary:hover { background: var(--gd-accent); filter: brightness(1.08); }
+	kbd { font: 11px/1 var(--gd-mono); padding: 2px 5px; border: 1px solid var(--gd-border); border-bottom-width: 2px; border-radius: 4px; color: var(--gd-muted); }
+
+	/* Full-bleed canvas with a dot grid that would scale with zoom */
+	.viewport { position: absolute; inset: 0; overflow: hidden; background-color: var(--gd-stage); background-image: radial-gradient(var(--gd-border) 1px, transparent 1.2px); background-size: 20px 20px; cursor: grab; }
+
+	/* Slim context strip */
+	.top { position: absolute; top: 12px; left: 12px; right: 12px; display: flex; align-items: center; gap: 12px; pointer-events: none; z-index: 3; }
+	.top > * { pointer-events: auto; }
+	.pill { display: flex; align-items: center; gap: 4px; padding: 4px; background: var(--gd-panel); border: 1px solid var(--gd-border); border-radius: 12px; box-shadow: var(--gd-float); }
+	.brand { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: var(--gd-accent); color: var(--gd-accent-text); font-weight: 800; font-size: 12px; margin-left: 4px; }
+	.crumb { font-weight: 600; }
+	.feature { font: 12px var(--gd-mono); color: var(--gd-muted); padding: 0 10px 0 4px; }
+	.spacer { flex: 1; }
+	.status { display: inline-flex; align-items: center; gap: 6px; color: var(--gd-muted); font-size: 12px; padding: 0 8px; }
+	.status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gd-success); }
+	.badge-n { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px; background: var(--gd-accent); color: var(--gd-accent-text); font-size: 12px; font-weight: 700; }
+
+	/* World */
+	.world { position: absolute; top: 110px; left: 40px; display: flex; gap: 48px; align-items: flex-start; }
+	.board { width: 300px; }
+	.board-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+	.board-head h2 { margin: 0; font-size: 14px; font-weight: 600; }
+	.board-head .num { color: var(--gd-muted); font-weight: 400; margin-right: 4px; }
+	.dotstate { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--gd-muted); }
+	.dotstate::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--gd-border); }
+	.dotstate.progress { color: var(--gd-accent); }
+	.dotstate.progress::before { background: var(--gd-accent); }
+	.frame { position: relative; height: 450px; background: #fff; border-radius: 4px; box-shadow: 0 2px 16px rgba(0,0,0,.5); }
+	.board.chosen .frame { box-shadow: 0 0 0 3px var(--gd-accent), 0 2px 16px rgba(0,0,0,.5); }
+	.board-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; padding: 4px; background: var(--gd-panel); border: 1px solid var(--gd-border); border-radius: 10px; box-shadow: var(--gd-float); opacity: 0; }
+	.board:hover .board-actions, .board:focus-within .board-actions, .board.show .board-actions { opacity: 1; }
+	.board-actions button { min-height: 30px; font-size: 12px; }
+	.tradeoff { margin: 8px 0 0; color: var(--gd-muted); font-size: 12px; }
+	.pin { position: absolute; display: grid; place-items: center; min-width: 26px; height: 26px; padding: 0 6px; border-radius: 13px 13px 13px 2px; border: 2px solid var(--gd-accent-text); background: var(--gd-pin); color: var(--gd-accent-text); font-weight: 700; font-size: 12px; transform: translate(-2px, -100%); box-shadow: 0 2px 6px rgba(0,0,0,.5); }
+	.pin.active { background: var(--gd-focus); }
+	.pin.resolved { background: var(--gd-panel); color: var(--gd-muted); border-color: var(--gd-pin-resolved); }
+
+	.mock { padding: 20px; color: var(--gd-accent-text); font-size: 11px; }
+	.mock .logo { width: 64px; height: 10px; background: var(--gd-accent-text); border-radius: 2px; margin-bottom: 18px; }
+	.mock h3 { margin: 0 0 12px; font-size: 15px; }
+	.mock .line { height: 28px; border: 1px solid var(--gd-muted); border-radius: 4px; margin-bottom: 8px; }
+	.mock .row { display: flex; gap: 8px; }
+	.mock .row .line { flex: 1; }
+	.mock .sum { display: flex; justify-content: space-between; padding: 10px 0; border-top: 1px solid var(--gd-text); margin-top: 6px; }
+	.mock .pay { height: 34px; border-radius: 4px; background: var(--gd-accent-text); color: #fff; display: grid; place-items: center; font-weight: 600; margin-top: 8px; }
+	.mock .steps { display: flex; gap: 6px; margin-bottom: 14px; }
+	.mock .steps i { flex: 1; height: 4px; border-radius: 2px; background: var(--gd-text); }
+	.mock .steps i.on { background: var(--gd-accent-text); }
+	.mock .express { display: flex; gap: 6px; margin-bottom: 12px; }
+	.mock .express i { flex: 1; height: 34px; border-radius: 4px; background: var(--gd-accent-text); }
+	.mock .or { text-align: center; color: var(--gd-muted); margin: 6px 0 10px; }
+
+	/* Bottom dock */
+	.dock { position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%); display: flex; align-items: center; gap: 4px; padding: 6px; background: var(--gd-panel); border: 1px solid var(--gd-border); border-radius: 14px; box-shadow: var(--gd-float); z-index: 3; }
+	.dock .sep { width: 1px; height: 24px; background: var(--gd-border); margin: 0 4px; }
+	.tool[aria-pressed="true"] { background: var(--gd-accent); color: var(--gd-accent-text); }
+	.tool { position: relative; }
+	.tool .k { position: absolute; right: 2px; bottom: 1px; font: 9px var(--gd-mono); opacity: .7; }
+	.dock output { min-width: 5ch; text-align: center; font-variant-numeric: tabular-nums; color: var(--gd-muted); }
+
+	/* Minimap */
+	.minimap { position: absolute; left: 20px; bottom: 20px; width: 200px; padding: 8px; background: var(--gd-panel); border: 1px solid var(--gd-border); border-radius: 12px; box-shadow: var(--gd-float); z-index: 3; }
+	.minimap h2 { margin: 0 0 6px; font-size: 11px; color: var(--gd-muted); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+	.minimap ol { position: relative; display: flex; gap: 8px; height: 72px; margin: 0; padding: 8px; list-style: none; background: var(--gd-stage); border-radius: 6px; }
+	.minimap li { flex: 1; }
+	.minimap li button { width: 100%; height: 100%; min-height: 0; min-width: 0; padding: 0; border-radius: 2px; background: var(--gd-muted); opacity: .55; }
+	.minimap li.chosen button { background: var(--gd-accent); opacity: 1; }
+	.minimap .view { position: absolute; inset: 4px 22px 4px 4px; border: 1.5px solid var(--gd-focus); border-radius: 4px; pointer-events: none; }
+
+	/* Floating comments card */
+	.panel { position: absolute; top: 68px; right: 12px; bottom: 84px; width: 340px; display: flex; flex-direction: column; background: var(--gd-panel); border: 1px solid var(--gd-border); border-radius: 12px; box-shadow: var(--gd-float); z-index: 3; }
+	.panel[hidden] { display: none; }
+	.panel-head { display: flex; align-items: center; gap: 8px; padding: 12px 12px 8px; }
+	.panel-head h2 { margin: 0; font-size: 15px; }
+	.seg { display: inline-flex; margin-left: auto; padding: 2px; gap: 2px; background: var(--gd-stage); border-radius: 8px; }
+	.seg button { min-height: 28px; font-size: 12px; color: var(--gd-muted); border-radius: 6px; }
+	.seg button[aria-pressed="true"] { background: var(--gd-panel); color: var(--gd-text); }
+	.list { flex: 1; overflow: auto; padding: 0 8px 8px; }
+	.group { margin: 8px 4px 4px; font-size: 11px; color: var(--gd-muted); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+	.card { display: grid; grid-template-columns: 26px 1fr; gap: 10px; padding: 10px; border-radius: 8px; }
+	.card:hover { background: var(--gd-stage); }
+	.card.active { background: var(--gd-stage); box-shadow: inset 2px 0 0 var(--gd-focus); }
+	.card .pin { position: static; transform: none; }
+	.card p { margin: 0; line-height: 1.45; }
+	.meta { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--gd-muted); margin-bottom: 2px; }
+	.meta .unsent { color: var(--gd-focus); }
+	.sel { font: 11px var(--gd-mono); color: var(--gd-muted); margin-top: 4px; }
+	.composer { margin: 8px; padding: 8px; border: 1px solid var(--gd-border); border-radius: 10px; background: var(--gd-stage); }
+	.composer-row { display: flex; align-items: center; gap: 8px; }
+	.composer-row span { font-size: 12px; color: var(--gd-muted); }
+	.composer-row .primary { margin-left: auto; }
+	.toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--gd-muted); cursor: pointer; }
+	.toggle input { accent-color: var(--gd-accent); }
+
+	.toast { position: absolute; left: 50%; bottom: 84px; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; background: var(--gd-panel); border: 1px solid var(--gd-success); border-radius: 10px; box-shadow: var(--gd-float); font-weight: 600; z-index: 3; }
+	.toast svg { color: var(--gd-success); }
+	.hint { position: absolute; right: 368px; bottom: 32px; font-size: 12px; color: var(--gd-muted); z-index: 3; }
+	.note { position: absolute; left: 40px; top: 680px; max-width: 70ch; color: var(--gd-muted); font-size: 12px; }
+
+	@media (prefers-reduced-motion: no-preference) {
+		button, .board-actions { transition: background-color 120ms ease, opacity 120ms ease; }
+	}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+	<symbol id="i-pointer" viewBox="0 0 24 24"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/></symbol>
+	<symbol id="i-comment" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+	<symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+	<symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></symbol>
+	<symbol id="i-fit" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></symbol>
+	<symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol>
+	<symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+	<symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+	<symbol id="i-compare" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18"/></symbol>
+	<symbol id="i-play" viewBox="0 0 24 24"><path d="m6 3 14 9-14 9z"/></symbol>
+	<symbol id="i-focus" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/></symbol>
+	<symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/></symbol>
+	<symbol id="i-keys" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></symbol>
+</svg>
+
+<main class="viewport" aria-label="Artboards">
+	<div class="world">
+		<article class="board chosen show" aria-labelledby="b1">
+			<div class="board-head"><h2 id="b1"><span class="num">01</span>Single column</h2><span class="dotstate progress">Chosen · in progress</span></div>
+			<div class="frame">
+				<div class="board-actions" role="group" aria-label="Single column actions">
+					<button type="button" title="Open focused (Enter)"><svg class="i"><use href="#i-focus"/></svg>Focus</button>
+					<button type="button" title="Compare with the running app"><svg class="i"><use href="#i-compare"/></svg>Compare</button>
+				</div>
+				<div class="mock">
+					<div class="logo"></div>
+					<h3>Checkout</h3>
+					<div class="line"></div><div class="line"></div>
+					<div class="row"><div class="line"></div><div class="line"></div></div>
+					<div class="line"></div>
+					<div class="sum"><span>Total</span><strong>$48.00</strong></div>
+					<div class="pay">Pay $48.00</div>
+				</div>
+				<span class="pin active" style="left:150px;top:248px">1</span>
+				<span class="pin" style="left:120px;top:322px">2</span>
+			</div>
+			<p class="tradeoff">Fastest to scan; long scroll on mobile</p>
+		</article>
+		<article class="board" aria-labelledby="b2">
+			<div class="board-head"><h2 id="b2"><span class="num">02</span>Two-step</h2><span class="dotstate">Alternative</span></div>
+			<div class="frame">
+				<div class="board-actions" role="group" aria-label="Two-step actions">
+					<button type="button"><svg class="i"><use href="#i-focus"/></svg>Focus</button>
+					<button type="button"><svg class="i"><use href="#i-play"/></svg>Implement this</button>
+				</div>
+				<div class="mock">
+					<div class="logo"></div>
+					<div class="steps"><i class="on"></i><i></i></div>
+					<h3>Shipping</h3>
+					<div class="line"></div><div class="line"></div>
+					<div class="row"><div class="line"></div><div class="line"></div></div>
+					<div class="pay">Continue to payment</div>
+				</div>
+				<span class="pin resolved" style="left:250px;top:120px" title="Resolved">3</span>
+			</div>
+			<p class="tradeoff">Less to read per step; one extra click</p>
+		</article>
+		<article class="board" aria-labelledby="b3">
+			<div class="board-head"><h2 id="b3"><span class="num">03</span>Express first</h2><span class="dotstate">Alternative</span></div>
+			<div class="frame">
+				<div class="board-actions" role="group" aria-label="Express first actions">
+					<button type="button"><svg class="i"><use href="#i-focus"/></svg>Focus</button>
+					<button type="button"><svg class="i"><use href="#i-play"/></svg>Implement this</button>
+				</div>
+				<div class="mock">
+					<div class="logo"></div>
+					<h3>Pay faster</h3>
+					<div class="express"><i></i><i></i></div>
+					<div class="or">or pay with card</div>
+					<div class="line"></div>
+					<div class="row"><div class="line"></div><div class="line"></div></div>
+					<div class="pay">Pay $48.00</div>
+				</div>
+			</div>
+			<p class="tradeoff">Quickest for returning buyers; card form feels secondary</p>
+		</article>
+	</div>
+	<p class="note">Direction 02 — the canvas gets the whole window. Context floats top-left, tools live in a bottom dock, the minimap jumps between artboards, and comments float as a card you can hide with <kbd>]</kbd>.</p>
+</main>
+
+<header class="top">
+	<div class="pill">
+		<span class="brand" aria-hidden="true">GD</span>
+		<button type="button" class="crumb" aria-haspopup="listbox">Checkout page <svg class="i"><use href="#i-down"/></svg></button>
+		<span class="feature" title="odd/tasks/checkout-page.md">odd/tasks/checkout-page.md</span>
+	</div>
+	<span class="spacer"></span>
+	<div class="pill">
+		<span class="status" role="status"><span class="dot" aria-hidden="true"></span>Session connected</span>
+		<button type="button" id="panel-toggle" aria-pressed="true" aria-controls="panel" title="Comments (])"><svg class="i"><use href="#i-panel"/></svg>Comments <span class="badge-n">2</span></button>
+	</div>
+</header>
+
+<nav class="dock" role="toolbar" aria-label="Canvas tools">
+	<button type="button" class="tool" id="m-nav" aria-pressed="false" aria-label="Navigate" title="Navigate (V)"><svg class="i"><use href="#i-pointer"/></svg><span class="k" aria-hidden="true">V</span></button>
+	<button type="button" class="tool" id="m-com" aria-pressed="true" aria-label="Comment" title="Comment (C)"><svg class="i"><use href="#i-comment"/></svg><span class="k" aria-hidden="true">C</span></button>
+	<span class="sep" aria-hidden="true"></span>
+	<button type="button" aria-label="Zoom out" title="Zoom out (−)"><svg class="i"><use href="#i-minus"/></svg></button>
+	<output aria-label="Zoom level">64%</output>
+	<button type="button" aria-label="Zoom in" title="Zoom in (+)"><svg class="i"><use href="#i-plus"/></svg></button>
+	<button type="button" aria-label="Fit all" title="Fit all (F)"><svg class="i"><use href="#i-fit"/></svg></button>
+	<span class="sep" aria-hidden="true"></span>
+	<button type="button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)"><svg class="i"><use href="#i-keys"/></svg></button>
+</nav>
+
+<section class="minimap" aria-labelledby="mm-title">
+	<h2 id="mm-title">Artboards</h2>
+	<ol>
+		<li class="chosen"><button type="button" aria-label="Go to 01 Single column, chosen"></button></li>
+		<li><button type="button" aria-label="Go to 02 Two-step"></button></li>
+		<li><button type="button" aria-label="Go to 03 Express first"></button></li>
+		<span class="view" aria-hidden="true"></span>
+	</ol>
+</section>
+
+<aside class="panel" id="panel" aria-labelledby="panel-title">
+	<div class="panel-head">
+		<h2 id="panel-title">Comments</h2>
+		<div class="seg" role="group" aria-label="Show comments">
+			<button type="button" aria-pressed="true">Open 2</button>
+			<button type="button" aria-pressed="false">Resolved 1</button>
+		</div>
+	</div>
+	<div class="list">
+		<h3 class="group">01 · Single column</h3>
+		<article class="card active" aria-label="Comment 1">
+			<span class="pin active" aria-hidden="true">1</span>
+			<div>
+				<div class="meta">2 min ago · <span class="unsent">Not sent</span></div>
+				<p>Make the total stand out more; it reads like the other rows.</p>
+				<div class="sel">main &gt; .summary &gt; strong</div>
+			</div>
+		</article>
+		<article class="card" aria-label="Comment 2">
+			<span class="pin" aria-hidden="true">2</span>
+			<div>
+				<div class="meta">6 min ago · <span class="unsent">Not sent</span> · 1 screenshot</div>
+				<p>Expiry and CVC fields are too narrow for the hint text.</p>
+				<div class="sel">main &gt; .row:nth-child(4)</div>
+			</div>
+		</article>
+	</div>
+	<div class="composer">
+		<div class="composer-row">
+			<label class="toggle"><input type="checkbox" checked> Collect before sending</label>
+			<button type="button" class="primary"><svg class="i"><use href="#i-send"/></svg>Send 2</button>
+		</div>
+	</div>
+</aside>
+
+<div class="toast" role="status"><svg class="i"><use href="#i-check"/></svg>Handoff sent: 01 Single column</div>
+<p class="hint">Press <kbd>?</kbd> for shortcuts</p>
+
+<script>
+	const nav = document.getElementById("m-nav"), com = document.getElementById("m-com");
+	const vp = document.querySelector(".viewport");
+	function setMode(c) { nav.setAttribute("aria-pressed", String(!c)); com.setAttribute("aria-pressed", String(c)); vp.style.cursor = c ? "crosshair" : "grab"; }
+	nav.onclick = () => setMode(false);
+	com.onclick = () => setMode(true);
+	const panel = document.getElementById("panel"), pt = document.getElementById("panel-toggle");
+	pt.onclick = () => { panel.hidden = !panel.hidden; pt.setAttribute("aria-pressed", String(!panel.hidden)); };
+	document.addEventListener("keydown", (e) => {
+		if (e.target.closest("input, textarea")) return;
+		if (e.key === "v" || e.key === "V") setMode(false);
+		if (e.key === "c" || e.key === "C") setMode(true);
+		if (e.key === "]") pt.click();
+	});
+	const toast = document.querySelector(".toast");
+	setTimeout(() => { toast.hidden = true; }, 4000);
+</script>
+</body>
+</html>

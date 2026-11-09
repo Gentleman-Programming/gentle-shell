@@ -78,7 +78,11 @@ export class SidebarGitHistory {
    const [graph, status] = await Promise.all([readSidebarGitGraph(this.git), this.status().catch(() => undefined)]);
    if (!this.active || generation !== this.generation) continue;
    if (JSON.stringify(graph) !== JSON.stringify(this.graph) || status !== this.statusFingerprint) {
-    this.graph = graph; this.statusFingerprint = status; this.revision++; this.publish();
+    this.graph = graph; this.statusFingerprint = status; this.revision++;
+    // A repaint can fail once the terminal has stopped. capture() must never
+    // reject for it: setActive() refreshes fire and forget, so a rejection here
+    // would be unhandled. The next frame repaints from the new revision.
+    try { this.publish(); } catch { /* repaint failures cannot change the graph. */ }
    }
   } while (this.active && this.queued);
  }

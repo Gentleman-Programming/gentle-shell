@@ -514,6 +514,29 @@ test("disabled destinations fall back to MAIN without changing saved preferences
  } finally { footer.dispose(); await fire(handlers, "session_shutdown", ctx); }
 });
 
+test("a worktree resolver that throws at startup behaves like no Git root", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	writeFileSync(join(home, "sidebar-tabs.json"), JSON.stringify({ schema: "gentle-pi.sidebar-tabs/v1", policy: "on" }));
+	const frameFor = async (resolveWorktree: () => undefined): Promise<string> => {
+		const { pi, handlers } = fakePi();
+		gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { activeProfile: () => undefined, resolveWorktree });
+		const { ctx, ui } = fakeContext();
+		await fire(handlers, "session_start", ctx);
+		assert.equal(typeof ui.footerFactory, "function", "startup still installs the footer");
+		const root = new VStack([{ component: { render: () => ["TRANSCRIPT"], invalidate() {} }, basis: 0, grow: 1 }]);
+		const host = { mode: "fullscreen", terminal: { rows: 24, columns: 160 }, layoutRoot: root, requestRender() {} };
+		const footer = (ui.footerFactory as (host: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void })(host, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+		try { return stripAnsi(renderLayoutFrame(root, 160, 24, () => {}).lines.join("\n")); }
+		finally { footer.dispose(); await fire(handlers, "session_shutdown", ctx); }
+	};
+	const noGitRoot = await frameFor(() => undefined);
+	// A resolver failure is the same as no Git root: startup must finish.
+	const throwing = await frameFor(() => { throw new Error("git is not installed"); });
+	assert.match(throwing, /CHANGES/);
+	assert.doesNotMatch(noGitRoot, /\[MAIN\]|\[GIT\]/, "a single destination shows no tab bar");
+	assert.equal(throwing, noGitRoot, "a throwing resolver leaves the same sidebar as no Git root");
+});
+
 test("live Tabs choices preserve production fallback", async (t) => {
 	{
 		const home = scopedDoubleEscCancelConfigHome(t);
@@ -3851,6 +3874,9 @@ test("Tabs malformed policy is visible and cannot be overwritten through Customi
 });
 
 test("Tabs write failure reports an error and preserves the saved preference", async (t) => {
+	// chmod does not make a directory unwritable on Windows, so the seam this
+	// test needs cannot be built there.
+	if (process.platform === "win32") { t.skip("Windows chmod cannot make a directory unwritable"); return; }
 	const home = scopedDoubleEscCancelConfigHome(t);
 	const path = join(home, "sidebar-tabs.json");
 	writeFileSync(path, '{"schema":"gentle-pi.sidebar-tabs/v1","policy":"off"}\n');

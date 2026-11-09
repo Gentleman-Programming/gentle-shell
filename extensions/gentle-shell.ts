@@ -2504,6 +2504,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		showChanges(ctx, model, visualSettings.visibility.changes, (width) => groupedChangesOwner(width));
 	};
 	const gitForRoot = (root: string) => deps.gitRunner(root);
+	// A Git discovery failure is the same as no Git root: an injected resolver
+	// that throws must never abort session startup.
+	const worktreeOrNone: WorktreeResolver = (path, cwd) => {
+		try { return deps.resolveWorktree(path, cwd); } catch { return undefined; }
+	};
 	// Changes is the Git state of the session's roots that still exist: read
 	// at turn end, on panel open and by the panel's poll, never at startup.
 	const changesTracker = (ctx: ExtensionContext) => {
@@ -2558,7 +2563,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		registry?.close();
 		currentContext = ctx;
 		changes = undefined;
-		registry = new SessionWorktreeRegistry(pi, ctx.sessionManager, ctx.cwd, deps.resolveWorktree);
+		registry = new SessionWorktreeRegistry(pi, ctx.sessionManager, ctx.cwd, worktreeOrNone);
 		registry.start();
 		applyCardStyle();
 		applyCardContent();
@@ -2578,7 +2583,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		}
 		changes = changesTracker(ctx);
 		const tracker = changes;
-		const hasGitRoot = !!deps.resolveWorktree(ctx.cwd, ctx.cwd);
+		const hasGitRoot = !!worktreeOrNone(ctx.cwd, ctx.cwd);
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			disposeFooter?.();
 			sidebarTui = tui;

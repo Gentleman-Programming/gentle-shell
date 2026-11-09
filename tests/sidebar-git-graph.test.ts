@@ -53,6 +53,27 @@ test("history is inactive until enabled and discards work after deactivation", a
  history.setActive(false);
 });
 
+test("a failing repaint never rejects capture and keeps the reported graph", async () => {
+ // requestRender can throw once the terminal has stopped. A repaint failure
+ // must never reject capture: setActive() refreshes fire-and-forget, so a
+ // rejected capture would surface as an unhandled rejection.
+ let subject = "first";
+ const history = new SidebarGitHistory(async args => ({
+  code: 0,
+  stdout: args[0] === "symbolic-ref" ? "main" : args[0] === "rev-parse" ? "abc" : `* \x1eabc\x1f\x1f${subject}\x1e\n`,
+ }), async () => "clean", () => { throw new Error("the terminal stopped: requestRender failed"); });
+ history.setActive(true);
+ await assert.doesNotReject(history.refresh(), "a repaint failure does not reject the queued refresh");
+ await new Promise(resolve => setImmediate(resolve));
+ assert.deepEqual(history.graph, { state: "ready", branch: "main", lines: ["* \x1eabc\x1f\x1ffirst\x1e"] });
+ assert.equal(history.revision, 1);
+ subject = "second";
+ await assert.doesNotReject(history.refresh(), "a later repaint failure does not reject either");
+ assert.deepEqual(history.graph, { state: "ready", branch: "main", lines: ["* \x1eabc\x1f\x1fsecond\x1e"] });
+ assert.equal(history.revision, 2);
+ history.setActive(false);
+});
+
 test("a realistic long branch and ref name clip inside a narrow rail", () => {
  // A real destination branch plus the ref shorthand Git prints for HEAD and
  // its upstream: both far wider than the rail's card, which must truncate and

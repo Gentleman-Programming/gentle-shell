@@ -3487,6 +3487,49 @@ async function customizeAction(ui: FakeUi, label: string): Promise<void> {
 	assert.ok(ui.notices.length > notices, `action did not finish: ${label}`);
 }
 
+// A Cards setting follows the panel convention: ←/→ only moves the cursor and
+// Enter applies the focused value. Moving must never write, apply or notify.
+async function assertCardChoiceNeedsEnter(ui: FakeUi, home: string, spec: {
+	setting: string;
+	current: string;
+	other: string;
+	/** Side of the inline line the other value sits on. */
+	direction: "left" | "right";
+	file: string;
+	stored: () => string;
+	live: () => string;
+}): Promise<void> {
+	const screen = () => ui.overlayView!.render(90).join("\n");
+	const inline = (a: string, b: string) => new RegExp(`${spec.setting}\\s+(?:${a}\\s+${b}|${b}\\s+${a})`);
+	const toward = spec.direction === "left" ? "\x1b[D" : "\x1b[C";
+	const back = spec.direction === "left" ? "\x1b[C" : "\x1b[D";
+	assert.ok(findCustomizeRow(ui, `${spec.setting}: ${spec.current} (current)`), `missing ${spec.setting}`);
+	assert.match(screen(), inline(`● ${spec.current}`, `○ ${spec.other}`), "focus marks the applied value and leaves the other one unfilled");
+	assert.equal(existsSync(join(home, spec.file)), false, `${spec.setting} is not written on focus`);
+	const notices = ui.notices.length;
+	ui.overlayView!.handleInput(toward);
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(spec.stored(), spec.current, "moving the cursor does not apply");
+	assert.equal(spec.live(), spec.current, "moving the cursor leaves the live setting alone");
+	assert.equal(existsSync(join(home, spec.file)), false, "moving the cursor does not persist");
+	assert.equal(ui.notices.length, notices, "moving the cursor does not notify");
+	assert.match(screen(), inline(`● ${spec.current}`, `› ${spec.other}`), "the applied value keeps ● while the cursor sits on the other one");
+	ui.overlayView!.handleInput("\r");
+	for (let attempt = 0; attempt < 100 && ui.notices.length === notices; attempt++) await new Promise<void>((resolve) => setTimeout(resolve, 5));
+	assert.equal(spec.stored(), spec.other, "Enter applies the focused value");
+	assert.equal(spec.live(), spec.other, "the live setting follows the applied choice");
+	assert.ok(existsSync(join(home, spec.file)), "Enter persists the choice");
+	assert.match(ui.notices.at(-1)!, new RegExp(`${spec.setting}: ${spec.other}`));
+	assert.match(screen(), inline(`● ${spec.other}`, `○ ${spec.current}`), "● moves to the applied value");
+	const applied = ui.notices.length;
+	ui.overlayView!.handleInput(back);
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(spec.stored(), spec.other, "moving the cursor back does not revert");
+	assert.equal(spec.live(), spec.other, "moving the cursor back leaves the live setting alone");
+	assert.equal(ui.notices.length, applied, "moving the cursor back does not notify");
+	assert.match(screen(), inline(`● ${spec.other}`, `› ${spec.current}`), "● stays on the applied value");
+}
+
 test("customize Notifications applies audio controls directly in the same overlay, without nested menus or visual writes", async (t) => {
 	const home = scopedDoubleEscCancelConfigHome(t);
 	const { pi, commands } = fakePi();
@@ -3772,6 +3815,63 @@ test("customize Cards rows persist the Card bash mode and switch the live bash c
 	assert.equal(resolveCardBash({ gentlePiConfigHome: home }).bash, "activity");
 	assert.equal(cardBash(), CARD_BASH.ACTIVITY);
 	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("customize Card style focuses with ←/→ and applies only on Enter", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const previous = cardStyle();
+	t.after(() => setCardStyle(previous));
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	try {
+		await assertCardChoiceNeedsEnter(ui, home, {
+			setting: "Card style", current: CARD_STYLE.FLOAT, other: CARD_STYLE.NEON, direction: "left",
+			file: "card-style.json",
+			stored: () => resolveCardStyle({ gentlePiConfigHome: home }).style,
+			live: () => cardStyle(),
+		});
+	} finally { ui.overlayView!.handleInput("\x1b"); await pending; }
+});
+
+test("customize Card content focuses with ←/→ and applies only on Enter", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const previous = cardContent();
+	t.after(() => setCardContent(previous));
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	try {
+		await assertCardChoiceNeedsEnter(ui, home, {
+			setting: "Card content", current: CARD_CONTENT.MINIMAL, other: CARD_CONTENT.DEFAULT, direction: "left",
+			file: "card-content.json",
+			stored: () => resolveCardContent({ gentlePiConfigHome: home }).content,
+			live: () => cardContent(),
+		});
+	} finally { ui.overlayView!.handleInput("\x1b"); await pending; }
+});
+
+test("customize Card bash focuses with ←/→ and applies only on Enter", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const previous = cardBash();
+	t.after(() => setCardBash(previous));
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	try {
+		await assertCardChoiceNeedsEnter(ui, home, {
+			setting: "Card bash", current: CARD_BASH.ACTIVITY, other: CARD_BASH.OUTPUT, direction: "right",
+			file: "card-bash.json",
+			stored: () => resolveCardBash({ gentlePiConfigHome: home }).bash,
+			live: () => cardBash(),
+		});
+	} finally { ui.overlayView!.handleInput("\x1b"); await pending; }
 });
 
 test("T3 live style Cards action refreshes cached TODO and Status in both directions while the wide chrome stays", async (t) => {

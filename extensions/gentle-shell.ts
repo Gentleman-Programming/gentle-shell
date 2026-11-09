@@ -3438,7 +3438,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					requestCustomizeRender?.();
 				},
 				() => ({ title: `Cards · ${style}`, sample: `${cardStylePreview[style]}${resolveCardStyle(home).malformed ? " · malformed or unreadable file" : ""}` }),
-				{ setting: "Card style", value: style, current: () => { const current = resolveCardStyle(home); return current.style === style && !current.malformed; }, hint: "How conversation cards are drawn" },
+				{ setting: "Card style", value: style, current: () => { const current = resolveCardStyle(home); return current.style === style && !current.malformed; }, hint: "How conversation cards are drawn", applyOnMove: false },
 			);
 			// The content level picks between the quiet tools' result previews
 			// (default) and command-only cards (minimal).
@@ -3459,7 +3459,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					requestCustomizeRender?.();
 				},
 				() => ({ title: `Cards · content ${content}`, sample: `${cardContentPreview[content]}${resolveCardContent(home).malformed ? " · malformed or unreadable file" : ""}` }),
-				{ setting: "Card content", value: content, current: () => { const current = resolveCardContent(home); return current.content === content && !current.malformed; }, hint: "Tool cards: result previews, or the command only" },
+				{ setting: "Card content", value: content, current: () => { const current = resolveCardContent(home); return current.content === content && !current.malformed; }, hint: "Tool cards: result previews, or the command only", applyOnMove: false },
 			);
 			// The bash heading names the activity its command implies, or the plain
 			// `bash` identity whose box follows the call's tone.
@@ -3480,7 +3480,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					requestCustomizeRender?.();
 				},
 				() => ({ title: `Cards · bash ${bash}`, sample: `${cardBashPreview[bash]}${resolveCardBash(home).malformed ? " · malformed or unreadable file" : ""}` }),
-				{ setting: "Card bash", value: bash, current: () => { const current = resolveCardBash(home); return current.bash === bash && !current.malformed; }, hint: "Bash heading: the inferred activity, or the plain bash identity" },
+				{ setting: "Card bash", value: bash, current: () => { const current = resolveCardBash(home); return current.bash === bash && !current.malformed; }, hint: "Bash heading: the inferred activity, or the plain bash identity", applyOnMove: false },
 			);
 			category = "Sections";
 			for (const key of VISUAL_SECTION_KEYS) for (const shown of [true, false]) add(

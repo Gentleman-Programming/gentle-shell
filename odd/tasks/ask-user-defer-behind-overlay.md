@@ -125,4 +125,17 @@ the menu. Chosen direction (user-approved): queue/defer `ask_user_choice` and
   PR body follows the branch-pr format directly.
 - L9. User approved delivery: push the branch and open the PR. The PR states
   honestly that exactly one menu was verified by hand and that the rest rely on
-  the unit suites.
+  the unit suites. Direct push to the upstream was rejected (403): none of the
+  contributor accounts holds write on the organization, so the delivery goes
+  through the `risaavedraf/gentle-shell` fork. PR #3052 opened against
+  `Gentleman-Programming/gentle-shell:main`.
+- L10. Delivery size decision: the branch is 993 authored lines (956 added, 37
+  removed) against the advisory ~400 review budget — 311 production, 550 tests,
+  132 docs. One honest slicing pass was tried (contract plus its tests 478, the
+  twelve wraps 102, the defer plus its tests 281, docs 132) and no cohesive split
+  both lands independently and respects the budget: the contract and the wraps
+  change no observable behavior on their own, and the contract slice alone
+  already exceeds 400. The single PR was kept and the numbers, the split analysis
+  and the residual-race caveat were recorded as a PR comment
+  (issuecomment-6742870480). The repository defines `size:exception`, but the
+  contributor account has no triage permission, so a maintainer must apply it.

@@ -41,7 +41,8 @@ export interface MemoryCardTheme {
  * the call, first present won, and the one-word status it reports once the call
  * finished. `withId` is the status the plugin writes when the call itself carries
  * `idField`; without it the plugin reports the id from a result `details` this
- * pane never receives, so the bare status is the most it may claim.
+ * pane never receives, so the bare status is the most it may claim. A tool absent
+ * from this table is one the plugin added later: its own call data names it.
  */
 interface MemoryToolDesign {
 	argument: readonly string[];
@@ -69,7 +70,6 @@ const MEMORY_TOOL_DESIGN: Record<string, MemoryToolDesign> = {
 	session_end: { argument: ["id"], status: "ended" },
 	current_project: { argument: ["cwd"], status: "detected" },
 	doctor: { argument: ["check", "project"], status: "checked" },
-	capture_passive: { argument: ["source", "content"], status: "captured" },
 	judge: { argument: ["judgment_id", "relation"], status: "judged" },
 	judge_many: { argument: [], status: "judged" },
 	compare: { argument: ["memory_id_a", "memory_id_b"], status: "compared" },
@@ -79,8 +79,8 @@ const MEMORY_TOOL_DESIGN: Record<string, MemoryToolDesign> = {
 	unpin: { argument: ["id"], status: "done" },
 };
 
-/** A tool the plugin adds later keeps its label and claims only that it finished. */
-const UNKNOWN_TOOL_DESIGN: MemoryToolDesign = { argument: [], status: "done" };
+/** A tool the plugin adds later claims only that the call finished. */
+const UNDESIGNED_STATUS = "done";
 
 /** Whether `name` belongs to the memory tool namespace rather than to another tool. */
 export function isMemoryToolName(name: string): boolean {
@@ -92,8 +92,8 @@ function memoryToolName(name: string): string {
 	return name.startsWith(MEMORY_TOOL_PREFIX) ? name.slice(MEMORY_TOOL_PREFIX.length) : name;
 }
 
-function design(name: string): MemoryToolDesign {
-	return MEMORY_TOOL_DESIGN[memoryToolName(name)] ?? UNKNOWN_TOOL_DESIGN;
+function design(name: string): MemoryToolDesign | undefined {
+	return MEMORY_TOOL_DESIGN[memoryToolName(name)];
 }
 
 /**
@@ -142,14 +142,40 @@ function reviewArgument(args: Record<string, unknown> | undefined): string | und
 }
 
 /**
+ * The first field a call of an undesigned tool actually sent, in the call's own
+ * order: the protocol carries the arguments, so nothing has to be modelled here,
+ * and no value is invented for a field the call left out.
+ */
+function callArgument(args: Record<string, unknown> | undefined): string | undefined {
+	for (const [key, value] of Object.entries(args ?? {})) {
+		const text = scalar(value);
+		if (text !== undefined) return argumentValue(key, text);
+	}
+	return undefined;
+}
+
+/** The id an undesigned tool's call carries, so its status still names a target. */
+function callId(args: Record<string, unknown> | undefined): string | undefined {
+	for (const [key, value] of Object.entries(args ?? {})) {
+		if (!ID_ARGUMENTS.has(key)) continue;
+		const text = scalar(value);
+		if (text !== undefined) return text;
+	}
+	return undefined;
+}
+
+/**
  * The one argument a compact memory row names its call with: the first field the
- * plugin reads for that tool that the retained call actually carries. Nothing else
- * is looked up — no value is invented for a call that did not send it — and a call
- * with no such field is named by its label alone.
+ * plugin reads for that tool that the retained call actually carries, or the call's
+ * own first field for a tool this pane does not model. Nothing else is looked up —
+ * no value is invented for a call that did not send it — and a call with no such
+ * field is named by its label alone.
  */
 export function memoryToolArgument(name: string, args: Record<string, unknown> | undefined): string | undefined {
 	if (memoryToolName(name) === "review") return reviewArgument(args);
-	for (const key of design(name).argument) {
+	const spec = design(name);
+	if (spec === undefined) return callArgument(args);
+	for (const key of spec.argument) {
 		const text = scalar(args?.[key]);
 		if (text !== undefined) return argumentValue(key, text);
 	}
@@ -159,6 +185,10 @@ export function memoryToolArgument(name: string, args: Record<string, unknown> |
 /** The status the plugin reports for a finished call, as far as the call itself says. */
 function statusWord(name: string, args: Record<string, unknown> | undefined): string {
 	const spec = design(name);
+	if (spec === undefined) {
+		const id = callId(args);
+		return id === undefined ? UNDESIGNED_STATUS : `${UNDESIGNED_STATUS} #${id}`;
+	}
 	const id = spec.idField === undefined ? undefined : scalar(args?.[spec.idField]);
 	return id === undefined ? spec.status : `${spec.withId ?? spec.status} #${id}`;
 }

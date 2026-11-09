@@ -66,7 +66,9 @@ test("the result row reports the plugin's status word for every memory tool", ()
 		["mem_session_end", { id: "s1" }, "✓ ended"],
 		["mem_current_project", { cwd: "/repo" }, "✓ detected"],
 		["mem_doctor", { check: "db" }, "✓ checked"],
-		["mem_capture_passive", { content: "c" }, "✓ captured"],
+		["mem_capture_passive", { content: "c" }, "✓ done"],
+		["mem_future_tool", { anything: "x" }, "✓ done"],
+		["mem_other_tool", { id: 8, note: "n" }, "✓ done #8"],
 		["mem_judge", { judgment_id: "j1" }, "✓ judged"],
 		["mem_judge_many", {}, "✓ judged"],
 		["mem_compare", { memory_id_a: 1, memory_id_b: 2 }, "✓ compared"],
@@ -104,11 +106,20 @@ test("the call row names the call with the plugin's own argument for that tool",
 	assert.equal(memoryToolArgument("mem_timeline", { observation_id: 5 }), "#5");
 	assert.equal(memoryToolArgument("mem_current_project", { cwd: "/repo" }), "“/repo”");
 	assert.equal(memoryToolArgument("mem_judge_many", { ids: [1, 2] }), undefined, "a tool with no argument key shows none");
-	assert.equal(memoryToolArgument("mem_future_tool", { anything: "x" }), undefined, "an unknown tool shows no argument either");
+	assert.equal(memoryToolArgument("mem_future_tool", {}), undefined, "an unmodeled tool with no argument shows none");
 	assert.equal(memoryToolArgument("mem_save", { title: "   ", content: "" }), undefined, "blank arguments name nothing");
 	assert.equal(memoryToolArgument("mem_save", undefined), undefined);
 	assert.equal(memoryToolArgument("mem_search", { capture_prompt: false, query: "kept" }), "“kept”", "a boolean is not a name");
 	assert.equal(memoryToolCard(memoryItem({ name: "mem_judge_many", args: {}, output: "" }), plainTheme, 60)[0], "🧠 judge many …", "a call with no argument is its label alone");
+});
+
+test("a tool the pane does not model is named by the call's own first field", () => {
+	assert.equal(memoryToolArgument("mem_future_tool", { anything: "x" }), "“x”", "the call's own field names the call");
+	assert.equal(memoryToolArgument("mem_future_tool", { source: "tool output", content: "a body" }), "“tool output”", "the call's own field order wins");
+	assert.equal(memoryToolArgument("mem_future_tool", { memo_id: 5, label: "after" }), "“5”", "a field the pane does not know as an id is quoted, never guessed");
+	assert.equal(memoryToolArgument("mem_future_tool", { flags: [1, 2], draft: false }), undefined, "no scalar field names nothing");
+	assert.equal(memoryToolArgument("mem_future_tool", undefined), undefined);
+	assert.equal(memoryToolCard(memoryItem({ name: "mem_future_tool", args: { source: "tool output" }, output: "payload" }), plainTheme, 80)[0], "🧠 future tool “tool output” …");
 });
 
 test("a quoted argument collapses to one row and keeps the plugin's bound", () => {

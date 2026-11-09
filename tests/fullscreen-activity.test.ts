@@ -83,6 +83,51 @@ test("monitor tolerates duplicate opens with multiple close events", () => {
 	assert.equal(monitor.isActive(), false);
 });
 
+test("a twice-opened source keeps a wait held until both closes arrive", async () => {
+	const emitter = recordedEmitter();
+	const monitor = new FullscreenActivityMonitor();
+	monitor.attach(emitter.events);
+	emitFullscreenActivity(emitter, "gentle-guide:tour", true);
+	emitFullscreenActivity(emitter, "gentle-guide:tour", true);
+
+	let resolved = false;
+	const pending = monitor.waitIfActive().then(() => {
+		resolved = true;
+	});
+	await new Promise<void>((resolve) => setTimeout(resolve, 10));
+	assert.equal(resolved, false, "the wait holds for a source that opened twice");
+
+	emitFullscreenActivity(emitter, "gentle-guide:tour", false);
+	await new Promise<void>((resolve) => setTimeout(resolve, 10));
+	assert.equal(resolved, false, "one close must not release a source that opened twice");
+
+	emitFullscreenActivity(emitter, "gentle-guide:tour", false);
+	await pending;
+	assert.equal(resolved, true);
+});
+
+test("a close for a source that never opened cannot release a wait", async () => {
+	const emitter = recordedEmitter();
+	const monitor = new FullscreenActivityMonitor();
+	monitor.attach(emitter.events);
+	emitFullscreenActivity(emitter, "gentle-shell:profiles", true);
+
+	let resolved = false;
+	const pending = monitor.waitIfActive().then(() => {
+		resolved = true;
+	});
+	await new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+	emitFullscreenActivity(emitter, "gentle-shell:palette", false);
+	await new Promise<void>((resolve) => setTimeout(resolve, 10));
+	assert.equal(resolved, false, "a close that belongs to no open must not release the wait");
+	assert.equal(monitor.isActive(), true);
+
+	emitFullscreenActivity(emitter, "gentle-shell:profiles", false);
+	await pending;
+	assert.equal(monitor.isActive(), false);
+});
+
 test("monitor keeps counting while a second source stays open", () => {
 	const emitter = recordedEmitter();
 	const monitor = new FullscreenActivityMonitor();
@@ -181,8 +226,9 @@ test("waitIfActive honors an already aborted signal without mounting", async () 
 
 	const controller = new AbortController();
 	controller.abort();
-	await monitor.waitIfActive(controller.signal);
+	const outcome = await monitor.waitIfActive(controller.signal);
 
+	assert.equal(outcome, "aborted", "a pre-aborted signal must end the wait as aborted, never as released");
 	assert.equal(monitor.isActive(), true, "aborting the wait must not replace the deferred ask with an open request");
 });
 

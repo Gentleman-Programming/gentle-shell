@@ -153,3 +153,17 @@ the menu. Chosen direction (user-approved): queue/defer `ask_user_choice` and
   failure stays an unreproducible transient with no root cause: it is not
   attributable to this diff, and no clean-run claim rests on it. The scratch
   worktree used for the comparison was removed afterwards.
+- L12. CodeRabbit round on PR #3052: six inline findings, all Trivial, each
+  adjudicated against the tree before touching anything. Valid: the pre-aborted
+  test discarded `waitIfActive`'s outcome, so a regression returning `"released"`
+  passed; `deadend` is not a word; the duplicate-open, unrelated-close and
+  question-abort paths had no test; and the harness `release()` ran no-op
+  closures instead of the bus unsubscribe (its `busHandlers` counter was read
+  nowhere and reported 1 while the monitors held 2 bus listeners). Partly valid:
+  the pre-abort difference is the deliberate choice recorded in L4, but that
+  entry, and the reference sentence written from it, claimed the old mount
+  behavior held *always* when the code keeps it only with no menu open. Invalid:
+  MD037 needs an emphasis pair and line 59 has none - its lone `*` is the
+  `ask_user*` glob - and the repository ships no markdownlint config, dependency,
+  script or job. Fixed as tests plus prose only; the defer mechanism is untouched.
+  L4 stays as written history and is superseded on that one point.

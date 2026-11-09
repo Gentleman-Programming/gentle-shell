@@ -42,7 +42,6 @@ interface InstalledTools {
 	question: { execute: (...args: unknown[]) => Promise<DeferredRequestResult> };
 	activity: { open(source: string): void; close(source: string): void };
 	emitted: Array<{ channel: string; data: unknown }>;
-	busHandlers: number;
 	handlerCountFor(channel: string): number;
 	release(): void;
 }
@@ -60,11 +59,15 @@ function installTools(): InstalledTools {
 			const list = handlers.get(channel) ?? [];
 			list.push(handler);
 			handlers.set(channel, list);
-			return () => {
+			const unsubscribe = (): void => {
 				const current = handlers.get(channel) ?? [];
 				const index = current.indexOf(handler);
 				if (index >= 0) current.splice(index, 1);
 			};
+			// release() must run the unsubscribe the bus actually handed out, not a
+			// stand-in: the monitors' teardown is what keeps a test from leaking.
+			subscriptions.push(unsubscribe);
+			return unsubscribe;
 		},
 		emit(channel: string, data: unknown): void {
 			emitted.push({ channel, data });
@@ -80,8 +83,10 @@ function installTools(): InstalledTools {
 			if (spec.name === "ask_user_question") questionTool.execute = spec.execute;
 		},
 		on(event: string, handler: (event: unknown, ctx: unknown) => void): void {
+			// Pi's session events are outside this harness; release() only tears down
+			// the bus subscriptions the tools' monitors install.
+			void event;
 			void handler;
-			subscriptions.push(() => void event);
 		},
 		events,
 	};
@@ -97,7 +102,6 @@ function installTools(): InstalledTools {
 			close: (source: string) => emitFullscreenActivity(pi, source, false),
 		},
 		emitted,
-		busHandlers: subscriptions.length,
 		handlerCountFor: (channel: string) => (handlers.get(channel) ?? []).length,
 		release: () => subscriptions.splice(0).forEach((unsubscribe) => unsubscribe()),
 	};
@@ -194,6 +198,23 @@ test("an aborted signal during the defer returns the cancelled shape without mou
 	assert.equal(trace.customCalls, 0, "aborting the defer never reaches the mount");
 	assert.equal(result.details.cancelled, true);
 	assert.deepEqual(blockedEventsFor(record, "gentle-pi:ask-user-choice:blocked"), []);
+	record.release();
+});
+
+test("an aborted signal during the defer cancels the questionnaire too (S5)", async () => {
+	const record = installTools();
+	const trace: MountTrace = { customCalls: 0 };
+	const signal = new AbortController();
+
+	record.activity.open("gentle-shell:palette");
+	const execution = record.question.execute("call", QUESTION_PARAMS, signal.signal, undefined, tuiContext(trace));
+	await flush();
+	signal.abort();
+	const result = await execution;
+
+	assert.equal(trace.customCalls, 0, "aborting the defer never reaches the questionnaire mount");
+	assert.equal(result.details.cancelled, true);
+	assert.deepEqual(blockedEventsFor(record, "gentle-pi:ask-user-question:blocked"), []);
 	record.release();
 });
 

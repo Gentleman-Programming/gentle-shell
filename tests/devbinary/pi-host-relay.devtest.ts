@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import test from "node:test";
@@ -440,6 +440,42 @@ test("dev-binary: Pi host relay captures one real B-target slot from an A-sessio
 	const sessionStatus = candidateStatus(RELAY_DEV_BINARY!, sessionA, sessionA, environment);
 	assert.equal(sessionStatus.authority, undefined, "A must remain without B's review authority");
 	assert.notEqual(sessionStatus.targetIdentity, advanced.targetIdentity, "A must remain unrelated to B's candidate binding");
+});
+
+test("dev-binary: committed-range START preserves selected untracked content without dirty tracked noise", { skip: !RUNNABLE }, async (t) => {
+	const cwd = repository(t, "gentle-pi-committed-selected-");
+	const home = mkdtempSync(join(tmpdir(), "gentle-pi-committed-selected-home-"));
+	t.after(() => { rmSync(home, { recursive: true, force: true }); });
+	const environment = { ...reviewEnvironment(home), GENTLE_PI_CONFIG_HOME: join(home, "config"), GENTLE_PI_AGENT_HOME: join(home, "agent"), PI_CODING_AGENT_DIR: join(home, "agent") };
+	const binary = RELAY_DEV_BINARY!;
+	const baseRef = git(cwd, "rev-parse", "HEAD");
+	writeFileSync(join(cwd, "app.ts"), "export const value = 2;\n");
+	git(cwd, "add", "app.ts");
+	git(cwd, "commit", "-qm", "committed candidate");
+	writeFileSync(join(cwd, "app.ts"), "staged noise\n");
+	git(cwd, "add", "app.ts");
+	writeFileSync(join(cwd, "app.ts"), "unstaged noise\n");
+	writeFileSync(join(cwd, "selected.txt"), "selected\n");
+	writeFileSync(join(cwd, "excluded.txt"), "excluded\n");
+	const before = { status: git(cwd, "status", "--porcelain=v1"), tree: git(cwd, "write-tree"), content: readFileSync(join(cwd, "app.ts"), "utf8") };
+	enableGlobalReview(binary, cwd, cwd, environment);
+	const calls: NativeProcessCall[] = [];
+	const native = devNativeCli(binary, environment, calls);
+	const controller = controllerForNative(native), context = sessionContext(cwd);
+	const selector = { baseRef, committedOnly: true };
+	const inspected = record((await controller.execute("selected-range-inspect", { operation: "inspect", untrackedScope: "select", intendedUntracked: ["selected.txt"], input: JSON.stringify(selector) }, undefined, undefined, context)).details, "selected inspect");
+	assert.equal(inspected.status, "ready");
+	const prompted = record((await controller.execute("selected-range-start", { operation: "start", input: JSON.stringify({ mode: "ordinary", ...selector }) }, undefined, undefined, context)).details, "selected start");
+	assert.equal(prompted.outcome, "native-review-consent-required", JSON.stringify(prompted));
+	assert.ok(calls.some(call => call.arguments[0] === "review" && call.arguments[1] === "start"), "real native START must run after the candidate identity check");
+	const started = record((await controller.execute("selected-range-consent", { operation: "answer-consent", input: JSON.stringify({ consentBinding: prompted.consent_binding, answer: "granted" }) }, undefined, undefined, context)).details, "selected consent");
+	assert.equal(record(started.result, "selected native START").action, "created");
+	const lineage = stringValue(record(started.result, "selected native START").lineage_id, "selected lineage");
+	const status = await native.targetStatus({ cwd, agent: "pi", lineageId: lineage, ...selector });
+	assert.deepEqual([...status.projection.paths].sort(), ["app.ts", "selected.txt"]);
+	assert.deepEqual(status.projection.intendedUntracked, ["selected.txt"]);
+	assert.equal(status.authority?.state, "reviewing", "this journey never captures a reviewer or approves/burns authority");
+	assert.deepEqual({ status: git(cwd, "status", "--porcelain=v1"), tree: git(cwd, "write-tree"), content: readFileSync(join(cwd, "app.ts"), "utf8") }, before);
 });
 
 // gentle-pi#522 / #524: a reviewer whose bytes gentle-ai refuses at admission

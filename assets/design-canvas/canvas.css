@@ -1,35 +1,125 @@
 :root {
 	color-scheme: dark;
-	--gd-bg: #111214;
-	--gd-stage: #1a1b1e;
-	--gd-panel: #222327;
-	--gd-border: #3a3b40;
-	--gd-text: #ececee;
-	--gd-muted: #a9abb2;
-	--gd-accent: #8ab4ff;
-	--gd-accent-text: #0b1220;
-	--gd-danger: #ff9b9b;
-	--gd-focus: #ffd479;
-	--gd-pin: #8ab4ff;
-	--gd-pin-resolved: #7d8a7f;
-	--gd-success: #9be0a8;
-	font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+	/* Brand set of design/system.md (assets/install-wizard/wizard.css) */
+	--bg: #1a1218;
+	--bg-deep: #000000;
+	--surface: #20161e;
+	--surface-1: #241822;
+	--surface-2: #342230;
+	--border: #342230;
+	--border-soft: #ffffff17;
+	--text: #f6eff3;
+	--text-muted: #a78e9b;
+	--text-faint: #76616b;
+	--accent: #f095c8;
+	--accent-strong: #ff76c3;
+	--accent-soft: #ffb1dd;
+	--success: #b4e7c7;
+	--warning: #e0c27a;
+	--error: #ff718f;
+	--info: #a9c7ee;
+	--radius-sm: 8px;
+	--radius-md: 12px;
+	--radius-lg: 16px;
+	--radius-pill: 999px;
+	--ease: cubic-bezier(.4, 0, .2, 1);
+	--glow: 0 10px 30px #f095c84d;
+	--shadow-panel: 0 24px 60px #00000073, 0 0 40px #f095c81a;
+	--font-sans: Inter, "SF Pro Text", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+	--font-mono: "IosevkaTerm NF", "Iosevka Term", "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+	/* Derived from the brand colors for the canvas */
+	--accent-wash: #f095c814;
+	--wash: #ffffff0f;
+	--paper: #ffffff;
+	--success-halo: #b4e7c726;
+	--error-halo: #ff718f26;
+	--error-wash: #ff718f1a;
+	--error-line: #ff718f80;
+	--info-halo: #a9c7ee33;
+	--info-line: #a9c7ee66;
+	--warning-line: #e0c27a66;
+	--warning-halo: #e0c27a33;
+	--success-line: #b4e7c766;
+	--accent-line: #f095c899;
+	--shadow-frame: 0 2px 16px #00000080;
+	--shadow-pop: 0 4px 16px #00000099;
+	--scrim: #000000b3;
+	--selection: #f095c84d;
+	--rail-width: 60px;
+	--bar-height: 56px;
+	--side-width: 360px;
+	font-family: var(--font-sans);
 	font-size: 14px;
+	line-height: 1.5;
+}
+
+/* canvas-layout S15: the Neutral theme (Settings > Appearance), a dark gray canvas with a light-gray accent instead of
+   the pink. It sets every color token of :root; the states (success, warning, error, info) keep their colors, so they
+   still mean the same. Text on the accent is var(--bg), dark on light. */
+:root[data-theme="neutral"] {
+	color-scheme: dark;
+	--bg: #161616;
+	--bg-deep: #000000;
+	--surface: #1c1c1c;
+	--surface-1: #212121;
+	--surface-2: #333333;
+	--border: #333333;
+	--border-soft: #ffffff17;
+	--text: #f2f2f2;
+	--text-muted: #a6a6a6;
+	--text-faint: #737373;
+	--accent: #d4d4d4;
+	--accent-strong: #ededed;
+	--accent-soft: #e0e0e0;
+	--success: #b4e7c7;
+	--warning: #e0c27a;
+	--error: #ff718f;
+	--info: #a9c7ee;
+	--glow: 0 10px 30px #d4d4d42e;
+	--shadow-panel: 0 24px 60px #00000073, 0 0 40px #ffffff0d;
+	--accent-wash: #d4d4d414;
+	--wash: #ffffff0f;
+	--paper: #ffffff;
+	--success-halo: #b4e7c726;
+	--error-halo: #ff718f26;
+	--error-wash: #ff718f1a;
+	--error-line: #ff718f80;
+	--info-halo: #a9c7ee33;
+	--info-line: #a9c7ee66;
+	--warning-line: #e0c27a66;
+	--warning-halo: #e0c27a33;
+	--success-line: #b4e7c766;
+	--accent-line: #d4d4d499;
+	--shadow-frame: 0 2px 16px #00000080;
+	--shadow-pop: 0 4px 16px #00000099;
+	--scrim: #000000b3;
+	--selection: #d4d4d44d;
 }
 
 * { box-sizing: border-box; }
 
+[hidden] { display: none !important; }
+
+/* The parts the browser draws carry the palette too: selection, caret, form controls and scrollbars. */
+::selection { background: var(--selection); color: var(--text); }
+textarea, input { caret-color: var(--accent); }
+input[type="checkbox"], input[type="radio"], input[type="range"] { accent-color: var(--accent); }
+* { scrollbar-width: thin; scrollbar-color: var(--surface-2) transparent; }
+
 html, body {
 	margin: 0;
 	height: 100%;
-	background: var(--gd-bg);
-	color: var(--gd-text);
+	background: var(--bg);
+	color: var(--text);
 	overflow: hidden;
 }
 
+/* Rail | top bar over (navigator | viewport | review side). */
 body {
-	display: flex;
-	flex-direction: column;
+	display: grid;
+	grid-template-columns: var(--rail-width) minmax(0, 1fr);
+	grid-template-rows: var(--bar-height) minmax(0, 1fr);
+	-webkit-font-smoothing: antialiased;
 }
 
 .gd-visually-hidden {
@@ -41,26 +131,186 @@ body {
 	white-space: nowrap;
 }
 
+.gd-sprite { position: absolute; }
+
+.gd-i {
+	width: 18px;
+	height: 18px;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 2;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+	flex: none;
+}
+
+/* Tool rail: few tools, each with a word under its icon (canvas-progressive S1) */
+.gd-rail {
+	grid-column: 1;
+	grid-row: 1 / 3;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 4px;
+	padding: 10px 0;
+	background: var(--bg-deep);
+	border-right: 1px solid var(--border);
+}
+
+.gd-mark {
+	display: grid;
+	place-items: center;
+	width: 40px;
+	height: 40px;
+	margin-bottom: 10px;
+	color: var(--accent);
+}
+
+/* The Gentle rose of the startup banner, one square per braille dot (i-rose): filled, not stroked like the icons. */
+.gd-mark .gd-rose { width: 40px; height: 37px; fill: currentColor; stroke: none; }
+
+.gd-rail .gd-tool {
+	position: relative;
+	flex-direction: column;
+	gap: 2px;
+	width: 52px;
+	min-width: 52px;
+	min-height: 52px;
+	padding: 4px 0;
+	color: var(--text-muted);
+	border-color: transparent;
+}
+
+.gd-tool-label { font-size: 11px; line-height: 1.2; }
+
+.gd-rail .gd-tool:hover:not(:disabled) { color: var(--accent-soft); border-color: var(--border-soft); }
+
+.gd-rail .gd-tool[aria-pressed="true"], .gd-rail .gd-tool[aria-expanded="true"] {
+	background: var(--surface-2);
+	color: var(--text);
+	border-color: var(--border);
+}
+
+.gd-rail .gd-tool[aria-pressed="true"] .gd-i { color: var(--accent); }
+
+.gd-rail .gd-tool[aria-pressed="true"]::before {
+	content: "";
+	position: absolute;
+	left: -4px;
+	top: 10px;
+	bottom: 10px;
+	width: 3px;
+	border-radius: 0 3px 3px 0;
+	background: var(--accent);
+}
+
+.gd-sep {
+	width: 24px;
+	height: 1px;
+	margin: 4px 0;
+	background: var(--border);
+}
+
+.gd-rail .gd-bottom { margin-top: auto; }
+
+/* Top bar */
 .gd-bar {
+	grid-column: 2;
+	grid-row: 1;
 	display: flex;
 	align-items: center;
-	flex-wrap: wrap;
-	gap: 8px 12px;
-	padding: 8px 12px;
-	background: var(--gd-panel);
-	border-bottom: 1px solid var(--gd-border);
-	flex: none;
+	gap: 12px;
+	min-width: 0;
+	padding: 0 16px;
+	background: var(--surface);
+	border-bottom: 1px solid var(--border);
+}
+
+.gd-spacer { flex: 1; }
+
+/* Whether a Pi session receives what the canvas sends (canvas-progressive S3), at the bar's far right (canvas-layout S14).
+   Connected is a quiet dot whose word stays in the accessible name and the tooltip; Not connected keeps its words. */
+.gd-connection {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	margin: 0;
+	padding: 2px 10px;
+	border: 1px solid transparent;
+	border-radius: var(--radius-pill);
+	color: var(--text-muted);
+	font-size: 13px;
+	white-space: nowrap;
+}
+
+.gd-connection[data-state="on"] { padding: 2px 4px; border-color: transparent; cursor: help; }
+
+.gd-connection-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 3px var(--success-halo); }
+
+.gd-connection[data-state="off"] {
+	color: var(--warning);
+	border-color: var(--warning-line);
+	font-weight: 600;
+	cursor: help;
+}
+
+.gd-connection[data-state="off"] .gd-connection-dot { background: var(--warning); box-shadow: 0 0 0 3px var(--warning-halo); }
+
+/* The top bar never lets one item spill over the next: the controls keep their size, and the design name gives way
+   (cut with an ellipsis). As the bar narrows, a few words become icons; they stay in the accessible name and the
+   tooltip. A warning (Not connected) always keeps its words. */
+.gd-bar { container: gd-bar / inline-size; }
+.gd-bar > .gd-zoom, .gd-bar > .gd-connection, .gd-bar > .gd-secondary, .gd-bar > .gd-toggle { flex: none; }
+.gd-bar > .gd-device-button { flex: none; }
+.gd-crumbs { flex: none; }
+.gd-field select { width: clamp(16ch, 15vw, 28ch); text-overflow: ellipsis; }
+.gd-spacer { min-width: 0; }
+
+@container gd-bar (max-width: 1700px) {
+	#gd-compare-app > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+	#gd-compare-app { min-width: 36px; padding: 4px 8px; }
+	#gd-feature { max-width: 18ch; }
+}
+
+@container gd-bar (max-width: 1500px) {
+	#gd-device-size { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
+
+@container gd-bar (max-width: 1400px) {
+	#gd-feature, #gd-feature-sep { display: none; }
+}
+
+@container gd-bar (max-width: 1020px) {
+	.gd-title, .gd-field > .gd-crumb-sep { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+	#gd-device-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
+
+/* Breadcrumb: Gentle Design / design / feature document */
+.gd-crumbs {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+	color: var(--text-muted);
 }
 
 .gd-title {
 	margin: 0;
-	font-size: 15px;
+	flex: none;
+	font-size: 14px;
 	font-weight: 600;
+	color: var(--text);
 	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	max-width: 32ch;
 }
+
+.gd-field {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+
+.gd-crumb-sep { flex: none; }
 
 .gd-group {
 	display: flex;
@@ -68,32 +318,72 @@ body {
 	gap: 4px;
 }
 
+.gd-zoom {
+	gap: 2px;
+	padding: 2px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+}
+
+.gd-zoom button {
+	min-width: 30px;
+	min-height: 30px;
+	padding: 0 6px;
+	color: var(--text-muted);
+	border-color: transparent;
+}
+
+/* Row, Column and Grid (canvas-layout S2): a segmented group like the zoom, the current arrangement pressed. */
+.gd-arrange {
+	flex: none;
+	gap: 2px;
+	padding: 2px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+}
+
+.gd-arrange button {
+	min-width: 30px;
+	min-height: 30px;
+	padding: 0 6px;
+	color: var(--text-muted);
+	border-color: transparent;
+}
+
+.gd-arrange button[aria-pressed="true"] { background: var(--surface-2); color: var(--text); }
+
 button, select, textarea {
 	font: inherit;
-	color: var(--gd-text);
-	background: var(--gd-stage);
-	border: 1px solid var(--gd-border);
-	border-radius: 6px;
+	color: var(--text);
+	background: transparent;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
 }
 
 button {
-	min-width: 32px;
-	min-height: 32px;
-	padding: 4px 10px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	min-width: 36px;
+	min-height: 36px;
+	padding: 4px 12px;
 	cursor: pointer;
 	white-space: nowrap;
 }
 
-button:hover { border-color: var(--gd-muted); }
+button:hover:not(:disabled) { border-color: var(--border-soft); color: var(--accent-soft); }
+
+select, textarea { background: var(--bg); }
 
 select {
-	min-height: 32px;
+	min-height: 36px;
 	padding: 4px 8px;
 	max-width: 28ch;
 }
 
-button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport:focus-visible {
-	outline: 2px solid var(--gd-focus);
+:focus-visible {
+	outline: 2px solid var(--accent);
 	outline-offset: 2px;
 }
 
@@ -101,56 +391,87 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport
 	min-width: 5ch;
 	text-align: center;
 	font-variant-numeric: tabular-nums;
-	color: var(--gd-muted);
+	color: var(--text-muted);
 }
 
-.gd-toggle[aria-pressed="true"], .gd-primary {
-	background: var(--gd-accent);
-	border-color: var(--gd-accent);
-	color: var(--gd-accent-text);
+.gd-toggle[aria-pressed="true"] {
+	background: var(--surface-2);
+	border-color: var(--accent-line);
+	color: var(--accent);
 }
 
-.gd-feature {
+.gd-primary {
+	background: var(--accent);
+	border-color: var(--accent);
+	color: var(--bg);
+	font-weight: 600;
+	box-shadow: var(--glow);
+}
+
+.gd-primary:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--bg); }
+
+/* Mono chips: the feature document and comment selectors */
+.gd-feature, .gd-comment-selector {
 	margin: 0;
-	max-width: 28ch;
-	color: var(--gd-muted);
+	padding: 1px 6px;
+	color: var(--accent-soft);
+	background: var(--wash);
+	border: 1px solid var(--border-soft);
+	border-radius: 6px;
+	font: 12px var(--font-mono);
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
 
-.gd-nav-mode {
-	margin: 0;
-	max-width: 40ch;
-	color: var(--gd-muted);
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
-}
+.gd-feature { max-width: 36ch; }
 
-.gd-nav-mode.gd-using { color: var(--gd-accent); font-weight: 600; }
+.gd-secondary { border-color: var(--border); }
 
 .gd-status {
-	margin: 0 0 0 auto;
-	color: var(--gd-muted);
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	margin: 0;
+	min-width: 0;
+	color: var(--text-muted);
+	font-size: 13px;
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
+
+/* The dot sits beside a text; the text says the same, so color is never alone. */
+.gd-status:not(:empty)::before {
+	content: "";
+	flex: none;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--success);
+	box-shadow: 0 0 0 3px var(--success-halo);
+}
+
+.gd-status.gd-error::before { background: var(--error); box-shadow: 0 0 0 3px var(--error-halo); }
 
 .gd-main {
 	position: relative;
+	grid-column: 2;
+	grid-row: 2;
 	display: flex;
-	flex: 1;
+	min-width: 0;
 	min-height: 0;
 }
 
+/* The viewport: a dot grid; the mode chip floats over it. */
 .gd-viewport {
 	position: relative;
 	flex: 1;
 	min-width: 0;
 	overflow: hidden;
-	background: var(--gd-stage);
+	background-color: var(--bg);
+	background-image: radial-gradient(var(--surface-2) 1px, transparent 1.2px);
+	background-size: 22px 22px;
 	cursor: grab;
 	touch-action: none;
 	-webkit-user-select: none;
@@ -164,14 +485,135 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport
 }
 
 .gd-viewport.gd-panning { cursor: grabbing; }
+/* Space held: every press pans, over an artboard too (canvas-layout S9). */
+.gd-viewport.gd-space-pan, .gd-viewport.gd-space-pan * { cursor: grab; }
+.gd-viewport.gd-space-pan.gd-panning, .gd-viewport.gd-space-pan.gd-panning * { cursor: grabbing; }
 
+.gd-nav-mode {
+	position: absolute;
+	left: 50%;
+	bottom: 20px;
+	z-index: 4;
+	display: block;
+	max-width: calc(100% - 32px);
+	margin: 0;
+	padding: 8px 14px;
+	transform: translateX(-50%);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-pill);
+	background: var(--surface-1);
+	box-shadow: var(--shadow-panel);
+	color: var(--text);
+	font-size: 13px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	pointer-events: none;
+}
+
+.gd-nav-mode::before {
+	content: "";
+	display: inline-block;
+	width: 8px;
+	height: 8px;
+	margin-right: 8px;
+	vertical-align: 1px;
+	border-radius: 50%;
+	background: var(--text-muted);
+}
+
+.gd-nav-mode.gd-commenting-chip::before, .gd-nav-mode.gd-using::before { background: var(--accent); }
+.gd-nav-mode.gd-using { color: var(--accent-soft); font-weight: 600; }
+
+/* The minimap: bottom right of the viewport, over the artboards, under the inspector. Its map is drawn by canvas.js in
+   this fixed size (MINIMAP in canvas.js); the view outline is warning-colored like the design's. */
+.gd-minimap {
+	position: absolute;
+	right: 16px;
+	bottom: 16px;
+	z-index: 5;
+	padding: 8px;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-md);
+	box-shadow: var(--shadow-panel);
+	cursor: default;
+}
+
+.gd-minimap-title {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	margin: 0 0 6px;
+	color: var(--text-muted);
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: .06em;
+	text-transform: uppercase;
+}
+
+.gd-minimap-title kbd {
+	padding: 3px 5px;
+	border: 1px solid var(--border-soft);
+	border-bottom-width: 2px;
+	border-radius: 4px;
+	font: 11px/1 var(--font-mono);
+	letter-spacing: 0;
+}
+
+.gd-minimap-map {
+	position: relative;
+	width: 204px;
+	height: 96px;
+	overflow: hidden;
+	border-radius: 6px;
+	background: var(--bg);
+	cursor: pointer;
+	touch-action: none;
+}
+
+.gd-minimap-block {
+	position: absolute;
+	border-radius: 2px;
+	background: var(--text-muted);
+	opacity: .5;
+}
+
+.gd-minimap-system { background: var(--text-faint); }
+.gd-minimap-chosen { background: var(--accent); opacity: 1; }
+.gd-minimap-discarded { opacity: .25; }
+.gd-minimap-placeholder { background: transparent; border: 1px dashed var(--accent); opacity: 1; }
+
+.gd-minimap-view {
+	position: absolute;
+	border: 1.5px solid var(--warning);
+	border-radius: 4px;
+	pointer-events: none;
+}
+
+/* The centered mode chip gives way to the minimap (222 px wide, 16 px from the edge) while it shows; when the viewport is
+   too narrow for both centered, the chip moves to the left edge. */
+.gd-viewport { container: gd-view / inline-size; }
+.gd-minimap:not([hidden]) ~ .gd-nav-mode { max-width: max(120px, calc(100% - 508px)); }
+@container gd-view (max-width: 760px) {
+	.gd-minimap:not([hidden]) ~ .gd-nav-mode { left: 16px; transform: none; max-width: calc(100% - 270px); }
+}
+
+/* In focus mode the Back to canvas button owns the bottom center; the chip sits beside it, in the same 48 px band. */
+.gd-focused .gd-nav-mode {
+	left: 8px;
+	bottom: 8px;
+	padding: 5px 12px;
+	transform: none;
+	max-width: calc(50% - 100px);
+}
+
+/* The world is as big as the bounds of its boards (canvas.js sizes it); each board sits at its position in
+   design/<slug>/layout.json, or in today's row, 80 px apart, when the design has none (canvas-layout S1-S3). */
 .gd-world {
 	position: absolute;
 	top: 0;
 	left: 0;
-	display: flex;
-	align-items: flex-start;
-	gap: 80px;
 	padding: 0;
 	transform-origin: 0 0;
 	will-change: transform;
@@ -184,12 +626,53 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport
 	flex: none;
 }
 
+/* Inside a direction the header is one line close above the frame (canvas-layout S5). */
+.gd-focus-board {
+	gap: 4px;
+}
+
+.gd-world .gd-artboard { position: absolute; top: 0; left: 0; }
+/* The one being moved stays above the others. */
+.gd-world .gd-lifted { z-index: 1; }
+
+/* An artboard moves by any part of it (canvas-layout S9): its label header says so; its buttons and links keep their own
+   cursor, and its frame keeps the pointer of the click that opens it. Inside a direction it stays put. */
+.gd-world .gd-artboard:not(.gd-placeholder) > .gd-artboard-label { cursor: move; user-select: none; }
+.gd-viewport.gd-moving, .gd-viewport.gd-moving * { cursor: grabbing; }
+/* The artboard pressed last, title and frame, until a press elsewhere or Esc (canvas-layout S10). */
+.gd-world .gd-selected {
+	outline: calc(2px * var(--gd-inv-zoom, 1)) solid var(--accent);
+	outline-offset: calc(6px * var(--gd-inv-zoom, 1));
+}
+.gd-focused .gd-world .gd-artboard > .gd-artboard-label { cursor: auto; user-select: auto; }
+
 .gd-artboard-label {
 	position: relative;
+	/* Above the frame box that follows it, so an implement alert can drop over the artboard. */
+	z-index: 2;
 	display: flex;
 	flex-direction: column;
 	gap: 2px;
+	/* Its text never sets the direction's width: the frame does, so a long tradeoff wraps instead of spreading the directions apart. */
+	contain: inline-size;
+	/* Open sits at the bottom right at screen size: keep room for it so it never covers the title or the tradeoff. */
+	padding-right: min(calc(88px * var(--gd-inv-zoom, 1)), 45%);
 }
+
+.gd-focus-board .gd-artboard-label, .gd-system-board .gd-artboard-label { padding-right: 0; }
+
+/* Inside a direction: number, title, the tradeoff cut to one line (whole in its tooltip) and the actions, on one line. A
+   frame too narrow for the title and the actions moves the actions to a second line instead of overlapping them. */
+.gd-focus-board .gd-artboard-label {
+	flex-direction: row;
+	flex-wrap: wrap;
+	align-items: center;
+	column-gap: 12px;
+	row-gap: 4px;
+}
+
+.gd-focus-board .gd-artboard-head { flex: 0 1 auto; min-width: 0; }
+.gd-focus-board .gd-artboard-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* The handoff row above Implement this: anchored to the label's bottom right, kept at screen
    size like the pins, and wrapped within the artboard's on-screen width. */
@@ -206,22 +689,33 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport
 	transform-origin: right bottom;
 }
 
+/* Zoomed out, the handoff row and Implement this collapse; Open stays, it is how a direction opens (canvas-progressive S4). */
+.gd-compact .gd-handoff, .gd-compact .gd-implement { display: none; }
+
 .gd-implement { white-space: nowrap; }
 
 /* At 100% the label makes room for the handoff row above Implement this. */
 .gd-has-handoff .gd-artboard-label { padding-top: 30px; }
+/* The chosen artboard's row has the stepper on a line of its own. */
+.gd-has-stepper .gd-artboard-label { padding-top: 56px; }
 
 .gd-implement-confirm {
 	display: flex;
 	align-items: center;
 	gap: 6px;
 	padding: 4px 6px;
-	border: 1px solid var(--gd-border);
+	border: 1px solid var(--border);
 	border-radius: 6px;
-	background: var(--gd-panel);
+	background: var(--surface);
 }
 
 .gd-implement [hidden] { display: none; }
+
+.gd-artboard-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
 
 .gd-artboard-title {
 	margin: 0;
@@ -229,9 +723,42 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport
 	font-weight: 600;
 }
 
+.gd-artboard-num { color: var(--text-muted); font-size: 16px; }
+
+/* The focus header repeats the handoff state beside the title; the row below stays for the other modes. */
+.gd-artboard-state {
+	display: none;
+	align-items: center;
+	padding: 1px 10px;
+	border: 1px solid var(--info-line);
+	border-radius: var(--radius-pill);
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--info);
+}
+
+.gd-focus-board .gd-artboard-state:not([hidden]) { display: inline-flex; }
+.gd-artboard-state[data-status="queued"] { color: var(--warning); border-color: var(--warning-line); }
+.gd-artboard-state[data-status="implemented"] { color: var(--success); border-color: var(--success-line); }
+
 .gd-artboard-tradeoff {
 	margin: 0;
-	color: var(--gd-muted);
+	color: var(--text-muted);
+	/* Two lines in the overview; the whole text is in the tooltip and inside a direction. */
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	line-clamp: 2;
+	overflow: hidden;
+}
+
+.gd-focus-board .gd-artboard-tradeoff {
+	display: block;
+	flex: 1 1 0;
+	min-width: 0;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 /* Handoff row (S15): Chosen or Alternative, the handoff state, its feature document, note and Compare. */
@@ -248,40 +775,83 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport
 
 .gd-choice, .gd-handoff-badge, .gd-handoff-feature, .gd-handoff-note {
 	padding: 1px 8px;
-	border: 1px solid var(--gd-border);
+	border: 1px solid var(--border);
 	border-radius: 999px;
-	background: var(--gd-panel);
+	background: var(--surface);
 	white-space: nowrap;
 }
 
-.gd-choice-chosen { background: var(--gd-accent); border-color: var(--gd-accent); color: var(--gd-accent-text); font-weight: 700; }
-.gd-choice-alternative { color: var(--gd-muted); }
+.gd-choice-chosen { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 700; }
 .gd-handoff-badge { font-weight: 600; }
-.gd-handoff-badge[data-status="queued"] { color: var(--gd-focus); border-color: var(--gd-focus); }
-.gd-handoff-badge[data-status="sent"], .gd-handoff-badge[data-status="in_progress"] { color: var(--gd-accent); border-color: var(--gd-accent); }
-.gd-handoff-badge[data-status="implemented"] { color: var(--gd-success); border-color: var(--gd-success); }
-.gd-handoff-feature { color: var(--gd-muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.gd-handoff-note { max-width: 32ch; overflow: hidden; text-overflow: ellipsis; color: var(--gd-muted); font-style: italic; }
+/* A dot leads Implementing… and In progress; it pulses only without reduced motion (see the motion block). */
+.gd-handoff-badge[data-status="sent"]::before, .gd-handoff-badge[data-status="in_progress"]::before {
+	content: "";
+	display: inline-block;
+	width: 6px;
+	height: 6px;
+	margin-right: 6px;
+	vertical-align: middle;
+	border-radius: 50%;
+	background: var(--info);
+}
+.gd-handoff-badge[data-status="queued"] { color: var(--warning); border-color: var(--warning); }
+.gd-handoff-badge[data-status="sent"], .gd-handoff-badge[data-status="in_progress"] { color: var(--info); border-color: var(--info); }
+.gd-handoff-badge[data-status="implemented"] { color: var(--success); border-color: var(--success); }
+.gd-handoff-feature { color: var(--text-muted); font-family: var(--font-mono); }
+/* The agent's last note reads as plain text on one line; the full note is in its tooltip. */
+.gd-handoff-note { max-width: 60ch; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+
+/* The chosen artboard's mini stepper, on its own line above the badges (canvas-chosen-direction S3). */
+.gd-ministep { flex-basis: 100%; display: flex; justify-content: flex-end; }
+.gd-ministep-list {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	font-size: 11px;
+	color: var(--text-muted);
+	white-space: nowrap;
+}
+.gd-ministep-step { display: inline-flex; align-items: center; gap: 4px; }
+.gd-ministep-step + .gd-ministep-step::before { content: ""; width: 10px; height: 1px; margin-right: 2px; background: var(--text-faint); }
+.gd-ministep-dot { flex: none; width: 8px; height: 8px; border: 1.5px solid var(--text-faint); border-radius: 50%; }
+.gd-ministep-step[data-state="done"] .gd-ministep-dot { background: var(--success); border-color: var(--success); }
+.gd-ministep-step[data-state="current"] .gd-ministep-dot { background: var(--info); border-color: var(--info); box-shadow: 0 0 0 3px var(--info-halo); }
+.gd-ministep-step[data-state="current"] .gd-ministep-label { color: var(--text); font-weight: 600; }
 .gd-compare-start { min-height: 24px; padding: 0 10px; font-size: 12px; }
 
 /* The chosen artboard keeps an accent frame at every zoom level. */
-.gd-chosen .gd-artboard-frame { box-shadow: 0 0 0 calc(3px * var(--gd-inv-zoom, 1)) var(--gd-accent), 0 2px 16px rgba(0, 0, 0, 0.5); }
+.gd-chosen .gd-artboard-frame { box-shadow: 0 0 0 calc(3px * var(--gd-inv-zoom, 1)) var(--accent), var(--shadow-frame); }
+
+/* Once one is chosen, the others are discarded: dimmed until hovered or reached by keyboard. */
+.gd-choice-discarded { color: var(--text-muted); }
+.gd-discarded .gd-frame-box {
+	opacity: .45;
+	filter: grayscale(.6);
+}
+.gd-discarded:hover .gd-frame-box, .gd-discarded:focus-within .gd-frame-box { opacity: 1; filter: none; }
+/* The direction you opened to review is shown as it is, discarded or not. */
+.gd-focus-board.gd-discarded .gd-frame-box { opacity: 1; filter: none; }
+.gd-implement-switch { color: var(--text-muted); border-color: var(--border); background: transparent; }
 
 .gd-artboard-frame {
 	display: block;
 	border: 0;
 	background: #fff;
-	box-shadow: 0 2px 16px rgba(0, 0, 0, 0.5);
+	box-shadow: var(--shadow-frame);
 }
 
-.gd-commenting .gd-artboard-frame { outline: 2px dashed var(--gd-accent); outline-offset: 4px; }
+.gd-commenting .gd-artboard-frame { outline: 2px dashed var(--accent); outline-offset: 4px; }
 
 /* The system board never takes comments: no comment outline, and a note while Comment mode is on. */
 .gd-commenting .gd-system-board .gd-artboard-frame { outline: none; opacity: 0.6; }
-.gd-system-note { visibility: hidden; margin: 0; color: var(--gd-muted); font-style: italic; cursor: help; }
+.gd-system-note { visibility: hidden; margin: 0; color: var(--text-muted); font-style: italic; cursor: help; }
 .gd-commenting .gd-system-note { visibility: visible; }
 
-.gd-frame-box { position: relative; }
+/* The box is the frame's size, so pins, the shield and the overflow chip line up with the frame, not with a wider header. */
+.gd-frame-box { position: relative; align-self: flex-start; }
 
 /* Navigation mode: a shield over each artboard keeps the wheel, drags and clicks on the canvas.
    Focus mode removes it from the focused artboard only. */
@@ -295,11 +865,11 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport
 .gd-shield[hidden] { display: none; }
 
 .gd-shield:hover, .gd-shield:focus-visible {
-	background: rgba(138, 180, 255, 0.06);
-	box-shadow: inset 0 0 0 calc(2px * var(--gd-inv-zoom, 1)) var(--gd-accent);
+	background: var(--accent-wash);
+	box-shadow: inset 0 0 0 calc(2px * var(--gd-inv-zoom, 1)) var(--accent);
 }
 
-.gd-shield:focus-visible { box-shadow: inset 0 0 0 calc(3px * var(--gd-inv-zoom, 1)) var(--gd-focus); }
+.gd-shield:focus-visible { box-shadow: inset 0 0 0 calc(3px * var(--gd-inv-zoom, 1)) var(--accent-soft); }
 
 .gd-shield-hint {
 	position: absolute;
@@ -309,45 +879,45 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport
 	width: max-content;
 	margin: 12px auto 0;
 	padding: 4px 10px;
-	border: 1px solid var(--gd-border);
+	border: 1px solid var(--border);
 	border-radius: 999px;
-	background: var(--gd-panel);
-	color: var(--gd-text);
+	background: var(--surface);
+	color: var(--text);
 	white-space: nowrap;
 	pointer-events: none;
 	opacity: 0;
 	transform: scale(var(--gd-inv-zoom, 1));
 	transform-origin: center top;
-	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+	box-shadow: var(--shadow-frame);
 }
 
 .gd-shield:hover .gd-shield-hint, .gd-shield:focus-visible .gd-shield-hint { opacity: 1; }
 
-/* In comment mode the inspector draws the hover box itself. */
-.gd-commenting .gd-shield { cursor: crosshair; }
-.gd-commenting .gd-shield:hover { background: transparent; box-shadow: none; }
-.gd-commenting .gd-shield-hint { display: none; }
+/* Comment mode in the overview: a click opens the direction (its hint says so); elements are picked inside it. */
 
 .gd-viewport.gd-focused {
 	cursor: default;
 	-webkit-user-select: auto;
 	user-select: auto;
 }
-.gd-focused .gd-artboard:not(.gd-focus-board) { opacity: 0.25; }
-.gd-focused .gd-focus-board .gd-artboard-frame { box-shadow: 0 0 0 2px var(--gd-accent), 0 2px 16px rgba(0, 0, 0, 0.5); }
+/* Only the open artboard shows: the others would peek in beside it. */
+.gd-focused .gd-world > :not(.gd-focus-board) { visibility: hidden; }
+.gd-focused .gd-focus-board .gd-artboard-frame { box-shadow: 0 0 0 2px var(--accent), var(--shadow-frame); }
 
-/* Floats in the band canvas.js keeps free below the focused artboard. */
+/* Floats in the 48 px band canvas.js keeps free below the focused artboard (BACK_SPACE). */
 .gd-back {
 	position: absolute;
-	bottom: 16px;
+	bottom: 8px;
+	min-height: 32px;
+	padding: 2px 14px;
 	left: 50%;
 	transform: translateX(-50%);
 	z-index: 5;
-	background: var(--gd-accent);
-	border-color: var(--gd-accent);
-	color: var(--gd-accent-text);
+	background: var(--accent);
+	border-color: var(--accent);
+	color: var(--bg);
 	font-weight: 600;
-	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+	box-shadow: var(--shadow-pop);
 }
 
 .gd-back[hidden] { display: none; }
@@ -365,54 +935,638 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport
 	min-height: 26px;
 	padding: 0 6px;
 	border-radius: 13px 13px 13px 2px;
-	border: 2px solid #0b1220;
-	background: var(--gd-pin);
-	color: var(--gd-accent-text);
+	border: 2px solid var(--bg);
+	background: var(--accent);
+	color: var(--bg);
 	font-weight: 700;
 	font-size: 12px;
 	pointer-events: auto;
 	transform: translate(-2px, -100%) scale(var(--gd-inv-zoom, 1));
 	transform-origin: 0 100%;
-	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+	box-shadow: var(--shadow-frame);
 }
 
-.gd-pin[data-status="resolved"] { background: var(--gd-pin-resolved); opacity: 0.75; }
-.gd-pin.gd-pin-active { background: var(--gd-focus); opacity: 1; }
+.gd-pin[data-status="resolved"] { background: var(--text-muted); opacity: 0.75; }
+.gd-pin.gd-pin-active { background: var(--warning); opacity: 1; }
+
+/* The ring Show draws around a check's element, by the canvas and never by the artboard's page. Like the pins it lives in the
+   transformed world, centered on the element's rect (--gd-mark-w/-h, artboard px); the inverse zoom keeps its stroke, its
+   label and its smallest size the same on screen, so a tiny element stays visible at any zoom. */
+.gd-check-mark {
+	--gd-mark-color: var(--warning);
+	--gd-mark-halo: var(--warning-halo);
+	position: absolute;
+	width: max(calc(var(--gd-mark-w) + 8px * var(--gd-inv-zoom, 1)), calc(28px * var(--gd-inv-zoom, 1)));
+	height: max(calc(var(--gd-mark-h) + 8px * var(--gd-inv-zoom, 1)), calc(28px * var(--gd-inv-zoom, 1)));
+	border: calc(2px * var(--gd-inv-zoom, 1)) solid var(--gd-mark-color);
+	border-radius: calc(6px * var(--gd-inv-zoom, 1));
+	box-shadow: 0 0 0 calc(4px * var(--gd-inv-zoom, 1)) var(--gd-mark-halo);
+	transform: translate(-50%, -50%);
+	pointer-events: none;
+	z-index: 2;
+}
+
+.gd-check-mark-fail {
+	--gd-mark-color: var(--error);
+	--gd-mark-halo: var(--error-halo);
+}
+
+.gd-check-mark-label {
+	position: absolute;
+	left: 0;
+	bottom: calc(100% + 4px * var(--gd-inv-zoom, 1));
+	max-width: 40ch;
+	padding: 1px 8px;
+	border-radius: var(--radius-pill);
+	background: var(--gd-mark-color);
+	color: var(--bg);
+	font-size: 11px;
+	font-weight: 700;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	transform: scale(var(--gd-inv-zoom, 1));
+	transform-origin: 0 100%;
+	box-shadow: var(--shadow-frame);
+}
+
+/* Screen sizes (focus mode): the All sizes view and the Overflows chip; the size is chosen in the top bar (.gd-device-button). */
+
+/* The handoff row and Implement this sit on the focus header's line, at the end. */
+.gd-focus-board .gd-board-actions {
+	position: static;
+	flex: none;
+	flex-direction: row;
+	align-items: center;
+	margin-left: auto;
+	max-width: none;
+	transform: none;
+}
+
+.gd-focus-board.gd-has-handoff .gd-artboard-label, .gd-focus-board.gd-has-stepper .gd-artboard-label { padding-top: 0; }
+
+.gd-i-s { width: 15px; height: 15px; }
+
+/* A segmented control (the comment filter, the Compare modes). */
+.gd-devices {
+	display: inline-flex;
+	padding: 3px;
+	gap: 2px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	background: var(--surface);
+}
+
+.gd-size-button {
+	min-height: 30px;
+	padding: 2px 10px;
+	border-color: transparent;
+	color: var(--text-muted);
+	font-size: 13px;
+}
+
+.gd-size-button[aria-pressed="true"] { background: var(--surface-2); color: var(--text); }
+
+/* All sizes: the artboard's own frame stays loaded but hidden; three scaled frames take its place. */
+.gd-all-sizes .gd-frame-box { visibility: hidden; }
+
+.gd-sizes-all {
+	position: absolute;
+	z-index: 3;
+	display: flex;
+	align-items: flex-start;
+	justify-content: center;
+	gap: 20px;
+}
+
+.gd-size-frame {
+	display: flex;
+	flex: none;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.gd-size-head {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-height: 20px;
+	color: var(--text-muted);
+	font-size: 12px;
+	white-space: nowrap;
+}
+
+.gd-size-name { color: var(--text); font-weight: 600; }
+.gd-size-dim, .gd-size-scale { font-variant-numeric: tabular-nums; }
+
+.gd-size-scaled {
+	position: relative;
+	overflow: hidden;
+	border-radius: 6px;
+	background: var(--paper);
+	box-shadow: var(--shadow-frame);
+}
+
+.gd-size-stage {
+	position: absolute;
+	top: 0;
+	left: 0;
+	transform-origin: 0 0;
+}
+
+.gd-size-iframe {
+	display: block;
+	border: 0;
+	background: var(--paper);
+}
+
+.gd-commenting .gd-size-scaled { outline: 2px dashed var(--accent); outline-offset: 2px; }
+
+.gd-overflow-flag {
+	position: absolute;
+	right: 6px;
+	bottom: 6px;
+	z-index: 2;
+	display: inline-flex;
+	align-items: center;
+	padding: 1px 10px;
+	border: 1px solid var(--warning-line);
+	border-radius: var(--radius-pill);
+	background: var(--surface);
+	box-shadow: var(--shadow-frame);
+	color: var(--warning);
+	font-size: 12px;
+	font-weight: 600;
+	cursor: help;
+}
+
+/* Token inspector: the panel beside the artboard in Comment mode (canvas.js positions it). */
+.gd-inspector {
+	position: absolute;
+	z-index: 5;
+	width: 280px;
+	max-height: calc(100% - 24px);
+	overflow: auto;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-md);
+	box-shadow: var(--shadow-panel);
+	font-size: 12px;
+	cursor: default;
+}
+
+.gd-inspector-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 12px 14px;
+	border-bottom: 1px solid var(--border);
+}
+
+.gd-inspector-title { margin: 0; font-size: 13px; white-space: nowrap; }
+
+.gd-inspector-selector {
+	min-width: 0;
+	padding: 1px 6px;
+	border: 1px solid var(--border-soft);
+	border-radius: 6px;
+	background: var(--wash);
+	color: var(--accent-soft);
+	font: 12px var(--font-mono);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.gd-inspector-list {
+	display: grid;
+	gap: 8px;
+	margin: 0;
+	padding: 10px 14px;
+}
+
+.gd-inspector-row {
+	display: grid;
+	grid-template-columns: 76px minmax(0, 1fr);
+	gap: 12px;
+}
+
+.gd-inspector-label { color: var(--text-muted); }
+
+.gd-inspector-value {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+	margin: 0;
+	min-width: 0;
+}
+
+.gd-inspector-code { font: 12px var(--font-mono); overflow-wrap: anywhere; }
+.gd-inspector-near { color: var(--text-muted); }
+
+.gd-inspector-swatch {
+	display: inline-block;
+	width: 12px;
+	height: 12px;
+	border: 1px solid var(--border-soft);
+	border-radius: 3px;
+}
+
+.gd-inspector-ok { color: var(--success); }
+.gd-inspector-bad { color: var(--warning); }
+
+.gd-inspector-note {
+	margin: 0;
+	padding: 0 14px 10px;
+	color: var(--text-muted);
+}
+
+.gd-inspector-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	padding: 10px 14px;
+	border-top: 1px solid var(--border);
+}
+
+.gd-small {
+	min-height: 30px;
+	padding: 2px 10px;
+	font-size: 12px;
+}
+
+/* Checks tab: a group per artboard, an issue card per finding, one dashed Passed card. */
+.gd-checks { display: flex; flex-direction: column; gap: 16px; }
+
+.gd-check-group { display: flex; flex-direction: column; gap: 8px; }
+
+.gd-check-head { display: flex; align-items: center; gap: 8px; }
+.gd-check-heading { margin: 0; font-size: 13px; }
+
+.gd-check-summary {
+	flex: none;
+	white-space: nowrap;
+	padding: 0 8px;
+	border: 1px solid var(--warning-line);
+	border-radius: var(--radius-pill);
+	color: var(--warning);
+	font-size: 11px;
+	font-weight: 600;
+}
+
+.gd-check-summary-ok { border-color: var(--success-line); color: var(--success); }
+
+.gd-check {
+	display: grid;
+	grid-template-columns: 20px minmax(0, 1fr);
+	gap: 8px;
+	padding: 10px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-md);
+	background: var(--surface-1);
+	font-size: 13px;
+}
+
+.gd-check-fail { border-color: var(--error-line); }
+.gd-check-advice { border-color: var(--warning-line); }
+.gd-check-icon { margin-top: 2px; color: var(--warning); }
+.gd-check-fail .gd-check-icon { color: var(--error); }
+
+.gd-check-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.gd-check-top { display: flex; align-items: center; gap: 8px; }
+
+.gd-check-kind {
+	padding: 0 8px;
+	border: 1px solid var(--warning-line);
+	border-radius: var(--radius-pill);
+	color: var(--warning);
+	font-size: 11px;
+	font-weight: 600;
+}
+
+.gd-check-fail .gd-check-kind { border-color: var(--error-line); color: var(--error); }
+
+.gd-check-detail { color: var(--text-muted); font-size: 12px; }
+
+.gd-check-selector {
+	align-self: flex-start;
+	max-width: 100%;
+	padding: 1px 6px;
+	border: 1px solid var(--border-soft);
+	border-radius: 6px;
+	background: var(--wash);
+	color: var(--accent-soft);
+	font: 12px var(--font-mono);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.gd-check-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+
+/* The card whose element the ring marks (aria-current), in its severity color. */
+.gd-check-active { border-color: var(--warning); box-shadow: 0 0 0 1px var(--warning); }
+.gd-check-fail.gd-check-active { border-color: var(--error); box-shadow: 0 0 0 1px var(--error); }
+
+/* An element out of sight gets no ring: the card says why. */
+.gd-check-hidden { color: var(--info); font-size: 12px; }
+
+.gd-check-passed, .gd-check-empty {
+	padding: 10px;
+	border: 1px solid var(--border);
+	border-style: dashed;
+	border-radius: var(--radius-md);
+	color: var(--text-muted);
+	font-size: 12px;
+}
 
 .gd-radio {
 	display: inline-flex;
 	align-items: center;
 	gap: 4px;
-	color: var(--gd-muted);
+	color: var(--text-muted);
 	white-space: nowrap;
 	cursor: pointer;
 }
 
-.gd-radio input { accent-color: var(--gd-accent); margin: 0; }
-.gd-radio input:focus-visible { outline: 2px solid var(--gd-focus); outline-offset: 2px; }
+.gd-radio input { accent-color: var(--accent); margin: 0; }
 
 button:disabled { opacity: 0.5; cursor: default; }
 
+/* Review side */
 .gd-panel {
 	flex: none;
-	width: min(340px, 40vw);
-	overflow-y: auto;
-	padding: 12px;
-	background: var(--gd-panel);
-	border-left: 1px solid var(--gd-border);
+	display: flex;
+	flex-direction: column;
+	width: min(var(--side-width), 40vw);
+	overflow: hidden;
+	background: var(--surface);
+	border-left: 1px solid var(--border);
 }
 
 .gd-panel[hidden] { display: none; }
 
-.gd-panel-title {
-	margin: 0 0 8px;
-	font-size: 15px;
+/* The tabs (Comments, Quality) can be wider than the panel: the row stays one line and scrolls rather than
+   squeezing labels and counts into each other; an arrow on each edge with tabs behind it scrolls toward that side.
+   The bottom line is an inset shadow on the bar because a scrolling row clips anything drawn below it. */
+.gd-tabs-bar {
+	display: flex;
+	align-items: stretch;
+	box-shadow: inset 0 -1px 0 var(--border);
 }
 
-.gd-filter { margin-bottom: 8px; }
-.gd-filter button[aria-pressed="true"] { border-color: var(--gd-accent); color: var(--gd-accent); }
+.gd-tabs {
+	display: flex;
+	flex: 1;
+	min-width: 0;
+	gap: 0;
+	padding: 8px 4px 0;
+	overflow-x: auto;
+	overflow-y: hidden;
+	scrollbar-width: none;
+}
 
-.gd-panel-empty { color: var(--gd-muted); margin: 8px 0; }
+.gd-tabs-arrow {
+	display: grid;
+	place-items: center;
+	flex: none;
+	width: 24px;
+	margin-top: 8px;
+	padding: 0;
+	border: 0;
+	border-radius: var(--radius-sm);
+	background: transparent;
+	color: var(--text-muted);
+	cursor: pointer;
+}
+
+.gd-tabs-arrow:hover { background: var(--surface-2); color: var(--text); }
+.gd-tabs-arrow[hidden] { display: none; }
+.gd-tabs-arrow .gd-i { width: 16px; height: 16px; }
+
+.gd-tabs::-webkit-scrollbar { display: none; }
+/* The fades only show which side has more tabs; the mask uses alpha, so any opaque token works. */
+.gd-tabs-more-end { mask-image: linear-gradient(to left, transparent, var(--bg) 32px); }
+.gd-tabs-more-start { mask-image: linear-gradient(to right, transparent, var(--bg) 32px); }
+.gd-tabs-more-start.gd-tabs-more-end { mask-image: linear-gradient(to right, transparent, var(--bg) 32px, var(--bg) calc(100% - 32px), transparent); }
+
+.gd-tab {
+	flex: none;
+	padding: 6px;
+	font-size: 13px;
+	border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+	border: 0;
+	border-bottom: 2px solid transparent;
+	color: var(--text-muted);
+}
+
+.gd-tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+
+/* The three tabs fit the default panel; a narrower one shrinks the labels (with an ellipsis) before anything scrolls out of view. */
+.gd-tabs .gd-tab {
+	flex: 0 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.gd-count {
+	padding: 0 6px;
+	border-radius: var(--radius-pill);
+	background: var(--surface-2);
+	color: var(--accent-soft);
+	font-size: 12px;
+}
+
+.gd-panel-body {
+	flex: 1;
+	min-height: 0;
+	overflow: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	padding: 12px;
+}
+
+.gd-panel-empty { margin: 0; color: var(--text-muted); }
+
+/* No comments yet, and how to add one (canvas-progressive S5). */
+.gd-comments-empty {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 8px;
+	margin-top: 24px;
+	padding: 20px;
+	border: 1px dashed var(--border);
+	border-radius: var(--radius-md);
+	color: var(--text-muted);
+	font-size: 13px;
+	text-align: center;
+}
+
+.gd-comments-empty .gd-i { width: 28px; height: 28px; color: var(--accent); }
+.gd-comments-empty strong { color: var(--text); font-size: 14px; }
+
+/* The Comments tab's Open / Resolved filter: the segmented control of the size bar. */
+.gd-comment-filter { align-self: flex-start; }
+.gd-comment-filter[hidden] { display: none; }
+
+/* Handoff timeline */
+.gd-handoff-panel {
+	padding: 12px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-md);
+	background: var(--bg);
+}
+
+.gd-handoff-title { margin: 0 0 10px; font-size: 13px; }
+
+/* Partial implementations (canvas-implement-part S3): under the timeline, one card per part; the state is in words. */
+.gd-parts-panel { margin-top: 12px; }
+.gd-parts {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.gd-part {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 4px;
+	padding: 10px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	background: var(--surface-1);
+	font-size: 12px;
+	color: var(--text-muted);
+}
+
+.gd-part-head { display: flex; align-items: center; gap: 8px; width: 100%; }
+.gd-part-title { flex: 1; min-width: 0; color: var(--text); font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gd-part-state {
+	flex: none;
+	padding: 0 8px;
+	border: 1px solid var(--border-soft);
+	border-radius: var(--radius-pill);
+	color: var(--text-muted);
+	font-size: 11px;
+	font-weight: 600;
+	white-space: nowrap;
+}
+.gd-part[data-status="queued"] .gd-part-state { color: var(--warning); border-color: var(--warning-line); }
+.gd-part[data-status="in_progress"] .gd-part-state { color: var(--info); border-color: var(--info-line); }
+.gd-part[data-status="implemented"] .gd-part-state { color: var(--success); border-color: var(--success-line); }
+.gd-part-excerpt { color: var(--text); overflow-wrap: anywhere; }
+.gd-part-selector { font: 11px var(--font-mono); color: var(--accent-soft); overflow-wrap: anywhere; }
+.gd-part-note { overflow-wrap: anywhere; }
+.gd-part-show { margin-top: 2px; }
+
+.gd-timeline {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+
+.gd-step {
+	display: grid;
+	grid-template-columns: 14px minmax(0, 1fr);
+	gap: 10px;
+	font-size: 13px;
+}
+
+.gd-step-dot {
+	width: 10px;
+	height: 10px;
+	margin-top: 5px;
+	border-radius: 50%;
+	border: 2px solid var(--text-faint);
+}
+
+.gd-step-done .gd-step-dot { background: var(--success); border-color: var(--success); }
+.gd-step-current .gd-step-dot { background: var(--info); border-color: var(--info); box-shadow: 0 0 0 3px var(--info-halo); }
+.gd-step-pending .gd-step-label { color: var(--text-muted); }
+.gd-step-body { display: flex; flex-direction: column; min-width: 0; }
+.gd-step-detail { color: var(--text-muted); overflow-wrap: anywhere; }
+
+.gd-side-foot {
+	margin-top: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	padding: 12px;
+	border-top: 1px solid var(--border);
+}
+
+.gd-sendmode {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	padding: 3px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+}
+
+.gd-sendmode .gd-radio {
+	position: relative;
+	justify-content: center;
+	min-height: 32px;
+	border-radius: 6px;
+	font-size: 13px;
+}
+
+/* "Save to send later" is longer than one line in a narrow panel: it wraps, centered. */
+.gd-sendmode .gd-radio { white-space: normal; text-align: center; }
+.gd-sendmode .gd-radio input { position: absolute; opacity: 0; }
+.gd-sendmode .gd-radio:has(input:checked) { background: var(--surface-2); color: var(--text); }
+.gd-sendmode .gd-radio:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Where comments go, and how many wait to be sent (hidden at 0). */
+.gd-send-intro { margin: 0; color: var(--text); font-size: 13px; }
+.gd-send-pending { margin: 0; color: var(--warning); font-size: 12px; font-weight: 600; }
+
+/* Feedback next to the action: the Send all explanation and its failure alert. */
+.gd-send-note, .gd-implement-note {
+	margin: 0;
+	color: var(--text-muted);
+	font-size: 12px;
+}
+
+.gd-implement-note { display: block; max-width: 32ch; text-align: right; white-space: normal; cursor: help; }
+
+.gd-alert {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	padding: 8px 8px 8px 10px;
+	border: 1px solid var(--error-line);
+	border-radius: var(--radius-sm);
+	background: var(--error-wash);
+	color: var(--text);
+	font-size: 13px;
+	text-align: left;
+	white-space: normal;
+}
+
+.gd-alert-icon { margin-top: 2px; color: var(--error); }
+.gd-alert-body { flex: 1; min-width: 0; }
+.gd-alert-text { margin: 0; overflow-wrap: anywhere; }
+.gd-alert-detail { display: block; margin-top: 2px; color: var(--text-muted); font: 11px var(--font-mono); overflow-wrap: anywhere; }
+.gd-alert-dismiss { min-width: 28px; min-height: 28px; padding: 0; color: var(--text-muted); border-color: transparent; }
+.gd-comment-item > .gd-alert { margin: 0 12px 12px; }
+/* The implement control sits at the bottom of the artboard header and grows upward, so its
+   alert drops over the artboard instead of running off the top of the canvas. */
+.gd-implement { position: relative; }
+.gd-implement .gd-alert { position: absolute; top: calc(100% + 6px); right: 0; z-index: 4; width: 36ch; max-width: 36ch; white-space: normal; background: linear-gradient(var(--error-wash), var(--error-wash)), var(--surface); box-shadow: var(--shadow-panel); }
+
+.gd-side-foot .gd-primary { width: 100%; min-height: 46px; font-size: 15px; }
 
 .gd-comment-list {
 	list-style: none;
@@ -420,16 +1574,16 @@ button:disabled { opacity: 0.5; cursor: default; }
 	padding: 0;
 	display: flex;
 	flex-direction: column;
-	gap: 8px;
+	gap: 10px;
 }
 
 .gd-comment-item {
-	border: 1px solid var(--gd-border);
-	border-radius: 6px;
-	background: var(--gd-stage);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-md);
+	background: var(--surface-1);
 }
 
-.gd-comment-item.gd-active { border-color: var(--gd-focus); }
+.gd-comment-item.gd-active { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-wash); }
 
 .gd-comment-show {
 	display: block;
@@ -438,27 +1592,85 @@ button:disabled { opacity: 0.5; cursor: default; }
 	text-align: left;
 	border: 0;
 	background: transparent;
-	padding: 8px;
+	padding: 12px 12px 4px;
 }
 
 .gd-comment-meta {
 	display: flex;
-	flex-wrap: wrap;
-	gap: 6px;
-	color: var(--gd-muted);
+	align-items: center;
+	gap: 8px;
+	color: var(--text-muted);
 	font-size: 12px;
 }
 
-.gd-comment-number { color: var(--gd-text); font-weight: 700; }
-.gd-comment-text { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.gd-badge { border: 1px solid var(--gd-border); border-radius: 4px; padding: 0 4px; }
-.gd-badge-detached { color: var(--gd-danger); border-color: var(--gd-danger); }
-.gd-badge-sent { color: var(--gd-success); border-color: var(--gd-success); }
+/* The pin's badge: the same shape as the pin on the artboard. */
+.gd-comment-number {
+	flex: none;
+	display: grid;
+	place-items: center;
+	min-width: 22px;
+	height: 22px;
+	padding: 0 4px;
+	border-radius: 11px 11px 11px 2px;
+	background: var(--accent);
+	color: var(--bg);
+	font-size: 11px;
+	font-weight: 700;
+}
+
+.gd-active .gd-comment-number { background: var(--warning); }
+.gd-comment-selector { flex: 0 1 auto; min-width: 0; }
+.gd-comment-text { display: block; margin: 8px 0 0; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* The size a comment was made at: a mono chip like the selector. */
+.gd-comment-viewport {
+	display: inline-block;
+	margin-top: 4px;
+	padding: 1px 6px;
+	border: 1px solid var(--border-soft);
+	border-radius: 6px;
+	background: var(--wash);
+	color: var(--accent-soft);
+	font: 12px var(--font-mono);
+	white-space: nowrap;
+}
+
+.gd-comment-file { display: block; margin-top: 4px; color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
+.gd-badge { flex: none; margin-left: auto; padding: 0 8px; border: 1px solid currentColor; border-radius: var(--radius-pill); font-weight: 600; }
+.gd-badge ~ .gd-badge { margin-left: 0; }
+.gd-badge-unsent { color: var(--warning); }
+.gd-badge-detached { color: var(--error); }
+.gd-badge-sent { color: var(--success); }
+
+/* The agent's note on a resolved comment. */
+.gd-comment-reply {
+	margin: 0 12px 4px;
+	padding: 8px 10px;
+	border-radius: var(--radius-sm);
+	background: var(--wash);
+	font-size: 12px;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.gd-comment-reply-label { margin-right: 4px; color: var(--success); font-weight: 700; }
 
 .gd-comment-actions {
 	display: flex;
 	justify-content: flex-end;
-	padding: 0 8px 8px;
+	padding: 0 12px 12px;
+}
+
+.gd-comment-actions button { min-height: 30px; padding: 2px 10px; font-size: 12px; color: var(--text-muted); }
+.gd-comment-actions { gap: 6px; }
+.gd-comment-actions button.gd-primary { color: var(--bg); }
+
+/* Editing an unsent comment in place (canvas-layout S17). */
+.gd-comment-editor {
+	display: block;
+	width: calc(100% - 24px);
+	margin: 0 12px 8px;
+	padding: 8px;
+	resize: vertical;
 }
 
 .gd-empty {
@@ -468,29 +1680,29 @@ button:disabled { opacity: 0.5; cursor: default; }
 	height: fit-content;
 	max-width: 48ch;
 	text-align: center;
-	color: var(--gd-muted);
+	color: var(--text-muted);
 }
 
 .gd-popover {
 	position: fixed;
 	z-index: 10;
-	width: min(360px, calc(100vw - 24px));
+	width: min(420px, calc(100vw - 24px));
 	padding: 12px;
-	background: var(--gd-panel);
-	border: 1px solid var(--gd-border);
+	background: var(--surface);
+	border: 1px solid var(--border);
 	border-radius: 8px;
-	box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+	box-shadow: var(--shadow-panel);
 }
 
 .gd-popover-title {
 	margin: 0 0 8px;
-	color: var(--gd-muted);
+	color: var(--text-muted);
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 
-.gd-popover-title code { color: var(--gd-text); }
+.gd-popover-title code { color: var(--text); }
 
 .gd-popover textarea {
 	width: 100%;
@@ -498,7 +1710,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 	padding: 8px;
 }
 
-.gd-popover.gd-dropping { border-color: var(--gd-accent); }
+.gd-popover.gd-dropping { border-color: var(--accent); }
 
 .gd-shot {
 	display: flex;
@@ -521,27 +1733,45 @@ button:disabled { opacity: 0.5; cursor: default; }
 	max-width: 160px;
 	max-height: 96px;
 	object-fit: contain;
-	border: 1px solid var(--gd-border);
+	border: 1px solid var(--border);
 	border-radius: 4px;
-	background: var(--gd-bg);
+	background: var(--bg-deep);
 }
 
 .gd-comment-shot { margin-top: 6px; }
 
 .gd-popover-actions {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
 	justify-content: flex-end;
 	gap: 8px;
 	margin-top: 8px;
 }
 
-.gd-popover-message {
-	margin-right: auto;
-	color: var(--gd-muted);
+.gd-popover-actions > button { flex: none; white-space: nowrap; }
+
+/* One row: Implement only this on the left, Cancel and Send together on the right (the DOM order stays Cancel,
+   Implement only this, Send for the keyboard). */
+.gd-popover-actions #gd-popover-part { order: -1; margin-right: auto; }
+
+/* The message takes its own row above the buttons, so it never squeezes them. */
+.gd-popover-feedback {
+	order: -2;
+	display: flex;
+	flex: 1 1 100%;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 4px;
 }
 
-.gd-popover-message.gd-error, .gd-status.gd-error { color: var(--gd-danger); }
+.gd-popover-feedback:has(> .gd-popover-message:empty) { display: none; }
+
+.gd-popover-message {
+	color: var(--text-muted);
+}
+
+.gd-popover-message.gd-error, .gd-status.gd-error { color: var(--error); }
 
 /* Compare (S15): the artboard and the running app side by side, over the canvas and the panel. */
 .gd-compare {
@@ -550,7 +1780,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 	z-index: 8;
 	display: flex;
 	flex-direction: column;
-	background: var(--gd-stage);
+	background: var(--bg);
 }
 
 .gd-compare[hidden] { display: none; }
@@ -561,8 +1791,8 @@ button:disabled { opacity: 0.5; cursor: default; }
 	flex-wrap: wrap;
 	gap: 8px 12px;
 	padding: 8px 12px;
-	background: var(--gd-panel);
-	border-bottom: 1px solid var(--gd-border);
+	background: var(--surface);
+	border-bottom: 1px solid var(--border);
 }
 
 .gd-compare-title {
@@ -580,20 +1810,18 @@ button:disabled { opacity: 0.5; cursor: default; }
 	align-items: center;
 	min-height: 32px;
 	padding: 4px 10px;
-	border: 1px solid var(--gd-border);
+	border: 1px solid var(--border);
 	border-radius: 6px;
-	color: var(--gd-accent);
+	color: var(--accent);
 }
-
-.gd-compare-open:focus-visible { outline: 2px solid var(--gd-focus); outline-offset: 2px; }
 
 .gd-compare-message {
 	margin: 0;
 	padding: 6px 12px;
-	color: var(--gd-muted);
+	color: var(--text-muted);
 }
 
-.gd-compare-message.gd-error { color: var(--gd-danger); }
+.gd-compare-message.gd-error { color: var(--error); }
 
 .gd-compare-stage {
 	flex: 1;
@@ -621,7 +1849,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 
 .gd-compare-caption {
 	max-width: 100%;
-	color: var(--gd-muted);
+	color: var(--text-muted);
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -631,30 +1859,568 @@ button:disabled { opacity: 0.5; cursor: default; }
 	display: block;
 	border: 0;
 	background: #fff;
-	box-shadow: 0 2px 16px rgba(0, 0, 0, 0.5);
+	box-shadow: var(--shadow-frame);
 }
 
 /* A confirmation that outlives the status line, such as a sent handoff. */
 .gd-toast {
 	position: fixed;
 	left: 50%;
-	bottom: 24px;
+	/* Top of the canvas, so it never covers Back to canvas or the mode chip at the bottom. */
+	top: 72px;
 	z-index: 20;
 	max-width: min(560px, calc(100vw - 32px));
 	padding: 10px 16px;
 	transform: translateX(-50%);
-	background: var(--gd-panel);
-	border: 1px solid var(--gd-accent);
+	background: var(--surface);
+	border: 1px solid var(--accent);
 	border-radius: 8px;
-	box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+	box-shadow: var(--shadow-panel);
 	font-weight: 600;
 }
 
 .gd-toast[hidden] { display: none; }
-.gd-toast.gd-error { border-color: var(--gd-danger); color: var(--gd-danger); }
+.gd-toast.gd-error { border-color: var(--error); color: var(--error); }
+
+/* Keyboard shortcuts */
+.gd-dialog {
+	width: min(520px, calc(100vw - 32px));
+	padding: 20px 24px;
+	background: var(--surface-1);
+	color: var(--text);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
+	box-shadow: var(--shadow-panel);
+}
+
+.gd-dialog::backdrop { background: var(--scrim); }
+
+.gd-dialog-title { margin: 0 0 12px; font-size: 16px; }
+
+.gd-keys {
+	display: grid;
+	grid-template-columns: auto 1fr;
+	gap: 8px 16px;
+	margin: 0;
+}
+
+.gd-keys dt { white-space: nowrap; color: var(--text-muted); }
+.gd-keys dd { margin: 0; }
+
+kbd {
+	padding: 2px 5px;
+	font: 11px/1 var(--font-mono);
+	color: var(--text-muted);
+	border: 1px solid var(--border-soft);
+	border-bottom-width: 2px;
+	border-radius: 4px;
+}
+
+.gd-dialog-note { margin: 12px 0 0; color: var(--text-muted); font-size: 12px; }
+.gd-dialog-actions { display: flex; justify-content: flex-end; margin-top: 16px; }
+
+/* The shortcuts a person can change (canvas-layout S11): one row per action, its key, Change and Reset. */
+.gd-keys-custom {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.gd-key-row {
+	display: grid;
+	grid-template-columns: 1fr 3em auto auto;
+	align-items: center;
+	gap: 8px;
+	padding: 3px 6px;
+	border-radius: var(--radius-sm);
+}
+
+.gd-key-current { justify-self: start; }
+
+.gd-key-waiting {
+	background: var(--accent-wash);
+	box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+
+.gd-key-waiting .gd-key-current { color: var(--accent); border-color: var(--accent-line); }
+
+.gd-keys-message {
+	min-height: 18px;
+	margin: 6px 0 12px;
+	color: var(--text-muted);
+	font-size: 12px;
+}
+
+.gd-keys-message.gd-error { color: var(--error); }
+.gd-keys-restore { margin-right: auto; }
+
+/* ---- artboard menu, another direction, placeholder (canvas-minimap-variants-export T2) ---- */
+
+/* The ⋯ button in an artboard's header. It stays at the header's end and scales with the board, like the title. */
+.gd-menu-button {
+	min-width: 30px;
+	min-height: 30px;
+	padding: 0 6px;
+	margin-left: auto;
+	color: var(--text-muted);
+	border-color: transparent;
+}
+
+.gd-menu-button[aria-expanded="true"] { background: var(--surface-2); color: var(--text); }
+.gd-menu-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* PNG export: the viewport covers the window and only the focused artboard's frame shows (exportArtboard). */
+.gd-exporting .gd-viewport {
+	position: fixed;
+	inset: 0;
+	z-index: 30;
+}
+
+.gd-exporting .gd-viewport > :not(.gd-world),
+.gd-exporting .gd-artboard:not(.gd-focus-board),
+.gd-exporting .gd-pins,
+.gd-exporting .gd-check-mark,
+.gd-exporting .gd-overflow-flag { visibility: hidden; }
+
+.gd-exporting .gd-focus-board .gd-artboard-frame { box-shadow: none; }
+
+/* One shared menu, placed at the button by the canvas (fixed: the world's transform does not touch it). */
+.gd-menu {
+	position: fixed;
+	z-index: 10;
+	min-width: 250px;
+	max-width: calc(100vw - 24px);
+	padding: 6px;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-md);
+	box-shadow: var(--shadow-panel);
+}
+
+.gd-menu-item {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: flex-start;
+	width: 100%;
+	min-height: 36px;
+	font-size: 13px;
+	text-align: left;
+	border-color: transparent;
+}
+
+.gd-menu-item:hover, .gd-menu-item:focus-visible { background: var(--surface-2); color: var(--text); }
+.gd-menu-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.gd-menu-item[aria-disabled="true"] { color: var(--text-muted); cursor: not-allowed; }
+.gd-menu-item[aria-disabled="true"]:hover { background: transparent; }
+
+.gd-menu-note {
+	flex-basis: 100%;
+	padding-left: 23px;
+	color: var(--text-muted);
+	font-size: 12px;
+	white-space: normal;
+	cursor: help;
+}
+
+.gd-menu-separator { height: 1px; margin: 4px 2px; background: var(--border); }
+
+/* The single key that does the same as a menu item (More: Keyboard shortcuts, ?). */
+.gd-menu-kbd {
+	margin-left: auto;
+	padding: 2px 5px;
+	border: 1px solid var(--border-soft);
+	border-bottom-width: 2px;
+	border-radius: 4px;
+	color: var(--text-muted);
+	font: 11px/1 var(--font-mono);
+}
+
+/* "Try another direction from this…" */
+.gd-variant { width: min(420px, calc(100vw - 32px)); }
+.gd-variant-note { margin: 0 0 12px; color: var(--text-muted); font-size: 12px; }
+.gd-variant-label { display: block; margin-bottom: 4px; font-weight: 600; }
+
+.gd-variant-field {
+	display: block;
+	width: 100%;
+	resize: vertical;
+	padding: 8px;
+	background: var(--surface);
+}
+
+.gd-variant-hint { margin: 4px 0 0; color: var(--text-muted); font-size: 12px; }
+.gd-variant-message { min-height: 1.5em; margin: 8px 0 0; color: var(--text-muted); font-size: 13px; }
+.gd-variant-message.gd-error { color: var(--error); }
+.gd-variant-field[aria-invalid="true"] { border-color: var(--error); }
+.gd-variant .gd-dialog-actions { gap: 8px; margin-top: 12px; }
+
+.gd-suggestions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; }
+
+.gd-suggestion {
+	min-height: 28px;
+	padding: 0 10px;
+	font-size: 12px;
+	color: var(--text-muted);
+	border-color: var(--border-soft);
+	border-radius: var(--radius-pill);
+}
+
+.gd-suggestion:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* The board that stands for the artboard being designed: no frame to use, only the promise of one. */
+.gd-placeholder .gd-artboard-label { padding-bottom: 4px; }
+
+.gd-placeholder-frame {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	gap: 12px;
+	padding: 0 20%;
+	background: var(--surface-1);
+	border: 1px dashed var(--accent);
+	border-radius: var(--radius-sm);
+	box-shadow: var(--shadow-frame);
+}
+
+.gd-placeholder-frame i { display: block; height: 14px; border-radius: 4px; background: var(--surface-2); }
+
+/* What is being designed, centered over the frame and kept at screen size like the pins, wrapped within the frame's on-screen width. */
+.gd-placeholder-status {
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	width: max-content;
+	max-width: calc(90% / var(--gd-inv-zoom, 1));
+	padding: 6px 14px;
+	border: 1px solid var(--info-line);
+	border-radius: var(--radius-pill);
+	background: var(--surface);
+	box-shadow: var(--shadow-frame);
+	color: var(--info);
+	font-size: 14px;
+	font-weight: 600;
+	text-align: center;
+	transform: translate(-50%, -50%) scale(var(--gd-inv-zoom, 1));
+}
+
+.gd-placeholder-state {
+	display: inline-flex;
+	align-items: center;
+	padding: 1px 10px;
+	border: 1px solid var(--info-line);
+	border-radius: var(--radius-pill);
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--info);
+}
 
 @media (prefers-reduced-motion: no-preference) {
-	button { transition: border-color 120ms ease; }
+	button { transition: border-color .2s var(--ease), color .2s var(--ease), background-color .2s var(--ease); }
 	.gd-shield-hint { transition: opacity 120ms ease; }
 	.gd-artboard { transition: opacity 160ms ease; }
+	.gd-discarded .gd-frame-box { transition: opacity 160ms ease, filter 160ms ease; }
+	.gd-handoff-badge[data-status="sent"]::before, .gd-handoff-badge[data-status="in_progress"]::before { animation: gd-pulse 1.6s var(--ease) infinite; }
+	.gd-check-mark { animation: gd-mark-pulse 0.9s var(--ease) 2; }
+	.gd-placeholder-status { animation: gd-breathe 2s var(--ease) infinite; }
+}
+
+/* Show's ring draws the eye twice, then rests on its halo. */
+@keyframes gd-mark-pulse {
+	0%, 100% { box-shadow: 0 0 0 calc(4px * var(--gd-inv-zoom, 1)) var(--gd-mark-halo); }
+	50% { box-shadow: 0 0 0 calc(12px * var(--gd-inv-zoom, 1)) var(--gd-mark-halo); }
+}
+
+/* A placeholder's status breathes gently while the agent designs. */
+@keyframes gd-breathe {
+	0%, 100% { opacity: 1; }
+	50% { opacity: .6; }
+}
+
+/* The pulse of the dot that says work is under way. */
+@keyframes gd-pulse {
+	0%, 100% { box-shadow: 0 0 0 0 var(--info-halo); }
+	50% { box-shadow: 0 0 0 4px var(--info-halo); }
+}
+
+/* ---- technical details (canvas-ux-quick-wins S2) ---- */
+
+/* The last row of the review side (canvas-progressive S5): off by default; a switch at its end shows the state. */
+.gd-technical {
+	justify-content: flex-start;
+	width: 100%;
+	gap: 8px;
+	border-color: transparent;
+	color: var(--text-muted);
+	font-size: 13px;
+}
+
+.gd-technical[aria-pressed="true"] { color: var(--text); }
+
+.gd-switch {
+	display: inline-flex;
+	align-items: center;
+	flex: none;
+	width: 34px;
+	height: 20px;
+	margin-left: auto;
+	padding: 2px;
+	border: 1px solid var(--border-soft);
+	border-radius: var(--radius-pill);
+	background: var(--surface-2);
+}
+
+.gd-switch::before { content: ""; width: 14px; height: 14px; border-radius: 50%; background: var(--text-muted); }
+.gd-technical[aria-pressed="true"] .gd-switch { justify-content: flex-end; background: var(--accent); border-color: var(--accent); }
+.gd-technical[aria-pressed="true"] .gd-switch::before { background: var(--bg); }
+
+.gd-technical:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* The check at the end of a checkable item of the shared menu (the step-by-step help switch). */
+.gd-menu-check {
+	margin-left: auto;
+	color: var(--accent);
+	visibility: hidden;
+}
+
+.gd-menu-item[aria-checked="true"] .gd-menu-check { visibility: visible; }
+
+/* ---- Appearance (canvas-layout S15) ---- */
+
+/* The theme and the language as radio groups in the shortcuts dialog's box (.gd-dialog), the current choice shown. */
+.gd-setting-group {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+
+.gd-dialog-note + .gd-setting-group { margin-top: 16px; }
+
+.gd-setting-title {
+	margin: 0 0 6px;
+	padding: 0;
+	color: var(--text-muted);
+	font-size: 12px;
+	font-weight: 600;
+}
+
+.gd-setting {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	min-height: 38px;
+	padding: 4px 10px;
+	border-radius: var(--radius-sm);
+	cursor: pointer;
+}
+
+.gd-setting:hover { background: var(--wash); }
+.gd-setting:has(input:checked) { background: var(--surface-2); color: var(--text); }
+.gd-setting input { flex: none; margin: 0; }
+.gd-setting input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.gd-setting-text { display: flex; flex-direction: column; }
+/* The Gentleman mustache (github.com/Gentleman-Programming) beside the Gentle theme (canvas-layout S18): filled, like the rose. */
+.gd-theme-name { display: inline-flex; align-items: center; gap: 8px; }
+.gd-mustache { width: 30px; height: 10px; fill: var(--accent); stroke: none; }
+
+.gd-setting-hint {
+	color: var(--text-muted);
+	font-size: 12px;
+}
+
+/* ---- device selector (canvas-layout S6) ---- */
+
+/* The size of the open artboard in the top bar: its icon, its short name and width × height; off outside focus mode. */
+.gd-device-button {
+	gap: 6px;
+	color: var(--text-muted);
+}
+
+.gd-device-button[aria-expanded="true"] { background: var(--surface-2); color: var(--text); }
+.gd-device-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.gd-device-size {
+	color: var(--accent-soft);
+	font: 12px var(--font-mono);
+}
+
+.gd-device-size:empty { display: none; }
+
+/* The artboard menu's box (.gd-menu), under its button: the sizes as radio items, then the custom width. */
+.gd-device-menu {
+	width: 300px;
+	padding: 6px;
+}
+
+.gd-device-item {
+	flex-wrap: nowrap;
+	min-height: 38px;
+}
+
+.gd-device-item[aria-checked="true"] {
+	background: var(--surface-2);
+	color: var(--text);
+}
+
+.gd-device-dim {
+	margin-left: auto;
+	color: var(--text-muted);
+	font: 12px var(--font-mono);
+}
+
+.gd-device-check {
+	margin-left: auto;
+	color: var(--accent);
+	visibility: hidden;
+}
+
+.gd-device-item[aria-checked="true"] .gd-device-check { visibility: visible; }
+.gd-device-dim + .gd-device-check { margin-left: 8px; }
+
+.gd-device-custom {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 38px;
+	padding: 0 12px;
+	color: var(--text-muted);
+	font-size: 13px;
+}
+
+.gd-device-custom.gd-selected { color: var(--text); }
+
+.gd-device-input {
+	width: 9ch;
+	min-height: 30px;
+	margin-left: auto;
+	padding: 2px 8px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	background: var(--bg);
+	color: var(--text);
+	font: 12px var(--font-mono);
+}
+
+.gd-device-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.gd-device-input[aria-invalid="true"] { border-color: var(--error-line); }
+.gd-device-custom.gd-selected .gd-device-input { border-color: var(--accent-line); }
+
+.gd-device-error {
+	margin: 0 12px 6px;
+	color: var(--error);
+	font-size: 12px;
+}
+
+/* Export as PDF: only the artboard prints, at its own size (exportPdf sets the page size). */
+.gd-print { position: fixed; left: 0; top: 0; visibility: hidden; pointer-events: none; }
+.gd-print iframe { display: block; border: 0; }
+
+@page { margin: 0; }
+
+@media print {
+	body.gd-printing { display: block; }
+	body.gd-printing > :not(.gd-print) { display: none; }
+	body.gd-printing .gd-print { position: static; visibility: visible; }
+}
+
+/* ---- step-by-step help card (replaces the canvas-progressive S6 first-run guide) ---- */
+
+/* The spotlight: an accent ring around the step's target, the rest of the page under the scrim; clicks pass through. */
+.gd-guide-spot {
+	position: fixed;
+	z-index: 20;
+	border-radius: var(--radius-md);
+	box-shadow: 0 0 0 2px var(--accent), 0 0 0 100vmax var(--scrim);
+	pointer-events: none;
+}
+
+/* One short card next to the target, its arrow pointing at it (--gd-guide-arrow, set by the canvas). */
+.gd-guide {
+	position: fixed;
+	z-index: 21;
+	width: min(452px, calc(100vw - 24px));
+	padding: 20px 22px 18px;
+	background: var(--surface-1);
+	border: 1px solid var(--accent-line);
+	border-radius: var(--radius-lg);
+	box-shadow: var(--shadow-panel);
+}
+
+.gd-guide::before {
+	content: "";
+	position: absolute;
+	left: var(--gd-guide-arrow, 50%);
+	width: 14px;
+	height: 14px;
+	margin-left: -7px;
+	background: var(--surface-1);
+	border: 1px solid var(--accent-line);
+	transform: rotate(45deg);
+}
+
+.gd-guide[data-side="below"]::before { top: -8px; border-right: 0; border-bottom: 0; }
+.gd-guide[data-side="above"]::before { bottom: -8px; border-left: 0; border-top: 0; }
+.gd-guide[data-side="inside"]::before { display: none; }
+
+.gd-guide-eyebrow {
+	margin: 0 0 6px;
+	color: var(--accent);
+	font: 600 12px/1.4 var(--font-mono);
+	letter-spacing: .12em;
+	text-transform: uppercase;
+}
+
+.gd-guide-title { margin: 0 0 6px; font-size: 20px; font-weight: 700; letter-spacing: -.01em; }
+.gd-guide-text { margin: 0 0 14px; color: var(--text-muted); }
+
+.gd-guide-steps {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	margin: 0 0 16px;
+	padding: 0;
+	list-style: none;
+	counter-reset: gd-guide;
+}
+
+.gd-guide-steps li {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	color: var(--text-muted);
+	font-size: 13px;
+	counter-increment: gd-guide;
+}
+
+.gd-guide-steps li::before {
+	content: counter(gd-guide);
+	display: inline-grid;
+	place-items: center;
+	flex: none;
+	width: 22px;
+	height: 22px;
+	border: 1px solid var(--border);
+	border-radius: 50%;
+	background: var(--surface);
+	font: 600 11px/1 var(--font-mono);
+}
+
+.gd-guide-steps li[aria-current="step"] { color: var(--text); font-weight: 600; }
+.gd-guide-steps li[aria-current="step"]::before { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+
+.gd-guide-actions { display: flex; align-items: center; gap: 8px; }
+.gd-guide-skip { border-color: transparent; color: var(--text-muted); }
+.gd-guide-skip:focus-visible, .gd-guide .gd-primary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: no-preference) {
+	.gd-guide { animation: gd-guide-rise .3s var(--ease) both; }
+	@keyframes gd-guide-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 }

@@ -10,50 +10,155 @@
 	<script src="{{BASE}}assets/canvas.js" defer></script>
 </head>
 <body>
-	<header class="gd-bar" role="toolbar" aria-label="Design canvas controls">
-		<h1 class="gd-title" id="gd-title">Gentle Design</h1>
-		<label class="gd-field" id="gd-design-field">
-			<span class="gd-visually-hidden">Design</span>
-			<select id="gd-design" aria-label="Design"></select>
-		</label>
-		<p id="gd-feature" class="gd-feature" hidden></p>
-		<div class="gd-group" role="group" aria-label="Zoom">
-			<button type="button" id="gd-zoom-out" aria-label="Zoom out">&minus;</button>
-			<output id="gd-zoom-level" aria-live="polite" aria-label="Zoom level">100%</output>
-			<button type="button" id="gd-zoom-in" aria-label="Zoom in">+</button>
-			<button type="button" id="gd-fit">Fit</button>
+	<svg class="gd-sprite" width="0" height="0" aria-hidden="true" focusable="false">
+		<symbol id="i-hand" viewBox="0 0 24 24"><path d="M18 11V6a2 2 0 0 0-4 0M14 10V4a2 2 0 0 0-4 0v2M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.9-6-2.4l-3.6-3.6a2 2 0 0 1 2.8-2.8L7 15"/></symbol>
+		<symbol id="i-comment" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+		<symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+		<symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></symbol>
+		<symbol id="i-fit" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></symbol>
+		<symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol>
+		<symbol id="i-compare" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18"/></symbol>
+		<symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></symbol>
+		<symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+		<symbol id="i-keys" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></symbol>
+		<symbol id="i-phone" viewBox="0 0 24 24"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></symbol>
+		<symbol id="i-tablet" viewBox="0 0 24 24"><rect x="4" y="2" width="16" height="20" rx="2"/><path d="M11 18h2"/></symbol>
+		<symbol id="i-monitor" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+		<symbol id="i-devices" viewBox="0 0 24 24"><rect x="2" y="4" width="13" height="10" rx="1.5"/><path d="M5 18h7"/><rect x="17" y="8" width="5" height="12" rx="1"/></symbol>
+		<symbol id="i-width" viewBox="0 0 24 24"><path d="M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4"/></symbol>
+		<symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+		<symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2"/></symbol>
+		<symbol id="i-palette" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="8" cy="10" r="1"/><circle cx="12" cy="7" r="1"/><circle cx="16" cy="10" r="1"/><path d="M12 21a3 3 0 0 1 0-6h2"/></symbol>
+		<symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+		<symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 1.7-2.5 2-2.5 4M12 17h.01"/></symbol>
+		<symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+		<symbol id="i-contrast" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 17a5 5 0 0 0 0-10z"/></symbol>
+		<symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+		<symbol id="i-sparkles" viewBox="0 0 24 24"><path d="m11 3 1.9 5.1L18 10l-5.1 1.9L11 17l-1.9-5.1L4 10l5.1-1.9z"/><path d="M19 3v4M17 5h4"/></symbol>
+		<symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/></symbol><symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></symbol>
+		<symbol id="i-code" viewBox="0 0 24 24"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></symbol>
+		<symbol id="i-row" viewBox="0 0 24 24"><rect x="2" y="6" width="5" height="12" rx="1"/><rect x="9.5" y="6" width="5" height="12" rx="1"/><rect x="17" y="6" width="5" height="12" rx="1"/></symbol>
+		<symbol id="i-column" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="5" rx="1"/><rect x="6" y="9.5" width="12" height="5" rx="1"/><rect x="6" y="17" width="12" height="5" rx="1"/></symbol>
+		<symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+		<symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol><symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol><symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol><symbol id="i-rose" viewBox="0 0 74 68"><path d="M26 3h1v1h-1zM27 2h1v1h-1zM27 3h1v1h-1zM28 1h1v1h-1zM28 2h1v1h-1zM28 3h1v1h-1zM29 0h1v1h-1zM29 1h1v1h-1zM29 2h1v1h-1zM29 3h1v1h-1zM30 0h1v1h-1zM30 1h1v1h-1zM30 2h1v1h-1zM30 3h1v1h-1zM31 1h1v1h-1zM31 2h1v1h-1zM31 3h1v1h-1zM32 1h1v1h-1zM32 2h1v1h-1zM32 3h1v1h-1zM33 1h1v1h-1zM33 2h1v1h-1zM33 3h1v1h-1zM34 1h1v1h-1zM34 2h1v1h-1zM34 3h1v1h-1zM35 2h1v1h-1zM35 3h1v1h-1zM36 2h1v1h-1zM36 3h1v1h-1zM37 2h1v1h-1zM37 3h1v1h-1zM38 2h1v1h-1zM38 3h1v1h-1zM39 2h1v1h-1zM39 3h1v1h-1zM40 2h1v1h-1zM40 3h1v1h-1zM41 3h1v1h-1zM42 3h1v1h-1zM43 2h1v1h-1zM43 3h1v1h-1zM44 2h1v1h-1zM44 3h1v1h-1zM45 3h1v1h-1zM46 3h1v1h-1zM47 3h1v1h-1zM53 3h1v1h-1zM54 3h1v1h-1zM55 3h1v1h-1zM56 3h1v1h-1zM57 3h1v1h-1zM21 7h1v1h-1zM22 6h1v1h-1zM22 7h1v1h-1zM23 5h1v1h-1zM23 6h1v1h-1zM23 7h1v1h-1zM24 4h1v1h-1zM24 5h1v1h-1zM24 6h1v1h-1zM24 7h1v1h-1zM25 4h1v1h-1zM25 5h1v1h-1zM25 6h1v1h-1zM25 7h1v1h-1zM26 4h1v1h-1zM26 5h1v1h-1zM26 6h1v1h-1zM26 7h1v1h-1zM27 4h1v1h-1zM27 5h1v1h-1zM27 6h1v1h-1zM27 7h1v1h-1zM28 4h1v1h-1zM28 5h1v1h-1zM28 6h1v1h-1zM29 4h1v1h-1zM29 5h1v1h-1zM29 6h1v1h-1zM30 4h1v1h-1zM30 5h1v1h-1zM30 7h1v1h-1zM31 4h1v1h-1zM31 7h1v1h-1zM32 4h1v1h-1zM32 6h1v1h-1zM32 7h1v1h-1zM33 4h1v1h-1zM33 6h1v1h-1zM33 7h1v1h-1zM34 4h1v1h-1zM34 6h1v1h-1zM34 7h1v1h-1zM35 4h1v1h-1zM35 6h1v1h-1zM35 7h1v1h-1zM36 4h1v1h-1zM36 5h1v1h-1zM36 6h1v1h-1zM36 7h1v1h-1zM37 4h1v1h-1zM37 6h1v1h-1zM37 7h1v1h-1zM38 4h1v1h-1zM38 6h1v1h-1zM38 7h1v1h-1zM39 4h1v1h-1zM39 6h1v1h-1zM39 7h1v1h-1zM40 4h1v1h-1zM40 6h1v1h-1zM40 7h1v1h-1zM41 4h1v1h-1zM41 7h1v1h-1zM42 4h1v1h-1zM42 6h1v1h-1zM42 7h1v1h-1zM43 4h1v1h-1zM43 6h1v1h-1zM43 7h1v1h-1zM44 4h1v1h-1zM44 5h1v1h-1zM44 6h1v1h-1zM44 7h1v1h-1zM45 4h1v1h-1zM45 5h1v1h-1zM45 6h1v1h-1zM45 7h1v1h-1zM46 4h1v1h-1zM46 5h1v1h-1zM46 6h1v1h-1zM46 7h1v1h-1zM47 4h1v1h-1zM47 5h1v1h-1zM47 7h1v1h-1zM48 4h1v1h-1zM48 5h1v1h-1zM49 4h1v1h-1zM49 5h1v1h-1zM50 4h1v1h-1zM50 5h1v1h-1zM51 4h1v1h-1zM51 5h1v1h-1zM52 4h1v1h-1zM52 5h1v1h-1zM52 6h1v1h-1zM53 4h1v1h-1zM53 5h1v1h-1zM53 6h1v1h-1zM54 4h1v1h-1zM54 5h1v1h-1zM54 6h1v1h-1zM54 7h1v1h-1zM55 4h1v1h-1zM55 5h1v1h-1zM55 6h1v1h-1zM55 7h1v1h-1zM56 4h1v1h-1zM56 5h1v1h-1zM56 6h1v1h-1zM56 7h1v1h-1zM57 5h1v1h-1zM57 6h1v1h-1zM57 7h1v1h-1zM58 6h1v1h-1zM58 7h1v1h-1zM59 7h1v1h-1zM13 11h1v1h-1zM14 10h1v1h-1zM14 11h1v1h-1zM15 9h1v1h-1zM15 10h1v1h-1zM15 11h1v1h-1zM16 9h1v1h-1zM16 10h1v1h-1zM16 11h1v1h-1zM17 8h1v1h-1zM17 9h1v1h-1zM17 10h1v1h-1zM17 11h1v1h-1zM18 8h1v1h-1zM18 9h1v1h-1zM18 10h1v1h-1zM18 11h1v1h-1zM19 8h1v1h-1zM19 9h1v1h-1zM20 8h1v1h-1zM20 9h1v1h-1zM21 8h1v1h-1zM21 9h1v1h-1zM21 10h1v1h-1zM21 11h1v1h-1zM22 8h1v1h-1zM22 9h1v1h-1zM22 10h1v1h-1zM22 11h1v1h-1zM23 8h1v1h-1zM23 9h1v1h-1zM23 10h1v1h-1zM23 11h1v1h-1zM24 8h1v1h-1zM24 9h1v1h-1zM24 10h1v1h-1zM24 11h1v1h-1zM25 8h1v1h-1zM25 9h1v1h-1zM26 8h1v1h-1zM28 10h1v1h-1zM28 11h1v1h-1zM29 8h1v1h-1zM29 9h1v1h-1zM29 10h1v1h-1zM29 11h1v1h-1zM30 8h1v1h-1zM30 9h1v1h-1zM30 10h1v1h-1zM30 11h1v1h-1zM31 8h1v1h-1zM31 9h1v1h-1zM31 10h1v1h-1zM31 11h1v1h-1zM32 8h1v1h-1zM32 9h1v1h-1zM32 10h1v1h-1zM33 8h1v1h-1zM34 8h1v1h-1zM34 10h1v1h-1zM34 11h1v1h-1zM35 9h1v1h-1zM35 10h1v1h-1zM35 11h1v1h-1zM36 8h1v1h-1zM36 9h1v1h-1zM37 8h1v1h-1zM37 9h1v1h-1zM37 10h1v1h-1zM37 11h1v1h-1zM38 8h1v1h-1zM38 9h1v1h-1zM38 10h1v1h-1zM38 11h1v1h-1zM39 8h1v1h-1zM39 9h1v1h-1zM39 10h1v1h-1zM39 11h1v1h-1zM40 8h1v1h-1zM40 9h1v1h-1zM40 11h1v1h-1zM41 8h1v1h-1zM41 9h1v1h-1zM41 10h1v1h-1zM41 11h1v1h-1zM42 8h1v1h-1zM42 9h1v1h-1zM42 10h1v1h-1zM42 11h1v1h-1zM43 8h1v1h-1zM43 9h1v1h-1zM43 10h1v1h-1zM43 11h1v1h-1zM44 8h1v1h-1zM44 9h1v1h-1zM44 10h1v1h-1zM44 11h1v1h-1zM45 8h1v1h-1zM45 9h1v1h-1zM45 10h1v1h-1zM45 11h1v1h-1zM46 8h1v1h-1zM46 9h1v1h-1zM46 10h1v1h-1zM47 8h1v1h-1zM47 9h1v1h-1zM47 10h1v1h-1zM47 11h1v1h-1zM48 8h1v1h-1zM48 9h1v1h-1zM48 11h1v1h-1zM49 8h1v1h-1zM49 9h1v1h-1zM49 10h1v1h-1zM50 8h1v1h-1zM50 9h1v1h-1zM50 10h1v1h-1zM50 11h1v1h-1zM51 8h1v1h-1zM51 9h1v1h-1zM51 10h1v1h-1zM51 11h1v1h-1zM52 8h1v1h-1zM52 9h1v1h-1zM52 10h1v1h-1zM52 11h1v1h-1zM53 8h1v1h-1zM53 9h1v1h-1zM53 10h1v1h-1zM53 11h1v1h-1zM54 9h1v1h-1zM54 10h1v1h-1zM54 11h1v1h-1zM55 9h1v1h-1zM55 10h1v1h-1zM55 11h1v1h-1zM56 10h1v1h-1zM56 11h1v1h-1zM57 8h1v1h-1zM58 8h1v1h-1zM58 9h1v1h-1zM58 10h1v1h-1zM59 8h1v1h-1zM59 9h1v1h-1zM59 10h1v1h-1zM59 11h1v1h-1zM60 8h1v1h-1zM60 9h1v1h-1zM60 10h1v1h-1zM60 11h1v1h-1zM61 8h1v1h-1zM61 9h1v1h-1zM61 10h1v1h-1zM61 11h1v1h-1zM62 8h1v1h-1zM62 9h1v1h-1zM62 10h1v1h-1zM62 11h1v1h-1zM63 9h1v1h-1zM63 10h1v1h-1zM63 11h1v1h-1zM64 9h1v1h-1zM64 10h1v1h-1zM64 11h1v1h-1zM65 10h1v1h-1zM65 11h1v1h-1zM66 10h1v1h-1zM66 11h1v1h-1zM67 10h1v1h-1zM67 11h1v1h-1zM68 10h1v1h-1zM68 11h1v1h-1zM6 14h1v1h-1zM6 15h1v1h-1zM7 14h1v1h-1zM7 15h1v1h-1zM8 13h1v1h-1zM8 14h1v1h-1zM8 15h1v1h-1zM9 13h1v1h-1zM9 14h1v1h-1zM9 15h1v1h-1zM10 13h1v1h-1zM10 14h1v1h-1zM10 15h1v1h-1zM11 12h1v1h-1zM11 13h1v1h-1zM11 14h1v1h-1zM11 15h1v1h-1zM12 12h1v1h-1zM12 13h1v1h-1zM12 14h1v1h-1zM12 15h1v1h-1zM13 12h1v1h-1zM13 13h1v1h-1zM13 14h1v1h-1zM13 15h1v1h-1zM14 12h1v1h-1zM14 13h1v1h-1zM14 14h1v1h-1zM14 15h1v1h-1zM15 12h1v1h-1zM15 13h1v1h-1zM15 14h1v1h-1zM15 15h1v1h-1zM16 12h1v1h-1zM16 13h1v1h-1zM16 14h1v1h-1zM17 12h1v1h-1zM21 12h1v1h-1zM22 12h1v1h-1zM22 13h1v1h-1zM22 14h1v1h-1zM23 12h1v1h-1zM23 13h1v1h-1zM23 14h1v1h-1zM23 15h1v1h-1zM24 14h1v1h-1zM24 15h1v1h-1zM25 15h1v1h-1zM28 12h1v1h-1zM29 12h1v1h-1zM29 13h1v1h-1zM29 14h1v1h-1zM29 15h1v1h-1zM30 12h1v1h-1zM30 13h1v1h-1zM30 14h1v1h-1zM30 15h1v1h-1zM31 12h1v1h-1zM31 15h1v1h-1zM33 14h1v1h-1zM34 12h1v1h-1zM34 13h1v1h-1zM34 14h1v1h-1zM35 12h1v1h-1zM35 13h1v1h-1zM36 13h1v1h-1zM36 14h1v1h-1zM36 15h1v1h-1zM37 12h1v1h-1zM37 13h1v1h-1zM37 14h1v1h-1zM37 15h1v1h-1zM38 12h1v1h-1zM38 13h1v1h-1zM38 14h1v1h-1zM38 15h1v1h-1zM39 12h1v1h-1zM39 13h1v1h-1zM39 14h1v1h-1zM39 15h1v1h-1zM40 12h1v1h-1zM40 13h1v1h-1zM40 14h1v1h-1zM40 15h1v1h-1zM41 12h1v1h-1zM41 13h1v1h-1zM41 14h1v1h-1zM41 15h1v1h-1zM42 12h1v1h-1zM42 13h1v1h-1zM42 14h1v1h-1zM42 15h1v1h-1zM43 12h1v1h-1zM43 13h1v1h-1zM43 14h1v1h-1zM43 15h1v1h-1zM44 12h1v1h-1zM44 13h1v1h-1zM44 14h1v1h-1zM44 15h1v1h-1zM45 12h1v1h-1zM45 13h1v1h-1zM45 14h1v1h-1zM45 15h1v1h-1zM46 12h1v1h-1zM46 13h1v1h-1zM46 14h1v1h-1zM46 15h1v1h-1zM47 12h1v1h-1zM47 13h1v1h-1zM47 14h1v1h-1zM47 15h1v1h-1zM48 12h1v1h-1zM48 13h1v1h-1zM48 14h1v1h-1zM49 13h1v1h-1zM49 14h1v1h-1zM50 12h1v1h-1zM50 13h1v1h-1zM50 14h1v1h-1zM50 15h1v1h-1zM51 12h1v1h-1zM51 15h1v1h-1zM52 14h1v1h-1zM52 15h1v1h-1zM53 12h1v1h-1zM53 13h1v1h-1zM53 14h1v1h-1zM53 15h1v1h-1zM54 12h1v1h-1zM54 13h1v1h-1zM54 14h1v1h-1zM55 12h1v1h-1zM55 13h1v1h-1zM56 12h1v1h-1zM57 14h1v1h-1zM57 15h1v1h-1zM58 12h1v1h-1zM58 13h1v1h-1zM58 14h1v1h-1zM58 15h1v1h-1zM59 12h1v1h-1zM59 13h1v1h-1zM59 14h1v1h-1zM59 15h1v1h-1zM60 12h1v1h-1zM60 13h1v1h-1zM60 14h1v1h-1zM60 15h1v1h-1zM61 12h1v1h-1zM61 13h1v1h-1zM62 12h1v1h-1zM62 13h1v1h-1zM63 12h1v1h-1zM64 12h1v1h-1zM64 13h1v1h-1zM65 12h1v1h-1zM65 13h1v1h-1zM65 14h1v1h-1zM65 15h1v1h-1zM66 12h1v1h-1zM66 13h1v1h-1zM66 14h1v1h-1zM66 15h1v1h-1zM67 12h1v1h-1zM67 13h1v1h-1zM67 14h1v1h-1zM67 15h1v1h-1zM68 12h1v1h-1zM68 13h1v1h-1zM68 14h1v1h-1zM68 15h1v1h-1zM69 12h1v1h-1zM69 13h1v1h-1zM69 14h1v1h-1zM69 15h1v1h-1zM70 14h1v1h-1zM70 15h1v1h-1zM7 16h1v1h-1zM8 16h1v1h-1zM8 17h1v1h-1zM8 18h1v1h-1zM8 19h1v1h-1zM9 16h1v1h-1zM9 17h1v1h-1zM9 18h1v1h-1zM9 19h1v1h-1zM10 16h1v1h-1zM10 17h1v1h-1zM10 18h1v1h-1zM10 19h1v1h-1zM11 16h1v1h-1zM11 17h1v1h-1zM11 18h1v1h-1zM11 19h1v1h-1zM12 16h1v1h-1zM12 17h1v1h-1zM12 18h1v1h-1zM12 19h1v1h-1zM13 16h1v1h-1zM13 17h1v1h-1zM13 18h1v1h-1zM13 19h1v1h-1zM14 16h1v1h-1zM14 17h1v1h-1zM14 18h1v1h-1zM14 19h1v1h-1zM15 16h1v1h-1zM15 17h1v1h-1zM15 18h1v1h-1zM15 19h1v1h-1zM16 17h1v1h-1zM16 18h1v1h-1zM16 19h1v1h-1zM24 16h1v1h-1zM24 18h1v1h-1zM24 19h1v1h-1zM25 16h1v1h-1zM25 17h1v1h-1zM25 18h1v1h-1zM25 19h1v1h-1zM26 16h1v1h-1zM26 17h1v1h-1zM26 18h1v1h-1zM27 18h1v1h-1zM27 19h1v1h-1zM28 19h1v1h-1zM29 16h1v1h-1zM29 17h1v1h-1zM31 16h1v1h-1zM32 16h1v1h-1zM32 17h1v1h-1zM33 17h1v1h-1zM33 18h1v1h-1zM34 17h1v1h-1zM34 18h1v1h-1zM34 19h1v1h-1zM35 18h1v1h-1zM35 19h1v1h-1zM36 16h1v1h-1zM36 18h1v1h-1zM36 19h1v1h-1zM37 16h1v1h-1zM37 19h1v1h-1zM38 16h1v1h-1zM38 17h1v1h-1zM39 16h1v1h-1zM39 17h1v1h-1zM40 16h1v1h-1zM40 17h1v1h-1zM41 16h1v1h-1zM41 17h1v1h-1zM42 17h1v1h-1zM42 18h1v1h-1zM43 18h1v1h-1zM43 19h1v1h-1zM44 16h1v1h-1zM44 19h1v1h-1zM45 16h1v1h-1zM45 19h1v1h-1zM46 18h1v1h-1zM46 19h1v1h-1zM47 17h1v1h-1zM47 18h1v1h-1zM47 19h1v1h-1zM48 16h1v1h-1zM48 17h1v1h-1zM48 19h1v1h-1zM49 16h1v1h-1zM49 17h1v1h-1zM49 19h1v1h-1zM50 16h1v1h-1zM50 17h1v1h-1zM50 19h1v1h-1zM51 16h1v1h-1zM51 18h1v1h-1zM51 19h1v1h-1zM52 16h1v1h-1zM52 18h1v1h-1zM52 19h1v1h-1zM53 16h1v1h-1zM53 18h1v1h-1zM53 19h1v1h-1zM54 18h1v1h-1zM54 19h1v1h-1zM55 17h1v1h-1zM55 18h1v1h-1zM55 19h1v1h-1zM56 16h1v1h-1zM56 17h1v1h-1zM56 18h1v1h-1zM56 19h1v1h-1zM57 16h1v1h-1zM57 17h1v1h-1zM58 16h1v1h-1zM58 17h1v1h-1zM59 16h1v1h-1zM64 17h1v1h-1zM64 18h1v1h-1zM64 19h1v1h-1zM65 16h1v1h-1zM65 17h1v1h-1zM65 18h1v1h-1zM65 19h1v1h-1zM66 16h1v1h-1zM66 17h1v1h-1zM66 18h1v1h-1zM66 19h1v1h-1zM67 16h1v1h-1zM67 17h1v1h-1zM67 18h1v1h-1zM67 19h1v1h-1zM68 16h1v1h-1zM68 17h1v1h-1zM68 18h1v1h-1zM68 19h1v1h-1zM69 16h1v1h-1zM69 17h1v1h-1zM69 18h1v1h-1zM69 19h1v1h-1zM70 16h1v1h-1zM70 17h1v1h-1zM70 18h1v1h-1zM70 19h1v1h-1zM71 16h1v1h-1zM71 17h1v1h-1zM71 18h1v1h-1zM7 23h1v1h-1zM8 20h1v1h-1zM9 20h1v1h-1zM9 21h1v1h-1zM9 22h1v1h-1zM10 20h1v1h-1zM10 21h1v1h-1zM10 22h1v1h-1zM10 23h1v1h-1zM11 20h1v1h-1zM11 21h1v1h-1zM11 22h1v1h-1zM11 23h1v1h-1zM12 20h1v1h-1zM12 21h1v1h-1zM12 22h1v1h-1zM12 23h1v1h-1zM13 20h1v1h-1zM13 21h1v1h-1zM13 22h1v1h-1zM13 23h1v1h-1zM14 20h1v1h-1zM14 21h1v1h-1zM14 22h1v1h-1zM14 23h1v1h-1zM15 20h1v1h-1zM15 21h1v1h-1zM15 22h1v1h-1zM15 23h1v1h-1zM16 20h1v1h-1zM16 21h1v1h-1zM16 22h1v1h-1zM16 23h1v1h-1zM17 21h1v1h-1zM17 22h1v1h-1zM17 23h1v1h-1zM18 22h1v1h-1zM18 23h1v1h-1zM19 22h1v1h-1zM19 23h1v1h-1zM20 22h1v1h-1zM20 23h1v1h-1zM24 20h1v1h-1zM24 21h1v1h-1zM25 20h1v1h-1zM28 20h1v1h-1zM29 20h1v1h-1zM29 21h1v1h-1zM30 21h1v1h-1zM30 22h1v1h-1zM31 23h1v1h-1zM34 23h1v1h-1zM35 22h1v1h-1zM35 23h1v1h-1zM36 22h1v1h-1zM37 21h1v1h-1zM37 22h1v1h-1zM38 20h1v1h-1zM38 21h1v1h-1zM38 22h1v1h-1zM39 20h1v1h-1zM39 21h1v1h-1zM40 20h1v1h-1zM40 21h1v1h-1zM41 20h1v1h-1zM41 21h1v1h-1zM42 20h1v1h-1zM42 21h1v1h-1zM42 23h1v1h-1zM43 20h1v1h-1zM43 21h1v1h-1zM43 23h1v1h-1zM44 20h1v1h-1zM44 21h1v1h-1zM44 23h1v1h-1zM45 20h1v1h-1zM45 21h1v1h-1zM45 23h1v1h-1zM46 20h1v1h-1zM46 21h1v1h-1zM46 23h1v1h-1zM47 20h1v1h-1zM47 21h1v1h-1zM47 23h1v1h-1zM48 20h1v1h-1zM48 21h1v1h-1zM48 22h1v1h-1zM49 20h1v1h-1zM49 21h1v1h-1zM50 20h1v1h-1zM50 21h1v1h-1zM51 20h1v1h-1zM52 20h1v1h-1zM54 21h1v1h-1zM55 20h1v1h-1zM55 21h1v1h-1zM55 22h1v1h-1zM56 20h1v1h-1zM56 21h1v1h-1zM56 22h1v1h-1zM56 23h1v1h-1zM60 23h1v1h-1zM61 23h1v1h-1zM62 22h1v1h-1zM62 23h1v1h-1zM63 21h1v1h-1zM63 22h1v1h-1zM63 23h1v1h-1zM64 20h1v1h-1zM64 21h1v1h-1zM64 22h1v1h-1zM64 23h1v1h-1zM65 20h1v1h-1zM65 21h1v1h-1zM65 22h1v1h-1zM65 23h1v1h-1zM66 20h1v1h-1zM66 21h1v1h-1zM66 22h1v1h-1zM66 23h1v1h-1zM67 20h1v1h-1zM67 21h1v1h-1zM67 22h1v1h-1zM67 23h1v1h-1zM68 20h1v1h-1zM68 21h1v1h-1zM68 22h1v1h-1zM68 23h1v1h-1zM69 20h1v1h-1zM69 21h1v1h-1zM70 20h1v1h-1zM7 24h1v1h-1zM8 27h1v1h-1zM9 27h1v1h-1zM11 24h1v1h-1zM12 24h1v1h-1zM12 25h1v1h-1zM13 24h1v1h-1zM13 25h1v1h-1zM14 24h1v1h-1zM14 25h1v1h-1zM14 26h1v1h-1zM15 25h1v1h-1zM15 26h1v1h-1zM16 24h1v1h-1zM16 25h1v1h-1zM16 26h1v1h-1zM17 24h1v1h-1zM17 25h1v1h-1zM17 26h1v1h-1zM18 24h1v1h-1zM18 25h1v1h-1zM18 26h1v1h-1zM18 27h1v1h-1zM19 24h1v1h-1zM19 25h1v1h-1zM19 26h1v1h-1zM19 27h1v1h-1zM20 24h1v1h-1zM20 25h1v1h-1zM20 26h1v1h-1zM20 27h1v1h-1zM21 24h1v1h-1zM21 25h1v1h-1zM21 26h1v1h-1zM21 27h1v1h-1zM22 24h1v1h-1zM22 25h1v1h-1zM22 26h1v1h-1zM22 27h1v1h-1zM23 25h1v1h-1zM23 26h1v1h-1zM23 27h1v1h-1zM24 26h1v1h-1zM24 27h1v1h-1zM25 26h1v1h-1zM25 27h1v1h-1zM26 27h1v1h-1zM27 27h1v1h-1zM31 26h1v1h-1zM31 27h1v1h-1zM32 24h1v1h-1zM32 25h1v1h-1zM33 24h1v1h-1zM41 24h1v1h-1zM42 24h1v1h-1zM43 24h1v1h-1zM44 24h1v1h-1zM45 24h1v1h-1zM54 27h1v1h-1zM55 26h1v1h-1zM55 27h1v1h-1zM56 26h1v1h-1zM56 27h1v1h-1zM57 25h1v1h-1zM57 26h1v1h-1zM57 27h1v1h-1zM58 24h1v1h-1zM58 26h1v1h-1zM58 27h1v1h-1zM59 26h1v1h-1zM59 27h1v1h-1zM60 25h1v1h-1zM60 26h1v1h-1zM61 24h1v1h-1zM61 25h1v1h-1zM61 26h1v1h-1zM62 24h1v1h-1zM62 25h1v1h-1zM63 24h1v1h-1zM63 25h1v1h-1zM64 24h1v1h-1zM65 24h1v1h-1zM66 27h1v1h-1zM67 25h1v1h-1zM67 26h1v1h-1zM67 27h1v1h-1zM68 24h1v1h-1zM68 25h1v1h-1zM68 26h1v1h-1zM68 27h1v1h-1zM69 24h1v1h-1zM69 25h1v1h-1zM69 26h1v1h-1zM69 27h1v1h-1zM70 24h1v1h-1zM70 25h1v1h-1zM70 26h1v1h-1zM70 27h1v1h-1zM71 25h1v1h-1zM71 26h1v1h-1zM71 27h1v1h-1zM20 28h1v1h-1zM21 28h1v1h-1zM21 29h1v1h-1zM21 30h1v1h-1zM22 28h1v1h-1zM22 29h1v1h-1zM22 30h1v1h-1zM22 31h1v1h-1zM23 28h1v1h-1zM23 30h1v1h-1zM23 31h1v1h-1zM24 28h1v1h-1zM24 30h1v1h-1zM24 31h1v1h-1zM25 28h1v1h-1zM25 29h1v1h-1zM25 31h1v1h-1zM26 28h1v1h-1zM26 29h1v1h-1zM27 28h1v1h-1zM27 29h1v1h-1zM28 28h1v1h-1zM28 29h1v1h-1zM29 28h1v1h-1zM29 29h1v1h-1zM30 28h1v1h-1zM30 29h1v1h-1zM30 30h1v1h-1zM31 29h1v1h-1zM31 30h1v1h-1zM32 29h1v1h-1zM32 30h1v1h-1zM33 29h1v1h-1zM33 30h1v1h-1zM33 31h1v1h-1zM34 30h1v1h-1zM34 31h1v1h-1zM35 30h1v1h-1zM35 31h1v1h-1zM36 30h1v1h-1zM36 31h1v1h-1zM37 30h1v1h-1zM37 31h1v1h-1zM38 31h1v1h-1zM39 31h1v1h-1zM47 31h1v1h-1zM48 31h1v1h-1zM49 30h1v1h-1zM50 29h1v1h-1zM50 30h1v1h-1zM51 29h1v1h-1zM52 28h1v1h-1zM52 29h1v1h-1zM53 28h1v1h-1zM54 28h1v1h-1zM55 28h1v1h-1zM56 28h1v1h-1zM57 28h1v1h-1zM57 31h1v1h-1zM58 31h1v1h-1zM59 31h1v1h-1zM60 31h1v1h-1zM61 31h1v1h-1zM62 30h1v1h-1zM62 31h1v1h-1zM63 29h1v1h-1zM63 30h1v1h-1zM63 31h1v1h-1zM64 29h1v1h-1zM64 30h1v1h-1zM64 31h1v1h-1zM65 28h1v1h-1zM65 29h1v1h-1zM65 30h1v1h-1zM65 31h1v1h-1zM66 28h1v1h-1zM66 29h1v1h-1zM66 30h1v1h-1zM66 31h1v1h-1zM67 28h1v1h-1zM67 29h1v1h-1zM67 30h1v1h-1zM67 31h1v1h-1zM68 28h1v1h-1zM68 29h1v1h-1zM68 30h1v1h-1zM69 28h1v1h-1zM69 29h1v1h-1zM69 30h1v1h-1zM70 28h1v1h-1zM70 29h1v1h-1zM70 30h1v1h-1zM71 28h1v1h-1zM71 29h1v1h-1zM72 28h1v1h-1zM72 29h1v1h-1zM27 32h1v1h-1zM27 33h1v1h-1zM28 32h1v1h-1zM28 33h1v1h-1zM29 32h1v1h-1zM29 33h1v1h-1zM29 34h1v1h-1zM30 32h1v1h-1zM30 33h1v1h-1zM30 34h1v1h-1zM31 32h1v1h-1zM31 33h1v1h-1zM31 34h1v1h-1zM31 35h1v1h-1zM32 33h1v1h-1zM32 34h1v1h-1zM32 35h1v1h-1zM33 34h1v1h-1zM33 35h1v1h-1zM34 34h1v1h-1zM34 35h1v1h-1zM35 35h1v1h-1zM36 35h1v1h-1zM42 32h1v1h-1zM43 32h1v1h-1zM44 32h1v1h-1zM44 33h1v1h-1zM45 32h1v1h-1zM45 33h1v1h-1zM46 33h1v1h-1zM46 34h1v1h-1zM47 34h1v1h-1zM47 35h1v1h-1zM49 34h1v1h-1zM50 33h1v1h-1zM51 32h1v1h-1zM51 35h1v1h-1zM52 34h1v1h-1zM53 34h1v1h-1zM54 34h1v1h-1zM55 33h1v1h-1zM55 34h1v1h-1zM56 33h1v1h-1zM57 33h1v1h-1zM57 35h1v1h-1zM58 32h1v1h-1zM58 33h1v1h-1zM58 35h1v1h-1zM59 32h1v1h-1zM59 33h1v1h-1zM59 35h1v1h-1zM60 32h1v1h-1zM60 33h1v1h-1zM60 35h1v1h-1zM61 32h1v1h-1zM61 33h1v1h-1zM61 35h1v1h-1zM62 32h1v1h-1zM62 35h1v1h-1zM63 32h1v1h-1zM63 34h1v1h-1zM63 35h1v1h-1zM64 32h1v1h-1zM64 34h1v1h-1zM64 35h1v1h-1zM65 32h1v1h-1zM65 33h1v1h-1zM65 34h1v1h-1zM65 35h1v1h-1zM66 32h1v1h-1zM66 33h1v1h-1zM66 34h1v1h-1zM66 35h1v1h-1zM67 32h1v1h-1zM67 33h1v1h-1zM67 34h1v1h-1zM68 32h1v1h-1zM68 33h1v1h-1zM68 34h1v1h-1zM69 32h1v1h-1zM69 33h1v1h-1zM70 32h1v1h-1zM16 37h1v1h-1zM16 38h1v1h-1zM17 37h1v1h-1zM17 38h1v1h-1zM18 37h1v1h-1zM18 38h1v1h-1zM19 37h1v1h-1zM19 38h1v1h-1zM19 39h1v1h-1zM20 38h1v1h-1zM20 39h1v1h-1zM21 38h1v1h-1zM21 39h1v1h-1zM22 38h1v1h-1zM22 39h1v1h-1zM23 39h1v1h-1zM24 39h1v1h-1zM27 36h1v1h-1zM27 38h1v1h-1zM28 36h1v1h-1zM28 38h1v1h-1zM29 36h1v1h-1zM29 38h1v1h-1zM30 36h1v1h-1zM30 38h1v1h-1zM31 36h1v1h-1zM31 37h1v1h-1zM31 38h1v1h-1zM32 36h1v1h-1zM32 37h1v1h-1zM32 38h1v1h-1zM33 36h1v1h-1zM33 37h1v1h-1zM34 36h1v1h-1zM34 37h1v1h-1zM34 39h1v1h-1zM35 37h1v1h-1zM35 39h1v1h-1zM36 37h1v1h-1zM36 38h1v1h-1zM37 38h1v1h-1zM37 39h1v1h-1zM38 39h1v1h-1zM39 39h1v1h-1zM41 36h1v1h-1zM42 36h1v1h-1zM42 37h1v1h-1zM42 38h1v1h-1zM43 39h1v1h-1zM44 36h1v1h-1zM44 38h1v1h-1zM44 39h1v1h-1zM45 38h1v1h-1zM46 37h1v1h-1zM46 38h1v1h-1zM47 37h1v1h-1zM48 36h1v1h-1zM48 37h1v1h-1zM49 36h1v1h-1zM49 37h1v1h-1zM50 36h1v1h-1zM50 37h1v1h-1zM51 36h1v1h-1zM52 36h1v1h-1zM53 36h1v1h-1zM54 36h1v1h-1zM55 36h1v1h-1zM23 40h1v1h-1zM24 40h1v1h-1zM24 41h1v1h-1zM24 42h1v1h-1zM25 41h1v1h-1zM25 42h1v1h-1zM25 43h1v1h-1zM29 41h1v1h-1zM30 41h1v1h-1zM32 42h1v1h-1zM33 42h1v1h-1zM33 43h1v1h-1zM34 40h1v1h-1zM34 42h1v1h-1zM34 43h1v1h-1zM35 40h1v1h-1zM35 41h1v1h-1zM35 42h1v1h-1zM35 43h1v1h-1zM36 42h1v1h-1zM36 43h1v1h-1zM37 43h1v1h-1zM41 41h1v1h-1zM41 42h1v1h-1zM42 41h1v1h-1zM42 42h1v1h-1zM42 43h1v1h-1zM43 40h1v1h-1zM44 40h1v1h-1zM45 40h1v1h-1zM45 41h1v1h-1zM46 40h1v1h-1zM46 41h1v1h-1zM47 41h1v1h-1zM47 42h1v1h-1zM48 42h1v1h-1zM48 43h1v1h-1zM49 43h1v1h-1zM50 43h1v1h-1zM55 40h1v1h-1zM56 40h1v1h-1zM56 41h1v1h-1zM57 42h1v1h-1zM57 43h1v1h-1zM59 40h1v1h-1zM59 41h1v1h-1zM60 41h1v1h-1zM60 42h1v1h-1zM61 42h1v1h-1zM61 43h1v1h-1zM62 40h1v1h-1zM62 41h1v1h-1zM63 40h1v1h-1zM25 44h1v1h-1zM26 44h1v1h-1zM26 45h1v1h-1zM27 45h1v1h-1zM27 46h1v1h-1zM27 47h1v1h-1zM28 47h1v1h-1zM29 47h1v1h-1zM30 45h1v1h-1zM30 47h1v1h-1zM31 45h1v1h-1zM32 44h1v1h-1zM33 44h1v1h-1zM34 44h1v1h-1zM35 44h1v1h-1zM36 44h1v1h-1zM36 47h1v1h-1zM37 44h1v1h-1zM37 47h1v1h-1zM38 44h1v1h-1zM39 44h1v1h-1zM39 45h1v1h-1zM40 45h1v1h-1zM40 47h1v1h-1zM41 45h1v1h-1zM41 46h1v1h-1zM42 44h1v1h-1zM42 46h1v1h-1zM42 47h1v1h-1zM43 44h1v1h-1zM43 45h1v1h-1zM43 46h1v1h-1zM43 47h1v1h-1zM44 46h1v1h-1zM44 47h1v1h-1zM45 47h1v1h-1zM48 44h1v1h-1zM48 45h1v1h-1zM48 46h1v1h-1zM48 47h1v1h-1zM49 44h1v1h-1zM49 47h1v1h-1zM50 44h1v1h-1zM50 45h1v1h-1zM51 45h1v1h-1zM51 46h1v1h-1zM52 46h1v1h-1zM52 47h1v1h-1zM57 44h1v1h-1zM57 45h1v1h-1zM58 44h1v1h-1zM58 45h1v1h-1zM58 46h1v1h-1zM58 47h1v1h-1zM62 45h1v1h-1zM62 46h1v1h-1zM62 47h1v1h-1zM63 44h1v1h-1zM63 45h1v1h-1zM63 46h1v1h-1zM64 44h1v1h-1zM28 48h1v1h-1zM28 49h1v1h-1zM29 48h1v1h-1zM29 49h1v1h-1zM30 48h1v1h-1zM30 49h1v1h-1zM31 48h1v1h-1zM31 49h1v1h-1zM31 50h1v1h-1zM32 49h1v1h-1zM32 50h1v1h-1zM33 50h1v1h-1zM33 51h1v1h-1zM34 50h1v1h-1zM34 51h1v1h-1zM35 51h1v1h-1zM36 48h1v1h-1zM36 51h1v1h-1zM37 48h1v1h-1zM37 51h1v1h-1zM38 48h1v1h-1zM38 51h1v1h-1zM40 51h1v1h-1zM41 51h1v1h-1zM42 51h1v1h-1zM43 51h1v1h-1zM44 51h1v1h-1zM45 48h1v1h-1zM45 51h1v1h-1zM46 48h1v1h-1zM46 51h1v1h-1zM47 48h1v1h-1zM47 49h1v1h-1zM47 51h1v1h-1zM48 49h1v1h-1zM48 51h1v1h-1zM49 48h1v1h-1zM49 49h1v1h-1zM49 50h1v1h-1zM49 51h1v1h-1zM50 50h1v1h-1zM50 51h1v1h-1zM51 48h1v1h-1zM51 51h1v1h-1zM52 48h1v1h-1zM52 49h1v1h-1zM52 50h1v1h-1zM52 51h1v1h-1zM55 50h1v1h-1zM55 51h1v1h-1zM57 51h1v1h-1zM58 48h1v1h-1zM58 49h1v1h-1zM58 50h1v1h-1zM58 51h1v1h-1zM60 49h1v1h-1zM60 50h1v1h-1zM60 51h1v1h-1zM61 48h1v1h-1zM61 49h1v1h-1zM61 50h1v1h-1zM39 52h1v1h-1zM40 52h1v1h-1zM41 52h1v1h-1zM51 52h1v1h-1zM52 52h1v1h-1zM52 53h1v1h-1zM53 53h1v1h-1zM53 54h1v1h-1zM54 54h1v1h-1zM54 55h1v1h-1zM56 55h1v1h-1zM57 52h1v1h-1zM57 53h1v1h-1zM57 54h1v1h-1zM57 55h1v1h-1zM58 52h1v1h-1zM59 53h1v1h-1zM59 54h1v1h-1zM59 55h1v1h-1zM60 52h1v1h-1zM60 53h1v1h-1zM60 54h1v1h-1zM54 56h1v1h-1zM54 57h1v1h-1zM54 58h1v1h-1zM54 59h1v1h-1zM55 57h1v1h-1zM55 58h1v1h-1zM56 56h1v1h-1zM57 58h1v1h-1zM58 56h1v1h-1zM58 57h1v1h-1zM58 58h1v1h-1zM58 59h1v1h-1zM59 56h1v1h-1zM59 58h1v1h-1zM60 57h1v1h-1zM60 58h1v1h-1zM61 57h1v1h-1zM61 59h1v1h-1zM62 56h1v1h-1zM63 56h1v1h-1zM49 63h1v1h-1zM50 62h1v1h-1zM50 63h1v1h-1zM51 61h1v1h-1zM51 62h1v1h-1zM52 61h1v1h-1zM53 60h1v1h-1zM53 62h1v1h-1zM53 63h1v1h-1zM54 62h1v1h-1zM55 61h1v1h-1zM56 60h1v1h-1zM56 63h1v1h-1zM57 60h1v1h-1zM57 63h1v1h-1zM58 62h1v1h-1zM59 61h1v1h-1zM60 60h1v1h-1zM60 61h1v1h-1zM61 60h1v1h-1zM55 65h1v1h-1zM57 64h1v1h-1z"/></symbol><symbol id="i-mustache" viewBox="0 0 355 122"><path d="M0 38 6 37 14 43 28 48 43 47 54 42 99 8 112 2 121 0 138 0 149 3 159 8 177 22 191 10 206 2 215 0 233 0 244 3 257 10 296 40 310 47 325 48 339 43 348 37 353 37 354 47 351 57 344 72 329 93 321 101 307 111 291 118 275 121 246 121 229 118 216 113 201 105 192 98 177 83 168 94 160 101 140 113 137 113 132 116 121 119 92 122 91 121 80 121 62 117 47 110 32 99 15 78 9 67 1 46Z"/></symbol>
+	</svg>
+	<nav class="gd-rail" aria-label="Tools" data-i18n-aria-label="rail.label">
+		<span class="gd-mark" aria-hidden="true"><svg class="gd-i gd-rose"><use href="#i-rose"/></svg></span>
+		<button type="button" id="gd-tool-navigate" class="gd-tool" aria-pressed="true" aria-keyshortcuts="V" title="Move around the canvas (V)" data-i18n-title="rail.navigate.title"><svg class="gd-i" aria-hidden="true"><use href="#i-hand"/></svg><span class="gd-tool-label" data-i18n="rail.navigate">Move</span></button>
+		<button type="button" id="gd-comment" class="gd-tool" aria-pressed="false" aria-keyshortcuts="C" title="Comment on an element (C)" data-i18n-title="rail.comment.title"><svg class="gd-i" aria-hidden="true"><use href="#i-comment"/></svg><span class="gd-tool-label" data-i18n="rail.comment">Comment</span></button>
+		<span class="gd-sep" aria-hidden="true"></span>
+		<button type="button" id="gd-rail-fit" class="gd-tool" aria-keyshortcuts="F" title="See all the directions (F)" data-i18n-title="rail.overview.title"><svg class="gd-i" aria-hidden="true"><use href="#i-fit"/></svg><span class="gd-tool-label" data-i18n="rail.overview">Overview</span></button>
+		<button type="button" id="gd-rail-settings" class="gd-tool gd-bottom" aria-haspopup="menu" aria-expanded="false" aria-controls="gd-menu" title="Settings: appearance, design system, keyboard shortcuts and step-by-step help" data-i18n-title="rail.settings.title"><svg class="gd-i" aria-hidden="true"><use href="#i-gear"/></svg><span class="gd-tool-label" data-i18n="rail.settings">Settings</span></button>
+	</nav>
+	<header class="gd-bar" role="toolbar" aria-label="Design canvas controls" data-i18n-aria-label="bar.label">
+		<div class="gd-crumbs">
+			<h1 class="gd-title" id="gd-title">Gentle Design</h1>
+			<label class="gd-field" id="gd-design-field">
+				<span class="gd-crumb-sep" aria-hidden="true">/</span>
+				<span class="gd-visually-hidden" data-i18n="bar.design">Design</span>
+				<select id="gd-design" aria-label="Design" data-i18n-aria-label="bar.design"></select>
+			</label>
+			<span id="gd-feature-sep" class="gd-crumb-sep" aria-hidden="true" hidden>/</span>
+			<code id="gd-feature" class="gd-feature" title="Feature document" data-i18n-title="bar.feature" hidden></code>
 		</div>
-		<p id="gd-nav-mode" class="gd-nav-mode" role="status" aria-live="polite">Navigating</p>
-		<button type="button" id="gd-comment" class="gd-toggle" aria-pressed="false">Comment</button>
-		<div class="gd-group" role="radiogroup" aria-label="When a comment is sent to the session">
-			<label class="gd-radio"><input type="radio" name="gd-send-mode" id="gd-mode-send" value="send"> Send now</label>
-			<label class="gd-radio"><input type="radio" name="gd-send-mode" id="gd-mode-collect" value="collect"> Collect</label>
+		<span class="gd-spacer"></span>
+		<div class="gd-group gd-arrange" role="group" aria-label="Arrange the directions" data-i18n-aria-label="layout.group">
+			<button type="button" id="gd-arrange-row" aria-pressed="true" aria-label="Row" title="Arrange in a row" data-i18n-aria-label="layout.row" data-i18n-title="layout.row.title"><svg class="gd-i" aria-hidden="true"><use href="#i-row"/></svg></button>
+			<button type="button" id="gd-arrange-column" aria-pressed="false" aria-label="Column" title="Arrange in a column" data-i18n-aria-label="layout.column" data-i18n-title="layout.column.title"><svg class="gd-i" aria-hidden="true"><use href="#i-column"/></svg></button>
+			<button type="button" id="gd-arrange-grid" aria-pressed="false" aria-label="Grid" title="Arrange in a grid" data-i18n-aria-label="layout.grid" data-i18n-title="layout.grid.title"><svg class="gd-i" aria-hidden="true"><use href="#i-grid"/></svg></button>
 		</div>
-		<button type="button" id="gd-send-all" disabled>Send all (0)</button>
-		<button type="button" id="gd-panel-toggle" class="gd-toggle" aria-pressed="true" aria-controls="gd-panel">Comments</button>
+		<button type="button" id="gd-device" class="gd-device-button" aria-haspopup="menu" aria-expanded="false" aria-controls="gd-device-menu" title="Open an artboard to choose its preview size" data-i18n-title="device.off" disabled><svg class="gd-i gd-i-s" aria-hidden="true"><use id="gd-device-icon" href="#i-monitor"/></svg><span id="gd-device-name" data-i18n="size.desktop">Desktop</span><span id="gd-device-size" class="gd-device-size"></span></button>
+		<div class="gd-group gd-zoom" role="group" aria-label="Zoom" data-i18n-aria-label="zoom.group">
+			<button type="button" id="gd-zoom-out" aria-label="Zoom out" title="Zoom out (-)" data-i18n-aria-label="zoom.out" data-i18n-title="zoom.out.title"><svg class="gd-i"><use href="#i-minus"/></svg></button>
+			<output id="gd-zoom-level" aria-live="polite" aria-label="Zoom level" data-i18n-aria-label="zoom.level">100%</output>
+			<button type="button" id="gd-zoom-in" aria-label="Zoom in" title="Zoom in (+)" data-i18n-aria-label="zoom.in" data-i18n-title="zoom.in.title"><svg class="gd-i"><use href="#i-plus"/></svg></button>
+			<button type="button" id="gd-fit" aria-label="Fit all" title="Fit all (0)" data-i18n-aria-label="zoom.fit" data-i18n-title="zoom.fit.title"><svg class="gd-i"><use href="#i-fit"/></svg></button>
+		</div>
+		<button type="button" id="gd-compare-app" class="gd-secondary" title="Compare with app" data-i18n-title="bar.compareApp" hidden><svg class="gd-i"><use href="#i-compare"/></svg><span data-i18n="bar.compareApp">Compare with app</span></button>
+		<button type="button" id="gd-panel-toggle" class="gd-toggle" aria-pressed="true" aria-controls="gd-panel" aria-keyshortcuts="]" title="Review panel (])" data-i18n="tab.comments" data-i18n-title="panel.toggleTitle">Comments</button>
 		<p id="gd-status" class="gd-status" role="status" aria-live="polite"></p>
+		<p id="gd-connection" class="gd-connection"></p>
 	</header>
 	<div class="gd-main">
-		<main id="gd-viewport" class="gd-viewport" aria-label="Artboards" tabindex="0">
+		<main id="gd-viewport" class="gd-viewport" aria-label="Directions" data-i18n-aria-label="viewport.label" tabindex="0">
 			<div id="gd-world" class="gd-world"></div>
 			<p id="gd-empty" class="gd-empty" hidden></p>
-			<button type="button" id="gd-back" class="gd-back" aria-keyshortcuts="Shift+Escape" title="Back to canvas (Shift+Esc)" hidden>Back to canvas</button>
+			<button type="button" id="gd-back" class="gd-back" aria-keyshortcuts="Shift+Escape" title="Back to canvas (Shift+Esc)" data-i18n="back" data-i18n-title="back.title" hidden>Back to canvas</button>
+			<section id="gd-minimap" class="gd-minimap" aria-labelledby="gd-minimap-title">
+				<h2 id="gd-minimap-title" class="gd-minimap-title"><span data-i18n="minimap.title">Minimap</span><kbd id="gd-minimap-key" aria-hidden="true">M</kbd></h2>
+				<div id="gd-minimap-map" class="gd-minimap-map" role="img" aria-label="Position of the visible area among the directions. Click or drag to move the view; with the keyboard, use the Open button on each direction." data-i18n-aria-label="minimap.aria"><b id="gd-minimap-view" class="gd-minimap-view"></b></div>
+			</section>
+			<p id="gd-nav-mode" class="gd-nav-mode" role="status" aria-live="polite" data-i18n="mode.navigating">Moving around the canvas · wheel to zoom</p>
+			<section id="gd-inspector" class="gd-inspector" aria-labelledby="gd-inspector-title" hidden>
+				<header class="gd-inspector-head">
+					<svg class="gd-i gd-i-s" aria-hidden="true"><use href="#i-target"/></svg>
+					<h2 id="gd-inspector-title" class="gd-inspector-title"></h2>
+					<code id="gd-inspector-selector" class="gd-inspector-selector"></code>
+				</header>
+				<dl id="gd-inspector-list" class="gd-inspector-list"></dl>
+				<p id="gd-inspector-note" class="gd-inspector-note" hidden></p>
+				<div class="gd-inspector-actions">
+					<button type="button" id="gd-inspector-fix" class="gd-primary gd-small"><svg class="gd-i gd-i-s" aria-hidden="true"><use href="#i-comment"/></svg><span data-i18n="checks.fix">Ask the agent to fix</span></button>
+					<button type="button" id="gd-inspector-copy" class="gd-small" data-i18n="common.copy">Copy</button>
+				</div>
+			</section>
 		</main>
 		<aside id="gd-panel" class="gd-panel" aria-labelledby="gd-panel-title">
-			<h2 id="gd-panel-title" class="gd-panel-title">Comments</h2>
-			<div class="gd-group gd-filter" role="group" aria-label="Show comments">
-				<button type="button" id="gd-filter-open" aria-pressed="true">Open (0)</button>
-				<button type="button" id="gd-filter-resolved" aria-pressed="false">Resolved (0)</button>
+			<h2 id="gd-panel-title" class="gd-visually-hidden" data-i18n="panel.label">Review</h2>
+			<div class="gd-tabs-bar">
+				<button type="button" id="gd-tabs-prev" class="gd-tabs-arrow" tabindex="-1" aria-hidden="true" aria-label="Earlier tabs" data-i18n-aria-label="tabs.prev" data-i18n-title="tabs.prev" title="Earlier tabs" hidden><svg class="gd-i"><use href="#i-chevron-left"/></svg></button>
+				<div id="gd-tabs" class="gd-tabs" role="tablist" aria-label="Review" data-i18n-aria-label="panel.label">
+					<button type="button" role="tab" id="gd-tab-comments" class="gd-tab" aria-selected="true" aria-controls="gd-tabpanel"><span data-i18n="tab.comments">Comments</span> <span id="gd-count-open" class="gd-count">0</span></button>
+					<button type="button" role="tab" id="gd-tab-checks" class="gd-tab" aria-selected="false" aria-controls="gd-tabpanel" tabindex="-1"><span data-i18n="tab.checks">Quality</span> <span id="gd-count-checks" class="gd-count">0</span></button>
+				</div>
+				<button type="button" id="gd-tabs-next" class="gd-tabs-arrow" tabindex="-1" aria-hidden="true" aria-label="More tabs" data-i18n-aria-label="tabs.next" data-i18n-title="tabs.next" title="More tabs" hidden><svg class="gd-i"><use href="#i-chevron-right"/></svg></button>
 			</div>
-			<p id="gd-panel-empty" class="gd-panel-empty">No comments yet. Turn on Comment mode and click an element.</p>
-			<ol id="gd-comment-list" class="gd-comment-list" aria-label="Comments"></ol>
+			<div id="gd-tabpanel" class="gd-panel-body" role="tabpanel" aria-labelledby="gd-tab-comments">
+				<div id="gd-comment-filter" class="gd-devices gd-comment-filter" role="group" aria-label="Show comments" data-i18n-aria-label="filter.label">
+					<button type="button" id="gd-filter-open" class="gd-size-button" aria-pressed="true" data-i18n="filter.open">Open · 0</button>
+					<button type="button" id="gd-filter-resolved" class="gd-size-button" aria-pressed="false" data-i18n="filter.resolved">Resolved · 0</button>
+					<button type="button" id="gd-filter-all" class="gd-size-button" aria-pressed="false" data-i18n="filter.all">All</button>
+				</div>
+				<div id="gd-comments-empty" class="gd-comments-empty" hidden>
+					<svg class="gd-i" aria-hidden="true"><use href="#i-comment"/></svg>
+					<strong data-i18n="panel.empty.none">No comments yet</strong>
+					<span data-i18n="panel.empty.hint">Open a direction and press “Comment” on whatever you want to change.</span>
+				</div>
+				<p id="gd-panel-empty" class="gd-panel-empty" data-i18n="panel.empty.open" hidden>No open comments.</p>
+				<ol id="gd-comment-list" class="gd-comment-list" aria-label="Comments" data-i18n-aria-label="panel.comments"></ol>
+				<div id="gd-checks" class="gd-checks" hidden></div>
+				<section id="gd-handoff-panel" class="gd-handoff-panel" aria-labelledby="gd-handoff-title" hidden>
+					<h3 id="gd-handoff-title" class="gd-handoff-title"></h3>
+					<ol id="gd-timeline" class="gd-timeline"></ol>
+				</section>
+				<section id="gd-parts-panel" class="gd-handoff-panel gd-parts-panel" aria-labelledby="gd-parts-title" hidden>
+					<h3 id="gd-parts-title" class="gd-handoff-title"></h3>
+					<ol id="gd-parts-list" class="gd-parts"></ol>
+				</section>
+			</div>
+			<div class="gd-side-foot">
+				<p id="gd-send-intro" class="gd-send-intro" data-i18n="panel.footIntro">Your comments go to the agent so it changes the design</p>
+				<p id="gd-send-pending" class="gd-send-pending" role="status" aria-live="polite" hidden></p>
+				<div class="gd-sendmode" role="radiogroup" aria-label="When a comment is sent to the session" data-i18n-aria-label="panel.sendMode">
+					<label class="gd-radio"><input type="radio" name="gd-send-mode" id="gd-mode-send" value="send"><span data-i18n="panel.sendNow">Send now</span></label>
+					<label class="gd-radio"><input type="radio" name="gd-send-mode" id="gd-mode-collect" value="collect"><span data-i18n="panel.collect">Save to send later</span></label>
+				</div>
+				<p id="gd-send-note" class="gd-send-note" hidden></p>
+				<div id="gd-send-alert" class="gd-alert" role="alert" hidden>
+					<svg id="gd-send-alert-icon" class="gd-i gd-alert-icon" aria-hidden="true"><use href="#i-alert"/></svg>
+					<div class="gd-alert-body"><p id="gd-send-alert-text" class="gd-alert-text"></p><small id="gd-send-alert-detail" class="gd-alert-detail"></small></div>
+					<button type="button" id="gd-send-alert-dismiss" class="gd-alert-dismiss" aria-label="Dismiss" title="Dismiss" data-i18n-aria-label="common.dismiss" data-i18n-title="common.dismiss"><svg class="gd-i" aria-hidden="true"><use href="#i-x"/></svg></button>
+				</div>
+				<button type="button" id="gd-send-all" class="gd-primary" aria-describedby="gd-send-note" data-i18n="panel.sendAll" disabled>Send all (0)</button>
+				<button type="button" id="gd-technical" class="gd-technical" aria-pressed="false" title="Selectors and the token inspector" data-i18n-title="technical.title"><svg class="gd-i gd-i-s" aria-hidden="true"><use href="#i-code"/></svg><span data-i18n="technical.label">Technical details</span><span class="gd-switch" aria-hidden="true"></span></button>
+			</div>
 		</aside>
 		<section id="gd-compare" class="gd-compare" aria-labelledby="gd-compare-title" hidden>
 			<div class="gd-compare-bar">
-				<h2 id="gd-compare-title" class="gd-compare-title">Compare</h2>
-				<label class="gd-radio" id="gd-compare-fit-field" hidden><input type="checkbox" id="gd-compare-fit"> Scale to fit</label>
-				<a id="gd-compare-open" class="gd-compare-open" target="_blank" rel="noopener noreferrer">Open in new tab</a>
-				<button type="button" id="gd-compare-back" class="gd-primary" aria-keyshortcuts="Shift+Escape" title="Back to canvas (Shift+Esc)">Back to canvas</button>
+				<h2 id="gd-compare-title" class="gd-compare-title" data-i18n="compare.title">Compare</h2>
+				<label class="gd-radio" id="gd-compare-fit-field" hidden><input type="checkbox" id="gd-compare-fit"> <span data-i18n="compare.fit">Scale to fit</span></label>
+				<a id="gd-compare-open" class="gd-compare-open" target="_blank" rel="noopener noreferrer" data-i18n="compare.open">Open in new tab</a>
+				<button type="button" id="gd-compare-back" class="gd-primary" aria-keyshortcuts="Shift+Escape" title="Back to canvas (Shift+Esc)" data-i18n="back" data-i18n-title="back.title">Back to canvas</button>
 			</div>
 			<p id="gd-compare-message" class="gd-compare-message" role="status" aria-live="polite"></p>
 			<div id="gd-compare-stage" class="gd-compare-stage">
@@ -63,26 +168,89 @@
 			</div>
 		</section>
 	</div>
+	<div id="gd-guide-spot" class="gd-guide-spot" aria-hidden="true" hidden></div>
+	<section id="gd-guide" class="gd-guide" role="dialog" aria-modal="false" aria-labelledby="gd-guide-title" aria-describedby="gd-guide-text" hidden>
+		<p id="gd-guide-eyebrow" class="gd-guide-eyebrow"></p>
+		<h2 id="gd-guide-title" class="gd-guide-title"></h2>
+		<p id="gd-guide-text" class="gd-guide-text"></p>
+		<ol id="gd-guide-steps" class="gd-guide-steps" aria-label="Steps" data-i18n-aria-label="guide.steps"></ol>
+		<div class="gd-guide-actions">
+			<button type="button" id="gd-guide-skip" class="gd-guide-skip" data-i18n="guide.off">Turn off help</button>
+			<span class="gd-spacer"></span>
+			<button type="button" id="gd-guide-next" class="gd-primary"><span id="gd-guide-next-label" data-i18n="guide.dismiss">Got it</span></button>
+		</div>
+	</section>
 	<div id="gd-toast" class="gd-toast" role="status" aria-live="polite" hidden></div>
+	<div id="gd-menu" class="gd-menu" role="menu" hidden></div>
+	<div id="gd-device-menu" class="gd-menu gd-device-menu" role="menu" aria-label="Preview size" data-i18n-aria-label="size.group" hidden></div>
 	<div id="gd-popover" class="gd-popover" role="dialog" aria-modal="false" aria-labelledby="gd-popover-title" hidden>
 		<form id="gd-popover-form">
-			<p class="gd-popover-title" id="gd-popover-title">Comment on <code id="gd-popover-target"></code></p>
-			<label class="gd-visually-hidden" for="gd-popover-text">Comment</label>
-			<textarea id="gd-popover-text" rows="4" maxlength="2000" required placeholder="What should change?"></textarea>
+			<p class="gd-popover-title" id="gd-popover-title"><span data-i18n="popover.title">Comment on</span> <code id="gd-popover-target"></code></p>
+			<label class="gd-visually-hidden" for="gd-popover-text" data-i18n="popover.label">Comment</label>
+			<textarea id="gd-popover-text" rows="4" maxlength="2000" required placeholder="What should change?" data-i18n-placeholder="change.prompt"></textarea>
 			<div class="gd-shot">
 				<input type="file" id="gd-shot-input" accept="image/png,image/jpeg,image/webp,image/gif" tabindex="-1" aria-hidden="true" hidden>
-				<button type="button" id="gd-shot-attach" title="Or paste an image, or drop one here (PNG, JPEG, WebP or GIF, up to 5 MB)">Attach screenshot</button>
+				<button type="button" id="gd-shot-attach" title="Or paste an image, or drop one here (PNG, JPEG, WebP or GIF, up to 5 MB)" data-i18n="popover.attach" data-i18n-title="popover.attachTitle">Attach screenshot</button>
 				<figure id="gd-shot-preview" class="gd-shot-preview" hidden>
-					<img id="gd-shot-image" alt="Attached screenshot">
-					<button type="button" id="gd-shot-remove">Remove</button>
+					<img id="gd-shot-image" alt="Attached screenshot" data-i18n-alt="popover.shotAlt">
+					<button type="button" id="gd-shot-remove" data-i18n="common.remove">Remove</button>
 				</figure>
 			</div>
 			<div class="gd-popover-actions">
-				<span id="gd-popover-message" class="gd-popover-message" role="status" aria-live="polite"></span>
-				<button type="button" id="gd-popover-cancel">Cancel</button>
-				<button type="submit" id="gd-popover-send" class="gd-primary">Send</button>
+				<div class="gd-popover-feedback">
+					<span id="gd-popover-message" class="gd-popover-message" role="status" aria-live="polite"></span>
+				</div>
+				<button type="button" id="gd-popover-cancel" data-i18n="common.cancel">Cancel</button>
+				<button type="button" id="gd-popover-part" data-i18n="part.add">Implement only this</button>
+				<button type="submit" id="gd-popover-send" class="gd-primary" data-i18n="common.send">Send</button>
 			</div>
 		</form>
 	</div>
+	<dialog id="gd-variant" class="gd-dialog gd-variant" aria-labelledby="gd-variant-title">
+		<form id="gd-variant-form" novalidate>
+			<h2 id="gd-variant-title" class="gd-dialog-title"><svg class="gd-i gd-i-s" aria-hidden="true"><use href="#i-sparkles"/></svg> <span data-i18n="variant.title">Another direction from</span> <strong id="gd-variant-source"></strong></h2>
+			<p id="gd-variant-note" class="gd-variant-note"></p>
+			<label class="gd-variant-label" for="gd-variant-text" data-i18n="change.prompt">What should change?</label>
+			<textarea id="gd-variant-text" class="gd-variant-field" rows="4" maxlength="2000" aria-describedby="gd-variant-hint gd-variant-message"></textarea>
+			<p id="gd-variant-hint" class="gd-variant-hint" data-i18n="variant.hint">1 to 2000 characters</p>
+			<div id="gd-variant-chips" class="gd-suggestions" role="group" aria-label="Suggestions" data-i18n-aria-label="variant.suggestions"></div>
+			<p id="gd-variant-message" class="gd-variant-message" role="status" aria-live="polite"></p>
+			<div class="gd-dialog-actions">
+				<button type="button" id="gd-variant-cancel" data-i18n="common.cancel">Cancel</button>
+				<button type="submit" id="gd-variant-send" class="gd-primary"><svg class="gd-i gd-i-s" aria-hidden="true"><use href="#i-sparkles"/></svg><span data-i18n="variant.send">Send to the session</span></button>
+			</div>
+		</form>
+	</dialog>
+	<dialog id="gd-shortcuts" class="gd-dialog" aria-labelledby="gd-shortcuts-title">
+		<h2 id="gd-shortcuts-title" class="gd-dialog-title" data-i18n="rail.keys">Keyboard shortcuts</h2>
+		<ul id="gd-keys-custom" class="gd-keys-custom" aria-label="Shortcuts you can change" data-i18n-aria-label="keys.customLabel"></ul>
+		<p id="gd-keys-message" class="gd-keys-message" role="status" aria-live="polite"></p>
+		<dl class="gd-keys">
+			<dt><kbd>0</kbd></dt><dd data-i18n="keys.fit">Fit all directions</dd>
+			<dt><kbd>+</kbd> <kbd>-</kbd></dt><dd data-i18n="keys.zoom">Zoom in and out</dd>
+			<dt><kbd>&larr;</kbd> <kbd>&rarr;</kbd> <kbd>&uarr;</kbd> <kbd>&darr;</kbd></dt><dd data-i18n="keys.pan">Pan (Shift for larger steps)</dd>
+			<dt><kbd data-i18n="keys.spaceKey">Space</kbd> + <span data-i18n="keys.drag">drag</span></dt><dd data-i18n="keys.space">Pan from anywhere, even over an artboard</dd>
+			<dt><kbd>Esc</kbd></dt><dd data-i18n="keys.esc">Leave Comment mode or close the comment box</dd>
+			<dt><kbd>Shift</kbd> + <kbd>Esc</kbd></dt><dd data-i18n="keys.shiftEsc">Back to canvas from an artboard or Compare</dd>
+		</dl>
+		<p class="gd-dialog-note" data-i18n="keys.customNote">Change gives an action another single key; your keys are saved in this browser, for every design.</p>
+		<p class="gd-dialog-note" data-i18n="keys.note">Single keys are off while you type, while the comment box is open and while an artboard is in use.</p>
+		<div class="gd-dialog-actions"><button type="button" id="gd-keys-restore" class="gd-keys-restore" data-i18n="keys.restore">Restore defaults</button><button type="button" id="gd-shortcuts-close" class="gd-primary" data-i18n="common.close">Close</button></div>
+	</dialog>
+	<dialog id="gd-appearance" class="gd-dialog" aria-labelledby="gd-appearance-title">
+		<h2 id="gd-appearance-title" class="gd-dialog-title" data-i18n="rail.appearance">Appearance</h2>
+		<fieldset class="gd-setting-group"><legend class="gd-setting-title" data-i18n="appearance.theme">Theme</legend>
+			<label class="gd-setting"><input type="radio" name="gd-theme" id="gd-theme-gentle" value="gentle"><span class="gd-setting-text"><span class="gd-theme-name"><svg class="gd-i gd-mustache" aria-hidden="true"><use href="#i-mustache"/></svg><span data-i18n="theme.gentle">Gentle</span></span><span class="gd-setting-hint" data-i18n="theme.gentle.hint">Gentleman style</span></span></label>
+			<label class="gd-setting"><input type="radio" name="gd-theme" id="gd-theme-neutral" value="neutral"><span class="gd-setting-text"><span data-i18n="theme.neutral">Neutral</span><span class="gd-setting-hint" data-i18n="theme.neutral.hint">Dark gray with a light-gray accent</span></span></label>
+		</fieldset>
+		<p class="gd-dialog-note" data-i18n="theme.note">The theme changes the canvas only; the directions keep their own design. Saved in this browser.</p>
+		<fieldset class="gd-setting-group"><legend class="gd-setting-title" data-i18n="appearance.language">Language</legend>
+			<label class="gd-setting"><input type="radio" name="gd-language" id="gd-language-es" value="es"><span data-i18n="lang.es">Español</span></label>
+			<label class="gd-setting"><input type="radio" name="gd-language" id="gd-language-en" value="en"><span data-i18n="lang.en">English</span></label>
+			<label class="gd-setting"><input type="radio" name="gd-language" id="gd-language-auto" value="auto"><span data-i18n="lang.auto">Match the browser</span></label>
+		</fieldset>
+		<p class="gd-dialog-note" data-i18n="lang.note">Saved in this browser. Comments you write stay in the language you type; messages to the agent stay in English.</p>
+		<div class="gd-dialog-actions"><button type="button" id="gd-appearance-close" class="gd-primary" data-i18n="common.close">Close</button></div>
+	</dialog>
 </body>
 </html>

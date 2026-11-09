@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { DESIGN_CANVAS_ASSETS } from "../lib/design-canvas-assets.ts";
+import { FakeDocument } from "./support/design-canvas-dom.ts";
 
 // The canvas modules (S1, S3, S4): flat files under assets/design-canvas/, loaded
 // as ES modules from canvas.js, wired only by canvas-boot.js.
@@ -69,4 +70,19 @@ test("each module exports init(ctx), and only canvas-boot.js imports its sibling
 test("canvas-boot.js documents the ctx.actions rule", () => {
 	const boot = read("canvas-boot.js").replace(/\n\/\/ ?/g, " ");
 	assert.ok(boot.includes("Actions are only complete once every `init` has returned, so no `init` may call another module's action synchronously"));
+});
+
+test("boot registers window listeners in main's order, with and without ResizeObserver", async () => {
+	const { boot } = await import(pathToFileURL(join(ASSET_DIR, "canvas-boot.js")).href);
+	for (const ro of [false, true]) {
+		const doc = new FakeDocument();
+		doc.getElementById("gd-config").textContent = JSON.stringify({ base: "/t/", slug: null });
+		const order: string[] = [];
+		const observed: unknown[] = [];
+		const win: Record<string, any> = { addEventListener: (type: string) => order.push(type), localStorage: { getItem: () => null, setItem() {} }, setTimeout, clearTimeout, requestAnimationFrame: () => 0, fetch: () => new Promise(() => {}), EventSource: class { addEventListener() {} }, location: { port: "1" }, URL, history: { replaceState() {} } };
+		if (ro) win.ResizeObserver = class { observe(el: unknown) { observed.push(el); } };
+		boot(win, doc);
+		assert.deepEqual(order, ro ? ["message", "resize", "resize"] : ["message", "resize", "resize", "resize"]);
+		assert.deepEqual(observed, ro ? [doc.getElementById("gd-viewport")] : []);
+	}
 });

@@ -1110,3 +1110,10 @@ test("a batch attaches at most six screenshots, in order, and names the rest for
 	const plain = batch.map(({ screenshot: _drop, ...rest }) => rest);
 	assert.equal(designCommentBatchContent(plain), formatDesignCommentBatch(plain));
 });
+
+test("module names are served only as one exact, flat segment", async (t) => {
+	const { port, base } = await start(t);
+	for (const path of ["sub/canvas-boot.js", "canvas-boot.js/", "canvas-boot.js%2F", "..%2Fcanvas-boot.js", "Canvas-Boot.js", "__proto__", "constructor"]) {
+		assert.equal((await rawRequest(port, `${base}assets/${path}`)).status, 404, path);
+	}
+});

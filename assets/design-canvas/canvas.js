@@ -110,6 +110,8 @@
 		system: null,
 		systemBoard: null,
 		zoom: 1,
+		// True while the view is the one Fit gave; a resize then fits again (refit).
+		fitted: false,
 		x: FIT_PADDING,
 		y: FIT_PADDING,
 		commenting: false,
@@ -182,6 +184,7 @@
 		state.x = px - (px - state.x) * (zoom / state.zoom);
 		state.y = py - (py - state.y) * (zoom / state.zoom);
 		state.zoom = zoom;
+		state.fitted = false;
 		applyView();
 		closePopover();
 	}
@@ -194,6 +197,7 @@
 	function panBy(dx, dy) {
 		state.x += dx;
 		state.y += dy;
+		state.fitted = false;
 		applyView();
 		closePopover();
 	}
@@ -208,8 +212,17 @@
 		state.zoom = zoom;
 		state.x = (rect.width - width * zoom) / 2;
 		state.y = Math.max(FIT_PADDING, (rect.height - height * zoom) / 2);
+		state.fitted = true;
 		applyView();
 		closePopover();
+	}
+
+	/**
+	 * A fitted overview follows the viewport's size (a window that opens small, the comments panel); a zoom or pan of yours stays.
+	 * While a comment is being written it waits, since fit() closes the comment box; the next size change fits again.
+	 */
+	function refit() {
+		if (state.fitted && !state.focus && els.popover.hidden) fit();
 	}
 
 	function wheelPixels(delta, mode) {
@@ -1246,6 +1259,8 @@
 	function setPanel(show) {
 		els.panel.hidden = !show;
 		els.panelToggle.setAttribute("aria-pressed", String(show));
+		// The viewport changes size with the panel; without ResizeObserver nothing else reports it.
+		if (typeof ResizeObserver !== "function") viewportResized();
 	}
 
 	els.panelToggle.addEventListener("click", () => setPanel(els.panel.hidden));
@@ -1496,9 +1511,13 @@
 
 	window.addEventListener("resize", closePopover);
 	window.addEventListener("resize", layoutCompare);
-	// The viewport also changes size when the comments panel opens or closes.
-	if (typeof ResizeObserver === "function") new ResizeObserver(() => centerFocus()).observe(els.viewport);
-	else window.addEventListener("resize", () => centerFocus());
+	// The viewport also changes size when the comments panel opens or closes (setPanel).
+	function viewportResized() {
+		centerFocus();
+		refit();
+	}
+	if (typeof ResizeObserver === "function") new ResizeObserver(viewportResized).observe(els.viewport);
+	else window.addEventListener("resize", viewportResized);
 
 	setMode(state.mode);
 	start();

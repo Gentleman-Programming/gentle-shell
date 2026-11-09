@@ -2986,3 +2986,85 @@ test("a retained card of another quiet tool keeps its rows across the Card bash 
 	assert.strictEqual(result.render(80), retainedResult, "and so does its result");
 	assert.deepEqual(frame(), retained, "the drawn card is the same card");
 });
+
+// pi repaints a retained card without asking its renderer again, so a card that
+// captured its Card content level keeps drawing the preview it was built with.
+// The preference is process-wide and switches while the transcript is on screen,
+// so the retained card reads it on every pass: the rows stay cached while the
+// level holds, and a switch repaints the very same component either way.
+test("a retained quiet card repaints when the Card content preference switches", (t) => {
+	useCardContent(t, CARD_CONTENT.DEFAULT);
+	const read = registeredQuietTools().get("read");
+	const args = { path: "a.ts" };
+	const finished = routineRenderContext({ args, executionStarted: true, isPartial: false, state: {} });
+	const call = read.renderCall(args, passthroughTheme, finished);
+	const result = read.renderResult(textResult("first line\nsecond line"), { expanded: false, isPartial: false }, passthroughTheme, finished);
+	const heading = () => frameLines(call, 80)[0]!;
+	const body = () => frameLines(result, 80).join("\n");
+
+	assert.match(body(), /first line/, "default content previews the result");
+	assert.match(body(), /second line/);
+	const retained = result.render(80);
+	assert.strictEqual(result.render(80), retained, "the preview level keeps reusing the rows it drew");
+
+	setCardContent(CARD_CONTENT.MINIMAL);
+	assert.match(heading(), /╭─ ≡ read a\.ts/, "the retained card still names its command");
+	assert.doesNotMatch(body(), /first line|second line/, "minimal content withholds the preview from the retained card");
+	assert.notStrictEqual(result.render(80), retained, "the switch drops the preview rows");
+	const withheld = result.render(80);
+	assert.strictEqual(result.render(80), withheld, "the withheld level keeps reusing the rows it drew");
+
+	setCardContent(CARD_CONTENT.DEFAULT);
+	assert.match(body(), /first line/, "switching back previews the result again");
+	assert.notStrictEqual(result.render(80), withheld, "the switch back drops the withheld rows");
+});
+
+// The withheld level draws no rows at all, so the rule must claim the key that
+// reveals them: the claim is measured again on every pass, never kept from the build.
+test("a retained bash card claims the expand key when the Card content withholds its preview", (t) => {
+	useCardContent(t, CARD_CONTENT.DEFAULT);
+	useCardBash(t, CARD_BASH.OUTPUT);
+	const bash = registeredQuietTools().get("bash");
+	const args = { command: "git status" };
+	const finished = routineRenderContext({ args, executionStarted: true, isPartial: false, state: {} });
+	const call = bash.renderCall(args, passthroughTheme, finished);
+	const result = bash.renderResult(textResult("clean tree"), { expanded: false, isPartial: false }, passthroughTheme, finished);
+	const heading = () => frameLines(call, 80)[0]!;
+	const body = () => frameLines(result, 80).join("\n");
+
+	assert.match(body(), /clean tree/, "default content previews the bash result");
+	assert.doesNotMatch(heading(), /to expand/, "the preview is already whole, so the rule claims no key");
+
+	setCardContent(CARD_CONTENT.MINIMAL);
+	assert.doesNotMatch(body(), /clean tree/, "minimal content withholds the preview");
+	assert.match(heading(), /to expand/, "and the retained rule claims the key that reveals it");
+});
+
+// A failed call keeps its bounded tail under either level and an expanded card
+// already shows the whole result, so the preference decides neither of them: the
+// row cache must hand back the very rows they drew.
+test("a card the Card content preference does not decide keeps its rows across the switch", (t) => {
+	useCardContent(t, CARD_CONTENT.DEFAULT);
+	const read = registeredQuietTools().get("read");
+	const args = { path: "a.ts" };
+	const finished = routineRenderContext({ args, executionStarted: true, isPartial: false, state: {} });
+	const failed = read.renderResult(
+		textResult("error one\nerror two\nerror three\nerror four"),
+		{ expanded: false, isPartial: false },
+		passthroughTheme,
+		routineRenderContext({ args, executionStarted: true, isPartial: false, state: {}, isError: true }),
+	);
+	const expanded = read.renderResult(textResult("first line\nsecond line"), { expanded: true, isPartial: false }, passthroughTheme, finished);
+	const failedFrame = frameLines(failed, 80).join("\n");
+	const expandedFrame = frameLines(expanded, 80).join("\n");
+	assert.match(failedFrame, /error two/, "a failed card says why while collapsed");
+	assert.match(expandedFrame, /first line/, "an expanded card shows the whole result");
+	const retainedFailed = failed.render(80);
+	const retainedExpanded = expanded.render(80);
+
+	setCardContent(CARD_CONTENT.MINIMAL);
+	assert.strictEqual(failed.render(80), retainedFailed, "the failed card keeps the rows it already drew");
+	assert.strictEqual(expanded.render(80), retainedExpanded, "and so does the expanded card");
+	assert.equal(frameLines(failed, 80).join("\n"), failedFrame, "the drawn failed card is the same card");
+	assert.equal(frameLines(expanded, 80).join("\n"), expandedFrame, "the drawn expanded card is the same card");
+});

@@ -927,9 +927,10 @@ function reDecided<T>(source: Live<T>): boolean {
 
 /**
  * Resolves a card value. pi repaints a retained card without asking its renderer
- * again, and the Card bash preference switches while the transcript is on screen,
- * so the identity a bash card heads with — and the rail it names — is asked for on
- * every pass instead of being kept from the build.
+ * again, and the Card bash and Card content preferences switch while the transcript
+ * is on screen, so the identity a bash card heads with, the rail it names, and the
+ * result level it draws at are asked for on every pass instead of being kept from
+ * the build.
  */
 function live<T>(source: Live<T>): T {
 	return reDecided(source) ? (source as () => T)() : (source as T);
@@ -937,24 +938,28 @@ function live<T>(source: Live<T>): T {
 
 /**
  * One settled frame per component: bounded memory, including all card chrome. The
- * Card bash preference is part of the frame of the card it draws, so rows drawn
- * under one identity are never handed back under the other, and a card it does not
- * draw keeps the frame it has.
+ * Card bash preference is part of the frame of the card it draws, and so is the
+ * Card content level of a card that level decides, so rows drawn under one value
+ * are never handed back under the other, and a card neither preference decides
+ * keeps the frame it has.
  */
 class ToolCardRows {
 	private readonly bashDecides: boolean;
-	private frame?: { width: number; style: ReturnType<typeof cardStyle>; bash: ReturnType<typeof cardBash> | undefined; running: boolean; lines: string[] };
+	private readonly contentDecides: boolean;
+	private frame?: { width: number; style: ReturnType<typeof cardStyle>; bash: ReturnType<typeof cardBash> | undefined; content: ReturnType<typeof cardContent> | undefined; running: boolean; lines: string[] };
 
-	constructor(bashDecides: boolean) {
+	constructor(bashDecides: boolean, contentDecides = false) {
 		this.bashDecides = bashDecides;
+		this.contentDecides = contentDecides;
 	}
 
 	render(width: number, running: boolean, build: () => string[]): string[] {
 		const style = cardStyle();
 		const bash = this.bashDecides ? cardBash() : undefined;
-		if (this.frame?.width === width && this.frame.style === style && this.frame.bash === bash && this.frame.running === running) return this.frame.lines;
+		const content = this.contentDecides ? cardContent() : undefined;
+		if (this.frame?.width === width && this.frame.style === style && this.frame.bash === bash && this.frame.content === content && this.frame.running === running) return this.frame.lines;
 		const lines = build();
-		this.frame = { width, style, bash, running, lines };
+		this.frame = { width, style, bash, content, running, lines };
 		return lines;
 	}
 
@@ -973,8 +978,8 @@ class ToolCardTop implements Component {
 	private readonly revealOf: (() => CardReveal | undefined) | undefined;
 	private showsMore = true;
 
-	constructor(heading: Live<ToolCardHeading>, tone: ToolTone, theme: CardTheme, hint?: string, row?: CardRowContext, reveal?: CardReveal, revealOf?: () => CardReveal | undefined) {
-		this.rows = new ToolCardRows(reDecided(heading));
+	constructor(heading: Live<ToolCardHeading>, tone: ToolTone, theme: CardTheme, hint?: string, row?: CardRowContext, reveal?: CardReveal, revealOf?: () => CardReveal | undefined, contentDecides = false) {
+		this.rows = new ToolCardRows(reDecided(heading), contentDecides);
 		this.heading = heading;
 		this.tone = tone;
 		this.theme = theme;
@@ -1032,8 +1037,8 @@ class ToolCardBody implements Component {
 	/** What the last drawn frame showed; a card with nothing left keeps the click with the host. */
 	private showsMore = true;
 
-	constructor(inner: () => Component, tone: ToolTone, theme: CardTheme, cacheable = true, elapsed?: string, reveal?: CardReveal, railRole?: Live<string | undefined>) {
-		this.rows = new ToolCardRows(reDecided(railRole));
+	constructor(inner: () => Component, tone: ToolTone, theme: CardTheme, cacheable = true, elapsed?: string, reveal?: CardReveal, railRole?: Live<string | undefined>, contentDecides = false) {
+		this.rows = new ToolCardRows(reDecided(railRole), contentDecides);
 		this.inner = inner;
 		this.tone = tone;
 		this.theme = theme;
@@ -1181,7 +1186,11 @@ export function createQuietToolRenderer(
 					headingRows(current, tone, theme, false, rowWidth).join("\n"),
 				);
 			};
-			return new ToolCardTop(heading, tone, theme, hint, renderContext, reveal, revealOf);
+			// Whether the rule claims a key that reveals a withheld preview depends on the
+			// Card content level, so the heading's frame counts the level for the cards it
+			// decides: a card that can reveal rows and did not fail, and nothing else.
+			const contentDecides = reveal !== undefined && renderContext.isError !== true;
+			return new ToolCardTop(heading, tone, theme, hint, renderContext, reveal, revealOf, contentDecides);
 		},
 		/** Builds the card component for this render pass; collapsed cards delegate to the wrapped-line cache keyed by the tool result object. */
 		renderResult(result, options, theme, context) {
@@ -1215,33 +1224,46 @@ export function createQuietToolRenderer(
 			// keeps that rail, derived from the same retained call the heading read — and
 			// re-derived on every pass, so a switch repaints the rail the heading drew.
 			const railRole = toolName === "bash" ? () => bashIdentity(renderContext?.args).railRole : undefined;
-			const carded = (component: () => Component, cacheable = options.isPartial !== true): Component => new ToolCardBody(component, resultTone, theme, cacheable, elapsed, reveal, railRole);
 			// Under the minimal Card content preference, every quiet tool draws
 			// the command alone while collapsed; the expand key still reveals
 			// the full result. Failures keep their bounded error tail so a red
 			// card always says why. The default preference keeps the previews.
-			const withheld = COMMAND_ONLY_TOOLS.has(toolName) && !isError && cardContent() === CARD_CONTENT.MINIMAL;
+			const withholdsPreview = COMMAND_ONLY_TOOLS.has(toolName) && !isError;
+			// The level switches while the card it was built under is on screen, so it is
+			// asked for again on every pass instead of being kept from the build.
+			const withheld: Live<boolean> = withholdsPreview ? () => cardContent() === CARD_CONTENT.MINIMAL : false;
+			// The collapsed rows follow that level, so their frame counts it. An expanded
+			// card already shows the whole result under either level, so its frame keeps
+			// the rows it drew.
+			const contentDecides = withholdsPreview && !expanded;
+			const carded = (component: () => Component, cacheable = options.isPartial !== true): Component => new ToolCardBody(component, resultTone, theme, cacheable, elapsed, reveal, railRole, contentDecides);
 			// Both levels are known here, so the card knows whether expanding shows more,
 			// measured where the rows are drawn (wrapping at a narrow width hides rows too).
-			const collapsedRows = quietResultRows(toolName, safeResult, text, { expanded: false, isError, args: renderContext?.args, withheld });
-			const expandedRows = quietResultRows(toolName, safeResult, text, { expanded: true, isError, args: renderContext?.args, withheld });
+			const collapsedRows = () => quietResultRows(toolName, safeResult, text, { expanded: false, isError, args: renderContext?.args, withheld: live(withheld) });
+			const expandedRows = quietResultRows(toolName, safeResult, text, { expanded: true, isError, args: renderContext?.args, withheld: false });
 			// A versioning preview judges its own text, so its `reveals` is authoritative
 			// there; every other preview is compared level against level. Either way the
 			// rows are measured where they are drawn, because wrapping at a narrow width
 			// hides rows too: a preview whose text is the whole output still leaves rows
 			// behind the key once those rows no longer fit, and expanding draws them.
+			// The level is read again here, so a switch repaints the claim with it.
 			if (reveal) reveal.body = (rowWidth) => {
-				const overflows = contentRows(collapsedRows.text, cardInnerWidth(rowWidth)) > PREVIEW_LINE_LIMIT;
-				if (collapsedRows.reveals !== undefined) return collapsedRows.reveals || overflows;
-				return collapsedRows.text !== expandedRows.text || overflows;
+				const rows = collapsedRows();
+				const overflows = contentRows(rows.text, cardInnerWidth(rowWidth)) > PREVIEW_LINE_LIMIT;
+				if (rows.reveals !== undefined) return rows.reveals || overflows;
+				return rows.text !== expandedRows.text || overflows;
 			};
-			if (!expanded && withheld) return carded(() => new Text("", 0, 0));
 			if (options.isPartial) {
 				const label = partialLabel(toolName, text);
 				const visible = lastOutputLines(text, PREVIEW_LINE_LIMIT);
-				if (reveal) reveal.body = (rowWidth) => !sameText(`${label}\n${visible}`, `${label}\n${text}`) || contentRows(`${label}\n${visible}`, cardInnerWidth(rowWidth)) > PREVIEW_LINE_LIMIT;
+				// A withheld card draws no rows at all, so expanding it shows whatever the
+				// expanded level holds; every other partial card measures its own preview.
+				if (reveal) reveal.body = (rowWidth) => {
+					if (!expanded && live(withheld)) return collapsedRows().text !== expandedRows.text;
+					return !sameText(`${label}\n${visible}`, `${label}\n${text}`) || contentRows(`${label}\n${visible}`, cardInnerWidth(rowWidth)) > PREVIEW_LINE_LIMIT;
+				};
 				if (expanded) return carded(() => new Text(`${theme.fg("warning", label)}\n${theme.fg("muted", text)}`, 0, 0));
-				return carded(() => new BoundedRows([
+				return carded(() => live(withheld) ? new Text("", 0, 0) : new BoundedRows([
 					{ text: theme.fg("warning", label), rows: 1 },
 					...(visible ? [{ text: theme.fg("muted", visible), rows: PREVIEW_LINE_LIMIT, tail: true }] : []),
 				], cacheKey));
@@ -1256,13 +1278,17 @@ export function createQuietToolRenderer(
 			}
 			const color = isError ? "error" : expanded ? "toolOutput" : "muted";
 			if (expanded) return carded(() => new Text(expandedRows.text ? theme.fg(color, expandedRows.text) : "", 0, 0));
-			if (collapsedRows.text) {
-				return carded(() => new BoundedRows([
-					{ text: theme.fg(color, collapsedRows.text), rows: PREVIEW_LINE_LIMIT, tail: collapsedRows.tail },
-				], cacheKey));
-			}
-			// The card top rule carries the expand key, so an empty result only closes the frame.
-			return carded(() => new Text("", 0, 0));
+			// The rows follow the level this pass decides, so a retained card repaints the
+			// preview a switch asks for instead of the one it was built with.
+			return carded(() => {
+				if (live(withheld)) return new Text("", 0, 0);
+				const rows = collapsedRows();
+				if (rows.text) return new BoundedRows([
+					{ text: theme.fg(color, rows.text), rows: PREVIEW_LINE_LIMIT, tail: rows.tail },
+				], cacheKey);
+				// The card top rule carries the expand key, so an empty result only closes the frame.
+				return new Text("", 0, 0);
+			});
 		},
 	};
 }

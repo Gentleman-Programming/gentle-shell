@@ -139,3 +139,17 @@ the menu. Chosen direction (user-approved): queue/defer `ask_user_choice` and
   and the residual-race caveat were recorded as a PR comment
   (issuecomment-6742870480). The repository defines `size:exception`, but the
   contributor account has no triage permission, so a maintainer must apply it.
+- L11. Repository-wide suite over the rebased tree: the `unit-tests` stage failed
+  only on environmental causes (7 EPERM symlink errors in the writer fixtures),
+  and `provider-contract` together with `runtime-harness` reported FAIL without
+  executing because that background shell had no `pnpm` on PATH. Both were
+  re-run directly: `node scripts/check-provider-contract.mjs` passes (contract
+  1.4.0, 10 bundle entries), and `node --experimental-strip-types
+  tests/runtime-harness.mjs` ran 13 times in total — one assertion at line 445
+  (`discovered.errors` came back non-empty) on the first run immediately after
+  the 35-minute suite, then twelve consecutive passes (eight on this branch, three
+  on a pristine `origin/main` tree, three under concurrent load next to the
+  provider-contract check). The failing payload was not captured, so the single
+  failure stays an unreproducible transient with no root cause: it is not
+  attributable to this diff, and no clean-run claim rests on it. The scratch
+  worktree used for the comparison was removed afterwards.

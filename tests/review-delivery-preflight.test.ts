@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
-import { checkReviewDeliveryPreflight } from "../lib/review-delivery-preflight.ts";
+import { checkReviewDeliveryPreflight, nativeDirectory } from "../lib/review-delivery-preflight.ts";
 import { recognizeReviewDeliveryActions } from "../lib/destructive-command-guard.ts";
 import { ReviewContinuationRegistry } from "../lib/review-continuation-registry.ts";
 import { NativeReviewCliV216, type NativeReviewCli } from "../lib/native-review-cli.ts";
@@ -264,4 +264,24 @@ test("preflight rechecks the actual assessed range, preserves native non-due/dec
 	const pending = checkReviewDeliveryPreflight(root, "bash", "git push origin HEAD", uncooperative, scope, () => false, abort.signal);
 	abort.abort();
 	assert.equal((await pending)?.block, true, "an uncooperative native reader cannot retain admission after abort");
+});
+
+test("MSYS-spelled delivery directories are translated before any native spawn", () => {
+	assert.equal(nativeDirectory("/c/work/repo", "win32"), "C:/work/repo", "Git Bash spells a Windows drive as /c");
+	assert.equal(nativeDirectory("/c", "win32"), "C:/", "a bare drive keeps a root");
+	assert.equal(nativeDirectory("/D/Work/Repo", "win32"), "D:/Work/Repo", "the drive letter is not case-sensitive");
+	assert.equal(nativeDirectory("C:/work/repo", "win32"), "C:/work/repo", "a native path is left alone");
+	assert.equal(nativeDirectory("./relative", "win32"), "./relative", "a relative path is left alone");
+	assert.equal(nativeDirectory("/mnt/c/work/repo", "win32"), "/mnt/c/work/repo", "a WSL spelling never names a Windows drive");
+	assert.equal(nativeDirectory("/c/work/repo", "linux"), "/c/work/repo", "a POSIX host keeps POSIX paths");
+});
+
+test("an unexpected native failure names its cause instead of a bare unavailable message", async t => {
+	const root = mkdtempSync(join(tmpdir(), "review-delivery-diagnostic-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const cli = { reviewMode: async () => { throw new Error("native process could not start"); } } as unknown as NativeReviewCli;
+	const result = await checkReviewDeliveryPreflight(root, "bash", "git push origin HEAD", cli, () => "base", () => false);
+	assert.equal(result?.block, true);
+	assert.match(result!.reason, /Native preflight is unavailable/, "the stable prefix is preserved");
+	assert.match(result!.reason, /native process could not start/, "the caught cause is reported");
 });

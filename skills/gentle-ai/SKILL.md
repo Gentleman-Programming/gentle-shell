@@ -1,6 +1,6 @@
 ---
 name: gentle-ai
-description: "Use Gentle AI harness discipline for Pi work: clarify first, track ODD work, use applicable test-first development by default, delegate when useful, and protect review workload."
+description: "Gentle AI harness discipline for Pi work: clarify first, track ODD work, applicable test-first by default, delegate when useful, protect review workload."
 ---
 
 # el Gentleman Harness
@@ -43,7 +43,7 @@ clarify → gentle-ai-explore when the evidence budget is exceeded → inline, o
 
 Hard delegation triggers:
 
-- **Evidence-budget rule**: read inline only when the evidence fits one parallel batch of at most 3 calls, ~10k tokens (grep and line ranges, never whole large files). Reassess cumulative discovery after each batch; do not reset the budget. When understanding needs more reading or more than ~5 sequential lookups, delegate one explorer that returns a handoff of at most ~2k tokens with `path:line` evidence. A fired trigger overrides initial task size; read-only restricts mutation, not exploration. Preparation for an already understood inline write stays inline, not further discovery. A known small targeted question within budget stays inline; do not re-read what the handoff covered beyond one spot check.
+- **Evidence-budget rule**: read inline only when the evidence fits one parallel batch of at most 3 calls, ~10k tokens (grep and line ranges, never whole large files). Reassess cumulative discovery after each batch; do not reset the budget. When understanding needs more reading or more than 3 lookups, delegate one explorer that returns a handoff of at most ~2k tokens with `path:line` evidence. A fired trigger overrides initial task size; read-only restricts mutation, not exploration. Preparation for an already understood inline write stays inline, not further discovery. A known small targeted question within budget stays inline; do not re-read what the handoff covered beyond one spot check.
 - **Writer rule**: outside full delegation, a writer only when two or more independent units of behavior, each heavier than a subagent start, are launched together in one turn, or when the context backstop fires; task size and file count never fire it. In full delegation every write goes to a bounded writer, whatever its size.
 - **Verification rule**: a change that touches a named high-risk item gets an independent verifier (assess `escalate` when RDD is on or unknown); otherwise the change's own focused test and suite run inline.
 - **Incident rule**: after wrong cwd, accidental worktree/repo mutation, merge recovery, confusing test command, or environment workaround, diagnose separately.

@@ -100,7 +100,7 @@ test("S2: setup failure preserves unrun proof without calling the verifier unava
 test("S3: a repaired setup needs one explicit request and keeps every existing limit", async () => {
 	includesAll(verifierPreparation(), [
 		"After a setup prerequisite is repaired, the human may explicitly request one new bounded verification attempt.",
-		"This is a new request, not an automatic retry, and it does not reset the prior attempt or unrelated budgets.",
+		"This is a new request, not an automatic retry; it does not reset the prior attempt or unrelated budgets.",
 		"Before proceeding, confirm no child is active or has an uncertain status.",
 		"Never bypass consent, a denial, explicit one-run or no-retry limits, terminal native outcomes, or exhausted native budgets",
 	]);

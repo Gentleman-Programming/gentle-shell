@@ -144,8 +144,10 @@ test("S5 change 5: the neutral persona states its Spanish register once (persona
 		assert.ok(!prompt.includes("Language: neutral/professional Spanish when the user writes Spanish."), `[${mode}] neutral duplicate Language line must go`);
 		assert.ok(prompt.includes("- When the user writes Spanish, use neutral/professional Spanish. Do NOT use voseo or any regional conjugations"), `[${mode}] neutral register rule must stay`);
 		assert.ok(prompt.includes("- Do not use slang or regional expressions."), `[${mode}] regional-expressions rule must stay`);
-		// The gentleman pair is pinned verbatim by tests/persona-reply-language.test.ts and stays.
-		assert.ok(render("gentleman", mode).includes("Language: natural Rioplatense Spanish with voseo when the user writes Spanish."));
+		// P14 (PD-57): the gentleman persona also states its register once, in its persona bullet.
+		const gentleman = render("gentleman", mode);
+		assert.ok(!gentleman.includes("Language: natural Rioplatense Spanish with voseo when the user writes Spanish."), `[${mode}] gentleman duplicate Language line must go`);
+		assert.ok(gentleman.includes("- When the user writes Spanish, answer in natural Rioplatense Spanish with voseo."), `[${mode}] gentleman register rule must stay`);
 	}
 });
 
@@ -168,11 +170,13 @@ test("S5 change 5: gentle_odd_phase does not restate the Phase reporting cadence
 // cost-speed-painpoints S15 P5a: the verifier-setup paragraph moved to orchestrator-verification.md and the
 // always-on verdicts landed; measured organic 24,256/24,428 B and full delegation 22,161/22,333 B (default RDD line).
 // Verifier B1: the full-delegation Verify mechanism routes a verifier setup failure to that module (+92 B).
+// cost-speed P14: the duplicate gentleman Language line (-80 B, PD-57) and the core's evidence-budget number aligned
+// to the runtime (-12 B in both modes, PD-81); measured organic 24,164/24,416 B and full delegation 22,131/22,383 B.
 const PRIMARY_PROMPT_BUDGETS: Record<(typeof MODES)[number], Record<(typeof PERSONAS)[number], number>> = {
-	organic: { gentleman: 24_256, neutral: 24_428 },
+	organic: { gentleman: 24_164, neutral: 24_416 },
 	// cost-speed P6 (X9): launch form, continue-one-worker rule and the tracking pointer, paid by the motivation
 	// sentence and a duplicate of step 6's verbatim-request rule (22,253/22,425 -> 22,223/22,395 B).
-	"full-delegation": { gentleman: 22_223, neutral: 22_395 },
+	"full-delegation": { gentleman: 22_131, neutral: 22_383 },
 };
 
 test("S5: the rendered primary prompt fits the lowered per-mode budgets", (t) => {

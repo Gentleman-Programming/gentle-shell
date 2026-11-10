@@ -1,6 +1,6 @@
 ---
 name: gentle-ai-work-unit-commits
-description: "Plan commits as reviewable work units. Trigger: commit splitting, chained PRs, or keeping tests and docs with code."
+description: "Trigger: commit splitting, chained PRs, keeping tests and docs with code. Plan commits as reviewable work units."
 license: Apache-2.0
 metadata:
   author: gentleman-programming

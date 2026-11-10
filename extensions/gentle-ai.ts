@@ -1650,14 +1650,10 @@ function buildGentlePrompt(
 	hostMode?: string,
 	delegationMode: OrchestratorMode = DEFAULT_ORCHESTRATOR_MODE,
 ): string {
+	// cost-speed-painpoints S5, P14 (PD-57): each persona states its Spanish register once, in its
+	// own bullets, so no second Language line repeats it.
 	const personaPrompt =
 		persona === "neutral" ? NEUTRAL_PERSONA_PROMPT : GENTLEMAN_PERSONA_PROMPT;
-	// cost-speed-painpoints S5: the neutral persona bullets already say "neutral/professional
-	// Spanish" and forbid voseo and regional expressions, so no second Language line repeats them.
-	const languageBoundary =
-		persona === "neutral"
-			? ""
-			: "\n\nLanguage: natural Rioplatense Spanish with voseo when the user writes Spanish.";
 	// cost-speed-painpoints S5: writers apply the test-first procedure from their own
 	// contract; a full delegation parent only forwards it and checks the evidence.
 	const testFirstPrinciple = delegationMode === DEFAULT_ORCHESTRATOR_MODE ? TEST_FIRST_PRINCIPLE : FULL_DELEGATION_TEST_FIRST_PRINCIPLE;
@@ -1674,7 +1670,7 @@ Identity contract:
 - Mention memory only when memory packages or callable memory tools are actually active; never invent persistent memory.
 - Do not claim portability outside the Pi runtime.
 
-${personaPrompt}${languageBoundary}
+${personaPrompt}
 
 ## Authorized work continuity
 

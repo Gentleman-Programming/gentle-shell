@@ -1337,7 +1337,7 @@ test("the skill tells the agent to report handoff progress and to name the chose
 // the skill names the codemode route once, before its first tool call.
 test("skills/design/SKILL.md names the codemode route for undeclared design tools once", () => {
 	const source = readFileSync(SKILL_PATH, "utf8");
-	const route = "When `gentle_design` or `gentle_design_comments` is not declared, call it from `codemode` as `tools.gentle_design({...})` with the same arguments.";
+	const route = "When `gentle_design` or `gentle_design_comments` is not declared, call it from `codemode` as `tools.gentle_design({...})` or `tools.gentle_design_comments({...})` with the same arguments.";
 	assert.equal(source.split(route).length - 1, 1, "the route sentence appears exactly once");
 	assert.ok(source.indexOf(route) < source.indexOf("Run this gate before every new brief"), "it precedes the list gate");
 });

@@ -1857,7 +1857,8 @@ test("normal and forced installation copy generic agents with complete role cont
 						assert.match(source, /Do not use that fallback before CodeGraph is unavailable or fails/);
 					}
 					assert.match(source, /Do not (?:edit, write|edit, write, or fix findings)/);
-					assert.match(source, /compressed (?:handoff|evidence handoff)/);
+					// Cost/speed S4: reports are compact and never restate the task.
+					assert.match(source, /compact (?:handoff|evidence handoff)/);
 					assert.match(source, /Do not use review lenses\. RDD review remains independent and parent-owned\./);
 					if (name === "gentle-ai-verify") {
 						assert.match(source, /exact test, build, lint, or spec example commands explicitly authorized by the parent/);

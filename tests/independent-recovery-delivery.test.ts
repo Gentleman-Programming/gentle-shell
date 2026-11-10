@@ -36,6 +36,7 @@ for (const persona of ["gentleman", "neutral"] as const) {
       const setup = paragraph(p, "A failed verifier setup");
       assert.match(setup, /prerequisite is repaired, the human may explicitly request one new bounded verification attempt/);
       assert.match(setup, /zero tests run; the checks remain unverified/);
+      assert.match(setup, /self-caused setup command error gets one correction within the same verification, without a human request/);
       assert.match(setup, /unavailable verifier remains unavailable; do not retry or escalate it/);
       for (const guard of ["consent", "a denial", "one-run", "no-retry", "terminal native outcomes", "exhausted native budgets"]) assert.ok(setup.includes(guard), guard);
       assert.match(setup, /no child is active or has an uncertain status/);
@@ -67,9 +68,10 @@ test("S3-S5 parsed worker and verifier contracts retain confinement and proof li
   assert.deepEqual(verify.tools, ["read", "grep", "find", "bash", "mcp__codegraph__codegraph_explore"]);
   assert.match(verify.instructions, /Before isolated setup[^\n]*space and inodes/);
   assert.match(verify.instructions, /smaller copy[^\n]*all source, test\/build files, baseline material, and dependencies/);
-  assert.match(verify.instructions, /first inability[^\n]*stop setup/);
+  assert.match(verify.instructions, /deterministic error in a command or environment you constructed[^\n]*exactly one corrected attempt/);
+  assert.match(verify.instructions, /second failure, or at any missing or unavailable prerequisite[^\n]*stop setup/);
   assert.match(verify.instructions, /setup fails before probes[^\n]*zero tests run/);
-  assert.match(verify.instructions, /Do not retry setup or enter repair-helper loops/);
+  assert.match(verify.instructions, /No further setup retries and no repair-helper loops/);
   for (const guard of ["system temp directory", "a symlink into the workspace", "No network, no installs, no writes outside", "NODE_COMPILE_CACHE", "NO_UPDATE_NOTIFIER=1"]) assert.ok(verify.instructions.includes(guard), guard);
 });
 

@@ -60,6 +60,33 @@ https://github.com/user-attachments/assets/6d2bc422-a4dd-4ecf-a04b-fcd3bea7fea9
   <img src="docs/assets/brand/terminal-divider.svg" width="480" alt="">
 </p>
 
+## 💖 Support the project
+
+Gentle AI, Engram and Gentle Shell are free and open source, for everyone, under the MIT License.
+
+We deliberately don't want to depend on investors. Keeping these projects fully independent
+means no outside agenda deciding the roadmap, no features locked behind paywalls for
+developers, and no pressure to trade the community's trust for growth.
+
+Donations are what make that possible. If these tools save you time or help your team,
+consider sponsoring the project. Donations are made through
+[GitHub Sponsors](https://github.com/sponsors/Gentleman-Programming), monthly or one-time,
+and every contribution, big or small, goes straight into maintenance, new features and
+keeping everything free and ours.
+
+<div align="center">
+
+<a href="https://github.com/sponsors/Gentleman-Programming"><img src="https://img.shields.io/badge/Donate%20on-GitHub%20Sponsors-F095C8?style=for-the-badge&labelColor=1A1218&logo=githubsponsors&logoColor=F095C8" alt="Donate on GitHub Sponsors"></a>
+
+</div>
+
+Not able to donate? A star, a bug report or a pull request helps too.
+Sponsorship never buys rankings, default selections or endorsements; see [TRADEMARKS.md](TRADEMARKS.md).
+
+<p align="center">
+  <img src="docs/assets/brand/terminal-divider.svg" width="480" alt="">
+</p>
+
 <a id="whats-new-in-v41"></a>
 
 ## ✨ What's new in v4.1
@@ -682,35 +709,6 @@ This project is built in public. Bring a real workflow, a sharp question, a bug 
 - Open an [issue](https://github.com/Gentleman-Programming/gentle-shell/issues) with the context needed to reproduce or understand the idea.
 - See the people shaping the project in the [contributors graph](https://github.com/Gentleman-Programming/gentle-shell/graphs/contributors).
 - Follow [Gentleman Programming](https://github.com/Gentleman-Programming) for the wider ecosystem.
-
-<p align="right"><a href="#top">Back to top ↑</a></p>
-
-<p align="center">
-  <img src="docs/assets/brand/terminal-divider.svg" width="480" alt="">
-</p>
-
-## 💖 Support the project
-
-Gentle AI, Engram and Gentle Shell are free and open source, for everyone, under the MIT License.
-
-We deliberately don't want to depend on investors. Keeping these projects fully independent
-means no outside agenda deciding the roadmap, no features locked behind paywalls for
-developers, and no pressure to trade the community's trust for growth.
-
-Donations are what make that possible. If these tools save you time or help your team,
-consider sponsoring the project. Donations are made through
-[GitHub Sponsors](https://github.com/sponsors/Gentleman-Programming), monthly or one-time,
-and every contribution, big or small, goes straight into maintenance, new features and
-keeping everything free and ours.
-
-<div align="center">
-
-<a href="https://github.com/sponsors/Gentleman-Programming"><img src="https://img.shields.io/badge/Donate%20on-GitHub%20Sponsors-F095C8?style=for-the-badge&labelColor=1A1218&logo=githubsponsors&logoColor=F095C8" alt="Donate on GitHub Sponsors"></a>
-
-</div>
-
-Not able to donate? A star, a bug report or a pull request helps too.
-Sponsorship never buys rankings, default selections or endorsements; see [TRADEMARKS.md](TRADEMARKS.md).
 
 <p align="right"><a href="#top">Back to top ↑</a></p>
 

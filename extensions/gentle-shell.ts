@@ -145,6 +145,7 @@ import { todoCollapseKey } from "../lib/shell-todo.ts";
 import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
 import { SelectionEngine } from "../lib/selection-engine.ts";
+import { withFullscreenOverlay, type FullscreenActivityEmitter } from "../lib/fullscreen-activity.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
 import { buildNotificationRows } from "../lib/notification-customize.ts";
 
@@ -1784,7 +1785,7 @@ interface OverlayDeps {
 // The overlay polls each root's Git state while it is open; diffs load lazily.
 // Like Gentle Agents it takes the whole terminal, and the native fullscreen
 // wrapper keeps mouse dispatch on the view while it owns the keyboard.
-async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps): Promise<void> {
+async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps, activity: FullscreenActivityEmitter): Promise<void> {
 	let host: ExternalEditorHost | undefined;
 	let view: WorktreeChangesView | undefined;
 	const refresh = async () => {
@@ -1795,7 +1796,7 @@ async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps): Pro
 	const poll = setInterval(() => void refresh().catch(() => {}), deps.pollMs);
 	poll.unref();
 	try {
-		const chosen = await ctx.ui.custom<{ root: string; file: ChangedFile } | null>(
+		const chosen = await withFullscreenOverlay(activity, "gentle-shell:changes-review", () => ctx.ui.custom<{ root: string; file: ChangedFile } | null>(
 			(tui, theme, _keybindings, done) => {
 				const close = withOverlayRepaint(tui, done);
 				host = tui;
@@ -1813,7 +1814,7 @@ async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps): Pro
 				return interaction;
 			},
 			{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } },
-		);
+		));
 		if (!chosen || !host) return;
 		try {
 			if (!openInExternalEditor(host, chosen.file.path, process.env, spawnSync, chosen.root)) ctx.ui.notify("No editor configured. Set $VISUAL or $EDITOR.", "warning");
@@ -1879,13 +1880,15 @@ async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext, env: 
 		return;
 	}
 	let piKeybindings: PiKeybindings | undefined;
-	const result = await ctx.ui.custom<CommandPaletteResult>(
+	// Fullscreen activity event: dialog tools (ask_user_*) defer while the
+	// palette holds the keyboard so they never mount hidden beneath it.
+	const result = await withFullscreenOverlay(pi, "gentle-shell:palette", () => ctx.ui.custom<CommandPaletteResult>(
 		(tui, theme, keybindings, done) => {
 			if (typeof (keybindings as Partial<PiKeybindings> | undefined)?.getKeys === "function") piKeybindings = keybindings as PiKeybindings;
 			return new CommandPalette(groups, withOverlayRepaint(tui, done), theme, () => Math.max(0, tui.terminal.rows));
 		},
 		{ overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "85%" } },
-	);
+	));
 	if (result?.type === "run") pi.sendUserMessage(`/${result.name}`, { expandPromptTemplates: true });
 	if (result?.type === "bind") await bindFromPalette(ctx, env, result.name, result.data, piKeybindings);
 }
@@ -2323,7 +2326,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		return opened;
 	};
 	const showPanelSheet = (ctx: ExtensionContext) =>
-		ctx.ui.custom<null>(
+		withFullscreenOverlay(pi, "gentle-shell:panel", () => ctx.ui.custom<null>(
 			(tui, theme, _keybindings, done) => {
 				const close = withOverlayRepaint(tui, done);
 				let scrollTop = 0;
@@ -2368,13 +2371,13 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				};
 			},
 			{ overlay: true, overlayOptions: { width: "100%", anchor: "top-center" } },
-		);
-	pi.registerCommand(PANEL_COMMAND_NAME, {
+		));
+		pi.registerCommand(PANEL_COMMAND_NAME, {
 		description: "Show the sidebar panel (todos, jobs, agents, changes, review, integrations) as a full-width sheet.",
 		handler: async (_args, ctx) => openPanelSheet(ctx),
 	});
 	const openUsage = (ctx: ExtensionContext) =>
-		ctx.ui.custom<null>(
+		withFullscreenOverlay(pi, "gentle-shell:usage", () => ctx.ui.custom<null>(
 			(tui, theme, _keybindings, done) => {
 				const view = new UsageView(usage, {
 					theme,
@@ -2394,8 +2397,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				return view;
 			},
 			{ overlay: true, overlayOptions: { width: "70%", minWidth: 60, anchor: "center" } },
-		);
-	pi.registerCommand(USAGE_COMMAND_NAME, {
+		));
+		pi.registerCommand(USAGE_COMMAND_NAME, {
 		description: "Show subscription usage windows for the connected providers. Press r to refetch.",
 		handler: async (_args, ctx) => openUsage(ctx),
 	});
@@ -3026,7 +3029,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			return;
 		}
 		if (failed > 0) ctx.ui.notify(`Git status failed for ${failed} ${failed === 1 ? "root" : "roots"}; ${failed === 1 ? "its" : "their"} changes are not listed.`, "warning");
-		await showChangesOverlay(ctx, { loadDiff: (root, file) => loadFileDiff(deps.gitRunner(root, DIFF_MAX_BYTES), file), worktrees: () => tracker.worktrees, refresh: () => tracker.refresh(), apply: applyChanges, pollMs: changesPollMs(env) });
+		await showChangesOverlay(ctx, { loadDiff: (root, file) => loadFileDiff(deps.gitRunner(root, DIFF_MAX_BYTES), file), worktrees: () => tracker.worktrees, refresh: () => tracker.refresh(), apply: applyChanges, pollMs: changesPollMs(env) }, pi);
 	};
 	pi.registerCommand(IMAGES_COMMAND_NAME, {
 		description: "List the on-disk paths of images pasted in this draft (needs GENTLE_PI_IMAGES_DISK_CACHE=session).",
@@ -3558,7 +3561,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				unobserve = adapter?.observe(() => { void refreshYolo(); });
 				await refreshYolo();
 				if (closed) return;
-				await ctx.ui.custom<null>((tui, theme, keys, done) => {
+				await withFullscreenOverlay(pi, "gentle-shell:customize", () => ctx.ui.custom<null>((tui, theme, keys, done) => {
 					if (typeof (keys as Partial<PiKeybindings> | undefined)?.getKeys === "function") piKeybindings = keys as PiKeybindings;
 					finish = () => done(null);
 					if (closed) done(null);
@@ -3576,7 +3579,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 						invalidate: () => { if (!closed) view.invalidate(); },
 						dispose: close,
 					};
-				}, { overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "85%" } });
+				}, { overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "85%" } }));
 			} finally { close(); }
 			if (rddHandoff && currentRddSession()) await rddHandoff.open();
 			if (reloadRequested) await ctx.reload();

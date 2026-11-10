@@ -1299,16 +1299,27 @@ for (const selection of [
 	{ untrackedScope: "exclude", expectedUntrackedInventory: "inventory-v1" },
 	{ untrackedScope: "select", expectedUntrackedInventory: "inventory-v1", intendedUntracked: ["new/file.ts", "notes.md"] },
 ] as const) {
-	test(`native and facade assess forward explicit ${selection.untrackedScope} without choosing scope`, async () => {
+	test(`native and facade assess forward explicit ${selection.untrackedScope} without choosing scope`, async (t) => {
+		// Own repository with its own origin/main: the facade pins a resolvable
+		// committed baseRef to its commit, so the real checkout's refs (present on
+		// push CI, absent on pull-request CI) must not decide the forwarded argv.
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "assess-forward-selection-")));
+		t.after(() => rmSync(root, { recursive: true, force: true }));
+		const gitEnv = { PATH: process.env.PATH, HOME: root, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
+		const fixtureGit = (...args: string[]): string => execFileSync("git", args, { cwd: root, env: gitEnv, encoding: "utf8" }).trim();
+		fixtureGit("init", "-q");
+		fixtureGit("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-q", "--allow-empty", "-m", "base");
+		fixtureGit("update-ref", "refs/remotes/origin/main", "HEAD");
+		const pinnedBase = fixtureGit("rev-parse", "refs/remotes/origin/main");
 		const queue = queuedAdapter([{ stdout: JSON.stringify(validEnvelope()) }, { stdout: JSON.stringify(validEnvelope()) }]);
 		const client = nativeClient(queue.adapter);
-		await client.assess({ cwd: process.cwd(), ...selection });
+		await client.assess({ cwd: root, ...selection });
 		const tool = reviewControllerTool({ assess: client.assess.bind(client) });
-		const result = await tool.execute("selected", { operation: "assess", input: JSON.stringify({ ...selection, baseRef: "origin/main", committedOnly: true }) }, undefined, undefined, ctx);
+		const result = await tool.execute("selected", { operation: "assess", input: JSON.stringify({ ...selection, baseRef: "origin/main", committedOnly: true }) }, undefined, undefined, { cwd: root } as ExtensionContext);
 		assert.equal((result.details as { risk: string }).risk, "medium");
 		const flags = [`--untracked-scope=${selection.untrackedScope}`, "--expected-untracked-inventory=inventory-v1", ...(selection.untrackedScope === "select" ? selection.intendedUntracked.map((path) => `--intended-untracked=${path}`) : [])];
-		assert.deepEqual(queue.calls[0].arguments, ["review", "assess", "--cwd", process.cwd(), ...flags, "--json"]);
-		assert.deepEqual(queue.calls[1].arguments, ["review", "assess", "--cwd", process.cwd(), "--base-ref", "origin/main", "--committed-only", ...flags, "--json"]);
+		assert.deepEqual(queue.calls[0].arguments, ["review", "assess", "--cwd", root, ...flags, "--json"]);
+		assert.deepEqual(queue.calls[1].arguments, ["review", "assess", "--cwd", root, "--base-ref", pinnedBase, "--committed-only", ...flags, "--json"]);
 	});
 }
 

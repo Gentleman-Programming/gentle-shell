@@ -165,9 +165,12 @@ test("S5 change 5: gentle_odd_phase does not restate the Phase reporting cadence
 
 // Measured at /a (normalized assets root), ACTIVE_TOOLS, default RDD line. Base c09189269 rendered
 // organic 25,482/25,778 B and full delegation 23,309/23,605 B (gentleman/neutral); the diet pins the new sizes.
+// cost-speed-painpoints S15 P5a: the verifier-setup paragraph moved to orchestrator-verification.md and the
+// always-on verdicts landed; measured organic 24,256/24,428 B and full delegation 22,161/22,333 B (default RDD line).
+// Verifier B1: the full-delegation Verify mechanism routes a verifier setup failure to that module (+92 B).
 const PRIMARY_PROMPT_BUDGETS: Record<(typeof MODES)[number], Record<(typeof PERSONAS)[number], number>> = {
-	organic: { gentleman: 25_180, neutral: 25_352 },
-	"full-delegation": { gentleman: 23_123, neutral: 23_295 },
+	organic: { gentleman: 24_256, neutral: 24_428 },
+	"full-delegation": { gentleman: 22_253, neutral: 22_425 },
 };
 
 test("S5: the rendered primary prompt fits the lowered per-mode budgets", (t) => {

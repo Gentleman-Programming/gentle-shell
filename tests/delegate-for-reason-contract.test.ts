@@ -181,9 +181,10 @@ test("AC5/S6/L4: per-worker independent verify fires only on assess or escalate,
 	assert.ok(item.includes("high-risk list in Task Size"), "the protocol must reference the core high-risk list");
 });
 
-test("AC5/S7: one inline full-suite seam check after parallel units", () => {
+// cost-speed S15 P5a: "inline" became "run by the parent" so a full-delegation parent can load the module.
+test("AC5/S7: one full-suite seam check run by the parent after parallel units", () => {
 	const item = reviewItem("3. **Seam check**");
-	for (const clause of ["after parallel units finish", "one inline full-suite command", "parent spot check", "seams between units"]) {
+	for (const clause of ["after parallel units finish", "one full-suite command run by the parent", "parent spot check", "seams between units"]) {
 		assert.ok(item.includes(clause), `seam check item is missing: ${clause}`);
 	}
 });
@@ -208,10 +209,11 @@ test("T12/S6: one independent verify per delegated unit after its self-review, n
 // T15 (S6, L38): after3 B x4 paid two same-model verifies with 0 defects.
 // Verification by named risk (user decision: the verifier follows the change's
 // risk, never the model that wrote it) dropped the smaller-model exception.
-test("T15/S6: inline code over several deliveries gets one verify at the feature's end, whatever model wrote it", () => {
+// cost-speed S15 P5a: "Inline code" became "Parent-written code", the same scope without the organic word.
+test("T15/S6: parent-written code over several deliveries gets one verify at the feature's end, whatever model wrote it", () => {
 	const item = reviewItem("2. **Independent verify per unit**");
 	for (const clause of [
-		"Inline code over several deliveries of one feature",
+		"Parent-written code over several deliveries of one feature",
 		"one verify at the feature's end",
 		"only when that unit is high risk",
 	]) {
@@ -251,9 +253,11 @@ test("AC4/S4: the normative verification rule text is unchanged by the review pr
 	// left to the worker's Verification contract it duplicated, a passive change with no reported command (C10), and
 	// shorter wording for the tier table lead-in, nativeReviewOutcome, the off fallback, the direct plan request and the
 	// continuation relay (B1 bytes).
+	// Re-pinned for cost-speed S15 P5a: the focused test and suite "run inline" became "run in the session that made
+	// the change", the same rule in words a full-delegation parent can load.
 	assert.equal(
 		createHash("sha256").update(normative).digest("hex"),
-		"d18cab3a5547c2c3191eec763dc686b75832d4e5c976fc649fddcbf966147856",
+		"4dfbe4ac90743d74f531121fc3ff6d4f2ff17886f0eaf10c3fbf486db7816402",
 		"the normative Verification rule section changed",
 	);
 	assert.ok(verification.includes("or a delegated writer returns"), "the module must still load when a delegated writer returns");

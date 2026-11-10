@@ -169,7 +169,10 @@ const MODULE_BUDGETS: Record<string, number> = {
 	// Cost-speed P8: change kinds in the verify handoff and contradictions C1, C2, C10, X6 resolved; the stall
 	// watchdog sentence stays only in the worker's Verification contract; the handoff
 	// carries the user's environment and the parent runs a real-case check the verifier left unverified (7,900 -> 7,898 B).
-	"orchestrator-verification.md": 7_898,
+	// Cost-speed S15 P5a: the always-on verifier-setup paragraph (976 B) moved into "## Verifier preparation failure",
+	// merged with what the section already said (+710 B); the always-on primary prompt fell by more (7,898 -> 8,608 B).
+	// Its three "inline" sentences reworded for both modes, so a full-delegation parent can load it (8,608 -> 8,656 B).
+	"orchestrator-verification.md": 8_656,
 	// Writer-rule fix (size threshold, one behavior per unit) and C3 (writer prompts name the helpers and
 	// invariants to reuse): 4,500 -> 5,300 B.
 	// Pain-point iteration S10 (C7): writer handoffs keep test scratch outside the worktree (5,300 -> 5,500 B).
@@ -204,10 +207,14 @@ test("S11: the default delegation pointer resolves to the lean card and the refe
 	const card = read("assets/orchestrator-delegation.md");
 	const reference = read("assets/orchestrator-delegation-reference.md");
 	assert.ok(Buffer.byteLength(card, "utf8") <= MODULE_BUDGETS["orchestrator-delegation.md"], "the delegation card is over its budget");
-	// Every core line that names a delegation module names the card, except the one reference pointer.
+	// Every core line that names a delegation module names the card, except the one reference pointer and the
+	// background-policy rules pointer (cost-speed S15 P5a, verdict X3: the background block lives in the reference).
 	const pointerLines = core.split("\n").filter((line) => line.includes("`orchestrator-delegation"));
-	const referenceLines = pointerLines.filter((line) => line.includes("`orchestrator-delegation-reference.md`"));
-	assert.equal(referenceLines.length, 1, "the core names the reference exactly once");
+	const backgroundPointer = "{{GENTLE_PI_BACKGROUND_POLICY}}; rules: background block, `orchestrator-delegation-reference.md`.";
+	assert.ok(pointerLines.includes(backgroundPointer), "the background-policy rules pointer names the reference");
+	assert.ok(reference.includes("<!-- gentle-pi:background-subagents -->"), "the reference carries the background block");
+	const referenceLines = pointerLines.filter((line) => line.includes("`orchestrator-delegation-reference.md`") && line !== backgroundPointer);
+	assert.equal(referenceLines.length, 1, "the core names the reference exactly once besides the background pointer");
 	for (const name of ["Per-action table", "Work Routing Ladder", "Canonical Workflows"]) {
 		assert.ok(referenceLines[0].includes(name), `the reference pointer must name ${name}`);
 	}

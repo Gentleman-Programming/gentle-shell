@@ -80,9 +80,10 @@ test("PD-81: every always-on and lazy statement of the evidence budget uses the 
 
 test("PD-74: skill-resolution fallback values are scoped to non-package agents", () => {
 	const skills = read("assets/orchestrator-skills.md");
-	const scope = "Only `gentle-ai-worker` reports `skill_resolution`, and only as `paths-injected`, `paths-invalid` (blocked; the unreadable path is in `risks`), or `none`; the fallback values come only from other agents.";
+	const scope = "Among package subagents only `gentle-ai-worker` reports `skill_resolution`, as `paths-injected`, `paths-invalid` (blocked; the unreadable path is in `risks`), or `none`; the fallback values below come from non-package agents.";
 	const leadIn = "If a subagent reports `skill_resolution`, interpret it as project/user skill resolution:";
 	assert.equal(count(skills, scope), 1, "the worker-only scope is stated once");
+	assert.ok(skills.includes("If no skill matches, continue without project skill injection and report `skill_resolution: none`."), "the parent's own step-4 report stays");
 	assert.ok(skills.indexOf(scope) < skills.indexOf(leadIn), "the scope precedes the single lead-in");
 	assert.ok(skills.includes(`${leadIn}\n\n- \`paths-injected\`:`), "one lead-in, directly followed by the value list");
 	assert.ok(!skills.includes("other agents may report:"), "no second lead-in");
@@ -113,7 +114,7 @@ test("PD-78: the skill-creation prompt defers its steps to skill-creator and kee
 	const prompt = read("prompts/skill-creation.md");
 	const skill = read("skills/skill-creator/SKILL.md");
 	assert.ok(prompt.includes("Use the `gentle-ai-skill-creator` skill if it is available."));
-	assert.ok(prompt.includes("before editing. If neither is available, say so and stop."), "the no-skill fallback follows the sentence that names the skill and its file");
+	assert.ok(prompt.includes("before editing. If neither the skill nor that `SKILL.md` is available, say so and stop."), "the no-skill fallback follows the sentence that names the skill and its file");
 	assert.ok(prompt.includes("Clarify the reusable behavior, target runtime, trigger phrases, and non-goals if they are not obvious"), "the clarify step is not in the skill, so it stays");
 	assert.ok(prompt.includes("Return the files changed, the selected trigger phrases, any supporting files, and whether registry/package verification remains to run."));
 	assert.ok(!prompt.includes("## Process"), "the restated steps must go");

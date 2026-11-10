@@ -15,7 +15,7 @@ The shared `.atl/skill-registry.md` indexes disk only and is never the full effe
 
 Subagents receive exact indexed paths and never rediscover the registry or other project/user `SKILL.md` files during normal runtime.
 
-Only `gentle-ai-worker` reports `skill_resolution`, and only as `paths-injected`, `paths-invalid` (blocked; the unreadable path is in `risks`), or `none`; the fallback values come only from other agents.
+Among package subagents only `gentle-ai-worker` reports `skill_resolution`, as `paths-injected`, `paths-invalid` (blocked; the unreadable path is in `risks`), or `none`; the fallback values below come from non-package agents.
 
 If a subagent reports `skill_resolution`, interpret it as project/user skill resolution:
 

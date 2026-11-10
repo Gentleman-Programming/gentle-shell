@@ -13,7 +13,7 @@ import { gentlePiConfigHome } from "./agent-home.ts";
 import { resolveBackgroundSubagentsPolicy } from "./background-subagents-policy.ts";
 import { childPackageExtensionArgs } from "./child-package-injection.ts";
 import { AGENT_MODE, formatModelRef, parseModelRef, type AgentDefinition, type AgentMode, type ModelRef } from "./agents-config.ts";
-import { CHILD_QUERY_MAX_INFLIGHT, CHILD_QUERY_TIMEOUT_MS, parseChildFrame, parseChildJobState, validChildMessage, validChildQueryId } from "./agents-messaging.ts";
+import { CHILD_MESSAGE_MAX_BYTES, CHILD_QUERY_MAX_INFLIGHT, CHILD_QUERY_TIMEOUT_ERROR, CHILD_QUERY_TIMEOUT_MS, parseChildFrame, parseChildJobState, validChildMessage, validChildQueryId } from "./agents-messaging.ts";
 import { ParentStandingReviewPermissionBroker } from "./review-session-standing-permission-ipc.ts";
 import { isFinished, normalizeRpcEvent, ToolArgumentProgress, TASK_EVENT, TASK_STATUS, taskLabel, type AskRequest, type ChildResponseObservation, type TaskRecord, type TaskStore, type TerminalErrorCategory } from "./agents-protocol.ts";
 import { WriterSurfaceRegistry, writerSurfaceConflictMessage } from "./writer-surfaces.ts";
@@ -202,6 +202,8 @@ interface Pending {
 interface PendingQuery {
 	cancel: () => void;
 	replying: boolean;
+	/** When the query expires; the stall watchdog never fires before it. */
+	deadline: number;
 }
 
 interface PendingReply {
@@ -222,6 +224,8 @@ interface LiveTask {
 	queries: Map<string, PendingQuery>;
 	replies: Map<string, PendingReply>;
 	cancelStall: () => void;
+	/** True while the armed stall budget was lengthened to cover a pending query. */
+	stallCoversQuery?: boolean;
 	cancelGrace: () => void;
 	processGroup: number | undefined;
 	terminal: { status: TaskRecord["status"]; error: string | null } | undefined;
@@ -286,10 +290,25 @@ const QUERY_REJECTION_ERRORS = new Set([
 	"task parent is not the active host session",
 	"duplicate query request",
 	"too many pending parent queries",
-	"parent query timed out",
+	CHILD_QUERY_TIMEOUT_ERROR,
 	"parent rejected query",
 ]);
 const QUERY_REJECTION = Symbol("query rejection");
+// Queries that settled unanswered (expired or closed) stay answerable once as a
+// steering message; bounded per task and across tasks.
+const CLOSED_QUERIES_PER_TASK = 16;
+const CLOSED_QUERY_TASKS = 64;
+// A child waiting on its query is not stalled: the watchdog waits for the
+// query's own deadline plus this margin, then the normal budget returns.
+export const QUERY_STALL_MARGIN_MS = 5_000;
+
+/** What a late answer to a closed query became; see `AgentRunner.replyLate`. */
+export type LateReply = "delivered" | "not running" | "too large";
+
+/** The steering text a late answer reaches the child with. */
+export function lateQueryAnswer(requestId: string, message: string): string {
+	return `Answer to your earlier question (${requestId}; it expired before the reply arrived): ${message}`;
+}
 
 function rejectQuery(error: string): never {
 	throw { [QUERY_REJECTION]: error };
@@ -540,6 +559,7 @@ export class AgentRunner {
 	private readonly waiters = new Map<string, Array<(task: TaskRecord) => void>>();
 	private readonly queryWaiters = new Map<string, Array<(query: TaskQuery | undefined) => void>>();
 	private readonly firstQueries = new Map<string, TaskQuery>();
+	private readonly closedQueries = new Map<string, string[]>();
 	private readonly writers = new WriterSurfaceRegistry();
 	private counter = 0;
 
@@ -633,8 +653,32 @@ export class AgentRunner {
 			query.cancel();
 			live.queries.delete(requestId);
 			this.hooks.onQuerySettled?.(id, requestId, "replied");
+			this.restoreStall(id, live);
 		}
 		return accepted;
+	}
+
+	/** A reply to a query that settled unanswered: delivered once through `steer`
+	 * while the task runs; otherwise reported as not running. Undefined when the
+	 * request was never a closed query of this owner, or was already answered. */
+	replyLate(id: string, requestId: string, message: string, parentSessionId: string): LateReply | undefined {
+		const task = this.store.get(id);
+		const closed = this.closedQueries.get(id);
+		if (!task || task.parentSessionId !== parentSessionId || !closed?.includes(requestId)) return undefined;
+		// Too large is reported, not consumed: a shorter answer can still go.
+		if (Buffer.byteLength(message, "utf8") > CHILD_MESSAGE_MAX_BYTES) return "too large";
+		if (!validChildMessage(message)) return undefined;
+		closed.splice(closed.indexOf(requestId), 1);
+		const live = this.live.get(id);
+		if (!live || live.terminal || isFinished(task.status)) return "not running";
+		return this.steer(id, lateQueryAnswer(requestId, message)) ? "delivered" : "not running";
+	}
+
+	private recordClosedQuery(taskId: string, requestId: string): void {
+		const closed = this.closedQueries.get(taskId) ?? [];
+		this.closedQueries.delete(taskId);
+		this.closedQueries.set(taskId, [...closed.filter((id) => id !== requestId), requestId].slice(-CLOSED_QUERIES_PER_TASK));
+		if (this.closedQueries.size > CLOSED_QUERY_TASKS) this.closedQueries.delete(this.closedQueries.keys().next().value!);
 	}
 
 	cancel(id: string, reason = "cancelled"): boolean {
@@ -866,7 +910,12 @@ export class AgentRunner {
 	private armStall(id: string, live: LiveTask): void {
 		live.cancelStall();
 		const tool = live.inFlightTools.values().next().value;
-		const budget = tool === undefined ? this.limits.stallTimeoutMs : Math.max(this.limits.toolStallTimeoutMs ?? this.limits.stallTimeoutMs, this.limits.stallTimeoutMs);
+		const base = tool === undefined ? this.limits.stallTimeoutMs : Math.max(this.limits.toolStallTimeoutMs ?? this.limits.stallTimeoutMs, this.limits.stallTimeoutMs);
+		const now = this.deps.now();
+		let queryWait = 0;
+		for (const query of live.queries.values()) queryWait = Math.max(queryWait, query.deadline - now + QUERY_STALL_MARGIN_MS);
+		const budget = Math.max(base, queryWait);
+		live.stallCoversQuery = budget > base;
 		live.cancelStall = this.deps.schedule(() => {
 			const lastStep = this.store.get(id)?.lastStep ?? "starting";
 			const minutes = Math.round(budget / 60_000);
@@ -1012,8 +1061,12 @@ export class AgentRunner {
 		try {
 			if (live.queries.has(parsed.frame.id)) rejectQuery("duplicate query request");
 			if (live.queries.size >= CHILD_QUERY_MAX_INFLIGHT) rejectQuery("too many pending parent queries");
-			query = { replying: false, cancel: this.deps.schedule(() => this.expireQuery(id, live, parsed.frame!.id), CHILD_QUERY_TIMEOUT_MS) };
+			query = { replying: false, deadline: this.deps.now() + CHILD_QUERY_TIMEOUT_MS, cancel: () => {} };
 			live.queries.set(parsed.frame.id, query);
+			// Lengthen the stall budget first, so the query's own deadline stays the last timer armed.
+			this.armStall(id, live);
+			const admitted = query;
+			admitted.cancel = this.deps.schedule(() => this.expireQuery(id, live, parsed.frame!.id), CHILD_QUERY_TIMEOUT_MS);
 			if (!this.hooks.onQuery) rejectQuery("task parent cannot accept queries");
 			if (this.hooks.onQuery(task, parsed.frame.id, parsed.frame.message) === false) rejectQuery("task parent is not the active host session");
 			if (task.mode === AGENT_MODE.TASK && !this.firstQueries.has(id)) {
@@ -1026,6 +1079,7 @@ export class AgentRunner {
 			if (query && live.queries.get(parsed.frame.id) === query) {
 				query.cancel();
 				live.queries.delete(parsed.frame.id);
+				this.restoreStall(id, live);
 			}
 			this.sendQueryError(live, parsed.frame.id, queryRejection(error));
 		}
@@ -1037,7 +1091,16 @@ export class AgentRunner {
 		live.queries.delete(id);
 		this.hooks.onQuerySettled?.(taskId, id, "expired");
 		if (query.replying) this.settleReply(live, id, false);
-		else this.sendQueryError(live, id, "parent query timed out");
+		else {
+			this.recordClosedQuery(taskId, id);
+			this.sendQueryError(live, id, CHILD_QUERY_TIMEOUT_ERROR);
+		}
+		this.restoreStall(taskId, live);
+	}
+
+	/** After a query settles, a stall budget lengthened for it returns to normal. */
+	private restoreStall(taskId: string, live: LiveTask): void {
+		if (live.stallCoversQuery && !live.terminal && this.live.get(taskId) === live) this.armStall(taskId, live);
 	}
 
 	private sendQueryError(live: LiveTask, id: string, error: string): void {
@@ -1075,8 +1138,11 @@ export class AgentRunner {
 	private closeIpc(live: LiveTask): void {
 		if (live.ipcClosed) return;
 		live.ipcClosed = true;
+		const taskId = [...this.live].find(([, entry]) => entry === live)?.[0];
+		for (const [requestId, query] of live.queries) if (taskId !== undefined && !query.replying) this.recordClosedQuery(taskId, requestId);
 		for (const query of live.queries.values()) query.cancel();
 		live.queries.clear();
+		if (taskId !== undefined) this.restoreStall(taskId, live);
 		for (const pending of live.replies.values()) pending.resolve(false);
 		live.replies.clear();
 		live.child.channel?.unref?.();

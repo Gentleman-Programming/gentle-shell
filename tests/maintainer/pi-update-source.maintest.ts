@@ -35,7 +35,8 @@ for (const manager of ['npm', 'pnpm']) test(`real ${manager} source update prese
   const name = path.slice(1);
   if (!manifests[name]) {res.statusCode = 404; res.end('{}'); return;}
   res.setHeader('content-type', 'application/json');
-  res.end(JSON.stringify({name, 'dist-tags':{latest:updated ? '1.1.0' : '1.0.0'}, time:{'1.0.0':'2020-01-01T00:00:00Z','1.1.0':'2020-01-02T00:00:00Z'}, versions:updated ? manifests[name] : {'1.0.0':manifests[name]['1.0.0']}}));
+  const latest = name === PI ? '2.0.0' : '1.1.0';
+  res.end(JSON.stringify({name, 'dist-tags':{latest:updated ? latest : '1.0.0'}, time:{'1.0.0':'2020-01-01T00:00:00Z',[latest]:new Date().toISOString(), ...(name === PI ? {'3.0.0':new Date().toISOString()} : {})}, versions:updated ? manifests[name] : {'1.0.0':manifests[name]['1.0.0']}}));
  });
  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
  t.after(() => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
@@ -46,18 +47,20 @@ for (const manager of ['npm', 'pnpm']) test(`real ${manager} source update prese
  // pnpm 11 does not honor npm's registry environment variable. Bind both
  // install and update explicitly to the fixture registry and private store.
  const registryFlags = ['--registry', registry, ...(manager === 'pnpm' ? ['--store-dir', join(temp,'store'), '--config.update-notifier=false'] : [])];
- for (const name of [PI, 'unrelated-fixture']) {
+ for (const name of [PI, 'unrelated-fixture', 'age-filtered-fixture', 'pre-excluded-fixture']) {
   manifests[name] = {};
-  for (const version of ['1.0.0', '1.1.0']) {
-   const pack = join(temp, `pack-${name === PI ? 'pi' : 'other'}-${version}`);
+  for (const version of name === PI ? ['1.0.0', '2.0.0', '3.0.0'] : ['1.0.0', '1.1.0']) {
+   const pack = join(temp, `pack-${name === PI ? 'pi' : name}-${version}`);
    await fs.mkdir(join(pack, 'package', 'dist', 'bundle'), {recursive:true});
-   const manifest = {name, version, bin:name === PI ? {pi:'dist/bundle/cli.js'} : undefined, scripts:{postinstall:'node -e "require(\'fs\').writeFileSync(\'LIFECYCLE_RAN\', \'bad\')"'}};
+   const manifest = {name, version, bin:name === PI ? {pi:'dist/bundle/cli.js'} : undefined,
+    dependencies:name === PI && version === '2.0.0' ? {'age-filtered-fixture':'^1.0.0', 'pre-excluded-fixture':'^1.0.0'} : undefined,
+    scripts:{postinstall:'node -e "require(\'fs\').writeFileSync(\'LIFECYCLE_RAN\', \'bad\')"'}};
    await fs.writeFile(join(pack, 'package', 'package.json'), JSON.stringify(manifest));
    await fs.writeFile(join(pack, 'package', 'dist', 'bundle', 'cli.js'), `console.log('${version}');`);
    const archive = join(pack, 'p.tgz');
    await exec('tar', ['-czf', archive, '-C', pack, 'package'], {env});
    const bytes = await fs.readFile(archive);
-   const path = `/tar/${name === PI ? 'pi' : 'other'}-${version}.tgz`;
+   const path = `/tar/${name === PI ? 'pi' : name}-${version}.tgz`;
    files.set(path, bytes);
    manifests[name][version] = {...manifest, dist:{tarball:registry + path, shasum:createHash('sha1').update(bytes).digest('hex')}};
   }
@@ -68,7 +71,7 @@ for (const manager of ['npm', 'pnpm']) test(`real ${manager} source update prese
  t.diagnostic(`${manager} runtime ${version}; project declaration ${declaredVersion}`);
  const manifest = JSON.stringify({name:'gentle-pi', version:'4.4.0', packageManager:`${manager}@${declaredVersion}`, devDependencies:{[PI]:'^1.0.0', 'unrelated-fixture':'^1.0.0'}});
  await fs.writeFile(join(root, 'package.json'), manifest);
- const policy = 'minimumReleaseAge: 4320\n';
+ const policy = 'minimumReleaseAge: 4320\nminimumReleaseAgeExclude:\n  - pre-excluded-fixture\n';
  if (manager === 'pnpm') await fs.writeFile(join(root,'pnpm-workspace.yaml'), policy);
  const common = ['--ignore-scripts', '--global=false', ...(manager === 'pnpm' ? ['--ignore-pnpmfile', '--pm-on-fail=ignore'] : ['--no-audit', '--no-fund'])];
  await exec(command, ['install', ...common, ...registryFlags], {cwd:root, env, maxBuffer:1024*1024});
@@ -87,17 +90,18 @@ for (const manager of ['npm', 'pnpm']) test(`real ${manager} source update prese
   run:async (_cmd: string, args: string[], options: {cwd?: string,env?: Record<string,string>}) => {
    if (args.includes('list') && args.includes('-g')) return {code:0, stdout:JSON.stringify([{path:temp, dependencies:{}}])};
    if (args.includes('ls') && args.includes('-g')) return {code:0, stdout:JSON.stringify({path:temp, dependencies:{'gentle-pi':{path:link, resolved:'file:../../checkout'}}})};
-   if (args[0] === 'update') mutations.push(args);
-   // The second phase models an already-published release, not a newly
-   // backdated version hidden behind install's fresh metadata-age cache.
+   const mutation = ['update', 'add', 'install'].includes(args[0]);
+   if (mutation) mutations.push(args);
    const selectedEnv = options.env ?? env;
-   const runEnv = manager === 'pnpm' && args[0] === 'update' ? {...selectedEnv, XDG_CACHE_HOME:join(temp,'update-cache')} : selectedEnv;
-   try {const result = await exec(command, args[0] === 'update' ? [...args, ...registryFlags] : args, {cwd:options.cwd, env:runEnv, maxBuffer:1024*1024}); managerRuns.push({args, stdout:result.stdout, stderr:result.stderr}); return {code:0, stdout:result.stdout, stderrTail:result.stderr};}
-   catch (error: any) {return {code:error.code, stdout:error.stdout, stderrTail:error.stderr};}
+   // A fresh cache ensures that the new publication is visible to the manager.
+   const runEnv = manager === 'pnpm' ? {...selectedEnv, XDG_CACHE_HOME:join(temp,'update-cache')} : selectedEnv;
+   const extra = mutation ? registryFlags : args.includes('view') ? ['--registry', registry] : [];
+   try {const result = await exec(command, [...args, ...extra], {cwd:options.cwd, env:runEnv, maxBuffer:1024*1024}); managerRuns.push({args, stdout:result.stdout, stderr:result.stderr}); return {code:0, stdout:result.stdout, stderrTail:result.stderr};}
+   catch (error: any) {t.diagnostic(JSON.stringify({args, code:error.code, stdout:error.stdout, stderr:error.stderr})); return {code:error.code, stdout:error.stdout, stderrTail:error.stderr};}
   },
  }}), 0);
  assert.equal(mutations.length, 1);
- assert.ok(mutations[0].includes(PI));
+ assert.ok(mutations[0].some(arg => arg === PI || arg.startsWith(`${PI}@`)));
  assert.ok(registryRequests.some(request => request.phase === 'update' && request.path === `/${PI}`), JSON.stringify(registryRequests));
  assert.ok(!mutations[0].includes('-g'));
  assert.equal(await fs.realpath(link), root);
@@ -107,10 +111,18 @@ for (const manager of ['npm', 'pnpm']) test(`real ${manager} source update prese
   assert.ok(managerRuns.filter(run => run.args.includes('config') || run.args.includes('--recursive') || run.args[0] === 'update').every(run => run.args.includes('--pm-on-fail=ignore')));
   assert.ok(!registryRequests.some(request => request.path === '/pnpm' || request.path.startsWith('/@pnpm/')), 'no project-pinned manager acquired');
  }
- assert.notEqual(await fs.readFile(lockPath, 'utf8'), oldLock, JSON.stringify({output, installed:JSON.parse(await fs.readFile(join(root,'node_modules',PI,'package.json'),'utf8')).version, managerRuns, registryRequests}));
- assert.equal(JSON.parse(await fs.readFile(join(root,'node_modules',PI,'package.json'),'utf8')).version, '1.1.0');
+ if (manager === 'pnpm') assert.notEqual(await fs.readFile(lockPath, 'utf8'), oldLock, JSON.stringify({output, installed:JSON.parse(await fs.readFile(join(root,'node_modules',PI,'package.json'),'utf8')).version, managerRuns, registryRequests}));
+ else assert.equal(await fs.readFile(lockPath, 'utf8'), oldLock, 'npm --no-save leaves the lockfile unchanged');
+ assert.equal(JSON.parse(await fs.readFile(join(root,'node_modules',PI,'package.json'),'utf8')).version, '2.0.0');
  assert.equal(JSON.parse(await fs.readFile(join(root,'node_modules','unrelated-fixture','package.json'),'utf8')).version, '1.0.0');
+ const { createRequire } = await import('node:module');
+ const resolveFromPi = createRequire(join(await fs.realpath(join(root,'node_modules',PI)), 'package.json'));
+ const installedVersion = async (name: string) => JSON.parse(await fs.readFile(resolveFromPi.resolve(`${name}/package.json`), 'utf8')).version;
+ if (manager === 'pnpm') {
+  assert.equal(await installedVersion('age-filtered-fixture'), '1.0.0', 'a fresh unrelated dependency remains age-filtered');
+  assert.equal(await installedVersion('pre-excluded-fixture'), '1.1.0', 'the existing exclusion remains effective');
+ }
  await assert.rejects(fs.access(join(root,'node_modules',PI,'LIFECYCLE_RAN')));
  assert.equal(output.length, 1);
- assert.match(output[0], /the selected Pi is now 1\.1\.0 \(was 1\.0\.0\)/);
+ assert.match(output[0], /the selected Pi is now 2\.0\.0 \(was 1\.0\.0\)/);
 });

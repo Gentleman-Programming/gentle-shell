@@ -12,7 +12,7 @@ export interface MessageToolCall {
 interface BranchEntry {
 	readonly type?: unknown;
 	readonly parentId?: unknown;
-	readonly message?: { readonly role?: unknown; readonly content?: unknown };
+	readonly message?: { readonly role?: unknown; readonly content?: unknown; readonly toolCallId?: unknown };
 }
 
 export interface SessionBranchReader {
@@ -26,14 +26,21 @@ const MAX_ENTRIES_BACK = 64;
 /**
  * The tool calls of the nearest assistant message on the branch, when that message issued `toolCallId`; otherwise
  * undefined. A call nested inside another tool (codemode, `parentToolCallId`) is not in the message, so it never
- * gets a batch.
+ * gets a batch. Providers may repeat call ids across messages, so a message whose call with this id already has its
+ * tool result behind it on the branch is an earlier message, never the one executing: no batch (fail closed). Only
+ * this id is checked: in Pi's sequential path earlier calls of the same message already have their results.
  */
 export function sameMessageToolCalls(session: SessionBranchReader | undefined, toolCallId: unknown): MessageToolCall[] | undefined {
 	if (!session || typeof toolCallId !== "string" || !toolCallId) return undefined;
 	try {
 		let entry = session.getLeafEntry();
+		let answered = false;
 		for (let steps = 0; entry && steps < MAX_ENTRIES_BACK; steps++) {
+			// Pi persists a result as a `message` entry with `role: "toolResult"` and the call's `toolCallId`
+			// (pi-agent-core agent-loop `createToolResultMessage`).
+			if (entry.type === "message" && entry.message?.role === "toolResult" && entry.message.toolCallId === toolCallId) answered = true;
 			if (entry.type === "message" && entry.message?.role === "assistant") {
+				if (answered) return undefined;
 				const content = Array.isArray(entry.message.content) ? entry.message.content : [];
 				const calls = content.filter((part): part is { type: "toolCall"; id: unknown; name: unknown; arguments: unknown } => !!part && typeof part === "object" && (part as { type?: unknown }).type === "toolCall");
 				if (!calls.some(call => call.id === toolCallId)) return undefined;

@@ -395,3 +395,17 @@ test("P6: the rejection names the same-message route and keeps the inline instru
 		assert.ok(denied?.reason.endsWith("write this unit inline yourself now; do not retry the launch, and never create a feature document only to launch writers."));
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+// Verifier mwb9qlc5-22-nfsa probes, kept as regression tests.
+test("P6: a writer beside gentle-ai-explore, and a path beside an uninterpretable glob, are rejected with the new text", async (t) => {
+	const bare = workspace(false);
+	t.after(() => rmSync(bare, { recursive: true, force: true }));
+	await withConfigHome(undefined, async () => {
+		const withExplorer = [writerCall("x1", "src/alpha.ts"), { id: "x2", name: "subagent_run", arguments: { agent: "gentle-ai-explore", task: "Map src/beta.ts" } }];
+		const denied = await launchBatchThroughHook([withExplorer], withExplorer[0], bare);
+		assert.equal(denied?.block, true);
+		assert.match(denied?.reason ?? "", /two or more writers with disjoint `## Allowed edit surfaces` launched together in one message with no other tool call/);
+		const glob = [writerCall("g1", "src/alpha.ts"), writerCall("g2", "src/[ab].ts")];
+		for (const target of glob) assert.equal((await launchBatchThroughHook([glob], target, bare))?.block, true, target.id);
+	});
+});

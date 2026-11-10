@@ -85,8 +85,8 @@ export function rejectUnscopedBoundedWriterDispatch(input: unknown): { block: tr
 
 // Pain-point iteration S16: prompt rules alone did not stop small-task delegation (a two-feature request still
 // started two writers for ~35-line units). A generic writer launch is admitted only for a task of an existing ODD
-// feature document, or when the parent's measured context reaches the context backstop (the same threshold as the
-// runtime notice, lib/context-backstop.ts). Judgment Day fix agents and continuations keep their own protocols.
+// feature document, when the parent's measured context reaches the context backstop (the same threshold as the
+// runtime notice, lib/context-backstop.ts), or as one of 2+ disjoint writers alone in one message (P6, below). Judgment Day fix agents and continuations keep their own protocols.
 // A line that starts with `Spec:` (optionally as a list item), names an odd/tasks document, and names a task
 // `T<n>` later on the same line: covers the canon (`, T2, S3-S4`), the delegation card (`(read until "## Log").
 // Do T2; S3.`), and comma-free forms (`.md T1 S1;`). A mention inside prose does not start the line.

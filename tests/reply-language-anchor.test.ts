@@ -10,7 +10,9 @@ import {
 	REPLY_LANGUAGE_ANCHOR_TYPE,
 	humanLanguageExcerpt,
 	isHumanInput,
+	placePersistedReplyAnchors,
 	replyLanguageAnchor,
+	replyLanguageAnchorPosition,
 } from "../lib/reply-language-anchor.ts";
 
 // ---------------------------------------------------------------------------
@@ -110,7 +112,8 @@ function hookFixture(t: TestContext, child = false) {
 	return {
 		sent,
 		input: (text: string, source = "interactive") => handlers.get("input")!({ type: "input", text, source }, ctx),
-		context: (messages: unknown[]) => handlers.get("context")?.({ type: "context", messages }, ctx) as { messages?: unknown[] } | undefined,
+		// P1: the anchor runs in `context_with_system`, so a changed list never folds Pi's system messages.
+		context: (messages: unknown[]) => handlers.get("context_with_system")?.({ type: "context_with_system", messages }, ctx) as { messages?: unknown[] } | undefined,
 	};
 }
 
@@ -171,3 +174,16 @@ test("S9: the anchor Pi flushes at turn_end, after the tool round, is not re-add
 	assert.equal(replyLanguageAnchor(flushed as never, HUMAN), undefined);
 });
 
+
+// P1 (cost-speed-painpoints S10): Pi saves the anchor after the reply, so each saved copy records where its request
+// carried it and is moved back there; one whose predecessor is gone, or saved without a placement, stays put.
+test("P1: a saved anchor is moved back after the message it followed, with its request's timestamp", () => {
+	const anchor = (details?: unknown) => ({ role: "custom", customType: REPLY_LANGUAGE_ANCHOR_TYPE, content: "a", display: false, details, timestamp: 50 });
+	const tail = custom("gentle-agents.result");
+	const saved = anchor({ after: replyLanguageAnchorPosition(tail), at: 7 });
+	const placed = placePersistedReplyAnchors([user(HUMAN), tail, assistant(), toolResult(), saved]);
+	assert.deepEqual(placed, [user(HUMAN), tail, { ...saved, timestamp: 7 }, assistant(), toolResult()]);
+	assert.equal(placePersistedReplyAnchors(placed!), undefined, "an anchor already in place is left alone");
+	assert.equal(placePersistedReplyAnchors([user(HUMAN), assistant(), saved]), undefined, "its predecessor compacted away: it stays put");
+	assert.equal(placePersistedReplyAnchors([user(HUMAN), tail, assistant(), anchor()]), undefined, "saved by an earlier version: it stays put");
+});

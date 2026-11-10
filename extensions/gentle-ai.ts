@@ -12,7 +12,7 @@ import { commitSliceToolResult } from "../lib/commit-slice-signal.ts";
 import { checkReviewDeliveryPreflight } from "../lib/review-delivery-preflight.ts";
 import { appendContextBackstopNotice, createContextBackstopSignal, createThrottledContextMeasure } from "../lib/context-backstop.ts";
 import { createExplorationBudget } from "../lib/exploration-budget.ts";
-import { REPLY_LANGUAGE_ANCHOR_TYPE, isHumanInput, replyLanguageAnchorFor } from "../lib/reply-language-anchor.ts";
+import { REPLY_LANGUAGE_ANCHOR_TYPE, isHumanInput, placePersistedReplyAnchors, replyLanguageAnchorFor, replyLanguageAnchorPosition, type ReplyLanguageAnchorDetails } from "../lib/reply-language-anchor.ts";
 import { blockChildDestructiveCommand } from "./child-safety.ts";
 import { evaluateExecutionSurfaceTool } from "../lib/execution-surface-guard.ts";
 import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, isHomeOrBroadUserDirectory, prepareBoundSessionRepository, rejectUndocumentedWriterLaunch, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sourcePathWithinProject } from "../lib/bounded-writer-admission.ts";
@@ -11881,20 +11881,26 @@ function createGentleAiExtensionForTesting(
 	// a reply after an English subagent result can be anchored to their language even
 	// when that message is far up the transcript or compacted away.
 	const humanReplyTexts = new Map<PendingReviewConsentSessionKey, string>();
-	const persistedReplyAnchors = new Map<PendingReviewConsentSessionKey, string>();
-	pi.on("context", (event, ctx) => {
+	const persistedReplyAnchors = new Map<PendingReviewConsentSessionKey, { tail: string; details: ReplyLanguageAnchorDetails }>();
+	// P1 (pi-claude-bridge cache rewrites): `context_with_system`, not `context`, so a
+	// changed list never folds Pi's mid-conversation system messages into the head.
+	pi.on("context_with_system", (event, ctx) => {
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") return undefined;
 		const key = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
-		const anchor = replyLanguageAnchorFor(event.messages, humanReplyTexts.get(key));
-		if (anchor === undefined) return undefined;
-		// Persisted once per automated tail, like the todo snapshot, so the next request
-		// carries it and stays append-only instead of dropping a trailing message the
-		// cache keyed on.
-		if (persistedReplyAnchors.get(key) !== anchor.tail) {
-			persistedReplyAnchors.set(key, anchor.tail);
-			try { pi.sendMessage({ customType: REPLY_LANGUAGE_ANCHOR_TYPE, content: anchor.text, display: false }, { triggerTurn: false }); } catch { /* The trailing copy below still serves this request. */ }
+		// Pi saves an anchor only once the turn ends, after the reply; put each saved
+		// copy back where its request carried it, so this request extends the last one.
+		const placed = placePersistedReplyAnchors(event.messages);
+		const messages = placed ?? event.messages;
+		const anchor = replyLanguageAnchorFor(messages.filter((message) => message.role !== "system"), humanReplyTexts.get(key));
+		if (anchor === undefined) return placed === undefined ? undefined : { messages };
+		// Saved once per automated tail; a retry of the same request reuses its placement.
+		let saved = persistedReplyAnchors.get(key);
+		if (saved?.tail !== anchor.tail) {
+			saved = { tail: anchor.tail, details: { after: replyLanguageAnchorPosition(messages.at(-1)), at: Date.now() } };
+			persistedReplyAnchors.set(key, saved);
+			try { pi.sendMessage({ customType: REPLY_LANGUAGE_ANCHOR_TYPE, content: anchor.text, display: false, details: saved.details }, { triggerTurn: false }); } catch { /* The trailing copy below still serves this request. */ }
 		}
-		return { messages: [...event.messages, { role: "custom", customType: REPLY_LANGUAGE_ANCHOR_TYPE, content: anchor.text, display: false, timestamp: Date.now() }] };
+		return { messages: [...messages, { role: "custom", customType: REPLY_LANGUAGE_ANCHOR_TYPE, content: anchor.text, display: false, details: saved.details, timestamp: saved.details.at }] };
 	});
 
 	pi.on("input", (event, ctx) => {

@@ -11,8 +11,14 @@
 //
 // The anchor is added only when the context's tail is automated, never mid tool
 // loop, and only when no anchor already follows that tail. The caller persists it
-// once, so the following requests stay append-only and the provider's prompt
-// cache keeps its prefix (gentle-shell#1662, #2195). Pure: no pi imports.
+// once (gentle-shell#1662, #2195), but Pi appends a message sent while streaming
+// only once the turn ends, after the reply and its tool results, so the saved copy
+// lands later than the request's trailing copy did. Each anchor therefore records
+// the message it followed and its own timestamp, and `placePersistedReplyAnchors`
+// moves every saved copy back to that spot: request k+1 then starts with exactly
+// the messages of request k, and the provider's prompt cache keeps its prefix
+// (pi-claude-bridge "Extensions that add a message to every request"). Pure: no
+// pi imports.
 
 import type { ContextEvent } from "@earendil-works/pi-coding-agent";
 
@@ -60,6 +66,45 @@ function isAutomated(message: Message): boolean {
 
 function isHumanMessage(message: Message): boolean {
 	return message.role === "user" && !isAutomated(message) && text(message.content).trim() !== "";
+}
+
+/** Where an anchor sat in the request that first carried it: right after `after`, with timestamp `at`. */
+export type ReplyLanguageAnchorDetails = { after: string; at: number };
+
+type Placed = { role?: unknown; customType?: unknown; timestamp?: unknown; details?: unknown };
+
+/** A message's position key: stable across requests, since Pi never rewrites a stored message. */
+export function replyLanguageAnchorPosition(message: Placed | undefined): string {
+	return message === undefined ? "" : `${String(message.role)}|${String(message.customType ?? "")}|${String(message.timestamp ?? "")}`;
+}
+
+function placement(message: Placed): ReplyLanguageAnchorDetails | undefined {
+	if (message.role !== "custom" || message.customType !== REPLY_LANGUAGE_ANCHOR_TYPE) return undefined;
+	const details = message.details as Partial<ReplyLanguageAnchorDetails> | undefined;
+	return typeof details?.after === "string" && typeof details.at === "number" ? { after: details.after, at: details.at } : undefined;
+}
+
+/**
+ * Moves each saved anchor back to where its request carried it, with that
+ * request's timestamp, so consecutive requests stay append-only. Returns
+ * `undefined` when nothing moved. An anchor whose predecessor is gone (compacted
+ * away) or that carries no placement (saved by an earlier version) stays put.
+ */
+export function placePersistedReplyAnchors<T>(messages: readonly T[]): T[] | undefined {
+	let list: T[] | undefined;
+	const current = () => list ?? messages;
+	for (let index = 0; index < current().length; index++) {
+		const message = current()[index] as Placed;
+		const where = placement(message);
+		if (where === undefined) continue;
+		let target = index - 1;
+		while (target >= 0 && replyLanguageAnchorPosition(current()[target] as Placed) !== where.after) target--;
+		if (target < 0 || (target === index - 1 && message.timestamp === where.at)) continue;
+		list ??= [...messages];
+		list.splice(index, 1);
+		list.splice(target + 1, 0, { ...message, timestamp: where.at } as T);
+	}
+	return list;
 }
 
 export function replyLanguageAnchorText(excerpt: string): string {

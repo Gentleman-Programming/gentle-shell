@@ -735,7 +735,7 @@ Size and uncertainty can call for scoped exploration or delegation within ODD. T
 
 ### gentle-ai managed blocks in context files
 
-A context file such as a gentle-ai managed `~/AGENTS.md` can carry another orchestrator's policy. While Gentle Shell injects its own orchestrator prompt, the primary session drops the orchestrator-only managed blocks (`orchestrator`, `sdd-orchestrator`, `sdd-model-assignments`, `agent-routing`) from the loaded context files, as delegated children already do. When the primary runs without Gentle Shell's orchestrator prompt, nothing is dropped.
+A context file such as a gentle-ai managed `~/AGENTS.md` can carry another orchestrator's policy. While Gentle Shell injects its own orchestrator prompt, the primary session drops the orchestrator-only managed blocks (the set listed in `lib/child-context-files.ts`) from the loaded context files, as delegated children already do. When the primary runs without Gentle Shell's orchestrator prompt, nothing is dropped.
 
 The `engram-protocol` managed block is deduplicated, never removed. When more than one loaded context file carries it, the primary (with Gentle Shell's orchestrator) and delegated children keep only the copy in the file nearest to the working directory, the same precedence Pi gives context files, and drop the copies in its ancestor directories. A single copy is always kept. Copies in the same directory, or in files outside the working directory's ancestor chain, are all kept. This does not depend on gentle-engram, whose own injected protocol is untouched.
 

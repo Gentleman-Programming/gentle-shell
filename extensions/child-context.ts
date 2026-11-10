@@ -27,13 +27,9 @@ export function createChildContextExtension(env: NodeJS.ProcessEnv = process.env
 			// The engram-protocol block is deduplicated: only the copy in the file
 			// nearest to the working directory stays.
 			const options = (event as { systemPromptOptions?: ContextFileOptions | null } | undefined)?.systemPromptOptions;
-<<<<<<< HEAD
-			filterChildSessionContextFiles(options);
-			dropSkillsCatalog(event, env);
-=======
 			const cwd = (ctx as { cwd?: unknown } | undefined)?.cwd;
 			filterChildSessionContextFiles(options, typeof cwd === "string" ? { cwd } : {});
->>>>>>> 9103a96b0 (perf(context): filter gentle-ai orchestrator blocks in the primary and dedupe the Engram protocol)
+			dropSkillsCatalog(event, env);
 			return undefined;
 		});
 	};

@@ -1662,14 +1662,24 @@ function sharedCacheFixture() {
 	};
 }
 
-function runSharedCacheProcess(root: string, cwd: string, resolved: ResolvedSkill[]): SharedCacheResult {
+function runSharedCacheProcess(
+	root: string,
+	cwd: string,
+	resolved: ResolvedSkill[],
+	via: "regenerate" | "apply" = "regenerate",
+): SharedCacheResult {
+	// "apply" is the real before_agent_start path (Pi's own resolution, which
+	// may be an explicit empty batch); "regenerate" is what a watcher poll does.
+	const call = via === "apply"
+		? `__testing.applyResolvedSkillsUpdate(${JSON.stringify(cwd)}, ${JSON.stringify(resolved)})`
+		: `__testing.regenerateRegistry(${JSON.stringify(cwd)}, false, ${JSON.stringify(resolved)})`;
 	const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", `
 		import { join } from "node:path";
 		const root = ${JSON.stringify(root)};
 		process.env.HOME = join(root, "home");
 		process.env.USERPROFILE = process.env.HOME;
 		const { __testing } = await import(${JSON.stringify(registryExtensionUrl)});
-		const result = await __testing.regenerateRegistry(${JSON.stringify(cwd)}, false, ${JSON.stringify(resolved)});
+		const result = await ${call};
 		console.log("RESULT " + JSON.stringify(result));
 	`], {
 		encoding: "utf8",
@@ -1732,12 +1742,26 @@ test("a process with no resolved skills cache-hits and preserves the published r
 	assert.match(publishedResolvedFingerprint ?? "", /^[0-9a-f]{40}$/);
 	assert.equal(
 		(JSON.parse(readFileSync(fixture.cache, "utf8")) as { resolvedFingerprint?: string }).resolvedFingerprint,
+		undefined,
+		"a rewrite that rendered no resolved rows must not claim a published resolved fingerprint",
+	);
+
+	// ...so the session that does hold those rows republishes them exactly once.
+	const peerRepair = runSharedCacheProcess(fixture.root, fixture.cwd, resolved);
+	assert.equal(peerRepair.regenerated, true, "the owning session must republish what the cache no longer records");
+	assert.match(
+		readFileSync(fixture.registry, "utf8"),
+		new RegExp(escapeRegExp(resolvedPath)),
+		"the republished registry must carry the Pi-resolved rows again",
+	);
+	assert.equal(
+		(JSON.parse(readFileSync(fixture.cache, "utf8")) as { resolvedFingerprint?: string }).resolvedFingerprint,
 		publishedResolvedFingerprint,
-		"a no-opinion write must preserve the peer's resolved fingerprint",
+		"the repaired cache must record the peer's resolved fingerprint again",
 	);
 
 	const peerPoll = runSharedCacheProcess(fixture.root, fixture.cwd, resolved);
-	assert.equal(peerPoll.regenerated, false, "the publishing peer must not re-fight over the shared cache");
+	assert.equal(peerPoll.regenerated, false, "the repair must be bounded to one publish");
 	assert.equal(peerPoll.reason, "cache-hit");
 });
 
@@ -1943,3 +1967,57 @@ test("files-only fingerprint excludes resolved skills and an empty resolved set 
 	);
 });
 
+// R9 (gentle-shell#3020 review R4-001): an empty resolved batch from Pi's own
+// resolution is an authority claim -- "this session now resolves nothing" -- and
+// must withdraw the published section. A watcher poll holds no such authority,
+// so the same empty list from a poll must leave the peer's section alone.
+test("an explicit empty resolved batch withdraws the published section, a poll never does (#3020)", async (t) => {
+	const fixture = sharedCacheFixture();
+	t.after(() => rmSync(fixture.root, { recursive: true, force: true }));
+	const resolvedPath = join(fixture.root, "pkg", "skills", "prompted", "SKILL.md");
+	const resolved: ResolvedSkill[] = [
+		{
+			name: "prompted",
+			description: "Trigger: prompted session authority.",
+			filePath: resolvedPath,
+			sourceInfo: { scope: "project", origin: "package" },
+		},
+	];
+	const resolvedAuthorityLine = /Pi-resolved runtime authority \(before_agent_start\.systemPromptOptions\.skills\): 1 skill\(s\)/;
+
+	assert.equal(runSharedCacheProcess(fixture.root, fixture.cwd, resolved, "apply").regenerated, true);
+	const published = readFileSync(fixture.registry, "utf8");
+	assert.match(published, new RegExp(escapeRegExp(resolvedPath)));
+	assert.match(published, resolvedAuthorityLine);
+
+	// A poll from a session that simply holds no set must not withdraw anything.
+	const poll = runSharedCacheProcess(fixture.root, fixture.cwd, []);
+	assert.equal(poll.regenerated, false, "a poll without a resolved set must stay a cache hit");
+	assert.equal(poll.reason, "cache-hit");
+	assert.match(readFileSync(fixture.registry, "utf8"), new RegExp(escapeRegExp(resolvedPath)));
+
+	// Pi's own resolution now reports zero skills: the stale authority must go.
+	const withdrawal = runSharedCacheProcess(fixture.root, fixture.cwd, [], "apply");
+	assert.equal(withdrawal.regenerated, true, "an explicit empty batch must withdraw the resolved section");
+	assert.equal(withdrawal.reason, "fingerprint-changed");
+	const withdrawn = readFileSync(fixture.registry, "utf8");
+	assert.doesNotMatch(withdrawn, new RegExp(escapeRegExp(resolvedPath)), "the withdrawn rows must be gone");
+	assert.doesNotMatch(withdrawn, resolvedAuthorityLine, "the stale authority count must be gone");
+	const cacheAfter = JSON.parse(readFileSync(fixture.cache, "utf8")) as {
+		fingerprint?: string;
+		resolvedFingerprint?: string;
+		resolved?: unknown[];
+	};
+	assert.equal(cacheAfter.resolvedFingerprint, undefined, "the withdrawn digest must not survive");
+	assert.equal(cacheAfter.resolved, undefined, "the withdrawn rows must not survive");
+
+	// And the withdrawal is bounded: repeating it says nothing new.
+	const repeat = runSharedCacheProcess(fixture.root, fixture.cwd, [], "apply");
+	assert.equal(repeat.regenerated, false, "a repeated empty batch must not rewrite again");
+	assert.equal(repeat.reason, "cache-hit");
+
+	// A different session that still resolves a set may publish it again.
+	const republish = runSharedCacheProcess(fixture.root, fixture.cwd, resolved, "apply");
+	assert.equal(republish.regenerated, true, "another session may still publish its own resolved set");
+	assert.match(readFileSync(fixture.registry, "utf8"), new RegExp(escapeRegExp(resolvedPath)));
+});

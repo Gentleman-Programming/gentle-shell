@@ -4,6 +4,8 @@ import { basename, dirname, isAbsolute, parse, relative, resolve } from "node:pa
 import type { OrchestratorMode } from "./agent-profiles.ts";
 import { contextBackstopReached, type MeasuredContext } from "./context-backstop.ts";
 import { resolveSessionWorktree, type WorktreeResolver } from "./session-worktree-registry.ts";
+import type { MessageToolCall } from "./writer-batch-admission.ts";
+import { overlappingSurfaces } from "./writer-surfaces.ts";
 
 const WRITER_NAMES = ["gentle-ai-worker", "worker", "jd-fix-agent"];
 export const WRITER_EDIT_SURFACE_REJECTION =
@@ -83,14 +85,34 @@ export function rejectUnscopedBoundedWriterDispatch(input: unknown): { block: tr
 
 // Pain-point iteration S16: prompt rules alone did not stop small-task delegation (a two-feature request still
 // started two writers for ~35-line units). A generic writer launch is admitted only for a task of an existing ODD
-// feature document, or when the parent's measured context reaches the context backstop (the same threshold as the
-// runtime notice, lib/context-backstop.ts). Judgment Day fix agents and continuations keep their own protocols.
+// feature document, when the parent's measured context reaches the context backstop (the same threshold as the
+// runtime notice, lib/context-backstop.ts), or as one of 2+ disjoint writers alone in one message (P6, below). Judgment Day fix agents and continuations keep their own protocols.
 // A line that starts with `Spec:` (optionally as a list item), names an odd/tasks document, and names a task
 // `T<n>` later on the same line: covers the canon (`, T2, S3-S4`), the delegation card (`(read until "## Log").
 // Do T2; S3.`), and comma-free forms (`.md T1 S1;`). A mention inside prose does not start the line.
 const FEATURE_DOCUMENT_TASK = /^[ \t]*(?:[-*+][ \t]+)?Spec:[ \t]*`?(odd\/tasks\/[^\s,`()]+\.md)`?[^\n]*?\bT\d+\b/gm;
 export const WRITER_FEATURE_DOCUMENT_REJECTION =
-	"Writers run only for a task of an existing ODD feature document (`Spec: odd/tasks/<feature>.md, T<n>` in the task) or when your measured context reaches the context backstop. This unit has neither: write this unit inline yourself now; do not retry the launch, and never create a feature document only to launch writers.";
+	"Writers run only for a task of an existing ODD feature document (`Spec: odd/tasks/<feature>.md, T<n>` in the task), when your measured context reaches the context backstop, or as two or more writers with disjoint `## Allowed edit surfaces` launched together in one message with no other tool call. This unit has none: write this unit inline yourself now; do not retry the launch, and never create a feature document only to launch writers.";
+
+// cost-speed P6 (R1, L41): the parallel reason is two or more independent units launched together in one turn,
+// in background mode or not. Pi runs one message's calls in parallel unless one is sequential, so the batch must
+// hold only generic writer launches: any other call beside them (a sequential `todo`, an explorer, a verifier)
+// voids it. Admission cannot measure unit size; "each heavier than a subagent start" stays a prompt rule.
+function parallelWriterBatch(calls: readonly MessageToolCall[] | undefined): boolean {
+	if (!calls || calls.length < 2) return false;
+	const claims: string[][] = [];
+	for (const call of calls) {
+		const input = call.arguments;
+		if (call.name !== "subagent_run" || !input || typeof input !== "object" || Array.isArray(input)) return false;
+		const record = input as Record<string, unknown>;
+		if (typeof record.agent !== "string" || !isGenericBoundedWriter(record.agent)) return false;
+		const surfaces = allowedEditSurfaces(record.task, record.context);
+		if (!surfaces) return false;
+		if (claims.some(other => overlappingSurfaces(surfaces, other).length > 0)) return false;
+		claims.push(surfaces);
+	}
+	return true;
+}
 
 function featureDocumentExists(root: string, relativePath: string): boolean {
 	// Resolve symlinks on both sides so a document linked from outside the root, or an odd/tasks directory linked
@@ -131,6 +153,8 @@ export function rejectUndocumentedWriterLaunch(
 		 * Omitted means organic, the admission above.
 		 */
 		orchestratorMode?: OrchestratorMode;
+		/** Every tool call of the assistant message that issued this launch, itself included (`sameMessageToolCalls`). */
+		sameMessageCalls?: readonly MessageToolCall[];
 	},
 ): { block: true; reason: string } | undefined {
 	if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
@@ -139,6 +163,7 @@ export function rejectUndocumentedWriterLaunch(
 	if (options.orchestratorMode === "full-delegation") return undefined;
 	if (namesExistingFeatureDocumentTask([record.task, record.context], options.root)) return undefined;
 	if (contextBackstopReached(options.contextUsage, options.env)) return undefined;
+	if (parallelWriterBatch(options.sameMessageCalls)) return undefined;
 	return { block: true, reason: WRITER_FEATURE_DOCUMENT_REJECTION };
 }
 

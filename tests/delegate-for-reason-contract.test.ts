@@ -331,13 +331,18 @@ test("T10: escalate labels name the core high-risk items", () => {
 	}
 });
 
-test("T9/AC2: the parallelism reason launches every unit together in background and waits for all", () => {
+test("T9/AC2: the parallelism reason launches every unit together in one turn, in any mode, and waits for all", () => {
 	const parallel = lineStarting(writer, "- **Parallelism**");
 	for (const clause of [
 		// Writer-rule fix: a unit is one independent piece of behavior.
 		"every independent unit in the same turn",
 		// P5b (C11): omit `mode`; an explicit background mode throws in single-shot runs.
 		"`subagent_run` without `mode`",
+		// cost-speed P6 (L41, L36): background is how the units run, never a condition (the core Writer rule says
+		// the same); Pi runs one message's calls in parallel, and admission takes only a writer-only message.
+		"In every mode,",
+		"in one assistant message with no other tool call",
+		"(in background when background mode is on)",
 		"wait for all completions",
 		"serial launches void the reason",
 		"work inline",
@@ -346,6 +351,11 @@ test("T9/AC2: the parallelism reason launches every unit together in background 
 		assert.ok(parallel.includes(clause), `writer parallelism launch rule is missing: ${clause}`);
 	}
 	assert.ok(!/high risk|high-risk|verify/i.test(parallel), "parallel mixes risk or verification into the writer reasons");
+	assert.ok(!/With the Background subagent policy on, launch/.test(parallel), "background mode must not condition the launch");
+});
+
+test("P6: the lazy Writer trigger names every route the runtime admits", () => {
+	assert.ok(delegationWriter.includes("The runtime admits writers only for a feature-document task, at the measured context backstop, or as 2+ disjoint writers alone in one message."));
 });
 
 // T4 (S2, AC6): the runtime rejects an overlapping live writer at admission,

@@ -16,6 +16,7 @@ import { REPLY_LANGUAGE_ANCHOR_TYPE, isHumanInput, placePersistedReplyAnchors, r
 import { blockChildDestructiveCommand } from "./child-safety.ts";
 import { evaluateExecutionSurfaceTool } from "../lib/execution-surface-guard.ts";
 import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, isHomeOrBroadUserDirectory, prepareBoundSessionRepository, rejectUndocumentedWriterLaunch, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sourcePathWithinProject } from "../lib/bounded-writer-admission.ts";
+import { sameMessageToolCalls } from "../lib/writer-batch-admission.ts";
 import { rejectUnriskedVerifierLaunch } from "../lib/verifier-admission.ts";
 import { VERIFIER_SETTLE_REMINDER_TYPE, createVerifierSettleReminders, finalAssistantText } from "../lib/verifier-settle-reminder.ts";
 import { consumeReviewMutation, pendingReviewMutation, pendingReviewMutationProfiles, recordReviewMutation, type ReceiptSession } from "../lib/review-reminder-receipt.ts";
@@ -12902,7 +12903,10 @@ function createGentleAiExtensionForTesting(
 				// The guard reads the same mode the prompt was built with, from the session's own environment, so the
 				// two can never disagree about whether a small change belongs to a writer.
 				const orchestratorMode = resolveSessionDelegationMode(ctx, permissionEnvironment);
-				const undocumentedWriter = rejectUndocumentedWriterLaunch(event.input, { root, contextUsage: ctx.getContextUsage?.(), env: permissionEnvironment, orchestratorMode });
+				// cost-speed P6: the launches of the same assistant message, read from the session branch (persisted on
+				// `message_end`, before Pi prepares any of its calls). A nested codemode call is never in the message.
+				const sameMessageCalls = sameMessageToolCalls(ctx.sessionManager, event.parentToolCallId === undefined ? event.toolCallId : undefined);
+				const undocumentedWriter = rejectUndocumentedWriterLaunch(event.input, { root, contextUsage: ctx.getContextUsage?.(), env: permissionEnvironment, orchestratorMode, sameMessageCalls });
 				if (undocumentedWriter) return undocumentedWriter;
 				const unriskedVerifier = rejectUnriskedVerifierLaunch(event.input, { root, contextUsage: ctx.getContextUsage?.(), env: permissionEnvironment });
 				if (unriskedVerifier) return unriskedVerifier;

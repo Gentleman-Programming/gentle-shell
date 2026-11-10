@@ -172,7 +172,7 @@ test("P4 B1: the full-delegation parent routes a verifier setup failure to the v
 	for (const rdd of ["off", "on", "unknown"] as const) {
 		const verify = render("full-delegation", rdd).split("\n").find((line) => line.startsWith("3. **Verify**")) ?? "";
 		assert.ok(verify.includes("add one independent `gentle-ai-verify` only when the Risk line names a high-risk item"), `[${rdd}] verifier sentence stays`);
-		assert.ok(verify.includes("; verifier setup failure: `orchestrator-verification.md` (`## Verifier preparation failure`)."), `[${rdd}] setup-failure route`);
+		assert.ok(verify.includes("; verification, handoffs, verifier setup failure: `orchestrator-verification.md` (`## Verifier preparation failure`)."), `[${rdd}] setup-failure route`);
 	}
 	const module = read("assets/orchestrator-verification.md");
 	const start = module.indexOf("## Verifier preparation failure");

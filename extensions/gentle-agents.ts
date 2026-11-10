@@ -3007,18 +3007,18 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 
 	tool(
 		"run",
-		"Delegate a task to a named subagent. Admission rejects writers without repository-relative paths under `## Allowed edit surfaces`; below the context backstop, organic writers without `Spec: odd/tasks/<existing>.md, T<n>` and `gentle-ai-verify` without that or `Risk: item N`.",
+		"Delegate a task to a named subagent. Admission rejects writers without repository-relative `## Allowed edit surfaces`; below the context backstop, organic writers without `Spec: odd/tasks/<existing>.md, T<n>` (2+ disjoint writers alone in one message pass) and `gentle-ai-verify` without that or `Risk: item N`.",
 		{
 			required: ["agent", "task"],
 			properties: {
 				agent: { type: "string", description: "Subagent name from subagent_list_agents." },
 				task: { type: "string", description: "What the subagent must do, self-contained." },
-				label: { type: "string", description: "Three to six words naming the work, shown on the agents card, e.g. 'map footer data sources'." },
+				label: { type: "string", description: "Three to six words naming the work for the agents card, e.g. 'map footer data sources'." },
 				context: { type: "string", description: "Optional extra context appended to the task." },
 				work: workDescriptorSchema,
-				workspace_root: { type: "string", description: "Optional canonical main or linked Git worktree within the parent's same clone only; mutually exclusive with repository_root." },
-				repository_root: { type: "string", description: "Optional canonical independent Git repository; requires direct interactive session-scoped consent before queueing; mutually exclusive with workspace_root." },
-				mode: { type: "string", enum: ["task", "background"], description: "task waits for the result (default); background returns a task id immediately." },
+				workspace_root: { type: "string", description: "Optional canonical main or linked Git worktree within the parent's clone only; exclusive with repository_root." },
+				repository_root: { type: "string", description: "Optional canonical independent Git repository; needs direct interactive session-scoped consent before queueing; exclusive with workspace_root." },
+				mode: { type: "string", enum: ["task", "background"], description: "task waits for the result (default); background returns a task id at once." },
 			},
 		},
 		async (params, ctx, signal) => {

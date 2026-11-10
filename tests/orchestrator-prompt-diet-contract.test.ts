@@ -119,7 +119,7 @@ test("S5 change 3: the mirror cadence is per task transition, with log entries r
 
 // --- Change 4: admission requirements are stated where the launch is composed --
 
-const ADMISSION = "Admission rejects writers without repository-relative paths under `## Allowed edit surfaces`; below the context backstop, organic writers without `Spec: odd/tasks/<existing>.md, T<n>` and `gentle-ai-verify` without that or `Risk: item N`.";
+const ADMISSION = "Admission rejects writers without repository-relative `## Allowed edit surfaces`; below the context backstop, organic writers without `Spec: odd/tasks/<existing>.md, T<n>` (2+ disjoint writers alone in one message pass) and `gentle-ai-verify` without that or `Risk: item N`.";
 
 test("S5 change 4: the subagent_run description names what admission rejects", () => {
 	const run = registeredTools().get("subagent_run");
@@ -170,7 +170,9 @@ test("S5 change 5: gentle_odd_phase does not restate the Phase reporting cadence
 // Verifier B1: the full-delegation Verify mechanism routes a verifier setup failure to that module (+92 B).
 const PRIMARY_PROMPT_BUDGETS: Record<(typeof MODES)[number], Record<(typeof PERSONAS)[number], number>> = {
 	organic: { gentleman: 24_256, neutral: 24_428 },
-	"full-delegation": { gentleman: 22_253, neutral: 22_425 },
+	// cost-speed P6 (X9): launch form, continue-one-worker rule and the tracking pointer, paid by the motivation
+	// sentence and a duplicate of step 6's verbatim-request rule (22,253/22,425 -> 22,223/22,395 B).
+	"full-delegation": { gentleman: 22_223, neutral: 22_395 },
 };
 
 test("S5: the rendered primary prompt fits the lowered per-mode budgets", (t) => {
@@ -203,6 +205,10 @@ test("S5 change 4: admission behaves as the subagent_run sentence states", async
 	const writer = { agent: "gentle-ai-worker", task: "Change one file.\n\n## Allowed edit surfaces\nsrc/a.ts" };
 	assert.ok(rejectUndocumentedWriterLaunch(writer, { root, contextUsage: belowBackstop, env, orchestratorMode: "organic" })?.block, "organic writer without Spec: is rejected below the backstop");
 	assert.equal(rejectUndocumentedWriterLaunch(writer, { root, contextUsage: belowBackstop, env, orchestratorMode: "full-delegation" }), undefined, "full delegation never rejects a writer for a missing Spec:");
+	const sibling = { agent: "gentle-ai-worker", task: "Change another file.\n\n## Allowed edit surfaces\nsrc/b.ts" };
+	const batch = [writer, sibling].map(input => ({ name: "subagent_run", arguments: input }));
+	assert.equal(rejectUndocumentedWriterLaunch(writer, { root, contextUsage: belowBackstop, env, orchestratorMode: "organic", sameMessageCalls: batch }), undefined, "2+ disjoint writers alone in one message pass");
+	assert.ok(rejectUndocumentedWriterLaunch(writer, { root, contextUsage: belowBackstop, env, orchestratorMode: "organic", sameMessageCalls: [...batch, { name: "read", arguments: { path: "a" } }] })?.block, "not with another call beside them");
 	const verifier = { agent: "gentle-ai-verify", task: "Verify the change." };
 	assert.ok(rejectUnriskedVerifierLaunch(verifier, { root, contextUsage: belowBackstop, env })?.block, "verifier without Risk: item N or Spec: is rejected (admission takes no mode, so full delegation too)");
 	assert.equal(rejectUnriskedVerifierLaunch({ ...verifier, task: "Verify the change.\nRisk: item 3 (shared parser)" }, { root, contextUsage: belowBackstop, env }), undefined, "a declared Risk: item 3 is admitted");

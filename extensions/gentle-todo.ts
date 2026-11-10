@@ -291,7 +291,7 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		description: "Plan and track multi-step work. Use write to set the whole list, update to move one task, add for a new one, clear to reset, list to read it back.",
 		promptSnippet: "Track multi-step work; rewrite the whole list as the plan changes",
 		promptGuidelines: [
-			"Use todo for work with three or more steps or when the user hands you a list. Skip it for single trivial requests.",
+			"Use todo only for large tracked work or when the user asks for one; small tasks need none.",
 			"Mark a task in_progress before starting it and done right after finishing it; keep exactly one task in_progress.",
 			"Prefer write with the complete list whenever the plan changes; keep ids of tasks that already exist.",
 			"Never mark a task done while tests fail or the work is partial; add a task for the blocker instead.",

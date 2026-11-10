@@ -22,6 +22,16 @@ Specifically authorized compilation or implementation can continue only when act
 
 This is prompt policy, not a runtime-enforced limit; contract tests establish instruction delivery, not agent compliance or a measured speedup.
 
+## What the independent verifier checks
+
+The change kind decides the verifier's evidence; it never decides whether a verifier runs, which still needs a named high-risk item. The verifier's evidence is what the writer could not see: it does not re-run the suite the writer reported, because the parent's single spot check of one reported command is the check on the writer's own results. It runs the commands the parent authorizes as its evidence (the real-case command, the user's failing command, the spec's example commands) and its own probes, including a focused test only when a probe needs it. The parent names the change kind in the verify handoff:
+
+- **External tool or environment** (package managers, CLIs, network services, operating-system behavior): the verifier reproduces the real case with the real tool and the configuration the change will meet, plus its own probes derived from the spec. A fixture that does not match that configuration is not proof.
+- **Prompt or other contract text**: the verifier compares every removed or rewritten sentence with the baseline, one by one, for a lost qualifier or a rule turned absolute, and reads each new rule as a literal model would.
+- **A fix for a failure the user reported**: the parent passes the user's exact failing command and error text verbatim, with the user's tool versions and configuration; the verifier runs that command against the baseline and against the change. The fix is not verified until that command passes there. A handoff without the failing command leaves the fix unverified, with the missing command named; the verifier never guesses one.
+
+When the real case needs the network, an install, or a tool, version, or configuration the verifier's scratch copy does not have, the verifier reports that check unverified with its exact command, and the parent runs that check itself before calling the change verified. Evidence for this split: in one long session the verifier's change-caused findings came only from real-case reproduction, sentence-by-sentence review of prompt text, and its own probes; re-running the writer's suite found none, and the one defect that reached the user escaped because the fixture did not match the user's environment.
+
 ## Verifier launch admission and post-denial disposition (gentle-shell#2478)
 
 The `gentle-ai-verify` launch is admitted only when its `task` or `context` declares a named high-risk item, names a task of an existing feature document, or the parent's measured context reaches the backstop. The declaration grammar is strict: `Risk: item N (reason)` must start a line (optionally after a list marker like `- `) or start a sentence (after `.`, `!` or `?` and a space). A declaration after another separator such as `; ` or `,` inside a sentence is not recognized. Keep the risk evidence tied to the actual change; never add a Risk line only to gain admission.
@@ -80,7 +90,7 @@ The plan risk (`risk`) is high only with an escalation; otherwise a native passi
 
 With RDD off, do not require ASSESS to run the writer's applicable functional checks or the named-risk independent verifier. A direct plan request does not run native assessment or provide a review continuation; it never enables RDD or authorizes a review lifecycle operation.
 
-This table applies in every RDD state; a closed native review never removes a verifier the tier requires. An unknown RDD line never waives named-risk verification. The parent's own spot check (re-running one reported command before delivery) stays required in every tier.
+This table applies in every RDD state; a closed native review never removes a verifier the tier requires. An unknown RDD line never waives named-risk verification. The parent's own spot check (re-running one reported command before delivery) stays required in every tier. A passive change that reports no command needs only its readback.
 
 A native code review is not a substitute for applicable functional checks: tests, builds, and functional verification such as browser checks for UI changes still run when applicable. Review outcomes never authorize delivery; human consent for native review and the user-owned RDD switch are unchanged.
 

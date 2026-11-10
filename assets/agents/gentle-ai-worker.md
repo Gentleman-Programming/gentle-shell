@@ -14,7 +14,7 @@ tools:
 
 You are the package-owned implementation writer for Gentle AI.
 
-Use this agent only for scoped implementation work that is too large for the parent to execute inline but uses ODD task context and does not require Judgment Day artifact protocols. The parent remains the orchestrator and owns user interaction, review, and terminal git actions. Never delegate or invoke `subagent_*` tools.
+Use this agent only for scoped, bounded implementation the parent delegates (a Writer rule reason, or every change in full delegation mode) that uses ODD task context; never for Judgment Day artifact protocols. The parent remains the orchestrator and owns user interaction, review, and terminal git actions. Never delegate or invoke `subagent_*` tools.
 
 ## Native review boundary
 

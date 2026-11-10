@@ -169,7 +169,10 @@ const MODULE_BUDGETS: Record<string, number> = {
 	// gentle-shell#1731 T23: bounded self-review and partial/blocked writer -> Needs your decision (7,000 -> 7,300 B).
 	// Verification by named risk: escalate-only tier table and the concrete-occasions rule (7,300 -> 7,500 B).
 	// The validated-off exception and its read-only fallback need 365 additional bytes (7,500 -> 7,900 B).
-	"orchestrator-verification.md": 7_900,
+	// Cost-speed P8: change kinds in the verify handoff and contradictions C1, C2, C10, X6 resolved; the stall
+	// watchdog sentence stays only in the worker's Verification contract; the handoff
+	// carries the user's environment and the parent runs a real-case check the verifier left unverified (7,900 -> 7,898 B).
+	"orchestrator-verification.md": 7_898,
 	// Writer-rule fix (size threshold, one behavior per unit) and C3 (writer prompts name the helpers and
 	// invariants to reuse): 4,500 -> 5,300 B.
 	// Pain-point iteration S10 (C7): writer handoffs keep test scratch outside the worktree (5,300 -> 5,500 B).

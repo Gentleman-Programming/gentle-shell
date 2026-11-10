@@ -44,7 +44,8 @@ function containsAll(text: string, clauses: readonly string[], label: string): v
 test("S1: verifier makes one isolated preparation attempt before checks", () => {
 	containsAll(verify, [
 		"Make one isolated preparation attempt",
-		"If preparation succeeds, run the authorized checks and independent spec-derived probes",
+		// Cost-speed P8 B2: the verifier runs its evidence commands and probes, never the writer's reported suite.
+		"If preparation succeeds, run your evidence commands and independent spec-derived probes",
 	], "preparation bound");
 });
 

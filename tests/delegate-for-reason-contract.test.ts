@@ -231,7 +231,8 @@ test("T11/S4: the parent hands verify the whole spec, authorizes its probes and 
 		"typecheck",
 		"`gentle-ai-verify` holds the checklist",
 		"every in-scope unmet item before closing the unit",
-		"the writer commits its probes as regression tests",
+		// P8 C2: writers never commit; the parent owns git.
+		"the writer adds its probes as regression tests; the parent commits",
 	]) {
 		assert.ok(item.includes(clause), `verify handoff item is missing: ${clause}`);
 	}
@@ -246,9 +247,13 @@ test("T11/S4: the parent hands verify the whole spec, authorizes its probes and 
 test("AC4/S4: the normative verification rule text is unchanged by the review protocol", () => {
 	const normative = sectionFrom(verification, "## Verification rule (normative)");
 	// Re-pinned on purpose: the runtime admission now also accepts a `Risk: item N` sentence (verifier-admission.ts).
+	// Re-pinned for cost-speed P8: stale number and not-restated claim removed (X6), the stall watchdog sentence
+	// left to the worker's Verification contract it duplicated, a passive change with no reported command (C10), and
+	// shorter wording for the tier table lead-in, nativeReviewOutcome, the off fallback, the direct plan request and the
+	// continuation relay (B1 bytes).
 	assert.equal(
 		createHash("sha256").update(normative).digest("hex"),
-		"48fb27b1e4af2f133861a2ba909fc5b5ed310fd1ca00e060f39f9208ab2cf022",
+		"d18cab3a5547c2c3191eec763dc686b75832d4e5c976fc649fddcbf966147856",
 		"the normative Verification rule section changed",
 	);
 	assert.ok(verification.includes("or a delegated writer returns"), "the module must still load when a delegated writer returns");

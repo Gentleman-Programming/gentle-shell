@@ -28,6 +28,9 @@ const CACHE_REL_PATH = ".atl/.skill-registry.cache.json";
 const SECTION_MARKER = "## Skills";
 const EXCLUDE_NAMES = new Set(["_shared", "skill-registry"]);
 const EXCLUDE_PREFIXES = ["sdd-"];
+// The registry skill's shipped name. Excluded from the session view only: the
+// shared disk index keeps byte parity with the Gentle AI CLI writer.
+const SESSION_EXCLUDE_NAMES = new Set(["gentle-ai-skill-registry"]);
 const WATCH_DEBOUNCE_MS = 500;
 // inotify budgets are finite (ENOSPC/EMFILE) and recursive watches degrade
 // silently on exhausted systems -- WSL2 hits this constantly -- so a slow
@@ -418,10 +421,11 @@ function markdownCell(value: string): string {
 	return trimmed.length > 0 ? trimmed : "—";
 }
 
-function renderRows(cwd: string, entries: SkillEntry[]): string[] {
-	return entries.map((entry) =>
-		`| \`${markdownCell(entry.name)}\` | ${markdownCell(entry.description)} | ${markdownCell(entry.scope ?? scopeForPath(cwd, entry.path))} | \`${markdownCell(entry.path)}\` |`,
-	);
+function renderRows(cwd: string, entries: SkillEntry[], withScope = true): string[] {
+	return entries.map((entry) => {
+		const scope = withScope ? ` ${markdownCell(entry.scope ?? scopeForPath(cwd, entry.path))} |` : "";
+		return `| \`${markdownCell(entry.name)}\` | ${markdownCell(entry.description)} |${scope} \`${markdownCell(entry.path)}\` |`;
+	});
 }
 
 function renderRegistry(cwd: string, sources: string[], entries: SkillEntry[]): string {
@@ -470,14 +474,32 @@ function clearEffectivePrompt(options: AppendableSystemPromptOptions | undefined
 	options.appendSystemPrompt = prefix + current.slice(end + EFFECTIVE_END.length);
 }
 
-function appendEffectivePrompt(options: AppendableSystemPromptOptions, cwd: string, entries: SkillEntry[]): void {
+// Pi already lists every skill it loaded in `<available_skills>`, so only the
+// effective winners Pi did not list are rendered; nothing is emitted when
+// there are none. Rows keep dedupeBySkillName's name order across turns.
+function unlistedEntries(effective: SkillEntry[], listed: SkillEntry[]): SkillEntry[] {
+	const listedPaths = new Set(listed.map((entry) => comparablePath(entry.path)));
+	return effective.filter((entry) => !listedPaths.has(comparablePath(entry.path)) && !SESSION_EXCLUDE_NAMES.has(entry.name));
+}
+
+// Mirrors Pi 1.5.2 buildSystemPromptSections (dist/core/system-prompt.js:101-108):
+// `<available_skills>` renders only when `read` or `bash` is a selected tool,
+// and an absent tool list defaults to read, bash, edit and write.
+function piRendersAvailableSkills(options: { selectedTools?: unknown }): boolean {
+	const selected = Array.isArray(options.selectedTools) ? options.selectedTools : ["read", "bash", "edit", "write"];
+	return ["read", "bash"].some((tool) => selected.includes(tool));
+}
+
+function appendEffectivePrompt(options: AppendableSystemPromptOptions, cwd: string, entries: SkillEntry[], piListed: boolean): void {
+	if (entries.length === 0) return;
 	appendSystemPromptOnce(options, [
 		EFFECTIVE_BEGIN,
-		"## Effective session skills",
-		"Use these current rows for parent skill selection and pass matching exact paths under `## Skills to load before work`. The shared disk index and Pi's available-skills list alone are incomplete.",
-		"| Skill | Trigger / description | Scope | Path |",
-		"| --- | --- | --- | --- |",
-		...renderRows(cwd, entries), EFFECTIVE_END,
+		piListed
+			? "## Effective session skills: on disk, not loaded by Pi; `<available_skills>` lists the rest"
+			: "## Effective session skills: all skills (Pi renders no `<available_skills>` without `read` or `bash`)",
+		"| Skill | Trigger / description | Path |",
+		"| --- | --- | --- |",
+		...renderRows(cwd, entries, false), EFFECTIVE_END,
 	].join("\n"));
 }
 
@@ -956,7 +978,8 @@ export default function (pi: ExtensionAPI) {
 			const resolved = lastResolvedSkills.map((skill) => toResolvedEntry(skill, ctx.cwd))
 				.filter((entry): entry is SkillEntry => entry !== undefined);
 			const effective = mergeResolvedWithLoose(resolved, entries, ctx.cwd, lastResolvedSkills.map((skill) => skill.filePath));
-			appendEffectivePrompt(options, ctx.cwd, effective);
+			const piListed = piRendersAvailableSkills(options as { selectedTools?: unknown });
+			appendEffectivePrompt(options, ctx.cwd, unlistedEntries(effective, piListed ? resolved : []), piListed);
 		} catch {
 			// Preserve best-effort behavior without advertising a stale or incomplete view.
 		}

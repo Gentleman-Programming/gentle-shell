@@ -14,6 +14,12 @@ test("independent extension hosts share disk bytes without sharing runtime captu
 	mkdirSync(join(cwd, "skills", "disk"), { recursive: true });
 	mkdirSync(home, { recursive: true });
 	writeFileSync(join(cwd, "skills", "disk", "SKILL.md"), "---\nname: disk\ndescription: Disk skill.\n---\n");
+	// Pi lists each host's capture itself; a same-name user-root copy shows which capture a host holds.
+	const alphaCopy = join(home, ".agents", "skills", "alpha-copy", "SKILL.md"), betaCopy = join(home, ".agents", "skills", "beta-copy", "SKILL.md");
+	for (const [path, name] of [[alphaCopy, "alpha"], [betaCopy, "beta"]]) {
+		mkdirSync(join(path, ".."), { recursive: true });
+		writeFileSync(path, `---\nname: ${name}\ndescription: User-root copy.\n---\n`);
+	}
 	const source = `
 		const { default: extension, __testing } = await import(${JSON.stringify(extensionUrl)});
 		const events = new Map(), commands = new Map();
@@ -62,13 +68,13 @@ test("independent extension hosts share disk bytes without sharing runtime captu
 		a.send({ action: "event", skills: [{ name: "alpha", description: "Alpha", filePath: alpha }] }),
 		b.send({ action: "event", skills: [{ name: "beta", description: "Beta", filePath: beta }] }),
 	]);
-	assert.ok(first.includes(alpha) && !first.includes(beta));
-	assert.ok(second.includes(beta) && !second.includes(alpha));
+	assert.ok(!first.includes(alpha) && !first.includes(alphaCopy) && first.includes(betaCopy));
+	assert.ok(!second.includes(beta) && !second.includes(betaCopy) && second.includes(alphaCopy));
 	await Promise.all([a.send({ action: "refresh" }), b.send({ action: "refresh" })]);
 	assert.deepEqual(readFileSync(registry), bytes);
 	assert.equal(statSync(registry).mtimeMs, mtime);
-	assert.ok(!(await a.send({ action: "event", skills: [] })).includes(alpha));
-	assert.ok((await b.send({ action: "event" })).includes(beta));
+	assert.ok((await a.send({ action: "event", skills: [] })).includes(alphaCopy));
+	assert.ok(!(await b.send({ action: "event" })).includes(betaCopy));
 	await Promise.all([a.send({ action: "shutdown" }), b.send({ action: "shutdown" })]);
 });
 

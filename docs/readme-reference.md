@@ -1036,9 +1036,11 @@ Compatibility: the package keeps the existing skill folders (`skills/branch-pr`,
 
 Delegation contract:
 
-- parent/orchestrator selects project/user and runtime skills from the effective session view and passes matching exact paths under `## Skills to load before work`;
+- parent/orchestrator selects project/user and runtime skills from the effective session view (`<available_skills>` plus the on-disk rows of the `Effective session skills` block) and passes matching exact paths under `## Skills to load before work`;
 - during normal runtime, subagents should not independently discover additional project/user `SKILL.md` files or the registry;
 - fallback loading is degraded self-healing and must be reported via `skill_resolution` as `fallback-registry`, `fallback-path`, or `none`.
+
+How the effective block is built: on each primary `before_agent_start`, the extension merges the current disk scan of project and user skill roots with `systemPromptOptions.skills`. Active resolved records take precedence within a scope; every resolved path, including disabled ones, suppresses its loose counterpart; it never rescans `node_modules` or reparses `pi.skills`. When Pi renders `<available_skills>` (Pi 1.5.2 does so only when `read` or `bash` is a selected tool, the default when no tool list is given), only winners Pi did not list there become rows, so skills from other agents' directories stay visible without repeating Pi's own list; otherwise every winner becomes a row. The block is omitted when no row exists. `gentle-ai-skill-registry` is excluded from the session view only; the on-disk index keeps it for byte parity with the Gentle AI CLI writer.
 
 ## Persona modes
 

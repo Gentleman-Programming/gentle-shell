@@ -54,7 +54,9 @@ test("rendered orchestrator core and selected declarations fit the byte budget",
 	t.diagnostic(`rendered core ${prompt} B + declarations ${declarationBytes} B = ${total} B`);
 	// Issue #2935 (user decision): 16,600 -> 16,700 B with the canonical core budget raise to 9,350 B,
 	// so the resolved-skill-read exception keeps the full confinement wording.
-	assert.ok(total <= 16700, `rendered core ${prompt} B + declarations ${declarationBytes} B = ${total} B`);
+	// cost-speed-painpoints S5 (T4): subagent_run states what admission rejects and the core dropped its duplicate
+	// Identity Contract pointer; measured 16,674 -> 16,694 B: 16,700 -> 16,694 B.
+	assert.ok(total <= 16694, `rendered core ${prompt} B + declarations ${declarationBytes} B = ${total} B`);
 });
 
 // Pi 1.4 does not export its pure system assembler from the package root.

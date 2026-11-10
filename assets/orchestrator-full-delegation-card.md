@@ -17,7 +17,7 @@ Before delegating, declare a subject via `orchestrator_session_id`.
 
 **Invariants:** the writer reuses the existing function for shared state and keeps its invariants (ordering, uniqueness, validation, normalization); writer prompts name those helpers.
 
-**Differential check (PRESERVE):** forward the harness test-first policy's differential check to writers.
+**Differential check (PRESERVE):** forward the test-first differential check to writers.
 
 ## Launch
 

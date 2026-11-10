@@ -3,6 +3,7 @@ import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { PROFILE_TIER_EVENT, supportsOpenAIFast } from "../lib/openai-fast-tier.ts";
 import { isDeepStrictEqual } from "node:util";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
+import { filterChildSessionContextFiles, type ContextFileOptions } from "../lib/child-context-files.ts";
 import { dataArgumentRanges, recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
 import { defaultTempScratchFs, isTempScratchRemoval, type TempScratchFs } from "../lib/yolo-temp-scratch.ts";
 import { SHELL_COMMAND_TOOLS } from "../lib/background-jobs.ts";
@@ -12674,6 +12675,17 @@ function createGentleAiExtensionForTesting(
 					return fragment === null ? "" : `\n\n${fragment}`;
 				})()
 				: "";
+		// The primary drops the gentle-ai orchestrator-only managed blocks from its
+		// context files (for example a gentle-ai managed ~/AGENTS.md) whenever this
+		// orchestrator prompt is injected, exactly as delegated children do
+		// (gentle-shell#1587): they carry a second, conflicting orchestrator policy.
+		// The engram-protocol block is deduplicated: only the copy in the file
+		// nearest to the working directory stays. Nested kept blocks such as
+		// remote-authorization stay; the filter never throws and keeps the
+		// original files on malformed markers.
+		if (isPrimarySession && gentlePrompt !== "") {
+			filterChildSessionContextFiles(event.systemPromptOptions as ContextFileOptions | undefined, { cwd: ctx.cwd });
+		}
 		// gentle-shell#1485: pi-claude-bridge drops a handler-returned systemPrompt
 		// and forwards only systemPromptOptions, so the harness is delivered
 		// through the mutable appendSystemPrompt section instead of a replacement.

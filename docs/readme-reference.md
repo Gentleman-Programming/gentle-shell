@@ -733,6 +733,14 @@ Typical flow:
 
 Size and uncertainty can call for scoped exploration or delegation within ODD. The delegation triggers below select execution topology, not a different development method.
 
+### gentle-ai managed blocks in context files
+
+A context file such as a gentle-ai managed `~/AGENTS.md` can carry another orchestrator's policy. While Gentle Shell injects its own orchestrator prompt, the primary session drops the orchestrator-only managed blocks (the set listed in `lib/child-context-files.ts`) from the loaded context files, as delegated children already do. When the primary runs without Gentle Shell's orchestrator prompt, nothing is dropped.
+
+The `engram-protocol` managed block is deduplicated, never removed. When more than one loaded context file carries it, the primary (with Gentle Shell's orchestrator) and delegated children keep only the copy in the file nearest to the working directory, the same precedence Pi gives context files, and drop the copies in its ancestor directories. A single copy is always kept. Copies in the same directory, or in files outside the working directory's ancestor chain, are all kept. This does not depend on gentle-engram, whose own injected protocol is untouched.
+
+Text outside managed markers, other managed blocks, and kept blocks nested inside a dropped one, such as `remote-authorization`, stay byte-for-byte. Files with unbalanced or ambiguous markers stay unchanged. The files on disk are never modified.
+
 ### Delegation triggers
 
 `gentle-pi` keeps the parent session thin and delegates at the narrowest useful point. When the Pi Subagents extension is installed, the preferred runtime is the `subagent_*` tool family because it runs the user's configured project/global subagent definitions and preserves history/background behavior. With the background policy on, delegations default to background mode: the terminal stays free and each result comes back as a message that starts a new turn; task mode is the bounded print-mode alternative and also supports delegations that must ask the user something mid-flight. Background work requires a live interactive/RPC parent; `subagent_run` and `subagent_continue` reject background mode in the single-shot modes `pi -p` and `pi --mode json`, which exit before a later result can be received. If those tools are unavailable, the parent falls back to Pi's native `Agent` tool in the current runtime; it must never fall back to an external pane, terminal, session, window, or remote worker. If no in-runtime mechanism is available, the parent stops and tells the user.

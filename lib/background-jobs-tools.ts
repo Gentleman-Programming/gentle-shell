@@ -97,7 +97,7 @@ export function registerBackgroundJobTools(pi: ExtensionAPI, options: Background
 		description: [
 			"Run a shell command in the background and return a job id at once. You are notified once, automatically, when it exits (exit code, last output lines, output file); do not poll, sleep, or delegate a subagent to wait.",
 			"Use synchronous bash for local, finite, deterministic checks reasonably expected to finish within 30 seconds, with an explicit timeout <= 30 seconds (30 included). Use bash_background for longer or unknown duration, external waits, CI, builds, and servers, including deploys and long tests. Report a timeout as failure; never automatically retry, restart, or migrate it to background. Preserve RED/GREEN and public-check exit codes, stdout, and stderr; do not defer or batch Engram bugfix saves and session summaries or bypass RDD. This is guidance, not a performance guarantee.",
-			"Put the wait condition inside the command so its exit is the event, e.g. `gh run watch <run-id> --exit-status` or `until curl -sf localhost:3000/health; do sleep 1; done`.",
+			"Put the wait condition inside the command so its exit is the event.",
 			`Output goes to a file you can read with the read tool. Stop a job with job_stop; list jobs with job_list. At most ${MAX_RUNNING_JOBS} run at once.`,
 		].join(" "),
 		parameters: {
@@ -126,8 +126,7 @@ export function registerBackgroundJobTools(pi: ExtensionAPI, options: Background
 		name: MONITOR_TOOL,
 		label: "Monitor",
 		description: [
-			"Run a command in the background and receive each output line as an event while it runs, without waiting for it to exit. Do not poll or sleep between events.",
-			"Use it to react as things happen: `tail -f app.log | grep --line-buffered ERROR`, or a loop that prints each CI check as it finishes. For a single result when a command ends, use bash_background instead.",
+			"Run a command in the background and receive each output line as an event while it runs, without waiting for it to exit; do not poll or sleep between events. Use it to react as things happen. For a single result when a command ends, use bash_background instead.",
 			`Lines within ${MONITOR_BATCH_MS} ms arrive as one notice of at most ${MONITOR_LINES_PER_NOTICE} lines. timeout_seconds is mandatory (1-${MONITOR_MAX_TIMEOUT_SECONDS}); the monitor is stopped when it expires, and also when it prints more than ${MONITOR_FLOOD_LINES} lines within ${MONITOR_FLOOD_WINDOW_MS / 1000}s, so filter the command's output.`,
 			"Stop it with job_stop; list it with job_list.",
 		].join(" "),

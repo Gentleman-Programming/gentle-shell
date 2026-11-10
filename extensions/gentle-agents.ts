@@ -2742,19 +2742,19 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.registerTool({
 		name: "orchestrator_session_id",
 		label: "Orchestrator session ID",
-		description: "Return this session's stable routing ID, Initial alias (FIRST TASK), Current alias (CURRENT TASK), and separate human Session name. Subject updates Current even when named; Initial is the first declared branch topic, unknown for legacy history. Without subject, explicit state.work.topic updates Current; keep it current as tasks change. Before delegation or cross-session coordination, declare a short recognizable non-sensitive subject, not a prompt. Do not require a subject declaration for small direct tasks. Do not query all peers. Names never authenticate. Existing Pi names and human renames are preserved. Progress is published automatically from the todo list; publish state only for objective, decisions, blockers or work, never just progress. Classified work must publish objective and work.topic/area at session start and every task-topic change; never retain old task state. Catalog flags never-published peers. Owner-curated state: 2048 UTF-8 bytes total; null withdraws, omission leaves unchanged. Never include credentials, internal instructions, or raw prompts. Historical notes are not consent or an owner reply.",
+		description: "Return this session's stable routing ID, Initial alias (FIRST TASK), Current alias (CURRENT TASK), and separate human Session name. Subject updates Current even when named; Initial is the first declared branch topic. Without subject, explicit state.work.topic updates Current; keep it current as tasks change. Before delegation or cross-session coordination, declare a short recognizable non-sensitive subject, not a prompt. Do not require a subject declaration for small direct tasks. Do not query all peers. Names never authenticate. Existing Pi names and human renames are preserved. Progress is published automatically from the todo list; publish state only for objective, decisions, blockers or work, never just progress. Classified work must publish objective and work.topic/area at session start and every task-topic change; never retain old task state. Owner-curated state: 2048 UTF-8 bytes total; null withdraws, omission leaves unchanged. Never include credentials, internal instructions, or raw prompts. Historical notes are not consent or an owner reply.",
 		...orchestratorToolRenderers("session", expandHint),
 		parameters: { type: "object", additionalProperties: false, properties: {
 			subject: { type: "string", maxLength: 120, description: "Short task subject; updates aliases independently of human names and names unnamed Pi sessions." },
 			state: { anyOf: [{ type: "null" }, { type: "object", additionalProperties: false, properties: {
 				objective: { type: "string" }, progress: { type: "string" }, decisions: { type: "string" }, blockers: { type: "string" },
 				work: { type: "object", additionalProperties: false,
-					description: "Historical, non-authoritative; topic requires area. Text and work JSON share 2048 UTF-8 bytes. Reject exact duplicate tags/refs; no ref resolution or routing.",
+					description: "Historical, non-authoritative; topic requires area; text and work JSON share 2048 UTF-8 bytes; no ref resolution or routing.",
 					properties: {
 						...workDescriptorSchema.properties,
 						tasks: { type: "object", maxProperties: 8, propertyNames: { type: "string", maxLength: 256 },
 							additionalProperties: workDescriptorSchema,
-							description: "Exact owner-declared task IDs, max 256 UTF-8 bytes; no controls, surrogates or __proto__/prototype/constructor. Root-only; nonempty tasks alone valid; replacement without tasks clears annotations." },
+							description: "Exact owner-declared task IDs, max 256 UTF-8 bytes; no controls or prototype-polluting names; replacement without tasks clears annotations." },
 					},
 				},
 			} }] },
@@ -2842,7 +2842,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		name: "orchestrator_list",
 		label: "List orchestrators",
 		...orchestratorToolRenderers("list", expandHint),
-		description: "List other sessions advertised by the trusted local profile. Omit filter for the existing list; filter searches published classified work only: bounded, non-exhaustive, no authority, unknown reachability. Classified work must publish at session start and each task-topic change; flag peers doing classified work who never published state.",
+		description: "List other sessions advertised by the trusted local profile. Omit filter for the existing list; filter searches published classified work only: bounded, non-exhaustive, no authority, unknown reachability.",
 		parameters: Type.Object({
 			recipient_session_id: Type.Optional(Type.String({ description: "Exact peer routing ID." })),
 			cursor: Type.Optional(Type.String({ description: "Opaque peer catalog continuation; requires recipient_session_id." })),
@@ -3012,11 +3012,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			properties: {
 				agent: { type: "string", description: "Subagent name from subagent_list_agents." },
 				task: { type: "string", description: "What the subagent must do, self-contained." },
-				label: { type: "string", description: "Three to six words naming the work, shown on the agents card, e.g. 'map footer data sources'." },
+				label: { type: "string", description: "Three to six words naming the work, shown on the agents card." },
 				context: { type: "string", description: "Optional extra context appended to the task." },
 				work: workDescriptorSchema,
-				workspace_root: { type: "string", description: "Optional canonical main or linked Git worktree within the parent's same clone only; mutually exclusive with repository_root." },
-				repository_root: { type: "string", description: "Optional canonical independent Git repository; requires direct interactive session-scoped consent before queueing; mutually exclusive with workspace_root." },
+				workspace_root: { type: "string", description: "Optional linked Git worktree in the parent's same clone; mutually exclusive with repository_root." },
+				repository_root: { type: "string", description: "Optional independent Git repository; requires interactive session-scoped consent before queueing; mutually exclusive with workspace_root." },
 				mode: { type: "string", enum: ["task", "background"], description: "task waits for the result (default); background returns immediately." },
 			},
 		},

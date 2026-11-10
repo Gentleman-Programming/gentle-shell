@@ -1059,7 +1059,12 @@ For `install-version` and `install-global`, a detail with `spawn UNKNOWN` select
 gentle-pi's postinstall builds as `spawn UNKNOWN`. Windows has no per-program
 exception, so the guidance offers WSL or turning Smart App Control off (on
 Windows 11 it cannot be turned back on without reinstalling Windows) instead of
-network and registry advice.
+network and registry advice. Smart App Control exists only on Windows 11: when
+the installer host reports a Windows 10 build (below 22000), `spawn UNKNOWN`
+selects `guidance.codeIntegrityBlockedWindows10` instead, which names the WDAC
+and AppLocker code integrity policies that can actually block the built program
+there and offers WSL or an administrator-relaxed policy, never the impossible
+Smart App Control advice.
 `scripts/installer-runner.mjs` exports the frozen
 arrays `blockedReasons` and `failedSteps`; a test requires guidance for exactly
 those entries, and the runner tests check that every reason and step their
@@ -2061,8 +2066,11 @@ skip on Windows. CI only runs after a push, which remains a user decision.
 ### Remaining T7 checks
 
 - real browsers and screen readers (only headless Chromium was used);
-- native macOS and Windows clean machines, including the Windows bootstrap
-  end to end and its tools removal;
+- native macOS, Windows 10 and Windows 11 clean machines, including the
+  Windows bootstrap end to end and its tools removal; a Windows 10 run must
+  cover the same facts as Windows 11 on build 19045 (22H2): the bootstrap, a
+  wizard plan with no blockers, every runner step `done`, a fresh terminal
+  resolving `gentle-shell`, and the tools-removal proof;
 - `pnpm setup` and fresh-terminal resolution in zsh and fish;
 - SIGTERM during a running installation;
 - reinstalling over an existing stack;

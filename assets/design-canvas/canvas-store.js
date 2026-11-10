@@ -1,12 +1,15 @@
 // The canvas state and the only functions that change it. `store.state` reads
 // the live values through getters: nothing is copied or frozen per read, so the
 // wheel and pan paths stay cheap, and assigning to it throws. Each mutator
-// changes one concern; a patch naming a field of another concern is refused.
+// changes one concern; a patch naming a field of another concern is refused
+// whole, before any field changes.
 //
 // The values are shared, not copied: boards and the Compare object stay objects
 // that their owning module may still change in place (board.rects and
 // board.viewHeight in canvas-messages.js, canvas-focus.js and canvas-boards.js;
-// compare.loaded in canvas-compare.js).
+// compare.loaded in canvas-compare.js). Comments and handoffs are plain data
+// with no such owner, so setComments and setHandoffs freeze them once, when they
+// are set (never on read): changing them means setting new values.
 
 // The first view sits FIT_PADDING (canvas-view.js) from the viewport's top left.
 const START_OFFSET = 48;
@@ -29,7 +32,7 @@ export function createStore(initial = {}) {
 		shot: null,
 		shotToken: 0,
 		closeTimer: 0,
-		comments: [],
+		comments: freezeComments([]),
 		filter: "open",
 		// canvas-boot.js restores the stored send mode before anything reads it.
 		mode: "send",
@@ -41,7 +44,7 @@ export function createStore(initial = {}) {
 		savedPanel: null,
 		hoverBoard: null,
 		// The handoffs.json of design `slug`; boards of another design ignore it.
-		handoffs: { slug: null, chosen: null, handoffs: {} },
+		handoffs: freezeHandoffs({ slug: null, chosen: null, handoffs: {} }),
 		// The open Compare view: { board, preview, artboardFrame, timer }.
 		compare: null,
 		toastTimer: 0,
@@ -52,8 +55,8 @@ export function createStore(initial = {}) {
 	const patch = (concern, keys) => (values) => {
 		for (const key in values) {
 			if (!keys.includes(key)) throw new TypeError(`${concern} cannot change ${key}`);
-			state[key] = values[key];
 		}
+		for (const key in values) state[key] = key === "comments" ? freezeComments(values[key]) : values[key];
 	};
 
 	return Object.freeze({
@@ -71,8 +74,27 @@ export function createStore(initial = {}) {
 		setMode(mode) { state.mode = mode; },
 		/** The open popover's pick and screenshot, the read token and the close timer. */
 		setPopover: patch("setPopover", ["pick", "shot", "shotToken", "closeTimer"]),
-		setHandoffs(handoffs) { state.handoffs = handoffs; },
+		setHandoffs(handoffs) { state.handoffs = freezeHandoffs(handoffs); },
 		setCompare(compare) { state.compare = compare; },
 		setToastTimer(timer) { state.toastTimer = timer; },
 	});
+}
+
+/** Freezes the comment list and each comment, so only setComments changes them. */
+function freezeComments(comments) {
+	if (Array.isArray(comments)) comments.forEach(freezeObject);
+	return freezeObject(comments);
+}
+
+/** Freezes the handoffs, their map and each entry, so only setHandoffs changes them. */
+function freezeHandoffs(handoffs) {
+	if (handoffs && typeof handoffs === "object" && handoffs.handoffs && typeof handoffs.handoffs === "object") {
+		Object.values(handoffs.handoffs).forEach(freezeObject);
+		freezeObject(handoffs.handoffs);
+	}
+	return freezeObject(handoffs);
+}
+
+function freezeObject(value) {
+	return value && typeof value === "object" ? Object.freeze(value) : value;
 }

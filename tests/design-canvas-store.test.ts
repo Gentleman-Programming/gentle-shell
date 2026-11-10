@@ -78,9 +78,33 @@ test("each patch mutator changes only the fields of its own concern", () => {
 	assert.throws(() => store.setDesign({ zoom: 3 }), { name: "TypeError", message: "setDesign cannot change zoom" });
 	assert.throws(() => store.setComments({ system: {} }), { name: "TypeError", message: "setComments cannot change system" });
 	assert.deepEqual({ ...store.state }, before, "a refused patch changes nothing");
+	// A patch mixing allowed and foreign fields is refused before any field changes.
+	assert.throws(() => store.setView({ zoom: 5, slug: "x" }), { name: "TypeError", message: "setView cannot change slug" });
+	assert.throws(() => store.setComments({ filter: "open", activeId: null, zoom: 9 }), { name: "TypeError", message: "setComments cannot change zoom" });
+	assert.deepEqual({ ...store.state }, before, "a refused mixed patch changes nothing");
 	// A partial patch leaves the other fields of the concern alone.
 	store.setView({ x: 7 });
 	assert.deepEqual([store.state.zoom, store.state.x, store.state.y, store.state.fitted], [2, 7, 2, true]);
+});
+
+test("comments and handoffs can only change through their mutators", () => {
+	const store = createStore();
+	const comment = { id: "c1", file: "01-a.html", status: "open" };
+	const comments = [comment];
+	store.setComments({ comments });
+	assert.equal(store.state.comments, comments, "the same array, frozen when it is set, not copied per read");
+	assert.throws(() => { (store.state.comments as any[]).push({ id: "c2" }); }, TypeError);
+	assert.throws(() => { (store.state.comments[0] as any).status = "resolved"; }, TypeError);
+	assert.deepEqual(store.state.comments, [{ id: "c1", file: "01-a.html", status: "open" }]);
+
+	const entry = { status: "sent", queued: false };
+	store.setHandoffs({ slug: "alpha", chosen: "01-a.html", handoffs: { "01-a.html": entry } });
+	assert.throws(() => { (store.state.handoffs as any).chosen = "x"; }, TypeError);
+	assert.throws(() => { (store.state.handoffs.handoffs as any)["02-b.html"] = {}; }, TypeError);
+	assert.throws(() => { (store.state.handoffs.handoffs as any)["01-a.html"].status = "implemented"; }, TypeError);
+	assert.deepEqual(store.state.handoffs, { slug: "alpha", chosen: "01-a.html", handoffs: { "01-a.html": { status: "sent", queued: false } } });
+	assert.throws(() => { (createStore().state.handoffs as any).chosen = "x"; }, TypeError, "the initial handoffs are protected too");
+	assert.throws(() => { (createStore().state.comments as any[]).push({}); }, TypeError, "the initial comments are protected too");
 });
 
 test("the single-field mutators set their one field", () => {

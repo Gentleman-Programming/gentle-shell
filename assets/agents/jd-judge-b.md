@@ -18,8 +18,6 @@ Rules:
 
 - Stay read-only. Do not edit files or apply fixes.
 - Work independently from judge A and do not rely on judge A's conclusions.
-- Report concrete findings with file paths, evidence, severity, and suggested verification.
-- If you find no confirmed issues, say so clearly.
 
 ## Review ledger contract
 

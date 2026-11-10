@@ -88,8 +88,9 @@ function parseSegment(manager: Manager, form: PackageAcquisition["form"] | undef
 				const named = equals >= 0 ? value.slice(equals + 1) : args[++index]?.value;
 				if (named === undefined) undetermined.push(name);
 				else packages.push(named);
-			} else if (PACKAGE_OPTIONS.has(name) && form === undefined && (equals >= 0 || FORMS[manager][args[index + 1]?.value ?? ""] === undefined)) {
-				// Followed by a subcommand, a bare `-p`/`--package` is npm's boolean `--parseable` or valueless.
+			} else if (PACKAGE_OPTIONS.has(name) && form === undefined && (equals >= 0 || (FORMS[manager][args[index + 1]?.value ?? ""] === undefined && !(args[index + 1]?.value ?? "").startsWith("-")))) {
+				// Followed by a subcommand or another option, a bare `-p`/`--package` is npm's boolean
+				// `--parseable` or valueless: it never takes that option, so a later `--package` still counts.
 				const named = equals >= 0 ? value.slice(equals + 1) : args[++index]?.value;
 				if (named !== undefined) packagesBeforeForm.push({ option: name, named, glued: equals >= 0 });
 			} else if (VALUE_OPTIONS[manager].has(name)) {

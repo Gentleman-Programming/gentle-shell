@@ -31,6 +31,7 @@ type Env = Record<string, string | undefined>;
  * Builds the detached shared server's environment without retaining session scratch.
  * Windows Node can reintroduce an omitted TEMP from its parent, so use the
  * original stable ancestor there; POSIX omits scratch temp settings instead.
+ * It also opts the server into Engram Cloud autosync, whatever the session set.
  */
 export function sharedEngramEnv(base: Env, platform: string = process.platform): Env {
 	const path = pathFor(platform);
@@ -64,6 +65,9 @@ export function sharedEngramEnv(base: Env, platform: string = process.platform):
 	// Keep an existing custom TEMP, even if TMP/TMPDIR chose another root.
 	if (stableTemp !== undefined && (tempKey === undefined || env[tempKey] === undefined)) env[tempKey ?? "TEMP"] = stableTemp;
 	env.ENGRAM_NO_UPDATE_CHECK = "1";
+	// Engram starts Cloud autosync only when this is exactly "1". Its other launchers
+	// set it too, and the server skips autosync itself when Cloud isn't configured.
+	env.ENGRAM_CLOUD_AUTOSYNC = "1";
 	return env;
 }
 

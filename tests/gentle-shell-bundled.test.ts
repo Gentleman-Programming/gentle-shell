@@ -351,7 +351,7 @@ const FIXTURE_CORE = [
 	"const args = process.argv.slice(2);",
 	"if (args[0] !== 'serve') { console.log('engram'); process.exit(0); }",
 	"const mode = process.env.FIXTURE_SERVE ?? 'ready';",
-	"const pick = ['HOME', 'GH_TOKEN', 'GITHUB_TOKEN', 'ENGRAM_NO_UPDATE_CHECK', 'ENGRAM_URL', 'ENGRAM_BIN', 'ENGRAM_HTTP_TOKEN', 'ENGRAM_STARTUP_POLICY'];",
+	"const pick = ['HOME', 'GH_TOKEN', 'GITHUB_TOKEN', 'ENGRAM_NO_UPDATE_CHECK', 'ENGRAM_CLOUD_AUTOSYNC', 'ENGRAM_URL', 'ENGRAM_BIN', 'ENGRAM_HTTP_TOKEN', 'ENGRAM_STARTUP_POLICY'];",
 	"appendFileSync(process.env.FIXTURE_SERVE_LOG, JSON.stringify({ args, mode, cwd: process.cwd(), pid: process.pid, env: Object.fromEntries(pick.map((k) => [k, process.env[k]])) }) + '\\n');",
 	"if (mode === 'exit') process.exit(1);",
 	"if (mode === 'race') { spawn(process.execPath, [process.argv[1], 'serve'], { env: { ...process.env, FIXTURE_SERVE: 'late' }, detached: true, stdio: 'ignore' }).unref(); process.exit(1); }",
@@ -506,7 +506,7 @@ async function stillServing(prefix: ReturnType<typeof bundledPrefix>): Promise<b
 
 test("with nothing listening Shell starts the bundled core's shared server detached, with a clean environment, and Pi reuses it", { skip: posixHost }, async (t) => {
 	const prefix = bundledPrefix(t);
-	const result = prefix.run([], { GH_TOKEN: "fixture-token", GITHUB_TOKEN: "fixture-token", ENGRAM_HTTP_TOKEN: "fixture-http" });
+	const result = prefix.run([], { GH_TOKEN: "fixture-token", GITHUB_TOKEN: "fixture-token", ENGRAM_HTTP_TOKEN: "fixture-http", ENGRAM_CLOUD_AUTOSYNC: "0" });
 	assert.equal(result.status, 0, result.stderr);
 	assert.deepEqual(memoryOf(result), ["allow", prefix.guard, DEFAULT_URL]);
 	assert.doesNotMatch(result.stderr, /memory disabled/);
@@ -514,9 +514,9 @@ test("with nothing listening Shell starts the bundled core's shared server detac
 	assert.deepEqual(others, []);
 	// Engram's own defaults: no port, data directory or URL chosen for it.
 	assert.deepEqual([serve.args, serve.cwd, serve.env.HOME], [["serve"], prefix.home, prefix.home]);
-	// S8: no update check, no GitHub tokens and no inherited Engram settings; Pi keeps the user's environment.
-	assert.deepEqual([serve.env.ENGRAM_NO_UPDATE_CHECK, serve.env.GH_TOKEN, serve.env.GITHUB_TOKEN, serve.env.ENGRAM_HTTP_TOKEN, serve.env.ENGRAM_URL, serve.env.ENGRAM_BIN],
-		["1", undefined, undefined, undefined, undefined, undefined]);
+	// S8: no update check, Cloud autosync on, no GitHub tokens and no inherited Engram settings; Pi keeps the user's environment.
+	assert.deepEqual([serve.env.ENGRAM_NO_UPDATE_CHECK, serve.env.ENGRAM_CLOUD_AUTOSYNC, serve.env.GH_TOKEN, serve.env.GITHUB_TOKEN, serve.env.ENGRAM_HTTP_TOKEN, serve.env.ENGRAM_URL, serve.env.ENGRAM_BIN],
+		["1", "1", undefined, undefined, undefined, undefined, undefined]);
 	assert.deepEqual([lastLaunch(result).env.GH_TOKEN, lastLaunch(result).env.ENGRAM_NO_UPDATE_CHECK], ["fixture-token", undefined]);
 	// Detached: it outlives the launcher and Pi, and the next launch reuses it without starting another.
 	assert.equal(await stillServing(prefix), true);

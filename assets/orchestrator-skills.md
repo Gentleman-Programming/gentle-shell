@@ -7,15 +7,13 @@ Bind this to the parent Pi session only, on skill resolution/discovery. Not alwa
 On each enabled primary-session agent start, the `Effective session skills` system-prompt block combines the current disk scan with that session's Pi-resolved records. Use this view to select skills and delegate:
 
 1. Match task context and target files against the effective view's `Trigger / description` column.
-2. Pass only matching exact `Path` values to subagents under `## Skills to load before work`.
+2. Pass only matching exact `Path` values to subagents under `## Skills to load before work`. Match the delegated task's own files and actions, never a fixed set: a child that will not commit gets no commit skill, and one that writes no docs gets no docs skill.
 3. Tell subagents to read those exact `SKILL.md` files before reading, writing, reviewing, testing, or creating artifacts.
 4. If no skill matches, continue without project skill injection and report `skill_resolution: none`.
 
 The shared `.atl/skill-registry.md` indexes disk only. Neither it nor Pi's injected `<available_skills>` alone includes the full effective view. If the block is unavailable, say so; a disk-only fallback may omit runtime-only skills. Disk changes appear in the view at the next agent start, not mid-run.
 
-Subagents should receive exact indexed paths. They should not have to rediscover the registry.
-
-Subagents do not independently discover additional project/user `SKILL.md` files or the registry during normal runtime. The parent passes selected project/user skill paths explicitly.
+Subagents receive exact indexed paths and never rediscover the registry or other project/user `SKILL.md` files during normal runtime.
 
 If a subagent reports `skill_resolution`, interpret it as project/user skill resolution:
 

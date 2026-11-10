@@ -373,14 +373,30 @@ function escapeRegExp(value: string): string {
 // capture through a same-name user-root copy the captured record outranks.
 function isolatedHome(t: { after(fn: () => void): void }): string {
 	const home = mkdtempSync(join(tmpdir(), "gentle-p2-home-"));
-	const oldHome = process.env.HOME;
+	const oldHome = process.env.HOME, oldProfile = process.env.USERPROFILE;
 	process.env.HOME = home;
+	process.env.USERPROFILE = home;
 	t.after(() => {
 		if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome;
+		if (oldProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = oldProfile;
 		rmSync(home, { recursive: true, force: true });
 	});
 	return home;
 }
+
+// os.homedir() reads USERPROFILE on Windows, so the helper must isolate both variables.
+test("isolatedHome points HOME and USERPROFILE at the temporary home and restores both", async (t) => {
+	const before = { home: process.env.HOME, profile: process.env.USERPROFILE };
+	let home = "";
+	await t.test("inside the fixture", (st) => {
+		home = isolatedHome(st);
+		assert.equal(process.env.HOME, home);
+		assert.equal(process.env.USERPROFILE, home);
+	});
+	assert.equal(process.env.HOME, before.home);
+	assert.equal(process.env.USERPROFILE, before.profile);
+	assert.ok(!existsSync(home), "the temporary home is removed after the fixture");
+});
 
 // Positive control: without `read` or `bash` Pi lists nothing, so the retained capture becomes rows.
 async function promptWithoutReaders(event: (event: unknown, ctx: unknown) => unknown, cwd: string): Promise<string> {
@@ -659,8 +675,10 @@ test("regenerateRegistry carries a skill resolved from a non-default PI_CODING_A
 	];
 
 	const previousHome = process.env.HOME;
+	const previousProfile = process.env.USERPROFILE;
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.HOME = isolatedHome;
+	process.env.USERPROFILE = isolatedHome;
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	try {
 		const { pi, handlers } = fakeSkillRegistryPi();
@@ -697,6 +715,7 @@ test("regenerateRegistry carries a skill resolved from a non-default PI_CODING_A
 		} else {
 			process.env.HOME = previousHome;
 		}
+		if (previousProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = previousProfile;
 		if (previousAgentDir === undefined) {
 			delete process.env.PI_CODING_AGENT_DIR;
 		} else {
@@ -1782,13 +1801,8 @@ const UNLISTED_HEADING = "## Effective session skills: on disk, not loaded by Pi
 
 async function unlistedFixture(t: { after(fn: () => void): void }) {
 	const cwd = mkdtempSync(join(tmpdir(), "gentle-p2-cwd-"));
-	const home = mkdtempSync(join(tmpdir(), "gentle-p2-home-"));
-	const oldHome = process.env.HOME;
-	process.env.HOME = home;
-	t.after(() => {
-		if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome;
-		rmSync(cwd, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true });
-	});
+	const home = isolatedHome(t);
+	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	const create = (root: string, dir: string, name: string, description: string) => {
 		const file = join(root, dir, "SKILL.md");
 		mkdirSync(dirname(file), { recursive: true });

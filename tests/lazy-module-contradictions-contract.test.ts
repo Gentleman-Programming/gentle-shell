@@ -137,6 +137,18 @@ test("X4: the reference names only agents and options that exist, and no delegat
 	assert.ok(delegation.includes("Parallel writers only with disjoint Allowed edit surfaces (runtime-enforced) or isolated worktrees."));
 });
 
+test("X4: the README reference and the gentle-ai skill name the explorer that exists, not `scout` or `context-builder`", () => {
+	const readme = read("docs/readme-reference.md");
+	const skill = read("skills/gentle-ai/SKILL.md");
+	for (const text of [readme, skill]) {
+		assert.doesNotMatch(text, /scout|context-builder/, "a text still names an agent that does not exist");
+		assert.ok(text.includes("gentle-ai-explore"));
+	}
+	assert.ok(readme.includes("Launch the package-owned `gentle-ai-explore`"));
+	assert.ok(readme.includes("`gentle-ai-explore` saves parent context by compressing broad exploration."));
+	assert.ok(skill.includes("clarify → gentle-ai-explore when the evidence budget is exceeded → inline"));
+});
+
 test("X5: the large task pattern label matches its inline diagram", () => {
 	const lines = reference.split("\n");
 	const label = lines.findIndex((line) => line.startsWith("Large task pattern"));

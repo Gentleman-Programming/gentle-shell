@@ -644,6 +644,20 @@ test("the rail paints Todos, Jobs and Agents before Status", (t) => {
 	assert.ok(todo < jobs && jobs < agents && agents < footer, `sections paint in order, got: ${text}`);
 });
 
+test("the GitHub section paints between Todos and Jobs", (t) => {
+	const f = fixture();
+	sidebarPart(f.tui, "jobs", { render: () => ["jobs"], invalidate() {} }, { digest: () => "jobs", render: () => ["Jobs card"], invalidate() {} });
+	sidebarPart(f.tui, "github", { render: () => ["github"], invalidate() {} }, { digest: () => "github", render: () => ["Github card"], invalidate() {} });
+	sidebarPart(f.tui, "todo", { render: () => ["todo"], invalidate() {} }, { digest: () => "todo", render: () => ["Todo card"], invalidate() {} });
+	t.after(installSidebar(f.tui, theme));
+	const text = renderLayoutFrame(f.root, 140, 20, () => {}).lines.join("\n");
+	const github = text.indexOf("Github card");
+	const jobs = text.indexOf("Jobs card");
+	const todo = text.indexOf("Todo card");
+	assert.ok(github >= 0, `the GitHub section paints in the rail, got: ${text}`);
+	assert.ok(todo < github && github < jobs, `GitHub paints between Todos and Jobs, got: ${text}`);
+});
+
 test("panel sections paint on the rail surface, joined by a tinted gap, while card sections stay unpainted", (t) => {
 	const f = fixture();
 	const roleCode: Record<string, number> = { customMessageBg: 236 };

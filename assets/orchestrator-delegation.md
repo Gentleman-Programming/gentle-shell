@@ -41,7 +41,7 @@ For a large task's bounded writes, prefer the installed package-owned `gentle-ai
 
 - Derive nonempty `## Allowed edit surfaces` before launching a writer (`orchestrator-writer.md`). Parallel writers only with disjoint Allowed edit surfaces (runtime-enforced) or isolated worktrees.
 - Pass the session's resolved skill paths under `## Skills to load before work`; children read them first (`orchestrator-skills.md`).
-- A child must be able to do the task it is given. Check the agent's declared `tools` in `subagent_list_agents` before launching: never give a read-only explorer shell, HTTP or MCP work, and never assume your own tools transfer to the child. With no qualified agent, report the capability gap; a fired trigger is never replaced by inline work.
+- A child must be able to do the task it is given. Check the agent's declared `tools` in `subagent_list_agents` before launching: never give a read-only explorer shell work, and never assume your own tools transfer to the child. With no qualified agent, report the capability gap; a fired trigger is never replaced by inline work.
 - Background (policy on, `subagent_run` present): omit `mode`; it returns a task id at once. End the turn and resume on its `gentle-agents.result` completion message; never sleep or poll `subagent_status`. Otherwise run in the foreground. Detail: reference.
 - Do not pass `model` to generic subagents unless the user asks.
 

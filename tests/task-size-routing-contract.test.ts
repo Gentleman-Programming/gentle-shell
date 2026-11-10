@@ -155,11 +155,14 @@ const MODULE_BUDGETS: Record<string, number> = {
 	// read and to pass paths, not content (7,000 -> 7,100 B; every other card sentence is pinned by a contract).
 	// S15: units of about 100 changed lines or less always run inline (7,100 -> 7,300 B).
 	// RDD-off verification keeps the named-risk rule while conditioning assess on mode (7,300 -> 7,350 B).
-	"orchestrator-delegation.md": 7_350,
-	"orchestrator-delegation-reference.md": 14_800,
+	// P5b (C4): the explorer has web and MCP tools; only shell work stays forbidden (7,350 -> 7,292 B).
+	"orchestrator-delegation.md": 7_292,
+	// P5b (C14, X4, X5): no restated worker definition, no nonexistent agents or options (14,800 -> 13,969 B).
+	"orchestrator-delegation-reference.md": 13_969,
 	// gentle-shell#1731 T23: Close gate accepts one Needs your decision result as a stop (12,500 -> 12,600 B).
 	// S14: close the open slice before a high-risk commit; outcomes per commit (12,600 -> 12,850 B).
-	"orchestrator-tracking.md": 12_850,
+	// P5b (C3, C5, X2): contradictions and step 3 / Phase reporting restatements removed; 1.4.0 commit-boundary rules kept (12,850 -> 10,324 B).
+	"orchestrator-tracking.md": 10_324,
 	// gentle-shell#1731 T3: parallel review protocol; lazy (delegation or high risk only), core and normative rule untouched.
 	// gentle-shell#1731 T11/T12: verify-per-unit timing and the every-S# verify handoff (6,000 -> 6,400 B).
 	// gentle-shell#1731 T15: one end-of-feature verify for same-model inline deliveries (6,400 -> 6,500 B).
@@ -170,7 +173,8 @@ const MODULE_BUDGETS: Record<string, number> = {
 	// Writer-rule fix (size threshold, one behavior per unit) and C3 (writer prompts name the helpers and
 	// invariants to reuse): 4,500 -> 5,300 B.
 	// Pain-point iteration S10 (C7): writer handoffs keep test scratch outside the worktree (5,300 -> 5,500 B).
-	"orchestrator-writer.md": 5_500,
+	// P5b (C11): omit `mode`, like every other launch rule (5,500 -> 5,428 B).
+	"orchestrator-writer.md": 5_428,
 	"orchestrator-prompts.md": 13_000,
 };
 
@@ -240,7 +244,9 @@ test("S11: the default delegation pointer resolves to the lean card and the refe
 // Focused on the two claims that carry the fix, not on the exact wording around them.
 test("delegation reports a capability gap instead of substituting inline work for a fired trigger", () => {
 	assert.match(delegation, /declared `tools` in `subagent_list_agents` before launching/);
-	assert.match(delegation, /never give a read-only explorer shell, HTTP or MCP work/);
+	// P5b (C4): the explorer declares web and MCP tools; only shell work is outside a read-only explorer.
+	assert.match(delegation, /never give a read-only explorer shell work/);
+	assert.doesNotMatch(delegation, /HTTP or MCP work/);
 	assert.match(delegation, /report the capability gap; a fired trigger is never replaced by inline work/);
 	assert.equal(delegation.split("report the capability gap").length - 1, 1);
 });

@@ -6,7 +6,7 @@ Date: 2026-11-10. Scratch (kept, not deleted): `/private/tmp/overhead-1494-X8jpv
 
 | Criterion (S1/S2): A ≤ 1.5x B, median | Ratio A/B | Result |
 |---|---|---|
-| Wall time, user default mode (full delegation) | **7.38x** (316.7 s / 42.9 s) | **FAIL** |
+| Wall time, full delegation with sol-low parent + terra-max workers (A1–A3; parent forced to sol low by the benchmark, not a real configuration) | **7.38x** (316.7 s / 42.9 s) | **FAIL** |
 | Tool calls, parent top-level | 0.71x (10 / 14) | pass |
 | Tool calls, parent with `codemode` inner calls expanded | 1.29x (18 / 14) | pass |
 | Tool calls, parent + child workers | **3.00x** (42 / 14) | FAIL |
@@ -14,10 +14,13 @@ Date: 2026-11-10. Scratch (kept, not deleted): `/private/tmp/overhead-1494-X8jpv
 | Parent + child tokens | 5.76x (502,294 / 87,211) | n/a |
 | Organic mode (n=3, AO1–AO3 vs B1–B4): wall / effective calls / parent tokens | 1.19x / 1.21x / 4.35x | wall + calls **pass** |
 | Full delegation, Astra-medium orchestrator + NaN DeepSeek Flash workers (AF1/AF4/AF5 vs B1–B4+B6): wall / effective calls / parent+child calls | 3.23x / 1.29x / 2.57x | **FAIL** (wall, total calls) |
+| Full delegation, user's real profile: Astra-medium orchestrator + terra-max workers (AT1–AT3 vs B1–B4+B6+B7): wall / effective calls / parent+child calls | 3.88x / 1.29x / 2.86x | **FAIL** (wall, total calls) |
+
+The A1–A3 rows (and every "A" or "sol-low + terra-max" label below) describe a configuration that does not exist in practice. The benchmark forced the parent to `openai-codex/gpt-6.1-sol` at `low` while the profile routed workers to terra-max. The user's real full-delegation configuration is the AT arm.
 
 The ratios above for full-delegation use B1–B3 (median 42.9 s). Against the B1–B4 median (45.15 s), full-delegation wall time is 7.01x; the call ratios do not change, and parent tokens are 3.12x. See "Organic arm (n=3)" below.
 
-Current main no longer shows the original failure classes: zero `gentle_review` calls, zero `gentle_odd_phase` calls, no ODD file or `.gitignore`/`.atl/` in the target repo, no per-test verifier subagents. The remaining wall-time overhead in the user's default mode comes from **full-delegation mode**: the parent sends every fix to a `gentle-ai-worker`. Those workers run on the profile's routed model, `openai/gpt-6.1-terra` at `max` thinking, not the parent's `gpt-6.1-sol`/`low`. Subagent calls take 197–370 s of the 258–449 s wall time (63–82%). In organic mode (n=3) the same harness ran inline and stayed within the bound for both time and calls.
+Current main no longer shows the original failure classes: zero `gentle_review` calls, zero `gentle_odd_phase` calls, no ODD file or `.gitignore`/`.atl/` in the target repo, no per-test verifier subagents. The remaining wall-time overhead in the user's default mode comes from **full-delegation mode**: the parent sends every fix to a `gentle-ai-worker`. Those workers run on the profile's routed model, `openai/gpt-6.1-terra` at `max` thinking, not the parent's `gpt-6.1-sol`/`low` (a benchmark-forced parent, not a real configuration; see the AT section for the user's real profile). Subagent calls take 197–370 s of the 258–449 s wall time (63–82%). In organic mode (n=3) the same harness ran inline and stayed within the bound for both time and calls.
 
 ## Setup
 
@@ -232,7 +235,7 @@ Bookkeeping share: 8 of 17–20 effective calls (40–47%). Bookkeeping-only tur
 
 B baseline is the median of B1–B4 + B6: wall 47.4 s, 14 effective calls, 87,211 parent tokens, $0.041. For comparison, the other arms are re-expressed against the same B median.
 
-| Metric (median) | AF Astra-med + Flash | AF/B | Full-deleg sol-low + terra-max (A1–A3) | A/B | Organic (AO1–AO3) | AO/B |
+| Metric (median) | AF Astra-med + Flash | AF/B | Full-deleg sol-low + terra-max (A1–A3; parent forced to sol low by the benchmark, not a real configuration) | A/B | Organic (AO1–AO3) | AO/B |
 |---|---|---|---|---|---|---|
 | Wall time | 153.1 s | **3.23x** ❌ | 316.7 s | 6.68x ❌ | 53.6 s | **1.13x** ✅ |
 | Parent effective calls | 18 | 1.29x ✅ | 18 | 1.29x ✅ | 17 | 1.21x ✅ |
@@ -248,6 +251,90 @@ Reading:
 - The floor is structural: three serial worker round-trips, 65–95 s in total, plus Astra-medium parent turns. Wall time minus subagent time leaves 58–74 s for the parent's own 8–11 turns.
 - Cheap workers do not make the parent cheap. Astra at medium costs about $0.58 per run on its own, 14x the bare run and 6x the organic run, because the parent still carries the full always-on prompt across 8–11 turns.
 - Organic remains the only configuration within the bound on this task.
+
+## Astra + Terra (full delegation, user's real profile)
+
+User request (verbatim): "lo que sería el benchmark de Full Delegation lo hiciste con Sol Low y Terra Max. No, la idea era Astra con Terra, justamente para hacer la comparativa entre Astra y DeepSeek."
+
+### Setup
+
+Exactly the AF setup (`fixture2/`, same prompt, `env -i`, home `~/.gentle-shell/agent` with super-yolo preserved, fresh repo per run, orchestrator `--model openai-codex/gpt-6-astra --thinking medium`, 900 s timeout). Only the pin changes: each run repo gets `.git/gentle-ai/profile-pin.json` set to `{"kind":"gentle-pi.agent_model_profile_pin","version":1,"profile":"openai-oauth-delegation"}`, the user's real active profile.
+
+That profile routes:
+
+- `gentle-ai-worker`: `openai/gpt-6.1-terra` @ `max`
+- `gentle-ai-explore`: terra @ `medium`
+- `gentle-ai-verify`: `openai/gpt-6.1-sol` @ `high`
+
+Its workflow is full-delegation. `profiles.json` was not modified for this arm: sha1 `0f5c4895…` before and after, and `active` is still `openai-oauth-delegation`.
+
+Run order: AT1, B7, AT2, AT3, strictly one at a time, each in its own awaited tool call.
+
+Confirmed from the session files:
+
+- Every parent has `model_change openai-codex/gpt-6-astra` and `thinking medium`.
+- Every system prompt contains `COORDINATOR in full delegation mode`.
+- Every subagent result reports `openai/gpt-6.1-terra` with `thinking max`, and every child session has the same model and level.
+- Stderr was empty, and each repo shows only `M inventory.py` (plus untracked `__pycache__/`).
+
+### Results
+
+Cost is Pi's estimate from catalog prices (`totalFromProvider: false`).
+
+| Run | Tests | Wall s | Parent eff | Subagents run+cont | Child calls | mem_save | todo | Parent tokens in/out/cache/total | Child tokens total | Parent $ | Child $ | Total $ | Sub s (share) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| AT1 | 3/3 | 182.5 | 18 | 1+2 | 22 | 3 | 4 | 27,147 / 1,498 / 323,584 / 352,229 | 204,085 | 0.670 | 0.051 | 0.721 | 119.3 (65%) |
+| AT2 | 3/3 | 176.7 | 17 | 1+2 | 23 | 3 | 4 | 26,734 / 1,369 / 222,976 / 251,079 | 246,766 | 0.559 | 0.049 | 0.608 | 124.7 (71%) |
+| AT3 | 3/3 | 176.2 | 18 | 1+2 | 28 | 3 | 4 | 27,414 / 1,396 / 247,680 / 276,490 | 245,374 | 0.592 | 0.063 | 0.655 | 123.3 (70%) |
+| B7 | 3/3 | 43.6 | 14 | 0 | – | 0 | 5 | 7,774 / 637 / 79,872 / 88,283 | – | 0.030 | – | 0.030 | – |
+
+All three AT runs used `gentle-ai-worker` only (zero explore or verify agents) and made 0 `gentle_review` and 0 `gentle_odd_phase` calls.
+
+Parent tools (effective):
+
+- AT1: bash 3, read 2, find 1, subagent_list_agents 1, orchestrator_session_id 1, todo 4, subagent_run 1, subagent_continue 2, mem_save 3.
+- AT2: bash 2, read 3, subagent_list_agents 1, orchestrator_session_id 1, todo 4, subagent_run 1, subagent_continue 2, mem_save 3.
+- AT3: bash 3, read 3, subagent_list_agents 1, orchestrator_session_id 1, todo 4, subagent_run 1, subagent_continue 2, mem_save 3.
+
+Child tools: AT1 bash 13, read 6, edit 3. AT2 bash 14, read 6, edit 3. AT3 bash 18, read 6, edit 3, find 1.
+
+Bookkeeping: 8 of 17–18 effective calls (44–47%). Bookkeeping-only turns: 7 of 13 (AT1), 3 of 9 (AT2), 3 of 10 (AT3).
+
+AT `mem_save` titles (one per fix):
+
+| Run | Titles |
+|---|---|
+| AT1 | `Fix total_stock including first item`, `Fix inventory price thousands separators`, `Fix inclusive sorted low stock results` |
+| AT2 | `Fix inventory stock aggregation`, `Fix inventory comma price parsing`, `Fix inclusive sorted low stock results` |
+| AT3 | `Fix total_stock first-item omission`, `Fix price parsing thousands separators`, `Fix inclusive sorted low-stock results` |
+
+Engram: 9 observations in projects `at1`–`at3` (#26973–26985).
+
+### Side by side
+
+B baseline is the median of B1–B4 + B6 + B7: wall 45.5 s (B values 39.6 / 58.2 / 42.9 / 47.4 / 47.8 / 43.6), 14 effective calls, 87,747 parent tokens, $0.0357. B5 (concurrent) is excluded. Arm medians come from their own runs; ratios are against this B.
+
+| Metric (median) | AT Astra-med + terra-max (real profile) | AF Astra-med + NaN Flash | Organic (AO1–AO3) | Sol-low + terra-max (A1–A3; parent forced to sol low by the benchmark, not a real configuration) | B |
+|---|---|---|---|---|---|
+| Wall time | 176.7 s (**3.88x** ❌) | 153.1 s (**3.36x** ❌) | 53.6 s (**1.18x** ✅) | 316.7 s (6.96x ❌) | 45.5 s |
+| Parent effective calls | 18 (1.29x ✅) | 18 (1.29x ✅) | 17 (1.21x ✅) | 18 (1.29x ✅) | 14 |
+| Parent + child calls | 40 (2.86x ❌) | 36 (2.57x ❌) | 17 (1.21x ✅) | 42 (3.00x ❌) | 14 |
+| Parent tokens | 276,490 (3.15x) | 255,423 (2.91x) | 382,588 (4.36x) | 274,458 (3.13x) | 87,747 |
+| Child tokens | 245,374 | 207,934 | 0 | 227,836 | 0 |
+| Parent + child tokens | 521,864 (5.95x) | 463,357 (5.28x) | 382,588 (4.36x) | 502,294 (5.72x) | 87,747 |
+| Subagent time share | 70% | 53% | 0% | 63% | 0% |
+| Cost, parent | $0.592 (16.6x) | $0.583 (16.3x) | $0.099 (2.8x) | $0.097 (2.7x) | $0.036 |
+| Cost, child | $0.051 | unpriced (NaN = $0 in Pi's catalog) | $0 | $0.064 | $0 |
+| Cost, total | $0.655 (**18.3x**) | ≥ $0.583 (≥ 16.3x) | $0.099 (2.8x) | $0.163 (4.6x) | $0.036 |
+
+The AF "subagent time share" median is taken over AF1/AF4/AF5 (62%, 48%, 53%).
+
+Reading:
+
+- **Speed:** Astra + Flash is about 24 s faster than Astra + Terra, in both wall time (153 s vs. 177 s) and subagent time (82 s vs. 123 s). Both fail ≤1.5x by a wide margin.
+- **Cost:** in both Astra arms, the Astra-medium parent is about 90% of the estimated cost ($0.56–0.67 per run). Terra-max workers add only about $0.05. Switching workers to DeepSeek Flash therefore saves time but almost no money on this task; the orchestrator choice dominates cost.
+- **Calls:** the parent shape is identical across all full-delegation arms: 17–18 effective calls, one worker task per fix, and one `mem_save` per fix.
+- **Only passing configuration:** organic remains the only configuration within the ≤1.5x bound.
 
 ## Bookkeeping attribution (for T4)
 
@@ -298,5 +385,6 @@ Reading of the data:
 3. "Same model and effort" holds for the parent sessions only. Under the user's profile, full-delegation workers run `openai/gpt-6.1-terra` at `max` on provider `openai`, which is a large part of A's time.
 4. `codemode` hides inner tool calls in top-level counts. Effective counts come from a regex over the script text.
 5. Wall time is measured around the whole launcher process, so it includes gentle-shell startup and Engram.
-6. Engram is the user's shared server. The fixture observations are in projects `a1`, `a2`, `a3`, `ao1`, `ao2`, `ao3`, `af1`–`af5` (33 in total) and were not deleted.
+6. Engram is the user's shared server. The fixture observations are in projects `a1`, `a2`, `a3`, `ao1`, `ao2`, `ao3`, `af1`–`af5`, `at1`–`at3` (42 in total) and were not deleted.
 7. The AF arm added a `bench-astra-flash` profile to the user's `profiles.json` (see the Astra section for the backup and the exact lines). B5, AF2 and AF3 ran concurrently and are excluded from the medians.
+8. The AT arm used the user's existing `openai-oauth-delegation` profile through a scratch pin. No config change was made.

@@ -1357,8 +1357,9 @@ function applyDelegationMode(assetsDir: string, text: string, mode: Orchestrator
 	const highRisk = text.split("\n").find((line) => line.startsWith(HIGH_RISK_PARAGRAPH_PREFIX));
 	if (highRisk === undefined || !variant.includes(HIGH_RISK_PLACEHOLDER)) return text;
 	const spliced = `${text.slice(0, start)}${variant.replace(HIGH_RISK_PLACEHOLDER, highRisk)}\n\n${text.slice(end)}`;
-	// The shared tail points at the organic routing reference; in this mode those
-	// pointers name the card instead, so the reference never reaches the session.
+	// The shared tail (including the Language Boundary) points at the organic routing
+	// reference and says "inline"; in this mode those pointers name the card instead,
+	// so the organic reference never reaches the session.
 	return FULL_DELEGATION_TAIL_PROJECTION.reduce((projected, [from, to]) => projected.replace(from, to), spliced);
 }
 
@@ -1370,6 +1371,13 @@ const FULL_DELEGATION_TAIL_PROJECTION: ReadonlyArray<readonly [string, string]> 
 	[
 		"Per-action table, Work Routing Ladder, Canonical Workflows: `orchestrator-delegation-reference.md`; blocking-prompt relays and provider defects: `orchestrator-prompts.md`.",
 		"Blocking-prompt relays and provider defects: `orchestrator-prompts.md`.",
+	],
+	// cost-speed-painpoints S5: the Language Boundary sits in the shared tail so both modes
+	// carry it; the parent never writes in this mode, and the card carries the exceptions.
+	["Generated technical artifacts — whether by the parent inline or by subagents —", "Generated technical artifacts — whether by the parent or by subagents —"],
+	[
+		"Subagent-facing English delegation and quote/UI exceptions: `orchestrator-delegation.md`.",
+		`Subagent-facing English delegation and quote/UI exceptions: \`${FULL_DELEGATION_CARD_FILE}\`.`,
 	],
 ];
 
@@ -1615,6 +1623,9 @@ function resolveSessionDelegationMode(
 	}
 }
 
+const TEST_FIRST_PRINCIPLE = "- For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks. Write one RED test per requested rule. For every existing command or option the change touches, add one test proving its previous behavior still holds; add no other cases. An existing behavior counts as touched when it shares the code you changed (options, parsers, helpers, validation). Only when your diff changes shared code (options, parsers, helpers) that an existing command the request did not name also uses, run one differential check before finishing, as a single script: for each such command, run it with the new or changed input (for example a new option passed to a sibling subcommand) against the previous code (a copy of the base commit in a `mktemp -d` scratch directory, never committed as a test; committed tests never read git history or a fixed commit) and against your change, and compare stdout, stderr, and exit code; any difference nobody asked for is a regression to fix and pin with a test. Test presence alone does not establish applicability; no chat or TUI toggle activates it. For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, explain why and run proportionate ordinary functional or structural verification. Never invent lifecycle evidence or skip checks. Follow orchestrator-delegation.md for ODD forwarding and evidence.";
+const FULL_DELEGATION_TEST_FIRST_PRINCIPLE = "- Writers apply test-first (RED, GREEN, PRESERVE with its differential check) from their own contract; forward it in every writer handoff and require their observed RED/GREEN evidence or stated exception. Never invent lifecycle evidence or skip checks.";
+
 function buildGentlePrompt(
 	persona: PersonaMode,
 	cwd: string = process.cwd(),
@@ -1625,10 +1636,15 @@ function buildGentlePrompt(
 ): string {
 	const personaPrompt =
 		persona === "neutral" ? NEUTRAL_PERSONA_PROMPT : GENTLEMAN_PERSONA_PROMPT;
+	// cost-speed-painpoints S5: the neutral persona bullets already say "neutral/professional
+	// Spanish" and forbid voseo and regional expressions, so no second Language line repeats them.
 	const languageBoundary =
 		persona === "neutral"
-			? "Language: neutral/professional Spanish when the user writes Spanish. Do NOT use voseo or Rioplatense regional expressions."
-			: "Language: natural Rioplatense Spanish with voseo when the user writes Spanish.";
+			? ""
+			: "\n\nLanguage: natural Rioplatense Spanish with voseo when the user writes Spanish.";
+	// cost-speed-painpoints S5: writers apply the test-first procedure from their own
+	// contract; a full delegation parent only forwards it and checks the evidence.
+	const testFirstPrinciple = delegationMode === DEFAULT_ORCHESTRATOR_MODE ? TEST_FIRST_PRINCIPLE : FULL_DELEGATION_TEST_FIRST_PRINCIPLE;
 	return `## el Gentleman Identity and Harness
 
 Current persona mode: ${persona}
@@ -1642,9 +1658,7 @@ Identity contract:
 - Mention memory only when memory packages or callable memory tools are actually active; never invent persistent memory.
 - Do not claim portability outside the Pi runtime.
 
-${personaPrompt}
-
-${languageBoundary}
+${personaPrompt}${languageBoundary}
 
 ## Authorized work continuity
 
@@ -1674,9 +1688,8 @@ Harness principles:
 - el Gentleman is not prompt engineering. It is runtime discipline around powerful agents.
 - Clarify scope, constraints, acceptance criteria, and non-goals when needed for the human to understand the action or to resolve consequential uncertainty. Reuse what is already established; after informed approval, proceed without repeating the clarification unless new consequential uncertainty appears.
 - Use subagents when available for exploration, planning, implementation, and review, while keeping one parent session responsible for orchestration.
-- For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks. Write one RED test per requested rule. For every existing command or option the change touches, add one test proving its previous behavior still holds; add no other cases. An existing behavior counts as touched when it shares the code you changed (options, parsers, helpers, validation). Only when your diff changes shared code (options, parsers, helpers) that an existing command the request did not name also uses, run one differential check before finishing, as a single script: for each such command, run it with the new or changed input (for example a new option passed to a sibling subcommand) against the previous code (a copy of the base commit in a \`mktemp -d\` scratch directory, never committed as a test; committed tests never read git history or a fixed commit) and against your change, and compare stdout, stderr, and exit code; any difference nobody asked for is a regression to fix and pin with a test. Test presence alone does not establish applicability; no chat or TUI toggle activates it. For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, explain why and run proportionate ordinary functional or structural verification. Never invent lifecycle evidence or skip checks. Follow ${delegationMode === DEFAULT_ORCHESTRATOR_MODE ? "orchestrator-delegation.md" : FULL_DELEGATION_CARD_FILE} for ODD forwarding and evidence.
+${testFirstPrinciple}
 - Protect the human reviewer: avoid oversized changes, surface review workload risk, and ask before turning one task into a large multi-area change.
-- Never claim persistent memory is available because of this package. Memory is provided by separate packages or MCP tools when installed and callable.
 
 ${getOrchestratorPrompt(cwd, activeTools, rddStatusLine, hostMode, delegationMode)}${headlessDeliveryNote(hostMode)}`;
 }
@@ -12010,10 +12023,11 @@ function createGentleAiExtensionForTesting(
 		renderShell: "self",
 		label: "Gentle ODD Phase",
 		description: "Refine the primary session's current ODD phase for the Gentle prompt's working label. Best-effort UI only; never a source of truth for orchestration logic.",
-		promptSnippet: "Refine the automatically inferred working label only at real ODD phase transitions; never poll or report per tool call.",
+		// The call cadence is stated once, in the always-on Phase reporting line (cost-speed-painpoints S5).
+		promptSnippet: "Refine the automatically inferred working label only at real ODD phase transitions.",
 		promptGuidelines: [
-			"Pass phase exactly as its schema enum; call only when the ODD phase actually changes for the primary session's active turn, never per tool call or thought.",
-			"Never call this from a subagent or background/child task; it reports only the primary orchestrator's own phase, and a child's session id can never override the parent's label.",
+			"Pass phase exactly as its schema enum.",
+			"Never call this from a subagent or background/child task.",
 		],
 		parameters: {
 			type: "object",

@@ -3006,7 +3006,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 
 	tool(
 		"run",
-		"Delegate a task to a named subagent. Task mode waits for the answer; background mode returns a task id immediately.",
+		"Delegate a task to a named subagent. Admission rejects writers without repository-relative paths under `## Allowed edit surfaces`; below the context backstop, organic writers without `Spec: odd/tasks/<existing>.md, T<n>` and `gentle-ai-verify` without that or `Risk: item N`.",
 		{
 			required: ["agent", "task"],
 			properties: {
@@ -3017,7 +3017,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				work: workDescriptorSchema,
 				workspace_root: { type: "string", description: "Optional canonical main or linked Git worktree within the parent's same clone only; mutually exclusive with repository_root." },
 				repository_root: { type: "string", description: "Optional canonical independent Git repository; requires direct interactive session-scoped consent before queueing; mutually exclusive with workspace_root." },
-				mode: { type: "string", enum: ["task", "background"], description: "task waits for the result (default); background returns immediately." },
+				mode: { type: "string", enum: ["task", "background"], description: "task waits for the result (default); background returns a task id immediately." },
 			},
 		},
 		async (params, ctx, signal) => {

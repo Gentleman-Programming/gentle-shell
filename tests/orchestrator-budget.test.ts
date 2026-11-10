@@ -39,7 +39,9 @@ const FIXTURE_PATH = join(import.meta.dirname, "fixtures", "orchestrator.pre-die
 // Issue #2935 (user decision 2026-11-06): 9,250 -> 9,350 B so the confinement clause keeps its full wording
 // (registered same-clone worktrees, never-blanket grants) while adding the resolved-skill-read exception; the
 // controlled 128-char assets root needs the headroom for platform-independent rendering.
-const BUDGET_BYTES = 9350;
+// cost-speed-painpoints S5 (T4): the duplicate `## Identity Contract` pointer left the core (the Language Boundary
+// intro carries the same pointer); measured 9,347 -> 9,197 B at the 128-char root: 9,350 -> 9,197 B.
+const BUDGET_BYTES = 9197;
 const MIN_CONTROLLED_LONG_ASSETS_ROOT_CHARS = 93;
 
 const LAZY_ASSET_NAMES = [
@@ -132,7 +134,7 @@ function measureOrchestratorPromptBytes(assetsDir: string): number {
 // measuring a shorter render again.
 const RDD_WORST_CASE_LINE = "Receipt-driven development: unknown (native status unavailable)";
 
-test("getOrchestratorPrompt return value stays within the canonical 9,350 B budget at a short assets root", () => {
+test("getOrchestratorPrompt return value stays within the canonical 9,197 B budget at a short assets root", () => {
 	const rendered = __testing.renderOrchestratorPrompt(representativeProductionAssetsDir);
 	assert.ok(
 		rendered.includes(RDD_WORST_CASE_LINE),
@@ -203,7 +205,7 @@ const TARGET_FILE: Record<Target, string> = {
 // (frozen byte-identical copy of assets/orchestrator.md at 23,047 B / 312 lines).
 const DISPOSITION_MAP: DispositionRange[] = [
 	{ lines: [1, 4], target: "replaced", label: "Header + bind: retired phase qualification" },
-	{ lines: [5, 8], target: "core", label: "Identity Contract" },
+	{ lines: [5, 8], target: "replaced", label: "Identity Contract pointer: dropped as a duplicate of the Language Boundary intro pointer (cost-speed-painpoints S5)" },
 	{ lines: [9, 13], target: "core", label: "Core Role" },
 	{ lines: [15, 15], target: "core", label: "Language Boundary heading" },
 	{ lines: [17, 17], target: "core", label: "Language Boundary LB1 pointer" },

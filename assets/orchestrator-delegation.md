@@ -27,7 +27,7 @@ These boundaries do not authorize children to orchestrate. Each trigger holds on
 
 **Invariants:** whoever writes, inline or delegated, reuses the existing function for shared state and keeps its invariants (ordering, uniqueness, validation, normalization); writer prompts name those helpers (`orchestrator-writer.md`).
 
-**Differential check (PRESERVE):** forward the harness test-first policy's differential check to writers.
+**Differential check (PRESERVE):** forward the test-first differential check to writers.
 
 **Preparation trigger:** reading that prepares a delegated write goes with the writer; inline writes read inline. When delegating, read only what decides the route, never the files the worker will read; pass paths, the spec reference, and what to change, not file contents.
 

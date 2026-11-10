@@ -4,7 +4,8 @@ import { CHILD_SKILLS_CATALOG_ENV, REQUESTED_TOOLS_ENV } from "../lib/agents-run
 import { registerCodeGraphTool } from "./codegraph-tools.ts";
 
 // gentle-shell#1587: delegated children drop the orchestrator-only gentle-ai
-// managed blocks from their context files. Gentle Agents passes this file to
+// managed blocks from their context files and keep a single engram-protocol
+// copy, the one nearest to the working directory. Gentle Agents passes this file to
 // every child with --extension because children do not load the gentle-pi
 // package in the isolated Gentle Shell home. At startup it also supplies the
 // existing CodeGraph implementation only when explicitly requested and absent
@@ -17,15 +18,22 @@ export function createChildContextExtension(env: NodeJS.ProcessEnv = process.env
 				if (!pi.getAllTools().some(tool => tool.name === "codegraph")) registerCodeGraphTool(pi);
 			});
 		}
-		pi.on("before_agent_start", (event) => {
+		pi.on("before_agent_start", (event, ctx) => {
 			if (env.GENTLE_PI_AGENTS_CHILD !== "1") return undefined;
 			// The filtered copies replace contextFiles on the same options object
 			// (pi-claude-bridge rebuilds its prompt from it). This never throws,
 			// keeps the original files on any error or malformed markers, and is
 			// idempotent: already-filtered content has nothing left to remove.
+			// The engram-protocol block is deduplicated: only the copy in the file
+			// nearest to the working directory stays.
 			const options = (event as { systemPromptOptions?: ContextFileOptions | null } | undefined)?.systemPromptOptions;
+<<<<<<< HEAD
 			filterChildSessionContextFiles(options);
 			dropSkillsCatalog(event, env);
+=======
+			const cwd = (ctx as { cwd?: unknown } | undefined)?.cwd;
+			filterChildSessionContextFiles(options, typeof cwd === "string" ? { cwd } : {});
+>>>>>>> 9103a96b0 (perf(context): filter gentle-ai orchestrator blocks in the primary and dedupe the Engram protocol)
 			return undefined;
 		});
 	};

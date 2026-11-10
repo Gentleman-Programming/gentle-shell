@@ -93,7 +93,8 @@ test("T13: the Close gate requires continuing or quoting the user's explicit sto
 test("T13: budgets hold and the pinned human-control line is untouched", () => {
 	const bytes = Buffer.byteLength(tracking, "utf8");
 	// S14: close the open slice before a high-risk commit; outcomes per commit (12,600 -> 12,850 B), same as MODULE_BUDGETS.
-	assert.ok(bytes <= 12_850, `orchestrator-tracking.md is ${bytes} B, over its 12,850 B budget`);
+	// P5b: contradictions and step 3 / Phase reporting restatements removed; 1.4.0 commit-boundary rules kept (12,850 -> 10,324 B).
+	assert.ok(bytes <= 10_324, `orchestrator-tracking.md is ${bytes} B, over its 10,324 B budget`);
 	assert.ok(core.includes("- Preserve human control: user decisions beat agent momentum."), "core human-control line must stay verbatim");
 	assert.ok(core.includes("4. **Track**") && core.includes("`orchestrator-tracking.md`"), "Track must still load the tracking module");
 });

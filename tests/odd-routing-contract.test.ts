@@ -98,6 +98,24 @@ test("organic progress preserves both complete feature copies and reconciles act
 	assert.doesNotMatch(memory, /`todo` tool is an optional session\/UI projection/);
 });
 
+// gentle-shell#1494 field follow-up: tracking must not grow its own reconciliation
+// scripts, invented size gates, or repeated malformed writer launches.
+test("tracking sync recovers from partial writes without custom reconciliation gates", () => {
+	containsAll(memory, [
+		"Read back both writes with the normal read tool; they are not atomic",
+		"never author comparison or reconciliation scripts or gates for them",
+		"After a partial or failed sync, check which writes already applied and continue from that state; never replay an applied write",
+		"a mirror that differs from the file just written is refreshed from the file, never a blocker",
+		"Preserve both versions on irreconcilable edits",
+	]);
+	containsAll(delegation, [
+		"A user's line limit is a ceiling, never an exact-count gate; never invent acceptance gates the user did not ask for",
+	]);
+	const writerClause = "Every new writer launch carries the section (a continuation inherits it); after an admission rejection, repair what it names once, never relaunch the same prompt unchanged";
+	containsAll(delegation, [writerClause]);
+	containsAll(read("assets/orchestrator-full-delegation-card.md"), [writerClause]);
+});
+
 test("assumption challenge and task checks do not activate or duplicate native review", () => {
 	containsAll(delegation, [
 		"at most one scoped independent read-only assumption challenge",

@@ -11,7 +11,7 @@ test("ODD continuity persists the task file and complete Engram mirror across re
 	assert.match(memory, /odd\/tasks\/<feature-name>\.md/);
 	assert.match(memory, /odd\/<feature-name>\/tasks/);
 	assert.match(memory, /Mirror the full current document and repository-relative file locator/);
-	assert.match(memory, /Read back both writes; they are not atomic/);
+	assert.match(memory, /Read back both writes with the normal read tool; they are not atomic/);
 	assert.match(memory, /mirror pending/);
 	assert.match(memory, /On resume, use `mem_context`, then project\/feature-scoped `mem_search`, and `mem_get_observation`/);
 	assert.match(memory, /read the actual task file/);

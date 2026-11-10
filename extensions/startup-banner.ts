@@ -4,7 +4,7 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
+import { resolveAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
 import { PI_SUBCOMMANDS } from "../lib/gentle-shell-launcher.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 
@@ -362,6 +362,23 @@ type LetterStroke = { orderMap: Map<string, number>; maxOrder: number };
 
 const WRITING_START_TICK = 6;
 const FALLBACK_LETTER_TICKS = 8;
+// Every rose pulse step repaints every rose cell, which drives the TUI diff to
+// redraw the whole header region and teleport the hardware cursor; on fast
+// terminals (ghostty) that churn reads as flicker/ghosting (ghostty#12685).
+// The resolved animation policy owns the step, so the cadence table in
+// docs/readme-reference.md stays authoritative: quality paints every 25ms and
+// takes the coarser ~100ms wave, while performance already paints every 250ms
+// and keeps the merge-base 2-tick step instead of freezing the wave.
+const ROSE_PULSE_TICKS: Record<AnimationPolicy, number> = {
+  quality: 4,
+  performance: 2,
+  potato: 2,
+};
+
+/** Ticks per rose pulse step under the resolved animation policy. */
+export function rosePulseTicks(policy: AnimationPolicy): number {
+  return ROSE_PULSE_TICKS[policy];
+}
 
 const LETTER_STROKES: Array<LetterStroke | null> = LETTER_SPANS.map(() => null);
 const LETTER_TICKS: number[] = LETTER_SPANS.map(() => FALLBACK_LETTER_TICKS);
@@ -662,6 +679,13 @@ export default function (pi: ExtensionAPI) {
     // CLI subcommands such as `pi update` or `pi install` skip the animated intro.
     if (isPiCliSubcommandInvocation(process.argv)) return;
 
+    // /reload re-fires session_start with reason "reload". The splash is a
+    // first-start experience, so the intro must not run again; but the
+    // disposeHeader() above already dropped the previous header, and banner
+    // changes are documented to apply on the next session or /reload. Returning
+    // early here would leave the editor without a header, so a reload repaints
+    // the complete static artwork instead (see the header factory below).
+    const reload = (_event as { reason?: string })?.reason === "reload";
     if (currentIntroMode() === "skip") return;
 
     // Pi has already started its renderer. Let setHeader schedule the paint;
@@ -767,8 +791,11 @@ export default function (pi: ExtensionAPI) {
         refreshStats = () => tui.requestRender();
         // Capture once: a command changes the live prompt, not this intro.
         const animationPolicy = resolveAnimationPolicy().policy;
+        const rosePulse = rosePulseTicks(animationPolicy);
         const animStart = Date.now();
-        if (animationPolicy === "potato") {
+        if (reload || animationPolicy === "potato") {
+          // Completed static artwork, no animation interval: potato asks for no
+          // periodic animation, and a /reload repaint has no intro to replay.
           tick = Number.MAX_SAFE_INTEGER;
           state.timer = null;
         } else {
@@ -821,7 +848,7 @@ export default function (pi: ExtensionAPI) {
               tick >= flashStartTick
                 ? Math.max(0, 1 - (tick - flashStartTick) / 12)
                 : 0;
-            const frame = Math.floor(tick / 2);
+            const frame = Math.floor(tick / rosePulse);
 
             const sideBySideMinWidth = roseBase.width + 3 + logoBase.width + 4;
             const horizontal =

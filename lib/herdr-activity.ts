@@ -66,8 +66,7 @@ function fit(parts: string[], columns: number, bytes: number, characters: number
 	return count;
 }
 
-/** Only the active Todo title is free text. LF is private framing, not a token. */
-export function activitySummary(tasks: unknown, columns = FALLBACK_COLUMNS): string | null {
+function activeTodo(tasks: unknown): { parts: string[]; clipped: boolean } | null {
 	if (!Array.isArray(tasks)) return null;
 	const title: unknown = tasks.find((task) => task?.status === "in_progress")?.title;
 	if (typeof title !== "string") return null;
@@ -82,6 +81,19 @@ export function activitySummary(tasks: unknown, columns = FALLBACK_COLUMNS): str
 	const parts = Array.from(graphemes.segment(clean), ({ segment }) => segment);
 	// The bounded sample may end inside a grapheme; never publish that fragment.
 	if (clipped) parts.pop();
+	return { parts, clipped };
+}
+
+/** Sanitized active title, without Herdr icons, rows or ellipsis layout. */
+export function activeTodoTitle(tasks: unknown): string | null {
+	return activeTodo(tasks)?.parts.join("") || null;
+}
+
+/** Only the active Todo title is free text. LF is private framing, not a token. */
+export function activitySummary(tasks: unknown, columns = FALLBACK_COLUMNS): string | null {
+	const active = activeTodo(tasks);
+	if (!active) return null;
+	const { parts, clipped } = active;
 	columns = Number.isFinite(columns) ? Math.max(1, Math.min(512, Math.floor(columns))) : FALLBACK_COLUMNS;
 	if (columns <= 2) return columns === 1 ? "…" : "◐…";
 	// Herdr caps each token at 80 scalars; count our icon/indent before its trim.

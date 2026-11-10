@@ -86,6 +86,30 @@ test("a genuinely absent adjacent peer falls back to PATH", (t) => {
 	assert.match(result.stdout, /pi 1\.2\.1/);
 });
 
+test("a bundled runtime launch performs zero real version-probe spawns", (t) => {
+	const f = standaloneLauncher(t);
+	const peer = join(f.root, "node_modules", "@earendil-works", "pi-coding-agent");
+	mkdirSync(join(peer, "dist", "bundle"), { recursive: true });
+	writeFileSync(join(peer, "dist", "index.js"), "");
+	writeFileSync(join(peer, "package.json"), JSON.stringify({
+		name: "@earendil-works/pi-coding-agent", type: "module", version: "1.2.5",
+		exports: { ".": { import: "./dist/index.js" } }, bin: { pi: "dist/bundle/cli.js" },
+	}));
+	const log = join(f.root, "version-probes.log");
+	writeFileSync(log, "");
+	writeFileSync(join(peer, "dist", "bundle", "cli.js"), [
+		"import { appendFileSync } from 'node:fs';",
+		"const args = process.argv.slice(2);",
+		`if (args.length === 1 && args[0] === '--version') { appendFileSync(${JSON.stringify(log)}, 'x'); console.error('unexpected-version-probe'); process.exit(77); }`,
+		"console.log('bundled-session-ok');",
+	].join("\n"));
+	const result = spawnSync(process.execPath, [f.launcher], { env: f.env, encoding: "utf8" });
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(result.stdout, "bundled-session-ok\n");
+	assert.doesNotMatch(result.stderr, /unexpected-version-probe/);
+	assert.equal(readFileSync(log, "utf8"), "", "only --version invocations record a probe");
+});
+
 test("malformed adjacent metadata never silently falls back to PATH; env override still wins", (t) => {
 	const f = standaloneLauncher(t);
 	const peer = join(f.root, "node_modules", "@earendil-works", "pi-coding-agent");

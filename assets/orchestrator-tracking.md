@@ -1,6 +1,6 @@
 # Orchestrator — ODD Tracking (lazy-loaded)
 
-Bind this to the parent Pi session only. Load it when a task is large (its resume test fails) or the user asks to track it; small tasks never need it (see `orchestrator.md` Task Size).
+Bind this to the parent Pi session only. Load it when a task is large (its resume test fails); a requested session task list alone needs no durable ODD document or memory mirror (see `orchestrator.md` Task Size).
 
 ### Organic Driven Development (ODD)
 

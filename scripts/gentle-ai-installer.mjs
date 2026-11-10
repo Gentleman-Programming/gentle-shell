@@ -14,10 +14,11 @@ import {
 } from "node:fs/promises";
 import https from "node:https";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative, toNamespacedPath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { createProxyTunnelAgent, proxyTrustOptions, resolveProxyForTarget } from "./gentle-ai-proxy.mjs";
 
 const execFileAsync = promisify(execFile);
 const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024;
@@ -37,7 +38,7 @@ const WINDOWS_SYSTEM_ROOT = "C:\\Windows";
 // version check below) derives from this constant instead of repeating the
 // literal, so a pin bump cannot leave a stale copy behind. See
 // scripts/install-gentle-ai.mjs for the incident that motivated this.
-export const INSTALLER_VERSION = "4.3.1";
+export const INSTALLER_VERSION = "4.4.0";
 export const RELEASE_BASE_URL = `https://github.com/Gentleman-Programming/gentle-ai/releases/download/v${INSTALLER_VERSION}/`;
 export const GENTLE_AI_INSTALL_METHOD = Object.freeze({
 	SIGNED_RELEASE_ASSET: "signed-release-asset",
@@ -46,11 +47,11 @@ export const GENTLE_AI_INSTALL_METHOD = Object.freeze({
 export const GENTLE_AI_WINDOWS_SOURCE_PACKAGE_PATH = "github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai";
 export const GENTLE_AI_WINDOWS_SOURCE_MODULE = "github.com/gentleman-programming/gentle-ai/v4";
 export const GENTLE_AI_WINDOWS_SOURCE_TAG = `v${INSTALLER_VERSION}`;
-// `go mod download -json github.com/gentleman-programming/gentle-ai/v4@v4.3.1`
+// `go mod download -json github.com/gentleman-programming/gentle-ai/v4@v4.4.0`
 // with GOSUMDB=sum.golang.org reports this exact module SumDB checksum, and the
-// tag resolves to commit 2dba7784114fff57864519c4c0d067e952a8c98b, the published v4.3.1 release head.
+// tag resolves to commit 55240afb100ad6d2ef5fbe16f7be33a7693f77ad, the published v4.4.0 release head.
 // v4.0.0 moved the Go module path to the /v4 major-version suffix.
-export const GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM = "h1:00p8dnjJrhYFq1Qikk2oY6K/UXIty9A/IBUUOUiX9XA=";
+export const GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM = "h1:cAQAzIsbocYcQfOzA1CmgGpGgiCivUNcPjdfJE8RJ6g=";
 export const GENTLE_AI_WINDOWS_SOURCE_PACKAGE = `${GENTLE_AI_WINDOWS_SOURCE_PACKAGE_PATH}@${GENTLE_AI_WINDOWS_SOURCE_TAG}`;
 export const GENTLE_AI_WINDOWS_MINIMUM_GO_VERSION = "1.25.10";
 export const GENTLE_AI_GO_TOOLCHAIN_UNAVAILABLE_CODE = "GENTLE_AI_GO_TOOLCHAIN_UNAVAILABLE";
@@ -69,7 +70,7 @@ export class GentleAiInstallerError extends Error {
 // Sentinel used while a re-pinned gentle-ai release is not yet published. A
 // sentinel digest can never match a real SHA-256, so installation fails closed,
 // and verify-package-files.mjs refuses to pack/publish while any digest below
-// still holds it. The v4.3.1 digests are pinned from the published release:
+// still holds it. The v4.4.0 digests are pinned from the published release:
 // archive sha256 values verified against the minisign-signed checksums.txt and
 // freshly computed hashes; binary sha256 values computed from the extracted
 // executables.
@@ -94,12 +95,14 @@ function asset(name, sha256, binarySha256, executable) {
 // documented recovery instead of leaving a dead end until the next repin.
 async function downloadPinnedGentleAiAsset(asset, destination, options) {
 	const download = options.download ?? downloadGentleAiAsset;
+	// Progress is display-only: it never changes what is downloaded or verified.
+	const progress = options.onProgress === undefined ? [] : [undefined, undefined, { onProgress: options.onProgress }];
 	try {
-		await download(asset.url, destination);
+		await download(asset.url, destination, ...progress);
 	} catch (primaryError) {
 		if (asset.mirrorUrl === undefined) throw primaryError;
 		try {
-			await download(asset.mirrorUrl, destination);
+			await download(asset.mirrorUrl, destination, ...progress);
 		} catch (mirrorError) {
 			throw new GentleAiInstallerError(
 				GENTLE_AI_ASSET_UNAVAILABLE_CODE,
@@ -111,15 +114,15 @@ async function downloadPinnedGentleAiAsset(asset, destination, options) {
 }
 
 // Windows is absent from signed release archives on purpose. gentle-ai stopped
-// distributing unsigned Windows builds in c4b764d0, so v4.3.1 publishes signed
+// distributing unsigned Windows builds in c4b764d0, so v4.4.0 publishes signed
 // Darwin/Linux archives only. Windows x64/arm64 uses the separately verified
 // exact-tag Go SumDB source-build path below; restore archive rows only when
 // upstream ships signed Windows assets.
 export const GENTLE_AI_RELEASE_ASSETS = Object.freeze({
-	"darwin/amd64": asset("gentle-ai_4.3.1_darwin_amd64.tar.gz", "6cf57fee0574daef2abed07f54a355fec3b93ac8f01733dc6c4d3674f1746112", "ca44c3fce186b63a7e7ad455c338133ba1982f4a13485301ce4d66edb73d2928", "gentle-ai"),
-	"darwin/arm64": asset("gentle-ai_4.3.1_darwin_arm64.tar.gz", "13e8828447f9081465ee0c35a61b24fb49296d51a310c6999227e2aed178956b", "749d08062b0dec13681678a1a1c018613d223ddcca47b5f27681b1d8ab5d14c2", "gentle-ai"),
-	"linux/amd64": asset("gentle-ai_4.3.1_linux_amd64.tar.gz", "04ec685c56b42c29dff6db10fc7dc2c730217dc9c96736e53ad2acf3226dafb7", "86248792bde3fe5e9ca93b128c07e7caa6a5b31fac0f9fc84b5b3011b123cb90", "gentle-ai"),
-	"linux/arm64": asset("gentle-ai_4.3.1_linux_arm64.tar.gz", "99e7d313a2ff85eaf23a6415e9b3aae67bf74c2fa169b21b93070ada7613f6a0", "df3580506bb5ea63cc4ef5ccebe8b68cfedf66b72f3b51f84ff393183d8cea2b", "gentle-ai"),
+	"darwin/amd64": asset("gentle-ai_4.4.0_darwin_amd64.tar.gz", "95686ea30615516aa29ebb6257227b1cdd4c67649dff63ec7adb576ca26a678d", "634189866db1db635aed6257716969e87e7cde6830c26627795becbd2969e104", "gentle-ai"),
+	"darwin/arm64": asset("gentle-ai_4.4.0_darwin_arm64.tar.gz", "b6e00957eb81115f18e33197ae2035f75812a624c6d53e72826ecf7b4a635539", "5bb53e7e32da585f08b668444209bde7a9b5c9c26489e2052bf180b05a2aab81", "gentle-ai"),
+	"linux/amd64": asset("gentle-ai_4.4.0_linux_amd64.tar.gz", "1f72ca13b32e87cb7f65b29e7fae6df4490b53d69d4763cdf23e944165880cd6", "9f39a94cef0b9882be4cd519fac3ef3602e602e3bf437df7db55c8cbd42f358d", "gentle-ai"),
+	"linux/arm64": asset("gentle-ai_4.4.0_linux_arm64.tar.gz", "2d8874464cbe54b66a77d7c9fe66ce577933de00936ed1a035c81de6406a95fc", "b9913af83cbeff2719e33d4b6c09e6ed568a000c4d6b885b4806ec5ce796f2b7", "gentle-ai"),
 });
 
 // A pinned asset is either a signed archive or, for a prerelease pin only,
@@ -171,17 +174,37 @@ async function sha256File(path) {
 function downloadTimeoutError(stage) { return Object.assign(new Error(`Gentle AI download ${stage} timed out`), { code: "GENTLE_AI_DOWNLOAD_TIMEOUT" }); }
 function isRetryableDownloadError(error) { return error && typeof error === "object" && ["GENTLE_AI_DOWNLOAD_TIMEOUT", "GENTLE_AI_DOWNLOAD_TRANSIENT_HTTP", "ECONNABORTED", "ECONNREFUSED", "ECONNRESET", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "ETIMEDOUT"].includes(error.code); }
 function downloadHttpError(status) { return Object.assign(new Error(`Gentle AI download failed with HTTP ${status}`), { code: [429, 500, 502, 503, 504].includes(status) ? "GENTLE_AI_DOWNLOAD_TRANSIENT_HTTP" : "GENTLE_AI_DOWNLOAD_HTTP" }); }
+/**
+ * Downloads a release asset over HTTPS.
+ *
+ * The trust options in `options` reach both peers of the connection, the
+ * proxy and the origin. An explicit `ca` replaces Node's default certificate
+ * authority list rather than adding to it, so it has to include the
+ * authorities of both peers the download is expected to reach. The client
+ * credentials are used for the origin only and are never offered to the
+ * proxy.
+ */
 export async function downloadGentleAiAsset(url, destination, maxBytes = MAX_DOWNLOAD_BYTES, redirects = MAX_REDIRECTS, options = {}) {
-	const { request = https.get, headerTimeoutMs = DOWNLOAD_TIMEOUTS.headers, bodyTimeoutMs = DOWNLOAD_TIMEOUTS.body, maxAttempts = DOWNLOAD_TIMEOUTS.attempts, retryDelayMs = DOWNLOAD_TIMEOUTS.retryDelay } = options;
+	const { request = https.get, env = process.env, headerTimeoutMs = DOWNLOAD_TIMEOUTS.headers, bodyTimeoutMs = DOWNLOAD_TIMEOUTS.body, maxAttempts = DOWNLOAD_TIMEOUTS.attempts, retryDelayMs = DOWNLOAD_TIMEOUTS.retryDelay, onProgress } = options;
+	// `onProgress({ received, total })` is display-only: `total` is undefined
+	// without a content-length. A reporter failure must never fail or alter the
+	// download itself, so it is swallowed here and reported per chunk below.
+	const report = (received, total) => { try { onProgress?.({ received, total }); } catch { /* display only */ } };
+	const trust = proxyTrustOptions(options);
 	if (![headerTimeoutMs, bodyTimeoutMs, retryDelayMs, maxAttempts].every((value) => Number.isSafeInteger(value) && value >= 0) || maxAttempts < 1) throw new TypeError("Gentle AI download timeout and retry options must be safe non-negative integers");
 	const responseFor = async (currentUrl, remainingRedirects) => {
 		const parsed = new URL(currentUrl);
 		if (parsed.protocol !== "https:") throw new Error("Gentle AI installer requires HTTPS downloads");
+		// The proxy is resolved per URL rather than once per download, because a
+		// redirect may land on a host that NO_PROXY exempts.
+		const proxy = resolveProxyForTarget(parsed, env);
+		const requestOptions = { headers: { "user-agent": "gentle-pi-installer" }, ...trust };
+		if (proxy !== undefined) requestOptions.agent = createProxyTunnelAgent(proxy, headerTimeoutMs, trust);
 		return new Promise((resolve, reject) => {
 			let pending;
 			const timer = setTimeout(() => pending?.destroy(downloadTimeoutError("headers")), headerTimeoutMs);
 			const fail = (error) => { clearTimeout(timer); reject(error); };
-			pending = request(parsed, { headers: { "user-agent": "gentle-pi-installer" } }, (response) => {
+			pending = request(parsed, requestOptions, (response) => {
 				clearTimeout(timer);
 				const status = response.statusCode ?? 0, location = response.headers.location;
 				if (status >= 300 && status < 400 && location) { response.resume(); return remainingRedirects <= 0 ? fail(new Error("Gentle AI download exceeded redirect limit")) : responseFor(new URL(location, parsed).toString(), remainingRedirects - 1).then(resolve, reject); }
@@ -210,7 +233,7 @@ export async function downloadGentleAiAsset(url, destination, maxBytes = MAX_DOW
 				const finish = (callback, value) => { if (settled) return; settled = true; clearTimeout(timer); void closed().then(() => callback(value)); };
 				const fail = (error) => { response.destroy(); output.destroy(); finish(reject, error); };
 				const reset = () => { clearTimeout(timer); timer = setTimeout(() => response.destroy(downloadTimeoutError("body")), bodyTimeoutMs); };
-				response.on("data", (chunk) => { reset(); received += chunk.length; if (received > maxBytes) response.destroy(new Error("Gentle AI download exceeds the maximum allowed size")); });
+				response.on("data", (chunk) => { reset(); received += chunk.length; if (received > maxBytes) response.destroy(new Error("Gentle AI download exceeds the maximum allowed size")); else report(received, contentLength > 0 ? contentLength : undefined); });
 				response.on("error", fail); response.setTimeout?.(bodyTimeoutMs, () => response.destroy(downloadTimeoutError("body")));
 				output.on("error", fail); output.on("finish", () => finish(resolve)); response.pipe(output);
 			});
@@ -661,7 +684,7 @@ async function installWindowsGentleAiFromGoSumdb(options, packageRoot, architect
 	const execute = options.execFile ?? execFileAsync;
 	return withInstallLock(packageRoot, options, async (runtimeRoot) => {
 		await cleanupStaleStagingBundles(runtimeRoot);
-		const stagingDirectory = await mkdtemp(join(runtimeRoot, `.v${INSTALLER_VERSION}.staging-`));
+		const stagingDirectory = await mkdtemp(toNamespacedPath(join(runtimeRoot, `.v${INSTALLER_VERSION}.staging-`)));
 		// Go builds in a short private directory under the system temp directory, never inside
 		// the package: from a deep pnpm store path (179 characters, run 38063142924) the
 		// working directories Go gives asm.exe inside GOMODCACHE exceed MAX_PATH and
@@ -704,7 +727,7 @@ async function installSignedRelease(options, packageRoot, platform, arch, asset)
 		await cleanupStaleStagingBundles(runtimeRoot);
 		const existing = versionBundlePath(runtimeRoot);
 		if (await existingSignedBundleMatches(existing, asset, platform)) return { installed: false, binaryPath: join(existing, asset.executable), asset };
-		const stagingDirectory = await mkdtemp(join(runtimeRoot, `.v${INSTALLER_VERSION}.staging-`));
+		const stagingDirectory = await mkdtemp(toNamespacedPath(join(runtimeRoot, `.v${INSTALLER_VERSION}.staging-`)));
 		try {
 			const form = gentleAiAssetForm(asset.name);
 			const archive = join(stagingDirectory, asset.name);

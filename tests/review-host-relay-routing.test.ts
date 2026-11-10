@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -15,7 +15,7 @@ import { REVIEW_HOST_RELAY_FAILURE, REVIEW_HOST_RELAY_PI_TIMEOUT_ENV, REVIEW_HOS
 import { decodeReviewFailureV2, decodeReviewNextTransitionV3, decodeReviewStatusV3, type ReviewArtifactSubjectV2, type ReviewCaptureSubmissionV1, type ReviewCollectInputV3, type ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import type { InProcessReviewerRegistry } from "../lib/inprocess-reviewer.ts";
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createSessionProfileClear, createSessionProfileStartupBind, SESSION_PROFILE_CUSTOM_TYPE } from "../lib/session-profile-persistence.ts";
+import { createSessionProfileBind, createSessionProfileClear, createSessionProfileStartupBind, SESSION_PROFILE_CUSTOM_TYPE } from "../lib/session-profile-persistence.ts";
 import { readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import { resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import { resetFrozenInheritedProfilesForTesting, resolveSessionProfile, sessionProfileRoutingAt } from "../lib/session-profile-freeze.ts";
@@ -1217,7 +1217,7 @@ const PINNED_COMPLETE: AgentModelConfig = {
 // three reviewer roles that models.json still configures.
 const PINNED_PARTIAL: AgentModelConfig = { "review-risk": { model: "pinned/risk-model" } };
 
-function pinFixture(t: test.TestContext): string {
+function pinFixture(t: test.TestContext, globalModels: AgentModelConfig | "absent" = GLOBAL_MODELS): string {
 	const configHome = mkdtempSync(join(tmpdir(), "gentle-pi-relay-pin-config-"));
 	const previous = process.env.GENTLE_PI_CONFIG_HOME;
 	const previousDevBinary = process.env[GENTLE_AI_DEV_BINARY_ENV];
@@ -1240,7 +1240,7 @@ function pinFixture(t: test.TestContext): string {
 	store = createProfile(store, "pinned-complete", PINNED_COMPLETE);
 	store = createProfile(store, "pinned-partial", PINNED_PARTIAL);
 	writeProfilesFileSync(profilesFilePath(configHome), store);
-	writeFileSync(join(configHome, "models.json"), `${JSON.stringify(GLOBAL_MODELS, null, 2)}\n`);
+	if (globalModels !== "absent") writeFileSync(join(configHome, "models.json"), `${JSON.stringify(globalModels, null, 2)}\n`);
 	return repository(t);
 }
 
@@ -1403,6 +1403,7 @@ test("a pinned profile missing a required group role is refused typed before any
 	const failure = result.failure as { kind?: string } | undefined;
 	assert.equal(failure?.kind, "reviewer-config-invalid");
 	assert.match(String(result.reason), /no model is configured for review-resilience/, "whole-profile precedence: models.json must not fill the pinned profile's gaps");
+	assert.match(String(result.reason), /\(routing source: repository profile pin; the review-resilience entry is missing\)/, "the refusal names where the routing came from");
 	assert.equal(modelLookups, 0, "the typed refusal fires before any model resolution");
 	assert.equal(authAttempts, 0, "the typed refusal fires before any provider auth");
 });
@@ -1642,4 +1643,101 @@ test("a startup record's orchestrator feeds the provider review roles while laun
 	assert.equal(__testing.reviewHostRelaySelection("risk", routing).selection, "team/risk-model");
 	const resolution = resolveSessionProfile({ sessionId, cwd, configHome: process.env.GENTLE_PI_CONFIG_HOME! });
 	assert.deepEqual([resolution.kind, sessionProfileRoutingAt(resolution, { cwd, configHome: process.env.GENTLE_PI_CONFIG_HOME! })], ["inherited", { "review-risk": { model: "team/risk-model" } }], "launch routing stays role-only");
+});
+
+// gentle-shell#2163: with no binding, pin or frozen profile the reviewer reads
+// the same global effective routing the models panel shows and launches use
+// (#1731), so a lens routed only through subagents.json is not refused. An
+// explicit snapshot stays whole and fail-closed (#1544/#2477).
+function agentHomeRouting(t: test.TestContext, modelProfiles: Record<string, unknown>): void {
+	isolatedAgentHome(t);
+	const agentHome = process.env.GENTLE_PI_AGENT_HOME!;
+	mkdirSync(join(agentHome, "agents"), { recursive: true });
+	for (const name of Object.keys(modelProfiles)) writeFileSync(join(agentHome, "agents", `${name}.md`), `---\nname: ${name}\ndescription: fixture lens\n---\nReview.\n`);
+	writeFileSync(join(agentHome, "subagents.json"), `${JSON.stringify({ model_profiles: modelProfiles }, null, 2)}\n`);
+}
+
+test("without a binding or pin the reviewer reads the global effective routing the panel shows", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const cwd = pinFixture(t, "absent");
+	agentHomeRouting(t, { "review-risk": { model: "agenthome/risk-model", effort: "high" } });
+	const lineageId = "relay-effective-routing";
+	const harness = nativeHarness([finalizeStatus(lineageId, [relayCollectInput(lineageId, "review-risk", 0)])]);
+	const relayed: ReviewHostRelayRequest[] = [];
+	__testing.setReviewHostRelayRunnerForTesting(async (request) => {
+		relayed.push(request);
+		return { promptByteLength: 64, resultByteLength: 32, submission: '{"admission_decision":"completed"}' };
+	});
+
+	const reviewer = __testing.readReviewerModelConfig(cwd, undefined);
+	const result = await runCapture(cwd, harness, lineageId);
+
+	assert.deepEqual(reviewer, __testing.readEffectiveModelConfig(cwd), "what the panel shows is what the reviewer reads");
+	assert.deepEqual(reviewer["review-risk"], { model: "agenthome/risk-model", thinking: "high" });
+	assert.equal(result.status, "captured");
+	assert.deepEqual([relayed[0]!.routingKey, relayed[0]!.selection, relayed[0]!.thinking], ["review-risk", "agenthome/risk-model", "high"]);
+});
+
+test("an explicit session binding that omits a lens still refuses, naming the binding as its source", async (t) => {
+	const cwd = pinFixture(t);
+	agentHomeRouting(t, { "review-resilience": { model: "agenthome/resilience-model" } });
+	const manager = profileSession(t, SESSION_PROFILE_CUSTOM_TYPE, createSessionProfileBind("partial", { "review-risk": { model: "bound/risk-model" } }));
+	const sessionId = manager.getSessionId(), lineageId = "relay-binding-missing-lens";
+	const input = relayCollectInput(lineageId, "review-resilience", 0);
+	const harness = nativeHarness([finalizeStatus(lineageId, [input])]);
+	let modelLookups = 0;
+	const registry: InProcessReviewerRegistry = { find: () => { modelLookups += 1; return undefined; }, getApiKeyAndHeaders: async () => ({ ok: true }) };
+
+	const result = await __testing.executeReviewCaptureOperation({ lineageId, collectBinding: JSON.stringify(input), reviewerRunAcknowledged: true }, cwd, harness.native, undefined, undefined, undefined, false, registry, sessionId, undefined, manager) as Record<string, unknown>;
+
+	assert.equal(resolveSessionProfile({ sessionId, cwd, configHome: process.env.GENTLE_PI_CONFIG_HOME! }).kind, "explicit");
+	assert.equal(__testing.readReviewerModelConfig(cwd, sessionId)["review-resilience"], undefined, "neither models.json nor subagents.json fills the binding's gap");
+	assert.equal(result.status, "blocked");
+	assert.equal((result.failure as { kind?: string } | undefined)?.kind, "reviewer-config-invalid");
+	assert.match(String(result.reason), /no model is configured for review-resilience \(routing source: session profile binding; the review-resilience entry is missing\)/);
+	assert.equal(modelLookups, 0, "the typed refusal fires before any model resolution");
+});
+
+test("a frozen startup profile that omits a lens keeps its whole snapshot over the effective routing", async (t) => {
+	const cwd = pinFixture(t);
+	agentHomeRouting(t, { "review-resilience": { model: "agenthome/resilience-model" } });
+	const manager = profileSession(t, SESSION_PROFILE_CUSTOM_TYPE, createSessionProfileStartupBind("global", "team", { "review-risk": { model: "team/risk-model" } }));
+	assert.equal(readSessionProfileAuthority(manager).available, true);
+	const sessionId = manager.getSessionId();
+
+	const routing = __testing.readReviewerModelConfig(cwd, sessionId);
+
+	assert.deepEqual(routing, { "review-risk": { model: "team/risk-model" } });
+	assert.deepEqual(__testing.reviewHostRelaySelection("resilience", routing), { routingKey: "review-resilience" }, "lens roles stay fail-closed");
+});
+
+// The reviewed candidate never selects its own reviewer: the unpinned reviewer
+// reads the global effective routing from the session's directory, as the
+// launcher does, never from the target's project agents or subagents.json.
+function plantCandidateReviewer(target: string): void {
+	mkdirSync(join(target, ".pi", "agents"), { recursive: true });
+	writeFileSync(join(target, ".pi", "agents", "review-risk.md"), "---\nname: review-risk\ndescription: x\nmodel: candidate/chosen-model\n---\nx\n");
+}
+
+test("an unpinned reviewer never reads routing from the reviewed target's own project agents", (t) => {
+	const session = pinFixture(t, "absent");
+	agentHomeRouting(t, { "review-risk": {} });
+	const target = repository(t);
+	plantCandidateReviewer(target);
+	const routing = __testing.readReviewerModelConfig(target, "sid-target-agents", session);
+	assert.deepEqual(routing["review-risk"], __testing.readEffectiveModelConfig(session)["review-risk"], "the reviewer reads the session's routing, not the candidate's");
+	assert.equal(__testing.reviewHostRelaySelection("risk", routing).selection, undefined, "the lens stays fail-closed");
+});
+
+test("an unpinned reviewer never reads routing from a same-clone worktree target's project agents", (t) => {
+	const session = pinFixture(t, "absent");
+	agentHomeRouting(t, { "review-risk": {} });
+	const parent = mkdtempSync(join(tmpdir(), "gentle-pi-relay-worktree-"));
+	t.after(() => rmSync(parent, { recursive: true, force: true }));
+	const target = join(parent, "writer");
+	execFileSync("git", ["worktree", "add", "-q", "-b", "writer", target], { cwd: session });
+	plantCandidateReviewer(target);
+	const routing = __testing.readReviewerModelConfig(target, "sid-worktree-agents", session);
+	assert.deepEqual(routing["review-risk"], __testing.readEffectiveModelConfig(session)["review-risk"], "the reviewer reads the session's routing, not the writer worktree's");
+	assert.equal(__testing.reviewHostRelaySelection("risk", routing).selection, undefined, "the lens stays fail-closed");
 });

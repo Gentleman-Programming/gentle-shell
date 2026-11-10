@@ -1,6 +1,7 @@
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { getImageDimensions, type ImageDimensions } from "@earendil-works/pi-tui";
 import type { ClipboardImage } from "./clipboard-image.ts";
+import type { ImageDiskCache } from "./image-disk-cache.ts";
 
 // Pasted images live in the draft as atomic `[Image#N]` chips (gentle-shell#2464).
 // The bytes stay in memory: a chip deleted from the draft is never sent, and
@@ -20,6 +21,8 @@ export interface ImageAttachment {
 	byteLength: number;
 	base64: string;
 	dimensions?: ImageDimensions;
+	/** Present only when a disk cache was supplied; never injected into the prompt. */
+	diskPath?: string;
 }
 
 export interface SubmittedImages {
@@ -42,6 +45,35 @@ export class ImageAttachments {
 	// Never reset: Pi's prompt history keeps the raw submitted text, so a
 	// reused id would let a recalled `[Image#1]` bind to a different image.
 	private counter = 0;
+	private cache?: ImageDiskCache;
+
+	/** Attach or drop the disk cache at runtime (session start and shutdown). */
+	setCache(cache?: ImageDiskCache): void {
+		this.cache = cache;
+	}
+
+	/** Cached files for the chips still in the draft; empty when no cache is active. */
+	cachedPaths(draftText?: string): Array<{ token: string; path: string }> {
+		const inDraft = draftText === undefined ? undefined : new Set(this.referenced(draftText).map((entry) => entry.id));
+		return [...this.entries.values()].flatMap((entry) =>
+			entry.diskPath && (inDraft === undefined || inDraft.has(entry.id)) ? [{ token: entry.token, path: entry.diskPath }] : [],
+		);
+	}
+
+	/**
+	 * An optional disk cache. Without one the class behaves exactly as before:
+	 * bytes stay in memory and no path exists. With one, each added image also
+	 * gets a private file the agent's tools can read; the path never enters the
+	 * prompt, the base64 payload stays the source of truth for submission.
+	 */
+	constructor(cache?: ImageDiskCache) {
+		this.cache = cache;
+	}
+
+	/** Drop the session's cached files. Safe to call when no cache was given. */
+	dispose(): void {
+		this.cache?.dispose();
+	}
 
 	get size(): number { return this.entries.size; }
 
@@ -57,6 +89,7 @@ export class ImageAttachments {
 			byteLength: image.bytes.length,
 			base64,
 			dimensions: getImageDimensions(base64, image.mimeType) ?? undefined,
+			diskPath: this.cache?.write(id, image.bytes, image.mimeType),
 		};
 		this.entries.set(id, attachment);
 		return attachment;

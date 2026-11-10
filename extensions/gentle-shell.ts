@@ -5,6 +5,7 @@ import { Editor, Image, Key, decodeKittyPrintable, getCapabilities, isKeyRelease
 import { readClipboardImage, type ClipboardImage } from "../lib/clipboard-image.ts";
 import { readPastedImagePaths } from "../lib/pasted-image-paths.ts";
 import { describeAttachment, ImageAttachments } from "../lib/image-attachments.ts";
+import { defaultCacheRoot, ImageDiskCache } from "../lib/image-disk-cache.ts";
 import { execFile, spawnSync } from "node:child_process";
 import { openInExternalEditor, type ExternalEditorHost } from "../lib/external-editor.ts";
 import { existsSync, realpathSync, statSync } from "node:fs";
@@ -49,6 +50,7 @@ import { isNanAdaptiveReasoningModel } from "../lib/nan-provider.ts";
 import { resolveAnimationPolicy, writeAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy, type VimPolicy } from "../lib/vim-policy.ts";
 import { resolveHistoryCapture, writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
+import { HERDR_TASK_SUMMARY_CHANGED, resolveHerdrTaskSummarySettings, writeHerdrTaskSummarySettings } from "../lib/herdr-task-summary-policy.ts";
 import { createRequire } from "node:module";
 import { createVimEditorAdapter, isAuditedPiEditorVersion } from "../lib/vim-editor-adapter.ts";
 import { VimNormalEngine } from "../lib/vim-normal-engine.ts";
@@ -1638,6 +1640,7 @@ function renderDoubleEscCancelReport(
 const CHANGES_WIDGET_KEY = "gentle-shell-changes";
 const HEADER_WIDGET_KEY = "gentle-shell-below-input-header";
 const CHANGES_COMMAND_NAME = "gentle:changes";
+const IMAGES_COMMAND_NAME = "gentle:images";
 const CHANGES_POLL_DEFAULT_MS = 2000;
 const GIT_TIMEOUT_MS = 5000;
 const COMMANDS_COMMAND_NAME = "gentle:commands";
@@ -2409,6 +2412,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let prompt: GentlePromptEditor | undefined;
 	// Images pasted into the current draft; emptied on every submit.
 	const imageAttachments = new ImageAttachments();
+	// Opt-in disk cache for tools that need a real file path. Off unless the user
+	// asks for it: `GENTLE_PI_IMAGES_DISK_CACHE=session`. The path is never put in
+	// the prompt; it is readable through /gentle:images only.
+	const imagesDiskCachePolicy = (env.GENTLE_PI_IMAGES_DISK_CACHE ?? "off").trim().toLowerCase() === "session" ? "session" : "off";
 	// Set by abortAndDispatchQueued via dispatchQueuedText when an Esc aborts
 	// a turn with a non-empty queue; sent exactly once, from agent_settled,
 	// once the aborted run has fully settled (issue #1218). Several aborts
@@ -2526,6 +2533,15 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	});
 	pi.on("session_start", async (_event, ctx) => {
 		customizeGeneration++;
+		if (imagesDiskCachePolicy === "session") {
+			const cacheRoot = defaultCacheRoot(env);
+			try {
+				ImageDiskCache.sweepStale(cacheRoot, 7 * 24 * 60 * 60 * 1000);
+			} catch {
+				// A sweep that cannot run must never block the session.
+			}
+			imageAttachments.setCache(new ImageDiskCache({ root: cacheRoot, sessionId: ctx.sessionManager.getSessionId() }));
+		}
 		closeCustomize?.();
 		runningJobs = undefined;
 		adaptiveReasoningNotices.clear();
@@ -2970,6 +2986,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	pi.on("session_shutdown", (_event, ctx) => {
 		customizeGeneration++;
 		disposeFooter?.();
+		imageAttachments.dispose();
+		imageAttachments.setCache(undefined);
 		closeCustomize?.();
 		if (review) {
 			review = undefined;
@@ -3019,6 +3037,21 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		if (failed > 0) ctx.ui.notify(`Git status failed for ${failed} ${failed === 1 ? "root" : "roots"}; ${failed === 1 ? "its" : "their"} changes are not listed.`, "warning");
 		await showChangesOverlay(ctx, { loadDiff: (root, file) => loadFileDiff(deps.gitRunner(root, DIFF_MAX_BYTES), file), worktrees: () => tracker.worktrees, refresh: () => tracker.refresh(), apply: applyChanges, pollMs: changesPollMs(env) });
 	};
+	pi.registerCommand(IMAGES_COMMAND_NAME, {
+		description: "List the on-disk paths of images pasted in this draft (needs GENTLE_PI_IMAGES_DISK_CACHE=session).",
+		handler: async (_args, ctx) => {
+			if (imagesDiskCachePolicy !== "session") {
+				ctx.ui.notify("Image disk cache is off. Set GENTLE_PI_IMAGES_DISK_CACHE=session to enable it.", "info");
+				return;
+			}
+			const cached = imageAttachments.cachedPaths(prompt?.getText() ?? "");
+			if (cached.length === 0) {
+				ctx.ui.notify("No pasted images are cached in this draft.", "info");
+				return;
+			}
+			for (const entry of cached) ctx.ui.notify(`${entry.token} ${entry.path}`, "info");
+		},
+	});
 	pi.registerCommand(CHANGES_COMMAND_NAME, {
 		description: "Browse uncommitted Git changes (working tree vs HEAD, untracked included) in this session's repository and its subagents' worktrees. Press o to open $EDITOR.",
 		handler: async (_args, ctx) => openChanges(ctx),
@@ -3087,7 +3120,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		});
 	}
 	pi.registerCommand("gentle:customize", {
-		description: "Configure appearance, audio notifications, Vim editing, RDD, session permissions and global Auto/YOLO defaults, and prompt history capture.",
+		description: "Configure appearance, task summary publishing, audio notifications, Vim editing, RDD, session permissions and global Auto/YOLO defaults, and prompt history capture.",
 		handler: async (_args, ctx) => {
 			if (ctx.mode !== "tui" || !ctx.hasUI) {
 				if (ctx.hasUI) ctx.ui.notify("Customization requires an interactive terminal.", "warning");
@@ -3363,6 +3396,23 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			});
 			rows.push(...buildNotificationRows(ctx));
 			category = "Layout";
+			const taskSummary = () => resolveHerdrTaskSummarySettings(home);
+			const taskSummaryCurrent = (enabled: boolean) => {
+				const current = taskSummary();
+				return !current.malformed && !current.readError && current.settings.enabled === enabled;
+			};
+			for (const enabled of [true, false]) add(
+				() => `Task summary: ${enabled ? "on" : "off"}${taskSummaryCurrent(enabled) ? " (current)" : ""}`,
+				`Task summary: ${enabled ? "on" : "off"}. Applies now to the active-task summary published to terminal tools (for example Herdr's sidebar).`,
+				() => {
+					const current = taskSummary();
+					if (current.malformed || current.readError) throw new Error(`Cannot update malformed or unreadable task summary preference: ${current.globalFile}`);
+					writeHerdrTaskSummarySettings({ ...current.settings, enabled }, home);
+					pi.events.emit(HERDR_TASK_SUMMARY_CHANGED, { configHome: doubleEscCancelConfigHome });
+				},
+				undefined,
+				{ ...explicitChoice("Task summary", enabled ? "on" : "off", () => taskSummaryCurrent(enabled)), hint: "Controls the task summary published to terminal tools" },
+			);
 			// Presets set the visibility switches and keep the placements, the density and the surface; any switch below still overrides them.
 			for (const preset of Object.values(VISUAL_PRESET)) add(() => `Preset: ${PRESET_LABEL[preset]}${visualPresetOf(visual()) === preset ? " (current)" : ""}`, pending, () => updateVisual((settings) => applyVisualPreset(settings, preset)), () => layoutPreview(applyVisualPreset(visual(), preset)),
 				layoutChoice("Preset", PRESET_LABEL[preset], () => visualPresetOf(visual()) === preset, "Light hides the rail, Power user adds Stats; alt+l cycles them"));

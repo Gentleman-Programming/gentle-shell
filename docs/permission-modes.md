@@ -1,6 +1,6 @@
 # Choose how permission questions are handled
 
-Use **Normal**, **Auto**, **YOLO**, or **Super Yolo** for the current primary session. Optionally save any of them as the user-global default for future sessions. These modes do not redesign Gentle Shell delegation, expand the task you authorized, or replace independent safety and consent.
+Use **Normal**, **Auto**, **YOLO**, or **Super Yolo** for the current primary session. Optionally save any of them as the user-global default for future sessions. These modes do not redesign Gentle Shell delegation, expand the task you authorized, or replace independent safety and consent. One always-on exception: reading the task's exact resolved skill files (the selected `SKILL.md` plus its referenced instruction files, by registry, catalog or parent-supplied paths) needs no per-file permission question in any mode; secrets, sensitive paths, unrelated personal files and explicit user prohibitions still apply.
 
 ## Tool context in Auto
 
@@ -92,6 +92,10 @@ An allow verdict only returns control to the original executor and remaining gua
 - User-question tools, native review/maintenance consent, opaque-token decisions and delegation-control tools retain their independent contracts. The classifier does not answer them.
 - The mode does not choose an unknown remote destination, account or credential, or authorize ambient credential discovery.
 - Calls that execute outside Pi's intercepted tool pipeline are outside this hook's coverage. A custom tool is inspected by its name and arguments, not by executing or proving its implementation.
+
+### Execution-surface guard
+
+A tool call whose input sets `openProjectPaneIfMissing` to anything but `false` is blocked before any prompt or execution, in every mode including YOLO and super-YOLO, and in child sessions. The reason carries the stable code `gentle-ai.execution-surface.external-fallback-prohibited`; run the work through `subagent_*` or the native `Agent` in the current runtime instead, or stop and tell the user.
 
 ## Failure behavior and cost
 

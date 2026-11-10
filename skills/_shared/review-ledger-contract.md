@@ -73,7 +73,7 @@ Permanent Pi-owned consumer infrastructure is limited to canonical identity prim
 
 ## Delivery boundary
 
-Commit, push, pull-request creation, and release creation are not RDD gates. Review outcomes and receipt state are informational and never authorize, consume, rewrite, or block a Bash delivery command; ordinary repository policy owns delivery. Pi does not inspect RDD mode or native authority for those commands.
+Commit, push, pull-request creation, and release creation are not provider receipt gates. Review outcomes and receipt state never authorize delivery; ordinary repository policy owns it. With RDD on, the existing session registry retains the selected committed base; reassess it immediately before delivery, once per repository/call. Native non-due outcomes and exact host-recorded human declines retain ordinary policy. Foreground push/PR batches and shell wrappers are allowed; candidate-changing commands and background waits finish separately. A missing base, changed range during the read or due review pauses delivery. No cached verdict or parallel registry is used. This does not recreate provider receipt gates or prove a remote PR's identity; see docs/review-delivery-preflight.md for the detection boundary.
 
 Dangerous-command confirmation/safety and destructive-review-maintenance consent remain independent. Review transactions, validation, and SDD never perform delivery commands themselves.
 

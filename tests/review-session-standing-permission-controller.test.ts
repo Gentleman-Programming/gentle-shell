@@ -310,10 +310,12 @@ function piConsent() {
 
 function controllerHarness(cwd: string, processEnv: NodeJS.ProcessEnv = {}, options: {
 	answerConsentError?: Error & { mutationOutcome?: "none" | "unknown" };
+	beforeAnswerConsent?: () => void;
 	startAction?: "created" | "resumed" | "replayed" | "closed" | "blocked-scope-action";
 	childStandingReviewPermissionClient?: ChildStandingReviewPermissionClient;
 	consent?: ReviewConsentEnvelope;
 	targetStatus?: (request: Record<string, unknown>) => Promise<ReviewStatusV3>;
+	emitted?: Array<{ channel: string; data: unknown }>;
 } = {}) {
 	const tools = new Map<string, RegisteredTool>();
 	const commands = new Map<string, RegisteredCommand>();
@@ -328,6 +330,7 @@ function controllerHarness(cwd: string, processEnv: NodeJS.ProcessEnv = {}, opti
 		answerConsent: async (request: { cwd: string; consent: { raw: unknown }; answer: "granted" | "declined" }) => {
 			answers.push(request.answer);
 			answerRequests.push(request);
+			options.beforeAnswerConsent?.();
 			if (options.answerConsentError !== undefined && answers.length === 1) throw options.answerConsentError;
 			if (request.answer === "declined") return {
 				kind: "declined",
@@ -347,7 +350,7 @@ function controllerHarness(cwd: string, processEnv: NodeJS.ProcessEnv = {}, opti
 		on(name: string, handler: RegisteredEvent) { events.set(name, handler); },
 		registerCommand(name: string, definition: RegisteredCommand) { commands.set(name, definition); },
 		registerTool(definition: RegisteredTool & { name: string }) { tools.set(definition.name, definition); },
-		events: { emit() {} },
+		events: { emit(channel: string, data: unknown) { options.emitted?.push({ channel, data }); } },
 	} as unknown as ExtensionAPI);
 	const controller = tools.get("gentle_review");
 	assert.ok(controller);
@@ -460,6 +463,25 @@ test("provider grant and decline remain candidate-only and cancellation stores n
 	assert.equal(prompts, 3, "neither provider choice creates standing host permission");
 });
 
+test("the review consent prompt projects one balanced Herdr blocker while it awaits the human", async (t) => {
+	const cwd = reviewRepository(t);
+	const emitted: Array<{ channel: string; data: unknown }> = [];
+	const runtime = controllerHarness(cwd, {}, { emitted });
+	const herdr = () => emitted.filter(({ channel }) => channel === "herdr:blocked").map(({ data }) => data);
+	const observedWhilePrompting: unknown[][] = [];
+	const ctx = interactiveContext(cwd, {}, async (_title, options) => {
+		observedWhilePrompting.push(herdr());
+		return options[0];
+	});
+	await runtime.controller.execute("herdr-consent", { operation: "start", input: JSON.stringify({ mode: "ordinary" }) }, undefined, undefined, ctx);
+	assert.deepEqual(observedWhilePrompting, [[{ active: true, label: "Review authorization awaiting input" }]], "Herdr sees the pane as blocked while the authorization is open");
+	assert.deepEqual(herdr(), [
+		{ active: true, label: "Review authorization awaiting input" },
+		{ active: false },
+	], "the blocker is released once the human answers");
+	assert.deepEqual(runtime.answers, ["granted"]);
+});
+
 test("explicit revocation ends the host grant without changing provider mode or authority", async (t) => {
 	const cwd = reviewRepository(t);
 	const runtime = controllerHarness(cwd);
@@ -520,10 +542,13 @@ test("blocked-scope-action never persists host permission", async (t) => {
 	const runtime = controllerHarness(cwd, {}, { startAction: "blocked-scope-action" });
 	let prompts = 0;
 	const ctx = interactiveContext(cwd, {}, async (_title, options) => options[prompts++ === 0 ? 2 : 1]);
+	const notices: string[] = [];
+	ctx.ui.notify = text => { notices.push(text); };
 	const start = { operation: "start", input: JSON.stringify({ mode: "ordinary" }) };
 	const blocked = (await runtime.controller.execute("blocked-host-choice", start, undefined, undefined, ctx)).details;
 	assert.equal((blocked.result as { action?: string }).action, "blocked-scope-action");
 	assert.equal((blocked.result as { state?: string }).state, "unreviewed");
+	assert.match(notices.at(-1) ?? "", /session permission was not stored.*native response/i);
 	writeFileSync(join(cwd, "app.ts"), "export const value = 3;\n");
 	await runtime.controller.execute("after-blocked-scope", start, undefined, undefined, ctx);
 	assert.equal(prompts, 2, "pending explicit scope action must leave the next candidate behind a fresh prompt");
@@ -561,13 +586,33 @@ test("a failed consent invocation never arms host permission", async (t) => {
 	const runtime = controllerHarness(cwd, {}, { answerConsentError: failure });
 	let prompts = 0;
 	const ctx = interactiveContext(cwd, {}, async (_title, options) => options[prompts++ === 0 ? 2 : 1]);
+	const notices: string[] = [];
+	ctx.ui.notify = text => { notices.push(text); };
 	const start = { operation: "start", input: JSON.stringify({ mode: "ordinary" }) };
 	const failed = (await runtime.controller.execute("failed-host-choice", start, undefined, undefined, ctx)).details;
 	assert.equal(failed.outcome, "native-operation-failed");
+	assert.match(notices.at(-1) ?? "", /session permission was not stored.*native response/i);
 	writeFileSync(join(cwd, "app.ts"), "export const value = 3;\n");
 	await runtime.controller.execute("after-error", start, undefined, undefined, ctx);
 	assert.equal(prompts, 2, "a native error must leave the next candidate behind a fresh prompt");
 	assert.deepEqual(runtime.answers, ["granted", "declined"]);
+});
+
+test("a session change during the native consent answer cannot store the old session grant", async t => {
+	const cwd = reviewRepository(t);
+	let session = "before-answer";
+	const manager = { getSessionId: () => session };
+	const runtime = controllerHarness(cwd, {}, { beforeAnswerConsent: () => { session = "after-answer"; } });
+	const ctx = interactiveContext(cwd, manager, async (_title, options) => options[2]);
+	manager.getSessionId = () => session;
+	const notices: string[] = [];
+	ctx.ui.notify = text => { notices.push(text); };
+	const original = await captureReviewSessionIdentity(ctx);
+	assert.ok(original);
+	await runtime.controller.execute("changed-during-answer", { operation: "start", input: JSON.stringify({ mode: "ordinary" }) }, undefined, undefined, ctx);
+	assert.deepEqual(runtime.answers, ["granted"], "the actual candidate answer is preserved");
+	assert.equal(hasReviewSessionPermission(original), false, "a stale live-session identity cannot receive standing permission");
+	assert.match(notices.at(-1) ?? "", /session permission was not stored.*session or repository changed/i);
 });
 
 test("headless, child, and changed post-UI identity never use host permission", async (t) => {
@@ -585,6 +630,7 @@ test("headless, child, and changed post-UI identity never use host permission", 
 
 	const runtime = controllerHarness(cwd);
 	const manager = { sessionId: "before", getSessionId() { return this.sessionId; } };
+	const notices: string[] = [];
 	const ctx = {
 		cwd,
 		mode: "tui",
@@ -592,7 +638,7 @@ test("headless, child, and changed post-UI identity never use host permission", 
 		sessionManager: manager,
 		ui: {
 			custom: consentCustom(async (_title: string, options: string[]) => { manager.sessionId = "after"; return options[2]; }),
-			notify() {},
+			notify(text: string) { notices.push(text); },
 			setStatus() {},
 			theme: { fg: (_color: string, text: string) => text },
 		},
@@ -600,6 +646,7 @@ test("headless, child, and changed post-UI identity never use host permission", 
 	const switched = (await runtime.controller.execute("switched", start, undefined, undefined, ctx)).details;
 	assert.equal(switched.outcome, "native-review-consent-required");
 	assert.deepEqual(runtime.answers, []);
+	assert.match(notices.at(-1) ?? "", /session permission was not stored.*session or repository changed/i);
 });
 
 test("standing permission never replays provider v2 or non-Pi v3 consents", async (t) => {

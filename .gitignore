@@ -34,3 +34,6 @@ tmp/
 
 # CodeGraph index (recreated by pi on session start)
 .codegraph/
+
+# Scratch directories written by the herdr activity tests
+odd/work/

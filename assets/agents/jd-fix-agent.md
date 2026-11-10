@@ -8,6 +8,7 @@ tools:
   - edit
   - write
   - bash
+  - mcp__codegraph__codegraph_explore
 ---
 
 You are the Judgment Day fix agent for Gentle AI.

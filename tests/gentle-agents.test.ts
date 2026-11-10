@@ -1204,6 +1204,65 @@ test("child parent-message tooling admits notifications and the active parent pr
 	assert.deepEqual(runtime.children[0].sent, [{ id: "n1", kind: "ack", accepted: true }, { id: "n2", kind: "ack", accepted: false, error: "task parent is not the active host session" }]);
 	await parent.fire("session_shutdown", ctx);
 });
+
+// #2266: a child with the forwarded job capability and owned IPC registers the
+// background job tools for its own session; the monitor stays parent-only.
+function childJobsChild(env: NodeJS.ProcessEnv, overrides: Partial<AgentsDeps> = {}) {
+	const child = fakePi();
+	const listeners = new Map<string, Array<(value: Record<string, unknown>) => void>>();
+	const frames: Array<Record<string, unknown>> = [];
+	gentleAgents(child.pi, { GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: "fixture", ...env }, {
+		childIpc: {
+			send: (frame: Record<string, unknown>) => { frames.push(frame); return true; },
+			on: (event: string, listener: (value: Record<string, unknown>) => void) => listeners.set(event, [...(listeners.get(event) ?? []), listener]),
+		},
+		...overrides,
+	});
+	return { child, frames, listeners };
+}
+
+test("a child with the forwarded job capability registers bash_background/job_list/job_stop privately, never the monitor", () => {
+	const jobs = fakeJobShell();
+	const { child } = childJobsChild({ GENTLE_PI_AGENTS_CHILD_JOBS: "1" }, { jobShell: jobs.shell, jobOutputDir: () => jobs.dir, now: () => 1_000 });
+	try {
+		assert.deepEqual([...child.tools.keys()].sort(), ["bash_background", "job_list", "job_stop", "subagent_parent_message"]);
+		assert.equal(child.tools.has("monitor"), false, "the monitor stays parent-only");
+	} finally { jobs.cleanup(); }
+});
+
+test("a child without the forwarded job capability keeps only parent messaging", () => {
+	const child = fakePi();
+	gentleAgents(child.pi, { GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: "fixture" }, {
+		childIpc: { send: () => true, on: () => undefined },
+	});
+	assert.deepEqual([...child.tools.keys()], ["subagent_parent_message"]);
+});
+
+test("a child without owned IPC never registers background job tools even with the forwarded capability", () => {
+	const child = fakePi();
+	gentleAgents(child.pi, { GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_CHILD_JOBS: "1" });
+	assert.deepEqual([...child.tools.keys()], []);
+});
+
+test("a child reports its background job state to the parent and delivers the exit notice to its own session", async () => {
+	const jobs = fakeJobShell();
+	const { child, frames } = childJobsChild({ GENTLE_PI_AGENTS_CHILD_JOBS: "1" }, { jobShell: jobs.shell, jobOutputDir: () => jobs.dir, now: () => 1_000 });
+	const { ctx } = fakeContext();
+	try {
+		await child.tools.get("bash_background")!.execute("b1", { command: "gh run watch 1 --exit-status", label: "CI" }, undefined, undefined, ctx);
+		assert.deepEqual(frames.at(-1), { id: "j1", kind: "job", message: JSON.stringify({ running: 1, pending: true }) });
+		await child.fire("agent_settled", ctx);
+		assert.deepEqual(frames.at(-1), { id: "j2", kind: "job", message: JSON.stringify({ running: 1, pending: true }) }, "settlement reports the still-running job");
+		jobs.runs[0]!.exit(0);
+		await eventually(() => child.sent.some((entry) => entry.message.customType === "gentle-jobs.notice"), "the child delivers its own job exit notice");
+		assert.deepEqual(frames.at(-1), { id: "j3", kind: "job", message: JSON.stringify({ running: 0, pending: false }) }, "the settlement report clears the running count");
+		const notice = child.sent.find((entry) => entry.message.customType === "gentle-jobs.notice")!;
+		assert.deepEqual(notice.options, { deliverAs: "steer", triggerTurn: true });
+		assert.equal(notice.message.display, true);
+		assert.match(String(notice.message.content), /Background job job-1/);
+	} finally { jobs.cleanup(); }
+});
+
 for (const boundary of ["allowed", "env", "session", "replacement", "bus-throws", "no-spawn", "long-running"] as const) {
 	test(`local child composition through real extensions and RPC runner: ${boundary}`, async (t) => {
 		const discarded: number[] = [];
@@ -5023,6 +5082,179 @@ test("session transport startup failure cleans the constructed Windows-capable t
 	assert.match((await h.tools.get("orchestrator_session_id")!.execute("id", {}, undefined, undefined, ctx)).content[0].text, /not ready/);
 });
 
+test("session transport startup failure re-arms exactly once on a later session event", async (t) => {
+	for (const mode of ["recovers", "fails-again", "first-succeeds", "agent-start"] as const) {
+		await t.test(mode, async () => {
+			const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+			const notices: Array<{ message: string; level: unknown }> = [];
+			ctx.ui.notify = (message, level) => { notices.push({ message, level }); };
+			let registries = 0, starts = 0, closes = 0;
+			const registry = { list: async () => [], listActivations: async () => [] };
+			runtime.deps.sessionTransport = {
+				createRegistry: async () => { registries++; return registry; },
+				createListener: () => ({ registry, start: async () => {
+					starts++;
+					if (mode !== "first-succeeds" && (starts === 1 || mode === "fails-again")) throw new Error("SECRET path token");
+				}, close: async () => { closes++; } }),
+				createClient: inertSessionTransport.createClient,
+			};
+			gentleAgents(h.pi, {}, runtime.deps);
+			await h.fire("session_start", ctx);
+			const id = async () => (await h.tools.get("orchestrator_session_id")!.execute("id", {}, undefined, undefined, ctx)).content[0].text;
+			const warning = { message: "Session transport startup failed: phase=listener diagnostics=unavailable.", level: "warning" };
+			if (mode === "first-succeeds") {
+				await eventually(() => starts === 1, "first startup");
+				await h.fire("turn_end", ctx);
+				await h.fire("agent_start", ctx);
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				assert.equal(registries, 1, "a live transport is never re-armed");
+				assert.deepEqual(notices, []);
+				await h.fire("session_shutdown", ctx);
+				return;
+			}
+			await eventually(() => notices.length === 1 && closes === 1, "first startup failure and cleanup");
+			assert.match(await id(), /not ready/);
+			await h.fire(mode === "agent-start" ? "agent_start" : "turn_end", ctx);
+			await eventually(() => starts === 2, "one re-arm attempt");
+			if (mode === "fails-again") {
+				await eventually(() => notices.length === 2 && closes === 2, "second failure warns again");
+				for (const event of ["turn_end", "agent_start", "turn_end"]) await h.fire(event, ctx);
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				assert.equal(registries, 2, "no further retries after the bounded re-arm");
+				assert.deepEqual(notices, [warning, warning]);
+				assert.match(await id(), /not ready/);
+			} else {
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				assert.doesNotMatch(await id(), /not ready/, "re-armed transport is active");
+				await h.fire("turn_end", ctx);
+				assert.equal(registries, 2);
+				assert.deepEqual(notices, [warning]);
+			}
+			await h.fire("session_shutdown", ctx);
+		});
+	}
+});
+
+test("session transport re-arm stays bounded across shutdown, pending close, and session replacement races", async (t) => {
+	for (const mode of ["shutdown", "close-pending", "session-switch", "changed-id"] as const) {
+		await t.test(mode, async () => {
+			const h = fakePi(), runtime = deps(), { ctx } = fakeContext(), { ctx: other } = fakeContext();
+			Object.assign(other.sessionManager, { getSessionId: () => "s2" });
+			const notices: string[] = [];
+			ctx.ui.notify = (message) => { notices.push(message); };
+			other.ui.notify = (message) => { notices.push(message); };
+			const starts = new Map<string, number>();
+			let registries = 0, closes = 0;
+			let releaseClose: (() => void) | undefined;
+			const closeGate = mode === "close-pending" ? new Promise<void>((resolve) => { releaseClose = resolve; }) : undefined;
+			const registry = { list: async () => [], listActivations: async () => [] };
+			runtime.deps.sessionTransport = {
+				createRegistry: async () => { registries++; return registry; },
+				createListener: (_registry, sessionId) => ({ registry, start: async () => {
+					starts.set(sessionId, (starts.get(sessionId) ?? 0) + 1);
+					throw new Error("SECRET");
+				}, close: async () => { closes++; if (closes === 1) await closeGate; } }),
+				createClient: inertSessionTransport.createClient,
+			};
+			gentleAgents(h.pi, {}, runtime.deps);
+			await h.fire("session_start", ctx);
+			await eventually(() => notices.length === 1, "first startup failure");
+			const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+			if (mode === "shutdown") {
+				await Promise.all([h.fire("session_shutdown", ctx), h.fire("agent_start", ctx), h.fire("turn_end", ctx)]);
+				const after = registries;
+				for (const event of ["agent_start", "turn_end"]) await h.fire(event, ctx);
+				await settle();
+				assert.equal(starts.get("s1"), 1, "no listener starts after shutdown");
+				assert.equal(registries, after, "no startup begins after shutdown completed");
+				return;
+			}
+			if (mode === "close-pending") {
+				try {
+					await h.fire("turn_end", ctx);
+					await h.fire("agent_start", ctx);
+					await settle();
+					assert.equal(registries, 1, "no re-arm while the failed startup is still closing");
+				} finally {
+					// A failed assertion must not leave shutdown waiting on the gated close.
+					releaseClose!();
+				}
+				await settle();
+				await h.fire("turn_end", ctx);
+				await eventually(() => starts.get("s1") === 2, "exactly one re-arm after close resolves");
+				await eventually(() => notices.length === 2, "re-arm failure warns");
+				for (const event of ["turn_end", "agent_start"]) await h.fire(event, ctx);
+				await settle();
+				assert.equal(registries, 2);
+			}
+			if (mode === "session-switch") {
+				await settle();
+				await h.fire("session_start", other);
+				await eventually(() => notices.length === 2, "replacement session startup failure");
+				await settle();
+				await h.fire("turn_end", ctx);
+				await h.fire("agent_start", ctx);
+				await settle();
+				assert.equal(starts.get("s1"), 1, "the retired session is never re-armed");
+				assert.equal(starts.get("s2"), 1);
+				await h.fire("turn_end", other);
+				await eventually(() => starts.get("s2") === 2, "the replacement session gets its own single re-arm");
+				await eventually(() => notices.length === 3, "replacement re-arm failure warns");
+				for (const event of ["turn_end", "agent_start"]) await h.fire(event, other);
+				await settle();
+				assert.equal(starts.get("s2"), 2);
+				assert.equal(starts.get("s1"), 1);
+				await h.fire("session_shutdown", other);
+				return;
+			}
+			if (mode === "changed-id") {
+				await settle();
+				Object.assign(ctx.sessionManager, { getSessionId: () => "replacement" });
+				for (const event of ["turn_end", "agent_start"]) await h.fire(event, ctx);
+				await settle();
+				assert.equal(registries, 1, "a changed session id on the same manager is never re-armed");
+				assert.equal(notices.length, 1);
+			}
+			await h.fire("session_shutdown", ctx);
+		});
+	}
+});
+
+test("a failed presence start at session_start warns with a fixed code and clears presence", async (t) => {
+	const start = t.mock.method(PresencePublisher, "start", () => { throw new Error("SECRET C:\\Users\\private token"); });
+	const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+	const notices: Array<{ message: string; level: unknown }> = [];
+	ctx.ui.notify = (message, level) => { notices.push({ message, level }); };
+	gentleAgents(h.pi, {}, runtime.deps);
+	await h.fire("session_start", ctx);
+	assert.ok(start.mock.callCount() >= 1);
+	assert.deepEqual(notices.filter((notice) => notice.message.includes("presence")), [{ message: "Session presence unavailable: phase=presence class=transport code=presence-cleared.", level: "warning" }]);
+	assert.ok(notices.every((notice) => !notice.message.includes("SECRET")));
+	await h.fire("session_shutdown", ctx);
+});
+
+test("Windows bootstrap stderr codes reach the startup warning without raw stderr", async () => {
+	const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+	const notices: Array<{ message: string; level: unknown }> = [];
+	ctx.ui.notify = (message, level) => { notices.push({ message, level }); };
+	runtime.deps.sessionTransport = {
+		...inertSessionTransport,
+		createRegistry: async (_home, observe, observeBootstrap) => {
+			observeBootstrap?.("rejection-transport-assert-owned");
+			observeBootstrap?.("SECRET stderr" as never);
+			observe?.({ phase: "start", status: "succeeded", error: null, lastStartupMarker: "native-ready" });
+			observe?.({ phase: "initialize", status: "failed", error: { class: "rejected", code: "protocol" }, lastStartupMarker: "native-ready" });
+			observe?.({ phase: "cleanup", status: "succeeded", error: null, lastStartupMarker: "native-ready" });
+			throw new Error("SECRET");
+		},
+	};
+	gentleAgents(h.pi, {}, runtime.deps);
+	await h.fire("session_start", ctx);
+	await eventually(() => notices.length === 1, "startup warning");
+	await h.fire("session_shutdown", ctx);
+	assert.deepEqual(notices, [{ message: "Session transport startup failed: phase=initialize class=rejected code=protocol lastStartupMarker=native-ready bootstrap=rejection-transport-assert-owned.", level: "warning" }]);
+});
+
 test("registered task aliases persist independently of human names and curated state", async () => {
 	const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
 	const timers = recordTimers(runtime.deps);
@@ -5642,7 +5874,7 @@ test("session transport selects a peer for outbound delivery and rejects stale c
 	Object.assign(ctx.sessionManager, { getSessionName: () => "Backend" });
 	const result = await h.tools.get("orchestrator_send_message")!.execute("send", { message: "hello peer", reason: "because the peer needs an update" }, undefined, undefined, ctx);
 	assert.deepEqual(dialogs, [
-		"select:Select recipient orchestrator:Orchestrator alpha|Orchestrator beta",
+		"select:Select recipient orchestrator:Orchestrator · alpha|Orchestrator · beta",
 		"select:Authorize cross-orchestrator message to alpha?\nReason: because the peer needs an update\nMessage: hello peer:Allow once|Allow for this session|Deny",
 	]);
 	assert.deepEqual(sent, [{ recipient: "alpha", message: "hello peer", expectedActivation: records[0] }]);
@@ -5668,6 +5900,95 @@ test("session transport selects a peer for outbound delivery and rejects stale c
 	assert.equal(closed, 2, "replacement closes the old client and listener before activating its successor");
 	await assert.rejects(original({ id: "late", senderSessionId: "alpha", message: "late callback" }), /stale session transport/);
 	await h.fire("session_shutdown", ctx);
+});
+
+test("recipient picker uses published labels and grows the suffix until every label is unique", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	// Three long ids share their last four characters, and two peers share the same
+	// published label, so only a grown suffix can tell the whole list apart.
+	const alphaId = "11111111-1111-4111-8111-11111111abcd";
+	const betaId = "22222222-2222-4222-8222-22222222abcd";
+	const gammaId = "33333333-3333-4333-8333-33333333abcd";
+	const activations: PresenceRecord[] = [
+		{ version: 1, sessionId: alphaId, endpoint: "/alpha.sock", createdAt: 1 },
+		{ version: 1, sessionId: betaId, endpoint: "/beta.sock", createdAt: 2 },
+		{ version: 1, sessionId: gammaId, endpoint: "/gamma.sock", createdAt: 3 },
+	];
+	const profile = realpathSync(mkdtempSync(join(tmpdir(), "gentle-agents-labels-")));
+	const publishers = [
+		PresencePublisher.start({ profile, sessionId: alphaId, label: "api", activity: [] }),
+		PresencePublisher.start({ profile, sessionId: betaId, label: "api", activity: [] }),
+		PresencePublisher.start({ profile, sessionId: gammaId, label: "database", activity: [] }),
+	];
+	publishers[0]!.updateDiscovery(activations[0]!, { workspace: "/repo/api", tasks: [] });
+	publishers[1]!.updateDiscovery(activations[1]!, { workspace: "/repo/api", tasks: [] });
+	publishers[2]!.updateDiscovery(activations[2]!, { workspace: "/repo/melia/db", tasks: [] });
+	const sent: Array<{ recipient: string }> = [];
+	const registry = { list: async () => [], listActivations: async () => activations };
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: () => ({ registry, start: async () => {}, close: async () => {} }),
+		createClient: () => ({ close: () => {}, sendNotification: async (recipient: string) => { sent.push({ recipient }); return { id: "accepted-1", accepted: true }; } }),
+	} as never;
+	let chosen = 0;
+	const { ctx, dialogs } = fakeContext(undefined, undefined, undefined, undefined, async (title, options) => title.startsWith("Select recipient") ? options[chosen] : options[0]);
+	gentleAgents(h.pi, {}, { ...runtime.deps, agentHome: profile });
+	try {
+		await h.fire("session_start", ctx);
+		const tool = h.tools.get("orchestrator_send_message")!;
+		const params = { message: "hello", reason: "because the peer needs an update" };
+		for (chosen = 0; chosen < 3; chosen += 1) await tool.execute("send", params, undefined, undefined, ctx);
+	} finally {
+		for (const publisher of publishers) publisher.dispose();
+		rmSync(profile, { recursive: true, force: true });
+	}
+	// The published label leads, the workspace basename follows only when it adds
+	// something, and the shared four-character tail forces the suffix to grow to six.
+	assert.equal(dialogs[0], "select:Select recipient orchestrator:api · 11abcd|api · 22abcd|database (db) · 33abcd");
+	assert.deepEqual(sent, [{ recipient: alphaId }, { recipient: betaId }, { recipient: gammaId }], "each displayed label must send to its own session");
+});
+
+test("recipient picker keeps one row per session when a transport repeats an activation", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	const alphaId = "11111111-1111-4111-8111-111111111111";
+	const betaId = "22222222-2222-4222-8222-222222222222";
+	// The canonical activation is the one the publication binds to, and it comes last, so a
+	// deduplication that keeps only one record would resolve the label of an ambiguous peer.
+	const activations: PresenceRecord[] = [
+		{ version: 1, sessionId: alphaId, endpoint: "/alpha-again.sock", createdAt: 1 },
+		{ version: 1, sessionId: alphaId, endpoint: "/alpha.sock", createdAt: 2 },
+		{ version: 1, sessionId: betaId, endpoint: "/beta.sock", createdAt: 3 },
+	];
+	const profile = realpathSync(mkdtempSync(join(tmpdir(), "gentle-agents-dedupe-")));
+	const publishers = [
+		PresencePublisher.start({ profile, sessionId: alphaId, label: "api", activity: [] }),
+		PresencePublisher.start({ profile, sessionId: betaId, label: "database", activity: [] }),
+	];
+	publishers[0]!.updateDiscovery(activations[1]!, { workspace: "/repo/api", tasks: [] });
+	publishers[1]!.updateDiscovery(activations[2]!, { workspace: "/repo/melia/db", tasks: [] });
+	const sent: Array<{ recipient: string }> = [];
+	const registry = { list: async () => [], listActivations: async () => activations };
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: () => ({ registry, start: async () => {}, close: async () => {} }),
+		createClient: () => ({ close: () => {}, sendNotification: async (recipient: string) => { sent.push({ recipient }); return { id: "accepted-1", accepted: true }; } }),
+	} as never;
+	let chosen = 1;
+	const { ctx, dialogs } = fakeContext(undefined, undefined, undefined, undefined, async (title, options) => title.startsWith("Select recipient") ? options[chosen] : options[0]);
+	gentleAgents(h.pi, {}, { ...runtime.deps, agentHome: profile });
+	try {
+		await h.fire("session_start", ctx);
+		await h.tools.get("orchestrator_send_message")!.execute("send", { message: "hello", reason: "because the peer needs an update" }, undefined, undefined, ctx);
+	} finally {
+		for (const publisher of publishers) publisher.dispose();
+		rmSync(profile, { recursive: true, force: true });
+	}
+	// One row per session, and the duplicated session stays unlabelled: discovery still
+	// sees both activations and fails closed instead of guessing which one it is.
+	assert.equal(dialogs[0], "select:Select recipient orchestrator:Orchestrator · 1111|database (db) · 2222");
+	assert.deepEqual(sent, [{ recipient: betaId }], "the second row must still be the second session");
 });
 
 test("all orchestrator tools own compact and expanded card rendering", () => {
@@ -5883,7 +6204,7 @@ test("orchestrator_send_message snapshots message and reason before recipient an
 	await eventually(() => dialogs.length === 1, "recipient selector opens");
 	params.message = "mutated during recipient selection";
 	params.reason = "mutated reason one";
-	chooseRecipient("Orchestrator alpha");
+	chooseRecipient("Orchestrator · alpha");
 	await eventually(() => dialogs.length === 2, "consent selector opens");
 	params.message = "mutated during consent selection";
 	params.reason = "mutated reason two";
@@ -7155,6 +7476,11 @@ test("a busy parent gets the exit notice steered into its run at the next turn b
 		await jobIo();
 		assert.equal(sent.length, 0, "a busy parent is not interrupted mid-tool-call");
 		await fire("turn_end", ctx);
+		// The notice lands when the job log closes, which can outlast this boundary under load; a later turn boundary then delivers it.
+		for (let boundary = 0; boundary < 40 && sent.length === 0; boundary++) {
+			await new Promise((resolve) => setTimeout(resolve, 25));
+			await fire("turn_end", ctx);
+		}
 		assert.equal(sent.length, 1);
 		assert.deepEqual(sent[0]!.options, { deliverAs: "steer", triggerTurn: true });
 		assert.match(String(sent[0]!.message.content), /job-1 \("make build"\) exited with code 0/);
@@ -7218,7 +7544,8 @@ test("/gentle:jobs opens this session's jobs overlay, stops the selected job, an
 		assert.equal(jobs.runs[0]!.signal?.aborted, true, "s stops the selected job");
 		assert.equal(statuses.at(-1), undefined, "the footer count clears when nothing runs");
 		assert.deepEqual(snapshots.at(-1)?.snapshot.jobs.map(({ status }) => status), ["stopped"], "the finished tail keeps the stopped job visible once the count clears");
-		await jobIo();
+		// The stop notice follows the job log close, which can outlast a fixed wait under load.
+		await eventually(() => sent.some((entry) => entry.message.customType === "gentle-jobs.notice"), "the stopped job must report its stop notice");
 		const notices = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
 		assert.equal(notices.length, 1, "the agent was told it would be notified, so a human stop is reported once");
 		assert.match(String(notices[0]!.message.content), /job-1 \("CI"\) was stopped by the user/);
@@ -7261,7 +7588,7 @@ test("/gentle:jobs mouse controls route the chosen running job through the exist
 		overlay.handleMouse?.(eventFor("s Stop", "click"));
 		assert.equal(jobs.runs[0]!.signal?.aborted, false);
 		assert.equal(jobs.runs[1]!.signal?.aborted, true, "the selected job alone is stopped");
-		await jobIo();
+		await eventually(() => sent.some((entry) => entry.message.customType === "gentle-jobs.notice"), "the stopped job must report its stop notice");
 		const notices = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
 		assert.equal(notices.length, 1);
 		assert.match(String(notices[0]!.message.content), /job-2 \("second job"\) was stopped by the user/);
@@ -7289,9 +7616,13 @@ test("a job exit notice whose forwarding throws while the parent is idle is retr
 		await jobIo();
 		assert.equal(sent.length, 0);
 		assert.equal(userMessages.length, 0);
+		assert.equal(sent.length, 0);
+		assert.equal(userMessages.length, 0);
+		// Forwarding keeps throwing until the job settles: the failed flush is what arms the bounded retry.
+		await eventually(() => timers.pending(PARENT_WAKE_GRACE_MS) >= 1, "the failed flush arms the bounded retry timer");
 		Object.assign(pi, { sendMessage });
 		// No turn boundary is coming for an idle parent, so the retry is a timer.
-		assert.equal(timers.run(PARENT_WAKE_GRACE_MS), 1, "one bounded retry flush is armed");
+		assert.equal(timers.run(PARENT_WAKE_GRACE_MS), 1, "exactly one bounded retry flush is armed");
 		await tick();
 		const notices = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
 		assert.equal(notices.length, 1, "the requeued notice reaches the idle parent");
@@ -7326,7 +7657,8 @@ for (const boundary of ["session_compact", "session_compact_failed"] as const) {
 			assert.equal(sent.length, 0, "the boundary handler runs before Pi leaves the compacting state");
 			setIdle(true);
 			assert.equal(timers.run(0), 1, "one deferred flush is scheduled for the compaction boundary");
-			await tick();
+			// The flush only succeeds once the job log close settles, which can outlast the boundary under load.
+			await eventually(() => sent.length >= 1, "the held notice is flushed after the compaction boundary");
 			assert.deepEqual(sent.map((entry) => entry.options), [{ triggerTurn: false }], "the held notice is stored without a direct turn");
 			assert.deepEqual(delivery, ["custom:gentle-jobs.notice", "user"], "one wake follows the held notice");
 		} finally {
@@ -7395,7 +7727,8 @@ test("monitor delivers line events to an idle parent with one wake, and reports 
 		assert.match(renderers.get("gentle-jobs.notice")!(events[0]!.message, { expanded: true }, plainTheme).render(70).map(stripAnsi).join("\n"), /unit: fail/);
 		jobs.runs[0]!.onData(Buffer.from("e2e: pass\n"));
 		jobs.runs[0]!.exit(1);
-		await jobIo();
+		// Pending lines and the end notice follow the job log close, which can outlast a fixed wait under load.
+		await eventually(() => sent.filter((entry) => entry.message.customType === "gentle-jobs.notice").length >= 3, "the closed monitor log must deliver its pending lines and end notice");
 		const contents = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice").map((entry) => String(entry.message.content));
 		assert.equal(contents.length, 3, "pending lines are delivered before the end notice");
 		assert.match(contents[1]!, /reported 1 new line:\ne2e: pass/);
@@ -8227,6 +8560,8 @@ test("a job notice held for a parent busy without a run is delivered by the held
 		jobs.runs[0]!.exit(0);
 		await jobIo();
 		assert.equal(sent.length, 0, "a parent busy without a run gets nothing yet");
+		// The notice arms the re-check when the job settles, which can outlast a fixed wait under load.
+		await eventually(() => timers.pending(HOLD_RECHECK_MS) > clockTicks, "the held job notice arms the re-check once it settles");
 		assert.equal(timers.pending(HOLD_RECHECK_MS) - clockTicks, 1, "the held job notice arms exactly one re-check");
 		setIdle(true);
 		timers.run(HOLD_RECHECK_MS);

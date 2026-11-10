@@ -131,3 +131,14 @@ test("children block recognized destructive commands sent to monitor too", async
 	const result = await h.handlers[0]({ toolName: "monitor", input: { command: "echo ok && rm -rf ./data" } }, context(async () => { throw new Error("child must never prompt"); }));
 	assert.equal((result as { block?: boolean })?.block, true);
 });
+
+test("child safety blocks an external pane fallback by its input property (gentle-shell#379)", async () => {
+	const h = harness(true);
+	const ctx = context(async () => { throw new Error("child must never prompt"); }, false);
+	const pane = { toolName: "synthetic_surface", input: { action: "send", cwd: "/tmp/other-repo", openProjectPaneIfMissing: true } } as unknown as ReturnType<typeof event>;
+	const result = await h.handlers[0](pane, ctx) as { block?: boolean; reason?: string };
+	assert.equal(result?.block, true);
+	assert.match(result?.reason ?? "", /code=gentle-ai\.execution-surface\.external-fallback-prohibited/);
+	assert.equal(await h.handlers[0]({ toolName: "synthetic_surface", input: { action: "send" } } as unknown as ReturnType<typeof event>, ctx), undefined);
+	assert.equal(await h.handlers[0](event("pnpm test"), ctx), undefined);
+});

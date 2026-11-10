@@ -1,6 +1,9 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ScrollView, Text, truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
+import { gentlePiConfigHome } from "../lib/agent-home.ts";
+import type { OrchestratorMode } from "../lib/agent-profiles.ts";
+import { resolveOrchestratorMode } from "../lib/orchestrator-mode-policy.ts";
 import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 import { panelHeaderRow } from "../lib/shell-card.ts";
 import { renderPanelRow } from "../lib/shell-panel.ts";
@@ -105,6 +108,19 @@ interface TodoSession {
 
 function sessionKey(ctx: ExtensionContext): string {
 	return ctx.sessionManager.getSessionId() ?? "";
+}
+
+/**
+ * The session's orchestrator mode, so the rules block tells a full delegation
+ * session to delegate a small task instead of doing it. Never throws: a profile
+ * store that cannot answer leaves today's organic block.
+ */
+function todoOrchestratorMode(ctx: ExtensionContext, env: NodeJS.ProcessEnv): OrchestratorMode {
+	try {
+		return resolveOrchestratorMode({ cwd: ctx.cwd, configHome: gentlePiConfigHome(env), sessionId: ctx.sessionManager?.getSessionId?.(), env }).mode;
+	} catch {
+		return "organic";
+	}
 }
 
 export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env): void {
@@ -367,7 +383,7 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		// gentle-shell#1485: pi-claude-bridge drops a handler-returned
 		// systemPrompt, so the rules block goes through appendSystemPrompt. It is
 		// the same bytes on every turn, list or no list (gentle-shell#1662).
-		appendSystemPromptOnce(event.systemPromptOptions, todoPromptBlock());
+		appendSystemPromptOnce(event.systemPromptOptions, todoPromptBlock(todoOrchestratorMode(ctx, env)));
 		return undefined;
 	});
 

@@ -95,7 +95,7 @@ export interface InProcessReviewerRequest {
 }
 
 export type InProcessReviewerOutcome =
-	| { readonly kind: "text"; readonly text: string; readonly reviewerModel: string }
+	| { readonly kind: "text"; readonly text: string; readonly reviewerModel: string; readonly evidence?: Record<string, unknown> }
 	| { readonly kind: "refused"; readonly code: InProcessReviewerFailureCode; readonly message: string; readonly evidence?: Record<string, unknown> };
 
 export interface InProcessReviewerDeps {
@@ -103,6 +103,8 @@ export interface InProcessReviewerDeps {
 	readonly complete: typeof completeSimple;
 	/** Test seam for the single user message's timestamp; defaults to Date.now. */
 	readonly now?: () => number;
+	/** Host-only facts, including on thrown auth errors. Never awaited; observer failure is non-authoritative. */
+	readonly onEvidence?: (evidence: Record<string, unknown>) => void | Promise<void>;
 }
 
 // No existing bound covers the reviewer's completion text: the child this
@@ -149,7 +151,7 @@ function sanitizeErrorExcerpt(error: unknown): string {
 	return collapsed.length <= ERROR_EXCERPT_MAX_CHARS ? collapsed : `${collapsed.slice(0, ERROR_EXCERPT_MAX_CHARS - 1)}…`;
 }
 
-function refuse(code: InProcessReviewerFailureCode, message: string, evidence?: Record<string, unknown>): InProcessReviewerOutcome {
+function refuse(code: InProcessReviewerFailureCode, message: string, evidence?: Record<string, unknown>): Extract<InProcessReviewerOutcome, { kind: "refused" }> {
 	return { kind: "refused", code, message, ...(evidence === undefined ? {} : { evidence }) };
 }
 
@@ -158,7 +160,7 @@ function isTextContent(part: { type?: unknown }): part is TextContent {
 }
 
 /** Completion diagnostics are facts only; never copy provider text, errors, or payloads. */
-function emptyOutputEvidence(model: Model<Api>, assistant: AssistantMessage): Record<string, unknown> {
+function completionEvidence(model: Model<Api>, assistant: AssistantMessage): Record<string, unknown> {
 	const evidence: Record<string, unknown> = { reviewerModel: `${model.provider}/${model.id}`.slice(0, 512) };
 	if (["pending", "stop", "length", "toolUse", "error", "aborted", "deferred"].includes(assistant.stopReason)) {
 		evidence.stopReason = assistant.stopReason;
@@ -171,6 +173,17 @@ function emptyOutputEvidence(model: Model<Api>, assistant: AssistantMessage): Re
 		addCounter(usage, key, assistant.usage?.[key]);
 	}
 	if (Object.keys(usage).length > 0) evidence.usage = usage;
+	// Copy only numbers the completion actually reported. Do not calculate
+	// missing totals or confuse SDK-reported cost with verified billing.
+	const reportedCost = assistant.usage?.cost;
+	const cost: Record<string, number | boolean> = {};
+	for (const key of ["input", "output", "cacheRead", "cacheWrite", "total"] as const) {
+		const value = reportedCost?.[key];
+		if (typeof value === "number" && Number.isFinite(value) && value >= 0) cost[key] = value;
+	}
+	const totalFromProvider = (reportedCost as unknown as Record<string, unknown> | undefined)?.totalFromProvider;
+	if (typeof totalFromProvider === "boolean") cost.totalFromProvider = totalFromProvider;
+	if (Object.keys(cost).length > 0) evidence.cost = cost;
 	const text = assistant.content.filter(isTextContent);
 	const thinking = assistant.content.filter((part) => part.type === "thinking");
 	const content: Record<string, number> = {};
@@ -211,13 +224,70 @@ export function openCodeSessionAttributionHeaders(model: Model<Api>, sessionId: 
 	return { "x-opencode-session": sessionId, "x-opencode-client": "pi" };
 }
 
-/**
- * Runs one reviewer completion in-process: resolve the model, authenticate,
- * map the routing thinking label, and complete exactly one frozen prompt as
- * a single user message. Never retries, never falls back to another model,
- * never reads process.env — every seam is injected through `deps`.
- */
-export async function runInProcessReviewer(request: InProcessReviewerRequest, deps: InProcessReviewerDeps): Promise<InProcessReviewerOutcome> {
+// Own settlement independently of the provider's AbortSignal handling. A timed
+// out provider may continue running; its late fulfillment/rejection is consumed
+// without resuming the reviewer pipeline or authorizing a submission.
+function reviewerDeadline(request: InProcessReviewerRequest) {
+	const controller = new AbortController();
+	const endsAt = performance.now() + request.timeoutMs;
+	const interrupted = Symbol("reviewer interrupted");
+	let timedOut = false;
+	let refusal: InProcessReviewerOutcome | undefined;
+	const failure = (): InProcessReviewerOutcome | undefined => {
+		if (refusal !== undefined) return refusal;
+		// The deadline wins if already elapsed when cancellation is observed.
+		// Otherwise caller cancellation settles immediately and retains ABORTED.
+		if (timedOut || performance.now() >= endsAt) {
+			refusal = refuse(INPROCESS_REVIEWER_FAILURE.TIMED_OUT, `Reviewer completion for ${request.routingKey} exceeded its ${request.timeoutMs}ms bound.`);
+			controller.abort(new DOMException("Reviewer deadline exceeded", "TimeoutError"));
+		} else if (request.signal?.aborted) {
+			refusal = refuse(INPROCESS_REVIEWER_FAILURE.ABORTED, `Reviewer completion for ${request.routingKey} was aborted by the caller.`);
+			controller.abort(request.signal.reason);
+		}
+		return refusal;
+	};
+	const onCallerAbort = () => { failure(); };
+	request.signal?.addEventListener("abort", onCallerAbort, { once: true });
+	const timer = setTimeout(() => { timedOut = true; failure(); }, request.timeoutMs);
+	return {
+		signal: controller.signal,
+		failure,
+		wait<T>(start: () => Promise<T>): Promise<T> {
+			return new Promise<T>((resolve, reject) => {
+				if (failure() !== undefined) { reject(interrupted); return; }
+				let settled = false;
+				const finish = (action: () => void) => {
+					if (settled) return;
+					settled = true;
+					controller.signal.removeEventListener("abort", onAbort);
+					action();
+				};
+				const onAbort = () => finish(() => reject(interrupted));
+				controller.signal.addEventListener("abort", onAbort, { once: true });
+				let pending: Promise<T>;
+				try { pending = start(); }
+				catch (error) { finish(() => reject(error)); return; }
+				// Both handlers stay attached after interruption to consume a late
+				// provider rejection, but finish can never resume this call twice.
+				Promise.resolve(pending).then(
+					value => finish(() => failure() === undefined ? resolve(value) : reject(interrupted)),
+					error => finish(() => reject(error)),
+				);
+			});
+		},
+		dispose() {
+			clearTimeout(timer);
+			request.signal?.removeEventListener("abort", onCallerAbort);
+		},
+	};
+}
+
+type InProcessReviewerModelResolution =
+	| { readonly kind: "resolved"; readonly model: Model<Api>; readonly provider?: InProcessReviewerProvider; readonly providerId: string }
+	| Extract<InProcessReviewerOutcome, { kind: "refused" }>;
+
+/** Resolve only caller-owned model routing; no authentication or completion. */
+export function resolveInProcessReviewerModel(request: Pick<InProcessReviewerRequest, "selection" | "routingKey">, registry: InProcessReviewerRegistry): InProcessReviewerModelResolution {
 	const parsed = parseSelection(request.selection);
 	if (parsed === undefined) {
 		return refuse(
@@ -226,7 +296,7 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 		);
 	}
 
-	const model = deps.registry.find(parsed.provider, parsed.modelId);
+	const model = registry.find(parsed.provider, parsed.modelId);
 	if (model === undefined) {
 		return refuse(
 			INPROCESS_REVIEWER_FAILURE.MODEL_NOT_FOUND,
@@ -252,148 +322,208 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 	// construction. Keying on the returned field instead would make that
 	// guarantee depend on every provider's `getModels()` echoing its own id,
 	// which a native or OAuth-modified extension provider is free not to do.
-	const provider = deps.registry.getProvider?.(parsed.provider);
-	if (deps.registry.getProvider !== undefined && provider === undefined) {
+	const provider = registry.getProvider?.(parsed.provider);
+	if (registry.getProvider !== undefined && provider === undefined) {
+		const evidence: Record<string, unknown> = { provider: parsed.provider, api: model.api };
+		// Preserve already resolved identity when configuration refuses before auth.
+		if (typeof model.provider === "string" && typeof model.id === "string") {
+			evidence.reviewerModel = `${model.provider}/${model.id}`.slice(0, 512);
+			evidence.provider = model.provider.slice(0, 256);
+		}
 		return refuse(
 			INPROCESS_REVIEWER_FAILURE.MODEL_NOT_FOUND,
 			`The model registry resolved ${JSON.stringify(request.selection)} for ${request.routingKey} but owns no provider for ${JSON.stringify(parsed.provider)}; reassign ${request.routingKey} to a model whose provider the interactive pi can actually dispatch.`,
-			{ provider: parsed.provider, api: model.api },
-		);
-	}
-
-	const auth = await deps.registry.getApiKeyAndHeaders(model);
-	// Negation narrowing (`!auth.ok`) does not eliminate the `ok: true` arm of
-	// this discriminated union under this project's `strict: false` tsconfig;
-	// an explicit `=== false` comparison narrows correctly in both directions.
-	if (auth.ok === false) {
-		return refuse(
-			INPROCESS_REVIEWER_FAILURE.AUTH_UNAVAILABLE,
-			`No credentials available for provider ${JSON.stringify(parsed.provider)} (used by ${request.routingKey}): ${auth.error}`,
-		);
-	}
-
-	const reasoning = resolveReasoning(request.thinking, model);
-	if (reasoning.ok === false) {
-		return refuse(
-			INPROCESS_REVIEWER_FAILURE.THINKING_INVALID,
-			`Unknown thinking level ${JSON.stringify(request.thinking)} for ${request.routingKey}; use one of off, minimal, low, medium, high, xhigh, max.`,
-		);
-	}
-
-	// OAuth resolution may supply an account-specific endpoint alongside the
-	// exchanged API key. Match ModelRuntime.prepareRequest: apply that endpoint
-	// to a request-local copy, never mutate the shared registry model.
-	const requestModel = auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
-
-	// Extension side-calls bypass pi's main agent loop, which is where OpenCode
-	// attribution headers are otherwise added. Use the effective request model
-	// and place attribution defaults beneath the registry's own auth headers,
-	// matching pi's core merge order for explicit header sources.
-	const attributionHeaders = openCodeSessionAttributionHeaders(requestModel, request.sessionId);
-
-	// The caller's own signal (if any) and a floor timeout race together:
-	// whichever fires first aborts the completion. The catch branch below
-	// tells them apart by which underlying signal actually fired, never by
-	// inspecting the thrown error's shape, which providers are free to vary.
-	const timeoutSignal = AbortSignal.timeout(request.timeoutMs);
-	const combinedSignal = request.signal === undefined ? timeoutSignal : AbortSignal.any([request.signal, timeoutSignal]);
-
-	const context: Context = {
-		messages: [
-			{
-				role: "user",
-				content: [{ type: "text", text: request.prompt.toString("utf8") }],
-				timestamp: (deps.now ?? Date.now)(),
-			},
-		],
-	};
-	const options: SimpleStreamOptions = {
-		signal: combinedSignal,
-		timeoutMs: request.timeoutMs,
-		// Providers that keep server-side conversation state key it on
-		// `options.sessionId` and otherwise fall back to something coarser (for
-		// example the worktree), which would merge every reviewer completion into
-		// one growing conversation. A fresh id per completion keeps each review
-		// isolated. It is deliberately not `request.sessionId`: that is the parent
-		// session's id and would merge reviewer calls into the parent's conversation.
-		sessionId: `review-${request.routingKey}-${randomUUID()}`,
-		...(auth.apiKey === undefined ? {} : { apiKey: auth.apiKey }),
-		...(auth.env === undefined ? {} : { env: auth.env }),
-		...(auth.headers === undefined && attributionHeaders === undefined ? {} : { headers: attributionHeaders === undefined ? auth.headers : { ...attributionHeaders, ...auth.headers } }),
-		...(reasoning.reasoning === undefined ? {} : { reasoning: reasoning.reasoning }),
-		...(request.transport === undefined ? {} : { transport: request.transport }),
-		...(request.tier !== undefined && supportsOpenAIFast(requestModel)
-			? { onPayload: (payload: unknown) => applyOpenAITier(payload, request.tier, requestModel) }
-			: {}),
-	};
-
-	// An abort is classified by which signal actually fired, never by the
-	// error's shape or the message's text, and the same classification serves
-	// both settlement paths: a provider may reject on abort, or — the pi-ai
-	// provider convention — resolve an AssistantMessage with `stopReason:
-	// "aborted"` carrying whatever text streamed before the cut. Either way a
-	// fired signal is a timeout or a caller abort, never empty or usable output.
-	const abortRefusal = (): InProcessReviewerOutcome | undefined => {
-		if (timeoutSignal.aborted) {
-			return refuse(INPROCESS_REVIEWER_FAILURE.TIMED_OUT, `Reviewer completion for ${request.routingKey} exceeded its ${request.timeoutMs}ms bound.`);
-		}
-		if (request.signal?.aborted === true) {
-			return refuse(INPROCESS_REVIEWER_FAILURE.ABORTED, `Reviewer completion for ${request.routingKey} was aborted by the caller.`);
-		}
-		return undefined;
-	};
-
-	// `SimpleStreamOptions` is identical on both paths; only the return shape
-	// differs (an event stream versus a promise), hence `.result()` — which is
-	// exactly what pi-ai's own compat layer does with the same stream.
-	let assistant: AssistantMessage;
-	try {
-		assistant = provider === undefined ? await deps.complete(requestModel, context, options) : await provider.streamSimple(requestModel, context, options).result();
-	} catch (error) {
-		return abortRefusal() ?? refuse(INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED, `Reviewer completion failed for ${request.routingKey}: ${sanitizeErrorExcerpt(error)}`);
-	}
-
-	const resolvedAbort = abortRefusal();
-	if (resolvedAbort !== undefined) return resolvedAbort;
-	if (assistant.stopReason === "aborted") {
-		// No signal of ours fired, so the provider cut the completion on its
-		// own: that is a provider failure, and its partial text is not a review.
-		return refuse(
-			INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED,
-			`Reviewer completion failed for ${request.routingKey}: the provider reported an aborted completion (${assistant.errorMessage ?? "no provider message"}).`,
-		);
-	}
-
-	if (assistant.stopReason === "error") {
-		return refuse(
-			INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED,
-			`Reviewer completion failed for ${request.routingKey}: ${assistant.errorMessage ?? "unknown provider error"}`,
-		);
-	}
-	if (assistant.content.some((part) => part.type === "toolCall")) {
-		return refuse(
-			INPROCESS_REVIEWER_FAILURE.TOOL_CALL_ATTEMPTED,
-			`Reviewer attempted a tool call for ${request.routingKey}; the in-process reviewer completion must answer in text only.`,
-		);
-	}
-
-	const text = assistant.content.filter(isTextContent).map((part) => part.text).join("");
-	if (text.length === 0) {
-		const evidence = emptyOutputEvidence(model, assistant);
-		return refuse(
-			INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT,
-			`Reviewer produced no text for ${request.routingKey} (stopReason: ${evidence.stopReason ?? "unknown"}).`,
 			evidence,
 		);
 	}
+	return { kind: "resolved", model, ...(provider === undefined ? {} : { provider }), providerId: parsed.provider };
+}
 
-	const textBytes = Buffer.byteLength(text, "utf8");
-	if (textBytes > INPROCESS_REVIEWER_OUTPUT_MAX_BYTES) {
-		return refuse(
-			INPROCESS_REVIEWER_FAILURE.OUTPUT_TOO_LARGE,
-			`Reviewer output for ${request.routingKey} exceeds the ${INPROCESS_REVIEWER_OUTPUT_MAX_BYTES}-byte bound (received ${textBytes} bytes).`,
-		);
+/**
+ * Runs one reviewer completion in-process: resolve the model, authenticate,
+ * map the routing thinking label, and complete exactly one frozen prompt as
+ * a single user message. Never retries, never falls back to another model,
+ * never reads process.env — every seam is injected through `deps`.
+ */
+export async function runInProcessReviewer(request: InProcessReviewerRequest, deps: InProcessReviewerDeps): Promise<InProcessReviewerOutcome> {
+	const began = performance.now();
+	let phase: "configuration" | "auth" | "completion" = "configuration";
+	let resolvedModel: Model<Api> | undefined, resolvedAssistant: AssistantMessage | undefined;
+	let authStarted: number | undefined, completionStarted: number | undefined;
+	let authDurationMs: number | undefined, completionDurationMs: number | undefined;
+	let finalEvidence: Record<string, unknown> | undefined;
+	/** Capture allowlisted facts at one instant, including unfinished phase durations. */
+	const snapshot = (): Record<string, unknown> => {
+		const evidence: Record<string, unknown> = { phase };
+		/** Omit unavailable or invalid measurements rather than inventing a duration. */
+		const duration = (key: string, value: number | undefined) => {
+			if (typeof value === "number" && Number.isFinite(value) && value >= 0) evidence[key] = value;
+		};
+		const now = performance.now();
+		duration("durationMs", now - began);
+		duration("authDurationMs", authDurationMs ?? (authStarted === undefined ? undefined : now - authStarted));
+		duration("completionDurationMs", completionDurationMs ?? (completionStarted === undefined ? undefined : now - completionStarted));
+		if (resolvedModel !== undefined) {
+			if (typeof resolvedModel.provider === "string" && typeof resolvedModel.id === "string") {
+				evidence.reviewerModel = `${resolvedModel.provider}/${resolvedModel.id}`.slice(0, 512);
+				evidence.provider = resolvedModel.provider.slice(0, 256);
+			}
+			// Diagnostics never change an otherwise valid completion or refusal.
+			try { if (resolvedAssistant !== undefined) Object.assign(evidence, completionEvidence(resolvedModel, resolvedAssistant)); } catch { /* malformed diagnostic metadata is unavailable */ }
+		}
+		return evidence;
+	};
+	/** Freeze the final evidence before phase cleanup or late provider settlement. */
+	const finish = (outcome: InProcessReviewerOutcome): InProcessReviewerOutcome => {
+		finalEvidence = { ...outcome.evidence, ...snapshot() };
+		return { ...outcome, evidence: finalEvidence };
+	};
+	try {
+		const resolved = resolveInProcessReviewerModel(request, deps.registry);
+		if (resolved.kind === "refused") return finish(resolved);
+		const { model, provider, providerId } = resolved;
+		resolvedModel = model;
+
+		// Authentication and completion share one monotonic host deadline. Do not
+		// restart its budget after auth or rely on a provider to settle on abort.
+		const deadline = reviewerDeadline(request);
+		try {
+			let auth: Awaited<ReturnType<InProcessReviewerRegistry["getApiKeyAndHeaders"]>>;
+			try { auth = await deadline.wait(() => {
+				phase = "auth"; authStarted = performance.now();
+				return deps.registry.getApiKeyAndHeaders(model);
+			}); }
+			catch (error) {
+				const stopped = deadline.failure();
+				if (stopped !== undefined) return finish(stopped);
+				throw error;
+			}
+			finally { if (authStarted !== undefined) authDurationMs = performance.now() - authStarted; }
+			// Negation narrowing (`!auth.ok`) does not eliminate the `ok: true` arm of
+			// this discriminated union under this project's `strict: false` tsconfig;
+			// an explicit `=== false` comparison narrows correctly in both directions.
+			if (auth.ok === false) {
+				return finish(refuse(
+					INPROCESS_REVIEWER_FAILURE.AUTH_UNAVAILABLE,
+					`No credentials available for provider ${JSON.stringify(providerId)} (used by ${request.routingKey}): ${auth.error}`,
+				));
+			}
+
+			phase = "configuration";
+			const reasoning = resolveReasoning(request.thinking, model);
+			if (reasoning.ok === false) {
+				return finish(refuse(
+					INPROCESS_REVIEWER_FAILURE.THINKING_INVALID,
+					`Unknown thinking level ${JSON.stringify(request.thinking)} for ${request.routingKey}; use one of off, minimal, low, medium, high, xhigh, max.`,
+				));
+			}
+
+			// OAuth resolution may supply an account-specific endpoint alongside the
+			// exchanged API key. Match ModelRuntime.prepareRequest: apply that endpoint
+			// to a request-local copy, never mutate the shared registry model.
+			const requestModel = auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
+
+			// Extension side-calls bypass pi's main agent loop, which is where OpenCode
+			// attribution headers are otherwise added. Use the effective request model
+			// and place attribution defaults beneath the registry's own auth headers,
+			// matching pi's core merge order for explicit header sources.
+			const attributionHeaders = openCodeSessionAttributionHeaders(requestModel, request.sessionId);
+
+			const context: Context = {
+				messages: [
+					{
+						role: "user",
+						content: [{ type: "text", text: request.prompt.toString("utf8") }],
+						timestamp: (deps.now ?? Date.now)(),
+					},
+				],
+			};
+			const options: SimpleStreamOptions = {
+				signal: deadline.signal,
+				// Preserve the provider's configured transport budget. The host's
+				// earlier deadline still includes auth and cannot be extended by it.
+				timeoutMs: request.timeoutMs,
+				// Providers that keep server-side conversation state key it on
+				// `options.sessionId` and otherwise fall back to something coarser (for
+				// example the worktree), which would merge every reviewer completion into
+				// one growing conversation. A fresh id per completion keeps each review
+				// isolated. It is deliberately not `request.sessionId`: that is the parent
+				// session's id and would merge reviewer calls into the parent's conversation.
+				sessionId: `review-${request.routingKey}-${randomUUID()}`,
+				...(auth.apiKey === undefined ? {} : { apiKey: auth.apiKey }),
+				...(auth.env === undefined ? {} : { env: auth.env }),
+				...(auth.headers === undefined && attributionHeaders === undefined ? {} : { headers: attributionHeaders === undefined ? auth.headers : { ...attributionHeaders, ...auth.headers } }),
+				...(reasoning.reasoning === undefined ? {} : { reasoning: reasoning.reasoning }),
+				...(request.transport === undefined ? {} : { transport: request.transport }),
+				...(request.tier !== undefined && supportsOpenAIFast(requestModel)
+					? { onPayload: (payload: unknown) => applyOpenAITier(payload, request.tier, requestModel) }
+					: {}),
+			};
+
+			// `SimpleStreamOptions` is identical on both paths; only the return shape
+			// differs (an event stream versus a promise), hence `.result()` — which is
+			// exactly what pi-ai's own compat layer does with the same stream.
+			let assistant: AssistantMessage;
+			try {
+				assistant = await deadline.wait(() => {
+					phase = "completion"; completionStarted = performance.now();
+					return provider === undefined ? deps.complete(requestModel, context, options) : provider.streamSimple(requestModel, context, options).result();
+				});
+				resolvedAssistant = assistant;
+			} catch (error) {
+				return finish(deadline.failure() ?? refuse(INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED, `Reviewer completion failed for ${request.routingKey}: ${sanitizeErrorExcerpt(error)}`));
+			}
+
+			finally { if (completionStarted !== undefined) completionDurationMs = performance.now() - completionStarted; }
+
+			const resolvedAbort = deadline.failure();
+			if (resolvedAbort !== undefined) return finish(resolvedAbort);
+			if (assistant.stopReason === "aborted") {
+				// No signal of ours fired, so the provider cut the completion on its
+				// own: that is a provider failure, and its partial text is not a review.
+				return finish(refuse(
+					INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED,
+					`Reviewer completion failed for ${request.routingKey}: the provider reported an aborted completion (${assistant.errorMessage ?? "no provider message"}).`,
+				));
+			}
+
+			if (assistant.stopReason === "error") {
+				return finish(refuse(
+					INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED,
+					`Reviewer completion failed for ${request.routingKey}: ${assistant.errorMessage ?? "unknown provider error"}`,
+				));
+			}
+			if (assistant.content.some((part) => part.type === "toolCall")) {
+				return finish(refuse(
+					INPROCESS_REVIEWER_FAILURE.TOOL_CALL_ATTEMPTED,
+					`Reviewer attempted a tool call for ${request.routingKey}; the in-process reviewer completion must answer in text only.`,
+				));
+			}
+
+			const text = assistant.content.filter(isTextContent).map((part) => part.text).join("");
+			if (text.length === 0) {
+				const stopReason = ["pending", "stop", "length", "toolUse", "error", "aborted", "deferred"].includes(assistant.stopReason) ? assistant.stopReason : undefined;
+				return finish(refuse(
+					INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT,
+					`Reviewer produced no text for ${request.routingKey} (stopReason: ${stopReason ?? "unknown"}).`,
+				));
+			}
+
+			const textBytes = Buffer.byteLength(text, "utf8");
+			if (textBytes > INPROCESS_REVIEWER_OUTPUT_MAX_BYTES) {
+				return finish(refuse(
+					INPROCESS_REVIEWER_FAILURE.OUTPUT_TOO_LARGE,
+					`Reviewer output for ${request.routingKey} exceeds the ${INPROCESS_REVIEWER_OUTPUT_MAX_BYTES}-byte bound (received ${textBytes} bytes).`,
+				));
+			}
+
+			return finish({ kind: "text", text, reviewerModel: `${model.provider}/${model.id}` });
+		} finally { deadline.dispose(); }
+
+	} finally {
+		try {
+			const observer = deps.onEvidence?.(structuredClone(finalEvidence ?? snapshot()));
+			if (observer !== undefined) void Promise.resolve(observer).catch(() => {});
+		} catch { /* Host diagnostics never affect classification or settlement. */ }
 	}
-
-	return { kind: "text", text, reviewerModel: `${model.provider}/${model.id}` };
 }

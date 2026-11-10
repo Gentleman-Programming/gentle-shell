@@ -1,4 +1,5 @@
 import type { ToolResultEvent } from "@earendil-works/pi-coding-agent";
+import type { OrchestratorMode } from "./agent-profiles.ts";
 import { inferOddPhase } from "./odd-phase-inference.ts";
 
 // Explicit discovery tools; existing shell inference below is advisory, never authorization.
@@ -32,7 +33,8 @@ export function createExplorationBudget() {
 			const request = requests.get(session);
 			if (request && !request.seen.has(id)) request.pending.set(id, { toolName, parentToolCallId });
 		},
-		result(session: unknown, event: DiscoveryResult, primary = true, aborted = false): string | undefined {
+		// `mode` is a thunk: it is read only when the notice is emitted, never per tool result.
+		result(session: unknown, event: DiscoveryResult, primary = true, aborted = false, mode?: () => OrchestratorMode): string | undefined {
 			const request = requests.get(session);
 			const call = request?.pending.get(event.toolCallId);
 			if (!request || !call) return undefined;
@@ -51,7 +53,7 @@ export function createExplorationBudget() {
 			}
 			if (request.notified || (request.lookups <= 3 && request.bytes <= 40_000)) return undefined;
 			request.notified = true;
-			return `Exploration budget: ${request.lookups.toLocaleString("en-US")} tracked lookups and ${request.bytes.toLocaleString("en-US")} UTF-8 text bytes (an approximate evidence budget). Ongoing discovery needs one configured explorer, even if read-only or initially small. Preparation for an already-understood authorized inline write remains exempt. This is runtime context for the original task, not a new user request. This notice grants no mutation or guard bypass authority.`;
+			return `Exploration budget: ${request.lookups.toLocaleString("en-US")} tracked lookups and ${request.bytes.toLocaleString("en-US")} UTF-8 text bytes (an approximate evidence budget). Ongoing discovery needs one configured explorer, even if read-only or initially small. ${mode?.() === "full-delegation" ? "Reading that prepares a writer belongs in that writer's prompt." : "Preparation for an already-understood authorized inline write remains exempt."} This is runtime context for the original task, not a new user request. This notice grants no mutation or guard bypass authority.`;
 		},
 		facts(session: unknown): { lookups: number; textBytes: number } | undefined {
 			const request = requests.get(session);

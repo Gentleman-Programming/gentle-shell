@@ -41,11 +41,11 @@ import { requireSessionProfileAuthority } from "../lib/session-profile-authority
 import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
 import { installBackgroundCacheWarming } from "../lib/background-cache-warming.ts";
 import { isFinished, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
-import { AgentRunner, piCommand, abortReasonText, REQUESTED_TOOLS_ENV, type AskAnswer, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
+import { AgentRunner, piCommand, abortReasonText, CHILD_JOBS_ENV, REQUESTED_TOOLS_ENV, type AskAnswer, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
 import { parseChildPackageInjection } from "../lib/child-package-injection.ts";
-import { ChildMessenger, type IpcEndpoint } from "../lib/agents-messaging.ts";
+import { ChildMessenger, formatChildJobState, type IpcEndpoint } from "../lib/agents-messaging.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
-import { WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, WindowsSessionRegistryPhaseSequence, type WindowsSessionRegistryPhaseObserver } from "../lib/windows-session-transport.ts";
+import { WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, WindowsSessionRegistryPhaseSequence, isWindowsSessionBootstrapDiagnosticCode, type WindowsSessionBootstrapDiagnosticCode, type WindowsSessionBootstrapDiagnosticObserver, type WindowsSessionRegistryPhaseObserver } from "../lib/windows-session-transport.ts";
 import { hasReviewSessionPermission, resolveCanonicalGitRepositoryIdentitySync, type ReviewSessionManager } from "../lib/review-session-standing-permission.ts";
 import { inheritedUnsafeGitEnvironmentKeys } from "../lib/review-repository.ts";
 import { historyDir, loadHistory, loadStoredTask, pruneHistory, saveTask, type StoredTask } from "../lib/agents-history.ts";
@@ -100,6 +100,31 @@ function messagePeerLabel(profile: string, sessionId: string): string | undefine
 		const matches = page.entries.filter(header => header.sessionHash === sessionHash(sessionId));
 		return matches.length === 1 && matches[0].recent ? sanitizeDisplayLabel(matches[0].label) || undefined : undefined;
 	} catch { return undefined; }
+}
+/** Human-readable labels for the recipient picker. A raw session id gives a person
+ * nothing to choose by, so the published session label and the workspace are used when
+ * they exist, and a short id suffix keeps every label unique: the chosen label is mapped
+ * back to a peer by exact match, so a collision would select the wrong one. */
+function recipientSelectionLabels(profile: string, candidates: readonly PresenceRecord[], activations: readonly PresenceRecord[] = candidates): string[] {
+	let discovered: ReturnType<typeof discoverOrchestrators> = [];
+	// Discovery must see every activation: it fails closed when one session resolves to
+	// several, and deduplicating before this point would silently label an ambiguous peer.
+	try { discovered = discoverOrchestrators(profile, activations); } catch { /* labels are best-effort, never routing */ }
+	const peersById = new Map(discovered.map(peer => [peer.sessionId, peer] as const));
+	const bases = candidates.map((candidate) => {
+		const peer = peersById.get(candidate.sessionId);
+		const name = peer?.label ?? peer?.legacyLabel;
+		if (!name) return "Orchestrator";
+		const workspace = peer?.workspace?.split(/[\\/]/).filter(Boolean).at(-1);
+		return workspace && workspace !== name ? `${name} (${workspace})` : name;
+	});
+	// Short ids stay whole (fixtures and test sessions); long ones are suffixed.
+	const suffix = (sessionId: string, length: number): string => sessionId.length <= 8 ? sessionId : sessionId.slice(-length);
+	for (const length of [4, 6, 8]) {
+		const labels = bases.map((base, index) => `${base} · ${suffix(candidates[index]!.sessionId, length)}`);
+		if (new Set(labels).size === labels.length) return labels;
+	}
+	return bases.map((base, index) => `${base} · ${candidates[index]!.sessionId}`);
 }
 export const AGENTS_STALE_RESULT_TYPE = "gentle-agents.stale-result";
 export const AGENTS_STALE_NOTICE_TYPE = "gentle-agents.stale-notice";
@@ -159,7 +184,7 @@ export interface SessionTransportClient {
 }
 
 export interface SessionTransportFactory {
-	createRegistry(agentHome: string, observeWindowsPhase?: WindowsSessionRegistryPhaseObserver): Promise<SessionTransportRegistry>;
+	createRegistry(agentHome: string, observeWindowsPhase?: WindowsSessionRegistryPhaseObserver, observeWindowsBootstrap?: WindowsSessionBootstrapDiagnosticObserver): Promise<SessionTransportRegistry>;
 	createListener(registry: SessionTransportRegistry, sessionId: string, onNotification: (notification: ReceivedNotification) => Promise<void>): SessionTransportListener;
 	createClient(registry: SessionTransportRegistry, sessionId: string): SessionTransportClient;
 }
@@ -390,6 +415,46 @@ function registerChildMessaging(pi: ExtensionAPI, ipc: IpcEndpoint): void {
 	});
 }
 
+// gentle-shell#2266: a child admitted for background jobs registers the tools
+// against its own private registry and reports its job state back over owned
+// IPC, so the runner can drain one bounded window at settlement instead of
+// killing a job mid-flight. The monitor stays parent-only.
+function registerChildBackgroundJobs(pi: ExtensionAPI, env: NodeJS.ProcessEnv, overrides: Partial<AgentsDeps>, ipc: IpcEndpoint): void {
+	const home = overrides.home ?? os.homedir();
+	const agentHome = overrides.agentHome ?? resolveAgentHomeDirectory({ env, home, agentHome: overrides.agentHome, homeOverridden: overrides.home !== undefined });
+	const now = overrides.now ?? (() => Date.now());
+	let outputDir: string | undefined;
+	let nextFrame = 0;
+	const reportJobs = (): void => {
+		const running = jobs.running();
+		try { ipc.send({ id: `j${++nextFrame}`, kind: "job", message: formatChildJobState({ running, pending: running > 0 }) }); }
+		catch { /* A lost report only costs the drain, never the job. */ }
+	};
+	const jobs = createJobRegistry({
+		outputDir: overrides.jobOutputDir ?? (() => (outputDir ??= mkdtempSync(join(os.tmpdir(), "gentle-jobs-")))),
+		now,
+		shell: overrides.jobShell ?? ((cwd) => {
+			const settings = SettingsManager.create(cwd, agentHome);
+			return { operations: createLocalBashOperations({ shellPath: settings.getShellPath() }), commandPrefix: settings.getShellCommandPrefix() };
+		}),
+		onSettled: (job: JobRecord) => {
+			reportJobs();
+			try { pi.sendMessage({ customType: JOB_NOTICE_TYPE, content: jobNoticeText(job), display: true, details: jobDetails(job) }, { deliverAs: "steer", triggerTurn: true }); }
+			catch { /* The notice is best-effort; the job outcome and the drain still stand. */ }
+		},
+	});
+	registerBackgroundJobTools(pi, { registry: jobs, sessionId: (ctx) => ctx.sessionManager.getSessionId() ?? "", now, onChange: reportJobs });
+	// agent_settled reports the jobs still running so the runner can drain before
+	// it requests the orderly shutdown.
+	pi.on("agent_settled", () => reportJobs());
+	pi.on("session_shutdown", () => {
+		if (!outputDir) return;
+		const dir = outputDir;
+		outputDir = undefined;
+		try { rmSync(dir, { recursive: true, force: true }); } catch { /* A leftover temp directory is harmless. */ }
+	});
+}
+
 const posixSessionTransport: SessionTransportFactory = {
 	createRegistry(agentHome) { return SessionPresenceRegistry.create(agentHome); },
 	createListener(registry: SessionPresenceRegistry, sessionId, onNotification) { return Object.assign(new ActiveSessionListener(registry, sessionId, onNotification), { closesRegistry: false }); },
@@ -397,7 +462,7 @@ const posixSessionTransport: SessionTransportFactory = {
 };
 
 const windowsSessionTransport: SessionTransportFactory = {
-	createRegistry(agentHome, observeWindowsPhase) { return WindowsSessionPresenceRegistry.create(agentHome, observeWindowsPhase); },
+	createRegistry(agentHome, observeWindowsPhase, observeWindowsBootstrap) { return WindowsSessionPresenceRegistry.create(agentHome, observeWindowsPhase, observeWindowsBootstrap); },
 	createListener(registry: WindowsSessionPresenceRegistry, sessionId, onNotification) { return Object.assign(new WindowsActiveSessionListener(registry, sessionId, onNotification), { closesRegistry: true }); },
 	createClient(registry: WindowsSessionPresenceRegistry, sessionId) { return new WindowsActiveSessionClient(registry, sessionId); },
 };
@@ -688,7 +753,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			pi.on("tool_call", () => ({ block: true, reason: "Retired SDD child launch is not supported." }));
 			return;
 		}
-		if (childIpc) registerChildMessaging(pi, childIpc);
+		if (childIpc) {
+			registerChildMessaging(pi, childIpc);
+			if (env[CHILD_JOBS_ENV] === "1") registerChildBackgroundJobs(pi, env, overrides, childIpc);
+		}
 		registerMissingToolsCheck(pi, env);
 		return;
 	}
@@ -950,6 +1018,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	type SessionTransport = { generation: number; sessionId: string; sessionManager: ExtensionContext["sessionManager"]; client: SessionTransportClient; listener: SessionTransportListener; registry: SessionTransportRegistry; close(): Promise<void> };
 	let transportGeneration = 0;
 	let activeSessionTransport: SessionTransport | undefined;
+	// A session whose first startup failed gets exactly one later re-arm attempt.
+	let transportRearm: { sessionManager: ExtensionContext["sessionManager"]; sessionId: string; ctx: ExtensionContext } | undefined;
 	const pendingTransportStartups = new Set<Promise<void>>();
 	const validTransportSessionId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value);
 	const closeSessionTransport = async (transport: SessionTransport | undefined) => {
@@ -961,11 +1031,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		operation.then(() => { pendingTransportStartups.delete(operation); }, () => { pendingTransportStartups.delete(operation); });
 		return operation;
 	};
-	const startSessionTransport = (ctx: ExtensionContext) => {
+	const startSessionTransport = (ctx: ExtensionContext, rearm = false) => {
 		const previous = activeSessionTransport;
 		const generation = ++transportGeneration;
 		const sessionManager = ctx.sessionManager;
 		activeSessionTransport = undefined;
+		transportRearm = undefined;
 		const operation = (async () => {
 			let registry: SessionTransportRegistry | undefined;
 			let listener: SessionTransportListener | undefined;
@@ -974,6 +1045,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			let sessionId: string | undefined;
 			let startupPhase: "registry" | "listener" = "registry";
 			const phases = new WindowsSessionRegistryPhaseSequence();
+			let bootstrap: WindowsSessionBootstrapDiagnosticCode | undefined;
+			const observeBootstrap = (code: WindowsSessionBootstrapDiagnosticCode) => { if (bootstrap === undefined && isWindowsSessionBootstrapDiagnosticCode(code)) bootstrap = code; return undefined; };
 			const closeStartupTransport = () => {
 				if (closePromise) return closePromise;
 				closePromise = Promise.resolve().then(async () => {
@@ -989,7 +1062,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				if (previous) trackTransportOperation(closeSessionTransport(previous));
 				sessionId = sessionManager.getSessionId();
 				if (!validTransportSessionId(sessionId) || sessions !== sessionManager || generation !== transportGeneration) return;
-				registry = await sessionTransport.createRegistry(agentHome, (event) => phases.observe(event));
+				registry = await sessionTransport.createRegistry(agentHome, (event) => phases.observe(event), observeBootstrap);
 				if (sessions !== sessionManager || generation !== transportGeneration) {
 					await closeStartupTransport();
 					return;
@@ -1024,22 +1097,33 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				if (activeSessionTransport?.generation === generation) activeSessionTransport = undefined;
 				// Only fixed, validated observer fields cross the UI boundary. Never
 				// interpolate the exception or report a retired session's failure.
-				if (sessions === sessionManager && generation === transportGeneration && validTransportSessionId(sessionId) && activeSessionId() === sessionId) {
+				const current = () => sessions === sessionManager && generation === transportGeneration && validTransportSessionId(sessionId) && activeSessionId() === sessionId;
+				if (current()) {
 					const observation = phases.snapshot();
 					const diagnostic = startupPhase === "registry" && observation.availability === "observed" && observation.firstFailurePhase !== null
 						? `phase=${observation.firstFailurePhase} class=${observation.firstFailureClass} code=${observation.firstFailureCode} lastStartupMarker=${observation.lastStartupMarker ?? "unavailable"}`
 						: `phase=${startupPhase} diagnostics=unavailable`;
-					try { ctx.ui.notify(`Session transport startup failed: ${diagnostic}.`, "warning"); } catch {}
+					try { ctx.ui.notify(`Session transport startup failed: ${diagnostic}${bootstrap ? ` bootstrap=${bootstrap}` : ""}.`, "warning"); } catch {}
 				}
 				await closeStartupTransport();
+				// Armed only after cleanup, so the re-arm never overlaps the failed helper.
+				if (!rearm && current()) transportRearm = { sessionManager, sessionId: sessionId!, ctx };
 			}
 		})();
 		trackTransportOperation(operation);
 		return operation;
 	};
+	// The single re-arm runs on a later session event of the same session while it
+	// still has no transport; its own failure warns again and arms nothing.
+	const rearmSessionTransport = (ctx: ExtensionContext | undefined) => {
+		const pending = transportRearm;
+		if (!pending || ctx?.sessionManager !== pending.sessionManager || sessions !== pending.sessionManager || activeSessionId() !== pending.sessionId || activeSessionTransport) return;
+		void startSessionTransport(pending.ctx, true);
+	};
 	const shutdownSessionTransport = async () => {
 		const active = activeSessionTransport;
 		activeSessionTransport = undefined;
+		transportRearm = undefined;
 		transportGeneration++;
 		if (active) await closeSessionTransport(active);
 		while (pendingTransportStartups.size > 0) {
@@ -2872,15 +2956,18 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			}
 			if (recipient === undefined) {
 				try {
-					const candidates = (await transport.listener.registry.listActivations(transport.sessionId)).filter((candidate) => candidate.sessionId !== transport.sessionId);
+					const activations = (await transport.listener.registry.listActivations(transport.sessionId)).filter((candidate) => candidate.sessionId !== transport.sessionId);
+					// A transport may report more than one activation for one session; the picker maps
+					// the chosen label back to a single activation, so keep one entry per session ID.
+					const candidates = [...new Map(activations.map((candidate) => [candidate.sessionId, candidate] as const)).values()];
 					if (activeTransportFor(ctx) !== transport || signal?.aborted) return text("Message selection was cancelled.", { error: "cancelled" });
 					if (candidates.length === 0) return text("No other sessions are currently advertised; message delivery is unavailable.", { error: "unavailable" });
 					if (candidates.length === 1) {
 						recipient = candidates[0].sessionId;
 						activation = candidates[0];
-					} else if (!ctx.hasUI) return text("Several recipient orchestrators are available. Ask the user to choose a recipient label; do not ask for a session ID.", { gentleAgents: { candidates: candidates.map((candidate) => ({ label: `Orchestrator ${candidate.sessionId}`, sessionId: candidate.sessionId })) } });
-					else {
-						const labels = candidates.map((candidate) => `Orchestrator ${candidate.sessionId}`);
+					} else {
+						const labels = recipientSelectionLabels(agentHome, candidates, activations);
+						if (!ctx.hasUI) return text(`Several recipient orchestrators are available. Ask the user to choose one of these recipient labels; do not ask for a session ID:\n${labels.map((label) => `- ${label}`).join("\n")}\nSending still requires interactive human consent.`, { gentleAgents: { candidates: candidates.map((candidate, index) => ({ label: labels[index]!, sessionId: candidate.sessionId })) } });
 						const selected = await ctx.ui.select("Select recipient orchestrator", labels, { signal });
 						if (selected === undefined || activeTransportFor(ctx) !== transport || signal?.aborted) return text("Message selection was cancelled.", { error: "cancelled" });
 						const index = labels.indexOf(selected);
@@ -3150,7 +3237,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			presence = startPresence(ctx.sessionManager);
 			resetActivityPublish();
 			publishActivityPrompt();
-		} catch { presence = undefined; }
+		} catch {
+			presence = undefined;
+			// Fixed text only: the failure may carry a profile path or session id.
+			try { ctx.ui.notify("Session presence unavailable: phase=presence class=transport code=presence-cleared.", "warning"); } catch {}
+		}
 		// /reload and /resume recompute busy from live owned work only: a task
 		// restored from disk never enters ownedTaskIds, so counting it would
 		// report working for work this runtime no longer owns. An unchanged
@@ -3181,6 +3272,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			rpcActivityPublisher.start();
 		}
 	});
+	pi.on("agent_start", (_event, ctx) => rearmSessionTransport(ctx));
+	pi.on("turn_end", (_event, ctx) => rearmSessionTransport(ctx));
 	pi.on("session_shutdown", async () => {
 		completions.dropAll();
 		messages.dropAll();

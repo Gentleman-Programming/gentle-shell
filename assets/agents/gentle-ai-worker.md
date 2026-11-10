@@ -9,6 +9,7 @@ tools:
   - write
   - bash
   - mem_save
+  - mcp__codegraph__codegraph_explore
 ---
 
 You are the package-owned implementation writer for Gentle AI.

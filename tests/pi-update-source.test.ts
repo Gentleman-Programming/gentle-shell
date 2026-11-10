@@ -8,7 +8,7 @@ import { updateSelectedPi } from '../scripts/pi-update.mjs';
 const PI = '@earendil-works/pi-coding-agent';
 const CLI = 'dist/bundle/cli.js';
 
-async function fixture(t: any, options: {manager?: string, locks?: string[], workspace?: boolean, range?: string, mismatch?: boolean, managerVersion?: string, fail?: boolean, unreadable?: boolean, unlink?: boolean, installedSource?: boolean, configOnly?: boolean, multipleProjects?: boolean, latest?: string, excludeOutput?: string} = {}) {
+async function fixture(t: any, options: {manager?: string, locks?: string[], workspace?: boolean, range?: string, mismatch?: boolean, managerVersion?: string, fail?: boolean, unreadable?: boolean, unlink?: boolean, installedSource?: boolean, configOnly?: boolean, multipleProjects?: boolean, latest?: string, excludeOutput?: string, piDependencies?: Record<string, unknown>, manifestView?: {code: number, stdout: string}, siblingDependencies?: Record<string, Record<string, unknown>>} = {}) {
  const temp = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'pi-source-')));
  t.after(() => fs.rm(temp, {recursive: true, force: true}));
  const root = join(temp, 'checkout');
@@ -48,6 +48,11 @@ async function fixture(t: any, options: {manager?: string, locks?: string[], wor
    if (args.includes('list')) return {code: 0, stdout: JSON.stringify([{path: join(temp, 'pnpm'), dependencies: {}}])};
    if (args.includes('ls')) return {code: 0, stdout: JSON.stringify({path: join(temp, 'global'), dependencies: {'gentle-pi': {path: link, resolved: 'file:../../checkout'}}})};
    if (args.includes('--version')) return {code: 0, stdout: `${options.managerVersion ?? '11.1.1'}\n`};
+   // `view <Pi>@<version> --json` reads the selected version's published manifest.
+   const spec = args[args.indexOf('view') + 1] ?? '', at = spec.lastIndexOf('@');
+   // A Pi-scope sibling resolves only from siblingDependencies; any other lookup fails.
+   if (args.includes('view') && args.includes('--json') && spec.slice(0, at) !== PI) return options.siblingDependencies?.[spec] ? {code: 0, stdout: JSON.stringify({name: spec.slice(0, at), version: spec.slice(at + 1), dependencies: options.siblingDependencies[spec]})} : {code: 1, stdout: ''};
+   if (args.includes('view') && args.includes('--json')) return options.manifestView ?? {code: 0, stdout: JSON.stringify({name: PI, version: options.latest ?? '1.1.0', bin: {pi: CLI}, dependencies: options.piDependencies ?? {}})};
    if (args.includes('view')) return {code: 0, stdout: `${options.latest ?? '1.1.0'}\n`};
    if (args.includes('config')) return {code:0, stdout:args.includes('minimumReleaseAgeExclude') ? options.excludeOutput ?? '["existing-fixture"]\n' : options.workspace ? '["packages/*"]\n' : ''};
    updates.push({command, args, cwd, ...(env ? {env} : {})});
@@ -82,7 +87,7 @@ for (const manager of ['pnpm', 'npm']) test(`source-linked Shell updates only it
 for (const manager of ['pnpm', 'npm']) test(`source ${manager} resolves the latest stable tag before updating, without changing its manifest`, async t => {
  const f = await fixture(t, {manager, range:'^1.0.0', latest:'2.0.0'});
  assert.equal(await updateSelectedPi(f.input), 0);
- const views = f.calls.filter(call => call.args.includes('view'));
+ const views = f.calls.filter(call => call.args.includes('view') && !call.args.includes('--json'));
  assert.equal(views.length, 1);
  assert.ok(views[0].args.includes(`${PI}@latest`));
  assert.ok(f.calls.indexOf(views[0]) < f.calls.findIndex(call => call.args === f.updates[0].args));
@@ -100,6 +105,61 @@ test('source pnpm retains existing package-specific release-age exclusions while
  assert.ok(args.includes(`--config.minimum-release-age-exclude=${PI}`));
  assert.ok(!args.some(arg => /^--(?:config\.)?minimum-release-age=/.test(arg)));
  assert.equal((await f.snapshot()).pnpmConfig, f.before.pnpmConfig);
+});
+
+const DEPENDENCIES = {'@earendil-works/pi-ai':'2.0.0', '@earendil-works/pi-tui':'2.0.0', '@earendil-works/pi-ranged':'^2.0.0',
+ '@earendil-works/pi-next':'2.1.0-rc.1', undici:'7.0.0', chalk:'^5.0.0'};
+
+// Pi 1.5.2's pi-ai pins pi-schema and pi-telemetry, which Pi itself does not list.
+const SIBLINGS = {'@earendil-works/pi-ai@2.0.0':{'@earendil-works/pi-schema':'2.0.0', '@earendil-works/pi-telemetry':'2.0.0', openai:'7.19.0'},
+ '@earendil-works/pi-tui@2.0.0':{'@earendil-works/pi-ai':'2.0.0', marked:'18.0.11'}, '@earendil-works/pi-schema@2.0.0':{}, '@earendil-works/pi-telemetry@2.0.0':{'@earendil-works/pi-ranged':'^2.0.0'}};
+
+test('source pnpm also exempts only the Pi-scope packages the selected Pi pins exactly, transitively', async t => {
+ const f = await fixture(t, {configOnly:true, latest:'2.0.0', piDependencies:DEPENDENCIES, siblingDependencies:SIBLINGS});
+ assert.equal(await updateSelectedPi(f.input), 0);
+ const manifests = f.calls.filter(call => call.args.includes('view') && call.args.includes('--json'));
+ assert.deepEqual(manifests, [PI, '@earendil-works/pi-ai', '@earendil-works/pi-tui', '@earendil-works/pi-schema', '@earendil-works/pi-telemetry'].map(name => ({command:'/fake/pnpm', args:['view', `${name}@2.0.0`, '--json', '--dir', f.root, '--pm-on-fail=ignore'], cwd:f.root, env:{COREPACK_ENABLE_PROJECT_SPEC:'0',COREPACK_ENABLE_NETWORK:'0'}})));
+ assert.ok(f.calls.indexOf(manifests[manifests.length - 1]) < f.calls.findIndex(call => call.args === f.updates[0].args));
+ assert.deepEqual(f.updates[0].args.filter(arg => arg.startsWith('--config.minimum-release-age-exclude=')), ['existing-fixture', PI, ...['pi-ai', 'pi-tui', 'pi-schema', 'pi-telemetry'].map(name => `@earendil-works/${name}@2.0.0`)].map(entry => `--config.minimum-release-age-exclude=${entry}`));
+ assert.ok(f.updates[0].args.includes('--no-save'));
+ assert.ok(!f.updates[0].args.some(arg => /minimum-release-age-strict|minimumReleaseAgeStrict/i.test(arg)));
+ const after = await f.snapshot();
+ assert.equal(after.manifest, f.before.manifest);
+ assert.equal(after.pnpmConfig, f.before.pnpmConfig);
+});
+
+for (const [name, manifestView] of Object.entries({'a failed lookup': {code:1, stdout:''}, 'unparsable output': {code:0, stdout:'not json'},
+ 'another package': {code:0, stdout:JSON.stringify({name:'other', version:'2.0.0'})}, 'list-shaped dependencies': {code:0, stdout:JSON.stringify({name:PI, version:'2.0.0', dependencies:['@earendil-works/pi-ai']})}})) test(`source pnpm refuses without mutation when the selected Pi manifest has ${name}`, async t => {
+ const f = await fixture(t, {configOnly:true, latest:'2.0.0', manifestView});
+ await assert.rejects(updateSelectedPi(f.input), {message:'gentle-shell update: the published dependencies of Pi 2.0.0 could not be verified. No installation changed.'});
+ assert.deepEqual(f.updates, []);
+ assert.deepEqual(f.output, []);
+ assert.deepEqual(await f.snapshot(), f.before);
+});
+
+test('source pnpm merges siblings into the checkout\'s versioned exclusions and keeps the rest verbatim', async t => {
+ const existing = [`${PI}@1.0.0`, '@earendil-works/chord@1.0.0', '@earendil-works/pi-ai@1.0.0', '@earendil-works/pi-telemetry@1.0.0', 'existing-fixture'];
+ const f = await fixture(t, {configOnly:true, latest:'2.0.0', piDependencies:DEPENDENCIES, siblingDependencies:SIBLINGS, excludeOutput:JSON.stringify(existing)});
+ assert.equal(await updateSelectedPi(f.input), 0);
+ assert.deepEqual(f.updates[0].args.filter(arg => arg.startsWith('--config.minimum-release-age-exclude=')).map(arg => arg.slice(arg.indexOf('=') + 1)),
+  [PI, '@earendil-works/chord@1.0.0', '@earendil-works/pi-ai@1.0.0 || 2.0.0', '@earendil-works/pi-telemetry@1.0.0 || 2.0.0', 'existing-fixture', '@earendil-works/pi-tui@2.0.0', '@earendil-works/pi-schema@2.0.0']);
+ assert.equal((await f.snapshot()).pnpmConfig, f.before.pnpmConfig);
+});
+
+test('source pnpm refuses without mutation when a transitively pinned sibling cannot be read', async t => {
+ const {'@earendil-works/pi-telemetry@2.0.0': _missing, ...siblings} = SIBLINGS;
+ const f = await fixture(t, {configOnly:true, latest:'2.0.0', piDependencies:DEPENDENCIES, siblingDependencies:siblings});
+ await assert.rejects(updateSelectedPi(f.input), {message:'gentle-shell update: the published dependencies of @earendil-works/pi-telemetry@2.0.0 could not be verified. No installation changed.'});
+ assert.deepEqual(f.updates, []);
+ assert.deepEqual(f.output, []);
+ assert.deepEqual(await f.snapshot(), f.before);
+});
+
+test('source npm keeps its update unchanged and never reads the Pi manifest', async t => {
+ const f = await fixture(t, {manager:'npm', latest:'2.0.0', piDependencies:DEPENDENCIES});
+ assert.equal(await updateSelectedPi(f.input), 0);
+ assert.deepEqual(f.calls.filter(call => call.args.includes('--json') && call.args.includes('view')), []);
+ assert.ok(!f.updates[0].args.some(arg => arg.includes('minimum-release-age')));
 });
 
 test('source pnpm safely handles an empty release-age exclusion list', async t => {

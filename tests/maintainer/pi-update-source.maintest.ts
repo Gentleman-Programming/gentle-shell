@@ -12,6 +12,13 @@ import { updateSelectedPi } from '../../scripts/pi-update.mjs';
 
 const exec = promisify(execFile);
 const PI = '@earendil-works/pi-coding-agent';
+// Co-published with Pi and pinned exactly by it: no older version can satisfy it.
+const SIBLING = '@earendil-works/pi-ai';
+// A Pi-scope dependency with a range must stay age-filtered like any other.
+const RANGED = '@earendil-works/pi-ranged-fixture';
+// Pinned exactly by SIBLING, not by Pi: only a transitive closure finds it.
+const GRAND = '@earendil-works/pi-grand-fixture';
+const fresh = (name: string) => name === PI || name === SIBLING || name === GRAND;
 for (const manager of ['npm', 'pnpm']) test(`real ${manager} source update preserves ranges, unrelated pins, Shell link and lifecycle safety`, {skip: process.platform === 'win32'}, async t => {
  const temp = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'pi-real-')));
  t.after(() => fs.rm(temp, {recursive:true, force:true}));
@@ -19,7 +26,8 @@ for (const manager of ['npm', 'pnpm']) test(`real ${manager} source update prese
  Object.assign(env, {HOME:temp, USERPROFILE:temp, XDG_CONFIG_HOME:temp, XDG_CACHE_HOME:join(temp,'cache'), npm_config_cache:join(temp,'cache'), npm_config_userconfig:join(temp,'user.npmrc'), npm_config_globalconfig:join(temp,'global.npmrc'), npm_config_update_notifier:'false', COREPACK_ENABLE_PROJECT_SPEC:'0', COREPACK_ENABLE_NETWORK:'0', COREPACK_HOME:join(temp,'corepack'), PNPM_HOME:join(temp,'pnpm-home')});
  await fs.writeFile(env.npm_config_userconfig!, '');
  await fs.writeFile(env.npm_config_globalconfig!, '');
- const command = (await exec('which', [manager], {env})).stdout.trim();
+ // GENTLE_PI_MAINTEST_PNPM selects another real pnpm (for example a user's newer global one).
+ const command = manager === 'pnpm' && process.env.GENTLE_PI_MAINTEST_PNPM ? process.env.GENTLE_PI_MAINTEST_PNPM : (await exec('which', [manager], {env})).stdout.trim();
  const version = (await exec(command, ['--version'], {cwd:temp, env})).stdout.trim();
  const files = new Map<string, Buffer>();
  const manifests: Record<string, any> = {};
@@ -35,7 +43,7 @@ for (const manager of ['npm', 'pnpm']) test(`real ${manager} source update prese
   const name = path.slice(1);
   if (!manifests[name]) {res.statusCode = 404; res.end('{}'); return;}
   res.setHeader('content-type', 'application/json');
-  const latest = name === PI ? '2.0.0' : '1.1.0';
+  const latest = fresh(name) ? '2.0.0' : '1.1.0';
   res.end(JSON.stringify({name, 'dist-tags':{latest:updated ? latest : '1.0.0'}, time:{'1.0.0':'2020-01-01T00:00:00Z',[latest]:new Date().toISOString(), ...(name === PI ? {'3.0.0':new Date().toISOString()} : {})}, versions:updated ? manifests[name] : {'1.0.0':manifests[name]['1.0.0']}}));
  });
  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -47,13 +55,14 @@ for (const manager of ['npm', 'pnpm']) test(`real ${manager} source update prese
  // pnpm 11 does not honor npm's registry environment variable. Bind both
  // install and update explicitly to the fixture registry and private store.
  const registryFlags = ['--registry', registry, ...(manager === 'pnpm' ? ['--store-dir', join(temp,'store'), '--config.update-notifier=false'] : [])];
- for (const name of [PI, 'unrelated-fixture', 'age-filtered-fixture', 'pre-excluded-fixture']) {
+ for (const name of [PI, SIBLING, GRAND, RANGED, 'unrelated-fixture', 'age-filtered-fixture', 'pre-excluded-fixture']) {
   manifests[name] = {};
-  for (const version of name === PI ? ['1.0.0', '2.0.0', '3.0.0'] : ['1.0.0', '1.1.0']) {
+  for (const version of name === PI ? ['1.0.0', '2.0.0', '3.0.0'] : fresh(name) ? ['1.0.0', '2.0.0'] : ['1.0.0', '1.1.0']) {
    const pack = join(temp, `pack-${name === PI ? 'pi' : name}-${version}`);
    await fs.mkdir(join(pack, 'package', 'dist', 'bundle'), {recursive:true});
    const manifest = {name, version, bin:name === PI ? {pi:'dist/bundle/cli.js'} : undefined,
-    dependencies:name === PI && version === '2.0.0' ? {'age-filtered-fixture':'^1.0.0', 'pre-excluded-fixture':'^1.0.0'} : undefined,
+    dependencies:name === PI && version === '2.0.0' ? {'age-filtered-fixture':'^1.0.0', 'pre-excluded-fixture':'^1.0.0', [SIBLING]:'2.0.0', [RANGED]:'^1.0.0'}
+     : name === SIBLING && version === '2.0.0' ? {[GRAND]:'2.0.0'} : undefined,
     scripts:{postinstall:'node -e "require(\'fs\').writeFileSync(\'LIFECYCLE_RAN\', \'bad\')"'}};
    await fs.writeFile(join(pack, 'package', 'package.json'), JSON.stringify(manifest));
    await fs.writeFile(join(pack, 'package', 'dist', 'bundle', 'cli.js'), `console.log('${version}');`);
@@ -71,7 +80,8 @@ for (const manager of ['npm', 'pnpm']) test(`real ${manager} source update prese
  t.diagnostic(`${manager} runtime ${version}; project declaration ${declaredVersion}`);
  const manifest = JSON.stringify({name:'gentle-pi', version:'4.4.0', packageManager:`${manager}@${declaredVersion}`, devDependencies:{[PI]:'^1.0.0', 'unrelated-fixture':'^1.0.0'}});
  await fs.writeFile(join(root, 'package.json'), manifest);
- const policy = 'minimumReleaseAge: 4320\nminimumReleaseAgeExclude:\n  - pre-excluded-fixture\n';
+ // Versioned entries for the siblings shadow any later CLI entry for the same name.
+ const policy = `minimumReleaseAge: 4320\nminimumReleaseAgeExclude:\n  - pre-excluded-fixture\n  - '${SIBLING}@1.0.0'\n  - '${GRAND}@1.0.0'\n`;
  if (manager === 'pnpm') await fs.writeFile(join(root,'pnpm-workspace.yaml'), policy);
  const common = ['--ignore-scripts', '--global=false', ...(manager === 'pnpm' ? ['--ignore-pnpmfile', '--pm-on-fail=ignore'] : ['--no-audit', '--no-fund'])];
  await exec(command, ['install', ...common, ...registryFlags], {cwd:root, env, maxBuffer:1024*1024});
@@ -104,6 +114,10 @@ for (const manager of ['npm', 'pnpm']) test(`real ${manager} source update prese
  assert.ok(mutations[0].some(arg => arg === PI || arg.startsWith(`${PI}@`)));
  assert.ok(registryRequests.some(request => request.phase === 'update' && request.path === `/${PI}`), JSON.stringify(registryRequests));
  assert.ok(!mutations[0].includes('-g'));
+ if (manager === 'pnpm') {
+  const exclusions = mutations[0].filter(arg => arg.startsWith('--config.minimum-release-age-exclude=')).map(arg => arg.slice(arg.indexOf('=') + 1));
+  assert.deepEqual(exclusions, ['pre-excluded-fixture', `${SIBLING}@1.0.0 || 2.0.0`, `${GRAND}@1.0.0 || 2.0.0`, PI]);
+ }
  assert.equal(await fs.realpath(link), root);
  assert.equal(await fs.readFile(join(root, 'package.json'), 'utf8'), manifest);
  if (manager === 'pnpm') {
@@ -121,7 +135,11 @@ for (const manager of ['npm', 'pnpm']) test(`real ${manager} source update prese
  if (manager === 'pnpm') {
   assert.equal(await installedVersion('age-filtered-fixture'), '1.0.0', 'a fresh unrelated dependency remains age-filtered');
   assert.equal(await installedVersion('pre-excluded-fixture'), '1.1.0', 'the existing exclusion remains effective');
+  assert.equal(await installedVersion(RANGED), '1.0.0', 'a ranged Pi-scope dependency remains age-filtered');
  }
+ assert.equal(await installedVersion(SIBLING), '2.0.0', 'the exact co-published sibling is installed');
+ const resolveFromSibling = createRequire(join(await fs.realpath(join(await fs.realpath(resolveFromPi.resolve(`${SIBLING}/package.json`)), '..')), 'package.json'));
+ assert.equal(JSON.parse(await fs.readFile(resolveFromSibling.resolve(`${GRAND}/package.json`), 'utf8')).version, '2.0.0', 'the transitively pinned sibling is installed');
  await assert.rejects(fs.access(join(root,'node_modules',PI,'LIFECYCLE_RAN')));
  assert.equal(output.length, 1);
  assert.match(output[0], /the selected Pi is now 2\.0\.0 \(was 1\.0\.0\)/);

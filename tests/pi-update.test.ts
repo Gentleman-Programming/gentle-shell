@@ -13,7 +13,9 @@ const AGE = ['--config.minimum-release-age-exclude=existing-fixture', `--config.
 // same store entry. npm nests the peer under the Shell package.
 function fixture({windows = false, npm = false, runtime = 'adjacent', groups = 'both', peerAfter = '1.2.0', shellVersion = '4.1.0',
  badManifest = false, failed = false, mismatch = false, linked = false, readback = true, unrelatedPeer = false, shim = '',
- artifact = true, configHome = '', latest = '1.2.0', installFailure = undefined as undefined | {stdout?: string, stderrTail?: string}} = {}) {
+ artifact = true, configHome = '', latest = '1.2.0', installFailure = undefined as undefined | {stdout?: string, stderrTail?: string},
+ piDependencies = {} as Record<string, unknown>, manifestView = undefined as undefined | {code: number, stdout: string},
+ siblingDependencies = {} as Record<string, Record<string, unknown> | null>, excludeOutput = '["existing-fixture"]\n'} = {}) {
  const base = windows ? 'C:/pnpm' : '/pnpm';
  const home = windows ? 'C:/Users/u' : '/home/u';
  // The tarball `gentle-shell upgrade --channel main` packs, named after its version.
@@ -75,8 +77,17 @@ function fixture({windows = false, npm = false, runtime = 'adjacent', groups = '
  const run = async (_command: string, args: string[], options?: {cwd?: unknown}) => {
   cwds.push(options?.cwd);
   if (args.includes('list') || args.includes('ls')) return {code: failed ? 1 : 0, stdout: readback || mutations.length === 0 ? JSON.stringify(listing()) : '{'};
-  if (args.includes('view')) { probes.push(args); return {code: 0, stdout: `${latest}\n`}; }
-  if (args.includes('config')) { probes.push(args); return {code: 0, stdout: '["existing-fixture"]\n'}; }
+  if (args.includes('view')) {
+   probes.push(args);
+   // `view <Pi>@<version> --json` reads the selected version's published manifest.
+   // A Pi-scope sibling resolves from siblingDependencies (null: the lookup fails).
+   const spec = args[args.indexOf('view') + 1], at = spec.lastIndexOf('@');
+   if (args.includes('--json') && spec.slice(0, at) !== PI) return siblingDependencies[spec] === null ? {code: 1, stdout: ''}
+    : {code: 0, stdout: JSON.stringify({name: spec.slice(0, at), version: spec.slice(at + 1), dependencies: siblingDependencies[spec] ?? {}})};
+   if (args.includes('--json')) return manifestView ?? {code: 0, stdout: JSON.stringify({name: PI, version: latest, dependencies: piDependencies})};
+   return {code: 0, stdout: `${latest}\n`};
+  }
+  if (args.includes('config')) { probes.push(args); return {code: 0, stdout: excludeOutput}; }
   mutations.push(args);
   runOptions.push(options);
   if (installFailure) return {code: 1, stdout: installFailure.stdout ?? '', ...('stderrTail' in installFailure ? {stderrTail: installFailure.stderrTail} : {})};
@@ -138,7 +149,7 @@ function supplierFixture({shell = false, decoyVersion = '1.0.0', selectedAfter =
  };
  const run = async (_command: string, args: string[]) => {
   if (args.includes('list')) return {code:0, stdout:JSON.stringify(listing())};
-  if (args.includes('view')) return {code:0, stdout:'2.0.0\n'};
+  if (args.includes('view')) return {code:0, stdout:args.includes('--json') ? JSON.stringify({name:PI, version:'2.0.0'}) : '2.0.0\n'};
   if (args.includes('config')) return {code:0, stdout:'["existing-fixture"]\n'};
   mutations.push(args);
   state.selected = selectedAfter;
@@ -346,6 +357,74 @@ test('a main-channel tarball is found under GENTLE_PI_CONFIG_HOME', async () => 
  assert.deepEqual(f.mutations, [['add', '-g', '/custom/config/main/packages/gentle-pi-4.2.0-main.fb5e731119a7.tgz', '--allow-build=gentle-pi', ...AGE]]);
 });
 
+// Pi 1.5.2 pins its co-published @earendil-works packages exactly; pnpm's
+// strict release-age mode cannot approve them under --no-save.
+const DEPENDENCIES = {'@earendil-works/pi-ai':'1.2.0', '@earendil-works/pi-tui':'1.2.0', '@earendil-works/pi-ranged':'^1.2.0',
+ '@earendil-works/pi-next':'1.3.0-rc.1', undici:'7.0.0', chalk:'^5.0.0'};
+// pi-ai pins pi-schema, which pins pi-ai back: the closure follows each once.
+const SIBLINGS = {'@earendil-works/pi-ai@1.2.0':{'@earendil-works/pi-schema':'1.2.0', openai:'7.19.0'}, '@earendil-works/pi-schema@1.2.0':{'@earendil-works/pi-ai':'1.2.0'}};
+const SIBLING_AGE = [...AGE, ...['pi-ai@1.2.0', 'pi-tui@1.2.0', 'pi-schema@1.2.0'].map(entry => `--config.minimum-release-age-exclude=@earendil-works/${entry}`)];
+
+for (const [name, options] of Object.entries({'global Pi': {runtime:'path'}, 'Shell peer': {}, 'main artifact': {shellVersion:MAIN}} as Record<string, {runtime?: string, shellVersion?: string}>)) test(`pnpm ${name} also exempts only the Pi-scope packages the selected Pi pins exactly`, async () => {
+ const f = fixture({...options, piDependencies:DEPENDENCIES, siblingDependencies:SIBLINGS});
+ assert.equal(await updateSelectedPi(f.input), 0);
+ assert.deepEqual(f.probes.filter(args => args.includes('view') && args.includes('--json')),
+  [PI, '@earendil-works/pi-ai', '@earendil-works/pi-tui', '@earendil-works/pi-schema'].map(name => ['view', `${name}@1.2.0`, '--json', '--config.global=true']));
+ const spec = options.runtime ? `${PI}@1.2.0` : options.shellVersion ? f.tarball : 'gentle-pi@4.1.0';
+ assert.deepEqual(f.mutations, [['add', '-g', spec, ...(options.runtime ? [] : ['--allow-build=gentle-pi']), ...SIBLING_AGE]]);
+});
+
+test('global pnpm merges each sibling into its configured exclusion instead of being shadowed by it', async () => {
+ // pnpm applies only the first rule naming a package, so a later CLI entry
+ // for an already listed name would be ignored.
+ const existing = ['existing-fixture', '@earendil-works/pi-ai@1.0.0', `${PI}@1.0.0`, '@earendil-works/pi-tui', '@earendil-works/*', '@earendil-works/pi-ai@0.9.0 || 1.1.0'];
+ const f = fixture({runtime:'path', piDependencies:DEPENDENCIES, siblingDependencies:SIBLINGS, excludeOutput:JSON.stringify(existing)});
+ assert.equal(await updateSelectedPi(f.input), 0);
+ assert.deepEqual(f.mutations[0].filter(arg => arg.startsWith('--config.minimum-release-age-exclude=')).map(arg => arg.slice(arg.indexOf('=') + 1)),
+  ['existing-fixture', '@earendil-works/pi-ai@1.0.0 || 0.9.0 || 1.1.0 || 1.2.0', PI, '@earendil-works/pi-tui', '@earendil-works/*', '@earendil-works/pi-schema@1.2.0']);
+});
+
+for (const existing of ['@earendil-works/pi-ai@^1.0.0', '@earendil-works/pi-ai@1.0.0 || latest', `${PI}@`]) test(`global pnpm refuses an exclusion it cannot merge safely: ${existing}`, async () => {
+ const f = fixture({runtime:'path', piDependencies:DEPENDENCIES, siblingDependencies:SIBLINGS, excludeOutput:JSON.stringify(['existing-fixture', existing])});
+ const result = await captureUpdate(f.input, f.out);
+ assert.deepEqual(f.mutations, []);
+ assert.deepEqual(result, {exitCode:1, stdout:'', stderr:'gentle-shell update: pnpm release-age exclusions could not be verified. No installation changed.\n'});
+});
+
+test('global pnpm refuses before installing when a pinned sibling manifest cannot be read', async () => {
+ const f = fixture({runtime:'path', piDependencies:DEPENDENCIES, siblingDependencies:{...SIBLINGS, '@earendil-works/pi-schema@1.2.0':null}});
+ const result = await captureUpdate(f.input, f.out);
+ assert.deepEqual(f.mutations, []);
+ assert.deepEqual(f.state, {peer:'1.1.0', group:'1.1.0'});
+ assert.deepEqual(result, {exitCode:1, stdout:'', stderr:'gentle-shell update: the published dependencies of @earendil-works/pi-schema@1.2.0 could not be verified. No installation changed.\n'});
+});
+
+test('global pnpm refuses an unbounded chain of pinned siblings without installing', async () => {
+ const chain = Object.fromEntries(Array.from({length:40}, (_, i) => [`@earendil-works/pi-chain-${i}@1.2.0`, {[`@earendil-works/pi-chain-${i + 1}`]:'1.2.0'}]));
+ const f = fixture({runtime:'path', piDependencies:{'@earendil-works/pi-chain-0':'1.2.0'}, siblingDependencies:chain});
+ const result = await captureUpdate(f.input, f.out);
+ assert.deepEqual(f.mutations, []);
+ assert.equal(f.probes.filter(args => args.includes('--json')).length, 33);
+ assert.deepEqual(result, {exitCode:1, stdout:'', stderr:'gentle-shell update: Pi 1.2.0 pins more than 32 @earendil-works packages; their release age could not be verified. No installation changed.\n'});
+});
+
+test('npm never reads the Pi manifest or passes pnpm release-age exclusions', async () => {
+ const f = fixture({npm:true, runtime:'path', piDependencies:DEPENDENCIES});
+ assert.equal(await updateSelectedPi(f.input), 0);
+ assert.deepEqual(f.probes.filter(args => args.includes('--json')), []);
+ assert.deepEqual(f.mutations, [['install', '-g', `${PI}@1.2.0`, '--ignore-scripts']]);
+});
+
+for (const [name, manifestView] of Object.entries({'a failed lookup': {code:1, stdout:''}, 'unparsable output': {code:0, stdout:'{'},
+ 'another package version': {code:0, stdout:JSON.stringify({name:PI, version:'1.1.0'})},
+ 'malformed dependencies': {code:0, stdout:JSON.stringify({name:PI, version:'1.2.0', dependencies:{'@earendil-works/pi-ai':1}})}})) test(`pnpm refuses before installing when the selected Pi manifest has ${name}`, async () => {
+ const f = fixture({runtime:'path', manifestView});
+ const result = await captureUpdate(f.input, f.out);
+ assert.deepEqual(f.mutations, []);
+ assert.deepEqual(f.state, {peer:'1.1.0', group:'1.1.0'});
+ assert.deepEqual(result, {exitCode:1, stdout:'', stderr:'gentle-shell update: the published dependencies of Pi 1.2.0 could not be verified. No installation changed.\n'});
+});
+
 test('a missing main-channel tarball names the rebuild command and installs nothing', async () => {
  const f = fixture({shellVersion: MAIN, artifact: false});
  await assert.rejects(updateSelectedPi(f.input), {message: `gentle-shell update: the main-channel build ${f.tarball} is missing, and this unpublished build cannot be reinstalled from the registry; run 'gentle-shell upgrade --channel release' and then 'gentle-shell upgrade --channel main' to rebuild it. No installation changed.`});
@@ -397,7 +476,7 @@ test('a manager that supplies a different Pi does not silently claim the latest 
 test('every package manager call runs from the neutral directory, never the project cwd', async () => {
  const f = fixture();
  assert.equal(await updateSelectedPi(f.input), 0);
- assert.deepEqual(f.cwds, ['/neutral', '/neutral', '/neutral', '/neutral', '/neutral']);
+ assert.deepEqual(f.cwds, ['/neutral', '/neutral', '/neutral', '/neutral', '/neutral', '/neutral']);
 });
 
 test('an unreadable readback is reported, not invented', async () => {

@@ -51,7 +51,7 @@ function launch(args: string[], scenario = 'owned', piVersion = '1.2.0') {
   run: async (cmd, args, options) => {
    if(args.includes('list') || args.includes('ls')) return {code:0,stdout:${JSON.stringify(listing)}};
    if(args.includes('--version')) return {code:0,stdout:'11.1.1'};
-   if(args.includes('view')) return {code:0,stdout:'${scenario === 'unstable' ? '1.3.0-rc.1' : '1.2.0'}'};
+   if(args.includes('view')) { const version = '${scenario === 'unstable' ? '1.3.0-rc.1' : '1.2.0'}'; return {code:0,stdout:args.includes('--json') ? JSON.stringify({name:'${PI}',version}) : version}; }
    if(args.includes('config')) return {code:0,stdout:''};
    console.log('MUTATION ' + JSON.stringify(args)); if (${source}) console.log('CWD ' + options.cwd); return {code:0};
   }

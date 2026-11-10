@@ -26,3 +26,15 @@ The test calls Pi 1.4's actual pure system prompt builder, with the primary Gent
 Pi 1.4 does not export the builder at its package root. This test deliberately resolves its installed internal `core/system-prompt.js` adjacent to the public entrypoint; an upstream move or API change fails the test and requires maintenance. It starts no session and makes no model or native-review call.
 
 The assembly budget excludes other extensions' guidelines, other skills, project instructions, dynamic session state, and provider serialization. The three declaration bytes are reported separately, not as part of the assembled system-text count. The fixture is not an exact provider request or a guarantee for other configurations. Bytes are not tokens, and these measurements do not establish latency or cost savings.
+
+## Tools behind codemode
+
+When `codemode` is declared in the primary session, rarely used or state-bound tools leave the per-turn declarations through each tool's `prepareLoadout` hook (`lib/hidden-tools.ts`, the same `hiddenDeclarations` projection as the RDD-off review loadout). They stay registered and active, so a codemode script calls them as `tools.<name>(args)`, and the system prompt gains one short route sentence per group:
+
+- `orchestrator_list`, `orchestrator_consult`, `orchestrator_send_message`: always while codemode is declared.
+- `gentle_guide`: always while codemode is declared.
+- `gentle_design`, `gentle_design_comments`: only while the project has no `design/` directory; the route says "not declared in this run" (the state is read when a run starts) and names `tools.gentle_design({ action: "list" })`, the call the design hint requires before designing; the design skill names the same route once.
+
+Without `codemode` (Pi's default when no MCP server or `defaultTools` entry activates it), every tool stays a direct declaration and no route sentence is added; `tool_search` alone is not treated as a route. Delegated children are unchanged.
+
+Measured with an offline provider (RDD off, organic and full delegation alike): with codemode the declarations drop from 34,521 B to 27,321 B without `design/` and to 30,484 B with it; the system prompt grows by 114 B and 209 B. Without codemode both stay byte-identical (30,804 B). The decision is evaluated once per run, so consecutive requests carry the same tool list; a `design/` directory appearing takes effect at the next run and rewrites the cached request prefix once.

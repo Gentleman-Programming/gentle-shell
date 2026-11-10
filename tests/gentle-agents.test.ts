@@ -8677,3 +8677,30 @@ test("a job notice held for a parent busy without a run is delivered by the held
 		jobs.cleanup();
 	}
 });
+
+// P3 (tools by mode): the rarely used cross-session tools leave the primary
+// request only while codemode, which the appended route names, reaches them.
+test("cross-session coordination tools are hidden behind codemode and named by a route; direct without codemode", async () => {
+	const { pi, tools, fire } = fakePi();
+	gentleAgents(pi, {}, deps().deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	try {
+		type Hook = (loadout: { declared: Array<{ name: string }> }) => { hiddenDeclarations?: readonly string[] } | undefined;
+		const registered = [...tools.keys()];
+		const hidden = (names: string[]) => registered.flatMap((name) => ((tools.get(name) as unknown as { prepareLoadout?: Hook }).prepareLoadout?.({ declared: names.map((tool) => ({ name: tool })) })?.hiddenDeclarations ?? []));
+		const coordination = ["orchestrator_consult", "orchestrator_list", "orchestrator_send_message"];
+		assert.deepEqual(hidden([...registered, "codemode"]).sort(), coordination);
+		assert.deepEqual(hidden(registered), [], "without codemode every tool stays declared");
+		assert.deepEqual(hidden([...registered.filter((name) => name !== "orchestrator_list"), "codemode"]).sort(), ["orchestrator_consult", "orchestrator_send_message"], "an inactive tool is never hidden");
+		const route = /Cross-session tools orchestrator_list, orchestrator_consult and orchestrator_send_message are not declared: call them from codemode as `tools\.<name>\(args\)`/;
+		const withRoute = { appendSystemPrompt: "", selectedTools: [...registered, "codemode"] };
+		await fire("before_agent_start", ctx, { type: "before_agent_start", prompt: "hi", systemPrompt: "", systemPromptOptions: withRoute });
+		assert.match(withRoute.appendSystemPrompt, route);
+		const direct = { appendSystemPrompt: "", selectedTools: registered };
+		await fire("before_agent_start", ctx, { type: "before_agent_start", prompt: "hi", systemPrompt: "", systemPromptOptions: direct });
+		assert.doesNotMatch(direct.appendSystemPrompt, route);
+	} finally {
+		await fire("session_shutdown", ctx);
+	}
+});

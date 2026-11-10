@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { missingRequiredPaths, requiredPaths } from "../scripts/verify-package-files.mjs";
+import { DESIGN_CANVAS_ASSETS } from "../lib/design-canvas-assets.ts";
+import { designCanvasAssetPaths, missingRequiredPaths, requiredPaths } from "../scripts/verify-package-files.mjs";
 
 // The voice worker is spawned by path and never imported, so only the package
 // check keeps it in the published tarball next to the modules that launch it.
@@ -17,6 +18,7 @@ test("the package check requires the voice command, its modules and the worker s
 // The canvas server reads its page and scripts from assets/ by path, never by import.
 const designCanvas = [
 	"lib/design-canvas-server.ts",
+	"lib/design-canvas-assets.ts",
 	"lib/design-open-browser.ts",
 	"lib/design-comments.ts",
 	"lib/design-handoffs.ts",
@@ -31,4 +33,12 @@ test("the package check requires the design command, its helpers and its skill",
 	const design = ["extensions/gentle-design.ts", "lib/gentle-design.ts", "lib/design-sources.ts", "skills/design/SKILL.md", ...designCanvas];
 	for (const path of design) assert.ok(requiredPaths.includes(path), `${path} is required`);
 	assert.deepEqual(missingRequiredPaths(root, design), []);
+});
+
+// The server's asset allowlist is the package's list of canvas files (S2).
+test("the package check requires every canvas asset the server serves", () => {
+	const assets = Object.keys(DESIGN_CANVAS_ASSETS).map((name) => `assets/design-canvas/${name}`);
+	assert.deepEqual([...designCanvasAssetPaths], assets);
+	for (const path of assets) assert.ok(requiredPaths.includes(path), `${path} is required`);
+	assert.deepEqual(missingRequiredPaths(root, assets), []);
 });

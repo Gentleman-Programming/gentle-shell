@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { TestContext } from "node:test";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { DESIGN_CANVAS_ASSETS } from "../lib/design-canvas-assets.ts";
 import { designCommentBatchContent, designCommentContent, formatDesignComment, formatDesignCommentBatch, startDesignCanvasServer, type DesignCanvasServerOptions, type DesignComment } from "../lib/design-canvas-server.ts";
 
 const TOKEN = "test-token-0123456789abcdef";
@@ -140,6 +141,10 @@ test("sandboxed artboards load their subresources with Origin null, but nothing 
 	}
 	assert.equal((await rawRequest(port, `${base}assets/inspector.js`, { headers: { Origin: "http://evil.example" } })).status, 403);
 	assert.equal((await rawRequest(port, `${base}files/alpha/01-hero.html`, { headers: { Origin: "http://evil.example" } })).status, 403);
+	// Every canvas asset behaves like canvas.js at the Origin gate; only inspector.js runs inside the sandbox.
+	for (const name of Object.keys(DESIGN_CANVAS_ASSETS)) {
+		assert.equal((await rawRequest(port, `${base}assets/${name}`, nullOrigin)).status, name === "inspector.js" ? 200 : 403, name);
+	}
 });
 
 test("the canvas page carries a strict CSP and a JSON config, never inline code", async (t) => {
@@ -174,6 +179,12 @@ test("only the fixed canvas assets are served", async (t) => {
 	assert.equal((await rawRequest(port, `${base}assets/inspector.js`)).status, 200);
 	for (const name of ["index.html", "missing.js", "..%2Fpackage.json", "%2e%2e", "canvas.js/x"]) {
 		assert.equal((await rawRequest(port, `${base}assets/${name}`)).status, 404, name);
+	}
+	for (const [name, type] of Object.entries(DESIGN_CANVAS_ASSETS)) {
+		const asset = await rawRequest(port, `${base}assets/${name}`);
+		assert.equal(asset.status, 200, name);
+		assert.equal(asset.headers["content-type"], type, name);
+		assert.deepEqual(asset.bytes, readFileSync(join(ASSET_DIR, name)), `${name} is served byte for byte`);
 	}
 });
 
@@ -984,18 +995,19 @@ test("formatDesignCommentBatch builds one exact message listing every comment", 
 });
 
 test("canvas assets sandbox artboards without allow-same-origin and reference no remote URL", () => {
-	const canvas = readFileSync(join(ASSET_DIR, "canvas.js"), "utf8");
-	assert.match(canvas, /setAttribute\("sandbox", "allow-scripts"\)/);
+	const boards = readFileSync(join(ASSET_DIR, "canvas-boards.js"), "utf8");
+	assert.match(boards, /setAttribute\("sandbox", "allow-scripts"\)/);
 	// The one allow-same-origin is the Compare preview of the running app, another loopback origin (S15).
-	assert.deepEqual(canvas.match(/"[^"\n]*allow-same-origin[^"\n]*"/g), ['"allow-scripts allow-same-origin allow-forms allow-popups"']);
-	for (const name of ["index.html", "canvas.css", "canvas.js", "inspector.js"]) {
+	const compare = readFileSync(join(ASSET_DIR, "canvas-compare.js"), "utf8");
+	assert.deepEqual(compare.match(/"[^"\n]*allow-same-origin[^"\n]*"/g), ['"allow-scripts allow-same-origin allow-forms allow-popups"']);
+	for (const name of ["index.html", ...Object.keys(DESIGN_CANVAS_ASSETS)]) {
 		const source = readFileSync(join(ASSET_DIR, name), "utf8");
-		if (name !== "canvas.js") assert.ok(!source.includes("allow-same-origin"), `${name} must not grant allow-same-origin`);
+		if (name !== "canvas-compare.js") assert.ok(!source.includes("allow-same-origin"), `${name} must not grant allow-same-origin`);
 		assert.ok(!/https?:\/\//i.test(source), `${name} must not reference remote URLs`);
 	}
 	const inspector = readFileSync(join(ASSET_DIR, "inspector.js"), "utf8");
 	assert.match(inspector, /gd:pick/);
-	assert.match(canvas, /event\.source/);
+	assert.match(readFileSync(join(ASSET_DIR, "canvas-messages.js"), "utf8"), /event\.source/);
 });
 
 const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64 * 1024, 7)]);
@@ -1097,4 +1109,11 @@ test("a batch attaches at most six screenshots, in order, and names the rest for
 	assert.deepEqual(content, [{ type: "text", text }, ...[0, 2, 3, 4, 5, 6].map((index) => ({ type: "image", data: `data${index}`, mimeType: "image/png" }))]);
 	const plain = batch.map(({ screenshot: _drop, ...rest }) => rest);
 	assert.equal(designCommentBatchContent(plain), formatDesignCommentBatch(plain));
+});
+
+test("module names are served only as one exact, flat segment", async (t) => {
+	const { port, base } = await start(t);
+	for (const path of ["sub/canvas-boot.js", "canvas-boot.js/", "canvas-boot.js%2F", "..%2Fcanvas-boot.js", "Canvas-Boot.js", "__proto__", "constructor"]) {
+		assert.equal((await rawRequest(port, `${base}assets/${path}`)).status, 404, path);
+	}
 });

@@ -5,6 +5,7 @@ import { open, readFile, realpath, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, isAbsolute, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DESIGN_CANVAS_ASSETS } from "./design-canvas-assets.ts";
 import { DESIGN_COMMENTS_FILE, DESIGN_COMMENT_LIMITS, DESIGN_SCREENSHOT_TYPES, DesignCommentsError, MAX_DESIGN_SCREENSHOT_BYTES, createDesignCommentStore, isDesignCommentId, truncateUtf16, type StoredDesignComment } from "./design-comments.ts";
 import { DESIGN_FEATURE_PATH, DesignHandoffsError, createDesignHandoffStore, sendDesignHandoff, type DesignHandoffDelivery } from "./design-handoffs.ts";
 
@@ -18,11 +19,6 @@ export const DESIGN_SLUG = /^[a-z0-9][a-z0-9-]*$/;
 const SLUG = DESIGN_SLUG;
 const TOKEN_SHAPE = /^[A-Za-z0-9_-]{16,128}$/;
 const ASSET_DIR = fileURLToPath(new URL("../assets/design-canvas/", import.meta.url));
-const ASSETS: Readonly<Record<string, string>> = Object.freeze({
-	"canvas.js": "text/javascript; charset=utf-8",
-	"canvas.css": "text/css; charset=utf-8",
-	"inspector.js": "text/javascript; charset=utf-8",
-});
 const FILE_TYPES: Readonly<Record<string, string>> = Object.freeze({
 	".html": "text/html; charset=utf-8",
 	".css": "text/css; charset=utf-8",
@@ -562,8 +558,8 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 	}
 
 	async function serveAsset(res: ServerResponse, name: string | null): Promise<void> {
-		if (!name || !Object.hasOwn(ASSETS, name)) throw new HttpError(404, "not-found");
-		raw(res, await readFile(join(ASSET_DIR, name)), { "Content-Type": ASSETS[name] });
+		if (!name || !Object.hasOwn(DESIGN_CANVAS_ASSETS, name)) throw new HttpError(404, "not-found");
+		raw(res, await readFile(join(ASSET_DIR, name)), { "Content-Type": DESIGN_CANVAS_ASSETS[name] });
 	}
 
 	/** Artboard responses are CSP-sandboxed so even a top-level visit gets an opaque origin. */

@@ -9,7 +9,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createSessionScratchExtension } from "../extensions/session-scratch.ts";
 import { AGENT_MODE, parseAgentsConfig, resolveAgentProfile, type AgentDefinition } from "../lib/agents-config.ts";
 import { MISSING_TOOLS_NOTE_PREFIX, TASK_STATUS, TaskStore, THREAD_ITEM, type TaskRecord } from "../lib/agents-protocol.ts";
-import { AgentRunner, childArguments, JsonLines, piCommand, abortReasonText, REQUESTED_TOOLS_ENV, type ChildLike, type RunnerDeps, type RunnerHooks, type TaskRequest } from "../lib/agents-runner.ts";
+import { AgentRunner, childArguments, JsonLines, piCommand, abortReasonText, REQUESTED_TOOLS_ENV, CHILD_SKILLS_CATALOG_ENV, type ChildLike, type RunnerDeps, type RunnerHooks, type TaskRequest } from "../lib/agents-runner.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
 import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
 
@@ -870,6 +870,30 @@ test("childArguments forwards a plain package root without --no-extensions", () 
 	assert.deepEqual(childArguments(request({ noExtensions: false, extensionPaths: ["/pkg"] })), ["--mode", "rpc", "--session-dir", "/sessions", "--extension", "/pkg", "--model", "openai-codex/gpt-5.6-terra:high", "--tools", "read,grep,subagent_parent_message", "--append-system-prompt", "You map things."]);
 	const args = childArguments(request({ extensionPaths: ["/pkg/extensions/child-context.ts"] }));
 	assert.ok(!args.includes("--no-extensions"), "an absent flag never disables discovery");
+});
+
+// The package-owned generic agents get their skills as exact paths from the
+// parent, so the runner tells their children to drop the skills catalog.
+test("AgentRunner marks only the package-owned generic agents' children to drop the skills catalog", async () => {
+	const h = harness({ maxConcurrency: 16 });
+	const packaged = ["gentle-ai-worker", "gentle-ai-explore", "gentle-ai-verify"].map(name => ({ ...explorer, name, filePath: `/home/u/.pi/agent/agents/${name}.md` }));
+	const others: AgentDefinition[] = [
+		explorer,
+		...["jd-judge-a", "jd-fix-agent", "review-risk"].map(name => ({ ...explorer, name, filePath: `/home/u/.pi/agent/agents/${name}.md` })),
+		// A user agent reusing a package name from the project or `subagents/` directory.
+		{ ...explorer, name: "gentle-ai-worker", scope: "project", filePath: "/repo/.pi/agents/gentle-ai-worker.md" },
+		{ ...explorer, name: "gentle-ai-explore", filePath: "/home/u/.pi/agent/subagents/gentle-ai-explore.md" },
+	];
+	const tasks = [...packaged, ...others].map(agent => h.runner.run(request({ agent, extensionPaths: ["/pkg"], env: { [CHILD_SKILLS_CATALOG_ENV]: "1" } })));
+	await tick();
+	assert.equal(h.spawnOptions.length, packaged.length + others.length);
+	h.spawnOptions.forEach((spawned, index) => {
+		const agent = [...packaged, ...others][index];
+		assert.equal(spawned.env[CHILD_SKILLS_CATALOG_ENV], index < packaged.length ? "1" : undefined, agent.filePath);
+		assert.ok(!spawned.args.includes("--no-skills"), agent.filePath);
+		assert.deepEqual(spawned.args.slice(-12), ["--mode", "rpc", "--session-dir", "/sessions", "--extension", "/pkg", "--model", "openai-codex/gpt-5.6-terra:high", "--tools", "read,grep,subagent_parent_message", "--append-system-prompt", "You map things."], "arguments stay as before");
+	});
+	for (const task of tasks) h.runner.cancel(task.id);
 });
 
 // Pins the runner as written: the T3 injection parser rejects a takeover with

@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { filterChildSessionContextFiles, type ContextFileOptions } from "../lib/child-context-files.ts";
-import { REQUESTED_TOOLS_ENV } from "../lib/agents-runner.ts";
+import { CHILD_SKILLS_CATALOG_ENV, REQUESTED_TOOLS_ENV } from "../lib/agents-runner.ts";
 import { registerCodeGraphTool } from "./codegraph-tools.ts";
 
 // gentle-shell#1587: delegated children drop the orchestrator-only gentle-ai
@@ -25,9 +25,20 @@ export function createChildContextExtension(env: NodeJS.ProcessEnv = process.env
 			// idempotent: already-filtered content has nothing left to remove.
 			const options = (event as { systemPromptOptions?: ContextFileOptions | null } | undefined)?.systemPromptOptions;
 			filterChildSessionContextFiles(options);
+			dropSkillsCatalog(event, env);
 			return undefined;
 		});
 	};
+}
+
+// The runner marks the children of the package-owned generic agents, whose
+// parent passes exact skill paths. Emptying the loaded skills in place removes
+// Pi's `<available_skills>` section under every launch form, including skills
+// of a package passed with --extension, which --no-skills keeps.
+function dropSkillsCatalog(event: unknown, env: NodeJS.ProcessEnv): void {
+	if (env[CHILD_SKILLS_CATALOG_ENV] !== "1") return;
+	const skills = (event as { systemPromptOptions?: { skills?: unknown } | null } | undefined)?.systemPromptOptions?.skills;
+	if (Array.isArray(skills)) skills.length = 0;
 }
 
 export default function childContextExtension(pi: ExtensionAPI): void {

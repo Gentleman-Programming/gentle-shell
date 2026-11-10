@@ -5,7 +5,7 @@ import { isSessionChangeEvidence, type SessionChangeEvidence } from "./session-c
 import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { tmpdir, userInfo } from "node:os";
-import { dirname, isAbsolute, join, resolve, win32 } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, win32 } from "node:path";
 import { Duplex, type Readable, type Writable } from "node:stream";
 import { stripVTControlCharacters } from "node:util";
 import { withoutInteractiveHost } from "./rpc-host.ts";
@@ -266,6 +266,8 @@ export const CHILD_JOBS_ENV = "GENTLE_PI_AGENTS_CHILD_JOBS";
 const PARENT_NOTIFICATION_TOOL = "subagent_parent_message";
 /** The exact --tools list, so the child can report requested names Pi dropped silently (#1690). */
 export const REQUESTED_TOOLS_ENV = "GENTLE_PI_AGENTS_REQUESTED_TOOLS";
+/** Set only for the package-owned generic agents: the child drops Pi's skills catalog. */
+export const CHILD_SKILLS_CATALOG_ENV = "GENTLE_PI_AGENTS_NO_SKILLS_CATALOG";
 const DEFAULT_TOOLS: readonly string[] = [];
 const TERMINATION_GRACE_MS = 250;
 const GROUP_CONFIRM_MS = 25;
@@ -338,6 +340,18 @@ function requestedWebPackagePaths(request: TaskRequest): string[] {
 		// Missing/incompatible package remains an observable child capability gap.
 		return [];
 	}
+}
+
+// The package-owned generic agents receive the exact skill paths they need in
+// the task and read them with `read`, so their children drop Pi's skills
+// catalog (extensions/child-context.ts). Identified by name plus the global
+// `agents/` directory the package installs into; a project or `subagents/`
+// agent reusing a name keeps the catalog.
+const NO_SKILLS_CATALOG_AGENTS = new Set(["gentle-ai-worker", "gentle-ai-explore", "gentle-ai-verify"]);
+
+function dropsSkillsCatalog(agent: TaskRequest["agent"]): boolean {
+	return NO_SKILLS_CATALOG_AGENTS.has(agent.name) && agent.scope === "global" &&
+		basename(dirname(agent.filePath)) === "agents" && basename(agent.filePath) === `${agent.name}.md`;
 }
 
 export function childArguments(request: TaskRequest, instructionsPath?: string): string[] {
@@ -703,6 +717,8 @@ export class AgentRunner {
 		} else delete env[CHILD_JOBS_ENV];
 		if (tools !== undefined) env[REQUESTED_TOOLS_ENV] = tools;
 		else delete env[REQUESTED_TOOLS_ENV];
+		if (dropsSkillsCatalog(request.agent)) env[CHILD_SKILLS_CATALOG_ENV] = "1";
+		else delete env[CHILD_SKILLS_CATALOG_ENV];
 		let instructionsTransportDir: string | undefined;
 		let instructionsTransportPath: string | undefined;
 		if (Buffer.byteLength(request.agent.instructions, "utf8") > MAX_INLINE_INSTRUCTIONS_BYTES) {

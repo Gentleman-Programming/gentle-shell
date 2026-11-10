@@ -11,7 +11,7 @@ metadata:
 
 Use this skill by default whenever the user asks, in plain words, for a UI design, mockup, screen, landing page, or visual directions, or iterates on artboards under `design/`. Do not use it to implement production code in the project's stack.
 
-The `/gentle:design` commands are optional shortcuts: every action also works from a plain request, through this skill and the `gentle_design` tool (`list`, `open`, `stop`, `implement`, `handoff`).
+The `/gentle:design` commands are optional shortcuts: every action also works from a plain request, through this skill and the `gentle_design` tool. When `gentle_design` or `gentle_design_comments` is not declared, call it from `codemode` as `tools.gentle_design({...})` with the same arguments.
 
 ## Hard Rules
 
@@ -69,7 +69,7 @@ Run this gate before every new brief: call the `gentle_design` tool with `action
 7. Set `width`/`height` to the artboard's intended viewport in CSS pixels; keep the manifest in sync with the files on every change. Fields: `title`, `brief`, optional `feature`, and `artboards[]` with `file`, `title`, `tradeoff`, `width`, `height`.
 8. ODD link: when the design comes from a tracked ODD feature (an existing `odd/tasks/<feature>.md` for the current work), set `feature` to that path and append one entry to that document's `## Log` naming `design/<slug>/` and its artboards. When an artboard of that design is handed off to implement, the Log entry also names the chosen artboard (the one handed off; `list` reports it as `Chosen`) and that the others are alternatives. For small untracked work, omit `feature` and leave the design standalone; never create a feature document just to link it.
 9. UX self-check, for every artboard you finish: pass it against the `gentle-ui-design` composition-and-feedback (hierarchy, density, feedback) and adaptive-interfaces (narrow screens, input access, states) guidance, and fix every gap before you report.
-10. After writing or changing artboards, call the `gentle_design` tool with `action: "open"` and the slug, unless the user said not to. When a canvas tab is already open it refreshes that tab instead of opening a new one, so call it after every change. Report the URL it returns.
+10. After writing or changing artboards, call the `gentle_design` tool with `action: "open"` and the slug, unless the user said not to. It refreshes an open canvas tab instead of opening another, so call it after every change. Report the URL it returns.
 
 ## Design system sync
 
@@ -81,10 +81,10 @@ Run this gate before every new brief: call the `gentle_design` tool with `action
 
 ## Canvas comments
 
-Comments from the canvas are stored in `design/<slug>/comments.json`; the session also receives them as messages that name each comment id.
+Canvas comments live in `design/<slug>/comments.json` and also arrive as messages naming each id.
 
 1. Read the open comments with the `gentle_design_comments` tool (`action: "list"`, optional `slug` and `file`). Without the tool, read `design/<slug>/comments.json` and use the entries whose `status` is `"open"`.
-2. Apply each comment by editing only the artboard in its `file`; use `selector` and `excerpt` to find the element. When a comment has a `screenshot`, look at it first: it arrives attached to the comment message, or open `design/<slug>/<screenshot>` with the read tool. It shows what the user saw, often a transient animation or transition state that the static artboard does not show.
+2. Apply each comment by editing only the artboard in its `file`; use `selector` and `excerpt` to find the element. When a comment has a `screenshot`, look at it first: it arrives attached to the comment message, or open `design/<slug>/<screenshot>` with the read tool. It shows what the user saw, often a transient state the static artboard lacks.
 3. Mark each applied comment resolved with the tool (`action: "resolve"`, `slug`, `ids`). Without the tool, set its `status` to `"resolved"` and `resolvedAt` to the current ISO time, keeping every other entry and field as is. Leave comments you did not apply open, and say why.
 
 The file format, for agents that only have file access:

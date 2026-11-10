@@ -188,6 +188,9 @@ test("a `--package` given before `exec`/`dlx` still names the packages to fetch"
 	passes("npm -p install left-pad@1.3.0");
 	confirms("npm -p install left-pad", ["left-pad"]);
 	confirms("npm -p left-pad install a@1.0.0", ["-p left-pad"]);
+	// A bare `-p` never takes another option as its value, so the `--package` after it still counts.
+	confirms("npm -p --package evil exec -- bin@1.0.0", ["evil"]);
+	confirms("npm --package -p evil exec -- bin@1.0.0", ["evil"]);
 });
 
 test("pnpm's `-w`/`--workspace-root` take no value, npm's `-w` names a workspace", () => {

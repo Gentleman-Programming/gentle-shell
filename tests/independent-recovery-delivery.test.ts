@@ -12,6 +12,15 @@ const paragraph = (p: string, prefix: string) => {
   assert.ok(text, prefix);
   return text;
 };
+// The body of the module's `## Verifier preparation failure` section.
+const verifierPreparation = () => {
+  const module = read("assets/orchestrator-verification.md");
+  const start = module.indexOf("## Verifier preparation failure\n\n");
+  assert.ok(start >= 0, "verification module keeps its preparation-failure section");
+  const body = module.slice(start + "## Verifier preparation failure\n\n".length);
+  const end = body.indexOf("\n## ");
+  return end < 0 ? body : body.slice(0, end);
+};
 let cwd: string;
 let prior: string | undefined;
 before(() => {
@@ -33,11 +42,14 @@ for (const persona of ["gentleman", "neutral"] as const) {
     test(`S2-S5 delivered recovery is bounded: ${persona}/${mode}`, () => {
       const p = __testing.buildGentlePrompt(persona, join(cwd, "project"), ["read"], `Receipt-driven development: ${mode}`);
       assert.equal(p.split("## Authorized work continuity").length, 2);
-      const setup = paragraph(p, "A failed verifier setup");
+      // cost-speed-painpoints S15 P4: the setup rules live in the verification module, loaded when Verification fires;
+      // the unavailable-verifier rule stays always-on in the mirrored Close step.
+      assert.ok(!p.includes("A failed verifier setup"), "the setup paragraph left the always-on prompt");
+      const setup = paragraph(verifierPreparation(), "A failed verifier setup");
       assert.match(setup, /prerequisite is repaired, the human may explicitly request one new bounded verification attempt/);
       assert.match(setup, /zero tests run; the checks remain unverified/);
-      assert.match(setup, /self-caused setup command error gets one correction within the same verification, without a human request/);
-      assert.match(setup, /unavailable verifier remains unavailable; do not retry or escalate it/);
+      assert.match(setup, /self-fix of its own setup error \(one correction within the same verification\) needs no decision/);
+      assert.match(p, /7\. \*\*Close\.\*\*[^\n]*an unavailable verifier or subagent is reported as unavailable, never retried or escalated/);
       for (const guard of ["consent", "a denial", "one-run", "no-retry", "terminal native outcomes", "exhausted native budgets"]) assert.ok(setup.includes(guard), guard);
       assert.match(setup, /no child is active or has an uncertain status/);
       const worker = paragraph(p, "An exhausted worker-local");

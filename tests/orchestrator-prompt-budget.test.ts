@@ -57,7 +57,8 @@ test("rendered orchestrator core and selected declarations fit the byte budget",
 	// cost-speed-painpoints S5 (T4): subagent_run states what admission rejects and the core dropped its duplicate
 	// Identity Contract pointer; measured 16,674 -> 16,694 B: 16,700 -> 16,694 B.
 	// cost-speed-painpoints S15 P7 (S7): the classified-work sentence of orchestrator_session_id became conditional; 16,694 -> 16,691 B.
-	assert.ok(total <= 16691, `rendered core ${prompt} B + declarations ${declarationBytes} B = ${total} B`);
+	// cost-speed-painpoints S15 P5a: always-on verdicts C7, C9, C12, X1, X3 and C8; 16,691 -> 16,683 B.
+	assert.ok(total <= 16683, `rendered core ${prompt} B + declarations ${declarationBytes} B = ${total} B`);
 });
 
 // Pi 1.4 does not export its pure system assembler from the package root.

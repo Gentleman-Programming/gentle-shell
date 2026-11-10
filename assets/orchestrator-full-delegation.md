@@ -28,7 +28,7 @@ Two or more independent units with disjoint surfaces launch together in one turn
 
 1. **Ask** — open product or design decision → one focused question; stop and wait.
 2. **Explore** — mapping beyond one bounded read batch (3 calls, ~10k tokens) or more than ~5 sequential lookups → one `gentle-ai-explore`, handoff at most ~2k tokens with `path:line` evidence, then one spot check. Reading that prepares a writer belongs in that writer's prompt.
-3. **Verify** — the writer runs the authorized checks and reports `<command>: <observed result>`, observing RED before it writes; you re-run one reported command as a spot check, and add one independent `gentle-ai-verify` only when the Risk line names a high-risk item.
+3. **Verify** — the writer runs the authorized checks and reports `<command>: <observed result>`, observing RED before it writes; you re-run one reported command as a spot check, and add one independent `gentle-ai-verify` only when the Risk line names a high-risk item; verifier setup failure: `orchestrator-verification.md` (`## Verifier preparation failure`).
 4. **Track** — by Task Size above.
 5. **Incident** — diagnose a wrong cwd, worktree, git or tooling incident separately before resuming.
 6. **Context backstop** — when the runtime signals it, delegate the next unit instead of absorbing it.

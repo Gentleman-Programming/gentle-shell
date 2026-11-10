@@ -332,7 +332,8 @@ test("T9/AC2: the parallelism reason launches every unit together in background 
 	for (const clause of [
 		// Writer-rule fix: a unit is one independent piece of behavior.
 		"every independent unit in the same turn",
-		'`subagent_run` with `mode: "background"`',
+		// P5b (C11): omit `mode`; an explicit background mode throws in single-shot runs.
+		"`subagent_run` without `mode`",
 		"wait for all completions",
 		"serial launches void the reason",
 		"work inline",

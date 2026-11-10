@@ -8,7 +8,7 @@ import { updateSelectedPi } from '../scripts/pi-update.mjs';
 const PI = '@earendil-works/pi-coding-agent';
 const CLI = 'dist/bundle/cli.js';
 
-async function fixture(t: any, options: {manager?: string, locks?: string[], workspace?: boolean, range?: string, mismatch?: boolean, managerVersion?: string, fail?: boolean, unreadable?: boolean, unlink?: boolean, installedSource?: boolean, configOnly?: boolean, multipleProjects?: boolean} = {}) {
+async function fixture(t: any, options: {manager?: string, locks?: string[], workspace?: boolean, range?: string, mismatch?: boolean, managerVersion?: string, fail?: boolean, unreadable?: boolean, unlink?: boolean, installedSource?: boolean, configOnly?: boolean, multipleProjects?: boolean, latest?: string, excludeOutput?: string} = {}) {
  const temp = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'pi-source-')));
  t.after(() => fs.rm(temp, {recursive: true, force: true}));
  const root = join(temp, 'checkout');
@@ -48,11 +48,12 @@ async function fixture(t: any, options: {manager?: string, locks?: string[], wor
    if (args.includes('list')) return {code: 0, stdout: JSON.stringify([{path: join(temp, 'pnpm'), dependencies: {}}])};
    if (args.includes('ls')) return {code: 0, stdout: JSON.stringify({path: join(temp, 'global'), dependencies: {'gentle-pi': {path: link, resolved: 'file:../../checkout'}}})};
    if (args.includes('--version')) return {code: 0, stdout: `${options.managerVersion ?? '11.1.1'}\n`};
-   if (args.includes('config')) return {code:0, stdout:options.workspace ? '["packages/*"]\n' : ''};
+   if (args.includes('view')) return {code: 0, stdout: `${options.latest ?? '1.1.0'}\n`};
+   if (args.includes('config')) return {code:0, stdout:args.includes('minimumReleaseAgeExclude') ? options.excludeOutput ?? '["existing-fixture"]\n' : options.workspace ? '["packages/*"]\n' : ''};
    updates.push({command, args, cwd, ...(env ? {env} : {})});
    if (options.fail) return {code: 1, stdout: '', stderrTail: 'npm error fixture install failed'};
    if (options.unreadable) await fs.rm(join(peer, 'package.json'));
-   else await fs.writeFile(join(peer, 'package.json'), JSON.stringify({name: PI, version: '1.1.0', bin: {pi: CLI}}));
+   else await fs.writeFile(join(peer, 'package.json'), JSON.stringify({name: PI, version: options.latest ?? '1.1.0', bin: {pi: CLI}}));
    if (options.unlink) await fs.unlink(link);
    return {code: 0, stdout: ''};
   },
@@ -70,12 +71,58 @@ for (const manager of ['pnpm', 'npm']) test(`source-linked Shell updates only it
  const f = await fixture(t, {manager});
  assert.equal(await updateSelectedPi(f.input), 0);
  const flags = manager === 'pnpm' ? ['--dir', f.root, '--lockfile-dir', f.root, '--recursive=false', '--ignore-pnpmfile'] : ['--prefix', f.root, '--workspaces=false', '--no-audit', '--no-fund'];
- assert.deepEqual(f.updates, [{command: `/fake/${manager}`, args: ['update', PI, '--no-save', '--ignore-scripts', '--global=false', ...flags, ...(manager === 'pnpm' ? ['--pm-on-fail=ignore'] : [])], cwd: f.root, ...(manager === 'pnpm' ? {env:{COREPACK_ENABLE_PROJECT_SPEC:'0',COREPACK_ENABLE_NETWORK:'0'}} : {})}]);
+ assert.deepEqual(f.updates, [{command: `/fake/${manager}`, args: [manager === 'pnpm' ? 'update' : 'install', `${PI}@1.1.0`, '--no-save', '--ignore-scripts', '--global=false', ...flags, ...(manager === 'pnpm' ? ['--pm-on-fail=ignore', '--config.minimum-release-age-exclude=existing-fixture', `--config.minimum-release-age-exclude=${PI}`] : [])], cwd: f.root, ...(manager === 'pnpm' ? {env:{COREPACK_ENABLE_PROJECT_SPEC:'0',COREPACK_ENABLE_NETWORK:'0'}} : {})}]);
  assert.deepEqual(f.output, [`${manager} updated ${PI} in ${f.root}; the selected Pi is now 1.1.0 (was 1.0.0).`]);
  assert.equal(await fs.realpath(f.link), f.root);
  assert.equal(await fs.readFile(join(f.root, 'package.json'), 'utf8'), f.manifest);
  assert.equal(await fs.readFile(join(f.root, 'unrelated.txt'), 'utf8'), 'preserve me');
  assert.ok(f.calls.filter(c => c.args.includes('list') || c.args.includes('ls') || c.args.includes('--version')).every(c => c.cwd === f.input.cwd));
+});
+
+for (const manager of ['pnpm', 'npm']) test(`source ${manager} resolves the latest stable tag before updating, without changing its manifest`, async t => {
+ const f = await fixture(t, {manager, range:'^1.0.0', latest:'2.0.0'});
+ assert.equal(await updateSelectedPi(f.input), 0);
+ const views = f.calls.filter(call => call.args.includes('view'));
+ assert.equal(views.length, 1);
+ assert.ok(views[0].args.includes(`${PI}@latest`));
+ assert.ok(f.calls.indexOf(views[0]) < f.calls.findIndex(call => call.args === f.updates[0].args));
+ assert.equal((await f.snapshot()).manifest, f.before.manifest);
+ assert.equal(await fs.realpath(f.link), f.root);
+});
+
+test('source pnpm retains existing package-specific release-age exclusions while exempting Pi', async t => {
+ const f = await fixture(t, {configOnly:true});
+ assert.equal(await updateSelectedPi(f.input), 0);
+ const exclusions = f.calls.filter(call => call.args.includes('config') && call.args.includes('minimumReleaseAgeExclude'));
+ assert.equal(exclusions.length, 1);
+ const args = f.updates[0].args;
+ assert.ok(args.includes('--config.minimum-release-age-exclude=existing-fixture'));
+ assert.ok(args.includes(`--config.minimum-release-age-exclude=${PI}`));
+ assert.ok(!args.some(arg => /^--(?:config\.)?minimum-release-age=/.test(arg)));
+ assert.equal((await f.snapshot()).pnpmConfig, f.before.pnpmConfig);
+});
+
+test('source pnpm safely handles an empty release-age exclusion list', async t => {
+ const f = await fixture(t, {excludeOutput:''});
+ assert.equal(await updateSelectedPi(f.input), 0);
+ assert.equal(f.updates[0].args.filter(arg => arg === `--config.minimum-release-age-exclude=${PI}`).length, 2);
+ assert.equal((await f.snapshot()).manifest, f.before.manifest);
+});
+
+test('source pnpm refuses malformed exclusions before any mutation', async t => {
+ const f = await fixture(t, {excludeOutput:'["ok", 1]'});
+ await assert.rejects(updateSelectedPi(f.input), /pnpm release-age exclusions could not be verified/);
+ assert.deepEqual(f.updates, []);
+ assert.deepEqual(f.output, []);
+ assert.deepEqual(await f.snapshot(), f.before);
+});
+
+for (const manager of ['pnpm', 'npm']) test(`source ${manager} rejects a prerelease latest tag without mutation`, async t => {
+ const f = await fixture(t, {manager, latest:'2.0.0-rc.1'});
+ await assert.rejects(updateSelectedPi(f.input), /latest published Pi.*rejected/);
+ assert.deepEqual(f.updates, []);
+ assert.deepEqual(f.output, []);
+ assert.deepEqual(await f.snapshot(), f.before);
 });
 
 test('newer pnpm uses its current version without downloading the older project pin', async t => {
@@ -84,9 +131,9 @@ test('newer pnpm uses its current version without downloading the older project 
  assert.equal(f.updates.length, 1);
  assert.deepEqual(f.output, [`pnpm updated ${PI} in ${f.root}; the selected Pi is now 1.1.0 (was 1.0.0).`]);
  const projectCalls = f.calls.filter(call => call.args.includes('config') || call.args.includes('--recursive') || call.args[0] === 'update');
- assert.equal(projectCalls.length, 3);
+ assert.equal(projectCalls.length, 4);
  assert.ok(projectCalls.every(call => call.args.includes('--pm-on-fail=ignore')));
- assert.ok(f.calls.filter(call => call.args.includes('--version') || projectCalls.includes(call)).every(call => call.env?.COREPACK_ENABLE_PROJECT_SPEC === '0' && call.env?.COREPACK_ENABLE_NETWORK === '0'));
+ assert.ok(f.calls.filter(call => call.args.includes('--version') || call.args.includes('view') || projectCalls.includes(call)).every(call => call.env?.COREPACK_ENABLE_PROJECT_SPEC === '0' && call.env?.COREPACK_ENABLE_NETWORK === '0'));
  const after = await f.snapshot();
  assert.equal(after.manifest, f.before.manifest);
  assert.equal(after.pnpmConfig, f.before.pnpmConfig);

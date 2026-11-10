@@ -16,6 +16,7 @@ import { REPLY_LANGUAGE_ANCHOR_TYPE, isHumanInput, placePersistedReplyAnchors, r
 import { blockChildDestructiveCommand } from "./child-safety.ts";
 import { evaluateExecutionSurfaceTool } from "../lib/execution-surface-guard.ts";
 import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, isHomeOrBroadUserDirectory, prepareBoundSessionRepository, rejectUndocumentedWriterLaunch, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sourcePathWithinProject } from "../lib/bounded-writer-admission.ts";
+import { sameMessageToolCalls } from "../lib/writer-batch-admission.ts";
 import { rejectUnriskedVerifierLaunch } from "../lib/verifier-admission.ts";
 import { VERIFIER_SETTLE_REMINDER_TYPE, createVerifierSettleReminders, finalAssistantText } from "../lib/verifier-settle-reminder.ts";
 import { consumeReviewMutation, pendingReviewMutation, pendingReviewMutationProfiles, recordReviewMutation, type ReceiptSession } from "../lib/review-reminder-receipt.ts";
@@ -1325,7 +1326,7 @@ async function resolveRddStatusLine(
 // delegation mode the single span below is REPLACED by the variant asset, never
 // appended beside the organic text: two contradictory rule sets in one prompt are
 // worse than either one alone, and the orchestrator would have to guess.
-const DELEGATION_MODE_REGION_START = "You are a COORDINATOR, not the default executor for substantial work.";
+const DELEGATION_MODE_REGION_START = "You are a COORDINATOR who executes understood work inline.";
 // The region ends at the background-policy placeholder, so the status line and
 // the lazy pointers that follow it stay in both modes.
 const DELEGATION_MODE_REGION_END = "{{GENTLE_PI_BACKGROUND_POLICY}}";
@@ -1367,7 +1368,7 @@ const HIGH_RISK_PARAGRAPH_PREFIX = "**High risk**:";
 const HIGH_RISK_PLACEHOLDER = "{{GENTLE_PI_HIGH_RISK_ITEMS}}";
 const FULL_DELEGATION_CARD_FILE = "orchestrator-full-delegation-card.md";
 const FULL_DELEGATION_TAIL_PROJECTION: ReadonlyArray<readonly [string, string]> = [
-	["; rules: delegation background-subagents block.", `; rules: the background block in \`${FULL_DELEGATION_CARD_FILE}\`.`],
+	["; rules: background block, `orchestrator-delegation-reference.md`.", `; rules: the background block in \`${FULL_DELEGATION_CARD_FILE}\`.`],
 	[
 		"Per-action table, Work Routing Ladder, Canonical Workflows: `orchestrator-delegation-reference.md`; blocking-prompt relays and provider defects: `orchestrator-prompts.md`.",
 		"Blocking-prompt relays and provider defects: `orchestrator-prompts.md`.",
@@ -1402,6 +1403,22 @@ const FULL_DELEGATION_SENTENCE_REPLACEMENTS: ReadonlyArray<readonly [string, str
 	],
 	["Detail for steps 3–7: `orchestrator-delegation.md` and", `Detail for steps 3–7: \`${FULL_DELEGATION_CARD_FILE}\` and`],
 ];
+
+// cost-speed-painpoints S15 P4: sentences that matter only while a review can start. A validated `off`
+// line drops them from the parent prompt; `on` and `unknown` keep them, and the RDD line itself always
+// renders, so the user can still turn RDD on. The off state already re-renders the prompt (it also drops
+// the review execution contract), so this adds no prompt-cache break.
+const RDD_ONLY_SENTENCES: readonly string[] = [
+	" When RDD is on and native assess returns a tier, that tier wins.",
+	" (assess `escalate` when RDD is on or unknown)",
+	"- An eligible interactive Pi host may resolve `gentle-ai.review-integration.consent/v3` before the envelope reaches the model. Permission: host-owned. If `gentle_review` returns the envelope unresolved, it is still the original provider-owned two-choice contract. Use `ask_user_choice` exactly or relay losslessly and stop. Never add the host action to a decoded or relayed provider envelope.\n",
+	" The native review candidate is a work-unit commit or a PR slice, never a TODO checkbox and never the accumulated feature branch; native review runs only under the user-owned RDD switch.",
+];
+
+function projectForRddState(text: string, rddStatusLine: string): string {
+	if (!isRddStatusLineOff(rddStatusLine)) return text;
+	return RDD_ONLY_SENTENCES.reduce((projected, sentence) => projected.replace(sentence, ""), text);
+}
 
 function projectOddStepsForMode(steps: string, mode: OrchestratorMode): string {
 	if (mode === DEFAULT_ORCHESTRATOR_MODE) return steps;
@@ -1451,7 +1468,7 @@ function renderOrchestratorPrompt(
 	delegationMode: OrchestratorMode = DEFAULT_ORCHESTRATOR_MODE,
 ): string {
 	const backgroundPolicyBlock = `${renderBackgroundSubagentsStatusLine(background)}\n${rddStatusLine}`;
-	return applyDelegationMode(assetsDir, readFileSync(join(assetsDir, "orchestrator.md"), "utf8"), delegationMode)
+	return projectForRddState(applyDelegationMode(assetsDir, readFileSync(join(assetsDir, "orchestrator.md"), "utf8"), delegationMode), rddStatusLine)
 		.replaceAll("{{GENTLE_PI_ASSETS_ROOT}}", assetsDir)
 		.replaceAll(
 			"{{GENTLE_PI_BACKGROUND_POLICY}}",
@@ -1467,8 +1484,7 @@ function renderOrchestratorPrompt(
 // instead, read once from the package-local mirror
 // (contracts/review-provider-contract-mirror/) and cached as the fully
 // rendered fragment for the process lifetime. It is deliberately NOT folded
-// into getOrchestratorPrompt/orchestratorPromptCache: that core prompt is
-// pinned at an 8192-byte budget (tests/orchestrator-budget.test.ts).
+// into getOrchestratorPrompt/orchestratorPromptCache: that core prompt has its own byte budget (tests/orchestrator-budget.test.ts).
 const PROVIDER_CONTRACT_MIRROR_ROOT = join(PACKAGE_ROOT, "contracts", "review-provider-contract-mirror");
 const PROVIDER_CONTRACT_LOCK_FILE = "provider-contract.lock.json";
 const PI_MIRROR_RUNTIME = "pi";
@@ -1672,8 +1688,6 @@ Stop for an unresolved consequential scope/product decision, required explicit c
 
 Before a terminal bounded-stop outcome, distinguish a recoverable technical or harness failure from genuinely inaccessible required proof. A failed test or harness check may be corrected and rerun without another authorization only within the authorized scope and existing correction budget, subject to every applicable limit. Honor explicit one run, no retries, or diagnostic-only limits; stop for permission denial, required new consent, or exhausted budget. Do not propose diagnostic-only or single-attempt authorization unless the human requested it. Respect terminal review and verification outcomes and existing bounded-stop rules: never reset budgets, add retry allowances, weaken checks, or override final outcomes.
 
-A failed verifier setup is a preparation failure, not an unavailable verifier capability. A self-caused setup command error gets one correction within the same verification, without a human request. If setup fails before probes, preserve the failed attempt and report zero tests run; the checks remain unverified. For a genuinely unavailable capability: An unavailable verifier remains unavailable; do not retry or escalate it. After a setup prerequisite is repaired, the human may explicitly request one new bounded verification attempt. This is a new request, not an automatic retry, and it does not reset the prior attempt or unrelated budgets. Before proceeding, confirm no child is active or has an uncertain status. Establish the required payload, dependencies and scratch capacity before isolated setup; do not blindly repeat an oversized copy. Never bypass consent, a denial, explicit one-run or no-retry limits, terminal native outcomes, or exhausted native budgets.
-
 An exhausted worker-local correction limit ends that automatic cycle, not necessarily the feature. Partial worker execution is not by itself exhausted proof or a terminal native review outcome. Stop and report the remaining work, failed checks and missing proof, and offer an explicit human-controlled bounded continuation. Name its scope, executor, correction limit and checks, or let the human stop. Before any worker continuation, confirm no child is active or has an uncertain status. The Close step's bounded stop ends the current automatic cycle; a later explicit human request is separate and remains subject to native authority. A new session does not reset any limit. When specifically authorized and not prohibited by actual native authority, continue ordinary in-scope compilation or implementation; unavailable proof still blocks completion and delivery.
 
 For worker-prohibited maintenance or rollback, worker prohibitions remain unchanged. The parent only may perform the operation when the human explicitly authorized the operation itself, exact scope, ownership, and preservation are established, and available permitted tools can perform it; fresh runtime/native consent and guards remain binding. A broad feature authorization is not destructive authority; never substitute another worker or tool to bypass a denial. For an upgrade require a validated backup, artifact and migration validation where applicable, and a recovery path. For rollback preserve unrelated edits even in the same file, remove only proven task-created helpers, and never blanket restore, reset, or clean. Stop when ambiguous ownership or denial stops the operation, or any prerequisite is missing. This route is guidance, not authorization.
@@ -1682,13 +1696,13 @@ For background work, launch the bounded action and end the turn when no independ
 
 Default workflow: Organic Driven Development (MANDATORY)
 Organic Driven Development (ODD) is the predefined workflow of this orchestrator. Every request enters it, without the user asking for a workflow, a plan, or task tracking. Never describe this workflow only when asked about it: run it. Run these steps in this order on every request:
-${projectOddStepsForMode(oddProtocolSteps(), delegationMode)}
+${projectForRddState(projectOddStepsForMode(oddProtocolSteps(), delegationMode), rddStatusLine)}
 
 Harness principles:
 - el Gentleman is not prompt engineering. It is runtime discipline around powerful agents.
 - Clarify scope, constraints, acceptance criteria, and non-goals when needed for the human to understand the action or to resolve consequential uncertainty. Reuse what is already established; after informed approval, proceed without repeating the clarification unless new consequential uncertainty appears.
-- Use subagents when available for exploration, planning, implementation, and review, while keeping one parent session responsible for orchestration.
 ${testFirstPrinciple}
+- When the user asks to stop receipt-driven development, run \`gentle-ai review mode disable\` without arguing, working around it, or proposing alternatives first; never enable it unless the user explicitly asks.
 - Protect the human reviewer: avoid oversized changes, surface review workload risk, and ask before turning one task into a large multi-area change.
 
 ${getOrchestratorPrompt(cwd, activeTools, rddStatusLine, hostMode, delegationMode)}${headlessDeliveryNote(hostMode)}`;
@@ -12889,7 +12903,10 @@ function createGentleAiExtensionForTesting(
 				// The guard reads the same mode the prompt was built with, from the session's own environment, so the
 				// two can never disagree about whether a small change belongs to a writer.
 				const orchestratorMode = resolveSessionDelegationMode(ctx, permissionEnvironment);
-				const undocumentedWriter = rejectUndocumentedWriterLaunch(event.input, { root, contextUsage: ctx.getContextUsage?.(), env: permissionEnvironment, orchestratorMode });
+				// cost-speed P6: the launches of the same assistant message, read from the session branch (persisted on
+				// `message_end`, before Pi prepares any of its calls). A nested codemode call is never in the message.
+				const sameMessageCalls = sameMessageToolCalls(ctx.sessionManager, event.parentToolCallId === undefined ? event.toolCallId : undefined);
+				const undocumentedWriter = rejectUndocumentedWriterLaunch(event.input, { root, contextUsage: ctx.getContextUsage?.(), env: permissionEnvironment, orchestratorMode, sameMessageCalls });
 				if (undocumentedWriter) return undocumentedWriter;
 				const unriskedVerifier = rejectUnriskedVerifierLaunch(event.input, { root, contextUsage: ctx.getContextUsage?.(), env: permissionEnvironment });
 				if (unriskedVerifier) return unriskedVerifier;

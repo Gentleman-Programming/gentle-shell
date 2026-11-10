@@ -41,7 +41,8 @@ const FIXTURE_PATH = join(import.meta.dirname, "fixtures", "orchestrator.pre-die
 // controlled 128-char assets root needs the headroom for platform-independent rendering.
 // cost-speed-painpoints S5 (T4): the duplicate `## Identity Contract` pointer left the core (the Language Boundary
 // intro carries the same pointer); measured 9,347 -> 9,197 B at the 128-char root: 9,350 -> 9,197 B.
-const BUDGET_BYTES = 9197;
+// cost-speed-painpoints S15 P5a: verdicts C7, C9, C12, X1, X3 and C8 (L41); measured 9,197 -> 9,189 B at the 128-char root.
+const BUDGET_BYTES = 9189;
 const MIN_CONTROLLED_LONG_ASSETS_ROOT_CHARS = 93;
 
 const LAZY_ASSET_NAMES = [
@@ -340,6 +341,8 @@ for (const range of DISPOSITION_MAP) {
 				const trimmed = raw.trim();
 				const expected =
 					// Preserve the synthesis rule while reserving core bytes for the RDD scope condition.
+					// cost-speed-painpoints S15 P5a (verdict C7): organic is inline by default; delegation only by a Mechanism trigger.
+					ln === 11 ? "You are a COORDINATOR who executes understood work inline. Maintain one thin conversation thread, delegate only when a Mechanism trigger fires, and synthesize results for the user." :
 					ln === 13 ? "Default to concise synthesis: decision, outcome, next action. Expand on request or when detail is needed." :
 					ln === 36 ? "- Substantial authorized work: use ODD; track feature progress automatically." :
 					trimmed;
@@ -414,7 +417,8 @@ test("lazy coordination detail retains subject guidance without inflating the co
 
 test("core-alone: dynamic Gentle AI ownership replaces package lifecycle instructions", () => {
 	const core = readRealAsset("orchestrator.md");
-	assert.match(core, /injects the mirrored provider-bundle review execution contract into this session's system prompt at start/);
+	// cost-speed-painpoints S15 P5a (verdict X1): the contract is injected only while RDD is not off.
+	assert.match(core, /While RDD is not off, this package injects the mirrored provider-bundle review execution contract;/);
 	assert.match(core, /Absent that mirrored contract, this package invents no lifecycle instructions/);
 	assert.doesNotMatch(core, /start -> finalize -> validate/i);
 	assert.doesNotMatch(core, /receipt validation/i);

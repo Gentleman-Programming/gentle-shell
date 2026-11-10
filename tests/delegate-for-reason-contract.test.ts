@@ -181,9 +181,10 @@ test("AC5/S6/L4: per-worker independent verify fires only on assess or escalate,
 	assert.ok(item.includes("high-risk list in Task Size"), "the protocol must reference the core high-risk list");
 });
 
-test("AC5/S7: one inline full-suite seam check after parallel units", () => {
+// cost-speed S15 P5a: "inline" became "run by the parent" so a full-delegation parent can load the module.
+test("AC5/S7: one full-suite seam check run by the parent after parallel units", () => {
 	const item = reviewItem("3. **Seam check**");
-	for (const clause of ["after parallel units finish", "one inline full-suite command", "parent spot check", "seams between units"]) {
+	for (const clause of ["after parallel units finish", "one full-suite command run by the parent", "parent spot check", "seams between units"]) {
 		assert.ok(item.includes(clause), `seam check item is missing: ${clause}`);
 	}
 });
@@ -208,10 +209,11 @@ test("T12/S6: one independent verify per delegated unit after its self-review, n
 // T15 (S6, L38): after3 B x4 paid two same-model verifies with 0 defects.
 // Verification by named risk (user decision: the verifier follows the change's
 // risk, never the model that wrote it) dropped the smaller-model exception.
-test("T15/S6: inline code over several deliveries gets one verify at the feature's end, whatever model wrote it", () => {
+// cost-speed S15 P5a: "Inline code" became "Parent-written code", the same scope without the organic word.
+test("T15/S6: parent-written code over several deliveries gets one verify at the feature's end, whatever model wrote it", () => {
 	const item = reviewItem("2. **Independent verify per unit**");
 	for (const clause of [
-		"Inline code over several deliveries of one feature",
+		"Parent-written code over several deliveries of one feature",
 		"one verify at the feature's end",
 		"only when that unit is high risk",
 	]) {
@@ -251,9 +253,11 @@ test("AC4/S4: the normative verification rule text is unchanged by the review pr
 	// left to the worker's Verification contract it duplicated, a passive change with no reported command (C10), and
 	// shorter wording for the tier table lead-in, nativeReviewOutcome, the off fallback, the direct plan request and the
 	// continuation relay (B1 bytes).
+	// Re-pinned for cost-speed S15 P5a: the focused test and suite "run inline" became "run in the session that made
+	// the change", the same rule in words a full-delegation parent can load.
 	assert.equal(
 		createHash("sha256").update(normative).digest("hex"),
-		"d18cab3a5547c2c3191eec763dc686b75832d4e5c976fc649fddcbf966147856",
+		"4dfbe4ac90743d74f531121fc3ff6d4f2ff17886f0eaf10c3fbf486db7816402",
 		"the normative Verification rule section changed",
 	);
 	assert.ok(verification.includes("or a delegated writer returns"), "the module must still load when a delegated writer returns");
@@ -327,13 +331,18 @@ test("T10: escalate labels name the core high-risk items", () => {
 	}
 });
 
-test("T9/AC2: the parallelism reason launches every unit together in background and waits for all", () => {
+test("T9/AC2: the parallelism reason launches every unit together in one turn, in any mode, and waits for all", () => {
 	const parallel = lineStarting(writer, "- **Parallelism**");
 	for (const clause of [
 		// Writer-rule fix: a unit is one independent piece of behavior.
 		"every independent unit in the same turn",
 		// P5b (C11): omit `mode`; an explicit background mode throws in single-shot runs.
 		"`subagent_run` without `mode`",
+		// cost-speed P6 (L41, L36): background is how the units run, never a condition (the core Writer rule says
+		// the same); Pi runs one message's calls in parallel, and admission takes only a writer-only message.
+		"In every mode,",
+		"in one assistant message with no other tool call",
+		"(in background when background mode is on)",
 		"wait for all completions",
 		"serial launches void the reason",
 		"work inline",
@@ -342,6 +351,11 @@ test("T9/AC2: the parallelism reason launches every unit together in background 
 		assert.ok(parallel.includes(clause), `writer parallelism launch rule is missing: ${clause}`);
 	}
 	assert.ok(!/high risk|high-risk|verify/i.test(parallel), "parallel mixes risk or verification into the writer reasons");
+	assert.ok(!/With the Background subagent policy on, launch/.test(parallel), "background mode must not condition the launch");
+});
+
+test("P6: the lazy Writer trigger names every route the runtime admits", () => {
+	assert.ok(delegationWriter.includes("The runtime admits writers only for a feature-document task, at the measured context backstop, or as 2+ disjoint writers alone in one message."));
 });
 
 // T4 (S2, AC6): the runtime rejects an overlapping live writer at admission,

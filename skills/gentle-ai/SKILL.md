@@ -38,7 +38,7 @@ large authorized work      → track ODD tasks and implement by work unit
 For large implementation with subagents:
 
 ```text
-clarify → scout/context-builder when context-heavy → inline, or a writer only for a reason → verify
+clarify → gentle-ai-explore when the evidence budget is exceeded → inline, or a writer only for a reason → verify
 ```
 
 Hard delegation triggers:

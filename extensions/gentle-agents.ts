@@ -43,7 +43,7 @@ import { installBackgroundCacheWarming } from "../lib/background-cache-warming.t
 import { isFinished, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
 import { AgentRunner, piCommand, abortReasonText, CHILD_JOBS_ENV, REQUESTED_TOOLS_ENV, type AskAnswer, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
 import { parseChildPackageInjection } from "../lib/child-package-injection.ts";
-import { ChildMessenger, formatChildJobState, type IpcEndpoint } from "../lib/agents-messaging.ts";
+import { CHILD_MESSAGE_MAX_BYTES, ChildMessenger, formatChildJobState, type IpcEndpoint } from "../lib/agents-messaging.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, WindowsSessionRegistryPhaseSequence, isWindowsSessionBootstrapDiagnosticCode, type WindowsSessionBootstrapDiagnosticCode, type WindowsSessionBootstrapDiagnosticObserver, type WindowsSessionRegistryPhaseObserver } from "../lib/windows-session-transport.ts";
 import { hasReviewSessionPermission, resolveCanonicalGitRepositoryIdentitySync, type ReviewSessionManager } from "../lib/review-session-standing-permission.ts";
@@ -1784,7 +1784,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		},
 		onQuerySettled: (taskId, requestId, outcome) => {
 			if (outcome === "replied") messages.consumeQuery(taskId, requestId);
-			else messages.expireQuery(taskId, requestId);
+			// A busy parent still sees a question that expired in its queue (S15 P9a).
+			else messages.markQueryExpired(taskId, requestId);
 		},
 		onFallback: (task, change) => announceFallback({ agent: task.agent, from: change.from, to: change.to, category: change.category, ...(change.launch ? { launch: true } : {}) }, task.parentSessionId, task.id),
 		onSuccessfulMutation: (task, tool) => {
@@ -3006,18 +3007,18 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 
 	tool(
 		"run",
-		"Delegate a task to a named subagent. Admission rejects writers without repository-relative paths under `## Allowed edit surfaces`; below the context backstop, organic writers without `Spec: odd/tasks/<existing>.md, T<n>` and `gentle-ai-verify` without that or `Risk: item N`.",
+		"Delegate a task to a named subagent. Admission rejects writers without repository-relative `## Allowed edit surfaces`; below the context backstop, organic writers without `Spec: odd/tasks/<existing>.md, T<n>` (2+ disjoint writers alone in one message pass) and `gentle-ai-verify` without that or `Risk: item N`.",
 		{
 			required: ["agent", "task"],
 			properties: {
 				agent: { type: "string", description: "Subagent name from subagent_list_agents." },
 				task: { type: "string", description: "What the subagent must do, self-contained." },
-				label: { type: "string", description: "Three to six words naming the work, shown on the agents card, e.g. 'map footer data sources'." },
+				label: { type: "string", description: "Three to six words naming the work for the agents card, e.g. 'map footer data sources'." },
 				context: { type: "string", description: "Optional extra context appended to the task." },
 				work: workDescriptorSchema,
-				workspace_root: { type: "string", description: "Optional canonical main or linked Git worktree within the parent's same clone only; mutually exclusive with repository_root." },
-				repository_root: { type: "string", description: "Optional canonical independent Git repository; requires direct interactive session-scoped consent before queueing; mutually exclusive with workspace_root." },
-				mode: { type: "string", enum: ["task", "background"], description: "task waits for the result (default); background returns a task id immediately." },
+				workspace_root: { type: "string", description: "Optional canonical main or linked Git worktree within the parent's clone only; exclusive with repository_root." },
+				repository_root: { type: "string", description: "Optional canonical independent Git repository; needs direct interactive session-scoped consent before queueing; exclusive with workspace_root." },
+				mode: { type: "string", enum: ["task", "background"], description: "task waits for the result (default); background returns a task id at once." },
 			},
 		},
 		async (params, ctx, signal) => {
@@ -3092,11 +3093,18 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		return text(reconciledTasks.length === 0 ? "No subagent tasks in this session." : reconciledTasks.map(describeTask).join("\n"));
 	});
 
-	tool("reply", "Reply once to a live query from a child of the current parent session.", { required: ["task_id", "request_id", "message"], properties: { task_id: { type: "string" }, request_id: { type: "string" }, message: { type: "string" } } }, async (params, ctx) => {
+	tool("reply", "Reply once to a child query; a late reply arrives as a message.", { required: ["task_id", "request_id", "message"], properties: { task_id: { type: "string" }, request_id: { type: "string" }, message: { type: "string" } } }, async (params, ctx) => {
 		const taskId = String(params.task_id);
 		const requestId = String(params.request_id);
-		const accepted = await runner.reply(taskId, requestId, typeof params.message === "string" ? params.message : "", ctx.sessionManager.getSessionId() ?? "");
-		return accepted ? text("Reply accepted for delivery.") : text("Error: query is unavailable.", { error: "query unavailable" });
+		const message = typeof params.message === "string" ? params.message : "";
+		const sessionId = ctx.sessionManager.getSessionId() ?? "";
+		if (await runner.reply(taskId, requestId, message, sessionId)) return text("Reply accepted for delivery.");
+		// S15 P9a: a busy parent answers after the deadline; the answer still reaches a running child.
+		const late = runner.replyLate(taskId, requestId, message, sessionId);
+		if (late === "delivered") return text(`Query ${requestId} had expired; the answer was delivered to task ${taskId} as a message.`);
+		if (late === "too large") return text(`Error: the reply exceeds the ${CHILD_MESSAGE_MAX_BYTES}-byte message limit and was not delivered; query ${requestId} can still be answered with a shorter reply.`, { error: "reply too large" });
+		if (late === "not running") return text(`Error: query ${requestId} had expired and task ${taskId} is no longer running, so the answer was not delivered. Pass it with subagent_continue.`, { error: "query expired" });
+		return text("Error: query is unavailable.", { error: "query unavailable" });
 	});
 
 	tool("cancel",  "Cancel a queued or running subagent task.", { required: ["task_id"], properties: { task_id: { type: "string" } } }, async (params) => {

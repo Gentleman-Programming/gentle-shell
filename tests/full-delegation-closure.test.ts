@@ -79,6 +79,20 @@ test("S2/S6: no lazy asset reachable from the full delegation prompt carries an 
 	}
 });
 
+// cost-speed P6 (X9): the full delegation parent gets tracking and verification detail from modules that are clean
+// for a parent that never implements, and the parallel-launch form inline in its own prompt, never through the
+// organic writer or delegation cards.
+test("P6 (X9): full delegation reaches tracking and verification, not the organic writer cards, and states the launch rules", () => {
+	const prompt = render("full-delegation");
+	const named = namedAssets(prompt);
+	for (const name of ["orchestrator-tracking.md", "orchestrator-verification.md"]) assert.ok(named.includes(name), `the closure must reach ${name}`);
+	for (const name of ["orchestrator-writer.md", "orchestrator-delegation.md", "orchestrator-delegation-reference.md", "orchestrator.md"]) assert.ok(!named.includes(name), `the closure must not reach ${name}`);
+	assert.ok(prompt.includes("tracked work: `orchestrator-tracking.md`"));
+	assert.ok(prompt.includes("verification, handoffs, verifier setup failure: `orchestrator-verification.md`"));
+	assert.ok(prompt.includes("Two or more independent units with disjoint surfaces launch together in one turn, as direct `subagent_run` calls in one message with no other tool call; units that need the same file run one at a time."));
+	assert.ok(prompt.includes("Fixes to one unit continue its worker (`subagent_continue`), never a new worker per fix."));
+});
+
 test("S3: full delegation keeps a Task Size that decides tracking and risk, never who writes", () => {
 	const prompt = render("full-delegation");
 	assert.match(prompt, /## Task Size/);

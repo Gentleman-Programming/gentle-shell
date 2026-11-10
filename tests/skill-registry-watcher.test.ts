@@ -1,12 +1,76 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 
 const extensionUrl = pathToFileURL(join(import.meta.dirname, "..", "extensions", "skill-registry.ts")).href;
+
+test("independent extension hosts share disk bytes without sharing runtime captures", { timeout: 15_000 }, async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "gentle-skill-two-hosts-"));
+	const cwd = join(root, "project"), home = join(root, "home");
+	mkdirSync(join(cwd, "skills", "disk"), { recursive: true });
+	mkdirSync(home, { recursive: true });
+	writeFileSync(join(cwd, "skills", "disk", "SKILL.md"), "---\nname: disk\ndescription: Disk skill.\n---\n");
+	const source = `
+		const { default: extension, __testing } = await import(${JSON.stringify(extensionUrl)});
+		const events = new Map(), commands = new Map();
+		extension({ on: (name, fn) => events.set(name, fn), registerCommand: (name, command) => commands.set(name, command), registerFlag() {}, getFlag: () => false });
+		const ctx = { cwd: ${JSON.stringify(cwd)}, hasUI: false, ui: { notify() {} } };
+		const options = { skills: [], appendSystemPrompt: 'existing' };
+		process.on('message', async message => {
+			try {
+				if (message.action === 'start') { await events.get('session_start')(undefined, ctx); await __testing.startupSettled(); }
+				if (message.action === 'event') { options.skills = message.skills; await events.get('before_agent_start')({ systemPromptOptions: options }, ctx); }
+				if (message.action === 'refresh') await commands.get('skill-registry:refresh').handler('', ctx);
+				if (message.action === 'shutdown') await events.get('session_shutdown')(undefined, ctx);
+				process.send({ prompt: options.appendSystemPrompt });
+				if (message.action === 'shutdown') process.disconnect();
+			} catch (error) { process.send({ error: String(error && error.stack || error) }); }
+		});
+		process.on('disconnect', () => process.exit(0));
+	`;
+	const createHost = () => {
+		const child = spawn(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", source], {
+			cwd, env: { PATH: process.env.PATH, HOME: home, USERPROFILE: home, CODEX_HOME: "", GIT_CEILING_DIRECTORIES: root, GIT_CONFIG_NOSYSTEM: "1", SYSTEMROOT: process.env.SYSTEMROOT },
+			stdio: ["ignore", "pipe", "pipe", "ipc"],
+		});
+		let stderr = "";
+		child.stderr?.on("data", (chunk) => { stderr += String(chunk); });
+		const send = (message: Record<string, unknown>) => new Promise<string>((resolve, reject) => {
+			const timer = setTimeout(() => reject(new Error(`host failed to reply: ${stderr}`)), 5000);
+			child.once("message", (reply: { prompt: string; error?: string }) => {
+				clearTimeout(timer);
+				if (reply.error) reject(new Error(reply.error)); else resolve(reply.prompt);
+			});
+			child.send(message);
+		});
+		return { child, send };
+	};
+	const a = createHost(), b = createHost();
+	t.after(() => {
+		for (const host of [a, b]) if (host.child.connected) host.child.disconnect();
+		rmSync(root, { recursive: true, force: true });
+	});
+	await Promise.all([a.send({ action: "start" }), b.send({ action: "start" })]);
+	const registry = join(cwd, ".atl", "skill-registry.md");
+	const bytes = readFileSync(registry), mtime = statSync(registry).mtimeMs;
+	const alpha = join(root, "alpha", "SKILL.md"), beta = join(root, "beta", "SKILL.md");
+	const [first, second] = await Promise.all([
+		a.send({ action: "event", skills: [{ name: "alpha", description: "Alpha", filePath: alpha }] }),
+		b.send({ action: "event", skills: [{ name: "beta", description: "Beta", filePath: beta }] }),
+	]);
+	assert.ok(first.includes(alpha) && !first.includes(beta));
+	assert.ok(second.includes(beta) && !second.includes(alpha));
+	await Promise.all([a.send({ action: "refresh" }), b.send({ action: "refresh" })]);
+	assert.deepEqual(readFileSync(registry), bytes);
+	assert.equal(statSync(registry).mtimeMs, mtime);
+	assert.ok(!(await a.send({ action: "event", skills: [] })).includes(alpha));
+	assert.ok((await b.send({ action: "event" })).includes(beta));
+	await Promise.all([a.send({ action: "shutdown" }), b.send({ action: "shutdown" })]);
+});
 
 for (const code of ["ENOENT", "EMFILE"]) {
 	test(`registered skill watcher survives asynchronous ${code} and preserves other roots`, (t) => {
@@ -22,6 +86,7 @@ for (const code of ["ENOENT", "EMFILE"]) {
 			const home = join(root, "home");
 			process.env.HOME = home;
 			process.env.USERPROFILE = home;
+			delete process.env.CODEX_HOME;
 			delete process.env.GENTLE_PI_AGENTS_CHILD;
 			delete process.env.GENTLE_PI_NO_SKILL_REGISTRY;
 			const userRoot = join(home, ".codex", "skills");

@@ -171,7 +171,7 @@ otherwise `herdr` from `PATH`, without a shell.
 | **Agent overlay close control** | Adds a header close button that adapts to available width. |
 | **Reviewer protection**        | Surfaces review workload risk before a task turns into an oversized PR.                                                                       |
 | **Per-agent model assignment** | Pi-native modal for assigning stronger or cheaper models to packaged and custom agents.                                                       |
-| **Skill discovery registry**   | Maintains `.atl/skill-registry.md` from project and user skills so review/comment/PR workflows do not silently miss the right skill.          |
+| **Skill discovery registry**   | Maintains a shared disk index and a separate Pi session-effective view for selecting and delegating exact skill paths. |
 | **Skill creation workflow**    | Provides the `gentle-ai-skill-creator`/`gentle-ai-skill-improver` skills, `/skill-creation` prompt, and packaged style guide for LLM-first skills. |
 | **Delivery skills**            | Includes issue-first PRs, chained PRs, work-unit commits, cognitive docs, comment writing, and Judgment Day review.                           |
 | **Bounded native review**      | Freezes one candidate, dispatches only controller-selected lenses, and records native authority. Review outcomes are informational; delivery follows ordinary repository policy. |
@@ -958,7 +958,7 @@ Saved model routing is applied separately; these installation commands do not ch
 .atl/skill-registry.md
 ```
 
-The registry scans project and user skill roots, not package-owned skills. It exists to catch workflow skills that are present on disk but not visible in Pi's injected skill list.
+The shared registry indexes disk roots only, not session-only package or custom skills. On each enabled primary-session agent start, Pi also exposes an **effective session skills** block combining the current disk scan with that session's runtime-resolved skills. Select and delegate from that view: neither the shared file nor Pi's injected skill list alone is complete. A disk change appears in the view at the next agent start, not mid-run.
 
 It scans common roots such as:
 
@@ -967,6 +967,7 @@ It scans common roots such as:
 .opencode/skills
 .claude/skills
 .gemini/skills
+.trae/skills
 .cursor/skills
 .github/skills
 .codex/skills
@@ -977,15 +978,20 @@ It scans common roots such as:
 .agent/skills
 .agents/skills
 .atl/skills
+.hermes/skills
 ~/.pi/agent/skills
 ~/.config/agents/skills
 ~/.agents/skills
+~/.kimi-code/skills
 ~/.kimi/skills
 ~/.config/opencode/skills
 ~/.config/kilo/skills
 ~/.claude/skills
 ~/.gemini/skills
+~/.gemini/config/skills
 ~/.gemini/antigravity/skills
+~/.gemini/antigravity-desktop/skills
+~/.gemini/antigravity-cli/skills
 ~/.cursor/skills
 ~/.copilot/skills
 ~/.codex/skills
@@ -993,7 +999,11 @@ It scans common roots such as:
 ~/.qwen/skills
 ~/.kiro/skills
 ~/.openclaw/skills
+~/.hermes/skills
+~/.trae/skills
 ```
+
+A valid `CODEX_HOME` replaces `~/.codex` for the Codex root; relative values resolve against the process cwd. Shared bytes converge when upgraded Pi and Gentle AI writers use the same cwd, home, effective `CODEX_HOME`, filesystem snapshot, and OS. Different homes and mixed old/new versions are outside that guarantee; upgrade both writers first.
 
 Behavior:
 
@@ -1001,9 +1011,10 @@ Behavior:
 - the registry refreshes on session start, but automatic writes (including watcher refreshes) preserve Git-tracked targets;
 - skipped writes warn with the protected paths and `/skill-registry:refresh` as the deliberate regeneration path; Git detection failures skip automatic writes rather than assuming files are untracked;
 - startup refresh is skipped when Pi starts with `--no-skills` / `-ns`, `--no-skill-registry`, or `GENTLE_PI_NO_SKILL_REGISTRY=1`;
-- `/skill-registry:refresh` intentionally regenerates the registry and cache and updates the child ignore, even when tracked; review the resulting Git diff;
-- a best-effort watcher refreshes when skill files change;
-- the registry indexes skill names, full descriptions, scope, and exact `SKILL.md` paths without copying skill body rules.
+- `/skill-registry:refresh` deliberately overrides tracked-target protection and updates the child ignore; review the resulting Git diff. It recomputes from disk but does not rewrite byte-identical registry or cache files;
+- a best-effort watcher refreshes when skill files change; the cache is a non-authoritative SHA-256 hint, and each refresh compares actual rendered and on-disk bytes;
+- each file is published atomically, registry before cache; they are not an atomic pair, and a later refresh repairs a mismatch;
+- the registry indexes skill names, descriptions, scope, and exact `SKILL.md` paths without copying skill body rules or runtime-only rows.
 
 Skill discovery is a guardrail, not a workflow router: it helps Pi load the right skill without forcing extra ceremony.
 
@@ -1015,7 +1026,7 @@ Compatibility: the package keeps the existing skill folders (`skills/branch-pr`,
 
 Delegation contract:
 
-- parent/orchestrator resolves project/user skills from the registry and passes matching paths under `## Skills to load before work`;
+- parent/orchestrator selects project/user and runtime skills from the effective session view and passes matching exact paths under `## Skills to load before work`;
 - during normal runtime, subagents should not independently discover additional project/user `SKILL.md` files or the registry;
 - fallback loading is degraded self-healing and must be reported via `skill_resolution` as `fallback-registry`, `fallback-path`, or `none`.
 

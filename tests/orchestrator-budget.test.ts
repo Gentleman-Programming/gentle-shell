@@ -277,7 +277,9 @@ const DISPOSITION_MAP: DispositionRange[] = [
 	{ lines: [232, 232], target: "core", label: "Skill Registry Protocol heading" },
 	{ lines: [234, 253], target: "replaced", label: "Skill resolution retained without phase roles" },
 	{ lines: [255, 255], target: "core", label: "Intent-Driven Skill Discovery heading" },
-	{ lines: [257, 276], target: "skills", label: "Intent-Driven Skill Discovery detail" },
+	{ lines: [257, 260], target: "skills", label: "Intent-Driven Skill Discovery introduction" },
+	{ lines: [261, 264], target: "replaced", label: "Disk-first discovery replaced by the S7 effective session view" },
+	{ lines: [265, 276], target: "skills", label: "Intent-Driven Skill Discovery fallback and intent hints" },
 	{ lines: [278, 283], target: "core", label: "Safety" },
 	{ lines: [285, 312], target: "obsolete", label: "Superseded pre-transaction review contract" },
 ];
@@ -361,6 +363,21 @@ for (const range of DISPOSITION_MAP) {
 		},
 	);
 }
+
+test("lazy skill discovery selects and delegates from the effective view with a disclosed disk-only fallback", () => {
+	const skills = readRealAsset("orchestrator-skills.md");
+	for (const required of [
+		"Match task context and target files against the effective view's `Trigger / description` column.",
+		"Pass only matching exact `Path` values to subagents under `## Skills to load before work`.",
+		"Tell subagents to read those exact `SKILL.md` files before reading, writing, reviewing, testing, or creating artifacts.",
+		"Consult the `Effective session skills` block, including runtime-only paths, before acting or delegating.",
+		"Read the matching exact `SKILL.md` path when acting; pass it to the subagent when delegating.",
+		"If the view is unavailable, disclose the limitation; `.atl/skill-registry.md` is a disk-only fallback, not a complete Pi view.",
+		"If an expected workflow is absent, search configured skill roots only as a fallback. Prefer the most specific project skill over a global skill with the same intent.",
+		"If no matching skill exists, continue with the smallest safe fallback and say which expected skill was unavailable.",
+	]) assert.ok(skills.includes(required), `missing skill-discovery rule: ${required}`);
+	assert.doesNotMatch(skills, /1\. Read `\.atl\/skill-registry\.md` when present\./);
+});
 
 // ---------------------------------------------------------------------------
 // 2.4 — Core-alone load-bearing tokens (JD-007) — assert on the raw core

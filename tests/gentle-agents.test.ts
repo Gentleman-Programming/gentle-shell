@@ -28,6 +28,7 @@ import { OrchestratorScopeCache } from "../lib/orchestrator-scope.ts";
 import { TODO_PROGRESS_EVENT } from "../lib/shell-todo.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
+import { CHILD_QUERY_TIMEOUT_MS } from "../lib/agents-messaging.ts";
 import { AgentRunner, REQUESTED_TOOLS_ENV, type TaskRequest } from "../lib/agents-runner.ts";
 import { bindSessionRepositoryPreparation } from "../lib/bounded-writer-admission.ts";
 import { bindSessionProfile, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
@@ -683,6 +684,105 @@ test("host query delivery exposes correlation and accepts one current-session re
 	assert.equal((await tools.get("subagent_reply")!.execute("reply", { task_id: taskId, request_id: "q1", message: "src/a.ts" }, undefined, undefined, ctx)).content[0].text, "Reply accepted for delivery.");
 	assert.deepEqual(harness.children[0].sent.at(-1), { id: "q1", kind: "reply", message: "src/a.ts" });
 	assert.match((await tools.get("subagent_reply")!.execute("duplicate", { task_id: taskId, request_id: "q1", message: "again" }, undefined, undefined, ctx)).content[0].text, /unavailable/);
+});
+
+// S15 P9a: a parent busy past the query deadline still gets its answer to the
+// child, as a steering message, and the tool result says what happened.
+function expiringQueryHarness() {
+	const h = fakePi();
+	const harness = deps();
+	const timers: Array<{ fn: () => void; ms: number }> = [];
+	harness.deps.schedule = (fn, ms) => { timers.push({ fn, ms }); return () => {}; };
+	gentleAgents(h.pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	const reply = async (requestId: string, message: string) => (await h.tools.get("subagent_reply")!.execute("reply", { task_id: taskId, request_id: requestId, message }, undefined, undefined, ctx));
+	let taskId = "";
+	let sessionStarted = false;
+	const begin = async () => { if (!sessionStarted) await h.fire("session_start", ctx); sessionStarted = true; };
+	const start = async () => {
+		await begin();
+		const started = await h.tools.get("subagent_run")!.execute("query", { agent: "explore", task: "Ask once", mode: "background" }, undefined, undefined, ctx);
+		taskId = (started.details.gentleAgents as { taskId: string }).taskId;
+		await tick();
+		harness.children[0].message({ id: "q1", kind: "query", message: "Which file?" });
+		await tick();
+		return taskId;
+	};
+	const expire = () => timers.filter((timer) => timer.ms === CHILD_QUERY_TIMEOUT_MS).at(-1)!.fn();
+	const steers = () => harness.children[0].written.filter((command) => command.type === "steer").map((command) => command.message);
+	return { h, ctx, harness, timers, reply, begin, start, expire, steers };
+}
+
+test("a query that expires while the parent is busy still reaches the parent once, marked expired", async () => {
+	const q = expiringQueryHarness();
+	await q.begin();
+	await q.h.fire("agent_start", q.ctx);
+	const sentBefore = q.h.sent.length;
+	const taskId = await q.start();
+	const asks = () => q.h.sent.slice(sentBefore).filter((entry) => String(entry.message.content).startsWith("Subagent "));
+	assert.equal(asks().length, 0, "a busy parent holds the question");
+	q.expire();
+	await q.h.fire("agent_end", q.ctx);
+	await tick();
+	assert.equal(asks().length, 1);
+	assert.equal(String(asks()[0]!.message.content), `Subagent explore asks:\nTask ID: ${taskId}\nRequest ID: q1\nQuestion: Which file?\nThis query expired before it reached you; a reply is delivered to the task as a message.`);
+	assert.equal((await q.reply("q1", "src/a.ts")).content[0].text, `Query q1 had expired; the answer was delivered to task ${taskId} as a message.`);
+	await q.h.fire("agent_settled", q.ctx);
+	await tick();
+	assert.equal(asks().length, 1, "shown once");
+});
+
+test("an oversize late reply says the limit and leaves the request answerable", async () => {
+	const q = expiringQueryHarness();
+	const taskId = await q.start();
+	q.expire();
+	assert.equal((await q.reply("q1", "x".repeat(8193))).content[0].text, "Error: the reply exceeds the 8192-byte message limit and was not delivered; query q1 can still be answered with a shorter reply.");
+	assert.equal((await q.reply("q1", "short")).content[0].text, `Query q1 had expired; the answer was delivered to task ${taskId} as a message.`);
+});
+
+test("a reply after the query expired is delivered to the running task as a prefixed message", async () => {
+	const h = expiringQueryHarness();
+	const taskId = await h.start();
+	h.expire();
+	const result = await h.reply("q1", "src/a.ts");
+	await tick();
+	assert.equal(result.content[0].text, `Query q1 had expired; the answer was delivered to task ${taskId} as a message.`);
+	assert.deepEqual(h.steers(), ["Answer to your earlier question (q1; it expired before the reply arrived): src/a.ts"]);
+	assert.equal(h.harness.children[0].sent.some((frame) => frame.kind === "reply" && "message" in frame), false, "no reply frame reaches a settled query");
+});
+
+test("a reply after the query expired and the task finished says it was not delivered", async () => {
+	const h = expiringQueryHarness();
+	const taskId = await h.start();
+	h.expire();
+	h.harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" }] });
+	h.harness.children[0].emit({ type: "agent_settled" });
+	for (let index = 0; index < 5; index += 1) await tick();
+	const result = await h.reply("q1", "src/a.ts");
+	await tick();
+	assert.equal(result.content[0].text, `Error: query q1 had expired and task ${taskId} is no longer running, so the answer was not delivered. Pass it with subagent_continue.`);
+	assert.deepEqual(h.steers(), []);
+});
+
+test("a second reply to an expired query is rejected", async () => {
+	const h = expiringQueryHarness();
+	await h.start();
+	h.expire();
+	await h.reply("q1", "src/a.ts");
+	assert.equal((await h.reply("q1", "again")).content[0].text, "Error: query is unavailable.");
+	await tick();
+	assert.equal(h.steers().length, 1);
+});
+
+test("a query waits 120 s and a reply before expiry keeps its exact result", async () => {
+	const h = expiringQueryHarness();
+	await h.start();
+	assert.equal(CHILD_QUERY_TIMEOUT_MS, 120_000);
+	assert.equal(h.timers.some((timer) => timer.ms === 120_000), true);
+	assert.equal((await h.reply("q1", "src/a.ts")).content[0].text, "Reply accepted for delivery.");
+	await tick();
+	assert.deepEqual(h.harness.children[0].sent.at(-1), { id: "q1", kind: "reply", message: "src/a.ts" });
+	assert.deepEqual(h.steers(), []);
 });
 
 test("first foreground query yields while its child runs and delivers one completion", async () => {

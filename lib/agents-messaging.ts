@@ -4,7 +4,13 @@ export const CHILD_QUERY_ERROR_MAX_BYTES = 256;
 export const CHILD_MESSAGE_MAX_INFLIGHT = 8;
 export const CHILD_MESSAGE_TIMEOUT_MS = 2_000;
 export const CHILD_QUERY_MAX_INFLIGHT = 4;
-export const CHILD_QUERY_TIMEOUT_MS = 30_000;
+// A busy parent answers after its current model call and tool batch, which
+// routinely takes one to two minutes. The child's query is an in-flight tool
+// call meanwhile, so the stall watchdog applies its tool ceiling, not idle silence.
+export const CHILD_QUERY_TIMEOUT_MS = 120_000;
+// What the child reads when the deadline passes; both the child's own deadline
+// and the runner's reply frame use it, so it must fit CHILD_QUERY_ERROR_MAX_BYTES.
+export const CHILD_QUERY_TIMEOUT_ERROR = "Parent query timed out: the parent did not answer in time. A late answer may still arrive as a message; continue with work that does not depend on it and state the open question in your report.";
 
 export interface NotificationFrame {
 	id: string;
@@ -182,7 +188,7 @@ export class ChildMessenger {
 		if (!validChildMessage(message)) return Promise.reject(new Error("query is not well-formed UTF-16 or exceeds 8KiB"));
 		if (this.queries.size >= CHILD_QUERY_MAX_INFLIGHT) return Promise.reject(new Error("too many pending parent queries"));
 		if (this.nextQueryId >= Number.MAX_SAFE_INTEGER) return Promise.reject(new Error("parent query correlation exhausted"));
-		return this.send(this.queries, `q${++this.nextQueryId}`, "query", message, CHILD_QUERY_TIMEOUT_MS, "parent query timed out");
+		return this.send(this.queries, `q${++this.nextQueryId}`, "query", message, CHILD_QUERY_TIMEOUT_MS, CHILD_QUERY_TIMEOUT_ERROR);
 	}
 
 	close(reason = "parent notification channel closed"): void {

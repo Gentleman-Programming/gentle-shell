@@ -12,7 +12,7 @@ export interface DestructiveCommandMatch {
 	 */
 	removalTargets?: readonly string[];
 }
-interface Token {
+export interface Token {
 	value: string;
 	raw: string;
 	operator: boolean;
@@ -36,7 +36,7 @@ function blankHeredocs(command: string, joinBody = false): string {
 const deliveryTokenPattern = /(?:\\\n)*#[^\n]*|(?:\d*(?:[<>]&|>\||<>|>>?|<<-?)|&>>?)|(?:"(?:\\[\s\S]|[^"\\])*"|'[^']*'|`(?:\\[\s\S]|[^`\\])*`|\\[\s\S]|[^\s;&|()<>'"\\])+|&&|\|\||[;&|()\n]/g;
 
 /** Keep quoted arguments intact so harmless prose is never treated as a command. */
-function tokenize(command: string, blank = true, delivery = false): Token[] {
+export function tokenize(command: string, blank = true, delivery = false): Token[] {
 	const tokens: Token[] = [];
 	if (blank) command = blankHeredocs(command, delivery);
 	// Delivery routing needs redirections as separate tokens, including attached
@@ -235,7 +235,7 @@ const WRAPPERS = ["env", "sudo", "command", "exec", "nohup", "timeout", "xargs"]
 const RESERVED_WORDS = new Set(["then", "else", "elif", "do", "{", "!", "if", "while", "until"]);
 
 /** Index of the executable token after reserved words, assignments and familiar wrappers. */
-function headCursor(segment: readonly Token[], onTargetRedirect?: () => void): number {
+export function headCursor(segment: readonly Token[], onTargetRedirect?: () => void): number {
 	let cursor = 0;
 	while (cursor < segment.length && segment[cursor].raw === segment[cursor].value && RESERVED_WORDS.has(segment[cursor].value)) cursor++;
 	while (cursor < segment.length) {

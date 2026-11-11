@@ -10,6 +10,7 @@ import { SHELL_COMMAND_TOOLS } from "../lib/background-jobs.ts";
 import { evaluateDeliveredTestTool } from "../lib/delivered-test-lint.ts";
 import { commitSliceToolResult } from "../lib/commit-slice-signal.ts";
 import { checkReviewDeliveryPreflight } from "../lib/review-delivery-preflight.ts";
+import { withReviewerProgress } from "../lib/reviewer-stream.ts";
 import { checkDeliveryConflictMarkers } from "../lib/delivery-conflict-markers.ts";
 import { appendContextBackstopNotice, createContextBackstopSignal, createThrottledContextMeasure } from "../lib/context-backstop.ts";
 import { createExplorationBudget } from "../lib/exploration-budget.ts";
@@ -12020,7 +12021,11 @@ function createGentleAiExtensionForTesting(
 	pi.on("session_before_tree", async (_event, ctx) => {
 		await waitCurrentSessionProfileSelection(ctx.sessionManager);
 	});
-	const observedReviewTool: typeof reviewSidebar.tool = (definition) => statusTiming.tool(reviewSidebar.tool(definition));
+	const observedReviewTool: typeof reviewSidebar.tool = (definition) => statusTiming.tool(reviewSidebar.tool({ ...definition,
+		execute: (...args) => withReviewerProgress(progress => args[3]?.({ content: [{ type: "text",
+			text: `${progress.routingKey}: ${progress.phase} (${Math.floor(progress.elapsedMs / 1000)}s)` }], details: undefined }),
+			() => definition.execute(...args)),
+	}));
 	pi.on("session_tree", (_event, ctx) => {
 		auto.reset();
 		reviewSidebar.reset(ctx);

@@ -17,6 +17,7 @@ interface Token {
 	raw: string;
 	operator: boolean;
 	index: number;
+	redirect?: "complete" | "target";
 }
 const separators = new Set([";", "&&", "||", "|", "&", "\n", "(", ")"]);
 // Separators after which the next segment starts only once this one finished.
@@ -25,18 +26,22 @@ const separators = new Set([";", "&&", "||", "|", "&", "\n", "(", ")"]);
 const SEQUENTIAL_SEPARATORS = new Set(["", ";", "&&", "||", "\n"]);
 
 /** Literal, named heredocs are data, not executable shell segments; offsets are preserved. */
-function blankHeredocs(command: string): string {
+function blankHeredocs(command: string, joinBody = false): string {
 	return command.replace(/<<-?\s*(['"]?)([A-Za-z_]\w*)\1[^\n]*\n[\s\S]*?\n\2(?=\n|$)/g, (raw) => {
-		const headerLength = raw.indexOf("\n") + 1;
+		const headerLength = raw.indexOf("\n") + (joinBody ? 0 : 1);
 		return raw.slice(0, headerLength) + " ".repeat(raw.length - headerLength);
 	});
 }
 
 /** Keep quoted arguments intact so harmless prose is never treated as a command. */
-function tokenize(command: string, blank = true): Token[] {
+function tokenize(command: string, blank = true, delivery = false): Token[] {
 	const tokens: Token[] = [];
-	if (blank) command = blankHeredocs(command);
-	const pattern = /(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s;&|()'"\\])+|&&|\|\||[;&|()\n]/g;
+	if (blank) command = blankHeredocs(command, delivery);
+	// Delivery routing needs redirections as separate tokens, including attached
+	// forms (`push>out`) and descriptor merges whose & is not a shell boundary.
+	const pattern = delivery
+		? /\d*[<>]&(?:\d+|-)|(?:\d*(?:>\||<>|>>?|<<-?|[<>]&)|&>>?)|(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s;&|()<>'"\\])+|&&|\|\||[;&|()\n]/g
+		: /(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s;&|()'"\\])+|&&|\|\||[;&|()\n]/g;
 	for (const match of command.matchAll(pattern)) {
 		const raw = match[0];
 		const value = raw.replace(/"((?:\\.|[^"\\])*)"|'([^']*)'|\\(.)/g,
@@ -45,7 +50,8 @@ function tokenize(command: string, blank = true): Token[] {
 				return single ?? escaped ?? "";
 			});
 		// Only raw operators are boundaries; quoted/escaped operators are words.
-		tokens.push({ value, raw, operator: separators.has(raw), index: match.index });
+		const redirect = !delivery ? undefined : /^\d*[<>]&(?:\d+|-)$/.test(raw) ? "complete" : /^(?:\d*(?:>\||<>|>>?|<<-?|[<>]&)|&>>?)$/.test(raw) ? "target" : undefined;
+		tokens.push({ value, raw, operator: separators.has(raw), index: match.index, ...(redirect ? { redirect } : {}) });
 	}
 	return tokens;
 }
@@ -55,15 +61,19 @@ const executable = (value: string) => value.split("/").at(-1) ?? value;
 export function recognizeReviewDeliveryActions(command: string, depth = 0): Array<{ kind: "change" | "delivery"; directories?: readonly string[]; unresolvedDirectory?: true }> {
 	if (depth > 8) return [];
 	const matches: ReturnType<typeof recognizeReviewDeliveryActions> = [];
-	const tokens = tokenize(command);
+	const tokens = tokenize(command, true, true);
 	const directories: string[] = [];
 	let unresolvedDirectory = false;
 	let leadingCdChain = true;
-	const ambiguousCdScope = tokens.some(token => token.operator && token.raw !== "&&");
+	const ambiguousCdScope = tokens.some(token => token.operator && !["&&", "||", "|"].includes(token.raw));
 	let start = 0;
 	for (let end = 0; end <= tokens.length; end++) {
 		if (end < tokens.length && !tokens[end].operator) continue;
-		const segment = tokens.slice(start, end);
+		// A fallback may execute after cd itself failed. Never carry its selected
+		// directory into a later delivery, even though the earlier push was scoped.
+		if (tokens[start - 1]?.raw === "||" && directories.length) unresolvedDirectory = true;
+		const words = tokens.slice(start, end);
+		const segment = words.filter((token, at) => !token.redirect && words[at - 1]?.redirect !== "target");
 		start = end + 1;
 		let unresolvedPrefix = false;
 		const cursor = headCursor(segment, () => { unresolvedPrefix = true; });

@@ -174,6 +174,34 @@ test("S5: routing ignores advisory_finding_claims", async () => {
 	assert.deepEqual(stepNames(withClaims.result), stepNames(without.result));
 });
 
+// T9 (S5): findings captured before a stop are not lost across the resume.
+test("S5: the review switch turned off after the approved closure returns blocked with the findings; the resume closes without them", async () => {
+	const claim = "Fixture reviewer claim for F1; not real review output.";
+	let resumed = false;
+	const runtime = createCoordinatorRuntime(scratchRepo(), "coordinator", {
+		hasUI: false, advisoryFindings: structuredClone(FINDINGS), reviewerResults: reviewerResult([{ id: "F1", claim }]),
+		mode: (_read, calls) => !resumed && calls.includes("capture:recorded-output") ? "off" : "on",
+	});
+	try {
+		const stopped = await runtime.invoke("gentle_review_run", { lineageId: runtime.lineage });
+		assert.equal(stopped.outcome, "blocked", JSON.stringify(stopped));
+		assert.equal(stopped.result.outcome, "review-mode-disabled");
+		assert.equal(runtime.closed(), false, "no acknowledgement while the switch is off");
+		assert.deepEqual(stopped.advisory_findings, FINDINGS);
+		assert.deepEqual(stopped.advisory_finding_claims, { F1: claim });
+		resumed = true;
+		const callsBefore = runtime.nativeCalls.length;
+		const closed = await runtime.invoke("gentle_review_run", { lineageId: runtime.lineage });
+		assert.equal(closed.outcome, "closed", JSON.stringify(closed));
+		assert.ok(runtime.closed());
+		assert.deepEqual(runtime.nativeCalls.slice(callsBefore), ["status:approved", "status:approved", "acknowledge"], "the resume goes straight to the acknowledgement");
+		// Neither bound STATUS nor the acknowledgement envelope carries the closure's
+		// findings, so the resumed result has none; the stopped result carried them.
+		assert.equal(Object.hasOwn(closed, "advisory_findings"), false);
+		assert.equal(Object.hasOwn(closed, "advisory_finding_claims"), false);
+	} finally { runtime.close(); }
+});
+
 // T7 (S2): a lens group whose findings need the refuter. The facade's group
 // capture admits every reviewer result without a closure and reconciles through
 // STATUS (native-reviewer-group-status-reconciled); the run continues through

@@ -170,8 +170,15 @@ test("orchestrator-delegation.md states the exact-captured-decline-invocation ru
 });
 
 test("orchestrator-delegation.md states handoff scope and mode preservation", () => {
-	assert.match(DELEGATION, /Do not invoke `gentle-ai review mode disable` at clone or global scope within this handoff/i);
-	assert.match(DELEGATION, /Do not turn RDD off or on within this handoff/i);
+	// cost-speed P20 (PD-88): an explicit user request to stop RDD wins over the handoff scope rule.
+	assert.ok(
+		DELEGATION.includes(
+			"Unless the user explicitly asks, do not invoke `gentle-ai review mode disable` at clone or global scope or turn RDD off or on within this handoff.",
+		),
+		"the handoff scope rule must yield to an explicit user request",
+	);
+	assert.doesNotMatch(DELEGATION, /Do not invoke `gentle-ai review mode disable` at clone or global scope within this handoff/i);
+	assert.doesNotMatch(DELEGATION, /Do not turn RDD off or on within this handoff/i);
 	assert.match(DELEGATION, /The result carries no lineage or receipt; ordinary delivery is unmanaged by the candidate choice, and the next candidate asks again/i);
 });
 

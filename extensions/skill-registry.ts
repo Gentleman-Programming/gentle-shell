@@ -706,6 +706,10 @@ async function regenerateRegistry(cwd: string, force: boolean, intentional = fal
 
 const watchedCwds = new Set<string>();
 const watcherPolls = new Map<string, ReturnType<typeof setInterval>>();
+// A debounce armed by a watcher event or by the poll outlives the event that
+// armed it; unregistered, it survived session_shutdown and fired into the
+// replaced session's stale ctx.
+const watcherDebounces = new Map<string, ReturnType<typeof setTimeout>>();
 // Startup regeneration runs after session_start returns; watcher refreshes
 // wait for it so an older startup scan never overwrites a newer refresh.
 const pendingStartups = new Map<string, Promise<void>>();
@@ -786,6 +790,8 @@ function closeSkillRegistryWatchers(): void {
 	activeWatchers.clear();
 	for (const poll of watcherPolls.values()) clearInterval(poll);
 	watcherPolls.clear();
+	for (const debounce of watcherDebounces.values()) clearTimeout(debounce);
+	watcherDebounces.clear();
 	watchedCwds.clear();
 }
 
@@ -824,6 +830,7 @@ async function startSkillRegistryWatcher(
 				}
 			})();
 		}, WATCH_DEBOUNCE_MS);
+		watcherDebounces.set(cwd, timer);
 	};
 	for (const dir of dirs) {
 		try {
@@ -957,7 +964,15 @@ export default function (pi: ExtensionAPI) {
 		try {
 			if (ctx.hasUI) {
 				await startSkillRegistryWatcher(cwd, (message, level = "info") => {
-					ctx.ui.notify(message, level);
+					// Watcher events and the fallback poll can fire after this session was
+					// replaced or reloaded: that ctx is stale, so drop the notice instead
+					// of letting ctx.ui.notify throw out of the extension.
+					if (generation !== startupGeneration) return;
+					try {
+						ctx.ui.notify(message, level);
+					} catch {
+						// A disposed UI must never crash Pi.
+					}
 				});
 			}
 		} catch (error) {

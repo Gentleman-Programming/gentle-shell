@@ -387,6 +387,27 @@ test("P6 preserve: full delegation, a feature-document task and the backstop sti
 	});
 });
 
+// cost-speed P6b: full delegation launched its independent writers from one `codemode` script before PR #3110 and the
+// children overlapped; the prompt now names both routes, so the hook must keep admitting both (preservation).
+test("P6b preserve: full delegation admits three writers launched from one codemode script and three in one message", async (t) => {
+	const bare = workspace(false);
+	t.after(() => rmSync(bare, { recursive: true, force: true }));
+	await withConfigHome(undefined, async () => {
+		const full = { GENTLE_PI_ORCHESTRATOR_MODE: "full-delegation" };
+		const script = { id: "cm", name: "codemode", arguments: { code: "await Promise.allSettled([tools.subagent_run(a), tools.subagent_run(b), tools.subagent_run(c)])" } };
+		const nested = [writerCall("cm/1", "src/alpha.ts"), writerCall("cm/2", "src/beta.ts"), writerCall("cm/3", "src/gamma.ts")];
+		for (const target of nested) {
+			const result = await launchBatchThroughHook([[script]], target, bare, 20_000, full, "cm");
+			assert.equal(result?.block, undefined, `codemode ${target.id}: ${result?.reason}`);
+		}
+		const trio = [writerCall("t1", "src/alpha.ts"), writerCall("t2", "src/beta.ts"), writerCall("t3", "src/gamma.ts")];
+		for (const target of trio) {
+			const result = await launchBatchThroughHook([trio], target, bare, 20_000, full);
+			assert.equal(result?.block, undefined, `same message ${target.id}: ${result?.reason}`);
+		}
+	});
+});
+
 test("P6: the rejection names the same-message route and keeps the inline instruction", () => {
 	const root = workspace(false);
 	try {

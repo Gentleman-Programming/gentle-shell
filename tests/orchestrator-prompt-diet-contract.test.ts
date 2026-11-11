@@ -176,7 +176,9 @@ const PRIMARY_PROMPT_BUDGETS: Record<(typeof MODES)[number], Record<(typeof PERS
 	organic: { gentleman: 24_164, neutral: 24_416 },
 	// cost-speed P6 (X9): launch form, continue-one-worker rule and the tracking pointer, paid by the motivation
 	// sentence and a duplicate of step 6's verbatim-request rule (22,253/22,425 -> 22,223/22,395 B).
-	"full-delegation": { gentleman: 22_131, neutral: 22_383 },
+	// cost-speed P6b: the launch sentence names the same assistant message, the `codemode` route and the sequential
+	// tools (+126 B), paid by tightening five sentences of the same asset (22,131/22,383 -> 22,128/22,380 B).
+	"full-delegation": { gentleman: 22_128, neutral: 22_380 },
 };
 
 test("S5: the rendered primary prompt fits the lowered per-mode budgets", (t) => {

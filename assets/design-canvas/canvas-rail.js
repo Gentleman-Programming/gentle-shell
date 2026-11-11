@@ -1,7 +1,8 @@
 // The tool rail on the left: Move and Comment (one pressed pair over Comment
 // mode), Overview (Fit) and Settings (a menu with the design system board and the
 // keyboard shortcuts). Its single-key shortcuts, and the ? list where a person
-// gives any of them another single key, saved in this browser for every design.
+// gives any of them another single key, saved in this browser for every design
+// the canvas server shows (per address: a restarted server has a new port).
 
 // Every string the rail shows, in English until the i18n PR keys them.
 const TEXT = Object.freeze({
@@ -36,7 +37,7 @@ const TEXT = Object.freeze({
 	spaceKey: "Space",
 });
 
-// The keys a person gave the single-key shortcuts in this browser, for every design: a JSON object, action id -> key.
+// The keys a person gave the single-key shortcuts in this browser, for every design at this canvas address: a JSON object, action id -> key.
 const SHORTCUTS_KEY = "gentle-design:shortcuts";
 // Never assignable: Esc, Shift+Esc, Enter, Tab, Space, the arrows and the zoom keys keep their meaning.
 const FIXED_KEYS = ["Escape", "Enter", "Tab", " ", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "+", "=", "-", "0"];
@@ -274,10 +275,16 @@ export function init(ctx) {
 	});
 
 	// While a Change waits, the next key is the new one and nothing else gets it; Esc cancels the wait (in the capture
-	// phase, ahead of every other key handler, and without closing the list).
+	// phase, ahead of every other key handler, and without closing the list). Tab ends the wait as leaving the button
+	// does, and still moves focus.
 	doc.addEventListener("keydown", (event) => {
 		const shortcut = keyWait;
 		if (!shortcut || MODIFIER_KEYS.includes(event.key)) return;
+		if (event.key === "Tab") {
+			stopKeyWait();
+			showKeysMessage(null);
+			return;
+		}
 		event.preventDefault();
 		stopKeyWait();
 		if (event.key === "Escape" && !event.shiftKey) {
@@ -296,8 +303,9 @@ export function init(ctx) {
 
 	// The shortcuts never fire while typing, with a browser chord, while the comment box, a menu or the list (where the
 	// help key closes it) is open, in Compare, or in focus mode (the artboard owns the keyboard; Shift+Esc is handled apart).
+	// A held key runs its shortcut once: the browser's repeated keydowns would toggle the panel or the list again.
 	doc.addEventListener("keydown", (event) => {
-		if (event.defaultPrevented || isChord(event)) return;
+		if (event.defaultPrevented || event.repeat || isChord(event)) return;
 		const target = event.target;
 		if (target && (TYPING_TAGS.includes(target.localName) || target.isContentEditable)) return;
 		const key = singleKey(event.key);

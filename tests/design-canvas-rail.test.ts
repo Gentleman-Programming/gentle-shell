@@ -435,9 +435,10 @@ test("a new key triggers its action, the old one does not, and the rail, the lis
 	assert.equal($(canvas, "gd-panel-toggle").getAttribute("aria-keyshortcuts"), "P");
 	press(canvas, "x");
 	assert.equal(pressed(canvas, "gd-comment"), "false", "X moves around the canvas");
-	press(canvas, "v");
 	press(canvas, "k");
-	assert.equal(pressed(canvas, "gd-comment"), "true", "V no longer does");
+	assert.equal(pressed(canvas, "gd-comment"), "true", "K selects Comment");
+	assert.equal(press(canvas, "v").defaultPrevented, false, "the old Move key is free");
+	assert.equal(pressed(canvas, "gd-comment"), "true", "V no longer selects Move");
 	press(canvas, "]");
 	assert.equal($(canvas, "gd-panel").hidden, false, "] is free");
 	press(canvas, "p");
@@ -454,6 +455,27 @@ test("a new key triggers its action, the old one does not, and the rail, the lis
 	assert.equal(shortcutsOpen(canvas), true);
 	press(canvas, "/");
 	assert.equal(shortcutsOpen(canvas), false, "and closes it");
+});
+
+test("holding a shortcut key runs it once: the browser's repeated keydowns are ignored", async () => {
+	const canvas = await loadRail();
+	const panel = $(canvas, "gd-panel");
+	press(canvas, "]");
+	assert.equal(panel.hidden, true);
+	assert.equal(press(canvas, "]", { repeat: true }).defaultPrevented, false, "a repeat is not taken");
+	assert.equal(panel.hidden, true, "and does not show the panel again");
+	press(canvas, "c");
+	press(canvas, "v", { repeat: true });
+	assert.equal(pressed(canvas, "gd-comment"), "true", "a held V does not switch to Move");
+	press(canvas, "?", { shiftKey: true });
+	press(canvas, "?", { shiftKey: true, repeat: true });
+	assert.equal(shortcutsOpen(canvas), true, "a held ? leaves the list open");
+	// Holding the key just given to the list's own action does not close the list either.
+	changeKey(canvas, "help", "/");
+	assert.equal(press(canvas, "/", { repeat: true }).defaultPrevented, false);
+	assert.equal(shortcutsOpen(canvas), true);
+	press(canvas, "/");
+	assert.equal(shortcutsOpen(canvas), false, "a new press still closes it");
 });
 
 test("custom keys are restored on load, and a stored entry that is unusable, unknown or taken is ignored", async () => {
@@ -564,11 +586,18 @@ test("a key another action uses is refused with a message naming it, and nothing
 test("fixed keys and keys that are not one printable key are refused; Esc cancels the wait; nothing fires while it waits", async () => {
 	const canvas = await loadRail();
 	const fixed: Array<[string, Record<string, unknown>, string]> = [
-		["Escape", { shiftKey: true }, "Shift+Esc"], ["Enter", {}, "Enter"], ["Tab", {}, "Tab"], [" ", {}, "Space"], ["ArrowLeft", {}, "←"], ["ArrowDown", {}, "↓"], ["0", {}, "0"], ["+", { shiftKey: true }, "+"], ["-", {}, "-"], ["=", {}, "="],
+		["Escape", { shiftKey: true }, "Shift+Esc"], ["Enter", {}, "Enter"], [" ", {}, "Space"], ["ArrowLeft", {}, "←"], ["ArrowDown", {}, "↓"], ["0", {}, "0"], ["+", { shiftKey: true }, "+"], ["-", {}, "-"], ["=", {}, "="],
 	];
 	for (const [key, init, name] of fixed) {
 		assert.equal(changeKey(canvas, "navigate", key, init).defaultPrevented, true, key);
 		assert.equal(keysMessage(canvas), `${name} is a fixed key and can’t be assigned. Nothing changed.`);
+		assert.equal(rowKey(canvas, "navigate"), "V");
+	}
+	// Tab is fixed too, but it moves focus on as usual: it ends the wait, and is neither taken nor reported.
+	for (const init of [{}, { shiftKey: true }]) {
+		assert.equal(changeKey(canvas, "navigate", "Tab", init).defaultPrevented, false, `Tab ${JSON.stringify(init)} still moves focus`);
+		assert.equal(rowChange(canvas, "navigate").textContent, "Change", "and ends the wait");
+		assert.equal(keysMessage(canvas), "");
 		assert.equal(rowKey(canvas, "navigate"), "V");
 	}
 	for (const [key, init] of [["F5", {}], ["k", { ctrlKey: true }], ["k", { altKey: true }], ["k", { metaKey: true }], ["Dead", {}]] as const) {
@@ -755,7 +784,7 @@ test("the docs describe the rail, the Settings menu and the changeable keys save
 	const start = section.indexOf("- **Tool rail**");
 	assert.ok(start >= 0, "a Tool rail entry");
 	const rail = section.slice(start, section.indexOf("\n", start));
-	for (const part of ["**Move** (`V`", "**Comment** (`C`)", "**Overview**", "(`F`)", "**Settings**", "**Design system board**", "**Keyboard shortcuts** (`?`)", "**Change**", "**Reset**", "**Restore defaults**", "`gentle-design:shortcuts`", "saved in this browser", "holds for this page only", "AltGr", "Compare covers the rail", "`]`", "`Esc`, `Shift+Esc`, the arrows, `Space`, `Enter`, `Tab`"]) {
+	for (const part of ["**Move** (`V`", "**Comment** (`C`)", "**Overview**", "(`F`)", "**Settings**", "**Design system board**", "**Keyboard shortcuts** (`?`)", "**Change**", "**Reset**", "**Restore defaults**", "`gentle-design:shortcuts`", "saved in this browser", "a new port", "`Tab` moves on and ends it", "holds for this page only", "AltGr", "Compare covers the rail", "`]`", "`Esc`, `Shift+Esc`, the arrows, `Space`, `Enter`, `Tab`"]) {
 		assert.ok(rail.includes(part), `the rail entry mentions ${part}`);
 	}
 	assert.ok(!/Appearance|theme|language|Step-by-step|minimap/i.test(rail), "nothing that does not ship here");

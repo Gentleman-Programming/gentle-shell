@@ -653,6 +653,198 @@ button:disabled { opacity: 0.5; cursor: default; }
 .gd-toast[hidden] { display: none; }
 .gd-toast.gd-error { border-color: var(--gd-danger); color: var(--gd-danger); }
 
+/* Icons: one hidden sprite in index.html; each icon is an <svg><use href="#i-…"> drawn with the text color. */
+.gd-sprite { position: absolute; }
+
+.gd-i {
+	width: 18px;
+	height: 18px;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 2;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+	flex: none;
+}
+
+.gd-i-s { width: 16px; height: 16px; }
+
+/* Tool rail: the first column of the main area, few tools, each an icon with a word under it. */
+.gd-rail {
+	flex: none;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 4px;
+	padding: 8px 4px;
+	background: var(--gd-panel);
+	border-right: 1px solid var(--gd-border);
+}
+
+.gd-rail .gd-tool {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 2px;
+	width: 56px;
+	min-width: 56px;
+	min-height: 52px;
+	padding: 4px 0;
+	background: transparent;
+	border-color: transparent;
+	color: var(--gd-muted);
+}
+
+.gd-tool-label { font-size: 11px; line-height: 1.2; }
+
+.gd-rail .gd-tool:hover:not(:disabled) { color: var(--gd-text); border-color: var(--gd-border); }
+
+.gd-rail .gd-tool[aria-pressed="true"], .gd-rail .gd-tool[aria-expanded="true"] {
+	background: var(--gd-stage);
+	border-color: var(--gd-border);
+	color: var(--gd-text);
+}
+
+.gd-rail .gd-tool[aria-pressed="true"] .gd-i { color: var(--gd-accent); }
+
+/* The pressed tool carries an accent bar on the rail's edge. */
+.gd-rail .gd-tool[aria-pressed="true"]::before {
+	content: "";
+	position: absolute;
+	left: -4px;
+	top: 10px;
+	bottom: 10px;
+	width: 3px;
+	border-radius: 0 3px 3px 0;
+	background: var(--gd-accent);
+}
+
+.gd-sep {
+	width: 24px;
+	height: 1px;
+	margin: 4px 0;
+	background: var(--gd-border);
+}
+
+.gd-rail .gd-bottom { margin-top: auto; }
+
+/* The shared menu (canvas-menu.js), placed at its button by the canvas: fixed, so the world's transform never touches it. */
+.gd-menu {
+	position: fixed;
+	z-index: 12;
+	min-width: 240px;
+	max-width: calc(100vw - 24px);
+	padding: 6px;
+	background: var(--gd-panel);
+	border: 1px solid var(--gd-border);
+	border-radius: 8px;
+	box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+}
+
+.gd-menu[hidden] { display: none; }
+
+.gd-menu-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	min-height: 36px;
+	text-align: left;
+	background: transparent;
+	border-color: transparent;
+}
+
+.gd-menu-item:hover, .gd-menu-item:focus-visible { background: var(--gd-stage); }
+.gd-menu-item:focus-visible { outline: 2px solid var(--gd-focus); outline-offset: -2px; }
+
+.gd-menu-item[aria-disabled="true"] {
+	color: var(--gd-muted);
+	cursor: not-allowed;
+}
+
+.gd-menu-item[aria-disabled="true"]:hover { background: transparent; border-color: transparent; }
+
+.gd-menu-separator { height: 1px; margin: 4px 2px; background: var(--gd-border); }
+
+/* The single key that does the same as a menu item (Settings: Keyboard shortcuts, ?). */
+.gd-menu-kbd { margin-left: auto; }
+
+/* Keyboard shortcuts: the ? list, the keys a person can change, and the fixed ones. */
+.gd-dialog {
+	width: min(520px, calc(100vw - 32px));
+	padding: 20px 24px;
+	background: var(--gd-panel);
+	color: var(--gd-text);
+	border: 1px solid var(--gd-border);
+	border-radius: 8px;
+	box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+}
+
+.gd-dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
+
+.gd-dialog-title { margin: 0 0 12px; font-size: 16px; }
+
+kbd, .gd-menu-kbd {
+	padding: 2px 5px;
+	font: 11px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	color: var(--gd-muted);
+	border: 1px solid var(--gd-border);
+	border-bottom-width: 2px;
+	border-radius: 4px;
+}
+
+.gd-keys {
+	display: grid;
+	grid-template-columns: auto 1fr;
+	gap: 8px 16px;
+	margin: 0;
+}
+
+.gd-keys dt { white-space: nowrap; color: var(--gd-muted); }
+.gd-keys dd { margin: 0; }
+
+.gd-keys-custom {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.gd-key-row {
+	display: grid;
+	grid-template-columns: 1fr 3em auto auto;
+	align-items: center;
+	gap: 8px;
+	padding: 3px 6px;
+	border-radius: 6px;
+}
+
+.gd-key-current { justify-self: start; }
+
+.gd-key-waiting {
+	background: var(--gd-stage);
+	box-shadow: inset 0 0 0 1px var(--gd-accent);
+}
+
+.gd-key-waiting .gd-key-current { color: var(--gd-accent); border-color: var(--gd-accent); }
+
+.gd-small { min-height: 26px; padding: 2px 8px; font-size: 12px; }
+
+.gd-keys-message {
+	min-height: 18px;
+	margin: 6px 0 12px;
+	color: var(--gd-muted);
+	font-size: 12px;
+}
+
+.gd-keys-message.gd-error { color: var(--gd-danger); }
+.gd-dialog-note { margin: 12px 0 0; color: var(--gd-muted); font-size: 12px; }
+.gd-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.gd-keys-restore { margin-right: auto; }
+
 @media (prefers-reduced-motion: no-preference) {
 	button { transition: border-color 120ms ease; }
 	.gd-shield-hint { transition: opacity 120ms ease; }

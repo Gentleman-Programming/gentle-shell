@@ -33,14 +33,20 @@ import * as compare from "./canvas-compare.js";
 import * as events from "./canvas-events.js";
 import * as focus from "./canvas-focus.js";
 import * as handoffs from "./canvas-handoffs.js";
+import * as menu from "./canvas-menu.js";
 import * as messages from "./canvas-messages.js";
 import * as popover from "./canvas-popover.js";
+import * as rail from "./canvas-rail.js";
 import { createStore } from "./canvas-store.js";
 import * as ui from "./canvas-ui.js";
 import * as view from "./canvas-view.js";
 
-/** The modules whose functions become ctx.actions, in their listener registration order. */
-const MODULES = [view, focus, boards, handoffs, compare, events, comments, popover, messages];
+/**
+ * The modules whose functions become ctx.actions, in their listener registration order.
+ * The rail comes before the popover: its keydown listener that takes the next key for a
+ * shortcut runs in the capture phase, ahead of the popover's Esc.
+ */
+const MODULES = [view, focus, boards, handoffs, compare, events, comments, menu, rail, popover, messages];
 
 export function boot(win, doc) {
 	const config = JSON.parse(doc.getElementById("gd-config").textContent);
@@ -56,6 +62,17 @@ export function boot(win, doc) {
 		zoomIn: $("gd-zoom-in"),
 		zoomLevel: $("gd-zoom-level"),
 		fit: $("gd-fit"),
+		sprite: $("gd-sprite"),
+		rail: $("gd-rail"),
+		toolNavigate: $("gd-tool-navigate"),
+		railFit: $("gd-rail-fit"),
+		railSettings: $("gd-rail-settings"),
+		menu: $("gd-menu"),
+		shortcuts: $("gd-shortcuts"),
+		shortcutsClose: $("gd-shortcuts-close"),
+		keysCustom: $("gd-keys-custom"),
+		keysMessage: $("gd-keys-message"),
+		keysRestore: $("gd-keys-restore"),
 		navMode: $("gd-nav-mode"),
 		back: $("gd-back"),
 		comment: $("gd-comment"),
@@ -117,6 +134,7 @@ export function boot(win, doc) {
 	else win.addEventListener("resize", viewportResized);
 
 	actions.setMode(actions.storedMode());
+	actions.startRail();
 	actions.start();
 	actions.connectEvents();
 }

@@ -95,9 +95,11 @@ export function init(ctx) {
 		els.comparePanes.replaceChildren(comparePane(`Design: ${board.artboard.file}`, artboardFrame), comparePane(`Implementation: ${preview}`, app));
 		els.compareFit.checked = false;
 		els.compare.hidden = false;
+		// Compare covers the rail too: inert, its controls leave the keyboard and the pointer.
 		els.viewport.inert = true;
 		els.panel.inert = true;
-		for (const control of [els.zoomOut, els.zoomIn, els.fit, els.design]) control.disabled = true;
+		els.rail.inert = true;
+		for (const control of [els.zoomOut, els.zoomIn, els.fit, els.railFit, els.design]) control.disabled = true;
 		layoutCompare();
 		els.compareBack.focus();
 	}
@@ -112,6 +114,7 @@ export function init(ctx) {
 		els.compare.hidden = true;
 		els.viewport.inert = false;
 		els.panel.inert = false;
+		els.rail.inert = false;
 		actions.applyFocusState();
 		if (!restoreFocus) return;
 		const board = state.boards.find((candidate) => candidate.artboard.file === compare.board.artboard.file);

@@ -21,6 +21,8 @@ export const DESIGN_CANVAS_ASSETS                                   = Object.fre
 	"canvas-comments.js": "text/javascript; charset=utf-8",
 	"canvas-popover.js": "text/javascript; charset=utf-8",
 	"canvas-messages.js": "text/javascript; charset=utf-8",
+	"canvas-menu.js": "text/javascript; charset=utf-8",
+	"canvas-rail.js": "text/javascript; charset=utf-8",
 	"canvas.css": "text/css; charset=utf-8",
 	"inspector.js": "text/javascript; charset=utf-8",
 });

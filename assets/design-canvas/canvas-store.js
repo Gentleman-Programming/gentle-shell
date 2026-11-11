@@ -48,6 +48,8 @@ export function createStore(initial = {}) {
 		// The open Compare view: { board, preview, artboardFrame, timer }.
 		compare: null,
 		toastTimer: 0,
+		// The open shared menu (canvas-menu.js): { button, items, byItem }, or null.
+		menu: null,
 	};
 	const read = Object.freeze(Object.defineProperties({}, Object.fromEntries(Object.keys(state).map((key) => [key, { enumerable: true, get: () => state[key] }]))));
 
@@ -77,6 +79,8 @@ export function createStore(initial = {}) {
 		setHandoffs(handoffs) { state.handoffs = freezeHandoffs(handoffs); },
 		setCompare(compare) { state.compare = compare; },
 		setToastTimer(timer) { state.toastTimer = timer; },
+		/** The open shared menu, or null when none is open. */
+		setMenu(menu) { state.menu = menu; },
 	});
 }
 

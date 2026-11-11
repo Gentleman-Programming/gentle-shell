@@ -18,6 +18,7 @@ const TEXT = Object.freeze({
 		comment: "Comment on an element",
 		fit: "Overview (fit all directions)",
 		panel: "Show or hide the comments panel",
+		minimap: "Show or hide the minimap",
 		help: "Show keyboard shortcuts",
 	},
 	change: "Change",
@@ -65,12 +66,13 @@ export function init(ctx) {
 	const { win, doc, els, store, actions } = ctx;
 	const { state } = store;
 
-	// The rail and panel actions, each with its default key; keys match without letter case, so they are kept lower case.
+	// The rail, panel and minimap actions, each with its default key; keys match without letter case, so they are kept lower case.
 	const SHORTCUTS = [
 		{ id: "navigate", key: "v", run: () => actions.setCommenting(false) },
 		{ id: "comment", key: "c", run: () => actions.setCommenting(true) },
 		{ id: "fit", key: "f", run: () => actions.fit() },
 		{ id: "panel", key: "]", run: () => actions.setPanel(els.panel.hidden) },
+		{ id: "minimap", key: "m", run: () => actions.toggleMinimap() },
 		{ id: "help", key: "?", run: () => openShortcuts() },
 	];
 	const shortcutById = (id) => SHORTCUTS.find((shortcut) => shortcut.id === id);
@@ -137,13 +139,14 @@ export function init(ctx) {
 	// Where the rail and the top bar name a key: in the tooltip, and in aria-keyshortcuts for screen readers.
 	const SHORTCUT_HINTS = [["navigate", els.toolNavigate, TEXT.navigateTitle], ["comment", els.comment, TEXT.commentTitle], ["fit", els.railFit, TEXT.fitTitle], ["panel", els.panelToggle, TEXT.panelTitle]];
 
-	/** Every place that shows a key shows the current one: the rail, the comments panel button and the list. */
+	/** Every place that shows a key shows the current one: the rail, the comments panel button, the minimap and the list. */
 	function renderShortcuts() {
 		for (const [id, element, title] of SHORTCUT_HINTS) {
 			const key = keyText(shortcutKey(shortcutById(id)));
 			element.setAttribute("aria-keyshortcuts", key);
 			element.title = title(key);
 		}
+		els.minimapKey.textContent = keyText(shortcutKey(shortcutById("minimap")));
 		for (const shortcut of SHORTCUTS) renderShortcutRow(shortcut);
 	}
 

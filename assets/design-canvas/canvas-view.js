@@ -1,5 +1,5 @@
-// The view transform: zoom, pan, Fit and refit, the wheel, drag to pan, the view
-// keys and the zoom buttons.
+// The view transform: zoom, pan, Fit and refit, the wheel, the pointer on the canvas
+// (pan, or move an artboard through canvas-layout.js), the view keys and the zoom buttons.
 
 const MIN_ZOOM = 0.05;
 const MAX_ZOOM = 4;
@@ -18,6 +18,7 @@ export function init(ctx) {
 		els.world.style.transform = `translate(${state.x}px, ${state.y}px) scale(${state.zoom})`;
 		els.world.style.setProperty("--gd-inv-zoom", String(1 / state.zoom));
 		els.zoomLevel.textContent = `${Math.round(state.zoom * 100)}%`;
+		actions.renderMinimapView();
 	}
 
 	/** Zoom so the world point under (px, py) in viewport coordinates stays put. */
@@ -46,6 +47,8 @@ export function init(ctx) {
 
 	function fit() {
 		if (state.focus) return;
+		// A label may have grown (a handoff row, a wrapped tradeoff) since the boards were placed.
+		actions.sizeWorld();
 		const rect = els.viewport.getBoundingClientRect();
 		const width = els.world.offsetWidth;
 		const height = els.world.offsetHeight;
@@ -94,17 +97,27 @@ export function init(ctx) {
 		return Boolean(target.closest("button, a, input, select, textarea, iframe") || (editable && editable.isContentEditable));
 	}
 
-	// A press on a shield pans like the background; released without moving, it is a
-	// click on that artboard: a routed pick in comment mode, else focus mode.
-	// The drag in progress is this module's own state, never shared.
+	// A press on any part of an artboard that is not a control moves that artboard and selects it, saved once on
+	// release; a press on the background pans and clears the selection. With Space held every press pans and
+	// changes nothing else; in Comment mode a press on an artboard pans, as on the background. A shield released
+	// without moving is a click on that artboard: a routed pick in Comment mode, else focus mode.
+	// The press in progress is this module's own state, never shared.
 	let drag = null;
 	els.viewport.addEventListener("pointerdown", (event) => {
 		if (state.focus || event.button !== 0 || interactiveTarget(event.target)) return;
-		const shield = event.target.closest(".gd-shield");
+		const target = event.target;
+		const shield = target.closest(".gd-shield");
+		const wrapper = target.closest(".gd-artboard");
+		// Anything else in the viewport (the minimap) keeps its own press.
+		if (!shield && !wrapper && target !== els.viewport && target !== els.world) return;
 		event.preventDefault();
-		drag = { id: event.pointerId, x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, moved: false, board: shield ? actions.boardOfShield(shield) : null };
+		const space = state.space;
+		const board = space ? null : shield ? actions.boardOfShield(shield) : wrapper ? actions.allBoards().find((candidate) => candidate.wrapper === wrapper) ?? null : null;
+		const moving = Boolean(board && !state.commenting && actions.beginMove(board));
+		if (!space && !state.commenting) actions.selectBoard(moving ? board : null);
+		drag = { id: event.pointerId, x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, moved: false, board: shield ? board : null, moving };
 		els.viewport.setPointerCapture(event.pointerId);
-		els.viewport.classList.add("gd-panning");
+		els.viewport.classList.add(moving ? "gd-moving" : "gd-panning");
 	});
 	// An old text selection can still initiate a native drag and cancel the pan.
 	els.viewport.addEventListener("dragstart", (event) => {
@@ -115,16 +128,23 @@ export function init(ctx) {
 			if (!drag) actions.hoverAt(event);
 			return;
 		}
+		if (Math.abs(event.clientX - drag.startX) > CLICK_SLOP || Math.abs(event.clientY - drag.startY) > CLICK_SLOP) drag.moved = true;
+		if (drag.moving) {
+			// A still press moves nothing.
+			if (drag.moved) actions.moveBy(event.clientX - drag.startX, event.clientY - drag.startY);
+			return;
+		}
 		panBy(event.clientX - drag.x, event.clientY - drag.y);
 		drag.x = event.clientX;
 		drag.y = event.clientY;
-		if (Math.abs(event.clientX - drag.startX) > CLICK_SLOP || Math.abs(event.clientY - drag.startY) > CLICK_SLOP) drag.moved = true;
 	});
 	const endDrag = (event) => {
 		if (!drag || drag.id !== event.pointerId) return;
 		const ended = drag;
 		drag = null;
 		els.viewport.classList.remove("gd-panning");
+		els.viewport.classList.remove("gd-moving");
+		if (ended.moving) actions.endMove(event.type === "pointerup");
 		if (event.type === "pointerup" && ended.board && !ended.moved) actions.activateBoard(ended.board, event.clientX, event.clientY);
 	};
 	els.viewport.addEventListener("pointerup", endDrag);

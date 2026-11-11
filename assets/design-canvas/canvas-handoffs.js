@@ -95,6 +95,8 @@ export function init(ctx) {
 
 	function renderHandoffs() {
 		state.boards.forEach(renderHandoff);
+		// The chosen artboard's block in the minimap follows.
+		actions.renderMinimap();
 	}
 
 	function setHandoffs(slug, data) {

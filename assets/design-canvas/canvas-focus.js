@@ -64,11 +64,12 @@ export function init(ctx) {
 		if (!board) return;
 		const viewport = els.viewport.getBoundingClientRect();
 		// Layout offsets inside the world ignore its transform, so re-centering is idempotent
-		// (a scaled bounding rect carries sub-pixel error that shifted the board by 1 px).
+		// (a scaled bounding rect carries sub-pixel error that shifted the board by 1 px). The artboard
+		// sits where the layout put it, and its frame box below its label, inside it.
 		const box = board.frame.parentElement;
-		const left = box.offsetLeft;
-		const top = box.offsetTop;
-		const labelSpace = box.offsetTop - board.wrapper.offsetTop;
+		const left = board.wrapper.offsetLeft + box.offsetLeft;
+		const top = board.wrapper.offsetTop + box.offsetTop;
+		const labelSpace = box.offsetTop;
 		const { width, height } = board.artboard;
 		const minTop = FOCUS_MARGIN + labelSpace;
 		const available = viewport.height - minTop - BACK_SPACE;
@@ -101,6 +102,8 @@ export function init(ctx) {
 		els.back.hidden = !focused;
 		els.navMode.textContent = focused ? `Using: ${focused.artboard.title} · Shift+Esc to exit` : "Navigating";
 		els.navMode.classList.toggle("gd-using", Boolean(focused));
+		actions.renderArrange();
+		actions.renderMinimap();
 	}
 
 	function enterFocus(board) {
@@ -112,6 +115,7 @@ export function init(ctx) {
 		}
 		actions.closePopover();
 		setHoverBoard(null);
+		actions.selectBoard(null);
 		store.setFocus({ focus: board });
 		centerFocus();
 		applyFocusState();

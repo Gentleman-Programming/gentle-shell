@@ -248,10 +248,14 @@ export async function loadCanvas(firstHeight = 300, extraReplies: Record<string,
 		history: { replaceState(_state: unknown, _title: string, url: string) { urls.push(url); } },
 		localStorage: { getItem: () => null, setItem() {} },
 		requestAnimationFrame: (callback: () => void) => { callback(); return 0; },
+		// A reply with `__throw` makes the request itself fail; `__http` sets the status of the reply.
 		fetch: async (url: string, init?: { method?: string; body?: string }) => {
 			if (init?.method === "POST") posts.push({ url, body: JSON.parse(init.body ?? "null") });
 			fetched.push(url);
-			return { ok: url in replies, status: url in replies ? 200 : 404, json: async () => replies[url] ?? {} };
+			const reply = replies[url] as Record<string, unknown> | undefined;
+			if (reply && typeof reply === "object" && "__throw" in reply) throw new TypeError(String(reply.__throw));
+			const status = reply && typeof reply === "object" && typeof reply.__http === "number" ? reply.__http : url in replies ? 200 : 404;
+			return { ok: status < 400, status, json: async () => reply ?? {} };
 		},
 		EventSource: class {
 			addEventListener(type: string, listener: Listener) {

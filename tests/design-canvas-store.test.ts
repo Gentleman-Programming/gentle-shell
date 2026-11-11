@@ -34,6 +34,11 @@ test("the store starts with the canvas defaults and no system field", () => {
 		compare: null,
 		toastTimer: 0,
 		menu: null,
+		layout: null,
+		layoutSaves: 0,
+		selected: null,
+		space: false,
+		minimap: true,
 	});
 	assert.equal(createStore({ slug: 3 }).state.slug, null, "a slug that is not a string shows the system-only view");
 	assert.equal(createStore().state.slug, null);

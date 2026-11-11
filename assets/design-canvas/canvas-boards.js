@@ -17,6 +17,8 @@ export function init(ctx) {
 		actions.exitFocus();
 		els.world.replaceChildren();
 		store.setDesign({ boards: [] });
+		actions.clearLayout();
+		actions.renderMinimap();
 		els.empty.textContent = text;
 		els.empty.hidden = false;
 	}
@@ -106,6 +108,8 @@ export function init(ctx) {
 		shield.append(hint);
 		const pins = doc.createElement("div");
 		pins.className = "gd-pins";
+		// The size the layout places (canvas-layout.js layoutSize): the frame at its manifest size.
+		wrapper.layoutSize = { width: artboard.width, height: artboard.height };
 		// rects: null until the artboard reports where each commented element is.
 		const board = { slug, artboard, frame, wrapper, shield, pins, handoff, rects: null, system, viewHeight: 0 };
 		actions.setFrameHeight(board, artboard.height);
@@ -203,6 +207,7 @@ export function init(ctx) {
 	/** No design selected: only the system board, or the empty notice. */
 	function showSystemOnly() {
 		store.setDesign({ manifest: null, boards: [] });
+		actions.clearLayout();
 		showFeature(null);
 		els.title.textContent = "Gentle Design";
 		if (!state.systemBoard) {
@@ -225,6 +230,10 @@ export function init(ctx) {
 			return;
 		}
 		if (slug !== state.slug) return;
+		// Where the boards sit, before they are placed.
+		const layout = await actions.fetchLayout(slug);
+		if (slug !== state.slug) return;
+		actions.takeLayout(slug, layout);
 		actions.closePopover();
 		store.setDesign({ manifest });
 		showFeature(manifest);
@@ -254,10 +263,11 @@ export function init(ctx) {
 		board.frame.src = `${boardUrl(board)}?v=${Date.now()}`;
 	}
 
-	/** The system board first, then the design's artboards. */
+	/** The system board first, then the design's artboards, each where the layout puts it. */
 	function placeBoards() {
 		const boards = actions.allBoards();
 		els.world.replaceChildren(...boards.map((board) => board.wrapper));
+		actions.layoutBoards(boards);
 		if (state.focus && !boards.includes(state.focus)) actions.exitFocus();
 		else actions.applyFocusState();
 	}

@@ -100,6 +100,9 @@ export function init(ctx) {
 		els.panel.inert = true;
 		els.rail.inert = true;
 		for (const control of [els.zoomOut, els.zoomIn, els.fit, els.railFit, els.design]) control.disabled = true;
+		// Compare covers the canvas: nothing to arrange, and no minimap.
+		actions.renderArrange();
+		actions.renderMinimap();
 		layoutCompare();
 		els.compareBack.focus();
 	}

@@ -50,6 +50,17 @@ export function createStore(initial = {}) {
 		toastTimer: 0,
 		// The open shared menu (canvas-menu.js): { button, items, byItem }, or null.
 		menu: null,
+		// Where the boards sit (canvas-layout.js): { slug, arrangement, positions, saved } for the design
+		// shown, or null (the system-only view); replaced whole on every change, never changed in place.
+		layout: null,
+		// Layout saves still on their way to the server; a layout.json change meanwhile is this page's own.
+		layoutSaves: 0,
+		// The artboard pressed last (outlined until a press elsewhere or Esc), or null.
+		selected: null,
+		// True while Space is held: every press on the canvas pans.
+		space: false,
+		// The minimap shows (M toggles it).
+		minimap: true,
 	};
 	const read = Object.freeze(Object.defineProperties({}, Object.fromEntries(Object.keys(state).map((key) => [key, { enumerable: true, get: () => state[key] }]))));
 
@@ -81,6 +92,11 @@ export function createStore(initial = {}) {
 		setToastTimer(timer) { state.toastTimer = timer; },
 		/** The open shared menu, or null when none is open. */
 		setMenu(menu) { state.menu = menu; },
+		/** The layout of the design shown and the saves of it in flight. */
+		setLayout: patch("setLayout", ["layout", "layoutSaves"]),
+		setSelected(board) { state.selected = board; },
+		setSpace(space) { state.space = space; },
+		setMinimap(show) { state.minimap = show; },
 	});
 }
 

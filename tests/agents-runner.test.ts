@@ -98,6 +98,18 @@ function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boo
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
+test("#3009: runner exposes the packaged preparer only to the verifier", async () => {
+	for (const name of ["gentle-ai-verify", "explore"]) {
+		const h = harness();
+		const task = h.runner.run(request({ agent: { ...explorer, name }, env: { GENTLE_PI_VERIFIER_PREPARER: "/stale/helper" } }));
+		await tick();
+		const helper = h.spawnOptions[0].env.GENTLE_PI_VERIFIER_PREPARER;
+		if (name === "gentle-ai-verify") { assert.ok(helper && existsSync(helper)); assert.equal(basename(helper), "prepare-verifier.mjs"); }
+		else assert.equal(helper, undefined);
+		h.runner.cancel(task.id); await tick();
+	}
+});
+
 for (const mode of [AGENT_MODE.TASK, AGENT_MODE.BACKGROUND]) {
 	for (const policy of [undefined, "off", "malformed"] as const) {
 		test(`background capability admission rejects ${mode} with ${policy ?? "default"} policy`, async (t) => {

@@ -54,6 +54,24 @@ test("P16: the user's failing command is run even when it is the suite the write
 	assert.ok(docs.includes("it does not re-run the suite the writer reported, because the parent's single spot check of one reported command is the check on the writer's own results; the one exception is the user's failing command the parent passes, which it runs even when it is that suite."), "the docs state the same exception next to the prohibition");
 });
 
+// Cost-speed S15 P17 (from the review of gentle-ai PR #6072): a passing run on the change proves nothing when the
+// user's failing command did not fail at the baseline with the user's error; the fix stays unverified then.
+test("P17: a user-reported fix is verified only when the failure reproduces at the baseline with the user's error", () => {
+	const kinds = sectionOf(verify, "## Evidence by change kind");
+	const rule = kinds.split("\n").find((line) => line.startsWith("- **A fix for a failure the user reported**")) ?? "";
+	containsAll(rule, [
+		"against the baseline and against the change",
+		"The fix is not verified until that command passes there.",
+		"The failure counts as reproduced only when that command fails at the baseline with the user's error; when it passes at the baseline or fails there with a different error, report the fix unverified and say which, never verified.",
+	], "verifier body baseline-reproduction condition");
+	const docRule = docs.split("\n").find((line) => line.startsWith("- **A fix for a failure the user reported**")) ?? "";
+	containsAll(docRule, [
+		"the verifier runs that command against the baseline and against the change",
+		"The fix is not verified until that command passes there.",
+		"The failure counts as reproduced only when that command fails at the baseline with the user's error; when it passes at the baseline or fails there with a different error, the verifier reports the fix unverified and says which, never verified.",
+	], "docs baseline-reproduction condition");
+});
+
 // Part A, rule 2: external tools and environments.
 test("P8 rule 2: an external tool or environment change is reproduced with the real tool and configuration plus own probes", () => {
 	const kinds = sectionOf(verify, "## Evidence by change kind");

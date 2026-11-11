@@ -21,8 +21,26 @@ done
 [ -d "$HOME" ] || fail 'HOME directory is missing'
 uid=$(id -u)
 ls -nd "$HOME" | awk -v uid="$uid" '$3 == uid && substr($1,6,1) != "w" && substr($1,9,1) != "w" {ok=1} END {exit !ok}' || fail 'Unsafe HOME ownership or permissions'
-# The repository's engines.node: clauses ^a.b.c (a >= 1) or >=a.b.c joined by ||.
-requirement=$(awk -F '"' '{for (i=2; i<=NF-2; i+=2) if ($i == "node" && $(i+2) ~ /^(\^|>=)[0-9]+\.[0-9]+\.[0-9]+( *\|\| *(\^|>=)[0-9]+\.[0-9]+\.[0-9]+)*$/) {value=$(i+2); count++}} END {if (count == 1) print value}' "$bundle/package.json")
+# The repository's engines.node: retain the original field scan and validate every
+# clause against nodeRequirementClauses before probing or acquisition.
+requirement=$(awk -F '"' '
+    {for (i=2; i<=NF-2; i+=2) if ($i == "node" && $(i+2) ~ /^(\^|>=)[0-9]+\.[0-9]+\.[0-9]+( *\|\| *(\^|>=)[0-9]+\.[0-9]+\.[0-9]+)*$/) {value=$(i+2); count++}}
+    END {
+        if (count != 1) exit
+        range = value; gsub(/ /, "", range); n = split(range, clauses, "[|][|]")
+        for (c=1; c<=n; c++) {
+            caret = substr(clauses[c],1,1) == "^"
+            sub(/^(\^|>=)/, "", clauses[c]); split(clauses[c], parts, ".")
+            if (caret && parts[1] == "0") exit
+            for (j=1; j<=3; j++) {
+                p = parts[j]
+                if ((length(p) > 1 && substr(p,1,1) == "0") || length(p) > 16 ||
+                    (length(p) == 16 && (substr(p,1,8)+0 > 90071992 ||
+                        (substr(p,1,8)+0 == 90071992 && substr(p,9,8)+0 > 54740991)))) exit
+            }
+        }
+        print value
+    }' "$bundle/package.json")
 [ -n "$requirement" ] || fail 'Cannot establish repository Node requirement'
 version_ok() {
     awk -v value="$1" -v minimum="$2" 'BEGIN {

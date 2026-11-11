@@ -1300,6 +1300,12 @@ test("native startup notice discovers a newer Shell-managed companion without in
 	assert.equal(fixture.npmCalls().some((args) => args.includes("install")), false);
 });
 
+// The development range admits Pi 1.4.0 and 1.5.x, whose `update --extensions` report differs:
+// 1.4.0 prints "Updated packages"; 1.5.x prints "Updated N package(s):" and one
+// "source from -> to" line per updated package.
+const COMPANION_UPDATED = /^Updated 1 package:\n {2}npm:gentle-engram 0\.4\.2 -> 0\.5\.0$|Updated packages/m;
+const ANY_PACKAGES_UPDATED = /Updated \d+ packages?:|Updated packages/;
+
 test("extension update migrates the old managed companion and propagates failure before succeeding", { skip: posixHost }, (t) => {
 	const fixture = nativeCompanionFixture(t);
 	const other = "npm:other-extension@2.0.0";
@@ -1315,12 +1321,12 @@ test("extension update migrates the old managed companion and propagates failure
 	const failed = fixture.run(["update", "--extensions"], { FIXTURE_PACKAGE_FAIL: "1" });
 	assert.equal(failed.status, 1);
 	assert.match(failed.stderr, /fixture package install failed|exited with code 7/);
-	assert.doesNotMatch(failed.stdout, /Updated packages/);
+	assert.doesNotMatch(failed.stdout, ANY_PACKAGES_UPDATED);
 	assert.equal(readFileSync(fixture.metadata, "utf8"), before);
 	assert.deepEqual(JSON.parse(readFileSync(fixture.settings, "utf8")).packages, ["npm:gentle-engram", other]);
 	const updated = fixture.run(["update", "--extensions"]);
 	assert.equal(updated.status, 0, updated.stderr);
-	assert.match(updated.stdout, /Updated packages/);
+	assert.match(updated.stdout, COMPANION_UPDATED);
 	// T4: the re-verification after the child reports the version it found, and never a failure.
 	assert.match(updated.stderr, /gentle-engram 0\.5\.0 verified after the extensions update/);
 	assert.doesNotMatch(updated.stderr, /could not verify|failed/);
@@ -1375,7 +1381,7 @@ test("update --extensions re-verifies the managed companion and reports the vers
 		JSON.stringify({ contract_id: "engram.pi-http-runtime/v1", revision: 1, digest: "0af9af176928e98562ab1396d3196efe582dd5d1c5d2c5f8f546ab4ed609810f" }));
 	const result = fixture.run(["update", "--extensions"]);
 	assert.equal(result.status, 0, result.stderr);
-	assert.match(result.stdout, /Updated packages/);
+	assert.match(result.stdout, COMPANION_UPDATED);
 	assert.equal(JSON.parse(readFileSync(fixture.metadata, "utf8")).version, "0.5.0");
 	assert.match(result.stderr, /gentle-engram 0\.5\.0 verified after the extensions update/);
 	// The matching digest warns nothing, and the selection is kept as Pi left it.
@@ -1390,7 +1396,7 @@ test("a failed post-update companion verification never turns a successful exten
 	// The fixture update replaces the companion with one that lost its startupPolicy.
 	const result = fixture.run(["update", "--extensions"], { FIXTURE_PACKAGE_POLICY: "0" });
 	assert.equal(result.status, 0, result.stderr);
-	assert.match(result.stdout, /Updated packages/);
+	assert.match(result.stdout, COMPANION_UPDATED);
 	assert.match(result.stderr, /engram\.startupPolicy=1/);
 	// Warn only: the selection is preserved, never rewritten or deleted.
 	assert.deepEqual(JSON.parse(readFileSync(fixture.settings, "utf8")).packages, ["npm:gentle-engram", "npm:other-extension@2.0.0"]);

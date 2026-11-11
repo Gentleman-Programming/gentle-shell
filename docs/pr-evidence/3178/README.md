@@ -17,7 +17,7 @@ The old component remains at generic running status. The corrected component sho
 
 ## Captures
 
-Each row lists the actual before and after screenshots at the same stage, theme and character dimensions. `.txt` siblings retain the captured xterm buffer; `sha256.json` fingerprints every PNG.
+Each row lists the actual before and after screenshots at the same stage, theme and character dimensions. `.txt` siblings retain whitespace-normalized xterm text; `sha256.json` fingerprints every PNG.
 
 | Theme / terminal | Stage | Before | After |
 | --- | --- | --- | --- |

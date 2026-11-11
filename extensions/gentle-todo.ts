@@ -5,6 +5,7 @@ import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import type { OrchestratorMode } from "../lib/agent-profiles.ts";
 import { resolveOrchestratorMode } from "../lib/orchestrator-mode-policy.ts";
 import { NativePointerRegion } from "../lib/native-pointer-region.ts";
+import { placePersistedMessages, requestMessagePosition, type PersistedPlacement } from "../lib/request-context-placement.ts";
 import { panelHeaderRow } from "../lib/shell-card.ts";
 import { renderPanelRow } from "../lib/shell-panel.ts";
 import { sidebarPart, sidebarState } from "../lib/shell-sidebar.ts";
@@ -41,12 +42,16 @@ import {
 // list changes (so list changes never invalidate the cached prompt prefix and
 // requests stay append-only, gentle-shell#1662, #2195), and
 // a list that goes untouched while tasks stay open is marked stale for the
-// human. Long runs also receive one request-local reminder after several
-// tool-use turns, without waking the agent or changing tasks.
+// human. Long runs also receive one reminder after several tool-use turns,
+// without waking the agent or changing tasks.
 
 const WIDGET_KEY = "gentle-todo";
 const STATUS_ENUM = ["pending", "in_progress", "blocked", "done", "dropped"];
 const REMIND_AFTER_TOOL_TURNS = 4;
+const STATE_TYPE = "gentle-todo-state";
+const REMINDER_TYPE = "gentle-todo-reminder";
+/** Messages this hook adds to a request and saves where that request carried them (P1b). */
+const PLACED_TYPES: ReadonlySet<string> = new Set([STATE_TYPE, REMINDER_TYPE]);
 const TODO_REMINDER = "The todo plan has not been reviewed during several tool-use turns. Check whether it still matches the work performed and update tasks where needed. Do not mark work done without verification.";
 const TOOL_PARAMETERS = {
 	type: "object",
@@ -85,6 +90,8 @@ export function todoEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 // The collapse key moved to lib/shell-todo.ts so the rail's key hints can read it.
 export { todoCollapseKey } from "../lib/shell-todo.ts";
 
+type PlacedMessage = { role: "custom"; customType: string; content: string; display: false; details: PersistedPlacement; timestamp: number };
+
 interface TodoSession {
 	state: TodoState;
 	turn: number;
@@ -99,6 +106,8 @@ interface TodoSession {
 	lastSent: string | undefined;
 	/** A snapshot queued during the current turn; Pi appends it at turn_end. */
 	pending: string | undefined;
+	/** Request copies of messages saved during the current turn, repeated by a retry until Pi appends them. */
+	placed: PlacedMessage[];
 	ui: ExtensionContext["ui"] | undefined;
 	host: { requestRender(): void } | undefined;
 	tui: TUI | undefined;
@@ -132,7 +141,7 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		const key = sessionKey(ctx);
 		let current = sessions.get(key);
 		if (!current) {
-			current = { state: emptyTodo(), turn: 0, toolTurnsSinceWrite: 0, reminded: false, wroteThisTurn: false, collapsed: false, clearOnNextTurn: false, lastSent: undefined, pending: undefined, ui: undefined, host: undefined, tui: undefined };
+			current = { state: emptyTodo(), turn: 0, toolTurnsSinceWrite: 0, reminded: false, wroteThisTurn: false, collapsed: false, clearOnNextTurn: false, lastSent: undefined, pending: undefined, placed: [], ui: undefined, host: undefined, tui: undefined };
 			sessions.set(key, current);
 		}
 		return current;
@@ -140,9 +149,9 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 
 	// While the agent streams, Pi appends this hidden message at turn_end, after
 	// the tool results and before the next model request; it never starts a turn.
-	const persistState = (current: TodoSession, state: string) => {
+	const persistState = (current: TodoSession, state: string, details?: PersistedPlacement) => {
 		if (!pi.sendMessage) return;
-		pi.sendMessage({ customType: "gentle-todo-state", content: state, display: false }, { triggerTurn: false });
+		pi.sendMessage({ customType: STATE_TYPE, content: state, display: false, ...(details ? { details } : {}) }, { triggerTurn: false });
 		current.lastSent = state;
 		current.pending = state;
 	};
@@ -291,7 +300,7 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		description: "Plan and track multi-step work. Use write to set the whole list, update to move one task, add for a new one, clear to reset, list to read it back.",
 		promptSnippet: "Track multi-step work; rewrite the whole list as the plan changes",
 		promptGuidelines: [
-			"Use todo for work with three or more steps or when the user hands you a list. Skip it for single trivial requests.",
+			"Use todo only for large tracked work or when the user asks for one; small tasks need none.",
 			"Mark a task in_progress before starting it and done right after finishing it; keep exactly one task in_progress.",
 			"Prefer write with the complete list whenever the plan changes; keep ids of tasks that already exist.",
 			"Never mark a task done while tests fail or the work is partial; add a task for the blocker instead.",
@@ -363,6 +372,7 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		current.wroteThisTurn = false;
 		current.lastSent = undefined;
 		current.pending = undefined;
+		current.placed = [];
 		current.ui = ctx.hasUI ? ctx.ui : undefined;
 		show(current);
 	});
@@ -395,34 +405,46 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 			current.toolTurnsSinceWrite += 1;
 		}
 		current.wroteThisTurn = false;
-		// Pi flushes the queued snapshot right after this event.
+		// Pi flushes the queued messages right after this event.
 		current.pending = undefined;
+		current.placed = [];
 	});
 
-	pi.on("context", (event, ctx) => {
+	// gentle-shell#1662, #2195, P1b: providers cache the request prefix up to the
+	// last message (Anthropic) or send only the delta after the previous input
+	// (openai-codex), so every request must start with exactly the previous one.
+	// The list is persisted when it changes. This hook adds two hidden messages:
+	// the snapshot again when the transcript lacks it (compaction, branch
+	// navigation, sessions recorded earlier), and the reminder. Each trails this
+	// request and is saved once, but Pi appends it only when the turn ends, after
+	// the reply, so it records the message it followed and is moved back there on
+	// later requests (lib/request-context-placement.ts). `context_with_system`,
+	// not `context`: a changed list from `context` would fold Pi's
+	// mid-conversation system messages into the head.
+	pi.on("context_with_system", (event, ctx) => {
 		const current = session(ctx);
-		// gentle-shell#1662, #2195: providers cache the request prefix up to the
-		// last message (Anthropic) or send only the delta after the previous input
-		// (openai-codex), so a trailing message that the next request drops breaks
-		// both. The list is persisted when it changes; this transform only covers a
-		// transcript that lacks the current snapshot (compaction, branch navigation,
-		// sessions recorded earlier): it trails this one request and persists the
-		// snapshot once, so the following requests are append-only again.
-		const trailing: Array<{ role: "custom"; customType: string; content: string; display: false; timestamp: number }> = [];
-		const last = [...event.messages].reverse().find((message) => (message as { customType?: string }).customType === "gentle-todo-state") as { content?: unknown } | undefined;
+		const placed = placePersistedMessages(event.messages, PLACED_TYPES);
+		const messages = placed ?? event.messages;
+		// A retry of this request, before Pi appended what it saved: the same copies.
+		const trailing: Array<(typeof messages)[number]> = current.placed.map((message) => ({ ...message }) as (typeof messages)[number]);
+		const add = (customType: string, content: string, save: (details: PersistedPlacement) => void) => {
+			const details = { after: requestMessagePosition([...messages, ...trailing].at(-1)), at: Date.now() };
+			const message: PlacedMessage = { role: "custom", customType, content, display: false, details, timestamp: details.at };
+			trailing.push({ ...message } as (typeof messages)[number]);
+			if (pi.sendMessage) current.placed.push(message);
+			save(details);
+		};
+		const last = [...messages, ...trailing].reverse().find((message) => (message as { customType?: string }).customType === STATE_TYPE) as { content?: unknown } | undefined;
 		const seen = typeof last?.content === "string" ? last.content : undefined;
 		const state = todoStateMessage(current.state) ?? (seen === undefined || seen === TODO_CLOSED_STATE ? undefined : TODO_CLOSED_STATE);
-		if (state !== undefined && seen !== state) {
-			trailing.push({ role: "custom", customType: "gentle-todo-state", content: state, display: false, timestamp: Date.now() });
-			if (current.pending !== state) persistState(current, state);
-		}
+		if (state !== undefined && seen !== state) add(STATE_TYPE, state, (details) => persistState(current, state, details));
 		const actionable = current.state.tasks.some((task) => task.status === "pending" || task.status === "in_progress");
 		if (!current.reminded && current.toolTurnsSinceWrite >= REMIND_AFTER_TOOL_TURNS && actionable) {
 			current.reminded = true;
-			trailing.push({ role: "custom", customType: "gentle-todo-reminder", content: TODO_REMINDER, display: false, timestamp: Date.now() });
+			add(REMINDER_TYPE, TODO_REMINDER, (details) => pi.sendMessage?.({ customType: REMINDER_TYPE, content: TODO_REMINDER, display: false, details }, { triggerTurn: false }));
 		}
-		if (trailing.length === 0) return undefined;
-		return { messages: [...event.messages, ...trailing] };
+		if (trailing.length === 0) return placed === undefined ? undefined : { messages };
+		return { messages: [...messages, ...trailing] };
 	});
 
 	pi.on("tool_execution_end", (event, ctx) => {

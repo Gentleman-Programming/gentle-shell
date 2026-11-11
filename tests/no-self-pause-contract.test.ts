@@ -33,8 +33,15 @@ test("resolved subdecisions retain the original authorized objective", () => {
 	assert.ok(prompt.includes("Resolving an incident or subdecision does not complete or cancel the original authorized objective; resume safe, necessary in-scope steps automatically, using judgment for proportionate recovery and respecting explicit user dispositions. Investigate pending technical uncertainty rather than treating it alone as a new human decision."));
 	assert.ok(prompt.includes("Stop for an unresolved consequential scope/product decision, required explicit consent, a denied action, or the human's explicit stop."));
 	assert.ok(prompt.includes("Unavailable required proof blocks completion and delivery; it does not alone prohibit specifically authorized in-scope implementation where actual native authority and other limits permit it."));
-	assert.ok(prompt.includes("After a setup prerequisite is repaired, the human may explicitly request one new bounded verification attempt."));
-	assert.ok(prompt.includes("Never bypass consent, a denial, explicit one-run or no-retry limits, terminal native outcomes, or exhausted native budgets."));
+	// cost-speed-painpoints S15 P4: the verifier-setup rules load with the Verification rule, not on every turn.
+	const verification = read("assets/orchestrator-verification.md");
+	for (const sentence of [
+		"After a setup prerequisite is repaired, the human may explicitly request one new bounded verification attempt.",
+		"Never bypass consent, a denial, explicit one-run or no-retry limits, terminal native outcomes, or exhausted native budgets",
+	]) {
+		assert.ok(verification.includes(sentence), `verification module keeps: ${sentence}`);
+		assert.ok(!prompt.includes(sentence), `always-on prompt no longer carries: ${sentence}`);
+	}
 	assert.ok(prompt.includes("Do not infer permission for publishing, destructive actions, unrelated scope or native consent from this continuity rule."));
 });
 
@@ -86,7 +93,8 @@ test("T13: the Close gate requires continuing or quoting the user's explicit sto
 test("T13: budgets hold and the pinned human-control line is untouched", () => {
 	const bytes = Buffer.byteLength(tracking, "utf8");
 	// S14: close the open slice before a high-risk commit; outcomes per commit (12,600 -> 12,850 B), same as MODULE_BUDGETS.
-	assert.ok(bytes <= 12_850, `orchestrator-tracking.md is ${bytes} B, over its 12,850 B budget`);
+	// P5b: contradictions and step 3 / Phase reporting restatements removed; 1.4.0 commit-boundary rules kept (12,850 -> 10,324 B).
+	assert.ok(bytes <= 10_324, `orchestrator-tracking.md is ${bytes} B, over its 10,324 B budget`);
 	assert.ok(core.includes("- Preserve human control: user decisions beat agent momentum."), "core human-control line must stay verbatim");
 	assert.ok(core.includes("4. **Track**") && core.includes("`orchestrator-tracking.md`"), "Track must still load the tracking module");
 });

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test, { after, afterEach, type TestContext } from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
 import { CURSOR_MARKER, matchesKey, stripTerminalSequences as stripAnsi, TuiAltScreen, TuiMainScreen, VStack, visibleWidth, type Terminal, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import installGentleShell, { backgroundChangeRefreshesSettled, buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
+import installGentleShell, { backgroundChangeRefreshesSettled, buildShellBarModel, createFooterStatusMemo, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { CODEX_USAGE_URL, NAN_QUOTA_URL, USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA } from "../lib/shell-usage.ts";
 import { bindSessionProfile, clearSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import { createVimEditorAdapter, isAuditedPiEditorVersion } from "../lib/vim-editor-adapter.ts";
@@ -21,7 +21,7 @@ import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE } from ".
 import { sidebarPart, sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
 import { installSidebar } from "../lib/shell-sidebar-layout.ts";
 import { renderTodoCard } from "../lib/shell-todo.ts";
-import type { ShellBarTheme } from "../lib/shell-bar.ts";
+import { renderShellBar, type ShellBarTheme } from "../lib/shell-bar.ts";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { decodeReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import { REVIEW_SIDEBAR_EVENT } from "../lib/review-sidebar-state.ts";
@@ -301,61 +301,62 @@ test("buildShellBarModel shortens the home directory and hides effort for non-re
 	assert.equal(built.branch, null);
 });
 
-test("buildShellBarModel reports auto effort for NaN models that manage their own depth", () => {
+test("NaN and non-NaN shell bars show selected effort and refresh the memo on changes", () => {
 	const { pi } = fakePi();
 	const { ctx } = fakeContext();
 	const model = ctx.model as unknown as { id: string; provider: string };
-	model.provider = "nan";
-	model.id = "deepseek-v4-flash";
+	let effort: "medium" | "xhigh" | "off" = "medium";
+	pi.getThinkingLevel = () => effort;
 	const footerData = {
 		getGitBranch: () => null,
 		getExtensionStatuses: () => new Map(),
 		getAvailableProviderCount: () => 1,
 		onBranchChange: () => () => {},
 	};
-	assert.equal(buildShellBarModel(pi, ctx, footerData, { home: "/home/alan" }).effort, "auto");
-	// A NaN model that honors the level keeps reporting the selected one.
-	model.id = "glm5.3";
-	assert.equal(buildShellBarModel(pi, ctx, footerData, { home: "/home/alan" }).effort, "medium");
+	const memo = createFooterStatusMemo({
+		pi, ctx, footerData, usage: () => undefined, profile: () => undefined,
+		jobs: () => undefined, review: () => undefined,
+		tracker: () => ({ model: { files: [], added: 0, deleted: 0, digest: "empty" } as never, unbornRoots: [] }),
+		visualSettings: () => undefined, cardStyle: () => undefined,
+	});
+	for (const [provider, id] of [
+		["nan", "deepseek-v4-flash"], ["nan", "qwen3.8-flash"], ["nan", "mimo-v2.6-flash"],
+		["nan", "glm5.3"], ["openai", "deepseek-v4-flash"],
+	]) {
+		model.provider = provider;
+		model.id = id;
+		effort = "medium";
+		assert.equal(memo.model().effort, "medium");
+		assert.ok(renderShellBar(memo.model(), plainTheme, 120).join("\n").includes(`${id} · medium`));
+		const before = memo.key();
+		effort = "xhigh";
+		assert.notEqual(memo.key(), before, `${provider}/${id} must invalidate on effort change`);
+		assert.equal(memo.model().effort, "xhigh");
+		assert.ok(renderShellBar(memo.model(), plainTheme, 120).join("\n").includes(`${id} · xhigh`));
+		effort = "off";
+		assert.equal(memo.model().effort, "off");
+	}
 });
 
-test("a self-managing NaN model announces its automatic depth once per session", async () => {
+test("NaN startup, model selection and effort changes never announce an automatic depth", async () => {
 	const { pi, handlers } = fakePi();
-	gentleShell(pi, {});
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: async () => { assert.fail("unexpected network"); } });
 	const { ctx, ui } = fakeContext();
-	const adaptive = { id: "qwen3.8-flash", provider: "nan", name: "Qwen 3.8 Flash", reasoning: true };
-	const budget = { id: "glm5.3", provider: "nan", name: "GLM 5.3", reasoning: true };
-	(ctx as unknown as { model: unknown }).model = adaptive;
 	const emit = async (event: string, payload: unknown) => {
 		for (const handler of handlers.get(event) ?? []) await handler(payload, ctx);
 	};
-	await emit("thinking_level_select", { type: "thinking_level_select", level: "high", previousLevel: "medium" });
-	assert.deepEqual(ui.notices.filter((notice) => notice.includes("automatically")), [
-		"Qwen 3.8 Flash chooses its reasoning depth automatically; the selected thinking level is accepted but does not change it.",
-	]);
-	// Re-selecting the same model or level never repeats the notice.
-	await emit("model_select", { type: "model_select", model: adaptive, previousModel: budget, source: "set" });
-	assert.equal(ui.notices.filter((notice) => notice.includes("automatically")).length, 1);
-	// A model that applies the level never announces.
-	(ctx as unknown as { model: unknown }).model = budget;
-	await emit("model_select", { type: "model_select", model: budget, previousModel: adaptive, source: "set" });
-	assert.equal(ui.notices.filter((notice) => notice.includes("automatically")).length, 1);
-});
-
-test("a session that starts on a self-managing NaN model announces it once", async () => {
-	const { pi, handlers } = fakePi();
-	gentleShell(pi, {});
-	const { ctx, ui } = fakeContext();
-	const adaptive = { id: "mimo-v2.6-flash", provider: "nan", name: "MiMo V2.6 Flash", reasoning: true };
-	(ctx as unknown as { model: unknown }).model = adaptive;
-	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
-	assert.deepEqual(ui.notices.filter((notice) => notice.includes("automatically")), [
-		"MiMo V2.6 Flash chooses its reasoning depth automatically; the selected thinking level is accepted but does not change it.",
-	]);
-	// A session that starts on a model which honors the level stays silent.
-	(ctx as unknown as { model: unknown }).model = { id: "gemma4", provider: "nan", name: "Gemma 4", reasoning: true };
-	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
-	assert.equal(ui.notices.filter((notice) => notice.includes("automatically")).length, 1);
+	try {
+		for (const id of ["deepseek-v4-flash", "qwen3.8-flash", "mimo-v2.6-flash"]) {
+			const model = { id, provider: "nan", name: id, reasoning: true };
+			(ctx as unknown as { model: unknown }).model = model;
+			await emit("session_start", {});
+			await emit("model_select", { type: "model_select", model, source: "set" });
+			await emit("thinking_level_select", { type: "thinking_level_select", level: "high", previousLevel: "medium" });
+		}
+		assert.deepEqual(ui.notices.filter((notice) => /automatically|does not change/i.test(notice)), []);
+	} finally {
+		await emit("session_shutdown", {});
+	}
 });
 
 test("gentleShell installs the footer on session_start when a UI exists", () => {
@@ -5883,14 +5884,15 @@ test("gentleShell fetches NaN quota on session start and shows it in the bar", a
 	const { fetchFn, calls } = fakeFetch(NAN_QUOTA_PAYLOAD);
 	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => 1_788_600_000_000 });
 	const { ctx, ui } = fakeContext({ token: "sk-nan-secret" });
-	(ctx as unknown as { model: { provider: string } }).model.provider = "nan";
+	Object.assign((ctx as unknown as { model: object }).model, { provider: "nan", id: "glm5.3" });
 	await fire(handlers, "session_start", ctx);
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	assert.equal(calls.length, 1);
 	assert.equal(calls[0].url, "https://cloud-api.nan.builders/api/usage/quota");
-	// The fixture's session model holds no NaN allowance of its own, so the
-	// account names the meter: a NaN payload of one model is still per-model data.
-	assert.match(renderFooter(ui), /\$0\.000 sub ⟡ nan total ▰+▱+ 27%/);
+	// The session model's own quota names the meter; NaN never shows an account
+	// total, which would read as a credit balance it is not.
+	assert.match(renderFooter(ui), /\$0\.000 sub ⟡ glm5\.3 ▰+▱+ 27%/);
+	assert.doesNotMatch(renderFooter(ui), /nan total/);
 
 	await fire(handlers, "agent_end", ctx);
 	await new Promise((resolve) => setTimeout(resolve, 0));
@@ -5909,17 +5911,17 @@ test("a failed NaN refresh keeps the last valid snapshot", async () => {
 	let now = 1_788_600_000_000;
 	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => now });
 	const { ctx, ui } = fakeContext({ token: "sk-nan-secret" });
-	(ctx as unknown as { model: { provider: string } }).model.provider = "nan";
+	Object.assign((ctx as unknown as { model: object }).model, { provider: "nan", id: "glm5.3" });
 	await fire(handlers, "session_start", ctx);
 	await new Promise((resolve) => setTimeout(resolve, 0));
-	assert.match(renderFooter(ui), /nan total ▰+▱+/);
+	assert.match(renderFooter(ui), /glm5\.3 ▰+▱+/);
 
 	fail = true;
 	now += 6 * 60_000;
 	await fire(handlers, "agent_end", ctx);
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	assert.equal(calls.length, 2, "the refresh window elapsed, so the retry was attempted");
-	assert.match(renderFooter(ui), /nan total ▰+▱+/, "a failed refresh cannot erase the last valid snapshot");
+	assert.match(renderFooter(ui), /glm5\.3 ▰+▱+/, "a failed refresh cannot erase the last valid snapshot");
 });
 
 test("gentleShell fetches Codex usage on session start and shows it in the bar", async () => {
@@ -6114,10 +6116,10 @@ test("a registered source resolving usage for another provider is rejected witho
 	const { fetchFn } = fakeFetch(NAN_QUOTA_PAYLOAD);
 	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => 1_788_600_000_000 });
 	const { ctx, ui } = fakeContext({ token: "sk-nan-secret" });
-	(ctx as unknown as { model: { provider: string } }).model.provider = "nan";
+	Object.assign((ctx as unknown as { model: object }).model, { provider: "nan", id: "glm5.3" });
 	await fire(handlers, "session_start", ctx);
 	await new Promise((resolve) => setTimeout(resolve, 0));
-	assert.match(renderFooter(ui), /nan total ▰+▱+/, "the real nan snapshot recorded first");
+	assert.match(renderFooter(ui), /glm5\.3 ▰+▱+/, "the real nan snapshot recorded first");
 
 	(ctx as unknown as { model: { provider: string } }).model.provider = "acme-cloud";
 	pi.events.emit(USAGE_SOURCE_EVENT, {
@@ -6129,7 +6131,7 @@ test("a registered source resolving usage for another provider is rejected witho
 	assert.doesNotMatch(renderFooter(ui), /acme-cloud/, "a resolution naming another provider must not surface as the active one");
 
 	(ctx as unknown as { model: { provider: string } }).model.provider = "nan";
-	assert.match(renderFooter(ui), /nan total ▰+▱+/, "the real nan snapshot must survive a mismatched acme-cloud resolution untouched");
+	assert.match(renderFooter(ui), /glm5\.3 ▰+▱+/, "the real nan snapshot must survive a mismatched acme-cloud resolution untouched");
 });
 
 test("gentleShell leaves a generic failure note when a registered source resolves a malformed usage", async () => {

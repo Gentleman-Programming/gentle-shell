@@ -1,8 +1,14 @@
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+
 // gentle-shell#1587: delegated children (GENTLE_PI_AGENTS_CHILD=1) load the
 // same context files as the orchestrator, including gentle-ai managed blocks
 // that bind themselves to the orchestrator only. Those blocks cost ~37k prefix
 // tokens per child and give a worker orchestration rules it must not follow.
-// This module removes exactly those blocks and keeps everything else.
+// This module removes exactly those blocks and keeps everything else. The
+// primary session applies the same filter while Gentle Shell injects its own
+// orchestrator prompt (extensions/gentle-ai.ts before_agent_start). Both
+// paths also deduplicate the engram-protocol block: when more than one loaded
+// file carries it, only the copy nearest to the working directory stays.
 
 export const ORCHESTRATOR_ONLY_MANAGED_BLOCKS = [
 	"orchestrator",
@@ -12,6 +18,21 @@ export const ORCHESTRATOR_ONLY_MANAGED_BLOCKS = [
 ] as const;
 
 export type OrchestratorOnlyManagedBlock = (typeof ORCHESTRATOR_ONLY_MANAGED_BLOCKS)[number];
+
+// gentle-ai's managed memory protocol. It is deduplicated, never removed:
+// a copy goes only when a nearer loaded context file carries it too.
+export const ENGRAM_PROTOCOL_MANAGED_BLOCK = "engram-protocol";
+
+export interface ManagedBlockFilterOptions {
+	// Also drop engram-protocol blocks (a nearer file keeps its own copy).
+	dropEngramProtocol?: boolean;
+}
+
+export interface ContextFilesFilterOptions {
+	// The session working directory; when known, only files on its ancestor
+	// chain take part in the engram-protocol deduplication.
+	cwd?: string;
+}
 
 export interface ContextFile {
 	path: string;
@@ -24,6 +45,8 @@ export interface ManagedBlockFilterResult {
 	// True when markers were unbalanced, mismatched, or ambiguous and the
 	// content was returned unchanged.
 	failSafe: boolean;
+	// Names of every managed block opened in the content (empty on fail-safe).
+	blockNames: string[];
 }
 
 export interface ChildContextFilesResult<T extends ContextFile> {
@@ -38,6 +61,11 @@ export interface ContextFileOptions {
 }
 
 const REMOVED_NAMES: ReadonlySet<string> = new Set(ORCHESTRATOR_ONLY_MANAGED_BLOCKS);
+const REMOVED_NAMES_WITH_ENGRAM: ReadonlySet<string> = new Set([...ORCHESTRATOR_ONLY_MANAGED_BLOCKS, ENGRAM_PROTOCOL_MANAGED_BLOCK]);
+
+function removedNames(options: ManagedBlockFilterOptions | undefined): ReadonlySet<string> {
+	return options?.dropEngramProtocol === true ? REMOVED_NAMES_WITH_ENGRAM : REMOVED_NAMES;
+}
 
 // A managed marker counts only when it is alone on its line. Inline mentions
 // (prose, inline code) and markers inside fenced code are plain text.
@@ -57,15 +85,17 @@ function splitLines(content: string): string[] {
 }
 
 function unchanged(content: string): ManagedBlockFilterResult {
-	return { content, removedBlocks: 0, failSafe: true };
+	return { content, removedBlocks: 0, failSafe: true, blockNames: [] };
 }
 
-export function filterOrchestratorOnlyBlocks(content: string): ManagedBlockFilterResult {
+export function filterOrchestratorOnlyBlocks(content: string, options?: ManagedBlockFilterOptions): ManagedBlockFilterResult {
+	const removed = removedNames(options);
 	const lines: Line[] = [];
 	const stack: string[] = [];
 	let fence: { char: string; length: number } | null = null;
 	let removedBlocks = 0;
 	let sawMarker = false;
+	const blockNames: string[] = [];
 
 	for (const text of splitLines(content)) {
 		const bare = text.replace(/\r?\n$/, "");
@@ -94,7 +124,8 @@ export function filterOrchestratorOnlyBlocks(content: string): ManagedBlockFilte
 			// A block reopened inside itself is ambiguous: fail safe.
 			if (stack.includes(name)) return unchanged(content);
 			stack.push(name);
-			if (REMOVED_NAMES.has(name)) removedBlocks += 1;
+			blockNames.push(name);
+			if (removed.has(name)) removedBlocks += 1;
 			lines.push({ text, owner: name });
 			continue;
 		}
@@ -103,7 +134,7 @@ export function filterOrchestratorOnlyBlocks(content: string): ManagedBlockFilte
 		lines.push({ text, owner: name });
 	}
 	if (stack.length > 0) return unchanged(content);
-	if (!sawMarker || removedBlocks === 0) return { content, removedBlocks: 0, failSafe: false };
+	if (!sawMarker || removedBlocks === 0) return { content, removedBlocks: 0, failSafe: false, blockNames };
 
 	// Drop lines owned by a removed block. Blank lines that directly follow a
 	// removal collapse so at most one empty line remains at that seam; a
@@ -112,7 +143,7 @@ export function filterOrchestratorOnlyBlocks(content: string): ManagedBlockFilte
 	let trailingBlanks = 0;
 	let afterRemoval = false;
 	for (const line of lines) {
-		if (line.owner !== null && REMOVED_NAMES.has(line.owner)) {
+		if (line.owner !== null && removed.has(line.owner)) {
 			afterRemoval = true;
 			continue;
 		}
@@ -125,7 +156,7 @@ export function filterOrchestratorOnlyBlocks(content: string): ManagedBlockFilte
 	if (afterRemoval) {
 		while (output.length > 0 && BLANK_LINE.test(output[output.length - 1])) output.pop();
 	}
-	return { content: output.join(""), removedBlocks, failSafe: false };
+	return { content: output.join(""), removedBlocks, failSafe: false, blockNames };
 }
 
 export function stripOrchestratorOnlyBlocks(content: string): string {
@@ -134,30 +165,68 @@ export function stripOrchestratorOnlyBlocks(content: string): string {
 
 const encoder = new TextEncoder();
 
+function isStrictAncestor(ancestor: string, descendant: string): boolean {
+	const rel = relative(ancestor, descendant);
+	return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+}
+
+function isAncestorOrSelf(ancestor: string, descendant: string): boolean {
+	return resolve(ancestor) === resolve(descendant) || isStrictAncestor(ancestor, descendant);
+}
+
+// Indexes of the files whose engram-protocol copy goes. Pi loads context
+// files from the root toward the working directory (nearest last), so the
+// nearest copy is the one in the deepest directory on the cwd chain. A copy
+// goes only when its directory is a strict ancestor of that nearest copy's
+// directory; two copies in the deepest directory, files off the chain, or a
+// single copy are all kept.
+function redundantEngramCopies(files: readonly ContextFile[], parsed: readonly ManagedBlockFilterResult[], cwd: string | undefined): Set<number> {
+	const copies: Array<{ index: number; dir: string }> = [];
+	files.forEach((file, index) => {
+		if (!parsed[index].blockNames.includes(ENGRAM_PROTOCOL_MANAGED_BLOCK)) return;
+		if (typeof file.path !== "string" || file.path === "" || !isAbsolute(file.path)) return;
+		const dir = dirname(resolve(file.path));
+		if (cwd !== undefined && !isAncestorOrSelf(dir, cwd)) return;
+		copies.push({ index, dir });
+	});
+	const redundant = new Set<number>();
+	if (copies.length < 2) return redundant;
+	const deepest = copies.filter((copy) => !copies.some((other) => isStrictAncestor(copy.dir, other.dir)));
+	if (deepest.length !== 1) return redundant;
+	for (const copy of copies) if (isStrictAncestor(copy.dir, deepest[0].dir)) redundant.add(copy.index);
+	return redundant;
+}
+
 // Returns filtered copies; the input array and its entries are never mutated.
-export function filterChildContextFiles<T extends ContextFile>(files: readonly T[]): ChildContextFilesResult<T> {
+export function filterChildContextFiles<T extends ContextFile>(files: readonly T[], options: ContextFilesFilterOptions = {}): ChildContextFilesResult<T> {
 	const result: ChildContextFilesResult<T> = { files: [], removedBlocks: 0, removedBytes: 0, failSafePaths: [] };
-	for (const file of files) {
-		const filtered = filterOrchestratorOnlyBlocks(file.content);
+	const parsed = files.map((file) => filterOrchestratorOnlyBlocks(file.content));
+	const cwd = typeof options.cwd === "string" && isAbsolute(options.cwd) ? resolve(options.cwd) : undefined;
+	const redundant = redundantEngramCopies(files, parsed, cwd);
+	files.forEach((file, index) => {
+		const filtered = redundant.has(index) ? filterOrchestratorOnlyBlocks(file.content, { dropEngramProtocol: true }) : parsed[index];
 		if (filtered.failSafe) result.failSafePaths.push(file.path);
 		if (filtered.removedBlocks === 0) {
 			result.files.push({ ...file });
-			continue;
+			return;
 		}
 		result.removedBlocks += filtered.removedBlocks;
 		result.removedBytes += encoder.encode(file.content).length - encoder.encode(filtered.content).length;
 		result.files.push({ ...file, content: filtered.content });
-	}
+	});
 	return result;
 }
 
 // Replaces contextFiles on the SAME options object: pi-claude-bridge keeps a
 // reference to it and rebuilds its prompt from its contextFiles. Never
 // throws; on any error the original context files stay in place.
-export function filterChildSessionContextFiles(options: ContextFileOptions | null | undefined): ChildContextFilesResult<ContextFile> | null {
+export function filterChildSessionContextFiles(
+	options: ContextFileOptions | null | undefined,
+	filterOptions?: ContextFilesFilterOptions,
+): ChildContextFilesResult<ContextFile> | null {
 	try {
 		if (!options || !Array.isArray(options.contextFiles)) return null;
-		const result = filterChildContextFiles(options.contextFiles);
+		const result = filterChildContextFiles(options.contextFiles, filterOptions);
 		if (result.removedBlocks > 0) options.contextFiles = result.files;
 		return result;
 	} catch {

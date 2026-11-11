@@ -33,7 +33,7 @@
 <p align="center">Your terminal can run an agent. Your workspace should help you lead it.<br><strong>gentle-shell is your coding agent, bringing your changes, tasks, and engineering workflow together—built for Pi.</strong></p>
 
 <div align="center">
- <h3>🎬 See it in action</h3>
+ <h3>See it in action</h3>
 
    <p>
    One prompt, from idea to reviewed commit: memory, workflow, and evidence in a real session.
@@ -54,25 +54,51 @@ https://github.com/user-attachments/assets/6d2bc422-a4dd-4ecf-a04b-fcd3bea7fea9
 
 </div>
 
+<p align="center"><sub><strong>If gentle-shell made your agent worth leading, a star helps other people find it.</strong></sub></p>
+
+<div align="center">
+
+<!--
+  sealed_token is a GitHub fine-grained token encrypted against Star History's
+  public key, so only the encrypted value is published here. It is required
+  because GitHub announced on 2026-06-30 that it would restrict the stargazers
+  API to a repository's admins and collaborators; without it the chart renders
+  an error placeholder.
+  Regenerate it at https://www.star-history.com/?repos=Gentleman-Programming%2Fgentle-pi&type=date&legend=top-left
+-->
+
+<a href="https://www.star-history.com/?repos=Gentleman-Programming%2Fgentle-pi&type=date&legend=top-left">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Gentleman-Programming%2Fgentle-pi&type=date&theme=dark&legend=top-left&sealed_token=zwrd_DfwYZeJU7nhGYNtREEheKWYEslW_uzrqORlZ36v-JSMepdqGLkKExp1M-xbNq6t-ebVS5iM3WoPDO26tXbSGkjXC2Jo3kHQ3uNzlRkCrWoqRHkPVQXvosKciY109ObiwGV1z8aajyedcloppmekCGrvVKJb6KWxGLXW_mHcRAVIBZUOa4SzW75D" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Gentleman-Programming%2Fgentle-pi&type=date&legend=top-left&sealed_token=zwrd_DfwYZeJU7nhGYNtREEheKWYEslW_uzrqORlZ36v-JSMepdqGLkKExp1M-xbNq6t-ebVS5iM3WoPDO26tXbSGkjXC2Jo3kHQ3uNzlRkCrWoqRHkPVQXvosKciY109ObiwGV1z8aajyedcloppmekCGrvVKJb6KWxGLXW_mHcRAVIBZUOa4SzW75D" />
+    <img width="620" alt="Star History Chart" src="https://api.star-history.com/chart?repos=Gentleman-Programming%2Fgentle-pi&type=date&legend=top-left&sealed_token=zwrd_DfwYZeJU7nhGYNtREEheKWYEslW_uzrqORlZ36v-JSMepdqGLkKExp1M-xbNq6t-ebVS5iM3WoPDO26tXbSGkjXC2Jo3kHQ3uNzlRkCrWoqRHkPVQXvosKciY109ObiwGV1z8aajyedcloppmekCGrvVKJb6KWxGLXW_mHcRAVIBZUOa4SzW75D" />
+  </picture>
+</a>
+
+</div>
+
 <p align="center"><strong>BUILT FOR PI</strong> &nbsp;·&nbsp; Shaped by Gentle-AI &nbsp;·&nbsp; Coding-agent workspace &nbsp;·&nbsp; Focused agents &nbsp;·&nbsp; ODD</p>
 
 <p align="center">
   <img src="docs/assets/brand/terminal-divider.svg" width="480" alt="">
 </p>
 
-<a id="whats-new-in-v41"></a>
+## Support the project
 
-## ✨ What's new in v4.1
+<div align="center">
 
-The [v4.1.0 release](https://github.com/Gentleman-Programming/gentle-shell/releases/tag/v4.1.0) makes Gentle Shell installable on a clean machine and pins Gentle AI v4.1.1:
+<a href="https://github.com/sponsors/Gentleman-Programming"><img width="100%" src="docs/assets/brand/sponsor-banner.svg" alt="Free forever, independent by choice. No investors, no paywalls: Gentle AI, Engram and Gentle Shell are funded by the people who use them. Sponsor on GitHub, monthly or one-time."></a>
 
-- **Clean-machine installers:** a browser wizard and double-click installers for macOS, Windows, and Linux install what is missing, update what you have, and ask once before changing anything. See [Get started](#get-started).
-- **Bundled Gentle Shell:** a new installation keeps its exact Pi, pinned Gentle AI, Engram, and state in one prefix; existing global installs can migrate, the launcher offers updates, and `gentle-shell self-uninstall` removes it.
-- **Background jobs and monitors:** `bash_background` wakes the agent once when a command exits, and `monitor` turns each output line of a long-running command into an event. Inspect them with `/gentle:jobs` ([Background jobs](#background-jobs)).
-- **Contextual Auto permissions:** Auto decides with the conversation's context and image input, retries provider failures, and can be the saved default ([Permission modes](#permission-modes--normal-auto-or-yolo)).
-- **Cross-session coordination:** sessions publish a recognizable subject, task aliases, repository scope, and a bounded work classification that other sessions can list, search, and consult with explicit cost permission.
-- **Session-bound profiles:** the active profile binds to the parent session, and orchestrator and reviewer routing apply per session.
-- **Delegate for a reason and review by risk:** see [Focused agents](#focused-agents--context-with-a-return-path), [ODD](#odd--the-everyday-workflow), and [Native review](#native-review--review-the-exact-change).
+<p>
+We deliberately don't depend on investors: no outside agenda deciding the roadmap and no features locked behind paywalls.<br/>
+Donations through <a href="https://github.com/sponsors/Gentleman-Programming"><strong>GitHub Sponsors</strong></a> go straight into maintenance, new features and keeping everything free and ours.
+</p>
+
+<p>Can't donate? A ⭐, a bug report or a pull request helps too.</p>
+
+<sub>Sponsorship never buys rankings, default selections or endorsements; see <a href="TRADEMARKS.md">TRADEMARKS.md</a>.</sub>
+
+</div>
 
 <p align="center">
   <img src="docs/assets/brand/terminal-divider.svg" width="480" alt="">
@@ -82,7 +108,7 @@ The [v4.1.0 release](https://github.com/Gentleman-Programming/gentle-shell/relea
 
 <a id="how-it-works"></a>
 
-## 🧠 How it works
+## How it works
 
 ### el Gentleman — Think before you build
 
@@ -164,7 +190,7 @@ Reviewer completions inherit Pi's effective `transport` preference when an ackno
 
 <a id="your-workspace"></a>
 
-## 🖥️ Your workspace
+## Your workspace
 
 ### gentle-shell — Your coding agent, in the workspace you lead
 
@@ -285,7 +311,7 @@ The Status panel has a **Jobs** section with each running job's description. Whe
 
 <a id="control"></a>
 
-## 🛡️ Control
+## Control
 
 ### Permission modes — Normal, Auto, or YOLO
 
@@ -341,7 +367,7 @@ Save `/gentle:mode default auto` or `/gentle:mode default yolo` to use either op
 
 <a id="also-in-the-box"></a>
 
-## 📦 Also in the box
+## Also in the box
 
 | Component | What it does |
 | :--- | :--- |
@@ -383,17 +409,23 @@ The first-party `nan` provider is included; no third-party provider package is r
 - **Login:** Both login routes await explicit API-key input; blank or whitespace-only entries fail without saving a credential, and surrounding whitespace is trimmed. Cancellation leaves the stored key unchanged. Stored keys take precedence over `NAN_API_KEY`.
 - **Streaming:** Pi streams chat completions through its OpenAI-compatible provider.
 - **Model discovery:** Model discovery intersects NaN's authenticated `/v1/models` response with a maintained subset of known chat IDs from the [official model documentation](https://nan.builders/docs/models); unknown and non-chat IDs are omitted. A successful response with no known chat IDs stays empty. Documented context, reasoning, and text/image capabilities are preserved with conservative numeric bounds for abbreviated limits; audio input is not advertised by Pi.
-- **Output caps:** The provider configures `maxTokens` caps rather than claiming undocumented model maxima: 32,768 for GLM 5.3, GLM 5.3 Flash, and MiMo; 131,072 for DeepSeek V4 Flash; 65,536 for Gemma 4 and Qwen 3.6; and 131,000 for Qwen 3.8 Flash (NaN documents 131K). Reasoning shares the output budget, and dense prompts can reason past 16K tokens, so DeepSeek gets a generous budget (NaN documents up to 393,216).
-- **Offline fallback:** Before a successful refresh, all seven documented chat models are available as the offline fallback in `/gentle:profiles`: `glm5.3`, `deepseek-v4-flash`, `glm5.3-flash`, `qwen3.8-flash`, `mimo-v2.6-flash`, `gemma4`, and `qwen3.6`. This fallback declares documented support, not proof of access for your key. Once refreshed, the successful live key-scoped list remains authoritative (including an empty list), even offline or after a failed refresh. Changing credentials resets the catalog to the full documented fallback until discovery succeeds for the new key.
+- **Offline fallback:** Before a successful refresh, the known chat catalog is available in `/gentle:profiles`: `glm5.3`, `deepseek-v4-flash`, `glm5.3-flash`, `qwen3.8-flash`, `mimo-v2.6-flash`, `gemma4`, `qwen3.6`, `kimi-k3.1-pro`, `qwen3.8-max`, `deepseek-v4-pro`, and `hy4`. The fallback declares support, not proof of access for your key. A successful key-scoped list remains authoritative (including an empty list), even offline or after a failed refresh; changing credentials resets it to the fallback until discovery succeeds for the new key.
+- **Output caps:** Pi configures 32,768 for GLM 5.3, GLM 5.3 Flash, MiMo and the four new models; 131,072 for DeepSeek V4 Flash; 65,536 for Gemma 4 and Qwen 3.6; and 131,000 for Qwen 3.8 Flash. The four new models' documented maxima are 1M (Kimi K3.1 Pro), 131K (Qwen 3.8 Max), 393K (DeepSeek V4 Pro), and 64K (Hy4); these are not Pi's configured caps. Reasoning and the answer share the total output budget. DeepSeek V4 Flash retains `max_tokens` for compatibility, although NaN accepts both that field and `max_completion_tokens` as total budgets; Qwen uses the latter, not a visible-answer-only cap.
+- **Pricing:** NaN does not publish per-token prices for this catalog. Pi requires numeric costs, so the zero rates are placeholders, not a claim that usage is free.
+- **Usage panel:** `/gentle:usage` (<kbd>Alt+U</kbd>) shows NaN's per-model token quota, not your credit balance, which NaN API keys cannot read. Only models in the maintained catalog appear (retired models such as `glm5.2` are hidden). The status bar shows the active model's own quota (or its family's), never a cross-model total, and these quota readings never put a NaN model on fallback cooldown.
 - **Not included:** NaN MCP search and media bridges are not included.
 
 Thinking levels follow NaN's [reasoning contract](https://nan.builders/docs/models):
 
 | Models | Pi thinking levels |
 | --- | --- |
-| GLM 5.3 / GLM 5.3 Flash | `low`, `medium`, `high`, and `max` are fully controllable. No `off`; Pi's `minimal` and `xhigh` clamp to `low` and `max`. |
-| Qwen 3.6 / Gemma 4 | `off` sends `none` and `minimal` also skips reasoning; `low`, `medium`, `high`, and `max` set reasoning budgets. Pi's `xhigh` clamps to `max`. |
-| DeepSeek V4 Flash / Qwen 3.8 Flash / MiMo | The same `off` (`none`), `minimal`, `low`, `medium`, `high`, and `max` levels are accepted, but NaN manages their reasoning depth, so no value changes it. Pi's `xhigh` clamps to `max`. The header reports `effort: auto` for these three and a one-time notice says the level does not change the depth. |
+| GLM 5.3 / GLM 5.3 Flash | Always reason: `minimal`, `low`, `medium`, `high`, `xhigh`, and `max` are available; `off` is hidden. |
+| Qwen 3.6 / Gemma 4 | `off` sends `none`; `minimal` also disables reasoning. On chat, `low`, `medium`, `high`, `xhigh`, and `max` cap reasoning at 2,048, 8,192, 16,384, 32,768, and 32,768 tokens respectively. |
+| DeepSeek V4 Flash / Qwen 3.8 Flash | `off` sends `none`; `minimal` through `max` are depth **hints**, not hard caps. |
+| MiMo V2.6 Flash | `off` sends `none`; `minimal` aliases `low` and `xhigh` aliases `max`. |
+| Kimi K3.1 Pro / Qwen 3.8 Max / DeepSeek V4 Pro / Hy4 | `off` sends `none` and `minimal` through `max` are accepted; NaN does not specify their per-level depth semantics. |
+
+NaN defaults Hy4 to `low` only if the API request omits `reasoning_effort`; an explicit effort wins. Pi's `off` sends `none` rather than relying on that server default. The shell shows the selected Pi effort, not a guarantee of the actual reasoning depth.
 
 </details>
 
@@ -405,7 +437,7 @@ Thinking levels follow NaN's [reasoning contract](https://nan.builders/docs/mode
 
 <a id="get-started"></a>
 
-## ⚡ Get started
+## Get started
 
 > ℹ️ **Naming transition:** The product is called `gentle-shell`; the current npm package and repository remain `gentle-pi` until migration.
 
@@ -616,7 +648,7 @@ For prerequisites, source-checkout instructions, full install behavior, and rele
 
 <a id="documentation"></a>
 
-## 📚 Documentation
+## Documentation
 
 Start with the product-facing destination, then move into the operational reference only when you need the details.
 
@@ -640,7 +672,7 @@ Start with the product-facing destination, then move into the operational refere
 
 <a id="community"></a>
 
-## 🤝 Community
+## Community
 
 This project is built in public. Bring a real workflow, a sharp question, a bug report, or a small improvement that makes the next person’s work clearer.
 
@@ -657,27 +689,6 @@ This project is built in public. Bring a real workflow, a sharp question, a bug 
 <p align="center">
   <a href="https://github.com/Gentleman-Programming/gentle-shell/stargazers"><strong>★ Star gentle-shell on GitHub</strong></a>
 </p>
-
-<div align="center">
-
-<!--
-  sealed_token is a GitHub fine-grained token encrypted against Star History's
-  public key, so only the encrypted value is published here. It is required
-  because GitHub announced on 2026-06-30 that it would restrict the stargazers
-  API to a repository's admins and collaborators; without it the chart renders
-  an error placeholder.
-  Regenerate it at https://www.star-history.com/?repos=Gentleman-Programming%2Fgentle-pi&type=date&legend=top-left
--->
-
-<a href="https://www.star-history.com/?repos=Gentleman-Programming%2Fgentle-pi&type=date&legend=top-left">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Gentleman-Programming%2Fgentle-pi&type=date&theme=dark&legend=top-left&sealed_token=zwrd_DfwYZeJU7nhGYNtREEheKWYEslW_uzrqORlZ36v-JSMepdqGLkKExp1M-xbNq6t-ebVS5iM3WoPDO26tXbSGkjXC2Jo3kHQ3uNzlRkCrWoqRHkPVQXvosKciY109ObiwGV1z8aajyedcloppmekCGrvVKJb6KWxGLXW_mHcRAVIBZUOa4SzW75D" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Gentleman-Programming%2Fgentle-pi&type=date&legend=top-left&sealed_token=zwrd_DfwYZeJU7nhGYNtREEheKWYEslW_uzrqORlZ36v-JSMepdqGLkKExp1M-xbNq6t-ebVS5iM3WoPDO26tXbSGkjXC2Jo3kHQ3uNzlRkCrWoqRHkPVQXvosKciY109ObiwGV1z8aajyedcloppmekCGrvVKJb6KWxGLXW_mHcRAVIBZUOa4SzW75D" />
-    <img width="620" alt="Star History Chart" src="https://api.star-history.com/chart?repos=Gentleman-Programming%2Fgentle-pi&type=date&legend=top-left&sealed_token=zwrd_DfwYZeJU7nhGYNtREEheKWYEslW_uzrqORlZ36v-JSMepdqGLkKExp1M-xbNq6t-ebVS5iM3WoPDO26tXbSGkjXC2Jo3kHQ3uNzlRkCrWoqRHkPVQXvosKciY109ObiwGV1z8aajyedcloppmekCGrvVKJb6KWxGLXW_mHcRAVIBZUOa4SzW75D" />
-  </picture>
-</a>
-
-</div>
 
 - Open an [issue](https://github.com/Gentleman-Programming/gentle-shell/issues) with the context needed to reproduce or understand the idea.
 - See the people shaping the project in the [contributors graph](https://github.com/Gentleman-Programming/gentle-shell/graphs/contributors).

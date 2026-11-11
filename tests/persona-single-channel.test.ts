@@ -388,12 +388,19 @@ test("Table B rule: LB5 exceptions kept verbatim in orchestrator (unique)", () =
 	}
 });
 
-test("orchestrator.md Identity Contract collapses to the one-line pointer (post-change)", () => {
+// cost-speed-painpoints S5 (T4): the one-line Identity Contract pointer was later dropped as a duplicate: the
+// Language Boundary intro carries the same pointer to the identity/harness section in both workflow modes.
+test("orchestrator.md no longer restates the Identity Contract pointer; the Language Boundary intro carries it in both modes", () => {
 	const raw = readOrchestratorMdRaw();
-	assert.ok(
-		raw.includes(POST_ORCH_IDENTITY.trim()),
-		"orchestrator.md must contain the exact Identity Contract pointer text from design.md",
-	);
+	assert.ok(!raw.includes(POST_ORCH_IDENTITY.trim()), "the duplicate Identity Contract pointer section must stay removed");
+	const pointer = "defined once in the identity/harness section above (its `Current persona mode:` line)";
+	for (const mode of ["organic", "full-delegation"] as const) {
+		for (const persona of ["gentleman", "neutral"] as const) {
+			const prompt = __testing.buildGentlePrompt(persona, undefined, undefined, undefined, undefined, mode);
+			assert.ok(prompt.includes(pointer), `[${mode}/${persona}] the identity/harness pointer must survive`);
+			assert.ok(prompt.includes("Identity contract:"), `[${mode}/${persona}] the wrapper identity contract must stay`);
+		}
+	}
 });
 
 test("orchestrator.md Language Boundary LB1 collapses to the one-line pointer; LB2-LB5 remain verbatim (post-change)", () => {
@@ -543,6 +550,7 @@ test("byte delta: wrapper Identity contract block grows by the measured delta (p
 	assert.equal(post - pre, WRAPPER_IDENTITY_DELTA_BYTES, "wrapper Identity block delta must be +379 B");
 });
 
+// Historical migration arithmetic over the frozen fixtures above; the section itself left orchestrator.md in S5 (T4).
 test("byte delta: orchestrator.md Identity Contract shrinks to the measured pointer size (149 B, ±1 B of design's 148 B estimate)", () => {
 	const pre = Buffer.byteLength(PRE_ORCH_IDENTITY);
 	const post = Buffer.byteLength(POST_ORCH_IDENTITY);

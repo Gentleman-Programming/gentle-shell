@@ -63,6 +63,7 @@ async function runSession(
 	bindings: Record<string, string>,
 	mode: () => RddMode,
 	beforeSecondPrompt: () => void = () => {},
+	extra?: { tools: string[]; install: (pi: import("@earendil-works/pi-coding-agent").ExtensionAPI) => void },
 ): Promise<SessionRun> {
 	const sdk = await import("@earendil-works/pi-coding-agent");
 	const ai = await import("@earendil-works/pi-ai");
@@ -95,6 +96,7 @@ async function runSession(
 				processEnv: { ...bindings, GENTLE_AI_TELEMETRY: "0" },
 				resolveTelemetryTriggerBinary: () => { throw new Error("fixture"); },
 			})(pi);
+			extra?.install(pi);
 			pi.on("tool_result", (event) => {
 				if (event.toolName === "gentle_review") run.assessResults.push({ isError: event.isError, details: event.details });
 			});
@@ -130,7 +132,7 @@ async function runSession(
 	assert.deepEqual(loader.getExtensions().errors, []);
 	const { session } = await sdk.createAgentSession({
 		cwd, agentDir: bindings.PI_CODING_AGENT_DIR, modelRuntime: runtime, model: model as never, thinkingLevel: "off", resourceLoader: loader,
-		tools: ["read", "gentle_review", ...HIDDEN_WHEN_OFF], sessionManager: manager, settingsManager: settings,
+		tools: ["read", "gentle_review", ...HIDDEN_WHEN_OFF, ...(extra?.tools ?? [])], sessionManager: manager, settingsManager: settings,
 	});
 	try {
 		await session.bindExtensions({ mode: "json", onError: (error) => run.errors.push(error.error) });
@@ -289,4 +291,24 @@ test("malformed fresh reads restore guidance while on and unknown preserve pinni
 		}
 		t.diagnostic(JSON.stringify({ initial, next, expected, requests: run.requests.length, calls: run.nativeCalls, errors: run.errors }));
 	}
+});
+
+// P3 (tools by mode): another tool hidden behind codemode joins the RDD-off
+// projection; it never replaces it, and the request stays stable across turns.
+test("RDD off: the review capture tools stay hidden beside a tool hidden behind codemode", { timeout: 30_000 }, async (t) => {
+	const { root, bindings } = fixture(t);
+	const { default: gentleGuide } = await import("../extensions/gentle-guide.ts");
+	const { registerCompactCodemode } = await import("../lib/codemode-renderer.ts");
+	const extra = { tools: ["gentle_guide", "codemode"], install: (pi: import("@earendil-works/pi-coding-agent").ExtensionAPI) => { gentleGuide(pi, {}); registerCompactCodemode(pi); } };
+	const off = await runSession(root, "off-codemode", bindings, () => "off", () => {}, extra);
+	assert.deepEqual(off.errors, []);
+	for (const request of off.requests) {
+		assertLeanRequest(request, off);
+		const names = request.tools.map((tool) => tool.name);
+		assert.deepEqual(names, ["read", "gentle_review", "codemode"], "review capture tools and the guide are all left out");
+	}
+	assert.equal(new Set(off.requests.map((request) => JSON.stringify(request.tools.map((tool) => tool.name)))).size, 1);
+	const on = await runSession(root, "on-codemode", bindings, () => "on", () => {}, extra);
+	assert.deepEqual(on.errors, []);
+	for (const request of on.requests) assert.deepEqual(request.tools.map((tool) => tool.name), ["read", "gentle_review", ...HIDDEN_WHEN_OFF, "codemode"], "RDD on declares the review family; the guide stays behind codemode");
 });

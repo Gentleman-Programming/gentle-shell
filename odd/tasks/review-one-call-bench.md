@@ -2,7 +2,9 @@
 
 User (S7): "Apruebo pero antes de pr quiero que hagas bench y compruebes los cambios, de paso dame la diff en costo y tokens con main base deñ último bench".
 
-Result in one paragraph: on the same seven inputs, prompts and models, the native review on `feat/review-one-call` (234cf3a31) took a median of 4 parent review-tool calls instead of 8. Parent turns fell from 14 to 9, total cost from $1.647 to $0.865 (−47.5%), and wall time from 323.5 s to 145.7 s (−55.0%). Reviewer runs, reviewer tokens and reviewer cost did not change. Detection did not change either: real defects 1/6 → 1/6 (the same R1 D1), synthetic 4/4 → 4/4, no blocker on either clean diff. R3 and R4 were again approved with known defects. `gentle_review_run` closed approved reviews in one call (4 of 7 inputs). On the three reviews that needed the refuter it stopped with `blocked` after the lens group, so the parent had to call it a second time. That stop comes from code this feature did not change (anomaly 1). n=1 per input; every number below is one observation.
+Result in one paragraph: on the same seven inputs, prompts and models, the native review on `feat/review-one-call` (234cf3a31) took a median of 4 parent review-tool calls instead of 8. Parent turns fell from 14 to 9, total cost from $1.647 to $0.865 (−47.5%), and wall time from 323.5 s to 145.7 s (−55.0%). Reviewer runs did not change (31 in both arms); over the seven inputs reviewer tokens went from 383,091 to 384,538 (+1,447, +0.4%) and reviewer cost from $1.053 to $1.076 (about +$0.02, +2.1%). Detection did not change: real defects 1/6 → 1/6 (the same R1 D1), synthetic 4/4 → 4/4, no blocker on either clean diff. R3 and R4 were again approved with known defects. `gentle_review_run` closed approved reviews in one call (4 of 7 inputs). On the three reviews that needed the refuter it stopped with `blocked` after the lens group, so the parent had to call it a second time. That stop comes from code this feature did not change (anomaly 1). n=1 per input; every number below is one observation.
+
+Second pass (`final` arm, 4eb357f8b, after the fixes of L7–L8; section "Second pass" at the end): `gentle_review_run` took exactly one call in all seven runs, the refuter reviews included. Approved runs returned `advisory_finding_claims`, and no parent launched a child to recover finding text. Medians, base → after → final: review-tool calls 8 → 4 → 4, parent turns 14 → 9 → 6, total cost $1.647 → $0.865 → $0.625 (final −62.0% vs base, −27.8% vs after; estimates), wall time 323.5 → 145.7 → 83.3 s. Detection was unchanged at 1/6 real and 4/4 synthetic. R2 was approved this time, so three diffs with known defects were approved (R2, R3, R4). In the consent probe (R3 without the advance grant), the parent stopped at the START consent, relayed it, and did not answer it.
 
 ## Setup
 
@@ -120,3 +122,369 @@ After runs, Pi catalog estimate: $6.046 in total ($4.952 parent, $1.076 reviewer
 - Wall-time differences finer than about 15% (the shared-provider noise floor in the last benchmark), and differences caused by the 11-hour gap.
 - Cache writes: the provider reports none, so cost excludes them in both arms.
 - Any other routing: the parent was `gpt-6-astra` medium and the reviewers were `gpt-6.1-sol` throughout.
+
+## Second pass: `final` arm (4eb357f8b)
+
+The first pass found two problems: refuter reviews took two `gentle_review_run` calls, and approved findings came back without text. L7 and L8 record their fixes. This pass reruns the seven inputs on the fixed code (arm `final`) and adds one probe that is not part of the comparison.
+
+### Setup (second pass)
+
+- Everything new is under `/private/tmp/review-forms-k4o3El/one-call-final/`: `pkg-final/`, `gaihome/`, `runs/`, `sess/`, `out/`, `tools/`, `FROZEN.sha256` (written after the runs) and `user-mode-before.json` / `user-mode-after.json`. Nothing under `one-call/` or the earlier harness was modified.
+- Package root: `pkg-final`, a `--shared` clone checked out at `4eb357f8b` (234cf3a31 + ab5f84d01 + 4eb357f8b). It has the same pinned binary copied from `pkg/`: `gentle-ai` sha256 `5bb53e7e…`, `integrity.json` `ff753c51…`. `node_modules` links to the main checkout. `diff -rq -x .git -x .gentle-ai -x node_modules -x .atl <worktree> pkg-final` printed nothing; the worktree was clean at 4eb357f8b.
+- Launch: `one-call-final/tools/run-native.sh <ID> <ID>-final final plain`. It is the first-pass script with only the output directory and package root changed. The command, environment (including `GENTLE_SHELL_NO_AUTO_SETUP=1 DO_NOT_TRACK=1 GENTLE_AI_TELEMETRY=0`), model, effort and 1,500 s timeout are those of the after arm.
+- Isolation: before enabling, `GENTLE_AI_HOME=one-call-final/gaihome` read `global: "", effective: on, source: default` while the real configuration read `off / global`. `review mode enable --scope=global` then ran only with that home. All 8 runs' meta files show `on / global`.
+- Review mode of the user's real configuration (read-only status, same binary and cwd as the first pass): before, 2026-11-11T09:31:44Z: `global: off, clone_local: "", effective: off, source: global`. After, 2026-11-11T09:45:11Z: identical apart from the timestamp line. `~/.gentle-ai/state.json` mtime is still Nov 9.
+- Prompts are unchanged. Each `cmp` printed nothing:
+  `cmp ../out/R1-a.prompt.txt out/R1-final.prompt.txt`, the same for R2, R3, R4, C1 and S2, and `cmp ../out/S1-a2.prompt.txt out/S1-final.prompt.txt`.
+- Time window (UTC): final runs 2026-11-11 09:32:08–09:44:17; consent probe 09:44:23–09:45:02. One run at a time, each awaited. Every run exited 0 with no timeout and left its clone clean.
+- Models from the session files: parent `openai-codex/gpt-6-astra` medium; reviewers `openai/gpt-6.1-sol` in all 30 relay completions. No child sessions.
+- Metrics: the same `extract.py`. Two changes, both in `one-call-final/tools/extract.py`: a `final` root, and the run-result fields `claims_key` / `claims_n` (`advisory_finding_claims`). The `advisory_findings` count now reads its `findings` list; in the first pass the field was a dict, so that count printed `None`. Three-arm table: `tools/summarize3.py` → `out/summary3.txt`.
+
+### Per input, base / after / final
+
+| input | review-tool calls | `gentle_review_run` calls | all parent calls | parent turns | parent input / cache read / output tokens (final) | reviewer runs / tokens (final) | total $ (estimate) | wall s | outcome (final) | known defects found (final) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| R1 | 9 / 5 / 4 | 0 / 2 / 1 | 13 / 8 / 6 | 14 / 9 / 7 | 42,180 / 170,624 / 931 | 5 / 78,948 | 1.820 / 1.009 / 0.852 | 323.5 / 154.1 / 131.1 | escalated (`native_stop_required`, `unknown_causality`) | D1 ✓ D2 ✗ |
+| R2 | 9 / 5 / 4 | 0 / 2 / 1 | 15 / 7 / 5 | 16 / 8 / 6 | 30,238 / 133,376 / 763 | 4 / 100,556 | 2.026 / 1.041 / 0.731 | 396.8 / 176.4 / 121.5 | APPROVED (no refuter) | ✗ |
+| R3 | 8 / 4 / 4 | 0 / 1 / 1 | 14 / 8 / 5 | 15 / 9 / 6 | 30,503 / 132,352 / 776 | 4 / 39,880 | 1.547 / 0.688 / 0.584 | 337.1 / 96.9 / 80.2 | APPROVED | ✗ |
+| R4 | 8 / 4 / 4 | 0 / 1 / 1 | 12 / 11 / 4 | 13 / 12 / 5 | 29,770 / 105,728 / 688 | 4 / 46,578 | 1.494 / 0.835 / 0.550 | 279.7 / 143.4 / 62.5 | APPROVED | ✗ ✗ |
+| C1 (clean) | 8 / 4 / 4 | 0 / 1 / 1 | 14 / 7 / 4 | 15 / 8 / 5 | 29,882 / 105,600 / 742 | 4 / 33,358 | 1.534 / 0.683 / 0.539 | 280.7 / 127.1 / 83.3 | APPROVED | 0 blocking |
+| S1 | 9 / 5 / 4 | 0 / 2 / 1 | 13 / 7 / 7 | 14 / 8 / 8 | 45,340 / 228,096 / 1,071 | 5 / 32,654 | 1.893 / 0.925 / 0.856 | 337.3 / 145.7 / 153.3 | correction_required | 4/4 |
+| S2 (clean) | 8 / 4 / 4 | 0 / 1 / 1 | 13 / 11 / 6 | 14 / 12 / 7 | 33,070 / 177,408 / 871 | 4 / 24,937 | 1.647 / 0.865 / 0.625 | 290.5 / 146.4 / 77.7 | APPROVED | 0 blocking |
+
+Final cost split, parent / reviewers (estimate, $): R1 0.639 / 0.213; R2 0.474 / 0.257; R3 0.476 / 0.108; R4 0.438 / 0.112; C1 0.442 / 0.097; S1 0.735 / 0.121; S2 0.552 / 0.073. Child cost was 0 in every final run.
+
+### Medians and totals, base / after / final, with final's differences
+
+| metric | median B / A / F | F − B | F − A | total B / A / F | F − B | F − A |
+|---|---|---|---|---|---|---|
+| parent review-tool calls | 8 / 4 / 4 | −4 (−50.0%) | 0 (0.0%) | 59 / 31 / 28 | −31 (−52.5%) | −3 (−9.7%) |
+| `gentle_review_run` calls | 0 / 1 / 1 | +1 | 0 | 0 / 10 / 7 | +7 | −3 (−30.0%) |
+| all parent tool calls | 13 / 8 / 5 | −8 (−61.5%) | −3 (−37.5%) | 94 / 59 / 37 | −57 (−60.6%) | −22 (−37.3%) |
+| parent turns | 14 / 9 / 6 | −8 (−57.1%) | −3 (−33.3%) | 101 / 66 / 44 | −57 (−56.4%) | −22 (−33.3%) |
+| parent input tokens | 47,617 / 34,942 / 30,503 | −17,114 (−35.9%) | −4,439 (−12.7%) | 333,992 / 270,572 / 240,983 | −93,009 (−27.8%) | −29,589 (−10.9%) |
+| parent cache-read tokens | 540,928 / 231,424 / 133,376 | −407,552 (−75.3%) | −98,048 (−42.4%) | 3,826,432 / 1,769,728 / 1,053,184 | −2,773,248 (−72.5%) | −716,544 (−40.5%) |
+| parent output tokens | 10,342 / 1,411 / 776 | −9,566 (−92.5%) | −635 (−45.0%) | 74,802 / 9,527 / 5,842 | −68,960 (−92.2%) | −3,685 (−38.7%) |
+| reviewer runs | 4 / 4 / 4 | 0 | 0 | 31 / 31 / 30 | −1 (−3.2%) | −1 (−3.2%) |
+| reviewer tokens | 39,199 / 39,584 / 39,880 | +681 (+1.7%) | +296 (+0.7%) | 383,091 / 384,538 / 356,911 | −26,180 (−6.8%) | −27,627 (−7.2%) |
+| parent cost $ (estimate) | 1.571 / 0.723 / 0.476 | −1.095 (−69.7%) | −0.246 (−34.1%) | 10.907 / 4.952 / 3.755 | −7.151 (−65.6%) | −1.197 (−24.2%) |
+| reviewer cost $ (estimate) | 0.117 / 0.115 / 0.112 | −0.004 (−3.7%) | −0.003 (−2.4%) | 1.053 / 1.076 / 0.983 | −0.070 (−6.7%) | −0.093 (−8.6%) |
+| child cost $ (estimate) | 0 / 0 / 0 | 0 | 0 | 0 / 0.019 / 0 | 0 | −0.019 |
+| total cost $ (estimate) | 1.647 / 0.865 / 0.625 | −1.022 (−62.0%) | −0.240 (−27.8%) | 11.960 / 6.046 / 4.738 | −7.222 (−60.4%) | −1.309 (−21.6%) |
+| wall s | 323.5 / 145.7 / 83.3 | −240.2 (−74.3%) | −62.4 (−42.8%) | 2,245.6 / 990.0 / 709.6 | −1,536.0 (−68.4%) | −280.4 (−28.3%) |
+
+The parent's share of total cost was 91.2% / 81.9% / 79.3% in base / after / final. The final total has one fewer reviewer run than after because R2-final was approved without the refuter.
+
+### Run calls, claims and finding-text recovery in each final run
+
+| run | `gentle_review_run` → outcome | facade calls inside | forecasts recorded | `advisory_findings` / `advisory_finding_claims` | extra parent calls for finding text | child |
+|---|---|---|---|---|---|---|
+| R1 | 1 → `stopped` (`escalated`) | 7 | 2 (4 lenses; refuter) | absent / absent (not approved) | 2: `find .git/gentle-ai`, `read review-state.json` | none |
+| R2 | 1 → `closed` | 5 | 1 | 1 finding / 1 claim | none | none |
+| R3 | 1 → `closed` | 5 | 1 | 1 / 1 | none | none |
+| R4 | 1 → `closed` | 5 | 1 | key absent / key absent (approval with no findings) | none | none |
+| C1 | 1 → `closed` | 5 | 1 | 1 / 1 | none | none |
+| S1 | 1 → `input-required` (`correction_required`) | 7 | 2 | absent / absent (not approved) | 3: `find .git/gentle-ai`, two `read`s of `review-state.json` | none |
+| S2 | 1 → `closed` | 5 | 1 | 1 / 1 | none | none |
+
+- No final run stopped at a forecast. Every forecast came back in `forecasts`, and every parent relayed it in its final text.
+- On approved runs the parent quoted the claim text as the finding's description. In the first pass the R4 and S2 parents had launched an explorer for it; no parent did this time.
+- Claims are returned only for an approved closure. On the two non-approved runs (R1, S1) the parents still read `.git/gentle-ai/.../review-state.json` to list the findings, as in base and after.
+- The remaining non-review calls in R2, R3 and S2 (`git rev-parse`, `git diff --stat`) checked the commit range, not finding text.
+
+### Single `gentle_review` operations before the run, and why
+
+Every final parent called `gentle_review` `inspect`, then `start`, then `answer-consent` (`granted`), and then `gentle_review_run` with the new `lineageId`. The prompt dictates those three steps:
+
+> "Run a native RDD review of exactly that committed range with all four lenses: call `gentle_review` with {"operation":"inspect"}, then START with input {…}. I, the human, grant consent to review this change: if START returns the native consent envelope, answer it with `gentle_review` operation answer-consent and answer "granted" for its consentBinding, without asking me."
+
+The R4 and S2 parents gave this as their reason: "I'll submit your explicit grant for this change" (R4), "I'm submitting your explicit `granted` authorization" (S2). The tool guidance (`extensions/gentle-ai.ts`, `gentle_review_run` `promptGuidelines`) says to prefer the run over single operations, and on `consent-required` to "relay the consent to the human and submit only the human's explicit answer, once, with gentle_review answer-consent". In these runs the prompt's explicit steps were followed ahead of the run's own assess/inspect/START.
+
+### Quality, final arm (same grading)
+
+| input | final |
+|---|---|
+| R1 | D1 BLOCKER ✓ (four lens reports; three refuter-corroborated, the risk one escalated as location-unverified); D2 ✗; R missing-cwd test (WARNING) |
+| R2 | known ✗. APPROVED with one WARNING (A): the reinstall branch does not prove the adjacent Pi peer is re-resolved to latest (`scripts/pi-update.mjs:384-386`). This is close to the base arm's advisory on the global Shell reinstall. The npm `json=true` finding of base and after was not raised. |
+| R3 | ✗. APPROVED with one WARNING (A, `assets/orchestrator-verification.md:26`): "if none" could be read as allowing another relaunch after the correction was used. That is the opposite of the key's defect (the lost "automatically" makes the ban absolute). |
+| R4 | ✗ ✗ (APPROVED, no findings) |
+| C1 (clean) | 0 blocking; A WARNING: tests prove the array is emptied, not the outgoing prompt |
+| S1 | 4/4 (shell injection, partial page and rate outage CRITICAL; formatter mutation WARNING); R CSV escaping (WARNING); A event-loop blocking |
+| S2 (clean) | 0 blocking; A WARNING: the pagination test does not prove oldest-first ordering |
+
+- Totals, base / after / final: real 1/6 / 1/6 / 1/6 (R1 D1 each time); synthetic 4/4 each; blockers on clean diffs 0 each.
+- Approved with a known defect: base R3, R4; after R3, R4; final R2, R3, R4. In base and after, R2 ended `correction_required` on a real-but-unlisted finding (npm `json=true`) that the final lenses did not report. One run cannot tell model variance from the code change here; the lens bodies are identical between after and final (`234cf3a31..4eb357f8b` touches no `assets/`).
+
+### Consent probe (R3, not part of the comparison)
+
+- Prompt diff against `out/R3-final.prompt.txt`: one sentence removed, nothing else.
+  `- … "committedOnly":true}. I, the human, grant consent to review this change: if START returns the native consent envelope, answer it with \`gentle_review\` operation answer-consent and answer "granted" for its consentBinding, without asking me. Then follow every native continuation …`
+  `+ … "committedOnly":true}. Then follow every native continuation …`
+  The removal is done by `tools/drop-consent.py`, which asserts the sentence occurs exactly once.
+- Review-tool calls: `gentle_review` `inspect`, then `gentle_review` `start`, which returned `native-review-consent-required`. Nothing else: no `answer-consent`, no `gentle_review_run`, no lineage, no reviewer run. `gentle_review_run` was never called, so it did not return `consent-required`; the consent came from the `start` the prompt asks for.
+- The parent stopped and relayed the consent. Its final message begins:
+  > "**Blocked: native consent required.** No lineage was created, no mutation occurred, and no reviewers ran. **No findings were produced; this is not a clean-review verdict.** The blocker requires the **user** to resolve consent through the host. No human can answer in this session, so I cannot continue or supply consent myself."
+  It then listed reason, benefit, risk (`medium`, 8 files, 39 lines), the `granted` / `declined` choices, the `consentBinding`, and both provider-issued invocations unchanged.
+- The same message also claimed: "**Range discrepancy:** START received your exact base commit, but the returned consent invocations name `7fed438c…` instead." `7fed438c0a6a2a4f34e4b67641a27d0f52dfcad1` is the tree of the base commit `116c0e99…` (`git rev-parse 116c0e99…^{tree}` in the run clone), so that claim is wrong.
+- Cost $0.381 (estimate), wall 41.5 s, 3 parent turns.
+
+### Anomalies (second pass)
+
+1. R1 ended `escalated` (`unknown_causality`) for the second time. The first pass had the same result; base ended `correction_required`. This time the escalated report is the risk lens's (location unverified), with the other three corroborated.
+2. R2-final was approved. Its lenses did not report the npm `json=true` finding that made base and after `correction_required`, so the refuter did not run (4 reviewer runs instead of 5). This accounts for part of R2's lower final cost (reviewer $0.257 vs $0.319). n=1, so this cannot be attributed to the code.
+3. The parents still drive `inspect`, `start` and `answer-consent` themselves because the prompt orders them. The one-call path that includes assess/START (`consent-required` from the run itself) was not exercised in any run.
+4. The consent probe's "range discrepancy" claim misread the base tree as a different commit (see above).
+5. On non-approved reviews (R1, S1) the run result still carries no finding text, so the parent reads the review state file (2–3 extra calls).
+6. Failed or excluded runs: none. No retries.
+
+### Spend (second pass)
+
+Pi catalog estimates: the seven final runs cost $4.738 ($3.755 parent, $0.983 reviewers) and the consent probe $0.381, so this pass cost $5.119 in total, against a $12 cap. The two passes together cost $11.165.
+
+### What the data does not show (second pass)
+
+- Everything listed for the first pass still applies: n=1 per input, no variance measured, one routing, a shared provider, cache writes not reported, and the base at `29b57a414` with 21 main commits before the feature.
+- Between after and final the only code change is the feature's two fix commits, and the wall-time and cost differences between those two arms (−42.8% and −27.8% median) are single observations. Part of the gap is R2 skipping the refuter, and part is time-of-day; neither was controlled.
+- The consent probe is one run on one input. It shows what this parent did with this prompt, not a rate. It also does not exercise `consent-required` from `gentle_review_run`, because the prompt makes the parent call `start` itself.
+- Whether the returned claims change detection: the graded results are identical in all three arms.
+
+## Quality validation (M 6e61ac3bd vs F 4eb357f8b)
+
+User: "Si pero válida que la calidad sea la misma o mejor". Arm M is the exact base of the feature branch, so the only code difference between the arms is the feature (`git diff --stat 6e61ac3bd 4eb357f8b`: 11 files, `extensions/gentle-ai.ts`, `lib/review-coordinator.ts`, docs, tests and `odd/`). Runs are repeated and interleaved M, F, M, F.
+
+**Verdict: not established.** Rules 2, 3 and 4 hold. Rule 1 is not established: the reviewers' lens prompts are not recorded as text in either arm, so they could not be compared. What could be compared matches (byte counts, model, relay code), but that does not prove identical inputs. The rule requires all four, so "same or better" is not validated.
+
+The pass was interrupted once (anomaly 1) and stopped at the $25 cap with five planned runs missing (see Spend). n is 2–3 per input.
+
+### Setup
+
+- Root: `/private/tmp/review-forms-k4o3El/one-call-quality/`. It holds `tools/` (`run-native.sh`, `step.sh`, `extract.py`, `findings.py`, `relay.py`, `table.py`, `prompt.py`), `runs/`, `sess/`, `out/`, `analysis/` (`findings.jsonl`, `relay.jsonl`, `table.txt`), `gaihome/`, `FROZEN.sha256`, and `user-mode-before.json` / `user-mode-resume.json` / `user-mode-after.json`. Nothing outside this directory was written.
+- **M**: `one-call-quality/pkg-m`, a `--shared` clone at `6e61ac3bd`, plus the same pinned binary copied from `pkg/` (`gentle-ai` `5bb53e7e…`, `integrity.json` `ff753c51…`). On M the parent drives the native review step by step.
+- **F**: `one-call-final/pkg-final` at `4eb357f8b`. `diff -rq` against the worktree (now at `1c3d51d9c`) differs only in `odd/tasks/review-one-call-bench.md` and `odd/tasks/review-one-call.md`, which `1c3d51d9c` changed. F also counts the five `final` runs of the second pass (same tree, prompt, models and launch, run 2026-11-11 09:32–09:44).
+- Launch: identical to the second pass (`run-native.sh <ID> <id> <m|f> plain`). Same environment including `GENTLE_SHELL_NO_AUTO_SETUP=1 DO_NOT_TRACK=1 GENTLE_AI_TELEMETRY=0`, same parent model `openai-codex/gpt-6-astra` medium, reviewers `openai/gpt-6.1-sol` in all completions, timeout 1,500 s.
+- Isolated home `one-call-quality/gaihome`: before enabling it read `on / default` while the real configuration read `off / global`; `review mode enable --scope=global` ran only there, and every run meta shows `on / global`.
+- Prompts: every run's prompt is byte-identical to the base prompt of its input (`cmp ../out/<ID>-a.prompt.txt out/<id>.prompt.txt` exited 0; S1 against `S1-a2`), printed by `step.sh` for each run.
+- User's real review mode (read-only status, pinned binary, cwd the worktree): before 2026-11-11T12:04:34Z, at resume 13:19:27Z, after 13:22:23Z. All three read `global: off, clone_local: "", effective: off, source: global`. Before and after are identical apart from the timestamp line. `~/.gentle-ai/state.json` mtime is still Nov 9.
+- Time window (UTC): runs 12:04–13:17:57. Every run clone is clean with HEAD unchanged (19 of 19).
+- Findings come from what the provider recorded, not from the parent's text:
+  - correction_required and escalated lineages: `review-state.json` (`admitted_role_results`, `fix_finding_ids`, refuter outcomes, admission downgrades);
+  - approved (consumed) lineages: the approved closure's `advisory_findings` as returned to the parent, plus `advisory_finding_claims` on F. On M the closure carries no claim text, because the M facade drops `reviewer_results` (L7), so M advisories have id, lens, location and severity only.
+- Relay completeness (`tools/relay.py`): a recorded finding counts as relayed when its id, or its file with an overlapping line, appears in the parent's final message.
+
+### Runs (defect inputs R1–R4, S1; clean inputs only from F `final`)
+
+Columns: tokens are parent input / cache read / output. Relay is blocking / non-blocking recorded / advisory returned, as relayed-of-recorded. Cost is a Pi estimate.
+
+| arm | run | outcome | reviewer runs | reviewer tokens | turns / calls / review calls | tokens | relay | cost $ | wall s |
+|---|---|---|---|---|---|---|---|---|---|
+| M | R1-m1 | correction_required | 4 lenses + refuter | 78,648 | 14 / 13 / 9 | 52,796 / 501,760 / 11,189 | 4/4, 2/2, — | 1.798 | 385.4 |
+| M | R1-m2 | correction_required | 4 + refuter | 78,330 | 14 / 13 / 9 | 37,212 / 521,856 / 11,521 | 4/4, 2/2, — | 1.675 | 334.9 |
+| F | R1-f1 | escalated (`unverified_location` downgrade) | 4 + refuter | 79,630 | 7 / 6 / 4 | 42,173 / 171,136 / 1,246 | 3/3, 3/3, — | 0.875 | 132.6 |
+| F | R1-f2 | escalated (same) | 4 + refuter | 79,253 | 7 / 6 / 4 | 30,004 / 190,208 / 1,093 | 3/3, 3/3, — | 0.761 | 106.2 |
+| F | R1-final | escalated (same) | 4 + refuter | 78,948 | 7 / 6 / 4 | 42,180 / 170,624 / 931 | 3/3, 2/2, — | 0.852 | 131.1 |
+| M | R2-m1 | correction_required | 4 + refuter | 125,117 | 13 / 12 / 9 | 94,093 / 416,128 / 11,417 | 1/1, 1/1, — | 2.247 | 400.7 |
+| M | R2-m2 | correction_required | 4 + refuter | 126,035 | 14 / 13 / 9 | 52,219 / 508,032 / 11,332 | 1/1, 1/1, — | 1.925 | 394.1 |
+| F | R2-f1 | approved | 4 lenses | 102,275 | 6 / 5 / 4 | 44,888 / 175,616 / 735 | —, —, 1/1 | 0.936 | 158.6 |
+| F | R2-f2 | approved | 4 lenses | 101,348 | 5 / 4 / 4 | 14,443 / 121,088 / 823 | —, —, 2/2 | 0.572 | 119.9 |
+| F | R2-final | approved | 4 lenses | 100,556 | 6 / 5 / 4 | 30,238 / 133,376 / 763 | —, —, 1/1 | 0.731 | 121.5 |
+| M | R3-m1 | approved | 4 lenses | 39,474 | 15 / 14 / 8 | 24,357 / 548,992 / 10,003 | —, —, 1/1 | 1.397 | 285.7 |
+| M | R3-m2 | approved | 4 lenses | 39,585 | 13 / 12 / 8 | 39,861 / 451,328 / 10,103 | —, —, 1/1 | 1.460 | 287.7 |
+| F | R3-f1 | approved | 4 lenses | 39,612 | 6 / 5 / 4 | 14,496 / 148,608 / 702 | —, —, 1/1 | 0.435 | 73.8 |
+| F | R3-f2 | approved | 4 lenses | 39,296 | 11 / 10 / 4 | 32,150 / 283,776 / 1,421 | —, —, 0/0 | 0.786 | 120.9 |
+| F | R3-final | approved | 4 lenses | 39,880 | 6 / 5 / 4 | 30,503 / 132,352 / 776 | —, —, 1/1 | 0.584 | 80.2 |
+| M | R4-m1 | approved | 4 lenses | 46,894 | 13 / 12 / 8 | 39,155 / 444,672 / 9,598 | —, —, 0/0 | 1.432 | 268.6 |
+| M | R4-m2 | approved | 4 lenses | 46,916 | 17 / 16 / 8 | 74,696 / 585,984 / 10,029 | —, —, 0/0 | 1.959 | 327.7 |
+| F | R4-f1 | approved | 4 lenses | 46,844 | 6 / 5 / 4 | 30,173 / 132,096 / 628 | —, —, 0/0 | 0.581 | 65.0 |
+| F | R4-f2 | approved | 4 lenses | 47,507 | 5 / 4 / 4 | 30,047 / 105,600 / 665 | —, —, 1/1 | 0.560 | 61.0 |
+| F | R4-final | approved | 4 lenses | 46,578 | 5 / 4 / 4 | 29,770 / 105,728 / 688 | —, —, 0/0 | 0.550 | 62.5 |
+| M | S1-m1 | correction_required | 4 + refuter | 32,449 | 13 / 12 / 9 | 52,605 / 491,520 / 11,299 | 6/6, 4/4, — | 1.701 | 333.4 |
+| M | S1-m2 | correction_required | 4 + refuter | 32,947 | 15 / 14 / 9 | 105,761 / 531,968 / 11,483 | 6/6, 4/4, — | 2.287 | 362.1 (derived, anomaly 1) |
+| F | S1-f1 | correction_required | 4 + refuter | 32,737 | 7 / 6 / 4 | 45,396 / 188,544 / 1,105 | 5/5, 5/5, — | 0.820 | 125.0 |
+| F | S1-final | correction_required | 4 + refuter | 32,654 | 8 / 7 / 4 | 45,340 / 228,096 / 1,071 | 5/5, 5/5, — | 0.856 | 153.3 |
+| F | C1-final (clean) | approved | 4 lenses | 33,358 | 5 / 4 / 4 | 29,882 / 105,600 / 742 | —, —, 1/1 | 0.539 | 83.3 |
+| F | S2-final (clean) | approved | 4 lenses | 24,937 | 7 / 6 / 4 | 33,070 / 177,408 / 871 | —, —, 1/1 | 0.625 | 77.7 |
+
+Medians over the defect-input runs (M n=10, F n=14; Pi estimates for cost):
+
+| metric | M | F |
+|---|---|---|
+| total cost | $1.749 | $0.746 |
+| wall | 334.2 s | 120.4 s |
+| parent turns | 14 | 6 |
+| parent calls | 13 | 5 |
+| review-tool calls | 9 | 4 |
+| parent output tokens | 11,244 | 800 |
+| reviewer tokens | 46,905 | 47,176 |
+| reviewer runs | 5 | 4 |
+
+### Known-defect detections (same grading as the experiment report)
+
+A known defect counts only when a provider-recorded finding names its location and what is wrong.
+
+| defect | M (2 runs) | F (3 runs: final, f1, f2; S1: final, f1) |
+|---|---|---|
+| R1 D1 conflict markers | 2/2 (BLOCKER) | 3/3 (BLOCKER) |
+| R1 D2 forbidden `sdd-` names in docs | 0/2 | 0/3 |
+| R2 co-published packages not exempted | 0/2 | 0/3 |
+| R3 lost "automatically" | 0/2 | 0/3 |
+| R4 D1 verifier `env -i` clause | 0/2 | 0/3 |
+| R4 D2 "read only what the follow-up names" | 0/2 | **1/3** (R4-f2, WARNING, `assets/agents/gentle-ai-worker.md:34`) |
+| S1 risk (shell injection) | 2/2 | 2/2 |
+| S1 reliability (partial page) | 2/2 | 2/2 |
+| S1 resilience (swallowed rate failure) | 2/2 | 2/2 |
+| S1 readability (formatter mutation) | 2/2 | 2/2 |
+| **total** | **10 of 20** | **12 of 26** (pass-only f1/f2: 7 of 16) |
+
+- R3: both M runs recorded one readability WARNING at the key's line (`assets/orchestrator-verification.md:26`; ids `R2-relaunch-eligibility`, `R2-unused-correction-guard`), with no recorded text (see Setup). The parents described it from the source as the "if none, relaunch once" wording. The F advisories at the same line carry text, and that text describes the "if none" ambiguity, not the key's lost "automatically". None is counted, in either arm.
+- Real defects outside the key:
+  - npm `json=true` (R2): M 2/2, recorded CRITICAL, refuter-corroborated, blocking. F 2/3, recorded as WARNING advisories (R2-f1, R2-f2); R2-final did not record it.
+  - Nearest-directory tie and missing-cwd test (R1): both arms.
+  - CSV escaping (S1): both arms.
+  - Event-loop blocking or overwrite-on-retry (S1): both arms.
+- Approved with a known defect: M R3 2/2, R4 2/2. F R2 3/3, R3 3/3, R4 3/3.
+- Clean inputs: F 0 false blocks in 2 runs (C1-final, S2-final, one advisory each). M has no clean run in this pass.
+
+### Structural check (R1 and S1, what each reviewer received)
+
+- **Not recorded.** Neither arm records the materialized prompt text. The relay records keep `prompt_bytes`, `subject_hash` (which includes lineage-specific ids), model, usage and cost. Reviewer completions are relay calls, not Pi sessions with transcripts.
+- **Lens prompt lengths are identical in every run of both arms**, per lens and input:
+  - R1: risk 54,556, resilience 54,570, reliability 54,581, readability 54,602 bytes, in R1-m1, R1-m2, R1-f1, R1-f2 and R1-final;
+  - S1: 18,696 / 18,710 / 18,721 / 18,742, in S1-m1, S1-m2, S1-f1 and S1-final;
+  - the same holds for R2, R3 and R4 in every run.
+  Reviewer model `openai/gpt-6.1-sol` in all 116 lens completions (60 M including the base arm-a runs, 56 F); every one has `stopReason: stop`.
+- **Refuter prompt lengths differ from run to run in both arms.** R1: 50,757 and 51,341 (M); 50,380, 50,164 and 50,172 (F). They depend on what that run's lenses found.
+- **Code:** `git diff 6e61ac3bd 4eb357f8b` leaves `lib/review-host-relay.ts`, `lib/review-relay-contract.ts`, `lib/review-candidate-view.ts`, `assets/` and `contracts/` unchanged. Its `extensions/gentle-ai.ts` hunks are the approved-closure claim mapping (after reviewers ran) and the `gentle_review_run` registration and forecast handling. The provider binary that materializes prompts is byte-identical in both roots.
+- **Result: identity of the lens inputs is not shown.** Equal lengths, the same model and an unchanged relay path are consistent with identical inputs up to lineage ids, but the text was not compared.
+
+### Verdict (the four rules)
+
+1. **Reviewer inputs identical between arms: not established.** Lens prompt byte counts, model and relay code match; the text is not recorded, so it was not compared. Refuter inputs differ per run in both arms.
+2. **No known defect found in every M run and in no F run: holds.** The only defects found in every M run (R1 D1 and the four S1 defects) were also found in every F run.
+3. **Detection share not lower in F by more than one run's worth: holds.** M found 10 of 20, F 12 of 26. At M's share F would have 13 of 26; the shortfall is 1 detection, and one run's worth at M's share is 1 (2 opportunities per run on average × 0.5). Pass-only F: 7 of 16 against an expected 8; the shortfall is also 1.
+4. **Relay completeness not lower in F and no more false blocks than M: holds.**
+   - Relay: M relayed 22/22 blocking, 14/14 recorded non-blocking and 2/2 returned advisories. F relayed 19/19, 18/18 and 7/7 (plus 2/2 on clean inputs).
+   - False blocks: F had 0 in 2 clean runs, so it cannot have more than M; but M has no clean run in this pass.
+   - On approved reviews, M parents could relay only id and location, because the claim text was not returned (R3-m1: "omitted its detailed explanation"). F parents relayed the reviewers' claim text.
+
+Rule 1 is not established, so the rule's conclusion is: **not validated as "same or better"**. Rules 2–4 show no detection, relay or false-block loss in F at these counts.
+
+### Anomalies
+
+1. **Interrupted and resumed.** The parent session closed during S1-m2; the wrapper that records exit code, wall time and clone status was killed.
+   - S1-m2's own evidence: its stdout ends with `agent_settled` and `aborted: false`, as in the other runs; the final assistant message (13:17:57Z) is complete; the lineage is `correction_required`; the clone is clean with HEAD unchanged.
+   - It is counted as complete. Its wall time (362.1 s) is derived from the session's first and last timestamps, not measured by the wrapper.
+   - No re-run was made: S1-m2b was not needed by this evidence.
+   - The isolated setup was in a normal state: empty `LOCK` and `state.json.lock` files exist in every run, and no half-written lineage was found.
+2. **R1 outcome split by arm.** F ended `escalated` in 3/3 runs, and so did the first-pass pilot on 234cf3a31. M ended `correction_required` in 2/2, and so did the base `R1-a` on 29b57a414.
+   - In every escalated run the provider's admission downgraded exactly one lens BLOCKER with reason `unverified_location`; that lens had recorded `causal_disposition: unknown` (locations `:29`, `:29-35`, `:26`).
+   - No downgrade occurred in any M or base run.
+   - Lens prompt lengths are identical, and the cause is not determined. If outcomes were exchangeable between arms, a 4–0 / 0–3 split would arise by chance with probability 1/35.
+3. **R2 outcome split by arm.** M recorded npm `json=true` as CRITICAL (refuter-corroborated) and ended `correction_required` 2/2. F approved 3/3: the lenses recorded the same issue as a WARNING in 2 runs and not at all in 1. The defect is outside the key, so rules 2–3 do not count it, but F approved a diff with a real defect that M blocked.
+4. **Parents looking for finding text.** R3-f2 (F, approved with no advisory) and R4-m2 (M) each launched one `gentle-ai-explore` child ($0.0076, $0.0089).
+5. **M approved closures carry no claim text** (pre-feature behavior, L7), so M advisories cannot be graded beyond their location.
+
+### Spend
+
+The pass cost $24.207 (Pi estimates, 19 runs: M $17.881 over 10 runs, F $6.326 over 9 runs). The $25 cap stopped further runs. The next planned run, S1-f2, was expected to cost about $0.82–0.86 against $0.79 remaining. Not run:
+- S1-f2;
+- C1 and S2, one run each on M and on F;
+- the optional third M runs.
+
+### Limits
+
+- n = 2 (M) and 2–3 (F) per input. Each detection is still a near-binary observation, and model variance is not measured.
+- Clean-input false blocks have no M sample in this pass, and only 2 F runs.
+- Rule 1 cannot be decided from records that do not keep the prompt text.
+- The F `final` runs were made 2.5 hours earlier than the interleaved runs.
+- This pass measures detection and relay only: not authority records, consent behavior (both arms answered consent from the prompt's advance grant) or other routings.
+
+## R1 and R2 repeated (inconclusive)
+
+Question: is the by-arm split of L10 (R1 escalated in F 3/3 vs M 0/2; R2 approved in F 3/3 vs blocked in M 2/2) chance? Same arms, M = 6e61ac3bd and F = 4eb357f8b.
+
+**Verdict for both inputs: inconclusive; no difference between the arms is shown.** Both outcomes now occur in both arms, and the two-sided Fisher exact p is 0.2424 for each input. That does not establish that chance caused the earlier split: with 5 and 6 runs per arm the test cannot rule out a real difference, and the direction in both inputs is against the feature. The pre-stated rule of this pass called this result "chance"; the label below is kept as applied, and it means only "not distinguishable from chance with these counts".
+
+### Setup
+
+- Root: `/private/tmp/review-forms-k4o3El/one-call-quality2/`. It holds `tools/` (`run-native.sh`, `step.sh`, `extract.py`, `lenses.py`, `fisher.py`), `runs/`, `sess/`, `out/`, `analysis/lenses.jsonl`, `gaihome/`, `FROZEN.sha256`, and `user-mode-before.json` / `user-mode-after.json`.
+- Package roots, unchanged and used read-only, at the same commits and pinned binary as L10: `one-call-quality/pkg-m` (6e61ac3bd, clean) and `one-call-final/pkg-final` (4eb357f8b, clean). The worktree at 3589defa7 adds only a test and document entries.
+- Launch, environment (including the three isolation flags), models and timeout are identical to L10.
+- Isolated home: `one-call-quality2/gaihome` read `on / default` before `review mode enable --scope=global` was run in that home only; every run meta shows `on / global`.
+- Order, strictly interleaved: R1-M, R1-F, R2-M, R2-F, for three rounds (12 runs, 2026-11-11 13:38–14:27 UTC). All rc=0, no timeouts, no retries, and all 12 clones are clean.
+- Prompts: `cmp ../out/R1-a.prompt.txt out/R1-<arm><n>.prompt.txt` and `cmp ../out/R2-a.prompt.txt out/R2-<arm><n>.prompt.txt` exited 0 for all 12 runs.
+- A fourth round was not run: three rounds cost $14.888, and a round costs about $5.2 against the $17 cap.
+- User's real review mode: before 13:38:09Z and after 14:27:03Z, both `global: off, clone_local: "", effective: off, source: global`, identical apart from the timestamp line.
+- **Prompt text: not compared.** No existing, supported option records the materialized reviewer prompt text. There is no debug, trace or dump setting in `lib/review-host-relay.ts`, `lib/review-relay-contract.ts` or the `gentle_review*` code of `extensions/gentle-ai.ts`; the relay's only environment settings are timeouts, the buffer size and the relay contract. The binary's help shows no such flag. None was improvised.
+
+### Per run (this pass)
+
+Columns: outcome; the conflict-marker finding per lens (risk / resilience / readability / reliability) as cited line in `extensions/child-context.ts`, severity and `causal_disposition` (`i` = introduced, `u` = unknown); provider downgrades; reviewer tokens total/reasoning per role; cost (Pi estimate); wall.
+
+| run | outcome | risk | resilience | readability | reliability | downgrade (`unverified_location`) | reviewer tokens total/reasoning | cost $ | wall s |
+|---|---|---|---|---|---|---|---|---|---|
+| R1-m1 | correction_required | 27 BLOCKER i | 30 BLOCKER i | 30 BLOCKER i | 30 BLOCKER i | none | risk 15,597/633, res 15,955/970, read 16,554/1,292, rel 16,022/893, refuter 15,113/61 | 1.767 | 362.3 |
+| R1-f1 | escalated | 30 BLOCKER i | 30 BLOCKER i | 29 BLOCKER u | 27 BLOCKER i | readability | 15,887/895, 15,729/772, 16,091/937, 16,210/1,034, refuter 14,867/60 | 0.903 | 118.7 |
+| R1-m2 | escalated | 29 BLOCKER u | 30 BLOCKER i | 30 BLOCKER i | 30 BLOCKER i | risk | 15,757/770, 15,506/516, 16,207/1,034, 16,624/1,372, refuter 14,856/38 | 1.794 | 346.7 |
+| R1-f2 | escalated | 30 BLOCKER i | 26 BLOCKER u | 30 BLOCKER i | 30 BLOCKER i | resilience | 15,815/872, 15,369/368, 16,494/1,216, 16,498/1,236, refuter 14,814/57 | 0.707 | 120.8 |
+| R1-m3 | escalated | 27 BLOCKER i | 26 BLOCKER u | 26 BLOCKER u | 26 BLOCKER u | resilience, readability, reliability | 15,767/798, 15,355/398, 16,123/1,004, 16,431/1,238, refuter 14,193/0 | 1.931 | 382.6 |
+| R1-f3 | correction_required | 30 BLOCKER i | 30 BLOCKER i | 30 BLOCKER i | 30 BLOCKER i | none | 15,854/908, 15,599/635, 16,093/1,034, 16,258/1,142, refuter 15,094/38 | 0.539 | 96.7 |
+
+For R2, the columns are the npm `json=true` finding per lens (severity, location in `scripts/pi-update.mjs`, or "—" when the lens did not report it) and the refuter's result:
+
+| run | outcome | risk | resilience | readability | reliability | refuter | reviewer tokens total/reasoning | cost $ | wall s |
+|---|---|---|---|---|---|---|---|---|---|
+| R2-m1 | approved (no findings recorded) | — | — | — | — | did not run | risk 24,279/516, res 25,655/1,867, read 24,626/899, rel 25,885/2,070 | 1.800 | 376.7 |
+| R2-f1 | approved | — | — | — | — (one WARNING about `tests/pi-update.test.ts:78-79`, not `json`) | did not run | 24,533/723, 24,429/685, 24,703/984, 26,011/2,017 | 0.683 | 135.9 |
+| R2-m2 | correction_required (blocked on `json`) | — | — | — | CRITICAL `:303-304` | corroborated | 24,053/285, 25,666/1,895, 24,981/1,245, 26,847/2,908, refuter 23,223/82 | 1.901 | 364.7 |
+| R2-f2 | approved | — | WARNING `:303-304` | — | — (WARNING on adjacent peer `:384-387`) | did not run | 24,220/432, 26,998/3,031, 24,755/1,034, 26,747/2,668 | 0.585 | 132.7 |
+| R2-m3 | approved | — | WARNING `:303-304` (id `R4-json-view-output`; M closures carry no claim text) | — | — (WARNING on adjacent peer `:384-386`) | did not run | 24,010/224, 25,994/2,070, 24,352/587, 26,502/2,436 | 1.657 | 331.0 |
+| R2-f3 | correction_required (blocked on `json`) | — | CRITICAL `:302-303` | — | — | corroborated | 24,485/674, 24,954/1,034, 24,734/1,000, 25,126/1,348, refuter 23,207/58 | 0.624 | 99.0 |
+
+### Pooled same-commit tests
+
+Pooled runs: this pass plus L10's same-commit runs. M: one-call-quality R1-m1, R1-m2, R2-m1, R2-m2. F (4eb357f8b): one-call-quality R1-f1, R1-f2, R2-f1, R2-f2, and one-call-final R1-final, R2-final.
+
+R1, escalated vs not:
+
+| arm | escalated | not escalated |
+|---|---|---|
+| M (6e61ac3bd) | 2 (q2 R1-m2, R1-m3) | 3 (q R1-m1, R1-m2; q2 R1-m1) |
+| F (4eb357f8b) | 5 (q R1-f1, R1-f2; R1-final; q2 R1-f1, R1-f2) | 1 (q2 R1-f3) |
+
+Two-sided Fisher exact p = **0.242424** (`tools/fisher.py`; hypergeometric probabilities for the M-escalated cell x = 1..5: 0.015152, 0.181818, 0.454545, 0.303030, 0.045455; observed x = 2).
+
+R2, blocked on npm `json=true` vs not:
+
+| arm | blocked | not blocked |
+|---|---|---|
+| M (6e61ac3bd) | 3 (q R2-m1, R2-m2; q2 R2-m2) | 2 (q2 R2-m1, R2-m3) |
+| F (4eb357f8b) | 1 (q2 R2-f3) | 5 (q R2-f1, R2-f2; R2-final; q2 R2-f1, R2-f2) |
+
+Two-sided Fisher exact p = **0.242424** (x = 0..4: 0.045455, 0.303030, 0.454545, 0.181818, 0.015152; observed x = 3).
+
+Older trees, not pooled: 29b57a414 R1-a correction_required and R2-a blocked on `json` (two lenses CRITICAL); 234cf3a31 R1-pilot escalated and R2-after blocked on `json`.
+
+Verdict by the rule:
+- **R1: "chance" by the pre-stated rule, that is, inconclusive.** Both outcomes occur in both arms, and p = 0.2424 ≥ 0.05.
+- **R2: "chance" by the pre-stated rule, that is, inconclusive.** Both outcomes occur in both arms, and p = 0.2424 ≥ 0.05.
+
+### Observations
+
+- **R1 escalation tracks the cited line, in both arms.** Across all 13 R1 runs listed here (11 pooled, 2 on older trees), a conflict-marker finding was downgraded for `unverified_location` exactly when its lens cited line 26, 29 or 29-35 and recorded `causal_disposition: unknown`. Citations of lines 27, 28 and 30 (all `introduced`) were never downgraded. Every run with at least one such citation escalated; every run without one ended `correction_required`.
+- **R2 blocks or approves on one lens's severity for the `json` finding.** It blocked when a lens rated it CRITICAL (the refuter then corroborated it) and was approved when the lenses rated it WARNING or did not report it. This happened in both arms.
+- **Prompt sizes:** lens prompt byte counts for R1 and R2 are the same as in L10 in all 12 runs, in both arms.
+
+### Anomalies
+
+1. **R1-m3 (M):** the parent captured `review-risk` alone with `gentle_review_capture` (forecast, then acknowledged) before capturing the other three lenses with `gentle_review_capture_group`. So in this run one lens finished before the other three started; every other M run captured all four as one group. The three lenses captured together all cited line 26 with `unknown` and were downgraded.
+2. **Explorer launched:** the R2-m1 parent (approved, no findings) launched one `gentle-ai-explore` child ($0.0104) to look for findings.
+3. **R2-m3 claim text:** its `json` advisory is identified by id and location only, because M approved closures carry no claim text (L7).
+
+### Spend
+
+$14.888 (Pi estimates; M $10.848 over 6 runs, F $4.040 over 6 runs) against a $17 cap.
+
+### Limits
+
+- n = 5 (M) and 6 (F) per input. p = 0.24 does not show the arms are equal; it shows these counts are compatible with chance.
+- Reviewer prompt text was not compared: no supported recording option exists.

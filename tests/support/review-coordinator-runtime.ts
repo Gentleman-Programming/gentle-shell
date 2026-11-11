@@ -5,7 +5,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { createGentleAiExtension, __testing } from "../../extensions/gentle-ai.ts";
 import { decodeReviewStatusV3, type ReviewCollectInputV3, type ReviewStatusV3 } from "../../lib/review-integration-v2.ts";
 import type { NativeReviewCli } from "../../lib/native-review-cli.ts";
-import type { ReviewHostRelayRequest } from "../../lib/review-host-relay.ts";
+import { runReviewHostRelayReviewerGroup, type ReviewHostRelayPreparationRunner, type ReviewHostRelayRequest } from "../../lib/review-host-relay.ts";
 
 type Body = Record<string, any>;
 export interface CoordinatorRuntimeOptions {
@@ -23,10 +23,23 @@ export interface CoordinatorRuntimeOptions {
 	 * STATUS; STATUS then offers one host-mediated refuter slot, whose capture
 	 * returns the approved closure. "refuter-reoffers-group": the same, except
 	 * that every STATUS after the reconciliation offers the same group again.
+	 * "group": the same two-lens group, whose last submission returns the
+	 * approved closure (a lens-only review).
 	 * "untracked-selection": a fresh review is due, and pre-lineage STATUS asks
 	 * for the intended-untracked selection (status/v7).
 	 */
-	scenario?: "single" | "refuter" | "refuter-reoffers-group" | "untracked-selection";
+	scenario?: "single" | "group" | "refuter" | "refuter-reoffers-group" | "untracked-selection";
+	/**
+	 * Prepares each reviewer run instead of the fixture's stub preparation: the
+	 * group seam then runs the production `runReviewHostRelayReviewerGroup`
+	 * with it, and the single seam calls it before the fixture's submission.
+	 * Submissions stay the fixture's own.
+	 */
+	relayPrepare?: ReviewHostRelayPreparationRunner;
+	/** `ctx.modelRegistry` handed to the facade; the fixture defaults to none. */
+	modelRegistry?: unknown;
+	/** Pi's effective transport setting (`pi.getSettings().transport`). */
+	transport?: string;
 }
 const GROUP_LENSES = ["review-risk", "review-reliability"] as const;
 export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coordinator", options: CoordinatorRuntimeOptions = {}) {
@@ -91,13 +104,17 @@ export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coo
 	let modeReads = 0;
 	let candidateReads = 0;
 	let relayRuns = 0;
+	// Every provider request as received (shallow copies; a signal stays live).
+	const nativeRequests: { operation: string; request: unknown }[] = [];
 	const tools = new Map<string, any>();
 	const native = {
-		reviewMode: async () => {
+		reviewMode: async (request: unknown) => {
+			nativeRequests.push({ operation: "review-mode", request: { ...(request as Body) } });
 			const effective = options.mode?.(++modeReads, nativeCalls) ?? "on";
 			return { operation: "status", scope: "clone", status: { global: effective, cloneLocal: "", effective, source: "global" } };
 		},
-		targetStatus: async () => {
+		targetStatus: async (request: unknown) => {
+			nativeRequests.push({ operation: "target-status", request: { ...(request as Body) } });
 			assert.notEqual(state, "burned", "no STATUS after burn");
 			nativeCalls.push(`status:${state}`);
 			if (state === "approved") return approved;
@@ -110,7 +127,8 @@ export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coo
 			}
 			return groupStatus(groupSubmitted);
 		},
-		acknowledgeApproved: async () => {
+		acknowledgeApproved: async (request: unknown) => {
+			nativeRequests.push({ operation: "acknowledge-approved", request: { ...(request as Body) } });
 			assert.equal(state, "approved");
 			nativeCalls.push("acknowledge"); state = "burned";
 			return { schema: "gentle-ai.review-acknowledged/v1", lineageId: lineage, targetIdentity: target, consumedRevision: revision };
@@ -129,40 +147,53 @@ export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coo
 	const lensOf = (request: ReviewHostRelayRequest) => request.captureArgumentTokens.find((token) => token.startsWith("--lens="))?.slice("--lens=".length);
 	__testing.setReviewHostRelayRunnerForTesting(async (request) => {
 		relayRuns++;
+		const promptByteLength = options.relayPrepare === undefined ? 0 : (await options.relayPrepare(request)).promptByteLength;
 		if (scenario === "single") {
 			assert.equal(state, "reviewing");
+			nativeRequests.push({ operation: "capture:recorded-output", request: { captureArgumentTokens: [...request.captureArgumentTokens], submission: structuredClone(request.submission) } });
 			nativeCalls.push("capture:recorded-output"); state = "approved";
 			const submission = approvedClosure("review/capture-result");
-			return { submission, promptByteLength: 0, resultByteLength: Buffer.byteLength(submission) };
+			return { submission, promptByteLength, resultByteLength: Buffer.byteLength(submission) };
 		}
 		assert.equal(state, "refuting");
 		assert.equal(request.routingKey, "review-refuter");
+		nativeRequests.push({ operation: "capture-refuter", request: { captureArgumentTokens: [...request.captureArgumentTokens], submission: structuredClone(request.submission) } });
 		nativeCalls.push("capture-refuter"); state = "approved";
 		const submission = approvedClosure("review.capture-refuter");
-		return { submission, promptByteLength: 0, resultByteLength: Buffer.byteLength(submission) };
+		return { submission, promptByteLength, resultByteLength: Buffer.byteLength(submission) };
 	});
 	__testing.setReviewHostRelayGroupRunnersForTesting(async (requests) => {
 		relayRuns += requests.length;
+		if (options.relayPrepare !== undefined) return await runReviewHostRelayReviewerGroup(requests, options.relayPrepare);
 		return requests.map((request) => ({ request, promptByteLength: 0, resultByteLength: 0 }));
 	}, async (prepared) => {
 		assert.equal(state, "reviewing");
+		nativeRequests.push({ operation: "capture-result", request: { captureArgumentTokens: [...prepared.request.captureArgumentTokens], submission: structuredClone(prepared.request.submission) } });
 		nativeCalls.push(`capture-result:${lensOf(prepared.request)}`);
-		if (++groupSubmitted === GROUP_LENSES.length) state = "refuting";
+		if (++groupSubmitted === GROUP_LENSES.length) {
+			if (scenario === "group") {
+				state = "approved";
+				const submission = approvedClosure("review/capture-result");
+				return { submission, promptByteLength: prepared.promptByteLength, resultByteLength: Buffer.byteLength(submission) };
+			}
+			state = "refuting";
+		}
 		// An admitted reviewer result that is not the last event: no closure.
-		return { submission: "{}", promptByteLength: 0, resultByteLength: 2 };
+		return { submission: "{}", promptByteLength: prepared.promptByteLength, resultByteLength: 2 };
 	});
 	createGentleAiExtension({ nativeReviewCli: native, candidateViews: null,
 		// The coordinator is registered by default; "0" is its explicit opt-out.
 		processEnv: { ...(variant === "coordinator" ? {} : { GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR: "0" }), GENTLE_AI_TELEMETRY: "0" },
-	})({ on() {}, registerCommand() {}, registerTool: (tool: any) => tools.set(tool.name, tool) } as never);
+	})({ on() {}, registerCommand() {}, registerTool: (tool: any) => tools.set(tool.name, tool),
+		...(options.transport === undefined ? {} : { getSettings: () => ({ transport: options.transport }) }) } as never);
 	const forecasts: Body[] = [];
-	const context = { cwd, hasUI: options.hasUI ?? true, sessionManager: { getSessionId: () => "fixture-live-driver", getBranch: () => [], getSessionFile: () => undefined }, modelRegistry: undefined };
+	const context = { cwd, hasUI: options.hasUI ?? true, sessionManager: { getSessionId: () => "fixture-live-driver", getBranch: () => [], getSessionFile: () => undefined }, modelRegistry: options.modelRegistry };
 	const facadeCalls: { name: string; parameters: Body; elapsed_ms: number }[] = [];
-	return { tools, lineage, target, nativeCalls, facadeCalls, forecasts,
-		async invoke(name: string, parameters: Body) {
+	return { tools, lineage, target, nativeCalls, nativeRequests, facadeCalls, forecasts,
+		async invoke(name: string, parameters: Body, signal?: AbortSignal) {
 			const tool = tools.get(name); assert.ok(tool, `registered tool ${name}`);
 			const began = performance.now();
-			const result = await tool.execute("fixture-call", parameters, undefined, (update: any) => forecasts.push(update.details), context);
+			const result = await tool.execute("fixture-call", parameters, signal, (update: any) => forecasts.push(update.details), context);
 			facadeCalls.push({ name, parameters, elapsed_ms: performance.now() - began });
 			return result.details as Body;
 		},

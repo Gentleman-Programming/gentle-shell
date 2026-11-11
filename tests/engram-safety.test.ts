@@ -253,6 +253,115 @@ test("the header is a newer-schema tripwire against the verified bundled schema,
 	assert.equal(shell.engramHeaderAllows(0, undefined), false);
 });
 
+test("the compatibility comparator keeps its old semantics across the refactor", () => {
+	assert.match(shell.engramOutdatedServerNotice("3.3.9"), /3\.3\.9/);
+});
+
+// T3 (S1, S3, S4): the companion-vs-core contract gate, warn only.
+const CONTRACT_352 = "4bf32703e111162b24073d090bec1c15c9120708587000bf595a07264e768672";
+const CONTRACT_370 = "0af9af176928e98562ab1396d3196efe582dd5d1c5d2c5f8f546ab4ed609810f";
+const RUNTIME_CONTRACT = { contract_id: "engram.pi-http-runtime/v1", revision: 1, digest: CONTRACT_370 };
+
+test("the bundled core contract table holds exactly the two verified release digests", () => {
+	assert.deepEqual([shell.bundledEngramContract("3.5.2"), shell.bundledEngramContract("3.7.0")], [CONTRACT_352, CONTRACT_370]);
+	for (const version of ["3.3.2", "3.4.0", "3.6.9", "9.9.9", ""]) assert.equal(shell.bundledEngramContract(version), undefined, version);
+	// The provenance stays named in the source: read from GET /runtime-contract
+	// of the real release binaries during development, and the 3.5.2 windows
+	// archive sha256 matched the retired 3.5.2 pin exactly.
+	const source = readFileSync(join(repository, "lib", "gentle-shell-bundled.ts"), "utf8");
+	assert.match(source, /GET \/runtime-contract/);
+	assert.match(source, /windows archive sha256[\s\S]{0,160}retired 3\.5\.2 pin/);
+});
+
+test("the runtime contract parser accepts only the exact contract id, an integer revision and a lowercase 64-hex digest", () => {
+	assert.deepEqual(shell.parseEngramRuntimeContract(RUNTIME_CONTRACT), RUNTIME_CONTRACT);
+	assert.deepEqual(shell.parseEngramRuntimeContract({ ...RUNTIME_CONTRACT, revision: 41 }), { ...RUNTIME_CONTRACT, revision: 41 });
+	assert.deepEqual(shell.parseEngramRuntimeContract({ ...RUNTIME_CONTRACT, extra: "kept" }), RUNTIME_CONTRACT);
+	for (const change of [{ contract_id: "engram.pi-http-runtime/v2" }, { contract_id: 1 }, { contract_id: undefined }, { revision: "1" }, { revision: 1.5 },
+		{ revision: null }, { revision: undefined }, { digest: CONTRACT_370.toUpperCase() }, { digest: "0af9af" }, { digest: 42 }, { digest: undefined },
+		{ digest: `${CONTRACT_370}0` }]) {
+		assert.equal(shell.parseEngramRuntimeContract({ ...RUNTIME_CONTRACT, ...change }), undefined, JSON.stringify(change));
+	}
+	for (const junk of [undefined, null, "text", 42, [], {}, ["x"], new Date(0)]) {
+		assert.equal(shell.parseEngramRuntimeContract(junk), undefined, String(junk));
+	}
+});
+
+test("the mismatch notice is loud only when both digests are known and differ", () => {
+	const notice = shell.engramContractMismatchNotice(CONTRACT_370, "3.5.2");
+	assert.match(notice!, new RegExp(CONTRACT_370));
+	assert.match(notice!, /3\.5\.2/);
+	assert.match(notice!, new RegExp(CONTRACT_352));
+	assert.match(notice!, /memory may be unavailable until the pair matches/);
+	assert.match(notice!, /new Gentle Shell release/);
+	assert.match(notice!, /update the companion/);
+	// Equal digests and unknown sides stay silent: never a false alarm.
+	assert.equal(shell.engramContractMismatchNotice(CONTRACT_352, "3.5.2"), undefined);
+	assert.equal(shell.engramContractMismatchNotice(undefined, "3.5.2"), undefined);
+	assert.equal(shell.engramContractMismatchNotice("0af9af", "3.5.2"), undefined);
+	assert.equal(shell.engramContractMismatchNotice(CONTRACT_370, "9.9.9"), undefined);
+	// The launch path passes the digest the running server actually answered.
+	assert.match(shell.engramContractMismatchNotice(CONTRACT_352, "3.7.0", CONTRACT_370)!, new RegExp(CONTRACT_370));
+	// A reused server is named as itself, never misattributed to the pinned
+	// version, because the digest came from that server and not from the pin.
+	const live = shell.engramContractMismatchNotice(CONTRACT_370, "3.7.0", CONTRACT_352, "the running Engram server")!;
+	assert.match(live, /the running Engram server answers/);
+	assert.doesNotMatch(live, /Engram core 3\.7\.0 answers/);
+	// An unparseable live answer leaves the core side unknown: the launcher
+	// returns before calling with the third argument (asserted in the wiring
+	// test below), and the two-argument call still compares against the table.
+	assert.equal(shell.engramContractMismatchNotice(CONTRACT_352, "9.9.9", CONTRACT_352), undefined);
+	// Warn only (S3): no contradicting memory-disabled framing.
+	assert.doesNotMatch(notice!, /memory disabled|disabled:/i);
+});
+
+test("the live contract probe reads only /runtime-contract and answers the parsed digest or undefined", async (t) => {
+	const seen: string[] = [];
+	const port = await listen(t, (path, response) => { seen.push(path); json(response, 200, RUNTIME_CONTRACT); });
+	assert.equal(await shell.probeEngramRuntimeContract({ port }), CONTRACT_370);
+	assert.deepEqual(seen, ["/runtime-contract"]);
+	for (const [status, body] of [[404, { error: "not found" }], [500, {}], [200, "{"],
+		[200, { contract_id: "engram.pi-http-runtime/v2", revision: 1, digest: CONTRACT_370 }]] as Array<[number, unknown]>) {
+		const broken = await listen(t, (path, response) => path === "/runtime-contract" ? json(response, status, body) : json(response, 404, {}));
+		assert.equal(await shell.probeEngramRuntimeContract({ port: broken, timeoutMs: 500 }), undefined, `${status} ${JSON.stringify(body)}`);
+	}
+});
+
+test("the launcher wires the warn-only contract gate into companion verification and the ready shared server", () => {
+	const launcher = readFileSync(join(repository, "bin", "gentle-shell.mjs"), "utf8");
+	// ensureEngramCompanion reads <home>/npm/node_modules/gentle-engram/runtime-contract.json and warns only.
+	assert.match(launcher, /async function ensureEngramCompanion[\s\S]{0,300}warnEngramContractMismatch\(home\);/);
+	assert.match(launcher, /function warnEngramContractMismatch\([\s\S]{0,600}runtime-contract\.json/);
+	// At launch, once the shared server is ready, the live GET /runtime-contract
+	// digest is compared with the companion's file.
+	assert.match(launcher, /if \(bundledMemory\.policy === "allow"\) await warnLiveEngramContractMismatch\(home\);/);
+	assert.match(launcher, /function warnLiveEngramContractMismatch\([\s\S]{0,600}probeEngramRuntimeContract\(\)/);
+	// An unparseable live answer leaves the core side unknown: skip, warn only.
+	assert.match(launcher, /const live = await probeEngramRuntimeContract\(\);[\s\S]{0,160}if \(live === undefined\) return;/);
+	// Warn only: neither helper fails the launch or changes an exit code.
+	for (const name of ["warnEngramContractMismatch", "warnLiveEngramContractMismatch"]) {
+		const start = launcher.indexOf(`function ${name}`);
+		const rest = launcher.slice(start + 1);
+		const body = rest.slice(0, rest.search(/\n(async )?function /));
+		assert.match(body, /process\.stderr\.write/, name);
+		assert.doesNotMatch(body, /fail\(|process\.exit\(/, name);
+	}
+});
+
+test("the extensions update re-verifies the managed companion after the child completes", () => {
+	const launcher = readFileSync(join(repository, "bin", "gentle-shell.mjs"), "utf8");
+	// T4 (S2, S5): after the pi update --extensions child completes for a
+	// bundled, Shell-owned home, the same companion verification that setup and
+	// launch run runs even though a piSubcommand is set. Warn only: never a
+	// failure for a successful update, the selection is never rewritten.
+	// `signal` is null (not undefined) on a normal exit, so the guard tests
+	// truthiness: a signal-killed child did not complete and is left to the next
+	// launch's verification.
+	assert.match(launcher,
+		/bundled && extensionUpdate && !signal && ownsCompanionHome\(home, homeHadContentBeforeBootstrap\)[\s\S]{0,400}ensureEngramCompanion\(home, runtime, \["ignore", 2, 2\], 10000, homeHadContentBeforeBootstrap\)/);
+	assert.match(launcher, /verified after the extensions update/);
+});
+
 function listen(t: TestContext, handler: (path: string, response: import("node:http").ServerResponse) => void): Promise<number> {
 	const server: Server = createServer((request, response) => handler(request.url ?? "", response));
 	t.after(() => new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()); }));

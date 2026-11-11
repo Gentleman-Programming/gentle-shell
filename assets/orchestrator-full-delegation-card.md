@@ -17,19 +17,19 @@ Before delegating, declare a subject via `orchestrator_session_id`.
 
 **Invariants:** the writer reuses the existing function for shared state and keeps its invariants (ordering, uniqueness, validation, normalization); writer prompts name those helpers.
 
-**Differential check (PRESERVE):** forward the harness test-first policy's differential check to writers.
+**Differential check (PRESERVE):** forward the test-first differential check to writers.
 
 ## Launch
 
 - Derive nonempty `## Allowed edit surfaces` before launching a writer (below). Parallel writers only with disjoint Allowed edit surfaces (runtime-enforced) or isolated worktrees.
 - Pass the session's resolved skill paths under `## Skills to load before work`; children read them first (`orchestrator-skills.md`).
-- A child must be able to do the task it is given. Check the agent's declared `tools` in `subagent_list_agents` before launching: never give a read-only explorer shell, HTTP or MCP work, and never assume your own tools transfer to the child. With no qualified agent, report the capability gap; never do the work yourself instead.
+- A child must be able to do the task it is given. Check the agent's declared `tools` in `subagent_list_agents` before launching: never give a read-only explorer shell work, and never assume your own tools transfer to the child. With no qualified agent, report the capability gap; never do the work yourself instead.
 - Background (policy on, `subagent_run` present): omit `mode`; it returns a task id at once. End the turn and resume on its `gentle-agents.result` completion message; never sleep or poll `subagent_status`. Otherwise run in the foreground. Detail: below.
 - Do not pass `model` to generic subagents unless the user asks.
 
 #### Allowed edit surfaces (MANDATORY)
 
-The bounded writer refuses to write outside the exact allowed edit surfaces and stops with `status: interaction_required` when they are missing. The parent derives them while planning the delegation; neither the writer nor the human supplies them.
+The bounded writer refuses to write outside the exact allowed edit surfaces and stops with `status: interaction_required` when they are missing. Every new writer launch carries the section (a continuation inherits it); after an admission rejection, repair what it names once, never relaunch the same prompt unchanged.
 
 Before launching a bounded writer (`gentle-ai-worker`, a user-configured `worker`, or the native `Agent` fallback), derive the allowed edit surface from the delegated task — files the change must touch, plus directories where it authorizes new files — and pass it in the prompt under an `## Allowed edit surfaces` heading, in the exact-path form of `## Skills to load before work`:
 
@@ -40,7 +40,7 @@ Before launching a bounded writer (`gentle-ai-worker`, a user-configured `worker
 
 Test scratch stays outside the worktree (`mktemp -d`), never in the repository (nor caches or `TMPDIR`); state needed inside uses an excluded path the test removes. The runtime owns session scratch; `/gentle:scratch` lists or cleans recorded clones and worktrees.
 
-If the surface genuinely cannot be derived, do not launch the writer or ask the human to author paths. Derive a candidate set first — the exact paths this task would touch — and present that enumerated list as an approve/decline choice under the Lossless Blocking Prompts rules in `orchestrator-prompts.md`. A free-text question asking which paths or globs to authorize is never a valid escalation: computing it is the parent's job.
+If the surface genuinely cannot be derived, do not launch the writer or ask the human to author paths. Derive a candidate set first — the exact paths this task would touch — and present that enumerated list as an approve/decline choice under the Lossless Blocking Prompts rules in `orchestrator-prompts.md`.
 
 Relay a writer's `interaction_required` payload about edit surfaces the same way: present its derived candidate paths as the choice, and add or drop paths only on the human's explicit instruction.
 

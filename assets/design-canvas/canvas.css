@@ -336,7 +336,7 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport
 .gd-focused .gd-artboard:not(.gd-focus-board) { opacity: 0.25; }
 .gd-focused .gd-focus-board .gd-artboard-frame { box-shadow: 0 0 0 2px var(--gd-accent), 0 2px 16px rgba(0, 0, 0, 0.5); }
 
-/* Floats in the band canvas.js keeps free below the focused artboard. */
+/* Floats in the band canvas-focus.js keeps free below the focused artboard. */
 .gd-back {
 	position: absolute;
 	bottom: 16px;

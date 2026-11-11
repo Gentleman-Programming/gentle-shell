@@ -101,6 +101,24 @@ test("only complete known Windows shims name what they run: npm cmd-shim, pnpm's
 	assert.equal(windowsShim(undefined), null);
 });
 
+// The exact PowerShell range check bootstrap.cmd applies to the repository's engines.node.
+const windowsRangeCheck = "(@($metadata.engines.node -split '\\s*\\|\\|\\s*' | Where-Object { $floor = [Version]$_.TrimStart('^', '>', '='); $actual -ge $floor -and (-not $_.StartsWith('^') -or $actual.Major -eq $floor.Major) }).Count -gt 0)";
+// A caret clause needs a major of 1 or more, as nodeRequirementClauses in installer-downloads.mjs.
+const windowsRangeGrammar = "'^(\\^[1-9][0-9]*|>=[0-9]+)\\.[0-9]+\\.[0-9]+(\\s*\\|\\|\\s*(\\^[1-9][0-9]*|>=[0-9]+)\\.[0-9]+\\.[0-9]+)*$'";
+const pwsh = ["pwsh", "powershell"].find((name) => spawnSync(name, ["-NoProfile", "-Command", "exit 0"], { encoding: "utf8" }).status === 0);
+test("CMD entry accepts the repository's ^22.19.0 || >=23.6.0 Node range and checks versions against it", { skip: pwsh ? false : "PowerShell is not installed" }, () => {
+	const source = readFileSync(new URL("../scripts/bootstrap.cmd", import.meta.url), "utf8");
+	assert.ok(source.includes(`if ($metadata.engines.node -notmatch ${windowsRangeGrammar} -or`), "the bundle check reads the range grammar");
+	const run = (range: string, version: string) => spawnSync(pwsh!, ["-NoProfile", "-Command",
+		`$metadata = [pscustomobject]@{ engines = [pscustomobject]@{ node = '${range}' } }; $actual = [Version]'${version}'; ` +
+		`if ($metadata.engines.node -notmatch ${windowsRangeGrammar}) { 'unknown' } elseif (${windowsRangeCheck}) { 'in' } else { 'out' }`], { encoding: "utf8" }).stdout.trim();
+	const range = "^22.19.0 || >=23.6.0";
+	for (const version of ["22.19.0", "22.99.99", "23.6.0", "24.22.2", "25.0.0"]) assert.equal(run(range, version), "in", version);
+	for (const version of ["22.18.9", "23.0.0", "23.5.9", "21.99.99"]) assert.equal(run(range, version), "out", version);
+	assert.equal(run(">=22.19.0", "23.0.0"), "in");
+	for (const bad of ["*", "^22.19", ">=22.19.0 <25.0.0", "~22.19.0", "^0.1.0", "^0.1.0 || >=23.6.0"]) assert.equal(run(bad, "24.22.2"), "unknown", bad);
+});
+
 test("CMD entry contains fixed commands, data-only paths, early bundle checks and no policy bypass", () => {
 	const source = readFileSync(new URL("../scripts/bootstrap.cmd", import.meta.url), "utf8");
 	assert.match(source, /DisableDelayedExpansion/i);
@@ -837,7 +855,7 @@ test("an older or untrusted user Node re-enters the pinned acquisition once; the
 	assert.match(probe, /"& \{ \$child = \$null; \$started = \$false; \$acquired = \$true; \$step = 'policy'; try \{/, "refusal is the default before any check");
 	assert.match(probe, /throw 'missing-target' \}; \$acquired = Test-Path -LiteralPath \(Join-Path \$tools '\.node-stem'\);/);
 	assert.match(probe, /if \(\$acquired -and \$version -ne 'v24\.21\.0'\) \{ throw 'acquired-version' \};/);
-	assert.match(probe, /\[Version\]\$metadata\.engines\.node\.Substring\(2\)\) \{ if \(\$acquired\) \{ throw 'engine' \}; \[IO\.File\]::Delete\(\(Join-Path \$tools '\.node-target'\)\) \};/);
+	assert.ok(probe.includes(`if ($actual -lt [Version]'24.3.0' -or -not ${windowsRangeCheck}) { if ($acquired) { throw 'engine' }; [IO.File]::Delete((Join-Path $tools '.node-target')) };`));
 	const untrusted = probe.match(/if \(-not \$acquired -and \$reason -cmatch '\^\(([a-z|()-]+)\)\$'\) \{ \[IO\.File\]::Delete\(\(Join-Path \$env:GENTLE_BOOTSTRAP_TOOLS '\.node-target'\)\) \}\" \^\n {2}\"else \{ \[Console\]::Error\.WriteLine\(/);
 	assert.ok(untrusted, "only fixed storage codes leave the user's Node; everything else still refuses");
 	const leaves = new RegExp(`^(?:${untrusted[1]})$`);

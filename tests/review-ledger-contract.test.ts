@@ -6,7 +6,6 @@ import { REVIEW_LENS_PARITY_PATTERNS } from "./support/review-lens-parity.ts";
 import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
 const ROOT = join(import.meta.dirname, "..");
-const CANONICAL = "skills/_shared/review-ledger-contract.md";
 const ORCHESTRATOR = ["assets/orchestrator.md", "assets/orchestrator-delegation.md", "assets/orchestrator-writer.md"];
 const REVIEW_LENSES = [
 	"assets/agents/review-risk.md",
@@ -23,6 +22,7 @@ const README = "README.md";
 const TECHNICAL_REFERENCE = "docs/readme-reference.md";
 const CHAIN = "assets/chains/4r-review.chain.md";
 const WORKER = "assets/agents/gentle-ai-worker.md";
+const RDD_DEFECT_SKILL = "skills/rdd-defect-workflow/SKILL.md";
 
 function read(path: string): string {
 	return readFileSync(join(ROOT, path), "utf8");
@@ -71,7 +71,6 @@ const OBSOLETE_JUDGMENT_DAY_REPLACEMENT =
 	/Judgment Day starts only when explicitly requested and replaces ordinary review for that lineage\./;
 
 const JUDGMENT_DAY_SEMANTIC_SURFACES = [
-	CANONICAL,
 	JD_SKILL,
 	JD_PROMPTS,
 	...JUDGES,
@@ -91,39 +90,25 @@ const FIX_PATTERNS = [
 	/Do not add findings, alter frozen claims, authorize transitions, deliver, publish, or start another actor\./,
 ] as const;
 
-test("canonical contract defines compact risk, causal admission, correction, CAS, compatibility, and the delivery boundary", () => {
-	const content = read(CANONICAL);
-	assertMatches(CANONICAL, content, [
-		/start -> finalize -> validate/,
-		/`low`[\s\S]*`medium`[\s\S]*`high`/,
+test("technical reference and README keep the review budget, compact states, trust boundary, and the delivery boundary", () => {
+	// The retired skills/_shared/review-ledger-contract.md carried these rules too; the
+	// technical reference is where they still live (cost-speed-painpoints P15).
+	const reference = read(TECHNICAL_REFERENCE);
+	assertMatches(TECHNICAL_REFERENCE, reference, [
+		/`low \| medium \| high` tier/,
 		/min\(200, ceil\(original_changed_lines \/ 2\)\)/,
 		/testdata\/golden\/\*\*/,
 		/`reviewing`, `correction_required`, `validating`, `approved`, and `escalated`/,
-		/`evidence_class`, `causal_disposition`, and concrete proof/,
-		/`changed-hunk`[\s\S]*`candidate-created-path`[\s\S]*`differential-test`[\s\S]*`before-after`/,
-		/Only severe `introduced`, `behavior-activated`, or `worsened` findings with valid proof can enter `correction_ids`/,
-		/`pre-existing` and `base-only` findings become non-blocking follow-ups/,
-		/one correction transaction/i,
-		/original budget/i,
-		/frozen findings and genesis scope/i,
-		/content-derived revisions, compare-and-swap replacement, exact retry idempotency/i,
-		/graph-v1 ordinary lineages remain readable for compatibility but reject new mutation/i,
-		/Legacy graph bundle export\/import is retired/i,
+		/Ordinary permits one correction transaction within the original budget\./,
+		/frozen findings and genesis scope remain unchanged/,
+		/legacy graph bundle export\/import is retired/i,
 		/Judgment Day remains mutable on graph-v1/i,
-		/--agent=pi --materialize=true/,
-		/provider-owned submission form/i,
-		/self-contained authority-advancing vectors/i,
-		/Commit, push, pull-request creation, and release creation are not provider receipt gates/i,
-		/Review outcomes and receipt state never authorize delivery/i,
-		/reassess it immediately before delivery/i,
-		/Review transactions, validation, and SDD never perform delivery commands themselves/i,
 		/local orchestrator and same-user process are trusted/i,
-		/reviewer and validator outputs remain semantically untrusted/i,
-		/do not report.*trusted local orchestrator.*security finding/i,
-		/untrusted repository content.*malformed inputs.*stale authority.*path drift.*external callers/i,
 		...JUDGMENT_DAY_DISCOVERY_PATTERNS,
 	]);
-	assert.match(read(TECHNICAL_REFERENCE), /Review outcomes never authorize delivery; commit, push, pull-request and release actions follow ordinary repository policy\./);
+	assert.doesNotMatch(reference, /up to three failed targeted attempts|third failed attempt/i);
+	assert.match(read(RDD_DEFECT_SKILL), /Keep bounded review defects in one correction transaction/);
+	assert.match(reference, /Review outcomes never authorize delivery; commit, push, pull-request and release actions follow ordinary repository policy\./);
 	assert.match(read(README), /\]\(docs\/readme-reference\.md(?:#[^)]+)?\)/);
 	assert.doesNotMatch(read(README), /one one-shot authorization for the exact command/i);
 	assert.doesNotMatch(read(README), /review-publication-gate/i);
@@ -231,16 +216,6 @@ test("ordinary lens prompts contain the literal compact-v2 native result envelop
 	}
 });
 
-test("retained provider review contract preserves bounded correction without declaring approval", () => {
-	const content = read(CANONICAL);
-	assert.match(content, /one correction transaction/i);
-	assert.match(content, /original budget/i);
-	assert.match(content, /`correction_required`/);
-	assert.doesNotMatch(content, /up to three failed targeted attempts|third failed attempt/i);
-	assert.match(content, /`reviewing`, `correction_required`, `validating`, `approved`, and `escalated`/);
-	assert.match(content, /Only severe `introduced`, `behavior-activated`, or `worsened` findings with valid proof can enter `correction_ids`/);
-});
-
 test("risk lens distinguishes trusted orchestration from concrete boundary bypasses", () => {
 	const content = read("assets/agents/review-risk.md");
 	assert.match(content, /local orchestrator and same-user process are trusted/i);
@@ -330,7 +305,6 @@ test("Judgment Day fix routing has one canonical shape and never falls back to g
 		"## Allowed edit surfaces",
 	].join("\n");
 	for (const [path, content] of [
-		[CANONICAL, read(CANONICAL)],
 		[FIX_AGENT, read(FIX_AGENT)],
 		[JD_SKILL, read(JD_SKILL)],
 		[JD_PROMPTS, fencedBlock(JD_PROMPTS, "## Fix Agent Prompt")],
@@ -345,7 +319,8 @@ test("Judgment Day fix routing has one canonical shape and never falls back to g
 });
 
 test("orchestrator, injected skill, and technical reference defer RDD lifecycle ownership to Gentle AI", () => {
-	const boundary = "This package injects the mirrored provider-bundle review execution contract into this session's system prompt at start; Gentle AI writes nothing into the Pi system prompt, and this package owns everything else here. Absent that mirrored contract, this package invents no lifecycle instructions.";
+	// cost-speed-painpoints S15 P5a (verdict X1): the contract is injected only while RDD is not off.
+	const boundary = "While RDD is not off, this package injects the mirrored provider-bundle review execution contract; Gentle AI writes nothing into this prompt. Absent that mirrored contract, this package invents no lifecycle instructions.";
 	const orchestrator = union(ORCHESTRATOR);
 	assert.ok(orchestrator.includes(boundary), "orchestrator must carry the sole static ownership boundary");
 

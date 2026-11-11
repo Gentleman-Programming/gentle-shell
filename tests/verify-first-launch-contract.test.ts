@@ -44,33 +44,42 @@ function containsAll(text: string, clauses: readonly string[], label: string): v
 test("S1: verifier makes one isolated preparation attempt before checks", () => {
 	containsAll(verify, [
 		"Make one isolated preparation attempt",
-		"If preparation succeeds, run the authorized checks and independent spec-derived probes",
+		// Cost-speed P8 B2: the verifier runs its evidence commands and probes, never the writer's reported suite.
+		"If preparation succeeds, run your evidence commands and independent spec-derived probes",
 	], "preparation bound");
 });
 
 test("S2: preparation failure reports a concrete blocker and exact unrun checks", () => {
 	containsAll(verify, [
-		"At the first inability to prepare a required copy, environment, dependency, or helper, stop setup",
+		"At a second failure, or at any missing or unavailable prerequisite (a tool, network, space, permission), stop setup",
 		"report one concrete setup blocker and the exact checks left unrun as unverified, not passed",
 		"list every scratch directory you created by exact path",
 	], "setup failure");
 });
 
 test("S3: setup failures do not trigger repair loops or automatic relaunch", () => {
-	containsAll(verify, ["Do not retry setup or enter repair-helper loops"], "verifier setup");
+	containsAll(verify, [
+		"When it fails on a deterministic error in a command or environment you constructed (a wrong flag, conflicting config, a typo, a path you chose), make exactly one corrected attempt without asking anyone and report both attempts.",
+		"No further setup retries and no repair-helper loops.",
+	], "verifier setup");
+	assert.ok(!verify.includes("Do not retry setup"), "verifier self-correction replaces the blanket no-retry rule");
 	containsAll(verification, [
-		"Do not automatically relaunch the verifier for the same missing prerequisite",
-		"Distinguish setup or infrastructure failure from genuine code findings",
-		"stop with one **Needs your decision** result identifying the missing prerequisite and exact unrun checks",
-		"Do not keep repairing helpers",
-		"Auxiliary tooling defects remain subject to the existing correction bound",
+		"A verifier's self-fix of its own setup error (one correction in the same verification) needs no decision; if it made none, relaunch once with the corrected command, unasked.",
+		"If setup still fails or lacks prerequisites, stop: one **Needs your decision** naming the blocker and exact unrun checks as unverified",
+		"never repair helpers more or auto-relaunch for it",
+		"Setup/infrastructure failures aren't code findings; tooling defects keep the correction bound.",
 	], "parent setup");
+});
+
+test("S3: parent setup rule keeps the human-requested relaunch after a repaired prerequisite", () => {
+	assert.doesNotMatch(verification, /never[^.]*\brelaunch for (that|the same)[^.]*prerequisite/);
+	assert.match(verification, /auto-?(matically )?relaunch/);
 });
 
 test("S2-S3: setup recovery references the always-on bounded policy", () => {
 	containsAll(verification, [
 		"Follow **Authorized work continuity** for setup and worker recovery; scratch: `gentle-ai-verify`.",
-		"Do not automatically relaunch the verifier for the same missing prerequisite",
+		"auto-relaunch for it",
 	], "parent setup recovery");
 });
 
@@ -90,6 +99,9 @@ test("S5: documentation identifies the instruction as policy rather than runtime
 	const docs = read("docs/delegated-verification.md");
 	containsAll(docs, [
 		"one isolated preparation attempt",
+		"the verifier makes exactly one corrected attempt without asking and reports both",
+		"the parent relaunches it once with the corrected command, without asking a human",
+		"automatically relaunching for the same prerequisite",
 		"prompt policy, not a runtime-enforced limit",
 		"unverified, not passed",
 	], "delegated verification documentation");

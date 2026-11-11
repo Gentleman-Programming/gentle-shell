@@ -21,8 +21,27 @@ done
 [ -d "$HOME" ] || fail 'HOME directory is missing'
 uid=$(id -u)
 ls -nd "$HOME" | awk -v uid="$uid" '$3 == uid && substr($1,6,1) != "w" && substr($1,9,1) != "w" {ok=1} END {exit !ok}' || fail 'Unsafe HOME ownership or permissions'
-minimum=$(awk -F '"' '{for (i=2; i<=NF-2; i+=2) if ($i == "node" && $(i+2) ~ /^>=[0-9]+\.[0-9]+\.[0-9]+$/) {value=$(i+2); sub(/^>=/, "", value); count++}} END {if (count == 1) print value}' "$bundle/package.json")
-[ -n "$minimum" ] || fail 'Cannot establish repository Node minimum'
+# The repository's engines.node: retain the original field scan and validate every
+# clause against nodeRequirementClauses before probing or acquisition.
+requirement=$(awk -F '"' '
+    {for (i=2; i<=NF-2; i+=2) if ($i == "node" && $(i+2) ~ /^(\^|>=)[0-9]+\.[0-9]+\.[0-9]+( *\|\| *(\^|>=)[0-9]+\.[0-9]+\.[0-9]+)*$/) {value=$(i+2); count++}}
+    END {
+        if (count != 1) exit
+        range = value; gsub(/ /, "", range); n = split(range, clauses, "[|][|]")
+        for (c=1; c<=n; c++) {
+            caret = substr(clauses[c],1,1) == "^"
+            sub(/^(\^|>=)/, "", clauses[c]); split(clauses[c], parts, ".")
+            if (caret && parts[1] == "0") exit
+            for (j=1; j<=3; j++) {
+                p = parts[j]
+                if ((length(p) > 1 && substr(p,1,1) == "0") || length(p) > 16 ||
+                    (length(p) == 16 && (substr(p,1,8)+0 > 90071992 ||
+                        (substr(p,1,8)+0 == 90071992 && substr(p,9,8)+0 > 54740991)))) exit
+            }
+        }
+        print value
+    }' "$bundle/package.json")
+[ -n "$requirement" ] || fail 'Cannot establish repository Node requirement'
 version_ok() {
     awk -v value="$1" -v minimum="$2" 'BEGIN {
         sub(/^v/, "", value)
@@ -37,6 +56,24 @@ version_ok() {
 }
 # Any stable version at all: version_ok against 0.0.0 accepts exactly those.
 stable_version() { version_ok "$1" 0.0.0; }
+# A stable version inside the repository range: any clause matches, and ^a.b.c
+# also keeps the major (so ^22.19.0 || >=23.6.0 refuses 23.0-23.5).
+node_ok() {
+    stable_version "$1" || return 1
+    awk -v value="$1" -v range="$requirement" 'BEGIN {
+        sub(/^v/, "", value); split(value, a, ".")
+        gsub(/ /, "", range); n = split(range, clauses, "[|][|]")
+        for (c=1; c<=n; c++) {
+            clause = clauses[c]; caret = substr(clause, 1, 1) == "^"
+            sub(/^(\^|>=)/, "", clause); split(clause, b, ".")
+            if (caret && (b[1]+0 == 0 || a[1]+0 != b[1]+0)) continue
+            ok = 1
+            for (i=1; i<=3; i++) { if (a[i]+0 > b[i]+0) break; if (a[i]+0 < b[i]+0) { ok = 0; break } }
+            if (ok) exit 0
+        }
+        exit 1
+    }'
+}
 # A stock POSIX watchdog avoids assuming GNU timeout on macOS.
 # These fixed prerequisite probes get an unignorable deadline, not graceful TERM.
 # Signal only our direct child PID; do not kill inherited process groups.
@@ -91,7 +128,7 @@ acquire_node=1
 if command -v node >/dev/null 2>&1; then
     node=$(command -v node)
     version=$(bounded 10 "$node" --version 2>/dev/null) || fail 'Existing Node version probe failed'
-    if version_ok "$version" "$minimum"; then acquire_node=0
+    if node_ok "$version"; then acquire_node=0
     # An older stable Node is left as it is: the verified Node below runs the
     # installer instead, exactly as when Node is absent.
     elif ! stable_version "$version"; then fail 'Existing Node is incompatible or unknown; refusing replacement'; fi
@@ -146,7 +183,7 @@ if [ "$acquire_node" = 1 ]; then
     candidate=$tools/staging/$member
     [ -f "$candidate" ] && [ ! -L "$candidate" ] || fail 'Node executable missing or unsafe'
     version=$(bounded 10 "$candidate" --version 2>/dev/null) || fail 'Acquired Node cannot execute on this native platform'
-    [ "$version" = v24.21.0 ] && version_ok "$version" "$minimum" || fail 'Acquired Node version rejected'
+    [ "$version" = v24.21.0 ] && node_ok "$version" || fail 'Acquired Node version rejected'
     bounded 10 chmod 700 "$candidate" 2>/dev/null || fail 'Cannot secure acquired Node executable'
     [ ! -e "$tools/node" ] && [ ! -L "$tools/node" ] || fail 'Conflicting Node destination'
     mv "$tools/staging/$stem" "$tools/node" || fail 'Cannot publish verified Node'

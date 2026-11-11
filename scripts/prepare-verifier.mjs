@@ -14,8 +14,8 @@ const inside = (root, path) => { const rel = relative(root, path); return rel !=
 const remaining = () => { const ms = MAX_MS - (performance.now() - started); if (ms <= 0) fail("preparation deadline exceeded (60000ms)"); return Math.ceil(ms); };
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")));
 Object.assign(env, { GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", GIT_ALLOW_PROTOCOL: "file", GIT_NO_LAZY_FETCH: "1", GIT_NO_REPLACE_OBJECTS: "1" });
-const git = (cwd, args, input) => execFileSync("git", ["-c", "core.hooksPath=", "-c", "core.fsmonitor=false", "-c", "core.autocrlf=false", ...args], {
-	cwd, env, input, encoding: "utf8", timeout: remaining(), maxBuffer: 16 * 1024 * 1024, stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
+const git = (cwd, args, input, encoding = "utf8", maxBuffer = 16 * 1024 * 1024) => execFileSync("git", ["-c", "core.hooksPath=", "-c", "core.fsmonitor=false", "-c", "core.autocrlf=false", ...args], {
+	cwd, env, input, encoding, timeout: remaining(), maxBuffer, stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
 });
 const names = text => text.split("\0").filter(Boolean);
 const statAt = path => { try { return lstatSync(path); } catch (error) { if (error.code === "ENOENT") return undefined; throw error; } };
@@ -29,7 +29,9 @@ try {
 		Object.keys(plan).some(key => !["include", "checks", "baseline", "runtimeArtifacts"].includes(key))) fail("expected source, fresh scratch, and {include, checks, baseline?, runtimeArtifacts?} plan");
 	const source = realpathSync(sourceArg);
 	scratch = realpathSync(scratchArg);
-	if (!inside(realpathSync(tmpdir()), scratch) || scratch !== resolve(scratchArg) || inside(source, scratch) || inside(scratch, source) || source === scratch || readdirSync(scratch).length) fail("scratch must be an empty real directory under system temp, outside source");
+	const scratchPath = scratchArg.replace(process.platform === "win32" ? /[\\/]+$/ : /\/+$/, "");
+	const scratchStat = lstatSync(scratchPath);
+	if (scratchStat.isSymbolicLink() || !scratchStat.isDirectory() || !inside(realpathSync(tmpdir()), scratch) || inside(source, scratch) || inside(scratch, source) || source === scratch || readdirSync(scratch).length) fail("scratch must be an empty real directory under system temp, outside source");
 	if (!lstatSync(join(source, ".git")).isDirectory() || lstatSync(join(source, ".git")).isSymbolicLink() ||
 		realpathSync(git(source, ["rev-parse", "--show-toplevel"]).trim()) !== source ||
 		resolve(source, git(source, ["rev-parse", "--git-common-dir"]).trim()) !== join(source, ".git")) fail("unsupported repository: ordinary single-root Git directory required");
@@ -84,8 +86,8 @@ try {
 	if (git(work, ["rev-parse", "HEAD"]).trim() !== head) fail("source HEAD changed during preparation");
 	if (plan.baseline) git(work, ["cat-file", "-e", `${plan.baseline}^{commit}`]);
 	git(work, ["read-tree", head]);
-	const patch = git(source, ["diff", "--cached", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", head, "--"]);
-	if (patch) git(work, ["apply", "--cached", "--binary", "-"], patch);
+	const patch = git(source, ["diff", "--cached", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", head, "--"], undefined, null, 2 * MAX_BYTES);
+	if (patch.length) git(work, ["apply", "--cached", "--binary", "-"], patch);
 	for (const [path, file] of files) {
 		remaining();
 		const bytes = readFileSync(file.absolute);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
@@ -35,9 +35,9 @@ function fixture(t: any) {
 	mkdirSync(join(source, "node_modules", "local-dep"), { recursive: true });
 	writeFileSync(join(source, "node_modules", "local-dep", "index.js"), "module.exports = 42;\n");
 	const snapshot = () => [git("status", "--porcelain=v1"), readFileSync(join(source, ".git", "index")).toString("hex"), readFileSync(join(source, "app.cjs"), "utf8")];
-	const prepare = (include: string[], scratch = mkdtempSync(join(root, "copy-")), runtimeArtifacts: string[] = []) => {
+	const prepare = (include: string[], scratch = mkdtempSync(join(root, "copy-")), runtimeArtifacts: string[] = [], requestedBaseline = baseline) => {
 		const result = spawnSync(process.execPath, [fileURLToPath(helper), source, scratch,
-			JSON.stringify({ include, baseline, runtimeArtifacts, checks: ["node probe.cjs"] })], { env, encoding: "utf8" });
+			JSON.stringify({ include, baseline: requestedBaseline, runtimeArtifacts, checks: ["node probe.cjs"] })], { env, encoding: "utf8" });
 		return { ...result, scratch, work: join(scratch, "work"), receipt: result.stdout ? JSON.parse(result.stdout) : undefined };
 	};
 	return { root, source, git, baseline, snapshot, prepare };
@@ -62,6 +62,21 @@ test("#3009: actual preparer preserves Git publication, baseline, index and requ
 	writeFileSync(join(result.work, "app.cjs"), "isolated mutation\n");
 	assert.deepEqual(f.snapshot(), before);
 	assert.equal(existsSync(join(result.work, ".git", "objects", "info", "alternates")), false);
+});
+
+test("#3009: the documented Bash call creates its own scratch before preparation", { skip: process.platform === "win32" }, t => {
+	const f = fixture(t), before = f.snapshot();
+	const prompt = readFileSync(new URL("../assets/agents/gentle-ai-verify.md", import.meta.url), "utf8");
+	const example = prompt.match(/`(s=\$\(mktemp -d\) && node "\$GENTLE_PI_VERIFIER_PREPARER"[^`]+)`/)?.[1];
+	assert.ok(example);
+	const plan = JSON.stringify({ include: ["selected [x].cjs", "node_modules/local-dep"], checks: ["node probe.cjs"], baseline: f.baseline });
+	const command = example.replace(/'[^']*'$/, `'${plan}'`);
+	const childEnv: NodeJS.ProcessEnv = { ...env, GENTLE_PI_VERIFIER_PREPARER: fileURLToPath(helper), TMPDIR: f.root };
+	delete childEnv.s;
+	const result = spawnSync("bash", ["-c", command], { cwd: f.source, env: childEnv, encoding: "utf8" });
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(JSON.parse(result.stdout).status, "ready");
+	assert.deepEqual(f.snapshot(), before);
 });
 
 test("#3009: omission controls fail the actual check; oversized payload fails preparation", t => {
@@ -143,4 +158,72 @@ test("#3009: source fsmonitor cannot execute during preparation", t => {
 	const result = f.prepare(["selected [x].cjs", "node_modules/local-dep"]);
 	assert.equal(result.status, 0, result.stderr);
 	assert.equal(existsSync(marker), false, "preparation must not execute source-configured commands");
+});
+
+test("#3009: staged non-UTF8 text and configured diff prefixes preserve the exact index", t => {
+	for (const prefix of [undefined, "diff.noprefix", "diff.mnemonicPrefix"]) {
+		const f = fixture(t), path = join(f.source, "latin.txt");
+		writeFileSync(path, Buffer.from("base caf\xe9\n", "latin1"));
+		f.git("add", "latin.txt"); f.git("commit", "-qm", "non-UTF8 baseline");
+		const staged = Buffer.from("staged caf\xe9\n", "latin1"), working = Buffer.from("working caf\xe9\n", "latin1");
+		writeFileSync(path, staged); f.git("add", "latin.txt"); writeFileSync(path, working);
+		if (prefix) f.git("config", prefix, "true");
+		const before = f.snapshot(), result = f.prepare([]);
+		assert.equal(result.status, 0, result.receipt?.reason ?? result.stderr);
+		assert.deepEqual(execFileSync("git", ["show", ":latin.txt"], { cwd: result.work, env }), staged);
+		assert.deepEqual(readFileSync(join(result.work, "latin.txt")), working);
+		assert.deepEqual(f.snapshot(), before);
+		assert.deepEqual(readFileSync(path), working);
+	}
+});
+
+test("#3009: a valid staged patch above 16MiB remains within the preparation payload", t => {
+	const f = fixture(t), bytes = Buffer.alloc(17 * 1024 * 1024, 0x61);
+	writeFileSync(join(f.source, "large-staged.txt"), bytes); f.git("add", "large-staged.txt");
+	const before = f.snapshot(), staged = f.git("rev-parse", ":large-staged.txt"), result = f.prepare([]);
+	assert.equal(result.status, 0, result.receipt?.reason ?? result.stderr);
+	assert.equal(execFileSync("git", ["rev-parse", ":large-staged.txt"], { cwd: result.work, env, encoding: "utf8" }).trim(), staged);
+	assert.deepEqual(readFileSync(join(result.work, "large-staged.txt")), bytes);
+	assert.deepEqual(f.snapshot(), before);
+});
+
+test("#3009: unavailable baseline and shallow history fail without changing source", t => {
+	const f = fixture(t), before = f.snapshot();
+	const unavailable = f.prepare([], undefined, [], "f".repeat(40));
+	assert.equal(unavailable.status, 1);
+	assert.equal(unavailable.receipt.status, "setup-failed");
+	assert.equal(unavailable.receipt.probesRun, 0);
+	assert.deepEqual(unavailable.receipt.unrunChecks, ["node probe.cjs"]);
+	assert.deepEqual(f.snapshot(), before);
+	writeFileSync(join(f.source, ".git", "shallow"), f.git("rev-parse", "HEAD") + "\n");
+	assert.equal(f.git("rev-parse", "--is-shallow-repository"), "true");
+	const shallow = f.prepare([]);
+	assert.equal(shallow.status, 1);
+	assert.match(shallow.receipt.reason, /unsupported shallow/);
+	assert.equal(shallow.receipt.probesRun, 0);
+	assert.equal(existsSync(shallow.work), false);
+	assert.deepEqual(f.snapshot(), before);
+});
+
+test("#3009: scratch permits linked ancestors but rejects the final directory link", { skip: process.platform === "win32" }, t => {
+	const f = fixture(t), parent = join(f.root, "real-parent"), alias = join(f.root, "alias-parent");
+	mkdirSync(parent); symlinkSync(parent, alias, "dir");
+	const scratch = join(alias, "copy"); mkdirSync(scratch);
+	const before = f.snapshot(), prepared = f.prepare(["selected [x].cjs", "node_modules/local-dep"], scratch);
+	assert.equal(prepared.status, 0, prepared.receipt?.reason ?? prepared.stderr);
+	assert.equal(prepared.receipt.work, join(realpathSync(parent), "copy", "work"));
+	assert.equal(spawnSync(process.execPath, ["probe.cjs"], { cwd: prepared.work }).status, 0);
+	const target = join(parent, "empty"), linked = join(f.root, "linked-scratch");
+	mkdirSync(target); symlinkSync(target, linked, "dir");
+	const nested = join(parent, "nested"), deepAlias = join(f.root, "deep-alias");
+	mkdirSync(nested); symlinkSync(nested, deepAlias, "dir");
+	symlinkSync(target, join(parent, "indirect-link"), "dir"); mkdirSync(join(f.root, "indirect-link"));
+	for (const path of [linked, linked + "/", deepAlias + "/../indirect-link"]) {
+		const rejected = f.prepare([], path);
+		assert.equal(rejected.status, 1);
+		assert.match(rejected.receipt.reason, /scratch must be an empty real directory/);
+		assert.equal(rejected.receipt.probesRun, 0);
+		assert.equal(existsSync(join(target, "work")), false);
+	}
+	assert.deepEqual(f.snapshot(), before);
 });

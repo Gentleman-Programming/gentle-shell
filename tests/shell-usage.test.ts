@@ -4,6 +4,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import {
 	accountIdFromToken,
 	formatReset,
+	NAN_QUOTA_NOTE,
 	parseAnthropicHeaders,
 	parseCodexHeaders,
 	parseNanQuota,
@@ -422,18 +423,18 @@ test("renderUsagePanel lists each NaN model allowance with its reset on the same
 
 // The server picks the order of the per-model allowances, so drawing the first
 // one showed DeepSeek's meter inside a GLM session. The bar follows the model
-// the session actually uses, and falls back to the account total when that
-// model holds no allowance of its own.
+// the session actually uses, and shows nothing when that model holds no
+// allowance of its own: NaN's caps are per-model quota, never an account total.
 test("renderUsageBar prefers the active model allowance over the payload order", () => {
 	const usage = parseNanQuota(NAN_QUOTA, NOW);
 	assert.equal(renderUsageBar(usage, plainTheme, "deepseek-v4-flash"), "deepseek-v4-flash ▰▱▱▱▱▱▱▱ 10%");
 	assert.equal(renderUsageBar(usage, plainTheme, "glm5.3"), "glm5.3 ▰▰▱▱▱▱▱▱ 27% · 4h 30%");
 	assert.equal(renderUsageBar(usage, plainTheme), "glm5.3 ▰▰▱▱▱▱▱▱ 27% · 4h 30%", "without an active model the first limit still wins");
-	assert.equal(renderUsageBar(usage, plainTheme, "gemma4"), "nan total ▰▰▱▱▱▱▱▱ 22%", "an unmetered model reports the account, never another model");
-	assert.equal(renderUsageBar(usage, plainTheme, "qwen3.8-flash"), "nan total ▰▰▱▱▱▱▱▱ 22%", "a model the payload skips holds no allowance either");
+	assert.equal(renderUsageBar(usage, plainTheme, "gemma4"), undefined, "an unmetered model reports no data, never another model or an account total");
+	assert.equal(renderUsageBar(usage, plainTheme, "qwen3.8-flash"), undefined, "a model the payload skips holds no allowance either");
 });
 
-test("renderUsageBar prefers the active model's family before the account total", () => {
+test("renderUsageBar falls back to the active model's family, never the account total", () => {
 	const usage = parseNanQuota({
 		periodEnd: "2026-10-01T00:00:00.000Z",
 		models: [
@@ -445,10 +446,10 @@ test("renderUsageBar prefers the active model's family before the account total"
 	// one member: the family is still a closer name for the meter than the whole
 	// account, so the ladder visits it before the account rung.
 	assert.match(renderUsageBar(usage, plainTheme, "glm5.3-turbo") ?? "", /^glm total ▰▱▱▱▱▱▱▱ 10%$/);
-	assert.match(renderUsageBar(usage, plainTheme, "gemma4") ?? "", /^nan total ▰▱▱▱▱▱▱▱ 7%$/, "no member of the family means the account is the only honest name");
+	assert.equal(renderUsageBar(usage, plainTheme, "gemma4"), undefined, "no member of the family means no NaN quota to show");
 });
 
-test("a single metered allowance still takes the family and account names", () => {
+test("a single metered allowance still takes the family name", () => {
 	const usage = parseNanQuota({
 		periodEnd: "2026-10-01T00:00:00.000Z",
 		models: [
@@ -462,7 +463,55 @@ test("a single metered allowance still takes the family and account names", () =
 	assert.deepEqual(usage.limits.map((limit) => limit.name), ["glm5.3-flash"]);
 	assert.equal(renderUsageBar(usage, plainTheme, "glm5.3-flash"), "glm5.3-flash ▰▰▱▱▱▱▱▱ 20%");
 	assert.match(renderUsageBar(usage, plainTheme, "glm5.4") ?? "", /^glm total ▰▰▱▱▱▱▱▱ 20%$/);
-	assert.match(renderUsageBar(usage, plainTheme, "gemma4") ?? "", /^nan total ▰▰▱▱▱▱▱▱ 20%$/);
+	assert.equal(renderUsageBar(usage, plainTheme, "gemma4"), undefined);
+});
+
+// The live quota payload, as NaN's dashboard backend returns it after the move
+// to a shared credit pool (dates filled in). It still lists a retired model
+// (glm5.2) next to the maintained chat catalog.
+const NAN_LIVE_QUOTA = {
+	periodStart: "2026-09-01T00:00:00.000Z",
+	models: [
+		{ model: "deepseek-v4-flash", tokensUsed: 150_025_722, cap: 3_000_000_000, remaining: 2_849_974_278, updatedAt: "2026-09-05T10:00:00.000Z", periodEnd: "2026-10-01T00:00:00.000Z", extraTokens: 0, extraUsable: true },
+		{ model: "glm5.3-flash", tokensUsed: 19_605_670, cap: 3_000_000_000, remaining: 2_980_394_330, updatedAt: "2026-09-05T10:00:00.000Z", periodEnd: "2026-10-01T00:00:00.000Z", extraTokens: 0, extraUsable: true },
+		{ model: "glm5.3", tokensUsed: 278_203_384, cap: 3_000_000_000, remaining: 2_721_796_616, updatedAt: "2026-09-05T10:00:00.000Z", periodEnd: "2026-10-01T00:00:00.000Z", fullWindowTokens: 400_000_000, windowHours: 4, extraTokens: 0, extraUsable: true },
+		{ model: "glm5.2", tokensUsed: 0, cap: 3_000_000_000, remaining: 3_000_000_000, periodEnd: "2026-10-01T00:00:00.000Z", fullWindowTokens: 400_000_000, windowHours: 4, extraTokens: 0, extraUsable: false },
+		{ model: "qwen3.8-flash", tokensUsed: 0, cap: 500_000_000, remaining: 500_000_000, periodEnd: "2026-10-01T00:00:00.000Z", extraTokens: 0, extraUsable: true },
+		{ model: "mimo-v2.6-flash", tokensUsed: 0, cap: 1_000_000_000, remaining: 1_000_000_000, periodEnd: "2026-10-01T00:00:00.000Z", extraTokens: 0, extraUsable: true },
+	],
+};
+
+test("parseNanQuota hides quota entries for models outside the maintained NaN chat catalog", () => {
+	const usage = parseNanQuota(NAN_LIVE_QUOTA, NOW);
+	assert.deepEqual(usage.limits.map((limit) => limit.name), ["deepseek-v4-flash", "glm5.3-flash", "glm5.3", "qwen3.8-flash", "mimo-v2.6-flash"]);
+	const lines = renderUsagePanel([usage], plainTheme, 100, NOW, { provider: "nan" });
+	assert.equal(lines.some((line) => line.includes("glm5.2")), false, "a retired model never reaches the panel");
+	// A retired model's unreadable usage is not drift in a model we still show.
+	const retiredDrift = parseNanQuota({ models: [{ model: "glm5.2", cap: 3_000_000_000 }, { model: "glm5.3", cap: 3_000_000_000, tokensUsed: 0 }] }, NOW);
+	assert.deepEqual(retiredDrift.limits.map((limit) => limit.name), ["glm5.3"]);
+});
+
+test("the NaN panel says its figures are per-model token quota, not the credit balance", () => {
+	const lines = renderUsagePanel([parseNanQuota(NAN_LIVE_QUOTA, NOW)], plainTheme, 100, NOW, { provider: "nan" });
+	assert.equal(NAN_QUOTA_NOTE, "per-model token quota · not your credit balance");
+	assert.ok(lines.some((line) => line === `  ${NAN_QUOTA_NOTE}`), "the note sits under NaN's rows");
+	assert.equal(lines.some((line) => line.includes("total")), false);
+});
+
+test("the NaN bar shows the active model's own quota and never an account aggregate", () => {
+	const usage = parseNanQuota(NAN_LIVE_QUOTA, NOW);
+	assert.equal(renderUsageBar(usage, plainTheme, "glm5.3"), "glm5.3 ▰▱▱▱▱▱▱▱ 9%");
+	assert.equal(renderUsageBar(usage, plainTheme, "deepseek-v4-flash"), "deepseek-v4-flash ▱▱▱▱▱▱▱▱ 5%");
+	assert.equal(renderUsageBar(usage, plainTheme, "gemma4"), undefined, "a model without a quota of its own shows no data, not a cross-model total");
+	assert.equal(renderUsageBar(usage, plainTheme, "kimi-k3.1-pro"), undefined);
+});
+
+test("Codex and Anthropic panels carry no NaN quota note", () => {
+	const claude = parseAnthropicHeaders({ "anthropic-ratelimit-unified-5h-utilization": "0.2" }, NOW);
+	assert.ok(claude);
+	const lines = renderUsagePanel([parseCodexUsage(CODEX_PAYLOAD, NOW), claude], plainTheme, 100, NOW, { provider: "openai-codex" });
+	assert.equal(lines.some((line) => line.includes(NAN_QUOTA_NOTE) || line.includes("credit")), false);
+	assert.equal(renderUsageBar(claude, plainTheme, "claude-opus-5-5"), "claude 5h ▰▰▱▱▱▱▱▱ 20%");
 });
 
 test("renderUsageBar leaves providers without raw allowances on their first limit", () => {
@@ -530,7 +579,7 @@ const GROUPED_NAN_QUOTA = {
 	models: [
 		{ model: "glm5.3-flash", cap: 2_000_000_000, tokensUsed: 200_000_000 },
 		{ model: "glm5.3", cap: 3_000_000_000, tokensUsed: 0, periodEnd: "2026-10-17T05:53:20.000Z" },
-		{ model: "glm5.2", cap: 3_000_000_000, tokensUsed: 0, periodEnd: "2026-10-17T05:53:20.000Z" },
+		{ model: "qwen3.8-flash", cap: 3_000_000_000, tokensUsed: 0, periodEnd: "2026-10-17T05:53:20.000Z" },
 		{ model: "deepseek-v4-flash", cap: 3_000_000_000, tokensUsed: 300_000_000 },
 	],
 };
@@ -556,7 +605,7 @@ function panelPercents(lines: string[]): number[] {
 
 test("renderUsagePanel orders the NaN allowances by family and prints no totals", () => {
 	const lines = renderUsagePanel([parseNanQuota(GROUPED_NAN_QUOTA, NOW)], plainTheme, 80, NOW, { provider: "nan" }).map((line) => line.trimEnd());
-	assert.deepEqual(panelNames(lines), ["deepseek-v4-flash", "glm5.3-flash", "glm5.3", "glm5.2"]);
+	assert.deepEqual(panelNames(lines), ["deepseek-v4-flash", "glm5.3-flash", "glm5.3", "qwen3.8-flash"]);
 	// 300M of 3B for DeepSeek first, then the GLM family by its own allowance.
 	assert.deepEqual(panelPercents(lines), [10, 10, 0, 0]);
 	// Every row keeps its own reset, inline: one line per window, never two.

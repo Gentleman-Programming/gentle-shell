@@ -34,7 +34,9 @@ test("S13 C9: every generic subagent prompt batches independent tool calls in on
 		const tools = declaredTools(prompt);
 		// A shell-less agent must not be told to read files or run tests with a command it cannot run.
 		if (tools.includes("bash")) {
-			containsAll(rule, ["read several files with one command", "the focused test and the suite without status-only turns"], agent);
+			// Cost-speed P8 B2: the verifier never re-runs the writer's reported suite, so its rule batches the commands it runs.
+			const batched = agent === "gentle-ai-verify" ? "without status-only turns" : "the focused test and the suite without status-only turns";
+			containsAll(rule, ["read several files with one command", batched], agent);
 		} else {
 			assert.doesNotMatch(rule, /one command|the suite/, `${agent} has no shell, so its rule must not name a command`);
 		}

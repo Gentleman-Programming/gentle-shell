@@ -290,6 +290,14 @@ The memory decision never skips or fails setup: `gentle-shell setup` publishes t
 
 In a Shell-owned home, a missing companion is installed through Pi as `npm:gentle-engram` and checked for `engram.startupPolicy: 1`; a failed check is reported and Shell still starts, protected by the guard. Shell migrates its old `npm:gentle-engram@0.4.2` registration to the unversioned source using Pi's package manager without installing an update. Pi then includes it in its normal startup package-update notice; run `gentle-shell update --extensions` to update it. An existing selection is not automatically reinstalled on launch, and linked/foreign homes, local companions, other companion pins and unrelated extension pins are not rewritten. This changes the Pi package, not the separately pinned native Engram core. `setup --dry-run` installs nothing.
 
+Because that update leaves the unversioned source to Pi, Shell re-verifies the companion once the extensions update finishes instead of leaving the replaced install unchecked, and reports the version it found. It never turns a successful update into a failure and never rewrites the selection.
+
+#### Companion and core must speak the same runtime contract
+
+The companion and the core agree on a runtime contract identified by `contract_id` and `revision`, and validated by a digest: the companion ships it in `runtime-contract.json`, and the running core answers it on `GET /runtime-contract`. Shell publishes a verified digest for each pinned core (read from the real release binaries), and **warns** when the installed companion's digest differs from the pinned core's or from the digest the running server actually answers. A companion can require a newer core than the one Shell publishes, and until now the only signal was memory failing for the whole session.
+
+The warning is deliberately non-blocking: an incompatible pair is still installed and still runs, the exit code never changes, the selection is never rewritten, and a missing or malformed `runtime-contract.json` is no signal rather than an error. Memory may be unavailable until the pair matches; update the core with a new Gentle Shell release, or update the companion.
+
 #### Explicit recovery after a core upgrade
 
 Earlier Shell releases provisioned `~/.engram` themselves and recorded `<prefix>/config/engram-provenance.json`; ordinary startup no longer reads that record. To migrate such a **Shell-provisioned store** with the bundled core explicitly, stop every Engram client and server using the directory, retain a complete backup (including WAL and configuration), then run:

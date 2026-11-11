@@ -344,6 +344,24 @@ test("S5: a malformed resolution in an existing comments.json is an invalid-file
 	assert.deepEqual((await store.read("alpha")).comments.map((comment) => comment.resolution), ["Done.", undefined]);
 });
 
+test("setText normalizes like a new comment: line endings become \\n, the text is trimmed, and blank text is refused without writing", async (t) => {
+	const root = designRoot(t);
+	const store = fixedStore(root);
+	const a = await store.add("alpha", INPUT);
+	const edited = await store.setText("alpha", a.id, "  Line one\r\nLine two\rLine three  \n");
+	assert.equal(edited.comment.comment, "Line one\nLine two\nLine three");
+	assert.equal((await store.read("alpha")).comments[0].comment, "Line one\nLine two\nLine three", "the stored text is the normalized one");
+	const path = join(root, "alpha", "comments.json");
+	const before = readFileSync(path, "utf8");
+	for (const blank of ["   ", "\r\n\t"]) {
+		await assert.rejects(store.setText("alpha", a.id, blank), (error: unknown) => error instanceof DesignCommentsError && error.code === "invalid-input", JSON.stringify(blank));
+	}
+	assert.equal(readFileSync(path, "utf8"), before, "a refused text leaves comments.json unchanged");
+	const same = await store.setText("alpha", a.id, "Line one\r\nLine two\nLine three ");
+	assert.equal(same.previous, "Line one\nLine two\nLine three");
+	assert.equal(readFileSync(path, "utf8"), before, "a text equal after normalizing writes nothing");
+});
+
 test("canvas-layout S17: setText changes the text of an open comment, sent or not, returns the previous text and refuses resolved, unknown and invalid ones without writing", async (t) => {
 	const root = designRoot(t);
 	const store = fixedStore(root);

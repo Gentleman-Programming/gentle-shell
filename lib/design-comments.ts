@@ -473,8 +473,10 @@ export function createDesignCommentStore(designRoot: string, deps: DesignComment
 			});
 		},
 
-		async setText(slug, id, text) {
-			if (typeof text !== "string" || text.length < 1 || text.length > DESIGN_COMMENT_LIMITS.comment) {
+		async setText(slug, id, raw) {
+			// Normalized here, like a new comment, so every caller stores the same text.
+			const text = typeof raw === "string" ? raw.replace(/\r\n?/g, "\n").trim() : "";
+			if (text.length < 1 || text.length > DESIGN_COMMENT_LIMITS.comment) {
 				throw new DesignCommentsError("invalid-input", `comment must have 1 to ${DESIGN_COMMENT_LIMITS.comment} characters`);
 			}
 			return mutate(slug, (document) => {

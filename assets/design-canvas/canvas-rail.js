@@ -30,6 +30,7 @@ const TEXT = Object.freeze({
 	taken: (key, action) => `${key} is already used by “${action}”. Nothing changed.`,
 	fixed: (key) => `${key} is a fixed key and can’t be assigned. Nothing changed.`,
 	invalid: "Use a single letter, digit or punctuation key, without Ctrl, Alt or Cmd. Nothing changed.",
+	unsaved: "This browser could not save the change, so it holds for this page only.",
 	resetDone: (action, key) => `“${action}” is back to ${key}.`,
 	restored: "All shortcuts are back to their defaults.",
 	spaceKey: "Space",
@@ -44,8 +45,18 @@ const ARROW_KEYS = { ArrowLeft: "←", ArrowRight: "→", ArrowUp: "↑", ArrowD
 const MODIFIER_KEYS = ["Shift", "Control", "Alt", "AltGraph", "Meta", "OS", "CapsLock", "NumLock", "ScrollLock", "Fn", "FnLock", "Hyper", "Super", "Symbol", "SymbolLock"];
 const TYPING_TAGS = ["input", "textarea", "select"];
 
-/** The key a shortcut can take from `key`: one printable character (a letter, a digit or punctuation), lower case; otherwise "". */
-const singleKey = (key) => (typeof key === "string" && [...key].length === 1 && /^\S$/u.test(key) ? key.toLowerCase() : "");
+/** One printable character (a letter, a digit or punctuation). */
+const printable = (key) => typeof key === "string" && [...key].length === 1 && /^\S$/u.test(key);
+/**
+ * The key a shortcut can take from `key`: one printable character, lower case, that is still one printable
+ * character once lower case (İ is not: it lowers to i plus a combining dot); otherwise "".
+ */
+const singleKey = (key) => (printable(key) && printable(key.toLowerCase()) ? key.toLowerCase() : "");
+/**
+ * Ctrl, Alt or Cmd held for a browser chord. AltGr, which types a character, reports Ctrl and Alt
+ * on some systems and AltGraph in getModifierState: that press is a printable key, not a chord.
+ */
+const isChord = (event) => Boolean(event.metaKey || ((event.ctrlKey || event.altKey) && !(typeof event.getModifierState === "function" && event.getModifierState("AltGraph"))));
 /** How a key is written: a letter upper case, as on the keyboard. */
 const keyText = (key) => (key.toUpperCase().length === key.length ? key.toUpperCase() : key);
 
@@ -95,8 +106,19 @@ export function init(ctx) {
 	const shortcutRows = new Map();
 	const shortcutKey = (shortcut) => customKeys[shortcut.id] ?? shortcut.key;
 
+	/** Saves the custom keys in this browser; false when storage refused them (they then hold for this page only). */
 	function saveShortcuts() {
-		try { win.localStorage.setItem(SHORTCUTS_KEY, JSON.stringify(customKeys)); } catch { /* storage may be unavailable: the keys hold for this page only */ }
+		try {
+			win.localStorage.setItem(SHORTCUTS_KEY, JSON.stringify(customKeys));
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	/** The message after a change: `text`, plus a warning (read as an error) when it could not be saved. */
+	function showSavedMessage(text, saved) {
+		showKeysMessage(saved ? text : `${text} ${TEXT.unsaved}`, !saved);
 	}
 
 	/** The line under the list that says what a Change did; a refusal reads as an error. No text clears it. */
@@ -201,9 +223,9 @@ export function init(ctx) {
 		}
 		if (key === shortcut.key) delete customKeys[shortcut.id];
 		else customKeys[shortcut.id] = key;
-		saveShortcuts();
+		const saved = saveShortcuts();
 		renderShortcuts();
-		showKeysMessage(done(labelOf(shortcut), keyText(key)));
+		showSavedMessage(done(labelOf(shortcut), keyText(key)), saved);
 	}
 
 	function openShortcuts() {
@@ -222,7 +244,10 @@ export function init(ctx) {
 	/** What Settings offers: the design system board (when there is one, and not over Compare) and the keyboard shortcuts. */
 	function settingsActions() {
 		return [
-			{ label: TEXT.system, icon: "i-palette", disabled: !state.systemBoard || Boolean(state.compare), run: () => actions.enterFocus(state.systemBoard) },
+			// Checked again when chosen: a live reload may have removed the board while the menu was open.
+			{ label: TEXT.system, icon: "i-palette", disabled: !state.systemBoard || Boolean(state.compare), run: () => {
+				if (state.systemBoard && !state.compare) actions.enterFocus(state.systemBoard);
+			} },
 			{ label: TEXT.keys, icon: "i-keys", shortcut: keyText(shortcutKey(shortcutById("help"))), run: openShortcuts },
 		];
 	}
@@ -243,9 +268,9 @@ export function init(ctx) {
 	els.keysRestore.addEventListener("click", () => {
 		stopKeyWait();
 		customKeys = {};
-		saveShortcuts();
+		const saved = saveShortcuts();
 		renderShortcuts();
-		showKeysMessage(TEXT.restored);
+		showSavedMessage(TEXT.restored, saved);
 	});
 
 	// While a Change waits, the next key is the new one and nothing else gets it; Esc cancels the wait (in the capture
@@ -264,7 +289,7 @@ export function init(ctx) {
 			showKeysMessage(TEXT.fixed(name), true);
 			return;
 		}
-		const key = event.ctrlKey || event.metaKey || event.altKey ? "" : singleKey(event.key);
+		const key = isChord(event) ? "" : singleKey(event.key);
 		if (key) assignKey(shortcut, key, TEXT.assigned);
 		else showKeysMessage(TEXT.invalid, true);
 	}, true);
@@ -272,7 +297,7 @@ export function init(ctx) {
 	// The shortcuts never fire while typing, with a browser chord, while the comment box, a menu or the list (where the
 	// help key closes it) is open, in Compare, or in focus mode (the artboard owns the keyboard; Shift+Esc is handled apart).
 	doc.addEventListener("keydown", (event) => {
-		if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+		if (event.defaultPrevented || isChord(event)) return;
 		const target = event.target;
 		if (target && (TYPING_TAGS.includes(target.localName) || target.isContentEditable)) return;
 		const key = singleKey(event.key);

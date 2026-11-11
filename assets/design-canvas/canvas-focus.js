@@ -94,7 +94,9 @@ export function init(ctx) {
 			if (!active && board.viewHeight !== board.artboard.height) setFrameHeight(board, board.artboard.height);
 			sendFocus(board);
 		}
-		for (const control of [els.zoomOut, els.zoomIn, els.fit, els.railFit]) control.disabled = Boolean(focused);
+		for (const control of [els.zoomOut, els.zoomIn, els.fit]) control.disabled = Boolean(focused);
+		// The rail's Overview sits under Compare: a reload while it is open must not turn it back on.
+		els.railFit.disabled = Boolean(focused || state.compare);
 		els.design.disabled = Boolean(focused) || state.designCount === 0;
 		els.back.hidden = !focused;
 		els.navMode.textContent = focused ? `Using: ${focused.artboard.title} · Shift+Esc to exit` : "Navigating";

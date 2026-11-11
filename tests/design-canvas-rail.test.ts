@@ -13,12 +13,15 @@ const SHORTCUT_IDS = ["navigate", "comment", "fit", "panel", "help"];
 const DEFAULT_KEYS = ["V", "C", "F", "]", "?"];
 const SYSTEM_REPLY = { "/t/api/system": { exists: true, file: "system.html", width: 1440, height: 1200 } };
 const COMMENT_STATUS = "Comment mode: click an element in an artboard";
+const UNSAVED = "This browser could not save the change, so it holds for this page only.";
 
 /** The canvas with an in-memory (or a throwing) localStorage; `stored` seeds the shortcuts entry (a string goes in as is). */
-async function loadRail(options: { stored?: unknown; broken?: boolean; replies?: Record<string, unknown> } = {}) {
+async function loadRail(options: { stored?: unknown; broken?: boolean; full?: boolean; replies?: Record<string, unknown> } = {}) {
 	const seed = options.stored === undefined ? {} : { [SHORTCUTS_KEY]: typeof options.stored === "string" ? options.stored : JSON.stringify(options.stored) };
 	const storage = memoryStorage(seed, options.broken);
-	const canvas = await loadCanvas(300, options.replies ?? {}, {}, { localStorage: storage.localStorage });
+	// `full`: reads work, every write throws (a full or read-only storage).
+	const localStorage = options.full ? { getItem: storage.localStorage.getItem, setItem() { throw new Error("QuotaExceededError"); } } : storage.localStorage;
+	const canvas = await loadCanvas(300, options.replies ?? {}, {}, { localStorage });
 	// The fake DOM starts every element visible; index.html starts these hidden.
 	canvas.document.getElementById("gd-popover").hidden = true;
 	canvas.document.getElementById("gd-menu").hidden = true;
@@ -116,6 +119,31 @@ test("the rail's Overview fits the canvas, and is off in focus mode and in Compa
 	assert.equal(fit.disabled, false);
 });
 
+const IMPLEMENTED_REPLY = { "/t/api/designs/alpha/handoffs": handoffDoc("01-a.html", { "01-a.html": { status: "implemented", previewUrl: "http://localhost:5173/" } }) };
+
+test("Compare covers the rail: it is inert until Back to canvas, keys leave the mode alone, and a design.json reload keeps Overview off", async () => {
+	const canvas = await loadRail({ replies: IMPLEMENTED_REPLY });
+	const rail = $(canvas, "gd-rail");
+	const fit = $(canvas, "gd-rail-fit");
+	assert.equal(rail.inert, false);
+
+	withClass(boardsOf(canvas)[0], "gd-compare-start")[0].dispatch("click");
+	assert.equal($(canvas, "gd-compare").hidden, false);
+	assert.equal(rail.inert, true, "Move, Comment, Overview and Settings leave the keyboard and the pointer while Compare covers them");
+	assert.equal(press(canvas, "c").defaultPrevented, false);
+	assert.equal(pressed(canvas, "gd-comment"), "false", "Comment mode does not change behind Compare");
+
+	await canvas.serverEvent("change", { slug: "alpha", file: "design.json" });
+	assert.equal($(canvas, "gd-compare").hidden, false, "the reload keeps Compare open");
+	assert.equal(fit.disabled, true, "Overview stays off after a design.json reload");
+	assert.equal(rail.inert, true, "and the rail stays inert");
+
+	$(canvas, "gd-compare-back").dispatch("click");
+	assert.deepEqual([rail.inert, fit.disabled], [false, false]);
+	press(canvas, "c");
+	assert.equal(pressed(canvas, "gd-comment"), "true", "the keys work again after Compare");
+});
+
 // ---- single-key shortcuts
 
 test("V, C, F, ] and ? drive the tools from the keyboard, without letter case", async () => {
@@ -184,6 +212,33 @@ test("browser chords, typing, the open comment box and focus mode leave single k
 	assert.equal(canvas.navMode.textContent, "Navigating", "Shift+Esc still leaves focus mode");
 	press(canvas, "c");
 	assert.equal(pressed(canvas, "gd-comment"), "true", "shortcuts work again outside focus mode");
+});
+
+// AltGr reports Ctrl+Alt on Windows; getModifierState("AltGraph") tells it apart from a chord.
+const ALT_GRAPH = { ctrlKey: true, altKey: true, getModifierState: (modifier: string) => modifier === "AltGraph" };
+const CTRL_ALT = { ctrlKey: true, altKey: true, getModifierState: () => false };
+
+test("a key typed with AltGr is a printable key, while Ctrl, Alt and Cmd chords stay ignored", async () => {
+	const canvas = await loadRail();
+	const panel = $(canvas, "gd-panel");
+	assert.equal(press(canvas, "]", ALT_GRAPH).defaultPrevented, true, "] typed with AltGr");
+	assert.equal(panel.hidden, true, "toggles the comments panel");
+	for (const init of [CTRL_ALT, { ctrlKey: true, getModifierState: () => false }, { altKey: true }, { ...ALT_GRAPH, metaKey: true }]) {
+		assert.equal(press(canvas, "]", init).defaultPrevented, false, JSON.stringify(init));
+	}
+	assert.equal(panel.hidden, true, "chords leave the panel alone");
+
+	assert.equal(changeKey(canvas, "comment", "@", ALT_GRAPH).defaultPrevented, true);
+	assert.equal(keysMessage(canvas), "“Comment on an element” is now @.", "AltGr punctuation can be assigned");
+	assert.equal(rowKey(canvas, "comment"), "@");
+	for (const init of [CTRL_ALT, { ...ALT_GRAPH, metaKey: true }]) {
+		changeKey(canvas, "fit", "#", init);
+		assert.equal(keysMessage(canvas), "Use a single letter, digit or punctuation key, without Ctrl, Alt or Cmd. Nothing changed.", JSON.stringify(init));
+	}
+	assert.deepEqual(canvas.stored(), { comment: "@" });
+	closeList(canvas);
+	assert.equal(press(canvas, "@", ALT_GRAPH).defaultPrevented, true);
+	assert.equal(pressed(canvas, "gd-comment"), "true", "the AltGr key runs its action");
 });
 
 test("M and [ are not shortcuts in this canvas", async () => {
@@ -275,6 +330,40 @@ test("Settings' Design system board shows the system board in focus mode", async
 	assert.equal($(canvas, "gd-rail-fit").disabled, true);
 	$(canvas, "gd-back").dispatch("click");
 	assert.equal($(canvas, "gd-rail-fit").disabled, false);
+});
+
+test("Settings' Design system board rechecks the board when chosen: if it vanished meanwhile, the focused view and panel stay", async () => {
+	const canvas = await loadRail({ replies: SYSTEM_REPLY });
+	const panel = $(canvas, "gd-panel");
+	// The system board is the first board; focus the design's first artboard.
+	click(canvas.boards[1].shield!, 200, 200);
+	const using = "Using: First · Shift+Esc to exit";
+	assert.equal(canvas.navMode.textContent, using);
+	assert.equal(panel.hidden, true);
+	const transform = canvas.world.style.transform;
+
+	const [system] = openSettings(canvas);
+	assert.equal(system.getAttribute("aria-disabled"), null);
+	canvas.replies["/t/api/system"] = { exists: false };
+	await canvas.serverEvent("change", { slug: null, file: "system.html" });
+	assert.equal(boardsOf(canvas).length, 2, "the system board is gone");
+	assert.equal(canvas.navMode.textContent, using, "the focused artboard is still focused");
+
+	let thrown = "";
+	try {
+		system.dispatch("click");
+	} catch (error) {
+		thrown = String(error);
+	}
+	assert.equal(thrown, "", "choosing it does not throw");
+	assert.equal(menuEl(canvas).hidden, true);
+	assert.equal(canvas.navMode.textContent, using, "focus mode is unchanged");
+	assert.equal(boardsOf(canvas).findIndex((wrapper) => wrapper.classes.has("gd-focus-board")), 0, "on the same artboard");
+	assert.equal($(canvas, "gd-back").hidden, false);
+	assert.equal(panel.hidden, true, "the panel stays as it was");
+	assert.equal(canvas.world.style.transform, transform, "and so does the view");
+	$(canvas, "gd-back").dispatch("click");
+	assert.deepEqual([canvas.navMode.textContent, panel.hidden], ["Navigating", false], "Back to canvas still restores the panel");
 });
 
 // ---- changing the single keys
@@ -398,10 +487,52 @@ test("custom keys are restored on load, and a stored entry that is unusable, unk
 	assert.deepEqual(rowKeys(broken), DEFAULT_KEYS, "unreadable storage keeps the defaults");
 	changeKey(broken, "comment", "k");
 	assert.equal(rowKey(broken, "comment"), "K", "and a change still applies for this page");
-	assert.equal(keysMessage(broken), "“Comment on an element” is now K.");
+	assert.equal(keysMessage(broken), `“Comment on an element” is now K. ${UNSAVED}`);
 	closeList(broken);
 	press(broken, "k");
 	assert.equal(pressed(broken, "gd-comment"), "true");
+});
+
+test("when the browser cannot save a key, the list says it holds for this page only", async () => {
+	const canvas = await loadRail({ full: true, stored: { navigate: "x" } });
+	assert.deepEqual(rowKeys(canvas), ["X", "C", "F", "]", "?"], "a readable storage still restores the keys");
+	changeKey(canvas, "comment", "k");
+	assert.equal(keysMessage(canvas), `“Comment on an element” is now K. ${UNSAVED}`);
+	assert.ok($(canvas, "gd-keys-message").classes.has("gd-error"), "the warning reads as an error");
+	assert.equal(rowKey(canvas, "comment"), "K", "the key holds for this page");
+	rowReset(canvas, "comment").dispatch("click");
+	assert.equal(keysMessage(canvas), `“Comment on an element” is back to C. ${UNSAVED}`);
+	$(canvas, "gd-keys-restore").dispatch("click");
+	assert.equal(keysMessage(canvas), `All shortcuts are back to their defaults. ${UNSAVED}`);
+	assert.deepEqual(rowKeys(canvas), DEFAULT_KEYS);
+	assert.deepEqual(canvas.shortcutWrites(), [], "nothing was written");
+
+	// A storage that saves keeps the plain message.
+	const saving = await loadRail();
+	changeKey(saving, "comment", "k");
+	assert.equal(keysMessage(saving), "“Comment on an element” is now K.");
+	assert.ok(!$(saving, "gd-keys-message").classes.has("gd-error"));
+});
+
+test("a key whose lower case is not one character, like İ, is refused when assigned and ignored when stored", async () => {
+	const canvas = await loadRail();
+	changeKey(canvas, "comment", "İ", { shiftKey: true });
+	assert.equal(keysMessage(canvas), "Use a single letter, digit or punctuation key, without Ctrl, Alt or Cmd. Nothing changed.");
+	assert.equal(rowKey(canvas, "comment"), "C");
+	assert.deepEqual(canvas.shortcutWrites(), []);
+	// A letter beyond ASCII whose lower case is one character still works, in either case.
+	changeKey(canvas, "comment", "Ñ", { shiftKey: true });
+	assert.equal(keysMessage(canvas), "“Comment on an element” is now Ñ.");
+	assert.deepEqual(canvas.stored(), { comment: "ñ" });
+
+	for (const stored of [{ comment: "İ" }, { comment: "i̇" }]) {
+		const reloaded = await loadRail({ stored });
+		assert.deepEqual(rowKeys(reloaded), DEFAULT_KEYS, JSON.stringify(stored));
+		press(reloaded, "c");
+		assert.equal(pressed(reloaded, "gd-comment"), "true", `${JSON.stringify(stored)}: C still comments`);
+	}
+	const kept = await loadRail({ stored: { comment: "Ñ" } });
+	assert.equal(rowKey(kept, "comment"), "Ñ", "a stored Ñ is kept, lower case");
 });
 
 test("a key another action uses is refused with a message naming it, and nothing changes", async () => {
@@ -531,7 +662,7 @@ test("Reset puts one action back on its default key and Restore defaults puts th
 
 test("index.html: a labeled rail with Move, Comment, Overview and Settings, one sprite, the menu and the shortcuts dialog, in English with no i18n hooks", () => {
 	const html = read("index.html");
-	const railStart = html.indexOf('<nav class="gd-rail" aria-label="Tools">');
+	const railStart = html.indexOf('<nav id="gd-rail" class="gd-rail" aria-label="Tools">');
 	assert.ok(railStart > 0, "a labeled rail");
 	const rail = html.slice(railStart, html.indexOf("</nav>", railStart));
 	const buttons = [...rail.matchAll(/<button type="button" id="([^"]+)"([^>]*)>([^]*?)<\/button>/g)];
@@ -620,7 +751,7 @@ test("the docs describe the rail, the Settings menu and the changeable keys save
 	const start = section.indexOf("- **Tool rail**");
 	assert.ok(start >= 0, "a Tool rail entry");
 	const rail = section.slice(start, section.indexOf("\n", start));
-	for (const part of ["**Move** (`V`", "**Comment** (`C`)", "**Overview**", "(`F`)", "**Settings**", "**Design system board**", "**Keyboard shortcuts** (`?`)", "**Change**", "**Reset**", "**Restore defaults**", "`gentle-design:shortcuts`", "saved in this browser", "`]`", "`Esc`, `Shift+Esc`, the arrows, `Space`, `Enter`, `Tab`"]) {
+	for (const part of ["**Move** (`V`", "**Comment** (`C`)", "**Overview**", "(`F`)", "**Settings**", "**Design system board**", "**Keyboard shortcuts** (`?`)", "**Change**", "**Reset**", "**Restore defaults**", "`gentle-design:shortcuts`", "saved in this browser", "holds for this page only", "AltGr", "Compare covers the rail", "`]`", "`Esc`, `Shift+Esc`, the arrows, `Space`, `Enter`, `Tab`"]) {
 		assert.ok(rail.includes(part), `the rail entry mentions ${part}`);
 	}
 	assert.ok(!/Appearance|theme|language|Step-by-step|minimap/i.test(rail), "nothing that does not ship here");

@@ -49,6 +49,10 @@ export class FakeElement {
 	constructor(tag: string, doc: FakeDocument) {
 		this.localName = tag;
 		this.doc = doc;
+		// node:assert diffs a failed comparison with its own inspect (depth 1000, custom inspect off):
+		// back-references would let it walk the whole cyclic document and exhaust memory.
+		// It skips non-enumerable properties, so hide them.
+		for (const key of ["doc", "parentElement"]) Object.defineProperty(this, key, { enumerable: false, writable: true, value: (this as any)[key] });
 		if (tag === "iframe") {
 			const posted: any[] = [];
 			this.contentWindow = { posted, postMessage: (message) => posted.push(structuredCopy(message)) };

@@ -63,6 +63,7 @@ export function boot(win, doc) {
 		zoomLevel: $("gd-zoom-level"),
 		fit: $("gd-fit"),
 		sprite: $("gd-sprite"),
+		rail: $("gd-rail"),
 		toolNavigate: $("gd-tool-navigate"),
 		railFit: $("gd-rail-fit"),
 		railSettings: $("gd-rail-settings"),

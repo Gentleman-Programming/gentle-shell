@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { DESIGN_VIEWPORT_LIMITS } from "../lib/design-comments.ts";
 import { findAll, flush, loadCanvas, read, texts, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
 
-// All sizes (canvas-sizes.js): the focused artboard at Phone, Tablet and Desktop at once, each a
+// All sizes (canvas-sizes.js): the focused artboard at Phone, Tablet and as designed at once, each a
 // real iframe ("size frame") that takes picks and shows pins like the artboard's own frame; the
 // Overflows chip a frame shows while its page is wider than it (inspector.js gd:overflow); and the
 // size a comment was made at (its viewport), sent with the comment and shown on its card.
@@ -73,7 +76,7 @@ const commentPosts = (canvas: Canvas) => canvas.posts.filter((post) => post.url 
 
 // ---- the frames (S3)
 
-test("All sizes shows Phone, Tablet and Desktop as real iframes at their true widths, scaled to fit together and labeled", async () => {
+test("All sizes shows Phone, Tablet and the artboard as designed as real iframes at their true widths, scaled to fit together and labeled", async () => {
 	const canvas = await loadSizes(WIDE_ALPHA);
 	const [first] = canvas.boards;
 	focusOn(canvas);
@@ -81,7 +84,7 @@ test("All sizes shows Phone, Tablet and Desktop as real iframes at their true wi
 	openDevices(canvas);
 	const all = deviceItems(canvas).find((item) => item.dataset.size === "all")!;
 	assert.deepEqual(deviceItems(canvas).map((item) => item.dataset.size), ["phone", "tablet", "desktop", "all"], "All sizes comes after the presets");
-	assert.equal(all.title, "All sizes: Phone, Tablet and Desktop side by side");
+	assert.equal(all.title, "All sizes: Phone, Tablet and the artboard as designed, side by side");
 	assert.deepEqual(texts(all, "gd-menu-label"), ["All sizes"]);
 	assert.deepEqual(texts(all, "gd-device-dim"), [], "no single size to show");
 	assert.equal(withClass(all, "gd-i")[0].children[0].getAttribute("href"), "#i-devices");
@@ -98,7 +101,7 @@ test("All sizes shows Phone, Tablet and Desktop as real iframes at their true wi
 	assert.equal(views[0].getAttribute("role"), "group");
 	assert.equal(views[0].getAttribute("aria-label"), "All sizes");
 	const sections = sizeSections(canvas);
-	assert.deepEqual(sections.map((section) => section.getAttribute("aria-label")), ["Phone 390 by 844", "Tablet 820 by 1180", "Desktop 1200 by 800"]);
+	assert.deepEqual(sections.map((section) => section.getAttribute("aria-label")), ["Phone 390 by 844", "Tablet 820 by 1180", "As designed 1200 by 800"]);
 	const frames = sections.map(iframeOf);
 	assert.deepEqual(frames.map((frame) => [frame.style.width, frame.style.height]), [["390px", "844px"], ["820px", "1180px"], ["1200px", "800px"]]);
 	for (const frame of frames) {
@@ -106,7 +109,7 @@ test("All sizes shows Phone, Tablet and Desktop as real iframes at their true wi
 		assert.equal(frame.getAttribute("referrerpolicy"), "no-referrer");
 		assert.equal(frame.src, "/t/files/alpha/01-a.html");
 	}
-	assert.deepEqual(frames.map((frame) => frame.title), ["First artboard at Phone 390 × 844", "First artboard at Tablet 820 × 1180", "First artboard at Desktop 1200 × 800"]);
+	assert.deepEqual(frames.map((frame) => frame.title), ["First artboard at Phone 390 × 844", "First artboard at Tablet 820 × 1180", "First artboard as designed, 1200 × 800"]);
 
 	// One scale for the three, small enough that they fit the viewport together.
 	const scales = sections.map(scaleOf);
@@ -121,10 +124,11 @@ test("All sizes shows Phone, Tablet and Desktop as real iframes at their true wi
 	assert.ok(Math.max(...heights) <= 700 - 8 - 8 - 28 - 48, "and above the Back to canvas band");
 	assert.deepEqual([views[0].style.left, views[0].style.right, views[0].style.top, views[0].style.bottom], ["8px", "8px", "16px", "48px"]);
 	const percent = Math.round(scales[0] * 100);
-	assert.deepEqual(sections.map((section) => texts(section, "gd-size-name")[0]), ["Phone", "Tablet", "Desktop"]);
+	assert.deepEqual(sections.map((section) => texts(section, "gd-size-name")[0]), ["Phone", "Tablet", "As designed"], "L12: the third frame is the artboard as designed, never Desktop");
 	assert.deepEqual(sections.map((section) => texts(section, "gd-size-dim")[0]), ["390 × 844", "820 × 1180", "1200 × 800"]);
 	assert.deepEqual(sections.map((section) => texts(section, "gd-size-scale")[0]), [`· ${percent}%`, `· ${percent}%`, `· ${percent}%`]);
 	assert.equal(withClass(sections[0], "gd-i").length, 1, "each label carries its icon");
+	assert.deepEqual(sections.map((section) => withClass(section, "gd-i")[0].children[0].getAttribute("href")), ["#i-phone", "#i-tablet", "#i-fit"], "the artboard's own size, not a monitor");
 	assert.equal(canvas.zoomLevel.textContent, "100%", "the label stays at 100% above the frames");
 
 	assert.equal(first.frame.src, src, "the artboard's own iframe is not reloaded");
@@ -159,7 +163,7 @@ test("Back to canvas and focusing another artboard leave All sizes and restore t
 	assert.deepEqual(pressedSizes(canvas), ["desktop"]);
 	// The system board shows at every size too, and takes no comments there.
 	chooseSize(canvas, "all");
-	assert.deepEqual(sizeSections(canvas).map((section) => section.getAttribute("aria-label")), ["Phone 390 by 844", "Tablet 820 by 1180", "Desktop 800 by 600"]);
+	assert.deepEqual(sizeSections(canvas).map((section) => section.getAttribute("aria-label")), ["Phone 390 by 844", "Tablet 820 by 1180", "As designed 800 by 600"]);
 	assert.equal(iframeOf(sizeSections(canvas)[0]).src, "/t/system.html");
 	commentMode(canvas);
 	const phone = iframeOf(sizeSections(canvas)[0]);
@@ -190,6 +194,19 @@ test("All sizes follows the viewport and a manifest refresh, and live reload rel
 	assert.equal(canvas.viewport.children.filter((child) => child.classes.has("gd-sizes-all")).length, 1);
 	assert.deepEqual(pressedSizes(canvas), ["all"]);
 	assert.ok(canvas.world.children[0].classes.has("gd-all-sizes"), "the refreshed artboard wears it");
+});
+
+test("E5: the server switching to the system-only view leaves no All sizes frames behind", async () => {
+	const canvas = await loadSizes({ ...WIDE_ALPHA, "/t/api/system": { exists: true, file: "system.html", width: 800, height: 600 } });
+	focusOn(canvas, 1);
+	chooseSize(canvas, "all");
+	assert.equal(withClass(canvas.viewport, "gd-sizes-all").length, 1);
+	await canvas.serverEvent("show", { slug: null });
+	assert.equal(withClass(canvas.viewport, "gd-sizes-all").length, 0, "no size frames left in the viewport");
+	assert.equal(sizeSections(canvas).length, 0);
+	assert.equal(canvas.navMode.textContent, "Navigating");
+	assert.equal(canvas.world.children.length, 1, "only the system board is shown");
+	assert.equal(canvas.world.children.filter((child) => child.classes.has("gd-all-sizes")).length, 0);
 });
 
 test("size frames are registered like the artboard's frame: they get focus, mode and pins when they load", async () => {
@@ -226,7 +243,7 @@ test("in All sizes every size frame takes picks; the popover opens beside the pi
 	const canvas = await loadSizes(WIDE_ALPHA);
 	focusOn(canvas);
 	chooseSize(canvas, "all");
-	const [phone, tablet, desktop] = sizeSections(canvas).map(iframeOf);
+	const [phone, tablet, designed] = sizeSections(canvas).map(iframeOf);
 	const popover = $(canvas, "gd-popover");
 
 	canvas.message(phone.contentWindow, PICK);
@@ -250,9 +267,9 @@ test("in All sizes every size frame takes picks; the popover opens beside the pi
 
 	$(canvas, "gd-popover-cancel").dispatch("click");
 	assert.deepEqual(phone.contentWindow!.posted.at(-1), { type: "gd:clear" }, "the frame that was picked clears its outline");
-	desktop.rect = { left: 300, top: 100, width: 400, height: 267 };
-	canvas.message(desktop.contentWindow, PICK);
-	assert.equal(popover.hidden, false, "the Desktop frame takes picks too");
+	designed.rect = { left: 300, top: 100, width: 400, height: 267 };
+	canvas.message(designed.contentWindow, PICK);
+	assert.equal(popover.hidden, false, "the as designed frame takes picks too");
 	assert.equal(popover.style.left, `${300 + 30 * (400 / 1200)}px`);
 	assert.match(canvas.navMode.textContent, /^Using:/);
 	canvas.message(tablet.contentWindow, { type: "gd:exit-focus" });
@@ -423,7 +440,7 @@ const submitComment = async (canvas: Canvas, text = "Tighter") => {
 	return commentPosts(canvas).at(-1)!;
 };
 
-test("a comment made at the manifest size carries no viewport; at Desktop in focus it carries the window-wide size it was made at (canvas-layout S8)", async () => {
+test("L12: a comment made at the manifest size or at Desktop carries no viewport: Desktop is the window's width, not a size of the design", async () => {
 	const canvas = await loadSizes();
 	tallViewport(canvas);
 	const [first] = canvas.boards;
@@ -434,7 +451,8 @@ test("a comment made at the manifest size carries no viewport; at Desktop in foc
 	focusOn(canvas);
 	first.frame.rect = { left: 0, top: 0, width: 984, height: 300 };
 	canvas.message(first.frame.contentWindow, PICK);
-	assert.deepEqual(Object.entries((await submitComment(canvas)).viewport), [["width", 984], ["height", 300]], "Desktop: the viewport's width, the manifest height");
+	assert.equal($(canvas, "gd-device-size").textContent, "984 × 300", "Desktop fills the window here (canvas-layout S8)");
+	assert.equal("viewport" in await submitComment(canvas), false, "Desktop records no size");
 	// A custom width equal to the manifest width is the manifest size too.
 	setCustom(canvas, "400");
 	canvas.message(first.frame.contentWindow, PICK);
@@ -448,25 +466,25 @@ test("a comment at a preset or custom width carries the viewport of that size, w
 	focusOn(canvas);
 	commentMode(canvas);
 	first.frame.rect = { left: 0, top: 0, width: 390, height: 844 };
-	const sizes: Array<[string, number, number]> = [];
+	const sizes: Array<Array<string | number>> = [];
 	const viewportOf = async () => {
 		canvas.message(first.frame.contentWindow, PICK);
 		const { viewport } = await submitComment(canvas);
-		return [viewport.width, viewport.height];
+		return viewport ? [viewport.width, viewport.height] : ["none"];
 	};
 	chooseSize(canvas, "phone");
-	sizes.push(["phone", ...(await viewportOf())] as [string, number, number]);
+	sizes.push(["phone", ...(await viewportOf())]);
 	chooseSize(canvas, "tablet");
-	sizes.push(["tablet", ...(await viewportOf())] as [string, number, number]);
+	sizes.push(["tablet", ...(await viewportOf())]);
 	setCustom(canvas, "720");
-	sizes.push(["custom", ...(await viewportOf())] as [string, number, number]);
-	// The size is the one at the pick: back at Desktop the next comment has Desktop's (canvas-layout S8: the viewport's width).
+	sizes.push(["custom", ...(await viewportOf())]);
+	// The size is the one at the pick: back at Desktop the next comment records none (L12).
 	chooseSize(canvas, "desktop");
-	sizes.push(["desktop", ...(await viewportOf())] as [string, number, number]);
-	assert.deepEqual(sizes, [["phone", 390, 844], ["tablet", 820, 1180], ["custom", 720, 300], ["desktop", 984, 300]]);
+	sizes.push(["desktop", ...(await viewportOf())]);
+	assert.deepEqual(sizes, [["phone", 390, 844], ["tablet", 820, 1180], ["custom", 720, 300], ["desktop", "none"]]);
 });
 
-test("in All sizes the comment carries the size of the frame that was picked; the Desktop frame is the manifest size", async () => {
+test("in All sizes the comment carries the size of the frame that was picked; the as designed frame is the manifest size", async () => {
 	const canvas = await loadSizes();
 	focusOn(canvas);
 	chooseSize(canvas, "all");
@@ -479,7 +497,7 @@ test("in All sizes the comment carries the size of the frame that was picked; th
 		const body = await submitComment(canvas);
 		sent.push(body.viewport ? `${body.viewport.width} × ${body.viewport.height}` : "none");
 	}
-	assert.deepEqual(sent, ["390 × 844", "820 × 1180", "none"], "Desktop = the 400 × 300 manifest size");
+	assert.deepEqual(sent, ["390 × 844", "820 × 1180", "none"], "as designed = the 400 × 300 manifest size");
 	// The artboard's own frame is hidden in All sizes; a pick from it records no size.
 	canvas.message(canvas.boards[0].frame.contentWindow, PICK);
 	assert.equal("viewport" in await submitComment(canvas), false);
@@ -516,6 +534,23 @@ test("the comment card shows the size it was made at: Phone, Tablet or width × 
 
 // ---- source pins, markup and styles
 
+test("E4: the client's viewport limits and the Phone and Tablet presets match what comments.json accepts and names (lib/design-comments.ts)", () => {
+	const sizes = read("canvas-sizes.js");
+	const server = readFileSync(fileURLToPath(new URL("../lib/design-comments.ts", import.meta.url)), "utf8");
+	const numbers = (text: string) => Object.fromEntries([...text.matchAll(/(\w+): (\d+)/g)].map((match) => [match[1], Number(match[2])]));
+	const limits = /const VIEWPORT_LIMITS = (\{[^}]*\});/.exec(sizes);
+	assert.ok(limits, "canvas-sizes.js declares VIEWPORT_LIMITS");
+	assert.deepEqual(Object.entries(numbers(limits[1])), Object.entries(DESIGN_VIEWPORT_LIMITS));
+	const clientPresets = /const SIZE_PRESETS = \[([^]*?)\];/.exec(sizes);
+	const serverPresets = /const VIEWPORT_PRESETS[^=]*= \[([^]*?)\];/.exec(server);
+	assert.ok(clientPresets && serverPresets, "both declare their presets");
+	const nameOf = (kind: string) => new RegExp(`\\n\\t${kind}: "([^"]+)",`).exec(sizes)?.[1];
+	const client = [...clientPresets[1].matchAll(/\{ kind: "(\w+)", width: (\d+), height: (\d+) \}/g)].map((match) => `${nameOf(match[1])} ${match[2]} × ${match[3]}`);
+	const named = [...serverPresets[1].matchAll(/\{ name: "(\w+)", width: (\d+), height: (\d+) \}/g)].map((match) => `${match[1]} ${match[2]} × ${match[3]}`);
+	assert.deepEqual(client, ["Phone 390 × 844", "Tablet 820 × 1180"]);
+	assert.deepEqual(named, client, "the server names the same sizes the card names");
+});
+
 test("All sizes keeps the module rules: state through the store, board fields documented, English strings in TEXT", () => {
 	const sizes = read("canvas-sizes.js");
 	assert.ok(sizes.indexOf("const TEXT = Object.freeze({") < sizes.indexOf("export function init"), "the strings sit in one TEXT block before init");
@@ -530,6 +565,12 @@ test("All sizes keeps the module rules: state through the store, board fields do
 	const messages = read("canvas-messages.js");
 	assert.match(messages, /gd:overflow/);
 	assert.match(messages, /candidate\.frame\.contentWindow === event\.source/, "a frame is trusted only by its window");
+	// E6: canvas-sizes.js owns a frame's overflow; the other modules change it through setOverflow.
+	for (const name of ["canvas-messages.js", "canvas-focus.js", "canvas-boards.js"]) {
+		assert.ok(!/\.overflow\s*=(?!=)/.test(read(name)), `${name} never assigns an overflow`);
+	}
+	assert.equal(sizes.match(/\.overflow\s*=(?!=)/g)?.length, 1, "one assignment, in setOverflow");
+	assert.match(messages, /actions\.setOverflow\(surface, /);
 });
 
 test("index.html has the All sizes icon, and canvas.css styles the frames, the chip and the comment's size in the Sizes section on --gd-* tokens", () => {

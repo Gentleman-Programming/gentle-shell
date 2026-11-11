@@ -57,8 +57,7 @@ export function init(ctx) {
 			if (board.system || typeof data.overflow !== "boolean" || !isFiniteNumber(data.width) || !isFiniteNumber(data.scrollWidth)) return;
 			// A report for another width is a late one from before the frame was resized.
 			if (Math.round(data.width) !== surface.viewWidth) return;
-			surface.overflow = data.overflow ? { scrollWidth: data.scrollWidth } : null;
-			actions.renderOverflow(surface);
+			actions.setOverflow(surface, data.overflow ? { scrollWidth: data.scrollWidth } : null);
 		} else if (data.type === "gd:escape") {
 			if (!els.popover.hidden) actions.closePopover();
 			else if (state.commenting) actions.setCommenting(false);

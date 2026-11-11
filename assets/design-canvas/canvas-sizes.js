@@ -5,12 +5,13 @@
 // The size lives in the store (setFocus), and the menu is the shared one
 // (canvas-menu.js) with its own element, #gd-device-menu.
 //
-// All sizes shows the focused artboard at Phone, Tablet and Desktop at once: a real iframe per
+// All sizes shows the focused artboard at Phone, Tablet and as designed at once: a real iframe per
 // size ("size frame") at its true width, scaled together outside the world. A board and its size
 // frames are its "surfaces": each takes picks, shows pins, reports overflow and records the size a
 // comment was made at (viewportOf), so the other modules handle a size frame as they handle a board.
 // This module owns the board fields it changes in place (canvas-store.js): board.sizeFrames,
-// board.sizesView and board.overflow, and each size frame's own rects and overflow.
+// board.sizesView and board.overflow, and each size frame's own rects and overflow. The other
+// modules change a frame's overflow only through setOverflow.
 
 // Every string the sizes show, in English until the i18n PR keys them.
 const TEXT = Object.freeze({
@@ -19,7 +20,8 @@ const TEXT = Object.freeze({
 	tablet: "Tablet",
 	desktop: "Desktop",
 	all: "All sizes",
-	allTitle: "All sizes: Phone, Tablet and Desktop side by side",
+	allTitle: "All sizes: Phone, Tablet and the artboard as designed, side by side",
+	designed: "As designed",
 	custom: "Custom",
 	customAria: "Custom width in pixels",
 	customGroup: "Custom width",
@@ -30,6 +32,7 @@ const TEXT = Object.freeze({
 	buttonOff: "Open an artboard to choose its preview size",
 	frameAria: (name, width, height) => `${name} ${width} by ${height}`,
 	frameTitle: (title, name, width, height) => `${title} artboard at ${name} ${width} × ${height}`,
+	designedTitle: (title, width, height) => `${title} artboard as designed, ${width} × ${height}`,
 	scale: (percent) => `· ${percent}%`,
 	overflow: "Overflows",
 	overflowNote: (width) => `Content is wider than ${width} px, so part of it is cut off or needs sideways scrolling at this size.`,
@@ -47,6 +50,8 @@ const SIZE_PRESETS = [
 const CUSTOM_WIDTH = { min: 240, max: 2560 };
 // The device button wears the icon of the size it shows (canvas-layout S6).
 const SIZE_ICONS = { phone: "i-phone", tablet: "i-tablet", desktop: "i-monitor", all: "i-devices", custom: "i-width" };
+// All sizes' third frame is the artboard at its own size in design.json, not a device: it wears the artboard frame icon.
+const DESIGNED_ICON = "i-fit";
 // What comments.json accepts for the size a comment was made at (lib/design-comments.ts).
 const VIEWPORT_LIMITS = { minWidth: 240, maxWidth: 4096, minHeight: 1, maxHeight: 20000 };
 // All sizes: the gap between the frames, the band each label takes above its frame, and the smallest scale.
@@ -238,9 +243,12 @@ export function init(ctx) {
 
 	// ---- All sizes: a frame per size, registered like the board's own frame
 
-	/** The sizes All sizes shows: Phone and Tablet, and Desktop at the artboard's own size (side by side, nothing fills the window). */
+	/**
+	 * The sizes All sizes shows: Phone and Tablet, and the artboard as designed, at its own size in design.json
+	 * (L12: labelled by what it is, never Desktop; side by side, nothing fills the window).
+	 */
 	function allSizes(board) {
-		return SIZE_PRESETS.map((preset) => ({ kind: preset.kind, ...(preset.kind === "desktop" ? manifestSize(board) : presetSize(board, preset)) }));
+		return SIZE_PRESETS.map((preset) => (preset.kind === "desktop" ? { kind: "designed", ...manifestSize(board) } : { kind: preset.kind, ...presetSize(board, preset) }));
 	}
 
 	/**
@@ -278,7 +286,8 @@ export function init(ctx) {
 		const head = doc.createElement("div");
 		head.className = "gd-size-head";
 		const scaleLabel = chip("gd-size-scale", "");
-		head.append(actions.icon(SIZE_ICONS[kind], "gd-i gd-i-s"), chip("gd-size-name", name), chip("gd-size-dim", dims({ width, height })), scaleLabel);
+		const designed = kind === "designed";
+		head.append(actions.icon(designed ? DESIGNED_ICON : SIZE_ICONS[kind], "gd-i gd-i-s"), chip("gd-size-name", name), chip("gd-size-dim", dims({ width, height })), scaleLabel);
 		const scaled = doc.createElement("div");
 		scaled.className = "gd-size-scaled";
 		const stage = doc.createElement("div");
@@ -289,7 +298,7 @@ export function init(ctx) {
 		frame.className = "gd-size-iframe";
 		frame.setAttribute("sandbox", "allow-scripts");
 		frame.setAttribute("referrerpolicy", "no-referrer");
-		frame.title = TEXT.frameTitle(board.artboard.title, name, width, height);
+		frame.title = designed ? TEXT.designedTitle(board.artboard.title, width, height) : TEXT.frameTitle(board.artboard.title, name, width, height);
 		frame.style.width = `${width}px`;
 		frame.style.height = `${height}px`;
 		const pins = doc.createElement("div");
@@ -305,9 +314,15 @@ export function init(ctx) {
 		return surface;
 	}
 
+	/**
+	 * Drops `board`'s size frames. A comment box open on one of them closes first, while that frame still
+	 * shows, so it clears its outline and no later Cancel reaches a removed frame (an export, for one,
+	 * leaves All sizes without setSize).
+	 */
 	function removeSizeFrames(board) {
 		board.wrapper.classList.remove("gd-all-sizes");
 		if (!board.sizesView) return;
+		if (state.pick && board.sizeFrames.includes(state.pick.surface)) actions.closePopover();
 		board.sizesView.remove();
 		board.sizesView = null;
 		board.sizeFrames = [];
@@ -339,8 +354,7 @@ export function init(ctx) {
 	/** A frame (the board's own or a size frame) finished loading: it knows nothing yet, so tell it the state. */
 	function surfaceLoaded(surface) {
 		surface.rects = null;
-		surface.overflow = null;
-		renderOverflow(surface);
+		setOverflow(surface, null);
 		actions.sendMode(surface);
 		actions.sendFocus(surface);
 		if (!ownerOf(surface).system) actions.sendPins(surface);
@@ -358,7 +372,16 @@ export function init(ctx) {
 	}
 
 	/**
-	 * Shown while the page last reported content wider than this frame (canvas-messages.js sets surface.overflow).
+	 * What a frame's page last reported: `{ scrollWidth }` while its content is wider than the frame, null when it
+	 * fits or has not reported for this width. The one way any module changes surface.overflow; the chip follows.
+	 */
+	function setOverflow(surface, overflow) {
+		surface.overflow = overflow;
+		renderOverflow(surface);
+	}
+
+	/**
+	 * Shown while the page last reported content wider than this frame (setOverflow).
 	 * The artboard's own frame shows it only at a single focused size; in All sizes each size frame has its own.
 	 */
 	function renderOverflow(surface) {
@@ -374,14 +397,15 @@ export function init(ctx) {
 	// ---- the size a comment was made at
 
 	/**
-	 * The size a pick was made at, for the comment: the focused single size, or the picked size frame of
-	 * All sizes. Null at the artboard's own size (nothing to record) and when comments.json would refuse it.
+	 * The size a pick was made at, for the comment: the focused Phone, Tablet or custom width, or the picked size
+	 * frame of All sizes. Null at the artboard's own size (nothing to record), at Desktop (L12: it fills the window,
+	 * so its width is the window's, not a size of the design) and when comments.json would refuse it.
 	 */
 	function viewportOf(surface) {
 		const board = ownerOf(surface);
 		let size;
 		if (surface !== board) size = { width: surface.width, height: surface.height };
-		else if (state.focus === board && state.size.kind !== "all") size = focusSize(board);
+		else if (state.focus === board && state.size.kind !== "all" && state.size.kind !== "desktop") size = focusSize(board);
 		else return null;
 		if (size.width === board.artboard.width && size.height === board.artboard.height) return null;
 		const { minWidth, maxWidth, minHeight, maxHeight } = VIEWPORT_LIMITS;
@@ -417,5 +441,5 @@ export function init(ctx) {
 		actions.menuKeydown(event, state.menu.items, actions.closeMenu, chooseDeviceItem);
 	});
 
-	return { focusSize, surfacesOf, ownerOf, renderDevice, closeDeviceMenu, startSizes, layoutSizes, removeSizeFrames, surfaceLoaded, overflowFlag, renderOverflow, viewportOf, viewportChip };
+	return { focusSize, surfacesOf, ownerOf, renderDevice, closeDeviceMenu, startSizes, layoutSizes, removeSizeFrames, surfaceLoaded, overflowFlag, setOverflow, renderOverflow, viewportOf, viewportChip };
 }

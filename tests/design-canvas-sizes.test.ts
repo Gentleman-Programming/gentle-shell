@@ -158,7 +158,7 @@ test("canvas-layout S6: the top bar's device button opens a menu of Phone, Table
 	assert.deepEqual(items.map((item) => item.dataset.size), ["phone", "tablet", "desktop", "all"]);
 	assert.deepEqual(items.map((item) => texts(item, "gd-menu-label")[0]), ["Phone", "Tablet", "Desktop", "All sizes"]);
 	assert.deepEqual(items.map((item) => texts(item, "gd-device-dim")[0] ?? ""), ["390 × 844", "820 × 1180", "984 × 300", ""]);
-	assert.deepEqual(items.map((item) => item.title), ["Phone 390 × 844", "Tablet 820 × 1180", "Desktop 984 × 300", "All sizes: Phone, Tablet and Desktop side by side"]);
+	assert.deepEqual(items.map((item) => item.title), ["Phone 390 × 844", "Tablet 820 × 1180", "Desktop 984 × 300", "All sizes: Phone, Tablet and the artboard as designed, side by side"]);
 	assert.deepEqual(items.map((item) => item.getAttribute("aria-checked")), ["false", "false", "true", "false"], "Desktop is checked when focus mode starts");
 	assert.deepEqual(items.map((item) => (item as FakeElement & { type?: string }).type), ["button", "button", "button", "button"]);
 	for (const item of items) assert.equal(withClass(item, "gd-i")[0].getAttribute("aria-hidden"), "true", "icons are decoration");
@@ -505,7 +505,7 @@ test("the docs describe the preview size in the top bar, All sizes, the Overflow
 	assert.ok(start >= 0, "a Sizes entry");
 	const sizes = section.slice(start, section.indexOf("\n", start));
 	for (const part of ["**Preview size**", "top bar", "disabled", "**Phone** (390 × 844)", "**Tablet** (820 × 1180)", "**Desktop**", "**Custom**", "240", "2560", "8 px", "drawn smaller", "Leaving focus mode"]) assert.ok(sizes.includes(part), `the Sizes entry mentions ${part}`);
-	for (const part of ["**All sizes**", "side by side", "its own iframe", "Comment mode", "**Overflows**", "wider than", "the size it was made at"]) assert.ok(sizes.includes(part), `the Sizes entry mentions ${part}`);
+	for (const part of ["**All sizes**", "side by side", "its own iframe", "Comment mode", "**Overflows**", "wider than", "the size it was made at", "**As designed**", "Desktop records none"]) assert.ok(sizes.includes(part), `the Sizes entry mentions ${part}`);
 	assert.ok(!section.includes("at its designed width at 100%"), "focus mode is no longer the designed width");
 	assert.ok(!section.includes("the rest of the canvas is dimmed"), "the other artboards are hidden now");
 });

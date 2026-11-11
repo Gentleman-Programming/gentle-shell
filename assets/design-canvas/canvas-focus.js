@@ -62,10 +62,9 @@ export function init(ctx) {
 	 */
 	function setFrameSize(board, width, height) {
 		if (board.viewWidth !== width) {
-			board.overflow = null;
 			board.viewWidth = width;
 			board.frame.style.width = `${width}px`;
-			actions.renderOverflow(board);
+			actions.setOverflow(board, null);
 		}
 		board.viewHeight = height;
 		board.frame.style.height = `${height}px`;

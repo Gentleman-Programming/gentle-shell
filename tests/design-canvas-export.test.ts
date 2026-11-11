@@ -542,6 +542,38 @@ test("an export from All sizes grabs the artboard's own frame without the size f
 	assert.ok(canvas.boards[0].wrapper.classes.has("gd-all-sizes"));
 });
 
+test("E1: an export while the comment box is open on an All sizes frame closes it first: that frame clears its outline before it is removed", async () => {
+	const { canvas } = await pngCanvas();
+	click(canvas.boards[0].shield!, 200, 200);
+	$(canvas, "gd-device").dispatch("click");
+	findAll($(canvas, "gd-device-menu"), (element) => element.dataset.size === "all")[0].dispatch("click");
+	$(canvas, "gd-comment").dispatch("click");
+	const phoneSection = withClass(canvas.viewport, "gd-size-frame")[0];
+	const phone = findAll(phoneSection, (element) => element.localName === "iframe")[0];
+	canvas.message(phone.contentWindow, { type: "gd:pick", selector: "#cta", excerpt: "Buy", rect: { x: 1, y: 1, width: 10, height: 10 } });
+	const popover = $(canvas, "gd-popover");
+	assert.equal(popover.hidden, false, "the comment box is open on the Phone frame");
+	// Whether the Phone frame was still in the viewport when it was told to clear its outline.
+	const shown = (element: FakeElement) => {
+		for (let at: FakeElement | null = element; at; at = at.parentElement) if (at === canvas.viewport) return true;
+		return false;
+	};
+	const clears: boolean[] = [];
+	const post = phone.contentWindow!.postMessage;
+	phone.contentWindow!.postMessage = (message: any) => {
+		if (message.type === "gd:clear") clears.push(shown(phoneSection));
+		post(message);
+	};
+	choose(canvas, "Export as PNG");
+	await settle();
+	assert.equal(popover.hidden, true, "no comment box is left on a frame that is gone");
+	assert.deepEqual(clears, [true], "the Phone frame cleared its outline while it was still shown");
+	assert.equal($(canvas, "gd-device-name").textContent, "All sizes", "All sizes comes back");
+	assert.equal(shown(phoneSection), false, "with new size frames");
+	$(canvas, "gd-popover-cancel").dispatch("click");
+	assert.deepEqual(clears, [true], "a later Cancel sends nothing to the removed frame");
+});
+
 test("an artboard bigger than the window names the window size it needs and grabs nothing", async () => {
 	const { canvas, log } = await pngCanvas({ frame: { width: 1440, height: 900 } });
 	const before = canvas.world.style.transform;

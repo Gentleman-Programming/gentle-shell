@@ -397,3 +397,94 @@ The pass cost $24.207 (Pi estimates, 19 runs: M $17.881 over 10 runs, F $6.326 o
 - Rule 1 cannot be decided from records that do not keep the prompt text.
 - The F `final` runs were made 2.5 hours earlier than the interleaved runs.
 - This pass measures detection and relay only: not authority records, consent behavior (both arms answered consent from the prompt's advance grant) or other routings.
+
+## R1 and R2 repeated (chance or split)
+
+Question: is the by-arm split of L10 (R1 escalated in F 3/3 vs M 0/2; R2 approved in F 3/3 vs blocked in M 2/2) chance? Same arms, M = 6e61ac3bd and F = 4eb357f8b.
+
+**Verdict for both inputs: chance.** Both outcomes now occur in both arms, and the two-sided Fisher exact p is 0.2424 for each input.
+
+### Setup
+
+- Root: `/private/tmp/review-forms-k4o3El/one-call-quality2/`. It holds `tools/` (`run-native.sh`, `step.sh`, `extract.py`, `lenses.py`, `fisher.py`), `runs/`, `sess/`, `out/`, `analysis/lenses.jsonl`, `gaihome/`, `FROZEN.sha256`, and `user-mode-before.json` / `user-mode-after.json`.
+- Package roots, unchanged and used read-only, at the same commits and pinned binary as L10: `one-call-quality/pkg-m` (6e61ac3bd, clean) and `one-call-final/pkg-final` (4eb357f8b, clean). The worktree at 3589defa7 adds only a test and document entries.
+- Launch, environment (including the three isolation flags), models and timeout are identical to L10.
+- Isolated home: `one-call-quality2/gaihome` read `on / default` before `review mode enable --scope=global` was run in that home only; every run meta shows `on / global`.
+- Order, strictly interleaved: R1-M, R1-F, R2-M, R2-F, for three rounds (12 runs, 2026-11-11 13:38–14:27 UTC). All rc=0, no timeouts, no retries, and all 12 clones are clean.
+- Prompts: `cmp ../out/R1-a.prompt.txt out/R1-<arm><n>.prompt.txt` and `cmp ../out/R2-a.prompt.txt out/R2-<arm><n>.prompt.txt` exited 0 for all 12 runs.
+- A fourth round was not run: three rounds cost $14.888, and a round costs about $5.2 against the $17 cap.
+- User's real review mode: before 13:38:09Z and after 14:27:03Z, both `global: off, clone_local: "", effective: off, source: global`, identical apart from the timestamp line.
+- **Prompt text: not compared.** No existing, supported option records the materialized reviewer prompt text. There is no debug, trace or dump setting in `lib/review-host-relay.ts`, `lib/review-relay-contract.ts` or the `gentle_review*` code of `extensions/gentle-ai.ts`; the relay's only environment settings are timeouts, the buffer size and the relay contract. The binary's help shows no such flag. None was improvised.
+
+### Per run (this pass)
+
+Columns: outcome; the conflict-marker finding per lens (risk / resilience / readability / reliability) as cited line in `extensions/child-context.ts`, severity and `causal_disposition` (`i` = introduced, `u` = unknown); provider downgrades; reviewer tokens total/reasoning per role; cost (Pi estimate); wall.
+
+| run | outcome | risk | resilience | readability | reliability | downgrade (`unverified_location`) | reviewer tokens total/reasoning | cost $ | wall s |
+|---|---|---|---|---|---|---|---|---|---|
+| R1-m1 | correction_required | 27 BLOCKER i | 30 BLOCKER i | 30 BLOCKER i | 30 BLOCKER i | none | risk 15,597/633, res 15,955/970, read 16,554/1,292, rel 16,022/893, refuter 15,113/61 | 1.767 | 362.3 |
+| R1-f1 | escalated | 30 BLOCKER i | 30 BLOCKER i | 29 BLOCKER u | 27 BLOCKER i | readability | 15,887/895, 15,729/772, 16,091/937, 16,210/1,034, refuter 14,867/60 | 0.903 | 118.7 |
+| R1-m2 | escalated | 29 BLOCKER u | 30 BLOCKER i | 30 BLOCKER i | 30 BLOCKER i | risk | 15,757/770, 15,506/516, 16,207/1,034, 16,624/1,372, refuter 14,856/38 | 1.794 | 346.7 |
+| R1-f2 | escalated | 30 BLOCKER i | 26 BLOCKER u | 30 BLOCKER i | 30 BLOCKER i | resilience | 15,815/872, 15,369/368, 16,494/1,216, 16,498/1,236, refuter 14,814/57 | 0.707 | 120.8 |
+| R1-m3 | escalated | 27 BLOCKER i | 26 BLOCKER u | 26 BLOCKER u | 26 BLOCKER u | resilience, readability, reliability | 15,767/798, 15,355/398, 16,123/1,004, 16,431/1,238, refuter 14,193/0 | 1.931 | 382.6 |
+| R1-f3 | correction_required | 30 BLOCKER i | 30 BLOCKER i | 30 BLOCKER i | 30 BLOCKER i | none | 15,854/908, 15,599/635, 16,093/1,034, 16,258/1,142, refuter 15,094/38 | 0.539 | 96.7 |
+
+For R2, the columns are the npm `json=true` finding per lens (severity, location in `scripts/pi-update.mjs`, or "—" when the lens did not report it) and the refuter's result:
+
+| run | outcome | risk | resilience | readability | reliability | refuter | reviewer tokens total/reasoning | cost $ | wall s |
+|---|---|---|---|---|---|---|---|---|---|
+| R2-m1 | approved (no findings recorded) | — | — | — | — | did not run | risk 24,279/516, res 25,655/1,867, read 24,626/899, rel 25,885/2,070 | 1.800 | 376.7 |
+| R2-f1 | approved | — | — | — | — (one WARNING about `tests/pi-update.test.ts:78-79`, not `json`) | did not run | 24,533/723, 24,429/685, 24,703/984, 26,011/2,017 | 0.683 | 135.9 |
+| R2-m2 | correction_required (blocked on `json`) | — | — | — | CRITICAL `:303-304` | corroborated | 24,053/285, 25,666/1,895, 24,981/1,245, 26,847/2,908, refuter 23,223/82 | 1.901 | 364.7 |
+| R2-f2 | approved | — | WARNING `:303-304` | — | — (WARNING on adjacent peer `:384-387`) | did not run | 24,220/432, 26,998/3,031, 24,755/1,034, 26,747/2,668 | 0.585 | 132.7 |
+| R2-m3 | approved | — | WARNING `:303-304` (id `R4-json-view-output`; M closures carry no claim text) | — | — (WARNING on adjacent peer `:384-386`) | did not run | 24,010/224, 25,994/2,070, 24,352/587, 26,502/2,436 | 1.657 | 331.0 |
+| R2-f3 | correction_required (blocked on `json`) | — | CRITICAL `:302-303` | — | — | corroborated | 24,485/674, 24,954/1,034, 24,734/1,000, 25,126/1,348, refuter 23,207/58 | 0.624 | 99.0 |
+
+### Pooled same-commit tests
+
+Pooled runs: this pass plus L10's same-commit runs. M: one-call-quality R1-m1, R1-m2, R2-m1, R2-m2. F (4eb357f8b): one-call-quality R1-f1, R1-f2, R2-f1, R2-f2, and one-call-final R1-final, R2-final.
+
+R1, escalated vs not:
+
+| arm | escalated | not escalated |
+|---|---|---|
+| M (6e61ac3bd) | 2 (q2 R1-m2, R1-m3) | 3 (q R1-m1, R1-m2; q2 R1-m1) |
+| F (4eb357f8b) | 5 (q R1-f1, R1-f2; R1-final; q2 R1-f1, R1-f2) | 1 (q2 R1-f3) |
+
+Two-sided Fisher exact p = **0.242424** (`tools/fisher.py`; hypergeometric probabilities for the M-escalated cell x = 1..5: 0.015152, 0.181818, 0.454545, 0.303030, 0.045455; observed x = 2).
+
+R2, blocked on npm `json=true` vs not:
+
+| arm | blocked | not blocked |
+|---|---|---|
+| M (6e61ac3bd) | 3 (q R2-m1, R2-m2; q2 R2-m2) | 2 (q2 R2-m1, R2-m3) |
+| F (4eb357f8b) | 1 (q2 R2-f3) | 5 (q R2-f1, R2-f2; R2-final; q2 R2-f1, R2-f2) |
+
+Two-sided Fisher exact p = **0.242424** (x = 0..4: 0.045455, 0.303030, 0.454545, 0.181818, 0.015152; observed x = 3).
+
+Older trees, not pooled: 29b57a414 R1-a correction_required and R2-a blocked on `json` (two lenses CRITICAL); 234cf3a31 R1-pilot escalated and R2-after blocked on `json`.
+
+Verdict by the rule:
+- **R1: chance.** Both outcomes occur in both arms, and p = 0.2424 ≥ 0.05.
+- **R2: chance.** Both outcomes occur in both arms, and p = 0.2424 ≥ 0.05.
+
+### Observations
+
+- **R1 escalation tracks the cited line, in both arms.** Across all 13 R1 runs listed here (11 pooled, 2 on older trees), a conflict-marker finding was downgraded for `unverified_location` exactly when its lens cited line 26, 29 or 29-35 and recorded `causal_disposition: unknown`. Citations of lines 27, 28 and 30 (all `introduced`) were never downgraded. Every run with at least one such citation escalated; every run without one ended `correction_required`.
+- **R2 blocks or approves on one lens's severity for the `json` finding.** It blocked when a lens rated it CRITICAL (the refuter then corroborated it) and was approved when the lenses rated it WARNING or did not report it. This happened in both arms.
+- **Prompt sizes:** lens prompt byte counts for R1 and R2 are the same as in L10 in all 12 runs, in both arms.
+
+### Anomalies
+
+1. **R1-m3 (M):** the parent captured `review-risk` alone with `gentle_review_capture` (forecast, then acknowledged) before capturing the other three lenses with `gentle_review_capture_group`. So in this run one lens finished before the other three started; every other M run captured all four as one group. The three lenses captured together all cited line 26 with `unknown` and were downgraded.
+2. **Explorer launched:** the R2-m1 parent (approved, no findings) launched one `gentle-ai-explore` child ($0.0104) to look for findings.
+3. **R2-m3 claim text:** its `json` advisory is identified by id and location only, because M approved closures carry no claim text (L7).
+
+### Spend
+
+$14.888 (Pi estimates; M $10.848 over 6 runs, F $4.040 over 6 runs) against a $17 cap.
+
+### Limits
+
+- n = 5 (M) and 6 (F) per input. p = 0.24 does not show the arms are equal; it shows these counts are compatible with chance.
+- Reviewer prompt text was not compared: no supported recording option exists.

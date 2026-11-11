@@ -62,9 +62,15 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
  let target: string | undefined;
  let started = false;
  const captured = new Set<string>();
- // advisory_findings of the latest admitted closure, relayed only on approval.
- // The provider emits the key only on an approved closure; never routed on.
+ // advisory_findings of the latest admitted closure. The provider emits the key
+ // only on an approved closure; once captured, every result this run returns
+ // carries it (closed or stopped), so the parent holds it before any resume:
+ // a resume that goes straight to the acknowledgement cannot recover it, since
+ // neither bound STATUS nor the ACK envelope carries it. Never routed on.
  let closureFindings: { value: unknown } | undefined;
+ // The facade's advisory_finding_claims of that same closure (each advisory id's
+ // reviewer claim), relayed beside advisory_findings only; never routed on.
+ let closureClaims: { value: unknown } | undefined;
  const checkCancelled = () => {
   if (deps.signal?.aborted) throw Object.assign(new Error("Review coordinator cancelled"), { name: "AbortError" });
  };
@@ -94,7 +100,8 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
   return result;
  };
  const finish = (outcome: string, result: Body) => ({ schema: "gentle-pi.review-coordinator-experiment/v1", outcome, result, forecasts, reviewer_runs: reviewerRuns,
-  ...(outcome === "closed" && closureFindings !== undefined ? { advisory_findings: closureFindings.value } : {}),
+  ...(closureFindings !== undefined ? { advisory_findings: closureFindings.value } : {}),
+  ...(closureFindings !== undefined && closureClaims !== undefined ? { advisory_finding_claims: closureClaims.value } : {}),
   ...(lineage === undefined ? {} : { lineage_id: lineage }), metrics: { elapsed_ms: now() - began, facade_calls: steps.length, steps } });
  const status = () => invoke("gentle_review", { operation: "status", lineageId: lineage, ...selectorInput });
  let details: Body;
@@ -150,7 +157,11 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
   const entries = Array.isArray(details.collectBindings) ? details.collectBindings.map(record) : [];
   // Native explicitly supplies the authored correction request. Do not derive
   // host routing metadata from submission domains or inspect opaque bindings.
-  if (transition.correction_request !== undefined || entries.length === 0) return finish("input-required", details);
+  if (transition.correction_request !== undefined) return finish("input-required", details);
+  // The facade's own pre-lineage intended-untracked selection (selectionBinding
+  // and nextStep, no collectBindings): the parent chooses, never the run.
+  if (entries.length === 0 && typeof details.selectionBinding === "string") return finish("selection-required", details);
+  if (entries.length === 0) return finish("input-required", details);
   if (lineage === undefined || target === undefined) return finish("blocked", details);
   const bindings = entries.map(entry => entry.collectBinding);
   if (!bindings.every(nonempty)) return finish("blocked", details);
@@ -163,12 +174,26 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
    if (await deps.presentForecast?.(capture) !== true) return finish("forecast", capture);
    capture = await invoke(tool, { ...parameters, reviewerRunAcknowledged: true });
   }
-  if (!["native-last-event-closure", "native-reviewer-result-captured"].includes(String(capture.outcome))
-   || capture.failure !== undefined || capture.reconciliation !== undefined) return finish("blocked", capture);
+  // A group whose every reviewer result was admitted without a closing event
+  // reports native-reviewer-group-status-reconciled after the facade's own
+  // bound STATUS confirmed lineage and target and offered no further reviewer
+  // capture (gentle_review_capture_group). Like any accepted capture, the next
+  // step comes only from the bound STATUS read below. Drift, an uncertain
+  // submission or a failed reconciliation carries another outcome or a
+  // failure/reconciliation field and stays blocked.
+  const reconciledGroup = tool === "gentle_review_capture_group" && capture.outcome === "native-reviewer-group-status-reconciled" && capture.status === "reconciled";
+  if (!(["native-last-event-closure", "native-reviewer-result-captured"].includes(String(capture.outcome)) || reconciledGroup)
+   || capture.failure !== undefined || capture.reconciliation !== undefined
+   || capture.native_failure !== undefined || capture.reconciliation_failure !== undefined) return finish("blocked", capture);
   if (Object.hasOwn(capture, "closure")) {
-   // Read only the key's presence and value; closure state and variants stay unread.
+   // Read only these keys' presence and value; closure state and variants stay unread.
    const closure = record(capture.closure);
    closureFindings = Object.hasOwn(closure, "advisory_findings") ? { value: structuredClone(closure.advisory_findings) } : undefined;
+   // Relayed only as a plain object of strings; any other shape is dropped.
+   const claims = closure.advisory_finding_claims;
+   const plainStrings = claims !== null && typeof claims === "object" && [Object.prototype, null].includes(Object.getPrototypeOf(claims))
+    && Object.values(claims).every(value => typeof value === "string");
+   closureClaims = closureFindings !== undefined && Object.hasOwn(closure, "advisory_finding_claims") && plainStrings ? { value: structuredClone(claims) } : undefined;
   }
   details = await status();
  }

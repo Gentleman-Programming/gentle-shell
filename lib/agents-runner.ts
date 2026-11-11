@@ -226,6 +226,8 @@ interface LiveTask {
 	cancelStall: () => void;
 	/** True while the armed stall budget was lengthened to cover a pending query. */
 	stallCoversQuery?: boolean;
+	/** A post-answer compaction phase is running: announced work, not silence. */
+	compacting?: boolean;
 	cancelGrace: () => void;
 	processGroup: number | undefined;
 	terminal: { status: TaskRecord["status"]; error: string | null } | undefined;
@@ -910,7 +912,8 @@ export class AgentRunner {
 	private armStall(id: string, live: LiveTask): void {
 		live.cancelStall();
 		const tool = live.inFlightTools.values().next().value;
-		const base = tool === undefined ? this.limits.stallTimeoutMs : Math.max(this.limits.toolStallTimeoutMs ?? this.limits.stallTimeoutMs, this.limits.stallTimeoutMs);
+		const compacting = live.compacting === true;
+		const base = tool === undefined && !compacting ? this.limits.stallTimeoutMs : Math.max(this.limits.toolStallTimeoutMs ?? this.limits.stallTimeoutMs, this.limits.stallTimeoutMs);
 		const now = this.deps.now();
 		let queryWait = 0;
 		for (const query of live.queries.values()) queryWait = Math.max(queryWait, query.deadline - now + QUERY_STALL_MARGIN_MS);
@@ -919,11 +922,12 @@ export class AgentRunner {
 		live.cancelStall = this.deps.schedule(() => {
 			const lastStep = this.store.get(id)?.lastStep ?? "starting";
 			const minutes = Math.round(budget / 60_000);
-			if (tool === undefined) {
+			if (tool === undefined && !compacting) {
 				const boundary = lastStep === "prompt accepted" && !live.sawRunEvent ? `; no first run event received for model: ${this.store.get(id)?.model}` : "";
 				this.requestStop(id, TASK_STATUS.TIMED_OUT, `stalled for ${minutes} min after: ${lastStep}${boundary}${this.stderrSuffix(live)}`);
 			}
-			else this.requestStop(id, TASK_STATUS.TIMED_OUT, `stalled for ${minutes} min with tool "${tool}" still running after: ${lastStep}${this.stderrSuffix(live)}`);
+			else if (tool !== undefined) this.requestStop(id, TASK_STATUS.TIMED_OUT, `stalled for ${minutes} min with tool "${tool}" still running after: ${lastStep}${this.stderrSuffix(live)}`);
+			else this.requestStop(id, TASK_STATUS.TIMED_OUT, `stalled for ${minutes} min during post-answer compaction after: ${lastStep}${this.stderrSuffix(live)}`);
 		}, budget);
 	}
 
@@ -1233,6 +1237,8 @@ export class AgentRunner {
 				}
 			}
 			if (event.type === TASK_EVENT.ASK) void this.answer(id, request, live, event.request, raw);
+			if (event.type === TASK_EVENT.COMPACTION_START) live.compacting = true;
+			if (event.type === TASK_EVENT.COMPACTION_END) live.compacting = false;
 			if (event.type === TASK_EVENT.AGENT_SETTLED) {
 				if (live.observations) live.observations.agentSettled = true;
 				const terminal = this.store.get(id);

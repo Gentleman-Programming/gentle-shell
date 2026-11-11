@@ -4265,6 +4265,143 @@ test("once the last task is done the card asks for one frame when its finished r
 	assert.equal(timers.filter((timer) => !timer.cancelled && timer.ms === 60_000).length, 0, "nothing is rescheduled once the card is empty");
 });
 
+// P9b: the report delivered into the parent's context is capped; the stored
+// result and subagent_result keep the full text.
+const reportNotice = (id: string, delivered: number, full: number) => `Report truncated: the first ${delivered} of ${full} bytes were delivered. Call subagent_result with task_id ${id} for the full text.`;
+const finishChild = (child: FakeChild, answer: string) => {
+	child.emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: answer }] }] });
+	child.emit({ type: "agent_settled" });
+};
+
+test("a background report over the cap is delivered truncated with the notice, and subagent_result returns the full text", async () => {
+	const { pi, tools, fire, sent } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	const started = await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Big job", mode: "background" }, undefined, undefined, ctx);
+	const id = (started.details.gentleAgents as { taskId: string }).taskId;
+	await tick();
+	const report = "row of a long table\n".repeat(1000); // 20,000 bytes
+	finishChild(harness.children[0], report);
+	await tick();
+	const results = sent.filter((entry) => entry.message.customType === "gentle-agents.result");
+	assert.equal(results.length, 1);
+	const head = "row of a long table\n".repeat(818) + "row of a long table"; // cut back to the last line break inside the cap
+	assert.equal(String(results[0]!.message.content), `Subagent explore (task ${id}, "Big job") finished.\n\n${head}\n\n${reportNotice(id, Buffer.byteLength(head), 20_000)}`);
+	const details = (results[0]!.message.details as { gentleAgents: Record<string, unknown> }).gentleAgents;
+	assert.deepEqual([details.taskId, details.status, details.reportTruncated, details.reportBytes, details.reportDeliveredBytes], [id, "completed", true, 20_000, Buffer.byteLength(head)]);
+	const full = await tools.get("subagent_result")!.execute("c2", { task_id: id }, undefined, undefined, ctx);
+	assert.equal(full.content[0].text, report, "subagent_result is the explicit uncapped route");
+	assert.equal((full.details.gentleAgents as Record<string, unknown>).reportTruncated, undefined);
+	await fire("session_shutdown", ctx);
+});
+
+test("task-mode run and continue results over the cap are truncated without splitting a multi-byte character", async () => {
+	const { pi, tools, fire } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	const report = `${"a".repeat(16_383)}€${"z".repeat(100)}`;
+	const run = tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Wide", mode: "task" }, undefined, undefined, ctx);
+	await tick();
+	finishChild(harness.children[0], report);
+	const result = await run;
+	const id = (result.details.gentleAgents as { taskId: string }).taskId;
+	const notice = reportNotice(id, 16_383, 16_486);
+	assert.equal(result.content[0].text, `Subagent explore (task ${id}, "Wide") finished.\n\n${"a".repeat(16_383)}\n\n${notice}`);
+	assert.equal(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(result.content[0].text, "utf8")), result.content[0].text, "valid UTF-8");
+	assert.deepEqual((({ reportTruncated, reportBytes, reportDeliveredBytes }) => [reportTruncated, reportBytes, reportDeliveredBytes])(result.details.gentleAgents as Record<string, unknown>), [true, 16_486, 16_383]);
+	assert.equal((await tools.get("subagent_result")!.execute("c2", { task_id: id }, undefined, undefined, ctx)).content[0].text, report);
+	const resumed = tools.get("subagent_continue")!.execute("c3", { task_id: id, prompt: "Again", mode: "task" }, undefined, undefined, ctx);
+	await tick();
+	await tick();
+	const learnings = "## Key Learnings\n\n- The cap keeps this block.";
+	finishChild(harness.children[1], `${"line\n".repeat(4000)}${learnings}`);
+	const continued = await resumed;
+	const continuedId = (continued.details.gentleAgents as { taskId: string }).taskId;
+	assert.match(continued.content[0].text, new RegExp(`Report truncated: the first 16379 of ${20_000 + Buffer.byteLength(learnings)} bytes were delivered, followed by its closing ## Key Learnings block\\. Call subagent_result with task_id ${continuedId} for the full text\\.\n\n${learnings}$`));
+	await fire("session_shutdown", ctx);
+});
+
+test("reports at the cap or one byte under keep today's exact text and details in task mode and background delivery", async () => {
+	for (const size of [16_384, 16_383, 9]) {
+		const { pi, tools, fire, sent } = fakePi();
+		const harness = deps();
+		gentleAgents(pi, {}, harness.deps);
+		const { ctx } = fakeContext();
+		await fire("session_start", ctx);
+		const report = size === 9 ? "All done." : "r".repeat(size);
+		const run = tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Edge", mode: "task" }, undefined, undefined, ctx);
+		await tick();
+		finishChild(harness.children[0], report);
+		const result = await run;
+		const id = (result.details.gentleAgents as { taskId: string }).taskId;
+		assert.equal(result.content[0].text, `Subagent explore (task ${id}, "Edge") finished.\n\n${report}`);
+		assert.equal("reportTruncated" in (result.details.gentleAgents as object), false);
+		const started = await tools.get("subagent_run")!.execute("c2", { agent: "explore", task: "Edge bg", mode: "background" }, undefined, undefined, ctx);
+		const bgId = (started.details.gentleAgents as { taskId: string }).taskId;
+		await tick();
+		finishChild(harness.children[1], report);
+		await tick();
+		const delivered = sent.filter((entry) => entry.message.customType === "gentle-agents.result");
+		assert.equal(String(delivered[0]!.message.content), `Subagent explore (task ${bgId}, "Edge bg") finished.\n\n${report}`);
+		assert.equal("reportTruncated" in (delivered[0]!.message.details as { gentleAgents: object }).gentleAgents, false);
+		await fire("session_shutdown", ctx);
+	}
+});
+
+test("report_max_bytes from subagents.json sets the delivered report cap", async () => {
+	const agentHome = join(root, "report-cap-profile", "agent");
+	mkdirSync(join(agentHome, "agents"), { recursive: true });
+	copyFileSync(join(home, ".pi", "agent", "agents", "explore.md"), join(agentHome, "agents", "explore.md"));
+	writeFileSync(join(agentHome, "subagents.json"), JSON.stringify({ report_max_bytes: 64 }));
+	const { pi, tools, fire, sent } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, { ...harness.deps, agentHome });
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	const started = await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Small cap", mode: "background" }, undefined, undefined, ctx);
+	const id = (started.details.gentleAgents as { taskId: string }).taskId;
+	await tick();
+	finishChild(harness.children[0], "x".repeat(65));
+	await tick();
+	const delivered = sent.filter((entry) => entry.message.customType === "gentle-agents.result");
+	assert.equal(String(delivered[0]!.message.content), `Subagent explore (task ${id}, "Small cap") finished.\n\n${"x".repeat(64)}\n\n${reportNotice(id, 64, 65)}`);
+	await fire("session_shutdown", ctx);
+});
+
+// Verifier blocker 4: strict-JSON reports would arrive as invalid JSON plus a notice.
+test("strict-JSON agents and single JSON documents over the cap are delivered whole; prose is still truncated", async () => {
+	const agentHome = join(root, "report-cap-json", "agent");
+	mkdirSync(join(agentHome, "agents"), { recursive: true });
+	for (const name of ["explore", "review-risk"]) copyFileSync(join(home, ".pi", "agent", "agents", "explore.md"), join(agentHome, "agents", `${name}.md`));
+	writeFileSync(join(agentHome, "subagents.json"), JSON.stringify({ report_max_bytes: 64 }));
+	const { pi, tools, fire } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, { ...harness.deps, agentHome });
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	const json = JSON.stringify({ schema: "compact-v2", findings: [{ id: "F1", text: "x".repeat(200) }] });
+	const runOnce = async (agent: string, answer: string, child: number) => {
+		const run = tools.get("subagent_run")!.execute(`c${child}`, { agent, task: "Judge", mode: "task" }, undefined, undefined, ctx);
+		await tick();
+		finishChild(harness.children[child], answer);
+		const result = await run;
+		return { text: result.content[0].text as string, id: (result.details.gentleAgents as { taskId: string }).taskId, details: result.details.gentleAgents as Record<string, unknown> };
+	};
+	const strict = await runOnce("review-risk", `\`\`\`json\n${json}\n\`\`\``, 0);
+	assert.equal(strict.text, `Subagent review-risk (task ${strict.id}, "Judge") finished.\n\n\`\`\`json\n${json}\n\`\`\``);
+	assert.deepEqual(JSON.parse(strict.text.split("\n\n").slice(1).join("\n\n").replace(/^```json\n|\n```$/g, "")), JSON.parse(json));
+	assert.equal("reportTruncated" in strict.details, false);
+	const generic = await runOnce("explore", json, 1);
+	assert.equal(generic.text, `Subagent explore (task ${generic.id}, "Judge") finished.\n\n${json}`);
+	const prose = await runOnce("explore", "x".repeat(65), 2);
+	assert.equal(prose.text, `Subagent explore (task ${prose.id}, "Judge") finished.\n\n${"x".repeat(64)}\n\n${reportNotice(prose.id, 64, 65)}`);
+	await fire("session_shutdown", ctx);
+});
+
 test("completionText names the outcome before the answer", () => {
 	const base = { id: "t1", agent: "explore", mode: "background", prompt: "p", label: "map lib", cwd: "/r", parentSessionId: "s", status: "failed" as const, createdAt: 1, startedAt: 1, endedAt: 2, model: "m", thinking: undefined, sessionPath: null, error: "pi exited with code 1", result: null, lastStep: "x", lastActivityAt: 2, turns: 0, toolCalls: 0, tokens: 0, cost: 0 };
 	assert.equal(completionText(base), 'Subagent explore (task t1, "map lib") failed.\n\nSubagent explore failed: pi exited with code 1');

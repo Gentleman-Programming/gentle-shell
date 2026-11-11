@@ -34,6 +34,7 @@ import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 import { resolveVisualSettings } from "../lib/visual-customization-policy.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
 import { createAgentMessageQueue, type PendingAgentMessage } from "../lib/agents-message-delivery.ts";
+import { capReport, withReportCap } from "../lib/agents-report-cap.ts";
 import { parseModelRef, AGENT_MODE, PROFILE_SOURCE, PROVIDER_REVIEW_ROLES, discoverAgents, formatModelRef, loadAgentsConfig, resolveAgentProfile, unmatchedProfileKeys, withPinnedModelProfiles, type AgentDefinition, type AgentMode, type ProfileSource } from "../lib/agents-config.ts";
 import { freezeSessionProfileAtStartup, inheritedProfileDriftNotice, resolveSessionProfile, sessionProfileRoutingAt, type InheritedProfileOptions, type SessionProfileResolution } from "../lib/session-profile-freeze.ts";
 import { resolveProfilePin, resolveUnversionedProjectProfile } from "../lib/agent-profile-pin.ts";
@@ -704,9 +705,9 @@ export function resolveDefaultSubagentMode(input: {
 
 // What the model reads when a background task ends: the outcome first, then
 // the answer itself. The expanded card shows the same text.
-export function completionText(task: TaskRecord): string {
+export function completionText(task: TaskRecord, report: string = finishedText(task)): string {
 	const outcome = task.status === "completed" ? "finished" : task.status.replace("_", " ");
-	return `Subagent ${task.agent} (task ${task.id}, "${task.label}") ${outcome}.\n\n${finishedText(task)}`;
+	return `Subagent ${task.agent} (task ${task.id}, "${task.label}") ${outcome}.\n\n${report}`;
 }
 
 const COMPLETION_HEADER = /^Subagent [^\n]+ \(task [^\n]*\) [^\n]+\.$/;
@@ -1475,7 +1476,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// Ownership is consulted at delivery time, matching onNotification and
 		// onQuery: a completion owned by another session is dropped, not delivered.
 		if (activeSessionId() !== task.parentSessionId) return;
-		sendToParent({ customType: AGENTS_RESULT_TYPE, content: completionText(task), display: true, details: taskDetails(task) }, route);
+		// P9b: only the delivered copy is capped; subagent_result keeps the full text.
+		let cwd = process.cwd();
+		try { cwd = sessions?.getCwd() ?? cwd; } catch { /* A stale manager keeps the process directory, like the runner's config. */ }
+		const capped = capReport(finishedText(task), loadAgentsConfig({ cwd, home: deps.home, agentHome }).reportMaxBytes, task.id, task.agent);
+		sendToParent({ customType: AGENTS_RESULT_TYPE, content: completionText(task, capped.text), display: true, details: withReportCap(taskDetails(task), capped) }, route);
 	};
 
 	// Incoming orchestrator session messages. The transport has already
@@ -2584,7 +2589,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			messages.invalidateTask(finished.id);
 			// The id rides in the text too: details never reach the model, which
 			// otherwise guesses ordinal ids for subagent_continue (#1731 T19).
-			return text(completionText(finished), taskDetails(finished));
+			const capped = capReport(finishedText(finished), loadAgentsConfig(roots(ctx)).reportMaxBytes, finished.id, finished.agent);
+			return text(completionText(finished, capped.text), withReportCap(taskDetails(finished), capped));
 		} finally {
 			signal?.removeEventListener("abort", onAbort);
 		}

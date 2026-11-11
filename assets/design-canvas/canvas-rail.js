@@ -15,9 +15,9 @@ const TEXT = Object.freeze({
 	actions: {
 		navigate: "Move around the canvas",
 		comment: "Comment on an element",
-		fit: "Fit all directions",
+		fit: "Overview (fit all directions)",
 		panel: "Show or hide the comments panel",
-		help: "This list",
+		help: "Show keyboard shortcuts",
 	},
 	change: "Change",
 	changeAria: (action, key) => `Change the key for “${action}” (${key})`,

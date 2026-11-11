@@ -72,29 +72,20 @@ export function init(ctx) {
 
 	/**
 	 * Builds the menu from `actions` under `button`, named `label`, with focus on its first
-	 * (or `last`) item. An action with `separator` starts a new group; `run(button)` is what
-	 * choosing it does.
+	 * (or `last`) item; `run(button)` is what choosing an action does.
 	 */
 	function showMenu(button, actions, label, last = false, beside = false) {
 		closeMenu(false);
-		const nodes = [];
 		const items = [];
 		const byItem = new Map();
 		for (const action of actions) {
-			if (action.separator) {
-				const separator = doc.createElement("div");
-				separator.className = "gd-menu-separator";
-				separator.setAttribute("role", "separator");
-				nodes.push(separator);
-			}
 			const item = menuItem(action);
 			item.addEventListener("click", () => chooseMenuItem(item));
 			byItem.set(item, action);
 			items.push(item);
-			nodes.push(item);
 		}
 		els.menu.setAttribute("aria-label", label);
-		els.menu.replaceChildren(...nodes);
+		els.menu.replaceChildren(...items);
 		els.menu.hidden = false;
 		button.setAttribute("aria-expanded", "true");
 		store.setMenu({ button, items, byItem });
@@ -172,5 +163,5 @@ export function init(ctx) {
 		if (open && !els.menu.contains(event.target) && !open.button.contains(event.target)) closeMenu(false);
 	});
 
-	return { icon, menuItem, placeMenu, showMenu, closeMenu, wireMenu, menuKeydown };
+	return { icon, showMenu, closeMenu, wireMenu, menuKeydown };
 }

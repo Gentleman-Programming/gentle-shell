@@ -387,7 +387,11 @@ function changeKey(canvas: Rail, id: string, key: string, init: Record<string, u
 test("the shortcuts list shows each rail and panel action with its key, Change and Reset, and one Restore defaults", async () => {
 	const canvas = await loadRail();
 	assert.deepEqual(keyRows(canvas).map((row) => row.dataset.shortcut), SHORTCUT_IDS, "the five single-key actions, in this order");
-	assert.deepEqual(SHORTCUT_IDS.map((id) => texts(keyRow(canvas, id), "gd-key-action")[0]), ["Move around the canvas", "Comment on an element", "Fit all directions", "Show or hide the comments panel", "This list"]);
+	const labels = SHORTCUT_IDS.map((id) => texts(keyRow(canvas, id), "gd-key-action")[0]);
+	// The fixed rows below (0 fits too) never repeat a changeable action's name.
+	const fixedRows = [...read("index.html").matchAll(/<dd>([^<]+)<\/dd>/g)].map((match) => match[1]);
+	for (const label of labels) assert.ok(!fixedRows.includes(label), `${label} is named once in the list`);
+	assert.deepEqual(labels, ["Move around the canvas", "Comment on an element", "Overview (fit all directions)", "Show or hide the comments panel", "Show keyboard shortcuts"]);
 	assert.deepEqual(rowKeys(canvas), DEFAULT_KEYS);
 	assert.equal(rowChange(canvas, "navigate").textContent, "Change");
 	assert.equal(rowChange(canvas, "navigate").getAttribute("aria-label"), "Change the key for “Move around the canvas” (V)");
@@ -544,13 +548,13 @@ test("a key another action uses is refused with a message naming it, and nothing
 	assert.deepEqual(canvas.shortcutWrites(), [], "nothing stored");
 	assert.equal(rowChange(canvas, "navigate").textContent, "Change", "the wait is over");
 	changeKey(canvas, "panel", "?", { shiftKey: true });
-	assert.equal(keysMessage(canvas), "? is already used by “This list”. Nothing changed.");
+	assert.equal(keysMessage(canvas), "? is already used by “Show keyboard shortcuts”. Nothing changed.");
 	assert.equal(shortcutsOpen(canvas), true, "? did not close the list while it waited");
 	// A custom key is taken too.
 	changeKey(canvas, "fit", "g");
 	assert.ok(!$(canvas, "gd-keys-message").classes.has("gd-error"));
 	changeKey(canvas, "panel", "g");
-	assert.equal(keysMessage(canvas), "G is already used by “Fit all directions”. Nothing changed.");
+	assert.equal(keysMessage(canvas), "G is already used by “Overview (fit all directions)”. Nothing changed.");
 	assert.deepEqual(canvas.stored(), { fit: "g" });
 	closeList(canvas);
 	press(canvas, "]");
@@ -596,7 +600,7 @@ test("fixed keys and keys that are not one printable key are refused; Esc cancel
 	rowChange(canvas, "fit").dispatch("click");
 	rowChange(canvas, "fit").dispatch("click");
 	assert.equal(rowChange(canvas, "fit").textContent, "Change");
-	assert.equal(keysMessage(canvas), "“Fit all directions” keeps F.");
+	assert.equal(keysMessage(canvas), "“Overview (fit all directions)” keeps F.");
 	rowChange(canvas, "fit").dispatch("click");
 	rowChange(canvas, "panel").dispatch("click");
 	assert.equal(rowChange(canvas, "fit").textContent, "Change");

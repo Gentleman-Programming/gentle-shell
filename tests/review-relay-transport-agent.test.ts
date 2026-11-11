@@ -404,7 +404,9 @@ test("public empty-output report preserves only safe in-process completion facts
 	assert.ok(Number(durationMs) >= Number(authDurationMs));
 	assert.ok(Number(durationMs) >= Number(completionDurationMs));
 	assert.deepEqual(facts, {
-		phase: "completion", provider: "nan", reviewerModel: "nan/deepseek-v4-flash", stopReason: "length", usage: { output: 64, reasoning: 64 },
+		phase: "completion", provider: "nan", reviewerModel: "nan/deepseek-v4-flash", stopReason: "length",
+		cause: "reasoning-exhausted-output-budget",
+		usage: { output: 64, reasoning: 64 },
 		content: { blocks: 1, textBlocks: 0, thinkingBlocks: 1, textChars: 0, thinkingChars: 16 },
 	});
 	assert.doesNotMatch(JSON.stringify(result), /PRIVATE|errorMessage|unknown|authorization/);

@@ -5,8 +5,10 @@ import test from "node:test";
 import type { Api, AssistantMessage, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import type { completeSimple } from "@earendil-works/pi-ai/compat";
 import {
+	INPROCESS_REVIEWER_EMPTY_OUTPUT_CAUSE,
 	INPROCESS_REVIEWER_FAILURE,
 	INPROCESS_REVIEWER_OUTPUT_MAX_BYTES,
+	classifyEmptyOutput,
 	runInProcessReviewer,
 	openCodeSessionAttributionHeaders,
 	type InProcessReviewerOutcome,
@@ -239,6 +241,7 @@ test("refuses empty assistant text with safe completion evidence", async () => {
 	assert.deepEqual(withoutRunTiming(refused.evidence), {
 		phase: "completion", provider: "openai",
 		reviewerModel: "openai/gpt-5", stopReason: "stop",
+		cause: INPROCESS_REVIEWER_EMPTY_OUTPUT_CAUSE.EMPTY_COMPLETION,
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		content: { blocks: 0, textBlocks: 0, thinkingBlocks: 0, textChars: 0, thinkingChars: 0 },
@@ -261,6 +264,7 @@ test("empty-output diagnostics allowlist facts, not provider secrets, and comple
 	assert.deepEqual(withoutRunTiming(refused.evidence), {
 		phase: "completion", provider: "nan",
 		reviewerModel: "nan/deepseek-v4-flash", stopReason: "length",
+		cause: INPROCESS_REVIEWER_EMPTY_OUTPUT_CAUSE.REASONING_EXHAUSTED_OUTPUT_BUDGET,
 		usage: { input: 12, output: 64, reasoning: 64, cacheRead: 0, cacheWrite: 0, totalTokens: 76 },
 		content: { blocks: 2, textBlocks: 1, thinkingBlocks: 1, textChars: 0, thinkingChars: 16 },
 	});
@@ -293,6 +297,75 @@ test("empty-output evidence does not invent usage or missing thinking lengths", 
 	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT);
 	assert.ok(!Object.hasOwn(refused.evidence!, "usage"));
 	assert.deepEqual(refused.evidence?.content, { blocks: 1, textBlocks: 0, thinkingBlocks: 1, textChars: 0 });
+});
+
+// gentle-ai#6095: an empty completion is attributed to whatever the completion
+// itself proves — the model's spent output budget, or a provider response with
+// no completion at all — instead of the generic "produced no text", which left
+// the recorded facts uninterpreted. None of these refusals infers a candidate
+// issue: a generation failure is a transport outcome, not a review finding.
+
+test("attributes an empty verdict to a reviewer model that spent its output budget on reasoning", async () => {
+	const model = fakeModel({ provider: "nan", id: "glm5.3", maxTokens: 16_384 });
+	const assistant = assistantText("", {
+		content: [{ type: "thinking", thinking: "x".repeat(74_755), thinkingSignature: "PRIVATE SIGNATURE" }],
+		stopReason: "length", errorMessage: "PRIVATE ERROR",
+		usage: { input: 901, output: 16_384, reasoning: 16_384, cacheRead: 0, cacheWrite: 0, totalTokens: 17_285 } as never,
+	});
+	const refused = expectRefused(await runInProcessReviewer(baseRequest(), {
+		registry: { ...fakeRegistry([model]), find: () => model }, complete: async () => assistant,
+	}));
+	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT);
+	assert.equal(refused.evidence?.cause, INPROCESS_REVIEWER_EMPTY_OUTPUT_CAUSE.REASONING_EXHAUSTED_OUTPUT_BUDGET);
+	assert.match(refused.message, /^Reviewer model nan\/glm5\.3 exhausted its 16384-token output budget on reasoning before emitting a verdict for review-risk \(stopReason: length; output: 16384; reasoning: 16384\)\./);
+	assert.match(refused.message, /Route this lens to a reviewer model with a sufficient output ceiling, raise the output budget, or reduce reasoning\./);
+	assert.match(refused.message, /No candidate issue is inferred from this generation failure\./);
+	// The facts that make the attribution checkable stay in the record.
+	assert.equal(refused.evidence?.reviewerModel, "nan/glm5.3");
+	assert.equal(refused.evidence?.stopReason, "length");
+	assert.deepEqual(refused.evidence?.usage, { input: 901, output: 16_384, reasoning: 16_384, cacheRead: 0, cacheWrite: 0, totalTokens: 17_285 });
+	assert.equal((refused.evidence?.content as Record<string, number>).textBlocks, 0);
+	assert.doesNotMatch(JSON.stringify(refused), /PRIVATE|Signature|errorMessage/);
+});
+
+test("attributes an empty completion with zero output tokens to the provider response", async () => {
+	const model = fakeModel({ provider: "nan", id: "glm5.3" });
+	const assistant = assistantText("", {
+		content: [], stopReason: "stop",
+		usage: { input: 901, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 901 } as never,
+	});
+	const refused = expectRefused(await runInProcessReviewer(baseRequest(), {
+		registry: { ...fakeRegistry([model]), find: () => model }, complete: async () => assistant,
+	}));
+	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT);
+	assert.equal(refused.evidence?.cause, INPROCESS_REVIEWER_EMPTY_OUTPUT_CAUSE.EMPTY_COMPLETION);
+	assert.equal(
+		refused.message,
+		"The provider returned no completion for review-risk from reviewer model nan/glm5.3 (stopReason: stop; output: 0). Retry the slot. No candidate issue is inferred from this generation failure.",
+	);
+	assert.equal(refused.evidence?.reviewerModel, "nan/glm5.3");
+	assert.equal(refused.evidence?.stopReason, "stop");
+	assert.deepEqual(refused.evidence?.usage, { input: 901, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 901 });
+});
+
+test("keeps the generic empty-output refusal for shapes it cannot attribute", async () => {
+	const unattributed: Array<{ name: string; assistant: AssistantMessage }> = [
+		{ name: "length with no reasoning reported", assistant: assistantText("", { content: [], stopReason: "length", usage: { input: 5, output: 64, cacheRead: 0, cacheWrite: 0, totalTokens: 69 } as never }) },
+		{ name: "length with zero output tokens", assistant: assistantText("", { content: [], stopReason: "length", usage: { input: 5, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 5 } as never }) },
+		{ name: "stop with no usage reported", assistant: assistantText("", { content: [], stopReason: "stop", usage: undefined }) },
+		{ name: "partial reasoning below the budget", assistant: assistantText("", { content: [], stopReason: "length", usage: { input: 5, output: 64, reasoning: 63, cacheRead: 0, cacheWrite: 0, totalTokens: 69 } as never }) },
+		{ name: "unrecognized stop reason", assistant: assistantText("", { content: [], stopReason: "deferred" }) },
+	];
+	for (const { name, assistant } of unattributed) {
+		const refused = expectRefused(await runInProcessReviewer(baseRequest(), {
+			registry: fakeRegistry([fakeModel()]), complete: async () => assistant,
+		}));
+		assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT, name);
+		assert.ok(!Object.hasOwn(refused.evidence!, "cause"), name);
+		assert.match(refused.message, /^Reviewer produced no text for review-risk \(stopReason: /, name);
+		assert.doesNotMatch(refused.message, /No candidate issue is inferred/, name);
+		assert.equal(classifyEmptyOutput(assistant), undefined, name);
+	}
 });
 
 test("refuses with PROVIDER_FAILED when the provider itself reports an aborted completion", async () => {

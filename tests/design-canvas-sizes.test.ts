@@ -56,11 +56,11 @@ const customInput = (canvas: Canvas) => {
 };
 const customRow = (canvas: Canvas) => withClass(deviceMenu(canvas), "gd-device-custom")[0];
 const sizeError = (canvas: Canvas) => withClass(deviceMenu(canvas), "gd-device-error")[0];
-const setCustom = (canvas: Canvas, value: string, key?: string) => {
+/** Types a width in the custom field and presses Enter, the only key that applies it. */
+const setCustom = (canvas: Canvas, value: string) => {
 	const input = customInput(canvas);
 	input.value = value;
-	if (key) input.dispatch("keydown", { key });
-	else input.dispatch("change");
+	input.dispatch("keydown", { key: "Enter" });
 	return input;
 };
 const frameSize = (canvas: Canvas, index = 0) => [canvas.boards[index].frame.style.width, canvas.boards[index].frame.style.height];
@@ -118,6 +118,19 @@ test("canvas-layout S5: an artboard wider than the window is drawn smaller to fi
 	assert.deepEqual(frameSize(canvas), ["1440px", "900px"], "the design still renders at its real width");
 	assert.equal(canvas.world.style.transform, `translate(8px, ${Math.round((700 - 900 * zoom) / 2 - 32 * zoom)}px) scale(${zoom})`);
 	assert.equal(readout(canvas), "Desktop 1440 × 900");
+});
+
+test("canvas-layout S5: the label above the frame is measured at the focused width, so one that wraps narrower keeps its space", async () => {
+	const canvas = await loadSizes();
+	const [first] = canvas.boards;
+	const box = first.frame.parentElement!;
+	// The label wraps to two lines once the frame is narrower than 400 px: 40 px above the frame instead of 20.
+	Object.defineProperty(box, "offsetTop", { configurable: true, get: () => (Number.parseInt(String(first.frame.style.width), 10) < 400 ? 40 : 20) });
+	focusOn(canvas);
+	chooseSize(canvas, "phone");
+	// 700 - (8 + 40) - 48 = 604 px of frame, the frame's top 8 + 40 px down: 48 - 40.
+	assert.deepEqual(frameSize(canvas), ["390px", "604px"]);
+	assert.equal(canvas.world.style.transform, "translate(305px, 8px) scale(1)");
 });
 
 // ---- the device button and its menu (canvas-layout S6)
@@ -350,7 +363,7 @@ test("S2: a custom width resizes the iframe with the manifest height; the field 
 		assert.equal(deviceMenu(canvas).hidden, false, "the menu stays open to correct it");
 	}
 	for (const edge of ["240", "2560"]) {
-		setCustom(canvas, edge, "Enter");
+		setCustom(canvas, edge);
 		assert.equal(canvas.boards[0].frame.style.width, `${edge}px`, `${edge} is accepted with Enter`);
 		assert.equal(deviceMenu(canvas).hidden, true);
 		assert.ok(isActive(canvas, deviceButton(canvas)));
@@ -363,6 +376,21 @@ test("S2: a custom width resizes the iframe with the manifest height; the field 
 	chooseSize(canvas, "phone");
 	assert.equal(customInput(canvas).value, "", "a preset clears the custom field");
 	assert.ok(!customRow(canvas).classes.has("gd-selected"));
+});
+
+test("S2: the custom width applies on Enter only: leaving the field (change) applies nothing, so Phone chosen next is Phone", async () => {
+	const canvas = await loadSizes();
+	tallViewport(canvas);
+	focusOn(canvas);
+	const input = customInput(canvas);
+	input.value = "600";
+	input.dispatch("change");
+	assert.equal(deviceMenu(canvas).hidden, false, "a change event (blur, spinner step) keeps the menu open");
+	assert.equal(readout(canvas), "Desktop 984 × 300", "and applies no width");
+	deviceItems(canvas).find((item) => item.dataset.size === "phone")?.dispatch("click");
+	assert.equal(readout(canvas), "Phone 390 × 844");
+	assert.deepEqual(frameSize(canvas), ["390px", "844px"]);
+	assert.equal(deviceMenu(canvas).hidden, true);
 });
 
 test("S2: leaving focus mode, or focusing another artboard, restores the manifest size", async () => {

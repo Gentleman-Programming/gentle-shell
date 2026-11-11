@@ -131,7 +131,6 @@ export function init(ctx) {
 		error.className = "gd-device-error";
 		error.setAttribute("role", "alert");
 		error.hidden = true;
-		input.addEventListener("change", applyCustomWidth);
 		input.addEventListener("keydown", (event) => {
 			if (event.key !== "Enter") return;
 			event.preventDefault();

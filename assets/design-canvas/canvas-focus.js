@@ -80,6 +80,9 @@ export function init(ctx) {
 		const board = state.focus;
 		if (!board) return;
 		const viewport = els.viewport.getBoundingClientRect();
+		const { width, height } = actions.focusSize(board);
+		// The label above the frame wraps at the frame's width: apply the width before measuring it.
+		setFrameSize(board, width, board.viewHeight);
 		// Layout offsets inside the world ignore its transform, so re-centering is idempotent
 		// (a scaled bounding rect carries sub-pixel error that shifted the board by 1 px). The artboard
 		// sits where the layout put it, and its frame box below its label, inside it.
@@ -87,7 +90,6 @@ export function init(ctx) {
 		const left = board.wrapper.offsetLeft + box.offsetLeft;
 		const top = board.wrapper.offsetTop + box.offsetTop;
 		const labelSpace = box.offsetTop;
-		const { width, height } = actions.focusSize(board);
 		// Screen pixels per artboard pixel: 1 when it fits beside the margins.
 		const zoom = Math.min(1, (viewport.width - FOCUS_MARGIN * 2) / width);
 		const minTop = FOCUS_MARGIN + labelSpace * zoom;

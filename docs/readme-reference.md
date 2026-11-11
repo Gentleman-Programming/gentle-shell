@@ -1027,6 +1027,7 @@ Behavior:
 - startup refresh is skipped when Pi starts with `--no-skills` / `-ns`, `--no-skill-registry`, or `GENTLE_PI_NO_SKILL_REGISTRY=1`;
 - `/skill-registry:refresh` deliberately overrides tracked-target protection and updates the child ignore; review the resulting Git diff. It recomputes from disk but does not rewrite byte-identical registry or cache files;
 - a best-effort watcher refreshes when skill files change; the cache is a non-authoritative SHA-256 hint, and each refresh compares actual rendered and on-disk bytes;
+- watcher events are debounced by 500 ms; a full fallback scan every 30 seconds also detects changes when watchers are unavailable or silently miss an event. Those missed changes can wait until the next scan; explicit refresh and the next prompt still read the current disk state;
 - each file is published atomically, registry before cache; they are not an atomic pair, and a later refresh repairs a mismatch;
 - the registry indexes skill names, descriptions, scope, and exact `SKILL.md` paths without copying skill body rules or runtime-only rows.
 

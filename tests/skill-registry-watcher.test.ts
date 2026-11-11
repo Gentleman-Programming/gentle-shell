@@ -8,6 +8,57 @@ import { pathToFileURL } from "node:url";
 
 const extensionUrl = pathToFileURL(join(import.meta.dirname, "..", "extensions", "skill-registry.ts")).href;
 
+test("#3143: idle scanning is bounded while silent watchers retain fallback and event refresh", { timeout: 25_000 }, t => {
+	const root = mkdtempSync(join(tmpdir(), "gentle-skill-idle-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", `
+		import assert from 'node:assert/strict';
+		import fs from 'node:fs';
+		import fsp from 'node:fs/promises';
+		import { EventEmitter } from 'node:events';
+		import { syncBuiltinESMExports } from 'node:module';
+		import { join } from 'node:path';
+		const root = ${JSON.stringify(root)}, cwd = join(root, 'project'), home = join(root, 'home');
+		process.env.HOME = home; process.env.USERPROFILE = home;
+		delete process.env.CODEX_HOME; delete process.env.GENTLE_PI_AGENTS_CHILD; delete process.env.GENTLE_PI_NO_SKILL_REGISTRY;
+		fs.mkdirSync(home, {recursive:true});
+		for(let i=0;i<375;i++) {
+			const dir=join(cwd,'skills','skill-'+i); fs.mkdirSync(dir,{recursive:true});
+			fs.writeFileSync(join(dir,'SKILL.md'),'---\\nname: skill-'+i+'\\ndescription: Original skill.\\n---\\n');
+		}
+		const listeners=[];
+		fs.watch=(_path,_options,listener)=>{ listeners.push(listener); const watcher=new EventEmitter(); watcher.close=()=>{}; return watcher; };
+		let skillReads=0;
+		const read=fsp.readFile;
+		fsp.readFile=async (path,...args)=>{ if(String(path).endsWith('SKILL.md')) skillReads++; return read(path,...args); };
+		syncBuiltinESMExports();
+		const interval=globalThis.setInterval;
+		let poll, period;
+		globalThis.setInterval=(callback,ms,...args)=>{ poll=callback; period=ms; return interval(callback,3600000,...args); };
+		const {default: extension,__testing}=await import(${JSON.stringify(extensionUrl)});
+		const events=new Map();
+		extension({on:(name,fn)=>events.set(name,fn),registerCommand(){},registerFlag(){},getFlag:()=>false});
+		const ctx={cwd,hasUI:true,ui:{notify(){}}};
+		const registry=join(cwd,'.atl','skill-registry.md'), skill=join(cwd,'skills','skill-0','SKILL.md');
+		const waitFor=async text=>{const end=Date.now()+8000; while(Date.now()<end){if(fs.existsSync(registry)&&fs.readFileSync(registry,'utf8').includes(text))return; await new Promise(r=>setTimeout(r,20));} assert.fail('refresh did not publish '+text);};
+		try {
+			await events.get('session_start')(undefined,ctx); await __testing.startupSettled();
+			assert.ok(listeners.length>0); assert.ok(poll);
+			skillReads=0;
+			fs.writeFileSync(skill,'---\\nname: skill-0\\ndescription: Fallback detects missed event.\\n---\\n');
+			poll(); await waitFor('Fallback detects missed event.');
+			assert.equal(skillReads,375,'one fallback scan reads each fixture skill exactly once');
+			console.log(JSON.stringify({skills:375,poll_ms:period,skill_reads_per_poll:skillReads,projected_idle_skill_reads_per_minute:skillReads*60000/period}));
+			assert.ok(period>=30000 && period<=60000,'idle full scans must be at most twice per minute, with bounded missed-event recovery');
+			fs.writeFileSync(skill,'---\\nname: skill-0\\ndescription: Watcher detects new event.\\n---\\n');
+			listeners[0](); await waitFor('Watcher detects new event.');
+		} finally {await events.get('session_shutdown')(undefined,ctx);}
+	`], { encoding: "utf8", timeout: 23_000, env: { ...process.env, GIT_CEILING_DIRECTORIES: root, GIT_CONFIG_NOSYSTEM: "1" } });
+	t.diagnostic(child.stdout.trim());
+	assert.equal(child.error, undefined, `${child.error?.message}\n${child.stderr}`);
+	assert.equal(child.status, 0, child.stderr);
+});
+
 test("independent extension hosts share disk bytes without sharing runtime captures", { timeout: 15_000 }, async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "gentle-skill-two-hosts-"));
 	const cwd = join(root, "project"), home = join(root, "home");

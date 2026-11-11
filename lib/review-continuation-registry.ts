@@ -33,7 +33,7 @@ export interface RetainedNativeUntrackedStopSelector {
 }
 
 export type RetainedReviewContinuation =
-	| { readonly kind: "committed-range"; readonly baseRef: string }
+	| { readonly kind: "committed-range"; readonly baseRef: string; readonly mutation?: string }
 	| (RetainedNativeUntrackedSelection & { readonly kind: "selection" })
 	| (RetainedPreLineageNativeUntrackedSelection & { readonly kind: "pre-start" })
 	| (RetainedNativeCaptureRoute & { readonly kind: "capture" })
@@ -63,8 +63,17 @@ export class ReviewContinuationRegistry {
 		const entry = this.entries.get(`committed-range\u0000${root}`);
 		return entry?.kind === "committed-range" ? entry.baseRef : undefined;
 	}
-	retainCommittedRange(root: string, baseRef: string): void {
-		this.retain(`committed-range\u0000${root}`, { kind: "committed-range", baseRef });
+	/** A reminder may reuse a selector only for the generation explicitly assessed. */
+	readReminderRange(root: string, mutation: string): string | undefined {
+		const entry = this.entries.get(`committed-range\u0000${root}`);
+		return entry?.kind === "committed-range" && entry.mutation === mutation ? entry.baseRef : undefined;
+	}
+	retainCommittedRange(root: string, baseRef: string, mutation?: string): void {
+		this.retain(`committed-range\u0000${root}`, { kind: "committed-range", baseRef, ...(mutation === undefined ? {} : { mutation }) });
+	}
+	clearReminderRange(root: string): void {
+		const baseRef = this.readCommittedRange(root);
+		if (baseRef !== undefined) this.retainCommittedRange(root, baseRef);
 	}
 	/** Bound retained hints by evicting the oldest key before a new insertion. */
 	private retain(key: string, entry: RetainedReviewContinuation): void {

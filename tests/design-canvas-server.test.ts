@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, watch, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,10 +7,27 @@ import type { TestContext } from "node:test";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { DESIGN_CANVAS_ASSETS } from "../lib/design-canvas-assets.ts";
-import { designCommentBatchContent, designCommentContent, formatDesignComment, formatDesignCommentBatch, startDesignCanvasServer, type DesignCanvasServerOptions, type DesignComment, type DesignImplementPartRequest } from "../lib/design-canvas-server.ts";
+import { designCommentBatchContent, designCommentContent, describeWatchFailure, formatDesignComment, formatDesignCommentBatch, startDesignCanvasServer, type DesignCanvasServerOptions, type DesignComment, type DesignImplementPartRequest } from "../lib/design-canvas-server.ts";
 
 const TOKEN = "test-token-0123456789abcdef";
 const ASSET_DIR = fileURLToPath(new URL("../assets/design-canvas/", import.meta.url));
+
+// gentle-shell#3156: when the host's inotify limit is exhausted, fs.watch cannot register and the
+// server's change events never fire; the server now says so per stream, and the tests that wait
+// for those events skip naming the environment instead of failing like a canvas regression.
+function probeFsWatch(): boolean {
+	const dir = mkdtempSync(join(tmpdir(), "fs-watch-probe-"));
+	try {
+		watch(dir, { persistent: false }, () => {}).close();
+		return true;
+	} catch {
+		return false;
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+const FS_WATCH_AVAILABLE = probeFsWatch();
+const FS_WATCH_SKIP = "fs.watch unavailable: inotify watch limit exhausted (ENOSPC); canvas change events cannot be observed on this host";
 
 type Reply = { status: number; headers: Record<string, string | string[] | undefined>; body: string; bytes: Buffer };
 type Options = { method?: string; headers?: Record<string, string>; body?: string; host?: string | null };
@@ -606,7 +623,8 @@ function openEvents(port: number) {
 	});
 	req.end();
 	// A waiter that never matches must fail loud, not hang the whole suite:
-	// an exhausted inotify limit silently stops the server's change events.
+	// an exhausted inotify limit stops the server's change events, and the fs.watch
+	// preflight above skips these tests naming that environment when it cannot register.
 	const waitFor = (pattern: RegExp) => new Promise<RegExpExecArray>((resolve, reject) => {
 		const timeout = setTimeout(() => reject(new Error(`events never matched ${pattern} within 5s; got: ${JSON.stringify(buffer.slice(-200))}`)), 5000);
 		const settle = (match: RegExpExecArray) => { clearTimeout(timeout); resolve(match); };
@@ -617,6 +635,7 @@ function openEvents(port: number) {
 }
 
 test("events stream a debounced change after an artboard write", async (t) => {
+	if (!FS_WATCH_AVAILABLE) return t.skip(FS_WATCH_SKIP);
 	const { port, root } = await start(t);
 	const events = openEvents(port);
 	t.after(() => events.req.destroy());
@@ -672,6 +691,7 @@ test("show() tells every connected page which design to show, or the system-only
 });
 
 test("events stream a change when comments.json is written", async (t) => {
+	if (!FS_WATCH_AVAILABLE) return t.skip(FS_WATCH_SKIP);
 	const { port } = await start(t);
 	const events = openEvents(port);
 	t.after(() => events.req.destroy());
@@ -747,6 +767,7 @@ test("the system routes keep the Host, token, Origin and method rules", async (t
 });
 
 test("events stream a change when system.html or system.md is written", async (t) => {
+	if (!FS_WATCH_AVAILABLE) return t.skip(FS_WATCH_SKIP);
 	const { port, root } = await start(t);
 	const events = openEvents(port);
 	t.after(() => events.req.destroy());
@@ -1078,6 +1099,7 @@ test("S2: parts/remove refuses a part not sent, an unknown or malformed id, a ba
 });
 
 test("S2: removing a part streams one change for parts.json", async (t) => {
+	if (!FS_WATCH_AVAILABLE) return t.skip(FS_WATCH_SKIP);
 	const { port } = await start(t);
 	const id = JSON.parse((await postJson(port, PARTS, SIDE)).body).id;
 	// Let the change of that write go out before the stream opens, so only the removal can match.
@@ -1300,6 +1322,7 @@ test("a refused implement request records no handoff", async (t) => {
 });
 
 test("events stream a change when handoffs.json is written", async (t) => {
+	if (!FS_WATCH_AVAILABLE) return t.skip(FS_WATCH_SKIP);
 	const { port } = await start(t);
 	const events = openEvents(port);
 	t.after(() => events.req.destroy());
@@ -1788,6 +1811,7 @@ test("canvas-layout S3: the layout route keeps the Origin, content-type, JSON an
 });
 
 test("canvas-layout S3: saving the layout streams one change for layout.json", async (t) => {
+	if (!FS_WATCH_AVAILABLE) return t.skip(FS_WATCH_SKIP);
 	const { port } = await start(t);
 	const events = openEvents(port);
 	t.after(() => events.req.destroy());
@@ -1864,4 +1888,9 @@ test("canvas-layout S17: an edited comment's message names it as an edit and quo
 	assert.ok(text.includes("\nComment (edited; it replaces the text you received earlier for this id):\nMake it shorter.\n"));
 	assert.ok(text.includes("\nPrevious text:\nMake it bigger.\n"));
 	assert.ok(!formatDesignComment({ id: "k3x9p2", slug: "landing", file: "02-bold.html", selector: "h1", excerpt: "", comment: "x" }).includes("edited"));
+});
+
+test("describeWatchFailure names the exhausted inotify limit (gentle-shell#3156)", () => {
+	assert.match(describeWatchFailure(Object.assign(new Error("watch failed"), { code: "ENOSPC" })), /fs\.watch failed: ENOSPC .*fs\.inotify\.max_user_watches/);
+	assert.match(describeWatchFailure(new Error("boom")), /fs\.watch failed: /);
 });

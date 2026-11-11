@@ -10046,8 +10046,9 @@ async function negotiatedStatusForHostTransport(
 // native review CLI with both `reviewMode` and `targetStatus`, a UI-bearing
 // context, and RDD effectively on. Returns `undefined` on any missing guard,
 // an effective-off mode, or any STATUS error or transport refusal. Startup
-// negotiation and mutation-gated `agent_end` use the same native whole-target
-// path; neither derives candidate scope from local mutation receipts.
+// negotiation uses the native whole-target path. agent_end may carry an
+// explicitly assessed range for the same mutation generation; receipts never
+// derive a partial scope or retain a risk verdict.
 // S5 (startup-home-repo-and-changes): the startup negotiation runs after
 // session_start returns, bounded by this deadline. Its in-flight review mode
 // read is kept per cwd so the first prompt waits for it instead of spawning
@@ -10062,6 +10063,7 @@ async function resolveNegotiatedReviewStatusForSession(
 	sessionKey: PendingReviewConsentSessionKey,
 	signal?: AbortSignal,
 	current: () => boolean = () => true,
+	selector: Pick<NativeTargetStatusRequest, "baseRef" | "committedOnly"> = {},
 ): Promise<ReviewStatusV3 | undefined> {
 	if (nativeReviewCli?.reviewMode === undefined || nativeReviewCli.targetStatus === undefined) return undefined;
 	if (ctx.hasUI !== true || !resolveSessionWorktree(ctx.cwd, ctx.cwd)) return undefined;
@@ -10074,7 +10076,7 @@ async function resolveNegotiatedReviewStatusForSession(
 	if (!enabled || !current()) return undefined;
 	try {
 		const retainedSelections = ((key: PendingReviewConsentSessionKey) => processRetainedNativeStatusSelections.get(key) ?? processRetainedNativeStatusSelections.set(key, new ReviewContinuationRegistry()).get(key)!)(sessionKey);
-		const negotiated = await negotiatedStatusForHostTransport(nativeReviewCli, { cwd: ctx.cwd, ...(signal === undefined ? {} : { signal }) }, retainedSelections, ctx.cwd);
+		const negotiated = await negotiatedStatusForHostTransport(nativeReviewCli, { cwd: ctx.cwd, ...selector, ...(signal === undefined ? {} : { signal }) }, retainedSelections, ctx.cwd);
 		return negotiated.status;
 	} catch {
 		return undefined;
@@ -10085,8 +10087,9 @@ async function resolveNegotiatedReviewStatusForSession(
 // through `agent_end`. It never runs START itself, so it names the one
 // supported continuation (gentle_review inspect) and defers the resulting
 // consent envelope to the human.
-function renderAgentEndReviewPreflightMessage(targetIdentity: string): string {
-	return `Receipt-driven development is enabled, and this worktree holds an unreviewed candidate (target ${targetIdentity}). First determine whether the user explicitly left this exact target unreviewed. If yes, do not invoke review; report that disposition and continue. Only otherwise, call the gentle_review tool with {"operation":"inspect"} and follow the transition it returns; it currently offers review.start for this target. An eligible interactive Pi host may resolve consent directly with its own three-action UI. If gentle_review instead returns an unresolved gentle-ai.review-integration.consent/v3 envelope, relay that original two-choice provider envelope to the human losslessly. Never answer consent from model prose or tool arguments.\n\nThis extension never runs START itself. This reminder consumes only this session's observed mutation generation.`;
+function renderAgentEndReviewPreflightMessage(targetIdentity: string, baseRef?: string): string {
+	const inspect = JSON.stringify({ operation: "inspect", ...(baseRef === undefined ? {} : { input: JSON.stringify({ baseRef, committedOnly: true }) }) });
+	return `Receipt-driven development is enabled, and this worktree holds an unreviewed candidate (target ${targetIdentity}). First determine whether the user explicitly left this exact target unreviewed. If yes, do not invoke review; report that disposition and continue. Only otherwise, call the gentle_review tool with ${inspect} and follow the transition it returns; it currently offers review.start for this target. An eligible interactive Pi host may resolve consent directly with its own three-action UI. If gentle_review instead returns an unresolved gentle-ai.review-integration.consent/v3 envelope, relay that original two-choice provider envelope to the human losslessly. Never answer consent from model prose or tool arguments.\n\nThis extension never runs START itself. This reminder consumes only this session's observed mutation generation.`;
 }
 
 function canonicalReviewCaptureBinding(value: unknown): string {
@@ -10736,10 +10739,13 @@ async function executeReviewControllerOperationImpl(
 				if (/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commit)) canonicalBaseRef = commit;
 			} catch { /* The normal assessment below reports the unresolved selection. */ }
 		}
+		const assessedMutation = context?.sessionManager ? pendingReviewMutation(context.sessionManager as ReceiptSession, defaultCwd) : undefined;
 		const details = await resolveReviewAssessmentPlan(nativeReviewCli, defaultCwd,
 			canonicalBaseRef === undefined ? input : { ...input, baseRef: canonicalBaseRef }, signal, context?.sessionManager as ReceiptSession | undefined);
 		if (canonicalBaseRef !== undefined && details.candidate?.kind === "base-diff" && details.candidate.baseRef === canonicalBaseRef) {
-			retainedUntrackedSelections.retainCommittedRange(defaultCwd, canonicalBaseRef);
+			retainedUntrackedSelections.retainCommittedRange(defaultCwd, canonicalBaseRef, assessedMutation);
+		} else {
+			retainedUntrackedSelections.clearReminderRange(defaultCwd);
 		}
 		return { operation: parameters.operation, ...details, ...(includeWorkspaceRoot ? { workspace_root: defaultCwd } : {}) };
 	}
@@ -12827,9 +12833,13 @@ function createGentleAiExtensionForTesting(
 		const epoch = reminderEpoch;
 		const manager = ctx.sessionManager;
 		const cwd = ctx.cwd;
+		const reminderRange = () => processRetainedNativeStatusSelections.get(sessionKey)?.readReminderRange(root, mutation!);
+		const baseRef = reminderRange();
+		const selector = baseRef === undefined ? {} : { baseRef, committedOnly: true as const };
 		const current = () => reminderSessionActive && epoch === reminderEpoch && (reminderManager === undefined || reminderManager === manager) &&
-			pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey) === sessionKey && ctx.cwd === cwd && (manager?.getCwd?.() ?? cwd) === cwd;
-		const status = await resolveNegotiatedReviewStatusForSession(nativeReviewCli, ctx, sessionKey, undefined, current);
+			pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey) === sessionKey && ctx.cwd === cwd && (manager?.getCwd?.() ?? cwd) === cwd &&
+			reminderRange() === baseRef && (baseRef === undefined || pendingReviewMutation(manager, root) === mutation);
+		const status = await resolveNegotiatedReviewStatusForSession(nativeReviewCli, ctx, sessionKey, undefined, current, selector);
 		if (status === undefined || !current()) return;
 		// Another concurrent end or ACK may already have consumed this prefix.
 		if (!pendingReviewMutation(ctx.sessionManager, root, mutation)) return;
@@ -12840,17 +12850,17 @@ function createGentleAiExtensionForTesting(
 		// review_due, keeps the nudge.
 		if (nativeReviewCli.assess !== undefined) {
 			let reviewDue: boolean | undefined;
-			try { reviewDue = (await nativeReviewCli.assess({ cwd: root })).reviewDue; }
+			try { reviewDue = (await nativeReviewCli.assess({ cwd: root, ...selector })).reviewDue; }
 			catch { reviewDue = undefined; }
 			if (reviewDue === false) return;
-			if (!reminderSessionActive || epoch !== reminderEpoch || pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey) !== sessionKey) return;
+			if (!current()) return;
 			if (!pendingReviewMutation(ctx.sessionManager, root, mutation)) return;
 		}
 		const targetIdentity = status.targetIdentity;
 		pi.sendMessage(
 			{
 				customType: "gentle-pi.review-preflight",
-				content: renderAgentEndReviewPreflightMessage(targetIdentity),
+				content: renderAgentEndReviewPreflightMessage(targetIdentity, baseRef),
 				display: true,
 			},
 			{ triggerTurn: true, deliverAs: "followUp" },

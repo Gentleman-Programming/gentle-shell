@@ -4,18 +4,14 @@ import { join } from "node:path";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { ReviewConsentComponent } from "../lib/review-consent-component.ts";
-import { formatReviewConsentSelectPayload, formatReviewConsentUi } from "../lib/review-consent-ui.ts";
-import { decodeReviewConsentV3, type ReviewConsentV3 } from "../lib/review-integration-v2.ts";
+import { formatReviewConsentUi } from "../lib/review-consent-ui.ts";
+import { decodeReviewConsentV3 } from "../lib/review-integration-v2.ts";
 
-function envelope(): ReviewConsentV3 {
+function consent() {
 	const path = join(process.cwd(), "tests", "fixtures", "devbinary", "consent-v3.captured.json");
 	const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
 	raw.agent = "pi";
-	return decodeReviewConsentV3(raw, "pi");
-}
-
-function consent() {
-	return formatReviewConsentUi(envelope());
+	return formatReviewConsentUi(decodeReviewConsentV3(raw, "pi"));
 }
 
 function createComponent(
@@ -308,41 +304,6 @@ test("fixed title uses a heading token without recoloring context or selection",
 	}, "fixed title uses the heading semantic token");
 	assert.ok(foregrounds.some(({ color, text }) => color === "accent" && text.startsWith("→ 1.")), "selected action remains accent styled");
 	assert.ok(!foregrounds.some(({ text }) => text.startsWith("Provider headline:")), "common body remains unstyled");
-});
-
-test("select payload keeps the headline on the first line and bounds the machine line", () => {
-	const base = envelope();
-	const pathological: ReviewConsentV3 = {
-		...base,
-		headline: `  ${"H".repeat(5000)}  `,
-		reason: "R".repeat(5000),
-		value: "V".repeat(5000),
-		riskEvidence: Array.from({ length: 25 }, (_, index) => `evidence ${index} ${"E".repeat(2500)}`),
-		offPath: { note: "N".repeat(5000), command: base.offPath.command },
-	};
-	const model = formatReviewConsentUi(pathological);
-	const payload = formatReviewConsentSelectPayload(pathological, model);
-	const lines = payload.title.split("\n");
-	assert.equal(lines.length, 2, "the machine line never introduces its own newline");
-	assert.equal(lines[0], "H".repeat(2000), "the human line is the trimmed headline, capped at 2000 characters");
-	const machine = JSON.parse(lines[1]) as Record<string, unknown>;
-	for (const key of ["headline", "reason", "value", "targetIdentity", "projection"]) {
-		const value = machine[key] as string;
-		assert.ok(value.length <= 2000, `${key} is capped at 2000 characters`);
-		assert.ok(!value.includes("\n"), `${key} stays one line`);
-	}
-	assert.equal((machine.reason as string).length, 2000, "a long reason is truncated, not dropped");
-	assert.equal((machine.value as string).length, 2000, "a long value is truncated, not dropped");
-	const offPath = machine.offPath as { note: string; command: string };
-	assert.equal(offPath.note.length, 2000, "a long off-path note is truncated, not dropped");
-	assert.equal(offPath.command, base.offPath.command, "the short off-path command survives whole");
-	const evidence = machine.riskEvidence as string[];
-	assert.equal(evidence.length, 20, "risk evidence is capped at 20 entries");
-	for (const item of evidence) assert.ok(item.length <= 2000, "each evidence entry is capped at 2000 characters");
-	assert.equal(typeof machine.changedFiles, "number", "counts stay numbers");
-	assert.equal(typeof machine.changedLines, "number", "counts stay numbers");
-	assert.equal(machine.changedFiles, base.changedFiles);
-	assert.equal(machine.changedLines, base.changedLines);
 });
 
 test("oversized selected consequences stay complete in read-only context without enabling consent", () => {

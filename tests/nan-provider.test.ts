@@ -6,11 +6,6 @@ import type { Provider } from "@earendil-works/pi-ai";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import nanProviderExtension from "../extensions/nan-provider.ts";
 import { createNanProviderConfig as createNativeProvider, isNanAdaptiveReasoningModel, NAN_ADAPTIVE_REASONING_MODEL_IDS, NAN_PROVIDER_BASE_URL, NAN_PROVIDER_ID } from "../lib/nan-provider.ts";
-import type { NanCompat, NanThinkingLevelMap } from "../lib/nan-provider.ts";
-
-// Pi 1.5's schema-derived compat and thinking-map types are `unknown` without strictNullChecks.
-const compatOf = (model: { compat?: unknown }) => model.compat as NanCompat | undefined;
-const levelsOf = (model: { thinkingLevelMap?: unknown }) => model.thinkingLevelMap as NanThinkingLevelMap | undefined;
 
 // Keep catalog assertions independent of the native refresh's void return contract.
 function createNanProviderConfig(options: Parameters<typeof createNativeProvider>[0] = {}) {
@@ -30,6 +25,14 @@ const DOCUMENTED_CHAT_IDS = [
 	"mimo-v2.6-flash", "gemma4", "qwen3.6",
 	"kimi-k3.1-pro", "qwen3.8-max", "deepseek-v4-pro", "hy4",
 ];
+
+// Pi 1.5 derives the compat and thinking-map types through pi-schema's Static, which
+// collapses all-optional objects to `unknown` under this repository's `strict: false`.
+// Both Pi 1.4 and 1.5 still read `compat.maxTokensField` at run time; these views name
+// the fields the tests read and write.
+type CatalogModel = ReturnType<ReturnType<typeof createNativeProvider>["getModels"]>[number];
+const capCompat = (model: CatalogModel) => model.compat as { maxTokensField?: "max_tokens" | "max_completion_tokens" } | undefined;
+const levelMap = (model: CatalogModel) => model.thinkingLevelMap as Record<string, string | null> | undefined;
 
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -198,7 +201,7 @@ test("initial catalog contains all eleven documented chat models with configured
 	assert.deepEqual(model?.input, ["text", "image"]);
 	assert.equal(model?.contextWindow, 1_000_000);
 	assert.equal(models.length, 11);
-	assert.equal(model?.maxTokens, 131_072);
+	assert.equal(model?.maxTokens, 393_216);
 	assert.deepEqual(model?.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 });
 
@@ -217,11 +220,11 @@ test("DeepSeek Flash keeps max_tokens as its configured output field", async () 
 		},
 	});
 	assert.equal(result.stopReason, "stop");
-	assert.equal(body?.max_tokens, 131_072);
+	assert.equal(body?.max_tokens, 393_216);
 	assert.ok(!Object.hasOwn(body!, "max_completion_tokens"));
 	assert.equal(body?.reasoning_effort, "minimal");
-	assert.equal(model.maxTokens, 131_072);
-	assert.equal(compatOf(model)?.maxTokensField, "max_tokens");
+	assert.equal(model.maxTokens, 393_216);
+	assert.equal(capCompat(model)?.maxTokensField, "max_tokens");
 	assert.ok(models.filter((candidate) => candidate.id !== model.id).every((candidate) => candidate.compat === undefined));
 });
 
@@ -230,10 +233,10 @@ test("DeepSeek compat is isolated across snapshots, providers, and live refreshe
 	for (const live of [false, true]) {
 		if (live) await provider.refreshModels!(refreshContext({ type: "api_key", key: "synthetic-key" }));
 		const model = provider.getModels().find((model) => model.id === "deepseek-v4-flash")!;
-		assert.equal(compatOf(model)?.maxTokensField, "max_tokens");
-		compatOf(model)!.maxTokensField = "max_completion_tokens";
-		assert.equal(compatOf(provider.getModels().find((candidate) => candidate.id === model.id)!)?.maxTokensField, "max_tokens");
-		assert.equal(compatOf(createNativeProvider().getModels().find((model) => model.id === "deepseek-v4-flash")!)?.maxTokensField, "max_tokens");
+		assert.equal(capCompat(model)?.maxTokensField, "max_tokens");
+		capCompat(model)!.maxTokensField = "max_completion_tokens";
+		assert.equal(capCompat(provider.getModels().find((candidate) => candidate.id === model.id)!)?.maxTokensField, "max_tokens");
+		assert.equal(capCompat(createNativeProvider().getModels().find((model) => model.id === "deepseek-v4-flash")!)?.maxTokensField, "max_tokens");
 	}
 });
 
@@ -277,7 +280,11 @@ for (const id of DOCUMENTED_CHAT_IDS) {
 			assert.equal(Object.hasOwn(body, "thinking"), false, `${id} ${effort} must use reasoning_effort`);
 			const capField = id === "deepseek-v4-flash" ? "max_tokens" : "max_completion_tokens";
 			const otherField = capField === "max_tokens" ? "max_completion_tokens" : "max_tokens";
-			assert.equal(body[capField], model.maxTokens, `${id} ${effort} output cap`);
+			// Pi clamps the configured cap to the context window minus its 4,096-token
+			// safety reserve and this probe's 4 estimated tokens. Only Kimi K3.1 Pro
+			// (Max answer 1M == context window) hits that clamp: 1,000,000 - 4,100.
+			const expectedCap = model.maxTokens >= model.contextWindow ? 995_900 : model.maxTokens;
+			assert.equal(body[capField], expectedCap, `${id} ${effort} output cap`);
 			assert.equal(Object.hasOwn(body, otherField), false, `${id} ${effort} alternate cap`);
 		}
 	});
@@ -305,19 +312,19 @@ test("thinking maps are isolated across snapshots, providers, and live catalog r
 	});
 	const baseline = provider.getModels();
 	for (const model of provider.getModels()) {
-		const levels = levelsOf(model);
-		assert.ok(levels);
-		levels.off = "mutated";
-		levels.medium = null;
+		const map = levelMap(model);
+		assert.ok(map);
+		map.off = "mutated";
+		map.medium = null;
 	}
 	assert.deepEqual(provider.getModels(), baseline);
 	assert.deepEqual(createNativeProvider().getModels(), baseline);
 	await provider.refreshModels!(refreshContext({ type: "api_key", key: "map-key" }));
 	assert.deepEqual(provider.getModels(), baseline);
 	for (const model of provider.getModels()) {
-		const levels = levelsOf(model);
-		assert.ok(levels);
-		levels.xhigh = "mutated";
+		const map = levelMap(model);
+		assert.ok(map);
+		map.xhigh = "mutated";
 	}
 	assert.deepEqual(provider.getModels(), baseline);
 	await provider.refreshModels!(refreshContext({ type: "api_key", key: "map-key" }));
@@ -374,16 +381,16 @@ test("live discovery uses the key-scoped endpoint and replaces the fallback with
 test("known chat models retain documented capabilities without advertising audio", async () => {
 	const expected = [
 		["glm5.3", 1_000_000, ["text", "image"], 32_768],
-		["deepseek-v4-flash", 1_000_000, ["text", "image"], 131_072],
-		["glm5.3-flash", 1_000_000, ["text", "image"], 32_768],
+		["deepseek-v4-flash", 1_000_000, ["text", "image"], 393_216],
+		["glm5.3-flash", 1_000_000, ["text", "image"], 131_072],
 		["qwen3.8-flash", 1_048_576, ["text", "image"], 131_000],
 		["mimo-v2.6-flash", 1_000_000, ["text", "image"], 32_768],
 		["gemma4", 262_000, ["text", "image"], 65_536],
 		["qwen3.6", 262_000, ["text", "image"], 65_536],
-		["kimi-k3.1-pro", 1_000_000, ["text", "image"], 32_768],
-		["qwen3.8-max", 1_000_000, ["text", "image"], 32_768],
-		["deepseek-v4-pro", 1_000_000, ["text"], 32_768],
-		["hy4", 1_000_000, ["text", "image"], 32_768],
+		["kimi-k3.1-pro", 1_000_000, ["text", "image"], 1_000_000],
+		["qwen3.8-max", 1_000_000, ["text", "image"], 131_000],
+		["deepseek-v4-pro", 1_000_000, ["text"], 393_000],
+		["hy4", 1_000_000, ["text", "image"], 64_000],
 	] as const;
 	const config = createNanProviderConfig({
 		fetchImpl: async () => jsonResponse({ data: expected.map(([id]) => ({ id })) }),

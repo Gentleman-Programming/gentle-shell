@@ -15,9 +15,14 @@ export type Listener = (event: any) => void;
 // postMessage clones its message, so a test sees a plain copy.
 export const structuredCopy = (message: unknown) => JSON.parse(JSON.stringify(message));
 type Rect = { left: number; top: number; width: number; height: number };
+export const HTML_NS = "http://www.w3.org/1999/xhtml";
+export const SVG_NS = "http://www.w3.org/2000/svg";
+// index.html elements the canvas looks up by id whose tag matters to it; any other id is a div.
+const TAGS: Record<string, [string, string?]> = { "gd-back": ["button"], "gd-shortcuts": ["dialog"], "gd-sprite": ["svg", SVG_NS] };
 
 export class FakeElement {
 	localName: string;
+	namespaceURI = HTML_NS;
 	id = "";
 	children: FakeElement[] = [];
 	parentElement: FakeElement | null = null;
@@ -44,6 +49,10 @@ export class FakeElement {
 	constructor(tag: string, doc: FakeDocument) {
 		this.localName = tag;
 		this.doc = doc;
+		// node:assert diffs a failed comparison with its own inspect (depth 1000, custom inspect off):
+		// back-references would let it walk the whole cyclic document and exhaust memory.
+		// It skips non-enumerable properties, so hide them.
+		for (const key of ["doc", "parentElement"]) Object.defineProperty(this, key, { enumerable: false, writable: true, value: (this as any)[key] });
 		if (tag === "iframe") {
 			const posted: any[] = [];
 			this.contentWindow = { posted, postMessage: (message) => posted.push(structuredCopy(message)) };
@@ -72,7 +81,11 @@ export class FakeElement {
 	offsetTop = 0;
 	get offsetWidth() { return 0; }
 	get offsetHeight() { return 0; }
-	setAttribute(name: string, value: unknown) { this.attributes.set(name, String(value)); }
+	setAttribute(name: string, value: unknown) {
+		this.attributes.set(name, String(value));
+		// SVG elements take their class through the attribute (className is not a string there).
+		if (name === "class") this.className = String(value);
+	}
 	getAttribute(name: string) { return this.attributes.get(name) ?? null; }
 	hasAttribute(name: string) { return this.attributes.has(name); }
 	removeAttribute(name: string) { this.attributes.delete(name); }
@@ -124,6 +137,13 @@ export class FakeElement {
 	getBoundingClientRect() { return this.rect; }
 	setPointerCapture(pointerId: number) { this.capturedPointers.push(pointerId); }
 	scrollIntoView() {}
+	/** <dialog>: open as a modal, and close with its close event, like the browser (the event comes at once here). */
+	showModal() { this.setAttribute("open", ""); }
+	close() {
+		if (!this.hasAttribute("open")) return;
+		this.removeAttribute("open");
+		this.dispatch("close");
+	}
 }
 
 export class FakeDocument {
@@ -141,10 +161,17 @@ export class FakeDocument {
 		this.activeElement = this.body;
 	}
 	createElement(tag: string) { return new FakeElement(tag, this); }
+	createElementNS(namespace: string, tag: string) {
+		const element = new FakeElement(tag, this);
+		element.namespaceURI = namespace;
+		return element;
+	}
 	getElementById(id: string) {
 		let element = this.byId.get(id);
 		if (!element) {
-			element = new FakeElement(id === "gd-back" ? "button" : "div", this);
+			const [tag, namespace] = TAGS[id] ?? ["div"];
+			element = new FakeElement(tag, this);
+			if (namespace) element.namespaceURI = namespace;
 			element.id = id;
 			this.byId.set(id, element);
 		}
@@ -158,9 +185,23 @@ export class FakeDocument {
 
 export const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-export async function loadCanvas(firstHeight = 300, extraReplies: Record<string, unknown> = {}) {
+/**
+ * A localStorage that keeps what the canvas stores, seeded with `seed`; `broken` throws on every call,
+ * like a browser that denies storage. `writes` lists every setItem as [key, value].
+ */
+export function memoryStorage(seed: Record<string, string> = {}, broken = false) {
+	const data = new Map<string, string>(Object.entries(seed));
+	const writes: Array<[string, string]> = [];
+	const localStorage = broken
+		? { getItem(): string | null { throw new Error("denied"); }, setItem() { throw new Error("denied"); } }
+		: { getItem: (key: string) => data.get(key) ?? null, setItem: (key: string, value: string) => { data.set(key, String(value)); writes.push([key, String(value)]); } };
+	return { localStorage, data, writes };
+}
+
+/** config: fields merged into #gd-config; extraWindow: window fields that replace the defaults (a localStorage, for one). */
+export async function loadCanvas(firstHeight = 300, extraReplies: Record<string, unknown> = {}, config: Record<string, unknown> = {}, extraWindow: Record<string, unknown> = {}) {
 	const document = new FakeDocument();
-	document.getElementById("gd-config").textContent = JSON.stringify({ base: "/t/", slug: "alpha" });
+	document.getElementById("gd-config").textContent = JSON.stringify({ base: "/t/", slug: "alpha", ...config });
 	const viewport = document.getElementById("gd-viewport");
 	const world = document.getElementById("gd-world");
 	viewport.append(world);
@@ -220,6 +261,7 @@ export async function loadCanvas(firstHeight = 300, extraReplies: Record<string,
 		addEventListener(type: string, listener: Listener) {
 			windowListeners.set(type, [...(windowListeners.get(type) ?? []), listener]);
 		},
+		...extraWindow,
 	};
 	boot(window, document);
 	for (let i = 0; i < 10; i++) await flush();

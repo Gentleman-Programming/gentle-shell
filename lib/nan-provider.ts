@@ -11,24 +11,19 @@ export interface NanProviderOptions {
 	timeoutMs?: number;
 }
 
-// Pi 1.5 derives its compat and thinking-map types from pi-schema, which collapse to
-// `unknown` without strictNullChecks; NaN declares the fields it sets.
-export type NanThinkingLevelMap = Partial<Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max", string | null>>;
-export interface NanCompat { maxTokensField?: "max_completion_tokens" | "max_tokens" }
-type NanChatModelConfig = Omit<Extract<ProviderModelConfig, { type?: "chat" }>, "compat" | "thinkingLevelMap"> & {
-	compat?: NanCompat;
-	thinkingLevelMap?: NanThinkingLevelMap;
-};
+type NanChatModelConfig = Extract<ProviderModelConfig, { type?: "chat" }>;
 
 // Pi requires numeric rates; NaN does not publish per-token prices. Zero is a placeholder, not a free-price claim.
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
 // Maintained chat subset from https://nan.builders/docs/models.
-// Decimal bounds conservatively interpret the documented 1M/262K/131K labels.
+// Decimal bounds conservatively interpret the documented 1M/262K/131K/393K/64K labels.
 // Pi models text/image inputs only; documented audio/video inputs are not advertised.
-// Reasoning and answer share the output budget. DeepSeek Flash retains its generous
-// 131,072 cap (gentle-shell#2840); Qwen 3.8 Flash retains 131,000. Gemma 4 and Qwen
-// 3.6 retain 65,536; other caps are configured 32,768, not published maxima.
+// Reasoning and answer share the output budget. DeepSeek Flash uses its exact published
+// 393,216 budget and GLM 5.3 Flash its exact published 131,072 (NaN lowers anything
+// above); Qwen 3.8 Flash retains 131,000 and Gemma 4 and Qwen 3.6 retain 65,536. The
+// November larger models now publish Max answer caps (Kimi K3.1 Pro 1M, Qwen 3.8 Max
+// 131K, DeepSeek V4 Pro 393K, Hy4 64K); glm5.3 publishes no maximum and keeps 32,768.
 // Pi requires explicit xhigh/max mappings to offer those levels; missing ordinary
 // levels pass through. GLM always reasons, while none disables all other models.
 const GLM_THINKING_LEVEL_MAP: NanChatModelConfig["thinkingLevelMap"] = {
@@ -56,13 +51,13 @@ const CHAT_MODELS: NanChatModelConfig[] = ([
 	},
 	{
 		id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", input: ["text", "image"], contextWindow: 1_000_000,
-		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP, maxTokens: 131_072,
+		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP, maxTokens: 393_216,
 		// Preserve the established field; NaN accepts both fields as a shared reasoning/answer budget.
 		compat: { maxTokensField: "max_tokens" },
 	},
 	{
 		id: "glm5.3-flash", name: "GLM 5.3 Flash", input: ["text", "image"], contextWindow: 1_000_000,
-		thinkingLevelMap: GLM_THINKING_LEVEL_MAP,
+		thinkingLevelMap: GLM_THINKING_LEVEL_MAP, maxTokens: 131_072,
 	},
 	{
 		id: "qwen3.8-flash", name: "Qwen 3.8 Flash", input: ["text", "image"], contextWindow: 1_048_576,
@@ -82,19 +77,19 @@ const CHAT_MODELS: NanChatModelConfig[] = ([
 	},
 	{
 		id: "kimi-k3.1-pro", name: "Kimi K3.1 Pro", input: ["text", "image"], contextWindow: 1_000_000,
-		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP,
+		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP, maxTokens: 1_000_000,
 	},
 	{
 		id: "qwen3.8-max", name: "Qwen 3.8 Max", input: ["text", "image"], contextWindow: 1_000_000,
-		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP,
+		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP, maxTokens: 131_000,
 	},
 	{
 		id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", input: ["text"], contextWindow: 1_000_000,
-		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP,
+		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP, maxTokens: 393_000,
 	},
 	{
 		id: "hy4", name: "Hy4", input: ["text", "image"], contextWindow: 1_000_000,
-		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP,
+		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP, maxTokens: 64_000,
 	},
 ] satisfies Partial<NanChatModelConfig>[]).map((model) => ({
 	...model,
@@ -116,7 +111,8 @@ function cloneModel(model: NanChatModelConfig): NanChatModelConfig {
 		...model,
 		input: [...model.input],
 		cost: { ...model.cost },
-		thinkingLevelMap: model.thinkingLevelMap ? { ...model.thinkingLevelMap } : undefined,
+		// structuredClone keeps the declared type: Pi 1.5 types the map `unknown` under strict: false, which a spread rejects.
+		thinkingLevelMap: model.thinkingLevelMap ? structuredClone(model.thinkingLevelMap) : undefined,
 		...(model.compat ? { compat: { ...model.compat } } : {}),
 	};
 }

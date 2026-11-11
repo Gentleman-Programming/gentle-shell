@@ -8,6 +8,7 @@ import { tmpdir, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, win32 } from "node:path";
 import { Duplex, type Readable, type Writable } from "node:stream";
 import { stripVTControlCharacters } from "node:util";
+import { fileURLToPath } from "node:url";
 import { withoutInteractiveHost } from "./rpc-host.ts";
 import { gentlePiConfigHome } from "./agent-home.ts";
 import { resolveBackgroundSubagentsPolicy } from "./background-subagents-policy.ts";
@@ -746,6 +747,8 @@ export class AgentRunner {
 		// Do not forward stale legacy child selection or authorization.
 		delete env.GENTLE_PI_SDD_REMEDIATION_PLAN;
 		delete env.GENTLE_PI_RESEARCH_SELECTION;
+		if (request.agent.name === "gentle-ai-verify") env.GENTLE_PI_VERIFIER_PREPARER = fileURLToPath(new URL("../scripts/prepare-verifier.mjs", import.meta.url));
+		else delete env.GENTLE_PI_VERIFIER_PREPARER;
 		const tools = requestedTools(request);
 		if (request.agent.tools.includes("bash_background")) {
 			const policy = resolveBackgroundSubagentsPolicy(request.cwd, { env: request.env, gentlePiConfigHome: gentlePiConfigHome(request.env) });

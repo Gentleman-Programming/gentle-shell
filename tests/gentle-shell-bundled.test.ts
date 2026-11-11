@@ -357,11 +357,12 @@ const FIXTURE_CORE = [
 	"if (mode === 'race') { spawn(process.execPath, [process.argv[1], 'serve'], { env: { ...process.env, FIXTURE_SERVE: 'late' }, detached: true, stdio: 'ignore' }).unref(); process.exit(1); }",
 	`const ready = ${JSON.stringify(JSON.stringify(READY_COMPATIBILITY))};`,
 	// FIXTURE_RUNTIME_CONTRACT optionally stands in for a live GET /runtime-contract
-	// answer (T3): without it the fixture answers 404 there, as before.
-	"const contractDigest = request.url === '/runtime-contract' ? process.env.FIXTURE_RUNTIME_CONTRACT : undefined;",
-	"const status = request.url === '/compatibility' || contractDigest ? 200 : 404;",
-	"const body = request.url === '/compatibility' ? ready : contractDigest ? JSON.stringify({ contract_id: 'engram.pi-http-runtime/v1', revision: 1, digest: contractDigest }) : '{}';",
+	// answer (T3): without it the fixture answers 404 there, as before. Computed
+	// inside the request handler, where `request` exists.
 	"setTimeout(() => require('node:http').createServer((request, response) => {",
+	" const contractDigest = request.url === '/runtime-contract' ? process.env.FIXTURE_RUNTIME_CONTRACT : undefined;",
+	" const status = request.url === '/compatibility' || contractDigest ? 200 : 404;",
+	" const body = request.url === '/compatibility' ? ready : contractDigest ? JSON.stringify({ contract_id: 'engram.pi-http-runtime/v1', revision: 1, digest: contractDigest }) : '{}';",
 	" response.writeHead(status, { 'content-type': 'application/json' }); response.end(body);",
 	"}).listen(0, '127.0.0.1', function () { const file = process.env.FIXTURE_ENGRAM_PORT_FILE; writeFileSync(file + '.tmp', String(this.address().port)); renameSync(file + '.tmp', file); }),",
 	" mode === 'late' ? 300 : 0);",

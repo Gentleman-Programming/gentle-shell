@@ -71,6 +71,9 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
  // The facade's advisory_finding_claims of that same closure (each advisory id's
  // reviewer claim), relayed beside advisory_findings only; never routed on.
  let closureClaims: { value: unknown } | undefined;
+ // The facade's marks on those claims: ids whose claim is a cut prefix, and ids
+ // whose claim the per-closure limit left out. Relayed with the claims only.
+ let closureClaimMarks: Body = {};
  const checkCancelled = () => {
   if (deps.signal?.aborted) throw Object.assign(new Error("Review coordinator cancelled"), { name: "AbortError" });
  };
@@ -96,12 +99,19 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
   }
   steps.push({ tool, operation: parameters.operation, elapsed_ms: now() - start,
    request_bytes: Buffer.byteLength(JSON.stringify({ ...workspace, ...parameters })), response_bytes: Buffer.byteLength(JSON.stringify(result)) });
-  if (!acknowledged(result)) checkCancelled();
+  // A capture closure carrying advisory_findings is checked after the outcome
+  // gate below, so a cancellation racing with it keeps the findings.
+  if (!acknowledged(result) && !(tool !== "gentle_review" && Object.hasOwn(record(result.closure), "advisory_findings"))) checkCancelled();
   return result;
  };
+ // The run's own inputs without a selection: after selection-required the
+ // caller resumes the run with these plus the chosen untracked selection, so
+ // START keeps the requested lenses and request context.
+ const { untrackedScope: _scope, intendedUntracked: _paths, ...resumeInput } = structuredClone(input);
  const finish = (outcome: string, result: Body) => ({ schema: "gentle-pi.review-coordinator-experiment/v1", outcome, result, forecasts, reviewer_runs: reviewerRuns,
   ...(closureFindings !== undefined ? { advisory_findings: closureFindings.value } : {}),
-  ...(closureFindings !== undefined && closureClaims !== undefined ? { advisory_finding_claims: closureClaims.value } : {}),
+  ...(closureFindings !== undefined && closureClaims !== undefined ? { advisory_finding_claims: closureClaims.value, ...closureClaimMarks } : {}),
+  ...(outcome === "selection-required" ? { resume_input: resumeInput } : {}),
   ...(lineage === undefined ? {} : { lineage_id: lineage }), metrics: { elapsed_ms: now() - began, facade_calls: steps.length, steps } });
  const status = () => invoke("gentle_review", { operation: "status", lineageId: lineage, ...selectorInput });
  let details: Body;
@@ -182,9 +192,16 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
   // submission or a failed reconciliation carries another outcome or a
   // failure/reconciliation field and stays blocked.
   const reconciledGroup = tool === "gentle_review_capture_group" && capture.outcome === "native-reviewer-group-status-reconciled" && capture.status === "reconciled";
-  if (!(["native-last-event-closure", "native-reviewer-result-captured"].includes(String(capture.outcome)) || reconciledGroup)
+  // An older provider's self-contained role vector (--execute=true): Go ran the
+  // refuter or validator and admitted it, returning the role artifact instead
+  // of a closure. Like an admitted reviewer result, bound STATUS routes next.
+  const capturedRole = tool === "gentle_review_capture" && capture.outcome === "native-provider-role-captured" && capture.status === "captured";
+  if (!(["native-last-event-closure", "native-reviewer-result-captured"].includes(String(capture.outcome)) || reconciledGroup || capturedRole)
    || capture.failure !== undefined || capture.reconciliation !== undefined
-   || capture.native_failure !== undefined || capture.reconciliation_failure !== undefined) return finish("blocked", capture);
+   || capture.native_failure !== undefined || capture.reconciliation_failure !== undefined) {
+   checkCancelled();
+   return finish("blocked", capture);
+  }
   if (Object.hasOwn(capture, "closure")) {
    // Read only these keys' presence and value; closure state and variants stay unread.
    const closure = record(capture.closure);
@@ -194,6 +211,16 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
    const plainStrings = claims !== null && typeof claims === "object" && [Object.prototype, null].includes(Object.getPrototypeOf(claims))
     && Object.values(claims).every(value => typeof value === "string");
    closureClaims = closureFindings !== undefined && Object.hasOwn(closure, "advisory_finding_claims") && plainStrings ? { value: structuredClone(claims) } : undefined;
+   // Each mark is relayed only as an array of strings; any other shape is dropped.
+   closureClaimMarks = Object.fromEntries(["advisory_finding_claims_truncated", "advisory_finding_claims_omitted"]
+    .filter(key => Array.isArray(closure[key]) && (closure[key] as unknown[]).every(id => typeof id === "string"))
+    .map(key => [key, structuredClone(closure[key])]));
+  }
+  // Cancelled after an admitted approved closure: return its findings and
+  // dispatch nothing more; resuming by lineageId reaches the acknowledgement.
+  if (deps.signal?.aborted) {
+   if (closureFindings !== undefined && Object.hasOwn(capture, "closure")) return finish("cancelled", capture);
+   checkCancelled();
   }
   details = await status();
  }

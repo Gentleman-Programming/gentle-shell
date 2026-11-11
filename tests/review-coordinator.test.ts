@@ -253,3 +253,57 @@ test("forecasts remain lossless in final results even if capture later refuses",
  const result = await runReviewCoordinator({ lineageId: lineage }, { ...host, presentForecast: async forecast => { forecast.message = "UI rendering must not alter the model relay"; return true; } });
  assert.equal(result.outcome, "blocked"); assert.deepEqual(result.forecasts, expected);
 });
+
+test("a captured provider-role artifact continues only through bound STATUS; look-alikes stay blocked", async () => {
+ const role = { tool: "gentle_review_capture", status: "captured", outcome: "native-provider-role-captured", provider_role: { role: "refuter", captured: true } };
+ const host = backend([collect, role, approved, closed]);
+ assert.equal((await runReviewCoordinator({ lineageId: lineage }, host)).outcome, "closed");
+ assert.deepEqual(host.calls.map(call => call.tool === "gentle_review" ? String(call.parameters.operation) : call.tool), ["status", "gentle_review_capture", "status", "acknowledge-approved"]);
+ const group = { ...collect, collectBindings: [{ collectBinding: "first" }, { collectBinding: "second" }] };
+ for (const [status, capture] of [
+  [collect, { ...role, status: "blocked" }],
+  [collect, { ...role, failure: { kind: "transport" } }],
+  [collect, { ...role, native_failure: {} }],
+  [collect, { ...role, reconciliation: {} }],
+  [collect, { ...role, reconciliation_failure: {} }],
+  [group, role],
+ ] as const) {
+  const blocked = backend([status, capture]);
+  const result = await runReviewCoordinator({ lineageId: lineage }, blocked);
+  assert.equal(result.outcome, "blocked", JSON.stringify(capture)); assert.equal(result.result, capture); assert.equal(blocked.calls.length, 2);
+ }
+});
+
+test("advisory finding claim marks are relayed only as arrays of strings, and only with the claims", async () => {
+ const findings = { statement: "fixture", findings: [{ id: "F1" }, { id: "F2" }] };
+ const run = async (closure: Body) => await runReviewCoordinator({ lineageId: lineage }, backend([collect, { ...captured, closure: { advisory_findings: findings, ...closure } }, approved, closed]));
+ const marked = await run({ advisory_finding_claims: { F1: "cut" }, advisory_finding_claims_truncated: ["F1"], advisory_finding_claims_omitted: ["F2"] });
+ assert.deepEqual(marked.advisory_finding_claims_truncated, ["F1"]); assert.deepEqual(marked.advisory_finding_claims_omitted, ["F2"]);
+ for (const mark of ["F1", [1], { F1: true }, null]) {
+  const result = await run({ advisory_finding_claims: { F1: "cut" }, advisory_finding_claims_truncated: mark, advisory_finding_claims_omitted: mark });
+  assert.equal(result.outcome, "closed");
+  assert.equal(Object.hasOwn(result, "advisory_finding_claims_truncated"), false, JSON.stringify(mark));
+  assert.equal(Object.hasOwn(result, "advisory_finding_claims_omitted"), false, JSON.stringify(mark));
+ }
+ const withoutClaims = await run({ advisory_finding_claims_truncated: ["F1"] });
+ assert.equal(Object.hasOwn(withoutClaims, "advisory_finding_claims_truncated"), false);
+});
+
+test("cancellation after an admitted closure with findings returns cancelled; a refused capture or a closure without findings still aborts", async () => {
+ const findings = { statement: "fixture", findings: [{ id: "F1" }] };
+ const withFindings = { ...captured, closure: { advisory_findings: findings, advisory_finding_claims: { F1: "claim" } } };
+ const racing = (response: Body) => {
+  const controller = new AbortController(); const calls: string[] = [];
+  return { calls, signal: controller.signal, async invoke(tool: ReviewCoordinatorTool) { calls.push(tool); if (tool === "gentle_review") return collect; controller.abort(); return response; } };
+ };
+ const host = racing(withFindings);
+ const result = await runReviewCoordinator({ lineageId: lineage }, host);
+ assert.equal(result.outcome, "cancelled"); assert.equal(result.result, withFindings);
+ assert.deepEqual(result.advisory_findings, findings); assert.deepEqual(result.advisory_finding_claims, { F1: "claim" });
+ assert.deepEqual(host.calls, ["gentle_review", "gentle_review_capture"], "nothing is dispatched after the cancellation");
+ for (const response of [{ ...withFindings, failure: { kind: "transport" } }, { ...withFindings, outcome: "capture-binding-rejected" }, { ...captured, closure: {} }, captured]) {
+  const refused = racing(response);
+  await assert.rejects(runReviewCoordinator({ lineageId: lineage }, refused), { name: "AbortError" }, JSON.stringify(response));
+  assert.equal(refused.calls.length, 2);
+ }
+});

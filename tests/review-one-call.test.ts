@@ -330,9 +330,9 @@ async function promptRequest(root: string, label: string, mode: "on" | "off", to
 	return requests[0]!;
 }
 
-const RUN_GUIDANCE = "To drive a due native ordinary review, prefer gentle_review_run over single review operations: it executes the same provider-issued lifecycle (assess, inspect, START, bound STATUS, captures, acknowledgement) in one call. Single operations remain for what its result hands back (the consent answer, the correction plan through gentle_review_capture, the untracked selection through the operation its nextStep names, status and recovery), for a review the user explicitly asks for after not-due, and for ASSESS after a delegated writer.";
+const RUN_GUIDANCE = "To drive a due native ordinary review, prefer gentle_review_run over single review operations: it executes the same provider-issued lifecycle (assess, inspect, START, bound STATUS, captures, acknowledgement) in one call. Single operations remain for what its result hands back (the consent answer, the correction plan through gentle_review_capture, status and recovery), for a review the user explicitly asks for after not-due, and for ASSESS after a delegated writer.";
 const CONSENT_GUIDANCE = "On consent-required, relay the consent to the human and submit only the human's explicit answer, once, with gentle_review answer-consent. Never choose the answer yourself and never pass a consent answer to gentle_review_run.";
-const RUN_OUTCOMES = ["closed", "not-due", "assessment-unavailable", "request-context-requires-fresh-review", "consent-required", "input-required", "selection-required", "stopped", "handoff", "repeated-capture", "forecast", "binding-drift", "transition-limit", "blocked"];
+const RUN_OUTCOMES = ["closed", "not-due", "assessment-unavailable", "request-context-requires-fresh-review", "consent-required", "input-required", "selection-required", "stopped", "handoff", "repeated-capture", "forecast", "binding-drift", "transition-limit", "cancelled", "blocked"];
 
 test("S3/S6: the run guidance keeps consent with the human, scopes the run to a due review and names every outcome", () => {
 	const tools = new Map<string, { description: string; promptGuidelines: string[] }>();

@@ -24,9 +24,17 @@ export interface CoordinatorRuntimeOptions {
 	 * returns the approved closure. "refuter-reoffers-group": the same, except
 	 * that every STATUS after the reconciliation offers the same group again.
 	 * "untracked-selection": a fresh review is due, and pre-lineage STATUS asks
-	 * for the intended-untracked selection (status/v7).
+	 * for the intended-untracked selection (status/v7); a STATUS that carries the
+	 * selection submission offers START, and native START records its request
+	 * and fails. "provider-role": the "refuter" group, after which STATUS offers
+	 * an older provider's self-contained refuter vector (--execute=true) whose
+	 * capture returns the provider-role artifact, not a closure.
 	 */
-	scenario?: "single" | "refuter" | "refuter-reoffers-group" | "untracked-selection";
+	scenario?: "single" | "refuter" | "refuter-reoffers-group" | "untracked-selection" | "provider-role";
+	/** Passed to every tool execute as its abort signal. */
+	signal?: AbortSignal;
+	/** Called right after a reviewer submission made the fixture's closure approved. */
+	onApproved?: () => void;
 }
 const GROUP_LENSES = ["review-risk", "review-reliability"] as const;
 export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coordinator", options: CoordinatorRuntimeOptions = {}) {
@@ -68,6 +76,13 @@ export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coo
 	} as unknown as ReviewCollectInputV3;
 	const refuting = { ...reviewing, nextTransition: { kind: "collect", reasonCode: "provider_refuter_required", collect: { inputs: [refuterInput] } },
 		raw: { ...raw, next_transition: { kind: "collect", reason_code: "provider_refuter_required" } } } as unknown as ReviewStatusV3;
+	// An older provider's self-contained refuter vector: Go runs the role itself.
+	const roleVectorInput = {
+		name: "provider_refuter", schema: "https://gentle-ai.dev/schema/review/refuter/v1", captureOperation: "review.capture-refuter",
+		arguments: [...roleArguments, { name: "agent", value: "pi", token: "--agent=pi" }, { name: "execute", value: "true", token: "--execute=true" }],
+	} as unknown as ReviewCollectInputV3;
+	const roleVector = { ...refuting, nextTransition: { kind: "collect", reasonCode: "provider_role_required", collect: { inputs: [roleVectorInput] } },
+		raw: { ...raw, next_transition: { kind: "collect", reason_code: "provider_role_required" } } } as unknown as ReviewStatusV3;
 	// A pre-lineage STATUS that asks the parent to choose intended untracked files.
 	const selectionInput = {
 		name: "intended_untracked_selection", schema: "gentle-ai.review-intended-untracked-selection/v1", captureOperation: "external.select_intended_untracked",
@@ -81,6 +96,11 @@ export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coo
 	} as unknown as ReviewCollectInputV3;
 	const selecting = { ...reviewing, authority: undefined, nextTransition: { kind: "collect", reasonCode: "intended_untracked_selection_required", collect: { inputs: [selectionInput] } },
 		raw: { schema: "gentle-ai.review-integration.status/v7", target_identity: target, next_transition: { kind: "collect", reason_code: "intended_untracked_selection_required", collect: { inputs: [] } } } } as unknown as ReviewStatusV3;
+	// The pre-lineage STATUS once the selection is submitted: START is offered.
+	const startReady = { ...reviewing, authority: undefined, applicability: "unrelated", action: "start",
+		nextTransition: { kind: "execute", reasonCode: "start_required", execute: { operation: "review.start", command: "gentle-ai review start --fixture-only", arguments: [], preconditions: [] } },
+		raw: { schema: "gentle-ai.review-integration.status/v7", target_identity: target, next_transition: { kind: "execute", reason_code: "start_required", execute: { operation: "review.start" } } } } as unknown as ReviewStatusV3;
+	const startRequests: Body[] = [];
 	const approvedClosure = (operation: string) => JSON.stringify({ schema: "gentle-ai.review-last-event-closure/v1", operation, lineage_id: lineage, state: "approved", action: "fixture approval; not real authority", store_revision: revision,
 		...(options.advisoryFindings === undefined ? {} : { advisory_findings: options.advisoryFindings }),
 		...(options.reviewerResults === undefined ? {} : { reviewer_results: options.reviewerResults }) });
@@ -97,18 +117,31 @@ export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coo
 			const effective = options.mode?.(++modeReads, nativeCalls) ?? "on";
 			return { operation: "status", scope: "clone", status: { global: effective, cloneLocal: "", effective, source: "global" } };
 		},
-		targetStatus: async () => {
+		targetStatus: async (request: Body) => {
 			assert.notEqual(state, "burned", "no STATUS after burn");
 			nativeCalls.push(`status:${state}`);
 			if (state === "approved") return approved;
-			if (scenario === "untracked-selection") return selecting;
+			if (scenario === "untracked-selection") return request.intendedUntrackedSelection === undefined ? selecting : startReady;
 			if (scenario === "single") return reviewing;
 			if (state === "refuting") {
+				if (scenario === "provider-role") return roleVector;
 				// The facade's own post-group reconciliation reads STATUS first.
 				if (scenario === "refuter-reoffers-group" && reconciledReads++ > 0) return groupStatus(0);
 				return refuting;
 			}
 			return groupStatus(groupSubmitted);
+		},
+		start: async (request: Body) => {
+			nativeCalls.push("start");
+			const { signal: _signal, ...recorded } = request;
+			startRequests.push(structuredClone(recorded));
+			throw new Error("fixture START records its request and fails");
+		},
+		captureProviderRole: async (request: Body) => {
+			assert.equal(state, "refuting");
+			assert.equal(request.captureOperation, "review.capture-refuter");
+			nativeCalls.push("capture-provider-role"); state = "approved";
+			return { schema: "gentle-ai.review-provider-role-capture/v1", lineageId: lineage, targetIdentity: target, role: "refuter", captured: true };
 		},
 		acknowledgeApproved: async () => {
 			assert.equal(state, "approved");
@@ -132,12 +165,14 @@ export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coo
 		if (scenario === "single") {
 			assert.equal(state, "reviewing");
 			nativeCalls.push("capture:recorded-output"); state = "approved";
+			options.onApproved?.();
 			const submission = approvedClosure("review/capture-result");
 			return { submission, promptByteLength: 0, resultByteLength: Buffer.byteLength(submission) };
 		}
 		assert.equal(state, "refuting");
 		assert.equal(request.routingKey, "review-refuter");
 		nativeCalls.push("capture-refuter"); state = "approved";
+		options.onApproved?.();
 		const submission = approvedClosure("review.capture-refuter");
 		return { submission, promptByteLength: 0, resultByteLength: Buffer.byteLength(submission) };
 	});
@@ -158,11 +193,11 @@ export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coo
 	const forecasts: Body[] = [];
 	const context = { cwd, hasUI: options.hasUI ?? true, sessionManager: { getSessionId: () => "fixture-live-driver", getBranch: () => [], getSessionFile: () => undefined }, modelRegistry: undefined };
 	const facadeCalls: { name: string; parameters: Body; elapsed_ms: number }[] = [];
-	return { tools, lineage, target, nativeCalls, facadeCalls, forecasts,
+	return { tools, lineage, target, nativeCalls, facadeCalls, forecasts, startRequests,
 		async invoke(name: string, parameters: Body) {
 			const tool = tools.get(name); assert.ok(tool, `registered tool ${name}`);
 			const began = performance.now();
-			const result = await tool.execute("fixture-call", parameters, undefined, (update: any) => forecasts.push(update.details), context);
+			const result = await tool.execute("fixture-call", parameters, options.signal, (update: any) => forecasts.push(update.details), context);
 			facadeCalls.push({ name, parameters, elapsed_ms: performance.now() - began });
 			return result.details as Body;
 		},

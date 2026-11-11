@@ -1,6 +1,6 @@
 // Designs and artboards: the design list, each board's sandboxed iframe, header
-// and Implement this control, manifest loading, the system board, the show
-// event and the first load.
+// and Implement this control (with the ⋯ menu of canvas-export.js beside it),
+// manifest loading, the system board, the show event and the first load.
 // design/system.html, when present, is the first board of every design; it is
 // kept out of state.boards so comments never apply to it.
 
@@ -74,11 +74,12 @@ export function init(ctx) {
 		const handoff = doc.createElement("div");
 		handoff.className = "gd-handoff";
 		handoff.hidden = true;
+		let boardActions = null;
 		if (!system) {
-			const actions = doc.createElement("div");
-			actions.className = "gd-board-actions";
-			actions.append(handoff, createImplementControl(slug, artboard));
-			label.append(actions);
+			boardActions = doc.createElement("div");
+			boardActions.className = "gd-board-actions";
+			boardActions.append(handoff, createImplementControl(slug, artboard));
+			label.append(boardActions);
 		}
 		if (system) {
 			label.title = SYSTEM_NOTE;
@@ -114,6 +115,8 @@ export function init(ctx) {
 		const board = { slug, artboard, frame, wrapper, shield, pins, handoff, rects: null, system, viewWidth: 0, viewHeight: 0 };
 		actions.setFrameSize(board, artboard.width, artboard.height);
 		actions.renderHandoff(board);
+		// The ⋯ menu (export) sits beside Implement this; the system board has none.
+		if (boardActions) boardActions.append(actions.boardMenuButton(board));
 		shield.addEventListener("keydown", (event) => {
 			if (event.key !== "Enter" && event.key !== " ") return;
 			event.preventDefault();
@@ -274,6 +277,8 @@ export function init(ctx) {
 
 	/** The system board first, then the design's artboards, each where the layout puts it. */
 	function placeBoards() {
+		// An open artboard menu belongs to a board this may replace.
+		actions.closeBoardMenu();
 		const boards = actions.allBoards();
 		els.world.replaceChildren(...boards.map((board) => board.wrapper));
 		actions.layoutBoards(boards);

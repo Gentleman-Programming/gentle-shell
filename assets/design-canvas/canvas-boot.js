@@ -31,6 +31,7 @@ import * as boards from "./canvas-boards.js";
 import * as comments from "./canvas-comments.js";
 import * as compare from "./canvas-compare.js";
 import * as events from "./canvas-events.js";
+import * as exporter from "./canvas-export.js";
 import * as focus from "./canvas-focus.js";
 import * as handoffs from "./canvas-handoffs.js";
 import * as layout from "./canvas-layout.js";
@@ -51,7 +52,7 @@ import * as view from "./canvas-view.js";
  * the popover too: its Esc clears the selected artboard first, and the next Esc reaches
  * the popover's (leave Comment mode).
  */
-const MODULES = [view, focus, boards, handoffs, compare, events, comments, menu, rail, sizes, layout, minimap, popover, messages];
+const MODULES = [view, focus, boards, handoffs, compare, events, comments, menu, rail, sizes, exporter, layout, minimap, popover, messages];
 
 export function boot(win, doc) {
 	const config = JSON.parse(doc.getElementById("gd-config").textContent);

@@ -95,6 +95,12 @@ export class FakeElement {
 			this.children.push(node);
 		}
 	}
+	/** Takes the element out of its parent, like Element.remove(). */
+	remove() {
+		if (!this.parentElement) return;
+		this.parentElement.children = this.parentElement.children.filter((child) => child !== this);
+		this.parentElement = null;
+	}
 	replaceChildren(...nodes: FakeElement[]) {
 		for (const child of this.children) child.parentElement = null;
 		this.children = [];
@@ -248,7 +254,8 @@ export async function loadCanvas(firstHeight = 300, extraReplies: Record<string,
 		history: { replaceState(_state: unknown, _title: string, url: string) { urls.push(url); } },
 		localStorage: { getItem: () => null, setItem() {} },
 		requestAnimationFrame: (callback: () => void) => { callback(); return 0; },
-		// A reply with `__throw` makes the request itself fail; `__http` sets the status of the reply.
+		// A reply with `__throw` makes the request itself fail; `__http` sets the status of the reply;
+		// `__text` is the body text() reads (an artboard file).
 		// A reply that is a promise keeps the request in flight until the test resolves it with the reply.
 		fetch: async (url: string, init?: { method?: string; body?: string }) => {
 			if (init?.method === "POST") posts.push({ url, body: JSON.parse(init.body ?? "null") });
@@ -257,7 +264,8 @@ export async function loadCanvas(firstHeight = 300, extraReplies: Record<string,
 			const reply = (stored instanceof Promise ? await stored : stored) as Record<string, unknown> | undefined;
 			if (reply && typeof reply === "object" && "__throw" in reply) throw new TypeError(String(reply.__throw));
 			const status = reply && typeof reply === "object" && typeof reply.__http === "number" ? reply.__http : url in replies ? 200 : 404;
-			return { ok: status < 400, status, json: async () => reply ?? {} };
+			const text = reply && typeof reply === "object" && typeof reply.__text === "string" ? reply.__text : JSON.stringify(reply ?? {});
+			return { ok: status < 400, status, json: async () => reply ?? {}, text: async () => text };
 		},
 		EventSource: class {
 			addEventListener(type: string, listener: Listener) {

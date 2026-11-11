@@ -19,6 +19,8 @@ export function init(ctx) {
 		els.world.style.setProperty("--gd-inv-zoom", String(1 / state.zoom));
 		els.zoomLevel.textContent = `${Math.round(state.zoom * 100)}%`;
 		actions.renderMinimapView();
+		// An artboard's ⋯ menu would stay behind while its button moves away.
+		actions.closeBoardMenu();
 	}
 
 	/** Zoom so the world point under (px, py) in viewport coordinates stays put. */

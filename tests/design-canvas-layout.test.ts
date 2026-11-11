@@ -294,6 +294,113 @@ test("a design.json reload whose layout read answers while the page's save is st
 	assert.equal(layoutPosts(canvas).length, 1);
 });
 
+test("a layout read that fails keeps the layout shown: a design.json reload after a failed save keeps the unsaved column and saves nothing", async () => {
+	const canvas = await loadLayout({ [LAYOUT_URL]: { layout: { arrangement: "grid", positions: {} } } });
+	canvas.replies[LAYOUT_URL] = { __http: 400, error: "invalid-layout", reason: "disk full" };
+	canvas.document.getElementById("gd-arrange-column").dispatch("click");
+	await settle();
+	assert.equal(layoutPosts(canvas).length, 1, "Column's save is rejected");
+	for (const reply of [{ __http: 500 }, { __throw: "offline" }]) {
+		canvas.replies[LAYOUT_URL] = reply;
+		await canvas.serverEvent("change", { slug: "alpha", file: "design.json" });
+		await settle();
+		assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["0px", "380px"]], `the unsaved column stays (${JSON.stringify(reply)})`);
+		assert.deepEqual(pressedArrangements(canvas), ["false", "true", "false"]);
+	}
+	assert.equal(layoutPosts(canvas).length, 1, "and nothing is saved");
+});
+
+test("a layout.json change whose read fails keeps the layout shown instead of falling back to the row", async () => {
+	const canvas = await loadLayout({ [LAYOUT_URL]: { layout: { arrangement: "column", positions: {} } } });
+	for (const reply of [{ __http: 500 }, { __throw: "offline" }]) {
+		canvas.replies[LAYOUT_URL] = reply;
+		await canvas.serverEvent("change", LAYOUT_CHANGE);
+		assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["0px", "380px"]], JSON.stringify(reply));
+		assert.deepEqual(pressedArrangements(canvas), ["false", "true", "false"]);
+	}
+	// The next read that answers still shows another page's change.
+	canvas.replies[LAYOUT_URL] = { layout: { arrangement: "row", positions: {} } };
+	await canvas.serverEvent("change", LAYOUT_CHANGE);
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["480px", "0px"]]);
+	assert.deepEqual(canvas.posts, [], "nothing is saved");
+});
+
+test("a design.json reload of an unchanged layout with negative positions leaves the view where it is", async () => {
+	const canvas = await loadLayout({ [LAYOUT_URL]: { layout: { arrangement: "free", positions: { "01-a.html": { x: -200, y: -100 }, "02-b.html": { x: 480, y: 0 } } } } });
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["680px", "100px"]]);
+	const view = translation(canvas);
+	for (let reload = 1; reload <= 2; reload++) {
+		await canvas.serverEvent("change", { slug: "alpha", file: "design.json" });
+		await settle();
+		assert.deepEqual(translation(canvas), view, `reload ${reload} keeps the view`);
+		assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["680px", "100px"]]);
+	}
+	assert.deepEqual(canvas.posts, []);
+});
+
+test("a layout.json change of the next design that comes before its design.json never moves or saves the boards still shown", async () => {
+	const BETA_LAYOUT = "/t/api/designs/beta/layout";
+	const canvas = await loadLayout(NO_LAYOUT);
+	const betaManifest = deferred();
+	const beta = canvas.replies["/t/api/designs/beta"];
+	canvas.replies["/t/api/designs/beta"] = betaManifest.promise;
+	canvas.replies[BETA_LAYOUT] = { layout: { arrangement: "column", positions: {} } };
+	const select = canvas.document.getElementById("gd-design");
+	select.value = "beta";
+	select.dispatch("change");
+	await canvas.serverEvent("change", { slug: "beta", file: "layout.json" });
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["480px", "0px"]], "alpha's boards keep alpha's row");
+	assert.deepEqual(pressedArrangements(canvas), ["true", "false", "false"]);
+	await dragFrom(boardTitle(canvas.world.children[1]), [500, 100], [[540, 100]]);
+	assert.deepEqual(canvas.posts.filter((post) => post.url === BETA_LAYOUT), [], "alpha's boards are never written to beta's layout.json");
+	betaManifest.resolve(beta);
+	await settle();
+	assert.equal(canvas.world.children.length, 1, "beta's board shows");
+	assert.deepEqual(pressedArrangements(canvas), ["false", "true", "false"], "in beta's column");
+	assert.deepEqual(canvas.posts.filter((post) => post.url === BETA_LAYOUT), []);
+});
+
+test("a second pointer pressed during a move never takes the move over: the moved artboard is saved on its own release", async () => {
+	const canvas = await loadLayout(NO_LAYOUT);
+	canvas.replies[LAYOUT_URL] = { ok: true };
+	const wrapper = canvas.world.children[1];
+	const title = boardTitle(wrapper);
+	title.dispatch("pointerdown", { button: 0, pointerId: 3, clientX: 500, clientY: 100 });
+	title.dispatch("pointermove", { pointerId: 3, clientX: 560, clientY: 100 });
+	canvas.viewport.dispatch("pointerdown", { button: 0, pointerId: 4, clientX: 900, clientY: 600 });
+	canvas.viewport.dispatch("pointerup", { button: 0, pointerId: 4, clientX: 900, clientY: 600 });
+	title.dispatch("pointerup", { button: 0, pointerId: 3, clientX: 560, clientY: 100 });
+	await settle();
+	assert.deepEqual(layoutPosts(canvas).map((post) => post.body), [{ arrangement: "free", positions: { "01-a.html": { x: 0, y: 0 }, "02-b.html": { x: 540, y: 0 } } }]);
+	assert.equal(wrapper.classes.has("gd-lifted"), false, "the artboard is put down");
+	assert.deepEqual(selectedBoards(canvas), [1], "the second press changes no selection");
+	canvas.replies[LAYOUT_URL] = { layout: { arrangement: "column", positions: {} } };
+	await canvas.serverEvent("change", LAYOUT_CHANGE);
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["0px", "380px"]], "a later layout.json change shows");
+});
+
+test("a save that succeeds after a failed one clears the save error, never another status", async () => {
+	const canvas = await loadLayout(NO_LAYOUT);
+	const status = canvas.document.getElementById("gd-status");
+	canvas.replies[LAYOUT_URL] = { __http: 400, error: "invalid-layout", reason: "disk full" };
+	await dragFrom(boardTitle(canvas.world.children[1]), [500, 100], [[540, 100]]);
+	assert.equal(status.textContent, "The layout of alpha could not be saved: disk full");
+	canvas.replies[LAYOUT_URL] = { ok: true };
+	await dragFrom(boardTitle(canvas.world.children[1]), [540, 100], [[560, 100]]);
+	assert.equal(layoutPosts(canvas).length, 2);
+	assert.equal(status.textContent, "", "the retry's success clears the error");
+	assert.equal(status.classes.has("gd-error"), false);
+	// Another status shown after the failure stays.
+	canvas.replies[LAYOUT_URL] = { __http: 400, error: "invalid-layout", reason: "disk full" };
+	await dragFrom(boardTitle(canvas.world.children[1]), [560, 100], [[580, 100]]);
+	await canvas.serverEvent("error", {});
+	canvas.replies[LAYOUT_URL] = { ok: true };
+	await dragFrom(boardTitle(canvas.world.children[1]), [580, 100], [[600, 100]]);
+	assert.equal(layoutPosts(canvas).length, 4);
+	assert.equal(status.textContent, "Live reload disconnected, retrying…");
+	assert.ok(status.classes.has("gd-error"));
+});
+
 // ---- moving an artboard (S1, S9) in Move mode
 
 test("dragging an artboard's title moves it in world px at any zoom and saves it once, on release, as a free layout", async () => {
@@ -599,6 +706,24 @@ test("a handoff that grows the artboard labels after they were placed lays the a
 	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["40px", "430px"]], "a free layout stays where it was put");
 	assert.deepEqual(worldBox(canvas), ["440px", "750px"], "and the world follows the smaller labels");
 	assert.equal(layoutPosts(canvas).length, 1);
+});
+
+test("a handoff that grows the labels while an artboard is in use keeps that artboard where it was on screen", async () => {
+	const canvas = await loadLayout({ [LAYOUT_URL]: { layout: { arrangement: "column", positions: {} } } });
+	// Like the browser: an artboard sits at its position and the handoff row pushes its frame box 30 px down.
+	for (const board of canvas.boards) {
+		Object.defineProperty(board.frame.parentElement!, "offsetTop", { get: () => (board.wrapper.classes.has("gd-has-handoff") ? 50 : 20) });
+		Object.defineProperty(board.wrapper, "offsetTop", { get: () => Number.parseFloat(board.wrapper.style.top) });
+	}
+	const [, second] = canvas.boards;
+	const frameTop = () => translation(canvas)[1] + Number.parseFloat(second.wrapper.style.top) + second.frame.parentElement!.offsetTop;
+	click(second.shield!, 200, 200);
+	assert.match(canvas.navMode.textContent, /^Using: Second/);
+	const onScreen = frameTop();
+	await setHandoffs(canvas, handoffDoc("01-a.html", { "01-a.html": {} }));
+	assert.deepEqual(placed(second.wrapper), ["0px", "430px"], "the column is laid out again below the grown first artboard");
+	assert.equal(frameTop(), onScreen, "the artboard in use stays put on screen");
+	assert.deepEqual(canvas.posts, []);
 });
 
 test("the arrangement buttons are off without a design, in focus mode and in Compare", async () => {

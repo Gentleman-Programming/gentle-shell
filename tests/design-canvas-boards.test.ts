@@ -28,3 +28,37 @@ test("Implement this shows a toast and the badge at once: Queued when busy, Impl
 	assert.equal(toast.textContent, "Sent: the session is implementing First now.");
 	assert.deepEqual(texts(boardsOf(canvas)[0], "gd-handoff-badge"), ["Implementing…"]);
 });
+
+/** A reply the test gives later: a request for it stays in flight until `resolve`. */
+function deferred() {
+	let resolve!: (reply: unknown) => void;
+	const promise = new Promise<unknown>((done) => { resolve = done; });
+	return { promise, resolve };
+}
+const settle = async () => { for (let i = 0; i < 10; i++) await flush(); };
+
+test("an older design.json load that answers last never replaces the boards of a newer load of the same design", async () => {
+	const MANIFEST = "/t/api/designs/alpha";
+	const LAYOUT = "/t/api/designs/alpha/layout";
+	const canvas = await loadCanvas(300, { [LAYOUT]: { layout: null } });
+	const older = canvas.replies[MANIFEST] as { artboards: unknown[] };
+	const newer = { ...older, artboards: [...older.artboards, { file: "03-c.html", title: "Third", tradeoff: "", width: 400, height: 300 }] };
+	const olderManifest = deferred();
+	canvas.replies[MANIFEST] = olderManifest.promise;
+	await canvas.serverEvent("change", { slug: "alpha", file: "design.json" });
+	const newerManifest = deferred();
+	canvas.replies[MANIFEST] = newerManifest.promise;
+	await canvas.serverEvent("change", { slug: "alpha", file: "design.json" });
+	// The older load reads its manifest first and waits for its layout; the newer one then reads both.
+	const olderLayout = deferred();
+	canvas.replies[LAYOUT] = olderLayout.promise;
+	olderManifest.resolve(older);
+	await settle();
+	canvas.replies[LAYOUT] = { layout: null };
+	newerManifest.resolve(newer);
+	await settle();
+	assert.deepEqual(texts(canvas.world, "gd-artboard-title"), ["First", "Second", "Third"], "the newer manifest shows");
+	olderLayout.resolve({ layout: null });
+	await settle();
+	assert.deepEqual(texts(canvas.world, "gd-artboard-title"), ["First", "Second", "Third"], "the older load that answered last is dropped");
+});

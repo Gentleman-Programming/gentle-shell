@@ -220,19 +220,24 @@ export function init(ctx) {
 		win.requestAnimationFrame(actions.fit);
 	}
 
+	// The latest loadManifest: an older load, of this design too, that answers after it changes nothing.
+	let loads = 0;
+
 	async function loadManifest(slug, keepView) {
+		const load = ++loads;
 		let manifest;
 		try {
 			manifest = await getJson(`api/designs/${encodeURIComponent(slug)}`);
 		} catch (error) {
+			if (load !== loads) return;
 			showEmpty(`Design "${slug}" cannot be shown: ${error.message}`);
 			setStatus(`design.json for ${slug} is invalid`, true);
 			return;
 		}
-		if (slug !== state.slug) return;
+		if (load !== loads || slug !== state.slug) return;
 		// Where the boards sit, before they are placed.
 		const layout = await actions.readLayoutNow(slug);
-		if (slug !== state.slug) return;
+		if (load !== loads || slug !== state.slug) return;
 		actions.takeLayout(slug, layout);
 		actions.closePopover();
 		store.setDesign({ manifest });

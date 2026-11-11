@@ -60,13 +60,16 @@ export function init(ctx) {
 		return { arrangement: value.arrangement, positions };
 	}
 
-	/** The saved layout of design `slug`; null when it has none or it cannot be read (the canvas never fails on it). */
+	/**
+	 * The saved layout of design `slug`: null when it has none or holds none this page can use; undefined when the read
+	 * itself failed (an error reply, no connection), which says nothing about the file (the canvas never fails on it).
+	 */
 	async function fetchLayout(slug) {
 		try {
 			const data = await getJson(`api/designs/${encodeURIComponent(slug)}/layout`);
 			return readLayout(data && data.layout);
 		} catch {
-			return null;
+			return undefined;
 		}
 	}
 
@@ -87,12 +90,17 @@ export function init(ctx) {
 
 	/**
 	 * loadManifest's layout: taken unless this page already shows a layout of the design that is newer than the read
-	 * (a save or a read went out after it, or a save is still in flight, which is newer than the file), or one whose
-	 * save failed while the file still holds what this page knew.
+	 * (a save or a read went out after it, or a save is still in flight, which is newer than the file), or the file
+	 * still holds what this page knew (the layout shown, already placed, or one whose save failed). A read that failed
+	 * keeps the layout shown; with none shown the boards sit in a row.
 	 */
 	function takeLayout(slug, { layout, read }) {
 		const shown = state.layout && state.layout.slug === slug ? state.layout : null;
-		if (!shown || (read === reads && saves === 0 && !(shown.unsaved && JSON.stringify(layout) === shown.saved))) useLayout(slug, layout);
+		if (layout === undefined) {
+			if (!shown) useLayout(slug, null);
+			return;
+		}
+		if (!shown || (read === reads && saves === 0 && JSON.stringify(layout) !== shown.saved)) useLayout(slug, layout);
 	}
 
 	/** No design shown (the system-only view, an empty notice): no layout, nothing selected, nothing to arrange. */
@@ -189,11 +197,15 @@ export function init(ctx) {
 		actions.renderMinimap();
 	}
 
-	/** placeBoards' layout step: a move or a selection of a board that was replaced ends, then every board is placed. */
+	/**
+	 * placeBoards' layout step: a move or a selection of a board that was replaced ends, then every board is placed,
+	 * and a layout.json change put off until the design's boards showed is read.
+	 */
 	function layoutBoards(boards) {
 		if (moving && !boards.includes(moving.board)) moving = null;
 		if (state.selected && !boards.includes(state.selected)) selectBoard(null);
 		applyLayout();
+		readAgain();
 	}
 
 	/** Puts `board` at `at` while it is dragged; it is saved on release (finishMove). */
@@ -245,13 +257,14 @@ export function init(ctx) {
 	/**
 	 * Writes the layout of the design shown to its layout.json, after the saves before it; a failure says so in the
 	 * status line and the boards stay, unsaved, until layout.json holds something this page did not know (another
-	 * page's change wins). A read on its way is older than this layout, and a change that came meanwhile is read once
-	 * the last save is done.
+	 * page's change wins); a later save that succeeds clears that error. A read on its way is older than this layout,
+	 * and a change that came meanwhile is read once the last save is done. Nothing is saved while the boards shown
+	 * are still another design's.
 	 */
 	function saveLayout() {
 		const slug = state.slug;
 		const layout = state.layout;
-		if (!slug || !state.manifest || !layout || layout.slug !== slug) return;
+		if (!slug || !state.manifest || state.manifest.slug !== slug || !layout || layout.slug !== slug) return;
 		const body = { arrangement: layout.arrangement, positions: layout.positions };
 		reads += 1;
 		saves += 1;
@@ -262,6 +275,8 @@ export function init(ctx) {
 				store.setLayout({ layout: reply.ok ? { ...state.layout, saved: JSON.stringify(body), unsaved: false } : { ...state.layout, unsaved: true } });
 			}
 			if (!reply.ok && slug === state.slug) setStatus(TEXT.saveFailed(slug, reply.body.reason || reply.body.error || "error"), true);
+			// A retry that succeeds clears this design's save error, never another status.
+			else if (reply.ok && els.status.classList.contains("gd-error") && els.status.textContent.startsWith(TEXT.saveFailed(slug, ""))) setStatus("", false);
 			readAgain();
 		}).catch(() => {});
 	}
@@ -273,7 +288,11 @@ export function init(ctx) {
 		onLayoutChange().catch(() => {});
 	}
 
-	/** layout.json changed: another page moved or arranged the boards, so they move here too; the page's own save is no news. */
+	/**
+	 * layout.json changed: another page moved or arranged the boards, so they move here too; the page's own save is no
+	 * news, a read that fails keeps the layout shown, and a change of a design whose boards are not shown yet (a design
+	 * switch still loading) is read once they are.
+	 */
 	async function onLayoutChange() {
 		const slug = state.slug;
 		if (!slug) return;
@@ -283,8 +302,8 @@ export function init(ctx) {
 		}
 		const read = ++reads;
 		const layout = await fetchLayout(slug);
-		if (read !== reads || slug !== state.slug || !state.manifest) return;
-		if (moving) {
+		if (read !== reads || slug !== state.slug || layout === undefined) return;
+		if (moving || !state.manifest || state.manifest.slug !== slug) {
 			readPending = true;
 			return;
 		}
@@ -297,7 +316,8 @@ export function init(ctx) {
 
 	/**
 	 * The boards changed size after they were placed (a handoff row grew or shrank their labels): an arrangement is
-	 * laid out again, so its gaps stay 80 px; a free layout, or a board being moved, stays where it is.
+	 * laid out again, so its gaps stay 80 px; a free layout, or a board being moved, stays where it is. The artboard
+	 * in use stays centered, since focus mode cannot pan.
 	 */
 	function boardsResized() {
 		if (!moving && (!state.layout || state.layout.arrangement !== "free")) applyLayout();
@@ -305,6 +325,7 @@ export function init(ctx) {
 			sizeWorld();
 			actions.renderMinimap();
 		}
+		if (state.focus) actions.centerFocus();
 	}
 
 	/** The Row / Column / Grid buttons: the current arrangement pressed (none for a hand-made layout), off without a design, inside an artboard and in Compare. */
@@ -319,7 +340,7 @@ export function init(ctx) {
 
 	/** Lays every board out as a row, a column or a grid, saves it and shows them all. */
 	function arrange(kind) {
-		if (state.focus || state.compare || !state.manifest || !state.layout) return;
+		if (state.focus || state.compare || !state.manifest || state.manifest.slug !== state.slug || !state.layout) return;
 		store.setLayout({ layout: { ...state.layout, arrangement: kind } });
 		applyLayout();
 		renderArrange();

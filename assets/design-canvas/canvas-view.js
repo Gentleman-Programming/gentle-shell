@@ -101,10 +101,11 @@ export function init(ctx) {
 	// release; a press on the background pans and clears the selection. With Space held every press pans and
 	// changes nothing else; in Comment mode a press on an artboard pans, as on the background. A shield released
 	// without moving is a click on that artboard: a routed pick in Comment mode, else focus mode.
-	// The press in progress is this module's own state, never shared.
+	// The press in progress is this module's own state, never shared; another pointer pressed meanwhile is ignored,
+	// so it never takes over a move or a pan before its own pointer is released.
 	let drag = null;
 	els.viewport.addEventListener("pointerdown", (event) => {
-		if (state.focus || event.button !== 0 || interactiveTarget(event.target)) return;
+		if (drag || state.focus || event.button !== 0 || interactiveTarget(event.target)) return;
 		const target = event.target;
 		const shield = target.closest(".gd-shield");
 		const wrapper = target.closest(".gd-artboard");

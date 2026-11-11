@@ -35,7 +35,6 @@ test("the store starts with the canvas defaults and no system field", () => {
 		toastTimer: 0,
 		menu: null,
 		layout: null,
-		layoutSaves: 0,
 		selected: null,
 		space: false,
 		minimap: true,

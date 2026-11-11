@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { DESIGN_CANVAS_ASSETS } from "../lib/design-canvas-assets.ts";
-import { click, flush, loadCanvas, read, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
+import { click, flush, handoffDoc, loadCanvas, read, setHandoffs, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
 
 // Where the artboards sit (canvas-layout.js): design/<slug>/layout.json through the
 // api/designs/<slug>/layout routes, Row / Column / Grid (Free once moved by hand),
@@ -186,6 +186,60 @@ test("a layout read on its way when the page saves never undoes the page's newer
 	await settle();
 	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["520px", "0px"]], "the read from before the save is dropped");
 	assert.deepEqual(pressedArrangements(canvas), ["false", "false", "false"]);
+});
+
+test("a layout.json change that comes during a press on an artboard shows once the press ends without a move", async () => {
+	const canvas = await loadLayout(NO_LAYOUT);
+	const title = boardTitle(canvas.world.children[1]);
+	// A still press: the change waits for the release, then shows.
+	title.dispatch("pointerdown", { button: 0, pointerId: 3, clientX: 500, clientY: 100 });
+	canvas.replies[LAYOUT_URL] = { layout: { arrangement: "column", positions: {} } };
+	await canvas.serverEvent("change", LAYOUT_CHANGE);
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["480px", "0px"]], "nothing moves under the press");
+	title.dispatch("pointerup", { button: 0, pointerId: 3, clientX: 500, clientY: 100 });
+	await settle();
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["0px", "380px"]], "the other page's column shows after the release");
+	// A cancelled move: the artboard goes back, then the change shows.
+	title.dispatch("pointerdown", { button: 0, pointerId: 4, clientX: 100, clientY: 400 });
+	title.dispatch("pointermove", { pointerId: 4, clientX: 160, clientY: 400 });
+	canvas.replies[LAYOUT_URL] = { layout: { arrangement: "row", positions: {} } };
+	await canvas.serverEvent("change", LAYOUT_CHANGE);
+	assert.deepEqual(placed(canvas.world.children[1]), ["60px", "380px"], "the moved artboard stays under the pointer");
+	title.dispatch("pointercancel", { button: 0, pointerId: 4, clientX: 160, clientY: 400 });
+	await settle();
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["480px", "0px"]], "the row shows after the cancel");
+	assert.deepEqual(pressedArrangements(canvas), ["true", "false", "false"]);
+	assert.deepEqual(canvas.posts, [], "and nothing is saved");
+});
+
+test("a design.json reload whose layout read answers after the page's newer save is done never undoes the page's move", async () => {
+	const canvas = await loadLayout(NO_LAYOUT);
+	const read = deferred();
+	canvas.replies[LAYOUT_URL] = read.promise;
+	await canvas.serverEvent("change", { slug: "alpha", file: "design.json" });
+	canvas.replies[LAYOUT_URL] = { ok: true };
+	await dragFrom(boardTitle(canvas.world.children[1]), [500, 100], [[540, 100]]);
+	assert.equal(layoutPosts(canvas).length, 1, "the move is saved, and its save is done");
+	read.resolve({ layout: null });
+	await settle();
+	await settle();
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["520px", "0px"]], "the reload's older read is dropped");
+	assert.deepEqual(pressedArrangements(canvas), ["false", "false", "false"]);
+	assert.equal(layoutPosts(canvas).length, 1);
+});
+
+test("a design.json reload whose layout read answers while the page's save is still on its way keeps the page's move", async () => {
+	const canvas = await loadLayout(NO_LAYOUT);
+	const save = deferred();
+	canvas.replies[LAYOUT_URL] = save.promise;
+	await dragFrom(boardTitle(canvas.world.children[1]), [500, 100], [[540, 100]]);
+	canvas.replies[LAYOUT_URL] = { layout: null };
+	await canvas.serverEvent("change", { slug: "alpha", file: "design.json" });
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["520px", "0px"]], "the file read before the save landed is older than the move");
+	save.resolve({ ok: true });
+	await settle();
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["520px", "0px"]]);
+	assert.equal(layoutPosts(canvas).length, 1);
 });
 
 // ---- moving an artboard (S1, S9) in Move mode
@@ -477,6 +531,22 @@ test("Row, Column and Grid arrange every artboard with 80 px between them, save 
 	await dragFrom(boardTitle(canvas.world.children[2]), [300, 300], [[330, 300]]);
 	assert.deepEqual(layoutPosts(canvas).at(-1)!.body, { arrangement: "free", positions: positionsOf([[0, 0], [0, 680], [100, 1060], [0, 1640], [0, 1820]]) });
 	assert.deepEqual(pressedArrangements(canvas), ["false", "false", "false"]);
+});
+
+test("a handoff that grows the artboard labels after they were placed lays the arrangement out again; a free layout keeps its positions", async () => {
+	const canvas = await loadLayout({ [LAYOUT_URL]: { layout: { arrangement: "column", positions: {} } } });
+	// Like the browser: the handoff row in an artboard's header (.gd-has-handoff) pushes its frame box 30 px down.
+	for (const board of canvas.boards) Object.defineProperty(board.frame.parentElement!, "offsetTop", { get: () => (board.wrapper.classes.has("gd-has-handoff") ? 50 : 20) });
+	await setHandoffs(canvas, handoffDoc("01-a.html", { "01-a.html": {} }));
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["0px", "430px"]], "80 px below the grown first artboard");
+	assert.deepEqual(worldBox(canvas), ["400px", "780px"]);
+	assert.deepEqual(canvas.posts, [], "laid out again, not saved");
+	canvas.replies[LAYOUT_URL] = { ok: true };
+	await dragFrom(boardTitle(canvas.world.children[1]), [500, 500], [[540, 500]]);
+	await setHandoffs(canvas, handoffDoc(null, {}));
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["40px", "430px"]], "a free layout stays where it was put");
+	assert.deepEqual(worldBox(canvas), ["440px", "750px"], "and the world follows the smaller labels");
+	assert.equal(layoutPosts(canvas).length, 1);
 });
 
 test("the arrangement buttons are off without a design, in focus mode and in Compare", async () => {

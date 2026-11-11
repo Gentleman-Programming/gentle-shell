@@ -26,10 +26,13 @@ export function init(ctx) {
 	let moving = null;
 	// Saves go out one after another, in gesture order, so the server writes the newest layout last.
 	let saving = Promise.resolve();
-	// The latest layout read (onLayoutChange); a newer read or a save makes an older read's reply stale.
+	// Layout saves queued or on their way to the server.
+	let saves = 0;
+	// The latest layout read (onLayoutChange, readLayoutNow); a newer read or a save makes an older read's reply stale.
 	let reads = 0;
-	// A layout.json change came while saves were on their way: layout.json is read again once they are done.
-	let changedWhileSaving = false;
+	// A layout.json change came while saves were on their way or a press was on an artboard: layout.json is read
+	// again once both are over.
+	let readPending = false;
 
 	/** A board's key in layout.json: its artboard file, or the system board's own key. */
 	function layoutKey(board) {
@@ -72,9 +75,18 @@ export function init(ctx) {
 		store.setLayout({ layout: { slug, arrangement: layout ? layout.arrangement : "row", positions: layout ? layout.positions : {}, saved: JSON.stringify(layout) } });
 	}
 
-	/** loadManifest's layout: taken unless a save of this design is still in flight, which is newer than the file. */
-	function takeLayout(slug, layout) {
-		if (!state.layout || state.layout.slug !== slug || state.layoutSaves === 0) useLayout(slug, layout);
+	/** loadManifest's read of design `slug`'s layout: { layout, read }, numbered like onLayoutChange's reads. */
+	async function readLayoutNow(slug) {
+		const read = ++reads;
+		return { layout: await fetchLayout(slug), read };
+	}
+
+	/**
+	 * loadManifest's layout: taken unless this page already shows a layout of the design that is newer than the read
+	 * (a save or a read went out after it, or a save is still in flight, which is newer than the file).
+	 */
+	function takeLayout(slug, { layout, read }) {
+		if (!state.layout || state.layout.slug !== slug || (read === reads && saves === 0)) useLayout(slug, layout);
 	}
 
 	/** No design shown (the system-only view, an empty notice): no layout, nothing selected, nothing to arrange. */
@@ -206,12 +218,14 @@ export function init(ctx) {
 	function endMove(keep) {
 		const ended = moving;
 		moving = null;
-		if (!ended) return;
-		if (ended.moved) {
-			if (keep) finishMove();
-			else moveBoard(ended.board, ended.from);
+		if (ended) {
+			if (ended.moved) {
+				if (keep) finishMove();
+				else moveBoard(ended.board, ended.from);
+			}
+			ended.board.wrapper.classList.remove("gd-lifted");
 		}
-		ended.board.wrapper.classList.remove("gd-lifted");
+		readAgain();
 	}
 
 	/** A board moved by hand: the layout is free from now on, and it is saved once. */
@@ -233,34 +247,55 @@ export function init(ctx) {
 		if (!slug || !state.manifest || !layout || layout.slug !== slug) return;
 		const body = { arrangement: layout.arrangement, positions: layout.positions };
 		reads += 1;
-		store.setLayout({ layout: { ...layout, saved: JSON.stringify(body) }, layoutSaves: state.layoutSaves + 1 });
+		saves += 1;
+		store.setLayout({ layout: { ...layout, saved: JSON.stringify(body) } });
 		saving = saving.then(async () => {
 			const reply = await postJson(`api/designs/${encodeURIComponent(slug)}/layout`, body).catch((error) => ({ ok: false, body: { error: error.message } }));
-			store.setLayout({ layoutSaves: state.layoutSaves - 1 });
+			saves -= 1;
 			if (!reply.ok && slug === state.slug) setStatus(TEXT.saveFailed(slug, reply.body.reason || reply.body.error || "error"), true);
-			if (state.layoutSaves === 0 && changedWhileSaving) {
-				changedWhileSaving = false;
-				onLayoutChange().catch(() => {});
-			}
+			readAgain();
 		}).catch(() => {});
+	}
+
+	/** The layout.json change put off by a save or a press is read once no save is on its way and no press is on an artboard. */
+	function readAgain() {
+		if (!readPending || saves > 0 || moving) return;
+		readPending = false;
+		onLayoutChange().catch(() => {});
 	}
 
 	/** layout.json changed: another page moved or arranged the boards, so they move here too; the page's own save is no news. */
 	async function onLayoutChange() {
 		const slug = state.slug;
 		if (!slug) return;
-		if (state.layoutSaves > 0) {
-			changedWhileSaving = true;
+		if (saves > 0 || moving) {
+			readPending = true;
 			return;
 		}
 		const read = ++reads;
 		const layout = await fetchLayout(slug);
-		if (read !== reads || slug !== state.slug || !state.manifest || moving) return;
+		if (read !== reads || slug !== state.slug || !state.manifest) return;
+		if (moving) {
+			readPending = true;
+			return;
+		}
 		if (state.layout && JSON.stringify(layout) === state.layout.saved) return;
 		useLayout(slug, layout);
 		applyLayout();
 		renderArrange();
 		if (state.focus) actions.centerFocus();
+	}
+
+	/**
+	 * The boards changed size after they were placed (a handoff row grew or shrank their labels): an arrangement is
+	 * laid out again, so its gaps stay 80 px; a free layout, or a board being moved, stays where it is.
+	 */
+	function boardsResized() {
+		if (!moving && (!state.layout || state.layout.arrangement !== "free")) applyLayout();
+		else {
+			sizeWorld();
+			actions.renderMinimap();
+		}
 	}
 
 	/** The Row / Column / Grid buttons: the current arrangement pressed (none for a hand-made layout), off without a design, inside an artboard and in Compare. */
@@ -323,5 +358,5 @@ export function init(ctx) {
 		if (state.space) releaseSpace();
 	});
 
-	return { layoutSize, fetchLayout, useLayout, takeLayout, clearLayout, sizeWorld, applyLayout, layoutBoards, beginMove, moveBy, endMove, onLayoutChange, renderArrange, selectBoard };
+	return { layoutSize, readLayoutNow, takeLayout, clearLayout, sizeWorld, layoutBoards, boardsResized, beginMove, moveBy, endMove, onLayoutChange, renderArrange, selectBoard };
 }

@@ -53,9 +53,6 @@ export function createStore(initial = {}) {
 		// Where the boards sit (canvas-layout.js): { slug, arrangement, positions, saved } for the design
 		// shown, or null (the system-only view); replaced whole on every change, never changed in place.
 		layout: null,
-		// Layout saves queued or on their way to the server (sent one at a time); a layout.json change meanwhile
-		// is read once they are done.
-		layoutSaves: 0,
 		// The artboard pressed last (outlined until a press elsewhere or Esc), or null.
 		selected: null,
 		// True while Space is held: every press on the canvas pans.
@@ -93,8 +90,8 @@ export function createStore(initial = {}) {
 		setToastTimer(timer) { state.toastTimer = timer; },
 		/** The open shared menu, or null when none is open. */
 		setMenu(menu) { state.menu = menu; },
-		/** The layout of the design shown and the saves of it in flight. */
-		setLayout: patch("setLayout", ["layout", "layoutSaves"]),
+		/** The layout of the design shown. */
+		setLayout: patch("setLayout", ["layout"]),
 		setSelected(board) { state.selected = board; },
 		setSpace(space) { state.space = space; },
 		setMinimap(show) { state.minimap = show; },

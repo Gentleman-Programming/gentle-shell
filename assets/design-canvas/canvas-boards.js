@@ -231,7 +231,7 @@ export function init(ctx) {
 		}
 		if (slug !== state.slug) return;
 		// Where the boards sit, before they are placed.
-		const layout = await actions.fetchLayout(slug);
+		const layout = await actions.readLayoutNow(slug);
 		if (slug !== state.slug) return;
 		actions.takeLayout(slug, layout);
 		actions.closePopover();

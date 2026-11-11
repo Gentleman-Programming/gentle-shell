@@ -840,6 +840,176 @@ test("forced refresh still leaves agents with user-edited bodies in place", () =
 	});
 });
 
+// gentle-ai appends managed guidance blocks to installed agents. The blocks are
+// not part of a published body, so they used to freeze the file as a local edit.
+function managedBlock(name: string, lines: readonly string[]): string {
+	return [`<!-- gentle-ai:${name} -->`, ...lines, `<!-- /gentle-ai:${name} -->`, ""].join("\n");
+}
+
+const WORKER_AGENT_KEY = "agents/gentle-ai-worker.md";
+
+function packagedWorkerAgent(): string {
+	return readFileSync(join(PACKAGE_ROOT, "assets", WORKER_AGENT_KEY), "utf8");
+}
+
+function staleWorkerAgent(): string {
+	return readFileSync(
+		join(PACKAGE_ROOT, "tests/fixtures/agent-assets/gentle-ai-worker.strict-tdd-era.md"),
+		"utf8",
+	);
+}
+
+test("forced refresh updates an agent body carrying a managed block and re-attaches the block", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		const guidance = managedBlock("documentation-guidance", ["", "## Documentation", ""]);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		writeFileSync(installedPath, `${staleWorkerAgent()}\n${guidance}`);
+
+		const result = installPackageAssets(agentHome, true, ["delegation"]);
+
+		const refreshed = readFileSync(installedPath, "utf8");
+		assert.equal(refreshed, `${packagedWorkerAgent()}\n${guidance}`);
+		assert.doesNotMatch(refreshed, /effective TDD mode/);
+		assert.equal(installedAssetManifest(agentHome).assets[WORKER_AGENT_KEY], sha256(refreshed));
+		assert.equal(result.skipped, 0);
+	});
+});
+
+test("a refresh keeps human text written inside a managed block verbatim", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		const guidance = managedBlock("ego-browser-guidance", [
+			"",
+			"## Local browser note",
+			"",
+			"Keep this hand-written paragraph exactly as written.",
+			"",
+			"- user bullet one",
+			"- user bullet two",
+			"",
+		]);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		writeFileSync(installedPath, `${staleWorkerAgent()}\n${guidance}`);
+
+		installPackageAssets(agentHome, true, ["delegation"]);
+
+		const refreshed = readFileSync(installedPath, "utf8");
+		assert.equal(refreshed, `${packagedWorkerAgent()}\n${guidance}`);
+		assert.match(refreshed, /Keep this hand-written paragraph exactly as written\./);
+		assert.match(refreshed, /- user bullet one\n- user bullet two/);
+	});
+});
+
+test("forced refresh preserves an agent body edited outside its managed block", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		const guidance = managedBlock("documentation-guidance", ["", "## Documentation", ""]);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		const edited = `${packagedWorkerAgent()}\nUser-authored instruction.\n\n${guidance}`;
+		writeFileSync(installedPath, edited);
+
+		const result = installPackageAssets(agentHome, true, ["delegation"]);
+
+		assert.equal(readFileSync(installedPath, "utf8"), edited);
+		assert.equal(installedAssetManifest(agentHome).assets[WORKER_AGENT_KEY], undefined);
+		assert.equal(result.skipped, 1);
+	});
+});
+
+test("corrupt managed markers fall back to whole-file comparison and preserve the agent", () => {
+	const corruptMarkers = {
+		"an unclosed block": "<!-- gentle-ai:documentation-guidance -->\n\n## Documentation\n",
+		"a closing marker without an opener": "<!-- /gentle-ai:documentation-guidance -->\n",
+		"a block name reopened inside itself":
+			"<!-- gentle-ai:documentation-guidance -->\n\n<!-- gentle-ai:documentation-guidance -->\n\n<!-- /gentle-ai:documentation-guidance -->\n",
+	} as const;
+	for (const [label, markers] of Object.entries(corruptMarkers)) {
+		withIsolatedAssetHome((agentHome) => {
+			const installedPath = join(agentHome, WORKER_AGENT_KEY);
+			installPackageAssets(agentHome, false, ["delegation"]);
+			const corrupt = `${packagedWorkerAgent()}\n${markers}`;
+			writeFileSync(installedPath, corrupt);
+
+			const result = installPackageAssets(agentHome, true, ["delegation"]);
+
+			assert.equal(readFileSync(installedPath, "utf8"), corrupt, `${label} must keep the installed bytes`);
+			assert.equal(
+				installedAssetManifest(agentHome).assets[WORKER_AGENT_KEY],
+				undefined,
+				`${label} must not be adopted as a managed copy`,
+			);
+			assert.equal(result.skipped, 1, `${label} must be skipped, not rewritten`);
+		});
+	}
+});
+
+test("two consecutive forced refreshes of an agent with a managed block are stable", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		const guidance = managedBlock("documentation-guidance", ["", "## Documentation", ""]);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		writeFileSync(installedPath, `${staleWorkerAgent()}\n${guidance}`);
+
+		installPackageAssets(agentHome, true, ["delegation"]);
+		const firstRefresh = readFileSync(installedPath, "utf8");
+
+		const second = installPackageAssets(agentHome, true, ["delegation"]);
+
+		assert.equal(firstRefresh, `${packagedWorkerAgent()}\n${guidance}`);
+		assert.equal(readFileSync(installedPath, "utf8"), firstRefresh);
+		assert.equal(installedAssetManifest(agentHome).assets[WORKER_AGENT_KEY], sha256(firstRefresh));
+		assert.equal(second.skipped, 0);
+	});
+});
+
+test("a refresh of an agent with a managed block still re-applies its model routing", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		const guidance = managedBlock("documentation-guidance", ["", "## Documentation", ""]);
+		const routedStale = staleWorkerAgent().replace(
+			/^(description:.*)$/m,
+			"$1\nmodel: openai/test-model\nthinking: max",
+		);
+		const routedPackaged = packagedWorkerAgent().replace(
+			/^(description:.*)$/m,
+			"$1\nmodel: openai/test-model\nthinking: max",
+		);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		writeFileSync(installedPath, `${routedStale}\n${guidance}`);
+
+		installPackageAssets(agentHome, true, ["delegation"]);
+
+		const refreshed = readFileSync(installedPath, "utf8");
+		assert.equal(refreshed, `${routedPackaged}\n${guidance}`);
+		assert.match(refreshed, /^model: openai\/test-model$/m);
+		assert.match(refreshed, /^thinking: max$/m);
+		assert.equal(installedAssetManifest(agentHome).assets[WORKER_AGENT_KEY], undefined);
+
+		installPackageAssets(agentHome, true, ["delegation"]);
+		assert.equal(readFileSync(installedPath, "utf8"), refreshed, "a second refresh must keep the routing and the block");
+	});
+});
+
+test("a refresh of an agent with two managed blocks keeps both in their original order", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		const documentation = managedBlock("documentation-guidance", ["", "## Documentation", ""]);
+		const browser = managedBlock("ego-browser-guidance", ["", "## Browser checks", ""]);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		writeFileSync(installedPath, `${staleWorkerAgent()}\n${documentation}\n${browser}`);
+
+		installPackageAssets(agentHome, true, ["delegation"]);
+
+		const refreshed = readFileSync(installedPath, "utf8");
+		assert.equal(refreshed, `${packagedWorkerAgent()}\n${documentation}\n${browser}`);
+		assert.ok(
+			refreshed.indexOf("gentle-ai:documentation-guidance") < refreshed.indexOf("gentle-ai:ego-browser-guidance"),
+			"the recognised blocks must keep their original order",
+		);
+	});
+});
+
 test("delegation installation retains strict TDD support without installing SDD assets", () => {
 	withIsolatedAssetHome((agentHome) => {
 		installPackageAssets(agentHome, false, ["delegation"]);

@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveGentlePiAgentHome } from "./agent-home.ts";
+import { attachManagedBlocks, splitManagedBlocks, type ManagedBlock } from "./managed-blocks.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
  return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -473,6 +474,7 @@ function copyDirectoryFiles(
 		const source = readFileSync(sourcePath, "utf8");
 		let nextSource = source;
 		let keepsLocalRouting = false;
+		let carriedBlocks: readonly ManagedBlock[] = [];
 		if (existsSync(targetPath)) {
 			if (!force) {
 				skipped += 1;
@@ -496,6 +498,17 @@ function copyDirectoryFiles(
 			const legacyHashes = managedHash === undefined
 				? legacyAssetHashes?.()[ownershipKey]
 				: undefined;
+			// gentle-ai appends managed guidance blocks to an installed agent. A
+			// published body never carries one, so the adoption comparison runs on the
+			// body with the recognised blocks removed; whatever this branch writes
+			// gets them back verbatim and the manifest hash covers the file as written.
+			const installedSplit =
+				installedContent === undefined || !ownershipKey.startsWith("agents/")
+					? undefined
+					: splitManagedBlocks(installedContent);
+			carriedBlocks = installedSplit?.blocks ?? [];
+			const installedBase =
+				installedSplit?.stripped === true ? installedSplit.content : installedContent;
 			if (
 				managedHash === undefined &&
 				comparableHash !== undefined &&
@@ -508,11 +521,14 @@ function copyDirectoryFiles(
 				);
 			} else if (
 				installedContent !== undefined &&
+				installedBase !== undefined &&
 				installedHash !== managedHash &&
 				// Only outdated instructions are refreshed; a frontmatter edit on the
 				// current agent (routing, tool allowlist) keeps the local-edit rules below.
-				agentBody(installedContent) !== agentBody(source) &&
-				hasShippedAgentBody(ownershipKey, installedContent, bodyHistory)
+				// Managed blocks are excluded from that comparison so they cannot freeze
+				// a copy whose body still matches a shipped version.
+				agentBody(installedBase) !== agentBody(source) &&
+				hasShippedAgentBody(ownershipKey, installedBase, bodyHistory)
 			) {
 				nextSource = migrateLegacyAssetContent(ownershipKey, installedContent, source);
 				// Saved model config owns managed routing and a refresh resets it, so a
@@ -531,6 +547,9 @@ function copyDirectoryFiles(
 				nextSource = migrateLegacyAssetContent(ownershipKey, installedContent, source);
 			}
 		}
+		// Re-attach the recognised blocks to whatever this branch decided to write,
+		// so an update never drops a block (the ownership hash below covers them).
+		if (carriedBlocks.length > 0) nextSource = attachManagedBlocks(nextSource, carriedBlocks);
 		writeFileSync(targetPath, nextSource);
 		if (keepsLocalRouting) delete manifest.assets[ownershipKey];
 		else manifest.assets[ownershipKey] = managedAssetHash(nextSource);

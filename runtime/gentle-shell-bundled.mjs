@@ -491,9 +491,11 @@ export function parseEngramRuntimeContract(payload         )                    
 // Silent when the digests are equal or either side is unknown — never a false
 // alarm. `coreDigest` lets the launch path pass the digest the running server
 // actually answered; the default is the pinned core's verified table entry.
-export function engramContractMismatchNotice(companionDigest                    , coreVersion        , coreDigest                     = bundledEngramContract(coreVersion))                     {
+// `coreLabel` names whoever answered, so a reused older server is never
+// misattributed to the pinned version.
+export function engramContractMismatchNotice(companionDigest                    , coreVersion        , coreDigest                     = bundledEngramContract(coreVersion), coreLabel         = `the Engram core ${coreVersion}`)                     {
 	if (companionDigest === undefined || coreDigest === undefined || !/^[0-9a-f]{64}$/.test(companionDigest) || companionDigest === coreDigest) return undefined;
-	return `Engram contract mismatch: the gentle-engram companion declares runtime-contract digest ${companionDigest}, while the Engram core ${coreVersion} answers ${coreDigest}; memory may be unavailable until the pair matches. Update the core with a new Gentle Shell release, or update the companion.`;
+	return `Engram contract mismatch: the gentle-engram companion declares runtime-contract digest ${companionDigest}, while ${coreLabel} answers ${coreDigest}; memory may be unavailable until the pair matches. Update the core with a new Gentle Shell release, or update the companion.`;
 }
 
 // One bounded read-only GET /runtime-contract on the shared server (the same

@@ -405,7 +405,7 @@ async function warnLiveEngramContractMismatch(home) {
 		// Without a well-formed live answer the core side is unknown: the gate is
 		// silent here, and the companion-vs-pinned check already warned above.
 		if (live === undefined) return;
-		const notice = engramContractMismatchNotice(companion.digest, engramPinVersion, live);
+		const notice = engramContractMismatchNotice(companion.digest, engramPinVersion, live, "the running Engram server");
 		if (notice) process.stderr.write(`gentle-shell: ${notice}\n`);
 	} catch {
 		// Warn only: an unreadable contract file never blocks anything.

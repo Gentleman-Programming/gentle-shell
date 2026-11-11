@@ -302,6 +302,11 @@ test("the mismatch notice is loud only when both digests are known and differ", 
 	assert.equal(shell.engramContractMismatchNotice(CONTRACT_370, "9.9.9"), undefined);
 	// The launch path passes the digest the running server actually answered.
 	assert.match(shell.engramContractMismatchNotice(CONTRACT_352, "3.7.0", CONTRACT_370)!, new RegExp(CONTRACT_370));
+	// A reused server is named as itself, never misattributed to the pinned
+	// version, because the digest came from that server and not from the pin.
+	const live = shell.engramContractMismatchNotice(CONTRACT_370, "3.7.0", CONTRACT_352, "the running Engram server")!;
+	assert.match(live, /the running Engram server answers/);
+	assert.doesNotMatch(live, /Engram core 3\.7\.0 answers/);
 	// An unparseable live answer leaves the core side unknown: the launcher
 	// returns before calling with the third argument (asserted in the wiring
 	// test below), and the two-argument call still compares against the table.

@@ -639,6 +639,9 @@ test("a ready shared server whose live runtime contract differs from the compani
 	assert.deepEqual(memoryOf(result), ["allow", prefix.guard, DEFAULT_URL]);
 	assert.match(result.stderr, /contract mismatch/);
 	assert.match(result.stderr, /4bf32703e111162b24073d090bec1c15c9120708587000bf595a07264e768672/);
+	// The digest came from the running server, so the notice names it instead of
+	// attributing that answer to the pinned core version.
+	assert.match(result.stderr, /the running Engram server answers/);
 });
 
 test("a launch without a companion runtime-contract file stays silent about contracts and keeps memory on", { skip: posixHost }, (t) => {

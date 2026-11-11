@@ -32,6 +32,7 @@ test("the store starts with the canvas defaults and no system field", () => {
 		size: { kind: "desktop" },
 		hoverBoard: null,
 		handoffs: { slug: null, chosen: null, handoffs: {} },
+		parts: { slug: null, parts: [] },
 		compare: null,
 		toastTimer: 0,
 		menu: null,

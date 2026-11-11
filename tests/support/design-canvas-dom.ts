@@ -227,6 +227,7 @@ export async function loadCanvas(firstHeight = 300, extraReplies: Record<string,
 		},
 		"/t/api/designs/alpha/comments": { comments: [] },
 		"/t/api/designs/alpha/handoffs": { version: 1, chosen: null, handoffs: {} },
+		"/t/api/designs/alpha/parts": { version: 1, parts: [] },
 		"/t/api/designs/beta": {
 			slug: "beta",
 			title: "Beta",
@@ -235,6 +236,7 @@ export async function loadCanvas(firstHeight = 300, extraReplies: Record<string,
 		},
 		"/t/api/designs/beta/comments": { comments: [] },
 		"/t/api/designs/beta/handoffs": { version: 1, chosen: null, handoffs: {} },
+		"/t/api/designs/beta/parts": { version: 1, parts: [] },
 		...extraReplies,
 	};
 	const fetched: string[] = [];

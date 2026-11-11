@@ -24,10 +24,13 @@ function loadInspector({ fonts = false } = {}) {
 		hasAttribute: () => false,
 		getBoundingClientRect: () => ({ left: 0, top: 0, width: 10, height: 10 }),
 	});
+	// The ids of the elements scrolled into view (a highlight).
+	const scrolled: string[] = [];
 	const created: any[] = [];
 	const button = Object.assign(new Element(), {
 		id: "cta",
 		isConnected: true,
+		scrollIntoView() { scrolled.push("cta"); },
 		localName: "button",
 		innerText: "Buy now",
 		parentElement: null,
@@ -49,7 +52,7 @@ function loadInspector({ fonts = false } = {}) {
 		},
 		elementFromPoint: () => button,
 		querySelectorAll: (selector: string) => (selector === "#cta" ? [button] : []),
-		querySelector: () => null,
+		querySelector: (selector: string) => (selector === "#cta" ? button : null),
 		addEventListener(type: string, listener: Listener, options?: boolean | { capture?: boolean }) {
 			const capture = options === true || (typeof options === "object" && options.capture === true);
 			if (capture) captures.set(type, [...(captures.get(type) ?? []), listener]);
@@ -95,7 +98,7 @@ function loadInspector({ fonts = false } = {}) {
 	const runFrames = () => { while (frames.length > 0) frames.shift()!(); };
 	// The inspector makes its hover outline first, then the selected one.
 	const [hoverBox, selectedBox] = created;
-	return { posted, fire, fromParent, context, documentElement, runFrames, captureOnDocument, mutate, fontsLoaded, makeNode, Element, hoverBox, selectedBox };
+	return { posted, fire, fromParent, context, documentElement, runFrames, scrolled, captureOnDocument, mutate, fontsLoaded, makeNode, Element, hoverBox, selectedBox };
 }
 
 test("the inspector reports whether its page is wider than the frame, once per change", () => {
@@ -281,6 +284,22 @@ test("the inspector picks the element under a routed point only in comment mode"
 	assert.deepEqual(inspector.posted, [{ type: "gd:pick", selector: "#cta", excerpt: "Buy now", rect: { x: 4, y: 8, width: 60, height: 20 }, generation: 0 }], "a page that heard no size yet tags generation 0");
 	inspector.fromParent({ type: "gd:pick-at", x: "10", y: 12 });
 	assert.equal(inspector.posted.length, 1, "non-numeric points are ignored");
+});
+
+test("gd:highlight finds the element by a part's selector or by a comment pin's id", () => {
+	const inspector = loadInspector();
+	inspector.fromParent({ type: "gd:highlight", selector: "#cta" });
+	assert.deepEqual(inspector.scrolled, ["cta"], "a part's selector");
+	inspector.fromParent({ type: "gd:highlight", selector: "#missing" });
+	inspector.fromParent({ type: "gd:highlight", selector: `#${"x".repeat(500)}` });
+	inspector.fromParent({ type: "gd:highlight", selector: 3 });
+	assert.deepEqual(inspector.scrolled, ["cta"], "no match, a selector over 500 characters or not text: nothing");
+	inspector.fromParent({ type: "gd:highlight", id: "c1" });
+	assert.deepEqual(inspector.scrolled, ["cta"], "an id with no pin finds nothing");
+	inspector.fromParent({ type: "gd:pins", pins: [{ id: "c1", selector: "#cta" }] });
+	inspector.fromParent({ type: "gd:highlight", id: "c1" });
+	assert.deepEqual(inspector.scrolled, ["cta", "cta"], "a comment pin's id still works");
+	assert.deepEqual(inspector.posted, [], "a highlight posts nothing");
 });
 
 test("gd:mode off hides the hover and selected outlines, which a PNG export relies on, and hovers stay hidden until it is on again", () => {

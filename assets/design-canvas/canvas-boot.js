@@ -11,6 +11,8 @@
 // Handoffs (design/<slug>/handoffs.json) show live on each artboard's header: the
 // handoff state, the chosen artboard and its alternatives, and, once implemented
 // with a loopback previewUrl, a Compare view of the artboard next to the running app.
+// Parts (design/<slug>/parts.json): Implement only this hands one element to the session
+// without choosing a direction; Partial implementations lists them at the panel's bottom.
 //
 // Modules: each canvas-*.js module exports init(ctx) and returns its public
 // functions; ctx is { win, doc, els, store, api, ui, actions }. Modules reach the
@@ -38,6 +40,7 @@ import * as layout from "./canvas-layout.js";
 import * as menu from "./canvas-menu.js";
 import * as messages from "./canvas-messages.js";
 import * as minimap from "./canvas-minimap.js";
+import * as parts from "./canvas-parts.js";
 import * as popover from "./canvas-popover.js";
 import * as rail from "./canvas-rail.js";
 import * as sizes from "./canvas-sizes.js";
@@ -52,7 +55,7 @@ import * as view from "./canvas-view.js";
  * the popover too: its Esc clears the selected artboard first, and the next Esc reaches
  * the popover's (leave Comment mode).
  */
-const MODULES = [view, focus, boards, handoffs, compare, events, comments, menu, rail, sizes, exporter, layout, minimap, popover, messages];
+const MODULES = [view, focus, boards, handoffs, parts, compare, events, comments, menu, rail, sizes, exporter, layout, minimap, popover, messages];
 
 export function boot(win, doc) {
 	const config = JSON.parse(doc.getElementById("gd-config").textContent);
@@ -102,6 +105,7 @@ export function boot(win, doc) {
 		text: $("gd-popover-text"),
 		message: $("gd-popover-message"),
 		cancel: $("gd-popover-cancel"),
+		partAdd: $("gd-popover-part"),
 		send: $("gd-popover-send"),
 		shotInput: $("gd-shot-input"),
 		shotAttach: $("gd-shot-attach"),
@@ -117,6 +121,9 @@ export function boot(win, doc) {
 		filterResolved: $("gd-filter-resolved"),
 		panelEmpty: $("gd-panel-empty"),
 		list: $("gd-comment-list"),
+		parts: $("gd-parts"),
+		partsTitle: $("gd-parts-title"),
+		partsList: $("gd-parts-list"),
 		toast: $("gd-toast"),
 		compare: $("gd-compare"),
 		compareTitle: $("gd-compare-title"),
@@ -133,7 +140,7 @@ export function boot(win, doc) {
 	const store = createStore({ slug: config.slug });
 	const actions = {};
 	const ctx = { win, doc, els, store, api: null, ui: null, actions };
-	ctx.api = api.init(ctx, base);
+	ctx.api = api.init(ctx, base, config.delivery);
 	ctx.ui = ui.init(ctx);
 	for (const module of MODULES) addActions(actions, module.init(ctx));
 	addActions(actions, { viewportResized });

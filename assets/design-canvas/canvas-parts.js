@@ -1,0 +1,341 @@
+// Partial implementations (design/<slug>/parts.json): one element of an artboard
+// handed to the session on its own, without choosing a direction. The comment
+// popover's Implement only this sends the picked element with the field as an
+// optional note; "Partial implementations · N", at the bottom of the panel, lists
+// the design's parts live with the state in words, the time, the excerpt, the
+// agent's note, Show (that artboard in focus with the element highlighted in every
+// frame of it) and, while the agent has not taken a part up, Remove behind an
+// inline confirm. Which part has its confirm open and which Removes are in flight
+// are this module's own view state, kept across re-renders; the parts themselves
+// change only through store.setParts.
+
+const TEXT = Object.freeze({
+	title: (count) => `Partial implementations · ${count}`,
+	states: { sent: "Sent", queued: "Queued", in_progress: "In progress", implemented: "Implemented ✓" },
+	times: {
+		sent: (time, today) => `Sent ${today ? "at" : "on"} ${time}`,
+		queued: (time, today) => `Queued ${today ? "at" : "on"} ${time}`,
+		in_progress: (time) => `In progress since ${time}`,
+		implemented: (time, today) => `Implemented ${today ? "at" : "on"} ${time}`,
+	},
+	quoted: (value) => `“${value}”`,
+	show: "Show",
+	showLabel: (number, file) => `Show part ${number} in ${file}`,
+	remove: "Remove",
+	removeLabel: (number, file) => `Remove part ${number} in ${file}`,
+	question: "Remove this part? The agent can no longer report on it.",
+	confirmLabel: (number) => `Confirm removing part ${number}`,
+	cancel: "Cancel",
+	partTitle: "Build only this element in the project; the field is an optional note",
+	partOffline: "The canvas is not connected to a Pi session; open it with /gentle:design open",
+	noteTooLong: (max) => `The note can have at most ${max} characters.`,
+	sending: "Sending…",
+	sentShort: "Sent to the session",
+	sent: (title) => `Sent: the session is building only this part of ${title} now.`,
+	queued: (title) => `Queued: the session will build only this part of ${title} after its current task.`,
+	notSent: (why) => `Not sent: ${why}`,
+	sendErrors: {
+		"implement-part-unavailable": "the canvas is not connected to a Pi session; open it with /gentle:design open.",
+		"invalid-file": "that artboard is no longer in the design.",
+		"invalid-selector": "this element's selector cannot be sent.",
+		"invalid-excerpt": "this element's text cannot be sent.",
+		"invalid-note": "the note can have at most 2000 characters.",
+		"not-found": "the design is gone.",
+		"too-many-parts": "this design already has 100 parts; remove one first.",
+		"parts-too-large": "parts.json is full; remove a part first.",
+		"invalid-parts": "parts.json cannot be read; fix it or delete it.",
+	},
+	deliveryFailed: (reason) => (reason ? `the session did not take it (${reason}).` : "the session did not take it."),
+	removed: "Part removed. The agent can no longer report on it.",
+	notRemoved: (why) => `Not removed: ${why}`,
+	removeErrors: {
+		"part-not-sent": "the agent already took this part up.",
+		"not-found": "this part is gone; its delivery failed or it was removed already.",
+		"invalid-parts": "parts.json cannot be read; fix it or delete it.",
+		"invalid-part": "this part's id is not valid.",
+	},
+	notShown: "Not shown: the artboard of this part is no longer in the design.",
+	unreadable: (slug, message) => `parts.json for ${slug} cannot be read: ${message}`,
+});
+
+const NOTE_LIMIT = 2000;
+const STATUSES = ["sent", "in_progress", "implemented"];
+const CLOSE_MS = 1200;
+
+export function init(ctx) {
+	const { win, doc, els, store, api, ui, actions } = ctx;
+	const { state } = store;
+	const { getJson, postJson, delivery } = api;
+	const { setStatus, showToast } = ui;
+	// The part whose Remove confirm is open, and the Removes in flight ("<slug>/<id>").
+	let confirming = null;
+	const removing = new Set();
+
+	const partsPath = (slug) => `api/designs/${encodeURIComponent(slug)}/parts`;
+	// A request that never reached the server has no error code, only its reason.
+	const failed = (error) => ({ ok: false, status: 0, body: { reason: error.message } });
+
+	function isPart(part) {
+		return Boolean(part && typeof part === "object" && typeof part.id === "string" && typeof part.file === "string" && typeof part.selector === "string" && STATUSES.includes(part.status));
+	}
+
+	/** The parts of the design shown; another design's parts never show. */
+	function shownParts() {
+		return state.parts.slug !== null && state.parts.slug === state.slug ? state.parts.parts : [];
+	}
+
+	function kindOf(part) {
+		if (part.status === "sent") return part.queued === true ? "queued" : "sent";
+		return part.status;
+	}
+
+	const boardOf = (part) => state.boards.find((board) => board.artboard.file === part.file) ?? null;
+	const removeKey = (slug, part) => `${slug}/${part.id}`;
+	const twoDigits = (value) => String(value).padStart(2, "0");
+
+	/** "09:30" today, "Oct 26, 09:30" this year, "Mar 4 2020, 09:05" before; null when unreadable. */
+	function timeOf(value) {
+		const date = typeof value === "string" ? new Date(value) : null;
+		if (!date || Number.isNaN(date.getTime())) return null;
+		const now = new Date();
+		const clock = `${twoDigits(date.getHours())}:${twoDigits(date.getMinutes())}`;
+		if (date.toDateString() === now.toDateString()) return { time: clock, today: true };
+		const day = date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+		return { time: `${date.getFullYear() === now.getFullYear() ? day : `${day} ${date.getFullYear()}`}, ${clock}`, today: false };
+	}
+
+	function chip(className, value) {
+		const element = doc.createElement("span");
+		element.className = className;
+		element.textContent = value;
+		return element;
+	}
+
+	function button(className, label, onClick) {
+		const element = doc.createElement("button");
+		element.type = "button";
+		element.className = className;
+		element.textContent = label;
+		element.addEventListener("click", onClick);
+		return element;
+	}
+
+	function renderPart(part, index, slug) {
+		const number = index + 1;
+		const kind = kindOf(part);
+		const board = boardOf(part);
+		const item = doc.createElement("li");
+		item.className = "gd-part";
+		item.dataset.id = part.id;
+		item.dataset.status = kind;
+		const head = doc.createElement("div");
+		head.className = "gd-part-head";
+		head.append(chip("gd-part-title", board ? board.artboard.title : part.file), chip("gd-part-state", TEXT.states[kind]));
+		item.append(head);
+		if (typeof part.excerpt === "string" && part.excerpt) item.append(chip("gd-part-excerpt", TEXT.quoted(part.excerpt)));
+		const when = timeOf(kind === "implemented" ? part.implementedAt : kind === "in_progress" ? part.startedAt : part.sentAt);
+		if (when) item.append(chip("gd-part-time", TEXT.times[kind](when.time, when.today)));
+		if (typeof part.note === "string" && part.note) item.append(chip("gd-part-note", TEXT.quoted(part.note)));
+		const controls = doc.createElement("div");
+		controls.className = "gd-part-actions";
+		const show = button("gd-part-show", TEXT.show, () => showPart(part));
+		show.setAttribute("aria-label", TEXT.showLabel(number, part.file));
+		show.dataset.control = "show";
+		show.disabled = !board;
+		controls.append(show);
+		if (kind === "sent" || kind === "queued") controls.append(...removeControl(part, number, slug));
+		item.append(controls);
+		return item;
+	}
+
+	/** Remove and its inline confirm (like Implement this): the agent can no longer report on a removed part. */
+	function removeControl(part, number, slug) {
+		const key = removeKey(slug, part);
+		const inFlight = removing.has(key);
+		const start = button("gd-part-remove", TEXT.remove, () => {
+			confirming = key;
+			start.hidden = true;
+			confirm.hidden = false;
+			yes.focus();
+		});
+		start.setAttribute("aria-label", TEXT.removeLabel(number, part.file));
+		start.dataset.control = "remove";
+		start.disabled = inFlight;
+		const confirm = doc.createElement("div");
+		confirm.className = "gd-part-confirm";
+		confirm.setAttribute("role", "group");
+		confirm.setAttribute("aria-label", TEXT.confirmLabel(number));
+		const close = () => {
+			confirming = null;
+			confirm.hidden = true;
+			start.hidden = false;
+			start.focus();
+		};
+		const yes = button("gd-part-confirm-yes gd-primary", TEXT.remove, () => removePart(slug, part));
+		yes.dataset.control = "yes";
+		yes.disabled = inFlight;
+		const no = button("gd-part-confirm-no", TEXT.cancel, close);
+		no.dataset.control = "no";
+		confirm.addEventListener("keydown", (event) => {
+			if (event.key !== "Escape") return;
+			event.preventDefault();
+			event.stopPropagation();
+			close();
+		});
+		confirm.append(chip("gd-part-question", TEXT.question), yes, no);
+		const open = confirming === key;
+		confirm.hidden = !open;
+		start.hidden = open;
+		return [start, confirm];
+	}
+
+	/** The list from the store; keyboard focus on a part's control stays on it across a re-render. */
+	function renderParts() {
+		const parts = shownParts();
+		const slug = state.parts.slug;
+		if (confirming && !parts.some((part) => removeKey(slug, part) === confirming && ["sent", "queued"].includes(kindOf(part)))) confirming = null;
+		const active = els.partsList.contains(doc.activeElement) ? doc.activeElement : null;
+		const focusItem = active?.closest(".gd-part");
+		const focus = focusItem ? { id: focusItem.dataset.id, control: active.dataset.control, index: Array.from(els.partsList.children).indexOf(focusItem) } : null;
+		const rendered = parts.map((part, index) => renderPart(part, index, slug));
+		els.partsList.replaceChildren(...rendered);
+		els.parts.hidden = parts.length === 0;
+		els.partsTitle.textContent = TEXT.title(parts.length);
+		if (focus) restoreFocus(rendered, focus);
+	}
+
+	/** The same control of the same part, else a usable one of the part now at its place, else the panel's toggle. */
+	function restoreFocus(rendered, focus) {
+		const usable = (element) => !element.hidden && !element.disabled && !element.parentElement.hidden;
+		const buttonsIn = (root) => Array.from(root.children).flatMap((child) => (child.localName === "button" ? [child] : buttonsIn(child)));
+		const pickIn = (item) => {
+			const buttons = buttonsIn(item).filter(usable);
+			return buttons.find((element) => element.dataset.control === focus.control) ?? buttons[0];
+		};
+		const same = rendered.find((item) => item.dataset.id === focus.id);
+		const near = rendered[Math.min(Math.max(focus.index, 0), rendered.length - 1)];
+		const target = same ? pickIn(same) : near ? pickIn(near) : null;
+		(target ?? els.panelToggle).focus();
+	}
+
+	function setParts(slug, parts) {
+		store.setParts({ slug, parts });
+		renderParts();
+	}
+
+	/** Drops the parts of the design shown before (canvas-boards.js showDesign). */
+	function clearParts() {
+		setParts(state.slug, []);
+	}
+
+	async function loadParts() {
+		const slug = state.slug;
+		if (!slug) return;
+		let data = null;
+		try {
+			data = await getJson(partsPath(slug));
+		} catch (error) {
+			setStatus(TEXT.unreadable(slug, error.message), true);
+		}
+		if (slug !== state.slug) return;
+		setParts(slug, data && Array.isArray(data.parts) ? data.parts.filter(isPart) : []);
+	}
+
+	/** A part the server just accepted, before its parts.json change event arrives; never into another design's list. */
+	function noteParts(slug, part) {
+		if (slug !== state.slug) return;
+		const current = state.parts.slug === slug ? state.parts.parts : [];
+		if (current.some((entry) => entry.id === part.id)) return;
+		setParts(slug, [...current, part]);
+	}
+
+	/** Show: the part's artboard in focus, its element highlighted in every frame; the board is looked up now. */
+	function showPart(part) {
+		const board = state.parts.slug === state.slug ? boardOf(part) : null;
+		if (!board) {
+			setStatus(TEXT.notShown, true);
+			renderParts();
+			return;
+		}
+		actions.exitCompare(false);
+		actions.enterFocus(board);
+		for (const surface of actions.surfacesOf(board)) surface.frame.contentWindow?.postMessage({ type: "gd:highlight", selector: part.selector }, "*");
+	}
+
+	async function removePart(slug, part) {
+		const key = removeKey(slug, part);
+		if (removing.has(key)) return;
+		removing.add(key);
+		renderParts();
+		const reply = await postJson(`${partsPath(slug)}/remove`, { id: part.id }).catch(failed);
+		removing.delete(key);
+		if (confirming === key) confirming = null;
+		const current = slug === state.slug && state.parts.slug === slug;
+		if (reply.ok) {
+			setStatus(TEXT.removed, false);
+			showToast(TEXT.removed, false);
+			if (current) setParts(slug, state.parts.parts.filter((entry) => entry.id !== part.id));
+			return;
+		}
+		const code = typeof reply.body.error === "string" ? reply.body.error : "";
+		const text = TEXT.notRemoved(TEXT.removeErrors[code] ?? (reply.body.reason || code || `HTTP ${reply.status}`));
+		setStatus(text, true);
+		showToast(text, true);
+		if (!current) return;
+		// The agent took it up meanwhile (409), or a failed delivery took it back (404): show what parts.json holds now.
+		if (code === "part-not-sent" || code === "not-found") await loadParts();
+		else renderParts();
+	}
+
+	/** Implement only this on the open popover: enabled only when the page config says the server can deliver a part. */
+	function renderPartButton() {
+		els.partAdd.disabled = !delivery.part;
+		els.partAdd.title = delivery.part ? TEXT.partTitle : TEXT.partOffline;
+	}
+
+	function sendFailure(reply) {
+		const code = typeof reply.body.error === "string" ? reply.body.error : "";
+		const reason = typeof reply.body.reason === "string" ? reply.body.reason : "";
+		const why = code === "delivery-failed" ? TEXT.deliveryFailed(reason) : TEXT.sendErrors[code] ?? (reason || code || `HTTP ${reply.status}`);
+		return { text: TEXT.notSent(why), code };
+	}
+
+	function popoverMessage(text, isError, detail = "") {
+		els.message.textContent = text;
+		els.message.title = detail;
+		els.message.classList.toggle("gd-error", isError);
+	}
+
+	els.partAdd.addEventListener("click", async () => {
+		const pick = state.pick;
+		if (!pick || !delivery.part || els.partAdd.disabled) return;
+		const note = els.text.value.replace(/\r\n?/g, "\n").trim();
+		if (note.length > NOTE_LIMIT) return popoverMessage(TEXT.noteTooLong(NOTE_LIMIT), true);
+		els.partAdd.disabled = true;
+		popoverMessage(TEXT.sending, false);
+		const board = pick.board;
+		const slug = board.slug;
+		const reply = await postJson(`api/designs/${encodeURIComponent(slug)}/implement-part`, { file: board.artboard.file, selector: pick.selector, excerpt: pick.excerpt, ...(note ? { note } : {}) }).catch(failed);
+		const open = state.pick === pick;
+		if (open) els.partAdd.disabled = !delivery.part;
+		if (!reply.ok) {
+			const failure = sendFailure(reply);
+			if (open) popoverMessage(failure.text, true, failure.code);
+			else setStatus(failure.text, true);
+			return;
+		}
+		const queued = reply.body.queued === true;
+		if (typeof reply.body.id === "string") {
+			noteParts(slug, { id: reply.body.id, file: board.artboard.file, selector: pick.selector, excerpt: pick.excerpt, status: "sent", queued, sentAt: new Date().toISOString(), startedAt: null, implementedAt: null, ...(note ? { instruction: note } : {}) });
+		}
+		const done = queued ? TEXT.queued(board.artboard.title) : TEXT.sent(board.artboard.title);
+		setStatus(done, false);
+		showToast(done, false);
+		if (!open) return;
+		els.text.value = "";
+		popoverMessage(TEXT.sentShort, false);
+		store.setPopover({ closeTimer: win.setTimeout(actions.closePopover, CLOSE_MS) });
+	});
+
+	return { loadParts, clearParts, renderParts, renderPartButton };
+}

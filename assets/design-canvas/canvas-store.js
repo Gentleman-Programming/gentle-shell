@@ -11,8 +11,8 @@
 // each size frame's own overflow in canvas-sizes.js, whose setOverflow is the only way
 // canvas-messages.js and canvas-focus.js change an overflow; board.generation in canvas-sizes.js,
 // whose resized is the only way canvas-focus.js changes it; each size frame's own rects
-// in canvas-sizes.js, canvas-messages.js and canvas-boards.js; compare.loaded in canvas-compare.js). Comments and handoffs are plain data
-// with no such owner, so setComments and setHandoffs freeze them once, when they
+// in canvas-sizes.js, canvas-messages.js and canvas-boards.js; compare.loaded in canvas-compare.js). Comments, handoffs and parts are plain data
+// with no such owner, so setComments, setHandoffs and setParts freeze them once, when they
 // are set (never on read): changing them means setting new values.
 
 // The first view sits FIT_PADDING (canvas-view.js) from the viewport's top left.
@@ -52,6 +52,8 @@ export function createStore(initial = {}) {
 		hoverBoard: null,
 		// The handoffs.json of design `slug`; boards of another design ignore it.
 		handoffs: freezeHandoffs({ slug: null, chosen: null, handoffs: {} }),
+		// The parts.json of design `slug` (canvas-parts.js); the panel lists them only while that design shows.
+		parts: freezeParts({ slug: null, parts: [] }),
 		// The open Compare view: { board, preview, artboardFrame, timer }.
 		compare: null,
 		toastTimer: 0,
@@ -94,6 +96,8 @@ export function createStore(initial = {}) {
 		/** The open popover's pick and screenshot, the read token and the close timer. */
 		setPopover: patch("setPopover", ["pick", "shot", "shotToken", "closeTimer"]),
 		setHandoffs(handoffs) { state.handoffs = freezeHandoffs(handoffs); },
+		/** The parts of one design: `{ slug, parts }`. */
+		setParts(parts) { state.parts = freezeParts(parts); },
 		setCompare(compare) { state.compare = compare; },
 		setToastTimer(timer) { state.toastTimer = timer; },
 		/** The open shared menu, or null when none is open. */
@@ -119,6 +123,15 @@ function freezeHandoffs(handoffs) {
 		freezeObject(handoffs.handoffs);
 	}
 	return freezeObject(handoffs);
+}
+
+/** Freezes the parts, their list and each part, so only setParts changes them. */
+function freezeParts(parts) {
+	if (parts && typeof parts === "object" && Array.isArray(parts.parts)) {
+		parts.parts.forEach(freezeObject);
+		freezeObject(parts.parts);
+	}
+	return freezeObject(parts);
 }
 
 function freezeObject(value) {

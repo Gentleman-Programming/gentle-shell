@@ -1,6 +1,6 @@
 // The comment popover: the pick it opens on, the screenshot attach (file, paste,
 // drop), Esc and Shift+Esc in the canvas, and the submit that saves or sends the
-// comment.
+// comment. Its Implement only this button belongs to canvas-parts.js.
 
 const LIMITS = { selector: 500, excerpt: 300, comment: 2000, screenshotBytes: 5 * 1024 * 1024 };
 const SCREENSHOT_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
@@ -36,6 +36,7 @@ export function init(ctx) {
 		els.message.textContent = "";
 		els.message.classList.remove("gd-error");
 		els.send.disabled = false;
+		actions.renderPartButton();
 		els.popover.hidden = false;
 		// The frame may be scaled (All sizes) or resized (a single size).
 		const frameRect = surface.frame.getBoundingClientRect();

@@ -272,6 +272,7 @@ export function init(ctx) {
 		if (!keepView) win.requestAnimationFrame(actions.fit);
 		await actions.loadHandoffs();
 		await actions.loadComments();
+		await actions.loadParts();
 	}
 
 	/** Reloads the artboard in its own frame and in every size frame of All sizes. */
@@ -344,6 +345,8 @@ export function init(ctx) {
 			store.setDesign({ slug });
 			store.setComments({ comments: [], activeId: null });
 			actions.renderComments();
+			// The old design's parts go with it, before the new design's parts.json is read.
+			actions.clearParts();
 		}
 		if (!(await refreshSystem()) && state.systemBoard) reloadBoard(state.systemBoard);
 		if (slug !== state.slug) return;

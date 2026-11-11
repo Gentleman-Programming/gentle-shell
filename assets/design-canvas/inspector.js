@@ -198,9 +198,14 @@
 		requestAnimationFrame(reportPins);
 	}
 
-	function highlight(id) {
-		const pin = pins.find((candidate) => candidate.id === id);
-		const element = pin ? find(pin.selector) : null;
+	/** The element of a comment pin (`id`) or of a part (`selector`, canvas-parts.js Show). */
+	function highlight(data) {
+		let element = null;
+		if (typeof data.selector === "string") element = data.selector.length <= MAX_SELECTOR ? find(data.selector) : null;
+		else {
+			const pin = pins.find((candidate) => candidate.id === data.id);
+			element = pin ? find(pin.selector) : null;
+		}
 		if (!element) return;
 		ensureBoxes();
 		selected = element;
@@ -212,7 +217,7 @@
 		if (event.source !== window.parent || !event.data || typeof event.data !== "object") return;
 		if (event.data.type === "gd:mode") setEnabled(event.data.enabled === true);
 		else if (event.data.type === "gd:pins") setPins(event.data.pins);
-		else if (event.data.type === "gd:highlight") highlight(event.data.id);
+		else if (event.data.type === "gd:highlight") highlight(event.data);
 		else if (event.data.type === "gd:focus") focused = event.data.enabled === true;
 		else if (event.data.type === "gd:size") {
 			if (Number.isInteger(event.data.generation) && event.data.generation >= 0) generation = event.data.generation;

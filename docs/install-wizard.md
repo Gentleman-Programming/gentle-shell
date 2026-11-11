@@ -137,8 +137,9 @@ Node.js outside the supported range (older than 22.19.0, or 23.0–23.5) or an
 incompatible pnpm on the user's PATH is not a blocker when
 the bootstrap's pinned copy runs the wizard: the probe reports that copy
 (bootstrap-only) with the user's stable version as `found`, and `tools.node` or
-`tools.pnpm` records `found` and the persisted pin as `version` (see
-[Existing installations](#existing-installations)). That copy is persisted
+`tools.pnpm` records `found` and the persisted pin as `version`. When the
+found Node is in `$PNPM_HOME/bin`, the probe and plan also record
+`foundInGlobalBin: true` (see [Existing installations](#existing-installations)). That copy is persisted
 only for a new installation of Gentle Shell: with an existing Shell (updated or
 current) the replaced runtime is an `incompatible-tool` blocker before consent,
 except for a setup recovery, which persists nothing. A user's pnpm in
@@ -624,10 +625,10 @@ For a bootstrap-only Node, the full group runs these fixed steps:
 
 The outcome then also reports `npmPrefix: "configured"` or `"unchanged"`.
 
-A persistent Node is never replaced or shadowed: there is no `runtime set` and
-no prefix change. An older Node on the user's PATH is not a persistent Node
-here: the bootstrap's pinned Node runs the wizard, so the full group above
-persists it next to the older one, which is left unchanged. One fixed add runs, then only the matching checks:
+A supported persistent Node is never replaced or shadowed: there is no `runtime set` and
+no prefix change. For an unsupported Node on the user's PATH, the bootstrap's
+pinned Node runs the wizard, so the full group above persists it. A found Node
+in `$PNPM_HOME/bin` is replaced; a Node elsewhere is left unchanged. One fixed add runs, then only the matching checks:
 
 | Intent | Command | Then |
 | --- | --- | --- |
@@ -658,7 +659,7 @@ Pi but never reinstalls or downgrades it, and nothing changes before consent.
 | A Pi older than the minimum that pnpm or npm owns | `update-pi` to `PI_INSTALL_VERSION` with that package manager (`pnpm add -g @earendil-works/pi-coding-agent@<version>` or `npm install -g …`), before any Gentle Shell step: ahead of `install-shell` or `update-shell-*`, or alone when Gentle Shell is current. The plan names the found and target versions and the manager. |
 | A Pi older than the minimum that neither pnpm nor npm owns (mise, Homebrew, a standalone binary) | Left unchanged. `install-pi` adds the installer's Pi with pnpm exactly as when Pi is absent (in the same `pnpm add -g` as gentle-pi, before an update of Gentle Shell, or alone when Gentle Shell is current), and the plan says so before consent. |
 | A Gentle Shell neither pnpm nor npm owns (an `npm link` of a source checkout, for example) | Blocked with an explanation; never reinstalled. |
-| A Node.js older than the minimum with a stable version (mise, nvm, Homebrew, an old installer) | Left unchanged. The POSIX bootstrap acquires its verified Node 24.21.0 as when Node is absent, and the plan persists it (`persist-node`, `persist-package-managers`, `configure-npm-prefix`). The plan says so before consent. An unknown or prerelease version still blocks. Windows: `bootstrap.cmd` does the same, and also acquires its Node for a user Node whose storage it cannot trust (nvm-windows' symlink, fnm's junction), which it never runs. |
+| A stable Node.js outside the supported range (mise, nvm, Homebrew, pnpm or an old installer) | The POSIX bootstrap acquires verified Node 24.21.0 and the plan persists it (`persist-node`, `persist-package-managers`, `configure-npm-prefix`). A pnpm-managed Node in `$PNPM_HOME/bin` is replaced; a Node elsewhere is left unchanged. The plan says so before consent. An unknown or prerelease version still blocks. Windows: `bootstrap.cmd` does the same, and also acquires its Node for a user Node whose storage it cannot trust (nvm-windows' symlink, fnm's junction), which it never runs. |
 | A pnpm older than 11.1.1, or whose engine rejects the bootstrap's Node (or, for the bootstraps only, another major) | Left unchanged. Both bootstraps acquire the verified pnpm 11.1.1 as when pnpm is absent, and the plan persists it (`persist-pnpm`, or `persist-package-managers` with npm). The plan says so before consent. Unknown evidence still blocks. |
 | That pnpm in `$PNPM_HOME/bin` itself (where persisting pnpm writes) | Never replaced or downgraded. At 11.1.1 or newer, of any major (pnpm 12 included), it is used as it is and nothing is persisted over it. An older one blocks before consent; the guidance names the found and required versions and updates it with `pnpm self-update 11.1.1`. |
 | A pnpm in `$PNPM_HOME/bin` whose shim is not recognized or whose `pnpm --version` reports no stable version | Left unchanged and never run again. The bootstrap's verified pnpm runs the installer and nothing is persisted over it (no `persist-pnpm`). The plan says so before consent. |
@@ -700,15 +701,16 @@ replaces the existing global package in place (its isolated global directory is
 swapped), whether Pi was added alone or together with gentle-pi, so the next run
 sees a single Pi; `npm install -g` replaces it in npm's global root.
 
-An older Node.js or incompatible pnpm is never changed or removed, and once the
-bootstrap has its pinned copy the installer never runs it for installation
-steps: the wizard and runner run under the bootstrap's Node (`process.execPath`),
+An unsupported Node.js outside `$PNPM_HOME/bin` or incompatible pnpm is left
+unchanged, and once the bootstrap has its pinned copy the installer never runs
+the user's copy for installation steps: the wizard and runner run under the bootstrap's Node (`process.execPath`),
 `persist-node` puts the pinned Node first in the runner's child `PATH`, and the
 runner invokes the bootstrap's pnpm by absolute path (`runnerEnvironment` puts
 its directory first on POSIX; Windows uses the `GENTLE_INSTALL_PNPM_*`
-handoff). The wizard reads the user's pnpm only for its `--version` (POSIX,
-from `/`). The plan's runtime persistence text names the found and pinned
-versions and says the user's copy is left unchanged. It promises no PATH
+handoff). Persisting Node replaces a pnpm-managed found Node in
+`$PNPM_HOME/bin`. The wizard reads the user's pnpm only for its `--version`
+(POSIX, from `/`). The plan's runtime persistence text names the found and pinned
+versions and says whether the found Node is replaced or left unchanged. It promises no PATH
 precedence: a version manager such as `mise activate` puts its own paths first
 again on every prompt, so new terminals may still run the older Node or pnpm.
 An update of an existing Gentle Shell persists nothing, so an older Node or

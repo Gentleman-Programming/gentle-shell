@@ -385,8 +385,8 @@ function actionDescription(action, plan) {
 	return actionDescriptions[action.id] ?? "Prepare the installation.";
 }
 
-/** An unsupported Node or incompatible pnpm the plan records as left in place next to
- * the installer's pinned copy: found and pinned versions, from the plan itself.
+/** An unsupported Node or incompatible pnpm beside the installer's pinned copy:
+ * found and pinned versions, and whether persistence replaces the found Node.
  * Nothing promises PATH precedence: a version manager may prepend its own again.
  */
 function alongsideNotes(plan) {
@@ -394,8 +394,12 @@ function alongsideNotes(plan) {
 	const node = plan.tools?.node;
 	const needs = typeof node?.required === "string" ? describeRequirement(node.required) : null;
 	if (STABLE.test(node?.found ?? "") && STABLE.test(node.version ?? "") && needs !== null) {
-		notes.push(`Node.js ${node.found} on this computer is not a version Gentle Shell supports (it needs ${needs}), so the installer uses its pinned Node.js ${node.version} ` +
-			`and installs it under $PNPM_HOME. Your Node.js ${node.found} is left unchanged.`);
+		const replacing = node.foundInGlobalBin === true && plan.actions.some((action) => action.id === "persist-node");
+		notes.push(replacing
+			? `Node.js ${node.found} on this computer is not a version Gentle Shell supports (it needs ${needs}). ` +
+				`Your Node.js ${node.found} is managed by pnpm under $PNPM_HOME and will be replaced by the pinned Node.js ${node.version}.`
+			: `Node.js ${node.found} on this computer is not a version Gentle Shell supports (it needs ${needs}), so the installer uses its pinned Node.js ${node.version} ` +
+				`and installs it under $PNPM_HOME. Your Node.js ${node.found} is left unchanged.`);
 	}
 	const pnpm = plan.tools?.pnpm;
 	if (STABLE.test(pnpm?.found ?? "") && STABLE.test(pnpm.version ?? "")) {
@@ -509,6 +513,7 @@ function planView(planId, { inventory, plan }) {
 	const changesProfile = ids.includes("setup-global-bin") || (privateHome !== null && inventory?.globalBin?.onPath !== true);
 	let tools = [];
 	const alongside = alongsideNotes(plan);
+	const replacesNode = ids.includes("persist-node") && plan.tools?.node?.foundInGlobalBin === true;
 	// A persistent pnpm next to a bootstrap-only Node is kept (persist-npm), never replaced.
 	if (ids.includes("persist-node")) tools = ids.includes("persist-npm") ? ["node", "npm"] : ["node", "npm", "pnpm"];
 	else if (ids.includes("persist-package-managers")) tools = ["npm", "pnpm"];
@@ -543,8 +548,9 @@ function planView(planId, { inventory, plan }) {
 		persistence: {
 			tools,
 			pnpmHome,
+			...(replacesNode ? { replacesNode: true } : {}),
 			description: tools.length > 0
-				? [`${tools.join(", ")} will be installed under $PNPM_HOME (${pnpmHome ?? "pnpm's home directory"}) so new terminals keep working after the temporary installer tools are removed. Existing installations are not replaced.`, ...alongside, ...(unchecked ? [unchecked] : [])].join(" ")
+				? [`${tools.join(", ")} will be installed under $PNPM_HOME (${pnpmHome ?? "pnpm's home directory"}) so new terminals keep working after the temporary installer tools are removed.${replacesNode ? "" : " Existing installations are not replaced."}`, ...alongside, ...(unchecked ? [unchecked] : [])].join(" ")
 				: unchecked ? `No runtime needs to be installed under $PNPM_HOME. ${unchecked}`
 				: "No runtime needs to be installed under $PNPM_HOME; your existing Node.js, npm and pnpm are reused.",
 		},

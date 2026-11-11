@@ -86,7 +86,8 @@ const probeNames = ["node", "pnpm", "pi", "shell", "gentleAi", "go", "globalBin"
  * tool directories) and npm (a usable npm resolves there) booleans; pnpm may
  * add persistent (resolvable from the user's PATH). A bootstrap-only Node or
  * pnpm may add found: the stable version of the older or incompatible one on the
- * user's PATH that the bootstrap left in place; a pnpm probe for the user's own
+ * user's PATH; Node adds foundInGlobalBin:true when that Node is in `$PNPM_HOME/bin`
+ * and persistence would replace it. A pnpm probe for the user's own
  * pnpm in `$PNPM_HOME/bin` (where persisting pnpm writes) adds inGlobalBin:true
  * and reports that pnpm itself, never as found, or, when that pnpm is never run
  * (untrusted:true) or reports no stable version (unchecked:true), the bootstrap's
@@ -239,17 +240,17 @@ export function planPreflight(inventory, { channel = "release" } = {}) {
 	if (tools.pnpm.status === "reusable" && inventory.pnpm.inGlobalBin === true && inventory.pnpm.unchecked === true) {
 		tools.pnpm = { ...tools.pnpm, unchecked: true };
 	}
-	// An older Node or an incompatible pnpm on the user's PATH is left as it is: the
-	// bootstrap acquired its pinned copy, which the probe reports (bootstrap-only)
-	// with the user's stable version as `found`. That copy runs the installer and
-	// is persisted below; the plan records both versions.
+	// The bootstrap acquired its pinned copy next to an unsupported Node or an
+	// incompatible pnpm, whose stable version is `found`. The plan records both
+	// versions and whether the found Node is in the global bin persistence replaces.
 	const replacedRuntimes = [];
 	for (const name of ["node", "pnpm"]) {
 		const seen = inventory[name];
 		const found = versionParts(seen?.found);
 		const replaced = name === "node" ? found !== null && !nodeRequirementSatisfied(requirements.node, found.join(".")) : found !== null;
 		if (tools[name].status !== "reusable" || seen.persistent !== false || !replaced) continue;
-		tools[name] = { ...tools[name], found: found.join("."), version: persistencePins[name] };
+		tools[name] = { ...tools[name], found: found.join("."), version: persistencePins[name],
+			...(name === "node" && seen.foundInGlobalBin === true ? { foundInGlobalBin: true } : {}) };
 		replacedRuntimes.push(name);
 	}
 	record("gentleAi", classify(inventory.gentleAi, requirements.gentleAi, (o) => o.compatible, true), requirements.gentleAi);

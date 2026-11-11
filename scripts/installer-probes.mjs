@@ -420,9 +420,8 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 			const nodeVersion = async (file) => exactVersion(await output(file, ["--version"], env, deadlines.version), NODE_VERSION);
 			let version = await nodeVersion(node);
 			if (!version) return unknown();
-			// A Node on the user's PATH outside the supported range is left as it is: the
-			// bootstrap's verified Node runs the installer, so it is reported (bootstrap-only)
-			// with the unsupported one found.
+			// The bootstrap's verified Node runs the installer when the user's Node is
+			// unsupported. Record whether persistence will replace the found global-bin Node.
 			let found = null;
 			if (persistent && bootstrap && persistent !== bootstrap && !nodeRequirementSatisfied(requirements.node, version) && spawnable(bootstrap, platform)) {
 				const pinned = await nodeVersion(bootstrap);
@@ -435,7 +434,18 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 			} catch {
 				npm = null;
 			}
-			return { available: true, version, usable: true, persistent: persistent !== null && found === null, npm, ...(found ? { found } : {}) };
+			let foundInGlobalBin = false;
+			if (found && globalBin) {
+				const directory = path.dirname(persistent);
+				foundInGlobalBin = samePath(directory, globalBin.path, platform);
+				if (!foundInGlobalBin) {
+					// Resolve directories, not the Node link itself (pnpm points it into its runtime store).
+					const [realDirectory, realBin] = await Promise.all([fs.realpath(directory).catch(() => null), fs.realpath(globalBin.path).catch(() => null)]);
+					foundInGlobalBin = realDirectory !== null && realBin !== null && samePath(realDirectory, realBin, platform);
+				}
+			}
+			return { available: true, version, usable: true, persistent: persistent !== null && found === null, npm,
+				...(found ? { found } : {}), ...(foundInGlobalBin ? { foundInGlobalBin: true } : {}) };
 		},
 		async pnpm() {
 			const pnpm = await pnpmInvocation(env, platform, fs);

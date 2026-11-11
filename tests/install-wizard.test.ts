@@ -366,6 +366,18 @@ test("planModel discloses the PATH change and runtime persistence before consent
 		[[false, true], [false, true]]);
 });
 
+test("the consent screen does not promise no replacements for a pnpm-managed Node", async () => {
+	for (const pi of [{ available: false }, { available: true, version: "0.99.0", usable: true, owner: "pnpm" }]) {
+		const view = await serverPlanView({ node: { available: true, version: "24.21.0", usable: true, persistent: false, npm: false,
+			found: "23.5.9", foundInGlobalBin: true }, pi });
+		const screen = wizard.renderPlan(new FakeDocument(), wizard.planModel(view), { install() {}, reload() {}, close() {} });
+		assert.match(screen.textContent, /Node\.js 23\.5\.9 is managed by pnpm under \$PNPM_HOME and will be replaced by the pinned Node\.js 24\.21\.0/);
+		assert.doesNotMatch(screen.textContent, /left unchanged|Existing installations are not replaced/);
+	}
+	const plain = wizard.renderPlan(new FakeDocument(), wizard.planModel(await serverPlanView()), { install() {}, reload() {}, close() {} });
+	assert.match(plain.textContent, /The installer runs only the steps listed above\. Existing installations are not replaced\./);
+});
+
 // A missing Git is noted on the review screen, never as a blocker: the plan stays installable.
 test("the review screen notes a missing Git and stays installable", async () => {
 	const model = wizard.planModel(await serverPlanView({ git: { available: false } }));

@@ -9,7 +9,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { exitCodeFor, openBrowser, openerFor, redirectPage, runnerEnvironment, upgradeEnvironment, wizardHandlers, writeRedirect } from "../bin/gentle-shell-install.mjs";
 import { planPreflight, requirements } from "../scripts/installer-preflight.mjs";
-import { PI_INSTALL_VERSION, blockedReasons, failedSteps } from "../scripts/installer-runner.mjs";
+import { PI_INSTALL_VERSION, blockedReasons, failedSteps, runStandardInstall } from "../scripts/installer-runner.mjs";
+import { createProbes } from "../scripts/installer-probes.mjs";
 import { createInstallerServer, guidance } from "../scripts/installer-server.mjs";
 import { distributionAsset, prefixLayout } from "../scripts/bundled-install.mjs";
 import { bundledBlockedReasons, bundledFailedSteps, bundledPlan } from "../scripts/bundled-wizard.mjs";
@@ -372,6 +373,57 @@ test("/api/plan says, before consent, that an older Node and an incompatible pnp
 		assert.doesNotMatch((await plan(plain.port, await plain.login())).persistence.description, /left unchanged|version manager/);
 	} finally {
 		await plain.host.close("test");
+	}
+});
+
+test("a pnpm-managed unsupported Node is disclosed as replaced from probe through plan, consent and runner", async () => {
+	const home = "/home/u/.local/share/pnpm";
+	const bootstrap = "/home/u/.gentle-shell-bootstrap-tools.fixture/node/bin/node";
+	const pnpmEntry = "/tools/pnpm/bin/pnpm.mjs";
+	const env = { HOME: "/home/u", PNPM_HOME: home, PATH: `${bootstrap.slice(0, -5)}:${BIN}:/usr/bin`,
+		GENTLE_INSTALL_PNPM_NODE: bootstrap, GENTLE_INSTALL_PNPM_ENTRY: pnpmEntry };
+	const nodeFor = async (version: string, own: string) => {
+		const probeEnv = { ...env, PATH: `${bootstrap.slice(0, -5)}:${own.slice(0, -5)}:/usr/bin` };
+		const fs = { isFile: async (file: string) => [bootstrap, own].includes(file),
+			isDirectory: async () => false, exists: async () => false, realpath: async (file: string) => file,
+			readText: async () => "", writable: async () => false };
+		return createProbes({ platform: "linux", env: probeEnv, fs,
+			run: async (command: string) => ({ code: 0, stdout: command === own ? `v${version}\n` : "v24.21.0\n" }) }).node();
+	};
+	for (const [version, own, managed] of [["23.5.9", `${BIN}/node`, true], ["22.18.0", `${BIN}/node`, true],
+		["23.5.9", "/usr/bin/node", false]] as const) {
+		const node = await nodeFor(version, own);
+		const data = collected({ node });
+		assert.deepEqual(data.plan.blockers, []);
+		assert.deepEqual(data.plan.actions.find((action: { id: string }) => action.id === "persist-node"),
+			{ id: "persist-node", kind: "persist-runtime", target: "node", version: "24.21.0" });
+		const { host, port, login } = await start({ collect: async () => data });
+		try {
+			const view = await plan(port, await login());
+			const text = view.persistence.description;
+			if (managed) {
+				assert.equal(view.persistence.replacesNode, true);
+				assert.ok(text.includes(`Your Node.js ${version} is managed by pnpm under $PNPM_HOME and will be replaced by the pinned Node.js 24.21.0.`), text);
+				assert.doesNotMatch(text, /left unchanged|Existing installations are not replaced/);
+			} else {
+				assert.equal(text, `node, npm, pnpm will be installed under $PNPM_HOME (${home}) so new terminals keep working after the temporary installer tools are removed. Existing installations are not replaced. ` +
+					`Node.js ${version} on this computer is not a version Gentle Shell supports (it needs 22.19.0 or a later 22.x release, or 23.6.0 or newer), so the installer uses its pinned Node.js 24.21.0 ` +
+					`and installs it under $PNPM_HOME. Your Node.js ${version} is left unchanged. A version manager such as \`mise activate\` may still put your own versions first on PATH in new terminals.`);
+			}
+		} finally { await host.close("test"); }
+		if (!managed || version !== "23.5.9") continue;
+		const calls: string[][] = [];
+		const result = await runStandardInstall({ plan: data.plan, consent: true }, { platform: "linux", env, nodePath: bootstrap,
+			fs: { isFile: async () => false }, run: async (_command: string, args: string[]) => {
+				calls.push(args);
+				const operation = args.slice(1).join(" ");
+				if (operation === "bin -g") return { code: 0, stdout: `${BIN}\n` };
+				if (operation === "list -g --depth 0 --json") return { code: 0, stdout: "[]" };
+				if (operation.startsWith("view ")) return { code: 0, stdout: `${PI_INSTALL_VERSION}\n` };
+				return { code: 1, stdout: "" }; // Stop after observing the runtime command.
+			} });
+		assert.equal(result.failedStep, "persist-node");
+		assert.deepEqual(calls.at(-1), [pnpmEntry, "runtime", "set", "node", "24.21.0", "-g"]);
 	}
 });
 

@@ -35,8 +35,10 @@ const WATCH_DEBOUNCE_MS = 500;
 // inotify budgets are finite (ENOSPC/EMFILE) and recursive watches degrade
 // silently on exhausted systems -- WSL2 hits this constantly -- so a slow
 // poll is the floor that keeps regeneration working when the OS cannot
-// deliver change events. Each poll validates the rendered disk bytes.
-const WATCH_FALLBACK_POLL_MS = 2_000;
+// deliver change events. Watcher events still use the 500ms debounce; the
+// fallback scans at most twice per minute instead of rereading every skill
+// 30 times per minute in an idle session. Each poll validates disk bytes.
+const WATCH_FALLBACK_POLL_MS = 30_000;
 const NO_SKILL_REGISTRY_FLAG = "no-skill-registry";
 const NO_SKILL_REGISTRY_ENV = "GENTLE_PI_NO_SKILL_REGISTRY";
 const LEGACY_PROJECT_REGISTRY_REL_PATH = ".pi/extensions/skill-registry.ts";

@@ -11,9 +11,26 @@ import {
 	petalTone,
 	SHELL_PULSE_WATCHDOG_MS,
 	SHELL_SCANNER_STEPS,
+	workingTick,
 	withPromptHint,
 	type PromptFrameOptions,
 } from "../lib/shell-prompt.ts";
+
+// The scanner phase must come from elapsed working time (one step per pulse
+// window), never from render count: streaming repaints arrive in bursts and
+// silent tool runs barely repaint at all, so a render-driven wave strobes or
+// freezes (the "─ ✾ exploring… ─" cadence regression).
+test("workingTick derives the scanner phase from elapsed time, not render count", () => {
+	assert.equal(workingTick(0), 0);
+	assert.equal(workingTick(79), 0, "the frame is stable within one pulse window");
+	assert.equal(workingTick(80), 1);
+	assert.equal(workingTick(161), 2);
+	assert.equal(workingTick(1000, SHELL_PULSE_WATCHDOG_MS), 1, "coarse policies step in watchdog windows");
+	const fg = (role: string, char: string) => `<${role}>${char}</${role}>`;
+	const wave = (ms: number) => scanWorkingText("exploring…", workingTick(ms), fg);
+	assert.equal(wave(400), wave(405), "repaints inside one window paint one identical frame");
+	assert.notEqual(wave(400), wave(480), "each window advances the wave exactly one step");
+});
 
 test("scanner reflects a symmetric light wave across working text at the watchdog cadence", () => {
 	const fg = (role: string, char: string) => `<${role}>${char}</${role}>`;

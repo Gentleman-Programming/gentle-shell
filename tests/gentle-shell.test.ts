@@ -5437,7 +5437,11 @@ test("registered canonical root governs real Git discovery, status and diff desp
 	// Pi exec has no env option and inherits routing. Model that boundary with
 	// a child-only env, without changing this test process's environment.
 	h.pi.exec = ((command: string, args: string[], options: { timeout?: number } = {}) => new Promise((resolve) => {
-		execFile(command, args, { env: poisoned, encoding: "utf8", timeout: options.timeout, maxBuffer: Infinity }, (error, stdout, stderr) => resolve({ stdout, stderr, code: error ? typeof error.code === "number" ? error.code : 1 : 0, killed: Boolean(error?.killed) }));
+		execFile(command, args, { env: poisoned, encoding: "utf8", timeout: options.timeout, maxBuffer: Infinity }, (error, stdout, stderr) => {
+			// Pi 1.5's ExecResult adds `truncated`; an unbounded maxBuffer never truncates. A named object keeps Pi 1.4's narrower type from rejecting it.
+			const result = { stdout, stderr, code: error ? typeof error.code === "number" ? error.code : 1 : 0, killed: Boolean(error?.killed), truncated: false };
+			resolve(result);
+		});
 	})) as ExtensionAPI["exec"];
 	const { ctx, ui, overlayReady } = fakeContext();
 	(ctx as unknown as { cwd: string }).cwd = selected;

@@ -46,7 +46,10 @@ function context(overrides: Partial<ToolRenderContext> = {}): ToolRenderContext 
 		args: { code: "await tools.read({path: '/private/argument'});" },
 		toolCallId: "code-1", invalidate() {}, lastComponent: undefined, state: {}, cwd: "/fixture",
 		executionStarted: true, argsComplete: true, isPartial: false, expanded: false, showImages: false,
-		isError: false, durationMs: undefined, outputPad: 0, ...overrides,
+		isError: false, durationMs: undefined, outputPad: 0,
+		// Pi 1.5 adds required key-hint helpers to the render context; Pi 1.4 ignores them.
+		keyText: (_keybinding: string) => "", keyHint: (_keybinding: string, description: string) => description,
+		...overrides,
 	};
 	return fixture;
 }

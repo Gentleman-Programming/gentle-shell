@@ -1236,7 +1236,7 @@ Full delegation is a deliberate trade-off for an expensive orchestrator paired w
 
 The mode changes the runtime as well as the prompt, so the two never disagree:
 
-- **Writer admission.** Organic mode admits a generic writer only for a task of an existing feature document, past the context backstop, or as one of two or more writers with disjoint surfaces launched alone in one assistant message. Full delegation mode admits it for any authorized change, small ones included. Allowed edit surfaces stay mandatory in both modes.
+- **Writer admission.** Organic mode admits a generic writer only for a task of an existing feature document, past the context backstop, or as one of two or more writers with disjoint surfaces launched alone in one assistant message. Full delegation mode admits it for any authorized change, small ones included, however it is launched, a `codemode` script included; its prompt asks for independent units in the same assistant message or one `codemode` script, never one launch per message. Allowed edit surfaces stay mandatory in both modes.
 - **What the orchestrator reads.** In full delegation mode the organic routing rules are removed, not annotated: the ODD steps are projected without their inline route, and the session's lazy detail is `assets/orchestrator-full-delegation-card.md` instead of the organic delegation and writer cards. Task Size still decides tracking and risk, never who writes.
 - **Runtime notices.** The context backstop, exploration budget and todo rules drop their inline wording in full delegation mode.
 

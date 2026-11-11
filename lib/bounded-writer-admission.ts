@@ -8,8 +8,9 @@ import type { MessageToolCall } from "./writer-batch-admission.ts";
 import { overlappingSurfaces } from "./writer-surfaces.ts";
 
 const WRITER_NAMES = ["gentle-ai-worker", "worker", "jd-fix-agent"];
+// The rule sentence closes every rejection, after the specific problem (cost-speed P9b).
 export const WRITER_EDIT_SURFACE_REJECTION =
-	"Writer tasks must include the exact Markdown heading `## Allowed edit surfaces` with narrow repository-relative paths or narrow globs, one per line. Every non-empty line belongs to the section until the next canonical Markdown heading and must be a valid surface entry. Paths containing whitespace require whole-entry backticks; begin explanatory prose under the next Markdown heading. The parent must derive or map that canonical block from the delegated task and relaunch the writer; do not accept aliases, and do not ask the human to author paths or globs.";
+	"Fix only that section, then relaunch with the rest of the task unchanged, never shortened or re-summarized; derive the surfaces from the task (narrow repository-relative paths or globs, one per line, until the next Markdown heading) and do not ask the human to author paths or globs.";
 // One heading matcher: the parser scans with the global form, and continuation
 // inheritance tests presence with the same source (review R3-003).
 const ALLOWED_EDIT_SURFACES_HEADING_LINE = /^## Allowed edit surfaces[ \t]*$/im;
@@ -25,48 +26,114 @@ function isTaskScopedRepositoryRelativePath(value: string, backticked: boolean):
 	return !/[?*\[\]{}]/.test(path.split("/")[0]);
 }
 
+const INVISIBLE = /\p{Cc}|\p{Zl}|\p{Zp}/u;
+const MARKER_ONLY = /^(?:[-*+]|\d+[.)])$/;
+// An echoed entry is at most this many UTF-8 bytes, ellipsis included (after escaping and masking), cut on a code point.
+const SHOWN_ENTRY_BYTES = 80;
+const ELLIPSIS = "…";
+
+function surfaceEntry(source: string): { path: string; valid: boolean } {
+	const line = source.replace(/^ {0,3}/, "");
+	const unlisted = line.replace(MARKDOWN_LIST_MARKER, "");
+	const quoted = unlisted.match(/^`([^`]+)`$/);
+	const path = quoted?.[1] ?? unlisted;
+	return { path, valid: !(MARKER_ONLY.test(line) || (unlisted.includes("`") && !quoted) || INVISIBLE.test(source) || !isTaskScopedRepositoryRelativePath(path, !!quoted)) };
+}
+
+// Why an entry `surfaceEntry` rejected is invalid, and its fix. Rule (verifier blocker 3): the fix, applied
+// literally to the entry, yields the path the author meant or an input that is still rejected, never a
+// different accepted surface. So wrapping is suggested only for an entry that reads as one path with spaces,
+// text beside a path is moved out rather than wrapped, and the path-shape reasons come before the whitespace ones.
+function surfaceEntryProblem(source: string): string {
+	const line = source.replace(/^ {0,3}/, "");
+	const unlisted = line.replace(MARKDOWN_LIST_MARKER, "");
+	const quoted = unlisted.match(/^`([^`]+)`$/);
+	const path = quoted?.[1] ?? unlisted;
+	if (MARKER_ONLY.test(line)) return "is a list marker with no path; put the path after it or delete the line";
+	if (INVISIBLE.test(source)) return "contains a control or line-separator character; retype it without that character";
+	if (unlisted.includes("`") && !quoted) return /`[^`]+`/.test(unlisted)
+		? "has text outside its backticked path; move that text below another Markdown heading"
+		: "has stray backticks; remove them";
+	if (/^\s*#{1,6}\s/.test(unlisted)) return "is a heading indented 4+ spaces, so it does not end the section; start it at the line start";
+	const spaced = !quoted && /\p{White_Space}/u.test(unlisted);
+	const normalized = path.replace(/\\/g, "/");
+	const relativePath = normalized.replace(/^(?:\.\/)+/, "");
+	const firstSegment = relativePath.split("/")[0];
+	if (spaced ? /^(?:\/|~\/|[A-Za-z]:\/)/.test(normalized) : isAbsolute(path) || /^(?:[A-Za-z]:|\/|~)/.test(normalized) || relativePath.startsWith("/")) return "is absolute or home-relative; use a repository-relative path";
+	if (!relativePath || relativePath === ".") return "names the whole repository; list only the paths or narrow globs the task edits";
+	if (relativePath.split("/").includes("..")) return "has a `..` segment; use a path inside the repository";
+	if (/[?*\[\]{}]/.test(firstSegment) && !/\p{White_Space}/u.test(firstSegment)) return "starts with a glob, so it spans the whole repository; start with a directory, for example `src/**/*.ts`";
+	if (spaced) {
+		if (!isTaskScopedRepositoryRelativePath(unlisted, true)) return "is not a path; move it below another Markdown heading";
+		const words = unlisted.split(/\p{White_Space}+/u);
+		const first = words[0], rest = unlisted.slice(first.length);
+		const pathLike = (word: string) => isTaskScopedRepositoryRelativePath(word, false) && (word.includes("/") || /\.[\w-]{1,10}$/.test(word));
+		const parts = unlisted.split(/\p{White_Space}*,\p{White_Space}*/u).filter(Boolean);
+		if (parts.length > 1 && parts.every(part => isTaskScopedRepositoryRelativePath(part, false))) return "lists several paths; put one path per line";
+		if (pathLike(first.replace(/:$/, "")) && (first.endsWith(":") || /^\p{White_Space}+(?:#|\/\/|\(|—|–|-|:)/u.test(rest))) return "has text after the path; move that text below another Markdown heading";
+		if (words.length === 2 && first.endsWith(":") && pathLike(words[1])) return "has a label before the path; keep only the path";
+		if (!first.endsWith(":") && !/[.:;,!?]$/.test(unlisted) && /\.[\w-]{1,10}$|\/$|\*$/.test(words.at(-1)!)) return "has spaces outside backticks; if it is one path, wrap the whole entry in backticks, otherwise move it below another Markdown heading";
+		return "looks like prose; move it below another Markdown heading";
+	}
+	return "is not a narrow repository-relative path or glob; use one";
+}
+
+// Quote an offending line without echoing a secret or an unbounded line: secret-looking assignment values
+// and long digit-bearing tokens are masked, invisible characters escaped, then cut at SHOWN_ENTRY_BYTES.
+function shownEntry(line: string): string {
+	const text = line.trim()
+		.replace(/([\w.-]*(?:key|token|secret|passw(?:or)?d|pwd|credentials?|auth)\s*[:=]\s*).*/i, "$1***")
+		.replace(/[\w+=-]{24,}/g, run => /\d/.test(run) ? "***" : run)
+		.replace(/\p{Cc}|\p{Zl}|\p{Zp}/gu, char => `\\u${char.codePointAt(0)!.toString(16).padStart(4, "0")}`);
+	if (Buffer.byteLength(text) <= SHOWN_ENTRY_BYTES) return text;
+	let shown = "", bytes = Buffer.byteLength(ELLIPSIS);
+	for (const char of text) {
+		bytes += Buffer.byteLength(char);
+		if (bytes > SHOWN_ENTRY_BYTES) break;
+		shown += char;
+	}
+	return `${shown}${ELLIPSIS}`;
+}
+
 // This is the same canonical parser used by both the tool hook and executor.
 // Prose cannot close the section, and repeated sections must agree exactly.
 // A rejection carries the concrete problem so the caller repairs only the
 // section instead of re-summarizing the whole task (gentle-shell#1713).
 function parseAllowedEditSurfaces(values: readonly unknown[]): { paths: string[] } | { problem: string } {
 	let expected: string[] | undefined;
+	let section = 0;
 	for (const value of values) {
 		if (typeof value !== "string") continue;
 		for (const heading of value.matchAll(ALLOWED_EDIT_SURFACES_HEADING)) {
+			section++;
 			const lines = value.slice((heading.index ?? 0) + heading[0].length).split(/\r?\n/);
 			const end = lines.findIndex(line => MARKDOWN_HEADING_LINE.test(line));
 			const entries = (end === -1 ? lines : lines.slice(0, end)).map(line => line.replace(/ +$/g, "")).filter(Boolean);
-			if (!entries.length) return { problem: "The section has no entries." };
-			const paths: string[] = [];
-			for (const source of entries) {
-				const line = source.replace(/^ {0,3}/, "");
-				const unlisted = line.replace(MARKDOWN_LIST_MARKER, "");
-				const quoted = unlisted.match(/^`([^`]+)`$/);
-				const path = quoted?.[1] ?? unlisted;
-				if (/^(?:[-*+]|\d+[.)])$/.test(line) || (unlisted.includes("`") && !quoted) || /\p{Cc}|\p{Zl}|\p{Zp}/u.test(source) || !isTaskScopedRepositoryRelativePath(path, !!quoted)) {
-					// Prose and a bad path need different repairs: moving a real surface
-					// out of the section would silently narrow the writer's scope.
-					// An unquoted entry with whitespace that would be valid when quoted is
-					// ambiguous: name both repairs instead of guessing prose.
-					const prose = /^(?:[-*+]|\d+[.)])$/.test(line) || (!quoted && /\p{White_Space}/u.test(unlisted));
-					const quotable = prose && !quoted && !unlisted.includes("`") && !/\p{Cc}|\p{Zl}|\p{Zp}/u.test(source) && isTaskScopedRepositoryRelativePath(unlisted, true);
-					const shown = (prose ? source.trim() : path).replace(/\p{Cc}|\p{Zl}|\p{Zp}/gu, " ");
-					const bounded = shown.length > 120 ? `${shown.slice(0, 120)}...` : shown;
-					return { problem: quotable
-						? `Line "${bounded}" is not a valid surface entry; if it is a path, wrap the whole entry in backticks, otherwise move it under a following Markdown heading.`
-						: prose
-							? `Line "${bounded}" is not a valid surface entry; move prose under a following Markdown heading.`
-							: `Entry "${bounded}" is not a narrow repository-relative path; remove absolute paths, \`..\` segments, root globs, and stray backticks.` };
-				}
-				paths.push(path);
+			if (!entries.length) return { problem: "The `## Allowed edit surfaces` section has no entries; add one path per line before the next heading." };
+			const parsed = entries.map(surfaceEntry);
+			const invalid = parsed.findIndex(entry => !entry.valid);
+			if (invalid !== -1) {
+				const more = parsed.slice(invalid + 1).filter(entry => !entry.valid).length;
+				const position = `non-empty line ${invalid + 1}${section > 1 ? ` of section ${section}` : ""}`;
+				return { problem: `Allowed edit surfaces entry "${shownEntry(entries[invalid])}" (${position}) ${surfaceEntryProblem(entries[invalid])}.${more ? ` ${more} more invalid line${more === 1 ? " follows" : "s follow"}.` : ""}` };
 			}
-			const unique = [...new Set(paths)].sort();
-			if (expected && (expected.length !== unique.length || expected.some((path, index) => path !== unique[index]))) return { problem: "Repeated sections list different surfaces." };
+			const unique = [...new Set(parsed.map(entry => entry.path))].sort();
+			if (expected) {
+				const previous = expected;
+				const differing = [...previous.filter(path => !unique.includes(path)), ...unique.filter(path => !previous.includes(path))].sort()[0];
+				if (differing !== undefined) return { problem: `Repeated \`## Allowed edit surfaces\` sections disagree on "${shownEntry(differing)}"; keep one section or list the same entries in each.` };
+			}
 			expected = unique;
 		}
 	}
-	return expected ? { paths: expected } : { problem: "No `## Allowed edit surfaces` heading was found." };
+	if (expected) return { paths: expected };
+	// A near-miss heading (wrong level, trailing colon, missing word) is the usual cause: name it.
+	for (const value of values) {
+		if (typeof value !== "string") continue;
+		const alias = value.split(/\r?\n/).find(line => /^ {0,3}#{1,6}[ \t]/.test(line) && /\b(?:edit[ \t]+surfaces?|allowed[ \t]+(?:edit|files|paths))\b/i.test(line));
+		if (alias) return { problem: `No \`## Allowed edit surfaces\` heading was found; "${shownEntry(alias)}" is close: rename it to exactly \`## Allowed edit surfaces\`.` };
+	}
+	return { problem: "No `## Allowed edit surfaces` heading was found; add it with one path per line." };
 }
 
 export function allowedEditSurfaces(...values: unknown[]): string[] | undefined {
@@ -80,7 +147,7 @@ export function rejectUnscopedBoundedWriterDispatch(input: unknown): { block: tr
 	if (typeof record.agent !== "string" || !WRITER_NAMES.includes(record.agent)) return undefined;
 	const parsed = parseAllowedEditSurfaces([record.task, record.context]);
 	if ("paths" in parsed) return undefined;
-	return { block: true, reason: `${WRITER_EDIT_SURFACE_REJECTION} ${parsed.problem} Resend the same task text unchanged except for that section; never shorten or re-summarize it.` };
+	return { block: true, reason: `${parsed.problem} ${WRITER_EDIT_SURFACE_REJECTION}` };
 }
 
 // Pain-point iteration S16: prompt rules alone did not stop small-task delegation (a two-feature request still

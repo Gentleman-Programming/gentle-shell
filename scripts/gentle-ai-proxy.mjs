@@ -3,7 +3,7 @@
 // release asset is fetched with node:https, whose client ignores HTTPS_PROXY,
 // HTTP_PROXY and NO_PROXY unless the process opts in, and Node only grew that
 // opt-in in v24 (NODE_USE_ENV_PROXY / --use-env-proxy) while this package
-// supports node >= 22.19.0. The tunnel below is the portable equivalent of
+// supports Node ^22.19.0 || >=23.6.0. The tunnel below is the portable equivalent of
 // that opt-in: it opens a CONNECT tunnel to the proxy and speaks TLS to the
 // origin host through it, so the origin's own certificate still decides
 // whether the connection is trusted and the proxy never sees the request.

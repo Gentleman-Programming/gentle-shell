@@ -136,7 +136,7 @@ test("technical reference declares the tested Pi minimum required for agent_sett
 	assert.equal(manifest.peerDependencies?.["@earendil-works/pi-coding-agent"], ">=1.2.0");
 	assert.equal(manifest.devDependencies?.["@earendil-works/pi-coding-agent"], ">=1.2.0");
 	assert.equal(manifest.peerDependenciesMeta?.["@earendil-works/pi-coding-agent"]?.optional, true);
-	assert.equal(manifest.engines?.node, ">=22.19.0");
+	assert.equal(manifest.engines?.node, "^22.19.0 || >=23.6.0");
 	for (const path of ["docs/readme-reference.md", "docs/gentle-shell.md"]) {
 		const source = readFileSync(join(PACKAGE_ROOT, path), "utf8");
 		assert.match(source, /Pi 1\.2\.0 or newer/, path);

@@ -10,6 +10,7 @@ import { SHELL_COMMAND_TOOLS } from "../lib/background-jobs.ts";
 import { evaluateDeliveredTestTool } from "../lib/delivered-test-lint.ts";
 import { commitSliceToolResult } from "../lib/commit-slice-signal.ts";
 import { checkReviewDeliveryPreflight } from "../lib/review-delivery-preflight.ts";
+import { checkDeliveryConflictMarkers } from "../lib/delivery-conflict-markers.ts";
 import { appendContextBackstopNotice, createContextBackstopSignal, createThrottledContextMeasure } from "../lib/context-backstop.ts";
 import { createExplorationBudget } from "../lib/exploration-budget.ts";
 import { REPLY_LANGUAGE_ANCHOR_TYPE, isHumanInput, placePersistedReplyAnchors, replyLanguageAnchorFor, replyLanguageAnchorPosition, type ReplyLanguageAnchorDetails } from "../lib/reply-language-anchor.ts";
@@ -12959,8 +12960,11 @@ function createGentleAiExtensionForTesting(
 			root => processRetainedNativeStatusSelections.get(sessionKey)?.readCommittedRange(root),
 			(root, target) => readNativeReviewOutcome(root, target) === "declined", ctx.signal,
 			() => deliveryEpoch === reminderEpoch && modeEpoch === yolo.epoch() && pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey) === sessionKey);
+		// cost-speed P9: after the RDD preflight (its denials win unchanged), independent of RDD mode; fails open.
+		// It runs BEFORE the epoch recheck below: no await may sit between that recheck and the return.
+		const markerDenied = !deliveryDenied && primaryToolCall ? await checkDeliveryConflictMarkers(ctx.cwd, command, ctx.signal) : undefined;
 		if (primaryToolCall && modeEpoch !== yolo.epoch()) return { block: true, reason: "Permission mode changed during delivery preflight. This action was not run; retry under the current mode." };
-		return deliveryDenied;
+		return deliveryDenied ?? markerDenied;
 	});
 
 	for (const owner of ["delegation", "review"] as const) {

@@ -2497,7 +2497,9 @@ async function main() {
 		// selection is never rewritten or deleted, and the version found after the
 		// update is reported. A signal-killed child did not complete; the next
 		// launch re-verifies as always.
-		if (bundled && extensionUpdate && signal === undefined && ownsCompanionHome(home, homeHadContentBeforeBootstrap)) {
+		// `signal` is null, not undefined, on a normal exit; keep the truthiness the
+		// exit code above already relies on.
+		if (bundled && extensionUpdate && !signal && ownsCompanionHome(home, homeHadContentBeforeBootstrap)) {
 			try {
 				const companion = await ensureEngramCompanion(home, runtime, ["ignore", 2, 2], 10000, homeHadContentBeforeBootstrap);
 				if (companion.ok) {

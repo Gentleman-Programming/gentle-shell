@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { TestContext } from "node:test";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { MAX_SYSTEM_TOKENS, MAX_SYSTEM_MD_BYTES, parseSystemTokens, readSystemTokens } from "../lib/design-system-tokens.ts";
+import { MAX_SYSTEM_LINE, MAX_SYSTEM_TOKENS, MAX_SYSTEM_MD_BYTES, parseSystemTokens, readSystemTokens } from "../lib/design-system-tokens.ts";
 
 // The canvas inspector compares what an artboard renders with design/system.md. The server reads that
 // file read-only and gives the page its tokens: table rows with a backticked `--name` and value.
@@ -106,6 +106,20 @@ test("S1: tokens, names, values and sections are bounded", () => {
 	assert.deepEqual(parseSystemTokens(`| \`--${"n".repeat(80)}\` | \`#000\` |`), [], "a name over 64 characters");
 	assert.deepEqual(parseSystemTokens(`| \`--v\` | \`${"x".repeat(401)}\` |`), [], "a value over 400 characters");
 	assert.equal(parseSystemTokens(`## ${"h".repeat(200)}\n| \`--a\` | \`#000\` |`)[0].section.length, 80);
+});
+
+test("a pathological first cell parses in linear time, and lines past the length cap are skipped", () => {
+	for (const filler of [" ", "1", " :", ".5"]) {
+		const line = `| \`--a\` ${filler.repeat(60_000)}x | y |`;
+		const started = performance.now();
+		assert.deepEqual(parseSystemTokens(`## Colors\n${line}\n`), [], JSON.stringify(filler));
+		assert.ok(performance.now() - started < 200, `${JSON.stringify(filler)} took ${Math.round(performance.now() - started)} ms`);
+	}
+	// Inline tokens still parse.
+	assert.deepEqual(parseSystemTokens("## Radius\n| `--radius-sm` 8px, `--radius-md`: `12px` | x |\n").map((token) => [token.name, token.value]), [["--radius-sm", "8px"], ["--radius-md", "12px"]]);
+	const long = `| \`--long\` | \`#000\` | ${"note ".repeat(MAX_SYSTEM_LINE / 5)} |`;
+	assert.ok(long.length > MAX_SYSTEM_LINE);
+	assert.deepEqual(parseSystemTokens(`## Colors\n${long}\n| \`--short\` | \`#fff\` |\n`).map((token) => token.name), ["--short"], "an over-long line is skipped, the next one still parses");
 });
 
 test("S1: readSystemTokens reads design/system.md read-only and never throws", async (t) => {

@@ -14,6 +14,8 @@ export const MAX_SYSTEM_TOKENS = 500;
 const MAX_NAME = 64;
 const MAX_VALUE = 400;
 const MAX_SECTION = 80;
+// A token row is short; a longer line is skipped before any pattern runs on it.
+export const MAX_SYSTEM_LINE = 1000;
 
 export type DesignTokenGroup = "color" | "font" | "spacing" | "radius" | "shadow" | "layout" | "other";
 export type DesignToken = { name: string; value: string; section: string; group: DesignTokenGroup };
@@ -22,7 +24,9 @@ export type DesignSystemTokens = { exists: boolean; tokens: DesignToken[]; probl
 const NAME = /^--[A-Za-z0-9_-]+$/;
 const TICKED = /`([^`]+)`/g;
 // Tokens written inline in a first cell, as "`--radius-sm` 8px, `--radius-md` 12px" or "`--font-sans`: `Inter, ...`".
-const INLINE = /`(--[A-Za-z0-9_-]+)`\s*:?\s*(?:`([^`]+)`|(-?\d*\.?\d+(?:px|rem|em|%|ms|s)?|#[0-9a-fA-F]{3,8}))\s*(?=[,;]|$|`--)/g;
+// No two adjacent runs can match the same text (the second whitespace run follows the colon, and a
+// number is digits with an optional fraction or a bare fraction), so a failing match stays linear.
+const INLINE = /`(--[A-Za-z0-9_-]+)`[ \t]*(?::[ \t]*)?(?:`([^`]+)`|(-?(?:\d+(?:\.\d+)?|\.\d+)(?:px|rem|em|%|ms|s)?|#[0-9a-fA-F]{3,8}))[ \t]*(?=[,;]|$|`--)/g;
 
 function groupOf(section: string): DesignTokenGroup {
 	if (/color/i.test(section)) return "color";
@@ -68,6 +72,7 @@ export function parseSystemTokens(text: string): DesignToken[] {
 			section = heading[1].trim().slice(0, MAX_SECTION);
 			continue;
 		}
+		if (line.length > MAX_SYSTEM_LINE) continue;
 		const cells = cellsOf(line);
 		if (!cells) continue;
 		for (const [name, value] of pairsOf(cells)) {

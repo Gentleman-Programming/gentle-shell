@@ -4725,16 +4725,23 @@ test("a task that finishes live stays visible as history, in both scopes, and it
 	const started = await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Persist me", mode: "background" }, undefined, undefined, ctx);
 	const id = (started.details.gentleAgents as { taskId: string }).taskId;
 	await tick();
-	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Kept." }] }] });
-	harness.children[0].emit({ type: "agent_settled" });
-	await tick();
 	const tasksDir = join(home, ".pi", "agent", "gentle-agents", "tasks");
 	let stored = await loadHistory(tasksDir);
 	for (let attempt = 0; attempt < 40 && !stored.some((entry) => entry.task.id === id); attempt += 1) {
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		stored = await loadHistory(tasksDir);
 	}
-	assert.ok(stored.some((entry) => entry.task.id === id && entry.task.result === "Kept."), "the finished task is on disk");
+	assert.ok(stored.some((entry) => entry.task.id === id && entry.task.result !== "Kept."), "observe the launch record before the child finishes");
+	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Kept." }] }] });
+	harness.children[0].emit({ type: "agent_settled" });
+	await tick();
+	// The last observed history can still contain the durable launch record.
+	const hasFinishedResult = () => stored.some((entry) => entry.task.id === id && entry.task.status === TASK_STATUS.COMPLETED && entry.task.result === "Kept.");
+	for (let attempt = 0; attempt < 40 && !hasFinishedResult(); attempt += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		stored = await loadHistory(tasksDir);
+	}
+	assert.ok(hasFinishedResult(), "the finished task is on disk");
 
 	// A completely different session still resolves it by id on demand, with
 	// nothing restored in advance.

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtemp, mkdir, readFile, stat } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import os from "node:os";
 import { dirname, join } from "node:path";
@@ -763,6 +763,12 @@ test("Windows bootstrap bridge admits only explicit partial or initialized publi
 	assert.deepEqual(parseWindowsHostFrame('{"requestId":"enumerate-3","ok":true,"result":{"state":"initialized","bootstrap":"complete","entries":2}}'), {
 		requestId: "enumerate-3", ok: true, result: { state: "initialized", bootstrap: "complete", entries: 2 },
 	});
+	// The wire ceiling matches the helper's enumeration ceiling in
+	// runtime/windows-session-transport.ps1 (largest list scan window, 256).
+	assert.deepEqual(parseWindowsHostFrame('{"requestId":"enumerate-4","ok":true,"result":{"state":"initialized","bootstrap":"complete","entries":256}}'), {
+		requestId: "enumerate-4", ok: true, result: { state: "initialized", bootstrap: "complete", entries: 256 },
+	});
+	assert.throws(() => parseWindowsHostFrame('{"requestId":"enumerate-5","ok":true,"result":{"state":"initialized","bootstrap":"complete","entries":257}}'), /invalid Windows transport frame/);
 	assert.throws(() => parseWindowsHostFrame('{"requestId":"start-1","ok":true,"result":{"ready":true}}'), /invalid Windows transport frame/);
 });
 
@@ -1166,6 +1172,55 @@ test("Windows-native discovery preserves a busy endpoint without connecting or m
 			await probe.close();
 		}
 	}, { diagnostics: t });
+});
+
+test("Windows-native discovery reclaims past the enumeration bound instead of failing busy", { skip: process.platform !== "win32", timeout: 60_000 }, async (t) => {
+	const root = await mkdtemp(join(os.tmpdir(), "gentle-pi-overflow-presence-"));
+	const agentHome = join(root, "profile", "agent");
+	await mkdir(join(agentHome, "gentle-agents"), { recursive: true });
+	// Fixture for #2365: orphaned presence records accumulating in the wild. The
+	// publisher publishes 64 records and stays alive while the observer works: a
+	// live owner holds its records open, so a reclaimed record stays visible
+	// (delete-marked) until the owner exits. Each record+publish pair stands for
+	// one dead activation; no pipe is ever opened for these endpoints, so every one
+	// of them is reclaimable. This measures the over-bound directory case and nothing more.
+	const publisher = await openInitializedHelper(agentHome, { diagnostics: t });
+	try {
+		for (let index = 0; index < 64; index++) {
+			const orphan = requirePublicPresenceResult(await publisher.presence("record", { sessionId: `orphan-${index}`, createdAt: index + 1 })) as Record<string, unknown>;
+			assert.equal((await publisher.presence("publish", { record: orphan })).ok, true);
+		}
+		await withInitializedHelpers([agentHome], async ([observer]) => {
+			// A live activation is assertable here because listen runs on the observer's
+			// own fresh ownership budget (its first publication), far below the
+			// per-helper bound in runtime/windows-session-transport.ps1.
+			const live = requirePublicPresenceResult(await observer.presence("listen", { sessionId: "live", createdAt: 1000 })) as Record<string, unknown>;
+			const presenceDir = join(agentHome, "gentle-agents", "transport", "presence");
+			assert.equal((await readdir(presenceDir)).length, 65, "fixture: 64 orphans plus the live record must exceed the 64-entry first scan window");
+			// Pre-fix this list fails busy: the single 64-entry scan trips over the dead
+			// records before it can reclaim them. Post-fix the scan reclaims one pass at
+			// a time and escalates, so the live activation is still reported.
+			assert.deepEqual(requirePublicPresenceResult(await observer.presence("list")), { records: [live] }, "an over-bound directory must still list live activations instead of failing busy");
+			// The over-bound count is assertable through the real parser here, after
+			// reclamation: the observer delete-marked the orphans, but they stay
+			// visible while the publisher still holds its handles open, so the count
+			// is stably 65 — past the 64-entry first scan window yet within the
+			// 256-entry wire ceiling shared by the helper and parseWindowsHostFrame.
+			assert.equal((requirePublicPresenceResult(await observer.enumerate()) as { entries: number }).entries, 65, "the over-bound directory count must cross the wire instead of failing the frame parser");
+			assert.deepEqual(requirePublicPresenceResult(await observer.presence("resolve", { sessionId: "live" })), live, "a live activation in an over-bound directory must still resolve");
+			// The crash is part of the fixture: it releases the owner's handles, which is
+			// what lets reclamation actually delete instead of merely delete-marking.
+			// This mirrors the existing orphan-reclamation test, scaled past the first
+			// scan window.
+			assert.notEqual(await publisher.terminate(), 0);
+			// The orphans were reclaimed (deleted), not merely hidden: the directory is
+			// back under the bound.
+			assert.deepEqual(requirePublicPresenceResult(await observer.presence("list")), { records: [live] }, "the live activation must survive the owner's exit");
+			assert.equal((requirePublicPresenceResult(await observer.enumerate()) as { entries: number }).entries, 1, "reclamation must delete the orphans, not hide them");
+		}, { diagnostics: t });
+	} finally {
+		await publisher.closeInput();
+	}
 });
 
 test("Windows-native owned publication removes its unchanged rooted record", { skip: process.platform !== "win32", timeout: 30_000 }, async (t) => {

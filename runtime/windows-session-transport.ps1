@@ -335,8 +335,11 @@ public static class WindowsSessionBootstrap {
     return @"\??\" + volume.Substring(4);
   }
   // The helper keeps this capability local. Publication/list RPCs are intentionally absent.
-  static string[] EnumeratePinned(IntPtr directory) {
-    const int MaxEntries = 64, MaxBytes = 8192; const uint STATUS_NO_MORE_FILES = 0x80000006;
+  // Overflow is reported through `truncated`, never raised: the caller reclaims orphaned records
+  // and rescans, so a directory full of dead records cannot turn discovery off (issue #2365).
+  static string[] EnumeratePinned(IntPtr directory, int maxEntries, out bool truncated) {
+    const int MaxBytes = 8192; const uint STATUS_NO_MORE_FILES = 0x80000006;
+    truncated = false;
         int Header = Marshal.OffsetOf(typeof(FILE_ID_BOTH_DIR_HEADER), "FileName").ToInt32(); if (Header <= 0 || Header >= MaxBytes) Fail("unavailable"); var names = new List<string>(); IntPtr buffer = Marshal.AllocHGlobal(MaxBytes);
     try {
       bool restart = true;
@@ -353,13 +356,14 @@ public static class WindowsSessionBootstrap {
           if (recordLength < Header || recordLength > available - offset || (next != 0 && (next & 7) != 0) || nameLength < 0 || (nameLength & 1) != 0 || nameLength > recordLength - Header) Fail("unsafe");
           string name = Marshal.PtrToStringUni(IntPtr.Add(buffer, offset + Header), nameLength / 2);
           if (String.IsNullOrEmpty(name) || name.IndexOfAny(new char[] {'\\', '/', ':', '\0'}) >= 0) Fail("unsafe");
-          if (name != "." && name != "..") { if (names.Count >= MaxEntries) Fail("busy"); names.Add(name); }
+          if (name != "." && name != "..") { if (names.Count >= maxEntries) { truncated = true; return names.ToArray(); } names.Add(name); }
               if (next == 0) { offset = available; } else { offset += next; }
         }
       }
     } finally { Marshal.FreeHGlobal(buffer); }
   }
-  public static int EnumeratePresence() { lock (Gate) { if (Presence == IntPtr.Zero) Fail("unavailable"); return EnumeratePinned(Presence).Length; } }
+  // The wire carries at most the largest list scan window (256): a larger directory reports 256, truncated, never more.
+  public static int EnumeratePresence() { lock (Gate) { if (Presence == IntPtr.Zero) Fail("unavailable"); bool truncated = false; return EnumeratePinned(Presence, 256, out truncated).Length; } }
       public sealed class PresenceRecord {
         public readonly string SessionId, Endpoint, Token; public readonly long CreatedAt;
         public PresenceRecord(string sessionId, string endpoint, string token, long createdAt) { SessionId = sessionId; Endpoint = endpoint; Token = token; CreatedAt = createdAt; }
@@ -473,23 +477,36 @@ public static class WindowsSessionBootstrap {
           RequirePresence();
           if (excluded != null && !Regex.IsMatch(excluded, "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")) Fail("invalid");
           var newest = new Dictionary<string, PresenceRecord>(StringComparer.Ordinal);
-          // Enumeration is capped at MaxEntries (64); each entry needs at most
-          // two explicit 1ms pipe waits, with no retries or protocol handshake.
-          foreach (string name in EnumeratePinned(Presence)) {
-            IntPtr file = IntPtr.Zero;
-            try {
-              RecordIdentity identity;
-              PresenceRecord record = ReadPinnedRecord(name, sid, out file, out identity);
-              if (record.SessionId == excluded) continue;
-              if (EndpointAbsent(record.Endpoint)) {
-                Close(file); file = IntPtr.Zero;
-                TryRemoveAbsentRecord(name, record, identity, sid);
-                continue;
-              }
-              PresenceRecord prior;
-              if (!newest.TryGetValue(record.SessionId, out prior) || record.CreatedAt > prior.CreatedAt || (record.CreatedAt == prior.CreatedAt && String.CompareOrdinal(record.Token, prior.Token) > 0)) newest[record.SessionId] = record;
-            } catch (BootstrapFailure) { }
-            finally { Close(file); }
+          var seen = new HashSet<string>(StringComparer.Ordinal);
+          // Reclamation lives in this loop, so the loop must survive a directory full of dead
+          // records: the scan is bounded per pass and escalates once, after the first pass has
+          // deleted whatever it could. No name is probed twice, and each probed entry costs at
+          // most two 1ms pipe waits, so the escalated pass is bounded at ~256 x 2ms and only runs
+          // when the directory already exceeds the ordinary bound.
+          int[] scanWindows = new int[] { 64, 256 };
+          for (int scan = 0; scan < scanWindows.Length; scan++) {
+            bool truncated = false;
+            string[] candidates = EnumeratePinned(Presence, scanWindows[scan], out truncated);
+            for (int index = 0; index < candidates.Length; index++) {
+              string name = candidates[index];
+              if (!seen.Add(name)) continue;
+              IntPtr file = IntPtr.Zero;
+              try {
+                RecordIdentity identity;
+                PresenceRecord record = ReadPinnedRecord(name, sid, out file, out identity);
+                if (record.SessionId == excluded) continue;
+                if (EndpointAbsent(record.Endpoint)) {
+                  Close(file); file = IntPtr.Zero;
+                  TryRemoveAbsentRecord(name, record, identity, sid);
+                  continue;
+                }
+                PresenceRecord prior;
+                if (!newest.TryGetValue(record.SessionId, out prior) || record.CreatedAt > prior.CreatedAt || (record.CreatedAt == prior.CreatedAt && String.CompareOrdinal(record.Token, prior.Token) > 0)) newest[record.SessionId] = record;
+              } catch (BootstrapFailure) { }
+              finally { Close(file); }
+            }
+            if (!truncated) break;
+            if (scan == scanWindows.Length - 1) Fail("busy");
           }
           var records = new List<PresenceRecord>(newest.Values);
           records.Sort(delegate(PresenceRecord left, PresenceRecord right) { return String.CompareOrdinal(left.SessionId, right.SessionId); });

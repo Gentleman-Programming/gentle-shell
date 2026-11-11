@@ -210,7 +210,8 @@ export function parseWindowsHostFrame(line: string): HostReply {
 		const result = frame.result as Record<string, unknown>;
 		const partial = Object.keys(result).length === 1 && result.state === "partial";
 		const initialized = Object.keys(result).length === 2 && result.state === "initialized" && result.bootstrap === "complete";
-		const enumerated = Object.keys(result).length === 3 && result.state === "initialized" && result.bootstrap === "complete" && typeof result.entries === "number" && Number.isSafeInteger(result.entries) && result.entries >= 0 && result.entries <= 64;
+		// The wire ceiling matches the helper's enumeration ceiling in runtime/windows-session-transport.ps1 (largest list scan window, 256): both sides share the number.
+		const enumerated = Object.keys(result).length === 3 && result.state === "initialized" && result.bootstrap === "complete" && typeof result.entries === "number" && Number.isSafeInteger(result.entries) && result.entries >= 0 && result.entries <= 256;
 		let publicResult: HostReply["result"];
 		if (partial || initialized || enumerated) publicResult = Object.freeze({ ...result }) as HostState;
 		else {

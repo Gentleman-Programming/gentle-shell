@@ -170,3 +170,70 @@ test("S5/S6: the run names cancelled and the claim marks in its description and 
 	assert.ok(run.promptGuidelines.includes(CANCELLED_GUIDANCE));
 	assert.ok(run.promptGuidelines.includes(CLAIM_MARKS_GUIDANCE));
 });
+
+// Verifier observations on T10: each result names only its own state and path.
+const closedOrAcknowledged = (value: unknown, path = "result"): string[] => {
+	if (typeof value === "string") return /^(closed|acknowledged|burned)$/.test(value) ? [`${path}=${value}`] : [];
+	if (value === null || typeof value !== "object") return [];
+	return Object.entries(value).flatMap(([key, entry]) => [...(/acknowledged|^closed$/.test(key) ? [`${path}.${key}`] : []), ...closedOrAcknowledged(entry, `${path}.${key}`)]);
+};
+
+test("S5/S6: a cancelled result says nothing is closed or acknowledged, keeps the findings, and a resume by lineageId acknowledges", async () => {
+	const controller = new AbortController();
+	const runtime = createCoordinatorRuntime(scratchRepo(), "coordinator", { hasUI: false, signal: controller.signal, onApproved: () => controller.abort(),
+		advisoryFindings: structuredClone(FINDINGS), reviewerResults: reviewerResult([{ id: "F1", claim: "x".repeat(1100) }]) });
+	try {
+		const cancelled = await runtime.invoke("gentle_review_run", { lineageId: runtime.lineage });
+		assert.equal(cancelled.outcome, "cancelled", JSON.stringify(cancelled));
+		assert.deepEqual(closedOrAcknowledged(cancelled), [], JSON.stringify(cancelled));
+		for (const key of ["status", "state"]) {
+			assert.equal(Object.hasOwn(cancelled.result, key), false, key);
+			assert.equal(Object.hasOwn(cancelled.result.closure, key), false, `closure.${key}`);
+		}
+		assert.deepEqual(cancelled.advisory_findings, FINDINGS);
+		assert.deepEqual(cancelled.advisory_finding_claims, { F1: "x".repeat(1024) });
+		assert.deepEqual(cancelled.advisory_finding_claims_truncated, ["F1"]);
+		assert.equal(cancelled.lineage_id, runtime.lineage);
+		assert.equal(runtime.closed(), false);
+		// The resume runs under a new, live signal.
+		const resumed = await runtime.invoke("gentle_review_run", { lineageId: cancelled.lineage_id }, new AbortController().signal);
+		assert.equal(resumed.outcome, "closed", JSON.stringify(resumed));
+		assert.ok(runtime.closed());
+		assert.equal(resumed.result.delivery, "ordinary-repository-policy");
+	} finally { runtime.close(); }
+});
+
+test("S2: a selection-required result names only the resume path; the single inspect still carries its nextStep", async () => {
+	const runtime = createCoordinatorRuntime(scratchRepo(), "coordinator", { hasUI: false, scenario: "untracked-selection" });
+	try {
+		const input = { lenses: ["risk"], lensesReason: "fixture" };
+		const run = await runtime.invoke("gentle_review_run", input);
+		assert.equal(run.outcome, "selection-required", JSON.stringify(run));
+		assert.equal(Object.hasOwn(run.result, "nextStep"), false, "the facade's single-operation nextStep is not relayed");
+		assert.doesNotMatch(JSON.stringify(run), /select-intended-untracked/);
+		assert.deepEqual(run.resume_input, input);
+		// The eligible paths the choice is made from stay in the provider's selection binding.
+		assert.match(run.result.selectionBinding, /eligible_paths_json/);
+		const inspect = await runtime.invoke("gentle_review", { operation: "inspect" });
+		assert.equal(typeof inspect.selectionBinding, "string");
+		assert.match(inspect.nextStep, /select-intended-untracked/, "the single operation's own result is unchanged");
+	} finally { runtime.close(); }
+});
+
+test("S5: a cut at 1,024 bytes never splits a 4-byte character and is marked only when it cuts", async () => {
+	const emoji = "\u{1F600}";
+	for (const [label, claim, keptBytes, marked] of [
+		["a*1022 + emoji + t", "a".repeat(1022) + emoji + "t", 1022, true],
+		["a*1020 + emoji", "a".repeat(1020) + emoji, 1024, false],
+		["emoji*300", emoji.repeat(300), 1024, true],
+	] as const) {
+		const run = await runOnce({ advisoryFindings: structuredClone(FINDINGS), reviewerResults: reviewerResult([{ id: "F1", claim }]) });
+		assert.equal(run.result.outcome, "closed", label);
+		const kept: string = run.result.advisory_finding_claims.F1;
+		assert.equal(Buffer.byteLength(kept), keptBytes, label);
+		assert.ok(kept.isWellFormed(), `${label}: no lone surrogate`);
+		assert.ok(claim.startsWith(kept), `${label}: a prefix of the reviewer's claim`);
+		assert.equal(Object.hasOwn(run.result, "advisory_finding_claims_truncated"), marked, label);
+		if (marked) assert.deepEqual(run.result.advisory_finding_claims_truncated, ["F1"], label);
+	}
+});

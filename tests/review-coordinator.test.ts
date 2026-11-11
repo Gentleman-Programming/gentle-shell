@@ -113,7 +113,9 @@ test("an intended-untracked selection returns selection-required; a correction r
  for (const [response, expected] of [[selecting, "selection-required"], [correction, "input-required"], [{ ...correction, selectionBinding: "opaque-selection" }, "input-required"]] as const) {
   const host = backend([response]); const result = await runReviewCoordinator({ lineageId: lineage }, host);
   assert.equal(result.outcome, expected);
-  assert.equal(result.result, response, "the facade envelope is relayed unchanged"); assert.equal(host.calls.length, 1);
+  // The selection drops only the facade's single-operation nextStep; resume_input names the way on.
+  const { nextStep: _nextStep, ...relayed } = response as Body;
+  assert.deepEqual(result.result, response === selecting ? relayed : response, "the facade envelope is relayed otherwise unchanged"); assert.equal(host.calls.length, 1);
  }
 });
 
@@ -266,6 +268,9 @@ test("a captured provider-role artifact continues only through bound STATUS; loo
   [collect, { ...role, native_failure: {} }],
   [collect, { ...role, reconciliation: {} }],
   [collect, { ...role, reconciliation_failure: {} }],
+  [collect, { ...role, status: "reconciled" }],
+  [collect, (({ status: _status, ...rest }) => rest)(role)],
+  [collect, { ...role, outcome: "native-provider-role-capture-recorded" }],
   [group, role],
  ] as const) {
   const blocked = backend([status, capture]);
@@ -298,7 +303,7 @@ test("cancellation after an admitted closure with findings returns cancelled; a 
  };
  const host = racing(withFindings);
  const result = await runReviewCoordinator({ lineageId: lineage }, host);
- assert.equal(result.outcome, "cancelled"); assert.equal(result.result, withFindings);
+ assert.equal(result.outcome, "cancelled"); assert.deepEqual(result.result, withFindings, "the fixture envelope carries no status or state to drop");
  assert.deepEqual(result.advisory_findings, findings); assert.deepEqual(result.advisory_finding_claims, { F1: "claim" });
  assert.deepEqual(host.calls, ["gentle_review", "gentle_review_capture"], "nothing is dispatched after the cancellation");
  for (const response of [{ ...withFindings, failure: { kind: "transport" } }, { ...withFindings, outcome: "capture-binding-rejected" }, { ...captured, closure: {} }, captured]) {
@@ -306,4 +311,18 @@ test("cancellation after an admitted closure with findings returns cancelled; a 
   await assert.rejects(runReviewCoordinator({ lineageId: lineage }, refused), { name: "AbortError" }, JSON.stringify(response));
   assert.equal(refused.calls.length, 2);
  }
+});
+
+test("after a captured provider-role artifact, drift, a reoffered capture and the cap still stop the run", async () => {
+ const role = { tool: "gentle_review_capture", status: "captured", outcome: "native-provider-role-captured", provider_role: { role: "refuter", captured: true } };
+ const drift = backend([collect, role, { result: { ...approved.result, target_identity: "other" } }]);
+ assert.equal((await runReviewCoordinator({ lineageId: lineage }, drift)).outcome, "binding-drift"); assert.equal(drift.calls.length, 3);
+ const reoffered = backend([collect, role, collect]);
+ assert.equal((await runReviewCoordinator({ lineageId: lineage }, reoffered)).outcome, "repeated-capture"); assert.equal(reoffered.calls.length, 3);
+ let roles = 0;
+ const capped = await runReviewCoordinator({ lineageId: lineage }, { invoke: async tool => {
+  if (tool === "gentle_review") return { ...collect, collectBindings: [{ collectBinding: `role-${roles}` }] };
+  roles++; return role;
+ } });
+ assert.equal(capped.outcome, "transition-limit"); assert.equal(roles, 24);
 });

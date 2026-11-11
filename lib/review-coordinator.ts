@@ -169,8 +169,15 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
   // host routing metadata from submission domains or inspect opaque bindings.
   if (transition.correction_request !== undefined) return finish("input-required", details);
   // The facade's own pre-lineage intended-untracked selection (selectionBinding
-  // and nextStep, no collectBindings): the parent chooses, never the run.
-  if (entries.length === 0 && typeof details.selectionBinding === "string") return finish("selection-required", details);
+  // and nextStep, no collectBindings): the parent chooses, never the run. The
+  // facade's nextStep names the single selection operation, which would start
+  // without this run's intent, so only resume_input names the way on; the
+  // selectionBinding stays because its eligible paths are what the choice is
+  // made from.
+  if (entries.length === 0 && typeof details.selectionBinding === "string") {
+   const { nextStep: _singleOperation, ...selection } = details;
+   return finish("selection-required", selection);
+  }
   if (entries.length === 0) return finish("input-required", details);
   if (lineage === undefined || target === undefined) return finish("blocked", details);
   const bindings = entries.map(entry => entry.collectBinding);
@@ -218,8 +225,14 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
   }
   // Cancelled after an admitted approved closure: return its findings and
   // dispatch nothing more; resuming by lineageId reaches the acknowledgement.
+  // The capture envelope's status ("closed") and state ("approved") describe
+  // the capture, not the run, which is neither closed nor acknowledged: drop them.
   if (deps.signal?.aborted) {
-   if (closureFindings !== undefined && Object.hasOwn(capture, "closure")) return finish("cancelled", capture);
+   if (closureFindings !== undefined && Object.hasOwn(capture, "closure")) {
+    const { status: _status, state: _state, closure, ...envelope } = capture;
+    const { state: _closureState, ...pending } = record(closure);
+    return finish("cancelled", { ...envelope, closure: pending });
+   }
    checkCancelled();
   }
   details = await status();

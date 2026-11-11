@@ -175,14 +175,14 @@ test("S5: routing ignores advisory_finding_claims", async () => {
 });
 
 // An INSPECT that asks for the intended-untracked selection is not a correction plan.
-test("S2: an INSPECT that requests the intended-untracked selection returns selection-required with the facade envelope unchanged", async () => {
+test("S2: an INSPECT that requests the intended-untracked selection returns selection-required with the facade envelope, without its nextStep", async () => {
 	const runtime = createCoordinatorRuntime(scratchRepo(), "coordinator", { hasUI: false, scenario: "untracked-selection" });
 	try {
 		const run = await runtime.invoke("gentle_review_run", { lenses: ["risk"], lensesReason: "fixture" });
 		assert.equal(run.outcome, "selection-required", JSON.stringify(run));
 		assert.equal(run.result.operation, "inspect");
 		assert.equal(typeof run.result.selectionBinding, "string");
-		assert.match(run.result.nextStep, /select-intended-untracked/);
+		assert.equal(Object.hasOwn(run.result, "nextStep"), false);
 		assert.equal(Object.hasOwn(run.result, "collectBindings"), false);
 		assert.deepEqual(stepNames(run), ["gentle_review:assess", "gentle_review:inspect"], "no further facade call");
 		assert.deepEqual(providerOperations(runtime.nativeCalls), ["assess"], "no provider operation after INSPECT");

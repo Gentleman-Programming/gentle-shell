@@ -194,10 +194,10 @@ export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coo
 	const context = { cwd, hasUI: options.hasUI ?? true, sessionManager: { getSessionId: () => "fixture-live-driver", getBranch: () => [], getSessionFile: () => undefined }, modelRegistry: undefined };
 	const facadeCalls: { name: string; parameters: Body; elapsed_ms: number }[] = [];
 	return { tools, lineage, target, nativeCalls, facadeCalls, forecasts, startRequests,
-		async invoke(name: string, parameters: Body) {
+		async invoke(name: string, parameters: Body, signal: AbortSignal | undefined = options.signal) {
 			const tool = tools.get(name); assert.ok(tool, `registered tool ${name}`);
 			const began = performance.now();
-			const result = await tool.execute("fixture-call", parameters, options.signal, (update: any) => forecasts.push(update.details), context);
+			const result = await tool.execute("fixture-call", parameters, signal, (update: any) => forecasts.push(update.details), context);
 			facadeCalls.push({ name, parameters, elapsed_ms: performance.now() - began });
 			return result.details as Body;
 		},

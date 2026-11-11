@@ -34,9 +34,26 @@ const SECOND_SIDES = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REBASE_HEAD"];
 const DIFF = ["--no-pager", "-c", "core.quotepath=false", "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--no-relative", "--no-renames"];
 const CANDIDATE = "-G^[<>][<>]";
 
+/** Remove backslash-newline continuations outside single quotes (inside them a backslash is literal). */
+function joinContinuations(command: string): string {
+	let out = "", single = false, double = false;
+	for (let at = 0; at < command.length; at++) {
+		const char = command[at];
+		if (char === "\\" && !single) {
+			if (command[at + 1] === "\n") { at++; continue; }
+			out += command.slice(at, at + 2); at++; continue;
+		}
+		if (char === "'" && !double) single = !single;
+		else if (char === '"' && !single) double = !double;
+		out += char;
+	}
+	return out;
+}
+
 function tokenize(command: string): Token[] {
 	const tokens: Token[] = [];
-	for (const match of command.matchAll(/(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s;&|()'"\\])+|&&|\|\||[;&|()\n]/g)) {
+	// `[<>]&`, `&>` and `>|` belong to a redirection (`2>&1`, `>&2`, `&>file`), never to a `&` separator.
+	for (const match of joinContinuations(command).matchAll(/(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[<>]&|&>|>\||[^\s;&|()'"\\])+|&&|\|\||[;&|()\n]/g)) {
 		const raw = match[0];
 		const operator = /^(?:&&|\|\||[;&|()\n])$/.test(raw);
 		tokens.push({ operator, value: operator ? raw : raw.replace(/"((?:\\.|[^"\\])*)"|'([^']*)'|\\(.)/g,
@@ -62,7 +79,7 @@ export function conflictMarkerChecks(command: string, cwd: string): Check[] {
 		if (end < tokens.length && !tokens[end].operator) continue;
 		// Redirections are not arguments: `> out`, `2>&1`, `<<EOF`, `< message.txt`.
 		const words = tokens.slice(start, end).map(token => token.value)
-			.filter((word, at, all) => !/^\d*[<>]/.test(word) && !/^\d*[<>]{1,2}$/.test(all[at - 1] ?? ""));
+			.filter((word, at, all) => !/^\d*(?:&>|[<>])/.test(word) && !/^\d*(?:&>>?|[<>]{1,2}&?|>\|)$/.test(all[at - 1] ?? ""));
 		start = end + 1;
 		let head = 0;
 		while (/^[A-Za-z_]\w*=/.test(words[head] ?? "")) {

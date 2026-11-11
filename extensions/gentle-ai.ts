@@ -12964,9 +12964,11 @@ function createGentleAiExtensionForTesting(
 			root => processRetainedNativeStatusSelections.get(sessionKey)?.readCommittedRange(root),
 			(root, target) => readNativeReviewOutcome(root, target) === "declined", ctx.signal,
 			() => deliveryEpoch === reminderEpoch && modeEpoch === yolo.epoch() && pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey) === sessionKey);
-		if (primaryToolCall && modeEpoch !== yolo.epoch()) return { block: true, reason: "Permission mode changed during delivery preflight. This action was not run; retry under the current mode." };
 		// cost-speed P9: after the RDD preflight (its denials win unchanged), independent of RDD mode; fails open.
-		return deliveryDenied ?? (primaryToolCall ? await checkDeliveryConflictMarkers(ctx.cwd, command, ctx.signal) : undefined);
+		// It runs BEFORE the epoch recheck below: no await may sit between that recheck and the return.
+		const markerDenied = !deliveryDenied && primaryToolCall ? await checkDeliveryConflictMarkers(ctx.cwd, command, ctx.signal) : undefined;
+		if (primaryToolCall && modeEpoch !== yolo.epoch()) return { block: true, reason: "Permission mode changed during delivery preflight. This action was not run; retry under the current mode." };
+		return deliveryDenied ?? markerDenied;
 	});
 
 	for (const owner of ["delegation", "review"] as const) {

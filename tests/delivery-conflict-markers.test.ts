@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import childProcess, { execFileSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 
 // Markers are assembled at runtime so no line of this file starts with one.
@@ -241,4 +243,83 @@ test("P9 preservation: a clean commit passes and RDD preflight denials keep thei
 	assert.equal(result?.block, true);
 	assert.match(result!.reason!, /^RDD pre-delivery: Select the actual committed range/, "the RDD denial runs first and is unchanged");
 	assert.equal(await hook(root, { mode: "off" })("git status && echo 'git commit'"), undefined, "non-delivery commands are untouched");
+});
+
+// PR #3113 review: a redirection's `&` is not a command separator, so a preceding `cd` keeps its directory.
+test("P9: redirections such as 2>&1 keep the cd and -C targets", async t => {
+	const { scratch, repo } = fixture(t);
+	const plain = join(scratch, "plain");
+	mkdirSync(plain);
+	const dirty = repo("dirty"), clean = repo("clean");
+	dirty.write("conflict.txt", CONFLICT); dirty.git("add", ".");
+	const run = hook(plain);
+	const forms = (root: string) => [`cd ${root} && git commit -m x 2>&1`, `git -C ${root} commit -am x > /dev/null 2>&1`,
+		`cd ${root} && git commit -m x >&2`, `cd ${root} && git commit -m x &>${join(scratch, "out.log")}`, `cd ${root} && git commit -m x 2>/dev/null </dev/null`];
+	for (const command of forms(dirty.root)) {
+		const result = await run(command);
+		assert.equal(result?.block, true, command);
+		assert.match(result!.reason!, / at conflict\.txt:2\. /, command);
+	}
+	for (const command of forms(clean.root)) assert.equal(await run(command), undefined, command);
+	assert.equal(await run(`cd ${dirty.root} && git commit -m x &`), undefined, "a trailing background & still ends the cd scope");
+});
+
+// PR #3113 review: a backslash-newline continues the command, so flags and paths on the next line belong to it.
+test("P9: line continuations keep -a and git add paths with their command", async t => {
+	const { repo } = fixture(t);
+	const { root, write } = repo("repo");
+	write("app.txt", CONFLICT);
+	const run = hook(root);
+	for (const command of ["git commit \\\n-a -m x", "git commit -m \"fix \\\n\" -a", "git add \\\napp.txt && git commit -m x", "git add app.txt \\\n&& git commit -m x"]) {
+		const result = await run(command);
+		assert.equal(result?.block, true, JSON.stringify(command));
+		assert.match(result!.reason!, / at app\.txt:2\. /, JSON.stringify(command));
+	}
+	assert.equal(await run("git commit -m 'a \\\n' -m y"), undefined, "inside single quotes the backslash is literal and the commit records only the index");
+});
+
+// PR #3113 review (security): no asynchronous work may run between the permission-mode epoch recheck and the
+// hook's return; a mode change while the marker check is pending must not yield a stale allow.
+test("P9: a permission-mode change while the marker check runs blocks instead of allowing", async t => {
+	const { repo, scratch } = fixture(t);
+	const { root } = repo("repo");
+	const manager = SessionManager.inMemory(root);
+	manager.appendCustomEntry("probe-anchor", {});
+	const handlers = new Map<string, Function[]>(), commands = new Map<string, any>();
+	const pi = { on: (name: string, fn: Function) => handlers.set(name, [...handlers.get(name) ?? [], fn]), events: { on() { return () => {}; }, emit() {} },
+		registerCommand: (name: string, value: unknown) => commands.set(name, value), registerTool() {}, registerFlag() {}, registerMessageRenderer() {},
+		getActiveTools: () => [], appendEntry() {} };
+	createGentleAiExtension({ nativeReviewCli: { reviewMode: async () => ({ status: { effective: "off", global: "off", cloneLocal: "", source: "global" } }), assess: async () => { throw new Error("none"); } } as never,
+		processEnv: { GENTLE_AI_TELEMETRY: "0", GENTLE_PI_CONFIG_HOME: join(scratch, "config") }, candidateViews: null,
+		resolveTelemetryTriggerBinary: () => { throw new Error("disabled"); } } as never)(pi as never);
+	const ctx = { cwd: root, mode: "tui", hasUI: true, sessionManager: manager, signal: new AbortController().signal,
+		ui: { notify() {}, setStatus() {}, setWidget() {}, confirm: async () => true } };
+	const call = async (command: string) => {
+		let output: any;
+		for (const fn of handlers.get("tool_call") ?? []) { const next = await fn({ toolName: "bash", toolCallId: "probe", input: { command } }, ctx); if (next !== undefined) output = next; }
+		return output as { block?: boolean; reason?: string } | undefined;
+	};
+	await commands.get("gentle:mode").handler("yolo", ctx);
+	assert.equal(await call("git commit -m clean"), undefined, "stable mode: a clean commit is allowed");
+	// Hold the marker check's first diff (its candidate pathspec is unique to the guard) and change the mode meanwhile.
+	const original = childProcess.execFile;
+	let held!: () => void, release!: () => void, holding = true;
+	const reached = new Promise<void>(resolve => { held = resolve; });
+	t.mock.method(childProcess, "execFile", (...args: any[]) => {
+		if (holding && Array.isArray(args[1]) && args[1].includes("-G^[<>][<>]")) {
+			holding = false; held();
+			void new Promise<void>(resolve => { release = resolve; }).then(() => (original as Function)(...args));
+			return undefined;
+		}
+		return (original as Function)(...args);
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const pending = call("git commit -m clean");
+	await Promise.race([reached, new Promise((_, reject) => setTimeout(() => reject(new Error("marker check never reached")), 3000))]);
+	await commands.get("gentle:mode").handler("normal", ctx);
+	release();
+	const result = await pending;
+	assert.equal(result?.block, true, "a decision made under the earlier mode must not be returned");
+	assert.match(result!.reason!, /^Permission mode changed during delivery preflight\. This action was not run; retry under the current mode\.$/);
 });

@@ -1354,6 +1354,8 @@ The notice appears once per distinct change: further launches stay quiet until t
 
 ## Commands
 
+This table is the short form. For every command's syntax, subcommands, defaults, in-overlay keys and the exact error strings, see the [command reference](commands.md), which covers all 36 registered commands rather than the most-used ones.
+
 | Command                          | What it does                                                        |
 | -------------------------------- | ------------------------------------------------------------------- |
 | `/gentle:status`              | Shows package assets and global model config status. |

@@ -398,11 +398,11 @@ The pass cost $24.207 (Pi estimates, 19 runs: M $17.881 over 10 runs, F $6.326 o
 - The F `final` runs were made 2.5 hours earlier than the interleaved runs.
 - This pass measures detection and relay only: not authority records, consent behavior (both arms answered consent from the prompt's advance grant) or other routings.
 
-## R1 and R2 repeated (chance or split)
+## R1 and R2 repeated (inconclusive)
 
 Question: is the by-arm split of L10 (R1 escalated in F 3/3 vs M 0/2; R2 approved in F 3/3 vs blocked in M 2/2) chance? Same arms, M = 6e61ac3bd and F = 4eb357f8b.
 
-**Verdict for both inputs: chance.** Both outcomes now occur in both arms, and the two-sided Fisher exact p is 0.2424 for each input.
+**Verdict for both inputs: inconclusive; no difference between the arms is shown.** Both outcomes now occur in both arms, and the two-sided Fisher exact p is 0.2424 for each input. That does not establish that chance caused the earlier split: with 5 and 6 runs per arm the test cannot rule out a real difference, and the direction in both inputs is against the feature. The pre-stated rule of this pass called this result "chance"; the label below is kept as applied, and it means only "not distinguishable from chance with these counts".
 
 ### Setup
 
@@ -465,8 +465,8 @@ Two-sided Fisher exact p = **0.242424** (x = 0..4: 0.045455, 0.303030, 0.454545,
 Older trees, not pooled: 29b57a414 R1-a correction_required and R2-a blocked on `json` (two lenses CRITICAL); 234cf3a31 R1-pilot escalated and R2-after blocked on `json`.
 
 Verdict by the rule:
-- **R1: chance.** Both outcomes occur in both arms, and p = 0.2424 ≥ 0.05.
-- **R2: chance.** Both outcomes occur in both arms, and p = 0.2424 ≥ 0.05.
+- **R1: "chance" by the pre-stated rule, that is, inconclusive.** Both outcomes occur in both arms, and p = 0.2424 ≥ 0.05.
+- **R2: "chance" by the pre-stated rule, that is, inconclusive.** Both outcomes occur in both arms, and p = 0.2424 ≥ 0.05.
 
 ### Observations
 

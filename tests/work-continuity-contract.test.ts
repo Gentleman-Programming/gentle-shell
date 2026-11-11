@@ -107,7 +107,11 @@ test("S3: a repaired setup needs one explicit request and keeps every existing l
 });
 
 test("#3049: explicit quota recovery permits only the missing proof without reopening authority", async () => {
-	includesAll(await delivered(), [
+	const parent = await delivered();
+	assert.ok(parent.includes("Quota recovery: `orchestrator-quota-recovery.md`."));
+	assert.ok(!parent.includes("A temporary verifier quota failure"), "recovery details load only on demand");
+	const recovery = readFileSync(new URL("../assets/orchestrator-quota-recovery.md", import.meta.url), "utf8");
+	includesAll(recovery, [
 		"A temporary verifier quota failure with no verdict still ends the automatic cycle.",
 		"After the human reports restored availability and explicitly requests the missing verification, allow one new bounded attempt for the same candidate.",
 		"Preserve the failed attempt and still-valid passed checks; do not replay passed suites.",

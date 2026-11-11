@@ -97,7 +97,7 @@ test("T23(d)(e): a quick check runs once and an unavailable verifier is reported
 test("S4-S5: the unchanged Close stop is scoped to the ended automatic cycle", () => {
 	for (const persona of personas) {
 		containsAll(prompt(persona), [
-			"The Close step's bounded stop ends the current automatic cycle; a later explicit human request is separate and remains subject to native authority.",
+			"The Close stop ends the cycle; later explicit requests stay subject to native authority.",
 			"Partial worker execution is not by itself exhausted proof or a terminal native review outcome.",
 		], `${persona} delivered continuation`);
 		assert.ok(closeStep(persona).includes("never more verification"), "the mirrored Close rule remains intact");

@@ -16,6 +16,8 @@ Broad feature approval is not destructive-operation authority. Do not reroute a 
 
 ## Temporary verifier quota recovery
 
+The always-on prompt points to `assets/orchestrator-quota-recovery.md`; the parent loads these conditions only when recovery is requested.
+
 A verifier that ended on a temporary quota error without a verdict has not supplied proof or approval. Its automatic cycle stops. After availability is restored, the human can explicitly request one new bounded attempt at the missing verification for the same candidate. A general request to continue implementation is not that request.
 
 Preserve the failed attempt and still-valid successful checks; run the missing verification rather than replaying passed suites. Before dispatch, confirm the previous child has ended and no child has uncertain status. A candidate change requires the ordinary verification decision for that changed candidate. Do not automatically wait, retry, or substitute a provider/model. Consent, actual denials, explicit one-run/no-retry limits, terminal native outcomes and exhausted native budgets remain binding; this request does not reset them.

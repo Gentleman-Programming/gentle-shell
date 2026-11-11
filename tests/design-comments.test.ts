@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 import test from "node:test";
-import { DesignCommentsError, MAX_DESIGN_COMMENTS, MAX_DESIGN_SCREENSHOT_BYTES, createDesignCommentStore, describeViewport } from "../lib/design-comments.ts";
+import { DesignCommentsError, MAX_DESIGN_COMMENTS, MAX_DESIGN_SCREENSHOT_BYTES, createDesignCommentStore, describeViewport, normalizeNote } from "../lib/design-comments.ts";
 
 // design/<slug>/comments.json has one owner: every read and write goes through
 // lib/design-comments.ts, so the canvas server and the agent tool serialize.
@@ -275,6 +275,18 @@ test("S5: setStatus resolved with a note stores it, trimmed, as the comment's re
 	assert.equal(onDisk[0].resolution, "Made the title 32px.");
 	assert.equal("resolution" in onDisk[1], false, "comments resolved or open without a note never get the key");
 	assert.equal((await store.read("alpha")).comments.find((comment) => comment.id === b.id)!.resolution, undefined);
+});
+
+test("S11: the resolution note is one line: line breaks and the whitespace around them become one space", async (t) => {
+	const root = designRoot(t);
+	const store = fixedStore(root);
+	const a = await store.add("alpha", INPUT);
+	const result = await store.setStatus("alpha", [a.id], "resolved", { note: " Made the title 32px. \r\n\n  Kept the  spacing.\rDone\n " });
+	assert.equal(result.updated[0].resolution, "Made the title 32px. Kept the  spacing. Done", "spaces inside a line are kept");
+	assert.equal(JSON.parse(readFileSync(join(root, "alpha", "comments.json"), "utf8")).comments[0].resolution, "Made the title 32px. Kept the  spacing. Done");
+	assert.equal(normalizeNote("a\u2028b\u2029 c"), "a b c", "Unicode line and paragraph separators are line breaks too");
+	assert.equal(normalizeNote(" \n\r\n "), undefined, "nothing left is no note");
+	assert.equal(normalizeNote("one line"), "one line");
 });
 
 test("S5: setStatus resolved without a note, or with a blank one, stores no resolution", async (t) => {

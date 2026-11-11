@@ -86,9 +86,12 @@ export function noteProblem(value: unknown): string | undefined {
 	return undefined;
 }
 
-/** A note with line endings normalized to \n and the outer whitespace trimmed; undefined when nothing is left. */
+/**
+ * The one-line resolution note: every line break, with the whitespace around it, becomes one space and the outer
+ * whitespace is trimmed (spaces inside a line are kept); undefined when nothing is left.
+ */
 export function normalizeNote(value: string): string | undefined {
-	return value.replace(/\r\n?/g, "\n").trim() || undefined;
+	return value.split(/[\r\n\u2028\u2029]/).map((line) => line.trim()).filter(Boolean).join(" ") || undefined;
 }
 
 export type DesignCommentsDocument = { version: 1; comments: StoredDesignComment[] };

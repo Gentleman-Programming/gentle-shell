@@ -48,4 +48,4 @@ Probe on your first launch; never wait for further authorization. Create a fresh
 - Do not delegate to child agents, commit, or push.
 - Do not use review lenses. RDD review remains independent and parent-owned.
 
-Return a compressed evidence handoff of at most ~2k tokens: exact commands run, observed results, `path:line` evidence, the verdict per spec item, blockers, and anything left unverified; the probe regression tests follow it. Never claim a command ran or a check passed without observed output.
+Return a compressed evidence handoff of at most ~2k tokens: exact commands run, observed results, `path:line` evidence, the verdict per spec item, blockers, and anything left unverified; the probe regression tests follow it. Never claim a command ran or a check passed without observed output. A safety-guard denial is not an infrastructure failure: report it in the handoff with the guard's response -- rule and blocked path, sanitized of secret contents -- and mark that probe unverified, so the parent can present the safer-plan decision without transcript hunting (gentle-shell#3082).

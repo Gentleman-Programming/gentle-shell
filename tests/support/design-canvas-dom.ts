@@ -275,6 +275,9 @@ export async function loadCanvas(firstHeight = 300, extraReplies: Record<string,
 		addEventListener(type: string, listener: Listener) {
 			windowListeners.set(type, [...(windowListeners.get(type) ?? []), listener]);
 		},
+		removeEventListener(type: string, listener: Listener) {
+			windowListeners.set(type, (windowListeners.get(type) ?? []).filter((candidate) => candidate !== listener));
+		},
 		...extraWindow,
 	};
 	boot(window, document);
@@ -291,13 +294,15 @@ export async function loadCanvas(firstHeight = 300, extraReplies: Record<string,
 	const windowEvent = (type: string) => {
 		for (const listener of windowListeners.get(type) ?? []) listener({ type });
 	};
+	/** How many listeners the window holds for `type`. */
+	const windowListenerCount = (type: string) => (windowListeners.get(type) ?? []).length;
 	/** A server-sent event on the canvas's live-reload stream, then the async work it starts. */
 	const serverEvent = async (type: string, data: unknown) => {
 		for (const listener of sourceListeners.get(type) ?? []) listener({ type, data: JSON.stringify(data) });
 		for (let i = 0; i < 10; i++) await flush();
 	};
 	const frames = () => world.children.map((wrapper) => wrapper.children.find((child) => child.classes.has("gd-frame-box"))!.children.find((child) => child.localName === "iframe")!);
-	return { document, viewport, world, boards, message, windowEvent, serverEvent, frames, fetched, posts, urls, replies, zoomLevel: document.getElementById("gd-zoom-level"), navMode: document.getElementById("gd-nav-mode") };
+	return { document, viewport, world, boards, message, windowEvent, windowListenerCount, serverEvent, frames, fetched, posts, urls, replies, zoomLevel: document.getElementById("gd-zoom-level"), navMode: document.getElementById("gd-nav-mode") };
 }
 
 export type CanvasFixture = Awaited<ReturnType<typeof loadCanvas>>;

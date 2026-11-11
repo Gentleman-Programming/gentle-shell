@@ -15,7 +15,7 @@ const TEXT = Object.freeze({
 	pdf: "Export as PDF",
 	html: "Download HTML",
 	frameTitle: (title) => `${title} artboard`,
-	confirm: "Choose this canvas tab in the browser's capture selector. Choosing another tab or screen may export the wrong content.",
+	choose: "Choose this canvas tab in the browser's capture selector. Choosing another tab or screen may export the wrong content.",
 	failed: (reason) => `Could not export the artboard. ${reason} Use your browser's screenshot tool instead.`,
 	unavailable: "Tab capture is not available in this browser.",
 	sharedScreen: "You shared a screen, not this tab, so the artboard cannot be cropped from it.",
@@ -32,6 +32,9 @@ const TEXT = Object.freeze({
 
 // Every PNG export starts the artboard at Desktop, its own size.
 const DESKTOP = Object.freeze({ kind: "desktop" });
+
+// How long a PNG export waits for the capture to paint a new frame; sharing that stopped paints none.
+const FRAME_WAIT_MS = 500;
 
 export function init(ctx) {
 	const { win, doc, els, store, api, ui, actions } = ctx;
@@ -54,8 +57,8 @@ export function init(ctx) {
 	/** What the menu offers for one artboard, in order: the exports only. */
 	function menuActions(board) {
 		return [
-			{ label: TEXT.png, icon: "i-image", run: () => exportArtboard(board, 1) },
-			{ label: TEXT.png2x, icon: "i-image", run: () => exportArtboard(board, 2) },
+			{ label: TEXT.png, icon: "i-image", run: (button) => exportArtboard(board, 1, button) },
+			{ label: TEXT.png2x, icon: "i-image", run: (button) => exportArtboard(board, 2, button) },
 			{ label: TEXT.pdf, icon: "i-image", run: () => exportPdf(board) },
 			{ label: TEXT.html, icon: "i-download", run: () => downloadHtml(board) },
 		];
@@ -78,8 +81,10 @@ export function init(ctx) {
 		return new Promise((resolve) => win.requestAnimationFrame(() => win.requestAnimationFrame(resolve)));
 	}
 
+	/** The next frame the capture paints, or FRAME_WAIT_MS at most: a capture whose sharing stopped paints none. */
 	function nextVideoFrame(video) {
-		return new Promise((resolve) => (video.requestVideoFrameCallback ? video.requestVideoFrameCallback(() => resolve()) : win.setTimeout(resolve, 100)));
+		const frame = new Promise((resolve) => (video.requestVideoFrameCallback ? video.requestVideoFrameCallback(() => resolve()) : win.setTimeout(resolve, 100)));
+		return Promise.race([frame, new Promise((resolve) => win.setTimeout(resolve, FRAME_WAIT_MS))]);
 	}
 
 	/** Downloads `url` as `name` through a temporary link, then releases the URL. */
@@ -101,14 +106,16 @@ export function init(ctx) {
 	/**
 	 * Exports the artboard as a PNG from the browser's tab capture, without sending pixels to the server.
 	 * For one frame the canvas hides its chrome and puts the artboard at its own size at 100% in the window's
-	 * top left; then it restores the focus, the screen size and the view it had.
+	 * top left; then it restores the focus, the screen size and the view it had, and puts the keyboard focus
+	 * back on `button`, the ⋯ button the export was chosen from.
 	 */
-	async function exportArtboard(board, scale) {
+	async function exportArtboard(board, scale, button) {
 		if (!win.navigator?.mediaDevices?.getDisplayMedia) {
 			reportFailure(TEXT.failed(TEXT.unavailable));
 			return;
 		}
-		if (!win.confirm(TEXT.confirm)) return;
+		// Not a confirm dialog: the browser lets the capture start only for a few seconds after the click.
+		ui.setStatus(TEXT.choose, false);
 		let stream = null;
 		const previous = { focus: state.focus, size: state.size, view: { zoom: state.zoom, x: state.x, y: state.y, fitted: state.fitted } };
 		try {
@@ -160,7 +167,9 @@ export function init(ctx) {
 			const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
 			if (!blob) throw new Error(TEXT.encode);
 			download(win.URL.createObjectURL(blob), `${fileName(board, true)}${scale === 2 ? "@2x" : ""}.png`);
-			ui.showToast(scale === 2 && (sx < 2 || sy < 2) ? TEXT.doneUpscaled : TEXT.done, false);
+			const done = scale === 2 && (sx < 2 || sy < 2) ? TEXT.doneUpscaled : TEXT.done;
+			ui.setStatus(done, false);
+			ui.showToast(done, false);
 		} catch (error) {
 			reportFailure(TEXT.failed(sentence(error?.message || TEXT.denied)));
 		} finally {
@@ -174,18 +183,19 @@ export function init(ctx) {
 			}
 			store.setView(previous.view);
 			actions.applyView();
+			button?.focus();
 		}
 	}
 
-	// The print container of the PDF export in progress, or null.
-	let printing = null;
+	// Ends the PDF export in progress (its container, page rule and listener), or null.
+	let endPrint = null;
 
 	/**
 	 * Prints the artboard alone, at its own size, from this page (artboards are sandboxed without modals, so
 	 * they cannot print themselves): the browser's print dialog saves it as PDF. Nothing goes to the server.
 	 */
 	function exportPdf(board) {
-		printing?.remove();
+		endPrint?.();
 		const { width, height, title, file } = board.artboard;
 		const holder = doc.createElement("div");
 		holder.className = "gd-print";
@@ -198,15 +208,16 @@ export function init(ctx) {
 		holder.append(frame);
 		doc.body.append(holder);
 		doc.body.classList.add("gd-printing");
-		printing = holder;
 		const page = setPrintPage(width, height);
 		const done = () => {
-			if (printing !== holder) return;
-			printing = null;
+			if (endPrint !== done) return;
+			endPrint = null;
+			win.removeEventListener("afterprint", done);
 			page?.();
 			holder.remove();
 			doc.body.classList.remove("gd-printing");
 		};
+		endPrint = done;
 		win.addEventListener("afterprint", done, { once: true });
 		frame.addEventListener("load", () => win.print(), { once: true });
 		frame.setAttribute("src", api.fileUrl(board.slug, file));
@@ -239,5 +250,5 @@ export function init(ctx) {
 		}
 	}
 
-	return { boardMenuButton, closeBoardMenu, exportArtboard, exportPdf, downloadHtml };
+	return { boardMenuButton, closeBoardMenu };
 }

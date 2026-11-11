@@ -218,24 +218,30 @@ test("a design reload closes an open artboard menu: its artboard is gone", async
 
 // ---- Export as PNG
 
-type PngLog = { calls: string[]; draw: number[][]; names: string[]; during: Array<{ exporting: boolean; transform: string; width: string; height: string }>; output: { width: number; height: number } | null };
+type PngLog = { calls: string[]; draw: number[][]; names: string[]; during: Array<{ exporting: boolean; transform: string; width: string; height: string }>; output: { width: number; height: number } | null; statusAtCapture: string[]; timeouts: number[] };
 
-/** The canvas with a tab capture that hands back one 1200 x 800 frame (this window at 1×) and a canvas that records what it draws. */
-async function pngCanvas(extra: { surface?: string; play?: () => Promise<void>; confirm?: boolean; frame?: { width: number; height: number } } = {}) {
-	const log: PngLog = { calls: [], draw: [], names: [], during: [], output: null };
+/**
+ * The canvas with a tab capture that hands back one 1200 x 800 frame (this window at 1×) and a canvas that records what it draws.
+ * `stalled`: the video never paints a new frame (sharing stopped); `setTimeout` then runs at once and logs its delay.
+ */
+async function pngCanvas(extra: { surface?: string; play?: () => Promise<void>; frame?: { width: number; height: number }; stalled?: boolean } = {}) {
+	const log: PngLog = { calls: [], draw: [], names: [], during: [], output: null, statusAtCapture: [], timeouts: [] };
 	const track = { stop: () => log.calls.push("stop"), getSettings: () => (extra.surface ? { displaySurface: extra.surface } : {}) };
 	const stream = { getTracks: () => [track], getVideoTracks: () => [track] };
+	let status: FakeElement | null = null;
 	const canvas = await loadExport({}, {
-		confirm: (message: string) => { log.calls.push(message); return extra.confirm ?? true; },
-		navigator: { mediaDevices: { getDisplayMedia: async (options: unknown) => { log.calls.push(`capture ${JSON.stringify(options)}`); return stream; } } },
+		confirm: () => { log.calls.push("confirm"); return true; },
+		navigator: { mediaDevices: { getDisplayMedia: async (options: unknown) => { log.calls.push(`capture ${JSON.stringify(options)}`); log.statusAtCapture.push(status!.textContent); return stream; } } },
 		URL: { createObjectURL: () => { log.calls.push("url"); return "blob:test"; }, revokeObjectURL: () => log.calls.push("revoke") },
+		...(extra.stalled ? { setTimeout: (callback: () => void, ms?: number) => { log.timeouts.push(ms ?? 0); const timer = setTimeout(callback, 0); timer.unref(); return timer; } } : {}),
 	});
+	status = $(canvas, "gd-status");
 	const frame = extra.frame ?? { width: 400, height: 300 };
 	canvas.boards[0].frame.rect = { left: 100, top: 100, ...frame };
 	const document = canvas.document as any;
 	const create = document.createElement.bind(document);
 	document.createElement = (tag: string) => {
-		if (tag === "video") return { videoWidth: 1200, videoHeight: 800, play: extra.play ?? (async () => { log.calls.push("play"); }), requestVideoFrameCallback: (done: () => void) => { log.calls.push("frame"); done(); } };
+		if (tag === "video") return { videoWidth: 1200, videoHeight: 800, play: extra.play ?? (async () => { log.calls.push("play"); }), requestVideoFrameCallback: (done: () => void) => { log.calls.push("frame"); if (!extra.stalled) done(); } };
 		if (tag === "canvas") {
 			const output: any = {
 				width: 0,
@@ -260,7 +266,7 @@ for (const [name, navigator] of [
 	["missing", undefined],
 	["denied", { mediaDevices: { getDisplayMedia: async () => { throw new Error("Permission denied."); } } }],
 ] as const) test(`a ${name} tab capture says so on the status line and the toast, and suggests the browser screenshot tool`, async () => {
-	const canvas = await loadExport({}, { navigator, confirm: () => true });
+	const canvas = await loadExport({}, { navigator });
 	const before = canvas.world.style.transform;
 	choose(canvas, "Export as PNG");
 	await settle();
@@ -274,13 +280,15 @@ for (const [name, navigator] of [
 	assert.deepEqual(canvas.posts, []);
 });
 
-for (const scale of [1, 2]) test(`export ${scale}× warns about the tab first, crops this tab's frame to the artboard at 100% and stops the capture`, async () => {
+const CHOOSE_TAB = "Choose this canvas tab in the browser's capture selector. Choosing another tab or screen may export the wrong content.";
+
+for (const scale of [1, 2]) test(`export ${scale}× warns about the tab on the status line, crops this tab's frame to the artboard at 100% and stops the capture`, async () => {
 	const { canvas, log } = await pngCanvas();
 	const before = canvas.world.style.transform;
 	choose(canvas, scale === 1 ? "Export as PNG" : "Export as PNG at 2×");
 	await settle();
-	assert.equal(log.calls[0], "Choose this canvas tab in the browser's capture selector. Choosing another tab or screen may export the wrong content.");
-	assert.equal(log.calls[1], 'capture {"video":{"displaySurface":"browser"},"audio":false,"preferCurrentTab":true}');
+	assert.equal(log.calls[0], 'capture {"video":{"displaySurface":"browser"},"audio":false,"preferCurrentTab":true}');
+	assert.deepEqual(log.statusAtCapture, [CHOOSE_TAB], "the status line names the tab to choose while the selector is open");
 	assert.deepEqual(log.draw, [[100, 100, 400, 300, 0, 0, 400 * scale, 300 * scale]]);
 	assert.deepEqual(log.names, [`01-a${scale === 2 ? "@2x" : ""}.png`]);
 	assert.equal(log.output?.width, 400 * scale);
@@ -298,8 +306,41 @@ for (const scale of [1, 2]) test(`export ${scale}× warns about the tab first, c
 	assert.equal(canvas.navMode.textContent, "Navigating", "and so does navigation mode");
 	assert.equal(canvas.boards[0].frame.style.width, "400px");
 	assert.equal(toastText(canvas), scale === 2 ? "Exported PNG at 2× (upscaled)." : "Exported PNG.", "1× pixels upscaled to 2× say so");
+	assert.equal(statusText(canvas), toastText(canvas), "the tab warning gives way to the result");
 	assert.equal(statusIsError(canvas), false);
 	assert.deepEqual(canvas.posts, []);
+});
+
+test("D1: Export as PNG asks for the capture at once, from the menu click: no confirm dialog spends the click's activation", async () => {
+	const { canvas, log } = await pngCanvas();
+	choose(canvas, "Export as PNG");
+	assert.deepEqual(log.calls.slice(0, 1), ['capture {"video":{"displaySurface":"browser"},"audio":false,"preferCurrentTab":true}'], "the capture starts within the click itself");
+	await settle();
+	assert.equal(log.calls.includes("confirm"), false, "no blocking dialog before the capture");
+	assert.deepEqual(log.statusAtCapture, [CHOOSE_TAB]);
+});
+
+test("D4: a capture that stops painting frames gives up waiting after 500 ms and still exports and restores the canvas", async () => {
+	const { canvas, log } = await pngCanvas({ stalled: true });
+	const before = canvas.world.style.transform;
+	choose(canvas, "Export as PNG");
+	await settle(16);
+	assert.equal(log.calls.filter((call) => call === "frame").length, 2, "both frame waits were asked for");
+	assert.equal(log.timeouts.filter((ms) => ms === 500).length, 2, "each bounded by 500 ms");
+	assert.deepEqual(log.draw, [[100, 100, 400, 300, 0, 0, 400, 300]]);
+	assert.deepEqual(log.names, ["01-a.png"]);
+	assert.equal(canvas.document.body.classes.has("gd-exporting"), false, "the chrome comes back");
+	assert.equal(canvas.world.style.transform, before);
+	assert.equal(canvas.navMode.textContent, "Navigating");
+});
+
+test("D5: after a PNG export, focus is back on the artboard's ⋯ button", async () => {
+	const { canvas, log } = await pngCanvas();
+	const button = openMenu(canvas, 0);
+	itemNamed(canvas, "Export as PNG").dispatch("click");
+	await settle();
+	assert.equal(log.draw.length, 1, "it exported");
+	assert.ok(isActive(canvas, button), "not left on the viewport or the closed artboard");
 });
 
 test("an export from an open artboard at Phone size grabs it at its own size and gives it back at Phone, still open", async () => {
@@ -346,17 +387,6 @@ for (const [surface, reason] of [["window", "You shared a window, not this tab, 
 	});
 }
 
-test("cancelling the tab warning starts no capture and changes nothing", async () => {
-	const { canvas, log } = await pngCanvas({ confirm: false });
-	const before = canvas.world.style.transform;
-	choose(canvas, "Export as PNG");
-	await settle();
-	assert.equal(log.calls.filter((call) => call.startsWith("capture")).length, 0);
-	assert.equal(canvas.world.style.transform, before);
-	assert.equal(statusText(canvas), "");
-	assert.deepEqual(canvas.posts, []);
-});
-
 test("a capture failure stops the stream and restores the canvas view", async () => {
 	const { canvas, log } = await pngCanvas({ play: async () => { throw new Error("The video could not play."); } });
 	const before = canvas.world.style.transform;
@@ -396,13 +426,26 @@ test("Export as PDF prints the artboard alone at its size once its frame has loa
 	assert.deepEqual(canvas.posts, [], "nothing is sent to the server");
 });
 
-test("a second Export as PDF replaces the first one's container", async () => {
+test("a second Export as PDF replaces the first one's container and ends the first one: one page rule, one afterprint listener (D3)", async () => {
 	const canvas = await loadExport({}, { print: () => {} });
+	// canvas.css with a CSSOM, where each export sets its page size.
+	const rules: string[] = [];
+	const sheet = { href: "/t/assets/canvas.css", cssRules: rules, insertRule: (text: string, index: number) => { rules.splice(index, 0, text); return index; }, deleteRule: (index: number) => { rules.splice(index, 1); } };
+	(canvas.document as any).styleSheets = [sheet];
+	const listeners = canvas.windowListenerCount("afterprint");
 	choose(canvas, "Export as PDF", 0);
+	assert.deepEqual(rules, ["@page { size: 400px 300px; }"]);
 	choose(canvas, "Export as PDF", 1);
 	const holders = withClass(canvas.document.body, "gd-print");
 	assert.equal(holders.length, 1);
 	assert.equal(holders[0].children[0].getAttribute("src"), "/t/files/alpha/02-b.html");
+	assert.deepEqual(rules, ["@page { size: 400px 300px; }"], "the first export's page rule is gone, only the second's is left");
+	assert.equal(canvas.windowListenerCount("afterprint"), listeners + 1, "the first export no longer waits for afterprint");
+	assert.equal(canvas.document.body.classes.has("gd-printing"), true);
+	canvas.windowEvent("afterprint");
+	assert.deepEqual(rules, []);
+	assert.equal(withClass(canvas.document.body, "gd-print").length, 0);
+	assert.equal(canvas.document.body.classes.has("gd-printing"), false);
 });
 
 test("Download HTML saves the artboard file as written, without the inspector the server injects", async () => {
@@ -452,10 +495,12 @@ test("canvas-export.js reaches the browser only through ctx.win and ctx.doc, cha
 	for (const global of ["window", "document", "navigator", "URL", "Blob", "fetch", "requestAnimationFrame", "setTimeout", "print", "confirm", "innerWidth", "innerHeight", "localStorage"]) {
 		assert.ok(!new RegExp(`(?<![\\w.$])${global}\\s*[.(\\[]`).test(body), `${global} only through win or doc`);
 	}
-	for (const used of ["win.navigator", "win.confirm", "win.print", "win.URL", "win.Blob", "win.fetch", "win.requestAnimationFrame", "doc.body", "doc.createElement"]) assert.ok(body.includes(used), used);
+	for (const used of ["win.navigator", "win.print", "win.URL", "win.Blob", "win.fetch", "win.requestAnimationFrame", "doc.body", "doc.createElement"]) assert.ok(body.includes(used), used);
 	assert.match(body, /store\.setView\(/);
 	assert.match(body, /store\.setFocus\(\{ size/, "the size goes back through setFocus, the sizes PR's path");
 	assert.match(body, /actions\.setFrameSize\(/);
+	assert.ok(!/\.confirm\(/.test(body), "no blocking confirm before the capture: it would spend the click's activation (D1)");
+	assert.match(body, /return \{ boardMenuButton, closeBoardMenu \};\s*\}\s*$/, "the other modules only need the button and closing its menu (D2)");
 	assert.ok(!/\bstate\.(?:size|focus|menu)\s*=(?!=)/.test(body));
 	assert.ok(source.indexOf("const TEXT = Object.freeze({") >= 0 && source.indexOf("const TEXT = Object.freeze({") < source.indexOf("export function init"), "the strings sit in one TEXT block before init");
 	assert.ok(!/\bloc\(|\bt\(|data-i18n|CATALOG|createAlert|explain\(|setRaw|variant|Try another direction|Compare with app|Implement this|enterCompare/.test(body), "no i18n, no alert helpers, no other menu items");

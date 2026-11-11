@@ -74,6 +74,9 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
  // The facade's marks on those claims: ids whose claim is a cut prefix, and ids
  // whose claim the per-closure limit left out. Relayed with the claims only.
  let closureClaimMarks: Body = {};
+ // That closure's capture envelope, kept unread for cancelled only while the
+ // retained closure carries advisory_findings.
+ let pendingCapture: Body | undefined;
  const checkCancelled = () => {
   if (deps.signal?.aborted) throw Object.assign(new Error("Review coordinator cancelled"), { name: "AbortError" });
  };
@@ -100,7 +103,8 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
   steps.push({ tool, operation: parameters.operation, elapsed_ms: now() - start,
    request_bytes: Buffer.byteLength(JSON.stringify({ ...workspace, ...parameters })), response_bytes: Buffer.byteLength(JSON.stringify(result)) });
   // A capture closure carrying advisory_findings is checked after the outcome
-  // gate below, so a cancellation racing with it keeps the findings.
+  // gate below, so a cancellation racing with it keeps the findings; any later
+  // abort ends in cancelled through runReviewCoordinator's catch.
   if (!acknowledged(result) && !(tool !== "gentle_review" && Object.hasOwn(record(result.closure), "advisory_findings"))) checkCancelled();
   return result;
  };
@@ -114,6 +118,7 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
   ...(outcome === "selection-required" ? { resume_input: resumeInput } : {}),
   ...(lineage === undefined ? {} : { lineage_id: lineage }), metrics: { elapsed_ms: now() - began, facade_calls: steps.length, steps } });
  const status = () => invoke("gentle_review", { operation: "status", lineageId: lineage, ...selectorInput });
+ const drive = async (): Promise<Body> => {
  let details: Body;
  if (lineage === undefined) {
   const assessment = await invoke("gentle_review", { operation: "assess", ...selectorInput });
@@ -222,20 +227,25 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
    closureClaimMarks = Object.fromEntries(["advisory_finding_claims_truncated", "advisory_finding_claims_omitted"]
     .filter(key => Array.isArray(closure[key]) && (closure[key] as unknown[]).every(id => typeof id === "string"))
     .map(key => [key, structuredClone(closure[key])]));
+   pendingCapture = closureFindings === undefined ? undefined : capture;
   }
-  // Cancelled after an admitted approved closure: return its findings and
-  // dispatch nothing more; resuming by lineageId reaches the acknowledgement.
-  // The capture envelope's status ("closed") and state ("approved") describe
-  // the capture, not the run, which is neither closed nor acknowledged: drop them.
-  if (deps.signal?.aborted) {
-   if (closureFindings !== undefined && Object.hasOwn(capture, "closure")) {
-    const { status: _status, state: _state, closure, ...envelope } = capture;
-    const { state: _closureState, ...pending } = record(closure);
-    return finish("cancelled", { ...envelope, closure: pending });
-   }
-   checkCancelled();
-  }
+  checkCancelled();
   details = await status();
  }
  return finish("transition-limit", details);
+ };
+ try {
+  return await drive();
+ } catch (error) {
+  // Cancelled after an admitted approved closure with findings, before the
+  // acknowledgement completed (which returns closed above): return its findings
+  // and dispatch nothing more; resuming by lineageId reaches the acknowledgement.
+  // Without such a closure, or for a failure other than the abort, rethrow.
+  if (pendingCapture === undefined || deps.signal?.aborted !== true) throw error;
+  // The capture's status ("closed") and state ("approved") describe the
+  // capture, not the run, which is neither closed nor acknowledged: drop them.
+  const { status: _status, state: _state, closure, ...envelope } = pendingCapture;
+  const { state: _closureState, ...pending } = record(closure);
+  return finish("cancelled", { ...envelope, closure: pending });
+ }
 }

@@ -326,3 +326,46 @@ test("after a captured provider-role artifact, drift, a reoffered capture and th
  } });
  assert.equal(capped.outcome, "transition-limit"); assert.equal(roles, 24);
 });
+
+test("a retained approved closure with findings survives every later abort before the acknowledgement; a completed acknowledgement stays closed", async () => {
+ const findings = { statement: "fixture", findings: [{ id: "F1" }] };
+ const withFindings = { ...captured, status: "closed", closure: { state: "approved", advisory_findings: findings, advisory_finding_claims: { F1: "claim" }, advisory_finding_claims_truncated: ["F1"] } };
+ const expected = { outcome: "native-last-event-closure", closure: { advisory_findings: findings, advisory_finding_claims: { F1: "claim" }, advisory_finding_claims_truncated: ["F1"] } };
+ // Abort observed after STATUS completed (while its step is recorded), before the acknowledgement.
+ {
+  const controller = new AbortController(); const calls: string[] = []; let statuses = 0; let abortAtNextClock = false;
+  const result = await runReviewCoordinator({ lineageId: lineage }, { signal: controller.signal,
+   now: () => { if (abortAtNextClock) controller.abort(); return 0; },
+   async invoke(tool, parameters) {
+    calls.push(tool === "gentle_review" ? String(parameters.operation) : tool);
+    if (tool !== "gentle_review") return withFindings;
+    if (++statuses === 1) return collect;
+    abortAtNextClock = true; return approved;
+   } });
+  assert.equal(result.outcome, "cancelled"); assert.deepEqual(result.result, expected);
+  assert.deepEqual(result.advisory_findings, findings); assert.deepEqual(result.advisory_finding_claims, { F1: "claim" }); assert.deepEqual(result.advisory_finding_claims_truncated, ["F1"]);
+  assert.deepEqual(calls, ["status", "gentle_review_capture", "status"], "no acknowledgement after the abort");
+ }
+ // The acknowledgement rejects because of the abort; or completes although the signal aborted.
+ for (const [ack, outcome] of [["rejects", "cancelled"], ["completes", "closed"]] as const) {
+  const controller = new AbortController(); let statuses = 0;
+  const result = await runReviewCoordinator({ lineageId: lineage }, { signal: controller.signal, async invoke(tool, parameters) {
+   if (tool !== "gentle_review") return withFindings;
+   if (parameters.operation === "acknowledge-approved") {
+    controller.abort();
+    if (ack === "rejects") throw Object.assign(new Error("aborted"), { name: "AbortError" });
+    return closed;
+   }
+   return ++statuses === 1 ? collect : approved;
+  } });
+  assert.equal(result.outcome, outcome, ack);
+  assert.deepEqual(result.advisory_findings, findings, ack);
+ }
+ // A non-abort rejection is not a cancellation.
+ let statuses = 0;
+ await assert.rejects(runReviewCoordinator({ lineageId: lineage }, { async invoke(tool) {
+  if (tool !== "gentle_review") return withFindings;
+  if (++statuses === 1) return collect;
+  throw new Error("transport failure");
+ } }), /transport failure/);
+});

@@ -37,6 +37,8 @@ export interface CoordinatorRuntimeOptions {
 	signal?: AbortSignal;
 	/** Called right after a reviewer submission made the fixture's closure approved. */
 	onApproved?: () => void;
+	/** Called on every native STATUS read, after it is recorded, with the fixture's state; may throw. */
+	onStatus?: (state: string) => void;
 	/**
 	 * Prepares each reviewer run instead of the fixture's stub preparation: the
 	 * group seam then runs the production `runReviewHostRelayReviewerGroup`
@@ -137,6 +139,7 @@ export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coo
 			nativeRequests.push({ operation: "target-status", request: { ...request } });
 			assert.notEqual(state, "burned", "no STATUS after burn");
 			nativeCalls.push(`status:${state}`);
+			options.onStatus?.(state);
 			if (state === "approved") return approved;
 			if (scenario === "untracked-selection") return request.intendedUntrackedSelection === undefined ? selecting : startReady;
 			if (scenario === "single") return reviewing;

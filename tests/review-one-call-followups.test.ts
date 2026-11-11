@@ -237,3 +237,50 @@ test("S5: a cut at 1,024 bytes never splits a 4-byte character and is marked onl
 		if (marked) assert.deepEqual(run.result.advisory_finding_claims_truncated, ["F1"], label);
 	}
 });
+
+// PR #3144 review: once an approved closure with findings is retained, a later
+// abort before the acknowledgement still returns them (through the tool).
+test("S5/S6: an abort while the STATUS after the approved closure is in flight returns cancelled with the findings, and a resume acknowledges", async () => {
+	for (const [label, rejects] of [["STATUS returns", false], ["STATUS rejects because of the abort", true]] as const) {
+		const controller = new AbortController();
+		const runtime = createCoordinatorRuntime(scratchRepo(), "coordinator", { hasUI: false, signal: controller.signal,
+			advisoryFindings: structuredClone(FINDINGS), reviewerResults: reviewerResult([{ id: "F1", claim: "x".repeat(1100) }]),
+			onStatus: (state) => {
+				if (state !== "approved" || controller.signal.aborted) return;
+				controller.abort();
+				if (rejects) throw Object.assign(new Error("fixture STATUS aborted"), { name: "AbortError" });
+			} });
+		try {
+			const cancelled = await runtime.invoke("gentle_review_run", { lineageId: runtime.lineage });
+			assert.equal(cancelled.outcome, "cancelled", `${label}: ${JSON.stringify(cancelled)}`);
+			assert.deepEqual(closedOrAcknowledged(cancelled), [], label);
+			for (const key of ["status", "state"]) assert.equal(Object.hasOwn(cancelled.result, key), false, `${label}: ${key}`);
+			assert.deepEqual(cancelled.advisory_findings, FINDINGS, label);
+			assert.deepEqual(cancelled.advisory_finding_claims, { F1: "x".repeat(1024) }, label);
+			assert.deepEqual(cancelled.advisory_finding_claims_truncated, ["F1"], label);
+			assert.equal(cancelled.lineage_id, runtime.lineage, label);
+			assert.equal(runtime.nativeCalls.includes("acknowledge"), false, label);
+			assert.equal(runtime.nativeCalls.at(-1), "status:approved", `${label}: nothing after the STATUS`);
+			const resumed = await runtime.invoke("gentle_review_run", { lineageId: cancelled.lineage_id }, new AbortController().signal);
+			assert.equal(resumed.outcome, "closed", `${label}: ${JSON.stringify(resumed)}`);
+			assert.ok(runtime.closed(), label);
+		} finally { runtime.close(); }
+	}
+});
+
+test("S6: after the approved closure, a STATUS failure that is not an abort is blocked; without findings an abort during that STATUS still throws", async () => {
+	const failing = createCoordinatorRuntime(scratchRepo(), "coordinator", { hasUI: false, advisoryFindings: structuredClone(FINDINGS),
+		onStatus: (state) => { if (state === "approved") throw new Error("fixture STATUS failure"); } });
+	try {
+		const run = await failing.invoke("gentle_review_run", { lineageId: failing.lineage });
+		assert.equal(run.outcome, "blocked", JSON.stringify(run));
+		assert.equal(failing.nativeCalls.includes("acknowledge"), false);
+	} finally { failing.close(); }
+	const controller = new AbortController();
+	const bare = createCoordinatorRuntime(scratchRepo(), "coordinator", { hasUI: false, signal: controller.signal,
+		onStatus: (state) => { if (state === "approved") controller.abort(); } });
+	try {
+		await assert.rejects(bare.invoke("gentle_review_run", { lineageId: bare.lineage }), { name: "AbortError" });
+		assert.equal(bare.nativeCalls.includes("acknowledge"), false);
+	} finally { bare.close(); }
+});

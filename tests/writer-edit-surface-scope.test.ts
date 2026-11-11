@@ -78,6 +78,7 @@ const ENTRY_REASONS = [
 	"lists several paths; put one path per line",
 	"has a label before the path; keep only the path",
 	"is a heading indented 4+ spaces, so it does not end the section; start it at the line start",
+	"is text under a list marker, not a path; move it below another Markdown heading, as a line of its own outside the list",
 	"is not a path; move it below another Markdown heading",
 	"has text after the path; move that text below another Markdown heading",
 	"looks like prose; move it below another Markdown heading",

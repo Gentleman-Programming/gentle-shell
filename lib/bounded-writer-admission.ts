@@ -54,7 +54,10 @@ function surfaceEntryProblem(source: string): string {
 	if (unlisted.includes("`") && !quoted) return /`[^`]+`/.test(unlisted)
 		? "has text outside its backticked path; move that text below another Markdown heading"
 		: "has stray backticks; remove them";
-	if (/^\s*#{1,6}\s/.test(unlisted)) return "is a heading indented 4+ spaces, so it does not end the section; start it at the line start";
+	// The raw line, not the unlisted one: a real indented heading keeps its leftover indent, while `- # foo`
+	// is list text, and moving it to the line start would make a heading that ends the section (PR #3114 review).
+	if (/^ +#{1,6} /.test(line)) return "is a heading indented 4+ spaces, so it does not end the section; start it at the line start";
+	if (unlisted !== line && /^#{1,6}\s/.test(unlisted)) return "is text under a list marker, not a path; move it below another Markdown heading, as a line of its own outside the list";
 	const spaced = !quoted && /\p{White_Space}/u.test(unlisted);
 	const normalized = path.replace(/\\/g, "/");
 	const relativePath = normalized.replace(/^(?:\.\/)+/, "");
@@ -68,7 +71,7 @@ function surfaceEntryProblem(source: string): string {
 		const words = unlisted.split(/\p{White_Space}+/u);
 		const first = words[0], rest = unlisted.slice(first.length);
 		const pathLike = (word: string) => isTaskScopedRepositoryRelativePath(word, false) && (word.includes("/") || /\.[\w-]{1,10}$/.test(word));
-		const parts = unlisted.split(/\p{White_Space}*,\p{White_Space}*/u).filter(Boolean);
+		const parts = commaParts(unlisted);
 		if (parts.length > 1 && parts.every(part => isTaskScopedRepositoryRelativePath(part, false))) return "lists several paths; put one path per line";
 		if (pathLike(first.replace(/:$/, "")) && (first.endsWith(":") || /^\p{White_Space}+(?:#|\/\/|\(|—|–|-|:)/u.test(rest))) return "has text after the path; move that text below another Markdown heading";
 		if (words.length === 2 && first.endsWith(":") && pathLike(words[1])) return "has a label before the path; keep only the path";
@@ -78,12 +81,70 @@ function surfaceEntryProblem(source: string): string {
 	return "is not a narrow repository-relative path or glob; use one";
 }
 
+const WHITE_SPACE = /\p{White_Space}/u;
+
+// `text.split(/\p{White_Space}*,\p{White_Space}*/u).filter(Boolean)` in linear time: that regex backtracks
+// quadratically over a long whitespace run with no comma (PR #3114 review).
+function commaParts(text: string): string[] {
+	const raw = text.split(",");
+	return raw.map((part, index) => {
+		let start = 0, end = part.length;
+		if (index > 0) while (start < end && WHITE_SPACE.test(part[start])) start++;
+		if (index < raw.length - 1) while (end > start && WHITE_SPACE.test(part[end - 1])) end--;
+		return part.slice(start, end);
+	}).filter(Boolean);
+}
+
+const SECRET_WORDS = ["key", "token", "secret", "password", "passwd", "pwd", "credential", "credentials", "auth"];
+const isWordCode = (code: number) => (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 95;
+const isLabelCode = (code: number) => isWordCode(code) || code === 46 || code === 45; // [\w.-]
+const isTokenCode = (code: number) => isWordCode(code) || code === 43 || code === 61 || code === 45; // [\w+=-]
+const isLineTerminator = (code: number) => code === 10 || code === 13 || code === 0x2028 || code === 0x2029;
+const isRegExpSpace = (char: string) => /\s/.test(char);
+
+// Masking in one forward scan with no backtracking (PR #3114 review), equal to the earlier
+// `.replace(/([\w.-]*(?:key|token|secret|passw(?:or)?d|pwd|credentials?|auth)\s*[:=]\s*).*/i, "$1***")`
+// then `.replace(/[\w+=-]{24,}/g, run => /\d/.test(run) ? "***" : run)`. The keyword must end its [\w.-] run
+// (neither `\s`, `:` nor `=` is in it), so the first run ending in one and followed by `\s*[:=]` is the match,
+// starting at that run's first character. Whole runs are masked, so no masked token is ever cut.
+function maskSecrets(text: string): string {
+	let masked = text;
+	for (let index = 0; index < text.length;) {
+		if (!isLabelCode(text.charCodeAt(index))) { index++; continue; }
+		const start = index;
+		while (index < text.length && isLabelCode(text.charCodeAt(index))) index++;
+		const tail = text.slice(Math.max(start, index - 11), index).toLowerCase();
+		if (!SECRET_WORDS.some(word => tail.endsWith(word))) continue;
+		let value = index;
+		while (value < text.length && isRegExpSpace(text[value])) value++;
+		if (text[value] !== ":" && text[value] !== "=") continue;
+		value++;
+		while (value < text.length && isRegExpSpace(text[value])) value++;
+		let end = value;
+		while (end < text.length && !isLineTerminator(text.charCodeAt(end))) end++;
+		masked = `${text.slice(0, value)}***${text.slice(end)}`;
+		break;
+	}
+	const pieces: string[] = [];
+	for (let index = 0; index < masked.length;) {
+		const start = index;
+		while (index < masked.length && isTokenCode(masked.charCodeAt(index))) index++;
+		if (index === start) { pieces.push(masked[index++]); continue; }
+		const run = masked.slice(start, index);
+		pieces.push(run.length >= 24 && /\d/.test(run) ? "***" : run);
+	}
+	return pieces.join("");
+}
+
 // Quote an offending line without echoing a secret or an unbounded line: secret-looking assignment values
 // and long digit-bearing tokens are masked, invisible characters escaped, then cut at SHOWN_ENTRY_BYTES.
+// Only ASCII spaces are stripped from the ends, so a tab at either end is shown escaped (PR #3114 review).
+// Every step is linear in the line length.
 function shownEntry(line: string): string {
-	const text = line.trim()
-		.replace(/([\w.-]*(?:key|token|secret|passw(?:or)?d|pwd|credentials?|auth)\s*[:=]\s*).*/i, "$1***")
-		.replace(/[\w+=-]{24,}/g, run => /\d/.test(run) ? "***" : run)
+	let start = 0, end = line.length;
+	while (start < end && line[start] === " ") start++;
+	while (end > start && line[end - 1] === " ") end--;
+	const text = maskSecrets(line.slice(start, end))
 		.replace(/\p{Cc}|\p{Zl}|\p{Zp}/gu, char => `\\u${char.codePointAt(0)!.toString(16).padStart(4, "0")}`);
 	if (Buffer.byteLength(text) <= SHOWN_ENTRY_BYTES) return text;
 	let shown = "", bytes = Buffer.byteLength(ELLIPSIS);

@@ -15,6 +15,10 @@ function reason(task: string, context?: string): string {
 	return result!.reason;
 }
 
+const LIST_TEXT = "is text under a list marker, not a path; move it below another Markdown heading, as a line of its own outside the list";
+const CONTROL = "contains a control or line-separator character; retype it without that character";
+// The quote keeps every character but ASCII spaces at the ends, with invisible characters escaped.
+const quote = (line: string) => line.replace(/^ +| +$/g, "").replace(/\p{Cc}|\p{Zl}|\p{Zp}/gu, char => `\\u${char.codePointAt(0)!.toString(16).padStart(4, "0")}`);
 const entry = (shown: string, position: string, why: string) => `Allowed edit surfaces entry "${shown}" (${position}) ${why}. ${RULE}`;
 
 test("the rule sentence is the exported constant, sent once, after the specific part", () => {
@@ -44,6 +48,11 @@ for (const [label, section, expected] of [
 	["marker only", "src/a.ts\n-", entry("-", "non-empty line 2", "is a list marker with no path; put the path after it or delete the line")],
 	["numbered marker only", "1.", entry("1.", "non-empty line 1", "is a list marker with no path; put the path after it or delete the line")],
 	["heading indented four spaces", "src/a.ts\n    ## Return", entry("## Return", "non-empty line 2", "is a heading indented 4+ spaces, so it does not end the section; start it at the line start")],
+	["heading-like text under a dash marker", "src/a.ts\n- # foo", entry("- # foo", "non-empty line 2", LIST_TEXT)],
+	["heading-like text under a star marker", "* ## notes", entry("* ## notes", "non-empty line 1", LIST_TEXT)],
+	["leading tab", "\tsrc/a.ts", entry("\\u0009src/a.ts", "non-empty line 1", CONTROL)],
+	["trailing tab", "src/a.ts\t", entry("src/a.ts\\u0009", "non-empty line 1", CONTROL)],
+	["tab-indented list entry", "src/b.ts\n\t- src/a.ts", entry("\\u0009- src/a.ts", "non-empty line 2", CONTROL)],
 ] as const) {
 	test(`invalid entry names line, position, reason and fix: ${label}`, () => {
 		assert.equal(reason(`Task.\n\n${H}${section}\n\n## Return\nReport`), expected);
@@ -146,6 +155,11 @@ for (const [entry, why, intent, expected] of [
 	["src/a\u0007.ts", "contains a control or line-separator character; retype it without that character", "path", ["src/a.ts"]],
 	["-", "is a list marker with no path; put the path after it or delete the line", "prose", []],
 	["    ## Notes", "is a heading indented 4+ spaces, so it does not end the section; start it at the line start", "prose", []],
+	["- # foo", LIST_TEXT, "prose", []],
+	["* ## notes", LIST_TEXT, "prose", []],
+	["\tsrc/a.ts", CONTROL, "path", ["src/a.ts"]],
+	["src/a.ts\t", CONTROL, "path", ["src/a.ts"]],
+	["\t- src/a.ts", CONTROL, "path", ["src/a.ts"]],
 	["~/my repo/a.ts", "is absolute or home-relative; use a repository-relative path", "path", null],
 	["C:\\Users\\me\\my repo\\a.ts", "is absolute or home-relative; use a repository-relative path", "path", null],
 	["/Users/x/repo/src/a.ts", "is absolute or home-relative; use a repository-relative path", "path", null],
@@ -157,7 +171,7 @@ for (const [entry, why, intent, expected] of [
 ] as const) {
 	test(`the suggested fix never admits a different surface: ${JSON.stringify(entry)}`, () => {
 		const message = reason(`${H}src/keep.ts\n${entry}`);
-		assert.equal(message, `Allowed edit surfaces entry "${entry.trim().replace(/\u0007/, "\\u0007")}" (non-empty line 2) ${why}. ${RULE}`);
+		assert.equal(message, `Allowed edit surfaces entry "${quote(entry)}" (non-empty line 2) ${why}. ${RULE}`);
 		const fixed = applyFix(entry, message, intent);
 		if (expected === null) {
 			// Not mechanical: the author supplies a new value. Wrapping it instead never admits it.
@@ -179,3 +193,40 @@ test("the quoted entry, ellipsis included, is at most 80 UTF-8 bytes", () => {
 		assert.ok(!shown.includes("\ufffd"));
 	}
 });
+
+test("a tab at either end of an entry stays in the quote, escaped, within the 80-byte bound", () => {
+	const shown = (line: string) => reason(`${H}${line}`).match(/^Allowed edit surfaces entry "(.*)" \(non-empty line 1\)/)![1];
+	assert.equal(shown("\tsrc/a.ts"), "\\u0009src/a.ts");
+	assert.equal(shown("src/a.ts\t"), "src/a.ts\\u0009");
+	assert.equal(shown("  \t- src/a.ts  "), "\\u0009- src/a.ts");
+	const long = shown(`\t${"x".repeat(200)}\t`);
+	assert.ok(long.startsWith("\\u0009x") && long.endsWith("…") && Buffer.byteLength(long) <= 80, long);
+});
+
+// Review of PR #3114: the quote is produced in time linear in the entry length, and a masked token never leaks a prefix.
+// 64 KiB runs first: a superlinear regression fails that size's time assertion in seconds instead of hanging
+// the job on the 1 MiB input.
+test("a 64 KiB and a 1 MiB invalid entry are quoted quickly and masked tokens never leak", () => {
+	for (const size of [64 << 10, 1 << 20]) quotesQuickly(size);
+});
+
+function quotesQuickly(MiB: number) {
+	const token = (n: number) => "Ab3".repeat(Math.ceil(n / 3)).slice(0, n);
+	for (const [label, line, expected] of [
+		["prose", `${"lorem ipsum dolor ".repeat(MiB / 18)}end.`, `${"lorem ipsum dolor ".repeat(5).slice(0, 77)}…`],
+		["one word with no secret label", `see ${"a".repeat(MiB)} later`, `see ${"a".repeat(73)}…`],
+		["a single token-like run", `/${token(MiB)}`, "/***"],
+		["a token-like run after prose", `then use ${token(MiB)} here`, "then use *** here"],
+		["a secret label before a long value", `api_token = ${token(MiB)}`, "api_token = ***"],
+		["a long non-breaking space run with no comma", `a b${"\u00a0".repeat(MiB)}c`, `a b${"\u00a0".repeat(37)}…`],
+		["short words then a long token", `${"word ".repeat(10)}${token(MiB)} end`, `${"word ".repeat(10)}*** end`],
+	] as const) {
+		const started = performance.now();
+		const text = reason(`${H}src/keep.ts\n${line}`);
+		const elapsed = performance.now() - started;
+		assert.ok(elapsed < 500, `${label} at ${MiB} bytes: ${Math.round(elapsed)} ms`);
+		const shown = text.match(/^Allowed edit surfaces entry "(.*)" \(non-empty line 2\)/)![1];
+		assert.equal(shown, expected, label);
+		assert.ok(Buffer.byteLength(shown) <= 80, label);
+	}
+}

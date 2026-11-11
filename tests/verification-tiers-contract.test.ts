@@ -207,8 +207,8 @@ test("P8 B1: the parent passes the user's environment and runs the real-case che
 		"Run yourself any real-case check the verifier leaves unverified before calling the change verified.",
 	], "verification handoff B1");
 	// Cost-speed S15 P5a: the always-on verifier-setup paragraph moved into this module (MODULE_BUDGETS in
-	// tests/task-size-routing-contract.test.ts holds the arithmetic): 7,900 -> 8,608 B; mode-neutral wording: 8,656 B; P16 conditional commit, paid by trimming restated phrases: 8,648 B.
-	assert.ok(verification.length > 0 && Buffer.byteLength(verification) <= 8_648, "the module stays within its 8,648 B budget");
+	// tests/task-size-routing-contract.test.ts holds the arithmetic): 7,900 -> 8,608 B; mode-neutral wording: 8,656 B; P16 conditional commit, paid by trimming restated phrases: 8,648 B; gentle-shell#3082 terminal-disposition raise: 8,900 B (#3149).
+	assert.ok(verification.length > 0 && Buffer.byteLength(verification) <= 8_900, "the module stays within its 8,900 B budget");
 });
 
 // B2: the verifier never re-runs the writer's reported suite, and no other sentence of its body orders it.

@@ -1,6 +1,6 @@
 ---
 name: gentle-design
-description: "Trigger: design a screen or page, mockup, landing page, UI directions, artboards, try a different approach, design system sync. Write self-contained HTML design directions under design/<slug>/."
+description: "Trigger: design a screen or page, mockup, landing page, UI directions, artboards, try a different approach, design system sync. HTML design directions in design/<slug>/."
 license: Apache-2.0
 metadata:
   author: gentleman-programming
@@ -11,7 +11,7 @@ metadata:
 
 Use this skill by default whenever the user asks, in plain words, for a UI design, mockup, screen, landing page, or visual directions, or iterates on artboards under `design/`. Do not use it to implement production code in the project's stack.
 
-The `/gentle:design` commands are optional shortcuts: every action also works from a plain request, through this skill and the `gentle_design` tool. When `gentle_design` or `gentle_design_comments` is not declared, call it from `codemode` as `tools.gentle_design({...})` with the same arguments.
+The `/gentle:design` commands are optional shortcuts: every action also works from a plain request, through this skill and the `gentle_design` tool. When `gentle_design` or `gentle_design_comments` is not declared, call it from `codemode` as `tools.gentle_design({...})` or `tools.gentle_design_comments({...})` with the same arguments.
 
 ## Hard Rules
 

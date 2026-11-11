@@ -96,7 +96,7 @@ test("S4: work-unit-commits no longer names the removed `review_budget_lines` se
 test("S10: the work-unit-commits trigger no longer fires on every implementation task", () => {
 	const line = workUnits.split("\n").find(entry => entry.startsWith("description:")) ?? "";
 	assert.doesNotMatch(line, /implementation/);
-	assert.match(line, /Trigger: commit splitting, chained PRs, or keeping tests and docs with code\./);
+	assert.match(line, /Trigger: commit splitting, chained PRs, keeping tests and docs with code\. Plan commits as reviewable work units\./);
 });
 
 test("S6: ask_user_question names the decisions it must not take and routes them to ask_user_choice", () => {

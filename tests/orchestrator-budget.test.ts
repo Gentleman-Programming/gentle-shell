@@ -42,7 +42,8 @@ const FIXTURE_PATH = join(import.meta.dirname, "fixtures", "orchestrator.pre-die
 // cost-speed-painpoints S5 (T4): the duplicate `## Identity Contract` pointer left the core (the Language Boundary
 // intro carries the same pointer); measured 9,347 -> 9,197 B at the 128-char root: 9,350 -> 9,197 B.
 // cost-speed-painpoints S15 P5a: verdicts C7, C9, C12, X1, X3 and C8 (L41); measured 9,197 -> 9,189 B at the 128-char root.
-const BUDGET_BYTES = 9189;
+// cost-speed P14 (PD-81): the Evidence-budget lookup number matches the runtime notice; measured 9,189 -> 9,177 B.
+const BUDGET_BYTES = 9177;
 const MIN_CONTROLLED_LONG_ASSETS_ROOT_CHARS = 93;
 
 const LAZY_ASSET_NAMES = [

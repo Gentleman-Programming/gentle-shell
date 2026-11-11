@@ -48,7 +48,7 @@ for (const persona of ["gentleman", "neutral"] as const) {
       const setup = paragraph(verifierPreparation(), "A failed verifier setup");
       assert.match(setup, /prerequisite is repaired, the human may explicitly request one new bounded verification attempt/);
       assert.match(setup, /zero tests run; the checks remain unverified/);
-      assert.match(setup, /self-fix of its own setup error \(one correction within the same verification\) needs no decision/);
+      assert.match(setup, /self-fix of its own setup error \(one correction in the same verification\) needs no decision/);
       assert.match(p, /7\. \*\*Close\.\*\*[^\n]*an unavailable verifier or subagent is reported as unavailable, never retried or escalated/);
       for (const guard of ["consent", "a denial", "one-run", "no-retry", "terminal native outcomes", "exhausted native budgets"]) assert.ok(setup.includes(guard), guard);
       assert.match(setup, /no child is active or has an uncertain status/);

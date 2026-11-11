@@ -120,7 +120,7 @@ const SETUP_SENTENCES = [
 	"A failed verifier setup is a preparation failure, not an unavailable verifier capability.",
 	"If setup fails before probes, preserve the failed attempt and report zero tests run; the checks remain unverified.",
 	"After a setup prerequisite is repaired, the human may explicitly request one new bounded verification attempt.",
-	"This is a new request, not an automatic retry, and it does not reset the prior attempt or unrelated budgets.",
+	"This is a new request, not an automatic retry; it does not reset the prior attempt or unrelated budgets.",
 	"Before proceeding, confirm no child is active or has an uncertain status.",
 	"Never bypass consent, a denial, explicit one-run or no-retry limits, terminal native outcomes, or exhausted native budgets",
 ];
@@ -135,7 +135,7 @@ test("P4: the verifier-setup paragraph lives in the verification module, not the
 	const module = read("assets/orchestrator-verification.md");
 	const section = module.slice(module.indexOf("## Verifier preparation failure"), module.indexOf("\n## ", module.indexOf("## Verifier preparation failure") + 1));
 	for (const sentence of SETUP_SENTENCES) assert.ok(section.includes(sentence), `module keeps: ${sentence}`);
-	assert.ok(section.includes("(one correction within the same verification)"), "self-fix keeps its bound");
+	assert.ok(section.includes("(one correction in the same verification)"), "self-fix keeps its bound");
 	assert.ok(section.includes("on a relaunch, never blindly repeat an oversized copy"), "payload rule keeps its qualifier");
 	assert.equal(module.split("A failed verifier setup is a preparation failure").length - 1, 1, "moved once, never duplicated");
 });

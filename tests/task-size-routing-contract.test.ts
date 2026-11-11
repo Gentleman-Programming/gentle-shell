@@ -158,7 +158,8 @@ const MODULE_BUDGETS: Record<string, number> = {
 	// P5b (C4): the explorer has web and MCP tools; only shell work stays forbidden (7,350 -> 7,292 B).
 	// cost-speed P6 (R1): the runtime-admission sentence must name the third admitted route (2+ disjoint writers alone
 	// in one message) or it is false; no rule-free wording elsewhere in the card could pay for it (7,292 -> 7,338 B).
-	"orchestrator-delegation.md": 7_338,
+	// cost-speed P14 (PD-81): the Evidence-budget lookup number matches the runtime notice (7,338 -> 7,326 B).
+	"orchestrator-delegation.md": 7_326,
 	// P5b (C14, X4, X5): no restated worker definition, no nonexistent agents or options (14,800 -> 13,969 B).
 	"orchestrator-delegation-reference.md": 13_969,
 	// gentle-shell#1731 T23: Close gate accepts one Needs your decision result as a stop (12,500 -> 12,600 B).
@@ -338,7 +339,7 @@ test("S1: a fired evidence trigger overrides an initial size classification", ()
 
 test("S1: iterative discovery reassesses cumulative evidence without resetting batches", () => {
 	assert.match(renderedCore, /Reassess cumulative discovery each batch, never reset/);
-	assert.match(renderedCore, /more than one read batch or >~5 sequential lookups/);
+	assert.match(renderedCore, /more than one read batch or >3 lookups/);
 });
 
 test("S1: task size uses only small and large", () => {

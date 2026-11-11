@@ -1,6 +1,6 @@
 ---
 name: gentle-ai-tui-design
-description: "Trigger: terminal UI design, TUI redesign, Gentle Shell look, IDE in a terminal, sidebar/status bar polish, critique TUI. Design, critique and refine terminal UIs with visual proof."
+description: "Trigger: terminal UI design, TUI redesign, Gentle Shell look, IDE in a terminal, sidebar/status bar polish, critique TUI. Refine terminal UIs with visual proof."
 license: Apache-2.0
 metadata:
   author: gentleman-programming

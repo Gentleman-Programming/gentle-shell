@@ -123,3 +123,12 @@ test("T23(f): the verify agent allows a second correction only for the same bloc
 		"a second correction only when the recheck shows the same blocker still failing, never for a new finding",
 	], "verify item 5");
 });
+
+test("gentle-shell#3082: a stopped verification carries its two exits in the lazy module", () => {
+	containsAll(verification, [
+		"Two exits close a stopped verification (#3082) via **Authorized work continuity**:",
+		"after prerequisite repair, the human may explicitly request one new bounded attempt",
+		"one terminal disposition names the missing proof and resumes in-scope work at `status: partial`",
+		"never PASS, never silently dropped",
+	], "verification stop exits");
+});

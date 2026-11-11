@@ -811,7 +811,10 @@ export class GentlePromptEditor extends CustomEditor {
 
 	/** Current animation phase: elapsed working time at the policy cadence. */
 	private workingPhase(): number {
-		return workingTick(this.deps.now(), this.animationPolicy === "potato" ? (this.deps.watchdogMs ?? SHELL_PULSE_WATCHDOG_MS) : SHELL_PULSE_MS);
+		// potato never animates (no timer, static petal); quality steps per
+		// SHELL_PULSE_MS window; performance keeps the coarse watchdog cadence.
+		if (this.animationPolicy === "potato") return 0;
+		return workingTick(this.deps.now(), this.animationPolicy === "quality" ? SHELL_PULSE_MS : (this.deps.watchdogMs ?? SHELL_PULSE_WATCHDOG_MS));
 	}
 
 	private startWatchdog(): void {

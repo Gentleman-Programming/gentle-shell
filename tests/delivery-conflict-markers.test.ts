@@ -323,3 +323,26 @@ test("P9: a permission-mode change while the marker check runs blocks instead of
 	assert.equal(result?.block, true, "a decision made under the earlier mode must not be returned");
 	assert.match(result!.reason!, /^Permission mode changed during delivery preflight\. This action was not run; retry under the current mode\.$/);
 });
+
+// PR #3113 review: only an UNQUOTED operator is a redirection; a quoted argument that starts with `<` or `>` is a word.
+test("P9: quoted words that start with < or > are arguments, not redirections", async t => {
+	const { scratch, repo } = fixture(t);
+	const { root, write } = repo("repo");
+	write("app.txt", CONFLICT);
+	const run = hook(root);
+	for (const command of [`git commit -m "<type>: msg" -a`, `git commit -a -m ">= 2 fixes"`, `git commit -m 'x > y' -a`, `git commit -m ">" -a`, `git commit -m \\> -a`]) {
+		const result = await run(command);
+		assert.equal(result?.block, true, command);
+		assert.match(result!.reason!, / at app\.txt:2\. /, command);
+	}
+	const named = repo("named");
+	named.write("<name>.txt", CONFLICT);
+	const added = await hook(named.root)(`git add "<name>.txt" && git commit -m x`);
+	assert.equal(added?.block, true, "a quoted path that starts with < is staged");
+	assert.match(added!.reason!, / at <name>\.txt:2\. /);
+	const target = join(scratch, "out file.txt");
+	const redirected = await run(`git commit -m x > "${target}" -a`);
+	assert.equal(redirected?.block, true, "the quoted word is the target of the unquoted operator");
+	assert.match(redirected!.reason!, / at app\.txt:2\. /);
+	assert.equal(await run(`git commit -m x > "${target}"`), undefined, "an unquoted operator still takes its quoted target");
+});

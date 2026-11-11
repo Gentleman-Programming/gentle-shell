@@ -17,7 +17,8 @@ interface Staging { pathspecs: string[]; tracked: boolean; untracked: boolean; f
 /** The content a commit records: the index, or worktree content (tracked, and untracked when staged by `add`). */
 type Source = { kind: "index" } | { kind: "worktree"; pathspecs: string[]; untracked: boolean; force: boolean };
 export interface Check { directory: string; sources: Source[]; staged: Staging[] }
-interface Token { value: string; operator: boolean }
+/** `redirect`: an unquoted redirection, complete (`2>&1`, `>out`) or needing the next word as its target (`>`). */
+interface Token { value: string; operator: boolean; redirect?: "complete" | "target" }
 
 const SHOWN = 5;
 const BUDGET_MS = 5_000;
@@ -56,7 +57,9 @@ function tokenize(command: string): Token[] {
 	for (const match of joinContinuations(command).matchAll(/(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[<>]&|&>|>\||[^\s;&|()'"\\])+|&&|\|\||[;&|()\n]/g)) {
 		const raw = match[0];
 		const operator = /^(?:&&|\|\||[;&|()\n])$/.test(raw);
-		tokens.push({ operator, value: operator ? raw : raw.replace(/"((?:\\.|[^"\\])*)"|'([^']*)'|\\(.)/g,
+		// Decided on the raw text: a quoted or escaped `<`/`>` is part of a word, never a redirection.
+		const redirect = operator || !/^\d*(?:&>|[<>])/.test(raw) ? undefined : /^\d*(?:&>>?|[<>]{1,2}&?|>\|)$/.test(raw) ? "target" : "complete";
+		tokens.push({ operator, redirect, value: operator ? raw : raw.replace(/"((?:\\.|[^"\\])*)"|'([^']*)'|\\(.)/g,
 			(_raw, double: string | undefined, single: string | undefined, escaped: string | undefined) => double?.replace(/\\(["\\$`])/g, "$1") ?? single ?? escaped ?? "") });
 	}
 	return tokens;
@@ -78,8 +81,7 @@ export function conflictMarkerChecks(command: string, cwd: string): Check[] {
 	for (let end = 0; end <= tokens.length; end++) {
 		if (end < tokens.length && !tokens[end].operator) continue;
 		// Redirections are not arguments: `> out`, `2>&1`, `<<EOF`, `< message.txt`.
-		const words = tokens.slice(start, end).map(token => token.value)
-			.filter((word, at, all) => !/^\d*(?:&>|[<>])/.test(word) && !/^\d*(?:&>>?|[<>]{1,2}&?|>\|)$/.test(all[at - 1] ?? ""));
+		const words = tokens.slice(start, end).filter((token, at, all) => !token.redirect && all[at - 1]?.redirect !== "target").map(token => token.value);
 		start = end + 1;
 		let head = 0;
 		while (/^[A-Za-z_]\w*=/.test(words[head] ?? "")) {

@@ -166,7 +166,9 @@ const MODULE_BUDGETS: Record<string, number> = {
 	// gentle-shell#1731 T23: bounded self-review and partial/blocked writer -> Needs your decision (7,000 -> 7,300 B).
 	// Verification by named risk: escalate-only tier table and the concrete-occasions rule (7,300 -> 7,500 B).
 	// The validated-off exception and its read-only fallback need 365 additional bytes (7,500 -> 7,900 B).
-	"orchestrator-verification.md": 7_900,
+	// gentle-shell#3082: the lazy module carries its two stop exits itself (self-contained like T6 demands):
+	// one human-requested bounded attempt after prerequisite repair, or one terminal disposition (7,900 -> 8,300 B).
+	"orchestrator-verification.md": 8_300,
 	// Writer-rule fix (size threshold, one behavior per unit) and C3 (writer prompts name the helpers and
 	// invariants to reuse): 4,500 -> 5,300 B.
 	// Pain-point iteration S10 (C7): writer handoffs keep test scratch outside the worktree (5,300 -> 5,500 B).

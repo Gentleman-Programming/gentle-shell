@@ -25,7 +25,7 @@ For Task Size high-risk work when RDD is on or unknown, assess with `"escalate":
 
 A verifier's self-fix of its own setup error needs no decision; if none, relaunch once with the corrected command, unasked. If setup still fails or lacks prerequisites, stop: one **Needs your decision** naming the blocker and exact unrun checks as unverified; never repair helpers more or auto-relaunch for it. Setup/infrastructure failures aren't code findings; tooling defects keep the correction bound. Keep consent. Follow **Authorized work continuity** for setup and worker recovery; scratch: `gentle-ai-verify`.
 
-Two exits close a stopped verification; neither is optional (gentle-shell#3082): (1) after the missing prerequisite is repaired, the human may explicitly request one new bounded verification attempt -- a new request under **Authorized work continuity**, never an automatic retry; (2) when the required proof is unobtainable, close with one terminal disposition naming the missing proof and resume other authorized in-scope work at `status: partial` -- unavailable proof blocks completion and delivery, not every in-scope step, and is never converted to PASS or silently dropped.
+Two exits close a stopped verification (#3082) via **Authorized work continuity**: after prerequisite repair, the human may explicitly request one new bounded attempt; when required proof is unobtainable, one terminal disposition names the missing proof and resumes in-scope work at `status: partial` -- never PASS, never silently dropped.
 
 ## Verification proportionality
 

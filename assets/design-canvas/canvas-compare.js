@@ -97,7 +97,7 @@ export function init(ctx) {
 		els.compare.hidden = false;
 		els.viewport.inert = true;
 		els.panel.inert = true;
-		for (const control of [els.zoomOut, els.zoomIn, els.fit, els.design]) control.disabled = true;
+		for (const control of [els.zoomOut, els.zoomIn, els.fit, els.railFit, els.design]) control.disabled = true;
 		layoutCompare();
 		els.compareBack.focus();
 	}

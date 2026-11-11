@@ -33,6 +33,7 @@ test("the store starts with the canvas defaults and no system field", () => {
 		handoffs: { slug: null, chosen: null, handoffs: {} },
 		compare: null,
 		toastTimer: 0,
+		menu: null,
 	});
 	assert.equal(createStore({ slug: 3 }).state.slug, null, "a slug that is not a string shows the system-only view");
 	assert.equal(createStore().state.slug, null);
@@ -118,10 +119,15 @@ test("the single-field mutators set their one field", () => {
 	store.setHandoffs(handoffs);
 	store.setCompare(compare);
 	store.setToastTimer(9);
+	const menu = { button: board, items: [], byItem: new Map() };
+	store.setMenu(menu);
 	assert.equal(store.state.hoverBoard, board);
 	assert.equal(store.state.commenting, true);
 	assert.equal(store.state.mode, "collect");
 	assert.equal(store.state.handoffs, handoffs);
 	assert.equal(store.state.compare, compare);
 	assert.equal(store.state.toastTimer, 9);
+	assert.equal(store.state.menu, menu, "the open menu, shared, not copied");
+	store.setMenu(null);
+	assert.equal(store.state.menu, null);
 });

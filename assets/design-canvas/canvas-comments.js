@@ -238,7 +238,7 @@ export function init(ctx) {
 
 	function setCommenting(enabled) {
 		store.setCommenting(enabled);
-		els.comment.setAttribute("aria-pressed", String(enabled));
+		actions.renderTools();
 		els.world.classList.toggle("gd-commenting", enabled);
 		state.boards.forEach(actions.sendMode);
 		setStatus(enabled ? "Comment mode: click an element in an artboard" : "", false);

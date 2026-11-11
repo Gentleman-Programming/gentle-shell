@@ -218,7 +218,7 @@ test("a design reload closes an open artboard menu: its artboard is gone", async
 
 // ---- Export as PNG
 
-type PngLog = { calls: string[]; draw: number[][]; names: string[]; during: Array<{ exporting: boolean; transform: string; width: string; height: string }>; output: { width: number; height: number } | null; statusAtCapture: string[]; timeouts: number[] };
+type PngLog = { calls: string[]; draw: number[][]; names: string[]; during: Array<{ exporting: boolean; transform: string; width: string; height: string; highlight: string }>; output: { width: number; height: number } | null; statusAtCapture: string[]; timeouts: number[] };
 
 /**
  * The canvas with a tab capture that hands back one 1200 x 800 frame (this window at 1×) and a canvas that records what it draws.
@@ -226,9 +226,11 @@ type PngLog = { calls: string[]; draw: number[][]; names: string[]; during: Arra
  * `frozen`: the video never paints a new frame and no timer ever fires, so only the track's `ended` event can end the waits.
  * `permission`: the capture's answer waits for it, like the browser's selector; a rejection is a denial.
  * `ended`: the track has already ended when the capture is granted (an inactive stream).
+ * `replies`: more server replies, such as the design's comments.
  * `track.end()` ends the shared track like the browser's Stop sharing: readyState "ended", then its `ended` event.
+ * `during[].highlight` is what the first artboard's inspector last heard about its highlight when the frame was grabbed.
  */
-async function pngCanvas(extra: { surface?: string; play?: () => Promise<void>; frame?: { width: number; height: number }; stalled?: boolean; frozen?: boolean; permission?: Promise<void>; ended?: boolean } = {}) {
+async function pngCanvas(extra: { surface?: string; play?: () => Promise<void>; frame?: { width: number; height: number }; stalled?: boolean; frozen?: boolean; permission?: Promise<void>; ended?: boolean; replies?: Record<string, unknown> } = {}) {
 	const log: PngLog = { calls: [], draw: [], names: [], during: [], output: null, statusAtCapture: [], timeouts: [] };
 	const endedListeners: Array<() => void> = [];
 	const track = {
@@ -240,7 +242,7 @@ async function pngCanvas(extra: { surface?: string; play?: () => Promise<void>; 
 	};
 	const stream = { getTracks: () => [track], getVideoTracks: () => [track] };
 	let status: FakeElement | null = null;
-	const canvas = await loadExport({}, {
+	const canvas = await loadExport(extra.replies ?? {}, {
 		confirm: () => { log.calls.push("confirm"); return true; },
 		navigator: { mediaDevices: { getDisplayMedia: async (options: unknown) => {
 			log.calls.push(`capture ${JSON.stringify(options)}`);
@@ -265,7 +267,7 @@ async function pngCanvas(extra: { surface?: string; play?: () => Promise<void>; 
 				height: 0,
 				getContext: () => ({ drawImage: (_video: unknown, ...args: number[]) => {
 					log.draw.push(args);
-					log.during.push({ exporting: canvas.document.body.classes.has("gd-exporting"), transform: canvas.world.style.transform, width: canvas.boards[0].frame.style.width, height: canvas.boards[0].frame.style.height });
+					log.during.push({ exporting: canvas.document.body.classes.has("gd-exporting"), transform: canvas.world.style.transform, width: canvas.boards[0].frame.style.width, height: canvas.boards[0].frame.style.height, highlight: lastHighlight(canvas.boards[0].frame) });
 					log.calls.push("draw");
 				} }),
 				toBlob: (done: (blob: object) => void) => { log.calls.push("encode"); done({}); },
@@ -277,6 +279,12 @@ async function pngCanvas(extra: { surface?: string; play?: () => Promise<void>; 
 		return create(tag);
 	};
 	return { canvas, log, track };
+}
+
+/** The last highlight message an artboard frame got: "gd:highlight <id>", "gd:clear" or "" for none. */
+function lastHighlight(frame: FakeElement) {
+	const last = frame.contentWindow!.posted.filter((message) => message.type === "gd:highlight" || message.type === "gd:clear").at(-1);
+	return last ? `${last.type}${last.id ? ` ${last.id}` : ""}` : "";
 }
 
 for (const [name, navigator] of [
@@ -521,6 +529,42 @@ for (const [surface, reason] of [["window", "You shared a window, not this tab, 
 	});
 }
 
+// CodeRabbit 4541511182: the inspector draws a selected comment's outline inside the artboard, where .gd-exporting cannot hide it.
+const COMMENTS = (file: string) => ({ "/t/api/designs/alpha/comments": { comments: [{ id: "abc123", file, selector: "h1", excerpt: "First", comment: "Update", status: "open", sentAt: null }] } });
+const showComment = (canvas: Canvas) => withClass($(canvas, "gd-comment-list"), "gd-comment-show")[0].dispatch("click");
+
+test("M-D1: a selected comment's highlight inside the artboard is cleared for the grabbed frame and shown again afterwards", async () => {
+	const { canvas, log } = await pngCanvas({ replies: COMMENTS("01-a.html") });
+	showComment(canvas);
+	assert.equal(lastHighlight(canvas.boards[0].frame), "gd:highlight abc123");
+	choose(canvas, "Export as PNG");
+	await settle();
+	assert.equal(log.draw.length, 1, "it exported");
+	assert.equal(log.during[0].highlight, "gd:clear", "no comment outline in the PNG");
+	assert.equal(lastHighlight(canvas.boards[0].frame), "gd:highlight abc123", "the outline comes back");
+});
+
+test("M-D1: a failed export also gives the selected comment's highlight back", async () => {
+	const { canvas, log } = await pngCanvas({ replies: COMMENTS("01-a.html"), frame: { width: 1440, height: 900 } });
+	showComment(canvas);
+	choose(canvas, "Export as PNG");
+	await settle();
+	assert.deepEqual(log.draw, []);
+	assert.ok(canvas.boards[0].frame.contentWindow!.posted.some((message) => message.type === "gd:clear"), "cleared for the capture");
+	assert.equal(lastHighlight(canvas.boards[0].frame), "gd:highlight abc123");
+});
+
+test("M-D1: with no selected comment on the artboard, the export clears it and sends no highlight back", async () => {
+	const { canvas, log } = await pngCanvas({ replies: COMMENTS("02-b.html") });
+	showComment(canvas);
+	assert.equal(lastHighlight(canvas.boards[1].frame), "gd:highlight abc123");
+	choose(canvas, "Export as PNG");
+	await settle();
+	assert.equal(log.during[0].highlight, "gd:clear");
+	assert.equal(lastHighlight(canvas.boards[0].frame), "gd:clear", "the other artboard's comment is not highlighted in this one");
+	assert.equal(lastHighlight(canvas.boards[1].frame), "gd:highlight abc123", "nor cleared in its own");
+});
+
 test("a capture failure stops the stream and restores the canvas view", async () => {
 	const { canvas, log } = await pngCanvas({ play: async () => { throw new Error("The video could not play."); } });
 	const before = canvas.world.style.transform;
@@ -536,10 +580,14 @@ test("a capture failure stops the stream and restores the canvas view", async ()
 
 // ---- Export as PDF and Download HTML
 
+/** Both design artboard files, as the server serves them. */
+const ARTBOARD_FILES = { [ARTBOARD_URL]: { __text: "<p>A</p>" }, "/t/files/alpha/02-b.html": { __text: "<p>B</p>" } };
+
 test("Export as PDF prints the artboard alone at its size once its frame has loaded, then cleans up", async () => {
 	let printed = 0;
-	const canvas = await loadExport({}, { print: () => printed++ });
+	const canvas = await loadExport(ARTBOARD_FILES, { print: () => printed++ });
 	choose(canvas, "Export as PDF");
+	await settle(4);
 	const body = canvas.document.body;
 	const holders = withClass(body, "gd-print");
 	assert.equal(holders.length, 1, "a print container is added to the page");
@@ -561,7 +609,7 @@ test("Export as PDF prints the artboard alone at its size once its frame has loa
 });
 
 test("a second Export as PDF replaces the first one's container and ends the first one: one page rule, one afterprint listener (D3)", async () => {
-	const canvas = await loadExport({}, { print: () => {} });
+	const canvas = await loadExport(ARTBOARD_FILES, { print: () => {} });
 	// canvas.css with a CSSOM, where each export sets its page size.
 	const rules: string[] = [];
 	const sheet = { href: "/t/assets/canvas.css", cssRules: rules, insertRule: (text: string, index: number) => { rules.splice(index, 0, text); return index; }, deleteRule: (index: number) => { rules.splice(index, 1); } };
@@ -570,6 +618,7 @@ test("a second Export as PDF replaces the first one's container and ends the fir
 	choose(canvas, "Export as PDF", 0);
 	assert.deepEqual(rules, ["@page { size: 400px 300px; }"]);
 	choose(canvas, "Export as PDF", 1);
+	await settle(4);
 	const holders = withClass(canvas.document.body, "gd-print");
 	assert.equal(holders.length, 1);
 	assert.equal(holders[0].children[0].getAttribute("src"), "/t/files/alpha/02-b.html");
@@ -592,12 +641,13 @@ function printSheet(canvas: Canvas) {
 
 test("#3153 case 3: two PDFs started before the first frame loads, then the second one printed: neither page rule, container nor listener is left", async () => {
 	let printed = 0;
-	const canvas = await loadExport({}, { print: () => printed++ });
+	const canvas = await loadExport(ARTBOARD_FILES, { print: () => printed++ });
 	const rules = printSheet(canvas);
 	const listeners = canvas.windowListenerCount("afterprint");
 	choose(canvas, "Export as PDF", 0);
 	choose(canvas, "Export as PDF", 1);
 	assert.deepEqual(rules, ["@page { margin: 0; }", "@page { size: 400px 300px; }"], "the superseded export's rule is gone at once");
+	await settle(4);
 	const holders = withClass(canvas.document.body, "gd-print");
 	assert.equal(holders.length, 1);
 	holders[0].children[0].dispatch("load");
@@ -610,10 +660,11 @@ test("#3153 case 3: two PDFs started before the first frame loads, then the seco
 });
 
 test("an Export as PDF whose print() throws cleans up its container, page rule and listener and says so", async () => {
-	const canvas = await loadExport({}, { print: () => { throw new Error("Printing is blocked"); } });
+	const canvas = await loadExport(ARTBOARD_FILES, { print: () => { throw new Error("Printing is blocked"); } });
 	const rules = printSheet(canvas);
 	const listeners = canvas.windowListenerCount("afterprint");
 	choose(canvas, "Export as PDF");
+	await settle(4);
 	withClass(canvas.document.body, "gd-print")[0].children[0].dispatch("load");
 	assert.deepEqual(rules, ["@page { margin: 0; }"]);
 	assert.equal(withClass(canvas.document.body, "gd-print").length, 0);
@@ -622,6 +673,47 @@ test("an Export as PDF whose print() throws cleans up its container, page rule a
 	assert.equal(statusText(canvas), "Could not print the artboard (Printing is blocked). Open it from design/ in your project instead.");
 	assert.equal(statusIsError(canvas), true);
 	assert.equal(toastText(canvas), statusText(canvas));
+});
+
+// CodeRabbit 4543489161: an iframe also fires load for the server's 404 page, which would then be printed.
+for (const [name, reply, reason] of [["is gone (404)", undefined, "HTTP 404"], ["cannot be fetched", { __throw: "Failed to fetch" }, "Failed to fetch"]] as const) {
+	test(`M-D2: Export as PDF of an artboard file that ${name} says so, prints nothing and leaves no container, page rule or listener`, async () => {
+		let printed = 0;
+		const canvas = await loadExport(reply ? { [ARTBOARD_URL]: reply } : {}, { print: () => printed++ });
+		const rules = printSheet(canvas);
+		const listeners = canvas.windowListenerCount("afterprint");
+		choose(canvas, "Export as PDF");
+		await settle(4);
+		assert.equal(printed, 0);
+		assert.equal(withClass(canvas.document.body, "gd-print").length, 0);
+		assert.equal(canvas.document.body.classes.has("gd-printing"), false);
+		assert.deepEqual(rules, ["@page { margin: 0; }"]);
+		assert.equal(canvas.windowListenerCount("afterprint"), listeners);
+		assert.ok(canvas.fetched.includes(ARTBOARD_URL), "the file was read before the frame loads it");
+		assert.equal(statusText(canvas), `Could not print the artboard (${reason}). Open it from design/ in your project instead.`);
+		assert.equal(statusIsError(canvas), true);
+		assert.equal(toastText(canvas), statusText(canvas));
+		assert.deepEqual(canvas.posts, []);
+	});
+}
+
+test("M-D2: a PDF export superseded while its file is read reports nothing when that read fails; the newer one prints", async () => {
+	let printed = 0;
+	let answer!: (reply: unknown) => void;
+	const canvas = await loadExport({ [ARTBOARD_URL]: new Promise((resolve) => { answer = resolve; }), "/t/files/alpha/02-b.html": { __text: "<p>B</p>" } }, { print: () => printed++ });
+	const rules = printSheet(canvas);
+	choose(canvas, "Export as PDF", 0);
+	choose(canvas, "Export as PDF", 1);
+	await settle(4);
+	answer({ __http: 404 });
+	await settle(4);
+	assert.equal(statusIsError(canvas), false, "the superseded export says nothing");
+	const holders = withClass(canvas.document.body, "gd-print");
+	assert.equal(holders.length, 1);
+	assert.equal(holders[0].children[0].getAttribute("src"), "/t/files/alpha/02-b.html");
+	assert.deepEqual(rules, ["@page { margin: 0; }", "@page { size: 400px 300px; }"]);
+	holders[0].children[0].dispatch("load");
+	assert.equal(printed, 1);
 });
 
 test("Download HTML saves the artboard file as written, without the inspector the server injects", async () => {

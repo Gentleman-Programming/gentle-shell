@@ -147,6 +147,8 @@ export function init(ctx) {
 		// Not a confirm dialog: the browser lets the capture start only for a few seconds after the click.
 		ui.setStatus(TEXT.choose, false);
 		let stream = null;
+		// The board whose inspector highlight was cleared for the capture.
+		let cleared = null;
 		const previous = { focus: state.focus, size: state.size, view: { zoom: state.zoom, x: state.x, y: state.y, fitted: state.fitted } };
 		try {
 			// This call must happen directly from the menu activation, before any asynchronous work.
@@ -169,6 +171,9 @@ export function init(ctx) {
 			// The viewport covers the window without the canvas chrome. Its size changes, so focus mode may center
 			// the artboard again once (the viewport's resize observer): wait for that before placing it.
 			doc.body.classList.add("gd-exporting");
+			// The inspector draws a selected comment's outline inside the artboard, out of the chrome's reach.
+			board.frame.contentWindow?.postMessage({ type: "gd:clear" }, "*");
+			cleared = board;
 			await live(nextPaint());
 			// Desktop fills the window (canvas-layout S8); the image is the artboard at its own size, at the top left.
 			actions.setFrameSize(board, board.artboard.width, board.artboard.height);
@@ -225,6 +230,11 @@ export function init(ctx) {
 				store.setView(previous.view);
 				actions.applyView();
 			}
+			// The selected comment's outline comes back when it is on this artboard, as canvas-comments.js shows it.
+			const active = state.comments.find((comment) => comment.id === state.activeId);
+			if (cleared && currentBoard(cleared) === cleared && active?.file === cleared.artboard.file) {
+				cleared.frame.contentWindow?.postMessage({ type: "gd:highlight", id: active.id }, "*");
+			}
 			const board = currentBoard(chosen);
 			if (board) buttons.get(board)?.focus();
 		}
@@ -236,8 +246,9 @@ export function init(ctx) {
 	/**
 	 * Prints the artboard alone, at its own size, from this page (artboards are sandboxed without modals, so
 	 * they cannot print themselves): the browser's print dialog saves it as PDF. Nothing goes to the server.
+	 * The file is read first: a frame also loads the server's error page, which must not be printed.
 	 */
-	function exportPdf(board) {
+	async function exportPdf(board) {
 		endPrint?.();
 		const { width, height, title, file } = board.artboard;
 		const holder = doc.createElement("div");
@@ -271,7 +282,18 @@ export function init(ctx) {
 				reportFailure(TEXT.printFailed(error?.message || "error"));
 			}
 		}, { once: true });
-		frame.setAttribute("src", api.fileUrl(board.slug, file));
+		const url = api.fileUrl(board.slug, file);
+		try {
+			const response = await win.fetch(url, { cache: "no-store" });
+			if (!response.ok) throw new Error(`HTTP ${response.status}`);
+		} catch (error) {
+			// A newer export replaced this one meanwhile: its failure concerns nobody.
+			if (endPrint !== done) return;
+			done();
+			reportFailure(TEXT.printFailed(error?.message || "error"));
+			return;
+		}
+		if (endPrint === done) frame.setAttribute("src", url);
 	}
 
 	/** One page the artboard's size (canvas.css sets no margin); returns how to remove it, or null where the browser gives no CSSOM. */

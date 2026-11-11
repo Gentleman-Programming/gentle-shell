@@ -18,7 +18,7 @@ import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { appendSystemPromptOnce, type AppendableSystemPromptOptions } from "../lib/append-system-prompt.ts";
 import { isHomeOrBroadUserDirectory } from "../lib/bounded-writer-admission.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
@@ -706,6 +706,9 @@ async function regenerateRegistry(cwd: string, force: boolean, intentional = fal
 
 const watchedCwds = new Set<string>();
 const watcherPolls = new Map<string, ReturnType<typeof setInterval>>();
+// Debounced watcher refreshes, cleared on shutdown so none fires into a
+// replaced or reloaded session.
+const watcherTimers = new Map<string, ReturnType<typeof setTimeout>>();
 // Startup regeneration runs after session_start returns; watcher refreshes
 // wait for it so an older startup scan never overwrites a newer refresh.
 const pendingStartups = new Map<string, Promise<void>>();
@@ -786,7 +789,23 @@ function closeSkillRegistryWatchers(): void {
 	activeWatchers.clear();
 	for (const poll of watcherPolls.values()) clearInterval(poll);
 	watcherPolls.clear();
+	for (const timer of watcherTimers.values()) clearTimeout(timer);
+	watcherTimers.clear();
 	watchedCwds.clear();
+}
+
+/**
+ * Pi's runner throws on any access to a ctx made stale by reload or session
+ * replacement (/reload, /resume, /new). Late async notices must neither reach
+ * that ctx nor let its throw escape as an uncaught exception.
+ */
+function notifyIfLive(ctx: ExtensionContext, message: string, level: "info" | "warning"): void {
+	try {
+		void ctx.sessionManager;
+		if (ctx.hasUI) ctx.ui.notify(message, level);
+	} catch {
+		// The session ended; nobody is left to show this notice to.
+	}
 }
 
 async function startSkillRegistryWatcher(
@@ -795,21 +814,27 @@ async function startSkillRegistryWatcher(
 ): Promise<void> {
 	if (watchedCwds.has(cwd)) return;
 	watchedCwds.add(cwd);
+	const generation = startupGeneration;
 	const dirs = await uniqueExistingDirs([
 		...projectSkillDirs(cwd),
 		...await userSkillDirs(),
 	]);
-	let timer: ReturnType<typeof setTimeout> | undefined;
+	if (generation !== startupGeneration) return;
 	// The poll re-asks a state the watchers already answered: without this,
 	// an unchanged tracked-target warning would repeat every poll interval.
 	let lastWarning: string | undefined;
 	const refresh = () => {
-		if (timer) clearTimeout(timer);
-		timer = setTimeout(() => {
+		if (generation !== startupGeneration) return;
+		const previous = watcherTimers.get(cwd);
+		if (previous) clearTimeout(previous);
+		watcherTimers.set(cwd, setTimeout(() => {
+			watcherTimers.delete(cwd);
 			void (async () => {
 				try {
 					await pendingStartups.get(cwd);
+					if (generation !== startupGeneration) return;
 					const result = await regenerateRegistry(cwd, false);
+					if (generation !== startupGeneration) return;
 					if (result.warning) {
 						if (result.warning !== lastWarning) notify(result.warning, "warning");
 						lastWarning = result.warning;
@@ -820,10 +845,11 @@ async function startSkillRegistryWatcher(
 						}
 					}
 				} catch (error) {
+					if (generation !== startupGeneration) return;
 					notify(`Skill registry refresh failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
 				}
 			})();
-		}, WATCH_DEBOUNCE_MS);
+		}, WATCH_DEBOUNCE_MS));
 	};
 	for (const dir of dirs) {
 		try {
@@ -900,9 +926,7 @@ export default function (pi: ExtensionAPI) {
 		if (repositoryRootedAtHome(ctx.cwd)) return;
 		const cwd = ctx.cwd;
 		const generation = startupGeneration;
-		const notifyWarning = (message: string) => {
-			if (ctx.hasUI) ctx.ui.notify(message, "warning");
-		};
+		const notifyWarning = (message: string) => notifyIfLive(ctx, message, "warning");
 		const regenerate = async () => {
 			if (generation !== startupGeneration) return;
 			try {
@@ -911,17 +935,11 @@ export default function (pi: ExtensionAPI) {
 				const quarantinedLegacy = await quarantineLegacyProjectRegistry(cwd, notifyWarning);
 				const result = await regenerateRegistry(cwd, quarantinedLegacy);
 				if (result.warning) notifyWarning(result.warning);
-				if (result.regenerated && ctx.hasUI) {
-					ctx.ui.notify(
-						`Skill registry refreshed (${result.skillCount} skills)`,
-						"info",
-					);
+				if (result.regenerated) {
+					notifyIfLive(ctx, `Skill registry refreshed (${result.skillCount} skills)`, "info");
 				}
-				if (quarantinedLegacy && ctx.hasUI) {
-					ctx.ui.notify(
-						"Disabled stale project-local skill registry extension; using package registry with project skills first.",
-						"warning",
-					);
+				if (quarantinedLegacy) {
+					notifyWarning("Disabled stale project-local skill registry extension; using package registry with project skills first.");
 				}
 				if (quarantinedLegacy) {
 					setTimeout(() => {
@@ -937,14 +955,7 @@ export default function (pi: ExtensionAPI) {
 					}, WATCH_DEBOUNCE_MS);
 				}
 			} catch (error) {
-				if (ctx.hasUI) {
-					const message =
-						error instanceof Error ? error.message : String(error);
-					ctx.ui.notify(
-						`Skill registry refresh failed: ${message}`,
-						"warning",
-					);
-				}
+				notifyWarning(`Skill registry refresh failed: ${error instanceof Error ? error.message : String(error)}`);
 			}
 		};
 		// Pi awaits session_start handlers one after another, so the Git tracking
@@ -957,7 +968,7 @@ export default function (pi: ExtensionAPI) {
 		try {
 			if (ctx.hasUI) {
 				await startSkillRegistryWatcher(cwd, (message, level = "info") => {
-					ctx.ui.notify(message, level);
+					notifyIfLive(ctx, message, level);
 				});
 			}
 		} catch (error) {

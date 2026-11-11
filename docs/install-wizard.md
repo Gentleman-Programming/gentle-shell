@@ -57,8 +57,9 @@ it lets the window close.
 `collectInventory`; see [Host probes](#host-probes).
 
 Current requirements come from `package.json` and
-[`gentle-ai-installer.mjs`](../scripts/gentle-ai-installer.mjs): Node ≥22.19.0,
-Pi ≥1.2.0, pnpm acquisition 11.1.1, Gentle Shell package 4.0.0 and package-local
+[`gentle-ai-installer.mjs`](../scripts/gentle-ai-installer.mjs): Node `^22.19.0 || >=23.6.0`
+(22.19.0 or a later 22.x release, or 23.6.0 or newer; 23.0–23.5 are not
+supported), Pi ≥1.2.0, pnpm acquisition 11.1.1, Gentle Shell package 4.0.0 and package-local
 Gentle AI 4.4.0. Windows native source builds require Go ≥1.25.10 when the
 required usable native binary is missing. A reusable binary does not require Go.
 When a build needs Go and the user's Go is missing, older or unchecked, the installer uses
@@ -131,12 +132,14 @@ Shell, also the pnpm commands that update or remove it); other blockers keep
 their fixed guidance. A missing, older or unchecked Go is not a blocker: `tools.go` is
 `needs-acquire` with `required`, the pinned `version` and the older `found`
 version (or `unchecked: true` when `go version` reported no version it can
-check), and the plan acquires the [pinned Go](#pinned-go). An
-older Node.js or an incompatible pnpm on the user's PATH is not a blocker when
+check), and the plan acquires the [pinned Go](#pinned-go). A
+Node.js outside the supported range (older than 22.19.0, or 23.0–23.5) or an
+incompatible pnpm on the user's PATH is not a blocker when
 the bootstrap's pinned copy runs the wizard: the probe reports that copy
 (bootstrap-only) with the user's stable version as `found`, and `tools.node` or
-`tools.pnpm` records `found` and the persisted pin as `version` (see
-[Existing installations](#existing-installations)). That copy is persisted
+`tools.pnpm` records `found` and the persisted pin as `version`. When the
+found Node is in `$PNPM_HOME/bin`, the probe and plan also record
+`foundInGlobalBin: true` (see [Existing installations](#existing-installations)). That copy is persisted
 only for a new installation of Gentle Shell: with an existing Shell (updated or
 current) the replaced runtime is an `incompatible-tool` blocker before consent,
 except for a setup recovery, which persists nothing. A user's pnpm in
@@ -622,10 +625,15 @@ For a bootstrap-only Node, the full group runs these fixed steps:
 
 The outcome then also reports `npmPrefix: "configured"` or `"unchanged"`.
 
-A persistent Node is never replaced or shadowed: there is no `runtime set` and
-no prefix change. An older Node on the user's PATH is not a persistent Node
-here: the bootstrap's pinned Node runs the wizard, so the full group above
-persists it next to the older one, which is left unchanged. One fixed add runs, then only the matching checks:
+When the first Node on the user's PATH is supported, it is reused and never
+replaced: there is no `runtime set` and no prefix change. A Node in
+`$PNPM_HOME/bin` can shadow it in the installer child environment, which puts
+`$PNPM_HOME/bin` first on PATH. When that
+first Node is unsupported, the bootstrap's pinned Node runs the wizard, so the
+full group above persists it into `$PNPM_HOME/bin`. That replaces any Node
+already in `$PNPM_HOME/bin`, even a supported one found later on PATH, and the
+plan says so before consent; the unsupported Node found first is left
+unchanged when it lives elsewhere. One fixed add runs, then only the matching checks:
 
 | Intent | Command | Then |
 | --- | --- | --- |
@@ -656,7 +664,7 @@ Pi but never reinstalls or downgrades it, and nothing changes before consent.
 | A Pi older than the minimum that pnpm or npm owns | `update-pi` to `PI_INSTALL_VERSION` with that package manager (`pnpm add -g @earendil-works/pi-coding-agent@<version>` or `npm install -g …`), before any Gentle Shell step: ahead of `install-shell` or `update-shell-*`, or alone when Gentle Shell is current. The plan names the found and target versions and the manager. |
 | A Pi older than the minimum that neither pnpm nor npm owns (mise, Homebrew, a standalone binary) | Left unchanged. `install-pi` adds the installer's Pi with pnpm exactly as when Pi is absent (in the same `pnpm add -g` as gentle-pi, before an update of Gentle Shell, or alone when Gentle Shell is current), and the plan says so before consent. |
 | A Gentle Shell neither pnpm nor npm owns (an `npm link` of a source checkout, for example) | Blocked with an explanation; never reinstalled. |
-| A Node.js older than the minimum with a stable version (mise, nvm, Homebrew, an old installer) | Left unchanged. The POSIX bootstrap acquires its verified Node 24.21.0 as when Node is absent, and the plan persists it (`persist-node`, `persist-package-managers`, `configure-npm-prefix`). The plan says so before consent. An unknown or prerelease version still blocks. Windows: `bootstrap.cmd` does the same, and also acquires its Node for a user Node whose storage it cannot trust (nvm-windows' symlink, fnm's junction), which it never runs. |
+| A stable Node.js outside the supported range (mise, nvm, Homebrew, pnpm or an old installer) | The POSIX bootstrap acquires verified Node 24.21.0 and the plan persists it (`persist-node`, `persist-package-managers`, `configure-npm-prefix`). A Node already in `$PNPM_HOME/bin` is replaced even when a different Node appears first on PATH; that other Node is left unchanged. The plan says so before consent. An unknown or prerelease version still blocks. Windows: `bootstrap.cmd` does the same, and also acquires its Node for a user Node whose storage it cannot trust (nvm-windows' symlink, fnm's junction), which it never runs. |
 | A pnpm older than 11.1.1, or whose engine rejects the bootstrap's Node (or, for the bootstraps only, another major) | Left unchanged. Both bootstraps acquire the verified pnpm 11.1.1 as when pnpm is absent, and the plan persists it (`persist-pnpm`, or `persist-package-managers` with npm). The plan says so before consent. Unknown evidence still blocks. |
 | That pnpm in `$PNPM_HOME/bin` itself (where persisting pnpm writes) | Never replaced or downgraded. At 11.1.1 or newer, of any major (pnpm 12 included), it is used as it is and nothing is persisted over it. An older one blocks before consent; the guidance names the found and required versions and updates it with `pnpm self-update 11.1.1`. |
 | A pnpm in `$PNPM_HOME/bin` whose shim is not recognized or whose `pnpm --version` reports no stable version | Left unchanged and never run again. The bootstrap's verified pnpm runs the installer and nothing is persisted over it (no `persist-pnpm`). The plan says so before consent. |
@@ -698,15 +706,16 @@ replaces the existing global package in place (its isolated global directory is
 swapped), whether Pi was added alone or together with gentle-pi, so the next run
 sees a single Pi; `npm install -g` replaces it in npm's global root.
 
-An older Node.js or incompatible pnpm is never changed or removed, and once the
-bootstrap has its pinned copy the installer never runs it for installation
-steps: the wizard and runner run under the bootstrap's Node (`process.execPath`),
+An unsupported Node.js outside `$PNPM_HOME/bin` or incompatible pnpm is left
+unchanged, and once the bootstrap has its pinned copy the installer never runs
+the user's copy for installation steps: the wizard and runner run under the bootstrap's Node (`process.execPath`),
 `persist-node` puts the pinned Node first in the runner's child `PATH`, and the
 runner invokes the bootstrap's pnpm by absolute path (`runnerEnvironment` puts
 its directory first on POSIX; Windows uses the `GENTLE_INSTALL_PNPM_*`
-handoff). The wizard reads the user's pnpm only for its `--version` (POSIX,
-from `/`). The plan's runtime persistence text names the found and pinned
-versions and says the user's copy is left unchanged. It promises no PATH
+handoff). Persisting Node replaces a pnpm-managed found Node in
+`$PNPM_HOME/bin`. The wizard reads the user's pnpm only for its `--version`
+(POSIX, from `/`). The plan's runtime persistence text names the found and pinned
+versions and says whether the found Node is replaced or left unchanged. It promises no PATH
 precedence: a version manager such as `mise activate` puts its own paths first
 again on every prompt, so new terminals may still run the older Node or pnpm.
 An update of an existing Gentle Shell persists nothing, so an older Node or
@@ -1324,7 +1333,7 @@ Windows bootstrap end to end still lacks native acceptance evidence.
 | --- | --- |
 | Entry | Small CMD entry invokes fixed stock Windows PowerShell commands with no profile. Paths are environment data, not interpolated PowerShell source. Delayed CMD expansion is disabled. |
 | Storage | Claim a new random-named prerequisite directory directly below `%LOCALAPPDATA%`, or below `%USERPROFILE%` when `%LOCALAPPDATA%` fails `acl-mask` or `home-owner` (see [claim candidates](#claim-candidates-and-owners)); never reuse an existing destination. Verify each path component's reparse attributes, owner and role-specific ACL rights. Set the claimed directory's owner to the invoking SID, protect its DACL for the invoking SID, SYSTEM and Administrators, and read both back. |
-| Node | Reuse a proven stable existing Node ≥24.3.0 and the repository minimum. Otherwise (missing, an older stable version, or a Node whose storage fails the reparse/owner/ACL walk, which therefore never runs) leave it as it is and acquire only the fixed official Node 24.21.0 Windows x64/arm64 ZIP, with no redirects and bounded transport, verify SHA256 before opening the archive, validate the whole namespace and extract only regular `node.exe`. |
+| Node | Reuse a proven stable existing Node ≥24.3.0 inside the repository `engines.node` range. Otherwise (missing, a stable version outside that range, or a Node whose storage fails the reparse/owner/ACL walk, which therefore never runs) leave it as it is and acquire only the fixed official Node 24.21.0 Windows x64/arm64 ZIP, with no redirects and bounded transport, verify SHA256 before opening the archive, validate the whole namespace and extract only regular `node.exe`. |
 | pnpm | A pnpm whose wrapper, Node, entry, metadata or exe fails the reparse/owner/ACL walk never runs: it is left as it is and pnpm is acquired as when missing. Reuse only a [known shim](#windows-command-shims) of pnpm's own JS entry, with package identity, bin target, stable CLI version, compatible engine and global add/bin help evidence, preserving its sibling-Node preference or proving its inherited cwd/PATH/PATHEXT Node selection; or a native `pnpm.exe` (`pnpm setup`, `pnpm self-update`, @pnpm/exe, pnpm 12), directly or as a known shim's target (an extensionless target resolves through PATHEXT in order, and only an `.exe` first match counts), whose `--version` is stable and equals the `package.json` naming pnpm or `@pnpm/*` beside it, with the same global help evidence. A `pnpm.exe` without that `package.json` (pnpm's standalone installer, a Volta or mise shim), Corepack's `pnpm.cmd` and mise's file shim are not proven pnpm: they are never run and pnpm is acquired as when missing. Never execute a shim via cmd.exe. Other unknown wrappers block without replacement. One whose stable version is of another major or older than 11.1.1 is left as it is, and pnpm is acquired as when missing. |
 | Missing pnpm | Shared pnpm 11.1.1 URL/SRI and raw `>=22.13` engine identity are unchanged. Parse bounded gzip/USTAR bytes, reject unsupported extensions, links and unsafe Windows namespaces before no-clobber publication. Return a direct Node + JS-entry invocation; do not fabricate a wrapper. |
 | Handoff | Existing Node helper starts the fixed wizard entry `bin/gentle-shell-install.mjs`. Only child PATH is refreshed. No persistent PATH, global installation, product root or companion installation is created here. |
@@ -1712,7 +1721,7 @@ never the path.
 | `output-limit` | Combined stdout and stderr exceeded 1 MiB. |
 | `exit-code` | Node exited with a nonzero code. |
 | `version-format` | `node --version` did not print exactly `vMAJOR.MINOR.PATCH`. |
-| `engine` | The acquired Node is below 24.3.0 or the repository `engines.node` floor. |
+| `engine` | The acquired Node is below 24.3.0 or outside the repository `engines.node` range. |
 | `acquired-version` | A Node acquired by this bootstrap is not exactly v24.21.0. |
 
 The user's Node (no `.node-stem`) is never refused for `engine` or for the

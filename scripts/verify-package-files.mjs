@@ -4,6 +4,9 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+// The generated copy of lib/design-canvas-assets.ts: plain `node` runs this check
+// (prepack, prepublishOnly), and Node 23.0-23.5 cannot load TypeScript unflagged.
+import { DESIGN_CANVAS_ASSETS } from "../runtime/design-canvas-assets.mjs";
 
 const root = join(fileURLToPath(new URL("..", import.meta.url)));
 
@@ -29,7 +32,6 @@ export const installerPaths = Object.freeze([
 
 // The canvas server serves exactly these files; one list keeps the server and
 // the package in sync.
-const { DESIGN_CANVAS_ASSETS } = await import(new URL("../lib/design-canvas-assets.ts", import.meta.url));
 export const designCanvasAssetPaths = Object.freeze(Object.keys(DESIGN_CANVAS_ASSETS).map((name) => `assets/design-canvas/${name}`));
 
 export const requiredPaths = [
@@ -73,9 +75,11 @@ export const requiredPaths = [
   // The design canvas server reads its page and scripts from assets/ by path.
   "lib/design-canvas-server.ts",
   "lib/design-canvas-assets.ts",
+  "runtime/design-canvas-assets.mjs",
   "lib/design-open-browser.ts",
   "lib/design-comments.ts",
   "lib/design-handoffs.ts",
+  "lib/design-system-tokens.ts",
   "lib/design-sources.ts",
   "assets/design-canvas/index.html",
   ...designCanvasAssetPaths,
@@ -483,7 +487,7 @@ async function main() {
     process.exit(1);
   }
 
-  const { GENTLE_AI_VERSION } = await import(new URL("../lib/gentle-ai-binary.ts", import.meta.url));
+  const { GENTLE_AI_VERSION } = await import(new URL("../runtime/gentle-ai-binary.mjs", import.meta.url));
   const versionMismatches = gentleAiVersionPinMismatches({
     installerVersion: INSTALLER_VERSION,
     releaseBaseUrl: RELEASE_BASE_URL,

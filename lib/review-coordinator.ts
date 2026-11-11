@@ -182,7 +182,11 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
    // Read only these keys' presence and value; closure state and variants stay unread.
    const closure = record(capture.closure);
    closureFindings = Object.hasOwn(closure, "advisory_findings") ? { value: structuredClone(closure.advisory_findings) } : undefined;
-   closureClaims = closureFindings !== undefined && Object.hasOwn(closure, "advisory_finding_claims") ? { value: structuredClone(closure.advisory_finding_claims) } : undefined;
+   // Relayed only as a plain object of strings; any other shape is dropped.
+   const claims = closure.advisory_finding_claims;
+   const plainStrings = claims !== null && typeof claims === "object" && [Object.prototype, null].includes(Object.getPrototypeOf(claims))
+    && Object.values(claims).every(value => typeof value === "string");
+   closureClaims = closureFindings !== undefined && Object.hasOwn(closure, "advisory_finding_claims") && plainStrings ? { value: structuredClone(claims) } : undefined;
   }
   details = await status();
  }

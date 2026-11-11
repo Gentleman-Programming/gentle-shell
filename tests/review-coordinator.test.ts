@@ -160,6 +160,21 @@ test("a reconciled reviewer group continues only through bound STATUS; drift, un
  assert.equal((await runReviewCoordinator({ lineageId: lineage }, single)).outcome, "blocked"); assert.equal(single.calls.length, 2);
 });
 
+test("advisory_finding_claims is relayed only as a plain object of strings", async () => {
+ const findings = { statement: "fixture", findings: [{ id: "F1" }] };
+ const run = async (claims: unknown) => {
+  const closure = { advisory_findings: findings, advisory_finding_claims: claims };
+  return await runReviewCoordinator({ lineageId: lineage }, backend([collect, { ...captured, closure }, approved, closed]));
+ };
+ assert.deepEqual((await run({ F1: "reviewer text" })).advisory_finding_claims, { F1: "reviewer text" });
+ for (const claims of [["reviewer text"], "reviewer text", { F1: 3 }, { F1: ["reviewer text"] }, null, 7, new Map([["F1", "x"]])]) {
+  const result = await run(claims);
+  assert.equal(result.outcome, "closed");
+  assert.deepEqual(result.advisory_findings, findings);
+  assert.equal(Object.hasOwn(result, "advisory_finding_claims"), false, JSON.stringify(claims));
+ }
+});
+
 test("reoffered and duplicate opaque bindings cannot execute twice", async () => {
  const host = backend([collect, captured, collect]);
  assert.equal((await runReviewCoordinator({ lineageId: lineage }, host)).outcome, "repeated-capture");

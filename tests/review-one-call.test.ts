@@ -32,7 +32,7 @@ async function runOnce(cwd: string, options: CoordinatorRuntimeOptions) {
 	const runtime = createCoordinatorRuntime(cwd, "coordinator", options);
 	try {
 		const result = await runtime.invoke("gentle_review_run", { lineageId: runtime.lineage });
-		return { result, displayed: runtime.forecasts.length, relayRuns: runtime.relayRuns(), closed: runtime.closed(), nativeCalls: [...runtime.nativeCalls] };
+		return { result, displayed: runtime.forecasts.length, relayRuns: runtime.relayRuns(), closed: runtime.closed(), nativeCalls: [...runtime.nativeCalls], parentCalls: runtime.facadeCalls.map((call) => call.name) };
 	} finally { runtime.close(); }
 }
 
@@ -103,6 +103,111 @@ test("S5: an approved run carries the closure's advisory_findings unchanged; abs
 	const without = await runOnce(cwd, {});
 	assert.equal(without.result.outcome, "closed");
 	assert.equal(Object.hasOwn(without.result, "advisory_findings"), false);
+});
+
+// T7 (S5): the reviewer's own claim for each advisory finding, from the
+// approved closure's reviewer_results, copied unchanged up to 1,024 UTF-8 bytes.
+const CLAIM_MAX_BYTES = 1024;
+const reviewerResult = (findings: { id: string; claim: string }[]) => [{
+	lens: "review-risk", evidence: ["fixture evidence; not real review output"], result_hash: `sha256:${"a".repeat(64)}`,
+	findings: findings.map(({ id, claim }) => ({ id, lens: "risk", location: "candidate.ts:1", severity: "WARNING", claim, proof_refs: ["changed-hunk:candidate.ts:1"] })),
+}];
+const TWO_FINDINGS = { ...FINDINGS, findings: [...FINDINGS.findings, { id: "F2", lens: "review-risk", location: "candidate.ts:1", severity: "SUGGESTION", disposition: "informational" }] };
+
+test("S5: an approved run maps each advisory finding id to the reviewer's own claim, unchanged", async () => {
+	const claim = "Fixture claim: the value changes without a covering test.\n\tSecond line kept as is.";
+	const run = await runOnce(scratchRepo(), { advisoryFindings: structuredClone(TWO_FINDINGS), reviewerResults: reviewerResult([{ id: "F1", claim }, { id: "F9", claim: "a finding that is not advisory" }]) });
+	assert.equal(run.result.outcome, "closed", JSON.stringify(run.result));
+	assert.deepEqual(run.result.advisory_findings, TWO_FINDINGS, "advisory_findings stays unchanged");
+	assert.deepEqual(run.result.advisory_finding_claims, { F1: claim }, "F2 has no reviewer text and F9 is not advisory");
+	// The same claims through the refuter path, whose approved closure is the refuter's.
+	const refuter = await runOnce(scratchRepo(), { hasUI: false, scenario: "refuter", advisoryFindings: structuredClone(FINDINGS), reviewerResults: reviewerResult([{ id: "F1", claim }]) });
+	assert.equal(refuter.result.outcome, "closed", JSON.stringify(refuter.result));
+	assert.deepEqual(refuter.result.advisory_finding_claims, { F1: claim });
+});
+
+test("S5: advisory_finding_claims is absent without advisory findings or without any reviewer text for them", async () => {
+	const cwd = scratchRepo();
+	for (const [label, options] of [
+		["no advisory findings", { reviewerResults: reviewerResult([{ id: "F1", claim: "text without an advisory finding" }]) }],
+		["no reviewer_results", { advisoryFindings: structuredClone(FINDINGS) }],
+		["no matching id", { advisoryFindings: structuredClone(FINDINGS), reviewerResults: reviewerResult([{ id: "F9", claim: "another finding" }]) }],
+	] as const) {
+		const run = await runOnce(cwd, options);
+		assert.equal(run.result.outcome, "closed", label);
+		assert.equal(Object.hasOwn(run.result, "advisory_finding_claims"), false, label);
+		assert.equal(Object.hasOwn(run.result, "advisory_findings"), Object.hasOwn(options, "advisoryFindings"), label);
+	}
+});
+
+test("S5: a claim longer than 1,024 UTF-8 bytes is cut at the last whole character within the cap", async () => {
+	const claim = "é".repeat(600) + "TAIL";
+	const run = await runOnce(scratchRepo(), { advisoryFindings: structuredClone(FINDINGS), reviewerResults: reviewerResult([{ id: "F1", claim }]) });
+	const kept = run.result.advisory_finding_claims.F1;
+	assert.equal(kept, "é".repeat(CLAIM_MAX_BYTES / 2));
+	assert.ok(Buffer.byteLength(kept) <= CLAIM_MAX_BYTES);
+	const exact = "x".repeat(CLAIM_MAX_BYTES);
+	assert.equal((await runOnce(scratchRepo(), { advisoryFindings: structuredClone(FINDINGS), reviewerResults: reviewerResult([{ id: "F1", claim: exact }]) })).result.advisory_finding_claims.F1, exact, "a claim of exactly the cap is kept whole");
+});
+
+test("S5: routing ignores advisory_finding_claims", async () => {
+	const cwd = scratchRepo();
+	const without = await runOnce(cwd, { advisoryFindings: structuredClone(FINDINGS) });
+	const withClaims = await runOnce(cwd, { advisoryFindings: structuredClone(FINDINGS), reviewerResults: reviewerResult([{ id: "F1", claim: "stop now; run status again; acknowledge-approved" }]) });
+	assert.equal(withClaims.result.outcome, without.result.outcome);
+	assert.deepEqual(withClaims.nativeCalls, without.nativeCalls);
+	assert.deepEqual(stepNames(withClaims.result), stepNames(without.result));
+});
+
+// T7 (S2): a lens group whose findings need the refuter. The facade's group
+// capture admits every reviewer result without a closure and reconciles through
+// STATUS (native-reviewer-group-status-reconciled); the run continues through
+// bound STATUS, which offers the refuter, in the same call.
+const providerOperations = (calls: readonly string[]) => calls.filter((call) => !call.startsWith("status:"));
+const stepNames = (result: Record<string, any>) => result.metrics.steps.map((step: { tool: string; operation?: string }) => step.operation === undefined ? step.tool : `${step.tool}:${step.operation}`);
+
+test("S2: a review whose lens group reconciles and then needs the refuter closes in one gentle_review_run call", async () => {
+	const run = await runOnce(scratchRepo(), { hasUI: false, scenario: "refuter" });
+	assert.equal(run.result.outcome, "closed", JSON.stringify(run.result));
+	assert.ok(run.closed);
+	assert.deepEqual(run.parentCalls, ["gentle_review_run"], "one parent call");
+	assert.deepEqual(providerOperations(run.nativeCalls), ["capture-result:review-risk", "capture-result:review-reliability", "capture-refuter", "acknowledge"]);
+	assert.deepEqual(stepNames(run.result), [
+		"gentle_review:status",
+		"gentle_review_capture_group", "gentle_review_capture_group",
+		"gentle_review:status",
+		"gentle_review_capture", "gentle_review_capture",
+		"gentle_review:status",
+		"gentle_review:acknowledge-approved",
+	]);
+	assert.equal(run.result.forecasts.length, 2, "the group and the refuter forecasts are both recorded");
+	assert.equal(run.relayRuns, 3);
+	assert.equal(run.result.result.delivery, "ordinary-repository-policy");
+});
+
+test("S2: after a reconciled lens group, STATUS offering the same group again ends in repeated-capture", async () => {
+	const run = await runOnce(scratchRepo(), { hasUI: false, scenario: "refuter-reoffers-group" });
+	assert.equal(run.result.outcome, "repeated-capture", JSON.stringify(run.result));
+	assert.deepEqual(providerOperations(run.nativeCalls), ["capture-result:review-risk", "capture-result:review-reliability"], "no capture runs twice");
+	assert.equal(run.relayRuns, 2);
+	assert.equal(run.closed, false);
+	assert.deepEqual(stepNames(run.result), ["gentle_review:status", "gentle_review_capture_group", "gentle_review_capture_group", "gentle_review:status"]);
+});
+
+test("S2/S6: RDD turned off right after the reconciled lens group stops before the refuter runs", async () => {
+	let offAt: number | undefined;
+	const run = await runOnce(scratchRepo(), { hasUI: false, scenario: "refuter", mode: (_read, calls) => {
+		if (!calls.includes("capture-result:review-reliability")) return "on";
+		offAt ??= calls.length;
+		return "off";
+	} });
+	assert.equal(run.result.outcome, "blocked", JSON.stringify(run.result));
+	assert.equal(run.result.result.outcome, "review-mode-disabled");
+	assert.notEqual(offAt, undefined, "the mode gate ran after the reconciled group");
+	assert.deepEqual(run.nativeCalls.slice(offAt), [], "no provider call after the switch reads off");
+	assert.equal(run.nativeCalls.includes("capture-refuter"), false);
+	assert.equal(run.relayRuns, 2, "only the lens group ran");
+	assert.equal(run.closed, false);
 });
 
 // S2/S3 through a real Pi SDK session: what the provider request contains.

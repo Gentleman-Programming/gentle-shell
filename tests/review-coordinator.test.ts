@@ -84,7 +84,7 @@ test("routing ignores every native state, reason code and capture closure shape"
  for (const state of ["correction_required", "validating", "declined", "future-state"]) {
   const response: Body = structuredClone(collect);
   response.result.authority.state = state; response.result.next_transition.reason_code = "future-reason";
-  // Only closure.advisory_findings is read (relayed on approval); every other closure field stays unread.
+  // Only closure.advisory_findings and advisory_finding_claims are read (relayed on approval); every other closure field stays unread.
   const closure = {};
   for (const key of ["schema", "operation", "lineage_id", "state", "store_revision", "action", "escalation", "status_continuation", "acknowledgement", "next_action"]) Object.defineProperty(closure, key, { get() { throw new Error("must not inspect closure shape"); } });
   const capture = { outcome: "native-last-event-closure", closure };
@@ -125,6 +125,39 @@ test("capture failures and missing forecast display never run or acknowledge fur
   assert.ok(["blocked", "forecast"].includes(String((await runReviewCoordinator({ lineageId: lineage }, host)).outcome)));
   assert.equal(host.calls.length, 2);
  }
+});
+
+test("a reconciled reviewer group continues only through bound STATUS; drift, uncertain or failed reconciliation stays blocked", async () => {
+ const group = { ...collect, collectBindings: [{ collectBinding: "first" }, { collectBinding: "second" }] };
+ const reconciled = { tool: "gentle_review_capture_group", status: "reconciled", outcome: "native-reviewer-group-status-reconciled", next_transition: { kind: "execute", execute: { operation: "review.acknowledge-approved" } } };
+ const refuter = { ...collect, collectBindings: [{ collectBinding: "refuter" }] };
+ const host = backend([group, reconciled, refuter, captured, approved, closed]);
+ assert.equal((await runReviewCoordinator({ lineageId: lineage }, host)).outcome, "closed");
+ assert.deepEqual(host.calls.map(call => call.tool === "gentle_review" ? `status-or-ack:${call.parameters.operation}` : call.tool), ["status-or-ack:status", "gentle_review_capture_group", "status-or-ack:status", "gentle_review_capture", "status-or-ack:status", "status-or-ack:acknowledge-approved"], "the reconciled capture's own next_transition is never followed");
+ for (const capture of [
+  { ...reconciled, native_failure: { reason: "unknown" } },
+  { ...reconciled, failure: { kind: "transport" } },
+  { ...reconciled, reconciliation: {} },
+  { ...reconciled, reconciliation_failure: {} },
+  { ...reconciled, status: "blocked" },
+  { tool: "gentle_review_capture_group", outcome: "native-reviewer-group-status-reconciliation-failed", reconciliation_failure: {} },
+  { tool: "gentle_review_capture_group", status: "blocked", outcome: "capture-group-authority-drift", reconciliation: {} },
+  { tool: "gentle_review_capture", status: "reconciled", outcome: "native-capture-outcome-unknown", native_failure: {} },
+ ]) {
+  const blocked = backend([group, capture]);
+  const result = await runReviewCoordinator({ lineageId: lineage }, blocked);
+  assert.equal(result.outcome, "blocked", JSON.stringify(capture)); assert.equal(result.result, capture); assert.equal(blocked.calls.length, 2);
+ }
+ // Fresh reconciled groups forever still end at the existing transition cap.
+ let groups = 0;
+ const capped = await runReviewCoordinator({ lineageId: lineage }, { invoke: async tool => {
+  if (tool === "gentle_review") return { ...collect, collectBindings: [{ collectBinding: `a-${groups}` }, { collectBinding: `b-${groups}` }] };
+  groups++; return reconciled;
+ } });
+ assert.equal(capped.outcome, "transition-limit"); assert.equal(groups, 24);
+ // Only a group capture reports this outcome; from a single capture it is unknown.
+ const single = backend([collect, reconciled]);
+ assert.equal((await runReviewCoordinator({ lineageId: lineage }, single)).outcome, "blocked"); assert.equal(single.calls.length, 2);
 });
 
 test("reoffered and duplicate opaque bindings cannot execute twice", async () => {

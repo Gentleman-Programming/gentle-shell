@@ -242,7 +242,7 @@ Subagent launches:
 
 O `mcp_servers` was 563 B in F1-O1 and 310 B in F2-O1.
 
-Per turn, the primary carries about 214 KB (O) or 212 KB (FD), against 19 KB for B, and a worker carries 64 KB. No session recorded a system-prompt patch after the first message.
+Per turn, by this transcript method, the primary carries about 214 KB (O) or 212 KB (FD), against 19 KB for B, and a worker carries 64 KB. These totals are estimates: the tool-definition column lists every registered tool and is an upper bound on what is sent (L37; see the final phase). No session recorded a system-prompt patch after the first message.
 
 - **Project context (primary):** `~/AGENTS.md` 67,088 B and `~/work/gentle-pi/AGENTS.md` 12,253 B. In the worker they are 13,230 B and 9,117 B, already stripped by `lib/child-context-files.ts`.
 - **Skills:** the `skills` section is 15,749 B in both primary and worker.
@@ -381,7 +381,7 @@ Checked on the first O session (after-F1-O1, confirmed again on O4) and the firs
   - Dropped from the primary: `gentle-ai:orchestrator` and `gentle-ai:agent-routing` in both files, and the home `gentle-ai:engram-protocol` copy.
 - **Worker system prompt:** the `skills` section is absent. Project context is 10,622 B (the same two blocks), down from 22,412.
 - **Language Boundary:** the full-delegation primary contains `## Language Boundary`.
-- **Primary per turn:** sections 91,215 B (O) and 89,165 B (FD); tool definitions 53,552 B (60 tools) in both.
+- **Primary per turn (transcript method):** sections 91,215 B (O) and 89,165 B (FD); tool definitions 53,552 B (60 tools, an upper bound on what is sent) in both.
 
 ### Per-run results
 
@@ -582,19 +582,19 @@ The bare arm's code and prompt are unchanged: 14,384 B sections in base and 14,3
 | | of which addendum | 56,809 | 56,459 | −0.6% |
 | | of which rules | 4,826 | 4,591 | −5% |
 | | tool definitions | 53,382 (60) | 53,552 (60) | +0.3% |
-| | **per turn** | **214,299** | **144,767** | **−32%** |
+| | **per turn (transcript estimate)** | **214,299** | **144,767** | **−32%** |
 | Primary FD | sections total | 158,498 | 89,165 | −44% |
 | | of which project_context | 79,406 | 10,622 | −87% |
 | | of which skills | 15,749 | 15,704 | −0.3% |
 | | of which addendum | 54,642 | 54,408 | −0.4% |
 | | tool definitions | 53,382 (60) | 53,552 (60) | +0.3% |
-| | **per turn** | **211,880** | **142,717** | **−33%** |
+| | **per turn (transcript estimate)** | **211,880** | **142,717** | **−33%** |
 | `gentle-ai-worker` | sections total | 57,885 | 30,511 | −47% |
 | | of which project_context | 22,412 | 10,622 | −53% |
 | | of which skills | 15,749 | 0 (absent) | −100% |
 | | of which addendum | 17,585 | 17,748 | +0.9% |
 | | tool definitions | 6,198 (8) | 6,198 (8) | 0% |
-| | **per turn** | **64,083** | **36,709** | **−43%** |
+| | **per turn (transcript estimate)** | **64,083** | **36,709** | **−43%** |
 
 The bytes saved come almost entirely from context-file filtering (#3095) and the worker skills removal (#3093):
 
@@ -757,11 +757,12 @@ P11 (S15). One phase, `final`, on 2026-11-10/11, 23:56 to 01:50 UTC, plus four r
 
 ```bash
 S=/private/tmp/cost-speed-bench-PSQgUo; ROOT=~/work/gentle-pi/.worktrees/bench-final
-./run.sh final $ROOT F1 B 1   # … one per call, order above
+cd $S && ./run.sh final $ROOT F1 B 1   # … one per call, order above
 python3 -B tools/table.py final > out/final-tables.md
 python3 -B tools/compare.py base final > out/compare-base-final.md
 python3 -B tools/compare.py after final --exclude after-F1-B1,after-F1-O1 > out/compare-after-final.md
-# F3 (delegation-check harness)
+# F3 (delegation-check harness: its own run.sh, no phase argument)
+D=/private/tmp/delegation-check-KGPJRI; cd $D
 ./run.sh $ROOT F3 O 3; ./run.sh $ROOT F3 FD 3; ./run.sh $ROOT F3 O 4; ./run.sh $ROOT F3 FD 4
 ```
 
@@ -814,7 +815,7 @@ Organic delegated in 0 of 6 runs (as in `after`). No `subagent_run` was rejected
 
 Parent / worker cost medians, final: F1 O 0.653 / 0; F1 FD quiet 0.645 / 0.051 (FD1–3: 0.625 / 0.140); F2 O 0.651 / 0; F2 FD 0.567 / 0.135. In `after`: F1 FD 0.792 / 0.073, F2 FD 0.654 / 0.135.
 
-**Which F1 FD value is used and why:** FD4–FD6. FD1–FD3 overlapped known load on the same worker model; their parent behaviour was identical to FD4–FD6 (one worker, `subagent_run` plus two `subagent_continue`, 9–12 parent turns, 0 rejections), and the difference is in worker time: subagent time 254–342 s against 111–128 s, worker input tokens 31–43k against 17–33k. The quiet runs are not around 400 s, so the 400 s is attributed to the shared load, not to the code. The other contaminated cells (F1 B and O) were not repeated; their bare reference ran in the same window.
+**Which F1 FD value is used and why:** FD4–FD6. FD1–FD3 overlapped known load on the same worker model; their parent behaviour was identical to FD4–FD6 (one worker, `subagent_run` plus two `subagent_continue`, 9–12 parent turns, 0 rejections), and the difference is in worker time: subagent time 254–342 s against 111–128 s, worker input tokens 31–43k against 17–33k. The quiet runs on the same tree are not around 400 s, so the code alone does not produce the 400 s; the shared load is the likely cause, not an established one, because the worker token counts also differed between the groups and these measurements do not separate provider load from worker variance. The other contaminated cells (F1 B and O) were not repeated; their bare reference ran in the same window.
 
 **F1 full delegation, quiet runs against `after`:** worker sessions 1 (after: 3 fresh workers per run), rounds 3 in both (after: 3 `subagent_run`; final: 1 `subagent_run` + 2 `subagent_continue`), subagent time 111–128 s (after: 150–306 s), worker output 3.2–5.2k tokens (after: 5.9–21.4k), parent turns 9–11 (after: 10–12).
 
@@ -829,7 +830,7 @@ The bare prompt changed by 24 B (`rules` 1,390 → 1,366: the `todo` tool guidel
 | F1 | 58.2 / 48.9 / 47.4 | 48.9 | 42.8 / 44.0 / 47.8 | 44.0 | −10% | 0.300 → 0.283 (−6%) |
 | F2 | 99.0 / 82.3 / 90.0 | 90.0 | 73.8 / 68.6 / 70.4 | 70.4 | −22% | 0.398 → 0.362 (−9%) |
 
-Bare F2 also took fewer parent turns (16 → 11 median) with an unchanged prompt. Time changes up to about ±20% and cost changes up to about ±10–15% occur in the bare arm between phases without a code cause; organic time changes against `after` (−5%, −9%) are inside that band, organic cost changes (−23%, −18%) are outside it.
+Bare F2 also took fewer parent turns (16 → 11 median) with an unchanged prompt. Time changes up to about ±20% and cost changes up to about ±10–15% occur in the bare arm between phases with only the 24 B prompt change above (the `todo` guideline); the data cannot separate that change from noise, so this band is the day's drift reference, not a pure noise measurement; organic time changes against `after` (−5%, −9%) are inside that band, organic cost changes (−23%, −18%) are outside it.
 
 ### Prompt bytes per turn (first system message, same method as above)
 
@@ -843,14 +844,14 @@ Sections = the first system message's sections; tool definitions = its `toolsAdd
 | | of which rules / tools text | 4,826 / 2,064 | 4,591 / 2,064 | 4,525 / 1,693 | −66 / −371 |
 | | of which project_context | 79,406 | 10,622 | 10,622 | 0 |
 | | tool definitions (transcript) | 53,382 (60) | 53,552 (60) | 53,542 (60) | −10 |
-| | **per turn** | **214,299** | **144,767** | **130,635** | **−14,132 (−10%)**; vs base −39% |
+| | **per turn (transcript estimate)** | **214,299** | **144,767** | **130,635** | **−14,132 (−10%)**; vs base −39% |
 | Primary FD | sections total | 158,498 | 89,165 | 75,113 | −14,052 |
 | | of which addendum | 54,642 | 54,408 | 40,845 | −13,563 |
 | | tool definitions (transcript) | 53,382 (60) | 53,552 (60) | 53,542 (60) | −10 |
-| | **per turn** | **211,880** | **142,717** | **128,655** | **−14,062 (−10%)**; vs base −39% |
+| | **per turn (transcript estimate)** | **211,880** | **142,717** | **128,655** | **−14,062 (−10%)**; vs base −39% |
 | `gentle-ai-worker` | sections total | 57,885 | 30,511 | 30,540 | +29 |
 | | tool definitions | 6,198 (8) | 6,198 (8) | 6,198 (8) | 0 |
-| | **per turn** | **64,083** | **36,709** | **36,738** | **+29** |
+| | **per turn (transcript estimate)** | **64,083** | **36,709** | **36,738** | **+29** |
 
 The addendum reduction is the removed `## Effective session skills` table (25.5 KB in `after`; the block is now absent because every on-disk skill is already listed by Pi) net of text added since. **Tool definitions are an upper bound:** the transcript's `toolsAdded` lists every registered tool, not what is sent (L37). The bytes actually declared in the request were not measured in this phase; #3111's own offline capture with real Pi measured 34,521 → 27,321 B (34 → 28 tools) for its configuration, and that change is not visible in this column.
 
@@ -910,7 +911,8 @@ Medians, old → new: organic 660.9 s → 654.9 s, $2.276 → $1.422 (−38%), p
 
 ### What the data supports
 
-- Per-turn primary prompt fell another 14.1 KB (−10%) from `after`, 39% below base, in both modes; the worker prompt is unchanged (+29 B).
+- Transcript estimate (first system message plus the transcript's tool definitions, an upper bound on what is sent; the bytes sent were not measured): the per-turn primary prompt fell another 14.1 KB (−10%) from `after`, 39% below base, in both modes; the worker estimate is unchanged (+29 B). Nearly all of it is in the system-message sections (−14,122 B O, −14,052 B FD); the tool-definition column moved −10 B.
+- Measured outside these runs, recorded in the feature document's log: the rendered primary prompt pins went 25,180 → 24,164 B organic and 23,123 → 22,128 B full delegation (L55, L76, L84); #3111's offline captures with real Pi measured the declarations at 34,521 → 27,321 B with `codemode` and no `design/` directory (L68, L72).
 - Organic cost fell 23% (F1) and 18% (F2) against `after`, 48% and 35% against base; the bare arm moved −6% and −9% over the same interval.
 - Organic time against `after` (−5%, −9%) is within the bare arm's −10% and −22% drift; against base it is −62% and −63%.
 - Full-delegation cost fell 18% (F1 quiet) and 15% (F2) against `after`, 42% and 34% against base.

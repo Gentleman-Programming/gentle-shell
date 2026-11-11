@@ -121,9 +121,9 @@ Public tests passed in every run: 20, 31, 43, 64 and 54 tests respectively. FD1'
 - **Orchestrator vs worker share:** the orchestrator took 20% / 18.5% of tokens and 64% / 62% of cost. Per token, the orchestrator costs $2.46-3.21 per M and the terra workers $0.23-0.50 per M, roughly 5-10x cheaper.
 - **Parallelism:** independent units really ran in parallel in 2/2 runs.
 - **Wall time:** sum vs max of writer durations was 736 vs 350 s (FD1) and 731 vs 292 s (FD2). The same launches done one after another would have taken about 860 s and 830 s instead of 478 s and 393 s.
-- **Cost vs organic:** full delegation was the cheapest harness arm on this task: $1.41 vs $2.15-2.40 for organic. It was 30% above bare ($1.09), with equal hidden quality.
+- **Cost vs organic:** full delegation was the cheapest delegating arm on this task (bare, at $1.09, cost less): $1.41 vs $2.15-2.40 for organic. It was 30% above bare ($1.09), with equal hidden quality.
 
-**Organic.** The Writer rule's parallel reason did **not** fire in 2/2 runs, even though its condition holds: three independent units with disjoint surfaces, each well over 100 lines. Both parents started writing inline. Delegation came only from the context backstop, about 10k tokens of work later, and the backstop notice asks for "the next bounded unit". So O1 delegated one unit, and O2 delegated two units one after another.
+**Organic.** The Writer rule's parallel reason did **not** fire in 2/2 runs, even though its condition holds: three independent units with disjoint surfaces, each well over 100 lines. Both parents started writing inline. Delegation came only from the context backstop, about 10k tokens of work later, and the backstop notice asks for "the next bounded unit". So O1 delegated one unit, and O2 delegated two units one after another. These runs do not show whether the parallel reason fires when the launches are admissible: F3 had no feature document, so below the backstop writer admission would have rejected an organic writer launch (`lib/bounded-writer-admission.ts:141`); neither parent attempted one (0 rejections).
 
 Organic cost 1.5-1.7x full delegation and about 2x bare, with the same quality. The parent carries 40-50k tokens per turn for 17-20 turns.
 
@@ -136,7 +136,7 @@ Delegation after the notice on a real multi-step unit is shown by F3 O1 and O2, 
 | Reason | Text intact after | Verified to fire | Notes |
 |---|---|---|---|
 | Context backstop | yes (byte-identical; runtime unchanged) | **yes**: notice in F3-O1/O2 (natural) and F1-OP1 (env probe); delegation followed in O1/O2 | one unit at a time, serial |
-| Writer rule, reason (a) parallel units, organic | yes | **no**: 0/2 F3 runs despite the condition holding | see regression R1 |
+| Writer rule, reason (a) parallel units, organic | yes | **no**: 0/2 F3 runs despite the condition holding; not tested with the launches admissible (no feature document, below the backstop) | see regression R1 |
 | Writer rule, parallel, full delegation | yes | **yes**: 3 writers launched together in 2/2 | |
 | Evidence-budget (explorer) | yes | runtime notice fires (benchmark and F3 runs); explorer launch **not tested**: every task was fully specified, so the exemption applied | needs a discovery-heavy task |
 | Verification rule (named high-risk) | yes | **not tested**: no high-risk item in F1/F2/F3 | |
@@ -153,8 +153,8 @@ Findings, all pre-existing and not caused by these PRs:
   - Task Size makes "several features asked at once" small, so no feature document is created.
   - Writer admission rejects organic writers without a feature-document task below the backstop (`lib/bounded-writer-admission.ts:141`; the `subagent_run` description now says so).
   - In single-shot mode (`-p`, `--mode json`) the background policy is forced off, and `orchestrator-writer.md` ties "launched together" to background mode and says otherwise "work inline". Full delegation shows that several task-mode writers can be launched together from one `codemode` call.
-  - Net effect: the parallel-units reason the user named is unreachable in organic unless the task is tracked or the backstop has fired, and the backstop then delegates serially.
-  - Not tested: interactive or RPC sessions with the background policy on. Admission would still apply there.
+  - Net effect: without a tracked task, organic writer launches are admitted only once the backstop has fired, so the parallel-units reason the user named cannot be acted on before it; in O1 and O2 the launches after the backstop were serial. Whether a parent launches several units together once launches are admitted was not observed.
+  - Not tested: interactive or RPC sessions with the background policy on. Below the backstop, admission would still reject untracked organic writers there; at the backstop it admits them and `orchestrator-writer.md` asks for launches together, so these runs do not establish that delegation there stays serial.
 - **R2 — the backstop counts the static prompt.** It measures total context, always-on system prompt and tools included. Its effective work headroom therefore moves with prompt size: 0 tokens in the baseline (it fired at turn 1), about 10.8k tokens after #3095. The 15% gate was calibrated (comment at `lib/context-backstop.ts:11-12`) under a different prompt size. Prompt growth or reduction silently changes when organic delegates.
 - **Minor.** The exploration-budget notice fires at the 4th lookup on fully specified tasks and is always waived by the exemption, so it is noise in these runs.
 

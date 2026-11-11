@@ -31,7 +31,7 @@ export const requirements = Object.freeze({
 /** Legacy Pi pin retained for verified distribution and compatibility checks.
  * Global installs resolve the latest stable Pi after consent instead.
  */
-export const PI_INSTALL_VERSION = "1.5.0";
+export const PI_INSTALL_VERSION = "1.5.2";
 
 /** Runtime persisted under PNPM_HOME. Bootstrap-only Node: `pnpm runtime set
  * node <node> -g`, then `pnpm add -g npm@<npm> pnpm@<pnpm>`, or only npm when

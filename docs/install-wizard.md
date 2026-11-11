@@ -627,8 +627,8 @@ The outcome then also reports `npmPrefix: "configured"` or `"unchanged"`.
 
 A supported persistent Node is never replaced or shadowed: there is no `runtime set` and
 no prefix change. For an unsupported Node on the user's PATH, the bootstrap's
-pinned Node runs the wizard, so the full group above persists it. A found Node
-in `$PNPM_HOME/bin` is replaced; a Node elsewhere is left unchanged. One fixed add runs, then only the matching checks:
+pinned Node runs the wizard, so the full group above persists it. A Node already in `$PNPM_HOME/bin` is replaced even when another Node is found
+first on PATH; the found Node elsewhere is left unchanged. One fixed add runs, then only the matching checks:
 
 | Intent | Command | Then |
 | --- | --- | --- |
@@ -659,7 +659,7 @@ Pi but never reinstalls or downgrades it, and nothing changes before consent.
 | A Pi older than the minimum that pnpm or npm owns | `update-pi` to `PI_INSTALL_VERSION` with that package manager (`pnpm add -g @earendil-works/pi-coding-agent@<version>` or `npm install -g …`), before any Gentle Shell step: ahead of `install-shell` or `update-shell-*`, or alone when Gentle Shell is current. The plan names the found and target versions and the manager. |
 | A Pi older than the minimum that neither pnpm nor npm owns (mise, Homebrew, a standalone binary) | Left unchanged. `install-pi` adds the installer's Pi with pnpm exactly as when Pi is absent (in the same `pnpm add -g` as gentle-pi, before an update of Gentle Shell, or alone when Gentle Shell is current), and the plan says so before consent. |
 | A Gentle Shell neither pnpm nor npm owns (an `npm link` of a source checkout, for example) | Blocked with an explanation; never reinstalled. |
-| A stable Node.js outside the supported range (mise, nvm, Homebrew, pnpm or an old installer) | The POSIX bootstrap acquires verified Node 24.21.0 and the plan persists it (`persist-node`, `persist-package-managers`, `configure-npm-prefix`). A pnpm-managed Node in `$PNPM_HOME/bin` is replaced; a Node elsewhere is left unchanged. The plan says so before consent. An unknown or prerelease version still blocks. Windows: `bootstrap.cmd` does the same, and also acquires its Node for a user Node whose storage it cannot trust (nvm-windows' symlink, fnm's junction), which it never runs. |
+| A stable Node.js outside the supported range (mise, nvm, Homebrew, pnpm or an old installer) | The POSIX bootstrap acquires verified Node 24.21.0 and the plan persists it (`persist-node`, `persist-package-managers`, `configure-npm-prefix`). A Node already in `$PNPM_HOME/bin` is replaced even when a different Node appears first on PATH; that other Node is left unchanged. The plan says so before consent. An unknown or prerelease version still blocks. Windows: `bootstrap.cmd` does the same, and also acquires its Node for a user Node whose storage it cannot trust (nvm-windows' symlink, fnm's junction), which it never runs. |
 | A pnpm older than 11.1.1, or whose engine rejects the bootstrap's Node (or, for the bootstraps only, another major) | Left unchanged. Both bootstraps acquire the verified pnpm 11.1.1 as when pnpm is absent, and the plan persists it (`persist-pnpm`, or `persist-package-managers` with npm). The plan says so before consent. Unknown evidence still blocks. |
 | That pnpm in `$PNPM_HOME/bin` itself (where persisting pnpm writes) | Never replaced or downgraded. At 11.1.1 or newer, of any major (pnpm 12 included), it is used as it is and nothing is persisted over it. An older one blocks before consent; the guidance names the found and required versions and updates it with `pnpm self-update 11.1.1`. |
 | A pnpm in `$PNPM_HOME/bin` whose shim is not recognized or whose `pnpm --version` reports no stable version | Left unchanged and never run again. The bootstrap's verified pnpm runs the installer and nothing is persisted over it (no `persist-pnpm`). The plan says so before consent. |

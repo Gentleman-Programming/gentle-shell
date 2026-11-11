@@ -394,19 +394,27 @@ function alongsideNotes(plan) {
 	const node = plan.tools?.node;
 	const needs = typeof node?.required === "string" ? describeRequirement(node.required) : null;
 	if (STABLE.test(node?.found ?? "") && STABLE.test(node.version ?? "") && needs !== null) {
-		const replacing = node.foundInGlobalBin === true && plan.actions.some((action) => action.id === "persist-node");
+		const persisting = plan.actions.some((action) => action.id === "persist-node");
+		const replacing = node.foundInGlobalBin === true && persisting;
+		const foundOnPath = persisting && node.globalBinNode === true ? " found first on PATH" : "";
 		notes.push(replacing
 			? `Node.js ${node.found} on this computer is not a version Gentle Shell supports (it needs ${needs}). ` +
 				`Your Node.js ${node.found} is managed by pnpm under $PNPM_HOME and will be replaced by the pinned Node.js ${node.version}.`
 			: `Node.js ${node.found} on this computer is not a version Gentle Shell supports (it needs ${needs}), so the installer uses its pinned Node.js ${node.version} ` +
-				`and installs it under $PNPM_HOME. Your Node.js ${node.found} is left unchanged.`);
+				`and installs it under $PNPM_HOME. Your Node.js ${node.found}${foundOnPath} is left unchanged.`);
 	}
 	const pnpm = plan.tools?.pnpm;
 	if (STABLE.test(pnpm?.found ?? "") && STABLE.test(pnpm.version ?? "")) {
 		notes.push(`pnpm ${pnpm.found} on this computer is not a pnpm ${pnpm.version.split(".")[0]} release this installer can use, ` +
 			`so the installer uses its pinned pnpm ${pnpm.version} and installs it under $PNPM_HOME. Your pnpm ${pnpm.found} is left unchanged.`);
 	}
-	if (notes.length > 0) notes.push("A version manager such as `mise activate` may still put your own versions first on PATH in new terminals.");
+	const hasAlongside = notes.length > 0;
+	const persistNode = plan.actions.find((action) => action.id === "persist-node");
+	if (persistNode && node?.globalBinNode === true && node.foundInGlobalBin !== true) {
+		const pin = STABLE.test(persistNode.version ?? "") ? ` ${persistNode.version}` : "";
+		notes.push(`The Node.js already in $PNPM_HOME will be replaced by the pinned Node.js${pin}.`);
+	}
+	if (hasAlongside) notes.push("A version manager such as `mise activate` may still put your own versions first on PATH in new terminals.");
 	return notes;
 }
 
@@ -513,7 +521,7 @@ function planView(planId, { inventory, plan }) {
 	const changesProfile = ids.includes("setup-global-bin") || (privateHome !== null && inventory?.globalBin?.onPath !== true);
 	let tools = [];
 	const alongside = alongsideNotes(plan);
-	const replacesNode = ids.includes("persist-node") && plan.tools?.node?.foundInGlobalBin === true;
+	const replacesNode = ids.includes("persist-node") && (plan.tools?.node?.foundInGlobalBin === true || plan.tools?.node?.globalBinNode === true);
 	// A persistent pnpm next to a bootstrap-only Node is kept (persist-npm), never replaced.
 	if (ids.includes("persist-node")) tools = ids.includes("persist-npm") ? ["node", "npm"] : ["node", "npm", "pnpm"];
 	else if (ids.includes("persist-package-managers")) tools = ["npm", "pnpm"];

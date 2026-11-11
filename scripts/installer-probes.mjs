@@ -444,8 +444,16 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 					foundInGlobalBin = realDirectory !== null && realBin !== null && samePath(realDirectory, realBin, platform);
 				}
 			}
+			let globalBinNode = null;
+			if (globalBin && !foundInGlobalBin && (persistent === null || found !== null)) {
+				// pnpm writes node (node.exe on Windows) here regardless of PATH order; never run it.
+				const destinationEnv = { ...user, [pathKey(user, platform)]: globalBin.path,
+					...(platform === "win32" ? { [Object.keys(user).find((key) => key.toUpperCase() === "PATHEXT") ?? "PATHEXT"]: ".EXE" } : {}) };
+				globalBinNode = await lookPath("node", destinationEnv, platform, fs);
+			}
 			return { available: true, version, usable: true, persistent: persistent !== null && found === null, npm,
-				...(found ? { found } : {}), ...(foundInGlobalBin ? { foundInGlobalBin: true } : {}) };
+				...(found ? { found } : {}), ...(foundInGlobalBin ? { foundInGlobalBin: true } : {}),
+				...(globalBinNode ? { globalBinNode: true } : {}) };
 		},
 		async pnpm() {
 			const pnpm = await pnpmInvocation(env, platform, fs);

@@ -87,7 +87,8 @@ const probeNames = ["node", "pnpm", "pi", "shell", "gentleAi", "go", "globalBin"
  * add persistent (resolvable from the user's PATH). A bootstrap-only Node or
  * pnpm may add found: the stable version of the older or incompatible one on the
  * user's PATH; Node adds foundInGlobalBin:true when that Node is in `$PNPM_HOME/bin`
- * and persistence would replace it. A pnpm probe for the user's own
+ * and persistence would replace it. A different Node at that destination is recorded as
+ * globalBinNode:true without running it. A pnpm probe for the user's own
  * pnpm in `$PNPM_HOME/bin` (where persisting pnpm writes) adds inGlobalBin:true
  * and reports that pnpm itself, never as found, or, when that pnpm is never run
  * (untrusted:true) or reports no stable version (unchecked:true), the bootstrap's
@@ -367,6 +368,8 @@ export function planPreflight(inventory, { channel = "release" } = {}) {
 	const pnpm = inventory.pnpm?.persistent === false;
 	if (persistable && node.persistent === false) {
 		action("persist-node", "persist-runtime", "node", persistencePins.node);
+		// Only a plan that persists Node replaces a different Node at the destination.
+		if (node.globalBinNode === true && tools.node.foundInGlobalBin !== true) tools.node = { ...tools.node, globalBinNode: true };
 		if (pnpm) action("persist-package-managers", "install-global", "package-managers");
 		else action("persist-npm", "install-global", "npm", persistencePins.npm);
 		action("configure-npm-prefix", "configure", "npm-prefix");

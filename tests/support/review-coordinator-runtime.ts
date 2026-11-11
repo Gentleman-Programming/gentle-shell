@@ -39,6 +39,8 @@ export interface CoordinatorRuntimeOptions {
 	onApproved?: () => void;
 	/** Called on every native STATUS read, after it is recorded, with the fixture's state; may throw. */
 	onStatus?: (state: string) => void;
+	/** The session's working directory when it differs from the repository root `cwd`. */
+	sessionCwd?: string;
 	/**
 	 * Prepares each reviewer run instead of the fixture's stub preparation: the
 	 * group seam then runs the production `runReviewHostRelayReviewerGroup`
@@ -225,7 +227,7 @@ export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coo
 	})({ on() {}, registerCommand() {}, registerTool: (tool: any) => tools.set(tool.name, tool),
 		...(options.transport === undefined ? {} : { getSettings: () => ({ transport: options.transport }) }) } as never);
 	const forecasts: Body[] = [];
-	const context = { cwd, hasUI: options.hasUI ?? true, sessionManager: { getSessionId: () => "fixture-live-driver", getBranch: () => [], getSessionFile: () => undefined }, modelRegistry: options.modelRegistry };
+	const context = { cwd: options.sessionCwd ?? cwd, hasUI: options.hasUI ?? true, sessionManager: { getSessionId: () => "fixture-live-driver", getBranch: () => [], getSessionFile: () => undefined }, modelRegistry: options.modelRegistry };
 	const facadeCalls: { name: string; parameters: Body; elapsed_ms: number }[] = [];
 	return { tools, lineage, target, nativeCalls, nativeRequests, facadeCalls, forecasts, startRequests,
 		async invoke(name: string, parameters: Body, signal: AbortSignal | undefined = options.signal) {
@@ -235,6 +237,8 @@ export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coo
 			facadeCalls.push({ name, parameters, elapsed_ms: performance.now() - began });
 			return result.details as Body;
 		},
+		/** Moves the session to another working directory, as a later turn in another workspace would. */
+		moveSession: (next: string) => { context.cwd = next; },
 		closed: () => state === "burned",
 		modeReads: () => modeReads,
 		relayRuns: () => relayRuns,

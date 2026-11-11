@@ -181,6 +181,9 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
   // made from.
   if (entries.length === 0 && typeof details.selectionBinding === "string") {
    const { nextStep: _singleOperation, ...selection } = details;
+   // Without a caller root, name the root INSPECT resolved, so a resume from a
+   // session in another workspace still reviews the one this selection is for.
+   if (input.workspaceRoot === undefined && nonempty(details.workspace_root)) resumeInput.workspaceRoot = details.workspace_root;
    return finish("selection-required", selection);
   }
   if (entries.length === 0) return finish("input-required", details);
@@ -241,7 +244,13 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
   // acknowledgement completed (which returns closed above): return its findings
   // and dispatch nothing more; resuming by lineageId reaches the acknowledgement.
   // Without such a closure, or for a failure other than the abort, rethrow.
-  if (pendingCapture === undefined || deps.signal?.aborted !== true) throw error;
+  // The abort itself is an AbortError-named error (checkCancelled, the facade's
+  // reviewCancellation, the native CLI's own abort, the signal's default
+  // reason) or the signal's own reason (a custom reason, such as a timeout,
+  // that a facade wait rejects with); any other error is a real failure.
+  const abort = deps.signal?.aborted === true
+   && ((error instanceof Error || error instanceof DOMException) && error.name === "AbortError" || error === deps.signal.reason);
+  if (pendingCapture === undefined || !abort) throw error;
   // The capture's status ("closed") and state ("approved") describe the
   // capture, not the run, which is neither closed nor acknowledged: drop them.
   const { status: _status, state: _state, closure, ...envelope } = pendingCapture;

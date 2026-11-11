@@ -369,3 +369,36 @@ test("a retained approved closure with findings survives every later abort befor
   throw new Error("transport failure");
  } }), /transport failure/);
 });
+
+test("only the abort itself turns a retained approved closure into cancelled; another error thrown while aborted is rethrown", async () => {
+ const findings = { statement: "fixture", findings: [{ id: "F1" }] };
+ const withFindings = { ...captured, closure: { advisory_findings: findings } };
+ const failing = (abort: (controller: AbortController) => void, thrown: (signal: AbortSignal) => unknown) => {
+  const controller = new AbortController(); let statuses = 0;
+  return runReviewCoordinator({ lineageId: lineage }, { signal: controller.signal, async invoke(tool) {
+   if (tool !== "gentle_review") return withFindings;
+   if (++statuses === 1) return collect;
+   abort(controller); throw thrown(controller.signal);
+  } });
+ };
+ const transport = new Error("transport failure");
+ await assert.rejects(failing(controller => controller.abort(), () => transport), error => error === transport, "a non-abort error is rethrown, not cancelled");
+ const timeout = new DOMException("deadline", "TimeoutError");
+ for (const [label, abort, thrown] of [
+  ["AbortError-named error", (controller: AbortController) => controller.abort(), () => Object.assign(new Error("aborted"), { name: "AbortError" })],
+  ["the signal's default reason", (controller: AbortController) => controller.abort(), (signal: AbortSignal) => signal.reason],
+  ["the signal's own custom reason", (controller: AbortController) => controller.abort(timeout), (signal: AbortSignal) => signal.reason],
+ ] as const) {
+  const result = await failing(abort, thrown);
+  assert.equal(result.outcome, "cancelled", label); assert.deepEqual(result.advisory_findings, findings, label);
+ }
+});
+
+test("resume_input names the INSPECT's resolved workspace_root only when the caller passed none", async () => {
+ const selecting = { operation: "inspect", status: "blocked", result: { next_transition: { kind: "collect" } }, selectionBinding: "opaque-selection", workspace_root: "/resolved/root" };
+ const input = { lenses: ["risk"], lensesReason: "fixture" };
+ assert.deepEqual((await runReviewCoordinator(input, backend([{ reviewDue: true }, selecting]))).resume_input, { ...input, workspaceRoot: "/resolved/root" });
+ assert.deepEqual((await runReviewCoordinator({ ...input, workspaceRoot: "/caller/root" }, backend([{ reviewDue: true }, selecting]))).resume_input, { ...input, workspaceRoot: "/caller/root" });
+ const { workspace_root: _root, ...unrooted } = selecting;
+ assert.deepEqual((await runReviewCoordinator(input, backend([{ reviewDue: true }, unrooted]))).resume_input, input);
+});

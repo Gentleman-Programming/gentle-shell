@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -283,4 +283,26 @@ test("S6: after the approved closure, a STATUS failure that is not an abort is b
 		await assert.rejects(bare.invoke("gentle_review_run", { lineageId: bare.lineage }), { name: "AbortError" });
 		assert.equal(bare.nativeCalls.includes("acknowledge"), false);
 	} finally { bare.close(); }
+});
+
+// PR #3144 review: resume_input names the workspace the selection was offered for.
+test("S2: with workspaceRoot omitted, resume_input carries the INSPECT's resolved workspace_root and the resume STARTs there from a moved session", async (t) => {
+	const root = scratchRepo();
+	const sub = join(root, "nested");
+	mkdirSync(sub, { recursive: true });
+	const elsewhere = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), "rdd-one-call-elsewhere-")));
+	t.after(() => rmSync(elsewhere, { recursive: true, force: true }));
+	execFileSync("git", ["init", "-q"], { cwd: elsewhere });
+	const input = { lenses: ["risk"], lensesReason: "fixture: touched the run's guards" };
+	const runtime = createCoordinatorRuntime(root, "coordinator", { hasUI: false, scenario: "untracked-selection", sessionCwd: sub });
+	try {
+		const stopped = await runtime.invoke("gentle_review_run", input);
+		assert.equal(stopped.outcome, "selection-required", JSON.stringify(stopped));
+		assert.equal(stopped.result.workspace_root, root);
+		assert.deepEqual(stopped.resume_input, { ...input, workspaceRoot: root });
+		runtime.moveSession(elsewhere);
+		await runtime.invoke("gentle_review_run", { ...stopped.resume_input, untrackedScope: "exclude" });
+		assert.equal(runtime.startRequests.length, 1);
+		assert.equal(runtime.startRequests[0]!.cwd, root, "START targets the workspace the selection was offered for");
+	} finally { runtime.close(); }
 });

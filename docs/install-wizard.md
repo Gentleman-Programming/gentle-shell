@@ -625,10 +625,13 @@ For a bootstrap-only Node, the full group runs these fixed steps:
 
 The outcome then also reports `npmPrefix: "configured"` or `"unchanged"`.
 
-A supported persistent Node is never replaced or shadowed: there is no `runtime set` and
-no prefix change. For an unsupported Node on the user's PATH, the bootstrap's
-pinned Node runs the wizard, so the full group above persists it. A Node already in `$PNPM_HOME/bin` is replaced even when another Node is found
-first on PATH; the found Node elsewhere is left unchanged. One fixed add runs, then only the matching checks:
+When the first Node on the user's PATH is supported, it is reused and never
+replaced or shadowed: there is no `runtime set` and no prefix change. When that
+first Node is unsupported, the bootstrap's pinned Node runs the wizard, so the
+full group above persists it into `$PNPM_HOME/bin`. That replaces any Node
+already in `$PNPM_HOME/bin`, even a supported one found later on PATH, and the
+plan says so before consent; the unsupported Node found first is left
+unchanged when it lives elsewhere. One fixed add runs, then only the matching checks:
 
 | Intent | Command | Then |
 | --- | --- | --- |

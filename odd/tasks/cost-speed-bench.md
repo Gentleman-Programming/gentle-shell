@@ -738,3 +738,225 @@ The base phase created 36 in 12 projects. Counts are from `engram projects list`
 3. **One concurrent pair in the after phase:** excluded and replaced, see above.
 4. **Costs are Pi catalog estimates** (`totalFromProvider: false`).
 5. **Model variance:** terra-max reasoning length varies widely between runs (worker output from 1.7k to 21.4k tokens per session). FD time differences of this size are within what n=3 can resolve only weakly.
+
+## Final phase (70becff64)
+
+P11 (S15). One phase, `final`, on 2026-11-10/11, 23:56 to 01:50 UTC, plus four runs of the multi-unit task F3 from the delegation check (T11).
+
+### Setup
+
+- **Code under test:** worktree `~/work/gentle-pi/.worktrees/bench-final`, detached at `70becff648472b855134db81c03f6c1d4fe5520a` (main `1308f5479` plus PR #3112), Pi `@earendil-works/pi-coding-agent` 1.5.2, same `node_modules` link. Every run's `.meta` records `root_head=70becff64…` and `pi=1.5.2`.
+- **Merged since `after` (29b57a414), from `git log 29b57a414..70becff64`:** #3099 skill contradictions, #3101 verification by change kind, #3100 reply-language anchors append-only, #3103 effective skills block, #3102 lazy-module contradictions, #3104 assess tests isolation, #3105 review follow-ups, #3106 todo reminder append-only, #3107 late child-query answers, #3108 always-on prompt verdicts, #3110 parallel writer admission, #3111 tools by mode (1308f5479), #3112 approved text verdicts (70becff64).
+- **Not in the tree:** P9b (conflict-marker refusal on commits, admission rejections that name the invalid line, a 16 KB cap on child reports) was still in verification. It should not move these numbers: every child report in these tasks is far below 16 KB, no run committed, and no launch in the final phase was rejected (the message change acts only on a rejected launch).
+- **Unchanged:** both harnesses (`/private/tmp/cost-speed-bench-PSQgUo`, `/private/tmp/delegation-check-KGPJRI`), their `run.sh`, fixtures, hidden suites and tools (`shasum -c FROZEN.sha256` OK in both before the first run); `openai-codex/gpt-6-astra` at `medium` for every parent; workers from the active profile `openai-oauth-delegation` (every child session `openai/gpt-6.1-terra@max`); `profiles.json` sha1 `e3b0b88122750d50f7220da96ff3b3f245ff5157` before and after; real HOME as `run.sh` sets it.
+- **Review mode:** `gentle-ai review mode status` printed `receipt-driven development: off (decided by global)` before the first run and after the last.
+- **Order:** F1 B1 O1 FD1, B2 O2 FD2, B3 O3 FD3; F2 in the same order; F3 O3, FD3, O4, FD4; then the quiet replacements F1 FD4, FD5, FD6. One run per tool call, each awaited. Every run exited 0 with empty stderr; nothing timed out, nothing was retried or repeated.
+- **Process counts:** `pgrep -fl "gentle-shell.mjs|pi-coding-agent" | wc -l` was 0 before the first run and 0 after the last; from final-F2-B1 on it was recorded immediately before and after every run, and was 0 every time (column `pgrep` below; `–` = not recorded per run).
+
+**Known contamination, final-F1-B1 through final-F1-FD3.** While these nine runs ran, the parent session had other subagents working on this machine (a verifier running timing probes and test suites, two writers, a ledger worker) on the same account and the same worker model as the full-delegation arm's workers (`gpt-6.1-terra`). The process count above stayed 0 during that window, so it does not detect that load. The F1 full-delegation cell was therefore run again under quiet conditions as FD4–FD6 (the parent launched nothing until the phase ended). Both versions are reported; nothing is dropped.
+
+```bash
+S=/private/tmp/cost-speed-bench-PSQgUo; ROOT=~/work/gentle-pi/.worktrees/bench-final
+./run.sh final $ROOT F1 B 1   # … one per call, order above
+python3 -B tools/table.py final > out/final-tables.md
+python3 -B tools/compare.py base final > out/compare-base-final.md
+python3 -B tools/compare.py after final --exclude after-F1-B1,after-F1-O1 > out/compare-after-final.md
+# F3 (delegation-check harness)
+./run.sh $ROOT F3 O 3; ./run.sh $ROOT F3 FD 3; ./run.sh $ROOT F3 O 4; ./run.sh $ROOT F3 FD 4
+```
+
+`tools/table.py` only reads n=1–4, so `out/final-tables.md` and both `out/compare-*-final.md` put FD1–FD4 into the F1 full-delegation median (355.9 s, n=4) and leave FD5 and FD6 out. The medians below come from the same `analyze.run()` per run, computed in scratch (`/private/tmp/p11-gGaaWv/med.py`, `all-metrics.json`), with the F1 full-delegation cell shown three ways.
+
+### Per-run results
+
+Cost is Pi's catalog estimate, parent / workers / total. Hidden = F2 hidden suite. Public tests passed in every run; no run changed a file outside the task or committed.
+
+| Run | rc | Wall s | $ parent | $ workers | $ total | Parent turns | Workers (sessions / rounds) | Hidden | pgrep before / after | Load |
+|---|---|---|---|---|---|---|---|---|---|---|
+| final-F1-B1 | 0 | 42.8 | 0.283 | 0 | 0.283 | 16 | – | – | – | contaminated |
+| final-F1-O1 | 0 | 58.0 | 0.653 | 0 | 0.653 | 12 | – | – | – | contaminated |
+| final-F1-FD1 | 0 | 421.2 | 0.718 | 0.084 | 0.802 | 12 | 1 / 3 | – | – | contaminated |
+| final-F1-B2 | 0 | 44.0 | 0.227 | 0 | 0.227 | 16 | – | – | – | contaminated |
+| final-F1-O2 | 0 | 85.8 | 0.789 | 0 | 0.789 | 17 | – | – | – | contaminated |
+| final-F1-FD2 | 0 | 399.1 | 0.621 | 0.147 | 0.768 | 9 | 1 / 3 | – | – | contaminated |
+| final-F1-B3 | 0 | 47.8 | 0.361 | 0 | 0.361 | 17 | – | – | – | contaminated |
+| final-F1-O3 | 0 | 51.3 | 0.644 | 0 | 0.644 | 12 | – | – | – | contaminated |
+| final-F1-FD3 | 0 | 312.7 | 0.625 | 0.140 | 0.764 | 9 | 1 / 3 | – | – | contaminated |
+| final-F2-B1 | 0 | 73.8 | 0.370 | 0 | 0.370 | 11 | – | 18/18 | 0 / 0 | quiet |
+| final-F2-O1 | 0 | 86.5 | 0.634 | 0 | 0.634 | 8 | – | 18/18 | 0 / 0 | quiet |
+| final-F2-FD1 | 0 | 287.9 | 0.546 | 0.135 | 0.681 | 6 | 1 / 1 | 18/18 | 0 / 0 | quiet |
+| final-F2-B2 | 0 | 68.6 | 0.283 | 0 | 0.283 | 11 | – | 18/18 | 0 / 0 | quiet |
+| final-F2-O2 | 0 | 83.8 | 0.684 | 0 | 0.684 | 10 | – | 18/18 | 0 / 0 | quiet |
+| final-F2-FD2 | 0 | 203.9 | 0.567 | 0.113 | 0.679 | 6 | 1 / 1 | 18/18 | 0 / 0 | quiet |
+| final-F2-B3 | 0 | 70.4 | 0.362 | 0 | 0.362 | 11 | – | 18/18 | 0 / 0 | quiet |
+| final-F2-O3 | 0 | 78.5 | 0.651 | 0 | 0.651 | 9 | – | 18/18 | 0 / 0 | quiet |
+| final-F2-FD3 | 0 | 459.3 | 0.613 | 0.146 | 0.760 | 7 | 1 / 2 | 18/18 | 0 / 0 | quiet |
+| final-F1-FD4 | 0 | 172.5 | 0.674 | 0.045 | 0.718 | 11 | 1 / 3 | – | 0 / 0 | quiet |
+| final-F1-FD5 | 0 | 183.6 | 0.645 | 0.069 | 0.714 | 10 | 1 / 3 | – | 0 / 0 | quiet |
+| final-F1-FD6 | 0 | 167.8 | 0.619 | 0.051 | 0.670 | 9 | 1 / 3 | – | 0 / 0 | quiet |
+
+Organic delegated in 0 of 6 runs (as in `after`). No `subagent_run` was rejected at admission in any final run.
+
+### Medians: base, after, final (time AND cost)
+
+`after` uses its published exclusions (after-F1-B1 and after-F1-O1, concurrent). Δ = (final − x) / x.
+
+| Task | Arm | Wall s base / after / final | Δ time vs after | Δ time vs base | $ total base / after / final | Δ cost vs after | Δ cost vs base | Time / B final (after) | Cost / B final (after) |
+|---|---|---|---|---|---|---|---|---|---|
+| F1 | B | 56.8 / 48.9 / 44.0 | −10% | −23% | 0.290 / 0.300 / 0.283 | −6% | −2% | – | – |
+| F1 | O | 153.7 / 61.2 / 58.0 | −5% | −62% | 1.251 / 0.843 / 0.653 | −23% | −48% | 1.32x (1.25x) | 2.31x (2.81x) |
+| F1 | FD, quiet FD4–6 (used) | 228.6 / 246.1 / 172.5 | −30% | −25% | 1.231 / 0.868 / 0.714 | −18% | −42% | 3.92x (5.03x) | 2.53x (2.90x) |
+| F1 | FD, FD1–3 as run (contaminated) | 228.6 / 246.1 / 399.1 | +62% | +75% | 1.231 / 0.868 / 0.768 | −11% | −38% | 9.07x | 2.72x |
+| F1 | FD, all six | – / – / 248.1 | +1% | +9% | – / – / 0.741 | −15% | −40% | – | – |
+| F2 | B | 90.9 / 90.0 / 70.4 | −22% | −23% | 0.346 / 0.398 / 0.362 | −9% | +5% | – | – |
+| F2 | O | 228.1 / 91.8 / 83.8 | −9% | −63% | 0.999 / 0.796 / 0.651 | −18% | −35% | 1.19x (1.02x) | 1.80x (2.00x) |
+| F2 | FD | 225.0 / 267.0 / 287.9 | +8% | +28% | 1.025 / 0.800 / 0.681 | −15% | −34% | 4.09x (2.97x) | 1.88x (2.01x) |
+
+Parent / worker cost medians, final: F1 O 0.653 / 0; F1 FD quiet 0.645 / 0.051 (FD1–3: 0.625 / 0.140); F2 O 0.651 / 0; F2 FD 0.567 / 0.135. In `after`: F1 FD 0.792 / 0.073, F2 FD 0.654 / 0.135.
+
+**Which F1 FD value is used and why:** FD4–FD6. FD1–FD3 overlapped known load on the same worker model; their parent behaviour was identical to FD4–FD6 (one worker, `subagent_run` plus two `subagent_continue`, 9–12 parent turns, 0 rejections), and the difference is in worker time: subagent time 254–342 s against 111–128 s, worker input tokens 31–43k against 17–33k. The quiet runs are not around 400 s, so the 400 s is attributed to the shared load, not to the code. The other contaminated cells (F1 B and O) were not repeated; their bare reference ran in the same window.
+
+**F1 full delegation, quiet runs against `after`:** worker sessions 1 (after: 3 fresh workers per run), rounds 3 in both (after: 3 `subagent_run`; final: 1 `subagent_run` + 2 `subagent_continue`), subagent time 111–128 s (after: 150–306 s), worker output 3.2–5.2k tokens (after: 5.9–21.4k), parent turns 9–11 (after: 10–12).
+
+**F2 full delegation:** final-F2-FD3 (459 s, quiet) spent 201 s of a 406 s subagent time on a `subagent_continue` asking the worker to delete the `__pycache__` files created by the parent's own `python3 -m unittest`; the worker returned `status: blocked` because its contract forbids deletion. Without that round the run is about 258 s. The same pattern (a worker launched to delete bytecode) appears in the old t11-F3-FD1 (27 s).
+
+### Bare arm as the day's noise reference
+
+The bare prompt changed by 24 B (`rules` 1,390 → 1,366: the `todo` tool guideline shortened by P7, loaded through `-e $ROOT/extensions/gentle-todo.ts`); tool definitions 4,861 B in all three phases.
+
+| Task | after B runs (s) | Median | final B runs (s) | Median | Change | $ median after → final |
+|---|---|---|---|---|---|---|
+| F1 | 58.2 / 48.9 / 47.4 | 48.9 | 42.8 / 44.0 / 47.8 | 44.0 | −10% | 0.300 → 0.283 (−6%) |
+| F2 | 99.0 / 82.3 / 90.0 | 90.0 | 73.8 / 68.6 / 70.4 | 70.4 | −22% | 0.398 → 0.362 (−9%) |
+
+Bare F2 also took fewer parent turns (16 → 11 median) with an unchanged prompt. Time changes up to about ±20% and cost changes up to about ±10–15% occur in the bare arm between phases without a code cause; organic time changes against `after` (−5%, −9%) are inside that band, organic cost changes (−23%, −18%) are outside it.
+
+### Prompt bytes per turn (first system message, same method as above)
+
+Sections = the first system message's sections; tool definitions = its `toolsAdded` JSON. Organic from F1-O1, full delegation from F1-FD1, worker from the first FD worker session.
+
+| Session | Part | base c09189269 | after 29b57a414 | final 70becff64 | final vs after |
+|---|---|---|---|---|---|
+| Primary O | sections total | 160,917 | 91,215 | 77,093 | −14,122 |
+| | of which addendum | 56,809 | 56,459 | 42,826 | −13,633 |
+| | of which skills | 15,749 | 15,704 | 15,616 | −88 |
+| | of which rules / tools text | 4,826 / 2,064 | 4,591 / 2,064 | 4,525 / 1,693 | −66 / −371 |
+| | of which project_context | 79,406 | 10,622 | 10,622 | 0 |
+| | tool definitions (transcript) | 53,382 (60) | 53,552 (60) | 53,542 (60) | −10 |
+| | **per turn** | **214,299** | **144,767** | **130,635** | **−14,132 (−10%)**; vs base −39% |
+| Primary FD | sections total | 158,498 | 89,165 | 75,113 | −14,052 |
+| | of which addendum | 54,642 | 54,408 | 40,845 | −13,563 |
+| | tool definitions (transcript) | 53,382 (60) | 53,552 (60) | 53,542 (60) | −10 |
+| | **per turn** | **211,880** | **142,717** | **128,655** | **−14,062 (−10%)**; vs base −39% |
+| `gentle-ai-worker` | sections total | 57,885 | 30,511 | 30,540 | +29 |
+| | tool definitions | 6,198 (8) | 6,198 (8) | 6,198 (8) | 0 |
+| | **per turn** | **64,083** | **36,709** | **36,738** | **+29** |
+
+The addendum reduction is the removed `## Effective session skills` table (25.5 KB in `after`; the block is now absent because every on-disk skill is already listed by Pi) net of text added since. **Tool definitions are an upper bound:** the transcript's `toolsAdded` lists every registered tool, not what is sent (L37). The bytes actually declared in the request were not measured in this phase; #3111's own offline capture with real Pi measured 34,521 → 27,321 B (34 → 28 tools) for its configuration, and that change is not visible in this column.
+
+### F3, multi-unit task (three independent modules), old runs on 29b57a414 next to new runs on 70becff64
+
+Hidden suite 28/28 (semver 10/10, cron 9/9, calc 9/9) in all nine runs; public tests passed; no files outside the task; no commits. Bare reference t11-F3-B1 (29b57a414): 236.5 s, $1.085.
+
+| Run | Tree | Wall s | $ parent / workers / total | Parent turns | Writers launched | Launch messages | Rejected | Children (start UTC, duration) | Overlap | Backstop notice | Fixes |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| O1 | 29b57a414 | 649.3 | 2.052 / 0.345 / 2.397 | 20 | 1 | 1 (turn 14) | 0 | 20:36:38 426 s | no | after turn 11, before the launch | – (parent wrote semver and cron inline) |
+| O2 | 29b57a414 | 672.5 | 1.815 / 0.339 / 2.154 | 17 | 2 + 1 continue | 3 (turns 9, 11, 12) | 0 | 20:58:50 243 s; 21:03:15 85 s; 21:04:48 172 s | no | after turn 6, before the launches | continue |
+| **O3** | 70becff64 | 758.5 | 0.738 / 0.537 / 1.274 | 9 | 3 | **1 (turn 4, three `subagent_run`, no other call)** | 0 | 00:46:48 188 s / 278 s / 663 s | **yes** | after turn 8, after the launch | none |
+| **O4** | 70becff64 | 551.3 | 0.887 / 0.683 / 1.570 | 8 | 3 | **1 (turn 3, three `subagent_run`, no other call)** | 0 | 01:14:31 183 s / 244 s / 438 s | **yes** | after turn 5, after the launch | none |
+| FD1 | 29b57a414 | 478.2 | 0.904 / 0.515 / 1.418 | 7 | 3 + 1 | 1 `codemode` (turn 3) + 1 (turn 5) | 0 | 20:45:59 172 s / 214 s / 350 s; 20:52:05 27 s | yes | after turn 5 | new worker for bytecode cleanup |
+| FD2 | 29b57a414 | 392.9 | 0.871 / 0.537 / 1.408 | 9 | 3 | 1 `codemode` (turn 4) | 0 | 21:09:39 206 s / 233 s / 292 s | yes | none | none |
+| **FD3** | 70becff64 | 886.9 | 0.823 / 0.446 / 1.269 | 9 | 3 + 1 continue | **3 (turns 3, 4, 5, one `subagent_run` each)** | 0 | 00:59:05 303 s; 01:04:30 178 s; 01:07:48 194 s; continue 01:11:09 108 s | **no** | none | `subagent_continue` of the calc worker |
+| **FD4** | 70becff64 | 1,091.7 | 1.067 / 0.629 / 1.696 | 8 | 3 | **3 (turns 3, 4, 5, one `subagent_run` each)** | 0 | 01:23:21 353 s; 01:29:33 322 s; 01:35:15 312 s | **no** | none | none |
+
+Medians, old → new: organic 660.9 s → 654.9 s, $2.276 → $1.422 (−38%), parent $1.934 → $0.812; full delegation 435.6 s → 989.3 s (+127%), $1.413 → $1.482 (+5%).
+
+- **Organic (PR #3110):** in both new runs the parent launched three writers in ONE assistant message containing only the three `subagent_run` calls, at turn 3–4, before the context backstop notice; none was rejected; the children ran concurrently (same start second). In the old runs the parent wrote one or two modules inline and delegated the rest only after the backstop, one launch per message, serially. Organic wall time is unchanged at the median because the slowest child dominates (calc 663 s in O3, 438 s in O4); cost fell because the parent made 8–9 turns instead of 17–20. O3 also recorded two provider errors on turns 5–6 (`WebSocket error`, `upstream connect error … connection termination`) that Pi retried.
+- **Full delegation:** in both new runs the parent launched the three writers one per assistant message, each `mode: "task"` awaited before the next, so the children never overlapped; in the old runs it launched all three from one `codemode` call (`Promise.allSettled`) and they overlapped. In FD3 the parent wrote "I'll delegate the three independent modules in parallel" on turn 2 and then launched them on turns 3, 4 and 5. The final FD prompt now reads "Two or more independent units with disjoint surfaces launch together in one turn, as direct `subagent_run` calls in one message with no other tool call"; the old one read "… launch together in one turn" with no call form. The fix to a unit (FD3) continued the same worker with `subagent_continue`, as the new rule "Fixes to one unit continue its worker" states; in old FD1 the parent launched a new worker for a cleanup.
+
+### Cache (parent session, no extra runs)
+
+`/private/tmp/p11-gGaaWv/cache.py`, per assistant turn of the parent session: input, cache read, cache write; "drops" = turns whose cache read is lower than the previous turn's. Medians per phase and arm; F1 FD final = quiet FD4–6 (FD1–3: input 31,925, cache read 232,064, 88.2%, 0 drops).
+
+| Task / arm | Input base / after / final | Cache read base / after / final | Cache write | Cache-read share base / after / final | Drops (median; total) base / after / final |
+|---|---|---|---|---|---|
+| F1 B | 16,263 / 16,289 / 15,244 | 93,056 / 90,496 / 89,088 | 0 | 84.9 / 85.2 / 85.4% | 2;4 / 2;7 / 1;6 |
+| F1 O | 48,216 / 33,500 / 28,895 | 644,736 / 443,264 / 296,320 | 0 | 93.0 / 93.0 / 91.1% | 0 / 0 / 0 |
+| F1 FD | 50,147 / 36,469 / 31,306 | 564,864 / 343,808 / 260,864 | 0 | 91.8 / 90.4 / 89.3% | 0 / 0 / 0 |
+| F2 B | 8,929 / 12,718 / 17,223 | 119,296 / 115,072 / 60,928 | 0 | 92.0 / 90.8 / 77.8% | 1;2 / 1;3 / 2;4 |
+| F2 O | 51,794 / 35,887 / 28,359 | 281,344 / 298,880 / 229,248 | 0 | 84.6 / 89.3 / 89.0% | 0 / 0 / 0 |
+| F2 FD | 55,428 / 41,244 / 34,283 | 280,576 / 169,600 / 146,176 | 0 | 83.6 / 80.7 / 81.3% | 0 / 0 / 0 |
+| F3 O (old O1–2 / new O3–4) | 89,563 / 40,140 | 684,800 / 226,432 | 0 | 88.4 / 84.8% | O1 t11, O2 t8 / O3 t5 |
+| F3 FD (old FD1–2 / new FD3–4) | 44,672 / 53,660 | 259,904 / 231,168 | 0 | 85.2 / 80.8% | none / FD4 t4 |
+
+- `openai-codex` reports `cacheWrite` 0 on every turn of every session in all phases: the provider's usage data does not expose cache writes.
+- No organic or full-delegation F1/F2 parent session in any phase has a turn whose cache read falls, so there is no prefix rewrite here for #3100 and #3106 to remove. Their effect was measured on pi-claude-bridge by the P1/P1b verifiers (L43, L60), whose explicit cache breakpoints make a moved tail visible; this provider's automatic prefix caching keeps the common prefix, and these runs are 6–17 turns long.
+- The F3 drops are to 0 cache read. O3 turn 5 is the provider error turn (no usage). FD4 turn 4 followed a 353 s wait for a child, and old O1/O2 followed long waits too; with no request bodies recorded, provider cache expiry cannot be told apart from a prefix rewrite. Bare-arm drops (4 / 7 / 6 on F1, 2 / 3 / 4 on F2) are partial and did not fall in `final`; the bare arm also loads the todo extension.
+
+### Excluded, failed, not measured
+
+- **Excluded from the comparison:** none of the final runs. FD1–FD3 of F1 are shown separately and not used for the F1 FD comparison value (reason above). `after-F1-B1` and `after-F1-O1` stay excluded on the `after` side as published.
+- **Failed:** none (21 harness runs and 4 F3 runs, rc 0, stderr empty, no timeout).
+- **Not measured:** tool declarations actually sent per request (transcript upper bound only); cache writes (not reported by the provider); whether the F1 B and O runs of the contaminated window were slowed (not repeated).
+- **Harness tool label:** `analyze.py` labels the final organic prompt mode `none` because the organic addendum no longer contains `COORDINATOR, not the default executor`; every final O session contains `COORDINATOR who executes understood work inline` and every FD session `COORDINATOR in full delegation mode`.
+
+### Limits
+
+1. n=3 per arm for F1/F2 (F1 FD: 3 contaminated + 3 quiet), n=2 per arm and tree for F3.
+2. One parent model and effort (Astra medium) and one worker routing (terra-max).
+3. Shared provider: the first nine runs overlapped other agents on the same account and worker model; the process count did not detect it.
+4. P9b (three runtime guards) is not in the tree; see Setup for why it should not move these numbers.
+5. Costs are Pi catalog estimates (`totalFromProvider: false`).
+
+### What the data supports
+
+- Per-turn primary prompt fell another 14.1 KB (−10%) from `after`, 39% below base, in both modes; the worker prompt is unchanged (+29 B).
+- Organic cost fell 23% (F1) and 18% (F2) against `after`, 48% and 35% against base; the bare arm moved −6% and −9% over the same interval.
+- Organic time against `after` (−5%, −9%) is within the bare arm's −10% and −22% drift; against base it is −62% and −63%.
+- Full-delegation cost fell 18% (F1 quiet) and 15% (F2) against `after`, 42% and 34% against base.
+- F1 full delegation now uses one worker continued twice instead of three fresh workers; quiet F1 FD time is 30% below `after` and 25% below base.
+- Organic mode now launches independent writers in one message, without rejections and before the backstop, and they run concurrently (2 of 2 new F3 runs; 0 of 2 old).
+- Full delegation on F3 launched its writers serially in both new runs (parallel in both old runs); F3 FD wall time rose from 393–478 s to 887–1,092 s with similar cost.
+- Quality: hidden suites 18/18 in every F2 run and 28/28 in every F3 run; public tests passed; no outside files; no commits; full-delegation edits all by workers.
+
+### What the data does not support
+
+- That organic wall time changed against `after`: the change is inside the bare drift.
+- That F2 full-delegation time changed: the three runs span 204–459 s, and one 201 s round was a refused cleanup.
+- That the anchor (#3100) or todo (#3106) changes affected these runs: there were no cache-read drops to remove in the harness arms, and the provider reports no cache writes.
+- That the serial full-delegation launches on F3 are caused by the new "direct `subagent_run` calls in one message" wording: n=2 per tree, and the rule text is the only prompt difference identified for that step, not a tested cause.
+- That the tool-declaration change of #3111 reduced the bytes sent: the transcript method does not show it.
+- Anything about other models, interactive background mode, or P9b.
+
+## Full delegation after the launch-sentence fix (8b2a492b6)
+
+P6b live check, 2026-11-11 02:22–02:35 UTC. Tree `.worktrees/fd-parallel-launch` at 8b2a492b6 (main e8a56a1a4 plus the reworded `orchestrator-full-delegation.md:25`); same harness (`/private/tmp/delegation-check-KGPJRI`, `shasum -c FROZEN.sha256` OK), `./run.sh $ROOT F3 FD 5` then `FD 6`, one per tool call, each awaited. Both rc 0, empty stderr, no timeout, no retry, no provider error (no assistant message with `stopReason: error`, no retry event in the JSON stream). `gentle-ai review mode status`: `receipt-driven development: off (decided by global)` before and after. `pgrep -fl "gentle-shell.mjs|pi-coding-agent" | wc -l`: 0 before and after each run; no other Gentle Shell subagent ran (visible: this check's parent and worker sessions, three idle interactive `gentle-shell` processes, one `gh pr checks 3114 --watch`, gone after FD6). Workers `openai/gpt-6.1-terra@max`. Scratch `/private/tmp/p6bl-pPjkOF`.
+
+| Run | Tree | Launches (calls / messages / route) | Overlap | Wall s | $ parent / workers / total | Hidden |
+|---|---|---|---|---|---|---|
+| FD1 | 29b57a414 | 3 + 1 / 2 / `codemode` + direct | yes | 478.2 | 0.904 / 0.515 / 1.418 | 28/28 |
+| FD2 | 29b57a414 | 3 / 1 / `codemode` | yes | 392.9 | 0.871 / 0.537 / 1.408 | 28/28 |
+| FD3 | 70becff64 | 3 + 1 continue / 3 + 1 / direct, one per message | no | 886.9 | 0.823 / 0.446 / 1.269 | 28/28 |
+| FD4 | 70becff64 | 3 / 3 / direct, one per message | no | 1,091.7 | 1.067 / 0.629 / 1.696 | 28/28 |
+| FD5 | 8b2a492b6 | 3 / 1 / `codemode` | yes | 360.2 | 0.652 / 0.443 / 1.094 | 28/28 |
+| FD6 | 8b2a492b6 | 3 / 1 / `codemode` | yes | 386.6 | 0.643 / 0.517 / 1.159 | 28/28 |
+
+- **FD5:** parent turn 4 of 7 held one `codemode` call and nothing else; the script ran `Promise.allSettled(jobs.map(… tools.subagent_run({agent:"gentle-ai-worker", mode:"task", …})))` over three units. Children started 02:23:17, durations 210 / 221 / 277 s, ended 02:26:47 / 02:26:58 / 02:27:54. No `subagent_continue`, no new worker for a fix, no verifier (3 worker sessions). Public 51 tests OK; 13 child edits, 0 parent edits; no outside files; no commits.
+- **FD6:** parent turn 3 of 6 held one `codemode` call and nothing else; same `Promise.allSettled` over three `subagent_run` (`mode: "task"`). Children started 02:29:38, durations 193 / 235 / 302 s, ended 02:32:51 / 02:33:33 / 02:34:40. No `subagent_continue`, no new worker for a fix, no verifier (3 worker sessions). Public 64 tests OK; 15 child edits, 0 parent edits; no outside files; no commits.
+
+What the two runs show:
+
+- 2 of 2 runs launched the three writers from one `codemode` call in one assistant message with no other tool call; 0 of 2 on 70becff64, 2 of 2 on 29b57a414 (FD1 adding one direct launch later).
+- Children overlapped in 2 of 2 (same start second); the slowest child took 277 s of 360.2 s wall (FD5) and 302 s of 386.6 s (FD6).
+- Median wall 70becff64 → 8b2a492b6: 989.3 s → 373.4 s (−62%); against 29b57a414 (435.6 s): −14%.
+- Median total cost 70becff64 → 8b2a492b6: $1.482 → $1.127 (−24%); parent $0.945 → $0.647; against 29b57a414 ($1.413): −20%.
+- Parent turns 7 and 6 (8 and 9 on 70becff64; 7 and 9 on 29b57a414).
+- Hidden 28/28 and public tests pass in both; total spend of the check $2.254.
+
+What two runs cannot show:
+
+- That the sentence alone caused the change: 8b2a492b6 also differs from 70becff64 by the merges up to e8a56a1a4 and seven tightened passages of the same file; n=2 per tree.
+- How often the parent launches one per message with the new sentence: with 0 of 2 the one-sided 95% upper bound for that rate is 78%.
+- That the parent uses direct `subagent_run` calls in one message (the other route the sentence names): neither run used it.
+- Behavior with a `todo` update at launch time, with fixes (`subagent_continue`), with a verifier, on other tasks, other models, or interactive background mode: none occurred or was tested.
+- The cost drop beyond noise: the bare arm's day-to-day drift was not measured in this window.

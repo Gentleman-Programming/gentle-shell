@@ -17,7 +17,7 @@ interface Token {
 	raw: string;
 	operator: boolean;
 	index: number;
-	redirect?: "complete" | "target";
+	redirect?: "target";
 }
 const separators = new Set([";", "&&", "||", "|", "&", "\n", "(", ")"]);
 // Separators after which the next segment starts only once this one finished.
@@ -40,7 +40,7 @@ function tokenize(command: string, blank = true, delivery = false): Token[] {
 	// Delivery routing needs redirections as separate tokens, including attached
 	// forms (`push>out`) and descriptor merges whose & is not a shell boundary.
 	const pattern = delivery
-		? /\d*[<>]&(?:\d+|-)|(?:\d*(?:[<>]&|>\||<>|>>?|<<-?)|&>>?)|(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s;&|()<>'"\\])+|&&|\|\||[;&|()\n]/g
+		? /(?:\d*(?:[<>]&|>\||<>|>>?|<<-?)|&>>?)|(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s;&|()<>'"\\])+|&&|\|\||[;&|()\n]/g
 		: /(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s;&|()'"\\])+|&&|\|\||[;&|()\n]/g;
 	for (const match of command.matchAll(pattern)) {
 		const raw = match[0];
@@ -50,7 +50,9 @@ function tokenize(command: string, blank = true, delivery = false): Token[] {
 				return single ?? escaped ?? "";
 			});
 		// Only raw operators are boundaries; quoted/escaped operators are words.
-		const redirect = !delivery ? undefined : /^\d*[<>]&(?:\d+|-)$/.test(raw) ? "complete" : /^(?:\d*(?:[<>]&|>\||<>|>>?|<<-?)|&>>?)$/.test(raw) ? "target" : undefined;
+		// Consume the whole operand as one word: >&1--dry-run is a filename,
+		// never descriptor 1 followed by a git option.
+		const redirect = delivery && /^(?:\d*(?:[<>]&|>\||<>|>>?|<<-?)|&>>?)$/.test(raw) ? "target" : undefined;
 		tokens.push({ value, raw, operator: separators.has(raw), index: match.index, ...(redirect ? { redirect } : {}) });
 	}
 	return tokens;
@@ -69,6 +71,7 @@ export function recognizeReviewDeliveryActions(command: string, depth = 0): Arra
 	let start = 0;
 	for (let end = 0; end <= tokens.length; end++) {
 		if (end < tokens.length && !tokens[end].operator) continue;
+		const preceding = tokens[start - 1]?.raw;
 		// A fallback may execute after cd itself failed. Never carry its selected
 		// directory into a later delivery, even though the earlier push was scoped.
 		if (tokens[start - 1]?.raw === "||" && directories.length) unresolvedDirectory = true;
@@ -83,7 +86,7 @@ export function recognizeReviewDeliveryActions(command: string, depth = 0): Arra
 		const gitDirectories: string[] = [];
 		let unresolvedGitDirectory = false;
 		if (name === "cd") {
-			if (leadingCdChain && !ambiguousCdScope && cursor === 0 && tokens[end]?.raw === "&&" &&
+			if (leadingCdChain && !ambiguousCdScope && (preceding === undefined || preceding === "&&") && cursor === 0 && tokens[end]?.raw === "&&" &&
 				args.length === 1 && !/[\n\r$`~]/.test(args[0]) && !args[0].startsWith("-")) directories.push(args[0]);
 			else unresolvedDirectory = true;
 		}

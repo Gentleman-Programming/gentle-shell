@@ -185,10 +185,14 @@ test("#3138: output syntax never hides a repository redirect or an uncertain cd 
 	for (const command of [
 		"cd /other | git push", "false || cd /other && git push", "cd /other && false || git push",
 		"cd /other && git push || gh pr create", "cd /other && git push; gh pr create",
+		"> /dev/null | cd /other && git push", ">out || cd /other && git push",
 		"cd /other && GIT_DIR=/elsewhere git push 2>&1 | tail -1",
 		"cd /other && env -C /elsewhere git push 2>&1", "cd /other && git --work-tree=/elsewhere push >out",
 	]) assert.ok(recognizeReviewDeliveryActions(command).some(action => action.kind === "delivery" && action.unresolvedDirectory), command);
 	assert.deepEqual(recognizeReviewDeliveryActions('echo "2>&1 | git push"'), []);
+	for (const target of ["1--dry-run", "1-n", "1--delete", "1--work-tree=/elsewhere", "1push", "-n"]) {
+		assert.deepEqual(recognizeReviewDeliveryActions(`cd /selected && git push >&${target}`), [{ kind: "delivery", directories: ["/selected"] }], target);
+	}
 });
 
 test("ambiguous directory control flow cannot borrow another repository's off mode", async t => {

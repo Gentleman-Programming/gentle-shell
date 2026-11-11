@@ -349,8 +349,11 @@ test("the extensions update re-verifies the managed companion after the child co
 	// bundled, Shell-owned home, the same companion verification that setup and
 	// launch run runs even though a piSubcommand is set. Warn only: never a
 	// failure for a successful update, the selection is never rewritten.
+	// `signal` is null (not undefined) on a normal exit, so the guard tests
+	// truthiness: a signal-killed child did not complete and is left to the next
+	// launch's verification.
 	assert.match(launcher,
-		/bundled && extensionUpdate && signal === undefined && ownsCompanionHome\(home, homeHadContentBeforeBootstrap\)[\s\S]{0,300}ensureEngramCompanion\(home, runtime, \["ignore", 2, 2\], 10000, homeHadContentBeforeBootstrap\)/);
+		/bundled && extensionUpdate && !signal && ownsCompanionHome\(home, homeHadContentBeforeBootstrap\)[\s\S]{0,400}ensureEngramCompanion\(home, runtime, \["ignore", 2, 2\], 10000, homeHadContentBeforeBootstrap\)/);
 	assert.match(launcher, /verified after the extensions update/);
 });
 

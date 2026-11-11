@@ -27,7 +27,7 @@ test("committed delivery requests pass the real native client validation without
 	}, join(root, "native-fixture.exe"));
 	const cli = { reviewMode: async () => ({ status: { effective: "on" } }), assess: client.assess.bind(client), targetStatus: client.targetStatus.bind(client) } as unknown as NativeReviewCli;
 	await checkReviewDeliveryPreflight(root, "bash", "git push", cli, () => baseRef, () => false);
-	assert.deepEqual(commands.map(args => args[1]), ["assess", "status"], "both real client validators accept the committed-only request and reach the process adapter");
+	assert.deepEqual(commands.map(args => args[1]), ["status", "assess", "status"], "the untracked inventory read, then both real client validators accept the committed-only request and reach the process adapter");
 	for (const args of commands) {
 		assert.ok(args.includes("--committed-only"));
 		assert.ok(args.includes(baseRef));
@@ -299,4 +299,78 @@ test("preflight rechecks the actual assessed range, preserves native non-due/dec
 	const pending = checkReviewDeliveryPreflight(root, "bash", "git push origin HEAD", uncooperative, scope, () => false, abort.signal);
 	abort.abort();
 	assert.equal((await pending)?.block, true, "an uncooperative native reader cannot retain admission after abort");
+});
+
+test("#3169: an untracked file beside a committed range is excluded with the native inventory instead of failing the preflight", async t => {
+	const root = mkdtempSync(join(tmpdir(), "review-delivery-untracked-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "-c", "commit.gpgsign=false", ...args], { cwd: root, encoding: "utf8" }).trim();
+	git("init", "-q"); writeFileSync(join(root, "app.ts"), "base\n"); git("add", "."); git("commit", "-qm", "base");
+	const baseRef = git("rev-parse", "HEAD");
+	writeFileSync(join(root, "app.ts"), "changed\n"); git("commit", "-qam", "change");
+	writeFileSync(join(root, "body.md"), "PR body written for gh pr create --body-file\n");
+	let inventory: string | undefined = "sha256:inventory";
+	let statusFails = false;
+	const statusCalls: unknown[] = [], assessCalls: Array<Record<string, unknown>> = [];
+	const cli = {
+		reviewMode: async () => ({ status: { effective: "on" } }),
+		targetStatus: async (request: unknown) => {
+			statusCalls.push(request);
+			if (statusFails) throw new Error("status unavailable");
+			return { applicability: "unrelated", ...(inventory === undefined ? {} : { eligibleUntrackedInventory: inventory }) };
+		},
+		assess: async (request: Record<string, unknown>) => {
+			assessCalls.push(request);
+			// Mirrors native: an undeclared untracked inventory fails a committed-only assessment.
+			if (inventory !== undefined && request.expectedUntrackedInventory !== inventory) throw new Error("untracked files require an explicit declaration");
+			return { candidate: { kind: "base-diff", baseRef, consumed: false }, reviewDue: false };
+		},
+	} as unknown as NativeReviewCli;
+	const command = `cd "${root}" && gh pr create --base main --head feat/x --title "t" --body-file body.md`;
+	assert.equal(await checkReviewDeliveryPreflight(root, "bash", command, cli, () => baseRef, () => false), undefined, "gh pr create passes like the push of the same range");
+	assert.deepEqual(statusCalls.map(request => { const { signal: _signal, ...rest } = request as Record<string, unknown>; return rest; }), [{ cwd: root, baseRef, committedOnly: true, agent: "pi" }]);
+	assert.equal(assessCalls[0].untrackedScope, "exclude");
+	assert.equal(assessCalls[0].expectedUntrackedInventory, "sha256:inventory");
+	assert.equal(assessCalls[0].baseRef, baseRef);
+	assert.equal(assessCalls[0].committedOnly, true);
+
+	inventory = undefined; assessCalls.length = 0;
+	assert.equal(await checkReviewDeliveryPreflight(root, "bash", "git push", cli, () => baseRef, () => false), undefined);
+	assert.ok(!("untrackedScope" in assessCalls[0]) && !("expectedUntrackedInventory" in assessCalls[0]), "no inventory, no declaration");
+
+	statusFails = true; inventory = "sha256:inventory"; assessCalls.length = 0;
+	assert.equal((await checkReviewDeliveryPreflight(root, "bash", "git push", cli, () => baseRef, () => false))?.block, true, "without a native inventory the undeclared assessment still fails closed");
+	assert.ok(!("untrackedScope" in assessCalls[0]), "a failed status read never invents a declaration");
+});
+
+test("#3169: the real native client sends the exclusion flags with the status inventory, and a session change during the status read blocks", async t => {
+	const root = mkdtempSync(join(tmpdir(), "review-delivery-untracked-native-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "-c", "commit.gpgsign=false", ...args], { cwd: root, encoding: "utf8" }).trim();
+	git("init", "-q"); writeFileSync(join(root, "app.ts"), "base\n"); git("add", "."); git("commit", "-qm", "base");
+	const baseRef = git("rev-parse", "HEAD");
+	const digest = `sha256:${"a".repeat(64)}`;
+	const assessArgs: string[][] = [];
+	const client = new NativeReviewCliV216(async request => {
+		if (request.arguments[1] === "assess") {
+			assessArgs.push([...request.arguments]);
+			return { stdout: JSON.stringify({ schema: "gentle-ai.review-assessment/v1", risk: "medium", reasons: [], changed_paths: 1, changed_lines: 1,
+				candidate: { kind: "base-diff", base_ref: baseRef, consumed: false }, review_due: false, review_due_reason: "under_budget" }), stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
+		}
+		throw new Error("status is decoded by its own suite");
+	}, join(root, "native-fixture.exe"));
+	let active = true;
+	const cli = { reviewMode: async () => ({ status: { effective: "on" } }), assess: client.assess.bind(client),
+		targetStatus: async () => { if (!active) throw new Error("unreachable"); return { eligibleUntrackedInventory: digest }; } } as unknown as NativeReviewCli;
+	assert.equal(await checkReviewDeliveryPreflight(root, "bash", "git push", cli, () => baseRef, () => false, undefined, () => active), undefined);
+	assert.ok(assessArgs[0].includes("--untracked-scope=exclude"));
+	assert.ok(assessArgs[0].includes(`--expected-untracked-inventory=${digest}`));
+	assert.ok(!assessArgs[0].some(arg => arg.startsWith("--intended-untracked")), "exclude names no paths");
+
+	assessArgs.length = 0;
+	const changing = { ...cli, targetStatus: async () => { active = false; return { eligibleUntrackedInventory: digest }; } } as unknown as NativeReviewCli;
+	const result = await checkReviewDeliveryPreflight(root, "bash", "git push", changing, () => baseRef, () => false, undefined, () => active);
+	assert.equal(result?.block, true);
+	assert.match(result!.reason, /Session changed during preflight/);
+	assert.equal(assessArgs.length, 0, "no assessment runs after the session changed");
 });

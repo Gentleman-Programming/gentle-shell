@@ -24,12 +24,25 @@ const PETAL_TONE = {
 
 export type PetalTone = (typeof PETAL_TONE)[keyof typeof PETAL_TONE];
 
-// Render-driven animation (gentle-shell#994): the petal advances inside the
-// prompt's own frames while streaming, so the only timer left is a watchdog
-// that repaints silent working phases (long tool runs with no output).
+// Working-animation cadence: the scanner phase derives from elapsed time
+// (workingTick), not render count — streaming repaints arrive in bursts and
+// silent tool runs barely repaint, so a render-driven wave strobes or freezes.
+// The pulse timer only keeps repaints flowing: SHELL_PULSE_MS under quality,
+// the coarse watchdog window under potato (no timer; repaints that happen
+// anyway still show the current coarse frame).
 export const SHELL_PULSE_WATCHDOG_MS = 1000;
+export const SHELL_PULSE_MS = 80;
 export const SHELL_SCANNER_STEPS = 15;
 const SCANNER_ENTRY_OFFSET = 3;
+
+/**
+ * Animation phase after `now` milliseconds of working time: one wave step per
+ * `unitMs` pulse window, so two repaints inside one window paint the identical
+ * frame and each window advances the wave exactly one step.
+ */
+export function workingTick(now: number, unitMs = SHELL_PULSE_MS): number {
+	return Math.floor(now / Math.max(1, unitMs));
+}
 
 /** Banner-style reflected-light wave across text; foreground only. */
 export function scanWorkingText(text: string, tick: number, fg: (role: string, text: string) => string): string {

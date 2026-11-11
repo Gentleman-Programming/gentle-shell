@@ -4267,7 +4267,7 @@ test("once the last task is done the card asks for one frame when its finished r
 
 // P9b: the report delivered into the parent's context is capped; the stored
 // result and subagent_result keep the full text.
-const reportNotice = (id: string, delivered: number, full: number) => `Report truncated: the first ${delivered} of ${full} bytes were delivered. Call subagent_result with task_id ${id} for the full text.`;
+const reportNotice = (id: string, first: number, last: number, full: number) => `Report truncated: the first ${first} and the last ${last} of ${full} bytes were delivered. Call subagent_result with task_id ${id} for the full text.`;
 const finishChild = (child: FakeChild, answer: string) => {
 	child.emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: answer }] }] });
 	child.emit({ type: "agent_settled" });
@@ -4287,10 +4287,11 @@ test("a background report over the cap is delivered truncated with the notice, a
 	await tick();
 	const results = sent.filter((entry) => entry.message.customType === "gentle-agents.result");
 	assert.equal(results.length, 1);
-	const head = "row of a long table\n".repeat(818) + "row of a long table"; // cut back to the last line break inside the cap
-	assert.equal(String(results[0]!.message.content), `Subagent explore (task ${id}, "Big job") finished.\n\n${head}\n\n${reportNotice(id, Buffer.byteLength(head), 20_000)}`);
+	const head = "row of a long table\n".repeat(818) + "row of a long table"; // cut back to the last line break inside the cap: 16,379 bytes
+	const tail = "row of a long table\n".repeat(102); // the end of the report, from the first line break of its last 2,048 bytes: 2,040 bytes
+	assert.equal(String(results[0]!.message.content), `Subagent explore (task ${id}, "Big job") finished.\n\n${head}\n\n${reportNotice(id, 16_379, 2040, 20_000)}\n\n${tail}`);
 	const details = (results[0]!.message.details as { gentleAgents: Record<string, unknown> }).gentleAgents;
-	assert.deepEqual([details.taskId, details.status, details.reportTruncated, details.reportBytes, details.reportDeliveredBytes], [id, "completed", true, 20_000, Buffer.byteLength(head)]);
+	assert.deepEqual([details.taskId, details.status, details.reportTruncated, details.reportBytes, details.reportDeliveredBytes], [id, "completed", true, 20_000, 16_379 + 2040]);
 	const full = await tools.get("subagent_result")!.execute("c2", { task_id: id }, undefined, undefined, ctx);
 	assert.equal(full.content[0].text, report, "subagent_result is the explicit uncapped route");
 	assert.equal((full.details.gentleAgents as Record<string, unknown>).reportTruncated, undefined);
@@ -4303,25 +4304,26 @@ test("task-mode run and continue results over the cap are truncated without spli
 	gentleAgents(pi, {}, harness.deps);
 	const { ctx } = fakeContext();
 	await fire("session_start", ctx);
-	const report = `${"a".repeat(16_383)}€${"z".repeat(100)}`;
+	const report = `${"a".repeat(16_383)}€${"z".repeat(3000)}€${"y".repeat(2046)}`; // a € straddles both cuts
 	const run = tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Wide", mode: "task" }, undefined, undefined, ctx);
 	await tick();
 	finishChild(harness.children[0], report);
 	const result = await run;
 	const id = (result.details.gentleAgents as { taskId: string }).taskId;
-	const notice = reportNotice(id, 16_383, 16_486);
-	assert.equal(result.content[0].text, `Subagent explore (task ${id}, "Wide") finished.\n\n${"a".repeat(16_383)}\n\n${notice}`);
+	const notice = reportNotice(id, 16_383, 2046, 21_435);
+	assert.equal(result.content[0].text, `Subagent explore (task ${id}, "Wide") finished.\n\n${"a".repeat(16_383)}\n\n${notice}\n\n${"y".repeat(2046)}`);
 	assert.equal(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(result.content[0].text, "utf8")), result.content[0].text, "valid UTF-8");
-	assert.deepEqual((({ reportTruncated, reportBytes, reportDeliveredBytes }) => [reportTruncated, reportBytes, reportDeliveredBytes])(result.details.gentleAgents as Record<string, unknown>), [true, 16_486, 16_383]);
+	assert.deepEqual((({ reportTruncated, reportBytes, reportDeliveredBytes }) => [reportTruncated, reportBytes, reportDeliveredBytes])(result.details.gentleAgents as Record<string, unknown>), [true, 21_435, 16_383 + 2046]);
 	assert.equal((await tools.get("subagent_result")!.execute("c2", { task_id: id }, undefined, undefined, ctx)).content[0].text, report);
 	const resumed = tools.get("subagent_continue")!.execute("c3", { task_id: id, prompt: "Again", mode: "task" }, undefined, undefined, ctx);
 	await tick();
 	await tick();
-	const learnings = "## Key Learnings\n\n- The cap keeps this block.";
-	finishChild(harness.children[1], `${"line\n".repeat(4000)}${learnings}`);
+	const closing = ["## Summary", "", "- The end of the report is kept."].join("\n"); // 44 bytes
+	finishChild(harness.children[1], `${"line\n".repeat(4000)}${closing}`);
 	const continued = await resumed;
 	const continuedId = (continued.details.gentleAgents as { taskId: string }).taskId;
-	assert.match(continued.content[0].text, new RegExp(`Report truncated: the first 16379 of ${20_000 + Buffer.byteLength(learnings)} bytes were delivered, followed by its closing ## Key Learnings block\\. Call subagent_result with task_id ${continuedId} for the full text\\.\n\n${learnings}$`));
+	const end = `${"line\n".repeat(400)}${closing}`; // the last 2,048 bytes start mid-line; the tail starts at the next line: 2,044 bytes
+	assert.ok(continued.content[0].text.endsWith(`\n\n${reportNotice(continuedId, 16_379, 2044, 20_044)}\n\n${end}`));
 	await fire("session_shutdown", ctx);
 });
 
@@ -4365,10 +4367,11 @@ test("report_max_bytes from subagents.json sets the delivered report cap", async
 	const started = await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Small cap", mode: "background" }, undefined, undefined, ctx);
 	const id = (started.details.gentleAgents as { taskId: string }).taskId;
 	await tick();
-	finishChild(harness.children[0], "x".repeat(65));
+	// A line break at byte 2 is outside the 16-byte window of a 64-byte cap: the head keeps all 64 bytes.
+	finishChild(harness.children[0], `ab\n${"x".repeat(3000)}`);
 	await tick();
 	const delivered = sent.filter((entry) => entry.message.customType === "gentle-agents.result");
-	assert.equal(String(delivered[0]!.message.content), `Subagent explore (task ${id}, "Small cap") finished.\n\n${"x".repeat(64)}\n\n${reportNotice(id, 64, 65)}`);
+	assert.equal(String(delivered[0]!.message.content), `Subagent explore (task ${id}, "Small cap") finished.\n\nab\n${"x".repeat(61)}\n\n${reportNotice(id, 64, 2048, 3003)}\n\n${"x".repeat(2048)}`);
 	await fire("session_shutdown", ctx);
 });
 
@@ -4397,8 +4400,8 @@ test("strict-JSON agents and single JSON documents over the cap are delivered wh
 	assert.equal("reportTruncated" in strict.details, false);
 	const generic = await runOnce("explore", json, 1);
 	assert.equal(generic.text, `Subagent explore (task ${generic.id}, "Judge") finished.\n\n${json}`);
-	const prose = await runOnce("explore", "x".repeat(65), 2);
-	assert.equal(prose.text, `Subagent explore (task ${prose.id}, "Judge") finished.\n\n${"x".repeat(64)}\n\n${reportNotice(prose.id, 64, 65)}`);
+	const prose = await runOnce("explore", "x".repeat(3000), 2);
+	assert.equal(prose.text, `Subagent explore (task ${prose.id}, "Judge") finished.\n\n${"x".repeat(64)}\n\n${reportNotice(prose.id, 64, 2048, 3000)}\n\n${"x".repeat(2048)}`);
 	await fire("session_shutdown", ctx);
 });
 

@@ -47,6 +47,7 @@ test("#3143: idle scanning is bounded while silent watchers retain fallback and 
 			skillReads=0;
 			fs.writeFileSync(skill,'---\\nname: skill-0\\ndescription: Fallback detects missed event.\\n---\\n');
 			poll(); await waitFor('Fallback detects missed event.');
+			assert.equal(skillReads,375,'one fallback scan reads each fixture skill exactly once');
 			console.log(JSON.stringify({skills:375,poll_ms:period,skill_reads_per_poll:skillReads,projected_idle_skill_reads_per_minute:skillReads*60000/period}));
 			assert.ok(period>=30000 && period<=60000,'idle full scans must be at most twice per minute, with bounded missed-event recovery');
 			fs.writeFileSync(skill,'---\\nname: skill-0\\ndescription: Watcher detects new event.\\n---\\n');

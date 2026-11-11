@@ -78,6 +78,98 @@ test("independent extension hosts share disk bytes without sharing runtime captu
 	await Promise.all([a.send({ action: "shutdown" }), b.send({ action: "shutdown" })]);
 });
 
+test("a watcher refresh pending at session shutdown neither regenerates nor touches the stale ctx", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "gentle-skill-watch-stale-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", `
+		import assert from "node:assert/strict";
+		import fs from "node:fs";
+		import { syncBuiltinESMExports } from "node:module";
+		import { join } from "node:path";
+		const root = ${JSON.stringify(root)};
+		const cwd = join(root, "workspace");
+		const home = join(root, "home");
+		process.env.HOME = home;
+		process.env.USERPROFILE = home;
+		delete process.env.CODEX_HOME;
+		delete process.env.GENTLE_PI_AGENTS_CHILD;
+		delete process.env.GENTLE_PI_NO_SKILL_REGISTRY;
+		const failures = [];
+		process.on("unhandledRejection", (error) => { failures.push("unhandledRejection: " + String(error)); process.exitCode = 1; console.error("unhandledRejection", error); });
+		process.on("uncaughtException", (error) => { failures.push("uncaughtException: " + String(error)); process.exitCode = 1; console.error("uncaughtException", error); });
+		const skill = join(cwd, "skills", "local", "SKILL.md");
+		const writeSkill = (description) => fs.writeFileSync(skill, "---\\nname: local\\ndescription: " + description + "\\n---\\n");
+		fs.mkdirSync(join(cwd, "skills", "local"), { recursive: true });
+		fs.mkdirSync(home, { recursive: true });
+		writeSkill("Initial skill.");
+		// Capture the watcher listener so the debounce is armed deterministically,
+		// independent of whether the OS delivers recursive-watch events in time.
+		const nativeWatch = fs.watch;
+		let refreshListener;
+		fs.watch = function (path, options, listener) {
+			refreshListener = listener;
+			return nativeWatch(path, options, listener);
+		};
+		syncBuiltinESMExports();
+		const { default: skillRegistry, __testing } = await import(${JSON.stringify(extensionUrl)});
+		const events = new Map();
+		skillRegistry({ on: (name, handler) => events.set(name, handler), registerCommand() {}, registerFlag() {}, getFlag: () => false });
+		// Pi's runner throws on any ctx access once the session is replaced or reloaded.
+		const makeCtx = () => {
+			const notices = [];
+			let stale = false;
+			const guard = () => { if (stale) throw new Error("This extension ctx is stale after session replacement or reload"); };
+			const ctx = {
+				cwd,
+				get hasUI() { guard(); return true; },
+				get ui() { guard(); return { notify: (message, level) => notices.push({ message, level }) }; },
+				get sessionManager() { guard(); return {}; },
+			};
+			return { ctx, notices, expire() { stale = true; } };
+		};
+		const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+		const registry = join(cwd, ".atl", "skill-registry.md");
+
+		const old = makeCtx();
+		await events.get("session_start")(undefined, old.ctx);
+		await __testing.startupSettled();
+		assert.ok(refreshListener, "fixture must start a recursive watcher");
+		assert.match(fs.readFileSync(registry, "utf8"), /Initial skill/);
+		const noticesBeforeShutdown = old.notices.length;
+		refreshListener("change", "local/SKILL.md"); // Arms the debounced refresh.
+		await events.get("session_shutdown")(undefined, old.ctx);
+		old.expire();
+		writeSkill("Changed after shutdown.");
+		await sleep(1500); // Well past the 500 ms debounce and its regeneration.
+		assert.deepEqual(failures, [], "a stale ctx must never escape as an unhandled error");
+		assert.equal(old.notices.length, noticesBeforeShutdown, "no notify after shutdown");
+		assert.doesNotMatch(fs.readFileSync(registry, "utf8"), /Changed after shutdown/, "no regeneration after shutdown");
+
+		refreshListener = undefined;
+		const live = makeCtx();
+		await events.get("session_start")(undefined, live.ctx);
+		await __testing.startupSettled();
+		assert.ok(refreshListener, "a later session must rewatch");
+		live.notices.length = 0;
+		writeSkill("Live session change.");
+		refreshListener("change", "local/SKILL.md");
+		const deadline = Date.now() + 5000;
+		while (!live.notices.some(({ message }) => message.startsWith("Skill registry refreshed")) && Date.now() < deadline) await sleep(25);
+		assert.ok(live.notices.some(({ message, level }) => level === "info" && message.startsWith("Skill registry refreshed")), JSON.stringify(live.notices));
+		assert.match(fs.readFileSync(registry, "utf8"), /Live session change/);
+		await events.get("session_shutdown")(undefined, live.ctx);
+		assert.deepEqual(failures, []);
+		console.log("STALE CTX SAFE");
+	`], {
+		encoding: "utf8",
+		timeout: 15_000,
+		env: { ...process.env, GIT_CEILING_DIRECTORIES: root },
+	});
+	assert.equal(child.error, undefined, `${child.error?.message}\n${child.stderr}`);
+	assert.equal(child.status, 0, child.stderr);
+	assert.match(child.stdout, /STALE CTX SAFE/);
+});
+
 for (const code of ["ENOENT", "EMFILE"]) {
 	test(`registered skill watcher survives asynchronous ${code} and preserves other roots`, (t) => {
 		const root = mkdtempSync(join(tmpdir(), "gentle-skill-watch-error-"));

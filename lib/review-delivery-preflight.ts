@@ -7,6 +7,17 @@ import { resolveSessionWorktree, worktreeGitEnvironment } from "./session-worktr
 type Denial = { block: true; reason: string };
 const deny = (reason: string): Denial => ({ block: true, reason: `RDD pre-delivery: ${reason} This delivery command was not run. Review outcomes do not authorize delivery.` });
 
+// Git Bash and other MSYS shells hand native binaries POSIX-spelled paths, and the
+// shell normally rewrites them; the preflight reads the raw command text instead, so
+// `resolve` would read `/c/repo` as `C:\c\repo` and every spawn from it fails. WSL's
+// `/mnt/c` spelling is not translated: it never names a Windows drive to Git.
+const MSYS_DRIVE_PATH = /^\/([a-zA-Z])(\/|$)/;
+export function nativeDirectory(directory: string, platform: string = process.platform): string {
+	if (platform !== "win32") return directory;
+	const match = MSYS_DRIVE_PATH.exec(directory);
+	return match === null ? directory : `${match[1].toUpperCase()}:${directory.slice(2) || "/"}`;
+}
+
 // Compare HEAD/base around this read, without retaining a verdict or snapshot.
 async function identity(root: string, baseRef: string): Promise<string | undefined> {
 	return new Promise(done => execFile("git", ["rev-parse", "--revs-only", "--end-of-options", "HEAD^{commit}", `${baseRef}^{commit}`],
@@ -32,7 +43,7 @@ export async function checkReviewDeliveryPreflight(cwd: string, toolName: string
 		try {
 			const checked: Array<{ root: string; baseRef: string; before: string }> = [];
 			const roots = new Set(deliveries.map(delivery => {
-				const target = (delivery.directories ?? []).reduce((base, directory) => resolve(base, directory), cwd);
+				const target = (delivery.directories ?? []).reduce((base, directory) => resolve(base, nativeDirectory(directory)), cwd);
 				return resolveSessionWorktree(target, cwd)?.root ?? target;
 			}));
 			for (const root of roots) {
@@ -59,7 +70,7 @@ export async function checkReviewDeliveryPreflight(cwd: string, toolName: string
 				if (bounded.aborted || !current() || baseRefFor(root) !== baseRef || await identity(root, baseRef) !== before || !current()) return deny("The range or session changed during preflight; assess again.");
 			}
 			return undefined;
-		} catch { return deny("Native preflight is unavailable; resolve it before delivery."); }
+		} catch (error) { return deny(`Native preflight is unavailable; resolve it before delivery. (${error instanceof Error ? `${error.name}: ${error.message}` : String(error)})`); }
 	};
 	try { return await Promise.race([run(), expired]); }
 	finally { bounded.removeEventListener("abort", abort); }

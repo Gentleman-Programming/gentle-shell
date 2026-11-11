@@ -994,19 +994,19 @@ test("Go has no descriptor for other targets", () => {
 // The Engram release the bundled install ships (S9), from its checksums.txt and
 // the GitHub asset digests; every archive was downloaded and re-hashed.
 const engramPins = {
-	"darwin-arm64": ["darwin_arm64.tar.gz", "43d398b2fe3327a4a6436c26b2a17d3285ba80bf2f11a22d0796ea2a7fd2b78c", 7749520],
-	"darwin-x64": ["darwin_amd64.tar.gz", "aea28ebf461a4ea86c52b793c29311539d7123875354ed7411eae982fc82ec87", 8181300],
-	"linux-x64": ["linux_amd64.tar.gz", "106a43ca8f43a27c2c260a6787151c3be6d91c5ed3d5e454e6140527adf92e01", 8064598],
-	"linux-arm64": ["linux_arm64.tar.gz", "b0ba49cf5a7d5af436c9744a9a0d638b3f9ebb2a7321c8736d30e96305c2993c", 7472279],
-	"win32-x64": ["windows_amd64.zip", "ba56a36d37b2da85fcb1581bbdbed9ae1ee690e642aab8dbe1e18209bf264afe", 8272809],
-	"win32-arm64": ["windows_arm64.zip", "df5acc5dd6ee407d484074e570c77a79567c0b8dccf55e25ae25a644c1e7db5f", 7530282],
+	"darwin-arm64": ["darwin_arm64.tar.gz", "22df56a58fb96ba301b9e7b76d542c40d3c50a3d61e43c3fc914d3c5bc8b1a0c", 7994478],
+	"darwin-x64": ["darwin_amd64.tar.gz", "0dfced7ee702ab5ab06a7bf419f10833f531a60152bf02fd0662f64cb44f2042", 8478496],
+	"linux-x64": ["linux_amd64.tar.gz", "3426c49b76632fd800f93faaed32e7c6f00624572423008efd4ecd59d62a5dce", 8359070],
+	"linux-arm64": ["linux_arm64.tar.gz", "65c4aed21a6bd3a46b8416aa7e723cf1b3903c3a69f198c446610c30d0cd4945", 7703363],
+	"win32-x64": ["windows_amd64.zip", "0798d5805e7128c52bd4121bdef0a25c8712b7edf55129fb9f8789c1c0ec2013", 8577456],
+	"win32-arm64": ["windows_arm64.zip", "fd0aaa5a5cf6868f21f14a244664ede13082e8cbee4f762b92e888f189470d36", 7775916],
 } as const;
 test("fixed Engram descriptors are the GitHub release archives and checksums, and nothing else", () => {
 	for (const [target, [suffix, sha256, size]] of Object.entries(engramPins)) {
 		const [platform, arch] = target.split("-");
 		const artifact = artifactFor("engram", platform, arch);
-		assert.equal(artifact.version, "3.5.2");
-		assert.equal(artifact.url, `https://github.com/Gentleman-Programming/engram/releases/download/v3.5.2/engram_3.5.2_${suffix}`);
+		assert.equal(artifact.version, "3.7.0");
+		assert.equal(artifact.url, `https://github.com/Gentleman-Programming/engram/releases/download/v3.7.0/engram_3.7.0_${suffix}`);
 		assert.equal(artifact.integrity, `sha256-${sha256}`);
 		assert.deepEqual([artifact.size, artifact.maxBytes], [size, size]);
 		// GitHub serves release assets from its asset hosts.

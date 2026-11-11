@@ -287,16 +287,50 @@ export const ENGRAM_COMPATIBILITY_MIN_VERSION = "3.4.0";
 export function engramOutdatedServerNotice(version        )         {
 	return `Engram memory disabled: the running Engram server reports version ${version}, which cannot prove store compatibility. Back up your Engram data, update that server to ${ENGRAM_COMPATIBILITY_MIN_VERSION} or later with the method you installed it with, and restart it; updating Shell alone does not replace a running server. Shell rechecks on every launch and remains usable without memory.`;
 }
+// A canonical numeric x.y.z (optionally v-prefixed, no leading zeros), split
+// into numeric parts; undefined otherwise. The version comes from the server,
+// so anything else is never echoed to the user.
+function canonicalVersion(version                    )                       {
+	const match = /^v?(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})$/.exec(version ?? "");
+	return match === null ? undefined : match.slice(1).map(Number);
+}
+
+// "older" or "same-or-newer" over canonical numeric parts, or undefined when
+// the version itself is not canonical.
+function compareVersion(version                    , minimum        )                                        {
+	const parts = canonicalVersion(version);
+	if (parts === undefined) return undefined;
+	const base = canonicalVersion(minimum);
+	if (base === undefined) return undefined;
+	for (let i = 0; i < parts.length; i += 1) {
+		if (parts[i] !== base[i]) return parts[i] < base[i] ? "older" : "same-or-newer";
+	}
+	return "same-or-newer";
+}
+
 // A canonical numeric x.y.z (optionally v-prefixed, no leading zeros) older than
 // the minimum. The version comes from the server, so anything else is never
 // echoed to the user.
 function outdatedServerVersion(version                    )                     {
-	const match = /^v?(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})$/.exec(version ?? "");
-	if (match === null) return undefined;
-	const parts = match.slice(1).map(Number);
-	const minimum = ENGRAM_COMPATIBILITY_MIN_VERSION.split(".").map(Number);
-	const index = parts.findIndex((part, i) => part !== minimum[i]);
-	return index >= 0 && parts[index] < minimum[index] ? parts.join(".") : undefined;
+	const parts = canonicalVersion(version);
+	if (parts === undefined) return undefined;
+	return compareVersion(version, ENGRAM_COMPATIBILITY_MIN_VERSION) === "older" ? parts.join(".") : undefined;
+}
+
+// The first release whose CLI runs the shared server's whole lifecycle as a
+// pidfile-tracked daemon (`engram run -d` plus the `ps`, `stop`, `logs`,
+// `restart` verbs; engram issues #2228 and #2346): a core older than this
+// knows only `serve`, which no daemon verb can adopt.
+export const ENGRAM_DAEMON_LIFECYCLE_MIN_VERSION = "3.7.0";
+export function engramSupportsDaemonLifecycle(version                    )          {
+	return compareVersion(version, ENGRAM_DAEMON_LIFECYCLE_MIN_VERSION) === "same-or-newer";
+}
+
+// The command line Shell starts the shared server with: daemon-lifecycle cores
+// register with `run -d` so the standard verbs manage the server; older cores
+// spawn only the legacy detached `serve`.
+export function engramSpawnArgs(version                    )           {
+	return engramSupportsDaemonLifecycle(version) ? ["run", "-d"] : ["serve"];
 }
 // The default endpoint gentle-engram uses without ENGRAM_URL or ENGRAM_PORT.
 export const ENGRAM_DEFAULT_PORT = 7437;
@@ -411,9 +445,10 @@ export function parseEngramProvenance(text                    )                 
 }
 
 // The bundled core's own schema (SQLite user_version), verified from the
-// tagged sources v3.3.2, v3.4.0 and v3.5.2: internal/store/store.go `const schemaVersion = 1`.
-// A pin without a verified entry leaves the header check unavailable.
-const BUNDLED_ENGRAM_SCHEMA                         = { "3.3.2": 1, "3.4.0": 1, "3.5.2": 1 };
+// tagged sources v3.3.2, v3.4.0, v3.5.2 and the v3.7.0 tree: internal/store/store.go
+// `const schemaVersion = 1`. A pin without a verified entry leaves the header
+// check unavailable.
+const BUNDLED_ENGRAM_SCHEMA                         = { "3.3.2": 1, "3.4.0": 1, "3.5.2": 1, "3.7.0": 1 };
 
 export function bundledEngramSchema(coreVersion        )                     {
 	return Object.hasOwn(BUNDLED_ENGRAM_SCHEMA, coreVersion) ? BUNDLED_ENGRAM_SCHEMA[coreVersion] : undefined;

@@ -164,6 +164,7 @@ test("#3138: output redirections and trailing filters preserve a literal deliver
 	const root = process.cwd();
 	const commands = [
 		`cd "${root}" && git push 2>&1`, `cd "${root}" && git push 2>&1 | tail -1`,
+		`cd "${root}" && git push 2>& 1 | tail -1`, `cd "${root}" && git push <& 0`,
 		`cd "${root}" && git push >out.log`, `cd "${root}" && git push>/dev/null`,
 		`cd "${root}" && git push &>/dev/null`, `cd "${root}" && git push >|out.log`,
 		`cd "${root}" && git push || echo failed`, `cd "${root}" && gh pr create --title x 2>&1 | tail -5`,

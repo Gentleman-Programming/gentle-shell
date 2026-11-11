@@ -40,7 +40,7 @@ function tokenize(command: string, blank = true, delivery = false): Token[] {
 	// Delivery routing needs redirections as separate tokens, including attached
 	// forms (`push>out`) and descriptor merges whose & is not a shell boundary.
 	const pattern = delivery
-		? /\d*[<>]&(?:\d+|-)|(?:\d*(?:>\||<>|>>?|<<-?|[<>]&)|&>>?)|(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s;&|()<>'"\\])+|&&|\|\||[;&|()\n]/g
+		? /\d*[<>]&(?:\d+|-)|(?:\d*(?:[<>]&|>\||<>|>>?|<<-?)|&>>?)|(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s;&|()<>'"\\])+|&&|\|\||[;&|()\n]/g
 		: /(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s;&|()'"\\])+|&&|\|\||[;&|()\n]/g;
 	for (const match of command.matchAll(pattern)) {
 		const raw = match[0];
@@ -50,7 +50,7 @@ function tokenize(command: string, blank = true, delivery = false): Token[] {
 				return single ?? escaped ?? "";
 			});
 		// Only raw operators are boundaries; quoted/escaped operators are words.
-		const redirect = !delivery ? undefined : /^\d*[<>]&(?:\d+|-)$/.test(raw) ? "complete" : /^(?:\d*(?:>\||<>|>>?|<<-?|[<>]&)|&>>?)$/.test(raw) ? "target" : undefined;
+		const redirect = !delivery ? undefined : /^\d*[<>]&(?:\d+|-)$/.test(raw) ? "complete" : /^(?:\d*(?:[<>]&|>\||<>|>>?|<<-?)|&>>?)$/.test(raw) ? "target" : undefined;
 		tokens.push({ value, raw, operator: separators.has(raw), index: match.index, ...(redirect ? { redirect } : {}) });
 	}
 	return tokens;

@@ -180,7 +180,9 @@ const MODULE_BUDGETS: Record<string, number> = {
 	// Cost-speed S15 P5a: the always-on verifier-setup paragraph (976 B) moved into "## Verifier preparation failure",
 	// merged with what the section already said (+710 B); the always-on primary prompt fell by more (7,898 -> 8,608 B).
 	// Its three "inline" sentences reworded for both modes, so a full-delegation parent can load it (8,608 -> 8,656 B).
-	"orchestrator-verification.md": 8_656,
+	// Cost-speed S15 P16: the parent commits verifier probes only when a commit is authorized (+28 B), paid by two
+	// phrases that restated their sentence (-36 B): 8,656 -> 8,648 B.
+	"orchestrator-verification.md": 8_648,
 	// Writer-rule fix (size threshold, one behavior per unit) and C3 (writer prompts name the helpers and
 	// invariants to reuse): 4,500 -> 5,300 B.
 	// Pain-point iteration S10 (C7): writer handoffs keep test scratch outside the worktree (5,300 -> 5,500 B).

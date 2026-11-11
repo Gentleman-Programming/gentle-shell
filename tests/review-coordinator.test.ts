@@ -84,8 +84,10 @@ test("routing ignores every native state, reason code and capture closure shape"
  for (const state of ["correction_required", "validating", "declined", "future-state"]) {
   const response: Body = structuredClone(collect);
   response.result.authority.state = state; response.result.next_transition.reason_code = "future-reason";
-  const capture = { outcome: "native-last-event-closure" };
-  Object.defineProperty(capture, "closure", { get() { throw new Error("must not inspect closure shape"); } });
+  // Only closure.advisory_findings is read (relayed on approval); every other closure field stays unread.
+  const closure = {};
+  for (const key of ["schema", "operation", "lineage_id", "state", "store_revision", "action", "escalation", "status_continuation", "acknowledgement", "next_action"]) Object.defineProperty(closure, key, { get() { throw new Error("must not inspect closure shape"); } });
+  const capture = { outcome: "native-last-event-closure", closure };
   for (const object of [response.result, response.result.authority]) Object.defineProperty(object, "state", { get() { throw new Error("must not read state"); }, configurable: true });
   Object.defineProperty(response.result.next_transition, "reason_code", { get() { throw new Error("must not read reason_code"); } });
   // Serialization is transport instrumentation, so poison only property reads.
@@ -175,8 +177,8 @@ test("ambiguous selectors and consent arguments are rejected before dispatch", (
 	for (const value of [{ baseRef: "main" }, { committedOnly: true }, { consent: "granted" }, { lenses: ["risk"] }, { intendedUntracked: [] }]) assert.throws(() => parseReviewCoordinatorInput(value));
 });
 
-test("coordinator is absent by default and in child sessions; enabled only by explicit environment flag", () => {
-	for (const [env, expected] of [[{}, false], [{ GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR: "1" }, true], [{ GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR: "1", GENTLE_PI_AGENTS_CHILD: "1" }, false]] as const) {
+test("coordinator is registered by default in a parent session; absent in child sessions and with the explicit opt-out", () => {
+	for (const [env, expected] of [[{}, true], [{ GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR: "1" }, true], [{ GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR: "0" }, false], [{ GENTLE_PI_AGENTS_CHILD: "1" }, false], [{ GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR: "1", GENTLE_PI_AGENTS_CHILD: "1" }, false]] as const) {
 		const tools = new Map();
 		createGentleAiExtension({ nativeReviewCli: null, processEnv: env })({ registerTool: (tool: { name: string }) => tools.set(tool.name, tool), registerCommand() {}, on() {} } as never);
 		assert.equal(tools.has("gentle_review_run"), expected);

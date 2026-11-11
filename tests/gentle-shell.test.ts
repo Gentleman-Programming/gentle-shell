@@ -972,6 +972,30 @@ const fakeTui = { terminal: { rows: 40, columns: 120 }, requestRender() {} };
 const editorTheme = { borderColor: (text: string) => text, selectList: {} };
 const fakeKeybindings = { matches: () => false };
 
+// Time-based cadence (fixes the render-count drift that froze or strobed the
+// working wave): repaints inside one pulse window must paint one identical
+// frame, and elapsed windows must advance the wave without any streaming
+// frame arriving.
+test("the working wave keeps time-based cadence across silent repaints", () => {
+	const roleFg = (role: string, text: string) => `<${role}>${text}</${role}>`;
+	let now = 0;
+	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, {
+		fg: roleFg, bold: (text: string) => text, requestRender() {}, pending: () => false, now: () => now,
+		doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => INSTALLED_PI,
+	});
+	try {
+		editor.setWorking(true);
+		now = 400;
+		const first = editor.render(80).join("\n");
+		const second = editor.render(80).join("\n");
+		assert.equal(second, first, "repaints within one pulse window paint one identical frame");
+		now = 480;
+		assert.notEqual(editor.render(80).join("\n"), first, "the next window advances the wave");
+	} finally {
+		editor.dispose();
+	}
+});
+
 test("panel control owns its rendered mouse cells across top rows and Vim modes", () => {
 	for (const vim of [false, true]) {
 		const tui = fakeTui;

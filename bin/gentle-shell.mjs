@@ -74,6 +74,7 @@ import {
 	ENGRAM_START_FAILED_NOTICE,
 	GENTLE_SHELL_CONFIG_HOME_ENV,
 	engramProbeAllowed,
+	engramSupportsDaemonLifecycle,
 	sharedEngramEnv,
 	piVersionOrHelpRequested,
 	probeEngramEndpoint,
@@ -230,23 +231,37 @@ async function classifyBundledMemory() {
 }
 
 // Like other agents' hooks, Shell starts the shared server when nothing
-// listens: the verified core's plain `serve` on Engram's own default port and
-// data directory, detached so it outlives Pi. Its environment drops the user's
-// Engram settings and GitHub tokens and skips the update check. Ready means the
-// same /compatibility contract any reused server must answer, so a concurrent
-// launch that wins the bind converges too: after the child exits, polling
-// continues for a short grace within the overall bound.
+// listens. Cores with the daemon lifecycle (>= 3.7.0) become a first-class
+// daemon through `engram run -d`, so the standard engram verbs manage them;
+// anything else (older cores, a failed daemon handoff) keeps the legacy
+// detached plain `serve` on Engram's own default port and data directory, so it
+// outlives Pi. Both paths' environment drops the user's Engram settings and
+// GitHub tokens and skips the update check. Ready means the same
+// /compatibility contract any reused server must answer, and a concurrent
+// launch that wins the bind converges through it within the overall bounds.
 const ENGRAM_START_TIMEOUT_MS = 10000;
 const ENGRAM_START_EXIT_GRACE_MS = 2000;
+// `engram run -d` itself waits up to 15 s for its daemon's readiness before the
+// wrapper exits (engram cmd/engram/run.go), so the daemon wrapper await can run
+// slightly longer than the serve-only start budget.
+const ENGRAM_DAEMON_START_TIMEOUT_MS = 16000;
 
 async function startSharedEngram() {
 	const failed = { policy: "disabled", notice: ENGRAM_START_FAILED_NOTICE };
 	const core = verifiedBundledCore();
 	if (core === undefined) return failed;
+	const env = sharedEngramEnv(process.env);
+	// Cores with the daemon lifecycle (>= 3.7.0) start through `engram run -d`:
+	// the pidfile it keeps is what `engram ps/stop/logs/restart` manage, so the
+	// shared server becomes a first-class daemon (engram#2346). Anything short of
+	// a compatible running server falls back to the legacy detached serve below,
+	// which is the only option an older core would have had anyway.
+	if (engramSupportsDaemonLifecycle(engramPinVersion) && (await startEngramDaemon(core, env))) {
+		return { policy: "allow", url: ENGRAM_DEFAULT_URL };
+	}
 	let deadline = Date.now() + ENGRAM_START_TIMEOUT_MS;
 	const exited = () => { deadline = Math.min(deadline, Date.now() + ENGRAM_START_EXIT_GRACE_MS); };
 	try {
-		const env = sharedEngramEnv(process.env);
 		const child = spawn(core, ["serve"], { cwd: homedir(), env, detached: true, stdio: "ignore", windowsHide: true });
 		child.once("error", exited);
 		child.once("exit", exited);
@@ -260,6 +275,34 @@ async function startSharedEngram() {
 		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
 	return failed;
+}
+
+// Runs `engram run -d` to completion and reports whether a compatible server is
+// listening: the wrapper exits 0 after the daemon reported readiness and exits
+// non-zero on failure; a concurrent launch that wins the bind converges through
+// the same probed contract as serve. Spawn errors and a wrapper that never ends
+// are cut off at the start budget. Bounded either way.
+async function startEngramDaemon(core, env) {
+	try {
+		const child = spawn(core, ["run", "-d"], { cwd: homedir(), env, stdio: "ignore", windowsHide: true });
+		await Promise.race([
+			new Promise((resolve, reject) => {
+				child.once("error", reject);
+				child.once("exit", (status) => resolve(typeof status === "number" ? status : -1));
+			}),
+			new Promise((_, reject) => setTimeout(() => reject(new Error("engram run -d start budget exceeded")), ENGRAM_DAEMON_START_TIMEOUT_MS)),
+		]);
+		const deadline = Date.now() + ENGRAM_START_EXIT_GRACE_MS;
+		while (Date.now() < deadline) {
+			const endpoint = await probeEngramEndpoint({ timeoutMs: 500 });
+			if (endpoint.kind === "listening" && endpoint.compatible) return true;
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
+	} catch {
+		// Spawn error or the wrapper outlived the start budget: fall back to the
+		// legacy detached serve.
+	}
+	return false;
 }
 
 const LEGACY_ENGRAM_COMPANION_SOURCE = "npm:gentle-engram@0.4.2";

@@ -253,6 +253,25 @@ test("the header is a newer-schema tripwire against the verified bundled schema,
 	assert.equal(shell.engramHeaderAllows(0, undefined), false);
 });
 
+test("cores with the daemon lifecycle launch through run -d, older ones keep the detached serve", () => {
+	// v3.7.0 store: internal/store/store.go declares schemaVersion = 1.
+	assert.equal(shell.bundledEngramSchema("3.7.0"), 1);
+	// The daemon verbs (engram ps/stop/logs/restart) manage only the pidfile
+	// daemon from `engram run -d` (engram#2228, #2346), first delivered in 3.7.0.
+	assert.equal(shell.engramSupportsDaemonLifecycle("3.7.0"), true);
+	assert.equal(shell.engramSupportsDaemonLifecycle("v3.7.0"), true);
+	assert.equal(shell.engramSupportsDaemonLifecycle("3.7.1"), true);
+	assert.equal(shell.engramSupportsDaemonLifecycle("4.0.0"), true);
+	assert.equal(shell.engramSupportsDaemonLifecycle("3.6.9"), false);
+	assert.equal(shell.engramSupportsDaemonLifecycle("3.5.2"), false);
+	assert.equal(shell.engramSupportsDaemonLifecycle("junk"), false);
+	assert.equal(shell.engramSupportsDaemonLifecycle(undefined), false);
+	assert.deepEqual(shell.engramSpawnArgs("3.7.0"), ["run", "-d"]);
+	assert.deepEqual(shell.engramSpawnArgs("3.6.9"), ["serve"]);
+	// The compatibility comparator keeps its old semantics across the refactor.
+	assert.match(shell.engramOutdatedServerNotice("3.3.9"), /3\.3\.9/);
+});
+
 function listen(t: TestContext, handler: (path: string, response: import("node:http").ServerResponse) => void): Promise<number> {
 	const server: Server = createServer((request, response) => handler(request.url ?? "", response));
 	t.after(() => new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()); }));

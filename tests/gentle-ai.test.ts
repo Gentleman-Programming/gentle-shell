@@ -250,6 +250,7 @@ test("registered Gentle Review tools render reusable rose lifecycle call rows", 
 		["gentle_review", { operation: "future-operation", secret: "/private" }, ""],
 		["gentle_review_scope", {}, "scope"],
 		["gentle_review_capture_group", {}, "capture group"],
+		["gentle_review_run", { lineageId: "lineage-id" }, "run"],
 		[
 			"gentle_review_capture",
 			{

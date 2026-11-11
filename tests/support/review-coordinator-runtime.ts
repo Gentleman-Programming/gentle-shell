@@ -7,7 +7,15 @@ import { decodeReviewStatusV3 } from "../../lib/review-integration-v2.ts";
 import type { NativeReviewCli } from "../../lib/native-review-cli.ts";
 
 type Body = Record<string, any>;
-export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coordinator") {
+export interface CoordinatorRuntimeOptions {
+	/** The host has a UI; false models print/RPC sessions with no human display. */
+	hasUI?: boolean;
+	/** Provider `advisory_findings` carried by the approved last-event closure. */
+	advisoryFindings?: unknown;
+	/** Effective native review mode per read; the fixture defaults to on. */
+	mode?: (read: number, nativeCalls: readonly string[]) => "on" | "off";
+}
+export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coordinator", options: CoordinatorRuntimeOptions = {}) {
 	cwd = realpathSync(cwd);
 	const raw = JSON.parse(readFileSync(new URL("../fixtures/devbinary/status-v5-capture-result-submission.captured.json", import.meta.url), "utf8"));
 	raw.action = "stop";
@@ -22,9 +30,13 @@ export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coo
 	const nativeCalls: string[] = [];
 	let modeReads = 0;
 	let candidateReads = 0;
+	let relayRuns = 0;
 	const tools = new Map<string, any>();
 	const native = {
-		reviewMode: async () => { modeReads++; return { operation: "status", scope: "clone", status: { global: "on", cloneLocal: "", effective: "on", source: "global" } }; },
+		reviewMode: async () => {
+			const effective = options.mode?.(++modeReads, nativeCalls) ?? "on";
+			return { operation: "status", scope: "clone", status: { global: effective, cloneLocal: "", effective, source: "global" } };
+		},
 		targetStatus: async () => {
 			assert.notEqual(state, "burned", "no STATUS after burn");
 			nativeCalls.push(`status:${state}`);
@@ -43,15 +55,18 @@ export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coo
 	} as unknown as NativeReviewCli;
 	__testing.setReviewHostRelayRunnerForTesting(async () => {
 		assert.equal(state, "reviewing");
+		relayRuns++;
 		nativeCalls.push("capture:recorded-output"); state = "approved";
-		const submission = JSON.stringify({ schema: "gentle-ai.review-last-event-closure/v1", operation: "review/capture-result", lineage_id: lineage, state: "approved", action: "fixture approval; not real authority", store_revision: revision });
+		const submission = JSON.stringify({ schema: "gentle-ai.review-last-event-closure/v1", operation: "review/capture-result", lineage_id: lineage, state: "approved", action: "fixture approval; not real authority", store_revision: revision,
+			...(options.advisoryFindings === undefined ? {} : { advisory_findings: options.advisoryFindings }) });
 		return { submission, promptByteLength: 0, resultByteLength: Buffer.byteLength(submission) };
 	});
 	createGentleAiExtension({ nativeReviewCli: native, candidateViews: null,
-		processEnv: { GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR: variant === "coordinator" ? "1" : "0", GENTLE_AI_TELEMETRY: "0" },
+		// The coordinator is registered by default; "0" is its explicit opt-out.
+		processEnv: { ...(variant === "coordinator" ? {} : { GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR: "0" }), GENTLE_AI_TELEMETRY: "0" },
 	})({ on() {}, registerCommand() {}, registerTool: (tool: any) => tools.set(tool.name, tool) } as never);
 	const forecasts: Body[] = [];
-	const context = { cwd, hasUI: true, sessionManager: { getSessionId: () => "fixture-live-driver", getBranch: () => [], getSessionFile: () => undefined }, modelRegistry: undefined };
+	const context = { cwd, hasUI: options.hasUI ?? true, sessionManager: { getSessionId: () => "fixture-live-driver", getBranch: () => [], getSessionFile: () => undefined }, modelRegistry: undefined };
 	const facadeCalls: { name: string; parameters: Body; elapsed_ms: number }[] = [];
 	return { tools, lineage, target, nativeCalls, facadeCalls, forecasts,
 		async invoke(name: string, parameters: Body) {
@@ -63,6 +78,7 @@ export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coo
 		},
 		closed: () => state === "burned",
 		modeReads: () => modeReads,
+		relayRuns: () => relayRuns,
 		candidateReads: () => candidateReads,
 		close: () => __testing.setReviewHostRelayRunnerForTesting(),
 	};

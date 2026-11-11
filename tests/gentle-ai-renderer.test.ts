@@ -52,7 +52,7 @@ test("review registrations own their shell", () => {
 		on() {}, registerCommand() {}, registerTool(tool: ToolDefinition) { tools.push(tool); },
 	} as unknown as ExtensionAPI);
 	const review = tools.filter((tool) => tool.name.startsWith("gentle_review"));
-	assert.equal(review.length, 4);
+	assert.equal(review.length, 5);
 	for (const tool of review) assert.equal(tool.renderShell, "self", tool.name);
 });
 

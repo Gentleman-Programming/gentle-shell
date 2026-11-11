@@ -12422,16 +12422,24 @@ function createGentleAiExtensionForTesting(
 	});
 	pi.registerTool(reviewControllerTool);
 
-	// Opt-in only; use the same wrapped tool executors so consent, authority,
-	// candidate routes, acknowledgement bookkeeping and sidebar updates survive.
-	if (permissionEnvironment.GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR === "1" && permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") {
+	// Registered by default in a parent session (odd/tasks/review-one-call.md S2);
+	// GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR=0 is the explicit opt-out. It uses
+	// the same wrapped tool executors so consent, authority, candidate routes,
+	// acknowledgement bookkeeping and sidebar updates survive.
+	if (permissionEnvironment.GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR !== "0" && permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") {
 		pi.registerTool({
 			name: "gentle_review_run",
 			exposure: "model-only",
-			label: "Experimental Review Coordinator",
-			description: "Experimental ordinary review coordinator. Uses the existing review facade and host consent. Resume by lineageId to follow native next_transition offers. Stops on correction edits, unresolved consent, failure or maintenance; never retries a failed capture or authorizes delivery.",
-			promptSnippet: "Experimental: use gentle_review_run to assess and coordinate ordinary review; retain its returned lineage when resuming.",
-			promptGuidelines: ["Supply the exact candidate selector and pertinent lenses with a reason. Resume an existing transaction with lineageId and the same workspaceRoot/baseRef. After an authorized correction edit, resume to follow the next native transition. Review consent stays in the host; never supply a consent answer. Correction edits and maintenance remain explicit handoffs.", "Relay every returned forecasts entry losslessly in the user's language, preserving all forecast fields and counts. Forecasts are informational; they do not grant review consent or delivery permission."],
+			renderShell: "self",
+			label: "Gentle Review Run",
+			description: "Run one ordinary native review in one call through the existing review facade and host consent, following only provider-issued next_transition values. Returns closed after the acknowledged approval, or stops with not-due, assessment-unavailable, request-context-requires-fresh-review, consent-required, input-required (correction plan), stopped, handoff (maintenance or another unsupported operation), repeated-capture, forecast (not displayed), binding-drift, transition-limit or blocked (error). Never answers consent, retries a failed capture or authorizes delivery.",
+			promptSnippet: "Run an ordinary native review in one call; resume it by lineageId.",
+			promptGuidelines: [
+				"To drive a due native ordinary review, prefer gentle_review_run over single review operations: it executes the same provider-issued lifecycle (assess, inspect, START, bound STATUS, captures, acknowledgement) in one call. Single operations remain for what its result hands back (the consent answer, the correction plan through gentle_review_capture, status and recovery), for a review the user explicitly asks for after not-due, and for ASSESS after a delegated writer.",
+				"Supply the exact candidate selector and pertinent lenses with a reason. Resume with lineageId and the same workspaceRoot/baseRef after an answered consent or an authorized correction edit. Correction edits and maintenance remain explicit handoffs.",
+				"On consent-required, relay the consent to the human and submit only the human's explicit answer, once, with gentle_review answer-consent. Never choose the answer yourself and never pass a consent answer to gentle_review_run.",
+				"Relay every returned forecasts entry losslessly in the user's language, preserving all fields and counts, and any advisory_findings unchanged. Both are informational; they grant no review consent or delivery permission.",
+			],
 			parameters: {
 				type: "object", additionalProperties: false, properties: {
 					workspaceRoot: { type: "string" }, baseRef: { type: "string" }, committedOnly: { type: "boolean", enum: [true] },
@@ -12443,6 +12451,13 @@ function createGentleAiExtensionForTesting(
 			executionMode: "sequential",
 			prepareLoadout() {
 				return rddOffReviewLoadout ? { hiddenDeclarations: ["gentle_review_run"] } : undefined;
+			},
+			// The same rose lifecycle card as every gentle_review* tool.
+			renderCall(_args, theme, context) {
+				return renderGentleAiLifecycleCall("review run", theme, timingContext(context as GentleAiRenderContext | undefined));
+			},
+			renderResult(result, options, theme, context) {
+				return renderGentleAiResult(result, options, theme, timingContext(context as GentleAiRenderContext | undefined));
 			},
 			async execute(toolCallId, parameters, signal, onUpdate, ctx) {
 				if (signal?.aborted) throw reviewCancellation("Review coordinator cancelled");
@@ -12467,7 +12482,11 @@ function createGentleAiExtensionForTesting(
 						return result.details as Record<string, unknown>;
 					},
 					presentForecast: async (forecast) => {
-						if (ctx.hasUI !== true || onUpdate === undefined) return false;
+						// Without a UI no human sees the forecast before the run; resending it
+						// acknowledged would be a model-only relay. It stays in the result's
+						// forecasts and the run continues; every guard runs on the next call.
+						if (ctx.hasUI !== true) return true;
+						if (onUpdate === undefined) return false;
 						onUpdate({ content: [{ type: "text", text: JSON.stringify(forecast) }], details: forecast });
 						return true;
 					},

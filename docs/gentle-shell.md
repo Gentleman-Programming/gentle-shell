@@ -321,7 +321,7 @@ Gentle Shell ships its own interactive tools instead of depending on third-party
 - **`ask_user_choice`** — one exactly representable single-select question, with an opt-in free-text response.
 - **`todo`** — plan tracking with the Gentle Todo card (see Gentle Todo below).
 - **`bash_background`**, **`monitor`**, **`job_stop`**, **`job_list`** — background shell jobs that notify the agent when they exit, or on every output line (see Background jobs below).
-- **`gentle_review` / capture tools** — the native review surface for receipt-driven development.
+- **`gentle_review` / capture tools** — the native review surface for receipt-driven development. While RDD is not off, **`gentle_review_run`** runs an ordinary native review in one call ([ordinary review in one call](review-coordinator.md)).
 - **Optional companions** (separately installed, never bundled): `gentle-engram` for persistent memory, `pi-web-access` for web access when a task needs it and your policy allows it, `pi-lens` for additional inspection surfaces, `pi-intercom` for cross-session communication where your Pi setup supports it, and `@juicesharp/rpiv-ask-user-question` for interactive choice support where a separately installed extension fits your setup. These are companions, not hidden prerequisites or a claim that every Pi installation has every capability; persistent memory is **not** bundled with `gentle-pi`.
 
 ### Gentle Agents

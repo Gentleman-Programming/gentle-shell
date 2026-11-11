@@ -1,4 +1,4 @@
-/** Experimental host orchestration. All authority stays in the existing facade. */
+/** Host orchestration of one ordinary native review. All authority stays in the existing facade. */
 export type ReviewCoordinatorTool = "gentle_review" | "gentle_review_capture" | "gentle_review_capture_group";
 type Body = Record<string, unknown>;
 const record = (value: unknown): Body => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Body : {};
@@ -18,7 +18,11 @@ export interface ReviewCoordinatorInput {
 
 export interface ReviewCoordinatorDeps {
 	invoke(tool: ReviewCoordinatorTool, parameters: Body): Promise<Body>;
-	/** True only after the host has displayed the entire informational forecast. */
+	/**
+	 * True to continue past an informational reviewer-run forecast: after the
+	 * host displayed all of it, or when the host has no display and the forecast
+	 * is only recorded in the result. Absent or false stops with "forecast".
+	 */
 	presentForecast?(details: Body): Promise<boolean>;
 	signal?: AbortSignal;
 	now?: () => number;
@@ -58,6 +62,9 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
  let target: string | undefined;
  let started = false;
  const captured = new Set<string>();
+ // advisory_findings of the latest admitted closure, relayed only on approval.
+ // The provider emits the key only on an approved closure; never routed on.
+ let closureFindings: { value: unknown } | undefined;
  const checkCancelled = () => {
   if (deps.signal?.aborted) throw Object.assign(new Error("Review coordinator cancelled"), { name: "AbortError" });
  };
@@ -87,6 +94,7 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
   return result;
  };
  const finish = (outcome: string, result: Body) => ({ schema: "gentle-pi.review-coordinator-experiment/v1", outcome, result, forecasts, reviewer_runs: reviewerRuns,
+  ...(outcome === "closed" && closureFindings !== undefined ? { advisory_findings: closureFindings.value } : {}),
   ...(lineage === undefined ? {} : { lineage_id: lineage }), metrics: { elapsed_ms: now() - began, facade_calls: steps.length, steps } });
  const status = () => invoke("gentle_review", { operation: "status", lineageId: lineage, ...selectorInput });
  let details: Body;
@@ -157,6 +165,11 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
   }
   if (!["native-last-event-closure", "native-reviewer-result-captured"].includes(String(capture.outcome))
    || capture.failure !== undefined || capture.reconciliation !== undefined) return finish("blocked", capture);
+  if (Object.hasOwn(capture, "closure")) {
+   // Read only the key's presence and value; closure state and variants stay unread.
+   const closure = record(capture.closure);
+   closureFindings = Object.hasOwn(closure, "advisory_findings") ? { value: structuredClone(closure.advisory_findings) } : undefined;
+  }
   details = await status();
  }
  return finish("transition-limit", details);

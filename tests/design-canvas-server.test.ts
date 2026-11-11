@@ -1158,7 +1158,15 @@ async function inFlightPart(t: TestContext) {
 	});
 	t.after(() => server.close());
 	const implement = postJson(server.port, PARTS, { file: "01-hero.html", selector: "h1" });
-	while (delivered.length === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+	// Bounded: a route that answers without delivering, or never delivers, fails here instead of hanging.
+	let implementSettled = false;
+	void implement.then(() => { implementSettled = true; }, () => { implementSettled = true; });
+	const deadline = Date.now() + 5000;
+	while (delivered.length === 0 && !implementSettled && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+	if (delivered.length === 0) {
+		assert.fail(implementSettled ? `implement-part answered ${(await implement).status} without delivering` : "implement-part did not deliver within 5 s");
+	}
+	assert.equal(delivered.length, 1, "the delivery callback ran once");
 	const id = delivered[0].part.id;
 	let removeSettled = false;
 	const remove = postJson(server.port, PARTS_REMOVE, { id }).finally(() => { removeSettled = true; });

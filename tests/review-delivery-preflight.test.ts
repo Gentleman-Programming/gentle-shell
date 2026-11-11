@@ -160,6 +160,41 @@ test("repository redirects remain delivery commands but cannot borrow the sessio
 	assert.deepEqual(recognizeReviewDeliveryActions("git -C/other push"), [{ kind: "delivery", directories: ["/other"] }]);
 });
 
+test("#3138: output redirections and trailing filters preserve a literal delivery directory", async () => {
+	const root = process.cwd();
+	const commands = [
+		`cd "${root}" && git push 2>&1`, `cd "${root}" && git push 2>&1 | tail -1`,
+		`cd "${root}" && git push 2>& 1 | tail -1`, `cd "${root}" && git push <& 0`,
+		`cd "${root}" && git push >out.log`, `cd "${root}" && git push>/dev/null`,
+		`cd "${root}" && git push &>/dev/null`, `cd "${root}" && git push >|out.log`,
+		`cd "${root}" && git push || echo failed`, `cd "${root}" && gh pr create --title x 2>&1 | tail -5`,
+		`cd "${root}" && gh pr create --body-file - <<'EOF'\nbody text\nEOF`,
+	];
+	for (const command of commands) {
+		assert.deepEqual(recognizeReviewDeliveryActions(command), [{ kind: "delivery", directories: [root] }], command);
+		const seen: string[] = [];
+		const cli = { reviewMode: async ({ cwd }: { cwd: string }) => { seen.push(cwd); return { status: { effective: "off" } }; } } as unknown as NativeReviewCli;
+		assert.equal(await checkReviewDeliveryPreflight(root, "bash", command, cli, () => undefined, () => false), undefined, command);
+		assert.deepEqual(seen, [root], "RDD off is read from the actual selected repository");
+		const on = { reviewMode: async () => ({ status: { effective: "on" } }) } as unknown as NativeReviewCli;
+		assert.match((await checkReviewDeliveryPreflight(root, "bash", command, on, () => undefined, () => false))!.reason, /committed range/, "output formatting never bypasses the RDD-on range gate");
+	}
+});
+
+test("#3138: output syntax never hides a repository redirect or an uncertain cd outcome", () => {
+	for (const command of [
+		"cd /other | git push", "false || cd /other && git push", "cd /other && false || git push",
+		"cd /other && git push || gh pr create", "cd /other && git push; gh pr create",
+		"> /dev/null | cd /other && git push", ">out || cd /other && git push",
+		"cd /other && GIT_DIR=/elsewhere git push 2>&1 | tail -1",
+		"cd /other && env -C /elsewhere git push 2>&1", "cd /other && git --work-tree=/elsewhere push >out",
+	]) assert.ok(recognizeReviewDeliveryActions(command).some(action => action.kind === "delivery" && action.unresolvedDirectory), command);
+	assert.deepEqual(recognizeReviewDeliveryActions('echo "2>&1 | git push"'), []);
+	for (const target of ["1--dry-run", "1-n", "1--delete", "1--work-tree=/elsewhere", "1push", "-n"]) {
+		assert.deepEqual(recognizeReviewDeliveryActions(`cd /selected && git push >&${target}`), [{ kind: "delivery", directories: ["/selected"] }], target);
+	}
+});
+
 test("ambiguous directory control flow cannot borrow another repository's off mode", async t => {
 	const root = mkdtempSync(join(tmpdir(), "review-delivery-directory-flow-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));

@@ -588,8 +588,11 @@ export async function automaticWriteWarning(
 		tracked = stdout.split("\0").filter(Boolean);
 	} catch (error) {
 		const failure = error as { code?: number | string; stderr?: string };
-		// A missing cwd cannot hold tracked targets, but git cannot even spawn there.
-		if (failure.code === "ENOENT" && !(await pathExists(cwd))) return undefined;
+		// ENOENT means the binary (or the cwd) is absent, not that the target is
+		// tracked: a missing `git` cannot answer the question, so it is treated as
+		// "no Git metadata" instead of failing closed into a warning the watcher
+		// then repeats on every tick.
+		if (failure.code === "ENOENT") return undefined;
 		if (failure.code === 128 && failure.stderr?.startsWith("fatal: not a git repository") && await hasNoGitMetadata(cwd)) return undefined;
 		throw new Error(`Cannot verify Git tracking for ${targets.join(", ")}; automatic writes skipped. Resolve Git detection, or deliberately run /skill-registry:refresh.`);
 	}

@@ -20,7 +20,7 @@ rem Bundle/dependency checks precede ALL acquisition and per-user writes.
   "  if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Unsafe bundle file' };" ^
   "};" ^
   "$metadata = Get-Content -LiteralPath (Join-Path $bundle 'package.json') -Raw | ConvertFrom-Json;" ^
-  "if ($metadata.engines.node -notmatch '^(\^|>=)[0-9]+\.[0-9]+\.[0-9]+(\s*\|\|\s*(\^|>=)[0-9]+\.[0-9]+\.[0-9]+)*$' -or $metadata.packageManager -ne 'pnpm@11.1.1') { throw 'Repository prerequisite unknown' };" ^
+  "if ($metadata.engines.node -notmatch '^(\^[1-9][0-9]*|>=[0-9]+)\.[0-9]+\.[0-9]+(\s*\|\|\s*(\^[1-9][0-9]*|>=[0-9]+)\.[0-9]+\.[0-9]+)*$' -or $metadata.packageManager -ne 'pnpm@11.1.1') { throw 'Repository prerequisite unknown' };" ^
   "} catch { [Console]::Error.WriteLine('Bootstrap: future wizard/dependent bundle file missing, unsupported metadata, or managed policy denial. No acquisition attempted.'); exit 1 } }"
 if errorlevel 1 goto failed
 

@@ -103,7 +103,8 @@ test("only complete known Windows shims name what they run: npm cmd-shim, pnpm's
 
 // The exact PowerShell range check bootstrap.cmd applies to the repository's engines.node.
 const windowsRangeCheck = "(@($metadata.engines.node -split '\\s*\\|\\|\\s*' | Where-Object { $floor = [Version]$_.TrimStart('^', '>', '='); $actual -ge $floor -and (-not $_.StartsWith('^') -or $actual.Major -eq $floor.Major) }).Count -gt 0)";
-const windowsRangeGrammar = "'^(\\^|>=)[0-9]+\\.[0-9]+\\.[0-9]+(\\s*\\|\\|\\s*(\\^|>=)[0-9]+\\.[0-9]+\\.[0-9]+)*$'";
+// A caret clause needs a major of 1 or more, as nodeRequirementClauses in installer-downloads.mjs.
+const windowsRangeGrammar = "'^(\\^[1-9][0-9]*|>=[0-9]+)\\.[0-9]+\\.[0-9]+(\\s*\\|\\|\\s*(\\^[1-9][0-9]*|>=[0-9]+)\\.[0-9]+\\.[0-9]+)*$'";
 const pwsh = ["pwsh", "powershell"].find((name) => spawnSync(name, ["-NoProfile", "-Command", "exit 0"], { encoding: "utf8" }).status === 0);
 test("CMD entry accepts the repository's ^22.19.0 || >=23.6.0 Node range and checks versions against it", { skip: pwsh ? false : "PowerShell is not installed" }, () => {
 	const source = readFileSync(new URL("../scripts/bootstrap.cmd", import.meta.url), "utf8");
@@ -115,7 +116,7 @@ test("CMD entry accepts the repository's ^22.19.0 || >=23.6.0 Node range and che
 	for (const version of ["22.19.0", "22.99.99", "23.6.0", "24.22.2", "25.0.0"]) assert.equal(run(range, version), "in", version);
 	for (const version of ["22.18.9", "23.0.0", "23.5.9", "21.99.99"]) assert.equal(run(range, version), "out", version);
 	assert.equal(run(">=22.19.0", "23.0.0"), "in");
-	for (const bad of ["*", "^22.19", ">=22.19.0 <25.0.0", "~22.19.0"]) assert.equal(run(bad, "24.22.2"), "unknown", bad);
+	for (const bad of ["*", "^22.19", ">=22.19.0 <25.0.0", "~22.19.0", "^0.1.0", "^0.1.0 || >=23.6.0"]) assert.equal(run(bad, "24.22.2"), "unknown", bad);
 });
 
 test("CMD entry contains fixed commands, data-only paths, early bundle checks and no policy bypass", () => {

@@ -1,6 +1,6 @@
 ---
 name: gentle-ai-rdd-defect-workflow
-description: "Trigger: RDD, receipt-driven development, review authority, receipt/lineage, correction/recovery, delivery gate/kill switch, bounded review defects. Guide work."
+description: "Trigger: fixing RDD defects (review authority, receipts/lineage, correction/recovery, delivery gate). Not for using or toggling RDD."
 license: Apache-2.0
 metadata:
   author: gentleman-programming
@@ -16,11 +16,11 @@ This skill guides public collaboration. It does not grant issue approval, label,
 ## Hard Rules
 
 - Review and Judgment Day evidence is review-only. Pi never mints delivery authority: ordinary commit, push, PR, and release always follow repository policy, regardless of RDD mode.
-- Require an approved issue (`status:approved`) and clean current `main` reproduction before implementation. Audit existing PRs for supersession or conflict; stop or narrow stale claims.
+- Follow the target repository's issue policy: require an approved issue (`status:approved`) only where it uses one; reproduce on a clean current default branch before implementation. Audit existing PRs for supersession or conflict; stop or narrow stale claims.
 - Group by causal authority invariant. Use one issue and one PR or explicit chain per independent invariant and rollback boundary. Split independent causes; never merge a superseded or conflicting authority line.
 - Inventory every operator flow claimed by the issue or PR, including entry, mode, environment, expectation, and negative controls. Require one truthful black-box bench journey per CLI or lifecycle flow, or actual runtime E2E proof when the core bench cannot represent it. Synthetic proxy coverage never proves another runtime.
 - Use CodeGraph-first impact mapping, a dedicated worktree, and behavior-first tests. Run source-mutating normalization before candidate freeze.
-- Forecast authored changes before edits. The hard limit is 400 additions plus deletions; above it, STOP for a chain or explicit maintainer-approved exception.
+- Forecast authored changes before edits. Above about 400 additions plus deletions (a planning heuristic, not a hard limit), apply the feature's delivery strategy and the target repository's size policy.
 - When RDD is enabled, bind review receipts, lineage, correction, and recovery evidence to the exact candidate. Keep bounded review defects in one correction transaction; never treat that evidence as delivery authority.
 - Require independent read-only candidate validation before publication. Validation cannot edit source or authority; findings require a new candidate.
 - Keep communication humane and evidence-based. Repository labels and workflow metadata are maintainer-owned, never evidence of contributor blame.
@@ -33,14 +33,14 @@ This skill guides public collaboration. It does not grant issue approval, label,
 | Issue gate or reproduction fails | Wait, stop, or narrow with evidence. |
 | Invariant or rollback is independent | Separate issue and authoritative PR line. |
 | Core bench fits / does not fit | Bench journey / actual runtime E2E; never proxy. |
-| Forecast exceeds 400 lines | Chain or approved exception before edits. |
+| Forecast exceeds about 400 lines | Apply the delivery strategy and the target size policy; never a hard stop. |
 
 ## Execution Steps
 
-1. Check mode, approval, PR conflicts, and current-main reproduction.
+1. Check mode, the repository's issue policy, PR conflicts, and default-branch reproduction.
 2. Name invariant and rollback; isolate the worktree; CodeGraph-map code, tests, evidence, docs, distribution, and registration.
 3. Inventory flows and controls; add failing tests and the smallest correction.
-4. Normalize, enforce budget, run tests, and record each flow's exact candidate, command, scenario, and result.
+4. Normalize, apply the delivery strategy past about 400 changed lines, run tests, and record each flow's exact candidate, command, scenario, and result.
 5. Freeze, validate read-only, and give the verdict, evidence, and one humane next action.
 
 ## Output Contract

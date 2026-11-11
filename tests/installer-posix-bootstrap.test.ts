@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync, readdirSync, rmSync, lstatSync, unlinkSync, realpathSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync, readlinkSync, readdirSync, rmSync, lstatSync, unlinkSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -9,7 +9,7 @@ import test, { type TestContext } from "node:test";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { crc32, deflateRawSync, gzipSync } from "node:zlib";
-import { artifactFor, verifiedDownload, compatibleEngine, ensurePnpm, launchWizard, bootstrap, removeOwnedTools, acquireGo, installedGo } from "../scripts/installer-downloads.mjs";
+import { artifactFor, verifiedDownload, compatibleEngine, nodeRequirementSatisfied, ensurePnpm, launchWizard, bootstrap, removeOwnedTools, acquireGo, installedGo } from "../scripts/installer-downloads.mjs";
 
 const script = resolve("scripts/bootstrap.sh");
 const helper = resolve("scripts/installer-downloads.mjs");
@@ -17,8 +17,9 @@ const node = process.execPath;
 // Shell and private-tools fixtures need POSIX sh, stock utilities and uids.
 const posixHost = process.platform === "win32" ? "POSIX shell bootstrap fixtures need a POSIX host" : false;
 const posixTest = (name: string, fn: (t: TestContext) => void | Promise<void>) => test(name, { skip: posixHost }, fn);
-// macOS keeps several stock utilities only in /bin.
-const systemUtility = (name: string) => ["/usr/bin", "/bin"].map((dir) => join(dir, name)).find((path) => existsSync(path)) ?? `/usr/bin/${name}`;
+// macOS keeps several stock utilities only in /bin. Allow an explicit awk for portability checks.
+const systemUtility = (name: string) => name === "awk" && process.env.INSTALLER_TEST_AWK ? process.env.INSTALLER_TEST_AWK
+	: ["/usr/bin", "/bin"].map((dir) => join(dir, name)).find((path) => existsSync(path)) ?? `/usr/bin/${name}`;
 function fixture() {
 	// The bootstrap refuses symlinked HOME ancestors, such as macOS /var -> /private/var.
 	const root = mkdtempSync(join(realpathSync(tmpdir()), "bootstrap space ü-"));
@@ -28,7 +29,7 @@ function fixture() {
 	for (const dir of [bin, home, join(bundle, "scripts"), join(bundle, "bin")]) mkdirSync(dir, { recursive: true, mode: 0o700 });
 	writeFileSync(join(bundle, "scripts/bootstrap.sh"), readFileSync(script));
 	writeFileSync(join(bundle, "scripts/installer-downloads.mjs"), readFileSync(helper));
-	writeFileSync(join(bundle, "package.json"), JSON.stringify({ engines: { node: ">=22.19.0" }, packageManager: "pnpm@11.1.1" }));
+	writeFileSync(join(bundle, "package.json"), JSON.stringify({ engines: { node: "^22.19.0 || >=23.6.0" }, packageManager: "pnpm@11.1.1" }));
 	for (const name of ["dirname", "pwd", "awk", "mkdir", "mktemp", "chmod", "mv", "rm", "sleep", "wc", "cat", "id", "ls"])
 		symlinkSync(systemUtility(name), join(bin, name));
 	const executable = (name: string, body: string) => {
@@ -82,6 +83,13 @@ test("engine evidence supports stable lower bounds, not guessed ranges", () => {
 	assert.equal(compatibleEngine(">=25.0.0", "24.21.0"), false);
 	assert.equal(compatibleEngine("*", "24.21.0"), false);
 	assert.equal(compatibleEngine(">=22.13.0", "24.0.0-rc.1"), false);
+});
+test("the repository Node requirement accepts 22.19 or a later 22.x, or 23.6 and newer", () => {
+	const range = "^22.19.0 || >=23.6.0";
+	for (const version of ["22.19.0", "22.99.99", "23.6.0", "24.22.2", "25.0.0", "v24.21.0"]) assert.equal(nodeRequirementSatisfied(range, version), true, version);
+	for (const version of ["21.99.99", "22.18.9", "23.0.0", "23.5.9", "24.0.0-rc.1", "banana"]) assert.equal(nodeRequirementSatisfied(range, version), false, version);
+	assert.equal(nodeRequirementSatisfied(">=22.19.0", "23.0.0"), true);
+	for (const bad of ["*", "", "^22.19", ">=22.19.0 <25.0.0", "^0.1.0", "^22.19.0 ||", "~22.19.0", undefined]) assert.equal(nodeRequirementSatisfied(bad, "24.22.2"), false, String(bad));
 });
 test("pnpm descriptor preserves the literal upstream Node engine", () => {
 	assert.equal(artifactFor("pnpm").engine, ">=22.13");
@@ -159,6 +167,83 @@ test("download helper validates bytes before returning them", async () => {
 	assert.equal(result, bytes);
 	assert.equal(observed, "https://registry.npmjs.org/pnpm/-/pnpm-11.1.1.tgz");
 	assert.notEqual(createHash("sha512").update(bytes).digest("base64"), artifactFor("pnpm").integrity.slice(7));
+});
+
+for (const version of ["23.5.9", "24.21.0"]) {
+	posixTest(`malformed repository Node ranges fail before acquisition with Node ${version}`, () => {
+		const invalid = ["^0.1.0 || >=23.6.0", ">=23.6.0 || ^0.1.0", "^00.1.0 || >=23.6.0",
+			"^22.019.0 || >=23.6.0", "^22.19.00 || >=23.6.0", "^22.19.0 || >=023.6.0",
+			"^22.19.0 || >=9007199254740992.0.0", ">=23.6.0 || >=1.9007199254740992.0",
+			">=23.6.0 || >=1.0.9007199254740992", "^22.19.0 ||", ">=23.6.0 || ~22.0.0"];
+		for (const range of invalid) {
+			assert.equal(nodeRequirementSatisfied(range, version), false, range);
+			const f = fixture();
+			try {
+				f.addPnpm(); f.wizard();
+				writeFileSync(join(f.bundle, "package.json"), JSON.stringify({ engines: { node: range }, packageManager: "pnpm@11.1.1" }));
+				const ownNode = `#!/bin/sh\nprintf x >> "$NODE_PROBE_COUNT"\nprintf '%s\\n' 'v${version}'\n`;
+				writeFileSync(join(f.bin, "node"), ownNode, { mode: 0o755 });
+				f.executable("curl", 'printf x >> "$DOWNLOAD_COUNT"; exit 1');
+				const before = readdirSync(f.root).sort();
+				const result = f.run({ NODE_PROBE_COUNT: join(f.root, "node-count"), DOWNLOAD_COUNT: join(f.root, "download-count") });
+				assert.equal(result.status, 1, range);
+				assert.equal(result.stdout, "", range);
+				assert.equal(result.stderr, "Bootstrap: Cannot establish repository Node requirement\n", range);
+				assert.deepEqual(readdirSync(f.root).sort(), before, `${range}: no probes, downloads, or files`);
+				assert.deepEqual(readdirSync(f.home), [], range);
+				assert.equal(readFileSync(join(f.bin, "node"), "utf8"), ownNode, range);
+			} finally { f.cleanup(); }
+		}
+	});
+}
+
+posixTest("noncanonical whitespace and JSON escapes remain rejected before probing or download", () => {
+	const cases = [
+		{ range: " ^22.19.0 || >=23.6.0 " },
+		{ range: "\t^22.19.0\n||\r>=23.6.0\u00a0" },
+		{ range: "^22.19.0 || >=23.6.0", json: '"\\u005e22.19.0 || >=23.6.0"' },
+		{ range: "^22.19.0\u00a0||\u00a0>=23.6.0" },
+	];
+	for (const { range, json = JSON.stringify(range) } of cases) {
+		assert.equal(nodeRequirementSatisfied(range, "24.21.0"), true, JSON.stringify(range));
+		const f = fixture();
+		try {
+			f.addPnpm(); f.wizard();
+			writeFileSync(join(f.bundle, "package.json"), `{"engines":{"node":${json}},"packageManager":"pnpm@11.1.1"}`);
+			f.executable("node", 'printf x >> "$NODE_PROBE_COUNT"; printf "v24.21.0\\n"');
+			f.executable("curl", 'printf x >> "$DOWNLOAD_COUNT"; exit 1');
+			const snapshot = () => readdirSync(f.root, { recursive: true }).sort().map((name) => {
+				const path = join(f.root, name);
+				const info = lstatSync(path);
+				return [name, info.isFile() ? readFileSync(path, "utf8") : info.isSymbolicLink() ? readlinkSync(path) : null];
+			});
+			const before = snapshot();
+			const result = f.run({ NODE_PROBE_COUNT: join(f.root, "node-count"), DOWNLOAD_COUNT: join(f.root, "download-count") });
+			assert.equal(result.status, 1, json);
+			assert.equal(result.stdout, "", json);
+			assert.equal(result.stderr, "Bootstrap: Cannot establish repository Node requirement\n", json);
+			assert.equal(existsSync(join(f.root, "node-count")), false, json);
+			assert.equal(existsSync(join(f.root, "download-count")), false, json);
+			assert.deepEqual(snapshot(), before, `${json}: no files written`);
+		} finally { f.cleanup(); }
+	}
+});
+
+posixTest("valid canonical ranges, including safe integer floors, still start the wizard", () => {
+	for (const range of [">=0.0.0", "^1.0.0 || >=23.6.0", ">=23.6.0 || ^9007199254740991.0.0",
+		"^22.19.0 || >=23.6.0"]) {
+		assert.equal(nodeRequirementSatisfied(range, "24.21.0"), true, range);
+		const f = fixture();
+		try {
+			f.addNode(); f.addPnpm(); f.wizard();
+			writeFileSync(join(f.bundle, "package.json"), JSON.stringify({ engines: { node: range }, packageManager: "pnpm@11.1.1" }));
+			const result = f.run();
+			assert.equal(result.status, 0, `${JSON.stringify(range)}: ${result.stderr}`);
+			assert.equal(result.stderr, "", range);
+			assert.match(result.stdout, /wizard-child:/, range);
+			assert.deepEqual(readdirSync(f.home), [], range);
+		} finally { f.cleanup(); }
+	}
 });
 
 posixTest("compatible existing tools are reused with whitespace and Unicode paths", () => {
@@ -314,6 +399,22 @@ posixTest("an older stable Node is left unchanged and a verified Node runs the h
 		assert.deepEqual(readdirSync(f.home), [], "successful wizard exit removes the owned tools");
 	} finally { f.cleanup(); }
 });
+for (const [version, reused] of [["v22.19.0", true], ["v23.6.0", true], ["v23.0.0", false], ["v23.5.9", false]] as const) {
+	posixTest(`existing Node ${version} is ${reused ? "reused" : "left unchanged while a verified Node runs the wizard"}`, () => {
+		const f = fixture();
+		try {
+			f.addPnpm(); f.wizard();
+			const user = `#!/bin/sh\nif [ "$1" = --version ]; then echo ${version}; else ${reused ? `exec '${node}' "$@"` : "echo user-node-ran >&2; exit 9"}; fi\n`;
+			writeFileSync(join(f.bin, "node"), user, { mode: 0o755 });
+			const result = f.run();
+			assert.equal(result.status, 0, result.stderr);
+			if (reused) assert.doesNotMatch(result.stdout, /\.gentle-shell-bootstrap-tools\.[^:\n]*\/node\/bin/);
+			else assert.match(result.stdout, /wizard-child:[^:\n]*\.gentle-shell-bootstrap-tools\.[^:\n]*\/node\/bin:/);
+			assert.doesNotMatch(result.stderr, /user-node-ran/);
+			assert.equal(readFileSync(join(f.bin, "node"), "utf8"), user);
+		} finally { f.cleanup(); }
+	});
+}
 posixTest("existing pnpm with unknown engine blocks instead of acquisition", () => {
 	const f = fixture();
 	try {
@@ -994,19 +1095,19 @@ test("Go has no descriptor for other targets", () => {
 // The Engram release the bundled install ships (S9), from its checksums.txt and
 // the GitHub asset digests; every archive was downloaded and re-hashed.
 const engramPins = {
-	"darwin-arm64": ["darwin_arm64.tar.gz", "43d398b2fe3327a4a6436c26b2a17d3285ba80bf2f11a22d0796ea2a7fd2b78c", 7749520],
-	"darwin-x64": ["darwin_amd64.tar.gz", "aea28ebf461a4ea86c52b793c29311539d7123875354ed7411eae982fc82ec87", 8181300],
-	"linux-x64": ["linux_amd64.tar.gz", "106a43ca8f43a27c2c260a6787151c3be6d91c5ed3d5e454e6140527adf92e01", 8064598],
-	"linux-arm64": ["linux_arm64.tar.gz", "b0ba49cf5a7d5af436c9744a9a0d638b3f9ebb2a7321c8736d30e96305c2993c", 7472279],
-	"win32-x64": ["windows_amd64.zip", "ba56a36d37b2da85fcb1581bbdbed9ae1ee690e642aab8dbe1e18209bf264afe", 8272809],
-	"win32-arm64": ["windows_arm64.zip", "df5acc5dd6ee407d484074e570c77a79567c0b8dccf55e25ae25a644c1e7db5f", 7530282],
+	"darwin-arm64": ["darwin_arm64.tar.gz", "22df56a58fb96ba301b9e7b76d542c40d3c50a3d61e43c3fc914d3c5bc8b1a0c", 7994478],
+	"darwin-x64": ["darwin_amd64.tar.gz", "0dfced7ee702ab5ab06a7bf419f10833f531a60152bf02fd0662f64cb44f2042", 8478496],
+	"linux-x64": ["linux_amd64.tar.gz", "3426c49b76632fd800f93faaed32e7c6f00624572423008efd4ecd59d62a5dce", 8359070],
+	"linux-arm64": ["linux_arm64.tar.gz", "65c4aed21a6bd3a46b8416aa7e723cf1b3903c3a69f198c446610c30d0cd4945", 7703363],
+	"win32-x64": ["windows_amd64.zip", "0798d5805e7128c52bd4121bdef0a25c8712b7edf55129fb9f8789c1c0ec2013", 8577456],
+	"win32-arm64": ["windows_arm64.zip", "fd0aaa5a5cf6868f21f14a244664ede13082e8cbee4f762b92e888f189470d36", 7775916],
 } as const;
 test("fixed Engram descriptors are the GitHub release archives and checksums, and nothing else", () => {
 	for (const [target, [suffix, sha256, size]] of Object.entries(engramPins)) {
 		const [platform, arch] = target.split("-");
 		const artifact = artifactFor("engram", platform, arch);
-		assert.equal(artifact.version, "3.5.2");
-		assert.equal(artifact.url, `https://github.com/Gentleman-Programming/engram/releases/download/v3.5.2/engram_3.5.2_${suffix}`);
+		assert.equal(artifact.version, "3.7.0");
+		assert.equal(artifact.url, `https://github.com/Gentleman-Programming/engram/releases/download/v3.7.0/engram_3.7.0_${suffix}`);
 		assert.equal(artifact.integrity, `sha256-${sha256}`);
 		assert.deepEqual([artifact.size, artifact.maxBytes], [size, size]);
 		// GitHub serves release assets from its asset hosts.

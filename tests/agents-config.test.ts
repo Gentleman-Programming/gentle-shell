@@ -215,6 +215,15 @@ test("parseAgentsConfig resolves the tool-call stall ceiling above the idle sile
 	assert.equal(parseAgentsConfig({ stall_timeout_ms: 45 * 60_000, tool_stall_timeout_ms: 1_000 }, undefined).toolStallTimeoutMs, 45 * 60_000, "the tool ceiling must never fall below the idle budget");
 });
 
+test("parseAgentsConfig bounds the delivered child report at 16,384 bytes unless report_max_bytes says otherwise", () => {
+	assert.equal(parseAgentsConfig(undefined, undefined).reportMaxBytes, 16_384);
+	assert.equal(parseAgentsConfig({ report_max_bytes: 8_192 }, undefined).reportMaxBytes, 8_192);
+	assert.equal(parseAgentsConfig({ report_max_bytes: 8_192 }, { report_max_bytes: 32_768 }).reportMaxBytes, 32_768);
+	for (const invalid of ["big", 0, -1, 12.5, null]) {
+		assert.equal(parseAgentsConfig({ report_max_bytes: invalid }, undefined).reportMaxBytes, 16_384, `invalid report_max_bytes ${String(invalid)} must fall back to the default`);
+	}
+});
+
 test("resolveAgentProfile prefers the profile, then the definition, then the defaults", () => {
 	const config = parseAgentsConfig({ default_model: "openai-codex/gpt-6-astra", default_effort: "medium", model_profiles: { "gentle-ai-explore": { effort: "high" } } }, undefined);
 	const explore = parseAgentDefinition(EXPLORER, "/x/explore.md", "global");

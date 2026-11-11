@@ -1,4 +1,4 @@
-/** Experimental host orchestration. All authority stays in the existing facade. */
+/** Host orchestration of one ordinary native review. All authority stays in the existing facade. */
 export type ReviewCoordinatorTool = "gentle_review" | "gentle_review_capture" | "gentle_review_capture_group";
 type Body = Record<string, unknown>;
 const record = (value: unknown): Body => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Body : {};
@@ -18,7 +18,11 @@ export interface ReviewCoordinatorInput {
 
 export interface ReviewCoordinatorDeps {
 	invoke(tool: ReviewCoordinatorTool, parameters: Body): Promise<Body>;
-	/** True only after the host has displayed the entire informational forecast. */
+	/**
+	 * True to continue past an informational reviewer-run forecast: after the
+	 * host displayed all of it, or when the host has no display and the forecast
+	 * is only recorded in the result. Absent or false stops with "forecast".
+	 */
 	presentForecast?(details: Body): Promise<boolean>;
 	signal?: AbortSignal;
 	now?: () => number;
@@ -58,6 +62,21 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
  let target: string | undefined;
  let started = false;
  const captured = new Set<string>();
+ // advisory_findings of the latest admitted closure. The provider emits the key
+ // only on an approved closure; once captured, every result this run returns
+ // carries it (closed or stopped), so the parent holds it before any resume:
+ // a resume that goes straight to the acknowledgement cannot recover it, since
+ // neither bound STATUS nor the ACK envelope carries it. Never routed on.
+ let closureFindings: { value: unknown } | undefined;
+ // The facade's advisory_finding_claims of that same closure (each advisory id's
+ // reviewer claim), relayed beside advisory_findings only; never routed on.
+ let closureClaims: { value: unknown } | undefined;
+ // The facade's marks on those claims: ids whose claim is a cut prefix, and ids
+ // whose claim the per-closure limit left out. Relayed with the claims only.
+ let closureClaimMarks: Body = {};
+ // That closure's capture envelope, kept unread for cancelled only while the
+ // retained closure carries advisory_findings.
+ let pendingCapture: Body | undefined;
  const checkCancelled = () => {
   if (deps.signal?.aborted) throw Object.assign(new Error("Review coordinator cancelled"), { name: "AbortError" });
  };
@@ -83,12 +102,23 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
   }
   steps.push({ tool, operation: parameters.operation, elapsed_ms: now() - start,
    request_bytes: Buffer.byteLength(JSON.stringify({ ...workspace, ...parameters })), response_bytes: Buffer.byteLength(JSON.stringify(result)) });
-  if (!acknowledged(result)) checkCancelled();
+  // A capture closure carrying advisory_findings is checked after the outcome
+  // gate below, so a cancellation racing with it keeps the findings; any later
+  // abort ends in cancelled through runReviewCoordinator's catch.
+  if (!acknowledged(result) && !(tool !== "gentle_review" && Object.hasOwn(record(result.closure), "advisory_findings"))) checkCancelled();
   return result;
  };
+ // The run's own inputs without a selection: after selection-required the
+ // caller resumes the run with these plus the chosen untracked selection, so
+ // START keeps the requested lenses and request context.
+ const { untrackedScope: _scope, intendedUntracked: _paths, ...resumeInput } = structuredClone(input);
  const finish = (outcome: string, result: Body) => ({ schema: "gentle-pi.review-coordinator-experiment/v1", outcome, result, forecasts, reviewer_runs: reviewerRuns,
+  ...(closureFindings !== undefined ? { advisory_findings: closureFindings.value } : {}),
+  ...(closureFindings !== undefined && closureClaims !== undefined ? { advisory_finding_claims: closureClaims.value, ...closureClaimMarks } : {}),
+  ...(outcome === "selection-required" ? { resume_input: resumeInput } : {}),
   ...(lineage === undefined ? {} : { lineage_id: lineage }), metrics: { elapsed_ms: now() - began, facade_calls: steps.length, steps } });
  const status = () => invoke("gentle_review", { operation: "status", lineageId: lineage, ...selectorInput });
+ const drive = async (): Promise<Body> => {
  let details: Body;
  if (lineage === undefined) {
   const assessment = await invoke("gentle_review", { operation: "assess", ...selectorInput });
@@ -142,7 +172,21 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
   const entries = Array.isArray(details.collectBindings) ? details.collectBindings.map(record) : [];
   // Native explicitly supplies the authored correction request. Do not derive
   // host routing metadata from submission domains or inspect opaque bindings.
-  if (transition.correction_request !== undefined || entries.length === 0) return finish("input-required", details);
+  if (transition.correction_request !== undefined) return finish("input-required", details);
+  // The facade's own pre-lineage intended-untracked selection (selectionBinding
+  // and nextStep, no collectBindings): the parent chooses, never the run. The
+  // facade's nextStep names the single selection operation, which would start
+  // without this run's intent, so only resume_input names the way on; the
+  // selectionBinding stays because its eligible paths are what the choice is
+  // made from.
+  if (entries.length === 0 && typeof details.selectionBinding === "string") {
+   const { nextStep: _singleOperation, ...selection } = details;
+   // Without a caller root, name the root INSPECT resolved, so a resume from a
+   // session in another workspace still reviews the one this selection is for.
+   if (input.workspaceRoot === undefined && nonempty(details.workspace_root)) resumeInput.workspaceRoot = details.workspace_root;
+   return finish("selection-required", selection);
+  }
+  if (entries.length === 0) return finish("input-required", details);
   if (lineage === undefined || target === undefined) return finish("blocked", details);
   const bindings = entries.map(entry => entry.collectBinding);
   if (!bindings.every(nonempty)) return finish("blocked", details);
@@ -155,9 +199,62 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
    if (await deps.presentForecast?.(capture) !== true) return finish("forecast", capture);
    capture = await invoke(tool, { ...parameters, reviewerRunAcknowledged: true });
   }
-  if (!["native-last-event-closure", "native-reviewer-result-captured"].includes(String(capture.outcome))
-   || capture.failure !== undefined || capture.reconciliation !== undefined) return finish("blocked", capture);
+  // A group whose every reviewer result was admitted without a closing event
+  // reports native-reviewer-group-status-reconciled after the facade's own
+  // bound STATUS confirmed lineage and target and offered no further reviewer
+  // capture (gentle_review_capture_group). Like any accepted capture, the next
+  // step comes only from the bound STATUS read below. Drift, an uncertain
+  // submission or a failed reconciliation carries another outcome or a
+  // failure/reconciliation field and stays blocked.
+  const reconciledGroup = tool === "gentle_review_capture_group" && capture.outcome === "native-reviewer-group-status-reconciled" && capture.status === "reconciled";
+  // An older provider's self-contained role vector (--execute=true): Go ran the
+  // refuter or validator and admitted it, returning the role artifact instead
+  // of a closure. Like an admitted reviewer result, bound STATUS routes next.
+  const capturedRole = tool === "gentle_review_capture" && capture.outcome === "native-provider-role-captured" && capture.status === "captured";
+  if (!(["native-last-event-closure", "native-reviewer-result-captured"].includes(String(capture.outcome)) || reconciledGroup || capturedRole)
+   || capture.failure !== undefined || capture.reconciliation !== undefined
+   || capture.native_failure !== undefined || capture.reconciliation_failure !== undefined) {
+   checkCancelled();
+   return finish("blocked", capture);
+  }
+  if (Object.hasOwn(capture, "closure")) {
+   // Read only these keys' presence and value; closure state and variants stay unread.
+   const closure = record(capture.closure);
+   closureFindings = Object.hasOwn(closure, "advisory_findings") ? { value: structuredClone(closure.advisory_findings) } : undefined;
+   // Relayed only as a plain object of strings; any other shape is dropped.
+   const claims = closure.advisory_finding_claims;
+   const plainStrings = claims !== null && typeof claims === "object" && [Object.prototype, null].includes(Object.getPrototypeOf(claims))
+    && Object.values(claims).every(value => typeof value === "string");
+   closureClaims = closureFindings !== undefined && Object.hasOwn(closure, "advisory_finding_claims") && plainStrings ? { value: structuredClone(claims) } : undefined;
+   // Each mark is relayed only as an array of strings; any other shape is dropped.
+   closureClaimMarks = Object.fromEntries(["advisory_finding_claims_truncated", "advisory_finding_claims_omitted"]
+    .filter(key => Array.isArray(closure[key]) && (closure[key] as unknown[]).every(id => typeof id === "string"))
+    .map(key => [key, structuredClone(closure[key])]));
+   pendingCapture = closureFindings === undefined ? undefined : capture;
+  }
+  checkCancelled();
   details = await status();
  }
  return finish("transition-limit", details);
+ };
+ try {
+  return await drive();
+ } catch (error) {
+  // Cancelled after an admitted approved closure with findings, before the
+  // acknowledgement completed (which returns closed above): return its findings
+  // and dispatch nothing more; resuming by lineageId reaches the acknowledgement.
+  // Without such a closure, or for a failure other than the abort, rethrow.
+  // The abort itself is an AbortError-named error (checkCancelled, the facade's
+  // reviewCancellation, the native CLI's own abort, the signal's default
+  // reason) or the signal's own reason (a custom reason, such as a timeout,
+  // that a facade wait rejects with); any other error is a real failure.
+  const abort = deps.signal?.aborted === true
+   && ((error instanceof Error || error instanceof DOMException) && error.name === "AbortError" || error === deps.signal.reason);
+  if (pendingCapture === undefined || !abort) throw error;
+  // The capture's status ("closed") and state ("approved") describe the
+  // capture, not the run, which is neither closed nor acknowledged: drop them.
+  const { status: _status, state: _state, closure, ...envelope } = pendingCapture;
+  const { state: _closureState, ...pending } = record(closure);
+  return finish("cancelled", { ...envelope, closure: pending });
+ }
 }

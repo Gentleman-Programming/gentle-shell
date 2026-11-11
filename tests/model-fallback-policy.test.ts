@@ -55,13 +55,24 @@ test("a full /gentle:usage window cools a whole provider until it resets, and a 
 test("a provider that reports one limit per model only cools the exhausted model; the provider waits only when every limit is spent", () => {
 	const cooldown = new ModelCooldown();
 	const limit = (name: string, usedPercent: number, reached: boolean, resetAt: number | null) => ({ name, limitReached: reached, windows: [{ usedPercent, resetAt }] });
-	syncUsageCooldown({ provider: "nan", limits: [limit("glm5.2", 100, true, 90_000), limit("deepseek-v4-flash", 10, false, 90_000)] }, cooldown, 1_000);
-	assert.equal(cooldown.available("nan/glm5.2", 2_000), false, "the spent model waits");
-	assert.equal(cooldown.available("nan/deepseek-v4-flash", 2_000), true, "its siblings keep working");
-	assert.equal(cooldown.available("nan/glm5.2", 90_000), true, "until its own window resets");
-	syncUsageCooldown({ provider: "nan", limits: [limit("glm5.2", 100, true, 50_000), limit("deepseek-v4-flash", 100, true, 60_000)] }, cooldown, 1_000);
-	assert.equal(cooldown.available("nan/other", 49_999), false, "every limit spent: the whole provider waits");
-	assert.equal(cooldown.available("nan/other", 50_000), true, "until the earliest reset");
+	syncUsageCooldown({ provider: "acme", limits: [limit("model-a", 100, true, 90_000), limit("model-b", 10, false, 90_000)] }, cooldown, 1_000);
+	assert.equal(cooldown.available("acme/model-a", 2_000), false, "the spent model waits");
+	assert.equal(cooldown.available("acme/model-b", 2_000), true, "its siblings keep working");
+	assert.equal(cooldown.available("acme/model-a", 90_000), true, "until its own window resets");
+	syncUsageCooldown({ provider: "acme", limits: [limit("model-a", 100, true, 50_000), limit("model-b", 100, true, 60_000)] }, cooldown, 1_000);
+	assert.equal(cooldown.available("acme/other", 49_999), false, "every limit spent: the whole provider waits");
+	assert.equal(cooldown.available("acme/other", 50_000), true, "until the earliest reset");
+});
+
+test("NaN's per-model quota snapshot is advisory and never cools a NaN model or the provider", () => {
+	const cooldown = new ModelCooldown();
+	const limit = (name: string, resetAt: number) => ({ name, limitReached: true, windows: [{ usedPercent: 100, resetAt }] });
+	syncUsageCooldown({ provider: "nan", limits: [limit("glm5.3", 90_000), limit("deepseek-v4-flash", 90_000)] }, cooldown, 1_000);
+	assert.equal(cooldown.available("nan/glm5.3", 2_000), true, "a spent quota row blocks nothing");
+	assert.equal(cooldown.available("nan/deepseek-v4-flash", 2_000), true, "every row spent still blocks no NaN model");
+	cooldown.mark("nan/glm5.3", C.QUOTA, 2_000);
+	syncUsageCooldown({ provider: "nan", limits: [] }, cooldown, 3_000);
+	assert.equal(cooldown.available("nan/glm5.3", 3_000), false, "a real quota error from NaN still cools the model");
 });
 
 test("a full window whose reset already passed is a stale reading and blocks nothing", () => {
@@ -80,4 +91,12 @@ test("a spent provider-wide limit (Codex's main one) skips every model; an extra
 	syncUsageCooldown({ provider: "openai-codex", limits: [{ name: "codex", scope: "provider", limitReached: false, windows: [window(40, 80_000)] }, { name: "GPT-5.3 Codex_Spark", limitReached: true, windows: [window(100, 90_000)] }] }, extras, 1_000);
 	assert.equal(extras.available("openai-codex/gpt-5.3-codex-spark", 2_000), false, "display names are matched in id form");
 	assert.equal(extras.available("openai-codex/gpt-5.5", 2_000), true);
+});
+
+test("a NaN quota reading never releases a model cooled by a real NaN error", () => {
+	const cooldown = new ModelCooldown();
+	cooldown.mark("nan/hy4", C.QUOTA, 1_000);
+	syncUsageCooldown({ provider: "nan", limits: [{ name: "hy4", limitReached: false, windows: [{ usedPercent: 5, resetAt: 90_000 }] }] }, cooldown, 1_500);
+	assert.equal(cooldown.available("nan/hy4", 2_000), false);
+	assert.equal(cooldown.reason("nan/hy4", 2_000), C.QUOTA);
 });

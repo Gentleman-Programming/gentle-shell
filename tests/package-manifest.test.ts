@@ -136,7 +136,7 @@ test("technical reference declares the tested Pi minimum required for agent_sett
 	assert.equal(manifest.peerDependencies?.["@earendil-works/pi-coding-agent"], ">=1.2.0");
 	assert.equal(manifest.devDependencies?.["@earendil-works/pi-coding-agent"], ">=1.2.0");
 	assert.equal(manifest.peerDependenciesMeta?.["@earendil-works/pi-coding-agent"]?.optional, true);
-	assert.equal(manifest.engines?.node, ">=22.19.0");
+	assert.equal(manifest.engines?.node, "^22.19.0 || >=23.6.0");
 	for (const path of ["docs/readme-reference.md", "docs/gentle-shell.md"]) {
 		const source = readFileSync(join(PACKAGE_ROOT, path), "utf8");
 		assert.match(source, /Pi 1\.2\.0 or newer/, path);
@@ -1857,7 +1857,8 @@ test("normal and forced installation copy generic agents with complete role cont
 						assert.match(source, /Do not use that fallback before CodeGraph is unavailable or fails/);
 					}
 					assert.match(source, /Do not (?:edit, write|edit, write, or fix findings)/);
-					assert.match(source, /compressed (?:handoff|evidence handoff)/);
+					// Cost/speed S4: reports are compact and never restate the task.
+					assert.match(source, /compact (?:handoff|evidence handoff)/);
 					assert.match(source, /Do not use review lenses\. RDD review remains independent and parent-owned\./);
 					if (name === "gentle-ai-verify") {
 						assert.match(source, /exact test, build, lint, or spec example commands explicitly authorized by the parent/);

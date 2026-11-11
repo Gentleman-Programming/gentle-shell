@@ -9,6 +9,7 @@ const object = value => value !== null && typeof value === 'object' && !Array.is
 const succeeded = result => result?.code === 0 && !result.timedOut && result.signal == null;
 const refusal = detail => new Error(`gentle-shell update: ownership ${detail}; update Pi with the package manager or source checkout that supplies the selected runtime. No installation changed.`);
 const LINKED = /^(?:file|link|workspace):/i;
+const STABLE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 // A main-channel Shell (`<version>-main.<sha12>`, scripts/main-channel.mjs
 // mainVersion) is never published; it exists only as the packed tarball.
 const MAIN_BUILD = /^[0-9A-Za-z.+-]+-main\.[0-9a-f]{12}$/;
@@ -130,7 +131,7 @@ async function listedEntries(groups, {adapters, path, key, canonical}) {
    const set = members.get(key(groupRoot)) ?? new Set();
    set.add(pkg);
    members.set(key(groupRoot), set);
-   if (pkg === PI || pkg === SHELL) entries.push({pkg, dependency, groupRoot});
+   if (pkg === PI || pkg === SHELL) entries.push({pkg, dependency, groupRoot, listingRoot: path.isAbsolute(group.path) ? key(group.path) : null});
   }
  }
  return {entries, members};
@@ -231,9 +232,9 @@ async function sourceOwner({root, linkPath, manifest, selected, adapters, path, 
   if (!succeeded(listing) || !Array.isArray(projects) || projects.length !== 1 || key(await canonical(projects[0]?.path)) !== key(root)) throw refusal('source workspace has other or unknown projects; update Pi from the workspace owner');
  }
  const flags = pin[1] === 'pnpm' ? ['--dir', root, '--lockfile-dir', root, '--recursive=false', '--ignore-pnpmfile', ...(sourceConfig === undefined ? [] : ['--workspace-root'])] : ['--prefix', root, '--workspaces=false', '--no-audit', '--no-fund'];
- return {name:pin[1], ...invocation, package:SHELL, spec:PI, sourceRoot:root, sourceConfig, sourceEnv, linkPath,
+ return {name:pin[1], ...invocation, package:SHELL, spec:PI, sourceRoot:root, sourceConfig, sourceEnv, sourceOptions, linkPath,
   manifest:await adapters.fs.readFile(path.join(root, 'package.json'), 'utf8'),
-  args:['update', PI, '--no-save', '--ignore-scripts', '--global=false', ...flags, ...sourceOptions]};
+  args:[pin[1] === 'pnpm' ? 'update' : 'install', PI, '--no-save', '--ignore-scripts', '--global=false', ...flags, ...sourceOptions]};
 }
 
 export async function resolveUpdateOwner({runtime, packageRoot, platform = process.platform, adapters, cwd, env, home}) {
@@ -248,7 +249,7 @@ export async function resolveUpdateOwner({runtime, packageRoot, platform = proce
   if (!invocation) continue;
   const groups = await globalListing(name, invocation, adapters, cwd);
   const {entries, members} = await listedEntries(groups, {adapters, path, key, canonical});
-  for (const {pkg, dependency, groupRoot} of entries) {
+  for (const {pkg, dependency, groupRoot, listingRoot} of entries) {
    if ((pkg === SHELL) !== adjacent) continue;
    const linked = dependency.link === true || [dependency.resolved, dependency.version].some(value => typeof value === 'string' && LINKED.test(value));
    const root = await canonical(dependency.path);
@@ -280,34 +281,169 @@ export async function resolveUpdateOwner({runtime, packageRoot, platform = proce
    }
    if (key(cli) !== key(selected)) continue;
    if (name === 'pnpm' && members.get(key(groupRoot)).size !== 1) throw refusal('selected supplier shares its global install group');
-   candidates.push({name, ...invocation, package:pkg, spec, artifact});
+   // Keep the listing snapshot and selected identity: pnpm may replace both
+   // this group and the versioned store root during the same installation.
+   candidates.push({name, ...invocation, package:pkg, spec, artifact, groupRoot, listingRoot, members,
+    from:dependency.from, shellVersion:pkg === SHELL ? manifest.version : undefined});
   }
  }
  if (candidates.length !== 1) throw refusal(candidates.length > 1 ? 'is ambiguous' : 'could not be verified from global listings');
  return candidates[0];
 }
 
+// Registry queries run in the same manager/config context as the install.
+function viewIn(owner, input, args) {
+ const scope = owner.sourceRoot
+  ? owner.name === 'pnpm' ? ['--dir', owner.sourceRoot, ...owner.sourceOptions] : ['--prefix', owner.sourceRoot, '--workspaces=false']
+  : owner.name === 'pnpm' ? ['--config.global=true'] : [];
+ return input.adapters.run(owner.command, [...owner.prefix, 'view', ...args, ...scope],
+  {deadlineMs:60_000, cwd:owner.sourceRoot ?? input.cwd, ...(owner.sourceEnv ? {env:owner.sourceEnv} : {})});
+}
+
+// Only a stable registry tag may become an install argument; never trust arbitrary output.
+async function latestPublishedPi(owner, input) {
+ const result = await viewIn(owner, input, [`${PI}@latest`, 'version']);
+ if (!succeeded(result) || result.truncated) throw new Error(`gentle-shell update: the latest published Pi could not be resolved (${owner.name} view failed). No installation changed.`);
+ const version = String(result.stdout ?? '').trim();
+ if (!STABLE.test(version)) throw new Error(`gentle-shell update: the latest published Pi version ${JSON.stringify(version)} was rejected. No installation changed.`);
+ return version;
+}
+
+const SIBLING = /^@earendil-works\/[a-z0-9][a-z0-9._-]*$/;
+const MAX_SIBLINGS = 32;
+// An exact version as pnpm accepts it in a minimumReleaseAgeExclude union.
+const EXACT = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+// The published dependencies of one exact version, checked against its identity.
+async function publishedDependencies(owner, input, name, version) {
+ const result = await viewIn(owner, input, [`${name}@${version}`, '--json']);
+ try {
+  const manifest = JSON.parse(String(result.stdout ?? ''));
+  const dependencies = manifest?.dependencies ?? {};
+  if (!succeeded(result) || result.truncated || !object(manifest) || manifest.name !== name || manifest.version !== version ||
+   !object(dependencies) || Object.values(dependencies).some(range => typeof range !== 'string')) throw new Error('invalid');
+  return Object.entries(dependencies).filter(([dependency, range]) => SIBLING.test(dependency) && dependency !== PI && STABLE.test(range));
+ } catch { throw new Error(`gentle-shell update: the published dependencies of ${name === PI ? 'Pi ' : `${name}@`}${version} could not be verified. No installation changed.`); }
+}
+
+/** Every Pi-scope package, as [name, version], that the selected Pi pins to an
+ * exact stable version directly or through such a pinned package (pi-ai pins
+ * pi-schema). They are published with Pi, so no older version can satisfy
+ * them, and pnpm's strict release-age mode cannot approve them under
+ * --no-save. Ranges, prereleases and other scopes stay age-filtered. The walk
+ * visits each package version once and is bounded.
+ */
+async function piSiblings(owner, input, version) {
+ const found = new Map();
+ let pending = await publishedDependencies(owner, input, PI, version);
+ while (pending.length) {
+  const level = [];
+  for (const [name, exact] of pending) {
+   if (found.has(`${name}@${exact}`)) continue;
+   if (found.size >= MAX_SIBLINGS) throw new Error(`gentle-shell update: Pi ${version} pins more than ${MAX_SIBLINGS} @earendil-works packages; their release age could not be verified. No installation changed.`);
+   found.set(`${name}@${exact}`, [name, exact]);
+   level.push([name, exact]);
+  }
+  pending = (await Promise.all(level.map(([name, exact]) => publishedDependencies(owner, input, name, exact)))).flat();
+ }
+ return [...found.values()];
+}
+
+// pnpm's matcher (parseVersionPolicyRule) splits a rule at the `@` after a scope.
+function exclusionName(entry) {
+ const at = entry.startsWith('@') ? entry.indexOf('@', 1) : entry.indexOf('@');
+ return at === -1 ? {name:entry, versions:null} : {name:entry.slice(0, at), versions:entry.slice(at + 1)};
+}
+
+// CLI values replace pnpm's configured list, so read the effective list in the
+// install context and pass it back intact with Pi and its exact siblings added.
+// pnpm applies only the first rule naming a package, so a new version joins
+// that name's existing rule as one `name@a || b` union (a bare name already
+// covers every version); a rule it cannot merge safely is refused. pnpm
+// represents a single CLI value as a string, not an array; repeat it when the
+// list has one entry.
+async function piAgeExclusion(owner, input, siblings) {
+ const scope = owner.sourceRoot ? ['--dir', owner.sourceRoot, ...owner.sourceOptions] : ['--global'];
+ const result = await input.adapters.run(owner.command, [...owner.prefix, 'config', 'get', 'minimumReleaseAgeExclude', '--json', ...scope],
+  {deadlineMs:30_000, cwd:owner.sourceRoot ?? input.cwd, ...(owner.sourceEnv ? {env:owner.sourceEnv} : {})});
+ const invalid = () => new Error('gentle-shell update: pnpm release-age exclusions could not be verified. No installation changed.');
+ let entries;
+ try {
+  const text = String(result.stdout ?? '').trim();
+  entries = text === '' || text === 'undefined' ? [] : JSON.parse(text);
+  if (typeof entries === 'string') entries = [entries];
+  if (!succeeded(result) || result.truncated || !Array.isArray(entries) || entries.some(entry => typeof entry !== 'string' || !entry)) throw new Error('invalid');
+ } catch { throw invalid(); }
+ // Wanted versions per name, in order; null means every version (Pi itself).
+ const wanted = new Map([[PI, null]]);
+ for (const [name, version] of siblings) if (wanted.get(name) !== null) wanted.set(name, [...(wanted.get(name) ?? []), version]);
+ const merged = new Map();
+ for (const entry of entries) {
+  const {name, versions} = exclusionName(entry);
+  if (!wanted.has(name)) continue;
+  const listed = versions === null ? null : versions.split('||').map(version => version.trim());
+  if (listed?.some(version => !EXACT.test(version))) throw invalid();
+  const before = merged.has(name) ? merged.get(name) : [];
+  merged.set(name, before === null || listed === null ? null : [...before, ...listed]);
+ }
+ const rule = name => {
+  const versions = merged.has(name) && merged.get(name) === null || wanted.get(name) === null ? null : [...new Set([...(merged.get(name) ?? []), ...wanted.get(name)])];
+  return versions === null ? name : `${name}@${versions.join(' || ')}`;
+ };
+ const placed = new Set();
+ const list = [];
+ for (const entry of entries) {
+  const {name} = exclusionName(entry);
+  if (!wanted.has(name)) list.push(entry);
+  else if (!placed.has(name)) { placed.add(name); list.push(rule(name)); }
+ }
+ for (const name of wanted.keys()) if (!placed.has(name)) list.push(rule(name));
+ if (list.length === 1) list.push(list[0]);
+ return list.map(entry => `--config.minimum-release-age-exclude=${entry}`);
+}
+
 /** The Pi version the owner's package now supplies, read back from a fresh
- * listing after the install; null when it cannot be read.
+ * listing after the install; null when continuity or identity is uncertain.
  */
 async function suppliedPiVersion(owner, {platform, adapters, cwd}) {
  const {path, key} = pathsFor(platform);
  const canonical = canonicalWith(adapters, path);
  try {
   const groups = await globalListing(owner.name, owner, adapters, cwd);
-  const {entries} = await listedEntries(groups, {adapters, path, key, canonical});
-  for (const {pkg, dependency, groupRoot} of entries) {
-   if (pkg !== owner.package) continue;
-   const root = await canonical(dependency.path);
-   if (pkg === PI) return (await manifestOf(adapters, path, root)).version ?? null;
-   if ((await manifestOf(adapters, path, root)).name !== SHELL) continue;
-   const peer = await adjacentPeer({shellRoot: root, groupRoot, adapters, path, key, canonical});
-   if (peer) return peer.manifest.version ?? null;
+  const {entries, members} = await listedEntries(groups, {adapters, path, key, canonical});
+  const removed = [...owner.members.keys()].filter(group => !members.has(group));
+  const added = [...members.keys()].filter(group => !owner.members.has(group));
+  // An unchanged group must keep its complete membership. A replacement can
+  // be attributed only when the selected group alone disappeared and exactly
+  // one group appeared; never select a package just because it is first/latest.
+  for (const [group, before] of owner.members) {
+   const after = members.get(group);
+   if (after && (before.size !== after.size || [...before].some(pkg => !after.has(pkg)))) return null;
   }
+  let target;
+  if (removed.length === 0 && added.length === 0) target = key(owner.groupRoot);
+  else if (owner.name === 'pnpm' && owner.listingRoot && removed.length === 1 && removed[0] === key(owner.groupRoot) && added.length === 1) target = added[0];
+  else return null;
+  const matches = entries.filter(entry => entry.pkg === owner.package && key(entry.groupRoot) === target);
+  if (matches.length !== 1 || (owner.name === 'pnpm' && members.get(target)?.size !== 1)) return null;
+  const {pkg, dependency, groupRoot, listingRoot} = matches[0];
+  if (listingRoot !== owner.listingRoot || (owner.from !== undefined && typeof owner.from !== 'string') || dependency.from !== owner.from ||
+   dependency.link === true || [dependency.resolved, dependency.version].some(value => typeof value === 'string' && LINKED.test(value))) return null;
+  const root = await canonical(dependency.path);
+  const manifest = await manifestOf(adapters, path, root);
+  if (manifest.name !== pkg || typeof manifest.version !== 'string' || !manifest.version ||
+   (dependency.version !== undefined && dependency.version !== manifest.version)) return null;
+  if (pkg === PI) {
+   if (manifest.bin?.pi !== 'dist/bundle/cli.js') return null;
+   const cli = await canonical(path.join(root, manifest.bin.pi));
+   return key(cli) === key(path.join(root, manifest.bin.pi)) ? manifest.version : null;
+  }
+  if (manifest.version !== owner.shellVersion) return null;
+  const peer = await adjacentPeer({shellRoot: root, groupRoot, adapters, path, key, canonical});
+  return typeof peer?.manifest.version === 'string' && peer.manifest.version ? peer.manifest.version : null;
  } catch {
   return null;
  }
- return null;
 }
 
 export async function updateSelectedPi(input) {
@@ -318,9 +454,15 @@ export async function updateSelectedPi(input) {
   try { await input.adapters.fs.realpath(owner.spec); }
   catch { throw new Error(`gentle-shell update: the main-channel build ${owner.spec} is missing, and this unpublished build cannot be reinstalled from the registry; run 'gentle-shell upgrade --channel release' and then 'gentle-shell upgrade --channel main' to rebuild it. No installation changed.`); }
  }
+ const latest = await latestPublishedPi(owner, input);
+ const ageExclusion = owner.name === 'pnpm' ? await piAgeExclusion(owner, input, await piSiblings(owner, input, latest)) : [];
  // Exactly one approved package per command; never create a comma group or
- // reinstall arbitrary dependencies merely because they share a store.
- const args = owner.args ?? (owner.name === 'pnpm' ? ['add', '-g', owner.spec, ...(owner.package === SHELL ? ['--allow-build=gentle-pi'] : [])] : ['install', '-g', owner.spec, ...(owner.package === PI ? ['--ignore-scripts'] : [])]);
+ // reinstall arbitrary dependencies merely because they share a store. The
+ // exact global Pi version is transient, not a source manifest pin.
+ const spec = owner.package === PI ? `${PI}@${latest}` : owner.spec;
+ const args = owner.args ? owner.args.map(arg => arg === PI ? `${PI}@${latest}` : arg)
+  : (owner.name === 'pnpm' ? ['add', '-g', spec, ...(owner.package === SHELL ? ['--allow-build=gentle-pi'] : [])] : ['install', '-g', spec, ...(owner.package === PI ? ['--ignore-scripts'] : [])]);
+ args.push(...ageExclusion);
  const result = await input.adapters.run(owner.command, [...owner.prefix, ...args], {deadlineMs:20 * 60_000, cwd: owner.sourceRoot ?? input.cwd, stderrTail:4096, ...(owner.sourceEnv ? {env:owner.sourceEnv} : {})});
  if (!succeeded(result)) {
   // One sanitized line of the manager's own error: npm prints it on stderr,
@@ -328,7 +470,7 @@ export async function updateSelectedPi(input) {
   // error line in either stream wins over a stderr warning, stderr's on a tie.
   const output = [result?.stdout, result?.stderrTail].filter(text => typeof text === 'string').join('\n');
   const detail = setupErrorDetail(output, input.home, input.platform);
-  throw new Error(`gentle-shell update: ${owner.name} (${[owner.command, ...owner.prefix].join(' ')}) could not install ${owner.spec}${detail ? `\n${detail}` : ''}`);
+  throw new Error(`gentle-shell update: ${owner.name} (${[owner.command, ...owner.prefix].join(' ')}) could not install ${owner.sourceRoot ? `${PI}@${latest}` : spec}${detail ? `\n${detail}` : ''}`);
  }
  if (owner.sourceRoot) {
   const {path, key} = pathsFor(input.platform ?? process.platform);
@@ -345,19 +487,16 @@ export async function updateSelectedPi(input) {
    if (peer && key(peer.cli) === key(nested)) after = peer.manifest.version ?? null;
   } catch { /* Never invent readback after a successful manager invocation. */ }
   const location = `${owner.name} updated ${PI} in ${owner.sourceRoot}`;
+  if (after !== null && after !== latest) throw new Error(`gentle-shell update: ${owner.name} supplied Pi ${after}, not the latest published Pi ${latest}; inspect the source checkout before retrying.`);
   if (after === null) input.out?.(`${location}. The Pi version could not be read back; run 'gentle-shell --version' to check it.`);
-  else {
-   input.out?.(`${location}; the selected Pi is ${after === input.currentVersion ? 'still' : 'now'} ${after}${after !== input.currentVersion && input.currentVersion !== undefined ? ` (was ${input.currentVersion})` : ''}.`);
-   if (after === input.currentVersion && owner.name === 'pnpm') input.out?.('The declared version range and pnpm minimumReleaseAge setting still apply; neither was overridden.');
-  }
+  else input.out?.(`${location}; the selected Pi is ${after === input.currentVersion ? 'still' : 'now'} ${after}${after !== input.currentVersion && input.currentVersion !== undefined ? ` (was ${input.currentVersion})` : ''}.`);
   return 0;
  }
  const after = await suppliedPiVersion(owner, input);
  const before = input.currentVersion;
- if (after === null) input.out?.(`${owner.name} installed ${owner.spec}. The Pi version it now supplies could not be read back; run 'gentle-shell --version' to check it.`);
- else if (before !== undefined && after === before) {
-  input.out?.(`${owner.name} installed ${owner.spec}, and the selected Pi is still ${after}.`);
-  if (owner.name === 'pnpm') input.out?.('pnpm installs only releases older than its minimumReleaseAge setting (pnpm 11 defaults to 4320 minutes); a newer Pi release is picked up once it is old enough.');
- } else input.out?.(`${owner.name} installed ${owner.spec}; the selected Pi is now ${after}${before !== undefined ? ` (was ${before})` : ''}.`);
+ if (after !== null && after !== latest) throw new Error(`gentle-shell update: ${owner.name} supplied Pi ${after}, not the latest published Pi ${latest}; inspect the installation before retrying.`);
+ if (after === null) input.out?.(`${owner.name} installed ${spec}. The Pi version it now supplies could not be read back; run 'gentle-shell --version' to check it.`);
+ else if (before !== undefined && after === before) input.out?.(`${owner.name} installed ${spec}, and the selected Pi is still ${after}.`);
+ else input.out?.(`${owner.name} installed ${spec}; the selected Pi is now ${after}${before !== undefined ? ` (was ${before})` : ''}.`);
  return 0;
 }

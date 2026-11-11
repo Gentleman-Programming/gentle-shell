@@ -4,17 +4,18 @@ Bind this to the parent Pi session only, on skill resolution/discovery. Not alwa
 
 ## Skill Registry Protocol
 
-The parent resolves skills once per session or before first delegation:
+The effective view is `<available_skills>` plus the on-disk rows of the `Effective session skills` system-prompt block: on each enabled primary-session agent start, that block lists the skills found in project and other agents' skill directories that Pi did not load (every skill when Pi renders no `<available_skills>`), and is absent when there are none. A block row whose name is also in `<available_skills>` won precedence (a project copy outranks a user or package copy); use the block's row. In `<available_skills>` the `Trigger / description` is `<description>` and the `Path` is `<location>`. Use this view to select skills and delegate:
 
-1. Read `.atl/skill-registry.md` if present.
-2. Match task context and target files against the `Trigger / description` column.
-3. Pass only matching `Path` values to subagents under `## Skills to load before work`.
-4. Tell subagents to read those exact `SKILL.md` files before reading, writing, reviewing, testing, or creating artifacts.
-5. If the registry is absent, continue but mention that project-specific skill paths were unavailable.
+1. Match task context and target files against the effective view's `Trigger / description` column.
+2. Pass only matching exact `Path` values to subagents under `## Skills to load before work`. Match the delegated task's own files and actions, never a fixed set: a child that will not commit gets no commit skill, and one that writes no docs gets no docs skill.
+3. Tell subagents to read those exact `SKILL.md` files before reading, writing, reviewing, testing, or creating artifacts.
+4. If no skill matches, continue without project skill injection and report `skill_resolution: none`.
 
-Subagents should receive exact indexed paths. They should not have to rediscover the registry.
+The shared `.atl/skill-registry.md` indexes disk only and is never the full effective view. The view is unavailable only when neither `<available_skills>` nor the block is present: then say so; a disk-only fallback may omit runtime-only skills. Disk changes appear in the view at the next agent start, not mid-run.
 
-Subagents do not independently discover additional project/user `SKILL.md` files or the registry during normal runtime. The parent passes selected project/user skill paths explicitly.
+Subagents receive exact indexed paths and never rediscover the registry or other project/user `SKILL.md` files during normal runtime.
+
+Among package subagents only `gentle-ai-worker` reports `skill_resolution`, as `paths-injected`, `paths-invalid` (blocked; the unreadable path is in `risks`), or `none`; the fallback values below come from non-package agents.
 
 If a subagent reports `skill_resolution`, interpret it as project/user skill resolution:
 
@@ -31,10 +32,10 @@ For skill-shaped requests, do not treat injected `<available_skills>` as complet
 
 Discovery order:
 
-1. Read `.atl/skill-registry.md` when present.
-2. If the registry suggests a specific skill, load the indexed `SKILL.md` path before acting.
-3. If the expected skill is absent from the registry but the request clearly names a known workflow, search common project/user skill dirs such as `./skills`, `.pi/skills`, `.agents/skills`, `~/.config/opencode/skills`, `~/.claude/skills`, and other configured skill roots.
-4. Prefer the most specific project skill over a global skill with the same intent.
+1. Consult `<available_skills>` and the `Effective session skills` block, when present, before acting or delegating.
+2. Read the matching exact `SKILL.md` path when acting; pass it to the subagent when delegating.
+3. If the view is unavailable, disclose the limitation; `.atl/skill-registry.md` is a disk-only fallback, not a complete Pi view.
+4. If an expected workflow is absent, search configured skill roots only as a fallback. Prefer the most specific project skill over a global skill with the same intent.
 5. If no matching skill exists, continue with the smallest safe fallback and say which expected skill was unavailable.
 
 Common intent hints, not hard routing:

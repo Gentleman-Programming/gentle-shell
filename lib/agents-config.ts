@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { AgentProfilesFile } from "./agent-profiles.ts";
+import { DEFAULT_REPORT_MAX_BYTES } from "./agents-report-cap.ts";
 import { THINKING_LEVELS as ROUTING_THINKING_LEVELS, isServiceTier, type AgentModelConfig, type ServiceTier, type ThinkingLevel as RoutingThinkingLevel } from "./model-routing-authority.ts";
 
 // Gentle Agents configuration. Agent definitions are markdown files with YAML
@@ -75,6 +76,8 @@ export interface AgentsConfig {
 	toolStallTimeoutMs: number;
 	maxConcurrency: number;
 	historyMaxTasks: number;
+	/** UTF-8 bytes of a child report delivered into the parent's context (`report_max_bytes`); subagent_result always returns the full text. */
+	reportMaxBytes: number;
 }
 
 export interface ProfileSources {
@@ -283,6 +286,7 @@ export function parseAgentsConfig(global: RawConfig, project: RawConfig): Agents
 		toolStallTimeoutMs: Math.max(positiveInteger(merged.tool_stall_timeout_ms, DEFAULT_TOOL_STALL_TIMEOUT_MS), stallTimeoutMs),
 		maxConcurrency: positiveInteger(merged.max_concurrency, DEFAULT_MAX_CONCURRENCY),
 		historyMaxTasks: positiveInteger(merged.history_max_tasks, DEFAULT_HISTORY_MAX_TASKS),
+		reportMaxBytes: positiveInteger(merged.report_max_bytes, DEFAULT_REPORT_MAX_BYTES),
 	};
 }
 

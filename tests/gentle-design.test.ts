@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import gentleDesign, { DESIGN_COMMAND_NAME } from "../extensions/gentle-design.ts";
 import { formatDesignComment, formatDesignCommentBatch, startDesignCanvasServer, type DesignCanvasServer, type DesignCanvasServerOptions, type DesignComment } from "../lib/design-canvas-server.ts";
+import { designImplementMessage, designImplementPartMessage, designVariantMessage } from "../lib/gentle-design.ts";
 import type { OpenInBrowserResult } from "../lib/design-open-browser.ts";
 import { __testing } from "../extensions/skill-registry.ts";
 
@@ -671,6 +672,37 @@ test("the gentle_design_comments tool names a comment's screenshot for the read 
 	assert.equal(text.match(/Screenshot:/g)?.length, 1);
 });
 
+test("S7: the gentle_design_comments tool lists a comment's viewport, and only for comments that have one", async () => {
+	const cwd = scratchCwd();
+	writeDesign(cwd, "login", "Login screen");
+	seedComments(cwd, "login", [{ id: "aaa111" }, { id: "bbb222" }]);
+	const path = join(cwd, "design", "login", "comments.json");
+	const document = JSON.parse(readFileSync(path, "utf8"));
+	document.comments[0].viewport = { width: 390, height: 844 };
+	writeFileSync(path, JSON.stringify(document));
+	const { pi, tool } = fakePi();
+	gentleDesign(pi);
+	const result = await tool("gentle_design_comments")!.execute("1", { action: "list", slug: "login" }, undefined, undefined, fakeContext(cwd).ctx);
+	const text = toolText(result);
+	assert.match(text, /\[aaa111\][^]*\n  Viewport: Phone 390 × 844 \(edit for this width\)\n[^]*- \[bbb222\]/);
+	assert.equal(text.match(/Viewport:/g)?.length, 1);
+	assert.deepEqual((result.details as { comments: Array<{ id: string; viewport?: unknown }> }).comments.map((entry) => entry.viewport), [{ width: 390, height: 844 }, undefined]);
+});
+
+test("S7: the handoff message names the viewport of the open comments that have one", () => {
+	const text = designImplementMessage({
+		slug: "login",
+		artboard: { file: "01-a.html", title: "A", tradeoff: "" },
+		systemTokens: false,
+		comments: [
+			{ id: "aaa111", selector: "#cta", excerpt: "Go", comment: "Wider.", viewport: { width: 390, height: 844 } },
+			{ id: "bbb222", selector: "h1", excerpt: "", comment: "Bolder." },
+		],
+	});
+	assert.match(text, /\n   Excerpt: "Go"\n   Viewport: Phone 390 × 844 \(edit for this width\)\n   Comment:\n/);
+	assert.equal(text.match(/Viewport:/g)?.length, 1);
+});
+
 test("the gentle_design_comments tool resolves comments by id and writes comments.json", async () => {
 	const cwd = scratchCwd();
 	writeDesign(cwd, "login", "Login screen");
@@ -691,6 +723,83 @@ test("the gentle_design_comments tool resolves comments by id and writes comment
 	writeFileSync(join(cwd, "design", "login", "comments.json"), "{ broken");
 	await assert.rejects(tool("gentle_design_comments")!.execute("5", { action: "list", slug: "login" }, undefined, undefined, ctx), /comments\.json/);
 	assert.equal(readFileSync(join(cwd, "design", "login", "comments.json"), "utf8"), "{ broken");
+});
+
+// S5: the agent's one-line reply on a resolved comment, in comments.json.
+
+async function resolveWith(cwd: string, params: Record<string, unknown>) {
+	const { pi, tool } = fakePi();
+	gentleDesign(pi);
+	return tool("gentle_design_comments")!.execute("1", { action: "resolve", slug: "login", ...params }, undefined, undefined, fakeContext(cwd).ctx);
+}
+
+const storedComments = (cwd: string) => JSON.parse(readFileSync(join(cwd, "design", "login", "comments.json"), "utf8")).comments;
+
+test("S5: the comments tool takes an optional note of at most 500 characters and says so", () => {
+	const { pi, tool } = fakePi();
+	gentleDesign(pi);
+	const comments = tool("gentle_design_comments") as unknown as { description: string; parameters: { properties: Record<string, { maxLength?: number; description?: string }>; required?: string[] } };
+	assert.equal(comments.parameters.properties.note?.maxLength, 500);
+	assert.match(comments.parameters.properties.note?.description ?? "", /resolve/);
+	assert.ok(!comments.parameters.required?.includes("note"), "the note is optional");
+	assert.match(comments.description, /note/);
+});
+
+test("S5: resolve with a note stores it as the comment's resolution, with no version history (canvas-trim S3)", async () => {
+	const cwd = scratchCwd();
+	writeDesign(cwd, "login", "Login screen");
+	seedComments(cwd, "login", [{ id: "aaa111" }, { id: "bbb222" }]);
+	writeFileSync(join(cwd, "design", "login", "01-a.html"), "<h1>A, bigger</h1>");
+	const result = await resolveWith(cwd, { ids: ["aaa111"], note: "  Made the title 32px.  " });
+	assert.equal(toolText(result), "Resolved 1 comment in design/login: aaa111.");
+	const stored = storedComments(cwd);
+	assert.equal(stored[0].resolution, "Made the title 32px.");
+	assert.equal("resolution" in stored[1], false);
+	assert.equal(existsSync(join(cwd, "design", "login", ".history")), false, "nothing is written to .history");
+});
+
+test("S5: two comments resolved at once on one artboard both keep the note", async () => {
+	const cwd = scratchCwd();
+	writeDesign(cwd, "login", "Login screen");
+	seedComments(cwd, "login", [{ id: "aaa111" }, { id: "bbb222" }]);
+	await resolveWith(cwd, { ids: ["aaa111", "bbb222"], note: "Both done." });
+	assert.deepEqual(storedComments(cwd).map((comment: { resolution?: string }) => comment.resolution), ["Both done.", "Both done."]);
+});
+
+test("S5: a note over 500 characters is refused and comments.json does not change", async () => {
+	const cwd = scratchCwd();
+	writeDesign(cwd, "login", "Login screen");
+	seedComments(cwd, "login", [{ id: "aaa111" }]);
+	const path = join(cwd, "design", "login", "comments.json");
+	const before = readFileSync(path, "utf8");
+	await assert.rejects(resolveWith(cwd, { ids: ["aaa111"], note: "x".repeat(501) }), /500/);
+	assert.equal(readFileSync(path, "utf8"), before);
+	const kept = await resolveWith(cwd, { ids: ["aaa111"], note: "y".repeat(500) });
+	assert.match(toolText(kept), /Resolved 1 comment/);
+	assert.equal(storedComments(cwd)[0].resolution.length, 500);
+});
+
+test("S5: resolve without a note still works and stores no resolution", async () => {
+	const cwd = scratchCwd();
+	writeDesign(cwd, "login", "Login screen");
+	seedComments(cwd, "login", [{ id: "aaa111" }]);
+	const result = await resolveWith(cwd, { ids: ["aaa111"] });
+	assert.match(toolText(result), /^Resolved 1 comment in design\/login: aaa111\.$/);
+	assert.deepEqual(result.details, { slug: "login", resolved: ["aaa111"], unknown: [] });
+	assert.equal(storedComments(cwd)[0].status, "resolved");
+	assert.equal("resolution" in storedComments(cwd)[0], false);
+});
+
+test("S5: the hint that lists open comments asks for a one-line note when resolving", async () => {
+	const cwd = scratchCwd();
+	writeDesign(cwd, "login", "Login screen");
+	seedComments(cwd, "login", [{ id: "aaa111" }]);
+	const { pi, tool } = fakePi();
+	gentleDesign(pi);
+	const listed = toolText(await tool("gentle_design_comments")!.execute("1", { action: "list", slug: "login" }, undefined, undefined, fakeContext(cwd).ctx));
+	assert.match(listed, /resolve it with gentle_design_comments \(action "resolve", slug, ids, note\)[^\n]*one line/);
+	const handoff = designImplementMessage({ slug: "login", artboard: { file: "01-a.html", title: "A", tradeoff: "" }, systemTokens: false, comments: [{ id: "aaa111", selector: "h1", excerpt: "", comment: "Bigger." }] });
+	assert.match(handoff, /action "resolve", slug "login", ids \["aaa111"\], note[^\n]*one line/);
 });
 
 // Advisory 8: the command and the canvas server list designs with one containment rule.
@@ -1320,6 +1429,108 @@ test("integration: the canvas Implement route records the handoff and answers qu
 	assert.equal(handoffsFile(cwd).chosen, "02-card.html");
 });
 
+// T2/S3: the canvas "Try another direction from this…" route asks the session for the next artboard.
+
+const VARIANT_TEXT = [
+	"Add another direction to the design design/login/, based on the artboard design/login/01-split.html",
+	"",
+	"Source artboard: design/login/01-split.html",
+	"Title: Split layout",
+	"",
+	"What should change:",
+	"  More compact for phones",
+	"  and a calmer palette",
+	"",
+	'Follow the gentle-design skill ("Save and try a different approach"): write the next artboard (the next NN after the existing ones, NN-<name>.html) in design/login/, starting from the source file, and append it to design/login/design.json with its title, tradeoff, width and height. Keep every existing artboard and its file as they are.',
+	"Take colors, typography, spacing, radius and shadows from design/system.md, the project's token source.",
+	'When it is written, refresh the canvas with the gentle_design tool (action "open", slug "login").',
+].join("\n");
+
+const variantInput = { slug: "login", artboard: { file: "01-split.html", title: "Split layout" }, instruction: "More compact for phones\nand a calmer palette", systemTokens: true };
+
+test("the variant message names the source file, the instruction, the skill gate and keeping the others", () => {
+	assert.equal(designVariantMessage(variantInput), VARIANT_TEXT);
+	const bare = designVariantMessage({ ...variantInput, systemTokens: false });
+	assert.ok(!bare.includes("design/system.md"), "no token line without design/system.md");
+	assert.equal(bare, VARIANT_TEXT.split("\n").filter((line) => !line.startsWith("Take colors")).join("\n"));
+});
+
+async function variantSession(t: { after(fn: () => unknown): void }, idle: boolean, system = true) {
+	const cwd = scratchCwd();
+	writeLinkedDesign(cwd, "login");
+	if (system) writeFileSync(join(cwd, "design", "system.md"), "# Tokens");
+	const { pi, sent, emit, command } = fakePi();
+	const opens: string[] = [];
+	gentleDesign(pi, { openBrowser: async (url) => { opens.push(url); return { opened: true }; } });
+	t.after(() => emit("session_shutdown", { type: "session_shutdown", reason: "quit" }));
+	const session = fakeContext(cwd, idle);
+	await command().handler("open login", session.ctx);
+	const url = new URL(opens[0]);
+	const token = url.pathname.split("/")[1];
+	const page = await new Promise<string>((resolve, reject) => {
+		httpRequest({ host: "127.0.0.1", port: url.port, path: `/${token}/`, method: "GET" }, (res) => {
+			let body = "";
+			res.setEncoding("utf8");
+			res.on("data", (chunk: string) => { body += chunk; });
+			res.on("end", () => resolve(body));
+		}).on("error", reject).end();
+	});
+	const post = (body: unknown, headers: Record<string, string> = { Origin: url.origin }) => new Promise<{ status: number; body: string }>((resolve, reject) => {
+		const req = httpRequest({ host: "127.0.0.1", port: url.port, path: `/${token}/api/designs/login/variant`, method: "POST", headers: { "Content-Type": "application/json", ...headers } }, (res) => {
+			let text = "";
+			res.setEncoding("utf8");
+			res.on("data", (chunk: string) => { text += chunk; });
+			res.on("end", () => resolve({ status: res.statusCode ?? 0, body: text }));
+		});
+		req.on("error", reject);
+		req.end(JSON.stringify(body));
+	});
+	return { cwd, sent, session, post, page };
+}
+
+test("integration: the canvas variant route sends the session one message and the page config advertises it", async (t) => {
+	const { cwd, sent, post, page } = await variantSession(t, true);
+	const config = JSON.parse(/<script id="gd-config" type="application\/json">([^<]*)<\/script>/.exec(page)![1]);
+	assert.deepEqual(config.delivery, { comment: true, batch: true, implement: true, variant: true, part: true });
+	const reply = await post({ file: "01-split.html", instruction: "  More compact for phones\r\nand a calmer palette " });
+	assert.equal(reply.status, 202);
+	assert.deepEqual(JSON.parse(reply.body), { ok: true, slug: "login", file: "01-split.html", queued: false });
+	assert.equal(sent.length, 1, "exactly one message");
+	assert.equal(sent[0].content, VARIANT_TEXT);
+	assert.equal(sent[0].options, undefined, "an idle agent runs it now");
+	assert.equal(existsSync(join(cwd, "design", "login", "handoffs.json")), false, "a variant is not a handoff");
+});
+
+test("integration: the canvas variant route is queued as a follow-up while the agent is busy, and idle again runs it now", async (t) => {
+	const { sent, session, post } = await variantSession(t, false);
+	const busy = await post({ file: "02-card.html", instruction: "Bolder" });
+	assert.equal(busy.status, 202);
+	assert.equal(JSON.parse(busy.body).queued, true);
+	assert.deepEqual(sent[0].options, { deliverAs: "followUp" });
+	assert.match(String(sent[0].content), /^Add another direction to the design design\/login\/, based on the artboard design\/login\/02-card\.html\n/);
+	session.state.idle = true;
+	const idle = await post({ file: "02-card.html", instruction: "Bolder" });
+	assert.equal(JSON.parse(idle.body).queued, false);
+	assert.equal(sent.length, 2);
+	assert.equal(sent[1].options, undefined);
+});
+
+test("integration: a refused canvas variant request sends the session nothing", async (t) => {
+	const { sent, post } = await variantSession(t, true);
+	assert.equal((await post({ file: "01-split.html", instruction: "" })).status, 400);
+	assert.equal((await post({ file: "01-split.html", instruction: "x".repeat(2001) })).status, 400);
+	assert.equal((await post({ file: "nope.html", instruction: "Bolder" })).status, 400);
+	assert.equal((await post({ file: "01-split.html", instruction: "Bolder" }, { Origin: "http://evil.example" })).status, 403);
+	assert.equal((await post({ file: "01-split.html", instruction: "Bolder" }, {})).status, 403);
+	assert.equal(sent.length, 0);
+});
+
+test("integration: without design/system.md the canvas variant message has no token line", async (t) => {
+	const { sent, post } = await variantSession(t, true, false);
+	assert.equal((await post({ file: "01-split.html", instruction: "More compact for phones\nand a calmer palette" })).status, 202);
+	assert.ok(!String(sent[0].content).includes("design/system.md"));
+});
+
 test("the gentle_design tool schema and description name the handoff action", () => {
 	const fake = fakePi();
 	gentleDesign(fake.pi);
@@ -1331,4 +1542,157 @@ test("the gentle_design tool schema and description name the handoff action", ()
 test("the skill tells the agent to report handoff progress and to name the chosen artboard in the ODD Log", () => {
 	const source = readFileSync(SKILL_PATH, "utf8");
 	for (const part of ['action "handoff"', '"in_progress"', '"implemented"', "previewUrl", "chosen artboard"]) assert.ok(source.includes(part), `SKILL.md mentions ${part}`);
+});
+
+// P3: without design/ (and with codemode) the design tools are not declared;
+// the skill names the codemode route once, before its first tool call.
+test("skills/design/SKILL.md names the codemode route for undeclared design tools once", () => {
+	const source = readFileSync(SKILL_PATH, "utf8");
+	const route = "When `gentle_design` or `gentle_design_comments` is not declared, call it from `codemode` as `tools.gentle_design({...})` or `tools.gentle_design_comments({...})` with the same arguments.";
+	assert.equal(source.split(route).length - 1, 1, "the route sentence appears exactly once");
+	assert.ok(source.indexOf(route) < source.indexOf("Run this gate before every new brief"), "it precedes the list gate");
+});
+
+// ---- canvas-implement-part: "Implement only this" (S4-S6)
+
+const PART_TEXT = [
+	"Implement only one part of the design artboard design/login/02-card.html",
+	"",
+	"Artboard: design/login/02-card.html",
+	"Title: Centered card",
+	"Part id: abc123",
+	"Element: nav.side > ul",
+	'Excerpt: "Home Tours"',
+	"Note:",
+	"solo el menú",
+	"sin la cabecera",
+	"",
+	"Build only this element in the project's real stack, as the shared piece the app would reuse (a layout or component) when it has one. Use the artboard as the visual spec for it: map it to the project's existing components and styles, and do not copy the artboard HTML verbatim. Leave the rest of the artboard unbuilt: this does not choose a direction, and the other artboards stay open.",
+	"Take colors, typography, spacing, radius and shadows from design/system.md, the project's token source.",
+	'Report progress with the gentle_design tool: action "handoff", target "login/02-card.html", part "abc123", status "in_progress" when you start; status "implemented" when it is done, with a one-line note on where it lives in the project.',
+	"This design is not linked to an ODD feature document: size it under the project's ODD rules as usual.",
+	"This handoff itself commits nothing.",
+].join("\n");
+
+const partInput = {
+	slug: "login",
+	artboard: { file: "02-card.html", title: "Centered card" },
+	part: { id: "abc123", selector: "nav.side > ul", excerpt: "Home Tours", instruction: "solo el menú\nsin la cabecera" },
+	systemTokens: true,
+};
+
+test("implement-part S5: the message asks to build only that element, names it, keeps the directions open and says how to report", () => {
+	assert.equal(designImplementPartMessage(partInput), PART_TEXT);
+	const bare = designImplementPartMessage({ ...partInput, systemTokens: false, part: { id: "abc123", selector: "nav.side > ul", excerpt: "" }, feature: "odd/tasks/tours.md" });
+	assert.ok(bare.includes("Excerpt: (none)\nNote: (none)"), "no excerpt and no note");
+	assert.ok(!bare.includes("Take colors"), "no token line without design/system.md");
+	assert.ok(bare.includes("This design belongs to an ODD feature: track this part in odd/tasks/tours.md (add or reopen its task there and log this handoff)."));
+});
+
+async function partSession(t: { after(fn: () => unknown): void }, idle: boolean) {
+	const cwd = scratchCwd();
+	writeLinkedDesign(cwd, "login");
+	writeFileSync(join(cwd, "design", "system.md"), "# Tokens");
+	const { pi, sent, emit, command } = fakePi();
+	const opens: string[] = [];
+	gentleDesign(pi, { openBrowser: async (url) => { opens.push(url); return { opened: true }; } });
+	t.after(() => emit("session_shutdown", { type: "session_shutdown", reason: "quit" }));
+	const session = fakeContext(cwd, idle);
+	await command().handler("open login", session.ctx);
+	const url = new URL(opens[0]);
+	const token = url.pathname.split("/")[1];
+	const post = (body: unknown, headers: Record<string, string> = { Origin: url.origin }) => new Promise<{ status: number; body: string }>((resolve, reject) => {
+		const req = httpRequest({ host: "127.0.0.1", port: url.port, path: `/${token}/api/designs/login/implement-part`, method: "POST", headers: { "Content-Type": "application/json", ...headers } }, (res) => {
+			let text = "";
+			res.setEncoding("utf8");
+			res.on("data", (chunk: string) => { text += chunk; });
+			res.on("end", () => resolve({ status: res.statusCode ?? 0, body: text }));
+		});
+		req.on("error", reject);
+		req.end(JSON.stringify(body));
+	});
+	return { cwd, sent, session, post };
+}
+
+const PART_BODY = { file: "02-card.html", selector: "nav.side > ul", excerpt: "Home Tours", note: "solo el menú\r\nsin la cabecera " };
+const partsFile = (cwd: string) => JSON.parse(readFileSync(join(cwd, "design", "login", "parts.json"), "utf8"));
+
+test("implement-part integration: the canvas route records the part and sends the session exactly the part message, choosing nothing", async (t) => {
+	const { cwd, sent, post } = await partSession(t, true);
+	const reply = await post(PART_BODY);
+	assert.equal(reply.status, 202);
+	const { id, queued } = JSON.parse(reply.body);
+	assert.equal(queued, false);
+	assert.equal(partsFile(cwd).parts[0].id, id);
+	assert.equal(sent.length, 1, "exactly one message");
+	assert.equal(sent[0].content, PART_TEXT.replaceAll("abc123", id));
+	assert.equal(sent[0].options, undefined, "an idle agent runs it now");
+	assert.equal(existsSync(join(cwd, "design", "login", "handoffs.json")), false, "no direction is chosen");
+});
+
+test("implement-part integration: queued as a follow-up while the agent is busy; a refused request sends nothing and records nothing", async (t) => {
+	const busy = await partSession(t, false);
+	const reply = await busy.post(PART_BODY);
+	assert.equal(JSON.parse(reply.body).queued, true);
+	assert.deepEqual(busy.sent[0].options, { deliverAs: "followUp" });
+	assert.equal(partsFile(busy.cwd).parts[0].queued, true);
+
+	const idle = await partSession(t, true);
+	assert.equal((await idle.post({ ...PART_BODY, file: "nope.html" })).status, 400);
+	assert.equal((await idle.post({ ...PART_BODY, selector: "" })).status, 400);
+	assert.equal((await idle.post(PART_BODY, { Origin: "http://evil.example" })).status, 403);
+	assert.equal(idle.sent.length, 0);
+	assert.equal(existsSync(join(idle.cwd, "design", "login", "parts.json")), false);
+});
+
+test("implement-part S6: gentle_design handoff with a part moves that part, leaves handoffs.json alone, and refuses an unknown part or another artboard's", async () => {
+	const cwd = scratchCwd();
+	writeLinkedDesign(cwd, "login");
+	mkdirSync(join(cwd, "design", "login"), { recursive: true });
+	writeFileSync(join(cwd, "design", "login", "parts.json"), JSON.stringify({ version: 1, parts: [{ id: "abc123", file: "02-card.html", selector: "nav.side", excerpt: "Home", status: "sent", queued: false, sentAt: "2026-10-31T10:00:00.000Z", startedAt: null, implementedAt: null }] }));
+	const fake = fakePi();
+	gentleDesign(fake.pi, { startServer: unexpectedServer, openBrowser: unexpectedBrowser });
+	const run = designTool(fake);
+	const { ctx } = fakeContext(cwd);
+	const started = await run({ action: "handoff", target: "login/02-card.html", part: "abc123", status: "in_progress", note: "Sidebar first" }, ctx);
+	assert.equal(toolText(started), "Part abc123 of design/login/02-card.html (nav.side): in progress. No direction is chosen by it.");
+	const done = await run({ action: "handoff", target: "login/02-card.html", part: "abc123", status: "implemented", note: "src/layout/Sidebar.tsx" }, ctx);
+	assert.equal(toolText(done), "Part abc123 of design/login/02-card.html (nav.side): implemented. No direction is chosen by it.");
+	const part = partsFile(cwd).parts[0];
+	assert.equal(part.status, "implemented");
+	assert.equal(part.note, "src/layout/Sidebar.tsx");
+	assert.deepEqual(done.details, { target: "login/02-card.html", part });
+	assert.equal(existsSync(join(cwd, "design", "login", "handoffs.json")), false, "handoffs.json is untouched");
+	await assert.rejects(run({ action: "handoff", target: "login/02-card.html", part: "nope", status: "implemented" }, ctx), /No part "nope"/);
+	await assert.rejects(run({ action: "handoff", target: "login/01-split.html", part: "abc123", status: "implemented" }, ctx), /belongs to 02-card\.html/);
+	await assert.rejects(run({ action: "handoff", target: "login/02-card.html", part: "abc123" }, ctx), /status "in_progress" or "implemented"/);
+	assert.equal(fake.sent.length, 0, "the tool sends no user message");
+});
+
+test("implement-part S6: gentle_design list names each design's parts with their state; the schema has part", async () => {
+	const cwd = scratchCwd();
+	writeLinkedDesign(cwd, "login");
+	writeFileSync(join(cwd, "design", "login", "parts.json"), JSON.stringify({ version: 1, parts: [
+		{ id: "abc123", file: "02-card.html", selector: "nav.side", excerpt: "Home", status: "implemented", queued: false, sentAt: "2026-10-31T10:00:00.000Z", startedAt: "2026-10-31T10:01:00.000Z", implementedAt: "2026-10-31T10:02:00.000Z" },
+		{ id: "def456", file: "01-split.html", selector: "footer", excerpt: "", status: "sent", queued: true, sentAt: "2026-10-31T10:03:00.000Z", startedAt: null, implementedAt: null },
+	] }));
+	const fake = fakePi();
+	gentleDesign(fake.pi, fakeCanvas());
+	const run = designTool(fake);
+	const { ctx } = fakeContext(cwd);
+	const text = toolText(await run({ action: "list" }, ctx));
+	assert.ok(text.includes([
+		"- login: Login screen",
+		"  - 01-split.html: Split layout",
+		"  - 02-card.html: Centered card",
+		"  Parts handed off on their own (2): abc123 02-card.html nav.side (implemented); def456 01-split.html footer (sent, queued)",
+	].join("\n")), text);
+	const tool = fake.tool("gentle_design") as unknown as { description: string; parameters: { properties: Record<string, unknown> } };
+	assert.ok("part" in tool.parameters.properties, "the schema has part");
+	assert.ok(tool.description.includes("part"), "the description names part");
+});
+
+test("skills/design/SKILL.md tells the sync to write tokens as the rows design/system.md is read with", () => {
+	const source = readFileSync(SKILL_PATH, "utf8");
+	assert.ok(source.includes("For each CSS custom property, use a table row under a `##` section, with the backticked token name in the first cell and its backticked value in the second cell."), "the sync names the token row format");
 });

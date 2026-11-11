@@ -4,6 +4,9 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+// The generated copy of lib/design-canvas-assets.ts: plain `node` runs this check
+// (prepack, prepublishOnly), and Node 23.0-23.5 cannot load TypeScript unflagged.
+import { DESIGN_CANVAS_ASSETS } from "../runtime/design-canvas-assets.mjs";
 
 const root = join(fileURLToPath(new URL("..", import.meta.url)));
 
@@ -26,6 +29,10 @@ export const installerPaths = Object.freeze([
   "assets/install-wizard/wizard.js",
   "assets/install-wizard/wizard.css",
 ]);
+
+// The canvas server serves exactly these files; one list keeps the server and
+// the package in sync.
+export const designCanvasAssetPaths = Object.freeze(Object.keys(DESIGN_CANVAS_ASSETS).map((name) => `assets/design-canvas/${name}`));
 
 export const requiredPaths = [
   "bin/gentle-shell.mjs",
@@ -67,14 +74,15 @@ export const requiredPaths = [
   "lib/gentle-design.ts",
   // The design canvas server reads its page and scripts from assets/ by path.
   "lib/design-canvas-server.ts",
+  "lib/design-canvas-assets.ts",
+  "runtime/design-canvas-assets.mjs",
   "lib/design-open-browser.ts",
   "lib/design-comments.ts",
   "lib/design-handoffs.ts",
+  "lib/design-system-tokens.ts",
   "lib/design-sources.ts",
   "assets/design-canvas/index.html",
-  "assets/design-canvas/canvas.js",
-  "assets/design-canvas/canvas.css",
-  "assets/design-canvas/inspector.js",
+  ...designCanvasAssetPaths,
   "scripts/npm-pack-result.mjs",
   "assets/orchestrator.md",
   "assets/orchestrator-delegation.md",
@@ -180,9 +188,9 @@ export const requiredPaths = [
   "contracts/review-provider-contract-mirror/v1.4.0/generated/provider-capabilities.baseline.json",
   "contracts/review-provider-contract-mirror/v1.4.0/generated/provider-roles.baseline.json",
   "prompts/skill-creation.md",
-  "skills/_shared/review-ledger-contract.md",
   "skills/branch-pr/SKILL.md",
   "skills/chained-pr/SKILL.md",
+  "skills/chained-pr/references/chaining-details.md",
   "skills/cognitive-doc-design/SKILL.md",
   "skills/comment-writer/SKILL.md",
   "skills/design/SKILL.md",
@@ -193,11 +201,20 @@ export const requiredPaths = [
   "skills/gentle-ui-design/references/adaptive-interfaces.md",
   "skills/gentle-ai/SKILL.md",
   "skills/issue-creation/SKILL.md",
+  "skills/issue-creation/references/delegated-workflow-actions.md",
   "skills/judgment-day/SKILL.md",
+  "skills/judgment-day/references/prompts-and-formats.md",
   "skills/rdd-defect-workflow/SKILL.md",
   "skills/skill-creator/SKILL.md",
   "skills/skill-improver/SKILL.md",
   "skills/skill-registry/SKILL.md",
+  "skills/tui-design/NOTICE.md",
+  "skills/tui-design/SKILL.md",
+  "skills/tui-design/references/commands.md",
+  "skills/tui-design/references/critique.md",
+  "skills/tui-design/references/design-doc.md",
+  "skills/tui-design/references/terminal-craft.md",
+  "skills/tui-design/references/visual-loop.md",
   "skills/work-unit-commits/SKILL.md",
 ];
 
@@ -470,7 +487,7 @@ async function main() {
     process.exit(1);
   }
 
-  const { GENTLE_AI_VERSION } = await import(new URL("../lib/gentle-ai-binary.ts", import.meta.url));
+  const { GENTLE_AI_VERSION } = await import(new URL("../runtime/gentle-ai-binary.mjs", import.meta.url));
   const versionMismatches = gentleAiVersionPinMismatches({
     installerVersion: INSTALLER_VERSION,
     releaseBaseUrl: RELEASE_BASE_URL,

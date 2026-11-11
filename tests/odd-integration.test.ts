@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
+import { __testing } from "../extensions/gentle-ai.ts";
 import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
@@ -11,7 +12,7 @@ test("ODD continuity persists the task file and complete Engram mirror across re
 	assert.match(memory, /odd\/tasks\/<feature-name>\.md/);
 	assert.match(memory, /odd\/<feature-name>\/tasks/);
 	assert.match(memory, /Mirror the full current document and repository-relative file locator/);
-	assert.match(memory, /Read back both writes; they are not atomic/);
+	assert.match(memory, /Read back both writes with the normal read tool; they are not atomic/);
 	assert.match(memory, /mirror pending/);
 	assert.match(memory, /On resume, use `mem_context`, then project\/feature-scoped `mem_search`, and `mem_get_observation`/);
 	assert.match(memory, /read the actual task file/);
@@ -19,7 +20,9 @@ test("ODD continuity persists the task file and complete Engram mirror across re
 
 test("optional research stays output-only and delegates to a general worker", () => {
 	const delegation = readDelegationDetail();
-	assert.match(delegation, /Recommend optional research only for a named uncertainty/);
+	// P5b: the named-uncertainty rule is stated once, in always-on step 3.
+	assert.match(__testing.buildGentlePrompt("gentleman"), /Recommend optional research only for a named uncertainty/);
+	assert.doesNotMatch(delegation, /Recommend optional research only for a named uncertainty/);
 	assert.match(delegation, /Forward these research instructions to an existing fresh general exploration\/research worker/);
 	assert.match(delegation, /Research remains read-only and requires no new persistence or readiness machinery/);
 	assert.match(delegation, /If tools are unavailable, disclose limitations without inventing access or evidence/);
@@ -32,7 +35,9 @@ test("applicability, fallback and honest evidence flow through ODD actors", () =
 	const worker = read("assets/agents/gentle-ai-worker.md");
 	const verifier = read("assets/agents/gentle-ai-verify.md");
 	assert.match(wrapper, /behavior changes with applicable runnable deterministic tests and a clear expected outcome/);
-	assert.match(delegation, /Test or framework presence alone does not establish applicability/);
+	// P5b (C3): the applicability rule lives in the always-on principle; the lazy modules forward it.
+	assert.match(wrapper, /Test presence alone does not establish applicability/);
+	assert.match(delegation, /forward this policy, the applicable exact runner and commands/);
 	for (const [actor, text] of [["implementation support", support], ["worker", worker], ["verifier", verifier]] as const) {
 		assert.match(text, /behavior changes with applicable runnable deterministic tests and a clear expected outcome/i, `${actor} must assess behavior-level applicability`);
 		assert.match(text, /passive documentation/i, `${actor} must handle passive docs`);

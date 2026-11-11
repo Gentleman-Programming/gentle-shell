@@ -98,3 +98,11 @@ test("gentle-shell#3082: verification inputs bind to named commits, not live fil
 		"never verify the live copy silently instead",
 	], "input identity boundary");
 });
+
+test("gentle-shell#3082: a safety-guard denial is reportable evidence in the handoff", () => {
+	containsAll(verify, [
+		"A safety-guard denial is not an infrastructure failure",
+		"rule and blocked path, sanitized of secret contents",
+		"mark that probe unverified",
+	], "denial evidence handoff");
+});

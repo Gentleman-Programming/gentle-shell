@@ -107,6 +107,16 @@ test("stop is surfaced unchanged before edit; authored collect returns to the mo
  }
 });
 
+test("an intended-untracked selection returns selection-required; a correction request still returns input-required", async () => {
+ const selecting = { operation: "inspect", status: "blocked", result: { next_transition: { kind: "collect" } }, selectionBinding: "opaque-selection", nextStep: "select-intended-untracked" };
+ const correction = { ...collect, result: { ...collect.result, next_transition: { kind: "collect", correction_request: { request_hash: "opaque-request" } } }, collectBindings: [{ collectBinding: "plan" }] };
+ for (const [response, expected] of [[selecting, "selection-required"], [correction, "input-required"], [{ ...correction, selectionBinding: "opaque-selection" }, "input-required"]] as const) {
+  const host = backend([response]); const result = await runReviewCoordinator({ lineageId: lineage }, host);
+  assert.equal(result.outcome, expected);
+  assert.equal(result.result, response, "the facade envelope is relayed unchanged"); assert.equal(host.calls.length, 1);
+ }
+});
+
 test("post-edit opaque captures need no targeted-validator reason or operation", async () => {
  const host = backend([collect, captured, approved, closed]);
  assert.equal((await runReviewCoordinator({ lineageId: lineage }, host)).outcome, "closed");

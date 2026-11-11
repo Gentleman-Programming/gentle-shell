@@ -157,7 +157,11 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
   const entries = Array.isArray(details.collectBindings) ? details.collectBindings.map(record) : [];
   // Native explicitly supplies the authored correction request. Do not derive
   // host routing metadata from submission domains or inspect opaque bindings.
-  if (transition.correction_request !== undefined || entries.length === 0) return finish("input-required", details);
+  if (transition.correction_request !== undefined) return finish("input-required", details);
+  // The facade's own pre-lineage intended-untracked selection (selectionBinding
+  // and nextStep, no collectBindings): the parent chooses, never the run.
+  if (entries.length === 0 && typeof details.selectionBinding === "string") return finish("selection-required", details);
+  if (entries.length === 0) return finish("input-required", details);
   if (lineage === undefined || target === undefined) return finish("blocked", details);
   const bindings = entries.map(entry => entry.collectBinding);
   if (!bindings.every(nonempty)) return finish("blocked", details);

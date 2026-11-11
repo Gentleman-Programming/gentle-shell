@@ -23,8 +23,10 @@ export interface CoordinatorRuntimeOptions {
 	 * STATUS; STATUS then offers one host-mediated refuter slot, whose capture
 	 * returns the approved closure. "refuter-reoffers-group": the same, except
 	 * that every STATUS after the reconciliation offers the same group again.
+	 * "untracked-selection": a fresh review is due, and pre-lineage STATUS asks
+	 * for the intended-untracked selection (status/v7).
 	 */
-	scenario?: "single" | "refuter" | "refuter-reoffers-group";
+	scenario?: "single" | "refuter" | "refuter-reoffers-group" | "untracked-selection";
 }
 const GROUP_LENSES = ["review-risk", "review-reliability"] as const;
 export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coordinator", options: CoordinatorRuntimeOptions = {}) {
@@ -66,6 +68,19 @@ export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coo
 	} as unknown as ReviewCollectInputV3;
 	const refuting = { ...reviewing, nextTransition: { kind: "collect", reasonCode: "provider_refuter_required", collect: { inputs: [refuterInput] } },
 		raw: { ...raw, next_transition: { kind: "collect", reason_code: "provider_refuter_required" } } } as unknown as ReviewStatusV3;
+	// A pre-lineage STATUS that asks the parent to choose intended untracked files.
+	const selectionInput = {
+		name: "intended_untracked_selection", schema: "gentle-ai.review-intended-untracked-selection/v1", captureOperation: "external.select_intended_untracked",
+		arguments: [
+			{ name: "target_identity", value: target }, { name: "projection", value: "workspace" },
+			{ name: "base_tree", value: reviewing.projection.baseTree }, { name: "candidate_tree", value: reviewing.projection.currentCandidateTree },
+			{ name: "eligible_paths_json", value: JSON.stringify(["untracked.md"]) }, { name: "expected_untracked_inventory", value: target },
+		],
+		submission: { operationToken: "status", argumentTokens: ["--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", "--intended-untracked-selection={{value}}"],
+			values: [{ slot: "intended_untracked_selection", domain: "schema_bound_json", schema: "gentle-ai.review-intended-untracked-selection/v1", substitutionLocation: 4 }] },
+	} as unknown as ReviewCollectInputV3;
+	const selecting = { ...reviewing, authority: undefined, nextTransition: { kind: "collect", reasonCode: "intended_untracked_selection_required", collect: { inputs: [selectionInput] } },
+		raw: { schema: "gentle-ai.review-integration.status/v7", target_identity: target, next_transition: { kind: "collect", reason_code: "intended_untracked_selection_required", collect: { inputs: [] } } } } as unknown as ReviewStatusV3;
 	const approvedClosure = (operation: string) => JSON.stringify({ schema: "gentle-ai.review-last-event-closure/v1", operation, lineage_id: lineage, state: "approved", action: "fixture approval; not real authority", store_revision: revision,
 		...(options.advisoryFindings === undefined ? {} : { advisory_findings: options.advisoryFindings }),
 		...(options.reviewerResults === undefined ? {} : { reviewer_results: options.reviewerResults }) });
@@ -86,6 +101,7 @@ export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coo
 			assert.notEqual(state, "burned", "no STATUS after burn");
 			nativeCalls.push(`status:${state}`);
 			if (state === "approved") return approved;
+			if (scenario === "untracked-selection") return selecting;
 			if (scenario === "single") return reviewing;
 			if (state === "refuting") {
 				// The facade's own post-group reconciliation reads STATUS first.
@@ -101,6 +117,11 @@ export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coo
 		},
 		assess: async () => {
 			candidateReads++;
+			if (scenario === "untracked-selection") {
+				nativeCalls.push("assess");
+				return { schema: "gentle-ai.review-assessment/v1", risk: "high", reasons: [], changedPaths: 1, changedLines: 1, reviewDue: true, reviewDueReason: "high_risk",
+					candidate: { kind: "current-changes", consumed: false } };
+			}
 			return { schema: "gentle-ai.review-assessment/v1", risk: "passive", reasons: [], changedPaths: 1, changedLines: 1,
 				candidate: { kind: "current-changes", consumed: state === "burned" } };
 		},

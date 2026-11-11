@@ -1091,6 +1091,105 @@ test("S2: removing a part streams one change for parts.json", async (t) => {
 	await events.waitFor(/event: change\ndata: \{"slug":"alpha","file":"parts\.json"\}\n\n/);
 });
 
+// canvas-server-data S9: parts.json holds at most 1 MiB, checked before the file is replaced.
+const MAX_PARTS_BYTES = 1024 * 1024;
+const CONTROL = "\u0001";
+const partsDocument = (parts: object[]) => `${JSON.stringify({ version: 1, parts }, null, 2)}\n`;
+
+/** Valid sent parts whose parts.json is exactly `target` bytes, mostly control characters (six bytes each once escaped). */
+function partsOfSize(target: number): object[] {
+	const fillers: Array<Record<string, unknown>> = [];
+	const size = () => Buffer.byteLength(partsDocument(fillers));
+	for (let i = 0; ; i++) {
+		const part: Record<string, unknown> = { id: `fill${i}`, file: "01-hero.html", selector: "h1", excerpt: "", instruction: "", status: "sent", queued: false, sentAt: "2026-10-31T10:00:00.000Z", startedAt: null, implementedAt: null };
+		const gap = target - size();
+		fillers.push(part);
+		const overhead = size() - Buffer.byteLength(partsDocument(fillers.slice(0, -1)));
+		let length = Math.min(2000, Math.floor((gap - overhead) / 6));
+		if (length === 2000 && gap - overhead - 12000 < overhead + 12) length = 1000;
+		assert.ok(length >= 0 && fillers.length < 99, "the fillers fit in the parts a design can hold");
+		part.instruction = CONTROL.repeat(length);
+		const left = target - size();
+		if (left >= 6) continue;
+		part.excerpt = "x".repeat(left);
+		assert.equal(size(), target);
+		return fillers;
+	}
+}
+
+test("S9: implement-part refuses a part that would push parts.json past 1 MiB with 409 parts-too-large, delivering nothing and leaving the file byte for byte", async (t) => {
+	const { port, root, parts } = await start(t);
+	writeFileSync(partsFile(root), partsDocument(partsOfSize(MAX_PARTS_BYTES - 2000)));
+	const before = readFileSync(partsFile(root));
+	const reply = await postJson(port, PARTS, { file: "01-hero.html", selector: "h1", note: CONTROL.repeat(2000) });
+	assert.equal(reply.status, 409);
+	const body = JSON.parse(reply.body);
+	assert.deepEqual(Object.keys(body), ["error", "reason"]);
+	assert.equal(body.error, "parts-too-large");
+	assert.match(body.reason, /^design\/alpha\/parts\.json would grow to \d+ bytes, past the 1 MiB it can hold; nothing was written\.$/);
+	assert.deepEqual(readFileSync(partsFile(root)), before, "the previous file is intact");
+	assert.equal(parts.length, 0, "a refused part never reaches the session");
+	const small = await postJson(port, PARTS, { file: "01-hero.html", selector: "h1" });
+	assert.equal(small.status, 202, "a part that still fits is recorded");
+	assert.ok(readFileSync(partsFile(root)).length <= MAX_PARTS_BYTES);
+	assert.equal((await rawRequest(port, `/${TOKEN}/${PARTS_LIST}`)).status, 200, "and the file still reads");
+	assert.equal((await postJson(port, PARTS_REMOVE, { id: JSON.parse(small.body).id })).status, 200, "Remove still works on a nearly full file");
+});
+
+// canvas-server-data S10: parts/remove runs under the same per-design exclusivity as the implement-part delivery, so a
+// Remove that arrives while a part is being delivered waits for that delivery to settle.
+
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	let reject!: (error: unknown) => void;
+	const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+	return { promise, resolve, reject };
+}
+
+async function inFlightPart(t: TestContext) {
+	const { root } = fixture(t);
+	const delivery = deferred<undefined>();
+	const delivered: DesignImplementPartRequest[] = [];
+	const server = await startDesignCanvasServer({
+		designRoot: root,
+		onComment: () => {},
+		onImplementPart: (request) => { delivered.push(request); return delivery.promise; },
+		randomToken: () => TOKEN,
+	});
+	t.after(() => server.close());
+	const implement = postJson(server.port, PARTS, { file: "01-hero.html", selector: "h1" });
+	while (delivered.length === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+	const id = delivered[0].part.id;
+	let removeSettled = false;
+	const remove = postJson(server.port, PARTS_REMOVE, { id }).finally(() => { removeSettled = true; });
+	await new Promise((resolve) => setTimeout(resolve, 150));
+	assert.equal(removeSettled, false, "the Remove waits while the delivery is in flight");
+	assert.deepEqual(JSON.parse(readFileSync(partsFile(root), "utf8")).parts.map((part: { id: string }) => part.id), [id], "the part is still on disk while it is delivered");
+	return { root, delivery, implement, remove, id };
+}
+
+test("S10: a Remove fired while implement-part is delivering waits for it, then removes the delivered part", async (t) => {
+	const { root, delivery, implement, remove, id } = await inFlightPart(t);
+	delivery.resolve(undefined);
+	const [implemented, removed] = await Promise.all([implement, remove]);
+	assert.equal(implemented.status, 202);
+	assert.deepEqual(JSON.parse(implemented.body), { ok: true, id, queued: false });
+	assert.equal(removed.status, 200);
+	assert.deepEqual(JSON.parse(removed.body), { ok: true, id });
+	assert.deepEqual(JSON.parse(readFileSync(partsFile(root), "utf8")), { version: 1, parts: [] });
+});
+
+test("S10: a Remove fired while implement-part is delivering finds nothing once the failed delivery takes the part back", async (t) => {
+	const { root, delivery, implement, remove } = await inFlightPart(t);
+	delivery.reject(new Error("session closed"));
+	const [implemented, removed] = await Promise.all([implement, remove]);
+	assert.equal(implemented.status, 500);
+	assert.deepEqual(JSON.parse(implemented.body), { error: "delivery-failed", slug: "alpha", file: "01-hero.html", reason: "session closed" });
+	assert.equal(removed.status, 404, "the part was taken back before the Remove ran");
+	assert.deepEqual(JSON.parse(removed.body), { error: "not-found" });
+	assert.deepEqual(JSON.parse(readFileSync(partsFile(root), "utf8")), { version: 1, parts: [] });
+});
+
 // S15: the canvas Implement route records the handoff in design/<slug>/handoffs.json.
 
 const handoffsOf = (root: string, slug = "alpha") => JSON.parse(readFileSync(join(root, slug, "handoffs.json"), "utf8"));

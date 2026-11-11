@@ -181,3 +181,80 @@ test("S2 preserve: remove still takes back a part whatever its status (a failed 
 	assert.equal(await store.remove("alpha", "part1"), false);
 	assert.deepEqual(onDisk(root), { version: 1, parts: [] });
 });
+
+// canvas-server-data S9: parts.json holds at most 1 MiB. The serialized document is measured before the file is
+// replaced, so a write that would pass the limit is refused and the previous file stays byte for byte. Control
+// characters escape to six bytes each, which is how plain-looking text can reach the limit.
+
+const MAX_PARTS_BYTES = 1024 * 1024;
+const CONTROL = "\u0001";
+const serialized = (parts: object[]) => `${JSON.stringify({ version: 1, parts }, null, 2)}\n`;
+const bytesOf = (parts: object[]) => Buffer.byteLength(serialized(parts));
+
+/** Filler parts so that the document of the fillers plus `extra` serializes to exactly `target` bytes. */
+function fillTo(target: number, extra: object[]): object[] {
+	const fillers: Array<Record<string, unknown>> = [];
+	for (let i = 0; ; i++) {
+		const part: Record<string, unknown> = { id: `fill${i}`, file: "01-a.html", selector: "s", excerpt: "", instruction: "", status: "sent", queued: false, sentAt: at(0), startedAt: null, implementedAt: null };
+		const gap = target - bytesOf([...fillers, ...extra]);
+		fillers.push(part);
+		const overhead = bytesOf([...fillers, ...extra]) - bytesOf([...fillers.slice(0, -1), ...extra]);
+		// Whole six-byte escapes in the instruction, never leaving a gap too small for one more filler.
+		let length = Math.min(2000, Math.floor((gap - overhead) / 6));
+		if (length === 2000 && gap - overhead - 12000 < overhead + 12) length = 1000;
+		assert.ok(length >= 0 && fillers.length < 99, "the fillers fit in the parts a design can hold");
+		part.instruction = CONTROL.repeat(length);
+		const left = target - bytesOf([...fillers, ...extra]);
+		if (left >= 6) continue;
+		part.excerpt = "x".repeat(left);
+		assert.equal(bytesOf([...fillers, ...extra]), target);
+		return fillers;
+	}
+}
+
+test("S9: add refuses a part that would push parts.json past 1 MiB with a too-large error, leaving the file byte for byte", async (t) => {
+	const root = designRoot(t);
+	const store = createDesignPartStore(root, { now: ticking(), randomId: ids() });
+	const added = { id: "part1", ...SIDEBAR, status: "sent", queued: false, sentAt: at(0), startedAt: null, implementedAt: null };
+	writeFileSync(partsPath(root), serialized(fillTo(MAX_PARTS_BYTES + 1, [added])));
+	const before = hash(partsPath(root));
+	await assert.rejects(store.add("alpha", SIDEBAR), (error: unknown) => error instanceof DesignPartsError && error.code === "too-large" && error.message === `design/alpha/parts.json would grow to ${MAX_PARTS_BYTES + 1} bytes, past the 1 MiB it can hold; nothing was written.`);
+	assert.equal(hash(partsPath(root)), before, "the previous file is intact");
+	assert.deepEqual(readdirSync(join(root, "alpha")), ["parts.json"], "no temp file is left");
+	assert.ok((await store.read("alpha")).parts.length > 0, "and it still reads");
+});
+
+test("S9: a write that lands exactly on 1 MiB is kept, and control characters in the note count as their six-byte escapes", async (t) => {
+	const root = designRoot(t);
+	const store = createDesignPartStore(root, { now: ticking(), randomId: ids() });
+	const added = { id: "part1", ...SIDEBAR, status: "sent", queued: false, sentAt: at(0), startedAt: null, implementedAt: null };
+	writeFileSync(partsPath(root), serialized(fillTo(MAX_PARTS_BYTES, [added])));
+	assert.deepEqual(await store.add("alpha", SIDEBAR), added);
+	assert.equal(readFileSync(partsPath(root)).length, MAX_PARTS_BYTES, "exactly at the limit is allowed");
+	const before = hash(partsPath(root));
+	await assert.rejects(store.add("alpha", { ...SIDEBAR, instruction: CONTROL }), isCode("too-large"));
+	await assert.rejects(store.setStatus("alpha", "01-a.html", "part1", "in_progress", { note: CONTROL.repeat(10) }), isCode("too-large"), "a growing progress note is refused too");
+	assert.equal(hash(partsPath(root)), before, "every refusal leaves the full file unchanged");
+	assert.deepEqual(await store.removeSent("alpha", "part1"), added, "Remove still repairs a full file");
+	assert.ok(readFileSync(partsPath(root)).length < MAX_PARTS_BYTES);
+});
+
+// canvas-server-data S11: a repeated in_progress report keeps the time the part was first started.
+
+test("S11: a repeated in_progress report keeps the first startedAt; in_progress after implemented starts again", async (t) => {
+	const root = designRoot(t);
+	const store = createDesignPartStore(root, { now: ticking(), randomId: ids() });
+	await store.add("alpha", SIDEBAR);
+	const first = await store.setStatus("alpha", "01-a.html", "part1", "in_progress", { note: "header" });
+	assert.equal(first.startedAt, at(1));
+	const again = await store.setStatus("alpha", "01-a.html", "part1", "in_progress", { note: "menu" });
+	assert.equal(again.startedAt, at(1), "the repeated report keeps the start time");
+	assert.equal(again.note, "menu", "the note is still exactly what the last call passed");
+	assert.equal(onDisk(root).parts[0].startedAt, at(1));
+	const done = await store.setStatus("alpha", "01-a.html", "part1", "implemented", {});
+	assert.equal(done.startedAt, at(1));
+	assert.equal(done.implementedAt, at(3));
+	const reopened = await store.setStatus("alpha", "01-a.html", "part1", "in_progress", {});
+	assert.equal(reopened.startedAt, at(4), "taking an implemented part up again is a new start, as before");
+	assert.equal(reopened.implementedAt, null);
+});

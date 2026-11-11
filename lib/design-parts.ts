@@ -9,6 +9,8 @@ import type { DesignHandoffDelivery } from "./design-handoffs.ts";
 // it with a temp file + rename. A file this module cannot parse is reported and never overwritten.
 // "Remove" on the canvas (removeSent) clears a part the agent never reported: only a part still `sent` (queued or not),
 // so a part the agent took up or finished keeps its record; every refusal leaves the file byte for byte.
+// The file holds at most 1 MiB: the serialized document is measured before the file is replaced, so a write that would
+// pass it is refused (`too-large`) and the previous file, which Remove can still repair, stays as it was.
 
 export const DESIGN_PARTS_FILE = "parts.json";
 /** The most parts one design keeps. */
@@ -45,8 +47,11 @@ export type DesignPartsDocument = { version: 1; parts: DesignPart[] };
 
 export type DesignPartInput = { file: string; selector: string; excerpt: string; instruction: string };
 
-/** `not-sent`: removeSent was asked for a part the agent already reported (in_progress or implemented). */
-export type DesignPartsErrorCode = "not-found" | "invalid-file" | "invalid-input" | "limit" | "not-sent";
+/**
+ * `not-sent`: removeSent was asked for a part the agent already reported (in_progress or implemented).
+ * `too-large`: the write would make parts.json larger than 1 MiB; nothing was written.
+ */
+export type DesignPartsErrorCode = "not-found" | "invalid-file" | "invalid-input" | "limit" | "not-sent" | "too-large";
 
 export class DesignPartsError extends Error {
 	readonly code: DesignPartsErrorCode;
@@ -162,7 +167,11 @@ export function createDesignPartStore(designRoot: string, deps: DesignPartStoreD
 		return serializeDesignWrite(path, async () => {
 			const document = await load(path);
 			const { result, write } = change(document);
-			if (write) await replaceDesignFile(dir, path, DESIGN_PARTS_FILE, `${JSON.stringify(document, null, 2)}\n`);
+			if (!write) return result;
+			const content = `${JSON.stringify(document, null, 2)}\n`;
+			const size = Buffer.byteLength(content);
+			if (size > MAX_FILE_BYTES) throw new DesignPartsError("too-large", `design/${slug}/${DESIGN_PARTS_FILE} would grow to ${size} bytes, past the 1 MiB it can hold; nothing was written.`);
+			await replaceDesignFile(dir, path, DESIGN_PARTS_FILE, content);
 			return result;
 		});
 	}
@@ -205,7 +214,8 @@ export function createDesignPartStore(designRoot: string, deps: DesignPartStoreD
 				const part = partOf({
 					...current,
 					status,
-					startedAt: status === "in_progress" ? stamp : current.startedAt,
+					// A repeated in_progress report keeps the first start; taking up a sent or implemented part starts it again.
+					startedAt: status === "in_progress" ? (current.status === "in_progress" ? current.startedAt ?? stamp : stamp) : current.startedAt,
 					implementedAt: status === "implemented" ? stamp : null,
 					note: cleanNote,
 				});

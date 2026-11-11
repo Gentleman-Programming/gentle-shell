@@ -178,6 +178,7 @@ function partFailure(error: unknown): never {
 	if (error.code === "invalid-file") throw new HttpError(422, "invalid-parts", { error: "invalid-parts", reason: error.message });
 	if (error.code === "limit") throw new HttpError(409, "too-many-parts", { error: "too-many-parts", reason: error.message });
 	if (error.code === "not-sent") throw new HttpError(409, "part-not-sent", { error: "part-not-sent", reason: error.message });
+	if (error.code === "too-large") throw new HttpError(409, "parts-too-large", { error: "parts-too-large", reason: error.message });
 	throw new HttpError(400, "invalid-part", { error: "invalid-part", reason: error.message });
 }
 
@@ -514,6 +515,8 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 	const layouts = createDesignLayoutStore(designRoot);
 	// Deliveries of one design run one at a time (send-now and send-all), so a
 	// comment is never delivered twice: a send-all waits for an in-flight send-now.
+	// An implement-part delivery and a parts/remove share it, so a Remove never
+	// takes out a part whose message is still on its way to the session.
 	const sending = new Map<string, Promise<unknown>>();
 
 	function exclusive<T>(slug: string, task: () => Promise<T>): Promise<T> {
@@ -842,7 +845,8 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 		if (note.length > LIMITS.comment) throw new HttpError(400, "invalid-note", { error: "invalid-note", reason: `note must have at most ${LIMITS.comment} characters` });
 		const excerpt = typeof body.excerpt === "string" ? body.excerpt : "";
 		let deliveryFailed: HttpError | undefined;
-		const { part, queued } = await sendDesignPart(partStore, slug, { file, selector, excerpt, instruction: note }, async (recorded) => {
+		// Record, deliver and settle under the design's delivery lock, so a parts/remove waits for the delivery in flight.
+		const { part, queued } = await exclusive(slug, () => sendDesignPart(partStore, slug, { file, selector, excerpt, instruction: note }, async (recorded) => {
 			try {
 				return await onImplementPart({ slug, part: recorded });
 			} catch (error) {
@@ -850,17 +854,19 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 				deliveryFailed = new HttpError(500, "delivery-failed", { error: "delivery-failed", slug, file, reason });
 				throw deliveryFailed;
 			}
-		}).catch((error: unknown) => (deliveryFailed !== undefined && error === deliveryFailed ? Promise.reject(error) : partFailure(error)));
+		})).catch((error: unknown) => (deliveryFailed !== undefined && error === deliveryFailed ? Promise.reject(error) : partFailure(error)));
 		reply(res, 202, { ok: true, id: part.id, queued });
 	}
 
 	/**
 	 * "Remove" (canvas-server-data S2): takes a part still `sent` out of parts.json through the store's serialized writer,
 	 * so a part the agent never reports can be cleared. Anything else is refused without writing; handoffs.json is never touched.
+	 * It runs under the design's delivery lock (S10): a Remove that lands while a part is being delivered waits for that
+	 * delivery to settle, then removes the delivered part or finds the failed one already taken back.
 	 */
 	async function removePart(req: IncomingMessage, res: ServerResponse, slug: string): Promise<void> {
 		const body = await readJsonObject(req);
-		const removed = await partStore.removeSent(slug, typeof body.id === "string" ? body.id : "").catch(partFailure);
+		const removed = await exclusive(slug, () => partStore.removeSent(slug, typeof body.id === "string" ? body.id : "")).catch(partFailure);
 		reply(res, 200, { ok: true, id: removed.id });
 	}
 

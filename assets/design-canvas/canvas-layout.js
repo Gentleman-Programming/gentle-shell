@@ -33,6 +33,9 @@ export function init(ctx) {
 	// A layout.json change came while saves were on their way or a press was on an artboard: layout.json is read
 	// again once both are over.
 	let readPending = false;
+	// The layout views taken so far (useLayout): a save's reply only touches the view it was made from, never one
+	// taken after the page left the design and came back.
+	let views = 0;
 
 	/** A board's key in layout.json: its artboard file, or the system board's own key. */
 	function layoutKey(board) {
@@ -76,10 +79,11 @@ export function init(ctx) {
 	/**
 	 * Takes `layout` (null: none, a row) as design `slug`'s; the boards move at the next applyLayout. `saved` is what
 	 * layout.json is known to hold (this read, or later a save the server took); `unsaved` marks a layout whose last
-	 * save failed, which stays until layout.json holds something else.
+	 * save failed, which stays until layout.json holds something else. Each call is a new view of the layout.
 	 */
 	function useLayout(slug, layout) {
-		store.setLayout({ layout: { slug, arrangement: layout ? layout.arrangement : "row", positions: layout ? layout.positions : {}, saved: JSON.stringify(layout) } });
+		views += 1;
+		store.setLayout({ layout: { slug, view: views, arrangement: layout ? layout.arrangement : "row", positions: layout ? layout.positions : {}, saved: JSON.stringify(layout) } });
 	}
 
 	/** loadManifest's read of design `slug`'s layout: { layout, read }, numbered like onLayoutChange's reads. */
@@ -259,7 +263,8 @@ export function init(ctx) {
 	 * status line and the boards stay, unsaved, until layout.json holds something this page did not know (another
 	 * page's change wins); a later save that succeeds clears that error. A read on its way is older than this layout,
 	 * and a change that came meanwhile is read once the last save is done. Nothing is saved while the boards shown
-	 * are still another design's.
+	 * are still another design's. A reply that comes after the page left the design and came back leaves the layout
+	 * read since alone: what it holds is what layout.json held then, so the save's own change event still shows.
 	 */
 	function saveLayout() {
 		const slug = state.slug;
@@ -271,7 +276,7 @@ export function init(ctx) {
 		saving = saving.then(async () => {
 			const reply = await postJson(`api/designs/${encodeURIComponent(slug)}/layout`, body).catch((error) => ({ ok: false, body: { error: error.message } }));
 			saves -= 1;
-			if (state.layout && state.layout.slug === slug) {
+			if (state.layout && state.layout.view === layout.view) {
 				store.setLayout({ layout: reply.ok ? { ...state.layout, saved: JSON.stringify(body), unsaved: false } : { ...state.layout, unsaved: true } });
 			}
 			if (!reply.ok && slug === state.slug) setStatus(TEXT.saveFailed(slug, reply.body.reason || reply.body.error || "error"), true);

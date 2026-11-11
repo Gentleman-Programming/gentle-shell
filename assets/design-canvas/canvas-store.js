@@ -50,7 +50,7 @@ export function createStore(initial = {}) {
 		toastTimer: 0,
 		// The open shared menu (canvas-menu.js): { button, items, byItem }, or null.
 		menu: null,
-		// Where the boards sit (canvas-layout.js): { slug, arrangement, positions, saved (what layout.json is known to hold), unsaved (its last save failed) } for the design
+		// Where the boards sit (canvas-layout.js): { slug, view (which read of it this is), arrangement, positions, saved (what layout.json is known to hold), unsaved (its last save failed) } for the design
 		// shown, or null (the system-only view); replaced whole on every change, never changed in place.
 		layout: null,
 		// The artboard pressed last (outlined until a press elsewhere or Esc), or null.

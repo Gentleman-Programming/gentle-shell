@@ -360,6 +360,40 @@ test("a layout.json change of the next design that comes before its design.json 
 	assert.deepEqual(canvas.posts.filter((post) => post.url === BETA_LAYOUT), []);
 });
 
+test("a save that lands after the page left the design and came back shows once its layout.json change comes", async () => {
+	const grid = { arrangement: "grid", positions: {} };
+	const canvas = await loadLayout({ [LAYOUT_URL]: { layout: grid } });
+	const select = canvas.document.getElementById("gd-design");
+	const open = async (slug: string) => {
+		select.value = slug;
+		select.dispatch("change");
+		await settle();
+	};
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["480px", "0px"]], "alpha opens in its grid");
+	// Column's save stays on its way while the page goes to beta and back; alpha's layout.json still holds the grid.
+	const save = deferred();
+	canvas.replies[LAYOUT_URL] = save.promise;
+	canvas.document.getElementById("gd-arrange-column").dispatch("click");
+	await settle();
+	assert.deepEqual(layoutPosts(canvas).map((post) => post.body.arrangement), ["column"]);
+	const column = layoutPosts(canvas)[0].body;
+	canvas.replies[LAYOUT_URL] = { layout: grid };
+	await open("beta");
+	assert.equal(canvas.world.children.length, 1, "beta's board shows");
+	await open("alpha");
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["480px", "0px"]], "back in alpha, the file's grid shows");
+	assert.deepEqual(pressedArrangements(canvas), ["false", "false", "true"]);
+	// The server takes the column, then its layout.json change comes.
+	save.resolve({ ok: true });
+	await settle();
+	canvas.replies[LAYOUT_URL] = { layout: column };
+	await canvas.serverEvent("change", LAYOUT_CHANGE);
+	await settle();
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["0px", "380px"]], "the column the server took shows");
+	assert.deepEqual(pressedArrangements(canvas), ["false", "true", "false"]);
+	assert.equal(layoutPosts(canvas).length, 1, "and nothing is saved back");
+});
+
 test("a second pointer pressed during a move never takes the move over: the moved artboard is saved on its own release", async () => {
 	const canvas = await loadLayout(NO_LAYOUT);
 	canvas.replies[LAYOUT_URL] = { ok: true };

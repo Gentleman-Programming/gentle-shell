@@ -43,20 +43,23 @@ test("an older design.json load that answers last never replaces the boards of a
 	const canvas = await loadCanvas(300, { [LAYOUT]: { layout: null } });
 	const older = canvas.replies[MANIFEST] as { artboards: unknown[] };
 	const newer = { ...older, artboards: [...older.artboards, { file: "03-c.html", title: "Third", tradeoff: "", width: 400, height: 300 }] };
+	// The older load reads its manifest, then its layout read goes out and stays on its way.
 	const olderManifest = deferred();
-	canvas.replies[MANIFEST] = olderManifest.promise;
-	await canvas.serverEvent("change", { slug: "alpha", file: "design.json" });
-	const newerManifest = deferred();
-	canvas.replies[MANIFEST] = newerManifest.promise;
-	await canvas.serverEvent("change", { slug: "alpha", file: "design.json" });
-	// The older load reads its manifest first and waits for its layout; the newer one then reads both.
 	const olderLayout = deferred();
+	canvas.replies[MANIFEST] = olderManifest.promise;
 	canvas.replies[LAYOUT] = olderLayout.promise;
+	const layoutReads = () => canvas.fetched.filter((url) => url === LAYOUT).length;
+	const readsBefore = layoutReads();
+	await canvas.serverEvent("change", { slug: "alpha", file: "design.json" });
 	olderManifest.resolve(older);
 	await settle();
+	assert.equal(layoutReads(), readsBefore + 1, "the older load's layout read has started before the newer load");
+	// The newer load then reads both and shows its boards.
+	canvas.replies[MANIFEST] = newer;
 	canvas.replies[LAYOUT] = { layout: null };
-	newerManifest.resolve(newer);
+	await canvas.serverEvent("change", { slug: "alpha", file: "design.json" });
 	await settle();
+	assert.equal(layoutReads(), readsBefore + 2);
 	assert.deepEqual(texts(canvas.world, "gd-artboard-title"), ["First", "Second", "Third"], "the newer manifest shows");
 	olderLayout.resolve({ layout: null });
 	await settle();

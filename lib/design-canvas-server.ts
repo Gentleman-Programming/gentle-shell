@@ -19,6 +19,13 @@ import { DesignPartsError, createDesignPartStore, sendDesignPart, type DesignPar
 const HOST = "127.0.0.1";
 /** Design directory names the canvas serves: kebab-case, never a dot or path segment. */
 export const DESIGN_SLUG = /^[a-z0-9][a-z0-9-]*$/;
+
+/** One-line diagnostic naming why canvas change events cannot fire; surfaced per SSE stream (gentle-shell#3156). */
+export function describeWatchFailure(error: unknown): string {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	if (code === "ENOSPC") return "fs.watch failed: ENOSPC (inotify watch limit exhausted; check fs.inotify.max_user_watches)";
+	return `fs.watch failed: ${code ?? String(error)}`;
+}
 const SLUG = DESIGN_SLUG;
 const TOKEN_SHAPE = /^[A-Za-z0-9_-]{16,128}$/;
 const ASSET_DIR = fileURLToPath(new URL("../assets/design-canvas/", import.meta.url));
@@ -536,6 +543,7 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 	let ownOrigins = new Set<string>();
 	let closing: Promise<void> | undefined;
 	let watcher: FSWatcher | undefined;
+	let watchFailure: string | undefined;
 	const clients = new Set<ServerResponse>();
 	const pending = new Map<string, NodeJS.Timeout>();
 	let heartbeat: NodeJS.Timeout | undefined;
@@ -942,12 +950,14 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 			const next = watch(root, { recursive: true, persistent: false }, (_event, filename) => {
 				if (typeof filename === "string" && filename) queueChange(filename);
 			});
-			next.on("error", () => {
+			next.on("error", (error) => {
+				watchFailure = describeWatchFailure(error);
 				next.close();
 				if (watcher === next) watcher = undefined;
 			});
 			watcher = next;
-		} catch {
+		} catch (error) {
+			watchFailure = describeWatchFailure(error);
 			watcher = undefined;
 		}
 	}
@@ -957,6 +967,7 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 		await ensureWatcher();
 		res.writeHead(200, { ...BASE_HEADERS, "Content-Type": "text/event-stream; charset=utf-8", Connection: "keep-alive" });
 		res.write("retry: 2000\n\n: connected\n\n");
+		if (watchFailure) res.write(`: watch-failed: ${watchFailure}\n\n`);
 		clients.add(res);
 		req.socket.setTimeout(0);
 		const drop = () => clients.delete(res);

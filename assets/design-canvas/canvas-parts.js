@@ -70,6 +70,15 @@ export function init(ctx) {
 	// The part whose Remove confirm is open, and the Removes in flight ("<slug>/<id>").
 	let confirming = null;
 	const removing = new Set();
+	// The latest loadParts: parts.json is written more than once per send, so an older reply landing last changes nothing.
+	let partLoads = 0;
+	// Why Implement only this is disabled, under the popover's buttons, where the keyboard and screen readers reach it too.
+	const partNote = doc.createElement("p");
+	partNote.id = "gd-popover-part-note";
+	partNote.className = "gd-popover-note";
+	partNote.textContent = TEXT.partOffline;
+	partNote.hidden = true;
+	els.form.append(partNote);
 
 	const partsPath = (slug) => `api/designs/${encodeURIComponent(slug)}/parts`;
 	// A request that never reached the server has no error code, only its reason.
@@ -165,7 +174,9 @@ export function init(ctx) {
 		confirm.className = "gd-part-confirm";
 		confirm.setAttribute("role", "group");
 		confirm.setAttribute("aria-label", TEXT.confirmLabel(number));
+		// Cancel and Esc wait for a Remove in flight: Remove (start) is disabled until it answers.
 		const close = () => {
+			if (removing.has(key)) return;
 			confirming = null;
 			confirm.hidden = true;
 			start.hidden = false;
@@ -173,9 +184,11 @@ export function init(ctx) {
 		};
 		const yes = button("gd-part-confirm-yes gd-primary", TEXT.remove, () => removePart(slug, part));
 		yes.dataset.control = "yes";
-		yes.disabled = inFlight;
+		// In flight it stays focusable, so the redraw keeps keyboard focus on it; removePart ignores the click.
+		if (inFlight) yes.setAttribute("aria-disabled", "true");
 		const no = button("gd-part-confirm-no", TEXT.cancel, close);
 		no.dataset.control = "no";
+		no.disabled = inFlight;
 		confirm.addEventListener("keydown", (event) => {
 			if (event.key !== "Escape") return;
 			event.preventDefault();
@@ -231,13 +244,16 @@ export function init(ctx) {
 	async function loadParts() {
 		const slug = state.slug;
 		if (!slug) return;
+		const load = ++partLoads;
 		let data = null;
+		let failure = null;
 		try {
 			data = await getJson(partsPath(slug));
 		} catch (error) {
-			setStatus(TEXT.unreadable(slug, error.message), true);
+			failure = error;
 		}
-		if (slug !== state.slug) return;
+		if (load !== partLoads || slug !== state.slug) return;
+		if (failure) setStatus(TEXT.unreadable(slug, failure.message), true);
 		setParts(slug, data && Array.isArray(data.parts) ? data.parts.filter(isPart) : []);
 	}
 
@@ -289,8 +305,12 @@ export function init(ctx) {
 
 	/** Implement only this on the open popover: enabled only when the page config says the server can deliver a part. */
 	function renderPartButton() {
-		els.partAdd.disabled = !delivery.part;
-		els.partAdd.title = delivery.part ? TEXT.partTitle : TEXT.partOffline;
+		const offline = !delivery.part;
+		els.partAdd.disabled = offline;
+		els.partAdd.title = offline ? TEXT.partOffline : TEXT.partTitle;
+		partNote.hidden = !offline;
+		if (offline) els.partAdd.setAttribute("aria-describedby", partNote.id);
+		else els.partAdd.removeAttribute("aria-describedby");
 	}
 
 	function sendFailure(reply) {
@@ -317,13 +337,14 @@ export function init(ctx) {
 		const slug = board.slug;
 		const reply = await postJson(`api/designs/${encodeURIComponent(slug)}/implement-part`, { file: board.artboard.file, selector: pick.selector, excerpt: pick.excerpt, ...(note ? { note } : {}) }).catch(failed);
 		const open = state.pick === pick;
-		if (open) els.partAdd.disabled = !delivery.part;
 		if (!reply.ok) {
 			const failure = sendFailure(reply);
-			if (open) popoverMessage(failure.text, true, failure.code);
-			else setStatus(failure.text, true);
+			if (!open) return setStatus(failure.text, true);
+			els.partAdd.disabled = !delivery.part;
+			popoverMessage(failure.text, true, failure.code);
 			return;
 		}
+		// Sent: it stays disabled until the popover closes, so a second click sends no duplicate; a new pick enables it.
 		const queued = reply.body.queued === true;
 		if (typeof reply.body.id === "string") {
 			noteParts(slug, { id: reply.body.id, file: board.artboard.file, selector: pick.selector, excerpt: pick.excerpt, status: "sent", queued, sentAt: new Date().toISOString(), startedAt: null, implementedAt: null, ...(note ? { instruction: note } : {}) });

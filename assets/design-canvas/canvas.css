@@ -584,6 +584,8 @@ button:disabled { opacity: 0.5; cursor: default; }
 .gd-part-note { overflow-wrap: anywhere; }
 .gd-part-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 2px; }
 .gd-part-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--gd-text); }
+/* A Remove in flight: marked disabled, still focusable, so keyboard focus stays on it. */
+.gd-part-confirm-yes[aria-disabled="true"] { opacity: 0.5; cursor: default; }
 .gd-part-actions [hidden] { display: none; }
 
 .gd-empty {
@@ -667,6 +669,9 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 
 .gd-popover-message.gd-error, .gd-status.gd-error { color: var(--gd-danger); }
+
+/* Why Implement only this is disabled (canvas-parts.js), under the buttons. */
+.gd-popover-note { margin: 6px 0 0; color: var(--gd-muted); font-size: 12px; text-align: right; }
 
 /* Compare (S15): the artboard and the running app side by side, over the canvas and the panel. */
 .gd-compare {

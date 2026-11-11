@@ -327,6 +327,8 @@ export function init(ctx) {
 	els.design.addEventListener("change", () => {
 		actions.exitCompare(false);
 		store.setDesign({ slug: els.design.value });
+		// The old design's parts go at once: loadManifest may never reach loadParts (a failed or empty design.json).
+		actions.clearParts();
 		loadManifest(state.slug, false);
 	});
 

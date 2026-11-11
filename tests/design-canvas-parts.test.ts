@@ -106,7 +106,7 @@ test("Implement only this posts the element with the optional note, says Sent or
 	assert.equal($(canvas, "gd-popover-text").value, "", "the field is cleared");
 	assert.equal($(canvas, "gd-popover-message").textContent, "Sent to the session");
 	assert.equal($(canvas, "gd-popover-message").classes.has("gd-error"), false);
-	assert.equal($(canvas, "gd-popover-part").disabled, false);
+	assert.equal($(canvas, "gd-popover-part").disabled, true, "sent: disabled until the popover opens again");
 	assert.deepEqual(texts(canvas.world, "gd-choice"), [], "no direction is chosen");
 	assert.equal($(canvas, "gd-parts").hidden, false, "the part shows before its parts.json change event");
 	assert.equal($(canvas, "gd-parts-title").textContent, "Partial implementations · 1");
@@ -187,6 +187,56 @@ test("an implement-part reply after a design switch leaves the new design's list
 	await settle();
 	assert.equal($(other, "gd-status").textContent, "Not sent: the session did not take it (session closed).");
 	assert.equal($(other, "gd-status").classes.has("gd-error"), true);
+});
+
+test("after a part is sent, Implement only this stays disabled until the popover opens again: a second click sends nothing", async () => {
+	const canvas = await loadParts({ [PART_URL]: { ok: true, id: "p1", queued: false } });
+	implementOnlyThis(canvas, 0);
+	await settle();
+	assert.equal(bodiesTo(canvas, PART_URL).length, 1);
+	assert.equal($(canvas, "gd-popover").hidden, false, "the popover is still open before it closes itself");
+	assert.equal($(canvas, "gd-popover-part").disabled, true);
+	$(canvas, "gd-popover-part").dispatch("click");
+	await settle();
+	assert.equal(bodiesTo(canvas, PART_URL).length, 1, "no duplicate part");
+	pick(canvas, 1);
+	assert.equal($(canvas, "gd-popover-part").disabled, false, "a new pick enables it again");
+});
+
+test("the popover message's tooltip (a refusal's raw code) goes when the popover opens again or the message changes", async () => {
+	const canvas = await loadParts({ [PART_URL]: { __http: 500, error: "delivery-failed", reason: "session closed" }, "/t/api/comments": { __http: 202, ok: true } });
+	implementOnlyThis(canvas, 0);
+	await settle();
+	assert.equal($(canvas, "gd-popover-message").title, "delivery-failed");
+	pick(canvas, 1);
+	assert.deepEqual([$(canvas, "gd-popover-message").textContent, $(canvas, "gd-popover-message").title], ["", ""], "a new pick starts clean");
+	implementOnlyThis(canvas, 1);
+	await settle();
+	assert.equal($(canvas, "gd-popover-message").title, "delivery-failed");
+	$(canvas, "gd-popover-text").value = "Fix the menu";
+	$(canvas, "gd-popover-form").dispatch("submit");
+	await settle();
+	assert.deepEqual([$(canvas, "gd-popover-message").textContent, $(canvas, "gd-popover-message").title], ["Sent to the session", ""], "a comment sent after it drops the code");
+});
+
+test("without a Pi session the reason Implement only this is disabled is a note under the buttons, which the button points to", async () => {
+	const offline = await loadParts({}, {});
+	pick(offline, 0);
+	const button = $(offline, "gd-popover-part");
+	assert.equal(button.disabled, true);
+	const noteId = button.getAttribute("aria-describedby");
+	assert.equal(noteId, "gd-popover-part-note");
+	const notes = findAll($(offline, "gd-popover-form"), (element) => element.id === noteId);
+	assert.equal(notes.length, 1, "the note is in the popover");
+	assert.deepEqual([notes[0].hidden, notes[0].textContent], [false, "The canvas is not connected to a Pi session; open it with /gentle:design open"]);
+	assert.equal(notes[0].classes.has("gd-popover-note"), true);
+
+	const online = await loadParts();
+	pick(online, 0);
+	assert.equal($(online, "gd-popover-part").getAttribute("aria-describedby"), null, "connected: nothing to explain");
+	assert.deepEqual(findAll($(online, "gd-popover-form"), (element) => element.id === "gd-popover-part-note").map((note) => note.hidden), [true]);
+	const css = read("canvas.css");
+	assert.match(css, /\.gd-popover-note \{[^}]*var\(--gd-muted\)/, "styled on the --gd-* tokens");
 });
 
 // ---- Partial implementations (S8: at the bottom of the panel, hidden with no parts)
@@ -297,6 +347,50 @@ test("a design switch drops the old parts at once and ignores a parts fetch stil
 	assert.equal($(canvas, "gd-parts").hidden, true, "the system-only view has no parts");
 });
 
+test("the design selector drops the old parts at once, before the new design.json answers and when it fails", async () => {
+	const canvas = await loadParts({ [PARTS_URL]: partsDoc(storedPart()) });
+	assert.equal(items(canvas).length, 1);
+	const held = deferred();
+	canvas.replies["/t/api/designs/beta"] = held.promise;
+	const select = $(canvas, "gd-design");
+	select.value = "beta";
+	select.dispatch("change");
+	await settle();
+	assert.equal($(canvas, "gd-parts").hidden, true, "alpha's parts go before beta's design.json answers");
+	assert.equal(items(canvas).length, 0, "no Remove of alpha's part is left");
+	held.answer({ __http: 500, error: "invalid-design", reason: "bad json" });
+	await settle();
+	assert.equal($(canvas, "gd-parts").hidden, true, "nor after beta's design.json fails");
+	assert.equal(items(canvas).length, 0);
+	assert.deepEqual(bodiesTo(canvas, REMOVE_URL), []);
+});
+
+test("parts.json replies that land out of order: the newest load wins, an older one changes nothing", async () => {
+	const canvas = await loadParts({ [PARTS_URL]: partsDoc(storedPart()) });
+	const older = deferred();
+	canvas.replies[PARTS_URL] = older.promise;
+	await canvas.serverEvent("change", { slug: "alpha", file: "parts.json" });
+	const newer = deferred();
+	canvas.replies[PARTS_URL] = newer.promise;
+	await canvas.serverEvent("change", { slug: "alpha", file: "parts.json" });
+	newer.answer(partsDoc(storedPart({ status: "in_progress", startedAt: todayAt(9, 48) })));
+	await settle();
+	older.answer(partsDoc(storedPart({ queued: true }), storedPart({ id: "removed" })));
+	await settle();
+	assert.deepEqual(items(canvas).map((item) => [item.dataset.id, item.dataset.status]), [["p1", "in_progress"]]);
+
+	// An older load that fails after a newer one says nothing either.
+	const stale = deferred();
+	canvas.replies[PARTS_URL] = stale.promise;
+	await canvas.serverEvent("change", { slug: "alpha", file: "parts.json" });
+	canvas.replies[PARTS_URL] = partsDoc(storedPart({ status: "implemented", implementedAt: todayAt(10, 5) }));
+	await canvas.serverEvent("change", { slug: "alpha", file: "parts.json" });
+	stale.answer({ __http: 422, error: "invalid-parts", reason: "parts.json is not valid JSON" });
+	await settle();
+	assert.equal($(canvas, "gd-status").textContent.startsWith("parts.json for alpha cannot be read"), false);
+	assert.deepEqual(items(canvas).map((item) => item.dataset.status), ["implemented"]);
+});
+
 // ---- Remove (S2: a part the agent never reports would stay sent forever)
 
 test("Remove asks an inline confirm, then removes a sent or queued part and stays disabled while in flight", async () => {
@@ -330,11 +424,11 @@ test("Remove asks an inline confirm, then removes a sent or queued part and stay
 	confirmRemove(canvas, 0);
 	await settle();
 	assert.deepEqual(bodiesTo(canvas, REMOVE_URL), [{ id: "p1" }]);
-	assert.equal(one(items(canvas)[0], "gd-part-confirm-yes").disabled, true, "disabled while in flight");
+	assert.equal(one(items(canvas)[0], "gd-part-confirm-yes").getAttribute("aria-disabled"), "true", "marked disabled while in flight, still focusable");
 	// A parts.json change while it is in flight re-renders the list; the part stays disabled.
 	await canvas.serverEvent("change", { slug: "alpha", file: "parts.json" });
 	assert.equal(one(items(canvas)[0], "gd-part-confirm").hidden, false, "the open confirm survives a re-render");
-	assert.equal(one(items(canvas)[0], "gd-part-confirm-yes").disabled, true);
+	assert.equal(one(items(canvas)[0], "gd-part-confirm-yes").getAttribute("aria-disabled"), "true");
 	one(items(canvas)[0], "gd-part-confirm-yes").dispatch("click");
 	await settle();
 	assert.equal(bodiesTo(canvas, REMOVE_URL).length, 1, "a second click while in flight posts nothing");
@@ -352,6 +446,31 @@ test("Remove asks an inline confirm, then removes a sent or queued part and stay
 	await settle();
 	assert.deepEqual(bodiesTo(canvas, REMOVE_URL).at(-1), { id: "p2" });
 	assert.deepEqual(items(canvas).map((item) => item.dataset.id), ["p3"]);
+});
+
+test("keyboard focus stays on the confirm's Remove while it is in flight, and Cancel and Esc wait for the reply", async () => {
+	const flight = deferred();
+	const canvas = await loadParts({ [PARTS_URL]: partsDoc(storedPart(), storedPart({ id: "p2", file: "02-b.html", selector: "footer" })), [REMOVE_URL]: flight.promise });
+	const active = () => canvas.document.activeElement!;
+	const focusAt = () => [active().dataset.control ?? "", active().closest(".gd-part")?.dataset.id ?? "", active().getAttribute("aria-disabled") ?? "", $(canvas, "gd-parts-list").contains(active())];
+	one(items(canvas)[0], "gd-part-remove").dispatch("click");
+	one(items(canvas)[0], "gd-part-confirm-yes").dispatch("click");
+	await settle();
+	assert.deepEqual(focusAt(), ["yes", "p1", "true", true], "the redraw keeps focus on the confirm's Remove");
+	await canvas.serverEvent("change", { slug: "alpha", file: "parts.json" });
+	assert.deepEqual(focusAt(), ["yes", "p1", "true", true], "a parts.json redraw too");
+	assert.equal(one(items(canvas)[0], "gd-part-confirm-no").disabled, true, "Cancel waits for the reply");
+	one(items(canvas)[0], "gd-part-confirm-no").dispatch("click");
+	one(items(canvas)[0], "gd-part-confirm").dispatch("keydown", { key: "Escape" });
+	assert.equal(one(items(canvas)[0], "gd-part-confirm").hidden, false, "neither closes the confirm while in flight");
+	assert.deepEqual(focusAt(), ["yes", "p1", "true", true]);
+	assert.equal(active() === canvas.document.body, false);
+
+	flight.answer({ __http: 422, error: "invalid-parts", reason: "bad" });
+	await settle();
+	assert.equal(active() === canvas.document.body, false, "focus never falls to the body");
+	assert.deepEqual([active().disabled, active().hidden, $(canvas, "gd-parts-list").contains(active())], [false, false, true]);
+	assert.equal(one(items(canvas)[0], "gd-part-confirm-no").disabled, false, "Cancel works again");
 });
 
 test("Remove that loses the race to the agent (409) or to a failed delivery (404) reloads the parts and says why", async () => {

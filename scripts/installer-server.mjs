@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
+import { nodeRequirementClauses, nodeRequirementSatisfied } from "./installer-downloads.mjs";
 import { goAcquisition, requirements } from "./installer-preflight.mjs";
 
 // Local wizard host: a dependency-free loopback HTTP server with a fixed route
@@ -248,6 +249,19 @@ const unmanaged = Object.freeze({
 	shell: "Gentle Shell is already installed, but neither pnpm nor npm manages it (a linked source checkout, for example), so this installer cannot update it. Nothing was replaced. Update it the way you installed it, then select Check again.",
 });
 const STABLE = /^v?(\d{1,6})\.(\d{1,6})\.(\d{1,6})$/;
+/** Plain-language requirement: "1.2.0 or newer" for a minimum, and for a Node
+ * range such as ^22.19.0 || >=23.6.0 "22.19.0 or a later 22.x release, or 23.6.0 or newer". */
+function describeRequirement(required) {
+	if (STABLE.test(required)) return `${required} or newer`;
+	const clauses = nodeRequirementClauses(required);
+	if (!clauses) return null;
+	return clauses.map(({ caret, floor }) => caret ? `${floor.join(".")} or a later ${floor[0]}.x release` : `${floor.join(".")} or newer`).join(", or ");
+}
+/** A found version that does not meet a minimum or Node range; false when unknown. */
+function unmet(found, required) {
+	if (STABLE.test(required)) return older(found, required);
+	return STABLE.test(found) && nodeRequirementClauses(required) !== null && !nodeRequirementSatisfied(required, found);
+}
 function older(found, required) {
 	const [a, b] = [STABLE.exec(found), STABLE.exec(required)];
 	if (!a || !b) return false;
@@ -339,10 +353,10 @@ function blockerGuidance(blocker, inventory, plan) {
 	// An older Node left next to the bootstrap's copy is recorded in the plan.
 	const found = plan.tools?.[blocker.tool]?.found ?? inventory?.[blocker.tool]?.version;
 	const required = plan.tools?.[blocker.tool]?.required;
-	if (typeof found !== "string" || typeof required !== "string" || !older(found, required)) return fixed;
+	if (typeof found !== "string" || typeof required !== "string" || !unmet(found, required)) return fixed;
 	const version = found.replace(/^v/, "");
 	const remedy = tool.remedy ? tool.remedy(required) : "Update it";
-	return `${tool.label} ${version} is installed${tool.where}, but this installer needs ${required} or newer. Nothing was replaced. ${remedy}, then select Check again.`;
+	return `${tool.label} ${version} is installed${tool.where}, but this installer needs ${describeRequirement(required)}. Nothing was replaced. ${remedy}, then select Check again.`;
 }
 
 /** An older Pi's update names its found and target versions and the package
@@ -371,15 +385,16 @@ function actionDescription(action, plan) {
 	return actionDescriptions[action.id] ?? "Prepare the installation.";
 }
 
-/** An older Node or incompatible pnpm the plan records as left in place next to
+/** An unsupported Node or incompatible pnpm the plan records as left in place next to
  * the installer's pinned copy: found and pinned versions, from the plan itself.
  * Nothing promises PATH precedence: a version manager may prepend its own again.
  */
 function alongsideNotes(plan) {
 	const notes = [];
 	const node = plan.tools?.node;
-	if (STABLE.test(node?.found ?? "") && STABLE.test(node.version ?? "")) {
-		notes.push(`Node.js ${node.found} on this computer is older than ${node.required}, so the installer uses its pinned Node.js ${node.version} ` +
+	const needs = typeof node?.required === "string" ? describeRequirement(node.required) : null;
+	if (STABLE.test(node?.found ?? "") && STABLE.test(node.version ?? "") && needs !== null) {
+		notes.push(`Node.js ${node.found} on this computer is not a version Gentle Shell supports (it needs ${needs}), so the installer uses its pinned Node.js ${node.version} ` +
 			`and installs it under $PNPM_HOME. Your Node.js ${node.found} is left unchanged.`);
 	}
 	const pnpm = plan.tools?.pnpm;

@@ -9,7 +9,7 @@ import test, { type TestContext } from "node:test";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { crc32, deflateRawSync, gzipSync } from "node:zlib";
-import { artifactFor, verifiedDownload, compatibleEngine, ensurePnpm, launchWizard, bootstrap, removeOwnedTools, acquireGo, installedGo } from "../scripts/installer-downloads.mjs";
+import { artifactFor, verifiedDownload, compatibleEngine, nodeRequirementSatisfied, ensurePnpm, launchWizard, bootstrap, removeOwnedTools, acquireGo, installedGo } from "../scripts/installer-downloads.mjs";
 
 const script = resolve("scripts/bootstrap.sh");
 const helper = resolve("scripts/installer-downloads.mjs");
@@ -28,7 +28,7 @@ function fixture() {
 	for (const dir of [bin, home, join(bundle, "scripts"), join(bundle, "bin")]) mkdirSync(dir, { recursive: true, mode: 0o700 });
 	writeFileSync(join(bundle, "scripts/bootstrap.sh"), readFileSync(script));
 	writeFileSync(join(bundle, "scripts/installer-downloads.mjs"), readFileSync(helper));
-	writeFileSync(join(bundle, "package.json"), JSON.stringify({ engines: { node: ">=22.19.0" }, packageManager: "pnpm@11.1.1" }));
+	writeFileSync(join(bundle, "package.json"), JSON.stringify({ engines: { node: "^22.19.0 || >=23.6.0" }, packageManager: "pnpm@11.1.1" }));
 	for (const name of ["dirname", "pwd", "awk", "mkdir", "mktemp", "chmod", "mv", "rm", "sleep", "wc", "cat", "id", "ls"])
 		symlinkSync(systemUtility(name), join(bin, name));
 	const executable = (name: string, body: string) => {
@@ -82,6 +82,13 @@ test("engine evidence supports stable lower bounds, not guessed ranges", () => {
 	assert.equal(compatibleEngine(">=25.0.0", "24.21.0"), false);
 	assert.equal(compatibleEngine("*", "24.21.0"), false);
 	assert.equal(compatibleEngine(">=22.13.0", "24.0.0-rc.1"), false);
+});
+test("the repository Node requirement accepts 22.19 or a later 22.x, or 23.6 and newer", () => {
+	const range = "^22.19.0 || >=23.6.0";
+	for (const version of ["22.19.0", "22.99.99", "23.6.0", "24.22.2", "25.0.0", "v24.21.0"]) assert.equal(nodeRequirementSatisfied(range, version), true, version);
+	for (const version of ["21.99.99", "22.18.9", "23.0.0", "23.5.9", "24.0.0-rc.1", "banana"]) assert.equal(nodeRequirementSatisfied(range, version), false, version);
+	assert.equal(nodeRequirementSatisfied(">=22.19.0", "23.0.0"), true);
+	for (const bad of ["*", "", "^22.19", ">=22.19.0 <25.0.0", "^0.1.0", "^22.19.0 ||", "~22.19.0", undefined]) assert.equal(nodeRequirementSatisfied(bad, "24.22.2"), false, String(bad));
 });
 test("pnpm descriptor preserves the literal upstream Node engine", () => {
 	assert.equal(artifactFor("pnpm").engine, ">=22.13");
@@ -314,6 +321,22 @@ posixTest("an older stable Node is left unchanged and a verified Node runs the h
 		assert.deepEqual(readdirSync(f.home), [], "successful wizard exit removes the owned tools");
 	} finally { f.cleanup(); }
 });
+for (const [version, reused] of [["v22.19.0", true], ["v23.6.0", true], ["v23.0.0", false], ["v23.5.9", false]] as const) {
+	posixTest(`existing Node ${version} is ${reused ? "reused" : "left unchanged while a verified Node runs the wizard"}`, () => {
+		const f = fixture();
+		try {
+			f.addPnpm(); f.wizard();
+			const user = `#!/bin/sh\nif [ "$1" = --version ]; then echo ${version}; else ${reused ? `exec '${node}' "$@"` : "echo user-node-ran >&2; exit 9"}; fi\n`;
+			writeFileSync(join(f.bin, "node"), user, { mode: 0o755 });
+			const result = f.run();
+			assert.equal(result.status, 0, result.stderr);
+			if (reused) assert.doesNotMatch(result.stdout, /\.gentle-shell-bootstrap-tools\.[^:\n]*\/node\/bin/);
+			else assert.match(result.stdout, /wizard-child:[^:\n]*\.gentle-shell-bootstrap-tools\.[^:\n]*\/node\/bin:/);
+			assert.doesNotMatch(result.stderr, /user-node-ran/);
+			assert.equal(readFileSync(join(f.bin, "node"), "utf8"), user);
+		} finally { f.cleanup(); }
+	});
+}
 posixTest("existing pnpm with unknown engine blocks instead of acquisition", () => {
 	const f = fixture();
 	try {

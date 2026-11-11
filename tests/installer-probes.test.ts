@@ -214,6 +214,23 @@ test("an older Node on the user's PATH is left as it is: the bootstrap's Node is
 	assert.equal((await stale.probes.node()).found, undefined);
 });
 
+test("a user Node 23 below 23.6 is swapped for the bootstrap's Node; 22.19 and 23.6 are reused", async () => {
+	const withUser = (version: string) => probes({ files: [...userNode.files, ...bootstrapNode.files], realpaths: { ...userNode.realpaths, ...bootstrapNode.realpaths },
+		texts: { ...userNode.texts, ...bootstrapNode.texts }, results: { ...userNode.results, [`${USER_NODE} --version`]: { code: 0, stdout: `v${version}\n` },
+			[`${TOOLS_NODE} --version`]: { code: 0, stdout: "v24.21.0\n" }, [`${TOOLS_NODE} ${USER_NPM_CLI} --version`]: { code: 0, stdout: "10.9.2\n" } } });
+	for (const version of ["23.0.0", "23.5.9"]) {
+		const node = await withUser(version).probes.node();
+		assert.equal(node.version, "24.21.0", version);
+		assert.equal(node.found, version);
+	}
+	for (const version of ["22.19.0", "23.6.0"]) {
+		const node = await withUser(version).probes.node();
+		assert.equal(node.version, version);
+		assert.equal(node.persistent, true, version);
+		assert.equal(node.found, undefined, version);
+	}
+});
+
 test("node absent, unparseable, failing, timed out or truncated", async () => {
 	assert.deepEqual(await probes({ env: { HOME, PATH: "/usr/bin" } }).probes.node(), { available: false });
 	for (const result of [{ code: 0, stdout: "v24\n" }, { code: 0, stdout: "v24.18.0-nightly\n" }, { code: 1, stdout: "v24.18.0" },

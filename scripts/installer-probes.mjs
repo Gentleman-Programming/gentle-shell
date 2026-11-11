@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { access, lstat, readFile, realpath, stat } from "node:fs/promises";
 import { posix, win32 } from "node:path";
 import { gentleAiBinaryPath } from "../runtime/gentle-ai-binary.mjs";
+import { nodeRequirementSatisfied } from "./installer-downloads.mjs";
 import { pnpmGlobalBin, requirements } from "./installer-preflight.mjs";
 import { installOwner } from "./main-channel.mjs";
 import {
@@ -419,12 +420,13 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 			const nodeVersion = async (file) => exactVersion(await output(file, ["--version"], env, deadlines.version), NODE_VERSION);
 			let version = await nodeVersion(node);
 			if (!version) return unknown();
-			// An older Node on the user's PATH is left as it is: the bootstrap's verified
-			// Node runs the installer, so it is reported (bootstrap-only) with the older one found.
+			// A Node on the user's PATH outside the supported range is left as it is: the
+			// bootstrap's verified Node runs the installer, so it is reported (bootstrap-only)
+			// with the unsupported one found.
 			let found = null;
-			if (persistent && bootstrap && persistent !== bootstrap && !atLeast(version, requirements.node) && spawnable(bootstrap, platform)) {
+			if (persistent && bootstrap && persistent !== bootstrap && !nodeRequirementSatisfied(requirements.node, version) && spawnable(bootstrap, platform)) {
 				const pinned = await nodeVersion(bootstrap);
-				if (pinned && atLeast(pinned, requirements.node)) [found, node, version] = [version, bootstrap, pinned];
+				if (pinned && nodeRequirementSatisfied(requirements.node, pinned)) [found, node, version] = [version, bootstrap, pinned];
 			}
 			// A usable npm must resolve without bootstrap tools, as in a fresh terminal.
 			let npm = null;

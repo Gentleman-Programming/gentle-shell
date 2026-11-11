@@ -57,8 +57,9 @@ it lets the window close.
 `collectInventory`; see [Host probes](#host-probes).
 
 Current requirements come from `package.json` and
-[`gentle-ai-installer.mjs`](../scripts/gentle-ai-installer.mjs): Node ≥22.19.0,
-Pi ≥1.2.0, pnpm acquisition 11.1.1, Gentle Shell package 4.0.0 and package-local
+[`gentle-ai-installer.mjs`](../scripts/gentle-ai-installer.mjs): Node `^22.19.0 || >=23.6.0`
+(22.19.0 or a later 22.x release, or 23.6.0 or newer; 23.0–23.5 are not
+supported), Pi ≥1.2.0, pnpm acquisition 11.1.1, Gentle Shell package 4.0.0 and package-local
 Gentle AI 4.4.0. Windows native source builds require Go ≥1.25.10 when the
 required usable native binary is missing. A reusable binary does not require Go.
 When a build needs Go and the user's Go is missing, older or unchecked, the installer uses
@@ -131,8 +132,9 @@ Shell, also the pnpm commands that update or remove it); other blockers keep
 their fixed guidance. A missing, older or unchecked Go is not a blocker: `tools.go` is
 `needs-acquire` with `required`, the pinned `version` and the older `found`
 version (or `unchecked: true` when `go version` reported no version it can
-check), and the plan acquires the [pinned Go](#pinned-go). An
-older Node.js or an incompatible pnpm on the user's PATH is not a blocker when
+check), and the plan acquires the [pinned Go](#pinned-go). A
+Node.js outside the supported range (older than 22.19.0, or 23.0–23.5) or an
+incompatible pnpm on the user's PATH is not a blocker when
 the bootstrap's pinned copy runs the wizard: the probe reports that copy
 (bootstrap-only) with the user's stable version as `found`, and `tools.node` or
 `tools.pnpm` records `found` and the persisted pin as `version` (see
@@ -1324,7 +1326,7 @@ Windows bootstrap end to end still lacks native acceptance evidence.
 | --- | --- |
 | Entry | Small CMD entry invokes fixed stock Windows PowerShell commands with no profile. Paths are environment data, not interpolated PowerShell source. Delayed CMD expansion is disabled. |
 | Storage | Claim a new random-named prerequisite directory directly below `%LOCALAPPDATA%`, or below `%USERPROFILE%` when `%LOCALAPPDATA%` fails `acl-mask` or `home-owner` (see [claim candidates](#claim-candidates-and-owners)); never reuse an existing destination. Verify each path component's reparse attributes, owner and role-specific ACL rights. Set the claimed directory's owner to the invoking SID, protect its DACL for the invoking SID, SYSTEM and Administrators, and read both back. |
-| Node | Reuse a proven stable existing Node ≥24.3.0 and the repository minimum. Otherwise (missing, an older stable version, or a Node whose storage fails the reparse/owner/ACL walk, which therefore never runs) leave it as it is and acquire only the fixed official Node 24.21.0 Windows x64/arm64 ZIP, with no redirects and bounded transport, verify SHA256 before opening the archive, validate the whole namespace and extract only regular `node.exe`. |
+| Node | Reuse a proven stable existing Node ≥24.3.0 inside the repository `engines.node` range. Otherwise (missing, a stable version outside that range, or a Node whose storage fails the reparse/owner/ACL walk, which therefore never runs) leave it as it is and acquire only the fixed official Node 24.21.0 Windows x64/arm64 ZIP, with no redirects and bounded transport, verify SHA256 before opening the archive, validate the whole namespace and extract only regular `node.exe`. |
 | pnpm | A pnpm whose wrapper, Node, entry, metadata or exe fails the reparse/owner/ACL walk never runs: it is left as it is and pnpm is acquired as when missing. Reuse only a [known shim](#windows-command-shims) of pnpm's own JS entry, with package identity, bin target, stable CLI version, compatible engine and global add/bin help evidence, preserving its sibling-Node preference or proving its inherited cwd/PATH/PATHEXT Node selection; or a native `pnpm.exe` (`pnpm setup`, `pnpm self-update`, @pnpm/exe, pnpm 12), directly or as a known shim's target (an extensionless target resolves through PATHEXT in order, and only an `.exe` first match counts), whose `--version` is stable and equals the `package.json` naming pnpm or `@pnpm/*` beside it, with the same global help evidence. A `pnpm.exe` without that `package.json` (pnpm's standalone installer, a Volta or mise shim), Corepack's `pnpm.cmd` and mise's file shim are not proven pnpm: they are never run and pnpm is acquired as when missing. Never execute a shim via cmd.exe. Other unknown wrappers block without replacement. One whose stable version is of another major or older than 11.1.1 is left as it is, and pnpm is acquired as when missing. |
 | Missing pnpm | Shared pnpm 11.1.1 URL/SRI and raw `>=22.13` engine identity are unchanged. Parse bounded gzip/USTAR bytes, reject unsupported extensions, links and unsafe Windows namespaces before no-clobber publication. Return a direct Node + JS-entry invocation; do not fabricate a wrapper. |
 | Handoff | Existing Node helper starts the fixed wizard entry `bin/gentle-shell-install.mjs`. Only child PATH is refreshed. No persistent PATH, global installation, product root or companion installation is created here. |
@@ -1712,7 +1714,7 @@ never the path.
 | `output-limit` | Combined stdout and stderr exceeded 1 MiB. |
 | `exit-code` | Node exited with a nonzero code. |
 | `version-format` | `node --version` did not print exactly `vMAJOR.MINOR.PATCH`. |
-| `engine` | The acquired Node is below 24.3.0 or the repository `engines.node` floor. |
+| `engine` | The acquired Node is below 24.3.0 or outside the repository `engines.node` range. |
 | `acquired-version` | A Node acquired by this bootstrap is not exactly v24.21.0. |
 
 The user's Node (no `.node-stem`) is never refused for `engine` or for the

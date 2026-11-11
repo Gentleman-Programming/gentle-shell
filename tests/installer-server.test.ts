@@ -356,7 +356,7 @@ test("/api/plan says, before consent, that an older Node and an incompatible pnp
 		assert.deepEqual(view.blockers, []);
 		assert.deepEqual(view.persistence.tools, ["node", "npm", "pnpm"]);
 		const text = view.persistence.description;
-		assert.ok(text.includes(`Node.js 22.18.0 on this computer is older than ${requirements.node}, so the installer uses its pinned Node.js 24.21.0 ` +
+		assert.ok(text.includes("Node.js 22.18.0 on this computer is not a version Gentle Shell supports (it needs 22.19.0 or a later 22.x release, or 23.6.0 or newer), so the installer uses its pinned Node.js 24.21.0 " +
 			"and installs it under $PNPM_HOME. Your Node.js 22.18.0 is left unchanged."), text);
 		assert.ok(text.includes(`pnpm 10.27.0 on this computer is not a pnpm ${requirements.pnpm.split(".")[0]} release this installer can use, ` +
 			`so the installer uses its pinned pnpm ${requirements.pnpm} and installs it under $PNPM_HOME. Your pnpm 10.27.0 is left unchanged.`), text);

@@ -206,6 +206,32 @@ export function compatibleEngine(range, version) {
 	}
 	return true;
 }
+// The repository's engines.node: clauses `^a.b.c` (a >= 1) or `>=a.b.c` joined by
+// `||`. Anything else is not a supported requirement. pnpm engine evidence keeps
+// using compatibleEngine, which accepts only one lower bound.
+const NODE_CLAUSE = /^(\^|>=)(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+export function nodeRequirementClauses(range) {
+	if (typeof range !== "string") return null;
+	const clauses = [];
+	for (const text of range.trim().split(/\s*\|\|\s*/)) {
+		const match = NODE_CLAUSE.exec(text);
+		const floor = match ? parts(`${match[2]}.${match[3]}.${match[4]}`) : null;
+		if (!floor || (match[1] === "^" && floor[0] === 0)) return null;
+		clauses.push({ caret: match[1] === "^", floor });
+	}
+	return clauses;
+}
+/** Whether a stable Node version meets the repository's engines.node range. */
+export function nodeRequirementSatisfied(range, version) {
+	const clauses = nodeRequirementClauses(range);
+	const actual = parts(version);
+	if (!clauses || !actual) return false;
+	return clauses.some(({ caret, floor }) => {
+		const index = [0, 1, 2].find((i) => actual[i] !== floor[i]);
+		const atLeast = index === undefined || actual[index] > floor[index];
+		return atLeast && (!caret || actual[0] === floor[0]);
+	});
+}
 function stat(path) {
 	try { return lstatSync(path); }
 	catch (error) { if (error.code === "ENOENT") return null; throw error; }
@@ -624,7 +650,7 @@ export async function bootstrap(bundle, suppliedTools, { env = process.env, adap
 	const entry = join(bundle, "bin/gentle-shell-install.mjs");
 	if (!regular(entry)) throw new Error("Future wizard entry is missing");
 	const metadata = JSON.parse(readFileSync(join(bundle, "package.json"), "utf8"));
-	if (!compatibleEngine(metadata.engines?.node, process.versions.node)) throw new Error("Node requirement rejected");
+	if (!nodeRequirementSatisfied(metadata.engines?.node, process.versions.node)) throw new Error("Node requirement rejected");
 	if (metadata.packageManager !== `pnpm@${pnpm.version}`) throw new Error("pnpm acquisition pin differs from repository; update verified descriptors first");
 	let tools = suppliedTools;
 	let created = false;

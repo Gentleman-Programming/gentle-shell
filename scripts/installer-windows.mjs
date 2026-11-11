@@ -2,7 +2,7 @@ import { lstatSync, readdirSync, readFileSync, realpathSync, mkdirSync, writeFil
 import { dirname, extname, join, parse, resolve, win32 } from "node:path";
 import { spawnSync } from "node:child_process";
 import { gunzipSync } from "node:zlib";
-import { artifactFor, verifiedDownload, compatibleEngine, launchWizard, pinnedPnpmCompatible } from "./installer-downloads.mjs";
+import { artifactFor, verifiedDownload, compatibleEngine, launchWizard, nodeRequirementSatisfied, pinnedPnpmCompatible } from "./installer-downloads.mjs";
 
 export const windowsNodeFloor = ">=24.3.0";
 const maxExpandedBytes = 128 * 1024 * 1024;
@@ -765,7 +765,7 @@ export async function bootstrapWindows({ bundle, tools, env }) {
 			if (!regular(join(bundle, file))) throw new Error("Required wizard bundle file missing");
 		}
 		const metadata = JSON.parse(readFileSync(join(bundle, "package.json"), "utf8"));
-		if (!compatibleEngine(windowsNodeFloor, process.versions.node) || !compatibleEngine(metadata.engines?.node, process.versions.node) || metadata.packageManager !== `pnpm@${artifactFor("pnpm").version}`) throw new Error("Windows repository prerequisite rejected");
+		if (!compatibleEngine(windowsNodeFloor, process.versions.node) || !nodeRequirementSatisfied(metadata.engines?.node, process.versions.node) || metadata.packageManager !== `pnpm@${artifactFor("pnpm").version}`) throw new Error("Windows repository prerequisite rejected");
 		step = "tools-storage";
 		verifyWindowsStorage(tools, env);
 		const result = await ensureWindowsPnpm({ tools, env, onStep: (next) => { step = next; } });

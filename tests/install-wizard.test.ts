@@ -422,7 +422,9 @@ test("planModel turns preflight blockers into guidance and offers no install", a
 	assert.equal(model.kind, "blocked");
 	assert.equal(model.blockers.length, 1);
 	assert.equal(model.blockers[0].toolLabel, "Node.js");
-	assert.equal(model.blockers[0].guidance, "Node.js 18.0.0 is installed, but this installer needs 22.19.0 or newer. Nothing was replaced. Update it, then select Check again.");
+	assert.equal(model.blockers[0].guidance, "Node.js 18.0.0 is installed, but this installer needs 22.19.0 or a later 22.x release, or 23.6.0 or newer. Nothing was replaced. Update it, then select Check again.");
+	const node23 = wizard.planModel(await serverPlanView({ node: { available: true, version: "23.3.0", usable: true, persistent: true, npm: true } }));
+	assert.equal(node23.blockers[0].guidance, "Node.js 23.3.0 is installed, but this installer needs 22.19.0 or a later 22.x release, or 23.6.0 or newer. Nothing was replaced. Update it, then select Check again.");
 	for (const code of Object.keys(guidance.blockers)) {
 		const rendered = wizard.planModel({ planId: "p", ready: false, actions: [], blockers: [{ code, tool: "pnpm", guidance: guidance.blockers[code] }],
 			profileChange: { changesProfile: false, binDir: null, description: "x" }, persistence: { tools: [], pnpmHome: null, description: "y" } });

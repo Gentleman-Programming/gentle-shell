@@ -48,7 +48,7 @@ export function init(ctx) {
 			const rect = board.rects?.get(comment.id);
 			// A 0x0 rect is an element that is hidden or not rendered: no pin at the artboard's corner.
 			if (!rect || (rect.width === 0 && rect.height === 0)) continue;
-			if (rect.x + rect.width < 0 || rect.y + rect.height < 0 || rect.x > board.artboard.width || rect.y > board.viewHeight) continue;
+			if (rect.x + rect.width < 0 || rect.y + rect.height < 0 || rect.x > board.viewWidth || rect.y > board.viewHeight) continue;
 			const pin = doc.createElement("button");
 			pin.type = "button";
 			pin.className = "gd-pin";

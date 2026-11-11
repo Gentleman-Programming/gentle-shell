@@ -5,8 +5,8 @@
 // whole, before any field changes.
 //
 // The values are shared, not copied: boards and the Compare object stay objects
-// that their owning module may still change in place (board.rects and
-// board.viewHeight in canvas-messages.js, canvas-focus.js and canvas-boards.js;
+// that their owning module may still change in place (board.rects, board.viewWidth
+// and board.viewHeight in canvas-messages.js, canvas-focus.js and canvas-boards.js;
 // compare.loaded in canvas-compare.js). Comments and handoffs are plain data
 // with no such owner, so setComments and setHandoffs freeze them once, when they
 // are set (never on read): changing them means setting new values.
@@ -42,13 +42,17 @@ export function createStore(initial = {}) {
 		focus: null,
 		savedView: null,
 		savedPanel: null,
+		// The focused artboard's screen size (canvas-sizes.js): { kind: "phone" | "tablet" | "desktop" }
+		// or { kind: "custom", width }. Every focus session starts at Desktop.
+		size: Object.freeze({ kind: "desktop" }),
 		hoverBoard: null,
 		// The handoffs.json of design `slug`; boards of another design ignore it.
 		handoffs: freezeHandoffs({ slug: null, chosen: null, handoffs: {} }),
 		// The open Compare view: { board, preview, artboardFrame, timer }.
 		compare: null,
 		toastTimer: 0,
-		// The open shared menu (canvas-menu.js): { button, items, byItem }, or null.
+		// The open menu (canvas-menu.js): { button, root, items, byItem }, or null; root is the menu's element
+		// (#gd-menu, or #gd-device-menu for the screen sizes), so one menu at a time is open.
 		menu: null,
 		// Where the boards sit (canvas-layout.js): { slug, view (which read of it this is), arrangement, positions, saved (what layout.json is known to hold), unsaved (its last save failed) } for the design
 		// shown, or null (the system-only view); replaced whole on every change, never changed in place.
@@ -76,8 +80,8 @@ export function createStore(initial = {}) {
 		setDesign: patch("setDesign", ["slug", "manifest", "boards", "systemBoard", "designCount"]),
 		/** Zoom and pan; `fitted` while the view is the one Fit gave. */
 		setView: patch("setView", ["zoom", "x", "y", "fitted"]),
-		/** The focused board and the view and panel to restore when focus mode ends. */
-		setFocus: patch("setFocus", ["focus", "savedView", "savedPanel"]),
+		/** The focused board, its screen size, and the view and panel to restore when focus mode ends. */
+		setFocus: patch("setFocus", ["focus", "savedView", "savedPanel", "size"]),
 		setHover(board) { state.hoverBoard = board; },
 		setCommenting(enabled) { state.commenting = enabled; },
 		/** The design's comments, the active one and the list filter. */

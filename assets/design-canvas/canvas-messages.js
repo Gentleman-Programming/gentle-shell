@@ -27,7 +27,7 @@ export function init(ctx) {
 		} else if (data.type === "gd:wheel") {
 			if (![data.deltaX, data.deltaY, data.deltaMode, data.x, data.y].every(isFiniteNumber)) return;
 			const frameRect = board.frame.getBoundingClientRect();
-			const scale = frameRect.width / board.artboard.width || 1;
+			const scale = frameRect.width / board.viewWidth || 1;
 			actions.handleWheel(data.deltaX, data.deltaY, data.deltaMode, data.zoom === true, data.shift === true, frameRect.left + data.x * scale, frameRect.top + data.y * scale);
 		} else if (data.type === "gd:pin-rects") {
 			if (board.system) return;

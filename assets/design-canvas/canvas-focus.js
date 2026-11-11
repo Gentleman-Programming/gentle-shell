@@ -1,9 +1,13 @@
 // Navigation and focus modes: the shield hover, activating a board, focus mode at
-// 100% with centerFocus, and the Back to canvas button.
+// 100% with centerFocus, and the Back to canvas button. The focused artboard's frame
+// has the screen size canvas-sizes.js gives it (focusSize).
 
-const FOCUS_MARGIN = 16;
-// Room below a focused artboard for the floating "Back to canvas" button.
-const BACK_SPACE = 64;
+// canvas-layout S5: an open artboard keeps 8 px from the viewport's edges, and 48 px below it for the
+// floating "Back to canvas" button (32 px high, 8 px from the bottom).
+const FOCUS_MARGIN = 8;
+const BACK_SPACE = 48;
+// Every focus session starts at Desktop.
+const DESKTOP = Object.freeze({ kind: "desktop" });
 
 export function init(ctx) {
 	const { els, store, actions } = ctx;
@@ -20,7 +24,7 @@ export function init(ctx) {
 	/** A viewport point in the artboard's own CSS pixels. */
 	function framePoint(board, clientX, clientY) {
 		const rect = board.frame.getBoundingClientRect();
-		const scale = rect.width / board.artboard.width || 1;
+		const scale = rect.width / board.viewWidth || 1;
 		return { x: (clientX - rect.left) / scale, y: (clientY - rect.top) / scale };
 	}
 
@@ -49,17 +53,28 @@ export function init(ctx) {
 		board.frame.contentWindow?.postMessage({ type: "gd:focus", enabled: board === state.focus }, "*");
 	}
 
-	/** The artboard's visible height: its manifest height, or the viewport's while focused on a taller one. */
-	function setFrameHeight(board, height) {
+	/**
+	 * The artboard's visible size: its manifest size, or the focused screen size, its height
+	 * clipped to the viewport while that is taller.
+	 */
+	function setFrameSize(board, width, height) {
+		board.viewWidth = width;
 		board.viewHeight = height;
+		board.frame.style.width = `${width}px`;
 		board.frame.style.height = `${height}px`;
 	}
 
+	/** The width a focused artboard has beside the margins: Desktop fills it (canvas-layout S8). */
+	function focusRoom() {
+		return Math.floor(els.viewport.getBoundingClientRect().width - FOCUS_MARGIN * 2);
+	}
+
 	/**
-	 * 100% zoom with the focused artboard centered and its label (Implement this) in view.
+	 * 100% zoom with the focused artboard centered at its screen size and its label (Implement
+	 * this) in view. A wider artboard keeps its real width and is drawn smaller to fit the
+	 * viewport (the zoom says how much), since the canvas cannot pan in focus mode.
 	 * A taller artboard is top-aligned and its frame is clipped to the viewport, so it
-	 * scrolls inside like a browser window instead of leaving its bottom out of reach
-	 * while the canvas cannot pan.
+	 * scrolls inside like a browser window instead of leaving its bottom out of reach.
 	 */
 	function centerFocus() {
 		const board = state.focus;
@@ -72,20 +87,23 @@ export function init(ctx) {
 		const left = board.wrapper.offsetLeft + box.offsetLeft;
 		const top = board.wrapper.offsetTop + box.offsetTop;
 		const labelSpace = box.offsetTop;
-		const { width, height } = board.artboard;
-		const minTop = FOCUS_MARGIN + labelSpace;
+		const { width, height } = actions.focusSize(board);
+		// Screen pixels per artboard pixel: 1 when it fits beside the margins.
+		const zoom = Math.min(1, (viewport.width - FOCUS_MARGIN * 2) / width);
+		const minTop = FOCUS_MARGIN + labelSpace * zoom;
 		const available = viewport.height - minTop - BACK_SPACE;
-		const tall = height > available;
-		setFrameHeight(board, tall ? Math.max(120, Math.floor(available)) : height);
+		const tall = height * zoom > available;
+		setFrameSize(board, width, tall ? Math.max(120, Math.floor(available / zoom)) : height);
 		store.setView({
-			zoom: 1,
-			x: Math.round(width + FOCUS_MARGIN * 2 <= viewport.width ? (viewport.width - width) / 2 - left : FOCUS_MARGIN - left),
-			y: Math.round((tall ? minTop : Math.max(minTop, (viewport.height - height) / 2)) - top),
+			zoom,
+			x: Math.round(width * zoom + FOCUS_MARGIN * 2 <= viewport.width ? (viewport.width - width * zoom) / 2 - left * zoom : FOCUS_MARGIN - left * zoom),
+			y: Math.round((tall ? minTop : Math.max(minTop, (viewport.height - height * zoom) / 2)) - top * zoom),
 		});
 		actions.applyView();
+		actions.renderDevice();
 	}
 
-	/** Shields, dimming, inert boards, toolbar controls and the mode label follow state.focus. */
+	/** Shields, hidden and inert boards, toolbar controls and the mode label follow state.focus. */
 	function applyFocusState() {
 		const focused = state.focus;
 		els.viewport.classList.toggle("gd-focused", Boolean(focused));
@@ -94,9 +112,13 @@ export function init(ctx) {
 			board.wrapper.classList.toggle("gd-focus-board", active);
 			board.wrapper.inert = Boolean(focused) && !active;
 			board.shield.hidden = active;
-			if (!active && board.viewHeight !== board.artboard.height) setFrameHeight(board, board.artboard.height);
+			// Leaving focus mode, or focusing another artboard, restores the manifest size.
+			if (!active && (board.viewWidth !== board.artboard.width || board.viewHeight !== board.artboard.height)) setFrameSize(board, board.artboard.width, board.artboard.height);
 			sendFocus(board);
 		}
+		// The device menu belongs to the artboard it opened on.
+		actions.closeDeviceMenu();
+		actions.renderDevice();
 		for (const control of [els.zoomOut, els.zoomIn, els.fit]) control.disabled = Boolean(focused);
 		// The rail's Overview sits under Compare: a reload while it is open must not turn it back on.
 		els.railFit.disabled = Boolean(focused || state.compare);
@@ -111,14 +133,14 @@ export function init(ctx) {
 	function enterFocus(board) {
 		if (state.focus === board) return;
 		if (!state.focus) {
-			// The artboard keeps its designed width at 100%; hiding the panel gains room for it.
+			// Desktop fills the viewport's width at 100%; hiding the panel gains room for it.
 			store.setFocus({ savedView: { zoom: state.zoom, x: state.x, y: state.y }, savedPanel: !els.panel.hidden });
 			actions.setPanel(false);
 		}
 		actions.closePopover();
 		setHoverBoard(null);
 		actions.selectBoard(null);
-		store.setFocus({ focus: board });
+		store.setFocus({ focus: board, size: DESKTOP });
 		centerFocus();
 		applyFocusState();
 		board.frame.focus();
@@ -127,7 +149,7 @@ export function init(ctx) {
 	function exitFocus() {
 		if (!state.focus) return;
 		actions.closePopover();
-		store.setFocus({ focus: null });
+		store.setFocus({ focus: null, size: DESKTOP });
 		if (state.savedPanel !== null) actions.setPanel(state.savedPanel);
 		store.setFocus({ savedPanel: null });
 		if (state.savedView) store.setView(state.savedView);
@@ -139,5 +161,5 @@ export function init(ctx) {
 
 	els.back.addEventListener("click", exitFocus);
 
-	return { allBoards, boardOfShield, activateBoard, setHoverBoard, hoverAt, sendFocus, setFrameHeight, centerFocus, applyFocusState, enterFocus, exitFocus };
+	return { allBoards, boardOfShield, activateBoard, setHoverBoard, hoverAt, sendFocus, setFrameSize, focusRoom, centerFocus, applyFocusState, enterFocus, exitFocus };
 }

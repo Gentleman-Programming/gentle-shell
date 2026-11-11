@@ -93,7 +93,6 @@ export function init(ctx) {
 		frame.setAttribute("sandbox", "allow-scripts");
 		frame.setAttribute("referrerpolicy", "no-referrer");
 		frame.title = `${artboard.title} artboard`;
-		frame.style.width = `${artboard.width}px`;
 		const box = doc.createElement("div");
 		box.className = "gd-frame-box";
 		const shield = doc.createElement("div");
@@ -111,8 +110,9 @@ export function init(ctx) {
 		// The size the layout places (canvas-layout.js layoutSize): the frame at its manifest size.
 		wrapper.layoutSize = { width: artboard.width, height: artboard.height };
 		// rects: null until the artboard reports where each commented element is.
-		const board = { slug, artboard, frame, wrapper, shield, pins, handoff, rects: null, system, viewHeight: 0 };
-		actions.setFrameHeight(board, artboard.height);
+		// viewWidth and viewHeight: the frame's size, the manifest's or the focused screen size (canvas-focus.js).
+		const board = { slug, artboard, frame, wrapper, shield, pins, handoff, rects: null, system, viewWidth: 0, viewHeight: 0 };
+		actions.setFrameSize(board, artboard.width, artboard.height);
 		actions.renderHandoff(board);
 		shield.addEventListener("keydown", (event) => {
 			if (event.key !== "Enter" && event.key !== " ") return;

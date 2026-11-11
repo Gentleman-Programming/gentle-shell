@@ -223,17 +223,34 @@ type PngLog = { calls: string[]; draw: number[][]; names: string[]; during: Arra
 /**
  * The canvas with a tab capture that hands back one 1200 x 800 frame (this window at 1×) and a canvas that records what it draws.
  * `stalled`: the video never paints a new frame (sharing stopped); `setTimeout` then runs at once and logs its delay.
+ * `frozen`: the video never paints a new frame and no timer ever fires, so only the track's `ended` event can end the waits.
+ * `permission`: the capture's answer waits for it, like the browser's selector; a rejection is a denial.
+ * `ended`: the track has already ended when the capture is granted (an inactive stream).
+ * `track.end()` ends the shared track like the browser's Stop sharing: readyState "ended", then its `ended` event.
  */
-async function pngCanvas(extra: { surface?: string; play?: () => Promise<void>; frame?: { width: number; height: number }; stalled?: boolean } = {}) {
+async function pngCanvas(extra: { surface?: string; play?: () => Promise<void>; frame?: { width: number; height: number }; stalled?: boolean; frozen?: boolean; permission?: Promise<void>; ended?: boolean } = {}) {
 	const log: PngLog = { calls: [], draw: [], names: [], during: [], output: null, statusAtCapture: [], timeouts: [] };
-	const track = { stop: () => log.calls.push("stop"), getSettings: () => (extra.surface ? { displaySurface: extra.surface } : {}) };
+	const endedListeners: Array<() => void> = [];
+	const track = {
+		readyState: extra.ended ? "ended" : "live",
+		stop: () => log.calls.push("stop"),
+		getSettings: () => (extra.surface ? { displaySurface: extra.surface } : {}),
+		addEventListener: (type: string, listener: () => void) => { if (type === "ended") endedListeners.push(listener); },
+		end() { track.readyState = "ended"; endedListeners.splice(0).forEach((listener) => listener()); },
+	};
 	const stream = { getTracks: () => [track], getVideoTracks: () => [track] };
 	let status: FakeElement | null = null;
 	const canvas = await loadExport({}, {
 		confirm: () => { log.calls.push("confirm"); return true; },
-		navigator: { mediaDevices: { getDisplayMedia: async (options: unknown) => { log.calls.push(`capture ${JSON.stringify(options)}`); log.statusAtCapture.push(status!.textContent); return stream; } } },
+		navigator: { mediaDevices: { getDisplayMedia: async (options: unknown) => {
+			log.calls.push(`capture ${JSON.stringify(options)}`);
+			log.statusAtCapture.push(status!.textContent);
+			if (extra.permission) await extra.permission;
+			return stream;
+		} } },
 		URL: { createObjectURL: () => { log.calls.push("url"); return "blob:test"; }, revokeObjectURL: () => log.calls.push("revoke") },
 		...(extra.stalled ? { setTimeout: (callback: () => void, ms?: number) => { log.timeouts.push(ms ?? 0); const timer = setTimeout(callback, 0); timer.unref(); return timer; } } : {}),
+		...(extra.frozen ? { setTimeout: (_callback: () => void, ms?: number) => { log.timeouts.push(ms ?? 0); return 0; } } : {}),
 	});
 	status = $(canvas, "gd-status");
 	const frame = extra.frame ?? { width: 400, height: 300 };
@@ -241,7 +258,7 @@ async function pngCanvas(extra: { surface?: string; play?: () => Promise<void>; 
 	const document = canvas.document as any;
 	const create = document.createElement.bind(document);
 	document.createElement = (tag: string) => {
-		if (tag === "video") return { videoWidth: 1200, videoHeight: 800, play: extra.play ?? (async () => { log.calls.push("play"); }), requestVideoFrameCallback: (done: () => void) => { log.calls.push("frame"); if (!extra.stalled) done(); } };
+		if (tag === "video") return { videoWidth: 1200, videoHeight: 800, play: extra.play ?? (async () => { log.calls.push("play"); }), requestVideoFrameCallback: (done: () => void) => { log.calls.push("frame"); if (!extra.stalled && !extra.frozen) done(); } };
 		if (tag === "canvas") {
 			const output: any = {
 				width: 0,
@@ -259,7 +276,7 @@ async function pngCanvas(extra: { surface?: string; play?: () => Promise<void>; 
 		if (tag === "a") return { click() { log.names.push(this.download); }, href: "", download: "" };
 		return create(tag);
 	};
-	return { canvas, log };
+	return { canvas, log, track };
 }
 
 for (const [name, navigator] of [
@@ -332,6 +349,123 @@ test("D4: a capture that stops painting frames gives up waiting after 500 ms and
 	assert.equal(canvas.document.body.classes.has("gd-exporting"), false, "the chrome comes back");
 	assert.equal(canvas.world.style.transform, before);
 	assert.equal(canvas.navMode.textContent, "Navigating");
+});
+
+// #3153 review, case 2: sharing that ends without a frame must end the export and give the canvas back.
+
+const STOPPED = "Could not export the artboard. Sharing stopped before the artboard was captured. Use your browser's screenshot tool instead.";
+
+test("#3153 case 2: no frame callback, then the track's ended event: the export ends at once with a reason and restores the canvas", async () => {
+	const { canvas, log, track } = await pngCanvas({ frozen: true });
+	const before = canvas.world.style.transform;
+	choose(canvas, "Export as PNG");
+	await settle();
+	assert.equal(log.calls.filter((call) => call === "frame").length, 1, "waiting for the first new frame");
+	assert.equal(canvas.document.body.classes.has("gd-exporting"), true, "still waiting, no timer fired");
+	track.end();
+	await settle();
+	assert.deepEqual(log.draw, [], "nothing grabbed");
+	assert.deepEqual(log.names, [], "nothing downloaded");
+	assert.equal(log.calls.filter((call) => call === "stop").length, 1, "the capture is stopped once");
+	assert.equal(canvas.document.body.classes.has("gd-exporting"), false, "the chrome comes back");
+	assert.equal(canvas.world.style.transform, before, "the view comes back");
+	assert.equal(canvas.navMode.textContent, "Navigating", "the artboard it opened is closed again");
+	assert.equal(statusText(canvas), STOPPED);
+	assert.equal(statusIsError(canvas), true);
+	assert.equal(toastText(canvas), STOPPED);
+});
+
+test("#3153 case 2: a capture whose track has already ended when it is granted (an inactive stream) exports nothing and never opens the artboard", async () => {
+	const { canvas, log } = await pngCanvas({ frozen: true, ended: true });
+	const before = canvas.world.style.transform;
+	choose(canvas, "Export as PNG");
+	await settle();
+	assert.equal(log.calls.includes("frame"), false, "no frame is waited for");
+	assert.deepEqual(log.draw, []);
+	assert.equal(log.calls.filter((call) => call === "stop").length, 1);
+	assert.equal(canvas.document.body.classes.has("gd-exporting"), false);
+	assert.equal(canvas.world.style.transform, before);
+	assert.equal(canvas.navMode.textContent, "Navigating");
+	assert.equal(statusText(canvas), STOPPED);
+});
+
+// #3153 review, case 1: a design.json reload while the capture's permission is pending replaces every board object.
+
+/** Focuses the first artboard, starts a PNG export whose permission waits, then reloads design.json; returns how to answer. */
+async function exportAcrossReload(focused: boolean, replies: Record<string, unknown> = {}) {
+	let grant!: () => void;
+	let deny!: (error: Error) => void;
+	const permission = new Promise<void>((resolve, reject) => { grant = resolve; deny = reject; });
+	permission.catch(() => {});
+	const { canvas, log } = await pngCanvas({ permission });
+	if (focused) click(canvas.boards[0].shield!, 200, 200);
+	const view = canvas.world.style.transform;
+	choose(canvas, "Export as PNG");
+	await settle();
+	assert.equal(log.calls.filter((call) => call.startsWith("capture ")).length, 1, "the browser's selector is open");
+	Object.assign(canvas.replies, replies);
+	await canvas.serverEvent("change", { slug: "alpha", file: "design.json" });
+	// A replaced board leaves the page: like a browser, its frame no longer has a box.
+	canvas.boards[0].frame.rect = { left: 0, top: 0, width: 0, height: 0 };
+	const current = boardsOf(canvas);
+	assert.ok(current.every((wrapper) => !canvas.boards.some((old) => old.wrapper === wrapper)), "the reload built new board objects");
+	return { canvas, log, view, current, grant, deny };
+}
+
+const frameOf = (wrapper: FakeElement) => findAll(wrapper, (element) => element.localName === "iframe")[0];
+
+test("#3153 case 1: focus, export with the permission pending, reload design.json, deny: the reloaded artboard is focused again, not the replaced one", async () => {
+	const { canvas, view, current, deny } = await exportAcrossReload(true);
+	assert.match(canvas.navMode.textContent, /^Using: First/, "the reload kept focus mode on the same file");
+	deny(new Error("Permission denied."));
+	await settle();
+	assert.equal(statusText(canvas), "Could not export the artboard. Permission denied. Use your browser's screenshot tool instead.");
+	assert.deepEqual(current.map((wrapper) => wrapper.classes.has("gd-focus-board")), [true, false], "the current First is the open artboard");
+	assert.deepEqual(current.map((wrapper) => wrapper.inert), [false, true], "only the other artboard is inert");
+	assert.match(canvas.navMode.textContent, /^Using: First/);
+	assert.equal(canvas.world.style.transform, view, "the focus view comes back");
+	assert.ok(isActive(canvas, menuButtonOf(current[0])), "keyboard focus on the current First's ⋯ button");
+});
+
+test("#3153 case 1: a capture granted after a design.json reload exports the reloaded artboard and gives it back focused", async () => {
+	const { canvas, log, view, current, grant } = await exportAcrossReload(true);
+	frameOf(current[0]).rect = { left: 100, top: 100, width: 400, height: 300 };
+	grant();
+	await settle();
+	assert.deepEqual(log.draw, [[100, 100, 400, 300, 0, 0, 400, 300]], "cropped from the current frame");
+	assert.deepEqual(log.names, ["01-a.png"]);
+	assert.equal(statusText(canvas), "Exported PNG.");
+	assert.deepEqual(current.map((wrapper) => wrapper.classes.has("gd-focus-board")), [true, false]);
+	assert.deepEqual(current.map((wrapper) => wrapper.inert), [false, true]);
+	assert.equal(canvas.world.style.transform, view);
+	assert.ok(isActive(canvas, menuButtonOf(current[0])));
+});
+
+test("#3153 case 1: when the reload removed the artboard, the export says so, grabs nothing and leaves the canvas navigating", async () => {
+	const manifest = { slug: "alpha", title: "Alpha", brief: "", artboards: [{ file: "02-b.html", title: "Second", tradeoff: "", width: 400, height: 300 }] };
+	const { canvas, log, view, current, grant } = await exportAcrossReload(false, { "/t/api/designs/alpha": manifest });
+	assert.equal(current.length, 1);
+	grant();
+	await settle();
+	assert.deepEqual(log.draw, []);
+	assert.equal(log.calls.filter((call) => call === "stop").length, 1);
+	assert.equal(statusText(canvas), "Could not export the artboard. The artboard is no longer in the design. Use your browser's screenshot tool instead.");
+	assert.equal(canvas.navMode.textContent, "Navigating");
+	assert.deepEqual(current.map((wrapper) => wrapper.inert), [false]);
+	assert.equal(canvas.document.body.classes.has("gd-exporting"), false);
+	assert.equal(canvas.world.style.transform, view);
+});
+
+test("#3153 case 1: when a reload removed the open artboard, the export leaves focus mode cleanly instead of reopening it", async () => {
+	const manifest = { slug: "alpha", title: "Alpha", brief: "", artboards: [{ file: "02-b.html", title: "Second", tradeoff: "", width: 400, height: 300 }] };
+	const { canvas, current, deny } = await exportAcrossReload(true, { "/t/api/designs/alpha": manifest });
+	assert.equal(canvas.navMode.textContent, "Navigating", "the reload already left focus mode");
+	const overview = canvas.world.style.transform;
+	deny(new Error("Permission denied."));
+	await settle();
+	assert.equal(canvas.navMode.textContent, "Navigating");
+	assert.deepEqual(current.map((wrapper) => wrapper.inert), [false]);
+	assert.equal(canvas.world.style.transform, overview, "the overview stays, not the old focus view");
 });
 
 test("D5: after a PNG export, focus is back on the artboard's ⋯ button", async () => {
@@ -446,6 +580,48 @@ test("a second Export as PDF replaces the first one's container and ends the fir
 	assert.deepEqual(rules, []);
 	assert.equal(withClass(canvas.document.body, "gd-print").length, 0);
 	assert.equal(canvas.document.body.classes.has("gd-printing"), false);
+});
+
+/** canvas.css with a CSSOM, where each PDF export sets its page size; `rules` is what it holds. */
+function printSheet(canvas: Canvas) {
+	const rules: string[] = ["@page { margin: 0; }"];
+	const sheet = { href: "/t/assets/canvas.css", cssRules: rules, insertRule: (text: string, index: number) => { rules.splice(index, 0, text); return index; }, deleteRule: (index: number) => { rules.splice(index, 1); } };
+	(canvas.document as any).styleSheets = [sheet];
+	return rules;
+}
+
+test("#3153 case 3: two PDFs started before the first frame loads, then the second one printed: neither page rule, container nor listener is left", async () => {
+	let printed = 0;
+	const canvas = await loadExport({}, { print: () => printed++ });
+	const rules = printSheet(canvas);
+	const listeners = canvas.windowListenerCount("afterprint");
+	choose(canvas, "Export as PDF", 0);
+	choose(canvas, "Export as PDF", 1);
+	assert.deepEqual(rules, ["@page { margin: 0; }", "@page { size: 400px 300px; }"], "the superseded export's rule is gone at once");
+	const holders = withClass(canvas.document.body, "gd-print");
+	assert.equal(holders.length, 1);
+	holders[0].children[0].dispatch("load");
+	assert.equal(printed, 1, "only the second one prints");
+	canvas.windowEvent("afterprint");
+	assert.deepEqual(rules, ["@page { margin: 0; }"], "canvas.css's own rules stay, no export rule survives");
+	assert.equal(withClass(canvas.document.body, "gd-print").length, 0);
+	assert.equal(canvas.document.body.classes.has("gd-printing"), false);
+	assert.equal(canvas.windowListenerCount("afterprint"), listeners);
+});
+
+test("an Export as PDF whose print() throws cleans up its container, page rule and listener and says so", async () => {
+	const canvas = await loadExport({}, { print: () => { throw new Error("Printing is blocked"); } });
+	const rules = printSheet(canvas);
+	const listeners = canvas.windowListenerCount("afterprint");
+	choose(canvas, "Export as PDF");
+	withClass(canvas.document.body, "gd-print")[0].children[0].dispatch("load");
+	assert.deepEqual(rules, ["@page { margin: 0; }"]);
+	assert.equal(withClass(canvas.document.body, "gd-print").length, 0);
+	assert.equal(canvas.document.body.classes.has("gd-printing"), false);
+	assert.equal(canvas.windowListenerCount("afterprint"), listeners);
+	assert.equal(statusText(canvas), "Could not print the artboard (Printing is blocked). Open it from design/ in your project instead.");
+	assert.equal(statusIsError(canvas), true);
+	assert.equal(toastText(canvas), statusText(canvas));
 });
 
 test("Download HTML saves the artboard file as written, without the inspector the server injects", async () => {

@@ -174,12 +174,6 @@ const MODULE_BUDGETS: Record<string, number> = {
 	// gentle-shell#1731 T23: bounded self-review and partial/blocked writer -> Needs your decision (7,000 -> 7,300 B).
 	// Verification by named risk: escalate-only tier table and the concrete-occasions rule (7,300 -> 7,500 B).
 	// The validated-off exception and its read-only fallback need 365 additional bytes (7,500 -> 7,900 B).
-	// Cost-speed P8: change kinds in the verify handoff and contradictions C1, C2, C10, X6 resolved; the stall
-	// watchdog sentence stays only in the worker's Verification contract; the handoff
-	// carries the user's environment and the parent runs a real-case check the verifier left unverified (7,900 -> 7,898 B).
-	// Cost-speed S15 P5a: the always-on verifier-setup paragraph (976 B) moved into "## Verifier preparation failure",
-	// merged with what the section already said (+710 B); the always-on primary prompt fell by more (7,898 -> 8,608 B).
-	// Its three "inline" sentences reworded for both modes, so a full-delegation parent can load it (8,608 -> 8,656 B).
 	// Cost-speed S15 P16: the parent commits verifier probes only when a commit is authorized (+28 B), paid by two
 	// phrases that restated their sentence (-36 B): 8,656 -> 8,648 B.
 	"orchestrator-verification.md": 8_648,

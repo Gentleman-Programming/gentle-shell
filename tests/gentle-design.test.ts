@@ -1691,3 +1691,8 @@ test("implement-part S6: gentle_design list names each design's parts with their
 	assert.ok("part" in tool.parameters.properties, "the schema has part");
 	assert.ok(tool.description.includes("part"), "the description names part");
 });
+
+test("skills/design/SKILL.md tells the sync to write tokens as the rows design/system.md is read with", () => {
+	const source = readFileSync(SKILL_PATH, "utf8");
+	assert.ok(source.includes("For each CSS custom property, use a table row under a `##` section, with the backticked token name in the first cell and its backticked value in the second cell."), "the sync names the token row format");
+});

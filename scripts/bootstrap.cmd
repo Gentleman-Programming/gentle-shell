@@ -20,7 +20,7 @@ rem Bundle/dependency checks precede ALL acquisition and per-user writes.
   "  if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Unsafe bundle file' };" ^
   "};" ^
   "$metadata = Get-Content -LiteralPath (Join-Path $bundle 'package.json') -Raw | ConvertFrom-Json;" ^
-  "if ($metadata.engines.node -notmatch '^>=[0-9]+\.[0-9]+\.[0-9]+$' -or $metadata.packageManager -ne 'pnpm@11.1.1') { throw 'Repository prerequisite unknown' };" ^
+  "if ($metadata.engines.node -notmatch '^(\^[1-9][0-9]*|>=[0-9]+)\.[0-9]+\.[0-9]+(\s*\|\|\s*(\^[1-9][0-9]*|>=[0-9]+)\.[0-9]+\.[0-9]+)*$' -or $metadata.packageManager -ne 'pnpm@11.1.1') { throw 'Repository prerequisite unknown' };" ^
   "} catch { [Console]::Error.WriteLine('Bootstrap: future wizard/dependent bundle file missing, unsupported metadata, or managed policy denial. No acquisition attempted.'); exit 1 } }"
 if errorlevel 1 goto failed
 
@@ -199,7 +199,7 @@ rem The acquired Node still has to pass every check; unknown versions still refu
   "$step = 'version'; $version = $text.Trim(); if ($version -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw 'version-format' };" ^
   "$actual = [Version]$version.Substring(1); $metadata = Get-Content -LiteralPath (Join-Path $env:GENTLE_BOOTSTRAP_BUNDLE 'package.json') -Raw | ConvertFrom-Json;" ^
   "if ($acquired -and $version -ne 'v24.21.0') { throw 'acquired-version' };" ^
-  "if ($actual -lt [Version]'24.3.0' -or $actual -lt [Version]$metadata.engines.node.Substring(2)) { if ($acquired) { throw 'engine' }; [IO.File]::Delete((Join-Path $tools '.node-target')) };" ^
+  "if ($actual -lt [Version]'24.3.0' -or -not (@($metadata.engines.node -split '\s*\|\|\s*' | Where-Object { $floor = [Version]$_.TrimStart('^', '>', '='); $actual -ge $floor -and (-not $_.StartsWith('^') -or $actual.Major -eq $floor.Major) }).Count -gt 0)) { if ($acquired) { throw 'engine' }; [IO.File]::Delete((Join-Path $tools '.node-target')) };" ^
   "} catch { $reason = 'unexpected-' + $step; if ($_.Exception.Message -cmatch '^(policy|missing-target|unsafe-target|unsafe-path|(target|parent|ancestor)-(reparse|owner|acl-mask)|no-start|deadline|output-limit|exit-code|version-format|engine|acquired-version)$') { $reason = $_.Exception.Message };" ^
   "if (-not $acquired -and $reason -cmatch '^(unsafe-target|unsafe-path|(target|parent|ancestor)-(reparse|owner|acl-mask))$') { [IO.File]::Delete((Join-Path $env:GENTLE_BOOTSTRAP_TOOLS '.node-target')) }" ^
   "else { [Console]::Error.WriteLine('Bootstrap: Node version, execution, deadline, output bound or policy check failed; refusing replacement. Reason: ' + $reason); exit 1 } }" ^

@@ -1,9 +1,10 @@
 import { join } from "node:path";
 import { designCommentBatchContent, designCommentContent, hasSystemTokens, listDesignEntries, readDesignManifest, resolveSystemBoard, startDesignCanvasServer, type DesignArtboard, type DesignCanvasServer, type DesignCanvasServerOptions, type DesignSessionContent } from "./design-canvas-server.ts";
-import { createDesignCommentStore, DesignCommentsError, type StoredDesignComment } from "./design-comments.ts";
+import { createDesignCommentStore, DesignCommentsError, describeViewport, noteProblem, type StoredDesignComment } from "./design-comments.ts";
 import { createDesignHandoffStore, DesignHandoffsError, sendDesignHandoff, type DesignHandoff, type DesignHandoffDelivery, type DesignHandoffStatus } from "./design-handoffs.ts";
 import { openInBrowser, type OpenInBrowserResult } from "./design-open-browser.ts";
 import { detectDesignSources, staleDesignSources } from "./design-sources.ts";
+import { createDesignPartStore, DesignPartsError, type DesignPart } from "./design-parts.ts";
 
 // Gentle Design helpers: argument parsing, the designs already written under
 // design/<slug>/design.json, the usage text, the per-session canvas that
@@ -78,7 +79,7 @@ export type DesignImplementInput = {
 	/** Whether design/system.md exists. */
 	systemTokens: boolean;
 	/** The open comments on this artboard. */
-	comments: ReadonlyArray<Pick<StoredDesignComment, "id" | "selector" | "excerpt" | "comment">>;
+	comments: ReadonlyArray<Pick<StoredDesignComment, "id" | "selector" | "excerpt" | "comment" | "viewport">>;
 };
 
 /** The handoff message for one artboard (S8); the command and the canvas button both send exactly this. */
@@ -103,18 +104,88 @@ export function designImplementMessage(input: DesignImplementInput): string {
 				`${index + 1}. Comment id: ${comment.id}`,
 				`   Element: ${comment.selector}`,
 				`   Excerpt: ${comment.excerpt ? JSON.stringify(comment.excerpt) : "(none)"}`,
+				...(comment.viewport ? [`   Viewport: ${describeViewport(comment.viewport)} (edit for this width)`] : []),
 				"   Comment:",
 				...comment.comment.split("\n").map((line) => `   ${line}`),
 			);
 		});
 		const ids = input.comments.map((comment) => JSON.stringify(comment.id)).join(", ");
-		lines.push(`When they are applied, resolve them with the ${DESIGN_COMMENTS_TOOL_NAME} tool (action "resolve", slug "${input.slug}", ids [${ids}]).`);
+		lines.push(`When they are applied, resolve them with the ${DESIGN_COMMENTS_TOOL_NAME} tool (action "resolve", slug "${input.slug}", ids [${ids}], note "<one line on what you changed>").`);
 	}
 	lines.push(
 		"",
 		`Report progress with the ${DESIGN_TOOL_NAME} tool: action "handoff", target "${input.slug}/${input.artboard.file}", status "in_progress" when you start; status "implemented" when it is done, with previewUrl set to the running app's loopback URL (localhost, 127.0.0.1 or [::1]) when one is running, so the canvas can compare it with the artboard.`,
 		input.feature
 			? `This design belongs to an ODD feature: track this implementation in ${input.feature} (add or reopen its task there and log this handoff).`
+			: "This design is not linked to an ODD feature document: size it under the project's ODD rules as usual.",
+		"This handoff itself commits nothing.",
+	);
+	return lines.join("\n");
+}
+
+export type DesignVariantInput = {
+	slug: string;
+	artboard: Pick<DesignArtboard, "file" | "title">;
+	/** What should change, already trimmed (1 to 2000 characters). */
+	instruction: string;
+	/** Whether design/system.md exists. */
+	systemTokens: boolean;
+};
+
+/** The message for "Try another direction from this…" (S3): the skill adds the next artboard based on the source file. */
+export function designVariantMessage(input: DesignVariantInput): string {
+	const folder = `design/${input.slug}`;
+	const path = `${folder}/${input.artboard.file}`;
+	const lines = [
+		`Add another direction to the design ${folder}/, based on the artboard ${path}`,
+		"",
+		`Source artboard: ${path}`,
+		`Title: ${input.artboard.title}`,
+		"",
+		"What should change:",
+		...input.instruction.split("\n").map((line) => `  ${line}`),
+		"",
+		`Follow the ${DESIGN_SKILL_NAME} skill ("Save and try a different approach"): write the next artboard (the next NN after the existing ones, NN-<name>.html) in ${folder}/, starting from the source file, and append it to ${folder}/design.json with its title, tradeoff, width and height. Keep every existing artboard and its file as they are.`,
+	];
+	if (input.systemTokens) lines.push("Take colors, typography, spacing, radius and shadows from design/system.md, the project's token source.");
+	lines.push(`When it is written, refresh the canvas with the ${DESIGN_TOOL_NAME} tool (action "open", slug "${input.slug}").`);
+	return lines.join("\n");
+}
+
+export type DesignImplementPartInput = {
+	slug: string;
+	artboard: Pick<DesignArtboard, "file" | "title">;
+	/** The recorded part; `instruction` is the user's note, absent or empty when none. */
+	part: Pick<DesignPart, "id" | "selector" | "excerpt" | "instruction">;
+	feature?: string;
+	/** Whether design/system.md exists. */
+	systemTokens: boolean;
+};
+
+/**
+ * The message for "Implement only this" (canvas-implement-part S5): build one element of an artboard in the real
+ * app, without choosing the direction, and report on that part with the handoff action's `part`.
+ */
+export function designImplementPartMessage(input: DesignImplementPartInput): string {
+	const path = `design/${input.slug}/${input.artboard.file}`;
+	const instruction = input.part.instruction ?? "";
+	const lines = [
+		`Implement only one part of the design artboard ${path}`,
+		"",
+		`Artboard: ${path}`,
+		`Title: ${input.artboard.title}`,
+		`Part id: ${input.part.id}`,
+		`Element: ${input.part.selector}`,
+		`Excerpt: ${input.part.excerpt ? JSON.stringify(input.part.excerpt) : "(none)"}`,
+		...(instruction ? ["Note:", ...instruction.split("\n")] : ["Note: (none)"]),
+		"",
+		"Build only this element in the project's real stack, as the shared piece the app would reuse (a layout or component) when it has one. Use the artboard as the visual spec for it: map it to the project's existing components and styles, and do not copy the artboard HTML verbatim. Leave the rest of the artboard unbuilt: this does not choose a direction, and the other artboards stay open.",
+	];
+	if (input.systemTokens) lines.push("Take colors, typography, spacing, radius and shadows from design/system.md, the project's token source.");
+	lines.push(
+		`Report progress with the ${DESIGN_TOOL_NAME} tool: action "handoff", target "${input.slug}/${input.artboard.file}", part "${input.part.id}", status "in_progress" when you start; status "implemented" when it is done, with a one-line note on where it lives in the project.`,
+		input.feature
+			? `This design belongs to an ODD feature: track this part in ${input.feature} (add or reopen its task there and log this handoff).`
 			: "This design is not linked to an ODD feature document: size it under the project's ODD rules as usual.",
 		"This handoff itself commits nothing.",
 	);
@@ -186,6 +257,32 @@ export async function planDesignImplement(cwd: string, target: string): Promise<
 		return { kind: "refuse", notice: { message: reason, level: "warning" } };
 	}
 	return { kind: "send", message: designImplementMessage({ slug, artboard, feature, systemTokens: hasSystemTokens(designRoot), comments }), warnings, handoff: { slug, file: artboard.file, feature } };
+}
+
+export type DesignVariantPlan = { kind: "send"; message: string } | { kind: "refuse"; notice: DesignNotice };
+
+/** Validates `<slug>/<file>` against the design's manifest and builds the variant message; the canvas route sends exactly this. */
+export function planDesignVariant(cwd: string, request: { slug: string; file: string; instruction: string }): DesignVariantPlan {
+	const resolved = resolveDesignTarget(cwd, `${request.slug}/${request.file}`, "add a direction to");
+	if (resolved.kind === "refuse") return resolved;
+	const { slug, artboard } = resolved;
+	return { kind: "send", message: designVariantMessage({ slug, artboard, instruction: request.instruction, systemTokens: hasSystemTokens(join(cwd, "design")) }) };
+}
+
+/** Checks the part's artboard against the design's manifest and builds its message; the canvas route sends exactly this. */
+export function planDesignImplementPart(cwd: string, request: { slug: string; part: DesignPart }): DesignVariantPlan {
+	const resolved = resolveDesignTarget(cwd, `${request.slug}/${request.part.file}`, "implement a part of");
+	if (resolved.kind === "refuse") return resolved;
+	const { slug, artboard, feature } = resolved;
+	return { kind: "send", message: designImplementPartMessage({ slug, artboard, part: request.part, feature, systemTokens: hasSystemTokens(join(cwd, "design")) }) };
+}
+
+/** A parts.json problem as the reason the model reads; a broken file is never overwritten. */
+function partsProblem(slug: string, error: unknown): Error {
+	if (error instanceof DesignPartsError && error.code === "invalid-file") {
+		return new Error(`design/${slug}/parts.json cannot be read: ${error.message}. Fix the file by hand; it is never overwritten.`);
+	}
+	return error instanceof Error ? error : new Error(String(error));
 }
 
 /** A handoffs.json problem as the reason the user or the model reads; a broken file is never overwritten. */
@@ -271,6 +368,18 @@ export function createDesignCanvas(deliver: (message: DesignSessionContent) => D
 					if (plan.kind === "refuse") throw new Error(plan.notice.message);
 					return deliver(plan.message);
 				},
+				// Not a handoff: nothing is recorded, the new artboard arrives through the manifest.
+				onVariant: (request) => {
+					const plan = planDesignVariant(cwd, request);
+					if (plan.kind === "refuse") throw new Error(plan.notice.message);
+					return deliver(plan.message);
+				},
+				// One element on its own: the server has recorded it in parts.json, never handoffs.json.
+				onImplementPart: (request) => {
+					const plan = planDesignImplementPart(cwd, request);
+					if (plan.kind === "refuse") throw new Error(plan.notice.message);
+					return deliver(plan.message);
+				},
 			});
 			running = { root, server };
 			server.catch(() => { if (running?.server === server) running = undefined; });
@@ -313,7 +422,7 @@ export function createDesignCanvas(deliver: (message: DesignSessionContent) => D
 
 export const DESIGN_COMMENTS_TOOL_NAME = "gentle_design_comments";
 
-export type DesignCommentsToolParams = { action: "list" | "resolve"; slug?: string; file?: string; ids?: string[] };
+export type DesignCommentsToolParams = { action: "list" | "resolve"; slug?: string; file?: string; ids?: string[]; note?: string };
 export type DesignCommentsToolResult = { text: string; details: { comments: Array<StoredDesignComment & { slug: string }> } | { slug: string; resolved: string[]; unknown: string[] } };
 
 function describeComment(slug: string, comment: StoredDesignComment): string[] {
@@ -321,6 +430,7 @@ function describeComment(slug: string, comment: StoredDesignComment): string[] {
 		`- [${comment.id}] design/${slug}/${comment.file}`,
 		`  Element: ${comment.selector}`,
 		`  Excerpt: ${comment.excerpt ? JSON.stringify(comment.excerpt) : "(none)"}`,
+		...(comment.viewport ? [`  Viewport: ${describeViewport(comment.viewport)} (edit for this width)`] : []),
 		`  Comment: ${comment.comment.split("\n").join("\n           ")}`,
 		...(comment.screenshot ? [`  Screenshot: design/${slug}/${comment.screenshot} (open it with the read tool)`] : []),
 	];
@@ -336,7 +446,11 @@ export async function runDesignCommentsTool(cwd: string, params: DesignCommentsT
 		if (typeof params.slug !== "string" || !params.slug) throw new Error("resolve needs the design slug.");
 		const ids = params.ids ?? [];
 		if (ids.length === 0) throw new Error("resolve needs at least one comment id in ids.");
-		const { updated, unknown } = await store.setStatus(params.slug, ids, "resolved").catch((error: unknown) => { throw failure(params.slug!, error); });
+		if (params.note !== undefined) {
+			const problem = noteProblem(params.note);
+			if (problem) throw new Error(problem);
+		}
+		const { updated, unknown } = await store.setStatus(params.slug, ids, "resolved", params.note === undefined ? undefined : { note: params.note }).catch((error: unknown) => { throw failure(params.slug!, error); });
 		const resolved = updated.map((comment) => comment.id);
 		const lines = [`Resolved ${resolved.length} comment${resolved.length === 1 ? "" : "s"} in design/${params.slug}${resolved.length ? `: ${resolved.join(", ")}` : ""}.`];
 		if (unknown.length) lines.push(`Unknown ids: ${unknown.join(", ")}.`);
@@ -357,7 +471,7 @@ export async function runDesignCommentsTool(cwd: string, params: DesignCommentsT
 	const scope = params.slug ? `design/${params.slug}${params.file ? `/${params.file}` : ""}` : "design/";
 	const lines = found.length === 0
 		? [`No open comments in ${scope}.`]
-		: [`Open design comments in ${scope} (${found.length}):`, ...found.flatMap((comment) => describeComment(comment.slug, comment)), "", `After applying a comment, resolve it with ${DESIGN_COMMENTS_TOOL_NAME} (action "resolve", slug, ids).`];
+		: [`Open design comments in ${scope} (${found.length}):`, ...found.flatMap((comment) => describeComment(comment.slug, comment)), "", `After applying a comment, resolve it with ${DESIGN_COMMENTS_TOOL_NAME} (action "resolve", slug, ids, note); the note is one line on what you changed, shown next to the comment.`];
 	if (problems.length) lines.push("", "Unreadable comment files:", ...problems.map((problem) => `- ${problem}`));
 	return { text: lines.join("\n"), details: { comments: found } };
 }
@@ -381,6 +495,8 @@ export type DesignToolParams = {
 	status?: string;
 	note?: string;
 	previewUrl?: string;
+	/** handoff only: a part handed off on its own ("Implement only this"); its id in parts.json. */
+	part?: string;
 };
 /** How many design source paths list names; `total` still counts them all. */
 const LISTED_DESIGN_SOURCES = 20;
@@ -397,7 +513,8 @@ export type DesignToolDetails =
 	| { url: string; opened: boolean; refreshed?: true }
 	| { stopped: boolean }
 	| { target: string; warnings: string[] }
-	| { target: string; chosen: string | null; handoff: DesignHandoff };
+	| { target: string; chosen: string | null; handoff: DesignHandoff }
+	| { target: string; part: DesignPart };
 /** `texts` become the tool's content parts; a refusal throws, so Pi flags the result as an error. */
 export type DesignToolResult = { texts: string[]; details: DesignToolDetails };
 
@@ -417,11 +534,20 @@ type ListedDesign = {
 	chosen?: string | null;
 	handoffs?: Record<string, DesignHandoff>;
 	handoffsError?: string;
+	/** Present only when the design has parts handed off on their own (canvas-implement-part). */
+	parts?: DesignPart[];
+	partsError?: string;
 };
+
+function partState(part: DesignPart): string {
+	const status = part.status === "in_progress" ? "in progress" : part.status;
+	return `${part.id} ${part.file} ${part.selector} (${status}${part.status === "sent" && part.queued ? ", queued" : ""})`;
+}
 
 async function listDesignTool(cwd: string, canvas: DesignCanvas): Promise<DesignToolResult> {
 	const designRoot = join(cwd, "design");
 	const handoffStore = createDesignHandoffStore(designRoot);
+	const partStore = createDesignPartStore(designRoot);
 	const designs: ListedDesign[] = [];
 	for (const { slug, title } of listDesigns(cwd)) {
 		let design: ListedDesign;
@@ -440,6 +566,12 @@ async function listDesignTool(cwd: string, canvas: DesignCanvas): Promise<Design
 		} catch (error) {
 			design.handoffsError = error instanceof Error ? error.message : String(error);
 		}
+		try {
+			const { parts } = await partStore.read(slug);
+			if (parts.length > 0) design.parts = parts;
+		} catch (error) {
+			design.partsError = error instanceof Error ? error.message : String(error);
+		}
 		designs.push(design);
 	}
 	const systemBoard = hasSystemBoard(cwd);
@@ -453,6 +585,8 @@ async function listDesignTool(cwd: string, canvas: DesignCanvas): Promise<Design
 			const entry = design.handoffs && Object.hasOwn(design.handoffs, artboard.file) ? design.handoffs[artboard.file] : undefined;
 			lines.push(`  - ${artboard.file}: ${artboard.title}${entry ? ` (${handoffState(entry)})` : ""}`);
 		}
+		if (design.parts) lines.push(`  Parts handed off on their own (${design.parts.length}): ${design.parts.map(partState).join("; ")}`);
+		if (design.partsError) lines.push(`  parts.json cannot be read: ${design.partsError}`);
 	}
 	lines.push(systemBoard ? "System board: design/system.html (shown first on the canvas)." : "No system board (design/system.html).");
 	const sources = detectDesignSources(cwd);
@@ -483,6 +617,12 @@ async function handoffTool(cwd: string, params: DesignToolParams): Promise<Desig
 	const resolved = resolveDesignTarget(cwd, params.target ?? "", "report on");
 	if (resolved.kind === "refuse") throw new Error(resolved.notice.message);
 	const { slug, artboard } = resolved;
+	if (params.part !== undefined) {
+		// A part on its own (canvas-implement-part S6): parts.json only, so no direction is chosen.
+		const part = await createDesignPartStore(join(cwd, "design")).setStatus(slug, artboard.file, params.part, status, { note: params.note }).catch((error: unknown) => { throw partsProblem(slug, error); });
+		const text = `Part ${part.id} of design/${slug}/${artboard.file} (${part.selector}): ${status === "in_progress" ? "in progress" : "implemented"}. No direction is chosen by it.`;
+		return { texts: [text], details: { target: `${slug}/${artboard.file}`, part } };
+	}
 	const store = createDesignHandoffStore(join(cwd, "design"));
 	const handoff = await store.setStatus(slug, artboard.file, status, { note: params.note, previewUrl: params.previewUrl }).catch((error: unknown) => { throw handoffsProblem(slug, error); });
 	const { chosen } = await store.read(slug).catch((error: unknown) => { throw handoffsProblem(slug, error); });

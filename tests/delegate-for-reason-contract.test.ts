@@ -233,8 +233,8 @@ test("T11/S4: the parent hands verify the whole spec, authorizes its probes and 
 		"typecheck",
 		"`gentle-ai-verify` holds the checklist",
 		"every in-scope unmet item before closing the unit",
-		// P8 C2: writers never commit; the parent owns git.
-		"the writer adds its probes as regression tests; the parent commits",
+		// P8 C2: writers never commit; the parent owns git and commits only when a commit is authorized (P16).
+		"the writer adds its probes as regression tests; the parent commits when a commit is authorized.",
 	]) {
 		assert.ok(item.includes(clause), `verify handoff item is missing: ${clause}`);
 	}
@@ -255,9 +255,11 @@ test("AC4/S4: the normative verification rule text is unchanged by the review pr
 	// continuation relay (B1 bytes).
 	// Re-pinned for cost-speed S15 P5a: the focused test and suite "run inline" became "run in the session that made
 	// the change", the same rule in words a full-delegation parent can load.
+	// Re-pinned for cost-speed S15 P16: two phrases that restated their own sentence ("for the exact rules", the second
+	// "when applicable") trimmed to pay for the conditional probe commit in the verify handoff; no rule changed.
 	assert.equal(
 		createHash("sha256").update(normative).digest("hex"),
-		"4dfbe4ac90743d74f531121fc3ff6d4f2ff17886f0eaf10c3fbf486db7816402",
+		"83f5c1f1628a7d2fbb75abfcb558b4a020835239d57d983eef3508c24b338e30",
 		"the normative Verification rule section changed",
 	);
 	assert.ok(verification.includes("or a delegated writer returns"), "the module must still load when a delegated writer returns");

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { DESIGN_CANVAS_ASSETS } from "../lib/design-canvas-assets.ts";
 import { designCanvasAssetPaths, missingRequiredPaths, requiredPaths } from "../scripts/verify-package-files.mjs";
@@ -8,6 +9,18 @@ import { designCanvasAssetPaths, missingRequiredPaths, requiredPaths } from "../
 // check keeps it in the published tarball next to the modules that launch it.
 
 const root = fileURLToPath(new URL("..", import.meta.url));
+
+// prepack and prepublishOnly run the check with plain `node`, and Node 23.0-23.5
+// (inside engines >=22.19.0) cannot load TypeScript without a flag.
+test("the package check runs on a Node without TypeScript type stripping", async () => {
+	const result = spawnSync(process.execPath, ["--no-experimental-strip-types", "scripts/verify-package-files.mjs"], { cwd: root, encoding: "utf8" });
+	assert.equal(result.stderr, "");
+	assert.equal(result.status, 0);
+	assert.match(result.stdout, /^gentle-pi package resource check passed/);
+	const runtime = await import("../runtime/design-canvas-assets.mjs");
+	assert.deepEqual(runtime.DESIGN_CANVAS_ASSETS, DESIGN_CANVAS_ASSETS, "the generated module lists the same assets");
+	assert.ok(requiredPaths.includes("runtime/design-canvas-assets.mjs"));
+});
 
 test("the package check requires the voice command, its modules and the worker script", () => {
 	const voice = ["extensions/gentle-voice.ts", "lib/voice-command.ts", "lib/voice-session.ts", "lib/voice-ui.ts", "scripts/voice-worker.cjs", "docs/voice.md"];
@@ -22,6 +35,7 @@ const designCanvas = [
 	"lib/design-open-browser.ts",
 	"lib/design-comments.ts",
 	"lib/design-handoffs.ts",
+	"lib/design-system-tokens.ts",
 	"assets/design-canvas/index.html",
 	"assets/design-canvas/canvas.js",
 	"assets/design-canvas/canvas.css",

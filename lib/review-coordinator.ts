@@ -62,8 +62,11 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
  let target: string | undefined;
  let started = false;
  const captured = new Set<string>();
- // advisory_findings of the latest admitted closure, relayed only on approval.
- // The provider emits the key only on an approved closure; never routed on.
+ // advisory_findings of the latest admitted closure. The provider emits the key
+ // only on an approved closure; once captured, every result this run returns
+ // carries it (closed or stopped), so the parent holds it before any resume:
+ // a resume that goes straight to the acknowledgement cannot recover it, since
+ // neither bound STATUS nor the ACK envelope carries it. Never routed on.
  let closureFindings: { value: unknown } | undefined;
  // The facade's advisory_finding_claims of that same closure (each advisory id's
  // reviewer claim), relayed beside advisory_findings only; never routed on.
@@ -97,8 +100,8 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
   return result;
  };
  const finish = (outcome: string, result: Body) => ({ schema: "gentle-pi.review-coordinator-experiment/v1", outcome, result, forecasts, reviewer_runs: reviewerRuns,
-  ...(outcome === "closed" && closureFindings !== undefined ? { advisory_findings: closureFindings.value } : {}),
-  ...(outcome === "closed" && closureFindings !== undefined && closureClaims !== undefined ? { advisory_finding_claims: closureClaims.value } : {}),
+  ...(closureFindings !== undefined ? { advisory_findings: closureFindings.value } : {}),
+  ...(closureFindings !== undefined && closureClaims !== undefined ? { advisory_finding_claims: closureClaims.value } : {}),
   ...(lineage === undefined ? {} : { lineage_id: lineage }), metrics: { elapsed_ms: now() - began, facade_calls: steps.length, steps } });
  const status = () => invoke("gentle_review", { operation: "status", lineageId: lineage, ...selectorInput });
  let details: Body;

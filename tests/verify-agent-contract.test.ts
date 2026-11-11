@@ -65,12 +65,12 @@ test("T11.5: verify distinguishes unit exclusions from unmet spec items", () => 
 	assert.ok(verify.includes("verdict per `S#`"), "the feature-document verdict per S# must stay");
 });
 
-// Cost-speed P8 C2: the writer adds the probes; the parent owns git and commits them.
+// Cost-speed P8 C2: the writer adds the probes; the parent owns git and commits them only when a commit is authorized (P16).
 test("T11.6: verify leaves its probes as regression tests the writer adds and the parent commits", () => {
 	containsAll(checklistItem(6), [
 		"regression tests",
 		"the project's test suite",
-		"the writer, who adds them; the parent commits",
+		"the writer, who adds them; the parent commits them only when a commit is authorized, otherwise they stay uncommitted",
 		"you never write them",
 	], "durable probe item");
 });

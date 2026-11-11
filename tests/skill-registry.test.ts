@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execSync } from "node:child_process";
+import { execSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
@@ -1938,4 +1938,303 @@ test("P2 a Pi-loaded symlinked skill and a disabled-only record emit no row", as
 	await event({ systemPromptOptions: options }, { cwd, hasUI: false });
 	assert.equal(options.appendSystemPrompt, "");
 	await shutdown(undefined, { cwd, hasUI: false });
+});
+
+// gentle-shell#3020 regression coverage, ported from @Cobies' gentle-shell#3070
+// onto the merged #3089 contract: the shared registry is disk-only and written
+// only when its rendered bytes change, while each session's Pi-resolved skills
+// stay session-local in its prompt. One shared `.atl/` is read by every Pi
+// session in the cwd, so the decisive evidence has to come from genuinely
+// separate processes. Each child imports the real extension and drives its
+// public `before_agent_start` handler (a prompt) and the watcher-poll seam.
+const registryExtensionUrl = pathToFileURL(
+	join(import.meta.dirname, "..", "extensions", "skill-registry.ts"),
+).href;
+
+interface SharedCacheResult {
+	regenerated: boolean;
+	skillCount: number;
+	reason: string;
+	warning?: string;
+}
+
+interface SharedCacheOutcome {
+	result: SharedCacheResult;
+	// The effective block this process appended to its own prompt, if it prompted.
+	prompt?: string;
+}
+
+interface ManagedFileSnapshot {
+	bytes: string;
+	ino: number;
+	mtimeMs: number;
+	size: number;
+}
+
+function managedFileSnapshot(path: string): ManagedFileSnapshot {
+	const info = statSync(path);
+	return { bytes: readFileSync(path, "utf8"), ino: info.ino, mtimeMs: info.mtimeMs, size: info.size };
+}
+
+function snapshotKey(snapshot: ManagedFileSnapshot | { bytes: string; ino: number; mtimeMs: number }): string {
+	return JSON.stringify([snapshot.bytes, snapshot.ino, snapshot.mtimeMs]);
+}
+
+function sharedCacheFixture() {
+	const root = mkdtempSync(join(tmpdir(), "gentle-pi-shared-cache-"));
+	const cwd = join(root, "workspace");
+	const skill = join(cwd, "skills", "loose", "SKILL.md");
+	mkdirSync(dirname(skill), { recursive: true });
+	writeFileSync(skill, "---\nname: loose\ndescription: Shared cache loose skill.\n---\n");
+	return {
+		root,
+		cwd,
+		skill,
+		home: join(root, "home"),
+		cache: join(cwd, ".atl", ".skill-registry.cache.json"),
+		registry: join(cwd, ".atl", "skill-registry.md"),
+	};
+}
+
+// Child-side prelude shared by both process helpers: an isolated HOME, a fake
+// Pi that records handlers, and a `prompt(resolved)` that fires the real
+// `before_agent_start` with Pi listing nothing (`selectedTools: ["grep"]`), so
+// the session's resolved rows must surface in its own effective block.
+const sharedCacheChildPrelude = `
+	import { join } from "node:path";
+	delete process.env.GENTLE_PI_AGENTS_CHILD;
+	process.env.HOME = join(process.env.GS_ROOT, "home");
+	process.env.USERPROFILE = process.env.HOME;
+	const { default: skillRegistry, __testing } = await import(process.env.GS_EXTENSION);
+	const handlers = new Map();
+	skillRegistry({
+		on(event, handler) { handlers.set(event, [...(handlers.get(event) ?? []), handler]); },
+		registerFlag() {},
+		registerCommand() {},
+		getFlag() { return false; },
+	});
+	const prompt = async (cwd, resolved) => {
+		const options = { skills: resolved, selectedTools: ["grep"], appendSystemPrompt: "" };
+		await handlers.get("before_agent_start")[0]({ systemPromptOptions: options }, { cwd, hasUI: false });
+		return options.appendSystemPrompt;
+	};
+`;
+
+function runSharedCacheProcess(root: string, cwd: string, resolved: ResolvedSkill[]): SharedCacheOutcome {
+	// A session holding a resolved set prompts first (the real before_agent_start
+	// path); every session then runs what a watcher poll does.
+	const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", `
+		${sharedCacheChildPrelude}
+		const cwd = ${JSON.stringify(cwd)};
+		const resolved = ${JSON.stringify(resolved)};
+		const promptText = resolved.length > 0 ? await prompt(cwd, resolved) : undefined;
+		const result = await __testing.regenerateRegistry(cwd, false);
+		console.log("RESULT " + JSON.stringify({ result, prompt: promptText }));
+	`], {
+		encoding: "utf8",
+		timeout: 20_000,
+		env: { ...process.env, GIT_CEILING_DIRECTORIES: root, GS_ROOT: root, GS_EXTENSION: registryExtensionUrl },
+	});
+	assert.equal(child.error, undefined, `${child.error?.message}\n${child.stderr}`);
+	assert.equal(child.status, 0, child.stderr);
+	const line = child.stdout.split("\n").find((candidate) => candidate.startsWith("RESULT "));
+	assert.ok(line, `child printed no result:\n${child.stdout}\n${child.stderr}`);
+	return JSON.parse(line.slice("RESULT ".length)) as SharedCacheOutcome;
+}
+
+test("a process with no resolved skills cache-hits and preserves the published registry (#3020)", async (t) => {
+	const fixture = sharedCacheFixture();
+	t.after(() => rmSync(fixture.root, { recursive: true, force: true }));
+	const resolvedPath = join(fixture.root, "pkg", "skills", "prompted", "SKILL.md");
+	const resolved: ResolvedSkill[] = [
+		{
+			name: "prompted",
+			description: "Trigger: prompted session authority.",
+			filePath: resolvedPath,
+			sourceInfo: { scope: "project", origin: "package" },
+		},
+	];
+
+	const published = runSharedCacheProcess(fixture.root, fixture.cwd, resolved);
+	assert.equal(published.result.regenerated, true, "the first process must publish the shared registry");
+	assert.equal(published.result.reason, "fingerprint-changed");
+	assert.doesNotMatch(
+		readFileSync(fixture.registry, "utf8"),
+		new RegExp(escapeRegExp(resolvedPath)),
+		"Pi-resolved rows are session-local and must never reach the shared registry",
+	);
+	assert.ok(published.prompt?.includes(resolvedPath), "the publishing session keeps its Pi-resolved rows in its own prompt");
+
+	const registryBefore = managedFileSnapshot(fixture.registry);
+	const cacheBefore = managedFileSnapshot(fixture.cache);
+	await new Promise((resolve) => setTimeout(resolve, 25));
+
+	const idle = runSharedCacheProcess(fixture.root, fixture.cwd, []);
+	assert.equal(idle.result.regenerated, false, "a session with no resolved skills must not rewrite the shared registry");
+	assert.equal(idle.result.reason, "cache-hit");
+	assert.equal(idle.result.skillCount, 1, "the idle session still indexes the shared disk skill");
+	assert.deepEqual(managedFileSnapshot(fixture.registry), registryBefore, "an idle poll must not rewrite the registry");
+	assert.deepEqual(managedFileSnapshot(fixture.cache), cacheBefore, "an idle poll must not rewrite the cache");
+
+	// The resolved session prompting again must not fight the idle one for the file.
+	const peerPoll = runSharedCacheProcess(fixture.root, fixture.cwd, resolved);
+	assert.equal(peerPoll.result.regenerated, false, "a prompted session must not republish the shared registry");
+	assert.equal(peerPoll.result.reason, "cache-hit");
+	assert.ok(peerPoll.prompt?.includes(resolvedPath));
+	assert.deepEqual(managedFileSnapshot(fixture.registry), registryBefore, "a prompt plus poll must not rewrite the registry");
+	assert.deepEqual(managedFileSnapshot(fixture.cache), cacheBefore, "a prompt plus poll must not rewrite the cache");
+
+	// A real skill change still writes, exactly once, and stays disk-only.
+	writeFileSync(fixture.skill, "---\nname: loose\ndescription: Changed loose skill.\n---\n");
+	const filesChanged = runSharedCacheProcess(fixture.root, fixture.cwd, []);
+	assert.equal(filesChanged.result.regenerated, true, "a skill byte change must still regenerate");
+	const changedRegistry = readFileSync(fixture.registry, "utf8");
+	assert.match(changedRegistry, /Changed loose skill/);
+	assert.doesNotMatch(changedRegistry, new RegExp(escapeRegExp(resolvedPath)));
+	const changedSnapshot = managedFileSnapshot(fixture.registry);
+
+	const settled = runSharedCacheProcess(fixture.root, fixture.cwd, resolved);
+	assert.equal(settled.result.regenerated, false, "the change must be bounded to one publish");
+	assert.equal(settled.result.reason, "cache-hit");
+	assert.deepEqual(managedFileSnapshot(fixture.registry), changedSnapshot);
+});
+
+const sharedCacheRoundsScript = `
+	${sharedCacheChildPrelude}
+	import fs from "node:fs";
+	const root = process.env.GS_ROOT;
+	const role = process.env.GS_ROLE;
+	const peer = role === "a" ? "b" : "a";
+	const cwd = join(root, "workspace");
+	const cachePath = join(cwd, ".atl", ".skill-registry.cache.json");
+	const registryPath = join(cwd, ".atl", "skill-registry.md");
+	const logPath = join(root, "rounds-" + role + ".jsonl");
+	const snapshot = (path) => {
+		const info = fs.statSync(path);
+		return { bytes: fs.readFileSync(path, "utf8"), ino: info.ino, mtimeMs: info.mtimeMs };
+	};
+	const waitFor = async (name) => {
+		const deadline = Date.now() + 10000;
+		while (!fs.existsSync(join(root, name))) {
+			if (Date.now() > deadline) throw new Error("timed out waiting for " + name);
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		}
+	};
+	const resolved = JSON.parse(process.env.GS_RESOLVED);
+	for (const round of [1, 2, 3]) {
+		const promptText = await prompt(cwd, resolved);
+		const result = await __testing.regenerateRegistry(cwd, false);
+		fs.appendFileSync(logPath, JSON.stringify({
+			role,
+			round,
+			result,
+			prompt: promptText,
+			cache: snapshot(cachePath),
+			registry: snapshot(registryPath),
+		}) + "\\n");
+		fs.writeFileSync(join(root, "done-" + role + "-" + round), "");
+		await waitFor("done-" + peer + "-" + round);
+	}
+	console.log("ROUNDS_DONE " + role);
+`;
+
+function runSharedCacheRounds(
+	root: string,
+	role: "a" | "b",
+	resolved: ResolvedSkill[],
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+	return new Promise((resolve) => {
+		const child = spawn(
+			process.execPath,
+			["--experimental-strip-types", "--input-type=module", "-e", sharedCacheRoundsScript],
+			{
+				env: {
+					...process.env,
+					GIT_CEILING_DIRECTORIES: root,
+					GS_ROOT: root,
+					GS_ROLE: role,
+					GS_RESOLVED: JSON.stringify(resolved),
+					GS_EXTENSION: registryExtensionUrl,
+				},
+			},
+		);
+		let stdout = "";
+		let stderr = "";
+		child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+		child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+		child.on("error", (error) => resolve({ status: null, stdout, stderr: `${stderr}${error.message}` }));
+		child.on("close", (status) => resolve({ status, stdout, stderr }));
+	});
+}
+
+test("two processes with different resolved sets each publish once and then cache-hit (#3020)", { timeout: 30_000 }, async (t) => {
+	const fixture = sharedCacheFixture();
+	t.after(() => rmSync(fixture.root, { recursive: true, force: true }));
+	const resolvedPathFor = (role: "a" | "b") => join(fixture.root, "pkg", "skills", `session-${role}`, "SKILL.md");
+	const resolvedFor = (role: "a" | "b"): ResolvedSkill[] => [
+		{
+			name: `session-${role}`,
+			description: `Trigger: session ${role}.`,
+			filePath: resolvedPathFor(role),
+		},
+	];
+
+	const outcomes = await Promise.all([
+		runSharedCacheRounds(fixture.root, "a", resolvedFor("a")),
+		runSharedCacheRounds(fixture.root, "b", resolvedFor("b")),
+	]);
+	for (const outcome of outcomes) {
+		assert.equal(outcome.status, 0, outcome.stderr);
+		assert.match(outcome.stdout, /ROUNDS_DONE/);
+	}
+
+	type Snapshot = { bytes: string; ino: number; mtimeMs: number };
+	type Round = { role: "a" | "b"; round: number; result: SharedCacheResult; prompt: string; cache: Snapshot; registry: Snapshot };
+	const readRounds = (role: "a" | "b"): Round[] =>
+		readFileSync(join(fixture.root, `rounds-${role}.jsonl`), "utf8")
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line) as Round);
+	const rounds = [...readRounds("a"), ...readRounds("b")];
+	assert.equal(rounds.length, 6, "both processes must complete all three rounds");
+	const firstRound = rounds.filter((entry) => entry.round === 1);
+	const laterRounds = rounds.filter((entry) => entry.round > 1);
+	assert.equal(firstRound.length, 2);
+	assert.equal(laterRounds.length, 4);
+
+	// Both sessions render the same disk-only bytes, so the first publication
+	// is shared. Which process lands it (or whether both race identical bytes
+	// in) is timing-dependent, so round 1 only bounds the count.
+	const firstPublishes = firstRound.filter((entry) => entry.result.regenerated).length;
+	assert.ok(firstPublishes >= 1 && firstPublishes <= 2, `round 1 must publish at most once per session, saw ${firstPublishes}`);
+	for (const entry of firstRound.filter((candidate) => candidate.result.regenerated)) {
+		assert.equal(entry.result.reason, "fingerprint-changed");
+	}
+	for (const entry of laterRounds) {
+		assert.equal(entry.result.regenerated, false, `session ${entry.role} round ${entry.round} must be quiet`);
+		assert.equal(entry.result.reason, "cache-hit");
+	}
+	assert.equal(
+		rounds.filter((entry) => entry.result.regenerated).length,
+		firstPublishes,
+		"no session may publish again after the first round",
+	);
+
+	const steadyCaches = new Set(laterRounds.map((entry) => snapshotKey(entry.cache)));
+	const steadyRegistries = new Set(laterRounds.map((entry) => snapshotKey(entry.registry)));
+	assert.equal(steadyCaches.size, 1, "the shared cache must stop changing after the first publication");
+	assert.equal(steadyRegistries.size, 1, "the shared registry must stop changing after the first publication");
+
+	// Each session keeps its own resolved set in its own prompt, and the shared
+	// file never carries either session's runtime-only rows.
+	for (const entry of rounds) {
+		const peer = entry.role === "a" ? "b" : "a";
+		assert.ok(entry.prompt.includes(resolvedPathFor(entry.role)), `session ${entry.role} round ${entry.round} must see its own resolved row`);
+		assert.ok(!entry.prompt.includes(resolvedPathFor(peer)), `session ${entry.role} must never see session ${peer}'s resolved row`);
+	}
+	const shared = readFileSync(fixture.registry, "utf8");
+	for (const role of ["a", "b"] as const) {
+		assert.doesNotMatch(shared, new RegExp(escapeRegExp(resolvedPathFor(role))), `session ${role}'s runtime row must stay out of the shared registry`);
+	}
+	assert.match(shared, new RegExp(escapeRegExp(fixture.skill)), "the shared registry still indexes the disk skill");
 });

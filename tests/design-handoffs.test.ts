@@ -280,3 +280,23 @@ test("a delivery answer never overwrites a state the agent already changed", asy
 	}), /boom/);
 	assert.equal(onDisk(root).handoffs["02-b.html"].status, "in_progress", "a failure after the agent took it over keeps the agent's state");
 });
+
+// canvas-server-data S11: a repeated in_progress report keeps the time the handoff was first started.
+test("S11: a repeated in_progress report keeps the first startedAt; in_progress after implemented starts again", async (t) => {
+	const root = designRoot(t);
+	const store = createDesignHandoffStore(root, { now: ticking() });
+	await store.markSent("alpha", "01-a.html", { queued: false });
+	const first = await store.setStatus("alpha", "01-a.html", "in_progress", { note: "header" });
+	assert.equal(first.startedAt, at(1));
+	const again = await store.setStatus("alpha", "01-a.html", "in_progress", { note: "menu" });
+	assert.deepEqual(again, { status: "in_progress", queued: false, sentAt: at(0), startedAt: at(1), implementedAt: null, note: "menu" }, "the start time stays; the note is the last one");
+	assert.deepEqual(onDisk(root).handoffs["01-a.html"], again);
+	const done = await store.setStatus("alpha", "01-a.html", "implemented", {});
+	assert.equal(done.startedAt, at(1));
+	const reopened = await store.setStatus("alpha", "01-a.html", "in_progress", {});
+	assert.equal(reopened.startedAt, at(4), "taking an implemented handoff up again is a new start, as before");
+	assert.equal(reopened.implementedAt, null);
+	const fresh = await store.setStatus("alpha", "02-b.html", "in_progress", {});
+	assert.equal(fresh.startedAt, at(5), "a first report on an artboard never handed off still starts it");
+	assert.equal((await store.setStatus("alpha", "02-b.html", "in_progress", {})).startedAt, at(5));
+});

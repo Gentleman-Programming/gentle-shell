@@ -74,7 +74,7 @@ Run this gate before every new brief: call the `gentle_design` tool with `action
 ## Design system sync
 
 1. Read only, and never edit project source. Sources: CSS custom properties (`:root`, `@theme`, `[data-theme]`), the Tailwind config or v4 `@theme`, component library folders, existing token files, and the fonts they declare.
-2. Write `design/system.md`: colors (token name, value, usage), typography, spacing, radius, shadows, and component rules. Each entry names its source `path`. Record only values found in the sources.
+2. Write `design/system.md`: colors (token name, value, usage), typography, spacing, radius, shadows, and component rules. For each CSS custom property, use a table row under a `##` section, with the backticked token name in the first cell and its backticked value in the second cell. Each entry names its source `path`. Record only values found in the sources.
 3. Write `design/system.html`: one self-contained artboard, 1440 px wide, that renders those tokens (swatches, type scale, spacing, radius, shadows) and the core components, under the same no-external-URL rules. The canvas shows it as the first board of every design.
 4. When no design sources exist, say so and propose a minimal starter system for the user to accept; never present invented values as project tokens.
 5. Self-check, for every artboard you finish while `design/system.md` exists: list the colors and font families the artboard uses, compare them with the system tokens, and fix every deviation before you report.

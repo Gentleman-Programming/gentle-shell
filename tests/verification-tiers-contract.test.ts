@@ -43,6 +43,17 @@ test("P8 rule 1: the verifier does not use the writer's reported suite as its ma
 	], "verification spot check");
 });
 
+// Cost-speed S15 P16 (from the review of gentle-ai PR #6072): when the user's failing command is the writer's
+// reported suite, the rule against re-running that suite must not leave the user-reported fix unverified.
+test("P16: the user's failing command is run even when it is the suite the writer reported", () => {
+	const kinds = sectionOf(verify, "## Evidence by change kind");
+	assert.ok(kinds.includes("Do not re-run the suite the writer reported: the parent's spot check of one reported command is the check on the writer's own results; the one exception is the user's failing command the parent passes, run even when it is that suite."), "the exception clause follows the prohibition in the verifier body");
+	const handoff = verification.split("\n").find((line) => line.startsWith("4. **Verify handoff**")) ?? "";
+	assert.ok(handoff.includes("the parent commits when a commit is authorized."), "the module's handoff commits only when a commit is authorized");
+	assert.ok(!handoff.includes("the parent commits."), "the unconditional commit sentence is gone from the module's handoff");
+	assert.ok(docs.includes("it does not re-run the suite the writer reported, because the parent's single spot check of one reported command is the check on the writer's own results; the one exception is the user's failing command the parent passes, which it runs even when it is that suite."), "the docs state the same exception next to the prohibition");
+});
+
 // Part A, rule 2: external tools and environments.
 test("P8 rule 2: an external tool or environment change is reproduced with the real tool and configuration plus own probes", () => {
 	const kinds = sectionOf(verify, "## Evidence by change kind");
@@ -104,9 +115,11 @@ test("P8 C1: the second correction is stated before the remaining blockers becom
 
 // Part B, C2: writers add probes as tests; the parent owns git.
 test("P8 C2: the writer adds verifier probes as regression tests and the parent commits", () => {
-	assert.ok(verification.includes("the writer adds its probes as regression tests; the parent commits"), "verification must say the parent commits");
+	assert.ok(verification.includes("the writer adds its probes as regression tests; the parent commits when a commit is authorized."), "verification must say the parent commits only when a commit is authorized");
 	assert.ok(!verification.includes("the writer commits its probes"), "the writer never commits");
-	assert.ok(verify.includes("for the parent to hand to the writer, who adds them; the parent commits; you never write them"), "verify durable probes must say the parent commits");
+	// Cost-speed S15 P16 (from the review of gentle-ai PR #6072): the parent commits the probes only when a commit is authorized.
+	assert.ok(verify.includes("for the parent to hand to the writer, who adds them; the parent commits them only when a commit is authorized, otherwise they stay uncommitted; you never write them"), "verify durable probes must say the parent commits only when a commit is authorized");
+	assert.ok(!verify.includes("the parent commits; you never write them"), "the unconditional commit sentence is gone from the verifier body");
 	assert.ok(!verify.includes("to hand to the writer to commit"), "verify must not say the writer commits");
 });
 
@@ -176,8 +189,8 @@ test("P8 B1: the parent passes the user's environment and runs the real-case che
 		"Run yourself any real-case check the verifier leaves unverified before calling the change verified.",
 	], "verification handoff B1");
 	// Cost-speed S15 P5a: the always-on verifier-setup paragraph moved into this module (MODULE_BUDGETS in
-	// tests/task-size-routing-contract.test.ts holds the arithmetic): 7,900 -> 8,608 B; mode-neutral wording: 8,656 B.
-	assert.ok(verification.length > 0 && Buffer.byteLength(verification) <= 8_656, "the module stays within its 8,656 B budget");
+	// tests/task-size-routing-contract.test.ts holds the arithmetic): 7,900 -> 8,608 B; mode-neutral wording: 8,656 B; P16 conditional commit, paid by trimming restated phrases: 8,648 B.
+	assert.ok(verification.length > 0 && Buffer.byteLength(verification) <= 8_648, "the module stays within its 8,648 B budget");
 });
 
 // B2: the verifier never re-runs the writer's reported suite, and no other sentence of its body orders it.

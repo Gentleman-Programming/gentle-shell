@@ -626,7 +626,9 @@ For a bootstrap-only Node, the full group runs these fixed steps:
 The outcome then also reports `npmPrefix: "configured"` or `"unchanged"`.
 
 When the first Node on the user's PATH is supported, it is reused and never
-replaced or shadowed: there is no `runtime set` and no prefix change. When that
+replaced: there is no `runtime set` and no prefix change. A Node in
+`$PNPM_HOME/bin` can shadow it in the installer child environment, which puts
+`$PNPM_HOME/bin` first on PATH. When that
 first Node is unsupported, the bootstrap's pinned Node runs the wizard, so the
 full group above persists it into `$PNPM_HOME/bin`. That replaces any Node
 already in `$PNPM_HOME/bin`, even a supported one found later on PATH, and the

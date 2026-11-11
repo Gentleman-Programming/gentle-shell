@@ -184,7 +184,6 @@ export const requiredPaths = [
   "contracts/review-provider-contract-mirror/v1.4.0/generated/provider-capabilities.baseline.json",
   "contracts/review-provider-contract-mirror/v1.4.0/generated/provider-roles.baseline.json",
   "prompts/skill-creation.md",
-  "skills/_shared/review-ledger-contract.md",
   "skills/branch-pr/SKILL.md",
   "skills/chained-pr/SKILL.md",
   "skills/chained-pr/references/chaining-details.md",

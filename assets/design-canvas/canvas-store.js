@@ -7,7 +7,9 @@
 // The values are shared, not copied: boards and the Compare object stay objects
 // that their owning module may still change in place (board.rects, board.viewWidth
 // and board.viewHeight in canvas-messages.js, canvas-focus.js and canvas-boards.js;
-// compare.loaded in canvas-compare.js). Comments and handoffs are plain data
+// board.overflow, board.sizeFrames and board.sizesView, the All sizes frames, and
+// each size frame's own rects and overflow in canvas-sizes.js, canvas-messages.js and
+// canvas-focus.js; compare.loaded in canvas-compare.js). Comments and handoffs are plain data
 // with no such owner, so setComments and setHandoffs freeze them once, when they
 // are set (never on read): changing them means setting new values.
 
@@ -42,7 +44,7 @@ export function createStore(initial = {}) {
 		focus: null,
 		savedView: null,
 		savedPanel: null,
-		// The focused artboard's screen size (canvas-sizes.js): { kind: "phone" | "tablet" | "desktop" }
+		// The focused artboard's screen size (canvas-sizes.js): { kind: "phone" | "tablet" | "desktop" | "all" }
 		// or { kind: "custom", width }. Every focus session starts at Desktop.
 		size: Object.freeze({ kind: "desktop" }),
 		hoverBoard: null,

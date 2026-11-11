@@ -1,7 +1,8 @@
 // Gentle Design artboard inspector, injected by the canvas server into every
 // artboard. In comment mode it highlights the hovered element and reports the
 // clicked one to the canvas; otherwise it only forwards canvas zoom and pan.
-// It also reports where each commented element is, so the canvas can pin it.
+// It also reports where each commented element is, so the canvas can pin it,
+// and whether the page is wider than its frame (the canvas's Overflows chip).
 // In navigation mode the canvas covers the artboard with a shield and routes
 // comment-mode hovers and clicks here as points; in focus mode the artboard
 // owns the wheel and the keyboard, and Shift+Esc asks the canvas to leave.
@@ -17,6 +18,8 @@
 	let focused = false;
 	let pins = [];
 	let reportQueued = false;
+	let overflowQueued = false;
+	let lastOverflow = "";
 	let hovered = null;
 	let selected = null;
 
@@ -163,6 +166,25 @@
 		requestAnimationFrame(reportPins);
 	}
 
+	/** Whether the page is wider than this frame; said once per change of width, scroll width or answer. */
+	function reportOverflow() {
+		overflowQueued = false;
+		const root = document.documentElement;
+		const width = window.innerWidth;
+		const scrollWidth = root.scrollWidth;
+		const overflow = scrollWidth > root.clientWidth;
+		const key = `${overflow}/${width}/${scrollWidth}`;
+		if (key === lastOverflow) return;
+		lastOverflow = key;
+		post({ type: "gd:overflow", overflow, width, scrollWidth });
+	}
+
+	function queueOverflow() {
+		if (overflowQueued) return;
+		overflowQueued = true;
+		requestAnimationFrame(reportOverflow);
+	}
+
 	function setPins(value) {
 		if (!Array.isArray(value)) return;
 		pins = value.slice(0, MAX_PINS).filter((pin) => pin && typeof pin.id === "string" && pin.id.length <= 32 && typeof pin.selector === "string" && pin.selector.length <= MAX_SELECTOR)
@@ -281,10 +303,10 @@
 	}, { passive: false, capture: true });
 
 	window.addEventListener("scroll", () => { refresh(); queueReport(); }, true);
-	window.addEventListener("resize", () => { refresh(); queueReport(); });
-	window.addEventListener("load", queueReport);
-	// Layout changes (late images, artboard scripts) move pinned elements; the inspector's own boxes do not count.
+	window.addEventListener("resize", () => { refresh(); queueReport(); queueOverflow(); });
+	window.addEventListener("load", () => { queueReport(); queueOverflow(); });
+	// Layout changes (late images, artboard scripts) move pinned elements and may widen the page; the inspector's own boxes do not count.
 	new MutationObserver((records) => {
-		if (records.some((record) => !(record.target instanceof Element && record.target.hasAttribute(MARK)))) queueReport();
+		if (records.some((record) => !(record.target instanceof Element && record.target.hasAttribute(MARK)))) { queueReport(); queueOverflow(); }
 	}).observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
 })();

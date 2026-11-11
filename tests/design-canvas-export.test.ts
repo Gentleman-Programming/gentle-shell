@@ -518,6 +518,30 @@ test("an export from an open artboard at Phone size grabs it at its own size and
 	assert.equal(canvas.world.style.transform, before);
 });
 
+test("an export from All sizes grabs the artboard's own frame without the size frames and gives All sizes back", async () => {
+	const { canvas, log } = await pngCanvas();
+	click(canvas.boards[0].shield!, 200, 200);
+	$(canvas, "gd-device").dispatch("click");
+	findAll($(canvas, "gd-device-menu"), (element) => element.dataset.size === "all")[0].dispatch("click");
+	const sizeFrames = () => withClass(canvas.viewport, "gd-size-frame").length;
+	assert.equal(sizeFrames(), 3);
+	const during: number[] = [];
+	const document = canvas.document as any;
+	const create = document.createElement;
+	document.createElement = (tag: string) => {
+		if (tag === "video") during.push(sizeFrames());
+		return create(tag);
+	};
+	choose(canvas, "Export as PNG");
+	await settle();
+	assert.deepEqual(during, [0], "Desktop while the frame is grabbed: no size frames");
+	assert.deepEqual([log.during[0].width, log.during[0].height], ["400px", "300px"]);
+	assert.match(canvas.navMode.textContent, /^Using: First/, "the artboard stays open");
+	assert.equal($(canvas, "gd-device-name").textContent, "All sizes");
+	assert.equal(sizeFrames(), 3, "All sizes again");
+	assert.ok(canvas.boards[0].wrapper.classes.has("gd-all-sizes"));
+});
+
 test("an artboard bigger than the window names the window size it needs and grabs nothing", async () => {
 	const { canvas, log } = await pngCanvas({ frame: { width: 1440, height: 900 } });
 	const before = canvas.world.style.transform;

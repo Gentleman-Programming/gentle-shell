@@ -22,12 +22,18 @@ export function init(ctx) {
 		return state.comments.filter((comment) => comment.file === board.artboard.file);
 	}
 
-	function sendPins(board) {
-		const pins = commentsForBoard(board).slice(0, LIMITS.pins).map((comment) => ({ id: comment.id, selector: comment.selector }));
-		board.frame.contentWindow?.postMessage({ type: "gd:pins", pins }, "*");
+	/** A board's frame or one of its size frames (canvas-sizes.js) locates its artboard's comments and reports where they are. */
+	function sendPins(surface) {
+		const pins = commentsForBoard(actions.ownerOf(surface)).slice(0, LIMITS.pins).map((comment) => ({ id: comment.id, selector: comment.selector }));
+		surface.frame.contentWindow?.postMessage({ type: "gd:pins", pins }, "*");
 	}
 
-	/** Detached: the artboard is gone, or it reported that the selector matches nothing. */
+	/** Every frame of every design board: its own and, in All sizes, its size frames. */
+	function eachSurface(callback) {
+		for (const board of state.boards) actions.surfacesOf(board).forEach(callback);
+	}
+
+	/** Detached: the artboard is gone, or its own frame reported that the selector matches nothing. */
 	function isDetached(comment) {
 		const board = state.boards.find((candidate) => candidate.artboard.file === comment.file);
 		if (!board) return true;
@@ -42,13 +48,14 @@ export function init(ctx) {
 		return state.comments.indexOf(comment) + 1;
 	}
 
-	function renderPins(board) {
+	/** The pins of one frame, at their element's position in that frame; a size frame has its own set. */
+	function renderPins(surface) {
 		const pins = [];
-		for (const comment of commentsForBoard(board)) {
-			const rect = board.rects?.get(comment.id);
+		for (const comment of commentsForBoard(actions.ownerOf(surface))) {
+			const rect = surface.rects?.get(comment.id);
 			// A 0x0 rect is an element that is hidden or not rendered: no pin at the artboard's corner.
 			if (!rect || (rect.width === 0 && rect.height === 0)) continue;
-			if (rect.x + rect.width < 0 || rect.y + rect.height < 0 || rect.x > board.viewWidth || rect.y > board.viewHeight) continue;
+			if (rect.x + rect.width < 0 || rect.y + rect.height < 0 || rect.x > surface.viewWidth || rect.y > surface.viewHeight) continue;
 			const pin = doc.createElement("button");
 			pin.type = "button";
 			pin.className = "gd-pin";
@@ -65,8 +72,8 @@ export function init(ctx) {
 			});
 			pins.push(pin);
 		}
-		const focused = board.pins.contains(doc.activeElement) ? doc.activeElement.dataset.id : null;
-		board.pins.replaceChildren(...pins);
+		const focused = surface.pins.contains(doc.activeElement) ? doc.activeElement.dataset.id : null;
+		surface.pins.replaceChildren(...pins);
 		if (focused) pins.find((pin) => pin.dataset.id === focused)?.focus();
 	}
 
@@ -115,6 +122,9 @@ export function init(ctx) {
 			text.style.display = "block";
 			text.textContent = comment.comment;
 			show.append(meta, text);
+			// The size it was made at, when not at the artboard's own size (canvas-sizes.js).
+			const made = actions.viewportChip(comment.viewport);
+			if (made) show.append(made);
 			if (comment.screenshot) {
 				const shot = doc.createElement("img");
 				shot.className = "gd-comment-shot";
@@ -124,23 +134,23 @@ export function init(ctx) {
 				show.append(shot);
 			}
 			show.addEventListener("click", () => selectComment(comment.id, { scroll: true, focusList: false }));
-			const actions = doc.createElement("div");
-			actions.className = "gd-comment-actions";
+			const controls = doc.createElement("div");
+			controls.className = "gd-comment-actions";
 			const toggle = doc.createElement("button");
 			toggle.type = "button";
 			const next = comment.status === "open" ? "resolved" : "open";
 			toggle.textContent = next === "resolved" ? "Resolve" : "Reopen";
 			toggle.setAttribute("aria-label", `${toggle.textContent} comment ${commentNumber(comment)}`);
 			toggle.addEventListener("click", () => setCommentStatus(comment.id, next));
-			actions.append(toggle);
-			item.append(show, actions);
+			controls.append(toggle);
+			item.append(show, controls);
 			return item;
 		}));
 	}
 
 	function renderComments() {
 		renderList();
-		state.boards.forEach(renderPins);
+		eachSurface(renderPins);
 	}
 
 	async function loadComments() {
@@ -155,7 +165,7 @@ export function init(ctx) {
 		if (slug !== state.slug || !Array.isArray(comments)) return;
 		store.setComments({ comments });
 		if (state.activeId && !comments.some((comment) => comment.id === state.activeId)) store.setComments({ activeId: null });
-		state.boards.forEach(sendPins);
+		eachSurface(sendPins);
 		renderComments();
 	}
 
@@ -169,7 +179,7 @@ export function init(ctx) {
 			renderList();
 		}
 		const board = state.boards.find((candidate) => candidate.artboard.file === comment.file);
-		board?.frame.contentWindow?.postMessage({ type: "gd:highlight", id }, "*");
+		if (board) for (const surface of actions.surfacesOf(board)) surface.frame.contentWindow?.postMessage({ type: "gd:highlight", id }, "*");
 		if (options.focusList) els.list.querySelector(`[data-id="${win.CSS.escape(id)}"] .gd-comment-show`)?.focus();
 		if (!options.scroll) return;
 		// The focused artboard is already at 1:1; another board's comment leaves focus mode first.
@@ -241,7 +251,8 @@ export function init(ctx) {
 		store.setCommenting(enabled);
 		actions.renderTools();
 		els.world.classList.toggle("gd-commenting", enabled);
-		state.boards.forEach(actions.sendMode);
+		state.boards.forEach((board) => board.sizesView?.classList.toggle("gd-commenting", enabled));
+		eachSurface(actions.sendMode);
 		setStatus(enabled ? "Comment mode: click an element in an artboard" : "", false);
 		if (!enabled) {
 			actions.setHoverBoard(null);

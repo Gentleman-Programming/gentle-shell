@@ -6,9 +6,15 @@ import { read, structuredCopy, type Listener } from "./support/design-canvas-dom
 // inspector.js is a classic script injected into each artboard, so it still runs
 // in a vm context with a minimal fake DOM.
 
-function loadInspector() {
+function loadInspector({ fonts = false } = {}) {
 	const posted: any[] = [];
 	const listeners = new Map<string, Listener[]>();
+	// The document's capture-phase listeners: an image's load does not bubble, so only these see it.
+	const captures = new Map<string, Listener[]>();
+	// The MutationObserver callbacks the page registers, for the test to call with records.
+	const observers: Array<(records: unknown[]) => void> = [];
+	// document.fonts (a FontFaceSet) when the test asks for one; older engines and the other tests have none.
+	const fontListeners = new Map<string, Listener[]>();
 	class Element {}
 	const style = () => ({ cursor: "" });
 	const makeNode = () => Object.assign(new Element(), {
@@ -30,7 +36,8 @@ function loadInspector() {
 		getBoundingClientRect: () => ({ left: 4, top: 8, width: 60, height: 20 }),
 	});
 	const scrolling = { scrollTop: 0, scrollLeft: 0, clientHeight: 100, scrollHeight: 100, clientWidth: 100, scrollWidth: 100, parentElement: null };
-	const documentElement = Object.assign(makeNode(), { append() {} });
+	// The page's width as the frame lays it out (clientWidth) and as wide as its content is (scrollWidth).
+	const documentElement = Object.assign(makeNode(), { append() {}, clientWidth: 100, scrollWidth: 100 });
 	const document = {
 		documentElement,
 		body: makeNode(),
@@ -43,15 +50,23 @@ function loadInspector() {
 		elementFromPoint: () => button,
 		querySelectorAll: (selector: string) => (selector === "#cta" ? [button] : []),
 		querySelector: () => null,
+		addEventListener(type: string, listener: Listener, options?: boolean | { capture?: boolean }) {
+			const capture = options === true || (typeof options === "object" && options.capture === true);
+			if (capture) captures.set(type, [...(captures.get(type) ?? []), listener]);
+		},
+		...(fonts ? { fonts: { addEventListener(type: string, listener: Listener) { fontListeners.set(type, [...(fontListeners.get(type) ?? []), listener]); } } } : {}),
 	};
 	const parent = { postMessage: (message: any) => posted.push(structuredCopy(message)) };
+	// Animation frames wait until the test runs them.
+	const frames: Array<() => void> = [];
 	const context: Record<string, any> = {
+		innerWidth: 100,
 		document,
 		Element,
 		CSS: { escape: (value: string) => value },
 		getComputedStyle: () => ({ overflowX: "hidden", overflowY: "hidden" }),
-		requestAnimationFrame: () => 0,
-		MutationObserver: class { observe() {} },
+		requestAnimationFrame: (callback: () => void) => { frames.push(callback); return frames.length; },
+		MutationObserver: class { constructor(callback: (records: unknown[]) => void) { observers.push(callback); } observe() {} },
 		parent,
 		addEventListener(type: string, listener: Listener) {
 			listeners.set(type, [...(listeners.get(type) ?? []), listener]);
@@ -65,10 +80,91 @@ function loadInspector() {
 		return event;
 	};
 	const fromParent = (data: unknown) => fire("message", { source: parent, data });
+	/** An event that does not bubble (an image's load) reaching the document on its way down. */
+	const captureOnDocument = (type: string, target: unknown) => {
+		for (const listener of captures.get(type) ?? []) listener({ type, target });
+	};
+	/** The page changed: every MutationObserver gets these records. */
+	const mutate = (records: unknown[]) => {
+		for (const callback of observers) callback(records);
+	};
+	/** The page's font set finished loading fonts (loadingdone). */
+	const fontsLoaded = () => {
+		for (const listener of fontListeners.get("loadingdone") ?? []) listener({ type: "loadingdone" });
+	};
+	const runFrames = () => { while (frames.length > 0) frames.shift()!(); };
 	// The inspector makes its hover outline first, then the selected one.
 	const [hoverBox, selectedBox] = created;
-	return { posted, fire, fromParent, hoverBox, selectedBox };
+	return { posted, fire, fromParent, context, documentElement, runFrames, captureOnDocument, mutate, fontsLoaded, makeNode, Element, hoverBox, selectedBox };
 }
+
+test("the inspector reports whether its page is wider than the frame, once per change", () => {
+	const inspector = loadInspector();
+	const root = inspector.documentElement as unknown as Record<string, unknown>;
+	inspector.context.innerWidth = 390;
+	root.clientWidth = 375;
+	root.scrollWidth = 520;
+	inspector.fire("load", {});
+	assert.deepEqual(inspector.posted, [], "reports wait for the next frame");
+	inspector.runFrames();
+	assert.deepEqual(inspector.posted, [{ type: "gd:overflow", overflow: true, width: 390, scrollWidth: 520 }]);
+	inspector.fire("resize", {});
+	inspector.runFrames();
+	assert.equal(inspector.posted.length, 1, "an unchanged report is not repeated");
+	root.scrollWidth = 375;
+	inspector.fire("resize", {});
+	inspector.fire("resize", {});
+	inspector.runFrames();
+	assert.deepEqual(inspector.posted.slice(1), [{ type: "gd:overflow", overflow: false, width: 390, scrollWidth: 375 }], "two resizes in one frame report once");
+	inspector.context.innerWidth = 820;
+	root.clientWidth = 805;
+	root.scrollWidth = 805;
+	inspector.fire("resize", {});
+	inspector.runFrames();
+	assert.deepEqual(inspector.posted.at(-1), { type: "gd:overflow", overflow: false, width: 820, scrollWidth: 805 }, "a new frame width is reported even when the page still fits");
+});
+
+test("the inspector checks the page's width again when the MutationObserver sees a page change, not its own boxes", () => {
+	const inspector = loadInspector();
+	const root = inspector.documentElement as unknown as Record<string, unknown>;
+	inspector.fire("load", {});
+	inspector.runFrames();
+	assert.deepEqual(inspector.posted, [{ type: "gd:overflow", overflow: false, width: 100, scrollWidth: 100 }]);
+	root.scrollWidth = 260;
+	const ownBox = Object.assign(inspector.makeNode(), { hasAttribute: () => true });
+	inspector.mutate([{ type: "attributes", target: ownBox }]);
+	inspector.runFrames();
+	assert.equal(inspector.posted.length, 1, "the inspector's own boxes moving is no page change");
+	inspector.mutate([{ type: "childList", target: inspector.makeNode() }]);
+	inspector.runFrames();
+	assert.deepEqual(inspector.posted.slice(1), [{ type: "gd:overflow", overflow: true, width: 100, scrollWidth: 260 }]);
+});
+
+test("the inspector checks the page's width again when an image loads late, though load does not bubble", () => {
+	const inspector = loadInspector();
+	const root = inspector.documentElement as unknown as Record<string, unknown>;
+	inspector.fire("load", {});
+	inspector.runFrames();
+	assert.deepEqual(inspector.posted, [{ type: "gd:overflow", overflow: false, width: 100, scrollWidth: 100 }]);
+	// A lazy image without a fixed size loads after the window's load and widens the page: no mutation, no resize.
+	root.scrollWidth = 340;
+	inspector.captureOnDocument("load", inspector.makeNode());
+	inspector.runFrames();
+	assert.deepEqual(inspector.posted.slice(1), [{ type: "gd:overflow", overflow: true, width: 100, scrollWidth: 340 }]);
+});
+
+test("the inspector checks the page's width again when a web font loads late", () => {
+	const inspector = loadInspector({ fonts: true });
+	const root = inspector.documentElement as unknown as Record<string, unknown>;
+	inspector.fire("load", {});
+	inspector.runFrames();
+	assert.deepEqual(inspector.posted, [{ type: "gd:overflow", overflow: false, width: 100, scrollWidth: 100 }]);
+	// A web font that swaps in after the window's load widens the page: no mutation, no resize, no load event.
+	root.scrollWidth = 340;
+	inspector.fontsLoaded();
+	inspector.runFrames();
+	assert.deepEqual(inspector.posted.slice(1), [{ type: "gd:overflow", overflow: true, width: 100, scrollWidth: 340 }]);
+});
 
 test("the inspector posts gd:exit-focus on Shift+Esc and keeps plain Esc for the design", () => {
 	const inspector = loadInspector();

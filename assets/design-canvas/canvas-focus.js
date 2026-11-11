@@ -1,6 +1,7 @@
 // Navigation and focus modes: the shield hover, activating a board, focus mode at
 // 100% with centerFocus, and the Back to canvas button. The focused artboard's frame
-// has the screen size canvas-sizes.js gives it (focusSize).
+// has the screen size canvas-sizes.js gives it (focusSize), and All sizes lays its size frames
+// out below the artboard's label (layoutSizes).
 
 // canvas-layout S5: an open artboard keeps 8 px from the viewport's edges, and 48 px below it for the
 // floating "Back to canvas" button (32 px high, 8 px from the bottom).
@@ -49,18 +50,24 @@ export function init(ctx) {
 		if (state.hoverBoard) state.hoverBoard.frame.contentWindow?.postMessage({ type: "gd:hover-at", ...framePoint(board, event.clientX, event.clientY) }, "*");
 	}
 
-	function sendFocus(board) {
-		board.frame.contentWindow?.postMessage({ type: "gd:focus", enabled: board === state.focus }, "*");
+	/** A board's frame or one of its size frames (canvas-sizes.js): focused with its artboard. */
+	function sendFocus(surface) {
+		surface.frame.contentWindow?.postMessage({ type: "gd:focus", enabled: actions.ownerOf(surface) === state.focus }, "*");
 	}
 
 	/**
 	 * The artboard's visible size: its manifest size, or the focused screen size, its height
-	 * clipped to the viewport while that is taller.
+	 * clipped to the viewport while that is taller. A report of horizontal overflow belongs to
+	 * one width, so a new width clears it until the page reports again.
 	 */
 	function setFrameSize(board, width, height) {
-		board.viewWidth = width;
+		if (board.viewWidth !== width) {
+			board.overflow = null;
+			board.viewWidth = width;
+			board.frame.style.width = `${width}px`;
+			actions.renderOverflow(board);
+		}
 		board.viewHeight = height;
-		board.frame.style.width = `${width}px`;
 		board.frame.style.height = `${height}px`;
 	}
 
@@ -75,6 +82,7 @@ export function init(ctx) {
 	 * viewport (the zoom says how much), since the canvas cannot pan in focus mode.
 	 * A taller artboard is top-aligned and its frame is clipped to the viewport, so it
 	 * scrolls inside like a browser window instead of leaving its bottom out of reach.
+	 * All sizes keeps the label at 100% at the top left and fits the size frames below it.
 	 */
 	function centerFocus() {
 		const board = state.focus;
@@ -90,18 +98,21 @@ export function init(ctx) {
 		const left = board.wrapper.offsetLeft + box.offsetLeft;
 		const top = board.wrapper.offsetTop + box.offsetTop;
 		const labelSpace = box.offsetTop;
+		const all = state.size.kind === "all";
 		// Screen pixels per artboard pixel: 1 when it fits beside the margins.
-		const zoom = Math.min(1, (viewport.width - FOCUS_MARGIN * 2) / width);
+		const zoom = all ? 1 : Math.min(1, (viewport.width - FOCUS_MARGIN * 2) / width);
 		const minTop = FOCUS_MARGIN + labelSpace * zoom;
 		const available = viewport.height - minTop - BACK_SPACE;
-		const tall = height * zoom > available;
+		const tall = all || height * zoom > available;
 		setFrameSize(board, width, tall ? Math.max(120, Math.floor(available / zoom)) : height);
 		store.setView({
 			zoom,
-			x: Math.round(width * zoom + FOCUS_MARGIN * 2 <= viewport.width ? (viewport.width - width * zoom) / 2 - left * zoom : FOCUS_MARGIN - left * zoom),
+			x: Math.round(!all && width * zoom + FOCUS_MARGIN * 2 <= viewport.width ? (viewport.width - width * zoom) / 2 - left * zoom : FOCUS_MARGIN - left * zoom),
 			y: Math.round((tall ? minTop : Math.max(minTop, (viewport.height - height * zoom) / 2)) - top * zoom),
 		});
 		actions.applyView();
+		// The size frames sit a margin below the label, beside the margins and above the Back to canvas band.
+		actions.layoutSizes(board, { top: minTop + FOCUS_MARGIN, side: FOCUS_MARGIN, bottom: BACK_SPACE, width: viewport.width, height: viewport.height });
 		actions.renderDevice();
 	}
 
@@ -114,9 +125,13 @@ export function init(ctx) {
 			board.wrapper.classList.toggle("gd-focus-board", active);
 			board.wrapper.inert = Boolean(focused) && !active;
 			board.shield.hidden = active;
-			// Leaving focus mode, or focusing another artboard, restores the manifest size.
-			if (!active && (board.viewWidth !== board.artboard.width || board.viewHeight !== board.artboard.height)) setFrameSize(board, board.artboard.width, board.artboard.height);
-			sendFocus(board);
+			if (!active) {
+				// Leaving focus mode, or focusing another artboard, restores the manifest size and drops the size frames.
+				if (board.viewWidth !== board.artboard.width || board.viewHeight !== board.artboard.height) setFrameSize(board, board.artboard.width, board.artboard.height);
+				actions.removeSizeFrames(board);
+			}
+			actions.renderOverflow(board);
+			actions.surfacesOf(board).forEach(sendFocus);
 		}
 		// The device menu belongs to the artboard it opened on.
 		actions.closeDeviceMenu();

@@ -1,9 +1,16 @@
 // Screen sizes in focus mode: the top bar's device button and its menu (Phone,
-// Tablet, Desktop and a custom width), and the size each one gives the focused
+// Tablet, Desktop, All sizes and a custom width), and the size each one gives the focused
 // artboard's frame (focusSize, which canvas-focus.js centers). A size resizes the
 // frame in place, so the design's own media queries respond; nothing reloads.
 // The size lives in the store (setFocus), and the menu is the shared one
 // (canvas-menu.js) with its own element, #gd-device-menu.
+//
+// All sizes shows the focused artboard at Phone, Tablet and Desktop at once: a real iframe per
+// size ("size frame") at its true width, scaled together outside the world. A board and its size
+// frames are its "surfaces": each takes picks, shows pins, reports overflow and records the size a
+// comment was made at (viewportOf), so the other modules handle a size frame as they handle a board.
+// This module owns the board fields it changes in place (canvas-store.js): board.sizeFrames,
+// board.sizesView and board.overflow, and each size frame's own rects and overflow.
 
 // Every string the sizes show, in English until the i18n PR keys them.
 const TEXT = Object.freeze({
@@ -11,6 +18,8 @@ const TEXT = Object.freeze({
 	phone: "Phone",
 	tablet: "Tablet",
 	desktop: "Desktop",
+	all: "All sizes",
+	allTitle: "All sizes: Phone, Tablet and Desktop side by side",
 	custom: "Custom",
 	customAria: "Custom width in pixels",
 	customGroup: "Custom width",
@@ -19,6 +28,12 @@ const TEXT = Object.freeze({
 	button: (size) => `Preview size: ${size}`,
 	buttonTitle: "Preview size of the open artboard",
 	buttonOff: "Open an artboard to choose its preview size",
+	frameAria: (name, width, height) => `${name} ${width} by ${height}`,
+	frameTitle: (title, name, width, height) => `${title} artboard at ${name} ${width} × ${height}`,
+	scale: (percent) => `· ${percent}%`,
+	overflow: "Overflows",
+	overflowNote: (width) => `Content is wider than ${width} px, so part of it is cut off or needs sideways scrolling at this size.`,
+	madeAt: (label) => `Made at ${label}`,
 });
 
 // Phone and Tablet are fixed sizes; Desktop fills the viewport beside the focus margins, never
@@ -31,7 +46,13 @@ const SIZE_PRESETS = [
 // The custom width: whole CSS px in this range, with the manifest height.
 const CUSTOM_WIDTH = { min: 240, max: 2560 };
 // The device button wears the icon of the size it shows (canvas-layout S6).
-const SIZE_ICONS = { phone: "i-phone", tablet: "i-tablet", desktop: "i-monitor", custom: "i-width" };
+const SIZE_ICONS = { phone: "i-phone", tablet: "i-tablet", desktop: "i-monitor", all: "i-devices", custom: "i-width" };
+// What comments.json accepts for the size a comment was made at (lib/design-comments.ts).
+const VIEWPORT_LIMITS = { minWidth: 240, maxWidth: 4096, minHeight: 1, maxHeight: 20000 };
+// All sizes: the gap between the frames, the band each label takes above its frame, and the smallest scale.
+const SIZES_GAP = 20;
+const SIZES_HEAD = 28;
+const MIN_SIZES_SCALE = 0.05;
 
 export function init(ctx) {
 	const { doc, els, store, actions } = ctx;
@@ -49,11 +70,30 @@ export function init(ctx) {
 		return preset.kind === "desktop" ? desktopSize(board) : { width: preset.width, height: preset.height };
 	}
 
-	/** What the focused size means for `board`: its frame's width and height before the viewport clips a tall one. */
+	/** The artboard's own size in design.json. */
+	function manifestSize(board) {
+		return { width: board.artboard.width, height: board.artboard.height };
+	}
+
+	/**
+	 * What the focused size means for `board`: its frame's width and height before the viewport clips a tall one.
+	 * All sizes keeps the artboard's own frame (hidden behind the size frames) at its manifest size.
+	 */
 	function focusSize(board) {
 		const size = state.size;
 		if (size.kind === "custom") return { width: size.width, height: board.artboard.height };
+		if (size.kind === "all") return manifestSize(board);
 		return presetSize(board, SIZE_PRESETS.find((preset) => preset.kind === size.kind) ?? SIZE_PRESETS[2]);
+	}
+
+	/** The board's own frame, then the size frames All sizes adds: every one takes picks and shows pins the same way. */
+	function surfacesOf(board) {
+		return board.sizeFrames.length > 0 ? [board, ...board.sizeFrames] : [board];
+	}
+
+	/** The artboard a frame belongs to: a board is its own, a size frame names its board. */
+	function ownerOf(surface) {
+		return surface.board ?? surface;
 	}
 
 	/**
@@ -64,7 +104,8 @@ export function init(ctx) {
 		const board = state.focus;
 		const kind = board && SIZE_ICONS[state.size.kind] ? state.size.kind : "desktop";
 		const name = nameOf(kind);
-		const size = board ? dims(focusSize(board)) : "";
+		// All sizes has no one size to name.
+		const size = board && kind !== "all" ? dims(focusSize(board)) : "";
 		els.deviceIcon.setAttribute("href", `#${SIZE_ICONS[kind]}`);
 		els.deviceName.textContent = name;
 		els.deviceSize.textContent = size;
@@ -81,33 +122,39 @@ export function init(ctx) {
 		return span;
 	}
 
-	/** One radio item of the device menu: icon, name, its size for the focused artboard and a check when it is the current one. */
-	function deviceItem(board, preset) {
-		const size = presetSize(board, preset);
+	/** One radio item of the device menu: icon, name, its size for the focused artboard (none for All sizes) and a check when it is the current one. */
+	function deviceItem(kind, title, size) {
 		const item = doc.createElement("button");
 		item.type = "button";
 		item.className = "gd-menu-item gd-device-item";
 		item.setAttribute("role", "menuitemradio");
-		item.setAttribute("aria-checked", String(state.size.kind === preset.kind));
+		item.setAttribute("aria-checked", String(state.size.kind === kind));
 		item.setAttribute("tabindex", "-1");
-		item.dataset.size = preset.kind;
-		item.title = TEXT.itemTitle(nameOf(preset.kind), size.width, size.height);
-		item.append(actions.icon(SIZE_ICONS[preset.kind], "gd-i gd-i-s"), chip("gd-menu-label", nameOf(preset.kind)), chip("gd-device-dim", dims(size)), actions.icon("i-check", "gd-i gd-i-s gd-device-check"));
+		item.dataset.size = kind;
+		item.title = title;
+		item.append(actions.icon(SIZE_ICONS[kind], "gd-i gd-i-s"), chip("gd-menu-label", nameOf(kind)));
+		if (size) item.append(chip("gd-device-dim", dims(size)));
+		item.append(actions.icon("i-check", "gd-i gd-i-s gd-device-check"));
 		item.addEventListener("click", () => chooseDeviceItem(item));
 		return item;
+	}
+
+	function presetItem(board, preset) {
+		const size = presetSize(board, preset);
+		return deviceItem(preset.kind, TEXT.itemTitle(nameOf(preset.kind), size.width, size.height), size);
 	}
 
 	// The open menu's width field and its error line; null while the device menu is closed.
 	let custom = null;
 
 	/**
-	 * The device menu, built when it opens: Phone, Tablet and Desktop as radio items, then the
+	 * The device menu, built when it opens: Phone, Tablet, Desktop and All sizes as radio items, then the
 	 * custom width field. The arrows reach the field as the last entry; inside it the other keys stay with the field.
 	 */
 	function openDeviceMenu(last) {
 		const board = state.focus;
 		if (!board) return;
-		const items = SIZE_PRESETS.map((preset) => deviceItem(board, preset));
+		const items = [...SIZE_PRESETS.map((preset) => presetItem(board, preset)), deviceItem("all", TEXT.allTitle, null)];
 		const separator = doc.createElement("div");
 		separator.className = "gd-menu-separator";
 		separator.setAttribute("role", "separator");
@@ -185,7 +232,176 @@ export function init(ctx) {
 		if (!state.focus) return;
 		actions.closePopover();
 		store.setFocus({ size: Object.freeze(size) });
+		// centerFocus lays the frames out for the size (layoutSizes): All sizes adds its frames, another size removes them.
 		actions.centerFocus();
+	}
+
+	// ---- All sizes: a frame per size, registered like the board's own frame
+
+	/** The sizes All sizes shows: Phone and Tablet, and Desktop at the artboard's own size (side by side, nothing fills the window). */
+	function allSizes(board) {
+		return SIZE_PRESETS.map((preset) => ({ kind: preset.kind, ...(preset.kind === "desktop" ? manifestSize(board) : presetSize(board, preset)) }));
+	}
+
+	/**
+	 * Brings `board`'s size frames in line with the focused size, from canvas-focus.js's centerFocus: the
+	 * focused board in All sizes gets them, laid out in `box` (the viewport's size, the margins kept free
+	 * and the top below the artboard's label); any other loses them. Its own chip follows the size.
+	 */
+	function layoutSizes(board, box) {
+		if (state.focus === board && state.size.kind === "all") {
+			if (!board.sizesView) createSizeFrames(board);
+			placeSizeFrames(board, box);
+		} else removeSizeFrames(board);
+		renderOverflow(board);
+	}
+
+	/** A real iframe per size at its true width (so the design's media queries apply), shown outside the world. */
+	function createSizeFrames(board) {
+		const view = doc.createElement("div");
+		view.className = "gd-sizes-all";
+		view.classList.toggle("gd-commenting", state.commenting && !board.system);
+		view.setAttribute("role", "group");
+		view.setAttribute("aria-label", TEXT.all);
+		board.sizeFrames = allSizes(board).map((size) => createSizeFrame(board, size));
+		view.append(...board.sizeFrames.map((surface) => surface.root));
+		board.sizesView = view;
+		board.wrapper.classList.add("gd-all-sizes");
+		els.viewport.append(view);
+	}
+
+	function createSizeFrame(board, { kind, width, height }) {
+		const name = nameOf(kind);
+		const root = doc.createElement("section");
+		root.className = "gd-size-frame";
+		root.setAttribute("aria-label", TEXT.frameAria(name, width, height));
+		const head = doc.createElement("div");
+		head.className = "gd-size-head";
+		const scaleLabel = chip("gd-size-scale", "");
+		head.append(actions.icon(SIZE_ICONS[kind], "gd-i gd-i-s"), chip("gd-size-name", name), chip("gd-size-dim", dims({ width, height })), scaleLabel);
+		const scaled = doc.createElement("div");
+		scaled.className = "gd-size-scaled";
+		const stage = doc.createElement("div");
+		stage.className = "gd-size-stage";
+		stage.style.width = `${width}px`;
+		stage.style.height = `${height}px`;
+		const frame = doc.createElement("iframe");
+		frame.className = "gd-size-iframe";
+		frame.setAttribute("sandbox", "allow-scripts");
+		frame.setAttribute("referrerpolicy", "no-referrer");
+		frame.title = TEXT.frameTitle(board.artboard.title, name, width, height);
+		frame.style.width = `${width}px`;
+		frame.style.height = `${height}px`;
+		const pins = doc.createElement("div");
+		pins.className = "gd-pins";
+		const flag = overflowFlag();
+		stage.append(frame, pins);
+		scaled.append(stage, flag);
+		root.append(head, scaled);
+		// rects and overflow: null until this frame's page reports them (canvas-messages.js).
+		const surface = { board, kind, width, height, viewWidth: width, viewHeight: height, frame, pins, flag, rects: null, overflow: null, root, scaled, stage, scaleLabel };
+		frame.addEventListener("load", () => surfaceLoaded(surface));
+		frame.src = actions.boardUrl(board);
+		return surface;
+	}
+
+	function removeSizeFrames(board) {
+		board.wrapper.classList.remove("gd-all-sizes");
+		if (!board.sizesView) return;
+		board.sizesView.remove();
+		board.sizesView = null;
+		board.sizeFrames = [];
+	}
+
+	/** One scale for the frames: small enough that they fit side by side under the label and above Back to canvas. */
+	function placeSizeFrames(board, box) {
+		const view = board.sizesView;
+		const frames = board.sizeFrames;
+		view.style.left = `${box.side}px`;
+		view.style.right = `${box.side}px`;
+		view.style.top = `${box.top}px`;
+		view.style.bottom = `${box.bottom}px`;
+		const availableWidth = box.width - box.side * 2 - SIZES_GAP * (frames.length - 1);
+		const availableHeight = box.height - box.top - box.bottom - SIZES_HEAD;
+		const totalWidth = frames.reduce((sum, surface) => sum + surface.width, 0);
+		const tallest = Math.max(...frames.map((surface) => surface.height));
+		const scale = Math.max(MIN_SIZES_SCALE, Math.min(1, availableWidth / totalWidth, availableHeight / tallest));
+		for (const surface of frames) {
+			surface.scaled.style.width = `${Math.round(surface.width * scale)}px`;
+			surface.scaled.style.height = `${Math.round(surface.height * scale)}px`;
+			surface.stage.style.transform = `scale(${scale})`;
+			// Pins keep their size at any scale, as in the world.
+			surface.stage.style.setProperty("--gd-inv-zoom", String(1 / scale));
+			surface.scaleLabel.textContent = TEXT.scale(Math.round(scale * 100));
+		}
+	}
+
+	/** A frame (the board's own or a size frame) finished loading: it knows nothing yet, so tell it the state. */
+	function surfaceLoaded(surface) {
+		surface.rects = null;
+		surface.overflow = null;
+		renderOverflow(surface);
+		actions.sendMode(surface);
+		actions.sendFocus(surface);
+		if (!ownerOf(surface).system) actions.sendPins(surface);
+	}
+
+	// ---- the Overflows chip
+
+	/** The "Overflows" chip of one frame, hidden until its page reports content wider than the frame (renderOverflow). */
+	function overflowFlag() {
+		const flag = doc.createElement("span");
+		flag.className = "gd-overflow-flag";
+		flag.hidden = true;
+		flag.append(chip("gd-overflow-text", TEXT.overflow), chip("gd-visually-hidden", ""));
+		return flag;
+	}
+
+	/**
+	 * Shown while the page last reported content wider than this frame (canvas-messages.js sets surface.overflow).
+	 * The artboard's own frame shows it only at a single focused size; in All sizes each size frame has its own.
+	 */
+	function renderOverflow(surface) {
+		const board = ownerOf(surface);
+		const shown = Boolean(surface.overflow) && (surface !== board || (state.focus === board && state.size.kind !== "all"));
+		surface.flag.hidden = !shown;
+		if (!shown) return;
+		const note = TEXT.overflowNote(surface.viewWidth);
+		surface.flag.title = note;
+		surface.flag.children[1].textContent = note;
+	}
+
+	// ---- the size a comment was made at
+
+	/**
+	 * The size a pick was made at, for the comment: the focused single size, or the picked size frame of
+	 * All sizes. Null at the artboard's own size (nothing to record) and when comments.json would refuse it.
+	 */
+	function viewportOf(surface) {
+		const board = ownerOf(surface);
+		let size;
+		if (surface !== board) size = { width: surface.width, height: surface.height };
+		else if (state.focus === board && state.size.kind !== "all") size = focusSize(board);
+		else return null;
+		if (size.width === board.artboard.width && size.height === board.artboard.height) return null;
+		const { minWidth, maxWidth, minHeight, maxHeight } = VIEWPORT_LIMITS;
+		const fits = size.width >= minWidth && size.width <= maxWidth && size.height >= minHeight && size.height <= maxHeight;
+		return fits && Number.isInteger(size.width) && Number.isInteger(size.height) ? { width: size.width, height: size.height } : null;
+	}
+
+	/** `Phone 390 × 844`, `Tablet 820 × 1180` or `<w> × <h>`: the preset's name only for its exact size. */
+	function describeViewport(viewport) {
+		const preset = SIZE_PRESETS.find((candidate) => candidate.width === viewport.width && candidate.height === viewport.height);
+		return preset ? `${nameOf(preset.kind)} ${dims(viewport)}` : dims(viewport);
+	}
+
+	/** The comment card's chip naming the size the comment was made at, or null for one made at the artboard's own size. */
+	function viewportChip(viewport) {
+		if (!viewport || typeof viewport !== "object" || !Number.isInteger(viewport.width) || !Number.isInteger(viewport.height)) return null;
+		const label = describeViewport(viewport);
+		const element = chip("gd-comment-viewport", label);
+		element.title = TEXT.madeAt(label);
+		return element;
 	}
 
 	/** The device button opens its menu like Settings (click, arrows, Esc); boot() runs it once every module is ready. */
@@ -201,5 +417,5 @@ export function init(ctx) {
 		actions.menuKeydown(event, state.menu.items, actions.closeMenu, chooseDeviceItem);
 	});
 
-	return { focusSize, renderDevice, closeDeviceMenu, startSizes };
+	return { focusSize, surfacesOf, ownerOf, renderDevice, closeDeviceMenu, startSizes, layoutSizes, removeSizeFrames, surfaceLoaded, overflowFlag, renderOverflow, viewportOf, viewportChip };
 }

@@ -113,7 +113,9 @@ test("an intended-untracked selection returns selection-required; a correction r
  for (const [response, expected] of [[selecting, "selection-required"], [correction, "input-required"], [{ ...correction, selectionBinding: "opaque-selection" }, "input-required"]] as const) {
   const host = backend([response]); const result = await runReviewCoordinator({ lineageId: lineage }, host);
   assert.equal(result.outcome, expected);
-  assert.equal(result.result, response, "the facade envelope is relayed unchanged"); assert.equal(host.calls.length, 1);
+  // The selection drops only the facade's single-operation nextStep; resume_input names the way on.
+  const { nextStep: _nextStep, ...relayed } = response as Body;
+  assert.deepEqual(result.result, response === selecting ? relayed : response, "the facade envelope is relayed otherwise unchanged"); assert.equal(host.calls.length, 1);
  }
 });
 
@@ -252,4 +254,151 @@ test("forecasts remain lossless in final results even if capture later refuses",
  const expected = structuredClone([first, second]);
  const result = await runReviewCoordinator({ lineageId: lineage }, { ...host, presentForecast: async forecast => { forecast.message = "UI rendering must not alter the model relay"; return true; } });
  assert.equal(result.outcome, "blocked"); assert.deepEqual(result.forecasts, expected);
+});
+
+test("a captured provider-role artifact continues only through bound STATUS; look-alikes stay blocked", async () => {
+ const role = { tool: "gentle_review_capture", status: "captured", outcome: "native-provider-role-captured", provider_role: { role: "refuter", captured: true } };
+ const host = backend([collect, role, approved, closed]);
+ assert.equal((await runReviewCoordinator({ lineageId: lineage }, host)).outcome, "closed");
+ assert.deepEqual(host.calls.map(call => call.tool === "gentle_review" ? String(call.parameters.operation) : call.tool), ["status", "gentle_review_capture", "status", "acknowledge-approved"]);
+ const group = { ...collect, collectBindings: [{ collectBinding: "first" }, { collectBinding: "second" }] };
+ for (const [status, capture] of [
+  [collect, { ...role, status: "blocked" }],
+  [collect, { ...role, failure: { kind: "transport" } }],
+  [collect, { ...role, native_failure: {} }],
+  [collect, { ...role, reconciliation: {} }],
+  [collect, { ...role, reconciliation_failure: {} }],
+  [collect, { ...role, status: "reconciled" }],
+  [collect, (({ status: _status, ...rest }) => rest)(role)],
+  [collect, { ...role, outcome: "native-provider-role-capture-recorded" }],
+  [group, role],
+ ] as const) {
+  const blocked = backend([status, capture]);
+  const result = await runReviewCoordinator({ lineageId: lineage }, blocked);
+  assert.equal(result.outcome, "blocked", JSON.stringify(capture)); assert.equal(result.result, capture); assert.equal(blocked.calls.length, 2);
+ }
+});
+
+test("advisory finding claim marks are relayed only as arrays of strings, and only with the claims", async () => {
+ const findings = { statement: "fixture", findings: [{ id: "F1" }, { id: "F2" }] };
+ const run = async (closure: Body) => await runReviewCoordinator({ lineageId: lineage }, backend([collect, { ...captured, closure: { advisory_findings: findings, ...closure } }, approved, closed]));
+ const marked = await run({ advisory_finding_claims: { F1: "cut" }, advisory_finding_claims_truncated: ["F1"], advisory_finding_claims_omitted: ["F2"] });
+ assert.deepEqual(marked.advisory_finding_claims_truncated, ["F1"]); assert.deepEqual(marked.advisory_finding_claims_omitted, ["F2"]);
+ for (const mark of ["F1", [1], { F1: true }, null]) {
+  const result = await run({ advisory_finding_claims: { F1: "cut" }, advisory_finding_claims_truncated: mark, advisory_finding_claims_omitted: mark });
+  assert.equal(result.outcome, "closed");
+  assert.equal(Object.hasOwn(result, "advisory_finding_claims_truncated"), false, JSON.stringify(mark));
+  assert.equal(Object.hasOwn(result, "advisory_finding_claims_omitted"), false, JSON.stringify(mark));
+ }
+ const withoutClaims = await run({ advisory_finding_claims_truncated: ["F1"] });
+ assert.equal(Object.hasOwn(withoutClaims, "advisory_finding_claims_truncated"), false);
+});
+
+test("cancellation after an admitted closure with findings returns cancelled; a refused capture or a closure without findings still aborts", async () => {
+ const findings = { statement: "fixture", findings: [{ id: "F1" }] };
+ const withFindings = { ...captured, closure: { advisory_findings: findings, advisory_finding_claims: { F1: "claim" } } };
+ const racing = (response: Body) => {
+  const controller = new AbortController(); const calls: string[] = [];
+  return { calls, signal: controller.signal, async invoke(tool: ReviewCoordinatorTool) { calls.push(tool); if (tool === "gentle_review") return collect; controller.abort(); return response; } };
+ };
+ const host = racing(withFindings);
+ const result = await runReviewCoordinator({ lineageId: lineage }, host);
+ assert.equal(result.outcome, "cancelled"); assert.deepEqual(result.result, withFindings, "the fixture envelope carries no status or state to drop");
+ assert.deepEqual(result.advisory_findings, findings); assert.deepEqual(result.advisory_finding_claims, { F1: "claim" });
+ assert.deepEqual(host.calls, ["gentle_review", "gentle_review_capture"], "nothing is dispatched after the cancellation");
+ for (const response of [{ ...withFindings, failure: { kind: "transport" } }, { ...withFindings, outcome: "capture-binding-rejected" }, { ...captured, closure: {} }, captured]) {
+  const refused = racing(response);
+  await assert.rejects(runReviewCoordinator({ lineageId: lineage }, refused), { name: "AbortError" }, JSON.stringify(response));
+  assert.equal(refused.calls.length, 2);
+ }
+});
+
+test("after a captured provider-role artifact, drift, a reoffered capture and the cap still stop the run", async () => {
+ const role = { tool: "gentle_review_capture", status: "captured", outcome: "native-provider-role-captured", provider_role: { role: "refuter", captured: true } };
+ const drift = backend([collect, role, { result: { ...approved.result, target_identity: "other" } }]);
+ assert.equal((await runReviewCoordinator({ lineageId: lineage }, drift)).outcome, "binding-drift"); assert.equal(drift.calls.length, 3);
+ const reoffered = backend([collect, role, collect]);
+ assert.equal((await runReviewCoordinator({ lineageId: lineage }, reoffered)).outcome, "repeated-capture"); assert.equal(reoffered.calls.length, 3);
+ let roles = 0;
+ const capped = await runReviewCoordinator({ lineageId: lineage }, { invoke: async tool => {
+  if (tool === "gentle_review") return { ...collect, collectBindings: [{ collectBinding: `role-${roles}` }] };
+  roles++; return role;
+ } });
+ assert.equal(capped.outcome, "transition-limit"); assert.equal(roles, 24);
+});
+
+test("a retained approved closure with findings survives every later abort before the acknowledgement; a completed acknowledgement stays closed", async () => {
+ const findings = { statement: "fixture", findings: [{ id: "F1" }] };
+ const withFindings = { ...captured, status: "closed", closure: { state: "approved", advisory_findings: findings, advisory_finding_claims: { F1: "claim" }, advisory_finding_claims_truncated: ["F1"] } };
+ const expected = { outcome: "native-last-event-closure", closure: { advisory_findings: findings, advisory_finding_claims: { F1: "claim" }, advisory_finding_claims_truncated: ["F1"] } };
+ // Abort observed after STATUS completed (while its step is recorded), before the acknowledgement.
+ {
+  const controller = new AbortController(); const calls: string[] = []; let statuses = 0; let abortAtNextClock = false;
+  const result = await runReviewCoordinator({ lineageId: lineage }, { signal: controller.signal,
+   now: () => { if (abortAtNextClock) controller.abort(); return 0; },
+   async invoke(tool, parameters) {
+    calls.push(tool === "gentle_review" ? String(parameters.operation) : tool);
+    if (tool !== "gentle_review") return withFindings;
+    if (++statuses === 1) return collect;
+    abortAtNextClock = true; return approved;
+   } });
+  assert.equal(result.outcome, "cancelled"); assert.deepEqual(result.result, expected);
+  assert.deepEqual(result.advisory_findings, findings); assert.deepEqual(result.advisory_finding_claims, { F1: "claim" }); assert.deepEqual(result.advisory_finding_claims_truncated, ["F1"]);
+  assert.deepEqual(calls, ["status", "gentle_review_capture", "status"], "no acknowledgement after the abort");
+ }
+ // The acknowledgement rejects because of the abort; or completes although the signal aborted.
+ for (const [ack, outcome] of [["rejects", "cancelled"], ["completes", "closed"]] as const) {
+  const controller = new AbortController(); let statuses = 0;
+  const result = await runReviewCoordinator({ lineageId: lineage }, { signal: controller.signal, async invoke(tool, parameters) {
+   if (tool !== "gentle_review") return withFindings;
+   if (parameters.operation === "acknowledge-approved") {
+    controller.abort();
+    if (ack === "rejects") throw Object.assign(new Error("aborted"), { name: "AbortError" });
+    return closed;
+   }
+   return ++statuses === 1 ? collect : approved;
+  } });
+  assert.equal(result.outcome, outcome, ack);
+  assert.deepEqual(result.advisory_findings, findings, ack);
+ }
+ // A non-abort rejection is not a cancellation.
+ let statuses = 0;
+ await assert.rejects(runReviewCoordinator({ lineageId: lineage }, { async invoke(tool) {
+  if (tool !== "gentle_review") return withFindings;
+  if (++statuses === 1) return collect;
+  throw new Error("transport failure");
+ } }), /transport failure/);
+});
+
+test("only the abort itself turns a retained approved closure into cancelled; another error thrown while aborted is rethrown", async () => {
+ const findings = { statement: "fixture", findings: [{ id: "F1" }] };
+ const withFindings = { ...captured, closure: { advisory_findings: findings } };
+ const failing = (abort: (controller: AbortController) => void, thrown: (signal: AbortSignal) => unknown) => {
+  const controller = new AbortController(); let statuses = 0;
+  return runReviewCoordinator({ lineageId: lineage }, { signal: controller.signal, async invoke(tool) {
+   if (tool !== "gentle_review") return withFindings;
+   if (++statuses === 1) return collect;
+   abort(controller); throw thrown(controller.signal);
+  } });
+ };
+ const transport = new Error("transport failure");
+ await assert.rejects(failing(controller => controller.abort(), () => transport), error => error === transport, "a non-abort error is rethrown, not cancelled");
+ const timeout = new DOMException("deadline", "TimeoutError");
+ for (const [label, abort, thrown] of [
+  ["AbortError-named error", (controller: AbortController) => controller.abort(), () => Object.assign(new Error("aborted"), { name: "AbortError" })],
+  ["the signal's default reason", (controller: AbortController) => controller.abort(), (signal: AbortSignal) => signal.reason],
+  ["the signal's own custom reason", (controller: AbortController) => controller.abort(timeout), (signal: AbortSignal) => signal.reason],
+ ] as const) {
+  const result = await failing(abort, thrown);
+  assert.equal(result.outcome, "cancelled", label); assert.deepEqual(result.advisory_findings, findings, label);
+ }
+});
+
+test("resume_input names the INSPECT's resolved workspace_root only when the caller passed none", async () => {
+ const selecting = { operation: "inspect", status: "blocked", result: { next_transition: { kind: "collect" } }, selectionBinding: "opaque-selection", workspace_root: "/resolved/root" };
+ const input = { lenses: ["risk"], lensesReason: "fixture" };
+ assert.deepEqual((await runReviewCoordinator(input, backend([{ reviewDue: true }, selecting]))).resume_input, { ...input, workspaceRoot: "/resolved/root" });
+ assert.deepEqual((await runReviewCoordinator({ ...input, workspaceRoot: "/caller/root" }, backend([{ reviewDue: true }, selecting]))).resume_input, { ...input, workspaceRoot: "/caller/root" });
+ const { workspace_root: _root, ...unrooted } = selecting;
+ assert.deepEqual((await runReviewCoordinator(input, backend([{ reviewDue: true }, unrooted]))).resume_input, input);
 });

@@ -175,14 +175,14 @@ test("S5: routing ignores advisory_finding_claims", async () => {
 });
 
 // An INSPECT that asks for the intended-untracked selection is not a correction plan.
-test("S2: an INSPECT that requests the intended-untracked selection returns selection-required with the facade envelope unchanged", async () => {
+test("S2: an INSPECT that requests the intended-untracked selection returns selection-required with the facade envelope, without its nextStep", async () => {
 	const runtime = createCoordinatorRuntime(scratchRepo(), "coordinator", { hasUI: false, scenario: "untracked-selection" });
 	try {
 		const run = await runtime.invoke("gentle_review_run", { lenses: ["risk"], lensesReason: "fixture" });
 		assert.equal(run.outcome, "selection-required", JSON.stringify(run));
 		assert.equal(run.result.operation, "inspect");
 		assert.equal(typeof run.result.selectionBinding, "string");
-		assert.match(run.result.nextStep, /select-intended-untracked/);
+		assert.equal(Object.hasOwn(run.result, "nextStep"), false);
 		assert.equal(Object.hasOwn(run.result, "collectBindings"), false);
 		assert.deepEqual(stepNames(run), ["gentle_review:assess", "gentle_review:inspect"], "no further facade call");
 		assert.deepEqual(providerOperations(runtime.nativeCalls), ["assess"], "no provider operation after INSPECT");
@@ -330,9 +330,9 @@ async function promptRequest(root: string, label: string, mode: "on" | "off", to
 	return requests[0]!;
 }
 
-const RUN_GUIDANCE = "To drive a due native ordinary review, prefer gentle_review_run over single review operations: it executes the same provider-issued lifecycle (assess, inspect, START, bound STATUS, captures, acknowledgement) in one call. Single operations remain for what its result hands back (the consent answer, the correction plan through gentle_review_capture, the untracked selection through the operation its nextStep names, status and recovery), for a review the user explicitly asks for after not-due, and for ASSESS after a delegated writer.";
+const RUN_GUIDANCE = "To drive a due native ordinary review, prefer gentle_review_run over single review operations: it executes the same provider-issued lifecycle (assess, inspect, START, bound STATUS, captures, acknowledgement) in one call. Single operations remain for what its result hands back (the consent answer, the correction plan through gentle_review_capture, status and recovery), for a review the user explicitly asks for after not-due, and for ASSESS after a delegated writer.";
 const CONSENT_GUIDANCE = "On consent-required, relay the consent to the human and submit only the human's explicit answer, once, with gentle_review answer-consent. Never choose the answer yourself and never pass a consent answer to gentle_review_run.";
-const RUN_OUTCOMES = ["closed", "not-due", "assessment-unavailable", "request-context-requires-fresh-review", "consent-required", "input-required", "selection-required", "stopped", "handoff", "repeated-capture", "forecast", "binding-drift", "transition-limit", "blocked"];
+const RUN_OUTCOMES = ["closed", "not-due", "assessment-unavailable", "request-context-requires-fresh-review", "consent-required", "input-required", "selection-required", "stopped", "handoff", "repeated-capture", "forecast", "binding-drift", "transition-limit", "cancelled", "blocked"];
 
 test("S3/S6: the run guidance keeps consent with the human, scopes the run to a due review and names every outcome", () => {
 	const tools = new Map<string, { description: string; promptGuidelines: string[] }>();

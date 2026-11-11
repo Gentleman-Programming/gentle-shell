@@ -369,6 +369,14 @@ async function migrateManagedEngramCompanion(home, homeHadContentBeforeBootstrap
 	}
 }
 
+// A stderr write that resolves once the bytes are handed to the stream. When
+// stderr is a pipe (a parent process, a test harness) Node writes
+// asynchronously, so an immediate process.exit() truncates the message. Anything
+// written right before the process exits must go through this.
+function writeStderrAndFlush(text) {
+	return new Promise((resolve) => { process.stderr.write(text, () => resolve()); });
+}
+
 // Companion-vs-core contract gate (S1, S3, S4), warn only: a companion whose
 // runtime contract differs from the bundled core's is still installed and run,
 // and the mismatch is only announced loudly — never a failure, never an exit
@@ -2494,12 +2502,12 @@ async function main() {
 				const companion = await ensureEngramCompanion(home, runtime, ["ignore", 2, 2], 10000, homeHadContentBeforeBootstrap);
 				if (companion.ok) {
 					const version = JSON.parse(readJsonIfExists(join(home.dir, "npm", "node_modules", "gentle-engram", "package.json")) ?? "null")?.version;
-					if (typeof version === "string") process.stderr.write(`gentle-shell: gentle-engram ${version} verified after the extensions update\n`);
+					if (typeof version === "string") await writeStderrAndFlush(`gentle-shell: gentle-engram ${version} verified after the extensions update\n`);
 				} else {
-					process.stderr.write(`${companion.message}\n`);
+					await writeStderrAndFlush(`${companion.message}\n`);
 				}
 			} catch (error) {
-				process.stderr.write(`gentle-shell: could not verify the gentle-engram companion after the extensions update (${error.message}); continuing\n`);
+				await writeStderrAndFlush(`gentle-shell: could not verify the gentle-engram companion after the extensions update (${error.message}); continuing\n`);
 			}
 		}
 		process.exit(exitCode);

@@ -86,7 +86,9 @@ export interface AgentEndEvent {
 }
 export interface AgentSettledEvent { type: typeof TASK_EVENT.AGENT_SETTLED }
 export interface CompactionStartEvent { type: typeof TASK_EVENT.COMPACTION_START; reason: string }
-export interface CompactionEndEvent { type: typeof TASK_EVENT.COMPACTION_END }
+export interface CompactionEndEvent { type: typeof TASK_EVENT.COMPACTION_END; outcome: CompactionOutcome }
+/** Pi ends a compaction run with a result, an abort, or an error; the label must not merge them. */
+export type CompactionOutcome = "completed" | "cancelled" | "failed";
 export interface ErrorEvent { type: typeof TASK_EVENT.ERROR; message: string }
 export interface AskEvent { type: typeof TASK_EVENT.ASK; request: AskRequest }
 export interface NoteEvent { type: typeof TASK_EVENT.NOTE; text: string }
@@ -435,8 +437,11 @@ export function normalizeRpcEvent(raw: unknown, options: { observeResponses?: bo
 		// It is announced work, so it must reach the host instead of looking like silence.
 		case "compaction_start":
 			return [{ type: TASK_EVENT.COMPACTION_START, reason: clean(event.reason) || "compaction" }];
-		case "compaction_end":
-			return [{ type: TASK_EVENT.COMPACTION_END }];
+		case "compaction_end": {
+			const aborted = event.aborted === true;
+			const failed = !aborted && event.result === undefined;
+			return [{ type: TASK_EVENT.COMPACTION_END, outcome: aborted ? "cancelled" : failed ? "failed" : "completed" }];
+		}
 		case "extension_ui_request":
 			if (event.method === "notify" && typeof event.message === "string" && event.message.startsWith(MISSING_TOOLS_NOTE_PREFIX)) return [{ type: TASK_EVENT.NOTE, text: clean(event.message) }];
 			return DIALOG_METHODS.has(String(event.method)) ? [{ type: TASK_EVENT.ASK, request: askRequest(event) }] : [];
@@ -538,7 +543,7 @@ function recordPatch(task: TaskRecord, event: TaskEvent): Partial<TaskRecord> {
 		case TASK_EVENT.COMPACTION_START:
 			return { ...resumed, lastStep: "compacting" };
 		case TASK_EVENT.COMPACTION_END:
-			return { ...resumed, lastStep: "compacted" };
+			return { ...resumed, lastStep: event.outcome === "completed" ? "compacted" : event.outcome === "cancelled" ? "compaction cancelled" : "compaction failed" };
 		case TASK_EVENT.AGENT_END:
 			return event.outcome === "success"
 				? { ...resumed, result: event.text, error: null, lastStep: "responded" }

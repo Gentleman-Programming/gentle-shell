@@ -927,7 +927,7 @@ export class AgentRunner {
 				this.requestStop(id, TASK_STATUS.TIMED_OUT, `stalled for ${minutes} min after: ${lastStep}${boundary}${this.stderrSuffix(live)}`);
 			}
 			else if (tool !== undefined) this.requestStop(id, TASK_STATUS.TIMED_OUT, `stalled for ${minutes} min with tool "${tool}" still running after: ${lastStep}${this.stderrSuffix(live)}`);
-			else this.requestStop(id, TASK_STATUS.TIMED_OUT, `stalled for ${minutes} min during post-answer compaction after: ${lastStep}${this.stderrSuffix(live)}`);
+			else this.requestStop(id, TASK_STATUS.TIMED_OUT, `stalled for ${minutes} min during compaction after: ${lastStep}${this.stderrSuffix(live)}`);
 		}, budget);
 	}
 

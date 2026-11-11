@@ -9,7 +9,7 @@ import { defaultTempScratchFs, isTempScratchRemoval, type TempScratchFs } from "
 import { SHELL_COMMAND_TOOLS } from "../lib/background-jobs.ts";
 import { evaluateDeliveredTestTool } from "../lib/delivered-test-lint.ts";
 import { commitSliceToolResult } from "../lib/commit-slice-signal.ts";
-import { checkReviewDeliveryPreflight } from "../lib/review-delivery-preflight.ts";
+import { checkReviewDeliveryPreflight, committedRangeUntrackedExclusion } from "../lib/review-delivery-preflight.ts";
 import { withReviewerProgress } from "../lib/reviewer-stream.ts";
 import { checkDeliveryConflictMarkers } from "../lib/delivery-conflict-markers.ts";
 import { appendContextBackstopNotice, createContextBackstopSignal, createThrottledContextMeasure } from "../lib/context-backstop.ts";
@@ -1138,9 +1138,14 @@ async function resolveReviewAssessmentPlan(
 		unassessableDetail = "native review assess is unavailable: the installed gentle-ai binary does not expose the assess command.";
 	} else {
 		try {
+			const selection = nativeUntrackedSelection(input);
+			// gentle-shell#3169: a committed range is assessed without its untracked files.
+			const untracked = input.baseRef !== undefined && Object.keys(selection).length === 0
+				? await committedRangeUntrackedExclusion(nativeReviewCli, cwd, input.baseRef, signal)
+				: selection;
 			const request: NativeReviewAssessRequest = {
 				cwd,
-				...nativeUntrackedSelection(input),
+				...untracked,
 				...(input.baseRef === undefined ? {} : { baseRef: input.baseRef, committedOnly: true as const }),
 				...(signal === undefined ? {} : { signal }),
 			};

@@ -212,6 +212,58 @@ test("a layout.json change that comes during a press on an artboard shows once t
 	assert.deepEqual(canvas.posts, [], "and nothing is saved");
 });
 
+test("a layout.json change from another page that comes while an artboard is dragged shows once the drag is cancelled", async () => {
+	// Page A sits in a row; page B chooses Column while A drags an artboard; A's drag is then cancelled.
+	const canvas = await loadLayout(NO_LAYOUT);
+	const title = boardTitle(canvas.world.children[1]);
+	title.dispatch("pointerdown", { button: 0, pointerId: 3, clientX: 500, clientY: 100 });
+	title.dispatch("pointermove", { pointerId: 3, clientX: 560, clientY: 100 });
+	assert.deepEqual(placed(canvas.world.children[1]), ["540px", "0px"], "the artboard follows the drag");
+	canvas.replies[LAYOUT_URL] = { layout: { arrangement: "column", positions: {} } };
+	await canvas.serverEvent("change", LAYOUT_CHANGE);
+	assert.deepEqual(placed(canvas.world.children[1]), ["540px", "0px"], "nothing moves under the drag");
+	title.dispatch("pointercancel", { button: 0, pointerId: 3, clientX: 560, clientY: 100 });
+	await settle();
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["0px", "380px"]], "B's column shows after the cancel");
+	assert.deepEqual(pressedArrangements(canvas), ["false", "true", "false"]);
+	assert.deepEqual(canvas.posts, [], "and the cancelled drag saves nothing");
+});
+
+test("an arrangement whose save failed stays until another page changes layout.json: the page's own earlier save, notified late, never replaces it", async () => {
+	const canvas = await loadLayout(NO_LAYOUT);
+	const status = canvas.document.getElementById("gd-status");
+	const arrange = async (id: string) => {
+		canvas.document.getElementById(id).dispatch("click");
+		await settle();
+	};
+	// Grid is saved; Column's save is rejected.
+	canvas.replies[LAYOUT_URL] = { ok: true };
+	await arrange("gd-arrange-grid");
+	const grid = layoutPosts(canvas)[0].body;
+	canvas.replies[LAYOUT_URL] = { __http: 400, error: "invalid-layout", reason: "disk full" };
+	await arrange("gd-arrange-column");
+	assert.equal(layoutPosts(canvas).length, 2);
+	assert.equal(status.textContent, "The layout of alpha could not be saved: disk full");
+	// The file event of the Grid save comes late: layout.json still holds the page's own Grid.
+	canvas.replies[LAYOUT_URL] = { layout: grid };
+	await canvas.serverEvent("change", LAYOUT_CHANGE);
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["0px", "380px"]], "the unsaved column stays");
+	assert.deepEqual(pressedArrangements(canvas), ["false", "true", "false"]);
+	assert.equal(status.textContent, "The layout of alpha could not be saved: disk full", "and the error still names it");
+	assert.ok(status.classes.has("gd-error"));
+	// A design.json reload reads the same Grid: still no news.
+	await canvas.serverEvent("change", { slug: "alpha", file: "design.json" });
+	await settle();
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["0px", "380px"]], "a reload keeps the unsaved column too");
+	assert.deepEqual(pressedArrangements(canvas), ["false", "true", "false"]);
+	// Another page writes Row: the file now holds something this page never saved, so it shows.
+	canvas.replies[LAYOUT_URL] = { layout: { arrangement: "row", positions: {} } };
+	await canvas.serverEvent("change", LAYOUT_CHANGE);
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["480px", "0px"]], "the other page's row wins");
+	assert.deepEqual(pressedArrangements(canvas), ["true", "false", "false"]);
+	assert.equal(layoutPosts(canvas).length, 2, "and nothing is saved back");
+});
+
 test("a design.json reload whose layout read answers after the page's newer save is done never undoes the page's move", async () => {
 	const canvas = await loadLayout(NO_LAYOUT);
 	const read = deferred();

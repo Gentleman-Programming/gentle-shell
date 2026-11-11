@@ -70,7 +70,11 @@ export function init(ctx) {
 		}
 	}
 
-	/** Takes `layout` (null: none, a row) as design `slug`'s; the boards move at the next applyLayout. */
+	/**
+	 * Takes `layout` (null: none, a row) as design `slug`'s; the boards move at the next applyLayout. `saved` is what
+	 * layout.json is known to hold (this read, or later a save the server took); `unsaved` marks a layout whose last
+	 * save failed, which stays until layout.json holds something else.
+	 */
 	function useLayout(slug, layout) {
 		store.setLayout({ layout: { slug, arrangement: layout ? layout.arrangement : "row", positions: layout ? layout.positions : {}, saved: JSON.stringify(layout) } });
 	}
@@ -83,10 +87,12 @@ export function init(ctx) {
 
 	/**
 	 * loadManifest's layout: taken unless this page already shows a layout of the design that is newer than the read
-	 * (a save or a read went out after it, or a save is still in flight, which is newer than the file).
+	 * (a save or a read went out after it, or a save is still in flight, which is newer than the file), or one whose
+	 * save failed while the file still holds what this page knew.
 	 */
 	function takeLayout(slug, { layout, read }) {
-		if (!state.layout || state.layout.slug !== slug || (read === reads && saves === 0)) useLayout(slug, layout);
+		const shown = state.layout && state.layout.slug === slug ? state.layout : null;
+		if (!shown || (read === reads && saves === 0 && !(shown.unsaved && JSON.stringify(layout) === shown.saved))) useLayout(slug, layout);
 	}
 
 	/** No design shown (the system-only view, an empty notice): no layout, nothing selected, nothing to arrange. */
@@ -238,8 +244,9 @@ export function init(ctx) {
 
 	/**
 	 * Writes the layout of the design shown to its layout.json, after the saves before it; a failure says so in the
-	 * status line and the boards stay. A read on its way is older than this layout, and a change that came meanwhile
-	 * is read once the last save is done.
+	 * status line and the boards stay, unsaved, until layout.json holds something this page did not know (another
+	 * page's change wins). A read on its way is older than this layout, and a change that came meanwhile is read once
+	 * the last save is done.
 	 */
 	function saveLayout() {
 		const slug = state.slug;
@@ -248,10 +255,12 @@ export function init(ctx) {
 		const body = { arrangement: layout.arrangement, positions: layout.positions };
 		reads += 1;
 		saves += 1;
-		store.setLayout({ layout: { ...layout, saved: JSON.stringify(body) } });
 		saving = saving.then(async () => {
 			const reply = await postJson(`api/designs/${encodeURIComponent(slug)}/layout`, body).catch((error) => ({ ok: false, body: { error: error.message } }));
 			saves -= 1;
+			if (state.layout && state.layout.slug === slug) {
+				store.setLayout({ layout: reply.ok ? { ...state.layout, saved: JSON.stringify(body), unsaved: false } : { ...state.layout, unsaved: true } });
+			}
 			if (!reply.ok && slug === state.slug) setStatus(TEXT.saveFailed(slug, reply.body.reason || reply.body.error || "error"), true);
 			readAgain();
 		}).catch(() => {});

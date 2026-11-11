@@ -123,3 +123,11 @@ test("T23(f): the verify agent allows a second correction only for the same bloc
 		"a second correction only when the recheck shows the same blocker still failing, never for a new finding",
 	], "verify item 5");
 });
+
+test("gentle-shell#3082: a stopped verification carries its terminal disposition in the lazy module", () => {
+	containsAll(verification, [
+		"When required proof is unobtainable, one terminal disposition closes a stopped verification",
+		"name the missing proof and resume authorized in-scope work at `status: partial`",
+		"never PASS, never silently dropped",
+	], "verification terminal disposition");
+});

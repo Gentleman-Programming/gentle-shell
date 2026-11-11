@@ -177,6 +177,8 @@ const MODULE_BUDGETS: Record<string, number> = {
 	// Cost-speed S15 P16: the parent commits verifier probes only when a commit is authorized (+28 B), paid by two
 	// phrases that restated their sentence (-36 B): 8,656 -> 8,648 B.
 	"orchestrator-verification.md": 8_648,
+	// gentle-shell#3082: the terminal disposition exit stays self-contained in the lazy module (+233 B over 8,648).
+	"orchestrator-verification.md": 8_900,
 	// Writer-rule fix (size threshold, one behavior per unit) and C3 (writer prompts name the helpers and
 	// invariants to reuse): 4,500 -> 5,300 B.
 	// Pain-point iteration S10 (C7): writer handoffs keep test scratch outside the worktree (5,300 -> 5,500 B).

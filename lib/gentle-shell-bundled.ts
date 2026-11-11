@@ -453,6 +453,59 @@ export function bundledEngramSchema(coreVersion: string): number | undefined {
 	return Object.hasOwn(BUNDLED_ENGRAM_SCHEMA, coreVersion) ? BUNDLED_ENGRAM_SCHEMA[coreVersion] : undefined;
 }
 
+// Companion-vs-core contract gate (gentle-shell#3015): the runtime-contract
+// digest each pinned core answers on GET /runtime-contract, read from the real
+// release binaries during development; the 3.5.2 windows archive sha256 matched
+// the retired 3.5.2 pin exactly. gentle-engram 0.7.0 requires the 3.7.0 digest,
+// and only the digest differs between the two (both report contract_id
+// engram.pi-http-runtime/v1, revision 1). A pin without a verified entry leaves
+// the gate unavailable, and the gate only ever warns (S3: "Instalar y avisar
+// fuerte"), never blocks.
+const BUNDLED_ENGRAM_CONTRACT: Record<string, string> = {
+	"3.5.2": "4bf32703e111162b24073d090bec1c15c9120708587000bf595a07264e768672",
+	"3.7.0": "0af9af176928e98562ab1396d3196efe582dd5d1c5d2c5f8f546ab4ed609810f",
+};
+
+export function bundledEngramContract(coreVersion: string): string | undefined {
+	return Object.hasOwn(BUNDLED_ENGRAM_CONTRACT, coreVersion) ? BUNDLED_ENGRAM_CONTRACT[coreVersion] : undefined;
+}
+
+// The runtime contract a gentle-engram companion ships (runtime-contract.json)
+// and the running core answers on GET /runtime-contract. Only the exact
+// contract id, an integer revision and a lowercase 64-hex digest count as
+// evidence; anything else is no signal, never an error.
+export type ParsedEngramRuntimeContract = { contract_id: "engram.pi-http-runtime/v1"; revision: number; digest: string };
+
+export function parseEngramRuntimeContract(payload: unknown): ParsedEngramRuntimeContract | undefined {
+	if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return undefined;
+	const record = payload as Record<string, unknown>;
+	const revision = record.revision;
+	if (record.contract_id !== "engram.pi-http-runtime/v1" || typeof revision !== "number" || !Number.isInteger(revision)) return undefined;
+	if (typeof record.digest !== "string" || !/^[0-9a-f]{64}$/.test(record.digest)) return undefined;
+	return { contract_id: "engram.pi-http-runtime/v1", revision, digest: record.digest };
+}
+
+// The loud, warn-only mismatch notice (S3): Shell still installs and runs the
+// pair, and the human decides whether to update the core or the companion.
+// Silent when the digests are equal or either side is unknown — never a false
+// alarm. `coreDigest` lets the launch path pass the digest the running server
+// actually answered; the default is the pinned core's verified table entry.
+// `coreLabel` names whoever answered, so a reused older server is never
+// misattributed to the pinned version.
+export function engramContractMismatchNotice(companionDigest: string | undefined, coreVersion: string, coreDigest: string | undefined = bundledEngramContract(coreVersion), coreLabel: string = `the Engram core ${coreVersion}`): string | undefined {
+	if (companionDigest === undefined || coreDigest === undefined || !/^[0-9a-f]{64}$/.test(companionDigest) || companionDigest === coreDigest) return undefined;
+	return `Engram contract mismatch: the gentle-engram companion declares runtime-contract digest ${companionDigest}, while ${coreLabel} answers ${coreDigest}; memory may be unavailable until the pair matches. Update the core with a new Gentle Shell release, or update the companion.`;
+}
+
+// One bounded read-only GET /runtime-contract on the shared server (the same
+// loopback rules as probeEngramEndpoint): the parsed digest, or undefined when
+// the server does not answer with a well-formed contract.
+export async function probeEngramRuntimeContract(input: { port?: number; timeoutMs?: number } = {}): Promise<string | undefined> {
+	const answer = await localGet(input.port ?? ENGRAM_DEFAULT_PORT, "/runtime-contract", input.timeoutMs ?? 1000);
+	if (answer.kind !== "response" || answer.status !== 200) return undefined;
+	return parseEngramRuntimeContract(parseJson(answer.body))?.digest;
+}
+
 // SQLite's user_version from the raw database header (bytes 60-63), or
 // undefined for anything that is not a well-formed rollback or WAL database.
 export function sqliteHeaderUserVersion(header: Uint8Array, size: number): number | undefined {

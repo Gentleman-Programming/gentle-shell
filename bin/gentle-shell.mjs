@@ -73,6 +73,7 @@ import {
 	ENGRAM_RECOVERY_NOTICE,
 	ENGRAM_START_FAILED_NOTICE,
 	GENTLE_SHELL_CONFIG_HOME_ENV,
+	engramContractMismatchNotice,
 	engramProbeAllowed,
 	engramSupportsDaemonLifecycle,
 	sharedEngramEnv,
@@ -87,6 +88,8 @@ import {
 	bundledUpdatePlan,
 	nodeBundledFs,
 	parseBundledUpgradeArgs,
+	parseEngramRuntimeContract,
+	probeEngramRuntimeContract,
 	resolveBundledInstall,
 	withBundledNpmCommand,
 	withoutMissingBundledNpmCommand,
@@ -366,10 +369,56 @@ async function migrateManagedEngramCompanion(home, homeHadContentBeforeBootstrap
 	}
 }
 
+// A stderr write that resolves once the bytes are handed to the stream. When
+// stderr is a pipe (a parent process, a test harness) Node writes
+// asynchronously, so an immediate process.exit() truncates the message. Anything
+// written right before the process exits must go through this.
+function writeStderrAndFlush(text) {
+	return new Promise((resolve) => { process.stderr.write(text, () => resolve()); });
+}
+
+// Companion-vs-core contract gate (S1, S3, S4), warn only: a companion whose
+// runtime contract differs from the bundled core's is still installed and run,
+// and the mismatch is only announced loudly — never a failure, never an exit
+// code change, never a rewritten selection. A missing or malformed contract
+// file is not an error: without a parsed digest there is nothing to compare.
+function warnEngramContractMismatch(home) {
+	try {
+		const contract = parseEngramRuntimeContract(JSON.parse(readJsonIfExists(join(home.dir, "npm", "node_modules", "gentle-engram", "runtime-contract.json")) ?? "null"));
+		const notice = engramContractMismatchNotice(contract?.digest, engramPinVersion);
+		if (notice) process.stderr.write(`gentle-shell: ${notice}\n`);
+	} catch {
+		// Warn only: an unreadable contract file never blocks anything.
+	}
+}
+
+// At launch, after the shared server is ready: compare the digest the running
+// server answers on GET /runtime-contract with the companion's own contract
+// file, and warn loudly on a mismatch. Warn only: a probe failure, an
+// unparseable answer or a missing file never disables memory or changes the
+// exit code, and the selection is never rewritten.
+async function warnLiveEngramContractMismatch(home) {
+	try {
+		const companion = parseEngramRuntimeContract(JSON.parse(readJsonIfExists(join(home.dir, "npm", "node_modules", "gentle-engram", "runtime-contract.json")) ?? "null"));
+		if (companion === undefined) return;
+		const live = await probeEngramRuntimeContract();
+		// Without a well-formed live answer the core side is unknown: the gate is
+		// silent here, and the companion-vs-pinned check already warned above.
+		if (live === undefined) return;
+		const notice = engramContractMismatchNotice(companion.digest, engramPinVersion, live, "the running Engram server");
+		if (notice) process.stderr.write(`gentle-shell: ${notice}\n`);
+	} catch {
+		// Warn only: an unreadable contract file never blocks anything.
+	}
+}
+
 // Use Pi's install command, never an alternate extension loader. A user's
 // selected companion stays selected; missing or unverified capability is only
 // warned about, while the guard continues to protect unverified stores.
 async function ensureEngramCompanion(home, runtime, stdio, timeoutMs, homeHadContentBeforeBootstrap) {
+	// S1/S3/S4: warn on a companion whose contract does not match the bundled
+	// core, but never fail, never change the exit code, never rewrite the selection.
+	warnEngramContractMismatch(home);
 	const metadata = join(home.dir, "npm", "node_modules", "gentle-engram", "package.json");
 	let packages;
 	try {
@@ -2360,6 +2409,9 @@ async function main() {
 			// Only this final decision starts the shared server, and Pi gets its
 			// URL only once the server verified.
 			if (bundledMemory.spawn) bundledMemory = await startSharedEngram();
+			// S1/S4: with the shared server ready, the live GET /runtime-contract is
+			// compared with the companion's file. Warn only.
+			if (bundledMemory.policy === "allow") await warnLiveEngramContractMismatch(home);
 			if (bundledMemory.notice) process.stderr.write(`gentle-shell: ${bundledMemory.notice}\n`);
 		}
 		bundledEnv = bundledProcessEnv();
@@ -2414,7 +2466,7 @@ async function main() {
 		resumeHandoff?.dispose();
 		fail(`Could not start pi: ${error.message}`, 1);
 	});
-	child.on("exit", (code, signal) => {
+	child.on("exit", async (code, signal) => {
 		const exitCode = signal ? signalExitCode(signal) : ((code ?? 1) || updateExitCode);
 		if (resumeHandoff) {
 			const hint = planResumeHint({
@@ -2434,6 +2486,30 @@ async function main() {
 				process.stdout.once("error", () => process.exit(exitCode));
 				process.stdout.write(hint, () => process.exit(exitCode));
 				return;
+			}
+		}
+		// T4 (S2, S5): after the `pi update --extensions` child completes for a
+		// bundled, Shell-owned home, run the same companion verification that setup
+		// and launch run, instead of skipping it because a piSubcommand is set: the
+		// migration above un-pins the source, Pi replaces it with @latest, and
+		// nothing else re-verifies the replaced companion. Warn only: a successful
+		// update is never reported as failed because of this, the user's package
+		// selection is never rewritten or deleted, and the version found after the
+		// update is reported. A signal-killed child did not complete; the next
+		// launch re-verifies as always.
+		// `signal` is null, not undefined, on a normal exit; keep the truthiness the
+		// exit code above already relies on.
+		if (bundled && extensionUpdate && !signal && ownsCompanionHome(home, homeHadContentBeforeBootstrap)) {
+			try {
+				const companion = await ensureEngramCompanion(home, runtime, ["ignore", 2, 2], 10000, homeHadContentBeforeBootstrap);
+				if (companion.ok) {
+					const version = JSON.parse(readJsonIfExists(join(home.dir, "npm", "node_modules", "gentle-engram", "package.json")) ?? "null")?.version;
+					if (typeof version === "string") await writeStderrAndFlush(`gentle-shell: gentle-engram ${version} verified after the extensions update\n`);
+				} else {
+					await writeStderrAndFlush(`${companion.message}\n`);
+				}
+			} catch (error) {
+				await writeStderrAndFlush(`gentle-shell: could not verify the gentle-engram companion after the extensions update (${error.message}); continuing\n`);
 			}
 		}
 		process.exit(exitCode);

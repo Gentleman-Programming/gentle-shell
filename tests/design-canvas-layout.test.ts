@@ -117,6 +117,77 @@ test("a layout that cannot be saved says so in the status line, and the artboard
 	assert.deepEqual(placed(canvas.world.children[1]), ["520px", "0px"]);
 });
 
+// ---- saves and reads of layout.json in flight
+
+/** A reply the test gives later: a request for it stays in flight until `resolve`. */
+function deferred() {
+	let resolve!: (reply: unknown) => void;
+	const promise = new Promise<unknown>((done) => { resolve = done; });
+	return { promise, resolve };
+}
+const settle = async () => { for (let i = 0; i < 5; i++) await flush(); };
+const LAYOUT_CHANGE = { slug: "alpha", file: "layout.json" };
+
+test("layout saves go out one at a time in gesture order: a move made while the previous save is on its way is sent after it", async () => {
+	const canvas = await loadLayout(NO_LAYOUT);
+	const firstSave = deferred();
+	canvas.replies[LAYOUT_URL] = firstSave.promise;
+	await dragFrom(boardTitle(canvas.world.children[1]), [500, 100], [[540, 100]]);
+	canvas.replies[LAYOUT_URL] = { ok: true };
+	await dragFrom(boardTitle(canvas.world.children[0]), [100, 100], [[100, 140]]);
+	const first = { arrangement: "free", positions: { "01-a.html": { x: 0, y: 0 }, "02-b.html": { x: 520, y: 0 } } };
+	const second = { arrangement: "free", positions: { "01-a.html": { x: 0, y: 40 }, "02-b.html": { x: 520, y: 0 } } };
+	assert.deepEqual(layoutPosts(canvas).map((post) => post.body), [first], "the second save waits for the first one's reply");
+	firstSave.resolve({ ok: true });
+	await settle();
+	assert.deepEqual(layoutPosts(canvas).map((post) => post.body), [first, second], "then goes out, so the server writes the newer layout last");
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "40px"], ["520px", "0px"]]);
+});
+
+test("a layout.json change from another page while a save is on its way is read once the save is done", async () => {
+	const canvas = await loadLayout(NO_LAYOUT);
+	const save = deferred();
+	canvas.replies[LAYOUT_URL] = save.promise;
+	await dragFrom(boardTitle(canvas.world.children[1]), [500, 100], [[540, 100]]);
+	// The page's save landed, then another page chose Column; its change comes before this page's reply.
+	canvas.replies[LAYOUT_URL] = { layout: { arrangement: "column", positions: {} } };
+	await canvas.serverEvent("change", LAYOUT_CHANGE);
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["520px", "0px"]], "the page's own move stays while its save is on its way");
+	save.resolve({ ok: true });
+	await settle();
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["0px", "380px"]], "then the other page's column shows");
+	assert.deepEqual(pressedArrangements(canvas), ["false", "true", "false"]);
+	assert.equal(layoutPosts(canvas).length, 1, "and nothing is saved back");
+});
+
+test("an older layout read that answers last never replaces a newer one", async () => {
+	const canvas = await loadLayout(NO_LAYOUT);
+	const older = deferred();
+	canvas.replies[LAYOUT_URL] = older.promise;
+	await canvas.serverEvent("change", LAYOUT_CHANGE);
+	canvas.replies[LAYOUT_URL] = { layout: { arrangement: "column", positions: {} } };
+	await canvas.serverEvent("change", LAYOUT_CHANGE);
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["0px", "380px"]], "the newer read shows");
+	older.resolve({ layout: { arrangement: "row", positions: {} } });
+	await settle();
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["0px", "380px"]], "the older read that answered last is dropped");
+	assert.deepEqual(pressedArrangements(canvas), ["false", "true", "false"]);
+});
+
+test("a layout read on its way when the page saves never undoes the page's newer move", async () => {
+	const canvas = await loadLayout(NO_LAYOUT);
+	const read = deferred();
+	canvas.replies[LAYOUT_URL] = read.promise;
+	await canvas.serverEvent("change", LAYOUT_CHANGE);
+	canvas.replies[LAYOUT_URL] = { ok: true };
+	await dragFrom(boardTitle(canvas.world.children[1]), [500, 100], [[540, 100]]);
+	assert.equal(layoutPosts(canvas).length, 1, "the move is saved");
+	read.resolve({ layout: { arrangement: "column", positions: {} } });
+	await settle();
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["520px", "0px"]], "the read from before the save is dropped");
+	assert.deepEqual(pressedArrangements(canvas), ["false", "false", "false"]);
+});
+
 // ---- moving an artboard (S1, S9) in Move mode
 
 test("dragging an artboard's title moves it in world px at any zoom and saves it once, on release, as a free layout", async () => {

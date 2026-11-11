@@ -53,7 +53,8 @@ export function createStore(initial = {}) {
 		// Where the boards sit (canvas-layout.js): { slug, arrangement, positions, saved } for the design
 		// shown, or null (the system-only view); replaced whole on every change, never changed in place.
 		layout: null,
-		// Layout saves still on their way to the server; a layout.json change meanwhile is this page's own.
+		// Layout saves queued or on their way to the server (sent one at a time); a layout.json change meanwhile
+		// is read once they are done.
 		layoutSaves: 0,
 		// The artboard pressed last (outlined until a press elsewhere or Esc), or null.
 		selected: null,

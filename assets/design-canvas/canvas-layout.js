@@ -24,6 +24,12 @@ export function init(ctx) {
 	// The artboard being moved by the pointer (canvas-view.js hands it over): { board, from, moved }.
 	// This module's own state, like the pan drag in canvas-view.js.
 	let moving = null;
+	// Saves go out one after another, in gesture order, so the server writes the newest layout last.
+	let saving = Promise.resolve();
+	// The latest layout read (onLayoutChange); a newer read or a save makes an older read's reply stale.
+	let reads = 0;
+	// A layout.json change came while saves were on their way: layout.json is read again once they are done.
+	let changedWhileSaving = false;
 
 	/** A board's key in layout.json: its artboard file, or the system board's own key. */
 	function layoutKey(board) {
@@ -216,24 +222,40 @@ export function init(ctx) {
 		saveLayout();
 	}
 
-	/** Writes the layout of the design shown to its layout.json; a failure says so in the status line and the boards stay. */
-	async function saveLayout() {
+	/**
+	 * Writes the layout of the design shown to its layout.json, after the saves before it; a failure says so in the
+	 * status line and the boards stay. A read on its way is older than this layout, and a change that came meanwhile
+	 * is read once the last save is done.
+	 */
+	function saveLayout() {
 		const slug = state.slug;
 		const layout = state.layout;
 		if (!slug || !state.manifest || !layout || layout.slug !== slug) return;
 		const body = { arrangement: layout.arrangement, positions: layout.positions };
+		reads += 1;
 		store.setLayout({ layout: { ...layout, saved: JSON.stringify(body) }, layoutSaves: state.layoutSaves + 1 });
-		const reply = await postJson(`api/designs/${encodeURIComponent(slug)}/layout`, body).catch((error) => ({ ok: false, body: { error: error.message } }));
-		store.setLayout({ layoutSaves: state.layoutSaves - 1 });
-		if (!reply.ok && slug === state.slug) setStatus(TEXT.saveFailed(slug, reply.body.reason || reply.body.error || "error"), true);
+		saving = saving.then(async () => {
+			const reply = await postJson(`api/designs/${encodeURIComponent(slug)}/layout`, body).catch((error) => ({ ok: false, body: { error: error.message } }));
+			store.setLayout({ layoutSaves: state.layoutSaves - 1 });
+			if (!reply.ok && slug === state.slug) setStatus(TEXT.saveFailed(slug, reply.body.reason || reply.body.error || "error"), true);
+			if (state.layoutSaves === 0 && changedWhileSaving) {
+				changedWhileSaving = false;
+				onLayoutChange().catch(() => {});
+			}
+		}).catch(() => {});
 	}
 
 	/** layout.json changed: another page moved or arranged the boards, so they move here too; the page's own save is no news. */
 	async function onLayoutChange() {
 		const slug = state.slug;
-		if (!slug || state.layoutSaves > 0) return;
+		if (!slug) return;
+		if (state.layoutSaves > 0) {
+			changedWhileSaving = true;
+			return;
+		}
+		const read = ++reads;
 		const layout = await fetchLayout(slug);
-		if (slug !== state.slug || !state.manifest || state.layoutSaves > 0 || moving) return;
+		if (read !== reads || slug !== state.slug || !state.manifest || moving) return;
 		if (state.layout && JSON.stringify(layout) === state.layout.saved) return;
 		useLayout(slug, layout);
 		applyLayout();

@@ -249,10 +249,12 @@ export async function loadCanvas(firstHeight = 300, extraReplies: Record<string,
 		localStorage: { getItem: () => null, setItem() {} },
 		requestAnimationFrame: (callback: () => void) => { callback(); return 0; },
 		// A reply with `__throw` makes the request itself fail; `__http` sets the status of the reply.
+		// A reply that is a promise keeps the request in flight until the test resolves it with the reply.
 		fetch: async (url: string, init?: { method?: string; body?: string }) => {
 			if (init?.method === "POST") posts.push({ url, body: JSON.parse(init.body ?? "null") });
 			fetched.push(url);
-			const reply = replies[url] as Record<string, unknown> | undefined;
+			const stored = replies[url];
+			const reply = (stored instanceof Promise ? await stored : stored) as Record<string, unknown> | undefined;
 			if (reply && typeof reply === "object" && "__throw" in reply) throw new TypeError(String(reply.__throw));
 			const status = reply && typeof reply === "object" && typeof reply.__http === "number" ? reply.__http : url in replies ? 200 : 404;
 			return { ok: status < 400, status, json: async () => reply ?? {} };

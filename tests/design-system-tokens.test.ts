@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
@@ -20,21 +20,13 @@ function scratch(t: TestContext): string {
 
 const byName = (text: string) => new Map(parseSystemTokens(text).map((token) => [token.name, token]));
 
-test("S1: the real design/system.md yields its colors, fonts, radius, shadows and layout tokens, grouped by section", () => {
+test("S1: the real design/system.md yields the wizard's colors, fonts, radius, shadows and motion tokens, grouped by section", () => {
 	const tokens = byName(REAL);
-	assert.deepEqual(tokens.get("--bg"), { name: "--bg", value: "#1a1218", section: "Colors — brand set", group: "color" });
+	assert.deepEqual(tokens.get("--bg"), { name: "--bg", value: "#1a1218", section: "Colors", group: "color" });
 	assert.equal(tokens.get("--accent")?.value, "#f095c8");
 	assert.equal(tokens.get("--text-muted")?.group, "color");
-	assert.equal(tokens.get("--accent-line")?.section, "Colors — canvas derived tokens");
-	assert.equal(tokens.get("--rail-width")?.value, "60px");
-	assert.equal(tokens.get("--rail-width")?.group, "layout");
-	assert.equal(tokens.get("--side-width")?.value, "360px");
-	// Rows that list several tokens in a cell.
-	assert.equal(tokens.get("--success-halo")?.value, "#b4e7c726");
-	assert.equal(tokens.get("--success-line")?.value, "#b4e7c766");
-	assert.equal(tokens.get("--error-wash")?.value, "#ff718f1a");
-	assert.equal(tokens.get("--scrim")?.value, "#000000b3");
-	// Tokens written inline in the first cell.
+	assert.equal(tokens.get("--border-soft")?.value, "#ffffff17");
+	assert.equal(tokens.get("--info")?.value, "#a9c7ee");
 	assert.match(tokens.get("--font-sans")!.value, /^Inter, "SF Pro Text"/);
 	assert.equal(tokens.get("--font-sans")?.group, "font");
 	assert.match(tokens.get("--font-mono")!.value, /^"IosevkaTerm NF"/);
@@ -43,21 +35,87 @@ test("S1: the real design/system.md yields its colors, fonts, radius, shadows an
 	assert.equal(tokens.get("--radius-sm")?.group, "radius");
 	assert.equal(tokens.get("--glow")?.value, "0 10px 30px #f095c84d");
 	assert.equal(tokens.get("--glow-hover")?.value, "0 14px 36px #f095c86b");
-	assert.equal(tokens.get("--shadow-frame")?.group, "shadow");
+	assert.equal(tokens.get("--shadow-panel")?.group, "shadow");
 	assert.equal(tokens.get("--ease")?.value, "cubic-bezier(.4, 0, .2, 1)");
 	// Prose and non-token rows are not tokens.
 	for (const name of tokens.keys()) assert.match(name, /^--[A-Za-z0-9_-]+$/);
-	assert.equal([...tokens.keys()].some((name) => name.includes(" ")), false);
-	assert.ok(tokens.size >= 46, `${tokens.size} tokens`);
+	assert.equal(tokens.size, 27, [...tokens.keys()].join(" "));
 });
 
-test("S1: the colors of the real file are the ones canvas.css declares in :root", () => {
-	const css = readFileSync(fileURLToPath(new URL("../assets/design-canvas/canvas.css", import.meta.url)), "utf8");
-	const root = css.match(/:root\s*{[^}]*}/)![0];
-	const tokens = byName(REAL);
-	for (const [name, value] of root.matchAll(/(--[a-z0-9-]+):\s*(#[0-9a-f]{3,8});/g).map((match) => [match[1], match[2]] as const)) {
-		if (tokens.has(name)) assert.equal(tokens.get(name)!.value, value, name);
+// Every documented token row names the file it comes from in its Source cell, and that file must
+// declare the token with the same value. Returns one line per problem; empty when the file is sound.
+const REPO = fileURLToPath(new URL("..", import.meta.url));
+const rowCells = (line: string) => line.trim().replace(/^\|/, "").replace(/\|$/, "").split(/(?<!\\)\|/).map((cell) => cell.replace(/\\\|/g, "|").trim());
+const declared = (css: string) => {
+	const found = new Map<string, string[]>();
+	for (const match of css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/(--[A-Za-z0-9_-]+)\s*:\s*([^;{}]+);/g)) {
+		found.set(match[1], [...(found.get(match[1]) ?? []), match[2].replace(/\s+/g, " ").trim()]);
 	}
+	return found;
+};
+
+function sourceProblems(text: string, root: string): string[] {
+	const problems: string[] = [];
+	let header: string[] | undefined;
+	let checked = 0;
+	for (const line of text.split(/\r\n?|\n/)) {
+		if (!line.trim().startsWith("|")) {
+			header = undefined;
+			continue;
+		}
+		const cells = rowCells(line);
+		if (!header) {
+			header = cells.map((cell) => cell.toLowerCase());
+			continue;
+		}
+		const tokens = parseSystemTokens(line);
+		if (tokens.length === 0) continue;
+		checked += tokens.length;
+		const names = tokens.map((token) => token.name).join(", ");
+		const column = header.indexOf("source");
+		const paths = column < 0 ? [] : [...(cells[column] ?? "").matchAll(/`([^`]+)`/g)].map((match) => match[1]);
+		if (paths.length !== 1) {
+			problems.push(`${names}: the row names no single source file`);
+			continue;
+		}
+		const path = join(root, paths[0]);
+		if (paths[0].split(/[\\/]/).includes("..") || !existsSync(path) || !statSync(path).isFile()) {
+			problems.push(`${names}: source ${paths[0]} does not exist`);
+			continue;
+		}
+		const css = declared(readFileSync(path, "utf8"));
+		for (const token of tokens) {
+			const values = css.get(token.name);
+			if (!values) problems.push(`${token.name}: not declared in ${paths[0]}`);
+			else if (!values.includes(token.value.replace(/\s+/g, " ").trim())) problems.push(`${token.name}: ${token.value} in system.md, ${values.join(" | ")} in ${paths[0]}`);
+		}
+	}
+	const total = parseSystemTokens(text).length;
+	if (checked !== total) problems.push(`${total - checked} documented tokens sit outside a table with a Source column`);
+	return problems;
+}
+
+test("S8: every token of the real design/system.md is declared, with the same value, in the source file its row names", () => {
+	assert.ok(parseSystemTokens(REAL).length > 0, "the real file documents tokens");
+	assert.deepEqual(sourceProblems(REAL, REPO), []);
+});
+
+test("S7: the real design/system.md describes the project only, never the canvas UI style", () => {
+	for (const canvas of ["design-canvas", "canvas.css", "--gd-", "Same brand set", "| both |"]) assert.ok(!REAL.includes(canvas), `system.md mentions ${canvas}`);
+});
+
+test("S8: the source check fails on a missing token, a different value, a row without a source and a source that does not exist", (t) => {
+	const root = scratch(t);
+	writeFileSync(join(root, "theme.css"), ":root {\n\t--a: #111111;\n\t--b: 0 1px  2px #000;\n}\n/* --c: #333333; */\n");
+	const table = (rows: string[]) => ["## Colors", "", "| Token | Value | Source |", "| --- | --- | --- |", ...rows].join("\n");
+	assert.deepEqual(sourceProblems(table(["| `--a` | `#111111` | `theme.css` |", "| `--b` | `0 1px 2px #000` | `theme.css` |"]), root), []);
+	assert.deepEqual(sourceProblems(table(["| `--c` | `#333333` | `theme.css` |"]), root), ["--c: not declared in theme.css"]);
+	assert.deepEqual(sourceProblems(table(["| `--a` | `#222222` | `theme.css` |"]), root), ["--a: #222222 in system.md, #111111 in theme.css"]);
+	assert.deepEqual(sourceProblems(table(["| `--a` | `#111111` | both |"]), root), ["--a: the row names no single source file"]);
+	assert.deepEqual(sourceProblems(table(["| `--a` | `#111111` | `gone.css` |"]), root), ["--a: source gone.css does not exist"]);
+	assert.deepEqual(sourceProblems(table(["| `--a` | `#111111` | `../theme.css` |"]), root), ["--a: source ../theme.css does not exist"]);
+	assert.deepEqual(sourceProblems("## Colors\n\n| Token | Value |\n| --- | --- |\n| `--a` | `#111111` |\n", root), ["--a: the row names no single source file"]);
+	assert.deepEqual(sourceProblems("## Colors\n\n| `--a` | `#111111` | `theme.css` |\n", root), ["1 documented tokens sit outside a table with a Source column"]);
 });
 
 test("S1: only table rows whose cells carry backticked names are tokens; headers, separators and prose are skipped", () => {

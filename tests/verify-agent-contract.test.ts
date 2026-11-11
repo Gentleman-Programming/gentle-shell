@@ -89,3 +89,11 @@ test("T11: probes stay inside the authorized commands or the scratch copy, and v
 	const tools = verify.split("---")[1] ?? "";
 	assert.ok(!/\n {2}- (edit|write)\n/.test(tools), "verify must not gain edit or write tools");
 });
+
+test("gentle-shell#3082: a safety-guard denial is reportable evidence in the handoff", () => {
+	containsAll(verify, [
+		"A safety-guard denial is not an infrastructure failure",
+		"rule and blocked path, sanitized of secret contents",
+		"mark that probe unverified",
+	], "denial evidence handoff");
+});

@@ -7,6 +7,8 @@ import type { DesignHandoffDelivery } from "./design-handoffs.ts";
 // artboard, so the other directions stay open. The canvas server and the gentle_design tool write through this module,
 // in the same per-file queue as comments.json and handoffs.json, re-reading the file before every write and replacing
 // it with a temp file + rename. A file this module cannot parse is reported and never overwritten.
+// "Remove" on the canvas (removeSent) clears a part the agent never reported: only a part still `sent` (queued or not),
+// so a part the agent took up or finished keeps its record; every refusal leaves the file byte for byte.
 
 export const DESIGN_PARTS_FILE = "parts.json";
 /** The most parts one design keeps. */
@@ -43,7 +45,8 @@ export type DesignPartsDocument = { version: 1; parts: DesignPart[] };
 
 export type DesignPartInput = { file: string; selector: string; excerpt: string; instruction: string };
 
-export type DesignPartsErrorCode = "not-found" | "invalid-file" | "invalid-input" | "limit";
+/** `not-sent`: removeSent was asked for a part the agent already reported (in_progress or implemented). */
+export type DesignPartsErrorCode = "not-found" | "invalid-file" | "invalid-input" | "limit" | "not-sent";
 
 export class DesignPartsError extends Error {
 	readonly code: DesignPartsErrorCode;
@@ -70,6 +73,11 @@ export interface DesignPartStore {
 	markQueued(slug: string, id: string): Promise<boolean>;
 	/** Removes part `id` (a delivery that failed); true when it was there. */
 	remove(slug: string, id: string): Promise<boolean>;
+	/**
+	 * The canvas "Remove": takes part `id` out when it is still `sent` (queued or not) and answers it. An unknown id is
+	 * `not-found`, a part in progress or implemented is `not-sent`, a malformed id is `invalid-input`; none writes.
+	 */
+	removeSent(slug: string, id: string): Promise<DesignPart>;
 }
 
 const collapse = (value: string) => value.replace(/\s+/g, " ").trim();
@@ -221,6 +229,18 @@ export function createDesignPartStore(designRoot: string, deps: DesignPartStoreD
 				if (index < 0) return { result: false, write: false };
 				document.parts.splice(index, 1);
 				return { result: true, write: true };
+			});
+		},
+
+		async removeSent(slug, id) {
+			if (typeof id !== "string" || !PART_ID.test(id)) throw new DesignPartsError("invalid-input", "id must be 1 to 32 lowercase letters or digits");
+			return mutate(slug, (document) => {
+				const index = document.parts.findIndex((part) => part.id === id);
+				if (index < 0) throw new DesignPartsError("not-found", `No part "${id}" in design/${slug}/parts.json.`);
+				const part = document.parts[index];
+				if (part.status !== "sent") throw new DesignPartsError("not-sent", `Part "${id}" is ${part.status}, not sent; only a sent part can be removed.`);
+				document.parts.splice(index, 1);
+				return { result: part, write: true };
 			});
 		},
 	};

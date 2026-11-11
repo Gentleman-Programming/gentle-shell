@@ -177,6 +177,7 @@ function partFailure(error: unknown): never {
 	if (error.code === "not-found") throw new HttpError(404, "not-found");
 	if (error.code === "invalid-file") throw new HttpError(422, "invalid-parts", { error: "invalid-parts", reason: error.message });
 	if (error.code === "limit") throw new HttpError(409, "too-many-parts", { error: "too-many-parts", reason: error.message });
+	if (error.code === "not-sent") throw new HttpError(409, "part-not-sent", { error: "part-not-sent", reason: error.message });
 	throw new HttpError(400, "invalid-part", { error: "invalid-part", reason: error.message });
 }
 
@@ -853,6 +854,16 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 		reply(res, 202, { ok: true, id: part.id, queued });
 	}
 
+	/**
+	 * "Remove" (canvas-server-data S2): takes a part still `sent` out of parts.json through the store's serialized writer,
+	 * so a part the agent never reports can be cleared. Anything else is refused without writing; handoffs.json is never touched.
+	 */
+	async function removePart(req: IncomingMessage, res: ServerResponse, slug: string): Promise<void> {
+		const body = await readJsonObject(req);
+		const removed = await partStore.removeSent(slug, typeof body.id === "string" ? body.id : "").catch(partFailure);
+		reply(res, 200, { ok: true, id: removed.id });
+	}
+
 	/** canvas-layout S3: the canvas saves where its artboards sit, validated whole before layout.json is replaced. */
 	async function saveLayout(req: IncomingMessage, res: ServerResponse, slug: string): Promise<void> {
 		const body = await readJsonObject(req, false, LIMITS.layoutBodyBytes);
@@ -996,6 +1007,10 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 		if (rest.length === 4 && rest[0] === "api" && rest[1] === "designs" && rest[3] === "implement-part") {
 			const slug = safeSegment(rest[2]);
 			return slug && SLUG.test(slug) ? (req, res) => implementPart(req, res, slug) : undefined;
+		}
+		if (rest.length === 5 && rest[0] === "api" && rest[1] === "designs" && rest[3] === "parts" && rest[4] === "remove") {
+			const slug = safeSegment(rest[2]);
+			return slug && SLUG.test(slug) ? (req, res) => removePart(req, res, slug) : undefined;
 		}
 		if (rest.length === 4 && rest[0] === "api" && rest[1] === "designs" && rest[3] === "layout") {
 			const slug = safeSegment(rest[2]);

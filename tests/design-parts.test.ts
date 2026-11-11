@@ -121,3 +121,63 @@ test("S4: a parts.json the store cannot parse is reported and never overwritten"
 	}
 	await assert.rejects(store.read("../etc"), isCode("not-found"));
 });
+
+// canvas-server-data S2: "Remove" clears a part the agent never reported. It goes through the same serialized
+// parts.json writer, removes only a part still `sent` (queued or not), and refuses anything else without writing.
+
+test("S2: removeSent takes out a sent part, queued or not, keeps the others in order, and never touches handoffs.json", async (t) => {
+	const root = designRoot(t);
+	const store = createDesignPartStore(root, { now: ticking(), randomId: ids() });
+	const first = await store.add("alpha", SIDEBAR);
+	const second = await store.add("alpha", { ...SIDEBAR, file: "02-b.html" });
+	const third = await store.add("alpha", SIDEBAR);
+	assert.equal(await store.markQueued("alpha", third.id), true);
+	assert.deepEqual(await store.removeSent("alpha", "part2"), second, "it answers the removed part");
+	assert.deepEqual(onDisk(root), { version: 1, parts: [first, { ...third, queued: true }] });
+	assert.deepEqual(await store.removeSent("alpha", "part3"), { ...third, queued: true }, "a queued part is still sent and can be removed");
+	assert.deepEqual(onDisk(root), { version: 1, parts: [first] });
+	assert.equal(readFileSync(partsPath(root), "utf8"), `${JSON.stringify({ version: 1, parts: [first] }, null, 2)}\n`);
+	assert.deepEqual(readdirSync(join(root, "alpha")), ["parts.json"], "no temp file and no handoffs.json");
+});
+
+test("S2: removeSent refuses a part in progress or implemented, an unknown or malformed id, a missing design and a broken file, leaving parts.json byte for byte", async (t) => {
+	const root = designRoot(t);
+	const store = createDesignPartStore(root, { now: ticking(), randomId: ids() });
+	await store.add("alpha", SIDEBAR);
+	await store.add("alpha", SIDEBAR);
+	await store.setStatus("alpha", "01-a.html", "part1", "in_progress", {});
+	await store.setStatus("alpha", "01-a.html", "part2", "implemented", {});
+	writeFileSync(join(root, "alpha", "handoffs.json"), "{\"handoffs\":[]}");
+	const before = hash(partsPath(root));
+	const handoffs = hash(join(root, "alpha", "handoffs.json"));
+	await assert.rejects(store.removeSent("alpha", "part1"), (error: unknown) => error instanceof DesignPartsError && error.code === "not-sent" && error.message === 'Part "part1" is in_progress, not sent; only a sent part can be removed.');
+	await assert.rejects(store.removeSent("alpha", "part2"), (error: unknown) => error instanceof DesignPartsError && error.code === "not-sent" && error.message === 'Part "part2" is implemented, not sent; only a sent part can be removed.');
+	await assert.rejects(store.removeSent("alpha", "nope"), (error: unknown) => error instanceof DesignPartsError && error.code === "not-found" && error.message === 'No part "nope" in design/alpha/parts.json.');
+	for (const id of ["", "UPPER", "a".repeat(33), "../x", 7 as never, undefined as never]) {
+		await assert.rejects(store.removeSent("alpha", id), (error: unknown) => error instanceof DesignPartsError && error.code === "invalid-input" && error.message === "id must be 1 to 32 lowercase letters or digits", `id ${String(id)}`);
+	}
+	await assert.rejects(store.removeSent("missing", "part1"), isCode("not-found"));
+	assert.equal(hash(partsPath(root)), before, "every refusal leaves parts.json unchanged");
+	assert.equal(hash(join(root, "alpha", "handoffs.json")), handoffs, "and handoffs.json untouched");
+	writeFileSync(partsPath(root), "not json");
+	await assert.rejects(store.removeSent("alpha", "part1"), isCode("invalid-file"));
+	assert.equal(readFileSync(partsPath(root), "utf8"), "not json", "a broken file is never overwritten");
+});
+
+test("S2: removeSent shares the serialized writer, so a parallel add and removal both land", async (t) => {
+	const root = designRoot(t);
+	const store = createDesignPartStore(root, { now: ticking(), randomId: ids() });
+	await store.add("alpha", SIDEBAR);
+	const [added] = await Promise.all([store.add("alpha", { ...SIDEBAR, file: "02-b.html" }), store.removeSent("alpha", "part1")]);
+	assert.deepEqual(onDisk(root).parts, [added], "the new part is kept and the removed one is gone");
+});
+
+test("S2 preserve: remove still takes back a part whatever its status (a failed delivery)", async (t) => {
+	const root = designRoot(t);
+	const store = createDesignPartStore(root, { now: ticking(), randomId: ids() });
+	await store.add("alpha", SIDEBAR);
+	await store.setStatus("alpha", "01-a.html", "part1", "implemented", {});
+	assert.equal(await store.remove("alpha", "part1"), true);
+	assert.equal(await store.remove("alpha", "part1"), false);
+	assert.deepEqual(onDisk(root), { version: 1, parts: [] });
+});

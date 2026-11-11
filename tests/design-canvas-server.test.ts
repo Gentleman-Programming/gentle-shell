@@ -1011,6 +1011,86 @@ test("implement-part S4: the parts route keeps the Origin, content-type, JSON an
 	assert.equal(parts.length, 0);
 });
 
+// canvas-server-data S2: "Remove" clears a part still `sent` from parts.json through the same writer; anything else is
+// refused without writing, and handoffs.json is never touched.
+const PARTS_REMOVE = "api/designs/alpha/parts/remove";
+const partsFile = (root: string) => join(root, "alpha", "parts.json");
+
+test("S2: parts/remove takes out a sent part, answers 200 with its id, keeps the others and leaves handoffs.json byte for byte", async (t) => {
+	const { port, root } = await start(t);
+	assert.equal((await postJson(port, "api/designs/alpha/implement", { file: "01-hero.html" })).status, 202);
+	const handoffs = readFileSync(join(root, "alpha", "handoffs.json"));
+	const first = JSON.parse((await postJson(port, PARTS, SIDE)).body).id;
+	const second = JSON.parse((await postJson(port, PARTS, { file: "01-hero.html", selector: "h1" })).body).id;
+	const kept = JSON.parse(readFileSync(partsFile(root), "utf8")).parts[1];
+	const reply = await postJson(port, PARTS_REMOVE, { id: first });
+	assert.equal(reply.status, 200);
+	assert.deepEqual(JSON.parse(reply.body), { ok: true, id: first });
+	assert.equal(readFileSync(partsFile(root), "utf8"), `${JSON.stringify({ version: 1, parts: [kept] }, null, 2)}\n`);
+	assert.equal(kept.id, second);
+	assert.deepEqual(readFileSync(join(root, "alpha", "handoffs.json")), handoffs, "handoffs.json is never written");
+	assert.deepEqual(JSON.parse((await rawRequest(port, `/${TOKEN}/${PARTS_LIST}`)).body), { version: 1, parts: [kept] });
+});
+
+test("S2: parts/remove refuses a part not sent, an unknown or malformed id, a bad body, Origin or method, and a missing design, writing nothing", async (t) => {
+	const { port, root } = await start(t);
+	assert.equal((await postJson(port, "api/designs/alpha/implement", { file: "01-hero.html" })).status, 202);
+	const at = "2026-10-31T10:00:00.000Z";
+	const part = (id: string, status: string) => ({ id, file: "01-hero.html", selector: "h1", excerpt: "Hero", status, queued: false, sentAt: at, startedAt: status === "sent" ? null : at, implementedAt: status === "implemented" ? at : null });
+	writeFileSync(partsFile(root), `${JSON.stringify({ version: 1, parts: [part("busy", "in_progress"), part("done", "implemented"), part("open", "sent")] }, null, 2)}\n`);
+	const parts = readFileSync(partsFile(root));
+	const handoffs = readFileSync(join(root, "alpha", "handoffs.json"));
+	const refused = async (reply: Promise<{ status: number; body: string }>, status: number, body: unknown, label: string) => {
+		const answer = await reply;
+		assert.equal(answer.status, status, label);
+		assert.deepEqual(JSON.parse(answer.body), body, label);
+		assert.deepEqual(readFileSync(partsFile(root)), parts, `${label}: parts.json unchanged`);
+		assert.deepEqual(readFileSync(join(root, "alpha", "handoffs.json")), handoffs, `${label}: handoffs.json untouched`);
+	};
+	await refused(postJson(port, PARTS_REMOVE, { id: "busy" }), 409, { error: "part-not-sent", reason: 'Part "busy" is in_progress, not sent; only a sent part can be removed.' }, "in progress");
+	await refused(postJson(port, PARTS_REMOVE, { id: "done" }), 409, { error: "part-not-sent", reason: 'Part "done" is implemented, not sent; only a sent part can be removed.' }, "implemented");
+	await refused(postJson(port, PARTS_REMOVE, { id: "nope" }), 404, { error: "not-found" }, "unknown id");
+	for (const id of ["", "UPPER", "a".repeat(33), 7, undefined]) {
+		await refused(postJson(port, PARTS_REMOVE, { id }), 400, { error: "invalid-part", reason: "id must be 1 to 32 lowercase letters or digits" }, `id ${String(id)}`);
+	}
+	await refused(postJson(port, PARTS_REMOVE, [1]), 400, { error: "invalid-body" }, "not an object");
+	const path = `/${TOKEN}/${PARTS_REMOVE}`;
+	const body = JSON.stringify({ id: "open" });
+	const own = { Origin: `http://127.0.0.1:${port}`, "Content-Type": "application/json" };
+	await refused(rawRequest(port, path, { method: "POST", headers: own, body: "not json" }), 400, { error: "invalid-json" }, "not JSON");
+	await refused(rawRequest(port, path, { method: "POST", headers: { "Content-Type": "application/json" }, body }), 403, { error: "forbidden" }, "no Origin");
+	await refused(rawRequest(port, path, { method: "POST", headers: { ...own, Origin: "http://evil.example" }, body }), 403, { error: "forbidden" }, "foreign Origin");
+	await refused(rawRequest(port, path, { method: "POST", headers: { ...own, "Content-Type": "text/plain" }, body }), 415, { error: "unsupported-media-type" }, "not JSON content");
+	await refused(rawRequest(port, path, { method: "POST", headers: own, body, host: `evil.example:${port}` }), 421, { error: "misdirected" }, "foreign Host");
+	await refused(rawRequest(port, `/wrong-token-0123456789abcdef/${PARTS_REMOVE}`, { method: "POST", headers: own, body }), 404, { error: "not-found" }, "wrong token");
+	const get = await rawRequest(port, path);
+	assert.equal(get.headers.allow, "POST");
+	await refused(Promise.resolve(get), 405, { error: "method-not-allowed" }, "GET");
+	await refused(rawRequest(port, path, { method: "PUT", headers: own, body }), 405, { error: "method-not-allowed" }, "PUT");
+	await refused(rawRequest(port, path, { method: "POST", headers: own, body: JSON.stringify({ id: "open", pad: "x".repeat(17 * 1024) }) }), 413, { error: "body-too-large" }, "over 16 KiB");
+	await refused(postJson(port, "api/designs/missing/parts/remove", { id: "open" }), 404, { error: "not-found" }, "missing design");
+	await refused(postJson(port, "api/designs/Not_A_Slug/parts/remove", { id: "open" }), 404, { error: "not-found" }, "bad slug");
+	writeFileSync(partsFile(root), "not json");
+	const broken = await postJson(port, PARTS_REMOVE, { id: "open" });
+	assert.equal(broken.status, 422);
+	assert.equal(JSON.parse(broken.body).error, "invalid-parts");
+	assert.equal(readFileSync(partsFile(root), "utf8"), "not json", "a broken file is never overwritten");
+});
+
+test("S2: removing a part streams one change for parts.json", async (t) => {
+	const { port } = await start(t);
+	const id = JSON.parse((await postJson(port, PARTS, SIDE)).body).id;
+	// Let the change of that write go out before the stream opens, so only the removal can match.
+	await new Promise((resolve) => setTimeout(resolve, 400));
+	const events = openEvents(port);
+	t.after(() => events.req.destroy());
+	await events.ready;
+	await events.waitFor(/: connected\n\n/);
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	assert.equal((await postJson(port, PARTS_REMOVE, { id })).status, 200);
+	await events.waitFor(/event: change\ndata: \{"slug":"alpha","file":"parts\.json"\}\n\n/);
+});
+
 // S15: the canvas Implement route records the handoff in design/<slug>/handoffs.json.
 
 const handoffsOf = (root: string, slug = "alpha") => JSON.parse(readFileSync(join(root, slug, "handoffs.json"), "utf8"));

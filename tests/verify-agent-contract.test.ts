@@ -88,3 +88,12 @@ test("T11: probes stay inside the authorized commands or the scratch copy, and v
 	const tools = verify.split("---")[1] ?? "";
 	assert.ok(!/\n {2}- (edit|write)\n/.test(tools), "verify must not gain edit or write tools");
 });
+
+test("gentle-shell#3082: verification inputs bind to named commits, not live files", () => {
+	containsAll(verify, [
+		"Bind verification inputs to the commits the parent named (baseline and candidate), not to live workspace files",
+		"report a preparation failure naming the path and both versions",
+		"mutable progress bookkeeping (task documents, receipts, trackers) is never source drift",
+		"never verify the live copy silently instead",
+	], "input identity boundary");
+});

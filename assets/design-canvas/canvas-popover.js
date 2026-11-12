@@ -21,19 +21,25 @@ export function init(ctx) {
 		return { selector, excerpt, rect: { x: box.x, y: box.y, width: box.width, height: box.height } };
 	}
 
-	function openPopover(board, pick) {
+	/**
+	 * The pick of `surface`, a board's frame or one of its All sizes frames (canvas-sizes.js), with the size it was
+	 * made at (viewport, null at the artboard's own size); the popover opens beside the element in that frame.
+	 */
+	function openPopover(surface, pick) {
 		win.clearTimeout(state.closeTimer);
-		// A pick on another artboard replaces the open one: that artboard's highlight goes, as on a close.
-		const previous = state.pick && state.pick.board;
-		if (previous && previous !== board) previous.frame.contentWindow?.postMessage({ type: "gd:clear" }, "*");
-		store.setPopover({ pick: { board, ...pick } });
+		const board = actions.ownerOf(surface);
+		// A pick in another frame replaces the open one: that frame's highlight goes, as on a close.
+		const previous = state.pick && state.pick.surface;
+		if (previous && previous !== surface) previous.frame.contentWindow?.postMessage({ type: "gd:clear" }, "*");
+		store.setPopover({ pick: { board, surface, viewport: actions.viewportOf(surface), ...pick } });
 		els.target.textContent = `${board.artboard.file} · ${pick.selector}`;
 		els.message.textContent = "";
 		els.message.classList.remove("gd-error");
 		els.send.disabled = false;
 		els.popover.hidden = false;
-		const frameRect = board.frame.getBoundingClientRect();
-		const scale = frameRect.width / board.artboard.width || 1;
+		// The frame may be scaled (All sizes) or resized (a single size).
+		const frameRect = surface.frame.getBoundingClientRect();
+		const scale = frameRect.width / surface.viewWidth || 1;
 		const width = els.popover.offsetWidth;
 		const height = els.popover.offsetHeight;
 		let left = frameRect.left + pick.rect.x * scale;
@@ -117,12 +123,19 @@ export function init(ctx) {
 	function closePopover() {
 		if (els.popover.hidden) return;
 		win.clearTimeout(state.closeTimer);
-		const board = state.pick && state.pick.board;
+		// The frame that was picked clears its outline.
+		const surface = state.pick && state.pick.surface;
 		store.setPopover({ pick: null });
 		clearShot();
 		els.popover.hidden = true;
-		board?.frame.contentWindow?.postMessage({ type: "gd:clear" }, "*");
-		if (els.popover.contains(doc.activeElement) || doc.activeElement === doc.body) (state.focus ? state.focus.frame : els.comment).focus();
+		surface?.frame.contentWindow?.postMessage({ type: "gd:clear" }, "*");
+		if (els.popover.contains(doc.activeElement) || doc.activeElement === doc.body) returnFocus(surface);
+	}
+
+	/** Back to the size frame that was picked while it still shows, else the focused artboard, else Comment. */
+	function returnFocus(surface) {
+		const sizeFrame = Boolean(state.focus && surface && surface !== state.focus && actions.surfacesOf(state.focus).includes(surface));
+		(sizeFrame ? surface.frame : state.focus ? state.focus.frame : els.comment).focus();
 	}
 
 	els.cancel.addEventListener("click", closePopover);
@@ -165,7 +178,7 @@ export function init(ctx) {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				cache: "no-store",
-				body: JSON.stringify({ slug: pick.board.slug, file: pick.board.artboard.file, selector: pick.selector, excerpt: pick.excerpt, comment, mode: state.mode, ...(shot ? { screenshot: shot } : {}) }),
+				body: JSON.stringify({ slug: pick.board.slug, file: pick.board.artboard.file, selector: pick.selector, excerpt: pick.excerpt, comment, mode: state.mode, ...(shot ? { screenshot: shot } : {}), ...(pick.viewport ? { viewport: pick.viewport } : {}) }),
 			});
 			let reply = {};
 			try { reply = await response.json(); } catch { /* keep the status */ }

@@ -31,6 +31,7 @@ import * as boards from "./canvas-boards.js";
 import * as comments from "./canvas-comments.js";
 import * as compare from "./canvas-compare.js";
 import * as events from "./canvas-events.js";
+import * as exporter from "./canvas-export.js";
 import * as focus from "./canvas-focus.js";
 import * as handoffs from "./canvas-handoffs.js";
 import * as layout from "./canvas-layout.js";
@@ -39,6 +40,7 @@ import * as messages from "./canvas-messages.js";
 import * as minimap from "./canvas-minimap.js";
 import * as popover from "./canvas-popover.js";
 import * as rail from "./canvas-rail.js";
+import * as sizes from "./canvas-sizes.js";
 import { createStore } from "./canvas-store.js";
 import * as ui from "./canvas-ui.js";
 import * as view from "./canvas-view.js";
@@ -50,7 +52,7 @@ import * as view from "./canvas-view.js";
  * the popover too: its Esc clears the selected artboard first, and the next Esc reaches
  * the popover's (leave Comment mode).
  */
-const MODULES = [view, focus, boards, handoffs, compare, events, comments, menu, rail, layout, minimap, popover, messages];
+const MODULES = [view, focus, boards, handoffs, compare, events, comments, menu, rail, sizes, exporter, layout, minimap, popover, messages];
 
 export function boot(win, doc) {
 	const config = JSON.parse(doc.getElementById("gd-config").textContent);
@@ -67,6 +69,11 @@ export function boot(win, doc) {
 		zoomLevel: $("gd-zoom-level"),
 		fit: $("gd-fit"),
 		arrange: { row: $("gd-arrange-row"), column: $("gd-arrange-column"), grid: $("gd-arrange-grid") },
+		device: $("gd-device"),
+		deviceIcon: $("gd-device-icon"),
+		deviceName: $("gd-device-name"),
+		deviceSize: $("gd-device-size"),
+		deviceMenu: $("gd-device-menu"),
 		sprite: $("gd-sprite"),
 		rail: $("gd-rail"),
 		toolNavigate: $("gd-tool-navigate"),
@@ -145,6 +152,7 @@ export function boot(win, doc) {
 
 	actions.setMode(actions.storedMode());
 	actions.startRail();
+	actions.startSizes();
 	actions.start();
 	actions.connectEvents();
 }

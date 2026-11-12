@@ -38,6 +38,18 @@ const TEXT = Object.freeze({
 // Every PNG export starts the artboard at Desktop, its own size.
 const DESKTOP = Object.freeze({ kind: "desktop" });
 
+// The characters the server escapes in the inspector tag's base, and how (escapeHtml in lib/design-canvas-server.ts).
+const HTML_ESCAPES = Object.freeze({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" });
+
+/**
+ * The inspector tag the server injects into every artboard served under `base` (inspectorTag and injectInspector in
+ * lib/design-canvas-server.ts): Download HTML removes it. tests/design-canvas-export.test.ts serves the
+ * artboard through the server's own injection, so the two cannot drift apart silently.
+ */
+function inspectorTag(base) {
+	return `<script src="${base.replace(/[&<>"']/g, (char) => HTML_ESCAPES[char])}assets/inspector.js"></script>`;
+}
+
 // How long a PNG export waits for the capture to paint a new frame; sharing that stopped paints none.
 const FRAME_WAIT_MS = 500;
 
@@ -69,7 +81,7 @@ export function init(ctx) {
 		return [
 			{ label: TEXT.png, icon: "i-image", run: () => exportArtboard(board, 1) },
 			{ label: TEXT.png2x, icon: "i-image", run: () => exportArtboard(board, 2) },
-			{ label: TEXT.pdf, icon: "i-image", run: () => exportPdf(board) },
+			{ label: TEXT.pdf, icon: "i-file", run: () => exportPdf(board) },
 			{ label: TEXT.html, icon: "i-download", run: () => downloadHtml(board) },
 		];
 	}
@@ -353,7 +365,7 @@ export function init(ctx) {
 			const response = await win.fetch(api.fileUrl(board.slug, board.artboard.file), { cache: "no-store" });
 			if (!response.ok) throw new Error(`HTTP ${response.status}`);
 			const served = await response.text();
-			const tag = `<script src="${api.base}assets/inspector.js"></script>`;
+			const tag = inspectorTag(api.base);
 			const at = served.lastIndexOf(tag);
 			const html = at === -1 ? served : served.slice(0, at) + served.slice(at + tag.length);
 			download(win.URL.createObjectURL(new win.Blob([html], { type: "text/html" })), fileName(board));

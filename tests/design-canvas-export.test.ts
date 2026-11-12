@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { DESIGN_CANVAS_ASSETS } from "../lib/design-canvas-assets.ts";
+import { injectInspector } from "../lib/design-canvas-server.ts";
 import { boardsOf, click, findAll, flush, handoffDoc, loadCanvas, read, texts, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
 
 // Export (canvas-export.js): a ⋯ button in each design artboard's header opens the shared
@@ -17,8 +18,8 @@ const SYSTEM_REPLY = { "/t/api/system": { exists: true, file: "system.html", wid
 const EXPORT_ITEMS = ["Export as PNG", "Export as PNG at 2×", "Export as PDF", "Download HTML"];
 const ARTBOARD_URL = "/t/files/alpha/01-a.html";
 
-async function loadExport(replies: Record<string, unknown> = {}, extraWindow: Record<string, unknown> = {}) {
-	const canvas = await loadCanvas(300, replies, {}, extraWindow);
+async function loadExport(replies: Record<string, unknown> = {}, extraWindow: Record<string, unknown> = {}, config: Record<string, unknown> = {}) {
+	const canvas = await loadCanvas(300, replies, config, extraWindow);
 	// The fake DOM starts every element visible; index.html starts these hidden.
 	for (const id of ["gd-popover", "gd-menu", "gd-device-menu"]) canvas.document.getElementById(id).hidden = true;
 	return canvas;
@@ -84,7 +85,7 @@ test("S7: the menu lists only the export items, marks the button expanded, focus
 	assert.equal(button.getAttribute("aria-expanded"), "true");
 	assert.equal(menuEl(canvas).getAttribute("aria-label"), "Second actions");
 	assert.deepEqual(itemLabels(canvas), EXPORT_ITEMS);
-	assert.deepEqual(menuItems(canvas).map((item) => withClass(item, "gd-i")[0].children[0].getAttribute("href")), ["#i-image", "#i-image", "#i-image", "#i-download"]);
+	assert.deepEqual(menuItems(canvas).map((item) => withClass(item, "gd-i")[0].children[0].getAttribute("href")), ["#i-image", "#i-image", "#i-file", "#i-download"]);
 	assert.equal(withClass(menuEl(canvas), "gd-menu-separator").length, 0);
 	assert.ok(menuItems(canvas).every((item) => item.localName === "button" && item.getAttribute("tabindex") === "-1"));
 	assert.ok(isActive(canvas, menuItems(canvas)[0]));
@@ -965,25 +966,55 @@ test("S3e: the print frame's blank load before its src is set never prints; the 
 	assert.equal(printed, 1, "printed once the artboard loaded");
 });
 
-test("Download HTML saves the artboard file as written, without the inspector the server injects", async () => {
+/**
+ * Download HTML under the canvas base `base`, the artboard served through the server's own injection
+ * (injectInspector), so a change in the injected tag fails here. Returns the downloads and the saved blobs.
+ */
+async function downloadServed(base: string, original: string) {
 	const names: string[] = [];
 	const blobs: Array<{ parts: unknown[]; type: string }> = [];
-	const original = "<!doctype html><title>A</title><p>Hello</p></body></html>";
-	const served = original.replace("</body>", '<script src="/t/assets/inspector.js"></script></body>');
-	const canvas = await loadExport({ [ARTBOARD_URL]: { __text: served } }, {
+	const fileUrl = `${base}files/alpha/01-a.html`;
+	// The default replies live under /t/; any other base needs its own design load.
+	const designReplies = base === "/t/" ? {} : {
+		[`${base}api/system`]: { exists: false },
+		[`${base}api/designs`]: { designs: [{ slug: "alpha", title: "Alpha", valid: true }] },
+		[`${base}api/designs/alpha`]: { slug: "alpha", title: "Alpha", brief: "", artboards: [{ file: "01-a.html", title: "First", tradeoff: "", width: 400, height: 300 }] },
+		[`${base}api/designs/alpha/comments`]: { comments: [] },
+		[`${base}api/designs/alpha/handoffs`]: { version: 1, chosen: null, handoffs: {} },
+	};
+	const canvas = await loadExport({ ...designReplies, [fileUrl]: { __text: injectInspector(original, base) } }, {
 		Blob: class { constructor(parts: unknown[], options: { type: string }) { blobs.push({ parts, type: options.type }); } },
 		URL: { createObjectURL: () => "blob:test", revokeObjectURL: () => names.push("revoked") },
-	});
+	}, { base });
 	const document = canvas.document as any;
 	const create = document.createElement.bind(document);
 	document.createElement = (tag: string) => (tag === "a" ? { click() { names.push(this.download); }, href: "", download: "" } : create(tag));
 	choose(canvas, "Download HTML");
 	await settle(4);
+	return { canvas, names, blobs: JSON.parse(JSON.stringify(blobs)), fileUrl };
+}
+
+test("Download HTML saves the artboard file as written, without the inspector the server injects", async () => {
+	const original = "<!doctype html><title>A</title><p>Hello</p></body></html>";
+	const { canvas, names, blobs, fileUrl } = await downloadServed("/t/", original);
 	assert.deepEqual(names, ["01-a.html", "revoked"]);
-	assert.deepEqual(JSON.parse(JSON.stringify(blobs)), [{ parts: [original], type: "text/html" }]);
-	assert.ok(canvas.fetched.includes(ARTBOARD_URL));
+	assert.deepEqual(blobs, [{ parts: [original], type: "text/html" }]);
+	assert.ok(canvas.fetched.includes(fileUrl));
 	assert.deepEqual(canvas.posts, []);
 	assert.equal(statusIsError(canvas), false);
+});
+
+test("S25: Download HTML removes the inspector the server injects when the base holds characters the server escapes", async () => {
+	const original = "<!doctype html><title>A</title><p>Hello</p></body></html>";
+	const base = "/t&x\"'<>/";
+	const { canvas, names, blobs, fileUrl } = await downloadServed(base, original);
+	assert.deepEqual(names, ["01-a.html", "revoked"]);
+	assert.deepEqual(blobs, [{ parts: [original], type: "text/html" }], "no inspector tag left");
+	assert.ok(canvas.fetched.includes(fileUrl));
+	assert.equal(statusIsError(canvas), false);
+	// An artboard without </body> gets the tag at its end; it is removed there too.
+	const bare = "<p>No body end</p>";
+	assert.deepEqual((await downloadServed(base, bare)).blobs, [{ parts: [bare], type: "text/html" }]);
 });
 
 test("a failed Download HTML says so with the reason and downloads nothing", async () => {
@@ -1036,7 +1067,7 @@ test("canvas-export.js is an allowlisted module wired by canvas-boot.js", () => 
 
 test("index.html's sprite holds the menu and export icons", () => {
 	const html = read("index.html");
-	for (const icon of ["i-more", "i-image", "i-download"]) assert.match(html, new RegExp(`<symbol id="${icon}" viewBox="0 0 24 24">`));
+	for (const icon of ["i-more", "i-image", "i-file", "i-download"]) assert.match(html, new RegExp(`<symbol id="${icon}" viewBox="0 0 24 24">`));
 	assert.ok(!/data-i18n/.test(html));
 });
 

@@ -4,7 +4,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createStore } from "../assets/design-canvas/canvas-store.js";
 import { DESIGN_CANVAS_ASSETS } from "../lib/design-canvas-assets.ts";
-import { findAll, flush, loadCanvas, read, texts, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
+import { findAll, flush, inspectorPick, loadCanvas, read, texts, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
 
 // Partial implementations (canvas-parts.js): Implement only this in the comment popover, the
 // "Partial implementations · N" section at the bottom of the panel (state in words, time, excerpt,
@@ -54,7 +54,8 @@ const fetchCount = (canvas: Canvas, url: string) => canvas.fetched.filter((fetch
 
 function pick(canvas: Canvas, index: number, data: Record<string, unknown> = {}) {
 	if ($(canvas, "gd-comment").getAttribute("aria-pressed") !== "true") $(canvas, "gd-comment").dispatch("click");
-	canvas.message(canvas.frames()[index].contentWindow, { type: "gd:pick", selector: "nav.side", excerpt: "Home Tours", rect: { x: 1, y: 1, width: 10, height: 10 }, ...data });
+	const frame = canvas.frames()[index];
+	canvas.message(frame.contentWindow, inspectorPick(frame, { type: "gd:pick", selector: "nav.side", excerpt: "Home Tours", rect: { x: 1, y: 1, width: 10, height: 10 }, ...data }));
 }
 function implementOnlyThis(canvas: Canvas, index: number, data: Record<string, unknown> = {}, note = "") {
 	pick(canvas, index, data);

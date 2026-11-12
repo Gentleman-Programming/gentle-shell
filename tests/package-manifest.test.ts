@@ -952,33 +952,122 @@ test("forced refresh preserves an agent body edited outside its managed block", 
 	});
 });
 
+// S4: every layout splitManagedBlocks cannot trust. Unbalanced, stray closing,
+// closing naming another block, and a name reopened inside itself.
+const CORRUPT_MANAGED_MARKERS = {
+	"an unclosed block": "<!-- gentle-ai:documentation-guidance -->\n\n## Documentation\n",
+	"a closing marker without an opener": "<!-- /gentle-ai:documentation-guidance -->\n",
+	"a closing marker naming another block":
+		"<!-- gentle-ai:documentation-guidance -->\n\n<!-- /gentle-ai:ego-browser-guidance -->\n",
+	"a block name reopened inside itself":
+		"<!-- gentle-ai:documentation-guidance -->\n\n<!-- gentle-ai:documentation-guidance -->\n\n<!-- /gentle-ai:documentation-guidance -->\n",
+} as const;
+
 test("corrupt managed markers fall back to whole-file comparison and preserve the agent", () => {
-	const corruptMarkers = {
-		"an unclosed block": "<!-- gentle-ai:documentation-guidance -->\n\n## Documentation\n",
-		"a closing marker without an opener": "<!-- /gentle-ai:documentation-guidance -->\n",
-		"a closing marker naming another block":
-			"<!-- gentle-ai:documentation-guidance -->\n\n<!-- /gentle-ai:ego-browser-guidance -->\n",
-		"a block name reopened inside itself":
-			"<!-- gentle-ai:documentation-guidance -->\n\n<!-- gentle-ai:documentation-guidance -->\n\n<!-- /gentle-ai:documentation-guidance -->\n",
-	} as const;
-	for (const [label, markers] of Object.entries(corruptMarkers)) {
+	for (const [label, markers] of Object.entries(CORRUPT_MANAGED_MARKERS)) {
 		withIsolatedAssetHome((agentHome) => {
 			const installedPath = join(agentHome, WORKER_AGENT_KEY);
 			installPackageAssets(agentHome, false, ["delegation"]);
 			const corrupt = `${packagedWorkerAgent()}\n${markers}`;
 			writeFileSync(installedPath, corrupt);
+			// A fail-safe skip is not an ownership change: it leaves whatever entry the
+			// key already had. Here that is the hash of the packaged body it installed,
+			// which no longer matches the corrupt file, so the copy is never treated as
+			// managed while the entry stays available for a repaired file.
+			const ownershipBefore = installedAssetManifest(agentHome).assets[WORKER_AGENT_KEY];
+			assert.equal(ownershipBefore, sha256(packagedWorkerAgent()), `${label} must start package-owned`);
 
 			const result = installPackageAssets(agentHome, true, ["delegation"]);
 
 			assert.equal(readFileSync(installedPath, "utf8"), corrupt, `${label} must keep the installed bytes`);
 			assert.equal(
 				installedAssetManifest(agentHome).assets[WORKER_AGENT_KEY],
-				undefined,
-				`${label} must not be adopted as a managed copy`,
+				ownershipBefore,
+				`${label} must keep the manifest entry it had`,
 			);
 			assert.equal(result.skipped, 1, `${label} must be skipped, not rewritten`);
 		});
 	}
+});
+
+// S4 has one more case than the test above covers: when the manifest hash equals
+// the whole-file hash of the broken file, the installer used to adopt it as a
+// managed copy, refresh it, and lose the added text. A broken marker set is
+// user-owned no matter what the manifest says.
+test("corrupt managed markers are left byte-identical even when the manifest hash matches", () => {
+	for (const [label, markers] of Object.entries(CORRUPT_MANAGED_MARKERS)) {
+		withIsolatedAssetHome((agentHome) => {
+			const installedPath = join(agentHome, WORKER_AGENT_KEY);
+			installPackageAssets(agentHome, false, ["delegation"]);
+			const corrupt = `${packagedWorkerAgent()}\n${markers}`;
+			writeFileSync(installedPath, corrupt);
+			const manifestPath = join(agentHome, "gentle-ai", "managed-assets.json");
+			const manifest = installedAssetManifest(agentHome);
+			manifest.assets[WORKER_AGENT_KEY] = sha256(corrupt);
+			writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+			const result = installPackageAssets(agentHome, true, ["delegation"]);
+
+			assert.equal(
+				readFileSync(installedPath, "utf8"),
+				corrupt,
+				`${label} must keep the installed bytes`,
+			);
+			assert.equal(
+				result.skipped,
+				1,
+				`${label} must be skipped, not refreshed`,
+			);
+			// The skip is not an ownership change: the entry a repaired file needs to be
+			// adopted again stays exactly as it was.
+			assert.equal(
+				installedAssetManifest(agentHome).assets[WORKER_AGENT_KEY],
+				sha256(corrupt),
+				`${label} must keep its manifest entry`,
+			);
+
+			const second = installPackageAssets(agentHome, true, ["delegation"]);
+
+			assert.equal(
+				readFileSync(installedPath, "utf8"),
+				corrupt,
+				`${label} must stay byte-identical on a second refresh`,
+			);
+			assert.equal(
+				second.skipped,
+				1,
+				`${label} must be skipped again on a second refresh`,
+			);
+			assert.equal(
+				installedAssetManifest(agentHome).assets[WORKER_AGENT_KEY],
+				sha256(corrupt),
+				`${label} must keep its manifest entry after a second refresh`,
+			);
+		});
+	}
+});
+
+// The fail-safe must not be satisfiable by never refreshing: healthy markers on
+// a hash-matching installed copy still adopt the shipped body and the blocks.
+test("a hash-matching agent with healthy managed markers still refreshes", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		const guidance = managedBlock("documentation-guidance", ["", "## Documentation", ""]);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		const installed = `${staleWorkerAgent()}\n${guidance}`;
+		writeFileSync(installedPath, installed);
+		const manifestPath = join(agentHome, "gentle-ai", "managed-assets.json");
+		const manifest = installedAssetManifest(agentHome);
+		manifest.assets[WORKER_AGENT_KEY] = sha256(installed);
+		writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+		const result = installPackageAssets(agentHome, true, ["delegation"]);
+
+		const refreshed = readFileSync(installedPath, "utf8");
+		assert.equal(refreshed, `${packagedWorkerAgent()}\n${guidance}`);
+		assert.doesNotMatch(refreshed, /effective TDD mode/);
+		assert.equal(result.skipped, 0);
+	});
 });
 
 test("two consecutive forced refreshes of an agent with a managed block are stable", () => {

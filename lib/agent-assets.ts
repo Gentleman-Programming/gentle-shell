@@ -506,6 +506,17 @@ function copyDirectoryFiles(
 				installedContent === undefined || !ownershipKey.startsWith("agents/")
 					? undefined
 					: splitManagedBlocks(installedContent);
+			// A marker layout splitManagedBlocks cannot trust means the blocks in the
+			// installed body are not recognisable, so the file is left untouched — even
+			// when the manifest hash matches the whole-file hash. Ownership is not
+			// touched either: a matching entry still matches, so the next run takes the
+			// same safe path, and a repaired file stops matching and reaches the
+			// ordinary local-edit branch. Dropping the entry here would freeze the file
+			// out of package ownership for good.
+			if (installedSplit?.failSafe !== undefined) {
+				skipped += 1;
+				continue;
+			}
 			carriedBlocks = installedSplit?.blocks ?? [];
 			const installedBase =
 				installedSplit?.stripped === true ? installedSplit.content : installedContent;

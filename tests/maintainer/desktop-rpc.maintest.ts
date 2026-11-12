@@ -180,8 +180,8 @@ test("installed Pi dispatches Desktop RPC without adding conversation messages",
 		assert.equal(response.kind, "response");
 		assert.equal(response.requestId, "real-1");
 		assert.equal(response.ok, true);
-		assert.deepEqual(response.data.methods, ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job"]);
-		assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update"]);
+		assert.deepEqual(response.data.methods, ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "list_subagents", "cancel_subagent"]);
+		assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "agents_update"]);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -405,6 +405,49 @@ test("installed Pi serves the owner-loaded empty job list without starting a job
 		assert.equal(payloads.some((payload) => payload.kind === "event"), false, "an offline list emits nothing");
 		assert.equal(JSON.stringify(payloads).includes("command"), false, "no command text leaks into the wire");
 		assert.equal(JSON.stringify(payloads).includes("outputPath"), false, "no output path leaks into the wire");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+/**
+ * Real production wiring for the subagents slice: the installed runtime loads
+ * the actual agents owner (`extensions/gentle-agents.ts`, which owns the single
+ * parent-session `TaskStore` plus the parent `AgentRunner`) alongside this
+ * transport extension. `list_subagents` is a read, so the probe stays offline
+ * and observes the truthful owner-loaded empty list — it never starts a child.
+ */
+test("installed Pi serves the owner-loaded empty subagent list without starting a child", () => {
+	const root = isolatedRoot("desktop-rpc-agents-");
+	try {
+		const input = [
+			prompt("prompt-list", desktopRequest("agents-1", "list_subagents")),
+		].map((value) => JSON.stringify(value)).join("\n") + "\n";
+		const child = spawnSync(process.execPath, probeArgs(root, [jobsOwnerExtension, desktopExtension]), {
+			cwd: join(root, "workspace"),
+			env: probeEnvironment(root),
+			input,
+			encoding: "utf8",
+			timeout: 20000,
+		});
+
+		assert.ifError(child.error);
+		assert.equal(child.status, 0, child.stderr);
+		assert.equal(child.stderr, "");
+		const records = child.stdout.trim().split("\n").map((line) => JSON.parse(line));
+		const payloads = records
+			.filter((record) => record.type === "extension_ui_request" && record.widgetKey === DESKTOP_RPC_WIDGET)
+			.map((record) => JSON.parse(record.widgetLines[0]));
+		const byRequest = (id: string) => payloads.find((payload) => payload.requestId === id && payload.kind === "response");
+
+		const list = byRequest("agents-1");
+		assert.equal(list.ok, true, JSON.stringify(list));
+		assert.deepEqual(list.data, { agents: [] }, "no subagents exist, so the list is empty rather than fabricated");
+
+		assert.equal(payloads.some((payload) => payload.kind === "event"), false, "an offline list emits nothing");
+		assert.equal(JSON.stringify(payloads).includes("prompt"), false, "no prompt text leaks into the wire");
+		assert.equal(JSON.stringify(payloads).includes("sessionPath"), false, "no session path leaks into the wire");
+		assert.equal(JSON.stringify(payloads).includes("cwd"), false, "no working directory leaks into the wire");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

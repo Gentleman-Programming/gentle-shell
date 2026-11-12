@@ -25,6 +25,7 @@ import { createJobRegistry, isStandaloneSleep, type JobExecOperations, type JobR
 import { JOB_GLYPH, JOB_NOTICE_TYPE, jobDetails, jobNoticeText, monitorEventsText, monitorStoppedText, registerBackgroundJobTools, type BackgroundJobsChange } from "../lib/background-jobs-tools.ts";
 import { createMonitorController, mergeMonitorBatches, type MonitorNotice } from "../lib/background-monitor.ts";
 import { DESKTOP_JOBS_SERVICE_CHANNEL, DESKTOP_JOBS_SERVICE_SCHEMA, projectDesktopJob, selectDesktopJobs, type DesktopJobsCancelOutcome, type DesktopJobsOwnerRead, type DesktopJobsService } from "../lib/desktop-rpc-jobs.ts";
+import { DESKTOP_AGENTS_SERVICE_CHANNEL, DESKTOP_AGENTS_SERVICE_SCHEMA, accumulateTaskUsage, projectDesktopAgent, selectDesktopAgents, type DesktopAgentsCancelOutcome, type DesktopAgentsOwnerRead, type DesktopAgentsService } from "../lib/desktop-rpc-agents.ts";
 import { JobsView } from "../lib/jobs-view.ts";
 import { JOBS_FINISHED_TTL_MS } from "../lib/jobs-widget.ts";
 import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY } from "../lib/jobs-sidebar-state.ts";
@@ -1286,6 +1287,81 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			/* obsolete trusted context: discovery expires closed */
 		}
 	});
+	// Desktop subagents owner adapter: the agents analogue of the jobs/usage
+	// owner services. The adapter never runs, stops, or spawns a subagent
+	// itself: `cancel` is the exact `runner.cancel` stop path the agents panel
+	// stop uses, `read` projects the single `TaskStore`, and `observe` is
+	// driven by the same actual TaskStore transitions below. There is no second
+	// store, runner, or process manager. `runner` is declared later in this
+	// module; the adapter closes over the binding lazily.
+	const desktopAgentsObservers = new Set<(sessionId: string) => void>();
+	const notifyDesktopAgents = (sessionId: string): void => {
+		if (desktopAgentsObservers.size === 0) return;
+		for (const observer of [...desktopAgentsObservers]) {
+			try { observer(sessionId); } catch { /* an observer never breaks agents */ }
+		}
+	};
+	pi.events.on(DESKTOP_AGENTS_SERVICE_CHANNEL, (payload: unknown) => {
+		if (!payload || typeof payload !== "object") return;
+		const request = payload as Partial<{ context: ExtensionContext; respond(service: DesktopAgentsService): void }>;
+		if (typeof request.respond !== "function" || !request.context) return;
+		const ctx = request.context;
+		try {
+			let disposed = false;
+			const subscriptions = new Set<(sessionId: string) => void>();
+			const sessionId = ctx.sessionManager?.getSessionId?.() ?? "";
+			const read = (): DesktopAgentsOwnerRead => ({
+				sessionId,
+				agents: disposed ? [] : selectDesktopAgents(store.list(sessionId)),
+			});
+			const cancel = (id: string): DesktopAgentsCancelOutcome => {
+				if (disposed) return { kind: "not_found" };
+				const before = store.get(id);
+				// The same ownership check the agents panel stop performs: a foreign
+				// or unknown id is a typed not_found, never a stop of someone else's task.
+				if (!before || before.parentSessionId !== sessionId) return { kind: "not_found" };
+				// The same owner path the agents panel stop uses: runner.cancel. Its
+				// boolean is honored verbatim, and `changed` reflects the store's actual
+				// synchronous transition, not the request. A queued task transitions to
+				// cancelled here; a running task's cancellation is asynchronous (no
+				// synchronous transition), so a repeated in-flight cancel is `changed:
+				// false` and never emits an immediate fabricated event.
+				const requested = runner.cancel(id, "cancelled: stopped from desktop");
+				const after = store.get(id) ?? before;
+				const changed = requested && after.status !== before.status;
+				return { kind: "ok", agent: projectDesktopAgent(after), requested, changed };
+			};
+			request.respond({
+				schema: DESKTOP_AGENTS_SERVICE_SCHEMA,
+				read,
+				cancel,
+				observe: (onChange) => {
+					if (disposed) return () => {};
+					subscriptions.add(onChange);
+					desktopAgentsObservers.add(onChange);
+					return () => {
+						subscriptions.delete(onChange);
+						desktopAgentsObservers.delete(onChange);
+					};
+				},
+				dispose: () => {
+					disposed = true;
+					for (const onChange of subscriptions) desktopAgentsObservers.delete(onChange);
+					subscriptions.clear();
+				},
+			});
+		} catch {
+			/* obsolete trusted context: discovery expires closed */
+		}
+	});
+	// Actual TaskStore transitions (task add and every status change) notify the
+	// Desktop bridge. Restored-from-disk snapshots are silent, matching the
+	// status-change notification contract. The usage breakdown recorded at
+	// completion is a status-unchanged update, so `onFinish` notifies it
+	// explicitly; the bridge coalesces both into one event.
+	const stopAgentsStatusNotifications = store.subscribeStatusChanges((change) => {
+		notifyDesktopAgents(change.sessionId);
+	});
 	// A parent that sleeps while background work runs only burns the turn: each
 	// completion already arrives as a session message (#1903). bash_background
 	// and monitor stay allowed because they are the sanctioned way to wait.
@@ -1935,10 +2011,23 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				}
 			} catch { /* Metrics must never interrupt task finalization. */ }
 			try {
+				// Record the final-assistant token breakdown so the Desktop list can
+				// project per-helper usage; in-flight tasks stay without it. This is a
+				// status-unchanged update, so the agents owner notifies explicitly and
+				// the Desktop bridge coalesces it with the terminal status change.
+				if (observations && observations.responses.length > 0) {
+					store.update(task.id, { usage: accumulateTaskUsage(observations.responses) });
+					notifyDesktopAgents(parentSessionId);
+				}
+			} catch { /* Best-effort usage bookkeeping cannot strand runner waiters. */ }
+			try {
 				ownedTaskIds.delete(task.id);
 				messages.invalidateTask(task.id);
 				requestRender();
-				persist(task);
+				// Persist the post-breakdown record so a restored finished task keeps
+				// its final usage. `task` is the onFinish argument, which predates the
+				// usage update above; the store now carries the merged record.
+				persist(store.get(task.id) ?? task);
 				const yielded = yieldedTaskIds.delete(task.id);
 				if ((task.mode === AGENT_MODE.BACKGROUND && task.status !== TASK_STATUS.CANCELLED) || (yielded && task.status !== TASK_STATUS.CANCELLED && activeSessionId() === task.parentSessionId)) settleCompletion(task);
 			} catch { /* Best-effort completion bookkeeping cannot strand runner waiters. */ }
@@ -3382,6 +3471,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.on("turn_end", (_event, ctx) => rearmSessionTransport(ctx));
 	pi.on("session_shutdown", async () => {
 		shuttingDown = true;
+		stopAgentsStatusNotifications();
 		completions.dropAll();
 		messages.dropAll();
 		// No stale busy may survive the runtime.

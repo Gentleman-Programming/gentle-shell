@@ -126,6 +126,19 @@ export interface TaskThread {
 	limits: ThreadLimits;
 }
 
+/**
+ * Per-helper token breakdown accumulated from the final-assistant observations
+ * the runner delivers at completion. Absent while a task is in flight: the
+ * runner only releases that breakdown once the run settled.
+ */
+export interface TaskUsage {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	reasoning: number;
+}
+
 export interface TaskRecord {
 	/** Retained legacy payload, never interpreted or replayed as launch authority. */
 	sddRemediation?: unknown;
@@ -159,6 +172,8 @@ export interface TaskRecord {
 	toolCalls: number;
 	tokens: number;
 	cost: number;
+	/** Final-assistant token breakdown, recorded by the owner at completion. */
+	usage?: TaskUsage;
 }
 
 export interface TaskSummary {

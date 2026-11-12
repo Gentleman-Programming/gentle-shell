@@ -592,8 +592,10 @@ test("the Desktop transport advertises the jobs methods and event", (t) => {
 		"get_design_canvas",
 		"list_jobs",
 		"cancel_job",
+		"list_subagents",
+		"cancel_subagent",
 	]);
-	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update"]);
+	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "agents_update"]);
 });
 
 test("list_jobs answers jobs_unavailable through the transport without an owner extension", async (t) => {

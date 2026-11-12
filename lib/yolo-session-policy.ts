@@ -5,6 +5,7 @@ import { appendSystemPromptOnce, type AppendableSystemPromptOptions } from "./ap
 import { sameReviewSessionIdentity, resolveCanonicalGitRepositoryIdentity, type ReviewSessionIdentity } from "./review-session-standing-permission.ts";
 import { realpath } from "node:fs/promises";
 import { gentlePiConfigHome } from "./agent-home.ts";
+import { isInteractiveMode } from "./rpc-host.ts";
 import { isPermissionMode, resolvePermissionModePolicy, writePermissionModePolicy, type PermissionMode } from "./permission-mode-policy.ts";
 export type { PermissionMode } from "./permission-mode-policy.ts";
 export const MODE_STATUS_KEY = "gentle:mode";
@@ -163,10 +164,14 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 	// Rendered strings last published for each context; identical repaints are skipped.
 	const published = new WeakMap<ExtensionContext, { yolo: string | undefined; modeText: string }>();
 	const primary = () => env.GENTLE_PI_AGENTS_CHILD !== "1";
+	// The TUI stays the standard interactive host. The Desktop app's own RPC
+	// process is the other one, and only when it sets the interactive-host marker:
+	// headless RPC children keep the marker stripped, so they stay closed exactly
+	// as before. This is the single host admission every mutation below reuses.
 	const interactive = (ctx: ExtensionContext): boolean => {
 		if (!primary() || !ctx.hasUI) return false;
 		const mode = (ctx as ExtensionContext & { mode?: string }).mode;
-		if (mode !== undefined) return mode === "tui";
+		if (mode !== undefined) return isInteractiveMode(mode, env);
 		try { return (ctx.ui.getAllThemes?.().length ?? 0) > 0; } catch { return false; }
 	};
 	const session = (ctx: ExtensionContext): { manager: ModeIdentity["manager"]; id: string } | undefined => {

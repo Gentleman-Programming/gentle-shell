@@ -5,6 +5,11 @@ import {
 	DesktopRpcRouter,
 	type DesktopRpcPublish,
 } from "../lib/desktop-rpc.ts";
+import {
+	DESKTOP_PERMISSION_EVENT,
+	DESKTOP_PERMISSION_METHODS,
+	DesktopPermissionBridge,
+} from "../lib/desktop-rpc-permissions.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 
 function publisher(ctx: ExtensionContext): DesktopRpcPublish {
@@ -18,21 +23,33 @@ function publisher(ctx: ExtensionContext): DesktopRpcPublish {
 }
 
 export default function desktopRpc(pi: ExtensionAPI) {
-	const router = new DesktopRpcRouter();
+	// Permission control always delegates to the existing Gentle AI session owner.
+	const permissions = new DesktopPermissionBridge(pi);
+	const router = new DesktopRpcRouter(
+		["capabilities", "get_snapshot", ...DESKTOP_PERMISSION_METHODS],
+		[DESKTOP_PERMISSION_EVENT],
+		() => ({}),
+		(method, params) => permissions.handle(method, params),
+	);
 
 	pi.on("session_start", (_event, ctx) => {
+		permissions.reset();
 		router.stop();
 		if (!isInteractiveRpcHost(ctx.mode)) return;
 		router.start(publisher(ctx));
 	});
 
-	pi.on("session_shutdown", () => router.stop());
+	pi.on("session_shutdown", () => {
+		permissions.reset();
+		router.stop();
+	});
 
 	pi.registerCommand(DESKTOP_RPC_COMMAND, {
 		description: "Handle a versioned Gentle Desktop RPC request",
 		async handler(args, ctx) {
 			if (!isInteractiveRpcHost(ctx.mode)) return;
-			router.handle(args);
+			permissions.attach(ctx);
+			await router.handle(args);
 		},
 	});
 }

@@ -4,9 +4,21 @@ export const DESKTOP_RPC_WIDGET = "gentle-desktop-rpc";
 
 const MAX_REQUEST_BYTES = 64 * 1024;
 const DEFAULT_METHODS = ["capabilities", "get_snapshot"] as const;
+const INTERNAL_ERROR = { code: "internal_error", message: "Desktop RPC operation failed" } as const;
 
 export type DesktopRpcPublish = (line: string) => void;
 export type DesktopRpcState = Record<string, unknown>;
+
+/** One domain outcome: data for a response plus at most one event published after it. */
+export type DesktopRpcOutcome =
+	| { ok: true; data: DesktopRpcState; event?: { name: string; data: DesktopRpcState } }
+	| { ok: false; error: { code: string; message: string } };
+
+/** Domain methods are supplied by each slice; `undefined` means "not implemented". */
+export type DesktopRpcDomain = (
+	method: string,
+	params: Record<string, unknown>,
+) => DesktopRpcOutcome | undefined | Promise<DesktopRpcOutcome | undefined>;
 
 type DesktopRpcRequest = {
 	schema: typeof DESKTOP_RPC_SCHEMA;
@@ -63,6 +75,10 @@ function decodeRequest(raw: string): DecodedRequest {
 	};
 }
 
+function isThenable(value: unknown): value is Promise<DesktopRpcOutcome | undefined> {
+	return typeof (value as { then?: unknown } | undefined)?.then === "function";
+}
+
 /** Session-scoped protocol state. Domain operations are supplied by each slice. */
 export class DesktopRpcRouter {
 	private sequence = 0;
@@ -70,15 +86,18 @@ export class DesktopRpcRouter {
 	private readonly methods: readonly string[];
 	private readonly events: readonly string[];
 	private readonly state: () => DesktopRpcState;
+	private readonly domain: DesktopRpcDomain | undefined;
 
 	constructor(
 		methods: readonly string[] = DEFAULT_METHODS,
 		events: readonly string[] = [],
 		state: () => DesktopRpcState = () => ({}),
+		domain?: DesktopRpcDomain,
 	) {
 		this.methods = methods;
 		this.events = events;
 		this.state = state;
+		this.domain = domain;
 	}
 
 	start(publish: DesktopRpcPublish): void {
@@ -108,7 +127,12 @@ export class DesktopRpcRouter {
 		this.sequence = sequence;
 	}
 
-	handle(raw: string): void {
+	/**
+	 * Synchronous methods answer before `handle` returns; domain methods may wait
+	 * for an owner. A late outcome for a replaced publisher is dropped, so a
+	 * shutdown or reload never answers into the wrong session.
+	 */
+	handle(raw: string): void | Promise<void> {
 		if (!this.publisher) return;
 		const publish = this.publisher;
 		const decoded = decodeRequest(raw);
@@ -119,6 +143,27 @@ export class DesktopRpcRouter {
 		}
 		if (!this.methods.includes(request.method)) {
 			publish(JSON.stringify(errorResponse(request.requestId, "unsupported_method", "Unsupported Desktop RPC method")));
+			return;
+		}
+		if (request.method !== "capabilities" && request.method !== "get_snapshot") {
+			if (!this.domain) {
+				publish(JSON.stringify(errorResponse(request.requestId, "unsupported_method", "Unsupported Desktop RPC method")));
+				return;
+			}
+			let outcome: DesktopRpcOutcome | undefined | Promise<DesktopRpcOutcome | undefined>;
+			try {
+				outcome = this.domain(request.method, request.params);
+			} catch {
+				this.settle(publish, request.requestId, { ok: false, error: INTERNAL_ERROR });
+				return;
+			}
+			if (isThenable(outcome)) {
+				return Promise.resolve(outcome).then(
+					(value) => this.settle(publish, request.requestId, value),
+					() => this.settle(publish, request.requestId, { ok: false, error: INTERNAL_ERROR }),
+				);
+			}
+			this.settle(publish, request.requestId, outcome);
 			return;
 		}
 
@@ -134,15 +179,29 @@ export class DesktopRpcRouter {
 						events: [...this.events],
 					};
 					break;
-				case "get_snapshot":
+				default:
 					data = this.snapshot();
 					break;
-				default:
-					publish(JSON.stringify(errorResponse(request.requestId, "unsupported_method", "Unsupported Desktop RPC method")));
-					return;
 			}
 		} catch {
-			publish(JSON.stringify(errorResponse(request.requestId, "internal_error", "Desktop RPC operation failed")));
+			publish(JSON.stringify(errorResponse(request.requestId, INTERNAL_ERROR.code, INTERNAL_ERROR.message)));
+			return;
+		}
+		this.settle(publish, request.requestId, { ok: true, data });
+	}
+
+	private settle(
+		publish: DesktopRpcPublish,
+		requestId: string,
+		outcome: DesktopRpcOutcome | undefined,
+	): void {
+		if (this.publisher !== publish) return;
+		if (!outcome) {
+			publish(JSON.stringify(errorResponse(requestId, "unsupported_method", "Unsupported Desktop RPC method")));
+			return;
+		}
+		if (outcome.ok === false) {
+			publish(JSON.stringify(errorResponse(requestId, outcome.error.code, outcome.error.message)));
 			return;
 		}
 		let line: string;
@@ -150,14 +209,17 @@ export class DesktopRpcRouter {
 			line = JSON.stringify({
 				schema: DESKTOP_RPC_SCHEMA,
 				kind: "response",
-				requestId: request.requestId,
+				requestId,
 				ok: true,
-				data,
+				data: outcome.data,
 			});
 		} catch {
-			publish(JSON.stringify(errorResponse(request.requestId, "internal_error", "Desktop RPC operation failed")));
+			publish(JSON.stringify(errorResponse(requestId, INTERNAL_ERROR.code, INTERNAL_ERROR.message)));
 			return;
 		}
 		publish(line);
+		// A change event never precedes its own response; emit re-checks the publisher,
+		// which is the same one captured above.
+		if (outcome.event) this.emit(outcome.event.name, outcome.event.data);
 	}
 }

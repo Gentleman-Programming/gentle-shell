@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
-import { DESKTOP_RPC_SCHEMA, DESKTOP_RPC_WIDGET, DesktopRpcRouter } from "../lib/desktop-rpc.ts";
+import { DESKTOP_RPC_SCHEMA, DESKTOP_RPC_WIDGET, DesktopRpcRouter, type DesktopRpcDomain, type DesktopRpcOutcome } from "../lib/desktop-rpc.ts";
 import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
 
 type WidgetCall = { key: string; lines: string[] };
@@ -66,8 +66,8 @@ test("capabilities and snapshots use correlated structured responses", async (t)
 			schema: DESKTOP_RPC_SCHEMA,
 			command: "gentle:desktop",
 			widget: DESKTOP_RPC_WIDGET,
-			methods: ["capabilities", "get_snapshot"],
-			events: [],
+			methods: ["capabilities", "get_snapshot", "get_permission_mode", "set_permission_mode"],
+			events: ["permission_mode_changed"],
 		},
 	});
 
@@ -165,6 +165,45 @@ test("state failures are internal errors and publisher failures are never retrie
 	assert.equal(calls, 1);
 	assert.throws(() => broken.emit("jobs_update", {}), /closed/);
 	assert.equal(broken.snapshot().sequence, 0);
+});
+
+test("async domain outcomes answer before their single event and drop superseded sessions", async () => {
+	const lines: string[] = [];
+	let settle: (value: DesktopRpcOutcome) => void = () => {};
+	const domain: DesktopRpcDomain = () => new Promise((resolve) => { settle = resolve; });
+	const methods = ["capabilities", "get_snapshot", "set_permission_mode"];
+	const router = new DesktopRpcRouter(methods, ["permission_mode_changed"], undefined, domain);
+	router.start((line) => lines.push(line));
+	const pending = router.handle(JSON.stringify(request("set_permission_mode")));
+	assert.equal(lines.length, 0, "nothing is published before the owner answers");
+	settle({ ok: true, data: { mode: "auto" }, event: { name: "permission_mode_changed", data: { mode: "auto" } } });
+	await pending;
+	assert.deepEqual(lines.map((line) => JSON.parse(line).kind), ["response", "event"]);
+	assert.equal(JSON.parse(lines[0]!).requestId, "request-set_permission_mode");
+	assert.deepEqual(JSON.parse(lines[1]!).data, { mode: "auto" });
+
+	const slowDomain: DesktopRpcDomain = async () => {
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		return { ok: true, data: {}, event: { name: "permission_mode_changed", data: {} } };
+	};
+	const stale = new DesktopRpcRouter(methods, ["permission_mode_changed"], undefined, slowDomain);
+	const staleLines: string[] = [];
+	stale.start((line) => staleLines.push(line));
+	const replacing = stale.handle(JSON.stringify(request("set_permission_mode")));
+	stale.start((line) => staleLines.push(line));
+	await replacing;
+	assert.deepEqual(staleLines, [], "a superseded publisher never answers or emits");
+
+	const rejectingDomain: DesktopRpcDomain = () => Promise.reject(new Error("private owner detail"));
+	const failing = new DesktopRpcRouter(methods, ["permission_mode_changed"], undefined, rejectingDomain);
+	const failedLines: string[] = [];
+	failing.start((line) => failedLines.push(line));
+	await failing.handle(JSON.stringify(request("set_permission_mode")));
+	assert.deepEqual(JSON.parse(failedLines[0]!).error, {
+		code: "internal_error",
+		message: "Desktop RPC operation failed",
+	});
+	assert.equal(failedLines.some((line) => line.includes("private owner detail")), false);
 });
 
 test("session lifecycle replaces the publisher and shutdown stops all responses", async (t) => {

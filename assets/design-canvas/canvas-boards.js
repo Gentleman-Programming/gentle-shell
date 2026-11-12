@@ -257,7 +257,11 @@ export function init(ctx) {
 		placeBoards();
 		if (state.focus) win.requestAnimationFrame(actions.centerFocus);
 		const warnings = Array.isArray(manifest.warnings) ? manifest.warnings.filter((warning) => typeof warning === "string") : [];
-		setStatus(warnings.length > 0 ? `design.json: ${warnings.join("; ")}` : state.boards.length === 0 ? "This design has no artboards yet." : "", warnings.length > 0);
+		// A layout error that still holds (a failed save while the layout is unsaved, a failed read) stays first.
+		const layoutError = actions.layoutError();
+		const notice = warnings.length > 0 ? `design.json: ${warnings.join("; ")}` : "";
+		if (layoutError || notice) setStatus([layoutError, notice].filter(Boolean).join("; "), true);
+		else setStatus(state.boards.length === 0 ? "This design has no artboards yet." : "", false);
 		if (!keepView) win.requestAnimationFrame(actions.fit);
 		await actions.loadHandoffs();
 		await actions.loadComments();

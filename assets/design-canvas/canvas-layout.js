@@ -13,6 +13,7 @@ const ARRANGEMENTS = ["row", "column", "grid"];
 // Every string this module shows, in English until the i18n PR keys them.
 const TEXT = Object.freeze({
 	saveFailed: (slug, reason) => `The layout of ${slug} could not be saved: ${reason}`,
+	readFailed: (slug, reason) => `design/${slug}/layout.json could not be read: ${reason}`,
 });
 
 export function init(ctx) {
@@ -39,6 +40,10 @@ export function init(ctx) {
 	// layout.json change reads on their way (onLayoutChange): a save that makes one stale and then fails reads the
 	// file again, so another page's change is never lost.
 	let changeReads = 0;
+	// The layout errors the status line keeps showing for a design ({ slug, text }): the last save that failed, while
+	// the layout it left is still unsaved, and the last read of layout.json that failed, until one answers or a save succeeds.
+	let saveError = null;
+	let readError = null;
 
 	/** A board's key in layout.json: its artboard file, or the system board's own key. */
 	function layoutKey(board) {
@@ -67,15 +72,41 @@ export function init(ctx) {
 	}
 
 	/**
-	 * The saved layout of design `slug`: null when it has none or holds none this page can use; undefined when the read
-	 * itself failed (an error reply, no connection), which says nothing about the file (the canvas never fails on it).
+	 * The saved layout of design `slug`, as { layout, error }: layout null when it has none or holds none this page can
+	 * use; undefined when the read itself failed (the server cannot read or use layout.json, an error reply, no
+	 * connection), with `error` saying why. A failed read says nothing about the boards: the canvas never fails on it.
 	 */
 	async function fetchLayout(slug) {
 		try {
 			const data = await getJson(`api/designs/${encodeURIComponent(slug)}/layout`);
-			return readLayout(data && data.layout);
-		} catch {
-			return undefined;
+			return { layout: readLayout(data && data.layout), error: "" };
+		} catch (error) {
+			return { layout: undefined, error: (error && error.message) || "error" };
+		}
+	}
+
+	/** The layout error the status line shows for the design shown: a failed save while its layout is unsaved, then a failed read. */
+	function layoutError() {
+		const slug = state.slug;
+		const shown = state.layout && state.layout.slug === slug ? state.layout : null;
+		if (saveError && saveError.slug === slug && shown && shown.unsaved) return saveError.text;
+		if (readError && readError.slug === slug) return readError.text;
+		return "";
+	}
+
+	/** A read of design `slug`'s layout answered (`error` empty) or failed: its read error is kept, or cleared from the status line. */
+	function noteRead(slug, error, show) {
+		if (error) {
+			readError = { slug, text: TEXT.readFailed(slug, error) };
+			if (show) setStatus(readError.text, true);
+			return;
+		}
+		if (!readError || readError.slug !== slug) return;
+		const text = readError.text;
+		readError = null;
+		if (show && els.status.classList.contains("gd-error") && els.status.textContent === text) {
+			const rest = layoutError();
+			setStatus(rest, Boolean(rest));
 		}
 	}
 
@@ -89,20 +120,21 @@ export function init(ctx) {
 		store.setLayout({ layout: { slug, view: views, arrangement: layout ? layout.arrangement : "row", positions: layout ? layout.positions : {}, saved: JSON.stringify(layout) } });
 	}
 
-	/** loadManifest's read of design `slug`'s layout: { layout, read }, numbered like onLayoutChange's reads. */
+	/** loadManifest's read of design `slug`'s layout: { layout, error, read }, numbered like onLayoutChange's reads. */
 	async function readLayoutNow(slug) {
 		const read = ++reads;
-		return { layout: await fetchLayout(slug), read };
+		return { ...(await fetchLayout(slug)), read };
 	}
 
 	/**
 	 * loadManifest's layout: taken unless this page already shows a layout of the design that is newer than the read
 	 * (a save or a read went out after it, or a save is still in flight, which is newer than the file), or the file
 	 * still holds what this page knew (the layout shown, already placed, or one whose save failed). A read that failed
-	 * keeps the layout shown; with none shown the boards sit in a row.
+	 * keeps the layout shown; with none shown the boards sit in a row. loadManifest then shows layoutError's text.
 	 */
-	function takeLayout(slug, { layout, read }) {
+	function takeLayout(slug, { layout, read, error }) {
 		const shown = state.layout && state.layout.slug === slug ? state.layout : null;
+		noteRead(slug, error, false);
 		if (layout === undefined) {
 			if (!shown) useLayout(slug, null);
 			return;
@@ -310,9 +342,18 @@ export function init(ctx) {
 			if (state.layout && state.layout.view === layout.view) {
 				store.setLayout({ layout: reply.ok ? { ...state.layout, saved: JSON.stringify(body), unsaved: false } : { ...state.layout, unsaved: true } });
 			}
-			if (!reply.ok && slug === state.slug) setStatus(TEXT.saveFailed(slug, reply.body.reason || reply.body.error || "error"), true);
-			// A retry that succeeds clears this design's save error, never another status.
-			else if (reply.ok && els.status.classList.contains("gd-error") && els.status.textContent.startsWith(TEXT.saveFailed(slug, ""))) setStatus("", false);
+			if (!reply.ok) {
+				// Kept while the layout is unsaved, so a design.json reload shows it again (loadManifest).
+				saveError = { slug, text: TEXT.saveFailed(slug, reply.body.reason || reply.body.error || "error") };
+				if (slug === state.slug) setStatus(saveError.text, true);
+			} else {
+				if (saveError && saveError.slug === slug) saveError = null;
+				// layout.json now holds this save: an earlier failed read of it is over too.
+				if (readError && readError.slug === slug) readError = null;
+				// A retry that succeeds clears this design's layout error, never another status.
+				const text = els.status.textContent;
+				if (els.status.classList.contains("gd-error") && (text.startsWith(TEXT.saveFailed(slug, "")) || text.startsWith(TEXT.readFailed(slug, "")))) setStatus("", false);
+			}
 			readAgain();
 		}).catch(() => {});
 	}
@@ -338,10 +379,12 @@ export function init(ctx) {
 		}
 		const read = ++reads;
 		changeReads += 1;
-		const layout = await fetchLayout(slug).finally(() => {
+		const { layout, error } = await fetchLayout(slug).finally(() => {
 			changeReads -= 1;
 		});
-		if (read !== reads || slug !== state.slug || layout === undefined) return;
+		if (read !== reads || slug !== state.slug) return;
+		noteRead(slug, error, true);
+		if (layout === undefined) return;
 		if (moving || !state.manifest || state.manifest.slug !== slug) {
 			readPending = true;
 			return;
@@ -367,10 +410,14 @@ export function init(ctx) {
 		if (state.focus) actions.centerFocus();
 	}
 
-	/** The Row / Column / Grid buttons: the current arrangement pressed (none for a hand-made layout), off without a design, inside an artboard and in Compare. */
+	/**
+	 * The Row / Column / Grid buttons: the current arrangement pressed (none for a hand-made layout), off without a
+	 * design or with no board shown (an empty notice), inside an artboard and in Compare.
+	 */
 	function renderArrange() {
 		const arrangement = state.layout ? state.layout.arrangement : "row";
-		const off = Boolean(state.focus) || Boolean(state.compare) || !state.manifest;
+		const shown = actions.allBoards().some((board) => board.wrapper.parentElement === els.world);
+		const off = Boolean(state.focus) || Boolean(state.compare) || !state.manifest || !shown;
 		for (const kind of ARRANGEMENTS) {
 			els.arrange[kind].setAttribute("aria-pressed", String(arrangement === kind));
 			els.arrange[kind].disabled = off;
@@ -407,7 +454,10 @@ export function init(ctx) {
 	// Space held pans from anywhere, over an artboard too. Not while typing or from a button or a link (Space is
 	// theirs), with the comment box, a menu or the shortcuts list open, in Compare or while an artboard is in use.
 	// A shield opens its artboard on Space first (its own keydown), so this one then sees focus mode and stays out.
-	const spaceTarget = (target) => target === doc.body || target === doc.documentElement || target === els.viewport || Boolean(target && typeof target.closest === "function" && target.closest(".gd-shield"));
+	// Row / Column / Grid keep the focus a click gave them: there Space pans too, unless the keyboard reached the
+	// button (it shows its focus ring, :focus-visible), where Space presses it as on any button.
+	const pointerFocusedArrange = (target) => ARRANGEMENTS.some((kind) => els.arrange[kind] === target) && !target.matches(":focus-visible");
+	const spaceTarget = (target) => target === doc.body || target === doc.documentElement || target === els.viewport || Boolean(target && typeof target.closest === "function" && target.closest(".gd-shield")) || Boolean(target && pointerFocusedArrange(target));
 	function releaseSpace() {
 		store.setSpace(false);
 		els.viewport.classList.remove("gd-space-pan");
@@ -420,12 +470,15 @@ export function init(ctx) {
 		els.viewport.classList.add("gd-space-pan");
 	});
 	doc.addEventListener("keyup", (event) => {
-		if (event.key === " " && state.space) releaseSpace();
+		if (event.key !== " " || !state.space) return;
+		// The release of a Space that panned presses no button (a browser activates a button on Space's keyup).
+		event.preventDefault();
+		releaseSpace();
 	});
 	// The release never comes once the window loses focus.
 	win.addEventListener("blur", () => {
 		if (state.space) releaseSpace();
 	});
 
-	return { layoutSize, readLayoutNow, takeLayout, clearLayout, sizeWorld, layoutBoards, boardsResized, beginMove, moveBy, endMove, onLayoutChange, renderArrange, selectBoard };
+	return { layoutSize, readLayoutNow, takeLayout, layoutError, clearLayout, sizeWorld, layoutBoards, boardsResized, beginMove, moveBy, endMove, onLayoutChange, renderArrange, selectBoard };
 }

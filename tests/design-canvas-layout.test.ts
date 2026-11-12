@@ -976,3 +976,133 @@ test("a failed design load that answers after the system-only view showed leaves
 	assert.equal(canvas.world.children.length, 1, "it still shows");
 	assert.ok(!canvas.document.getElementById("gd-status").classes.has("gd-error"), "and no design error is reported");
 });
+
+// ---- egdev6's review of #3146: the layout errors in the status line, Space on an arrangement button, nothing to arrange
+
+/** The reply of the canvas server's GET layout route for a layout.json it cannot read or use (canvas-layout S17). */
+const UNREADABLE = { __http: 422, error: "unreadable-layout", reason: "not valid JSON" };
+const READ_FAILED = "design/alpha/layout.json could not be read: not valid JSON";
+
+test("a layout.json the server cannot read keeps the layout shown, says so in the status line and saves nothing, until a read that answers", async () => {
+	const canvas = await loadLayout(NO_LAYOUT);
+	const status = canvas.document.getElementById("gd-status");
+	canvas.replies[LAYOUT_URL] = { ok: true };
+	await dragFrom(boardTitle(canvas.world.children[1]), [500, 100], [[540, 100]]);
+	assert.equal(layoutPosts(canvas).length, 1, "the free layout is saved");
+	const free = [["0px", "0px"], ["520px", "0px"]];
+	canvas.replies[LAYOUT_URL] = UNREADABLE;
+	await canvas.serverEvent("change", LAYOUT_CHANGE);
+	assert.deepEqual(canvas.world.children.map(placed), free, "a layout.json change that cannot be read is no row");
+	assert.deepEqual(pressedArrangements(canvas), ["false", "false", "false"]);
+	assert.equal(status.textContent, READ_FAILED);
+	assert.ok(status.classes.has("gd-error"));
+	await canvas.serverEvent("change", DESIGN_CHANGE);
+	await settle();
+	assert.deepEqual(canvas.world.children.map(placed), free, "nor is a design.json reload's read of it");
+	assert.equal(status.textContent, READ_FAILED, "and the reload still says so");
+	assert.ok(status.classes.has("gd-error"));
+	assert.equal(layoutPosts(canvas).length, 1, "nothing is saved over the file");
+	canvas.replies[LAYOUT_URL] = { layout: { arrangement: "column", positions: {} } };
+	await canvas.serverEvent("change", LAYOUT_CHANGE);
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["0px", "380px"]], "a read that answers shows the file again");
+	assert.equal(status.textContent, "", "and clears the read error");
+	assert.equal(status.classes.has("gd-error"), false);
+	assert.equal(layoutPosts(canvas).length, 1);
+});
+
+test("a design opened while its layout.json cannot be read sits in a row, says so, and saves nothing", async () => {
+	const canvas = await loadLayout({ [LAYOUT_URL]: UNREADABLE });
+	const status = canvas.document.getElementById("gd-status");
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["480px", "0px"]]);
+	assert.equal(status.textContent, READ_FAILED);
+	assert.ok(status.classes.has("gd-error"));
+	assert.deepEqual(canvas.posts, []);
+});
+
+test("a failed save stays in the status line across a design.json reload while the layout is unsaved; a later save clears it", async () => {
+	const canvas = await loadLayout(NO_LAYOUT);
+	const status = canvas.document.getElementById("gd-status");
+	canvas.replies[LAYOUT_URL] = { __http: 400, error: "invalid-layout", reason: "disk full" };
+	await dragFrom(boardTitle(canvas.world.children[1]), [500, 100], [[540, 100]]);
+	assert.equal(status.textContent, "The layout of alpha could not be saved: disk full");
+	// The file still holds no layout: the reload keeps the unsaved move, and its error.
+	canvas.replies[LAYOUT_URL] = { layout: null };
+	await canvas.serverEvent("change", DESIGN_CHANGE);
+	await settle();
+	assert.deepEqual(placed(canvas.world.children[1]), ["520px", "0px"], "the unsaved move stays");
+	assert.equal(status.textContent, "The layout of alpha could not be saved: disk full", "the reload does not hide the failed save");
+	assert.ok(status.classes.has("gd-error"));
+	canvas.replies[LAYOUT_URL] = { ok: true };
+	await dragFrom(boardTitle(canvas.world.children[1]), [540, 100], [[560, 100]]);
+	assert.equal(status.textContent, "", "a save that succeeds clears it");
+	assert.equal(status.classes.has("gd-error"), false);
+	canvas.replies[LAYOUT_URL] = { layout: layoutPosts(canvas).at(-1)!.body };
+	await canvas.serverEvent("change", DESIGN_CHANGE);
+	await settle();
+	assert.equal(status.textContent, "", "and a reload after it shows no error");
+});
+
+test("Space held on an arrangement button just clicked pans instead of pressing it again; reached by the keyboard it keeps Space", async () => {
+	const canvas = await loadLayout(NO_LAYOUT);
+	canvas.replies[LAYOUT_URL] = { ok: true };
+	const grid = canvas.document.getElementById("gd-arrange-grid");
+	grid.focus();
+	grid.dispatch("click");
+	await settle();
+	assert.equal(layoutPosts(canvas).length, 1, "Grid is saved");
+	const [x, y] = translation(canvas);
+	assert.equal(keyAt(canvas, "keydown", " ", grid).defaultPrevented, true, "Space does not press the button");
+	assert.ok(canvas.viewport.classes.has("gd-space-pan"));
+	await dragFrom(boardTitle(canvas.world.children[1]), [500, 60], [[540, 80]]);
+	assert.deepEqual(translation(canvas), [x + 40, y + 20], "the drag pans");
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["480px", "0px"]], "and moves no artboard");
+	assert.equal(keyAt(canvas, "keyup", " ", grid).defaultPrevented, true, "nor does its release");
+	assert.ok(!canvas.viewport.classes.has("gd-space-pan"));
+	assert.equal(layoutPosts(canvas).length, 1, "nothing more is saved");
+	// A button reached with Tab shows its focus ring (:focus-visible): Space presses it, as on any button.
+	grid.matches = (selector: string) => selector === ":focus-visible";
+	assert.equal(keyAt(canvas, "keydown", " ", grid).defaultPrevented, false);
+	assert.ok(!canvas.viewport.classes.has("gd-space-pan"));
+});
+
+test("the arrangement buttons are off when no boards show: a design without artboards, or one whose design.json cannot be read", async () => {
+	const off = (canvas: Canvas) => ARRANGE_IDS.map((id) => canvas.document.getElementById(id).disabled);
+	const empty = await loadLayout({ ...NO_LAYOUT, "/t/api/designs/alpha": { slug: "alpha", title: "Alpha", brief: "", artboards: [] } });
+	assert.deepEqual(off(empty), [true, true, true], "a design without artboards");
+	const canvas = await loadLayout(NO_LAYOUT);
+	assert.deepEqual(off(canvas), [false, false, false]);
+	const manifest = canvas.replies["/t/api/designs/alpha"];
+	canvas.replies["/t/api/designs/alpha"] = { __http: 422, error: "invalid-manifest", reason: "broken" };
+	await canvas.serverEvent("change", DESIGN_CHANGE);
+	await settle();
+	assert.equal(canvas.world.children.length, 0, "no boards show");
+	assert.deepEqual(off(canvas), [true, true, true], "a design.json that cannot be read");
+	canvas.replies["/t/api/designs/alpha"] = manifest;
+	await canvas.serverEvent("change", DESIGN_CHANGE);
+	await settle();
+	assert.deepEqual(off(canvas), [false, false, false], "they come back with the boards");
+});
+
+test("a design.json reload still shows the manifest's warnings and the no-artboards notice; a standing save error comes first", async () => {
+	const manifest = (artboards: unknown[], warnings?: string[]) => ({ slug: "alpha", title: "Alpha", brief: "", artboards, ...(warnings ? { warnings } : {}) });
+	const two = [{ file: "01-a.html", title: "First", tradeoff: "", width: 400, height: 300 }, { file: "02-b.html", title: "Second", tradeoff: "", width: 400, height: 300 }];
+	const canvas = await loadLayout({ ...SYSTEM_REPLY, ...NO_LAYOUT, "/t/api/designs/alpha": manifest(two, ["feature was ignored", "one more"]) });
+	const status = canvas.document.getElementById("gd-status");
+	assert.equal(status.textContent, "design.json: feature was ignored; one more");
+	assert.ok(status.classes.has("gd-error"));
+	canvas.replies["/t/api/designs/alpha"] = manifest([]);
+	await canvas.serverEvent("change", DESIGN_CHANGE);
+	await settle();
+	assert.equal(status.textContent, "This design has no artboards yet.", "the system board shows alone");
+	assert.equal(status.classes.has("gd-error"), false);
+	canvas.replies["/t/api/designs/alpha"] = manifest(two, ["feature was ignored"]);
+	await canvas.serverEvent("change", DESIGN_CHANGE);
+	await settle();
+	canvas.replies[LAYOUT_URL] = { __http: 400, error: "invalid-layout", reason: "disk full" };
+	await dragFrom(boardTitle(canvas.world.children[2]), [1400, 100], [[1440, 100]]);
+	canvas.replies[LAYOUT_URL] = { layout: null };
+	await canvas.serverEvent("change", DESIGN_CHANGE);
+	await settle();
+	assert.equal(status.textContent, "The layout of alpha could not be saved: disk full; design.json: feature was ignored");
+	assert.ok(status.classes.has("gd-error"));
+});

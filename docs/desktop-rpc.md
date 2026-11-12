@@ -62,12 +62,12 @@ Returns the currently implemented contract; clients must not infer support from 
   "schema": "gentle-shell.desktop-rpc/v1",
   "command": "gentle:desktop",
   "widget": "gentle-desktop-rpc",
-  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage"],
-  "events": ["config_changed", "permission_mode_changed", "rate_limit"]
+  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas"],
+  "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas"]
 }
 ```
 
-The permission methods, the bounded config read and write, the subscription-usage read and refresh, and the `config_changed`, `permission_mode_changed`, and `rate_limit` events are advertised because this extension wires them; a later slice adds its own methods and events here. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), and [Usage limits](#usage-limits).
+The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, and the `config_changed`, `permission_mode_changed`, `rate_limit`, and `design_canvas` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), and [Design limits](#design-limits).
 
 ### `get_snapshot`
 
@@ -623,6 +623,67 @@ A refreshable provider that is **outside the current session scope** is also a t
 
 When a refresh actually changes a snapshot, the response is followed by exactly one `rate_limit` event carrying every changed snapshot (`source: "refresh"`). A no-op, unsupported, throttled, or failed refresh changes nothing and emits no event. The response line always precedes the event line.
 
+### `get_design_canvas`
+
+Reads the live design canvas state the existing design owner already owns (the single `DesignCanvas` from `createDesignCanvas`, plus `listDesigns`). Params are optional: an empty object omits the tokenized URL, and `{ "includeUrl": true }` explicitly requests it.
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-55", "method": "get_design_canvas", "params": {} }
+```
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-56", "method": "get_design_canvas", "params": { "includeUrl": true } }
+```
+
+| Param | Required | Type | Meaning |
+| --- | --- | --- | --- |
+| `includeUrl` | no | boolean | Include the tokenized canvas URL. Only honored for an interactive RPC host (the trust gate below); omitted by default. |
+
+Only the `includeUrl` key is accepted; any other key, or a non-boolean `includeUrl`, is `invalid_request`. A read has no side effect: it never starts a canvas server, never opens a browser, and never emits an event.
+
+Success:
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-56",
+  "ok": true,
+  "data": {
+    "running": true,
+    "slug": "login",
+    "connectedClients": 1,
+    "designs": [
+      { "slug": "login", "title": "Login screen", "mtime": 1788600000000 },
+      { "slug": "pricing", "title": "Pricing page", "mtime": 1788500000000 }
+    ],
+    "url": "http://127.0.0.1:4100/<token>/d/login/"
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `running` | Whether the session's canvas server is actually running, as the owner reports it. |
+| `slug` | The slug the canvas last showed, or `null` for the system-only root. `null` is not "stopped": `running` answers that. |
+| `connectedClients` | How many canvas pages the running server has connected (live-reload streams). `0` when stopped. |
+| `designs` | The designs under `<cwd>/design` the owner's `listDesigns` reports (`slug`, `title`, `mtime`), most recent first. Empty when none exist. |
+| `url` | Present only after `includeUrl: true` **and** the interactive-host trust check. The tokenized canvas URL is a capability; it is never a default field and never a bare token. |
+
+When the design owner is absent (the extension that owns the canvas is not loaded), the answer is `design_unavailable` — never a fabricated `running: false`:
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-57",
+  "ok": false,
+  "error": { "code": "design_unavailable", "message": "Design canvas owner unavailable for this session" }
+}
+```
+
+A request with `includeUrl: true` from a host that is not an interactive RPC host simply gets the same state **without** `url`; the capability is omitted, not rejected. There is no `open`/`stop` method on this channel — those stay the `gentle_design` tool's actions, and this slice only observes their results.
+
 ## Responses
 
 Success:
@@ -652,7 +713,7 @@ Failure:
 }
 ```
 
-Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invalid_data`, `revision_conflict`, `write_failed`, `unsupported_method`, `permission_unavailable`, `permission_denied`, `config_unavailable`, `usage_unavailable`, and `internal_error`. A request that cannot supply a valid correlation ID uses `requestId: null`. State/provider failures use the generic `internal_error` message rather than exposing raw paths, credentials, or provider errors. Transport failures from `setWidget` are never retried as a second response.
+Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invalid_data`, `revision_conflict`, `write_failed`, `unsupported_method`, `permission_unavailable`, `permission_denied`, `config_unavailable`, `usage_unavailable`, `design_unavailable`, and `internal_error`. A request that cannot supply a valid correlation ID uses `requestId: null`. State/provider failures use the generic `internal_error` message rather than exposing raw paths, credentials, or provider errors. Transport failures from `setWidget` are never retried as a second response.
 
 | Code | Meaning |
 | --- | --- |
@@ -667,6 +728,7 @@ Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invali
 | `permission_denied` | The owner refused the change (for example a non-interactive or replaced session). State unchanged. |
 | `config_unavailable` | No Desktop command has bound a session context, that context has no working directory, or a pin write was requested outside a resolvable Git worktree. |
 | `usage_unavailable` | The usage owner did not answer for this session (extension not loaded, or the session changed). State unchanged. |
+| `design_unavailable` | The design canvas owner did not answer for this session (the owning extension is not loaded, or the session changed). State unchanged. |
 | `internal_error` | Unexpected failure; message stays generic. |
 
 ## Events
@@ -768,6 +830,32 @@ Carries structured subscription-usage snapshots to subscribed Desktop consumers.
 
 Each snapshot entry is the same safe projection as `get_subscription_usage` (`provider`, `status`, `fetchedAt`, `plan` when public, `limits`), so a client that missed a response can reconcile from the event alone. `seq` advances exactly once per delivered event, through the same router sequencer as the other events.
 
+### `design_canvas`
+
+Carries the sanitized post-transition state of the session's design canvas whenever the existing design owner actually opens, refreshes, or stops it. It is emitted for **all** canvas transitions, whether they were initiated by the agent (`gentle_design` tool, `/gentle:design`) or anything else — the bridge subscribes to the owner eagerly, so agent-driven canvas work reaches a connected Desktop app even before any `get_design_canvas` request. There is no parsing of `Design canvas:` text anywhere: the owner emits the structured transition directly, and no event is emitted for a no-op or failed action (a refused slug, a browser that could not open, a server that could not start, or a `stop` with nothing running).
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "event",
+  "seq": 2,
+  "event": "design_canvas",
+  "data": {
+    "transition": "open",
+    "running": true,
+    "slug": "login",
+    "connectedClients": 0,
+    "url": "http://127.0.0.1:4100/<token>/d/login/"
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `transition` | One of `open` (a canvas was shown, browser tab opened), `refresh` (an already-connected page was told to reload), or `stop` (a running server was closed). |
+| `running`, `slug`, `connectedClients` | The sanitized post-transition state, exactly as `get_design_canvas` reports it. A `stop` transition carries `running: false`, `slug: null`, `connectedClients: 0`. |
+| `url` | Present only for a trusted interactive Desktop client (the same trust gate as `get_design_canvas` `includeUrl`). Sanitized by default — the URL and its embedded token are never a default event field and never a bare token. A `stop` transition has no URL. |
+
 ## Configuration limits
 
 - **One reader and one writer per store.** Each `get_config` answer and each `set_config` write comes from the module that already owns that file (`agent-profiles.ts`, `model-routing-authority.ts`, `model-fallback-store.ts`, `agents-config.ts`, `agent-profile-pin.ts`, `agent-assets.ts`). There is no second store, no cached copy, no parallel parser, no shadow precedence, and no re-implemented invariant: the merge rules are the owner's own (`readSavedModelConfig`, `parseAgentsConfig`, `evaluateProfilePin`) and the writes are the owner's validated atomic writers (`writeProfilesFileSync`, `writeFallbacksFile`, `writeProfilePinSync`).
@@ -804,6 +892,15 @@ Each snapshot entry is the same safe projection as `get_subscription_usage` (`pr
 - **Session-scoped, disposed on replacement.** The owner adapter is discovered per session and disposed on session replacement or shutdown; a late refresh or header recording for a replaced session is dropped, and the router's own publisher guard drops any superseded response. A refresh response always precedes its `rate_limit` event, and a no-op or failed refresh emits no event.
 - **No agent tool.** The usage surface is reachable only through `/gentle:desktop` over the interactive RPC channel, exactly like the permission and config slices.
 
+## Design limits
+
+- **One owner, no second canvas.** `get_design_canvas` and the `design_canvas` event reach the existing design owner — the single `DesignCanvas` returned by `createDesignCanvas`, plus `listDesigns` — through a defensive, versioned owner-service adapter, the design analogue of the usage and YOLO seams. There is no second server, port, canvas store, browser opener, or watcher.
+- **Read + observe only.** This slice has exactly one method, `get_design_canvas`, and one event, `design_canvas`. It does not implement `open` or `stop`: those remain the `gentle_design` tool's actions (`/gentle:design open|stop`), and this slice only reports the transitions those actions actually cause.
+- **Tokenized URL is a capability.** The canvas URL contains the per-server token. It is omitted by default, is included on a read only for an explicit `{ "includeUrl": true }` **after** the interactive-host trust check, and is included in an event only for a trusted interactive Desktop client. The raw token is never a separate field and never appears in an error or log: a throwing owner answers `design_unavailable` with a fixed message.
+- **No-op and failure mean no event.** A refused slug, a browser that could not open, a server that could not start, or a `stop` with nothing running emits nothing. Only actual `open`/`refresh`/`stop` transitions emit.
+- **Agent work reaches the app.** The bridge subscribes to the owner eagerly at session start, so a canvas opened or stopped by the agent (or by any other path through the owner) still arrives as a `design_canvas` event. Session replacement or shutdown disconnects the observer and drops late outcomes, and the router's own publisher guard drops superseded events.
+- **Truthful absence.** When the owning extension is not loaded, `get_design_canvas` answers `design_unavailable` rather than inventing `running: false`. `slug: null` means the system-only root, not a stopped canvas — `running` answers that.
+
 ## Verification
 
 ```sh
@@ -812,10 +909,13 @@ node --experimental-strip-types --test \
   tests/desktop-rpc-permissions.test.ts \
   tests/desktop-rpc-config.test.ts \
   tests/desktop-rpc-usage.test.ts \
+  tests/desktop-rpc-design.test.ts \
   tests/maintainer/desktop-rpc.maintest.ts
 ```
 
 The permission tests register the real `registerYoloSessionPolicy` owner with an isolated temporary config home and a stub identity resolver; they never read or write the user's own permission store.
+
+The design tests use only injected fake canvas/server/browser factories and a fake owner service: they cover stopped/running/open/refresh/stop state, slug and connected-client counts, default URL omission, explicit `includeUrl` inclusion only after trust, untrusted omission, malformed adapters and params, owner absence (`design_unavailable`, never a fabricated `running: false`), failed and no-op actions emitting nothing, external (agent-driven) transition events, late-reset disposal and stale-outcome drops, and raw-error/token redaction. One test runs the real `gentleDesign` owner seam in-process to prove the stopped canvas state and the design list arrive from the single owner adapter.
 
 The usage tests use a fake owner service and a fake fetch/modelRegistry only: they cover the five statuses, the safe projection and plan-only-when-public rule, provider filters, unknown-provider `unavailable`, invalid params, refresh delegation with the provider filter forwarded, the response-before-event order over the router, the Anthropic typed `unsupported` no-op, the out-of-scope `out_of_scope` no-op (including the real owner never reaching the fetcher), content-based change detection (a same-millisecond payload change emits once, byte-equivalent data stays a no-op), late-discovery disposal after a reset, no duplicate event on no-op/failed refresh, raw-error and secret redaction, header-driven `rate_limit` events, stale-session disconnects, and the versioned adapter discovery. One test runs the real `gentleShell` owner seam to prove Claude's 5h/7d windows arrive as structured snapshots from response headers, never header text.
 
@@ -827,6 +927,7 @@ The maintainer probes run the installed Pi runtime with isolated HOME, agent hom
 2. config reads — the same isolated runtime reads pre-seeded `profiles.json` and project `models.json` through `get_config`, checks the bounded `get_snapshot` projection, and proves no event is emitted and no store is created or rewritten;
 3. config write — the same isolated runtime reads the `profiles` write target, sends a `set_config` with that `expectedRevision`, observes the response plus one ordered `config_changed`, reads the store back with a moved revision, asserts the on-disk bytes are exactly the owner's serialization, and proves no other store was created and `get_messages` stayed empty;
 4. live owner — the real `extensions/gentle-ai.ts` owner extension is loaded alongside this extension, and the probe reads the mode, sets `auto` with `persist: false`, observes the response plus one `permission_mode_changed` event, and reads `auto` again in the same process without a restart, while `get_messages` stays empty and no default file is written. Nothing in the probe reimplements the owner;
-5. usage owner — the real `extensions/gentle-shell.ts` usage owner is loaded alongside this extension, and the probe reads `get_subscription_usage` for `anthropic` and `openai-codex` and observes truthful offline `pending` answers with no event and no live provider fetch. It never calls `refresh_subscription_usage` against a live provider.
+5. usage owner — the real `extensions/gentle-shell.ts` usage owner is loaded alongside this extension, and the probe reads `get_subscription_usage` for `anthropic` and `openai-codex` and observes truthful offline `pending` answers with no event and no live provider fetch. It never calls `refresh_subscription_usage` against a live provider;
+6. design owner — the real `extensions/gentle-design.ts` design owner is loaded alongside this extension, and the probe reads `get_design_canvas` (with and without `includeUrl`) and observes the truthful owner-loaded stopped state (`running: false`, `slug: null`, `connectedClients: 0`, `designs: []`) with no event and no tokenized URL. It never starts a canvas server or opens a browser.
 
-What this does not prove: a live Desktop conversation approving the request. The probe writes RPC stdin itself, so it demonstrates that the production owner accepts the change and reports it truthfully, not that a person consented. It also does not cover `persist: true` end to end; persistence is covered by the owner and focused unit tests. Nothing in this slice proves a cross-process guarantee either: the probes use one process, which is exactly the scope `expectedRevision` provides.
+What this does not prove: a live Desktop conversation approving the request. The probe writes RPC stdin itself, so it demonstrates that the production owner accepts the change and reports it truthfully, not that a person consented. It also does not cover `persist: true` end to end; persistence is covered by the owner and focused unit tests. Nothing in this slice proves a cross-process guarantee either: the probes use one process, which is exactly the scope `expectedRevision` provides. The design probe does not prove a live browser canvas: it only proves the owner-loaded stopped state without starting a server, while open/refresh/stop transitions and URL trust are covered by the injected-canvas unit tests.

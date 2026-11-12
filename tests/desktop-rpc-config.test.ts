@@ -1301,8 +1301,9 @@ test("capabilities advertise the wired config read and write surface", async (t)
 		"set_permission_mode",
 		"get_subscription_usage",
 		"refresh_subscription_usage",
+		"get_design_canvas",
 	]);
-	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit"]);
+	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas"]);
 });
 
 test("get_config answers through the transport with no physical path in the response", async (t) => {

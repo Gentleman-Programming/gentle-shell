@@ -496,6 +496,26 @@ function promptEvent(): { systemPrompt: string; systemPromptOptions: { appendSys
 	return { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } };
 }
 
+test("custom-triggered runs preserve todo freshness while retaining the prompt rules (#2336)", async () => {
+	const { pi, tools, fire } = fakePi();
+	gentleTodo(pi, {});
+	const { ctx, widget } = fakeContext();
+	await fire("session_start", ctx);
+	await tools.get("todo")!.execute("write", { action: "write", tasks: [{ title: "Verify the fix" }] }, undefined, undefined, ctx);
+	await fire("tool_execution_end", ctx, { toolName: "todo" });
+	const original = widget();
+	for (let index = 0; index < 3; index++) {
+		const event = { ...promptEvent(), messageType: "custom", message: { role: "custom", customType: "worker-complete", content: "Finished", display: false, timestamp: index } };
+		await fire("before_agent_start", ctx, event);
+		assert.deepEqual(widget(), original, "a background wake must not age the todo card");
+		assert.match(event.systemPromptOptions.appendSystemPrompt, /^## Todo list/, "custom runs still receive todo rules");
+	}
+	await fire("before_agent_start", ctx, { ...promptEvent(), messageType: "user", prompt: "Continue" });
+	assert.doesNotMatch(widget()!.join("\n"), /stale/);
+	await fire("before_agent_start", ctx, { ...promptEvent(), messageType: "user", prompt: "Continue" });
+	assert.match(widget()!.join("\n"), /stale · 2 turns/, "user turns still age the card");
+});
+
 test("the system prompt carries only a byte-stable todo block; the current list travels as a request-local message (#1662)", async () => {
 	const { pi, tools, fire } = fakePi();
 	gentleTodo(pi, {});

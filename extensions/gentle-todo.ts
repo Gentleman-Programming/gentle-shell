@@ -383,7 +383,8 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 
 	pi.on("before_agent_start", (event, ctx) => {
 		const current = session(ctx);
-		current.turn += 1;
+		// Match session replay's user-message clock; custom wakes still receive the rules below.
+		if (event.messageType !== "custom") current.turn += 1;
 		if (current.tui) invalidateSidebar(current.tui);
 		if (current.clearOnNextTurn) {
 			current.state = { ...current.state, tasks: [] };

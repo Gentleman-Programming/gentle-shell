@@ -45,6 +45,11 @@ export function init(ctx) {
 				actions.loadHandoffs();
 				return;
 			}
+			// Nor is where the boards sit: they move, nothing reloads.
+			if (change.file === "layout.json") {
+				actions.onLayoutChange().catch(() => {});
+				return;
+			}
 			if (state.compare && state.compare.board.artboard.file === change.file) state.compare.artboardFrame.src = `${actions.boardUrl(state.compare.board)}?v=${Date.now()}`;
 			const matching = state.boards.filter((board) => board.artboard.file === change.file);
 			// A shared asset (CSS, image, font) can affect every artboard of the design.

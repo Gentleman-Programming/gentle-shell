@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import test from "node:test";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { runInProcessReviewer, type InProcessReviewerDeps, type InProcessReviewerOutcome } from "../lib/inprocess-reviewer.ts";
 import { prepareReviewHostRelaySlot, submitReviewHostRelayPreparedResult, ReviewHostRelayError, REVIEW_HOST_RELAY_FAILURE, type ReviewHostRelayRequest } from "../lib/review-host-relay.ts";
+import { withReviewerProgress } from "../lib/reviewer-stream.ts";
 
 const model = { id: "fixture-model", provider: "fixture", api: "openai-completions", baseUrl: "https://PRIVATE.invalid", reasoning: false, input: ["text"], cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 1 }, contextWindow: 1000, maxTokens: 100 };
 const raw = '{"findings":[],"evidence":["fixture"]}\n';
@@ -149,6 +151,44 @@ function relayFixture(t: test.TestContext, rejectSubmission = false): ReviewHost
 		gentleAiExecutable: process.execPath, targetCwd: cwd, reviewerRegistry: deps().registry,
 		selection: request.selection, routingKey: request.routingKey, environment: { ...process.env }, gentleAiTimeoutMs: 5_000, piTimeoutMs: 30_000 };
 }
+
+for (const phase of ["first-output", "stream-idle"] as const) {
+	test(`#2676: production relay preserves ${phase} evidence and never submits a stalled stream`, async t => {
+		const fixture = relayFixture(t), stream = createAssistantMessageEventStream();
+		let calls = 0;
+		fixture.environment!.GENTLE_PI_REVIEW_RELAY_FIRST_OUTPUT_TIMEOUT_MS = "1000";
+		fixture.environment!.GENTLE_PI_REVIEW_RELAY_IDLE_TIMEOUT_MS = "20";
+		if (phase === "first-output") fixture.environment!.GENTLE_PI_REVIEW_RELAY_FIRST_OUTPUT_TIMEOUT_MS = "20";
+		const registry = { ...fixture.reviewerRegistry!, getProvider: () => ({ streamSimple: () => {
+			calls++;
+			if (phase === "stream-idle") stream.push({ type: "thinking_delta", contentIndex: 0, delta: "PRIVATE THINKING", partial: assistant() as never });
+			return stream;
+		} }) };
+		try {
+			await assert.rejects(prepareReviewHostRelaySlot({ ...fixture, reviewerRegistry: registry }), error => {
+				assert.ok(error instanceof ReviewHostRelayError);
+				assert.equal(error.kind, REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT);
+				assert.equal(error.reviewerEvidence?.timeoutPhase, phase); assert.equal(error.reviewerEvidence?.streamTimeoutMs, 20);
+				assert.equal(error.reviewerEvidence?.reviewerModel, "fixture/fixture-model");
+				assert.match(error.message, new RegExp(phase)); assert.doesNotMatch(error.message, /Raise .*PI_TIMEOUT/);
+				assert.equal(error.mutationOutcome, "none"); return true;
+			});
+			assert.equal(calls, 1); assert.equal(existsSync(join(fixture.targetCwd!, "submitted.raw")), false);
+		} finally { stream.end(assistant() as never); }
+	});
+}
+
+test("#2676: the production relay publishes content-free progress and submits original SDK completion bytes", async t => {
+	const fixture = relayFixture(t), stream = createAssistantMessageEventStream(), progress: unknown[] = [];
+	const registry = { ...fixture.reviewerRegistry!, getProvider: () => ({ streamSimple: () => {
+		stream.push({ type: "thinking_delta", contentIndex: 0, delta: "PRIVATE THINKING", partial: assistant() as never });
+		stream.end(assistant() as never); return stream;
+	} }) };
+	const prepared = await withReviewerProgress(value => { progress.push(value); }, () => prepareReviewHostRelaySlot({ ...fixture, reviewerRegistry: registry }));
+	await submitReviewHostRelayPreparedResult(prepared);
+	assert.equal(readFileSync(join(fixture.targetCwd!, "submitted.raw"), "utf8"), raw);
+	assert.ok(progress.length > 0); assert.doesNotMatch(JSON.stringify(progress), /PRIVATE|findings|evidence/);
+});
 
 test("relay preserves reviewer evidence through prepare and submission without altering native artifact bytes", async t => {
 	const fixture = relayFixture(t);

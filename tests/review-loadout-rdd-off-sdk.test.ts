@@ -304,11 +304,18 @@ test("RDD off: the review capture tools stay hidden beside a tool hidden behind 
 	assert.deepEqual(off.errors, []);
 	for (const request of off.requests) {
 		assertLeanRequest(request, off);
+		assert.match(request.systemPrompt, /gentle_review\* tools are model-only: use direct tool calls, never tools\.gentle_review\(\.\.\.\) in codemode/);
+		assert.match(request.systemPrompt, /ALL_TOOLS lists only callable tools; absence there does not mean the direct tool is unavailable/);
+		assert.match(request.tools.find(tool => tool.name === "gentle_review")!.description, /Call directly, never through codemode/);
 		const names = request.tools.map((tool) => tool.name);
 		assert.deepEqual(names, ["read", "gentle_review", "codemode"], "review capture tools and the guide are all left out");
 	}
 	assert.equal(new Set(off.requests.map((request) => JSON.stringify(request.tools.map((tool) => tool.name)))).size, 1);
 	const on = await runSession(root, "on-codemode", bindings, () => "on", () => {}, extra);
 	assert.deepEqual(on.errors, []);
-	for (const request of on.requests) assert.deepEqual(request.tools.map((tool) => tool.name), ["read", "gentle_review", ...HIDDEN_WHEN_OFF, "codemode"], "RDD on declares the review family; the guide stays behind codemode");
+	for (const request of on.requests) {
+		assert.deepEqual(request.tools.map((tool) => tool.name), ["read", "gentle_review", ...HIDDEN_WHEN_OFF, "codemode"], "RDD on declares the review family; the guide stays behind codemode");
+		assert.match(request.systemPrompt, /gentle_review\* tools are model-only: use direct tool calls/);
+		assert.match(request.tools.find(tool => tool.name === "gentle_review")!.description, /Call directly, never through codemode/);
+	}
 });

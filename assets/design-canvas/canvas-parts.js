@@ -5,8 +5,8 @@
 // the design's parts live with the state in words, the time, the excerpt, the
 // agent's note, Show (that artboard in focus with the element highlighted in every
 // frame of it) and, while the agent has not taken a part up, Remove behind an
-// inline confirm. Which part has its confirm open and which Removes are in flight
-// are this module's own view state, kept across re-renders; the parts themselves
+// inline confirm. Which part has its confirm open and which Removes and sends are
+// in flight are this module's own view state, kept across re-renders; the parts themselves
 // change only through store.setParts.
 
 const TEXT = Object.freeze({
@@ -71,7 +71,11 @@ export function init(ctx) {
 	let confirming = null;
 	const removing = new Set();
 	// The latest loadParts: parts.json is written more than once per send, so an older reply landing last changes nothing.
+	// A part listed by Implement only this or dropped by Remove counts as newer too.
 	let partLoads = 0;
+	// The elements whose Implement only this is in flight ("<slug>/<file>/<selector>"), across popovers.
+	const sending = new Set();
+	const sendKey = (pick) => JSON.stringify([pick.board.slug, pick.board.artboard.file, pick.selector]);
 	// Why Implement only this is disabled, under the popover's buttons, where the keyboard and screen readers reach it too.
 	const partNote = doc.createElement("p");
 	partNote.id = "gd-popover-part-note";
@@ -253,7 +257,8 @@ export function init(ctx) {
 			failure = error;
 		}
 		if (load !== partLoads || slug !== state.slug) return;
-		if (failure) setStatus(TEXT.unreadable(slug, failure.message), true);
+		// A failed read keeps the parts shown.
+		if (failure) return setStatus(TEXT.unreadable(slug, failure.message), true);
 		setParts(slug, data && Array.isArray(data.parts) ? data.parts.filter(isPart) : []);
 	}
 
@@ -262,6 +267,7 @@ export function init(ctx) {
 		if (slug !== state.slug) return;
 		const current = state.parts.slug === slug ? state.parts.parts : [];
 		if (current.some((entry) => entry.id === part.id)) return;
+		partLoads += 1;
 		setParts(slug, [...current, part]);
 	}
 
@@ -290,7 +296,9 @@ export function init(ctx) {
 		if (reply.ok) {
 			setStatus(TEXT.removed, false);
 			showToast(TEXT.removed, false);
-			if (current) setParts(slug, state.parts.parts.filter((entry) => entry.id !== part.id));
+			if (!current) return;
+			partLoads += 1;
+			setParts(slug, state.parts.parts.filter((entry) => entry.id !== part.id));
 			return;
 		}
 		const code = typeof reply.body.error === "string" ? reply.body.error : "";
@@ -303,10 +311,10 @@ export function init(ctx) {
 		else renderParts();
 	}
 
-	/** Implement only this on the open popover: enabled only when the page config says the server can deliver a part. */
+	/** Implement only this on the open popover: enabled only when the page config says the server can deliver a part and that element is not in flight. */
 	function renderPartButton() {
 		const offline = !delivery.part;
-		els.partAdd.disabled = offline;
+		els.partAdd.disabled = offline || Boolean(state.pick && sending.has(sendKey(state.pick)));
 		els.partAdd.title = offline ? TEXT.partOffline : TEXT.partTitle;
 		partNote.hidden = !offline;
 		if (offline) els.partAdd.setAttribute("aria-describedby", partNote.id);
@@ -329,14 +337,20 @@ export function init(ctx) {
 	els.partAdd.addEventListener("click", async () => {
 		const pick = state.pick;
 		if (!pick || !delivery.part || els.partAdd.disabled) return;
+		const key = sendKey(pick);
+		if (sending.has(key)) return;
 		const note = els.text.value.replace(/\r\n?/g, "\n").trim();
 		if (note.length > NOTE_LIMIT) return popoverMessage(TEXT.noteTooLong(NOTE_LIMIT), true);
+		sending.add(key);
 		els.partAdd.disabled = true;
 		popoverMessage(TEXT.sending, false);
 		const board = pick.board;
 		const slug = board.slug;
 		const reply = await postJson(`api/designs/${encodeURIComponent(slug)}/implement-part`, { file: board.artboard.file, selector: pick.selector, excerpt: pick.excerpt, ...(note ? { note } : {}) }).catch(failed);
+		sending.delete(key);
 		const open = state.pick === pick;
+		// The same element picked again while this was in flight can be sent now.
+		if (!open && state.pick && sendKey(state.pick) === key) renderPartButton();
 		if (!reply.ok) {
 			const failure = sendFailure(reply);
 			if (!open) return setStatus(failure.text, true);

@@ -391,6 +391,74 @@ test("parts.json replies that land out of order: the newest load wins, an older 
 	assert.deepEqual(items(canvas).map((item) => item.dataset.status), ["implemented"]);
 });
 
+test("a parts.json reply older than a part Implement only this just listed does not drop that part", async () => {
+	const canvas = await loadParts({ [PARTS_URL]: partsDoc(storedPart()), [PART_URL]: { __http: 202, ok: true, id: "p2", queued: false } });
+	const held = deferred();
+	canvas.replies[PARTS_URL] = held.promise;
+	await canvas.serverEvent("change", { slug: "alpha", file: "parts.json" });
+	implementOnlyThis(canvas, 1, { selector: "footer", excerpt: "" });
+	await settle();
+	assert.deepEqual(items(canvas).map((item) => item.dataset.id), ["p1", "p2"]);
+	held.answer(partsDoc());
+	await settle();
+	assert.deepEqual(items(canvas).map((item) => item.dataset.id), ["p1", "p2"], "the older reply changes nothing");
+});
+
+test("a parts.json reply older than a succeeded Remove does not bring the removed part back", async () => {
+	const canvas = await loadParts({ [PARTS_URL]: partsDoc(storedPart()), [REMOVE_URL]: { ok: true, id: "p1" } });
+	const held = deferred();
+	canvas.replies[PARTS_URL] = held.promise;
+	await canvas.serverEvent("change", { slug: "alpha", file: "parts.json" });
+	confirmRemove(canvas, 0);
+	await settle();
+	assert.equal(items(canvas).length, 0);
+	held.answer(partsDoc(storedPart()));
+	await settle();
+	assert.deepEqual(items(canvas).map((item) => item.dataset.id), [], "the older reply changes nothing");
+	assert.equal($(canvas, "gd-parts").hidden, true);
+});
+
+test("a parts.json load that fails keeps the parts shown and says why in the status line", async () => {
+	const canvas = await loadParts({ [PARTS_URL]: partsDoc(storedPart()) });
+	assert.deepEqual(items(canvas).map((item) => item.dataset.id), ["p1"]);
+	canvas.replies[PARTS_URL] = { __http: 500, error: "internal", reason: "disk busy" };
+	await canvas.serverEvent("change", { slug: "alpha", file: "parts.json" });
+	await settle();
+	assert.deepEqual(items(canvas).map((item) => item.dataset.id), ["p1"], "the shown list is kept");
+	assert.equal($(canvas, "gd-parts").hidden, false);
+	assert.equal($(canvas, "gd-parts-title").textContent, "Partial implementations · 1");
+	assert.equal($(canvas, "gd-status").textContent, "parts.json for alpha cannot be read: disk busy");
+	assert.equal($(canvas, "gd-status").classes.has("gd-error"), true);
+});
+
+test("Implement only this sends an element once while its request is in flight, even after the popover closes and the same element is picked again", async () => {
+	const flight = deferred();
+	const canvas = await loadParts({ [PART_URL]: flight.promise });
+	implementOnlyThis(canvas, 0);
+	await settle();
+	$(canvas, "gd-popover-cancel").dispatch("click");
+	assert.equal($(canvas, "gd-popover").hidden, true);
+	pick(canvas, 0);
+	assert.equal($(canvas, "gd-popover-part").disabled, true, "the same element in flight: disabled");
+	$(canvas, "gd-popover-part").dispatch("click");
+	await settle();
+	assert.equal(bodiesTo(canvas, PART_URL).length, 1, "no second request");
+	pick(canvas, 1);
+	assert.equal($(canvas, "gd-popover-part").disabled, false, "another element can be sent");
+	pick(canvas, 0);
+	assert.equal($(canvas, "gd-popover-part").disabled, true);
+
+	// The reply releases the element: a refusal lets it be sent again.
+	flight.answer({ __http: 500, error: "delivery-failed", reason: "session closed" });
+	await settle();
+	assert.equal($(canvas, "gd-popover-part").disabled, false, "released when the reply arrives");
+	canvas.replies[PART_URL] = { ok: true, id: "p1", queued: false };
+	$(canvas, "gd-popover-part").dispatch("click");
+	await settle();
+	assert.equal(bodiesTo(canvas, PART_URL).length, 2);
+	assert.deepEqual(items(canvas).map((item) => item.dataset.id), ["p1"]);
+});
+
 // ---- Remove (S2: a part the agent never reports would stay sent forever)
 
 test("Remove asks an inline confirm, then removes a sent or queued part and stays disabled while in flight", async () => {

@@ -141,8 +141,9 @@ export function init(ctx) {
 	 * For one frame the canvas hides its chrome and puts the artboard at its own size at 100% in the window's
 	 * top left; then it restores the focus, the screen size and the view it had, and puts the keyboard focus
 	 * back on the artboard's ⋯ button. A design.json reload while the browser asks for the capture replaces
-	 * the board objects: both the export and the restore follow the current ones; a reload or a close while
-	 * the frame is being grabbed fails the export instead. A second request while one runs is ignored, and
+	 * the board objects: both the export and the restore follow the current ones; a reload (the design's or the
+	 * artboard frame's own) or a close while the frame is being grabbed fails the export instead, and an artboard
+	 * left meanwhile (Back, Shift+Esc) is not reopened. A second request while one runs is ignored, and
 	 * a viewport resized meanwhile gets the view a resize gives (refit or recentered), not the old one.
 	 */
 	async function exportArtboard(chosen, scale) {
@@ -187,6 +188,8 @@ export function init(ctx) {
 			board.frame.contentWindow?.postMessage({ type: "gd:clear" }, "*");
 			board.frame.contentWindow?.postMessage({ type: "gd:mode", enabled: false }, "*");
 			cleared = board;
+			// An artboard file change reloads this frame in place (same board object, new src): see the check below.
+			const source = board.frame.src;
 			await live(nextPaint());
 			// Desktop fills the window (canvas-layout S8); the image is the artboard at its own size, at the top left.
 			actions.setFrameSize(board, board.artboard.width, board.artboard.height);
@@ -208,8 +211,9 @@ export function init(ctx) {
 			// The first frame can predate the layout above; wait for frames painted after it.
 			await live(nextVideoFrame(video));
 			await live(nextVideoFrame(video));
-			// A reload or a close during the waits moved the artboard away from the rectangle measured above.
-			if (currentBoard(board) !== board || state.focus !== board) throw new Error(TEXT.changed);
+			// A reload (of the design or of the artboard's own frame) or a close during the waits moved or repainted
+			// the artboard away from the rectangle measured above.
+			if (currentBoard(board) !== board || state.focus !== board || board.frame.src !== source) throw new Error(TEXT.changed);
 			const sx = video.videoWidth / win.innerWidth;
 			const sy = video.videoHeight / win.innerHeight;
 			if (!Number.isFinite(sx) || !Number.isFinite(sy) || sx <= 0 || sy <= 0) throw new Error(TEXT.noFrame);
@@ -233,8 +237,10 @@ export function init(ctx) {
 			exporting = false;
 			stream?.getTracks().forEach((track) => track.stop());
 			doc.body.classList.remove("gd-exporting");
+			// Left with Back or Shift+Esc during the capture: the artboard stays closed, with the view leaving gave.
+			const left = Boolean(cleared) && !state.focus && currentBoard(cleared) === cleared;
 			// The artboard that was open, as it is now; when a reload removed it, the canvas leaves focus mode.
-			const reopen = currentBoard(previous.focus);
+			const reopen = left ? null : currentBoard(previous.focus);
 			if (!reopen && state.focus) actions.exitFocus();
 			else if (reopen && state.focus !== reopen) actions.enterFocus(reopen);
 			if (reopen && state.focus === reopen) {
@@ -242,7 +248,7 @@ export function init(ctx) {
 				actions.centerFocus();
 			}
 			// A focus view without its artboard would leave the overview pointing at nothing.
-			if (reopen || !previous.focus) {
+			if (!left && (reopen || !previous.focus)) {
 				store.setView(previous.view);
 				actions.applyView();
 			}

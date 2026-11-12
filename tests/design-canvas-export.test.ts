@@ -671,6 +671,8 @@ const CHANGED = "Could not export the artboard. The artboard was reloaded or clo
 for (const [name, interrupt] of [
 	["a design.json reload replaces the board", (canvas: Canvas) => canvas.serverEvent("change", { slug: "alpha", file: "design.json" })],
 	["Back closes the artboard", async (canvas: Canvas) => { $(canvas, "gd-back").dispatch("click"); }],
+	// S11(a): the artboard's file changed, so its frame reloads in place: same board object, new src.
+	["the artboard's file changes and its frame reloads in place", (canvas: Canvas) => canvas.serverEvent("change", { slug: "alpha", file: "01-a.html" })],
 ] as const) {
 	test(`S3d: when ${name} while the capture's frames are awaited, nothing is drawn or downloaded and the export fails`, async () => {
 		const { canvas, log, releaseFrames } = await pngCanvas({ held: true });
@@ -690,6 +692,37 @@ for (const [name, interrupt] of [
 		assert.equal(canvas.document.body.classes.has("gd-exporting"), false, "the chrome comes back");
 		assert.equal(canvas.navMode.textContent, "Navigating");
 		assert.equal(canvas.world.style.transform, before, "the view comes back");
+	});
+}
+
+// S11(b): an artboard open before the export and left during the capture stays closed afterwards.
+for (const [name, leave] of [
+	["Back", (canvas: Canvas) => { $(canvas, "gd-back").dispatch("click"); }],
+	["Shift+Esc", (canvas: Canvas) => {
+		const chord: any = { key: "Escape", shiftKey: true, ctrlKey: false, metaKey: false, altKey: false, target: $(canvas, "gd-back"), defaultPrevented: false, preventDefault() { chord.defaultPrevented = true; } };
+		for (const listener of canvas.document.listeners.get("keydown") ?? []) listener(chord);
+	}],
+] as const) {
+	test(`S11b: an open artboard left with ${name} while the capture's frames are awaited is not reopened after the failed export`, async () => {
+		const { canvas, log, releaseFrames } = await pngCanvas({ held: true });
+		click(canvas.boards[0].shield!, 200, 200);
+		assert.match(canvas.navMode.textContent, /^Using: First/);
+		choose(canvas, "Export as PNG");
+		await settle();
+		assert.equal(log.calls.filter((call) => call === "frame").length, 1, "waiting for a new frame");
+		leave(canvas);
+		assert.equal(canvas.navMode.textContent, "Navigating", "the artboard was left");
+		const left = canvas.world.style.transform;
+		releaseFrames();
+		await settle();
+		assert.deepEqual(log.draw, []);
+		assert.deepEqual(log.names, []);
+		assert.equal(statusText(canvas), CHANGED);
+		assert.equal(canvas.navMode.textContent, "Navigating", "not reopened");
+		assert.deepEqual(boardsOf(canvas).map((wrapper) => wrapper.classes.has("gd-focus-board")), [false, false], "no artboard is open");
+		assert.deepEqual(boardsOf(canvas).map((wrapper) => wrapper.inert), [false, false]);
+		assert.equal(canvas.world.style.transform, left, "the overview leaving gave, not the focus view from before");
+		assert.equal(canvas.document.body.classes.has("gd-exporting"), false);
 	});
 }
 

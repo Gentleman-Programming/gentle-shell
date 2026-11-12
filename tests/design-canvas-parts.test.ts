@@ -396,6 +396,8 @@ test("a parts.json reply older than a part Implement only this just listed does 
 	const held = deferred();
 	canvas.replies[PARTS_URL] = held.promise;
 	await canvas.serverEvent("change", { slug: "alpha", file: "parts.json" });
+	// What parts.json holds once the server accepted p2, for the fresh read that follows.
+	canvas.replies[PARTS_URL] = partsDoc(storedPart(), storedPart({ id: "p2", file: "02-b.html", selector: "footer", excerpt: "" }));
 	implementOnlyThis(canvas, 1, { selector: "footer", excerpt: "" });
 	await settle();
 	assert.deepEqual(items(canvas).map((item) => item.dataset.id), ["p1", "p2"]);
@@ -409,6 +411,8 @@ test("a parts.json reply older than a succeeded Remove does not bring the remove
 	const held = deferred();
 	canvas.replies[PARTS_URL] = held.promise;
 	await canvas.serverEvent("change", { slug: "alpha", file: "parts.json" });
+	// What parts.json holds once the server removed p1, for the fresh read that follows.
+	canvas.replies[PARTS_URL] = partsDoc();
 	confirmRemove(canvas, 0);
 	await settle();
 	assert.equal(items(canvas).length, 0);
@@ -416,6 +420,38 @@ test("a parts.json reply older than a succeeded Remove does not bring the remove
 	await settle();
 	assert.deepEqual(items(canvas).map((item) => item.dataset.id), [], "the older reply changes nothing");
 	assert.equal($(canvas, "gd-parts").hidden, true);
+});
+
+test("after Implement only this lists a part, a fresh parts.json read keeps the other parts' updates an in-flight read carried", async () => {
+	const canvas = await loadParts({ [PARTS_URL]: partsDoc(storedPart()), [PART_URL]: { __http: 202, ok: true, id: "p2", queued: false } });
+	const held = deferred();
+	canvas.replies[PARTS_URL] = held.promise;
+	await canvas.serverEvent("change", { slug: "alpha", file: "parts.json" });
+	const fetches = fetchCount(canvas, PARTS_URL);
+	const implemented = storedPart({ status: "implemented", implementedAt: todayAt(10, 5) });
+	canvas.replies[PARTS_URL] = partsDoc(implemented, storedPart({ id: "p2", file: "02-b.html", selector: "footer", excerpt: "" }));
+	implementOnlyThis(canvas, 1, { selector: "footer", excerpt: "" });
+	await settle();
+	assert.equal(fetchCount(canvas, PARTS_URL), fetches + 1, "a fresh read follows the local change");
+	held.answer(partsDoc(implemented));
+	await settle();
+	assert.deepEqual(items(canvas).map((item) => [item.dataset.id, item.dataset.status]), [["p1", "implemented"], ["p2", "sent"]]);
+});
+
+test("after a succeeded Remove, a fresh parts.json read keeps the other parts' updates an in-flight read carried", async () => {
+	const canvas = await loadParts({ [PARTS_URL]: partsDoc(storedPart(), storedPart({ id: "p2", file: "02-b.html", selector: "footer" })), [REMOVE_URL]: { ok: true, id: "p2" } });
+	const held = deferred();
+	canvas.replies[PARTS_URL] = held.promise;
+	await canvas.serverEvent("change", { slug: "alpha", file: "parts.json" });
+	const fetches = fetchCount(canvas, PARTS_URL);
+	const implemented = storedPart({ status: "implemented", implementedAt: todayAt(10, 5) });
+	canvas.replies[PARTS_URL] = partsDoc(implemented);
+	confirmRemove(canvas, 1);
+	await settle();
+	assert.equal(fetchCount(canvas, PARTS_URL), fetches + 1, "a fresh read follows the local change");
+	held.answer(partsDoc(implemented, storedPart({ id: "p2", file: "02-b.html", selector: "footer" })));
+	await settle();
+	assert.deepEqual(items(canvas).map((item) => [item.dataset.id, item.dataset.status]), [["p1", "implemented"]]);
 });
 
 test("a parts.json load that fails keeps the parts shown and says why in the status line", async () => {

@@ -71,8 +71,10 @@ export function init(ctx) {
 	let confirming = null;
 	const removing = new Set();
 	// The latest loadParts: parts.json is written more than once per send, so an older reply landing last changes nothing.
-	// A part listed by Implement only this or dropped by Remove counts as newer too.
+	// A part listed by Implement only this or dropped by Remove counts as newer too; when that drops a read in flight,
+	// which may carry other parts' updates, a fresh read follows.
 	let partLoads = 0;
+	let reading = 0;
 	// The elements whose Implement only this is in flight ("<slug>/<file>/<selector>"), across popovers.
 	const sending = new Set();
 	const sendKey = (pick) => JSON.stringify([pick.board.slug, pick.board.artboard.file, pick.selector]);
@@ -251,10 +253,13 @@ export function init(ctx) {
 		const load = ++partLoads;
 		let data = null;
 		let failure = null;
+		reading += 1;
 		try {
 			data = await getJson(partsPath(slug));
 		} catch (error) {
 			failure = error;
+		} finally {
+			reading -= 1;
 		}
 		if (load !== partLoads || slug !== state.slug) return;
 		// A failed read keeps the parts shown.
@@ -269,6 +274,7 @@ export function init(ctx) {
 		if (current.some((entry) => entry.id === part.id)) return;
 		partLoads += 1;
 		setParts(slug, [...current, part]);
+		if (reading > 0) void loadParts();
 	}
 
 	/** Show: the part's artboard in focus, its element highlighted in every frame; the board is looked up now. */
@@ -299,6 +305,7 @@ export function init(ctx) {
 			if (!current) return;
 			partLoads += 1;
 			setParts(slug, state.parts.parts.filter((entry) => entry.id !== part.id));
+			if (reading > 0) await loadParts();
 			return;
 		}
 		const code = typeof reply.body.error === "string" ? reply.body.error : "";

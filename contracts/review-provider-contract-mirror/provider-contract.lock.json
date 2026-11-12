@@ -1,17 +1,16 @@
 {
   "schema": "gentle-pi.review-provider-contract-mirror-lock/v1",
   "acquisition": "field-test-local",
-  "contract_semver": "1.4.0",
+  "contract_semver": "1.5.0",
   "source": {
-    "kind": "archive",
-    "archive_sha256": "9d2927a84ba9a596f69029e3f854b16f86ca4c8b32cc5d63683764ccf2fb394b"
+    "kind": "tree"
   },
-  "tree_sha256": "aab5ab7fe7ee6bb180d8bbce21c034cebb0c0d284afcc8664a9b3bb57323c35d",
+  "tree_sha256": "9e887fbded4a216aa89e8ec8818a6f4789d2b09cfff7fbd165fc1518a4d3d312",
   "entries": {
     "README.md": "3a655c2f19aee02636da062f0cae7a189b7e5f691c8ba8010f2ed50e5d8e8d70",
-    "manifest.json": "d2b5765e28df5b2459848379e91a27beb806916fabc96207060ad1cc5e911972",
-    "orchestration/pi.md": "2d7ddd99f1c739a97f4a6b3929e5e2bdddcbf69aed69356395038d90bca25b2f",
-    "routing/pi.md": "1c7466e2333c08e386b4b5afb081531146d181030692463431e7695df7f90690",
+    "manifest.json": "cd8f2379a27b66877a77d7cf57ad21d4a19244baaa9929117183b0f6e5ae6d6d",
+    "orchestration/pi.md": "c0e7c4c2ab07a695ecf108b476bee81e6d9ca553b7a3860299fe2870b68d8bfc",
+    "routing/pi.md": "f34508b060197339fc73dd885565a24d037366c02b3f91b4db15431b42a5c573",
     "schemas/lens.schema.json": "9b8a2354a570888486015434501b66b51441a3baf5bf858635e4fff56b2e8298",
     "schemas/refuter.schema.json": "36f8267c6c3f04600b8f1cb77df70d90858611af822cc81922efd6b3502fb646",
     "schemas/targeted-validator.schema.json": "40e397195bdfbc6782fc3090f20c5be082e4d14d2855314f99ecb8506133eddc",
@@ -20,8 +19,8 @@
     "vectors/targeted-validator.json": "7b5a5165e3a913863fb98d2ba5387811860c21333b5c37e6ed3b4e0d121cf2fa"
   },
   "generated": {
-    "generated/provider-capabilities.baseline.json": "bca708f5f67f506b4acb2cfdcb775b02a51468579fc7d6b4d169785ff411a215",
-    "generated/provider-roles.baseline.json": "aa36ec6f7469ac6faab756eec681f68f234cbadc1e12b345a93c6c34aa01f7aa"
+    "generated/provider-capabilities.baseline.json": "f9b2e0f3600683e81d7e381ee24aa251e781a11e8cfc7fe12e476861354102ff",
+    "generated/provider-roles.baseline.json": "f6a9c8b071d01266a7ba2a3c74ab54833cfd5b240abfe435ae931086e5397a8b"
   },
   "runtimes": [
     "claude-code",

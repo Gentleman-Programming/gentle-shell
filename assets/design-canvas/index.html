@@ -20,6 +20,16 @@
 		<symbol id="i-row" viewBox="0 0 24 24"><rect x="2" y="6" width="5" height="12" rx="1"/><rect x="9.5" y="6" width="5" height="12" rx="1"/><rect x="17" y="6" width="5" height="12" rx="1"/></symbol>
 		<symbol id="i-column" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="5" rx="1"/><rect x="6" y="9.5" width="12" height="5" rx="1"/><rect x="6" y="17" width="12" height="5" rx="1"/></symbol>
 		<symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+		<symbol id="i-phone" viewBox="0 0 24 24"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></symbol>
+		<symbol id="i-tablet" viewBox="0 0 24 24"><rect x="4" y="2" width="16" height="20" rx="2"/><path d="M11 18h2"/></symbol>
+		<symbol id="i-monitor" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+		<symbol id="i-devices" viewBox="0 0 24 24"><rect x="2" y="4" width="13" height="10" rx="1.5"/><path d="M5 18h7"/><rect x="17" y="8" width="5" height="12" rx="1"/></symbol>
+		<symbol id="i-width" viewBox="0 0 24 24"><path d="M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4"/></symbol>
+		<symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+		<symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+		<symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/></symbol>
+		<symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></symbol>
+		<symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></symbol>
 	</svg>
 	<header class="gd-bar" role="toolbar" aria-label="Design canvas controls">
 		<h1 class="gd-title" id="gd-title">Gentle Design</h1>
@@ -39,6 +49,7 @@
 			<button type="button" id="gd-arrange-column" aria-pressed="false" aria-label="Column" title="Arrange in a column" disabled><svg class="gd-i" aria-hidden="true"><use href="#i-column"/></svg></button>
 			<button type="button" id="gd-arrange-grid" aria-pressed="false" aria-label="Grid" title="Arrange in a grid" disabled><svg class="gd-i" aria-hidden="true"><use href="#i-grid"/></svg></button>
 		</div>
+		<button type="button" id="gd-device" class="gd-device-button" aria-haspopup="menu" aria-expanded="false" aria-controls="gd-device-menu" aria-label="Preview size: Desktop" title="Open an artboard to choose its preview size" disabled><svg class="gd-i gd-i-s" aria-hidden="true"><use id="gd-device-icon" href="#i-monitor"/></svg><span id="gd-device-name">Desktop</span><span id="gd-device-size" class="gd-device-size"></span></button>
 		<p id="gd-nav-mode" class="gd-nav-mode" role="status" aria-live="polite">Navigating</p>
 		<div class="gd-group" role="radiogroup" aria-label="When a comment is sent to the session">
 			<label class="gd-radio"><input type="radio" name="gd-send-mode" id="gd-mode-send" value="send"> Send now</label>
@@ -73,6 +84,10 @@
 			</div>
 			<p id="gd-panel-empty" class="gd-panel-empty">No comments yet. Turn on Comment mode and click an element.</p>
 			<ol id="gd-comment-list" class="gd-comment-list" aria-label="Comments"></ol>
+			<section id="gd-parts" class="gd-parts" aria-labelledby="gd-parts-title" hidden>
+				<h3 id="gd-parts-title" class="gd-parts-title">Partial implementations</h3>
+				<ol id="gd-parts-list" class="gd-parts-list"></ol>
+			</section>
 		</aside>
 		<section id="gd-compare" class="gd-compare" aria-labelledby="gd-compare-title" hidden>
 			<div class="gd-compare-bar">
@@ -91,6 +106,7 @@
 	</div>
 	<div id="gd-toast" class="gd-toast" role="status" aria-live="polite" hidden></div>
 	<div id="gd-menu" class="gd-menu" role="menu" hidden></div>
+	<div id="gd-device-menu" class="gd-menu gd-device-menu" role="menu" aria-label="Preview size" hidden></div>
 	<dialog id="gd-shortcuts" class="gd-dialog" aria-labelledby="gd-shortcuts-title">
 		<h2 id="gd-shortcuts-title" class="gd-dialog-title">Keyboard shortcuts</h2>
 		<ul id="gd-keys-custom" class="gd-keys-custom" aria-label="Shortcuts you can change"></ul>
@@ -123,6 +139,7 @@
 			<div class="gd-popover-actions">
 				<span id="gd-popover-message" class="gd-popover-message" role="status" aria-live="polite"></span>
 				<button type="button" id="gd-popover-cancel">Cancel</button>
+				<button type="button" id="gd-popover-part" disabled>Implement only this</button>
 				<button type="submit" id="gd-popover-send" class="gd-primary">Send</button>
 			</div>
 		</form>

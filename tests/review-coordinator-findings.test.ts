@@ -92,6 +92,30 @@ test("an empty provider list is returned as the provider's answer; no key when t
 	}
 });
 
+for (const [name, statement, kept, cut] of [
+	["short", "Provider statement.", "Provider statement.", false],
+	["exact UTF-8 boundary", "é".repeat(512), "é".repeat(512), false],
+	["oversized ASCII", "x".repeat(1024 * 1024), "x".repeat(1024), true],
+	["oversized astral", "😀".repeat(257), "😀".repeat(256), true],
+	["partial codepoint boundary", "a".repeat(1023) + "😀", "a".repeat(1023), true],
+] as const) test(`non-blocking statement: ${name}`, async () => {
+	for (const responseOf of [correction, escalated]) for (const findings of [[], [finding("N1", "claim")]]) {
+		const response = responseOf({ statement, findings });
+		const original = structuredClone(response);
+		const host = backend([response]);
+		const result = await runReviewCoordinator({ lineageId: lineage }, host);
+		assert.equal(Buffer.byteLength((result.non_blocking_findings as Body).statement as string), Buffer.byteLength(kept));
+		assert.deepEqual(result.non_blocking_findings, { statement: kept, findings: findings.map(listed), ...(cut ? { statement_truncated: true } : {}) });
+		assert.equal(result.outcome, response.result.next_transition.kind === "stop" ? "stopped" : "input-required");
+		assert.deepEqual(host.calls, [{ tool: "gentle_review", parameters: { operation: "status", lineageId: lineage } }]);
+		assert.deepEqual(response, original, "provider input remains untouched");
+		const { non_blocking_findings: _raw, ...nested } = original.result;
+		assert.deepEqual(result.result, { ...original, result: nested }, "no unbounded nested copy");
+		assert.deepEqual(result.non_blocking_finding_claims, findings.length ? { N1: "claim" } : undefined);
+		for (const key of ["non_blocking_findings_omitted_count", "non_blocking_finding_claims_truncated", "non_blocking_finding_claims_omitted"]) assert.equal(Object.hasOwn(result, key), false, key);
+	}
+});
+
 test("a malformed non-blocking set is dropped whole and never changes the outcome", async () => {
 	const proto = Object.create({ id: "N1" });
 	for (const value of ["s", [], null, { statement: "", findings: [] }, { statement: "s" }, { statement: "s", findings: {} }, set([finding("N1", 3)]), set([{ ...finding("N1", "c"), id: "" }]),

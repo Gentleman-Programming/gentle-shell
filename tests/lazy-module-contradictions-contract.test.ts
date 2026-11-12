@@ -43,16 +43,16 @@ test("C5: tracking drops what restated the injected review contract and keeps th
 	]) {
 		assert.ok(!tracking.includes(stale), `tracking still restates the injected review contract: ${stale}`);
 	}
-	assert.ok(tracking.includes("When RDD is enabled, the injected Gentle AI review execution contract governs how a native review starts, runs, and gets consent; this module adds only the assessment and commit-boundary rules below."), "tracking must defer start, run, and consent to the injected contract");
-	// Current 1.4.0 boundary rules, mirrored from routing/pi.md; the rendered prompt carries them nowhere else.
+	assert.ok(tracking.includes("When RDD is enabled, the injected Gentle AI contract governs native review start, execution and consent; this module adds only assessment and commit boundaries."), "tracking must defer start, run, and consent to the injected contract");
+	// Provider-owned boundary rules; tracking carries the slice assessment policy.
 	for (const rule of [
 		"A not-due `passive` commit needs no review and the boundary advances; `under_budget` stays pending in the slice until a later commit reaches the budget.",
-		"When a high-risk unit follows pending `under_budget` commits, close the open slice first, assessing and reviewing it as the slice, so the high-risk commit is then reviewed alone against the new boundary.",
-		"An unavailable or failed assessment never lowers the tier: treat the commit as due; never infer low risk from a failed assessment.",
+		"Before a high-risk unit, assess any pending `under_budget` slice.",
+		"If assessment fails or is unavailable, report missing assessment proof; never infer `reviewDue`, construct a preflight transition, lower the tier or infer low risk.",
 	]) {
 		assert.ok(tracking.includes(rule), `tracking lost a commit-boundary rule: ${rule}`);
 	}
-	assert.ok(tracking.includes('after each work-unit commit, assess it with `gentle_review` `{"operation":"assess"}` and `{"baseRef":"<last reviewed boundary>","committedOnly":true}`'));
+	assert.ok(tracking.includes('After each work-unit commit, assess it with `gentle_review` `{"operation":"assess"}` and `{"baseRef":"<last reviewed boundary>","committedOnly":true}`'));
 	assert.match(tracking, /assess `escalate` field \(`orchestrator-verification\.md`\); never lower one/);
 	assert.ok(tracking.includes("When RDD is disabled, do not start or prompt for RDD; ordinary checks remain."));
 	// The rule that a high-risk unit is reviewed alone lives in always-on step 6.

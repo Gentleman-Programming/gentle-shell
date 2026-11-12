@@ -306,7 +306,7 @@ test("T4: tracking updates edit in place and mirror without re-emitting the docu
 // moved clause must live in the module its pointer names.
 test("T6: each delegation module carries its own clauses and names the modules it depends on", () => {
 	const placement: Record<string, readonly string[]> = {
-		"orchestrator-tracking.md": ["#### Authorization and progress", "Delivery follows work units", "Raise a candidate you know is high risk"],
+		"orchestrator-tracking.md": ["#### Authorization and progress", "Delivery follows work units", "Raise known high-risk candidates"],
 		// The tier table header lost "Native risk" with verification by named
 		// risk: the high row is reached only through escalate, not a native tier.
 		"orchestrator-verification.md": [

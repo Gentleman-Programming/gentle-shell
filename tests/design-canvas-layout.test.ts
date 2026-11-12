@@ -782,8 +782,9 @@ test("focus mode centers a moved artboard from where it sits", async () => {
 	second.wrapper.offsetTop = 900;
 	second.frame.parentElement!.offsetTop = 20;
 	click(second.shield!, 200, 200);
-	// x centers the 400 px board in 1000 px: 300 - 600; y centers its 300 px below the 16 px margin and the label: 200 - 920.
-	assert.equal(canvas.world.style.transform, "translate(-300px, -720px) scale(1)");
+	// Desktop fills the 1000 px viewport less its 8 px margins, so x is the left margin: 8 - 600; y centers its 300 px below
+	// the 8 px margin and the label: 200 - 920.
+	assert.equal(canvas.world.style.transform, "translate(-592px, -720px) scale(1)");
 });
 
 test("a layout change while an artboard is in use shifts the view to restore, so Back to canvas shows the boards where they were", async () => {

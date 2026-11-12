@@ -1591,22 +1591,26 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	const flushJobNotices = () => {
 		const route = deliveryRoute(false);
 		if (!route) return;
-		const failed: JobNotice[] = [];
+		const retained: JobNotice[] = [];
+		let deliveryFailed = false;
 		for (const notice of jobNotices.splice(0)) {
 			const { job } = notice;
-			if (activeSessionId() !== job.ownerSessionId) continue;
+			if (activeSessionId() !== job.ownerSessionId) {
+				retained.push(notice);
+				continue;
+			}
 			const content = notice.kind === "events" ? monitorEventsText(job, notice.batch)
 				: notice.kind === "stopped" ? monitorStoppedText(job, notice.reason) : jobNoticeText(job);
 			const event = notice.kind === "events" ? "events" : notice.kind === "stopped" ? notice.reason : undefined;
 			try {
 				sendToParent({ customType: JOB_NOTICE_TYPE, content, display: true, details: jobDetails(job, event) }, route);
 			} catch {
-				failed.push(notice);
+				retained.push(notice);
+				deliveryFailed = true;
 			}
 		}
-		if (failed.length === 0) return;
-		jobNotices.unshift(...failed);
-		if (route === "idle") armDeliveryRetry();
+		jobNotices.unshift(...retained);
+		if (deliveryFailed && route === "idle") armDeliveryRetry();
 	};
 
 	const flushAll = () => {
@@ -2280,7 +2284,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		};
 	};
 
-	const roots = (ctx: ExtensionContext) => ({ cwd: ctx.sessionManager.getCwd(), home: deps.home, agentHome });
+	const roots = (ctx: ExtensionContext) => ({ cwd: ctx.sessionManager.getCwd(), home: deps.home, agentHome, configHome: gentlePiConfigHome(deps.env) });
 	// Issue #2400: parent sessions already told about model_profiles keys that
 	// match no agent and suggest none, so the notice fires once per session.
 	const unmatchedKeysNotifiedSessions = new Set<string>();
@@ -3022,9 +3026,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	});
 
 	tool("list_agents", "List the subagents defined for this project and user, with their descriptions and declared tool inventory.", { properties: {} }, async (_params, ctx) => {
-		const { agents, errors } = discoverAgents(roots(ctx));
+		const { agents, errors, notices } = discoverAgents(roots(ctx));
 		const lines = agents.map((agent) => `- ${agent.name} (${agent.scope}): ${agent.description || "no description"} ${declaredToolInventory(agent)}`);
-		const problems = errors.map((error) => `! ${error}`);
+		const problems = [...errors, ...notices].map((problem) => `! ${problem}`);
 		return text(lines.length === 0 ? "No subagents defined." : [...lines, ...problems].join("\n"));
 	});
 
@@ -3243,11 +3247,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			});
 		} catch { /* A launch freezes lazily through the same resolver. */ }
 		stateCache.load(ctx.sessionManager);
-		// A resumed, reloaded, or replaced session starts with an empty completion
-		// queue so nothing pending from another session can replay here.
+		// A resumed, reloaded, or replaced session starts with empty completion
+		// and message queues so nothing pending from another session can replay here.
 		completions.dropAll();
 		messages.dropAll();
-		jobNotices.length = 0;
+		// Job notices remain owner-scoped and survive until their session resumes.
 		resetParentDelivery(ctx);
 		presence?.dispose();
 		registryFor(ctx);

@@ -5,10 +5,14 @@
 // whole, before any field changes.
 //
 // The values are shared, not copied: boards and the Compare object stay objects
-// that their owning module may still change in place (board.rects and
-// board.viewHeight in canvas-messages.js, canvas-focus.js and canvas-boards.js;
-// compare.loaded in canvas-compare.js). Comments and handoffs are plain data
-// with no such owner, so setComments and setHandoffs freeze them once, when they
+// that their owning module may still change in place (board.rects, board.viewWidth
+// and board.viewHeight in canvas-messages.js, canvas-focus.js and canvas-boards.js;
+// board.overflow, board.sizeFrames and board.sizesView, the All sizes frames, and
+// each size frame's own overflow in canvas-sizes.js, whose setOverflow is the only way
+// canvas-messages.js and canvas-focus.js change an overflow; board.generation in canvas-sizes.js,
+// whose resized is the only way canvas-focus.js changes it; each size frame's own rects
+// in canvas-sizes.js, canvas-messages.js and canvas-boards.js; compare.loaded in canvas-compare.js). Comments, handoffs and parts are plain data
+// with no such owner, so setComments, setHandoffs and setParts freeze them once, when they
 // are set (never on read): changing them means setting new values.
 
 // The first view sits FIT_PADDING (canvas-view.js) from the viewport's top left.
@@ -42,13 +46,19 @@ export function createStore(initial = {}) {
 		focus: null,
 		savedView: null,
 		savedPanel: null,
+		// The focused artboard's screen size (canvas-sizes.js): { kind: "phone" | "tablet" | "desktop" | "all" }
+		// or { kind: "custom", width }. Every focus session starts at Desktop.
+		size: Object.freeze({ kind: "desktop" }),
 		hoverBoard: null,
 		// The handoffs.json of design `slug`; boards of another design ignore it.
 		handoffs: freezeHandoffs({ slug: null, chosen: null, handoffs: {} }),
+		// The parts.json of design `slug` (canvas-parts.js); the panel lists them only while that design shows.
+		parts: freezeParts({ slug: null, parts: [] }),
 		// The open Compare view: { board, preview, artboardFrame, timer }.
 		compare: null,
 		toastTimer: 0,
-		// The open shared menu (canvas-menu.js): { button, items, byItem }, or null.
+		// The open menu (canvas-menu.js): { button, root, items, byItem }, or null; root is the menu's element
+		// (#gd-menu, or #gd-device-menu for the screen sizes), so one menu at a time is open.
 		menu: null,
 		// Where the boards sit (canvas-layout.js): { slug, view (which read of it this is), arrangement, positions, saved (what layout.json is known to hold), unsaved (its last save failed) } for the design
 		// shown, or null (the system-only view); replaced whole on every change, never changed in place.
@@ -76,8 +86,8 @@ export function createStore(initial = {}) {
 		setDesign: patch("setDesign", ["slug", "manifest", "boards", "systemBoard", "designCount"]),
 		/** Zoom and pan; `fitted` while the view is the one Fit gave. */
 		setView: patch("setView", ["zoom", "x", "y", "fitted"]),
-		/** The focused board and the view and panel to restore when focus mode ends. */
-		setFocus: patch("setFocus", ["focus", "savedView", "savedPanel"]),
+		/** The focused board, its screen size, and the view and panel to restore when focus mode ends. */
+		setFocus: patch("setFocus", ["focus", "savedView", "savedPanel", "size"]),
 		setHover(board) { state.hoverBoard = board; },
 		setCommenting(enabled) { state.commenting = enabled; },
 		/** The design's comments, the active one and the list filter. */
@@ -86,6 +96,8 @@ export function createStore(initial = {}) {
 		/** The open popover's pick and screenshot, the read token and the close timer. */
 		setPopover: patch("setPopover", ["pick", "shot", "shotToken", "closeTimer"]),
 		setHandoffs(handoffs) { state.handoffs = freezeHandoffs(handoffs); },
+		/** The parts of one design: `{ slug, parts }`. */
+		setParts(parts) { state.parts = freezeParts(parts); },
 		setCompare(compare) { state.compare = compare; },
 		setToastTimer(timer) { state.toastTimer = timer; },
 		/** The open shared menu, or null when none is open. */
@@ -111,6 +123,15 @@ function freezeHandoffs(handoffs) {
 		freezeObject(handoffs.handoffs);
 	}
 	return freezeObject(handoffs);
+}
+
+/** Freezes the parts, their list and each part, so only setParts changes them. */
+function freezeParts(parts) {
+	if (parts && typeof parts === "object" && Array.isArray(parts.parts)) {
+		parts.parts.forEach(freezeObject);
+		freezeObject(parts.parts);
+	}
+	return freezeObject(parts);
 }
 
 function freezeObject(value) {

@@ -29,8 +29,10 @@ test("the store starts with the canvas defaults and no system field", () => {
 		focus: null,
 		savedView: null,
 		savedPanel: null,
+		size: { kind: "desktop" },
 		hoverBoard: null,
 		handoffs: { slug: null, chosen: null, handoffs: {} },
+		parts: { slug: null, parts: [] },
 		compare: null,
 		toastTimer: 0,
 		menu: null,
@@ -70,7 +72,7 @@ test("each patch mutator changes only the fields of its own concern", () => {
 	const concerns: Array<[string, Record<string, unknown>]> = [
 		["setDesign", { slug: "beta", manifest: { slug: "beta" }, boards: [], systemBoard: null, designCount: 2 }],
 		["setView", { zoom: 2, x: 1, y: 2, fitted: true }],
-		["setFocus", { focus: null, savedView: { zoom: 1, x: 0, y: 0 }, savedPanel: true }],
+		["setFocus", { focus: null, savedView: { zoom: 1, x: 0, y: 0 }, savedPanel: true, size: { kind: "custom", width: 600 } }],
 		["setComments", { comments: [], activeId: "abc123", filter: "resolved" }],
 		["setPopover", { pick: null, shot: null, shotToken: 4, closeTimer: 0 }],
 	];

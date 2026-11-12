@@ -13,6 +13,7 @@ const TEXT = Object.freeze({
 	desktop: "Desktop",
 	custom: "Custom",
 	customAria: "Custom width in pixels",
+	customGroup: "Custom width",
 	error: (min, max) => `Enter a whole number from ${min} to ${max} (px).`,
 	itemTitle: (name, width, height) => `${name} ${width} × ${height}`,
 	button: (size) => `Preview size: ${size}`,
@@ -137,7 +138,14 @@ export function init(ctx) {
 			applyCustomWidth();
 		});
 		custom = { input, error };
-		actions.openMenu(els.device, els.deviceMenu, [...items, separator, row, error], [...items, input], TEXT.group, last ? input : items[0]);
+		// A menu owns only items, separators and groups: the field and its error sit in a named group, so screen readers in
+		// menu mode still reach and announce them.
+		const group = doc.createElement("div");
+		group.className = "gd-device-custom-group";
+		group.setAttribute("role", "group");
+		group.setAttribute("aria-label", TEXT.customGroup);
+		group.append(row, error);
+		actions.openMenu(els.device, els.deviceMenu, [...items, separator, group], [...items, input], TEXT.group, last ? input : items[0]);
 	}
 
 	const deviceMenuOpen = () => Boolean(state.menu && state.menu.root === els.deviceMenu);

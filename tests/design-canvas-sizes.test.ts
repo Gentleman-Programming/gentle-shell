@@ -173,6 +173,18 @@ test("canvas-layout S6: the top bar's device button opens a menu of Phone, Table
 	assert.equal(sizeError(canvas).getAttribute("role"), "alert");
 });
 
+test("the custom width field and its error sit in a group named Custom width, the only kind of non-item a menu may own", async () => {
+	const canvas = await loadSizes();
+	tallViewport(canvas);
+	focusOn(canvas);
+	$(canvas, "gd-device").dispatch("click");
+	const roles = deviceMenu(canvas).children.map((child) => child.getAttribute("role"));
+	assert.deepEqual(roles, ["menuitemradio", "menuitemradio", "menuitemradio", "separator", "group"], "the menu owns only items, a separator and a group");
+	const group = deviceMenu(canvas).children[4];
+	assert.equal(group.getAttribute("aria-label"), "Custom width");
+	assert.deepEqual(group.children.map((child) => child.className), ["gd-device-custom", "gd-device-error"], "the field's row and its error are inside the group");
+});
+
 test("canvas-layout S6: choosing a size closes the menu, gives focus back to the button and shows the size's icon and name on it", async () => {
 	const canvas = await loadSizes();
 	tallViewport(canvas);

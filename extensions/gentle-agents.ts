@@ -2280,7 +2280,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		};
 	};
 
-	const roots = (ctx: ExtensionContext) => ({ cwd: ctx.sessionManager.getCwd(), home: deps.home, agentHome });
+	const roots = (ctx: ExtensionContext) => ({ cwd: ctx.sessionManager.getCwd(), home: deps.home, agentHome, configHome: gentlePiConfigHome(deps.env) });
 	// Issue #2400: parent sessions already told about model_profiles keys that
 	// match no agent and suggest none, so the notice fires once per session.
 	const unmatchedKeysNotifiedSessions = new Set<string>();
@@ -3012,9 +3012,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	});
 
 	tool("list_agents", "List the subagents defined for this project and user, with their descriptions and declared tool inventory.", { properties: {} }, async (_params, ctx) => {
-		const { agents, errors } = discoverAgents(roots(ctx));
+		const { agents, errors, notices } = discoverAgents(roots(ctx));
 		const lines = agents.map((agent) => `- ${agent.name} (${agent.scope}): ${agent.description || "no description"} ${declaredToolInventory(agent)}`);
-		const problems = errors.map((error) => `! ${error}`);
+		const problems = [...errors, ...notices].map((problem) => `! ${problem}`);
 		return text(lines.length === 0 ? "No subagents defined." : [...lines, ...problems].join("\n"));
 	});
 

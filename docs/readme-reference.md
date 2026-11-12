@@ -1150,6 +1150,24 @@ Config shape (per agent):
 
 Legacy string entries are still accepted and treated as `model`-only config.
 
+## Subagent tool overlay
+
+Subagent tool allowlists ship inside the package-owned agent files, but a user or extension can add or remove tools without editing those files — the same way model routing is kept outside the agent definition. The overlay is applied at load and never written back to the agent file, so the file stays package-owned and keeps receiving upgrades.
+
+```json
+{
+  "gentle-ai-worker": { "add": ["bash_background"], "remove": ["mem_save"] }
+}
+```
+
+Overlay sources, lowest to highest precedence (the highest wins when one source adds and another removes the same tool):
+
+1. extension drop-ins — `agent-overlays.d/*.json` in the Gentle AI config home,
+2. global — `tools.json` in the Gentle AI config home (next to `models.json`),
+3. project — `.pi/gentle-ai/tools.json`.
+
+`add` appends tools (deduplicated); `remove` removes tools, including ones the package ships, and removing an absent tool is a no-op. An invalid overlay file or entry is ignored and reported as a notice next to agent parse errors; an overlay entry naming an agent that does not exist is reported the same way. A tool name the child runtime does not provide is passed through and surfaced by the child's own missing-tools notice.
+
 ## Agent-model profiles
 
 ```text

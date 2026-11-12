@@ -900,6 +900,10 @@ button:disabled { opacity: 0.5; cursor: default; }
 /* The single key that does the same as a menu item (Settings: Keyboard shortcuts, ?). */
 .gd-menu-kbd { margin-left: auto; }
 
+/* A checkbox item (Settings: Technical details): a check mark at the end while it is on. */
+.gd-menu-check { margin-left: auto; color: var(--gd-accent); visibility: hidden; }
+.gd-menu-item[aria-checked="true"] .gd-menu-check { visibility: visible; }
+
 /* Screen sizes (canvas-sizes.js): the top bar's device button shows the open artboard's size (its icon, short
    name and width × height) and is off outside focus mode; its menu, the shared .gd-menu box under it, holds the
    sizes as radio items, then the custom width field. */
@@ -1084,6 +1088,88 @@ button:disabled { opacity: 0.5; cursor: default; }
 	font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 	white-space: nowrap;
 }
+
+/* Token inspector (canvas-tokens.js): with Technical details on, the panel beside the frame of the element under
+   the pointer in Comment mode, with each value and its token; a value off the system says so in words. */
+.gd-inspector {
+	position: absolute;
+	z-index: 5;
+	width: 280px;
+	max-height: calc(100% - 24px);
+	overflow: auto;
+	background: var(--gd-panel);
+	border: 1px solid var(--gd-border);
+	border-radius: 8px;
+	box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+	color: var(--gd-text);
+	font-size: 12px;
+	cursor: default;
+}
+
+.gd-inspector[hidden] { display: none; }
+
+.gd-inspector-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 10px 12px;
+	border-bottom: 1px solid var(--gd-border);
+}
+
+.gd-inspector-title { margin: 0; font-size: 13px; white-space: nowrap; }
+
+.gd-inspector-selector {
+	min-width: 0;
+	color: var(--gd-accent);
+	font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.gd-inspector-list { display: grid; gap: 8px; margin: 0; padding: 10px 12px; }
+
+.gd-inspector-row {
+	display: grid;
+	grid-template-columns: 76px minmax(0, 1fr);
+	gap: 12px;
+}
+
+.gd-inspector-label { color: var(--gd-muted); }
+
+.gd-inspector-value {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+	margin: 0;
+	min-width: 0;
+}
+
+.gd-inspector-code { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+.gd-inspector-near { color: var(--gd-muted); }
+
+.gd-inspector-swatch {
+	display: inline-block;
+	width: 12px;
+	height: 12px;
+	border: 1px solid var(--gd-border);
+	border-radius: 3px;
+}
+
+.gd-inspector-ok { color: var(--gd-success); }
+.gd-inspector-bad { color: var(--gd-focus); font-weight: 600; }
+.gd-inspector-note { margin: 0; padding: 0 12px 10px; color: var(--gd-muted); }
+
+.gd-inspector-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	padding: 10px 12px;
+	border-top: 1px solid var(--gd-border);
+}
+
+.gd-inspector button:focus-visible { outline: 2px solid var(--gd-focus); outline-offset: 2px; }
 
 /* Export (canvas-export.js): the ⋯ button beside Implement this opens the shared menu with the exports. While a
    PNG is grabbed, the viewport covers the window and only the open artboard's frame shows (exportArtboard). */

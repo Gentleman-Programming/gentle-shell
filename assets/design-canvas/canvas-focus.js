@@ -44,6 +44,8 @@ export function init(ctx) {
 	/** Comment mode in navigation: the shield routes the hover to the inspector so it can outline the element. */
 	function hoverAt(event) {
 		if (!state.commenting || state.focus) return setHoverBoard(null);
+		// The token inspector's panel floats over the canvas: the pointer on it keeps the hovered element.
+		if (els.inspector.contains(event.target)) return;
 		const shield = event.target.closest(".gd-shield");
 		const board = shield ? boardOfShield(shield) : null;
 		setHoverBoard(board && !board.system ? board : null);

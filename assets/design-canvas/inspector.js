@@ -8,6 +8,9 @@
 // In navigation mode the canvas covers the artboard with a shield and routes
 // comment-mode hovers and clicks here as points; in focus mode the artboard
 // owns the wheel and the keyboard, and Shift+Esc asks the canvas to leave.
+// In comment mode it also measures the element under the pointer (gd:inspect), once per element
+// and again after a scroll: the canvas's token inspector compares those computed values with the
+// project's design tokens (canvas-tokens.js).
 (() => {
 	"use strict";
 
@@ -26,6 +29,8 @@
 	let generation = 0;
 	let hovered = null;
 	let selected = null;
+	// The element last reported with gd:inspect (null: none).
+	let inspected = null;
 
 	function makeBox(color) {
 		const box = document.createElement("div");
@@ -82,6 +87,13 @@
 			selected = null;
 		}
 		refresh();
+		reportInspect(false);
+	}
+
+	function setHovered(element) {
+		hovered = element;
+		refresh();
+		reportInspect(false);
 	}
 
 	function isOwn(node) {
@@ -140,6 +152,110 @@
 
 	function post(message) {
 		window.parent.postMessage(message, "*");
+	}
+
+	// ---- measuring (the token inspector)
+
+	const MAX_FAMILY = 300;
+	const MAX_LABEL = 80;
+
+	/** `rgb()`/`rgba()` as a browser reports a computed color (comma or space syntax), else null. */
+	function parseColor(text) {
+		if (typeof text !== "string") return null;
+		const match = /^rgba?\(\s*([\d.]+)\s*[, ]\s*([\d.]+)\s*[, ]\s*([\d.]+)\s*(?:[,/]\s*([\d.]+)(%?)\s*)?\)$/.exec(text.trim());
+		if (!match) return null;
+		const alpha = match[4] === undefined ? 1 : Number(match[4]) / (match[5] ? 100 : 1);
+		const color = { r: Number(match[1]), g: Number(match[2]), b: Number(match[3]), a: alpha };
+		return [color.r, color.g, color.b].every((channel) => channel >= 0 && channel <= 255) && alpha >= 0 && alpha <= 1 ? color : null;
+	}
+
+	/** `top` composited over the opaque `under`, rounded to whole channels. */
+	function over(top, under) {
+		const mix = (a, b) => Math.round(a * top.a + b * (1 - top.a));
+		return { r: mix(top.r, under.r), g: mix(top.g, under.g), b: mix(top.b, under.b) };
+	}
+
+	/**
+	 * The color behind an element: its own and its ancestors' backgrounds up to the first opaque one,
+	 * composited; the white page when none is opaque; null when an image, a gradient or a color it
+	 * cannot read is in the way.
+	 */
+	function backgroundOf(element) {
+		const layers = [];
+		for (let node = element; node; node = node.parentElement) {
+			const style = getComputedStyle(node);
+			if (style.backgroundImage && style.backgroundImage !== "none") return null;
+			const color = parseColor(style.backgroundColor);
+			if (color === null && style.backgroundColor && style.backgroundColor !== "transparent") return null;
+			if (color && color.a > 0) {
+				layers.push(color);
+				if (color.a >= 1) break;
+			}
+		}
+		let base = { r: 255, g: 255, b: 255 };
+		for (let index = layers.length - 1; index >= 0; index--) base = layers[index].a >= 1 ? { r: layers[index].r, g: layers[index].g, b: layers[index].b } : over(layers[index], base);
+		return base;
+	}
+
+	/** CSS px of a computed length; a percentage (a radius) of `basis`. */
+	function px(value, basis) {
+		if (typeof value !== "string") return 0;
+		const number = Number.parseFloat(value);
+		if (!Number.isFinite(number)) return 0;
+		return value.endsWith("%") ? Math.round(number * basis) / 100 : number;
+	}
+
+	function weightOf(value) {
+		if (value === "bold") return 700;
+		const number = Number.parseFloat(value);
+		return Number.isFinite(number) ? number : 400;
+	}
+
+	/** The element's own text, not its children's. */
+	function ownText(element) {
+		let text = "";
+		for (const node of element.childNodes || []) if (node.nodeType === 3) text += node.textContent;
+		return text.replace(/\s+/g, " ").trim();
+	}
+
+	function labelOf(element) {
+		const id = element.id ? `#${element.id}` : "";
+		const className = typeof element.className === "string" ? element.className.trim().split(/\s+/)[0] : "";
+		return `${element.localName}${id}${!id && className ? `.${className}` : ""}`.slice(0, MAX_LABEL);
+	}
+
+	/** What the canvas needs to compare one element with the design tokens; lengths in CSS px. */
+	function measure(element) {
+		const style = getComputedStyle(element);
+		const rect = element.getBoundingClientRect();
+		const basis = Math.min(rect.width, rect.height);
+		const sides = (names) => names.map((name) => px(style[name], basis));
+		const lineHeight = Number.parseFloat(style.lineHeight);
+		const text = ownText(element);
+		return {
+			selector: cssSelector(element),
+			label: labelOf(element),
+			text: text.slice(0, MAX_EXCERPT),
+			hasText: text.length > 0,
+			rect: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
+			color: parseColor(style.color),
+			background: backgroundOf(element),
+			fontFamily: String(style.fontFamily || "").slice(0, MAX_FAMILY),
+			fontSize: px(style.fontSize, 0),
+			fontWeight: weightOf(style.fontWeight),
+			lineHeight: Number.isFinite(lineHeight) ? lineHeight : null,
+			margin: sides(["marginTop", "marginRight", "marginBottom", "marginLeft"]),
+			padding: sides(["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"]),
+			radius: sides(["borderTopLeftRadius", "borderTopRightRadius", "borderBottomRightRadius", "borderBottomLeftRadius"]),
+		};
+	}
+
+	/** Tells the canvas which element is under the pointer, once per element (`force`: again, it moved); null when none or not commenting. */
+	function reportInspect(force) {
+		const element = enabled ? hovered : null;
+		if (!force && element === inspected) return;
+		inspected = element;
+		post({ type: "gd:inspect", element: element ? measure(element) : null });
 	}
 
 	function find(selector) {
@@ -229,8 +345,7 @@
 			if (enabled) pick(elementAt(event.data));
 		} else if (event.data.type === "gd:hover-at") {
 			if (!enabled) return;
-			hovered = elementAt(event.data);
-			refresh();
+			setHovered(elementAt(event.data));
 		} else if (event.data.type === "gd:clear") {
 			selected = null;
 			refresh();
@@ -253,8 +368,12 @@
 
 	window.addEventListener("pointerover", (event) => {
 		if (!enabled) return;
-		hovered = targetOf(event);
-		refresh();
+		setHovered(targetOf(event));
+	}, true);
+
+	// Leaving the page altogether (the pointer goes out of the frame) ends the hover.
+	window.addEventListener("pointerout", (event) => {
+		if (enabled && !event.relatedTarget) setHovered(null);
 	}, true);
 
 	window.addEventListener("click", (event) => {
@@ -318,7 +437,7 @@
 		post({ type: "gd:wheel", deltaX: event.deltaX, deltaY: event.deltaY, deltaMode: event.deltaMode, zoom, shift: event.shiftKey, x: event.clientX, y: event.clientY });
 	}, { passive: false, capture: true });
 
-	window.addEventListener("scroll", () => { refresh(); queueReport(); }, true);
+	window.addEventListener("scroll", () => { refresh(); queueReport(); if (enabled && hovered) reportInspect(true); }, true);
 	window.addEventListener("resize", () => { refresh(); queueReport(); queueOverflow(); });
 	window.addEventListener("load", () => { queueReport(); queueOverflow(); });
 	// An image that loads after the page did can widen it with no mutation or resize; its load does not bubble, so the

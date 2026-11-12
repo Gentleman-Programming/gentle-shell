@@ -3,7 +3,8 @@
 // are trusted only by matching event.source to a known artboard's frame or, in All
 // sizes, one of its size frames (canvas-sizes.js). The canvas's own messages to
 // artboards (gd:mode, gd:focus, gd:size, gd:pins, gd:pick-at, gd:hover-at, gd:highlight,
-// gd:clear) are posted by the module that owns each state.
+// gd:clear) are posted by the module that owns each state. gd:inspect (the element under the
+// pointer, measured) belongs to the token inspector (canvas-tokens.js).
 
 export function init(ctx) {
 	const { win, els, store, api, actions } = ctx;
@@ -61,6 +62,8 @@ export function init(ctx) {
 			// A report for another width is a late one from before the frame was resized.
 			if (Math.round(data.width) !== surface.viewWidth) return;
 			actions.setOverflow(surface, data.overflow ? { scrollWidth: data.scrollWidth } : null);
+		} else if (data.type === "gd:inspect") {
+			actions.inspectFrom(surface, data.element);
 		} else if (data.type === "gd:escape") {
 			if (!els.popover.hidden) actions.closePopover();
 			else if (state.commenting) actions.setCommenting(false);

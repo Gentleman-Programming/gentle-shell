@@ -26,17 +26,21 @@ function loadInspector({ fonts = false } = {}) {
 	});
 	// The ids of the elements scrolled into view (a highlight).
 	const scrolled: string[] = [];
+	// `computed`: the element's computed style, as getComputedStyle reports it (the token inspector measures it).
 	const created: any[] = [];
-	const button = Object.assign(new Element(), {
+	const button: Record<string, any> = Object.assign(new Element(), {
 		id: "cta",
 		isConnected: true,
 		scrollIntoView() { scrolled.push("cta"); },
 		localName: "button",
+		className: "buy primary",
 		innerText: "Buy now",
+		childNodes: [{ nodeType: 3, textContent: " Buy  now " }, { nodeType: 1, textContent: "icon" }],
 		parentElement: null,
 		hasAttribute: () => false,
 		getAttribute: () => null,
 		getBoundingClientRect: () => ({ left: 4, top: 8, width: 60, height: 20 }),
+		computed: {},
 	});
 	const scrolling = { scrollTop: 0, scrollLeft: 0, clientHeight: 100, scrollHeight: 100, clientWidth: 100, scrollWidth: 100, parentElement: null };
 	// The page's width as the frame lays it out (clientWidth) and as wide as its content is (scrollWidth).
@@ -67,7 +71,7 @@ function loadInspector({ fonts = false } = {}) {
 		document,
 		Element,
 		CSS: { escape: (value: string) => value },
-		getComputedStyle: () => ({ overflowX: "hidden", overflowY: "hidden" }),
+		getComputedStyle: (node: any) => ({ overflowX: "hidden", overflowY: "hidden", ...node?.computed }),
 		requestAnimationFrame: (callback: () => void) => { frames.push(callback); return frames.length; },
 		MutationObserver: class { constructor(callback: (records: unknown[]) => void) { observers.push(callback); } observe() {} },
 		parent,
@@ -98,7 +102,7 @@ function loadInspector({ fonts = false } = {}) {
 	const runFrames = () => { while (frames.length > 0) frames.shift()!(); };
 	// The inspector makes its hover outline first, then the selected one.
 	const [hoverBox, selectedBox] = created;
-	return { posted, fire, fromParent, context, documentElement, runFrames, scrolled, captureOnDocument, mutate, fontsLoaded, makeNode, Element, hoverBox, selectedBox };
+	return { posted, fire, fromParent, context, documentElement, runFrames, scrolled, button, captureOnDocument, mutate, fontsLoaded, makeNode, Element, hoverBox, selectedBox };
 }
 
 test("the inspector reports whether its page is wider than the frame, once per change", () => {
@@ -330,4 +334,178 @@ test("in focus mode the inspector leaves the wheel to the artboard and never pan
 	const zoom = inspector.fire("wheel", { ...wheel, ctrlKey: true, metaKey: false });
 	assert.equal(zoom.defaultPrevented, true, "Ctrl/Cmd+wheel never zooms the browser page");
 	assert.deepEqual(inspector.posted, []);
+});
+
+// ---- the token inspector's measure (gd:inspect)
+
+/** The computed style of a 14 px bold button with padding and rounded corners, as a browser reports it. */
+const BUTTON_STYLE = {
+	color: "rgb(17, 17, 17)", backgroundColor: "rgb(255, 212, 121)", backgroundImage: "none",
+	fontFamily: "Inter, sans-serif", fontSize: "14px", fontWeight: "bold", lineHeight: "20px",
+	marginTop: "0px", marginRight: "4px", marginBottom: "0px", marginLeft: "4px",
+	paddingTop: "8px", paddingRight: "16px", paddingBottom: "8px", paddingLeft: "16px",
+	borderTopLeftRadius: "6px", borderTopRightRadius: "6px", borderBottomRightRadius: "50%", borderBottomLeftRadius: "6px",
+};
+const BUTTON_MEASURE = {
+	selector: "#cta", label: "button#cta", text: "Buy now", hasText: true,
+	rect: { x: 4, y: 8, width: 60, height: 20 },
+	color: { r: 17, g: 17, b: 17, a: 1 }, background: { r: 255, g: 212, b: 121 },
+	fontFamily: "Inter, sans-serif", fontSize: 14, fontWeight: 700, lineHeight: 20,
+	margin: [0, 4, 0, 4], padding: [8, 16, 8, 16], radius: [6, 6, 10, 6], rootFontSize: 16,
+};
+const inspects = (inspector: ReturnType<typeof loadInspector>) => inspector.posted.filter((message) => message.type === "gd:inspect");
+
+test("in Comment mode with Technical details on the inspector measures the hovered element once per element, and says when none is hovered", () => {
+	const inspector = loadInspector();
+	inspector.button.computed = BUTTON_STYLE;
+	inspector.fromParent({ type: "gd:hover-at", x: 10, y: 12 });
+	inspector.fire("pointerover", { target: inspector.button });
+	assert.deepEqual(inspector.posted, [], "nothing outside Comment mode");
+	inspector.fromParent({ type: "gd:mode", enabled: true, inspect: true });
+	assert.deepEqual(inspector.posted, [], "Comment mode with nothing hovered says nothing");
+	inspector.fromParent({ type: "gd:hover-at", x: 10, y: 12 });
+	assert.deepEqual(inspector.posted, [{ type: "gd:inspect", element: BUTTON_MEASURE }]);
+	inspector.fromParent({ type: "gd:hover-at", x: 11, y: 12 });
+	inspector.fire("pointerover", { target: inspector.button });
+	inspector.fromParent({ type: "gd:mode", enabled: true, inspect: true });
+	assert.equal(inspector.posted.length, 1, "the same element is reported once");
+	inspector.fire("scroll", {});
+	inspector.runFrames();
+	assert.equal(inspects(inspector).length, 2, "a scroll moves the element: reported again");
+	inspector.fire("pointerout", { relatedTarget: inspector.button });
+	assert.equal(inspects(inspector).length, 2, "moving to another element of the page is not leaving it");
+	inspector.fire("pointerout", { relatedTarget: null });
+	assert.deepEqual(inspector.posted.at(-1), { type: "gd:inspect", element: null }, "the pointer left the page");
+	inspector.fire("scroll", {});
+	inspector.runFrames();
+	assert.equal(inspects(inspector).length, 3, "nothing hovered, nothing to report on scroll");
+	inspector.fire("pointerover", { target: inspector.button });
+	assert.deepEqual(inspector.posted.at(-1), { type: "gd:inspect", element: BUTTON_MEASURE });
+	inspector.fromParent({ type: "gd:mode", enabled: false, inspect: true });
+	assert.deepEqual(inspector.posted.at(-1), { type: "gd:inspect", element: null }, "leaving Comment mode clears it");
+	assert.equal(inspects(inspector).length, 5);
+});
+
+test("the measured background composites translucent layers up to the first opaque one, and is unknown over an image or gradient", () => {
+	const inspector = loadInspector();
+	const layer = (computed: Record<string, string>, parentElement: unknown = null) => ({ computed, parentElement });
+	const page = layer({ backgroundColor: "rgb(0, 0, 255)", backgroundImage: "none" });
+	const tint = layer({ backgroundColor: "rgba(255, 0, 0, 0.5)", backgroundImage: "none" }, page);
+	inspector.button.computed = { ...BUTTON_STYLE, backgroundColor: "rgba(0, 0, 0, 0)", color: "rgb(10 20 30 / 50%)", lineHeight: "normal", fontWeight: "500" };
+	inspector.button.parentElement = tint;
+	inspector.fromParent({ type: "gd:mode", enabled: true, inspect: true });
+	inspector.fromParent({ type: "gd:hover-at", x: 1, y: 1 });
+	const element = inspector.posted.at(-1).element;
+	assert.deepEqual([element.background, element.color, element.lineHeight, element.fontWeight], [{ r: 128, g: 0, b: 128 }, { r: 10, g: 20, b: 30, a: 0.5 }, null, 500]);
+
+	// No opaque layer at all: the white page is behind it.
+	page.computed = { backgroundColor: "transparent", backgroundImage: "none" };
+	inspector.fire("scroll", {});
+	inspector.runFrames();
+	assert.deepEqual(inspector.posted.at(-1).element.background, { r: 255, g: 128, b: 128 });
+	page.computed = { backgroundColor: "rgb(0, 0, 255)", backgroundImage: "linear-gradient(red, blue)" };
+	inspector.fire("scroll", {});
+	inspector.runFrames();
+	assert.equal(inspector.posted.at(-1).element.background, null, "a gradient behind: unknown");
+	page.computed = { backgroundColor: "color(display-p3 1 0 0)", backgroundImage: "none" };
+	inspector.fire("scroll", {});
+	inspector.runFrames();
+	assert.equal(inspector.posted.at(-1).element.background, null, "a color it cannot read: unknown");
+});
+
+test("with Technical details off the inspector outlines the element but never measures it; turning it on reports the hovered one", () => {
+	const inspector = loadInspector();
+	inspector.button.computed = BUTTON_STYLE;
+	const computed = inspector.context.getComputedStyle;
+	let styles = 0;
+	inspector.context.getComputedStyle = (node: unknown) => { styles += 1; return computed(node); };
+	inspector.fromParent({ type: "gd:mode", enabled: true, inspect: false });
+	inspector.fromParent({ type: "gd:hover-at", x: 10, y: 12 });
+	inspector.fire("scroll", {});
+	inspector.fire("pointerout", { relatedTarget: null });
+	inspector.fromParent({ type: "gd:hover-at", x: 10, y: 12 });
+	inspector.runFrames();
+	assert.deepEqual([inspects(inspector).length, styles], [0, 0], "nothing measured, nothing posted");
+	inspector.fromParent({ type: "gd:mode", enabled: true, inspect: true });
+	assert.deepEqual(inspects(inspector), [{ type: "gd:inspect", element: BUTTON_MEASURE }], "on: the element already hovered, at once");
+	inspector.fromParent({ type: "gd:mode", enabled: true, inspect: true });
+	assert.equal(inspects(inspector).length, 1, "still on: not again");
+	inspector.fromParent({ type: "gd:mode", enabled: true, inspect: false });
+	inspector.fromParent({ type: "gd:mode", enabled: true, inspect: true });
+	assert.equal(inspects(inspector).length, 2, "off and on again: reported again, so the panel can come back");
+});
+
+test("scrolls in one animation frame re-measure the hovered element once", () => {
+	const inspector = loadInspector();
+	inspector.button.computed = BUTTON_STYLE;
+	inspector.fromParent({ type: "gd:mode", enabled: true, inspect: true });
+	inspector.fromParent({ type: "gd:hover-at", x: 10, y: 12 });
+	assert.equal(inspects(inspector).length, 1);
+	inspector.fire("scroll", {});
+	inspector.fire("scroll", {});
+	assert.equal(inspects(inspector).length, 1, "reports wait for the next frame");
+	inspector.runFrames();
+	assert.equal(inspects(inspector).length, 2, "two scrolls, one report");
+	inspector.fire("scroll", {});
+	inspector.fire("pointerout", { relatedTarget: null });
+	inspector.runFrames();
+	assert.deepEqual(inspects(inspector).slice(2), [{ type: "gd:inspect", element: null }], "the pointer left before the frame: nothing to re-measure");
+});
+
+/** Comment mode with Technical details on and the button hovered and measured; then the button grows without a scroll. */
+function measuredThenResized({ fonts = false } = {}) {
+	const inspector = loadInspector({ fonts });
+	inspector.button.computed = BUTTON_STYLE;
+	inspector.fromParent({ type: "gd:mode", enabled: true, inspect: true });
+	inspector.fromParent({ type: "gd:hover-at", x: 10, y: 12 });
+	assert.deepEqual(inspects(inspector), [{ type: "gd:inspect", element: BUTTON_MEASURE }]);
+	inspector.button.getBoundingClientRect = () => ({ left: 4, top: 8, width: 120, height: 48 });
+	inspector.button.computed = { ...BUTTON_STYLE, fontSize: "18px" };
+	return inspector;
+}
+const RESIZED = { type: "gd:inspect", element: { ...BUTTON_MEASURE, rect: { x: 4, y: 8, width: 120, height: 48 }, fontSize: 18, radius: [6, 6, 24, 6] } };
+
+test("a late load on the page re-measures the hovered element once per frame", () => {
+	const inspector = measuredThenResized();
+	inspector.captureOnDocument("load", inspector.makeNode());
+	inspector.captureOnDocument("load", inspector.makeNode());
+	assert.equal(inspects(inspector).length, 1, "reports wait for the next frame");
+	inspector.runFrames();
+	assert.deepEqual(inspects(inspector).slice(1), [RESIZED], "two loads in one frame, one report with the new size");
+});
+
+test("a late web font re-measures the hovered element once per frame", () => {
+	const inspector = measuredThenResized({ fonts: true });
+	inspector.fontsLoaded();
+	inspector.fontsLoaded();
+	assert.equal(inspects(inspector).length, 1, "reports wait for the next frame");
+	inspector.runFrames();
+	assert.deepEqual(inspects(inspector).slice(1), [RESIZED], "two font loads in one frame, one report with the new size");
+});
+
+test("a page change re-measures the hovered element once per frame; the inspector's own boxes do not", () => {
+	const inspector = measuredThenResized();
+	const ownBox = Object.assign(inspector.makeNode(), { hasAttribute: () => true });
+	inspector.mutate([{ type: "attributes", target: ownBox }]);
+	inspector.runFrames();
+	assert.equal(inspects(inspector).length, 1, "the inspector's own boxes moving is no page change");
+	inspector.mutate([{ type: "childList", target: inspector.makeNode() }]);
+	inspector.mutate([{ type: "attributes", target: inspector.makeNode() }]);
+	assert.equal(inspects(inspector).length, 1, "reports wait for the next frame");
+	inspector.runFrames();
+	assert.deepEqual(inspects(inspector).slice(1), [RESIZED], "two changes in one frame, one report with the new size");
+});
+
+test("the measure reports the page's root font size, so rem tokens are compared in this page's px; 16 when unreadable", () => {
+	const inspector = loadInspector();
+	inspector.button.computed = BUTTON_STYLE;
+	const root = inspector.documentElement as unknown as Record<string, unknown>;
+	root.computed = { fontSize: "10px" };
+	inspector.fromParent({ type: "gd:mode", enabled: true, inspect: true });
+	inspector.fromParent({ type: "gd:hover-at", x: 10, y: 12 });
+	assert.equal(inspector.posted.at(-1).element.rootFontSize, 10);
+	root.computed = { fontSize: "" };
+	inspector.fire("scroll", {});
+	inspector.runFrames();
+	assert.equal(inspector.posted.at(-1).element.rootFontSize, 16, "no readable root font size: the browser default");
 });

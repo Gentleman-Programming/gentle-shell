@@ -13,6 +13,8 @@
 // with a loopback previewUrl, a Compare view of the artboard next to the running app.
 // Parts (design/<slug>/parts.json): Implement only this hands one element to the session
 // without choosing a direction; Partial implementations lists them at the panel's bottom.
+// Tokens (design/system.md): with Technical details on, Comment mode shows the token inspector
+// beside the hovered element's frame (canvas-tokens.js).
 //
 // Modules: each canvas-*.js module exports init(ctx) and returns its public
 // functions; ctx is { win, doc, els, store, api, ui, actions }. Modules reach the
@@ -45,6 +47,7 @@ import * as popover from "./canvas-popover.js";
 import * as rail from "./canvas-rail.js";
 import * as sizes from "./canvas-sizes.js";
 import { createStore } from "./canvas-store.js";
+import * as tokens from "./canvas-tokens.js";
 import * as ui from "./canvas-ui.js";
 import * as view from "./canvas-view.js";
 
@@ -55,7 +58,7 @@ import * as view from "./canvas-view.js";
  * the popover too: its Esc clears the selected artboard first, and the next Esc reaches
  * the popover's (leave Comment mode).
  */
-const MODULES = [view, focus, boards, handoffs, parts, compare, events, comments, menu, rail, sizes, exporter, layout, minimap, popover, messages];
+const MODULES = [view, focus, boards, handoffs, parts, tokens, compare, events, comments, menu, rail, sizes, exporter, layout, minimap, popover, messages];
 
 export function boot(win, doc) {
 	const config = JSON.parse(doc.getElementById("gd-config").textContent);
@@ -99,6 +102,13 @@ export function boot(win, doc) {
 		minimapMap: $("gd-minimap-map"),
 		minimapView: $("gd-minimap-view"),
 		minimapKey: $("gd-minimap-key"),
+		inspector: $("gd-inspector"),
+		inspectorTitle: $("gd-inspector-title"),
+		inspectorSelector: $("gd-inspector-selector"),
+		inspectorList: $("gd-inspector-list"),
+		inspectorNote: $("gd-inspector-note"),
+		inspectorFix: $("gd-inspector-fix"),
+		inspectorCopy: $("gd-inspector-copy"),
 		popover: $("gd-popover"),
 		form: $("gd-popover-form"),
 		target: $("gd-popover-target"),
@@ -160,6 +170,7 @@ export function boot(win, doc) {
 	actions.setMode(actions.storedMode());
 	actions.startRail();
 	actions.startSizes();
+	actions.startTokens();
 	actions.start();
 	actions.connectEvents();
 }

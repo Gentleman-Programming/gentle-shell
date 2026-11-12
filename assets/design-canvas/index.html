@@ -26,6 +26,7 @@
 		<symbol id="i-devices" viewBox="0 0 24 24"><rect x="2" y="4" width="13" height="10" rx="1.5"/><path d="M5 18h7"/><rect x="17" y="8" width="5" height="12" rx="1"/></symbol>
 		<symbol id="i-width" viewBox="0 0 24 24"><path d="M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4"/></symbol>
 		<symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+		<symbol id="i-code" viewBox="0 0 24 24"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></symbol>
 		<symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
 		<symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/></symbol>
 		<symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></symbol>
@@ -65,7 +66,7 @@
 			<button type="button" id="gd-comment" class="gd-tool" aria-pressed="false" aria-keyshortcuts="C" title="Comment on an element (C)"><svg class="gd-i" aria-hidden="true"><use href="#i-comment"/></svg><span class="gd-tool-label">Comment</span></button>
 			<span class="gd-sep" aria-hidden="true"></span>
 			<button type="button" id="gd-rail-fit" class="gd-tool" aria-keyshortcuts="F" title="See all the directions (F)"><svg class="gd-i" aria-hidden="true"><use href="#i-fit"/></svg><span class="gd-tool-label">Overview</span></button>
-			<button type="button" id="gd-rail-settings" class="gd-tool gd-bottom" aria-haspopup="menu" aria-expanded="false" aria-controls="gd-menu" title="Settings: design system and keyboard shortcuts"><svg class="gd-i" aria-hidden="true"><use href="#i-gear"/></svg><span class="gd-tool-label">Settings</span></button>
+			<button type="button" id="gd-rail-settings" class="gd-tool gd-bottom" aria-haspopup="menu" aria-expanded="false" aria-controls="gd-menu" title="Settings: design system, keyboard shortcuts and technical details"><svg class="gd-i" aria-hidden="true"><use href="#i-gear"/></svg><span class="gd-tool-label">Settings</span></button>
 		</nav>
 		<main id="gd-viewport" class="gd-viewport" aria-label="Artboards" tabindex="0">
 			<div id="gd-world" class="gd-world"></div>
@@ -74,6 +75,18 @@
 			<section id="gd-minimap" class="gd-minimap" aria-labelledby="gd-minimap-title" hidden>
 				<h2 id="gd-minimap-title" class="gd-minimap-title"><span>Minimap</span><kbd id="gd-minimap-key" aria-hidden="true">M</kbd></h2>
 				<div id="gd-minimap-map" class="gd-minimap-map" role="img" aria-label="Position of the visible area among the artboards. Click or drag to move the view."><b id="gd-minimap-view" class="gd-minimap-view"></b></div>
+			</section>
+			<section id="gd-inspector" class="gd-inspector" aria-labelledby="gd-inspector-title" hidden>
+				<header class="gd-inspector-head">
+					<h2 id="gd-inspector-title" class="gd-inspector-title"></h2>
+					<code id="gd-inspector-selector" class="gd-inspector-selector"></code>
+				</header>
+				<dl id="gd-inspector-list" class="gd-inspector-list"></dl>
+				<p id="gd-inspector-note" class="gd-inspector-note" hidden></p>
+				<div class="gd-inspector-actions">
+					<button type="button" id="gd-inspector-fix" class="gd-primary gd-small">Ask the agent to fix</button>
+					<button type="button" id="gd-inspector-copy" class="gd-small">Copy</button>
+				</div>
 			</section>
 		</main>
 		<aside id="gd-panel" class="gd-panel" aria-labelledby="gd-panel-title">

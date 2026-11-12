@@ -33,6 +33,8 @@ test("the store starts with the canvas defaults and no system field", () => {
 		hoverBoard: null,
 		handoffs: { slug: null, chosen: null, handoffs: {} },
 		parts: { slug: null, parts: [] },
+		tokens: [],
+		technical: false,
 		compare: null,
 		toastTimer: 0,
 		menu: null,
@@ -136,4 +138,20 @@ test("the single-field mutators set their one field", () => {
 	assert.equal(store.state.menu, menu, "the open menu, shared, not copied");
 	store.setMenu(null);
 	assert.equal(store.state.menu, null);
+});
+
+test("the design tokens are frozen when they are set, and Technical details is one boolean", () => {
+	const store = createStore();
+	assert.throws(() => { (store.state.tokens as any[]).push({}); }, TypeError, "the initial tokens are protected too");
+	const token = { name: "--bg", value: "#1a1218", section: "Colors", group: "color" };
+	const tokens = [token];
+	store.setTokens(tokens);
+	assert.equal(store.state.tokens, tokens, "the same array, frozen when it is set, not copied per read");
+	assert.throws(() => { (store.state.tokens as any[]).push({}); }, TypeError);
+	assert.throws(() => { (store.state.tokens[0] as any).value = "#000"; }, TypeError);
+	assert.deepEqual(store.state.tokens, [{ name: "--bg", value: "#1a1218", section: "Colors", group: "color" }]);
+	store.setTechnical(true);
+	assert.equal(store.state.technical, true);
+	store.setTechnical(false);
+	assert.equal(store.state.technical, false);
 });

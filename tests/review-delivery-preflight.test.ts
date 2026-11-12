@@ -388,7 +388,7 @@ test("preflight rechecks the actual assessed range, preserves native non-due/dec
 });
 
 test("#3169: an untracked file beside a committed range is excluded with the native inventory instead of failing the preflight", async t => {
-	const root = mkdtempSync(join(tmpdir(), "review-delivery-untracked-"));
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "review-delivery-untracked-")));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "-c", "commit.gpgsign=false", ...args], { cwd: root, encoding: "utf8" }).trim();
 	git("init", "-q"); writeFileSync(join(root, "app.ts"), "base\n"); git("add", "."); git("commit", "-qm", "base");

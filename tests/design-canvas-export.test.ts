@@ -64,7 +64,7 @@ test("each design artboard has a ⋯ menu button named after it beside Implement
 		assert.equal(buttons.length, 1);
 		const button = buttons[0];
 		assert.equal(button.localName, "button");
-		assert.equal(button.type, "button");
+		assert.equal((button as unknown as { type?: string }).type, "button");
 		assert.equal(button.getAttribute("aria-label"), `More actions for ${title}`);
 		assert.equal(button.getAttribute("aria-haspopup"), "menu");
 		assert.equal(button.getAttribute("aria-expanded"), "false");

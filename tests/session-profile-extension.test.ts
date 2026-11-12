@@ -241,7 +241,7 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
  await bind(first.session);
  const runtime = new AgentSessionRuntime(
   first.session,
-  { cwd: root, agentDir } as never,
+  { cwd: root, agentDir, modelRuntime } as never,
   async (options) => {
    const next = await make(
     options.sessionManager,
@@ -249,7 +249,7 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
    );
    return {
     ...next,
-    services: { cwd: root, agentDir } as never,
+    services: { cwd: root, agentDir, modelRuntime } as never,
     diagnostics: [],
    };
   },

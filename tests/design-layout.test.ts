@@ -69,6 +69,7 @@ test("S3: write refuses anything but a known arrangement and integer positions o
 		[{ arrangement: "row", positions: { "01-a.html": { x: Number.NaN, y: 0 } } }, /x and y must be integers/],
 		[{ arrangement: "row", positions: { "01-a.html": { x: Number.POSITIVE_INFINITY, y: 0 } } }, /x and y must be integers/],
 		[{ arrangement: "row", positions: { "01-a.html": { x: 0, y: -DESIGN_LAYOUT_COORDINATE_MAX - 1 } } }, /x and y must be integers/],
+		[{ arrangement: "row", positions: { "01-a.html": { x: 1e300, y: 0 } } }, /x and y must be integers between -2000000 and 2000000/],
 		[{ arrangement: "row", positions: many }, /at most 100 boards/],
 	];
 	for (const [value, message] of refused) {

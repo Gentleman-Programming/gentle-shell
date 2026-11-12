@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -163,6 +164,42 @@ test("validated ASSESS objects reach the mocked native facade with parsed fields
 	assert.equal(requests.length, 2);
 	assert.deepEqual(requests[0], { cwd: process.cwd(), baseRef, committedOnly: true });
 	assert.deepEqual(requests[1], requests[0]);
+});
+
+test("ASSESS ignores empty top-level selection defaults and targets the selected child repository (#2808)", async (t) => {
+	const parent = realpathSync(mkdtempSync(join(tmpdir(), "assess-parent-")));
+	t.after(() => rmSync(parent, { recursive: true, force: true }));
+	const selected = join(parent, "selected");
+	const other = join(parent, "other");
+	for (const cwd of [selected, other]) {
+		mkdirSync(cwd);
+		execFileSync("git", ["init", "--initial-branch=fixture"], { cwd, stdio: "ignore" });
+	}
+	const requests: unknown[] = [];
+	const native = { assess: async (request: unknown) => { requests.push(request); throw new Error("fixture assessment unavailable"); } } as unknown as NativeReviewCli;
+	for (const defaults of [{}, { intendedUntracked: [] }, { untrackedScope: "select" }, { untrackedScope: "exclude" }, { intendedUntracked: [], untrackedScope: "select" }, { intendedUntracked: [], untrackedScope: "exclude" }]) {
+		const args = validate("gentle_review", { operation: "assess", workspaceRoot: selected, input: "{}", ...defaults });
+		const original = structuredClone(args);
+		const parsed = __testing.parseReviewControllerParameters(args);
+		assert.equal("intendedUntracked" in parsed, false);
+		assert.equal("untrackedScope" in parsed, false);
+		const result = await __testing.executeReviewControllerOperation(args, parent, native);
+		assert.equal(result.operation, "assess");
+		assert.deepEqual(args, original, "normalization must not mutate the caller input");
+	}
+	assert.deepEqual(requests, Array.from({ length: 6 }, () => ({ cwd: selected })), "all equivalent calls reach the selected repository; the fixture deliberately reports native unavailability");
+});
+
+test("ASSESS still rejects meaningful or malformed top-level untracked selection (#2808)", () => {
+	for (const defaults of [
+		{ intendedUntracked: ["new.ts"] },
+		{ intendedUntracked: ["new.ts"], untrackedScope: "select" },
+		{ intendedUntracked: null }, { intendedUntracked: "" }, { intendedUntracked: undefined },
+		{ intendedUntracked: [], untrackedScope: "unknown" }, { untrackedScope: null },
+	]) assert.throws(() => __testing.parseReviewControllerParameters({ operation: "assess", ...defaults }), /does not accept/);
+	for (const operation of ["status", "start", "answer-consent", "reset"]) {
+		assert.throws(() => __testing.parseReviewControllerParameters({ operation, intendedUntracked: [], untrackedScope: "select" }), /does not accept/);
+	}
 });
 
 test("serialized inputs remain byte-for-byte unchanged at validation and facade parsing", () => {

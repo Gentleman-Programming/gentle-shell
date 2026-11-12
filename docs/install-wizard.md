@@ -743,7 +743,7 @@ PNPM_HOME, `pnpm add -g @earendil-works/pi-coding-agent@1.0.0 gentle-pi@4.0.0`
 lists Pi 1.0.0 while the Pi beside gentle-pi is 1.1.0. So Gentle Shell may run a
 Pi newer than `PI_INSTALL_VERSION`, always at least the minimum: the runner
 verifies that Pi (`verify-global-list`, the setup recovery, a pnpm
-`verify-updated-shell`) and, when it is not `PI_INSTALL_VERSION` (1.5.0 now; the 1.0.0/1.1.0/1.2.0 figures above are that older verification), the outcome says which Pi
+`verify-updated-shell`) and, when it is not `PI_INSTALL_VERSION` (1.5.2 now; the 1.0.0/1.1.0/1.2.0 figures above are that older verification), the outcome says which Pi
 Gentle Shell runs. `--config.auto-install-peers=false` would leave gentle-pi
 with no Pi beside it, so the launcher would run any `pi` on PATH, and
 `--config.overrides` is ignored for global installs.

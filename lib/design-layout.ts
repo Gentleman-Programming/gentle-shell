@@ -3,7 +3,9 @@ import { isArtboardPath, locateDesignFile, readDesignFile, replaceDesignFile, se
 // The single owner of design/<slug>/layout.json (canvas-layout S3): where each artboard sits on the canvas and the
 // arrangement last chosen. Only the canvas server writes it, after validating the whole document, through the same
 // per-file queue and temp file + rename as comments.json. It is view state, not design content: a file this module
-// cannot read or parse is no layout (the canvas lays the artboards out in a row), and the next save replaces it.
+// cannot read or parse is never an error that stops the canvas, and the next save replaces it. `load` tells such a
+// file apart from a missing one (the server answers it as an error, so the canvas keeps the layout it shows);
+// `read` takes both as no layout.
 
 export const DESIGN_LAYOUT_FILE = "layout.json";
 export const DESIGN_LAYOUT_ARRANGEMENTS = ["row", "column", "grid", "free"] as const;
@@ -19,7 +21,7 @@ export type DesignLayoutArrangement = (typeof DESIGN_LAYOUT_ARRANGEMENTS)[number
 export type DesignLayoutPosition = { x: number; y: number };
 export type DesignLayout = { arrangement: DesignLayoutArrangement; positions: Record<string, DesignLayoutPosition> };
 
-export type DesignLayoutErrorCode = "not-found" | "invalid-input";
+export type DesignLayoutErrorCode = "not-found" | "invalid-input" | "invalid-file";
 
 export class DesignLayoutError extends Error {
 	readonly code: DesignLayoutErrorCode;
@@ -33,6 +35,11 @@ export class DesignLayoutError extends Error {
 export interface DesignLayoutStore {
 	/** The design's layout; null when layout.json is missing, unreadable or invalid. */
 	read(slug: string): Promise<DesignLayout | null>;
+	/**
+	 * The design's layout; null only when layout.json is missing. A layout.json that is a link, a directory, too large,
+	 * fails to read or holds no valid layout throws an "invalid-file" error saying why; it is left as it is.
+	 */
+	load(slug: string): Promise<DesignLayout | null>;
 	/** Validates `value` as a whole layout and replaces layout.json with it; a refused value writes nothing. */
 	write(slug: string, value: unknown): Promise<DesignLayout>;
 }
@@ -68,23 +75,43 @@ export function createDesignLayoutStore(designRoot: string): DesignLayoutStore {
 		return locateDesignFile(designRoot, slug, DESIGN_LAYOUT_FILE, (message) => new DesignLayoutError("not-found", message));
 	}
 
+	async function load(slug: string): Promise<DesignLayout | null> {
+		const missing = `No design "${slug}" in design/.`;
+		const unreadable = (reason: string) => new DesignLayoutError("invalid-file", reason);
+		let raw: string | undefined;
+		try {
+			const { path } = await locate(slug);
+			raw = await readDesignFile(path, MAX_FILE_BYTES, () => unreadable(`larger than ${MAX_FILE_BYTES} bytes`));
+		} catch (error) {
+			// Only a missing design is not found; a layout.json that is a link or a directory is no file to read.
+			if (error instanceof DesignLayoutError && (error.message === missing || error.code === "invalid-file")) throw error;
+			if (error instanceof DesignLayoutError) throw unreadable("not a regular file");
+			const code = error && typeof error === "object" && typeof (error as { code?: unknown }).code === "string" ? (error as { code: string }).code : "";
+			throw unreadable(code ? `read error ${code}` : "read error");
+		}
+		if (raw === undefined) return null;
+		let value: unknown;
+		try {
+			value = JSON.parse(raw);
+		} catch {
+			throw unreadable("not valid JSON");
+		}
+		try {
+			return parseDesignLayout(value);
+		} catch (error) {
+			throw unreadable((error as Error).message);
+		}
+	}
+
 	return {
+		load,
+
 		async read(slug) {
-			const missing = `No design "${slug}" in design/.`;
-			let raw: string | undefined;
 			try {
-				const { path } = await locate(slug);
-				raw = await readDesignFile(path, MAX_FILE_BYTES, () => new Error("layout.json is too large"));
+				return await load(slug);
 			} catch (error) {
-				// Only a missing design is an error; a layout.json that is a link, a directory or too large is no layout.
-				if (error instanceof DesignLayoutError && error.message === missing) throw error;
-				return null;
-			}
-			if (raw === undefined) return null;
-			try {
-				return parseDesignLayout(JSON.parse(raw));
-			} catch {
-				return null;
+				if (error instanceof DesignLayoutError && error.code === "invalid-file") return null;
+				throw error;
 			}
 		},
 

@@ -2757,7 +2757,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		...orchestratorToolRenderers("session", expandHint),
 		parameters: { type: "object", additionalProperties: false, properties: {
 			subject: { type: "string", maxLength: 120, description: "Short task subject; updates aliases independently of human names and names unnamed Pi sessions." },
-			state: { anyOf: [{ type: "null" }, { type: "object", additionalProperties: false, properties: {
+			state: { anyOf: [{ type: "null" }, { type: "string" }, { type: "object", additionalProperties: false, properties: {
 				objective: { type: "string" }, progress: { type: "string" }, decisions: { type: "string" }, blockers: { type: "string" },
 				work: { type: "object", additionalProperties: false,
 					description: "Historical, non-authoritative; topic requires area. Text and work JSON share 2048 UTF-8 bytes. Reject exact duplicate tags/refs; no ref resolution or routing.",
@@ -2773,7 +2773,17 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const transport = activeTransportFor(ctx);
 			if (!transport) return text("Error: session messaging is not ready.", { error: "not ready" });
-			const { subject, state } = params as { subject?: unknown; state?: unknown };
+			const { subject, state: rawState } = params as { subject?: unknown; state?: unknown };
+			// Agents sometimes serialize the state object as a JSON string; accept
+			// it with the same rules instead of a cryptic schema rejection, and
+			// name the nesting rule when the parsed shape is flat.
+			let state = rawState;
+			if (typeof rawState === "string") {
+				try { state = JSON.parse(rawState); }
+				catch { throw new Error("invalid-state-json: state must be a JSON object string with objective/progress/decisions/blockers and optional work{area,topic,tags,refs,tasks} nested under \"work\"."); }
+				if (state !== null && (typeof state !== "object" || Array.isArray(state))) throw new Error("invalid-state-json: the JSON string must encode an object or null.");
+				if (state && Object.keys(state).some(key => !["objective", "progress", "decisions", "blockers", "work"].includes(key))) throw new Error("invalid-state-json: unknown top-level fields; area/topic/tags/refs/tasks must be nested under \"work\", not at the top level of state.");
+			}
 			const declared = normalizeTaskSubject(subject);
 			// An owner object without `progress` keeps the automatic todo progress still on
 			// display; null and an explicit `progress` win, and an over-budget merge does not fail the call.

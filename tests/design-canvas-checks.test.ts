@@ -413,7 +413,7 @@ test("a drag pans and keeps the ring; a still click on the canvas or an artboard
 
 test("a finding out of sight gets no ring: its card says why and Show centers the artboard", async () => {
 	const canvas = await loadChecks();
-	report(canvas, canvas.boards[0].frame, [finding({ check: "target", title: "Small touch target", detail: '"Skip" is 120 × 20 px; WCAG 2.2 needs at least 24 × 24 px.', selector: "#skip", hidden: true })]);
+	report(canvas, canvas.boards[0].frame, [finding({ check: "target", severity: "advice", title: "Small touch target", detail: '"Skip" is 120 × 20 px; WCAG 2.2 asks for 24 × 24 px, or enough space around it that a 24 px circle on it touches no other target.', selector: "#skip", hidden: true })]);
 	openQuality(canvas);
 	const note = withClass(cards(canvas)[0], "gd-check-hidden")[0];
 	assert.equal(note.textContent, "Out of sight (hidden or off-screen), so Show centers its artboard without a ring.");

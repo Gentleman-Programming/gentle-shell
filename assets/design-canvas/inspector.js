@@ -216,6 +216,22 @@
 		return base;
 	}
 
+	/**
+	 * How opaque the element's text is drawn: its own opacity times its ancestors', up to and including the one whose
+	 * background is opaque (the layer backgroundOf stops at). 0 when the text is not drawn at all.
+	 */
+	function opacityOf(element) {
+		let opacity = 1;
+		for (let node = element; node; node = node.parentElement) {
+			const style = getComputedStyle(node);
+			const own = Number.parseFloat(style.opacity);
+			if (Number.isFinite(own)) opacity *= Math.min(Math.max(own, 0), 1);
+			const color = parseColor(style.backgroundColor);
+			if (color && color.a >= 1) break;
+		}
+		return opacity;
+	}
+
 	/** CSS px of a computed length; a percentage (a radius) of `basis`. */
 	function px(value, basis) {
 		if (typeof value !== "string") return 0;
@@ -446,8 +462,9 @@
 			if (text && !element.hasAttribute("disabled")) {
 				const color = parseColor(style.color);
 				const behind = color ? backgroundOf(element) : null;
-				if (color && behind) {
-					const foreground = color.a < 1 ? over(color, behind) : color;
+				const alpha = behind ? color.a * opacityOf(element) : 0;
+				if (color && behind && alpha > 0) {
+					const foreground = alpha < 1 ? over({ ...color, a: alpha }, behind) : color;
 					const { ratio, text: shownRatio } = contrastOf(foreground, behind);
 					const size = px(style.fontSize, 0);
 					const large = size >= 24 || (size >= 18.66 && weightOf(style.fontWeight) >= 700);
@@ -460,13 +477,15 @@
 				const rect = element.getBoundingClientRect();
 				const width = Math.round(rect.width);
 				const height = Math.round(rect.height);
-				if (width < MIN_TARGET || height < MIN_TARGET) add("target", "fail", "Small touch target", `${subjectOf(element)} is ${width} × ${height} px; WCAG 2.2 needs at least ${MIN_TARGET} × ${MIN_TARGET} px.`, element);
+				// Advice, never a problem: WCAG 2.2 accepts a smaller target with enough space around it, which this cannot measure.
+				if (width < MIN_TARGET || height < MIN_TARGET) add("target", "advice", "Small touch target", `${subjectOf(element)} is ${width} × ${height} px; WCAG 2.2 asks for ${MIN_TARGET} × ${MIN_TARGET} px, or enough space around it that a ${MIN_TARGET} px circle on it touches no other target.`, element);
 				else if (width < ADVISED_TARGET || height < ADVISED_TARGET) add("target", "advice", "Touch target under 44 px", `${subjectOf(element)} is ${width} × ${height} px; ${ADVISED_TARGET} × ${ADVISED_TARGET} px is recommended for touch.`, element);
 			}
 
 			const type = (element.getAttribute("type") || "").toLowerCase();
 			const role = element.getAttribute("role");
-			if ((tag === "img" || (tag === "input" && type === "image")) && style.display !== "none" && !element.hasAttribute("alt") && role !== "presentation" && role !== "none" && element.getAttribute("aria-hidden") !== "true") {
+			// Not rendered (display: none on it or an ancestor): no box at all. A rendered image not loaded yet has one, even 0 × 0.
+			if ((tag === "img" || (tag === "input" && type === "image")) && element.getClientRects().length > 0 && !element.hasAttribute("alt") && role !== "presentation" && role !== "none" && element.getAttribute("aria-hidden") !== "true") {
 				const source = (element.getAttribute("src") || "").split(/[?#]/)[0].split("/").pop();
 				add("alt", "fail", "Image without alt text", `${source ? clip(source, 60) : "The image"} has no alt attribute. Describe it, or use alt="" if it is decorative.`, element);
 			}

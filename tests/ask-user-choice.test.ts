@@ -742,3 +742,22 @@ test("ask_user_choice renderResult renders selected, custom response with text, 
 	).render(80).join("\n");
 	assert.match(cancelled, /Cancelled/);
 });
+
+test("ask_user_choice reports Pi blocked (kind=question) while the choice is on screen", async () => {
+	const { tool } = registerChoiceTool(["read"]);
+	let customOptions: { blocked?: { kind?: string; message?: string } } | undefined;
+	const ctx = {
+		mode: "tui",
+		ui: {
+			custom: async (_factory: ChoiceCustomFactory, options?: typeof customOptions) => {
+				customOptions = options;
+				return undefined;
+			},
+		},
+	};
+
+	await tool.execute("call", { question: "Proceed?", options }, new AbortController().signal, undefined, ctx);
+
+	assert.equal(customOptions?.blocked?.kind, "question");
+	assert.match(customOptions?.blocked?.message ?? "", /\S/);
+});

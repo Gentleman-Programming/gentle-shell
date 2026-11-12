@@ -301,7 +301,7 @@ export default function askUserChoice(pi: ExtensionAPI): void {
 					container.addChild(new Text(theme.fg("dim", "↑↓ navigate • Enter select • Esc cancel"), 1, 0));
 					container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
 					return container;
-				});
+				}, { blocked: { kind: "question", message: "Choice awaiting input" } });
 			} finally {
 				pi.events.emit(ASK_USER_CHOICE_BLOCKED_EVENT, { active: false });
 			}

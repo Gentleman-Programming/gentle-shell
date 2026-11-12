@@ -17,6 +17,8 @@ function installIdentity(terminal: Terminal, busyLabel: () => string | undefined
 	if (typeof original !== "function") return NOOP;
 	let active = true;
 	let latest: ProgramStatus | undefined;
+	// True while the only report on the terminal is our own busy "working" (no native status yet).
+	let synthetic = false;
 	const effective = (status: ProgramStatus): ProgramStatus => {
 		if (status.state === "clear") return status;
 		const label = busyLabel();
@@ -28,14 +30,21 @@ function installIdentity(terminal: Terminal, busyLabel: () => string | undefined
 	const wrapped = (status: ProgramStatus) => {
 		if (!active) return original.call(terminal, status);
 		latest = { ...status };
+		synthetic = false;
 		original.call(terminal, effective(status));
 	};
-	// Re-report the latest native status after a busy edge. Without one, only a
-	// raise has anything to say; a lower has nothing to restore.
+	// Re-report the latest native status after a busy edge. Without one, a raise
+	// reports a synthetic working and a lower clears it again.
 	const refresh = () => {
 		if (!active) return;
 		if (latest) original.call(terminal, effective(latest));
-		else if (busyLabel() !== undefined) original.call(terminal, effective({ state: "working" }));
+		else if (busyLabel() !== undefined) {
+			synthetic = true;
+			original.call(terminal, { state: "working", app: "gentle-shell", message: busyLabel() });
+		} else if (synthetic) {
+			synthetic = false;
+			original.call(terminal, { state: "clear" });
+		}
 	};
 	terminal.setProgramStatus = wrapped;
 
@@ -56,6 +65,7 @@ function installIdentity(terminal: Terminal, busyLabel: () => string | undefined
 		if (terminal.setProgramStatus !== wrapped) return;
 		terminal.setProgramStatus = original;
 		if (latest) original.call(terminal, latest);
+		else if (synthetic) original.call(terminal, { state: "clear" });
 	};
 	return { release, refresh };
 }

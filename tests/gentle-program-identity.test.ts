@@ -229,6 +229,26 @@ test("a busy raise re-reports the latest native status and the lower edge delive
 	h.fire("session_shutdown");
 });
 
+test("a synthetic working report with no native status is cleared when busy ends or the wrapper is released", () => {
+	for (const end of ["lower", "release"] as const) {
+		const h = harness(); h.terminal.programStatus = undefined; h.fire("session_start");
+		h.busy({ active: true, label: "1 subagent running" });
+		assert.deepEqual(h.reports, [{ state: "working", app: "gentle-shell", message: "1 subagent running" }]);
+		h.reports.length = 0;
+		if (end === "lower") h.busy({ active: false }); else h.fire("session_shutdown");
+		assert.deepEqual(h.reports, [{ state: "clear" }]);
+		if (end === "lower") h.fire("session_shutdown");
+	}
+	// A native report replaces the synthetic one: the lower edge then restores that report, never clears it.
+	const h = harness(); h.terminal.programStatus = undefined; h.fire("session_start");
+	h.busy({ active: true, label: "1 subagent running" });
+	h.terminal.setProgramStatus({ state: "done", app: "pi", message: "Session name" });
+	h.reports.length = 0;
+	h.busy({ active: false });
+	assert.deepEqual(h.reports, [{ state: "done", app: "gentle-shell", message: "Session name" }]);
+	h.fire("session_shutdown");
+});
+
 test("blocked and error pass through while subagents run", () => {
 	const h = harness(); h.fire("session_start");
 	h.busy({ active: true, label: "1 subagent running" });

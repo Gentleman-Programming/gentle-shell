@@ -320,6 +320,12 @@ export function findAll(root: FakeElement, test: (element: FakeElement) => boole
 }
 
 export const withClass = (root: FakeElement, name: string) => findAll(root, (element) => element.classes.has(name));
+
+/** The size generation a frame's page last heard from the canvas (gd:size), 0 before any, as inspector.js keeps it. */
+export const heardGeneration = (frame: FakeElement): number => frame.contentWindow!.posted.filter((message) => message.type === "gd:size").at(-1)?.generation ?? 0;
+
+/** A gd:pick as inspector.js posts it from `frame`'s page now: tagged with the size generation that page heard last. */
+export const inspectorPick = (frame: FakeElement, pick: Record<string, unknown>) => ({ ...pick, generation: heardGeneration(frame) });
 export const texts = (root: FakeElement, name: string) => withClass(root, name).map((element) => element.textContent);
 
 export function handoffDoc(chosen: string | null, handoffs: Record<string, Record<string, unknown>>) {

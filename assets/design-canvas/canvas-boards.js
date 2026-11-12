@@ -45,8 +45,9 @@ export function init(ctx) {
 		return designs;
 	}
 
-	function sendMode(board) {
-		board.frame.contentWindow?.postMessage({ type: "gd:mode", enabled: state.commenting && !board.system }, "*");
+	/** A board's frame or one of its size frames (canvas-sizes.js): comment mode never reaches the system board. */
+	function sendMode(surface) {
+		surface.frame.contentWindow?.postMessage({ type: "gd:mode", enabled: state.commenting && !actions.ownerOf(surface).system }, "*");
 	}
 
 	function boardUrl(board) {
@@ -108,11 +109,15 @@ export function init(ctx) {
 		shield.append(hint);
 		const pins = doc.createElement("div");
 		pins.className = "gd-pins";
+		// The Overflows chip (canvas-sizes.js) on the frame.
+		const flag = actions.overflowFlag();
 		// The size the layout places (canvas-layout.js layoutSize): the frame at its manifest size.
 		wrapper.layoutSize = { width: artboard.width, height: artboard.height };
 		// rects: null until the artboard reports where each commented element is.
 		// viewWidth and viewHeight: the frame's size, the manifest's or the focused screen size (canvas-focus.js).
-		const board = { slug, artboard, frame, wrapper, shield, pins, handoff, rects: null, system, viewWidth: 0, viewHeight: 0 };
+		// overflow, sizeFrames and sizesView: the page's overflow report and the All sizes frames (canvas-sizes.js).
+		// generation: how many sizes the frame has had, which its page tags its picks with (canvas-sizes.js resized).
+		const board = { slug, artboard, frame, wrapper, shield, pins, flag, handoff, rects: null, system, viewWidth: 0, viewHeight: 0, overflow: null, generation: 0, sizeFrames: [], sizesView: null };
 		actions.setFrameSize(board, artboard.width, artboard.height);
 		actions.renderHandoff(board);
 		// The ⋯ menu (export) sits beside Implement this; the system board has none.
@@ -123,15 +128,12 @@ export function init(ctx) {
 			actions.enterFocus(board);
 		});
 		frame.addEventListener("load", () => {
-			board.rects = null;
-			sendMode(board);
-			actions.sendFocus(board);
-			if (!system) actions.sendPins(board);
+			actions.surfaceLoaded(board);
 			// A live reload of the focused artboard keeps focus mode and its keyboard focus.
 			if (state.focus === board && els.popover.hidden && (doc.activeElement === frame || doc.activeElement === doc.body)) frame.focus();
 		});
 		frame.src = boardUrl(board);
-		box.append(frame, shield, pins);
+		box.append(frame, shield, pins, flag);
 		wrapper.append(label, box);
 		return board;
 	}
@@ -254,6 +256,8 @@ export function init(ctx) {
 		}
 		els.empty.hidden = true;
 		const focusFile = state.focus && !state.focus.system ? state.focus.artboard.file : null;
+		// The boards are built again: the old ones' All sizes frames go with them (the focused one gets new ones).
+		for (const board of state.boards) actions.removeSizeFrames(board);
 		store.setDesign({ boards: manifest.artboards.map((artboard) => createBoard(slug, artboard)) });
 		// A manifest reload keeps focus mode on the same artboard file while it still exists.
 		if (focusFile) store.setFocus({ focus: state.boards.find((board) => board.artboard.file === focusFile) ?? state.focus });
@@ -270,9 +274,13 @@ export function init(ctx) {
 		await actions.loadComments();
 	}
 
+	/** Reloads the artboard in its own frame and in every size frame of All sizes. */
 	function reloadBoard(board) {
-		board.rects = null;
-		board.frame.src = `${boardUrl(board)}?v=${Date.now()}`;
+		const url = `${boardUrl(board)}?v=${Date.now()}`;
+		for (const surface of actions.surfacesOf(board)) {
+			surface.rects = null;
+			surface.frame.src = url;
+		}
 	}
 
 	/** The system board first, then the design's artboards, each where the layout puts it. */
@@ -292,6 +300,7 @@ export function init(ctx) {
 		try { info = await getJson("api/system"); } catch { info = null; }
 		const exists = Boolean(info && info.exists === true && isFiniteNumber(info.width) && isFiniteNumber(info.height));
 		if (exists === Boolean(state.systemBoard)) return false;
+		if (state.systemBoard) actions.removeSizeFrames(state.systemBoard);
 		store.setDesign({ systemBoard: exists ? createBoard(null, { file: String(info.file), ...SYSTEM_LABEL, width: info.width, height: info.height }, true) : null });
 		return true;
 	}

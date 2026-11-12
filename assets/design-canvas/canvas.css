@@ -13,6 +13,8 @@
 	--gd-pin: #8ab4ff;
 	--gd-pin-resolved: #7d8a7f;
 	--gd-success: #9be0a8;
+	/* An artboard's page before its own background paints. */
+	--gd-paper: #fff;
 	font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 	font-size: 14px;
 }
@@ -936,6 +938,106 @@ button:disabled { opacity: 0.5; cursor: default; }
 	margin: 0 10px 6px;
 	color: var(--gd-danger);
 	font-size: 12px;
+}
+
+/* All sizes: the artboard's own frame stays loaded but hidden; a frame per size takes its place, outside the
+   world, below the artboard's label, scaled together (canvas-sizes.js layoutSizes). At the smallest scale the row
+   can still be wider than the viewport: it then starts at its left edge and scrolls sideways. The 4 px of padding,
+   taken back by the margin, keep the frames' outlines inside the scrolling box. */
+.gd-all-sizes .gd-frame-box { visibility: hidden; }
+
+.gd-sizes-all {
+	position: absolute;
+	z-index: 3;
+	display: flex;
+	align-items: flex-start;
+	justify-content: safe center;
+	gap: 20px;
+	margin: -4px;
+	padding: 4px;
+	overflow-x: auto;
+}
+
+.gd-size-frame {
+	display: flex;
+	flex: none;
+	flex-direction: column;
+	gap: 8px;
+}
+
+/* The label is as wide as its scaled frame (canvas-sizes.js): a longer one ends in an ellipsis, its title keeps the whole. */
+.gd-size-head {
+	overflow: hidden;
+	min-height: 20px;
+	color: var(--gd-muted);
+	font-size: 12px;
+	line-height: 20px;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.gd-size-head > * + * { margin-left: 6px; }
+.gd-size-head > .gd-i { vertical-align: -3px; }
+
+.gd-size-name { color: var(--gd-text); font-weight: 600; }
+.gd-size-dim, .gd-size-scale { font-variant-numeric: tabular-nums; }
+
+.gd-size-scaled {
+	position: relative;
+	overflow: hidden;
+	background: var(--gd-paper);
+	box-shadow: 0 0 0 1px var(--gd-border);
+}
+
+.gd-size-stage {
+	position: absolute;
+	top: 0;
+	left: 0;
+	transform-origin: 0 0;
+}
+
+.gd-size-iframe {
+	display: block;
+	border: 0;
+	background: var(--gd-paper);
+}
+
+.gd-commenting .gd-size-scaled { outline: 2px dashed var(--gd-accent); outline-offset: 2px; }
+
+/* Overflows: on a frame whose page is wider than it, at the frame's bottom right; the title explains it. In the
+   world it keeps its screen size at any zoom. */
+.gd-overflow-flag {
+	position: absolute;
+	right: 6px;
+	bottom: 6px;
+	z-index: 2;
+	display: inline-flex;
+	align-items: center;
+	padding: 1px 10px;
+	border: 1px solid var(--gd-focus);
+	border-radius: 4px;
+	background: var(--gd-panel);
+	color: var(--gd-focus);
+	font-size: 12px;
+	font-weight: 600;
+	cursor: help;
+	transform: scale(var(--gd-inv-zoom, 1));
+	transform-origin: 100% 100%;
+}
+
+.gd-overflow-flag[hidden] { display: none; }
+.gd-exporting .gd-overflow-flag { visibility: hidden; }
+
+/* The size a comment was made at, on its card: a mono chip like the size on the device button. */
+.gd-comment-viewport {
+	display: inline-block;
+	margin-top: 4px;
+	padding: 1px 6px;
+	border: 1px solid var(--gd-border);
+	border-radius: 4px;
+	color: var(--gd-accent);
+	font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	white-space: nowrap;
 }
 
 /* Export (canvas-export.js): the ⋯ button beside Implement this opens the shared menu with the exports. While a

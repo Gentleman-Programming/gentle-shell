@@ -4,7 +4,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { DESIGN_CANVAS_ASSETS } from "../lib/design-canvas-assets.ts";
 import { injectInspector } from "../lib/design-canvas-server.ts";
-import { boardsOf, click, findAll, flush, handoffDoc, loadCanvas, read, texts, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
+import { boardsOf, click, findAll, flush, handoffDoc, inspectorPick, loadCanvas, read, texts, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
 
 // Export (canvas-export.js): a ⋯ button in each design artboard's header opens the shared
 // menu (canvas-menu.js) with the export items only: Export as PNG (the browser's tab
@@ -516,6 +516,62 @@ test("an export from an open artboard at Phone size grabs it at its own size and
 	assert.equal(canvas.boards[0].frame.style.width, "390px", "at Phone again");
 	assert.equal($(canvas, "gd-device-name").textContent, "Phone");
 	assert.equal(canvas.world.style.transform, before);
+});
+
+test("an export from All sizes grabs the artboard's own frame without the size frames and gives All sizes back", async () => {
+	const { canvas, log } = await pngCanvas();
+	click(canvas.boards[0].shield!, 200, 200);
+	$(canvas, "gd-device").dispatch("click");
+	findAll($(canvas, "gd-device-menu"), (element) => element.dataset.size === "all")[0].dispatch("click");
+	const sizeFrames = () => withClass(canvas.viewport, "gd-size-frame").length;
+	assert.equal(sizeFrames(), 3);
+	const during: number[] = [];
+	const document = canvas.document as any;
+	const create = document.createElement;
+	document.createElement = (tag: string) => {
+		if (tag === "video") during.push(sizeFrames());
+		return create(tag);
+	};
+	choose(canvas, "Export as PNG");
+	await settle();
+	assert.deepEqual(during, [0], "Desktop while the frame is grabbed: no size frames");
+	assert.deepEqual([log.during[0].width, log.during[0].height], ["400px", "300px"]);
+	assert.match(canvas.navMode.textContent, /^Using: First/, "the artboard stays open");
+	assert.equal($(canvas, "gd-device-name").textContent, "All sizes");
+	assert.equal(sizeFrames(), 3, "All sizes again");
+	assert.ok(canvas.boards[0].wrapper.classes.has("gd-all-sizes"));
+});
+
+test("E1: an export while the comment box is open on an All sizes frame closes it first: that frame clears its outline before it is removed", async () => {
+	const { canvas } = await pngCanvas();
+	click(canvas.boards[0].shield!, 200, 200);
+	$(canvas, "gd-device").dispatch("click");
+	findAll($(canvas, "gd-device-menu"), (element) => element.dataset.size === "all")[0].dispatch("click");
+	$(canvas, "gd-comment").dispatch("click");
+	const phoneSection = withClass(canvas.viewport, "gd-size-frame")[0];
+	const phone = findAll(phoneSection, (element) => element.localName === "iframe")[0];
+	canvas.message(phone.contentWindow, inspectorPick(phone, { type: "gd:pick", selector: "#cta", excerpt: "Buy", rect: { x: 1, y: 1, width: 10, height: 10 } }));
+	const popover = $(canvas, "gd-popover");
+	assert.equal(popover.hidden, false, "the comment box is open on the Phone frame");
+	// Whether the Phone frame was still in the viewport when it was told to clear its outline.
+	const shown = (element: FakeElement) => {
+		for (let at: FakeElement | null = element; at; at = at.parentElement) if (at === canvas.viewport) return true;
+		return false;
+	};
+	const clears: boolean[] = [];
+	const post = phone.contentWindow!.postMessage;
+	phone.contentWindow!.postMessage = (message: any) => {
+		if (message.type === "gd:clear") clears.push(shown(phoneSection));
+		post(message);
+	};
+	choose(canvas, "Export as PNG");
+	await settle();
+	assert.equal(popover.hidden, true, "no comment box is left on a frame that is gone");
+	assert.deepEqual(clears, [true], "the Phone frame cleared its outline while it was still shown");
+	assert.equal($(canvas, "gd-device-name").textContent, "All sizes", "All sizes comes back");
+	assert.equal(shown(phoneSection), false, "with new size frames");
+	$(canvas, "gd-popover-cancel").dispatch("click");
+	assert.deepEqual(clears, [true], "a later Cancel sends nothing to the removed frame");
 });
 
 test("an artboard bigger than the window names the window size it needs and grabs nothing", async () => {

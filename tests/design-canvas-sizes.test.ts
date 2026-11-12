@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { click, findAll, loadCanvas, read, texts, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
+import { click, findAll, inspectorPick, loadCanvas, read, texts, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
 
 // Screen sizes in focus mode (canvas-sizes.js): the top bar's device button and its menu
 // (Phone, Tablet, Desktop and a custom width), the focused artboard's frame at that size,
@@ -135,7 +135,7 @@ test("canvas-layout S5: the label above the frame is measured at the focused wid
 
 // ---- the device button and its menu (canvas-layout S6)
 
-test("canvas-layout S6: the top bar's device button opens a menu of Phone, Tablet, Desktop and a custom width, Desktop checked", async () => {
+test("canvas-layout S6: the top bar's device button opens a menu of Phone, Tablet, Desktop, All sizes and a custom width, Desktop checked", async () => {
 	const canvas = await loadSizes();
 	const button = deviceButton(canvas);
 	assert.equal(button.disabled, true, "outside an open artboard the button does nothing");
@@ -155,14 +155,14 @@ test("canvas-layout S6: the top bar's device button opens a menu of Phone, Table
 	assert.equal(button.getAttribute("aria-expanded"), "true");
 	assert.equal(menu.getAttribute("aria-label"), "Preview size");
 	const items = deviceItems(canvas);
-	assert.deepEqual(items.map((item) => item.dataset.size), ["phone", "tablet", "desktop"]);
-	assert.deepEqual(items.map((item) => texts(item, "gd-menu-label")[0]), ["Phone", "Tablet", "Desktop"]);
-	assert.deepEqual(items.map((item) => texts(item, "gd-device-dim")[0]), ["390 × 844", "820 × 1180", "984 × 300"]);
-	assert.deepEqual(items.map((item) => item.title), ["Phone 390 × 844", "Tablet 820 × 1180", "Desktop 984 × 300"]);
-	assert.deepEqual(items.map((item) => item.getAttribute("aria-checked")), ["false", "false", "true"], "Desktop is checked when focus mode starts");
-	assert.deepEqual(items.map((item) => (item as FakeElement & { type?: string }).type), ["button", "button", "button"]);
+	assert.deepEqual(items.map((item) => item.dataset.size), ["phone", "tablet", "desktop", "all"]);
+	assert.deepEqual(items.map((item) => texts(item, "gd-menu-label")[0]), ["Phone", "Tablet", "Desktop", "All sizes"]);
+	assert.deepEqual(items.map((item) => texts(item, "gd-device-dim")[0] ?? ""), ["390 × 844", "820 × 1180", "984 × 300", ""]);
+	assert.deepEqual(items.map((item) => item.title), ["Phone 390 × 844", "Tablet 820 × 1180", "Desktop 984 × 300", "All sizes: Phone, Tablet and the artboard as designed, side by side"]);
+	assert.deepEqual(items.map((item) => item.getAttribute("aria-checked")), ["false", "false", "true", "false"], "Desktop is checked when focus mode starts");
+	assert.deepEqual(items.map((item) => (item as FakeElement & { type?: string }).type), ["button", "button", "button", "button"]);
 	for (const item of items) assert.equal(withClass(item, "gd-i")[0].getAttribute("aria-hidden"), "true", "icons are decoration");
-	assert.deepEqual(items.map((item) => withClass(item, "gd-i")[0].children[0].getAttribute("href")), ["#i-phone", "#i-tablet", "#i-monitor"]);
+	assert.deepEqual(items.map((item) => withClass(item, "gd-i")[0].children[0].getAttribute("href")), ["#i-phone", "#i-tablet", "#i-monitor", "#i-devices"]);
 	assert.ok(isActive(canvas, items[0]), "focus moves to the first item");
 	const input = customInput(canvas);
 	assert.equal(input.getAttribute("aria-label"), "Custom width in pixels");
@@ -231,8 +231,8 @@ test("canvas-layout S6: the device menu keeps the shared menu's keys, and the wi
 	keyOn(items[0], "ArrowUp");
 	assert.ok(isActive(canvas, input), "ArrowUp wraps to the field");
 	keyOn(input, "ArrowUp");
-	assert.ok(isActive(canvas, items[2]));
-	keyOn(items[2], "Home");
+	assert.ok(isActive(canvas, items[3]), "All sizes is the last item before the field");
+	keyOn(items[3], "Home");
 	assert.ok(isActive(canvas, items[0]));
 	keyOn(items[0], "End");
 	assert.ok(isActive(canvas, input));
@@ -452,9 +452,47 @@ test("S2: pins and the comment box measure the frame at its focused width, not t
 	// The frame is 390 px wide on screen at 100%: a pick 100 px in is 100 px right of its left edge.
 	$(canvas, "gd-comment").dispatch("click");
 	first.frame.rect = { left: 305, top: 50, width: 390, height: 844 };
-	canvas.message(first.frame.contentWindow, { type: "gd:pick", selector: "h1", excerpt: "First", rect: { x: 100, y: 20, width: 30, height: 40 } });
+	canvas.message(first.frame.contentWindow, inspectorPick(first.frame, { type: "gd:pick", selector: "h1", excerpt: "First", rect: { x: 100, y: 20, width: 30, height: 40 } }));
 	assert.equal($(canvas, "gd-popover").hidden, false);
 	assert.equal($(canvas, "gd-popover").style.left, "405px");
+});
+
+// ---- All sizes in a narrow viewport
+
+test("All sizes fits a narrow viewport: each frame is as wide as its scaled iframe, the row fits the room, and a cut label keeps its full text in a title", async () => {
+	const canvas = await loadSizes({ "/t/api/designs/alpha": { slug: "alpha", title: "Alpha", brief: "", artboards: [
+		{ file: "01-a.html", title: "First", tradeoff: "", width: 4000, height: 800 },
+		{ file: "02-b.html", title: "Second", tradeoff: "", width: 400, height: 300 },
+	] } });
+	focusOn(canvas);
+	chooseSize(canvas, "all");
+	const px = (value: unknown) => Number.parseFloat(String(value));
+	const view = withClass(canvas.viewport, "gd-sizes-all")[0];
+	const sections = withClass(canvas.viewport, "gd-size-frame");
+	const scaled = sections.map((section) => withClass(section, "gd-size-scaled")[0]);
+	const widths = scaled.map((box) => px(box.style.width));
+	// The label cannot widen its frame: the section is exactly as wide as the scaled iframe.
+	assert.deepEqual(sections.map((section) => px(section.style.width)), widths);
+	// The 1000 px viewport less the side margins and the two 20 px gaps.
+	const room = 1000 - px(view.style.left) - px(view.style.right) - 20 * 2;
+	const total = widths.reduce((sum, width) => sum + width, 0);
+	assert.ok(total <= room, `${total} px of frames fit the ${room} px room`);
+	const tallest = Math.max(...scaled.map((box) => px(box.style.height)));
+	assert.ok(tallest <= 700 - px(view.style.top) - px(view.style.bottom) - 28, `${tallest} px fit under the 28 px labels`);
+	const percent = texts(sections[0], "gd-size-scale")[0];
+	assert.deepEqual(sections.map((section) => withClass(section, "gd-size-head")[0].title), [`Phone 390 × 844 ${percent}`, `Tablet 820 × 1180 ${percent}`, `As designed 4000 × 800 ${percent}`]);
+
+	const css = read("canvas.css");
+	const block = (selector: string) => {
+		const start = css.indexOf(`\n${selector} {`);
+		assert.ok(start >= 0, `${selector} is styled`);
+		return css.slice(start, css.indexOf("}", start) + 1);
+	};
+	const head = block(".gd-size-head");
+	for (const rule of [/overflow: hidden;/, /text-overflow: ellipsis;/, /white-space: nowrap;/]) assert.match(head, rule, "a label longer than its frame ends in an ellipsis");
+	const row = block(".gd-sizes-all");
+	assert.match(row, /justify-content: safe center;/, "a row wider than the viewport starts at its left edge, never cut on both sides");
+	assert.match(row, /overflow-x: auto;/, "and scrolls sideways at the smallest scale");
 });
 
 // ---- markup, styles, store and docs
@@ -465,9 +503,8 @@ test("canvas-layout S6: the device selector's markup sits after the arrangements
 	assert.match(bar, /<button type="button" id="gd-device" class="gd-device-button" aria-haspopup="menu" aria-expanded="false" aria-controls="gd-device-menu" aria-label="Preview size: Desktop" title="Open an artboard to choose its preview size" disabled><svg class="gd-i gd-i-s" aria-hidden="true"><use id="gd-device-icon" href="#i-monitor"\/><\/svg><span id="gd-device-name">Desktop<\/span><span id="gd-device-size" class="gd-device-size"><\/span><\/button>/);
 	assert.ok(bar.indexOf('id="gd-arrange-grid"') < bar.indexOf('id="gd-device"') && bar.indexOf('id="gd-device"') < bar.indexOf('id="gd-nav-mode"'), "after the arrangements, before the mode label");
 	assert.match(html, /<div id="gd-device-menu" class="gd-menu gd-device-menu" role="menu" aria-label="Preview size" hidden><\/div>/);
-	for (const icon of ["i-phone", "i-tablet", "i-monitor", "i-width", "i-check"]) assert.match(html, new RegExp(`<symbol id="${icon}" viewBox="0 0 24 24">`));
+	for (const icon of ["i-phone", "i-tablet", "i-monitor", "i-devices", "i-width", "i-check"]) assert.match(html, new RegExp(`<symbol id="${icon}" viewBox="0 0 24 24">`));
 	assert.ok(!/data-i18n/.test(html), "English literals, no catalog keys yet");
-	assert.ok(!html.includes("i-devices"), "All sizes is not part of this selector");
 	const css = read("canvas.css");
 	const block = (selector: string) => {
 		const start = css.indexOf(`\n${selector} {`);
@@ -499,14 +536,14 @@ test("the focus margins live in canvas-focus.js, and the size changes only throu
 	assert.ok(!/data-i18n/.test(sizes));
 });
 
-test("the docs describe the preview size in the top bar and focus mode as wide as the window", () => {
+test("the docs describe the preview size in the top bar, All sizes, the Overflows chip, the comment's size and focus mode as wide as the window", () => {
 	const docs = readFileSync(fileURLToPath(new URL("../docs/gentle-shell.md", import.meta.url)), "utf8");
 	const section = docs.slice(docs.indexOf("### Gentle Design"), docs.indexOf("### Gentle Music"));
 	const start = section.indexOf("- **Sizes**");
 	assert.ok(start >= 0, "a Sizes entry");
 	const sizes = section.slice(start, section.indexOf("\n", start));
 	for (const part of ["**Preview size**", "top bar", "disabled", "**Phone** (390 × 844)", "**Tablet** (820 × 1180)", "**Desktop**", "**Custom**", "240", "2560", "8 px", "drawn smaller", "Leaving focus mode"]) assert.ok(sizes.includes(part), `the Sizes entry mentions ${part}`);
-	assert.ok(!sizes.includes("All sizes"), "All sizes ships later");
+	for (const part of ["**All sizes**", "side by side", "its own iframe", "Comment mode", "**Overflows**", "wider than", "the size it was made at", "**As designed**", "Desktop records none"]) assert.ok(sizes.includes(part), `the Sizes entry mentions ${part}`);
 	assert.ok(!section.includes("at its designed width at 100%"), "focus mode is no longer the designed width");
 	assert.ok(!section.includes("the rest of the canvas is dimmed"), "the other artboards are hidden now");
 });

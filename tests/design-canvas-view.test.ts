@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { click, loadCanvas, read, texts, type CanvasFixture, type FakeElement } from "./support/design-canvas-dom.ts";
+import { click, inspectorPick, loadCanvas, read, texts, type CanvasFixture, type FakeElement } from "./support/design-canvas-dom.ts";
 
 // The view transform: pan, zoom, Fit and refit (canvas-view.js).
 
@@ -250,7 +250,7 @@ test("a comment being written keeps its element and view when the panel toggles 
 	canvas.viewport.rect = { left: 0, top: 50, width: 400, height: 300 };
 	canvas.document.getElementById("gd-fit").dispatch("click");
 	canvas.document.getElementById("gd-comment").dispatch("click");
-	canvas.message(first.frame.contentWindow, { type: "gd:pick", selector: "#cta", excerpt: "Buy now", rect: { x: 4, y: 8, width: 60, height: 20 } });
+	canvas.message(first.frame.contentWindow, inspectorPick(first.frame, { type: "gd:pick", selector: "#cta", excerpt: "Buy now", rect: { x: 4, y: 8, width: 60, height: 20 } }));
 	const popover = canvas.document.getElementById("gd-popover");
 	assert.equal(popover.hidden, false);
 	const view = canvas.world.style.transform;
@@ -271,10 +271,10 @@ test("a pick on another artboard clears the previous artboard's pick; a new pick
 	commentMode(canvas);
 	const pick = { type: "gd:pick", selector: "#cta", excerpt: "Buy now", rect: { x: 4, y: 8, width: 60, height: 20 } };
 	const clears = (board: typeof first) => board.frame.contentWindow!.posted.filter((message) => message.type === "gd:clear").length;
-	canvas.message(first.frame.contentWindow, pick);
-	canvas.message(first.frame.contentWindow, { ...pick, selector: "#title" });
+	canvas.message(first.frame.contentWindow, inspectorPick(first.frame, pick));
+	canvas.message(first.frame.contentWindow, inspectorPick(first.frame, { ...pick, selector: "#title" }));
 	assert.equal(clears(first), 0, "the same artboard replaces its own pick");
-	canvas.message(second.frame.contentWindow, pick);
+	canvas.message(second.frame.contentWindow, inspectorPick(second.frame, pick));
 	assert.equal(clears(first), 1, "the first artboard's highlight is cleared");
 	assert.equal(clears(second), 0);
 	assert.equal(canvas.document.getElementById("gd-popover-target").textContent, "02-b.html · #cta");

@@ -142,11 +142,47 @@ export const SIDEBAR_RESERVED_KEYS: readonly string[] = [...SIDEBAR_SECTION_KEYS
 const PLUGIN_SECTION_KEY = /^plugin:([^:]+):(.+)$/;
 // One guarded proxy per contributed rail, so the layout memo keeps seeing a stable identity.
 const GUARDED_RAILS = new WeakMap<object, SidebarRail>();
-let sidebarReport: ContributionReport = { skipped: [], replaced: [] };
+// Process-wide for the same reason the contribution box is: Pi evaluates every
+// extension with `moduleCache: false`, so `/gentle:plugins` can hold a second
+// instance of this module. A module-local report would be empty there while the
+// sidebar instance holds refusals — a silent blind spot in the audit.
+const CONTRIBUTION_REPORT = Symbol.for("gentle-pi.sidebar-contribution-report/v1");
+
+interface SidebarReportState {
+	skipped: ContributionIssue[];
+	replaced: string[];
+}
+
+function isSidebarReport(value: unknown): value is SidebarReportState {
+	if (typeof value !== "object" || value === null) return false;
+	// SAFETY: only the two array fields the report is built from are read here.
+	const candidate = value as { skipped?: unknown; replaced?: unknown };
+	return Array.isArray(candidate.skipped) && Array.isArray(candidate.replaced);
+}
+
+/** The one report every evaluation of this module shares through its process slot. */
+function sidebarReport(): SidebarReportState {
+	// SAFETY: the symbol index signature is the process-wide slot every evaluation of this module agrees on.
+	const holder = globalThis as unknown as { [key: symbol]: unknown };
+	const current = holder[CONTRIBUTION_REPORT];
+	if (isSidebarReport(current)) return current;
+	const created: SidebarReportState = { skipped: [], replaced: [] };
+	holder[CONTRIBUTION_REPORT] = created;
+	return created;
+}
+
+/** Clear the report in place, so a previous evaluation's reference stays live. */
+function resetSidebarReport(): SidebarReportState {
+	const report = sidebarReport();
+	report.skipped.length = 0;
+	report.replaced.length = 0;
+	return report;
+}
 
 /** What the last contribution install refused, in the contract's own report shape. */
 export function readSidebarContributionReport(): ContributionReport {
-	return { skipped: sidebarReport.skipped.map((issue) => ({ ...issue })), replaced: [...sidebarReport.replaced] };
+	const report = sidebarReport();
+	return { skipped: report.skipped.map((issue) => ({ ...issue })), replaced: [...report.replaced] };
 }
 
 /**
@@ -199,8 +235,9 @@ function contributionSection(contribution: Contribution): { key: string } | { is
 
 function recordRailFailure(id: string, error: unknown): void {
 	const detail = error instanceof Error ? error.message : String(error);
-	if (sidebarReport.skipped.some((issue) => issue.id === id && issue.detail === detail)) return;
-	sidebarReport.skipped.push({ id, code: "invalid-contribution", detail });
+	const skipped = sidebarReport().skipped;
+	if (skipped.some((issue) => issue.id === id && issue.detail === detail)) return;
+	skipped.push({ id, code: "invalid-contribution", detail });
 }
 
 // A plugin rail is foreign code: a throwing render, digest or invalidation must
@@ -223,6 +260,18 @@ function guardedContributionRail(rail: SidebarRail, id: string): SidebarRail {
 					}
 				};
 			}
+			// The layout already survives a throwing digest by treating it as
+			// undefined; record it too, so the audit can say the rail misbehaved.
+			if (property === "digest") {
+				return () => {
+					try {
+						return target.digest?.();
+					} catch (error) {
+						onError(error);
+						return undefined;
+					}
+				};
+			}
 			return Reflect.get(target, property, receiver);
 		},
 	}) as SidebarRail;
@@ -237,8 +286,8 @@ function guardedContributionRail(rail: SidebarRail, id: string): SidebarRail {
  * on the next read; a core key is never installed, replaced or removed here.
  */
 export function installContributedSidebar(tui: TUI): ContributedSidebar {
-	sidebarReport = { skipped: [], replaced: [] };
-	const result: ContributedSidebar = { keys: [], rejected: sidebarReport.skipped };
+	const report = resetSidebarReport();
+	const result: ContributedSidebar = { keys: [], rejected: report.skipped };
 	if (!tui.terminal) return result;
 	const state = sidebarState(tui);
 	const contributed = state.contributed ??= new Set<string>();
@@ -248,7 +297,7 @@ export function installContributedSidebar(tui: TUI): ContributedSidebar {
 		const section = contributionSection(contribution);
 		if (!section) continue;
 		if ("issue" in section) {
-			sidebarReport.skipped.push(section.issue);
+			report.skipped.push(section.issue);
 			continue;
 		}
 		state.parts.set(section.key, guardedContributionRail(contribution.sidebar!.rail as SidebarRail, contribution.id));

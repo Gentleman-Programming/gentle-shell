@@ -15,7 +15,7 @@ import {
 import { installSidebar } from "../lib/shell-sidebar-layout.ts";
 
 // Canary for the sidebar read point (spec S2/S5/S9): a refactor that drops the
-// plugin seam makes these three tests fail, while an empty box stays a no-op.
+// plugin seam makes these tests fail, while an empty box stays a no-op.
 
 const NODE = Symbol.for("@earendil-works/pi-tui/layout-node");
 const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
@@ -39,25 +39,79 @@ function contribute(key: string, name = "notes", owner = "acme"): Contribution {
 	};
 }
 
-test("a contributed section is appended after the known keys and paints there", (t) => {
+test("a contributed section reaches the painted rail through the layout's own prepare path", (t) => {
 	reset();
 	t.after(reset);
 	const f = fixture();
+	// The contribution is only in the box: nothing installs the rail by hand, so
+	// dropping the layout's prepare path leaves the parts map and the rail empty.
 	contributionSlot().set("acme.notes", contribute("plugin:acme:notes"));
 	sidebarPart(f.tui, "footer", { render: () => ["Status"], invalidate() {} });
 
-	assert.deepEqual(sidebarSectionOrder(["plugin:acme:notes"]), [...SIDEBAR_SECTION_KEYS, "plugin:acme:notes"]);
-	const applied = installContributedSidebar(f.tui);
-	assert.deepEqual(applied.keys, ["plugin:acme:notes"]);
-	assert.deepEqual(applied.rejected, []);
-	assert.ok(sidebarState(f.tui).parts.has("plugin:acme:notes"), "the contributed rail joins the shared parts map");
-
 	t.after(installSidebar(f.tui, theme));
 	const text = renderLayoutFrame(f.root, 140, 20, () => {}).lines.join("\n");
+	assert.ok(sidebarState(f.tui).parts.has("plugin:acme:notes"), "the layout installs the contributed rail into the shared parts map");
 	const footer = text.indexOf("Status");
 	const contributed = text.indexOf("notes card");
 	assert.ok(footer >= 0 && contributed >= 0, `both sections paint: ${text}`);
 	assert.ok(footer < contributed, `the contributed section paints after the known ones: ${text}`);
+	assert.deepEqual([...sidebarState(f.tui).parts.keys()], ["footer", "plugin:acme:notes"], "the core sections stay first");
+});
+
+test("a throwing plugin digest is reported and the section still paints", (t) => {
+	reset();
+	t.after(reset);
+	const f = fixture();
+	const contribution: Contribution = {
+		id: "acme.notes",
+		owner: "acme",
+		contract: CONTRACT_VERSION,
+		sidebar: {
+			key: "plugin:acme:notes",
+			bottom: false,
+			rail: {
+				render: () => ["notes card"],
+				invalidate() {},
+				digest: () => {
+					throw new Error("digest exploded");
+				},
+			},
+		},
+	};
+	contributionSlot().set("acme.notes", contribution);
+	sidebarPart(f.tui, "footer", { render: () => ["Status"], invalidate() {} });
+
+	t.after(installSidebar(f.tui, theme));
+	const text = renderLayoutFrame(f.root, 140, 20, () => {}).lines.join("\n");
+	assert.ok(text.includes("notes card"), `a broken digest does not change what paints: ${text}`);
+	assert.deepEqual(readSidebarContributionReport().skipped.map((issue) => [issue.id, issue.code, issue.detail]), [
+		["acme.notes", "invalid-contribution", "digest exploded"],
+	]);
+});
+
+test("a report written by this module evaluation is readable from the next one", async (t) => {
+	reset();
+	t.after(reset);
+	const f = fixture();
+	// Pi evaluates every extension with `moduleCache: false`: `/gentle:plugins`
+	// can hold another instance of this module, so the report must live in the
+	// process-wide slot, not in module-local state.
+	contributionSlot().set("acme.notes", contribute("todo"));
+	installContributedSidebar(f.tui);
+	const report = readSidebarContributionReport();
+	assert.deepEqual(report.skipped.map((issue) => issue.id), ["acme.notes"]);
+
+	// A distinct module instance, exactly like a second extension evaluation.
+	const isolatedUrl = new URL(`../lib/shell-sidebar.ts?isolated=${process.pid}-${Date.now()}`, import.meta.url).href;
+	const isolated = await import(isolatedUrl);
+	assert.notEqual(isolated.readSidebarContributionReport, readSidebarContributionReport, "the second evaluation is a separate instance");
+	assert.deepEqual(isolated.readSidebarContributionReport().skipped.map((issue) => issue.id), ["acme.notes"]);
+
+	// Reads stay copies: a caller cannot mutate the shared report.
+	const copy = isolated.readSidebarContributionReport();
+	copy.skipped.push({ id: "acme.tampered", code: "invalid-contribution", detail: "tampered" });
+	copy.replaced.push("acme.tampered");
+	assert.deepEqual(readSidebarContributionReport(), report);
 });
 
 test("a contribution claiming a core key is rejected and reported, leaving the core order and part intact", (t) => {

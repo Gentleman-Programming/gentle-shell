@@ -1,7 +1,10 @@
 // Gentle Design artboard inspector, injected by the canvas server into every
 // artboard. In comment mode it highlights the hovered element and reports the
 // clicked one to the canvas; otherwise it only forwards canvas zoom and pan.
-// It also reports where each commented element is, so the canvas can pin it.
+// It also reports where each commented element is, so the canvas can pin it,
+// and whether the page is wider than its frame (the canvas's Overflows chip).
+// The canvas numbers each size it gives the frame (gd:size): every pick carries
+// the number the page heard last, so a pick made before a resize is known stale.
 // In navigation mode the canvas covers the artboard with a shield and routes
 // comment-mode hovers and clicks here as points; in focus mode the artboard
 // owns the wheel and the keyboard, and Shift+Esc asks the canvas to leave.
@@ -17,6 +20,10 @@
 	let focused = false;
 	let pins = [];
 	let reportQueued = false;
+	let overflowQueued = false;
+	let lastOverflow = "";
+	// The frame's size generation, as the canvas last said it (gd:size); 0 until it does.
+	let generation = 0;
 	let hovered = null;
 	let selected = null;
 
@@ -163,6 +170,25 @@
 		requestAnimationFrame(reportPins);
 	}
 
+	/** Whether the page is wider than this frame; said once per change of width, scroll width or answer. */
+	function reportOverflow() {
+		overflowQueued = false;
+		const root = document.documentElement;
+		const width = window.innerWidth;
+		const scrollWidth = root.scrollWidth;
+		const overflow = scrollWidth > root.clientWidth;
+		const key = `${overflow}/${width}/${scrollWidth}`;
+		if (key === lastOverflow) return;
+		lastOverflow = key;
+		post({ type: "gd:overflow", overflow, width, scrollWidth });
+	}
+
+	function queueOverflow() {
+		if (overflowQueued) return;
+		overflowQueued = true;
+		requestAnimationFrame(reportOverflow);
+	}
+
 	function setPins(value) {
 		if (!Array.isArray(value)) return;
 		pins = value.slice(0, MAX_PINS).filter((pin) => pin && typeof pin.id === "string" && pin.id.length <= 32 && typeof pin.selector === "string" && pin.selector.length <= MAX_SELECTOR)
@@ -188,6 +214,12 @@
 		else if (event.data.type === "gd:pins") setPins(event.data.pins);
 		else if (event.data.type === "gd:highlight") highlight(event.data.id);
 		else if (event.data.type === "gd:focus") focused = event.data.enabled === true;
+		else if (event.data.type === "gd:size") {
+			if (Number.isInteger(event.data.generation) && event.data.generation >= 0) generation = event.data.generation;
+			// The canvas dropped what this page reported (it loaded, or the frame changed size): say it again, even unchanged.
+			lastOverflow = "";
+			queueOverflow();
+		}
 		else if (event.data.type === "gd:pick-at") {
 			if (enabled) pick(elementAt(event.data));
 		} else if (event.data.type === "gd:hover-at") {
@@ -210,6 +242,7 @@
 			selector: cssSelector(element),
 			excerpt: excerptOf(element),
 			rect: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
+			generation,
 		});
 	}
 
@@ -281,10 +314,15 @@
 	}, { passive: false, capture: true });
 
 	window.addEventListener("scroll", () => { refresh(); queueReport(); }, true);
-	window.addEventListener("resize", () => { refresh(); queueReport(); });
-	window.addEventListener("load", queueReport);
-	// Layout changes (late images, artboard scripts) move pinned elements; the inspector's own boxes do not count.
+	window.addEventListener("resize", () => { refresh(); queueReport(); queueOverflow(); });
+	window.addEventListener("load", () => { queueReport(); queueOverflow(); });
+	// An image that loads after the page did can widen it with no mutation or resize; its load does not bubble, so the
+	// document catches it on the way down.
+	document.addEventListener("load", () => { queueReport(); queueOverflow(); }, true);
+	// A web font that loads late can widen the page the same way, with no mutation, resize or load event.
+	document.fonts?.addEventListener("loadingdone", () => { queueReport(); queueOverflow(); });
+	// Layout changes (late images, artboard scripts) move pinned elements and may widen the page; the inspector's own boxes do not count.
 	new MutationObserver((records) => {
-		if (records.some((record) => !(record.target instanceof Element && record.target.hasAttribute(MARK)))) queueReport();
+		if (records.some((record) => !(record.target instanceof Element && record.target.hasAttribute(MARK)))) { queueReport(); queueOverflow(); }
 	}).observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
 })();

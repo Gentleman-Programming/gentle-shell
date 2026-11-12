@@ -724,7 +724,9 @@ test("index.html: a labeled rail with Move, Comment, Overview and Settings, one 
 	assert.ok(sprite, "a hidden sprite");
 	const symbols = [...sprite![1].matchAll(/<symbol id="([^"]+)" viewBox="0 0 24 24">/g)].map((match) => match[1]);
 	assert.equal(new Set(symbols).size, symbols.length, "sprite ids are unique");
-	assert.deepEqual(symbols.sort(), ["i-column", "i-comment", "i-fit", "i-gear", "i-grid", "i-hand", "i-keys", "i-palette", "i-row"]);
+	// The screen sizes' icons are used by canvas-sizes.js (tests/design-canvas-sizes.test.ts), the ⋯ menu's
+	// by canvas-export.js (tests/design-canvas-export.test.ts).
+	assert.deepEqual(symbols.sort(), ["i-check", "i-column", "i-comment", "i-devices", "i-download", "i-file", "i-fit", "i-gear", "i-grid", "i-hand", "i-image", "i-keys", "i-monitor", "i-more", "i-palette", "i-phone", "i-row", "i-tablet", "i-width"]);
 	for (const match of html.matchAll(/<use href="#([^"]+)"/g)) assert.ok(symbols.includes(match[1]), `${match[1]} exists in the sprite`);
 
 	assert.match(html, /<div id="gd-menu" class="gd-menu" role="menu" hidden><\/div>/);

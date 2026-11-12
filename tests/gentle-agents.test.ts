@@ -7728,6 +7728,39 @@ test("bash_background returns at once, and an idle parent gets one stored exit n
 	}
 });
 
+test("a job notice survives session switching and is delivered only to its owner (#3205)", async () => {
+	const { pi, tools, fire, sent } = fakePi();
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx: owner } = fakeContext();
+	const { ctx: other } = fakeContext();
+	Object.assign(other.sessionManager, { getSessionId: () => "s2" });
+	const notices = () => sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
+	try {
+		await fire("session_start", owner);
+		await fire("agent_start", owner);
+		await tools.get("bash_background")!.execute("b1", { command: "make build", label: "owner job" }, undefined, undefined, owner);
+		jobs.runs[0]!.exit(0);
+		await jobIo();
+		assert.equal(notices().length, 0, "the busy owner holds the exit notice");
+
+		await fire("session_start", other, { reason: "new" });
+		await fire("agent_settled", other);
+		await fire("turn_end", other);
+		assert.equal(notices().length, 0, "the inactive owner's notice is never delivered to another session");
+
+		await fire("session_start", owner, { reason: "resume" });
+		await fire("turn_end", owner);
+		await eventually(() => notices().length === 1, "resuming the owner delivers its retained notice");
+		assert.match(String(notices()[0]!.message.content), /job-1 \(\"owner job\"\) exited with code 0/);
+		await fire("turn_end", owner);
+		assert.equal(notices().length, 1, "the retained notice is delivered exactly once");
+	} finally {
+		await fire("session_shutdown", owner);
+		jobs.cleanup();
+	}
+});
+
 test("a busy parent gets the exit notice steered into its run at the next turn boundary", async () => {
 	const { pi, tools, fire, sent, userMessages } = fakePi();
 	const jobs = fakeJobShell();

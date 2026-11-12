@@ -1591,22 +1591,26 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	const flushJobNotices = () => {
 		const route = deliveryRoute(false);
 		if (!route) return;
-		const failed: JobNotice[] = [];
+		const retained: JobNotice[] = [];
+		let deliveryFailed = false;
 		for (const notice of jobNotices.splice(0)) {
 			const { job } = notice;
-			if (activeSessionId() !== job.ownerSessionId) continue;
+			if (activeSessionId() !== job.ownerSessionId) {
+				retained.push(notice);
+				continue;
+			}
 			const content = notice.kind === "events" ? monitorEventsText(job, notice.batch)
 				: notice.kind === "stopped" ? monitorStoppedText(job, notice.reason) : jobNoticeText(job);
 			const event = notice.kind === "events" ? "events" : notice.kind === "stopped" ? notice.reason : undefined;
 			try {
 				sendToParent({ customType: JOB_NOTICE_TYPE, content, display: true, details: jobDetails(job, event) }, route);
 			} catch {
-				failed.push(notice);
+				retained.push(notice);
+				deliveryFailed = true;
 			}
 		}
-		if (failed.length === 0) return;
-		jobNotices.unshift(...failed);
-		if (route === "idle") armDeliveryRetry();
+		jobNotices.unshift(...retained);
+		if (deliveryFailed && route === "idle") armDeliveryRetry();
 	};
 
 	const flushAll = () => {
@@ -3243,11 +3247,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			});
 		} catch { /* A launch freezes lazily through the same resolver. */ }
 		stateCache.load(ctx.sessionManager);
-		// A resumed, reloaded, or replaced session starts with an empty completion
-		// queue so nothing pending from another session can replay here.
+		// A resumed, reloaded, or replaced session starts with empty completion
+		// and message queues so nothing pending from another session can replay here.
 		completions.dropAll();
 		messages.dropAll();
-		jobNotices.length = 0;
+		// Job notices remain owner-scoped and survive until their session resumes.
 		resetParentDelivery(ctx);
 		presence?.dispose();
 		registryFor(ctx);

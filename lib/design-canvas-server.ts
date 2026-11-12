@@ -389,7 +389,18 @@ function scriptJson(value: unknown): string {
 	return JSON.stringify(value).replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 }
 
-function injectInspector(html: string, tag: string): string {
+/**
+ * The inspector tag the server injects into every artboard served under `base`. canvas-export.js builds the
+ * same tag (same escaping) to remove it again for Download HTML; its tests serve artboards through injectInspector,
+ * so a change here fails them.
+ */
+function inspectorTag(base: string): string {
+	return `<script src="${escapeHtml(base)}assets/inspector.js"></script>`;
+}
+
+/** The artboard HTML as served: the inspector tag before the last `</body>`, or at the end without one. */
+export function injectInspector(html: string, base: string): string {
+	const tag = inspectorTag(base);
 	const index = html.toLowerCase().lastIndexOf("</body>");
 	return index === -1 ? html + tag : html.slice(0, index) + tag + html.slice(index);
 }
@@ -672,7 +683,7 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 			await handle.close();
 		}
 		const body = type.startsWith("text/html")
-			? injectInspector(content.toString("utf8"), `<script src="${escapeHtml(base)}assets/inspector.js"></script>`)
+			? injectInspector(content.toString("utf8"), base)
 			: content;
 		raw(res, body, { "Content-Type": type, "Content-Security-Policy": artboardCsp(String(req.headers.host)) });
 	}

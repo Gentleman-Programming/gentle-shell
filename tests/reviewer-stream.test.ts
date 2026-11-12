@@ -16,6 +16,10 @@ async function fixture(t: TestContext, overrides: Partial<InProcessReviewerReque
 	t.mock.method(performance, "now", () => clock);
 	t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
 	const stream = createAssistantMessageEventStream(), caller = new AbortController();
+	let rejectResult!: (error: Error) => void;
+	const resultFailure = new Promise<never>((_resolve, reject) => { rejectResult = reject; });
+	const sdkResult = stream.result.bind(stream);
+	stream.result = () => Promise.race([sdkResult(), resultFailure]);
 	let providerSignal: AbortSignal | undefined;
 	const progress: unknown[] = [];
 	const pending = runInProcessReviewer({ selection: "fixture/fixture", prompt: Buffer.from("prompt-secret"), timeoutMs: 500,
@@ -27,6 +31,7 @@ async function fixture(t: TestContext, overrides: Partial<InProcessReviewerReque
 	t.after(async () => { caller.abort(); stream.end(message); await pending; });
 	await nextTurn();
 	return { stream, caller, pending, progress, get settled() { return settled; }, get calls() { return calls; }, get signal() { return providerSignal; },
+		rejectResult,
 		jump(ms: number) { clock += ms; },
 		async tick(ms: number) { clock += ms; t.mock.timers.tick(ms); await nextTurn(); },
 		async delta(type: "text_delta" | "thinking_delta", delta = "output-secret") { stream.push({ type, delta, contentIndex: 0, partial: message }); await nextTurn(); } };
@@ -122,3 +127,23 @@ for (const scenario of ["late-first-delta", "late-first-result", "late-idle-resu
 		assert.equal(outcome.evidence?.timeoutPhase, scenario === "late-idle-result" ? "stream-idle" : "first-output");
 	});
 }
+
+for (const phase of ["first-output", "stream-idle"] as const) {
+	test(`#2676: a late provider rejection retains the expired ${phase} cause`, async t => {
+		const f = await fixture(t);
+		if (phase === "stream-idle") await f.delta("thinking_delta");
+		f.jump(phase === "stream-idle" ? 31 : 41);
+		f.rejectResult(new Error("controlled provider rejection"));
+		const outcome = await f.pending; assert.equal(outcome.kind, "refused");
+		if (outcome.kind !== "refused") return;
+		assert.equal(outcome.code, "timed-out"); assert.equal(outcome.evidence?.timeoutPhase, phase);
+		assert.equal(f.signal?.aborted, true); assert.equal(f.calls, 1);
+	});
+}
+
+test("#2676: a provider rejection within the stream bound remains provider-failed", async t => {
+	const f = await fixture(t); f.rejectResult(new Error("controlled timely rejection"));
+	const outcome = await f.pending; assert.equal(outcome.kind, "refused");
+	if (outcome.kind !== "refused") return;
+	assert.equal(outcome.code, "provider-failed"); assert.equal(outcome.evidence?.timeoutPhase, undefined);
+});

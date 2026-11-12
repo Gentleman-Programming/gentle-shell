@@ -77,6 +77,9 @@ export async function readReviewerStream(stream: ReviewerStream, options: {
 		const [message] = await Promise.all([options.wait(() => stream.result()), observed]);
 		expired(); // Provider microtasks may resolve before an overdue timer is dispatched.
 		return message;
+	} catch (error) {
+		expired(); // A provider rejection must retain the same deadline precedence.
+		throw error;
 	} finally {
 		disposed = true; clearTimeout(timer); clearInterval(heartbeat);
 		try { void Promise.resolve(iterator?.return?.()).catch(() => {}); } catch { /* Never wait for provider cleanup. */ }

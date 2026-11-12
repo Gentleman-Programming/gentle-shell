@@ -9395,7 +9395,20 @@ const REVIEW_HOST_RELAY_DECLARATION_FAILED_ACTION =
 	"The relay failure was deterministic for this slot, but gentle-ai refused the unachievable declaration, so no slot state changed. "
 	+ "Call fresh STATUS and follow only its declared action; never replay this capture from transcript inference.";
 
+function reviewHostRelayStreamTimeoutNextAction(error: ReviewHostRelayError): string | undefined {
+	if (error.kind !== REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT) return undefined;
+	const phase = error.reviewerEvidence?.timeoutPhase, limit = error.reviewerEvidence?.streamTimeoutMs;
+	if (phase !== "first-output" && phase !== "stream-idle") return undefined;
+	const setting = phase === "first-output" ? "GENTLE_PI_REVIEW_RELAY_FIRST_OUTPUT_TIMEOUT_MS" : "GENTLE_PI_REVIEW_RELAY_IDLE_TIMEOUT_MS";
+	const measured = typeof limit === "number" && Number.isSafeInteger(limit) && limit > 0 ? ` (${limit}ms)` : "";
+	return `Do not relaunch this slot unchanged: the ${phase} stream bound${measured} stopped the reviewer. `
+		+ `Fix the stalled provider or adjust ${setting}=<milliseconds> first; raising the overall timeout does not change this stream bound. `
+		+ REVIEW_HOST_RELAY_RETRY_ACTION;
+}
+
 function reviewHostRelayTimeoutNextAction(error: ReviewHostRelayError): string {
+	const streamAction = reviewHostRelayStreamTimeoutNextAction(error);
+	if (streamAction !== undefined) return streamAction;
 	const measured = error.elapsedMs === null || error.timeoutMs === null
 		? ""
 		: ` The reviewer was killed after ${error.elapsedMs}ms against a ${error.timeoutMs}ms bound.`;
@@ -10327,7 +10340,8 @@ function reviewHostRelayGroupFailure(
 		reason: error.message,
 		failure: reviewHostRelayFailureReport(error),
 		...reviewHostRelayGroupProgress(slots, prepared, submitted),
-		next_action: error.kind === REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED ? REVIEW_HOST_RELAY_REFUSED_ACTION : REVIEW_HOST_RELAY_RETRY_ACTION,
+		next_action: reviewHostRelayStreamTimeoutNextAction(error)
+			?? (error.kind === REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED ? REVIEW_HOST_RELAY_REFUSED_ACTION : REVIEW_HOST_RELAY_RETRY_ACTION),
 	};
 }
 

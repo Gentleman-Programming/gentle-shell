@@ -10,8 +10,8 @@ test("pending and failed assessment never manufacture review entry", () => {
 	assert.match(tracking, /only when `reviewDue` is true or the user explicitly asks/);
 	assert.match(tracking, /otherwise preserve the pending boundary/);
 	assert.match(tracking, /A task boundary neither authorizes review nor advances a reviewed boundary/);
-	assert.match(tracking, /report the missing assessment proof/);
-	assert.match(tracking, /never infer `reviewDue` or construct a preflight transition/);
+	assert.match(tracking, /report missing assessment proof/);
+	assert.match(tracking, /never infer `reviewDue`, construct a preflight transition/);
 });
 
 test("delivered contract preserves consent, authority and risk floor", () => {
@@ -21,6 +21,6 @@ test("delivered contract preserves consent, authority and risk floor", () => {
 	assert.match(contract, /only when its `reviewDue` is true.*or the user explicitly asks/);
 	assert.match(contract, /Global RDD enabled permits review; it never grants consent for this candidate/);
 	assert.match(contract, /prompt prose never creates authority or decides delivery/);
-	assert.match(tracking, /never infer low risk from a failed assessment/);
+	assert.match(tracking, /lower the tier or infer low risk/);
 	assert.match(tracking, /When RDD is disabled, do not start or prompt for RDD; ordinary checks remain/);
 });

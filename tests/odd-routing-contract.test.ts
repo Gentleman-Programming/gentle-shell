@@ -128,13 +128,13 @@ test("assumption challenge and task checks do not activate or duplicate native r
 		"native RDD refuter",
 		"functional checks per task",
 		"native review runs at that work-unit commit or PR slice boundary",
-		"native candidate risk assessment",
+		"Never replace assessment with model judgment, task size or defect severity",
 		"`gentle_review` `{\"operation\":\"assess\"}`",
 		// P5b (C5): the injected contract governs how a review starts, runs, and gets consent; tracking keeps the
 		// commit-boundary rules mirrored from routing/pi.md, which the rendered prompt carries nowhere else.
-		"When RDD is enabled, the injected Gentle AI review execution contract governs how a native review starts, runs, and gets consent; this module adds only the assessment and commit-boundary rules below.",
+		"When RDD is enabled, the injected Gentle AI contract governs native review start, execution and consent; this module adds only assessment and commit boundaries.",
 		"A not-due `passive` commit needs no review and the boundary advances; `under_budget` stays pending in the slice until a later commit reaches the budget.",
-		"never infer low risk from a failed assessment",
+		"lower the tier or infer low risk",
 		"When RDD is disabled, do not start or prompt for RDD",
 	]);
 });
@@ -179,10 +179,10 @@ test("ODD commits work units in reviewable slices and reviews the commit or PR s
 	);
 	assert.ok(!core.includes("- Never commit unless the user explicitly asks."), "core Safety contradicts ODD step 6 work-unit commits");
 	containsAll(delegation, [
-		'after each work-unit commit, assess it with `gentle_review` `{"operation":"assess"}` and `{"baseRef":"<last reviewed boundary>","committedOnly":true}`',
-		"the first boundary is the branch point, and every reviewed boundary becomes the next base",
+		'After each work-unit commit, assess it with `gentle_review` `{"operation":"assess"}` and `{"baseRef":"<last reviewed boundary>","committedOnly":true}`',
+		"start at the branch point; each reviewed boundary is the next base",
 		// S14: commit per reviewable slice; one commit may hold several tasks, so outcomes are recorded per commit.
-		"Record per commit the assessed tier and outcome (not due, granted, declined, or unavailable) with its `reviewDueReason`",
+		"Record each commit's assessed tier, outcome (not due, granted, declined, unavailable) and `reviewDueReason`",
 		"Delivery follows work units",
 		"forecast authored changed lines (additions plus deletions, generated files excluded) from the task list",
 		"keep a running count from work-unit commits",
@@ -524,23 +524,23 @@ test("ODD protocol is always-on in the rendered system prompt and runs by defaul
 test("S14: RDD tracking assesses the open slice before a high-risk commit and records outcomes per commit", () => {
 	const tracking = readFileSync(join(import.meta.dirname, "..", "assets", "orchestrator-tracking.md"), "utf8");
 	assert.ok(
-		tracking.includes("When a high-risk unit follows pending `under_budget` commits, assess the open slice first."),
+		tracking.includes("Before a high-risk unit, assess any pending `under_budget` slice."),
 		"tracking must assess the open slice before a high-risk commit",
 	);
 	assert.ok(
 		wrapper.includes("a unit whose Risk line names a high-risk item gets its own commit so native review can take it alone"),
 		"step 6 must keep a high-risk unit in its own commit",
 	);
-	assert.ok(tracking.includes("Record per commit the assessed tier and outcome"), "tracking must record outcomes per commit");
+	assert.ok(tracking.includes("Record each commit's assessed tier, outcome"), "tracking must record outcomes per commit");
 	assert.ok(!tracking.includes("Record per task the assessed tier and outcome"), "tracking must not record outcomes per task");
 });
 
 test("pending slice review follows provider due or explicit request without inventing a boundary", () => {
 	const tracking = read("assets/orchestrator-tracking.md");
 	containsAll(tracking, [
-		"When a high-risk unit follows pending `under_budget` commits, assess the open slice first.",
+		"Before a high-risk unit, assess any pending `under_budget` slice.",
 		"Review the pending slice only when `reviewDue` is true or the user explicitly asks",
-		"otherwise preserve the pending boundary and proceed without starting review",
+		"otherwise preserve the pending boundary and proceed without review",
 		"A task boundary neither authorizes review nor advances a reviewed boundary.",
 	]);
 	assert.doesNotMatch(tracking, /close the open slice first, assessing and reviewing it as the slice/);
@@ -549,9 +549,9 @@ test("pending slice review follows provider due or explicit request without inve
 test("failed assessment reports missing proof without inventing due or preflight", () => {
 	const tracking = read("assets/orchestrator-tracking.md");
 	containsAll(tracking, [
-		"report the missing assessment proof",
-		"never infer `reviewDue` or construct a preflight transition",
-		"never infer low risk from a failed assessment",
+		"report missing assessment proof",
+		"never infer `reviewDue`, construct a preflight transition",
+		"lower the tier or infer low risk",
 	]);
 	assert.doesNotMatch(tracking, /treat the commit as due/);
 });

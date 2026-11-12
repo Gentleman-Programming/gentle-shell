@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { execFileSync } from "node:child_process";
 import {
  existsSync,
  mkdirSync,
@@ -28,6 +29,9 @@ import { loadExtensionFromFactory } from "../node_modules/@earendil-works/pi-cod
 import { getThemeByName } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import fast from "../extensions/gentle-fast.ts";
+import gentleAgents from "../extensions/gentle-agents.ts";
+import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
+import { fakeChild } from "./agents-fake-child.ts";
 import { PROFILE_TIER_EVENT } from "../lib/openai-fast-tier.ts";
 import { readSessionProfileBinding } from "../lib/session-profile-binding.ts";
 import { SESSION_PROFILE_CUSTOM_TYPE } from "../lib/session-profile-persistence.ts";
@@ -45,6 +49,8 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
  noAuth?: boolean;
  reason?: "startup" | "new" | "resume" | "fork";
  fastOrder?: "ai-first" | "fast-first";
+ agents?: boolean;
+ routing?: Record<string, AgentRoutingEntry>;
 }) {
  const root = mkdtempSync(join(tmpdir(), "u3-public-"));
  const config = join(root, "config"),
@@ -74,7 +80,7 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
  const profiles = {
   team: { worker: { model: "openai/gpt-4o" } },
   empty: {},
-  live: { orchestrator: startup?.orchestrator ?? { model: "openai/gpt-5.2", thinking: "high" } },
+  live: { ...startup?.routing, orchestrator: startup?.orchestrator ?? { model: "openai/gpt-5.2", thinking: "high" } },
  };
  const saveProfiles = () =>
   writeFileSync(
@@ -87,6 +93,14 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
    }),
   );
  saveProfiles();
+ const spawned: Array<{ args: string[]; cwd: string }> = [];
+ if (startup?.agents) {
+  const template = join(root, "git-template");
+  mkdirSync(template);
+  execFileSync("git", ["init", "--quiet", `--template=${template}`, root]);
+  mkdirSync(join(agentDir, "agents"));
+  writeFileSync(join(agentDir, "agents", "explore.md"), "---\ndescription: Offline launch probe\n---\nMap the target.");
+ }
  const identity = { root, commonDir: join(root, "git-common") };
  setProfilePinWorktreeResolverForTesting(() => identity);
  if (startup?.layer) {
@@ -131,6 +145,7 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
   theme: getThemeByName("dark")!,
   getAllThemes: () => [{ name: "dark" }],
   notify: (text: string, severity?: string) => notices.push({ text, severity }),
+  confirm: async () => true,
   setStatus() {},
   setWidget() {},
   custom(factory: Parameters<ExtensionUIContext["custom"]>[0]) {
@@ -228,6 +243,25 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
      extensionRuntime,
     ),
    ];
+   if (startup?.agents) loaded.push(await loadExtensionFromFactory(
+    (pi) => gentleAgents(pi, environment, {
+     home: root,
+     agentHome: agentDir,
+     env: environment,
+     resolveWorktree: resolveSessionWorktree,
+     pi: { command: "pi", args: [] },
+     spawn: (_command, args, options) => {
+      spawned.push({ args: [...args], cwd: options.cwd });
+      return fakeChild().child;
+     },
+     schedule: () => () => {},
+     sessionTransport: {
+      createRegistry: async () => ({ list: async () => [], listActivations: async () => [] }),
+      createListener: (registry) => ({ registry, start: async () => {}, close: async () => {} }),
+      createClient: () => ({ close() {}, sendNotification: async () => assert.fail("no peer messages") }),
+     },
+    }), root, bus, extensionRuntime,
+   ));
    if (fastFirst) loaded.unshift(fastFirst);
    else if (startup?.fastOrder === "ai-first") loaded.push(await loadExtensionFromFactory(fast, root, bus, extensionRuntime));
   };
@@ -335,6 +369,7 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
  return {
   root,
   config,
+  spawned,
   runtime,
   manager,
   settingsUnchanged: () => assert.equal(readFileSync(settingsPath, "utf8"), settings),
@@ -756,6 +791,55 @@ test("A3 a foreign repository session resolves its own profile, not the parent's
  assert.equal(readFrozenDefaultOrchestrator(child.sessionManager.getSessionId()), undefined);
  f.settingsUnchanged();
 });
+
+for (const active of ["live", undefined] as const)
+ test(`A3 foreign launch from the started session preserves its model and frozen routing (${active ?? "no profile"})`, async (t) => {
+  const routing = { explore: { model: "openai/gpt-5.2", thinking: "low" as const } };
+  const f = await fixture(t, false, false, active, { env: {}, agents: true, routing });
+  const session = f.runtime.session;
+  assert.equal(session.model?.id, active ? "gpt-5.2" : "gpt-4o");
+  assert.equal(session.thinkingLevel, active ? "high" : "off");
+  assert.equal(f.authCalls(), active ? 1 : 0, "only the profiled own start switches");
+  const frozen = readFrozenInheritedProfile(f.manager.getSessionId());
+  assert.ok(frozen, "own start froze the session's inherited routing");
+  assert.equal(frozen.profile?.name, active);
+  f.settingsUnchanged();
+  const foreign = join(f.root, "foreign");
+  execFileSync("git", ["init", "--quiet", `--template=${join(f.root, "git-template")}`, foreign]);
+  const foreignIdentity = resolveSessionWorktree(foreign, f.root)!;
+  assert.ok(foreignIdentity);
+  // A competing orchestrator makes any accidental target-start switch observable.
+  Object.assign(f.profiles.team, {
+   orchestrator: { model: "openai/gpt-4o", thinking: "minimal" },
+   explore: { model: "openai/gpt-4o", thinking: "minimal" },
+  });
+  f.saveProfiles();
+  writeProfilePinSync(localProfilePinPath(foreignIdentity.commonDir), "team");
+  const runner = session.extensionRunner;
+  const launch = runner.getToolDefinition("subagent_run");
+  assert.ok(launch);
+  const ctx = runner.createContext() as unknown as Parameters<typeof launch.execute>[4];
+  const setModel = t.mock.method(session, "setModel");
+  const before = { model: session.model, thinking: session.thinkingLevel, auth: f.authCalls(), events: [...f.events] };
+  const result = await launch.execute("a3-foreign", {
+   agent: "explore", task: "Map the foreign target without provider requests.", repository_root: foreign, mode: "background",
+  }, undefined, undefined, ctx);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(result.isError, undefined);
+  assert.equal(f.spawned.length, 1, "the launch reaches the offline child spawn");
+  assert.equal(f.spawned[0].cwd, foreign);
+  const args = f.spawned[0].args;
+  assert.ok(args.includes("--model"));
+  assert.equal(args[args.indexOf("--model") + 1], active ? "openai/gpt-5.2:low" : "openai/gpt-4o:minimal",
+   active ? "the frozen profile wins over the foreign pin" : "a session frozen without a profile uses the foreign pin");
+  assert.equal(f.runtime.session, session, "launch uses the already-started parent");
+  assert.equal(session.model, before.model);
+  assert.equal(session.thinkingLevel, before.thinking);
+  assert.equal(f.authCalls(), before.auth, "foreign launch does not authenticate another own-start switch");
+  assert.equal(setModel.mock.callCount(), 0, "foreign launch never switches the live parent model");
+  assert.deepEqual(f.events, before.events, "launch does not emit another session start");
+  f.settingsUnchanged();
+ });
 
 // gentle-shell#2742, section 3: a new session knows the startup state it froze.
 const data = (entry: unknown) => (entry as { data?: unknown } | undefined)?.data;

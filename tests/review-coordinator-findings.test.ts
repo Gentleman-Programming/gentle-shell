@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createCoordinatorRuntime } from "./support/review-coordinator-runtime.ts";
 import { runReviewCoordinator, type ReviewCoordinatorTool } from "../lib/review-coordinator.ts";
 
 // odd/tasks/review-one-call.md T11 (S5), L18: a run that stops on a correction
@@ -154,4 +159,48 @@ test("the listed findings fit the 16 KiB JSON boundary and count the unlisted re
 		const { non_blocking_findings: _raw, ...nested } = response.result;
 		assert.deepEqual(result.result, { ...response, result: nested });
 	}
+});
+
+let repo: string | undefined;
+after(() => { if (repo !== undefined) rmSync(repo, { recursive: true, force: true }); });
+function scratchRepo(): string {
+	if (repo !== undefined) return repo;
+	repo = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), "rdd-nonblocking-")));
+	execFileSync("git", ["init", "-q"], { cwd: repo });
+	writeFileSync(join(repo, "candidate.ts"), "export const value = 1;\n");
+	return repo;
+}
+
+test("the facade's STATUS operation asks the provider for the non-blocking findings", async () => {
+	for (const scenario of ["correction", "escalated"] as const) {
+		const runtime = createCoordinatorRuntime(scratchRepo(), "coordinator", { hasUI: false, scenario, correctionFindings: [blocking] });
+		try {
+			const result = await runtime.invoke("gentle_review_run", { lineageId: runtime.lineage });
+			assert.equal(result.outcome, scenario === "correction" ? "input-required" : "stopped");
+			const statuses = runtime.nativeRequests.filter((entry) => entry.operation === "target-status").map((entry) => entry.request as Body);
+			assert.equal(statuses.length, 1);
+			assert.equal(statuses[0].nonBlockingFindings, true, scenario);
+		} finally { runtime.close(); }
+	}
+});
+
+test("a direct INSPECT never asks for the non-blocking findings; inside the run only facade status reads do", async () => {
+	const runtime = createCoordinatorRuntime(scratchRepo(), "coordinator", { hasUI: false, scenario: "escalated" });
+	try {
+		const inspected = await runtime.invoke("gentle_review", { operation: "inspect" });
+		assert.equal(inspected.result?.authority?.state, "escalated", JSON.stringify(inspected).slice(0, 400));
+		const statuses = runtime.nativeRequests.filter((entry) => entry.operation === "target-status").map((entry) => entry.request as Body);
+		assert.ok(statuses.length >= 1);
+		for (const status of statuses) assert.equal(Object.hasOwn(status, "nonBlockingFindings"), false, "L19: a direct gentle_review never asks");
+	} finally { runtime.close(); }
+	// A reviewer-group capture reads STATUS before and after its submissions without the opt-in.
+	const group = createCoordinatorRuntime(scratchRepo(), "coordinator", { hasUI: false, scenario: "refuter" });
+	try {
+		const result = await group.invoke("gentle_review_run", { lineageId: group.lineage });
+		assert.equal(result.outcome, "closed", JSON.stringify(result).slice(0, 400));
+		const flagged = group.nativeRequests.filter((entry) => entry.operation === "target-status").map((entry) => (entry.request as Body).nonBlockingFindings === true);
+		const statusSteps = (result.metrics as Metrics).steps.filter((step: Body) => step.tool === "gentle_review" && step.operation === "status").length;
+		assert.equal(flagged.filter(Boolean).length, statusSteps, "one opted-in read per facade status operation");
+		assert.ok(flagged.some((value: boolean) => !value), "capture-side STATUS reads stay as they are");
+	} finally { group.close(); }
 });

@@ -33,7 +33,7 @@ function blankHeredocs(command: string, joinBody = false): string {
 	});
 }
 
-const deliveryTokenPattern = /#[^\n]*|(?:\d*(?:[<>]&|>\||<>|>>?|<<-?)|&>>?)|(?:"(?:\\.|[^"\\])*"|'[^']*'|`(?:\\.|[^`\\])*`|\\.|[^\s;&|()<>'"\\])+|&&|\|\||[;&|()\n]/g;
+const deliveryTokenPattern = /(?:\\\n)*#[^\n]*|(?:\d*(?:[<>]&|>\||<>|>>?|<<-?)|&>>?)|(?:"(?:\\[\s\S]|[^"\\])*"|'[^']*'|`(?:\\[\s\S]|[^`\\])*`|\\[\s\S]|[^\s;&|()<>'"\\])+|&&|\|\||[;&|()\n]/g;
 
 /** Keep quoted arguments intact so harmless prose is never treated as a command. */
 function tokenize(command: string, blank = true, delivery = false): Token[] {
@@ -46,7 +46,7 @@ function tokenize(command: string, blank = true, delivery = false): Token[] {
 		: /(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s;&|()'"\\])+|&&|\|\||[;&|()\n]/g;
 	for (const match of command.matchAll(pattern)) {
 		const raw = match[0];
-		if (delivery && raw.startsWith("#")) continue;
+		if (delivery && /^(?:\\\n)*#/.test(raw)) continue;
 		const value = raw.replace(/"((?:\\.|[^"\\])*)"|'([^']*)'|\\(.)/g,
 			(_raw, double: string | undefined, single: string | undefined, escaped: string | undefined) => {
 				if (double !== undefined) return double.replace(/\\(["\\$`\n])/g, (_escape, char: string) => char === "\n" ? "" : char);
@@ -110,7 +110,7 @@ function collectReviewDeliveryActions(command: string, depth: number, onRoutingE
 	if (depth > 8) return [];
 	// Preserve offsets while removing comment data from every delivery scan,
 	// including the secondary command-substitution and backtick scans.
-	command = blankHeredocs(command, true).replace(deliveryTokenPattern, raw => raw.startsWith("#") ? " ".repeat(raw.length) : raw);
+	command = blankHeredocs(command, true).replace(deliveryTokenPattern, raw => /^(?:\\\n)*#/.test(raw) ? " ".repeat(raw.length) : raw);
 	const matches: ReturnType<typeof recognizeReviewDeliveryActions> = [];
 	const tokens = tokenize(command, true, true);
 	const backticks = backtickBodies(command);

@@ -496,6 +496,60 @@ test("Implement only this sends an element once while its request is in flight, 
 	assert.deepEqual(items(canvas).map((item) => item.dataset.id), ["p1"]);
 });
 
+test("an implement-part reply that lands after its part was listed and removed does not bring the part back", async () => {
+	const flight = deferred();
+	const canvas = await loadParts({ [PART_URL]: flight.promise, [REMOVE_URL]: { ok: true, id: "p1" } });
+	implementOnlyThis(canvas, 0);
+	await settle();
+	// Delivery completed: the parts.json change event lists the part before the send's reply arrives.
+	canvas.replies[PARTS_URL] = partsDoc(storedPart());
+	await canvas.serverEvent("change", { slug: "alpha", file: "parts.json" });
+	await settle();
+	assert.deepEqual(items(canvas).map((item) => item.dataset.id), ["p1"]);
+	canvas.replies[PARTS_URL] = partsDoc();
+	confirmRemove(canvas, 0);
+	await settle();
+	await canvas.serverEvent("change", { slug: "alpha", file: "parts.json" });
+	await settle();
+	assert.deepEqual(items(canvas).map((item) => item.dataset.id), []);
+
+	flight.answer({ ok: true, id: "p1", queued: false });
+	await settle();
+	assert.deepEqual(items(canvas).map((item) => item.dataset.id), [], "the older send reply does not add the removed part again");
+	assert.equal($(canvas, "gd-parts").hidden, true);
+	assert.equal($(canvas, "gd-status").textContent, "Sent: the session is building only this part of First now.", "it still says it was sent");
+});
+
+test("Show stays disabled until the shown design's boards are installed and never opens another design's board with the same file", async () => {
+	const canvas = await loadParts();
+	const manifest = deferred();
+	canvas.replies["/t/api/designs/beta"] = manifest.promise;
+	canvas.replies[BETA_PARTS_URL] = partsDoc(storedPart({ id: "b1", selector: "main.beta", excerpt: "Beta" }));
+	const alphaFrames = canvas.frames();
+	await canvas.serverEvent("show", { slug: "beta" });
+	// Beta's parts arrive while its design.json is held: alpha's boards are still the installed ones, and alpha has 01-a.html too.
+	await canvas.serverEvent("change", { slug: "beta", file: "parts.json" });
+	await settle();
+	assert.deepEqual(items(canvas).map((item) => item.dataset.id), ["b1"]);
+	const show = one(items(canvas)[0], "gd-part-show");
+	assert.equal(show.disabled, true, "no beta board is installed yet");
+	assert.equal(text(items(canvas)[0], "gd-part-title"), "01-a.html", "alpha's board title is not borrowed");
+	show.dispatch("click");
+	assert.equal(canvas.navMode.textContent, "Navigating", "alpha's old board is not focused");
+	const highlights = (frame: FakeElement) => frame.contentWindow!.posted.filter((message) => message.type === "gd:highlight");
+	assert.deepEqual(alphaFrames.flatMap(highlights), [], "alpha's board never gets beta's selector");
+
+	manifest.answer({ slug: "beta", title: "Beta", brief: "", artboards: [{ file: "01-a.html", title: "Beta A", tradeoff: "", width: 500, height: 400 }] });
+	await settle();
+	const ready = one(items(canvas)[0], "gd-part-show");
+	assert.equal(ready.disabled, false, "enabled once beta's boards are installed");
+	assert.equal(text(items(canvas)[0], "gd-part-title"), "Beta A");
+	ready.dispatch("click");
+	assert.equal(canvas.navMode.textContent, "Using: Beta A · Shift+Esc to exit");
+	assert.deepEqual(highlights(canvas.frames()[0]), [{ type: "gd:highlight", selector: "main.beta" }]);
+	assert.deepEqual(alphaFrames.flatMap(highlights), []);
+});
+
 // ---- Remove (S2: a part the agent never reports would stay sent forever)
 
 test("Remove asks an inline confirm, then removes a sent or queued part and stays disabled while in flight", async () => {

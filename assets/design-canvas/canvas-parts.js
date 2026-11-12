@@ -75,6 +75,9 @@ export function init(ctx) {
 	// which may carry other parts' updates, a fresh read follows.
 	let partLoads = 0;
 	let reading = 0;
+	// The parts a parts.json read listed or a Remove dropped ("<slug>/<id>"): the server already reported on them, so
+	// an Implement only this reply that lands later never lists them again, even when the list no longer has them.
+	const reported = new Set();
 	// The elements whose Implement only this is in flight ("<slug>/<file>/<selector>"), across popovers.
 	const sending = new Set();
 	const sendKey = (pick) => JSON.stringify([pick.board.slug, pick.board.artboard.file, pick.selector]);
@@ -104,7 +107,8 @@ export function init(ctx) {
 		return part.status;
 	}
 
-	const boardOf = (part) => state.boards.find((board) => board.artboard.file === part.file) ?? null;
+	// By design and file: while a design switch waits for its design.json, the boards installed are the old design's.
+	const boardOf = (part, slug) => state.boards.find((board) => board.slug === slug && board.artboard.file === part.file) ?? null;
 	const removeKey = (slug, part) => `${slug}/${part.id}`;
 	const twoDigits = (value) => String(value).padStart(2, "0");
 
@@ -138,7 +142,7 @@ export function init(ctx) {
 	function renderPart(part, index, slug) {
 		const number = index + 1;
 		const kind = kindOf(part);
-		const board = boardOf(part);
+		const board = boardOf(part, slug);
 		const item = doc.createElement("li");
 		item.className = "gd-part";
 		item.dataset.id = part.id;
@@ -264,12 +268,14 @@ export function init(ctx) {
 		if (load !== partLoads || slug !== state.slug) return;
 		// A failed read keeps the parts shown.
 		if (failure) return setStatus(TEXT.unreadable(slug, failure.message), true);
-		setParts(slug, data && Array.isArray(data.parts) ? data.parts.filter(isPart) : []);
+		const parts = data && Array.isArray(data.parts) ? data.parts.filter(isPart) : [];
+		for (const part of parts) reported.add(removeKey(slug, part));
+		setParts(slug, parts);
 	}
 
 	/** A part the server just accepted, before its parts.json change event arrives; never into another design's list. */
 	function noteParts(slug, part) {
-		if (slug !== state.slug) return;
+		if (slug !== state.slug || reported.has(removeKey(slug, part))) return;
 		const current = state.parts.slug === slug ? state.parts.parts : [];
 		if (current.some((entry) => entry.id === part.id)) return;
 		partLoads += 1;
@@ -279,7 +285,7 @@ export function init(ctx) {
 
 	/** Show: the part's artboard in focus, its element highlighted in every frame; the board is looked up now. */
 	function showPart(part) {
-		const board = state.parts.slug === state.slug ? boardOf(part) : null;
+		const board = state.parts.slug === state.slug ? boardOf(part, state.slug) : null;
 		if (!board) {
 			setStatus(TEXT.notShown, true);
 			renderParts();
@@ -300,6 +306,7 @@ export function init(ctx) {
 		if (confirming === key) confirming = null;
 		const current = slug === state.slug && state.parts.slug === slug;
 		if (reply.ok) {
+			reported.add(key);
 			setStatus(TEXT.removed, false);
 			showToast(TEXT.removed, false);
 			if (!current) return;

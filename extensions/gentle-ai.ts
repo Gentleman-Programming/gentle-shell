@@ -2,6 +2,7 @@ import { emptyFallbacksFile, fallbacksFilePath, followProfileRename, readFallbac
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { PROFILE_TIER_EVENT, supportsOpenAIFast } from "../lib/openai-fast-tier.ts";
 import { isDeepStrictEqual } from "node:util";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { filterChildSessionContextFiles, type ContextFileOptions } from "../lib/child-context-files.ts";
 import { dataArgumentRanges, recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
@@ -10018,6 +10019,16 @@ interface NegotiatedHostTransportStatus {
 }
 const reviewTransportRefusalByProvider = new WeakMap<object, ReviewTransportRefusal>();
 
+// odd/tasks/review-one-call.md L19: the STATUS opt-in for a stopped review's
+// non-blocking findings (gentle-ai#6088) is asked only by facade calls that
+// gentle_review_run dispatches. The scope is set by the run around its own
+// facade dispatch, in process; it is not a tool parameter, so no model input
+// can set it, and a direct gentle_review call never asks for the findings.
+const reviewRunScope = new AsyncLocalStorage<true>();
+function nonBlockingFindingsForRun(): { nonBlockingFindings?: true } {
+	return reviewRunScope.getStore() === true ? { nonBlockingFindings: true } : {};
+}
+
 function clearReviewTransportProbeForTesting(nativeReviewCli: NativeReviewCli | null): void {
 	if (nativeReviewCli !== null) reviewTransportRefusalByProvider.delete(nativeReviewCli as unknown as object);
 }
@@ -10844,6 +10855,8 @@ async function executeReviewControllerOperationImpl(
 					{
 						cwd: defaultCwd,
 						...inspectSelector,
+						// gentle-ai#6088: only on behalf of gentle_review_run (L19).
+						...nonBlockingFindingsForRun(),
 						...(signal === undefined ? {} : { signal }),
 					},
 					retainedUntrackedSelections,
@@ -11798,6 +11811,9 @@ async function executeReviewControllerOperationImpl(
 					...(parameters.lineageId === undefined ? {} : { lineageId: parameters.lineageId }),
 					...(effectiveBaseRef === undefined ? {} : { baseRef: effectiveBaseRef, committedOnly: true }),
 					...(effectiveUntrackedSelection.untrackedScope === undefined ? {} : effectiveUntrackedSelection),
+					// gentle-ai#6088: only on behalf of gentle_review_run (L19); the run
+					// bounds them and drops the raw set from its nested record.
+					...nonBlockingFindingsForRun(),
 					...(signal === undefined ? {} : { signal }),
 				}, retainedUntrackedSelections, defaultCwd);
 				if (negotiated.transport !== undefined) {
@@ -12584,7 +12600,7 @@ function createGentleAiExtensionForTesting(
 						// but emits no nested tool_call/tool_result/execution events. SDK
 						// accounting sees only the outer call; internal facade calls have
 						// no additional budget/timing events. Returned metrics describe them.
-						const result = await tools[name].execute(toolCallId, args as never, signal, onUpdate, ctx);
+						const result = await reviewRunScope.run(true, () => tools[name].execute(toolCallId, args as never, signal, onUpdate, ctx));
 						return result.details as Record<string, unknown>;
 					},
 					presentForecast: async (forecast) => {

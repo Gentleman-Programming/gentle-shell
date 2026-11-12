@@ -82,7 +82,9 @@ test("organic progress preserves both complete feature copies and reconciles act
 		"preserve valid completed and unrelated work",
 		"reopen invalidated items",
 		"Check off only observed outcomes",
-		"Read back both writes",
+		"explicit, complete save acknowledgement",
+		"inspect the changed local task/log lines as needed",
+		"do not routinely reread both full copies",
 		"not atomic",
 		"mirror pending",
 		"Preserve both versions",
@@ -102,9 +104,10 @@ test("organic progress preserves both complete feature copies and reconciles act
 // scripts, invented size gates, or repeated malformed writer launches.
 test("tracking sync recovers from partial writes without custom reconciliation gates", () => {
 	containsAll(memory, [
-		"Read back both writes with the normal read tool; they are not atomic",
+		"These writes are not atomic",
 		"never author comparison or reconciliation scripts or gates for them",
-		"After a partial or failed sync, check which writes already applied and continue from that state; never replay an applied write",
+		"A missing, partial, truncated, failed, or uncertain acknowledgement requires checking which writes already applied before any retry; never replay an applied write",
+		"If the tool reports a payload it cannot preserve, keep the file and mark its mirror pending rather than repeatedly resending the same payload",
 		"a mirror that differs from the file just written is refreshed from the file, never a blocker",
 		"Preserve both versions on irreconcilable edits",
 	]);
@@ -268,7 +271,10 @@ test("one feature document carries intent, accepted rationale and worker context
 		"automatically update affected intent and TODOs",
 		"add genuinely new tasks or reopen invalidated items with a reason",
 		"Findings alone never authorize scope expansion or automatic acceptance",
-		"Before implementation or resume, the parent reads both the actual file and full observation",
+		"At initial implementation or recovery after interruption or context loss, the parent reads both the actual file and full observation",
+		"Within an intact continuation, reuse the established specs, next task, route, and applicable proof",
+		"A progress question does not restart preparation",
+		"New scope, external edits, stale proof, or missing context require inspecting the affected state before editing",
 		"passes the locator, task IDs, and linked `S#`; workers read the document until `## Log` before edits",
 	]);
 	containsAll(read("assets/agents/gentle-ai-worker.md"), [

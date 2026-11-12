@@ -12,6 +12,7 @@ const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
 const runtime = resolve(packageRoot, "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js");
 const desktopExtension = resolve(packageRoot, "extensions/gentle-desktop-rpc.ts");
 const ownerExtension = resolve(packageRoot, "extensions/gentle-ai.ts");
+const usageOwnerExtension = resolve(packageRoot, "extensions/gentle-shell.ts");
 const WAIT_TIMEOUT_MS = 20_000;
 
 /** Isolated filesystem, no provider, no network, no inherited user configuration. */
@@ -177,8 +178,8 @@ test("installed Pi dispatches Desktop RPC without adding conversation messages",
 		assert.equal(response.kind, "response");
 		assert.equal(response.requestId, "real-1");
 		assert.equal(response.ok, true);
-		assert.deepEqual(response.data.methods, ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode"]);
-		assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed"]);
+		assert.deepEqual(response.data.methods, ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage"]);
+		assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit"]);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -256,6 +257,60 @@ test("installed Pi serves Desktop config reads from the existing stores", () => 
 		assert.equal(payloads.some((payload) => payload.kind === "event"), false, "a read emits nothing");
 		assert.equal(readFileSync(join(workspace, ".pi", "gentle-ai", "models.json"), "utf8"), projectModels);
 		assert.equal(existsSync(join(root, "config", "profile-fallbacks.json")), false, "no store is created by a read");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+/**
+ * Real production wiring for the read-side usage slice: the installed runtime
+ * loads the actual usage owner (`extensions/gentle-shell.ts`, which owns the
+ * UsageStore / UsageSourceRegistry / refreshUsage / after_provider_response
+ * closures) plus this transport extension. `get_subscription_usage` is a read,
+ * so the probe stays fully offline and only observes truthful pending answers
+ * — it never triggers a live provider refresh.
+ */
+test("installed Pi serves offline subscription usage reads from the real owner", () => {
+	const root = isolatedRoot("desktop-rpc-usage-");
+	try {
+		const input = [
+			prompt("prompt-anthropic", desktopRequest("usage-1", "get_subscription_usage", { provider: "anthropic" })),
+			prompt("prompt-codex", desktopRequest("usage-2", "get_subscription_usage", { provider: "openai-codex" })),
+			prompt("prompt-all", desktopRequest("usage-3", "get_subscription_usage")),
+		].map((value) => JSON.stringify(value)).join("\n") + "\n";
+		const child = spawnSync(process.execPath, probeArgs(root, [usageOwnerExtension, desktopExtension]), {
+			cwd: join(root, "workspace"),
+			env: probeEnvironment(root),
+			input,
+			encoding: "utf8",
+			timeout: 15000,
+		});
+
+		assert.ifError(child.error);
+		assert.equal(child.status, 0, child.stderr);
+		assert.equal(child.stderr, "");
+		const records = child.stdout.trim().split("\n").map((line) => JSON.parse(line));
+		const payloads = records
+			.filter((record) => record.type === "extension_ui_request" && record.widgetKey === DESKTOP_RPC_WIDGET)
+			.map((record) => JSON.parse(record.widgetLines[0]));
+		const byRequest = (id: string) => payloads.find((payload) => payload.requestId === id && payload.kind === "response");
+
+		// Anthropic has no usage endpoint; offline it must stay pending, never a
+		// fabricated snapshot or a failed fetch.
+		const anthropic = byRequest("usage-1");
+		assert.equal(anthropic.ok, true, JSON.stringify(anthropic));
+		assert.deepEqual(anthropic.data.providers, [{ provider: "anthropic", status: "pending" }]);
+
+		const codex = byRequest("usage-2");
+		assert.equal(codex.ok, true, JSON.stringify(codex));
+		assert.deepEqual(codex.data.providers, [{ provider: "openai-codex", status: "pending" }]);
+
+		const all = byRequest("usage-3");
+		assert.equal(all.ok, true, JSON.stringify(all));
+		assert.ok(Array.isArray(all.data.providers), "an unfiltered read projects the scope providers");
+
+		assert.equal(payloads.some((payload) => payload.kind === "event"), false, "an offline read emits nothing");
+		assert.equal(JSON.stringify(payloads).includes("chatgpt.com"), false, "no endpoint leaks into the wire");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

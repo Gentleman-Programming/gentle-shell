@@ -62,12 +62,12 @@ Returns the currently implemented contract; clients must not infer support from 
   "schema": "gentle-shell.desktop-rpc/v1",
   "command": "gentle:desktop",
   "widget": "gentle-desktop-rpc",
-  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode"],
-  "events": ["config_changed", "permission_mode_changed"]
+  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage"],
+  "events": ["config_changed", "permission_mode_changed", "rate_limit"]
 }
 ```
 
-The permission methods, the bounded config read and write, and the `config_changed` and `permission_mode_changed` events are advertised because this extension wires them; a later slice adds its own methods and events here. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits) and [Configuration limits](#configuration-limits).
+The permission methods, the bounded config read and write, the subscription-usage read and refresh, and the `config_changed`, `permission_mode_changed`, and `rate_limit` events are advertised because this extension wires them; a later slice adds its own methods and events here. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), and [Usage limits](#usage-limits).
 
 ### `get_snapshot`
 
@@ -511,6 +511,118 @@ Persistence is delegated to the owner's validated writer, which keeps the file p
 }
 ```
 
+### `get_subscription_usage`
+
+Reads the subscription usage windows the existing usage owner has already recorded, projected into a safe wire shape. Params are optional: an empty object reads the whole current scope, and `{ "provider": "nan" }` reads exactly one provider.
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-50", "method": "get_subscription_usage", "params": {} }
+```
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-51", "method": "get_subscription_usage", "params": { "provider": "openai-codex" } }
+```
+
+| Param | Required | Type | Meaning |
+| --- | --- | --- | --- |
+| `provider` | no | string | Narrow the answer to one provider. Unknown names answer `unavailable`, never an error. |
+
+Only the `provider` key is accepted; any other key, a non-string `provider`, or an empty string is `invalid_request`. A read has no side effect: it never fetches, never writes, and never emits an event.
+
+Success:
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-51",
+  "ok": true,
+  "data": {
+    "providers": [
+      {
+        "provider": "openai-codex",
+        "status": "ok",
+        "fetchedAt": 1788600000000,
+        "plan": "pro",
+        "limits": [
+          {
+            "name": "codex",
+            "limitReached": false,
+            "windows": [
+              { "label": "week", "usedPercent": 40, "windowSeconds": 604800, "resetAt": 1788777491000 }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Each entry carries only the safe fields of the owner's recorded snapshot:
+
+| Field | Meaning |
+| --- | --- |
+| `provider` | The provider identifier. |
+| `status` | One of `ok`, `pending`, `stale`, `failed`, `unavailable` — see below. |
+| `fetchedAt` | When the snapshot was recorded, present when there is a snapshot. |
+| `plan` | The plan name the owner already recorded, present only when public; never enriched from auth or account state. |
+| `limits` | Safe windows: `name`, `limitReached`, and per-window `label`, `usedPercent`, `windowSeconds`, `resetAt`, plus NaN's raw `used`/`budget` allowance numbers when the provider reports them. |
+
+`status` is derived only from facts the owner already holds:
+
+- `ok` — a snapshot is recorded and fresh.
+- `stale` — a snapshot is recorded but older than the 5-minute refresh window (refreshable providers only).
+- `pending` — no snapshot yet, the provider is supported, and its latest refresh did not fail.
+- `failed` — no snapshot and the latest refresh settled empty.
+- `unavailable` — the provider is not supported (no built-in fetcher and no registered usage source).
+
+A header-only provider (Anthropic) is `pending` until its first response, and its snapshots never age into `stale` because they arrive with responses rather than through a fetch cycle. A retained snapshot keeps `ok`/`stale` even after a failed refresh; its `fetchedAt` is the age signal. No account id, URL, access token, key material, raw provider error, or auth-resolution detail ever crosses the wire.
+
+### `refresh_subscription_usage`
+
+Delegates a forced refresh to the existing `refreshUsage` closure, with exactly the same API-key and auth logic the panel uses. It never resolves credentials, reads `auth.json`, or implements a second fetcher.
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-52", "method": "refresh_subscription_usage", "params": { "provider": "openai-codex" } }
+```
+
+Params are the same optional `provider` filter as `get_subscription_usage`. The response reports the post-refresh statuses in the same `providers` shape. A provider with no fetch endpoint (Anthropic — its windows arrive with provider responses) is a truthful typed no-op: it answers `refresh: "unsupported"` with its current `pending`/`ok` status and performs no fetch and emits no event. No Claude usage endpoint is invented.
+
+A refreshable provider that is **outside the current session scope** is also a truthful no-op: the owner resolves the scope before delegating, so it never attempts the fetch, keeps the current snapshot and status, and answers `refresh: "out_of_scope"` — an explicit signal instead of an ambiguous `pending`.
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-54",
+  "ok": true,
+  "data": {
+    "providers": [
+      { "provider": "openai-codex", "status": "pending", "refresh": "out_of_scope" }
+    ]
+  }
+}
+```
+
+`refresh` appears only on a refresh answer and is one of `unsupported` (supported provider with no fetch endpoint) or `out_of_scope` (refreshable provider the current scope does not target). Either is a no-op: no fetch, no event, and the snapshot and status are left exactly as they were.
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-53",
+  "ok": true,
+  "data": {
+    "providers": [
+      { "provider": "anthropic", "status": "pending", "refresh": "unsupported" }
+    ]
+  }
+}
+```
+
+When a refresh actually changes a snapshot, the response is followed by exactly one `rate_limit` event carrying every changed snapshot (`source: "refresh"`). A no-op, unsupported, throttled, or failed refresh changes nothing and emits no event. The response line always precedes the event line.
+
 ## Responses
 
 Success:
@@ -540,7 +652,7 @@ Failure:
 }
 ```
 
-Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invalid_data`, `revision_conflict`, `write_failed`, `unsupported_method`, `permission_unavailable`, `permission_denied`, `config_unavailable`, and `internal_error`. A request that cannot supply a valid correlation ID uses `requestId: null`. State/provider failures use the generic `internal_error` message rather than exposing raw paths, credentials, or provider errors. Transport failures from `setWidget` are never retried as a second response.
+Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invalid_data`, `revision_conflict`, `write_failed`, `unsupported_method`, `permission_unavailable`, `permission_denied`, `config_unavailable`, `usage_unavailable`, and `internal_error`. A request that cannot supply a valid correlation ID uses `requestId: null`. State/provider failures use the generic `internal_error` message rather than exposing raw paths, credentials, or provider errors. Transport failures from `setWidget` are never retried as a second response.
 
 | Code | Meaning |
 | --- | --- |
@@ -554,6 +666,7 @@ Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invali
 | `permission_unavailable` | The permission owner did not answer for this session (extension not loaded, or the session changed). State unchanged. |
 | `permission_denied` | The owner refused the change (for example a non-interactive or replaced session). State unchanged. |
 | `config_unavailable` | No Desktop command has bound a session context, that context has no working directory, or a pin write was requested outside a resolvable Git worktree. |
+| `usage_unavailable` | The usage owner did not answer for this session (extension not loaded, or the session changed). State unchanged. |
 | `internal_error` | Unexpected failure; message stays generic. |
 
 ## Events
@@ -617,6 +730,44 @@ Emitted at most once per successful `set_config` that actually changed its targe
 
 `store`, `scope`, `revision`, and `writeRevision` are the resulting values, identical to the response that precedes the event, so a client that missed the response can reconcile from the event alone. `source` is `desktop` because this slice only publishes events for changes it made itself; a change made by `/gentle:profiles`, by the installer, or by another `pi` process becomes visible on the next read and emits nothing.
 
+### `rate_limit`
+
+Carries structured subscription-usage snapshots to subscribed Desktop consumers. It is emitted in two ways:
+
+- **`source: "response"`** — asynchronously, whenever the existing usage owner records a snapshot from provider response headers (`after_provider_response`). Claude's 5h/7d windows arrive here, already parsed by the owner — the Desktop consumer never parses header text.
+- **`source: "refresh"`** — after a `refresh_subscription_usage` that actually changed a snapshot's content. It follows the refresh response line and is omitted for a no-op (unsupported, out-of-scope, throttled, or failed) refresh.
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "event",
+  "seq": 3,
+  "event": "rate_limit",
+  "data": {
+    "source": "response",
+    "snapshots": [
+      {
+        "provider": "anthropic",
+        "status": "ok",
+        "fetchedAt": 1788600000000,
+        "limits": [
+          {
+            "name": "claude",
+            "limitReached": false,
+            "windows": [
+              { "label": "5h", "usedPercent": 25, "windowSeconds": 18000, "resetAt": null },
+              { "label": "week", "usedPercent": 90, "windowSeconds": 604800, "resetAt": null }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Each snapshot entry is the same safe projection as `get_subscription_usage` (`provider`, `status`, `fetchedAt`, `plan` when public, `limits`), so a client that missed a response can reconcile from the event alone. `seq` advances exactly once per delivered event, through the same router sequencer as the other events.
+
 ## Configuration limits
 
 - **One reader and one writer per store.** Each `get_config` answer and each `set_config` write comes from the module that already owns that file (`agent-profiles.ts`, `model-routing-authority.ts`, `model-fallback-store.ts`, `agents-config.ts`, `agent-profile-pin.ts`, `agent-assets.ts`). There is no second store, no cached copy, no parallel parser, no shadow precedence, and no re-implemented invariant: the merge rules are the owner's own (`readSavedModelConfig`, `parseAgentsConfig`, `evaluateProfilePin`) and the writes are the owner's validated atomic writers (`writeProfilesFileSync`, `writeFallbacksFile`, `writeProfilePinSync`).
@@ -627,14 +778,14 @@ Emitted at most once per successful `set_config` that actually changed its targe
 - **No paths, no secrets.** Physical paths are rejected as request input and never appear in a response, an event, or an error message. Content is limited to what these stores hold: profile names, routing entries, fallback chains, pin names, layer statuses, and asset ownership keys and hashes. `managed_assets` is additionally filtered to ownership-shaped entries — a relative asset path below the agent home plus a 64-hex sha256 digest — so an absolute path, a traversal segment, or an arbitrary string in the manifest is omitted rather than echoed. No credential, token, auth file, provider error, or conversation content is read or returned.
 - **Truthful normalization.** Content is what the owner's normalizer produced. Entries an owner drops (an unsafe agent key, an unknown thinking level, a stale `active` marker) are absent from `value`; if everything was dropped, the store reads `ok` with an empty map rather than being reported as `invalid`. A file the owner cannot parse at all reads `invalid`. A **write** may not rely on that leniency: data the normalizer would drop is rejected as `invalid_data`, so a Desktop write can never delete content it does not understand.
 - **No watcher.** Nothing is pushed except this slice's own `config_changed`. A change made by another `pi` process, by `/gentle:profiles`, or by the installer becomes visible on the next read and produces no event.
-- **This slice does not implement** permission changes beyond the existing slice, usage, agents, jobs, music, profile application, store materialization, or any Gentle Desktop client change.
+- **This slice does not implement** permission changes beyond the existing slice, subscription usage beyond the read/refresh contract below, agents, jobs, music, profile application, store materialization, or any Gentle Desktop client change.
 
 ## Permission limits
 
 - The methods delegate to the Gentle AI extension's permission owner in the same Pi process. When that extension is not loaded, both methods answer `permission_unavailable` instead of guessing state.
 - Session changes require the owner's interactive-host admission: the TUI, or an RPC process with `GENTLE_SHELL_INTERACTIVE_HOST=1`. Headless RPC children and subagent children stay closed exactly as before.
 - Permission control is never an agent-callable tool; only `/gentle:desktop` over the interactive RPC channel reaches it.
-- This slice adds no filesystem watcher and no second store. Config is limited to the `get_config` and `set_config` contract in [Configuration limits](#configuration-limits); usage, agents, jobs, music, and any Desktop client change are not implemented.
+- This slice adds no filesystem watcher and no second store. Config is limited to the `get_config` and `set_config` contract in [Configuration limits](#configuration-limits); subscription usage is limited to the `get_subscription_usage` and `refresh_subscription_usage` contract in [Usage limits](#usage-limits); agents, jobs, music, and any Desktop client change are not implemented.
 - Requests are not queued. Pi's own RPC loop dispatches prompts concurrently, so overlapping `set_permission_mode` calls reach the owner in whatever order their own reads finish, and one can apply right after the other. What stays guaranteed: every request gets exactly one correlated response, responses never cross, and each response and its optional event are published as an adjacent pair with a monotonic `seq`. Send permission requests one at a time and correlate with `requestId`; the maintainer probe does exactly that.
 
 ### Trust boundary
@@ -644,6 +795,15 @@ Emitted at most once per successful `set_config` that actually changed its targe
 - `hasUI` in RPC mode means the Desktop app's UI surface exists; it is not proof that a person approved anything. This contract adds no confirmation dialog, so approval belongs to the Desktop client and its user.
 - The same write access already implies full control of an interactive agent session, so this is not a privilege escalation beyond stdin access. It is still a capability: treat the Desktop client's stdin channel as trusted input, and never let untrusted content (task text, issues, files, agent output) synthesize `/gentle:desktop` permission requests.
 
+## Usage limits
+
+- **One owner, no second fetcher or store.** `get_subscription_usage` and `refresh_subscription_usage` reach the existing usage owner (`UsageStore` / `UsageSourceRegistry` / `refreshUsage` / `after_provider_response` closures) through a defensive, versioned owner-service adapter — the usage analogue of the YOLO host-ui seam. There is no second fetcher, no second auth resolver, no `auth.json` access, and no cached copy.
+- **Same refresh semantics as the panel.** `refresh_subscription_usage` delegates to the existing `refreshUsage` with the same API-key and auth logic, the same 5-minute throttle (forced here), the same bounded fetch window, and the same per-provider generation guard. The scope is resolved **before** delegation: a refreshable provider outside the current session scope answers `refresh: "out_of_scope"` and never reaches the fetcher. Anthropic has no usage endpoint: a refresh for it is a truthful `refresh: "unsupported"` no-op, never fabricated data.
+- **Claude data arrives after provider responses.** Anthropic's 5h/7d windows are header-driven: they appear in a `rate_limit` event (`source: "response"`) only after a provider response, never from a fetch. Before the first response, Anthropic reads `pending`.
+- **Safe projection only.** The wire carries provider id, status, `fetchedAt`, the public plan name, and the window percentages/durations/resets (plus NaN's raw allowance numbers). No account id, URL, access token, key material, raw provider error, or auth-resolution detail is ever returned or logged.
+- **Session-scoped, disposed on replacement.** The owner adapter is discovered per session and disposed on session replacement or shutdown; a late refresh or header recording for a replaced session is dropped, and the router's own publisher guard drops any superseded response. A refresh response always precedes its `rate_limit` event, and a no-op or failed refresh emits no event.
+- **No agent tool.** The usage surface is reachable only through `/gentle:desktop` over the interactive RPC channel, exactly like the permission and config slices.
+
 ## Verification
 
 ```sh
@@ -651,10 +811,13 @@ node --experimental-strip-types --test \
   tests/desktop-rpc.test.ts \
   tests/desktop-rpc-permissions.test.ts \
   tests/desktop-rpc-config.test.ts \
+  tests/desktop-rpc-usage.test.ts \
   tests/maintainer/desktop-rpc.maintest.ts
 ```
 
 The permission tests register the real `registerYoloSessionPolicy` owner with an isolated temporary config home and a stub identity resolver; they never read or write the user's own permission store.
+
+The usage tests use a fake owner service and a fake fetch/modelRegistry only: they cover the five statuses, the safe projection and plan-only-when-public rule, provider filters, unknown-provider `unavailable`, invalid params, refresh delegation with the provider filter forwarded, the response-before-event order over the router, the Anthropic typed `unsupported` no-op, the out-of-scope `out_of_scope` no-op (including the real owner never reaching the fetcher), content-based change detection (a same-millisecond payload change emits once, byte-equivalent data stays a no-op), late-discovery disposal after a reset, no duplicate event on no-op/failed refresh, raw-error and secret redaction, header-driven `rate_limit` events, stale-session disconnects, and the versioned adapter discovery. One test runs the real `gentleShell` owner seam to prove Claude's 5h/7d windows arrive as structured snapshots from response headers, never header text.
 
 The config tests build six stores in a temporary root and inject the worktree identity, so no real user config, agent home, or repository pin is read. On the read side they cover every store, current path precedence, missing and malformed layers, revision stability and change, the read-only split, rejected stores/params/paths, the bounded snapshot projection, and a byte-and-mtime comparison proving a read never mutates a store. On the write side they cover a valid write for each writable store and both pin layers, clearing either pin layer and observing the winner fall back, clearing an already-missing layer as a no-op, clearing and replacing an unreadable layer, creating a missing store, a stale or missing `expectedRevision` (including on a clear), the documented rejection order (envelope, then store identity, then mutability, then revision, then payload), data the owner would drop, malformed pin clear shapes, extra and physical-path keys, every read-only store, a forced owner write failure (the store path is a directory) answering `write_failed` with no path, OS code, or event and an unchanged tree, the no-op path with untouched bytes and mtime, the resulting disk bytes, revision movement and its invalid-state coarseness, the response-then-event order over the real transport, and that a stopped session neither answers nor writes. They also re-check that the config dispatcher still falls through to the permission bridge.
 
@@ -663,6 +826,7 @@ The maintainer probes run the installed Pi runtime with isolated HOME, agent hom
 1. transport only — this extension alone proves slash-command dispatch, correlation, and that capabilities advertise the permission and config domains;
 2. config reads — the same isolated runtime reads pre-seeded `profiles.json` and project `models.json` through `get_config`, checks the bounded `get_snapshot` projection, and proves no event is emitted and no store is created or rewritten;
 3. config write — the same isolated runtime reads the `profiles` write target, sends a `set_config` with that `expectedRevision`, observes the response plus one ordered `config_changed`, reads the store back with a moved revision, asserts the on-disk bytes are exactly the owner's serialization, and proves no other store was created and `get_messages` stayed empty;
-4. live owner — the real `extensions/gentle-ai.ts` owner extension is loaded alongside this extension, and the probe reads the mode, sets `auto` with `persist: false`, observes the response plus one `permission_mode_changed` event, and reads `auto` again in the same process without a restart, while `get_messages` stays empty and no default file is written. Nothing in the probe reimplements the owner.
+4. live owner — the real `extensions/gentle-ai.ts` owner extension is loaded alongside this extension, and the probe reads the mode, sets `auto` with `persist: false`, observes the response plus one `permission_mode_changed` event, and reads `auto` again in the same process without a restart, while `get_messages` stays empty and no default file is written. Nothing in the probe reimplements the owner;
+5. usage owner — the real `extensions/gentle-shell.ts` usage owner is loaded alongside this extension, and the probe reads `get_subscription_usage` for `anthropic` and `openai-codex` and observes truthful offline `pending` answers with no event and no live provider fetch. It never calls `refresh_subscription_usage` against a live provider.
 
 What this does not prove: a live Desktop conversation approving the request. The probe writes RPC stdin itself, so it demonstrates that the production owner accepts the change and reports it truthfully, not that a person consented. It also does not cover `persist: true` end to end; persistence is covered by the owner and focused unit tests. Nothing in this slice proves a cross-process guarantee either: the probes use one process, which is exactly the scope `expectedRevision` provides.

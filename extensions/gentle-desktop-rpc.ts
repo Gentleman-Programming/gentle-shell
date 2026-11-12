@@ -16,6 +16,8 @@ import {
 	DESKTOP_PERMISSION_METHODS,
 	DesktopPermissionBridge,
 } from "../lib/desktop-rpc-permissions.ts";
+import { DESKTOP_USAGE_EVENTS, DESKTOP_USAGE_METHODS } from "../lib/desktop-rpc-usage.ts";
+import { DesktopUsageBridge } from "../lib/desktop-usage-service.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 
 function publisher(ctx: ExtensionContext): DesktopRpcPublish {
@@ -30,17 +32,26 @@ function publisher(ctx: ExtensionContext): DesktopRpcPublish {
 
 export default function desktopRpc(pi: ExtensionAPI) {
 	// Permission control always delegates to the existing Gentle AI session owner;
-	// config reads and writes delegate to the existing store owners. Neither has a
-	// store of its own.
+	// config reads and writes delegate to the existing store owners; subscription
+	// usage delegates to the existing usage owner. None has a store of its own.
 	const permissions = new DesktopPermissionBridge(pi);
 	const config = new DesktopConfigBridge();
+	const usage = new DesktopUsageBridge(pi);
 	const domain: DesktopRpcDomain = (method, params) => {
-		const outcome = config.handle(method, params);
-		return outcome === undefined ? permissions.handle(method, params) : outcome;
+		// Config is the only synchronous bridge; permission and usage answers are
+		// awaited in fall-through order, so an unknown method still resolves to
+		// the router's `unsupported_method` instead of an early `undefined`.
+		const configOutcome = config.handle(method, params);
+		if (configOutcome !== undefined) return configOutcome;
+		return (async () => {
+			const permissionOutcome = await permissions.handle(method, params);
+			if (permissionOutcome !== undefined) return permissionOutcome;
+			return usage.handle(method, params);
+		})();
 	};
 	const router = new DesktopRpcRouter(
-		["capabilities", "get_snapshot", ...DESKTOP_CONFIG_METHODS, ...DESKTOP_PERMISSION_METHODS],
-		[...DESKTOP_CONFIG_EVENTS, DESKTOP_PERMISSION_EVENT],
+		["capabilities", "get_snapshot", ...DESKTOP_CONFIG_METHODS, ...DESKTOP_PERMISSION_METHODS, ...DESKTOP_USAGE_METHODS],
+		[...DESKTOP_CONFIG_EVENTS, DESKTOP_PERMISSION_EVENT, ...DESKTOP_USAGE_EVENTS],
 		() => config.snapshotState(),
 		domain,
 	);
@@ -48,14 +59,19 @@ export default function desktopRpc(pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		permissions.reset();
 		config.reset();
+		usage.reset();
 		router.stop();
 		if (!isInteractiveRpcHost(ctx.mode)) return;
 		router.start(publisher(ctx));
+		// Header-driven usage snapshots (Claude's 5h/7d windows, Codex SSE
+		// headers) become ordered `rate_limit` events through the router.
+		usage.wire((event, data) => router.emit(event, data));
 	});
 
 	pi.on("session_shutdown", () => {
 		permissions.reset();
 		config.reset();
+		usage.reset();
 		router.stop();
 	});
 
@@ -65,6 +81,7 @@ export default function desktopRpc(pi: ExtensionAPI) {
 			if (!isInteractiveRpcHost(ctx.mode)) return;
 			permissions.attach(ctx);
 			config.attach(ctx);
+			usage.attach(ctx);
 			await router.handle(args);
 		},
 	});

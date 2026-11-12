@@ -283,6 +283,26 @@ function guardedContributionRail(rail: SidebarRail, id: string): SidebarRail {
 }
 
 /**
+ * Whether this box entry declares a `sidebar` payload, which is the only kind
+ * of contribution `plugins.json` can reorder here. The property can be a plugin
+ * getter, so a throw is "no sidebar" for this purpose; the validation already
+ * reports the contribution itself.
+ */
+function declaresSidebar(value: unknown): boolean {
+	if ((typeof value !== "object" && typeof value !== "function") || value === null) return false;
+	try {
+		return (value as { sidebar?: unknown }).sidebar !== undefined;
+	} catch {
+		return false;
+	}
+}
+
+function boxDeclaresSidebar(store: Map<string, Contribution>): boolean {
+	for (const contribution of store.values()) if (declaresSidebar(contribution)) return true;
+	return false;
+}
+
+/**
  * Apply every valid contributed rail to the shared `SidebarState.parts` map
  * before the layout iterates, and return the section keys in the order this
  * read gave them: the owners the declared order names first, then the rest in
@@ -291,10 +311,10 @@ function guardedContributionRail(rail: SidebarRail, id: string): SidebarRail {
  * removed here.
  *
  * `plugins.json` is read once per prepare, never cached, so an edit takes
- * effect on the next frame without a reload. This runs on every rail prepare,
- * and an empty box cannot be reordered, so the read is skipped entirely while
- * the box holds nothing: the empty-box order and report stay exactly what they
- * are without the file, and only a non-empty box pays for one read.
+ * effect on the next frame without a reload. Only a contribution that declares
+ * a sidebar can be reordered by it, so the read is skipped entirely while the
+ * box holds none: an ordinary frame that contributes rows or palette commands
+ * pays no I/O, and the empty box's order and report stay exactly what they are.
  */
 export function installContributedSidebar(tui: TUI, options: PluginOrderOptions = {}): ContributedSidebar {
 	const report = resetSidebarReport();
@@ -304,7 +324,7 @@ export function installContributedSidebar(tui: TUI, options: PluginOrderOptions 
 	const contributed = state.contributed ??= new Set<string>();
 	const installed = new Set<string>();
 	const contributions = guard(
-		() => readContributions(contributionSlot().size === 0 ? {} : { order: readPluginOrder(options).order }),
+		() => readContributions(boxDeclaresSidebar(contributionSlot()) ? { order: readPluginOrder(options).order } : {}),
 		[] as Contribution[],
 		(error) => recordRailFailure("contributions", error),
 	) as Contribution[];

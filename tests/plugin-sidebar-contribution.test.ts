@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { renderLayoutFrame } from "@earendil-works/pi-tui/dist/layout.js";
 import type { TUI } from "@earendil-works/pi-tui";
-import { CONTRIBUTIONS, CONTRACT_VERSION, contributionSlot } from "../lib/plugin-contract.ts";
+import { CONTRIBUTIONS, CONTRACT_VERSION, contributionSlot, readContributionReport } from "../lib/plugin-contract.ts";
 import type { Contribution } from "../lib/plugin-contract.ts";
+import { PLUGINS_SCHEMA } from "../lib/plugin-order.ts";
 import {
 	installContributedSidebar,
 	readSidebarContributionReport,
@@ -132,6 +136,81 @@ test("a contribution claiming a core key is rejected and reported, leaving the c
 	assert.deepEqual(readSidebarContributionReport().skipped.map((issue) => issue.id), ["acme.notes", "acme.other"]);
 	assert.equal(sidebarState(f.tui).parts.get("todo"), coreRail, "a plugin never replaces a core part");
 	assert.deepEqual(sidebarSectionOrder(applied.keys), [...SIDEBAR_SECTION_KEYS]);
+});
+
+test("editing owner order changes the next painted frame", (t) => {
+	reset();
+	const home = mkdtempSync(join(tmpdir(), "gentle-sidebar-order-"));
+	const previous = process.env.GENTLE_PI_CONFIG_HOME;
+	// The layout reads the real config home, so the declared order comes from
+	// this scratch directory and an edit is visible without a reload.
+	process.env.GENTLE_PI_CONFIG_HOME = home;
+	t.after(() => {
+		reset();
+		if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previous;
+		rmSync(home, { recursive: true, force: true });
+	});
+	const f = fixture();
+	// Registration order never changes: only plugins.json decides the paint order.
+	contributionSlot().set("zeta.notes", contribute("plugin:zeta:notes", "notes", "zeta"));
+	contributionSlot().set("acme.other", contribute("plugin:acme:other", "other", "acme"));
+	sidebarPart(f.tui, "footer", { render: () => ["Status"], invalidate() {} });
+
+	const declared = (order: readonly string[]): void => {
+		writeFileSync(join(home, "plugins.json"), `${JSON.stringify({ schema: PLUGINS_SCHEMA, order })}\n`);
+	};
+	const painted = () => {
+		const text = renderLayoutFrame(f.root, 140, 20, () => {}).lines.join("\n");
+		return { text, acme: text.indexOf("other card"), zeta: text.indexOf("notes card") };
+	};
+
+	t.after(installSidebar(f.tui, theme));
+	declared(["acme"]);
+	const acmeFirst = painted();
+	assert.ok(acmeFirst.acme >= 0 && acmeFirst.zeta >= 0, `both sections paint: ${acmeFirst.text}`);
+	assert.ok(acmeFirst.acme < acmeFirst.zeta, `plugins.json names acme first: ${acmeFirst.text}`);
+
+	declared(["zeta"]);
+	const zetaFirst = painted();
+	assert.ok(zetaFirst.acme >= 0 && zetaFirst.zeta >= 0, `both sections still paint: ${zetaFirst.text}`);
+	assert.ok(zetaFirst.zeta < zetaFirst.acme, `the next frame follows the edited file: ${zetaFirst.text}`);
+});
+
+test("an order read happens only while the box declares a sidebar", (t) => {
+	reset();
+	t.after(reset);
+	const f = fixture();
+	const home = mkdtempSync(join(tmpdir(), "gentle-sidebar-order-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	// The injected home is the only thing the order reader resolves, so a getter
+	// makes the read itself observable with no file, FIFO or non-portable trick:
+	// a frame that must not read the order never touches it.
+	let reads = 0;
+	const options = {
+		get gentlePiConfigHome(): string {
+			reads++;
+			return home;
+		},
+	};
+
+	// A non-empty box whose contribution declares no sidebar payload cannot be
+	// reordered by plugins.json, so an ordinary frame pays no I/O for it.
+	contributionSlot().set("acme.rows", { id: "acme.rows", owner: "acme", contract: CONTRACT_VERSION, rows: [{ category: "Plugins", label: "Row", action() {} }] });
+	assert.deepEqual(installContributedSidebar(f.tui, options).keys, []);
+	assert.equal(reads, 0, "no sidebar contribution: the order is never read");
+
+	// A throwing `sidebar` property counts as "no sidebar" too; validation reports it.
+	const broken = { id: "acme.broken", owner: "acme", contract: CONTRACT_VERSION } as unknown as Contribution;
+	Object.defineProperty(broken, "sidebar", { enumerable: true, get() { throw new Error("sidebar exploded"); } });
+	contributionSlot().set("acme.broken", broken);
+	installContributedSidebar(f.tui, options);
+	assert.equal(reads, 0, "a throwing sidebar property does not force a read");
+	assert.deepEqual(readContributionReport().skipped.map((issue) => [issue.id, issue.detail]), [["acme.broken", "reading the contribution threw"]]);
+
+	contributionSlot().set("zeta.notes", contribute("plugin:zeta:notes", "notes", "zeta"));
+	assert.deepEqual(installContributedSidebar(f.tui, options).keys, ["plugin:zeta:notes"]);
+	assert.equal(reads, 1, "a declared sidebar reads the order once");
 });
 
 test("an empty contribution box computes exactly the known order and installs nothing", () => {

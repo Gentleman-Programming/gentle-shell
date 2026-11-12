@@ -221,7 +221,10 @@ export function init(ctx) {
 			} else moving = null;
 		}
 		if (state.selected && !boards.includes(state.selected)) selectBoard(null);
+		// An arrangement places every board again: a board already moved stays where it was dragged until the release.
+		const dragged = moving && moving.moved && state.layout.arrangement !== "free" ? state.layout.positions[layoutKey(moving.board)] : null;
 		applyLayout();
+		if (dragged) moveBoard(moving.board, dragged);
 		readAgain();
 	}
 

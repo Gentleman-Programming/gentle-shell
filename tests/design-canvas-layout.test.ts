@@ -921,6 +921,18 @@ test("a design.json reload during a move hands the move to the rebuilt artboard,
 	assert.deepEqual(layoutPosts(canvas).map((post) => post.body), [{ arrangement: "free", positions: { "01-a.html": { x: 0, y: 0 }, "02-b.html": { x: 540, y: 0 } } }]);
 });
 
+test("a design.json reload during a move in an arrangement keeps the dragged position, saved on a release without another move", async () => {
+	const canvas = await loadLayout(NO_LAYOUT);
+	boardTitle(canvas.world.children[1]).dispatch("pointerdown", { button: 0, pointerId: 3, clientX: 500, clientY: 100 });
+	onViewport(canvas, "pointermove", 540, 100);
+	await canvas.serverEvent("change", DESIGN_CHANGE);
+	await settle();
+	assert.deepEqual(placed(canvas.world.children[1]), ["520px", "0px"], "the rebuilt artboard stays where it was dragged");
+	onViewport(canvas, "pointerup", 540, 100);
+	await settle();
+	assert.deepEqual(layoutPosts(canvas).map((post) => post.body), [{ arrangement: "free", positions: { "01-a.html": { x: 0, y: 0 }, "02-b.html": { x: 520, y: 0 } } }]);
+});
+
 test("a move of the system board across a design switch is cancelled and never written to the next design's layout.json", async () => {
 	const BETA_LAYOUT = "/t/api/designs/beta/layout";
 	const canvas = await loadLayout({ ...SYSTEM_REPLY, ...NO_LAYOUT });

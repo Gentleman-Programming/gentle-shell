@@ -157,8 +157,19 @@ test("a contribution whose palette payload is malformed contributes nothing", ()
 		id: "acme.broken",
 		owner: "acme",
 		contract: CONTRACT_VERSION,
-		palette: { command: "acme:deploy" } as unknown as PluginPaletteCommand,
+		palette: { command: "" } as unknown as PluginPaletteCommand,
 	});
 	const groups = buildCommandPaletteGroups(REGISTERED, {});
 	assert.deepEqual(groups, catalogOnly(REGISTERED, {}));
+});
+
+test("a contribution with no declared group falls back to Plugins · owner after the catalogued groups", () => {
+	reset();
+	contribute("acme.deploy", { command: "acme:deploy" });
+	const groups = buildCommandPaletteGroups(REGISTERED, {});
+
+	assert.deepEqual(groups.map((group) => group.title), ["Configuration", "Session", "Diagnostics", "Plugins · acme"]);
+	assert.deepEqual(groups.at(-1)?.items.map((item) => item.command), ["acme:deploy"]);
+	assert.equal(groups.at(-1)?.items[0]?.description, "Deploy the acme stack");
+	assert.equal(commandsOf(groups).filter((command) => command === "acme:deploy").length, 1);
 });

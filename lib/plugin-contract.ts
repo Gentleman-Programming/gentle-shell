@@ -52,7 +52,8 @@ export interface PluginSidebarSection {
 
 export interface PluginPaletteCommand {
 	command: string;
-	group: string;
+	/** Optional: missing, empty or blank means the palette derives a group from the owner. */
+	group?: string;
 }
 
 export interface Contribution {
@@ -68,6 +69,7 @@ export type ContributionIssueCode =
 	| "invalid-contribution"
 	| "incompatible-contract"
 	| "invalid-id"
+	| "duplicate-id"
 	| "malformed-rows"
 	| "malformed-sidebar"
 	| "malformed-palette";
@@ -79,7 +81,7 @@ export interface ContributionIssue {
 	detail: string;
 }
 
-/** What the last read refused and which ids a later set replaced. */
+/** What the last read refused and which ids a later set was refused for. */
 export interface ContributionReport {
 	skipped: ContributionIssue[];
 	replaced: string[];
@@ -97,6 +99,7 @@ const STATE = Symbol.for("gentle-pi.contributions/v1/state");
 
 interface ContributionState {
 	replaced: Set<string>;
+	duplicates: Set<string>;
 	report: ContributionReport;
 	reporter: ContributionReporter | undefined;
 }
@@ -115,17 +118,24 @@ function stateOf(store: Map<string, Contribution>): ContributionState {
 /**
  * Attach replacement tracking once per process slot. Re-evaluating this module
  * finds the state already present, so a second evaluation never double-wraps
- * `set` or drops the ids a previous evaluation recorded.
+ * `set` or drops the ids a previous evaluation recorded. A set for an id that
+ * already holds a contribution is refused outright: the first value stays in
+ * the box, so no package can overwrite another package's contribution.
  */
 function prepare(store: Map<string, Contribution>): void {
-	const state: ContributionState = { replaced: new Set(), report: emptyReport(), reporter: undefined };
+	const state: ContributionState = { replaced: new Set(), duplicates: new Set(), report: emptyReport(), reporter: undefined };
 	Object.defineProperty(store, STATE, { value: state, enumerable: false, configurable: true });
 	const nativeSet = store.set;
 	Object.defineProperty(store, "set", {
 		enumerable: false,
 		configurable: true,
 		value(id: string, contribution: Contribution): Map<string, Contribution> {
-			if (store.has(id)) state.replaced.add(id);
+			if (store.has(id)) {
+				state.replaced.add(id);
+				// Re-setting the exact stored entry changed nothing, so it is replaced but not a conflict.
+				if (store.get(id) !== contribution) state.duplicates.add(id);
+				return store;
+			}
 			return nativeSet.call(store, id, contribution);
 		},
 	});
@@ -161,7 +171,8 @@ export function readContributionReport(): ContributionReport {
  * Every valid contribution: the `order` owners first (insertion order within an
  * owner), then everything else in insertion order. Stored entries are never
  * mutated; a contribution whose payload is partially malformed loads with only
- * that payload dropped.
+ * that payload dropped, while a property read that throws refuses the whole
+ * contribution. A refused duplicate id is reported and keeps its first value.
  */
 export function readContributions(options: ContributionReadOptions = {}): Contribution[] {
 	const store = contributionSlot();
@@ -171,6 +182,11 @@ export function readContributions(options: ContributionReadOptions = {}): Contri
 	for (const [key, value] of store) {
 		const contribution = normalize(key, value, skipped);
 		if (contribution !== undefined) loaded.set(key, contribution);
+	}
+	for (const key of store.keys()) {
+		if (state.duplicates.has(key)) {
+			skipped.push(issue(key, "duplicate-id", "a later set for this id was refused; the first contribution wins"));
+		}
 	}
 
 	const order = Array.isArray(options.order) ? options.order : [];
@@ -292,7 +308,7 @@ function validSidebar(value: unknown): value is PluginSidebarSection {
 }
 
 function validPalette(value: unknown): value is PluginPaletteCommand {
-	return isRecord(value) && nonEmptyString(value.command) && nonEmptyString(value.group);
+	return isRecord(value) && nonEmptyString(value.command) && (value.group === undefined || typeof value.group === "string");
 }
 
 function cloneRow(value: PluginRow): PluginRow {
@@ -300,31 +316,42 @@ function cloneRow(value: PluginRow): PluginRow {
 }
 
 function normalize(key: string, value: Contribution, skipped: ContributionIssue[]): Contribution | undefined {
-	if (!isRecord(value)) {
-		skipped.push(issue(key, "invalid-contribution", "entry is not an object"));
-		return undefined;
-	}
-	if (value.contract !== CONTRACT_VERSION) {
-		skipped.push(issue(key, "incompatible-contract", `contract ${String(value.contract)} is not ${CONTRACT_VERSION}`));
-		return undefined;
-	}
-	if (!validIdentity(key, value)) {
-		skipped.push(issue(key, "invalid-id", "id must be a namespaced `<owner>.<name>` and equal its map key"));
-		return undefined;
-	}
+	const issues: ContributionIssue[] = [];
+	try {
+		if (!isRecord(value)) {
+			skipped.push(issue(key, "invalid-contribution", "entry is not an object"));
+			return undefined;
+		}
+		if (value.contract !== CONTRACT_VERSION) {
+			skipped.push(issue(key, "incompatible-contract", `contract ${String(value.contract)} is not ${CONTRACT_VERSION}`));
+			return undefined;
+		}
+		if (!validIdentity(key, value)) {
+			skipped.push(issue(key, "invalid-id", "id must be a namespaced `<owner>.<name>` and equal its map key"));
+			return undefined;
+		}
 
-	const contribution: Contribution = { id: key, owner: value.owner, contract: CONTRACT_VERSION };
-	if (value.rows !== undefined) {
-		if (Array.isArray(value.rows) && value.rows.every(validRow)) contribution.rows = value.rows.map(cloneRow);
-		else skipped.push(issue(key, "malformed-rows", "rows must be an array of well-formed plugin rows"));
+		const contribution: Contribution = { id: key, owner: value.owner, contract: CONTRACT_VERSION };
+		const rows = value.rows;
+		if (rows !== undefined) {
+			if (Array.isArray(rows) && rows.every(validRow)) contribution.rows = rows.map(cloneRow);
+			else issues.push(issue(key, "malformed-rows", "rows must be an array of well-formed plugin rows"));
+		}
+		const sidebar = value.sidebar;
+		if (sidebar !== undefined) {
+			if (validSidebar(sidebar)) contribution.sidebar = { ...sidebar };
+			else issues.push(issue(key, "malformed-sidebar", "sidebar must carry a key, a boolean bottom and a rail"));
+		}
+		const palette = value.palette;
+		if (palette !== undefined) {
+			if (validPalette(palette)) contribution.palette = { ...palette };
+			else issues.push(issue(key, "malformed-palette", "palette must carry a command and, if present, a string group"));
+		}
+		skipped.push(...issues);
+		return contribution;
+	} catch {
+		// Any property read can be a plugin getter: a throw is a refusal, never an escape.
+		skipped.push(issue(key, "invalid-contribution", "reading the contribution threw"));
+		return undefined;
 	}
-	if (value.sidebar !== undefined) {
-		if (validSidebar(value.sidebar)) contribution.sidebar = { ...value.sidebar };
-		else skipped.push(issue(key, "malformed-sidebar", "sidebar must carry a key, a boolean bottom and a rail"));
-	}
-	if (value.palette !== undefined) {
-		if (validPalette(value.palette)) contribution.palette = { ...value.palette };
-		else skipped.push(issue(key, "malformed-palette", "palette must carry a command and a group"));
-	}
-	return contribution;
 }

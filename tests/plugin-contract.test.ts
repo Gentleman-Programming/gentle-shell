@@ -9,7 +9,7 @@ import {
 	readContributions,
 	setContributionReporter,
 } from "../lib/plugin-contract.ts";
-import type { Contribution, ContributionReport, PluginRow } from "../lib/plugin-contract.ts";
+import type { Contribution, ContributionReport, PluginPaletteCommand, PluginRow } from "../lib/plugin-contract.ts";
 
 const noop = (): void => {};
 
@@ -95,17 +95,127 @@ test("ids must be namespaced by their owner and match the slot key", () => {
 	assert.ok(skipped.every((issue) => issue.code === "invalid-id"));
 });
 
-test("a later set on an existing id replaces it and the reader reports the id", () => {
+test("a later set for an existing id is refused: the first payload wins and the duplicate is reported", () => {
 	reset();
 	const slot = contributionSlot();
-	slot.set("acme.hello", contribution({ id: "acme.hello", rows: [row({ category: "Old" })] }));
-	slot.set("acme.hello", contribution({ id: "acme.hello", rows: [row({ category: "New" })] }));
+	const first = contribution({ id: "acme.hello", rows: [row({ category: "First" })], palette: { command: "acme:hello", group: "First" } });
+	const second = contribution({ id: "acme.hello", rows: [row({ category: "Second" })], palette: { command: "acme:hello", group: "Second" } });
+	slot.set("acme.hello", first);
+	slot.set("acme.hello", second);
+
+	assert.equal(slot.get("acme.hello"), first, "the first contribution stays in the box");
+	const loaded = readContributions();
+	assert.equal(loaded.length, 1);
+	assert.equal(loaded[0].rows?.[0].category, "First");
+	assert.equal(loaded[0].palette?.group, "First");
+
+	const report = readContributionReport();
+	assert.deepEqual(report.replaced, ["acme.hello"]);
+	assert.deepEqual(report.skipped.map((entry) => [entry.id, entry.code]), [["acme.hello", "duplicate-id"]]);
+	assert.match(report.skipped[0].detail, /first/);
+	assert.deepEqual(readContributionReport(), report, "repeated reads report the same refusal");
+});
+
+test("re-setting the same stored entry still reports the id as replaced without a duplicate-id issue", () => {
+	reset();
+	const slot = contributionSlot();
+	const stored = contribution({ id: "acme.hello", rows: [row({ category: "Only" })] });
+	slot.set("acme.hello", stored);
+	slot.set("acme.hello", stored);
 
 	const loaded = readContributions();
 	assert.equal(loaded.length, 1);
-	assert.equal(loaded[0].rows?.[0].category, "New");
-	assert.deepEqual(readContributionReport().replaced, ["acme.hello"]);
-	assert.deepEqual(readContributionReport().replaced, ["acme.hello"]);
+	assert.equal(loaded[0].rows?.[0].category, "Only");
+	const report = readContributionReport();
+	assert.deepEqual(report.replaced, ["acme.hello"]);
+	assert.deepEqual(report.skipped, []);
+});
+
+test("a payload getter that throws is an invalid-contribution report, never an exception", () => {
+	reset();
+	const slot = contributionSlot();
+	slot.set("acme.rows", raw({
+		id: "acme.rows",
+		owner: "acme",
+		contract: 1,
+		get rows(): PluginRow[] {
+			throw new Error("rows getter");
+		},
+	}));
+	slot.set("acme.palette", raw({
+		id: "acme.palette",
+		owner: "acme",
+		contract: 1,
+		rows: [row()],
+		get palette(): unknown {
+			throw new Error("palette getter");
+		},
+	}));
+	slot.set("acme.row", raw({
+		id: "acme.row",
+		owner: "acme",
+		contract: 1,
+		rows: [{
+			category: "Acme",
+			label: "Hi",
+			action: noop,
+			get visible(): boolean {
+				throw new Error("visible getter");
+			},
+		}],
+	}));
+	slot.set("acme.ok", contribution({ id: "acme.ok", palette: { command: "acme:ok", group: "Acme" } }));
+
+	let loaded: Contribution[] = [];
+	assert.doesNotThrow(() => {
+		loaded = readContributions();
+	});
+	assert.deepEqual(loaded.map((entry) => entry.id), ["acme.ok"]);
+
+	// A palette reader reads these fields directly: every stored payload is plain data.
+	assert.doesNotThrow(() => {
+		for (const entry of loaded) {
+			void entry.id;
+			void entry.owner;
+			void entry.contract;
+			for (const entryRow of entry.rows ?? []) {
+				void entryRow.category;
+				void entryRow.label;
+				void entryRow.preview;
+				void entryRow.choice;
+				void entryRow.visible;
+				void entryRow.action;
+			}
+			void entry.palette?.command;
+			void entry.palette?.group;
+			void entry.sidebar?.key;
+			void entry.sidebar?.bottom;
+			void entry.sidebar?.rail;
+		}
+	});
+	assert.deepEqual(readContributionReport().skipped.map((entry) => [entry.id, entry.code]), [
+		["acme.rows", "invalid-contribution"],
+		["acme.palette", "invalid-contribution"],
+		["acme.row", "invalid-contribution"],
+	]);
+});
+
+test("a missing, empty or whitespace-only palette group loads with the palette payload intact", () => {
+	reset();
+	const slot = contributionSlot();
+	const palettes: Array<[string, PluginPaletteCommand]> = [
+		["acme.missing", { command: "acme:missing" }],
+		["acme.empty", { command: "acme:empty", group: "" }],
+		["acme.blank", { command: "acme:blank", group: " \t " }],
+	];
+	for (const [id, palette] of palettes) slot.set(id, { id, owner: "acme", contract: CONTRACT_VERSION, palette });
+
+	const loaded = readContributions();
+	assert.deepEqual(
+		loaded.map((entry) => entry.palette),
+		palettes.map(([, palette]) => ({ ...palette })),
+	);
+	assert.deepEqual(readContributionReport().skipped, []);
 });
 
 test("malformed payloads are dropped and reported while the rest of the contribution loads", () => {

@@ -1320,7 +1320,7 @@ const RDD_OFF_REVIEW_GUIDELINES: readonly string[] = [
 	"RDD off does not require an assessment. Applicable tests, builds, and functional checks still run; a named Task Size high-risk item still requires one independent verifier. Do not start native review or change RDD based on this loadout.",
 	'When a plan is requested, gentle_review {"operation":"assess"} remains read-only; pass {"escalate":{"item":1-6,"reason":"<one line>"}} for a named high-risk item. Native assessment is skipped and no native candidate or continuation is invented. Review outcomes never authorize delivery.',
 ];
-const RDD_OFF_REVIEW_DESCRIPTION = "Return a verification plan on request without a native assessment while RDD is off. Read-only; review outcomes never authorize delivery: commit, push, pull-request, and release commands follow ordinary repository policy.";
+const RDD_OFF_REVIEW_DESCRIPTION = "Return a verification plan on request without a native assessment while RDD is off. Call directly, never through codemode. Read-only; review outcomes never authorize delivery: commit, push, pull-request, and release commands follow ordinary repository policy.";
 const RDD_OFF_HIDDEN_REVIEW_TOOLS: readonly string[] = ["gentle_review_scope", "gentle_review_capture_group", "gentle_review_capture"];
 
 interface ReviewToolPromptOptions {
@@ -12345,7 +12345,7 @@ function createGentleAiExtensionForTesting(
 		renderShell: "self",
 		label: "Gentle Review Controller",
 		description:
-			"Inspect and recover review authority and start native ordinary review. Ordinary capture uses only gentle_review_capture. Review outcomes never authorize delivery: commit, push, pull-request, and release commands follow ordinary repository policy.",
+			"Inspect and recover review authority and start native ordinary review. Call directly, never through codemode. Ordinary capture uses only gentle_review_capture. Review outcomes never authorize delivery: commit, push, pull-request, and release commands follow ordinary repository policy.",
 		promptSnippet: "Inspect authority, then start native ordinary review; use gentle_review_capture for one current collect slot",
 		promptGuidelines: [
 			// Declared once for the review family: Pi dedupes identical guidelines,

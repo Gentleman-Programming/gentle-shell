@@ -31,6 +31,7 @@ import { discoverYoloUiAdapter, MODE_STATUS_KEY, YOLO_DISPLAY, YOLO_STATUS_KEY, 
 import { discoverRddModeControl, type RddModeControl } from "../lib/rdd-mode-control.ts";
 import { NATIVE_REVIEW_MODE_SOURCE } from "../lib/native-review-cli.ts";
 import { VisualCustomizeView, type CustomizeCategory, type CustomizeRow, type ProfileActions } from "../lib/visual-customize-view.ts";
+import { guard, readContributions, type PluginRow } from "../lib/plugin-contract.ts";
 import { deleteVisualProfile, getVisualProfile, listVisualProfiles, resetVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
 import { gaugePaintFor } from "../lib/gauge-theme.ts";
 import type { GaugePaint } from "../lib/shell-gauge.ts";
@@ -2034,6 +2035,91 @@ export async function backgroundChangeRefreshesSettled(timeoutMs = 2000): Promis
 	clearTimeout(timer);
 }
 
+/** The label a contributed row shows while its own label is broken; the row is dropped right after. */
+const PLUGIN_ROW_LABEL = "Plugin row";
+const PLUGIN_PREVIEW_FALLBACK = { title: "Plugin preview unavailable", sample: "" };
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+	return (typeof value === "object" || typeof value === "function") && value !== null && typeof (value as { then?: unknown }).then === "function";
+}
+
+/**
+ * Runs a synchronous row slot (`label`, `preview`, `visible`, `choice.current`)
+ * through `guard`. A plugin that breaks the declared shape by answering with a
+ * promise cannot fill a synchronous slot, so this answers `fallback` instead of
+ * awaiting inside a render; `guard` already owns that promise's rejection.
+ */
+function guardedSync<T>(run: () => T | Promise<T>, fallback: T, onError: (error: unknown) => void): T {
+	const answered = guard(run, fallback, onError);
+	return isThenable(answered) ? fallback : answered;
+}
+
+/**
+ * Adapts one public `PluginRow` to the internal `CustomizeRow`. Every callback is
+ * guarded, so a broken plugin hides its own row or does nothing and never breaks
+ * the panel. `action` is passed through untouched: a plugin's state lives in the
+ * plugin's own file and it must never write a gentle-pi preference.
+ */
+function pluginCustomizeRow(id: string, row: PluginRow, notifyError: (message: string) => void): CustomizeRow {
+	let reported = false;
+	const fail = (error: unknown) => {
+		// One report per row keeps a render-loop failure from spamming the panel.
+		if (reported) return;
+		reported = true;
+		try { notifyError(`Plugin ${id}: ${error instanceof Error ? error.message : String(error)}`); } catch { /* A broken notifier must not break the panel. */ }
+	};
+	let labelBroken = false;
+	const pluginLabel = row.label;
+	const label = (): string => {
+		if (labelBroken) return PLUGIN_ROW_LABEL;
+		if (typeof pluginLabel === "string") return pluginLabel;
+		const answered = guard<string>(pluginLabel, PLUGIN_ROW_LABEL, (error) => { labelBroken = true; fail(error); });
+		// A promise cannot fill a synchronous slot: drop the row rather than await here.
+		if (isThenable(answered)) { labelBroken = true; return PLUGIN_ROW_LABEL; }
+		return answered;
+	};
+	const visible = row.visible;
+	const mapped: CustomizeRow = {
+		category: row.category,
+		label,
+		visible: () => {
+			// A label that threw (or answered with a promise) cannot be painted: drop the row.
+			if (labelBroken) return false;
+			if (typeof pluginLabel === "function") label();
+			if (labelBroken) return false;
+			if (visible === undefined) return true;
+			return guardedSync(() => visible(), false, fail);
+		},
+		action: () => {
+			const answered = guard<unknown>(() => row.action(), undefined, fail);
+			return isThenable(answered) ? Promise.resolve(answered).then(() => undefined) : undefined;
+		},
+	};
+	const preview = row.preview;
+	if (preview !== undefined) mapped.preview = () => guardedSync(() => preview(), PLUGIN_PREVIEW_FALLBACK, fail);
+	const choice = row.choice;
+	if (choice !== undefined) mapped.choice = {
+		// Namespaced, so a plugin switch can never merge into a built-in setting line.
+		setting: `${id} · ${choice.setting}`,
+		value: choice.value,
+		current: () => guardedSync(() => choice.current(), false, fail),
+		hint: choice.hint,
+		applyOnMove: choice.applyOnMove,
+	};
+	return mapped;
+}
+
+/**
+ * Append every contributed row to `/gentle:customize`, after every built-in row
+ * and never in place of one (S2). The public DTO is adapted here so gentle-pi
+ * internals stay private; with an empty box this appends nothing at all.
+ */
+export function appendPluginCustomizeRows(rows: CustomizeRow[], notifyError: (message: string) => void): void {
+	for (const contribution of readContributions()) {
+		for (const row of contribution.rows ?? []) rows.push(pluginCustomizeRow(contribution.id, row, notifyError));
+	}
+}
+
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	installSessionChangeCapture(pi, env, overrides.resolveWorktree ?? resolveSessionWorktree);
 	// Replaced before persistence, so the footer, /gentle:stats and the session file
@@ -3494,6 +3580,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return false;
 				}
 		}, () => ({ title: "Restore visual defaults", sample: "[Header] → [Input]  [responsive status] · quality" }));
+			// Additive only: contributed rows land after every built-in row, never before
+			// one and never in place of one.
+			appendPluginCustomizeRows(rows, (message) => ctx.ui.notify(message, "warning"));
 			const profiles: ProfileActions = {
 				list: catalog,
 				save: async (name, replace) => {

@@ -229,7 +229,7 @@ export function init(ctx) {
 		try {
 			manifest = await getJson(`api/designs/${encodeURIComponent(slug)}`);
 		} catch (error) {
-			if (load !== loads) return;
+			if (load !== loads || slug !== state.slug) return;
 			showEmpty(`Design "${slug}" cannot be shown: ${error.message}`);
 			setStatus(`design.json for ${slug} is invalid`, true);
 			return;

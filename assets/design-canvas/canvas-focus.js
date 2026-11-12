@@ -25,6 +25,8 @@ export function init(ctx) {
 	}
 
 	function activateBoard(board, clientX, clientY) {
+		// A board a reload replaced since the press is no longer on the canvas.
+		if (!allBoards().includes(board)) return;
 		if (!state.commenting) enterFocus(board);
 		else if (!board.system) board.frame.contentWindow?.postMessage({ type: "gd:pick-at", ...framePoint(board, clientX, clientY) }, "*");
 	}

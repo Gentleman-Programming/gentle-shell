@@ -21,8 +21,8 @@ export function init(ctx) {
 	const { getJson, postJson } = api;
 	const { setStatus } = ui;
 
-	// The artboard being moved by the pointer (canvas-view.js hands it over): { board, from, moved }.
-	// This module's own state, like the pan drag in canvas-view.js.
+	// The artboard being moved by the pointer (canvas-view.js hands it over): { board, from, moved, view }, `view` the
+	// layout view it was pressed in. This module's own state, like the pan drag in canvas-view.js.
 	let moving = null;
 	// Saves go out one after another, in gesture order, so the server writes the newest layout last.
 	let saving = Promise.resolve();
@@ -36,6 +36,9 @@ export function init(ctx) {
 	// The layout views taken so far (useLayout): a save's reply only touches the view it was made from, never one
 	// taken after the page left the design and came back.
 	let views = 0;
+	// layout.json change reads on their way (onLayoutChange): a save that makes one stale and then fails reads the
+	// file again, so another page's change is never lost.
+	let changeReads = 0;
 
 	/** A board's key in layout.json: its artboard file, or the system board's own key. */
 	function layoutKey(board) {
@@ -109,6 +112,7 @@ export function init(ctx) {
 
 	/** No design shown (the system-only view, an empty notice): no layout, nothing selected, nothing to arrange. */
 	function clearLayout() {
+		cancelMove();
 		store.setLayout({ layout: null });
 		selectBoard(null);
 		renderArrange();
@@ -206,7 +210,16 @@ export function init(ctx) {
 	 * and a layout.json change put off until the design's boards showed is read.
 	 */
 	function layoutBoards(boards) {
-		if (moving && !boards.includes(moving.board)) moving = null;
+		if (moving && (!state.layout || state.layout.view !== moving.view)) cancelMove();
+		else if (moving && !boards.includes(moving.board)) {
+			// The same layout, rebuilt (a design.json reload): the move goes on with the board that replaced this one.
+			const key = layoutKey(moving.board);
+			const next = boards.find((board) => layoutKey(board) === key);
+			if (next) {
+				moving.board = next;
+				next.wrapper.classList.add("gd-lifted");
+			} else moving = null;
+		}
 		if (state.selected && !boards.includes(state.selected)) selectBoard(null);
 		applyLayout();
 		readAgain();
@@ -225,13 +238,23 @@ export function init(ctx) {
 	function beginMove(board) {
 		const from = state.layout ? state.layout.positions[layoutKey(board)] : null;
 		if (!from) return false;
-		moving = { board, from, moved: false };
+		moving = { board, from, moved: false, view: state.layout.view };
 		return true;
+	}
+
+	/**
+	 * A move whose layout is gone (another design, another page's layout taken meanwhile, no design shown) ends
+	 * without a save: its offsets belong to the layout it was pressed in.
+	 */
+	function cancelMove() {
+		if (!moving) return;
+		moving.board.wrapper.classList.remove("gd-lifted");
+		moving = null;
 	}
 
 	/** The pointer went (dx, dy) screen px from where the move began: in world px, so the board stays under it at any zoom. */
 	function moveBy(dx, dy) {
-		if (!moving) return;
+		if (!moving || !state.layout) return;
 		moving.moved = true;
 		moveBoard(moving.board, { x: Math.round(moving.from.x + dx / state.zoom), y: Math.round(moving.from.y + dy / state.zoom) });
 	}
@@ -271,11 +294,16 @@ export function init(ctx) {
 		const layout = state.layout;
 		if (!slug || !state.manifest || state.manifest.slug !== slug || !layout || layout.slug !== slug) return;
 		const body = { arrangement: layout.arrangement, positions: layout.positions };
+		// A change read this save makes stale: a save that fails leaves the file as that change wrote it, so it is read again.
+		const staleChange = changeReads > 0;
 		reads += 1;
 		saves += 1;
 		saving = saving.then(async () => {
 			const reply = await postJson(`api/designs/${encodeURIComponent(slug)}/layout`, body).catch((error) => ({ ok: false, body: { error: error.message } }));
 			saves -= 1;
+			// A read that went out while this save was on its way may hold the file from before it.
+			if (reply.ok) reads += 1;
+			else if (staleChange) readPending = true;
 			if (state.layout && state.layout.view === layout.view) {
 				store.setLayout({ layout: reply.ok ? { ...state.layout, saved: JSON.stringify(body), unsaved: false } : { ...state.layout, unsaved: true } });
 			}
@@ -306,7 +334,10 @@ export function init(ctx) {
 			return;
 		}
 		const read = ++reads;
-		const layout = await fetchLayout(slug);
+		changeReads += 1;
+		const layout = await fetchLayout(slug).finally(() => {
+			changeReads -= 1;
+		});
 		if (read !== reads || slug !== state.slug || layout === undefined) return;
 		if (moving || !state.manifest || state.manifest.slug !== slug) {
 			readPending = true;

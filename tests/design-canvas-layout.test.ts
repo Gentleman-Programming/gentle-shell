@@ -850,3 +850,117 @@ test("the shortcuts list names Space + drag and Esc clears the selection, and th
 	assert.ok(!section.includes("pan by dragging or scrolling"));
 });
 
+
+// ---- CodeRabbit round 2: reads, saves and moves that cross a reload, a design switch or the system-only view
+
+const DESIGN_CHANGE = { slug: "alpha", file: "design.json" };
+/** A pointer event on the viewport, which holds the pointer capture once a press began. */
+const onViewport = (canvas: Canvas, type: string, x: number, y: number) => canvas.viewport.dispatch(type, { button: 0, pointerId: 3, clientX: x, clientY: y });
+
+test("a design.json reload whose layout read went out during a save and answers after the save succeeded never rolls the move back", async () => {
+	const canvas = await loadLayout(NO_LAYOUT);
+	const save = deferred();
+	canvas.replies[LAYOUT_URL] = save.promise;
+	await dragFrom(boardTitle(canvas.world.children[1]), [500, 100], [[540, 100]]);
+	const read = deferred();
+	canvas.replies[LAYOUT_URL] = read.promise;
+	await canvas.serverEvent("change", DESIGN_CHANGE);
+	save.resolve({ ok: true });
+	await settle();
+	read.resolve({ layout: null });
+	await settle();
+	await settle();
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["520px", "0px"]], "the read of the file from before the save is dropped");
+	assert.deepEqual(pressedArrangements(canvas), ["false", "false", "false"]);
+	assert.equal(layoutPosts(canvas).length, 1);
+});
+
+test("another page's layout.json change whose read a failed save made stale is read again once the save fails", async () => {
+	const canvas = await loadLayout({ [LAYOUT_URL]: { layout: { arrangement: "column", positions: {} } } });
+	const external = deferred();
+	canvas.replies[LAYOUT_URL] = external.promise;
+	await canvas.serverEvent("change", LAYOUT_CHANGE);
+	const save = deferred();
+	canvas.replies[LAYOUT_URL] = save.promise;
+	canvas.document.getElementById("gd-arrange-row").dispatch("click");
+	await settle();
+	// Another page wrote Grid; this page's Row is rejected.
+	canvas.replies[LAYOUT_URL] = { layout: { arrangement: "grid", positions: {} } };
+	external.resolve({ layout: { arrangement: "grid", positions: {} } });
+	await settle();
+	save.resolve({ __http: 400, error: "invalid-layout", reason: "disk full" });
+	await settle();
+	await settle();
+	assert.deepEqual(pressedArrangements(canvas), ["false", "false", "true"], "the other page's grid shows");
+	assert.equal(layoutPosts(canvas).length, 1, "and nothing is saved back");
+});
+
+test("a move of the system board ends unsaved when the system-only view takes its layout away", async () => {
+	const canvas = await loadLayout({ ...SYSTEM_REPLY, ...NO_LAYOUT });
+	boardTitle(canvas.world.children[0]).dispatch("pointerdown", { button: 0, pointerId: 3, clientX: 100, clientY: 100 });
+	onViewport(canvas, "pointermove", 140, 100);
+	await canvas.serverEvent("show", { slug: null });
+	await settle();
+	onViewport(canvas, "pointermove", 180, 100);
+	onViewport(canvas, "pointerup", 180, 100);
+	await settle();
+	assert.deepEqual(canvas.posts, [], "nothing is saved");
+	assert.equal(canvas.navMode.textContent, NAVIGATING);
+});
+
+test("a design.json reload during a move hands the move to the rebuilt artboard, saved once on release", async () => {
+	const canvas = await loadLayout(NO_LAYOUT);
+	boardTitle(canvas.world.children[1]).dispatch("pointerdown", { button: 0, pointerId: 3, clientX: 500, clientY: 100 });
+	onViewport(canvas, "pointermove", 540, 100);
+	await canvas.serverEvent("change", DESIGN_CHANGE);
+	await settle();
+	onViewport(canvas, "pointermove", 560, 100);
+	assert.deepEqual(placed(canvas.world.children[1]), ["540px", "0px"], "the rebuilt artboard follows the pointer");
+	onViewport(canvas, "pointerup", 560, 100);
+	await settle();
+	assert.deepEqual(layoutPosts(canvas).map((post) => post.body), [{ arrangement: "free", positions: { "01-a.html": { x: 0, y: 0 }, "02-b.html": { x: 540, y: 0 } } }]);
+});
+
+test("a move of the system board across a design switch is cancelled and never written to the next design's layout.json", async () => {
+	const BETA_LAYOUT = "/t/api/designs/beta/layout";
+	const canvas = await loadLayout({ ...SYSTEM_REPLY, ...NO_LAYOUT });
+	const betaManifest = deferred();
+	const beta = canvas.replies["/t/api/designs/beta"];
+	canvas.replies["/t/api/designs/beta"] = betaManifest.promise;
+	canvas.replies[BETA_LAYOUT] = { layout: null };
+	const select = canvas.document.getElementById("gd-design");
+	select.value = "beta";
+	select.dispatch("change");
+	boardTitle(canvas.world.children[0]).dispatch("pointerdown", { button: 0, pointerId: 3, clientX: 100, clientY: 100 });
+	onViewport(canvas, "pointermove", 160, 100);
+	betaManifest.resolve(beta);
+	await settle();
+	onViewport(canvas, "pointermove", 200, 100);
+	onViewport(canvas, "pointerup", 200, 100);
+	await settle();
+	assert.deepEqual(canvas.posts.map((post) => post.url), [], "nothing is saved, to alpha or beta");
+});
+
+test("a still press on an artboard that a design.json reload replaced opens nothing on release", async () => {
+	const canvas = await loadLayout(NO_LAYOUT);
+	withClass(canvas.world.children[1], "gd-shield")[0].dispatch("pointerdown", { button: 0, pointerId: 3, clientX: 500, clientY: 300 });
+	await canvas.serverEvent("change", DESIGN_CHANGE);
+	await settle();
+	onViewport(canvas, "pointerup", 500, 300);
+	await settle();
+	assert.equal(canvas.navMode.textContent, NAVIGATING, "no detached artboard is opened");
+});
+
+test("a failed design load that answers after the system-only view showed leaves that view alone", async () => {
+	const canvas = await loadLayout({ ...SYSTEM_REPLY, ...NO_LAYOUT });
+	const manifest = deferred();
+	canvas.replies["/t/api/designs/alpha"] = manifest.promise;
+	await canvas.serverEvent("change", DESIGN_CHANGE);
+	await canvas.serverEvent("show", { slug: null });
+	await settle();
+	assert.equal(canvas.world.children.length, 1, "the system board shows");
+	manifest.resolve({ __http: 500 });
+	await settle();
+	assert.equal(canvas.world.children.length, 1, "it still shows");
+	assert.ok(!canvas.document.getElementById("gd-status").classes.has("gd-error"), "and no design error is reported");
+});

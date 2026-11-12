@@ -109,6 +109,7 @@ test("capabilities advertise the wired permission domain and no agent tool", asy
 	assert.deepEqual(response.data.methods, [
 		"capabilities",
 		"get_snapshot",
+		"get_config",
 		"get_permission_mode",
 		"set_permission_mode",
 	]);

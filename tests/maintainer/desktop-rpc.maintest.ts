@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
@@ -176,8 +176,85 @@ test("installed Pi dispatches Desktop RPC without adding conversation messages",
 		assert.equal(response.kind, "response");
 		assert.equal(response.requestId, "real-1");
 		assert.equal(response.ok, true);
-		assert.deepEqual(response.data.methods, ["capabilities", "get_snapshot", "get_permission_mode", "set_permission_mode"]);
+		assert.deepEqual(response.data.methods, ["capabilities", "get_snapshot", "get_config", "get_permission_mode", "set_permission_mode"]);
 		assert.deepEqual(response.data.events, ["permission_mode_changed"]);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+/**
+ * Real production wiring for the read-side config slice: the installed runtime
+ * serves `get_config` and the bounded `get_snapshot` projection from isolated,
+ * pre-seeded stores without a second store, a watcher, or any write.
+ */
+test("installed Pi serves Desktop config reads from the existing stores", () => {
+	const root = isolatedRoot("desktop-rpc-config-");
+	try {
+		const configHome = join(root, "config");
+		const workspace = join(root, "workspace");
+		mkdirSync(join(workspace, ".pi", "gentle-ai"), { recursive: true });
+		writeFileSync(
+			join(configHome, "profiles.json"),
+			`${JSON.stringify({
+				kind: "gentle-pi.agent_model_profiles",
+				version: 1,
+				active: "team",
+				profiles: { team: { explore: { model: "anthropic/claude-probe" } } },
+			})}\n`,
+		);
+		const projectModels = `${JSON.stringify({ worker: { model: "openai/gpt-probe" } })}\n`;
+		writeFileSync(join(workspace, ".pi", "gentle-ai", "models.json"), projectModels);
+
+		const input = [
+			prompt("prompt-config", desktopRequest("config-1", "get_config", { store: "profiles" })),
+			prompt("prompt-models", desktopRequest("config-2", "get_config", { store: "models" })),
+			prompt("prompt-snapshot", desktopRequest("config-3", "get_snapshot")),
+		].map((value) => JSON.stringify(value)).join("\n") + "\n";
+		const child = spawnSync(process.execPath, probeArgs(root, [desktopExtension]), {
+			cwd: workspace,
+			env: probeEnvironment(root),
+			input,
+			encoding: "utf8",
+			timeout: 15000,
+		});
+
+		assert.ifError(child.error);
+		assert.equal(child.status, 0, child.stderr);
+		assert.equal(child.stderr, "");
+		const records = child.stdout.trim().split("\n").map((line) => JSON.parse(line));
+		const payloads = records
+			.filter((record) => record.type === "extension_ui_request" && record.widgetKey === DESKTOP_RPC_WIDGET)
+			.map((record) => JSON.parse(record.widgetLines[0]));
+		const byRequest = (id: string) => payloads.find((payload) => payload.requestId === id && payload.kind === "response");
+
+		const profiles = byRequest("config-1");
+		assert.equal(profiles.ok, true);
+		assert.equal(profiles.data.store, "profiles");
+		assert.equal(profiles.data.scope, "global");
+		assert.equal(profiles.data.readOnly, false);
+		assert.equal(profiles.data.status, "ok");
+		assert.equal(profiles.data.value.active, "team");
+		assert.match(profiles.data.revision, /^sha256:[a-f0-9]{32}$/);
+
+		const models = byRequest("config-2");
+		assert.equal(models.ok, true);
+		assert.equal(models.data.store, "models");
+		assert.equal(models.data.readOnly, true);
+		assert.deepEqual(models.data.value, { worker: { model: "openai/gpt-probe" } });
+
+		const snapshot = byRequest("config-3").data;
+		assert.equal(snapshot.state.config.stores.length, 6);
+		assert.deepEqual(
+			snapshot.state.config.stores.map((entry: any) => entry.store),
+			["profiles", "models", "profile_fallbacks", "subagents", "pins", "managed_assets"],
+		);
+		assert.equal(snapshot.state.config.stores[0].status, "ok");
+		assert.equal(JSON.stringify(snapshot).includes("claude-probe"), false, "snapshots stay bounded");
+
+		assert.equal(payloads.some((payload) => payload.kind === "event"), false, "a read emits nothing");
+		assert.equal(readFileSync(join(workspace, ".pi", "gentle-ai", "models.json"), "utf8"), projectModels);
+		assert.equal(existsSync(join(root, "config", "profile-fallbacks.json")), false, "no store is created by a read");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

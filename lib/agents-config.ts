@@ -302,17 +302,43 @@ export function parseAgentsConfig(global: RawConfig, project: RawConfig): Agents
 }
 
 function readJson(path: string): RawConfig {
-	if (!existsSync(path)) return undefined;
+	const read = readSubagentsFileResult(path);
+	return read.status === "valid" ? read.value : undefined;
+}
+
+/** The two stores `subagents.json` is assembled from, global first. */
+export function subagentsConfigPaths(roots: DiscoveryRoots): { global: string; project: string } {
+	return {
+		global: join(profileRoot(roots), "subagents.json"),
+		project: join(roots.cwd, ".pi", "subagents.json"),
+	};
+}
+
+/**
+ * Read-side status of one `subagents.json`, kept apart from `loadAgentsConfig`'s
+ * forgiving merge so a caller can report a missing layer separately from a
+ * malformed one. It never writes and never repairs the file.
+ */
+export type SubagentsFileReadResult =
+	| { status: "missing" }
+	| { status: "invalid" }
+	| { status: "valid"; value: Record<string, unknown> };
+
+export function readSubagentsFileResult(path: string): SubagentsFileReadResult {
+	if (!existsSync(path)) return { status: "missing" };
 	try {
 		const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
-		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : undefined;
+		return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+			? { status: "valid", value: parsed as Record<string, unknown> }
+			: { status: "invalid" };
 	} catch {
-		return undefined;
+		return { status: "invalid" };
 	}
 }
 
 export function loadAgentsConfig(roots: DiscoveryRoots): AgentsConfig {
-	return parseAgentsConfig(readJson(join(profileRoot(roots), "subagents.json")), readJson(join(roots.cwd, ".pi", "subagents.json")));
+	const paths = subagentsConfigPaths(roots);
+	return parseAgentsConfig(readJson(paths.global), readJson(paths.project));
 }
 
 export function withPinnedModelProfiles(

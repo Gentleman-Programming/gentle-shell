@@ -508,11 +508,11 @@ function copyDirectoryFiles(
 					: splitManagedBlocks(installedContent);
 			// A marker layout splitManagedBlocks cannot trust means the blocks in the
 			// installed body are not recognisable, so the file is left untouched — even
-			// when the manifest hash matches the whole-file hash. Ownership is not
-			// touched either: a matching entry still matches, so the next run takes the
-			// same safe path, and a repaired file stops matching and reaches the
-			// ordinary local-edit branch. Dropping the entry here would freeze the file
-			// out of package ownership for good.
+			// when the manifest hash matches the whole-file hash. Ownership is left
+			// exactly as it was: a matching entry still matches, so the next run skips
+			// again on identical bytes, and a repaired file stops matching and is compared
+			// normally again, adoption by body included. Dropping the entry here would
+			// freeze the file out of package ownership for good.
 			if (installedSplit?.failSafe !== undefined) {
 				skipped += 1;
 				continue;

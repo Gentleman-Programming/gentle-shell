@@ -43,7 +43,7 @@ Resolve only supplied IDs and fix-line regressions; do not add findings, change 
 
 Return one `verified | corroborated | regression` resolution per requested ID.
 
-Each candidate includes stable ID, exact location, severity, evidence class, and concrete user-impact claim. WARNING and SUGGESTION are informational. If clean, return an empty candidate list.
+Each candidate includes stable ID, exact location, severity, evidence class, and concrete user-impact claim. Use only BLOCKER, CRITICAL, WARNING, or SUGGESTION for severity. BLOCKER and CRITICAL are severe; WARNING and SUGGESTION are informational. HIGH and MAJOR are unsupported. Classify from the evidence; never rename or promote a severity to obtain fix admission. If clean, return an empty candidate list.
 
 For initial discovery, return only this graph-v1 native JSON shape:
 

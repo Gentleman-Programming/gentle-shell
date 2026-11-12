@@ -184,6 +184,7 @@ import {
 } from "../lib/review-host-relay.ts";
 import type { InProcessReviewerRegistry } from "../lib/inprocess-reviewer.ts";
 import {
+	FROZEN_SEVERITY,
 	JOURNAL_STATUS,
 	REVIEW_OPERATION,
 	REVIEW_TRANSITION,
@@ -675,6 +676,24 @@ function hasCanonicalJudgmentDayFixActivation(...values: unknown[]): boolean {
 const JUDGMENT_DAY_FIX_DISPATCH_REJECTION =
 	"Judgment Day fix dispatch requires exactly one `agent: \"jd-fix-agent\"`, one exact `## Judgment Day activation` section containing only `User explicitly requested Judgment Day.`, one non-empty unique canonical `## Exact authorized severe IDs` section, one exact `## Judgment Day correction batch` section with `Round: 1 of 2.` or `Round: 2 of 2.` and the matching canonical lowercase SHA-256 of one exact `## Exact frozen finding rows` section whose BLOCKER/CRITICAL open Judgment Day rows equal the authorized IDs in the same order, and the existing exact `## Allowed edit surfaces` guard. The parent must provide the canonical bounded dispatch; do not infer activation, authorization, or frozen findings.";
 
+/** Explain a denied classification; never rewrite rows or change admission. */
+function judgmentDaySeverityRejection(...values: unknown[]): string | undefined {
+	const bodies = values.flatMap(value => canonicalJudgmentDaySectionBodies(value, JUDGMENT_DAY_FROZEN_FINDING_ROWS_HEADING));
+	if (bodies.length !== 1) return undefined;
+	for (const entry of bodies[0]!) {
+		let row: unknown;
+		try { row = JSON.parse(entry); } catch { return undefined; }
+		if (!isRecord(row) || typeof row.severity !== "string") return undefined;
+		if (row.severity === FROZEN_SEVERITY.BLOCKER || row.severity === FROZEN_SEVERITY.CRITICAL) continue;
+		const severity = JSON.stringify(row.severity.slice(0, 64));
+		const classification = Object.values(FROZEN_SEVERITY).some(value => value === row.severity)
+			? `Judgment Day severity ${severity} is informational and not eligible for fix dispatch.`
+			: `Unsupported Judgment Day severity ${severity}. Allowed judge severities: ${Object.values(FROZEN_SEVERITY).join(", ")}.`;
+		return `${classification} Fix dispatch accepts only BLOCKER or CRITICAL. Re-evaluate through the authorized Judgment Day flow; never rename or promote a severity to gain admission.`;
+	}
+	return undefined;
+}
+
 function rejectInvalidJudgmentDayFixDispatch(input: unknown): { block: true; reason: string } | undefined {
 	if (!isRecord(input) || !hasJudgmentDayFixAgentReference(input)) return undefined;
 	if (
@@ -685,7 +704,8 @@ function rejectInvalidJudgmentDayFixDispatch(input: unknown): { block: true; rea
 	) {
 		return undefined;
 	}
-	return { block: true, reason: JUDGMENT_DAY_FIX_DISPATCH_REJECTION };
+	const severityIssue = judgmentDaySeverityRejection(input.task, input.context);
+	return { block: true, reason: severityIssue ? `${severityIssue} ${JUDGMENT_DAY_FIX_DISPATCH_REJECTION}` : JUDGMENT_DAY_FIX_DISPATCH_REJECTION };
 }
 
 /**

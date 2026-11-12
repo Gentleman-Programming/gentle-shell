@@ -1969,12 +1969,12 @@ test("Gentle Shell v4.7.0 package manifest declares the release version", () => 
 	assert.doesNotMatch(runtime, /execFileSync\("(?:npm|pnpm)", \["publish"/);
 });
 
-test("bounded review keeps the Judgment Day skill contract at canon metadata version 1.7", () => {
+test("bounded review keeps the Judgment Day skill contract at canon metadata version 1.8", () => {
 	const frontmatter = readAgentFrontmatter(
 		join(PACKAGE_ROOT, "skills", "judgment-day", "SKILL.md"),
 	);
 
-	assert.match(frontmatter, /^  version: "1\.7"$/m);
+	assert.match(frontmatter, /^  version: "1\.8"$/m);
 	assert.doesNotMatch(frontmatter, /^  version: "1\.4"$/m);
 });
 

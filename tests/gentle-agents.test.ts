@@ -301,6 +301,24 @@ for (const scenario of ["background", "task", "append-failure", "overflow", "byt
 	});
 }
 
+test("orchestrator_session_id accepts a JSON-string state with actionable errors", async t => {
+	const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+	gentleAgents(h.pi, {}, runtime.deps);
+	await h.fire("session_start", ctx);
+	const tool = h.tools.get("orchestrator_session_id")!;
+	const before = h.entries.length;
+	// A JSON-encoded string publishes exactly like the equivalent object.
+	const result = await tool.execute("string", { state: JSON.stringify({ objective: "From string", work: { area: "gentle-ai", topic: "string-state" } }) }, undefined, undefined, ctx);
+	assert.match(result.content[0].text, /Current alias \(CURRENT TASK\): string-state/);
+	const published = h.entries.at(-1)!.data as { state: { objective: string } };
+	assert.equal(published.state.objective, "From string");
+	assert.equal(h.entries.length, before + 1);
+	// Malformed JSON fails with an actionable message, never a schema riddle.
+	await assert.rejects(tool.execute("bad-json", { state: "{objective:" }, undefined, undefined, ctx), /JSON/);
+	// A valid JSON string with a flat shape names the nesting rule.
+	await assert.rejects(tool.execute("bad-shape", { state: JSON.stringify({ objective: "x", area: "flat" }) }, undefined, undefined, ctx), /work/);
+});
+
 test("invalid run work rejects before foreign consent or allocation", async t => {
 	const h = fakePi(), runtime = deps(), { ctx, dialogs } = fakeContext();
 	gentleAgents(h.pi, {}, runtime.deps);

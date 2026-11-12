@@ -17,6 +17,9 @@
 		<symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
 		<symbol id="i-palette" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="8" cy="10" r="1"/><circle cx="12" cy="7" r="1"/><circle cx="16" cy="10" r="1"/><path d="M12 21a3 3 0 0 1 0-6h2"/></symbol>
 		<symbol id="i-keys" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></symbol>
+		<symbol id="i-row" viewBox="0 0 24 24"><rect x="2" y="6" width="5" height="12" rx="1"/><rect x="9.5" y="6" width="5" height="12" rx="1"/><rect x="17" y="6" width="5" height="12" rx="1"/></symbol>
+		<symbol id="i-column" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="5" rx="1"/><rect x="6" y="9.5" width="12" height="5" rx="1"/><rect x="6" y="17" width="12" height="5" rx="1"/></symbol>
+		<symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
 	</svg>
 	<header class="gd-bar" role="toolbar" aria-label="Design canvas controls">
 		<h1 class="gd-title" id="gd-title">Gentle Design</h1>
@@ -30,6 +33,11 @@
 			<output id="gd-zoom-level" aria-live="polite" aria-label="Zoom level">100%</output>
 			<button type="button" id="gd-zoom-in" aria-label="Zoom in">+</button>
 			<button type="button" id="gd-fit">Fit</button>
+		</div>
+		<div class="gd-group gd-arrange" role="group" aria-label="Arrange the artboards">
+			<button type="button" id="gd-arrange-row" aria-pressed="true" aria-label="Row" title="Arrange in a row" disabled><svg class="gd-i" aria-hidden="true"><use href="#i-row"/></svg></button>
+			<button type="button" id="gd-arrange-column" aria-pressed="false" aria-label="Column" title="Arrange in a column" disabled><svg class="gd-i" aria-hidden="true"><use href="#i-column"/></svg></button>
+			<button type="button" id="gd-arrange-grid" aria-pressed="false" aria-label="Grid" title="Arrange in a grid" disabled><svg class="gd-i" aria-hidden="true"><use href="#i-grid"/></svg></button>
 		</div>
 		<p id="gd-nav-mode" class="gd-nav-mode" role="status" aria-live="polite">Navigating</p>
 		<div class="gd-group" role="radiogroup" aria-label="When a comment is sent to the session">
@@ -52,6 +60,10 @@
 			<div id="gd-world" class="gd-world"></div>
 			<p id="gd-empty" class="gd-empty" hidden></p>
 			<button type="button" id="gd-back" class="gd-back" aria-keyshortcuts="Shift+Escape" title="Back to canvas (Shift+Esc)" hidden>Back to canvas</button>
+			<section id="gd-minimap" class="gd-minimap" aria-labelledby="gd-minimap-title" hidden>
+				<h2 id="gd-minimap-title" class="gd-minimap-title"><span>Minimap</span><kbd id="gd-minimap-key" aria-hidden="true">M</kbd></h2>
+				<div id="gd-minimap-map" class="gd-minimap-map" role="img" aria-label="Position of the visible area among the artboards. Click or drag to move the view."><b id="gd-minimap-view" class="gd-minimap-view"></b></div>
+			</section>
 		</main>
 		<aside id="gd-panel" class="gd-panel" aria-labelledby="gd-panel-title">
 			<h2 id="gd-panel-title" class="gd-panel-title">Comments</h2>
@@ -87,7 +99,8 @@
 			<dt><kbd>0</kbd></dt><dd>Fit all directions</dd>
 			<dt><kbd>+</kbd> <kbd>-</kbd></dt><dd>Zoom in and out</dd>
 			<dt><kbd>&larr;</kbd> <kbd>&rarr;</kbd> <kbd>&uarr;</kbd> <kbd>&darr;</kbd></dt><dd>Pan (Shift for larger steps)</dd>
-			<dt><kbd>Esc</kbd></dt><dd>Leave Comment mode or close the comment box</dd>
+			<dt><kbd>Space</kbd> + drag</dt><dd>Pan from anywhere, even over an artboard</dd>
+			<dt><kbd>Esc</kbd></dt><dd>Clear the selected artboard, leave Comment mode or close the comment box</dd>
 			<dt><kbd>Shift</kbd> + <kbd>Esc</kbd></dt><dd>Back to canvas from an artboard or Compare</dd>
 		</dl>
 		<p class="gd-dialog-note">Change gives an action another single key; your keys are saved in this browser, for every design.</p>

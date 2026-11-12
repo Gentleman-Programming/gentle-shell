@@ -46,7 +46,8 @@ export function init(ctx) {
 		const pins = [];
 		for (const comment of commentsForBoard(board)) {
 			const rect = board.rects?.get(comment.id);
-			if (!rect) continue;
+			// A 0x0 rect is an element that is hidden or not rendered: no pin at the artboard's corner.
+			if (!rect || (rect.width === 0 && rect.height === 0)) continue;
 			if (rect.x + rect.width < 0 || rect.y + rect.height < 0 || rect.x > board.artboard.width || rect.y > board.viewHeight) continue;
 			const pin = doc.createElement("button");
 			pin.type = "button";

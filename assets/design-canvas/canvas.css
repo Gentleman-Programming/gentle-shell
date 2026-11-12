@@ -104,6 +104,10 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport
 	color: var(--gd-muted);
 }
 
+/* Row, Column and Grid: a group like the zoom, the current arrangement pressed. */
+.gd-arrange button { padding: 4px 6px; color: var(--gd-muted); }
+.gd-arrange button[aria-pressed="true"] { border-color: var(--gd-accent); color: var(--gd-accent); }
+
 .gd-toggle[aria-pressed="true"], .gd-primary {
 	background: var(--gd-accent);
 	border-color: var(--gd-accent);
@@ -164,14 +168,16 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport
 }
 
 .gd-viewport.gd-panning { cursor: grabbing; }
+/* Space held: every press pans, over an artboard too. */
+.gd-viewport.gd-space-pan, .gd-viewport.gd-space-pan * { cursor: grab; }
+.gd-viewport.gd-space-pan.gd-panning, .gd-viewport.gd-space-pan.gd-panning * { cursor: grabbing; }
 
+/* The world is as big as the bounds of its boards (canvas-layout.js sizes it); each board sits at its position
+   in design/<slug>/layout.json, or in a row, 80 px apart, when the design has none. */
 .gd-world {
 	position: absolute;
 	top: 0;
 	left: 0;
-	display: flex;
-	align-items: flex-start;
-	gap: 80px;
 	padding: 0;
 	transform-origin: 0 0;
 	will-change: transform;
@@ -184,11 +190,25 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport
 	flex: none;
 }
 
+/* Layout: each artboard where canvas-layout.js places it; the one being moved stays above the others. */
+.gd-world .gd-artboard { position: absolute; top: 0; left: 0; }
+.gd-world .gd-lifted { z-index: 1; }
+.gd-viewport.gd-moving, .gd-viewport.gd-moving * { cursor: grabbing; }
+
+/* The artboard pressed last, title and frame, until a press elsewhere or Esc. */
+.gd-world .gd-selected {
+	outline: calc(2px * var(--gd-inv-zoom, 1)) solid var(--gd-accent);
+	outline-offset: calc(6px * var(--gd-inv-zoom, 1));
+}
+
+/* The board is placed with no width, so it shrinks to its content: the label never adds to that width
+   (a long title or tradeoff wraps), and the board stays as wide as its frame, the size the layout places. */
 .gd-artboard-label {
 	position: relative;
 	display: flex;
 	flex-direction: column;
 	gap: 2px;
+	contain: inline-size;
 }
 
 /* The handoff row above Implement this: anchored to the label's bottom right, kept at screen
@@ -351,6 +371,64 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport
 }
 
 .gd-back[hidden] { display: none; }
+
+/* The minimap: bottom right of the viewport, over the artboards. canvas-minimap.js draws its map in this
+   fixed size (MINIMAP there): a block per board and the visible area outlined. */
+.gd-minimap {
+	position: absolute;
+	right: 16px;
+	bottom: 16px;
+	z-index: 5;
+	padding: 8px;
+	background: var(--gd-panel);
+	border: 1px solid var(--gd-border);
+	border-radius: 8px;
+	cursor: default;
+}
+
+.gd-minimap-title {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	margin: 0 0 6px;
+	color: var(--gd-muted);
+	font-size: 11px;
+	font-weight: 600;
+}
+
+.gd-minimap-map {
+	position: relative;
+	width: 204px;
+	height: 96px;
+	overflow: hidden;
+	border-radius: 6px;
+	background: var(--gd-bg);
+	cursor: pointer;
+	touch-action: none;
+}
+
+.gd-minimap-block {
+	position: absolute;
+	border-radius: 2px;
+	background: var(--gd-muted);
+	opacity: 0.5;
+}
+
+.gd-minimap-system {
+	background: var(--gd-border);
+}
+
+.gd-minimap-chosen {
+	background: var(--gd-accent);
+	opacity: 1;
+}
+
+.gd-minimap-view {
+	position: absolute;
+	border: 1.5px solid var(--gd-focus);
+	border-radius: 4px;
+	pointer-events: none;
+}
 
 /* Pins live in the transformed world, so they follow pan and zoom; the inverse scale keeps their size. */
 .gd-pins {

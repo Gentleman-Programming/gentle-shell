@@ -9,8 +9,8 @@ import { boardsOf, click, findAll, handoffDoc, loadCanvas, memoryStorage, read, 
 // person can change, saved in this browser.
 
 const SHORTCUTS_KEY = "gentle-design:shortcuts";
-const SHORTCUT_IDS = ["navigate", "comment", "fit", "panel", "help"];
-const DEFAULT_KEYS = ["V", "C", "F", "]", "?"];
+const SHORTCUT_IDS = ["navigate", "comment", "fit", "panel", "minimap", "help"];
+const DEFAULT_KEYS = ["V", "C", "F", "]", "M", "?"];
 const SYSTEM_REPLY = { "/t/api/system": { exists: true, file: "system.html", width: 1440, height: 1200 } };
 const COMMENT_STATUS = "Comment mode: click an element in an artboard";
 const UNSAVED = "This browser could not save the change, so it holds for this page only.";
@@ -241,9 +241,9 @@ test("a key typed with AltGr is a printable key, while Ctrl, Alt and Cmd chords 
 	assert.equal(pressed(canvas, "gd-comment"), "true", "the AltGr key runs its action");
 });
 
-test("M and [ are not shortcuts in this canvas", async () => {
+test("[ and Z are not shortcuts in this canvas", async () => {
 	const canvas = await loadRail();
-	for (const key of ["m", "[", "z"]) assert.equal(press(canvas, key).defaultPrevented, false, key);
+	for (const key of ["[", "z"]) assert.equal(press(canvas, key).defaultPrevented, false, key);
 	assert.equal($(canvas, "gd-panel").hidden, false);
 	assert.equal(pressed(canvas, "gd-comment"), "false");
 });
@@ -386,12 +386,12 @@ function changeKey(canvas: Rail, id: string, key: string, init: Record<string, u
 
 test("the shortcuts list shows each rail and panel action with its key, Change and Reset, and one Restore defaults", async () => {
 	const canvas = await loadRail();
-	assert.deepEqual(keyRows(canvas).map((row) => row.dataset.shortcut), SHORTCUT_IDS, "the five single-key actions, in this order");
+	assert.deepEqual(keyRows(canvas).map((row) => row.dataset.shortcut), SHORTCUT_IDS, "the six single-key actions, in this order");
 	const labels = SHORTCUT_IDS.map((id) => texts(keyRow(canvas, id), "gd-key-action")[0]);
 	// The fixed rows below (0 fits too) never repeat a changeable action's name.
 	const fixedRows = [...read("index.html").matchAll(/<dd>([^<]+)<\/dd>/g)].map((match) => match[1]);
 	for (const label of labels) assert.ok(!fixedRows.includes(label), `${label} is named once in the list`);
-	assert.deepEqual(labels, ["Move around the canvas", "Comment on an element", "Overview (fit all directions)", "Show or hide the comments panel", "Show keyboard shortcuts"]);
+	assert.deepEqual(labels, ["Move around the canvas", "Comment on an element", "Overview (fit all directions)", "Show or hide the comments panel", "Show or hide the minimap", "Show keyboard shortcuts"]);
 	assert.deepEqual(rowKeys(canvas), DEFAULT_KEYS);
 	assert.equal(rowChange(canvas, "navigate").textContent, "Change");
 	assert.equal(rowChange(canvas, "navigate").getAttribute("aria-label"), "Change the key for “Move around the canvas” (V)");
@@ -480,13 +480,13 @@ test("holding a shortcut key runs it once: the browser's repeated keydowns are i
 
 test("custom keys are restored on load, and a stored entry that is unusable, unknown or taken is ignored", async () => {
 	const restored = await loadRail({ stored: { navigate: "x", help: "/" } });
-	assert.deepEqual(rowKeys(restored), ["X", "C", "F", "]", "/"]);
+	assert.deepEqual(rowKeys(restored), ["X", "C", "F", "]", "M", "/"]);
 	assert.equal($(restored, "gd-tool-navigate").title, "Move around the canvas (X)");
 	press(restored, "/");
 	assert.equal(shortcutsOpen(restored), true);
 	assert.deepEqual(restored.shortcutWrites(), [], "loading writes nothing");
 
-	for (const stored of ["not json", "[1, 2]", "\"x\"", "null", "42", JSON.stringify({ navigate: "vv", comment: "Enter", fit: " ", panel: 7, help: "0", minimap: "z", bogus: "z" })]) {
+	for (const stored of ["not json", "[1, 2]", "\"x\"", "null", "42", JSON.stringify({ navigate: "vv", comment: "Enter", fit: " ", panel: 7, help: "0", minimap: "zz", bogus: "z" })]) {
 		const canvas = await loadRail({ stored });
 		assert.deepEqual(rowKeys(canvas), DEFAULT_KEYS, stored);
 		press(canvas, "c");
@@ -497,13 +497,13 @@ test("custom keys are restored on load, and a stored entry that is unusable, unk
 	}
 	// Two actions stored on one key: neither takes it.
 	const twice = await loadRail({ stored: { navigate: "q", comment: "q", fit: "w" } });
-	assert.deepEqual(rowKeys(twice), ["V", "C", "W", "]", "?"]);
+	assert.deepEqual(rowKeys(twice), ["V", "C", "W", "]", "M", "?"]);
 	// A stored key equal to another action's default is refused too, and that refusal can free another one.
 	const chained = await loadRail({ stored: { navigate: "c" } });
 	assert.deepEqual(rowKeys(chained), DEFAULT_KEYS);
 	// Keys swapped between two actions are both kept.
 	const swapped = await loadRail({ stored: { navigate: "c", comment: "v" } });
-	assert.deepEqual(rowKeys(swapped), ["C", "V", "F", "]", "?"]);
+	assert.deepEqual(rowKeys(swapped), ["C", "V", "F", "]", "M", "?"]);
 	press(swapped, "c");
 	assert.equal(pressed(swapped, "gd-comment"), "false", "C now moves around the canvas");
 	press(swapped, "v");
@@ -521,7 +521,7 @@ test("custom keys are restored on load, and a stored entry that is unusable, unk
 
 test("when the browser cannot save a key, the list says it holds for this page only", async () => {
 	const canvas = await loadRail({ full: true, stored: { navigate: "x" } });
-	assert.deepEqual(rowKeys(canvas), ["X", "C", "F", "]", "?"], "a readable storage still restores the keys");
+	assert.deepEqual(rowKeys(canvas), ["X", "C", "F", "]", "M", "?"], "a readable storage still restores the keys");
 	changeKey(canvas, "comment", "k");
 	assert.equal(keysMessage(canvas), `“Comment on an element” is now K. ${UNSAVED}`);
 	assert.ok($(canvas, "gd-keys-message").classes.has("gd-error"), "the warning reads as an error");
@@ -724,7 +724,7 @@ test("index.html: a labeled rail with Move, Comment, Overview and Settings, one 
 	assert.ok(sprite, "a hidden sprite");
 	const symbols = [...sprite![1].matchAll(/<symbol id="([^"]+)" viewBox="0 0 24 24">/g)].map((match) => match[1]);
 	assert.equal(new Set(symbols).size, symbols.length, "sprite ids are unique");
-	assert.deepEqual(symbols.sort(), ["i-comment", "i-fit", "i-gear", "i-hand", "i-keys", "i-palette"]);
+	assert.deepEqual(symbols.sort(), ["i-column", "i-comment", "i-fit", "i-gear", "i-grid", "i-hand", "i-keys", "i-palette", "i-row"]);
 	for (const match of html.matchAll(/<use href="#([^"]+)"/g)) assert.ok(symbols.includes(match[1]), `${match[1]} exists in the sprite`);
 
 	assert.match(html, /<div id="gd-menu" class="gd-menu" role="menu" hidden><\/div>/);
@@ -734,9 +734,8 @@ test("index.html: a labeled rail with Move, Comment, Overview and Settings, one 
 	assert.match(dialog, /<ul id="gd-keys-custom" class="gd-keys-custom" aria-label="Shortcuts you can change"><\/ul>/);
 	assert.match(dialog, /<p id="gd-keys-message" class="gd-keys-message" role="status" aria-live="polite"><\/p>/);
 	assert.match(dialog, /<button type="button" id="gd-keys-restore" class="gd-keys-restore">Restore defaults<\/button><button type="button" id="gd-shortcuts-close" class="gd-primary">Close<\/button>/);
-	// The fixed keys of this canvas are listed; Space-pan and the minimap arrive with their own features.
+	// The fixed keys of this canvas are listed (Space + drag with the layout, in tests/design-canvas-layout.test.ts).
 	for (const fixed of [/<dt><kbd>0<\/kbd><\/dt><dd>Fit all directions<\/dd>/, /<dt><kbd>\+<\/kbd> <kbd>-<\/kbd><\/dt><dd>Zoom in and out<\/dd>/, /<kbd>&larr;<\/kbd>/, /<dt><kbd>Esc<\/kbd><\/dt>/, /<dt><kbd>Shift<\/kbd> \+ <kbd>Esc<\/kbd><\/dt>/]) assert.match(dialog, fixed);
-	assert.ok(!/Space|[Mm]inimap/.test(dialog), "no Space or minimap keys yet");
 
 	assert.ok(!html.includes("data-i18n"), "no i18n hooks: English literals until the i18n PR");
 	for (const cut of ["gd-appearance", "gd-theme", "gd-language", "i-help", "gd-variant", "gd-mark", "data-theme"]) assert.ok(!html.includes(cut), `${cut} stays out`);
@@ -747,7 +746,7 @@ test("canvas-rail.js and canvas-menu.js keep their English strings grouped at th
 	for (const name of ["canvas-rail.js", "canvas-menu.js"]) {
 		const source = read(name);
 		assert.ok(!/\bloc\(|\bt\(|data-i18n|CATALOG|refreshLoc|applyLanguage/.test(source), `${name}: no i18n`);
-		assert.ok(!/theme|appearance|renderGuide|guideBlocked|variant|minimap/i.test(source), `${name}: no cut feature`);
+		assert.ok(!/theme|appearance|renderGuide|guideBlocked|variant/i.test(source), `${name}: no cut feature`);
 	}
 	const rail = read("canvas-rail.js");
 	assert.ok(rail.indexOf("const TEXT = Object.freeze({") >= 0 && rail.indexOf("const TEXT = Object.freeze({") < rail.indexOf("export function init"), "the rail's strings sit in one TEXT block before init");
@@ -787,5 +786,5 @@ test("the docs describe the rail, the Settings menu and the changeable keys save
 	for (const part of ["**Move** (`V`", "**Comment** (`C`)", "**Overview**", "(`F`)", "**Settings**", "**Design system board**", "**Keyboard shortcuts** (`?`)", "**Change**", "**Reset**", "**Restore defaults**", "`gentle-design:shortcuts`", "saved in this browser", "a new port", "`Tab` moves on and ends it", "holds for this page only", "AltGr", "Compare covers the rail", "`]`", "`Esc`, `Shift+Esc`, the arrows, `Space`, `Enter`, `Tab`"]) {
 		assert.ok(rail.includes(part), `the rail entry mentions ${part}`);
 	}
-	assert.ok(!/Appearance|theme|language|Step-by-step|minimap/i.test(rail), "nothing that does not ship here");
+	assert.ok(!/Appearance|theme|language|Step-by-step/i.test(rail), "nothing that does not ship here");
 });

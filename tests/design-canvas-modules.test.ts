@@ -31,7 +31,7 @@ function importWithoutGlobals(names: string[]) {
 }
 
 test("no canvas module touches the DOM or window when it is imported", () => {
-	assert.equal(MODULES.length, 15);
+	assert.equal(MODULES.length, 17);
 	const result = importWithoutGlobals(MODULES);
 	assert.equal(result.stderr, "");
 	assert.deepEqual(result.stdout.trim().split("\n"), MODULES.map((name) => `imported ${name}`));
@@ -82,7 +82,8 @@ test("boot registers window listeners in main's order, with and without ResizeOb
 		const win: Record<string, any> = { addEventListener: (type: string) => order.push(type), localStorage: { getItem: () => null, setItem() {} }, setTimeout, clearTimeout, requestAnimationFrame: () => 0, fetch: () => new Promise(() => {}), EventSource: class { addEventListener() {} }, location: { port: "1" }, URL, history: { replaceState() {} } };
 		if (ro) win.ResizeObserver = class { observe(el: unknown) { observed.push(el); } };
 		boot(win, doc);
-		assert.deepEqual(order, ro ? ["message", "resize", "resize"] : ["message", "resize", "resize", "resize"]);
+		// blur: Space held to pan lets go when the window loses focus (canvas-layout.js).
+		assert.deepEqual(order, ro ? ["blur", "message", "resize", "resize"] : ["blur", "message", "resize", "resize", "resize"]);
 		assert.deepEqual(observed, ro ? [doc.getElementById("gd-viewport")] : []);
 	}
 });

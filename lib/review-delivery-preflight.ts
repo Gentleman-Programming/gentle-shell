@@ -57,7 +57,7 @@ export async function checkReviewDeliveryPreflight(cwd: string, toolName: string
 				if (bounded.aborted || !current()) return deny("Session changed during preflight; assess again.");
 				if (mode.status.effective === "off") continue;
 				if (mode.status.effective !== "on") return deny("RDD mode is unavailable; resolve it before delivery.");
-				if (toolName !== "bash" || actions.some(action => action.kind === "change")) return deny("Finish candidate-changing commands or background waits separately, then issue delivery so the resulting commits can be assessed.");
+				if (toolName !== "bash" || deliveries.some(delivery => delivery.background) || actions.some(action => action.kind === "change")) return deny("Finish candidate-changing commands or background waits separately, then issue delivery so the resulting commits can be assessed.");
 				const baseRef = baseRefFor(root);
 				if (!baseRef) return deny('Select the actual committed range with gentle_review assess input {"baseRef":"<slice base>","committedOnly":true}.');
 				const before = await identity(root, baseRef);

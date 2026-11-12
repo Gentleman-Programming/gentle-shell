@@ -160,6 +160,59 @@ test("repository redirects remain delivery commands but cannot borrow the sessio
 	assert.deepEqual(recognizeReviewDeliveryActions("git -C/other push"), [{ kind: "delivery", directories: ["/other"] }]);
 });
 
+test("#2997: shell background lists cannot use a foreground review check", async () => {
+	const commands = [
+		"sleep 30 && git push &", "git push && echo done &", "git push || echo failed &",
+		"bash -c 'sleep 30 && git push &'", "bash -c 'git push' &",
+		"(git push; echo done) &", "{ git push; echo done; } &",
+		"if true; then git push; fi &", "until true; do gh pr merge 42; done &",
+		'echo "$(git push)" &', "echo `git push` &",
+	];
+	let assessments = 0;
+	const cli = {
+		reviewMode: async () => ({ status: { effective: "on" } }),
+		assess: async ({ baseRef }: { baseRef: string }) => { assessments++; return { candidate: { kind: "base-diff", baseRef }, reviewDue: false }; },
+	} as unknown as NativeReviewCli;
+	for (const command of commands) {
+		const result = await checkReviewDeliveryPreflight(process.cwd(), "bash", command, cli, () => "HEAD", () => false);
+		assert.equal(result?.block, true, command);
+		assert.match(result!.reason, /background|foreground/, command);
+	}
+	assert.equal(assessments, 0, "deferred execution must be separated before assessment");
+	const off = { reviewMode: async () => ({ status: { effective: "off" } }) } as unknown as NativeReviewCli;
+	for (const command of commands) assert.equal(await checkReviewDeliveryPreflight(process.cwd(), "bash", command, off, () => undefined, () => false), undefined, "known RDD off preserves ordinary command policy");
+	for (const command of ["sleep 1 & git push", "git push 2>&1 | tail -1", "git push &>/dev/null", "git push && echo done", "git push; echo `sleep 1 &`"]) {
+		assert.equal(await checkReviewDeliveryPreflight(process.cwd(), "bash", command, cli, () => "HEAD", () => false), undefined, command);
+	}
+});
+
+test("#2997: exported Git routing cannot borrow an unrelated RDD-off directory", async () => {
+	let modeReads = 0;
+	const off = { reviewMode: async () => { modeReads++; return { status: { effective: "off" } }; } } as unknown as NativeReviewCli;
+	for (const variable of ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_NAMESPACE"]) {
+		for (const command of [
+			`export ${variable}=/other; git push`, `export ${variable}=/other && gh pr merge 42`,
+			`export ${variable}=/other; bash -c 'git push'`, `export ${variable}=/other; echo "$(git push)"`,
+			`eval 'export ${variable}=/other'; git push`,
+			`export ${variable}=/other && git push &`, `echo \`export ${variable}=/other; git push\``,
+		]) {
+			const result = await checkReviewDeliveryPreflight(process.cwd(), "bash", command, off, () => undefined, () => false);
+			assert.equal(result?.block, true, command);
+			assert.match(result!.reason, /repository cannot be resolved/, command);
+		}
+	}
+	assert.equal(modeReads, 0, "the session's off mode cannot authorize a redirected target");
+	for (const command of [
+		"export PATH=/bin; git push", 'echo "export GIT_DIR=/other; git push &"', "echo '$(git push)'",
+		'echo "$(git push)"; export GIT_DIR=/other', "(export GIT_DIR=/other); git push",
+		"bash -c 'export GIT_DIR=/other'; git push", "eval '(export GIT_DIR=/other)'; git push",
+		"export GIT_DIR=/other & git push", "echo `true; export GIT_DIR=/other; true`; git push",
+		"eval 'export GIT_DIR=/other &' ; git push",
+	]) {
+		assert.equal(await checkReviewDeliveryPreflight(process.cwd(), "bash", command, off, () => undefined, () => false), undefined, command);
+	}
+});
+
 test("#3138: output redirections and trailing filters preserve a literal delivery directory", async () => {
 	const root = process.cwd();
 	const commands = [

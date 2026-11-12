@@ -1,7 +1,8 @@
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import type { PanelSummary } from "./shell-panel.ts";
-import { guard, readContributions } from "./plugin-contract.ts";
+import { contributionSlot, guard, readContributions } from "./plugin-contract.ts";
 import type { Contribution, ContributionIssue, ContributionReport } from "./plugin-contract.ts";
+import { readPluginOrder, type PluginOrderOptions } from "./plugin-order.ts";
 
 // Store on the terminal, not a module singleton: extension loaders may isolate
 // modules, while Pi keeps this terminal across regular/fullscreen transitions.
@@ -187,7 +188,9 @@ export function readSidebarContributionReport(): ContributionReport {
 
 /**
  * The rail's section keys: the built-in four first, then contributed keys in
- * registration order. Contributed keys never displace or reorder a core one.
+ * the order this read gave them — the declared owner order first, insertion
+ * order for the owners `plugins.json` does not name. Contributed keys never
+ * displace or reorder a core one.
  */
 export function sidebarSectionOrder(contributed: readonly string[] = [], todoVisible = true): string[] {
 	const order: string[] = [];
@@ -281,18 +284,30 @@ function guardedContributionRail(rail: SidebarRail, id: string): SidebarRail {
 
 /**
  * Apply every valid contributed rail to the shared `SidebarState.parts` map
- * before the layout iterates, and return the section keys in registration
- * order. The map is shared state, so a rail removed from the slot is retired
- * on the next read; a core key is never installed, replaced or removed here.
+ * before the layout iterates, and return the section keys in the order this
+ * read gave them: the owners the declared order names first, then the rest in
+ * registration order. The map is shared state, so a rail removed from the slot
+ * is retired on the next read; a core key is never installed, replaced or
+ * removed here.
+ *
+ * `plugins.json` is read once per prepare, never cached, so an edit takes
+ * effect on the next frame without a reload. This runs on every rail prepare,
+ * and an empty box cannot be reordered, so the read is skipped entirely while
+ * the box holds nothing: the empty-box order and report stay exactly what they
+ * are without the file, and only a non-empty box pays for one read.
  */
-export function installContributedSidebar(tui: TUI): ContributedSidebar {
+export function installContributedSidebar(tui: TUI, options: PluginOrderOptions = {}): ContributedSidebar {
 	const report = resetSidebarReport();
 	const result: ContributedSidebar = { keys: [], rejected: report.skipped };
 	if (!tui.terminal) return result;
 	const state = sidebarState(tui);
 	const contributed = state.contributed ??= new Set<string>();
 	const installed = new Set<string>();
-	const contributions = guard(() => readContributions(), [] as Contribution[], (error) => recordRailFailure("contributions", error)) as Contribution[];
+	const contributions = guard(
+		() => readContributions(contributionSlot().size === 0 ? {} : { order: readPluginOrder(options).order }),
+		[] as Contribution[],
+		(error) => recordRailFailure("contributions", error),
+	) as Contribution[];
 	for (const contribution of contributions) {
 		const section = contributionSection(contribution);
 		if (!section) continue;

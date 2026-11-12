@@ -32,6 +32,7 @@ import { discoverRddModeControl, type RddModeControl } from "../lib/rdd-mode-con
 import { NATIVE_REVIEW_MODE_SOURCE } from "../lib/native-review-cli.ts";
 import { VisualCustomizeView, type CustomizeCategory, type CustomizeRow, type ProfileActions } from "../lib/visual-customize-view.ts";
 import { guard, readContributions, type PluginRow } from "../lib/plugin-contract.ts";
+import { readPluginOrder, type PluginOrderOptions } from "../lib/plugin-order.ts";
 import { deleteVisualProfile, getVisualProfile, listVisualProfiles, resetVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
 import { gaugePaintFor } from "../lib/gauge-theme.ts";
 import type { GaugePaint } from "../lib/shell-gauge.ts";
@@ -2113,9 +2114,17 @@ function pluginCustomizeRow(id: string, row: PluginRow, notifyError: (message: s
  * Append every contributed row to `/gentle:customize`, after every built-in row
  * and never in place of one (S2). The public DTO is adapted here so gentle-pi
  * internals stay private; with an empty box this appends nothing at all.
+ *
+ * The box is read here, at use time, with the owner order `plugins.json`
+ * declares right now, so the appended rows follow that order and an owner the
+ * file does not name keeps registration order.
  */
-export function appendPluginCustomizeRows(rows: CustomizeRow[], notifyError: (message: string) => void): void {
-	for (const contribution of readContributions()) {
+export function appendPluginCustomizeRows(
+	rows: CustomizeRow[],
+	notifyError: (message: string) => void,
+	options: PluginOrderOptions = {},
+): void {
+	for (const contribution of readContributions({ order: readPluginOrder(options).order })) {
 		for (const row of contribution.rows ?? []) rows.push(pluginCustomizeRow(contribution.id, row, notifyError));
 	}
 }
@@ -3582,7 +3591,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		}, () => ({ title: "Restore visual defaults", sample: "[Header] → [Input]  [responsive status] · quality" }));
 			// Additive only: contributed rows land after every built-in row, never before
 			// one and never in place of one.
-			appendPluginCustomizeRows(rows, (message) => ctx.ui.notify(message, "warning"));
+			appendPluginCustomizeRows(rows, (message) => ctx.ui.notify(message, "warning"), { gentlePiConfigHome: gentlePiConfigHome(env) });
 			const profiles: ProfileActions = {
 				list: catalog,
 				save: async (name, replace) => {

@@ -1,5 +1,6 @@
 import type { CommandPaletteGroup, CommandPaletteItem } from "./command-palette.ts";
 import { readContributions, type Contribution } from "./plugin-contract.ts";
+import { readPluginOrder, type PluginOrderOptions } from "./plugin-order.ts";
 
 // The curated command set for the command palette: an OpenCode-style
 // grouped menu, not a raw listing of every registered extension command.
@@ -88,8 +89,16 @@ function contributedGroup(contribution: Contribution): string {
  * command that is not registered, or one the catalog already lists, adds
  * nothing. The first contribution read for a command owns it, which keeps
  * the output reproducible across builds.
+ *
+ * The read applies the declared owner order read from `plugins.json` on this
+ * build, never a cached copy: an owner the file names comes first in that
+ * sequence, and every other owner keeps registration order after it.
  */
-export function buildCommandPaletteGroups(registered: readonly { name: string; description?: string }[], shortcuts: Readonly<Record<string, string | undefined>>): CommandPaletteGroup[] {
+export function buildCommandPaletteGroups(
+	registered: readonly { name: string; description?: string }[],
+	shortcuts: Readonly<Record<string, string | undefined>>,
+	options: PluginOrderOptions = {},
+): CommandPaletteGroup[] {
 	const byName = new Map(registered.map((command) => [command.name, command]));
 	const groups: CommandPaletteGroup[] = [];
 	const catalogued = new Set<string>();
@@ -104,23 +113,27 @@ export function buildCommandPaletteGroups(registered: readonly { name: string; d
 		groups.push({ title: group.title, items });
 	}
 
-	const contributed = new Map<string, string>();
-	for (const contribution of readContributions()) {
+	// One order read and one contribution read per build: the declared owner
+	// order fixes the appended sequence, and the owners the file does not name
+	// keep registration order after the named ones.
+	const contributed: Array<{ registration: { name: string; description?: string }; title: string }> = [];
+	const claimed = new Set<string>();
+	for (const contribution of readContributions({ order: readPluginOrder(options).order })) {
 		const command = contribution.palette?.command;
-		if (command === undefined || contributed.has(command)) continue;
-		contributed.set(command, contributedGroup(contribution));
+		if (command === undefined || claimed.has(command) || catalogued.has(command)) continue;
+		const registration = byName.get(command);
+		if (registration === undefined) continue;
+		claimed.add(command);
+		contributed.push({ registration, title: contributedGroup(contribution) });
 	}
 
-	for (const command of registered) {
-		if (catalogued.has(command.name)) continue;
-		const title = contributed.get(command.name);
-		if (title === undefined) continue;
+	for (const { registration, title } of contributed) {
 		let group = groups.find((candidate) => candidate.title === title);
 		if (group === undefined) {
 			group = { title, items: [] };
 			groups.push(group);
 		}
-		group.items.push({ command: command.name, label: command.name, description: command.description, shortcut: shortcuts[command.name] });
+		group.items.push({ command: registration.name, label: registration.name, description: registration.description, shortcut: shortcuts[registration.name] });
 	}
 
 	return groups.filter((group) => group.items.length > 0);

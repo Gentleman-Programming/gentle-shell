@@ -344,7 +344,8 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			// A carded section renders one indent wider; its body rows drop that indent inside the card.
 			const renderWidth = carded ? panelInnerWidth(theme, contentWidth) + PANEL_ROW_INDENT : contentWidth - RAIL_PADDING * 2;
 			// Live work first, then the session Status sections (design/shell-rework/02-proposal.html),
-			// then contributed plugin sections in registration order.
+			// then contributed plugin sections: the owners `plugins.json` names first, in that
+			// sequence, and every other owner after them in registration order.
 			const sections = sidebarSectionOrder(contributed.keys, state.visibility?.todo !== false).map((key) => {
 				const component = state.parts.get(key);
 				if (!component) {

@@ -1,70 +1,17 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { gentlePiConfigHome } from "./agent-home.ts";
 import type { Contribution, ContributionIssue, ContributionReport } from "./plugin-contract.ts";
+
+// The declared order has one reader, in `lib/plugin-order.ts`, because every
+// read point applies it too. It is re-exported here so `/gentle:plugins` and
+// its test keep one import for the audit surface.
+export { PLUGINS_SCHEMA, parsePluginOrderFile, readPluginOrder } from "./plugin-order.ts";
+export type { PluginOrderOptions, PluginOrderResolution } from "./plugin-order.ts";
+import type { PluginOrderResolution } from "./plugin-order.ts";
 
 // The audit surface behind /gentle:plugins: what the contribution box loaded,
 // what the contract refused, which ids were replaced, which owners the order
 // file placed first, and whether another extension swapped a `ctx.ui` setter.
 // Plain data and plain text on purpose (no Pi UI, no theme), so the command
 // and the tests read the same model.
-
-/** The only `plugins.json` shape this reader accepts. Anything else is ignored, never guessed. */
-export const PLUGINS_SCHEMA = "gentle-pi.plugins/v1";
-const PLUGINS_FILE = "plugins.json";
-
-export interface PluginOrderOptions {
-	/** Defaults to the gentle-pi config home; only a test passes it. */
-	gentlePiConfigHome?: string;
-}
-
-export interface PluginOrderResolution {
-	/** Owners to place first, in this order. Empty means "no explicit order". */
-	order: string[];
-	/** `default` is a missing file: insertion order, exactly today's behavior. */
-	source: "global_file" | "default";
-	/** A file exists but is unreadable, not JSON or wrongly schemated. */
-	malformed: boolean;
-	globalFile: string;
-}
-
-/**
- * The explicit owner order, `undefined` when the text is not a valid file.
- * Mirrors `parseCardStyleFile`: two keys exactly, this schema, and no coercion.
- */
-export function parsePluginOrderFile(raw: string): string[] | undefined {
-	try {
-		const value: unknown = JSON.parse(raw);
-		if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-		const record = value as Record<string, unknown>;
-		if (Object.keys(record).length !== 2 || record.schema !== PLUGINS_SCHEMA) return undefined;
-		const order = record.order;
-		if (!Array.isArray(order) || !order.every((owner) => typeof owner === "string" && owner.length > 0)) return undefined;
-		return [...order];
-	} catch {
-		return undefined;
-	}
-}
-
-/**
- * A missing `plugins.json` means no explicit order. A malformed, wrongly
- * schemated or unreadable one also means no explicit order — the same
- * "malformed reads as default" contract as `lib/card-style-policy.ts` — so a
- * hand edit can break arbitration but never `/gentle:plugins`, and this reader
- * never throws and never rewrites the file.
- */
-export function readPluginOrder(options: PluginOrderOptions = {}): PluginOrderResolution {
-	const globalFile = join(options.gentlePiConfigHome ?? gentlePiConfigHome(), PLUGINS_FILE);
-	try {
-		const order = parsePluginOrderFile(readFileSync(globalFile, "utf8"));
-		return order === undefined
-			? { order: [], source: "global_file", malformed: true, globalFile }
-			: { order, source: "global_file", malformed: false, globalFile };
-	} catch (error) {
-		const missing = typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
-		return { order: [], source: missing ? "default" : "global_file", malformed: !missing, globalFile };
-	}
-}
 
 /** The three payloads a contribution can carry, in the order the audit prints them. */
 export const CONTRIBUTION_SLOTS = ["rows", "sidebar", "palette"] as const;

@@ -33,7 +33,7 @@ export function init(ctx) {
 		els.send.disabled = false;
 		els.popover.hidden = false;
 		const frameRect = board.frame.getBoundingClientRect();
-		const scale = frameRect.width / board.artboard.width || 1;
+		const scale = frameRect.width / board.viewWidth || 1;
 		const width = els.popover.offsetWidth;
 		const height = els.popover.offsetHeight;
 		let left = frameRect.left + pick.rect.x * scale;

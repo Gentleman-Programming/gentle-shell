@@ -3,7 +3,9 @@
 // of the canvas shares (arrows, Home, End, Enter and Space choose, Escape and Tab
 // close) and a press outside to close it. The rail's Settings uses it; the
 // per-artboard menu reuses it later. The open menu lives in the store (setMenu),
-// so the single-key shortcuts can stay off while it is open.
+// so the single-key shortcuts can stay off while it is open. A menu with its own
+// element and items (the screen sizes, canvas-sizes.js) opens through openMenu and
+// shares the rest: one menu at a time, closeMenu, the keys and the press outside.
 
 export function init(ctx) {
 	const { win, doc, els, store } = ctx;
@@ -75,7 +77,6 @@ export function init(ctx) {
 	 * (or `last`) item; `run(button)` is what choosing an action does.
 	 */
 	function showMenu(button, actions, label, last = false, beside = false) {
-		closeMenu(false);
 		const items = [];
 		const byItem = new Map();
 		for (const action of actions) {
@@ -84,23 +85,32 @@ export function init(ctx) {
 			byItem.set(item, action);
 			items.push(item);
 		}
-		els.menu.setAttribute("aria-label", label);
-		els.menu.replaceChildren(...items);
-		els.menu.hidden = false;
-		button.setAttribute("aria-expanded", "true");
-		store.setMenu({ button, items, byItem });
-		placeMenu(button, els.menu, beside);
-		(last ? items[items.length - 1] : items[0]).focus();
+		openMenu(button, els.menu, items, items, label, last ? items[items.length - 1] : items[0], beside, byItem);
 	}
 
-	/** Closes the menu; focus goes back to its button when it was inside the menu (or `refocus`). */
+	/**
+	 * Shows `root`, a menu element, filled with `nodes` under `button`, with focus on `first`;
+	 * `items` are the entries the arrow keys move through. Any other open menu closes first.
+	 */
+	function openMenu(button, root, nodes, items, label, first, beside = false, byItem = new Map()) {
+		closeMenu(false);
+		root.setAttribute("aria-label", label);
+		root.replaceChildren(...nodes);
+		root.hidden = false;
+		button.setAttribute("aria-expanded", "true");
+		store.setMenu({ button, root, items, byItem });
+		placeMenu(button, root, beside);
+		first.focus();
+	}
+
+	/** Closes the open menu; focus goes back to its button when it was inside the menu (or `refocus`). */
 	function closeMenu(refocus) {
 		const open = state.menu;
 		if (!open) return;
 		store.setMenu(null);
-		const inside = els.menu.contains(doc.activeElement);
-		els.menu.hidden = true;
-		els.menu.replaceChildren();
+		const inside = open.root.contains(doc.activeElement);
+		open.root.hidden = true;
+		open.root.replaceChildren();
 		open.button.setAttribute("aria-expanded", "false");
 		if (refocus || inside) open.button.focus();
 	}
@@ -155,13 +165,13 @@ export function init(ctx) {
 	}
 
 	els.menu.addEventListener("keydown", (event) => {
-		if (state.menu) menuKeydown(event, state.menu.items, closeMenu, chooseMenuItem);
+		if (state.menu && state.menu.root === els.menu) menuKeydown(event, state.menu.items, closeMenu, chooseMenuItem);
 	});
 
 	doc.addEventListener("pointerdown", (event) => {
 		const open = state.menu;
-		if (open && !els.menu.contains(event.target) && !open.button.contains(event.target)) closeMenu(false);
+		if (open && !open.root.contains(event.target) && !open.button.contains(event.target)) closeMenu(false);
 	});
 
-	return { icon, showMenu, closeMenu, wireMenu, menuKeydown };
+	return { icon, showMenu, openMenu, closeMenu, wireMenu, menuKeydown };
 }

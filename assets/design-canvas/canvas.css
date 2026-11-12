@@ -353,13 +353,14 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport
 	-webkit-user-select: auto;
 	user-select: auto;
 }
-.gd-focused .gd-artboard:not(.gd-focus-board) { opacity: 0.25; }
+/* Only the open artboard shows: Desktop fills the window, and the others would peek in beside it. */
+.gd-focused .gd-world > :not(.gd-focus-board) { visibility: hidden; }
 .gd-focused .gd-focus-board .gd-artboard-frame { box-shadow: 0 0 0 2px var(--gd-accent), 0 2px 16px rgba(0, 0, 0, 0.5); }
 
-/* Floats in the band canvas-focus.js keeps free below the focused artboard. */
+/* Floats in the 48 px band canvas-focus.js keeps free below the focused artboard (BACK_SPACE). */
 .gd-back {
 	position: absolute;
-	bottom: 16px;
+	bottom: 8px;
 	left: 50%;
 	transform: translateX(-50%);
 	z-index: 5;
@@ -848,6 +849,91 @@ button:disabled { opacity: 0.5; cursor: default; }
 /* The single key that does the same as a menu item (Settings: Keyboard shortcuts, ?). */
 .gd-menu-kbd { margin-left: auto; }
 
+/* Screen sizes (canvas-sizes.js): the top bar's device button shows the open artboard's size (its icon, short
+   name and width × height) and is off outside focus mode; its menu, the shared .gd-menu box under it, holds the
+   sizes as radio items, then the custom width field. */
+.gd-device-button {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--gd-muted);
+}
+
+.gd-bar > .gd-device-button { flex: none; }
+.gd-device-button[aria-expanded="true"] { background: var(--gd-panel); border-color: var(--gd-muted); color: var(--gd-text); }
+.gd-device-button:focus-visible { outline: 2px solid var(--gd-focus); outline-offset: 2px; }
+
+.gd-device-size {
+	color: var(--gd-accent);
+	font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.gd-device-size:empty { display: none; }
+
+.gd-device-menu {
+	width: 300px;
+	padding: 6px;
+}
+
+.gd-device-item {
+	flex-wrap: nowrap;
+	min-height: 38px;
+}
+
+.gd-device-item[aria-checked="true"] {
+	background: var(--gd-stage);
+	color: var(--gd-text);
+}
+
+.gd-device-dim {
+	margin-left: auto;
+	color: var(--gd-muted);
+	font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.gd-device-check {
+	margin-left: 8px;
+	color: var(--gd-accent);
+	visibility: hidden;
+}
+
+.gd-device-item[aria-checked="true"] .gd-device-check { visibility: visible; }
+
+.gd-device-custom {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 38px;
+	padding: 0 10px;
+	color: var(--gd-muted);
+}
+
+.gd-device-custom.gd-selected { color: var(--gd-text); }
+
+.gd-device-input {
+	width: 9ch;
+	min-height: 30px;
+	margin-left: auto;
+	padding: 2px 8px;
+	border: 1px solid var(--gd-border);
+	border-radius: 4px;
+	background: var(--gd-bg);
+	color: var(--gd-text);
+	font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.gd-device-input:focus-visible { outline: 2px solid var(--gd-focus); outline-offset: 2px; }
+.gd-device-custom.gd-selected .gd-device-input { border-color: var(--gd-accent); }
+.gd-device-input[aria-invalid="true"] { border-color: var(--gd-danger); }
+
+.gd-device-unit { color: var(--gd-muted); font-size: 12px; }
+
+.gd-device-error {
+	margin: 0 10px 6px;
+	color: var(--gd-danger);
+	font-size: 12px;
+}
+
 /* Keyboard shortcuts: the ? list, the keys a person can change, and the fixed ones. */
 .gd-dialog {
 	width: min(520px, calc(100vw - 32px));
@@ -926,5 +1012,4 @@ kbd, .gd-menu-kbd {
 @media (prefers-reduced-motion: no-preference) {
 	button { transition: border-color 120ms ease; }
 	.gd-shield-hint { transition: opacity 120ms ease; }
-	.gd-artboard { transition: opacity 160ms ease; }
 }

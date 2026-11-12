@@ -230,7 +230,7 @@ export function freezeSessionProfileAtOwnStart(options: SessionProfileOptions): 
 	registry().ownStart.add(options.sessionId!);
 	const startup = readSessionProfileOwnStartup(options.sessionId);
 	const orchestrator = startup && startup !== "none" ? readProfileOrchestrator(startup.modelProfiles) : undefined;
-	if (orchestrator?.model) setFrozenDefaultOrchestrator(options.sessionId, orchestrator);
+	setFrozenDefaultOrchestrator(options.sessionId, orchestrator);
 }
 
 /**

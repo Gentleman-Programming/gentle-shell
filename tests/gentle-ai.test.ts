@@ -4406,6 +4406,23 @@ test("A3 a frozen profile without an orchestrator keeps the settings.json review
 	}
 });
 
+test("A3 a profile without an orchestrator clears a stale materialized reviewer fallback at own start", (t) => {
+	const { fixture, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeStore({ sol: { "review-risk": { model: "openai/sol-risk" } } }, "sol");
+	writeSettings({ defaultProvider: "openai", defaultModel: "current", defaultThinkingLevel: "low" });
+	writeFileSync(fixture.globalPath, JSON.stringify({ orchestrator: { model: "openai/stale", tier: "fast" } }));
+	const beforeModels = readFileSync(fixture.globalPath, "utf8");
+	const beforeSettings = readFileSync(settingsPath, "utf8");
+
+	freezeSessionProfileAtOwnStart({ sessionId: "stale-orchestrator-session", cwd: fixture.root, configHome: fixture.configHome });
+	const routing = __testing.readReviewerModelConfig(fixture.root, "stale-orchestrator-session");
+	const roles = ["review-refuter", "review-validator"];
+	const selections = roles.map((role) => __testing.reviewHostRelaySelection(role, routing));
+	assert.equal(readFileSync(fixture.globalPath, "utf8"), beforeModels);
+	assert.equal(readFileSync(settingsPath, "utf8"), beforeSettings);
+	assert.deepEqual(selections, roles.map((role) => ({ selection: "openai/current", thinking: "low", routingKey: role })));
+});
+
 test("A3 frozen orchestrator never fills an unconfigured lens model", (t) => {
 	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
 	resetFrozenInheritedProfilesForTesting();

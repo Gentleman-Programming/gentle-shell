@@ -498,3 +498,50 @@ test("the primary session keeps a policy-only orchestrator block the injected pr
 		await rm(root, { recursive: true, force: true });
 	}
 });
+
+// The duplicate check compares line sets, not a normalized substring: a short
+// block body that happens to occur inside a prompt line proves nothing about
+// the prompt already carrying the block's policy.
+test("ambiguous short prompt substring keeps user policy", () => {
+	const content = "<!-- gentle-ai:orchestrator -->\ndo not\n<!-- /gentle-ai:orchestrator -->\n";
+	const result = filterOrchestratorOnlyBlocks(content, { injectedPrompt: "Please do not delete things" });
+	assert.equal(result.content, content);
+	assert.deepEqual(result.removedBlockNames, []);
+});
+
+test("a multi-line block whose normalized lines all appear in the prompt is dropped in any order", () => {
+	const body = ["alpha rule", "beta rule", "", "gamma rule"].join("\n");
+	const input = `Intro\n\n${block("orchestrator", body)}\n\nOutro\n`;
+	const prompt = ["Header", "", "gamma rule", "alpha   rule", "", "beta rule", "", "Footer"].join("\n");
+	const result = filterOrchestratorOnlyBlocks(input, { injectedPrompt: prompt });
+	assert.equal(result.content, "Intro\n\nOutro\n");
+	assert.equal(result.removedBlocks, 1);
+	assert.deepEqual(result.removedBlockNames, ["orchestrator"]);
+});
+
+test("a multi-line block with one line the prompt lacks is kept", () => {
+	const body = ["alpha rule", "beta rule", "gamma rule"].join("\n");
+	const input = `Before\n\n${block("orchestrator", body)}\n\nAfter\n`;
+	const prompt = ["Header", "alpha rule", "beta rule", "a different gamma rule"].join("\n");
+	const result = filterOrchestratorOnlyBlocks(input, { injectedPrompt: prompt });
+	assert.equal(result.content, input, "one missing line means the block is not duplicated");
+	assert.equal(result.removedBlocks, 0);
+	assert.deepEqual(result.removedBlockNames, []);
+});
+
+// Intended boundary: the rule is line-based, not length-based, so a one-line
+// body the prompt carries as its own line is a duplicate.
+test("a one-line block the prompt carries as its own line is dropped", () => {
+	const input = `Before\n\n${block("orchestrator", "Keep it short.")}\n\nAfter\n`;
+	const result = filterOrchestratorOnlyBlocks(input, { injectedPrompt: "Header\nKeep it short.\nFooter" });
+	assert.equal(result.content, "Before\n\nAfter\n");
+	assert.deepEqual(result.removedBlockNames, ["orchestrator"]);
+});
+
+test("a block with no non-blank line is never treated as a duplicate", () => {
+	const input = `Before\n\n<!-- gentle-ai:orchestrator -->\n\n   \n<!-- /gentle-ai:orchestrator -->\n\nAfter\n`;
+	const result = filterOrchestratorOnlyBlocks(input, { injectedPrompt: "Before\n\nAfter" });
+	assert.equal(result.content, input);
+	assert.equal(result.removedBlocks, 0);
+	assert.deepEqual(result.removedBlockNames, []);
+});

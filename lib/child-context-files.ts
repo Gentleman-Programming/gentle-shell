@@ -33,11 +33,13 @@ export interface ManagedBlockFilterOptions {
 	// Also drop engram-protocol blocks (a nearer file keeps its own copy).
 	dropEngramProtocol?: boolean;
 	// Text of the prompt the session actually receives. When given, a listed
-	// block goes only if its normalized text is non-empty and contained in the
-	// normalized prompt (gentle-shell#3097); otherwise it is kept where it is.
-	// When absent, the block name alone decides, which is what a delegated
-	// child relies on (gentle-shell#1587). The engram-protocol deduplication
-	// above is not affected.
+	// block goes only if every one of its non-blank normalized lines appears
+	// among the normalized lines of this prompt (gentle-shell#3097, a line-set
+	// comparison rather than a substring, so a short body cannot match by
+	// accident); otherwise it is kept where it is. When absent, the block name
+	// alone decides, which is what a delegated child relies on
+	// (gentle-shell#1587). The engram-protocol deduplication above is not
+	// affected.
 	injectedPrompt?: string;
 }
 
@@ -125,10 +127,18 @@ function unchanged(content: string): ManagedBlockFilterResult {
 	return { content, removedBlocks: 0, failSafe: true, blockNames: [], removedBlockNames: [] };
 }
 
-// Collapse runs of whitespace to one space and trim, so a block and the prompt
-// can be compared regardless of line breaks, indentation, or wrapping.
-function normalizeBlockText(text: string): string {
-	return text.replace(/\s+/g, " ").trim();
+// Collapse runs of whitespace to one space and trim, so one block line and one
+// prompt line compare regardless of indentation or internal spacing.
+function normalizeLine(line: string): string {
+	return line.replace(/\s+/g, " ").trim();
+}
+
+// The non-blank normalized lines of a text. Both the block body and the
+// injected prompt go through this, so the duplicate check is a line-set
+// comparison: line order and whitespace do not matter, but a line the prompt
+// lacks keeps the block.
+function normalizedLines(text: string): string[] {
+	return splitLines(text).map(normalizeLine).filter((line) => line !== "");
 }
 
 // The text between a block's markers; the marker lines themselves are
@@ -142,7 +152,7 @@ function blockBody(lines: readonly Line[], instance: ManagedBlockInstance): stri
 
 export function filterOrchestratorOnlyBlocks(content: string, options?: ManagedBlockFilterOptions): ManagedBlockFilterResult {
 	const removed = removedNames(options);
-	const contentAware = typeof options?.injectedPrompt === "string" ? normalizeBlockText(options.injectedPrompt) : undefined;
+	const contentAware = typeof options?.injectedPrompt === "string" ? new Set(normalizedLines(options.injectedPrompt)) : undefined;
 	const lines: Line[] = [];
 	const instances: ManagedBlockInstance[] = [];
 	const stack: number[] = [];
@@ -196,8 +206,8 @@ export function filterOrchestratorOnlyBlocks(content: string, options?: ManagedB
 	const dropped = instances.map((instance) => {
 		if (!removed.has(instance.name)) return false;
 		if (contentAware === undefined || instance.name === ENGRAM_PROTOCOL_MANAGED_BLOCK) return true;
-		const body = normalizeBlockText(blockBody(lines, instance));
-		return body !== "" && contentAware.includes(body);
+		const bodyLines = normalizedLines(blockBody(lines, instance));
+		return bodyLines.length > 0 && bodyLines.every((line) => contentAware.has(line));
 	});
 	const removedBlockNames = instances.flatMap((instance, index) => (dropped[index] ? [instance.name] : []));
 	if (!sawMarker || removedBlockNames.length === 0) return { content, removedBlocks: 0, failSafe: false, blockNames, removedBlockNames: [] };

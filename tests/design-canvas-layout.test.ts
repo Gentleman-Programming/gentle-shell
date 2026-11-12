@@ -1106,3 +1106,16 @@ test("a design.json reload still shows the manifest's warnings and the no-artboa
 	assert.equal(status.textContent, "The layout of alpha could not be saved: disk full; design.json: feature was ignored");
 	assert.ok(status.classes.has("gd-error"));
 });
+
+test("a layout read that fails for another reason than an unreadable layout.json (an HTTP error, no connection) keeps the layout and says nothing", async () => {
+	const canvas = await loadLayout({ [LAYOUT_URL]: { layout: { arrangement: "column", positions: {} } } });
+	const status = canvas.document.getElementById("gd-status");
+	for (const reply of [{ __http: 500 }, { __http: 404 }, { __throw: "offline" }]) {
+		canvas.replies[LAYOUT_URL] = reply;
+		await canvas.serverEvent("change", { slug: "alpha", file: "design.json" });
+		await settle();
+		assert.deepEqual(pressedArrangements(canvas), ["false", "true", "false"], `the column stays (${JSON.stringify(reply)})`);
+		assert.deepEqual([status.textContent, status.classes.has("gd-error")], ["", false], `nothing in the status line (${JSON.stringify(reply)})`);
+	}
+	assert.deepEqual(canvas.posts, []);
+});

@@ -16,7 +16,8 @@ export function init(ctx, base) {
 		try { body = await response.json(); } catch { body = null; }
 		if (!response.ok) {
 			const reason = body && (body.reason || body.error);
-			throw new Error(reason ? String(reason) : `HTTP ${response.status}`);
+			// The status and the reply body ride along, so a caller can tell one error reply from another.
+			throw Object.assign(new Error(reason ? String(reason) : `HTTP ${response.status}`), { status: response.status, body });
 		}
 		return body;
 	}

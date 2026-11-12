@@ -81,7 +81,10 @@ export function init(ctx) {
 			const data = await getJson(`api/designs/${encodeURIComponent(slug)}/layout`);
 			return { layout: readLayout(data && data.layout), error: "" };
 		} catch (error) {
-			return { layout: undefined, error: (error && error.message) || "error" };
+			// Only a layout.json the server cannot read or use is news for the status line; an HTTP error or no
+			// connection says nothing about the file, and the layout shown stays without a word, as before.
+			const unreadable = Boolean(error && error.body && error.body.error === "unreadable-layout");
+			return { layout: undefined, error: unreadable ? error.message || "error" : null };
 		}
 	}
 
@@ -96,6 +99,8 @@ export function init(ctx) {
 
 	/** A read of design `slug`'s layout answered (`error` empty) or failed: its read error is kept, or cleared from the status line. */
 	function noteRead(slug, error, show) {
+		// null: the read failed for a reason that says nothing about layout.json (keep what the status line says).
+		if (error === null) return;
 		if (error) {
 			readError = { slug, text: TEXT.readFailed(slug, error) };
 			if (show) setStatus(readError.text, true);

@@ -151,7 +151,7 @@ import { createSessionProfileIntegration, hasPendingSessionProfileSelection, rea
 import { publishSessionProfileOutcome, readSessionProfileAuthority, requireSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import { isSessionProfileFamilyEntry, type SessionProfileStartupState } from "../lib/session-profile-persistence.ts";
 import type { SessionProfileAppendOutcome } from "../lib/session-profile-append-controller.ts";
-import { freezeSessionProfileAtOwnStart, profileFollowEnabled, readSessionProfileOwnStartup, resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles, sessionProfileRoutingAt, setFrozenDefaultOrchestrator } from "../lib/session-profile-freeze.ts";
+import { freezeSessionProfileAtOwnStart, profileFollowEnabled, readFrozenDefaultOrchestrator, readSessionProfileOwnStartup, resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles, sessionProfileRoutingAt, setFrozenDefaultOrchestrator } from "../lib/session-profile-freeze.ts";
 import {
 	applyOrchestratorSettings,
 	readOrchestratorSettings,
@@ -3143,13 +3143,16 @@ function readReviewerRouting(cwd: string, sessionId: string | undefined, session
 		: resolution.kind === "inherited" && resolution.profile !== undefined ? "frozen session profile"
 		: resolution.kind === "follow" ? "followed session profile"
 		: "repository profile pin";
-	// Only a profile chosen with Use in this session, or recorded as the session's
-	// startup profile, carries its orchestrator to the provider review roles; an
-	// in-memory freeze, pinned and global routing leave them on Pi's persisted
-	// default (gentle-shell#2716 A1, gentle-shell#2742 section 8).
+	// Provider review roles inherit the explicit binding's orchestrator, the
+	// startup record's, or the in-memory frozen profile's, before Pi's persisted
+	// default. Pins and global routing never supply this fallback; a session
+	// frozen without a profile has no orchestrator to carry to a foreign target.
 	if (resolution.kind !== "explicit") delete config.orchestrator;
-	const recorded = resolution.kind === "inherited" ? readSessionProfileBinding(sessionId)?.modelProfiles.orchestrator : undefined;
-	if (recorded !== undefined) config.orchestrator = { ...recorded };
+	const orchestrator = resolution.kind === "inherited"
+		? readSessionProfileBinding(sessionId)?.modelProfiles.orchestrator
+			?? (resolution.profile === undefined ? undefined : readFrozenDefaultOrchestrator(sessionId))
+		: undefined;
+	if (orchestrator !== undefined) config.orchestrator = { ...orchestrator };
 	return { config, source };
 }
 
@@ -9469,8 +9472,8 @@ function reviewHostRelayFailureReport(error: ReviewHostRelayError): Record<strin
 // gentle-pi#2271: review-refuter and review-validator are provider review
 // roles, not installable agents, so nothing seeds their entries and profiles
 // never carry them. For those two keys only, a snapshot with no model falls
-// back to Pi's persisted default model and effort, the default the routing
-// panel already labels them with. Lens keys keep the fail-closed rule.
+// back to the session profile's orchestrator, then Pi's persisted default model
+// and effort. Lens keys keep the fail-closed rule.
 //
 // gentle-shell#2163: a caller that knows where the snapshot came from passes
 // it, so the relay's refusal names the routing source and whether the entry

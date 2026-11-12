@@ -130,13 +130,17 @@ test("the visible area is an outlined rectangle that follows pan and zoom", asyn
 	assert.equal(miniView(canvas).getAttribute("aria-hidden"), null, "the rectangle lives inside the map, which carries the name");
 });
 
-test("the visible-area rectangle is clipped to the map when the view is away from the boards", async () => {
+test("the visible-area rectangle is clipped to the map when the view is away from the boards, and never shrinks to nothing", async () => {
 	const canvas = await minimapCanvas();
 	for (let i = 0; i < 40; i++) canvas.viewport.dispatch("keydown", { key: "ArrowRight", shiftKey: true });
 	const [left, top, width, height] = miniBox(miniView(canvas));
 	assert.ok(left >= 0 && top >= 0 && left + width <= 204.01 && top + height <= 96.01, "never outside the map");
-	assert.ok(left + width > 203.9 && width < 1, "pinned to the right edge, pointing to where the view went");
+	assert.ok(left + width > 203.9 && Math.abs(width - 4) < 0.05, "pinned to the right edge at 4 px, pointing to where the view went");
 	assert.ok(height > 60);
+	// Far up and to the left: pinned to the top left corner, 4 px each way.
+	for (let i = 0; i < 80; i++) canvas.viewport.dispatch("keydown", { key: "ArrowLeft", shiftKey: true });
+	for (let i = 0; i < 40; i++) canvas.viewport.dispatch("keydown", { key: "ArrowUp", shiftKey: true });
+	near(miniBox(miniView(canvas)), [0, 0, 4, 4]);
 });
 
 test("a pan or a wheel only moves the outline: it reads no board's layout and does not measure the viewport", async () => {
@@ -202,6 +206,37 @@ test("only the primary button pans the minimap, and another pointer's moves are 
 	mapPointer(canvas, "pointercancel", 400, 300);
 	mapPointer(canvas, "pointermove", 900, 500);
 	assert.equal(canvas.world.style.transform, after, "a cancelled drag ends too");
+});
+
+test("a second pointer pressed during a minimap drag is ignored, and losing the capture ends the drag", async () => {
+	const canvas = await minimapCanvas();
+	mapPointer(canvas, "pointerdown", 400, 300);
+	assert.equal(canvas.world.style.transform, "translate(100px, 50px) scale(1)");
+	mapPointer(canvas, "pointerdown", 900, 500, { pointerId: 8 });
+	assert.equal(canvas.world.style.transform, "translate(100px, 50px) scale(1)", "the second press does not move the view");
+	assert.deepEqual(miniMap(canvas).capturedPointers, [7], "nor takes the capture");
+	mapPointer(canvas, "pointermove", 900, 500, { pointerId: 8 });
+	assert.equal(canvas.world.style.transform, "translate(100px, 50px) scale(1)");
+	mapPointer(canvas, "pointermove", 600, 400);
+	assert.equal(canvas.world.style.transform, "translate(-100px, -50px) scale(1)", "the first pointer still drags");
+	mapPointer(canvas, "pointerup", 900, 500, { pointerId: 8 });
+	mapPointer(canvas, "pointermove", 500, 300);
+	assert.equal(canvas.world.style.transform, "translate(0px, 50px) scale(1)", "the second pointer's release does not end the first one's drag");
+	mapPointer(canvas, "lostpointercapture", 500, 300);
+	mapPointer(canvas, "pointermove", 600, 400);
+	assert.equal(canvas.world.style.transform, "translate(0px, 50px) scale(1)", "a lost capture ends the drag");
+});
+
+test("a minimap drag past the map's edges stops at them", async () => {
+	const canvas = await minimapCanvas();
+	mapPointer(canvas, "pointerdown", 400, 300);
+	// Far past the bottom right: the map's corner (204, 96) is world (1980, 900).
+	mapPointer(canvas, "pointermove", 9000, 4000);
+	assert.equal(canvas.world.style.transform, "translate(-1480px, -550px) scale(1)");
+	// Far past the top left: the map's corner (0, 0) is world (-60, -60).
+	mapPointer(canvas, "pointermove", -9000, -4000);
+	assert.equal(canvas.world.style.transform, "translate(560px, 410px) scale(1)");
+	mapPointer(canvas, "pointerup", -9000, -4000);
 });
 
 test("the minimap follows the view for every kind of pan, a resize and a change of boards", async () => {

@@ -65,3 +65,13 @@ test("an older design.json load that answers last never replaces the boards of a
 	await settle();
 	assert.deepEqual(texts(canvas.world, "gd-artboard-title"), ["First", "Second", "Third"], "the older load that answered last is dropped");
 });
+
+test("an artboard's label never widens the board: canvas.css contains its inline size", () => {
+	// The board is absolutely placed with no width, so it shrinks to fit its content; without containment a long
+	// title or tradeoff would make it wider than its frame, and the layout would place a box it never measured.
+	const css = read("canvas.css");
+	const start = css.indexOf("\n.gd-artboard-label {");
+	assert.ok(start >= 0, "the label is styled");
+	const rule = css.slice(start, css.indexOf("}", start) + 1);
+	assert.match(rule, /contain:\s*inline-size;/);
+});

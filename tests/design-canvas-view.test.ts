@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { click, loadCanvas, read, type CanvasFixture, type FakeElement } from "./support/design-canvas-dom.ts";
+import { click, loadCanvas, read, texts, type CanvasFixture, type FakeElement } from "./support/design-canvas-dom.ts";
 
 // The view transform: pan, zoom, Fit and refit (canvas-view.js).
 
@@ -263,4 +263,37 @@ test("a comment being written keeps its element and view when the panel toggles 
 	canvas.document.getElementById("gd-popover-cancel").dispatch("click");
 	canvas.windowEvent("resize");
 	assert.equal(canvas.zoomLevel.textContent, "19%");
+});
+
+test("a pick on another artboard clears the previous artboard's pick; a new pick on the same artboard does not", async () => {
+	const canvas = await loadCanvas();
+	const [first, second] = canvas.boards;
+	commentMode(canvas);
+	const pick = { type: "gd:pick", selector: "#cta", excerpt: "Buy now", rect: { x: 4, y: 8, width: 60, height: 20 } };
+	const clears = (board: typeof first) => board.frame.contentWindow!.posted.filter((message) => message.type === "gd:clear").length;
+	canvas.message(first.frame.contentWindow, pick);
+	canvas.message(first.frame.contentWindow, { ...pick, selector: "#title" });
+	assert.equal(clears(first), 0, "the same artboard replaces its own pick");
+	canvas.message(second.frame.contentWindow, pick);
+	assert.equal(clears(first), 1, "the first artboard's highlight is cleared");
+	assert.equal(clears(second), 0);
+	assert.equal(canvas.document.getElementById("gd-popover-target").textContent, "02-b.html · #cta");
+});
+
+test("a comment whose element reports a 0x0 rect (hidden or not rendered) gets no pin", async () => {
+	const comments = [
+		{ id: "hidden1", file: "01-a.html", selector: "#gone", excerpt: "", comment: "Hidden", status: "open", sentAt: null },
+		{ id: "shown01", file: "01-a.html", selector: "h1", excerpt: "First", comment: "Shown", status: "open", sentAt: null },
+	];
+	const canvas = await loadCanvas(300, { "/t/api/designs/alpha/comments": { comments } });
+	const board = canvas.boards[0];
+	canvas.message(board.frame.contentWindow, { type: "gd:pin-rects", rects: [
+		{ id: "hidden1", rect: { x: 0, y: 0, width: 0, height: 0 } },
+		{ id: "shown01", rect: { x: 10, y: 10, width: 30, height: 20 } },
+	] });
+	const pins = board.frame.parentElement!.children.find((child) => child.classes.has("gd-pins"))!;
+	assert.deepEqual(pins.children.map((pin) => pin.dataset.id), ["shown01"], "no pin at the artboard's corner for the hidden element");
+	const items = canvas.document.getElementById("gd-comment-list").children;
+	assert.equal(items.length, 2, "the hidden element's comment stays in the list");
+	assert.ok(items.every((item) => texts(item, "gd-badge-detached").length === 0), "a hidden element is not a detached comment");
 });

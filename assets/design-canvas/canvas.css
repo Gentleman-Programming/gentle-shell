@@ -201,11 +201,14 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport
 	outline-offset: calc(6px * var(--gd-inv-zoom, 1));
 }
 
+/* The board is placed with no width, so it shrinks to its content: the label never adds to that width
+   (a long title or tradeoff wraps), and the board stays as wide as its frame, the size the layout places. */
 .gd-artboard-label {
 	position: relative;
 	display: flex;
 	flex-direction: column;
 	gap: 2px;
+	contain: inline-size;
 }
 
 /* The handoff row above Implement this: anchored to the label's bottom right, kept at screen

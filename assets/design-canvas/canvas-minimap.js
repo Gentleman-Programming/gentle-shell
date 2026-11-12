@@ -3,8 +3,8 @@
 // the view there. M (a single key of the rail) shows or hides it.
 
 // The map box in CSS px (canvas.css gives .gd-minimap-map the same size), the pad kept
-// free around the blocks, and the smallest block drawn.
-const MINIMAP = Object.freeze({ width: 204, height: 96, pad: 6, minBlock: 2 });
+// free around the blocks, the smallest block drawn, and the smallest visible-area outline.
+const MINIMAP = Object.freeze({ width: 204, height: 96, pad: 6, minBlock: 2, minView: 4 });
 
 // Every string this module shows, in English until the i18n PR keys them.
 const TEXT = Object.freeze({
@@ -92,18 +92,27 @@ export function init(ctx) {
 		renderMinimapView();
 	}
 
+	/**
+	 * One side of the visible area in map px, clipped to [0, limit] and at least MINIMAP.minView long, so a view far
+	 * past an edge still shows as a sliver pinned there, pointing the way: [start, size].
+	 */
+	function viewSpan(start, end, limit) {
+		const clamp = (value) => Math.min(limit, Math.max(0, value));
+		const from = clamp(start);
+		const to = clamp(end);
+		const size = Math.max(MINIMAP.minView, to - from);
+		return [Math.min(limit - size, Math.max(0, (from + to - size) / 2)), size];
+	}
+
 	/** The visible area in world px, pinned inside the map so it still points the way when the view is far away. */
 	function renderMinimapView() {
 		if (!map || !viewport || els.minimap.hidden) return;
-		const clamp = (value, limit) => Math.min(limit, Math.max(0, value));
-		const left = clamp(map.x - (state.x / state.zoom) * map.scale, MINIMAP.width);
-		const top = clamp(map.y - (state.y / state.zoom) * map.scale, MINIMAP.height);
-		const right = clamp(map.x + ((viewport.width - state.x) / state.zoom) * map.scale, MINIMAP.width);
-		const bottom = clamp(map.y + ((viewport.height - state.y) / state.zoom) * map.scale, MINIMAP.height);
+		const [left, width] = viewSpan(map.x - (state.x / state.zoom) * map.scale, map.x + ((viewport.width - state.x) / state.zoom) * map.scale, MINIMAP.width);
+		const [top, height] = viewSpan(map.y - (state.y / state.zoom) * map.scale, map.y + ((viewport.height - state.y) / state.zoom) * map.scale, MINIMAP.height);
 		els.minimapView.style.left = rounded(left);
 		els.minimapView.style.top = rounded(top);
-		els.minimapView.style.width = rounded(right - left);
-		els.minimapView.style.height = rounded(bottom - top);
+		els.minimapView.style.width = rounded(width);
+		els.minimapView.style.height = rounded(height);
 	}
 
 	/** The viewport changed size (a window resize, the comments panel): measure it again for the outline. */
@@ -117,19 +126,22 @@ export function init(ctx) {
 		renderMinimap();
 	}
 
-	/** Centers the view on the world point under a pointer in the map; the zoom stays. */
+	/** Centers the view on the world point under a pointer in the map, kept to the map's edges while dragging; the zoom stays. */
 	function panToMinimap(event) {
 		if (!map || !viewport || map.scale <= 0) return;
 		const rect = els.minimapMap.getBoundingClientRect();
-		const worldX = (event.clientX - rect.left - map.x) / map.scale;
-		const worldY = (event.clientY - rect.top - map.y) / map.scale;
+		const x = Math.min(rect.width, Math.max(0, event.clientX - rect.left));
+		const y = Math.min(rect.height, Math.max(0, event.clientY - rect.top));
+		const worldX = (x - map.x) / map.scale;
+		const worldY = (y - map.y) / map.scale;
 		store.setView({ x: viewport.width / 2 - worldX * state.zoom, y: viewport.height / 2 - worldY * state.zoom, fitted: false });
 		actions.applyView();
 		actions.closePopover();
 	}
 
 	els.minimapMap.addEventListener("pointerdown", (event) => {
-		if (event.button !== 0) return;
+		// One drag at a time: another pointer pressed meanwhile is ignored.
+		if (event.button !== 0 || dragging !== null) return;
 		dragging = event.pointerId;
 		els.minimapMap.setPointerCapture(event.pointerId);
 		panToMinimap(event);
@@ -142,6 +154,8 @@ export function init(ctx) {
 	};
 	els.minimapMap.addEventListener("pointerup", endDrag);
 	els.minimapMap.addEventListener("pointercancel", endDrag);
+	// The browser took the capture away (a context menu, a lost window): the release may never come.
+	els.minimapMap.addEventListener("lostpointercapture", endDrag);
 
 	return { renderMinimap, renderMinimapView, measureMinimap, toggleMinimap };
 }

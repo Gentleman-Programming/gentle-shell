@@ -11,6 +11,8 @@ const isDenial = (value: unknown): value is Denial => typeof value === "object" 
 /** Reads answer in well under a second; only the native assessment is slow enough to exhaust a shared budget. */
 const READ_TIMEOUT_MS = 10_000;
 const ASSESS_TIMEOUT_MS = 120_000;
+/** `AbortSignal.timeout` overflows past this and fires after 1 ms, turning a budget into an instant denial. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
 const PREFLIGHT_TIMEOUT_ENV = "GENTLE_RDD_PREFLIGHT_TIMEOUT_MS";
 
 /**
@@ -21,7 +23,7 @@ const PREFLIGHT_TIMEOUT_ENV = "GENTLE_RDD_PREFLIGHT_TIMEOUT_MS";
 export function preflightTimeouts(env: Record<string, string | undefined>): { readMs: number; assessMs: number } {
 	const raw = env[PREFLIGHT_TIMEOUT_ENV]?.trim();
 	const override = raw !== undefined && /^\d+$/.test(raw) ? Number(raw) : 0;
-	return { readMs: READ_TIMEOUT_MS, assessMs: Number.isSafeInteger(override) && override > 0 ? override : ASSESS_TIMEOUT_MS };
+	return { readMs: READ_TIMEOUT_MS, assessMs: Number.isSafeInteger(override) && override > 0 ? Math.min(override, MAX_TIMER_MS) : ASSESS_TIMEOUT_MS };
 }
 
 /**
@@ -76,10 +78,15 @@ export async function checkReviewDeliveryPreflight(cwd: string, toolName: string
 	 * bound that is too short (gentle-pi#3200). The deadline also fires when a caller ignores its signal.
 	 */
 	const phase = async <T>(budgetMs: number, expired: () => Denial, call: (bound: AbortSignal) => Promise<T>): Promise<T | Denial> => {
+		if (signal?.aborted) return cancellation();
 		const bound = AbortSignal.any([AbortSignal.timeout(budgetMs), ...(signal ? [signal] : [])]);
 		const deadline = new Promise<Denial>(done => bound.addEventListener("abort", () => done(signal?.aborted ? cancellation() : expired()), { once: true }));
+		// An already-aborted composite never fires a later listener, so a call that ignores its signal
+		// would otherwise be unbounded here.
+		if (bound.aborted) return signal?.aborted ? cancellation() : expired();
 		const value = await Promise.race([call(bound), deadline]);
 		if (isDenial(value)) return value;
+		if (bound.aborted) return signal?.aborted ? cancellation() : expired();
 		return current() ? value : cancellation();
 	};
 	const read = <T>(call: (bound: AbortSignal) => Promise<T>) =>

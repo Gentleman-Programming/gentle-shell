@@ -4,7 +4,7 @@ import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { checkReviewDeliveryPreflight } from "../lib/review-delivery-preflight.ts";
@@ -527,4 +527,65 @@ test("#3066: POSIX delivery directories keep their existing resolution order", a
 	const { deliveryTarget } = await import("../lib/review-delivery-preflight.ts");
 	assert.equal(deliveryTarget("/home/ana/repo", "sub", "linux"), "/home/ana/repo/sub", "a relative directory resolves against the base");
 	assert.equal(deliveryTarget("/home/ana/repo", "/other", "linux"), "/other", "an absolute directory still wins over the base");
+});
+
+test("#3066: deliveryTarget keeps MSYS, drive-absolute and UNC forms distinct", async () => {
+	const { deliveryTarget } = await import("../lib/review-delivery-preflight.ts");
+	assert.equal(deliveryTarget("C:\\Users\\ana", "/C/Users/ana/repo", "win32"), "C:\\Users\\ana\\repo", "an uppercase drive form is normalized too");
+	assert.equal(deliveryTarget("C:\\Users\\ana", "C:/Users/ana/repo", "win32"), "C:\\Users\\ana\\repo", "a native drive path stays absolute");
+	assert.equal(deliveryTarget("C:\\Users\\ana", "\\\\srv\\share\\r", "win32"), "\\\\srv\\share\\r", "a UNC path ignores the base");
+	for (const directory of ["", ".", "sub", "/other"]) assert.equal(deliveryTarget("/home/ana/repo", directory, "linux"), resolve("/home/ana/repo", directory), `POSIX parity for ${JSON.stringify(directory)}`);
+});
+
+test("#3200: a due review denies with the optional targetStatus member absent instead of throwing", async t => {
+	const root = mkdtempSync(join(tmpdir(), "review-delivery-no-target-status-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "-c", "commit.gpgsign=false", ...args], { cwd: root, encoding: "utf8" }).trim();
+	git("init", "-q"); writeFileSync(join(root, "app.ts"), "base\n"); git("add", "."); git("commit", "-qm", "base");
+	const baseRef = git("rev-parse", "HEAD");
+	const result = await checkReviewDeliveryPreflight(root, "bash", "git push", {
+		reviewMode: async () => ({ status: { effective: "on" } }),
+		assess: async () => ({ candidate: { kind: "base-diff", baseRef }, reviewDue: true }),
+	} as unknown as NativeReviewCli, () => baseRef, () => false);
+	assert.equal(result?.block, true, "a due review denies even without targetStatus");
+	assert.match(result!.reason, /reports a due review/, "the due-review denial, not an unavailable preflight");
+});
+
+test("#3200: an assessment that outlives its budget cannot flip the denial it already earned", async t => {
+	const root = mkdtempSync(join(tmpdir(), "review-delivery-late-assess-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "-c", "commit.gpgsign=false", ...args], { cwd: root, encoding: "utf8" }).trim();
+	git("init", "-q"); writeFileSync(join(root, "app.ts"), "base\n"); git("add", "."); git("commit", "-qm", "base");
+	const baseRef = git("rev-parse", "HEAD");
+	const previous = process.env.GENTLE_RDD_PREFLIGHT_TIMEOUT_MS;
+	t.after(() => { if (previous === undefined) delete process.env.GENTLE_RDD_PREFLIGHT_TIMEOUT_MS; else process.env.GENTLE_RDD_PREFLIGHT_TIMEOUT_MS = previous; });
+	process.env.GENTLE_RDD_PREFLIGHT_TIMEOUT_MS = "120";
+	let lateResolved = false, lateRejected = false;
+	const unhandled: unknown[] = [];
+	const onUnhandled = (reason: unknown) => unhandled.push(reason);
+	process.on("unhandledRejection", onUnhandled);
+	t.after(() => process.off("unhandledRejection", onUnhandled));
+	const cli = { reviewMode: async () => ({ status: { effective: "on" } }),
+		assess: async () => { await new Promise(done => setTimeout(done, 400)); lateResolved = true; return { candidate: { kind: "base-diff", baseRef }, reviewDue: true }; } } as unknown as NativeReviewCli;
+	assert.match((await checkReviewDeliveryPreflight(root, "bash", "git push", cli, () => baseRef, () => false))!.reason, /native assessment did not answer within 120 ms/);
+	const rejecting = { ...cli, assess: async () => { await new Promise(done => setTimeout(done, 400)); lateRejected = true; throw new Error("late"); } } as unknown as NativeReviewCli;
+	assert.match((await checkReviewDeliveryPreflight(root, "bash", "git push", rejecting, () => baseRef, () => false))!.reason, /native assessment did not answer within 120 ms/);
+	await new Promise(done => setTimeout(done, 600));
+	assert.deepEqual({ lateResolved, lateRejected }, { lateResolved: true, lateRejected: true }, "the losing branch is not cancelled, but it must not change the verdict");
+	assert.deepEqual(unhandled, [], "a losing branch's late rejection is never unhandled");
+});
+
+test("#3200: an env budget past the timer range cannot collapse to an instant timeout", async () => {
+	const { preflightTimeouts } = await import("../lib/review-delivery-preflight.ts");
+	assert.ok(preflightTimeouts({ GENTLE_RDD_PREFLIGHT_TIMEOUT_MS: "2147483648" }).assessMs <= 2 ** 31 - 1,
+		"a budget beyond AbortSignal.timeout range falls back or is clamped, never becomes 1 ms");
+});
+
+test("#3200: the read phase names itself when it expires", { timeout: 15_000 }, async t => {
+	const root = mkdtempSync(join(tmpdir(), "review-delivery-read-timeout-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	execFileSync("git", ["init", "-q"], { cwd: root });
+	const result = await checkReviewDeliveryPreflight(root, "bash", "git push", { reviewMode: () => new Promise(() => {}) } as unknown as NativeReviewCli, () => "HEAD", () => false);
+	assert.match(result!.reason, /native review read did not answer within 10000 ms/);
+	assert.doesNotMatch(result!.reason, /bounded preflight was cancelled or timed out/);
 });

@@ -22,8 +22,9 @@ import { join, resolve, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createLocalBashOperations, keyHint, SettingsManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createJobRegistry, isStandaloneSleep, type JobExecOperations, type JobRecord } from "../lib/background-jobs.ts";
-import { JOB_GLYPH, JOB_NOTICE_TYPE, jobDetails, jobNoticeText, monitorEventsText, monitorStoppedText, registerBackgroundJobTools } from "../lib/background-jobs-tools.ts";
+import { JOB_GLYPH, JOB_NOTICE_TYPE, jobDetails, jobNoticeText, monitorEventsText, monitorStoppedText, registerBackgroundJobTools, type BackgroundJobsChange } from "../lib/background-jobs-tools.ts";
 import { createMonitorController, mergeMonitorBatches, type MonitorNotice } from "../lib/background-monitor.ts";
+import { DESKTOP_JOBS_SERVICE_CHANNEL, DESKTOP_JOBS_SERVICE_SCHEMA, projectDesktopJob, selectDesktopJobs, type DesktopJobsCancelOutcome, type DesktopJobsOwnerRead, type DesktopJobsService } from "../lib/desktop-rpc-jobs.ts";
 import { JobsView } from "../lib/jobs-view.ts";
 import { JOBS_FINISHED_TTL_MS } from "../lib/jobs-widget.ts";
 import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY } from "../lib/jobs-sidebar-state.ts";
@@ -1206,6 +1207,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	type JobNotice = { job: JobRecord; kind: "exit" } | MonitorNotice;
 	const jobNotices: JobNotice[] = [];
 	let jobOutputDir: string | undefined;
+	// Shutdown stops every job through stopAll and then refreshes once; that
+	// final refresh must not notify Desktop consumers (the channel is closing).
+	let shuttingDown = false;
 	const jobs = createJobRegistry({
 		outputDir: deps.jobOutputDir ?? (() => (jobOutputDir ??= mkdtempSync(join(os.tmpdir(), "gentle-jobs-")))),
 		now: deps.now,
@@ -1220,6 +1224,67 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		schedule: (fn, ms) => deps.schedule(fn, ms),
 		now: deps.now,
 		deliver: (notice) => queueJobNotice(notice),
+	});
+	// Desktop's jobs slice reaches the single parent registry and monitor
+	// controller only through this versioned, adapter-shaped seam — the jobs
+	// analogue of the usage/design owner services. The adapter never runs or
+	// stops a job itself: `cancel` is `job_stop`'s exact stop path
+	// (`monitors.cancel` then `registry.stop`), and `observe` is driven by the
+	// same actual registry changes below. There is no second registry, process
+	// manager, or store.
+	const desktopJobsObservers = new Set<(sessionId: string) => void>();
+	const notifyDesktopJobs = (sessionId: string): void => {
+		if (desktopJobsObservers.size === 0) return;
+		for (const observer of [...desktopJobsObservers]) {
+			try { observer(sessionId); } catch { /* an observer never breaks jobs */ }
+		}
+	};
+	pi.events.on(DESKTOP_JOBS_SERVICE_CHANNEL, (payload: unknown) => {
+		if (!payload || typeof payload !== "object") return;
+		const request = payload as Partial<{ context: ExtensionContext; respond(service: DesktopJobsService): void }>;
+		if (typeof request.respond !== "function" || !request.context) return;
+		const ctx = request.context;
+		try {
+			let disposed = false;
+			const subscriptions = new Set<(sessionId: string) => void>();
+			const sessionId = ctx.sessionManager?.getSessionId?.() ?? "";
+			const read = (): DesktopJobsOwnerRead => ({
+				sessionId,
+				jobs: disposed ? [] : selectDesktopJobs(jobs.list(sessionId), deps.now()),
+			});
+			const cancel = (id: string): DesktopJobsCancelOutcome => {
+				if (disposed) return { kind: "not_found" };
+				const job = jobs.get(id);
+				// The same ownership check job_stop performs: a foreign or unknown
+				// id is a typed not_found, never a stop of someone else's job.
+				if (!job || job.ownerSessionId !== sessionId) return { kind: "not_found" };
+				const wasRunning = job.status === "running";
+				monitors.cancel(job.id);
+				jobs.stop(job.id);
+				return { kind: "ok", job: projectDesktopJob(job), changed: wasRunning };
+			};
+			request.respond({
+				schema: DESKTOP_JOBS_SERVICE_SCHEMA,
+				read,
+				cancel,
+				observe: (onChange) => {
+					if (disposed) return () => {};
+					subscriptions.add(onChange);
+					desktopJobsObservers.add(onChange);
+					return () => {
+						subscriptions.delete(onChange);
+						desktopJobsObservers.delete(onChange);
+					};
+				},
+				dispose: () => {
+					disposed = true;
+					for (const onChange of subscriptions) desktopJobsObservers.delete(onChange);
+					subscriptions.clear();
+				},
+			});
+		} catch {
+			/* obsolete trusted context: discovery expires closed */
+		}
 	});
 	// A parent that sleeps while background work runs only burns the turn: each
 	// completion already arrives as a session message (#1903). bash_background
@@ -1671,6 +1736,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					...finished.map(({ id, label, startedAt, status, endedAt, exitCode }) => ({ id, label, startedAt, status, endedAt, exitCode })),
 				] } });
 			} catch { /* Display only. */ }
+			// Every actual registry change funnels through this refresh, including
+			// monitor self-timeout/flood stops (their `stopFor` delivers a notice
+			// here). Notify Desktop consumers; the bridge dedupes byte-identical
+			// lists so a stop that also flushes pending lines still emits once.
+			if (!shuttingDown) notifyDesktopJobs(sessionId);
 		}
 	};
 
@@ -1875,7 +1945,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		},
 	});
 
-	registerBackgroundJobTools(pi, { registry: jobs, monitors, sessionId: (ctx) => ctx.sessionManager.getSessionId() ?? "", now: deps.now, onChange: () => { refreshJobStatus(); requestRender(); } });
+	registerBackgroundJobTools(pi, { registry: jobs, monitors, sessionId: (ctx) => ctx.sessionManager.getSessionId() ?? "", now: deps.now, onChange: (change: BackgroundJobsChange) => { refreshJobStatus(); requestRender(); } });
 
 	pi.registerMessageRenderer(AGENTS_MESSAGE_TYPE, (message, options, theme) => {
 		const details = (message.details as { gentleAgents?: { taskId?: unknown; agent?: unknown } } | undefined)?.gentleAgents;
@@ -3231,6 +3301,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		publishActivityPrompt();
 	});
 	pi.on("session_start", async (event, ctx) => {
+		shuttingDown = false;
 		// gentle-shell#1064 slice 3b-ii: a parent session that has no explicit
 		// profile binding freezes `p → P → G` now. This handler is parent-only (a
 		// child returns before registering it) and runs for every reason Pi
@@ -3310,6 +3381,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.on("agent_start", (_event, ctx) => rearmSessionTransport(ctx));
 	pi.on("turn_end", (_event, ctx) => rearmSessionTransport(ctx));
 	pi.on("session_shutdown", async () => {
+		shuttingDown = true;
 		completions.dropAll();
 		messages.dropAll();
 		// No stale busy may survive the runtime.

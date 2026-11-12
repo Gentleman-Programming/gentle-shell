@@ -62,12 +62,12 @@ Returns the currently implemented contract; clients must not infer support from 
   "schema": "gentle-shell.desktop-rpc/v1",
   "command": "gentle:desktop",
   "widget": "gentle-desktop-rpc",
-  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas"],
-  "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas"]
+  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job"],
+  "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update"]
 }
 ```
 
-The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, and the `config_changed`, `permission_mode_changed`, `rate_limit`, and `design_canvas` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), and [Design limits](#design-limits).
+The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list and cancel, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, and `jobs_update` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list and cancel methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), and [Jobs limits](#jobs-limits).
 
 ### `get_snapshot`
 
@@ -684,6 +684,74 @@ When the design owner is absent (the extension that owns the canvas is not loade
 
 A request with `includeUrl: true` from a host that is not an interactive RPC host simply gets the same state **without** `url`; the capability is omitted, not rejected. There is no `open`/`stop` method on this channel — those stay the `gentle_design` tool's actions, and this slice only observes their results.
 
+### `list_jobs`
+
+Reads the live background jobs the existing jobs owner already owns (the single parent-session `JobRegistry`), projected into the safe wire shape. Params must be an empty object.
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-58", "method": "list_jobs", "params": {} }
+```
+
+Only an empty params object is accepted; any other key is rejected as `invalid_request`. A read has no side effect: it never starts, stops, or polls a job, and never emits an event.
+
+Success:
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-58",
+  "ok": true,
+  "data": {
+    "jobs": [
+      { "id": "job-1", "label": "CI for PR 42", "status": "running", "startedAt": 1788600000000 },
+      { "id": "job-2", "label": "Deploy staging", "status": "exited", "startedAt": 1788599000000, "endedAt": 1788599500000, "exitCode": 0 }
+    ]
+  }
+}
+```
+
+Each entry carries only the whitelisted fields of the owner's `JobRecord`:
+
+| Field | Meaning |
+| --- | --- |
+| `id` | The owner's opaque job identifier. |
+| `label` | The human label the job was started with (the command text when none was given). |
+| `status` | One of `running`, `exited`, `stopped`, or `failed`. |
+| `startedAt` | When the job started, in milliseconds. |
+| `endedAt` | When a non-running job ended, present only after it ends. |
+| `exitCode` | The job's own exit code, present only when the owner recorded one (`null` for an exit without a code). |
+
+No command text, working directory, output path or tail, environment, owner session id, monitor counters, or error string ever crosses the wire. The list is bounded: running jobs first (newest start first), then recently-finished jobs (newest end first) within a 60-second linger, capped at 50 entries, so the answer can never grow with the process lifetime. When the jobs owner is absent (the owning extension is not loaded), the answer is `jobs_unavailable` — never a fabricated empty list.
+
+### `cancel_job`
+
+Stops one running background job through the same owner stop path as `job_stop`: the monitor controller's `cancel` (dropping its timers and pending lines) followed by the registry's `stop` (aborting the process tree). Params are exactly `{ id }`.
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-59", "method": "cancel_job", "params": { "id": "job-1" } }
+```
+
+| Param | Required | Type | Meaning |
+| --- | --- | --- | --- |
+| `id` | yes | non-empty string | The job to stop, as reported by `list_jobs`. |
+
+Only the `id` key is accepted; any other key, a non-string or empty `id`, or a request shaped like `job_stop`'s `job_id` is `invalid_request`. The id is resolved against the active owner session, exactly like `job_stop`'s ownership check: an unknown id or a job owned by another session is a typed `not_found`, never a stop of someone else's job.
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-59",
+  "ok": true,
+  "data": {
+    "job": { "id": "job-1", "label": "CI for PR 42", "status": "stopped", "startedAt": 1788600000000, "endedAt": 1788601000000 }
+  }
+}
+```
+
+The response is the **actual post-action state**, re-read from the owner — never an echo of the request. A job that was already terminal (an `exited`, `stopped`, or `failed` job) answers that terminal state with `status` unchanged and no `changed` marker, and emits no event; there is no race-driven error for a job that finished just before the cancel. The response line always precedes its `jobs_update` event.
+
 ## Responses
 
 Success:
@@ -713,7 +781,7 @@ Failure:
 }
 ```
 
-Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invalid_data`, `revision_conflict`, `write_failed`, `unsupported_method`, `permission_unavailable`, `permission_denied`, `config_unavailable`, `usage_unavailable`, `design_unavailable`, and `internal_error`. A request that cannot supply a valid correlation ID uses `requestId: null`. State/provider failures use the generic `internal_error` message rather than exposing raw paths, credentials, or provider errors. Transport failures from `setWidget` are never retried as a second response.
+Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invalid_data`, `revision_conflict`, `write_failed`, `unsupported_method`, `permission_unavailable`, `permission_denied`, `config_unavailable`, `usage_unavailable`, `design_unavailable`, `jobs_unavailable`, `not_found`, and `internal_error`. A request that cannot supply a valid correlation ID uses `requestId: null`. State/provider failures use the generic `internal_error` message rather than exposing raw paths, credentials, or provider errors. Transport failures from `setWidget` are never retried as a second response.
 
 | Code | Meaning |
 | --- | --- |
@@ -729,6 +797,8 @@ Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invali
 | `config_unavailable` | No Desktop command has bound a session context, that context has no working directory, or a pin write was requested outside a resolvable Git worktree. |
 | `usage_unavailable` | The usage owner did not answer for this session (extension not loaded, or the session changed). State unchanged. |
 | `design_unavailable` | The design canvas owner did not answer for this session (the owning extension is not loaded, or the session changed). State unchanged. |
+| `jobs_unavailable` | The background-jobs owner did not answer for this session (the owning extension is not loaded, or the session changed). State unchanged. |
+| `not_found` | `cancel_job` named a job id that does not exist or belongs to another session. Nothing was stopped. |
 | `internal_error` | Unexpected failure; message stays generic. |
 
 ## Events
@@ -856,6 +926,26 @@ Carries the sanitized post-transition state of the session's design canvas whene
 | `running`, `slug`, `connectedClients` | The sanitized post-transition state, exactly as `get_design_canvas` reports it. A `stop` transition carries `running: false`, `slug: null`, `connectedClients: 0`. |
 | `url` | Present only for a trusted interactive Desktop client (the same trust gate as `get_design_canvas` `includeUrl`). Sanitized by default — the URL and its embedded token are never a default event field and never a bare token. A `stop` transition has no URL. |
 
+### `jobs_update`
+
+Carries the active session's projected background-job list whenever the existing jobs owner's registry actually changes — a job starting (`bash_background`/`monitor`), settling (exit or failure), being stopped (`job_stop` or a Desktop `cancel_job`), or a monitor stopping itself on its timeout or flood limit. It is emitted for **all** such changes, not only Desktop-initiated ones, so a connected app can live-update its job list.
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "event",
+  "seq": 2,
+  "event": "jobs_update",
+  "data": {
+    "jobs": [
+      { "id": "job-1", "label": "CI for PR 42", "status": "stopped", "startedAt": 1788600000000, "endedAt": 1788601000000 }
+    ]
+  }
+}
+```
+
+`jobs` is the same whitelisted, bounded projection as `list_jobs` (`id`, `label`, `status`, `startedAt`, `endedAt?`, `exitCode?`), so a client that missed a response can reconcile from the event alone. The event is filtered to the active owner session; a foreign-session change emits nothing to this bridge. A no-op or failed cancellation emits nothing: an already-terminal `cancel_job` (or `job_stop` on a job that already ended) changes nothing, so no event follows. When a changed `cancel_job` triggers the event, its response line always precedes the event line through the same router sequencer.
+
 ## Configuration limits
 
 - **One reader and one writer per store.** Each `get_config` answer and each `set_config` write comes from the module that already owns that file (`agent-profiles.ts`, `model-routing-authority.ts`, `model-fallback-store.ts`, `agents-config.ts`, `agent-profile-pin.ts`, `agent-assets.ts`). There is no second store, no cached copy, no parallel parser, no shadow precedence, and no re-implemented invariant: the merge rules are the owner's own (`readSavedModelConfig`, `parseAgentsConfig`, `evaluateProfilePin`) and the writes are the owner's validated atomic writers (`writeProfilesFileSync`, `writeFallbacksFile`, `writeProfilePinSync`).
@@ -866,14 +956,14 @@ Carries the sanitized post-transition state of the session's design canvas whene
 - **No paths, no secrets.** Physical paths are rejected as request input and never appear in a response, an event, or an error message. Content is limited to what these stores hold: profile names, routing entries, fallback chains, pin names, layer statuses, and asset ownership keys and hashes. `managed_assets` is additionally filtered to ownership-shaped entries — a relative asset path below the agent home plus a 64-hex sha256 digest — so an absolute path, a traversal segment, or an arbitrary string in the manifest is omitted rather than echoed. No credential, token, auth file, provider error, or conversation content is read or returned.
 - **Truthful normalization.** Content is what the owner's normalizer produced. Entries an owner drops (an unsafe agent key, an unknown thinking level, a stale `active` marker) are absent from `value`; if everything was dropped, the store reads `ok` with an empty map rather than being reported as `invalid`. A file the owner cannot parse at all reads `invalid`. A **write** may not rely on that leniency: data the normalizer would drop is rejected as `invalid_data`, so a Desktop write can never delete content it does not understand.
 - **No watcher.** Nothing is pushed except this slice's own `config_changed`. A change made by another `pi` process, by `/gentle:profiles`, or by the installer becomes visible on the next read and produces no event.
-- **This slice does not implement** permission changes beyond the existing slice, subscription usage beyond the read/refresh contract below, agents, jobs, music, profile application, store materialization, or any Gentle Desktop client change.
+- **This slice does not implement** permission changes beyond the existing slice, subscription usage beyond the read/refresh contract below, agents, music, profile application, store materialization, or any Gentle Desktop client change.
 
 ## Permission limits
 
 - The methods delegate to the Gentle AI extension's permission owner in the same Pi process. When that extension is not loaded, both methods answer `permission_unavailable` instead of guessing state.
 - Session changes require the owner's interactive-host admission: the TUI, or an RPC process with `GENTLE_SHELL_INTERACTIVE_HOST=1`. Headless RPC children and subagent children stay closed exactly as before.
 - Permission control is never an agent-callable tool; only `/gentle:desktop` over the interactive RPC channel reaches it.
-- This slice adds no filesystem watcher and no second store. Config is limited to the `get_config` and `set_config` contract in [Configuration limits](#configuration-limits); subscription usage is limited to the `get_subscription_usage` and `refresh_subscription_usage` contract in [Usage limits](#usage-limits); agents, jobs, music, and any Desktop client change are not implemented.
+- This slice adds no filesystem watcher and no second store. Config is limited to the `get_config` and `set_config` contract in [Configuration limits](#configuration-limits); subscription usage is limited to the `get_subscription_usage` and `refresh_subscription_usage` contract in [Usage limits](#usage-limits); background jobs are limited to the `list_jobs` and `cancel_job` contract in [Jobs limits](#jobs-limits); agents, music, and any Desktop client change are not implemented.
 - Requests are not queued. Pi's own RPC loop dispatches prompts concurrently, so overlapping `set_permission_mode` calls reach the owner in whatever order their own reads finish, and one can apply right after the other. What stays guaranteed: every request gets exactly one correlated response, responses never cross, and each response and its optional event are published as an adjacent pair with a monotonic `seq`. Send permission requests one at a time and correlate with `requestId`; the maintainer probe does exactly that.
 
 ### Trust boundary
@@ -901,6 +991,16 @@ Carries the sanitized post-transition state of the session's design canvas whene
 - **Agent work reaches the app.** The bridge subscribes to the owner eagerly at session start, so a canvas opened or stopped by the agent (or by any other path through the owner) still arrives as a `design_canvas` event. Session replacement or shutdown disconnects the observer and drops late outcomes, and the router's own publisher guard drops superseded events.
 - **Truthful absence.** When the owning extension is not loaded, `get_design_canvas` answers `design_unavailable` rather than inventing `running: false`. `slug: null` means the system-only root, not a stopped canvas — `running` answers that.
 
+## Jobs limits
+
+- **One owner, no second registry or process manager.** `list_jobs`, `cancel_job`, and the `jobs_update` event reach the existing jobs owner — the single parent-session `JobRegistry` plus the parent `MonitorController` — through a defensive, versioned owner-service adapter, the jobs analogue of the usage and design seams. There is no second registry, no second process manager, no subagent cancellation, and no cached copy.
+- **List + cancel only.** This slice has exactly two methods, `list_jobs` and `cancel_job`, and one event, `jobs_update`. It does not start jobs: `bash_background` and `monitor` stay agent tools, and there is no run/start method on this channel. `cancel_job` is `job_stop`'s exact stop path — the monitor controller's `cancel` (dropping timers and pending lines) followed by the registry's `stop` (aborting the process tree) — not a second stop implementation.
+- **Safe projection only.** The wire carries exactly `id`, `label`, `status`, `startedAt`, `endedAt?`, and `exitCode?`. No command text, working directory, output path or tail, environment, owner session id, monitor counters, or error string is ever returned or logged. A foreign field on an owner entry is dropped by the projection, never echoed.
+- **Bounded list.** `list_jobs` returns running jobs first (newest start first), then recently-finished jobs (newest end first) within a 60-second linger, capped at 50 entries. Finished jobs older than the linger drop out, so the answer can never grow with the process lifetime.
+- **No-op and failure mean no event.** A `cancel_job` on an already-terminal job answers that terminal state with no event, and a `cancel_job` on an unknown or foreign id answers `not_found` with no event. A `job_stop` that finds the job already terminal likewise changes nothing and emits nothing. Only an actual registry change (start, settle, or a running→stopped transition) emits `jobs_update`.
+- **Agent work reaches the app.** The bridge subscribes to the owner eagerly at session start, so a job started or stopped by the agent (or any other path through the owner) still arrives as a `jobs_update` event. Every actual registry change funnels through the owner's single `refreshJobStatus` path, including a monitor's self-timeout/flood stop, so no stop path can bypass the notification. The bridge dedupes byte-identical projected lists, so a stop that also flushes pending lines still emits exactly once. Session replacement or shutdown disconnects the observer and drops late outcomes, and the router's own publisher guard drops superseded events. A changed `cancel_job`'s response always precedes its event.
+- **Truthful absence.** When the owning extension is not loaded, `list_jobs` and `cancel_job` answer `jobs_unavailable` rather than inventing an empty list or a fake stop. A job that exists but belongs to another session is indistinguishable from an unknown id at this boundary: both answer `not_found`.
+
 ## Verification
 
 ```sh
@@ -910,6 +1010,7 @@ node --experimental-strip-types --test \
   tests/desktop-rpc-config.test.ts \
   tests/desktop-rpc-usage.test.ts \
   tests/desktop-rpc-design.test.ts \
+  tests/desktop-rpc-jobs.test.ts \
   tests/maintainer/desktop-rpc.maintest.ts
 ```
 
@@ -919,15 +1020,18 @@ The design tests use only injected fake canvas/server/browser factories and a fa
 
 The usage tests use a fake owner service and a fake fetch/modelRegistry only: they cover the five statuses, the safe projection and plan-only-when-public rule, provider filters, unknown-provider `unavailable`, invalid params, refresh delegation with the provider filter forwarded, the response-before-event order over the router, the Anthropic typed `unsupported` no-op, the out-of-scope `out_of_scope` no-op (including the real owner never reaching the fetcher), content-based change detection (a same-millisecond payload change emits once, byte-equivalent data stays a no-op), late-discovery disposal after a reset, no duplicate event on no-op/failed refresh, raw-error and secret redaction, header-driven `rate_limit` events, stale-session disconnects, and the versioned adapter discovery. One test runs the real `gentleShell` owner seam to prove Claude's 5h/7d windows arrive as structured snapshots from response headers, never header text.
 
+The jobs tests use the existing background-job fake (the same fake shell operations and monitor controller as the background-jobs tests) and a fake owner service only: they cover the whitelisted projection and field redaction, the bounded running + recent-finished selection, list/cancel param shapes, the active-session filter, owner absence (`jobs_unavailable`, never a fabricated empty list), the `job_stop` stop path (monitor cancel + registry stop), already-terminal idempotency with no event, unknown and foreign-session `not_found`, invalid params rejected before discovery, agent-driven `jobs_update` events with foreign-session filtering, the response-before-event order over the router, session reset disconnecting observers and dropping late outcomes, late-discovery disposal, and the versioned adapter discovery. They also drive the real `job_stop` tool to prove the change descriptor distinguishes a running→stopped stop from a no-op stop.
+
 The config tests build six stores in a temporary root and inject the worktree identity, so no real user config, agent home, or repository pin is read. On the read side they cover every store, current path precedence, missing and malformed layers, revision stability and change, the read-only split, rejected stores/params/paths, the bounded snapshot projection, and a byte-and-mtime comparison proving a read never mutates a store. On the write side they cover a valid write for each writable store and both pin layers, clearing either pin layer and observing the winner fall back, clearing an already-missing layer as a no-op, clearing and replacing an unreadable layer, creating a missing store, a stale or missing `expectedRevision` (including on a clear), the documented rejection order (envelope, then store identity, then mutability, then revision, then payload), data the owner would drop, malformed pin clear shapes, extra and physical-path keys, every read-only store, a forced owner write failure (the store path is a directory) answering `write_failed` with no path, OS code, or event and an unchanged tree, the no-op path with untouched bytes and mtime, the resulting disk bytes, revision movement and its invalid-state coarseness, the response-then-event order over the real transport, and that a stopped session neither answers nor writes. They also re-check that the config dispatcher still falls through to the permission bridge.
 
 The maintainer probes run the installed Pi runtime with isolated HOME, agent home, config home, session, and temporary directories and no provider or network. They cover:
 
-1. transport only — this extension alone proves slash-command dispatch, correlation, and that capabilities advertise the permission and config domains;
+1. transport only — this extension alone proves slash-command dispatch, correlation, and that capabilities advertise the permission, config, usage, design, and jobs domains;
 2. config reads — the same isolated runtime reads pre-seeded `profiles.json` and project `models.json` through `get_config`, checks the bounded `get_snapshot` projection, and proves no event is emitted and no store is created or rewritten;
 3. config write — the same isolated runtime reads the `profiles` write target, sends a `set_config` with that `expectedRevision`, observes the response plus one ordered `config_changed`, reads the store back with a moved revision, asserts the on-disk bytes are exactly the owner's serialization, and proves no other store was created and `get_messages` stayed empty;
 4. live owner — the real `extensions/gentle-ai.ts` owner extension is loaded alongside this extension, and the probe reads the mode, sets `auto` with `persist: false`, observes the response plus one `permission_mode_changed` event, and reads `auto` again in the same process without a restart, while `get_messages` stays empty and no default file is written. Nothing in the probe reimplements the owner;
 5. usage owner — the real `extensions/gentle-shell.ts` usage owner is loaded alongside this extension, and the probe reads `get_subscription_usage` for `anthropic` and `openai-codex` and observes truthful offline `pending` answers with no event and no live provider fetch. It never calls `refresh_subscription_usage` against a live provider;
-6. design owner — the real `extensions/gentle-design.ts` design owner is loaded alongside this extension, and the probe reads `get_design_canvas` (with and without `includeUrl`) and observes the truthful owner-loaded stopped state (`running: false`, `slug: null`, `connectedClients: 0`, `designs: []`) with no event and no tokenized URL. It never starts a canvas server or opens a browser.
+6. design owner — the real `extensions/gentle-design.ts` design owner is loaded alongside this extension, and the probe reads `get_design_canvas` (with and without `includeUrl`) and observes the truthful owner-loaded stopped state (`running: false`, `slug: null`, `connectedClients: 0`, `designs: []`) with no event and no tokenized URL. It never starts a canvas server or opens a browser;
+7. jobs owner — the real `extensions/gentle-agents.ts` jobs owner is loaded alongside this extension, and the probe reads `list_jobs` and observes the truthful owner-loaded empty list (`jobs: []`) with no event and no command or output path on the wire. It never starts a job.
 
-What this does not prove: a live Desktop conversation approving the request. The probe writes RPC stdin itself, so it demonstrates that the production owner accepts the change and reports it truthfully, not that a person consented. It also does not cover `persist: true` end to end; persistence is covered by the owner and focused unit tests. Nothing in this slice proves a cross-process guarantee either: the probes use one process, which is exactly the scope `expectedRevision` provides. The design probe does not prove a live browser canvas: it only proves the owner-loaded stopped state without starting a server, while open/refresh/stop transitions and URL trust are covered by the injected-canvas unit tests.
+What this does not prove: a live Desktop conversation approving the request. The probe writes RPC stdin itself, so it demonstrates that the production owner accepts the change and reports it truthfully, not that a person consented. It also does not cover `persist: true` end to end; persistence is covered by the owner and focused unit tests. Nothing in this slice proves a cross-process guarantee either: the probes use one process, which is exactly the scope `expectedRevision` provides. The design probe does not prove a live browser canvas: it only proves the owner-loaded stopped state without starting a server, while open/refresh/stop transitions and URL trust are covered by the injected-canvas unit tests. The jobs probe does not prove a live job or a live `cancel_job` kill: it only proves the owner-loaded empty list without starting a job, while the stop path, terminal idempotency, and events are covered by the fake-registry unit tests.

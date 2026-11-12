@@ -14,6 +14,7 @@ const desktopExtension = resolve(packageRoot, "extensions/gentle-desktop-rpc.ts"
 const ownerExtension = resolve(packageRoot, "extensions/gentle-ai.ts");
 const usageOwnerExtension = resolve(packageRoot, "extensions/gentle-shell.ts");
 const designOwnerExtension = resolve(packageRoot, "extensions/gentle-design.ts");
+const jobsOwnerExtension = resolve(packageRoot, "extensions/gentle-agents.ts");
 const WAIT_TIMEOUT_MS = 20_000;
 
 /** Isolated filesystem, no provider, no network, no inherited user configuration. */
@@ -179,8 +180,8 @@ test("installed Pi dispatches Desktop RPC without adding conversation messages",
 		assert.equal(response.kind, "response");
 		assert.equal(response.requestId, "real-1");
 		assert.equal(response.ok, true);
-		assert.deepEqual(response.data.methods, ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas"]);
-		assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas"]);
+		assert.deepEqual(response.data.methods, ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job"]);
+		assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update"]);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -362,6 +363,48 @@ test("installed Pi serves the owner-loaded stopped design canvas without startin
 
 		assert.equal(payloads.some((payload) => payload.kind === "event"), false, "an offline read emits nothing");
 		assert.equal(JSON.stringify(payloads).includes("/tok/"), false, "no tokenized URL leaks into the wire");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+/**
+ * Real production wiring for the jobs slice: the installed runtime loads the
+ * actual jobs owner (`extensions/gentle-agents.ts`, which owns the single
+ * parent-session `JobRegistry` plus the parent `MonitorController`) alongside
+ * this transport extension. `list_jobs` is a read, so the probe stays offline
+ * and observes the truthful owner-loaded empty list — it never starts a job.
+ */
+test("installed Pi serves the owner-loaded empty job list without starting a job", () => {
+	const root = isolatedRoot("desktop-rpc-jobs-");
+	try {
+		const input = [
+			prompt("prompt-list", desktopRequest("jobs-1", "list_jobs")),
+		].map((value) => JSON.stringify(value)).join("\n") + "\n";
+		const child = spawnSync(process.execPath, probeArgs(root, [jobsOwnerExtension, desktopExtension]), {
+			cwd: join(root, "workspace"),
+			env: probeEnvironment(root),
+			input,
+			encoding: "utf8",
+			timeout: 20000,
+		});
+
+		assert.ifError(child.error);
+		assert.equal(child.status, 0, child.stderr);
+		assert.equal(child.stderr, "");
+		const records = child.stdout.trim().split("\n").map((line) => JSON.parse(line));
+		const payloads = records
+			.filter((record) => record.type === "extension_ui_request" && record.widgetKey === DESKTOP_RPC_WIDGET)
+			.map((record) => JSON.parse(record.widgetLines[0]));
+		const byRequest = (id: string) => payloads.find((payload) => payload.requestId === id && payload.kind === "response");
+
+		const list = byRequest("jobs-1");
+		assert.equal(list.ok, true, JSON.stringify(list));
+		assert.deepEqual(list.data, { jobs: [] }, "no jobs exist, so the list is empty rather than fabricated");
+
+		assert.equal(payloads.some((payload) => payload.kind === "event"), false, "an offline list emits nothing");
+		assert.equal(JSON.stringify(payloads).includes("command"), false, "no command text leaks into the wire");
+		assert.equal(JSON.stringify(payloads).includes("outputPath"), false, "no output path leaks into the wire");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

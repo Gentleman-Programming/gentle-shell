@@ -24,6 +24,11 @@ const quoted = (job: JobRecord) => `${job.id} ("${job.label}")`;
 const noun = (job: JobRecord) => (job.kind === "monitor" ? "Monitor" : "Background job");
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
+/** What changed on the registry, so a listener can ignore a no-op stop. */
+export type BackgroundJobsChange =
+	| { kind: "start"; job: JobRecord }
+	| { kind: "stop"; job: JobRecord; changed: boolean };
+
 /** One-line outcome, shared by the notice, the list, and the jobs view. */
 export function jobOutcome(job: JobRecord): string {
 	if (job.status === "running") return "running";
@@ -79,7 +84,7 @@ export interface BackgroundJobToolsOptions {
 	sessionId(ctx: ExtensionContext): string;
 	now(): number;
 	/** Called after a job starts or stops, so views can refresh. */
-	onChange?(): void;
+	onChange?(change: BackgroundJobsChange): void;
 	/** Starts and stops monitors; without it the monitor tool is not offered. */
 	monitors?: MonitorController;
 }
@@ -113,7 +118,7 @@ export function registerBackgroundJobTools(pi: ExtensionAPI, options: Background
 			const input = params as { command?: unknown; label?: unknown };
 			if (typeof input.command !== "string" || !input.command.trim()) throw new Error("bash_background requires a non-empty command");
 			const job = registry.start({ command: input.command, cwd: ctx.cwd, ownerSessionId: options.sessionId(ctx), label: typeof input.label === "string" ? input.label : undefined });
-			options.onChange?.();
+			options.onChange?.({ kind: "start", job });
 			return text(
 				`Started background job ${quoted(job)}.\nOutput: ${job.outputPath}\nYou will be notified once when it exits; keep working or end your turn. Stop it with job_stop.`,
 				jobDetails(job),
@@ -146,7 +151,7 @@ export function registerBackgroundJobTools(pi: ExtensionAPI, options: Background
 			if (typeof input.command !== "string" || !input.command.trim()) throw new Error("monitor requires a non-empty command");
 			const timeoutSeconds = typeof input.timeout_seconds === "number" ? input.timeout_seconds : Number.NaN;
 			const job = monitors.start({ command: input.command, cwd: ctx.cwd, ownerSessionId: options.sessionId(ctx), label: typeof input.label === "string" ? input.label : undefined, timeoutSeconds });
-			options.onChange?.();
+			options.onChange?.({ kind: "start", job });
 			return text(
 				`Started monitor ${quoted(job)} for up to ${timeoutSeconds}s.\nOutput: ${job.outputPath}\nEach new output line reaches you as an event; keep working or end your turn. Stop it with job_stop.`,
 				jobDetails(job),
@@ -166,7 +171,7 @@ export function registerBackgroundJobTools(pi: ExtensionAPI, options: Background
 			const wasRunning = job.status === "running";
 			options.monitors?.cancel(job.id);
 			registry.stop(job.id);
-			options.onChange?.();
+			options.onChange?.({ kind: "stop", job, changed: wasRunning });
 			return text(wasRunning ? `Stopped ${quoted(job)}.` : `${quoted(job)} was already ${jobOutcome(job)}.`, jobDetails(job));
 		},
 	});

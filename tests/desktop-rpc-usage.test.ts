@@ -661,8 +661,10 @@ test("the Desktop transport advertises the usage methods and rate_limit event", 
 		"get_subscription_usage",
 		"refresh_subscription_usage",
 		"get_design_canvas",
+		"list_jobs",
+		"cancel_job",
 	]);
-	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas"]);
+	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update"]);
 });
 
 test("get_subscription_usage answers usage_unavailable through the transport without an owner extension", async (t) => {

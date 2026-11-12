@@ -156,3 +156,28 @@ test("upstream safeguards: tools, continuation reuse, evidence routing, isolatio
 	], "preserved upstream obligations");
 	assert.ok(Buffer.byteLength(parent) <= 8_900, "parent routing module retains its upstream budget");
 });
+
+// S4: retain the independent verifier's public-delivery regression probes.
+test("public delivery survives line endings, scope, and routing edits", () => {
+	for (const scope of ["global", "project"] as const) {
+		for (const text of [source, source.replaceAll("\n", "\r\n"), source + " \n"]) {
+			const parsed = parseAgentDefinition(text, path, scope);
+			assert.ok(!("error" in parsed));
+			assert.equal(parsed.instructions.replaceAll("\r\n", "\n"), verify);
+			assert.deepEqual(parsed.tools, agent.tools);
+			assert.equal(parsed.scope, scope);
+		}
+	}
+	const routed = source.replace("description:", "model: offline/example\ndescription:");
+	assert.equal(agentBody(routed), agentBody(source));
+	const parsed = parseAgentDefinition(routed, path, "global");
+	assert.ok(!("error" in parsed));
+	assert.equal(parsed.instructions, verify);
+});
+
+test("empty instruction delivery fails without manufacturing instructions", () => {
+	const frontmatter = source.slice(0, source.indexOf("\n---", 4) + 4);
+	assert.deepEqual(parseAgentDefinition(frontmatter + "\n \n", path, "global"), {
+		filePath: path, error: "no instructions after the frontmatter",
+	});
+});

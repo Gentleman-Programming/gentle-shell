@@ -283,13 +283,14 @@ async function executeController(runtime: ParityRuntime, operation: unknown, cwd
 	return response.details as Record<string, unknown>;
 }
 
-function consentNative(cwd: string): { native: NativeReviewCli; starts: { count: number }; answers: string[] } {
+function consentNative(cwd: string): { native: NativeReviewCli; starts: { count: number }; answers: string[]; consent: ReturnType<typeof decodeReviewConsentV3> } {
 	const consent = decodeReviewConsentV3(captured("consent-v3.captured.json"));
 	const starts = { count: 0 };
 	const answers: string[] = [];
 	return {
 		starts,
 		answers,
+		consent,
 		native: {
 			targetStatus: async () => startStatus(cwd),
 			start: async () => {
@@ -336,6 +337,7 @@ async function beginConsent(runtime: ParityRuntime, cwd: string, sessionId = "pa
 	const blocked = await executeController(runtime, { operation: "start", input: JSON.stringify({ mode: "ordinary" }) }, cwd, sessionId);
 	assert.equal(blocked.outcome, "native-review-consent-required");
 	assert.equal(typeof blocked.consent_binding, "string");
+	assert.equal((blocked.consent as Record<string, unknown>).consentBinding, blocked.consent_binding);
 	return blocked;
 }
 
@@ -449,8 +451,13 @@ test("public consent relay allows any active session to resolve a live binding, 
 	// gentle-pi#455: a binding is answerable by whichever active Pi session
 	// presents it, not only the session whose START created it.
 	const blockedA = await beginConsent(first, cwd, "session-a");
-	assert.deepEqual(blockedA.consent, decodeReviewConsentV3(captured("consent-v3.captured.json")).raw);
-	const declinedFromOtherSession = await answerConsent(second, cwd, blockedA.consent_binding, "declined", "session-b");
+	const { consentBinding, ...nativeEnvelope } = blockedA.consent as Record<string, unknown>;
+	assert.deepEqual(nativeEnvelope, fixture.consent.raw, "the public copy preserves every native field");
+	assert.notEqual(blockedA.consent, fixture.consent.raw, "the Pi annotation must not mutate the native object");
+	assert.equal(Object.hasOwn(fixture.consent.raw, "consentBinding"), false);
+	assert.doesNotThrow(() => decodeReviewConsentV3(fixture.consent.raw));
+	assert.throws(() => decodeReviewConsentV3(blockedA.consent), /consentBinding/, "the annotated copy is not a native envelope");
+	const declinedFromOtherSession = await answerConsent(second, cwd, consentBinding, "declined", "session-b");
 	assert.equal(declinedFromOtherSession.operation, "answer-consent");
 	assert.equal(declinedFromOtherSession.outcome, "consent-declined-this-candidate");
 	assert.deepEqual(fixture.answers, ["declined", "declined"]);

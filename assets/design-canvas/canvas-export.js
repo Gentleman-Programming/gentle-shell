@@ -143,8 +143,9 @@ export function init(ctx) {
 	 * back on the artboard's ⋯ button. A design.json reload while the browser asks for the capture replaces
 	 * the board objects: both the export and the restore follow the current ones; a reload (the design's or the
 	 * artboard frame's own) or a close while the frame is being grabbed fails the export instead, and an artboard
-	 * left meanwhile (Back, Shift+Esc) is not reopened. A second request while one runs is ignored, and
-	 * a viewport resized meanwhile gets the view a resize gives (refit or recentered), not the old one.
+	 * left meanwhile (Back, Shift+Esc) is not reopened, even across a reload. A second request while one runs is
+	 * ignored, a viewport resized meanwhile gets the view a resize gives (refit or recentered), not the old one, and
+	 * another design shown meanwhile keeps its own view.
 	 */
 	async function exportArtboard(chosen, scale) {
 		if (!win.navigator?.mediaDevices?.getDisplayMedia) {
@@ -159,7 +160,7 @@ export function init(ctx) {
 		let stream = null;
 		// The board whose inspector highlight was cleared for the capture.
 		let cleared = null;
-		const previous = { focus: state.focus, size: state.size, view: { zoom: state.zoom, x: state.x, y: state.y, fitted: state.fitted } };
+		const previous = { slug: state.slug, focus: state.focus, size: state.size, view: { zoom: state.zoom, x: state.x, y: state.y, fitted: state.fitted } };
 		const viewport = els.viewport.getBoundingClientRect();
 		const viewportSize = { width: viewport.width, height: viewport.height };
 		try {
@@ -238,7 +239,9 @@ export function init(ctx) {
 			stream?.getTracks().forEach((track) => track.stop());
 			doc.body.classList.remove("gd-exporting");
 			// Left with Back or Shift+Esc during the capture: the artboard stays closed, with the view leaving gave.
-			const left = Boolean(cleared) && !state.focus && currentBoard(cleared) === cleared;
+			// A design.json reload keeps focus on the same file (with a new board object), so no focus while the
+			// artboard is still in the design means it was left, whether a reload came before or after.
+			const left = Boolean(cleared) && !state.focus && currentBoard(cleared) !== null;
 			// The artboard that was open, as it is now; when a reload removed it, the canvas leaves focus mode.
 			const reopen = left ? null : currentBoard(previous.focus);
 			if (!reopen && state.focus) actions.exitFocus();
@@ -247,8 +250,9 @@ export function init(ctx) {
 				store.setFocus({ size: previous.size });
 				actions.centerFocus();
 			}
-			// A focus view without its artboard would leave the overview pointing at nothing.
-			if (!left && (reopen || !previous.focus)) {
+			// A focus view without its artboard would leave the overview pointing at nothing, and another design
+			// shown meanwhile keeps the view it got (its fit), not this design's.
+			if (!left && (reopen || !previous.focus) && state.slug === previous.slug) {
 				store.setView(previous.view);
 				actions.applyView();
 			}

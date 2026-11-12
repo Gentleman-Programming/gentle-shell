@@ -726,6 +726,76 @@ for (const [name, leave] of [
 	});
 }
 
+// S21 E1: a design.json reload builds new board objects, so the artboard left during the capture must stay closed
+// whether the reload comes before or after Back.
+for (const [name, interrupt] of [
+	["Back, then a design.json reload", async (canvas: Canvas) => {
+		$(canvas, "gd-back").dispatch("click");
+		await canvas.serverEvent("change", { slug: "alpha", file: "design.json" });
+	}],
+	["a design.json reload, then Back", async (canvas: Canvas) => {
+		await canvas.serverEvent("change", { slug: "alpha", file: "design.json" });
+		assert.match(canvas.navMode.textContent, /^Using: First/, "the reload kept focus mode on the same file");
+		$(canvas, "gd-back").dispatch("click");
+	}],
+] as const) {
+	test(`S21 E1: an open artboard left during the capture stays closed after ${name}`, async () => {
+		const { canvas, log, releaseFrames } = await pngCanvas({ held: true });
+		click(canvas.boards[0].shield!, 200, 200);
+		assert.match(canvas.navMode.textContent, /^Using: First/);
+		choose(canvas, "Export as PNG");
+		await settle();
+		assert.equal(log.calls.filter((call) => call === "frame").length, 1, "waiting for a new frame");
+		await interrupt(canvas);
+		assert.equal(canvas.navMode.textContent, "Navigating", "the artboard was left");
+		releaseFrames();
+		await settle();
+		assert.deepEqual(log.draw, [], "nothing drawn");
+		assert.deepEqual(log.names, [], "nothing downloaded");
+		assert.equal(statusText(canvas), CHANGED);
+		assert.equal(canvas.navMode.textContent, "Navigating", "not reopened");
+		assert.deepEqual(boardsOf(canvas).map((wrapper) => wrapper.classes.has("gd-focus-board")), [false, false], "no artboard is open");
+		assert.deepEqual(boardsOf(canvas).map((wrapper) => wrapper.inert), [false, false]);
+		assert.equal(canvas.document.body.classes.has("gd-exporting"), false);
+	});
+}
+
+// S21 E2: a design switch during an export keeps the new design's view; the old design's view is not restored over it.
+test("S21 E2: a show event for another design while the capture is pending leaves that design's fit, not the old design's view", async () => {
+	// The fake world has no box, which Fit needs; alpha is zoomed in, so its view is not the fit any design gets.
+	const zoomed = (canvas: Canvas) => {
+		Object.defineProperty(canvas.world, "offsetWidth", { get: () => 2000 });
+		Object.defineProperty(canvas.world, "offsetHeight", { get: () => 1000 });
+		$(canvas, "gd-zoom-in").dispatch("click");
+		return canvas.world.style.transform;
+	};
+	const plain = await pngCanvas();
+	const alphaView = zoomed(plain.canvas);
+	await plain.canvas.serverEvent("show", { slug: "beta" });
+	await settle();
+	const betaFit = plain.canvas.world.style.transform;
+	assert.notEqual(betaFit, alphaView, "beta's fit differs from alpha's view");
+
+	let grant!: () => void;
+	const permission = new Promise<void>((resolve) => { grant = resolve; });
+	const { canvas, log } = await pngCanvas({ permission });
+	assert.equal(zoomed(canvas), alphaView);
+	choose(canvas, "Export as PNG");
+	await settle();
+	assert.equal(log.calls.filter((call) => call.startsWith("capture ")).length, 1, "the browser's selector is open");
+	await canvas.serverEvent("show", { slug: "beta" });
+	await settle();
+	assert.equal(canvas.world.style.transform, betaFit, "beta loaded and fitted");
+	grant();
+	await settle();
+	assert.deepEqual(log.draw, []);
+	assert.deepEqual(log.names, []);
+	assert.equal(canvas.document.getElementById("gd-title").textContent, "Beta");
+	assert.equal(canvas.navMode.textContent, "Navigating");
+	assert.equal(canvas.world.style.transform, betaFit, "beta's fit, not alpha's view from before the export");
+	assert.equal(canvas.document.body.classes.has("gd-exporting"), false);
+});
+
 test("a capture failure stops the stream and restores the canvas view", async () => {
 	const { canvas, log } = await pngCanvas({ play: async () => { throw new Error("The video could not play."); } });
 	const before = canvas.world.style.transform;

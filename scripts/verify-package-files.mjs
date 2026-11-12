@@ -135,6 +135,7 @@ export const requiredPaths = [
   "lib/status-timing-diagnostics.ts",
   "lib/provider-contract-bundle.ts",
   "lib/review-host-relay.ts",
+  "lib/reviewer-stream.ts",
   "lib/review-integration-v2.ts",
   "lib/review-relay-contract.ts",
   "lib/agent-assets.ts",

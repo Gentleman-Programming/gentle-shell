@@ -25,6 +25,7 @@ import type { Api, AssistantMessage, Context, Model, ProviderEnv, ProviderHeader
 import type { completeSimple } from "@earendil-works/pi-ai/compat";
 import { SAFE_MODEL_ID_PATTERN, type ServiceTier } from "./model-routing-authority.ts";
 import { applyOpenAITier, supportsOpenAIFast } from "./openai-fast-tier.ts";
+import { readReviewerStream, type ReviewerStream, type ReviewerProgressObserver } from "./reviewer-stream.ts";
 
 // ---------------------------------------------------------------------------
 // Registry seam — a structural subset of pi's live ModelRegistry
@@ -40,11 +41,12 @@ import { applyOpenAITier, supportsOpenAIFast } from "./openai-fast-tier.ts";
 
 /**
  * The single method this module needs from a resolved provider. pi's
- * `Provider.streamSimple` returns an `AssistantMessageEventStream`; only its
- * `result()` is consumed here, so the seam asks for nothing more.
+ * `Provider.streamSimple` returns an `AssistantMessageEventStream`. Observe
+ * content activity when iterable; result-only compatibility seams retain the
+ * overall deadline without inventing stream progress.
  */
 export interface InProcessReviewerProvider {
-	streamSimple(model: Model<Api>, context: Context, options?: SimpleStreamOptions): { result(): Promise<AssistantMessage> };
+	streamSimple(model: Model<Api>, context: Context, options?: SimpleStreamOptions): ReviewerStream;
 }
 
 export interface InProcessReviewerRegistry {
@@ -95,6 +97,8 @@ export interface InProcessReviewerRequest {
 	/** Frozen Go-materialized prompt bytes, submitted verbatim as the one user message. */
 	readonly prompt: Buffer;
 	readonly timeoutMs: number;
+	readonly firstOutputTimeoutMs?: number;
+	readonly idleTimeoutMs?: number;
 	readonly signal?: AbortSignal;
 	/**
 	 * The live pi session id, threaded from the extension context. Pi's main
@@ -119,6 +123,7 @@ export interface InProcessReviewerDeps {
 	readonly now?: () => number;
 	/** Host-only facts, including on thrown auth errors. Never awaited; observer failure is non-authoritative. */
 	readonly onEvidence?: (evidence: Record<string, unknown>) => void | Promise<void>;
+	readonly onProgress?: ReviewerProgressObserver;
 }
 
 // No existing bound covers the reviewer's completion text: the child this
@@ -319,6 +324,13 @@ function reviewerDeadline(request: InProcessReviewerRequest) {
 	return {
 		signal: controller.signal,
 		failure,
+		timeout(phase: "first-output" | "stream-idle", limitMs: number) {
+			if (failure() !== undefined) return;
+			refusal = refuse(INPROCESS_REVIEWER_FAILURE.TIMED_OUT,
+				`Reviewer ${request.routingKey} exceeded its ${limitMs}ms ${phase} bound; no result was admitted.`,
+				{ timeoutPhase: phase, streamTimeoutMs: limitMs });
+			controller.abort(new DOMException("Reviewer stream stalled", "TimeoutError"));
+		},
 		wait<T>(start: () => Promise<T>): Promise<T> {
 			return new Promise<T>((resolve, reject) => {
 				if (failure() !== undefined) { reject(interrupted); return; }
@@ -527,14 +539,16 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 					: {}),
 			};
 
-			// `SimpleStreamOptions` is identical on both paths; only the return shape
-			// differs (an event stream versus a promise), hence `.result()` — which is
-			// exactly what pi-ai's own compat layer does with the same stream.
+			// Observe the composed SDK stream while retaining the original result.
+			// The promise-only compatibility seam has only the overall deadline.
 			let assistant: AssistantMessage;
 			try {
 				assistant = await deadline.wait(() => {
 					phase = "completion"; completionStarted = performance.now();
-					return provider === undefined ? deps.complete(requestModel, context, options) : provider.streamSimple(requestModel, context, options).result();
+					return provider === undefined ? deps.complete(requestModel, context, options) : readReviewerStream(provider.streamSimple(requestModel, context, options), {
+						routingKey: request.routingKey, firstOutputTimeoutMs: request.firstOutputTimeoutMs, idleTimeoutMs: request.idleTimeoutMs,
+						wait: deadline.wait, timeout: deadline.timeout, onProgress: deps.onProgress,
+					});
 				});
 				resolvedAssistant = assistant;
 			} catch (error) {

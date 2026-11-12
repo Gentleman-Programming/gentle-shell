@@ -1792,6 +1792,18 @@ test("canvas-layout S17: GET layout tells a missing layout.json (null) from one 
 	assert.equal((await rawRequest(port, `${base}api/designs/missing/layout`)).status, 404, "an unknown design is still not found");
 });
 
+test("canvas-layout S23: a position far out of range (1e300) is a layout.json the server cannot use on GET (422) and refuses on POST", async (t) => {
+	const { port, base, root } = await start(t);
+	const far = { arrangement: "free", positions: { "01-hero.html": { x: 1e300, y: 0 } } };
+	const file = join(root, "alpha", "layout.json");
+	writeFileSync(file, JSON.stringify(far));
+	const read = await rawRequest(port, `${base}${LAYOUT_PATH}`);
+	assert.deepEqual({ status: read.status, body: JSON.parse(read.body) }, { status: 422, body: { error: "unreadable-layout", reason: 'positions["01-hero.html"] x and y must be integers between -2000000 and 2000000' } });
+	const save = await postJson(port, LAYOUT_PATH, far);
+	assert.deepEqual({ status: save.status, body: JSON.parse(save.body) }, { status: 400, body: { error: "invalid-layout", reason: 'positions["01-hero.html"] x and y must be integers between -2000000 and 2000000' } });
+	assert.equal(readFileSync(file, "utf8"), JSON.stringify(far), "the file is left as it was");
+});
+
 test("canvas-layout S3: an invalid layout is refused with its reason and nothing is written", async (t) => {
 	const { port, root } = await start(t);
 	const refuse = async (body: unknown, reason: RegExp) => {

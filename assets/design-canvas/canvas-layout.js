@@ -9,11 +9,15 @@
 const BOARD_GAP = 80;
 const SYSTEM_KEY = "system";
 const ARRANGEMENTS = ["row", "column", "grid"];
+// The farthest a board may sit from the origin on each axis, as the server's layout.json rules say
+// (DESIGN_LAYOUT_COORDINATE_MAX in lib/design-layout.ts): a layout past it is none this page uses.
+const COORDINATE_MAX = 2_000_000;
 
 // Every string this module shows, in English until the i18n PR keys them.
 const TEXT = Object.freeze({
 	saveFailed: (slug, reason) => `The layout of ${slug} could not be saved: ${reason}`,
 	readFailed: (slug, reason) => `design/${slug}/layout.json could not be read: ${reason}`,
+	unusable: "it holds no layout this page can use",
 });
 
 export function init(ctx) {
@@ -42,6 +46,7 @@ export function init(ctx) {
 	let changeReads = 0;
 	// The layout errors the status line keeps showing for a design ({ slug, text }): the last save that failed, while
 	// the layout it left is still unsaved, and the last read of layout.json that failed, until one answers or a save succeeds.
+	// While that read error stands nothing is saved (saveLayout): the file is never written over before it can be read.
 	let saveError = null;
 	let readError = null;
 
@@ -57,29 +62,39 @@ export function init(ctx) {
 		return { width: size.width, height: (box ? box.offsetTop : 0) + size.height };
 	}
 
-	/** api/designs/<slug>/layout's layout, or null when it is none or cannot be read (the boards then sit in a row). */
+	const isCoordinate = (value) => Number.isInteger(value) && Math.abs(value) <= COORDINATE_MAX;
+
+	/**
+	 * api/designs/<slug>/layout's layout, or null when it holds none this page can use: an unknown arrangement, or a
+	 * position that is no integer within COORDINATE_MAX (so the world and the minimap keep a sane size). Positions are
+	 * keyed in an object without a prototype, so a key such as `__proto__` is just another board's key.
+	 */
 	function readLayout(value) {
 		if (!value || typeof value !== "object" || Array.isArray(value)) return null;
 		if (value.arrangement !== "free" && !ARRANGEMENTS.includes(value.arrangement)) return null;
 		const raw = value.positions;
 		if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-		const positions = {};
+		const positions = Object.create(null);
 		for (const [key, position] of Object.entries(raw)) {
-			if (!position || !Number.isInteger(position.x) || !Number.isInteger(position.y)) return null;
+			if (!position || !isCoordinate(position.x) || !isCoordinate(position.y)) return null;
 			positions[key] = { x: position.x, y: position.y };
 		}
 		return { arrangement: value.arrangement, positions };
 	}
 
 	/**
-	 * The saved layout of design `slug`, as { layout, error }: layout null when it has none or holds none this page can
-	 * use; undefined when the read itself failed (the server cannot read or use layout.json, an error reply, no
-	 * connection), with `error` saying why. A failed read says nothing about the boards: the canvas never fails on it.
+	 * The saved layout of design `slug`, as { layout, error }: layout null when it has none; undefined when layout.json
+	 * cannot be used (the server cannot read or use it, or it holds a layout this page's readLayout rejects) or the read
+	 * itself failed (an error reply, no connection), with `error` saying why. A failed read says nothing about the
+	 * boards: the canvas never fails on it.
 	 */
 	async function fetchLayout(slug) {
 		try {
 			const data = await getJson(`api/designs/${encodeURIComponent(slug)}/layout`);
-			return { layout: readLayout(data && data.layout), error: "" };
+			const value = data ? data.layout : null;
+			if (value === null || value === undefined) return { layout: null, error: "" };
+			const layout = readLayout(value);
+			return layout ? { layout, error: "" } : { layout: undefined, error: TEXT.unusable };
 		} catch (error) {
 			// Only a layout.json the server cannot read or use is news for the status line; an HTTP error or no
 			// connection says nothing about the file, and the layout shown stays without a word, as before.
@@ -326,13 +341,16 @@ export function init(ctx) {
 	 * status line and the boards stay, unsaved, until layout.json holds something this page did not know (another
 	 * page's change wins); a later save that succeeds clears that error. A read on its way is older than this layout,
 	 * and a change that came meanwhile is read once the last save is done. Nothing is saved while the boards shown
-	 * are still another design's. A reply that comes after the page left the design and came back leaves the layout
+	 * are still another design's, nor while layout.json cannot be used (the last read of it failed with the reason in
+	 * the status line): moves and arrangements then change only the view, and saves resume once a read answers with a
+	 * layout or with none. A reply that comes after the page left the design and came back leaves the layout
 	 * read since alone: what it holds is what layout.json held then, so the save's own change event still shows.
 	 */
 	function saveLayout() {
 		const slug = state.slug;
 		const layout = state.layout;
 		if (!slug || !state.manifest || state.manifest.slug !== slug || !layout || layout.slug !== slug) return;
+		if (readError && readError.slug === slug) return;
 		const body = { arrangement: layout.arrangement, positions: layout.positions };
 		// A change read this save makes stale: a save that fails leaves the file as that change wrote it, so it is read again.
 		const staleChange = changeReads > 0;

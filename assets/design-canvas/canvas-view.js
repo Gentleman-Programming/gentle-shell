@@ -150,6 +150,9 @@ export function init(ctx) {
 	};
 	els.viewport.addEventListener("pointerup", endDrag);
 	els.viewport.addEventListener("pointercancel", endDrag);
+	// A capture lost without a pointerup (the browser or the system took the pointer) ends the press like a cancel, so
+	// a press that never ends never blocks the next one; the capture a pointerup releases comes once the press is over.
+	els.viewport.addEventListener("lostpointercapture", endDrag);
 	els.viewport.addEventListener("pointerleave", () => actions.setHoverBoard(null));
 
 	els.viewport.addEventListener("keydown", (event) => {

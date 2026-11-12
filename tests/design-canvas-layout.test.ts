@@ -1119,3 +1119,104 @@ test("a layout read that fails for another reason than an unreadable layout.json
 	}
 	assert.deepEqual(canvas.posts, []);
 });
+
+// ---- egdev6's second review of #3146: a lost pointer capture, and no saves while layout.json cannot be used
+
+test("a move whose pointer capture is lost puts the artboard back unsaved, and the next press on the empty canvas pans", async () => {
+	const canvas = await loadLayout(NO_LAYOUT);
+	canvas.replies[LAYOUT_URL] = { ok: true };
+	boardTitle(canvas.world.children[1]).dispatch("pointerdown", { button: 0, pointerId: 3, clientX: 500, clientY: 100 });
+	onViewport(canvas, "pointermove", 560, 100);
+	assert.deepEqual(placed(canvas.world.children[1]), ["540px", "0px"], "the artboard follows the pointer");
+	onViewport(canvas, "lostpointercapture", 560, 100);
+	await settle();
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["480px", "0px"]], "the artboard goes back");
+	assert.equal(canvas.viewport.classes.has("gd-moving"), false, "the grabbing cursor goes");
+	assert.deepEqual(canvas.posts, [], "nothing is saved");
+	const [x, y] = translation(canvas);
+	await dragFrom(canvas.viewport, [900, 600], [[940, 620]]);
+	assert.deepEqual(translation(canvas), [x + 40, y + 20], "a new press on the empty canvas pans");
+	assert.deepEqual(canvas.posts, []);
+});
+
+test("a pan whose pointer capture is lost ends, so the next press works; a capture lost after the release changes nothing", async () => {
+	const canvas = await loadLayout(NO_LAYOUT);
+	canvas.replies[LAYOUT_URL] = { ok: true };
+	const [x, y] = translation(canvas);
+	onViewport(canvas, "pointerdown", 900, 600);
+	onViewport(canvas, "pointermove", 920, 600);
+	onViewport(canvas, "lostpointercapture", 920, 600);
+	assert.equal(canvas.viewport.classes.has("gd-panning"), false, "the pan ends");
+	await dragFrom(canvas.viewport, [900, 600], [[900, 640]]);
+	assert.deepEqual(translation(canvas), [x + 20, y + 40], "the next press pans");
+	// The browser releases the capture after a pointerup too: that release has already saved the move once.
+	await dragFrom(boardTitle(canvas.world.children[1]), [500, 100], [[540, 100]]);
+	onViewport(canvas, "lostpointercapture", 540, 100);
+	await settle();
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["520px", "0px"]], "the moved artboard stays");
+	assert.deepEqual(layoutPosts(canvas).map((post) => post.body), [{ arrangement: "free", positions: { "01-a.html": { x: 0, y: 0 }, "02-b.html": { x: 520, y: 0 } } }]);
+});
+
+test("while layout.json cannot be read, a move and Row/Column/Grid change only the view and save nothing; saves resume once it reads again", async () => {
+	const canvas = await loadLayout({ [LAYOUT_URL]: UNREADABLE });
+	const status = canvas.document.getElementById("gd-status");
+	await dragFrom(boardTitle(canvas.world.children[1]), [500, 100], [[540, 100]]);
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["520px", "0px"]], "the artboard moves on screen");
+	assert.deepEqual(canvas.posts, [], "nothing is saved over the file");
+	assert.deepEqual([status.textContent, status.classes.has("gd-error")], [READ_FAILED, true], "the status line still says why");
+	canvas.document.getElementById("gd-arrange-column").dispatch("click");
+	await settle();
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["0px", "380px"]], "Column arranges the boards on screen");
+	assert.deepEqual(pressedArrangements(canvas), ["false", "true", "false"]);
+	assert.deepEqual(canvas.posts, [], "and saves nothing");
+	assert.deepEqual([status.textContent, status.classes.has("gd-error")], [READ_FAILED, true]);
+	// The file can be read again: the next move is saved.
+	canvas.replies[LAYOUT_URL] = { layout: { arrangement: "row", positions: {} } };
+	await canvas.serverEvent("change", LAYOUT_CHANGE);
+	assert.deepEqual(pressedArrangements(canvas), ["true", "false", "false"], "the file's layout shows");
+	assert.deepEqual([status.textContent, status.classes.has("gd-error")], ["", false]);
+	canvas.replies[LAYOUT_URL] = { ok: true };
+	await dragFrom(boardTitle(canvas.world.children[1]), [500, 100], [[540, 100]]);
+	assert.equal(layoutPosts(canvas).length, 1, "the move is saved");
+	assert.equal((layoutPosts(canvas)[0].body as { arrangement: string }).arrangement, "free");
+});
+
+test("a layout.json missing again after it could not be read lets the page save once more", async () => {
+	const canvas = await loadLayout({ [LAYOUT_URL]: UNREADABLE });
+	canvas.replies[LAYOUT_URL] = { layout: null };
+	await canvas.serverEvent("change", LAYOUT_CHANGE);
+	canvas.replies[LAYOUT_URL] = { ok: true };
+	await dragFrom(boardTitle(canvas.world.children[1]), [500, 100], [[540, 100]]);
+	assert.deepEqual(layoutPosts(canvas).map((post) => post.body), [{ arrangement: "free", positions: { "01-a.html": { x: 0, y: 0 }, "02-b.html": { x: 520, y: 0 } } }]);
+});
+
+test("a layout the page cannot use (a fraction, a position out of range) sits in a row, says so, and a move or an arrangement saves nothing", async () => {
+	for (const position of [{ x: 1.5, y: 0 }, { x: 1e300, y: 0 }, { x: 0, y: -2_000_001 }]) {
+		const label = JSON.stringify(position);
+		const canvas = await loadLayout({ [LAYOUT_URL]: { layout: { arrangement: "free", positions: { "01-a.html": { x: 0, y: 0 }, "02-b.html": position } } } });
+		const status = canvas.document.getElementById("gd-status");
+		assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["480px", "0px"]], label);
+		const unusable = "design/alpha/layout.json could not be read: it holds no layout this page can use";
+		assert.deepEqual([status.textContent, status.classes.has("gd-error")], [unusable, true], label);
+		canvas.replies[LAYOUT_URL] = { ok: true };
+		await dragFrom(boardTitle(canvas.world.children[1]), [500, 100], [[540, 100]]);
+		assert.deepEqual(canvas.world.children.map(placed), [["0px", "0px"], ["520px", "0px"]], `${label}: the move shows`);
+		canvas.document.getElementById("gd-arrange-column").dispatch("click");
+		await settle();
+		assert.deepEqual(canvas.posts, [], `${label}: nothing is saved`);
+		assert.equal(status.textContent, unusable, label);
+	}
+	// The farthest position the server accepts is one the page uses too.
+	const edge = await loadLayout({ [LAYOUT_URL]: { layout: { arrangement: "free", positions: { "01-a.html": { x: 0, y: 0 }, "02-b.html": { x: 2_000_000, y: 0 } } } } });
+	assert.deepEqual(edge.world.children.map(placed), [["0px", "0px"], ["2000000px", "0px"]]);
+});
+
+test("a __proto__ key in a saved layout is an unknown board like any other: it changes no prototype and drops out of the next save", async () => {
+	const layout = JSON.parse('{"arrangement":"free","positions":{"__proto__":{"x":7,"y":9},"01-a.html":{"x":0,"y":500},"02-b.html":{"x":600,"y":0}}}');
+	const canvas = await loadLayout({ [LAYOUT_URL]: { layout } });
+	assert.deepEqual(canvas.world.children.map(placed), [["0px", "500px"], ["600px", "0px"]]);
+	assert.equal((Object.prototype as Record<string, unknown>).x, undefined, "Object.prototype is untouched");
+	canvas.replies[LAYOUT_URL] = { ok: true };
+	await dragFrom(boardTitle(canvas.world.children[1]), [700, 100], [[740, 100]]);
+	assert.deepEqual(layoutPosts(canvas).map((post) => JSON.stringify(post.body)), [JSON.stringify({ arrangement: "free", positions: { "01-a.html": { x: 0, y: 500 }, "02-b.html": { x: 640, y: 0 } } })]);
+});

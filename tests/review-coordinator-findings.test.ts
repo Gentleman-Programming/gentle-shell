@@ -153,7 +153,7 @@ test("the facade's STATUS operation asks the provider for the non-blocking findi
 		try {
 			const result = await runtime.invoke("gentle_review_run", { lineageId: runtime.lineage });
 			assert.equal(result.outcome, scenario === "correction" ? "input-required" : "stopped");
-			const statuses = runtime.nativeRequests.filter((entry) => entry.operation === "target-status").map((entry) => entry.request);
+			const statuses = runtime.nativeRequests.filter((entry) => entry.operation === "target-status").map((entry) => entry.request as Body);
 			assert.equal(statuses.length, 1);
 			assert.equal(statuses[0].nonBlockingFindings, true, scenario);
 		} finally { runtime.close(); }
@@ -165,7 +165,7 @@ test("a direct INSPECT never asks for the non-blocking findings; inside the run 
 	try {
 		const inspected = await runtime.invoke("gentle_review", { operation: "inspect" });
 		assert.equal(inspected.result?.authority?.state, "escalated", JSON.stringify(inspected).slice(0, 400));
-		const statuses = runtime.nativeRequests.filter((entry) => entry.operation === "target-status").map((entry) => entry.request);
+		const statuses = runtime.nativeRequests.filter((entry) => entry.operation === "target-status").map((entry) => entry.request as Body);
 		assert.ok(statuses.length >= 1);
 		for (const status of statuses) assert.equal(Object.hasOwn(status, "nonBlockingFindings"), false, "L19: a direct gentle_review never asks");
 	} finally { runtime.close(); }
@@ -174,7 +174,7 @@ test("a direct INSPECT never asks for the non-blocking findings; inside the run 
 	try {
 		const result = await group.invoke("gentle_review_run", { lineageId: group.lineage });
 		assert.equal(result.outcome, "closed", JSON.stringify(result).slice(0, 400));
-		const flagged = group.nativeRequests.filter((entry) => entry.operation === "target-status").map((entry) => entry.request.nonBlockingFindings === true);
+		const flagged = group.nativeRequests.filter((entry) => entry.operation === "target-status").map((entry) => (entry.request as Body).nonBlockingFindings === true);
 		const statusSteps = (result.metrics as Metrics).steps.filter((step: Body) => step.tool === "gentle_review" && step.operation === "status").length;
 		assert.equal(flagged.filter(Boolean).length, statusSteps, "one opted-in read per facade status operation");
 		assert.ok(flagged.some((value: boolean) => !value), "capture-side STATUS reads stay as they are");

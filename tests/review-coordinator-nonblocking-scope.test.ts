@@ -13,9 +13,16 @@ import { NativeReviewCliV216, type ExecFileAdapter } from "../lib/native-review-
 
 type Body = Record<string, unknown>;
 interface CapturedAuthority { lineage_id: string }
-interface CapturedStatus { authority: CapturedAuthority; non_blocking_findings?: Body }
+interface FixtureFindings extends Body { statement: string; findings: Body[] }
+interface CapturedStatus extends Body { authority: CapturedAuthority; non_blocking_findings?: FixtureFindings }
+interface FixtureEnvelope { result: Body }
+interface FixtureDetails extends Body {
+	result: FixtureEnvelope;
+	non_blocking_findings: FixtureFindings;
+	non_blocking_finding_claims: Body;
+}
 interface FixtureTextContent { text: string }
-interface FixtureResult { details: Body; content: FixtureTextContent[] }
+interface FixtureResult { details: FixtureDetails; content: FixtureTextContent[] }
 interface FixtureTool {
 	name: string;
 	execute(callId: string, parameters: Body, signal: undefined, onUpdate: undefined, context: unknown): Promise<FixtureResult>;
@@ -63,7 +70,7 @@ function provider(count: number, mutate: (set: Body) => void = () => {}) {
 	const context = { cwd: scratch, hasUI: false, sessionManager: { getSessionId: () => "fixture-scope", getBranch: () => [], getSessionFile: () => undefined } };
 	const invoke = async (name: string, parameters: Body) => {
 		const result = await tools.get(name)!.execute("fixture-call", parameters, undefined, undefined, context);
-		return { details: result.details as Body, bytes: Buffer.byteLength((result.content as { text: string }[]).map((part) => part.text).join("")), content: result.content };
+		return { details: result.details, bytes: Buffer.byteLength((result.content as { text: string }[]).map((part) => part.text).join("")), content: result.content };
 	};
 	return { statusCalls, invoke, close: () => { __testing.setReviewHostRelayRunnerForTesting(); __testing.setReviewHostRelayGroupRunnersForTesting(); } };
 }

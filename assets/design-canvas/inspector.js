@@ -8,9 +8,10 @@
 // In navigation mode the canvas covers the artboard with a shield and routes
 // comment-mode hovers and clicks here as points; in focus mode the artboard
 // owns the wheel and the keyboard, and Shift+Esc asks the canvas to leave.
-// In comment mode it also measures the element under the pointer (gd:inspect), once per element
-// and again after a scroll: the canvas's token inspector compares those computed values with the
-// project's design tokens (canvas-tokens.js).
+// In comment mode with Technical details on (gd:mode `inspect`) it also measures the element under
+// the pointer (gd:inspect), once per element and again after a scroll (at most once per animation
+// frame): the canvas's token inspector compares those computed values with the project's design
+// tokens (canvas-tokens.js). With Technical details off it measures nothing.
 (() => {
 	"use strict";
 
@@ -29,8 +30,11 @@
 	let generation = 0;
 	let hovered = null;
 	let selected = null;
-	// The element last reported with gd:inspect (null: none).
+	// The element last reported with gd:inspect (null: none), whether the canvas wants those reports
+	// (Technical details on), and whether a re-measure after a scroll waits for the next frame.
 	let inspected = null;
+	let inspecting = false;
+	let inspectQueued = false;
 
 	function makeBox(color) {
 		const box = document.createElement("div");
@@ -250,12 +254,30 @@
 		};
 	}
 
-	/** Tells the canvas which element is under the pointer, once per element (`force`: again, it moved); null when none or not commenting. */
+	/**
+	 * Tells the canvas which element is under the pointer, once per element (`force`: again, it moved); null when none
+	 * or not commenting. With Technical details off nothing is measured, and the element counts as not reported yet, so
+	 * turning it on reports the hovered one at once.
+	 */
 	function reportInspect(force) {
+		if (!inspecting) {
+			inspected = null;
+			return;
+		}
 		const element = enabled ? hovered : null;
 		if (!force && element === inspected) return;
 		inspected = element;
 		post({ type: "gd:inspect", element: element ? measure(element) : null });
+	}
+
+	/** Scrolling moves the hovered element: measure it again on the next frame, however many scroll events came. */
+	function queueInspect() {
+		if (inspectQueued) return;
+		inspectQueued = true;
+		requestAnimationFrame(() => {
+			inspectQueued = false;
+			if (enabled && hovered) reportInspect(true);
+		});
 	}
 
 	function find(selector) {
@@ -331,7 +353,10 @@
 
 	window.addEventListener("message", (event) => {
 		if (event.source !== window.parent || !event.data || typeof event.data !== "object") return;
-		if (event.data.type === "gd:mode") setEnabled(event.data.enabled === true);
+		if (event.data.type === "gd:mode") {
+			inspecting = event.data.inspect === true;
+			setEnabled(event.data.enabled === true);
+		}
 		else if (event.data.type === "gd:pins") setPins(event.data.pins);
 		else if (event.data.type === "gd:highlight") highlight(event.data);
 		else if (event.data.type === "gd:focus") focused = event.data.enabled === true;
@@ -437,7 +462,7 @@
 		post({ type: "gd:wheel", deltaX: event.deltaX, deltaY: event.deltaY, deltaMode: event.deltaMode, zoom, shift: event.shiftKey, x: event.clientX, y: event.clientY });
 	}, { passive: false, capture: true });
 
-	window.addEventListener("scroll", () => { refresh(); queueReport(); if (enabled && hovered) reportInspect(true); }, true);
+	window.addEventListener("scroll", () => { refresh(); queueReport(); if (enabled && hovered && inspecting) queueInspect(); }, true);
 	window.addEventListener("resize", () => { refresh(); queueReport(); queueOverflow(); });
 	window.addEventListener("load", () => { queueReport(); queueOverflow(); });
 	// An image that loads after the page did can widen it with no mutation or resize; its load does not bubble, so the

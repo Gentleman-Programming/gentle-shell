@@ -91,6 +91,8 @@ export function init(ctx) {
 	function centerFocus() {
 		const board = state.focus;
 		if (!board) return;
+		// The artboard moves under the token inspector's panel (a layout change, a resize): it would sit misplaced.
+		actions.hideInspector();
 		const viewport = els.viewport.getBoundingClientRect();
 		const { width, height } = actions.focusSize(board);
 		// The label above the frame wraps at the frame's width: apply the width before measuring it.

@@ -168,7 +168,7 @@ test("Back to canvas and focusing another artboard leave All sizes and restore t
 	commentMode(canvas);
 	const phone = iframeOf(sizeSections(canvas)[0]);
 	phone.dispatch("load");
-	assert.deepEqual(lastOf(phone, "gd:mode"), { type: "gd:mode", enabled: false });
+	assert.deepEqual(lastOf(phone, "gd:mode"), { type: "gd:mode", enabled: false, inspect: false });
 	assert.equal(phone.contentWindow!.posted.filter((message) => message.type === "gd:pins").length, 0, "no pins either");
 	canvas.message(phone.contentWindow, inspectorPick(phone, { type: "gd:pick", selector: "#x", excerpt: "", rect: { x: 0, y: 0, width: 1, height: 1 } }));
 	assert.equal($(canvas, "gd-popover").hidden, true);
@@ -217,14 +217,14 @@ test("size frames are registered like the artboard's frame: they get focus, mode
 	for (const frame of frames) {
 		frame.dispatch("load");
 		assert.deepEqual(lastOf(frame, "gd:focus"), { type: "gd:focus", enabled: true });
-		assert.deepEqual(lastOf(frame, "gd:mode"), { type: "gd:mode", enabled: false });
+		assert.deepEqual(lastOf(frame, "gd:mode"), { type: "gd:mode", enabled: false, inspect: false });
 		assert.deepEqual(lastOf(frame, "gd:pins"), { type: "gd:pins", pins: [{ id: "a1", selector: "main > .a1" }] });
 	}
 	commentMode(canvas);
-	for (const frame of frames) assert.deepEqual(frame.contentWindow!.posted.at(-1), { type: "gd:mode", enabled: true });
+	for (const frame of frames) assert.deepEqual(frame.contentWindow!.posted.at(-1), { type: "gd:mode", enabled: true, inspect: false });
 	assert.ok(withClass(canvas.viewport, "gd-sizes-all")[0].classes.has("gd-commenting"), "the frames wear the comment-mode outline");
 	$(canvas, "gd-tool-navigate").dispatch("click");
-	for (const frame of frames) assert.deepEqual(frame.contentWindow!.posted.at(-1), { type: "gd:mode", enabled: false });
+	for (const frame of frames) assert.deepEqual(frame.contentWindow!.posted.at(-1), { type: "gd:mode", enabled: false, inspect: false });
 	assert.ok(!withClass(canvas.viewport, "gd-sizes-all")[0].classes.has("gd-commenting"));
 	// Frames made while Comment mode is on start with the outline.
 	commentMode(canvas);

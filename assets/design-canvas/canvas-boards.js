@@ -46,9 +46,12 @@ export function init(ctx) {
 		return designs;
 	}
 
-	/** A board's frame or one of its size frames (canvas-sizes.js): comment mode never reaches the system board. */
+	/**
+	 * A board's frame or one of its size frames (canvas-sizes.js): comment mode never reaches the system board.
+	 * `inspect`: Technical details is on, so the frame measures the hovered element for the token inspector.
+	 */
 	function sendMode(surface) {
-		surface.frame.contentWindow?.postMessage({ type: "gd:mode", enabled: state.commenting && !actions.ownerOf(surface).system }, "*");
+		surface.frame.contentWindow?.postMessage({ type: "gd:mode", enabled: state.commenting && !actions.ownerOf(surface).system, inspect: state.technical }, "*");
 	}
 
 	function boardUrl(board) {

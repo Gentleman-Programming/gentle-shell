@@ -3,10 +3,13 @@
 // under the pointer: inspector.js measures it (gd:inspect) and this module compares its computed
 // color, background, font, sizes, spacing and radius with the tokens of design/system.md, computes
 // the WCAG contrast, and offers Ask the agent to fix (the comment box, prefilled) and Copy.
+// While a panel shows, it follows another element only once the pointer rests on it (hover intent),
+// so the pointer can cross the artboard to the panel's buttons; Esc in the panel closes it.
 // These are heuristics: a background image or gradient leaves the background unknown, and the
 // match uses computed values, not the CSS that produced them.
 // The tokens and Technical details live in the store (setTokens, setTechnical); the element the
-// panel shows, its hide timer and whether the pointer is on it are this module's own view state.
+// panel shows, the one it may switch to, its timers and whether the pointer is on it are this
+// module's own view state.
 
 const TEXT = Object.freeze({
 	labels: { color: "Color", background: "Background", contrast: "Contrast", font: "Font", size: "Size", lineHeight: "Line height", spacing: "Spacing", radius: "Radius" },
@@ -32,6 +35,11 @@ const TEXT = Object.freeze({
 	radiusNoToken: (value) => `${value} px no token`,
 	none: "—",
 	noTokens: "No design/system.md tokens found, so values and contrast are shown without a comparison.",
+	// Why the server read no tokens from a design/system.md that exists (api/system/tokens `problem`).
+	problems: {
+		"too-large": "design/system.md is over 256 KB, so its tokens were not read: values and contrast are shown without a comparison.",
+		unreadable: "design/system.md could not be read, so values and contrast are shown without a comparison.",
+	},
 	nothingToFix: "Nothing is off the design system, so there is nothing to fix.",
 	copied: "Copied",
 	copyFailed: "Could not copy. Use Ask the agent to fix and copy the text from the comment box.",
@@ -61,6 +69,9 @@ const INSPECTOR_WIDTH = 280;
 const INSPECTOR_HEIGHT = 340;
 const INSPECTOR_GAP = 12;
 const HIDE_MS = 300;
+// While a panel shows, how long the pointer must rest on another element before the panel follows it: quicker
+// passes (the pointer crossing the artboard on its way to the panel) keep the element and the place.
+const DWELL_MS = 250;
 // Channels are whole numbers, so a token matches only when it is the same color; alpha tolerates hex rounding.
 const ALPHA_EPSILON = 0.01;
 const NEAR_ALPHA = 0.05;
@@ -194,10 +205,15 @@ export function init(ctx) {
 	// The tokens parsed by kind, once per load (never per hover), and the latest load: an older reply landing last changes nothing.
 	let kinds = tokenKinds([]);
 	let tokenLoads = 0;
+	// Why the last read found no tokens in an existing design/system.md ("too-large", "unreadable"), else "".
+	let problem = "";
 	// The element the panel shows ({ surface, measure, flags, text }) or null; the generation a pending hide
-	// belongs to (a newer element or a hide cancels it); whether the pointer is on the panel.
+	// belongs to (a newer element or a hide cancels it); the element the panel may switch to ({ surface, measure })
+	// or null, and the generation of that pending switch; whether the pointer is on the panel.
 	let inspect = null;
 	let generation = 0;
+	let pending = null;
+	let switches = 0;
 	let pointerOn = false;
 
 	// ---- tokens and Technical details
@@ -213,6 +229,9 @@ export function init(ctx) {
 			.map((token) => ({ name: token.name, value: token.value, section: typeof token.section === "string" ? token.section : "", group: typeof token.group === "string" ? token.group : "other" }));
 		store.setTokens(tokens);
 		kinds = tokenKinds(state.tokens);
+		problem = typeof data.problem === "string" ? data.problem : "";
+		// An open panel compares with the new tokens at once, where it is.
+		if (inspect) renderInspector(inspect.surface, inspect.measure);
 	}
 
 	function storedTechnical() {
@@ -227,6 +246,8 @@ export function init(ctx) {
 	function setTechnical(on) {
 		store.setTechnical(on);
 		try { win.localStorage.setItem(TECHNICAL_KEY, on ? "on" : "off"); } catch { /* storage may be unavailable */ }
+		// Every frame, All sizes frames included, measures only while it is on (gd:mode `inspect`).
+		actions.allBoards().flatMap(actions.surfacesOf).forEach(actions.sendMode);
 		if (!on) hideInspector();
 	}
 
@@ -413,21 +434,52 @@ export function init(ctx) {
 	}
 
 	/**
-	 * A gd:inspect from `surface` (a board's frame or an All sizes frame, canvas-messages.js): the panel shows only with
-	 * Technical details on, in Comment mode, with the comment box closed, outside Compare, for a design artboard of the
-	 * design shown (an old design's frames may still report while the new one loads) and, in focus mode, for the focused
-	 * artboard's frames only. `element` null: the pointer left the element.
+	 * Whether a report from `surface` may show the panel: only with Technical details on, in Comment mode, with the
+	 * comment box closed, outside Compare, for a design artboard of the design shown (an old design's frames may still
+	 * report while the new one loads) and, in focus mode, for the focused artboard's frames only.
+	 */
+	function accepts(surface) {
+		const board = actions.ownerOf(surface);
+		if (!state.technical || !state.commenting || !els.popover.hidden || state.compare || board.system || board.slug !== state.slug) return false;
+		return !state.focus || board === state.focus;
+	}
+
+	/**
+	 * A gd:inspect from `surface` (a board's frame or an All sizes frame, canvas-messages.js). The first panel shows at
+	 * once, and its own element again (scrolled) re-places it at once; another element waits for the pointer to rest on
+	 * it (waitToSwitch), and with the pointer on the panel nothing changes. `element` null: the pointer left that frame's
+	 * page, so a switch waiting on it is off and the panel goes soon.
 	 */
 	function inspectFrom(surface, element) {
-		const board = actions.ownerOf(surface);
-		if (!state.technical || !state.commenting || !els.popover.hidden || state.compare || board.system || board.slug !== state.slug) return;
-		if (state.focus && board !== state.focus) return;
+		if (!accepts(surface)) return;
 		if (element === null) {
-			if (inspect && inspect.surface === surface) scheduleHide();
+			const waiting = Boolean(pending && pending.surface === surface);
+			if (waiting) cancelSwitch();
+			if (inspect && (waiting || inspect.surface === surface)) scheduleHide();
 			return;
 		}
 		const measure = readMeasure(element);
-		if (measure) showInspector(surface, measure);
+		if (!measure || pointerOn) return;
+		if (!inspect || (inspect.surface === surface && inspect.measure.selector === measure.selector)) showInspector(surface, measure);
+		else waitToSwitch(surface, measure);
+	}
+
+	/** Another element while the panel shows: the pointer is on an element, so no hide; the switch comes after the rest. */
+	function waitToSwitch(surface, measure) {
+		generation += 1;
+		pending = { surface, measure };
+		const current = ++switches;
+		win.setTimeout(() => {
+			if (current !== switches || !pending) return;
+			const next = pending;
+			pending = null;
+			if (!pointerOn && accepts(next.surface)) showInspector(next.surface, next.measure);
+		}, DWELL_MS);
+	}
+
+	function cancelSwitch() {
+		switches += 1;
+		pending = null;
 	}
 
 	// ---- the panel
@@ -460,30 +512,38 @@ export function init(ctx) {
 	}
 
 	function showInspector(surface, measure) {
-		const result = describe(measure);
-		// A new element cancels a pending hide.
+		// A new element cancels a pending hide and a pending switch.
 		generation += 1;
+		cancelSwitch();
+		renderInspector(surface, measure);
+		els.inspector.hidden = false;
+		placeInspector(surface, measure.rect);
+	}
+
+	/** The panel's title, rows, note and Ask the agent to fix for `measure`, compared with the current tokens. */
+	function renderInspector(surface, measure) {
+		const result = describe(measure);
 		inspect = { surface, measure, flags: result.flags, text: result.text };
 		els.inspectorTitle.textContent = measure.label;
 		els.inspectorSelector.textContent = measure.selector;
 		els.inspectorSelector.title = measure.selector;
 		els.inspectorList.replaceChildren(...result.rows);
-		els.inspectorNote.textContent = TEXT.noTokens;
+		els.inspectorNote.textContent = Object.hasOwn(TEXT.problems, problem) ? TEXT.problems[problem] : TEXT.noTokens;
 		els.inspectorNote.hidden = state.tokens.length > 0;
 		const nothing = result.flags.length === 0;
 		els.inspectorFix.disabled = nothing;
 		els.inspectorFix.title = nothing ? TEXT.nothingToFix : "";
-		els.inspector.hidden = false;
-		placeInspector(surface, measure.rect);
 	}
 
 	/**
 	 * Hides the panel: the comment box opens or closes (closePopover runs this first, so every path that closes it
 	 * — focus mode ending, another size, Comment mode off, a pan — hides the panel too), Technical details goes off,
-	 * another design shows, or its frame goes (hideGoneInspector). Keyboard focus in it goes back to the canvas.
+	 * another design shows, its frame goes (hideGoneInspector), the focused artboard is re-centered (centerFocus) or Esc
+	 * is pressed in it. A pending switch ends with it. Keyboard focus in it goes back to the canvas.
 	 */
 	function hideInspector() {
 		generation += 1;
+		cancelSwitch();
 		pointerOn = false;
 		if (!inspect && els.inspector.hidden) return;
 		inspect = null;
@@ -492,11 +552,12 @@ export function init(ctx) {
 		if (focused) (state.focus ? state.focus.frame : els.viewport).focus();
 	}
 
-	/** Hides the panel when the frame it is beside is gone: a design.json reload, All sizes frames removed. */
+	/** Hides the panel when the frame it is beside is gone (a design.json reload, All sizes frames removed); a switch to a gone frame is off. */
 	function hideGoneInspector() {
-		if (!inspect) return;
+		if (!inspect && !pending) return;
 		const surfaces = actions.allBoards().flatMap(actions.surfacesOf);
-		if (!surfaces.includes(inspect.surface)) hideInspector();
+		if (pending && !surfaces.includes(pending.surface)) cancelSwitch();
+		if (inspect && !surfaces.includes(inspect.surface)) hideInspector();
 	}
 
 	/** The element was left: the panel goes soon, unless the pointer or the keyboard is in it by then. */
@@ -508,10 +569,25 @@ export function init(ctx) {
 		}, HIDE_MS);
 	}
 
-	els.inspector.addEventListener("pointerenter", () => { pointerOn = true; });
+	// With the pointer on the panel nothing changes: a switch it passed on its way is off.
+	els.inspector.addEventListener("pointerenter", () => {
+		pointerOn = true;
+		cancelSwitch();
+	});
 	els.inspector.addEventListener("pointerleave", () => {
 		pointerOn = false;
 		if (inspect) scheduleHide();
+	});
+	// Keyboard focus leaving the panel (not to another of its buttons) lets it go like the pointer does (WCAG 1.4.13).
+	els.inspector.addEventListener("focusout", (event) => {
+		if (!inspect || pointerOn || els.inspector.contains(event.relatedTarget)) return;
+		scheduleHide();
+	});
+	// Esc closes only the panel (Comment mode stays on), focus back on the canvas.
+	els.inspector.addEventListener("keydown", (event) => {
+		if (event.key !== "Escape" || event.shiftKey) return;
+		event.preventDefault();
+		hideInspector();
 	});
 	// The panel is not part of the canvas: the wheel over it never pans or zooms.
 	els.inspector.addEventListener("wheel", (event) => event.stopPropagation());

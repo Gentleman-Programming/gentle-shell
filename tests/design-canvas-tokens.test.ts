@@ -14,6 +14,8 @@ import { findAll, flush, loadCanvas, memoryStorage, read, texts, withClass, type
 const TOKENS_URL = "/t/api/system/tokens";
 const TECHNICAL_KEY = "gentle-design:technical";
 const HIDE_MS = 300;
+// While a panel shows, the pointer must rest this long on another element before the panel follows it.
+const DWELL_MS = 250;
 
 const TOKEN_SET = { exists: true, tokens: [
 	{ name: "--bg", value: "#1a1218", section: "Colors", group: "color" },
@@ -58,20 +60,29 @@ type Options = { replies?: Record<string, unknown>; tokens?: unknown; stored?: s
 /** The canvas with an in-memory localStorage; `timers` keeps the canvas's timeouts until the test runs them. */
 async function loadTokens(options: Options = {}) {
 	const storage = memoryStorage(options.stored === undefined ? {} : { [TECHNICAL_KEY]: options.stored }, options.broken);
-	const timers: Array<{ callback: () => void; ms: number; cleared: boolean }> = [];
+	// Every timer the canvas set, in order; its id is its index + 1, and `done` once it ran or was cleared.
+	const timers: Array<{ callback: () => void; ms: number; done: boolean }> = [];
 	const clock = options.timers ? {
-		setTimeout: (callback: () => void, ms = 0) => timers.push({ callback, ms, cleared: false }),
-		clearTimeout: (id: number) => { if (timers[id - 1]) timers[id - 1].cleared = true; },
+		setTimeout: (callback: () => void, ms = 0) => timers.push({ callback, ms, done: false }),
+		clearTimeout: (id: number) => { if (timers[id - 1]) timers[id - 1].done = true; },
 	} : {};
 	const replies = { ...(options.tokens === undefined ? { [TOKENS_URL]: TOKEN_SET } : options.tokens === null ? {} : { [TOKENS_URL]: options.tokens }), ...options.replies };
 	const canvas = await loadCanvas(300, replies, {}, { localStorage: storage.localStorage, ...clock, ...options.extraWindow });
 	// The fake DOM starts every element visible; index.html starts these hidden.
 	for (const id of ["gd-popover", "gd-menu", "gd-device-menu", "gd-inspector"]) canvas.document.getElementById(id).hidden = true;
-	/** Runs the panel's pending hide timers (the 300 ms ones), as if that time passed. */
-	const runHide = () => {
-		for (const timer of timers.splice(0)) if (!timer.cleared && timer.ms === HIDE_MS) timer.callback();
+	/** Runs the pending timers of `ms` (every pending one without it), as if that time passed; others stay pending. */
+	const run = (ms?: number) => {
+		for (const timer of timers.slice()) {
+			if (timer.done || (ms !== undefined && timer.ms !== ms)) continue;
+			timer.done = true;
+			timer.callback();
+		}
 	};
-	return { ...canvas, storage, runHide, timers };
+	/** The panel's pending hide timers (the 300 ms ones). */
+	const runHide = () => run(HIDE_MS);
+	/** The panel's pending switch to another element (the 250 ms rest). */
+	const runDwell = () => run(DWELL_MS);
+	return { ...canvas, storage, run, runHide, runDwell, timers };
 }
 type Canvas = Awaited<ReturnType<typeof loadTokens>>;
 
@@ -412,18 +423,221 @@ test("leaving the element hides the panel after 300 ms unless the pointer or the
 	assert.equal(shown(canvas), false, "and leaves when it leaves");
 
 	inspect(canvas, first.frame);
-	$(canvas, "gd-inspector-copy").parentElement = panelOf(canvas);
-	$(canvas, "gd-inspector-copy").focus();
+	const copy = $(canvas, "gd-inspector-copy");
+	copy.parentElement = panelOf(canvas);
+	copy.focus();
 	inspect(canvas, first.frame, null);
 	canvas.runHide();
 	assert.equal(shown(canvas), true, "keyboard focus inside keeps it");
-	canvas.document.activeElement = canvas.document.body;
+	canvas.document.body.focus();
+	copy.dispatch("focusout", { relatedTarget: canvas.document.body });
+	canvas.runHide();
+	assert.equal(shown(canvas), false, "and it goes once focus leaves it");
 
+	inspect(canvas, first.frame);
 	inspect(canvas, first.frame, null);
 	inspect(canvas, first.frame, { ...MEASURE, selector: "main > h1", label: "h1" });
 	canvas.runHide();
 	assert.equal(shown(canvas), true, "a new element cancels the pending hide");
-	assert.equal($(canvas, "gd-inspector-title").textContent, "h1");
+	canvas.runDwell();
+	assert.equal($(canvas, "gd-inspector-title").textContent, "h1", "and the panel follows it once the pointer rests on it");
+});
+
+test("focus leaving the panel hides it after the grace, unless it stays in the panel or the pointer is on it; Esc in the panel closes it", async () => {
+	const canvas = await inspecting({ timers: true });
+	const [first] = canvas.boards;
+	const copy = $(canvas, "gd-inspector-copy");
+	const fix = $(canvas, "gd-inspector-fix");
+	copy.parentElement = panelOf(canvas);
+	fix.parentElement = panelOf(canvas);
+	inspect(canvas, first.frame, OFF);
+	fix.focus();
+	copy.dispatch("focusout", { relatedTarget: fix });
+	canvas.runHide();
+	assert.equal(shown(canvas), true, "Tab from Copy to Ask the agent to fix stays in the panel");
+	panelOf(canvas).dispatch("pointerenter");
+	canvas.document.body.focus();
+	fix.dispatch("focusout", { relatedTarget: canvas.document.body });
+	canvas.runHide();
+	assert.equal(shown(canvas), true, "the pointer is on the panel");
+	panelOf(canvas).dispatch("pointerleave");
+	canvas.runHide();
+	assert.equal(shown(canvas), false);
+
+	inspect(canvas, first.frame, OFF);
+	copy.focus();
+	canvas.document.activeElement = null;
+	copy.dispatch("focusout", { relatedTarget: null });
+	canvas.runHide();
+	assert.equal(shown(canvas), false, "focus leaving the page");
+
+	inspect(canvas, first.frame, OFF);
+	copy.focus();
+	const esc = copy.dispatch("keydown", { key: "Escape" });
+	assert.equal(shown(canvas), false, "Esc closes it at once");
+	assert.equal(esc.defaultPrevented, true, "and only it: Comment mode stays on");
+	assert.equal(canvas.document.activeElement?.id, "gd-viewport", "focus goes back to the canvas");
+	assert.equal($(canvas, "gd-status").textContent, "Comment mode: click an element in an artboard");
+
+	focusOn(canvas, 0);
+	inspect(canvas, first.frame, OFF);
+	copy.focus();
+	copy.dispatch("keydown", { key: "Escape" });
+	assert.equal(shown(canvas), false);
+	assert.equal(canvas.document.activeElement === first.frame, true, "in focus mode, to the open artboard");
+});
+
+// ---- hover intent (L4: the pointer must be able to reach the panel's buttons)
+
+test("while the panel shows, quick passes over other elements keep it, so the pointer can reach Ask the agent to fix", async () => {
+	const canvas = await inspecting({ timers: true });
+	const [first] = canvas.boards;
+	first.frame.rect = { left: 100, top: 120, width: 400, height: 300 };
+	const place = () => [panelOf(canvas).style.left, panelOf(canvas).style.top];
+	const title = () => $(canvas, "gd-inspector-title").textContent;
+	inspect(canvas, first.frame, OFF);
+	assert.equal(shown(canvas), true, "the first panel shows at once");
+	const at = place();
+	// On its way to the panel the pointer crosses other elements of the artboard, then leaves the frame.
+	inspect(canvas, first.frame, { ...MEASURE, selector: "main > h1", label: "h1", rect: { x: 30, y: 200, width: 200, height: 30 } });
+	inspect(canvas, first.frame, { ...MEASURE, selector: "main > button", label: "button", rect: { x: 30, y: 260, width: 120, height: 32 } });
+	assert.deepEqual([title(), ...place()], ["p.or", ...at], "quick passes keep the element and the place");
+	inspect(canvas, first.frame, null);
+	panelOf(canvas).dispatch("pointerenter");
+	canvas.run();
+	assert.deepEqual([shown(canvas), title(), ...place()], [true, "p.or", ...at], "on the panel nothing changes");
+	inspect(canvas, first.frame, { ...MATCHING, selector: "main > h2", label: "h2" });
+	canvas.run();
+	assert.equal(title(), "p.or", "no report changes it while the pointer is on it");
+	$(canvas, "gd-inspector-fix").dispatch("click");
+	assert.equal($(canvas, "gd-popover-target").textContent, "01-a.html · main > p.or", "Ask the agent to fix opens the element the panel showed");
+	assert.match($(canvas, "gd-popover-text").value, /^Fix the values on main > p\.or /);
+});
+
+test("resting 250 ms on another element switches the panel to it; its own element re-places it at once; leaving everything hides it", async () => {
+	const canvas = await inspecting({ timers: true });
+	const [first, second] = canvas.boards;
+	first.frame.rect = { left: 100, top: 120, width: 400, height: 300 };
+	second.frame.rect = { left: 100, top: 520, width: 400, height: 300 };
+	const title = () => $(canvas, "gd-inspector-title").textContent;
+	const top = () => panelOf(canvas).style.top;
+	const h1 = { ...MEASURE, selector: "main > h1", label: "h1", rect: { x: 30, y: 200, width: 200, height: 30 } };
+	inspect(canvas, first.frame);
+	inspect(canvas, first.frame, h1);
+	assert.deepEqual([title(), top()], ["p.or", "110px"]);
+	canvas.runDwell();
+	assert.deepEqual([title(), top()], ["h1", "270px"], "the pointer rested on it");
+	inspect(canvas, first.frame, { ...h1, rect: { ...h1.rect, y: 100 } });
+	assert.equal(top(), "170px", "the shown element, scrolled: re-placed at once");
+
+	inspect(canvas, first.frame);
+	inspect(canvas, first.frame, h1);
+	canvas.runDwell();
+	assert.deepEqual([title(), top()], ["h1", "270px"], "back on the shown element before the rest: no switch");
+
+	// The pointer goes to another artboard: its frame's element after the rest, the first frame's leaving ignored.
+	inspect(canvas, second.frame);
+	inspect(canvas, first.frame, null);
+	canvas.runDwell();
+	canvas.runHide();
+	assert.deepEqual([shown(canvas), title(), top()], [true, "p.or", "510px"]);
+
+	// Leaving the page before the rest: no switch, and the panel goes after the grace.
+	inspect(canvas, second.frame, h1);
+	inspect(canvas, second.frame, null);
+	canvas.runDwell();
+	assert.equal(title(), "p.or");
+	canvas.runHide();
+	assert.equal(shown(canvas), false);
+
+	// A pending switch on another frame than the panel's, then the pointer leaves that frame too: the panel goes.
+	inspect(canvas, first.frame);
+	inspect(canvas, first.frame, null);
+	inspect(canvas, second.frame, h1);
+	inspect(canvas, second.frame, null);
+	canvas.run();
+	assert.equal(shown(canvas), false, "the pointer is on no element");
+
+	// A pending switch ends with the panel: Technical details off and on again before the rest.
+	inspect(canvas, first.frame);
+	inspect(canvas, first.frame, h1);
+	toggleTechnical(canvas);
+	toggleTechnical(canvas);
+	canvas.run();
+	assert.equal(shown(canvas), false);
+});
+
+// ---- the panel follows what changes under it
+
+test("tokens that change while the panel shows re-describe it at once, with no new report", async () => {
+	const canvas = await inspecting();
+	const [first] = canvas.boards;
+	inspect(canvas, first.frame, { ...MEASURE, color: { r: 1, g: 2, b: 3, a: 1 } });
+	assert.match(rowText(canvas, "Color"), /^#010203 ⚠ no token/);
+	assert.equal($(canvas, "gd-inspector-fix").disabled, false);
+	canvas.replies[TOKENS_URL] = { exists: true, tokens: [{ name: "--ink", value: "#010203", section: "Colors", group: "color" }, { name: "--paper", value: "#ffffff", section: "Colors", group: "color" }] };
+	await canvas.serverEvent("change", { slug: null, file: "system.md" });
+	assert.equal(shown(canvas), true);
+	assert.equal(rowText(canvas, "Color"), "#010203 ✓ --ink");
+	assert.equal($(canvas, "gd-inspector-fix").disabled, true, "nothing is off the new tokens");
+	// A hidden panel stays hidden.
+	toggleTechnical(canvas);
+	toggleTechnical(canvas);
+	canvas.replies[TOKENS_URL] = TOKEN_SET;
+	await canvas.serverEvent("change", { slug: null, file: "system.md" });
+	assert.equal(shown(canvas), false);
+});
+
+test("a re-center the canvas makes in focus mode (a layout.json change) hides the panel, which would be misplaced", async () => {
+	const layoutUrl = "/t/api/designs/alpha/layout";
+	const canvas = await inspecting({ replies: { [layoutUrl]: { layout: null } } });
+	focusOn(canvas, 0);
+	inspect(canvas, canvas.boards[0].frame);
+	assert.equal(shown(canvas), true);
+	canvas.replies[layoutUrl] = { layout: { arrangement: "column", positions: {} } };
+	await canvas.serverEvent("change", { slug: "alpha", file: "layout.json" });
+	assert.equal(shown(canvas), false);
+});
+
+test("a design/system.md the server could not read says why in the panel", async () => {
+	const noTokens = "No design/system.md tokens found, so values and contrast are shown without a comparison.";
+	const tooLarge = "design/system.md is over 256 KB, so its tokens were not read: values and contrast are shown without a comparison.";
+	const unreadable = "design/system.md could not be read, so values and contrast are shown without a comparison.";
+	for (const [problem, note] of [["too-large", tooLarge], ["unreadable", unreadable], ["other", noTokens], [3, noTokens]]) {
+		const canvas = await inspecting({ tokens: { exists: true, tokens: [], problem } });
+		inspect(canvas, canvas.boards[0].frame);
+		assert.deepEqual([$(canvas, "gd-inspector-note").hidden, $(canvas, "gd-inspector-note").textContent], [false, note], String(problem));
+	}
+	// The panel open while system.md grows too large, then is fixed.
+	const canvas = await inspecting();
+	inspect(canvas, canvas.boards[0].frame);
+	assert.equal($(canvas, "gd-inspector-note").hidden, true);
+	canvas.replies[TOKENS_URL] = { exists: true, tokens: [], problem: "too-large" };
+	await canvas.serverEvent("change", { slug: null, file: "system.md" });
+	assert.deepEqual([$(canvas, "gd-inspector-note").hidden, $(canvas, "gd-inspector-note").textContent, rowText(canvas, "Color")], [false, tooLarge, "#76616b"]);
+	canvas.replies[TOKENS_URL] = TOKEN_SET;
+	await canvas.serverEvent("change", { slug: null, file: "system.md" });
+	assert.equal($(canvas, "gd-inspector-note").hidden, true);
+});
+
+// ---- measuring only with Technical details on (T1)
+
+test("gd:mode tells every frame, size frames included, whether Technical details is on, so a frame measures only then", async () => {
+	const canvas = await loadTokens({ replies: WIDE_ALPHA });
+	const lastMode = (frame: FakeElement) => JSON.stringify(frame.contentWindow!.posted.filter((message) => message.type === "gd:mode").at(-1) ?? null);
+	const modes = (frames: FakeElement[]) => frames.map(lastMode);
+	const all = () => [...canvas.frames(), ...sizeFrames(canvas)];
+	const mode = (enabled: boolean, inspect: boolean) => JSON.stringify({ type: "gd:mode", enabled, inspect });
+	commentMode(canvas);
+	assert.deepEqual(modes(all()), [mode(true, false), mode(true, false)]);
+	toggleTechnical(canvas);
+	assert.deepEqual(modes(all()), [mode(true, true), mode(true, true)], "turning it on tells the frames at once");
+	focusOn(canvas, 0);
+	chooseSize(canvas, "all");
+	for (const frame of sizeFrames(canvas)) frame.dispatch("load");
+	assert.deepEqual(modes(sizeFrames(canvas)), [mode(true, true), mode(true, true), mode(true, true)], "a size frame that loads is told too");
+	toggleTechnical(canvas);
+	assert.deepEqual(modes(all()), all().map(() => mode(true, false)), "off: no frame measures");
 });
 
 test("the panel hides when its frame goes or its context ends: every exit path", async () => {
@@ -653,7 +867,7 @@ test("the docs describe the token inspector with the heuristics note, and Techni
 	assert.ok(start >= 0, "a Tokens entry");
 	const entry = section.slice(start, section.indexOf("\n", start));
 	assert.ok(entry.includes("These are heuristics: an element with a background image or gradient has no known background, and the match uses computed values, not the CSS that produced them."));
-	for (const words of ["**Technical details**", "Comment mode", "⚠ no token", "OKLab", "WCAG", "**Ask the agent to fix**", "**Copy**", "`design/system.md`", "`gentle-design:technical`"]) assert.ok(entry.includes(words), `the Tokens entry mentions ${words}`);
+	for (const words of ["**Technical details**", "Comment mode", "⚠ no token", "OKLab", "WCAG", "**Ask the agent to fix**", "**Copy**", "`design/system.md`", "`gentle-design:technical`", "only after the pointer rests on it (250 ms)", "`Esc` in the panel closes it", "keyboard focus leaves the panel", "over 256 KB or could not be read", "measure the element under the pointer only while Technical details is on"]) assert.ok(entry.includes(words), `the Tokens entry mentions ${words}`);
 	const rail = section.slice(section.indexOf("- **Tool rail**"), section.indexOf("\n", section.indexOf("- **Tool rail**")));
 	assert.ok(rail.includes("**Technical details**"), "the Tool rail entry names Technical details");
 });

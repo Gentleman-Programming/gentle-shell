@@ -138,7 +138,16 @@ const TOOL_PREFIX = "subagent_";
 // It names itself as automated so the model never attributes it to the human.
 // Persisted Bridge identities embed this exact text, so changing it would
 // unhide the wakes of existing sessions.
-const PARENT_WAKE_TEXT = "[System-generated Gentle Agents notification, not written by the user] Subagent output was delivered to this session above. Review it and continue.";
+const PARENT_WAKE_PREFIX = "[System-generated Gentle Agents notification, not written by the user]";
+type WakeTextKey = "subagent" | "job" | "monitor" | "output";
+const PARENT_WAKE_BODIES: Record<WakeTextKey, string> = {
+	subagent: "Subagent output was delivered to this session above. Review it and continue.",
+	job: "A background job exit notice was delivered to this session above. Review it and continue.",
+	monitor: "A monitor notice was delivered to this session above. Review it and continue.",
+	output: "Output was delivered to this session above. Review it and continue.",
+};
+const parentWakeText = (key: WakeTextKey): string => `${PARENT_WAKE_PREFIX} ${PARENT_WAKE_BODIES[key]}`;
+const PARENT_WAKE_TEXT = parentWakeText("subagent");
 const PARENT_WAKE_TYPE = "gentle-agents.wake";
 const BRIDGE_WAKE_IDENTITY_TYPE = "gentle-agents.wake-identity";
 interface BridgeWakeIdentity {
@@ -146,11 +155,32 @@ interface BridgeWakeIdentity {
 	nonce: string;
 	text: string;
 }
-const bridgeWakeText = (nonce: string): string => `${PARENT_WAKE_TEXT} [gentle-agents wake: ${nonce}]`;
-// Pi gives the hidden native wake to the model with the user role, so an
-// unlabeled English wake read as an English human turn and switched the reply
-// language. It disowns authorship and pins the human's language.
-const NATIVE_PARENT_WAKE_TEXT = `${PARENT_WAKE_TEXT} Reply in the language of the human's own last message, not the language of this notification or of the subagent output.`;
+const bridgeWakeText = (nonce: string, key: WakeTextKey = "subagent"): string => `${parentWakeText(key)} [gentle-agents wake: ${nonce}]`;
+const isBridgeWakeText = (nonce: string, text: string): boolean =>
+	(Object.keys(PARENT_WAKE_BODIES) as WakeTextKey[]).some((key) => text === bridgeWakeText(nonce, key));
+export type WakeDeliveryKind = "subagent" | "job" | "monitor";
+
+const NATIVE_WAKE_LANGUAGE_INSTRUCTION = "Reply in the language of the human's own last message, not the language of this notification or of the subagent output.";
+export const WAKE_TEXT_SUBAGENT = `${parentWakeText("subagent")} ${NATIVE_WAKE_LANGUAGE_INSTRUCTION}`;
+export const WAKE_TEXT_JOB = `${parentWakeText("job")} ${NATIVE_WAKE_LANGUAGE_INSTRUCTION}`;
+export const WAKE_TEXT_MONITOR = `${parentWakeText("monitor")} ${NATIVE_WAKE_LANGUAGE_INSTRUCTION}`;
+export const WAKE_TEXT_OUTPUT = `${parentWakeText("output")} ${NATIVE_WAKE_LANGUAGE_INSTRUCTION}`;
+export const NATIVE_PARENT_WAKE_TEXT = WAKE_TEXT_SUBAGENT;
+
+/**
+ * Resolves the automated parent wake prompt matching the delivery kinds accumulated
+ * since the last wake, avoiding confusing the model with "subagent output" after a background job.
+ */
+export function nativeParentWakeText(kinds: ReadonlySet<WakeDeliveryKind>): string {
+	const key = wakeTextKey(kinds);
+	return key === "job" ? WAKE_TEXT_JOB : key === "monitor" ? WAKE_TEXT_MONITOR : key === "output" ? WAKE_TEXT_OUTPUT : WAKE_TEXT_SUBAGENT;
+}
+function wakeTextKey(kinds: ReadonlySet<WakeDeliveryKind>): WakeTextKey {
+	if (kinds.size > 1) return "output";
+	if (kinds.has("job")) return "job";
+	if (kinds.has("monitor")) return "monitor";
+	return "subagent";
+}
 // How long a dispatched wake may take to start a parent run before a later
 // delivery may send another one.
 export const PARENT_WAKE_GRACE_MS = 30_000;
@@ -1262,7 +1292,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			const data = entry.data as Partial<BridgeWakeIdentity> | undefined;
 			if (data?.sessionId === ctx.sessionManager.getSessionId() && typeof data.nonce === "string"
 				&& /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(data.nonce)
-				&& data.text === bridgeWakeText(data.nonce)) {
+				&& typeof data.text === "string" && isBridgeWakeText(data.nonce, data.text)) {
 				bridgeWakeIdentity = data as BridgeWakeIdentity;
 				break;
 			}
@@ -1274,10 +1304,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// replacement changes the identity, never the transformer registration.
 		pi.registerMarkdownTransformer((markdown, context) =>
 			context.messageType === "user" && bridgeWakeIdentity?.sessionId === parentCtx?.sessionManager.getSessionId()
-				&& markdown === bridgeWakeIdentity?.text ? "" : markdown);
+				&& bridgeWakeIdentity !== undefined && isBridgeWakeText(bridgeWakeIdentity.nonce, markdown) ? "" : markdown);
 	}
-	const bridgeWake = (): string => {
-		if (!parentCtx) return PARENT_WAKE_TEXT;
+	const bridgeWake = (key: WakeTextKey = "subagent"): string => {
+		if (!parentCtx) return parentWakeText(key);
 		try {
 			if (!hasWakeTransformer) throw new Error("Markdown transformer API unavailable");
 			if (!bridgeWakeIdentity || bridgeWakeIdentity.sessionId !== parentCtx.sessionManager.getSessionId()) {
@@ -1287,14 +1317,14 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				pi.appendEntry(BRIDGE_WAKE_IDENTITY_TYPE, identity);
 				bridgeWakeIdentity = identity;
 			}
-			return bridgeWakeIdentity.text;
+			return bridgeWakeText(bridgeWakeIdentity.nonce, key);
 		} catch {
 			// Compatibility fallback preserves continuation, not invisibility.
 			if (!wakeVisibilityWarning) {
 				wakeVisibilityWarning = true;
 				try { parentCtx.ui.notify("Gentle Agents cannot hide Claude Bridge continuation on this runtime; the generated user wake remains visible.", "warning"); } catch { /* UI failure must not drop continuation. */ }
 			}
-			return PARENT_WAKE_TEXT;
+			return parentWakeText(key);
 		}
 	};
 	// Mirrors the host's agent run, which spans agent_start through
@@ -1313,6 +1343,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// when marked at input) and an owed wake is sent then; it never suppresses later wakes for longer than that.
 	let wakeOwed = false;
 	let wakeQueued = false;
+	const pendingWakeKinds = new Set<WakeDeliveryKind>();
 	let promptStarting = false;
 	let cancelPromptGrace: (() => void) | undefined;
 	let cancelBoundaryFlush: (() => void) | undefined;
@@ -1431,6 +1462,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (route === "hold") armHoldRecheck();
 		if (route !== "idle") return;
 		wakeOwed = false;
+		const kinds = new Set(pendingWakeKinds);
+		pendingWakeKinds.clear();
 		endDeliveryRetry();
 		beginPromptStart();
 		try {
@@ -1440,11 +1473,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			// Only Claude Bridge is currently evidenced to require prompt capture;
 			// registering a custom provider alone does not make it a bridge.
 			if (parentCtx?.model?.provider === "claude-bridge") {
-				pi.sendUserMessage(bridgeWake(), { deliverAs: "steer" });
+				pi.sendUserMessage(bridgeWake(wakeTextKey(kinds)), { deliverAs: "steer" });
 			} else {
 				pi.sendMessage({
 					customType: PARENT_WAKE_TYPE,
-					content: NATIVE_PARENT_WAKE_TEXT,
+					content: nativeParentWakeText(kinds),
 					display: false,
 				}, { deliverAs: "steer", triggerTurn: true });
 			}
@@ -1455,6 +1488,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			// retried once per grace, a bounded number of times in a row.
 			endPromptStart();
 			wakeOwed = true;
+			for (const kind of kinds) pendingWakeKinds.add(kind);
 			armDeliveryRetry();
 		}
 	};
@@ -1462,13 +1496,19 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// `runMode` is how a message joins a run in progress: child content steers
 	// (see the #867 rationale above); an orchestrator session message is a
 	// follow-up, so it never interrupts the turn the parent is working on.
-	const sendToParent = (message: Parameters<ExtensionAPI["sendMessage"]>[0], route: Exclude<ParentRoute, "hold">, runMode: "steer" | "followUp" = "steer") => {
+	const sendToParent = (
+		message: Parameters<ExtensionAPI["sendMessage"]>[0],
+		route: Exclude<ParentRoute, "hold">,
+		runMode: "steer" | "followUp" = "steer",
+		kind: WakeDeliveryKind = "subagent",
+	) => {
 		if (route === "run") {
 			pi.sendMessage(message, { deliverAs: runMode, triggerTurn: true });
 			return;
 		}
 		pi.sendMessage(message, { triggerTurn: false });
 		wakeOwed = true;
+		pendingWakeKinds.add(kind);
 		requestWake();
 	};
 
@@ -1598,8 +1638,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			const content = notice.kind === "events" ? monitorEventsText(job, notice.batch)
 				: notice.kind === "stopped" ? monitorStoppedText(job, notice.reason) : jobNoticeText(job);
 			const event = notice.kind === "events" ? "events" : notice.kind === "stopped" ? notice.reason : undefined;
+			const kind: WakeDeliveryKind = job.kind === "monitor" ? "monitor" : "job";
 			try {
-				sendToParent({ customType: JOB_NOTICE_TYPE, content, display: true, details: jobDetails(job, event) }, route);
+				sendToParent({ customType: JOB_NOTICE_TYPE, content, display: true, details: jobDetails(job, event) }, route, "steer", kind);
 			} catch {
 				failed.push(notice);
 			}
@@ -1638,6 +1679,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		wakeVisibilityWarning = false;
 		parentRunActive = false;
 		wakeOwed = false;
+		pendingWakeKinds.clear();
 		heldOrchestratorMessages = [];
 		completionsMaybePending = false;
 		endPromptStart();
@@ -1727,6 +1769,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		parentRunActive = true;
 		// The run carries everything stored while the parent was idle.
 		wakeOwed = false;
+		pendingWakeKinds.clear();
 		endDeliveryRetry();
 		deliveryRetries = 0;
 		endPromptStart();

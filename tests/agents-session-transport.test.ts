@@ -132,6 +132,40 @@ test("lists only advertised peer IDs without mutating the private registry", asy
 	assert.equal(remaining.length, 3, "only the live records (self, alpha twice) survive the sweep");
 });
 
+// gentle-shell#1443: inode existence does not imply liveness. A session that
+// dies without unlinking its socket leaves an advertises()-passing record that
+// must be purged from the list itself — not only after a refused send or an
+// over-cap sweep. The probe is refusal-only: ambiguous outcomes keep records.
+// Real reproduction: a subprocess binds the endpoint, then SIGKILL leaves the
+// socket file behind (net.Server.close() never runs), exactly the liveness lie
+// that advertises() cannot detect with lstat alone.
+const orphanSocket = async (path: string) => {
+	const child = spawn(process.execPath, ["--input-type=module", "--eval", `import { createServer } from "node:net"; const server = createServer(() => {}); server.listen(${JSON.stringify(path)}, () => console.log("ready"));`], { stdio: ["ignore", "pipe", "pipe"] });
+	await Promise.race([once(child.stdout, "data"), once(child, "error").then(([error]) => { throw error; })]);
+	child.kill("SIGKILL");
+	await once(child, "close");
+	assert.equal((await lstat(path)).isSocket(), true, "the orphaned socket file survives the killed listener");
+};
+
+test("lists only peers whose surviving socket still accepts connections (#1443)", async (t) => {
+	const transport = await registry(t);
+	const live = await raw(t, transport, "live");
+	const dead = await transport.record("dead", 2);
+	await orphanSocket(dead.endpoint);
+	await transport.publish(dead);
+	assert.deepEqual(await transport.list(), [{ sessionId: "live", reachability: "unknown" }], "a record whose socket file survives a dead listener is not advertised");
+	assert.deepEqual((await readdir(transport.paths.presence)).sort(), [transport.presencePath(live).split("/").pop()], "only the live record remains; the provably dead one was purged");
+	assert.equal((await lstat(dead.endpoint)).isSocket(), true, "socket files belong to their owning session and are never removed by the scan");
+});
+
+test("a live listener keeps being listed and its record survives the scan", async (t) => {
+	const transport = await registry(t);
+	await raw(t, transport, "self");
+	const peer = await raw(t, transport, "peer");
+	assert.deepEqual(await transport.list("self"), [{ sessionId: "peer", reachability: "unknown" }]);
+	assert.deepEqual(await transport.resolve(peer.sessionId), peer, "the live record is untouched by the scan");
+});
+
 test("keeps same-session activations distinct and old cleanup preserves the newest", async (t) => {
 	const transport = await registry(t);
 	const old = await transport.record("same-session", 1);

@@ -95,6 +95,8 @@ export function init(ctx) {
 
 	function renderHandoffs() {
 		state.boards.forEach(renderHandoff);
+		// The handoff row changes the labels' height: the arrangement and the minimap (its chosen block too) follow.
+		actions.boardsResized();
 	}
 
 	function setHandoffs(slug, data) {

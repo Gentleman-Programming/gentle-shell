@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { resolve } from "node:path";
-import type { NativeReviewCli } from "./native-review-cli.ts";
+import { NATIVE_UNTRACKED_SCOPE, type NativeReviewCli } from "./native-review-cli.ts";
 import { recognizeReviewDeliveryActions } from "./destructive-command-guard.ts";
 import { resolveSessionWorktree, worktreeGitEnvironment } from "./session-worktree-registry.ts";
 
@@ -15,6 +15,23 @@ async function identity(root: string, baseRef: string): Promise<string | undefin
 			const ids = stdout.trim().split(/\r?\n/);
 			done(!error && ids.length === 2 && ids.every(id => /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(id)) ? ids.join("\n") : undefined);
 		}));
+}
+
+/**
+ * gentle-shell#3169: native assess refuses a committed-only range while any
+ * untracked file exists (a PR body written for `gh pr create --body-file`)
+ * unless the untracked inventory is declared. A base-diff snapshot never
+ * includes untracked files, so excluding them leaves the assessed range
+ * unchanged. The digest comes only from native status; without it nothing is
+ * declared and native keeps deciding.
+ */
+export async function committedRangeUntrackedExclusion(cli: Pick<NativeReviewCli, "targetStatus"> | null | undefined, cwd: string, baseRef: string,
+	signal?: AbortSignal): Promise<{ untrackedScope?: typeof NATIVE_UNTRACKED_SCOPE.EXCLUDE; expectedUntrackedInventory?: string }> {
+	if (!cli?.targetStatus) return {};
+	try {
+		const inventory = (await cli.targetStatus({ cwd, baseRef, committedOnly: true, agent: "pi", ...(signal ? { signal } : {}) })).eligibleUntrackedInventory;
+		return typeof inventory === "string" && inventory ? { untrackedScope: NATIVE_UNTRACKED_SCOPE.EXCLUDE, expectedUntrackedInventory: inventory } : {};
+	} catch { return {}; }
 }
 
 /** One fresh check per repository/batch. The existing session registry supplies only a base-ref hint. */
@@ -40,13 +57,15 @@ export async function checkReviewDeliveryPreflight(cwd: string, toolName: string
 				if (bounded.aborted || !current()) return deny("Session changed during preflight; assess again.");
 				if (mode.status.effective === "off") continue;
 				if (mode.status.effective !== "on") return deny("RDD mode is unavailable; resolve it before delivery.");
-				if (toolName !== "bash" || actions.some(action => action.kind === "change")) return deny("Finish candidate-changing commands or background waits separately, then issue delivery so the resulting commits can be assessed.");
+				if (toolName !== "bash" || deliveries.some(delivery => delivery.background) || actions.some(action => action.kind === "change")) return deny("Finish candidate-changing commands or background waits separately, then issue delivery so the resulting commits can be assessed.");
 				const baseRef = baseRefFor(root);
 				if (!baseRef) return deny('Select the actual committed range with gentle_review assess input {"baseRef":"<slice base>","committedOnly":true}.');
 				const before = await identity(root, baseRef);
 				if (!before || !cli.assess) return deny("The selected base or native assessment is unavailable; resolve it before delivery.");
 				if (bounded.aborted || !current()) return deny("Session changed during preflight; assess again.");
-				const assessment = await cli.assess({ cwd: root, baseRef, committedOnly: true, signal: bounded });
+				const untracked = await committedRangeUntrackedExclusion(cli, root, baseRef, bounded);
+				if (bounded.aborted || !current()) return deny("Session changed during preflight; assess again.");
+				const assessment = await cli.assess({ cwd: root, baseRef, committedOnly: true, ...untracked, signal: bounded });
 				if (bounded.aborted || !current()) return deny("Session changed during preflight; assess again.");
 				if (assessment.candidate.kind !== "base-diff" || assessment.candidate.baseRef !== baseRef || typeof assessment.reviewDue !== "boolean") return deny("Native assessment did not confirm the selected committed range.");
 				if (assessment.reviewDue) {

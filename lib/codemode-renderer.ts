@@ -130,6 +130,7 @@ class CodemodeCard implements Component {
  * these rules cost nothing when codemode is off and reach delegated children too.
  */
 export const CODEMODE_GUIDELINES: readonly string[] = [
+	"gentle_review* tools are model-only: use direct tool calls, never tools.gentle_review(...) in codemode. ALL_TOOLS lists only callable tools; absence there does not mean the direct tool is unavailable.",
 	"Use codemode as a thin orchestration layer that cuts model/tool round trips, not a place for the whole task: give each script one coherent objective (gather context, prepare one change, run checks, or save evidence) and never mix uncertain exploration, file mutations, and remote publishing in one script.",
 	"In codemode, parallelize by independence, not by count: run independent calls together with Promise.allSettled() and label each result so partial failures stay attributable; run dependent steps (read, decide, edit, verify) sequentially and never parallelize writes that can overlap.",
 	"In codemode, a fulfilled promise is not success: check each result's own failure fields (bash exit_code, MCP isError, truncation flags) and throw or report the failure instead of assuming the call worked. Await every tool call before the script ends.",

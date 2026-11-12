@@ -8,11 +8,21 @@ This is a Shell prompt-guidance improvement, not an incident closure for #2211 o
 | --- | --- |
 | A test or harness check fails, but a correction and rerun remain in scope and within the existing budget | Correct and continue without asking for approval of each transition. Do not reset the budget or weaken the check. |
 | The human specified one run, no retries, or diagnostic only | Honor that limit; do not propose diagnostic-only or single-attempt authorization unless requested. |
-| Proof is genuinely inaccessible, consent is required, an action is denied, or the correction budget is exhausted | Stop and report the blocker. Terminal outcomes and existing bounded-stop rules remain binding; an unavailable verifier is not retried. |
+| Proof is genuinely inaccessible, consent is required, an action is denied, or the correction budget is exhausted | Stop and report the blocker. Terminal outcomes and existing bounded-stop rules remain binding; an unavailable verifier is not retried automatically. The narrow human-requested quota recovery below is a separate attempt. |
 | A worker cannot perform an upgrade | Only the parent may act after explicit authorization of the operation, exact scope and ownership, preservation, permitted tools, applicable fresh consent and guards, a validated backup, applicable artifact/migration validation, and a recovery path are established. |
 | An authorized rollback mixes task changes and unrelated changes, even in one file | Preserve unrelated edits; remove only proven task-created helpers. Never blanket restore, reset, or clean. Ambiguous ownership or denial stops the operation. |
 
 Broad feature approval is not destructive-operation authority. Do not reroute a denial to another worker or tool. No real maintenance, backup, migration, rollback, destructive Git operation, or model/provider operation was performed for this work.
+
+## Temporary verifier quota recovery
+
+The always-on prompt points to `assets/orchestrator-quota-recovery.md`; the parent loads these conditions only when recovery is requested.
+
+A verifier that ended on a temporary quota error without a verdict has not supplied proof or approval. Its automatic cycle stops. After availability is restored, the human can explicitly request one new bounded attempt at the missing verification for the same candidate. A general request to continue implementation is not that request.
+
+Preserve the failed attempt and still-valid successful checks; run the missing verification rather than replaying passed suites. Before dispatch, confirm the previous child has ended and no child has uncertain status. A candidate change requires the ordinary verification decision for that changed candidate. Do not automatically wait, retry, or substitute a provider/model. Consent, actual denials, explicit one-run/no-retry limits, terminal native outcomes and exhausted native budgets remain binding; this request does not reset them.
+
+This guidance changes no runtime quota detection, provider selection, or native review authority. The provider-owned Close text and pinned contracts remain unchanged. Delivered-instruction tests do not establish model adherence or a successful subscription-recovery journey.
 
 ## Current bounded checks
 

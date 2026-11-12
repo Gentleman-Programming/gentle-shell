@@ -301,6 +301,24 @@ for (const scenario of ["background", "task", "append-failure", "overflow", "byt
 	});
 }
 
+test("orchestrator_session_id accepts a JSON-string state with actionable errors", async t => {
+	const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+	gentleAgents(h.pi, {}, runtime.deps);
+	await h.fire("session_start", ctx);
+	const tool = h.tools.get("orchestrator_session_id")!;
+	const before = h.entries.length;
+	// A JSON-encoded string publishes exactly like the equivalent object.
+	const result = await tool.execute("string", { state: JSON.stringify({ objective: "From string", work: { area: "gentle-ai", topic: "string-state" } }) }, undefined, undefined, ctx);
+	assert.match(result.content[0].text, /Current alias \(CURRENT TASK\): string-state/);
+	const published = h.entries.at(-1)!.data as { state: { objective: string } };
+	assert.equal(published.state.objective, "From string");
+	assert.equal(h.entries.length, before + 1);
+	// Malformed JSON fails with an actionable message, never a schema riddle.
+	await assert.rejects(tool.execute("bad-json", { state: "{objective:" }, undefined, undefined, ctx), /JSON/);
+	// A valid JSON string with a flat shape names the nesting rule.
+	await assert.rejects(tool.execute("bad-shape", { state: JSON.stringify({ objective: "x", area: "flat" }) }, undefined, undefined, ctx), /work/);
+});
+
 test("invalid run work rejects before foreign consent or allocation", async t => {
 	const h = fakePi(), runtime = deps(), { ctx, dialogs } = fakeContext();
 	gentleAgents(h.pi, {}, runtime.deps);
@@ -4725,16 +4743,23 @@ test("a task that finishes live stays visible as history, in both scopes, and it
 	const started = await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Persist me", mode: "background" }, undefined, undefined, ctx);
 	const id = (started.details.gentleAgents as { taskId: string }).taskId;
 	await tick();
-	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Kept." }] }] });
-	harness.children[0].emit({ type: "agent_settled" });
-	await tick();
 	const tasksDir = join(home, ".pi", "agent", "gentle-agents", "tasks");
 	let stored = await loadHistory(tasksDir);
 	for (let attempt = 0; attempt < 40 && !stored.some((entry) => entry.task.id === id); attempt += 1) {
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		stored = await loadHistory(tasksDir);
 	}
-	assert.ok(stored.some((entry) => entry.task.id === id && entry.task.result === "Kept."), "the finished task is on disk");
+	assert.ok(stored.some((entry) => entry.task.id === id && entry.task.result !== "Kept."), "observe the launch record before the child finishes");
+	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Kept." }] }] });
+	harness.children[0].emit({ type: "agent_settled" });
+	await tick();
+	// The last observed history can still contain the durable launch record.
+	const hasFinishedResult = () => stored.some((entry) => entry.task.id === id && entry.task.status === TASK_STATUS.COMPLETED && entry.task.result === "Kept.");
+	for (let attempt = 0; attempt < 40 && !hasFinishedResult(); attempt += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		stored = await loadHistory(tasksDir);
+	}
+	assert.ok(hasFinishedResult(), "the finished task is on disk");
 
 	// A completely different session still resolves it by id on demand, with
 	// nothing restored in advance.

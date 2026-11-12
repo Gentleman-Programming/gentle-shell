@@ -23,6 +23,9 @@ export function init(ctx) {
 
 	function openPopover(board, pick) {
 		win.clearTimeout(state.closeTimer);
+		// A pick on another artboard replaces the open one: that artboard's highlight goes, as on a close.
+		const previous = state.pick && state.pick.board;
+		if (previous && previous !== board) previous.frame.contentWindow?.postMessage({ type: "gd:clear" }, "*");
 		store.setPopover({ pick: { board, ...pick } });
 		els.target.textContent = `${board.artboard.file} · ${pick.selector}`;
 		els.message.textContent = "";

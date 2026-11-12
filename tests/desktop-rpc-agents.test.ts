@@ -679,6 +679,8 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
 
 interface RealOwnerHarness {
+	handlers: Map<string, Array<(event: unknown, ctx: ExtensionContext) => unknown>>;
+	listeners: Map<string, Set<(data: unknown) => void>>;
 	pi: ExtensionAPI;
 	ctx: ExtensionContext;
 	service: DesktopAgentsService;
@@ -788,7 +790,7 @@ async function realOwnerHarness(t: test.TestContext): Promise<RealOwnerHarness> 
 
 	const service = await discoverDesktopAgentsService(pi, ctx);
 	assert.ok(service, "the real owner seam must answer in-process");
-	return { pi, ctx, service, tools, children, tasksDir: historyDir(home, agentHome) };
+	return { pi, ctx, service, tools, children, tasksDir: historyDir(home, agentHome), handlers, listeners };
 }
 
 async function launchBackgroundTask(h: RealOwnerHarness): Promise<string> {
@@ -877,4 +879,14 @@ test("the real owner persists the final usage breakdown so restored finished tas
 	assert.ok(stored, "the finished task was persisted");
 	assert.equal(stored.task.status, TASK_STATUS.COMPLETED);
 	assert.deepEqual(stored.task.usage, { input: 100, output: 40, cacheRead: 30, cacheWrite: 10, reasoning: 5 });
+});
+
+test("a shut-down owner leaves the agents service channel and never answers discovery", async (t) => {
+	const harness = await realOwnerHarness(t);
+	assert.equal(harness.listeners.get(DESKTOP_AGENTS_SERVICE_CHANNEL)?.size, 1, "one owner answers while the session is live");
+	for (const handler of harness.handlers.get("session_shutdown") ?? []) await handler({}, harness.ctx);
+	assert.equal(harness.listeners.get(DESKTOP_AGENTS_SERVICE_CHANNEL)?.size ?? 0, 0, "the owner subscription is removed on shutdown");
+	let answered = 0;
+	harness.pi.events.emit(DESKTOP_AGENTS_SERVICE_CHANNEL, { context: harness.ctx, respond: () => { answered += 1; } });
+	assert.equal(answered, 0, "a replaced runtime is never discovered through the old owner");
 });

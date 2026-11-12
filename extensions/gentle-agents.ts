@@ -1240,7 +1240,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			try { observer(sessionId); } catch { /* an observer never breaks jobs */ }
 		}
 	};
-	pi.events.on(DESKTOP_JOBS_SERVICE_CHANNEL, (payload: unknown) => {
+	const unsubscribeDesktopJobsService = pi.events.on(DESKTOP_JOBS_SERVICE_CHANNEL, (payload: unknown) => {
 		if (!payload || typeof payload !== "object") return;
 		const request = payload as Partial<{ context: ExtensionContext; respond(service: DesktopJobsService): void }>;
 		if (typeof request.respond !== "function" || !request.context) return;
@@ -1301,7 +1301,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			try { observer(sessionId); } catch { /* an observer never breaks agents */ }
 		}
 	};
-	pi.events.on(DESKTOP_AGENTS_SERVICE_CHANNEL, (payload: unknown) => {
+	const unsubscribeDesktopAgentsService = pi.events.on(DESKTOP_AGENTS_SERVICE_CHANNEL, (payload: unknown) => {
 		if (!payload || typeof payload !== "object") return;
 		const request = payload as Partial<{ context: ExtensionContext; respond(service: DesktopAgentsService): void }>;
 		if (typeof request.respond !== "function" || !request.context) return;
@@ -3472,6 +3472,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.on("session_shutdown", async () => {
 		shuttingDown = true;
 		stopAgentsStatusNotifications();
+		// Both Desktop owner services leave the bus with the session, so a
+		// replaced runtime is never discovered through a stale owner.
+		unsubscribeDesktopJobsService();
+		unsubscribeDesktopAgentsService();
 		completions.dropAll();
 		messages.dropAll();
 		// No stale busy may survive the runtime.

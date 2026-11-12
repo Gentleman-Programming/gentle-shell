@@ -612,6 +612,8 @@ test("list_jobs answers jobs_unavailable through the transport without an owner 
 // ---- Real owner: the gentle-agents jobs seam drives monitor self-stop ----
 
 interface RealOwnerHarness {
+	handlers: Map<string, Array<(event: unknown, ctx: ExtensionContext) => unknown>>;
+	listeners: Map<string, Set<(data: unknown) => void>>;
 	pi: ExtensionAPI;
 	ctx: ExtensionContext;
 	tools: Map<string, any>;
@@ -743,7 +745,7 @@ async function realOwnerHarness(t: test.TestContext): Promise<RealOwnerHarness> 
 	bridge.wire((event, data) => events.push({ event, data }));
 	await bridge.start();
 
-	return { pi, ctx, tools, fake, scheduled, service, events, fireTimeout: (ms = 1000) => scheduled.fire(ms) };
+	return { pi, ctx, tools, fake, scheduled, service, events, fireTimeout: (ms = 1000) => scheduled.fire(ms), handlers, listeners };
 }
 
 test("the real owner notifies a monitor self-timeout exactly once and suppresses duplicate lists", async (t) => {
@@ -780,4 +782,14 @@ test("the real owner notifies a monitor self-timeout once even without pending l
 	assert.deepEqual(harness.events[1]!.data, {
 		jobs: [{ id: "job-1", label: "tail -f app.log", status: "stopped", startedAt: 1000, endedAt: 1000 }],
 	});
+});
+
+test("a shut-down owner leaves the jobs service channel and never answers discovery", async (t) => {
+	const harness = await realOwnerHarness(t);
+	assert.equal(harness.listeners.get(DESKTOP_JOBS_SERVICE_CHANNEL)?.size, 1, "one owner answers while the session is live");
+	for (const handler of harness.handlers.get("session_shutdown") ?? []) await handler({}, harness.ctx);
+	assert.equal(harness.listeners.get(DESKTOP_JOBS_SERVICE_CHANNEL)?.size ?? 0, 0, "the owner subscription is removed on shutdown");
+	let answered = 0;
+	harness.pi.events.emit(DESKTOP_JOBS_SERVICE_CHANNEL, { context: harness.ctx, respond: () => { answered += 1; } });
+	assert.equal(answered, 0, "a replaced runtime is never discovered through the old owner");
 });

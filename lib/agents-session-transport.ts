@@ -184,7 +184,23 @@ export class SessionPresenceRegistry {
 				}
 			}
 		} catch (error) { boundary(error); }
-		return [...newest.values()].sort((left, right) => left.sessionId.localeCompare(right.sessionId));
+		// gentle-shell#1443: advertises() only proves the socket file exists, not
+	// that its listener is alive — a session killed without unlinking would
+	// stay advertised forever otherwise. Probe each candidate once, bounded,
+	// with the sweep's own refusal-only liveness: provably dead records are
+	// excluded and purged; ambiguous outcomes stay advertised.
+	const advertised = [...newest.values()];
+	const live = new Set<string>();
+	let next = 0;
+	const worker = async () => {
+		while (next < advertised.length) {
+			const record = advertised[next++];
+			if (await this.liveness(record.endpoint) !== "dead") live.add(record.sessionId);
+			else await this.removeOwn(record).catch(() => {});
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(SWEEP_PROBE_CONCURRENCY, advertised.length) }, worker));
+	return advertised.filter((record) => live.has(record.sessionId)).sort((left, right) => left.sessionId.localeCompare(right.sessionId));
 	}
 
 	resolve(id: string): Promise<PresenceRecord> {

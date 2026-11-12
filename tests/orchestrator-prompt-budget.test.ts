@@ -59,7 +59,9 @@ test("rendered orchestrator core and selected declarations fit the byte budget",
 	// cost-speed-painpoints S15 P7 (S7): the classified-work sentence of orchestrator_session_id became conditional; 16,694 -> 16,691 B.
 	// cost-speed-painpoints S15 P5a: always-on verdicts C7, C9, C12, X1, X3 and C8; 16,691 -> 16,683 B.
 	// cost-speed P14 (PD-81): the core's Evidence-budget lookup number matches the runtime; 16,683 -> 16,671 B.
-	assert.ok(total <= 16671, `rendered core ${prompt} B + declarations ${declarationBytes} B = ${total} B`);
+	// #3188: orchestrator_session_id state also accepts a JSON string (same validation), +18 B structural anyOf
+	// variant with no added description text; 16,671 -> 16,689 B.
+	assert.ok(total <= 16689, `rendered core ${prompt} B + declarations ${declarationBytes} B = ${total} B`);
 });
 
 // Pi 1.4 does not export its pure system assembler from the package root.
@@ -126,7 +128,9 @@ test("fixed harness is independent of ambient background policy", () => {
 });
 
 const schemaDigests: Record<string, string> = {
-	orchestrator_session_id: "5fb49381808a8dc1146d89409ba6237380b62c871282a99104770b24902589e0",
+	// #3188: intentional structural change — state also accepts a JSON string
+	// (parsed and validated with the same rules as the object form).
+	orchestrator_session_id: "fdd8a6164daeab8625e2569345af0a8fe35a3407c9911823bca44333160e9c9d",
 	orchestrator_list: "fe50d306a023bfaf20fddeb8696a3e62b84534b02efb6d699f9991b129a709fa",
 	subagent_run: "02e15acc80fde692b0e7ceab434c248b733f33783b176606119969952cd16036",
 };

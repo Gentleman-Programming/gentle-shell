@@ -104,6 +104,10 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport
 	color: var(--gd-muted);
 }
 
+/* Row, Column and Grid: a group like the zoom, the current arrangement pressed. */
+.gd-arrange button { padding: 4px 6px; color: var(--gd-muted); }
+.gd-arrange button[aria-pressed="true"] { border-color: var(--gd-accent); color: var(--gd-accent); }
+
 .gd-toggle[aria-pressed="true"], .gd-primary {
 	background: var(--gd-accent);
 	border-color: var(--gd-accent);
@@ -164,14 +168,16 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport
 }
 
 .gd-viewport.gd-panning { cursor: grabbing; }
+/* Space held: every press pans, over an artboard too. */
+.gd-viewport.gd-space-pan, .gd-viewport.gd-space-pan * { cursor: grab; }
+.gd-viewport.gd-space-pan.gd-panning, .gd-viewport.gd-space-pan.gd-panning * { cursor: grabbing; }
 
+/* The world is as big as the bounds of its boards (canvas-layout.js sizes it); each board sits at its position
+   in design/<slug>/layout.json, or in a row, 80 px apart, when the design has none. */
 .gd-world {
 	position: absolute;
 	top: 0;
 	left: 0;
-	display: flex;
-	align-items: flex-start;
-	gap: 80px;
 	padding: 0;
 	transform-origin: 0 0;
 	will-change: transform;
@@ -184,11 +190,25 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport
 	flex: none;
 }
 
+/* Layout: each artboard where canvas-layout.js places it; the one being moved stays above the others. */
+.gd-world .gd-artboard { position: absolute; top: 0; left: 0; }
+.gd-world .gd-lifted { z-index: 1; }
+.gd-viewport.gd-moving, .gd-viewport.gd-moving * { cursor: grabbing; }
+
+/* The artboard pressed last, title and frame, until a press elsewhere or Esc. */
+.gd-world .gd-selected {
+	outline: calc(2px * var(--gd-inv-zoom, 1)) solid var(--gd-accent);
+	outline-offset: calc(6px * var(--gd-inv-zoom, 1));
+}
+
+/* The board is placed with no width, so it shrinks to its content: the label never adds to that width
+   (a long title or tradeoff wraps), and the board stays as wide as its frame, the size the layout places. */
 .gd-artboard-label {
 	position: relative;
 	display: flex;
 	flex-direction: column;
 	gap: 2px;
+	contain: inline-size;
 }
 
 /* The handoff row above Implement this: anchored to the label's bottom right, kept at screen
@@ -351,6 +371,64 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport
 }
 
 .gd-back[hidden] { display: none; }
+
+/* The minimap: bottom right of the viewport, over the artboards. canvas-minimap.js draws its map in this
+   fixed size (MINIMAP there): a block per board and the visible area outlined. */
+.gd-minimap {
+	position: absolute;
+	right: 16px;
+	bottom: 16px;
+	z-index: 5;
+	padding: 8px;
+	background: var(--gd-panel);
+	border: 1px solid var(--gd-border);
+	border-radius: 8px;
+	cursor: default;
+}
+
+.gd-minimap-title {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	margin: 0 0 6px;
+	color: var(--gd-muted);
+	font-size: 11px;
+	font-weight: 600;
+}
+
+.gd-minimap-map {
+	position: relative;
+	width: 204px;
+	height: 96px;
+	overflow: hidden;
+	border-radius: 6px;
+	background: var(--gd-bg);
+	cursor: pointer;
+	touch-action: none;
+}
+
+.gd-minimap-block {
+	position: absolute;
+	border-radius: 2px;
+	background: var(--gd-muted);
+	opacity: 0.5;
+}
+
+.gd-minimap-system {
+	background: var(--gd-border);
+}
+
+.gd-minimap-chosen {
+	background: var(--gd-accent);
+	opacity: 1;
+}
+
+.gd-minimap-view {
+	position: absolute;
+	border: 1.5px solid var(--gd-focus);
+	border-radius: 4px;
+	pointer-events: none;
+}
 
 /* Pins live in the transformed world, so they follow pan and zoom; the inverse scale keeps their size. */
 .gd-pins {
@@ -652,6 +730,198 @@ button:disabled { opacity: 0.5; cursor: default; }
 
 .gd-toast[hidden] { display: none; }
 .gd-toast.gd-error { border-color: var(--gd-danger); color: var(--gd-danger); }
+
+/* Icons: one hidden sprite in index.html; each icon is an <svg><use href="#i-…"> drawn with the text color. */
+.gd-sprite { position: absolute; }
+
+.gd-i {
+	width: 18px;
+	height: 18px;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 2;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+	flex: none;
+}
+
+.gd-i-s { width: 16px; height: 16px; }
+
+/* Tool rail: the first column of the main area, few tools, each an icon with a word under it. */
+.gd-rail {
+	flex: none;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 4px;
+	padding: 8px 4px;
+	background: var(--gd-panel);
+	border-right: 1px solid var(--gd-border);
+}
+
+.gd-rail .gd-tool {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 2px;
+	width: 56px;
+	min-width: 56px;
+	min-height: 52px;
+	padding: 4px 0;
+	background: transparent;
+	border-color: transparent;
+	color: var(--gd-muted);
+}
+
+.gd-tool-label { font-size: 11px; line-height: 1.2; }
+
+.gd-rail .gd-tool:hover:not(:disabled) { color: var(--gd-text); border-color: var(--gd-border); }
+
+.gd-rail .gd-tool[aria-pressed="true"], .gd-rail .gd-tool[aria-expanded="true"] {
+	background: var(--gd-stage);
+	border-color: var(--gd-border);
+	color: var(--gd-text);
+}
+
+.gd-rail .gd-tool[aria-pressed="true"] .gd-i { color: var(--gd-accent); }
+
+/* The pressed tool carries an accent bar on the rail's edge. */
+.gd-rail .gd-tool[aria-pressed="true"]::before {
+	content: "";
+	position: absolute;
+	left: -4px;
+	top: 10px;
+	bottom: 10px;
+	width: 3px;
+	border-radius: 0 3px 3px 0;
+	background: var(--gd-accent);
+}
+
+.gd-sep {
+	width: 24px;
+	height: 1px;
+	margin: 4px 0;
+	background: var(--gd-border);
+}
+
+.gd-rail .gd-bottom { margin-top: auto; }
+
+/* The shared menu (canvas-menu.js), placed at its button by the canvas: fixed, so the world's transform never touches it. */
+.gd-menu {
+	position: fixed;
+	z-index: 12;
+	min-width: 240px;
+	max-width: calc(100vw - 24px);
+	padding: 6px;
+	background: var(--gd-panel);
+	border: 1px solid var(--gd-border);
+	border-radius: 8px;
+	box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+}
+
+.gd-menu[hidden] { display: none; }
+
+.gd-menu-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	min-height: 36px;
+	text-align: left;
+	background: transparent;
+	border-color: transparent;
+}
+
+.gd-menu-item:hover, .gd-menu-item:focus-visible { background: var(--gd-stage); }
+.gd-menu-item:focus-visible { outline: 2px solid var(--gd-focus); outline-offset: -2px; }
+
+.gd-menu-item[aria-disabled="true"] {
+	color: var(--gd-muted);
+	cursor: not-allowed;
+}
+
+.gd-menu-item[aria-disabled="true"]:hover { background: transparent; border-color: transparent; }
+
+.gd-menu-separator { height: 1px; margin: 4px 2px; background: var(--gd-border); }
+
+/* The single key that does the same as a menu item (Settings: Keyboard shortcuts, ?). */
+.gd-menu-kbd { margin-left: auto; }
+
+/* Keyboard shortcuts: the ? list, the keys a person can change, and the fixed ones. */
+.gd-dialog {
+	width: min(520px, calc(100vw - 32px));
+	padding: 20px 24px;
+	background: var(--gd-panel);
+	color: var(--gd-text);
+	border: 1px solid var(--gd-border);
+	border-radius: 8px;
+	box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+}
+
+.gd-dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
+
+.gd-dialog-title { margin: 0 0 12px; font-size: 16px; }
+
+kbd, .gd-menu-kbd {
+	padding: 2px 5px;
+	font: 11px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	color: var(--gd-muted);
+	border: 1px solid var(--gd-border);
+	border-bottom-width: 2px;
+	border-radius: 4px;
+}
+
+.gd-keys {
+	display: grid;
+	grid-template-columns: auto 1fr;
+	gap: 8px 16px;
+	margin: 0;
+}
+
+.gd-keys dt { white-space: nowrap; color: var(--gd-muted); }
+.gd-keys dd { margin: 0; }
+
+.gd-keys-custom {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.gd-key-row {
+	display: grid;
+	grid-template-columns: 1fr 3em auto auto;
+	align-items: center;
+	gap: 8px;
+	padding: 3px 6px;
+	border-radius: 6px;
+}
+
+.gd-key-current { justify-self: start; }
+
+.gd-key-waiting {
+	background: var(--gd-stage);
+	box-shadow: inset 0 0 0 1px var(--gd-accent);
+}
+
+.gd-key-waiting .gd-key-current { color: var(--gd-accent); border-color: var(--gd-accent); }
+
+.gd-small { min-height: 26px; padding: 2px 8px; font-size: 12px; }
+
+.gd-keys-message {
+	min-height: 18px;
+	margin: 6px 0 12px;
+	color: var(--gd-muted);
+	font-size: 12px;
+}
+
+.gd-keys-message.gd-error { color: var(--gd-danger); }
+.gd-dialog-note { margin: 12px 0 0; color: var(--gd-muted); font-size: 12px; }
+.gd-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.gd-keys-restore { margin-right: auto; }
 
 @media (prefers-reduced-motion: no-preference) {
 	button { transition: border-color 120ms ease; }

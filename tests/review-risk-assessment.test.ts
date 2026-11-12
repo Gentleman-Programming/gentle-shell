@@ -1465,3 +1465,39 @@ test("native assess: a wrong schema or unrecognized risk value fails closed as s
 		(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE,
 	);
 });
+
+test("#3169: gentle_review assess of a committed range excludes untracked files with the native inventory, leaving explicit and workspace assessments alone", async (t) => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "assess-untracked-exclusion-")));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const gitEnv = { PATH: process.env.PATH, HOME: root, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
+	const fixtureGit = (...args: string[]): string => execFileSync("git", args, { cwd: root, env: gitEnv, encoding: "utf8" }).trim();
+	fixtureGit("init", "-q");
+	fixtureGit("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-q", "--allow-empty", "-m", "base");
+	const base = fixtureGit("rev-parse", "HEAD");
+	writeFileSync(join(root, "body.md"), "untracked PR body\n");
+	const statusCalls: Array<Record<string, unknown>> = [], assessCalls: Array<Record<string, unknown>> = [];
+	const tool = reviewControllerTool({
+		targetStatus: async (request) => { if (request.baseRef !== undefined) statusCalls.push({ ...request }); return { eligibleUntrackedInventory: "sha256:native-inventory" } as unknown as ReviewStatusV3; },
+		assess: async (request) => {
+			assessCalls.push({ ...request });
+			return { schema: REVIEW_ASSESSMENT_SCHEMA, risk: "medium", reasons: [], changedPaths: 1, changedLines: 1, candidate: { kind: "base-diff", baseRef: request.baseRef }, reviewDue: false };
+		},
+	});
+	const run = (input: Record<string, unknown>) => tool.execute("untracked", { operation: "assess", input: JSON.stringify(input) }, undefined, undefined, { cwd: root } as ExtensionContext);
+
+	const committed = await run({ baseRef: base, committedOnly: true });
+	assert.equal((committed.details as { nativeRisk: string }).nativeRisk, "medium");
+	assert.deepEqual(statusCalls.map(({ signal: _signal, ...rest }) => rest), [{ cwd: root, baseRef: base, committedOnly: true, agent: "pi" }]);
+	assert.equal(assessCalls[0].untrackedScope, "exclude");
+	assert.equal(assessCalls[0].expectedUntrackedInventory, "sha256:native-inventory");
+
+	statusCalls.length = 0; assessCalls.length = 0;
+	await run({ baseRef: base, committedOnly: true, untrackedScope: "select", expectedUntrackedInventory: "sha256:caller", intendedUntracked: ["body.md"] });
+	assert.equal(statusCalls.length, 0, "an explicit caller declaration is never replaced");
+	assert.deepEqual([assessCalls[0].untrackedScope, assessCalls[0].expectedUntrackedInventory, assessCalls[0].intendedUntracked], ["select", "sha256:caller", ["body.md"]]);
+
+	statusCalls.length = 0; assessCalls.length = 0;
+	await run({});
+	assert.equal(statusCalls.length, 0, "a workspace assessment never silently narrows its candidate");
+	assert.ok(!("untrackedScope" in assessCalls[0]));
+});

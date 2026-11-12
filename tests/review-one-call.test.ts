@@ -11,6 +11,7 @@ import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { NativeReviewConsentRequiredError } from "../lib/native-review-cli.ts";
 import { decodeReviewConsentV3 } from "../lib/review-integration-v2.ts";
 import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
+import { publishReviewerProgress } from "../lib/reviewer-stream.ts";
 import { readFileSync } from "node:fs";
 
 // odd/tasks/review-one-call.md: one gentle_review_run call drives an ordinary
@@ -35,6 +36,24 @@ async function runOnce(cwd: string, options: CoordinatorRuntimeOptions) {
 		return { result, displayed: runtime.forecasts.length, relayRuns: runtime.relayRuns(), closed: runtime.closed(), nativeCalls: [...runtime.nativeCalls], parentCalls: runtime.facadeCalls.map((call) => call.name) };
 	} finally { runtime.close(); }
 }
+
+test("#2676: registered review-run forwards reviewer progress through nested capture tool updates", async () => {
+	const cwd = scratchRepo(), updates: string[] = [];
+	const runtime = createCoordinatorRuntime(cwd, "coordinator", { hasUI: false, relayPrepare: async request => {
+		await Promise.resolve();
+		publishReviewerProgress({ routingKey: "review-risk", phase: "waiting-for-output", elapsedMs: 5000 });
+		return { request, promptByteLength: 1, resultByteLength: 1 };
+	} });
+	try {
+		const tool = runtime.tools.get("gentle_review_run");
+		const result = await tool.execute("progress-fixture", { lineageId: runtime.lineage }, undefined,
+			(update: { content: Array<{ text?: string }> }) => updates.push(update.content.map(item => item.text ?? "").join("\n")),
+			{ cwd, hasUI: false, sessionManager: { getSessionId: () => "fixture-live-driver", getBranch: () => [], getSessionFile: () => undefined } });
+		assert.equal(result.details.outcome, "closed");
+		assert.ok(updates.some(text => text.includes("review-risk: waiting-for-output (5s)")), JSON.stringify(updates));
+		assert.equal(runtime.relayRuns(), 1);
+	} finally { runtime.close(); }
+});
 
 const FINDINGS = {
 	statement: "Fixture advisory statement; not real review output.",

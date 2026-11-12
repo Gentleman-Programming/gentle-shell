@@ -106,6 +106,24 @@ test("S3: a repaired setup needs one explicit request and keeps every existing l
 	]);
 });
 
+test("#3049: explicit quota recovery permits only the missing proof without reopening authority", async () => {
+	const parent = await delivered();
+	assert.ok(parent.includes("Quota recovery: `orchestrator-quota-recovery.md`."));
+	assert.ok(!parent.includes("A temporary verifier quota failure"), "recovery details load only on demand");
+	const recovery = readFileSync(new URL("../assets/orchestrator-quota-recovery.md", import.meta.url), "utf8");
+	includesAll(recovery, [
+		"A temporary verifier quota failure with no verdict still ends the automatic cycle.",
+		"After the human reports restored availability and explicitly requests the missing verification, allow one new bounded attempt for the same candidate.",
+		"Preserve the failed attempt and still-valid passed checks; do not replay passed suites.",
+		"Confirm no child is active or uncertain.",
+		"This is not an automatic retry, provider/model fallback, or reset of correction/native budgets.",
+		"Consent, denials, explicit one-run/no-retry limits and terminal native outcomes remain binding; failure never counts as approval.",
+	]);
+	includesAll(await closeStep(), [UNAVAILABLE_VERIFIER]);
+	const docs = readFileSync(new URL("../docs/work-continuity.md", import.meta.url), "utf8");
+	assert.ok(docs.includes("This guidance changes no runtime quota detection, provider selection, or native review authority."));
+});
+
 test("S4-S5: worker exhaustion exposes a bounded continuation without waiving proof", async () => {
 	includesAll(await delivered(), [
 		"An exhausted worker-local correction limit ends that automatic cycle, not necessarily the feature.",

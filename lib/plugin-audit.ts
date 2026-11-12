@@ -78,6 +78,14 @@ export interface PluginAuditEntry {
 	slots: ContributionSlotName[];
 }
 
+/** Which read point refused a contribution: the contract itself, or the sidebar seam. */
+export type PluginAuditSkipSource = "contract" | "sidebar";
+
+/** One refusal in the audit, tagged with the read point that made it. */
+export interface PluginAuditSkip extends ContributionIssue {
+	source: PluginAuditSkipSource;
+}
+
 /** Where an owner's position came from: the order file, or the box's insertion order. */
 export type PluginOwnerSource = "plugins.json" | "insertion";
 
@@ -89,7 +97,7 @@ export interface PluginAuditOwner {
 /** The audit model the formatter and the overlay render. */
 export interface PluginAudit {
 	loaded: PluginAuditEntry[];
-	skipped: ContributionIssue[];
+	skipped: PluginAuditSkip[];
 	replacedIds: string[];
 	owners: PluginAuditOwner[];
 	replacedSetters: string[];
@@ -101,6 +109,12 @@ export interface PluginAuditInput {
 	contributions: readonly Contribution[];
 	/** The report of that read: what the contract refused and which ids a later set replaced. */
 	report: ContributionReport;
+	/**
+	 * What the sidebar read point refused (`readSidebarContributionReport()`).
+	 * Omitted or empty means that seam reported nothing — another module
+	 * instance, or no layout read yet — and the audit stays exactly as it was.
+	 */
+	sidebar?: ContributionReport;
 	order: PluginOrderResolution;
 	/** `ctx.ui` setters whose identity changed since the extension first saw the context. */
 	replacedSetters?: readonly string[];
@@ -108,6 +122,26 @@ export interface PluginAuditInput {
 
 function slotsOf(contribution: Contribution): ContributionSlotName[] {
 	return CONTRIBUTION_SLOTS.filter((slot) => contribution[slot] !== undefined);
+}
+
+/**
+ * Merge every refusal into one deterministic list: the contract's own issues
+ * first, in the order its read produced them, then the sidebar seam's. An
+ * issue with the same id and the same detail appears once, so repeated reads
+ * of an unchanged box print the same lines.
+ */
+function skippedIssues(contract: ContributionReport, sidebar: ContributionReport | undefined): PluginAuditSkip[] {
+	const merged: PluginAuditSkip[] = [];
+	const seen = new Set<string>();
+	for (const [source, report] of [["contract", contract], ["sidebar", sidebar]] as const) {
+		for (const issue of report?.skipped ?? []) {
+			const key = `${issue.id}\u0000${issue.detail}`;
+			if (seen.has(key)) continue;
+			seen.add(key);
+			merged.push({ id: issue.id, code: issue.code, detail: issue.detail, source });
+		}
+	}
+	return merged;
 }
 
 /**
@@ -132,7 +166,7 @@ export function buildPluginAudit(input: PluginAuditInput): PluginAudit {
 	}
 	return {
 		loaded,
-		skipped: input.report.skipped.map((issue) => ({ ...issue })),
+		skipped: skippedIssues(input.report, input.sidebar),
 		replacedIds: [...input.report.replaced],
 		owners,
 		replacedSetters: [...(input.replacedSetters ?? [])],
@@ -189,7 +223,7 @@ export function formatPluginAudit(audit: PluginAudit, options: PluginAuditFormat
 	}
 	if (audit.skipped.length > 0) {
 		lines.push(`skipped (${audit.skipped.length}):`);
-		lines.push(...capped(audit.skipped, limit, (issue) => `  ${issue.id} · ${issue.code} · ${issue.detail}`, "skipped"));
+		lines.push(...capped(audit.skipped, limit, (issue) => `  ${issue.id} · ${issue.source === "sidebar" ? "sidebar:" : ""}${issue.code} · ${issue.detail}`, "skipped"));
 	}
 	if (audit.replacedIds.length > 0) {
 		const ids = audit.replacedIds.slice(0, limit).join(", ");

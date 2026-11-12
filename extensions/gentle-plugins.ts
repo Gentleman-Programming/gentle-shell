@@ -18,6 +18,7 @@ import {
 	setContributionReporter,
 	type ContributionReport,
 } from "../lib/plugin-contract.ts";
+import { readSidebarContributionReport } from "../lib/shell-sidebar.ts";
 
 // /gentle:plugins: the audit surface for community contributions. It reads the
 // box other packages fill, so it never imports them, and it shows what loaded,
@@ -134,6 +135,17 @@ export default function gentlePlugins(pi: ExtensionAPI, deps: GentlePluginsDeps 
 		const order = readPluginOrder({ gentlePiConfigHome: gentlePiConfigHome(env) });
 		const contributions = readContributions({ order: order.order });
 		const report = observed ?? readContributionReport();
+		// The sidebar seam refuses a section the contract loaded (a core key, a
+		// bad namespace, a rail that is not a component or that threw). Its
+		// report is the only record of those, so the audit merges it. Under
+		// `moduleCache: false` this can be another module instance whose report
+		// is empty: then nothing is merged and the audit reads exactly as before.
+		let sidebar: ContributionReport | undefined;
+		try {
+			sidebar = readSidebarContributionReport();
+		} catch {
+			sidebar = undefined;
+		}
 		let replacedSetters: string[] = [];
 		if (baseline !== undefined) {
 			try {
@@ -142,7 +154,7 @@ export default function gentlePlugins(pi: ExtensionAPI, deps: GentlePluginsDeps 
 				replacedSetters = [];
 			}
 		}
-		return buildPluginAudit({ contributions, report, order, replacedSetters });
+		return buildPluginAudit({ contributions, report, sidebar, order, replacedSetters });
 	};
 
 	const show = async (ctx: ExtensionContext, lines: readonly string[]): Promise<void> => {

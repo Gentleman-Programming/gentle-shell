@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { TUI } from "@earendil-works/pi-tui";
 import {
 	PLUGINS_SCHEMA,
 	buildPluginAudit,
@@ -20,6 +21,7 @@ import {
 	readContributions,
 } from "../lib/plugin-contract.ts";
 import type { Contribution, PluginRow } from "../lib/plugin-contract.ts";
+import { installContributedSidebar, readSidebarContributionReport } from "../lib/shell-sidebar.ts";
 import installGentlePlugins, { PLUGINS_COMMAND_NAME } from "../extensions/gentle-plugins.ts";
 
 // /gentle:plugins: the audit surface for community contributions. The order
@@ -51,6 +53,16 @@ function pluginsFile(dir: string, order: readonly string[]): string {
 	const path = join(dir, "plugins.json");
 	writeFileSync(path, `${JSON.stringify({ schema: PLUGINS_SCHEMA, order })}\n`);
 	return path;
+}
+
+/** A rail the sidebar read point refuses for its key (`todo` is read-only). */
+function reservedSidebarContribution(): Contribution {
+	return contribution("acme.nav", { sidebar: { key: "todo", bottom: true, rail: { render: () => ["section"] } } });
+}
+
+/** The minimal terminal the sidebar seam needs to record its refusals. */
+function fakeTui(): TUI {
+	return { terminal: {} } as unknown as TUI;
 }
 
 test("a missing plugins.json means no explicit order", (t) => {
@@ -186,6 +198,89 @@ test("an empty audit says so plainly and names nothing", (t) => {
 	]);
 });
 
+test("a refused sidebar section is reported by its read point, not silently loaded", (t) => {
+	const dir = scratch(t);
+	reset();
+	contributionSlot().set("acme.nav", reservedSidebarContribution());
+	installContributedSidebar(fakeTui());
+
+	const order = readPluginOrder({ gentlePiConfigHome: dir });
+	const audit = buildPluginAudit({
+		contributions: readContributions({ order: order.order }),
+		report: readContributionReport(),
+		sidebar: readSidebarContributionReport(),
+		order,
+	});
+	const text = formatPluginAudit(audit).join("\n");
+
+	// The contract loaded it; the sidebar seam refused only its section.
+	assert.match(text, /acme\.nav · contract 1 · sidebar/);
+	assert.match(text, /acme\.nav · sidebar:malformed-sidebar · sidebar key "todo" is read-only for plugins/);
+});
+
+test("a repeated sidebar refusal is listed once and the same box always prints the same lines", (t) => {
+	const dir = scratch(t);
+	reset();
+	contributionSlot().set("acme.nav", reservedSidebarContribution());
+	const tui = fakeTui();
+	for (let read = 0; read < 3; read++) installContributedSidebar(tui);
+	const order = readPluginOrder({ gentlePiConfigHome: dir });
+	const build = () =>
+		formatPluginAudit(
+			buildPluginAudit({
+				contributions: readContributions({ order: order.order }),
+				report: readContributionReport(),
+				sidebar: readSidebarContributionReport(),
+				order,
+			}),
+		);
+
+	const first = build();
+	assert.equal(first.filter((line) => line.includes("sidebar:malformed-sidebar")).length, 1);
+	assert.deepEqual(build(), first, "the same box produces the same lines on every run");
+
+	// The same refusal reported by both read points, twice, still lists once.
+	const issue = { id: "acme.nav", code: "malformed-sidebar" as const, detail: 'sidebar key "todo" is read-only for plugins' };
+	const deduped = buildPluginAudit({
+		contributions: readContributions({ order: order.order }),
+		report: { skipped: [issue], replaced: [] },
+		sidebar: { skipped: [{ ...issue }, { ...issue }], replaced: [] },
+		order,
+	});
+	assert.equal(deduped.skipped.filter((entry) => entry.id === "acme.nav").length, 1);
+	assert.deepEqual(deduped.skipped[0], { ...issue, source: "contract" });
+});
+
+test("without sidebar refusals the audit text is byte-identical to today's output", (t) => {
+	const dir = scratch(t);
+	reset();
+	const slot = contributionSlot();
+	const hello = contribution("acme.hello", { rows: [row()], palette: { command: "acme:hello", group: "Acme" } });
+	slot.set("acme.hello", hello);
+	slot.set("acme.hello", hello);
+	slot.set("beta.v2", { id: "beta.v2", owner: "beta", contract: 2 });
+	// A fresh sidebar read of this box: it carries no sidebar payload, so that
+	// seam reports nothing and the audit text is the one this slice always printed.
+	installContributedSidebar(fakeTui());
+	const order = readPluginOrder({ gentlePiConfigHome: dir });
+	const audit = buildPluginAudit({
+		contributions: readContributions({ order: order.order }),
+		report: readContributionReport(),
+		sidebar: readSidebarContributionReport(),
+		order,
+	});
+
+	assert.deepEqual(formatPluginAudit(audit), [
+		"Gentle plugins: 1 loaded, 1 skipped, 1 replaced",
+		"order: acme (insertion)",
+		"loaded (1):",
+		"  acme.hello · contract 1 · rows, palette",
+		"skipped (1):",
+		"  beta.v2 · incompatible-contract · contract 2 is not 1",
+		"replaced ids: acme.hello",
+	]);
+});
+
 test("a ctx.ui setter whose identity changed is named, an unchanged one is not", () => {
 	const ui = {
 		setHeader: () => {},
@@ -295,9 +390,30 @@ test("/gentle:plugins opens a scrollable overlay over the same audit text", asyn
 	assert.equal(context.closed(), 1);
 });
 
+test("/gentle:plugins lists a sidebar refusal once, naming its read point", async (t) => {
+	const dir = scratch(t);
+	reset();
+	contributionSlot().set("acme.nav", reservedSidebarContribution());
+	const tui = fakeTui();
+	installContributedSidebar(tui);
+	installContributedSidebar(tui);
+
+	const { pi, commands, fire } = fakePi();
+	installGentlePlugins(pi, { env: { GENTLE_PI_CONFIG_HOME: dir } });
+	const context = fakeContext({ hasUI: false, mode: "print" });
+	await fire("session_start", context.ctx);
+	await commands.get(PLUGINS_COMMAND_NAME)!.handler("", context.ctx);
+
+	const text = context.notices.at(-1) ?? "";
+	assert.match(text, /acme\.nav · sidebar:malformed-sidebar · sidebar key "todo" is read-only for plugins/);
+	assert.equal(text.split("\n").filter((line) => line.includes("sidebar:malformed-sidebar")).length, 1);
+});
+
 test("/gentle:plugins says the box is empty instead of failing", async (t) => {
 	const dir = scratch(t);
 	reset();
+	// Empty box, empty sidebar read: nothing for either seam to report.
+	installContributedSidebar(fakeTui());
 	const { pi, commands, fire } = fakePi();
 	installGentlePlugins(pi, { env: { GENTLE_PI_CONFIG_HOME: dir } });
 	const context = fakeContext({ hasUI: false, mode: "print" });

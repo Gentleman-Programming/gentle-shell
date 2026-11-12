@@ -242,6 +242,8 @@ export function init(ctx) {
 	function setSize(size) {
 		if (!state.focus) return;
 		actions.closePopover();
+		// A check's ring was drawn for the frame at its old size.
+		actions.clearMark();
 		store.setFocus({ size: Object.freeze(size) });
 		// centerFocus lays the frames out for the size (layoutSizes): All sizes adds its frames, another size removes them.
 		actions.centerFocus();
@@ -333,8 +335,9 @@ export function init(ctx) {
 		board.sizesView.remove();
 		board.sizesView = null;
 		board.sizeFrames = [];
-		// The token inspector's panel goes with its frame.
+		// The token inspector's panel and a check's ring go with their frame.
 		actions.hideGoneInspector();
+		actions.clearMark(board);
 	}
 
 	/**
@@ -374,6 +377,8 @@ export function init(ctx) {
 	 * fresh report, so the chip follows the page that now shows, after a reload or a navigation to another page.
 	 */
 	function surfaceLoaded(surface) {
+		// First, so the frame's last messages stay the state below: a ring on this artboard goes, its own frame checks itself.
+		actions.checksLoaded(surface);
 		surface.rects = null;
 		setOverflow(surface, null);
 		sendSize(surface);

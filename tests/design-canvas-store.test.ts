@@ -35,6 +35,7 @@ test("the store starts with the canvas defaults and no system field", () => {
 		parts: { slug: null, parts: [] },
 		tokens: [],
 		technical: false,
+		tab: "comments",
 		compare: null,
 		toastTimer: 0,
 		menu: null,
@@ -154,4 +155,14 @@ test("the design tokens are frozen when they are set, and Technical details is o
 	assert.equal(store.state.technical, true);
 	store.setTechnical(false);
 	assert.equal(store.state.technical, false);
+});
+
+test("the panel's tab is one of two names, set through setTab", () => {
+	const store = createStore();
+	assert.equal(store.state.tab, "comments", "every page starts on Comments");
+	store.setTab("quality");
+	assert.equal(store.state.tab, "quality");
+	store.setTab("comments");
+	assert.equal(store.state.tab, "comments");
+	assert.throws(() => { (store.state as any).tab = "quality"; }, TypeError);
 });

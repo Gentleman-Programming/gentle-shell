@@ -64,9 +64,12 @@ function loadInspector({ fonts = false } = {}) {
 		...(fonts ? { fonts: { addEventListener(type: string, listener: Listener) { fontListeners.set(type, [...(fontListeners.get(type) ?? []), listener]); } } } : {}),
 	};
 	const parent = { postMessage: (message: any) => posted.push(structuredCopy(message)) };
-	// Animation frames wait until the test runs them.
+	// Animation frames wait until the test runs them, and so do timers (id: index + 1; `done` once run or cleared).
 	const frames: Array<() => void> = [];
+	const timeouts: Array<{ callback: () => void; ms: number; done: boolean }> = [];
 	const context: Record<string, any> = {
+		setTimeout: (callback: () => void, ms = 0) => timeouts.push({ callback, ms, done: false }),
+		clearTimeout: (id: number) => { if (timeouts[id - 1]) timeouts[id - 1].done = true; },
 		innerWidth: 100,
 		document,
 		Element,
@@ -100,9 +103,17 @@ function loadInspector({ fonts = false } = {}) {
 		for (const listener of fontListeners.get("loadingdone") ?? []) listener({ type: "loadingdone" });
 	};
 	const runFrames = () => { while (frames.length > 0) frames.shift()!(); };
+	const pendingTimeouts = () => timeouts.filter((timer) => !timer.done).map((timer) => timer.ms);
+	const runTimeouts = () => {
+		for (const timer of timeouts.slice()) {
+			if (timer.done) continue;
+			timer.done = true;
+			timer.callback();
+		}
+	};
 	// The inspector makes its hover outline first, then the selected one.
 	const [hoverBox, selectedBox] = created;
-	return { posted, fire, fromParent, context, documentElement, runFrames, scrolled, button, captureOnDocument, mutate, fontsLoaded, makeNode, Element, hoverBox, selectedBox };
+	return { posted, fire, fromParent, context, document, documentElement, runFrames, scrolled, button, Element, pendingTimeouts, runTimeouts, captureOnDocument, mutate, fontsLoaded, makeNode, hoverBox, selectedBox };
 }
 
 test("the inspector reports whether its page is wider than the frame, once per change", () => {
@@ -306,6 +317,34 @@ test("gd:highlight finds the element by a part's selector or by a comment pin's 
 	assert.deepEqual(inspector.posted, [], "a highlight posts nothing");
 });
 
+test("gd:highlight with locate says where the element is once in view, and again after scrolls (once per frame) until gd:clear or another highlight", () => {
+	const inspector = loadInspector();
+	const located = () => inspector.posted.filter((message) => message.type === "gd:located");
+	inspector.fromParent({ type: "gd:highlight", selector: "#cta", locate: true });
+	assert.deepEqual([inspector.scrolled, inspector.posted], [["cta"], [{ type: "gd:located", selector: "#cta", rect: { x: 4, y: 8, width: 60, height: 20 } }]], "after it scrolls into view");
+	inspector.button.getBoundingClientRect = () => ({ left: 4, top: 120, width: 60, height: 20 });
+	inspector.fire("scroll", {});
+	inspector.fire("scroll", {});
+	assert.equal(located().length, 1, "reports wait for the next frame");
+	inspector.runFrames();
+	assert.deepEqual(located().slice(1), [{ type: "gd:located", selector: "#cta", rect: { x: 4, y: 120, width: 60, height: 20 } }], "two scrolls, one report");
+	inspector.fire("scroll", {});
+	inspector.fromParent({ type: "gd:clear" });
+	inspector.runFrames();
+	inspector.fire("scroll", {});
+	inspector.runFrames();
+	assert.equal(located().length, 2, "nothing after gd:clear, not even a scroll queued before it");
+	inspector.fromParent({ type: "gd:highlight", selector: "#cta", locate: true });
+	inspector.fromParent({ type: "gd:highlight", selector: "#cta" });
+	inspector.fire("scroll", {});
+	inspector.runFrames();
+	assert.equal(located().length, 3, "a highlight without locate (a part, a comment) ends it");
+	inspector.fromParent({ type: "gd:highlight", selector: "#missing", locate: true });
+	inspector.fire("scroll", {});
+	inspector.runFrames();
+	assert.equal(located().length, 3, "no element, no report");
+});
+
 test("gd:mode off hides the hover and selected outlines, which a PNG export relies on, and hovers stay hidden until it is on again", () => {
 	const inspector = loadInspector();
 	inspector.fromParent({ type: "gd:mode", enabled: true });
@@ -463,6 +502,293 @@ test("scrolls in one animation frame re-measure the hovered element once", () =>
 	inspector.fire("pointerout", { relatedTarget: null });
 	inspector.runFrames();
 	assert.deepEqual(inspects(inspector).slice(2), [{ type: "gd:inspect", element: null, generation: 0 }], "the pointer left before the frame: nothing to re-measure");
+});
+
+// ---- accessibility checks (gd:checks)
+
+type PageSpec = { tag: string; attrs?: Record<string, string>; style?: Record<string, string>; size?: [number, number]; at?: [number, number]; text?: string; kids?: PageSpec[] };
+
+/** What getComputedStyle reports for an element with no style of its own. */
+const BASE_STYLE = {
+	display: "block", visibility: "visible", opacity: "1", color: "rgb(0, 0, 0)", backgroundColor: "rgba(0, 0, 0, 0)", backgroundImage: "none",
+	fontSize: "16px", fontWeight: "400", overflow: "visible", overflowX: "visible", overflowY: "visible", clip: "auto", clipPath: "none",
+};
+
+/** A small page for the inspector: elements in document order, with computed styles and boxes. */
+function checkPage(specs: PageSpec[]) {
+	const inspector = loadInspector();
+	const Element = inspector.Element as new () => any;
+	const all: any[] = [];
+	const build = (spec: PageSpec, parent: any): any => {
+		const node = new Element();
+		all.push(node);
+		const attrs = spec.attrs ?? {};
+		Object.assign(node, {
+			localName: spec.tag, parentElement: parent, id: attrs.id ?? "", className: attrs.class ?? "", styleSpec: spec.style ?? {},
+			size: spec.size ?? [100, 24], childNodes: [], children: [], isConnected: true,
+			getAttribute: (name: string) => attrs[name] ?? null,
+			hasAttribute: (name: string) => name in attrs,
+			scrollIntoView() {},
+		});
+		node.index = all.length;
+		Object.defineProperty(node, "textContent", { get: () => node.childNodes.map((child: any) => child.textContent).join("") });
+		// `at` places the box (left, top); without it the elements stack down the page.
+		node.getBoundingClientRect = () => ({ left: spec.at?.[0] ?? 8, top: spec.at?.[1] ?? 8 + node.index * 30, width: node.size[0], height: node.size[1] });
+		// Like the browser: no box at all under display: none (its own or an ancestor's); a box, even 0 × 0, otherwise.
+		node.getClientRects = () => {
+			for (let current = node; current; current = current.parentElement) if (current.styleSpec.display === "none") return [];
+			return [node.getBoundingClientRect()];
+		};
+		if (spec.text) node.childNodes.push({ nodeType: 3, textContent: spec.text });
+		for (const kid of spec.kids ?? []) {
+			const child = build(kid, node);
+			child.nodeType = 1;
+			node.children.push(child);
+			node.childNodes.push(child);
+		}
+		return node;
+	};
+	const body = build({ tag: "body", kids: specs }, null);
+	const doc = inspector.document as any;
+	doc.body = body;
+	doc.querySelectorAll = (selector: string) => (selector === "*" ? all : selector.startsWith("#") ? all.filter((node) => node.id === selector.slice(1)) : []);
+	doc.querySelector = (selector: string) => (selector.startsWith("#") ? all.find((node) => node.id === selector.slice(1)) ?? null : null);
+	doc.getElementById = (id: string) => all.find((node) => node.id === id) ?? null;
+	Object.assign(inspector.documentElement, { scrollWidth: 1200, clientWidth: 1200 });
+	let styles = 0;
+	inspector.context.getComputedStyle = (element: any) => {
+		styles += 1;
+		return { ...BASE_STYLE, ...(element?.styleSpec ?? {}) };
+	};
+	const reports = () => inspector.posted.filter((message) => message.type === "gd:checks");
+	/** The canvas asks this frame to check itself (its artboard's own frame), and the page settles. */
+	const run = () => {
+		inspector.fromParent({ type: "gd:run-checks" });
+		inspector.runTimeouts();
+		return reports().at(-1) as { checks: Array<{ id: string; label: string; count: number; advice: number }>; issues: Array<Record<string, any>> };
+	};
+	return { inspector, all, run, reports, styles: () => styles };
+}
+
+const issuesOf = (report: { issues: Array<Record<string, any>> }, check: string, severity?: string) => report.issues.filter((issue) => issue.check === check && (severity === undefined || issue.severity === severity));
+const gray = (value: number) => ({ color: `rgb(${value}, ${value}, ${value})` });
+
+test("checks run only in a frame the canvas asks (the artboard's own), once the page settles after load and after a resize, and post a changed result only", () => {
+	const page = checkPage([{ tag: "h1", text: "Hello" }, { tag: "p", attrs: { id: "faint" }, text: "World", style: gray(200) }, { tag: "button", text: "Go", size: [120, 48] }]);
+	page.inspector.fire("load", {});
+	page.inspector.fire("resize", {});
+	page.inspector.runTimeouts();
+	page.inspector.runFrames();
+	assert.deepEqual([page.reports().length, page.styles(), page.inspector.pendingTimeouts().length], [0, 0, 0], "not asked (a size frame, the system board): nothing scanned, nothing posted");
+	page.inspector.fire("message", { source: {}, data: { type: "gd:run-checks" } });
+	assert.deepEqual(page.inspector.pendingTimeouts(), [], "only the canvas can ask");
+	page.inspector.fromParent({ type: "gd:run-checks" });
+	assert.deepEqual(page.inspector.pendingTimeouts(), [250], "after a short wait, so late images, fonts and scripts are in");
+	assert.equal(page.reports().length, 0);
+	page.inspector.runTimeouts();
+	assert.equal(page.reports().length, 1);
+	const first = page.reports()[0];
+	assert.deepEqual(first.checks.map((check: { id: string; label: string; count: number; advice: number }) => [check.id, check.label, check.count, check.advice]), [
+		["contrast", "Text contrast", 1, 0], ["target", "Target size", 0, 0], ["alt", "Images have alt text", 0, 0], ["label", "Form fields have labels", 0, 0], ["heading", "Headings in order", 0, 0],
+	]);
+	page.inspector.fire("resize", {});
+	page.inspector.fire("resize", {});
+	assert.deepEqual(page.inspector.pendingTimeouts(), [400], "two resizes in a row: one run, once the size settles");
+	page.inspector.runTimeouts();
+	assert.equal(page.reports().length, 1, "an unchanged result is not sent again");
+	page.all.find((node) => node.localName === "button").size = [10, 10];
+	page.inspector.fire("resize", {});
+	page.inspector.runTimeouts();
+	assert.equal(page.reports().length, 2, "a resize that changes the result sends it");
+	assert.equal(page.reports()[1].issues.find((issue: { check: string }) => issue.check === "target").selector, "body > button");
+});
+
+test("the contrast check flags text under AA (4.5 : 1, 3 : 1 for large text) on its real background", () => {
+	const page = checkPage([
+		{ tag: "p", attrs: { id: "low" }, text: "or pay with card", style: gray(119) },
+		{ tag: "p", attrs: { id: "ok" }, text: "fine", style: gray(118) },
+		{ tag: "p", attrs: { id: "large-ok" }, text: "Big", style: { ...gray(119), fontSize: "24px" } },
+		{ tag: "p", attrs: { id: "large-low" }, text: "Big", style: { ...gray(170), fontSize: "24px" } },
+		{ tag: "p", attrs: { id: "bold-ok" }, text: "Bold", style: { ...gray(119), fontSize: "19px", fontWeight: "700" } },
+		{ tag: "p", attrs: { id: "bold-low" }, text: "Not bold", style: { ...gray(119), fontSize: "19px", fontWeight: "400" } },
+		{ tag: "p", attrs: { id: "alpha" }, text: "Faint", style: { color: "rgba(0, 0, 0, 0.2)" } },
+		{ tag: "p", attrs: { id: "dark" }, text: "Light on dark", style: { color: "rgb(246, 239, 243)", backgroundColor: "rgb(26, 18, 24)" } },
+		{ tag: "div", style: { backgroundColor: "rgb(0, 0, 0)" }, kids: [{ tag: "p", attrs: { id: "inherits" }, text: "Dark text on a dark parent", style: gray(40) }] },
+		{ tag: "div", style: { backgroundImage: "linear-gradient(red, blue)" }, kids: [{ tag: "p", attrs: { id: "on-image" }, text: "Unknown", style: gray(200) }] },
+		{ tag: "p", attrs: { id: "hidden" }, text: "Hidden", style: { ...gray(200), display: "none" } },
+		{ tag: "p", attrs: { id: "invisible" }, text: "Hidden", style: { ...gray(200), visibility: "hidden" } },
+		{ tag: "p", attrs: { id: "empty" }, text: "Zero", style: gray(200), size: [0, 0] },
+		{ tag: "button", attrs: { id: "off", disabled: "" }, text: "Disabled", style: gray(200), size: [100, 40] },
+		{ tag: "p", attrs: { id: "no-text" }, text: "   ", style: gray(200) },
+		{ tag: "script", text: "var x", style: gray(255) },
+	]);
+	const report = page.run();
+	assert.deepEqual(issuesOf(report, "contrast").map((issue) => issue.selector), ["#low", "#large-low", "#bold-low", "#alpha", "#inherits"]);
+	const low = issuesOf(report, "contrast")[0];
+	assert.deepEqual(low, {
+		check: "contrast", severity: "fail", title: "Low contrast", selector: "#low", label: "p#low", excerpt: "or pay with card", rect: { x: 8, y: 68, width: 100, height: 24 },
+		detail: '"or pay with card" is 4.47 : 1 (#777777 on #ffffff); WCAG AA needs 4.5 : 1.',
+	});
+	assert.match(issuesOf(report, "contrast")[1].detail, /WCAG AA needs 3 : 1 for large text\.$/);
+	assert.match(issuesOf(report, "contrast")[3].detail, /\(#cccccc on #ffffff\)/, "translucent text is judged as composited over its background");
+	assert.deepEqual(report.checks.find((check) => check.id === "contrast"), { id: "contrast", label: "Text contrast", count: 5, advice: 0 });
+});
+
+test("the contrast check multiplies the text's alpha by the opacity of the element and its ancestors up to its opaque background", () => {
+	const page = checkPage([
+		{ tag: "p", attrs: { id: "half" }, text: "Half", style: { opacity: "0.5" } },
+		{ tag: "div", style: { opacity: "0.5" }, kids: [{ tag: "p", attrs: { id: "in-faded" }, text: "Inside" }] },
+		{ tag: "div", style: { opacity: "0.9" }, kids: [{ tag: "p", attrs: { id: "slight" }, text: "Slight" }] },
+		{ tag: "div", style: { opacity: "0" }, kids: [{ tag: "p", attrs: { id: "invisible" }, text: "Gone" }] },
+		{ tag: "p", attrs: { id: "plain" }, text: "Plain" },
+	]);
+	const report = page.run();
+	assert.deepEqual(issuesOf(report, "contrast").map((issue) => issue.selector), ["#half", "#in-faded"]);
+	assert.equal(issuesOf(report, "contrast")[0].detail, '"Half" is 3.94 : 1 (#808080 on #ffffff); WCAG AA needs 4.5 : 1.', "black on white at opacity 0.5 is about 3.95 : 1, not 21 : 1");
+	assert.equal(issuesOf(report, "contrast")[1].detail, '"Inside" is 3.94 : 1 (#808080 on #ffffff); WCAG AA needs 4.5 : 1.', "an ancestor's opacity counts too");
+	assert.equal(report.checks.find((check) => check.id === "contrast")?.count, 2, "text under an ancestor at opacity 0 is not drawn, so it is not judged");
+});
+
+test("a target under 24 × 24 px is advice, never a problem: the spacing exception cannot be measured", () => {
+	const report = checkPage([{ tag: "button", attrs: { id: "tiny" }, text: "Go", size: [20, 20] }]).run();
+	assert.deepEqual(issuesOf(report, "target").map((issue) => [issue.selector, issue.severity, issue.title, issue.detail]), [
+		["#tiny", "advice", "Small touch target", '"Go" is 20 × 20 px; WCAG 2.2 asks for 24 × 24 px, or enough space around it that a 24 px circle on it touches no other target.'],
+	]);
+	assert.deepEqual(report.checks.find((check) => check.id === "target"), { id: "target", label: "Target size", count: 0, advice: 1 });
+});
+
+test("the target check advises on interactive elements under 24 × 24 px and under 44 px", () => {
+	const page = checkPage([
+		{ tag: "button", attrs: { id: "tiny" }, text: "Go", size: [20, 20] },
+		{ tag: "button", attrs: { id: "narrow" }, text: "Go", size: [100, 23] },
+		{ tag: "a", attrs: { id: "advice", href: "/pay" }, text: "Pay", size: [100, 28] },
+		{ tag: "button", attrs: { id: "edge" }, text: "Edge", size: [24, 24] },
+		{ tag: "button", attrs: { id: "big" }, text: "Big", size: [120, 48] },
+		{ tag: "a", attrs: { id: "no-href" }, text: "Not a link", size: [10, 10] },
+		{ tag: "a", attrs: { id: "inline", href: "/x" }, text: "inline link", size: [60, 14], style: { display: "inline" } },
+		{ tag: "button", attrs: { id: "disabled", disabled: "" }, text: "Off", size: [10, 10] },
+		{ tag: "input", attrs: { id: "hidden", type: "hidden" }, size: [0, 0] },
+		{ tag: "div", attrs: { id: "tab0", tabindex: "0" }, size: [20, 20] },
+		{ tag: "div", attrs: { id: "tab-1", tabindex: "-1" }, size: [10, 10] },
+		{ tag: "div", attrs: { id: "role-button", role: "button", "aria-label": "Close" }, size: [12, 12] },
+		{ tag: "select", attrs: { id: "pick", "aria-label": "Size" }, size: [80, 22] },
+		{ tag: "button", attrs: { id: "gone" }, text: "Hidden", size: [0, 0] },
+	]);
+	const report = page.run();
+	assert.deepEqual(issuesOf(report, "target", "fail").map((issue) => issue.selector), []);
+	assert.deepEqual(issuesOf(report, "target", "advice").map((issue) => [issue.selector, issue.title]), [
+		["#tiny", "Small touch target"], ["#narrow", "Small touch target"], ["#advice", "Touch target under 44 px"], ["#edge", "Touch target under 44 px"],
+		["#tab0", "Small touch target"], ["#role-button", "Small touch target"], ["#pick", "Small touch target"],
+	]);
+	assert.deepEqual([issuesOf(report, "target")[0].title, issuesOf(report, "target")[0].detail], ["Small touch target", '"Go" is 20 × 20 px; WCAG 2.2 asks for 24 × 24 px, or enough space around it that a 24 px circle on it touches no other target.']);
+	assert.deepEqual([issuesOf(report, "target", "advice")[2].title, issuesOf(report, "target", "advice")[2].detail], ["Touch target under 44 px", '"Pay" is 100 × 28 px; 44 × 44 px is recommended for touch.']);
+	assert.match(issuesOf(report, "target").find((issue) => issue.selector === "#role-button")!.detail, /^"Close" is 12 × 12 px/, "named by its aria-label");
+	assert.deepEqual(report.checks.find((check) => check.id === "target"), { id: "target", label: "Target size", count: 0, advice: 7 });
+});
+
+test("the alt check flags images without an alt attribute; alt=\"\", presentation and aria-hidden are fine", () => {
+	const page = checkPage([
+		{ tag: "img", attrs: { id: "bad", src: "/img/hero-photo.png?x=1" } },
+		{ tag: "img", attrs: { id: "empty", src: "a.png", alt: "" } },
+		{ tag: "img", attrs: { id: "named", src: "b.png", alt: "A cup" } },
+		{ tag: "img", attrs: { id: "role", src: "c.png", role: "presentation" } },
+		{ tag: "img", attrs: { id: "none", src: "d.png", role: "none" } },
+		{ tag: "img", attrs: { id: "aria", src: "e.png", "aria-hidden": "true" } },
+		{ tag: "img", attrs: { id: "nosrc" } },
+		{ tag: "input", attrs: { id: "btn", type: "image", src: "f.png", "aria-label": "Go" }, size: [48, 48] },
+		{ tag: "input", attrs: { id: "btn-ok", type: "image", src: "f.png", alt: "Go" }, size: [48, 48] },
+	]);
+	const report = page.run();
+	assert.deepEqual(issuesOf(report, "alt").map((issue) => issue.selector), ["#bad", "#nosrc", "#btn"]);
+	assert.deepEqual([issuesOf(report, "alt")[0].title, issuesOf(report, "alt")[0].detail], ["Image without alt text", 'hero-photo.png has no alt attribute. Describe it, or use alt="" if it is decorative.']);
+	assert.equal(issuesOf(report, "alt")[1].detail, 'The image has no alt attribute. Describe it, or use alt="" if it is decorative.');
+	assert.equal(report.checks.find((check) => check.id === "alt")?.count, 3);
+});
+
+test("the alt check skips images that are not rendered (inside a display: none parent); a rendered image not loaded yet still needs alt", () => {
+	const page = checkPage([
+		{ tag: "div", style: { display: "none" }, kids: [{ tag: "img", attrs: { id: "in-hidden", src: "menu.png" } }] },
+		{ tag: "img", attrs: { id: "own-hidden", src: "tab.png" }, style: { display: "none" } },
+		{ tag: "img", attrs: { id: "loading", src: "late.png" }, size: [0, 0] },
+	]);
+	const report = page.run();
+	assert.deepEqual(issuesOf(report, "alt").map((issue) => issue.selector), ["#loading"]);
+	assert.equal(report.checks.find((check) => check.id === "alt")?.count, 1);
+});
+
+test("the label check flags form fields without an accessible label, and accepts each way of labeling", () => {
+	const page = checkPage([
+		{ tag: "input", attrs: { id: "aria", type: "text", "aria-label": "Email" } },
+		{ tag: "label", attrs: { for: "for" }, text: "Street" },
+		{ tag: "input", attrs: { id: "for", type: "text" } },
+		{ tag: "label", text: "City", kids: [{ tag: "input", attrs: { id: "wrapped", type: "text" } }] },
+		{ tag: "span", attrs: { id: "name" }, text: "Postal code" },
+		{ tag: "input", attrs: { id: "by", type: "text", "aria-labelledby": "missing name" } },
+		{ tag: "input", attrs: { id: "title", type: "text", title: "Phone" } },
+		{ tag: "input", attrs: { id: "placeholder", type: "text", placeholder: "Search" } },
+		{ tag: "select", attrs: { id: "select" } },
+		{ tag: "textarea", attrs: { id: "area" } },
+		{ tag: "input", attrs: { id: "blank", type: "text", "aria-label": "  " } },
+		{ tag: "label", attrs: { for: "empty-label" }, text: " " },
+		{ tag: "input", attrs: { id: "empty-label", type: "text" } },
+		{ tag: "input", attrs: { id: "dangling", type: "text", "aria-labelledby": "nowhere" } },
+		{ tag: "input", attrs: { id: "submit", type: "submit", value: "Pay" } },
+		{ tag: "input", attrs: { id: "button", type: "button" } },
+		{ tag: "input", attrs: { id: "reset", type: "reset" } },
+		{ tag: "input", attrs: { id: "hidden", type: "hidden" } },
+		{ tag: "input", attrs: { id: "invisible", type: "text" }, style: { display: "none" } },
+		{ tag: "input", attrs: { id: "no-type" } },
+		{ tag: "input", attrs: { id: "email", type: "email" } },
+	]);
+	const report = page.run();
+	assert.deepEqual(issuesOf(report, "label").map((issue) => issue.selector), ["#placeholder", "#select", "#area", "#blank", "#empty-label", "#dangling", "#no-type", "#email"]);
+	assert.deepEqual([issuesOf(report, "label")[0].title, issuesOf(report, "label")[0].detail], ["Form field without a label", 'The text field "Search" has no label. Add a <label for>, aria-label or aria-labelledby; a placeholder is not a label.']);
+	assert.equal(issuesOf(report, "label")[1].detail, "The select has no label. Add a <label for>, aria-label or aria-labelledby; a placeholder is not a label.");
+	assert.equal(issuesOf(report, "label")[2].detail, "The text area has no label. Add a <label for>, aria-label or aria-labelledby; a placeholder is not a label.");
+	assert.equal(issuesOf(report, "label")[7].detail, "The email field has no label. Add a <label for>, aria-label or aria-labelledby; a placeholder is not a label.");
+	assert.equal(report.checks.find((check) => check.id === "label")?.count, 8);
+});
+
+test("the heading check flags levels that skip, in document order", () => {
+	const page = checkPage([
+		{ tag: "h1", text: "Title" }, { tag: "h2", text: "A" },
+		{ tag: "h4", attrs: { id: "skip1" }, text: "Detail" },
+		{ tag: "h2", text: "B" }, { tag: "h3", text: "B1" }, { tag: "h3", text: "B2" },
+		{ tag: "h6", attrs: { id: "skip2" }, text: "Fine print" },
+		{ tag: "h1", text: "Again" }, { tag: "h2", text: "Ok" },
+		{ tag: "div", attrs: { id: "aria", role: "heading", "aria-level": "4" }, text: "ARIA heading" },
+		{ tag: "h5", attrs: { id: "hidden" }, text: "Hidden", style: { display: "none" } },
+	]);
+	const report = page.run();
+	assert.deepEqual(issuesOf(report, "heading").map((issue) => issue.selector), ["#skip1", "#skip2", "#aria"]);
+	assert.deepEqual([issuesOf(report, "heading")[0].title, issuesOf(report, "heading")[0].detail], ["Heading level skipped", 'h4 "Detail" follows h2: h3 is missing.']);
+	assert.equal(issuesOf(report, "heading")[1].detail, 'h6 "Fine print" follows h3: h4, h5 are missing.');
+	const clean = checkPage([{ tag: "h2", text: "Starts at two" }, { tag: "h3", text: "x" }, { tag: "h2", text: "y" }]);
+	assert.deepEqual(clean.run().issues, [], "the first heading may be any level; going back up is fine");
+});
+
+test("each check lists at most 20 problems and 10 advice items, with the full counts", () => {
+	const page = checkPage(Array.from({ length: 45 }, (_, index) => ({ tag: "p", attrs: { id: `p${index}` }, text: `text ${index}`, style: gray(200) })));
+	const report = page.run();
+	assert.deepEqual([issuesOf(report, "contrast").length, report.checks.find((check) => check.id === "contrast")!.count], [20, 45]);
+	assert.deepEqual(issuesOf(report, "contrast").map((issue) => issue.selector).slice(0, 2), ["#p0", "#p1"], "the first ones in document order");
+	const advice = checkPage(Array.from({ length: 30 }, (_, index) => ({ tag: "button", attrs: { id: `b${index}` }, text: "x", size: [30, 30] as [number, number] }))).run();
+	assert.deepEqual([issuesOf(advice, "target", "advice").length, advice.checks.find((check) => check.id === "target")!.advice], [10, 30]);
+});
+
+test("a finding whose element is out of sight says hidden: true; below the fold is not out of sight", () => {
+	const page = checkPage([
+		{ tag: "a", attrs: { id: "skip", href: "#main" }, text: "Skip to content", size: [120, 20], at: [-500, 8] },
+		{ tag: "button", attrs: { id: "clipped" }, text: "x", size: [1, 1] },
+		{ tag: "button", attrs: { id: "rect" }, text: "y", size: [10, 10], style: { clip: "rect(0px, 0px, 0px, 0px)" } },
+		{ tag: "div", attrs: { id: "box" }, size: [100, 100], at: [0, 0], style: { overflow: "hidden", overflowX: "hidden", overflowY: "hidden" }, kids: [{ tag: "button", attrs: { id: "cut" }, text: "z", size: [10, 10], at: [300, 0] }] },
+		{ tag: "button", attrs: { id: "fold" }, text: "w", size: [10, 10], at: [8, 5000] },
+		{ tag: "button", attrs: { id: "right" }, text: "v", size: [10, 10], at: [1300, 8] },
+	]);
+	const report = page.run();
+	const hidden = Object.fromEntries(issuesOf(report, "target").map((issue) => [issue.selector, issue.hidden === true]));
+	assert.deepEqual(hidden, { "#skip": true, "#clipped": true, "#rect": true, "#cut": true, "#fold": false, "#right": true });
+	assert.equal(Object.hasOwn(issuesOf(report, "target").find((issue) => issue.selector === "#fold")!, "hidden"), false, "a visible finding has no hidden field");
 });
 
 /** Comment mode with Technical details on and the button hovered and measured; then the button grows without a scroll. */

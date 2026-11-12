@@ -15,6 +15,8 @@
 // without choosing a direction; Partial implementations lists them at the panel's bottom.
 // Tokens (design/system.md): with Technical details on, Comment mode shows the token inspector
 // beside the hovered element's frame (canvas-tokens.js).
+// Accessibility checks: each artboard's own frame checks its page; the panel's Quality tab lists the
+// findings, with Show (a ring on the canvas) and Ask the agent to fix (canvas-checks.js).
 //
 // Modules: each canvas-*.js module exports init(ctx) and returns its public
 // functions; ctx is { win, doc, els, store, api, ui, actions }. Modules reach the
@@ -32,6 +34,7 @@
 
 import * as api from "./canvas-api.js";
 import * as boards from "./canvas-boards.js";
+import * as checks from "./canvas-checks.js";
 import * as comments from "./canvas-comments.js";
 import * as compare from "./canvas-compare.js";
 import * as events from "./canvas-events.js";
@@ -56,9 +59,10 @@ import * as view from "./canvas-view.js";
  * The rail comes before the popover: its keydown listener that takes the next key for a
  * shortcut runs in the capture phase, ahead of the popover's Esc. The layout comes before
  * the popover too: its Esc clears the selected artboard first, and the next Esc reaches
- * the popover's (leave Comment mode).
+ * the popover's (leave Comment mode). The checks come before the layout: their Esc clears
+ * the ring of Show before the selected artboard.
  */
-const MODULES = [view, focus, boards, handoffs, parts, tokens, compare, events, comments, menu, rail, sizes, exporter, layout, minimap, popover, messages];
+const MODULES = [view, focus, boards, handoffs, parts, tokens, compare, events, comments, menu, rail, sizes, exporter, checks, layout, minimap, popover, messages];
 
 export function boot(win, doc) {
 	const config = JSON.parse(doc.getElementById("gd-config").textContent);
@@ -127,6 +131,13 @@ export function boot(win, doc) {
 		sendAll: $("gd-send-all"),
 		panelToggle: $("gd-panel-toggle"),
 		panel: $("gd-panel"),
+		tabs: $("gd-tabs"),
+		tabComments: $("gd-tab-comments"),
+		tabQuality: $("gd-tab-quality"),
+		countComments: $("gd-count-comments"),
+		countQuality: $("gd-count-quality"),
+		tabpanelComments: $("gd-tabpanel-comments"),
+		quality: $("gd-quality"),
 		filterOpen: $("gd-filter-open"),
 		filterResolved: $("gd-filter-resolved"),
 		panelEmpty: $("gd-panel-empty"),

@@ -31,7 +31,7 @@ function importWithoutGlobals(names: string[]) {
 }
 
 test("no canvas module touches the DOM or window when it is imported", () => {
-	assert.equal(MODULES.length, 21);
+	assert.equal(MODULES.length, 22);
 	const result = importWithoutGlobals(MODULES);
 	assert.equal(result.stderr, "");
 	assert.deepEqual(result.stdout.trim().split("\n"), MODULES.map((name) => `imported ${name}`));

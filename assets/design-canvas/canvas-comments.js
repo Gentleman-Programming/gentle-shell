@@ -84,6 +84,7 @@ export function init(ctx) {
 		els.filterResolved.textContent = `Resolved (${resolved.length})`;
 		els.filterOpen.setAttribute("aria-pressed", String(state.filter === "open"));
 		els.filterResolved.setAttribute("aria-pressed", String(state.filter === "resolved"));
+		els.countComments.textContent = String(open.length);
 		const unsent = open.filter((comment) => comment.sentAt === null).length;
 		els.sendAll.textContent = `Send all (${unsent})`;
 		els.sendAll.disabled = unsent === 0;
@@ -180,6 +181,8 @@ export function init(ctx) {
 		}
 		const board = state.boards.find((candidate) => candidate.artboard.file === comment.file);
 		if (board) for (const surface of actions.surfacesOf(board)) surface.frame.contentWindow?.postMessage({ type: "gd:highlight", id }, "*");
+		// A pin clicked while Quality shows brings the list back, so focus can land in it.
+		if (options.focusList && state.tab !== "comments") actions.setTab("comments");
 		if (options.focusList) els.list.querySelector(`[data-id="${win.CSS.escape(id)}"] .gd-comment-show`)?.focus();
 		if (!options.scroll) return;
 		// The focused artboard is already at 1:1; another board's comment leaves focus mode first.

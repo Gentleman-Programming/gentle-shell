@@ -211,20 +211,24 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport
 	contain: inline-size;
 }
 
-/* The handoff row above Implement this: anchored to the label's bottom right, kept at screen
-   size like the pins, and wrapped within the artboard's on-screen width. */
+/* The handoff row above Implement this and the ⋯ menu beside it: anchored to the label's bottom right,
+   kept at screen size like the pins, and wrapped within the artboard's on-screen width. */
 .gd-board-actions {
 	position: absolute;
 	right: 0;
 	bottom: 0;
-	display: flex;
-	flex-direction: column;
-	align-items: flex-end;
+	display: grid;
+	grid-template-columns: auto auto;
+	justify-content: end;
+	justify-items: end;
+	align-items: center;
 	gap: 4px;
 	max-width: calc(100% / var(--gd-inv-zoom, 1));
 	transform: scale(var(--gd-inv-zoom, 1));
 	transform-origin: right bottom;
 }
+
+.gd-board-actions > .gd-handoff { grid-column: 1 / -1; }
 
 .gd-implement { white-space: nowrap; }
 
@@ -932,6 +936,45 @@ button:disabled { opacity: 0.5; cursor: default; }
 	margin: 0 10px 6px;
 	color: var(--gd-danger);
 	font-size: 12px;
+}
+
+/* Export (canvas-export.js): the ⋯ button beside Implement this opens the shared menu with the exports. While a
+   PNG is grabbed, the viewport covers the window and only the open artboard's frame shows (exportArtboard). */
+.gd-menu-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0 6px;
+	color: var(--gd-muted);
+	background: transparent;
+	border-color: transparent;
+}
+
+.gd-menu-button:hover, .gd-menu-button[aria-expanded="true"] { background: var(--gd-stage); border-color: var(--gd-border); color: var(--gd-text); }
+.gd-menu-button:focus-visible { outline: 2px solid var(--gd-focus); outline-offset: 2px; }
+
+.gd-exporting .gd-viewport {
+	position: fixed;
+	inset: 0;
+	z-index: 30;
+}
+
+.gd-exporting .gd-viewport > :not(.gd-world),
+.gd-exporting .gd-artboard:not(.gd-focus-board),
+.gd-exporting .gd-pins { visibility: hidden; }
+
+.gd-exporting .gd-focus-board .gd-artboard-frame { box-shadow: none; outline: none; }
+
+/* Export as PDF: only the artboard prints, at its own size (exportPdf sets the page size). */
+.gd-print { position: fixed; left: 0; top: 0; visibility: hidden; pointer-events: none; }
+.gd-print iframe { display: block; border: 0; }
+
+@page { margin: 0; }
+
+@media print {
+	body.gd-printing { display: block; }
+	body.gd-printing > :not(.gd-print) { display: none; }
+	body.gd-printing .gd-print { position: static; visibility: visible; }
 }
 
 /* Keyboard shortcuts: the ? list, the keys a person can change, and the fixed ones. */

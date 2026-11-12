@@ -18,8 +18,10 @@ function loadInspector() {
 		hasAttribute: () => false,
 		getBoundingClientRect: () => ({ left: 0, top: 0, width: 10, height: 10 }),
 	});
+	const created: any[] = [];
 	const button = Object.assign(new Element(), {
 		id: "cta",
+		isConnected: true,
 		localName: "button",
 		innerText: "Buy now",
 		parentElement: null,
@@ -33,7 +35,11 @@ function loadInspector() {
 		documentElement,
 		body: makeNode(),
 		scrollingElement: scrolling,
-		createElement: makeNode,
+		createElement: () => {
+			const node = makeNode();
+			created.push(node);
+			return node;
+		},
 		elementFromPoint: () => button,
 		querySelectorAll: (selector: string) => (selector === "#cta" ? [button] : []),
 		querySelector: () => null,
@@ -59,7 +65,9 @@ function loadInspector() {
 		return event;
 	};
 	const fromParent = (data: unknown) => fire("message", { source: parent, data });
-	return { posted, fire, fromParent };
+	// The inspector makes its hover outline first, then the selected one.
+	const [hoverBox, selectedBox] = created;
+	return { posted, fire, fromParent, hoverBox, selectedBox };
 }
 
 test("the inspector posts gd:exit-focus on Shift+Esc and keeps plain Esc for the design", () => {
@@ -83,6 +91,21 @@ test("the inspector picks the element under a routed point only in comment mode"
 	assert.deepEqual(inspector.posted, [{ type: "gd:pick", selector: "#cta", excerpt: "Buy now", rect: { x: 4, y: 8, width: 60, height: 20 } }]);
 	inspector.fromParent({ type: "gd:pick-at", x: "10", y: 12 });
 	assert.equal(inspector.posted.length, 1, "non-numeric points are ignored");
+});
+
+test("gd:mode off hides the hover and selected outlines, which a PNG export relies on, and hovers stay hidden until it is on again", () => {
+	const inspector = loadInspector();
+	inspector.fromParent({ type: "gd:mode", enabled: true });
+	inspector.fromParent({ type: "gd:hover-at", x: 10, y: 12 });
+	inspector.fromParent({ type: "gd:pick-at", x: 10, y: 12 });
+	assert.deepEqual([inspector.hoverBox.style.display, inspector.selectedBox.style.display], ["block", "block"]);
+	inspector.fromParent({ type: "gd:mode", enabled: false });
+	assert.deepEqual([inspector.hoverBox.style.display, inspector.selectedBox.style.display], ["none", "none"]);
+	inspector.fromParent({ type: "gd:hover-at", x: 10, y: 12 });
+	assert.equal(inspector.hoverBox.style.display, "none", "no hover outline while comment mode is off");
+	inspector.fromParent({ type: "gd:mode", enabled: true });
+	inspector.fromParent({ type: "gd:hover-at", x: 10, y: 12 });
+	assert.equal(inspector.hoverBox.style.display, "block", "hover works again once it is back on");
 });
 
 test("in focus mode the inspector leaves the wheel to the artboard and never pans the canvas", () => {

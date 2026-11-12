@@ -4,6 +4,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import test from "node:test";
 import { REVIEW_LENS_PARITY_PATTERNS } from "./support/review-lens-parity.ts";
 import { readDelegationDetail } from "./support/orchestrator-modules.ts";
+import { FROZEN_SEVERITY } from "../lib/review-transaction.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const ORCHESTRATOR = ["assets/orchestrator.md", "assets/orchestrator-delegation.md", "assets/orchestrator-writer.md"];
@@ -289,6 +290,9 @@ test("Judgment Day skill and prompts preserve bounded fix and re-judgment author
 	assertMatches(JD_PROMPTS, judgePrompt, JUDGMENT_DAY_DISCOVERY_PATTERNS);
 	assertMatches(JD_PROMPTS, fencedBlock(JD_PROMPTS, "## Fix Agent Prompt"), FIX_PATTERNS);
 	assertMatches(FIX_AGENT, read(FIX_AGENT), FIX_PATTERNS);
+	for (const content of [skill, judgePrompt, ...JUDGES.map(read)]) {
+		for (const severity of Object.values(FROZEN_SEVERITY)) assert.match(content, new RegExp(`\\b${severity}\\b`), "judge vocabulary must cover the canonical ledger enum");
+	}
 });
 
 test("Judgment Day fix routing has one canonical shape and never falls back to generic roles", () => {

@@ -363,6 +363,36 @@ test("a value off the system shows ⚠ no token and the nearest token: colors by
 	assert.equal(rowText(canvas, "Radius"), "8 8 0 9 px ⚠ 9 px no token");
 });
 
+test("rem tokens are converted with the root font size the frame reports, 16 px when it reports none", async () => {
+	const REM_TOKENS = { exists: true, tokens: [...TOKEN_SET.tokens,
+		{ name: "--space-4", value: "1.6rem", section: "Spacing", group: "spacing" },
+		{ name: "--text-md", value: "1.4rem", section: "Typography", group: "font" },
+	] };
+	const canvas = await inspecting({ tokens: REM_TOKENS });
+	const [first] = canvas.boards;
+	inspect(canvas, first.frame, { ...MEASURE, rootFontSize: 10, fontSize: 14, margin: [0, 0, 0, 0], padding: [16, 16, 16, 16] });
+	assert.equal(rowText(canvas, "Spacing"), "padding 16 16 16 16 ✓ on scale", "1.6rem is 16 px under a 10 px root");
+	assert.equal(rowText(canvas, "Size"), "14 px ✓ --text-md weight 400", "1.4rem is 14 px under a 10 px root");
+	assert.equal(withClass($(canvas, "gd-inspector-list"), "gd-inspector-bad").length, 0, "nothing flagged");
+	inspect(canvas, first.frame, { ...MEASURE, fontSize: 22.4, margin: [0, 0, 0, 0], padding: [25.6, 0, 0, 0] });
+	assert.equal(rowText(canvas, "Spacing"), "padding 25.6 0 0 0 ✓ on scale", "no root font size reported: 16 px");
+	assert.equal(rowText(canvas, "Size"), "22.4 px ✓ --text-md weight 400");
+	inspect(canvas, first.frame, { ...MEASURE, rootFontSize: 16, fontSize: 14, margin: [0, 0, 0, 0], padding: [16, 0, 0, 0] });
+	assert.equal(rowText(canvas, "Spacing"), "padding 16 0 0 0 ⚠ 16 px off scale Nearest --space-4 1.6rem", "under a 16 px root 1.6rem is 25.6 px");
+	assert.equal(rowText(canvas, "Size"), "14 px ⚠ no token Nearest --text-md 1.4rem weight 400");
+});
+
+test("negative margins are checked against the spacing scale by their size", async () => {
+	const canvas = await inspecting({ tokens: EXTRA_TOKENS });
+	const [first] = canvas.boards;
+	inspect(canvas, first.frame, { ...MEASURE, margin: [-12, 0, 0, 0] });
+	assert.equal(rowText(canvas, "Spacing"), "margin -12 0 0 0 ⚠ -12 px off scale Nearest --space-2 8px");
+	assert.equal(flagged(canvas, "Spacing"), 1);
+	inspect(canvas, first.frame, { ...MEASURE, margin: [-8, 0, 16, 0] });
+	assert.equal(rowText(canvas, "Spacing"), "margin -8 0 16 0 ✓ on scale", "-8 px is the 8 px token pulled the other way");
+	assert.equal(flagged(canvas, "Spacing"), 0);
+});
+
 test("contrast is the WCAG ratio, flagged under AA (4.5 : 1, 3 : 1 for large text) and never rounded up", async () => {
 	const canvas = await inspecting();
 	const [first] = canvas.boards;

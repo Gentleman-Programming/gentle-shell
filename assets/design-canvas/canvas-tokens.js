@@ -76,6 +76,8 @@ const DWELL_MS = 250;
 const ALPHA_EPSILON = 0.01;
 const NEAR_ALPHA = 0.05;
 const SIZE_EPSILON = 0.01;
+// The root font size a rem token is converted with when a frame reports none (the browser default).
+const ROOT_FONT_SIZE = 16;
 
 // ---- comparing values with tokens (pure)
 
@@ -91,13 +93,13 @@ function parseTokenColor(value) {
 	return null;
 }
 
-/** px of a token like `8px` or `0.5rem`, else null. */
+/** A token like `8px` or `0.5rem`: its number and whether it is rem (converted per page, with its root font size), else null. */
 function parseTokenLength(value) {
 	const match = /^(-?\d*\.?\d+)(px|rem)$/.exec(value.trim());
-	return match ? Number(match[1]) * (match[2] === "rem" ? 16 : 1) : null;
+	return match ? { size: Number(match[1]), rem: match[2] === "rem" } : null;
 }
 
-/** The tokens by what they can be compared with: colors, font families, and px lengths by purpose. Parsed once per load. */
+/** The tokens by what they can be compared with: colors, font families, and lengths by purpose. Parsed once per load. */
 function tokenKinds(tokens) {
 	const kinds = { color: [], family: [], radius: [], spacing: [], fontSize: [] };
 	for (const token of tokens) {
@@ -105,9 +107,9 @@ function tokenKinds(tokens) {
 		const length = color ? null : parseTokenLength(token.value);
 		if (color) kinds.color.push({ token, color });
 		else if (length !== null) {
-			if (token.group === "radius" || /radius/.test(token.name)) kinds.radius.push({ token, px: length });
-			else if (token.group === "spacing" || /(^|-)(space|spacing|gap|pad|padding|margin)(-|$)/.test(token.name)) kinds.spacing.push({ token, px: length });
-			else if (token.group === "font" || /font|text|type/.test(token.name)) kinds.fontSize.push({ token, px: length });
+			if (token.group === "radius" || /radius/.test(token.name)) kinds.radius.push({ token, length });
+			else if (token.group === "spacing" || /(^|-)(space|spacing|gap|pad|padding|margin)(-|$)/.test(token.name)) kinds.spacing.push({ token, length });
+			else if (token.group === "font" || /font|text|type/.test(token.name)) kinds.fontSize.push({ token, length });
 		} else if ((token.group === "font" || /font|family/.test(token.name)) && /[a-zA-Z]/.test(token.value)) kinds.family.push({ token, families: familyList(token.value) });
 	}
 	return kinds;
@@ -173,12 +175,13 @@ function familyList(value) {
 
 const sameFamilies = (a, b) => a.length === b.length && a.every((family, index) => family.toLowerCase() === b[index].toLowerCase());
 
-/** A length against the tokens of one kind: exact token names, else the nearest by numeric distance. */
-function matchLength(px, candidates) {
-	const exact = candidates.filter((candidate) => Math.abs(candidate.px - px) < SIZE_EPSILON).map((candidate) => candidate.token);
+/** A length against the tokens of one kind, rem in px of the page's `root` font size: exact token names, else the nearest by numeric distance. */
+function matchLength(px, candidates, root) {
+	const sized = candidates.map((candidate) => ({ token: candidate.token, px: candidate.length.size * (candidate.length.rem ? root : 1) }));
+	const exact = sized.filter((candidate) => Math.abs(candidate.px - px) < SIZE_EPSILON).map((candidate) => candidate.token);
 	if (exact.length > 0) return { exact, nearest: null };
 	let nearest = null;
-	for (const candidate of candidates) if (!nearest || Math.abs(candidate.px - px) < Math.abs(nearest.px - px)) nearest = candidate;
+	for (const candidate of sized) if (!nearest || Math.abs(candidate.px - px) < Math.abs(nearest.px - px)) nearest = candidate;
 	return { exact: [], nearest: nearest ? nearest.token : null };
 }
 
@@ -305,11 +308,11 @@ export function init(ctx) {
 		return nodes;
 	}
 
-	/** A px value against the tokens of one kind; no tokens of that kind means nothing to compare. */
-	function lengthValue(px, candidates, flags, label) {
+	/** A px value against the tokens of one kind (rem in px of the page's `root` font size); no tokens of that kind means nothing to compare. */
+	function lengthValue(px, candidates, root, flags, label) {
 		const nodes = [code(TEXT.px(fmt(px)))];
 		if (candidates.length === 0) return nodes;
-		const match = matchLength(px, candidates);
+		const match = matchLength(px, candidates, root);
 		if (match.exact.length > 0) return [...nodes, okChip(names(match.exact))];
 		nodes.push(badChip(TEXT.noToken));
 		if (match.nearest) nodes.push(near(TEXT.nearest(match.nearest.name)), code(match.nearest.value));
@@ -351,8 +354,9 @@ export function init(ctx) {
 		if (m.padding.some((value) => value !== 0)) nodes.push(code(TEXT.padding(sides(m.padding))));
 		if (nodes.length === 0) return [code(TEXT.none)];
 		if (kinds.spacing.length === 0) return nodes;
-		const values = [...new Set([...m.margin, ...m.padding].filter((value) => value > 0))];
-		const off = values.map((value) => ({ value, match: matchLength(value, kinds.spacing) })).filter((entry) => entry.match.exact.length === 0);
+		// A negative margin pulls by a step of the scale: its size is what is checked.
+		const values = [...new Set([...m.margin, ...m.padding].filter((value) => value !== 0))];
+		const off = values.map((value) => ({ value, match: matchLength(Math.abs(value), kinds.spacing, m.rootFontSize) })).filter((entry) => entry.match.exact.length === 0);
 		if (off.length === 0) nodes.push(okChip(TEXT.onScale));
 		for (const { value, match } of off) {
 			nodes.push(badChip(TEXT.offScale(fmt(value))));
@@ -365,11 +369,11 @@ export function init(ctx) {
 	function radiusValue(m, flags) {
 		const corners = m.radius;
 		if (corners.every((value) => value === 0)) return [code(TEXT.none)];
-		if (corners.every((value) => value === corners[0])) return lengthValue(corners[0], kinds.radius, flags, TEXT.session.radius);
+		if (corners.every((value) => value === corners[0])) return lengthValue(corners[0], kinds.radius, m.rootFontSize, flags, TEXT.session.radius);
 		const nodes = [code(TEXT.px(sides(corners)))];
 		if (kinds.radius.length === 0) return nodes;
 		for (const value of new Set(corners.filter((corner) => corner > 0))) {
-			const match = matchLength(value, kinds.radius);
+			const match = matchLength(value, kinds.radius, m.rootFontSize);
 			if (match.exact.length > 0) continue;
 			nodes.push(badChip(TEXT.radiusNoToken(fmt(value))));
 			flags.push(TEXT.session.length(TEXT.session.radius, fmt(value), match.nearest));
@@ -386,7 +390,7 @@ export function init(ctx) {
 			row(labels.background, m.background ? colorValue(m.background, flags, TEXT.session.background) : [code(TEXT.imageBackground)]),
 			row(labels.contrast, contrastValue(m, flags)),
 			row(labels.font, familyValue(m, flags)),
-			row(labels.size, [...lengthValue(m.fontSize, kinds.fontSize, flags, TEXT.session.fontSize), near(TEXT.weight(m.fontWeight))]),
+			row(labels.size, [...lengthValue(m.fontSize, kinds.fontSize, m.rootFontSize, flags, TEXT.session.fontSize), near(TEXT.weight(m.fontWeight))]),
 			row(labels.lineHeight, [code(m.lineHeight === null ? TEXT.normal : TEXT.px(fmt(m.lineHeight)))]),
 			row(labels.spacing, spacingValue(m, flags)),
 			row(labels.radius, radiusValue(m, flags)),
@@ -430,6 +434,8 @@ export function init(ctx) {
 			rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
 			color, background, fontFamily: raw.fontFamily.slice(0, LIMITS.family), fontSize: raw.fontSize, fontWeight: raw.fontWeight, lineHeight: raw.lineHeight,
 			margin, padding, radius,
+			// A frame that reports no usable root font size converts rem at the browser default.
+			rootFontSize: isFiniteNumber(raw.rootFontSize) && raw.rootFontSize > 0 ? raw.rootFontSize : ROOT_FONT_SIZE,
 		};
 	}
 

@@ -251,6 +251,8 @@
 			margin: sides(["marginTop", "marginRight", "marginBottom", "marginLeft"]),
 			padding: sides(["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"]),
 			radius: sides(["borderTopLeftRadius", "borderTopRightRadius", "borderBottomRightRadius", "borderBottomLeftRadius"]),
+			// The page's root font size, so the canvas converts rem tokens in this page's px (16, the browser default, when unreadable).
+			rootFontSize: px(getComputedStyle(document.documentElement).fontSize, 0) || 16,
 		};
 	}
 

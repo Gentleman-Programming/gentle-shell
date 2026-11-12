@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { DESKTOP_RPC_SCHEMA, DESKTOP_RPC_WIDGET } from "../../lib/desktop-rpc.ts";
+import { normalizeProfilesFile, serializeProfilesFile } from "../../lib/agent-profiles.ts";
 
 const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
 const runtime = resolve(packageRoot, "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js");
@@ -176,8 +177,8 @@ test("installed Pi dispatches Desktop RPC without adding conversation messages",
 		assert.equal(response.kind, "response");
 		assert.equal(response.requestId, "real-1");
 		assert.equal(response.ok, true);
-		assert.deepEqual(response.data.methods, ["capabilities", "get_snapshot", "get_config", "get_permission_mode", "set_permission_mode"]);
-		assert.deepEqual(response.data.events, ["permission_mode_changed"]);
+		assert.deepEqual(response.data.methods, ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode"]);
+		assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed"]);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -256,6 +257,115 @@ test("installed Pi serves Desktop config reads from the existing stores", () => 
 		assert.equal(readFileSync(join(workspace, ".pi", "gentle-ai", "models.json"), "utf8"), projectModels);
 		assert.equal(existsSync(join(root, "config", "profile-fallbacks.json")), false, "no store is created by a read");
 	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+/**
+ * Real production wiring for the write slice: the installed runtime serves a
+ * `set_config` round trip through the existing `profiles.json` owner, writes the
+ * isolated file atomically, emits exactly one ordered `config_changed`, and adds
+ * no conversation message. Nothing here reimplements the store owner.
+ */
+test("installed Pi applies a Desktop config write through the existing store owner", async () => {
+	const root = isolatedRoot("desktop-rpc-config-write-");
+	const probe = new LiveProbe(root, [desktopExtension]);
+	try {
+		const configHome = join(root, "config");
+		const path = join(configHome, "profiles.json");
+		writeFileSync(
+			path,
+			`${JSON.stringify({
+				kind: "gentle-pi.agent_model_profiles",
+				version: 1,
+				active: "team",
+				profiles: { team: { explore: { model: "anthropic/claude-probe" } } },
+			})}\n`,
+		);
+		const responseFor = (requestId: string) => probe.waitFor(
+			(record) => record.type === "extension_ui_request" && record.widgetKey === DESKTOP_RPC_WIDGET &&
+				JSON.parse(record.widgetLines[0]).kind === "response" &&
+				JSON.parse(record.widgetLines[0]).requestId === requestId,
+			`response ${requestId}`,
+		).then((record) => JSON.parse(record.widgetLines[0]));
+
+		probe.send(prompt("prompt-read", desktopRequest("read-1", "get_config", { store: "profiles" })));
+		const before = await responseFor("read-1");
+		assert.equal(before.ok, true, JSON.stringify(before));
+		const writeTarget = before.data.writeTargets.find((entry: any) => entry.target === "global");
+		assert.equal(writeTarget.status, "ok");
+		const previousBytes = readFileSync(path, "utf8");
+
+		const data = {
+			kind: "gentle-pi.agent_model_profiles",
+			version: 1,
+			active: "team",
+			profiles: {
+				team: { explore: { model: "anthropic/claude-probe" } },
+				ops: { worker: { model: "openai/gpt-probe-write", thinking: "high" } },
+			},
+		};
+		probe.send(prompt("prompt-write", desktopRequest("write-1", "set_config", {
+			store: "profiles",
+			data,
+			expectedRevision: writeTarget.writeRevision,
+		})));
+		const written = await responseFor("write-1");
+		assert.equal(written.ok, true, JSON.stringify(written));
+		assert.equal(written.data.changed, true);
+		assert.equal(written.data.writeTarget, "global");
+		assert.equal(written.data.readOnly, false);
+		assert.deepEqual(Object.keys(written.data.value.profiles).sort(), ["ops", "team"]);
+
+		const event = await probe.waitFor(
+			(record) => record.type === "extension_ui_request" && record.widgetKey === DESKTOP_RPC_WIDGET &&
+				JSON.parse(record.widgetLines[0]).event === "config_changed",
+			"config_changed event",
+		).then((record) => JSON.parse(record.widgetLines[0]));
+		assert.equal(event.seq, 1);
+		assert.deepEqual(event.data, {
+			store: "profiles",
+			scope: "global",
+			writeTarget: "global",
+			revision: written.data.revision,
+			writeRevision: written.data.writeRevision,
+			source: "desktop",
+		});
+
+		probe.send(prompt("prompt-read-2", desktopRequest("read-2", "get_config", { store: "profiles" })));
+		const after = await responseFor("read-2");
+		assert.equal(after.ok, true, JSON.stringify(after));
+		assert.deepEqual(Object.keys(after.data.value.profiles).sort(), ["ops", "team"]);
+		assert.notEqual(after.data.revision, before.data.revision);
+
+		probe.send({ id: "messages-1", type: "get_messages" });
+		const messages = await probe.waitFor((record) => record.id === "messages-1", "get_messages response");
+		assert.deepEqual(messages.data, { messages: [] }, "control traffic never reaches the conversation");
+
+		for (const id of ["prompt-read", "prompt-write", "prompt-read-2"]) {
+			assert.deepEqual(
+				await probe.waitFor((record) => record.id === id, `prompt response ${id}`),
+				{ id, type: "response", command: "prompt", success: true, data: { disposition: "handled" } },
+			);
+		}
+
+		const onDisk = readFileSync(path, "utf8");
+		assert.notEqual(onDisk, previousBytes, "the isolated store really changed on disk");
+		assert.equal(onDisk, serializeProfilesFile(normalizeProfilesFile(data)!.file), "the owner serialization is the disk content");
+		assert.deepEqual(JSON.parse(onDisk).profiles.ops, { worker: { model: "openai/gpt-probe-write", thinking: "high" } });
+		assert.equal(existsSync(join(configHome, "profile-fallbacks.json")), false, "no other store is created");
+
+		assert.deepEqual(
+			probe.desktopPayloads().map((payload) => `${payload.kind}:${payload.requestId ?? payload.event}`),
+			["response:read-1", "response:write-1", "event:config_changed", "response:read-2"],
+			"one ordered event follows its response and nothing else is emitted",
+		);
+
+		const closed = await probe.close();
+		assert.equal(closed.status, 0, closed.stderr);
+		assert.equal(closed.stderr, "");
+	} finally {
+		probe.kill();
 		rmSync(root, { recursive: true, force: true });
 	}
 });

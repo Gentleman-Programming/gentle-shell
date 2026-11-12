@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
 import { parseAgentsConfig, loadAgentsConfig } from "../lib/agents-config.ts";
-import { FALLBACKS_KIND, FALLBACKS_VERSION, fallbacksFilePath } from "../lib/model-fallback-store.ts";
-import { PROFILES_KIND, PROFILES_VERSION, profilesFilePath } from "../lib/agent-profiles.ts";
-import { PROFILE_PIN_KIND, PROFILE_PIN_VERSION, localProfilePinPath, repoProfileDeclarationPath } from "../lib/agent-profile-pin.ts";
-import { DESKTOP_CONFIG_METHODS, DESKTOP_CONFIG_STORES, DesktopConfigBridge } from "../lib/desktop-rpc-config.ts";
+import { FALLBACKS_KIND, FALLBACKS_VERSION, fallbacksFilePath, normalizeFallbacksFile } from "../lib/model-fallback-store.ts";
+import { PROFILES_KIND, PROFILES_VERSION, normalizeProfilesFile, profilesFilePath, serializeProfilesFile } from "../lib/agent-profiles.ts";
+import { PROFILE_PIN_KIND, PROFILE_PIN_VERSION, localProfilePinPath, repoProfileDeclarationPath, serializeProfilePin } from "../lib/agent-profile-pin.ts";
+import { DESKTOP_CONFIG_EVENTS, DESKTOP_CONFIG_METHODS, DESKTOP_CONFIG_STORES, DesktopConfigBridge } from "../lib/desktop-rpc-config.ts";
 import { DESKTOP_RPC_SCHEMA, DESKTOP_RPC_WIDGET } from "../lib/desktop-rpc.ts";
 import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
 import type { WorktreeIdentity } from "../lib/session-worktree-registry.ts";
@@ -536,9 +536,8 @@ test("get_config rejects unknown stores, unsupported params, and physical paths"
 		assert.equal(JSON.stringify(outcome).includes(env.root), false, "no physical path is echoed back");
 	}
 
-	const unsupported = await bridge.handle("set_config", { store: "profiles" });
-	assert.equal(unsupported, undefined, "this slice implements no writer");
-	assert.deepEqual(DESKTOP_CONFIG_METHODS, ["get_config"]);
+	assert.deepEqual(DESKTOP_CONFIG_METHODS, ["get_config", "set_config"]);
+	assert.deepEqual([...DESKTOP_CONFIG_EVENTS], ["config_changed"]);
 	assert.deepEqual([...DESKTOP_CONFIG_STORES], ["profiles", "models", "profile_fallbacks", "subagents", "pins", "managed_assets"]);
 });
 
@@ -618,6 +617,619 @@ test("a host without a session cwd answers unavailable instead of guessing paths
 	});
 });
 
+// ---- Write contract: `set_config` over the authoritative owners ----
+
+async function writeTargetRevision(bridge: DesktopConfigBridge, store: string, target = "global"): Promise<string> {
+	const data = await readStore(bridge, store);
+	const targets = data.writeTargets as Array<{ target: string; status: string; writeRevision: string }> | undefined;
+	assert.ok(targets, `${store} must expose its write targets`);
+	const entry = targets.find((candidate) => candidate.target === target);
+	assert.ok(entry, `${store} must expose the ${target} write target`);
+	assert.match(entry.writeRevision, /^sha256:[a-f0-9]{32}$/);
+	return entry.writeRevision;
+}
+
+async function setConfig(bridge: DesktopConfigBridge, params: Record<string, unknown>): Promise<any> {
+	const outcome = await bridge.handle("set_config", params);
+	assert.ok(outcome, "set_config must answer");
+	return outcome;
+}
+
+function assertError(outcome: any, code: string): void {
+	assert.equal(outcome.ok, false, `expected ${code}: ${JSON.stringify(outcome)}`);
+	assert.equal(outcome.error.code, code);
+	assert.equal(outcome.event, undefined, "a rejected write emits nothing");
+}
+
+function withProfile(name: string, model: string): Record<string, unknown> {
+	const fixture = profilesFixture();
+	return {
+		...fixture,
+		profiles: { ...(fixture.profiles as Record<string, unknown>), [name]: { worker: { model } } },
+	};
+}
+
+test("profiles accepts a validated write and reports the resulting store", async (t) => {
+	const env = isolatedEnvironment(t);
+	const path = profilesFilePath(env.configHome);
+	writeJson(path, profilesFixture());
+	const bridge = bridgeFor(env);
+	const before = await readStore(bridge, "profiles");
+	const beforeWrite = await writeTargetRevision(bridge, "profiles");
+	const data = withProfile("extra", "openai/gpt-extra");
+
+	const outcome = await setConfig(bridge, { store: "profiles", data, expectedRevision: beforeWrite });
+
+	assert.equal(outcome.ok, true, JSON.stringify(outcome));
+	assert.equal(outcome.data.store, "profiles");
+	assert.equal(outcome.data.scope, "global");
+	assert.equal(outcome.data.readOnly, false);
+	assert.equal(outcome.data.status, "ok");
+	assert.equal(outcome.data.writeTarget, "global");
+	assert.equal(outcome.data.changed, true);
+	assert.deepEqual(Object.keys(outcome.data.value.profiles).sort(), ["extra", "ops", "team"]);
+	assert.notEqual(outcome.data.revision, before.revision, "the read revision moved");
+	assert.notEqual(outcome.data.writeRevision, beforeWrite, "the write revision moved");
+	assert.equal(
+		readFileSync(path, "utf8"),
+		serializeProfilesFile(normalizeProfilesFile(data)!.file),
+		"the store holds exactly the owner-serialized normalized data",
+	);
+	assert.equal(outcome.event?.name, "config_changed");
+	assert.deepEqual(outcome.event?.data, {
+		store: "profiles",
+		scope: "global",
+		writeTarget: "global",
+		revision: outcome.data.revision,
+		writeRevision: outcome.data.writeRevision,
+		source: "desktop",
+	});
+	assert.equal(JSON.stringify(outcome).includes(env.root), false, "no physical path crosses the contract");
+});
+
+test("profiles creates a missing store from its missing-state write revision", async (t) => {
+	const env = isolatedEnvironment(t);
+	const path = profilesFilePath(env.configHome);
+	const bridge = bridgeFor(env);
+	const missing = await readStore(bridge, "profiles");
+	assert.equal(missing.status, "missing");
+	const beforeWrite = await writeTargetRevision(bridge, "profiles");
+
+	const outcome = await setConfig(bridge, { store: "profiles", data: profilesFixture(), expectedRevision: beforeWrite });
+
+	assert.equal(outcome.ok, true, JSON.stringify(outcome));
+	assert.equal(outcome.data.changed, true);
+	assert.equal(outcome.data.status, "ok");
+	assert.notEqual(outcome.data.writeRevision, beforeWrite);
+	assert.equal(readFileSync(path, "utf8"), serializeProfilesFile(normalizeProfilesFile(profilesFixture())!.file));
+});
+
+test("profile_fallbacks writes normalized chains and refuses content the owner would drop", async (t) => {
+	const env = isolatedEnvironment(t);
+	const path = fallbacksFilePath(env.configHome);
+	const bridge = bridgeFor(env);
+	const data = {
+		kind: FALLBACKS_KIND,
+		version: FALLBACKS_VERSION,
+		profiles: { team: { worker: [{ model: "openai/gpt-fallback", thinking: "low" }] } },
+	};
+	const empty = await readStore(bridge, "profile_fallbacks");
+
+	const outcome = await setConfig(bridge, {
+		store: "profile_fallbacks",
+		data,
+		expectedRevision: await writeTargetRevision(bridge, "profile_fallbacks"),
+	});
+
+	assert.equal(outcome.ok, true, JSON.stringify(outcome));
+	assert.equal(outcome.data.scope, "global");
+	assert.equal(outcome.data.writeTarget, "global");
+	assert.equal(outcome.data.changed, true);
+	assert.notEqual(outcome.data.revision, empty.revision);
+	assert.deepEqual(outcome.data.value.profiles.team.worker, [{ model: "openai/gpt-fallback", thinking: "low" }]);
+	assert.equal(
+		readFileSync(path, "utf8"),
+		`${JSON.stringify(normalizeFallbacksFile(data), null, 2)}\n`,
+		"the store holds exactly the owner-normalized chains",
+	);
+	assert.equal(outcome.event?.name, "config_changed");
+
+	const before = snapshotTree(env.root);
+	for (const invalid of [
+		{ kind: FALLBACKS_KIND, version: FALLBACKS_VERSION, profiles: { team: { worker: [] } } },
+		{ kind: FALLBACKS_KIND, version: FALLBACKS_VERSION, profiles: { team: { worker: [{ model: "openai/gpt-a" }, { model: "openai/gpt-a" }] } } },
+		{ kind: FALLBACKS_KIND, version: FALLBACKS_VERSION, profiles: { team: { worker: [{ model: "not a model" }] } } },
+		{ kind: FALLBACKS_KIND, version: FALLBACKS_VERSION, profiles: {}, extra: true },
+		{ kind: "gentle-pi.something_else", version: 1, profiles: {} },
+	]) {
+		const rejected = await setConfig(bridge, {
+			store: "profile_fallbacks",
+			data: invalid,
+			expectedRevision: await writeTargetRevision(bridge, "profile_fallbacks"),
+		});
+		assertError(rejected, "invalid_data");
+	}
+	assert.deepEqual(snapshotTree(env.root), before, "rejected data never touches the store");
+});
+
+test("pins writes only the layer the request names", async (t) => {
+	const env = isolatedEnvironment(t);
+	writeJson(profilesFilePath(env.configHome), profilesFixture());
+	const identity: WorktreeIdentity = { root: env.workspace, commonDir: join(env.root, "git-common") };
+	const bridge = bridgeFor(env, () => identity);
+	const targets = (await readStore(bridge, "pins")).writeTargets;
+	assert.deepEqual(
+		targets.map((entry: any) => [entry.target, entry.status]),
+		[["local", "missing"], ["repo", "missing"]],
+		"both owner layers are write targets before either file exists",
+	);
+
+	const local = await setConfig(bridge, {
+		store: "pins",
+		data: { source: "local", profile: "ops" },
+		expectedRevision: targets[0].writeRevision,
+	});
+
+	assert.equal(local.ok, true, JSON.stringify(local));
+	assert.equal(local.data.scope, "local+repo");
+	assert.equal(local.data.writeTarget, "local");
+	assert.equal(local.data.changed, true);
+	assert.deepEqual(local.data.value.winner, { source: "local", profile: "ops" });
+	assert.equal(readFileSync(localProfilePinPath(identity.commonDir), "utf8"), serializeProfilePin("ops"));
+	assert.equal(existsSync(repoProfileDeclarationPath(identity.root)), false, "the other layer is untouched");
+	assert.equal(local.event?.name, "config_changed");
+	assert.equal(local.event?.data.writeTarget, "local");
+	assert.equal(JSON.stringify(local.data).includes(env.root), false, "no pin path crosses the contract");
+
+	const afterLocal = await readStore(bridge, "pins");
+	const repo = await setConfig(bridge, {
+		store: "pins",
+		data: { source: "repo", profile: "team" },
+		expectedRevision: afterLocal.writeTargets[1].writeRevision,
+	});
+
+	assert.equal(repo.ok, true, JSON.stringify(repo));
+	assert.equal(repo.data.writeTarget, "repo");
+	assert.equal(repo.data.changed, true);
+	assert.equal(readFileSync(repoProfileDeclarationPath(identity.root), "utf8"), serializeProfilePin("team"));
+	assert.equal(readFileSync(localProfilePinPath(identity.commonDir), "utf8"), serializeProfilePin("ops"));
+	assert.deepEqual(repo.data.value.winner, { source: "local", profile: "ops" }, "the local layer still wins the read");
+});
+
+test("stale or missing expectedRevision is a revision conflict without writes", async (t) => {
+	const env = isolatedEnvironment(t);
+	const path = profilesFilePath(env.configHome);
+	writeJson(path, profilesFixture());
+	const bridge = bridgeFor(env);
+	const revision = await writeTargetRevision(bridge, "profiles");
+	const data = { ...profilesFixture(), active: "ops" };
+	const before = snapshotTree(env.root);
+
+	for (const expectedRevision of [undefined, 42, "sha256:00000000000000000000000000000000"]) {
+		const params: Record<string, unknown> = { store: "profiles", data };
+		if (expectedRevision !== undefined) params.expectedRevision = expectedRevision;
+		assertError(await setConfig(bridge, params), "revision_conflict");
+	}
+	assert.deepEqual(snapshotTree(env.root), before, "a conflict never writes");
+
+	const applied = await setConfig(bridge, { store: "profiles", data, expectedRevision: revision });
+	assert.equal(applied.ok, true, JSON.stringify(applied));
+	const stale = await setConfig(bridge, { store: "profiles", data: profilesFixture(), expectedRevision: revision });
+	assertError(stale, "revision_conflict");
+	assert.equal((await readStore(bridge, "profiles")).value.active, "ops", "the stale write never applied");
+});
+
+test("invalid data never creates or modifies a file", async (t) => {
+	const env = isolatedEnvironment(t);
+	writeJson(profilesFilePath(env.configHome), profilesFixture());
+	const identity: WorktreeIdentity = { root: env.workspace, commonDir: join(env.root, "git-common") };
+	const bridge = bridgeFor(env, () => identity);
+	const before = snapshotTree(env.root);
+	const cases: Array<[string, unknown]> = [
+		["profiles", []],
+		["profiles", { kind: "gentle-pi.something_else", version: 1, profiles: {} }],
+		["profiles", { kind: PROFILES_KIND, version: PROFILES_VERSION, profiles: { "bad name": { worker: { model: "openai/gpt-a" } } } }],
+		["profiles", { kind: PROFILES_KIND, version: PROFILES_VERSION, profiles: { team: { "bad agent!": { model: "openai/gpt-a" } } } }],
+		["profiles", { ...profilesFixture(), active: "ghost" }],
+		["profiles", { ...profilesFixture(), profiles: { team: { explore: { model: "openai/gpt-a", effort: "high" } } } }],
+		["profiles", { ...profilesFixture(), profiles: { team: { explore: { model: "openai/gpt-a", unknown_member: 1 } } } }],
+		["profiles", { ...profilesFixture(), workflow: { team: { orchestratorMode: "organic" } } }],
+		["profile_fallbacks", { kind: FALLBACKS_KIND, version: FALLBACKS_VERSION, profiles: { team: { worker: [{ model: "openai/gpt-a" }, { model: "openai/gpt-a" }] } } }],
+		["pins", { source: "local", profile: "ghost" }],
+		["pins", { source: "global", profile: "team" }],
+		["pins", { source: "local", profile: "bad name" }],
+		["pins", { profile: "team" }],
+		["pins", { source: "local", profile: "team", path: "/etc/passwd" }],
+		["pins", "local"],
+	];
+	for (const [store, data] of cases) {
+		const revision = await writeTargetRevision(bridge, store, store === "pins" ? "local" : "global");
+		const outcome = await setConfig(bridge, { store, data, expectedRevision: revision });
+		assertError(outcome, "invalid_data");
+		assert.equal(JSON.stringify(outcome).includes("/etc/passwd"), false, "no path is echoed back");
+	}
+	assert.deepEqual(snapshotTree(env.root), before, "no rejected write creates or modifies a store");
+});
+
+test("read-only and unknown stores reject writes without creating anything", async (t) => {
+	const env = isolatedEnvironment(t);
+	const bridge = bridgeFor(env);
+	const before = snapshotTree(env.root);
+
+	for (const store of ["models", "subagents", "managed_assets"]) {
+		const outcome = await setConfig(bridge, { store, data: {}, expectedRevision: "sha256:x" });
+		assertError(outcome, "read_only");
+	}
+	assertError(await setConfig(bridge, { store: "auth", data: {}, expectedRevision: "sha256:x" }), "unknown_store");
+	assert.deepEqual(snapshotTree(env.root), before, "no read-only store is created or materialized");
+});
+
+test("set_config rejects extra keys, missing data, and physical paths", async (t) => {
+	const env = isolatedEnvironment(t);
+	writeJson(profilesFilePath(env.configHome), profilesFixture());
+	const bridge = bridgeFor(env);
+	const revision = await writeTargetRevision(bridge, "profiles");
+	const data = { ...profilesFixture(), active: "ops" };
+	const before = snapshotTree(env.root);
+
+	for (const params of [
+		{ store: "profiles", data, expectedRevision: revision, path: join(env.configHome, "profiles.json") },
+		{ store: "profiles", data, expectedRevision: revision, scope: "global" },
+		{ store: "profiles", data, expectedRevision: revision, file: "profiles.json" },
+		{ store: "profiles", data, expectedRevision: revision, physical_path: "/etc/passwd" },
+		{ store: "profiles", expectedRevision: revision },
+		{ store: 42, data, expectedRevision: revision },
+	]) {
+		const outcome = await setConfig(bridge, params as Record<string, unknown>);
+		assertError(outcome, "invalid_request");
+		assert.equal(JSON.stringify(outcome).includes(env.root), false, "no physical path is echoed back");
+	}
+	assert.deepEqual(snapshotTree(env.root), before, "a malformed request never writes");
+});
+
+test("an identical write is a no-op with untouched bytes and no event", async (t) => {
+	const env = isolatedEnvironment(t);
+	const path = profilesFilePath(env.configHome);
+	writeJson(path, profilesFixture());
+	const bridge = bridgeFor(env);
+	const before = { text: readFileSync(path, "utf8"), mtimeMs: statSync(path).mtimeMs };
+
+	const outcome = await setConfig(bridge, {
+		store: "profiles",
+		data: profilesFixture(),
+		expectedRevision: await writeTargetRevision(bridge, "profiles"),
+	});
+
+	assert.equal(outcome.ok, true, JSON.stringify(outcome));
+	assert.equal(outcome.data.changed, false);
+	assert.equal(outcome.data.readOnly, false);
+	assert.equal(outcome.data.status, "ok");
+	assert.equal(outcome.event, undefined, "a no-op emits no event");
+	assert.deepEqual(
+		{ text: readFileSync(path, "utf8"), mtimeMs: statSync(path).mtimeMs },
+		before,
+		"identical content is not rewritten",
+	);
+});
+
+test("writes require a bound session with a working directory", async (t) => {
+	const env = isolatedEnvironment(t);
+	const before = snapshotTree(env.root);
+	const bridge = new DesktopConfigBridge({ configHome: env.configHome, agentHome: env.agentHome });
+	bridge.attach({ mode: "rpc" } as unknown as ExtensionContext);
+
+	assertError(
+		await setConfig(bridge, { store: "profiles", data: profilesFixture(), expectedRevision: "sha256:x" }),
+		"config_unavailable",
+	);
+	assert.equal(bridge.handle("get_permission_mode", {}), undefined, "other domains still fall through");
+	assert.equal(bridge.handle("set_permission_mode", { mode: "auto" }), undefined);
+	bridge.reset();
+	assertError(
+		await setConfig(bridge, { store: "profiles", data: profilesFixture(), expectedRevision: "sha256:x" }),
+		"config_unavailable",
+	);
+	assert.deepEqual(snapshotTree(env.root), before, "nothing is written without a session cwd");
+});
+
+test("pins write only inside a resolvable worktree", async (t) => {
+	const env = isolatedEnvironment(t);
+	writeJson(profilesFilePath(env.configHome), profilesFixture());
+	const bridge = bridgeFor(env, () => undefined);
+
+	assertError(
+		await setConfig(bridge, { store: "pins", data: { source: "repo", profile: "team" }, expectedRevision: "sha256:x" }),
+		"config_unavailable",
+	);
+	assertError(
+		await setConfig(bridge, { store: "pins", data: { source: "repo", profile: null }, expectedRevision: "sha256:x" }),
+		"config_unavailable",
+	);
+	assert.equal(existsSync(repoProfileDeclarationPath(env.workspace)), false, "no target is invented without a worktree");
+});
+
+test("pins clears the layer the request names and reports the remaining store", async (t) => {
+	const env = isolatedEnvironment(t);
+	writeJson(profilesFilePath(env.configHome), profilesFixture());
+	const identity: WorktreeIdentity = { root: env.workspace, commonDir: join(env.root, "git-common") };
+	writeJson(localProfilePinPath(identity.commonDir), pin("ops"));
+	writeJson(repoProfileDeclarationPath(identity.root), pin("team"));
+	const bridge = bridgeFor(env, () => identity);
+	const repoBytes = readFileSync(repoProfileDeclarationPath(identity.root), "utf8");
+
+	const targets = (await readStore(bridge, "pins")).writeTargets;
+	assert.deepEqual(targets.map((entry: any) => [entry.target, entry.status]), [["local", "ok"], ["repo", "ok"]]);
+
+	const cleared = await setConfig(bridge, {
+		store: "pins",
+		data: { source: "local", profile: null },
+		expectedRevision: targets[0].writeRevision,
+	});
+
+	assert.equal(cleared.ok, true, JSON.stringify(cleared));
+	assert.equal(cleared.data.store, "pins");
+	assert.equal(cleared.data.scope, "local+repo");
+	assert.equal(cleared.data.readOnly, false);
+	assert.equal(cleared.data.writeTarget, "local");
+	assert.equal(cleared.data.changed, true);
+	assert.deepEqual(cleared.data.value.winner, { source: "repo", profile: "team" }, "the lower layer now resolves");
+	assert.deepEqual(cleared.data.layers, [
+		{ source: "local", status: "missing" },
+		{ source: "repo", status: "ok" },
+	]);
+	assert.equal(existsSync(localProfilePinPath(identity.commonDir)), false, "the cleared layer file is gone");
+	assert.equal(
+		readFileSync(repoProfileDeclarationPath(identity.root), "utf8"),
+		repoBytes,
+		"the layer the request did not name is untouched",
+	);
+	assert.equal(cleared.event?.name, "config_changed");
+	assert.deepEqual(cleared.event?.data, {
+		store: "pins",
+		scope: "local+repo",
+		writeTarget: "local",
+		revision: cleared.data.revision,
+		writeRevision: cleared.data.writeRevision,
+		source: "desktop",
+	});
+	assert.equal(JSON.stringify(cleared).includes(env.root), false, "no pin path crosses the contract");
+
+	// The repo layer needs its own write revision, and the winner changes again.
+	const repoRevision = (await readStore(bridge, "pins")).writeTargets[1].writeRevision;
+	const repo = await setConfig(bridge, {
+		store: "pins",
+		data: { source: "repo", profile: null },
+		expectedRevision: repoRevision,
+	});
+	assert.equal(repo.ok, true, JSON.stringify(repo));
+	assert.equal(repo.data.writeTarget, "repo");
+	assert.equal(repo.data.changed, true);
+	assert.equal(existsSync(repoProfileDeclarationPath(identity.root)), false);
+	assert.equal(repo.data.value.resolved, false);
+	assert.equal((await readStore(bridge, "pins")).status, "missing");
+});
+
+test("clearing an already-missing pin layer is a no-op with no event", async (t) => {
+	const env = isolatedEnvironment(t);
+	writeJson(profilesFilePath(env.configHome), profilesFixture());
+	const identity: WorktreeIdentity = { root: env.workspace, commonDir: join(env.root, "git-common") };
+	const bridge = bridgeFor(env, () => identity);
+	const before = snapshotTree(env.root);
+
+	const outcome = await setConfig(bridge, {
+		store: "pins",
+		data: { source: "local", profile: null },
+		expectedRevision: (await readStore(bridge, "pins")).writeTargets[0].writeRevision,
+	});
+
+	assert.equal(outcome.ok, true, JSON.stringify(outcome));
+	assert.equal(outcome.data.changed, false);
+	assert.equal(outcome.event, undefined, "clearing nothing emits nothing");
+	assert.deepEqual(snapshotTree(env.root), before, "a no-op clear creates and removes nothing");
+
+	// A layer that exists but is not a readable pin is still removed by an explicit clear.
+	mkdirSync(dirname(localProfilePinPath(identity.commonDir)), { recursive: true });
+	writeFileSync(localProfilePinPath(identity.commonDir), "{ broken\n");
+	const broken = await setConfig(bridge, {
+		store: "pins",
+		data: { source: "local", profile: null },
+		expectedRevision: (await readStore(bridge, "pins")).writeTargets[0].writeRevision,
+	});
+	assert.equal(broken.ok, true, JSON.stringify(broken));
+	assert.equal(broken.data.changed, true);
+	assert.equal(existsSync(localProfilePinPath(identity.commonDir)), false);
+});
+
+test("a clear with a stale or missing revision is a conflict without writes", async (t) => {
+	const env = isolatedEnvironment(t);
+	writeJson(profilesFilePath(env.configHome), profilesFixture());
+	const identity: WorktreeIdentity = { root: env.workspace, commonDir: join(env.root, "git-common") };
+	writeJson(localProfilePinPath(identity.commonDir), pin("ops"));
+	writeJson(repoProfileDeclarationPath(identity.root), pin("team"));
+	const bridge = bridgeFor(env, () => identity);
+	const targets = (await readStore(bridge, "pins")).writeTargets;
+	const before = snapshotTree(env.root);
+	const repoBytes = readFileSync(repoProfileDeclarationPath(identity.root), "utf8");
+
+	// Another layer's revision is not this layer's precondition.
+	assertError(
+		await setConfig(bridge, { store: "pins", data: { source: "local", profile: null }, expectedRevision: targets[1].writeRevision }),
+		"revision_conflict",
+	);
+	assertError(
+		await setConfig(bridge, { store: "pins", data: { source: "local", profile: null } }),
+		"revision_conflict",
+	);
+	assert.deepEqual(snapshotTree(env.root), before, "a conflicted clear removes nothing");
+
+	const applied = await setConfig(bridge, {
+		store: "pins",
+		data: { source: "local", profile: null },
+		expectedRevision: targets[0].writeRevision,
+	});
+	assert.equal(applied.ok, true, JSON.stringify(applied));
+	assertError(
+		await setConfig(bridge, { store: "pins", data: { source: "repo", profile: null }, expectedRevision: targets[0].writeRevision }),
+		"revision_conflict",
+	);
+	assert.equal(
+		readFileSync(repoProfileDeclarationPath(identity.root), "utf8"),
+		repoBytes,
+		"the stale clear left the other layer in place",
+	);
+});
+
+test("pins rejects a null-clearing shape that is not explicit", async (t) => {
+	const env = isolatedEnvironment(t);
+	writeJson(profilesFilePath(env.configHome), profilesFixture());
+	const identity: WorktreeIdentity = { root: env.workspace, commonDir: join(env.root, "git-common") };
+	const bridge = bridgeFor(env, () => identity);
+	const before = snapshotTree(env.root);
+	const revision = (await readStore(bridge, "pins")).writeTargets[0].writeRevision;
+
+	for (const data of [
+		{ source: "local" },
+		{ source: "local", profile: 7 },
+		{ source: "local", profile: "" },
+		{ source: "local", profile: "bad name" },
+		{ source: "local", profile: [] },
+		{ source: "local", profile: "ghost" },
+		{ profile: null },
+		{ source: "global", profile: null },
+		{ source: "local", profile: null, path: "/etc/passwd" },
+	]) {
+		const outcome = await setConfig(bridge, { store: "pins", data, expectedRevision: revision });
+		assertError(outcome, "invalid_data");
+		assert.equal(JSON.stringify(outcome).includes("/etc/passwd"), false);
+	}
+	assert.deepEqual(snapshotTree(env.root), before, "a rejected shape never creates or removes a pin");
+});
+
+test("an owner write failure is a typed write_failed with no path and no event", async (t) => {
+	const env = isolatedEnvironment(t);
+	const path = profilesFilePath(env.configHome);
+	// A hostile but real filesystem shape: the store path is a directory, so the
+	// owner's atomic rename cannot land and the write throws.
+	mkdirSync(path, { recursive: true });
+	writeFileSync(join(path, "marker"), "x");
+	const bridge = bridgeFor(env);
+	const target = await writeTargetRevision(bridge, "profiles");
+	const before = snapshotTree(env.root);
+
+	const outcome = await setConfig(bridge, { store: "profiles", data: profilesFixture(), expectedRevision: target });
+
+	assert.equal(outcome.ok, false, JSON.stringify(outcome));
+	assert.equal(outcome.error.code, "write_failed");
+	assert.equal(outcome.error.message, "Config store write failed", "the message is fixed, not owner detail");
+	assert.equal(outcome.event, undefined, "a failed write emits no event");
+	const wire = JSON.stringify(outcome);
+	assert.equal(wire.includes(env.root), false, "no physical path leaks");
+	for (const leak of ["EISDIR", "ENOTDIR", "EPERM", "EACCES", "EEXIST", "EROFS", "errno", "syscall", "profiles.json"]) {
+		assert.equal(wire.includes(leak), false, `no OS detail leaks: ${leak}`);
+	}
+	assert.deepEqual(snapshotTree(env.root), before, "the failed write leaves the tree exactly as it was, temp file included");
+});
+
+test("pins replaces an unreadable layer explicitly, and invalid revisions stay coarse", async (t) => {
+	const env = isolatedEnvironment(t);
+	writeJson(profilesFilePath(env.configHome), profilesFixture());
+	const identity: WorktreeIdentity = { root: env.workspace, commonDir: join(env.root, "git-common") };
+	const path = localProfilePinPath(identity.commonDir);
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, "{ broken\n");
+	const bridge = bridgeFor(env, () => identity);
+	const targets = (await readStore(bridge, "pins")).writeTargets;
+	assert.equal(targets[0].status, "invalid");
+
+	// Two different broken contents share one write revision: the invalid-state digest
+	// covers only `{store, target, status}`, so this guard is deliberately coarse.
+	writeFileSync(path, "[different, broken]\n");
+	const rewritten = (await readStore(bridge, "pins")).writeTargets;
+	assert.equal(rewritten[0].writeRevision, targets[0].writeRevision, "broken-to-broken is invisible to the guard");
+
+	const outcome = await setConfig(bridge, {
+		store: "pins",
+		data: { source: "local", profile: "ops" },
+		expectedRevision: targets[0].writeRevision,
+	});
+
+	assert.equal(outcome.ok, true, JSON.stringify(outcome));
+	assert.equal(outcome.data.changed, true);
+	assert.deepEqual(outcome.data.layers, [
+		{ source: "local", status: "ok" },
+		{ source: "repo", status: "missing" },
+	]);
+	assert.deepEqual(outcome.data.value.winner, { source: "local", profile: "ops" });
+	assert.equal(readFileSync(path, "utf8"), serializeProfilePin("ops"), "the broken layer is replaced, not merged");
+	assert.equal(outcome.event?.name, "config_changed");
+	assert.equal(outcome.event?.data.writeTarget, "local");
+});
+
+test("set_config validates in one documented order", async (t) => {
+	const env = isolatedEnvironment(t);
+	const bridge = bridgeFor(env);
+	const revision = "sha256:00000000000000000000000000000000";
+	const before = snapshotTree(env.root);
+
+	// 1. Envelope: exact keys, `store` as a string, and `data` present.
+	assertError(await setConfig(bridge, { store: "models" }), "invalid_request");
+	assertError(await setConfig(bridge, { store: "auth" }), "invalid_request");
+	assertError(await setConfig(bridge, { store: 42, data: {}, expectedRevision: revision }), "invalid_request");
+	// 2. Store identity.
+	assertError(await setConfig(bridge, { store: "auth", data: {}, expectedRevision: revision }), "unknown_store");
+	// 3. Mutability, before the payload is inspected or the revision is read.
+	assertError(await setConfig(bridge, { store: "models", data: "not an object", expectedRevision: 42 }), "read_only");
+	// 4. A usable revision, before the payload is validated.
+	assertError(await setConfig(bridge, { store: "profiles", data: [] }), "revision_conflict");
+	assertError(await setConfig(bridge, { store: "profiles", data: [], expectedRevision: "" }), "revision_conflict");
+	// 5. Session roots.
+	assertError(
+		await (async () => {
+			const unbound = new DesktopConfigBridge({ configHome: env.configHome, agentHome: env.agentHome });
+			unbound.attach({ mode: "rpc" } as unknown as ExtensionContext);
+			return setConfig(unbound, { store: "profiles", data: profilesFixture(), expectedRevision: revision });
+		})(),
+		"config_unavailable",
+	);
+	// 6. Payload, 7. revision comparison.
+	assertError(await setConfig(bridge, { store: "profiles", data: [], expectedRevision: revision }), "invalid_data");
+	assertError(await setConfig(bridge, { store: "profiles", data: profilesFixture(), expectedRevision: revision }), "revision_conflict");
+	assert.deepEqual(snapshotTree(env.root), before, "no rejected request writes");
+});
+
+test("a pin write is not claimed after its worktree disappears", async (t) => {
+	const env = isolatedEnvironment(t);
+	writeJson(profilesFilePath(env.configHome), profilesFixture());
+	const identity: WorktreeIdentity = { root: env.workspace, commonDir: join(env.root, "git-common") };
+	let current: WorktreeIdentity | undefined = identity;
+	const bridge = bridgeFor(env, () => current);
+	const targets = (await readStore(bridge, "pins")).writeTargets;
+
+	const written = await setConfig(bridge, {
+		store: "pins",
+		data: { source: "local", profile: "ops" },
+		expectedRevision: targets[0].writeRevision,
+	});
+	assert.equal(written.ok, true, JSON.stringify(written));
+
+	// The session survives its worktree: reads must stop claiming a pin target.
+	current = undefined;
+	const after = await readStore(bridge, "pins");
+	assert.equal(after.status, "invalid");
+	assert.deepEqual(after.value, { resolved: false, invalid: [], stale: [], reason: "worktree_unresolved" });
+	assert.deepEqual(after.writeTargets, [], "no target is reported for a vanished worktree");
+	assert.equal(JSON.stringify(after).includes("ops"), false, "no stale pin claim survives the worktree");
+	assertError(
+		await setConfig(bridge, { store: "pins", data: { source: "local", profile: null }, expectedRevision: written.data.writeRevision }),
+		"config_unavailable",
+	);
+	assert.equal(
+		readFileSync(localProfilePinPath(identity.commonDir), "utf8"),
+		serializeProfilePin("ops"),
+		"the pin file itself is untouched; only the session lost its target",
+	);
+});
+
 // ---- Transport-level coverage: capabilities, dispatch, and prior slices ----
 
 type WidgetCall = { key: string; lines: string[] };
@@ -659,6 +1271,7 @@ function isolatedTransport(t: test.TestContext) {
 		env,
 		ctx,
 		widgets,
+		events,
 		start() { events.get("session_start")?.({}, ctx); },
 		async invoke(method: string, params: Record<string, unknown> = {}, requestId = `request-${method}`) {
 			await commands.get("gentle:desktop")!.handler(
@@ -674,7 +1287,7 @@ function isolatedTransport(t: test.TestContext) {
 	};
 }
 
-test("capabilities advertise get_config and no config change event", async (t) => {
+test("capabilities advertise the wired config read and write surface", async (t) => {
 	const app = isolatedTransport(t);
 	app.start();
 	await app.invoke("capabilities");
@@ -683,10 +1296,11 @@ test("capabilities advertise get_config and no config change event", async (t) =
 		"capabilities",
 		"get_snapshot",
 		"get_config",
+		"set_config",
 		"get_permission_mode",
 		"set_permission_mode",
 	]);
-	assert.deepEqual(response.data.events, ["permission_mode_changed"], "no config_changed yet");
+	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed"]);
 });
 
 test("get_config answers through the transport with no physical path in the response", async (t) => {
@@ -729,6 +1343,63 @@ test("the snapshot exposes the config projection and keeps the permission slice 
 	const permission = app.last();
 	assert.equal(permission.ok, false);
 	assert.equal(permission.error.code, "permission_unavailable", "no owner extension in this process");
+});
+
+test("set_config answers before exactly one config_changed and the snapshot reflects it", async (t) => {
+	const app = isolatedTransport(t);
+	writeJson(profilesFilePath(app.env.configHome), profilesFixture());
+	app.start();
+
+	await app.invoke("get_config", { store: "profiles" }, "read-1");
+	const read = app.last();
+	assert.equal(read.ok, true);
+	const revision = read.data.writeTargets[0].writeRevision;
+
+	await app.invoke("set_config", { store: "profiles", data: { ...profilesFixture(), active: "ops" }, expectedRevision: revision }, "write-1");
+	assert.equal(app.widgets.length, 3, "a read, its response, and one event");
+	const response = JSON.parse(app.widgets[1]!.lines[0]!);
+	const event = JSON.parse(app.widgets[2]!.lines[0]!);
+	assert.equal(response.kind, "response");
+	assert.equal(response.requestId, "write-1");
+	assert.equal(response.data.changed, true);
+	assert.equal(response.data.writeTarget, "global");
+
+	assert.equal(event.kind, "event");
+	assert.equal(event.event, "config_changed");
+	assert.equal(event.seq, 1);
+	assert.deepEqual(event.data, {
+		store: "profiles",
+		scope: "global",
+		writeTarget: "global",
+		revision: response.data.revision,
+		writeRevision: response.data.writeRevision,
+		source: "desktop",
+	});
+	assert.equal(JSON.stringify([response, event]).includes(app.env.root), false);
+
+	await app.invoke("get_snapshot", {}, "snap-1");
+	assert.equal(app.last().data.sequence, 1, "a delivered event advances the sequence");
+	assert.equal(app.last().data.state.config.stores[0].status, "ok");
+
+	const published = app.widgets.length;
+	await app.invoke("set_config", { store: "profiles", data: profilesFixture(), expectedRevision: revision }, "write-2");
+	assert.equal(app.last().error.code, "revision_conflict");
+	assert.equal(app.widgets.length, published + 1, "a conflict publishes only its response");
+});
+
+test("a stopped session answers nothing and writes nothing", async (t) => {
+	const app = isolatedTransport(t);
+	writeJson(profilesFilePath(app.env.configHome), profilesFixture());
+	app.start();
+	await app.invoke("get_config", { store: "profiles" }, "read-1");
+	const revision = app.last().data.writeTargets[0].writeRevision;
+	const before = snapshotTree(app.env.root);
+
+	app.events.get("session_shutdown")?.({}, app.ctx);
+	await app.invoke("set_config", { store: "profiles", data: withProfile("late", "openai/gpt-late"), expectedRevision: revision }, "write-1");
+
+	assert.equal(app.widgets.length, 1, "a stopped router publishes nothing");
+	assert.deepEqual(snapshotTree(app.env.root), before, "a stopped session never writes");
 });
 
 function snapshotTree(root: string): Record<string, string> {

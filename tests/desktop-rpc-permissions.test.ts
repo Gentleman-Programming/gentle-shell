@@ -110,10 +110,11 @@ test("capabilities advertise the wired permission domain and no agent tool", asy
 		"capabilities",
 		"get_snapshot",
 		"get_config",
+		"set_config",
 		"get_permission_mode",
 		"set_permission_mode",
 	]);
-	assert.deepEqual(response.data.events, ["permission_mode_changed"]);
+	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed"]);
 	assert.deepEqual(app.tools, [], "the control surface is never an agent-callable tool");
 });
 

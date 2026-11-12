@@ -1,28 +1,50 @@
-// Read-side Gentle Desktop config access (`get_config`).
+// Gentle Desktop config access (`get_config`) and the bounded write slice
+// (`set_config`).
 //
 // Desktop names a store, never a path: this module maps each store identifier to
 // the existing owner reader and its current precedence, then reports the
-// normalized content plus an opaque revision. It never writes, never repairs a
-// malformed file, never watches the filesystem, and never adds a second store.
-// Writes (`set_config`, `expectedRevision`, `config_changed`) belong to a later
-// slice; until then every store is read-only over this channel and the three
-// authoritative stores are marked mutable only for the Desktop client's
-// planning, while `models`, `subagents`, and `managed_assets` are derived or
-// installer-owned and stay read-only permanently.
+// normalized content plus an opaque revision. Writes exist only for the three
+// stores whose owners already accept validated, atomic writes — `profiles`,
+// `profile_fallbacks`, and `pins` — and they go through those same owner writers,
+// so no invariant is re-implemented here. A pin layer is set or cleared through
+// the owner's `writeProfilePinSync` / `clearProfilePinSync`, one explicitly named
+// layer per request. `models`, `subagents`, and `managed_assets` are derived or
+// installer-owned and answer a typed `read_only` error to every write. There is no
+// second store, no cached copy, and no filesystem watcher.
+//
+// The write revision is the digest of the exact single file the owner rewrites,
+// which is why `pins` reports one revision per layer instead of the merged read
+// revision. `expectedRevision` is re-checked against a fresh read immediately
+// before the owner write, in the same synchronous step, so an interleaved Desktop
+// request in this process cannot pass the check with a stale token. That is a
+// per-process serialization, not a cross-process transaction: there is no lock,
+// so a second `pi` process can still write between the check and the rename.
 
 import { createHash } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { managedAssetsManifestPath, readManagedAssetsManifestResult, type ManagedAssetsManifest } from "./agent-assets.ts";
 import { gentlePiConfigHome, resolveGentlePiAgentHome } from "./agent-home.ts";
-import { profilesFilePath, readProfilesFileResult } from "./agent-profiles.ts";
-import { evaluateProfilePin, readProfilePinStatus } from "./agent-profile-pin.ts";
+import {
+	isValidProfileName,
+	normalizeProfilesFile,
+	parseProfilesFileText,
+	profilesFilePath,
+	readProfilesFileResult,
+	serializeProfilesFile,
+	writeProfilesFileSync,
+	type ProfilesParseDrops,
+} from "./agent-profiles.ts";
+import { evaluateProfilePin, clearProfilePinSync, readProfilePinStatus, writeProfilePinSync } from "./agent-profile-pin.ts";
 import { parseAgentsConfig, readSubagentsFileResult, subagentsConfigPaths } from "./agents-config.ts";
 import type { DesktopRpcOutcome, DesktopRpcState } from "./desktop-rpc.ts";
-import { fallbacksFilePath, readFallbacksFile } from "./model-fallback-store.ts";
+import { fallbacksFilePath, normalizeFallbacksFile, readFallbacksFile, writeFallbacksFile } from "./model-fallback-store.ts";
 import { modelConfigPaths, normalizeModelConfig, readModelConfigFile, readSavedModelConfig } from "./model-routing-authority.ts";
 import type { WorktreeResolver } from "./session-worktree-registry.ts";
 
-export const DESKTOP_CONFIG_METHODS = ["get_config"] as const;
+export const DESKTOP_CONFIG_METHODS = ["get_config", "set_config"] as const;
+/** Advertised only because this module wires the writer that publishes it. */
+export const DESKTOP_CONFIG_EVENTS = ["config_changed"] as const;
+export const DESKTOP_CONFIG_EVENT = "config_changed";
 
 /** Every store this channel can read, in the order `get_snapshot` projects them. */
 export const DESKTOP_CONFIG_STORES = [
@@ -49,7 +71,7 @@ export interface DesktopConfigLayer {
 export interface DesktopConfigData {
 	store: DesktopConfigStore;
 	scope: DesktopConfigScope;
-	/** See `storeReadOnly`: only the persistent family is written by a later slice. */
+	/** See `storeReadOnly`: only the persistent family is written by this slice. */
 	readOnly: boolean;
 	status: DesktopConfigStatus;
 	/** Opaque digest of the canonical normalized content; stable across equivalent reads. */
@@ -62,13 +84,38 @@ export interface DesktopConfigData {
 	 */
 	value?: unknown;
 	layers: DesktopConfigLayer[];
+	/**
+	 * One entry per file this store's owner rewrites, each with its own write
+	 * revision. Present only for stores this slice may write.
+	 */
+	writeTargets?: DesktopConfigWriteTargetInfo[];
+}
+
+/**
+ * A write target is one file, not one store: `profiles` and `profile_fallbacks`
+ * each own a single global file, while `pins` owns two independent layers that a
+ * request must select explicitly.
+ */
+export type DesktopConfigWriteTarget = "global" | "local" | "repo";
+
+export interface DesktopConfigWriteTargetInfo {
+	target: DesktopConfigWriteTarget;
+	status: DesktopConfigStatus;
+	/** Digest of the target's current content, not of a merged multi-layer read. */
+	writeRevision: string;
 }
 
 const INVALID_PARAMS = { code: "invalid_request", message: "Invalid Desktop config parameters" } as const;
 const UNKNOWN_STORE = { code: "unknown_store", message: "Unknown Desktop config store" } as const;
 const UNAVAILABLE = { code: "config_unavailable", message: "Config stores unavailable for this session" } as const;
+const READ_ONLY = { code: "read_only", message: "Config store is read-only over Desktop RPC" } as const;
+const INVALID_DATA = { code: "invalid_data", message: "Invalid config data for this store" } as const;
+const UNKNOWN_PIN_PROFILE = { code: "invalid_data", message: "Pin target profile is not defined by the profiles store" } as const;
+const MISSING_REVISION = { code: "revision_conflict", message: "expectedRevision is required before writing" } as const;
+const STALE_REVISION = { code: "revision_conflict", message: "Config changed since expectedRevision was read" } as const;
+const WRITE_FAILED = { code: "write_failed", message: "Config store write failed" } as const;
 
-/** Authoritative stores a later slice may write; read-only for this contract. */
+/** Authoritative stores this slice may write; every other store is read-only. */
 const AUTHORITATIVE_STORES: ReadonlySet<DesktopConfigStore> = new Set(["profiles", "profile_fallbacks", "pins"]);
 
 export function storeReadOnly(store: DesktopConfigStore): boolean {
@@ -127,6 +174,22 @@ function canonicalJson(value: unknown): string {
 /** Read-time content digest. It orders nothing across processes and is not a transaction token. */
 export function configRevision(store: DesktopConfigStore, status: DesktopConfigStatus, value: unknown): string {
 	const payload = value === undefined ? { store, status } : { store, status, value };
+	return `sha256:${createHash("sha256").update(canonicalJson(payload)).digest("hex").slice(0, 32)}`;
+}
+
+/**
+ * Write-time digest of exactly one target file. It is deliberately a different
+ * token from the read `revision` (the payload names the target), because the value
+ * a write replaces is one file while a multi-layer read describes a merge: a pin
+ * layer's write revision must not be confusable with the merged `pins` revision.
+ */
+export function configWriteRevision(
+	store: DesktopConfigStore,
+	target: DesktopConfigWriteTarget,
+	status: DesktopConfigStatus,
+	value: unknown,
+): string {
+	const payload = value === undefined ? { store, target, status } : { store, target, status, value };
 	return `sha256:${createHash("sha256").update(canonicalJson(payload)).digest("hex").slice(0, 32)}`;
 }
 
@@ -309,6 +372,7 @@ export function readConfigStore(store: DesktopConfigStore, root: DesktopConfigRo
 	const read = reader.read(root);
 	const value = read.value === undefined ? undefined : wireValue(read.value);
 	const revision = configRevision(store, read.status, value);
+	const writeTargets = writeTargetsFor(store, root);
 	return {
 		store,
 		scope: reader.scope,
@@ -317,6 +381,190 @@ export function readConfigStore(store: DesktopConfigStore, root: DesktopConfigRo
 		revision,
 		...(value === undefined ? {} : { value }),
 		layers: read.layers,
+		...(writeTargets === undefined ? {} : { writeTargets }),
+	};
+}
+
+function layerWriteInfo(
+	store: DesktopConfigStore,
+	target: DesktopConfigWriteTarget,
+	status: DesktopConfigStatus,
+	value: unknown,
+): DesktopConfigWriteTargetInfo {
+	return { target, status, writeRevision: configWriteRevision(store, target, status, value) };
+}
+
+/**
+ * The files a store's owner rewrites, one entry each, or `undefined` for a store
+ * this slice never writes. `pins` returns an empty list outside a resolvable Git
+ * worktree: there is no truthful pin target then, so none is reported or written.
+ */
+function writeTargetsFor(
+	store: DesktopConfigStore,
+	root: DesktopConfigRoots,
+): DesktopConfigWriteTargetInfo[] | undefined {
+	switch (store) {
+		case "profiles": {
+			const read = readProfilesFileResult(profilesFilePath(root.configHome));
+			const status: DesktopConfigStatus = read.status === "valid" ? "ok" : read.status;
+			return [layerWriteInfo(store, "global", status, read.status === "valid" ? read.file : undefined)];
+		}
+		case "profile_fallbacks": {
+			const read = readFallbacksFile(fallbacksFilePath(root.configHome));
+			const status: DesktopConfigStatus = read.status === "valid" ? "ok" : read.status;
+			return [layerWriteInfo(store, "global", status, read.status === "valid" ? read.file : undefined)];
+		}
+		case "pins": {
+			const status = readProfilePinStatus(root.cwd, root.resolveWorktree);
+			if (!status) return [];
+			return (["local", "repo"] as const).map((source) => {
+				const layerRead = source === "local" ? status.local : status.repo;
+				const layerStatus: DesktopConfigStatus = layerRead.status === "valid" ? "ok" : layerRead.status;
+				return layerWriteInfo(
+					store,
+					source,
+					layerStatus,
+					layerRead.status === "valid" ? { profile: layerRead.profile } : undefined,
+				);
+			});
+		}
+		default:
+			return undefined;
+	}
+}
+
+// ---- Write slice: validated, owner-delegated, revision-guarded ----
+
+/**
+ * One write plan: either a typed rejection before anything is touched, or the
+ * exact target, its revision as re-read now, whether the content really differs,
+ * and the owner writer to call.
+ */
+type WritePlan =
+	| { error: { code: string; message: string } }
+	| { target: DesktopConfigWriteTarget; writeRevision: string; changed: boolean; write: () => void };
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * `expectedRevision` is mandatory and is compared before the payload is validated,
+ * so "you did not prove you saw the current state" never depends on what the data
+ * happens to look like. Absent, empty, and non-string tokens are the same answer.
+ */
+function revisionConflict(
+	expected: string,
+	current: string,
+): typeof STALE_REVISION | undefined {
+	return expected === current ? undefined : STALE_REVISION;
+}
+
+/**
+ * The owner normalizer drops entries it cannot keep (an illegal profile name, an
+ * unsafe agent key, a stale `active` marker, an unknown workflow mode). Writing
+ * that result would silently delete operator data, so any drop rejects the write
+ * instead.
+ */
+function hasNormalizationDrops(drops: ProfilesParseDrops): boolean {
+	return (
+		drops.droppedProfiles.length > 0 ||
+		drops.droppedAgents.length > 0 ||
+		drops.droppedActive !== undefined ||
+		(drops.droppedWorkflow?.length ?? 0) > 0
+	);
+}
+
+function planProfilesWrite(data: unknown, root: DesktopConfigRoots, expected: string): WritePlan {
+	const normalized = normalizeProfilesFile(data);
+	if (!normalized || hasNormalizationDrops(normalized.drops)) return { error: INVALID_DATA };
+	const file = normalized.file;
+	// The request must already be in the owner's canonical form: anything the
+	// normalizer would rewrite (the `effort` alias, an organic workflow entry) is
+	// rejected instead of being applied behind the client's back.
+	if (canonicalJson(file) !== canonicalJson(data)) return { error: INVALID_DATA };
+	// The owner's serializer must be lossless for this file; data it cannot
+	// round-trip is data this channel refuses to write.
+	const reparsed = parseProfilesFileText(serializeProfilesFile(file));
+	if (reparsed.status !== "valid" || canonicalJson(reparsed.file) !== canonicalJson(file)) {
+		return { error: INVALID_DATA };
+	}
+	const path = profilesFilePath(root.configHome);
+	const current = readProfilesFileResult(path);
+	const currentStatus: DesktopConfigStatus = current.status === "valid" ? "ok" : current.status;
+	const currentValue = current.status === "valid" ? current.file : undefined;
+	const writeRevision = configWriteRevision("profiles", "global", currentStatus, currentValue);
+	const conflict = revisionConflict(expected, writeRevision);
+	if (conflict) return { error: conflict };
+	const changed = current.status !== "valid" || canonicalJson(currentValue) !== canonicalJson(file);
+	return { target: "global", writeRevision, changed, write: () => writeProfilesFileSync(path, file) };
+}
+
+function planFallbacksWrite(data: unknown, root: DesktopConfigRoots, expected: string): WritePlan {
+	const normalized = normalizeFallbacksFile(data);
+	// The owner normalizer drops an empty chain and an emptied profile block. A
+	// Desktop write must be lossless, so the normalized value has to equal the
+	// request exactly; anything else would delete content the client sent.
+	if (!normalized || canonicalJson(normalized) !== canonicalJson(data)) return { error: INVALID_DATA };
+	const path = fallbacksFilePath(root.configHome);
+	const current = readFallbacksFile(path);
+	const currentStatus: DesktopConfigStatus = current.status === "valid" ? "ok" : current.status;
+	const currentValue = current.status === "valid" ? current.file : undefined;
+	const writeRevision = configWriteRevision("profile_fallbacks", "global", currentStatus, currentValue);
+	const conflict = revisionConflict(expected, writeRevision);
+	if (conflict) return { error: conflict };
+	const changed = current.status !== "valid" || canonicalJson(currentValue) !== canonicalJson(normalized);
+	return { target: "global", writeRevision, changed, write: () => writeFallbacksFile(path, normalized) };
+}
+
+function planPinsWrite(data: unknown, root: DesktopConfigRoots, expected: string): WritePlan {
+	if (!isRecordValue(data)) return { error: INVALID_DATA };
+	if (!Object.keys(data).every((key) => key === "source" || key === "profile")) return { error: INVALID_DATA };
+	const source = data.source;
+	// The layer is chosen by the request, never by which file happens to exist.
+	if (source !== "local" && source !== "repo") return { error: INVALID_DATA };
+	// `profile: null` is the explicit clear; every other value must be a pinnable
+	// name. There is no "clear everything" and no implicit clear by omission.
+	const requested = data.profile;
+	let profile: string | undefined;
+	if (requested !== null) {
+		if (!isValidProfileName(requested)) return { error: INVALID_DATA };
+		profile = requested;
+		// The invariant the `/gentle:profiles` panel enforces: only a profile the store
+		// still defines can be pinned, so this channel never writes a stale pin.
+		const store = readProfilesFileResult(profilesFilePath(root.configHome));
+		if (store.status !== "valid" || !Object.prototype.hasOwnProperty.call(store.file.profiles, profile)) {
+			return { error: UNKNOWN_PIN_PROFILE };
+		}
+	}
+	const status = readProfilePinStatus(root.cwd, root.resolveWorktree);
+	if (!status) return { error: UNAVAILABLE };
+	const layer = source === "local" ? status.local : status.repo;
+	const path = source === "local" ? status.localPath : status.repoPath;
+	const layerStatus: DesktopConfigStatus = layer.status === "valid" ? "ok" : layer.status;
+	const writeRevision = configWriteRevision(
+		"pins",
+		source,
+		layerStatus,
+		layer.status === "valid" ? { profile: layer.profile } : undefined,
+	);
+	const conflict = revisionConflict(expected, writeRevision);
+	if (conflict) return { error: conflict };
+	// Clearing a layer that holds no file is already the desired state; a layer that
+	// exists but is not a readable pin is still removed by an explicit clear.
+	if (profile === undefined) {
+		return {
+			target: source,
+			writeRevision,
+			changed: layer.status !== "missing",
+			write: () => clearProfilePinSync(path),
+		};
+	}
+	return {
+		target: source,
+		writeRevision,
+		changed: !(layer.status === "valid" && layer.profile === profile),
+		write: () => writeProfilePinSync(path, profile),
 	};
 }
 
@@ -331,11 +579,12 @@ function parseStoreParam(params: Record<string, unknown>): DesktopConfigStore | 
 }
 
 /**
- * `get_config` plus the bounded `get_snapshot` projection, over the owner readers.
+ * `get_config` and the bounded `set_config` writer, over the owner readers and
+ * the three owner writers.
  *
  * The host context is bound per Desktop command, exactly like the permission
  * bridge, because the pin and project layers depend on the live session cwd.
- * Configuration reads never write, so a read can never advance a store.
+ * Reads never write, so a read can never advance a store.
  */
 export class DesktopConfigBridge {
 	private host: ExtensionContext | undefined;
@@ -354,15 +603,99 @@ export class DesktopConfigBridge {
 	}
 
 	handle(method: string, params: Record<string, unknown>): DesktopRpcOutcome | undefined {
-		if (method !== "get_config") return undefined;
+		// Only the config methods are this bridge's business; anything else falls
+		// through to the next domain (the permission bridge) untouched.
+		if (method !== "get_config" && method !== "set_config") return undefined;
 		const host = this.host;
 		if (!host) return { ok: false, error: UNAVAILABLE };
+		return method === "get_config" ? this.read(host, params) : this.write(host, params);
+	}
+
+	private read(host: ExtensionContext, params: Record<string, unknown>): DesktopRpcOutcome {
 		const parsed = parseStoreParam(params);
 		if (typeof parsed !== "string") return { ok: false, error: parsed.error };
 		const root = withRoots(host, this.overrides);
 		if (!root) return { ok: false, error: UNAVAILABLE };
 		const data = readConfigStore(parsed, root);
 		return { ok: true, data: data as unknown as Record<string, unknown> };
+	}
+
+	/**
+	 * `set_config`: validate the store-specific data with the owner, re-check
+	 * `expectedRevision` against a fresh read, then let the owner write.
+	 *
+	 * Everything here is synchronous on purpose. Pi dispatches Desktop prompts
+	 * concurrently, and only an `await` can interleave another request, so the check
+	 * and the owner's atomic rename cannot be split by another Desktop request in
+	 * this process. That is a per-process guarantee only; it is not a cross-process
+	 * transaction (see `docs/desktop-rpc.md`).
+	 */
+	private write(host: ExtensionContext, params: Record<string, unknown>): DesktopRpcOutcome {
+		for (const key of Object.keys(params)) {
+			if (key !== "store" && key !== "data" && key !== "expectedRevision") {
+				return { ok: false, error: INVALID_PARAMS };
+			}
+		}
+		if (typeof params.store !== "string" || params.data === undefined) {
+			return { ok: false, error: INVALID_PARAMS };
+		}
+		if (!isDesktopConfigStore(params.store)) return { ok: false, error: UNKNOWN_STORE };
+		// A read-only store is rejected before its data is inspected: the reason a
+		// write cannot happen is the store itself, not the payload.
+		if (storeReadOnly(params.store)) return { ok: false, error: READ_ONLY };
+		// A usable revision is required before the payload is validated: absent, empty,
+		// and non-string tokens are all "the client did not prove current state".
+		const expected =
+			typeof params.expectedRevision === "string" && params.expectedRevision.length > 0
+				? params.expectedRevision
+				: undefined;
+		if (expected === undefined) return { ok: false, error: MISSING_REVISION };
+		const root = withRoots(host, this.overrides);
+		if (!root) return { ok: false, error: UNAVAILABLE };
+
+		const store = params.store;
+		const plan =
+			store === "profiles"
+				? planProfilesWrite(params.data, root, expected)
+				: store === "profile_fallbacks"
+					? planFallbacksWrite(params.data, root, expected)
+					: planPinsWrite(params.data, root, expected);
+		if ("error" in plan) return { ok: false, error: plan.error };
+
+		// Identical content is not a change: the owner writer would skip the rename
+		// anyway, and skipping it here keeps a no-op free of a rewrite and an event.
+		if (plan.changed) {
+			try {
+				plan.write();
+			} catch {
+				// Owner failures carry paths and OS detail; none of it crosses the contract.
+				return { ok: false, error: WRITE_FAILED };
+			}
+		}
+
+		// The response reports what the store now holds, re-read through the owner,
+		// not an echo of the request. The resulting write revision also decides
+		// whether this request really changed anything.
+		const after = readConfigStore(store, root);
+		const writeRevision = after.writeTargets?.find((entry) => entry.target === plan.target)?.writeRevision;
+		const changed = writeRevision !== plan.writeRevision;
+		const data = { ...after, writeTarget: plan.target, writeRevision, changed } as Record<string, unknown>;
+		if (!changed) return { ok: true, data };
+		return {
+			ok: true,
+			data,
+			event: {
+				name: DESKTOP_CONFIG_EVENT,
+				data: {
+					store: after.store,
+					scope: after.scope,
+					writeTarget: plan.target,
+					revision: after.revision,
+					writeRevision,
+					source: "desktop",
+				},
+			},
+		};
 	}
 
 	/** Bounded status/revision/readOnly projection; store content never enters a snapshot. */

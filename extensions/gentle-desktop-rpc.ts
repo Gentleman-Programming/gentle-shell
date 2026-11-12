@@ -7,6 +7,7 @@ import {
 	type DesktopRpcPublish,
 } from "../lib/desktop-rpc.ts";
 import {
+	DESKTOP_CONFIG_EVENTS,
 	DESKTOP_CONFIG_METHODS,
 	DesktopConfigBridge,
 } from "../lib/desktop-rpc-config.ts";
@@ -29,8 +30,8 @@ function publisher(ctx: ExtensionContext): DesktopRpcPublish {
 
 export default function desktopRpc(pi: ExtensionAPI) {
 	// Permission control always delegates to the existing Gentle AI session owner;
-	// config reads delegate to the existing store owners. Neither has a store of
-	// its own.
+	// config reads and writes delegate to the existing store owners. Neither has a
+	// store of its own.
 	const permissions = new DesktopPermissionBridge(pi);
 	const config = new DesktopConfigBridge();
 	const domain: DesktopRpcDomain = (method, params) => {
@@ -39,7 +40,7 @@ export default function desktopRpc(pi: ExtensionAPI) {
 	};
 	const router = new DesktopRpcRouter(
 		["capabilities", "get_snapshot", ...DESKTOP_CONFIG_METHODS, ...DESKTOP_PERMISSION_METHODS],
-		[DESKTOP_PERMISSION_EVENT],
+		[...DESKTOP_CONFIG_EVENTS, DESKTOP_PERMISSION_EVENT],
 		() => config.snapshotState(),
 		domain,
 	);

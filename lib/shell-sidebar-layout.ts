@@ -1,5 +1,5 @@
 import { Container, ScrollView, VStack, truncateToWidth, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import { setSidebarHover, sidebarState, type SidebarRail } from "./shell-sidebar.ts";
+import { installContributedSidebar, setSidebarHover, sidebarSectionOrder, sidebarState, type SidebarRail } from "./shell-sidebar.ts";
 import type { ShellBarTheme } from "./shell-bar.ts";
 import { CARD_STYLE, CARD_TONE, cardBottom, cardLine, cardStyle, cardTop, floatRows, paintSurfaceRow, panelInnerWidth, type CardStyle } from "./shell-card.ts";
 import { chromeSurface, PANEL_ROW_INDENT, panelSurfaceOpener, sectionGap } from "./shell-panel.ts";
@@ -308,6 +308,9 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			return false;
 		}
 		const style = cardStyle();
+		// Contributed rails join the shared parts map before the layout snapshots it,
+		// so a plugin section is reachable exactly like a built-in part.
+		const contributed = installContributedSidebar(tui);
 		const parts = [...state.parts.entries()];
 		// Digest closures read live session state, so they must be evaluated once
 		// per frame and stored for the next comparison (issue #1681): the sections
@@ -340,8 +343,9 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const cardGap = () => (carded && style === CARD_STYLE.FLOAT) || sectionGap(density());
 			// A carded section renders one indent wider; its body rows drop that indent inside the card.
 			const renderWidth = carded ? panelInnerWidth(theme, contentWidth) + PANEL_ROW_INDENT : contentWidth - RAIL_PADDING * 2;
-			// Live work first, then the session Status sections (design/shell-rework/02-proposal.html).
-			const sections = ["todo", "jobs", "agents", "footer"].filter((key) => key !== "todo" || state.visibility?.todo !== false).map((key) => {
+			// Live work first, then the session Status sections (design/shell-rework/02-proposal.html),
+			// then contributed plugin sections in registration order.
+			const sections = sidebarSectionOrder(contributed.keys, state.visibility?.todo !== false).map((key) => {
 				const component = state.parts.get(key);
 				if (!component) {
 					sectionCache.delete(key);

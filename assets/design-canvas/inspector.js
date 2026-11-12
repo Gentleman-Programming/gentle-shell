@@ -9,8 +9,8 @@
 // comment-mode hovers and clicks here as points; in focus mode the artboard
 // owns the wheel and the keyboard, and Shift+Esc asks the canvas to leave.
 // In comment mode with Technical details on (gd:mode `inspect`) it also measures the element under
-// the pointer (gd:inspect), once per element and again after a scroll (at most once per animation
-// frame): the canvas's token inspector compares those computed values with the project's design
+// the pointer (gd:inspect), once per element and again after a scroll, a late load or a page change (at most
+// once per animation frame): the canvas's token inspector compares those computed values with the project's design
 // tokens (canvas-tokens.js). With Technical details off it measures nothing.
 (() => {
 	"use strict";
@@ -272,7 +272,7 @@
 		post({ type: "gd:inspect", element: element ? measure(element) : null });
 	}
 
-	/** Scrolling moves the hovered element: measure it again on the next frame, however many scroll events came. */
+	/** Scrolling, a late load or a page change moves or resizes the hovered element: measure it again on the next frame, however many came. */
 	function queueInspect() {
 		if (inspectQueued) return;
 		inspectQueued = true;
@@ -468,12 +468,14 @@
 	window.addEventListener("resize", () => { refresh(); queueReport(); queueOverflow(); });
 	window.addEventListener("load", () => { queueReport(); queueOverflow(); });
 	// An image that loads after the page did can widen it with no mutation or resize; its load does not bubble, so the
-	// document catches it on the way down.
-	document.addEventListener("load", () => { queueReport(); queueOverflow(); }, true);
-	// A web font that loads late can widen the page the same way, with no mutation, resize or load event.
-	document.fonts?.addEventListener("loadingdone", () => { queueReport(); queueOverflow(); });
-	// Layout changes (late images, artboard scripts) move pinned elements and may widen the page; the inspector's own boxes do not count.
+	// document catches it on the way down. It can also resize the hovered element: measure it again.
+	document.addEventListener("load", () => { refresh(); queueReport(); queueOverflow(); if (enabled && hovered && inspecting) queueInspect(); }, true);
+	// A web font that loads late can widen the page the same way, with no mutation, resize or load event, and resize the
+	// hovered element: measure it again.
+	document.fonts?.addEventListener("loadingdone", () => { refresh(); queueReport(); queueOverflow(); if (enabled && hovered && inspecting) queueInspect(); });
+	// Layout changes (late images, artboard scripts) move pinned elements, may widen the page and resize the hovered
+	// element; the inspector's own boxes do not count (refresh moves them, so it cannot loop).
 	new MutationObserver((records) => {
-		if (records.some((record) => !(record.target instanceof Element && record.target.hasAttribute(MARK)))) { queueReport(); queueOverflow(); }
+		if (records.some((record) => !(record.target instanceof Element && record.target.hasAttribute(MARK)))) { refresh(); queueReport(); queueOverflow(); if (enabled && hovered && inspecting) queueInspect(); }
 	}).observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
 })();

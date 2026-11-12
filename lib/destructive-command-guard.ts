@@ -47,11 +47,15 @@ function tokenize(command: string, blank = true, delivery = false): Token[] {
 	for (const match of command.matchAll(pattern)) {
 		const raw = match[0];
 		if (delivery && /^(?:\\\n)*#/.test(raw)) continue;
-		const value = raw.replace(/"((?:\\.|[^"\\])*)"|'([^']*)'|\\(.)/g,
+		const wordPattern = delivery
+			? /"((?:\\[\s\S]|[^"\\])*)"|'([^']*)'|\\([\s\S])/g
+			: /"((?:\\.|[^"\\])*)"|'([^']*)'|\\(.)/g;
+		const value = raw.replace(wordPattern,
 			(_raw, double: string | undefined, single: string | undefined, escaped: string | undefined) => {
 				if (double !== undefined) return double.replace(/\\(["\\$`\n])/g, (_escape, char: string) => char === "\n" ? "" : char);
-				return single ?? escaped ?? "";
+				return single ?? (delivery && escaped === "\n" ? "" : escaped) ?? "";
 			});
+		if (delivery && !value && /^(?:\\\n)+$/.test(raw)) continue;
 		// Only raw operators are boundaries; quoted/escaped operators are words.
 		// Consume the whole operand as one word: >&1--dry-run is a filename,
 		// never descriptor 1 followed by a git option.

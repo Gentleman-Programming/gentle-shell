@@ -162,14 +162,14 @@ test("repository redirects remain delivery commands but cannot borrow the sessio
 
 test("#2997: escaped newlines preserve shell word comment boundaries", async () => {
 	const continued = String.fromCharCode(92, 10);
-	for (const command of [`echo prefix${continued}#; git push`, `echo prefix${continued}${continued}#; git push`]) {
+	for (const command of [`${continued}git push`, `${continued} git push`, `g${continued}it push`, `git pu${continued}sh`, `git${continued} push`, `"g${continued}it" push`, `echo prefix${continued}#; git push`, `echo prefix${continued}${continued}#; git push`]) {
 		assert.equal(recognizeReviewDeliveryActions(command).filter(action => action.kind === "delivery").length, 1, command);
 		let assessments = 0;
 		const cli = { reviewMode: async () => ({ status: { effective: "on" } }), assess: async () => { assessments++; return { reviewDue: true }; } } as unknown as NativeReviewCli;
 		assert.equal((await checkReviewDeliveryPreflight(process.cwd(), "bash", command, cli, () => "HEAD", () => false))?.block, true);
 		assert.equal(assessments, 1);
 	}
-	for (const command of [`echo ${continued}#; git push`, `${continued}# git push &`, `echo ${continued}${continued}# git push &`]) {
+	for (const command of [`'g${continued}it' push`, `echo ${continued}#; git push`, `${continued}# git push &`, `echo ${continued}${continued}# git push &`]) {
 		assert.deepEqual(recognizeReviewDeliveryActions(command), [], command);
 	}
 });

@@ -283,8 +283,15 @@ async function executeController(runtime: ParityRuntime, operation: unknown, cwd
 	return response.details as Record<string, unknown>;
 }
 
-function consentNative(cwd: string): { native: NativeReviewCli; starts: { count: number }; answers: string[]; consent: ReturnType<typeof decodeReviewConsentV3> } {
-	const consent = decodeReviewConsentV3(captured("consent-v3.captured.json"));
+function consentNative(cwd: string, agent: "claude-code" | "pi" = "claude-code"): { native: NativeReviewCli; starts: { count: number }; answers: string[]; consent: ReturnType<typeof decodeReviewConsentV3> } {
+	const raw = captured("consent-v3.captured.json") as Record<string, unknown>;
+	if (agent === "pi") {
+		raw.agent = agent;
+		for (const choice of raw.choices as Array<Record<string, unknown>>) {
+			choice.invocation = String(choice.invocation).replace(" --consent ", " --agent pi --consent ");
+		}
+	}
+	const consent = decodeReviewConsentV3(raw, agent);
 	const starts = { count: 0 };
 	const answers: string[] = [];
 	return {
@@ -337,7 +344,12 @@ async function beginConsent(runtime: ParityRuntime, cwd: string, sessionId = "pa
 	const blocked = await executeController(runtime, { operation: "start", input: JSON.stringify({ mode: "ordinary" }) }, cwd, sessionId);
 	assert.equal(blocked.outcome, "native-review-consent-required");
 	assert.equal(typeof blocked.consent_binding, "string");
-	assert.equal((blocked.consent as Record<string, unknown>).consentBinding, blocked.consent_binding);
+	const consent = blocked.consent as Record<string, unknown>;
+	if (consent.schema === "gentle-ai.review-integration.consent/v3" && consent.agent === "pi") {
+		assert.equal(consent.consentBinding, blocked.consent_binding);
+	} else {
+		assert.equal(Object.hasOwn(consent, "consentBinding"), false, "other native envelopes remain exact");
+	}
 	return blocked;
 }
 
@@ -441,7 +453,7 @@ test("public gentle:review-mode handler reports current operations, global-off w
 test("public consent relay allows any active session to resolve a live binding, is one-shot, and is candidate-scoped", async (t) => {
 	const cwd = repository(t);
 	const sharedRegistry = new PendingReviewConsentRegistry();
-	const fixture = consentNative(cwd);
+	const fixture = consentNative(cwd, "pi");
 	const first = parityRuntime(fixture.native, { pendingReviewConsentRegistry: sharedRegistry });
 	const second = parityRuntime(fixture.native, { pendingReviewConsentRegistry: sharedRegistry });
 	const sameSession = await beginConsent(first, cwd, "same-session");

@@ -33,6 +33,8 @@ function blankHeredocs(command: string, joinBody = false): string {
 	});
 }
 
+const deliveryTokenPattern = /#[^\n]*|(?:\d*(?:[<>]&|>\||<>|>>?|<<-?)|&>>?)|(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s;&|()<>'"\\])+|&&|\|\||[;&|()\n]/g;
+
 /** Keep quoted arguments intact so harmless prose is never treated as a command. */
 function tokenize(command: string, blank = true, delivery = false): Token[] {
 	const tokens: Token[] = [];
@@ -40,10 +42,11 @@ function tokenize(command: string, blank = true, delivery = false): Token[] {
 	// Delivery routing needs redirections as separate tokens, including attached
 	// forms (`push>out`) and descriptor merges whose & is not a shell boundary.
 	const pattern = delivery
-		? /(?:\d*(?:[<>]&|>\||<>|>>?|<<-?)|&>>?)|(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s;&|()<>'"\\])+|&&|\|\||[;&|()\n]/g
+		? deliveryTokenPattern
 		: /(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s;&|()'"\\])+|&&|\|\||[;&|()\n]/g;
 	for (const match of command.matchAll(pattern)) {
 		const raw = match[0];
+		if (delivery && raw.startsWith("#")) continue;
 		const value = raw.replace(/"((?:\\.|[^"\\])*)"|'([^']*)'|\\(.)/g,
 			(_raw, double: string | undefined, single: string | undefined, escaped: string | undefined) => {
 				if (double !== undefined) return double.replace(/\\(["\\$`\n])/g, (_escape, char: string) => char === "\n" ? "" : char);
@@ -66,6 +69,7 @@ function deliveryCommandScopes(tokens: readonly Token[], substitutions: readonly
 	const scopes = [{ start: 0, close: "", opening: -1 }];
 	const compoundEnds: Record<string, string> = { if: "fi", while: "done", until: "done", for: "done", select: "done", case: "esac", "{": "}" };
 	let commandHead = true;
+	let continuation = false;
 	for (const token of tokens) {
 		if (substitutions.some(body => token.index >= body.index && token.index < body.end)) continue;
 		if (token.operator && token.raw === "(") { scopes.push({ start: token.index + 1, close: ")", opening: token.index }); commandHead = true; continue; }
@@ -80,10 +84,12 @@ function deliveryCommandScopes(tokens: readonly Token[], substitutions: readonly
 		if (token.operator) {
 			const scope = scopes.at(-1)!;
 			if (token.raw === "&") ranges.push([scope.start, token.index]);
-			if (["&", ";", "\n"].includes(token.raw)) scope.start = token.index + token.raw.length;
+			if (["&", ";", "\n"].includes(token.raw) && !(token.raw === "\n" && continuation)) scope.start = token.index + token.raw.length;
+			if (token.raw !== "\n") continuation = ["&&", "||", "|"].includes(token.raw);
 			commandHead = true;
 			continue;
 		}
+		continuation = false;
 		if (commandHead && token.raw === token.value) {
 			const close = compoundEnds[token.raw];
 			if (close) scopes.push({ start: token.index, close, opening: -1 });
@@ -102,6 +108,9 @@ export function recognizeReviewDeliveryActions(command: string, depth = 0): Arra
 
 function collectReviewDeliveryActions(command: string, depth: number, onRoutingExport?: () => void): ReturnType<typeof recognizeReviewDeliveryActions> {
 	if (depth > 8) return [];
+	// Preserve offsets while removing comment data from every delivery scan,
+	// including the secondary command-substitution and backtick scans.
+	command = blankHeredocs(command, true).replace(deliveryTokenPattern, raw => raw.startsWith("#") ? " ".repeat(raw.length) : raw);
 	const matches: ReturnType<typeof recognizeReviewDeliveryActions> = [];
 	const tokens = tokenize(command, true, true);
 	const backticks = backtickBodies(command);

@@ -163,6 +163,8 @@ test("repository redirects remain delivery commands but cannot borrow the sessio
 test("#2997: shell background lists cannot use a foreground review check", async () => {
 	const commands = [
 		"sleep 30 && git push &", "git push && echo done &", "git push || echo failed &",
+		"sleep 30 && git push &&\n echo done &", "git push ||\n echo failed &", "git push |\n cat &",
+		"git push &&\n # continuation & comment\n echo done &",
 		"bash -c 'sleep 30 && git push &'", "bash -c 'git push' &",
 		"(git push; echo done) &", "{ git push; echo done; } &",
 		"if true; then git push; fi &", "until true; do gh pr merge 42; done &",
@@ -181,7 +183,9 @@ test("#2997: shell background lists cannot use a foreground review check", async
 	assert.equal(assessments, 0, "deferred execution must be separated before assessment");
 	const off = { reviewMode: async () => ({ status: { effective: "off" } }) } as unknown as NativeReviewCli;
 	for (const command of commands) assert.equal(await checkReviewDeliveryPreflight(process.cwd(), "bash", command, off, () => undefined, () => false), undefined, "known RDD off preserves ordinary command policy");
-	for (const command of ["sleep 1 & git push", "git push 2>&1 | tail -1", "git push &>/dev/null", "git push && echo done", "git push; echo `sleep 1 &`"]) {
+	for (const command of ["git push # publish & notify", "git push # $(git push &)", "git push # `git push &`", "git push # comment with unmatched ' &",
+		"git push &&\n echo done", "git push # comment &\n echo done",
+		"sleep 1 & git push", "git push 2>&1 | tail -1", "git push &>/dev/null", "git push && echo done", "git push; echo `sleep 1 &`"]) {
 		assert.equal(await checkReviewDeliveryPreflight(process.cwd(), "bash", command, cli, () => "HEAD", () => false), undefined, command);
 	}
 });

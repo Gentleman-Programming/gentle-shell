@@ -161,7 +161,7 @@ test("S2: after a reconciled lens group, a captured provider-role artifact conti
 });
 
 const CANCELLED_GUIDANCE = "On cancelled, the run stopped after an approved closure: relay its advisory_findings and claims as on closed; resuming with lineageId reaches the acknowledgement without them.";
-const CLAIM_MARKS_GUIDANCE = "advisory_finding_claims_truncated lists the ids whose claim is cut at 1,024 UTF-8 bytes and advisory_finding_claims_omitted the ids whose claim the 8,192-byte limit left out; say so when relaying them.";
+const CLAIM_MARKS_GUIDANCE = "advisory_finding_claims_truncated, correction_finding_claims_truncated and non_blocking_finding_claims_truncated list the ids whose claim is cut at 1,024 UTF-8 bytes, and advisory_finding_claims_omitted, correction_finding_claims_omitted and non_blocking_finding_claims_omitted the ids whose claim the 8,192-byte limit left out; say so when relaying them.";
 
 test("S5/S6: the run names cancelled and the claim marks in its description and guidance", () => {
 	const run = registeredRun();

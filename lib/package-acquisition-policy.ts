@@ -74,8 +74,22 @@ function parseSegment(manager: Manager, form: PackageAcquisition["form"] | undef
 	// `--package` before the subcommand counts once the subcommand turns out to be exec/dlx.
 	const packagesBeforeForm: Array<{ option: string; named: string; glued: boolean }> = [];
 	const isBoolean = (name: string) => BOOLEAN_OPTIONS.has(name) || MANAGER_BOOLEAN_OPTIONS[manager].has(name);
+	// npx hands every word after the command to it; plain `npm exec` keeps parsing its own options until `--`.
+	const npxForm = form !== undefined;
 	for (let index = 0; index < args.length; index++) {
 		const { value } = args[index];
+		if (target !== undefined) {
+			// Past the command of a plain `npm exec`, only `--package` still names what npm fetches.
+			if (value === "--") break;
+			const equals = value.startsWith("--") ? value.indexOf("=") : -1;
+			const name = equals < 0 ? value : value.slice(0, equals);
+			if (PACKAGE_OPTIONS.has(name)) {
+				const named = equals >= 0 ? value.slice(equals + 1) : args[++index]?.value;
+				if (named === undefined) undetermined.push(name);
+				else packages.push(named);
+			}
+			continue;
+		}
 		if (!optionsEnded && value === "--") {
 			optionsEnded = true;
 			continue;
@@ -117,9 +131,10 @@ function parseSegment(manager: Manager, form: PackageAcquisition["form"] | undef
 			if (form === undefined) return undefined;
 		} else if (form === "install") specs.push(value);
 		else {
-			// The first operand of exec/dlx is the package or command; the rest belongs to it.
+			// The first operand of exec/dlx is the package or command; the rest belongs to it,
+			// except the options a plain `npm exec` still reads before any `--`.
 			target = value;
-			break;
+			if (npxForm || manager !== "npm" || form !== "exec" || optionsEnded) break;
 		}
 	}
 	if (form === undefined) return undefined;

@@ -22,7 +22,11 @@ test("exact registry versions pass, scoped and unscoped, prerelease and build in
 		"npm exec --package=cowsay@1.6.0 -- cowsay hello",
 		"npx -p cowsay@1.6.0 -p lolcatjs@2.3.5 cowsay hi",
 		"pnpm dlx cowsay@1.6.0 hello",
-	]) passes(command);
+	]) {
+		// A pass must come from a recognized exact spec, never from a command that went unrecognized.
+		assert.ok(recognizePackageAcquisitions(command).length > 0, command);
+		passes(command);
+	}
 });
 
 test("non-exact specs ask for confirmation and are named", () => {
@@ -200,4 +204,18 @@ test("pnpm's `-w`/`--workspace-root` take no value, npm's `-w` names a workspace
 	confirms("pnpm add -w left-pad", ["left-pad"]);
 	passes("npm i -w pkg-a left-pad@1.3.0");
 	confirms("npm i -w pkg-a left-pad", ["left-pad"]);
+});
+
+test("plain `npm exec` keeps reading `--package` after the command until `--`; npx hands it to the command", () => {
+	confirms("npm exec --package=cowsay@1.6.0 cowsay hi --package=evil", ["evil"]);
+	confirms("npm exec cowsay@1.6.0 hi -p evil", ["evil"]);
+	confirms("npm x --package=cowsay@1.6.0 cowsay --package evil", ["evil"]);
+	passes("npm exec --package=cowsay@1.6.0 cowsay hi --package=lolcatjs@2.3.5");
+	// After `--` every word belongs to the command.
+	passes("npm exec --package=cowsay@1.6.0 -- cowsay hi --package=evil");
+	passes("npm exec cowsay@1.6.0 -- hi --package=evil");
+	// npx passes everything after the command to it.
+	passes("npx cowsay@1.6.0 hi --package=evil");
+	// Other options after the command stay the command's business.
+	passes("npm exec cowsay@1.6.0 --fix src");
 });

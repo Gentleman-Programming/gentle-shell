@@ -27,6 +27,8 @@ import {
 import { loadExtensionFromFactory } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
 import { getThemeByName } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import fast from "../extensions/gentle-fast.ts";
+import { PROFILE_TIER_EVENT } from "../lib/openai-fast-tier.ts";
 import { readSessionProfileBinding } from "../lib/session-profile-binding.ts";
 import { SESSION_PROFILE_CUSTOM_TYPE } from "../lib/session-profile-persistence.ts";
 import { localProfilePinPath, repoProfileDeclarationPath, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
@@ -42,6 +44,7 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
  orchestrator?: AgentRoutingEntry;
  noAuth?: boolean;
  reason?: "startup" | "new" | "resume" | "fork";
+ fastOrder?: "ai-first" | "fast-first";
 }) {
  const root = mkdtempSync(join(tmpdir(), "u3-public-"));
  const config = join(root, "config"),
@@ -119,7 +122,8 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
  };
  const notices: Array<{ text: string; severity?: string }> = [],
   errors: string[] = [],
-  events: string[] = [];
+  events: string[] = [],
+  tierEvents: unknown[] = [];
  let selection: keyof typeof profiles | undefined;
  let currentApi: ExtensionAPI | undefined;
  let cancel = false;
@@ -178,6 +182,9 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
   const reload = async () => {
    extensionRuntime = createExtensionRuntime();
    const bus = createEventBus();
+   bus.on(PROFILE_TIER_EVENT, (event) => tierEvents.push(event));
+   const fastFirst = startup?.fastOrder === "fast-first"
+    ? await loadExtensionFromFactory(fast, root, bus, extensionRuntime) : undefined;
    loaded = [
     await loadExtensionFromFactory(
      (pi) => {
@@ -221,6 +228,8 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
      extensionRuntime,
     ),
    ];
+   if (fastFirst) loaded.unshift(fastFirst);
+   else if (startup?.fastOrder === "ai-first") loaded.push(await loadExtensionFromFactory(fast, root, bus, extensionRuntime));
   };
   const loader: ResourceLoader = {
    getExtensions: () => ({
@@ -337,6 +346,7 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
   },
   notices,
   events,
+  tierEvents,
   errors,
   profiles,
   saveProfiles,
@@ -618,6 +628,43 @@ for (const transition of ["fork", "tree", "reload", "new"] as const)
  });
 
 // A3: startup model selection through the real SDK, never the panel action.
+for (const fastOrder of ["ai-first", "fast-first"] as const) {
+ test(`A3 startup notifies Fast and keeps its tier (${fastOrder})`, async (t) => {
+  const orchestrator = { model: "openai/gpt-6.1-sol", tier: "fast" as const };
+  const f = await fixture(t, false, false, "live", { env: {}, orchestrator, fastOrder });
+  assert.equal(f.runtime.session.model?.id, "gpt-6.1-sol");
+  assert.equal(f.authCalls(), 1);
+  assert.deepEqual(f.tierEvents, [{ sessionId: f.manager.getSessionId(), ...orchestrator }]);
+  const payload = { input: "fixture", service_tier: "flex" };
+  assert.deepEqual(await f.runtime.session.extensionRunner.emitBeforeProviderRequest(payload), { ...payload, service_tier: "priority" });
+  assert.deepEqual(payload, { input: "fixture", service_tier: "flex" });
+  assert.equal(f.family().length, 0, "notification does not publish a profile record");
+  f.settingsUnchanged();
+ });
+
+ test(`A3 Fast startup notification leaves settings.json byte-for-byte unchanged (${fastOrder})`, async (t) => {
+  const f = await fixture(t, false, false, "live", {
+   env: {}, orchestrator: { model: "openai/gpt-6.1-sol", tier: "fast" }, fastOrder,
+  });
+  assert.equal(f.tierEvents.length, 1, "startup sends the live-only notification");
+  f.settingsUnchanged();
+  await f.runtime.session.extensionRunner.emitBeforeProviderRequest({ input: "fixture" });
+  f.settingsUnchanged();
+ });
+
+ test(`A3 Use in this session preserves Fast notification after startup (${fastOrder})`, async (t) => {
+  const f = await fixture(t, false, false, undefined, {
+   env: {}, orchestrator: { model: "openai/gpt-6.1-sol", tier: "fast" }, fastOrder,
+  });
+  assert.deepEqual(await f.runtime.session.extensionRunner.emitBeforeProviderRequest({}), {});
+  await f.enter("live");
+  assert.equal(f.runtime.session.model?.id, "gpt-6.1-sol");
+  assert.deepEqual(f.tierEvents, [{ sessionId: f.manager.getSessionId(), ...f.profiles.live.orchestrator }]);
+  assert.deepEqual(await f.runtime.session.extensionRunner.emitBeforeProviderRequest({}), { service_tier: "priority" });
+  f.settingsUnchanged();
+ });
+}
+
 for (const layer of ["local", "repo", "global"] as const)
  test(`A3 own start switches the ${layer} profile's orchestrator without settings writes`, async (t) => {
   const f = await fixture(t, false, false, layer === "global" ? "live" : "team", { env: {}, ...(layer === "global" ? {} : { layer }) });

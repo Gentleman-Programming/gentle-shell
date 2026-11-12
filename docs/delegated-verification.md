@@ -2,7 +2,23 @@
 
 How the Gentle Pi orchestrator decides who verifies a bounded writer's work. The always-on parent prompt renders a `Receipt-driven development: on|off|unknown` line; the verification module (`assets/orchestrator-verification.md`, Verification rule) keys the verification rule on it. Because the line sits in the cached system-prompt prefix, a session keeps the first line it rendered and re-renders it when the off state changes (which also drops or restores the review execution contract); an `unknown` to `on` flip or a deciding-source change keeps the original text. Off is freshly confirmed for each run; a failed read after off renders unknown rather than relying on a stale off status. Review tools always read the live mode. While the pinned line reads `off`, the parent request also carries a lean review loadout: `gentle_review` keeps its schema but its snippet, guidelines, and description cover only `assess`, and the `gentle_review_capture`, `gentle_review_capture_group`, and `gentle_review_scope` declarations are hidden (they stay registered and active). The loadout follows the pinned line, so it changes only at the next run after RDD turns off or back on, together with the review execution contract; `on` and `unknown` keep the full registered text. This page is package-owned; `docs/review-integration.md` mirrors the Gentle AI contract and must stay byte-identical to it.
 
+## Identify verification inputs
+
+Before dispatch, the parent reads the canonical policy in `assets/agents/gentle-ai-verify.md` and supplies the frozen full specification as exact content or a snapshot with a content digest, including the whole feature document and `## Log` when present. It need not share the code commit: an uncommitted task document is a non-code input. Identify named non-code payload inputs and their digests separately from the parent-named baseline and candidate code commits. Check that isolated source and specification match the supplied identities before probes; missing or unidentifiable inputs stop preparation. This does not authorize a live-code overlay or replace upstream's commit-bound source checks.
+
+Separate mutable progress and receipts from specification identity. Do not require whole live task-document equality with its committed version. Progress-only updates do not change the frozen inputs. Genuine source or requirement changes need an explicit reconciled handoff under existing authorization and attempt limits; do not silently discard requirements or adopt them mid-run, including on continuation. Report failed comparisons with expected and observed identities and safe repository-relative labels, not sensitive invocation details.
+
 ## Verifier preparation
+
+### Choose checks before setup
+
+Before adding an auxiliary preparation gate, the parent must deliver its in-scope acceptance criterion, concrete threat, or authoritative contract to the verifier and explain why existing approved checks are insufficient. A verifier-authored helper is not mandatory merely because it exists. Do not insert unjustified optional helpers into required setup.
+
+With an explicit complete approved payload, prefer named artifact, dependency, version, identity, and capacity checks and parent-approved actual module-load commands (including native in-memory loads) and tests. Use no parallel lexical-import or full transitive-closure analyzer gate without that justification; SQL, templates, or prose are not imports. Required source inspection and static analysis remain valid when the criterion or threat requires them. Name actual missing inputs with evidence, not a parser failure. An authorized functional module-load check in isolation is distinct from executing an entry point merely to inspect it.
+
+An optional analysis failure alone does not prove missing runtime capability or an application defect; proportionality does not waive real missing artifacts, mandated checks, or security denials. Preserve complete payloads, identity, permissions, capacity, and private isolation. The one self-caused deterministic setup correction and explicit human-requested bounded resumption described below remain available within their limits: no unlimited retries, budget resets, denial bypass, outcome rewriting, or executor swaps. This policy does not retroactively revive stopped trials or waive failed checks.
+
+### Bounded preparation
 
 The independent verifier makes one isolated preparation attempt. When it fails on a deterministic error in a command or environment the verifier constructed (a wrong flag, conflicting config, a typo, a path it chose), the verifier makes exactly one corrected attempt without asking and reports both. At a second failure, or at any missing or unavailable prerequisite (a tool, network, space, permission), it stops setup and reports one concrete blocker, the exact checks left unrun as unverified, not passed, and any scratch directories created. It does not otherwise retry setup or chain helper repairs. When the verifier returns a self-caused setup error without having used its correction, the parent relaunches it once with the corrected command, without asking a human; otherwise the parent stops with one **Needs your decision** result identifying the blocker and exact unrun checks, without continuing helper repairs or automatically relaunching for the same prerequisite. After the prerequisite is repaired, the human may explicitly request one new bounded verification attempt. Setup or infrastructure failure is distinct from a code finding, whose existing correction allowance remains; auxiliary tooling defects remain subject to the existing correction bound, which setup failure does not reset. Successful preparation continues to authorized checks and independent probes within the existing isolation and permission boundaries.
 
@@ -11,6 +27,20 @@ For Git-dependent checks, the runner exposes the absolute packaged `scripts/prep
 This pilot supports ordinary single-root Git repositories and regular-file dependencies inside that root. It rejects links, submodules, worktrees, shallow/shared/sparse/partial history and inputs outside the root; declare unsupported external dependencies as prerequisites. Limits are 20000 files, 256MiB regular-file payload, a 512MiB staged-patch buffer and a 60-second checked preparation budget. Staged patches retain raw bytes and fixed path prefixes regardless of repository diff settings. Scratch may have linked ancestors, but its final directory must not be a link and its real path must remain under system temp, empty and separate from the source. Git subprocesses receive the remaining deadline; filesystem operations check between steps. Git object transfer is not included in the regular-file payload measurement; unavailable baseline/history, capacity or deadline failures leave partial scratch and no probe result. This is deterministic helper behavior, not proof of model adherence or representative large-project performance.
 
 The existing Bash `pipefail` tar copy is retained only for probes independent of Git metadata. A failed archive producer cannot be hidden by a successful extractor. Chain probes with `&&` when they share either setup call; a non-zero preparation result leaves them unrun even if the partial destination contains files. This does not make an oversized copy faster or establish that model-selected alternatives preserve the required payload. The one-attempt rule remains prompt policy, not a runtime-enforced limit.
+
+### Report evidence, not completion
+
+Task completion is not a verification PASS. Reports distinguish these categories, which may coexist:
+
+| Evidence | Meaning |
+| --- | --- |
+| preparation failure | Missing input, copy, dependency, or environment setup; zero tests run if no probes started. |
+| security denial | Blocked operation, not an infrastructure failure. |
+| structural inspection | Read-only observations, not proof that functional checks ran. |
+| functional verdict | Observed authorized probes; a successful process exit alone is insufficient. |
+| missing dependency proof | Required criteria remain unverified; partial functional results do not satisfy them. |
+
+Report commands actually run, exit codes, test counts, and exact checks left unrun, alongside source/specification identities and per-item verdicts within the compact handoff. Sanitize sensitive command details. For a denial, mark that probe unverified and report only safe task/call identifiers when available, denial category and affected unrun criterion; no raw arguments, transcripts, private paths, or credentials. Optionally include the rule and blocked path, sanitized of secret contents, only when the rule is public and the blocked path is an actually safe repository-relative label. Never require or reconstruct a private blocked path. A safer-plan request is not a consent grant. Do not replay the denied operation or invent an approval continuation. Preserve the denial and missing proof under existing consent and recovery rules.
 
 ### Explicit recovery after a setup failure
 
@@ -24,7 +54,7 @@ A worker-local correction limit ends its automatic cycle, not necessarily the fe
 
 Specifically authorized compilation or implementation can continue only when actual native authority and other applicable limits permit it. A read-only inspection with no instantiated native budget does not itself prohibit ordinary edits; it also grants no review approval. Missing required proof still blocks completion and delivery. Native recovery, consent, and terminal-outcome rules remain separate and unchanged.
 
-This is prompt policy, not a runtime-enforced limit; contract tests establish instruction delivery, not agent compliance or a measured speedup.
+This is prompt policy, not a runtime-enforced limit; contract tests establish instruction delivery, not runtime enforcement or model compliance, and not a measured speedup. This is not a runtime-enforced freeze, snapshot API, or security approval; it does not establish incident closure or that all P05/backend work is unblocked. Runtime recovery and native review authority remain unchanged.
 
 ## What the independent verifier checks
 

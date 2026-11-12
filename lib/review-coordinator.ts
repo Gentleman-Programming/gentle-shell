@@ -120,7 +120,10 @@ function nonBlockingFindingKeys(status: unknown): Body {
 	const omittedCount = findings.length - listed.length;
 	const entries = (findings as Body[]).slice(0, listed.length);
 	const bounded = boundedFindingClaims(entries.map((finding) => finding.id as string), entries as { id: string; claim: string }[]);
-	return { non_blocking_findings: { statement: value.statement, findings: listed },
+	// Statement text shares the per-claim UTF-8 cap; the host marks a cut prefix explicitly.
+	const statement = withinUtf8Bytes(value.statement, REVIEW_FINDING_CLAIM_MAX_BYTES);
+	return { non_blocking_findings: { statement, findings: listed,
+		...(statement === value.statement ? {} : { statement_truncated: true }) },
 		...(omittedCount === 0 ? {} : { non_blocking_findings_omitted_count: omittedCount }),
 		...(bounded === undefined ? {} : { non_blocking_finding_claims: bounded.claims,
 			...(bounded.truncated.length === 0 ? {} : { non_blocking_finding_claims_truncated: bounded.truncated }),

@@ -111,7 +111,8 @@ function cloneModel(model: NanChatModelConfig): NanChatModelConfig {
 		...model,
 		input: [...model.input],
 		cost: { ...model.cost },
-		thinkingLevelMap: model.thinkingLevelMap ? { ...model.thinkingLevelMap } : undefined,
+		// structuredClone keeps the declared type: Pi 1.5 types the map `unknown` under strict: false, which a spread rejects.
+		thinkingLevelMap: model.thinkingLevelMap ? structuredClone(model.thinkingLevelMap) : undefined,
 		...(model.compat ? { compat: { ...model.compat } } : {}),
 	};
 }

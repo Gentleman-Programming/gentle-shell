@@ -54,7 +54,7 @@ for (const persona of ["gentleman", "neutral"] as const) {
       assert.match(setup, /no child is active or has an uncertain status/);
       const worker = paragraph(p, "An exhausted worker-local");
       assert.match(worker, /scope, executor, correction limit and checks/);
-      assert.match(worker, /later explicit human request is separate and remains subject to native authority/);
+      assert.match(worker, /later explicit requests stay subject to native authority/);
       assert.match(worker, /new session does not reset any limit/);
       assert.match(worker, /specifically authorized.*actual native authority.*in-scope compilation or implementation/);
       assert.match(worker, /unavailable proof still blocks completion and delivery/);

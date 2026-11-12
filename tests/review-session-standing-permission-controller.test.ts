@@ -365,7 +365,10 @@ test("a validated intended-untracked selection may use the host third action onl
 
 	const headless = (await selectIntended(unrelated, { ...interactiveContext(unrelated, {}, async () => { throw new Error("headless must not prompt"); }), mode: "print", hasUI: false } as ExtensionContext)).details;
 	assert.equal(headless.outcome, "native-review-consent-required");
-	assert.equal(JSON.stringify(headless.consent), JSON.stringify(runtime.consent.raw), "an unavailable host returns the byte-equivalent raw provider envelope");
+	const { consentBinding, ...nativeEnvelope } = headless.consent as Record<string, unknown>;
+	assert.equal(consentBinding, headless.consent_binding, "the public Pi v3 copy carries the opaque binding");
+	assert.deepEqual(nativeEnvelope, runtime.consent.raw, "an unavailable host preserves every native envelope field");
+	assert.equal(Object.hasOwn(runtime.consent.raw, "consentBinding"), false, "the stored provider envelope stays unannotated");
 	assert.deepEqual(runtime.answers, ["granted", "granted", "granted"], "an unavailable host never submits a provider answer");
 });
 

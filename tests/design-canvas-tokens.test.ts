@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { findAll, flush, loadCanvas, memoryStorage, read, texts, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
+import { findAll, flush, inspectorPick, loadCanvas, memoryStorage, read, texts, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
 
 // The token inspector (canvas-tokens.js): with Technical details on (a checkbox in the rail's Settings,
 // off by default, saved in this browser), Comment mode shows a panel beside the frame of the hovered
@@ -258,7 +258,7 @@ test("the panel shows only with Technical details on, in Comment mode, the comme
 	inspect(canvas, first.frame);
 	assert.equal(shown(canvas), true);
 	// The comment box takes the panel's place, and no report reopens the panel while the box is open.
-	canvas.message(first.frame.contentWindow, { type: "gd:pick", selector: "main > p.or", excerpt: "", rect: { x: 1, y: 1, width: 2, height: 2 } });
+	canvas.message(first.frame.contentWindow, inspectorPick(first.frame, { type: "gd:pick", selector: "main > p.or", excerpt: "", rect: { x: 1, y: 1, width: 2, height: 2 } }));
 	assert.equal($(canvas, "gd-popover").hidden, false);
 	assert.equal(shown(canvas), false, "the comment box opening hides the panel");
 	inspect(canvas, first.frame);

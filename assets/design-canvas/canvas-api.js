@@ -1,9 +1,12 @@
 // The canvas server API under the per-server base path: artboard file URLs and
 // JSON GET and POST, plus the number check shared by everything that reads
-// server or artboard data.
+// server or artboard data, and what the server can deliver to the session.
 
-/** base: the per-server path every route lives under, from #gd-config. */
-export function init(ctx, base) {
+/**
+ * base: the per-server path every route lives under, from #gd-config; delivery: its `delivery`,
+ * what the server can hand to the session (only `part: true` turns Implement only this on).
+ */
+export function init(ctx, base, delivery) {
 	const { win } = ctx;
 
 	function fileUrl(slug, file) {
@@ -38,5 +41,5 @@ export function init(ctx, base) {
 		return typeof value === "number" && Number.isFinite(value);
 	}
 
-	return { base, fileUrl, getJson, postJson, isFiniteNumber };
+	return { base, fileUrl, getJson, postJson, isFiniteNumber, delivery: Object.freeze({ part: Boolean(delivery && typeof delivery === "object" && delivery.part === true) }) };
 }

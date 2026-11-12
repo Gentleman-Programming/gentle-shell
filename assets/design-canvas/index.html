@@ -84,6 +84,10 @@
 			</div>
 			<p id="gd-panel-empty" class="gd-panel-empty">No comments yet. Turn on Comment mode and click an element.</p>
 			<ol id="gd-comment-list" class="gd-comment-list" aria-label="Comments"></ol>
+			<section id="gd-parts" class="gd-parts" aria-labelledby="gd-parts-title" hidden>
+				<h3 id="gd-parts-title" class="gd-parts-title">Partial implementations</h3>
+				<ol id="gd-parts-list" class="gd-parts-list"></ol>
+			</section>
 		</aside>
 		<section id="gd-compare" class="gd-compare" aria-labelledby="gd-compare-title" hidden>
 			<div class="gd-compare-bar">
@@ -135,6 +139,7 @@
 			<div class="gd-popover-actions">
 				<span id="gd-popover-message" class="gd-popover-message" role="status" aria-live="polite"></span>
 				<button type="button" id="gd-popover-cancel">Cancel</button>
+				<button type="button" id="gd-popover-part" disabled>Implement only this</button>
 				<button type="submit" id="gd-popover-send" class="gd-primary">Send</button>
 			</div>
 		</form>

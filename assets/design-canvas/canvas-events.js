@@ -45,6 +45,11 @@ export function init(ctx) {
 				actions.loadHandoffs();
 				return;
 			}
+			// Not a shared asset: a part's progress reloads no artboard.
+			if (change.file === "parts.json") {
+				actions.loadParts();
+				return;
+			}
 			// Nor is where the boards sit: they move, nothing reloads.
 			if (change.file === "layout.json") {
 				actions.onLayoutChange().catch(() => {});

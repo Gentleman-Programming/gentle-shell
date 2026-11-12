@@ -1037,6 +1037,7 @@ async function downloadServed(base: string, original: string) {
 		[`${base}api/designs/alpha`]: { slug: "alpha", title: "Alpha", brief: "", artboards: [{ file: "01-a.html", title: "First", tradeoff: "", width: 400, height: 300 }] },
 		[`${base}api/designs/alpha/comments`]: { comments: [] },
 		[`${base}api/designs/alpha/handoffs`]: { version: 1, chosen: null, handoffs: {} },
+		[`${base}api/designs/alpha/parts`]: { version: 1, parts: [] },
 	};
 	const canvas = await loadExport({ ...designReplies, [fileUrl]: { __text: injectInspector(original, base) } }, {
 		Blob: class { constructor(parts: unknown[], options: { type: string }) { blobs.push({ parts, type: options.type }); } },

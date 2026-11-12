@@ -546,6 +546,48 @@ button:disabled { opacity: 0.5; cursor: default; }
 	padding: 0 8px 8px;
 }
 
+/* Partial implementations (canvas-parts.js): the panel's last section, one card per part. The state is a word in
+   a chip, never a dot, colored like the handoff badge. */
+.gd-parts { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--gd-border); }
+.gd-parts[hidden] { display: none; }
+.gd-parts-title { margin: 0 0 8px; font-size: 13px; }
+
+.gd-parts-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.gd-part {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 4px;
+	padding: 8px;
+	border: 1px solid var(--gd-border);
+	border-radius: 6px;
+	background: var(--gd-stage);
+	color: var(--gd-muted);
+	font-size: 12px;
+}
+
+.gd-part-head { display: flex; align-items: center; gap: 8px; width: 100%; }
+.gd-part-title { flex: 1; min-width: 0; color: var(--gd-text); font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gd-part-state { flex: none; padding: 0 6px; border: 1px solid var(--gd-border); border-radius: 4px; font-weight: 600; white-space: nowrap; }
+.gd-part[data-status="queued"] .gd-part-state { color: var(--gd-focus); border-color: var(--gd-focus); }
+.gd-part[data-status="sent"] .gd-part-state, .gd-part[data-status="in_progress"] .gd-part-state { color: var(--gd-accent); border-color: var(--gd-accent); }
+.gd-part[data-status="implemented"] .gd-part-state { color: var(--gd-success); border-color: var(--gd-success); }
+.gd-part-excerpt { color: var(--gd-text); overflow-wrap: anywhere; }
+.gd-part-note { overflow-wrap: anywhere; }
+.gd-part-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 2px; }
+.gd-part-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--gd-text); }
+/* A Remove in flight: marked disabled, still focusable, so keyboard focus stays on it. */
+.gd-part-confirm-yes[aria-disabled="true"] { opacity: 0.5; cursor: default; }
+.gd-part-actions [hidden] { display: none; }
+
 .gd-empty {
 	position: absolute;
 	inset: 0;
@@ -627,6 +669,9 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 
 .gd-popover-message.gd-error, .gd-status.gd-error { color: var(--gd-danger); }
+
+/* Why Implement only this is disabled (canvas-parts.js), under the buttons. */
+.gd-popover-note { margin: 6px 0 0; color: var(--gd-muted); font-size: 12px; text-align: right; }
 
 /* Compare (S15): the artboard and the running app side by side, over the canvas and the panel. */
 .gd-compare {

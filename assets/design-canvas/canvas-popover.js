@@ -1,6 +1,6 @@
 // The comment popover: the pick it opens on, the screenshot attach (file, paste,
 // drop), Esc and Shift+Esc in the canvas, and the submit that saves or sends the
-// comment.
+// comment. Its Implement only this button belongs to canvas-parts.js.
 
 const LIMITS = { selector: 500, excerpt: 300, comment: 2000, screenshotBytes: 5 * 1024 * 1024 };
 const SCREENSHOT_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
@@ -33,9 +33,9 @@ export function init(ctx) {
 		if (previous && previous !== surface) previous.frame.contentWindow?.postMessage({ type: "gd:clear" }, "*");
 		store.setPopover({ pick: { board, surface, viewport: actions.viewportOf(surface), ...pick } });
 		els.target.textContent = `${board.artboard.file} · ${pick.selector}`;
-		els.message.textContent = "";
-		els.message.classList.remove("gd-error");
+		showMessage("", false);
 		els.send.disabled = false;
+		actions.renderPartButton();
 		els.popover.hidden = false;
 		// The frame may be scaled (All sizes) or resized (a single size).
 		const frameRect = surface.frame.getBoundingClientRect();
@@ -60,9 +60,15 @@ export function init(ctx) {
 		els.shotAttach.hidden = false;
 	}
 
+	/** The popover's message line; a refusal's raw code in its tooltip (canvas-parts.js) goes with the message it explained. */
+	function showMessage(text, isError) {
+		els.message.textContent = text;
+		els.message.title = "";
+		els.message.classList.toggle("gd-error", isError);
+	}
+
 	function shotError(message) {
-		els.message.textContent = message;
-		els.message.classList.add("gd-error");
+		showMessage(message, true);
 	}
 
 	/** Reads one image file into the popover; a later attach or a clear discards a read still running. */
@@ -80,8 +86,7 @@ export function init(ctx) {
 			els.shotImage.src = url;
 			els.shotPreview.hidden = false;
 			els.shotAttach.hidden = true;
-			els.message.textContent = "";
-			els.message.classList.remove("gd-error");
+			showMessage("", false);
 		});
 		reader.addEventListener("error", () => { if (token === state.shotToken) shotError("The screenshot could not be read."); });
 		reader.readAsDataURL(file);
@@ -164,14 +169,9 @@ export function init(ctx) {
 		const pick = state.pick;
 		if (!pick) return;
 		const comment = els.text.value.trim();
-		if (!comment || comment.length > LIMITS.comment) {
-			els.message.textContent = `Write a comment of 1 to ${LIMITS.comment} characters.`;
-			els.message.classList.add("gd-error");
-			return;
-		}
+		if (!comment || comment.length > LIMITS.comment) return showMessage(`Write a comment of 1 to ${LIMITS.comment} characters.`, true);
 		els.send.disabled = true;
-		els.message.classList.remove("gd-error");
-		els.message.textContent = "Sending…";
+		showMessage("Sending…", false);
 		const shot = state.shot;
 		try {
 			const response = await win.fetch(`${base}api/comments`, {
@@ -190,15 +190,13 @@ export function init(ctx) {
 			els.text.value = "";
 			if (state.shot === shot) clearShot();
 			const done = savedOnly ? "Saved, but not sent to the session" : response.status === 201 ? "Saved; use Send all to send it" : "Sent to the session";
-			els.message.textContent = done;
-			els.message.classList.toggle("gd-error", savedOnly);
+			showMessage(done, savedOnly);
 			setStatus(done, savedOnly);
 			store.setPopover({ closeTimer: win.setTimeout(closePopover, savedOnly ? 2500 : 1200) });
 		} catch (error) {
 			if (state.pick !== pick) return;
 			els.send.disabled = false;
-			els.message.textContent = `Not sent: ${error.message}`;
-			els.message.classList.add("gd-error");
+			showMessage(`Not sent: ${error.message}`, true);
 		}
 	});
 

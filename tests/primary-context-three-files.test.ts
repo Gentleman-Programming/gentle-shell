@@ -10,8 +10,9 @@ import { filterChildSessionContextFiles } from "../lib/child-context-files.ts";
 // Three loaded context files in Pi's order (root toward the working directory):
 // a home file with every managed block, a project file with engram-protocol and
 // agent-routing, and a nested package file with user text only. With Gentle
-// Shell's orchestrator injected, the primary drops the orchestrator-only blocks,
-// keeps remote-authorization, and keeps only the nearest engram-protocol copy.
+// Shell's orchestrator injected, the primary drops a listed block whose body the
+// injected prompt already carries (gentle-shell#3097), keeps remote-authorization,
+// and keeps only the nearest engram-protocol copy.
 
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 
@@ -19,39 +20,60 @@ function block(name: string, body: string): string {
 	return `<!-- gentle-ai:${name} -->\n${body}\n<!-- /gentle-ai:${name} -->`;
 }
 
+// Every body expected to be dropped is a real line of the prompt the primary
+// injects, read from it once in the `before` hook instead of being invented.
+let injectedPrompt = "";
+
+function promptBody(match: string): string {
+	const line = injectedPrompt.split("\n").find((candidate) => candidate.includes(match) && candidate.trim() !== "");
+	assert.ok(line !== undefined, `the injected orchestrator prompt carries "${match}"`);
+	return line.trim();
+}
+
 const REMOTE_AUTHORIZATION = block("remote-authorization", "## Remote operation authorization\n\nNo remote without consent.");
 const ENGRAM_HOME = block("engram-protocol", "## Engram HOME copy\n\nrule H.");
 const ENGRAM_PROJECT = block("engram-protocol", "## Engram PROJECT copy\n\nrule P.");
 
-const HOME_MD = [
-	"# Home notes",
-	"",
-	"keep me 1",
-	"",
-	block("orchestrator", "## Teams\n\nCOORD"),
-	"",
-	block("sdd-orchestrator", `# SDD\n\n${block("sdd-model-assignments", "| a | b |")}`),
-	"",
-	ENGRAM_HOME,
-	"",
-	block("agent-routing", `## Routing\n\nrules\n\n${REMOTE_AUTHORIZATION}`),
-	"",
-	"## Tail",
-	"keep me 2",
-	"",
-].join("\n");
+// Blocks are flat: a body carrying nested markers is never quoted inside a real
+// prompt, so nesting stays in tests/child-context-files.test.ts, where the
+// injected prompt is a parameter.
+function managedHomeMd(): string {
+	return [
+		"# Home notes",
+		"",
+		"keep me 1",
+		"",
+		block("orchestrator", promptBody("You are el Gentleman: a Pi-specific coding-agent harness")),
+		"",
+		block("sdd-orchestrator", promptBody("Identity contract:")),
+		"",
+		block("sdd-model-assignments", promptBody("Follow the currently selected persona mode.")),
+		"",
+		ENGRAM_HOME,
+		"",
+		block("agent-routing", promptBody("Reply-language style and the active persona's Spanish variant")),
+		"",
+		REMOTE_AUTHORIZATION,
+		"",
+		"## Tail",
+		"keep me 2",
+		"",
+	].join("\n");
+}
 const HOME_EXPECTED = ["# Home notes", "", "keep me 1", "", REMOTE_AUTHORIZATION, "", "## Tail", "keep me 2", ""].join("\n");
 
-const PROJECT_MD = [
-	"# Project",
-	"",
-	"proj text",
-	"",
-	ENGRAM_PROJECT,
-	"",
-	block("agent-routing", "## Implementation Routing\n\n### Receipt-driven development is user-owned\n\nx"),
-	"",
-].join("\n");
+function projectMd(): string {
+	return [
+		"# Project",
+		"",
+		"proj text",
+		"",
+		ENGRAM_PROJECT,
+		"",
+		block("agent-routing", promptBody("Reply-language style and the active persona's Spanish variant")),
+		"",
+	].join("\n");
+}
 const PROJECT_EXPECTED = ["# Project", "", "proj text", "", ENGRAM_PROJECT, ""].join("\n");
 
 const NESTED_MD = "# Package notes\n\nOnly user text here.\n";
@@ -80,6 +102,7 @@ before(async () => {
 		previousEnvironment.set(key, process.env[key]);
 		process.env[key] = value;
 	}
+	injectedPrompt = await captureInjectedPrompt();
 });
 after(async () => {
 	for (const [key, value] of previousEnvironment) {
@@ -117,25 +140,35 @@ function ctx(cwd: string): ExtensionContext {
 	} as unknown as ExtensionContext;
 }
 
-function startEvent(extra: Record<string, unknown> = {}) {
+function startEvent(extra: Record<string, unknown> = {}, files: { home?: string; project?: string } = {}) {
 	const contextFiles = [
-		{ path: join(homeDir, "AGENTS.md"), content: HOME_MD },
-		{ path: join(projectDir, "AGENTS.md"), content: PROJECT_MD },
+		{ path: join(homeDir, "AGENTS.md"), content: files.home ?? managedHomeMd() },
+		{ path: join(projectDir, "AGENTS.md"), content: files.project ?? projectMd() },
 		{ path: join(packageDir, "AGENTS.md"), content: NESTED_MD },
 	];
 	const systemPromptOptions = { appendSystemPrompt: "", contextFiles };
 	return { contextFiles, systemPromptOptions, event: { systemPrompt: "base", systemPromptOptions, ...extra } };
 }
 
+// One primary turn over empty context files: its appendSystemPrompt is the
+// prompt the session receives, which is what the drop rule compares against.
+async function captureInjectedPrompt(): Promise<string> {
+	const { systemPromptOptions, event } = startEvent({}, { home: "", project: "" });
+	await beforeAgentStart()(event, ctx(packageDir));
+	return systemPromptOptions.appendSystemPrompt;
+}
+
 for (const mode of ["organic", "full-delegation"] as const) {
 	test(`${mode}: three context files keep exactly the expected bytes`, async () => {
-		const { contextFiles, systemPromptOptions, event } = startEvent();
+		const home = managedHomeMd();
+		const project = projectMd();
+		const { contextFiles, systemPromptOptions, event } = startEvent({}, { home, project });
 		await beforeAgentStart({ GENTLE_PI_ORCHESTRATOR_MODE: mode })(event, ctx(packageDir));
 		assert.match(systemPromptOptions.appendSystemPrompt, /el Gentleman Identity and Harness/);
 		if (mode === "full-delegation") assert.match(systemPromptOptions.appendSystemPrompt, /COORDINATOR in full delegation mode/);
 		else assert.doesNotMatch(systemPromptOptions.appendSystemPrompt, /COORDINATOR in full delegation mode/);
 		assert.deepEqual(systemPromptOptions.contextFiles.map((file) => file.content), [HOME_EXPECTED, PROJECT_EXPECTED, NESTED_MD]);
-		assert.deepEqual(contextFiles.map((file) => file.content), [HOME_MD, PROJECT_MD, NESTED_MD], "the loaded entries are never mutated");
+		assert.deepEqual(contextFiles.map((file) => file.content), [home, project, NESTED_MD], "the loaded entries are never mutated");
 		const filtered = systemPromptOptions.contextFiles;
 		await beforeAgentStart({ GENTLE_PI_ORCHESTRATOR_MODE: mode })(event, ctx(packageDir));
 		assert.equal(systemPromptOptions.contextFiles, filtered, "a second turn removes nothing more");

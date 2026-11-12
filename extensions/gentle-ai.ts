@@ -12689,16 +12689,19 @@ function createGentleAiExtensionForTesting(
 					return fragment === null ? "" : `\n\n${fragment}`;
 				})()
 				: "";
-		// The primary drops the gentle-ai orchestrator-only managed blocks from its
-		// context files (for example a gentle-ai managed ~/AGENTS.md) whenever this
-		// orchestrator prompt is injected, exactly as delegated children do
-		// (gentle-shell#1587): they carry a second, conflicting orchestrator policy.
-		// The engram-protocol block is deduplicated: only the copy in the file
-		// nearest to the working directory stays. Nested kept blocks such as
-		// remote-authorization stay; the filter never throws and keeps the
-		// original files on malformed markers.
+		// The primary drops a gentle-ai orchestrator-only managed block from its
+		// context files (for example a gentle-ai managed ~/AGENTS.md) only when the
+		// orchestrator prompt injected below already carries that block's text
+		// (gentle-shell#3097): a block whose text is not in the prompt is user
+		// policy, and deleting it emptied `<project_instructions>` for a file
+		// wrapped end to end in an `orchestrator` block. When this prompt is absent
+		// the primary does not filter at all, and a delegated child keeps its
+		// name-based drop (gentle-shell#1587). The engram-protocol block is
+		// deduplicated: only the copy in the file nearest to the working directory
+		// stays. Nested kept blocks such as remote-authorization stay; the filter
+		// never throws and keeps the original files on malformed markers.
 		if (isPrimarySession && gentlePrompt !== "") {
-			filterChildSessionContextFiles(event.systemPromptOptions as ContextFileOptions | undefined, { cwd: ctx.cwd });
+			filterChildSessionContextFiles(event.systemPromptOptions as ContextFileOptions | undefined, { cwd: ctx.cwd, injectedPrompt: gentlePrompt });
 		}
 		// gentle-shell#1485: pi-claude-bridge drops a handler-returned systemPrompt
 		// and forwards only systemPromptOptions, so the harness is delivered

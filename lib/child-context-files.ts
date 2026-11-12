@@ -9,6 +9,12 @@ import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 // orchestrator prompt (extensions/gentle-ai.ts before_agent_start). Both
 // paths also deduplicate the engram-protocol block: when more than one loaded
 // file carries it, only the copy nearest to the working directory stays.
+//
+// gentle-shell#3097: the primary only drops a listed block whose text is
+// already carried by the prompt it injects, because there the premise "the
+// block duplicates what we inject" is checked rather than assumed. A user who
+// wraps their own policy in an `orchestrator` block keeps it; a child, which
+// receives no such prompt, keeps the original name-based drop.
 
 export const ORCHESTRATOR_ONLY_MANAGED_BLOCKS = [
 	"orchestrator",
@@ -26,12 +32,22 @@ export const ENGRAM_PROTOCOL_MANAGED_BLOCK = "engram-protocol";
 export interface ManagedBlockFilterOptions {
 	// Also drop engram-protocol blocks (a nearer file keeps its own copy).
 	dropEngramProtocol?: boolean;
+	// Text of the prompt the session actually receives. When given, a listed
+	// block goes only if its normalized text is non-empty and contained in the
+	// normalized prompt (gentle-shell#3097); otherwise it is kept where it is.
+	// When absent, the block name alone decides, which is what a delegated
+	// child relies on (gentle-shell#1587). The engram-protocol deduplication
+	// above is not affected.
+	injectedPrompt?: string;
 }
 
 export interface ContextFilesFilterOptions {
 	// The session working directory; when known, only files on its ancestor
 	// chain take part in the engram-protocol deduplication.
 	cwd?: string;
+	// Text of the prompt the session actually receives; see
+	// ManagedBlockFilterOptions.injectedPrompt.
+	injectedPrompt?: string;
 }
 
 export interface ContextFile {
@@ -47,6 +63,16 @@ export interface ManagedBlockFilterResult {
 	failSafe: boolean;
 	// Names of every managed block opened in the content (empty on fail-safe).
 	blockNames: string[];
+	// Names of the blocks actually dropped, in document order (empty on
+	// fail-safe), so a caller can report the removal instead of it staying
+	// silent.
+	removedBlockNames: string[];
+}
+
+// One loaded file and the block names the filter dropped from it.
+export interface DroppedManagedBlock {
+	path: string;
+	blockNames: string[];
 }
 
 export interface ChildContextFilesResult<T extends ContextFile> {
@@ -54,6 +80,8 @@ export interface ChildContextFilesResult<T extends ContextFile> {
 	removedBlocks: number;
 	removedBytes: number;
 	failSafePaths: string[];
+	// One entry per file that lost at least one block.
+	droppedBlocks: DroppedManagedBlock[];
 }
 
 export interface ContextFileOptions {
@@ -75,9 +103,18 @@ const BLANK_LINE = /^[ \t]*\r?\n?$/;
 
 interface Line {
 	text: string;
-	// Name of the innermost managed block owning this line (marker lines are
-	// owned by the block they delimit), or null for unmanaged text.
-	owner: string | null;
+	// Index into `instances` of the innermost managed block owning this line
+	// (marker lines are owned by the block they delimit), or null for unmanaged
+	// text.
+	owner: number | null;
+}
+
+interface ManagedBlockInstance {
+	name: string;
+	openLine: number;
+	// Index of the closing marker line; a block left open fails safe before it
+	// is ever read.
+	closeLine: number;
 }
 
 function splitLines(content: string): string[] {
@@ -85,15 +122,31 @@ function splitLines(content: string): string[] {
 }
 
 function unchanged(content: string): ManagedBlockFilterResult {
-	return { content, removedBlocks: 0, failSafe: true, blockNames: [] };
+	return { content, removedBlocks: 0, failSafe: true, blockNames: [], removedBlockNames: [] };
+}
+
+// Collapse runs of whitespace to one space and trim, so a block and the prompt
+// can be compared regardless of line breaks, indentation, or wrapping.
+function normalizeBlockText(text: string): string {
+	return text.replace(/\s+/g, " ").trim();
+}
+
+// The text between a block's markers; the marker lines themselves are
+// structural and are never quoted inside a prompt. Nested blocks are part of
+// their parent's text.
+function blockBody(lines: readonly Line[], instance: ManagedBlockInstance): string {
+	let body = "";
+	for (let index = instance.openLine + 1; index < instance.closeLine; index += 1) body += lines[index].text;
+	return body;
 }
 
 export function filterOrchestratorOnlyBlocks(content: string, options?: ManagedBlockFilterOptions): ManagedBlockFilterResult {
 	const removed = removedNames(options);
+	const contentAware = typeof options?.injectedPrompt === "string" ? normalizeBlockText(options.injectedPrompt) : undefined;
 	const lines: Line[] = [];
-	const stack: string[] = [];
+	const instances: ManagedBlockInstance[] = [];
+	const stack: number[] = [];
 	let fence: { char: string; length: number } | null = null;
-	let removedBlocks = 0;
 	let sawMarker = false;
 	const blockNames: string[] = [];
 
@@ -122,28 +175,41 @@ export function filterOrchestratorOnlyBlocks(content: string, options?: ManagedB
 		const [, closing, name] = marker;
 		if (closing === "") {
 			// A block reopened inside itself is ambiguous: fail safe.
-			if (stack.includes(name)) return unchanged(content);
-			stack.push(name);
+			if (stack.some((index) => instances[index].name === name)) return unchanged(content);
+			instances.push({ name, openLine: lines.length, closeLine: -1 });
+			stack.push(instances.length - 1);
 			blockNames.push(name);
-			if (removed.has(name)) removedBlocks += 1;
-			lines.push({ text, owner: name });
+			lines.push({ text, owner: instances.length - 1 });
 			continue;
 		}
-		if (stack.length === 0 || stack[stack.length - 1] !== name) return unchanged(content);
+		if (stack.length === 0) return unchanged(content);
+		const open = stack[stack.length - 1];
+		if (instances[open].name !== name) return unchanged(content);
+		instances[open].closeLine = lines.length;
 		stack.pop();
-		lines.push({ text, owner: name });
+		lines.push({ text, owner: open });
 	}
 	if (stack.length > 0) return unchanged(content);
-	if (!sawMarker || removedBlocks === 0) return { content, removedBlocks: 0, failSafe: false, blockNames };
+	// A block is dropped per instance, so a kept block nested inside a dropped
+	// parent is lifted out with its own markers. The engram-protocol copy is a
+	// deduplication, never a duplicate of the prompt, so it stays name-based.
+	const dropped = instances.map((instance) => {
+		if (!removed.has(instance.name)) return false;
+		if (contentAware === undefined || instance.name === ENGRAM_PROTOCOL_MANAGED_BLOCK) return true;
+		const body = normalizeBlockText(blockBody(lines, instance));
+		return body !== "" && contentAware.includes(body);
+	});
+	const removedBlockNames = instances.flatMap((instance, index) => (dropped[index] ? [instance.name] : []));
+	if (!sawMarker || removedBlockNames.length === 0) return { content, removedBlocks: 0, failSafe: false, blockNames, removedBlockNames: [] };
 
-	// Drop lines owned by a removed block. Blank lines that directly follow a
+	// Drop lines owned by a dropped block. Blank lines that directly follow a
 	// removal collapse so at most one empty line remains at that seam; a
 	// removal at the start or end of the file leaves no blank edge behind.
 	const output: string[] = [];
 	let trailingBlanks = 0;
 	let afterRemoval = false;
 	for (const line of lines) {
-		if (line.owner !== null && removed.has(line.owner)) {
+		if (line.owner !== null && dropped[line.owner]) {
 			afterRemoval = true;
 			continue;
 		}
@@ -156,7 +222,7 @@ export function filterOrchestratorOnlyBlocks(content: string, options?: ManagedB
 	if (afterRemoval) {
 		while (output.length > 0 && BLANK_LINE.test(output[output.length - 1])) output.pop();
 	}
-	return { content: output.join(""), removedBlocks, failSafe: false, blockNames };
+	return { content: output.join(""), removedBlocks: removedBlockNames.length, failSafe: false, blockNames, removedBlockNames };
 }
 
 export function stripOrchestratorOnlyBlocks(content: string): string {
@@ -199,13 +265,18 @@ function redundantEngramCopies(files: readonly ContextFile[], parsed: readonly M
 
 // Returns filtered copies; the input array and its entries are never mutated.
 export function filterChildContextFiles<T extends ContextFile>(files: readonly T[], options: ContextFilesFilterOptions = {}): ChildContextFilesResult<T> {
-	const result: ChildContextFilesResult<T> = { files: [], removedBlocks: 0, removedBytes: 0, failSafePaths: [] };
-	const parsed = files.map((file) => filterOrchestratorOnlyBlocks(file.content));
+	const result: ChildContextFilesResult<T> = { files: [], removedBlocks: 0, removedBytes: 0, failSafePaths: [], droppedBlocks: [] };
+	const promptOptions = typeof options.injectedPrompt === "string" ? { injectedPrompt: options.injectedPrompt } : undefined;
+	// The first parse only discovers which files carry an engram-protocol copy.
+	const parsed = files.map((file) => filterOrchestratorOnlyBlocks(file.content, promptOptions));
 	const cwd = typeof options.cwd === "string" && isAbsolute(options.cwd) ? resolve(options.cwd) : undefined;
 	const redundant = redundantEngramCopies(files, parsed, cwd);
 	files.forEach((file, index) => {
-		const filtered = redundant.has(index) ? filterOrchestratorOnlyBlocks(file.content, { dropEngramProtocol: true }) : parsed[index];
+		const filtered = redundant.has(index)
+			? filterOrchestratorOnlyBlocks(file.content, { ...promptOptions, dropEngramProtocol: true })
+			: parsed[index];
 		if (filtered.failSafe) result.failSafePaths.push(file.path);
+		if (filtered.removedBlockNames.length > 0) result.droppedBlocks.push({ path: file.path, blockNames: filtered.removedBlockNames });
 		if (filtered.removedBlocks === 0) {
 			result.files.push({ ...file });
 			return;

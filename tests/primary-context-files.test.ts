@@ -21,36 +21,49 @@ function block(name: string, body: string): string {
 	return `<!-- gentle-ai:${name} -->\n${body}\n<!-- /gentle-ai:${name} -->`;
 }
 
+// The primary drops a listed block only when the prompt it injects already
+// carries that block's body (gentle-shell#3097). Every body expected to be
+// dropped below is therefore a real line of that prompt, read from it once in
+// the `before` hook instead of being invented here.
+let injectedPrompt = "";
+
+function promptBody(match: string): string {
+	const line = injectedPrompt.split("\n").find((candidate) => candidate.includes(match) && candidate.trim() !== "");
+	assert.ok(line !== undefined, `the injected orchestrator prompt carries "${match}"`);
+	return line.trim();
+}
+
 const REMOTE_AUTHORIZATION = block("remote-authorization", "## Remote operation authorization\n\nAsk before remote work.");
 const ENGRAM_PROTOCOL = block("engram-protocol", "## Engram\n\nSave decisions.");
 
-const MANAGED_AGENTS_MD = [
-	"# My own notes",
-	"",
-	"Prefer small commits.",
-	"",
-	block("orchestrator", "## Agent Teams Lite\n\nYou are a COORDINATOR."),
-	"",
-	block("sdd-orchestrator", [
-		"# SDD orchestrator",
+// A managed AGENTS.md whose orchestrator-only blocks duplicate lines of the
+// injected prompt, so the primary drops them by content. Blocks are flat: a
+// block body that carries nested markers is never quoted inside a real prompt,
+// so nesting is exercised in tests/child-context-files.test.ts, where the
+// injected prompt is a parameter.
+function managedAgentsMd(): string {
+	return [
+		"# My own notes",
 		"",
-		block("sdd-model-assignments", "| Phase | Model |\n|---|---|\n| sdd-apply | sonnet |"),
-	].join("\n")),
-	"",
-	ENGRAM_PROTOCOL,
-	"",
-	block("agent-routing", [
-		"## Implementation Routing",
+		"Prefer small commits.",
 		"",
-		"Delegate on the 4-file rule.",
+		block("orchestrator", promptBody("You are el Gentleman: a Pi-specific coding-agent harness")),
+		"",
+		block("sdd-orchestrator", promptBody("Identity contract:")),
+		"",
+		block("sdd-model-assignments", promptBody("Follow the currently selected persona mode.")),
+		"",
+		ENGRAM_PROTOCOL,
+		"",
+		block("agent-routing", promptBody("Reply-language style and the active persona's Spanish variant")),
 		"",
 		REMOTE_AUTHORIZATION,
-	].join("\n")),
-	"",
-	"## Closing notes",
-	"Keep lines short.",
-	"",
-].join("\n");
+		"",
+		"## Closing notes",
+		"Keep lines short.",
+		"",
+	].join("\n");
+}
 
 const EXPECTED_PRIMARY = [
 	"# My own notes",
@@ -102,6 +115,7 @@ before(async () => {
 		previousEnvironment.set(key, process.env[key]);
 		process.env[key] = value;
 	}
+	injectedPrompt = await captureInjectedPrompt();
 });
 after(async () => {
 	for (const [key, value] of previousEnvironment) {
@@ -143,36 +157,49 @@ function ctx(): ExtensionContext {
 // The home file sits in an ancestor of the project directory (the cwd).
 function startEvent(options: { extra?: Record<string, unknown>; home?: string; project?: string } = {}) {
 	const contextFiles = [
-		{ path: join(fixtureRoot!, "AGENTS.md"), content: options.home ?? MANAGED_AGENTS_MD },
+		{ path: join(fixtureRoot!, "AGENTS.md"), content: options.home ?? managedAgentsMd() },
 		{ path: join(fixtureCwd, "AGENTS.md"), content: options.project ?? PROJECT_AGENTS_MD },
 	];
 	const systemPromptOptions = { appendSystemPrompt: "", contextFiles };
 	return { contextFiles, systemPromptOptions, event: { systemPrompt: "base", systemPromptOptions, ...options.extra } };
 }
 
+// One primary turn over an empty context file: its appendSystemPrompt is the
+// prompt this session receives, which is what the drop rule compares against.
+async function captureInjectedPrompt(): Promise<string> {
+	const { systemPromptOptions, event } = startEvent({ home: "" });
+	await beforeAgentStart()(event, ctx());
+	return systemPromptOptions.appendSystemPrompt;
+}
+
 const ORCHESTRATOR_HEADING = /el Gentleman Identity and Harness/;
 
 for (const name of ORCHESTRATOR_ONLY_MANAGED_BLOCKS) {
 	test(`the primary drops the ${name} block while Gentle Shell's orchestrator is injected`, async () => {
-		const home = `Before\n\n${block(name, "Orchestrator only\n\nMore text")}\n\nAfter\n`;
+		const home = `Before\n\n${block(name, promptBody("You are el Gentleman: a Pi-specific coding-agent harness"))}\n\nAfter\n`;
 		const { systemPromptOptions, event } = startEvent({ home });
 		await beforeAgentStart()(event, ctx());
 		assert.match(systemPromptOptions.appendSystemPrompt, ORCHESTRATOR_HEADING, "Gentle Shell's orchestrator is active");
-		assert.equal(systemPromptOptions.contextFiles[0].content, "Before\n\nAfter\n");
+		assert.equal(systemPromptOptions.contextFiles[0].content, "Before\n\nAfter\n", "the duplicated block goes");
 	});
 }
 
 test("the primary filters a managed AGENTS.md on the same options object without mutating the loaded entries", async () => {
-	const { contextFiles, systemPromptOptions, event } = startEvent({ project: "# Repo rules\n" });
+	const managed = managedAgentsMd();
+	const { contextFiles, systemPromptOptions, event } = startEvent({ home: managed, project: "# Repo rules\n" });
 	const result = await beforeAgentStart()(event, ctx());
 	assert.equal(result, undefined, "the handler never returns a replacement system prompt");
 	assert.match(systemPromptOptions.appendSystemPrompt, ORCHESTRATOR_HEADING);
 	assert.equal(event.systemPromptOptions, systemPromptOptions, "the same options object stays in place");
 	assert.notEqual(systemPromptOptions.contextFiles, contextFiles, "filtered copies replace contextFiles");
-	assert.equal(contextFiles[0].content, MANAGED_AGENTS_MD, "the original entries are never mutated");
+	assert.equal(contextFiles[0].content, managed, "the original entries are never mutated");
 	assert.deepEqual(systemPromptOptions.contextFiles.map((file) => file.path), contextFiles.map((file) => file.path));
 	assert.equal(systemPromptOptions.contextFiles[0].content, EXPECTED_PRIMARY, "a single engram-protocol copy is kept");
-	assert.doesNotMatch(systemPromptOptions.contextFiles[0].content, /COORDINATOR|SDD orchestrator|sdd-apply|Implementation Routing|4-file rule/);
+	assert.doesNotMatch(
+		systemPromptOptions.contextFiles[0].content,
+		/gentle-ai:(orchestrator|sdd-orchestrator|sdd-model-assignments|agent-routing) -->/,
+		"every block whose body the injected prompt carries is dropped",
+	);
 });
 
 test("with engram-protocol in two loaded files the primary keeps only the copy nearest to the working directory", async () => {
@@ -183,12 +210,17 @@ test("with engram-protocol in two loaded files the primary keeps only the copy n
 	assert.equal(contextFiles[1].content, PROJECT_AGENTS_MD);
 });
 
-test("the nested remote-authorization block survives in the primary although its enclosing agent-routing block is dropped", async () => {
-	const { systemPromptOptions, event } = startEvent();
+test("a kept agent-routing block keeps its nested remote-authorization in the primary", async () => {
+	// A real prompt cannot carry a block body that itself holds managed markers,
+	// so under the content rule a routing block with a nested block is kept whole
+	// instead of being dropped. Lifting a kept nested block out of a dropped
+	// parent stays covered in tests/child-context-files.test.ts, where the
+	// injected prompt is a parameter and can hold the nested markers.
+	const routing = block("agent-routing", [promptBody("Reply-language style and the active persona's Spanish variant"), "", REMOTE_AUTHORIZATION].join("\n"));
+	const home = `Intro\n\n${routing}\n\nOutro\n`;
+	const { systemPromptOptions, event } = startEvent({ home });
 	await beforeAgentStart()(event, ctx());
-	const home = systemPromptOptions.contextFiles[0].content;
-	assert.ok(!home.includes("gentle-ai:agent-routing -->"), "the enclosing agent-routing block is dropped");
-	assert.ok(home.includes(REMOTE_AUTHORIZATION), "remote-authorization stays byte-for-byte");
+	assert.equal(systemPromptOptions.contextFiles[0].content, home, "the user's routing block and its nested block survive byte-for-byte");
 });
 
 test("two engram-protocol copies at the same level, or off the working-directory chain, are both kept", async () => {
@@ -228,13 +260,15 @@ test("a second primary turn over already-filtered context files removes nothing 
 
 for (const scenario of ["child", "named-agent"] as const) {
 	test(`a ${scenario} start, where Gentle Shell's orchestrator is not injected, leaves context files untouched`, async () => {
+		const managed = managedAgentsMd();
 		const { contextFiles, systemPromptOptions, event } = startEvent({
+			home: managed,
 			extra: scenario === "named-agent" ? { agentName: "gentle-ai-worker" } : {},
 		});
 		await beforeAgentStart({ processEnv: scenario === "child" ? { GENTLE_PI_AGENTS_CHILD: "1" } : {} })(event, ctx());
 		assert.doesNotMatch(systemPromptOptions.appendSystemPrompt, ORCHESTRATOR_HEADING);
 		assert.equal(systemPromptOptions.contextFiles, contextFiles);
-		assert.equal(systemPromptOptions.contextFiles[0].content, MANAGED_AGENTS_MD);
+		assert.equal(systemPromptOptions.contextFiles[0].content, managed);
 		assert.equal(systemPromptOptions.contextFiles[1].content, PROJECT_AGENTS_MD);
 	});
 }

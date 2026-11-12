@@ -10,8 +10,8 @@ S3. Preserve run-only opt-in, direct/capture STATUS parity, bounded findings/cla
 ## Tasks
 T1 | S1-S3 | worker scope | done | run-only opt-in, bounds/isolation and correction-gate tests; integrated 46/46 PASS | commit: 55f3b664f
 T2 | S1-S3 | worker result | done | bounded coordinator result; RED 5 failures, GREEN 7/7 plus 27/27 existing tests; exact reference code | commit: 6e5825d28
-T3 | S1-S3 | parent | in_progress | refusal and bounded-result corrections independently verified and delivered; remaining integration must explain nested statement_truncated, then receive fresh checks | commit: 332224982 + e9e9d0aa3 + b1971cb64 (race correction)
-T4 | S1-S3 | parent | pending | publish <=400-line slices after provider prerequisite and required verification | commit: pending
+T3 | S1-S3 | parent | done | integration disclosure independently verified; retained regressions/types and current-head CI/gates PASS; #3214 merged | commit: 1b71b4c8e049ad2918ef24dcd1d0cf87bcf9b0d7; merge: e388cf6dbce868f8dc872a0fc7bd26a8a4351cfd
+T4 | S1-S3 | parent | in_progress | implementation slices delivered; final historical documentation and closure record await current-head CI and merge | commit: pending
 
 ## Log
 L1. User: "Bueno, pero trata de avanzar todo lo que puedas. Lo que puedas paralizar, hacelo."
@@ -43,3 +43,5 @@ L17. Parent setup error: bb1's firstparent is only the fixture-typing commit, no
 L18. #3213 MERGED447fca5851d750d3fae9b0b685adf6069b5661bf at40c1545cd,326lines,334CI and341freshgatesPASS. #3214 integrated corrected ancestors in separate nbf-integration-current-main. RED346 proves missing nestedstatement_truncated disclosure in public run tool guidelines; added explicit1024UTF8 disclosure/no-complete/no-inferred-text clause. Existing docs already require that consumer disclosure. Parent34789/89PASS; direct-import typecheck failed13missingrelativeSDKpaths, notcodeerrors.349 validatedlockSDK1.5.2, linkedignoredlocaldeps andtypes/diffPASS. Independent delta verification/publishing pending; no thirdmanualmacOSretry andno realreview/modelquery.
 
 L19. Independent2r onfbdf22fbf: S1-S3 scopedMET, baseline14/15 (missingdisclosure only), candidate15/15, differential3configs+9executions perside identical after61exact-wrapper-validated sourceInfo.path normalizations; stderrempty.58priorartifacts unchanged. Original import failure, unavailable scratch and incorrect probe expectations remain preserved. Human "si te autorizo" approved the final expectation-only correction. Parent368 retained2regressions,8/8focused/typecheck/diffPASS. No product correction beyond disclosure, no modelquery or thirdmanualmacOSretry. Evidence /private/tmp/nbf-integration-proof.3PEdyI/evidence/expectation-correction; currenthead CI still required.
+
+L20. #3214 merged e388cf6dbce868f8dc872a0fc7bd26a8a4351cfd at1b71b4c8e,375lines,371allCI/375freshhead+threads0+allchecksPASS. Final docs branch integrates actual merged main, preserves original317-line historical task/benchmark delta, adds statement-cap clarification without new benchmark claims, and carries reviewDue closure from #3221. Documentation-only structural checks and current-head CI remain required before #3215 delivery.

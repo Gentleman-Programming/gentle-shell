@@ -488,3 +488,261 @@ $14.888 (Pi estimates; M $10.848 over 6 runs, F $4.040 over 6 runs) against a $1
 
 - n = 5 (M) and 6 (F) per input. p = 0.24 does not show the arms are equal; it shows these counts are compatible with chance.
 - Reviewer prompt text was not compared: no supported recording option exists.
+
+## Correction findings in the run result (N 966f97aa6 vs F 4eb357f8b, S1)
+
+User (S7): "antes de pr quiero que hagas bench y compruebes los cambios". Change under test (T11, L15): when a native review ends in a correction request, the `input-required` result of `gentle_review_run` carries `correction_findings` and `correction_finding_claims` at the top level.
+
+Result: in all three N runs the run returned the blocking findings with their claims, and the parent wrote its answer with no further tool call. In the two base runs the parent searched for and read `review-state.json` 2–3 times. Medians, base → N: parent tool calls 6.5 → 4, parent turns 7.5 → 5, total cost $0.838 → $0.696 (−17.0%, Pi estimates), wall 139.2 → 123.0 s. The four planted defects were recorded by the provider in every run of both arms. All blocking findings reached the parent's final message in both arms: paraphrased in base, verbatim in N. No N parent relayed any non-blocking finding. In base every non-blocking finding was relayed, among them planted defect D4 (formatter mutation, WARNING). n = 2 (base) and 3 (N), one input.
+
+### Setup
+
+- Root: `/private/tmp/review-forms-k4o3El/one-call-findings/`, which holds `tools/`, `pkg-n/`, `gaihome/`, `runs/`, `sess/`, `out/`, `analysis/` (`post.jsonl`, `medians.txt`, `findings-<id>.json`, `x-<id>.json`), `FROZEN.sha256` and `user-mode-before.json` / `user-mode-after.json`. Nothing under the earlier pass directories was written; their transcripts, run clones and outputs were only read.
+- Tools: copies of `one-call-quality2/tools/` plus `one-call-quality/tools/relay.py`. Three copied files differ from their sources, and only in paths:
+  - `run-native.sh`: output directory `one-call-findings`, a single root `n`;
+  - `step.sh`: output directory, and extract kind `cf`;
+  - `extract.py`: adds the `cf` root.
+  `tools/post.py` is new. It reads transcripts, run results and run clones, and records the calls after the run, the run-result keys, the provider-recorded findings (through the unchanged `findings.py`) and relay completeness (the `relay.py` rule, plus a claim-text check).
+- **N**: `pkg-n`, a `--shared` clone of the repository checked out at `966f97aa6`, with the same pinned binary copied from `pkg/` (`gentle-ai` `5bb53e7e…`, `integrity.json` `ff753c51…`) and `node_modules` linked to the main checkout. `diff -rq -x .git -x .gentle-ai -x node_modules -x .atl <worktree> pkg-n` printed nothing (exit 0); the worktree was clean at 966f97aa6.
+- **Base**: the existing arm F runs of S1 on 4eb357f8b, which were not re-run: `one-call-final` `S1-final` (09:40 UTC) and `one-call-quality` `S1-f1` (12:40 UTC). The same extraction was applied to their transcripts.
+- Code delta: `4eb357f8b..966f97aa6` is 34 commits and 69 files, not only T11. It includes the merged #3134–#3136, #3144 (T10), docs changes to `assets/agents/gentle-ai-verify.md` and `assets/orchestrator-verification.md`, design, installer and skill-registry changes, and the `package.json` engines range. T11 itself (`34050930d..966f97aa6`) touches `lib/review-coordinator.ts`, `extensions/gentle-ai.ts` (tool description and guidance), docs and tests. No run isolated T11 from the rest.
+- Launch: `tools/step.sh S1 n <k>` → `run-native.sh S1 S1-n<k> n plain`. Command, environment (including `GENTLE_SHELL_NO_AUTO_SETUP=1 DO_NOT_TRACK=1 GENTLE_AI_TELEMETRY=0`), parent model `openai-codex/gpt-6-astra` medium and the 1,500 s timeout are as in L10/L12. Reviewers: `openai/gpt-6.1-sol` in all 15 N completions. No child sessions.
+- Prompts: each `cmp` exited 0. The checks were `cmp ../out/S1-a2.prompt.txt out/S1-n<k>.prompt.txt` (from `step.sh`), `cmp out/S1-n1.prompt.txt out/S1-n2.prompt.txt`, `cmp out/S1-n1.prompt.txt out/S1-n3.prompt.txt`, and `cmp` against `one-call-final/out/S1-final.prompt.txt` and `one-call-quality/out/S1-f1.prompt.txt`.
+- Isolated home: `one-call-findings/gaihome` read `global: "", effective: on, source: default`. `review mode enable --scope=global` then ran only with that home. Every run meta shows `on / global`.
+- Runs: 2026-11-11 19:26:20–19:32:34 UTC, one at a time, each awaited. All three exited 0 with no timeout and no retry, and each clone is clean with HEAD unchanged.
+- Lens prompt sizes are identical in all five runs (risk 18,696, resilience 18,710, reliability 18,721, readability 18,742 bytes). Refuter prompt sizes differ per run (15,232 to 16,485).
+
+### Per run
+
+Tokens are the parent's input / cache read / output. Costs are Pi catalog estimates (`totalFromProvider: false`).
+
+| arm | run | `gentle_review_run` calls → outcome | all parent calls | review-tool calls | parent turns | parent tokens | reviewer runs / tokens | cost parent / reviewers / total $ | wall s |
+|---|---|---|---|---|---|---|---|---|---|
+| base | S1-final | 1 → `input-required` (correction_required) | 7 | 4 | 8 | 45,340 / 228,096 / 1,071 | 5 / 32,654 | 0.735 / 0.121 / 0.856 | 153.3 |
+| base | S1-f1 | 1 → `input-required` (correction_required) | 6 | 4 | 7 | 45,396 / 188,544 / 1,105 | 5 / 32,737 | 0.698 / 0.122 / 0.820 | 125.0 |
+| N | S1-n1 | 1 → `input-required` (correction_required) | 4 | 4 | 5 | 37,065 / 118,144 / 1,248 | 5 / 33,424 | 0.551 / 0.130 / 0.681 | 125.1 |
+| N | S1-n2 | 1 → `input-required` (correction_required) | 4 | 4 | 5 | 37,535 / 118,144 / 1,593 | 5 / 33,050 | 0.573 / 0.123 / 0.696 | 123.0 |
+| N | S1-n3 | 1 → `input-required` (correction_required) | 4 | 4 | 5 | 37,517 / 118,400 / 1,627 | 5 / 34,018 | 0.575 / 0.133 / 0.708 | 122.2 |
+
+Every run used the same review-tool calls: `gentle_review` inspect, start and answer-consent (the prompt orders them), then one `gentle_review_run`, which made 7 facade calls and recorded 2 forecasts. The first N run ended in a correction request, as did every other run.
+
+### After the run returned
+
+| run | parent calls after the run result | reads of the review state | child launched | `correction_findings` / `correction_finding_claims` | truncated / omitted |
+|---|---|---|---|---|---|
+| S1-final | 3: `bash` `find .git/gentle-ai -type f -name '*.json'`, `read` `review-state.json` ×2 | 3 (find + 2 reads) | no | absent / absent (5 ids nested under `result.result.next_transition.correction_request.findings`) | — |
+| S1-f1 | 2: `bash` `git rev-parse …; find .git/gentle-ai -type f`, `read` `review-state.json` | 2 (find + read) | no | absent / absent (5 nested) | — |
+| S1-n1 | 0 | 0 | no | 5 / 5 | none / none |
+| S1-n2 | 0 | 0 | no | 6 / 6 | none / none |
+| S1-n3 | 0 | 0 | no | 6 / 6 | none / none |
+
+- Parent turns after the run result: base 4 and 3, N 1, 1 and 1 (the final message).
+- In every N run, the `correction_findings` ids equal the provider's `fix_finding_ids` in `review-state.json` and the ids nested in the relayed STATUS envelope. Each `correction_finding_claims` value equals the recorded finding's `claim` byte for byte; none reached the 1,024-byte cut.
+
+### Relay completeness and planted defects
+
+Located means the `relay.py` rule: the finding's id, or its file with an overlapping line, appears in the final message. Verbatim means the whole recorded claim appears in the final message after whitespace and markdown-marker normalization.
+
+| run | blocking: located / verbatim | non-blocking recorded: id in final message | planted defects recorded by the provider | planted defects in the final message |
+|---|---|---|---|---|
+| S1-final | 5/5 / 0/5 (paraphrased table) | 5/5 (all listed with id, location, severity, "Blocks: No") | 4/4 | 4/4 |
+| S1-f1 | 5/5 / 0/5 (paraphrased) | 5/5 | 4/4 | 4/4 |
+| S1-n1 | 5/5 / 5/5 | 0/6 | 4/4 | 3/4 (D4 absent) |
+| S1-n2 | 6/6 / 6/6 | 0/4 | 4/4 | 3/4 (D4 absent) |
+| S1-n3 | 6/6 / 6/6 | 0/6 | 4/4 | 3/4 (D4 absent) |
+
+- Planted defects in every N run, all `introduced`: D1 command injection (risk, CRITICAL); D2 partial page (reliability, CRITICAL); D3 swallowed rate failure (resilience, CRITICAL); D4 formatter mutation (readability `R2-hidden-export-mutation` at `src/export.ts:14-17`, WARNING, plus a reliability WARNING at `src/export.ts:16`). The refuter corroborated every blocking finding.
+- D4 and the other WARNINGs are recorded by the provider but are not in the correction request (L15: it holds only the findings to fix), so they are not in `correction_findings`. None of the three N final messages contains "formatAmount", "exported", "CSV" or "event loop", or says that non-blocking findings exist and were not returned. N1 says "All five returned findings are CRITICAL". Some non-blocking findings score "located" under the `relay.py` rule only because they share a file and line with a blocking one (for example `src/rates.ts:19`); by id, 0 were relayed.
+- N2 and N3 also printed the two forecasts as a JSON block, which may explain part of the higher output tokens (not measured).
+
+### Medians, base (n=2, mean of the two) vs N (n=3)
+
+| metric | base | N | N − base |
+|---|---|---|---|
+| `gentle_review_run` calls | 1 | 1 | 0 |
+| parent calls after the run | 2.5 | 0 | −2.5 (−100%) |
+| state-file reads after the run | 2.5 | 0 | −2.5 (−100%) |
+| parent turns | 7.5 | 5 | −2.5 (−33.3%) |
+| all parent tool calls | 6.5 | 4 | −2.5 (−38.5%) |
+| review-tool calls | 4 | 4 | 0 |
+| parent input tokens | 45,368 | 37,517 | −7,851 (−17.3%) |
+| parent cache-read tokens | 208,320 | 118,144 | −90,176 (−43.3%) |
+| parent output tokens | 1,088 | 1,593 | +505 (+46.4%) |
+| reviewer runs | 5 | 5 | 0 |
+| reviewer tokens | 32,696 | 33,424 | +729 (+2.2%) |
+| parent cost $ (estimate) | 0.716 | 0.573 | −0.143 (−20.0%) |
+| reviewer cost $ (estimate) | 0.122 | 0.130 | +0.008 (+6.4%) |
+| total cost $ (estimate) | 0.838 | 0.696 | −0.142 (−17.0%) |
+| wall s | 139.2 | 123.0 | −16.2 (−11.6%) |
+
+### Anomalies
+
+1. The non-blocking findings, including planted D4, no longer reached the user in N. Base parents found them in the state file and listed them. N parents did not read the state file, and the run result does not carry them.
+2. The parent still runs inspect, start and answer-consent itself (prompt-ordered), as in every earlier pass.
+3. Failed or excluded runs: none. No retries.
+
+### Spend
+
+N runs: $2.085 (Pi estimates: parent $1.699, reviewers $0.386), against a $5 cap. The base runs were not re-run.
+
+### Real review mode
+
+Read with the read-only status command (pinned binary `~/work/gentle-pi/.gentle-ai/v4.4.0/gentle-ai`, cwd the worktree, no `GENTLE_AI_HOME`):
+- before, 2026-11-11T19:25:45Z: `global: off, clone_local: "", effective: off, source: global`;
+- after, 2026-11-11T19:32:39Z: the same, and identical to before apart from the timestamp line.
+
+`~/.gentle-ai/state.json` mtime is still Nov 9. `enable` and `disable` were never run against the real configuration.
+
+### What the data does not show
+
+- n = 2 (base) and 3 (N) on one input (S1). No variance was estimated, and the cost and time differences are small-sample medians of Pi estimates. Base and N ran at different times of day (09:40 and 12:40 vs 19:26–19:32 UTC).
+- The base-to-N delta contains 33 commits besides T11 (Setup), so the differences are not attributed to T11 alone. The observed mechanism (no state-file read after the run in N, 2–3 in base) is the one T11 targets.
+- The escalated outcome is not covered. The provider sends no finding text for it (L15), and S1 did not escalate.
+- Approved runs, the other inputs, cut or omitted claims, and a malformed correction request were not exercised.
+- Whether the N parent would mention non-blocking findings with different guidance or another input was not tested.
+
+## Non-blocking findings in the run result (P and Q on a23db9f7a, S1)
+
+User (S7): "antes de pr quiero que hagas bench y compruebes los cambios". This pass re-runs the S1 benchmark of L16 with the feature of L18–L19 complete.
+
+- **P** = a23db9f7a with a provider that knows `--non-blocking-findings`: 3 valid runs.
+- **Q** = a23db9f7a with the pinned v4.4.0 provider, which refuses the flag: 1 valid run.
+- **Base** (S1-final and S1-f1 on 4eb357f8b) and **N** (S1-n1 to n3 on 966f97aa6) are the L16 runs. They were not re-run; the same extraction was applied to their transcripts.
+
+Result:
+- In every P run, `gentle_review_run` returned the provider's non-blocking findings with their claims: 2, 5 and 3, the same ids the provider recorded in `review-state.json`, none cut, none left out.
+- Every P final message listed them by id, under a heading separate from the findings to correct, together with planted defect D4.
+- No P parent read the review state.
+- Medians, base → N → P (estimates): total cost $0.838 → $0.696 → $0.708; parent turns 7.5 → 5 → 5; state-file reads after the run 2.5 → 0 → 0; planted defects in the final message 4 → 3 → 4; non-blocking findings in the final message 5 of 5 → 0 → all recorded.
+- Q got the provider's refusal once. The STATUS was repeated without the flag, the flag was not sent again, and neither key came back. Like N, its final message had no non-blocking finding and no D4.
+- Three of the first four runs overlapped in time and are excluded (anomaly 1). The valid Q run hit a reviewer 503 (anomaly 2).
+
+### Setup
+
+- Root: `/private/tmp/review-forms-k4o3El/one-call-nonblocking/`, holding `gentle-ai-new`, `pkg/`, `bin/`, `gaihome/`, `runs/`, `sess/`, `out/` (with `<id>.argv`), `analysis/` (`post-nb.jsonl`, `medians.txt`), `tools/`, `FROZEN.sha256` and `user-mode-before.json` / `user-mode-after.json`. Earlier pass directories were read only; nothing under them was changed or deleted.
+- Provider builds:
+  - **P**: `go build -o <root>/gentle-ai-new ./cmd/gentle-ai`, run in the gentle-ai worktree `non-blocking-findings` at e7720e6f4 (sha256 `ac606638…`). `git status` in that worktree was empty after the build.
+  - **Q**: the pinned v4.4.0 binary copied from `pkg/` (`5bb53e7e…`, `integrity.json` `ff753c51…`).
+- Package root: `pkg/`, a `--shared` clone of the repository at a23db9f7a, with the pinned binary under `.gentle-ai/v4.4.0/` and `node_modules` linked to the main checkout. `diff -rq -x .git -x .gentle-ai -x node_modules -x .atl <worktree> pkg` printed nothing (exit 0).
+- How each arm selects its provider. The pinned path verifies the binary against the release digest, so a locally built provider cannot sit there. Both arms therefore use Gentle Shell's dev-binary override, `GENTLE_PI_GENTLE_AI_DEV_BINARY`, pointing at a per-run wrapper `bin/provider-<id>`. The wrapper appends argv and exit code to `out/<id>.argv` and runs the real binary (P: `gentle-ai-new`; Q: the pinned copy). So Q runs the pinned binary but is not resolved through the pinned path.
+- Tools: copies of `one-call-findings/tools/`; `run-native.sh`, `step.sh` and `extract.py` differ only in the output directory, the arm (p|q), the wrapper and the override variable. `tools/post-nb.py` is new and read-only.
+- Launch otherwise identical to L16: parent `openai-codex/gpt-6-astra` medium; reviewers `openai/gpt-6.1-sol` in every completion; timeout 1,500 s; `GENTLE_SHELL_NO_AUTO_SETUP=1 DO_NOT_TRACK=1 GENTLE_AI_TELEMETRY=0`. Isolated `gaihome` read `on / default` and was enabled globally there only; every run meta shows `on / global`.
+- Prompts: `cmp ../out/S1-a2.prompt.txt out/S1-<id>.prompt.txt` exited 0 for all seven runs. All `.prompt.txt` files share one sha256 (`FROZEN.sha256`), the same as the L16 N prompts.
+- Runs, UTC: S1-p1 21:06:10–21:08:48; S1-p2, S1-p3 and S1-q1 21:09:06–21:12:38, overlapping; S1-p4 21:14:02–21:16:34; S1-p5 21:16:39–21:18:48; S1-q2 21:18:55–21:24:05. All exited 0 with no timeout, and every clone is clean with HEAD unchanged.
+
+### Per run (valid runs)
+
+Tokens are parent input / cache read / output; costs are Pi catalog estimates. Result bytes is the text of the last `gentle_review_run` result the model received.
+
+| arm | run | `gentle_review_run` calls → last outcome | parent calls | turns | parent tokens | reviewer runs / tokens | cost parent / reviewers / total $ | wall s | result bytes |
+|---|---|---|---|---|---|---|---|---|---|
+| base | S1-final | 1 → input-required | 7 | 8 | 45,340 / 228,096 / 1,071 | 5 / 32,654 | 0.735 / 0.121 / 0.856 | 153.3 | 17,290 |
+| base | S1-f1 | 1 → input-required | 6 | 7 | 45,396 / 188,544 / 1,105 | 5 / 32,737 | 0.698 / 0.122 / 0.820 | 125.0 | 18,017 |
+| N | S1-n1 | 1 → input-required | 4 | 5 | 37,065 / 118,144 / 1,248 | 5 / 33,424 | 0.551 / 0.130 / 0.681 | 125.1 | 21,165 |
+| N | S1-n2 | 1 → input-required | 4 | 5 | 37,535 / 118,144 / 1,593 | 5 / 33,050 | 0.573 / 0.123 / 0.696 | 123.0 | 23,220 |
+| N | S1-n3 | 1 → input-required | 4 | 5 | 37,517 / 118,400 / 1,627 | 5 / 34,018 | 0.575 / 0.133 / 0.708 | 122.2 | 23,654 |
+| P | S1-p1 | 1 → input-required | 4 | 5 | 38,617 / 118,400 / 1,914 | 5 / 34,015 | 0.600 / 0.130 / 0.731 | 160.1 | 28,997 |
+| P | S1-p4 | 1 → input-required | 4 | 5 | 37,658 / 118,400 / 1,953 | 5 / 31,946 | 0.593 / 0.115 / 0.708 | 155.0 | 24,017 |
+| P | S1-p5 | 1 → input-required | 4 | 5 | 37,701 / 118,400 / 1,677 | 5 / 32,182 | 0.579 / 0.116 / 0.696 | 131.4 | 23,998 |
+| Q | S1-q2 | 2 → blocked, then input-required | 9 | 10 | 45,033 / 310,272 / 4,401 | 6 / 32,851 | 0.981 / 0.123 / 1.104 | 312.1 | 20,943 (blocked: 3,011) |
+
+Each run's lineage ended `correction_required`.
+
+Run result keys and provider STATUS invocations (from the argv logs; P and Q only):
+
+| run | `correction_findings` / claims | `non_blocking_findings` / claims | truncated / omitted / omitted count | raw set in nested record | STATUS with flag (refused) / without |
+|---|---|---|---|---|---|
+| S1-p1 | 8 / 8 | 2 / 2 | none | no | 3 (0) / 12 |
+| S1-p4 | 5 / 5 | 5 / 5 | none | no | 3 (0) / 12 |
+| S1-p5 | 5 / 5 | 3 / 3 | none | no | 3 (0) / 12 |
+| S1-q2 | 6 / 6 | absent / absent | — | no | 1 (1, exit 1) / 20 |
+
+- In P, the 3 flagged STATUS calls are the run's facade `status` reads. The parent's direct `inspect` and `start` STATUS calls carried no flag.
+- In Q, the one flagged call was the run's first STATUS. It exited 1 and was followed at once by the same STATUS without the flag; no later call carried it.
+
+### Medians, base (n=2, mean of two) / N (n=3) / P (n=3), with P's differences; Q (n=1) for reference
+
+| metric | base | N | P | P − base | P − N | Q |
+|---|---|---|---|---|---|---|
+| `gentle_review_run` calls | 1 | 1 | 1 | 0 | 0 | 2 |
+| parent calls after the last run result | 2.5 | 0 | 0 | −2.5 (−100%) | 0 | 0 |
+| reads of review state / `.git/gentle-ai` (whole session) | 2.5 | 0 | 0 | −2.5 (−100%) | 0 | 0 |
+| parent turns | 7.5 | 5 | 5 | −2.5 (−33.3%) | 0 | 10 |
+| all parent tool calls | 6.5 | 4 | 4 | −2.5 (−38.5%) | 0 | 9 |
+| parent input tokens | 45,368 | 37,517 | 37,701 | −7,667 (−16.9%) | +184 (+0.5%) | 45,033 |
+| parent cache-read tokens | 208,320 | 118,144 | 118,400 | −89,920 (−43.2%) | +256 (+0.2%) | 310,272 |
+| parent output tokens | 1,088 | 1,593 | 1,914 | +826 (+75.9%) | +321 (+20.2%) | 4,401 |
+| reviewer tokens | 32,696 | 33,424 | 32,182 | −514 (−1.6%) | −1,242 (−3.7%) | 32,851 |
+| parent cost $ (estimate) | 0.716 | 0.573 | 0.593 | −0.124 (−17.3%) | +0.020 (+3.4%) | 0.981 |
+| reviewer cost $ (estimate) | 0.122 | 0.130 | 0.116 | −0.006 (−4.6%) | −0.013 (−10.3%) | 0.123 |
+| total cost $ (estimate) | 0.838 | 0.696 | 0.708 | −0.130 (−15.6%) | +0.012 (+1.7%) | 1.104 |
+| wall s | 139.2 | 123.0 | 155.0 | +15.9 (+11.4%) | +32.0 (+26.0%) | 312.1 |
+| run result bytes | 17,654 | 23,220 | 24,017 | +6,364 (+36.0%) | +797 (+3.4%) | 20,943 |
+
+The P−N cost, token and result-size differences are small next to the run-to-run spread within N and within P, and are inconclusive at n=3. The wall-time difference is not attributed to the change: N and P ran hours apart, and part of P's median comes from S1-p1, which ran before the overlapping runs.
+
+### After the run
+
+- **Base**: the parents searched `.git/gentle-ai` and read `review-state.json` (3 and 2 calls).
+- **N**: no call after the run result.
+- **P**: no call after the run result.
+- **Q (S1-q2)**:
+  - The first `gentle_review_run` returned `blocked` (anomaly 2).
+  - The parent then called `gentle_review` `status`, then `codemode` (which called `gentle_review` status inside it), then `gentle_review_capture` twice (forecast, then acknowledged) for the failed `review-risk` lens.
+  - A second `gentle_review_run` returned `input-required`, and the parent wrote its answer with no further call.
+  - It never read the review state.
+
+### Relay of non-blocking findings and planted defects
+
+Non-blocking means a finding the provider recorded in `review-state.json` that is not in `fix_finding_ids`. "In final" means its id appears in the parent's final message. A planted defect counts as in final when the final message names it (keywords per defect: injection/shell; pageCount, page count or partial page; rate; formatAmount or `exported`). In every valid run the provider recorded all four planted defects, D4 as WARNINGs.
+
+| run | blocking: located / verbatim | non-blocking recorded | non-blocking in final | separated from findings to correct | D1 | D2 | D3 | D4 in final |
+|---|---|---|---|---|---|---|---|---|
+| S1-final | 5/5, 0/5 (paraphrased) | 5 | 5 | table column "Blocks: No" | ✓ | ✓ | ✓ | ✓ |
+| S1-f1 | 5/5, 0/5 (paraphrased) | 5 | 5 | per-finding blocking flag | ✓ | ✓ | ✓ | ✓ |
+| S1-n1 | 5/5, 5/5 | 6 | 0 | — | ✓ | ✓ | ✓ | ✗ |
+| S1-n2 | 6/6, 6/6 | 4 | 0 | — | ✓ | ✓ | ✓ | ✗ |
+| S1-n3 | 6/6, 6/6 | 6 | 0 | — | ✓ | ✓ | ✓ | ✗ |
+| S1-p1 | 8/8, 8/8 | 2 | 2 (claims verbatim 2/2) | "### Blocking" / "### Non-blocking" | ✓ | ✓ | ✓ | ✓ |
+| S1-p4 | 5/5, 5/5 | 5 | 5 (5/5 verbatim) | separate non-blocking heading | ✓ | ✓ | ✓ | ✓ |
+| S1-p5 | 5/5, 5/5 | 3 | 3 (3/3 verbatim) | separate non-blocking heading | ✓ | ✓ | ✓ | ✓ |
+| S1-q2 | 6/6, 6/6 | 5 | 0 | — | ✓ | ✓ | ✓ | ✗ |
+
+In every P run, the ids in `non_blocking_findings` were exactly the provider's recorded non-blocking ids.
+
+### Anomalies
+
+1. **Three runs overlapped; my error.** S1-p2, S1-p3 and S1-q1 were launched in one batch and ran at the same time (21:09:06–21:12:38), against the one-run-at-a-time rule.
+   - They are kept on disk and in `post-nb.jsonl` and excluded from every table and median above. They were replaced by S1-p4, S1-p5 and S1-q2, run one at a time.
+   - What the excluded runs show:
+     - S1-p2 and S1-p3 returned 5/5 non-blocking findings with claims, relayed 5/5 by id, D4 included.
+     - S1-q1 got the same single refusal, then no flag.
+     - In S1-q1 the `review-reliability` reviewer echoed a wrong `subject_hash` (`binding_mismatch`), so the first run returned `blocked`, and the parent called STATUS and a second run (6 reviewer runs, $0.847, 214.3 s).
+2. **S1-q2: reviewer provider 503.** The `review-risk` reviewer completion failed with `OpenAI API error (503): upstream connect error … connection termination`, and the first run returned `blocked` (`pi-host-relay-transport-failure`).
+   - The parent recovered inside the session: it captured that lens alone, then made a second run call.
+   - That recovery explains Q's 10 turns, 6 reviewer runs, $1.104 and 312.1 s; those numbers do not measure the flag fallback.
+   - A harness retry was not made: another Q run (about $0.85) would have passed the $6 cap.
+3. **More blocking findings in S1-p1.** It recorded 8 blocking and 2 non-blocking findings; the other runs recorded 5–6 blocking. These are the reviewers' own severities, the same in kind as the L12 variation.
+4. **P outputs more text.** P's parent output tokens and result bytes are higher than N's, since the result and the final message now carry the non-blocking findings and their claims.
+
+### Spend
+
+- All 7 runs: $5.514 (Pi estimates: parent $4.635), against a $6 cap.
+- Valid runs: P $2.134, Q $1.104.
+- Excluded overlapping runs: $2.277.
+
+### Real review mode
+
+Read with the read-only status command (pinned binary `~/work/gentle-pi/.gentle-ai/v4.4.0/gentle-ai`, cwd the worktree, no `GENTLE_AI_HOME`):
+- before, 2026-11-11T21:05:35Z: `global: off, clone_local: "", effective: off, source: global`;
+- after, 2026-11-11T21:24:14Z: identical apart from the timestamp line.
+
+`~/.gentle-ai/state.json` mtime is still Nov 9. `enable` and `disable` were never run against the real configuration.
+
+### What the data does not show
+
+- Few runs (P 3, Q 1, base 2, N 3) on one input. No variance was estimated, and no difference here is attributed to the change beyond the observed mechanism: no state reads; non-blocking findings and D4 present in P's final messages and absent from N's and Q's.
+- The escalated outcome was not exercised live; S1 ends in a correction request. It is covered only by the tests and the verifier's provider runs (L18–L19).
+- The valid Q run is dominated by an unrelated reviewer 503, so Q's cost, turns and time do not measure the fallback. Its argv shows the fallback: one refusal, then no flag.
+- Commits differ beyond this feature. Base 4eb357f8b, N 966f97aa6 and P/Q a23db9f7a are separated by main merges (L16 setup: 33 commits between base and N; this pass adds the merge of origin/main bc9b438af and L18–L19). The provider in P is a local build of an unreleased change, selected through the dev-binary override.
+- Wall time is not comparable across passes: N and P ran hours apart, and S1-p1 ran next to nothing while the overlapping runs did not count.

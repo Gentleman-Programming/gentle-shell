@@ -128,3 +128,38 @@ test("look-alike refusals are not retried", async () => {
 		assert.equal(queue.calls.length, 1, JSON.stringify(body).slice(0, 200));
 	}
 });
+
+test("an in-flight old refusal does not suppress the flag for a replacement executable", async () => {
+	const executable = binary("old in-flight provider");
+	let enter!: () => void;
+	let release!: () => void;
+	const entered = new Promise<void>((resolve) => { enter = resolve; });
+	const held = new Promise<void>((resolve) => { release = resolve; });
+	const queue = adapter([{ body: UNKNOWN_FLAG, exitCode: 1 }, { body: statusBody }, { body: statusBody }]);
+	let first = true;
+	const cli = new NativeReviewCliV216(async (call) => {
+		if (first) { first = false; enter(); await held; }
+		return queue.adapter(call);
+	}, executable, 30_000, 1024 * 1024);
+	const pending = cli.targetStatus({ ...request, nonBlockingFindings: true });
+	await entered;
+	writeFileSync(executable, "replacement supporting provider");
+	release();
+	assert.equal((await pending).nextTransition?.kind, "collect");
+	assert.equal((await cli.targetStatus({ ...request, nonBlockingFindings: true })).nextTransition?.kind, "collect");
+	assert.deepEqual(queue.calls.map((call) => call.arguments), [
+		[...base, "--non-blocking-findings", "--next-transition"],
+		[...base, "--next-transition"],
+		[...base, "--non-blocking-findings", "--next-transition"],
+	]);
+});
+
+test("unreadable executable identity preserves STATUS refusal fallback without caching", async () => {
+	const executable = join(scratch, "absent-executable");
+	const queue = adapter([{ body: UNKNOWN_FLAG, exitCode: 1 }, { body: statusBody }, { body: UNKNOWN_FLAG, exitCode: 1 }, { body: statusBody }]);
+	const cli = new NativeReviewCliV216(queue.adapter, executable, 30_000, 1024 * 1024);
+	for (let call = 0; call < 2; call++) {
+		assert.equal((await cli.targetStatus({ ...request, nonBlockingFindings: true })).nextTransition?.kind, "collect");
+	}
+	assert.deepEqual(queue.calls.map((call) => call.arguments.includes("--non-blocking-findings")), [true, false, true, false]);
+});

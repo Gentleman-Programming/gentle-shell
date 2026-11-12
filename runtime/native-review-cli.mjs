@@ -520,11 +520,15 @@ function nonBlockingFindingsRefused(executable        )          {
 	}
 }
 
-function rememberNonBlockingFindingsRefusal(executable        )       {
-	try {
-		nonBlockingFindingsRefusals.set(executable, binaryDigest(executable));
-	} catch {
-		nonBlockingFindingsRefusals.delete(executable);
+function nonBlockingExecutableDigest(executable        )                     {
+	try { return binaryDigest(executable); } catch { return undefined; }
+}
+
+function rememberNonBlockingFindingsRefusal(executable        , digest                    )       {
+	// An old in-flight refusal must neither label a replacement unsupported
+	// nor erase a newer request's cache entry when identity cannot be read.
+	if (digest !== undefined && nonBlockingExecutableDigest(executable) === digest) {
+		nonBlockingFindingsRefusals.set(executable, digest);
 	}
 }
 
@@ -2560,13 +2564,14 @@ export class NativeReviewCliV216                            {
 			? this.negotiated(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments(nonBlockingFindings), false, request.signal)
 			: this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments(nonBlockingFindings), false, request.signal, executable);
 		const sendNonBlocking = nonBlockingExecutable !== undefined && !nonBlockingFindingsRefused(nonBlockingExecutable);
+		const nonBlockingDigest = sendNonBlocking ? nonBlockingExecutableDigest(nonBlockingExecutable ) : undefined;
 		let execution                     ;
 		try {
 			execution = await run(sendNonBlocking);
 		} catch (error) {
 			// Only the unknown-flag refusal falls back, once; every other failure is the caller's.
 			if (!sendNonBlocking || !isNativeReviewNonBlockingFindingsUnsupported(error)) throw error;
-			rememberNonBlockingFindingsRefusal(nonBlockingExecutable );
+			rememberNonBlockingFindingsRefusal(nonBlockingExecutable , nonBlockingDigest);
 			execution = await run(false);
 		}
 		measureStatusSync("decode", () => assertSupportedNextTransitionOperation(execution.body));

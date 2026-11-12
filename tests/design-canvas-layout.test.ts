@@ -375,7 +375,7 @@ test("a save that lands after the page left the design and came back shows once 
 	canvas.replies[LAYOUT_URL] = save.promise;
 	canvas.document.getElementById("gd-arrange-column").dispatch("click");
 	await settle();
-	assert.deepEqual(layoutPosts(canvas).map((post) => post.body.arrangement), ["column"]);
+	assert.deepEqual(layoutPosts(canvas).map((post) => (post.body as { arrangement: string }).arrangement), ["column"]);
 	const column = layoutPosts(canvas)[0].body;
 	canvas.replies[LAYOUT_URL] = { layout: grid };
 	await open("beta");

@@ -2757,7 +2757,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		...orchestratorToolRenderers("session", expandHint),
 		parameters: { type: "object", additionalProperties: false, properties: {
 			subject: { type: "string", maxLength: 120, description: "Short task subject; updates aliases independently of human names and names unnamed Pi sessions." },
-			state: { anyOf: [{ type: "null" }, { type: "string", description: "JSON-encoded state object; parsed and validated with the same rules as the object form. Malformed JSON or a flat shape (area/topic/tags outside work) fails with an actionable message." }, { type: "object", additionalProperties: false, properties: {
+			state: { anyOf: [{ type: "null" }, { type: "string" }, { type: "object", additionalProperties: false, properties: {
 				objective: { type: "string" }, progress: { type: "string" }, decisions: { type: "string" }, blockers: { type: "string" },
 				work: { type: "object", additionalProperties: false,
 					description: "Historical, non-authoritative; topic requires area. Text and work JSON share 2048 UTF-8 bytes. Reject exact duplicate tags/refs; no ref resolution or routing.",

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { click, findAll, loadCanvas, read, texts, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
+import { click, findAll, inspectorPick, loadCanvas, read, texts, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
 
 // Screen sizes in focus mode (canvas-sizes.js): the top bar's device button and its menu
 // (Phone, Tablet, Desktop and a custom width), the focused artboard's frame at that size,
@@ -452,7 +452,7 @@ test("S2: pins and the comment box measure the frame at its focused width, not t
 	// The frame is 390 px wide on screen at 100%: a pick 100 px in is 100 px right of its left edge.
 	$(canvas, "gd-comment").dispatch("click");
 	first.frame.rect = { left: 305, top: 50, width: 390, height: 844 };
-	canvas.message(first.frame.contentWindow, { type: "gd:pick", selector: "h1", excerpt: "First", rect: { x: 100, y: 20, width: 30, height: 40 } });
+	canvas.message(first.frame.contentWindow, inspectorPick(first.frame, { type: "gd:pick", selector: "h1", excerpt: "First", rect: { x: 100, y: 20, width: 30, height: 40 } }));
 	assert.equal($(canvas, "gd-popover").hidden, false);
 	assert.equal($(canvas, "gd-popover").style.left, "405px");
 });

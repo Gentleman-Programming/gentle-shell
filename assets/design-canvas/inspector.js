@@ -3,6 +3,8 @@
 // clicked one to the canvas; otherwise it only forwards canvas zoom and pan.
 // It also reports where each commented element is, so the canvas can pin it,
 // and whether the page is wider than its frame (the canvas's Overflows chip).
+// The canvas numbers each size it gives the frame (gd:size): every pick carries
+// the number the page heard last, so a pick made before a resize is known stale.
 // In navigation mode the canvas covers the artboard with a shield and routes
 // comment-mode hovers and clicks here as points; in focus mode the artboard
 // owns the wheel and the keyboard, and Shift+Esc asks the canvas to leave.
@@ -20,6 +22,8 @@
 	let reportQueued = false;
 	let overflowQueued = false;
 	let lastOverflow = "";
+	// The frame's size generation, as the canvas last said it (gd:size); 0 until it does.
+	let generation = 0;
 	let hovered = null;
 	let selected = null;
 
@@ -210,6 +214,12 @@
 		else if (event.data.type === "gd:pins") setPins(event.data.pins);
 		else if (event.data.type === "gd:highlight") highlight(event.data.id);
 		else if (event.data.type === "gd:focus") focused = event.data.enabled === true;
+		else if (event.data.type === "gd:size") {
+			if (Number.isInteger(event.data.generation) && event.data.generation >= 0) generation = event.data.generation;
+			// The canvas dropped what this page reported (it loaded, or the frame changed size): say it again, even unchanged.
+			lastOverflow = "";
+			queueOverflow();
+		}
 		else if (event.data.type === "gd:pick-at") {
 			if (enabled) pick(elementAt(event.data));
 		} else if (event.data.type === "gd:hover-at") {
@@ -232,6 +242,7 @@
 			selector: cssSelector(element),
 			excerpt: excerptOf(element),
 			rect: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
+			generation,
 		});
 	}
 

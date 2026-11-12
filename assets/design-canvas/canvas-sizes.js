@@ -10,8 +10,14 @@
 // frames are its "surfaces": each takes picks, shows pins, reports overflow and records the size a
 // comment was made at (viewportOf), so the other modules handle a size frame as they handle a board.
 // This module owns the board fields it changes in place (canvas-store.js): board.sizeFrames,
-// board.sizesView and board.overflow, and each size frame's own rects and overflow. The other
-// modules change a frame's overflow only through setOverflow.
+// board.sizesView, board.overflow and board.generation, and each size frame's own rects and overflow. The other
+// modules change a frame's overflow only through setOverflow, and its generation only through resized.
+//
+// A frame's generation counts the sizes it has had. The canvas tells the frame's page (gd:size) when it loads and
+// whenever the frame changes size, and the page tags each pick with the generation it heard last: a pick made before
+// a resize, whose reply arrives after it, carries an older one and is refused (canvas-messages.js), so a comment is
+// never sent with a size it was not made at. The same message tells the page that the canvas dropped its overflow
+// report, so the page reports again even when its answer did not change.
 
 // Every string the sizes show, in English until the i18n PR keys them.
 const TEXT = Object.freeze({
@@ -307,8 +313,9 @@ export function init(ctx) {
 		stage.append(frame, pins);
 		scaled.append(stage, flag);
 		root.append(head, scaled);
-		// rects and overflow: null until this frame's page reports them (canvas-messages.js).
-		const surface = { board, kind, width, height, viewWidth: width, viewHeight: height, frame, pins, flag, rects: null, overflow: null, root, head, scaled, stage, scaleLabel };
+		// rects and overflow: null until this frame's page reports them (canvas-messages.js). A size frame never
+		// changes size, so its generation stays 0.
+		const surface = { board, kind, width, height, viewWidth: width, viewHeight: height, frame, pins, flag, rects: null, overflow: null, generation: 0, root, head, scaled, stage, scaleLabel };
 		frame.addEventListener("load", () => surfaceLoaded(surface));
 		frame.src = actions.boardUrl(board);
 		return surface;
@@ -358,13 +365,30 @@ export function init(ctx) {
 		}
 	}
 
-	/** A frame (the board's own or a size frame) finished loading: it knows nothing yet, so tell it the state. */
+	/**
+	 * A frame (the board's own or a size frame) finished loading: it knows nothing yet, so tell it the state.
+	 * Its page may have reported overflow before this load event (a resource that loaded first) and, keeping
+	 * unchanged answers to itself, would not report it again: gd:size, sent after the chip is cleared, asks for a
+	 * fresh report, so the chip follows the page that now shows, after a reload or a navigation to another page.
+	 */
 	function surfaceLoaded(surface) {
 		surface.rects = null;
 		setOverflow(surface, null);
+		sendSize(surface);
 		actions.sendMode(surface);
 		actions.sendFocus(surface);
 		if (!ownerOf(surface).system) actions.sendPins(surface);
+	}
+
+	/** Tells the frame's page its size generation; it tags its picks with it and reports its overflow afresh. */
+	function sendSize(surface) {
+		surface.frame.contentWindow?.postMessage({ type: "gd:size", generation: surface.generation }, "*");
+	}
+
+	/** The frame changed size: a pick its page made before it hears so belongs to the old size. */
+	function resized(surface) {
+		surface.generation += 1;
+		sendSize(surface);
 	}
 
 	// ---- the Overflows chip
@@ -448,5 +472,5 @@ export function init(ctx) {
 		actions.menuKeydown(event, state.menu.items, actions.closeMenu, chooseDeviceItem);
 	});
 
-	return { focusSize, surfacesOf, ownerOf, renderDevice, closeDeviceMenu, startSizes, layoutSizes, removeSizeFrames, surfaceLoaded, overflowFlag, setOverflow, renderOverflow, viewportOf, viewportChip };
+	return { focusSize, surfacesOf, ownerOf, renderDevice, closeDeviceMenu, startSizes, layoutSizes, removeSizeFrames, surfaceLoaded, resized, overflowFlag, setOverflow, renderOverflow, viewportOf, viewportChip };
 }

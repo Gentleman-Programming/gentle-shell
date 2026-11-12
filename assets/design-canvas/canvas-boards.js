@@ -116,7 +116,8 @@ export function init(ctx) {
 		// rects: null until the artboard reports where each commented element is.
 		// viewWidth and viewHeight: the frame's size, the manifest's or the focused screen size (canvas-focus.js).
 		// overflow, sizeFrames and sizesView: the page's overflow report and the All sizes frames (canvas-sizes.js).
-		const board = { slug, artboard, frame, wrapper, shield, pins, flag, handoff, rects: null, system, viewWidth: 0, viewHeight: 0, overflow: null, sizeFrames: [], sizesView: null };
+		// generation: how many sizes the frame has had, which its page tags its picks with (canvas-sizes.js resized).
+		const board = { slug, artboard, frame, wrapper, shield, pins, flag, handoff, rects: null, system, viewWidth: 0, viewHeight: 0, overflow: null, generation: 0, sizeFrames: [], sizesView: null };
 		actions.setFrameSize(board, artboard.width, artboard.height);
 		actions.renderHandoff(board);
 		// The ⋯ menu (export) sits beside Implement this; the system board has none.

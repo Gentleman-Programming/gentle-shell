@@ -2,7 +2,7 @@
 // iframes sandboxed with scripts only, so each one has an opaque origin; messages
 // are trusted only by matching event.source to a known artboard's frame or, in All
 // sizes, one of its size frames (canvas-sizes.js). The canvas's own messages to
-// artboards (gd:mode, gd:focus, gd:pins, gd:pick-at, gd:hover-at, gd:highlight,
+// artboards (gd:mode, gd:focus, gd:size, gd:pins, gd:pick-at, gd:hover-at, gd:highlight,
 // gd:clear) are posted by the module that owns each state.
 
 export function init(ctx) {
@@ -36,6 +36,9 @@ export function init(ctx) {
 		if (data.type === "gd:pick") {
 			// The system board never takes comments, even if its page posts a pick.
 			if (!state.commenting || board.system || (state.focus && board !== state.focus)) return;
+			// A pick the page made before it heard of the frame's latest size (gd:size) belongs to a size the frame
+			// no longer has: the comment would record the wrong one, so it opens nothing (canvas-sizes.js resized).
+			if (data.generation !== surface.generation) return;
 			const pick = actions.readPick(data);
 			if (pick) actions.openPopover(surface, pick);
 		} else if (data.type === "gd:wheel") {

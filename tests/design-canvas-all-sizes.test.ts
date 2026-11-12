@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { DESIGN_VIEWPORT_LIMITS } from "../lib/design-comments.ts";
-import { findAll, flush, loadCanvas, read, texts, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
+import { findAll, flush, inspectorPick, loadCanvas, read, texts, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
 
 // All sizes (canvas-sizes.js): the focused artboard at Phone, Tablet and as designed at once, each a
 // real iframe ("size frame") that takes picks and shows pins like the artboard's own frame; the
@@ -170,7 +170,7 @@ test("Back to canvas and focusing another artboard leave All sizes and restore t
 	phone.dispatch("load");
 	assert.deepEqual(lastOf(phone, "gd:mode"), { type: "gd:mode", enabled: false });
 	assert.equal(phone.contentWindow!.posted.filter((message) => message.type === "gd:pins").length, 0, "no pins either");
-	canvas.message(phone.contentWindow, { type: "gd:pick", selector: "#x", excerpt: "", rect: { x: 0, y: 0, width: 1, height: 1 } });
+	canvas.message(phone.contentWindow, inspectorPick(phone, { type: "gd:pick", selector: "#x", excerpt: "", rect: { x: 0, y: 0, width: 1, height: 1 } }));
 	assert.equal($(canvas, "gd-popover").hidden, true);
 });
 
@@ -246,14 +246,14 @@ test("in All sizes every size frame takes picks; the popover opens beside the pi
 	const [phone, tablet, designed] = sizeSections(canvas).map(iframeOf);
 	const popover = $(canvas, "gd-popover");
 
-	canvas.message(phone.contentWindow, PICK);
+	canvas.message(phone.contentWindow, inspectorPick(phone, PICK));
 	assert.equal(popover.hidden, true, "a pick needs Comment mode");
 	commentMode(canvas);
 	canvas.message({}, PICK);
 	assert.equal(popover.hidden, true, "a stranger window is ignored");
 
 	phone.rect = { left: 100, top: 200, width: 150, height: 325 };
-	canvas.message(phone.contentWindow, PICK);
+	canvas.message(phone.contentWindow, inspectorPick(phone, PICK));
 	assert.equal(popover.hidden, false);
 	assert.equal($(canvas, "gd-popover-target").textContent, "01-a.html · #cta");
 	// The frame is shown at 150/390 of its width.
@@ -268,7 +268,7 @@ test("in All sizes every size frame takes picks; the popover opens beside the pi
 	$(canvas, "gd-popover-cancel").dispatch("click");
 	assert.deepEqual(phone.contentWindow!.posted.at(-1), { type: "gd:clear" }, "the frame that was picked clears its outline");
 	designed.rect = { left: 300, top: 100, width: 400, height: 267 };
-	canvas.message(designed.contentWindow, PICK);
+	canvas.message(designed.contentWindow, inspectorPick(designed, PICK));
 	assert.equal(popover.hidden, false, "the as designed frame takes picks too");
 	assert.equal(popover.style.left, `${300 + 30 * (400 / 1200)}px`);
 	assert.match(canvas.navMode.textContent, /^Using:/);
@@ -283,12 +283,12 @@ test("a pick from another artboard is refused while one is focused, also with it
 	focusOn(canvas);
 	chooseSize(canvas, "all");
 	commentMode(canvas);
-	canvas.message(canvas.boards[1].frame.contentWindow, { type: "gd:pick", selector: "#x", excerpt: "", rect: { x: 0, y: 0, width: 1, height: 1 } });
+	canvas.message(canvas.boards[1].frame.contentWindow, inspectorPick(canvas.boards[1].frame, { type: "gd:pick", selector: "#x", excerpt: "", rect: { x: 0, y: 0, width: 1, height: 1 } }));
 	assert.equal($(canvas, "gd-popover").hidden, true);
 	// A frame that was removed is a stranger.
 	const [phone] = sizeSections(canvas).map(iframeOf);
 	chooseSize(canvas, "tablet");
-	canvas.message(phone.contentWindow, PICK);
+	canvas.message(phone.contentWindow, inspectorPick(phone, PICK));
 	assert.equal($(canvas, "gd-popover").hidden, true);
 });
 
@@ -446,16 +446,16 @@ test("L12: a comment made at the manifest size or at Desktop carries no viewport
 	const [first] = canvas.boards;
 	commentMode(canvas);
 	first.frame.rect = { left: 0, top: 0, width: 400, height: 300 };
-	canvas.message(first.frame.contentWindow, PICK);
+	canvas.message(first.frame.contentWindow, inspectorPick(first.frame, PICK));
 	assert.equal("viewport" in await submitComment(canvas), false, "not focused");
 	focusOn(canvas);
 	first.frame.rect = { left: 0, top: 0, width: 984, height: 300 };
-	canvas.message(first.frame.contentWindow, PICK);
+	canvas.message(first.frame.contentWindow, inspectorPick(first.frame, PICK));
 	assert.equal($(canvas, "gd-device-size").textContent, "984 × 300", "Desktop fills the window here (canvas-layout S8)");
 	assert.equal("viewport" in await submitComment(canvas), false, "Desktop records no size");
 	// A custom width equal to the manifest width is the manifest size too.
 	setCustom(canvas, "400");
-	canvas.message(first.frame.contentWindow, PICK);
+	canvas.message(first.frame.contentWindow, inspectorPick(first.frame, PICK));
 	assert.equal("viewport" in await submitComment(canvas), false);
 });
 
@@ -468,7 +468,7 @@ test("a comment at a preset or custom width carries the viewport of that size, w
 	first.frame.rect = { left: 0, top: 0, width: 390, height: 844 };
 	const sizes: Array<Array<string | number>> = [];
 	const viewportOf = async () => {
-		canvas.message(first.frame.contentWindow, PICK);
+		canvas.message(first.frame.contentWindow, inspectorPick(first.frame, PICK));
 		const { viewport } = await submitComment(canvas);
 		return viewport ? [viewport.width, viewport.height] : ["none"];
 	};
@@ -484,6 +484,37 @@ test("a comment at a preset or custom width carries the viewport of that size, w
 	assert.deepEqual(sizes, [["phone", 390, 844], ["tablet", 820, 1180], ["custom", 720, 300], ["desktop", "none"]]);
 });
 
+test("S27: a pick made at Phone whose reply arrives after the switch to Tablet opens no comment box and posts nothing; a pick made at the current size still posts it", async () => {
+	const canvas = await loadSizes();
+	tallViewport(canvas);
+	const [first] = canvas.boards;
+	focusOn(canvas);
+	commentMode(canvas);
+	first.frame.rect = { left: 0, top: 0, width: 390, height: 844 };
+	const sent = (body: Record<string, any> | undefined) => (body?.viewport ? `${body.viewport.width} × ${body.viewport.height}` : "none");
+	chooseSize(canvas, "phone");
+	canvas.message(first.frame.contentWindow, inspectorPick(first.frame, PICK));
+	assert.equal(sent(await submitComment(canvas)), "390 × 844", "a pick made and received at Phone");
+
+	// The page picks at Phone; the reply is still on its way when Tablet resizes the frame.
+	const madeAtPhone = inspectorPick(first.frame, PICK);
+	chooseSize(canvas, "tablet");
+	canvas.message(first.frame.contentWindow, madeAtPhone);
+	assert.equal($(canvas, "gd-popover").hidden, true, "the stale pick opens no comment box");
+	const before = commentPosts(canvas).length;
+	await submitComment(canvas);
+	assert.equal(commentPosts(canvas).length, before, "nothing is posted for it");
+	assert.ok(!commentPosts(canvas).some((body) => sent(body) === "820 × 1180"), "no comment made at Phone is sent as Tablet");
+
+	// A pick the page makes once it heard of the new size is Tablet's.
+	canvas.message(first.frame.contentWindow, inspectorPick(first.frame, PICK));
+	assert.equal(sent(await submitComment(canvas)), "820 × 1180");
+	// A pick with no generation cannot say which size it was made at: it is refused too.
+	chooseSize(canvas, "phone");
+	canvas.message(first.frame.contentWindow, PICK);
+	assert.equal($(canvas, "gd-popover").hidden, true, "a pick without a generation is refused");
+});
+
 test("in All sizes the comment carries the size of the frame that was picked; the as designed frame is the manifest size", async () => {
 	const canvas = await loadSizes();
 	focusOn(canvas);
@@ -493,13 +524,13 @@ test("in All sizes the comment carries the size of the frame that was picked; th
 	const sent: Array<string> = [];
 	for (const frame of frames) {
 		frame.rect = { left: 100, top: 100, width: 100, height: 100 };
-		canvas.message(frame.contentWindow, PICK);
+		canvas.message(frame.contentWindow, inspectorPick(frame, PICK));
 		const body = await submitComment(canvas);
 		sent.push(body.viewport ? `${body.viewport.width} × ${body.viewport.height}` : "none");
 	}
 	assert.deepEqual(sent, ["390 × 844", "820 × 1180", "none"], "as designed = the 400 × 300 manifest size");
 	// The artboard's own frame is hidden in All sizes; a pick from it records no size.
-	canvas.message(canvas.boards[0].frame.contentWindow, PICK);
+	canvas.message(canvas.boards[0].frame.contentWindow, inspectorPick(canvas.boards[0].frame, PICK));
 	assert.equal("viewport" in await submitComment(canvas), false);
 });
 
@@ -511,7 +542,7 @@ test("a viewport the server would refuse is left out of the request instead of f
 	commentMode(canvas);
 	setCustom(canvas, "600");
 	first.frame.rect = { left: 0, top: 0, width: 600, height: 700 };
-	canvas.message(first.frame.contentWindow, PICK);
+	canvas.message(first.frame.contentWindow, inspectorPick(first.frame, PICK));
 	assert.equal("viewport" in await submitComment(canvas), false, "30000 px is beyond the 20000 px the file accepts");
 });
 

@@ -4,7 +4,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { DESIGN_CANVAS_ASSETS } from "../lib/design-canvas-assets.ts";
 import { injectInspector } from "../lib/design-canvas-server.ts";
-import { boardsOf, click, findAll, flush, handoffDoc, loadCanvas, read, texts, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
+import { boardsOf, click, findAll, flush, handoffDoc, inspectorPick, loadCanvas, read, texts, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
 
 // Export (canvas-export.js): a ⋯ button in each design artboard's header opens the shared
 // menu (canvas-menu.js) with the export items only: Export as PNG (the browser's tab
@@ -550,7 +550,7 @@ test("E1: an export while the comment box is open on an All sizes frame closes i
 	$(canvas, "gd-comment").dispatch("click");
 	const phoneSection = withClass(canvas.viewport, "gd-size-frame")[0];
 	const phone = findAll(phoneSection, (element) => element.localName === "iframe")[0];
-	canvas.message(phone.contentWindow, { type: "gd:pick", selector: "#cta", excerpt: "Buy", rect: { x: 1, y: 1, width: 10, height: 10 } });
+	canvas.message(phone.contentWindow, inspectorPick(phone, { type: "gd:pick", selector: "#cta", excerpt: "Buy", rect: { x: 1, y: 1, width: 10, height: 10 } }));
 	const popover = $(canvas, "gd-popover");
 	assert.equal(popover.hidden, false, "the comment box is open on the Phone frame");
 	// Whether the Phone frame was still in the viewport when it was told to clear its outline.

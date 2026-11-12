@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
-import { read, structuredCopy, type Listener } from "./support/design-canvas-dom.ts";
+import { findAll, loadCanvas, read, structuredCopy, withClass, type Listener } from "./support/design-canvas-dom.ts";
 
 // inspector.js is a classic script injected into each artboard, so it still runs
 // in a vm context with a minimal fake DOM.
@@ -166,6 +166,100 @@ test("the inspector checks the page's width again when a web font loads late", (
 	assert.deepEqual(inspector.posted.slice(1), [{ type: "gd:overflow", overflow: true, width: 100, scrollWidth: 340 }]);
 });
 
+test("gd:size: the inspector reports its overflow again even when unchanged, and tags its picks with that size's generation", () => {
+	const inspector = loadInspector();
+	inspector.fire("load", {});
+	inspector.runFrames();
+	assert.deepEqual(inspector.posted, [{ type: "gd:overflow", overflow: false, width: 100, scrollWidth: 100 }]);
+	// The canvas dropped what the page reported (a load, a new size): the same answer is said again.
+	inspector.fromParent({ type: "gd:size", generation: 3 });
+	inspector.runFrames();
+	assert.deepEqual(inspector.posted.slice(1), [{ type: "gd:overflow", overflow: false, width: 100, scrollWidth: 100 }]);
+	inspector.fromParent({ type: "gd:mode", enabled: true });
+	inspector.fromParent({ type: "gd:pick-at", x: 10, y: 12 });
+	assert.deepEqual(inspector.posted.at(-1), { type: "gd:pick", selector: "#cta", excerpt: "Buy now", rect: { x: 4, y: 8, width: 60, height: 20 }, generation: 3 });
+	inspector.fromParent({ type: "gd:size", generation: "4" });
+	inspector.fromParent({ type: "gd:size", generation: -1 });
+	inspector.fromParent({ type: "gd:pick-at", x: 10, y: 12 });
+	assert.deepEqual(inspector.posted.at(-1), { type: "gd:pick", selector: "#cta", excerpt: "Buy now", rect: { x: 4, y: 8, width: 60, height: 20 }, generation: 3 }, "a malformed generation is ignored");
+});
+
+/**
+ * The canvas and a size frame's real inspector, wired together: what the canvas posts to the frame reaches the
+ * inspector at once, and deliver() hands the canvas what the inspector posted so far.
+ */
+async function allSizesWithInspector() {
+	const canvas = await loadCanvas(300, { "/t/api/designs/alpha": { slug: "alpha", title: "Alpha", brief: "", artboards: [
+		{ file: "01-a.html", title: "First", tradeoff: "", width: 1200, height: 800 },
+	] } });
+	const $ = (id: string) => canvas.document.getElementById(id);
+	for (const id of ["gd-popover", "gd-menu", "gd-device-menu"]) $(id).hidden = true;
+	canvas.boards[0].shield!.dispatch("keydown", { key: "Enter" });
+	$("gd-device").dispatch("click");
+	findAll($("gd-device-menu"), (element) => element.dataset.size === "all")[0].dispatch("click");
+	const phoneSection = withClass(canvas.viewport, "gd-size-frame")[0];
+	const phone = findAll(phoneSection, (element) => element.localName === "iframe")[0];
+	const chipHidden = () => withClass(phoneSection, "gd-overflow-flag")[0].hidden;
+	// The page the Phone frame shows now: a navigation replaces it, and the old one hears nothing more.
+	let current: ReturnType<typeof loadInspector> | null = null;
+	const window = phone.contentWindow!;
+	const post = window.postMessage;
+	window.postMessage = (message: unknown) => {
+		post(message);
+		current?.fromParent(structuredCopy(message));
+	};
+	/** A page loading in the Phone frame: a fresh inspector, 390 px wide, whose content is `scrollWidth` wide. */
+	const page = (scrollWidth: number) => {
+		const inspector = loadInspector();
+		inspector.context.innerWidth = 390;
+		Object.assign(inspector.documentElement as unknown as Record<string, unknown>, { clientWidth: 390, scrollWidth });
+		current = inspector;
+		const deliver = () => {
+			inspector.runFrames();
+			for (const message of inspector.posted.splice(0)) canvas.message(window, message);
+		};
+		return { inspector, deliver };
+	};
+	return { phone, chipHidden, page };
+}
+
+test("S26: the Overflows chip survives the frame's load event that comes after an early overflow report", async () => {
+	const { phone, chipHidden, page } = await allSizesWithInspector();
+	const { inspector, deliver } = page(520);
+	// An image loads before the page does and the page reports that it overflows.
+	inspector.captureOnDocument("load", inspector.makeNode());
+	deliver();
+	assert.equal(chipHidden(), false, "the early report shows the chip");
+	// The page's own load queues a check; the canvas sees the frame's load before that check runs.
+	inspector.fire("load", {});
+	phone.dispatch("load");
+	deliver();
+	assert.equal(chipHidden(), false, "the page still overflows, so the chip is shown again after the load");
+});
+
+test("S26: a frame that navigates to another page shows that page's answer, not the previous one's", async () => {
+	const { phone, chipHidden, page } = await allSizesWithInspector();
+	const first = page(520);
+	first.inspector.fire("load", {});
+	phone.dispatch("load");
+	first.deliver();
+	assert.equal(chipHidden(), false);
+	// The next page fits: its own reports decide, whether they come before or after the frame's load.
+	const next = page(390);
+	next.inspector.captureOnDocument("load", next.inspector.makeNode());
+	next.deliver();
+	assert.equal(chipHidden(), true, "the new page's early report hides the chip");
+	next.inspector.fire("load", {});
+	phone.dispatch("load");
+	next.deliver();
+	assert.equal(chipHidden(), true);
+	const back = page(520);
+	back.inspector.fire("load", {});
+	phone.dispatch("load");
+	back.deliver();
+	assert.equal(chipHidden(), false, "a page that overflows again shows it");
+});
+
 test("the inspector posts gd:exit-focus on Shift+Esc and keeps plain Esc for the design", () => {
 	const inspector = loadInspector();
 	const plain = inspector.fire("keydown", { key: "Escape", shiftKey: false });
@@ -184,7 +278,7 @@ test("the inspector picks the element under a routed point only in comment mode"
 	assert.deepEqual(inspector.posted, [], "no pick outside comment mode");
 	inspector.fromParent({ type: "gd:mode", enabled: true });
 	inspector.fromParent({ type: "gd:pick-at", x: 10, y: 12 });
-	assert.deepEqual(inspector.posted, [{ type: "gd:pick", selector: "#cta", excerpt: "Buy now", rect: { x: 4, y: 8, width: 60, height: 20 } }]);
+	assert.deepEqual(inspector.posted, [{ type: "gd:pick", selector: "#cta", excerpt: "Buy now", rect: { x: 4, y: 8, width: 60, height: 20 }, generation: 0 }], "a page that heard no size yet tags generation 0");
 	inspector.fromParent({ type: "gd:pick-at", x: "10", y: 12 });
 	assert.equal(inspector.posted.length, 1, "non-numeric points are ignored");
 });

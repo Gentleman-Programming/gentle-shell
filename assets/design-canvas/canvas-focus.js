@@ -58,9 +58,11 @@ export function init(ctx) {
 	/**
 	 * The artboard's visible size: its manifest size, or the focused screen size, its height
 	 * clipped to the viewport while that is taller. A report of horizontal overflow belongs to
-	 * one width, so a new width clears it until the page reports again.
+	 * one width, so a new width clears it until the page reports again; any new size starts a new
+	 * generation, so a pick the page made at the old one is refused (canvas-sizes.js resized).
 	 */
 	function setFrameSize(board, width, height) {
+		const changed = board.viewWidth !== width || board.viewHeight !== height;
 		if (board.viewWidth !== width) {
 			board.viewWidth = width;
 			board.frame.style.width = `${width}px`;
@@ -68,6 +70,7 @@ export function init(ctx) {
 		}
 		board.viewHeight = height;
 		board.frame.style.height = `${height}px`;
+		if (changed) actions.resized(board);
 	}
 
 	/** The width a focused artboard has beside the margins: Desktop fills it (canvas-layout S8). */

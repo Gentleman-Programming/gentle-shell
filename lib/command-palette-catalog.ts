@@ -52,6 +52,7 @@ export const COMMAND_PALETTE_CATALOG: readonly CommandPaletteCatalogGroup[] = [
 		items: [
 			{ command: "gentle:status", label: "Gentle AI status" },
 			{ command: "gentle:doctor", label: "Doctor" },
+			{ command: "gentle:plugins", label: "Plugins · contribution audit" },
 		],
 	},
 	{

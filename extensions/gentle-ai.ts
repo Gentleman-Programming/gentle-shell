@@ -12609,10 +12609,25 @@ function createGentleAiExtensionForTesting(
 		sessionProfiles.start(ctx.sessionManager, (type, data) => pi.appendEntry(type, data), event);
 		// gentle-shell#2742: only a session's own start tells this process its
 		// startup state; anything else leaves it unknown.
+		let startupProfile: SessionProfileStartupState | undefined;
 		try {
-			if (profileSessionId && isSessionOwnStart(event, ctx.sessionManager))
+			if (profileSessionId && isSessionOwnStart(event, ctx.sessionManager)) {
 				freezeSessionProfileAtOwnStart({ sessionId: profileSessionId, cwd: ctx.sessionManager.getCwd(), configHome: gentleAiConfigHome() });
+				startupProfile = readSessionProfileOwnStartup(profileSessionId);
+			}
 		} catch { /* The startup state stays unknown. */ }
+		// A3: only this session's own start applies its frozen full definition.
+		// The workflow mode remains live; launches still receive role routing only.
+		if (startupProfile && startupProfile !== "none" && permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && !profileFollowEnabled(permissionEnvironment)) {
+			const orchestrator = readProfileOrchestrator(startupProfile.modelProfiles);
+			const current = () => startupEpoch === reminderEpoch && sessionProfiles.isCurrent(ctx.sessionManager);
+			const note = orchestrator?.model
+				? await switchLiveOrchestrator(ctx, pi, orchestrator, current)
+					|| "\nThe profile's orchestrator model is invalid; this session keeps its current model."
+				: `\nprofile "${startupProfile.name}" has no orchestrator model; this session keeps its current model.`;
+			if (!current()) return;
+			if (ctx.hasUI) ctx.ui.notify(`el Gentleman started with profile "${startupProfile.name}".${note}`, "info");
+		}
 		readSessionProfileAuthority(ctx.sessionManager);
 		if (ctx.hasUI) notifySessionProfileProblem(ctx);
 		auto.reset();

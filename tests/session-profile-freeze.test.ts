@@ -15,6 +15,8 @@ import {
 	profileFollowEnabled,
 	sessionProfileRoutingAt,
 	readFrozenInheritedProfile,
+	readFrozenDefaultOrchestrator,
+	setFrozenDefaultOrchestrator,
 	resetFrozenInheritedProfilesForTesting,
 	readSessionProfileOwnStartup,
 	resolveInheritedProfile,
@@ -481,6 +483,30 @@ test("own start captures the startup profile with its full definition, orchestra
 	f.setActive("team");
 	freezeSessionProfileAtOwnStart(options(f, "session-a"));
 	assert.deepEqual(JSON.parse(JSON.stringify(readSessionProfileOwnStartup("session-a"))), { origin: "global", name: "team", modelProfiles: TEAM });
+});
+
+test("own start freezes the full orchestrator without requiring a tier, independently of role routing", () => {
+	const f = fixture({ team: { ...TEAM, orchestrator: { model: "openai/gpt-5", thinking: "high" } } });
+	f.setActive("team");
+	const opts = options(f, "session-a");
+	freezeSessionProfileAtOwnStart(opts);
+	const entry = readFrozenDefaultOrchestrator("session-a");
+	assert.deepEqual(entry, { model: "openai/gpt-5", thinking: "high" });
+	entry!.model = "mutated";
+	f.editProfile("team", LOCAL);
+	freezeSessionProfileAtOwnStart(opts);
+	assert.deepEqual(readFrozenDefaultOrchestrator("session-a"), { model: "openai/gpt-5", thinking: "high" }, "first startup wins and readers cannot mutate it");
+	assert.deepEqual(JSON.parse(JSON.stringify(sessionProfileModelProfiles(resolveSessionProfile(opts)))), { worker: TEAM.worker });
+});
+
+test("Make default still updates only its applying session's frozen orchestrator", () => {
+	const entry = { model: "openai/gpt-5", tier: "fast" as const };
+	setFrozenDefaultOrchestrator("session-a", entry);
+	entry.model = "mutated";
+	assert.deepEqual(readFrozenDefaultOrchestrator("session-a"), { model: "openai/gpt-5", tier: "fast" });
+	assert.equal(readFrozenDefaultOrchestrator("session-b"), undefined);
+	setFrozenDefaultOrchestrator("session-a", undefined);
+	assert.equal(readFrozenDefaultOrchestrator("session-a"), undefined);
 });
 
 test("a session frozen by a plain resume has no known startup state", () => {

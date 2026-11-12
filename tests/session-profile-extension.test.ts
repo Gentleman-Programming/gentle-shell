@@ -29,23 +29,49 @@ import { getThemeByName } from "../node_modules/@earendil-works/pi-coding-agent/
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { readSessionProfileBinding } from "../lib/session-profile-binding.ts";
 import { SESSION_PROFILE_CUSTOM_TYPE } from "../lib/session-profile-persistence.ts";
+import { localProfilePinPath, repoProfileDeclarationPath, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
+import { readFrozenDefaultOrchestrator, readFrozenInheritedProfile, resolveSessionProfile, sessionProfileRoutingAt } from "../lib/session-profile-freeze.ts";
+import type { AgentRoutingEntry } from "../lib/model-routing-authority.ts";
 import { replay, type Transcript } from "./fixtures/session-profile-v1/replay.ts";
 
 // Actual SDK factory loader, AgentSession and replacement runtime. Only resource,
 // auth and UI boundaries are fixture-owned. No prompts, provider streams or Git.
-async function fixture(t: test.TestContext, memory = false, flushed = true, active?: string) {
+async function fixture(t: test.TestContext, memory = false, flushed = true, active?: string, startup?: {
+ env?: NodeJS.ProcessEnv;
+ layer?: "local" | "repo";
+ orchestrator?: AgentRoutingEntry;
+ noAuth?: boolean;
+ reason?: "startup" | "new" | "resume" | "fork";
+}) {
  const root = mkdtempSync(join(tmpdir(), "u3-public-"));
  const config = join(root, "config"),
   agentDir = join(root, "agent");
  mkdirSync(config);
  mkdirSync(agentDir);
- const originalConfig = process.env.GENTLE_PI_CONFIG_HOME;
- process.env.GENTLE_PI_CONFIG_HOME = config;
+ const environment = {
+  GENTLE_PI_CONFIG_HOME: config,
+  GENTLE_PI_AGENT_HOME: agentDir,
+  PI_CODING_AGENT_DIR: agentDir,
+  GENTLE_PI_AGENTS_CHILD: startup?.env?.GENTLE_PI_AGENTS_CHILD,
+  GENTLE_PI_PROFILE_FOLLOW: startup?.env?.GENTLE_PI_PROFILE_FOLLOW,
+ };
+ const originals = Object.fromEntries(Object.keys(environment).map((key) => [key, process.env[key]]));
+ for (const [key, value] of Object.entries(environment)) {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+ }
+ t.after(() => {
+  for (const [key, value] of Object.entries(originals)) {
+   if (value === undefined) delete process.env[key];
+   else process.env[key] = value;
+  }
+  setProfilePinWorktreeResolverForTesting();
+ });
  const profilesPath = join(config, "profiles.json");
  const profiles = {
   team: { worker: { model: "openai/gpt-4o" } },
   empty: {},
-  live: { orchestrator: { model: "openai/gpt-5.2", thinking: "high" } },
+  live: { orchestrator: startup?.orchestrator ?? { model: "openai/gpt-5.2", thinking: "high" } },
  };
  const saveProfiles = () =>
   writeFileSync(
@@ -58,6 +84,15 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
    }),
   );
  saveProfiles();
+ const identity = { root, commonDir: join(root, "git-common") };
+ setProfilePinWorktreeResolverForTesting(() => identity);
+ if (startup?.layer) {
+  writeProfilePinSync(repoProfileDeclarationPath(root), startup.layer === "local" ? "team" : "live");
+  if (startup.layer === "local") writeProfilePinSync(localProfilePinPath(identity.commonDir), "live");
+ }
+ const settingsPath = join(agentDir, "settings.json");
+ const settings = '{"defaultProvider":"openai","defaultModel":"gpt-4o","defaultThinkingLevel":"off"}\n';
+ if (startup) writeFileSync(settingsPath, settings);
  const modelRuntime = await ModelRuntime.create({
   authPath: join(agentDir, "auth.json"),
   modelsPath: null,
@@ -73,7 +108,7 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
  let authCalls = 0,
   providerCalls = 0;
  let auth: () => Promise<unknown> = async () => ({ type: "api-key" });
- modelRuntime.hasConfiguredAuth = () => true;
+ modelRuntime.hasConfiguredAuth = () => !startup?.noAuth;
  modelRuntime.checkAuth = (async () => {
   authCalls++;
   return auth();
@@ -150,7 +185,7 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
       createGentleAiExtension({
        nativeReviewCli: null,
        candidateViews: null,
-       processEnv: { GENTLE_PI_AGENTS_CHILD: "1" },
+       processEnv: startup?.env ?? { GENTLE_PI_AGENTS_CHILD: "1" },
        resolveTelemetryTriggerBinary: () => {
         throw Error("disabled fixture telemetry");
        },
@@ -206,7 +241,7 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
   };
   await reload();
   const created = await createAgentSession({
-   cwd: root,
+   cwd: manager.getCwd(),
    agentDir,
    modelRuntime,
    model: baseModel,
@@ -230,7 +265,7 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
   manager.appendMessage({ role: "user", content: "fixture", timestamp: 1 });
  const first = await make(manager, {
   type: "session_start",
-  reason: "startup",
+  reason: startup?.reason ?? "startup",
  });
  const bind = (session: AgentSession) =>
   session.bindExtensions({
@@ -257,8 +292,6 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
  runtime.setRebindSession(bind);
  t.after(async () => {
   await runtime.dispose();
-  if (originalConfig === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-  else process.env.GENTLE_PI_CONFIG_HOME = originalConfig;
   rmSync(root, { recursive: true, force: true });
   assert.equal(providerCalls, 0);
   assert.deepEqual(errors, []);
@@ -292,8 +325,16 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
  ];
  return {
   root,
+  config,
   runtime,
   manager,
+  settingsUnchanged: () => assert.equal(readFileSync(settingsPath, "utf8"), settings),
+  async startAt(cwd: string) {
+   const next = await make(SessionManager.inMemory(cwd), { type: "session_start", reason: "startup" });
+   await bind(next.session);
+   t.after(() => next.session.dispose());
+   return next.session;
+  },
   notices,
   events,
   errors,
@@ -575,6 +616,99 @@ for (const transition of ["fork", "tree", "reload", "new"] as const)
   );
   assert.equal(f.authCalls(), 1);
  });
+
+// A3: startup model selection through the real SDK, never the panel action.
+for (const layer of ["local", "repo", "global"] as const)
+ test(`A3 own start switches the ${layer} profile's orchestrator without settings writes`, async (t) => {
+  const f = await fixture(t, false, false, layer === "global" ? "live" : "team", { env: {}, ...(layer === "global" ? {} : { layer }) });
+  assert.equal(f.runtime.session.model?.id, "gpt-5.2");
+  assert.equal(f.runtime.session.thinkingLevel, "high");
+  assert.equal(f.authCalls(), 1);
+  assert.deepEqual(readFrozenDefaultOrchestrator(f.manager.getSessionId()), f.profiles.live.orchestrator);
+  assert.equal(f.family().length, 0, "startup does not publish an explicit selection");
+  assert.equal(f.binding(), undefined);
+  assert.ok(f.notices.some((n) => n.text.includes('profile "live"') && n.text.includes("This session now runs on openai/gpt-5.2 · high.")));
+  f.settingsUnchanged();
+  const before = f.protectedBytes();
+  await f.runtime.session.reload();
+  assert.equal(f.authCalls(), 1, "reload must not reapply the startup orchestrator");
+  assert.deepEqual(f.protectedBytes(), before);
+ });
+
+for (const active of [undefined, "team"] as const)
+ test(`A3 own start keeps the model with ${active ?? "no profile"}`, async (t) => {
+  const f = await fixture(t, false, false, active, { env: {} });
+  assert.equal(f.runtime.session.model?.id, "gpt-4o");
+  assert.equal(f.runtime.session.thinkingLevel, "off");
+  assert.equal(f.authCalls(), 0);
+  assert.equal(f.family().length, 0);
+  if (active) assert.ok(f.notices.some((n) => n.text.includes('profile "team" has no orchestrator model; this session keeps its current model.')));
+  else assert.equal(f.notices.some((n) => /orchestrator|current model|now runs/.test(n.text)), false);
+  f.settingsUnchanged();
+ });
+
+for (const failure of ["model", "credentials"] as const)
+ test(`A3 missing ${failure} keeps the current model and notifies`, async (t) => {
+  const f = await fixture(t, false, false, "live", {
+   env: {},
+   ...(failure === "model" ? { orchestrator: { model: "openai/not-in-catalog", thinking: "high" as const } } : { noAuth: true }),
+  });
+  assert.equal(f.runtime.session.model?.id, "gpt-4o");
+  assert.equal(f.runtime.session.thinkingLevel, "off");
+  assert.equal(f.authCalls(), 0);
+  assert.equal(f.family().length, 0);
+  assert.equal(f.binding(), undefined);
+  const text = failure === "model"
+   ? "openai/not-in-catalog is not in the model catalog; this session keeps its current model."
+   : "no authentication is configured for openai; this session keeps its current model.";
+  assert.ok(f.notices.some((n) => n.text.includes(text)), JSON.stringify(f.notices));
+  f.settingsUnchanged();
+ });
+
+for (const env of [{ GENTLE_PI_PROFILE_FOLLOW: "1" }, { GENTLE_PI_AGENTS_CHILD: "1" }])
+ test(`A3 ${Object.keys(env)[0]} skips startup switching and freezing`, async (t) => {
+  const f = await fixture(t, false, false, "live", { env });
+  assert.equal(f.runtime.session.model?.id, "gpt-4o");
+  assert.equal(f.runtime.session.thinkingLevel, "off");
+  assert.equal(f.authCalls(), 0);
+  assert.equal(readFrozenInheritedProfile(f.manager.getSessionId()), undefined);
+  assert.equal(f.notices.some((n) => /orchestrator|current model|now runs/.test(n.text)), false);
+  f.settingsUnchanged();
+ });
+
+for (const reason of ["new", "resume", "fork"] as const)
+ test(`A3 ${reason} respects the own-start reason guard`, async (t) => {
+  const f = await fixture(t, false, false, "live", { env: {}, reason });
+  assert.equal(f.runtime.session.model?.id, reason === "new" ? "gpt-5.2" : "gpt-4o");
+  assert.equal(f.authCalls(), reason === "new" ? 1 : 0);
+  f.settingsUnchanged();
+ });
+
+test("A3 an existing conversation does not switch at process startup", async (t) => {
+ const f = await fixture(t, false, true, "live", { env: {} });
+ assert.equal(f.runtime.session.model?.id, "gpt-4o");
+ assert.equal(f.authCalls(), 0);
+ f.settingsUnchanged();
+});
+
+test("A3 a foreign repository session resolves its own profile, not the parent's frozen orchestrator", async (t) => {
+ const f = await fixture(t, false, false, "live", { env: {} });
+ assert.equal(f.runtime.session.model?.id, "gpt-5.2");
+ const foreign = join(f.root, "foreign");
+ mkdirSync(foreign);
+ const identity = { root: foreign, commonDir: join(foreign, "git-common") };
+ setProfilePinWorktreeResolverForTesting(() => identity);
+ writeProfilePinSync(localProfilePinPath(identity.commonDir), "team");
+ const child = await f.startAt(foreign);
+ assert.equal(child.model?.id, "gpt-4o", "the foreign profile has no orchestrator");
+ assert.equal(f.authCalls(), 1, "the parent switch is not repeated for the foreign session");
+ assert.equal(f.runtime.session.model?.id, "gpt-5.2", "the parent's model stays independent");
+ // Existing inherited ROLE routing still belongs to its session across targets.
+ const resolution = resolveSessionProfile({ sessionId: f.manager.getSessionId(), cwd: f.root, configHome: f.config });
+ assert.deepEqual(sessionProfileRoutingAt(resolution, { cwd: foreign, configHome: f.config, foreignRepository: true }), {});
+ assert.equal(readFrozenDefaultOrchestrator(child.sessionManager.getSessionId()), undefined);
+ f.settingsUnchanged();
+});
 
 // gentle-shell#2742, section 3: a new session knows the startup state it froze.
 const data = (entry: unknown) => (entry as { data?: unknown } | undefined)?.data;

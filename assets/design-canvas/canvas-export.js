@@ -1,8 +1,9 @@
 // Export: a ⋯ button in each design artboard's header opens the shared menu
 // (canvas-menu.js) with the export items only: Export as PNG and at 2× (the
 // browser's own tab capture, cropped to the artboard), Export as PDF (the print
-// dialog) and Download HTML (the artboard file as written). Nothing goes to the
-// server and nothing is written under design/. The system board gets no menu.
+// dialog) and Download HTML (the artboard file as written). PNG contacts no
+// server; PDF and HTML only read the artboard file from the canvas server (a GET).
+// Nothing is uploaded and nothing is written under design/. The system board gets no menu.
 // canvas-boards.js asks for the button when it builds a board (boardMenuButton).
 // Results and failures show on the status line and the toast (canvas-ui.js).
 
@@ -27,6 +28,7 @@ const TEXT = Object.freeze({
 	denied: "Capture was denied or failed.",
 	stopped: "Sharing stopped before the artboard was captured.",
 	gone: "The artboard is no longer in the design.",
+	changed: "The artboard was reloaded or closed during the capture.",
 	done: "Exported PNG.",
 	doneUpscaled: "Exported PNG at 2× (upscaled).",
 	downloadFailed: (reason) => `Could not download the artboard (${reason}). Open it from design/ in your project instead.`,
@@ -44,6 +46,8 @@ export function init(ctx) {
 	const { state } = store;
 	// Each board's ⋯ button, so an export can give the keyboard focus back to the current board's.
 	const buttons = new WeakMap();
+	// True while a PNG export runs: a second one would share its body class, its view restore and its capture.
+	let exporting = false;
 
 	/** The ⋯ button of a design artboard's header, wired to its menu. */
 	function boardMenuButton(board) {
@@ -137,19 +141,26 @@ export function init(ctx) {
 	 * For one frame the canvas hides its chrome and puts the artboard at its own size at 100% in the window's
 	 * top left; then it restores the focus, the screen size and the view it had, and puts the keyboard focus
 	 * back on the artboard's ⋯ button. A design.json reload while the browser asks for the capture replaces
-	 * the board objects: both the export and the restore follow the current ones.
+	 * the board objects: both the export and the restore follow the current ones; a reload or a close while
+	 * the frame is being grabbed fails the export instead. A second request while one runs is ignored, and
+	 * a viewport resized meanwhile gets the view a resize gives (refit or recentered), not the old one.
 	 */
 	async function exportArtboard(chosen, scale) {
 		if (!win.navigator?.mediaDevices?.getDisplayMedia) {
 			reportFailure(TEXT.failed(TEXT.unavailable));
 			return;
 		}
+		// Synchronous, so the capture below still starts from the menu activation.
+		if (exporting) return;
+		exporting = true;
 		// Not a confirm dialog: the browser lets the capture start only for a few seconds after the click.
 		ui.setStatus(TEXT.choose, false);
 		let stream = null;
 		// The board whose inspector highlight was cleared for the capture.
 		let cleared = null;
 		const previous = { focus: state.focus, size: state.size, view: { zoom: state.zoom, x: state.x, y: state.y, fitted: state.fitted } };
+		const viewport = els.viewport.getBoundingClientRect();
+		const viewportSize = { width: viewport.width, height: viewport.height };
 		try {
 			// This call must happen directly from the menu activation, before any asynchronous work.
 			stream = await win.navigator.mediaDevices.getDisplayMedia({ video: { displaySurface: "browser" }, audio: false, preferCurrentTab: true });
@@ -171,8 +182,10 @@ export function init(ctx) {
 			// The viewport covers the window without the canvas chrome. Its size changes, so focus mode may center
 			// the artboard again once (the viewport's resize observer): wait for that before placing it.
 			doc.body.classList.add("gd-exporting");
-			// The inspector draws a selected comment's outline inside the artboard, out of the chrome's reach.
+			// The inspector draws a selected comment's outline and, in comment mode, the hovered element's outline
+			// inside the artboard, out of the chrome's reach: comment mode is off there until the export ends.
 			board.frame.contentWindow?.postMessage({ type: "gd:clear" }, "*");
+			board.frame.contentWindow?.postMessage({ type: "gd:mode", enabled: false }, "*");
 			cleared = board;
 			await live(nextPaint());
 			// Desktop fills the window (canvas-layout S8); the image is the artboard at its own size, at the top left.
@@ -195,6 +208,8 @@ export function init(ctx) {
 			// The first frame can predate the layout above; wait for frames painted after it.
 			await live(nextVideoFrame(video));
 			await live(nextVideoFrame(video));
+			// A reload or a close during the waits moved the artboard away from the rectangle measured above.
+			if (currentBoard(board) !== board || state.focus !== board) throw new Error(TEXT.changed);
 			const sx = video.videoWidth / win.innerWidth;
 			const sy = video.videoHeight / win.innerHeight;
 			if (!Number.isFinite(sx) || !Number.isFinite(sy) || sx <= 0 || sy <= 0) throw new Error(TEXT.noFrame);
@@ -215,6 +230,7 @@ export function init(ctx) {
 		} catch (error) {
 			reportFailure(TEXT.failed(sentence(error?.message || TEXT.denied)));
 		} finally {
+			exporting = false;
 			stream?.getTracks().forEach((track) => track.stop());
 			doc.body.classList.remove("gd-exporting");
 			// The artboard that was open, as it is now; when a reload removed it, the canvas leaves focus mode.
@@ -230,10 +246,16 @@ export function init(ctx) {
 				store.setView(previous.view);
 				actions.applyView();
 			}
-			// The selected comment's outline comes back when it is on this artboard, as canvas-comments.js shows it.
+			// The window changed size meanwhile (while the browser asked for the capture, say): the view from before
+			// would stay stale until the next resize, so do what a resize does (refit the overview, recenter focus).
+			const now = els.viewport.getBoundingClientRect();
+			if (now.width !== viewportSize.width || now.height !== viewportSize.height) actions.viewportResized();
+			// Comment mode comes back in the artboard, then the selected comment's outline when it is on this
+			// artboard, as canvas-comments.js shows it. A reload sent its own mode to the board that replaced it.
 			const active = state.comments.find((comment) => comment.id === state.activeId);
-			if (cleared && currentBoard(cleared) === cleared && active?.file === cleared.artboard.file) {
-				cleared.frame.contentWindow?.postMessage({ type: "gd:highlight", id: active.id }, "*");
+			if (cleared && currentBoard(cleared) === cleared) {
+				actions.sendMode(cleared);
+				if (active?.file === cleared.artboard.file) cleared.frame.contentWindow?.postMessage({ type: "gd:highlight", id: active.id }, "*");
 			}
 			const board = currentBoard(chosen);
 			if (board) buttons.get(board)?.focus();
@@ -245,7 +267,8 @@ export function init(ctx) {
 
 	/**
 	 * Prints the artboard alone, at its own size, from this page (artboards are sandboxed without modals, so
-	 * they cannot print themselves): the browser's print dialog saves it as PDF. Nothing goes to the server.
+	 * they cannot print themselves): the browser's print dialog saves it as PDF. The frame and the check below
+	 * read the artboard file from the canvas server; nothing is uploaded.
 	 * The file is read first: a frame also loads the server's error page, which must not be printed.
 	 */
 	async function exportPdf(board) {
@@ -273,15 +296,6 @@ export function init(ctx) {
 		};
 		endPrint = done;
 		win.addEventListener("afterprint", done, { once: true });
-		frame.addEventListener("load", () => {
-			try {
-				win.print();
-			} catch (error) {
-				// No dialog opened, so no afterprint will come.
-				done();
-				reportFailure(TEXT.printFailed(error?.message || "error"));
-			}
-		}, { once: true });
 		const url = api.fileUrl(board.slug, file);
 		try {
 			const response = await win.fetch(url, { cache: "no-store" });
@@ -293,7 +307,19 @@ export function init(ctx) {
 			reportFailure(TEXT.printFailed(error?.message || "error"));
 			return;
 		}
-		if (endPrint === done) frame.setAttribute("src", url);
+		if (endPrint !== done) return;
+		// Attached only now: some browsers (Firefox before 148) fire the empty frame's about:blank load after its
+		// insertion, which would print a blank page. Setting src right after cancels that pending load.
+		frame.addEventListener("load", () => {
+			try {
+				win.print();
+			} catch (error) {
+				// No dialog opened, so no afterprint will come.
+				done();
+				reportFailure(TEXT.printFailed(error?.message || "error"));
+			}
+		}, { once: true });
+		frame.setAttribute("src", url);
 	}
 
 	/** One page the artboard's size (canvas.css sets no margin); returns how to remove it, or null where the browser gives no CSSOM. */
@@ -308,7 +334,10 @@ export function init(ctx) {
 		}
 	}
 
-	/** Saves the artboard file as written: the server injects the inspector into every artboard, so remove that tag again. */
+	/**
+	 * Saves the artboard file as written, read from the canvas server (nothing is uploaded): the server injects the
+	 * inspector into every artboard, so remove that tag again.
+	 */
 	async function downloadHtml(board) {
 		try {
 			const response = await win.fetch(api.fileUrl(board.slug, board.artboard.file), { cache: "no-store" });

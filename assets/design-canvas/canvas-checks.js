@@ -2,11 +2,12 @@
 // Each design artboard's own frame checks its page when the canvas asks (gd:run-checks, sent when
 // that frame loads; never to an All sizes frame or the system board) and again after each resize
 // (inspector.js gd:checks). Quality lists the findings of each design artboard as the artboard
-// reported them, with Show (zoom in under 100%, center the element, a ring on the canvas) and Ask
-// the agent to fix (the comment box on that element, prefilled). The checks describe the artboard at
-// the size it is shown, and they are heuristics, not a full audit: they miss keyboard, focus-order,
-// motion and screen-reader problems, and each list is capped (20 problems and 10 advice items per
-// check, with the full count reported; docs/gentle-shell.md).
+// reported them, with Show (zoom in under 100%, center the element, a ring on the canvas that follows
+// it as its page scrolls: inspector.js gd:located) and Ask the agent to fix (the comment box on that
+// element, prefilled). The checks describe the artboard at the size it is shown,
+// and they are heuristics, not a full audit: they miss keyboard, focus-order, motion and screen-reader
+// problems, and each list is capped (20 problems and 10 advice items per check, with the full count reported
+// for the page's first 3000 elements; docs/gentle-shell.md).
 // board.checks is changed in place only by setChecks here; the tab lives in the store (setTab); the
 // ring is this module's own view state, which other modules end through clearMark.
 
@@ -35,7 +36,7 @@ const TEXT = Object.freeze({
 const TABS = ["comments", "quality"];
 const CHECK_IDS = ["contrast", "target", "alt", "label", "heading"];
 const SEVERITIES = ["fail", "advice"];
-const LIMITS = { checks: 10, issues: 200, title: 80, detail: 400, selector: 500, label: 80, comment: 2000 };
+const LIMITS = { checks: 10, issues: 200, title: 80, detail: 400, selector: 500, label: 80, excerpt: 300, comment: 2000 };
 // Under SHOW_ZOOM, Show zooms in to it, or less when the element would not fit in SHOW_ROOM of the view at that zoom.
 const SHOW_ZOOM = 1;
 const SHOW_ROOM = 0.8;
@@ -46,7 +47,8 @@ export function init(ctx) {
 	const { doc, els, store, api, actions } = ctx;
 	const { state } = store;
 	const { isFiniteNumber } = api;
-	// The ring of Show: { board, issue, ring, label, card } or null; the press that may be a still click on the canvas.
+	// The ring of Show: { board, issue, rect, ring, label, card, recenter } or null (rect: where the element is in its
+	// frame, the checks' rect until the frame locates it); the press that may be a still click on the canvas.
 	let mark = null;
 	let press = null;
 	let hiddenNotes = 0;
@@ -84,14 +86,21 @@ export function init(ctx) {
 			const title = bounded(raw.title, LIMITS.title);
 			const detail = bounded(raw.detail, LIMITS.detail);
 			const label = bounded(raw.label, LIMITS.label);
+			// The element's text, as a pick sends it (inspector.js excerptOf), for Ask the agent to fix.
+			const excerpt = bounded(raw.excerpt, LIMITS.excerpt);
 			const selector = typeof raw.selector === "string" ? raw.selector.trim() : "";
-			const rect = raw.rect && typeof raw.rect === "object" ? raw.rect : null;
-			if (!title || detail === null || label === null || !selector || selector.length > LIMITS.selector) return null;
-			if (!rect || !["x", "y", "width", "height"].every((key) => isFiniteNumber(rect[key]))) return null;
+			const rect = readRect(raw.rect);
+			if (!title || detail === null || label === null || excerpt === null || !selector || selector.length > LIMITS.selector || !rect) return null;
 			// Only `hidden: true` means out of sight.
-			issues.push({ check: raw.check, severity: raw.severity, title, detail, selector, label, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, hidden: raw.hidden === true });
+			issues.push({ check: raw.check, severity: raw.severity, title, detail, selector, label, excerpt, rect, hidden: raw.hidden === true });
 		}
 		return { checks, issues };
+	}
+
+	/** A box in a frame's CSS px, copied; null unless it has four finite numbers. */
+	function readRect(value) {
+		if (!value || typeof value !== "object" || !["x", "y", "width", "height"].every((key) => isFiniteNumber(value[key]))) return null;
+		return { x: value.x, y: value.y, width: value.width, height: value.height };
 	}
 
 	/** A gd:checks from `surface` (canvas-messages.js): only a design artboard's own frame, of the design shown, speaks for it. */
@@ -145,7 +154,8 @@ export function init(ctx) {
 	/** Quality's count (problems; advice does not count) and, while it shows, one group per design artboard. */
 	function renderChecks() {
 		const boards = designBoards();
-		els.countQuality.textContent = String(boards.reduce((sum, board) => sum + failures(board), 0));
+		// No number until an artboard has reported: 0 would say nothing was found.
+		els.countQuality.textContent = boards.some((board) => board.checks) ? String(boards.reduce((sum, board) => sum + failures(board), 0)) : "";
 		if (state.tab !== "quality") return;
 		// Keyboard focus on a card's button stays on the same button of the same finding across a re-render.
 		const active = els.quality.contains(doc.activeElement) ? doc.activeElement : null;
@@ -252,8 +262,10 @@ export function init(ctx) {
 		actions.panBy(viewport.left + viewport.width / 2 - x, viewport.top + viewport.height / 2 - y);
 	}
 
-	function highlight(board, issue) {
-		for (const surface of actions.surfacesOf(board)) surface.frame.contentWindow?.postMessage({ type: "gd:highlight", selector: issue.selector }, "*");
+	/** The element highlighted in every frame of its artboard; with `locate`, the ring's frame also says where it is (gd:located). */
+	function highlight(board, issue, locate) {
+		const ringed = locate ? markSurface(board) : null;
+		for (const surface of actions.surfacesOf(board)) surface.frame.contentWindow?.postMessage({ type: "gd:highlight", selector: issue.selector, ...(surface === ringed ? { locate: true } : {}) }, "*");
 	}
 
 	/** Show: the element centered and ringed; one out of sight gets no ring, and its artboard is centered instead. */
@@ -267,29 +279,38 @@ export function init(ctx) {
 			reveal(board, issue.rect, true);
 			placeMark(board, issue, card);
 		}
-		highlight(board, issue);
+		highlight(board, issue, !issue.hidden);
 	}
 
 	/** Ask the agent to fix: the comment box on the element, prefilled and editable; in All sizes on the frame as designed. */
 	function askAbout(board, issue) {
 		if (!isCurrent(board, issue)) return;
-		if (!isMarked(board, issue)) clearMark();
+		const marked = isMarked(board, issue);
+		if (!marked) clearMark();
 		reveal(board, issue.rect, false);
-		highlight(board, issue);
+		// A ring it keeps goes on following the element.
+		highlight(board, issue, marked);
 		const sizes = board.sizeFrames;
-		actions.openPopover(sizes.length > 0 ? sizes[sizes.length - 1] : board, { selector: issue.selector, excerpt: issue.label, rect: issue.rect });
+		actions.openPopover(sizes.length > 0 ? sizes[sizes.length - 1] : board, { selector: issue.selector, excerpt: issue.excerpt, rect: issue.rect });
 		els.text.value = TEXT.session[issue.severity](issue).slice(0, LIMITS.comment);
 	}
 
 	// ---- the ring of Show
 	// Drawn by the canvas, never by the artboard's page, beside the frame the checks ran in: in the world like the pins, so it
-	// follows zoom and pan, or on the frame as designed in All sizes. Esc, a still click on the canvas, another Show, a reload of
-	// its frame, another size, its frames or its board going, or another design clear it.
+	// follows zoom and pan, or on the frame as designed in All sizes. That frame's page says where the element is once Show
+	// scrolled it into view and after each scroll (gd:located), so the ring stays on it, and is not drawn while the element is
+	// outside the frame. Esc, a still click on the canvas, another Show, a reload of its frame, another size, its frames or its
+	// board going, or another design clear it, and the element's highlight in its page with it (gd:clear).
 
-	/** The frame the checks ran in: the artboard's own, or in All sizes its frame as designed (the manifest size). */
-	function markHost(board) {
+	/** The frame the checks ran in, which the ring is drawn on: the artboard's own, or in All sizes its frame as designed (the manifest size). */
+	function markSurface(board) {
 		const sizes = board.sizeFrames;
-		return sizes.length > 0 ? sizes[sizes.length - 1].stage : board.frame.parentElement;
+		return sizes.length > 0 ? sizes[sizes.length - 1] : board;
+	}
+
+	function markHost(board) {
+		const surface = markSurface(board);
+		return surface === board ? board.frame.parentElement : surface.stage;
 	}
 
 	function setCardMarked(card, marked) {
@@ -307,15 +328,17 @@ export function init(ctx) {
 		ring.setAttribute("aria-hidden", "true");
 		const label = chip("gd-check-mark-label", "");
 		ring.append(label);
-		mark = { board, issue, ring, label, card };
+		mark = { board, issue, rect: issue.rect, ring, label, card, recenter: true };
 		renderMark();
 		markHost(board).append(ring);
 		setCardMarked(card, true);
 	}
 
-	/** The ring centered on its finding's rect (artboard CSS px), labeled with the check's title. */
+	/** The ring centered on its element's rect (artboard CSS px), labeled with the check's title; none while outside its frame. */
 	function renderMark() {
-		const { rect } = mark.issue;
+		const { rect } = mark;
+		const surface = markSurface(mark.board);
+		mark.ring.hidden = rect.x + rect.width < 0 || rect.y + rect.height < 0 || rect.x > surface.viewWidth || rect.y > surface.viewHeight;
 		mark.ring.style.left = `${rect.x + rect.width / 2}px`;
 		mark.ring.style.top = `${rect.y + rect.height / 2}px`;
 		mark.ring.style.setProperty("--gd-mark-w", `${rect.width}px`);
@@ -332,16 +355,36 @@ export function init(ctx) {
 			return;
 		}
 		mark.issue = same;
+		mark.rect = same.rect;
 		renderMark();
+	}
+
+	/**
+	 * A gd:located from `surface` (canvas-messages.js): where the ringed element is now, said only by the frame the ring is
+	 * drawn on and only for its element. The ring moves there; the first report after Show also centers it, since Show
+	 * centered where the checks saw it, before the page scrolled it into view.
+	 */
+	function locatedFrom(surface, data) {
+		if (!mark || surface !== markSurface(mark.board) || data.selector !== mark.issue.selector) return;
+		const rect = readRect(data.rect);
+		if (!rect) return;
+		mark.rect = rect;
+		renderMark();
+		if (!mark.recenter) return;
+		mark.recenter = false;
+		if (!state.focus || state.focus === mark.board) reveal(mark.board, rect, false);
 	}
 
 	/** Removes the ring (with `board`, only a ring on that artboard); true when there was one. */
 	function clearMark(board) {
 		if (!mark || (board && mark.board !== board)) return false;
 		const { ring, card } = mark;
+		const ringed = mark.board;
 		mark = null;
 		ring.remove();
 		setCardMarked(card, false);
+		// The element's highlight in its page goes too, and the page stops saying where it is; a board that went has no page.
+		if (designBoards().includes(ringed)) for (const surface of actions.surfacesOf(ringed)) surface.frame.contentWindow?.postMessage({ type: "gd:clear" }, "*");
 		return true;
 	}
 
@@ -377,5 +420,5 @@ export function init(ctx) {
 		tabButtons()[next].focus();
 	});
 
-	return { checksFrom, setChecks, checksLoaded, refreshChecks, renderChecks, setTab, clearMark };
+	return { checksFrom, locatedFrom, setChecks, checksLoaded, refreshChecks, renderChecks, setTab, clearMark };
 }

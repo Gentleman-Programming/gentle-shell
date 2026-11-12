@@ -16,6 +16,9 @@
 // board) it runs a few accessibility checks once the page settles after load and after each resize
 // (gd:checks): text contrast, target size, images without alt, unlabeled form fields and skipped heading
 // levels. They are heuristics, not an audit; a finding whose element is out of sight says so (`hidden`).
+// A highlight with `locate` (Show of a check) answers gd:located with where the element is once scrolled into
+// view, and again after a scroll (at most once per animation frame) while it stays the selected element,
+// until gd:clear or another highlight: the canvas keeps its ring on the element as the page scrolls.
 (() => {
 	"use strict";
 
@@ -43,6 +46,10 @@
 	let checking = false;
 	let checksTimer = 0;
 	let lastChecks = "";
+	// The element whose place the canvas follows ({ selector, element }, from a highlight with `locate`) and
+	// whether a report after a scroll waits for the next frame.
+	let locating = null;
+	let locateQueued = false;
 
 	function makeBox(color) {
 		const box = document.createElement("div");
@@ -405,8 +412,8 @@
 	}
 
 	/**
-	 * Runs the checks over the page. The counts are complete; each list keeps the first MAX_FAILURES problems and
-	 * MAX_ADVICE advice items, and only those are described (selector, box, whether out of sight).
+	 * Runs the checks over the page's first MAX_SCAN elements. The counts cover all of those; each list keeps the first
+	 * MAX_FAILURES problems and MAX_ADVICE advice items, and only those are described (selector, text, box, whether out of sight).
 	 */
 	function collectChecks() {
 		const everything = Array.from(document.querySelectorAll("*")).filter((element) => element instanceof Element && !isOwn(element) && !SKIPPED.has(element.localName)).slice(0, MAX_SCAN);
@@ -419,7 +426,7 @@
 			else entry.advice += 1;
 			if (list.length >= (fail ? MAX_FAILURES : MAX_ADVICE)) return;
 			const rect = element.getBoundingClientRect();
-			const issue = { check, severity, title, detail, selector: cssSelector(element), label: labelOf(element), rect: { x: rect.left, y: rect.top, width: rect.width, height: rect.height } };
+			const issue = { check, severity, title, detail, selector: cssSelector(element), label: labelOf(element), excerpt: excerptOf(element), rect: { x: rect.left, y: rect.top, width: rect.width, height: rect.height } };
 			// Only a finding out of sight carries `hidden`, so the canvas draws no ring for it.
 			if (isOutOfSight(element)) issue.hidden = true;
 			list.push(issue);
@@ -559,8 +566,12 @@
 		requestAnimationFrame(reportPins);
 	}
 
-	/** The element of a comment pin (`id`) or of a part (`selector`, canvas-parts.js Show). */
+	/**
+	 * The element of a comment pin (`id`), of a part (`selector`, canvas-parts.js Show) or of a check (`selector` with
+	 * `locate`, canvas-checks.js Show: then where it is once in view, and after each scroll). Any highlight ends the last follow.
+	 */
 	function highlight(data) {
+		locating = null;
 		let element = null;
 		if (typeof data.selector === "string") element = data.selector.length <= MAX_SELECTOR ? find(data.selector) : null;
 		else {
@@ -570,8 +581,31 @@
 		if (!element) return;
 		ensureBoxes();
 		selected = element;
-		element.scrollIntoView({ block: "nearest", inline: "nearest" });
+		const locate = data.locate === true && typeof data.selector === "string";
+		// The place is read right after the scroll, so a page with smooth scrolling jumps there at once.
+		element.scrollIntoView(locate ? { block: "nearest", inline: "nearest", behavior: "instant" } : { block: "nearest", inline: "nearest" });
 		refresh();
+		if (!locate) return;
+		locating = { selector: data.selector, element };
+		reportLocated();
+	}
+
+	/** Where the followed element is now; nothing once it is no longer the selected one (a pick, gd:clear, leaving Comment mode). */
+	function reportLocated() {
+		locateQueued = false;
+		if (!locating || selected !== locating.element) {
+			locating = null;
+			return;
+		}
+		const rect = locating.element.getBoundingClientRect();
+		post({ type: "gd:located", selector: locating.selector, rect: { x: rect.left, y: rect.top, width: rect.width, height: rect.height } });
+	}
+
+	/** Scrolling moves the followed element: one report on the next frame, however many scroll events came. */
+	function queueLocate() {
+		if (locateQueued || !locating) return;
+		locateQueued = true;
+		requestAnimationFrame(reportLocated);
 	}
 
 	window.addEventListener("message", (event) => {
@@ -601,6 +635,7 @@
 			setHovered(elementAt(event.data));
 		} else if (event.data.type === "gd:clear") {
 			selected = null;
+			locating = null;
 			refresh();
 		}
 	});
@@ -690,7 +725,7 @@
 		post({ type: "gd:wheel", deltaX: event.deltaX, deltaY: event.deltaY, deltaMode: event.deltaMode, zoom, shift: event.shiftKey, x: event.clientX, y: event.clientY });
 	}, { passive: false, capture: true });
 
-	window.addEventListener("scroll", () => { refresh(); queueReport(); if (enabled && hovered && inspecting) queueInspect(); }, true);
+	window.addEventListener("scroll", () => { refresh(); queueReport(); if (enabled && hovered && inspecting) queueInspect(); if (locating) queueLocate(); }, true);
 	window.addEventListener("resize", () => { refresh(); queueReport(); queueOverflow(); if (checking) scheduleChecks(RESIZE_DELAY); });
 	window.addEventListener("load", () => { queueReport(); queueOverflow(); });
 	// An image that loads after the page did can widen it with no mutation or resize; its load does not bubble, so the

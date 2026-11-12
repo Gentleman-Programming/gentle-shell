@@ -507,6 +507,8 @@ button:disabled { opacity: 0.5; cursor: default; }
 .gd-tab[aria-selected="true"] { color: var(--gd-text); border-bottom-color: var(--gd-accent); }
 .gd-tab:focus-visible { outline: 2px solid var(--gd-focus); outline-offset: -2px; }
 .gd-count { min-width: 20px; padding: 0 5px; border: 1px solid var(--gd-border); border-radius: 4px; font-size: 12px; text-align: center; }
+/* Quality has no count until an artboard has reported. */
+.gd-count:empty { display: none; }
 .gd-tabpanel[hidden], .gd-quality[hidden] { display: none; }
 
 .gd-filter { margin-bottom: 8px; }

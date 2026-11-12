@@ -13,7 +13,7 @@ import { findAll, flush, loadCanvas, read, texts, withClass, type FakeElement } 
 const SYSTEM_REPLY = { "/t/api/system": { exists: true, file: "system.html", width: 800, height: 600 } };
 const CHECKS: Array<[string, string]> = [["contrast", "Text contrast"], ["target", "Target size"], ["alt", "Images have alt text"], ["label", "Form fields have labels"], ["heading", "Headings in order"]];
 const DETAIL = '"or pay with card" is 3.1 : 1 (#999999 on #ffffff); WCAG AA needs 4.5 : 1.';
-const finding = (extra: Record<string, unknown> = {}) => ({ check: "contrast", severity: "fail", title: "Low contrast", detail: DETAIL, selector: "main > p.or", label: "p.or", rect: { x: 30, y: 40, width: 200, height: 20 }, ...extra });
+const finding = (extra: Record<string, unknown> = {}) => ({ check: "contrast", severity: "fail", title: "Low contrast", detail: DETAIL, selector: "main > p.or", label: "p.or", excerpt: "or pay with card", rect: { x: 30, y: 40, width: 200, height: 20 }, ...extra });
 const advice = (extra: Record<string, unknown> = {}) => finding({ check: "target", severity: "advice", title: "Touch target under 44 px", detail: '"Pay" is 100 × 28 px; 44 × 44 px is recommended for touch.', selector: "#pay", label: "button#pay", rect: { x: 10, y: 250, width: 4, height: 2 }, ...extra });
 
 function checksReport(issues: Array<Record<string, any>> = []) {
@@ -86,10 +86,12 @@ test("the panel has two tabs, Comments and Quality, with counts; the arrows, Hom
 	const tabs = () => ["gd-tab-comments", "gd-tab-quality"].map((id) => `${$(canvas, id).getAttribute("aria-selected")}/${$(canvas, id).getAttribute("tabindex") ?? "0"}`);
 	const panels = () => [$(canvas, "gd-tabpanel-comments").hidden, quality(canvas).hidden];
 	assert.equal($(canvas, "gd-count-comments").textContent, "2", "Comments counts the open comments");
-	assert.equal(count(canvas), "0");
+	assert.equal(count(canvas), "", "no count before an artboard reports");
 	openQuality(canvas);
 	assert.deepEqual([tabs(), panels()], [["false/-1", "true/0"], [true, false]]);
 	assert.deepEqual(texts(quality(canvas), "gd-check-summary"), ["Not checked yet", "Not checked yet"], "a group per design artboard, before it reports");
+	report(canvas, canvas.boards[1].frame, []);
+	assert.equal(count(canvas), "0", "one artboard reported, with no problems");
 
 	const tablist = $(canvas, "gd-tabs");
 	const right = tablist.dispatch("keydown", { key: "ArrowRight" });
@@ -205,12 +207,14 @@ test("reports from an unknown frame, a size frame or the system board are ignore
 		checksReport([finding({ title: 5 })]),
 		checksReport([finding({ severity: "boom" })]),
 		checksReport([finding({ check: "unknown" })]),
+		checksReport([finding({ excerpt: 5 })]),
+		checksReport([finding({ excerpt: undefined })]),
 		{ ...checksReport(), issues: [null] },
 		{ ...checksReport(), issues: [5] },
 		checksReport(Array.from({ length: 201 }, () => finding())),
 	];
 	for (const data of bad) assert.doesNotThrow(() => canvas.message(second.contentWindow, data));
-	assert.deepEqual([count(canvas), $(canvas, "gd-status").textContent, $(canvas, "gd-status").classes.has("gd-error")], ["0", "before", false]);
+	assert.deepEqual([count(canvas), $(canvas, "gd-status").textContent, $(canvas, "gd-status").classes.has("gd-error")], ["", "before", false]);
 	openQuality(canvas);
 	assert.deepEqual(groups(canvas), ["01 First: Not checked yet", "02 Second: Not checked yet"], "the system board has no group");
 
@@ -218,7 +222,7 @@ test("reports from an unknown frame, a size frame or the system board are ignore
 	focusOn(canvas, 1);
 	chooseSize(canvas, "all");
 	for (const section of sizeSections(canvas)) report(canvas, iframeOf(section), [finding()]);
-	assert.equal(count(canvas), "0", "size frames are not the artboard");
+	assert.equal(count(canvas), "", "size frames are not the artboard");
 	report(canvas, first, [finding()]);
 	assert.equal(count(canvas), "1");
 });
@@ -231,7 +235,7 @@ test("a reload of an artboard drops its result until it reports again", async ()
 	assert.deepEqual(groups(canvas)[0], "01 First: 1 check");
 	await canvas.serverEvent("change", { slug: "alpha", file: "01-a.html" });
 	first.frame.dispatch("load");
-	assert.deepEqual([groups(canvas)[0], count(canvas), cards(canvas).length], ["01 First: Not checked yet", "0", 0]);
+	assert.deepEqual([groups(canvas)[0], count(canvas), cards(canvas).length], ["01 First: Not checked yet", "", 0]);
 	report(canvas, first.frame, []);
 	assert.deepEqual(groups(canvas)[0], "01 First: Accessible ✓");
 });
@@ -245,7 +249,7 @@ test("a manifest reload builds new boards: Quality re-renders, the ring goes, an
 	const staleFix = fixButton(canvas, 0);
 	assert.equal(marks(canvas).length, 1);
 	await canvas.serverEvent("change", { slug: "alpha", file: "design.json" });
-	assert.deepEqual([groups(canvas), count(canvas), marks(canvas).length], [["01 First: Not checked yet", "02 Second: Not checked yet"], "0", 0]);
+	assert.deepEqual([groups(canvas), count(canvas), marks(canvas).length], [["01 First: Not checked yet", "02 Second: Not checked yet"], "", 0]);
 	const fresh = canvas.frames();
 	const posted = fresh.map((frame) => frame.contentWindow!.posted.length);
 	staleShow.dispatch("click");
@@ -253,7 +257,7 @@ test("a manifest reload builds new boards: Quality re-renders, the ring goes, an
 	assert.deepEqual([marks(canvas).length, $(canvas, "gd-popover").hidden, fresh.map((frame) => frame.contentWindow!.posted.length)], [0, true, posted], "nothing drawn, opened or highlighted");
 	// The old frame is no longer trusted; the new one is.
 	report(canvas, canvas.boards[0].frame, [finding()]);
-	assert.equal(count(canvas), "0");
+	assert.equal(count(canvas), "");
 	report(canvas, fresh[0], [finding()]);
 	assert.equal(count(canvas), "1");
 });
@@ -268,9 +272,9 @@ test("a design switch clears Quality and the ring at once, by the design menu an
 			$(canvas, "gd-design").value = "beta";
 			$(canvas, "gd-design").dispatch("change");
 		} else canvas.serverEvent("show", { slug: "beta" });
-		assert.deepEqual([count(canvas), groups(canvas), marks(canvas).length], ["0", [], 0], `${how}: nothing of alpha shows while beta loads`);
+		assert.deepEqual([count(canvas), groups(canvas), marks(canvas).length], ["", [], 0], `${how}: nothing of alpha shows while beta loads`);
 		report(canvas, canvas.boards[0].frame, [finding()]);
-		assert.equal(count(canvas), "0", `${how}: a late report of alpha's frame is ignored`);
+		assert.equal(count(canvas), "", `${how}: a late report of alpha's frame is ignored`);
 		await settle();
 		assert.deepEqual(groups(canvas), ["01 Only: Not checked yet"], `${how}: beta's artboard`);
 	}
@@ -289,7 +293,7 @@ test("Show draws one ring on the canvas over the element, in its severity, and h
 	assert.deepEqual([marks(canvas).length, ringIn(frameBox(canvas, 0)), markBox(canvas)], [1, 1, ["130px 50px 200px 20px"]], "centered on the rect, in artboard px, beside the frame in the world");
 	const ring = marks(canvas)[0];
 	assert.deepEqual([ring.getAttribute("aria-hidden"), ring.classes.has("gd-check-mark-fail"), texts(ring, "gd-check-mark-label")], ["true", true, ["Low contrast"]]);
-	assert.deepEqual([lastOf(first.frame, "gd:highlight"), activeCards(canvas)], [{ type: "gd:highlight", selector: "main > p.or" }, [0]]);
+	assert.deepEqual([lastOf(first.frame, "gd:highlight"), activeCards(canvas)], [{ type: "gd:highlight", selector: "main > p.or", locate: true }, [0]], "the frame is asked where the element is once in view");
 	showCard(canvas, 1);
 	assert.deepEqual([marks(canvas).length, marks(canvas)[0].classes.has("gd-check-mark-advice"), markBox(canvas), activeCards(canvas)], [1, true, ["12px 251px 4px 2px"], [1]], "one ring at a time");
 	$(canvas, "gd-zoom-in").dispatch("click");
@@ -301,6 +305,63 @@ test("Show draws one ring on the canvas over the element, in its severity, and h
 	assert.deepEqual([markBox(canvas), activeCards(canvas)], [["25px 5px 50px 10px"], [3]]);
 	report(canvas, second.frame, [advice()]);
 	assert.deepEqual([marks(canvas).length, activeCards(canvas)], [0, []]);
+});
+
+test("Show follows the element where its page scrolled it: the ring and the pan use the frame's located rect, not the checks' rect", async () => {
+	const canvas = await loadChecks();
+	const [first, second] = canvas.boards;
+	// The checks saw the element below the fold of its 300 px tall frame; Show scrolls the page to it.
+	report(canvas, first.frame, [finding({ rect: { x: 30, y: 900, width: 200, height: 20 } })]);
+	report(canvas, second.frame, [finding()]);
+	openQuality(canvas);
+	showCard(canvas, 0);
+	assert.deepEqual(lastOf(first.frame, "gd:highlight"), { type: "gd:highlight", selector: "main > p.or", locate: true });
+	assert.deepEqual([marks(canvas).length, marks(canvas)[0].hidden], [1, true], "never drawn below its frame, over the canvas or the next artboard");
+	const located = (frame: FakeElement, selector: string, y: number) => canvas.message(frame.contentWindow, { type: "gd:located", selector, rect: { x: 30, y, width: 200, height: 20 } });
+	// The frame where the view puts it now: where the element's center at y 250 is in the world.
+	const before = view(canvas);
+	first.frame.rect = { left: 100, top: 120, width: 400 * before.zoom, height: 300 * before.zoom };
+	const world = { x: (100 + 130 * before.zoom - before.x) / before.zoom, y: (120 + 260 * before.zoom - 50 - before.y) / before.zoom };
+	const lands = () => { const now = view(canvas); return [Math.round(now.x + world.x * now.zoom), Math.round(50 + now.y + world.y * now.zoom)]; };
+	located(first.frame, "main > p.or", 250);
+	assert.deepEqual([markBox(canvas), marks(canvas)[0].hidden, lands()], [["130px 260px 200px 20px"], false, [500, 400]], "the ring inside the frame, the element at the viewport's center");
+	const centered = view(canvas);
+	located(first.frame, "main > p.or", 100);
+	assert.deepEqual([markBox(canvas), marks(canvas)[0].hidden, view(canvas)], [["130px 110px 200px 20px"], false, centered], "a scroll moves the ring; only the first report re-centers");
+	located(first.frame, "main > p.or", 400);
+	assert.deepEqual([markBox(canvas), marks(canvas)[0].hidden], [["130px 410px 200px 20px"], true], "scrolled out of its frame: no ring outside it");
+	located(first.frame, "main > p.or", 100);
+	// Another board's frame, another selector or a malformed rect change nothing.
+	located(second.frame, "main > p.or", 20);
+	located(first.frame, "#other", 20);
+	canvas.message(first.frame.contentWindow, { type: "gd:located", selector: "main > p.or", rect: { x: "1", y: 20, width: 200, height: 20 } });
+	canvas.message(first.frame.contentWindow, { type: "gd:located", selector: "main > p.or" });
+	canvas.message({}, { type: "gd:located", selector: "main > p.or", rect: { x: 30, y: 20, width: 200, height: 20 } });
+	assert.deepEqual([markBox(canvas), view(canvas)], [["130px 110px 200px 20px"], centered]);
+	// A new report keeps the ring on its finding, at the rect the page reported then.
+	report(canvas, first.frame, [finding({ rect: { x: 30, y: 60, width: 200, height: 20 } })]);
+	assert.deepEqual(markBox(canvas), ["130px 70px 200px 20px"]);
+	// With no ring, a late report draws nothing.
+	press(canvas, "Escape");
+	located(first.frame, "main > p.or", 100);
+	assert.deepEqual([marks(canvas).length, view(canvas)], [0, centered]);
+});
+
+test("in All sizes the ring follows only the frame it is drawn on, the frame as designed", async () => {
+	const canvas = await loadChecks();
+	const [first] = canvas.boards;
+	report(canvas, first.frame, [finding({ rect: { x: 30, y: 900, width: 200, height: 20 } })]);
+	openQuality(canvas);
+	focusOn(canvas, 0);
+	chooseSize(canvas, "all");
+	showCard(canvas, 0);
+	const [phone, , designed] = sizeSections(canvas).map(iframeOf);
+	const located = (frame: FakeElement, y: number) => canvas.message(frame.contentWindow, { type: "gd:located", selector: "main > p.or", rect: { x: 30, y, width: 200, height: 20 } });
+	located(first.frame, 250);
+	located(phone, 250);
+	assert.deepEqual([markBox(canvas), marks(canvas)[0].hidden], [["130px 910px 200px 20px"], true], "the artboard's own frame, hidden behind, and the other sizes are not where the ring is");
+	located(designed, 250);
+	assert.deepEqual([markBox(canvas), marks(canvas)[0].hidden], [["130px 260px 200px 20px"], false]);
 });
 
 test("Show zooms in under 100% about the element and centers it, and never zooms out", async () => {
@@ -368,14 +429,14 @@ test("the ring goes when its frame goes: another size, leaving All sizes, focus 
 	openQuality(canvas);
 	focusOn(canvas, 0);
 	showCard(canvas, 0);
-	assert.deepEqual([ringIn(frameBox(canvas, 0)), lastOf(first.frame, "gd:highlight")], [1, { type: "gd:highlight", selector: "main > p.or" }], "in focus mode on the open artboard");
+	assert.deepEqual([ringIn(frameBox(canvas, 0)), lastOf(first.frame, "gd:highlight")], [1, { type: "gd:highlight", selector: "main > p.or", locate: true }], "in focus mode on the open artboard");
 	chooseSize(canvas, "phone");
 	assert.equal(marks(canvas).length, 0, "another size");
 	chooseSize(canvas, "all");
 	showCard(canvas, 0);
 	const sections = sizeSections(canvas);
 	assert.deepEqual(sections.map(ringIn), [0, 0, 1], "in All sizes, on the frame as designed, where the checks ran");
-	assert.deepEqual(sections.map((section) => lastOf(iframeOf(section), "gd:highlight")), sections.map(() => ({ type: "gd:highlight", selector: "main > p.or" })), "the element is highlighted in every frame");
+	assert.deepEqual(sections.map((section) => lastOf(iframeOf(section), "gd:highlight")), [{ type: "gd:highlight", selector: "main > p.or" }, { type: "gd:highlight", selector: "main > p.or" }, { type: "gd:highlight", selector: "main > p.or", locate: true }], "the element is highlighted in every frame, and the ring's frame says where it is");
 	$(canvas, "gd-back").dispatch("click");
 	assert.deepEqual([marks(canvas).length, activeCards(canvas)], [0, []], "leaving focus mode drops the size frames and the ring");
 	focusOn(canvas, 0);
@@ -432,6 +493,32 @@ test("Esc goes to the comment box, Compare and the dialogs first, then clears th
 	assert.equal(pressed(canvas, "gd-comment"), "false");
 });
 
+test("clearing the ring clears the element's highlight in its page too: Esc, a still click, and in every All sizes frame", async () => {
+	const canvas = await loadChecks();
+	const [first, second] = canvas.boards;
+	report(canvas, first.frame, [finding()]);
+	openQuality(canvas);
+	const last = (frame: FakeElement) => frame.contentWindow!.posted.at(-1);
+	showCard(canvas, 0);
+	press(canvas, "Escape");
+	assert.deepEqual([marks(canvas).length, last(first.frame), lastOf(second.frame, "gd:clear")], [0, { type: "gd:clear" }, null], "Esc: only the ring's artboard");
+	showCard(canvas, 0);
+	canvas.viewport.dispatch("pointerdown", { button: 0, pointerId: 1, clientX: 500, clientY: 400 });
+	canvas.viewport.dispatch("pointerup", { button: 0, pointerId: 1, clientX: 500, clientY: 400 });
+	assert.deepEqual([marks(canvas).length, last(first.frame)], [0, { type: "gd:clear" }], "a still click");
+	showCard(canvas, 0);
+	canvas.viewport.dispatch("pointerdown", { button: 0, pointerId: 1, clientX: 500, clientY: 400 });
+	canvas.viewport.dispatch("pointermove", { pointerId: 1, clientX: 560, clientY: 430 });
+	canvas.viewport.dispatch("pointerup", { button: 0, pointerId: 1, clientX: 560, clientY: 430 });
+	assert.deepEqual([marks(canvas).length, last(first.frame)], [1, { type: "gd:highlight", selector: "main > p.or", locate: true }], "a drag pans and keeps both");
+	press(canvas, "Escape");
+	focusOn(canvas, 0);
+	chooseSize(canvas, "all");
+	showCard(canvas, 0);
+	press(canvas, "Escape");
+	assert.deepEqual([first.frame, ...sizeSections(canvas).map(iframeOf)].map(last), [{ type: "gd:clear" }, { type: "gd:clear" }, { type: "gd:clear" }, { type: "gd:clear" }]);
+});
+
 // ---- Ask the agent to fix
 
 test("Ask the agent to fix opens the comment box on that artboard's element, prefilled and editable", async () => {
@@ -449,7 +536,12 @@ test("Ask the agent to fix opens the comment box on that artboard's element, pre
 	$(canvas, "gd-popover-form").dispatch("submit");
 	await settle();
 	const body = canvas.posts.at(-1)!.body as Record<string, unknown>;
-	assert.deepEqual([body.file, body.selector, body.excerpt, String(body.comment).endsWith("Also on hover.")], ["01-a.html", "main > p.or", "p.or", true]);
+	assert.deepEqual([body.file, body.selector, body.excerpt, String(body.comment).endsWith("Also on hover.")], ["01-a.html", "main > p.or", "or pay with card", true], "the element's text, as a pick sends it, not its CSS label");
+	report(canvas, first.frame, [finding({ excerpt: "x".repeat(400) })]);
+	fixButton(canvas, 0).dispatch("click");
+	$(canvas, "gd-popover-form").dispatch("submit");
+	await settle();
+	assert.equal((canvas.posts.at(-1)!.body as Record<string, unknown>).excerpt, "x".repeat(300), "bounded like a pick's excerpt");
 	fixButton(canvas, 1).dispatch("click");
 	assert.match($(canvas, "gd-popover-text").value, /^Accessibility advice on #pay: Touch target under 44 px\.\n"Pay" is 100 × 28 px; 44 × 44 px is recommended for touch\.\nConsider fixing it, keeping the design's tokens\.$/);
 });
@@ -486,7 +578,7 @@ test("index.html has the tabs, the Quality panel and the Show icon; canvas.css s
 	const html = read("index.html");
 	assert.match(html, /<div id="gd-tabs" class="gd-tabs" role="tablist" aria-label="Review">/);
 	assert.match(html, /<button type="button" role="tab" id="gd-tab-comments" class="gd-tab" aria-selected="true" aria-controls="gd-tabpanel-comments">Comments <span id="gd-count-comments" class="gd-count">0<\/span><\/button>/);
-	assert.match(html, /<button type="button" role="tab" id="gd-tab-quality" class="gd-tab" aria-selected="false" aria-controls="gd-quality" tabindex="-1">Quality <span id="gd-count-quality" class="gd-count">0<\/span><\/button>/);
+	assert.match(html, /<button type="button" role="tab" id="gd-tab-quality" class="gd-tab" aria-selected="false" aria-controls="gd-quality" tabindex="-1">Quality <span id="gd-count-quality" class="gd-count"><\/span><\/button>/);
 	assert.match(html, /<div id="gd-quality" class="gd-quality" role="tabpanel" aria-labelledby="gd-tab-quality" hidden><\/div>/);
 	assert.match(html, /<div id="gd-tabpanel-comments" class="gd-tabpanel" role="tabpanel" aria-labelledby="gd-tab-comments">/);
 	assert.match(html, /<symbol id="i-target" viewBox="0 0 24 24">/);
@@ -505,6 +597,7 @@ test("index.html has the tabs, the Quality panel and the Show icon; canvas.css s
 test("the docs describe the Quality tab, Show and the checks' limits in the heuristics note", () => {
 	const docs = readFileSync(fileURLToPath(new URL("../docs/gentle-shell.md", import.meta.url)), "utf8");
 	const section = docs.slice(docs.indexOf("### Gentle Design"), docs.indexOf("### Gentle Music"));
-	assert.ok(section.includes("The checks run inside the artboard's own frame, so they describe the artboard at the size it is shown, and they are heuristics, not a full audit: they miss keyboard, focus-order, motion and screen-reader problems, and each list is capped (20 problems and 10 advice items per check, with the full count reported)."));
+	assert.ok(section.includes("The checks run inside the artboard's own frame, so they describe the artboard at the size it is shown, and they are heuristics, not a full audit: they miss keyboard, focus-order, motion and screen-reader problems, each list is capped (20 problems and 10 advice items per check, with the full count reported), and a page with more than 3000 elements is checked only up to its 3000th, so its counts cover that part only."));
+	assert.ok(section.includes("The ring follows the element as its page scrolls"), "the docs say the ring follows the element");
 	for (const words of ["**Quality**", "**Comments**", "**Show**", "**Ask the agent to fix**", "`Accessible ✓`"]) assert.ok(section.includes(words), `the Gentle Design docs mention ${words}`);
 });

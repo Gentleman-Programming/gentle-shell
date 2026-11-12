@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -196,7 +196,7 @@ test("#3138: output syntax never hides a repository redirect or an uncertain cd 
 });
 
 test("ambiguous directory control flow cannot borrow another repository's off mode", async t => {
-	const root = mkdtempSync(join(tmpdir(), "review-delivery-directory-flow-"));
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "review-delivery-directory-flow-")));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const other = join(root, "other");
 	mkdirSync(other);
@@ -241,7 +241,7 @@ test("ambiguous directory control flow cannot borrow another repository's off mo
 });
 
 test("preflight rechecks the actual assessed range, preserves native non-due/decline and rejects drift", async t => {
-	const root = mkdtempSync(join(tmpdir(), "review-delivery-scope-"));
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "review-delivery-scope-")));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "-c", "commit.gpgsign=false", ...args], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 	git("init", "-q"); writeFileSync(join(root, "app.ts"), "base\n"); git("add", "."); git("commit", "-qm", "base");

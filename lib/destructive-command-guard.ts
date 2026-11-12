@@ -33,7 +33,7 @@ function blankHeredocs(command: string, joinBody = false): string {
 	});
 }
 
-const deliveryTokenPattern = /#[^\n]*|(?:\d*(?:[<>]&|>\||<>|>>?|<<-?)|&>>?)|(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s;&|()<>'"\\])+|&&|\|\||[;&|()\n]/g;
+const deliveryTokenPattern = /#[^\n]*|(?:\d*(?:[<>]&|>\||<>|>>?|<<-?)|&>>?)|(?:"(?:\\.|[^"\\])*"|'[^']*'|`(?:\\.|[^`\\])*`|\\.|[^\s;&|()<>'"\\])+|&&|\|\||[;&|()\n]/g;
 
 /** Keep quoted arguments intact so harmless prose is never treated as a command. */
 function tokenize(command: string, blank = true, delivery = false): Token[] {

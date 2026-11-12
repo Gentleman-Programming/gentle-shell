@@ -160,6 +160,21 @@ test("repository redirects remain delivery commands but cannot borrow the sessio
 	assert.deepEqual(recognizeReviewDeliveryActions("git -C/other push"), [{ kind: "delivery", directories: ["/other"] }]);
 });
 
+test("#2997: comments inside backticks preserve subsequent parent deliveries", async () => {
+	for (const command of ["echo prefix`true # note`; git push", "echo `true # note`; git push", "echo `true # note`; git push &", "echo `true # note`; export GIT_DIR=/other; git push"]) {
+		const delivery = recognizeReviewDeliveryActions(command).filter(action => action.kind === "delivery");
+		assert.equal(delivery.length, 1, command);
+	}
+	let assessments = 0;
+	const cli = {
+		reviewMode: async () => ({ status: { effective: "on" } }),
+		assess: async () => { assessments++; return { reviewDue: true }; },
+	} as unknown as NativeReviewCli;
+	const result = await checkReviewDeliveryPreflight(process.cwd(), "bash", "echo `true # note`; git push", cli, () => "HEAD", () => false);
+	assert.equal(result?.block, true);
+	assert.equal(assessments, 1, "the trailing parent delivery must still be assessed");
+});
+
 test("#2997: shell background lists cannot use a foreground review check", async () => {
 	const commands = [
 		"sleep 30 && git push &", "git push && echo done &", "git push || echo failed &",

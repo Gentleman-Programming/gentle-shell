@@ -17,8 +17,8 @@ globalThis[Symbol.for("gentle-pi.contributions/v1")] // a Map<string, Contributi
 Three consequences a plugin author relies on:
 
 - **The box is yours to create.** A plain `Map` already installed under that symbol is adopted, never replaced; if nothing is there, the first writer or the first reader creates it. A plugin needs nothing but the symbol and `Map`.
-- **Contributions are read at use time.** The customize panel, the sidebar and the palette call the reader when they open or render, not at import time. A contribution registered before or after gentle-pi's own extensions is equally visible, so load order cannot decide whether your row appears. Fill the box in `session_start`, before the panel is used.
-- **Entries are keyed by their namespaced id.** The map key must equal `Contribution.id`, so two packages cannot overwrite each other by accident: a later `set` on the same id is your own replacement, not a merge with someone else.
+- **Contributions are read at use time.** The customize panel, the sidebar and the palette call the reader when they open or render, not at import time. A contribution registered before or after gentle-pi's own extensions is equally visible, so load order cannot decide whether your row appears. Fill the box once, in `session_start`, before the panel is used.
+- **Entries are keyed by their namespaced id.** The map key must equal `Contribution.id`, and a later `set` on an id the box already holds is refused rather than applied: the first value stays, so no package can replace another package's contribution by reusing its id.
 
 The same process-wide-symbol pattern already carries gentle-pi's own cross-evaluation state (for example `Symbol.for("gentle-pi.resume-hint")`); plugins use the public box instead of reaching for those.
 
@@ -66,15 +66,16 @@ export interface PluginSidebarSection {
 
 export interface PluginPaletteCommand {
 	command: string;
-	group: string;
+	/** Optional: missing, empty or blank means the palette derives a group from the owner. */
+	group?: string;
 }
 ```
 
-`PluginRow` is deliberately not the panel's internal row type. The customize read point adapts a contributed row into a core row, so this slice can grow without exposing gentle-pi internals, and v1 rows have no shortcut key or audio hint of their own. A contributed `action` is called with no arguments, may be async, and gets no inline bridge: it cannot open a nested dialog, and it never writes a gentle-pi preference file.
+`PluginRow` is deliberately not the panel's internal row type. The customize read point adapts a contributed row into a core row, so this slice can grow without exposing gentle-pi internals, and v1 rows have no shortcut key or audio hint of their own. A contributed `action` is called with no arguments, may be async, and is handed no gentle-pi object: the box passes nothing but your own closure. That is a rule, not a barrier — the reader calls your function in gentle-pi's own process, so a closure can open a dialog or write any file that process can, and nothing in this reader prevents it. The contract's rule is that a contribution must not write a gentle-pi preference file and must not open its own dialog; a review refuses a plugin that does.
 
 The row's query slots are synchronous: `label` (when it is a function), `preview`, `visible` and `choice.current` must answer immediately. A `label` that returns a promise drops its row, because a promise cannot fill a row the panel is painting right now. A `choice.setting` is namespaced under your contribution id (as `<id> · <setting>`), so a plugin switch can never merge into a built-in setting line; consecutive contributed rows that share a `setting` render as one line with their values inline.
 
-`PluginSidebarSection.rail` is opaque to the reader: it must be a mounted Pi component (anything with a `render(width)` function), and `bottom` travels with it unchanged — contributed sections are appended after the core keys in registration order.
+`PluginSidebarSection.rail` is opaque to the reader: it must be a mounted Pi component (anything with a `render(width)` function), and `bottom` travels with it unchanged — contributed sections are appended after the core keys, in the order the [declared owner order](#declared-owner-order) gives them.
 
 ### Ids, keys and the contract version
 
@@ -85,20 +86,21 @@ The row's query slots are synchronous: `label` (when it is a function), `preview
 
 ### Fail-closed reporting
 
-The reader validates each entry on its own. A contribution whose payload is partly malformed is still loaded, with only the bad payload dropped; an entry that fails identity or version is skipped entirely. Every refusal is recorded with the id it was stored under and one of these codes:
+The reader validates each entry on its own. A contribution whose payload is partly malformed is still loaded, with only the bad payload dropped; an entry that fails identity or version is skipped entirely. A property read that throws — a plugin getter that raises — refuses the whole entry, because the reader cannot tell what the rest of the object would have answered. Every refusal is recorded with the id it was stored under and one of these codes:
 
 | Code | Meaning |
 | --- | --- |
-| `invalid-contribution` | The stored value is not an object, or (in a rail) a callback threw. |
+| `invalid-contribution` | The stored value is not an object, or reading one of its properties threw. |
 | `incompatible-contract` | `contract` is not `1`. |
 | `invalid-id` | `id` is not namespaced, does not equal the map key, or disagrees with `owner`. |
+| `duplicate-id` | A later `set` for an id the box already holds passed a different object than the stored one, so it was refused and the first contribution stays. |
 | `malformed-rows` | `rows` is not an array of well-formed rows: every row needs `category`, `label` and `action`, and every optional field must have its declared type. |
 | `malformed-sidebar` | The key is reserved, unnamespaced, owned by someone else, or the rail does not render. |
-| `malformed-palette` | `palette` lacks a non-empty `command` or `group`. |
+| `malformed-palette` | `palette` lacks a non-empty `command`, or carries a `group` that is not a string. |
 
-A read also records which ids a later `set` replaced, so re-registering your own id after a reload is visible instead of silent. Skipped entries and replaced ids are shown by `/gentle:plugins`, and `/gentle:customize` additionally raises a warning notice whose text starts with `Plugin <id>:` when it refuses a row. The report is an audit trail, never a second source of truth.
+A later `set` on an existing id is refused, and the box keeps the first contribution under that id: re-registering an id never replaces what is already there, so a package cannot take over another package's contribution. A refusal whose value is a different object than the stored one is reported as `duplicate-id` on every later read; re-setting the very same reference marks the id as replaced but is not a duplicate. A read records both lists. Skipped entries and replaced ids are shown by `/gentle:plugins`, and `/gentle:customize` additionally raises a warning notice whose text starts with `Plugin <id>:` when it refuses a row. The report is an audit trail, never a second source of truth.
 
-Every contributed callback — `label`, `preview`, `visible`, `choice.current`, `action`, and a rail's `render`/`invalidate` — runs through a guard. A callback that throws, or a promise that rejects, degrades to that read point's fallback and is reported: a throwing `label` drops its own row (it is not shown with a placeholder), a throwing `preview` shows `Plugin preview unavailable` instead, and a throwing rail paint renders an empty section. An async `action` is still awaited. A broken plugin degrades its own row or section; it never takes the panel down with it.
+Every contributed callback — `label`, `preview`, `visible`, `choice.current`, `action`, and a rail's `render`, `digest` and `invalidate` — runs through a guard. A callback that throws, or a promise that rejects, degrades to what that read point can render and is reported: a throwing `label` drops its own row (it is not shown with a placeholder), a throwing `preview` shows `Plugin preview unavailable` instead, a throwing `visible` hides the row, and a throwing `choice.current` reads as `false`. A throwing rail `render` paints an empty section and a throwing rail `digest` reads as no digest; the sidebar seam records both, and a throwing `invalidate` too, under `invalid-contribution`, so the audit can say the rail misbehaved. An async `action` is still awaited. A broken plugin degrades its own row or section; it never takes the panel down with it.
 
 ### How each read point appends
 
@@ -106,9 +108,23 @@ Every contributed callback — `label`, `preview`, `visible`, `choice.current`, 
 | --- | --- |
 | Customize (`/gentle:customize`) | Appends your rows after the built-in rows of the category you name. A category the panel does not know yet starts its own category after the built-in ones, so `Reset` keeps its place. |
 | Sidebar rail | Installs your `plugin:<owner>:<name>` rail into the shared parts map, so the layout paints it after `todo`, `jobs`, `agents` and `footer`. A contribution you withdraw is retired on the next read. |
-| Command palette (`/gentle:commands`) | Appends a registered command that the curated catalog does not list into the group you name, creating that group after the catalog groups when it is new; an empty group name falls back to `Plugins · <owner>`. The row's label is the command name and its description comes from your registration. |
+| Command palette (`/gentle:commands`) | Appends a registered command that the curated catalog does not list into the group you name, creating that group after the catalog groups when it is new; a missing, empty or whitespace-only group name falls back to `Plugins · <owner>`. The row's label is the command name and its description comes from your registration. |
 
-A palette entry naming a command that is not registered, or one the catalog already lists, adds nothing: the palette stays a curated menu, never a dump of every registered command.
+A palette entry naming a command that is not registered, or one the catalog already lists, adds nothing: the palette stays a curated menu, never a dump of every registered command. When two contributions name the same command, the first one read owns its group.
+
+### Declared owner order
+
+`plugins.json` in gentle-pi's config directory (`GENTLE_PI_CONFIG_HOME`, else `~/.pi/gentle-ai`) names owners, never ids, and decides the order the read points present contributions in. Each read reads it at use time, never a cached copy, so an edit takes effect on the next read without a reload. Exactly two keys, this schema and this shape:
+
+```json
+{ "schema": "gentle-pi.plugins/v1", "order": ["acme", "demo"] }
+```
+
+An owner the file names is presented first, in the order the file gives; every owner it does not name keeps the box's registration order after the named ones. A missing file, or one that is unreadable, not JSON or wrongly schemated, means registration order. gentle-pi only reads this file and never writes it, so a hand edit can break the order but never a read point.
+
+### With an empty box
+
+With an empty box the customize panel, the sidebar rail and the palette contribute nothing: no plugin row, section or command appears, and no built-in row, rail key or catalog entry is moved or replaced. That no-op promise covers plugin-contributed content only. Slice 1 also adds the built-in `/gentle:plugins` command, and its catalogued palette row (`Plugins · contribution audit`, in the `Diagnostics` group) is present whether the box is empty or not.
 
 ## An example plugin
 
@@ -176,7 +192,7 @@ export default function gentleDemo(pi) {
 }
 ```
 
-`session_start` is where the box is filled, because Pi may load an extension without starting a session, and because a session is where a live `ctx` exists. Re-setting `demo.hello` on the next session or reload replaces your own earlier entry — that is what keeps a reload working — and the audit surface reports it as a replacement, not as a conflict.
+`session_start` is where the box is filled, because Pi may load an extension without starting a session, and because a session is where a live `ctx` exists. Fill the box once per process: the entry the process stored first is the one that answers. This example re-sets `demo.hello` on every `session_start`, and after the first session that `set` passes a different object and is refused — the id appears in `/gentle:plugins` under replaced ids, with a `duplicate-id` refusal, and the first entry, with the `ctx` it closed over, stays live. Re-setting the very same reference only marks the id as replaced.
 
 ## What a plugin may touch
 

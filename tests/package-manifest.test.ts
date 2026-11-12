@@ -901,6 +901,41 @@ test("a refresh keeps human text written inside a managed block verbatim", () =>
 	});
 });
 
+// S3: the name is free-form, so a section a user writes for their own purpose
+// survives a refresh of the packaged body just like a gentle-ai feature block.
+test("a refresh keeps a user section with a custom marker name in place", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		const userSection = managedBlock("worker-policy", [
+			"",
+			"## My own worker policy",
+			"",
+			"Hand-written paragraph that a package refresh must never drop.",
+			"",
+			"- keep this bullet",
+			"",
+		]);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		writeFileSync(installedPath, `${staleWorkerAgent()}\n${userSection}`);
+
+		const result = installPackageAssets(agentHome, true, ["delegation"]);
+
+		const refreshed = readFileSync(installedPath, "utf8");
+		// (a) the refreshed body landed, (b) the user section kept its text, and
+		// (c) the section still follows the end of the body exactly.
+		assert.doesNotMatch(refreshed, /effective TDD mode/);
+		assert.equal(refreshed, `${packagedWorkerAgent()}\n${userSection}`);
+		assert.match(refreshed, /Hand-written paragraph that a package refresh must never drop\./);
+		assert.match(refreshed, /- keep this bullet/);
+		assert.ok(
+			refreshed.startsWith(packagedWorkerAgent()),
+			"the user section must stay after the body, never above it",
+		);
+		assert.equal(installedAssetManifest(agentHome).assets[WORKER_AGENT_KEY], sha256(refreshed));
+		assert.equal(result.skipped, 0);
+	});
+});
+
 test("forced refresh preserves an agent body edited outside its managed block", () => {
 	withIsolatedAssetHome((agentHome) => {
 		const installedPath = join(agentHome, WORKER_AGENT_KEY);
@@ -921,6 +956,8 @@ test("corrupt managed markers fall back to whole-file comparison and preserve th
 	const corruptMarkers = {
 		"an unclosed block": "<!-- gentle-ai:documentation-guidance -->\n\n## Documentation\n",
 		"a closing marker without an opener": "<!-- /gentle-ai:documentation-guidance -->\n",
+		"a closing marker naming another block":
+			"<!-- gentle-ai:documentation-guidance -->\n\n<!-- /gentle-ai:ego-browser-guidance -->\n",
 		"a block name reopened inside itself":
 			"<!-- gentle-ai:documentation-guidance -->\n\n<!-- gentle-ai:documentation-guidance -->\n\n<!-- /gentle-ai:documentation-guidance -->\n",
 	} as const;

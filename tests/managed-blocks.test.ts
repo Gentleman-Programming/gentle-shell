@@ -64,6 +64,29 @@ test("two appended managed blocks keep their original order and separation", () 
 	assert.match(attachManagedBlocks(split.content, split.blocks).slice(BODY.length), /documentation[\s\S]*Browser checks/);
 });
 
+// S3: the name is free-form. A section a user writes for their own purpose,
+// named after that purpose rather than after a gentle-ai feature, is still
+// recognised by its marker shape alone.
+test("a user section survives under any marker name", () => {
+	const mine = block("mine", ["", "## Mine", "", "Hand-written policy that a refresh must keep.", ""]);
+	const dotted = block("team-policy.v2", ["", "## Team policy", ""]);
+	const installed = `${BODY}\n${mine}\n${dotted}`;
+
+	const split = splitManagedBlocks(installed);
+
+	assert.equal(split.failSafe, undefined);
+	assert.deepEqual(
+		split.blocks.map((entry) => entry.name),
+		["mine", "team-policy.v2"],
+	);
+	assert.equal(split.content, BODY);
+	assert.equal(attachManagedBlocks(split.content, split.blocks), installed);
+	assert.equal(
+		attachManagedBlocks("# Refreshed body\n", split.blocks),
+		`# Refreshed body\n${split.blocks[0].text}${split.blocks[1].text}`,
+	);
+});
+
 test("a managed block in the middle of the body is recorded at its own seam", () => {
 	const routing = block("agent-routing", ["", "## Routing", "", "Delegate on the 4-file rule.", ""]);
 	const installed = `# Body\n\nBefore.\n\n${routing}\nAfter.\n`;

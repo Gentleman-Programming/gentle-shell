@@ -394,6 +394,16 @@ test("a block that only partly matches the injected prompt is kept", () => {
 	assert.deepEqual(result.removedBlockNames, []);
 });
 
+// Sharing a heading with the prompt is not duplication: the block's other
+// line decides, so a user policy under a heading the prompt also uses stays.
+test("a shared heading does not discard additional policy", () => {
+	const content = `${block("orchestrator", "## Rules\nDo not leak secrets")}\n`;
+	const result = filterOrchestratorOnlyBlocks(content, { injectedPrompt: "## Rules\nOther rules\n" });
+	assert.equal(result.content, content);
+	assert.equal(result.removedBlocks, 0);
+	assert.deepEqual(result.removedBlockNames, []);
+});
+
 test("without an injected prompt the drop stays the name-based behaviour children rely on", () => {
 	const input = `Before\n\n${block("orchestrator", "policy that no prompt carries")}\n\nAfter\n`;
 	for (const options of [undefined, {}]) {

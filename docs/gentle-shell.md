@@ -332,7 +332,7 @@ The `subagent_*` tools and the agents card replace the third-party subagents pac
 
 Agent paths follow `GENTLE_PI_AGENT_HOME`, then `PI_CODING_AGENT_DIR`, then `~/.pi/agent` for definitions, config, history, child sessions, and transcripts. These overrides select the agent profile; they do not sandbox project or shared global resources.
 
-Package-managed agents refresh in place: any `<!-- gentle-ai:<name> -->` … `<!-- /gentle-ai:<name> -->` section you add to an installed agent definition survives a refresh under any name, coming back verbatim — user text included — at the position relative to the end of the body it had before. A marker counts only when it is alone on its line. A broken marker set (an unclosed block, a closing marker without an opener, a closing marker naming a different block, or a name reopened inside itself) leaves that file untouched as a local edit.
+Package-managed agents refresh in place: any `<!-- gentle-ai:<name> -->` … `<!-- /gentle-ai:<name> -->` section you add to an installed agent definition survives a refresh under any name, coming back verbatim — user text included — at the position relative to the end of the body it had before. A marker counts only when it is alone on its line. A broken marker set (an unclosed block, a closing marker without an opener, a closing marker naming a different block, or a name reopened inside itself) leaves the installed file byte-identical and its ownership record as it was, so the next refresh skips it again and a repaired file reaches the ordinary comparison.
 
 ```text
 ╭─ ❀ Agents · 1 active · 1 done ─────────────────────────────── 1m24s ╮

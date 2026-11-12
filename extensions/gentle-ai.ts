@@ -7110,8 +7110,8 @@ const REVIEW_CONTROLLER_PARAMETER_FIELDS = {
 			description: "Bounded review lineage identifier. A failed start creates no lineage; unusable with status or advance.",
 		},
 		selectionBinding: { type: "string", description: "Opaque provider-issued pre-lineage intended-untracked selection binding." },
-		intendedUntracked: { type: "array", items: { type: "string" }, description: 'Repository-relative paths selected from the provider binding; accepted on inspect only with untrackedScope "select".' },
-		untrackedScope: { type: "string", enum: ["exclude", "select"], description: "Inspect-only: resolve the intended-untracked selection stop in one call; \"exclude\" forbids intendedUntracked, \"select\" includes exactly the supplied paths." },
+		intendedUntracked: { type: "array", items: { type: "string" }, description: 'Repository-relative paths selected from the provider binding. Inspect-only with untrackedScope "select"; ASSESS ignores an empty array.' },
+		untrackedScope: { type: "string", enum: ["exclude", "select"], description: 'Inspect selection: "exclude" forbids intendedUntracked; "select" includes the supplied paths. ASSESS ignores valid scope defaults without selected paths.' },
 		changeName: {
 			type: "string",
 			description: "Canonical OpenSpec change name for recovered-authority lifecycle validate.",
@@ -7353,13 +7353,17 @@ function parseReviewControllerParameters(value: unknown): ReviewControllerParame
 	// gentle-pi#706: top-level untrackedScope/intendedUntracked resolve the
 	// intended-untracked stop through inspect alone. intendedUntracked is not a
 	// standalone selector: inspect accepts it only for an explicit select scope.
-	const hasIntendedUntracked = "intendedUntracked" in value;
+	// Flat-schema callers may emit inspect defaults on ASSESS; empty defaults select nothing.
+	const emptyAssessSelection = value.operation === REVIEW_CONTROLLER_OPERATION.ASSESS &&
+		(!("intendedUntracked" in value) || (Array.isArray(value.intendedUntracked) && value.intendedUntracked.length === 0)) &&
+		(value.untrackedScope === undefined || value.untrackedScope === NATIVE_START_UNTRACKED_SCOPE.SELECT || value.untrackedScope === NATIVE_START_UNTRACKED_SCOPE.EXCLUDE);
+	const hasIntendedUntracked = "intendedUntracked" in value && !emptyAssessSelection;
 	if (hasIntendedUntracked && value.operation !== REVIEW_CONTROLLER_OPERATION.INSPECT) {
 		throw new Error(
 			`Review controller ${value.operation} does not accept intendedUntracked; it is accepted only by inspect with untrackedScope select`,
 		);
 	}
-	if (value.untrackedScope !== undefined) {
+	if (value.untrackedScope !== undefined && !emptyAssessSelection) {
 		if (value.operation !== REVIEW_CONTROLLER_OPERATION.INSPECT)
 			throw new Error(
 				`Review controller ${value.operation} does not accept untrackedScope; it is accepted only by inspect`,

@@ -457,6 +457,44 @@ test("S2: pins and the comment box measure the frame at its focused width, not t
 	assert.equal($(canvas, "gd-popover").style.left, "405px");
 });
 
+// ---- All sizes in a narrow viewport
+
+test("All sizes fits a narrow viewport: each frame is as wide as its scaled iframe, the row fits the room, and a cut label keeps its full text in a title", async () => {
+	const canvas = await loadSizes({ "/t/api/designs/alpha": { slug: "alpha", title: "Alpha", brief: "", artboards: [
+		{ file: "01-a.html", title: "First", tradeoff: "", width: 4000, height: 800 },
+		{ file: "02-b.html", title: "Second", tradeoff: "", width: 400, height: 300 },
+	] } });
+	focusOn(canvas);
+	chooseSize(canvas, "all");
+	const px = (value: unknown) => Number.parseFloat(String(value));
+	const view = withClass(canvas.viewport, "gd-sizes-all")[0];
+	const sections = withClass(canvas.viewport, "gd-size-frame");
+	const scaled = sections.map((section) => withClass(section, "gd-size-scaled")[0]);
+	const widths = scaled.map((box) => px(box.style.width));
+	// The label cannot widen its frame: the section is exactly as wide as the scaled iframe.
+	assert.deepEqual(sections.map((section) => px(section.style.width)), widths);
+	// The 1000 px viewport less the side margins and the two 20 px gaps.
+	const room = 1000 - px(view.style.left) - px(view.style.right) - 20 * 2;
+	const total = widths.reduce((sum, width) => sum + width, 0);
+	assert.ok(total <= room, `${total} px of frames fit the ${room} px room`);
+	const tallest = Math.max(...scaled.map((box) => px(box.style.height)));
+	assert.ok(tallest <= 700 - px(view.style.top) - px(view.style.bottom) - 28, `${tallest} px fit under the 28 px labels`);
+	const percent = texts(sections[0], "gd-size-scale")[0];
+	assert.deepEqual(sections.map((section) => withClass(section, "gd-size-head")[0].title), [`Phone 390 × 844 ${percent}`, `Tablet 820 × 1180 ${percent}`, `As designed 4000 × 800 ${percent}`]);
+
+	const css = read("canvas.css");
+	const block = (selector: string) => {
+		const start = css.indexOf(`\n${selector} {`);
+		assert.ok(start >= 0, `${selector} is styled`);
+		return css.slice(start, css.indexOf("}", start) + 1);
+	};
+	const head = block(".gd-size-head");
+	for (const rule of [/overflow: hidden;/, /text-overflow: ellipsis;/, /white-space: nowrap;/]) assert.match(head, rule, "a label longer than its frame ends in an ellipsis");
+	const row = block(".gd-sizes-all");
+	assert.match(row, /justify-content: safe center;/, "a row wider than the viewport starts at its left edge, never cut on both sides");
+	assert.match(row, /overflow-x: auto;/, "and scrolls sideways at the smallest scale");
+});
+
 // ---- markup, styles, store and docs
 
 test("canvas-layout S6: the device selector's markup sits after the arrangements in English, and its styles use --gd-* tokens, a focus ring and no motion", () => {

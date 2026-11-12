@@ -308,7 +308,7 @@ export function init(ctx) {
 		scaled.append(stage, flag);
 		root.append(head, scaled);
 		// rects and overflow: null until this frame's page reports them (canvas-messages.js).
-		const surface = { board, kind, width, height, viewWidth: width, viewHeight: height, frame, pins, flag, rects: null, overflow: null, root, scaled, stage, scaleLabel };
+		const surface = { board, kind, width, height, viewWidth: width, viewHeight: height, frame, pins, flag, rects: null, overflow: null, root, head, scaled, stage, scaleLabel };
 		frame.addEventListener("load", () => surfaceLoaded(surface));
 		frame.src = actions.boardUrl(board);
 		return surface;
@@ -328,7 +328,11 @@ export function init(ctx) {
 		board.sizeFrames = [];
 	}
 
-	/** One scale for the frames: small enough that they fit side by side under the label and above Back to canvas. */
+	/**
+	 * One scale for the frames: small enough that they fit side by side under the label and above Back to canvas.
+	 * Each frame is as wide as its scaled iframe, so a label longer than that ends in an ellipsis (canvas.css) and
+	 * keeps its full text in a title; the room leaves half a pixel per frame for rounding the sizes.
+	 */
 	function placeSizeFrames(board, box) {
 		const view = board.sizesView;
 		const frames = board.sizeFrames;
@@ -336,18 +340,21 @@ export function init(ctx) {
 		view.style.right = `${box.side}px`;
 		view.style.top = `${box.top}px`;
 		view.style.bottom = `${box.bottom}px`;
-		const availableWidth = box.width - box.side * 2 - SIZES_GAP * (frames.length - 1);
-		const availableHeight = box.height - box.top - box.bottom - SIZES_HEAD;
+		const availableWidth = box.width - box.side * 2 - SIZES_GAP * (frames.length - 1) - frames.length / 2;
+		const availableHeight = box.height - box.top - box.bottom - SIZES_HEAD - 0.5;
 		const totalWidth = frames.reduce((sum, surface) => sum + surface.width, 0);
 		const tallest = Math.max(...frames.map((surface) => surface.height));
 		const scale = Math.max(MIN_SIZES_SCALE, Math.min(1, availableWidth / totalWidth, availableHeight / tallest));
 		for (const surface of frames) {
-			surface.scaled.style.width = `${Math.round(surface.width * scale)}px`;
+			const width = `${Math.round(surface.width * scale)}px`;
+			surface.root.style.width = width;
+			surface.scaled.style.width = width;
 			surface.scaled.style.height = `${Math.round(surface.height * scale)}px`;
 			surface.stage.style.transform = `scale(${scale})`;
 			// Pins keep their size at any scale, as in the world.
 			surface.stage.style.setProperty("--gd-inv-zoom", String(1 / scale));
 			surface.scaleLabel.textContent = TEXT.scale(Math.round(scale * 100));
+			surface.head.title = `${nameOf(surface.kind)} ${dims(surface)} ${surface.scaleLabel.textContent}`;
 		}
 	}
 

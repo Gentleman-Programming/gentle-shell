@@ -305,6 +305,9 @@
 	window.addEventListener("scroll", () => { refresh(); queueReport(); }, true);
 	window.addEventListener("resize", () => { refresh(); queueReport(); queueOverflow(); });
 	window.addEventListener("load", () => { queueReport(); queueOverflow(); });
+	// An image that loads after the page did can widen it with no mutation or resize; its load does not bubble, so the
+	// document catches it on the way down.
+	document.addEventListener("load", () => { queueReport(); queueOverflow(); }, true);
 	// Layout changes (late images, artboard scripts) move pinned elements and may widen the page; the inspector's own boxes do not count.
 	new MutationObserver((records) => {
 		if (records.some((record) => !(record.target instanceof Element && record.target.hasAttribute(MARK)))) { queueReport(); queueOverflow(); }

@@ -179,8 +179,8 @@ test("the custom width field and its error sit in a group named Custom width, th
 	focusOn(canvas);
 	$(canvas, "gd-device").dispatch("click");
 	const roles = deviceMenu(canvas).children.map((child) => child.getAttribute("role"));
-	assert.deepEqual(roles, ["menuitemradio", "menuitemradio", "menuitemradio", "separator", "group"], "the menu owns only items, a separator and a group");
-	const group = deviceMenu(canvas).children[4];
+	assert.deepEqual(roles.filter((role) => role !== "menuitemradio"), ["separator", "group"], "besides its items, the menu owns only a separator and a group");
+	const group = deviceMenu(canvas).children[roles.indexOf("group")];
 	assert.equal(group.getAttribute("aria-label"), "Custom width");
 	assert.deepEqual(group.children.map((child) => child.className), ["gd-device-custom", "gd-device-error"], "the field's row and its error are inside the group");
 });

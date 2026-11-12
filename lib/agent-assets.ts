@@ -399,12 +399,37 @@ function legacyComparableAssetContent(
 		: content;
 }
 
+// Tools-only frontmatter merge: the packaged block in packaged order, then every
+// installed entry the package does not ship. Idempotent, so it is safe to run on
+// content that already carries a merged block. An inline/flow `tools:` list on
+// either side is not parsed, so the packaged block wins.
+function preserveInstalledTools(
+	ownershipKey: string,
+	installedContent: string,
+	packagedContent: string,
+): string {
+	if (!ownershipKey.startsWith("agents/")) return packagedContent;
+	const installedFrontmatter = agentFrontmatter(installedContent);
+	if (installedFrontmatter === undefined) return packagedContent;
+	const installedTools = frontmatterToolsBlock(installedFrontmatter);
+	const packagedFrontmatter = agentFrontmatter(packagedContent);
+	const packagedHasInlineTools =
+		packagedFrontmatter?.split("\n").some((line) => /^tools:[ \t]+\S/.test(line)) === true;
+	if (installedTools === undefined || packagedHasInlineTools) return packagedContent;
+	const packagedTools =
+		packagedFrontmatter === undefined
+			? undefined
+			: frontmatterToolsBlock(packagedFrontmatter);
+	return replaceAgentToolsBlock(
+		packagedContent,
+		mergedToolsBlock(installedTools, packagedTools),
+	);
+}
+
 /**
  * Writes a packaged agent over an installed one: packaged frontmatter and body,
  * except `model:`/`thinking:` and any `tools:` entry the package does not ship,
- * which come from the installed file. An inline/flow `tools:` list on either
- * side is not parsed, so the packaged block wins exactly as it did before tool
- * preservation existed.
+ * which come from the installed file.
  *
  * @internal Exported for the tools-merge boundary tests: two cases need a
  * packaged agent no shipped asset provides (no tools block, inline tools).
@@ -414,27 +439,14 @@ export function migrateLegacyAssetContent(
 	installedContent: string,
 	packagedContent: string,
 ): string {
-	if (!ownershipKey.startsWith("agents/")) return packagedContent;
-	const installedFrontmatter = agentFrontmatter(installedContent);
+	const installedFrontmatter = ownershipKey.startsWith("agents/")
+		? agentFrontmatter(installedContent)
+		: undefined;
 	if (installedFrontmatter === undefined) return packagedContent;
 	const routingLines = installedFrontmatter
 		.split("\n")
 		.filter((line) => /^(?:model|thinking):/.test(line));
-	const installedTools = frontmatterToolsBlock(installedFrontmatter);
-	const packagedFrontmatter = agentFrontmatter(packagedContent);
-	const packagedHasInlineTools =
-		packagedFrontmatter?.split("\n").some((line) => /^tools:[ \t]+\S/.test(line)) === true;
-	const packagedTools =
-		packagedFrontmatter === undefined
-			? undefined
-			: frontmatterToolsBlock(packagedFrontmatter);
-	const preserved =
-		installedTools !== undefined && !packagedHasInlineTools
-			? replaceAgentToolsBlock(
-					packagedContent,
-					mergedToolsBlock(installedTools, packagedTools),
-				)
-			: packagedContent;
+	const preserved = preserveInstalledTools(ownershipKey, installedContent, packagedContent);
 	return updateAgentFrontmatterRouting(preserved, routingLines);
 }
 
@@ -454,6 +466,7 @@ function resetAgentAssetContent(
 	ownershipKey: string,
 	targetPath: string,
 	installedContent: string,
+	installedBytes: Buffer,
 	packagedContent: string,
 ): { content: string; backup: string } {
 	const base = `${targetPath}.local-${filesystemSafeTimestamp()}`;
@@ -461,8 +474,10 @@ function resetAgentAssetContent(
 	for (let suffix = 2; existsSync(backup); suffix += 1) backup = `${base}-${suffix}`;
 	// `wx` never replaces an earlier backup; the walk above only picks the first
 	// free name, so a concurrent writer still fails instead of losing bytes.
-	writeFileSync(backup, installedContent, { encoding: "utf8", flag: "wx" });
-	if (readFileSync(backup, "utf8") !== installedContent) {
+	// The raw bytes are copied, never a UTF-8 decoding: a lossy string would write
+	// U+FFFD replacements and still satisfy a string read-back comparison.
+	writeFileSync(backup, installedBytes, { flag: "wx" });
+	if (!readFileSync(backup).equals(installedBytes)) {
 		throw new Error(`the backup ${backup} does not match the installed bytes`);
 	}
 	return {
@@ -634,10 +649,15 @@ function copyDirectoryFiles(
 			}
 			const managedHash = manifest.assets[ownershipKey];
 			let installedContent: string | undefined;
+			let installedBytes: Buffer | undefined;
 			try {
-				installedContent = readFileSync(targetPath, "utf8");
+				// Hash and content logic keep working on the decoded string; the reset
+				// backup copies these raw bytes.
+				installedBytes = readFileSync(targetPath);
+				installedContent = installedBytes.toString("utf8");
 			} catch {
 				installedContent = undefined;
+				installedBytes = undefined;
 			}
 			const installedHash = installedContent === undefined
 				? undefined
@@ -707,12 +727,19 @@ function copyDirectoryFiles(
 				(managedHash !== undefined || adopt) &&
 				installedHash !== managedHash &&
 				installedContent !== undefined &&
+				installedBytes !== undefined &&
 				installedBase !== undefined &&
 				!hasShippedAgentBody(ownershipKey, installedBase, bodyHistory)
 			) {
 				let reset: { content: string; backup: string };
 				try {
-					reset = resetAgentAssetContent(ownershipKey, targetPath, installedContent, source);
+					reset = resetAgentAssetContent(
+						ownershipKey,
+						targetPath,
+						installedContent,
+						installedBytes,
+						source,
+					);
 				} catch (error) {
 					resetFailures.push({
 						key: ownershipKey,
@@ -734,6 +761,17 @@ function copyDirectoryFiles(
 			} else if (ownershipKey === "agents/sdd-research.md" && installedContent !== undefined) {
 				// Keep routing adopted by the legacy migration on subsequent refreshes.
 				nextSource = migrateLegacyAssetContent(ownershipKey, installedContent, source);
+			}
+			// Every write over an existing agent goes through the tools merge, on every
+			// path: a reset records the merged content, so the following refresh is a
+			// hash match and must merge again rather than write the packaged block
+			// untouched and drop a preserved tool. Merging already-merged content
+			// reproduces it byte for byte, so repeated refreshes stay stable. Only
+			// `tools:` is merged here: managed `model:`/`thinking:` routing stays owned
+			// by the branches above, and the merge is agent-only, so chains and support
+			// files are unaffected.
+			if (installedContent !== undefined) {
+				nextSource = preserveInstalledTools(ownershipKey, installedContent, nextSource);
 			}
 		}
 		// Re-attach the recognised blocks to whatever this branch decided to write,

@@ -1283,6 +1283,74 @@ test("a second forced refresh after a reset changes nothing and creates no new b
 	});
 });
 
+// The installed bytes, not their UTF-8 decoding, are what a reset preserves. A
+// lossy round-trip would replace them with U+FFFD and still compare equal.
+test("reset backup preserves non-UTF8 bytes", () => {
+	withIsolatedAssetHome((home) => {
+		installPackageAssets(home, false, ["delegation"]);
+		const path = join(home, WORKER_AGENT_KEY);
+		const before = Buffer.concat([readFileSync(path), Buffer.from([0xff, 0xfe, 0x0a])]);
+		writeFileSync(path, before);
+		const result = installPackageAssets(home, true, ["delegation"]);
+		assert.equal(result.resets.length, 1);
+		const reset = result.resets.at(0);
+		assert.ok(reset);
+		assert.deepEqual(readFileSync(reset.backup), before);
+	});
+});
+
+// A reset records the merged content, so the (hash-matching) next refresh must
+// merge again instead of writing the packaged block untouched and dropping the
+// tool. Every write over an existing agent goes through the merge, and merging
+// already-merged content is idempotent.
+test("reset with an added tool remains byte-stable on the next refresh", () => {
+	withIsolatedAssetHome((home) => {
+		installPackageAssets(home, false, ["delegation"]);
+		const path = join(home, WORKER_AGENT_KEY);
+		const edited = readFileSync(path, "utf8")
+			.replace("tools:\n", "tools:\n  - mcp__context7__query_docs\n")
+			.concat("\nUser body edit.\n");
+		writeFileSync(path, edited);
+		assert.equal(installPackageAssets(home, true, ["delegation"]).resets.length, 1);
+		const first = readFileSync(path);
+		assert.match(first.toString(), /mcp__context7__query_docs/);
+		assert.equal(
+			agentToolEntries(first.toString()).filter((tool) => tool === "mcp__context7__query_docs").length,
+			1,
+		);
+		installPackageAssets(home, true, ["delegation"]);
+		assert.deepEqual(readFileSync(path), first);
+		installPackageAssets(home, true, ["delegation"]);
+		assert.deepEqual(readFileSync(path), first, "a third refresh must stay byte-identical");
+	});
+});
+
+// A current-body copy is released, not written, so its added tool survives
+// every later refresh without a reset or a backup.
+test("an added tool on current instructions stays byte-stable across refreshes", () => {
+	withIsolatedAssetHome((home) => {
+		installPackageAssets(home, false, ["delegation"]);
+		const path = join(home, WORKER_AGENT_KEY);
+		const edited = readFileSync(path, "utf8").replace(
+			"tools:\n",
+			"tools:\n  - mcp__context7__query_docs\n",
+		);
+		writeFileSync(path, edited);
+
+		installPackageAssets(home, true, ["delegation"]);
+		assert.deepEqual(readFileSync(path), Buffer.from(edited), "a current-body copy keeps its added tool");
+		installPackageAssets(home, true, ["delegation"]);
+		installPackageAssets(home, true, ["delegation"]);
+
+		assert.deepEqual(readFileSync(path), Buffer.from(edited));
+		assert.equal(
+			agentToolEntries(readFileSync(path, "utf8")).filter((tool) => tool === "mcp__context7__query_docs").length,
+			1,
+		);
+		assert.deepEqual(localBackups(home), [], "a released copy is not reset and gets no backup");
+	});
+});
+
 // S4: every layout splitManagedBlocks cannot trust. Unbalanced, stray closing,
 // closing naming another block, and a name reopened inside itself.
 const CORRUPT_MANAGED_MARKERS = {
@@ -2042,8 +2110,16 @@ test("forced package installation refreshes an asset recorded as package-managed
 		installPackageAssets(PACKAGE_ROOT, true);
 
 		const refreshed = readAgentDefinition(installedExemplar);
-		assert.deepEqual(refreshed.tools, MANAGED_EXEMPLAR_TOOLS);
-		assert.doesNotMatch(refreshed.source, /^  - bash$/m);
+		assert.doesNotMatch(
+			refreshed.source,
+			/previous package version/,
+			"the packaged body must replace the recorded one",
+		);
+		// A hash-recorded copy is still written through the tools merge, so the
+		// installed entry the package does not ship survives the refresh.
+		assert.deepEqual(refreshed.tools, [...MANAGED_EXEMPLAR_TOOLS, "bash"]);
+		assert.match(refreshed.source, /^  - bash$/m);
+		assert.doesNotMatch(refreshed.source, /^model: /m, "managed routing is refreshed away");
 	} finally {
 		if (previousAgentHome === undefined) {
 			delete process.env.GENTLE_PI_AGENT_HOME;

@@ -125,6 +125,7 @@ test("S3/S5: the run guidance relays correction findings and their claims as the
 	const run = tools.get("gentle_review_run")!;
 	assert.ok(run.promptGuidelines.includes(RELAY_GUIDANCE));
 	assert.ok(run.promptGuidelines.includes(MARKS_GUIDANCE));
+	assert.ok(run.promptGuidelines.includes("When non_blocking_findings.statement_truncated is true, say the provider statement was truncated at 1,024 UTF-8 bytes; do not present it as complete or infer missing text."));
 	assert.match(run.description, /input-required \(correction plan; with its findings and the non-blocking findings when the provider reports the non-blocking ones\)/);
 	assert.match(run.description, /stopped \(escalated: with the non-blocking findings\)/);
 });

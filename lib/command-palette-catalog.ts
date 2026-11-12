@@ -1,4 +1,5 @@
 import type { CommandPaletteGroup, CommandPaletteItem } from "./command-palette.ts";
+import { readContributions, type Contribution } from "./plugin-contract.ts";
 
 // The curated command set for the command palette: an OpenCode-style
 // grouped menu, not a raw listing of every registered extension command.
@@ -59,24 +60,67 @@ export const COMMAND_PALETTE_CATALOG: readonly CommandPaletteCatalogGroup[] = [
 	},
 ];
 
+/** Group a contribution falls back to when its palette payload carries no usable group. */
+const CONTRIBUTION_GROUP_FALLBACK = "Plugins";
+
+/**
+ * The group a contributed command belongs in: the group the plugin declared,
+ * or a stable group derived from its owner when the declaration has none.
+ */
+function contributedGroup(contribution: Contribution): string {
+	const group = contribution.palette?.group;
+	return group !== undefined && group.trim().length > 0 ? group : `${CONTRIBUTION_GROUP_FALLBACK} · ${contribution.owner}`;
+}
+
 /**
  * Build the palette's groups for one session: keep only catalog entries
  * whose command is actually registered (so a missing extension never shows
  * a dead row), attach that registration's live description and an optional
  * shortcut hint, and drop any group left with no items. Catalog order is
  * preserved throughout.
+ *
+ * Community plugin contributions are merged here, at build time, never into
+ * `COMMAND_PALETTE_CATALOG`: a registered command that the catalog does not
+ * list is appended to the group its contribution declares (creating that
+ * group after the catalog ones when it is new), so no row, group or order
+ * changes when the contribution box is empty. A contribution naming a
+ * command that is not registered, or one the catalog already lists, adds
+ * nothing. The first contribution read for a command owns it, which keeps
+ * the output reproducible across builds.
  */
 export function buildCommandPaletteGroups(registered: readonly { name: string; description?: string }[], shortcuts: Readonly<Record<string, string | undefined>>): CommandPaletteGroup[] {
 	const byName = new Map(registered.map((command) => [command.name, command]));
 	const groups: CommandPaletteGroup[] = [];
+	const catalogued = new Set<string>();
 	for (const group of COMMAND_PALETTE_CATALOG) {
 		const items: CommandPaletteItem[] = [];
 		for (const entry of group.items) {
+			catalogued.add(entry.command);
 			const found = byName.get(entry.command);
 			if (!found) continue;
 			items.push({ command: entry.command, label: entry.label, description: found.description, shortcut: shortcuts[entry.command] });
 		}
-		if (items.length > 0) groups.push({ title: group.title, items });
+		groups.push({ title: group.title, items });
 	}
-	return groups;
+
+	const contributed = new Map<string, string>();
+	for (const contribution of readContributions()) {
+		const command = contribution.palette?.command;
+		if (command === undefined || contributed.has(command)) continue;
+		contributed.set(command, contributedGroup(contribution));
+	}
+
+	for (const command of registered) {
+		if (catalogued.has(command.name)) continue;
+		const title = contributed.get(command.name);
+		if (title === undefined) continue;
+		let group = groups.find((candidate) => candidate.title === title);
+		if (group === undefined) {
+			group = { title, items: [] };
+			groups.push(group);
+		}
+		group.items.push({ command: command.name, label: command.name, description: command.description, shortcut: shortcuts[command.name] });
+	}
+
+	return groups.filter((group) => group.items.length > 0);
 }

@@ -12545,6 +12545,20 @@ function createGentleAiExtensionForTesting(
 		await surfaceDevBinaryOverride(ctx);
 		try {
 			const installResult = installPackageAssets(ctx.cwd, true, ["delegation", "review"]);
+			if (ctx.hasUI) {
+				for (const reset of installResult.resets) {
+					ctx.ui.notify(
+						`el Gentleman reset ${reset.key} to the packaged body because your copy had text of its own; it is saved at ${reset.backup}.`,
+						"info",
+					);
+				}
+				for (const failure of installResult.resetFailures) {
+					ctx.ui.notify(
+						`el Gentleman could not reset ${failure.key}: ${failure.reason}. The file and its ownership record are unchanged.`,
+						"warning",
+					);
+				}
+			}
 			migrateLegacyProjectModelOverrides(ctx.cwd);
 			const modelResult = await applySavedModelConfig(ctx);
 			if (ctx.hasUI && modelResult.invalidPath) {
@@ -12953,10 +12967,17 @@ function createGentleAiExtensionForTesting(
 			description: `Repair or refresh only global Gentle AI ${label} assets.`,
 			handler: async (args, ctx) => {
 				const force = args.includes("--force");
-				const result = installPackageAssets(ctx.cwd, force, [owner]);
+				const adopt = args.includes("--adopt");
+				const result = installPackageAssets(ctx.cwd, force, [owner], undefined, { adopt });
+				const resetNotes = result.resets
+					.map((reset) => `\nReset ${reset.key} to the packaged body; your own text is saved at ${reset.backup}.`)
+					.join("");
+				const failureNotes = result.resetFailures
+					.map((failure) => `\nCould not reset ${failure.key}: ${failure.reason}.`)
+					.join("");
 				ctx.ui.notify(
-					`Global Gentle AI ${label} assets installed: ${result.agents} agent(s), ${result.chains} chain(s), ${result.support} support file(s), ${result.skipped} already present.`,
-					"info",
+					`Global Gentle AI ${label} assets installed: ${result.agents} agent(s), ${result.chains} chain(s), ${result.support} support file(s), ${result.skipped} already present.${resetNotes}${failureNotes}`,
+					result.resetFailures.length > 0 ? "warning" : "info",
 				);
 			},
 		});

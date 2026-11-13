@@ -7,6 +7,7 @@ import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { codemodeReaches, DESIGN_TOOLS_ROUTE, hideBehindCodemode } from "../lib/hidden-tools.ts";
 import type { DesignSessionContent } from "../lib/design-canvas-server.ts";
 import { DESIGN_COMMENTS_TOOL_NAME, DESIGN_HELP, DESIGN_PROMPT_HINT, DESIGN_SKILL_NAME, DESIGN_SYNC_REQUEST, DESIGN_TOOL_NAME, createDesignCanvas, designRunMessage, designUsage, hasSystemBoard, listDesigns, parseDesignArgs, planDesignImplement, runDesignCommentsTool, runDesignTool, sendDesignImplement, type DesignCanvasDeps, type DesignCommentsToolParams, type DesignToolParams } from "../lib/gentle-design.ts";
+import { DESKTOP_DESIGN_SERVICE_CHANNEL, DESKTOP_DESIGN_SERVICE_SCHEMA, type DesktopDesignService } from "../lib/desktop-rpc-design.ts";
 
 // Gentle Design: /gentle:design <brief> runs the bundled gentle-design skill,
 // which writes self-contained HTML artboards under design/<slug>/ with
@@ -83,6 +84,50 @@ export default function gentleDesign(pi: ExtensionAPI, deps: GentleDesignDeps = 
 		return { queued };
 	};
 	const canvas = createDesignCanvas(deliver, deps);
+
+	// Desktop's design slice reaches the canvas only through this versioned,
+	// adapter-shaped seam — the design analogue of the YOLO host-ui adapter. It
+	// wraps the same single DesignCanvas and listDesigns owner; there is no
+	// second server, port, or canvas store. The tokenized URL stays a capability
+	// here: it is returned only to an explicitly subscribing observer, and the
+	// Desktop bridge re-checks the interactive-host trust before it reaches the
+	// wire. Agent-driven canvas work (the gentle_design tool and /gentle:design)
+	// emits through the same observers, so a connected Desktop app sees it too.
+	pi.events?.on(DESKTOP_DESIGN_SERVICE_CHANNEL, (payload: unknown) => {
+		if (!payload || typeof payload !== "object") return;
+		const request = payload as Partial<{ context: ExtensionContext; respond(service: DesktopDesignService): void }>;
+		if (typeof request.respond !== "function" || !request.context) return;
+		const ctx = request.context;
+		try {
+			let disposed = false;
+			const subscriptions = new Set<() => void>();
+			request.respond({
+				schema: DESKTOP_DESIGN_SERVICE_SCHEMA,
+				read: () => (disposed ? Promise.resolve({ running: false, slug: null, connectedClients: 0 }) : canvas.state()),
+				url: () => (disposed ? undefined : canvas.url()),
+				listDesigns: () => (disposed || typeof ctx.cwd !== "string" ? [] : listDesigns(ctx.cwd)),
+				observe: (options, onTransition) => {
+					if (disposed) return () => {};
+					const unsubscribe = canvas.observe((transition) => {
+						const url = options.includeUrl ? canvas.url() : undefined;
+						onTransition({ ...transition, ...(url === undefined ? {} : { url }) });
+					});
+					subscriptions.add(unsubscribe);
+					return () => {
+						subscriptions.delete(unsubscribe);
+						unsubscribe();
+					};
+				},
+				dispose: () => {
+					disposed = true;
+					for (const unsubscribe of [...subscriptions]) unsubscribe();
+					subscriptions.clear();
+				},
+			});
+		} catch {
+			/* obsolete trusted context: discovery expires closed */
+		}
+	});
 
 	const open = async (ctx: ExtensionContext, slug?: string) => {
 		const notice = await canvas.open(ctx.cwd, slug);

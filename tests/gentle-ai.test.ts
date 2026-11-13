@@ -867,6 +867,52 @@ test("the install command adopts a released agent and names its backup", async (
 	assert.match(notice.message, /gentle-ai-worker\.md/);
 });
 
+// `--force` still reaches the installer: a copy whose whole-file hash is an
+// old shipped version is adopted only by a refreshing run.
+test("the install command still adopts an old shipped copy on --force", async (t) => {
+	const fixture = routingConsumerFixture(t);
+	const legacy = readFileSync(
+		join(import.meta.dirname, "..", "tests", "fixtures", "v0.14", "assets", "agents", "review-risk.md"),
+		"utf8",
+	);
+	const target = join(fixture.agentHome, "agents", "review-risk.md");
+
+	writeFileSync(target, legacy);
+	await fixture.run("gentle:install-review", "");
+	assert.equal(readFileSync(target, "utf8"), legacy, "a plain run leaves the old copy alone");
+
+	await fixture.run("gentle:install-review", "--force");
+	assert.notEqual(readFileSync(target, "utf8"), legacy, "--force must still refresh the old copy");
+});
+
+// The flag is an exact token: a value that only contains `--adopt` (or a bare
+// `adopt` word) must not release a file the manifest does not own.
+test("the install command does not adopt on an argument that only contains --adopt", async (t) => {
+	const fixture = routingConsumerFixture(t);
+	installPackageAssets(fixture.root, false, ["delegation"]);
+	const agentPath = join(fixture.agentHome, "agents", "gentle-ai-worker.md");
+	const edited = readFileSync(agentPath, "utf8") + "\nUser-authored instruction.\n";
+	writeFileSync(agentPath, edited);
+	const manifestPath = join(fixture.agentHome, "gentle-ai", "managed-assets.json");
+	const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { assets: Record<string, string> };
+	delete manifest.assets["agents/gentle-ai-worker.md"];
+	writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+	await fixture.run("gentle:install-delegation", "--adopt=false adopt");
+
+	assert.equal(readFileSync(agentPath, "utf8"), edited, "the edit must stay untouched");
+	assert.deepEqual(
+		readdirSync(join(fixture.agentHome, "agents")).filter((name) => name.includes(".local-")),
+		[],
+		"no reset backup may be written",
+	);
+	assert.equal(
+		fixture.notifications.some((entry) => entry.message.includes("Reset ")),
+		false,
+		"no reset may be reported",
+	);
+});
+
 // The startup refresh takes the same path with the same report, so a reset is
 // never silent for a UI session.
 test("the session-start install reports a reset and names its backup", async (t) => {

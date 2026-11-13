@@ -99,6 +99,42 @@ test("a managed block in the middle of the body is recorded at its own seam", ()
 	assert.equal(attachManagedBlocks(split.content, split.blocks), installed);
 });
 
+// Each block belongs before the base lines that followed it, so a body line
+// between two blocks must stay between them when the sections are re-attached.
+test("two blocks between body lines keep the body lines between them", () => {
+	const first = block("first-section", ["", "## First", ""]);
+	const second = block("second-section", ["", "## Second", ""]);
+	const installed = `# Body\nBefore A.\n${first}Before B.\n${second}After C.\n`;
+
+	const split = splitManagedBlocks(installed);
+
+	assert.equal(split.failSafe, undefined);
+	assert.equal(split.content, "# Body\nBefore A.\nBefore B.\nAfter C.\n");
+	assert.deepEqual(
+		split.blocks.map((entry) => entry.name),
+		["first-section", "second-section"],
+	);
+	assert.equal(attachManagedBlocks(split.content, split.blocks), installed);
+});
+
+// A refreshed body is shorter than the one the block was recorded against, so
+// the recorded seam can fall past every remaining body line. The block still
+// belongs after the frontmatter: in front of it the file stops being an agent.
+test("a block from a longer body lands after the frontmatter, never before it", () => {
+	const routing = block("agent-routing", ["", "## Routing", ""]);
+	const installed = `---\nname: worker\n---\n\n${routing}Tail one.\nTail two.\nTail three.\nTail four.\nTail five.\nTail six.\n`;
+
+	const split = splitManagedBlocks(installed);
+
+	assert.equal(split.failSafe, undefined);
+	assert.equal(split.blocks.length, 1);
+	assert.equal(attachManagedBlocks(split.content, split.blocks), installed, "an unchanged base still round-trips");
+	assert.equal(
+		attachManagedBlocks("---\nname: worker\n---\n# New body.\n", split.blocks),
+		`---\nname: worker\n---\n${split.blocks[0].text}# New body.\n`,
+	);
+});
+
 test("other bytes are never collapsed or trimmed", () => {
 	const installed = `# Body\n\n\n\nLine with trailing spaces.   \n\n${DOCUMENTATION_BLOCK}`;
 

@@ -172,21 +172,42 @@ export function splitManagedBlocks(content: string): ManagedBlockSplit {
  * base this reproduces the original content byte-for-byte. Each block is placed
  * before the number of base lines that followed it, so a block appended to an
  * installed body stays at the end of a refreshed body.
+ *
+ * Every block is placed against the original base line indices, so a body line
+ * between two blocks keeps its place instead of shifting under the insertions.
  */
 export function attachManagedBlocks(content: string, blocks: readonly ManagedBlock[]): string {
 	if (!Array.isArray(blocks) || blocks.length === 0) return content;
-	const lines = splitLines(content);
-	const ordered = [...blocks].sort((left, right) => left.trailingLines - right.trailingLines);
-	let attached = 0;
-	for (let index = ordered.length - 1; index >= 0; index -= 1) {
-		const block = ordered.at(index);
-		if (block === undefined) continue;
-		const baseLength = lines.length - attached;
-		const trailing = Number.isInteger(block.trailingLines)
-			? Math.min(Math.max(block.trailingLines, 0), baseLength)
-			: 0;
-		lines.splice(baseLength - trailing, 0, block.text);
-		attached += 1;
+	const base = splitLines(content);
+	// Managed blocks belong to the body. A seam recorded against a longer body can
+	// point past every remaining line, and clamping that to the file start would
+	// put the block in front of the frontmatter and stop the file being an agent.
+	const bodyStart = bodyStartLine(base);
+	const placed = new Map<number, string[]>();
+	for (const block of blocks) {
+		const requested = Number.isInteger(block.trailingLines) ? block.trailingLines : 0;
+		const trailing = Math.min(Math.max(requested, 0), base.length - bodyStart);
+		const index = base.length - trailing;
+		const queued = placed.get(index);
+		if (queued === undefined) placed.set(index, [block.text]);
+		else queued.push(block.text);
 	}
-	return lines.join("");
+	const attached: string[] = [];
+	for (let index = 0; index <= base.length; index += 1) {
+		for (const text of placed.get(index) ?? []) attached.push(text);
+		if (index < base.length) attached.push(base[index]);
+	}
+	return attached.join("");
+}
+
+/**
+ * First line index a managed block may occupy: the line after a leading `---`
+ * frontmatter, or 0 when the content carries none (or an unterminated one).
+ */
+function bodyStartLine(lines: readonly string[]): number {
+	if (lines.length === 0 || lines[0].replace(/\r?\n$/, "") !== "---") return 0;
+	for (let index = 1; index < lines.length; index += 1) {
+		if (lines[index].replace(/\r?\n$/, "") === "---") return index + 1;
+	}
+	return 0;
 }

@@ -13207,8 +13207,11 @@ function createGentleAiExtensionForTesting(
 		pi.registerCommand(`gentle:install-${owner}`, {
 			description: `Repair or refresh only global Gentle AI ${label} assets.`,
 			handler: async (args, ctx) => {
-				const force = args.includes("--force");
-				const adopt = args.includes("--adopt");
+				// Flags are exact tokens: `--adopt=false` or a word that merely contains
+				// `--adopt` must not release a file the manifest does not own.
+				const flags = args.trim().split(/\s+/).filter(Boolean);
+				const force = flags.includes("--force");
+				const adopt = flags.includes("--adopt");
 				const result = installPackageAssets(ctx.cwd, force, [owner], undefined, { adopt });
 				const resetNotes = result.resets
 					.map((reset) => `\nReset ${reset.key} to the packaged body; your own text is saved at ${reset.backup}.`)

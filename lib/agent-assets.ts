@@ -367,20 +367,55 @@ function agentFrontmatter(content: string): string | undefined {
 	return endIndex === -1 ? undefined : content.slice(4, endIndex);
 }
 
-// Reads a `tools:` YAML block list from a frontmatter. An inline/flow list such
-// as `tools: [read, grep]` returns undefined: the merge does not parse YAML, so
-// a refresh keeps the packaged block instead of guessing.
-function frontmatterToolsBlock(frontmatter: string): readonly string[] | undefined {
+// A `tools:` list in a frontmatter, as this module reads it. The scan matches
+// the runtime loader (`parseFrontmatter` in ./agents-config.ts): a blank line or
+// a `#` comment inside the list does not end it there either, and the entries
+// after them load. Stopping at the first non-entry line would read a tool below
+// a comment as absent, and the rebuild below would drop it.
+interface ToolsList {
+	/** Index of the `tools:` line. */
+	readonly start: number;
+	/** Exclusive end of the list, after its last entry and its trailing comments. */
+	readonly end: number;
+	/** `  - entry` lines in file order. */
+	readonly entries: readonly string[];
+	/** `#` comment lines inside the list, verbatim and in file order. */
+	readonly layout: readonly string[];
+}
+
+function frontmatterToolsList(frontmatter: string): ToolsList | undefined {
 	const lines = frontmatter.split("\n");
 	const start = lines.indexOf("tools:");
 	if (start === -1) return undefined;
 	const entries: string[] = [];
+	const layout: string[] = [];
+	let end = start + 1;
 	for (let index = start + 1; index < lines.length; index += 1) {
 		const line = lines[index];
-		if (!/^ {2}- /.test(line)) break;
-		entries.push(line);
+		if (/^ {2}- /.test(line)) {
+			entries.push(line);
+			end = index + 1;
+			continue;
+		}
+		if (line.trim().startsWith("#")) {
+			// A comment belongs to the list the loader reads, so the rebuilt block
+			// carries it; a blank line is layout and stays where it is.
+			layout.push(line);
+			end = index + 1;
+			continue;
+		}
+		if (line.trim().length === 0) continue;
+		break;
 	}
-	return entries.length > 0 ? entries : undefined;
+	return { start, end, entries, layout };
+}
+
+// Reads a `tools:` YAML block list from a frontmatter. An inline/flow list such
+// as `tools: [read, grep]` returns undefined: the merge does not parse YAML, so
+// a refresh keeps the packaged block instead of guessing.
+function frontmatterToolsBlock(frontmatter: string): readonly string[] | undefined {
+	const list = frontmatterToolsList(frontmatter);
+	return list !== undefined && list.entries.length > 0 ? list.entries : undefined;
 }
 
 // The packaged list in its packaged order, followed by every installed entry the
@@ -396,19 +431,23 @@ function mergedToolsBlock(
 	return merged;
 }
 
-function replaceAgentToolsBlock(content: string, toolsBlock: readonly string[]): string {
+function replaceAgentToolsBlock(
+	content: string,
+	toolsBlock: readonly string[],
+	layout: readonly string[] = [],
+): string {
 	const frontmatter = agentFrontmatter(content);
 	if (frontmatter === undefined) return content;
 	const lines = frontmatter.split("\n");
-	const start = lines.indexOf("tools:");
-	if (start === -1) {
+	const list = frontmatterToolsList(frontmatter);
+	if (list === undefined) {
 		const descriptionIndex = lines.findIndex((line) => line.startsWith("description:"));
 		const insertIndex = descriptionIndex >= 0 ? descriptionIndex + 1 : Math.min(1, lines.length);
-		lines.splice(insertIndex, 0, "tools:", ...toolsBlock);
+		lines.splice(insertIndex, 0, "tools:", ...toolsBlock, ...layout);
 	} else {
-		let end = start + 1;
-		while (end < lines.length && /^ {2}- /.test(lines[end])) end += 1;
-		lines.splice(start, end - start, "tools:", ...toolsBlock);
+		// Replace the whole list, comments included, so the captured comment lines
+		// are carried once instead of accumulating on the next refresh.
+		lines.splice(list.start, list.end - list.start, "tools:", ...toolsBlock, ...layout);
 	}
 	const bodyStart = frontmatter.length + 4;
 	return `---\n${lines.join("\n")}${content.slice(bodyStart)}`;
@@ -435,18 +474,21 @@ function preserveInstalledTools(
 	if (!ownershipKey.startsWith("agents/")) return packagedContent;
 	const installedFrontmatter = agentFrontmatter(installedContent);
 	if (installedFrontmatter === undefined) return packagedContent;
-	const installedTools = frontmatterToolsBlock(installedFrontmatter);
+	const installedList = frontmatterToolsList(installedFrontmatter);
 	const packagedFrontmatter = agentFrontmatter(packagedContent);
 	const packagedHasInlineTools =
 		packagedFrontmatter?.split("\n").some((line) => /^tools:[ \t]+\S/.test(line)) === true;
-	if (installedTools === undefined || packagedHasInlineTools) return packagedContent;
+	if (installedList === undefined || installedList.entries.length === 0 || packagedHasInlineTools) {
+		return packagedContent;
+	}
 	const packagedTools =
 		packagedFrontmatter === undefined
 			? undefined
 			: frontmatterToolsBlock(packagedFrontmatter);
 	return replaceAgentToolsBlock(
 		packagedContent,
-		mergedToolsBlock(installedTools, packagedTools),
+		mergedToolsBlock(installedList.entries, packagedTools),
+		installedList.layout,
 	);
 }
 

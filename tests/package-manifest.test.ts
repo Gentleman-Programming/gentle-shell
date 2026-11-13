@@ -894,6 +894,39 @@ test("an added mcp tool survives a body refresh", () => {
 	});
 });
 
+// The runtime loader (parseFrontmatter in lib/agents-config.ts) skips blank and
+// `#` comment lines inside a `tools:` block and keeps the entries after them, so
+// the merge has to read the same list: a tool below a comment is installed.
+test("a tool below a comment inside the tools block survives a body refresh", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		const withComment = staleWorkerAgent().replace(
+			/\ntools:\n((?: {2}- .*\n)+)/,
+			(match) => `${match}  # kept by hand\n  - mcp__context7__query_docs\n\n`,
+		);
+		assert.ok(withComment.includes("\n  - mcp__context7__query_docs\n"));
+		writeFileSync(installedPath, withComment);
+
+		installPackageAssets(agentHome, true, ["delegation"]);
+
+		const written = readFileSync(installedPath, "utf8");
+		assert.doesNotMatch(written, /effective TDD mode/, "the packaged body must arrive");
+		assert.equal(
+			written.split("\n").filter((line) => line === "  - mcp__context7__query_docs").length,
+			1,
+			"the tool below the comment must survive exactly once",
+		);
+		assert.ok(
+			agentToolEntries(written).includes("mcp__context7__query_docs"),
+			"the retained tool must stay in the tools block",
+		);
+		assert.ok(written.includes("  # kept by hand\n"), "the comment itself is not dropped");
+		installPackageAssets(agentHome, true, ["delegation"]);
+		assert.equal(readFileSync(installedPath, "utf8"), written, "a second refresh must be byte-identical");
+	});
+});
+
 test("a second refresh keeps the added tool once", () => {
 	withIsolatedAssetHome((agentHome) => {
 		const installedPath = join(agentHome, WORKER_AGENT_KEY);

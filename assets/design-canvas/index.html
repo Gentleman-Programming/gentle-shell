@@ -51,7 +51,7 @@
 			<button type="button" id="gd-arrange-column" aria-pressed="false" aria-label="Column" title="Arrange in a column" data-i18n-aria-label="column" data-i18n-title="arrangeColumn" disabled><svg class="gd-i" aria-hidden="true"><use href="#i-column"/></svg></button>
 			<button type="button" id="gd-arrange-grid" aria-pressed="false" aria-label="Grid" title="Arrange in a grid" data-i18n-aria-label="grid" data-i18n-title="arrangeGrid" disabled><svg class="gd-i" aria-hidden="true"><use href="#i-grid"/></svg></button>
 		</div>
-		<button type="button" id="gd-device" class="gd-device-button" aria-haspopup="menu" aria-expanded="false" aria-controls="gd-device-menu" aria-label="Preview size: Desktop" title="Open an artboard to choose its preview size" disabled><svg class="gd-i gd-i-s" aria-hidden="true"><use id="gd-device-icon" href="#i-monitor"/></svg><span id="gd-device-name">Desktop</span><span id="gd-device-size" class="gd-device-size"></span></button>
+		<button type="button" id="gd-device" class="gd-device-button" aria-haspopup="menu" aria-expanded="false" aria-controls="gd-device-menu" aria-label="Preview size: Desktop" title="Open an artboard to choose its preview size" data-i18n-aria-label="previewDesktop" data-i18n-title="previewOff" disabled><svg class="gd-i gd-i-s" aria-hidden="true"><use id="gd-device-icon" href="#i-monitor"/></svg><span id="gd-device-name" data-i18n="desktop">Desktop</span><span id="gd-device-size" class="gd-device-size"></span></button>
 		<p id="gd-nav-mode" class="gd-nav-mode" role="status" aria-live="polite">Navigating</p>
 		<div class="gd-group" role="radiogroup" aria-label="When a comment is sent to the session" data-i18n-aria-label="sendMode">
 			<label class="gd-radio"><input type="radio" name="gd-send-mode" id="gd-mode-send" value="send"> <span data-i18n="sendNow">Send now</span></label>
@@ -74,8 +74,8 @@
 			<p id="gd-empty" class="gd-empty" hidden></p>
 			<button type="button" id="gd-back" class="gd-back" aria-keyshortcuts="Shift+Escape" title="Back to canvas (Shift+Esc)" data-i18n-title="backTitle" data-i18n="back" hidden>Back to canvas</button>
 			<section id="gd-minimap" class="gd-minimap" aria-labelledby="gd-minimap-title" hidden>
-				<h2 id="gd-minimap-title" class="gd-minimap-title"><span>Minimap</span><kbd id="gd-minimap-key" aria-hidden="true">M</kbd></h2>
-				<div id="gd-minimap-map" class="gd-minimap-map" role="img" aria-label="Position of the visible area among the artboards. Click or drag to move the view."><b id="gd-minimap-view" class="gd-minimap-view"></b></div>
+				<h2 id="gd-minimap-title" class="gd-minimap-title"><span data-i18n="minimap">Minimap</span><kbd id="gd-minimap-key" aria-hidden="true">M</kbd></h2>
+				<div id="gd-minimap-map" class="gd-minimap-map" role="img" aria-label="Position of the visible area among the artboards. Click or drag to move the view." data-i18n-aria-label="minimapMap"><b id="gd-minimap-view" class="gd-minimap-view"></b></div>
 			</section>
 			<section id="gd-inspector" class="gd-inspector" aria-labelledby="gd-inspector-title" hidden>
 				<header class="gd-inspector-head">
@@ -112,10 +112,10 @@
 		</aside>
 		<section id="gd-compare" class="gd-compare" aria-labelledby="gd-compare-title" hidden>
 			<div class="gd-compare-bar">
-				<h2 id="gd-compare-title" class="gd-compare-title">Compare</h2>
-				<label class="gd-radio" id="gd-compare-fit-field" hidden><input type="checkbox" id="gd-compare-fit"> Scale to fit</label>
-				<a id="gd-compare-open" class="gd-compare-open" target="_blank" rel="noopener noreferrer">Open in new tab</a>
-				<button type="button" id="gd-compare-back" class="gd-primary" aria-keyshortcuts="Shift+Escape" title="Back to canvas (Shift+Esc)">Back to canvas</button>
+				<h2 id="gd-compare-title" class="gd-compare-title" data-i18n="compare">Compare</h2>
+				<label class="gd-radio" id="gd-compare-fit-field" hidden><input type="checkbox" id="gd-compare-fit"> <span data-i18n="scaleToFit">Scale to fit</span></label>
+				<a id="gd-compare-open" class="gd-compare-open" target="_blank" rel="noopener noreferrer" data-i18n="openTab">Open in new tab</a>
+				<button type="button" id="gd-compare-back" class="gd-primary" aria-keyshortcuts="Shift+Escape" title="Back to canvas (Shift+Esc)" data-i18n-title="compareBackTitle" data-i18n="compareBack">Back to canvas</button>
 			</div>
 			<p id="gd-compare-message" class="gd-compare-message" role="status" aria-live="polite"></p>
 			<div id="gd-compare-stage" class="gd-compare-stage">
@@ -127,7 +127,7 @@
 	</div>
 	<div id="gd-toast" class="gd-toast" role="status" aria-live="polite" hidden></div>
 	<div id="gd-menu" class="gd-menu" role="menu" hidden></div>
-	<div id="gd-device-menu" class="gd-menu gd-device-menu" role="menu" aria-label="Preview size" hidden></div>
+	<div id="gd-device-menu" class="gd-menu gd-device-menu" role="menu" aria-label="Preview size" data-i18n-aria-label="previewSize" hidden></div>
 	<dialog id="gd-shortcuts" class="gd-dialog" aria-labelledby="gd-shortcuts-title">
 		<h2 id="gd-shortcuts-title" class="gd-dialog-title" data-i18n="shortcutsTitle">Keyboard shortcuts</h2>
 		<ul id="gd-keys-custom" class="gd-keys-custom" aria-label="Shortcuts you can change" data-i18n-aria-label="changeable"></ul>

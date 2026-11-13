@@ -379,10 +379,11 @@ test("index.html carries the minimap inside the viewport, hidden until there are
 	const html = read("index.html");
 	const section = html.match(/<section id="gd-minimap"[^>]*>[^]*?<\/section>/)![0];
 	assert.match(section, /^<section id="gd-minimap" class="gd-minimap" aria-labelledby="gd-minimap-title" hidden>/);
-	assert.match(section, /<h2 id="gd-minimap-title" class="gd-minimap-title"><span>Minimap<\/span><kbd id="gd-minimap-key" aria-hidden="true">M<\/kbd><\/h2>/);
-	assert.match(section, /<div id="gd-minimap-map" class="gd-minimap-map" role="img" aria-label="[^"]+">/);
+	assert.match(section, /<h2 id="gd-minimap-title" class="gd-minimap-title"><span data-i18n="minimap">Minimap<\/span><kbd id="gd-minimap-key" aria-hidden="true">M<\/kbd><\/h2>/);
+	assert.match(section, /<div id="gd-minimap-map" class="gd-minimap-map" role="img" aria-label="[^"]+" data-i18n-aria-label="minimapMap">/);
 	assert.match(section, /<b id="gd-minimap-view" class="gd-minimap-view"><\/b>/);
-	assert.ok(!/tabindex|<button|data-i18n/.test(section), "nothing in the minimap takes the keyboard, and its words are English literals");
+	// Its words are keyed for the language (ES.html, tests/design-canvas-i18n.test.ts); the English stays in the markup.
+	assert.ok(!/tabindex|<button/.test(section), "nothing in the minimap takes the keyboard");
 	const viewport = html.slice(html.indexOf('<main id="gd-viewport"'), html.indexOf("</main>"));
 	assert.ok(viewport.includes('id="gd-minimap"'), "the minimap is inside the viewport");
 });

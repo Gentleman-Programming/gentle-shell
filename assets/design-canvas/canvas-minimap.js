@@ -6,7 +6,7 @@
 // free around the blocks, the smallest block drawn, and the smallest visible-area outline.
 const MINIMAP = Object.freeze({ width: 204, height: 96, pad: 6, minBlock: 2, minView: 4 });
 
-// Every string this module shows, in English until the i18n PR keys them.
+// Every string this module shows, in English; canvas-i18n-es.js has the Spanish (its own plural).
 const TEXT = Object.freeze({
 	label: (count) => `Position of the visible area among ${count} artboard${count === 1 ? "" : "s"}. Click or drag to move the view.`,
 });
@@ -16,6 +16,7 @@ const rounded = (value) => `${Number(value.toFixed(2))}px`;
 export function init(ctx) {
 	const { doc, els, store, actions } = ctx;
 	const { state } = store;
+	const T = ctx.i18n.text("minimap", TEXT);
 
 	// This module's own state: the block of each board, and what the last full render measured (where the world's
 	// (0, 0) lands in the map and how big a world px is there; the viewport's size), so a pan or a wheel only
@@ -88,7 +89,7 @@ export function init(ctx) {
 		// Only when the set of boards changed: re-attaching nodes on every pointer move is wasted work.
 		const old = Array.from(els.minimapMap.children);
 		if (old.length !== children.length || old.some((child, index) => child !== children[index])) els.minimapMap.replaceChildren(...children);
-		els.minimapMap.setAttribute("aria-label", TEXT.label(boards.filter((board) => !board.system).length));
+		els.minimapMap.setAttribute("aria-label", T.label(boards.filter((board) => !board.system).length));
 		renderMinimapView();
 	}
 
@@ -157,5 +158,6 @@ export function init(ctx) {
 	// The browser took the capture away (a context menu, a lost window): the release may never come.
 	els.minimapMap.addEventListener("lostpointercapture", endDrag);
 
-	return { renderMinimap, renderMinimapView, measureMinimap, toggleMinimap };
+	// A new language: the map's name (index.html's title is keyed); the blocks carry the artboards' titles as written.
+	return { renderMinimap, renderMinimapView, measureMinimap, toggleMinimap, relabel: renderMinimap };
 }

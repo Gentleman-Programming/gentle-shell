@@ -19,7 +19,7 @@
 // never sent with a size it was not made at. The same message tells the page that the canvas dropped its overflow
 // report, so the page reports again even when its answer did not change.
 
-// Every string the sizes show, in English until the i18n PR keys them.
+// Every string the sizes show, in English; canvas-i18n-es.js has the Spanish. Artboard titles stay as written.
 const TEXT = Object.freeze({
 	group: "Preview size",
 	phone: "Phone",
@@ -68,8 +68,9 @@ const MIN_SIZES_SCALE = 0.05;
 export function init(ctx) {
 	const { doc, els, store, actions } = ctx;
 	const { state } = store;
+	const T = ctx.i18n.text("sizes", TEXT);
 
-	const nameOf = (kind) => TEXT[kind] ?? TEXT.desktop;
+	const nameOf = (kind) => T[kind] ?? T.desktop;
 	const dims = (size) => `${size.width} × ${size.height}`;
 
 	/** Desktop: the viewport's whole width at 100%, never narrower than the artboard was designed. */
@@ -121,8 +122,8 @@ export function init(ctx) {
 		els.deviceName.textContent = name;
 		els.deviceSize.textContent = size;
 		els.device.disabled = !board;
-		els.device.title = board ? TEXT.buttonTitle : TEXT.buttonOff;
-		els.device.setAttribute("aria-label", TEXT.button(size ? `${name} ${size}` : name));
+		els.device.title = board ? T.buttonTitle : T.buttonOff;
+		els.device.setAttribute("aria-label", T.button(size ? `${name} ${size}` : name));
 	}
 
 	/** A span with a class and text. */
@@ -152,7 +153,7 @@ export function init(ctx) {
 
 	function presetItem(board, preset) {
 		const size = presetSize(board, preset);
-		return deviceItem(preset.kind, TEXT.itemTitle(nameOf(preset.kind), size.width, size.height), size);
+		return deviceItem(preset.kind, T.itemTitle(nameOf(preset.kind), size.width, size.height), size);
 	}
 
 	// The open menu's width field and its error line; null while the device menu is closed.
@@ -165,7 +166,7 @@ export function init(ctx) {
 	function openDeviceMenu(last) {
 		const board = state.focus;
 		if (!board) return;
-		const items = [...SIZE_PRESETS.map((preset) => presetItem(board, preset)), deviceItem("all", TEXT.allTitle, null)];
+		const items = [...SIZE_PRESETS.map((preset) => presetItem(board, preset)), deviceItem("all", T.allTitle, null)];
 		const separator = doc.createElement("div");
 		separator.className = "gd-menu-separator";
 		separator.setAttribute("role", "separator");
@@ -177,7 +178,7 @@ export function init(ctx) {
 		// A name keeps the browser from flagging an anonymous form field.
 		input.name = "gd-custom-width";
 		input.className = "gd-device-input";
-		input.setAttribute("aria-label", TEXT.customAria);
+		input.setAttribute("aria-label", T.customAria);
 		input.setAttribute("min", String(CUSTOM_WIDTH.min));
 		input.setAttribute("max", String(CUSTOM_WIDTH.max));
 		input.setAttribute("step", "1");
@@ -185,7 +186,7 @@ export function init(ctx) {
 		input.value = state.size.kind === "custom" ? String(state.size.width) : "";
 		const unit = chip("gd-device-unit", "px");
 		unit.setAttribute("aria-hidden", "true");
-		row.append(actions.icon(SIZE_ICONS.custom, "gd-i gd-i-s"), chip("gd-device-custom-label", TEXT.custom), input, unit);
+		row.append(actions.icon(SIZE_ICONS.custom, "gd-i gd-i-s"), chip("gd-device-custom-label", T.custom), input, unit);
 		const error = doc.createElement("p");
 		error.className = "gd-device-error";
 		error.setAttribute("role", "alert");
@@ -201,9 +202,9 @@ export function init(ctx) {
 		const group = doc.createElement("div");
 		group.className = "gd-device-custom-group";
 		group.setAttribute("role", "group");
-		group.setAttribute("aria-label", TEXT.customGroup);
+		group.setAttribute("aria-label", T.customGroup);
 		group.append(row, error);
-		actions.openMenu(els.device, els.deviceMenu, [...items, separator, group], [...items, input], TEXT.group, last ? input : items[0]);
+		actions.openMenu(els.device, els.deviceMenu, [...items, separator, group], [...items, input], T.group, last ? input : items[0]);
 	}
 
 	const deviceMenuOpen = () => Boolean(state.menu && state.menu.root === els.deviceMenu);
@@ -228,7 +229,7 @@ export function init(ctx) {
 		const width = Number(text);
 		if (!/^\d+$/.test(text) || width < CUSTOM_WIDTH.min || width > CUSTOM_WIDTH.max) {
 			input.setAttribute("aria-invalid", "true");
-			error.textContent = TEXT.error(CUSTOM_WIDTH.min, CUSTOM_WIDTH.max);
+			error.textContent = T.error(CUSTOM_WIDTH.min, CUSTOM_WIDTH.max);
 			error.hidden = false;
 			return;
 		}
@@ -278,24 +279,23 @@ export function init(ctx) {
 		view.className = "gd-sizes-all";
 		view.classList.toggle("gd-commenting", state.commenting && !board.system);
 		view.setAttribute("role", "group");
-		view.setAttribute("aria-label", TEXT.all);
 		board.sizeFrames = allSizes(board).map((size) => createSizeFrame(board, size));
 		view.append(...board.sizeFrames.map((surface) => surface.root));
 		board.sizesView = view;
+		labelSizesView(board);
 		board.wrapper.classList.add("gd-all-sizes");
 		els.viewport.append(view);
 	}
 
 	function createSizeFrame(board, { kind, width, height }) {
-		const name = nameOf(kind);
 		const root = doc.createElement("section");
 		root.className = "gd-size-frame";
-		root.setAttribute("aria-label", TEXT.frameAria(name, width, height));
 		const head = doc.createElement("div");
 		head.className = "gd-size-head";
 		const scaleLabel = chip("gd-size-scale", "");
+		const nameLabel = chip("gd-size-name", "");
 		const designed = kind === "designed";
-		head.append(actions.icon(designed ? DESIGNED_ICON : SIZE_ICONS[kind], "gd-i gd-i-s"), chip("gd-size-name", name), chip("gd-size-dim", dims({ width, height })), scaleLabel);
+		head.append(actions.icon(designed ? DESIGNED_ICON : SIZE_ICONS[kind], "gd-i gd-i-s"), nameLabel, chip("gd-size-dim", dims({ width, height })), scaleLabel);
 		const scaled = doc.createElement("div");
 		scaled.className = "gd-size-scaled";
 		const stage = doc.createElement("div");
@@ -306,7 +306,6 @@ export function init(ctx) {
 		frame.className = "gd-size-iframe";
 		frame.setAttribute("sandbox", "allow-scripts");
 		frame.setAttribute("referrerpolicy", "no-referrer");
-		frame.title = designed ? TEXT.designedTitle(board.artboard.title, width, height) : TEXT.frameTitle(board.artboard.title, name, width, height);
 		frame.style.width = `${width}px`;
 		frame.style.height = `${height}px`;
 		const pins = doc.createElement("div");
@@ -317,10 +316,30 @@ export function init(ctx) {
 		root.append(head, scaled);
 		// rects and overflow: null until this frame's page reports them (canvas-messages.js). A size frame never
 		// changes size, so its generation stays 0.
-		const surface = { board, kind, width, height, viewWidth: width, viewHeight: height, frame, pins, flag, rects: null, overflow: null, generation: 0, root, head, scaled, stage, scaleLabel };
+		const surface = { board, kind, width, height, viewWidth: width, viewHeight: height, frame, pins, flag, rects: null, overflow: null, generation: 0, root, head, scaled, stage, scaleLabel, nameLabel, scale: null };
+		labelSizeFrame(surface);
 		frame.addEventListener("load", () => surfaceLoaded(surface));
 		frame.src = actions.boardUrl(board);
 		return surface;
+	}
+
+	/** A size frame's own text in the current language: its name, its label and its frame's title. */
+	function labelSizeFrame(surface) {
+		const { board, kind, width, height } = surface;
+		const name = nameOf(kind);
+		surface.root.setAttribute("aria-label", T.frameAria(name, width, height));
+		surface.nameLabel.textContent = name;
+		surface.frame.title = kind === "designed" ? T.designedTitle(board.artboard.title, width, height) : T.frameTitle(board.artboard.title, name, width, height);
+	}
+
+	/** All sizes' group name, and each frame's scale and header title once it has a scale (placeSizeFrames). */
+	function labelSizesView(board) {
+		board.sizesView.setAttribute("aria-label", T.all);
+		for (const surface of board.sizeFrames) {
+			if (surface.scale === null) continue;
+			surface.scaleLabel.textContent = T.scale(Math.round(surface.scale * 100));
+			surface.head.title = `${nameOf(surface.kind)} ${dims(surface)} ${surface.scaleLabel.textContent}`;
+		}
 	}
 
 	/**
@@ -365,9 +384,9 @@ export function init(ctx) {
 			surface.stage.style.transform = `scale(${scale})`;
 			// Pins keep their size at any scale, as in the world.
 			surface.stage.style.setProperty("--gd-inv-zoom", String(1 / scale));
-			surface.scaleLabel.textContent = TEXT.scale(Math.round(scale * 100));
-			surface.head.title = `${nameOf(surface.kind)} ${dims(surface)} ${surface.scaleLabel.textContent}`;
+			surface.scale = scale;
 		}
+		labelSizesView(board);
 	}
 
 	/**
@@ -405,8 +424,14 @@ export function init(ctx) {
 		const flag = doc.createElement("span");
 		flag.className = "gd-overflow-flag";
 		flag.hidden = true;
-		flag.append(chip("gd-overflow-text", TEXT.overflow), chip("gd-visually-hidden", ""));
+		flag.append(chip("gd-overflow-text", ""), chip("gd-visually-hidden", ""));
+		labelOverflow(flag);
 		return flag;
+	}
+
+	/** The chip's own word, in the current language; its note follows the report (renderOverflow). */
+	function labelOverflow(flag) {
+		flag.children[0].textContent = T.overflow;
 	}
 
 	/**
@@ -427,7 +452,7 @@ export function init(ctx) {
 		const shown = Boolean(surface.overflow) && (surface !== board || (state.focus === board && state.size.kind !== "all"));
 		surface.flag.hidden = !shown;
 		if (!shown) return;
-		const note = TEXT.overflowNote(surface.viewWidth);
+		const note = T.overflowNote(surface.viewWidth);
 		surface.flag.title = note;
 		surface.flag.children[1].textContent = note;
 	}
@@ -462,7 +487,7 @@ export function init(ctx) {
 		if (!viewport || typeof viewport !== "object" || !Number.isInteger(viewport.width) || !Number.isInteger(viewport.height)) return null;
 		const label = describeViewport(viewport);
 		const element = chip("gd-comment-viewport", label);
-		element.title = TEXT.madeAt(label);
+		element.title = T.madeAt(label);
 		return element;
 	}
 
@@ -479,5 +504,21 @@ export function init(ctx) {
 		actions.menuKeydown(event, state.menu.items, actions.closeMenu, chooseDeviceItem);
 	});
 
-	return { focusSize, surfacesOf, ownerOf, renderDevice, closeDeviceMenu, startSizes, layoutSizes, removeSizeFrames, surfaceLoaded, resized, overflowFlag, setOverflow, renderOverflow, viewportOf, viewportChip };
+	/**
+	 * A new language: the device button, and every frame's text built once, in place (no frame reloads): All sizes' labels
+	 * and each Overflows chip with its note. The device menu is built when it opens, so it opens in the language shown.
+	 */
+	function relabel() {
+		renderDevice();
+		for (const board of actions.allBoards()) {
+			if (board.sizesView) labelSizesView(board);
+			for (const surface of surfacesOf(board)) {
+				if (surface !== board) labelSizeFrame(surface);
+				labelOverflow(surface.flag);
+				renderOverflow(surface);
+			}
+		}
+	}
+
+	return { relabel, focusSize, surfacesOf, ownerOf, renderDevice, closeDeviceMenu, startSizes, layoutSizes, removeSizeFrames, surfaceLoaded, resized, overflowFlag, setOverflow, renderOverflow, viewportOf, viewportChip };
 }

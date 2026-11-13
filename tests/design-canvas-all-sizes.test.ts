@@ -582,12 +582,12 @@ test("E4: the client's viewport limits and the Phone and Tablet presets match wh
 	assert.deepEqual(named, client, "the server names the same sizes the card names");
 });
 
+// Its strings go through ctx.i18n, checked against canvas-i18n-es.js in tests/design-canvas-i18n.test.ts.
 test("All sizes keeps the module rules: state through the store, board fields documented, English strings in TEXT", () => {
 	const sizes = read("canvas-sizes.js");
 	assert.ok(sizes.indexOf("const TEXT = Object.freeze({") < sizes.indexOf("export function init"), "the strings sit in one TEXT block before init");
 	for (const literal of ["All sizes", "Overflows", "Made at"]) assert.ok(sizes.slice(0, sizes.indexOf("export function init")).includes(literal), `${literal} is in TEXT`);
 	assert.ok(!/\bstate\.size\s*=(?!=)/.test(sizes));
-	assert.ok(!/data-i18n|\bloc\(|\bt\(/.test(sizes));
 	assert.match(sizes, /setAttribute\("sandbox", "allow-scripts"\)/, "size frames keep the scripts-only sandbox");
 	assert.ok(!/setAttribute\("style"|\.cssText/.test(sizes), "styles go through the CSSOM");
 	const store = read("canvas-store.js");

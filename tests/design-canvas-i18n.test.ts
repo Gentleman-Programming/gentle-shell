@@ -14,8 +14,8 @@ import { boardsOf, click, FakeDocument, findAll, flush, loadCanvas, memoryStorag
 const LANGUAGE_KEY = "gentle-design:language";
 const LANGUAGE_ITEMS = ["Español", "English", "Match the browser"];
 const NOTE = "Messages to the agent stay in English.";
-// The modules this PR keys, by their ES name.
-const COVERED = ["rail", "boards", "focus", "events"];
+// The modules keyed so far, by their ES name (tests/design-canvas-i18n-views.test.ts covers the second five).
+const COVERED = ["rail", "boards", "focus", "events", "layout", "minimap", "sizes", "export", "compare"];
 
 type Browser = { languages?: string[]; language?: string } | null;
 

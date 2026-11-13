@@ -7,39 +7,64 @@
 // production. No top-navigation flag is granted, so it can never navigate the canvas away.
 const PREVIEW_SANDBOX = "allow-scripts allow-same-origin allow-forms allow-popups";
 const PREVIEW_TIMEOUT_MS = 6000;
-const PREVIEW_HINT = "If the app refuses to be framed, use Open in new tab.";
-// CSP host sources have no IPv6 literal form, so Chromium drops the [::1] source from frame-src.
-const IPV6_HINT = "Browsers do not frame [::1] under the canvas policy (CSP has no IPv6 sources): use Open in new tab, or report the preview on localhost.";
 const COMPARE_GAP = 24;
 const COMPARE_PADDING = 24;
+
+// Every string Compare shows, in English; canvas-i18n-es.js has the Spanish. Titles, file names and URLs stay as written.
+const TEXT = Object.freeze({
+	hint: "If the app refuses to be framed, use Open in new tab.",
+	// CSP host sources have no IPv6 literal form, so Chromium drops the [::1] source from frame-src.
+	ipv6: "Browsers do not frame [::1] under the canvas policy (CSP has no IPv6 sources): use Open in new tab, or report the preview on localhost.",
+	title: (title) => `Compare: ${title}`,
+	artboardFrame: (title) => `${title} artboard`,
+	appFrame: (preview) => `Running app at ${preview}`,
+	designCaption: (file) => `Design: ${file}`,
+	appCaption: (preview) => `Implementation: ${preview}`,
+	loadError: (preview) => `The app at ${preview} could not be loaded in the frame. Use Open in new tab.`,
+	timeout: (preview) => `The app at ${preview} has not loaded; it may be down or refuse to be framed. Use Open in new tab.`,
+});
 
 export function init(ctx) {
 	const { win, doc, els, store, actions } = ctx;
 	const { state } = store;
+	const T = ctx.i18n.text("compare", TEXT);
 
-	function comparePane(caption, frame) {
+	function comparePane(frame) {
 		const figure = doc.createElement("figure");
 		figure.className = "gd-compare-pane";
 		const label = doc.createElement("figcaption");
 		label.className = "gd-compare-caption";
-		label.textContent = caption;
 		figure.append(label, frame);
 		return figure;
 	}
 
-	function compareFrame(width, height, title) {
+	function compareFrame(width, height) {
 		const frame = doc.createElement("iframe");
 		frame.className = "gd-compare-frame";
 		frame.setAttribute("referrerpolicy", "no-referrer");
-		frame.title = title;
 		frame.style.width = `${width}px`;
 		frame.style.height = `${height}px`;
 		return frame;
 	}
 
-	function setCompareMessage(text, isError) {
-		els.compareMessage.textContent = text;
+	/** text: the message, as a function so a new language writes it again (relabel). */
+	function setCompareMessage(compare, text, isError) {
+		compare.message = { text, isError };
+		els.compareMessage.textContent = text();
 		els.compareMessage.classList.toggle("gd-error", Boolean(isError));
+	}
+
+	/** Compare's own text, in the current language: its title, the captions and names of both frames, and its message. */
+	function labelCompare() {
+		const compare = state.compare;
+		if (!compare) return;
+		const { board, preview, artboardFrame, app, panes } = compare;
+		els.compareTitle.textContent = T.title(board.artboard.title);
+		artboardFrame.title = T.artboardFrame(board.artboard.title);
+		app.title = T.appFrame(preview);
+		panes[0].children[0].textContent = T.designCaption(board.artboard.file);
+		panes[1].children[0].textContent = T.appCaption(preview);
+		setCompareMessage(compare, compare.message.text, compare.message.isError);
 	}
 
 	/** 100% by default; past the window width, "Scale to fit" shrinks the pair to fit. */
@@ -64,35 +89,37 @@ export function init(ctx) {
 		actions.exitFocus();
 		actions.closePopover();
 		actions.setHoverBoard(null);
-		const { width, height, title } = board.artboard;
-		const artboardFrame = compareFrame(width, height, `${title} artboard`);
+		const { width, height } = board.artboard;
+		const artboardFrame = compareFrame(width, height);
 		artboardFrame.setAttribute("sandbox", "allow-scripts");
 		// Like focus mode: the artboard owns its scroll, and Shift+Esc inside it asks to leave.
 		artboardFrame.addEventListener("load", () => artboardFrame.contentWindow?.postMessage({ type: "gd:focus", enabled: true }, "*"));
 		artboardFrame.src = actions.boardUrl(board);
-		const app = compareFrame(width, height, `Running app at ${preview}`);
+		const app = compareFrame(width, height);
 		app.setAttribute("sandbox", PREVIEW_SANDBOX);
-		// This module's own object: the load and timeout below update it in place.
-		const compare = { board, preview, artboardFrame, timer: 0, loaded: false };
+		const panes = [comparePane(artboardFrame), comparePane(app)];
+		// This module's own object: the load and timeout below update it in place, and so does a new language (labelCompare).
+		const compare = { board, preview, artboardFrame, app, panes, timer: 0, loaded: false, message: null };
 		const failed = (text) => {
-			if (state.compare === compare) setCompareMessage(text, true);
+			if (state.compare === compare) setCompareMessage(compare, text, true);
 		};
 		// A frame refused by X-Frame-Options or frame-ancestors may still fire load, so the
 		// Open in new tab fallback is always shown; a missing load also says so.
 		app.addEventListener("load", () => { compare.loaded = true; });
-		app.addEventListener("error", () => failed(`The app at ${preview} could not be loaded in the frame. Use Open in new tab.`));
+		app.addEventListener("error", () => failed(() => T.loadError(preview)));
 		compare.timer = win.setTimeout(() => {
-			if (!compare.loaded) failed(`The app at ${preview} has not loaded; it may be down or refuse to be framed. Use Open in new tab.`);
+			if (!compare.loaded) failed(() => T.timeout(preview));
 		}, PREVIEW_TIMEOUT_MS);
 		app.src = preview;
 		store.setCompare(compare);
-		els.compareTitle.textContent = `Compare: ${title}`;
 		// A new tab with no opener and no Referer: the canvas URL carries the server token.
 		els.compareOpen.setAttribute("target", "_blank");
 		els.compareOpen.setAttribute("rel", "noopener noreferrer");
 		els.compareOpen.href = preview;
-		setCompareMessage(new win.URL(preview).hostname === "[::1]" ? IPV6_HINT : PREVIEW_HINT, false);
-		els.comparePanes.replaceChildren(comparePane(`Design: ${board.artboard.file}`, artboardFrame), comparePane(`Implementation: ${preview}`, app));
+		const ipv6 = new win.URL(preview).hostname === "[::1]";
+		compare.message = { text: () => (ipv6 ? T.ipv6 : T.hint), isError: false };
+		els.comparePanes.replaceChildren(...panes);
+		labelCompare();
 		els.compareFit.checked = false;
 		els.compare.hidden = false;
 		// Compare covers the rail too: inert, its controls leave the keyboard and the pointer.
@@ -128,5 +155,5 @@ export function init(ctx) {
 	els.compareBack.addEventListener("click", () => exitCompare(true));
 	els.compareFit.addEventListener("change", layoutCompare);
 
-	return { layoutCompare, enterCompare, exitCompare };
+	return { layoutCompare, enterCompare, exitCompare, relabel: labelCompare };
 }

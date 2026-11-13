@@ -500,12 +500,11 @@ test("All sizes fits a narrow viewport: each frame is as wide as its scaled ifra
 test("canvas-layout S6: the device selector's markup sits after the arrangements in English, and its styles use --gd-* tokens, a focus ring and no motion", () => {
 	const html = read("index.html");
 	const bar = html.slice(html.indexOf('<header class="gd-bar"'), html.indexOf("</header>"));
-	assert.match(bar, /<button type="button" id="gd-device" class="gd-device-button" aria-haspopup="menu" aria-expanded="false" aria-controls="gd-device-menu" aria-label="Preview size: Desktop" title="Open an artboard to choose its preview size" disabled><svg class="gd-i gd-i-s" aria-hidden="true"><use id="gd-device-icon" href="#i-monitor"\/><\/svg><span id="gd-device-name">Desktop<\/span><span id="gd-device-size" class="gd-device-size"><\/span><\/button>/);
+	assert.match(bar, /<button type="button" id="gd-device" class="gd-device-button" aria-haspopup="menu" aria-expanded="false" aria-controls="gd-device-menu" aria-label="Preview size: Desktop" title="Open an artboard to choose its preview size" data-i18n-aria-label="previewDesktop" data-i18n-title="previewOff" disabled><svg class="gd-i gd-i-s" aria-hidden="true"><use id="gd-device-icon" href="#i-monitor"\/><\/svg><span id="gd-device-name" data-i18n="desktop">Desktop<\/span><span id="gd-device-size" class="gd-device-size"><\/span><\/button>/);
 	assert.ok(bar.indexOf('id="gd-arrange-grid"') < bar.indexOf('id="gd-device"') && bar.indexOf('id="gd-device"') < bar.indexOf('id="gd-nav-mode"'), "after the arrangements, before the mode label");
-	assert.match(html, /<div id="gd-device-menu" class="gd-menu gd-device-menu" role="menu" aria-label="Preview size" hidden><\/div>/);
+	assert.match(html, /<div id="gd-device-menu" class="gd-menu gd-device-menu" role="menu" aria-label="Preview size" data-i18n-aria-label="previewSize" hidden><\/div>/);
 	for (const icon of ["i-phone", "i-tablet", "i-monitor", "i-devices", "i-width", "i-check"]) assert.match(html, new RegExp(`<symbol id="${icon}" viewBox="0 0 24 24">`));
-	const device = html.slice(html.indexOf('<button type="button" id="gd-device"'), html.indexOf('id="gd-nav-mode"'));
-	assert.ok(!/data-i18n/.test(device + html.slice(html.indexOf('<div id="gd-device-menu"'), html.indexOf('<dialog id="gd-shortcuts"'))), "English literals, no catalog keys yet");
+	// The English stays in the markup, keyed for the language (ES.html, tests/design-canvas-i18n.test.ts); renderDevice rewrites it.
 	const css = read("canvas.css");
 	const block = (selector: string) => {
 		const start = css.indexOf(`\n${selector} {`);
@@ -534,7 +533,6 @@ test("the focus margins live in canvas-focus.js, and the size changes only throu
 	const sizes = read("canvas-sizes.js");
 	assert.match(sizes, /store\.setFocus\(\{ size/);
 	assert.ok(!/\bstate\.size\s*=(?!=)/.test(sizes), "never assigned in place");
-	assert.ok(!/data-i18n/.test(sizes));
 });
 
 test("the docs describe the preview size in the top bar, All sizes, the Overflows chip, the comment's size and focus mode as wide as the window", () => {

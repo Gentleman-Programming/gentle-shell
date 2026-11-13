@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { exploreViaDaemon, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
 import { seedWorktreeIndex } from "../lib/codegraph-seed.ts";
-import { CHILD_ENV, maybeRewarm, prepareReadiness, runCodegraph, syncBeforeSearch, warmUpDaemon, type SearchSyncInput, type SessionStartReason } from "../lib/codegraph-readiness.ts";
+import { CHILD_ENV, indexState, maybeRewarm, prepareReadiness, runCodegraph, syncBeforeSearch, warmUpDaemon, type SearchSyncInput, type SessionStartReason } from "../lib/codegraph-readiness.ts";
 
 const CODEGRAPH_OPERATION = {
 	INIT: "init",
@@ -167,14 +167,11 @@ function assertSafeIndexDirectory(cwd: string): void {
 /**
  * An index is the database file, not merely the directory: a .codegraph/ left behind by a
  * partial init or a killed reindex is not a usable index. Any error, including EACCES,
- * counts as unconfirmed, so gates on this never fire on an unknown state.
+ * counts as unconfirmed, so gates on this never fire on an unknown state. Delegates to
+ * indexState: true exactly for "present"; absent and unknown both count as no index.
  */
 export function indexExists(cwd: string): boolean {
-	try {
-		return statSync(join(cwd, ".codegraph", "codegraph.db")).isFile();
-	} catch {
-		return false;
-	}
+	return indexState(cwd) === "present";
 }
 
 /** A full re-index from bash is blocked when an index already exists; this is the reason it gets. */

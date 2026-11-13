@@ -38,7 +38,7 @@ all seven items, six commits (hygiene items share one commit), user chose Start 
 
 - T1 (S1): perf(codegraph): cache git interrogations per cwd per turn — inline — commit: f121d12
 - T2 (S2): perf(codegraph): scan the daemon registry once per window — inline — commit: 10e8cd8
-- T3 (S3): chore(codegraph): drop dead branch, unify guards, narrow exports — inline — commit: —
+- T3 (S3): chore(codegraph): drop dead branch, unify guards, narrow exports — inline — commit: 70d639c
 - T4 (S4): test(codegraph): shared fakeRegistry helper and stat core — inline — commit: —
 - T5 (S5): feat(codegraph): skip a failed daemon until the next turn — inline — commit: —
 - T6 (S6): refactor(codegraph): one MCP line-conversation helper — inline — commit: —
@@ -56,3 +56,4 @@ all seven items, six commits (hygiene items share one commit), user chose Start 
 - L7: T1 implemented — git asked once per cwd per turn; gates: tools 34 pass, 5-file suite 0 fail, tsc 16 pre-existing unchanged; Risk: none (shared helpers pinned by the existing suite; the only behavior change is the cached-turn rule, pinned by the new test)
 - L8: T2 implemented — registry read once per project per window + warmUpDaemon single daemonFor; gates: daemon file pass, 5-file suite pass, tsc 16 unchanged; Risk: none (stale liveness within 1s degrades to the existing CLI fallback)
 - L9: T3 implemented — unreachable spawn guard removed; the one unguarded daemonFor call (runCodegraph's project line, the unit text's "maybeRewarm" quote) wrapped with the not-alive fallback to realpathSync(cwd), while the maybeRewarm and syncBeforeSearch daemonFor calls were already guarded at HEAD and stay as-is; exports audited 7 demoted, 2 annotated as test seams, evidence tmp/u3-export-audit.txt; gates: suite 84/0, tsc 16 unchanged; Risk: none (behavior-preserving chore; suite is the differential; no new RED test for that reason)
+- L10: T4 implemented — 6 record.json fixture copies replaced by one parameterized helper (values preserved per copy); indexExists delegates to indexState === "present" (verified equivalent for present/absent/unknown); gates: readiness file 27/0, suite 84/0, tsc 16 unchanged; Risk: none (test-only dedup plus behavior-identical delegation; suite green pre/post is the differential; no new RED test for that reason)

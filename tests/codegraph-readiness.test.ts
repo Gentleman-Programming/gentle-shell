@@ -31,6 +31,11 @@ function writeDb(cwd: string): void {
 	writeFileSync(join(cwd, ".codegraph", "codegraph.db"), "index");
 }
 
+/** Writes one daemon-registry record for a project into `registry`. */
+function fakeRegistryRecord(registry: string, root: string, socketPath: string, pid: number, startedAt = 1): void {
+	writeFileSync(join(registry, "record.json"), JSON.stringify({ root, socketPath, startedAt, pid }));
+}
+
 /** A ReadinessInput whose run and warm are counters; nothing real is spawned. */
 function fakeInput(cwd: string, overrides: Partial<ReadinessInput> = {}): ReadinessInput {
 	return {
@@ -116,7 +121,7 @@ test("prepareReadiness: a live daemon syncs without unlocking; a dead one keeps 
 	const registry = dir(t, "sync-live-registry");
 	const socket = join(registry, "live.sock");
 	writeFileSync(socket, "");
-	writeFileSync(join(registry, "record.json"), JSON.stringify({ root: cwd, socketPath: socket, startedAt: 1, pid: process.pid }));
+	fakeRegistryRecord(registry, cwd, socket, process.pid);
 	const calls: string[] = [];
 	const result = await prepareReadiness(fakeInput(cwd, {
 		registryDir: registry,
@@ -271,7 +276,7 @@ test("daemonFor: a dead pid is not alive, but its record still names the spellin
 	const registry = dir(t, "registry-dead");
 	const socket = join(registry, "stale.sock");
 	writeFileSync(socket, "");
-	writeFileSync(join(registry, "record.json"), JSON.stringify({ root: cwd, socketPath: socket, startedAt: 1, pid: exited.pid }));
+	fakeRegistryRecord(registry, cwd, socket, exited.pid);
 
 	const daemon = daemonFor(cwd, registry);
 	assert.equal(daemon.alive, false);
@@ -293,7 +298,7 @@ test("maybeRewarm: warms in the background only when the daemon is not alive", a
 
 	const liveSocket = join(registry, "live.sock");
 	writeFileSync(liveSocket, "");
-	writeFileSync(join(registry, "record.json"), JSON.stringify({ root: cwd, socketPath: liveSocket, startedAt: 1, pid: process.pid }));
+	fakeRegistryRecord(registry, cwd, liveSocket, process.pid);
 	warmed.length = 0;
 	maybeRewarm(cwd, warm, registry);
 	await new Promise((resolve) => setTimeout(resolve, 10));
@@ -314,7 +319,7 @@ test("warmUpDaemon: a live daemon resolves true without spawning; a dead record 
 	const registry = dir(t, "warm-live-registry");
 	const socket = join(registry, "live.sock");
 	writeFileSync(socket, "");
-	writeFileSync(join(registry, "record.json"), JSON.stringify({ root: cwd, socketPath: socket, startedAt: 1, pid: process.pid }));
+	fakeRegistryRecord(registry, cwd, socket, process.pid);
 	const startedAt = Date.now();
 	const warmed = await warmUpDaemon(cwd, false, 5_000, registry);
 	assert.equal(warmed, true, "a live daemon is already warm: no spawn, no handshake");
@@ -326,7 +331,7 @@ test("warmUpDaemon: a live daemon resolves true without spawning; a dead record 
 	const deadRegistry = dir(t, "warm-dead-registry");
 	const staleSocket = join(deadRegistry, "stale.sock");
 	writeFileSync(staleSocket, "");
-	writeFileSync(join(deadRegistry, "record.json"), JSON.stringify({ root: deadCwd, socketPath: staleSocket, startedAt: 1, pid: exited.pid }));
+	fakeRegistryRecord(deadRegistry, deadCwd, staleSocket, exited.pid);
 	const dead = await warmUpDaemon(deadCwd, false, 5_000, deadRegistry);
 	assert.equal(dead, false, "a dead record does not short-circuit: the spawn path ran and failed without codegraph on PATH");
 });
@@ -353,7 +358,7 @@ test("syncBeforeSearch: a live daemon syncs only, never unlocked; no daemon keep
 	const registry = dir(t, "search-live-registry");
 	const socket = join(registry, "live.sock");
 	writeFileSync(socket, "");
-	writeFileSync(join(registry, "record.json"), JSON.stringify({ root: cwd, socketPath: socket, startedAt: 1, pid: process.pid }));
+	fakeRegistryRecord(registry, cwd, socket, process.pid);
 	const calls: string[] = [];
 	syncBeforeSearch({
 		cwd,

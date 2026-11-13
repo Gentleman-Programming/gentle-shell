@@ -1,6 +1,6 @@
 # Plugin contributions contract (v1)
 
-A Pi package can add rows to `/gentle:customize`, sections to the sidebar rail, and entries to `/gentle:commands` without importing gentle-pi, without knowing a file path inside it, and without depending on extension load order. Those are the three surfaces slice 1 opens; runtime events for delegations, working agents and background jobs are [slice 2](#slice-2-is-not-in-this-contract) and are not described here.
+A Pi package can add rows to `/gentle:customize`, sections to the sidebar rail, rows under the header, and entries to `/gentle:commands` without importing gentle-pi, without knowing a file path inside it, and without depending on extension load order. Those are the four surfaces slice 1 opens; runtime events for delegations, working agents and background jobs are [slice 2](#slice-2-is-not-in-this-contract) and are not described here.
 
 Source map: [contract](../lib/plugin-contract.ts) (the only stable surface), the read points in [the palette](../lib/command-palette-catalog.ts) and [the sidebar rail](../lib/shell-sidebar.ts), the customize read point in [the shell extension](../extensions/gentle-shell.ts), and the audit command `/gentle:plugins`.
 
@@ -34,6 +34,7 @@ export interface Contribution {
 	rows?: PluginRow[];
 	sidebar?: PluginSidebarSection;
 	palette?: PluginPaletteCommand;
+	header?: PluginHeader;
 }
 
 export interface PluginRow {
@@ -61,7 +62,24 @@ export interface PluginRowChoice {
 export interface PluginSidebarSection {
 	key: string;
 	bottom: boolean;
-	rail: unknown;
+	rail: PluginRail;
+}
+
+export interface PluginRail {
+	render(width: number): readonly string[];
+	digest?(): string;
+	invalidate?(): void;
+}
+
+export interface PluginHeader {
+	/** Static rows, or a function called on each render with the live header context. */
+	rows: readonly string[] | ((context: PluginHeaderContext) => readonly string[]);
+}
+
+export interface PluginHeaderContext {
+	/** Columns the header may use at this width. */
+	width: number;
+	placement: "top" | "below-input" | "split";
 }
 
 export interface PluginPaletteCommand {
@@ -75,7 +93,9 @@ export interface PluginPaletteCommand {
 
 The row's query slots are synchronous: `label` (when it is a function), `preview`, `visible` and `choice.current` must answer immediately. A `label` that returns a promise drops its row, because a promise cannot fill a row the panel is painting right now. A `choice.setting` is namespaced under your contribution id (as `<id> · <setting>`), so a plugin switch can never merge into a built-in setting line; consecutive contributed rows that share a `setting` render as one line with their values inline.
 
-`PluginSidebarSection.rail` is opaque to the reader: it must be a mounted Pi component (anything with a `render(width)` function), and `bottom` travels with it unchanged — contributed sections are appended after the core keys, in the order the [declared owner order](#declared-owner-order) gives them.
+`PluginSidebarSection.rail` is typed `PluginRail`: it must be a mounted Pi component (anything with a `render(width)` function), `digest` and `invalidate` are optional, and `bottom` travels with it unchanged — contributed sections are appended after the core keys, in the order the [declared owner order](#declared-owner-order) gives them. The reader still accepts any runtime component with a `render` function; the type is there so a plugin author stops guessing, not to narrow what installs.
+
+`PluginHeader.rows` is either an array of plain strings or a function called on each render. An empty string is a valid row (a plugin may want a blank line); an object is not a row. A static array is read once at box-read time, so mutating it later changes nothing; the function form is how a plugin answers live state.
 
 ### Ids, keys and the contract version
 
@@ -99,10 +119,11 @@ The reader validates each entry on its own. A contribution whose payload is part
 | `malformed-rows` | `rows` is not an array of well-formed rows: every row needs `category`, `label` and `action`, and every optional field must have its declared type. |
 | `malformed-sidebar` | The key is reserved, unnamespaced, owned by someone else, or the rail does not render. |
 | `malformed-palette` | `palette` lacks a non-empty `command`, or carries a `group` that is not a string. |
+| `malformed-header` | `header.rows` is neither an array of strings (the empty string included) nor a function. |
 
 From adoption on, a later `set` on an existing id is refused, and the box keeps the first contribution under that id: re-registering an id never replaces what is already there, so a package cannot take over another package's contribution. A refusal whose value is a different object than the stored one is reported as `duplicate-id` on every later read; re-setting the very same reference marks the id as replaced but is not a duplicate. A read records both lists. Skipped entries and replaced ids are shown by `/gentle:plugins`, and `/gentle:customize` additionally raises a warning notice whose text starts with `Plugin <id>:` when it refuses a row. The report is an audit trail, never a second source of truth.
 
-Every contributed callback — `label`, `preview`, `visible`, `choice.current`, `action`, and a rail's `render`, `digest` and `invalidate` — runs through a guard. A callback that throws, or a promise that rejects, degrades to what that read point can render and is reported: a throwing `label` drops its own row (it is not shown with a placeholder), a throwing `preview` shows `Plugin preview unavailable` instead, a throwing `visible` hides the row, and a throwing `choice.current` reads as `false`. A throwing rail `render` paints an empty section and a throwing rail `digest` reads as no digest; the sidebar seam records both, and a throwing `invalidate` too, under `invalid-contribution`, so the audit can say the rail misbehaved. An async `action` is still awaited. A broken plugin degrades its own row or section; it never takes the panel down with it.
+Every contributed callback — `label`, `preview`, `visible`, `choice.current`, `action`, a rail's `render`, `digest` and `invalidate`, and a header's `rows` function — runs through a guard. A callback that throws, or a promise that rejects, degrades to what that read point can render and is reported: a throwing `label` drops its own row (it is not shown with a placeholder), a throwing `preview` shows `Plugin preview unavailable` instead, a throwing `visible` hides the row, and a throwing `choice.current` reads as `false`. A throwing rail `render` paints an empty section and a throwing rail `digest` reads as no digest; the sidebar seam records both, and a throwing `invalidate` too, under `invalid-contribution`, so the audit can say the rail misbehaved. A throwing header `rows` function paints no rows and is reported once per contribution. An async `action` is still awaited. A broken plugin degrades its own row, section or rows; it never takes the panel down with it.
 
 ### How each read point appends
 
@@ -126,7 +147,15 @@ An owner the file names is presented first, in the order the file gives; every o
 
 ### With an empty box
 
-With an empty box the customize panel, the sidebar rail and the palette contribute nothing: no plugin row, section or command appears, and no built-in row, rail key or catalog entry is moved or replaced. That no-op promise covers plugin-contributed content only. Slice 1 also adds the built-in `/gentle:plugins` command, and its catalogued palette row (`Plugins · contribution audit`, in the `Diagnostics` group) is present whether the box is empty or not.
+With an empty box the customize panel, the sidebar rail, the header and the palette contribute nothing: no plugin row, section, header row or command appears, and no built-in row, rail key, header row or catalog entry is moved or replaced. That no-op promise covers plugin-contributed content only. Slice 1 also adds the built-in `/gentle:plugins` command, and its catalogued palette row (`Plugins · contribution audit`, in the `Diagnostics` group) is present whether the box is empty or not.
+
+## Header rows
+
+`header.rows` adds text rows to the shell header, after the core rows and never in place of them. The core header is gentle-pi's: a plugin cannot replace it, hide a core row, reorder it, or take the header's widget slot. Replacing the whole header widget is out of contract — it is last-writer-wins, and whoever writes it destroys the core header for everyone else. Rows are the additive half.
+
+`rows` is either an array of plain strings or a function called on each render with the live context: `width` is the columns the header may use, and `placement` is the placement the current mode paints (`top`, `below-input` or `split`). The function form is how a plugin answers live state; the static form is read once. A row is a string — the empty string included, so a plugin may ask for a blank line — and an object is not a row.
+
+Contributed rows follow the [declared owner order](#declared-owner-order) and paint after the core rows of whichever placement is active. A rows function that throws contributes no rows and is reported once per contribution as `Plugin <id>: <message>`; it never breaks the header. A header whose `rows` is neither an array of strings nor a function is refused as `malformed-header`, and the same contribution's other payloads still load.
 
 ## An example plugin
 
@@ -207,6 +236,7 @@ Fill the box once per process: the entry the process stored first is the one tha
 | Customize rows (`rows`) | allowed | Appended after the built-in rows in the category you name; nothing core is replaced or reordered, so an empty box and a full box show the same base panel. |
 | Sidebar sections (`sidebar`) | allowed | Appended after the four core keys with a `plugin:<owner>:<name>` key, so a plugin can never occupy `todo`, `jobs`, `agents`, `footer`, `header` or `statusbar`. |
 | Palette entries (`palette`) | allowed | Appended after the curated catalog for a command you registered; a command the catalog already names is not listed twice. |
+| Header rows (`header`) | allowed | Appended after the core header rows in every placement (`top`, `below-input`, `split`); see [Header rows](#header-rows). |
 | Its own settings files | allowed, required | A plugin persists only its own state, so a plugin update cannot corrupt a gentle-pi preference and a preference redesign cannot break a plugin. |
 | Agent status records | read-only | Writing them would forge a working/blocked/idle claim that another view renders as truth about a session that is not yours. |
 | Published runtime documents (activity, presence) | read-only | These are observations gentle-pi publishes for its own panels; writing them would make a plugin's guess indistinguishable from a measured state. |

@@ -43,11 +43,29 @@ export interface PluginRow {
 	action(): void | Promise<void>;
 }
 
-/** The component stays opaque here; the sidebar reader owns its own typing. */
+/** The component stays runtime-opaque here, but its public shape is typed, so a plugin author stops guessing. */
+export interface PluginRail {
+	render(width: number): readonly string[];
+	digest?(): string;
+	invalidate?(): void;
+}
+
 export interface PluginSidebarSection {
 	key: string;
 	bottom: boolean;
-	rail: unknown;
+	rail: PluginRail;
+}
+
+/** Where the shell paints the header right now, and the room it has there. */
+export interface PluginHeaderContext {
+	/** Columns the header may use at this width. */
+	width: number;
+	placement: "top" | "below-input" | "split";
+}
+
+export interface PluginHeader {
+	/** Static rows, or a function called on each render with the live header context. */
+	rows: readonly string[] | ((context: PluginHeaderContext) => readonly string[]);
 }
 
 export interface PluginPaletteCommand {
@@ -63,6 +81,7 @@ export interface Contribution {
 	rows?: PluginRow[];
 	sidebar?: PluginSidebarSection;
 	palette?: PluginPaletteCommand;
+	header?: PluginHeader;
 }
 
 export type ContributionIssueCode =
@@ -72,7 +91,8 @@ export type ContributionIssueCode =
 	| "duplicate-id"
 	| "malformed-rows"
 	| "malformed-sidebar"
-	| "malformed-palette";
+	| "malformed-palette"
+	| "malformed-header";
 
 /** One thing the reader refused, with the id it was stored under. */
 export interface ContributionIssue {
@@ -311,6 +331,22 @@ function validPalette(value: unknown): value is PluginPaletteCommand {
 	return isRecord(value) && nonEmptyString(value.command) && (value.group === undefined || typeof value.group === "string");
 }
 
+/**
+ * Header rows are plain text: an array whose every entry is a string (the empty
+ * string included, so a plugin may ask for a blank line), or a function the
+ * read point calls with the live context. An object is never a row.
+ */
+function validHeader(value: unknown): value is PluginHeader {
+	if (!isRecord(value)) return false;
+	const rows = value.rows;
+	if (Array.isArray(rows)) return rows.every((row) => typeof row === "string");
+	return callable(rows);
+}
+
+function copyHeader(value: PluginHeader): PluginHeader {
+	return { rows: Array.isArray(value.rows) ? [...value.rows] : value.rows };
+}
+
 function cloneRow(value: PluginRow): PluginRow {
 	return value.choice === undefined ? { ...value } : { ...value, choice: { ...value.choice } };
 }
@@ -346,6 +382,11 @@ function normalize(key: string, value: Contribution, skipped: ContributionIssue[
 		if (palette !== undefined) {
 			if (validPalette(palette)) contribution.palette = { ...palette };
 			else issues.push(issue(key, "malformed-palette", "palette must carry a command and, if present, a string group"));
+		}
+		const header = value.header;
+		if (header !== undefined) {
+			if (validHeader(header)) contribution.header = copyHeader(header);
+			else issues.push(issue(key, "malformed-header", "header rows must be an array of strings or a function"));
 		}
 		skipped.push(...issues);
 		return contribution;

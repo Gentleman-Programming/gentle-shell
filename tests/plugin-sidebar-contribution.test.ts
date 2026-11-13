@@ -6,7 +6,7 @@ import test from "node:test";
 import { renderLayoutFrame } from "@earendil-works/pi-tui/dist/layout.js";
 import type { TUI } from "@earendil-works/pi-tui";
 import { CONTRIBUTIONS, CONTRACT_VERSION, contributionSlot, readContributionReport } from "../lib/plugin-contract.ts";
-import type { Contribution } from "../lib/plugin-contract.ts";
+import type { Contribution, PluginRail } from "../lib/plugin-contract.ts";
 import { PLUGINS_SCHEMA } from "../lib/plugin-order.ts";
 import {
 	installContributedSidebar,
@@ -34,12 +34,19 @@ function fixture(columns = 140) {
 	return { host, tui: host as unknown as TUI, root };
 }
 
+// The public rail type is what a plugin author writes against: a `render` is
+// enough, `digest` and `invalidate` stay optional, and the runtime shape check
+// below still decides what installs.
+function pluginRail(name: string): PluginRail {
+	return { render: () => [`${name} card`], invalidate() {} };
+}
+
 function contribute(key: string, name = "notes", owner = "acme"): Contribution {
 	return {
 		id: `${owner}.${name}`,
 		owner,
 		contract: CONTRACT_VERSION,
-		sidebar: { key, bottom: false, rail: { render: () => [`${name} card`], invalidate() {} } },
+		sidebar: { key, bottom: false, rail: pluginRail(name) },
 	};
 }
 

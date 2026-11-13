@@ -20,7 +20,7 @@ import {
 	readContributionReport,
 	readContributions,
 } from "../lib/plugin-contract.ts";
-import type { Contribution, PluginRow } from "../lib/plugin-contract.ts";
+import type { Contribution, PluginRail, PluginRow } from "../lib/plugin-contract.ts";
 import { installContributedSidebar, readSidebarContributionReport } from "../lib/shell-sidebar.ts";
 import installGentlePlugins, { PLUGINS_COMMAND_NAME } from "../extensions/gentle-plugins.ts";
 
@@ -133,7 +133,7 @@ test("the audit model reports loaded slots, rejected ids, duplicated ids and the
 	slot.set("acme.hello", hello);
 	slot.set("acme.hello", hello);
 	slot.set("beta.v2", { id: "beta.v2", owner: "beta", contract: 2 });
-	slot.set("gamma.panel", contribution("gamma.panel", { sidebar: { key: "gamma", bottom: true, rail: {} } }));
+	slot.set("gamma.panel", contribution("gamma.panel", { sidebar: { key: "gamma", bottom: true, rail: {} as PluginRail } }));
 
 	const audit = buildPluginAudit({
 		contributions: readContributions({ order: order.order }),

@@ -77,6 +77,23 @@ export const INVALID_JOBS_PARAMS = { code: "invalid_request", message: "Invalid 
 export const JOBS_UNAVAILABLE = { code: "jobs_unavailable", message: "Background jobs owner unavailable for this session" } as const;
 export const JOB_NOT_FOUND = { code: "not_found", message: "No background job with that id in this session" } as const;
 
+/** Shown for a command job the agent started without a label. */
+export const DESKTOP_JOB_FALLBACK_LABEL = "Background job";
+/** Shown for a monitor the agent started without a label. */
+export const DESKTOP_MONITOR_FALLBACK_LABEL = "Background monitor";
+
+/**
+ * The label a job may show on the wire. An explicit label is the agent's own
+ * wording and is kept. Without one, the registry falls back to the command
+ * itself, and a command can hide a secret in more shell forms (headers,
+ * quoted or escaped assignments, substitutions) than any parser here could
+ * safely cover, so no part of it is derived: the label is fixed by kind.
+ */
+export function desktopJobLabel(job: Pick<JobRecord, "label" | "command" | "kind">): string {
+	if (job.label.trim() !== job.command.trim()) return job.label;
+	return job.kind === "monitor" ? DESKTOP_MONITOR_FALLBACK_LABEL : DESKTOP_JOB_FALLBACK_LABEL;
+}
+
 /**
  * The whitelisted projection of one owner `JobRecord`. Every field is rebuilt
  * from the named members only, so a foreign or stale object can never smuggle
@@ -85,7 +102,7 @@ export const JOB_NOT_FOUND = { code: "not_found", message: "No background job wi
 export function projectDesktopJob(job: JobRecord): DesktopJobEntry {
 	const entry: DesktopJobEntry = {
 		id: job.id,
-		label: job.label,
+		label: desktopJobLabel(job),
 		status: job.status,
 		startedAt: job.startedAt,
 	};

@@ -54,9 +54,12 @@ import { inheritedUnsafeGitEnvironmentKeys } from "../lib/review-repository.ts";
 import { historyDir, loadHistory, loadStoredTask, pruneHistory, saveTask, type StoredTask } from "../lib/agents-history.ts";
 import { sessionToMarkdown } from "../lib/agents-transcript.ts";
 import { AgentsView } from "../lib/agents-view.ts";
+import { THREAD_PRESENTATION } from "../lib/agents-thread-view.ts";
+import { AGENTS_VIEW_STYLE, resolveAgentsViewStyle } from "../lib/agents-view-style-policy.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
 import { PresencePublisher, sanitizeDisplayLabel, listPresence, sessionHash } from "../lib/orchestrator-presence.ts";
 import { incomingMessageCard, outgoingMessageCall, outgoingMessageResult, type OrchestratorMessageDetails } from "../lib/orchestrator-message-card.ts";
+import { AGENT_MESSAGE, agentCardParts, agentTheme } from "../lib/agents-message-card.ts";
 import { orchestratorToolRenderers } from "../lib/orchestrator-tool-card.ts";
 import { discoverOrchestrators } from "../lib/orchestrator-discovery.ts";
 import { consultPublishedMetadata, unavailableMetadata, type MetadataReceipt } from "../lib/orchestrator-consultation.ts";
@@ -72,7 +75,7 @@ import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { HERDR_BUSY_CHANNEL, nextHerdrBusyAction, type HerdrBusyEmitted } from "../lib/herdr-busy.ts";
 import { AGENTS_GLYPH, agentsCardTone, agentsSpend, agentsSummary, renderAgentsAlert, renderAgentsCard, renderAgentsSection, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
-import { CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardInnerWidth, cardRunningLine, cardTop, floatRows, headingFits, markCardResult, panelHeaderRow, panelInnerWidth, renderCard, type CardRowContext, type CardTheme, type CardTone } from "../lib/shell-card.ts";
+import { CARD_TONE, cardAwaitingResult, cardInnerWidth, cardRunningLine, floatRows, headingFits, markCardResult, panelHeaderRow, panelInnerWidth, renderCard, type CardRowContext, type CardTheme, type CardTone } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { resolveAgentHomeDirectory } from "../lib/agent-model-resolution.ts";
@@ -347,6 +350,24 @@ function legacySubagentsInstalledAt(agentHome: string): boolean {
 
 export { agentsViewKey, agentsCollapseKey, agentsStopKey };
 
+/**
+ * The cards' detail levels as the host holds them when the overlay opens: its
+ * own thinking visibility (`hideThinkingBlock`) and its tool-output expansion.
+ * A host that cannot answer keeps the overlay's defaults — thinking shown and
+ * cards collapsed — and nothing here writes the chat's state back.
+ */
+export function threadDetailDefaults(ctx: Pick<ExtensionContext, "cwd" | "ui">, agentHome: string): { thinkingExpanded: boolean; toolsExpanded: boolean } {
+	let hiddenThinking = false;
+	try {
+		hiddenThinking = SettingsManager.create(ctx.cwd, agentHome).getSettings().hideThinkingBlock === true;
+	} catch { /* unreadable settings keep thinking visible */ }
+	let toolsExpanded = false;
+	try {
+		toolsExpanded = typeof ctx.ui?.getToolsExpanded === "function" && ctx.ui.getToolsExpanded() === true;
+	} catch { /* a host without a working probe keeps cards collapsed */ }
+	return { thinkingExpanded: !hiddenThinking, toolsExpanded };
+}
+
 function sanitizeTerminalText(value: string): string {
 	return value.replace(/[\x00-\x08\x0B-\x1F\x7F-\x9F]/g, (control) => `\\x${control.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
 }
@@ -535,8 +556,8 @@ const ACTION_GLYPH: Record<string, string> = {
 	status: "◎",
 	result: "↩",
 	cancel: "⨯",
-	send_message: "✉",
-	reply: "✉",
+	send_message: AGENT_MESSAGE.glyph,
+	reply: AGENT_MESSAGE.glyph,
 	continue: "↻",
 	list_tasks: "☰",
 	list_agents: "☰",
@@ -546,7 +567,7 @@ const ACTION_HEADING: Record<string, string> = {
 	status: "Agent status",
 	result: "Agent answer",
 	cancel: "Stopping agent",
-	send_message: "Messaging agent",
+	send_message: AGENT_MESSAGE.title,
 	reply: "Replying to agent",
 	continue: "Resuming agent",
 	list_tasks: "Agent tasks",
@@ -560,28 +581,6 @@ function statusPill(status: string, theme: CardTheme): string {
 		: (status === TASK_STATUS.FAILED || status === TASK_STATUS.CANCELLED || status === TASK_STATUS.TIMED_OUT) ? "error"
 		: "accent";
 	return theme.fg(role, status.replace("_", " ").toUpperCase());
-}
-
-// The agent identity palette from the design handoff (agent-tool-cards/04):
-// agent cards wear the iris chrome — heading, glyph, frame and running pill —
-// whatever the active accent is, so working with agents reads as its own
-// mode. The palette is emitted as truecolor ANSI exactly like pi renders
-// theme hex values; every other role stays theme-native, so body text,
-// hints and the success/error states keep the user's theme.
-const IRIS_FG = "\x1b[38;2;185;167;242m";
-const IRIS_DEEP_FG = "\x1b[38;2;143;122;217m";
-const IRIS_TINT_BG = "\x1b[48;2;26;21;38m";
-
-// The float tint follows the card tone: info cards (live agent work) wear the
-// iris tint; success, warning and error cards keep the theme's background.
-function agentTheme(theme: CardTheme, tone: CardTone): CardTheme {
-	const tint = tone === CARD_TONE.INFO;
-	return {
-		fg: (color, text) => color === "accent" ? `${IRIS_FG}${text}\x1b[39m`
-			: color === "border" ? `${IRIS_DEEP_FG}${text}\x1b[39m`
-			: theme.fg(color, text),
-		...(theme.bg ? { bg: (color, text) => tint && color === "toolSuccessBg" ? `${IRIS_TINT_BG}${text}\x1b[49m` : theme.bg!(color, text) } : {}),
-	};
 }
 
 // Card headings are one row: fold any line break a caller passes in before
@@ -2227,14 +2226,25 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		}
 		let view: AgentsView | undefined;
 		let overlayHost: { requestRender(force?: boolean): void; stop(): void; start(): void } | undefined;
+		// Read once, so an opened overlay starts from the chat's state and later
+		// changes there neither follow into it nor get written back.
+		const cardDetail = threadDetailDefaults(ctx, agentHome);
+		// The renderer is read here too: /gentle:customize writes the preference and
+		// the next open draws with it, so a live thread never reads the disk per frame.
+		const presentation = resolveAgentsViewStyle({ gentlePiConfigHome: visualHome }).style === AGENTS_VIEW_STYLE.CARDS
+			? THREAD_PRESENTATION.CARDS
+			: THREAD_PRESENTATION.LOG;
 		const chosen = await ctx.ui.custom<TaskRecord | null>(
-			(tui, theme, _keybindings, done) => {
+			(tui, theme, keybindings, done) => {
 				const close = withOverlayRepaint(tui, done);
 				overlayHost = tui;
 				view = new AgentsView({
 					theme,
 					rows: () => Math.max(0, tui.terminal.rows),
 					store,
+					keybindings,
+					cardDetail,
+					threadPresentation: () => presentation,
 					sessionId: ctx.sessionManager.getSessionId() ?? "",
 					presence: {
 						profile: agentHome,
@@ -2812,10 +2822,15 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 						const tone = row.isError || row.state?.agentFailed ? CARD_TONE.ERROR : CARD_TONE.INFO;
 						const iris = agentTheme(theme, tone);
 						const hint = expandHint(!!row.expanded);
-						return floatRows(tone, iris, width, (inner) => ({
-							head: [cardTop({ title: heading, subtitle: fitSubject({ title: heading, tone, glyph }, hint, inner, chips), body: [], tone, glyph }, iris, inner, hint)],
-							...(cardAwaitingResult(row) ? { body: [cardRunningLine(tone, iris, inner)], bottom: cardBottom(tone, iris, inner) } : {}),
-						}));
+						return floatRows(tone, iris, width, (inner) => {
+							// The heading is the shared card's own; the `running…` row is this
+							// phase's, so the call never draws a body the result draws again.
+							const card = agentCardParts({ title: heading, subtitle: fitSubject({ title: heading, tone, glyph }, hint, inner, chips), body: [], tone, glyph, expanded: false, hint }, iris, inner);
+							return {
+								head: card.head,
+								...(cardAwaitingResult(row) ? { body: [cardRunningLine(tone, iris, inner)], bottom: card.bottom } : {}),
+							};
+						});
 					},
 					invalidate() {},
 				};
@@ -2896,13 +2911,21 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					render(width: number) {
 						if (width <= 0) return [];
 						const hint = expandHint(options.expanded);
-						return floatRows(tone, iris, width, (inner) => ({
-							...(ownHeading ? {
-								head: [cardTop({ title: heading, subtitle: fitSubject({ title: heading, tone, glyph }, hint, inner, ownChips), body: [], tone, glyph }, iris, inner, hint)],
-							} : { afterHeading: true }),
-							body: cardBodyRows(fitRows ? rows.map((row) => truncateToWidth(row, cardInnerWidth(inner), "…")) : rows, tone, iris, inner, { expanded: options.expanded, previewRows: ownHeading ? 3 : undefined }),
-							bottom: cardBottom(tone, iris, inner),
-						}));
+						return floatRows(tone, iris, width, (inner) => {
+							// One shared drawing for heading, body and frame; only which phase
+							// owns the heading (a poll result draws its own) differs per tool.
+							const card = agentCardParts({
+								title: heading,
+								glyph,
+								tone,
+								subtitle: ownHeading ? fitSubject({ title: heading, tone, glyph }, hint, inner, ownChips) : undefined,
+								body: fitRows ? rows.map((row) => truncateToWidth(row, cardInnerWidth(inner), "…")) : rows,
+								expanded: options.expanded,
+								previewRows: ownHeading ? 3 : undefined,
+								hint,
+							}, iris, inner);
+							return { ...(ownHeading ? { head: card.head } : { afterHeading: true }), body: card.body, bottom: card.bottom };
+						});
 					},
 					invalidate() {},
 				};

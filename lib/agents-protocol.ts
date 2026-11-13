@@ -57,7 +57,7 @@ export interface TextEvent { type: typeof TASK_EVENT.TEXT; text: string }
 export interface ThinkingEvent { type: typeof TASK_EVENT.THINKING; text: string }
 export interface ToolStartEvent { type: typeof TASK_EVENT.TOOL_START; callId: string; name: string; args: Record<string, unknown> }
 export interface ToolUpdateEvent { type: typeof TASK_EVENT.TOOL_UPDATE; callId: string; output: string }
-export interface ToolEndEvent { type: typeof TASK_EVENT.TOOL_END; callId: string; output: string; isError: boolean }
+export interface ToolEndEvent { type: typeof TASK_EVENT.TOOL_END; callId: string; output: string; isError: boolean; /** Retained only when the result's own diff fits the card's bound. */ diff?: string }
 export interface TurnEndEvent { type: typeof TASK_EVENT.TURN_END }
 /** Closed terminal-error vocabulary (#2322). A category, never provider text. */
 export const TERMINAL_ERROR_CATEGORY = {
@@ -109,7 +109,7 @@ export type TaskEvent = ResponseObservationEvent | TextEvent | ThinkingEvent | T
 
 export interface TextItem { kind: typeof THREAD_ITEM.TEXT; text: string }
 export interface ThinkingItem { kind: typeof THREAD_ITEM.THINKING; text: string }
-export interface ToolItem { kind: typeof THREAD_ITEM.TOOL; callId: string; name: string; args: Record<string, unknown>; output: string; running: boolean; isError: boolean }
+export interface ToolItem { kind: typeof THREAD_ITEM.TOOL; callId: string; name: string; args: Record<string, unknown>; output: string; running: boolean; isError: boolean; /** The tool result's own diff, retained whole only while it fits the card's bound. */ diff?: string }
 export interface NoteItem { kind: typeof THREAD_ITEM.NOTE; text: string }
 
 export type ThreadItem = TextItem | ThinkingItem | ToolItem | NoteItem;
@@ -222,6 +222,28 @@ function contentText(content: unknown): string {
 		.map((part) => (part && typeof part === "object" && (part as { type?: string }).type === "text" ? clean((part as { text?: unknown }).text) : ""))
 		.filter((text) => text.length > 0)
 		.join("\n");
+}
+
+/** A retained edit diff costs one card's worth of rows, so retaining it is bounded. */
+export const RETAINED_DIFF_MAX_LINES = 400;
+export const RETAINED_DIFF_MAX_BYTES = 32 * 1024;
+
+/**
+ * The result's own diff, or `undefined` when it is not one a card can draw whole.
+ * Truncating or appending a marker would hand the card a diff the tool never
+ * produced, so an oversized diff is dropped entirely: the card then shows the
+ * plain result it shows without one.
+ */
+function retainedDiff(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const diff = clean(value);
+	if (diff.split("\n").length > RETAINED_DIFF_MAX_LINES) return undefined;
+	return Buffer.byteLength(diff, "utf8") > RETAINED_DIFF_MAX_BYTES ? undefined : diff;
+}
+
+function resultDiff(result: Raw | undefined): string | undefined {
+	const details = result?.details;
+	return details && typeof details === "object" ? retainedDiff((details as Raw).diff) : undefined;
 }
 
 function keepTail(text: string, max: number): string {
@@ -420,8 +442,11 @@ export function normalizeRpcEvent(raw: unknown, options: { observeResponses?: bo
 			return [{ type: TASK_EVENT.TOOL_START, callId: String(event.toolCallId ?? ""), name: clean(event.toolName), args: (event.args as Record<string, unknown>) ?? {} }];
 		case "tool_execution_update":
 			return [{ type: TASK_EVENT.TOOL_UPDATE, callId: String(event.toolCallId ?? ""), output: contentText((event.partialResult as Raw | undefined)?.content) }];
-		case "tool_execution_end":
-			return [{ type: TASK_EVENT.TOOL_END, callId: String(event.toolCallId ?? ""), output: contentText((event.result as Raw | undefined)?.content), isError: event.isError === true }];
+		case "tool_execution_end": {
+			const result = event.result as Raw | undefined;
+			const diff = resultDiff(result);
+			return [{ type: TASK_EVENT.TOOL_END, callId: String(event.toolCallId ?? ""), output: contentText(result?.content), isError: event.isError === true, ...(diff === undefined ? {} : { diff }) }];
+		}
 		case "message_end": {
 			const message = event.message as Raw | undefined;
 			const usage = message?.role === "assistant" ? (message.usage as Raw | undefined) : undefined;
@@ -514,8 +539,11 @@ export function applyTaskEvent(thread: TaskThread, event: TaskEvent): TaskThread
 			return push(thread, { kind: THREAD_ITEM.TOOL, callId: event.callId, name: event.name, args: event.args, output: "", running: true, isError: false });
 		case TASK_EVENT.TOOL_UPDATE:
 			return updateTool(thread, event.callId, { output: event.output });
-		case TASK_EVENT.TOOL_END:
-			return updateTool(thread, event.callId, { output: event.output, running: false, isError: event.isError });
+		case TASK_EVENT.TOOL_END: {
+			// Bounded here too, so a hand-built event cannot smuggle an unbounded diff in.
+			const diff = retainedDiff(event.diff);
+			return updateTool(thread, event.callId, { output: event.output, running: false, isError: event.isError, ...(diff === undefined ? {} : { diff }) });
+		}
 		case TASK_EVENT.ERROR:
 			return push(thread, { kind: THREAD_ITEM.NOTE, text: `error: ${event.message}` });
 		case TASK_EVENT.ASK:

@@ -32,8 +32,12 @@ function harness(env: NodeJS.ProcessEnv = { PI_PROGRAM_STATUS_APP: "gentle-shell
 			widgets++;
 		} },
 	} as unknown as ExtensionContext;
-	createProgramIdentityExtension(env)({ on: (name: string, fn: Handler) => handlers.set(name, fn) } as unknown as ExtensionAPI);
-	return { terminal, reports, ctx, widgets: () => widgets, component: () => widget,
+	const bus = new Map<string, (data: unknown) => void>();
+	createProgramIdentityExtension(env)({
+		on: (name: string, fn: Handler) => handlers.set(name, fn),
+		events: { on: (channel: string, fn: (data: unknown) => void) => { bus.set(channel, fn); return () => bus.delete(channel); } },
+	} as unknown as ExtensionAPI);
+	return { terminal, busy: (data: unknown) => bus.get("herdr:busy")?.(data), reports, ctx, widgets: () => widgets, component: () => widget,
 		fire: (name: string, context = ctx) => handlers.get(name)?.({}, context) };
 }
 
@@ -140,7 +144,7 @@ test("real Pi reporter and terminal emit the corrected startup and native states
 		const ctx = { mode: "tui", hasUI: true, ui: { setWidget(_key, factory) {
 			widget?.dispose?.(); widget = factory?.({ terminal });
 		} } };
-		createProgramIdentityExtension()({ on: (name, fn) => handlers.set(name, fn) });
+		createProgramIdentityExtension()({ on: (name, fn) => handlers.set(name, fn), events: { on: () => () => {} } });
 		terminal.start(() => {}, () => {});
 		reporter.report();
 		const initial = chunks.splice(0).join("");
@@ -194,4 +198,78 @@ test("real Pi reporter and terminal emit the corrected startup and native states
 			]);
 		}
 	} finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("a native done or idle while subagents run is reported as working with the busy label", () => {
+	for (const settled of ["done", "idle"] as const) {
+		const h = harness(); h.fire("session_start");
+		h.terminal.setProgramStatus({ state: "working", app: "pi" });
+		h.busy({ active: true, label: "1 subagent running" });
+		h.reports.length = 0;
+		h.terminal.setProgramStatus({ state: settled, app: "pi", message: "Session name" });
+		assert.deepEqual(h.reports, [{ state: "working", app: "gentle-shell", message: "1 subagent running" }]);
+		h.fire("session_shutdown");
+	}
+});
+
+test("a busy raise re-reports the latest native status and the lower edge delivers a held done", () => {
+	const h = harness(); h.fire("session_start");
+	h.terminal.setProgramStatus({ state: "done", app: "pi", message: "Session name" });
+	h.reports.length = 0;
+	h.busy({ active: true, label: "1 subagent running" });
+	assert.deepEqual(h.reports, [{ state: "working", app: "gentle-shell", message: "1 subagent running" }]);
+	h.busy({ active: false }); h.busy({ active: true, label: "2 subagents running" });
+	assert.deepEqual(h.reports.slice(1), [
+		{ state: "done", app: "gentle-shell", message: "Session name" },
+		{ state: "working", app: "gentle-shell", message: "2 subagents running" },
+	]);
+	h.reports.length = 0;
+	h.busy({ active: false });
+	assert.deepEqual(h.reports, [{ state: "done", app: "gentle-shell", message: "Session name" }]);
+	h.fire("session_shutdown");
+});
+
+test("a synthetic working report with no native status is cleared when busy ends or the wrapper is released", () => {
+	for (const end of ["lower", "release"] as const) {
+		const h = harness(); h.terminal.programStatus = undefined; h.fire("session_start");
+		h.busy({ active: true, label: "1 subagent running" });
+		assert.deepEqual(h.reports, [{ state: "working", app: "gentle-shell", message: "1 subagent running" }]);
+		h.reports.length = 0;
+		if (end === "lower") h.busy({ active: false }); else h.fire("session_shutdown");
+		assert.deepEqual(h.reports, [{ state: "clear" }]);
+		if (end === "lower") h.fire("session_shutdown");
+	}
+	// A native report replaces the synthetic one: the lower edge then restores that report, never clears it.
+	const h = harness(); h.terminal.programStatus = undefined; h.fire("session_start");
+	h.busy({ active: true, label: "1 subagent running" });
+	h.terminal.setProgramStatus({ state: "done", app: "pi", message: "Session name" });
+	h.reports.length = 0;
+	h.busy({ active: false });
+	assert.deepEqual(h.reports, [{ state: "done", app: "gentle-shell", message: "Session name" }]);
+	h.fire("session_shutdown");
+});
+
+test("blocked and error pass through while subagents run", () => {
+	const h = harness(); h.fire("session_start");
+	h.busy({ active: true, label: "1 subagent running" });
+	for (const status of [
+		{ state: "blocked", app: "pi", kind: "permission", message: "Allow command?" },
+		{ state: "error", app: "pi", message: "Failure" },
+		{ state: "clear" },
+	] satisfies ProgramStatus[]) {
+		h.terminal.setProgramStatus(status);
+		assert.deepEqual(h.reports.at(-1), status.state === "clear" ? status : { ...status, app: "gentle-shell" });
+	}
+	h.fire("session_shutdown");
+});
+
+test("busy mapping ignores malformed payloads and stays off for delegated children", () => {
+	const h = harness(); h.fire("session_start");
+	h.busy({ active: true }); h.busy("x"); h.busy(undefined);
+	h.terminal.setProgramStatus({ state: "done", app: "pi" });
+	assert.deepEqual(h.reports.at(-1), { state: "done", app: "gentle-shell" });
+	h.fire("session_shutdown");
+	const child = harness({ PI_PROGRAM_STATUS_APP: "gentle-shell", GENTLE_PI_AGENTS_CHILD: "1" });
+	child.busy({ active: true, label: "1 subagent running" });
+	assert.deepEqual(child.reports, []);
 });

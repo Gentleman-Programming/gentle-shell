@@ -158,12 +158,29 @@ function assertSafeIndexDirectory(cwd: string): void {
  * partial init or a killed reindex is not a usable index. Any error, including EACCES,
  * counts as unconfirmed, so gates on this never fire on an unknown state.
  */
-function indexExists(cwd: string): boolean {
+export function indexExists(cwd: string): boolean {
 	try {
 		return statSync(join(cwd, ".codegraph", "codegraph.db")).isFile();
 	} catch {
 		return false;
 	}
+}
+
+/** A full re-index from bash is blocked when an index already exists; this is the reason it gets. */
+const CODEGRAPH_INDEX_BLOCK_REASON = "CodeGraph: an index already exists for this workspace. Re-indexing kills the shared daemon and rebuilds it; the runtime refreshes with sync (before the first search of each prompt). If you really need a full rebuild, set GENTLE_CODEGRAPH_ALLOW_INDEX=1.";
+
+/**
+ * Whether a shell command, past its leading whitespace and env-var assignments, starts with
+ * `codegraph index` or `codegraph init` — a full re-index that kills the shared daemon and
+ * rebuilds the index. The word boundary keeps every other subcommand (`codegraph indexer`,
+ * `sync`, `query`, `unlock`, `status`) allowed.
+ */
+function isCodegraphIndexCommand(command: string): boolean {
+	let rest = command.trimStart();
+	// Leading `FOO=1 BAR=2` assignments are shell syntax, not the command itself.
+	const assignment = /^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/;
+	while (assignment.test(rest)) rest = rest.replace(assignment, "");
+	return /^codegraph\s+(index|init)\b/.test(rest);
 }
 
 function gitOutput(cwd: string, args: readonly string[]): string {
@@ -537,6 +554,23 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 	registerCodeGraphTool(pi);
 	// One background unlock+sync per user prompt: the first search of every turn fires it.
 	pi.on?.("turn_start", () => clearSearchSync());
+	// `codegraph index`/`codegraph init` from bash rebuilds the index from scratch and kills the
+	// daemon every session shares (a full rebuild once took the daemon down), while the runtime
+	// already refreshes the index with sync before the first search of each prompt. When an index
+	// already exists the rebuild is blocked — "if an index exists, do not re-index — only sync" —
+	// and GENTLE_CODEGRAPH_ALLOW_INDEX=1 is the explicit override. The guard is total: any
+	// internal error allows the call, so a broken guard can never break bash.
+	pi.on?.("tool_call", (event, ctx) => {
+		try {
+			if (event.toolName !== "bash" && event.toolName !== "bash_background") return undefined;
+			const command = (event.input as { command?: unknown }).command;
+			if (typeof command !== "string" || !isCodegraphIndexCommand(command)) return undefined;
+			if (!indexExists(ctx.cwd) || process.env.GENTLE_CODEGRAPH_ALLOW_INDEX === "1") return undefined;
+			return { block: true, reason: CODEGRAPH_INDEX_BLOCK_REASON };
+		} catch {
+			return undefined;
+		}
+	});
 	// Session-start readiness: the index first (sync or init, in the background), then the daemon
 	// warm-up, so the first real query of the session is fast. The session never waits for any of it.
 	pi.on?.("session_start", (event, ctx) => {

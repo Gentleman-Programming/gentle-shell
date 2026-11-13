@@ -393,6 +393,60 @@ test("the extension hooks turn_start and session_start; turn_start resets the pe
 	assert.deepEqual(calls, [["unlock"], ["sync", "-q"], ["unlock"], ["sync", "-q"]]);
 });
 
+test("the tool_call guard blocks bash codegraph index/init when an index exists and allows everything else", async (t) => {
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	const pi = {
+		registerTool() {
+			/* the registered tool's shape is covered above */
+		},
+		on(event: string, handler: (event: unknown, ctx: unknown) => unknown) {
+			handlers.set(event, handler);
+		},
+	} as unknown as ExtensionAPI;
+	codeGraphTools(pi);
+	const guard = handlers.get("tool_call");
+	assert.ok(typeof guard === "function", "the extension registers a tool_call guard");
+
+	const indexed = workspace(t);
+	await writeIndex(["init", indexed], { cwd: indexed, maxBuffer: 1 });
+	const ctx = { cwd: indexed } as ExtensionContext;
+	const previousOverride = process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	t.after(() => {
+		if (previousOverride === undefined) delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+		else process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = previousOverride;
+	});
+	const verdict = (command: string, toolName = "bash") =>
+		(guard as (event: unknown, ctx: unknown) => unknown)({ toolName, input: { command } }, ctx);
+
+	for (const [command, toolName] of [
+		["codegraph index .", "bash"],
+		["codegraph init", "bash"],
+		["  FOO=1 codegraph index", "bash"],
+		["FOO=1 codegraph init", "bash_background"],
+	] as const) {
+		const blocked = verdict(command, toolName) as { block?: boolean; reason?: string } | undefined;
+		assert.equal(blocked?.block, true, `${toolName}: ${command} is blocked`);
+		assert.match(blocked?.reason ?? "", /an index already exists/);
+		assert.match(blocked?.reason ?? "", /GENTLE_CODEGRAPH_ALLOW_INDEX=1/);
+	}
+
+	for (const command of ["codegraph sync", "codegraph unlock", "codegraph status", "codegraph indexer .", "rg foo"]) {
+		assert.equal(verdict(command), undefined, `${command} is allowed`);
+	}
+	assert.equal(verdict("codegraph index .", "read"), undefined, "only bash tools are guarded");
+
+	const bare = workspace(t);
+	assert.equal(
+		(guard as (event: unknown, ctx: unknown) => unknown)({ toolName: "bash", input: { command: "codegraph index" } }, { cwd: bare } as ExtensionContext),
+		undefined,
+		"no index database: the first index is the legitimate init path",
+	);
+
+	process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = "1";
+	assert.equal(verdict("codegraph index ."), undefined, "the explicit override allows a deliberate rebuild");
+});
+
 function writeCodeGraphPackage(binDir: string, scriptSource = "#!/usr/bin/env node\n"): string {
 	const pkgRoot = join(binDir, "node_modules", "@colbymchenry", "codegraph");
 	mkdirSync(pkgRoot, { recursive: true });

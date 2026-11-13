@@ -22,14 +22,21 @@ const NO_PROJECT_TEXT = "No CodeGraph project is loaded";
  * Makes the project's CodeGraph daemon open its database and start a read worker, so the next real call
  * is fast: talks MCP to `codegraph serve --mcp -p <project>` started from the temp directory (cmd.exe
  * cannot take a UNC working directory), then destroys the pipes and unrefs the child so the server goes
- * on alone as the daemon — it is shared with the user's other sessions, so it is never killed. Never
+ * on alone as the daemon — it is shared with the user's other sessions, so it is never killed. When a
+ * daemon is already alive there is nothing to warm: resolves true without spawning anything. Never
  * rejects; `background` unrefs everything so a warm-up still running never keeps its caller alive.
  */
-export function warmUpDaemon(cwd: string, background = false, timeoutMs = WARMUP_TIMEOUT_MS): Promise<boolean> {
+export function warmUpDaemon(cwd: string, background = false, timeoutMs = WARMUP_TIMEOUT_MS, registryDir?: string): Promise<boolean> {
+	// A daemon that is already alive is already warm: a second `serve --mcp` cannot take the daemon
+	// lock and only logs "Could not acquire the daemon lock; exiting" (26+ such lines in daemon.log)
+	// before it is reported as a failed warm-up. No spawn, no handshake — it resolves at once.
+	try {
+		if (daemonFor(cwd, registryDir).alive) return Promise.resolve(true);
+	} catch { /* an unreadable registry is no reason to skip the warm-up */ }
 	return new Promise((resolve) => {
 		let settled = false;
 		let child: ReturnType<typeof spawn> | undefined;
-		const project = daemonFor(cwd).root ?? realpathSync(cwd);
+		const project = daemonFor(cwd, registryDir).root ?? realpathSync(cwd);
 		const finish = (ok: boolean) => {
 			if (settled) return;
 			settled = true;
@@ -129,6 +136,8 @@ export function skipsSession(env: Record<string, string | undefined>, reason: Se
 
 export interface ReadinessInput {
 	cwd: string;
+	/** The daemon registry consulted for liveness; the default is CodeGraph's own. */
+	registryDir?: string;
 	env: Record<string, string | undefined>;
 	reason: SessionStartReason;
 	/** Whether cwd is a real git project root equal to the workspace (the tool's workspace guard). */
@@ -166,11 +175,20 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 			try { input.onStart?.(action); } catch { /* never worth stopping the index */ }
 			let ok: boolean;
 			if (action === "sync") {
-				// A stale lock can block the sync, so it is always cleared first, mirroring the repo's refresh
-			// discipline ("codegraph unlock && codegraph sync"). The unlock is a precondition, not
-			// best-effort: when it fails, the sync does not run and the failure is reported as the sync's own.
-				const unlocked = await input.run(["unlock"], input.cwd, SYNC_TIMEOUT_MS);
-				ok = unlocked && await input.run(["sync", "-q"], input.cwd, SYNC_TIMEOUT_MS);
+				// A live daemon holds the writer lock and its index is never stale: a CLI `sync -q` coexists
+				// with it (daemon.log auto-syncs), so it is never unlocked — "if an index exists, do not
+				// re-index — only sync". Without a live daemon a stale lock can block the sync, so it is
+				// cleared first, mirroring the repo's refresh discipline ("codegraph unlock && codegraph
+				// sync"). That unlock is a precondition, not best-effort: when it fails, the sync does not
+				// run and the failure is reported as the sync's own.
+				let alive = false;
+				try { alive = daemonFor(input.cwd, input.registryDir).alive; } catch { /* not alive */ }
+				if (alive) {
+					ok = await input.run(["sync", "-q"], input.cwd, SYNC_TIMEOUT_MS);
+				} else {
+					const unlocked = await input.run(["unlock"], input.cwd, SYNC_TIMEOUT_MS);
+					ok = unlocked && await input.run(["sync", "-q"], input.cwd, SYNC_TIMEOUT_MS);
+				}
 			} else {
 				ok = await input.run(["init", "-y"], input.cwd, INIT_TIMEOUT_MS);
 			}
@@ -195,6 +213,8 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 
 export interface SearchSyncInput {
 	cwd: string;
+	/** The daemon registry consulted for liveness; the default is CodeGraph's own. */
+	registryDir?: string;
 	run(args: readonly string[], cwd: string, timeoutMs: number): Promise<boolean>;
 	onFailed?(stage: "unlock" | "sync"): void;
 }
@@ -203,18 +223,24 @@ export interface SearchSyncInput {
 const searchSyncInFlight = new Map<string, Promise<void>>();
 
 /**
- * Refreshes the index before a search, in the background: unlock, then sync -q, each within the
- * sync timeout. The unlock is a precondition, not best-effort — when it fails the sync never runs.
- * Never blocks and never rejects; failures surface only through onFailed.
+ * Refreshes the index before a search, in the background: sync -q, preceded by an unlock only when no
+ * daemon is alive — a live daemon holds the writer lock and is never stale, and a CLI sync coexists
+ * with it (daemon.log auto-syncs). Each run is within the sync timeout, and the unlock is a
+ * precondition, not best-effort — when it runs and fails, the sync never runs. Never blocks and
+ * never rejects; failures surface only through onFailed.
  */
 export function syncBeforeSearch(input: SearchSyncInput): void {
 	if (searchSyncInFlight.has(input.cwd)) return;
 	const job = (async (): Promise<void> => {
 		try {
-			const unlocked = await input.run(["unlock"], input.cwd, SYNC_TIMEOUT_MS);
-			if (!unlocked) {
-				input.onFailed?.("unlock");
-				return;
+			let alive = false;
+			try { alive = daemonFor(input.cwd, input.registryDir).alive; } catch { /* not alive */ }
+			if (!alive) {
+				const unlocked = await input.run(["unlock"], input.cwd, SYNC_TIMEOUT_MS);
+				if (!unlocked) {
+					input.onFailed?.("unlock");
+					return;
+				}
 			}
 			const synced = await input.run(["sync", "-q"], input.cwd, SYNC_TIMEOUT_MS);
 			if (!synced) input.onFailed?.("sync");

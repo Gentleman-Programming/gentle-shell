@@ -12,6 +12,7 @@ import {
 	prepareReadiness,
 	skipsSession,
 	syncBeforeSearch,
+	warmUpDaemon,
 	type ReadinessInput,
 	type SearchSyncInput,
 	type SessionStartReason,
@@ -105,6 +106,41 @@ test("prepareReadiness: an existing index is synced and then warmed", async (t) 
 	}));
 	assert.deepEqual(result, { action: "sync", ok: true, warm: "ok" });
 	assert.deepEqual(calls, ["run:unlock", "run:sync -q", "warm"], "a sync is always preceded by an unlock");
+});
+
+test("prepareReadiness: a live daemon syncs without unlocking; a dead one keeps unlock-then-sync", async (t) => {
+	const cwd = dir(t, "sync-live-daemon");
+	writeDb(cwd);
+	const registry = dir(t, "sync-live-registry");
+	const socket = join(registry, "live.sock");
+	writeFileSync(socket, "");
+	writeFileSync(join(registry, "record.json"), JSON.stringify({ root: cwd, socketPath: socket, startedAt: 1, pid: process.pid }));
+	const calls: string[] = [];
+	const result = await prepareReadiness(fakeInput(cwd, {
+		registryDir: registry,
+		run: async (args) => {
+			calls.push(`run:${args.join(" ")}`);
+			return true;
+		},
+		warm: async () => {
+			calls.push("warm");
+			return true;
+		},
+	}));
+	assert.deepEqual(result, { action: "sync", ok: true, warm: "ok" });
+	assert.deepEqual(calls, ["run:sync -q", "warm"], "a live daemon holds the writer lock: only the sync runs");
+
+	const deadCwd = dir(t, "sync-dead-daemon");
+	writeDb(deadCwd);
+	const deadCalls: string[] = [];
+	await prepareReadiness(fakeInput(deadCwd, {
+		registryDir: dir(t, "sync-dead-registry"),
+		run: async (args) => {
+			deadCalls.push(`run:${args.join(" ")}`);
+			return true;
+		},
+	}));
+	assert.deepEqual(deadCalls, ["run:unlock", "run:sync -q"], "no live daemon: the stale-lock clear still precedes the sync");
 });
 
 test("prepareReadiness: a failed unlock prevents the sync, a failed sync still warms", async (t) => {
@@ -262,6 +298,37 @@ test("maybeRewarm: warms in the background only when the daemon is not alive", a
 	assert.deepEqual(warmed, [], "a live daemon needs no re-warm");
 });
 
+test("warmUpDaemon: a live daemon resolves true without spawning; a dead record still spawns", async (t) => {
+	// Any spawn would fail: PATH holds nothing but an empty directory, so a true result can only
+	// come from the liveness gate, and a spawn-path result is a fast false.
+	const emptyBin = dir(t, "warm-empty-bin");
+	const previousPath = process.env.PATH;
+	process.env.PATH = emptyBin;
+	t.after(() => {
+		process.env.PATH = previousPath;
+	});
+
+	const cwd = dir(t, "warm-live");
+	const registry = dir(t, "warm-live-registry");
+	const socket = join(registry, "live.sock");
+	writeFileSync(socket, "");
+	writeFileSync(join(registry, "record.json"), JSON.stringify({ root: cwd, socketPath: socket, startedAt: 1, pid: process.pid }));
+	const startedAt = Date.now();
+	const warmed = await warmUpDaemon(cwd, false, 5_000, registry);
+	assert.equal(warmed, true, "a live daemon is already warm: no spawn, no handshake");
+	assert.ok(Date.now() - startedAt < 5_000, "the resolution is immediate");
+
+	const exited = spawnSync(process.execPath, ["-e", ""], { encoding: "utf8" });
+	assert.ok(typeof exited.pid === "number" && exited.pid > 0);
+	const deadCwd = dir(t, "warm-dead");
+	const deadRegistry = dir(t, "warm-dead-registry");
+	const staleSocket = join(deadRegistry, "stale.sock");
+	writeFileSync(staleSocket, "");
+	writeFileSync(join(deadRegistry, "record.json"), JSON.stringify({ root: deadCwd, socketPath: staleSocket, startedAt: 1, pid: exited.pid }));
+	const dead = await warmUpDaemon(deadCwd, false, 5_000, deadRegistry);
+	assert.equal(dead, false, "a dead record does not short-circuit: the spawn path ran and failed without codegraph on PATH");
+});
+
 test("syncBeforeSearch: unlock first, then sync -q; a failed sync reports only sync", async (t) => {
 	const cwd = dir(t, "search-order");
 	const calls: string[] = [];
@@ -277,6 +344,38 @@ test("syncBeforeSearch: unlock first, then sync -q; a failed sync reports only s
 	await settled();
 	assert.deepEqual(calls, ["unlock", "sync -q"]);
 	assert.deepEqual(failures, ["sync"]);
+});
+
+test("syncBeforeSearch: a live daemon syncs only, never unlocked; no daemon keeps unlock+sync", async (t) => {
+	const cwd = dir(t, "search-live-daemon");
+	const registry = dir(t, "search-live-registry");
+	const socket = join(registry, "live.sock");
+	writeFileSync(socket, "");
+	writeFileSync(join(registry, "record.json"), JSON.stringify({ root: cwd, socketPath: socket, startedAt: 1, pid: process.pid }));
+	const calls: string[] = [];
+	syncBeforeSearch({
+		cwd,
+		registryDir: registry,
+		run: async (args) => {
+			calls.push(args.join(" "));
+			return true;
+		},
+	});
+	await settled();
+	assert.deepEqual(calls, ["sync -q"], "a live daemon holds the writer lock and is not stale: only the sync runs");
+
+	const deadCwd = dir(t, "search-dead-daemon");
+	const deadCalls: string[] = [];
+	syncBeforeSearch({
+		cwd: deadCwd,
+		registryDir: dir(t, "search-dead-registry"),
+		run: async (args) => {
+			deadCalls.push(args.join(" "));
+			return true;
+		},
+	});
+	await settled();
+	assert.deepEqual(deadCalls, ["unlock", "sync -q"], "no live daemon: the stale lock is still cleared first");
 });
 
 test("syncBeforeSearch: a failed unlock never runs the sync and reports only unlock", async (t) => {

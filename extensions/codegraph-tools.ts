@@ -117,7 +117,20 @@ function gitFailureDetail(error: unknown): string {
 	return text.length > GIT_DIAGNOSTIC_MAX_CHARS ? `${text.slice(0, GIT_DIAGNOSTIC_MAX_CHARS)}...` : text;
 }
 
-function resolveWorkspaceCwd(cwd: string): string {
+/** One git interrogation: fixed arguments for one cwd, returning trimmed stdout. */
+export type GitRun = (args: readonly string[], cwd: string) => string;
+
+const defaultGitRun: GitRun = (args, cwd) => execFileSync("git", [...args], {
+	cwd,
+	encoding: "utf8",
+	stdio: ["ignore", "pipe", "pipe"],
+	windowsHide: true,
+}).trim();
+
+/** Workspaces whose guard already passed this turn: git is asked once per cwd per turn. */
+const workspaceVerified = new Set<string>();
+
+function resolveWorkspaceCwd(cwd: string, gitRun: GitRun = defaultGitRun): string {
 	const resolved = realpathSync(cwd);
 	if (!lstatSync(resolved).isDirectory()) {
 		throw new Error("CodeGraph can run only in the current workspace directory.");
@@ -125,16 +138,13 @@ function resolveWorkspaceCwd(cwd: string): string {
 	if (resolved === realpathSync(homedir()) || resolved === realpathSync(tmpdir())) {
 		throw new Error("CodeGraph requires a real Git project root equal to the current workspace, not HOME or a temporary directory.");
 	}
+	if (workspaceVerified.has(resolved)) return resolved;
 	try {
-		const root = realpathSync(execFileSync("git", ["rev-parse", "--show-toplevel"], {
-			cwd: resolved,
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "pipe"],
-			windowsHide: true,
-		}).trim());
+		const root = realpathSync(gitRun(["rev-parse", "--show-toplevel"], resolved));
 		if (!isSameDirectory(root, resolved)) {
 			throw gitRootRequiredError(resolved, "git toplevel", root);
 		}
+		workspaceVerified.add(resolved);
 		return resolved;
 	} catch (error) {
 		if (error instanceof Error && /real Git project root/.test(error.message)) throw error;
@@ -184,27 +194,25 @@ function isCodegraphIndexCommand(command: string): boolean {
 	return /^codegraph\s+(index|init)\b/.test(rest);
 }
 
-function gitOutput(cwd: string, args: readonly string[]): string {
-	return execFileSync("git", [...args], {
-		cwd,
-		encoding: "utf8",
-		stdio: ["ignore", "pipe", "ignore"],
-		windowsHide: true,
-	}).trim();
-}
-
 // CodeGraph writes .codegraph/.gitignore with `*` and `!.gitignore`, so that file
 // stays untracked and enters every diff. Keep the whole index out of git through
 // the worktree's local exclude file; tracked files and .gitignore are never edited.
 const LOCAL_EXCLUDE_PATTERN = ".codegraph/";
 const EQUIVALENT_EXCLUDE_PATTERNS = new Set([".codegraph", ".codegraph/", "/.codegraph", "/.codegraph/"]);
 
-function excludeIndexLocally(cwd: string): CodeGraphLocalExclude | undefined {
+/** The git-derived exclude path per cwd this turn: git is asked once, the exclude file is still checked on every call. */
+const excludeApplied = new Map<string, string | undefined>();
+
+function excludeIndexLocally(cwd: string, gitRun: GitRun = defaultGitRun): CodeGraphLocalExclude | undefined {
 	let path: string | undefined;
 	try {
-		if (gitOutput(cwd, ["rev-parse", "--is-inside-work-tree"]) !== "true") return undefined;
-		// --git-path resolves the exclude file a linked worktree actually reads.
-		path = resolve(cwd, gitOutput(cwd, ["rev-parse", "--git-path", "info/exclude"]));
+		if (!excludeApplied.has(cwd)) {
+			const inside = gitRun(["rev-parse", "--is-inside-work-tree"], cwd) === "true";
+			// --git-path resolves the exclude file a linked worktree actually reads.
+			excludeApplied.set(cwd, inside ? resolve(cwd, gitRun(["rev-parse", "--git-path", "info/exclude"], cwd)) : undefined);
+		}
+		path = excludeApplied.get(cwd);
+		if (path === undefined) return undefined;
 		const current = existsSync(path) ? readFileSync(path, "utf8") : "";
 		mkdirSync(dirname(path), { recursive: true });
 		path = join(realpathSync(dirname(path)), basename(path));
@@ -419,9 +427,11 @@ async function queryViaDaemon(cwd: string, parameters: CodeGraphToolParameters, 
 /** The cwds whose index this turn's first search already refreshed in the background. */
 const searchSynced = new Set<string>();
 
-/** A new user prompt starts a new turn: its first search refreshes the index again. */
+/** A new user prompt starts a new turn: its first search refreshes the index and re-asks git once. */
 export function clearSearchSync(): void {
 	searchSynced.clear();
+	workspaceVerified.clear();
+	excludeApplied.clear();
 }
 
 /**
@@ -449,6 +459,7 @@ export function createCodeGraphTool(
 		daemonExplore = queryViaDaemon,
 		warm = (project: string, timeoutMs: number) => warmUpDaemon(project, false, timeoutMs),
 		syncRun = runCodegraph,
+		gitRun = defaultGitRun,
 	}: {
 		queryTimeoutMs?: number;
 		daemonExplore?: DaemonExplore;
@@ -456,6 +467,8 @@ export function createCodeGraphTool(
 		warm?: (cwd: string, timeoutMs: number) => Promise<boolean>;
 		/** Runs the per-turn unlock+sync fired before the first search; injected in tests. */
 		syncRun?: SearchSyncInput["run"];
+		/** Runs every git interrogation (workspace guard, exclude detection); injected in tests. */
+		gitRun?: GitRun;
 	} = {},
 ) {
 	return {
@@ -478,7 +491,7 @@ export function createCodeGraphTool(
 			_onUpdate: undefined,
 			ctx: ExtensionContext,
 		): Promise<{ content: { type: "text"; text: string }[]; details: { operation: CodeGraphOperation; cwd: string; args: string[]; localExclude?: CodeGraphLocalExclude; viaDaemon?: boolean; syncTriggered?: boolean } | CodeGraphFallbackDetails }> {
-			const cwd = resolveWorkspaceCwd(ctx.cwd);
+			const cwd = resolveWorkspaceCwd(ctx.cwd, gitRun);
 			assertSafeIndexDirectory(cwd);
 			const args = commandArguments(parameters, cwd);
 			// MCP-only query path: query and explore always go through the daemon socket (roughly 75 ms
@@ -501,7 +514,7 @@ export function createCodeGraphTool(
 				const syncDetails = syncTriggered ? { syncTriggered: true } : {};
 				if (viaDaemon?.status === "ok") {
 					const output = truncateOutput(viaDaemon.text);
-					const localExclude = indexExists(cwd) ? excludeIndexLocally(cwd) : undefined;
+					const localExclude = indexExists(cwd) ? excludeIndexLocally(cwd, gitRun) : undefined;
 					return {
 						content: [{ type: "text" as const, text: withLocalExcludeNote(output || "CodeGraph completed without output.", localExclude) }],
 						details: { operation: parameters.operation, cwd, args, viaDaemon: true, ...syncDetails, ...(localExclude ? { localExclude } : {}) },
@@ -513,14 +526,14 @@ export function createCodeGraphTool(
 				try {
 					const result = await runner(args, { cwd, signal, maxBuffer: PROCESS_MAX_BUFFER });
 					const output = truncateOutput([result.stdout, result.stderr].filter(Boolean).join("\n"));
-					const localExclude = indexExists(cwd) ? excludeIndexLocally(cwd) : undefined;
+					const localExclude = indexExists(cwd) ? excludeIndexLocally(cwd, gitRun) : undefined;
 					return {
 						content: [{ type: "text" as const, text: withLocalExcludeNote(output || "CodeGraph completed without output.", localExclude) }],
 						details: { operation: parameters.operation, cwd, args, viaDaemon: false, ...syncDetails, ...(localExclude ? { localExclude } : {}) },
 					};
 				} catch (error: unknown) {
 					const details = codeGraphFailureDetails(error, parameters.operation, cwd);
-					const localExclude = indexExists(cwd) ? excludeIndexLocally(cwd) : undefined;
+					const localExclude = indexExists(cwd) ? excludeIndexLocally(cwd, gitRun) : undefined;
 					if (localExclude) details.localExclude = localExclude;
 					return {
 						content: [{ type: "text" as const, text: withLocalExcludeNote(codeGraphFailureMessage(details.status), localExclude) }],
@@ -533,7 +546,7 @@ export function createCodeGraphTool(
 				const result = await runner(args, { cwd, signal, maxBuffer: PROCESS_MAX_BUFFER });
 				const output = truncateOutput([result.stdout, result.stderr].filter(Boolean).join("\n"));
 				const localExclude = parameters.operation === CODEGRAPH_OPERATION.INIT || indexExists(cwd)
-					? excludeIndexLocally(cwd)
+					? excludeIndexLocally(cwd, gitRun)
 					: undefined;
 				return {
 					content: [{ type: "text" as const, text: withLocalExcludeNote(output || "CodeGraph completed without output.", localExclude) }],
@@ -542,7 +555,7 @@ export function createCodeGraphTool(
 			} catch (error: unknown) {
 				const details = codeGraphFailureDetails(error, parameters.operation, cwd);
 				// A failed init can still leave a partial index behind.
-				const localExclude = indexExists(cwd) ? excludeIndexLocally(cwd) : undefined;
+				const localExclude = indexExists(cwd) ? excludeIndexLocally(cwd, gitRun) : undefined;
 				if (localExclude) details.localExclude = localExclude;
 				return {
 					content: [{ type: "text" as const, text: withLocalExcludeNote(codeGraphFailureMessage(details.status), localExclude) }],

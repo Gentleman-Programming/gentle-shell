@@ -277,6 +277,38 @@ test("CodeGraph search falls back to one CLI process when the daemon cannot serv
 	assert.equal((result.details as { syncTriggered?: boolean }).syncTriggered, true);
 });
 
+test("CodeGraph tool asks git once per cwd per turn, not once per search", async (t) => {
+	withoutChildEnv(t);
+	const cwd = workspace(t);
+	mkdirSync(join(cwd, ".codegraph"));
+	writeFileSync(join(cwd, ".codegraph", "codegraph.db"), "index");
+	const gitCalls: string[] = [];
+	const gitRun = (args: readonly string[], at: string): string => {
+		gitCalls.push(args.join(" "));
+		if (args.includes("--show-toplevel")) return at;
+		if (args.includes("--is-inside-work-tree")) return "true";
+		if (args.includes("--git-path")) return ".git/info/exclude";
+		throw new Error(`unexpected git interrogation: ${args.join(" ")}`);
+	};
+	const tool = createCodeGraphTool(async () => ({ stdout: "unused", stderr: "" }), {
+		daemonExplore: daemonOk,
+		warm: async () => true,
+		syncRun: syncNothing,
+		gitRun,
+	});
+	const ctx = { cwd } as ExtensionContext;
+
+	await tool.execute("test", { operation: "query", query: "first" }, undefined, undefined, ctx);
+	const firstSearch = gitCalls.length;
+	assert.ok(firstSearch > 0, "the first search of a turn asks git");
+	await tool.execute("test", { operation: "query", query: "second" }, undefined, undefined, ctx);
+	assert.equal(gitCalls.length, firstSearch, "a later search in the same turn asks git nothing");
+
+	clearSearchSync();
+	await tool.execute("test", { operation: "query", query: "third" }, undefined, undefined, ctx);
+	assert.equal(gitCalls.length, firstSearch * 2, "a new turn asks git again, exactly once");
+});
+
 test("CodeGraph init reports the missing binary distinctly", async (t) => {
 	const cwd = workspace(t);
 	const unavailable = Object.assign(new Error("spawn codegraph ENOENT"), { code: "ENOENT" });

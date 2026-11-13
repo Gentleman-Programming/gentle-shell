@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { maybeRewarm, prepareReadiness, runCodegraph, warmUpDaemon, type SessionStartReason } from "../lib/codegraph-readiness.ts";
 
 const CODEGRAPH_OPERATION = {
 	INIT: "init",
@@ -402,6 +403,9 @@ export function createCodeGraphTool(
 		): Promise<{ content: { type: "text"; text: string }[]; details: { operation: CodeGraphOperation; cwd: string; args: string[]; localExclude?: CodeGraphLocalExclude } | CodeGraphFallbackDetails }> {
 			const cwd = resolveWorkspaceCwd(ctx.cwd);
 			assertSafeIndexDirectory(cwd);
+			// Lazy re-warm: if the project's daemon died mid-session, warm it in the background so the
+			// next query is fast again. Never blocks this call.
+			if (parameters.operation !== CODEGRAPH_OPERATION.INIT) maybeRewarm(cwd);
 			const args = commandArguments(parameters, cwd);
 			const timeout = parameters.operation === "init" ? undefined : AbortSignal.timeout(queryTimeoutMs);
 			const runSignal = timeout && signal ? AbortSignal.any([signal, timeout]) : (timeout ?? signal);
@@ -439,4 +443,45 @@ export function registerCodeGraphTool(pi: ExtensionAPI): void {
 
 export default function codeGraphTools(pi: ExtensionAPI): void {
 	registerCodeGraphTool(pi);
+	// Session-start readiness: the index first (sync or init, in the background), then the daemon
+	// warm-up, so the first real query of the session is fast. The session never waits for any of it.
+	pi.on?.("session_start", (event, ctx) => {
+		const reason = (event as { reason?: unknown }).reason;
+		if (typeof reason !== "string") return;
+		const say = (text: string, level: "info" | "warning") => {
+			if (ctx.hasUI) ctx.ui.notify(text, level);
+		};
+		void prepareReadiness({
+			cwd: ctx.cwd,
+			env: process.env,
+			reason: reason as SessionStartReason,
+			isProjectRoot: (workspace) => {
+				try {
+					return resolveWorkspaceCwd(workspace) === workspace;
+				} catch {
+					return false;
+				}
+			},
+			run: runCodegraph,
+			warm: (workspace) => warmUpDaemon(workspace),
+			onStart: (action) => say(
+				action === "sync"
+					? "syncing the CodeGraph index..."
+					: "creating the CodeGraph index of this project...",
+				"info",
+			),
+			onIndexed: (result) => {
+				if (!result.ok) say(`codegraph ${result.action} failed in ${ctx.cwd}`, "warning");
+				else say(result.action === "sync" ? "CodeGraph index synced" : "CodeGraph index created", "info");
+			},
+			onWarmStart: () => say("warming up CodeGraph...", "info"),
+		})
+			.then((result) => {
+				if (result.warm === "ok") say("CodeGraph ready", "info");
+				else if (result.warm === "failed") say(`CodeGraph warm-up failed in ${ctx.cwd}`, "warning");
+			})
+			.catch(() => {
+				/* never surface: the session may already be gone */
+			});
+	});
 }

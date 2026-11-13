@@ -25,6 +25,8 @@ test("a job without its own label is projected by program name, never by its com
 		['curl -H "Authorization: Bearer sk-live-123" https://api.example.com', "curl"],
 		["GITHUB_TOKEN=ghp_secret /home/devel/bin/deploy.sh --key=s3cr3t", "deploy.sh"],
 		["  npm run build  ", "npm"],
+		['"C:\\Program Files\\Tools\\app.exe" --token=s3cr3t', "app.exe"],
+		["API_KEY=s3cr3t '/home/devel/my tools/run.sh' --key=s3cr3t", "run.sh"],
 		["A=1 B=2", "Background job"],
 		["", "Background job"],
 	];

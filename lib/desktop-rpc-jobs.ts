@@ -90,7 +90,9 @@ const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
  */
 export function desktopJobLabel(job: Pick<JobRecord, "label" | "command">): string {
 	if (job.label.trim() !== job.command.trim()) return job.label;
-	const program = job.command.trim().split(/\s+/).find((word) => word.length > 0 && !ENV_ASSIGNMENT.test(word));
+	// Words are split on whitespace, but a quoted word (a path with spaces) stays whole.
+	const words = job.command.trim().match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+	const program = words.find((word) => !ENV_ASSIGNMENT.test(word));
 	const name = program?.replace(/^["']|["']$/g, "").split(/[\\/]/).pop() ?? "";
 	return /^[A-Za-z0-9._+-]{1,64}$/.test(name) ? name : DESKTOP_JOB_FALLBACK_LABEL;
 }

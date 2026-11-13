@@ -37,6 +37,7 @@ import {
 import { evaluateProfilePin, clearProfilePinSync, readProfilePinStatus, writeProfilePinSync } from "./agent-profile-pin.ts";
 import { parseAgentsConfig, readSubagentsFileResult, subagentsConfigPaths } from "./agents-config.ts";
 import type { DesktopRpcOutcome, DesktopRpcState } from "./desktop-rpc.ts";
+import { isDesktopProfileApplyRunning } from "./desktop-rpc-profiles.ts";
 import { fallbacksFilePath, normalizeFallbacksFile, readFallbacksFile, writeFallbacksFile } from "./model-fallback-store.ts";
 import { modelConfigPaths, normalizeModelConfig, readModelConfigFile, readSavedModelConfig } from "./model-routing-authority.ts";
 import type { WorktreeResolver } from "./session-worktree-registry.ts";
@@ -109,6 +110,7 @@ const INVALID_PARAMS = { code: "invalid_request", message: "Invalid Desktop conf
 const UNKNOWN_STORE = { code: "unknown_store", message: "Unknown Desktop config store" } as const;
 const UNAVAILABLE = { code: "config_unavailable", message: "Config stores unavailable for this session" } as const;
 const READ_ONLY = { code: "read_only", message: "Config store is read-only over Desktop RPC" } as const;
+const APPLY_BUSY = { code: "profile_apply_busy", message: "A profile apply is in progress" } as const;
 const INVALID_DATA = { code: "invalid_data", message: "Invalid config data for this store" } as const;
 const UNKNOWN_PIN_PROFILE = { code: "invalid_data", message: "Pin target profile is not defined by the profiles store" } as const;
 const MISSING_REVISION = { code: "revision_conflict", message: "expectedRevision is required before writing" } as const;
@@ -643,6 +645,10 @@ export class DesktopConfigBridge {
 		// A read-only store is rejected before its data is inspected: the reason a
 		// write cannot happen is the store itself, not the payload.
 		if (storeReadOnly(params.store)) return { ok: false, error: READ_ONLY };
+		// An apply_profile reads these stores, awaits, then rewrites the profiles
+		// store (and restores it on failure) from that snapshot; a write accepted in
+		// between would be silently overwritten, so it waits for the apply instead.
+		if (isDesktopProfileApplyRunning()) return { ok: false, error: APPLY_BUSY };
 		// A usable revision is required before the payload is validated: absent, empty,
 		// and non-string tokens are all "the client did not prove current state".
 		const expected =

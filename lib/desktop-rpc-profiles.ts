@@ -48,6 +48,32 @@ export interface DesktopProfilesService {
 	dispose(): void;
 }
 
+// Process-wide: the apply owner (gentle-ai) and the Desktop config writer
+// (gentle-desktop-rpc) may load this module separately, so the gate lives on a
+// registered symbol rather than in module state.
+const APPLY_GATE = Symbol.for("gentle-shell.desktop-profile-apply");
+type GateHost = { [APPLY_GATE]?: boolean };
+
+/**
+ * Claims the single apply slot. While it is held, Desktop writes to the stores an
+ * apply reads and rewrites (`profiles`, `profile_fallbacks`, `pins`) are refused,
+ * so an apply's claim and rollback never overwrite an edit accepted mid-apply.
+ */
+export function beginDesktopProfileApply(): boolean {
+	const host = globalThis as GateHost;
+	if (host[APPLY_GATE]) return false;
+	host[APPLY_GATE] = true;
+	return true;
+}
+
+export function endDesktopProfileApply(): void {
+	(globalThis as GateHost)[APPLY_GATE] = false;
+}
+
+export function isDesktopProfileApplyRunning(): boolean {
+	return (globalThis as GateHost)[APPLY_GATE] === true;
+}
+
 /**
  * Binds a confirmation to the exact dialog the screen would show and to the
  * saved profile content the apply uses. Any change in the diff, the profile's

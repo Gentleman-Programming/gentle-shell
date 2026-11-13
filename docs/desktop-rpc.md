@@ -900,7 +900,7 @@ Otherwise the answer is the outcome, with the screen's notices as `notes` (`leve
 
 `session` binds the profile to the RPC session through the same session-profile path as the screen's Enter: it writes no global routing, no pins, no materialized stores, and does not change the active marker in `profiles.json`.
 
-Only one apply runs at a time in a Pi process, across sessions. A request that arrives while another apply is running answers `profile_apply_busy` and changes nothing.
+Only one apply runs at a time in a Pi process, across sessions. A request that arrives while another apply is running answers `profile_apply_busy` and changes nothing. While an apply runs, `set_config` for `profiles`, `profile_fallbacks`, and `pins` also answers `profile_apply_busy` and writes nothing: the apply rewrites the profiles store (and restores it on failure) from the snapshot it read, so an edit accepted mid-apply would otherwise be lost. Retry after the apply answers.
 
 ## Responses
 
@@ -951,7 +951,7 @@ Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invali
 | `agents_unavailable` | The subagents owner did not answer for this session (the owning extension is not loaded, or the session changed). State unchanged. |
 | `profiles_unavailable` | The profiles owner did not answer for this session (the owning extension is not loaded, the session changed, or no Desktop command bound a session context). Nothing was written. |
 | `unknown_profile` | `apply_profile` named a profile that is not saved in `profiles.json`. No routing, settings, agents, or pins were written (a missing `profiles.json` may have been seeded). |
-| `profile_apply_busy` | Another `apply_profile` is still running. Nothing was written by this request. |
+| `profile_apply_busy` | An `apply_profile` is still running; returned to a second `apply_profile` and to `set_config` for `profiles`, `profile_fallbacks`, or `pins`. Nothing was written by this request. |
 | `not_found` | `cancel_job` named a job id, or `cancel_subagent` named a subagent id, that does not exist or belongs to another session. Nothing was stopped. |
 | `internal_error` | Unexpected failure; message stays generic. |
 

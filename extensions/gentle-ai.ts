@@ -164,7 +164,9 @@ import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-inte
 import {
 	DESKTOP_PROFILES_SERVICE_CHANNEL,
 	DESKTOP_PROFILES_SERVICE_SCHEMA,
+	beginDesktopProfileApply,
 	desktopConfirmationToken,
+	endDesktopProfileApply,
 	type DesktopProfileApplyRequest,
 	type DesktopProfileApplyResult,
 	type DesktopProfileNote,
@@ -6769,8 +6771,6 @@ async function loadProfilesStore(ctx: ExtensionContext): Promise<{ path: string;
 	return { path, file };
 }
 
-let desktopProfileApplyInFlight = false;
-
 /**
  * Runs the screen's own "Make default" or "Use in this session" action for
  * Gentle Desktop. The screen's UI is replaced by a recording adapter: notices
@@ -6780,8 +6780,7 @@ let desktopProfileApplyInFlight = false;
  * Desktop showed that text to the human for that exact profile.
  */
 async function applyDesktopProfile(context: ExtensionContext, live: LiveSession, request: DesktopProfileApplyRequest): Promise<DesktopProfileApplyResult> {
-	if (desktopProfileApplyInFlight) return { status: "busy" };
-	desktopProfileApplyInFlight = true;
+	if (!beginDesktopProfileApply()) return { status: "busy" };
 	try {
 		const notes: DesktopProfileNote[] = [];
 		let pending: { title: string; message: string; confirmation: string } | undefined;
@@ -6823,7 +6822,7 @@ async function applyDesktopProfile(context: ExtensionContext, live: LiveSession,
 		// Every success path ends with an info notice; every failure ends with a warning or says nothing.
 		return { status: notes.slice(actionStart).at(-1)?.level === "info" ? "applied" : "not_applied", notes };
 	} finally {
-		desktopProfileApplyInFlight = false;
+		endDesktopProfileApply();
 	}
 }
 

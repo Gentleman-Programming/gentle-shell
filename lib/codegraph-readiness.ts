@@ -11,7 +11,7 @@ import type { SeedOutcome } from "./codegraph-seed.ts";
 /** A cold daemon on a network share can need over a minute for its first read. */
 const WARMUP_TIMEOUT_MS = 120_000;
 export const SYNC_TIMEOUT_MS = 120_000;
-export const INIT_TIMEOUT_MS = 600_000;
+const INIT_TIMEOUT_MS = 600_000;
 /** How long a killed command may take to be gone before the timeout is reported anyway. */
 const KILL_WAIT_MS = 10_000;
 /** The environment variable a subagent child carries; children never start an index operation of their own. */
@@ -63,10 +63,6 @@ export function warmUpDaemon(cwd: string, background = false, timeoutMs = WARMUP
 				child = spawn(`codegraph serve --mcp -p ${JSON.stringify(project)}`, { cwd: tmpdir(), env: process.env, shell: true, windowsHide: true, stdio: ["pipe", "pipe", "ignore"] });
 			} else {
 				child = spawn("codegraph", ["serve", "--mcp", "-p", project], { cwd: tmpdir(), env: process.env, windowsHide: true, stdio: ["pipe", "pipe", "ignore"] });
-			}
-			if (child === undefined) {
-				finish(false);
-				return;
 			}
 			if (background) {
 				child.unref();
@@ -359,7 +355,13 @@ export function runCodegraph(args: readonly string[], cwd: string, timeoutMs: nu
 		};
 		let child: ReturnType<typeof spawn> | undefined;
 		try {
-			const project = daemonFor(cwd).root ?? realpathSync(cwd);
+			let project: string;
+			try {
+				project = daemonFor(cwd).root ?? realpathSync(cwd);
+			} catch {
+				/* not alive: no registry, so the command simply runs for the real project path */
+				project = realpathSync(cwd);
+			}
 			if (process.platform === "win32") {
 				child = spawn(`codegraph ${[...args, project].map((part) => JSON.stringify(part)).join(" ")}`, { cwd: tmpdir(), env: process.env, shell: true, windowsHide: true, stdio: "ignore" });
 			} else {

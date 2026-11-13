@@ -365,6 +365,7 @@ function* codeGraphNodeScriptsOnPath(): Generator<string, undefined, unknown> {
 	}
 }
 
+/** Test seam: exercised only by the test suite; not part of the tool's runtime surface. */
 /** Resolve the first valid CodeGraph npm entry point in Windows PATH order. */
 export function findCodeGraphNodeScriptOnPath(): string | undefined {
 	return codeGraphNodeScriptsOnPath().next().value;

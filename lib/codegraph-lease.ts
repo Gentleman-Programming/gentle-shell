@@ -117,11 +117,11 @@ export function tryAcquireLease(path: string, kind: LeaseKind, ttlMs: number, no
 }
 
 /** The sync lease outlives the longest sync by design; the TTL is the crash backstop. */
-export const SYNC_LEASE_TTL_MS = 120_000;
+const SYNC_LEASE_TTL_MS = 120_000;
 /** The init lock outlives the longest init; the TTL is the crash backstop. */
-export const INIT_LOCK_TTL_MS = 600_000;
+const INIT_LOCK_TTL_MS = 600_000;
 /** How long a second session waits for another session's init before giving up. */
-export const INIT_LOCK_WAIT_MS = 120_000;
+const INIT_LOCK_WAIT_MS = 120_000;
 const POLL_MS = 500;
 
 /** One call for the daemon-less sync path: acquire the project's sync lease or skip. */

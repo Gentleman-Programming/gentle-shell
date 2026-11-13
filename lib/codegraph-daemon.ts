@@ -4,9 +4,9 @@ import net from "node:net";
 import { join } from "node:path";
 
 /** The hello line a CodeGraph daemon sends carries `protocol`; this is the only one spoken here. */
-export const DAEMON_PROTOCOL = 1;
+const DAEMON_PROTOCOL = 1;
 /** A daemon sends its hello line as soon as it accepts; one silent this long is hung, and the next one gets the rest of the budget. */
-export const DAEMON_HELLO_TIMEOUT_MS = 2_000;
+const DAEMON_HELLO_TIMEOUT_MS = 2_000;
 /** An explore answer is tens of kilobytes; anything near this size is not one worth keeping in memory. */
 const MAX_REPLY_CHARS = 1_000_000;
 /** CodeGraph answers an explore without a project with this plain text, not with an error. */
@@ -44,6 +44,7 @@ export function resetDaemonRegistryMemo(): void {
 	registryMemo = undefined;
 }
 
+/** Test seam: exercised only by the test suite; not part of the tool's runtime surface. */
 /** Daemons registered for `root` in any spelling, newest first. Reads the registry only; starts nothing. */
 export function registeredDaemons(root: string, registryDir: string = join(homedir(), ".codegraph", "daemons")): RegisteredDaemon[] {
 	let files: string[];
@@ -116,7 +117,7 @@ export function daemonFor(cwd: string, registryDir?: string): DaemonInfo {
 }
 
 /** Sockets of the project's live daemons, newest first. */
-export function daemonSockets(cwd: string, registryDir?: string): string[] {
+function daemonSockets(cwd: string, registryDir?: string): string[] {
 	return registeredDaemons(cwd, registryDir)
 		.filter((entry) => entry.pid !== undefined && processAlive(entry.pid) && socketPresent(entry.socketPath))
 		.map((entry) => entry.socketPath);

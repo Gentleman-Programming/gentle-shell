@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { exploreViaDaemon, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
 import { maybeRewarm, prepareReadiness, runCodegraph, warmUpDaemon, type SessionStartReason } from "../lib/codegraph-readiness.ts";
 
 const CODEGRAPH_OPERATION = {
@@ -377,9 +378,31 @@ const runCodeGraphCommand: CodeGraphRunner = async (args, options) => {
 	throw unavailableError;
 };
 
+/** How long the daemon attempt may take before the CLI fallback takes over. */
+const DAEMON_ATTEMPT_TIMEOUT_MS = 30_000;
+
+/** One daemon query attempt: undefined or a miss means "use the CLI path". */
+export type DaemonExplore = (cwd: string, parameters: CodeGraphToolParameters, timeoutMs: number) => Promise<DaemonCallResult | undefined>;
+
+/** The daemon speaks the same tool names as the CLI: query and explore, with their natural arguments. */
+async function queryViaDaemon(cwd: string, parameters: CodeGraphToolParameters, timeoutMs: number): Promise<DaemonCallResult | undefined> {
+	try {
+		const query = requireQuery(parameters.query);
+		const limit = resolveLimit(parameters.limit);
+		return parameters.operation === CODEGRAPH_OPERATION.QUERY
+			? await exploreViaDaemon(cwd, "codegraph_query", { query, limit }, timeoutMs)
+			: await exploreViaDaemon(cwd, "codegraph_explore", { query, maxFiles: limit }, timeoutMs);
+	} catch {
+		return undefined;
+	}
+}
+
 export function createCodeGraphTool(
 	runner: CodeGraphRunner = runCodeGraphCommand,
-	{ queryTimeoutMs = CODEGRAPH_QUERY_TIMEOUT_MS }: { queryTimeoutMs?: number } = {},
+	{
+		queryTimeoutMs = CODEGRAPH_QUERY_TIMEOUT_MS,
+		daemonExplore = queryViaDaemon,
+	}: { queryTimeoutMs?: number; daemonExplore?: DaemonExplore } = {},
 ) {
 	return {
 		name: "codegraph",
@@ -400,13 +423,28 @@ export function createCodeGraphTool(
 			signal: AbortSignal | undefined,
 			_onUpdate: undefined,
 			ctx: ExtensionContext,
-		): Promise<{ content: { type: "text"; text: string }[]; details: { operation: CodeGraphOperation; cwd: string; args: string[]; localExclude?: CodeGraphLocalExclude } | CodeGraphFallbackDetails }> {
+		): Promise<{ content: { type: "text"; text: string }[]; details: { operation: CodeGraphOperation; cwd: string; args: string[]; localExclude?: CodeGraphLocalExclude; viaDaemon?: boolean } | CodeGraphFallbackDetails }> {
 			const cwd = resolveWorkspaceCwd(ctx.cwd);
 			assertSafeIndexDirectory(cwd);
 			// Lazy re-warm: if the project's daemon died mid-session, warm it in the background so the
 			// next query is fast again. Never blocks this call.
 			if (parameters.operation !== CODEGRAPH_OPERATION.INIT) maybeRewarm(cwd);
 			const args = commandArguments(parameters, cwd);
+			// Daemon-first query path: a warm daemon answers over its socket without the per-call CLI
+			// process (roughly 75 ms local against ~590 ms, 0.5-2 s on a network share against 2.5-6 s).
+			// Any miss - no daemon, protocol drift, a timeout, an error result - falls through to the CLI
+			// path below, unchanged.
+			if (parameters.operation !== CODEGRAPH_OPERATION.INIT) {
+				const viaDaemon = await daemonExplore(cwd, parameters, Math.min(queryTimeoutMs, DAEMON_ATTEMPT_TIMEOUT_MS));
+				if (viaDaemon?.status === "ok") {
+					const output = truncateOutput(viaDaemon.text);
+					const localExclude = indexExists(cwd) ? excludeIndexLocally(cwd) : undefined;
+					return {
+						content: [{ type: "text" as const, text: withLocalExcludeNote(output || "CodeGraph completed without output.", localExclude) }],
+						details: { operation: parameters.operation, cwd, args, viaDaemon: true, ...(localExclude ? { localExclude } : {}) },
+					};
+				}
+			}
 			const timeout = parameters.operation === "init" ? undefined : AbortSignal.timeout(queryTimeoutMs);
 			const runSignal = timeout && signal ? AbortSignal.any([signal, timeout]) : (timeout ?? signal);
 			try {

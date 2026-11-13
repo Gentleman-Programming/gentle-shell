@@ -534,6 +534,52 @@ test("CodeGraph query does not treat a .codegraph directory without codegraph.db
 	assert.equal((result.details as { localExclude?: unknown }).localExclude, undefined);
 });
 
+test("CodeGraph query prefers the daemon socket and never spawns the CLI", async (t) => {
+	const cwd = workspace(t);
+	let runnerCalls = 0;
+	const tool = createCodeGraphTool(
+		async () => {
+			runnerCalls += 1;
+			return { stdout: "cli", stderr: "" };
+		},
+		{ daemonExplore: async () => ({ status: "ok", text: "daemon answer" }) },
+	);
+	const result = await tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd } as ExtensionContext);
+	assert.deepEqual(result.content, [{ type: "text", text: "daemon answer" }]);
+	assert.equal(runnerCalls, 0, "the daemon answered, so no CLI process was spawned");
+	assert.equal((result.details as { viaDaemon?: boolean }).viaDaemon, true);
+});
+
+test("CodeGraph falls back to the CLI when the daemon misses, and init never consults it", async (t) => {
+	const cwd = workspace(t);
+	let runnerCalls = 0;
+	const fallback = createCodeGraphTool(
+		async () => {
+			runnerCalls += 1;
+			return { stdout: "cli answer", stderr: "" };
+		},
+		{ daemonExplore: async () => ({ status: "unavailable" }) },
+	);
+	const query = await fallback.execute("test", { operation: "explore", query: "symbol" }, undefined, undefined, { cwd } as ExtensionContext);
+	assert.deepEqual(query.content, [{ type: "text", text: "cli answer" }]);
+	assert.equal(runnerCalls, 1);
+	assert.equal((query.details as { viaDaemon?: boolean }).viaDaemon, undefined);
+
+	const daemonCalls: string[] = [];
+	const initTool = createCodeGraphTool(
+		async () => ({ stdout: "init", stderr: "" }),
+		{
+			daemonExplore: async (_cwd, parameters) => {
+				daemonCalls.push(parameters.operation);
+				return { status: "ok", text: "daemon answer" };
+			},
+		},
+	);
+	const init = await initTool.execute("test", { operation: "init" }, undefined, undefined, { cwd } as ExtensionContext);
+	assert.deepEqual(init.content, [{ type: "text", text: "init" }]);
+	assert.deepEqual(daemonCalls, [], "init is a lifecycle operation and never goes through the daemon");
+});
+
 test("CodeGraph init still succeeds and reports when git is unavailable for the local exclusion", async (t) => {
 	const cwd = workspace(t);
 	const empty = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-nogit-")));

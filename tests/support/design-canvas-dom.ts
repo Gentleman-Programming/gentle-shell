@@ -215,6 +215,7 @@ export async function loadCanvas(firstHeight = 300, extraReplies: Record<string,
 	const windowListeners = new Map<string, Listener[]>();
 	const replies: Record<string, unknown> = {
 		"/t/api/system": { exists: false },
+		"/t/api/system/tokens": { exists: false, tokens: [] },
 		"/t/api/designs": { designs: [{ slug: "alpha", title: "Alpha", valid: true }] },
 		"/t/api/designs/alpha": {
 			slug: "alpha",

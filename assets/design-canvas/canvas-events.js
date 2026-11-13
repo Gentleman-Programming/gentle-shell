@@ -25,6 +25,8 @@ export function init(ctx) {
 			if (!change || typeof change.file !== "string") return;
 			if (change.slug === null) {
 				if (change.file === "system.html") actions.onSystemChange().catch(() => {});
+				// The design tokens: nothing reloads, the token inspector compares with the new ones.
+				else if (change.file === "system.md") actions.loadTokens().catch(() => {});
 				return;
 			}
 			if (typeof change.slug !== "string") return;

@@ -43,7 +43,8 @@ function press(canvas: Rail, key: string, init: Record<string, unknown> = {}, ta
 const pressed = (canvas: Rail, id: string) => $(canvas, id).getAttribute("aria-pressed");
 const keyOn = (target: FakeElement, key: string, init: Record<string, unknown> = {}) => target.dispatch("keydown", { key, shiftKey: false, ...init });
 const menuEl = (canvas: Rail) => $(canvas, "gd-menu");
-const menuItems = (canvas: Rail) => findAll(menuEl(canvas), (element) => element.getAttribute("role") === "menuitem");
+// Settings' items: actions (menuitem) and the Technical details checkbox (menuitemcheckbox).
+const menuItems = (canvas: Rail) => findAll(menuEl(canvas), (element) => ["menuitem", "menuitemcheckbox"].includes(element.getAttribute("role") ?? ""));
 const itemLabels = (canvas: Rail) => menuItems(canvas).map((item) => texts(item, "gd-menu-label")[0]);
 const settingsButton = (canvas: Rail) => $(canvas, "gd-rail-settings");
 const openSettings = (canvas: Rail) => {
@@ -68,12 +69,12 @@ test("the rail's Move and Comment form a pressed pair over Comment mode", async 
 	assert.deepEqual([pressed(canvas, "gd-tool-navigate"), pressed(canvas, "gd-comment")], ["false", "true"]);
 	assert.ok(canvas.world.classes.has("gd-commenting"));
 	assert.equal($(canvas, "gd-status").textContent, COMMENT_STATUS);
-	assert.deepEqual(canvas.frames()[0].contentWindow!.posted.at(-1), { type: "gd:mode", enabled: true });
+	assert.deepEqual(canvas.frames()[0].contentWindow!.posted.at(-1), { type: "gd:mode", enabled: true, inspect: false });
 
 	navigate.dispatch("click");
 	assert.deepEqual([pressed(canvas, "gd-tool-navigate"), pressed(canvas, "gd-comment")], ["true", "false"]);
 	assert.ok(!canvas.world.classes.has("gd-commenting"));
-	assert.deepEqual(canvas.frames()[0].contentWindow!.posted.at(-1), { type: "gd:mode", enabled: false });
+	assert.deepEqual(canvas.frames()[0].contentWindow!.posted.at(-1), { type: "gd:mode", enabled: false, inspect: false });
 
 	// Comment keeps toggling, Move while moving changes nothing, and the nav chip stays main's.
 	comment.dispatch("click");
@@ -250,7 +251,7 @@ test("[ and Z are not shortcuts in this canvas", async () => {
 
 // ---- Settings and the shared menu
 
-test("Settings opens the shared menu with Design system board and Keyboard shortcuts, with the menu keyboard behavior", async () => {
+test("Settings opens the shared menu with Design system board, Keyboard shortcuts and Technical details, with the menu keyboard behavior", async () => {
 	const canvas = await loadRail();
 	const settings = settingsButton(canvas);
 	const dialog = $(canvas, "gd-shortcuts");
@@ -258,10 +259,10 @@ test("Settings opens the shared menu with Design system board and Keyboard short
 	assert.equal(menuEl(canvas).hidden, false);
 	assert.equal(settings.getAttribute("aria-expanded"), "true");
 	assert.equal(menuEl(canvas).getAttribute("aria-label"), "Settings");
-	assert.deepEqual(itemLabels(canvas), ["Design system board", "Keyboard shortcuts"]);
-	assert.deepEqual(items.map((item) => [item.localName, item.getAttribute("tabindex")]), [["button", "-1"], ["button", "-1"]]);
+	assert.deepEqual(itemLabels(canvas), ["Design system board", "Keyboard shortcuts", "Technical details"]);
+	assert.deepEqual(items.map((item) => [item.localName, item.getAttribute("tabindex")]), [["button", "-1"], ["button", "-1"], ["button", "-1"]]);
 	// Each item leads with a sprite icon built in the SVG namespace of the page's sprite.
-	for (const [item, name] of [[items[0], "#i-palette"], [items[1], "#i-keys"]] as const) {
+	for (const [item, name] of [[items[0], "#i-palette"], [items[1], "#i-keys"], [items[2], "#i-code"]] as const) {
 		const [svg] = findAll(item, (element) => element.localName === "svg");
 		assert.equal(svg.namespaceURI, SVG_NS);
 		assert.equal(svg.getAttribute("aria-hidden"), "true");
@@ -278,16 +279,18 @@ test("Settings opens the shared menu with Design system board and Keyboard short
 	keyOn(items[0], "ArrowDown");
 	assert.equal(canvas.document.activeElement, items[1]);
 	keyOn(items[1], "ArrowDown");
+	assert.equal(canvas.document.activeElement, items[2]);
+	keyOn(items[2], "ArrowDown");
 	assert.equal(canvas.document.activeElement, items[0], "the arrows wrap");
 	keyOn(items[0], "End");
-	assert.equal(canvas.document.activeElement, items[1]);
-	keyOn(items[1], "Home");
+	assert.equal(canvas.document.activeElement, items[2]);
+	keyOn(items[2], "Home");
 	assert.equal(canvas.document.activeElement, items[0]);
 	keyOn(items[0], "ArrowUp");
-	assert.equal(canvas.document.activeElement, items[1]);
-	assert.equal(press(canvas, "c", {}, items[1]).defaultPrevented, false, "single keys stay off while it is open");
+	assert.equal(canvas.document.activeElement, items[2]);
+	assert.equal(press(canvas, "c", {}, items[2]).defaultPrevented, false, "single keys stay off while it is open");
 	assert.equal(pressed(canvas, "gd-comment"), "false");
-	assert.equal(keyOn(items[1], "Escape").defaultPrevented, true);
+	assert.equal(keyOn(items[2], "Escape").defaultPrevented, true);
 	assert.equal(menuEl(canvas).hidden, true);
 	assert.deepEqual(menuEl(canvas).children, [], "a closed menu keeps no items");
 	assert.equal(settings.getAttribute("aria-expanded"), "false");
@@ -710,7 +713,7 @@ test("index.html: a labeled rail with Move, Comment, Overview and Settings, one 
 	for (const [id, key] of [["gd-tool-navigate", "V"], ["gd-comment", "C"], ["gd-rail-fit", "F"]]) {
 		assert.match(rail, new RegExp(`id="${id}"[^>]*aria-keyshortcuts="${key}"[^>]*title="[^"]*\\(${key}\\)"`), `${id} names ${key}`);
 	}
-	assert.match(rail, /id="gd-rail-settings" class="gd-tool gd-bottom" aria-haspopup="menu" aria-expanded="false" aria-controls="gd-menu" title="Settings: design system and keyboard shortcuts"/);
+	assert.match(rail, /id="gd-rail-settings" class="gd-tool gd-bottom" aria-haspopup="menu" aria-expanded="false" aria-controls="gd-menu" title="Settings: design system, keyboard shortcuts and technical details"/);
 	assert.match(html, /id="gd-panel-toggle"[^>]*aria-keyshortcuts="\]" title="Comments panel \(\]\)"/);
 
 	// Comment moved from the top bar into the rail, and the rail sits beside the viewport.
@@ -725,8 +728,8 @@ test("index.html: a labeled rail with Move, Comment, Overview and Settings, one 
 	const symbols = [...sprite![1].matchAll(/<symbol id="([^"]+)" viewBox="0 0 24 24">/g)].map((match) => match[1]);
 	assert.equal(new Set(symbols).size, symbols.length, "sprite ids are unique");
 	// The screen sizes' icons are used by canvas-sizes.js (tests/design-canvas-sizes.test.ts), the ⋯ menu's
-	// by canvas-export.js (tests/design-canvas-export.test.ts).
-	assert.deepEqual(symbols.sort(), ["i-check", "i-column", "i-comment", "i-devices", "i-download", "i-file", "i-fit", "i-gear", "i-grid", "i-hand", "i-image", "i-keys", "i-monitor", "i-more", "i-palette", "i-phone", "i-row", "i-tablet", "i-width"]);
+	// by canvas-export.js (tests/design-canvas-export.test.ts), Technical details' by canvas-rail.js (tests/design-canvas-tokens.test.ts).
+	assert.deepEqual(symbols.sort(), ["i-check", "i-code", "i-column", "i-comment", "i-devices", "i-download", "i-file", "i-fit", "i-gear", "i-grid", "i-hand", "i-image", "i-keys", "i-monitor", "i-more", "i-palette", "i-phone", "i-row", "i-tablet", "i-width"]);
 	for (const match of html.matchAll(/<use href="#([^"]+)"/g)) assert.ok(symbols.includes(match[1]), `${match[1]} exists in the sprite`);
 
 	assert.match(html, /<div id="gd-menu" class="gd-menu" role="menu" hidden><\/div>/);

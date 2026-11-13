@@ -26,6 +26,8 @@ export function init(ctx) {
 	 * made at (viewport, null at the artboard's own size); the popover opens beside the element in that frame.
 	 */
 	function openPopover(surface, pick) {
+		// The comment box takes the token inspector's place.
+		actions.hideInspector();
 		win.clearTimeout(state.closeTimer);
 		const board = actions.ownerOf(surface);
 		// A pick in another frame replaces the open one: that frame's highlight goes, as on a close.
@@ -126,6 +128,9 @@ export function init(ctx) {
 	});
 
 	function closePopover() {
+		// Before the early return: every path that closes the box (focus mode ending, another size, Comment mode off,
+		// a pan or a zoom) also ends the token inspector's panel, open or not.
+		actions.hideInspector();
 		if (els.popover.hidden) return;
 		win.clearTimeout(state.closeTimer);
 		// The frame that was picked clears its outline.

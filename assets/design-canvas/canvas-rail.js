@@ -1,6 +1,6 @@
 // The tool rail on the left: Move and Comment (one pressed pair over Comment
-// mode), Overview (Fit) and Settings (a menu with the design system board and the
-// keyboard shortcuts). Its single-key shortcuts, and the ? list where a person
+// mode), Overview (Fit) and Settings (a menu with the design system board, the
+// keyboard shortcuts and Technical details, which turns the token inspector on). Its single-key shortcuts, and the ? list where a person
 // gives any of them another single key, saved in this browser for every design
 // the canvas server shows (per address: a restarted server has a new port).
 
@@ -9,6 +9,7 @@ const TEXT = Object.freeze({
 	settings: "Settings",
 	system: "Design system board",
 	keys: "Keyboard shortcuts",
+	technical: "Technical details",
 	navigateTitle: (key) => `Move around the canvas (${key})`,
 	commentTitle: (key) => `Comment on an element (${key})`,
 	fitTitle: (key) => `See all the directions (${key})`,
@@ -245,7 +246,7 @@ export function init(ctx) {
 		els.railSettings.focus();
 	}
 
-	/** What Settings offers: the design system board (when there is one, and not over Compare) and the keyboard shortcuts. */
+	/** What Settings offers: the design system board (when there is one, and not over Compare), the keyboard shortcuts and Technical details. */
 	function settingsActions() {
 		return [
 			// Checked again when chosen: a live reload may have removed the board while the menu was open.
@@ -253,6 +254,8 @@ export function init(ctx) {
 				if (state.systemBoard && !state.compare) actions.enterFocus(state.systemBoard);
 			} },
 			{ label: TEXT.keys, icon: "i-keys", shortcut: keyText(shortcutKey(shortcutById("help"))), run: openShortcuts },
+			// A checkbox: the token inspector in Comment mode (canvas-tokens.js).
+			{ label: TEXT.technical, icon: "i-code", checked: state.technical, run: () => actions.setTechnical(!state.technical) },
 		];
 	}
 

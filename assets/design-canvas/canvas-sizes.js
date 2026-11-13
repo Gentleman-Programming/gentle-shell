@@ -333,6 +333,8 @@ export function init(ctx) {
 		board.sizesView.remove();
 		board.sizesView = null;
 		board.sizeFrames = [];
+		// The token inspector's panel goes with its frame.
+		actions.hideGoneInspector();
 	}
 
 	/**

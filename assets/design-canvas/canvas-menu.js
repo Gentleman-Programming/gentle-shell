@@ -27,14 +27,17 @@ export function init(ctx) {
 	}
 
 	/**
-	 * One item of a menu. action: { label, icon?, shortcut?, disabled? }; a disabled
-	 * item (nothing to act on) is announced as unavailable and choosing it does nothing.
+	 * One item of a menu. action: { label, icon?, shortcut?, disabled?, checked? }; a disabled
+	 * item (nothing to act on) is announced as unavailable and choosing it does nothing. An action
+	 * with `checked` (true or false) is a checkbox item, with a check mark shown while it is on.
 	 */
 	function menuItem(action) {
+		const checkbox = typeof action.checked === "boolean";
 		const item = doc.createElement("button");
 		item.type = "button";
 		item.className = "gd-menu-item";
-		item.setAttribute("role", "menuitem");
+		item.setAttribute("role", checkbox ? "menuitemcheckbox" : "menuitem");
+		if (checkbox) item.setAttribute("aria-checked", String(action.checked));
 		item.setAttribute("tabindex", "-1");
 		if (action.icon) item.append(icon(action.icon, "gd-i gd-i-s"));
 		const label = doc.createElement("span");
@@ -50,6 +53,7 @@ export function init(ctx) {
 			key.textContent = action.shortcut;
 			item.append(key);
 		}
+		if (checkbox) item.append(icon("i-check", "gd-i gd-i-s gd-menu-check"));
 		if (action.disabled) item.setAttribute("aria-disabled", "true");
 		return item;
 	}

@@ -17,6 +17,7 @@ export function init(ctx) {
 		actions.exitFocus();
 		els.world.replaceChildren();
 		store.setDesign({ boards: [] });
+		actions.hideGoneInspector();
 		actions.clearLayout();
 		actions.renderMinimap();
 		els.empty.textContent = text;
@@ -45,9 +46,12 @@ export function init(ctx) {
 		return designs;
 	}
 
-	/** A board's frame or one of its size frames (canvas-sizes.js): comment mode never reaches the system board. */
+	/**
+	 * A board's frame or one of its size frames (canvas-sizes.js): comment mode never reaches the system board.
+	 * `inspect`: Technical details is on, so the frame measures the hovered element for the token inspector.
+	 */
 	function sendMode(surface) {
-		surface.frame.contentWindow?.postMessage({ type: "gd:mode", enabled: state.commenting && !actions.ownerOf(surface).system }, "*");
+		surface.frame.contentWindow?.postMessage({ type: "gd:mode", enabled: state.commenting && !actions.ownerOf(surface).system, inspect: state.technical }, "*");
 	}
 
 	function boardUrl(board) {
@@ -290,6 +294,8 @@ export function init(ctx) {
 		actions.closeBoardMenu();
 		const boards = actions.allBoards();
 		els.world.replaceChildren(...boards.map((board) => board.wrapper));
+		// The token inspector's frame may be one this replaced.
+		actions.hideGoneInspector();
 		actions.layoutBoards(boards);
 		if (state.focus && !boards.includes(state.focus)) actions.exitFocus();
 		else actions.applyFocusState();
@@ -327,6 +333,7 @@ export function init(ctx) {
 	els.design.addEventListener("change", () => {
 		actions.exitCompare(false);
 		store.setDesign({ slug: els.design.value });
+		actions.hideInspector();
 		// The old design's parts go at once: loadManifest may never reach loadParts (a failed or empty design.json).
 		actions.clearParts();
 		loadManifest(state.slug, false);
@@ -345,6 +352,7 @@ export function init(ctx) {
 			actions.exitCompare(false);
 			actions.exitFocus();
 			store.setDesign({ slug });
+			actions.hideInspector();
 			store.setComments({ comments: [], activeId: null });
 			actions.renderComments();
 			// The old design's parts go with it, before the new design's parts.json is read.

@@ -28,6 +28,7 @@ export const DESIGN_CANVAS_ASSETS                                   = Object.fre
 	"canvas-minimap.js": "text/javascript; charset=utf-8",
 	"canvas-export.js": "text/javascript; charset=utf-8",
 	"canvas-parts.js": "text/javascript; charset=utf-8",
+	"canvas-tokens.js": "text/javascript; charset=utf-8",
 	"canvas.css": "text/css; charset=utf-8",
 	"inspector.js": "text/javascript; charset=utf-8",
 });

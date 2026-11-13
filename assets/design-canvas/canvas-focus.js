@@ -44,6 +44,8 @@ export function init(ctx) {
 	/** Comment mode in navigation: the shield routes the hover to the inspector so it can outline the element. */
 	function hoverAt(event) {
 		if (!state.commenting || state.focus) return setHoverBoard(null);
+		// The token inspector's panel floats over the canvas: the pointer on it keeps the hovered element.
+		if (els.inspector.contains(event.target)) return;
 		const shield = event.target.closest(".gd-shield");
 		const board = shield ? boardOfShield(shield) : null;
 		setHoverBoard(board && !board.system ? board : null);
@@ -89,6 +91,8 @@ export function init(ctx) {
 	function centerFocus() {
 		const board = state.focus;
 		if (!board) return;
+		// The artboard moves under the token inspector's panel (a layout change, a resize): it would sit misplaced.
+		actions.hideInspector();
 		const viewport = els.viewport.getBoundingClientRect();
 		const { width, height } = actions.focusSize(board);
 		// The label above the frame wraps at the frame's width: apply the width before measuring it.

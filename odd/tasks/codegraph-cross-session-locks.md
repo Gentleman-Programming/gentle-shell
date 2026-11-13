@@ -50,3 +50,11 @@ session's live index lock and corrupt the index it is writing.
 - L1: "commit first then go" (user, 2026-11-13 session) after approving the
   Group A plan ("Approve and start", "Group A only") for the gaps named in
   tmp/codegraph-side-by-side.md: cross-session init lock + sync lease.
+- L2: T1 committed as 7edcb89; T2 committed as 7b7a2c9. Independent
+  verification (gentle-ai-verify, 2026-11-13): S1 PASS, S2 PASS — verdicts
+  with file:line evidence, re-check-after-acquire confirmed, race test
+  reproduced; three non-blocking advisories recorded (stale-steal TOCTOU
+  µs window, late release after TTL steal, 32-hex digest truncation) plus
+  two durable probes — ADDED and committed as f4e38c9 (11/11 lease).
+  Risk: item 4 (concurrency) — independent verifier RAN (exceeds the
+  assess plan). Native assess risk medium, no review due. CLOSED.

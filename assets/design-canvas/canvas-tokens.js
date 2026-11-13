@@ -665,5 +665,10 @@ export function init(ctx) {
 		if (inspect) renderInspector(inspect.surface, inspect.measure);
 	}
 
-	return { relabel, loadTokens, setTechnical, startTokens, inspectFrom, hideInspector, hideGoneInspector };
+	/** The panel beside its element again, after the artboard moved (a language switch re-centers it). */
+	function placeInspectorAgain() {
+		if (inspect && !els.inspector.hidden) placeInspector(inspect.surface, inspect.measure.rect);
+	}
+
+	return { relabel, placeInspector: placeInspectorAgain, loadTokens, setTechnical, startTokens, inspectFrom, hideInspector, hideGoneInspector };
 }

@@ -95,11 +95,13 @@ export function init(ctx) {
 	 * scrolls inside like a browser window instead of leaving its bottom out of reach.
 	 * All sizes keeps the label at 100% at the top left and fits the size frames below it.
 	 */
-	function centerFocus() {
+	function centerFocus(options) {
 		const board = state.focus;
 		if (!board) return;
-		// The artboard moves under the token inspector's panel (a layout change, a resize): it would sit misplaced.
-		actions.hideInspector();
+		// The artboard moves under the token inspector's panel (a layout change, a resize): it would sit misplaced. A
+		// language switch (`keepInspector`) moves it only by a label's height, so the panel is placed again instead.
+		const keep = Boolean(options) && options.keepInspector === true;
+		if (!keep) actions.hideInspector();
 		const viewport = els.viewport.getBoundingClientRect();
 		const { width, height } = actions.focusSize(board);
 		// The label above the frame wraps at the frame's width: apply the width before measuring it.
@@ -127,6 +129,7 @@ export function init(ctx) {
 		// The size frames sit a margin below the label, beside the margins and above the Back to canvas band.
 		actions.layoutSizes(board, { top: minTop + FOCUS_MARGIN, side: FOCUS_MARGIN, bottom: BACK_SPACE, width: viewport.width, height: viewport.height });
 		actions.renderDevice();
+		if (keep) actions.placeInspector();
 	}
 
 	/** Shields, hidden and inert boards, toolbar controls and the mode label follow state.focus. */

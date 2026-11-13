@@ -125,6 +125,19 @@ test("the comments panel's empty states in Spanish, and the exact English again"
 	await bothWays(open, () => empty(open)[1], "No resolved comments.", "No hay comentarios resueltos.");
 });
 
+test("a switch keeps Send all disabled while its request is in flight, so a second click cannot send again", async () => {
+	const canvas = await loadLanguage({ [COMMENTS_URL]: COMMENTS, [SEND_ALL_URL]: { ok: true, sent: 1 } });
+	const sends = () => canvas.posts.filter((post) => post.url === SEND_ALL_URL).length;
+	$(canvas, "gd-send-all").dispatch("click");
+	assert.equal($(canvas, "gd-send-all").disabled, true, "disabled while sending");
+	choose(canvas, "Español");
+	assert.equal($(canvas, "gd-send-all").disabled, true, "still disabled after the switch, before the reply");
+	if (!$(canvas, "gd-send-all").disabled) $(canvas, "gd-send-all").dispatch("click");
+	await settle();
+	assert.equal(sends(), 1, "one request");
+	assert.equal($(canvas, "gd-send-all").textContent.startsWith("Enviar todo"), true, "and the button is in the new language once it settles");
+});
+
 test("in Spanish the status lines of Send all (one or two), Resolve and Comment mode, and the Save button in Collect", async () => {
 	const canvas = await loadLanguage({ [COMMENTS_URL]: COMMENTS, [SEND_ALL_URL]: { ok: true, sent: 1 } }, "es");
 	const status = () => $(canvas, "gd-status").textContent;
@@ -205,6 +218,22 @@ test("a validation message already on screen is worded again when the language s
 	await settle();
 	choose(canvas, "Español");
 	assert.doesNotMatch($(canvas, "gd-popover-message").textContent, /^Escribe un comentario/, "a later message replaced the validation one");
+});
+
+test("a switch leaves Implement only this's own message alone, even after a comment-box message", async () => {
+	const canvas = await loadLanguage({ "/t/api/designs/alpha/implement-part": { __http: 409, error: "too-many-parts" } });
+	pick(canvas);
+	$(canvas, "gd-popover-text").value = "";
+	$(canvas, "gd-popover-form").dispatch("submit");
+	$(canvas, "gd-popover-text").value = "note";
+	$(canvas, "gd-popover-part").dispatch("click");
+	await settle();
+	const refusal = $(canvas, "gd-popover-message").textContent;
+	assert.notEqual(refusal, "Write a comment of 1 to 2000 characters.", "the refusal replaced the validation message");
+	choose(canvas, "Español");
+	assert.equal($(canvas, "gd-popover-message").textContent, refusal, "the parts message is not the comment box's to word again");
+	assert.doesNotMatch($(canvas, "gd-popover-message").textContent, /Escribe un comentario/);
+	assert.equal($(canvas, "gd-popover-message").title, "too-many-parts");
 });
 
 test("the offline note of Implement only this is in the stored language from the start, not only after a switch", async () => {
@@ -309,6 +338,20 @@ async function inspecting(stored?: string) {
 	canvas.message(frame.contentWindow, { type: "gd:inspect", element: MEASURE, generation: heardGeneration(frame) });
 	return canvas;
 }
+
+test("a switch in focus mode keeps the token panel open, translated and beside its element", async () => {
+	const canvas = await inspecting();
+	canvas.boards[0].shield!.dispatch("keydown", { key: "Enter" });
+	const frame = canvas.boards[0].frame;
+	canvas.message(frame.contentWindow, { type: "gd:inspect", element: MEASURE, generation: heardGeneration(frame) });
+	assert.equal($(canvas, "gd-inspector").hidden, false, "the panel shows in focus mode");
+	choose(canvas, "Español");
+	assert.equal($(canvas, "gd-inspector").hidden, false, "it stays open across the switch");
+	assert.equal($(canvas, "gd-inspector-copy").textContent, "Copiar", "and is translated");
+	choose(canvas, "English");
+	assert.equal($(canvas, "gd-inspector").hidden, false);
+	assert.equal($(canvas, "gd-inspector-copy").textContent, "Copy");
+});
 
 test("the token inspector in Spanish: each row's label and words, its buttons; the exact English again", async () => {
 	const canvas = await inspecting();

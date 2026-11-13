@@ -178,7 +178,7 @@ export function boot(win, doc) {
 		ctx.i18n.applyMarkup();
 		for (const relabel of relabels) relabel();
 		// A longer or shorter label changes the room above the focused artboard: place it again.
-		ctx.actions.centerFocus();
+		ctx.actions.centerFocus({ keepInspector: true });
 	});
 	for (const module of MODULES) {
 		const { relabel, ...functions } = module.init(ctx);

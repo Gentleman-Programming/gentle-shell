@@ -104,10 +104,15 @@ export function init(ctx) {
 		if (hadFocus && compare) compare.focus();
 	}
 
-	function renderHandoffs() {
+	function renderHandoffs(options) {
 		state.boards.forEach(renderHandoff);
 		// The handoff row changes the labels' height: the arrangement and the minimap (its chosen block too) follow.
-		actions.boardsResized();
+		actions.boardsResized(options);
+	}
+
+	/** A new language: the same rows, in place, without closing the token panel (boot places the artboard again). */
+	function relabel() {
+		renderHandoffs({ keepInspector: true });
 	}
 
 	function setHandoffs(slug, data) {
@@ -141,5 +146,5 @@ export function init(ctx) {
 	}
 
 	// A new language rewrites each artboard's handoff row (its chips only; no frame reloads).
-	return { relabel: renderHandoffs, renderHandoff, loadHandoffs, noteHandoff };
+	return { relabel, renderHandoff, loadHandoffs, noteHandoff };
 }

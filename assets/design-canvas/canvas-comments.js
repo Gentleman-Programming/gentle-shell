@@ -120,7 +120,7 @@ export function init(ctx) {
 		els.countComments.textContent = String(open.length);
 		const unsent = open.filter((comment) => comment.sentAt === null).length;
 		els.sendAll.textContent = T.sendAll(unsent);
-		els.sendAll.disabled = unsent === 0;
+		els.sendAll.disabled = unsent === 0 || sendingAll;
 		const shown = state.filter === "open" ? open : resolved;
 		els.panelEmpty.hidden = shown.length > 0;
 		els.panelEmpty.textContent = state.comments.length === 0 ? T.empty : state.filter === "open" ? T.emptyOpen : T.emptyResolved;
@@ -237,11 +237,15 @@ export function init(ctx) {
 		await loadComments();
 	}
 
+	// Send all is in flight: any re-render (a filter, a language switch) keeps the button disabled until the reply.
+	let sendingAll = false;
 	els.sendAll.addEventListener("click", async () => {
 		const slug = state.slug;
 		if (!slug) return;
+		sendingAll = true;
 		els.sendAll.disabled = true;
 		const reply = await postJson(`api/designs/${encodeURIComponent(slug)}/comments/send-all`, {}).catch((error) => ({ ok: false, body: { error: error.message } }));
+		sendingAll = false;
 		if (!reply.ok) setStatus(T.notSentAll(reply.body.reason || reply.body.error || T.error), true);
 		else setStatus(reply.body.sent ? T.sentAll(reply.body.sent) : T.noneUnsent, false);
 		await loadComments();

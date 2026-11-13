@@ -1,6 +1,38 @@
 // Comments persisted in design/<slug>/comments.json: pins on the artboards, the
 // list and its filter, the send mode, Send all, the panel and Comment mode.
 
+// Every string the comments show, in English; canvas-i18n-es.js has the Spanish. The comments themselves and file names stay as written.
+const TEXT = Object.freeze({
+	open: (count) => `Open (${count})`,
+	resolved: (count) => `Resolved (${count})`,
+	sendAll: (count) => `Send all (${count})`,
+	empty: "No comments yet. Turn on Comment mode and click an element.",
+	emptyOpen: "No open comments.",
+	emptyResolved: "No resolved comments.",
+	pin: (number, status, text) => `Comment ${number} (${status}): ${text}`,
+	statuses: { open: "open", resolved: "resolved" },
+	showLabel: (number, file) => `Show comment ${number} on ${file}`,
+	sent: "Sent",
+	notSent: "Not sent",
+	detached: "Detached",
+	shot: (number) => `Screenshot of comment ${number}`,
+	resolve: "Resolve",
+	reopen: "Reopen",
+	resolveLabel: (number) => `Resolve comment ${number}`,
+	reopenLabel: (number) => `Reopen comment ${number}`,
+	unreadable: (slug, reason) => `comments.json for ${slug} cannot be read: ${reason}`,
+	notUpdated: (reason) => `Comment not updated: ${reason}`,
+	resolvedDone: "Comment resolved",
+	reopenedDone: "Comment reopened",
+	notSentAll: (reason) => `Comments not sent: ${reason}`,
+	sentAll: (count) => `Sent ${count} comment${count === 1 ? "" : "s"} to the session`,
+	noneUnsent: "No unsent comments",
+	error: "error",
+	save: "Save",
+	send: "Send",
+	commentMode: "Comment mode: click an element in an artboard",
+});
+
 const LIMITS = { pins: 500 };
 const MODE_KEY = "gentle-design:send-mode";
 
@@ -9,6 +41,7 @@ export function init(ctx) {
 	const { state } = store;
 	const { base, getJson, postJson, isFiniteNumber } = api;
 	const { setStatus } = ui;
+	const T = ctx.i18n.text("comments", TEXT);
 
 	function storedMode() {
 		try {
@@ -63,7 +96,7 @@ export function init(ctx) {
 			pin.dataset.status = comment.status;
 			pin.classList.toggle("gd-pin-active", comment.id === state.activeId);
 			pin.textContent = String(commentNumber(comment));
-			pin.setAttribute("aria-label", `Comment ${commentNumber(comment)} (${comment.status}): ${comment.comment}`);
+			pin.setAttribute("aria-label", T.pin(commentNumber(comment), T.statuses[comment.status] ?? comment.status, comment.comment));
 			pin.style.left = `${Math.max(0, rect.x)}px`;
 			pin.style.top = `${Math.max(0, rect.y)}px`;
 			pin.addEventListener("click", (event) => {
@@ -80,19 +113,17 @@ export function init(ctx) {
 	function renderList() {
 		const open = state.comments.filter((comment) => comment.status === "open");
 		const resolved = state.comments.filter((comment) => comment.status === "resolved");
-		els.filterOpen.textContent = `Open (${open.length})`;
-		els.filterResolved.textContent = `Resolved (${resolved.length})`;
+		els.filterOpen.textContent = T.open(open.length);
+		els.filterResolved.textContent = T.resolved(resolved.length);
 		els.filterOpen.setAttribute("aria-pressed", String(state.filter === "open"));
 		els.filterResolved.setAttribute("aria-pressed", String(state.filter === "resolved"));
 		els.countComments.textContent = String(open.length);
 		const unsent = open.filter((comment) => comment.sentAt === null).length;
-		els.sendAll.textContent = `Send all (${unsent})`;
+		els.sendAll.textContent = T.sendAll(unsent);
 		els.sendAll.disabled = unsent === 0;
 		const shown = state.filter === "open" ? open : resolved;
 		els.panelEmpty.hidden = shown.length > 0;
-		els.panelEmpty.textContent = state.comments.length === 0
-			? "No comments yet. Turn on Comment mode and click an element."
-			: state.filter === "open" ? "No open comments." : "No resolved comments.";
+		els.panelEmpty.textContent = state.comments.length === 0 ? T.empty : state.filter === "open" ? T.emptyOpen : T.emptyResolved;
 		els.list.replaceChildren(...shown.map((comment) => {
 			const item = doc.createElement("li");
 			item.className = "gd-comment-item";
@@ -101,7 +132,7 @@ export function init(ctx) {
 			const show = doc.createElement("button");
 			show.type = "button";
 			show.className = "gd-comment-show";
-			show.setAttribute("aria-label", `Show comment ${commentNumber(comment)} on ${comment.file}`);
+			show.setAttribute("aria-label", T.showLabel(commentNumber(comment), comment.file));
 			const meta = doc.createElement("span");
 			meta.className = "gd-comment-meta";
 			const number = doc.createElement("span");
@@ -116,8 +147,8 @@ export function init(ctx) {
 				element.textContent = text;
 				meta.append(element);
 			};
-			badge(comment.sentAt ? "Sent" : "Not sent", comment.sentAt ? "sent" : "unsent");
-			if (isDetached(comment)) badge("Detached", "detached");
+			badge(comment.sentAt ? T.sent : T.notSent, comment.sentAt ? "sent" : "unsent");
+			if (isDetached(comment)) badge(T.detached, "detached");
 			const text = doc.createElement("span");
 			text.className = "gd-comment-text";
 			text.style.display = "block";
@@ -129,7 +160,7 @@ export function init(ctx) {
 			if (comment.screenshot) {
 				const shot = doc.createElement("img");
 				shot.className = "gd-comment-shot";
-				shot.alt = `Screenshot of comment ${commentNumber(comment)}`;
+				shot.alt = T.shot(commentNumber(comment));
 				shot.loading = "lazy";
 				shot.src = `${base}api/designs/${encodeURIComponent(state.slug)}/comments/${encodeURIComponent(comment.id)}/screenshot`;
 				show.append(shot);
@@ -140,8 +171,8 @@ export function init(ctx) {
 			const toggle = doc.createElement("button");
 			toggle.type = "button";
 			const next = comment.status === "open" ? "resolved" : "open";
-			toggle.textContent = next === "resolved" ? "Resolve" : "Reopen";
-			toggle.setAttribute("aria-label", `${toggle.textContent} comment ${commentNumber(comment)}`);
+			toggle.textContent = next === "resolved" ? T.resolve : T.reopen;
+			toggle.setAttribute("aria-label", (next === "resolved" ? T.resolveLabel : T.reopenLabel)(commentNumber(comment)));
 			toggle.addEventListener("click", () => setCommentStatus(comment.id, next));
 			controls.append(toggle);
 			item.append(show, controls);
@@ -161,7 +192,7 @@ export function init(ctx) {
 		try {
 			comments = (await getJson(`api/designs/${encodeURIComponent(slug)}/comments`)).comments;
 		} catch (error) {
-			setStatus(`comments.json for ${slug} cannot be read: ${error.message}`, true);
+			setStatus(T.unreadable(slug, error.message), true);
 		}
 		if (slug !== state.slug || !Array.isArray(comments)) return;
 		store.setComments({ comments });
@@ -201,8 +232,8 @@ export function init(ctx) {
 	async function setCommentStatus(id, status) {
 		const slug = state.slug;
 		const reply = await postJson(`api/designs/${encodeURIComponent(slug)}/comments/${encodeURIComponent(id)}/status`, { status }).catch((error) => ({ ok: false, body: { error: error.message } }));
-		if (!reply.ok) setStatus(`Comment not updated: ${reply.body.reason || reply.body.error || "error"}`, true);
-		else setStatus(status === "resolved" ? "Comment resolved" : "Comment reopened", false);
+		if (!reply.ok) setStatus(T.notUpdated(reply.body.reason || reply.body.error || T.error), true);
+		else setStatus(status === "resolved" ? T.resolvedDone : T.reopenedDone, false);
 		await loadComments();
 	}
 
@@ -211,8 +242,8 @@ export function init(ctx) {
 		if (!slug) return;
 		els.sendAll.disabled = true;
 		const reply = await postJson(`api/designs/${encodeURIComponent(slug)}/comments/send-all`, {}).catch((error) => ({ ok: false, body: { error: error.message } }));
-		if (!reply.ok) setStatus(`Comments not sent: ${reply.body.reason || reply.body.error || "error"}`, true);
-		else setStatus(reply.body.sent ? `Sent ${reply.body.sent} comment${reply.body.sent === 1 ? "" : "s"} to the session` : "No unsent comments", false);
+		if (!reply.ok) setStatus(T.notSentAll(reply.body.reason || reply.body.error || T.error), true);
+		else setStatus(reply.body.sent ? T.sentAll(reply.body.sent) : T.noneUnsent, false);
 		await loadComments();
 	});
 
@@ -220,8 +251,19 @@ export function init(ctx) {
 		store.setMode(mode === "collect" ? "collect" : "send");
 		els.modeSend.checked = state.mode === "send";
 		els.modeCollect.checked = state.mode === "collect";
-		els.send.textContent = state.mode === "collect" ? "Save" : "Send";
+		labelSend();
 		try { win.localStorage.setItem(MODE_KEY, state.mode); } catch { /* storage may be unavailable */ }
+	}
+
+	/** The comment box's submit button: Save in Collect, Send in Send now. */
+	function labelSend() {
+		els.send.textContent = state.mode === "collect" ? T.save : T.send;
+	}
+
+	/** A new language: the panel, the pins and the submit button, in place (no frame reloads). */
+	function relabel() {
+		renderComments();
+		labelSend();
 	}
 
 	els.modeSend.addEventListener("change", () => setMode("send"));
@@ -256,7 +298,7 @@ export function init(ctx) {
 		els.world.classList.toggle("gd-commenting", enabled);
 		state.boards.forEach((board) => board.sizesView?.classList.toggle("gd-commenting", enabled));
 		eachSurface(actions.sendMode);
-		setStatus(enabled ? "Comment mode: click an element in an artboard" : "", false);
+		setStatus(enabled ? T.commentMode : "", false);
 		if (!enabled) {
 			actions.setHoverBoard(null);
 			actions.closePopover();
@@ -265,5 +307,5 @@ export function init(ctx) {
 
 	els.comment.addEventListener("click", () => setCommenting(!state.commenting));
 
-	return { storedMode, sendPins, detachedKey, renderPins, renderList, renderComments, loadComments, setMode, setPanel, readRects, setCommenting };
+	return { relabel, storedMode, sendPins, detachedKey, renderPins, renderList, renderComments, loadComments, setMode, setPanel, readRects, setCommenting };
 }

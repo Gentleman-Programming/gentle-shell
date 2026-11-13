@@ -10,6 +10,9 @@
 // for the page's first 3000 elements; docs/gentle-shell.md).
 // board.checks is changed in place only by setChecks here; the tab lives in the store (setTab); the
 // ring is this module's own view state, which other modules end through clearMark.
+// Each finding comes with its English title and detail, and with a key and plain vars (inspector.js): the card shows
+// findings[key] over those vars, in the canvas language, or the English it came with when they are missing or do not fit.
+// What Ask the agent to fix prefills (TEXT.session) is English, with the English title and detail.
 
 const TEXT = Object.freeze({
 	names: { contrast: "Text contrast", target: "Target size", alt: "Images have alt text", label: "Form fields have labels", heading: "Headings in order" },
@@ -26,6 +29,16 @@ const TEXT = Object.freeze({
 	showLabel: (title, label, name) => `Show ${title} on ${label} in ${name}`,
 	fix: "Ask the agent to fix",
 	fixLabel: (title, label) => `Ask the agent to fix ${title} on ${label}`,
+	// A finding by its key (inspector.js), over its vars: the same English the inspector sends.
+	findings: {
+		contrast: { title: "Low contrast", detail: (v) => `"${v.text}" is ${v.ratio} : 1 (${v.foreground} on ${v.background}); WCAG AA needs ${v.needed} : 1.` },
+		contrastLarge: { title: "Low contrast", detail: (v) => `"${v.text}" is ${v.ratio} : 1 (${v.foreground} on ${v.background}); WCAG AA needs ${v.needed} : 1 for large text.` },
+		targetSmall: { title: "Small touch target", detail: (v) => `${v.name ? `"${v.name}"` : v.element} is ${v.width} × ${v.height} px; WCAG 2.2 asks for ${v.min} × ${v.min} px, or enough space around it that a ${v.min} px circle on it touches no other target.` },
+		targetAdvised: { title: "Touch target under 44 px", detail: (v) => `${v.name ? `"${v.name}"` : v.element} is ${v.width} × ${v.height} px; ${v.advised} × ${v.advised} px is recommended for touch.` },
+		alt: { title: "Image without alt text", detail: (v) => `${v.source || "The image"} has no alt attribute. Describe it, or use alt="" if it is decorative.` },
+		label: { title: "Form field without a label", detail: (v) => `The ${v.field === "select" ? "select" : v.field === "textarea" ? "text area" : `${v.type} field`}${v.hint ? ` "${v.hint}"` : ""} has no label. Add a <label for>, aria-label or aria-labelledby; a placeholder is not a label.` },
+		heading: { title: "Heading level skipped", detail: (v) => `h${v.level} "${v.text}" follows h${v.previous}: ${v.missing} ${v.count === 1 ? "is" : "are"} missing.` },
+	},
 	// What Ask the agent to fix prefills: instructions for the session.
 	session: {
 		fail: (issue) => `Accessibility check on ${issue.selector}: ${issue.title}.\n${issue.detail}\nFix it so it meets WCAG 2.2 AA, keeping the design's tokens.`,
@@ -36,7 +49,17 @@ const TEXT = Object.freeze({
 const TABS = ["comments", "quality"];
 const CHECK_IDS = ["contrast", "target", "alt", "label", "heading"];
 const SEVERITIES = ["fail", "advice"];
-const LIMITS = { checks: 10, issues: 200, title: 80, detail: 400, selector: 500, label: 80, excerpt: 300, comment: 2000 };
+const LIMITS = { checks: 10, issues: 200, title: 80, detail: 400, selector: 500, label: 80, excerpt: 300, comment: 2000, variable: 120 };
+// The vars of each finding key (inspector.js): exactly these, each a string or a finite number.
+const FINDING_VARS = {
+	contrast: ["text", "ratio", "foreground", "background", "needed"],
+	contrastLarge: ["text", "ratio", "foreground", "background", "needed"],
+	targetSmall: ["name", "element", "width", "height", "min"],
+	targetAdvised: ["name", "element", "width", "height", "advised"],
+	alt: ["source"],
+	label: ["field", "type", "hint"],
+	heading: ["level", "previous", "text", "missing", "count"],
+};
 // Under SHOW_ZOOM, Show zooms in to it, or less when the element would not fit in SHOW_ROOM of the view at that zoom.
 const SHOW_ZOOM = 1;
 const SHOW_ROOM = 0.8;
@@ -47,6 +70,7 @@ export function init(ctx) {
 	const { doc, els, store, api, actions } = ctx;
 	const { state } = store;
 	const { isFiniteNumber } = api;
+	const T = ctx.i18n.text("checks", TEXT);
 	// The ring of Show: { board, issue, rect, ring, label, card, recenter } or null (rect: where the element is in its
 	// frame, the checks' rect until the frame locates it); the press that may be a still click on the canvas.
 	let mark = null;
@@ -91,10 +115,32 @@ export function init(ctx) {
 			const selector = typeof raw.selector === "string" ? raw.selector.trim() : "";
 			const rect = readRect(raw.rect);
 			if (!title || detail === null || label === null || excerpt === null || !selector || selector.length > LIMITS.selector || !rect) return null;
-			// Only `hidden: true` means out of sight.
-			issues.push({ check: raw.check, severity: raw.severity, title, detail, selector, label, excerpt, rect, hidden: raw.hidden === true });
+			// Only `hidden: true` means out of sight. A key whose vars do not fit is dropped: the card shows the English.
+			const vars = readVars(raw.key, raw.vars);
+			issues.push({ check: raw.check, severity: raw.severity, title, detail, selector, label, excerpt, rect, hidden: raw.hidden === true, ...(vars ? { key: raw.key, vars } : {}) });
 		}
 		return { checks, issues };
+	}
+
+	/** A finding's vars, copied, when its key is known and they are exactly that key's, each a bounded string or a finite number; else null. */
+	function readVars(key, raw) {
+		if (typeof key !== "string" || !Object.hasOwn(FINDING_VARS, key) || !raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+		const names = FINDING_VARS[key];
+		if (Object.keys(raw).length !== names.length) return null;
+		const vars = {};
+		for (const name of names) {
+			const value = raw[name];
+			if (!(typeof value === "string" && value.length <= LIMITS.variable) && !isFiniteNumber(value)) return null;
+			vars[name] = value;
+		}
+		return vars;
+	}
+
+	/** What a card shows for a finding: findings[key] over its vars in the canvas language, else the English it came with. */
+	function shown(issue) {
+		if (issue.vars === undefined) return { title: issue.title, detail: issue.detail };
+		const finding = T.findings[issue.key];
+		return { title: finding.title, detail: finding.detail(issue.vars) };
 	}
 
 	/** A box in a frame's CSS px, copied; null unless it has four finite numbers. */
@@ -167,15 +213,15 @@ export function init(ctx) {
 		const active = els.quality.contains(doc.activeElement) ? doc.activeElement : null;
 		const keep = active && active.dataset && active.dataset.key ? { key: active.dataset.key, control: active.dataset.control } : null;
 		const controls = [];
-		els.quality.replaceChildren(...(boards.length === 0 ? [chip("gd-check-empty", TEXT.noBoards)] : boards.map((board) => checkGroup(board, controls))));
+		els.quality.replaceChildren(...(boards.length === 0 ? [chip("gd-check-empty", T.noBoards)] : boards.map((board) => checkGroup(board, controls))));
 		if (keep) (controls.find((control) => control.dataset.key === keep.key && control.dataset.control === keep.control) ?? els.tabQuality).focus();
 	}
 
 	function checkGroup(board, controls) {
-		const name = TEXT.boardName(state.boards.indexOf(board) + 1, board.artboard.title);
+		const name = T.boardName(state.boards.indexOf(board) + 1, board.artboard.title);
 		const group = doc.createElement("section");
 		group.className = "gd-check-group";
-		group.setAttribute("aria-label", TEXT.groupLabel(name));
+		group.setAttribute("aria-label", T.groupLabel(name));
 		const head = doc.createElement("div");
 		head.className = "gd-check-head";
 		const heading = doc.createElement("h3");
@@ -183,15 +229,15 @@ export function init(ctx) {
 		heading.textContent = name;
 		const result = board.checks;
 		const count = failures(board);
-		const summary = !result ? chip("gd-check-summary", TEXT.notChecked)
-			: count === 0 ? chip("gd-check-summary gd-check-summary-ok", TEXT.accessible)
-			: chip("gd-check-summary gd-check-summary-fail", TEXT.failing(count));
+		const summary = !result ? chip("gd-check-summary", T.notChecked)
+			: count === 0 ? chip("gd-check-summary gd-check-summary-ok", T.accessible)
+			: chip("gd-check-summary gd-check-summary-fail", T.failing(count));
 		head.append(heading, summary);
 		group.append(head);
 		if (!result) return group;
 		group.append(...result.issues.map((issue) => checkCard(board, issue, name, controls)));
-		const passed = result.checks.filter((check) => check.count === 0).map((check) => TEXT.names[check.id]);
-		if (passed.length > 0) group.append(chip("gd-check-passed", TEXT.passed(passed)));
+		const passed = result.checks.filter((check) => check.count === 0).map((check) => T.names[check.id]);
+		if (passed.length > 0) group.append(chip("gd-check-passed", T.passed(passed)));
 		return group;
 	}
 
@@ -201,26 +247,27 @@ export function init(ctx) {
 		card.className = `gd-check ${fail ? "gd-check-fail" : "gd-check-advice"}`;
 		const top = doc.createElement("div");
 		top.className = "gd-check-top";
+		const words = shown(issue);
 		const title = doc.createElement("b");
 		title.className = "gd-check-title";
-		title.textContent = issue.title;
-		top.append(title, chip("gd-check-kind", TEXT.kinds[issue.severity]));
+		title.textContent = words.title;
+		top.append(title, chip("gd-check-kind", T.kinds[issue.severity]));
 		const detail = doc.createElement("small");
 		detail.className = "gd-check-detail";
-		detail.textContent = issue.detail;
+		detail.textContent = words.detail;
 		card.append(top, detail);
 		const key = [board.artboard.file, issue.check, issue.severity, issue.selector].join("\n");
 		const show = doc.createElement("button");
 		show.type = "button";
 		show.className = "gd-check-show gd-small";
-		show.setAttribute("aria-label", TEXT.showLabel(issue.title, issue.label, name));
-		show.append(actions.icon("i-target", "gd-i gd-i-s"), chip("", TEXT.show));
+		show.setAttribute("aria-label", T.showLabel(words.title, issue.label, name));
+		show.append(actions.icon("i-target", "gd-i gd-i-s"), chip("", T.show));
 		show.addEventListener("click", () => showIssue(board, issue, card));
 		const fix = doc.createElement("button");
 		fix.type = "button";
 		fix.className = "gd-check-fix gd-small";
-		fix.textContent = TEXT.fix;
-		fix.setAttribute("aria-label", TEXT.fixLabel(issue.title, issue.label));
+		fix.textContent = T.fix;
+		fix.setAttribute("aria-label", T.fixLabel(words.title, issue.label));
 		fix.addEventListener("click", () => askAbout(board, issue));
 		for (const [control, kind] of [[show, "show"], [fix, "fix"]]) {
 			control.dataset.key = key;
@@ -229,7 +276,7 @@ export function init(ctx) {
 		}
 		// Show cannot point at what is out of sight: the card says why nothing is ringed.
 		if (issue.hidden) {
-			const note = chip("gd-check-hidden", TEXT.hidden);
+			const note = chip("gd-check-hidden", T.hidden);
 			note.id = `gd-check-hidden-${++hiddenNotes}`;
 			show.setAttribute("aria-describedby", note.id);
 			card.append(note);
@@ -301,7 +348,8 @@ export function init(ctx) {
 		// On the artboard's own frame the comment records the size the finding was made at, not the size shown now.
 		if (sizes.length > 0) actions.openPopover(sizes[sizes.length - 1], pick);
 		else actions.openPopover(board, { ...pick, viewport: board.checks.viewport });
-		els.text.value = TEXT.session[issue.severity](issue).slice(0, LIMITS.comment);
+		// The English title and detail the finding came with: the request is for the session.
+		els.text.value = T.session[issue.severity](issue).slice(0, LIMITS.comment);
 	}
 
 	// ---- the ring of Show
@@ -352,7 +400,7 @@ export function init(ctx) {
 		mark.ring.style.top = `${rect.y + rect.height / 2}px`;
 		mark.ring.style.setProperty("--gd-mark-w", `${rect.width}px`);
 		mark.ring.style.setProperty("--gd-mark-h", `${rect.height}px`);
-		mark.label.textContent = mark.issue.title;
+		mark.label.textContent = shown(mark.issue).title;
 	}
 
 	/**
@@ -433,5 +481,11 @@ export function init(ctx) {
 		tabButtons()[next].focus();
 	});
 
-	return { checksFrom, locatedFrom, setChecks, checksLoaded, refreshChecks, renderChecks, setTab, clearMark };
+	/** A new language: Quality's cards (focus kept, as on any re-render) and the ring's label, in place. */
+	function relabel() {
+		renderChecks();
+		if (mark) renderMark();
+	}
+
+	return { relabel, checksFrom, locatedFrom, setChecks, checksLoaded, refreshChecks, renderChecks, setTab, clearMark };
 }

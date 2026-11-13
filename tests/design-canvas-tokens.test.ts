@@ -926,7 +926,9 @@ test("index.html has the panel in the viewport, hidden, with a heading and real 
 	assert.match(main, /<button type="button" id="gd-inspector-fix"[^>]*>Ask the agent to fix<\/button>/);
 	assert.match(main, /<button type="button" id="gd-inspector-copy"[^>]*>Copy<\/button>/);
 	assert.match(html, /<symbol id="i-code" viewBox="0 0 24 24">/);
-	assert.ok(!main.slice(main.indexOf('<section id="gd-inspector"')).includes("data-i18n"));
+	// Its buttons are keyed for the language (ES.html); the rows come from canvas-tokens.js.
+	assert.match(main, /id="gd-inspector-fix"[^>]*data-i18n="inspectorFix"/);
+	assert.match(main, /id="gd-inspector-copy"[^>]*data-i18n="inspectorCopy"/);
 });
 
 test("canvas.css styles the panel in one section on --gd-* tokens, the warning in words, no dots", () => {
@@ -945,7 +947,6 @@ test("canvas-tokens.js keeps its English strings in one block, reaches the brows
 	const source = read("canvas-tokens.js");
 	const init = source.indexOf("export function init");
 	assert.ok(source.indexOf("const TEXT = Object.freeze({") >= 0 && source.indexOf("const TEXT = Object.freeze({") < init);
-	assert.ok(!/\bloc\(|\bt\(|data-i18n|CATALOG/.test(source), "no i18n");
 	assert.ok(!/(?<![.\w])(navigator|document|window|localStorage|setTimeout)\b/.test(source.slice(init).replace(/\/\/.*$|\/\*[^]*?\*\//gm, "")), "only ctx.win and ctx.doc");
 	assert.ok(source.includes('"gentle-design:technical"'));
 	assert.ok(!/state\.(tokens|technical)\s*=/.test(source), "store mutators only");

@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { init as i18nInit } from "../assets/design-canvas/canvas-i18n.js";
 import { ES } from "../assets/design-canvas/canvas-i18n-es.js";
 import { createStore } from "../assets/design-canvas/canvas-store.js";
 import { DESIGN_CANVAS_ASSETS } from "../lib/design-canvas-assets.ts";
-import { boardsOf, click, FakeDocument, findAll, flush, loadCanvas, memoryStorage, read, texts, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
+import { ASSET_DIR, boardsOf, click, FakeDocument, findAll, flush, loadCanvas, memoryStorage, read, texts, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
 
 // The canvas language (canvas-i18n.js, canvas-i18n-es.js; odd/tasks/canvas-i18n.md S1-S8): Español, English or
 // Match the browser in the rail's Settings, saved in this browser, applied at once; the shell's strings in Spanish.
@@ -14,8 +14,9 @@ import { boardsOf, click, FakeDocument, findAll, flush, loadCanvas, memoryStorag
 const LANGUAGE_KEY = "gentle-design:language";
 const LANGUAGE_ITEMS = ["Español", "English", "Match the browser"];
 const NOTE = "Messages to the agent stay in English.";
-// The modules keyed so far, by their ES name (tests/design-canvas-i18n-views.test.ts covers the second five).
-const COVERED = ["rail", "boards", "focus", "events", "layout", "minimap", "sizes", "export", "compare"];
+// Every canvas module with a TEXT block, by its ES name (canvas-<name>.js): the catalog covers them all.
+const MODULE_FILES = readdirSync(ASSET_DIR).filter((name) => /^canvas-[a-z-]+\.js$/.test(name)).sort();
+const COVERED = MODULE_FILES.filter((name) => read(name).includes("const TEXT = Object.freeze({")).map((name) => name.slice("canvas-".length, -".js".length));
 
 type Browser = { languages?: string[]; language?: string } | null;
 
@@ -344,6 +345,7 @@ function sameShape(english: Record<string, unknown>, spanish: Record<string, unk
 }
 
 test("ES has every key of each covered module's TEXT, with the same parameters, and nothing else, never session", () => {
+	assert.deepEqual(COVERED, ["boards", "checks", "comments", "compare", "events", "export", "focus", "handoffs", "layout", "minimap", "parts", "popover", "rail", "sizes", "tokens"], "every module that shows text has a TEXT block");
 	assert.deepEqual(Object.keys(ES).filter((key) => key !== "html").sort(), [...COVERED].sort());
 	for (const module of COVERED) sameShape(englishText(module), ES[module as keyof typeof ES] as Record<string, unknown>, module);
 	assert.ok(!Object.hasOwn(ES, "session") && Object.values(ES).every((entry) => !Object.hasOwn(entry as object, "session")), "no session key");
@@ -375,6 +377,138 @@ test("the covered modules read their strings through ctx.i18n, and the language 
 	assert.ok(boot.includes("relabel"), "canvas-boot.js documents the relabel rule");
 });
 
+// ---- every canvas string comes from the catalog (S4): a structural check over the modules and index.html
+
+// Strings with letters that are no canvas text, each left out on purpose.
+const NOT_TEXT = new Set([
+	// The keys the canvas compares event.key with.
+	"Escape", "Enter", "Tab", "Home", "End", "ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight",
+	"Shift", "Control", "Alt", "AltGraph", "Meta", "CapsLock", "NumLock", "ScrollLock", "Fn", "FnLock", "Hyper", "Super", "Symbol", "SymbolLock",
+	// Key caps, which read the same in both languages.
+	"Esc",
+	// An HTTP header and method, the DataTransfer type of dropped files, a link's rel, a CSS selector and a print rule.
+	"Content-Type", "POST", "Files", "noopener noreferrer", "button, a, input, select, textarea, iframe", "@page { size:  px  px; }",
+	// The product's name (the page title adds it after the design's).
+	"Gentle Design", "· Gentle Design",
+	// Errors for the developer, thrown only when the code itself is wrong.
+	"canvas:   is exported by two modules", "cannot change",
+]);
+
+/**
+ * The string literals of a module's code, comments left out: quoted strings, and each template literal's text with its
+ * interpolations blanked (the code inside them is read as code). Regular expression literals are skipped.
+ */
+function literals(source: string): string[] {
+	const found: string[] = [];
+	let index = 0;
+	let previous = "";
+	const code = (end: string | null) => {
+		let depth = 0;
+		while (index < source.length) {
+			const char = source[index];
+			if (end && char === "}" && depth === 0) return;
+			if (source.startsWith("//", index)) index = source.indexOf("\n", index) === -1 ? source.length : source.indexOf("\n", index);
+			else if (source.startsWith("/*", index)) index = source.indexOf("*/", index) + 2;
+			else if (char === '"' || char === "'") {
+				let text = "";
+				for (index += 1; source[index] !== char; index += 1) text += source[index] === "\\" ? source[++index] : source[index];
+				index += 1;
+				found.push(text);
+				previous = "a";
+			} else if (char === "`") {
+				let text = "";
+				for (index += 1; source[index] !== "`"; ) {
+					if (source.startsWith("${", index)) {
+						index += 2;
+						code("}");
+						index += 1;
+						text += " ";
+					} else text += source[index] === "\\" ? source[(index += 2) - 1] : source[index++];
+				}
+				index += 1;
+				found.push(text);
+				previous = "a";
+			} else if (char === "/" && (previous === "" || "(,=:[!&|?{};+".includes(previous))) {
+				// A regular expression: up to its closing slash, past classes and escapes.
+				let inClass = false;
+				for (index += 1; inClass || source[index] !== "/"; index += 1) {
+					if (source[index] === "\\") index += 1;
+					else if (source[index] === "[") inClass = true;
+					else if (source[index] === "]") inClass = false;
+				}
+				index += 1;
+				previous = "a";
+			} else {
+				if (char === "{") depth += 1;
+				else if (char === "}") depth -= 1;
+				if (!/\s/.test(char)) previous = /[\w$)\]]/.test(char) ? "a" : char;
+				if (/\w/.test(char) && /^(return|typeof|case)\b/.test(source.slice(index)) && !/\w/.test(source[index - 1] ?? "")) {
+					const word = /^\w+/.exec(source.slice(index))![0];
+					index += word.length;
+					previous = "(";
+					continue;
+				}
+				index += 1;
+			}
+		}
+	};
+	code(null);
+	return found;
+}
+
+/**
+ * Whether a literal reads as words a person sees: a capitalized word, or two words in a row, once code-like tokens
+ * (class names, file names, message types, paths, selectors) are taken out. A single lowercase word is not caught; the
+ * per-surface tests in tests/design-canvas-i18n*.test.ts cover those.
+ */
+function isText(literal: string) {
+	const words = literal.split(/\s+/).filter((token) => token && !/[-_:#./=*>[\]()@]|^\d|^[a-z]+[A-Z]/.test(token.replace(/[.,;?!…]+$/, ""))).join(" ");
+	return !NOT_TEXT.has(literal.trim()) && (/\p{Lu}\p{Ll}+/u.test(words) || /\p{Ll}{2,}[,;]? \p{Ll}{2,}/u.test(words));
+}
+
+test("every visible string of the canvas modules comes from their TEXT block: no word outside it", () => {
+	assert.deepEqual(literals('a("Hi", `x ${b ? `Inner text` : "y"} z`, /"no"/g); // "Gone"'), ["Hi", "Inner text", "y", "x   z"], "the literal reader");
+	assert.deepEqual(["Sent", "the session did not take it.", "gd-check gd-check-fail", "api/designs/", "Escape", "#i-target", "gd:pins", "image/png"].map(isText), [true, true, false, false, false, false, false, false]);
+	const outside: string[] = [];
+	for (const name of MODULE_FILES.filter((file) => file !== "canvas-i18n-es.js")) {
+		const source = read(name);
+		const start = source.indexOf("const TEXT = Object.freeze({");
+		const code = start < 0 ? source : source.slice(0, start) + source.slice(source.indexOf("\n});", start) + 4);
+		for (const literal of literals(code)) if (isText(literal)) outside.push(`${name}: ${literal}`);
+	}
+	assert.deepEqual(outside, []);
+});
+
+/** index.html's text and words in title, aria-label, placeholder and alt, script, style and the icon sprite left out, each with whether it is keyed. */
+function markupStrings(html: string) {
+	const body = html.slice(html.indexOf("<body>")).replace(/<svg id="gd-sprite"[^]*?<\/svg>/, "").replace(/<(script|style)\b[^]*?<\/\1>/g, "");
+	const strings: Array<{ text: string; keyed: boolean }> = [];
+	const open: string[] = [];
+	for (const [, closing, tag, attributes, text] of body.matchAll(/<(\/?)([a-z0-9]+)([^>]*)>|([^<]+)/g)) {
+		if (text !== undefined) {
+			const words = text.replace(/&[a-z]+;/g, "").trim();
+			if (/\p{L}{2,}/u.test(words) && !NOT_TEXT.has(words)) strings.push({ text: words, keyed: /\bdata-i18n="/.test(open.at(-1) ?? "") });
+			continue;
+		}
+		if (closing) {
+			open.pop();
+			continue;
+		}
+		for (const name of ["title", "aria-label", "placeholder", "alt"]) {
+			const value = new RegExp(`\\s${name}="([^"]*)"`).exec(attributes)?.[1];
+			if (value && /\p{L}{2,}/u.test(value)) strings.push({ text: `${name}=${value}`, keyed: new RegExp(`\\sdata-i18n-${name}="`).test(attributes) });
+		}
+		if (!attributes.endsWith("/") && !["meta", "link", "input", "img", "br", "use"].includes(tag)) open.push(attributes);
+	}
+	return strings;
+}
+
+test("every word index.html shows, as text or in a title, aria-label, placeholder or alt, is keyed for the language", () => {
+	const sample = markupStrings('<body><p data-i18n="a">One</p><p>Two <span id="x">3</span></p><b title="Tip" data-i18n-title="t">&minus;</b><img alt="Pic"><kbd>Esc</kbd></body>');
+	assert.deepEqual(sample, [{ text: "One", keyed: true }, { text: "Two", keyed: false }, { text: "title=Tip", keyed: true }, { text: "alt=Pic", keyed: false }], "the markup reader");
+	assert.deepEqual(markupStrings(read("index.html")).filter((entry) => !entry.keyed).map((entry) => entry.text), []);
+});
+
 test("the docs describe the language in Settings: the choices, the default, where it is saved and what stays as written", () => {
 	const docs = readFileSync(fileURLToPath(new URL("../docs/gentle-shell.md", import.meta.url)), "utf8");
 	const section = docs.slice(docs.indexOf("### Gentle Design"));
@@ -383,4 +517,10 @@ test("the docs describe the language in Settings: the choices, the default, wher
 	for (const part of ["**Español**", "**English**", "**Match the browser**", "browser's language", "`gentle-design:language`", "without reloading", "comment text", "artboard titles", "file names", "Messages to the agent stay in English"]) {
 		assert.ok(rail.includes(part), `the rail entry mentions ${part}`);
 	}
+	// Every surface switches; what goes to the agent, the accessibility findings included, stays English.
+	for (const part of ["every surface", "Comments panel", "comment box", "**Partial implementations**", "token inspector", "**Quality**", "**Ask the agent to fix** prefills", "findings"]) {
+		assert.ok(rail.includes(part), `the rail entry mentions ${part}`);
+	}
+	const quality = section.slice(section.indexOf("- **Quality**"), section.indexOf("\n", section.indexOf("- **Quality**")));
+	assert.ok(quality.includes("in the canvas language") && !quality.includes("(in English)"), "Quality shows each finding in the canvas language");
 });

@@ -74,7 +74,7 @@ function confirmRemove(canvas: Canvas, index: number) {
 test("Implement only this sits between Cancel and Send, enabled only when the page config's delivery.part is true", async () => {
 	const html = read("index.html");
 	const actions = html.slice(html.indexOf('<div class="gd-popover-actions">'), html.indexOf("</form>"));
-	assert.match(actions, /<button type="button" id="gd-popover-part" disabled>Implement only this<\/button>/);
+	assert.match(actions, /<button type="button" id="gd-popover-part" data-i18n="implementOnly" disabled>Implement only this<\/button>/);
 	assert.ok(actions.indexOf("gd-popover-cancel") < actions.indexOf("gd-popover-part") && actions.indexOf("gd-popover-part") < actions.indexOf("gd-popover-send"), "after Cancel, before Send");
 	const cases: Array<[Record<string, unknown>, boolean]> = [[ONLINE, true], [{}, false], [{ delivery: { part: false } }, false], [{ delivery: { part: "yes" } }, false]];
 	for (const [config, enabled] of cases) {
@@ -699,7 +699,7 @@ test("canvas-parts.js is registered, groups its English text and styles its sect
 
 	const html = read("index.html");
 	const panel = html.slice(html.indexOf('<aside id="gd-panel"'), html.indexOf("</aside>"));
-	assert.match(panel, /<section id="gd-parts" class="gd-parts" aria-labelledby="gd-parts-title" hidden>\s*<h3 id="gd-parts-title" class="gd-parts-title">Partial implementations<\/h3>\s*<ol id="gd-parts-list" class="gd-parts-list"><\/ol>\s*<\/section>\s*$/, "the last thing in the panel");
+	assert.match(panel, /<section id="gd-parts" class="gd-parts" aria-labelledby="gd-parts-title" hidden>\s*<h3 id="gd-parts-title" class="gd-parts-title" data-i18n="partsTitle">Partial implementations<\/h3>\s*<ol id="gd-parts-list" class="gd-parts-list"><\/ol>\s*<\/section>\s*$/, "the last thing in the panel");
 
 	const css = read("canvas.css");
 	const rules = css.split("}").filter((rule) => /(^|\n)\.gd-part/.test(rule.trim().split("{")[0]) || /^\s*\.gd-part/.test(rule));

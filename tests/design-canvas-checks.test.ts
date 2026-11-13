@@ -627,9 +627,10 @@ test("canvas-checks.js keeps its words in one TEXT block, changes state only thr
 
 test("index.html has the tabs, the Quality panel and the Show icon; canvas.css styles them on --gd-* tokens and hides the ring in exports", () => {
 	const html = read("index.html");
-	assert.match(html, /<div id="gd-tabs" class="gd-tabs" role="tablist" aria-label="Review">/);
-	assert.match(html, /<button type="button" role="tab" id="gd-tab-comments" class="gd-tab" aria-selected="true" aria-controls="gd-tabpanel-comments">Comments <span id="gd-count-comments" class="gd-count">0<\/span><\/button>/);
-	assert.match(html, /<button type="button" role="tab" id="gd-tab-quality" class="gd-tab" aria-selected="false" aria-controls="gd-quality" tabindex="-1">Quality <span id="gd-count-quality" class="gd-count"><\/span><\/button>/);
+	// Each tab's word in its own keyed span (ES.html), so the language never wipes its count.
+	assert.match(html, /<div id="gd-tabs" class="gd-tabs" role="tablist" aria-label="Review" data-i18n-aria-label="review">/);
+	assert.match(html, /<button type="button" role="tab" id="gd-tab-comments" class="gd-tab" aria-selected="true" aria-controls="gd-tabpanel-comments"><span data-i18n="tabComments">Comments<\/span> <span id="gd-count-comments" class="gd-count">0<\/span><\/button>/);
+	assert.match(html, /<button type="button" role="tab" id="gd-tab-quality" class="gd-tab" aria-selected="false" aria-controls="gd-quality" tabindex="-1"><span data-i18n="quality">Quality<\/span> <span id="gd-count-quality" class="gd-count"><\/span><\/button>/);
 	assert.match(html, /<div id="gd-quality" class="gd-quality" role="tabpanel" aria-labelledby="gd-tab-quality" hidden><\/div>/);
 	assert.match(html, /<div id="gd-tabpanel-comments" class="gd-tabpanel" role="tabpanel" aria-labelledby="gd-tab-comments">/);
 	assert.match(html, /<symbol id="i-target" viewBox="0 0 24 24">/);

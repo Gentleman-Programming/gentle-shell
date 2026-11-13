@@ -40,6 +40,8 @@ export class FakeElement {
 	// Set by the canvas on iframes, the Open in new tab link and the Scale to fit checkbox.
 	src = "";
 	href = "";
+	// Set by the canvas on a comment card's screenshot.
+	alt = "";
 	checked = false;
 	rect: Rect = { left: 0, top: 0, width: 0, height: 0 };
 	capturedPointers: number[] = [];

@@ -236,6 +236,44 @@ test("a switch leaves Implement only this's own message alone, even after a comm
 	assert.equal($(canvas, "gd-popover-message").title, "too-many-parts");
 });
 
+test("identical comment and Parts errors preserve display ownership across language switches", async () => {
+	const canvas = await loadLanguage({
+		"/t/api/comments": { __throw: "Failed to fetch" },
+		"/t/api/designs/alpha/implement-part": { __http: 500, error: "Failed to fetch" },
+	});
+	pick(canvas);
+	const content = "  Keep my wording: más grande  ";
+	$(canvas, "gd-popover-text").value = content;
+	const message = () => {
+		const line = $(canvas, "gd-popover-message");
+		return [line.textContent, line.title, line.classes.has("gd-error")];
+	};
+	const fetched = canvas.fetched.length;
+	$(canvas, "gd-popover-form").dispatch("submit");
+	await settle();
+	await bothWays(canvas, message, ["Not sent: Failed to fetch", "", true], ["No se envió: Failed to fetch", "", true]);
+	assert.equal($(canvas, "gd-popover-text").value, content, "a failed comment keeps the user's field");
+
+	$(canvas, "gd-popover-part").dispatch("click");
+	await settle();
+	await bothWays(canvas, message, ["Not sent: Failed to fetch", "Failed to fetch", true], ["Not sent: Failed to fetch", "Failed to fetch", true]);
+	assert.equal($(canvas, "gd-popover-text").value, content, "a failed part and both switches keep the user's field");
+	assert.equal(canvas.fetched.length, fetched + 2, "only the two submits fetch");
+	assert.deepEqual(canvas.posts, [
+		{ url: "/t/api/comments", body: { slug: "alpha", file: "01-a.html", selector: "nav.side", excerpt: "Home Tours", comment: content.trim(), mode: "send" } },
+		{ url: "/t/api/designs/alpha/implement-part", body: { file: "01-a.html", selector: "nav.side", excerpt: "Home Tours", note: content.trim() } },
+	]);
+
+	// A new comment validation takes the line back and drops the Parts refusal's raw-code tooltip.
+	$(canvas, "gd-popover-text").value = "";
+	$(canvas, "gd-popover-form").dispatch("submit");
+	await bothWays(canvas, message, ["Write a comment of 1 to 2000 characters.", "", true], ["Escribe un comentario de 1 a 2000 caracteres.", "", true]);
+	assert.equal(canvas.posts.length, 2, "validation sends nothing");
+	assert.equal(canvas.fetched.length, fetched + 2, "validation and switches fetch nothing");
+	assert.equal($(canvas, "gd-count-comments").textContent, "0", "failed submits add no comments");
+	assert.equal($(canvas, "gd-parts").hidden, true, "failed submits add no parts");
+});
+
 test("the offline note of Implement only this is in the stored language from the start, not only after a switch", async () => {
 	const storage = memoryStorage({ [LANGUAGE_KEY]: "es" });
 	const navigator = { languages: ["en-US"], language: "en-US" };

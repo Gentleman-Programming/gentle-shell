@@ -353,6 +353,7 @@ export function init(ctx) {
 	}
 
 	function popoverMessage(text, isError, detail = "") {
+		els.message.setAttribute("data-gd-message-owner", "parts");
 		els.message.textContent = text;
 		els.message.title = detail;
 		els.message.classList.toggle("gd-error", isError);

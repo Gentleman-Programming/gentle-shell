@@ -80,12 +80,10 @@ export function init(ctx) {
 	/** The popover's message line; a refusal's raw code in its tooltip (canvas-parts.js) goes with the message it explained. */
 	// Set when the message is the canvas's own wording, given as a function so a language switch words it again.
 	let worded = null;
-	// What this module last wrote: canvas-parts.js writes the same line on its own, and that text is not ours to word again.
-	let wording = "";
 	function showMessage(text, isError) {
 		worded = typeof text === "function" ? text : null;
+		els.message.setAttribute("data-gd-message-owner", "comment");
 		els.message.textContent = worded ? worded() : text;
-		wording = els.message.textContent;
 		els.message.title = "";
 		els.message.classList.toggle("gd-error", isError);
 	}
@@ -228,9 +226,8 @@ export function init(ctx) {
 
 	/** A new language: the message on screen, when it is the canvas's own wording (the rest of the box is keyed markup). */
 	function relabel() {
-		if (!worded || els.message.textContent !== wording) return;
+		if (!worded || els.message.getAttribute("data-gd-message-owner") !== "comment") return;
 		els.message.textContent = worded();
-		wording = els.message.textContent;
 	}
 
 	return { relabel, readPick, openPopover, closePopover };

@@ -150,9 +150,14 @@ function assertSafeIndexDirectory(cwd: string): void {
 	}
 }
 
+/**
+ * An index is the database file, not merely the directory: a .codegraph/ left behind by a
+ * partial init or a killed reindex is not a usable index. Any error, including EACCES,
+ * counts as unconfirmed, so gates on this never fire on an unknown state.
+ */
 function indexExists(cwd: string): boolean {
 	try {
-		return lstatSync(join(cwd, ".codegraph")).isDirectory();
+		return statSync(join(cwd, ".codegraph", "codegraph.db")).isFile();
 	} catch {
 		return false;
 	}

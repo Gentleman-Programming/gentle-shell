@@ -518,6 +518,22 @@ test("CodeGraph query excludes an index that already exists, and leaves the excl
 	assert.equal((result.details as { localExclude?: unknown }).localExclude, undefined);
 });
 
+test("CodeGraph query does not treat a .codegraph directory without codegraph.db as an index", async (t) => {
+	const partial = workspace(t);
+	mkdirSync(join(partial, ".codegraph"));
+	writeFileSync(join(partial, ".codegraph", ".gitignore"), "*\n!.gitignore\n");
+	const result = await createCodeGraphTool(async () => ({ stdout: "found", stderr: "" })).execute(
+		"test",
+		{ operation: "query", query: "symbol" },
+		undefined,
+		undefined,
+		{ cwd: partial } as ExtensionContext,
+	);
+	assert.deepEqual(result.content, [{ type: "text", text: "found" }]);
+	assert.deepEqual(excludeLines(partial), [], "a directory without the database file is not an index");
+	assert.equal((result.details as { localExclude?: unknown }).localExclude, undefined);
+});
+
 test("CodeGraph init still succeeds and reports when git is unavailable for the local exclusion", async (t) => {
 	const cwd = workspace(t);
 	const empty = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-nogit-")));

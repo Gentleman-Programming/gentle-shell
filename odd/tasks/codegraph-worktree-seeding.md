@@ -54,3 +54,13 @@ correctness never depends on seeding.
   carries only {sessionId}, not roots, and the registry instance is owned by
   another extension; a worktree registered mid-session is seeded at its next
   session start. To be reported in the completion report.
+- L3: Commits 9a72c8d (seed lib + tests) and 2752066 (wiring). Independent
+  verification (gentle-ai-verify): S1/S3/S4 PASS, S2 FAIL on one clause —
+  the staged-rename comparator was INVERTED (db first), so a failing sidecar
+  rename could leave a torn db counted as an index. FIXED d1e000d: comparator
+  flipped (sidecars first, db last) + crash-window test RED against the old
+  order, GREEN after; firmlink-spelling advisory also fixed (realpathSync in
+  the resolver test). Final suites 7/7 seed + 27/27 readiness + 11/11 lease
+  + 33/33 tools + 4/4 daemon + 3/3 child-bootstrap, tsc zero codegraph
+  errors. Native assess medium, no review due (writer self-verification
+  stood; independent verifier exceeded it). CLOSED.

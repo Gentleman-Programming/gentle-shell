@@ -15,6 +15,11 @@ export interface LeaseToken {
 	pid: number;
 	startedAt: number;
 	expiresAt: number;
+	/** The codegraph process this holder spawned, when observed: on win32 a shell wraps it. */
+	writerPid?: number;
+	/** The spawn was shelled (a cmd.exe wrapper): this pid is a proxy, not the real writer. */
+	writerProxy?: boolean;
+	writerPidAt?: number;
 }
 
 /** Locks live next to CodeGraph's own daemon registry, keyed per project and kind. */
@@ -38,12 +43,25 @@ function pidAlive(pid: number): boolean {
 	}
 }
 
+/** CodeGraph's own writer lock, any launcher's: a live pid in `.codegraph/codegraph.lock` means an index write is in progress right now. */
+export function codegraphWritingIndex(cwd: string): boolean {
+	try {
+		const pid = Number.parseInt(readFileSync(join(cwd, ".codegraph", "codegraph.lock"), "utf8").trim(), 10);
+		return Number.isInteger(pid) && pid > 0 && pidAlive(pid);
+	} catch {
+		return false;
+	}
+}
+
 /**
  * Reads a token file and judges it. An expired token or a dead holder is stale (stealable);
  * a damaged or unreadable file is unknown, and unknown is fail-closed: no session may init or
- * sync past it, because it cannot tell whether a live writer is behind the damage.
+ * sync past it, because it cannot tell whether a live writer is behind the damage. With `cwd`
+ * given, CodeGraph's own writer lock is consulted first, and a freshly reported proxy writer
+ * pid holds for its trust window — both overrides flip a stale-looking token back to held-live,
+ * because a live writer is never unlocked under.
  */
-export function readLeaseVerdict(path: string, now: number = Date.now()): LeaseVerdict {
+export function readLeaseVerdict(path: string, now: number = Date.now(), cwd?: string): LeaseVerdict {
 	let raw: string;
 	try {
 		raw = readFileSync(path, "utf8");
@@ -66,6 +84,11 @@ export function readLeaseVerdict(path: string, now: number = Date.now()): LeaseV
 	} catch {
 		return "unknown";
 	}
+	// CodeGraph's own writer lock outranks everything: a live writer behind a stale-looking token
+	// must never be unlocked under. A proxy pid (a cmd.exe wrapper on win32) reported inside its
+	// trust window holds the same way — the real writer is still starting behind it.
+	if (cwd !== undefined && codegraphWritingIndex(cwd)) return "held-live";
+	if (token.writerProxy === true && token.writerPidAt !== undefined && now - token.writerPidAt < PROXY_TRUST_MS) return "held-live";
 	if (token.expiresAt <= now) return "held-stale";
 	return pidAlive(token.pid) ? "held-live" : "held-stale";
 }
@@ -78,6 +101,20 @@ function writeTokenExclusively(path: string, kind: LeaseKind, ttlMs: number, now
 		return true;
 	} catch {
 		return false; // EEXIST (someone else won) or unwritable: not ours either way
+	}
+}
+
+/** Records the spawned writer pid on this holder's token, best effort: only our own token is ever touched. */
+function adoptWriterPid(path: string, pid: number, proxy: boolean, now: number = Date.now()): void {
+	try {
+		const token = JSON.parse(readFileSync(path, "utf8")) as LeaseToken;
+		if (token.pid !== process.pid) return; // lost or stolen since: never touch another holder's token
+		token.writerPid = pid;
+		token.writerProxy = proxy;
+		token.writerPidAt = now;
+		writeFileSync(path, `${JSON.stringify(token)}\n`);
+	} catch {
+		/* best effort: the trust window only narrows the stale window */
 	}
 }
 
@@ -98,13 +135,13 @@ function releasePath(path: string): void {
  * Acquires a free or stale path exclusively; a live or unknown holder, an unwritable locks dir,
  * or a lost steal race returns undefined — the caller then skips what it wanted to do.
  */
-export function tryAcquireLease(path: string, kind: LeaseKind, ttlMs: number, now: number = Date.now()): AcquiredLease | undefined {
+export function tryAcquireLease(path: string, kind: LeaseKind, ttlMs: number, now: number = Date.now(), cwd?: string): AcquiredLease | undefined {
 	try {
 		mkdirSync(dirname(path), { recursive: true });
 	} catch {
 		return undefined; // fail-closed: no locks dir, no coordination, no write
 	}
-	const verdict = readLeaseVerdict(path, now);
+	const verdict = readLeaseVerdict(path, now, cwd);
 	if (verdict !== "free" && verdict !== "held-stale") return undefined;
 	if (verdict === "held-stale") {
 		try {
@@ -119,6 +156,8 @@ export function tryAcquireLease(path: string, kind: LeaseKind, ttlMs: number, no
 
 /** The sync lease outlives the longest sync by design; the TTL is the crash backstop. */
 const SYNC_LEASE_TTL_MS = 120_000;
+/** A freshly reported proxy pid (a cmd.exe wrapper) is trusted this long once its holder is gone. */
+const PROXY_TRUST_MS = 60_000;
 /** The init lock outlives the longest init; the TTL is the crash backstop. */
 const INIT_LOCK_TTL_MS = 600_000;
 /** How long a second session waits for another session's init before giving up. */
@@ -127,11 +166,11 @@ const POLL_MS = 500;
 
 /** One call for the daemon-less sync path: acquire the project's sync lease or skip. */
 export function tryAcquireSyncLease(cwd: string, locksDir?: string, ttlMs: number = SYNC_LEASE_TTL_MS): AcquiredLease | undefined {
-	return tryAcquireLease(lockPathFor(cwd, "sync", locksDir ?? defaultLocksDir()), "sync", ttlMs);
+	return tryAcquireLease(lockPathFor(cwd, "sync", locksDir ?? defaultLocksDir()), "sync", ttlMs, Date.now(), cwd);
 }
 
 export type InitLockOutcome =
-	| { outcome: "acquired"; release(): void }
+	| { outcome: "acquired"; release(): void; adopt(pid: number, proxy: boolean): void }
 	/** The other session's init finished while we waited: the database file exists. */
 	| { outcome: "present" }
 	/** Still held, or unknown, past the wait budget: fail-closed, this session inits nothing. */
@@ -174,10 +213,10 @@ export async function acquireInitLock(
 	const path = lockPathFor(cwd, "init", locksDir ?? defaultLocksDir());
 	const deadline = now() + waitMs;
 	for (;;) {
-		const verdict = readLeaseVerdict(path, now());
+		const verdict = readLeaseVerdict(path, now(), cwd);
 		if (verdict === "free" || verdict === "held-stale") {
 			const lease = tryAcquireLease(path, "init", ttlMs, now());
-			if (lease) return { outcome: "acquired", release: lease.release };
+			if (lease) return { outcome: "acquired", release: lease.release, adopt: (pid, proxy) => adoptWriterPid(path, pid, proxy) };
 			// The steal race was lost between verdict and create: keep waiting like a live holder.
 		} else if (verdict === "held-live" && exists(cwd)) {
 			return { outcome: "present" };

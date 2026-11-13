@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { daemonFor, mcpCallText, parseMcpReply } from "./codegraph-daemon.ts";
 import type { DaemonInfo } from "./codegraph-daemon.ts";
-import { acquireInitLock, tryAcquireSyncLease } from "./codegraph-lease.ts";
+import { acquireInitLock, codegraphWritingIndex, tryAcquireSyncLease } from "./codegraph-lease.ts";
 import type { SeedOutcome } from "./codegraph-seed.ts";
 
 /** A cold daemon on a network share can need over a minute for its first read. */
@@ -149,7 +149,7 @@ export interface ReadinessInput {
 	/** Whether cwd is a real git project root equal to the workspace (the tool's workspace guard). */
 	isProjectRoot(cwd: string): boolean;
 	/** Runs `codegraph <args...> <project>` from the temp dir; true when it exited 0. */
-	run(args: readonly string[], cwd: string, timeoutMs: number): Promise<boolean>;
+	run(args: readonly string[], cwd: string, timeoutMs: number, onSpawn?: (pid: number, proxy: boolean) => void): Promise<boolean>;
 	/** Warms the daemon; true when it worked. */
 	warm(cwd: string): Promise<boolean>;
 	onStart?(action: IndexAction): void;
@@ -191,6 +191,9 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 				try { alive = daemonFor(input.cwd, input.registryDir).alive; } catch { /* not alive */ }
 				if (alive) {
 					ok = await input.run(["sync", "-q"], input.cwd, SYNC_TIMEOUT_MS);
+				} else if (codegraphWritingIndex(input.cwd)) {
+					// CodeGraph itself is writing (any launcher): an unlock would drop its live lock.
+					ok = true;
 				} else {
 					// Daemon-less: only the sync-lease holder refreshes. A live lease in another session
 					// means that session is unlocking+syncing right now — an unlock here would clear its
@@ -227,7 +230,7 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 					});
 					if (lock.outcome === "acquired") {
 						try {
-							ok = indexState(input.cwd) === "present" || await input.run(["init", "-y"], input.cwd, INIT_TIMEOUT_MS);
+							ok = indexState(input.cwd) === "present" || await input.run(["init", "-y"], input.cwd, INIT_TIMEOUT_MS, (pid, proxy) => lock.adopt(pid, proxy));
 						} finally {
 							lock.release();
 						}
@@ -288,6 +291,7 @@ export function syncBeforeSearch(input: SearchSyncInput): void {
 			}
 			// Daemon-less: the sync lease decides who refreshes. A live lease in another session
 			// means zero CLI calls here — an unlock would clear that session's live lock.
+			if (codegraphWritingIndex(input.cwd)) return; // a live CodeGraph writer is never unlocked under
 			const lease = tryAcquireSyncLease(input.cwd, input.locksDir);
 			if (!lease) return;
 			try {
@@ -337,7 +341,7 @@ function killProcessTree(child: { pid?: number } | undefined): void {
  * daemon). On Windows the npm `.cmd` shim needs a shell. A timeout kills the child and only reports the
  * failure once that process is gone: its pid must not outlive the result.
  */
-export function runCodegraph(args: readonly string[], cwd: string, timeoutMs: number): Promise<boolean> {
+export function runCodegraph(args: readonly string[], cwd: string, timeoutMs: number, onSpawn?: (pid: number, proxy: boolean) => void): Promise<boolean> {
 	return new Promise((resolve) => {
 		let settled = false;
 		let grace: ReturnType<typeof setTimeout> | undefined;
@@ -365,6 +369,9 @@ export function runCodegraph(args: readonly string[], cwd: string, timeoutMs: nu
 		} catch {
 			resolve(false);
 			return;
+		}
+		if (child !== undefined && child.pid !== undefined) {
+			try { onSpawn?.(child.pid, process.platform === "win32"); } catch { /* bookkeeping is best effort */ }
 		}
 		const timer = setTimeout(() => {
 			killProcessTree(child);

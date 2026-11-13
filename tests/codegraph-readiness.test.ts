@@ -650,3 +650,56 @@ test("two real sessions racing one fresh project run exactly one init", async (t
 	assert.equal(lines.length, 1, `exactly one init ran, got: ${lines.join(" | ")}`);
 	assert.equal(indexState(cwd), "present", "the racing init produced the shared database");
 });
+
+test("prepareReadiness: a live CodeGraph writer lock means no unlock, no sync, and ok", async (t) => {
+	const cwd = dir(t, "sync-writer-busy");
+	writeDb(cwd);
+	writeFileSync(join(cwd, ".codegraph", "codegraph.lock"), String(process.pid));
+	const calls: string[] = [];
+	const result = await prepareReadiness(fakeInput(cwd, {
+		run: async (args) => {
+			calls.push(`run:${args.join(" ")}`);
+			return true;
+		},
+		warm: async () => {
+			calls.push("warm");
+			return true;
+		},
+	}));
+	assert.deepEqual(result, { action: "sync", ok: true, warm: "ok" });
+	assert.deepEqual(calls, ["warm"], "a live writer is never unlocked under");
+});
+
+test("syncBeforeSearch: a live CodeGraph writer lock means zero CLI calls", async (t) => {
+	const cwd = dir(t, "search-writer-busy");
+	writeDb(cwd);
+	writeFileSync(join(cwd, ".codegraph", "codegraph.lock"), String(process.pid));
+	const calls: string[] = [];
+	syncBeforeSearch({
+		cwd,
+		run: async (args) => {
+			calls.push(args.join(" "));
+			return true;
+		},
+	});
+	await settled();
+	assert.deepEqual(calls, [], "the live writer owns the refresh");
+});
+
+test("prepareReadiness: the init run receives the lock's adopt hook", async (t) => {
+	const fresh = dir(t, "init-adopt");
+	writeFileSync(join(fresh, "package.json"), "{}\n");
+	const seen: Array<{ pid: number; proxy: boolean }> = [];
+	const result = await prepareReadiness(fakeInput(fresh, {
+		run: async (args, _cwd, _timeout, onSpawn) => {
+			if (args[0] === "init") {
+				assert.equal(typeof onSpawn, "function", "the init run can report its spawn");
+				onSpawn?.(4242, false);
+			}
+			return true;
+		},
+		warm: async () => true,
+	}));
+	assert.deepEqual(result, { action: "init", ok: true, warm: "ok" });
+	assert.equal(seen.length, 0);
+});

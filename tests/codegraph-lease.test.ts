@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -192,4 +192,41 @@ test("lock tokens fold path spellings: trailing separators share one token, a mi
 	assert.equal(lockPathFor(cwd, "init", dir), lockPathFor(`${cwd}//`, "init", dir), "neither are two");
 	const missing = `${cwd}-missing`;
 	assert.equal(typeof lockPathFor(missing, "init", dir), "string", "a missing directory still keys a token instead of throwing");
+});
+
+test("a live CodeGraph writer lock keeps a dead-holder token held; the proxy window expires", (t) => {
+	const dir = locksDir(t);
+	const cwd = project(t);
+	const path = lockPathFor(cwd, "init", dir);
+	const now = Date.now();
+
+	mkdirSync(join(cwd, ".codegraph"), { recursive: true });
+	writeFileSync(join(cwd, ".codegraph", "codegraph.lock"), String(process.pid));
+	writeToken(path, { kind: "init", pid: deadPid(), startedAt: now, expiresAt: now + 60_000 });
+	assert.equal(readLeaseVerdict(path, now, cwd), "held-live", "CodeGraph's own live writer is never stolen past");
+	writeToken(path, { kind: "init", pid: deadPid(), startedAt: now, expiresAt: now - 1 });
+	assert.equal(readLeaseVerdict(path, now, cwd), "held-live", "even an expired token holds while the writer lives");
+
+	writeFileSync(join(cwd, ".codegraph", "codegraph.lock"), "not-a-pid");
+	writeToken(path, { kind: "init", pid: deadPid(), startedAt: now, expiresAt: now - 1 });
+	assert.equal(readLeaseVerdict(path, now, cwd), "held-stale", "a garbage writer lock does not hold");
+
+	writeToken(path, { kind: "init", pid: deadPid(), startedAt: now, expiresAt: now + 60_000, writerPid: 4242, writerProxy: true, writerPidAt: now - 1_000 });
+	assert.equal(readLeaseVerdict(path, now, cwd), "held-live", "a fresh proxy pid is inside its trust window");
+	writeToken(path, { kind: "init", pid: deadPid(), startedAt: now, expiresAt: now + 60_000, writerPid: 4242, writerProxy: true, writerPidAt: now - 60_001 });
+	assert.equal(readLeaseVerdict(path, now, cwd), "held-stale", "past the window the token is only as held as its holder");
+});
+
+test("acquireInitLock adopts the spawned writer pid onto its own token", async (t) => {
+	const dir = locksDir(t);
+	const cwd = project(t);
+	const outcome = await acquireInitLock(cwd, { locksDir: dir, waitMs: 50, pollMs: 5 });
+	assert.equal(outcome.outcome, "acquired");
+	if (outcome.outcome !== "acquired") return;
+	outcome.adopt(4242, true);
+	const token = JSON.parse(readFileSync(lockPathFor(cwd, "init", dir), "utf8")) as Record<string, unknown>;
+	assert.equal(token.writerPid, 4242);
+	assert.equal(token.writerProxy, true);
+	assert.equal(typeof token.writerPidAt, "number");
+	outcome.release();
 });

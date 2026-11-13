@@ -1799,10 +1799,12 @@ const GUARDED_COMMAND_KEY = {
 type GuardedCommandKey = (typeof GUARDED_COMMAND_KEY)[keyof typeof GUARDED_COMMAND_KEY];
 
 type GuardedCommandsConfig = Partial<Record<GuardedCommandKey, GuardAction>>;
+type GuardedCommandVariantsConfig = Partial<Record<string, GuardAction>>;
 
 interface RuntimeGuardrailsConfig {
 	autonomousMode: boolean;
 	guardedCommands: GuardedCommandsConfig;
+	guardedCommandVariants?: GuardedCommandVariantsConfig;
 }
 
 interface LoadGuardrailsOptions {
@@ -1834,6 +1836,59 @@ const GUARDED_COMMAND_LABELS: Record<GuardedCommandKey, string> = {
 	piRemove: "pi remove",
 };
 
+// A guarded push grant is the operation plus its option variant; operands stay
+// out, so the remote, branch and refspec may vary. Anything this guard cannot
+// read as one literal push stays once-only instead of guessing.
+const PUSH_PERMISSION_VARIANT = {
+	PLAIN: "plain",
+	DELETE: "--delete",
+	MIRROR: "--mirror",
+	FORCE: "--force",
+} as const;
+
+const PUSH_PERMISSION_VARIANTS: ReadonlySet<string> = new Set(Object.values(PUSH_PERMISSION_VARIANT));
+const PUSH_PERMISSION_SEPARATOR = ":";
+const PUSH_PERMISSION_UNSAFE_RE = /[\r\n;&|()<>"'\\`$#]/;
+
+function pushPermissionKey(variant: string): string {
+	return `${GUARDED_COMMAND_KEY.GIT_PUSH}${PUSH_PERMISSION_SEPARATOR}${variant}`;
+}
+
+function gitPushPermissionVariant(command: string): string | undefined {
+	const trimmed = command.trim();
+	if (PUSH_PERMISSION_UNSAFE_RE.test(trimmed)) return undefined;
+	const tokens = trimmed.split(/\s+/);
+	if (tokens[0] !== "git") return undefined;
+	let index = 1;
+	// Same single `-C <directory>` prefix the guard already recognizes; the directory is not part of the identity.
+	if (tokens[index] === "-C") {
+		if (tokens[index + 1] === undefined) return undefined;
+		index += 2;
+	}
+	if (tokens[index] !== "push") return undefined;
+	let variant: string = PUSH_PERMISSION_VARIANT.PLAIN;
+	let operandsOnly = false;
+	for (const token of tokens.slice(index + 1)) {
+		if (!operandsOnly && token === "--") { operandsOnly = true; continue; }
+		if (!operandsOnly && token.startsWith("-")) {
+			if (token === "--delete" || token === "-d") variant = PUSH_PERMISSION_VARIANT.DELETE;
+			else if (token === "--mirror") variant = PUSH_PERMISSION_VARIANT.MIRROR;
+			else if (token === "-f" || /^-[^-]*f/.test(token) || /^--force(?:-with-lease)?(?:=|$)/.test(token)) variant = PUSH_PERMISSION_VARIANT.FORCE;
+			else return undefined;
+			continue;
+		}
+		if (token.startsWith("+")) variant = PUSH_PERMISSION_VARIANT.FORCE;
+		else if (token.startsWith(":")) variant = PUSH_PERMISSION_VARIANT.DELETE;
+	}
+	return variant;
+}
+
+function pushPermissionLabel(variant: string): string {
+	return variant === PUSH_PERMISSION_VARIANT.PLAIN
+		? GUARDED_COMMAND_LABELS[GUARDED_COMMAND_KEY.GIT_PUSH]
+		: `${GUARDED_COMMAND_LABELS[GUARDED_COMMAND_KEY.GIT_PUSH]} ${variant}`;
+}
+
 const SAFE_GUARDRAILS_CONFIG: RuntimeGuardrailsConfig = {
 	autonomousMode: false,
 	guardedCommands: {},
@@ -1857,6 +1912,7 @@ function collectGuardedMatches(
 ): GuardMatch[] {
 	const matches: GuardMatch[] = [];
 	const dataRanges = dataArgumentRanges(command);
+	const pushVariant = gitPushPermissionVariant(command);
 	for (const [key, pattern] of Object.entries(GUARDED_KEY_PATTERNS) as [
 		GuardedCommandKey,
 		RegExp,
@@ -1865,9 +1921,16 @@ function collectGuardedMatches(
 		for (const match of command.matchAll(globalPattern)) {
 			// gentle-shell#2174: text inside a data command's argument is not an operation.
 			if (inDataArgument(dataRanges, match.index)) continue;
+			const broad = config.guardedCommands[key];
+			const variantAction = key === GUARDED_COMMAND_KEY.GIT_PUSH && pushVariant !== undefined
+				? config.guardedCommandVariants?.[pushPermissionKey(pushVariant)]
+				: undefined;
+			// An explicit broad block keeps blocking; otherwise the more specific
+			// variant grant applies without reinterpreting legacy broad allows.
+			const configured = broad === GUARD_ACTION.BLOCK ? broad : variantAction ?? broad;
 			const action = config.autonomousMode
-				? (config.guardedCommands[key] ?? AUTONOMOUS_DEFAULT_ACTIONS[key])
-				: config.guardedCommands[key] === GUARD_ACTION.ALLOW
+				? (configured ?? AUTONOMOUS_DEFAULT_ACTIONS[key])
+				: configured === GUARD_ACTION.ALLOW
 					? GUARD_ACTION.ALLOW
 					: GUARD_ACTION.CONFIRM;
 			matches.push({
@@ -1976,7 +2039,20 @@ function parseGuardrailsConfigFile(
 		}
 	}
 
-	return { autonomousMode, guardedCommands };
+	const rawVariants = isRecord(parsed.guardedCommandVariants) ? parsed.guardedCommandVariants : {};
+	const guardedCommandVariants: GuardedCommandVariantsConfig = {};
+	for (const [key, value] of Object.entries(rawVariants)) {
+		if (value !== GUARD_ACTION.ALLOW) continue;
+		if (!key.startsWith(`${GUARDED_COMMAND_KEY.GIT_PUSH}${PUSH_PERMISSION_SEPARATOR}`)) continue;
+		if (!PUSH_PERMISSION_VARIANTS.has(key.slice(GUARDED_COMMAND_KEY.GIT_PUSH.length + PUSH_PERMISSION_SEPARATOR.length))) continue;
+		guardedCommandVariants[key] = value as GuardAction;
+	}
+
+	return {
+		autonomousMode,
+		guardedCommands,
+		...(Object.keys(guardedCommandVariants).length === 0 ? {} : { guardedCommandVariants }),
+	};
 }
 
 /**
@@ -2020,12 +2096,17 @@ function loadRuntimeGuardrailsConfig(
 			);
 			if (!projectParsed) return SAFE_GUARDRAILS_CONFIG;
 			// Project values fully override global values
+			const mergedVariants = {
+				...merged.guardedCommandVariants,
+				...projectParsed.guardedCommandVariants,
+			};
 			merged = {
 				autonomousMode: projectParsed.autonomousMode,
 				guardedCommands: {
 					...merged.guardedCommands,
 					...projectParsed.guardedCommands,
 				},
+				...(Object.keys(mergedVariants).length === 0 ? {} : { guardedCommandVariants: mergedVariants }),
 			};
 		}
 
@@ -2519,56 +2600,72 @@ function evaluateSuperYoloCommand(command: string): GuardAction {
 // Permission allowlist — session and always scopes for confirmations
 // ---------------------------------------------------------------------------
 
-/** Session-scoped exact-command allows, keyed by session manager identity. */
+/** Session-scoped permission identities, keyed by session manager identity. */
 const sessionAllowedCommands = new WeakMap<object, Set<string>>();
 
 function normalizeAllowedCommand(command: string): string {
 	return command.trim().replace(/\s+/g, " ");
 }
 
+function sessionPermissionIdentity(command: string, pushVariant?: string): string {
+	return pushVariant === undefined ? normalizeAllowedCommand(command) : pushPermissionKey(pushVariant);
+}
+
 function sessionAllowedScope(ctx: ExtensionContext): object | undefined {
 	try { return ctx.sessionManager ?? undefined; } catch { return undefined; }
 }
 
-function sessionAllowedCheck(ctx: ExtensionContext, command: string): boolean {
+function sessionAllowedCheck(ctx: ExtensionContext, command: string, pushVariant?: string): boolean {
 	const scope = sessionAllowedScope(ctx);
 	if (scope === undefined) return false;
-	return sessionAllowedCommands.get(scope)?.has(normalizeAllowedCommand(command)) ?? false;
+	return sessionAllowedCommands.get(scope)?.has(sessionPermissionIdentity(command, pushVariant)) ?? false;
 }
 
-function sessionAllowedRemember(ctx: ExtensionContext, command: string): void {
+function sessionAllowedRemember(ctx: ExtensionContext, command: string, pushVariant?: string): void {
 	const scope = sessionAllowedScope(ctx);
 	if (scope === undefined) return;
 	const granted = sessionAllowedCommands.get(scope) ?? new Set<string>();
-	granted.add(normalizeAllowedCommand(command));
+	granted.add(sessionPermissionIdentity(command, pushVariant));
 	sessionAllowedCommands.set(scope, granted);
 }
 
 /**
- * Persist one guarded-key allow into the user-level runtime-guardrails config.
+ * Persist one guarded allow into the user-level runtime-guardrails config.
  * Malformed or unreadable existing config refuses the write: human repair, never
  * a silent rewrite. Atomic same-directory replacement, private file mode.
+ * A push variant is stored under its own key; other guards keep the broad key.
  */
 function saveGuardedCommandAllowAlways(
 	key: GuardedCommandKey,
 	options: LoadGuardrailsOptions = {},
+	pushVariant?: string,
 ): boolean {
+	if (pushVariant !== undefined && (key !== GUARDED_COMMAND_KEY.GIT_PUSH || !PUSH_PERMISSION_VARIANTS.has(pushVariant))) return false;
 	const configHome = options.gentlePiConfigHome ?? gentleAiConfigHome();
 	const configPath = join(configHome, "runtime-guardrails.json");
 	let autonomousMode = false;
 	let guardedCommands: GuardedCommandsConfig = {};
+	let guardedCommandVariants: GuardedCommandVariantsConfig = {};
 	try {
 		const parsed = parseGuardrailsConfigFile(readFileSync(configPath, "utf8"));
 		if (!parsed) return false;
 		autonomousMode = parsed.autonomousMode;
 		guardedCommands = parsed.guardedCommands;
+		guardedCommandVariants = parsed.guardedCommandVariants ?? {};
 	} catch (error) {
 		if (!(typeof error === "object" && error !== null && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT")) return false;
 	}
-	const updated: RuntimeGuardrailsConfig = {
-		autonomousMode,
-		guardedCommands: { ...guardedCommands, [key]: GUARD_ACTION.ALLOW },
-	};
+	const updated: RuntimeGuardrailsConfig = pushVariant === undefined
+		? {
+			autonomousMode,
+			guardedCommands: { ...guardedCommands, [key]: GUARD_ACTION.ALLOW },
+			...(Object.keys(guardedCommandVariants).length === 0 ? {} : { guardedCommandVariants }),
+		}
+		: {
+			autonomousMode,
+			guardedCommands,
+			guardedCommandVariants: { ...guardedCommandVariants, [pushPermissionKey(pushVariant)]: GUARD_ACTION.ALLOW },
+		};
 	const temporary = `${configPath}.${randomUUID()}.tmp`;
 	try {
 		mkdirSync(configHome, { recursive: true });
@@ -2603,6 +2700,7 @@ async function confirmCommand(
 	}
 	const guardrailsConfig = loadRuntimeGuardrailsConfig(ctx.cwd);
 	const evaluation = evaluateGuardedCommand(command, guardrailsConfig);
+	const pushVariant = gitPushPermissionVariant(command);
 	// Configuration provenance is distinct from legacy autonomy resolution, which
 	// can ignore confirmations when an environment override is present. Activation
 	// cannot waive a restriction from either user or project configuration layer.
@@ -2625,9 +2723,9 @@ async function confirmCommand(
 	// classification === "allow" or "confirm" from this point on
 	if (classification === "allow") return autoGate?.();
 
-	// Session-scoped exact-command allow: this exact command was approved earlier
-	// in the same session, so the confirmation dialog is not repeated.
-	if (sessionAllowedCheck(ctx, command)) return autoGate?.();
+	// Session-scoped grant: a literal push uses its variant identity, every other
+	// command (including unsupported and compound pushes) the exact command.
+	if (sessionAllowedCheck(ctx, command, pushVariant)) return autoGate?.();
 
 	// Auto may replace only a default confirmation, never an explicit user/project
 	// ask/block rule or the independent data-loss confirmation.
@@ -2682,9 +2780,10 @@ async function confirmCommand(
 	try {
 		if (typeof (ctx.ui as { select?: unknown }).select === "function") {
 			// Scoped confirmation: the ask dialog itself carries the allowlist choices.
-			const canAlwaysAllow = !evaluation.dataLoss && typeof evaluation.key === "string";
+			const canAlwaysAllow = !evaluation.dataLoss && typeof evaluation.key === "string"
+				&& (evaluation.key !== GUARDED_COMMAND_KEY.GIT_PUSH || pushVariant !== undefined);
 			const alwaysLabel = canAlwaysAllow
-				? `Always allow ${GUARDED_COMMAND_LABELS[evaluation.key as GuardedCommandKey]}`
+				? `Always allow ${pushVariant !== undefined ? pushPermissionLabel(pushVariant) : GUARDED_COMMAND_LABELS[evaluation.key as GuardedCommandKey]}`
 				: undefined;
 			const sessionScopeAvailable = sessionAllowedScope(ctx) !== undefined;
 			const choices = [
@@ -2696,8 +2795,9 @@ async function confirmCommand(
 			const selection = await (ctx.ui as unknown as {
 				select: (title: string, options: string[]) => Promise<string | undefined>;
 			}).select(`${title}\n${preview}`, choices);
-			if (selection === "Allow for this session") sessionAllowedRemember(ctx, command);
-			if (alwaysLabel !== undefined && selection === alwaysLabel && !saveGuardedCommandAllowAlways(evaluation.key as GuardedCommandKey)) {
+			if (selection === "Allow for this session") sessionAllowedRemember(ctx, command, pushVariant);
+			if (alwaysLabel !== undefined && selection === alwaysLabel
+				&& !saveGuardedCommandAllowAlways(evaluation.key as GuardedCommandKey, {}, pushVariant)) {
 				try { ctx.ui.notify?.("Could not save the always-allow preference; the command is approved once only.", "warning"); } catch { /* display only */ }
 			}
 			approved = selection === "Allow once" || selection === "Allow for this session" || (alwaysLabel !== undefined && selection === alwaysLabel);

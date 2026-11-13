@@ -199,6 +199,44 @@ export function cardInnerWidth(width: number): number {
 	return Math.max(1, width - FRAME_COLUMNS);
 }
 
+/**
+ * Theme roles a diff row's own mark names, or undefined for a row that is not a
+ * change. `+` opens a row the change added and `-` one it removed; a context row,
+ * a patch file header (`+++`/`---`) and a hunk header (`@@`) are not changes, so
+ * they keep whichever role the card already paints its rows in.
+ */
+const DIFF_ROW_ROLE = {
+	"+": "toolDiffAdded",
+	"-": "toolDiffRemoved",
+} as const;
+
+/** The role one diff row wears, or undefined when its mark names no change. */
+export function diffRowRole(row: string): string | undefined {
+	// A patch's own `+++`/`---` file header and its `@@` hunk header are the diff's
+	// frame, not lines of it: read as a change they would color the whole header block.
+	if (row.startsWith("+++") || row.startsWith("---") || row.startsWith("@@")) return undefined;
+	const mark = row.charAt(0) as keyof typeof DIFF_ROW_ROLE;
+	return DIFF_ROW_ROLE[mark];
+}
+
+/**
+ * Paints a diff's rows one row at a time: an added row takes the theme's added
+ * role and a removed row its removed role, while every other row keeps `role` —
+ * or, when no base role is given, exactly the text it arrived as.
+ *
+ * Input is plain text (callers sanitize it first). A single role wrapped around
+ * the whole diff would not survive the diff's own row-by-row roles, because a
+ * color reset ends the outer one, so each row is painted once here; wrapping a
+ * long row then re-opens that row's role on every row it continues to.
+ */
+export function diffRows(text: string, theme: CardTheme, role?: string): string {
+	if (text === "") return "";
+	return text.split("\n").map((row) => {
+		const rowRole = diffRowRole(row) ?? role;
+		return rowRole === undefined ? row : theme.fg(rowRole, row);
+	}).join("\n");
+}
+
 /** Shared body for whole cards and separate call/result components. Budgets apply after wrapping. */
 export function cardBodyRows(
 	rows: readonly string[], tone: CardTone, theme: CardTheme, width: number,

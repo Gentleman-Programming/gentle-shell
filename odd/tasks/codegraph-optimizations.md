@@ -44,7 +44,7 @@ all seven items, six commits (hygiene items share one commit), user chose Start 
 - T3 (S3): chore(codegraph): drop dead branch, unify guards, narrow exports — inline — commit: 70d639c
 - T4 (S4): test(codegraph): shared fakeRegistry helper and stat core — inline — commit: ba870a1
 - T5 (S5): feat(codegraph): skip a failed daemon until the next turn — inline — commit: c6248d5
-- T6 (S6): refactor(codegraph): one MCP line-conversation helper — inline — commit: —
+- T6 (S6): refactor(codegraph): one MCP line-conversation helper — inline — commit: 58e58d9
 
 ## Log
 
@@ -56,6 +56,7 @@ all seven items, six commits (hygiene items share one commit), user chose Start 
 - L4: "going back: any of this optimizations can broke the code or not" — answered read-only
 - L5: "and the seventh ?" — all seven audit items are covered; items 5+6 share commit T3
 - L6: scope selection: "All items, 6 commits (Recommended)" + "Start now (Recommended)"
+- L13: feature closed — all six units landed (f121d12, 10e8cd8, 70d639c, ba870a1, c6248d5, 58e58d9 plus this docs close); every gate green at close: 5-file suite 85/0, tsc 16 pre-existing unchanged, zero edits to pre-existing tests across the whole feature
 - L7: T1 implemented — git asked once per cwd per turn; gates: tools 34 pass, 5-file suite 0 fail, tsc 16 pre-existing unchanged; Risk: none (shared helpers pinned by the existing suite; the only behavior change is the cached-turn rule, pinned by the new test)
 - L8: T2 implemented — registry read once per project per window + warmUpDaemon single daemonFor; gates: daemon file pass, 5-file suite pass, tsc 16 unchanged; Risk: none (stale liveness within 1s degrades to the existing CLI fallback)
 - L9: T3 implemented — unreachable spawn guard removed; the one unguarded daemonFor call (runCodegraph's project line, the unit text's "maybeRewarm" quote) wrapped with the not-alive fallback to realpathSync(cwd), while the maybeRewarm and syncBeforeSearch daemonFor calls were already guarded at HEAD and stay as-is; exports audited 7 demoted, 2 annotated as test seams, evidence tmp/u3-export-audit.txt; gates: suite 84/0, tsc 16 unchanged; Risk: none (behavior-preserving chore; suite is the differential; no new RED test for that reason)

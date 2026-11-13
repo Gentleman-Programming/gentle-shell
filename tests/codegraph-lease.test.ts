@@ -184,3 +184,12 @@ test("a token expiring exactly now is stale, and the token shape is exactly kind
 	assert.deepEqual(keys, ["expiresAt", "kind", "pid", "startedAt"], "no extra fields leak into the token");
 	lease.release();
 });
+
+test("lock tokens fold path spellings: trailing separators share one token, a missing directory still keys", (t) => {
+	const dir = locksDir(t);
+	const cwd = project(t);
+	assert.equal(lockPathFor(cwd, "init", dir), lockPathFor(`${cwd}/`, "init", dir), "a trailing separator is not a different project");
+	assert.equal(lockPathFor(cwd, "init", dir), lockPathFor(`${cwd}//`, "init", dir), "neither are two");
+	const missing = `${cwd}-missing`;
+	assert.equal(typeof lockPathFor(missing, "init", dir), "string", "a missing directory still keys a token instead of throwing");
+});

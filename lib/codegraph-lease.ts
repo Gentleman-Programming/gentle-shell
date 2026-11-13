@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { canonicalRoot } from "./codegraph-canonical.ts";
 
 /** A cross-process exclusion token for one project: init (long-held) or sync (short lease). */
 export type LeaseKind = "init" | "sync";
@@ -21,9 +22,9 @@ export function defaultLocksDir(): string {
 	return join(homedir(), ".codegraph", "locks");
 }
 
-/** One real project path maps to one lock per kind: two sessions, one spelling, one token. */
+/** One real project path in any spelling maps to one lock per kind: two sessions, one token. */
 export function lockPathFor(cwd: string, kind: LeaseKind, locksDir: string = defaultLocksDir()): string {
-	const digest = createHash("sha256").update(realpathSync(cwd)).digest("hex").slice(0, 32);
+	const digest = createHash("sha256").update(canonicalRoot(cwd)).digest("hex").slice(0, 32);
 	return join(locksDir, `${digest}.${kind}.json`);
 }
 

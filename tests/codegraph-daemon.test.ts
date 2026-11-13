@@ -118,3 +118,12 @@ test("registeredDaemons reads the registry once per project per window", (t) => 
 	assert.equal(fresh.length, 1);
 	assert.equal(fresh[0]?.startedAt, 2, "after the reset the mutated record is read again");
 });
+
+test("registry roots in any separator spelling match the project", async (t) => {
+	const project = dir(t, "spelling");
+	const daemon = fakeDaemon(t, `${project}//`, HELLO, INITIALIZED, ANSWER);
+	await daemon.ready;
+	const found = daemonFor(project, daemon.registryDir);
+	assert.equal(found.alive, true, "a trailing double separator is the same project");
+	assert.equal(found.root, `${project}//`, "the registered spelling is returned as-is");
+});

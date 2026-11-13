@@ -1,7 +1,8 @@
-import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import net from "node:net";
 import { join } from "node:path";
+import { canonicalRoot } from "./codegraph-canonical.ts";
 
 /** The hello line a CodeGraph daemon sends carries `protocol`; this is the only one spoken here. */
 const DAEMON_PROTOCOL = 1;
@@ -12,21 +13,6 @@ const MAX_REPLY_CHARS = 1_000_000;
 /** CodeGraph answers an explore without a project with this plain text, not with an error. */
 const NO_PROJECT_TEXT = "No CodeGraph project is loaded";
 const PIPE_PREFIX = "\\\\.\\pipe\\";
-
-/**
- * One canonical form for root comparison: the real path on disk, trailing separator removed; on
- * Windows also lowercased, so drive-letter case and letter case do not split one project into two
- * daemons.
- */
-function canonical(path: string): string {
-	let resolved = path;
-	try {
-		resolved = realpathSync(path);
-	} catch {
-		/* keep the spelling we were given */
-	}
-	return (process.platform === "win32" ? resolved.toLowerCase() : resolved).replace(/[\\/]$/, "");
-}
 
 interface RegisteredDaemon {
 	root: string;
@@ -53,7 +39,7 @@ export function registeredDaemons(root: string, registryDir: string = join(homed
 	} catch {
 		return [];
 	}
-	const wanted = canonical(root);
+	const wanted = canonicalRoot(root);
 	// The listing is fresh on every call: a record that appeared or vanished changes it and busts the memo.
 	const key = `${registryDir}|${wanted}|${files.join(",")}`;
 	if (registryMemo !== undefined && registryMemo.key === key && Date.now() - registryMemo.at < REGISTRY_MEMO_MS) return registryMemo.daemons;
@@ -61,7 +47,7 @@ export function registeredDaemons(root: string, registryDir: string = join(homed
 	for (const file of files) {
 		try {
 			const entry = JSON.parse(readFileSync(join(registryDir, file), "utf8"));
-			if (typeof entry.root !== "string" || typeof entry.socketPath !== "string" || canonical(entry.root) !== wanted) continue;
+			if (typeof entry.root !== "string" || typeof entry.socketPath !== "string" || canonicalRoot(entry.root) !== wanted) continue;
 			found.push({
 				root: entry.root,
 				socketPath: entry.socketPath,

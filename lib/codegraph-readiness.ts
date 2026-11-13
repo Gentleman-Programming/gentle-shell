@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { daemonFor } from "./codegraph-daemon.ts";
+import { acquireInitLock, tryAcquireSyncLease } from "./codegraph-lease.ts";
 
 /** A cold daemon on a network share can need over a minute for its first read. */
 const WARMUP_TIMEOUT_MS = 120_000;
@@ -138,6 +139,10 @@ export interface ReadinessInput {
 	cwd: string;
 	/** The daemon registry consulted for liveness; the default is CodeGraph's own. */
 	registryDir?: string;
+	/** Where cross-session init/sync lock tokens live; the default is CodeGraph's own locks dir. */
+	locksDir?: string;
+	/** Bounded wait for another session's init before failing closed; defaults to the init-lock budget. */
+	initLockWaitMs?: number;
 	env: Record<string, string | undefined>;
 	reason: SessionStartReason;
 	/** Whether cwd is a real git project root equal to the workspace (the tool's workspace guard). */
@@ -186,11 +191,38 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 				if (alive) {
 					ok = await input.run(["sync", "-q"], input.cwd, SYNC_TIMEOUT_MS);
 				} else {
-					const unlocked = await input.run(["unlock"], input.cwd, SYNC_TIMEOUT_MS);
-					ok = unlocked && await input.run(["sync", "-q"], input.cwd, SYNC_TIMEOUT_MS);
+					// Daemon-less: only the sync-lease holder refreshes. A live lease in another session
+					// means that session is unlocking+syncing right now — an unlock here would clear its
+					// live lock — so this session runs nothing and reports the refresh as handled.
+					const lease = tryAcquireSyncLease(input.cwd, input.locksDir);
+					if (!lease) {
+						ok = true;
+					} else {
+						try {
+							const unlocked = await input.run(["unlock"], input.cwd, SYNC_TIMEOUT_MS);
+							ok = unlocked && await input.run(["sync", "-q"], input.cwd, SYNC_TIMEOUT_MS);
+						} finally {
+							lease.release();
+						}
+					}
 				}
 			} else {
-				ok = await input.run(["init", "-y"], input.cwd, INIT_TIMEOUT_MS);
+				// The init lock keeps two sessions on one fresh project from building the same index
+				// twice; after acquiring, the state is re-checked — another init may have finished
+				// while this one waited for the lock.
+				const lock = await acquireInitLock(input.cwd, {
+					locksDir: input.locksDir,
+					waitMs: input.initLockWaitMs,
+				});
+				if (lock.outcome === "acquired") {
+					try {
+						ok = indexState(input.cwd) === "present" || await input.run(["init", "-y"], input.cwd, INIT_TIMEOUT_MS);
+					} finally {
+						lock.release();
+					}
+				} else {
+					ok = lock.outcome === "present";
+				}
 			}
 			try { input.onIndexed?.({ action, ok }); } catch { /* never worth stopping the warm-up */ }
 			// A failed sync still leaves an index to warm; a failed init leaves nothing worth warming.
@@ -215,6 +247,8 @@ export interface SearchSyncInput {
 	cwd: string;
 	/** The daemon registry consulted for liveness; the default is CodeGraph's own. */
 	registryDir?: string;
+	/** Where the cross-session sync lease token lives; the default is CodeGraph's own locks dir. */
+	locksDir?: string;
 	run(args: readonly string[], cwd: string, timeoutMs: number): Promise<boolean>;
 	onFailed?(stage: "unlock" | "sync"): void;
 }
@@ -235,15 +269,26 @@ export function syncBeforeSearch(input: SearchSyncInput): void {
 		try {
 			let alive = false;
 			try { alive = daemonFor(input.cwd, input.registryDir).alive; } catch { /* not alive */ }
-			if (!alive) {
+			if (alive) {
+				const synced = await input.run(["sync", "-q"], input.cwd, SYNC_TIMEOUT_MS);
+				if (!synced) input.onFailed?.("sync");
+				return;
+			}
+			// Daemon-less: the sync lease decides who refreshes. A live lease in another session
+			// means zero CLI calls here — an unlock would clear that session's live lock.
+			const lease = tryAcquireSyncLease(input.cwd, input.locksDir);
+			if (!lease) return;
+			try {
 				const unlocked = await input.run(["unlock"], input.cwd, SYNC_TIMEOUT_MS);
 				if (!unlocked) {
 					input.onFailed?.("unlock");
 					return;
 				}
+				const synced = await input.run(["sync", "-q"], input.cwd, SYNC_TIMEOUT_MS);
+				if (!synced) input.onFailed?.("sync");
+			} finally {
+				lease.release();
 			}
-			const synced = await input.run(["sync", "-q"], input.cwd, SYNC_TIMEOUT_MS);
-			if (!synced) input.onFailed?.("sync");
 		} catch {
 			/* a detached job never surfaces; a rejection is not a stage failure */
 		} finally {

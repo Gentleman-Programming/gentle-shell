@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { daemonFor } from "../lib/codegraph-daemon.ts";
+import { lockPathFor, readLeaseVerdict } from "../lib/codegraph-lease.ts";
 import {
 	indexState,
 	maybeRewarm,
@@ -437,4 +439,143 @@ test("syncBeforeSearch: a rejecting run never surfaces an unhandled rejection", 
 	await settled();
 
 	assert.deepEqual(rejections, []);
+});
+
+test("prepareReadiness: a live sync lease in another session skips the sync but still warms", async (t) => {
+	const cwd = dir(t, "sync-lease-live");
+	writeDb(cwd);
+	const locks = dir(t, "sync-lease-locks");
+	writeFileSync(lockPathFor(cwd, "sync", locks), `${JSON.stringify({ kind: "sync", pid: process.pid, startedAt: Date.now(), expiresAt: Date.now() + 60_000 })}\n`);
+	const calls: string[] = [];
+	const result = await prepareReadiness(fakeInput(cwd, {
+		locksDir: locks,
+		run: async (args) => {
+			calls.push(`run:${args.join(" ")}`);
+			return true;
+		},
+		warm: async () => {
+			calls.push("warm");
+			return true;
+		},
+	}));
+	assert.deepEqual(result, { action: "sync", ok: true, warm: "ok" }, "another session is refreshing: not a failure");
+	assert.deepEqual(calls, ["warm"], "no unlock, no sync — the lease holder owns the refresh");
+	assert.equal(readLeaseVerdict(lockPathFor(cwd, "sync", locks)), "held-live", "the foreign lease is never stolen");
+});
+
+test("prepareReadiness: the daemon-less sync takes and releases the lease when it is free", async (t) => {
+	const cwd = dir(t, "sync-lease-free");
+	writeDb(cwd);
+	const locks = dir(t, "sync-lease-free-locks");
+	const calls: string[] = [];
+	const result = await prepareReadiness(fakeInput(cwd, {
+		locksDir: locks,
+		run: async (args) => {
+			calls.push(`run:${args.join(" ")}`);
+			return true;
+		},
+	}));
+	assert.deepEqual(result, { action: "sync", ok: true, warm: "ok" });
+	assert.deepEqual(calls, ["run:unlock", "run:sync -q"]);
+	assert.equal(readLeaseVerdict(lockPathFor(cwd, "sync", locks)), "free", "the lease is released after the sync");
+});
+
+test("prepareReadiness: an init under another session's lock reports present once the database appears", async (t) => {
+	const cwd = dir(t, "init-join");
+	writeFileSync(join(cwd, "package.json"), "{}\n");
+	const locks = dir(t, "init-join-locks");
+	writeFileSync(lockPathFor(cwd, "init", locks), `${JSON.stringify({ kind: "init", pid: process.pid, startedAt: Date.now(), expiresAt: Date.now() + 600_000 })}\n`);
+	const timer = setTimeout(() => writeDb(cwd), 30);
+	const calls: string[] = [];
+	const result = await prepareReadiness(fakeInput(cwd, {
+		locksDir: locks,
+		run: async (args) => {
+			calls.push(`run:${args.join(" ")}`);
+			return true;
+		},
+		warm: async () => true,
+	}));
+	clearTimeout(timer);
+	assert.deepEqual(result, { action: "init", ok: true, warm: "ok" }, "the other session's init finished: joined, not failed");
+	assert.deepEqual(calls, [], "this session never runs init");
+});
+
+test("prepareReadiness: a foreign init still running past the wait budget fails closed", async (t) => {
+	const cwd = dir(t, "init-skip");
+	writeFileSync(join(cwd, "package.json"), "{}\n");
+	const locks = dir(t, "init-skip-locks");
+	writeFileSync(lockPathFor(cwd, "init", locks), `${JSON.stringify({ kind: "init", pid: process.pid, startedAt: Date.now(), expiresAt: Date.now() + 600_000 })}\n`);
+	const calls: string[] = [];
+	const result = await prepareReadiness(fakeInput(cwd, {
+		locksDir: locks,
+		initLockWaitMs: 10,
+		run: async (args) => {
+			calls.push(`run:${args.join(" ")}`);
+			return true;
+		},
+	}));
+	assert.deepEqual(result, { action: "init", ok: false, warm: "skipped" }, "fail-closed: no second concurrent init");
+	assert.deepEqual(calls, []);
+	assert.equal(readLeaseVerdict(lockPathFor(cwd, "init", locks)), "held-live", "skipped never steals");
+});
+
+test("syncBeforeSearch: a live sync lease in another session means zero CLI calls", async (t) => {
+	const cwd = dir(t, "search-lease-live");
+	const locks = dir(t, "search-lease-locks");
+	writeFileSync(lockPathFor(cwd, "sync", locks), `${JSON.stringify({ kind: "sync", pid: process.pid, startedAt: Date.now(), expiresAt: Date.now() + 60_000 })}\n`);
+	const calls: string[] = [];
+	const failures: string[] = [];
+	syncBeforeSearch({
+		cwd,
+		locksDir: locks,
+		run: async (args) => {
+			calls.push(args.join(" "));
+			return true;
+		},
+		onFailed: (stage) => failures.push(stage),
+	});
+	await settled();
+	assert.deepEqual(calls, [], "no unlock, no sync: the live lease holder owns this refresh");
+	assert.deepEqual(failures, []);
+});
+
+test("two real sessions racing one fresh project run exactly one init", async (t) => {
+	const cwd = dir(t, "init-race");
+	writeFileSync(join(cwd, "package.json"), "{}\n");
+	const locks = dir(t, "init-race-locks");
+	const sandbox = dir(t, "init-race-child");
+	const log = join(sandbox, "init.log");
+	const script = join(sandbox, "child.mjs");
+	writeFileSync(script, [
+		'import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";',
+		"const [libHref, project, locksDir, logPath] = process.argv.slice(2);",
+		"const { prepareReadiness } = await import(libHref);",
+		"await prepareReadiness({",
+		"  cwd: project,",
+		"  locksDir,",
+		'  env: {}, reason: "startup",',
+		"  isProjectRoot: () => true,",
+		"  run: async (args) => {",
+		'    if (args[0] === "init") {',
+		"      appendFileSync(logPath, `init ${process.pid}\\n`);",
+		"      await new Promise((resolve) => setTimeout(resolve, 200));",
+		"      mkdirSync(`${project}/.codegraph`, { recursive: true });",
+		'      writeFileSync(`${project}/.codegraph/codegraph.db`, "index");',
+		"      return true;",
+		"    }",
+		"    return true;",
+		"  },",
+		"  warm: async () => true,",
+		"});",
+	].join("\n") + "\n");
+	const libHref = new URL("../lib/codegraph-readiness.ts", import.meta.url).href;
+	const closed = (child: ReturnType<typeof spawn>) => new Promise<number>((resolve) => {
+		child.on("close", (code: number | null) => resolve(code ?? -1));
+	});
+	const children = [spawn(process.execPath, [script, libHref, cwd, locks, log], { stdio: "ignore" }), spawn(process.execPath, [script, libHref, cwd, locks, log], { stdio: "ignore" })];
+	const codes = await Promise.all(children.map(closed));
+	assert.deepEqual(codes, [0, 0], "both sessions finish their readiness normally");
+	const lines = readFileSync(log, "utf8").trim().split("\n").filter((line) => line.length > 0);
+	assert.equal(lines.length, 1, `exactly one init ran, got: ${lines.join(" | ")}`);
+	assert.equal(indexState(cwd), "present", "the racing init produced the shared database");
 });

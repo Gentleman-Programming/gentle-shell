@@ -208,7 +208,7 @@ test("pnpm's `-w`/`--workspace-root` take no value, npm's `-w` names a workspace
 
 test("plain `npm exec` keeps reading `--package` after the command until `--`; npx hands it to the command", () => {
 	confirms("npm exec --package=cowsay@1.6.0 cowsay hi --package=evil", ["evil"]);
-	confirms("npm exec cowsay@1.6.0 hi -p evil", ["evil"]);
+	confirms("npm exec cowsay@1.6.0 hi --package evil", ["evil"]);
 	confirms("npm x --package=cowsay@1.6.0 cowsay --package evil", ["evil"]);
 	passes("npm exec --package=cowsay@1.6.0 cowsay hi --package=lolcatjs@2.3.5");
 	// After `--` every word belongs to the command.
@@ -218,4 +218,28 @@ test("plain `npm exec` keeps reading `--package` after the command until `--`; n
 	passes("npx cowsay@1.6.0 hi --package=evil");
 	// Other options after the command stay the command's business.
 	passes("npm exec cowsay@1.6.0 --fix src");
+});
+
+test("after the command of plain `npm exec`, `-p` is npm's boolean `--parseable`, never a package", () => {
+	passes("npm exec cowsay@1.6.0 -p tsconfig.json");
+	passes("npm exec cowsay@1.6.0 hi -p evil");
+	passes("npm x cowsay@1.6.0 -p=evil");
+	// `tsc` itself is still the unpinned command npm would fetch.
+	confirms("npm exec tsc -p tsconfig.json", ["tsc"]);
+	// `--package` after the command still names a fetched package.
+	confirms("npm exec cowsay@1.6.0 -p tsconfig.json --package evil", ["evil"]);
+});
+
+test("npx reads an attached `-p=<spec>` before the command like `--package=<spec>`", () => {
+	confirms("npx -p=evil --package=cowsay@1.6.0 -- cowsay", ["evil"]);
+	confirms("npx -p=evil cowsay@1.6.0 hi", ["evil"]);
+	confirms("npx --package=cowsay@1.6.0 -p=evil -- cowsay", ["evil"]);
+	passes("npx -p=cowsay@1.6.0 cowsay hi");
+	passes("npx -p=cowsay@1.6.0 --package=lolcatjs@2.3.5 -- cowsay hi");
+	// npx strips every leading dash before matching `p`, so `--p` is `--package` too.
+	confirms("npx --p=evil --package=cowsay@1.6.0 -- cowsay", ["evil"]);
+	confirms("npx --p evil --package=cowsay@1.6.0 -- cowsay", ["evil"]);
+	passes("npx --p=cowsay@1.6.0 cowsay hi");
+	// Everything after the command belongs to it.
+	passes("npx cowsay@1.6.0 -p=evil");
 });

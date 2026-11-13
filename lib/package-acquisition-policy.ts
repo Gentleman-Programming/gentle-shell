@@ -79,11 +79,12 @@ function parseSegment(manager: Manager, form: PackageAcquisition["form"] | undef
 	for (let index = 0; index < args.length; index++) {
 		const { value } = args[index];
 		if (target !== undefined) {
-			// Past the command of a plain `npm exec`, only `--package` still names what npm fetches.
+			// Past the command of a plain `npm exec`, only `--package` still names what npm fetches;
+			// there `-p` is the boolean `--parseable`.
 			if (value === "--") break;
 			const equals = value.startsWith("--") ? value.indexOf("=") : -1;
 			const name = equals < 0 ? value : value.slice(0, equals);
-			if (PACKAGE_OPTIONS.has(name)) {
+			if (name === "--package") {
 				const named = equals >= 0 ? value.slice(equals + 1) : args[++index]?.value;
 				if (named === undefined) undetermined.push(name);
 				else packages.push(named);
@@ -95,8 +96,11 @@ function parseSegment(manager: Manager, form: PackageAcquisition["form"] | undef
 			continue;
 		}
 		if (!optionsEnded && value.startsWith("-") && value.length > 1) {
-			const equals = value.startsWith("--") ? value.indexOf("=") : -1;
-			const name = equals < 0 ? value : value.slice(0, equals);
+			// npx strips every leading dash and rewrites a `p` key, keeping any attached value, to
+			// `--package`: `-p=<spec>`, `--p <spec>` and `--p=<spec>` all name a fetched package.
+			const npxPackage = npxForm && /^-+p(=|$)/.test(value);
+			const equals = value.startsWith("--") || npxPackage ? value.indexOf("=") : -1;
+			const name = npxPackage ? "--package" : equals < 0 ? value : value.slice(0, equals);
 			if (/^-[A-Za-z]*g[A-Za-z]*$/.test(value) || name === "--global") global = true;
 			if (PACKAGE_OPTIONS.has(name) && (form === "exec" || form === "dlx")) {
 				const named = equals >= 0 ? value.slice(equals + 1) : args[++index]?.value;

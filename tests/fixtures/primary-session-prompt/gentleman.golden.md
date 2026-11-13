@@ -126,7 +126,7 @@ With memory, the parent selects context; workers save validated facts when given
 
 ## Skill Registry Protocol
 
-The parent resolves skill paths once per session under `## Skills to load before work`; subagents read those `SKILL.md` files first (`paths-injected`) or report unavailable paths; inline/fallbacks: `orchestrator-skills.md`.
+The parent resolves skill paths once a session under `## Skills to load before work`; subagents read those `SKILL.md` files first (`paths-injected`) or flag missing paths; inline/fallbacks: `orchestrator-skills.md`.
 
 ## Intent-Driven Skill Discovery
 

@@ -6,7 +6,7 @@ import test from "node:test";
 // ---------------------------------------------------------------------------
 // gentle-shell#348 — slice 2, contract layer.
 //
-// The `### Parent inline execution` paragraph in the lazy
+// The `### Parent execution` paragraph in the lazy
 // `assets/orchestrator-skills.md` is the narrowest execution boundary of the
 // inline skill contract (design note: issues/348#issuecomment-5784664642).
 // This test binds every obligation clause of the landed paragraph so no
@@ -19,13 +19,13 @@ import test from "node:test";
 const repoRoot = join(import.meta.dirname, "..");
 const asset = readFileSync(join(repoRoot, "assets", "orchestrator-skills.md"), "utf8");
 
-const SECTION_HEADING = "### Parent inline execution";
+const SECTION_HEADING = "### Parent execution";
 
-// Extracts the `### Parent inline execution` section: from its heading to the
+// Extracts the `### Parent execution` section: from its heading to the
 // next markdown heading (any level) or EOF, whichever comes first.
 function extractParentInlineExecutionSection(source: string): string {
 	const start = source.indexOf(SECTION_HEADING);
-	assert.ok(start >= 0, "the skills asset must carry a `### Parent inline execution` section");
+	assert.ok(start >= 0, "the skills asset must carry a `### Parent execution` section");
 	const remainder = source.slice(start + SECTION_HEADING.length);
 	const nextHeading = /^#{1,6} .*/m.exec(remainder);
 	return remainder.slice(0, nextHeading === null ? remainder.length : nextHeading.index);
@@ -38,7 +38,7 @@ function assertInlineExecutionContract(section: string): void {
 	assert.match(section, /read the exact indexed `SKILL\.md` in this session/);
 	assert.match(section, /let the skill's declared `## Output Contract` shape the result/);
 	assert.match(section, /same contract markers applying the skill directly would\s+produce/);
-	assert.match(section, /`Skill applied \(inline\): <name>`/);
+	assert.match(section, /`Skill applied \(parent\): <name>`/);
 	assert.match(section, /proceed unskilled/);
 	assert.match(section, /Never present contract markers/);
 	assert.match(section, /name only, never paths/);
@@ -76,7 +76,7 @@ test("every obligation clause is bound: mutating it makes the contract assertion
 		},
 		{
 			label: "attribution line format",
-			mutated: section.replace(/`Skill applied \(inline\): <name>`/, "`some attribution`"),
+			mutated: section.replace(/`Skill applied \(parent\): <name>`/, "`some attribution`"),
 		},
 		{
 			label: "unreadable-path fallback",

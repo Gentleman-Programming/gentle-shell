@@ -1404,6 +1404,9 @@ const FULL_DELEGATION_TAIL_PROJECTION: ReadonlyArray<readonly [string, string]> 
 	// cost-speed-painpoints S5: the Language Boundary sits in the shared tail so both modes
 	// carry it; the parent never writes in this mode, and the card carries the exceptions.
 	["Generated technical artifacts — whether by the parent inline or by subagents —", "Generated technical artifacts — whether by the parent or by subagents —"],
+	// Full delegation never executes work in the parent, so the skills pointer drops the
+	// organic "inline" route; the parent-execution duty stays in the organic render only.
+	["; inline/fallbacks: `orchestrator-skills.md`.", "; fallbacks: `orchestrator-skills.md`."],
 	[
 		"Subagent-facing English delegation and quote/UI exceptions: `orchestrator-delegation.md`.",
 		`Subagent-facing English delegation and quote/UI exceptions: \`${FULL_DELEGATION_CARD_FILE}\`.`,

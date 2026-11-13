@@ -545,6 +545,26 @@ test("while the panel shows, quick passes over other elements keep it, so the po
 	assert.match($(canvas, "gd-popover-text").value, /^Fix the values on main > p\.or /);
 });
 
+test("S2: re-measures of the element the pointer rests on do not restart the 250 ms rest; the panel switches with its latest values", async () => {
+	const canvas = await inspecting({ timers: true });
+	const [first] = canvas.boards;
+	first.frame.rect = { left: 100, top: 120, width: 400, height: 300 };
+	const title = () => $(canvas, "gd-inspector-title").textContent;
+	const h1 = { ...MEASURE, selector: "main > h1", label: "h1", rect: { x: 30, y: 200, width: 200, height: 30 } };
+	inspect(canvas, first.frame);
+	inspect(canvas, first.frame, h1);
+	// Late loads or page changes re-measure h1 about every 100 ms while the pointer stays on it.
+	inspect(canvas, first.frame, { ...h1, rect: { ...h1.rect, y: 190 } });
+	inspect(canvas, first.frame, { ...h1, rect: { ...h1.rect, y: 180 } });
+	assert.equal(title(), "p.or", "before the rest the panel keeps its element");
+	// Only the 250 ms that started when the pointer reached h1 pass.
+	const rest = canvas.timers.find((timer) => !timer.done && timer.ms === DWELL_MS)!;
+	rest.done = true;
+	rest.callback();
+	assert.deepEqual([title(), panelOf(canvas).style.top], ["h1", "250px"], "250 ms after the pointer reached h1, its latest measurement");
+	assert.equal(canvas.timers.filter((timer) => !timer.done && timer.ms === DWELL_MS).length, 0, "no second rest is waiting");
+});
+
 test("resting 250 ms on another element switches the panel to it; its own element re-places it at once; leaving everything hides it", async () => {
 	const canvas = await inspecting({ timers: true });
 	const [first, second] = canvas.boards;

@@ -470,9 +470,17 @@ export function init(ctx) {
 		else waitToSwitch(surface, measure);
 	}
 
-	/** Another element while the panel shows: the pointer is on an element, so no hide; the switch comes after the rest. */
+	/**
+	 * Another element while the panel shows: the pointer is on an element, so no hide; the switch comes after the rest.
+	 * The rest counts from when the pointer reached that element: its re-measures (late loads, page changes) only
+	 * refresh the values the switch will show, so they cannot hold the panel on the old element.
+	 */
 	function waitToSwitch(surface, measure) {
 		generation += 1;
+		if (pending && pending.surface === surface && pending.measure.selector === measure.selector) {
+			pending.measure = measure;
+			return;
+		}
 		pending = { surface, measure };
 		const current = ++switches;
 		win.setTimeout(() => {

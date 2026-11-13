@@ -168,3 +168,19 @@ test("acquireInitLock: a sustained unknown verdict resolves skipped (fail-closed
 	assert.equal(outcome.outcome, "skipped");
 	assert.match(readFileSync(lockPathFor(cwd, "init", dir), "utf8"), /\{not json/);
 });
+
+test("a token expiring exactly now is stale, and the token shape is exactly kind/pid/startedAt/expiresAt", (t) => {
+	const dir = locksDir(t);
+	const boundary = join(dir, "boundary.json");
+	const now = Date.now();
+
+	writeToken(boundary, { kind: "init", pid: process.pid, startedAt: now, expiresAt: now });
+	assert.equal(readLeaseVerdict(boundary, now), "held-stale", "expiry is inclusive: at-now is stealable");
+
+	const fresh = join(dir, "fresh.json");
+	const lease = tryAcquireLease(fresh, "sync", 120_000, now);
+	assert.ok(lease);
+	const keys = Object.keys(JSON.parse(readFileSync(fresh, "utf8"))).sort();
+	assert.deepEqual(keys, ["expiresAt", "kind", "pid", "startedAt"], "no extra fields leak into the token");
+	lease.release();
+});

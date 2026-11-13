@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -194,6 +194,27 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 }
 
 /**
+ * Kills the spawned command and, on Windows, its whole tree. The shell:true spawn there returns the
+ * cmd.exe wrapper's pid, and killing only the wrapper would orphan the real codegraph process, which
+ * would keep writing the shared index after the failure has already been reported. On POSIX the child
+ * is the command itself, so a direct kill reaches it.
+ */
+function killProcessTree(child: { pid?: number } | undefined): void {
+	if (child?.pid === undefined) return;
+	if (process.platform === "win32") {
+		execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], () => {
+			/* already gone: the grace timer reports the failure anyway */
+		});
+		return;
+	}
+	try {
+		process.kill(child.pid);
+	} catch {
+		/* already gone */
+	}
+}
+
+/**
  * Runs the codegraph CLI with fixed arguments for the project in `cwd`, from the temp directory with the
  * project as the last argument spelled as its daemon registered it (another spelling starts another
  * daemon). On Windows the npm `.cmd` shim needs a shell. A timeout kills the child and only reports the
@@ -223,9 +244,7 @@ export function runCodegraph(args: readonly string[], cwd: string, timeoutMs: nu
 			return;
 		}
 		const timer = setTimeout(() => {
-			try {
-				if (child?.pid !== undefined) process.kill(child.pid);
-			} catch { /* already gone */ }
+			killProcessTree(child);
 			// A killed command may still be closing; report the failure only once the process is gone.
 			grace = setTimeout(() => finish(false), KILL_WAIT_MS);
 		}, timeoutMs);

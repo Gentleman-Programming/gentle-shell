@@ -302,6 +302,17 @@ Pick how much a collapsed quiet-tool card shows in `/gentle:customize` → **Car
 
 Quiet tool cards redraw immediately after a change; bash rows follow on new calls. Gentle AI cards keep their full card and elapsed time at both levels.
 
+### Card bash
+
+Pick the bash card's heading identity in `/gentle:customize` → **Cards** → **Card bash**. The choice is saved in `card-bash.json` in the Gentle Pi config home; a missing, malformed, or unreadable file reads as `activity` (the default), and a malformed file is never overwritten.
+
+| Mode | Bash card heading |
+|------|-------------------|
+| `activity` | The activity the command implies (`⌕ exploring`, `✓ checking`, …) with that activity's mark, color and card box. |
+| `output` | The plain `bash` identity: the `$ bash` title and mark, and a box that follows the call's tone instead of an activity role. |
+
+The switch changes the heading identity only. The command the card shows, its detail rows and the result preview stay the same at both modes, so `output` never brings back uncondensed output.
+
 ### Compact Code card
 
 With quiet tools enabled, `codemode` uses the same rounded **Code** card. The collapsed view shows up to eight observed child calls in their original order, including repeats, with Pi's actual status and available nonnegative duration. Additional calls and failures are counted. Error payloads have a separate two-row preview even when their child falls outside the first eight; final output has a three-row physical budget, and a full-output locator remains visible when available.

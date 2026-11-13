@@ -24,6 +24,7 @@ import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment
 import { CARD_STYLE, CARD_TONE, cardStyle, panelHeaderRow, renderCard, setCardStyle, type Card, type CardTheme } from "../lib/shell-card.ts";
 import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
 import { CARD_CONTENT, resolveCardContent, setCardContent, writeCardContent } from "../lib/card-content-policy.ts";
+import { CARD_BASH, resolveCardBash, setCardBash, writeCardBash } from "../lib/card-bash-policy.ts";
 import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { buildKeymapRows } from "../lib/keymaps-customize.ts";
@@ -2502,6 +2503,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	// renderers read it live, so the saved level applies from the first render.
 	const applyCardContent = () => setCardContent(resolveCardContent(animationOptions).content);
 	applyCardContent();
+	// Card bash decides the heading identity of a bash card, read live by the
+	// quiet tool renderers like the content level above.
+	const applyCardBash = () => setCardBash(resolveCardBash(animationOptions).bash);
+	applyCardBash();
 	const reportVim = (ctx: ExtensionContext, result: ReturnType<typeof resolveVimPolicy>) => {
 		const source = result.source === "default" ? "built-in default" : `global file ${result.globalFile}`;
 		const effective = prompt?.effectiveVimPolicy;
@@ -2617,6 +2622,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		registry.start();
 		applyCardStyle();
 		applyCardContent();
+		applyCardBash();
 		if (!ctx.hasUI) return;
 		visualSettings = resolveVisualSettings(animationOptions).settings;
 		setChromeSurface(visualSettings.surface);
@@ -3491,20 +3497,20 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					requestCustomizeRender?.();
 				},
 				() => ({ title: `Cards · ${style}`, sample: `${cardStylePreview[style]}${resolveCardStyle(home).malformed ? " · malformed or unreadable file" : ""}` }),
-				{ setting: "Card style", value: style, current: () => { const current = resolveCardStyle(home); return current.style === style && !current.malformed; }, hint: "How conversation cards are drawn" },
+				{ setting: "Card style", value: style, current: () => { const current = resolveCardStyle(home); return current.style === style && !current.malformed; }, hint: "How conversation cards are drawn", applyOnMove: false },
 			);
 			// The content level picks between the quiet tools' result previews
 			// (default) and command-only cards (minimal).
 			const cardContentPreview = {
-				[CARD_CONTENT.DEFAULT]: "≡ read a.ts · result previews + counts · bash rows keep pi's native card",
-				[CARD_CONTENT.MINIMAL]: "≡ read a.ts · command only · ctrl+o expands · bash draws as a Gentle card",
+				[CARD_CONTENT.DEFAULT]: "≡ read a.ts · result previews + counts · bash shows its inferred phase",
+				[CARD_CONTENT.MINIMAL]: "≡ read a.ts · command only · ctrl+o expands · bash shows its inferred phase",
 			};
 			for (const content of Object.values(CARD_CONTENT)) add(
 				() => {
 					const current = resolveCardContent(home);
 					return `Card content: ${content}${current.content === content && !current.malformed ? " (current)" : ""}`;
 				},
-				`Card content: ${content}. Quiet tool cards redraw now; bash rows follow on new calls.`,
+				`Card content: ${content}. Quiet tool cards redraw now.`,
 				() => {
 					writeCardContent(content, home);
 					setCardContent(content);
@@ -3512,7 +3518,28 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					requestCustomizeRender?.();
 				},
 				() => ({ title: `Cards · content ${content}`, sample: `${cardContentPreview[content]}${resolveCardContent(home).malformed ? " · malformed or unreadable file" : ""}` }),
-				{ setting: "Card content", value: content, current: () => { const current = resolveCardContent(home); return current.content === content && !current.malformed; }, hint: "Tool cards: result previews, or the command only" },
+				{ setting: "Card content", value: content, current: () => { const current = resolveCardContent(home); return current.content === content && !current.malformed; }, hint: "Tool cards: result previews, or the command only", applyOnMove: false },
+			);
+			// The bash heading names the activity its command implies, or the plain
+			// `bash` identity whose box follows the call's tone.
+			const cardBashPreview = {
+				[CARD_BASH.ACTIVITY]: "⌕ exploring · git status · the box wears the activity",
+				[CARD_BASH.OUTPUT]: "$ bash · git status · the box follows the tone",
+			};
+			for (const bash of Object.values(CARD_BASH)) add(
+				() => {
+					const current = resolveCardBash(home);
+					return `Card bash: ${bash}${current.bash === bash && !current.malformed ? " (current)" : ""}`;
+				},
+				`Card bash: ${bash}. Bash cards redraw now.`,
+				() => {
+					writeCardBash(bash, home);
+					setCardBash(bash);
+					renderHost?.requestRender();
+					requestCustomizeRender?.();
+				},
+				() => ({ title: `Cards · bash ${bash}`, sample: `${cardBashPreview[bash]}${resolveCardBash(home).malformed ? " · malformed or unreadable file" : ""}` }),
+				{ setting: "Card bash", value: bash, current: () => { const current = resolveCardBash(home); return current.bash === bash && !current.malformed; }, hint: "Bash heading: the inferred activity, or the plain bash identity", applyOnMove: false },
 			);
 			category = "Sections";
 			for (const key of VISUAL_SECTION_KEYS) for (const shown of [true, false]) add(

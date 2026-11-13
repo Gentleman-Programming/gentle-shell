@@ -2,12 +2,15 @@ import assert from "node:assert/strict";
 import { parseNpmPackResult } from "../scripts/npm-pack-result.mjs";
 import { createHash } from "node:crypto";
 import {
+	chmodSync,
 	existsSync,
 	mkdtempSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
 	rmSync,
+	statSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -17,7 +20,7 @@ import ts from "typescript";
 import { fileURLToPath } from "node:url";
 import { applyModelConfig } from "../extensions/gentle-ai.ts";
 import { resolveGentlePiAgentHome } from "../lib/agent-home.ts";
-import { agentBody, getPackageAssetOwner, installPackageAssets, readAgentBodyHistory, type PackageAssetOwner } from "../lib/agent-assets.ts";
+import { agentBody, getPackageAssetOwner, installPackageAssets, migrateLegacyAssetContent, readAgentBodyHistory, type PackageAssetOwner } from "../lib/agent-assets.ts";
 import { discoverAgents } from "../lib/agents-config.ts";
 import { AUDITED_PI_EDITOR_VERSIONS } from "../lib/vim-editor-adapter.ts";
 import { resolveProjectPiSdkVersion, runNpmWithEnv } from "../scripts/test-packed-runner.mjs";
@@ -69,12 +72,48 @@ interface ManagedAssetsManifest {
 	assets: Record<string, string>;
 }
 
+interface ManagedAssetsInstallResult {
+	agents: number;
+	chains: number;
+	support: number;
+	skipped: number;
+	resets: Array<{ key: string; backup: string }>;
+	resetFailures: Array<{ key: string; reason: string }>;
+}
+
 interface LegacyManagedAssetsManifest extends ManagedAssetsManifest {
 	packageVersion: string;
 }
 
 function sha256(content: string): string {
 	return createHash("sha256").update(content).digest("hex");
+}
+
+// The install result with no reset events; keeps every count-only assertion
+// explicit about the reset report it does not expect.
+function installCounts(
+	agents: number,
+	chains: number,
+	support: number,
+	skipped: number,
+): ManagedAssetsInstallResult {
+	return { agents, chains, support, skipped, resets: [], resetFailures: [] };
+}
+
+function localBackups(agentHome: string): string[] {
+	return readdirSync(join(agentHome, "agents"))
+		.filter((name) => name.includes(".local-"))
+		.sort();
+}
+
+// The reset write goes through `replaceManagedAssetFileAtomically`, whose
+// temporary file is `.<uuid>.tmp` beside the agent and is renamed away when it
+// succeeds. Atomicity itself is not observable from a test; the leftover check
+// and the surviving mode are what a reset can be pinned on.
+function agentTemporaryFiles(agentHome: string): string[] {
+	return readdirSync(join(agentHome, "agents"))
+		.filter((name) => name.endsWith(".tmp"))
+		.sort();
 }
 
 interface PackageJsonPiManifest {
@@ -812,6 +851,207 @@ test("forced refresh keeps a frontmatter edit on an agent with current instructi
 	});
 });
 
+// The frontmatter `tools:` block list of an agent file, entry strings included.
+// An inline/flow list ("tools: [read, grep]") is deliberately unreadable here:
+// no shipped agent writes one and the merge below does not parse it either.
+function agentToolEntries(content: string): string[] {
+	const block = content.match(/^---\n[\s\S]*?\ntools:\n((?: {2}- .*\n)+)/)?.[1];
+	assert.ok(block, "frontmatter must declare a block tools list");
+	return block.split("\n").filter(Boolean).map((line) => line.replace(/^ {2}- /, ""));
+}
+
+// Every packaged agent ships a tool the stale fixture does not, and the install
+// compares bodies only: the union keeps the user's extra entry on top of the
+// packaged order instead of letting the packaged frontmatter win.
+test("an added mcp tool survives a body refresh", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		const stale = staleWorkerAgent().replace(
+			/\ntools:\n((?: {2}- .*\n)+)/,
+			(match) => `${match}  - mcp__context7__query_docs\n`,
+		);
+		assert.ok(agentToolEntries(stale).includes("mcp__context7__query_docs"));
+		writeFileSync(installedPath, stale);
+
+		installPackageAssets(agentHome, true, ["delegation"]);
+
+		const written = readFileSync(installedPath, "utf8");
+		assert.doesNotMatch(written, /effective TDD mode/, "the packaged body must arrive");
+		const tools = agentToolEntries(written);
+		for (const packagedTool of agentToolEntries(packagedWorkerAgent())) {
+			assert.ok(tools.includes(packagedTool), `the written list must keep packaged tool ${packagedTool}`);
+		}
+		assert.equal(
+			tools.filter((tool) => tool === "mcp__context7__query_docs").length,
+			1,
+			"the added tool must appear exactly once",
+		);
+		assert.ok(
+			tools.indexOf("mcp__codegraph__codegraph_explore") < tools.indexOf("mcp__context7__query_docs"),
+			"packaged tools keep their order and the installed extras follow",
+		);
+	});
+});
+
+// The runtime loader (parseFrontmatter in lib/agents-config.ts) skips blank and
+// `#` comment lines inside a `tools:` block and keeps the entries after them, so
+// the merge has to read the same list: a tool below a comment is installed.
+test("a tool below a comment inside the tools block survives a body refresh", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		const withComment = staleWorkerAgent().replace(
+			/\ntools:\n((?: {2}- .*\n)+)/,
+			(match) => `${match}  # kept by hand\n  - mcp__context7__query_docs\n\n`,
+		);
+		assert.ok(withComment.includes("\n  - mcp__context7__query_docs\n"));
+		writeFileSync(installedPath, withComment);
+
+		installPackageAssets(agentHome, true, ["delegation"]);
+
+		const written = readFileSync(installedPath, "utf8");
+		assert.doesNotMatch(written, /effective TDD mode/, "the packaged body must arrive");
+		assert.equal(
+			written.split("\n").filter((line) => line === "  - mcp__context7__query_docs").length,
+			1,
+			"the tool below the comment must survive exactly once",
+		);
+		assert.ok(
+			agentToolEntries(written).includes("mcp__context7__query_docs"),
+			"the retained tool must stay in the tools block",
+		);
+		assert.ok(written.includes("  # kept by hand\n"), "the comment itself is not dropped");
+		installPackageAssets(agentHome, true, ["delegation"]);
+		assert.equal(readFileSync(installedPath, "utf8"), written, "a second refresh must be byte-identical");
+	});
+});
+
+test("a second refresh keeps the added tool once", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		writeFileSync(
+			installedPath,
+			staleWorkerAgent().replace(
+				/\ntools:\n((?: {2}- .*\n)+)/,
+				(match) => `${match}  - mcp__context7__query_docs\n`,
+			),
+		);
+
+		installPackageAssets(agentHome, true, ["delegation"]);
+		const firstRefresh = readFileSync(installedPath, "utf8");
+		installPackageAssets(agentHome, true, ["delegation"]);
+
+		const written = readFileSync(installedPath, "utf8");
+		assert.equal(written, firstRefresh, "a second refresh must leave the file unchanged");
+		assert.equal(
+			agentToolEntries(written).filter((tool) => tool === "mcp__context7__query_docs").length,
+			1,
+			"the union must not duplicate the added tool",
+		);
+	});
+});
+
+// There is no way to tell a deliberate removal from an absence, so the union
+// restores a packaged tool a user deleted. Pinned as intended, not as a bug.
+test("a removed packaged tool returns on refresh", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		const withoutBash = staleWorkerAgent().replace("  - bash\n", "");
+		assert.ok(!agentToolEntries(withoutBash).includes("bash"));
+		writeFileSync(installedPath, withoutBash);
+
+		installPackageAssets(agentHome, true, ["delegation"]);
+
+		assert.deepEqual(
+			agentToolEntries(readFileSync(installedPath, "utf8")),
+			agentToolEntries(packagedWorkerAgent()),
+			"a refresh restores every packaged tool in packaged order",
+		);
+	});
+});
+
+test("an installed agent without tools keeps the packaged list", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		writeFileSync(installedPath, staleWorkerAgent().replace(/\ntools:\n(?: {2}- .*\n)+/, "\n"));
+
+		installPackageAssets(agentHome, true, ["delegation"]);
+
+		assert.deepEqual(
+			agentToolEntries(readFileSync(installedPath, "utf8")),
+			agentToolEntries(packagedWorkerAgent()),
+			"an absent installed list must leave the packaged list unchanged",
+		);
+	});
+});
+
+// No packaged agent ships without a `tools:` block, so this boundary calls the
+// merge directly instead of inventing a synthetic asset on disk.
+test("a packaged agent without tools keeps the installed list", () => {
+	const installed = [
+		"---",
+		"name: synthetic",
+		"description: Installed.",
+		"tools:",
+		"  - read",
+		"  - mcp__context7__query_docs",
+		"---",
+		"",
+		"Installed body.",
+		"",
+	].join("\n");
+	const packaged = ["---", "name: synthetic", "description: Packaged.", "---", "", "Packaged body.", ""].join("\n");
+
+	assert.equal(
+		migrateLegacyAssetContent("agents/synthetic.md", installed, packaged),
+		[
+			"---",
+			"name: synthetic",
+			"description: Packaged.",
+			"tools:",
+			"  - read",
+			"  - mcp__context7__query_docs",
+			"---",
+			"",
+			"Packaged body.",
+			"",
+		].join("\n"),
+	);
+});
+
+// Flow style is not parsed on either side; the packaged block is what a
+// refresh wrote before tool preservation existed, and that is what it writes now.
+test("an inline tools list is replaced by the packaged one (flow style is never merged)", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		writeFileSync(
+			installedPath,
+			staleWorkerAgent().replace(
+				/\ntools:\n(?: {2}- .*\n)+/,
+				"\ntools: [read, grep, mcp__context7__query_docs]\n",
+			),
+		);
+
+		installPackageAssets(agentHome, true, ["delegation"]);
+
+		const written = readFileSync(installedPath, "utf8");
+		assert.doesNotMatch(written, /^tools: \[/m, "an inline installed list is replaced");
+		assert.deepEqual(agentToolEntries(written), agentToolEntries(packagedWorkerAgent()));
+	});
+});
+
+test("an inline tools list on the packaged side is kept as written (flow style is never merged)", () => {
+	const installed = ["---", "name: synthetic", "tools:", "  - read", "---", "", "Installed body.", ""].join("\n");
+	const packaged = ["---", "name: synthetic", "tools: [read, grep]", "---", "", "Packaged body.", ""].join("\n");
+
+	assert.equal(migrateLegacyAssetContent("agents/synthetic.md", installed, packaged), packaged);
+});
+
 test("agent body history records the body of every packaged agent", () => {
 	const history = readAgentBodyHistory();
 	const agentsDir = join(PACKAGE_ROOT, "assets", "agents");
@@ -823,20 +1063,523 @@ test("agent body history records the body of every packaged agent", () => {
 	}
 });
 
-test("forced refresh still leaves agents with user-edited bodies in place", () => {
+// A reset is for package-owned agents only. Every other managed asset keeps the
+// release-on-edit rule, pinned here on a support file.
+test("forced refresh still leaves an edited support file in place", () => {
 	withIsolatedAssetHome((agentHome) => {
-		const key = "agents/gentle-ai-worker.md";
-		const installedPath = join(agentHome, key);
+		const key = "gentle-ai/support/strict-tdd.md";
+		const installedPath = join(agentHome, ...key.split("/"));
 		installPackageAssets(agentHome, false, ["delegation"]);
-		const edited = readFileSync(installedPath, "utf8")
-			.replace(/^(description:.*)$/m, "$1\nmodel: openai/test-model")
-			.concat("\nUser-authored instruction.\n");
+		const edited = readFileSync(installedPath, "utf8").concat("\nUser-authored instruction.\n");
 		writeFileSync(installedPath, edited);
 
 		const result = installPackageAssets(agentHome, true, ["delegation"]);
 		assert.equal(readFileSync(installedPath, "utf8"), edited);
 		assert.equal(installedAssetManifest(agentHome).assets[key], undefined);
 		assert.equal(result.skipped, 1);
+		assert.deepEqual(result.resets, []);
+	});
+});
+
+// gentle-ai appends managed guidance blocks to installed agents. The blocks are
+// not part of a published body, so they used to freeze the file as a local edit.
+function managedBlock(name: string, lines: readonly string[]): string {
+	return [`<!-- gentle-ai:${name} -->`, ...lines, `<!-- /gentle-ai:${name} -->`, ""].join("\n");
+}
+
+const WORKER_AGENT_KEY = "agents/gentle-ai-worker.md";
+
+function packagedWorkerAgent(): string {
+	return readFileSync(join(PACKAGE_ROOT, "assets", WORKER_AGENT_KEY), "utf8");
+}
+
+function staleWorkerAgent(): string {
+	return readFileSync(
+		join(PACKAGE_ROOT, "tests/fixtures/agent-assets/gentle-ai-worker.strict-tdd-era.md"),
+		"utf8",
+	);
+}
+
+test("forced refresh updates an agent body carrying a managed block and re-attaches the block", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		const guidance = managedBlock("documentation-guidance", ["", "## Documentation", ""]);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		writeFileSync(installedPath, `${staleWorkerAgent()}\n${guidance}`);
+
+		const result = installPackageAssets(agentHome, true, ["delegation"]);
+
+		const refreshed = readFileSync(installedPath, "utf8");
+		assert.equal(refreshed, `${packagedWorkerAgent()}\n${guidance}`);
+		assert.doesNotMatch(refreshed, /effective TDD mode/);
+		assert.equal(installedAssetManifest(agentHome).assets[WORKER_AGENT_KEY], sha256(refreshed));
+		assert.equal(result.skipped, 0);
+	});
+});
+
+test("a refresh keeps human text written inside a managed block verbatim", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		const guidance = managedBlock("ego-browser-guidance", [
+			"",
+			"## Local browser note",
+			"",
+			"Keep this hand-written paragraph exactly as written.",
+			"",
+			"- user bullet one",
+			"- user bullet two",
+			"",
+		]);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		writeFileSync(installedPath, `${staleWorkerAgent()}\n${guidance}`);
+
+		installPackageAssets(agentHome, true, ["delegation"]);
+
+		const refreshed = readFileSync(installedPath, "utf8");
+		assert.equal(refreshed, `${packagedWorkerAgent()}\n${guidance}`);
+		assert.match(refreshed, /Keep this hand-written paragraph exactly as written\./);
+		assert.match(refreshed, /- user bullet one\n- user bullet two/);
+	});
+});
+
+// S3: the name is free-form, so a section a user writes for their own purpose
+// survives a refresh of the packaged body just like a gentle-ai feature block.
+test("a refresh keeps a user section with a custom marker name in place", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		const userSection = managedBlock("worker-policy", [
+			"",
+			"## My own worker policy",
+			"",
+			"Hand-written paragraph that a package refresh must never drop.",
+			"",
+			"- keep this bullet",
+			"",
+		]);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		writeFileSync(installedPath, `${staleWorkerAgent()}\n${userSection}`);
+
+		const result = installPackageAssets(agentHome, true, ["delegation"]);
+
+		const refreshed = readFileSync(installedPath, "utf8");
+		// (a) the refreshed body landed, (b) the user section kept its text, and
+		// (c) the section still follows the end of the body exactly.
+		assert.doesNotMatch(refreshed, /effective TDD mode/);
+		assert.equal(refreshed, `${packagedWorkerAgent()}\n${userSection}`);
+		assert.match(refreshed, /Hand-written paragraph that a package refresh must never drop\./);
+		assert.match(refreshed, /- keep this bullet/);
+		assert.ok(
+			refreshed.startsWith(packagedWorkerAgent()),
+			"the user section must stay after the body, never above it",
+		);
+		assert.equal(installedAssetManifest(agentHome).assets[WORKER_AGENT_KEY], sha256(refreshed));
+		assert.equal(result.skipped, 0);
+	});
+});
+
+// An owned agent whose body matches no shipped version used to freeze silently.
+// It now resets to the packaged body after a verified sibling backup of the
+// installed bytes, and the recognised sections come back verbatim.
+test("an agent whose body was edited is reset to the packaged body and keeps its sections", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		const guidance = managedBlock("documentation-guidance", ["", "## Documentation", ""]);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		const edited = `${packagedWorkerAgent()}\nUser-authored instruction.\n\n${guidance}`;
+		writeFileSync(installedPath, edited);
+		chmodSync(installedPath, 0o644);
+
+		const result = installPackageAssets(agentHome, true, ["delegation"]);
+
+		const written = readFileSync(installedPath, "utf8");
+		assert.equal(written, `${packagedWorkerAgent()}\n${guidance}`);
+		assert.doesNotMatch(written, /User-authored instruction\./);
+		assert.equal(installedAssetManifest(agentHome).assets[WORKER_AGENT_KEY], sha256(written));
+		assert.equal(statSync(installedPath).mode & 0o777, 0o644, "a reset must keep the installed file mode");
+		assert.deepEqual(agentTemporaryFiles(agentHome), [], "a reset must leave no temporary file behind");
+		assert.equal(result.resets.length, 1);
+		const reset = result.resets.at(0);
+		assert.ok(reset);
+		assert.equal(reset.key, WORKER_AGENT_KEY);
+		assert.equal(readFileSync(reset.backup, "utf8"), edited, "the backup must hold the pre-reset bytes");
+		assert.equal(result.skipped, 0);
+	});
+});
+
+// The write is `wx` against a timestamped sibling. A dangling symlink at that
+// name is invisible to existsSync but makes the exclusive create fail, so the
+// reset aborts before touching the agent.
+test("the reset refuses to run when the backup cannot be written", (t) => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		const edited = `${packagedWorkerAgent()}\nUser-authored instruction.\n`;
+		writeFileSync(installedPath, edited);
+		const nowMs = Date.now();
+		for (let offset = -2; offset <= 5; offset += 1) {
+			const stamp = new Date(nowMs + offset * 1_000)
+				.toISOString()
+				.slice(0, 19)
+				.replaceAll(":", "-");
+			try {
+				symlinkSync(join(agentHome, "missing-backup-target"), `${installedPath}.local-${stamp}`, "file");
+			} catch (error) {
+				t.skip(`file symlinks unavailable: ${error instanceof Error ? error.message : String(error)}`);
+				return;
+			}
+		}
+
+		const result = installPackageAssets(agentHome, true, ["delegation"]);
+
+		assert.equal(readFileSync(installedPath, "utf8"), edited, "an unverified backup must leave the agent untouched");
+		assert.equal(
+			installedAssetManifest(agentHome).assets[WORKER_AGENT_KEY],
+			sha256(packagedWorkerAgent()),
+			"a refused reset keeps the manifest entry",
+		);
+		assert.deepEqual(result.resets, []);
+		assert.equal(result.resetFailures.length, 1);
+		assert.equal(result.resetFailures.at(0)?.key, WORKER_AGENT_KEY);
+		assert.match(result.resetFailures.at(0)?.reason ?? "", /exist/i);
+		assert.equal(result.skipped, 1);
+	});
+});
+
+test("a reset keeps an added mcp tool", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		const edited = packagedWorkerAgent()
+			.replace(/(\ntools:\n(?: {2}- .*\n)+)/, "$1  - mcp__context7__query_docs\n")
+			.concat("\nUser-authored instruction.\n");
+		writeFileSync(installedPath, edited);
+
+		const result = installPackageAssets(agentHome, true, ["delegation"]);
+
+		assert.equal(result.resets.length, 1);
+		const written = readFileSync(installedPath, "utf8");
+		assert.doesNotMatch(written, /User-authored instruction\./);
+		const tools = agentToolEntries(written);
+		assert.ok(tools.includes("mcp__context7__query_docs"), "the reset must keep the added tool");
+		for (const packagedTool of agentToolEntries(packagedWorkerAgent())) {
+			assert.ok(tools.includes(packagedTool), `the reset must keep packaged tool ${packagedTool}`);
+		}
+	});
+});
+
+test("a file the manifest does not own is never reset", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		const manifestPath = join(agentHome, "gentle-ai", "managed-assets.json");
+		const manifest = installedAssetManifest(agentHome);
+		delete manifest.assets[WORKER_AGENT_KEY];
+		writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+		const edited = `${packagedWorkerAgent()}\nUser-authored instruction.\n`;
+		writeFileSync(installedPath, edited);
+
+		const result = installPackageAssets(agentHome, true, ["delegation"]);
+
+		assert.equal(readFileSync(installedPath, "utf8"), edited);
+		assert.deepEqual(localBackups(agentHome), [], "an unowned file gets no backup");
+		assert.deepEqual(result.resets, []);
+		assert.equal(result.skipped, 1);
+	});
+});
+
+// `--adopt` is the recovery entry point for copies released before the reset
+// existed: the same backup-verify-write sequence, without manifest ownership.
+test("--adopt resets a file the manifest no longer owns", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		const manifestPath = join(agentHome, "gentle-ai", "managed-assets.json");
+		const manifest = installedAssetManifest(agentHome);
+		delete manifest.assets[WORKER_AGENT_KEY];
+		writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+		const edited = `${packagedWorkerAgent()}\nUser-authored instruction.\n`;
+		writeFileSync(installedPath, edited);
+
+		const result = installPackageAssets(agentHome, false, ["delegation"], undefined, { adopt: true });
+
+		const written = readFileSync(installedPath, "utf8");
+		assert.equal(written, packagedWorkerAgent());
+		assert.equal(installedAssetManifest(agentHome).assets[WORKER_AGENT_KEY], sha256(written));
+		assert.equal(result.resets.length, 1);
+		const reset = result.resets.at(0);
+		assert.ok(reset);
+		assert.equal(readFileSync(reset.backup, "utf8"), edited);
+	});
+});
+
+test("a second forced refresh after a reset changes nothing and creates no new backup", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		writeFileSync(installedPath, `${packagedWorkerAgent()}\nUser-authored instruction.\n`);
+
+		installPackageAssets(agentHome, true, ["delegation"]);
+		const afterReset = readFileSync(installedPath, "utf8");
+		const backupsAfterReset = localBackups(agentHome);
+		assert.equal(backupsAfterReset.length, 1);
+
+		const second = installPackageAssets(agentHome, true, ["delegation"]);
+
+		assert.equal(readFileSync(installedPath, "utf8"), afterReset);
+		assert.deepEqual(localBackups(agentHome), backupsAfterReset, "a stable copy creates no new backup");
+		assert.deepEqual(second.resets, []);
+	});
+});
+
+// The installed bytes, not their UTF-8 decoding, are what a reset preserves. A
+// lossy round-trip would replace them with U+FFFD and still compare equal.
+test("reset backup preserves non-UTF8 bytes", () => {
+	withIsolatedAssetHome((home) => {
+		installPackageAssets(home, false, ["delegation"]);
+		const path = join(home, WORKER_AGENT_KEY);
+		const before = Buffer.concat([readFileSync(path), Buffer.from([0xff, 0xfe, 0x0a])]);
+		writeFileSync(path, before);
+		const result = installPackageAssets(home, true, ["delegation"]);
+		assert.equal(result.resets.length, 1);
+		const reset = result.resets.at(0);
+		assert.ok(reset);
+		assert.deepEqual(readFileSync(reset.backup), before);
+	});
+});
+
+// A reset records the merged content, so the (hash-matching) next refresh must
+// merge again instead of writing the packaged block untouched and dropping the
+// tool. Every write over an existing agent goes through the merge, and merging
+// already-merged content is idempotent.
+test("reset with an added tool remains byte-stable on the next refresh", () => {
+	withIsolatedAssetHome((home) => {
+		installPackageAssets(home, false, ["delegation"]);
+		const path = join(home, WORKER_AGENT_KEY);
+		const edited = readFileSync(path, "utf8")
+			.replace("tools:\n", "tools:\n  - mcp__context7__query_docs\n")
+			.concat("\nUser body edit.\n");
+		writeFileSync(path, edited);
+		assert.equal(installPackageAssets(home, true, ["delegation"]).resets.length, 1);
+		const first = readFileSync(path);
+		assert.match(first.toString(), /mcp__context7__query_docs/);
+		assert.equal(
+			agentToolEntries(first.toString()).filter((tool) => tool === "mcp__context7__query_docs").length,
+			1,
+		);
+		installPackageAssets(home, true, ["delegation"]);
+		assert.deepEqual(readFileSync(path), first);
+		installPackageAssets(home, true, ["delegation"]);
+		assert.deepEqual(readFileSync(path), first, "a third refresh must stay byte-identical");
+	});
+});
+
+// A current-body copy is released, not written, so its added tool survives
+// every later refresh without a reset or a backup.
+test("an added tool on current instructions stays byte-stable across refreshes", () => {
+	withIsolatedAssetHome((home) => {
+		installPackageAssets(home, false, ["delegation"]);
+		const path = join(home, WORKER_AGENT_KEY);
+		const edited = readFileSync(path, "utf8").replace(
+			"tools:\n",
+			"tools:\n  - mcp__context7__query_docs\n",
+		);
+		writeFileSync(path, edited);
+
+		installPackageAssets(home, true, ["delegation"]);
+		assert.deepEqual(readFileSync(path), Buffer.from(edited), "a current-body copy keeps its added tool");
+		installPackageAssets(home, true, ["delegation"]);
+		installPackageAssets(home, true, ["delegation"]);
+
+		assert.deepEqual(readFileSync(path), Buffer.from(edited));
+		assert.equal(
+			agentToolEntries(readFileSync(path, "utf8")).filter((tool) => tool === "mcp__context7__query_docs").length,
+			1,
+		);
+		assert.deepEqual(localBackups(home), [], "a released copy is not reset and gets no backup");
+	});
+});
+
+// S4: every layout splitManagedBlocks cannot trust. Unbalanced, stray closing,
+// closing naming another block, and a name reopened inside itself.
+const CORRUPT_MANAGED_MARKERS = {
+	"an unclosed block": "<!-- gentle-ai:documentation-guidance -->\n\n## Documentation\n",
+	"a closing marker without an opener": "<!-- /gentle-ai:documentation-guidance -->\n",
+	"a closing marker naming another block":
+		"<!-- gentle-ai:documentation-guidance -->\n\n<!-- /gentle-ai:ego-browser-guidance -->\n",
+	"a block name reopened inside itself":
+		"<!-- gentle-ai:documentation-guidance -->\n\n<!-- gentle-ai:documentation-guidance -->\n\n<!-- /gentle-ai:documentation-guidance -->\n",
+} as const;
+
+test("corrupt managed markers fall back to whole-file comparison and preserve the agent", () => {
+	for (const [label, markers] of Object.entries(CORRUPT_MANAGED_MARKERS)) {
+		withIsolatedAssetHome((agentHome) => {
+			const installedPath = join(agentHome, WORKER_AGENT_KEY);
+			installPackageAssets(agentHome, false, ["delegation"]);
+			const corrupt = `${packagedWorkerAgent()}\n${markers}`;
+			writeFileSync(installedPath, corrupt);
+			// A fail-safe skip is not an ownership change: it leaves whatever entry the
+			// key already had. Here that is the hash of the packaged body it installed,
+			// which no longer matches the corrupt file, so the copy is never treated as
+			// managed while the entry stays available for a repaired file.
+			const ownershipBefore = installedAssetManifest(agentHome).assets[WORKER_AGENT_KEY];
+			assert.equal(ownershipBefore, sha256(packagedWorkerAgent()), `${label} must start package-owned`);
+
+			const result = installPackageAssets(agentHome, true, ["delegation"]);
+
+			assert.equal(readFileSync(installedPath, "utf8"), corrupt, `${label} must keep the installed bytes`);
+			assert.equal(
+				installedAssetManifest(agentHome).assets[WORKER_AGENT_KEY],
+				ownershipBefore,
+				`${label} must keep the manifest entry it had`,
+			);
+			assert.equal(result.skipped, 1, `${label} must be skipped, not rewritten`);
+		});
+	}
+});
+
+// S4 has one more case than the test above covers: when the manifest hash equals
+// the whole-file hash of the broken file, the installer used to adopt it as a
+// managed copy, refresh it, and lose the added text. A broken marker set is
+// user-owned no matter what the manifest says.
+test("corrupt managed markers are left byte-identical even when the manifest hash matches", () => {
+	for (const [label, markers] of Object.entries(CORRUPT_MANAGED_MARKERS)) {
+		withIsolatedAssetHome((agentHome) => {
+			const installedPath = join(agentHome, WORKER_AGENT_KEY);
+			installPackageAssets(agentHome, false, ["delegation"]);
+			const corrupt = `${packagedWorkerAgent()}\n${markers}`;
+			writeFileSync(installedPath, corrupt);
+			const manifestPath = join(agentHome, "gentle-ai", "managed-assets.json");
+			const manifest = installedAssetManifest(agentHome);
+			manifest.assets[WORKER_AGENT_KEY] = sha256(corrupt);
+			writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+			const result = installPackageAssets(agentHome, true, ["delegation"]);
+
+			assert.equal(
+				readFileSync(installedPath, "utf8"),
+				corrupt,
+				`${label} must keep the installed bytes`,
+			);
+			assert.equal(
+				result.skipped,
+				1,
+				`${label} must be skipped, not refreshed`,
+			);
+			// The skip is not an ownership change: the entry a repaired file needs to be
+			// adopted again stays exactly as it was.
+			assert.equal(
+				installedAssetManifest(agentHome).assets[WORKER_AGENT_KEY],
+				sha256(corrupt),
+				`${label} must keep its manifest entry`,
+			);
+
+			const second = installPackageAssets(agentHome, true, ["delegation"]);
+
+			assert.equal(
+				readFileSync(installedPath, "utf8"),
+				corrupt,
+				`${label} must stay byte-identical on a second refresh`,
+			);
+			assert.equal(
+				second.skipped,
+				1,
+				`${label} must be skipped again on a second refresh`,
+			);
+			assert.equal(
+				installedAssetManifest(agentHome).assets[WORKER_AGENT_KEY],
+				sha256(corrupt),
+				`${label} must keep its manifest entry after a second refresh`,
+			);
+		});
+	}
+});
+
+// The fail-safe must not be satisfiable by never refreshing: healthy markers on
+// a hash-matching installed copy still adopt the shipped body and the blocks.
+test("a hash-matching agent with healthy managed markers still refreshes", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		const guidance = managedBlock("documentation-guidance", ["", "## Documentation", ""]);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		const installed = `${staleWorkerAgent()}\n${guidance}`;
+		writeFileSync(installedPath, installed);
+		const manifestPath = join(agentHome, "gentle-ai", "managed-assets.json");
+		const manifest = installedAssetManifest(agentHome);
+		manifest.assets[WORKER_AGENT_KEY] = sha256(installed);
+		writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+		const result = installPackageAssets(agentHome, true, ["delegation"]);
+
+		const refreshed = readFileSync(installedPath, "utf8");
+		assert.equal(refreshed, `${packagedWorkerAgent()}\n${guidance}`);
+		assert.doesNotMatch(refreshed, /effective TDD mode/);
+		assert.equal(result.skipped, 0);
+	});
+});
+
+test("two consecutive forced refreshes of an agent with a managed block are stable", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		const guidance = managedBlock("documentation-guidance", ["", "## Documentation", ""]);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		writeFileSync(installedPath, `${staleWorkerAgent()}\n${guidance}`);
+
+		installPackageAssets(agentHome, true, ["delegation"]);
+		const firstRefresh = readFileSync(installedPath, "utf8");
+
+		const second = installPackageAssets(agentHome, true, ["delegation"]);
+
+		assert.equal(firstRefresh, `${packagedWorkerAgent()}\n${guidance}`);
+		assert.equal(readFileSync(installedPath, "utf8"), firstRefresh);
+		assert.equal(installedAssetManifest(agentHome).assets[WORKER_AGENT_KEY], sha256(firstRefresh));
+		assert.equal(second.skipped, 0);
+	});
+});
+
+test("a refresh of an agent with a managed block still re-applies its model routing", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		const guidance = managedBlock("documentation-guidance", ["", "## Documentation", ""]);
+		const routedStale = staleWorkerAgent().replace(
+			/^(description:.*)$/m,
+			"$1\nmodel: openai/test-model\nthinking: max",
+		);
+		const routedPackaged = packagedWorkerAgent().replace(
+			/^(description:.*)$/m,
+			"$1\nmodel: openai/test-model\nthinking: max",
+		);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		writeFileSync(installedPath, `${routedStale}\n${guidance}`);
+
+		installPackageAssets(agentHome, true, ["delegation"]);
+
+		const refreshed = readFileSync(installedPath, "utf8");
+		assert.equal(refreshed, `${routedPackaged}\n${guidance}`);
+		assert.match(refreshed, /^model: openai\/test-model$/m);
+		assert.match(refreshed, /^thinking: max$/m);
+		assert.equal(installedAssetManifest(agentHome).assets[WORKER_AGENT_KEY], undefined);
+
+		installPackageAssets(agentHome, true, ["delegation"]);
+		assert.equal(readFileSync(installedPath, "utf8"), refreshed, "a second refresh must keep the routing and the block");
+	});
+});
+
+test("a refresh of an agent with two managed blocks keeps both in their original order", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const installedPath = join(agentHome, WORKER_AGENT_KEY);
+		const documentation = managedBlock("documentation-guidance", ["", "## Documentation", ""]);
+		const browser = managedBlock("ego-browser-guidance", ["", "## Browser checks", ""]);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		writeFileSync(installedPath, `${staleWorkerAgent()}\n${documentation}\n${browser}`);
+
+		installPackageAssets(agentHome, true, ["delegation"]);
+
+		const refreshed = readFileSync(installedPath, "utf8");
+		assert.equal(refreshed, `${packagedWorkerAgent()}\n${documentation}\n${browser}`);
+		assert.ok(
+			refreshed.indexOf("gentle-ai:documentation-guidance") < refreshed.indexOf("gentle-ai:ego-browser-guidance"),
+			"the recognised blocks must keep their original order",
+		);
 	});
 });
 
@@ -860,7 +1603,7 @@ test("selective delegation installation owns only generic agents", () => {
 			"gentle-ai/support/strict-tdd-verify.md",
 			"gentle-ai/support/strict-tdd.md",
 		]);
-		assert.deepEqual(result, { agents: 3, chains: 0, support: 2, skipped: 0 });
+		assert.deepEqual(result, installCounts(3, 0, 2, 0));
 		assert.deepEqual(readdirSync(join(agentHome, "agents")).sort(), [
 			"gentle-ai-explore.md", "gentle-ai-verify.md", "gentle-ai-worker.md",
 		]);
@@ -929,7 +1672,7 @@ for (const owner of Object.keys(EXPECTED_OWNER_ASSETS) as PackageAssetOwner[]) {
 				assert.equal(readFileSync(join(agentHome, key), "utf8"), readFileSync(source, "utf8"));
 			}
 			const counts = installPackageAssets(agentHome, false, [owner, owner]);
-			assert.deepEqual(counts, { agents: 0, chains: 0, support: 0, skipped: expected.length });
+			assert.deepEqual(counts, installCounts(0, 0, 0, expected.length));
 		});
 	});
 }
@@ -944,31 +1687,45 @@ test("all-assets installation covers every retained packaged file with explicit 
 		assert.equal(getPackageAssetOwner(key), undefined, "unknown assets must not default to SDD");
 	}
 	withIsolatedAssetHome((agentHome) => {
-		assert.deepEqual(installPackageAssets(agentHome, false), { agents: 10, chains: 1, support: 2, skipped: 0 });
+		assert.deepEqual(installPackageAssets(agentHome, false), installCounts(10, 1, 2, 0));
 		assert.deepEqual(Object.keys(installedAssetManifest(agentHome).assets).sort(), packaged);
-		assert.deepEqual(installPackageAssets(agentHome, false), { agents: 0, chains: 0, support: 0, skipped: 13 });
-		assert.deepEqual(installPackageAssets(agentHome, true), { agents: 10, chains: 1, support: 2, skipped: 0 });
+		assert.deepEqual(installPackageAssets(agentHome, false), installCounts(0, 0, 0, 13));
+		assert.deepEqual(installPackageAssets(agentHome, true), installCounts(10, 1, 2, 0));
 	});
 });
 
-test("selective refresh preserves unselected ownership and selected user changes after an all-assets install", () => {
+test("selective refresh resets a selected owned agent and preserves unselected ownership and user changes", () => {
 	withIsolatedAssetHome((agentHome) => {
 		installPackageAssets(agentHome, false);
 		const manifest = installedAssetManifest(agentHome);
 		const selectedUserKey = "agents/gentle-ai-explore.md";
 		const unselectedUserKey = "agents/review-risk.md";
+		const userText = "User-authored instructions\n";
 		for (const key of [selectedUserKey, unselectedUserKey, "agents/custom.md"]) {
-			writeFileSync(join(agentHome, key), "User-authored instructions\n");
+			writeFileSync(join(agentHome, key), userText);
 		}
 		const before = new Map(assetFileKeys(agentHome).map(key => [key, readFileSync(join(agentHome, key), "utf8")]));
-		assert.deepEqual(installPackageAssets(agentHome, true, ["delegation"]), { agents: 2, chains: 0, support: 2, skipped: 1 });
-		delete manifest.assets[selectedUserKey];
+		const refreshed = installPackageAssets(agentHome, true, ["delegation"]);
+		// The selected copy is owned, so its unknown body resets after a verified
+		// backup instead of being released.
+		assert.equal(refreshed.resets.length, 1);
+		const reset = refreshed.resets.at(0);
+		assert.ok(reset);
+		assert.equal(reset.key, selectedUserKey);
+		assert.equal(readFileSync(reset.backup, "utf8"), userText);
+		assert.equal(
+			readFileSync(join(agentHome, selectedUserKey), "utf8"),
+			readFileSync(join(PACKAGE_ROOT, "assets", "agents", "gentle-ai-explore.md"), "utf8"),
+		);
+		// The reset keeps ownership, so the entry the manifest already recorded for
+		// the packaged copy is written back unchanged.
 		assert.deepEqual(installedAssetManifest(agentHome), manifest);
 		for (const [key, content] of before) {
+			if (key === selectedUserKey) continue;
 			if (key !== "gentle-ai/managed-assets.json") assert.equal(readFileSync(join(agentHome, key), "utf8"), content, key);
 		}
 		const manifestBytes = readFileSync(join(agentHome, "gentle-ai", "managed-assets.json"), "utf8");
-		assert.deepEqual(installPackageAssets(agentHome, true, []), { agents: 0, chains: 0, support: 0, skipped: 0 });
+		assert.deepEqual(installPackageAssets(agentHome, true, []), installCounts(0, 0, 0, 0));
 		assert.equal(readFileSync(join(agentHome, "gentle-ai", "managed-assets.json"), "utf8"), manifestBytes);
 	});
 });
@@ -1233,10 +1990,17 @@ test("first forced sync migrates untouched v0.13 assets, preserves routing, and 
 		assert.notEqual(migrated, routedLegacySource, "the stale v0.13 review contract must refresh");
 		assert.match(migrated, /^model: private\/legacy-model$/m);
 		assert.match(migrated, /^thinking: xhigh$/m);
+		// The v0.13 allowlist still declares `glob` and `bash`, which the package no
+		// longer ships, so the merge keeps them after the packaged entries.
+		const expectedMigrated = currentPackageSource.replace(
+			"  - gentle_review_scope\n---",
+			"  - gentle_review_scope\n  - glob\n  - bash\n---",
+		);
+		assert.notEqual(expectedMigrated, currentPackageSource);
 		assert.equal(
 			migrated.replace(/^model: .*\n|^thinking: .*\n/gm, ""),
-			currentPackageSource,
-			"migration must update the package body without losing user routing",
+			expectedMigrated,
+			"migration must update the package body, keep user routing, and preserve installed tools the package no longer ships",
 		);
 		assert.equal(
 			readFileSync(installedExemplar, "utf8"),
@@ -1259,16 +2023,21 @@ test("first forced sync migrates untouched v0.13 assets, preserves routing, and 
 		);
 		assert.notEqual(userEditedMigration, migrated, "the fixture must exercise post-migration drift");
 		writeFileSync(installedReviewRisk, userEditedMigration);
-		installPackageAssets(PACKAGE_ROOT, true);
-		assert.deepEqual(
-			readFileSync(installedReviewRisk),
-			Buffer.from(userEditedMigration),
-			"exact full-content ownership must protect edits made after migration",
+		const resetResult = installPackageAssets(PACKAGE_ROOT, true);
+		const afterReset = readFileSync(installedReviewRisk, "utf8");
+		assert.equal(
+			afterReset.replace(/^model: .*\n|^thinking: .*\n/gm, ""),
+			expectedMigrated,
+			"a post-migration body edit resets to the packaged body",
 		);
+		assert.equal(resetResult.resets.length, 1);
+		const reset = resetResult.resets.at(0);
+		assert.ok(reset);
+		assert.equal(readFileSync(reset.backup, "utf8"), userEditedMigration);
 		const postEditManifest = JSON.parse(
 			readFileSync(managedAssetsManifest, "utf8"),
 		) as ManagedAssetsManifest;
-		assert.equal(postEditManifest.assets[`agents/${REVIEW_RISK_FILE}`], undefined);
+		assert.equal(postEditManifest.assets[`agents/${REVIEW_RISK_FILE}`], sha256(afterReset));
 	} finally {
 		if (previousAgentHome === undefined) {
 			delete process.env.GENTLE_PI_AGENT_HOME;
@@ -1306,10 +2075,14 @@ test("first forced sync migrates untouched v0.14 review contracts and preserves 
 			join(PACKAGE_ROOT, "assets", "agents", REVIEW_RISK_FILE),
 			"utf8",
 		);
-		assert.equal(
-			migrated.replace(/^model: .*\n|^thinking: .*\n/gm, ""),
-			currentPackageSource,
+		// The v0.14 allowlist still declares `glob` and `bash`, which the package no
+		// longer ships, so the merge keeps them after the packaged entries.
+		const expectedMigrated = currentPackageSource.replace(
+			"  - gentle_review_scope\n---",
+			"  - gentle_review_scope\n  - glob\n  - bash\n---",
 		);
+		assert.notEqual(expectedMigrated, currentPackageSource);
+		assert.equal(migrated.replace(/^model: .*\n|^thinking: .*\n/gm, ""), expectedMigrated);
 	} finally {
 		if (previousAgentHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
 		else process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
@@ -1385,8 +2158,16 @@ test("forced package installation refreshes an asset recorded as package-managed
 		installPackageAssets(PACKAGE_ROOT, true);
 
 		const refreshed = readAgentDefinition(installedExemplar);
-		assert.deepEqual(refreshed.tools, MANAGED_EXEMPLAR_TOOLS);
-		assert.doesNotMatch(refreshed.source, /^  - bash$/m);
+		assert.doesNotMatch(
+			refreshed.source,
+			/previous package version/,
+			"the packaged body must replace the recorded one",
+		);
+		// A hash-recorded copy is still written through the tools merge, so the
+		// installed entry the package does not ship survives the refresh.
+		assert.deepEqual(refreshed.tools, [...MANAGED_EXEMPLAR_TOOLS, "bash"]);
+		assert.match(refreshed.source, /^  - bash$/m);
+		assert.doesNotMatch(refreshed.source, /^model: /m, "managed routing is refreshed away");
 	} finally {
 		if (previousAgentHome === undefined) {
 			delete process.env.GENTLE_PI_AGENT_HOME;
@@ -1461,13 +2242,43 @@ test("forced package installation preserves a thinking-only edit to a managed ag
 	);
 });
 
-test("forced package installation preserves an ordinary body edit to a managed agent", () => {
-	assertManagedAgentUserEditIsPreserved("an ordinary body edit", (source) =>
-		source.replace(
+test("forced package installation resets an ordinary body edit to a managed agent", () => {
+	const temporaryAgentHome = mkdtempSync(join(tmpdir(), "gentle-pi-managed-edit-reset-"));
+	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
+	const installedExemplar = join(temporaryAgentHome, "agents", MANAGED_EXEMPLAR_FILE);
+	const packagedPath = join(PACKAGE_ROOT, "assets", "agents", MANAGED_EXEMPLAR_FILE);
+
+	try {
+		process.env.GENTLE_PI_AGENT_HOME = temporaryAgentHome;
+		installPackageAssets(PACKAGE_ROOT, true);
+		const installedSource = readFileSync(installedExemplar, "utf8");
+		const userEditedSource = installedSource.replace(
 			"You are the read-only explorer for generic ODD work.",
 			"Preserve this user-authored body change. You are the read-only explorer for generic ODD work.",
-		),
-	);
+		);
+		assert.notEqual(userEditedSource, installedSource, "the fixture must alter the asset");
+		writeFileSync(installedExemplar, userEditedSource);
+
+		const result = installPackageAssets(PACKAGE_ROOT, true);
+
+		const written = readFileSync(installedExemplar, "utf8");
+		assert.equal(written, readFileSync(packagedPath, "utf8"), "the packaged body must replace the edit");
+		assert.equal(result.resets.length, 1);
+		const reset = result.resets.at(0);
+		assert.ok(reset);
+		assert.equal(readFileSync(reset.backup, "utf8"), userEditedSource);
+		const manifest = JSON.parse(
+			readFileSync(join(temporaryAgentHome, "gentle-ai", "managed-assets.json"), "utf8"),
+		) as ManagedAssetsManifest;
+		assert.equal(manifest.assets[`agents/${MANAGED_EXEMPLAR_FILE}`], sha256(written));
+	} finally {
+		if (previousAgentHome === undefined) {
+			delete process.env.GENTLE_PI_AGENT_HOME;
+		} else {
+			process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
+		}
+		rmSync(temporaryAgentHome, { recursive: true, force: true });
+	}
 });
 
 test("package model assignment keeps only package-managed agents owned", () => {
@@ -2015,5 +2826,44 @@ test("package installation retires owned sync but preserves modified copies and 
 		installPackageAssets(agentHome, true, ["delegation"]);
 		assert.equal(readFileSync(path, "utf8"), "User-modified sync instructions\n");
 		assert.equal(installedAssetManifest(agentHome).assets["agents/sdd-sync.md"], undefined);
+	});
+});
+
+// Byte-exact backup, occupied name and completed reset with routing preserved.
+test("raw-byte reset uses a free backup suffix and writes exact routed package content", (t) => {
+	t.mock.timers.enable({ apis: ["Date"], now: 0 });
+	withIsolatedAssetHome((home) => {
+		installPackageAssets(home, false, ["delegation"]);
+		const path = join(home, WORKER_AGENT_KEY);
+		const packaged = packagedWorkerAgent();
+		const routed = packaged.replace(/^description:.*$/m, "$&\nmodel: local/test\nthinking: high");
+		const before = Buffer.concat([Buffer.from(routed), Buffer.from([0xff, 0xfe, 0x0a])]);
+		writeFileSync(path, before);
+		const occupied = `${path}.local-1970-01-01T00-00-00`;
+		writeFileSync(occupied, "earlier backup");
+
+		const result = installPackageAssets(home, true, ["delegation"]);
+		assert.deepEqual(result.resetFailures, []);
+		assert.equal(result.resets.length, 1);
+		assert.equal(result.resets[0].backup, `${occupied}-2`);
+		assert.deepEqual(readFileSync(result.resets[0].backup), before);
+		assert.equal(readFileSync(occupied, "utf8"), "earlier backup");
+		assert.equal(readFileSync(path, "utf8"), routed);
+	});
+});
+
+// The reset → hash-match transition the documentation now scopes.
+test("routing retained by reset is removed by the next managed refresh", () => {
+	withIsolatedAssetHome((home) => {
+		installPackageAssets(home, false, ["delegation"]);
+		const path = join(home, WORKER_AGENT_KEY);
+		const packaged = packagedWorkerAgent();
+		const routed = packaged.replace(/^description:.*$/m, "$&\nmodel: local/test\nthinking: high");
+		writeFileSync(path, `${routed}\nUser body edit.\n`);
+
+		assert.equal(installPackageAssets(home, true, ["delegation"]).resets.length, 1);
+		assert.equal(readFileSync(path, "utf8"), routed);
+		installPackageAssets(home, true, ["delegation"]);
+		assert.equal(readFileSync(path, "utf8"), packaged);
 	});
 });

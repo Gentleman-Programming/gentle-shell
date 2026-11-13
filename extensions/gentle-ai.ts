@@ -12773,6 +12773,20 @@ function createGentleAiExtensionForTesting(
 		await surfaceDevBinaryOverride(ctx);
 		try {
 			const installResult = installPackageAssets(ctx.cwd, true, ["delegation", "review"]);
+			if (ctx.hasUI) {
+				for (const reset of installResult.resets) {
+					ctx.ui.notify(
+						`el Gentleman reset ${reset.key} to the packaged body because your copy had text of its own; it is saved at ${reset.backup}.`,
+						"info",
+					);
+				}
+				for (const failure of installResult.resetFailures) {
+					ctx.ui.notify(
+						`el Gentleman could not reset ${failure.key}: ${failure.reason}. The file and its ownership record are unchanged.`,
+						"warning",
+					);
+				}
+			}
 			migrateLegacyProjectModelOverrides(ctx.cwd);
 			const modelResult = await applySavedModelConfig(ctx);
 			if (ctx.hasUI && modelResult.invalidPath) {
@@ -12917,18 +12931,22 @@ function createGentleAiExtensionForTesting(
 					return fragment === null ? "" : `\n\n${fragment}`;
 				})()
 				: "";
-		// The primary drops the gentle-ai orchestrator-only managed blocks from its
-		// context files (for example a gentle-ai managed ~/AGENTS.md) whenever this
-		// orchestrator prompt is injected, exactly as delegated children do
-		// (gentle-shell#1587): they carry a second, conflicting orchestrator policy.
-		// The engram-protocol memory block goes too: gentle-engram injects its own
-		// protocol every turn, so the loaded copy is a duplicate that only adds
-		// session-start ceremony. The file on disk is untouched, which keeps it
-		// available to runtimes with no runtime-injected equivalent (OpenClaw).
-		// Nested kept blocks such as remote-authorization stay; the filter never
-		// throws and keeps the original files on malformed markers.
+		// The primary drops a gentle-ai orchestrator-only managed block from its
+		// context files (for example a gentle-ai managed ~/AGENTS.md) only when the
+		// orchestrator prompt injected below already carries that block's text
+		// (gentle-shell#3097): a block whose text is not in the prompt is user
+		// policy, and deleting it emptied `<project_instructions>` for a file
+		// wrapped end to end in an `orchestrator` block. When this prompt is absent
+		// the primary does not filter at all, and a delegated child keeps its
+		// name-based drop (gentle-shell#1587). The engram-protocol memory block
+		// goes too: gentle-engram injects its own protocol every turn, so the loaded
+		// copy is a duplicate that only adds session-start ceremony. The file on
+		// disk is untouched, which keeps it available to runtimes with no
+		// runtime-injected equivalent (OpenClaw). Nested kept blocks such as
+		// remote-authorization stay; the filter never throws and keeps the original
+		// files on malformed markers.
 		if (isPrimarySession && gentlePrompt !== "") {
-			filterChildSessionContextFiles(event.systemPromptOptions as ContextFileOptions | undefined);
+			filterChildSessionContextFiles(event.systemPromptOptions as ContextFileOptions | undefined, { cwd: ctx.cwd, injectedPrompt: gentlePrompt });
 		}
 		// gentle-shell#1485: pi-claude-bridge drops a handler-returned systemPrompt
 		// and forwards only systemPromptOptions, so the harness is delivered
@@ -13189,11 +13207,21 @@ function createGentleAiExtensionForTesting(
 		pi.registerCommand(`gentle:install-${owner}`, {
 			description: `Repair or refresh only global Gentle AI ${label} assets.`,
 			handler: async (args, ctx) => {
-				const force = args.includes("--force");
-				const result = installPackageAssets(ctx.cwd, force, [owner]);
+				// Flags are exact tokens: `--adopt=false` or a word that merely contains
+				// `--adopt` must not release a file the manifest does not own.
+				const flags = args.trim().split(/\s+/).filter(Boolean);
+				const force = flags.includes("--force");
+				const adopt = flags.includes("--adopt");
+				const result = installPackageAssets(ctx.cwd, force, [owner], undefined, { adopt });
+				const resetNotes = result.resets
+					.map((reset) => `\nReset ${reset.key} to the packaged body; your own text is saved at ${reset.backup}.`)
+					.join("");
+				const failureNotes = result.resetFailures
+					.map((failure) => `\nCould not reset ${failure.key}: ${failure.reason}.`)
+					.join("");
 				ctx.ui.notify(
-					`Global Gentle AI ${label} assets installed: ${result.agents} agent(s), ${result.chains} chain(s), ${result.support} support file(s), ${result.skipped} already present.`,
-					"info",
+					`Global Gentle AI ${label} assets installed: ${result.agents} agent(s), ${result.chains} chain(s), ${result.support} support file(s), ${result.skipped} already present.${resetNotes}${failureNotes}`,
+					result.resetFailures.length > 0 ? "warning" : "info",
 				);
 			},
 		});

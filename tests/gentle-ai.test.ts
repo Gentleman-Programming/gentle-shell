@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -838,6 +838,135 @@ test("session startup reports invalid project routing without mutating the profi
 	assert.equal(globalWarning.severity, "warning");
 	assert.match(globalWarning.message, /skipped model config/);
 	assert.equal(readFileSync(profilePath, "utf8"), before);
+});
+
+// A copy released before the reset existed has no successor on its own. The
+// command's `--adopt` entry point resets it and names the backup in its report.
+test("the install command adopts a released agent and names its backup", async (t) => {
+	const fixture = routingConsumerFixture(t);
+	installPackageAssets(fixture.root, false, ["delegation"]);
+	const agentPath = join(fixture.agentHome, "agents", "gentle-ai-worker.md");
+	const edited = readFileSync(agentPath, "utf8") + "\nUser-authored instruction.\n";
+	writeFileSync(agentPath, edited);
+	const manifestPath = join(fixture.agentHome, "gentle-ai", "managed-assets.json");
+	const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { assets: Record<string, string> };
+	delete manifest.assets["agents/gentle-ai-worker.md"];
+	writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+	await fixture.run("gentle:install-delegation", "--adopt");
+
+	const written = readFileSync(agentPath, "utf8");
+	assert.doesNotMatch(written, /User-authored instruction\./, "the packaged body must replace the edit");
+	const backups = readdirSync(join(fixture.agentHome, "agents")).filter((name) => name.includes(".local-"));
+	assert.equal(backups.length, 1);
+	const backupPath = join(fixture.agentHome, "agents", backups[0]);
+	assert.equal(readFileSync(backupPath, "utf8"), edited);
+	const notice = fixture.notifications.find((entry) => entry.message.includes(backupPath));
+	assert.ok(notice, JSON.stringify(fixture.notifications));
+	assert.equal(notice.severity, "info");
+	assert.match(notice.message, /gentle-ai-worker\.md/);
+});
+
+// `--force` still reaches the installer: a copy whose whole-file hash is an
+// old shipped version is adopted only by a refreshing run.
+test("the install command still adopts an old shipped copy on --force", async (t) => {
+	const fixture = routingConsumerFixture(t);
+	const legacy = readFileSync(
+		join(import.meta.dirname, "..", "tests", "fixtures", "v0.14", "assets", "agents", "review-risk.md"),
+		"utf8",
+	);
+	const target = join(fixture.agentHome, "agents", "review-risk.md");
+
+	writeFileSync(target, legacy);
+	await fixture.run("gentle:install-review", "");
+	assert.equal(readFileSync(target, "utf8"), legacy, "a plain run leaves the old copy alone");
+
+	await fixture.run("gentle:install-review", "--force");
+	assert.notEqual(readFileSync(target, "utf8"), legacy, "--force must still refresh the old copy");
+});
+
+// The flag is an exact token: a value that only contains `--adopt` (or a bare
+// `adopt` word) must not release a file the manifest does not own.
+test("the install command does not adopt on an argument that only contains --adopt", async (t) => {
+	const fixture = routingConsumerFixture(t);
+	installPackageAssets(fixture.root, false, ["delegation"]);
+	const agentPath = join(fixture.agentHome, "agents", "gentle-ai-worker.md");
+	const edited = readFileSync(agentPath, "utf8") + "\nUser-authored instruction.\n";
+	writeFileSync(agentPath, edited);
+	const manifestPath = join(fixture.agentHome, "gentle-ai", "managed-assets.json");
+	const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { assets: Record<string, string> };
+	delete manifest.assets["agents/gentle-ai-worker.md"];
+	writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+	await fixture.run("gentle:install-delegation", "--adopt=false adopt");
+
+	assert.equal(readFileSync(agentPath, "utf8"), edited, "the edit must stay untouched");
+	assert.deepEqual(
+		readdirSync(join(fixture.agentHome, "agents")).filter((name) => name.includes(".local-")),
+		[],
+		"no reset backup may be written",
+	);
+	assert.equal(
+		fixture.notifications.some((entry) => entry.message.includes("Reset ")),
+		false,
+		"no reset may be reported",
+	);
+});
+
+// The startup refresh takes the same path with the same report, so a reset is
+// never silent for a UI session.
+test("the session-start install reports a reset and names its backup", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "gentle-pi-reset-session-start-"));
+	const configHome = join(root, "global");
+	const agentHome = join(root, "agent-home");
+	mkdirSync(configHome, { recursive: true });
+	mkdirSync(join(agentHome, "agents"), { recursive: true });
+	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = configHome;
+	process.env.GENTLE_PI_AGENT_HOME = agentHome;
+	t.after(() => {
+		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+		if (previousAgentHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
+		else process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
+		rmSync(root, { recursive: true, force: true });
+	});
+
+	installPackageAssets(root, false, ["delegation"]);
+	const agentPath = join(agentHome, "agents", "gentle-ai-worker.md");
+	const edited = readFileSync(agentPath, "utf8") + "\nUser-authored instruction.\n";
+	writeFileSync(agentPath, edited);
+
+	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>();
+	createGentleAiExtension({ nativeReviewCli: null, processEnv: { GENTLE_PI_AGENTS_CHILD: "0" } })({
+		on(name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) {
+			handlers.set(name, handler);
+		},
+		registerCommand() {},
+		registerTool() {},
+	} as unknown as ExtensionAPI);
+	const notifications: Array<{ message: string; severity: string }> = [];
+	await handlers.get("session_start")!({}, {
+		cwd: root,
+		hasUI: true,
+		ui: {
+			notify(message: string, severity: string) {
+				notifications.push({ message, severity });
+			},
+		},
+	} as unknown as ExtensionContext);
+
+	const written = readFileSync(agentPath, "utf8");
+	assert.doesNotMatch(written, /User-authored instruction\./);
+	const backups = readdirSync(join(agentHome, "agents")).filter((name) => name.includes(".local-"));
+	assert.equal(backups.length, 1);
+	const backupPath = join(agentHome, "agents", backups[0]);
+	assert.equal(readFileSync(backupPath, "utf8"), edited);
+	const notice = notifications.find((entry) => entry.message.includes(backupPath));
+	assert.ok(notice, JSON.stringify(notifications));
+	assert.equal(notice.severity, "info");
+	assert.match(notice.message, /gentle-ai-worker\.md/);
 });
 
 test("agent discovery skips skills directories", async (t) => {

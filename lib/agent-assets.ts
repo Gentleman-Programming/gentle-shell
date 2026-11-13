@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveGentlePiAgentHome } from "./agent-home.ts";
+import { attachManagedBlocks, splitManagedBlocks, type ManagedBlock } from "./managed-blocks.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
  return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -81,6 +82,43 @@ interface PackageAssetInstallLockOptions {
 	timeoutMs?: number;
 	retryMs?: number;
 	holdLockMs?: number;
+}
+
+export interface PackageAssetInstallOptions {
+	/** `--adopt` resets an agent the manifest no longer owns instead of releasing it. */
+	adopt?: boolean;
+}
+
+/** One agent reset to the packaged body, with the sibling backup of its old bytes. */
+export interface PackageAssetReset {
+	key: string;
+	backup: string;
+}
+
+/** A reset that aborted before touching the installed file, usually an unwritable backup. */
+export interface PackageAssetResetFailure {
+	key: string;
+	reason: string;
+}
+
+export interface PackageAssetInstallResult {
+	agents: number;
+	chains: number;
+	support: number;
+	skipped: number;
+	resets: PackageAssetReset[];
+	resetFailures: PackageAssetResetFailure[];
+}
+
+interface CopyDirectoryResult {
+	copied: number;
+	skipped: number;
+	resets: PackageAssetReset[];
+	resetFailures: PackageAssetResetFailure[];
+}
+
+function emptyCopyDirectoryResult(): CopyDirectoryResult {
+	return { copied: 0, skipped: 0, resets: [], resetFailures: [] };
 }
 
 
@@ -323,6 +361,98 @@ function updateAgentFrontmatterRouting(
 	return `---\n${lines.join("\n")}${body}`;
 }
 
+function agentFrontmatter(content: string): string | undefined {
+	if (!content.startsWith("---\n")) return undefined;
+	const endIndex = content.indexOf("\n---", 4);
+	return endIndex === -1 ? undefined : content.slice(4, endIndex);
+}
+
+// A `tools:` list in a frontmatter, as this module reads it. The scan matches
+// the runtime loader (`parseFrontmatter` in ./agents-config.ts): a blank line or
+// a `#` comment inside the list does not end it there either, and the entries
+// after them load. Stopping at the first non-entry line would read a tool below
+// a comment as absent, and the rebuild below would drop it.
+interface ToolsList {
+	/** Index of the `tools:` line. */
+	readonly start: number;
+	/** Exclusive end of the list, after its last entry and its trailing comments. */
+	readonly end: number;
+	/** `  - entry` lines in file order. */
+	readonly entries: readonly string[];
+	/** `#` comment lines inside the list, verbatim and in file order. */
+	readonly layout: readonly string[];
+}
+
+function frontmatterToolsList(frontmatter: string): ToolsList | undefined {
+	const lines = frontmatter.split("\n");
+	const start = lines.indexOf("tools:");
+	if (start === -1) return undefined;
+	const entries: string[] = [];
+	const layout: string[] = [];
+	let end = start + 1;
+	for (let index = start + 1; index < lines.length; index += 1) {
+		const line = lines[index];
+		if (/^ {2}- /.test(line)) {
+			entries.push(line);
+			end = index + 1;
+			continue;
+		}
+		if (line.trim().startsWith("#")) {
+			// A comment belongs to the list the loader reads, so the rebuilt block
+			// carries it; a blank line is layout and stays where it is.
+			layout.push(line);
+			end = index + 1;
+			continue;
+		}
+		if (line.trim().length === 0) continue;
+		break;
+	}
+	return { start, end, entries, layout };
+}
+
+// Reads a `tools:` YAML block list from a frontmatter. An inline/flow list such
+// as `tools: [read, grep]` returns undefined: the merge does not parse YAML, so
+// a refresh keeps the packaged block instead of guessing.
+function frontmatterToolsBlock(frontmatter: string): readonly string[] | undefined {
+	const list = frontmatterToolsList(frontmatter);
+	return list !== undefined && list.entries.length > 0 ? list.entries : undefined;
+}
+
+// The packaged list in its packaged order, followed by every installed entry the
+// package does not ship, in installed order. Deduplicated by exact line.
+function mergedToolsBlock(
+	installedTools: readonly string[],
+	packagedTools: readonly string[] | undefined,
+): readonly string[] {
+	const merged: string[] = [];
+	for (const entry of [...(packagedTools ?? []), ...installedTools]) {
+		if (!merged.includes(entry)) merged.push(entry);
+	}
+	return merged;
+}
+
+function replaceAgentToolsBlock(
+	content: string,
+	toolsBlock: readonly string[],
+	layout: readonly string[] = [],
+): string {
+	const frontmatter = agentFrontmatter(content);
+	if (frontmatter === undefined) return content;
+	const lines = frontmatter.split("\n");
+	const list = frontmatterToolsList(frontmatter);
+	if (list === undefined) {
+		const descriptionIndex = lines.findIndex((line) => line.startsWith("description:"));
+		const insertIndex = descriptionIndex >= 0 ? descriptionIndex + 1 : Math.min(1, lines.length);
+		lines.splice(insertIndex, 0, "tools:", ...toolsBlock, ...layout);
+	} else {
+		// Replace the whole list, comments included, so the captured comment lines
+		// are carried once instead of accumulating on the next refresh.
+		lines.splice(list.start, list.end - list.start, "tools:", ...toolsBlock, ...layout);
+	}
+	const bodyStart = frontmatter.length + 4;
+	return `---\n${lines.join("\n")}${content.slice(bodyStart)}`;
+}
+
 function legacyComparableAssetContent(
 	ownershipKey: string,
 	content: string,
@@ -332,20 +462,94 @@ function legacyComparableAssetContent(
 		: content;
 }
 
-function migrateLegacyAssetContent(
+// Tools-only frontmatter merge: the packaged block in packaged order, then every
+// installed entry the package does not ship. Idempotent, so it is safe to run on
+// content that already carries a merged block. An inline/flow `tools:` list on
+// either side is not parsed, so the packaged block wins.
+function preserveInstalledTools(
 	ownershipKey: string,
 	installedContent: string,
 	packagedContent: string,
 ): string {
 	if (!ownershipKey.startsWith("agents/")) return packagedContent;
-	if (!installedContent.startsWith("---\n")) return packagedContent;
-	const endIndex = installedContent.indexOf("\n---", 4);
-	if (endIndex === -1) return packagedContent;
-	const routingLines = installedContent
-		.slice(4, endIndex)
+	const installedFrontmatter = agentFrontmatter(installedContent);
+	if (installedFrontmatter === undefined) return packagedContent;
+	const installedList = frontmatterToolsList(installedFrontmatter);
+	const packagedFrontmatter = agentFrontmatter(packagedContent);
+	const packagedHasInlineTools =
+		packagedFrontmatter?.split("\n").some((line) => /^tools:[ \t]+\S/.test(line)) === true;
+	if (installedList === undefined || installedList.entries.length === 0 || packagedHasInlineTools) {
+		return packagedContent;
+	}
+	const packagedTools =
+		packagedFrontmatter === undefined
+			? undefined
+			: frontmatterToolsBlock(packagedFrontmatter);
+	return replaceAgentToolsBlock(
+		packagedContent,
+		mergedToolsBlock(installedList.entries, packagedTools),
+		installedList.layout,
+	);
+}
+
+/**
+ * Writes a packaged agent over an installed one: packaged frontmatter and body,
+ * except `model:`/`thinking:` and any `tools:` entry the package does not ship,
+ * which come from the installed file.
+ *
+ * @internal Exported for the tools-merge boundary tests: two cases need a
+ * packaged agent no shipped asset provides (no tools block, inline tools).
+ */
+export function migrateLegacyAssetContent(
+	ownershipKey: string,
+	installedContent: string,
+	packagedContent: string,
+): string {
+	const installedFrontmatter = ownershipKey.startsWith("agents/")
+		? agentFrontmatter(installedContent)
+		: undefined;
+	if (installedFrontmatter === undefined) return packagedContent;
+	const routingLines = installedFrontmatter
 		.split("\n")
 		.filter((line) => /^(?:model|thinking):/.test(line));
-	return updateAgentFrontmatterRouting(packagedContent, routingLines);
+	const preserved = preserveInstalledTools(ownershipKey, installedContent, packagedContent);
+	return updateAgentFrontmatterRouting(preserved, routingLines);
+}
+
+/** ISO timestamp a filesystem accepts as a file-name suffix: `2026-11-12T19-50-30`. */
+function filesystemSafeTimestamp(now = new Date()): string {
+	return now.toISOString().slice(0, 19).replaceAll(":", "-");
+}
+
+/**
+ * Resets a package-owned agent to packaged content in three steps: write the
+ * installed bytes to a sibling backup, read that backup back to prove they were
+ * preserved, then build the next content. Throws before returning content when
+ * the backup cannot be written or verified, so the caller leaves the agent and
+ * its ownership record exactly as they were.
+ */
+function resetAgentAssetContent(
+	ownershipKey: string,
+	targetPath: string,
+	installedContent: string,
+	installedBytes: Buffer,
+	packagedContent: string,
+): { content: string; backup: string } {
+	const base = `${targetPath}.local-${filesystemSafeTimestamp()}`;
+	let backup = base;
+	for (let suffix = 2; existsSync(backup); suffix += 1) backup = `${base}-${suffix}`;
+	// `wx` never replaces an earlier backup; the walk above only picks the first
+	// free name, so a concurrent writer still fails instead of losing bytes.
+	// The raw bytes are copied, never a UTF-8 decoding: a lossy string would write
+	// U+FFFD replacements and still satisfy a string read-back comparison.
+	writeFileSync(backup, installedBytes, { flag: "wx" });
+	if (!readFileSync(backup).equals(installedBytes)) {
+		throw new Error(`the backup ${backup} does not match the installed bytes`);
+	}
+	return {
+		backup,
+		content: migrateLegacyAssetContent(ownershipKey, installedContent, packagedContent),
+	};
 }
 
 function replaceManagedAssetFileAtomically(path: string, content: string): void {
@@ -462,19 +666,22 @@ function copyDirectoryFiles(
 	targetDir: string,
 	ownershipPrefix: string,
 	force: boolean,
+	adopt: boolean,
 	manifest: ManagedAssetsManifest,
 	legacyAssetHashes: (() => Readonly<Record<string, readonly string[]>>) | undefined,
 	selected?: ReadonlySet<string>,
-): { copied: number; skipped: number } {
-	if (!existsSync(sourceDir)) return { copied: 0, skipped: 0 };
+): CopyDirectoryResult {
+	if (!existsSync(sourceDir)) return emptyCopyDirectoryResult();
 	let cachedBodyHistory: Record<string, readonly string[]> | undefined;
 	const bodyHistory = () => (cachedBodyHistory ??= readAgentBodyHistory());
 	if (selected && ![...selected].some(key => key.startsWith(`${ownershipPrefix}/`))) {
-		return { copied: 0, skipped: 0 };
+		return emptyCopyDirectoryResult();
 	}
 	mkdirSync(targetDir, { recursive: true });
 	let copied = 0;
 	let skipped = 0;
+	const resets: PackageAssetReset[] = [];
+	const resetFailures: PackageAssetResetFailure[] = [];
 	for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
 		const sourcePath = join(sourceDir, entry.name);
 		const targetPath = join(targetDir, entry.name);
@@ -485,18 +692,26 @@ function copyDirectoryFiles(
 				targetPath,
 				ownershipKey,
 				force,
+				adopt,
 				manifest,
 				legacyAssetHashes,
 				selected,
 			);
 			copied += child.copied;
 			skipped += child.skipped;
+			resets.push(...child.resets);
+			resetFailures.push(...child.resetFailures);
 			continue;
 		}
 		if (!entry.isFile() || (selected && !selected.has(ownershipKey))) continue;
 		const source = readFileSync(sourcePath, "utf8");
 		let nextSource = source;
 		let keepsLocalRouting = false;
+		// The reset overwrites a copy that already has a verified backup beside it,
+		// so its write goes through the atomic helper: a crash mid-write must not
+		// leave a truncated agent next to that backup.
+		let resetsAgentCopy = false;
+		let carriedBlocks: readonly ManagedBlock[] = [];
 		if (existsSync(targetPath)) {
 			if (!force) {
 				skipped += 1;
@@ -504,10 +719,15 @@ function copyDirectoryFiles(
 			}
 			const managedHash = manifest.assets[ownershipKey];
 			let installedContent: string | undefined;
+			let installedBytes: Buffer | undefined;
 			try {
-				installedContent = readFileSync(targetPath, "utf8");
+				// Hash and content logic keep working on the decoded string; the reset
+				// backup copies these raw bytes.
+				installedBytes = readFileSync(targetPath);
+				installedContent = installedBytes.toString("utf8");
 			} catch {
 				installedContent = undefined;
+				installedBytes = undefined;
 			}
 			const installedHash = installedContent === undefined
 				? undefined
@@ -520,6 +740,28 @@ function copyDirectoryFiles(
 			const legacyHashes = managedHash === undefined
 				? legacyAssetHashes?.()[ownershipKey]
 				: undefined;
+			// gentle-ai appends managed guidance blocks to an installed agent. A
+			// published body never carries one, so the adoption comparison runs on the
+			// body with the recognised blocks removed; whatever this branch writes
+			// gets them back verbatim and the manifest hash covers the file as written.
+			const installedSplit =
+				installedContent === undefined || !ownershipKey.startsWith("agents/")
+					? undefined
+					: splitManagedBlocks(installedContent);
+			// A marker layout splitManagedBlocks cannot trust means the blocks in the
+			// installed body are not recognisable, so the file is left untouched — even
+			// when the manifest hash matches the whole-file hash. Ownership is left
+			// exactly as it was: a matching entry still matches, so the next run skips
+			// again on identical bytes, and a repaired file stops matching and is compared
+			// normally again, adoption by body included. Dropping the entry here would
+			// freeze the file out of package ownership for good.
+			if (installedSplit?.failSafe !== undefined) {
+				skipped += 1;
+				continue;
+			}
+			carriedBlocks = installedSplit?.blocks ?? [];
+			const installedBase =
+				installedSplit?.stripped === true ? installedSplit.content : installedContent;
 			if (
 				managedHash === undefined &&
 				comparableHash !== undefined &&
@@ -532,16 +774,53 @@ function copyDirectoryFiles(
 				);
 			} else if (
 				installedContent !== undefined &&
+				installedBase !== undefined &&
 				installedHash !== managedHash &&
 				// Only outdated instructions are refreshed; a frontmatter edit on the
 				// current agent (routing, tool allowlist) keeps the local-edit rules below.
-				agentBody(installedContent) !== agentBody(source) &&
-				hasShippedAgentBody(ownershipKey, installedContent, bodyHistory)
+				// Managed blocks are excluded from that comparison so they cannot freeze
+				// a copy whose body still matches a shipped version.
+				agentBody(installedBase) !== agentBody(source) &&
+				hasShippedAgentBody(ownershipKey, installedBase, bodyHistory)
 			) {
 				nextSource = migrateLegacyAssetContent(ownershipKey, installedContent, source);
 				// Saved model config owns managed routing and a refresh resets it, so a
 				// copy carrying its own routing stays unmanaged to keep that routing.
 				keepsLocalRouting = nextSource !== source;
+			} else if (
+				// An owned agent whose body no longer matches any shipped version froze
+				// here: ownership was released and the copy was never updated again. It
+				// now resets to the packaged body after a verified backup of its own bytes.
+				// A file the manifest does not own is only reset by the explicit `--adopt`
+				// entry point, so a user-authored agent on a package path is never rewritten.
+				ownershipKey.startsWith("agents/") &&
+				(managedHash !== undefined || adopt) &&
+				installedHash !== managedHash &&
+				installedContent !== undefined &&
+				installedBytes !== undefined &&
+				installedBase !== undefined &&
+				!hasShippedAgentBody(ownershipKey, installedBase, bodyHistory)
+			) {
+				let reset: { content: string; backup: string };
+				try {
+					reset = resetAgentAssetContent(
+						ownershipKey,
+						targetPath,
+						installedContent,
+						installedBytes,
+						source,
+					);
+				} catch (error) {
+					resetFailures.push({
+						key: ownershipKey,
+						reason: error instanceof Error ? error.message : String(error),
+					});
+					skipped += 1;
+					continue;
+				}
+				nextSource = reset.content;
+				resets.push({ key: ownershipKey, backup: reset.backup });
+				resetsAgentCopy = true;
 			} else if (managedHash === undefined) {
 				delete manifest.assets[ownershipKey];
 				skipped += 1;
@@ -554,13 +833,28 @@ function copyDirectoryFiles(
 				// Keep routing adopted by the legacy migration on subsequent refreshes.
 				nextSource = migrateLegacyAssetContent(ownershipKey, installedContent, source);
 			}
+			// Every write over an existing agent goes through the tools merge, on every
+			// path: a reset records the merged content, so the following refresh is a
+			// hash match and must merge again rather than write the packaged block
+			// untouched and drop a preserved tool. Merging already-merged content
+			// reproduces it byte for byte, so repeated refreshes stay stable. Only
+			// `tools:` is merged here: managed `model:`/`thinking:` routing stays owned
+			// by the branches above, and the merge is agent-only, so chains and support
+			// files are unaffected.
+			if (installedContent !== undefined) {
+				nextSource = preserveInstalledTools(ownershipKey, installedContent, nextSource);
+			}
 		}
-		writeFileSync(targetPath, nextSource);
+		// Re-attach the recognised blocks to whatever this branch decided to write,
+		// so an update never drops a block (the ownership hash below covers them).
+		if (carriedBlocks.length > 0) nextSource = attachManagedBlocks(nextSource, carriedBlocks);
+		if (resetsAgentCopy) replaceManagedAssetFileAtomically(targetPath, nextSource);
+		else writeFileSync(targetPath, nextSource);
 		if (keepsLocalRouting) delete manifest.assets[ownershipKey];
 		else manifest.assets[ownershipKey] = managedAssetHash(nextSource);
 		copied += 1;
 	}
-	return { copied, skipped };
+	return { copied, skipped, resets, resetFailures };
 }
 
 // Assets retired by gentle-pi#311 P5: the Pi-owned adversarial review actors.
@@ -631,15 +925,21 @@ export function installPackageAssets(
 	force: boolean,
 	owners?: readonly PackageAssetOwner[],
 	lockOptions?: PackageAssetInstallLockOptions,
-): { agents: number; chains: number; support: number; skipped: number } {
+	options?: PackageAssetInstallOptions,
+): PackageAssetInstallResult {
 	const agentHome = gentlePiAgentHome();
 	return withManagedAssetsLock(agentHome, () => {
+		const adopt = options?.adopt === true;
+		// `--adopt` must reach existing files, so it implies the same processing
+		// force does; it changes only what happens to an agent the manifest does
+		// not own.
+		const refresh = force || adopt;
 		const selected = owners === undefined ? undefined : new Set(
 			Object.entries(ASSET_OWNER_BY_KEY).filter(([, owner]) => owners.includes(owner)).map(([key]) => key),
 		);
 		const manifestPath = join(agentHome, "gentle-ai", MANAGED_ASSETS_MANIFEST);
 		let legacyAssetHashes: (() => Readonly<Record<string, readonly string[]>>) | undefined;
-		if (force) {
+		if (refresh) {
 			let cachedLegacyAssetHashes: Record<string, readonly string[]> | undefined;
 			legacyAssetHashes = () =>
 				(cachedLegacyAssetHashes ??= readLegacyManagedAssetHashes());
@@ -650,7 +950,8 @@ export function installPackageAssets(
 			join(ASSETS_DIR, "agents"),
 			join(agentHome, "agents"),
 			"agents",
-			force,
+			refresh,
+			adopt,
 			manifest,
 			legacyAssetHashes,
 			selected,
@@ -659,7 +960,8 @@ export function installPackageAssets(
 			join(ASSETS_DIR, "chains"),
 			join(agentHome, "chains"),
 			"chains",
-			force,
+			refresh,
+			adopt,
 			manifest,
 			legacyAssetHashes,
 			selected,
@@ -668,7 +970,8 @@ export function installPackageAssets(
 			join(ASSETS_DIR, "support"),
 			join(agentHome, "gentle-ai", "support"),
 			"gentle-ai/support",
-			force,
+			refresh,
+			adopt,
 			manifest,
 			legacyAssetHashes,
 			selected,
@@ -680,6 +983,12 @@ export function installPackageAssets(
 			chains: chains.copied,
 			support: support.copied,
 			skipped: agents.skipped + chains.skipped + support.skipped,
+			resets: [...agents.resets, ...chains.resets, ...support.resets],
+			resetFailures: [
+				...agents.resetFailures,
+				...chains.resetFailures,
+				...support.resetFailures,
+			],
 		};
 	}, lockOptions);
 }

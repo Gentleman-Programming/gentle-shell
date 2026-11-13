@@ -33,46 +33,46 @@
 		<symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></symbol>
 		<symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2"/></symbol>
 	</svg>
-	<header class="gd-bar" role="toolbar" aria-label="Design canvas controls">
+	<header class="gd-bar" role="toolbar" aria-label="Design canvas controls" data-i18n-aria-label="toolbar">
 		<h1 class="gd-title" id="gd-title">Gentle Design</h1>
 		<label class="gd-field" id="gd-design-field">
-			<span class="gd-visually-hidden">Design</span>
-			<select id="gd-design" aria-label="Design"></select>
+			<span class="gd-visually-hidden" data-i18n="design">Design</span>
+			<select id="gd-design" aria-label="Design" data-i18n-aria-label="design"></select>
 		</label>
 		<p id="gd-feature" class="gd-feature" hidden></p>
-		<div class="gd-group" role="group" aria-label="Zoom">
-			<button type="button" id="gd-zoom-out" aria-label="Zoom out">&minus;</button>
-			<output id="gd-zoom-level" aria-live="polite" aria-label="Zoom level">100%</output>
-			<button type="button" id="gd-zoom-in" aria-label="Zoom in">+</button>
-			<button type="button" id="gd-fit">Fit</button>
+		<div class="gd-group" role="group" aria-label="Zoom" data-i18n-aria-label="zoom">
+			<button type="button" id="gd-zoom-out" aria-label="Zoom out" data-i18n-aria-label="zoomOut">&minus;</button>
+			<output id="gd-zoom-level" aria-live="polite" aria-label="Zoom level" data-i18n-aria-label="zoomLevel">100%</output>
+			<button type="button" id="gd-zoom-in" aria-label="Zoom in" data-i18n-aria-label="zoomIn">+</button>
+			<button type="button" id="gd-fit" data-i18n="fit">Fit</button>
 		</div>
-		<div class="gd-group gd-arrange" role="group" aria-label="Arrange the artboards">
-			<button type="button" id="gd-arrange-row" aria-pressed="true" aria-label="Row" title="Arrange in a row" disabled><svg class="gd-i" aria-hidden="true"><use href="#i-row"/></svg></button>
-			<button type="button" id="gd-arrange-column" aria-pressed="false" aria-label="Column" title="Arrange in a column" disabled><svg class="gd-i" aria-hidden="true"><use href="#i-column"/></svg></button>
-			<button type="button" id="gd-arrange-grid" aria-pressed="false" aria-label="Grid" title="Arrange in a grid" disabled><svg class="gd-i" aria-hidden="true"><use href="#i-grid"/></svg></button>
+		<div class="gd-group gd-arrange" role="group" aria-label="Arrange the artboards" data-i18n-aria-label="arrange">
+			<button type="button" id="gd-arrange-row" aria-pressed="true" aria-label="Row" title="Arrange in a row" data-i18n-aria-label="row" data-i18n-title="arrangeRow" disabled><svg class="gd-i" aria-hidden="true"><use href="#i-row"/></svg></button>
+			<button type="button" id="gd-arrange-column" aria-pressed="false" aria-label="Column" title="Arrange in a column" data-i18n-aria-label="column" data-i18n-title="arrangeColumn" disabled><svg class="gd-i" aria-hidden="true"><use href="#i-column"/></svg></button>
+			<button type="button" id="gd-arrange-grid" aria-pressed="false" aria-label="Grid" title="Arrange in a grid" data-i18n-aria-label="grid" data-i18n-title="arrangeGrid" disabled><svg class="gd-i" aria-hidden="true"><use href="#i-grid"/></svg></button>
 		</div>
 		<button type="button" id="gd-device" class="gd-device-button" aria-haspopup="menu" aria-expanded="false" aria-controls="gd-device-menu" aria-label="Preview size: Desktop" title="Open an artboard to choose its preview size" disabled><svg class="gd-i gd-i-s" aria-hidden="true"><use id="gd-device-icon" href="#i-monitor"/></svg><span id="gd-device-name">Desktop</span><span id="gd-device-size" class="gd-device-size"></span></button>
 		<p id="gd-nav-mode" class="gd-nav-mode" role="status" aria-live="polite">Navigating</p>
-		<div class="gd-group" role="radiogroup" aria-label="When a comment is sent to the session">
-			<label class="gd-radio"><input type="radio" name="gd-send-mode" id="gd-mode-send" value="send"> Send now</label>
-			<label class="gd-radio"><input type="radio" name="gd-send-mode" id="gd-mode-collect" value="collect"> Collect</label>
+		<div class="gd-group" role="radiogroup" aria-label="When a comment is sent to the session" data-i18n-aria-label="sendMode">
+			<label class="gd-radio"><input type="radio" name="gd-send-mode" id="gd-mode-send" value="send"> <span data-i18n="sendNow">Send now</span></label>
+			<label class="gd-radio"><input type="radio" name="gd-send-mode" id="gd-mode-collect" value="collect"> <span data-i18n="collect">Collect</span></label>
 		</div>
 		<button type="button" id="gd-send-all" disabled>Send all (0)</button>
-		<button type="button" id="gd-panel-toggle" class="gd-toggle" aria-pressed="true" aria-controls="gd-panel" aria-keyshortcuts="]" title="Comments panel (])">Comments</button>
+		<button type="button" id="gd-panel-toggle" class="gd-toggle" aria-pressed="true" aria-controls="gd-panel" aria-keyshortcuts="]" title="Comments panel (])" data-i18n="comments">Comments</button>
 		<p id="gd-status" class="gd-status" role="status" aria-live="polite"></p>
 	</header>
 	<div class="gd-main">
-		<nav id="gd-rail" class="gd-rail" aria-label="Tools">
-			<button type="button" id="gd-tool-navigate" class="gd-tool" aria-pressed="true" aria-keyshortcuts="V" title="Move around the canvas (V)"><svg class="gd-i" aria-hidden="true"><use href="#i-hand"/></svg><span class="gd-tool-label">Move</span></button>
-			<button type="button" id="gd-comment" class="gd-tool" aria-pressed="false" aria-keyshortcuts="C" title="Comment on an element (C)"><svg class="gd-i" aria-hidden="true"><use href="#i-comment"/></svg><span class="gd-tool-label">Comment</span></button>
+		<nav id="gd-rail" class="gd-rail" aria-label="Tools" data-i18n-aria-label="tools">
+			<button type="button" id="gd-tool-navigate" class="gd-tool" aria-pressed="true" aria-keyshortcuts="V" title="Move around the canvas (V)"><svg class="gd-i" aria-hidden="true"><use href="#i-hand"/></svg><span class="gd-tool-label" data-i18n="move">Move</span></button>
+			<button type="button" id="gd-comment" class="gd-tool" aria-pressed="false" aria-keyshortcuts="C" title="Comment on an element (C)"><svg class="gd-i" aria-hidden="true"><use href="#i-comment"/></svg><span class="gd-tool-label" data-i18n="comment">Comment</span></button>
 			<span class="gd-sep" aria-hidden="true"></span>
-			<button type="button" id="gd-rail-fit" class="gd-tool" aria-keyshortcuts="F" title="See all the directions (F)"><svg class="gd-i" aria-hidden="true"><use href="#i-fit"/></svg><span class="gd-tool-label">Overview</span></button>
-			<button type="button" id="gd-rail-settings" class="gd-tool gd-bottom" aria-haspopup="menu" aria-expanded="false" aria-controls="gd-menu" title="Settings: design system, keyboard shortcuts and technical details"><svg class="gd-i" aria-hidden="true"><use href="#i-gear"/></svg><span class="gd-tool-label">Settings</span></button>
+			<button type="button" id="gd-rail-fit" class="gd-tool" aria-keyshortcuts="F" title="See all the directions (F)"><svg class="gd-i" aria-hidden="true"><use href="#i-fit"/></svg><span class="gd-tool-label" data-i18n="overview">Overview</span></button>
+			<button type="button" id="gd-rail-settings" class="gd-tool gd-bottom" aria-haspopup="menu" aria-expanded="false" aria-controls="gd-menu" title="Settings: design system, keyboard shortcuts and technical details" data-i18n-title="settingsTitle"><svg class="gd-i" aria-hidden="true"><use href="#i-gear"/></svg><span class="gd-tool-label" data-i18n="settings">Settings</span></button>
 		</nav>
-		<main id="gd-viewport" class="gd-viewport" aria-label="Artboards" tabindex="0">
+		<main id="gd-viewport" class="gd-viewport" aria-label="Artboards" data-i18n-aria-label="artboards" tabindex="0">
 			<div id="gd-world" class="gd-world"></div>
 			<p id="gd-empty" class="gd-empty" hidden></p>
-			<button type="button" id="gd-back" class="gd-back" aria-keyshortcuts="Shift+Escape" title="Back to canvas (Shift+Esc)" hidden>Back to canvas</button>
+			<button type="button" id="gd-back" class="gd-back" aria-keyshortcuts="Shift+Escape" title="Back to canvas (Shift+Esc)" data-i18n-title="backTitle" data-i18n="back" hidden>Back to canvas</button>
 			<section id="gd-minimap" class="gd-minimap" aria-labelledby="gd-minimap-title" hidden>
 				<h2 id="gd-minimap-title" class="gd-minimap-title"><span>Minimap</span><kbd id="gd-minimap-key" aria-hidden="true">M</kbd></h2>
 				<div id="gd-minimap-map" class="gd-minimap-map" role="img" aria-label="Position of the visible area among the artboards. Click or drag to move the view."><b id="gd-minimap-view" class="gd-minimap-view"></b></div>
@@ -129,20 +129,20 @@
 	<div id="gd-menu" class="gd-menu" role="menu" hidden></div>
 	<div id="gd-device-menu" class="gd-menu gd-device-menu" role="menu" aria-label="Preview size" hidden></div>
 	<dialog id="gd-shortcuts" class="gd-dialog" aria-labelledby="gd-shortcuts-title">
-		<h2 id="gd-shortcuts-title" class="gd-dialog-title">Keyboard shortcuts</h2>
-		<ul id="gd-keys-custom" class="gd-keys-custom" aria-label="Shortcuts you can change"></ul>
+		<h2 id="gd-shortcuts-title" class="gd-dialog-title" data-i18n="shortcutsTitle">Keyboard shortcuts</h2>
+		<ul id="gd-keys-custom" class="gd-keys-custom" aria-label="Shortcuts you can change" data-i18n-aria-label="changeable"></ul>
 		<p id="gd-keys-message" class="gd-keys-message" role="status" aria-live="polite"></p>
 		<dl class="gd-keys">
-			<dt><kbd>0</kbd></dt><dd>Fit all directions</dd>
-			<dt><kbd>+</kbd> <kbd>-</kbd></dt><dd>Zoom in and out</dd>
-			<dt><kbd>&larr;</kbd> <kbd>&rarr;</kbd> <kbd>&uarr;</kbd> <kbd>&darr;</kbd></dt><dd>Pan (Shift for larger steps)</dd>
-			<dt><kbd>Space</kbd> + drag</dt><dd>Pan from anywhere, even over an artboard</dd>
-			<dt><kbd>Esc</kbd></dt><dd>Clear a check's ring or the selected artboard, leave Comment mode or close the comment box</dd>
-			<dt><kbd>Shift</kbd> + <kbd>Esc</kbd></dt><dd>Back to canvas from an artboard or Compare</dd>
+			<dt><kbd>0</kbd></dt><dd data-i18n="fitAll">Fit all directions</dd>
+			<dt><kbd>+</kbd> <kbd>-</kbd></dt><dd data-i18n="zoomInOut">Zoom in and out</dd>
+			<dt><kbd>&larr;</kbd> <kbd>&rarr;</kbd> <kbd>&uarr;</kbd> <kbd>&darr;</kbd></dt><dd data-i18n="pan">Pan (Shift for larger steps)</dd>
+			<dt><kbd data-i18n="space">Space</kbd> + <span data-i18n="drag">drag</span></dt><dd data-i18n="panAnywhere">Pan from anywhere, even over an artboard</dd>
+			<dt><kbd>Esc</kbd></dt><dd data-i18n="escape">Clear a check's ring or the selected artboard, leave Comment mode or close the comment box</dd>
+			<dt><kbd data-i18n="shift">Shift</kbd> + <kbd>Esc</kbd></dt><dd data-i18n="shiftEscape">Back to canvas from an artboard or Compare</dd>
 		</dl>
-		<p class="gd-dialog-note">Change gives an action another single key; your keys are saved in this browser, for every design.</p>
-		<p class="gd-dialog-note">Single keys are off while you type, while the comment box is open and while an artboard is in use.</p>
-		<div class="gd-dialog-actions"><button type="button" id="gd-keys-restore" class="gd-keys-restore">Restore defaults</button><button type="button" id="gd-shortcuts-close" class="gd-primary">Close</button></div>
+		<p class="gd-dialog-note" data-i18n="changeNote">Change gives an action another single key; your keys are saved in this browser, for every design.</p>
+		<p class="gd-dialog-note" data-i18n="singleKeysNote">Single keys are off while you type, while the comment box is open and while an artboard is in use.</p>
+		<div class="gd-dialog-actions"><button type="button" id="gd-keys-restore" class="gd-keys-restore" data-i18n="restore">Restore defaults</button><button type="button" id="gd-shortcuts-close" class="gd-primary" data-i18n="close">Close</button></div>
 	</dialog>
 	<div id="gd-popover" class="gd-popover" role="dialog" aria-modal="false" aria-labelledby="gd-popover-title" hidden>
 		<form id="gd-popover-form">

@@ -186,7 +186,26 @@ export class FakeDocument {
 	addEventListener(type: string, listener: Listener) {
 		this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
 	}
-	querySelectorAll() { return []; }
+	/** Attribute selectors only (`[data-i18n],[data-i18n-title]`), over the elements in the page; any other selector finds nothing. */
+	querySelectorAll(selector = "") {
+		const names = selector.split(",").map((part) => /^\[([\w-]+)\]$/.exec(part.trim())?.[1]);
+		if (names.some((name) => !name)) return [];
+		return findAll(this.documentElement, (element) => names.some((name) => element.hasAttribute(name!)));
+	}
+}
+
+/**
+ * The index.html elements that carry a data-i18n* attribute, in the page with their attributes and their text as
+ * written (an element with an id is the one getElementById gives): the static markup the language pass rewrites.
+ */
+export function addMarkup(document: FakeDocument) {
+	for (const [, tag, attributes, text] of read("index.html").matchAll(/<([a-z0-9]+)\s([^>]*\bdata-i18n[^>]*)>([^<]*)/g)) {
+		const id = /\bid="([^"]+)"/.exec(attributes)?.[1];
+		const element = id ? document.getElementById(id) : document.createElement(tag);
+		for (const [, name, value] of attributes.matchAll(/([\w-]+)="([^"]*)"/g)) element.setAttribute(name, value);
+		if (/\bdata-i18n="/.test(attributes)) element.textContent = text;
+		if (!element.parentElement) document.body.append(element);
+	}
 }
 
 export const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -204,9 +223,13 @@ export function memoryStorage(seed: Record<string, string> = {}, broken = false)
 	return { localStorage, data, writes };
 }
 
-/** config: fields merged into #gd-config; extraWindow: window fields that replace the defaults (a localStorage, for one). */
-export async function loadCanvas(firstHeight = 300, extraReplies: Record<string, unknown> = {}, config: Record<string, unknown> = {}, extraWindow: Record<string, unknown> = {}) {
+/**
+ * config: fields merged into #gd-config; extraWindow: window fields that replace the defaults (a localStorage, for one);
+ * markup: the page holds index.html's data-i18n* elements (addMarkup).
+ */
+export async function loadCanvas(firstHeight = 300, extraReplies: Record<string, unknown> = {}, config: Record<string, unknown> = {}, extraWindow: Record<string, unknown> = {}, markup = false) {
 	const document = new FakeDocument();
+	if (markup) addMarkup(document);
 	document.getElementById("gd-config").textContent = JSON.stringify({ base: "/t/", slug: "alpha", ...config });
 	const viewport = document.getElementById("gd-viewport");
 	const world = document.getElementById("gd-world");

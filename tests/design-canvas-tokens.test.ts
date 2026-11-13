@@ -205,7 +205,7 @@ test("only well-formed tokens count: a custom property name, a value, at most 50
 test("Technical details is a checkbox item in Settings, off by default and remembered in this browser", async () => {
 	const canvas = await loadTokens();
 	$(canvas, "gd-rail-settings").dispatch("click");
-	assert.deepEqual(settingsItems(canvas).map((item) => texts(item, "gd-menu-label")[0]), ["Design system board", "Keyboard shortcuts", "Technical details"]);
+	assert.deepEqual(settingsItems(canvas).map((item) => texts(item, "gd-menu-label")[0]), ["Design system board", "Keyboard shortcuts", "Technical details", "Español", "English", "Match the browser"]);
 	const item = technicalItem(canvas)!;
 	assert.equal(item.getAttribute("role"), "menuitemcheckbox");
 	assert.equal(item.getAttribute("aria-checked"), "false");
@@ -926,7 +926,7 @@ test("index.html has the panel in the viewport, hidden, with a heading and real 
 	assert.match(main, /<button type="button" id="gd-inspector-fix"[^>]*>Ask the agent to fix<\/button>/);
 	assert.match(main, /<button type="button" id="gd-inspector-copy"[^>]*>Copy<\/button>/);
 	assert.match(html, /<symbol id="i-code" viewBox="0 0 24 24">/);
-	assert.ok(!html.includes("data-i18n"));
+	assert.ok(!main.slice(main.indexOf('<section id="gd-inspector"')).includes("data-i18n"));
 });
 
 test("canvas.css styles the panel in one section on --gd-* tokens, the warning in words, no dots", () => {

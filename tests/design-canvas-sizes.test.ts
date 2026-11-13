@@ -504,7 +504,8 @@ test("canvas-layout S6: the device selector's markup sits after the arrangements
 	assert.ok(bar.indexOf('id="gd-arrange-grid"') < bar.indexOf('id="gd-device"') && bar.indexOf('id="gd-device"') < bar.indexOf('id="gd-nav-mode"'), "after the arrangements, before the mode label");
 	assert.match(html, /<div id="gd-device-menu" class="gd-menu gd-device-menu" role="menu" aria-label="Preview size" hidden><\/div>/);
 	for (const icon of ["i-phone", "i-tablet", "i-monitor", "i-devices", "i-width", "i-check"]) assert.match(html, new RegExp(`<symbol id="${icon}" viewBox="0 0 24 24">`));
-	assert.ok(!/data-i18n/.test(html), "English literals, no catalog keys yet");
+	const device = html.slice(html.indexOf('<button type="button" id="gd-device"'), html.indexOf('id="gd-nav-mode"'));
+	assert.ok(!/data-i18n/.test(device + html.slice(html.indexOf('<div id="gd-device-menu"'), html.indexOf('<dialog id="gd-shortcuts"'))), "English literals, no catalog keys yet");
 	const css = read("canvas.css");
 	const block = (selector: string) => {
 		const start = css.indexOf(`\n${selector} {`);

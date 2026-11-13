@@ -985,6 +985,12 @@ button:disabled { opacity: 0.5; cursor: default; }
 
 .gd-menu-separator { height: 1px; margin: 4px 2px; background: var(--gd-border); }
 
+/* A group's heading in a menu (Settings: Language): a label, not an item. */
+.gd-menu-heading { margin: 4px 8px 2px; color: var(--gd-muted); font-size: 12px; font-weight: 600; user-select: none; }
+
+/* A line of text in a menu (Settings: messages to the agent stay in English). */
+.gd-menu-note { margin: 4px 8px; max-width: 240px; color: var(--gd-muted); font-size: 12px; }
+
 /* The single key that does the same as a menu item (Settings: Keyboard shortcuts, ?). */
 .gd-menu-kbd { margin-left: auto; }
 

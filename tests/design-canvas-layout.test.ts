@@ -818,14 +818,13 @@ test("no canvas module changes the view in place: zoom and pan go through the st
 test("the arrangement control sits in the top bar after the zoom, named in English, styled with tokens; boards are placed absolutely", () => {
 	const html = read("index.html");
 	const bar = html.slice(html.indexOf('<header class="gd-bar"'), html.indexOf("</header>"));
-	const group = /<div class="gd-group gd-arrange" role="group" aria-label="Arrange the artboards">([^]*?)<\/div>/.exec(bar);
+	const group = /<div class="gd-group gd-arrange" role="group" aria-label="Arrange the artboards" data-i18n-aria-label="arrange">([^]*?)<\/div>/.exec(bar);
 	assert.ok(group, "a labelled group in the top bar");
 	for (const [kind, name] of [["row", "Row"], ["column", "Column"], ["grid", "Grid"]]) {
-		assert.match(group![1], new RegExp(`<button type="button" id="gd-arrange-${kind}" aria-pressed="${kind === "row"}" aria-label="${name}" title="Arrange in a ${kind}" disabled><svg class="gd-i" aria-hidden="true"><use href="#i-${kind}"/></svg></button>`));
+		assert.match(group![1], new RegExp(`<button type="button" id="gd-arrange-${kind}" aria-pressed="${kind === "row"}" aria-label="${name}" title="Arrange in a ${kind}" data-i18n-aria-label="${kind}" data-i18n-title="arrange${name}" disabled><svg class="gd-i" aria-hidden="true"><use href="#i-${kind}"/></svg></button>`));
 		assert.match(html, new RegExp(`<symbol id="i-${kind}" viewBox="0 0 24 24">`));
 	}
 	assert.ok(bar.indexOf('aria-label="Zoom"') < bar.indexOf("gd-arrange") && bar.indexOf("gd-arrange") < bar.indexOf('id="gd-nav-mode"'), "after the zoom, before the mode label");
-	assert.ok(!/data-i18n/.test(html), "English literals, no catalog keys yet");
 	const css = read("canvas.css");
 	const pressed = /\.gd-arrange button\[aria-pressed="true"\]\s*{([^}]*)}/.exec(css);
 	assert.ok(pressed && /var\(--gd-/.test(pressed[1]) && !/#[0-9a-fA-F]{3,8}\b|rgba?\(/.test(pressed[1]), "the chosen arrangement shows, in tokens");
@@ -838,9 +837,9 @@ test("the arrangement control sits in the top bar after the zoom, named in Engli
 test("the shortcuts list names Space + drag and Esc clears the selection, and the docs describe the layout", () => {
 	const html = read("index.html");
 	const dialog = html.slice(html.indexOf('<dialog id="gd-shortcuts"'), html.indexOf("</dialog>"));
-	assert.match(dialog, /<dt><kbd>Space<\/kbd> \+ drag<\/dt><dd>Pan from anywhere, even over an artboard<\/dd>/);
-	assert.ok(dialog.indexOf("&darr;") < dialog.indexOf("<kbd>Space</kbd>") && dialog.indexOf("<kbd>Space</kbd>") < dialog.indexOf("<dt><kbd>Esc</kbd></dt>"), "after the arrow keys");
-	assert.match(dialog, /<dt><kbd>Esc<\/kbd><\/dt><dd>[^<]*selected artboard[^<]*<\/dd>/);
+	assert.match(dialog, /<dt><kbd data-i18n="space">Space<\/kbd> \+ <span data-i18n="drag">drag<\/span><\/dt><dd data-i18n="panAnywhere">Pan from anywhere, even over an artboard<\/dd>/);
+	assert.ok(dialog.indexOf("&darr;") < dialog.indexOf(">Space</kbd>") && dialog.indexOf(">Space</kbd>") < dialog.indexOf("<dt><kbd>Esc</kbd></dt>"), "after the arrow keys");
+	assert.match(dialog, /<dt><kbd>Esc<\/kbd><\/dt><dd data-i18n="escape">[^<]*selected artboard[^<]*<\/dd>/);
 	const docs = readFileSync(fileURLToPath(new URL("../docs/gentle-shell.md", import.meta.url)), "utf8");
 	const section = docs.slice(docs.indexOf("### Gentle Design"));
 	const start = section.indexOf("- **Layout**");

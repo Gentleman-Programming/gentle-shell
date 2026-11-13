@@ -67,7 +67,7 @@ Once a trigger fires, the parent MUST delegate through the best available subage
 
 The canonical Writer rule under Delegation Triggers overrides this general runtime preference.
 
-1. **Evidence-budget rule**: when the reading exceeds the evidence budget, launch `scout`, `context-builder`, or the closest read-only mapping subagent with fresh context and a narrow mapping task that returns a handoff of at most ~2k tokens with `path:line` evidence. Route generic exploration first to the installed package-owned `gentle-ai-explore`; if missing or unusable, use native `Agent` with the same read-only mapping task and report the fallback.
+1. **Evidence-budget rule**: when the reading exceeds the evidence budget, launch the closest read-only mapping subagent with fresh context and a narrow mapping task that returns a handoff of at most ~2k tokens with `path:line` evidence. Route generic exploration first to the installed package-owned `gentle-ai-explore`; if missing or unusable, use native `Agent` with the same read-only mapping task and report the fallback.
 2. **Writer rule**: follow the canonical Writer rule under Delegation Triggers.
 3. **Incident rule**: after wrong `cwd`, accidental repository/worktree mutation, failed merge recovery, confusing test command, or environment workaround, stop and diagnose the incident separately before resuming.
 4. **Context backstop**: when the runtime signals the context backstop, pause and delegate the next unit that needs several steps instead of silently continuing monolithically; single small edits stay inline.
@@ -111,13 +111,13 @@ For generic mapping, follow the Evidence-budget rule in the delegation card.
 
 The canonical Writer rule under Delegation Triggers overrides the general runtime preference above.
 
-Delegate generic verification that executes or delegates commands per the RDD-aware Verification rule (trigger 3 under Delegation Triggers, gentle-pi#661) -- the normative on/off/unknown routing lives in `orchestrator-verification.md`, not here: the bounded writer always self-verifies via `## Verification`; a named high-risk item also requires `gentle-ai-verify` (or the native `Agent` fallback, with the same read-only verification constraints, exact parent-authorized commands, and fallback reporting). When RDD is on or unknown, use the `gentle_review` `assess` plan and named `escalate` item; validated off does not require assessment (gentle-pi#662). `## Known environmental failures` follows the same definition as `gentle-ai-worker`'s Verification contract: exact pre-existing base failures reported as evidence, never blockers -- any other failing required command still forces `status: partial`. The change's own focused test and suite run inline. Separate exploration stays reserved for when the parent needs the map to decide or route; reading that prepares a write belongs with the writer making the change, consistent with the Delegation Rules table above.
+Delegate generic verification that executes or delegates commands per the RDD-aware Verification rule (trigger 3 under Delegation Triggers, gentle-pi#661) -- the normative on/off/unknown routing lives in `orchestrator-verification.md`, not here: the bounded writer always self-verifies via `## Verification`; a named high-risk item also requires `gentle-ai-verify` (or the native `Agent` fallback, with the same read-only verification constraints, exact parent-authorized commands, and fallback reporting). When RDD is on or unknown, use the `gentle_review` `assess` plan and named `escalate` item; validated off does not require assessment (gentle-pi#662). `## Known environmental failures`: `gentle-ai-worker`'s Verification contract. The change's own focused test and suite run inline. Separate exploration stays reserved for when the parent needs the map to decide or route; reading that prepares a write belongs with the writer making the change, consistent with the Delegation Rules table above.
 
 For delegation other than a large task's bounded writes, use the generic fallback: if `subagent_*` tools are unavailable, fall back to Pi's native `Agent` tool in the current runtime; never fall back to an external pane, terminal, session, window, or remote worker. The delegation trigger remains mandatory. If no delegation mechanism is available, stop the complex work and tell the user instead of silently continuing inline.
 
 #### Pi Subagent Model Routing
 
-For generic Pi subagents (`delegate`, `worker`, `scout`, `context-builder`, `oracle`, `planner`, `researcher`, or other general agents), do not pass the `model` parameter by default. Let `pi-subagents` resolve model and thinking from `.pi/settings.json`, `.pi/subagents.json`, global subagent config, and runtime defaults.
+For generic Pi subagents, do not pass the `model` parameter by default. Let `pi-subagents` resolve model and thinking from `.pi/settings.json`, `.pi/subagents.json`, global subagent config, and runtime defaults.
 
 Only pass `model` for generic subagents when the user explicitly requests a model override for that launch.
 
@@ -127,7 +127,7 @@ Small task pattern:
 parent clarifies and checks git → parent edits inline → focused test and suite inline → parent reports
 ```
 
-Large task pattern (with a Writer rule reason, one bounded worker per unit writes instead):
+Large task pattern (no Writer rule reason; with one, one bounded worker per unit writes instead):
 
 ```text
 parent clarifies and checks git → parent edits inline following the logbook → focused test and suite inline → parent reports
@@ -135,20 +135,12 @@ parent clarifies and checks git → parent edits inline following the logbook �
 
 Add agents only where a mechanism's own trigger fires.
 
-## Pi Delegation Bindings
-
-Prefer delegation when fresh context improves correctness more than token savings:
-
-- Use `scout`/`context-builder` to compress broad repository exploration into a short handoff instead of loading many files into the parent.
-- Use one `worker` per writer thread; parallel writers only with disjoint Allowed edit surfaces (runtime-enforced) or isolated worktrees.
-- Use `outputMode: "file-only"` for large child reports and summarize only decisions, blockers, and paths in the parent thread.
-
 ### Canonical Lightweight Workflows
 
 Bugfix with unfamiliar flow (understanding exceeds the evidence budget):
 
 ```text
-parent git/status + clarify → scout maps flow/files → worker implements authorized fixes + tests → focused verification → parent reports
+parent git/status + clarify → explorer maps flow/files → worker implements authorized fixes + tests → focused verification → parent reports
 ```
 
 Conflict or dependency-marker cleanup:

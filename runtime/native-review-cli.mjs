@@ -493,6 +493,45 @@ const NATIVE_REVIEW_UNKNOWN_UNACHIEVABLE_VERB_REFUSAL = /unknown review command 
 // flags with this exact typed preflight cause, before reading the repository.
 const NATIVE_REVIEW_UNKNOWN_LENS_FLAG_CAUSE = /^flag provided but not defined: -lenses(?:-reason)?$/;
 
+// A provider older than gentle-ai#6088 refuses the STATUS opt-in with this
+// exact typed preflight cause, before reading the repository.
+const NATIVE_REVIEW_UNKNOWN_NON_BLOCKING_FLAG_CAUSE = /^flag provided but not defined: -non-blocking-findings$/;
+
+/** Reports a not-started STATUS refusal caused only by an unknown --non-blocking-findings flag. */
+function isNativeReviewNonBlockingFindingsUnsupported(error         )          {
+	if (!(error instanceof NativeReviewIntegrationError)) return false;
+	const failure = error.failureEnvelope;
+	return failure.code === "invalid_request" && failure.mutationOutcome === "not_started" &&
+		typeof failure.cause === "string" && NATIVE_REVIEW_UNKNOWN_NON_BLOCKING_FLAG_CAUSE.test(failure.cause);
+}
+
+// Provider binaries (executable path to its sha256) that refused
+// --non-blocking-findings in this process. A replaced binary at the same path
+// has another digest and is asked again. Never a capability claim.
+const nonBlockingFindingsRefusals = new Map                ();
+
+function nonBlockingFindingsRefused(executable        )          {
+	const digest = nonBlockingFindingsRefusals.get(executable);
+	if (digest === undefined) return false;
+	try {
+		return binaryDigest(executable) === digest;
+	} catch {
+		return false;
+	}
+}
+
+function nonBlockingExecutableDigest(executable        )                     {
+	try { return binaryDigest(executable); } catch { return undefined; }
+}
+
+function rememberNonBlockingFindingsRefusal(executable        , digest                    )       {
+	// An old in-flight refusal must neither label a replacement unsupported
+	// nor erase a newer request's cache entry when identity cannot be read.
+	if (digest !== undefined && nonBlockingExecutableDigest(executable) === digest) {
+		nonBlockingFindingsRefusals.set(executable, digest);
+	}
+}
+
 /** Reports a not-started STATUS refusal caused only by an unknown --lenses flag. */
 export function isNativeReviewLensSelectionUnsupported(error         )          {
 	if (!(error instanceof NativeReviewIntegrationError)) return false;
@@ -568,6 +607,14 @@ function nativeRequestContextArguments(request                               )  
 
 
 export const NATIVE_REVIEW_CONSENT_ANSWER = { GRANTED: "granted", DECLINED: "declined" }         ;
+
+
+
+
+
+
+
+
 
 
 
@@ -2495,7 +2542,12 @@ export class NativeReviewCliV216                            {
 					NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE, undefined, false);
 			}
 		}
-		const statusArguments = submittedTokens === undefined ? [
+		// The opt-in rides only this client's own contracted STATUS, never a
+		// provider-issued selection submission.
+		const nonBlockingExecutable = request.nonBlockingFindings === true && submittedTokens === undefined
+			? contextExecutable ?? measureStatusSync("resolution", () => this.executablePath(NATIVE_REVIEW_OPERATION.STATUS, false))
+			: undefined;
+		const statusArguments = (nonBlockingFindings         ) => submittedTokens === undefined ? [
 			"review", "status", "--contract", REVIEW_INTEGRATION_CONTRACT, "--cwd", request.cwd,
 			"--projection", request.projection ?? "workspace",
 			...nativeUntrackedSelectionArguments(selection),
@@ -2504,11 +2556,24 @@ export class NativeReviewCliV216                            {
 			...(request.agent === undefined ? [] : ["--agent", request.agent]),
 			...nativeLensSelectionArguments(request),
 			...requestContextArguments,
+			...(nonBlockingFindings ? ["--non-blocking-findings"] : []),
 			"--next-transition",
 		] : ["review", "status", "--cwd", request.cwd, ...submittedTokens, ...forwardedBaseRef, ...forwardedLineage, ...nativeLensSelectionArguments(request), ...requestContextArguments];
-		const execution = contextExecutable === undefined
-			? await this.negotiated(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal)
-			: await this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal, contextExecutable);
+		const executable = nonBlockingExecutable ?? contextExecutable;
+		const run = (nonBlockingFindings         ) => executable === undefined
+			? this.negotiated(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments(nonBlockingFindings), false, request.signal)
+			: this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments(nonBlockingFindings), false, request.signal, executable);
+		const sendNonBlocking = nonBlockingExecutable !== undefined && !nonBlockingFindingsRefused(nonBlockingExecutable);
+		const nonBlockingDigest = sendNonBlocking ? nonBlockingExecutableDigest(nonBlockingExecutable ) : undefined;
+		let execution                     ;
+		try {
+			execution = await run(sendNonBlocking);
+		} catch (error) {
+			// Only the unknown-flag refusal falls back, once; every other failure is the caller's.
+			if (!sendNonBlocking || !isNativeReviewNonBlockingFindingsUnsupported(error)) throw error;
+			rememberNonBlockingFindingsRefusal(nonBlockingExecutable , nonBlockingDigest);
+			execution = await run(false);
+		}
 		measureStatusSync("decode", () => assertSupportedNextTransitionOperation(execution.body));
 		return decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewStatusV3(execution.body));
 	}

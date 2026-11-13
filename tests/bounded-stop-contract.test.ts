@@ -97,7 +97,7 @@ test("T23(d)(e): a quick check runs once and an unavailable verifier is reported
 test("S4-S5: the unchanged Close stop is scoped to the ended automatic cycle", () => {
 	for (const persona of personas) {
 		containsAll(prompt(persona), [
-			"The Close step's bounded stop ends the current automatic cycle; a later explicit human request is separate and remains subject to native authority.",
+			"The Close stop ends the cycle; later explicit requests stay subject to native authority.",
 			"Partial worker execution is not by itself exhausted proof or a terminal native review outcome.",
 		], `${persona} delivered continuation`);
 		assert.ok(closeStep(persona).includes("never more verification"), "the mirrored Close rule remains intact");
@@ -122,4 +122,12 @@ test("T23(f): the verify agent allows a second correction only for the same bloc
 		"one correction batch and one recheck limited to the reported blockers",
 		"a second correction only when the recheck shows the same blocker still failing, never for a new finding",
 	], "verify item 5");
+});
+
+test("gentle-shell#3082: a stopped verification carries its terminal disposition in the lazy module", () => {
+	containsAll(verification, [
+		"When required proof is unobtainable, one terminal disposition closes a stopped verification",
+		"name the missing proof and resume authorized in-scope work at `status: partial`",
+		"never PASS, never silently dropped",
+	], "verification terminal disposition");
 });

@@ -187,7 +187,7 @@ test("worker asset owns the canonical Known environmental failures definition", 
 test("delegation asset references the worker's Known environmental failures definition instead of restating it", () => {
 	assert.match(
 		delegation,
-		/`## Known environmental failures` follows the same definition as `gentle-ai-worker`'s Verification contract: exact pre-existing base failures reported as evidence, never blockers -- any other failing required command still forces `status: partial`\./,
+		/`## Known environmental failures`: `gentle-ai-worker`'s Verification contract\./,
 	);
 	// The full canonical wording ("lists exact test names or exact command
 	// lines that already fail on the base") must not be duplicated here.

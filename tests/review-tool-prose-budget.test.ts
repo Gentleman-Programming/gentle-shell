@@ -97,6 +97,7 @@ test("trimmed review surface keeps the security and authority invariants", () =>
 	assert.match(family, /Review outcomes never authorize delivery/);
 	// Provider-issued opaque values are authoritative; never invent tokens.
 	assert.match(controller, /native-input-required.*never.*invent/is);
+	assert.match(controller, /Pi v3 use consent\.consentBinding.*otherwise use top-level consent_binding.*Pi-minted.*never a lineage id/);
 	// Ambiguous output handling is declared, not improvised.
 	assert.match(
 		controller,

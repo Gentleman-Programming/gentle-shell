@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
+import { codemodeReaches, GUIDE_TOOL_ROUTE, hideBehindCodemode } from "../lib/hidden-tools.ts";
 import { guidePlacement, GuidePopover, guideStepText, guideSteps, GuideTour, type GuideMode, type GuideResult } from "../lib/gentle-guide.ts";
 import { sidebarState } from "../lib/shell-sidebar.ts";
 
@@ -135,6 +136,7 @@ export default function gentleGuide(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		description: "Drive the /gentle:guide tour of Gentle Shell: start shows the first step as a popover beside the part of the screen it describes and returns its text to explain; next, previous and show (with a step id) move; end closes the popover. Show one step per turn and let the user ask questions between steps.",
 		promptSnippet: "Show the Gentle Shell guided tour one step at a time and explain each step.",
 		parameters: GuideParams,
+		prepareLoadout: hideBehindCodemode(GUIDE_TOOL_NAME),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const { action, step } = params as GuideParamsValue;
 			const text = (value: string) => ({ content: [{ type: "text" as const, text: value }], details: {} });
@@ -165,6 +167,7 @@ export default function gentleGuide(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 
 	pi.on("before_agent_start", (event) => {
 		appendSystemPromptOnce(event.systemPromptOptions, GUIDE_PROMPT_HINT);
+		if (codemodeReaches(event.systemPromptOptions?.selectedTools) && event.systemPromptOptions?.selectedTools?.includes(GUIDE_TOOL_NAME)) appendSystemPromptOnce(event.systemPromptOptions, GUIDE_TOOL_ROUTE);
 		return undefined;
 	});
 	pi.on("session_shutdown", () => {

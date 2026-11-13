@@ -44,7 +44,8 @@ function containsAll(text: string, clauses: readonly string[], label: string): v
 test("S1: verifier makes one isolated preparation attempt before checks", () => {
 	containsAll(verify, [
 		"Make one isolated preparation attempt",
-		"If preparation succeeds, run the authorized checks and independent spec-derived probes",
+		// Cost-speed P8 B2: the verifier runs its evidence commands and probes, never the writer's reported suite.
+		"If preparation succeeds, run your evidence commands and independent spec-derived probes",
 	], "preparation bound");
 });
 
@@ -63,7 +64,7 @@ test("S3: setup failures do not trigger repair loops or automatic relaunch", () 
 	], "verifier setup");
 	assert.ok(!verify.includes("Do not retry setup"), "verifier self-correction replaces the blanket no-retry rule");
 	containsAll(verification, [
-		"A verifier's self-fix of its own setup error needs no decision; if none, relaunch once with the corrected command, unasked.",
+		"A verifier's self-fix of its own setup error (one correction in the same verification) needs no decision; if it made none, relaunch once with the corrected command, unasked.",
 		"If setup still fails or lacks prerequisites, stop: one **Needs your decision** naming the blocker and exact unrun checks as unverified",
 		"never repair helpers more or auto-relaunch for it",
 		"Setup/infrastructure failures aren't code findings; tooling defects keep the correction bound.",

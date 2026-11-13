@@ -17,7 +17,7 @@ Use this skill after installing, removing, creating, moving, or renaming skills,
 - Do not generate or inject compact rules by default; preserve author intent by passing exact skill paths to subagents.
 - Refresh `.atl/skill-registry.md` as a shared disk-only index; do not save session-only runtime rows to the file or Engram.
 - Skip `sdd-*`, `_shared`, and `skill-registry`; deduplicate by skill name, preferring project-level skills over user-level skills.
-- Pi's effective session view merges the current raw disk candidates with `before_agent_start.systemPromptOptions.skills`: active resolved records take precedence within a scope, and all currently resolved paths suppress their loose counterparts, including disabled ones. Never rescan `node_modules` or reparse `pi.skills` yourself.
+- In Pi, the effective view is `<available_skills>` plus the on-disk rows of the `Effective session skills` block in the system prompt.
 - Preserve Git-tracked targets during automatic refresh. Deliberate `/skill-registry:refresh` overrides that guard; unchanged rendered bytes remain untouched even on force.
 
 ## Decision Gates
@@ -33,7 +33,7 @@ Use this skill after installing, removing, creating, moving, or renaming skills,
 ## Execution Steps
 
 1. Use `/skill-registry:refresh` for a deliberate disk-index refresh. It scans known project and user roots, reads frontmatter, and publishes deterministic rows and a non-authoritative cache.
-2. For Pi selection, consult the model-visible effective session view; runtime-only package and custom paths arrive from Pi, not from a `node_modules` scan.
+2. For Pi selection, consult the effective view: `<available_skills>` plus the `Effective session skills` rows.
 3. Pass selected exact paths to subagents and require them to read each `SKILL.md` before work.
 4. Return the registry path, disk skill count, and whether bytes changed.
 
@@ -48,4 +48,4 @@ Return:
 ## References
 
 - `docs/skill-style-guide.md` — how skills should be authored before indexing.
-- `skills/_shared/skill-resolver.md` — how delegators use the index.
+- `assets/orchestrator-skills.md` — Pi delegator protocol (effective view, exact paths).

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -27,7 +27,7 @@ test("committed delivery requests pass the real native client validation without
 	}, join(root, "native-fixture.exe"));
 	const cli = { reviewMode: async () => ({ status: { effective: "on" } }), assess: client.assess.bind(client), targetStatus: client.targetStatus.bind(client) } as unknown as NativeReviewCli;
 	await checkReviewDeliveryPreflight(root, "bash", "git push", cli, () => baseRef, () => false);
-	assert.deepEqual(commands.map(args => args[1]), ["assess", "status"], "both real client validators accept the committed-only request and reach the process adapter");
+	assert.deepEqual(commands.map(args => args[1]), ["status", "assess", "status"], "the untracked inventory read, then both real client validators accept the committed-only request and reach the process adapter");
 	for (const args of commands) {
 		assert.ok(args.includes("--committed-only"));
 		assert.ok(args.includes(baseRef));
@@ -160,8 +160,129 @@ test("repository redirects remain delivery commands but cannot borrow the sessio
 	assert.deepEqual(recognizeReviewDeliveryActions("git -C/other push"), [{ kind: "delivery", directories: ["/other"] }]);
 });
 
+test("#2997: escaped newlines preserve shell word comment boundaries", async () => {
+	const continued = String.fromCharCode(92, 10);
+	for (const command of [`${continued}git push`, `${continued} git push`, `g${continued}it push`, `git pu${continued}sh`, `git${continued} push`, `"g${continued}it" push`, `echo prefix${continued}#; git push`, `echo prefix${continued}${continued}#; git push`]) {
+		assert.equal(recognizeReviewDeliveryActions(command).filter(action => action.kind === "delivery").length, 1, command);
+		let assessments = 0;
+		const cli = { reviewMode: async () => ({ status: { effective: "on" } }), assess: async () => { assessments++; return { reviewDue: true }; } } as unknown as NativeReviewCli;
+		assert.equal((await checkReviewDeliveryPreflight(process.cwd(), "bash", command, cli, () => "HEAD", () => false))?.block, true);
+		assert.equal(assessments, 1);
+	}
+	for (const command of [`'g${continued}it' push`, `echo ${continued}#; git push`, `${continued}# git push &`, `echo ${continued}${continued}# git push &`]) {
+		assert.deepEqual(recognizeReviewDeliveryActions(command), [], command);
+	}
+});
+
+test("#2997: comments inside backticks preserve subsequent parent deliveries", async () => {
+	for (const command of ["echo prefix`true # note`; git push", "echo `true # note`; git push", "echo `true # note`; git push &", "echo `true # note`; export GIT_DIR=/other; git push"]) {
+		const delivery = recognizeReviewDeliveryActions(command).filter(action => action.kind === "delivery");
+		assert.equal(delivery.length, 1, command);
+	}
+	let assessments = 0;
+	const cli = {
+		reviewMode: async () => ({ status: { effective: "on" } }),
+		assess: async () => { assessments++; return { reviewDue: true }; },
+	} as unknown as NativeReviewCli;
+	const result = await checkReviewDeliveryPreflight(process.cwd(), "bash", "echo `true # note`; git push", cli, () => "HEAD", () => false);
+	assert.equal(result?.block, true);
+	assert.equal(assessments, 1, "the trailing parent delivery must still be assessed");
+});
+
+test("#2997: shell background lists cannot use a foreground review check", async () => {
+	const commands = [
+		"sleep 30 && git push &", "git push && echo done &", "git push || echo failed &",
+		"sleep 30 && git push &&\n echo done &", "git push ||\n echo failed &", "git push |\n cat &",
+		"git push &&\n # continuation & comment\n echo done &",
+		"bash -c 'sleep 30 && git push &'", "bash -c 'git push' &",
+		"(git push; echo done) &", "{ git push; echo done; } &",
+		"if true; then git push; fi &", "until true; do gh pr merge 42; done &",
+		'echo "$(git push)" &', "echo `git push` &",
+	];
+	let assessments = 0;
+	const cli = {
+		reviewMode: async () => ({ status: { effective: "on" } }),
+		assess: async ({ baseRef }: { baseRef: string }) => { assessments++; return { candidate: { kind: "base-diff", baseRef }, reviewDue: false }; },
+	} as unknown as NativeReviewCli;
+	for (const command of commands) {
+		const result = await checkReviewDeliveryPreflight(process.cwd(), "bash", command, cli, () => "HEAD", () => false);
+		assert.equal(result?.block, true, command);
+		assert.match(result!.reason, /background|foreground/, command);
+	}
+	assert.equal(assessments, 0, "deferred execution must be separated before assessment");
+	const off = { reviewMode: async () => ({ status: { effective: "off" } }) } as unknown as NativeReviewCli;
+	for (const command of commands) assert.equal(await checkReviewDeliveryPreflight(process.cwd(), "bash", command, off, () => undefined, () => false), undefined, "known RDD off preserves ordinary command policy");
+	for (const command of ["git push # publish & notify", "git push # $(git push &)", "git push # `git push &`", "git push # comment with unmatched ' &",
+		"git push &&\n echo done", "git push # comment &\n echo done",
+		"sleep 1 & git push", "git push 2>&1 | tail -1", "git push &>/dev/null", "git push && echo done", "git push; echo `sleep 1 &`"]) {
+		assert.equal(await checkReviewDeliveryPreflight(process.cwd(), "bash", command, cli, () => "HEAD", () => false), undefined, command);
+	}
+});
+
+test("#2997: exported Git routing cannot borrow an unrelated RDD-off directory", async () => {
+	let modeReads = 0;
+	const off = { reviewMode: async () => { modeReads++; return { status: { effective: "off" } }; } } as unknown as NativeReviewCli;
+	for (const variable of ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_NAMESPACE"]) {
+		for (const command of [
+			`export ${variable}=/other; git push`, `export ${variable}=/other && gh pr merge 42`,
+			`export ${variable}=/other; bash -c 'git push'`, `export ${variable}=/other; echo "$(git push)"`,
+			`eval 'export ${variable}=/other'; git push`,
+			`export ${variable}=/other && git push &`, `echo \`export ${variable}=/other; git push\``,
+		]) {
+			const result = await checkReviewDeliveryPreflight(process.cwd(), "bash", command, off, () => undefined, () => false);
+			assert.equal(result?.block, true, command);
+			assert.match(result!.reason, /repository cannot be resolved/, command);
+		}
+	}
+	assert.equal(modeReads, 0, "the session's off mode cannot authorize a redirected target");
+	for (const command of [
+		"export PATH=/bin; git push", 'echo "export GIT_DIR=/other; git push &"', "echo '$(git push)'",
+		'echo "$(git push)"; export GIT_DIR=/other', "(export GIT_DIR=/other); git push",
+		"bash -c 'export GIT_DIR=/other'; git push", "eval '(export GIT_DIR=/other)'; git push",
+		"export GIT_DIR=/other & git push", "echo `true; export GIT_DIR=/other; true`; git push",
+		"eval 'export GIT_DIR=/other &' ; git push",
+	]) {
+		assert.equal(await checkReviewDeliveryPreflight(process.cwd(), "bash", command, off, () => undefined, () => false), undefined, command);
+	}
+});
+
+test("#3138: output redirections and trailing filters preserve a literal delivery directory", async () => {
+	const root = process.cwd();
+	const commands = [
+		`cd "${root}" && git push 2>&1`, `cd "${root}" && git push 2>&1 | tail -1`,
+		`cd "${root}" && git push 2>& 1 | tail -1`, `cd "${root}" && git push <& 0`,
+		`cd "${root}" && git push >out.log`, `cd "${root}" && git push>/dev/null`,
+		`cd "${root}" && git push &>/dev/null`, `cd "${root}" && git push >|out.log`,
+		`cd "${root}" && git push || echo failed`, `cd "${root}" && gh pr create --title x 2>&1 | tail -5`,
+		`cd "${root}" && gh pr create --body-file - <<'EOF'\nbody text\nEOF`,
+	];
+	for (const command of commands) {
+		assert.deepEqual(recognizeReviewDeliveryActions(command), [{ kind: "delivery", directories: [root] }], command);
+		const seen: string[] = [];
+		const cli = { reviewMode: async ({ cwd }: { cwd: string }) => { seen.push(cwd); return { status: { effective: "off" } }; } } as unknown as NativeReviewCli;
+		assert.equal(await checkReviewDeliveryPreflight(root, "bash", command, cli, () => undefined, () => false), undefined, command);
+		assert.deepEqual(seen, [root], "RDD off is read from the actual selected repository");
+		const on = { reviewMode: async () => ({ status: { effective: "on" } }) } as unknown as NativeReviewCli;
+		assert.match((await checkReviewDeliveryPreflight(root, "bash", command, on, () => undefined, () => false))!.reason, /committed range/, "output formatting never bypasses the RDD-on range gate");
+	}
+});
+
+test("#3138: output syntax never hides a repository redirect or an uncertain cd outcome", () => {
+	for (const command of [
+		"cd /other | git push", "false || cd /other && git push", "cd /other && false || git push",
+		"cd /other && git push || gh pr create", "cd /other && git push; gh pr create",
+		"> /dev/null | cd /other && git push", ">out || cd /other && git push",
+		"cd /other && GIT_DIR=/elsewhere git push 2>&1 | tail -1",
+		"cd /other && env -C /elsewhere git push 2>&1", "cd /other && git --work-tree=/elsewhere push >out",
+	]) assert.ok(recognizeReviewDeliveryActions(command).some(action => action.kind === "delivery" && action.unresolvedDirectory), command);
+	assert.deepEqual(recognizeReviewDeliveryActions('echo "2>&1 | git push"'), []);
+	for (const target of ["1--dry-run", "1-n", "1--delete", "1--work-tree=/elsewhere", "1push", "-n"]) {
+		assert.deepEqual(recognizeReviewDeliveryActions(`cd /selected && git push >&${target}`), [{ kind: "delivery", directories: ["/selected"] }], target);
+	}
+});
+
 test("ambiguous directory control flow cannot borrow another repository's off mode", async t => {
-	const root = mkdtempSync(join(tmpdir(), "review-delivery-directory-flow-"));
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "review-delivery-directory-flow-")));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const other = join(root, "other");
 	mkdirSync(other);
@@ -206,7 +327,7 @@ test("ambiguous directory control flow cannot borrow another repository's off mo
 });
 
 test("preflight rechecks the actual assessed range, preserves native non-due/decline and rejects drift", async t => {
-	const root = mkdtempSync(join(tmpdir(), "review-delivery-scope-"));
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "review-delivery-scope-")));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "-c", "commit.gpgsign=false", ...args], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 	git("init", "-q"); writeFileSync(join(root, "app.ts"), "base\n"); git("add", "."); git("commit", "-qm", "base");
@@ -264,4 +385,78 @@ test("preflight rechecks the actual assessed range, preserves native non-due/dec
 	const pending = checkReviewDeliveryPreflight(root, "bash", "git push origin HEAD", uncooperative, scope, () => false, abort.signal);
 	abort.abort();
 	assert.equal((await pending)?.block, true, "an uncooperative native reader cannot retain admission after abort");
+});
+
+test("#3169: an untracked file beside a committed range is excluded with the native inventory instead of failing the preflight", async t => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "review-delivery-untracked-")));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "-c", "commit.gpgsign=false", ...args], { cwd: root, encoding: "utf8" }).trim();
+	git("init", "-q"); writeFileSync(join(root, "app.ts"), "base\n"); git("add", "."); git("commit", "-qm", "base");
+	const baseRef = git("rev-parse", "HEAD");
+	writeFileSync(join(root, "app.ts"), "changed\n"); git("commit", "-qam", "change");
+	writeFileSync(join(root, "body.md"), "PR body written for gh pr create --body-file\n");
+	let inventory: string | undefined = "sha256:inventory";
+	let statusFails = false;
+	const statusCalls: unknown[] = [], assessCalls: Array<Record<string, unknown>> = [];
+	const cli = {
+		reviewMode: async () => ({ status: { effective: "on" } }),
+		targetStatus: async (request: unknown) => {
+			statusCalls.push(request);
+			if (statusFails) throw new Error("status unavailable");
+			return { applicability: "unrelated", ...(inventory === undefined ? {} : { eligibleUntrackedInventory: inventory }) };
+		},
+		assess: async (request: Record<string, unknown>) => {
+			assessCalls.push(request);
+			// Mirrors native: an undeclared untracked inventory fails a committed-only assessment.
+			if (inventory !== undefined && request.expectedUntrackedInventory !== inventory) throw new Error("untracked files require an explicit declaration");
+			return { candidate: { kind: "base-diff", baseRef, consumed: false }, reviewDue: false };
+		},
+	} as unknown as NativeReviewCli;
+	const command = `cd "${root}" && gh pr create --base main --head feat/x --title "t" --body-file body.md`;
+	assert.equal(await checkReviewDeliveryPreflight(root, "bash", command, cli, () => baseRef, () => false), undefined, "gh pr create passes like the push of the same range");
+	assert.deepEqual(statusCalls.map(request => { const { signal: _signal, ...rest } = request as Record<string, unknown>; return rest; }), [{ cwd: root, baseRef, committedOnly: true, agent: "pi" }]);
+	assert.equal(assessCalls[0].untrackedScope, "exclude");
+	assert.equal(assessCalls[0].expectedUntrackedInventory, "sha256:inventory");
+	assert.equal(assessCalls[0].baseRef, baseRef);
+	assert.equal(assessCalls[0].committedOnly, true);
+
+	inventory = undefined; assessCalls.length = 0;
+	assert.equal(await checkReviewDeliveryPreflight(root, "bash", "git push", cli, () => baseRef, () => false), undefined);
+	assert.ok(!("untrackedScope" in assessCalls[0]) && !("expectedUntrackedInventory" in assessCalls[0]), "no inventory, no declaration");
+
+	statusFails = true; inventory = "sha256:inventory"; assessCalls.length = 0;
+	assert.equal((await checkReviewDeliveryPreflight(root, "bash", "git push", cli, () => baseRef, () => false))?.block, true, "without a native inventory the undeclared assessment still fails closed");
+	assert.ok(!("untrackedScope" in assessCalls[0]), "a failed status read never invents a declaration");
+});
+
+test("#3169: the real native client sends the exclusion flags with the status inventory, and a session change during the status read blocks", async t => {
+	const root = mkdtempSync(join(tmpdir(), "review-delivery-untracked-native-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "-c", "commit.gpgsign=false", ...args], { cwd: root, encoding: "utf8" }).trim();
+	git("init", "-q"); writeFileSync(join(root, "app.ts"), "base\n"); git("add", "."); git("commit", "-qm", "base");
+	const baseRef = git("rev-parse", "HEAD");
+	const digest = `sha256:${"a".repeat(64)}`;
+	const assessArgs: string[][] = [];
+	const client = new NativeReviewCliV216(async request => {
+		if (request.arguments[1] === "assess") {
+			assessArgs.push([...request.arguments]);
+			return { stdout: JSON.stringify({ schema: "gentle-ai.review-assessment/v1", risk: "medium", reasons: [], changed_paths: 1, changed_lines: 1,
+				candidate: { kind: "base-diff", base_ref: baseRef, consumed: false }, review_due: false, review_due_reason: "under_budget" }), stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
+		}
+		throw new Error("status is decoded by its own suite");
+	}, join(root, "native-fixture.exe"));
+	let active = true;
+	const cli = { reviewMode: async () => ({ status: { effective: "on" } }), assess: client.assess.bind(client),
+		targetStatus: async () => { if (!active) throw new Error("unreachable"); return { eligibleUntrackedInventory: digest }; } } as unknown as NativeReviewCli;
+	assert.equal(await checkReviewDeliveryPreflight(root, "bash", "git push", cli, () => baseRef, () => false, undefined, () => active), undefined);
+	assert.ok(assessArgs[0].includes("--untracked-scope=exclude"));
+	assert.ok(assessArgs[0].includes(`--expected-untracked-inventory=${digest}`));
+	assert.ok(!assessArgs[0].some(arg => arg.startsWith("--intended-untracked")), "exclude names no paths");
+
+	assessArgs.length = 0;
+	const changing = { ...cli, targetStatus: async () => { active = false; return { eligibleUntrackedInventory: digest }; } } as unknown as NativeReviewCli;
+	const result = await checkReviewDeliveryPreflight(root, "bash", "git push", changing, () => baseRef, () => false, undefined, () => active);
+	assert.equal(result?.block, true);
+	assert.match(result!.reason, /Session changed during preflight/);
+	assert.equal(assessArgs.length, 0, "no assessment runs after the session changed");
 });

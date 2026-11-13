@@ -119,7 +119,7 @@ test("S5 change 3: the mirror cadence is per task transition, with log entries r
 
 // --- Change 4: admission requirements are stated where the launch is composed --
 
-const ADMISSION = "Admission rejects writers without repository-relative paths under `## Allowed edit surfaces`; below the context backstop, organic writers without `Spec: odd/tasks/<existing>.md, T<n>` and `gentle-ai-verify` without that or `Risk: item N`.";
+const ADMISSION = "Admission rejects writers without repository-relative `## Allowed edit surfaces`; below the context backstop, organic writers without `Spec: odd/tasks/<existing>.md, T<n>` (2+ disjoint writers alone in one message pass) and `gentle-ai-verify` without that or `Risk: item N`.";
 
 test("S5 change 4: the subagent_run description names what admission rejects", () => {
 	const run = registeredTools().get("subagent_run");
@@ -144,8 +144,10 @@ test("S5 change 5: the neutral persona states its Spanish register once (persona
 		assert.ok(!prompt.includes("Language: neutral/professional Spanish when the user writes Spanish."), `[${mode}] neutral duplicate Language line must go`);
 		assert.ok(prompt.includes("- When the user writes Spanish, use neutral/professional Spanish. Do NOT use voseo or any regional conjugations"), `[${mode}] neutral register rule must stay`);
 		assert.ok(prompt.includes("- Do not use slang or regional expressions."), `[${mode}] regional-expressions rule must stay`);
-		// The gentleman pair is pinned verbatim by tests/persona-reply-language.test.ts and stays.
-		assert.ok(render("gentleman", mode).includes("Language: natural Rioplatense Spanish with voseo when the user writes Spanish."));
+		// P14 (PD-57): the gentleman persona also states its register once, in its persona bullet.
+		const gentleman = render("gentleman", mode);
+		assert.ok(!gentleman.includes("Language: natural Rioplatense Spanish with voseo when the user writes Spanish."), `[${mode}] gentleman duplicate Language line must go`);
+		assert.ok(gentleman.includes("- When the user writes Spanish, answer in natural Rioplatense Spanish with voseo."), `[${mode}] gentleman register rule must stay`);
 	}
 });
 
@@ -165,9 +167,18 @@ test("S5 change 5: gentle_odd_phase does not restate the Phase reporting cadence
 
 // Measured at /a (normalized assets root), ACTIVE_TOOLS, default RDD line. Base c09189269 rendered
 // organic 25,482/25,778 B and full delegation 23,309/23,605 B (gentleman/neutral); the diet pins the new sizes.
+// cost-speed-painpoints S15 P5a: the verifier-setup paragraph moved to orchestrator-verification.md and the
+// always-on verdicts landed; measured organic 24,256/24,428 B and full delegation 22,161/22,333 B (default RDD line).
+// Verifier B1: the full-delegation Verify mechanism routes a verifier setup failure to that module (+92 B).
+// cost-speed P14: the duplicate gentleman Language line (-80 B, PD-57) and the core's evidence-budget number aligned
+// to the runtime (-12 B in both modes, PD-81); measured organic 24,164/24,416 B and full delegation 22,131/22,383 B.
 const PRIMARY_PROMPT_BUDGETS: Record<(typeof MODES)[number], Record<(typeof PERSONAS)[number], number>> = {
-	organic: { gentleman: 25_180, neutral: 25_352 },
-	"full-delegation": { gentleman: 23_123, neutral: 23_295 },
+	organic: { gentleman: 24_164, neutral: 24_416 },
+	// cost-speed P6 (X9): launch form, continue-one-worker rule and the tracking pointer, paid by the motivation
+	// sentence and a duplicate of step 6's verbatim-request rule (22,253/22,425 -> 22,223/22,395 B).
+	// cost-speed P6b: the launch sentence names the same assistant message, the `codemode` route and the sequential
+	// tools (+126 B), paid by tightening five sentences of the same asset (22,131/22,383 -> 22,128/22,380 B).
+	"full-delegation": { gentleman: 22_128, neutral: 22_380 },
 };
 
 test("S5: the rendered primary prompt fits the lowered per-mode budgets", (t) => {
@@ -200,6 +211,10 @@ test("S5 change 4: admission behaves as the subagent_run sentence states", async
 	const writer = { agent: "gentle-ai-worker", task: "Change one file.\n\n## Allowed edit surfaces\nsrc/a.ts" };
 	assert.ok(rejectUndocumentedWriterLaunch(writer, { root, contextUsage: belowBackstop, env, orchestratorMode: "organic" })?.block, "organic writer without Spec: is rejected below the backstop");
 	assert.equal(rejectUndocumentedWriterLaunch(writer, { root, contextUsage: belowBackstop, env, orchestratorMode: "full-delegation" }), undefined, "full delegation never rejects a writer for a missing Spec:");
+	const sibling = { agent: "gentle-ai-worker", task: "Change another file.\n\n## Allowed edit surfaces\nsrc/b.ts" };
+	const batch = [writer, sibling].map(input => ({ name: "subagent_run", arguments: input }));
+	assert.equal(rejectUndocumentedWriterLaunch(writer, { root, contextUsage: belowBackstop, env, orchestratorMode: "organic", sameMessageCalls: batch }), undefined, "2+ disjoint writers alone in one message pass");
+	assert.ok(rejectUndocumentedWriterLaunch(writer, { root, contextUsage: belowBackstop, env, orchestratorMode: "organic", sameMessageCalls: [...batch, { name: "read", arguments: { path: "a" } }] })?.block, "not with another call beside them");
 	const verifier = { agent: "gentle-ai-verify", task: "Verify the change." };
 	assert.ok(rejectUnriskedVerifierLaunch(verifier, { root, contextUsage: belowBackstop, env })?.block, "verifier without Risk: item N or Spec: is rejected (admission takes no mode, so full delegation too)");
 	assert.equal(rejectUnriskedVerifierLaunch({ ...verifier, task: "Verify the change.\nRisk: item 3 (shared parser)" }, { root, contextUsage: belowBackstop, env }), undefined, "a declared Risk: item 3 is admitted");

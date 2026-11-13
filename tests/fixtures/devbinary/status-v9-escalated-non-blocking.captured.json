@@ -1,0 +1,92 @@
+{
+  "schema": "gentle-ai.review-integration.status/v9",
+  "contract": "gentle-ai.review-integration/v2",
+  "operation": "review.status",
+  "applicability": "current_target",
+  "authority": {
+    "version": "compact-v2",
+    "lineage_id": "review-0e3fa3cadd7d4bb6",
+    "state": "escalated",
+    "generation": 1,
+    "revision": "sha256:f0b02d76d799607c1a6f08bb24a92ebc5ab8a61a70155b89ecc39932c2ad7d38"
+  },
+  "action": "stop",
+  "replayability": "manual_action_required",
+  "frozen": {
+    "tier": "medium",
+    "original_changed_lines": 4,
+    "correction_budget": 2
+  },
+  "target_identity": "sha256:bcedabec743a2ddb57e9dc4654f70c7550b67c7ac6cf637284b6c776bb1d96f9",
+  "projection": {
+    "schema": "gentle-ai.review-integration.projection/v1",
+    "kind": "current-changes",
+    "projection": "workspace",
+    "base_tree": "cb234a1435871ed095db961750b8bb944fadbd43",
+    "initial_review_tree": "0d4e270fd5137e056253134ca65d0c32e41901a2",
+    "current_candidate_tree": "0d4e270fd5137e056253134ca65d0c32e41901a2",
+    "paths_digest": "sha256:8ccae4e729a07c59c29c6f64e8ea1e868d12b0a8d7aa6bb6c836be10a44ad7b8",
+    "paths": [
+      "app.ts"
+    ],
+    "intended_untracked": [],
+    "intended_untracked_proof": "sha256:b97229718d4c7fe50a8892eb474ae5aa6491697bccb400e3e31dbaca4894d2f3",
+    "initial_snapshot_identity": "sha256:bcedabec743a2ddb57e9dc4654f70c7550b67c7ac6cf637284b6c776bb1d96f9",
+    "current_snapshot_identity": "sha256:bcedabec743a2ddb57e9dc4654f70c7550b67c7ac6cf637284b6c776bb1d96f9"
+  },
+  "eligible_untracked_inventory": "sha256:0fc9c89f9fb57a5340cb06a0d61707dbf4d16b8d18d78a55fd8c28d114b47735",
+  "repair": {
+    "schema": "gentle-ai.review-authority-repair-assessment/v1",
+    "status": "unsupported",
+    "counts": {
+      "lineages": 0,
+      "compact_lineages": 0,
+      "legacy_lineages": 0,
+      "events": 0,
+      "bytes": 0,
+      "eligible_candidates": 0,
+      "unsupported_lineages": 0,
+      "conflicts": 0
+    },
+    "supported_operations": [
+      "review/complete-fix",
+      "review/validate-fix"
+    ],
+    "authorization_schema": "gentle-ai.review-repair-authorization/v1"
+  },
+  "candidates": [],
+  "forecast": {
+    "horizon": "terminal",
+    "steps": [
+      {
+        "step": 1,
+        "kind": "stop",
+        "reason_code": "native_stop_required",
+        "description": "Native stop transition required by authority"
+      }
+    ]
+  },
+  "next_transition": {
+    "kind": "stop",
+    "reason_code": "native_stop_required"
+  },
+  "escalation": {
+    "cause": "unknown_causality",
+    "finding_ids": [
+      "R3-001"
+    ]
+  },
+  "non_blocking_findings": {
+    "statement": "Every finding listed here is non-blocking: it is not a finding to correct and not an unresolved finding that stopped this review, and it needs no correction in this review. A `follow_up` finding is separate later work; a `refuted` finding needs none.",
+    "findings": [
+      {
+        "id": "R3-002",
+        "lens": "reliability",
+        "location": "app.ts:2",
+        "severity": "WARNING",
+        "disposition": "informational",
+        "claim": "synthetic warning claim"
+      }
+    ]
+  }
+}

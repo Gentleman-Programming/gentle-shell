@@ -80,7 +80,7 @@ function renderComponent(component: { render(width: number): string[] }): string
 	return component.render(120).map((line) => line.replace(/[ \t]+$/g, "")).join("\n");
 }
 
-function registeredGentleTools(): Map<string, any> {
+function registeredGentleTools(processEnv?: NodeJS.ProcessEnv): Map<string, any> {
 	const tools = new Map<string, any>();
 	const pi = {
 		on() {},
@@ -89,7 +89,7 @@ function registeredGentleTools(): Map<string, any> {
 			tools.set(tool.name, tool);
 		},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	createGentleAiExtension({ nativeReviewCli: null, ...(processEnv === undefined ? {} : { processEnv }) })(pi);
 	return tools;
 }
 
@@ -244,12 +244,15 @@ test("missing package-local binaries give a direct recovery without attributing 
 });
 
 test("registered Gentle Review tools render reusable rose lifecycle call rows", () => {
-	const tools = registeredGentleTools();
+	// An explicit empty environment, so an inherited child or opt-out variable
+	// cannot drop gentle_review_run from the registered family this test lists.
+	const tools = registeredGentleTools({});
 	const cases = [
 		["gentle_review", { operation: "status" }, "status"],
 		["gentle_review", { operation: "future-operation", secret: "/private" }, ""],
 		["gentle_review_scope", {}, "scope"],
 		["gentle_review_capture_group", {}, "capture group"],
+		["gentle_review_run", { lineageId: "lineage-id" }, "run"],
 		[
 			"gentle_review_capture",
 			{

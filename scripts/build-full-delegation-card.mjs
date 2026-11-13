@@ -101,6 +101,10 @@ export function renderFullDelegationCard(assetsDir) {
 	const differential = paragraph(delegation, "**Differential check (PRESERVE):**", delegationSource);
 	const launch = rewrite(section(delegation, "## Launch", delegationSource), [
 		[" before launching a writer (`orchestrator-writer.md`).", " before launching a writer (below)."],
+		// ceremony-diet S2: the card's first launch bullet restates the always-on
+		// "derive nonempty surfaces" rule and core Safety's parallel-writer rule; both
+		// already live in the injected prompt, so the card drops them (pure dedup).
+		["- Derive nonempty `## Allowed edit surfaces` before launching a writer (below). Parallel writers only with disjoint Allowed edit surfaces (runtime-enforced) or isolated worktrees.\n", ""],
 		["Otherwise run in the foreground. Detail: reference.", "Otherwise run in the foreground. Detail: below."],
 		["report the capability gap; a fired trigger is never replaced by inline work.", "report the capability gap; never do the work yourself instead."],
 	], delegationSource);

@@ -106,7 +106,8 @@ test("T31: PRESERVE uses the general definition of touched, not a parser-specifi
 test("T31: high-risk item 3 is about unrequested breaks, not the requested change", () => {
 	const core = read("assets/orchestrator.md");
 	assert.ok(
-		core.includes("requested changes are not; unrequested breaks in shared code are"),
+		// cost-speed-painpoints S15 P5a (verdict C9): touching shared code that unrequested behavior uses is item 3.
+		core.includes("requested changes are not; changing shared code that unrequested behavior also uses is"),
 		"item 3 must separate requested changes from unrequested breaks",
 	);
 });

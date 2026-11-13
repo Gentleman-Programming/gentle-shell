@@ -1,6 +1,38 @@
 // Comments persisted in design/<slug>/comments.json: pins on the artboards, the
 // list and its filter, the send mode, Send all, the panel and Comment mode.
 
+// Every string the comments show, in English; canvas-i18n-es.js has the Spanish. The comments themselves and file names stay as written.
+const TEXT = Object.freeze({
+	open: (count) => `Open (${count})`,
+	resolved: (count) => `Resolved (${count})`,
+	sendAll: (count) => `Send all (${count})`,
+	empty: "No comments yet. Turn on Comment mode and click an element.",
+	emptyOpen: "No open comments.",
+	emptyResolved: "No resolved comments.",
+	pin: (number, status, text) => `Comment ${number} (${status}): ${text}`,
+	statuses: { open: "open", resolved: "resolved" },
+	showLabel: (number, file) => `Show comment ${number} on ${file}`,
+	sent: "Sent",
+	notSent: "Not sent",
+	detached: "Detached",
+	shot: (number) => `Screenshot of comment ${number}`,
+	resolve: "Resolve",
+	reopen: "Reopen",
+	resolveLabel: (number) => `Resolve comment ${number}`,
+	reopenLabel: (number) => `Reopen comment ${number}`,
+	unreadable: (slug, reason) => `comments.json for ${slug} cannot be read: ${reason}`,
+	notUpdated: (reason) => `Comment not updated: ${reason}`,
+	resolvedDone: "Comment resolved",
+	reopenedDone: "Comment reopened",
+	notSentAll: (reason) => `Comments not sent: ${reason}`,
+	sentAll: (count) => `Sent ${count} comment${count === 1 ? "" : "s"} to the session`,
+	noneUnsent: "No unsent comments",
+	error: "error",
+	save: "Save",
+	send: "Send",
+	commentMode: "Comment mode: click an element in an artboard",
+});
+
 const LIMITS = { pins: 500 };
 const MODE_KEY = "gentle-design:send-mode";
 
@@ -9,6 +41,7 @@ export function init(ctx) {
 	const { state } = store;
 	const { base, getJson, postJson, isFiniteNumber } = api;
 	const { setStatus } = ui;
+	const T = ctx.i18n.text("comments", TEXT);
 
 	function storedMode() {
 		try {
@@ -22,12 +55,18 @@ export function init(ctx) {
 		return state.comments.filter((comment) => comment.file === board.artboard.file);
 	}
 
-	function sendPins(board) {
-		const pins = commentsForBoard(board).slice(0, LIMITS.pins).map((comment) => ({ id: comment.id, selector: comment.selector }));
-		board.frame.contentWindow?.postMessage({ type: "gd:pins", pins }, "*");
+	/** A board's frame or one of its size frames (canvas-sizes.js) locates its artboard's comments and reports where they are. */
+	function sendPins(surface) {
+		const pins = commentsForBoard(actions.ownerOf(surface)).slice(0, LIMITS.pins).map((comment) => ({ id: comment.id, selector: comment.selector }));
+		surface.frame.contentWindow?.postMessage({ type: "gd:pins", pins }, "*");
 	}
 
-	/** Detached: the artboard is gone, or it reported that the selector matches nothing. */
+	/** Every frame of every design board: its own and, in All sizes, its size frames. */
+	function eachSurface(callback) {
+		for (const board of state.boards) actions.surfacesOf(board).forEach(callback);
+	}
+
+	/** Detached: the artboard is gone, or its own frame reported that the selector matches nothing. */
 	function isDetached(comment) {
 		const board = state.boards.find((candidate) => candidate.artboard.file === comment.file);
 		if (!board) return true;
@@ -42,12 +81,14 @@ export function init(ctx) {
 		return state.comments.indexOf(comment) + 1;
 	}
 
-	function renderPins(board) {
+	/** The pins of one frame, at their element's position in that frame; a size frame has its own set. */
+	function renderPins(surface) {
 		const pins = [];
-		for (const comment of commentsForBoard(board)) {
-			const rect = board.rects?.get(comment.id);
-			if (!rect) continue;
-			if (rect.x + rect.width < 0 || rect.y + rect.height < 0 || rect.x > board.artboard.width || rect.y > board.viewHeight) continue;
+		for (const comment of commentsForBoard(actions.ownerOf(surface))) {
+			const rect = surface.rects?.get(comment.id);
+			// A 0x0 rect is an element that is hidden or not rendered: no pin at the artboard's corner.
+			if (!rect || (rect.width === 0 && rect.height === 0)) continue;
+			if (rect.x + rect.width < 0 || rect.y + rect.height < 0 || rect.x > surface.viewWidth || rect.y > surface.viewHeight) continue;
 			const pin = doc.createElement("button");
 			pin.type = "button";
 			pin.className = "gd-pin";
@@ -55,7 +96,7 @@ export function init(ctx) {
 			pin.dataset.status = comment.status;
 			pin.classList.toggle("gd-pin-active", comment.id === state.activeId);
 			pin.textContent = String(commentNumber(comment));
-			pin.setAttribute("aria-label", `Comment ${commentNumber(comment)} (${comment.status}): ${comment.comment}`);
+			pin.setAttribute("aria-label", T.pin(commentNumber(comment), T.statuses[comment.status] ?? comment.status, comment.comment));
 			pin.style.left = `${Math.max(0, rect.x)}px`;
 			pin.style.top = `${Math.max(0, rect.y)}px`;
 			pin.addEventListener("click", (event) => {
@@ -64,26 +105,25 @@ export function init(ctx) {
 			});
 			pins.push(pin);
 		}
-		const focused = board.pins.contains(doc.activeElement) ? doc.activeElement.dataset.id : null;
-		board.pins.replaceChildren(...pins);
+		const focused = surface.pins.contains(doc.activeElement) ? doc.activeElement.dataset.id : null;
+		surface.pins.replaceChildren(...pins);
 		if (focused) pins.find((pin) => pin.dataset.id === focused)?.focus();
 	}
 
 	function renderList() {
 		const open = state.comments.filter((comment) => comment.status === "open");
 		const resolved = state.comments.filter((comment) => comment.status === "resolved");
-		els.filterOpen.textContent = `Open (${open.length})`;
-		els.filterResolved.textContent = `Resolved (${resolved.length})`;
+		els.filterOpen.textContent = T.open(open.length);
+		els.filterResolved.textContent = T.resolved(resolved.length);
 		els.filterOpen.setAttribute("aria-pressed", String(state.filter === "open"));
 		els.filterResolved.setAttribute("aria-pressed", String(state.filter === "resolved"));
+		els.countComments.textContent = String(open.length);
 		const unsent = open.filter((comment) => comment.sentAt === null).length;
-		els.sendAll.textContent = `Send all (${unsent})`;
-		els.sendAll.disabled = unsent === 0;
+		els.sendAll.textContent = T.sendAll(unsent);
+		els.sendAll.disabled = unsent === 0 || sendingAll;
 		const shown = state.filter === "open" ? open : resolved;
 		els.panelEmpty.hidden = shown.length > 0;
-		els.panelEmpty.textContent = state.comments.length === 0
-			? "No comments yet. Turn on Comment mode and click an element."
-			: state.filter === "open" ? "No open comments." : "No resolved comments.";
+		els.panelEmpty.textContent = state.comments.length === 0 ? T.empty : state.filter === "open" ? T.emptyOpen : T.emptyResolved;
 		els.list.replaceChildren(...shown.map((comment) => {
 			const item = doc.createElement("li");
 			item.className = "gd-comment-item";
@@ -92,7 +132,7 @@ export function init(ctx) {
 			const show = doc.createElement("button");
 			show.type = "button";
 			show.className = "gd-comment-show";
-			show.setAttribute("aria-label", `Show comment ${commentNumber(comment)} on ${comment.file}`);
+			show.setAttribute("aria-label", T.showLabel(commentNumber(comment), comment.file));
 			const meta = doc.createElement("span");
 			meta.className = "gd-comment-meta";
 			const number = doc.createElement("span");
@@ -107,39 +147,42 @@ export function init(ctx) {
 				element.textContent = text;
 				meta.append(element);
 			};
-			badge(comment.sentAt ? "Sent" : "Not sent", comment.sentAt ? "sent" : "unsent");
-			if (isDetached(comment)) badge("Detached", "detached");
+			badge(comment.sentAt ? T.sent : T.notSent, comment.sentAt ? "sent" : "unsent");
+			if (isDetached(comment)) badge(T.detached, "detached");
 			const text = doc.createElement("span");
 			text.className = "gd-comment-text";
 			text.style.display = "block";
 			text.textContent = comment.comment;
 			show.append(meta, text);
+			// The size it was made at, when not at the artboard's own size (canvas-sizes.js).
+			const made = actions.viewportChip(comment.viewport);
+			if (made) show.append(made);
 			if (comment.screenshot) {
 				const shot = doc.createElement("img");
 				shot.className = "gd-comment-shot";
-				shot.alt = `Screenshot of comment ${commentNumber(comment)}`;
+				shot.alt = T.shot(commentNumber(comment));
 				shot.loading = "lazy";
 				shot.src = `${base}api/designs/${encodeURIComponent(state.slug)}/comments/${encodeURIComponent(comment.id)}/screenshot`;
 				show.append(shot);
 			}
 			show.addEventListener("click", () => selectComment(comment.id, { scroll: true, focusList: false }));
-			const actions = doc.createElement("div");
-			actions.className = "gd-comment-actions";
+			const controls = doc.createElement("div");
+			controls.className = "gd-comment-actions";
 			const toggle = doc.createElement("button");
 			toggle.type = "button";
 			const next = comment.status === "open" ? "resolved" : "open";
-			toggle.textContent = next === "resolved" ? "Resolve" : "Reopen";
-			toggle.setAttribute("aria-label", `${toggle.textContent} comment ${commentNumber(comment)}`);
+			toggle.textContent = next === "resolved" ? T.resolve : T.reopen;
+			toggle.setAttribute("aria-label", (next === "resolved" ? T.resolveLabel : T.reopenLabel)(commentNumber(comment)));
 			toggle.addEventListener("click", () => setCommentStatus(comment.id, next));
-			actions.append(toggle);
-			item.append(show, actions);
+			controls.append(toggle);
+			item.append(show, controls);
 			return item;
 		}));
 	}
 
 	function renderComments() {
 		renderList();
-		state.boards.forEach(renderPins);
+		eachSurface(renderPins);
 	}
 
 	async function loadComments() {
@@ -149,12 +192,12 @@ export function init(ctx) {
 		try {
 			comments = (await getJson(`api/designs/${encodeURIComponent(slug)}/comments`)).comments;
 		} catch (error) {
-			setStatus(`comments.json for ${slug} cannot be read: ${error.message}`, true);
+			setStatus(T.unreadable(slug, error.message), true);
 		}
 		if (slug !== state.slug || !Array.isArray(comments)) return;
 		store.setComments({ comments });
 		if (state.activeId && !comments.some((comment) => comment.id === state.activeId)) store.setComments({ activeId: null });
-		state.boards.forEach(sendPins);
+		eachSurface(sendPins);
 		renderComments();
 	}
 
@@ -168,7 +211,9 @@ export function init(ctx) {
 			renderList();
 		}
 		const board = state.boards.find((candidate) => candidate.artboard.file === comment.file);
-		board?.frame.contentWindow?.postMessage({ type: "gd:highlight", id }, "*");
+		if (board) for (const surface of actions.surfacesOf(board)) surface.frame.contentWindow?.postMessage({ type: "gd:highlight", id }, "*");
+		// A pin clicked while Quality shows brings the list back, so focus can land in it.
+		if (options.focusList && state.tab !== "comments") actions.setTab("comments");
 		if (options.focusList) els.list.querySelector(`[data-id="${win.CSS.escape(id)}"] .gd-comment-show`)?.focus();
 		if (!options.scroll) return;
 		// The focused artboard is already at 1:1; another board's comment leaves focus mode first.
@@ -187,18 +232,22 @@ export function init(ctx) {
 	async function setCommentStatus(id, status) {
 		const slug = state.slug;
 		const reply = await postJson(`api/designs/${encodeURIComponent(slug)}/comments/${encodeURIComponent(id)}/status`, { status }).catch((error) => ({ ok: false, body: { error: error.message } }));
-		if (!reply.ok) setStatus(`Comment not updated: ${reply.body.reason || reply.body.error || "error"}`, true);
-		else setStatus(status === "resolved" ? "Comment resolved" : "Comment reopened", false);
+		if (!reply.ok) setStatus(T.notUpdated(reply.body.reason || reply.body.error || T.error), true);
+		else setStatus(status === "resolved" ? T.resolvedDone : T.reopenedDone, false);
 		await loadComments();
 	}
 
+	// Send all is in flight: any re-render (a filter, a language switch) keeps the button disabled until the reply.
+	let sendingAll = false;
 	els.sendAll.addEventListener("click", async () => {
 		const slug = state.slug;
 		if (!slug) return;
+		sendingAll = true;
 		els.sendAll.disabled = true;
 		const reply = await postJson(`api/designs/${encodeURIComponent(slug)}/comments/send-all`, {}).catch((error) => ({ ok: false, body: { error: error.message } }));
-		if (!reply.ok) setStatus(`Comments not sent: ${reply.body.reason || reply.body.error || "error"}`, true);
-		else setStatus(reply.body.sent ? `Sent ${reply.body.sent} comment${reply.body.sent === 1 ? "" : "s"} to the session` : "No unsent comments", false);
+		sendingAll = false;
+		if (!reply.ok) setStatus(T.notSentAll(reply.body.reason || reply.body.error || T.error), true);
+		else setStatus(reply.body.sent ? T.sentAll(reply.body.sent) : T.noneUnsent, false);
 		await loadComments();
 	});
 
@@ -206,8 +255,19 @@ export function init(ctx) {
 		store.setMode(mode === "collect" ? "collect" : "send");
 		els.modeSend.checked = state.mode === "send";
 		els.modeCollect.checked = state.mode === "collect";
-		els.send.textContent = state.mode === "collect" ? "Save" : "Send";
+		labelSend();
 		try { win.localStorage.setItem(MODE_KEY, state.mode); } catch { /* storage may be unavailable */ }
+	}
+
+	/** The comment box's submit button: Save in Collect, Send in Send now. */
+	function labelSend() {
+		els.send.textContent = state.mode === "collect" ? T.save : T.send;
+	}
+
+	/** A new language: the panel, the pins and the submit button, in place (no frame reloads). */
+	function relabel() {
+		renderComments();
+		labelSend();
 	}
 
 	els.modeSend.addEventListener("change", () => setMode("send"));
@@ -238,10 +298,11 @@ export function init(ctx) {
 
 	function setCommenting(enabled) {
 		store.setCommenting(enabled);
-		els.comment.setAttribute("aria-pressed", String(enabled));
+		actions.renderTools();
 		els.world.classList.toggle("gd-commenting", enabled);
-		state.boards.forEach(actions.sendMode);
-		setStatus(enabled ? "Comment mode: click an element in an artboard" : "", false);
+		state.boards.forEach((board) => board.sizesView?.classList.toggle("gd-commenting", enabled));
+		eachSurface(actions.sendMode);
+		setStatus(enabled ? T.commentMode : "", false);
 		if (!enabled) {
 			actions.setHoverBoard(null);
 			actions.closePopover();
@@ -250,5 +311,5 @@ export function init(ctx) {
 
 	els.comment.addEventListener("click", () => setCommenting(!state.commenting));
 
-	return { storedMode, sendPins, detachedKey, renderPins, renderList, renderComments, loadComments, setMode, setPanel, readRects, setCommenting };
+	return { relabel, storedMode, sendPins, detachedKey, renderPins, renderList, renderComments, loadComments, setMode, setPanel, readRects, setCommenting };
 }

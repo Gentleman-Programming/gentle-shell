@@ -41,7 +41,9 @@ const FIXTURE_PATH = join(import.meta.dirname, "fixtures", "orchestrator.pre-die
 // controlled 128-char assets root needs the headroom for platform-independent rendering.
 // cost-speed-painpoints S5 (T4): the duplicate `## Identity Contract` pointer left the core (the Language Boundary
 // intro carries the same pointer); measured 9,347 -> 9,197 B at the 128-char root: 9,350 -> 9,197 B.
-const BUDGET_BYTES = 9197;
+// cost-speed-painpoints S15 P5a: verdicts C7, C9, C12, X1, X3 and C8 (L41); measured 9,197 -> 9,189 B at the 128-char root.
+// cost-speed P14 (PD-81): the Evidence-budget lookup number matches the runtime notice; measured 9,189 -> 9,177 B.
+const BUDGET_BYTES = 9177;
 const MIN_CONTROLLED_LONG_ASSETS_ROOT_CHARS = 93;
 
 const LAZY_ASSET_NAMES = [
@@ -340,6 +342,8 @@ for (const range of DISPOSITION_MAP) {
 				const trimmed = raw.trim();
 				const expected =
 					// Preserve the synthesis rule while reserving core bytes for the RDD scope condition.
+					// cost-speed-painpoints S15 P5a (verdict C7): organic is inline by default; delegation only by a Mechanism trigger.
+					ln === 11 ? "You are a COORDINATOR who executes understood work inline. Maintain one thin conversation thread, delegate only when a Mechanism trigger fires, and synthesize results for the user." :
 					ln === 13 ? "Default to concise synthesis: decision, outcome, next action. Expand on request or when detail is needed." :
 					ln === 36 ? "- Substantial authorized work: use ODD; track feature progress automatically." :
 					trimmed;
@@ -372,7 +376,8 @@ test("lazy skill discovery selects and delegates from the effective view with a 
 		"Match task context and target files against the effective view's `Trigger / description` column.",
 		"Pass only matching exact `Path` values to subagents under `## Skills to load before work`.",
 		"Tell subagents to read those exact `SKILL.md` files before reading, writing, reviewing, testing, or creating artifacts.",
-		"Consult the `Effective session skills` block, including runtime-only paths, before acting or delegating.",
+		"The effective view is `<available_skills>` plus the on-disk rows of the `Effective session skills` system-prompt block",
+		"Consult `<available_skills>` and the `Effective session skills` block, when present, before acting or delegating.",
 		"Read the matching exact `SKILL.md` path when acting; pass it to the subagent when delegating.",
 		"If the view is unavailable, disclose the limitation; `.atl/skill-registry.md` is a disk-only fallback, not a complete Pi view.",
 		"If an expected workflow is absent, search configured skill roots only as a fallback. Prefer the most specific project skill over a global skill with the same intent.",
@@ -413,7 +418,8 @@ test("lazy coordination detail retains subject guidance without inflating the co
 
 test("core-alone: dynamic Gentle AI ownership replaces package lifecycle instructions", () => {
 	const core = readRealAsset("orchestrator.md");
-	assert.match(core, /injects the mirrored provider-bundle review execution contract into this session's system prompt at start/);
+	// cost-speed-painpoints S15 P5a (verdict X1): the contract is injected only while RDD is not off.
+	assert.match(core, /While RDD is not off, this package injects the mirrored provider-bundle review execution contract;/);
 	assert.match(core, /Absent that mirrored contract, this package invents no lifecycle instructions/);
 	assert.doesNotMatch(core, /start -> finalize -> validate/i);
 	assert.doesNotMatch(core, /receipt validation/i);

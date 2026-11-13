@@ -1075,6 +1075,71 @@ test("committed-only candidate views scope an explicit base to committed changes
 	}
 });
 
+test("committed-only candidates include only explicitly selected untracked files", (t) => {
+	mockWindowsAcl(t);
+	const contributorRoot = repository(t);
+	const baseCommit = git(contributorRoot, "rev-parse", "HEAD");
+	const baseTree = git(contributorRoot, "rev-parse", "HEAD^{tree}");
+	commitFileAfterBase(contributorRoot);
+	writeFileSync(join(contributorRoot, "tracked.txt"), "staged noise\n");
+	git(contributorRoot, "add", "tracked.txt");
+	writeFileSync(join(contributorRoot, "tracked.txt"), "unstaged noise\n");
+	writeFileSync(join(contributorRoot, "selected.txt"), "selected\n");
+	writeFileSync(join(contributorRoot, "excluded.txt"), "excluded\n");
+	const snapshot = () => ({ status: git(contributorRoot, "status", "--porcelain=v1"), tree: git(contributorRoot, "write-tree"), tracked: readFileSync(join(contributorRoot, "tracked.txt"), "utf8") });
+	const before = snapshot();
+	const oracleIndex = join(contributorRoot, ".git", "oracle-index");
+	const oracle = (...args: string[]) => execFileSync("git", args, { cwd: contributorRoot, encoding: "utf8", env: { ...process.env, GIT_INDEX_FILE: oracleIndex } }).trim();
+	oracle("read-tree", "HEAD");
+	oracle("add", "--", "selected.txt");
+	const expected = oracle("write-tree");
+	for (const selector of [{ baseRef: baseCommit }, { providerBaseTree: baseTree }]) {
+		for (const intendedUntracked of [["selected.txt"], []]) {
+			const view = new CandidateViewRegistry().createOrReuse({ contributorRoot, committedOnly: true, ...selector, intendedUntracked });
+			try {
+				assert.equal(view.candidateTree, intendedUntracked.length ? expected : git(contributorRoot, "rev-parse", "HEAD^{tree}"));
+				assert.equal(existsSync(join(view.root, "selected.txt")), intendedUntracked.length > 0);
+				assert.equal(existsSync(join(view.root, "excluded.txt")), false);
+				assert.equal(readFileSync(join(view.root, "tracked.txt"), "utf8"), "base\n");
+				assert.equal(readFileSync(join(view.root, "committed-after-base.txt"), "utf8"), "committed after base\n");
+				assert.deepEqual(view.intendedUntracked, intendedUntracked);
+			} finally { view.cleanup(); }
+		}
+	}
+	assert.deepEqual(snapshot(), before);
+});
+
+test("committed-only untracked selections reject tracked collisions and directory expansion", (t) => {
+	mockWindowsAcl(t);
+	for (const collision of ["tracked", "removed-from-index", "directory", "staged", "ignored"]) {
+		const contributorRoot = repository(t);
+		const baseRef = git(contributorRoot, "rev-parse", "HEAD");
+		writeFileSync(join(contributorRoot, "tracked.txt"), "dirty tracked input\n");
+		let selection = "tracked.txt";
+		if (collision === "removed-from-index") git(contributorRoot, "rm", "--cached", "tracked.txt");
+		if (collision === "directory") {
+			mkdirSync(join(contributorRoot, "folder"));
+			writeFileSync(join(contributorRoot, "folder", "tracked.txt"), "committed\n");
+			git(contributorRoot, "add", "folder/tracked.txt");
+			git(contributorRoot, "-c", "user.name=Candidate Test", "-c", "user.email=candidate@example.invalid", "commit", "-m", "directory baseline");
+			writeFileSync(join(contributorRoot, "folder", "tracked.txt"), "dirty directory input\n");
+			writeFileSync(join(contributorRoot, "folder", "selected.txt"), "selected\n");
+			selection = "folder";
+		}
+		if (collision === "staged" || collision === "ignored") {
+			selection = "selected.txt";
+			writeFileSync(join(contributorRoot, selection), "selected\n");
+			if (collision === "staged") git(contributorRoot, "add", selection);
+			else writeFileSync(join(contributorRoot, ".gitignore"), selection + "\n");
+		}
+		const before = git(contributorRoot, "write-tree");
+		assert.throws(() => new CandidateViewRegistry().createOrReuse({ contributorRoot, baseRef, committedOnly: true, intendedUntracked: [selection] }),
+			(error: unknown) => error instanceof CandidateViewError && error.reason === "candidate-untracked-selection-invalid");
+		assert.equal(git(contributorRoot, "write-tree"), before);
+		assert.equal(readFileSync(join(contributorRoot, "tracked.txt"), "utf8"), "dirty tracked input\n");
+	}
+});
+
 test("explicit base refs reject ambiguous DWIM names even when they resolve identically, while full refs stay valid", (t) => {
 	const contributorRoot = repository(t);
 	const baseCommit = git(contributorRoot, "rev-parse", "HEAD");

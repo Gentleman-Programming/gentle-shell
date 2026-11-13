@@ -1,20 +1,22 @@
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
-
 // gentle-shell#1587: delegated children (GENTLE_PI_AGENTS_CHILD=1) load the
 // same context files as the orchestrator, including gentle-ai managed blocks
 // that bind themselves to the orchestrator only. Those blocks cost ~37k prefix
 // tokens per child and give a worker orchestration rules it must not follow.
-// This module removes exactly those blocks and keeps everything else. The
-// primary session applies the same filter while Gentle Shell injects its own
-// orchestrator prompt (extensions/gentle-ai.ts before_agent_start). Both
-// paths also deduplicate the engram-protocol block: when more than one loaded
-// file carries it, only the copy nearest to the working directory stays.
+// This module removes exactly those blocks plus the engram-protocol memory
+// block and keeps everything else. The primary session applies the same filter
+// while Gentle Shell injects its own orchestrator prompt and gentle-engram
+// injects its own MEMORY_INSTRUCTIONS (extensions/gentle-ai.ts
+// before_agent_start). Only the injected context is filtered: every file on
+// disk keeps its blocks byte-for-byte for runtimes that read them as workspace
+// files and carry no runtime-injected equivalent (OpenClaw).
 //
-// gentle-shell#3097: the primary only drops a listed block whose text is
-// already carried by the prompt it injects, because there the premise "the
-// block duplicates what we inject" is checked rather than assumed. A user who
-// wraps their own policy in an `orchestrator` block keeps it; a child, which
-// receives no such prompt, keeps the original name-based drop.
+// gentle-shell#3097: an orchestrator-only block is dropped only when the prompt
+// the session receives already carries its text, because there the premise
+// "the block duplicates what we inject" is checked rather than assumed. A user
+// who wraps their own policy in an `orchestrator` block keeps it; a child,
+// which receives no such prompt, keeps the original name-based drop. The
+// engram-protocol block is never content-checked: gentle-engram injects the
+// equivalent instructions every turn, so every injected copy goes.
 
 export const ORCHESTRATOR_ONLY_MANAGED_BLOCKS = [
 	"orchestrator",
@@ -25,27 +27,30 @@ export const ORCHESTRATOR_ONLY_MANAGED_BLOCKS = [
 
 export type OrchestratorOnlyManagedBlock = (typeof ORCHESTRATOR_ONLY_MANAGED_BLOCKS)[number];
 
-// gentle-ai's managed memory protocol. It is deduplicated, never removed:
-// a copy goes only when a nearer loaded context file carries it too.
+// gentle-ai's managed memory protocol. Dropped from injected context like an
+// orchestrator-only block, but for a different reason: gentle-engram injects
+// the equivalent instructions every turn, so the loaded copy is a duplicate
+// that only adds session-start ceremony.
 export const ENGRAM_PROTOCOL_MANAGED_BLOCK = "engram-protocol";
 
+// Every managed block this filter removes from an injected context file.
+const DROPPED_MANAGED_BLOCKS: ReadonlySet<string> = new Set([...ORCHESTRATOR_ONLY_MANAGED_BLOCKS, ENGRAM_PROTOCOL_MANAGED_BLOCK]);
+
 export interface ManagedBlockFilterOptions {
-	// Also drop engram-protocol blocks (a nearer file keeps its own copy).
-	dropEngramProtocol?: boolean;
-	// Text of the prompt the session actually receives. When given, a listed
-	// block goes only if every one of its non-blank normalized lines appears
-	// among the normalized lines of this prompt (gentle-shell#3097, a line-set
-	// comparison rather than a substring, so a short body cannot match by
-	// accident); otherwise it is kept where it is. When absent, the block name
+	// Text of the prompt the session actually receives. When given, an
+	// orchestrator-only block goes only if every one of its non-blank normalized
+	// lines appears among the normalized lines of this prompt (gentle-shell#3097,
+	// a line-set comparison rather than a substring, so a short body cannot match
+	// by accident); otherwise it is kept where it is. When absent, the block name
 	// alone decides, which is what a delegated child relies on
-	// (gentle-shell#1587). The engram-protocol deduplication above is not
-	// affected.
+	// (gentle-shell#1587). The engram-protocol drop is name-based either way.
 	injectedPrompt?: string;
 }
 
 export interface ContextFilesFilterOptions {
-	// The session working directory; when known, only files on its ancestor
-	// chain take part in the engram-protocol deduplication.
+	// Accepted for call-site compatibility and no longer consulted: an
+	// engram-protocol copy is dropped from every injected file, so no ancestor
+	// chain decides between copies.
 	cwd?: string;
 	// Text of the prompt the session actually receives; see
 	// ManagedBlockFilterOptions.injectedPrompt.
@@ -88,13 +93,6 @@ export interface ChildContextFilesResult<T extends ContextFile> {
 
 export interface ContextFileOptions {
 	contextFiles?: ContextFile[];
-}
-
-const REMOVED_NAMES: ReadonlySet<string> = new Set(ORCHESTRATOR_ONLY_MANAGED_BLOCKS);
-const REMOVED_NAMES_WITH_ENGRAM: ReadonlySet<string> = new Set([...ORCHESTRATOR_ONLY_MANAGED_BLOCKS, ENGRAM_PROTOCOL_MANAGED_BLOCK]);
-
-function removedNames(options: ManagedBlockFilterOptions | undefined): ReadonlySet<string> {
-	return options?.dropEngramProtocol === true ? REMOVED_NAMES_WITH_ENGRAM : REMOVED_NAMES;
 }
 
 // A managed marker counts only when it is alone on its line. Inline mentions
@@ -151,7 +149,6 @@ function blockBody(lines: readonly Line[], instance: ManagedBlockInstance): stri
 }
 
 export function filterOrchestratorOnlyBlocks(content: string, options?: ManagedBlockFilterOptions): ManagedBlockFilterResult {
-	const removed = removedNames(options);
 	const contentAware = typeof options?.injectedPrompt === "string" ? new Set(normalizedLines(options.injectedPrompt)) : undefined;
 	const lines: Line[] = [];
 	const instances: ManagedBlockInstance[] = [];
@@ -201,10 +198,11 @@ export function filterOrchestratorOnlyBlocks(content: string, options?: ManagedB
 	}
 	if (stack.length > 0) return unchanged(content);
 	// A block is dropped per instance, so a kept block nested inside a dropped
-	// parent is lifted out with its own markers. The engram-protocol copy is a
-	// deduplication, never a duplicate of the prompt, so it stays name-based.
+	// parent is lifted out with its own markers. Only an orchestrator-only block
+	// consults the injected prompt; the engram-protocol copy is a duplicate of
+	// what gentle-engram injects, so it goes name-based.
 	const dropped = instances.map((instance) => {
-		if (!removed.has(instance.name)) return false;
+		if (!DROPPED_MANAGED_BLOCKS.has(instance.name)) return false;
 		if (contentAware === undefined || instance.name === ENGRAM_PROTOCOL_MANAGED_BLOCK) return true;
 		const bodyLines = normalizedLines(blockBody(lines, instance));
 		return bodyLines.length > 0 && bodyLines.every((line) => contentAware.has(line));
@@ -241,60 +239,22 @@ export function stripOrchestratorOnlyBlocks(content: string): string {
 
 const encoder = new TextEncoder();
 
-function isStrictAncestor(ancestor: string, descendant: string): boolean {
-	const rel = relative(ancestor, descendant);
-	return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
-}
-
-function isAncestorOrSelf(ancestor: string, descendant: string): boolean {
-	return resolve(ancestor) === resolve(descendant) || isStrictAncestor(ancestor, descendant);
-}
-
-// Indexes of the files whose engram-protocol copy goes. Pi loads context
-// files from the root toward the working directory (nearest last), so the
-// nearest copy is the one in the deepest directory on the cwd chain. A copy
-// goes only when its directory is a strict ancestor of that nearest copy's
-// directory; two copies in the deepest directory, files off the chain, or a
-// single copy are all kept.
-function redundantEngramCopies(files: readonly ContextFile[], parsed: readonly ManagedBlockFilterResult[], cwd: string | undefined): Set<number> {
-	const copies: Array<{ index: number; dir: string }> = [];
-	files.forEach((file, index) => {
-		if (!parsed[index].blockNames.includes(ENGRAM_PROTOCOL_MANAGED_BLOCK)) return;
-		if (typeof file.path !== "string" || file.path === "" || !isAbsolute(file.path)) return;
-		const dir = dirname(resolve(file.path));
-		if (cwd !== undefined && !isAncestorOrSelf(dir, cwd)) return;
-		copies.push({ index, dir });
-	});
-	const redundant = new Set<number>();
-	if (copies.length < 2) return redundant;
-	const deepest = copies.filter((copy) => !copies.some((other) => isStrictAncestor(copy.dir, other.dir)));
-	if (deepest.length !== 1) return redundant;
-	for (const copy of copies) if (isStrictAncestor(copy.dir, deepest[0].dir)) redundant.add(copy.index);
-	return redundant;
-}
-
 // Returns filtered copies; the input array and its entries are never mutated.
 export function filterChildContextFiles<T extends ContextFile>(files: readonly T[], options: ContextFilesFilterOptions = {}): ChildContextFilesResult<T> {
 	const result: ChildContextFilesResult<T> = { files: [], removedBlocks: 0, removedBytes: 0, failSafePaths: [], droppedBlocks: [] };
 	const promptOptions = typeof options.injectedPrompt === "string" ? { injectedPrompt: options.injectedPrompt } : undefined;
-	// The first parse only discovers which files carry an engram-protocol copy.
-	const parsed = files.map((file) => filterOrchestratorOnlyBlocks(file.content, promptOptions));
-	const cwd = typeof options.cwd === "string" && isAbsolute(options.cwd) ? resolve(options.cwd) : undefined;
-	const redundant = redundantEngramCopies(files, parsed, cwd);
-	files.forEach((file, index) => {
-		const filtered = redundant.has(index)
-			? filterOrchestratorOnlyBlocks(file.content, { ...promptOptions, dropEngramProtocol: true })
-			: parsed[index];
+	for (const file of files) {
+		const filtered = filterOrchestratorOnlyBlocks(file.content, promptOptions);
 		if (filtered.failSafe) result.failSafePaths.push(file.path);
 		if (filtered.removedBlockNames.length > 0) result.droppedBlocks.push({ path: file.path, blockNames: filtered.removedBlockNames });
 		if (filtered.removedBlocks === 0) {
 			result.files.push({ ...file });
-			return;
+			continue;
 		}
 		result.removedBlocks += filtered.removedBlocks;
 		result.removedBytes += encoder.encode(file.content).length - encoder.encode(filtered.content).length;
 		result.files.push({ ...file, content: filtered.content });
-	});
+	}
 	return result;
 }
 

@@ -1009,13 +1009,23 @@ function materializeCandidateView(request: CreateCandidateViewRequest, executor:
 			if (unborn) git(contributorRoot, ["read-tree", "--empty"], environment, executor);
 			else git(contributorRoot, ["read-tree", candidateCommit.commit], environment, executor);
 		}
+		if (committedOnly && intendedUntracked !== undefined && intendedUntracked.length > 0) {
+			// An explicit selection may extend HEAD, never replace its tracked
+			// content or expand a directory/pathspec into unrelated dirty inputs.
+			const literalEnvironment = { ...process.env, GIT_LITERAL_PATHSPECS: "1" };
+			const available = new Set((candidateGit(contributorRoot, ["ls-files", "--others", "--exclude-standard", "-z", "--", ...intendedUntracked], literalEnvironment, "utf8", executor) as string).split("\0"));
+			const headEntries = candidateGit(contributorRoot, ["ls-tree", "-r", "--name-only", "-z", candidateCommit.commit, "--", ...intendedUntracked], literalEnvironment, "utf8", executor) as string;
+			if (intendedUntracked.some(path => !available.has(path)) || headEntries.length > 0) {
+				throw new CandidateViewError("committed candidate selection must name exact untracked files outside HEAD", "candidate-untracked-selection-invalid");
+			}
+		}
 		if (!committedOnly) {
 			if (intendedUntracked === undefined) git(contributorRoot, ["add", "-A"], environment, executor);
 			else {
 				git(contributorRoot, ["add", "-u"], environment, executor);
-				if (intendedUntracked.length > 0) git(contributorRoot, ["add", "--", ...intendedUntracked], { ...environment, GIT_LITERAL_PATHSPECS: "1" }, executor);
 			}
 		}
+		if (intendedUntracked !== undefined && intendedUntracked.length > 0) git(contributorRoot, ["add", "--", ...intendedUntracked], { ...environment, GIT_LITERAL_PATHSPECS: "1" }, executor);
 		const candidateTree = git(contributorRoot, ["write-tree"], environment, executor);
 		const root = join(parent, randomUUID());
 		let owner: CandidateViewOwner;

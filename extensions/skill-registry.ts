@@ -18,7 +18,7 @@ import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { appendSystemPromptOnce, type AppendableSystemPromptOptions } from "../lib/append-system-prompt.ts";
 import { isHomeOrBroadUserDirectory } from "../lib/bounded-writer-admission.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
@@ -28,12 +28,17 @@ const CACHE_REL_PATH = ".atl/.skill-registry.cache.json";
 const SECTION_MARKER = "## Skills";
 const EXCLUDE_NAMES = new Set(["_shared", "skill-registry"]);
 const EXCLUDE_PREFIXES = ["sdd-"];
+// The registry skill's shipped name. Excluded from the session view only: the
+// shared disk index keeps byte parity with the Gentle AI CLI writer.
+const SESSION_EXCLUDE_NAMES = new Set(["gentle-ai-skill-registry"]);
 const WATCH_DEBOUNCE_MS = 500;
 // inotify budgets are finite (ENOSPC/EMFILE) and recursive watches degrade
 // silently on exhausted systems -- WSL2 hits this constantly -- so a slow
 // poll is the floor that keeps regeneration working when the OS cannot
-// deliver change events. Each poll validates the rendered disk bytes.
-const WATCH_FALLBACK_POLL_MS = 2_000;
+// deliver change events. Watcher events still use the 500ms debounce; the
+// fallback scans at most twice per minute instead of rereading every skill
+// 30 times per minute in an idle session. Each poll validates disk bytes.
+const WATCH_FALLBACK_POLL_MS = 30_000;
 const NO_SKILL_REGISTRY_FLAG = "no-skill-registry";
 const NO_SKILL_REGISTRY_ENV = "GENTLE_PI_NO_SKILL_REGISTRY";
 const LEGACY_PROJECT_REGISTRY_REL_PATH = ".pi/extensions/skill-registry.ts";
@@ -418,10 +423,11 @@ function markdownCell(value: string): string {
 	return trimmed.length > 0 ? trimmed : "—";
 }
 
-function renderRows(cwd: string, entries: SkillEntry[]): string[] {
-	return entries.map((entry) =>
-		`| \`${markdownCell(entry.name)}\` | ${markdownCell(entry.description)} | ${markdownCell(entry.scope ?? scopeForPath(cwd, entry.path))} | \`${markdownCell(entry.path)}\` |`,
-	);
+function renderRows(cwd: string, entries: SkillEntry[], withScope = true): string[] {
+	return entries.map((entry) => {
+		const scope = withScope ? ` ${markdownCell(entry.scope ?? scopeForPath(cwd, entry.path))} |` : "";
+		return `| \`${markdownCell(entry.name)}\` | ${markdownCell(entry.description)} |${scope} \`${markdownCell(entry.path)}\` |`;
+	});
 }
 
 function renderRegistry(cwd: string, sources: string[], entries: SkillEntry[]): string {
@@ -470,14 +476,32 @@ function clearEffectivePrompt(options: AppendableSystemPromptOptions | undefined
 	options.appendSystemPrompt = prefix + current.slice(end + EFFECTIVE_END.length);
 }
 
-function appendEffectivePrompt(options: AppendableSystemPromptOptions, cwd: string, entries: SkillEntry[]): void {
+// Pi already lists every skill it loaded in `<available_skills>`, so only the
+// effective winners Pi did not list are rendered; nothing is emitted when
+// there are none. Rows keep dedupeBySkillName's name order across turns.
+function unlistedEntries(effective: SkillEntry[], listed: SkillEntry[]): SkillEntry[] {
+	const listedPaths = new Set(listed.map((entry) => comparablePath(entry.path)));
+	return effective.filter((entry) => !listedPaths.has(comparablePath(entry.path)) && !SESSION_EXCLUDE_NAMES.has(entry.name));
+}
+
+// Mirrors Pi 1.5.2 buildSystemPromptSections (dist/core/system-prompt.js:101-108):
+// `<available_skills>` renders only when `read` or `bash` is a selected tool,
+// and an absent tool list defaults to read, bash, edit and write.
+function piRendersAvailableSkills(options: { selectedTools?: unknown }): boolean {
+	const selected = Array.isArray(options.selectedTools) ? options.selectedTools : ["read", "bash", "edit", "write"];
+	return ["read", "bash"].some((tool) => selected.includes(tool));
+}
+
+function appendEffectivePrompt(options: AppendableSystemPromptOptions, cwd: string, entries: SkillEntry[], piListed: boolean): void {
+	if (entries.length === 0) return;
 	appendSystemPromptOnce(options, [
 		EFFECTIVE_BEGIN,
-		"## Effective session skills",
-		"Use these current rows for parent skill selection and pass matching exact paths under `## Skills to load before work`. The shared disk index and Pi's available-skills list alone are incomplete.",
-		"| Skill | Trigger / description | Scope | Path |",
-		"| --- | --- | --- | --- |",
-		...renderRows(cwd, entries), EFFECTIVE_END,
+		piListed
+			? "## Effective session skills: on disk, not loaded by Pi; `<available_skills>` lists the rest"
+			: "## Effective session skills: all skills (Pi renders no `<available_skills>` without `read` or `bash`)",
+		"| Skill | Trigger / description | Path |",
+		"| --- | --- | --- |",
+		...renderRows(cwd, entries, false), EFFECTIVE_END,
 	].join("\n"));
 }
 
@@ -684,6 +708,9 @@ async function regenerateRegistry(cwd: string, force: boolean, intentional = fal
 
 const watchedCwds = new Set<string>();
 const watcherPolls = new Map<string, ReturnType<typeof setInterval>>();
+// Debounced watcher refreshes, cleared on shutdown so none fires into a
+// replaced or reloaded session.
+const watcherTimers = new Map<string, ReturnType<typeof setTimeout>>();
 // Startup regeneration runs after session_start returns; watcher refreshes
 // wait for it so an older startup scan never overwrites a newer refresh.
 const pendingStartups = new Map<string, Promise<void>>();
@@ -764,7 +791,23 @@ function closeSkillRegistryWatchers(): void {
 	activeWatchers.clear();
 	for (const poll of watcherPolls.values()) clearInterval(poll);
 	watcherPolls.clear();
+	for (const timer of watcherTimers.values()) clearTimeout(timer);
+	watcherTimers.clear();
 	watchedCwds.clear();
+}
+
+/**
+ * Pi's runner throws on any access to a ctx made stale by reload or session
+ * replacement (/reload, /resume, /new). Late async notices must neither reach
+ * that ctx nor let its throw escape as an uncaught exception.
+ */
+function notifyIfLive(ctx: ExtensionContext, message: string, level: "info" | "warning"): void {
+	try {
+		void ctx.sessionManager;
+		if (ctx.hasUI) ctx.ui.notify(message, level);
+	} catch {
+		// The session ended; nobody is left to show this notice to.
+	}
 }
 
 async function startSkillRegistryWatcher(
@@ -773,21 +816,27 @@ async function startSkillRegistryWatcher(
 ): Promise<void> {
 	if (watchedCwds.has(cwd)) return;
 	watchedCwds.add(cwd);
+	const generation = startupGeneration;
 	const dirs = await uniqueExistingDirs([
 		...projectSkillDirs(cwd),
 		...await userSkillDirs(),
 	]);
-	let timer: ReturnType<typeof setTimeout> | undefined;
+	if (generation !== startupGeneration) return;
 	// The poll re-asks a state the watchers already answered: without this,
 	// an unchanged tracked-target warning would repeat every poll interval.
 	let lastWarning: string | undefined;
 	const refresh = () => {
-		if (timer) clearTimeout(timer);
-		timer = setTimeout(() => {
+		if (generation !== startupGeneration) return;
+		const previous = watcherTimers.get(cwd);
+		if (previous) clearTimeout(previous);
+		watcherTimers.set(cwd, setTimeout(() => {
+			watcherTimers.delete(cwd);
 			void (async () => {
 				try {
 					await pendingStartups.get(cwd);
+					if (generation !== startupGeneration) return;
 					const result = await regenerateRegistry(cwd, false);
+					if (generation !== startupGeneration) return;
 					if (result.warning) {
 						if (result.warning !== lastWarning) notify(result.warning, "warning");
 						lastWarning = result.warning;
@@ -798,10 +847,11 @@ async function startSkillRegistryWatcher(
 						}
 					}
 				} catch (error) {
+					if (generation !== startupGeneration) return;
 					notify(`Skill registry refresh failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
 				}
 			})();
-		}, WATCH_DEBOUNCE_MS);
+		}, WATCH_DEBOUNCE_MS));
 	};
 	for (const dir of dirs) {
 		try {
@@ -878,9 +928,7 @@ export default function (pi: ExtensionAPI) {
 		if (repositoryRootedAtHome(ctx.cwd)) return;
 		const cwd = ctx.cwd;
 		const generation = startupGeneration;
-		const notifyWarning = (message: string) => {
-			if (ctx.hasUI) ctx.ui.notify(message, "warning");
-		};
+		const notifyWarning = (message: string) => notifyIfLive(ctx, message, "warning");
 		const regenerate = async () => {
 			if (generation !== startupGeneration) return;
 			try {
@@ -889,17 +937,11 @@ export default function (pi: ExtensionAPI) {
 				const quarantinedLegacy = await quarantineLegacyProjectRegistry(cwd, notifyWarning);
 				const result = await regenerateRegistry(cwd, quarantinedLegacy);
 				if (result.warning) notifyWarning(result.warning);
-				if (result.regenerated && ctx.hasUI) {
-					ctx.ui.notify(
-						`Skill registry refreshed (${result.skillCount} skills)`,
-						"info",
-					);
+				if (result.regenerated) {
+					notifyIfLive(ctx, `Skill registry refreshed (${result.skillCount} skills)`, "info");
 				}
-				if (quarantinedLegacy && ctx.hasUI) {
-					ctx.ui.notify(
-						"Disabled stale project-local skill registry extension; using package registry with project skills first.",
-						"warning",
-					);
+				if (quarantinedLegacy) {
+					notifyWarning("Disabled stale project-local skill registry extension; using package registry with project skills first.");
 				}
 				if (quarantinedLegacy) {
 					setTimeout(() => {
@@ -915,14 +957,7 @@ export default function (pi: ExtensionAPI) {
 					}, WATCH_DEBOUNCE_MS);
 				}
 			} catch (error) {
-				if (ctx.hasUI) {
-					const message =
-						error instanceof Error ? error.message : String(error);
-					ctx.ui.notify(
-						`Skill registry refresh failed: ${message}`,
-						"warning",
-					);
-				}
+				notifyWarning(`Skill registry refresh failed: ${error instanceof Error ? error.message : String(error)}`);
 			}
 		};
 		// Pi awaits session_start handlers one after another, so the Git tracking
@@ -935,7 +970,7 @@ export default function (pi: ExtensionAPI) {
 		try {
 			if (ctx.hasUI) {
 				await startSkillRegistryWatcher(cwd, (message, level = "info") => {
-					ctx.ui.notify(message, level);
+					notifyIfLive(ctx, message, level);
 				});
 			}
 		} catch (error) {
@@ -956,7 +991,8 @@ export default function (pi: ExtensionAPI) {
 			const resolved = lastResolvedSkills.map((skill) => toResolvedEntry(skill, ctx.cwd))
 				.filter((entry): entry is SkillEntry => entry !== undefined);
 			const effective = mergeResolvedWithLoose(resolved, entries, ctx.cwd, lastResolvedSkills.map((skill) => skill.filePath));
-			appendEffectivePrompt(options, ctx.cwd, effective);
+			const piListed = piRendersAvailableSkills(options as { selectedTools?: unknown });
+			appendEffectivePrompt(options, ctx.cwd, unlistedEntries(effective, piListed ? resolved : []), piListed);
 		} catch {
 			// Preserve best-effort behavior without advertising a stale or incomplete view.
 		}

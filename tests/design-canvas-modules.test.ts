@@ -31,7 +31,7 @@ function importWithoutGlobals(names: string[]) {
 }
 
 test("no canvas module touches the DOM or window when it is imported", () => {
-	assert.equal(MODULES.length, 13);
+	assert.equal(MODULES.length, 24);
 	const result = importWithoutGlobals(MODULES);
 	assert.equal(result.stderr, "");
 	assert.deepEqual(result.stdout.trim().split("\n"), MODULES.map((name) => `imported ${name}`));
@@ -61,9 +61,10 @@ test("each module exports init(ctx), and only canvas-boot.js imports its sibling
 		}
 		assert.ok(!/\bimport\s*\(/.test(source), `${name} has no dynamic import`);
 		const module = await import(pathToFileURL(join(ASSET_DIR, name)).href);
-		const expected = name === "canvas-boot.js" ? "boot" : name === "canvas-store.js" ? "createStore" : "init";
+		// canvas-i18n-es.js is the Spanish catalog (canvas-i18n.js reads it): data, not a module with an init.
+		const expected = name === "canvas-boot.js" ? "boot" : name === "canvas-store.js" ? "createStore" : name === "canvas-i18n-es.js" ? "ES" : "init";
 		assert.deepEqual(Object.keys(module), [expected], `${name} exports ${expected}`);
-		assert.equal(typeof module[expected], "function");
+		assert.equal(typeof module[expected], expected === "ES" ? "object" : "function");
 	}
 });
 
@@ -82,7 +83,8 @@ test("boot registers window listeners in main's order, with and without ResizeOb
 		const win: Record<string, any> = { addEventListener: (type: string) => order.push(type), localStorage: { getItem: () => null, setItem() {} }, setTimeout, clearTimeout, requestAnimationFrame: () => 0, fetch: () => new Promise(() => {}), EventSource: class { addEventListener() {} }, location: { port: "1" }, URL, history: { replaceState() {} } };
 		if (ro) win.ResizeObserver = class { observe(el: unknown) { observed.push(el); } };
 		boot(win, doc);
-		assert.deepEqual(order, ro ? ["message", "resize", "resize"] : ["message", "resize", "resize", "resize"]);
+		// blur: Space held to pan lets go when the window loses focus (canvas-layout.js); languagechange: Match the browser follows it (canvas-i18n.js).
+		assert.deepEqual(order, ro ? ["blur", "message", "resize", "resize", "languagechange"] : ["blur", "message", "resize", "resize", "resize", "languagechange"]);
 		assert.deepEqual(observed, ro ? [doc.getElementById("gd-viewport")] : []);
 	}
 });

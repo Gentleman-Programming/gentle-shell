@@ -106,14 +106,14 @@ test("neutral and gentleman modes produce different language-boundary text", () 
 	// Neutral must not include a positive instruction to use Rioplatense
 	assert.doesNotMatch(
 		neutralPrompt,
-		/Language: natural Rioplatense/i,
+		/answer in natural Rioplatense/i,
 		"neutral prompt must not contain positive 'natural Rioplatense' language instruction",
 	);
 
-	// Gentleman must contain the Rioplatense instruction
+	// Gentleman must contain the Rioplatense instruction (P14 PD-57: once, in the persona bullet)
 	assert.match(
 		gentlemanPrompt,
-		/Language: natural Rioplatense/i,
-		"gentleman prompt must contain 'Language: natural Rioplatense' instruction",
+		/When the user writes Spanish, answer in natural Rioplatense Spanish with voseo\./,
+		"gentleman prompt must contain the natural Rioplatense persona instruction",
 	);
 });

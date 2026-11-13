@@ -220,11 +220,16 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 			const action = planIndexAction(input.cwd, indexState(input.cwd), input.isProjectRoot);
 			if (action === "none") return { action, ok: true, warm: "skipped" };
 			try { input.onStart?.(action); } catch { /* never worth stopping the index */ }
-			const ok = await input.run(
-				action === "sync" ? ["sync", "-q"] : ["init", "-y"],
-				input.cwd,
-				action === "sync" ? SYNC_TIMEOUT_MS : INIT_TIMEOUT_MS,
-			);
+			let ok: boolean;
+			if (action === "sync") {
+				// A stale lock can block the sync, so it is always cleared first, mirroring the repo's refresh
+			// discipline ("codegraph unlock && codegraph sync"). The unlock is a precondition, not
+			// best-effort: when it fails, the sync does not run and the failure is reported as the sync's own.
+				const unlocked = await input.run(["unlock"], input.cwd, SYNC_TIMEOUT_MS);
+				ok = unlocked && await input.run(["sync", "-q"], input.cwd, SYNC_TIMEOUT_MS);
+			} else {
+				ok = await input.run(["init", "-y"], input.cwd, INIT_TIMEOUT_MS);
+			}
 			try { input.onIndexed?.({ action, ok }); } catch { /* never worth stopping the warm-up */ }
 			// A failed sync still leaves an index to warm; a failed init leaves nothing worth warming.
 			if (!(action === "sync" || (action === "init" && ok))) return { action, ok, warm: "skipped" };

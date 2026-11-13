@@ -97,14 +97,38 @@ test("prepareReadiness: an existing index is synced and then warmed", async (t) 
 		},
 	}));
 	assert.deepEqual(result, { action: "sync", ok: true, warm: "ok" });
-	assert.deepEqual(calls, ["run:sync -q", "warm"]);
+	assert.deepEqual(calls, ["run:unlock", "run:sync -q", "warm"], "a sync is always preceded by an unlock");
 });
 
-test("prepareReadiness: a failed sync still warms, a failed init does not", async (t) => {
+test("prepareReadiness: a failed unlock prevents the sync, a failed sync still warms", async (t) => {
+	const locked = dir(t, "unlock-fail");
+	writeDb(locked);
+	const calls: string[] = [];
+	const unlocked = await prepareReadiness(fakeInput(locked, {
+		run: async () => {
+			calls.push("run");
+			return false;
+		},
+		warm: async () => {
+			calls.push("warm");
+			return true;
+		},
+	}));
+	assert.deepEqual(unlocked, { action: "sync", ok: false, warm: "ok" }, "the index still exists, so it is warmed");
+	assert.deepEqual(calls, ["run", "warm"], "the unlock failed, so the sync never ran");
+
 	const synced = dir(t, "sync-fail");
 	writeDb(synced);
-	const failedSync = await prepareReadiness(fakeInput(synced, { run: async () => false, warm: async () => true }));
+	const syncCalls: string[] = [];
+	const failedSync = await prepareReadiness(fakeInput(synced, {
+		run: async (args) => {
+			syncCalls.push(`run:${args[0]}`);
+			return args[0] === "unlock";
+		},
+		warm: async () => true,
+	}));
 	assert.deepEqual(failedSync, { action: "sync", ok: false, warm: "ok" }, "a failed sync leaves an index to warm");
+	assert.deepEqual(syncCalls, ["run:unlock", "run:sync"], "the unlock succeeded, so the sync ran and failed");
 
 	const fresh = dir(t, "init-fail");
 	writeFileSync(join(fresh, "package.json"), "{}\n");
@@ -165,15 +189,15 @@ test("prepareReadiness: concurrent runs for one project are deduped in-process",
 	writeDb(cwd);
 	let runs = 0;
 	const input: ReadinessInput = fakeInput(cwd, {
-		run: async () => {
-			runs += 1;
+		run: async (args) => {
+			if (args[0] === "sync") runs += 1;
 			await new Promise((resolve) => setTimeout(resolve, 20));
 			return true;
 		},
 		warm: async () => true,
 	});
 	const [first, second] = await Promise.all([prepareReadiness(input), prepareReadiness(input)]);
-	assert.equal(runs, 1, "one run serves both callers");
+	assert.equal(runs, 1, "one sync serves both callers");
 	assert.deepEqual(first, second);
 });
 

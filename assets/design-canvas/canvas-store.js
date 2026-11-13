@@ -77,6 +77,9 @@ export function createStore(initial = {}) {
 		space: false,
 		// The minimap shows (M toggles it).
 		minimap: true,
+		// The canvas language (canvas-i18n.js): the one it shows, "es" or "en", and the choice in Settings, "es", "en" or "auto" (the browser's).
+		language: "en",
+		languageChoice: "auto",
 	};
 	const read = Object.freeze(Object.defineProperties({}, Object.fromEntries(Object.keys(state).map((key) => [key, { enumerable: true, get: () => state[key] }]))));
 
@@ -118,6 +121,11 @@ export function createStore(initial = {}) {
 		setSelected(board) { state.selected = board; },
 		setSpace(space) { state.space = space; },
 		setMinimap(show) { state.minimap = show; },
+		/** The language choice and the language it resolves to. */
+		setLanguage(choice, language) {
+			state.languageChoice = choice;
+			state.language = language;
+		},
 	});
 }
 

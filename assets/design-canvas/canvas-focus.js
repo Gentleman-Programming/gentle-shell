@@ -10,9 +10,16 @@ const BACK_SPACE = 48;
 // Every focus session starts at Desktop.
 const DESKTOP = Object.freeze({ kind: "desktop" });
 
+// The mode chip in the top bar, in English; canvas-i18n-es.js has the Spanish.
+const TEXT = Object.freeze({
+	navigating: "Navigating",
+	using: (title) => `Using: ${title} · Shift+Esc to exit`,
+});
+
 export function init(ctx) {
 	const { els, store, actions } = ctx;
 	const { state } = store;
+	const T = ctx.i18n.text("focus", TEXT);
 
 	function allBoards() {
 		return state.systemBoard ? [state.systemBoard, ...state.boards] : state.boards;
@@ -147,10 +154,15 @@ export function init(ctx) {
 		els.railFit.disabled = Boolean(focused || state.compare);
 		els.design.disabled = Boolean(focused) || state.designCount === 0;
 		els.back.hidden = !focused;
-		els.navMode.textContent = focused ? `Using: ${focused.artboard.title} · Shift+Esc to exit` : "Navigating";
+		renderNavMode();
 		els.navMode.classList.toggle("gd-using", Boolean(focused));
 		actions.renderArrange();
 		actions.renderMinimap();
+	}
+
+	/** The mode chip: navigating, or the artboard in use. */
+	function renderNavMode() {
+		els.navMode.textContent = state.focus ? T.using(state.focus.artboard.title) : T.navigating;
 	}
 
 	function enterFocus(board) {
@@ -184,5 +196,5 @@ export function init(ctx) {
 
 	els.back.addEventListener("click", exitFocus);
 
-	return { allBoards, boardOfShield, activateBoard, setHoverBoard, hoverAt, sendFocus, setFrameSize, focusRoom, centerFocus, applyFocusState, enterFocus, exitFocus };
+	return { allBoards, boardOfShield, activateBoard, setHoverBoard, hoverAt, sendFocus, setFrameSize, focusRoom, centerFocus, applyFocusState, enterFocus, exitFocus, relabel: renderNavMode };
 }

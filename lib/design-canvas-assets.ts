@@ -29,6 +29,8 @@ export const DESIGN_CANVAS_ASSETS: Readonly<Record<string, string>> = Object.fre
 	"canvas-parts.js": "text/javascript; charset=utf-8",
 	"canvas-tokens.js": "text/javascript; charset=utf-8",
 	"canvas-checks.js": "text/javascript; charset=utf-8",
+	"canvas-i18n.js": "text/javascript; charset=utf-8",
+	"canvas-i18n-es.js": "text/javascript; charset=utf-8",
 	"canvas.css": "text/css; charset=utf-8",
 	"inspector.js": "text/javascript; charset=utf-8",
 });

@@ -1125,7 +1125,7 @@ test("canvas-export.js is an allowlisted module wired by canvas-boot.js", () => 
 test("index.html's sprite holds the menu and export icons", () => {
 	const html = read("index.html");
 	for (const icon of ["i-more", "i-image", "i-file", "i-download"]) assert.match(html, new RegExp(`<symbol id="${icon}" viewBox="0 0 24 24">`));
-	assert.ok(!/data-i18n/.test(html));
+	assert.ok(!/data-i18n/.test(html.slice(html.indexOf('<svg id="gd-sprite"'), html.indexOf("</svg>"))));
 });
 
 /** The body of the first `selector {` rule in canvas.css. */

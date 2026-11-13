@@ -19,7 +19,7 @@
 // findings, with Show (a ring on the canvas) and Ask the agent to fix (canvas-checks.js).
 //
 // Modules: each canvas-*.js module exports init(ctx) and returns its public
-// functions; ctx is { win, doc, els, store, api, ui, actions }. Modules reach the
+// functions; ctx is { win, doc, els, store, api, ui, i18n, actions }. Modules reach the
 // browser only through ctx.win and ctx.doc, change state only through the store's
 // mutators (canvas-store.js), and never import each other: this file is the only
 // one that imports the others, so no module touches the DOM or window when it is
@@ -31,6 +31,14 @@
 // an init, pass `() => actions.fit()`, never `actions.fit` itself. Inits only
 // define functions and register listeners; the first actions run at the end of
 // boot().
+//
+// The relabel rule: ctx.i18n (canvas-i18n.js) is ready before any init. A module reads its
+// strings through `const T = ctx.i18n.text("<module>", TEXT)`, made in its init, and may
+// return a `relabel` function from init, which boot() keeps apart from ctx.actions. The
+// language starts before the first action, so the first render is in it; when it changes,
+// boot() rewrites index.html's keyed text, then runs every relabel in MODULES order. A
+// relabel rewrites in place the text its module built (never rebuilding a board, so no
+// artboard reloads); transient text (the status line, a toast) keeps the language it had.
 
 import * as api from "./canvas-api.js";
 import * as boards from "./canvas-boards.js";
@@ -41,6 +49,8 @@ import * as events from "./canvas-events.js";
 import * as exporter from "./canvas-export.js";
 import * as focus from "./canvas-focus.js";
 import * as handoffs from "./canvas-handoffs.js";
+import * as i18n from "./canvas-i18n.js";
+import { ES } from "./canvas-i18n-es.js";
 import * as layout from "./canvas-layout.js";
 import * as menu from "./canvas-menu.js";
 import * as messages from "./canvas-messages.js";
@@ -160,10 +170,19 @@ export function boot(win, doc) {
 
 	const store = createStore({ slug: config.slug });
 	const actions = {};
-	const ctx = { win, doc, els, store, api: null, ui: null, actions };
+	const ctx = { win, doc, els, store, api: null, ui: null, i18n: null, actions };
 	ctx.api = api.init(ctx, base, config.delivery);
 	ctx.ui = ui.init(ctx);
-	for (const module of MODULES) addActions(actions, module.init(ctx));
+	const relabels = [];
+	ctx.i18n = i18n.init(ctx, ES, () => {
+		ctx.i18n.applyMarkup();
+		for (const relabel of relabels) relabel();
+	});
+	for (const module of MODULES) {
+		const { relabel, ...functions } = module.init(ctx);
+		if (relabel) relabels.push(relabel);
+		addActions(actions, functions);
+	}
 	addActions(actions, { viewportResized });
 	Object.freeze(actions);
 
@@ -178,6 +197,7 @@ export function boot(win, doc) {
 	if (typeof win.ResizeObserver === "function") new win.ResizeObserver(viewportResized).observe(els.viewport);
 	else win.addEventListener("resize", viewportResized);
 
+	ctx.i18n.startLanguage();
 	actions.setMode(actions.storedMode());
 	actions.startRail();
 	actions.startSizes();

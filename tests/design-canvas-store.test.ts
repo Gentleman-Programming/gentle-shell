@@ -43,6 +43,8 @@ test("the store starts with the canvas defaults and no system field", () => {
 		selected: null,
 		space: false,
 		minimap: true,
+		language: "en",
+		languageChoice: "auto",
 	});
 	assert.equal(createStore({ slug: 3 }).state.slug, null, "a slug that is not a string shows the system-only view");
 	assert.equal(createStore().state.slug, null);
@@ -155,6 +157,16 @@ test("the design tokens are frozen when they are set, and Technical details is o
 	assert.equal(store.state.technical, true);
 	store.setTechnical(false);
 	assert.equal(store.state.technical, false);
+});
+
+test("the language changes only through setLanguage: the choice and the language it resolves to", () => {
+	const store = createStore();
+	assert.deepEqual([store.state.languageChoice, store.state.language], ["auto", "en"], "English until the canvas reads the browser");
+	store.setLanguage("auto", "es");
+	assert.deepEqual([store.state.languageChoice, store.state.language], ["auto", "es"]);
+	store.setLanguage("en", "en");
+	assert.deepEqual([store.state.languageChoice, store.state.language], ["en", "en"]);
+	assert.throws(() => { (store.state as any).language = "es"; }, TypeError);
 });
 
 test("the panel's tab is one of two names, set through setTab", () => {

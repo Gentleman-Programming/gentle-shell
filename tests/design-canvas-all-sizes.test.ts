@@ -607,7 +607,7 @@ test("All sizes keeps the module rules: state through the store, board fields do
 test("index.html has the All sizes icon, and canvas.css styles the frames, the chip and the comment's size in the Sizes section on --gd-* tokens", () => {
 	const html = read("index.html");
 	assert.match(html, /<symbol id="i-devices" viewBox="0 0 24 24">/);
-	assert.ok(!/data-i18n/.test(html));
+	assert.ok(!/data-i18n/.test(html.slice(html.indexOf('<svg id="gd-sprite"'), html.indexOf("</svg>"))));
 	const css = read("canvas.css");
 	const start = css.indexOf("/* Screen sizes (canvas-sizes.js)");
 	assert.ok(start >= 0 && css.split("/* Screen sizes (canvas-sizes.js)").length === 2, "one Sizes section");

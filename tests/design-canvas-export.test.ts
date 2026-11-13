@@ -1105,10 +1105,11 @@ test("canvas-export.js reaches the browser only through ctx.win and ctx.doc, cha
 	assert.match(body, /store\.setFocus\(\{ size/, "the size goes back through setFocus, the sizes PR's path");
 	assert.match(body, /actions\.setFrameSize\(/);
 	assert.ok(!/\.confirm\(/.test(body), "no blocking confirm before the capture: it would spend the click's activation (D1)");
-	assert.match(body, /return \{ boardMenuButton, closeBoardMenu \};\s*\}\s*$/, "the other modules only need the button and closing its menu (D2)");
+	assert.match(body, /return \{ boardMenuButton, closeBoardMenu, relabel \};\s*\}\s*$/, "the other modules only need the button and closing its menu (D2); relabel is the language's (canvas-boot.js)");
 	assert.ok(!/\bstate\.(?:size|focus|menu)\s*=(?!=)/.test(body));
 	assert.ok(source.indexOf("const TEXT = Object.freeze({") >= 0 && source.indexOf("const TEXT = Object.freeze({") < source.indexOf("export function init"), "the strings sit in one TEXT block before init");
-	assert.ok(!/\bloc\(|\bt\(|data-i18n|CATALOG|createAlert|explain\(|setRaw|variant|Try another direction|Compare with app|Implement this|enterCompare/.test(body), "no i18n, no alert helpers, no other menu items");
+	// Its strings go through ctx.i18n, checked against canvas-i18n-es.js in tests/design-canvas-i18n.test.ts.
+	assert.ok(!/createAlert|explain\(|setRaw|variant|Try another direction|Compare with app|Implement this|enterCompare/.test(body), "no alert helpers, no other menu items");
 	assert.ok(!/\b(?:state|view|savedView)\.(?:x|y|zoom|fitted)\s*(?:[-+*/]?=)(?!=)/.test(body));
 	assert.ok(!/Object\.assign\(\s*state\b/.test(body));
 	assert.ok(!/https?:\/\//i.test(source), "no remote URL literals");

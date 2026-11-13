@@ -198,11 +198,13 @@ test("a plugins.json naming an owner with no contribution, or a malformed one, c
 	t.after(reset);
 	paletteContributions();
 
-	// No file: the baseline every later comparison uses.
-	const baseline = buildCommandPaletteGroups(REGISTERED, {});
+	// No file: the baseline every later comparison uses. An isolated config home
+	// keeps the developer's real plugins.json out of the comparison, or a machine
+	// whose own file names acme first would fail against correct behaviour.
 	const empty = join(dir, "missing");
 	mkdirSync(empty);
-	assert.deepEqual(buildCommandPaletteGroups(REGISTERED, {}, { gentlePiConfigHome: empty }), baseline, "a missing file is the baseline");
+	const baseline = buildCommandPaletteGroups(REGISTERED, {}, { gentlePiConfigHome: empty });
+	assert.deepEqual(buildCommandPaletteGroups(REGISTERED, {}, { gentlePiConfigHome: dir }), baseline, "a missing file is the baseline");
 
 	pluginsFile(dir, ["ghost"]);
 	assert.deepEqual(buildCommandPaletteGroups(REGISTERED, {}, { gentlePiConfigHome: dir }), baseline, "an owner with no contribution changes nothing");
@@ -262,4 +264,31 @@ test("the appended customize rows follow the declared owner order", (t) => {
 	assert.deepEqual(appended(), ["Zeta row", "Acme row"]);
 	pluginsFile(dir, ["acme"]);
 	assert.deepEqual(appended(), ["Acme row", "Zeta row"]);
+});
+
+test("a contributed preview that is not { title, sample } strings is refused before the pane splits it", (t) => {
+	reset();
+	t.after(reset);
+	// The preview pane splits `sample` on newlines outside any guard, so an
+	// answer the adapter passes through unchanged would throw while rendering.
+	const preview = (value: unknown): PluginRow["preview"] => (() => value) as unknown as PluginRow["preview"];
+	const slot = contributionSlot();
+	slot.set("acme.rows", contribution("acme.rows", {
+		rows: [
+			{ category: "Plugins", label: "Number", action: noop, preview: preview(7) },
+			{ category: "Plugins", label: "Sample", action: noop, preview: preview({ title: "Async", sample: 7 }) },
+			{ category: "Plugins", label: "Null", action: noop, preview: preview(null) },
+			{ category: "Plugins", label: "Thenable", action: noop, preview: preview(Promise.resolve({ title: "Later", sample: "later" })) },
+			{ category: "Plugins", label: "Healthy", action: noop, preview: () => ({ title: "Healthy title", sample: "line one\nline two" }) },
+		],
+	}));
+	const notices: string[] = [];
+	const appended: CustomizeRow[] = [];
+	appendPluginCustomizeRows(appended, (message) => notices.push(message), { gentlePiConfigHome: scratch(t) });
+
+	const answered = appended.map((entry) => entry.preview!());
+	assert.deepEqual(answered.map((value) => typeof value.sample), ["string", "string", "string", "string", "string"]);
+	assert.deepEqual(answered.slice(0, 4), Array.from({ length: 4 }, () => ({ title: "Plugin preview unavailable", sample: "" })));
+	assert.deepEqual(answered[4], { title: "Healthy title", sample: "line one\nline two" }, "a well-formed preview is unchanged");
+	assert.ok(notices.some((notice) => notice.includes("acme.rows")), `the refusal is reported: ${notices.join(" | ")}`);
 });

@@ -347,8 +347,23 @@ function copyHeader(value: PluginHeader): PluginHeader {
 	return { rows: Array.isArray(value.rows) ? [...value.rows] : value.rows };
 }
 
+/**
+ * Copy exactly the fields the row contract declares. Spreading would keep own
+ * enumerable fields only, so a row written as a class instance would pass
+ * validation (its methods are callable through the prototype) and then lose
+ * `action`, `preview`, `visible` or `choice.current` in the copy.
+ */
 function cloneRow(value: PluginRow): PluginRow {
-	return value.choice === undefined ? { ...value } : { ...value, choice: { ...value.choice } };
+	const row: PluginRow = { category: value.category, label: value.label, action: value.action };
+	if (value.preview !== undefined) row.preview = value.preview;
+	if (value.visible !== undefined) row.visible = value.visible;
+	if (value.choice !== undefined) {
+		const choice: PluginRowChoice = { setting: value.choice.setting, value: value.choice.value, current: value.choice.current };
+		if (value.choice.hint !== undefined) choice.hint = value.choice.hint;
+		if (value.choice.applyOnMove !== undefined) choice.applyOnMove = value.choice.applyOnMove;
+		row.choice = choice;
+	}
+	return row;
 }
 
 function normalize(key: string, value: Contribution, skipped: ContributionIssue[]): Contribution | undefined {

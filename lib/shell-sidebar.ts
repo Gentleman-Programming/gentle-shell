@@ -237,10 +237,41 @@ function contributionSection(contribution: Contribution): { key: string } | { is
 }
 
 function recordRailFailure(id: string, error: unknown): void {
-	const detail = error instanceof Error ? error.message : String(error);
+	recordRailIssue(id, detailOf(error));
+}
+
+function detailOf(error: unknown): string {
+	try {
+		return error instanceof Error ? error.message : String(error);
+	} catch {
+		return "the rail threw an unreadable error";
+	}
+}
+
+function recordRailIssue(id: string, detail: string): void {
 	const skipped = sidebarReport().skipped;
 	if (skipped.some((issue) => issue.id === id && issue.detail === detail)) return;
 	skipped.push({ id, code: "invalid-contribution", detail });
+}
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+	return (typeof value === "object" || typeof value === "function") && value !== null &&
+		typeof (value as { then?: unknown }).then === "function";
+}
+
+/**
+ * Observe a thenable answer to a synchronous rail slot: the slot cannot paint
+ * it, but its rejection is still this seam's to report and must never surface
+ * as an unhandled rejection.
+ */
+function observeRejection(value: PromiseLike<unknown>, onError: (error: unknown) => void): void {
+	void Promise.resolve(value).catch((error) => {
+		try {
+			onError(error);
+		} catch {
+			// A broken reporter must not escape as an unhandled rejection either.
+		}
+	});
 }
 
 // A plugin rail is foreign code: a throwing render, digest or invalidation must
@@ -249,35 +280,63 @@ function guardedContributionRail(rail: SidebarRail, id: string): SidebarRail {
 	const cached = GUARDED_RAILS.get(rail as object);
 	if (cached) return cached;
 	const onError = (error: unknown) => recordRailFailure(id, error);
-	const wrapped = new Proxy(rail, {
-		get(target, property, receiver) {
-			if (property === "render") {
-				return (width: number) => guard(() => target.render(width) ?? [], [] as string[], onError) as string[];
-			}
-			if (property === "invalidate") {
-				return () => {
-					try {
-						target.invalidate?.();
-					} catch (error) {
-						onError(error);
-					}
-				};
-			}
-			// The layout already survives a throwing digest by treating it as
-			// undefined; record it too, so the audit can say the rail misbehaved.
-			if (property === "digest") {
-				return () => {
-					try {
-						return target.digest?.();
-					} catch (error) {
-						onError(error);
-						return undefined;
-					}
-				};
-			}
-			return Reflect.get(target, property, receiver);
+	const refuse = (detail: string): [] => {
+		recordRailIssue(id, detail);
+		return [];
+	};
+	// A forwarding facade, not a Proxy: a rail may be frozen, and a proxy that
+	// answers a fresh `render` for a non-writable, non-configurable property
+	// throws on the Proxy invariants before any guard runs, which disables the
+	// whole layout. The facade keeps one stable identity and inherits every other
+	// field (`surface`, `cardGroups`, `handleMouse`, …) from the plugin's rail.
+	const wrapped = Object.create(rail) as SidebarRail;
+	Object.defineProperties(wrapped, {
+		render: {
+			enumerable: true,
+			configurable: true,
+			writable: true,
+			value: (width: number): string[] => {
+				const answered: unknown = guard(() => rail.render(width) ?? [], [] as string[], onError);
+				if (isThenable(answered)) {
+					observeRejection(answered, onError);
+					return refuse("rail render answered with a promise, which the synchronous rail cannot paint");
+				}
+				// The layout spreads and measures these rows, so anything but a
+				// synchronous array of strings would throw there and disable the sidebar.
+				if (!Array.isArray(answered) || !answered.every((line) => typeof line === "string")) {
+					return refuse("rail render must answer an array of strings");
+				}
+				return answered;
+			},
 		},
-	}) as SidebarRail;
+		invalidate: {
+			enumerable: true,
+			configurable: true,
+			writable: true,
+			value: () => {
+				const answered: unknown = guard(() => rail.invalidate?.(), undefined, onError);
+				if (isThenable(answered)) observeRejection(answered, onError);
+			},
+		},
+		// The layout already survives a throwing digest by treating it as
+		// undefined; record it too, so the audit can say the rail misbehaved.
+		digest: {
+			enumerable: true,
+			configurable: true,
+			writable: true,
+			value: () => {
+				const answered: unknown = guard(() => rail.digest?.(), undefined, onError);
+				// The digest slot is synchronous: a thenable cannot fill it.
+				if (isThenable(answered)) {
+					observeRejection(answered, onError);
+					return undefined;
+				}
+				// Untouched otherwise: a non-string digest already behaved like any other
+				// value the layout compares, so this seam only closes the promise hole.
+				return answered as string | undefined;
+			},
+		},
+	});
 	GUARDED_RAILS.set(rail as object, wrapped);
 	return wrapped;
 }

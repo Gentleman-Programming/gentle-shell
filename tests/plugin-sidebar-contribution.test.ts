@@ -310,3 +310,84 @@ test("an empty contribution box computes exactly the known order and installs no
 	assert.deepEqual([...sidebarState(f.tui).parts.keys()], []);
 	assert.deepEqual(readSidebarContributionReport().skipped, []);
 });
+
+test("a frozen rail paints instead of tripping the guard's own forwarding", (t) => {
+	reset();
+	t.after(reset);
+	const f = fixture();
+	// A frozen rail is a legal `PluginRail`; a forwarding proxy that answers a
+	// fresh function for a non-writable, non-configurable property throws on the
+	// Proxy invariants before any guard runs and disables the whole layout.
+	contributionSlot().set("acme.frozen", {
+		id: "acme.frozen",
+		owner: "acme",
+		contract: CONTRACT_VERSION,
+		sidebar: { key: "plugin:acme:frozen", bottom: false, rail: Object.freeze({ render: () => ["frozen card"] }) },
+	});
+	sidebarPart(f.tui, "footer", { render: () => ["Status"], invalidate() {} });
+
+	t.after(installSidebar(f.tui, theme));
+	const text = renderLayoutFrame(f.root, 140, 20, () => {}).lines.join("\n");
+	assert.ok(text.includes("frozen card"), `a frozen rail still paints: ${text}`);
+	assert.ok(text.includes("Status"), `the rest of the rail still paints: ${text}`);
+	assert.deepEqual(readSidebarContributionReport().skipped, [], "a frozen rail is legal, so nothing is refused");
+});
+
+test("a rail render that is not a synchronous array of strings is refused, and the rest of the sidebar paints", (t) => {
+	reset();
+	t.after(reset);
+	const f = fixture();
+	const set = (name: string, rail: unknown): void => {
+		contributionSlot().set(`acme.${name}`, {
+			id: `acme.${name}`,
+			owner: "acme",
+			contract: CONTRACT_VERSION,
+			sidebar: { key: `plugin:acme:${name}`, bottom: false, rail: rail as PluginRail },
+		});
+	};
+	set("number", { render: () => 7 });
+	set("promise", { render: () => Promise.resolve(["async card"]) });
+	set("rows", { render: () => ["ok row", 7] });
+	set("healthy", { render: () => ["healthy card"] });
+	sidebarPart(f.tui, "footer", { render: () => ["Status"], invalidate() {} });
+
+	t.after(installSidebar(f.tui, theme));
+	const text = renderLayoutFrame(f.root, 140, 20, () => {}).lines.join("\n");
+	assert.ok(text.includes("healthy card"), `a well-formed section still paints: ${text}`);
+	assert.ok(text.includes("Status"), `the sidebar is not disabled by one bad rail: ${text}`);
+	assert.ok(!text.includes("ok row"), `a rail with a non-string row paints nothing: ${text}`);
+	assert.ok(!text.includes("async card"), `a promise cannot fill the synchronous rail: ${text}`);
+	const refused = readSidebarContributionReport().skipped.filter((issue) => issue.id.startsWith("acme."));
+	assert.deepEqual(refused.map((issue) => issue.id).sort(), ["acme.number", "acme.promise", "acme.rows"]);
+	assert.ok(refused.every((issue) => issue.code === "invalid-contribution"), "each refusal is reported as an invalid contribution");
+});
+
+test("a rejected promise from a rail's invalidate or digest is reported, never left unhandled", async (t) => {
+	reset();
+	t.after(reset);
+	const unhandled: unknown[] = [];
+	const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+	process.on("unhandledRejection", onUnhandled);
+	t.after(() => process.off("unhandledRejection", onUnhandled));
+	const f = fixture();
+	const rail = {
+		render: () => ["notes card"],
+		invalidate: () => Promise.reject(new Error("invalidate exploded")),
+		digest: () => Promise.reject(new Error("digest exploded")),
+	} as unknown as PluginRail;
+	contributionSlot().set("acme.notes", {
+		id: "acme.notes",
+		owner: "acme",
+		contract: CONTRACT_VERSION,
+		sidebar: { key: "plugin:acme:notes", bottom: false, rail },
+	});
+	assert.deepEqual(installContributedSidebar(f.tui).keys, ["plugin:acme:notes"]);
+	const part = sidebarState(f.tui).parts.get("plugin:acme:notes");
+	assert.ok(part, "the rail is installed");
+	part.invalidate?.();
+	// The digest slot is synchronous, so a thenable answer cannot fill it.
+	assert.equal(part.digest?.(), undefined);
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.deepEqual(unhandled, [], "both rejections are observed by the seam");
+	assert.deepEqual(readSidebarContributionReport().skipped.map((issue) => issue.detail).sort(), ["digest exploded", "invalidate exploded"]);
+});

@@ -2097,7 +2097,17 @@ function pluginCustomizeRow(id: string, row: PluginRow, notifyError: (message: s
 		},
 	};
 	const preview = row.preview;
-	if (preview !== undefined) mapped.preview = () => guardedSync(() => preview(), PLUGIN_PREVIEW_FALLBACK, fail);
+	if (preview !== undefined) mapped.preview = () => {
+		// The pane splits `sample` on newlines outside any guard, so an answer that
+		// is not { title, sample } as strings must be refused here, not painted.
+		const answered = guardedSync<unknown>(() => preview(), PLUGIN_PREVIEW_FALLBACK, fail);
+		const shaped = answered as { title?: unknown; sample?: unknown } | null;
+		if (typeof shaped === "object" && shaped !== null && typeof shaped.title === "string" && typeof shaped.sample === "string") {
+			return { title: shaped.title, sample: shaped.sample };
+		}
+		fail(new Error("preview must answer { title, sample } with string fields"));
+		return PLUGIN_PREVIEW_FALLBACK;
+	};
 	const choice = row.choice;
 	if (choice !== undefined) mapped.choice = {
 		// Namespaced, so a plugin switch can never merge into a built-in setting line.

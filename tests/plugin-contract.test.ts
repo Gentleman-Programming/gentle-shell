@@ -368,3 +368,60 @@ test("the reporter sink receives skips while the default stays silent on stdout"
 	assert.deepEqual(writes, []);
 	assert.equal(reports.length, 1);
 });
+
+test("a row stored as a class instance keeps the prototype callbacks the contract declared", () => {
+	reset();
+	// A class instance passes validation (its methods are callable through the
+	// prototype), so the copy must carry those fields explicitly: spreading the
+	// row would silently drop `action`, `preview`, `visible` and `current`.
+	class Choice {
+		setting = "Switch";
+		value = "on";
+		current(): boolean { return true; }
+	}
+	class Row {
+		category = "Acme";
+		label = "Class row";
+		choice = new Choice();
+		action(): void {}
+		visible(): boolean { return true; }
+		preview(): { title: string; sample: string } { return { title: "Title", sample: "Sample" }; }
+	}
+	const instance = new Row();
+	const slot = contributionSlot();
+	slot.set("acme.classy", { id: "acme.classy", owner: "acme", contract: CONTRACT_VERSION, rows: [instance as unknown as PluginRow] });
+
+	const row = readContributions()[0]!.rows![0]!;
+	assert.equal(row.category, "Acme");
+	assert.equal(row.label, "Class row");
+	assert.equal(row.action, instance.action, "the prototype action survives the copy");
+	assert.equal(row.preview, instance.preview, "the prototype preview survives the copy");
+	assert.equal(row.visible, instance.visible, "the prototype visible survives the copy");
+	assert.equal(row.choice?.current, instance.choice.current, "the prototype current survives the copy");
+	assert.deepEqual(row.choice, { setting: "Switch", value: "on", current: instance.choice.current });
+	assert.deepEqual(readContributionReport().skipped, []);
+});
+
+test("a plain-object row keeps every declared field, hint and applyOnMove included", () => {
+	reset();
+	// The previous behaviour of the copy: every optional field the contract
+	// declares survives, including the ones the adapter only reads.
+	const stored = contribution({
+		id: "acme.plain",
+		rows: [row({
+			preview: () => ({ title: "Plain", sample: "Plain sample" }),
+			visible: () => true,
+			choice: { setting: "Switch", value: "on", current: () => false, hint: "A hint", applyOnMove: true },
+		})],
+	});
+	contributionSlot().set(stored.id, stored);
+	const copied = readContributions()[0]!.rows![0]!;
+	assert.equal(copied.label, "Hello");
+	assert.equal(copied.action, stored.rows![0]!.action);
+	assert.deepEqual(copied.preview!(), { title: "Plain", sample: "Plain sample" });
+	assert.equal(copied.visible?.(), true);
+	assert.deepEqual({ ...copied.choice, current: copied.choice!.current() }, {
+		setting: "Switch", value: "on", current: false, hint: "A hint", applyOnMove: true,
+	});
+	assert.equal(stored.rows![0]!.choice!.hint, "A hint", "the stored entry is untouched");
+});

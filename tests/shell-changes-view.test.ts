@@ -132,6 +132,109 @@ test("worktree accordion keeps groups and nested files beside a framed lazy diff
 	assert.equal(closed, 1);
 });
 
+// ANSI roles keep pi-tui's width math real, so a styled hint row is measured
+// and truncated the way a terminal sees it. Tagged markup would count as
+// visible characters.
+const SGR: Record<string, string> = { accent: "\x1b[36m", muted: "\x1b[37m", dim: "\x1b[2m", border: "\x1b[90m" };
+const ansiTheme = {
+	fg(color: string, text: string) {
+		return `${SGR[color] ?? "\x1b[0m"}${text}\x1b[0m`;
+	},
+};
+
+const WORKTREE_FOOTER = [
+	["j/k", "select"],
+	["enter", "toggle/open"],
+	["←", "fold"],
+	["ctrl+j/k", "scroll"],
+	["r", "refresh"],
+	["F", "diff only"],
+	["esc", "close"],
+] as const;
+
+const CHANGES_FOOTER = [
+	["j/k", "file"],
+	["ctrl+j/k", "scroll"],
+	["o", "open in editor"],
+	["esc", "close"],
+] as const;
+
+const CHANGES_BACK_FOOTER = [
+	["j/k", "file"],
+	["ctrl+j/k", "scroll"],
+	["o", "open in editor"],
+	["esc", "files"],
+] as const;
+
+const WORKTREE_DIFF_ONLY_FOOTER = [
+	["j/k", "file"],
+	["ctrl+j/k", "scroll"],
+	["o", "open"],
+	["r", "refresh"],
+	["F", "files"],
+	["esc", "files"],
+] as const;
+
+function accordion(theme: ChangesViewDeps["theme"], rows = 10) {
+	return new WorktreeChangesView([{ root: "/main", branch: "main", model: changesModel([file("a.ts", 1, 0)]) }], {
+		theme, rows,
+		loadDiff: async () => "+x",
+		onOpen: () => {},
+		onClose: () => {},
+		onRefresh: () => {},
+		requestRender: () => {},
+	});
+}
+
+function plainHints(keys: ReadonlyArray<readonly [string, string]>): string {
+	return keys.map(([key, label]) => `${key} ${label}`).join("   ");
+}
+
+function paintedHints(keys: ReadonlyArray<readonly [string, string]>): string {
+	return keys.map(([key, label]) => `${SGR.accent}${key}\x1b[0m ${SGR.muted}${label}\x1b[0m`).join("   ");
+}
+
+function assertFooter(line: string, keys: ReadonlyArray<readonly [string, string]>): void {
+	assert.equal(visibleWidth(line), 120);
+	assert.ok(line.includes(paintedHints(keys)), `footer must split the key and description roles, got ${line}`);
+	assert.equal(stripAnsi(line).slice(2, 2 + plainHints(keys).length), plainHints(keys), "every hint stays on the row, in order");
+}
+
+test("worktree footer paints each key in the accent role and its description in the text role", () => {
+	assertFooter(accordion(ansiTheme).render(120)[8]!, WORKTREE_FOOTER);
+});
+
+test("worktree footer keeps the same two roles in diff-only mode", () => {
+	const component = accordion(ansiTheme);
+	component.handleInput("F");
+	assertFooter(component.render(120)[8]!, WORKTREE_DIFF_ONLY_FOOTER);
+});
+
+test("ChangesView footer paints each key in the accent role and its description in the muted role", async () => {
+	const { view: component } = view({ theme: ansiTheme });
+	await settle();
+	const footer = component.render(120)[10]!;
+	assertFooter(footer, CHANGES_FOOTER);
+	assert.ok(!footer.includes(SGR.dim), "the descriptions must not fall back to the dim role");
+
+	const { view: backed } = view({ theme: ansiTheme, backLabel: "files" });
+	await settle();
+	const backedFooter = backed.render(120)[10]!;
+	assertFooter(backedFooter, CHANGES_BACK_FOOTER);
+	assert.ok(backedFooter.includes(`${SGR.accent}esc\x1b[0m ${SGR.muted}files\x1b[0m`), "the backLabel override keeps the muted role");
+});
+
+test("the worktree footer stays inside the frame at a narrow width, in both modes", () => {
+	const component = accordion(plainTheme);
+	const truncated = [/^│ j\/k select   enter toggle\/open   ← … +│$/, /^│ j\/k file   ctrl\+j\/k scroll   o open… +│$/];
+	for (const expected of truncated) {
+		const lines = component.render(40).map(stripAnsi);
+		for (const line of lines) assert.equal(visibleWidth(line), 40, `"${line}" overflows the narrow frame`);
+		assert.match(lines[8]!, expected, "a narrow row keeps the leading hints and truncates with an ellipsis");
+		component.handleInput("F");
+	}
+});
+
 // Long paths were clipped to `tools/linkedin-automation/scr…`, hiding the file
 // name. Rows lead with the name and trail the directory; the diff pane shows
 // the full path, clipped from the left so the name always survives.

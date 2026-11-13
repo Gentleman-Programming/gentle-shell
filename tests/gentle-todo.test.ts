@@ -350,11 +350,11 @@ function toolTurn(toolName = "read") {
 	return { message: { role: "assistant", content: [{ type: "toolCall", id: "call", name: toolName, arguments: {} }] }, toolResults: [] };
 }
 
-type ContextMessage = { role: string; content: unknown; customType?: string; display?: boolean; timestamp?: number };
+type ContextMessage = { role: string; content: unknown; customType?: string; display?: boolean; details?: unknown; timestamp?: number };
 
 async function contextMessages(fire: ReturnType<typeof fakePi>["fire"], ctx: ExtensionContext): Promise<ContextMessage[] | undefined> {
 	const messages = [{ role: "user", content: "Keep working", timestamp: 1 }];
-	const result = await fire("context", ctx, { messages }) as { messages: ContextMessage[] } | undefined;
+	const result = await fire("context_with_system", ctx, { messages }) as { messages: ContextMessage[] } | undefined;
 	assert.deepEqual(messages, [{ role: "user", content: "Keep working", timestamp: 1 }], "request-local injection must not mutate the input transcript");
 	if (result === undefined) return undefined;
 	assert.deepEqual(result.messages[0], { role: "user", content: "Keep working", timestamp: 1 }, "the transcript stays first; todo messages trail it");
@@ -393,7 +393,8 @@ test("runtime reminder arrives after four tool-use turns, only once, without cha
 	assert.equal(messages.length, 3, "transcript, current list, then the reminder");
 	assert.equal(messages[1]!.customType, "gentle-todo-state");
 	const reminder = messages[2]!;
-	assert.deepEqual(reminder, { role: "custom", customType: "gentle-todo-reminder", content: REMINDER, display: false, timestamp: reminder.timestamp });
+	// P1b: the reminder records the message it followed, so its saved copy keeps this place in later requests.
+	assert.deepEqual(reminder, { role: "custom", customType: "gentle-todo-reminder", content: REMINDER, display: false, details: { after: `custom|gentle-todo-state|${messages[1]!.timestamp}`, at: reminder.timestamp }, timestamp: reminder.timestamp });
 	const converted = convertToLlm(messages as Parameters<typeof convertToLlm>[0]);
 	assert.deepEqual(converted[2], { role: "user", content: [{ type: "text", text: REMINDER }], timestamp: reminder.timestamp }, "Pi forwards the reminder as provider-compatible text");
 	await workTurns(fire, ctx, 4);
@@ -495,6 +496,26 @@ function promptEvent(): { systemPrompt: string; systemPromptOptions: { appendSys
 	return { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } };
 }
 
+test("custom-triggered runs preserve todo freshness while retaining the prompt rules (#2336)", async () => {
+	const { pi, tools, fire } = fakePi();
+	gentleTodo(pi, {});
+	const { ctx, widget } = fakeContext();
+	await fire("session_start", ctx);
+	await tools.get("todo")!.execute("write", { action: "write", tasks: [{ title: "Verify the fix" }] }, undefined, undefined, ctx);
+	await fire("tool_execution_end", ctx, { toolName: "todo" });
+	const original = widget();
+	for (let index = 0; index < 3; index++) {
+		const event = { ...promptEvent(), messageType: "custom", message: { role: "custom", customType: "worker-complete", content: "Finished", display: false, timestamp: index } };
+		await fire("before_agent_start", ctx, event);
+		assert.deepEqual(widget(), original, "a background wake must not age the todo card");
+		assert.match(event.systemPromptOptions.appendSystemPrompt, /^## Todo list/, "custom runs still receive todo rules");
+	}
+	await fire("before_agent_start", ctx, { ...promptEvent(), messageType: "user", prompt: "Continue" });
+	assert.doesNotMatch(widget()!.join("\n"), /stale/);
+	await fire("before_agent_start", ctx, { ...promptEvent(), messageType: "user", prompt: "Continue" });
+	assert.match(widget()!.join("\n"), /stale · 2 turns/, "user turns still age the card");
+});
+
 test("the system prompt carries only a byte-stable todo block; the current list travels as a request-local message (#1662)", async () => {
 	const { pi, tools, fire } = fakePi();
 	gentleTodo(pi, {});
@@ -566,9 +587,10 @@ function liveSession() {
 	const queued: ContextMessage[] = [];
 	const pi = {
 		...base.pi,
-		sendMessage(message: { customType: string; content: string; display: boolean }, options: { triggerTurn?: boolean }) {
+		sendMessage(message: { customType: string; content: string; display: boolean; details?: unknown }, options: { triggerTurn?: boolean }) {
 			assert.equal(options.triggerTurn, false, "todo state must never start a turn");
-			queued.push({ role: "custom", customType: message.customType, content: message.content, display: message.display, timestamp: 0 });
+			// Pi keeps `details` and stamps the saved copy itself (agent-session sendCustomMessage).
+			queued.push({ role: "custom", customType: message.customType, content: message.content, display: message.display, ...(message.details === undefined ? {} : { details: message.details }), timestamp: 0 });
 		},
 	} as unknown as ExtensionAPI;
 	gentleTodo(pi, {});
@@ -577,7 +599,7 @@ function liveSession() {
 	const requests: ContextMessage[][] = [];
 	let call = 0;
 	const request = async () => {
-		const result = await base.fire("context", ctx, { messages: [...transcript] }) as { messages: ContextMessage[] } | undefined;
+		const result = await base.fire("context_with_system", ctx, { messages: [...transcript] }) as { messages: ContextMessage[] } | undefined;
 		const messages = result?.messages ?? [...transcript];
 		requests.push(messages);
 		return messages;
@@ -644,7 +666,8 @@ test("an open list missing from the transcript (compaction, branch switch) is pe
 	await live.request();
 	for (const messages of live.requests.slice(healedFrom)) assert.match(String(live.visibleState(messages)), /\[pending\] Fix the bug/);
 	assert.equal(live.transcript.filter((message) => message.customType === "gentle-todo-state").length, 1, "the missing state is persisted exactly once");
-	live.assertAppendOnly(healedFrom + 1);
+	// P1b: the request that re-sends the snapshot is extended too (it used to be skipped: its copy was saved later).
+	live.assertAppendOnly(healedFrom);
 });
 
 test("consecutive context requests with an unchanged Todo list preserve prefix stability (#2195)", async () => {
@@ -656,7 +679,7 @@ test("consecutive context requests with an unchanged Todo list preserve prefix s
 
 	// Request 1: first model request
 	const userMsg = { role: "user", content: "Work on it", timestamp: 100 };
-	const req1 = await fire("context", ctx, { messages: [userMsg] }) as { messages: Array<{ role: string; customType?: string }> };
+	const req1 = await fire("context_with_system", ctx, { messages: [userMsg] }) as { messages: Array<{ role: string; customType?: string }> };
 	assert.ok(req1, "req1 must return context messages");
 	assert.ok(req1.messages.some((m) => (m as { customType?: string }).customType === "gentle-todo-state"), "req1 must include gentle-todo-state");
 
@@ -667,7 +690,7 @@ test("consecutive context requests with an unchanged Todo list preserve prefix s
 	// Request 2: next model request with unchanged todo list.
 	// The input messages to context include the transcript with the already-delivered state message
 	const inputReq2 = [...req1.messages, assistantMsg, toolResultMsg];
-	const req2 = await fire("context", ctx, { messages: inputReq2 }) as { messages: Array<{ role: string; customType?: string }> } | undefined;
+	const req2 = await fire("context_with_system", ctx, { messages: inputReq2 }) as { messages: Array<{ role: string; customType?: string }> } | undefined;
 
 	// req2 must not append a redundant trailing gentle-todo-state that would invalidate prefix caching
 	const effectiveReq2 = req2?.messages ?? inputReq2;
@@ -847,4 +870,21 @@ test("a todo write emits the session's progress; list and errors emit nothing", 
 	assert.equal(emitted.length, 1, "list and a failed update publish nothing");
 	await todo({ action: "update", id: 2, status: "done" });
 	assert.deepEqual(emitted.at(-1)?.data, { sessionId: "s1", done: 2, total: 3, current: null });
+});
+
+// full-delegation-mode-conflicts S5: the todo rules block follows the session's orchestrator mode, so a full
+// delegation session is told to delegate a small task instead of doing it. Organic stays byte-identical above.
+test("S5: a full delegation session gets the delegate wording; the organic wording is unchanged", async () => {
+	const full = fakePi();
+	gentleTodo(full.pi, { GENTLE_PI_ORCHESTRATOR_MODE: "full-delegation" });
+	const fullEvent = promptEvent();
+	await full.fire("before_agent_start", { ...fakeContext().ctx, cwd: process.cwd() } as ExtensionContext, fullEvent);
+	assert.match(fullEvent.systemPromptOptions.appendSystemPrompt, /uses no todo list: delegate it and report\./);
+	assert.doesNotMatch(fullEvent.systemPromptOptions.appendSystemPrompt, /do it and report/);
+
+	const organic = fakePi();
+	gentleTodo(organic.pi, { GENTLE_PI_ORCHESTRATOR_MODE: "organic" });
+	const organicEvent = promptEvent();
+	await organic.fire("before_agent_start", { ...fakeContext().ctx, cwd: process.cwd() } as ExtensionContext, organicEvent);
+	assert.match(organicEvent.systemPromptOptions.appendSystemPrompt, /uses no todo list: do it and report\./);
 });

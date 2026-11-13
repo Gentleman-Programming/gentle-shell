@@ -34,6 +34,7 @@ import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 import { resolveVisualSettings } from "../lib/visual-customization-policy.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
 import { createAgentMessageQueue, type PendingAgentMessage } from "../lib/agents-message-delivery.ts";
+import { capReport, withReportCap } from "../lib/agents-report-cap.ts";
 import { parseModelRef, AGENT_MODE, PROFILE_SOURCE, PROVIDER_REVIEW_ROLES, discoverAgents, formatModelRef, loadAgentsConfig, resolveAgentProfile, unmatchedProfileKeys, withPinnedModelProfiles, type AgentDefinition, type AgentMode, type ProfileSource } from "../lib/agents-config.ts";
 import { freezeSessionProfileAtStartup, inheritedProfileDriftNotice, resolveSessionProfile, sessionProfileRoutingAt, type InheritedProfileOptions, type SessionProfileResolution } from "../lib/session-profile-freeze.ts";
 import { resolveProfilePin, resolveUnversionedProjectProfile } from "../lib/agent-profile-pin.ts";
@@ -41,11 +42,11 @@ import { requireSessionProfileAuthority } from "../lib/session-profile-authority
 import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
 import { installBackgroundCacheWarming } from "../lib/background-cache-warming.ts";
 import { isFinished, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
-import { AgentRunner, piCommand, abortReasonText, REQUESTED_TOOLS_ENV, type AskAnswer, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
+import { AgentRunner, piCommand, abortReasonText, CHILD_JOBS_ENV, REQUESTED_TOOLS_ENV, type AskAnswer, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
 import { parseChildPackageInjection } from "../lib/child-package-injection.ts";
-import { ChildMessenger, type IpcEndpoint } from "../lib/agents-messaging.ts";
+import { CHILD_MESSAGE_MAX_BYTES, ChildMessenger, formatChildJobState, type IpcEndpoint } from "../lib/agents-messaging.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
-import { WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, WindowsSessionRegistryPhaseSequence, type WindowsSessionRegistryPhaseObserver } from "../lib/windows-session-transport.ts";
+import { WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, WindowsSessionRegistryPhaseSequence, isWindowsSessionBootstrapDiagnosticCode, type WindowsSessionBootstrapDiagnosticCode, type WindowsSessionBootstrapDiagnosticObserver, type WindowsSessionRegistryPhaseObserver } from "../lib/windows-session-transport.ts";
 import { hasReviewSessionPermission, resolveCanonicalGitRepositoryIdentitySync, type ReviewSessionManager } from "../lib/review-session-standing-permission.ts";
 import { inheritedUnsafeGitEnvironmentKeys } from "../lib/review-repository.ts";
 import { historyDir, loadHistory, loadStoredTask, pruneHistory, saveTask, type StoredTask } from "../lib/agents-history.ts";
@@ -77,6 +78,8 @@ import { allowedEditSurfaces, inheritAllowedEditSurfaces, isBoundedWriter, isDev
 import { CHILD_METRICS_EVENT, CHILD_METRICS_REVOKED, childEvent, launchSelection, type LaunchSelection } from "../lib/runtime-metrics-children.ts";
 import { runtimeMetricsEnvAllows, type RuntimeMetricsPolicyDeps } from "../lib/runtime-metrics-policy.ts";
 import { publishTaskStatusChanges } from "../lib/notification-events.ts";
+import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
+import { codemodeReaches, COORDINATION_TOOLS_ROUTE, hideBehindCodemode } from "../lib/hidden-tools.ts";
 
 // Gentle Agents: subagents as isolated `pi --mode rpc` children, a task
 // store that notifies per task, and a Gentle Shell card above the editor.
@@ -184,7 +187,7 @@ export interface SessionTransportClient {
 }
 
 export interface SessionTransportFactory {
-	createRegistry(agentHome: string, observeWindowsPhase?: WindowsSessionRegistryPhaseObserver): Promise<SessionTransportRegistry>;
+	createRegistry(agentHome: string, observeWindowsPhase?: WindowsSessionRegistryPhaseObserver, observeWindowsBootstrap?: WindowsSessionBootstrapDiagnosticObserver): Promise<SessionTransportRegistry>;
 	createListener(registry: SessionTransportRegistry, sessionId: string, onNotification: (notification: ReceivedNotification) => Promise<void>): SessionTransportListener;
 	createClient(registry: SessionTransportRegistry, sessionId: string): SessionTransportClient;
 }
@@ -415,6 +418,46 @@ function registerChildMessaging(pi: ExtensionAPI, ipc: IpcEndpoint): void {
 	});
 }
 
+// gentle-shell#2266: a child admitted for background jobs registers the tools
+// against its own private registry and reports its job state back over owned
+// IPC, so the runner can drain one bounded window at settlement instead of
+// killing a job mid-flight. The monitor stays parent-only.
+function registerChildBackgroundJobs(pi: ExtensionAPI, env: NodeJS.ProcessEnv, overrides: Partial<AgentsDeps>, ipc: IpcEndpoint): void {
+	const home = overrides.home ?? os.homedir();
+	const agentHome = overrides.agentHome ?? resolveAgentHomeDirectory({ env, home, agentHome: overrides.agentHome, homeOverridden: overrides.home !== undefined });
+	const now = overrides.now ?? (() => Date.now());
+	let outputDir: string | undefined;
+	let nextFrame = 0;
+	const reportJobs = (): void => {
+		const running = jobs.running();
+		try { ipc.send({ id: `j${++nextFrame}`, kind: "job", message: formatChildJobState({ running, pending: running > 0 }) }); }
+		catch { /* A lost report only costs the drain, never the job. */ }
+	};
+	const jobs = createJobRegistry({
+		outputDir: overrides.jobOutputDir ?? (() => (outputDir ??= mkdtempSync(join(os.tmpdir(), "gentle-jobs-")))),
+		now,
+		shell: overrides.jobShell ?? ((cwd) => {
+			const settings = SettingsManager.create(cwd, agentHome);
+			return { operations: createLocalBashOperations({ shellPath: settings.getShellPath() }), commandPrefix: settings.getShellCommandPrefix() };
+		}),
+		onSettled: (job: JobRecord) => {
+			reportJobs();
+			try { pi.sendMessage({ customType: JOB_NOTICE_TYPE, content: jobNoticeText(job), display: true, details: jobDetails(job) }, { deliverAs: "steer", triggerTurn: true }); }
+			catch { /* The notice is best-effort; the job outcome and the drain still stand. */ }
+		},
+	});
+	registerBackgroundJobTools(pi, { registry: jobs, sessionId: (ctx) => ctx.sessionManager.getSessionId() ?? "", now, onChange: reportJobs });
+	// agent_settled reports the jobs still running so the runner can drain before
+	// it requests the orderly shutdown.
+	pi.on("agent_settled", () => reportJobs());
+	pi.on("session_shutdown", () => {
+		if (!outputDir) return;
+		const dir = outputDir;
+		outputDir = undefined;
+		try { rmSync(dir, { recursive: true, force: true }); } catch { /* A leftover temp directory is harmless. */ }
+	});
+}
+
 const posixSessionTransport: SessionTransportFactory = {
 	createRegistry(agentHome) { return SessionPresenceRegistry.create(agentHome); },
 	createListener(registry: SessionPresenceRegistry, sessionId, onNotification) { return Object.assign(new ActiveSessionListener(registry, sessionId, onNotification), { closesRegistry: false }); },
@@ -422,7 +465,7 @@ const posixSessionTransport: SessionTransportFactory = {
 };
 
 const windowsSessionTransport: SessionTransportFactory = {
-	createRegistry(agentHome, observeWindowsPhase) { return WindowsSessionPresenceRegistry.create(agentHome, observeWindowsPhase); },
+	createRegistry(agentHome, observeWindowsPhase, observeWindowsBootstrap) { return WindowsSessionPresenceRegistry.create(agentHome, observeWindowsPhase, observeWindowsBootstrap); },
 	createListener(registry: WindowsSessionPresenceRegistry, sessionId, onNotification) { return Object.assign(new WindowsActiveSessionListener(registry, sessionId, onNotification), { closesRegistry: true }); },
 	createClient(registry: WindowsSessionPresenceRegistry, sessionId) { return new WindowsActiveSessionClient(registry, sessionId); },
 };
@@ -662,9 +705,9 @@ export function resolveDefaultSubagentMode(input: {
 
 // What the model reads when a background task ends: the outcome first, then
 // the answer itself. The expanded card shows the same text.
-export function completionText(task: TaskRecord): string {
+export function completionText(task: TaskRecord, report: string = finishedText(task)): string {
 	const outcome = task.status === "completed" ? "finished" : task.status.replace("_", " ");
-	return `Subagent ${task.agent} (task ${task.id}, "${task.label}") ${outcome}.\n\n${finishedText(task)}`;
+	return `Subagent ${task.agent} (task ${task.id}, "${task.label}") ${outcome}.\n\n${report}`;
 }
 
 const COMPLETION_HEADER = /^Subagent [^\n]+ \(task [^\n]*\) [^\n]+\.$/;
@@ -713,7 +756,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			pi.on("tool_call", () => ({ block: true, reason: "Retired SDD child launch is not supported." }));
 			return;
 		}
-		if (childIpc) registerChildMessaging(pi, childIpc);
+		if (childIpc) {
+			registerChildMessaging(pi, childIpc);
+			if (env[CHILD_JOBS_ENV] === "1") registerChildBackgroundJobs(pi, env, overrides, childIpc);
+		}
 		registerMissingToolsCheck(pi, env);
 		return;
 	}
@@ -975,6 +1021,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	type SessionTransport = { generation: number; sessionId: string; sessionManager: ExtensionContext["sessionManager"]; client: SessionTransportClient; listener: SessionTransportListener; registry: SessionTransportRegistry; close(): Promise<void> };
 	let transportGeneration = 0;
 	let activeSessionTransport: SessionTransport | undefined;
+	// A session whose first startup failed gets exactly one later re-arm attempt.
+	let transportRearm: { sessionManager: ExtensionContext["sessionManager"]; sessionId: string; ctx: ExtensionContext } | undefined;
 	const pendingTransportStartups = new Set<Promise<void>>();
 	const validTransportSessionId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value);
 	const closeSessionTransport = async (transport: SessionTransport | undefined) => {
@@ -986,11 +1034,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		operation.then(() => { pendingTransportStartups.delete(operation); }, () => { pendingTransportStartups.delete(operation); });
 		return operation;
 	};
-	const startSessionTransport = (ctx: ExtensionContext) => {
+	const startSessionTransport = (ctx: ExtensionContext, rearm = false) => {
 		const previous = activeSessionTransport;
 		const generation = ++transportGeneration;
 		const sessionManager = ctx.sessionManager;
 		activeSessionTransport = undefined;
+		transportRearm = undefined;
 		const operation = (async () => {
 			let registry: SessionTransportRegistry | undefined;
 			let listener: SessionTransportListener | undefined;
@@ -999,6 +1048,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			let sessionId: string | undefined;
 			let startupPhase: "registry" | "listener" = "registry";
 			const phases = new WindowsSessionRegistryPhaseSequence();
+			let bootstrap: WindowsSessionBootstrapDiagnosticCode | undefined;
+			const observeBootstrap = (code: WindowsSessionBootstrapDiagnosticCode) => { if (bootstrap === undefined && isWindowsSessionBootstrapDiagnosticCode(code)) bootstrap = code; return undefined; };
 			const closeStartupTransport = () => {
 				if (closePromise) return closePromise;
 				closePromise = Promise.resolve().then(async () => {
@@ -1014,7 +1065,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				if (previous) trackTransportOperation(closeSessionTransport(previous));
 				sessionId = sessionManager.getSessionId();
 				if (!validTransportSessionId(sessionId) || sessions !== sessionManager || generation !== transportGeneration) return;
-				registry = await sessionTransport.createRegistry(agentHome, (event) => phases.observe(event));
+				registry = await sessionTransport.createRegistry(agentHome, (event) => phases.observe(event), observeBootstrap);
 				if (sessions !== sessionManager || generation !== transportGeneration) {
 					await closeStartupTransport();
 					return;
@@ -1049,22 +1100,33 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				if (activeSessionTransport?.generation === generation) activeSessionTransport = undefined;
 				// Only fixed, validated observer fields cross the UI boundary. Never
 				// interpolate the exception or report a retired session's failure.
-				if (sessions === sessionManager && generation === transportGeneration && validTransportSessionId(sessionId) && activeSessionId() === sessionId) {
+				const current = () => sessions === sessionManager && generation === transportGeneration && validTransportSessionId(sessionId) && activeSessionId() === sessionId;
+				if (current()) {
 					const observation = phases.snapshot();
 					const diagnostic = startupPhase === "registry" && observation.availability === "observed" && observation.firstFailurePhase !== null
 						? `phase=${observation.firstFailurePhase} class=${observation.firstFailureClass} code=${observation.firstFailureCode} lastStartupMarker=${observation.lastStartupMarker ?? "unavailable"}`
 						: `phase=${startupPhase} diagnostics=unavailable`;
-					try { ctx.ui.notify(`Session transport startup failed: ${diagnostic}.`, "warning"); } catch {}
+					try { ctx.ui.notify(`Session transport startup failed: ${diagnostic}${bootstrap ? ` bootstrap=${bootstrap}` : ""}.`, "warning"); } catch {}
 				}
 				await closeStartupTransport();
+				// Armed only after cleanup, so the re-arm never overlaps the failed helper.
+				if (!rearm && current()) transportRearm = { sessionManager, sessionId: sessionId!, ctx };
 			}
 		})();
 		trackTransportOperation(operation);
 		return operation;
 	};
+	// The single re-arm runs on a later session event of the same session while it
+	// still has no transport; its own failure warns again and arms nothing.
+	const rearmSessionTransport = (ctx: ExtensionContext | undefined) => {
+		const pending = transportRearm;
+		if (!pending || ctx?.sessionManager !== pending.sessionManager || sessions !== pending.sessionManager || activeSessionId() !== pending.sessionId || activeSessionTransport) return;
+		void startSessionTransport(pending.ctx, true);
+	};
 	const shutdownSessionTransport = async () => {
 		const active = activeSessionTransport;
 		activeSessionTransport = undefined;
+		transportRearm = undefined;
 		transportGeneration++;
 		if (active) await closeSessionTransport(active);
 		while (pendingTransportStartups.size > 0) {
@@ -1414,7 +1476,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// Ownership is consulted at delivery time, matching onNotification and
 		// onQuery: a completion owned by another session is dropped, not delivered.
 		if (activeSessionId() !== task.parentSessionId) return;
-		sendToParent({ customType: AGENTS_RESULT_TYPE, content: completionText(task), display: true, details: taskDetails(task) }, route);
+		// P9b: only the delivered copy is capped; subagent_result keeps the full text.
+		let cwd = process.cwd();
+		try { cwd = sessions?.getCwd() ?? cwd; } catch { /* A stale manager keeps the process directory, like the runner's config. */ }
+		const capped = capReport(finishedText(task), loadAgentsConfig({ cwd, home: deps.home, agentHome }).reportMaxBytes, task.id, task.agent);
+		sendToParent({ customType: AGENTS_RESULT_TYPE, content: completionText(task, capped.text), display: true, details: withReportCap(taskDetails(task), capped) }, route);
 	};
 
 	// Incoming orchestrator session messages. The transport has already
@@ -1525,22 +1591,26 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	const flushJobNotices = () => {
 		const route = deliveryRoute(false);
 		if (!route) return;
-		const failed: JobNotice[] = [];
+		const retained: JobNotice[] = [];
+		let deliveryFailed = false;
 		for (const notice of jobNotices.splice(0)) {
 			const { job } = notice;
-			if (activeSessionId() !== job.ownerSessionId) continue;
+			if (activeSessionId() !== job.ownerSessionId) {
+				retained.push(notice);
+				continue;
+			}
 			const content = notice.kind === "events" ? monitorEventsText(job, notice.batch)
 				: notice.kind === "stopped" ? monitorStoppedText(job, notice.reason) : jobNoticeText(job);
 			const event = notice.kind === "events" ? "events" : notice.kind === "stopped" ? notice.reason : undefined;
 			try {
 				sendToParent({ customType: JOB_NOTICE_TYPE, content, display: true, details: jobDetails(job, event) }, route);
 			} catch {
-				failed.push(notice);
+				retained.push(notice);
+				deliveryFailed = true;
 			}
 		}
-		if (failed.length === 0) return;
-		jobNotices.unshift(...failed);
-		if (route === "idle") armDeliveryRetry();
+		jobNotices.unshift(...retained);
+		if (deliveryFailed && route === "idle") armDeliveryRetry();
 	};
 
 	const flushAll = () => {
@@ -1651,8 +1721,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// compaction ran inside or right before the run. `before_agent_start`
 	// marks a prompt that is about to start a run, and the compaction events
 	// release content held while the parent compacted without a run.
-	pi.on("before_agent_start", () => {
+	pi.on("before_agent_start", (event) => {
 		if (!parentRunActive) beginPromptStart();
+		const options = event?.systemPromptOptions;
+		if (codemodeReaches(options?.selectedTools) && ["orchestrator_list", "orchestrator_consult", "orchestrator_send_message"].some((name) => options?.selectedTools?.includes(name))) appendSystemPromptOnce(options, COORDINATION_TOOLS_ROUTE);
 	});
 	pi.on("agent_start", () => {
 		activeAgentRuns += 1;
@@ -1725,7 +1797,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		},
 		onQuerySettled: (taskId, requestId, outcome) => {
 			if (outcome === "replied") messages.consumeQuery(taskId, requestId);
-			else messages.expireQuery(taskId, requestId);
+			// A busy parent still sees a question that expired in its queue (S15 P9a).
+			else messages.markQueryExpired(taskId, requestId);
 		},
 		onFallback: (task, change) => announceFallback({ agent: task.agent, from: change.from, to: change.to, category: change.category, ...(change.launch ? { launch: true } : {}) }, task.parentSessionId, task.id),
 		onSuccessfulMutation: (task, tool) => {
@@ -2211,7 +2284,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		};
 	};
 
-	const roots = (ctx: ExtensionContext) => ({ cwd: ctx.sessionManager.getCwd(), home: deps.home, agentHome });
+	const roots = (ctx: ExtensionContext) => ({ cwd: ctx.sessionManager.getCwd(), home: deps.home, agentHome, configHome: gentlePiConfigHome(deps.env) });
 	// Issue #2400: parent sessions already told about model_profiles keys that
 	// match no agent and suggest none, so the notice fires once per session.
 	const unmatchedKeysNotifiedSessions = new Set<string>();
@@ -2520,7 +2593,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			messages.invalidateTask(finished.id);
 			// The id rides in the text too: details never reach the model, which
 			// otherwise guesses ordinal ids for subagent_continue (#1731 T19).
-			return text(completionText(finished), taskDetails(finished));
+			const capped = capReport(finishedText(finished), loadAgentsConfig(roots(ctx)).reportMaxBytes, finished.id, finished.agent);
+			return text(completionText(finished, capped.text), withReportCap(taskDetails(finished), capped));
 		} finally {
 			signal?.removeEventListener("abort", onAbort);
 		}
@@ -2683,11 +2757,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.registerTool({
 		name: "orchestrator_session_id",
 		label: "Orchestrator session ID",
-		description: "Return this session's stable routing ID, Initial alias (FIRST TASK), Current alias (CURRENT TASK), and separate human Session name. Subject updates Current even when named; Initial is the first declared branch topic, unknown for legacy history. Without subject, explicit state.work.topic updates Current; keep it current as tasks change. Before delegation or cross-session coordination, declare a short recognizable non-sensitive subject, not a prompt. Do not require a subject declaration for small direct tasks. Do not query all peers. Names never authenticate. Existing Pi names and human renames are preserved. Progress is published automatically from the todo list; publish state only for objective, decisions, blockers or work, never just progress. Classified work must publish objective and work.topic/area at session start and every task-topic change; never retain old task state. Catalog flags never-published peers. Owner-curated state: 2048 UTF-8 bytes total; null withdraws, omission leaves unchanged. Never include credentials, internal instructions, or raw prompts. Historical notes are not consent or an owner reply.",
+		description: "Return this session's stable routing ID, Initial alias (FIRST TASK), Current alias (CURRENT TASK), and separate human Session name. Subject updates Current even when named; Initial is the first declared branch topic, unknown for legacy history. Without subject, explicit state.work.topic updates Current; keep it current as tasks change. Before delegation or cross-session coordination, declare a short recognizable non-sensitive subject, not a prompt. Do not require a subject declaration for small direct tasks. Do not query all peers. Names never authenticate. Existing Pi names and human renames are preserved. Progress is published automatically from the todo list; publish state only for objective, decisions, blockers or work, never just progress. If you publish classified work, keep objective and work.topic/area current on each task-topic change; never retain old task state. Catalog flags never-published peers. Owner-curated state: 2048 UTF-8 bytes total; null withdraws, omission leaves unchanged. Never include credentials, internal instructions, or raw prompts. Historical notes are not consent or an owner reply.",
 		...orchestratorToolRenderers("session", expandHint),
 		parameters: { type: "object", additionalProperties: false, properties: {
 			subject: { type: "string", maxLength: 120, description: "Short task subject; updates aliases independently of human names and names unnamed Pi sessions." },
-			state: { anyOf: [{ type: "null" }, { type: "object", additionalProperties: false, properties: {
+			state: { anyOf: [{ type: "null" }, { type: "string" }, { type: "object", additionalProperties: false, properties: {
 				objective: { type: "string" }, progress: { type: "string" }, decisions: { type: "string" }, blockers: { type: "string" },
 				work: { type: "object", additionalProperties: false,
 					description: "Historical, non-authoritative; topic requires area. Text and work JSON share 2048 UTF-8 bytes. Reject exact duplicate tags/refs; no ref resolution or routing.",
@@ -2703,7 +2777,17 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const transport = activeTransportFor(ctx);
 			if (!transport) return text("Error: session messaging is not ready.", { error: "not ready" });
-			const { subject, state } = params as { subject?: unknown; state?: unknown };
+			const { subject, state: rawState } = params as { subject?: unknown; state?: unknown };
+			// Agents sometimes serialize the state object as a JSON string; accept
+			// it with the same rules instead of a cryptic schema rejection, and
+			// name the nesting rule when the parsed shape is flat.
+			let state = rawState;
+			if (typeof rawState === "string") {
+				try { state = JSON.parse(rawState); }
+				catch { throw new Error("invalid-state-json: state must be a JSON object string with objective/progress/decisions/blockers and optional work{area,topic,tags,refs,tasks} nested under \"work\"."); }
+				if (state !== null && (typeof state !== "object" || Array.isArray(state))) throw new Error("invalid-state-json: the JSON string must encode an object or null.");
+				if (state && Object.keys(state).some(key => !["objective", "progress", "decisions", "blockers", "work"].includes(key))) throw new Error("invalid-state-json: unknown top-level fields; area/topic/tags/refs/tasks must be nested under \"work\", not at the top level of state.");
+			}
 			const declared = normalizeTaskSubject(subject);
 			// An owner object without `progress` keeps the automatic todo progress still on
 			// display; null and an explicit `progress` win, and an over-budget merge does not fail the call.
@@ -2732,6 +2816,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.registerTool({
 		name: "orchestrator_consult",
 		label: "Consult published context",
+		prepareLoadout: hideBehindCodemode("orchestrator_consult"),
 		...orchestratorToolRenderers("consult", expandHint),
 		description: "Read published metadata (default), request bounded helper reasoning with explicit UI model-cost permission and a question, or revoke-reasoning for an exact target. Never an owner reply, consent or private context access.",
 		parameters: { type: "object", additionalProperties: false, required: ["recipient_session_id"], properties: {
@@ -2782,6 +2867,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.registerTool({
 		name: "orchestrator_list",
 		label: "List orchestrators",
+		prepareLoadout: hideBehindCodemode("orchestrator_list"),
 		...orchestratorToolRenderers("list", expandHint),
 		description: "List other sessions advertised by the trusted local profile. Omit filter for the existing list; filter searches published classified work only: bounded, non-exhaustive, no authority, unknown reachability. Classified work must publish at session start and each task-topic change; flag peers doing classified work who never published state.",
 		parameters: Type.Object({
@@ -2862,6 +2948,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.registerTool({
 		name: "orchestrator_send_message",
 		label: "Send orchestrator message",
+		prepareLoadout: hideBehindCodemode("orchestrator_send_message"),
 		renderShell: "self",
 		renderCall(args, theme, context) {
 			return outgoingMessageCall(args as { message?: unknown }, theme, context, expandHint(context.expanded));
@@ -2939,26 +3026,26 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	});
 
 	tool("list_agents", "List the subagents defined for this project and user, with their descriptions and declared tool inventory.", { properties: {} }, async (_params, ctx) => {
-		const { agents, errors } = discoverAgents(roots(ctx));
+		const { agents, errors, notices } = discoverAgents(roots(ctx));
 		const lines = agents.map((agent) => `- ${agent.name} (${agent.scope}): ${agent.description || "no description"} ${declaredToolInventory(agent)}`);
-		const problems = errors.map((error) => `! ${error}`);
+		const problems = [...errors, ...notices].map((problem) => `! ${problem}`);
 		return text(lines.length === 0 ? "No subagents defined." : [...lines, ...problems].join("\n"));
 	});
 
 	tool(
 		"run",
-		"Delegate a task to a named subagent. Task mode waits for the answer; background mode returns a task id immediately.",
+		"Delegate a task to a named subagent. Admission rejects writers without repository-relative `## Allowed edit surfaces`; below the context backstop, organic writers without `Spec: odd/tasks/<existing>.md, T<n>` (2+ disjoint writers alone in one message pass) and `gentle-ai-verify` without that or `Risk: item N`.",
 		{
 			required: ["agent", "task"],
 			properties: {
 				agent: { type: "string", description: "Subagent name from subagent_list_agents." },
 				task: { type: "string", description: "What the subagent must do, self-contained." },
-				label: { type: "string", description: "Three to six words naming the work, shown on the agents card, e.g. 'map footer data sources'." },
+				label: { type: "string", description: "Three to six words naming the work for the agents card, e.g. 'map footer data sources'." },
 				context: { type: "string", description: "Optional extra context appended to the task." },
 				work: workDescriptorSchema,
-				workspace_root: { type: "string", description: "Optional canonical main or linked Git worktree within the parent's same clone only; mutually exclusive with repository_root." },
-				repository_root: { type: "string", description: "Optional canonical independent Git repository; requires direct interactive session-scoped consent before queueing; mutually exclusive with workspace_root." },
-				mode: { type: "string", enum: ["task", "background"], description: "task waits for the result (default); background returns immediately." },
+				workspace_root: { type: "string", description: "Optional canonical main or linked Git worktree within the parent's clone only; exclusive with repository_root." },
+				repository_root: { type: "string", description: "Optional canonical independent Git repository; needs direct interactive session-scoped consent before queueing; exclusive with workspace_root." },
+				mode: { type: "string", enum: ["task", "background"], description: "task waits for the result (default); background returns a task id at once." },
 			},
 		},
 		async (params, ctx, signal) => {
@@ -3033,11 +3120,18 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		return text(reconciledTasks.length === 0 ? "No subagent tasks in this session." : reconciledTasks.map(describeTask).join("\n"));
 	});
 
-	tool("reply", "Reply once to a live query from a child of the current parent session.", { required: ["task_id", "request_id", "message"], properties: { task_id: { type: "string" }, request_id: { type: "string" }, message: { type: "string" } } }, async (params, ctx) => {
+	tool("reply", "Reply once to a child query; a late reply arrives as a message.", { required: ["task_id", "request_id", "message"], properties: { task_id: { type: "string" }, request_id: { type: "string" }, message: { type: "string" } } }, async (params, ctx) => {
 		const taskId = String(params.task_id);
 		const requestId = String(params.request_id);
-		const accepted = await runner.reply(taskId, requestId, typeof params.message === "string" ? params.message : "", ctx.sessionManager.getSessionId() ?? "");
-		return accepted ? text("Reply accepted for delivery.") : text("Error: query is unavailable.", { error: "query unavailable" });
+		const message = typeof params.message === "string" ? params.message : "";
+		const sessionId = ctx.sessionManager.getSessionId() ?? "";
+		if (await runner.reply(taskId, requestId, message, sessionId)) return text("Reply accepted for delivery.");
+		// S15 P9a: a busy parent answers after the deadline; the answer still reaches a running child.
+		const late = runner.replyLate(taskId, requestId, message, sessionId);
+		if (late === "delivered") return text(`Query ${requestId} had expired; the answer was delivered to task ${taskId} as a message.`);
+		if (late === "too large") return text(`Error: the reply exceeds the ${CHILD_MESSAGE_MAX_BYTES}-byte message limit and was not delivered; query ${requestId} can still be answered with a shorter reply.`, { error: "reply too large" });
+		if (late === "not running") return text(`Error: query ${requestId} had expired and task ${taskId} is no longer running, so the answer was not delivered. Pass it with subagent_continue.`, { error: "query expired" });
+		return text("Error: query is unavailable.", { error: "query unavailable" });
 	});
 
 	tool("cancel",  "Cancel a queued or running subagent task.", { required: ["task_id"], properties: { task_id: { type: "string" } } }, async (params) => {
@@ -3153,11 +3247,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			});
 		} catch { /* A launch freezes lazily through the same resolver. */ }
 		stateCache.load(ctx.sessionManager);
-		// A resumed, reloaded, or replaced session starts with an empty completion
-		// queue so nothing pending from another session can replay here.
+		// A resumed, reloaded, or replaced session starts with empty completion
+		// and message queues so nothing pending from another session can replay here.
 		completions.dropAll();
 		messages.dropAll();
-		jobNotices.length = 0;
+		// Job notices remain owner-scoped and survive until their session resumes.
 		resetParentDelivery(ctx);
 		presence?.dispose();
 		registryFor(ctx);
@@ -3178,7 +3272,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			presence = startPresence(ctx.sessionManager);
 			resetActivityPublish();
 			publishActivityPrompt();
-		} catch { presence = undefined; }
+		} catch {
+			presence = undefined;
+			// Fixed text only: the failure may carry a profile path or session id.
+			try { ctx.ui.notify("Session presence unavailable: phase=presence class=transport code=presence-cleared.", "warning"); } catch {}
+		}
 		// /reload and /resume recompute busy from live owned work only: a task
 		// restored from disk never enters ownedTaskIds, so counting it would
 		// report working for work this runtime no longer owns. An unchanged
@@ -3209,6 +3307,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			rpcActivityPublisher.start();
 		}
 	});
+	pi.on("agent_start", (_event, ctx) => rearmSessionTransport(ctx));
+	pi.on("turn_end", (_event, ctx) => rearmSessionTransport(ctx));
 	pi.on("session_shutdown", async () => {
 		completions.dropAll();
 		messages.dropAll();

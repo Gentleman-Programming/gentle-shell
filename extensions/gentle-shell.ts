@@ -5,6 +5,7 @@ import { Editor, Image, Key, decodeKittyPrintable, getCapabilities, isKeyRelease
 import { readClipboardImage, type ClipboardImage } from "../lib/clipboard-image.ts";
 import { readPastedImagePaths } from "../lib/pasted-image-paths.ts";
 import { describeAttachment, ImageAttachments } from "../lib/image-attachments.ts";
+import { defaultCacheRoot, ImageDiskCache } from "../lib/image-disk-cache.ts";
 import { execFile, spawnSync } from "node:child_process";
 import { openInExternalEditor, type ExternalEditorHost } from "../lib/external-editor.ts";
 import { existsSync, realpathSync, statSync } from "node:fs";
@@ -38,17 +39,17 @@ import { applyVisualPreset, CHROME_SURFACE, DEFAULT_VISUAL_SETTINGS, DENSITY, HE
 import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, readBannerConfig, readBannerConfigForEdit, writeBannerConfig } from "./startup-banner.ts";
 import { commandKeymapId, commandKeymapIds, effectiveKey, keymapCommand, keymapLabel, keymapSavedNotice, loadKeymaps, prepareKeymapChange, writeKeymaps, type KeymapBindings, type PiKeybindings } from "../lib/keymaps.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
-import { DOUBLE_ESC_CANCEL_HINT, floatPromptRow, framePromptLines, panelPromptRow, resolvePromptLayout, IDLE_ESC_CLEAR_HINT, PANEL_BUTTON, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_WATCHDOG_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
+import { DOUBLE_ESC_CANCEL_HINT, floatPromptRow, framePromptLines, panelPromptRow, resolvePromptLayout, IDLE_ESC_CLEAR_HINT, PANEL_BUTTON, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, SHELL_PULSE_WATCHDOG_MS, withPromptHint, workingTick, type PromptState } from "../lib/shell-prompt.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { CLAUDE_BRIDGE_PROVIDER, priceBridgeMessage } from "../lib/bridge-cost.ts";
 import { inferOddPhase } from "../lib/odd-phase-inference.ts";
 import { isInteractiveMode } from "../lib/rpc-host.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
-import { isNanAdaptiveReasoningModel } from "../lib/nan-provider.ts";
 import { resolveAnimationPolicy, writeAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy, type VimPolicy } from "../lib/vim-policy.ts";
 import { resolveHistoryCapture, writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
+import { HERDR_TASK_SUMMARY_CHANGED, resolveHerdrTaskSummarySettings, writeHerdrTaskSummarySettings } from "../lib/herdr-task-summary-policy.ts";
 import { createRequire } from "node:module";
 import { createVimEditorAdapter, isAuditedPiEditorVersion } from "../lib/vim-editor-adapter.ts";
 import { VimNormalEngine } from "../lib/vim-normal-engine.ts";
@@ -353,7 +354,6 @@ export function buildShellBarModel(
 	const home = options.home ?? os.homedir();
 	const { usage, costTotal } = sessionStats(ctx);
 	const model = ctx.model;
-	const adaptiveReasoning = isNanAdaptiveReasoningModel(model);
 	const entries = Array.from(footerData.getExtensionStatuses().entries())
 		.filter(([key]) => key !== "gentle-fast" && (options.jobs === undefined || key !== JOBS_STATUS_KEY))
 		.sort(([a], [b]) => a.localeCompare(b));
@@ -372,7 +372,7 @@ export function buildShellBarModel(
 		dirty: options.dirty,
 		sessionName: ctx.sessionManager.getSessionName(),
 		modelId: model?.id ?? "no-model",
-		effort: model?.reasoning ? (adaptiveReasoning ? "auto" : pi.getThinkingLevel()) : undefined,
+		effort: model?.reasoning ? pi.getThinkingLevel() : undefined,
 		contextPercent: usage?.percent ?? null,
 		contextWindow: usage?.contextWindow ?? model?.contextWindow ?? 0,
 		costTotal,
@@ -423,7 +423,7 @@ export function createFooterStatusMemo(deps: FooterStatusMemoDeps): { key(): str
 			statsKey ? [statsKey[0], statsKey[1], statsKey[2]] : sessionStats(ctx),
 			model?.id ?? null,
 			model?.contextWindow ?? null,
-			model?.reasoning ? (isNanAdaptiveReasoningModel(model) ? "auto" : pi.getThinkingLevel()) : undefined,
+			model?.reasoning ? pi.getThinkingLevel() : undefined,
 			model ? ctx.modelRegistry.isUsingOAuth(model) : false,
 			footerData.getGitBranch(),
 			deps.profile(),
@@ -516,7 +516,7 @@ interface PromptEditorDeps {
 	/** Pasted images become atomic `[Image#N]` chips; absent, Pi's paste handler runs unchanged. */
 	attachments?: ImageAttachments;
 	readClipboardImage?: () => Promise<ClipboardImage | null>;
-	/** Injectable silence-watchdog window; production and tests default to SHELL_PULSE_WATCHDOG_MS. */
+	/** Injectable coarse-animation window; production and tests default to SHELL_PULSE_WATCHDOG_MS. */
 	watchdogMs?: number;
 	/** Read on every render: true while the wide IDE chrome shows, so the editor draws its panel frame. */
 	panelChrome?: () => boolean;
@@ -566,7 +566,6 @@ export function extractQueuedText(combined: string, draft: string): string | und
 
 export class GentlePromptEditor extends CustomEditor {
 	private promptState: PromptState = PROMPT_STATE.IDLE;
-	private tick = 0;
 	private animationPolicy: AnimationPolicy = "quality";
 	private vimPolicy: VimPolicy = "off";
 	private vimRejected = false;
@@ -583,9 +582,6 @@ export class GentlePromptEditor extends CustomEditor {
 	private visualObjectPending: "i" | "a" | undefined;
 	private visualAnchor: { line: number; col: number } | undefined;
 	private watchdog: NodeJS.Timeout | undefined;
-	// Last time a frame painted (or the watchdog forced one) while working; the
-	// quality watchdog repaints only when now() drifts past its window.
-	private lastRenderAt = 0;
 	private readonly deps: PromptEditorDeps;
 	private readonly pointerTui: TUI;
 	private floatMouseLayout?: ReturnType<typeof resolvePromptLayout>;
@@ -813,20 +809,22 @@ export class GentlePromptEditor extends CustomEditor {
 		this.deps.requestRender();
 	}
 
+	/** Current animation phase: elapsed working time at the policy cadence. */
+	private workingPhase(): number {
+		// potato never animates (no timer, static petal); quality steps per
+		// SHELL_PULSE_MS window; performance keeps the coarse watchdog cadence.
+		if (this.animationPolicy === "potato") return 0;
+		return workingTick(this.deps.now(), this.animationPolicy === "quality" ? SHELL_PULSE_MS : (this.deps.watchdogMs ?? SHELL_PULSE_WATCHDOG_MS));
+	}
+
 	private startWatchdog(): void {
+		// Time-based animation: the phase comes from workingPhase(), so this
+		// timer only keeps repaints flowing while working — quality pulses at
+		// SHELL_PULSE_MS so silent tool runs stay on cadence; potato gets no
+		// timer at all (its coarse frames paint only when a repaint happens).
 		if (this.animationPolicy === "potato") return;
-		const windowMs = this.deps.watchdogMs ?? SHELL_PULSE_WATCHDOG_MS;
-		this.lastRenderAt = this.deps.now();
-		this.watchdog = setInterval(() => {
-			// Render-driven petal (gentle-shell#994): streaming frames already
-			// advance the animation in render(), so under quality the watchdog
-			// stays silent unless no frame painted within its window. performance
-			// keeps its coarse cadence regardless of render traffic.
-			if (this.animationPolicy === "quality" && this.deps.now() - this.lastRenderAt < windowMs) return;
-			this.tick += 1;
-			this.lastRenderAt = this.deps.now();
-			this.deps.requestRender();
-		}, windowMs);
+		const windowMs = this.animationPolicy === "quality" ? SHELL_PULSE_MS : (this.deps.watchdogMs ?? SHELL_PULSE_WATCHDOG_MS);
+		this.watchdog = setInterval(() => this.deps.requestRender(), windowMs);
 		this.watchdog.unref();
 	}
 
@@ -1382,13 +1380,9 @@ export class GentlePromptEditor extends CustomEditor {
 	}
 
 	render(width: number): string[] {
-		// Render-driven petal (gentle-shell#994): every frame the host already
-		// paints while working advances the animation for free, so no fast
-		// timer forces renders during streaming.
-		if (this.promptState === PROMPT_STATE.WORKING && this.animationPolicy === "quality") {
-			this.tick += 1;
-			this.lastRenderAt = this.deps.now();
-		}
+		// Time-based animation: the phase is read from the clock per frame, so a
+		// streaming render burst cannot strobe the wave and silent tool runs
+		// advance it via the working pulse timer.
 		const layout = resolvePromptLayout(width, cardStyle(), this.deps.bg, this.deps.panelChrome?.() ?? false);
 		this.floatMouseLayout = layout.background || layout.panel ? layout : undefined;
 		const inner = layout.nativeWidth;
@@ -1415,7 +1409,7 @@ export class GentlePromptEditor extends CustomEditor {
 			? visibleCount! + 2 : editorLines.length;
 		const framed = framePromptLines(editorLines.slice(0, borderEnd), width, {
 			state,
-			tick: this.tick,
+			tick: this.workingPhase(),
 			borderColor: (text) => layout.background || layout.panel ? this.borderColor(text) : this.deps.fg(PROMPT_FRAME_ROLE, text),
 			fg: this.deps.fg,
 			bold: this.deps.bold,
@@ -1495,7 +1489,6 @@ export class GentlePromptEditor extends CustomEditor {
 	private stopWatchdog(): void {
 		if (this.watchdog) clearInterval(this.watchdog);
 		this.watchdog = undefined;
-		this.tick = 0;
 	}
 }
 
@@ -1636,6 +1629,7 @@ function renderDoubleEscCancelReport(
 const CHANGES_WIDGET_KEY = "gentle-shell-changes";
 const HEADER_WIDGET_KEY = "gentle-shell-below-input-header";
 const CHANGES_COMMAND_NAME = "gentle:changes";
+const IMAGES_COMMAND_NAME = "gentle:images";
 const CHANGES_POLL_DEFAULT_MS = 2000;
 const GIT_TIMEOUT_MS = 5000;
 const COMMANDS_COMMAND_NAME = "gentle:commands";
@@ -2080,17 +2074,6 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	// overlapping refreshes of the SAME source (or of builtins) can otherwise
 	// let an older failure settle after a newer success and poison it.
 	const usageGenerations = new Map<string, number>();
-	// NaN accepts a thinking level for DeepSeek V4 Flash, Qwen 3.8 Flash, and MiMo
-	// but manages their depth itself, so the header reports `auto` and the shell says
-	// why once per model instead of repeating it on every level change.
-	const adaptiveReasoningNotices = new Set<string>();
-	const announceAdaptiveReasoning = (ctx: ExtensionContext, model: { provider: string; id: string; name?: string } | undefined) => {
-		if (!ctx.hasUI || !isNanAdaptiveReasoningModel(model)) return;
-		const key = `${model.provider}/${model.id}`;
-		if (adaptiveReasoningNotices.has(key)) return;
-		adaptiveReasoningNotices.add(key);
-		ctx.ui.notify(`${model.name || model.id} chooses its reasoning depth automatically; the selected thinking level is accepted but does not change it.`, "info");
-	};
 	// One spelling of the config home, so the pin resolver, the global profiles
 	// store and the profile reader cannot drift onto two different stores.
 	const usageConfigHome = gentlePiConfigHome(env);
@@ -2407,6 +2390,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let prompt: GentlePromptEditor | undefined;
 	// Images pasted into the current draft; emptied on every submit.
 	const imageAttachments = new ImageAttachments();
+	// Opt-in disk cache for tools that need a real file path. Off unless the user
+	// asks for it: `GENTLE_PI_IMAGES_DISK_CACHE=session`. The path is never put in
+	// the prompt; it is readable through /gentle:images only.
+	const imagesDiskCachePolicy = (env.GENTLE_PI_IMAGES_DISK_CACHE ?? "off").trim().toLowerCase() === "session" ? "session" : "off";
 	// Set by abortAndDispatchQueued via dispatchQueuedText when an Esc aborts
 	// a turn with a non-empty queue; sent exactly once, from agent_settled,
 	// once the aborted run has fully settled (issue #1218). Several aborts
@@ -2524,12 +2511,17 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	});
 	pi.on("session_start", async (_event, ctx) => {
 		customizeGeneration++;
+		if (imagesDiskCachePolicy === "session") {
+			const cacheRoot = defaultCacheRoot(env);
+			try {
+				ImageDiskCache.sweepStale(cacheRoot, 7 * 24 * 60 * 60 * 1000);
+			} catch {
+				// A sweep that cannot run must never block the session.
+			}
+			imageAttachments.setCache(new ImageDiskCache({ root: cacheRoot, sessionId: ctx.sessionManager.getSessionId() }));
+		}
 		closeCustomize?.();
 		runningJobs = undefined;
-		adaptiveReasoningNotices.clear();
-		// A restored or default session never emits model_select, so the startup model
-		// announces itself here when it manages its own depth.
-		announceAdaptiveReasoning(ctx, ctx.model);
 		if (review) {
 			review = undefined;
 			redrawReview();
@@ -2961,6 +2953,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	pi.on("session_shutdown", (_event, ctx) => {
 		customizeGeneration++;
 		disposeFooter?.();
+		imageAttachments.dispose();
+		imageAttachments.setCache(undefined);
 		closeCustomize?.();
 		if (review) {
 			review = undefined;
@@ -3010,6 +3004,21 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		if (failed > 0) ctx.ui.notify(`Git status failed for ${failed} ${failed === 1 ? "root" : "roots"}; ${failed === 1 ? "its" : "their"} changes are not listed.`, "warning");
 		await showChangesOverlay(ctx, { loadDiff: (root, file) => loadFileDiff(deps.gitRunner(root, DIFF_MAX_BYTES), file), worktrees: () => tracker.worktrees, refresh: () => tracker.refresh(), apply: applyChanges, pollMs: changesPollMs(env) });
 	};
+	pi.registerCommand(IMAGES_COMMAND_NAME, {
+		description: "List the on-disk paths of images pasted in this draft (needs GENTLE_PI_IMAGES_DISK_CACHE=session).",
+		handler: async (_args, ctx) => {
+			if (imagesDiskCachePolicy !== "session") {
+				ctx.ui.notify("Image disk cache is off. Set GENTLE_PI_IMAGES_DISK_CACHE=session to enable it.", "info");
+				return;
+			}
+			const cached = imageAttachments.cachedPaths(prompt?.getText() ?? "");
+			if (cached.length === 0) {
+				ctx.ui.notify("No pasted images are cached in this draft.", "info");
+				return;
+			}
+			for (const entry of cached) ctx.ui.notify(`${entry.token} ${entry.path}`, "info");
+		},
+	});
 	pi.registerCommand(CHANGES_COMMAND_NAME, {
 		description: "Browse uncommitted Git changes (working tree vs HEAD, untracked included) in this session's repository and its subagents' worktrees. Press o to open $EDITOR.",
 		handler: async (_args, ctx) => openChanges(ctx),
@@ -3078,7 +3087,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		});
 	}
 	pi.registerCommand("gentle:customize", {
-		description: "Configure appearance, audio notifications, Vim editing, RDD, session permissions and global Auto/YOLO defaults, and prompt history capture.",
+		description: "Configure appearance, task summary publishing, audio notifications, Vim editing, RDD, session permissions and global Auto/YOLO defaults, and prompt history capture.",
 		handler: async (_args, ctx) => {
 			if (ctx.mode !== "tui" || !ctx.hasUI) {
 				if (ctx.hasUI) ctx.ui.notify("Customization requires an interactive terminal.", "warning");
@@ -3354,6 +3363,23 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			});
 			rows.push(...buildNotificationRows(ctx));
 			category = "Layout";
+			const taskSummary = () => resolveHerdrTaskSummarySettings(home);
+			const taskSummaryCurrent = (enabled: boolean) => {
+				const current = taskSummary();
+				return !current.malformed && !current.readError && current.settings.enabled === enabled;
+			};
+			for (const enabled of [true, false]) add(
+				() => `Task summary: ${enabled ? "on" : "off"}${taskSummaryCurrent(enabled) ? " (current)" : ""}`,
+				`Task summary: ${enabled ? "on" : "off"}. Applies now to the active-task summary published to terminal tools (for example Herdr's sidebar).`,
+				() => {
+					const current = taskSummary();
+					if (current.malformed || current.readError) throw new Error(`Cannot update malformed or unreadable task summary preference: ${current.globalFile}`);
+					writeHerdrTaskSummarySettings({ ...current.settings, enabled }, home);
+					pi.events.emit(HERDR_TASK_SUMMARY_CHANGED, { configHome: doubleEscCancelConfigHome });
+				},
+				undefined,
+				{ ...explicitChoice("Task summary", enabled ? "on" : "off", () => taskSummaryCurrent(enabled)), hint: "Controls the task summary published to terminal tools" },
+			);
 			// Presets set the visibility switches and keep the placements, the density and the surface; any switch below still overrides them.
 			for (const preset of Object.values(VISUAL_PRESET)) add(() => `Preset: ${PRESET_LABEL[preset]}${visualPresetOf(visual()) === preset ? " (current)" : ""}`, pending, () => updateVisual((settings) => applyVisualPreset(settings, preset)), () => layoutPreview(applyVisualPreset(visual(), preset)),
 				layoutChoice("Preset", PRESET_LABEL[preset], () => visualPresetOf(visual()) === preset, "Light hides the rail, Power user adds Stats; alt+l cycles them"));
@@ -3682,11 +3708,5 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// A slow or failing Git never holds the turn end.
 		trackChangeRefresh(refreshChanges(ctx));
 		void refreshUsage(ctx, false);
-	});
-	pi.on("model_select", (event, ctx) => {
-		announceAdaptiveReasoning(ctx, event.model);
-	});
-	pi.on("thinking_level_select", (_event, ctx) => {
-		announceAdaptiveReasoning(ctx, ctx.model);
 	});
 }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -126,14 +127,21 @@ test("both extensions land their block in appendSystemPrompt on one shared optio
 		"Never end a turn merely announcing an immediately executable authorized next step; execute it instead",
 		"required explicit consent, a denied action, or the human's explicit stop",
 		"Unavailable required proof blocks completion and delivery; it does not alone prohibit specifically authorized in-scope implementation where actual native authority and other limits permit it.",
-		"After a setup prerequisite is repaired, the human may explicitly request one new bounded verification attempt.",
-		"Never bypass consent, a denial, explicit one-run or no-retry limits, terminal native outcomes, or exhausted native budgets.",
 		"Do not infer permission for publishing, destructive actions, unrelated scope or native consent",
 		"Report a concrete blocker and the exact decision needed",
 		"launch the bounded action and end the turn when no independent in-scope work remains",
 		"Retain its identity and resume the already-authorized continuation automatically on its completion event",
 		"do not ask the human to say \"continue\", poll, or claim completion while checks remain pending",
 	]) assert.ok(continuity.includes(clause), `missing continuity clause: ${clause}`);
+	// cost-speed-painpoints S15 P4: the verifier-setup rules load with the Verification rule, not on every turn.
+	const verification = readFileSync(new URL("../assets/orchestrator-verification.md", import.meta.url), "utf8");
+	for (const clause of [
+		"After a setup prerequisite is repaired, the human may explicitly request one new bounded verification attempt.",
+		"Never bypass consent, a denial, explicit one-run or no-retry limits, terminal native outcomes, or exhausted native budgets",
+	]) {
+		assert.ok(verification.includes(clause), `verification module is missing: ${clause}`);
+		assert.ok(!continuity.includes(clause), `continuity must not restate the moved setup rule: ${clause}`);
+	}
 	assert.match(appended, /## Todo list/);
 	// gentle-shell#1662: the list itself travels as a request-local message, never in the prompt.
 	assert.doesNotMatch(appended, /Fix the bug/);

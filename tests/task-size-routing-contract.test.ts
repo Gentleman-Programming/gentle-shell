@@ -77,6 +77,16 @@ test("AC3: small work runs its checks inline and keeps test-first", () => {
 	}
 });
 
+test("small requested task lists and long checks do not force extra ODD machinery", () => {
+	const size = sectionOf(core, "## Task Size");
+	assert.match(size, /`todo` on request/);
+	assert.doesNotMatch(size, /no `todo`/);
+	const reference = read("assets/orchestrator-delegation-reference.md");
+	assert.doesNotMatch(reference, /or long suites, builds, or installs of a large task/);
+	assert.match(reference, /duration alone never triggers a verifier/);
+	assert.match(read("assets/orchestrator-tracking.md"), /a requested session task list alone needs no durable ODD document or memory mirror/);
+});
+
 test("AC4: each mechanism turns on only by its own trigger and size is re-evaluated after", () => {
 	const triggers = sectionOf(core, "## Mechanisms");
 	for (const clause of [
@@ -145,22 +155,37 @@ const MODULE_BUDGETS: Record<string, number> = {
 	// read and to pass paths, not content (7,000 -> 7,100 B; every other card sentence is pinned by a contract).
 	// S15: units of about 100 changed lines or less always run inline (7,100 -> 7,300 B).
 	// RDD-off verification keeps the named-risk rule while conditioning assess on mode (7,300 -> 7,350 B).
-	"orchestrator-delegation.md": 7_350,
-	"orchestrator-delegation-reference.md": 14_800,
+	// P5b (C4): the explorer has web and MCP tools; only shell work stays forbidden (7,350 -> 7,292 B).
+	// cost-speed P6 (R1): the runtime-admission sentence must name the third admitted route (2+ disjoint writers alone
+	// in one message) or it is false; no rule-free wording elsewhere in the card could pay for it (7,292 -> 7,338 B).
+	// cost-speed P14 (PD-81): the Evidence-budget lookup number matches the runtime notice (7,338 -> 7,326 B).
+	"orchestrator-delegation.md": 7_326,
+	// P5b (C14, X4, X5): no restated worker definition, no nonexistent agents or options (14,800 -> 13,969 B).
+	"orchestrator-delegation-reference.md": 13_969,
 	// gentle-shell#1731 T23: Close gate accepts one Needs your decision result as a stop (12,500 -> 12,600 B).
 	// S14: close the open slice before a high-risk commit; outcomes per commit (12,600 -> 12,850 B).
-	"orchestrator-tracking.md": 12_850,
+	// P5b (C3, C5, X2): contradictions and step 3 / Phase reporting restatements removed; 1.4.0 commit-boundary rules kept (12,850 -> 10,324 B).
+	// cost-speed P6 (X9): Task Size is named as the always-on section, not `orchestrator.md`, so full delegation can load
+	// this module without reaching the organic core (10,324 -> 10,308 B).
+	"orchestrator-tracking.md": 10_308,
 	// gentle-shell#1731 T3: parallel review protocol; lazy (delegation or high risk only), core and normative rule untouched.
 	// gentle-shell#1731 T11/T12: verify-per-unit timing and the every-S# verify handoff (6,000 -> 6,400 B).
 	// gentle-shell#1731 T15: one end-of-feature verify for same-model inline deliveries (6,400 -> 6,500 B).
 	// gentle-shell#1731 T23: bounded self-review and partial/blocked writer -> Needs your decision (7,000 -> 7,300 B).
 	// Verification by named risk: escalate-only tier table and the concrete-occasions rule (7,300 -> 7,500 B).
 	// The validated-off exception and its read-only fallback need 365 additional bytes (7,500 -> 7,900 B).
-	"orchestrator-verification.md": 7_900,
+	// Cost-speed S15 P16: the parent commits verifier probes only when a commit is authorized (+28 B), paid by two
+	// phrases that restated their sentence (-36 B): 8,656 -> 8,648 B.
+	// gentle-shell#3082: the terminal disposition exit stays self-contained in the lazy module (+233 B over 8,648):
+	// 8,648 -> 8,900 B.
+	"orchestrator-verification.md": 8_900,
 	// Writer-rule fix (size threshold, one behavior per unit) and C3 (writer prompts name the helpers and
 	// invariants to reuse): 4,500 -> 5,300 B.
 	// Pain-point iteration S10 (C7): writer handoffs keep test scratch outside the worktree (5,300 -> 5,500 B).
-	"orchestrator-writer.md": 5_500,
+	// P5b (C11): omit `mode`, like every other launch rule (5,500 -> 5,428 B).
+	// cost-speed P6 (L41, L36): the same-turn launch holds in every mode, in one writer-only message, background
+	// being how the units run; paid by dropping the Invariants example (5,428 -> 5,426 B).
+	"orchestrator-writer.md": 5_426,
 	"orchestrator-prompts.md": 13_000,
 };
 
@@ -191,10 +216,14 @@ test("S11: the default delegation pointer resolves to the lean card and the refe
 	const card = read("assets/orchestrator-delegation.md");
 	const reference = read("assets/orchestrator-delegation-reference.md");
 	assert.ok(Buffer.byteLength(card, "utf8") <= MODULE_BUDGETS["orchestrator-delegation.md"], "the delegation card is over its budget");
-	// Every core line that names a delegation module names the card, except the one reference pointer.
+	// Every core line that names a delegation module names the card, except the one reference pointer and the
+	// background-policy rules pointer (cost-speed S15 P5a, verdict X3: the background block lives in the reference).
 	const pointerLines = core.split("\n").filter((line) => line.includes("`orchestrator-delegation"));
-	const referenceLines = pointerLines.filter((line) => line.includes("`orchestrator-delegation-reference.md`"));
-	assert.equal(referenceLines.length, 1, "the core names the reference exactly once");
+	const backgroundPointer = "{{GENTLE_PI_BACKGROUND_POLICY}}; rules: background block, `orchestrator-delegation-reference.md`.";
+	assert.ok(pointerLines.includes(backgroundPointer), "the background-policy rules pointer names the reference");
+	assert.ok(reference.includes("<!-- gentle-pi:background-subagents -->"), "the reference carries the background block");
+	const referenceLines = pointerLines.filter((line) => line.includes("`orchestrator-delegation-reference.md`") && line !== backgroundPointer);
+	assert.equal(referenceLines.length, 1, "the core names the reference exactly once besides the background pointer");
 	for (const name of ["Per-action table", "Work Routing Ladder", "Canonical Workflows"]) {
 		assert.ok(referenceLines[0].includes(name), `the reference pointer must name ${name}`);
 	}
@@ -230,7 +259,9 @@ test("S11: the default delegation pointer resolves to the lean card and the refe
 // Focused on the two claims that carry the fix, not on the exact wording around them.
 test("delegation reports a capability gap instead of substituting inline work for a fired trigger", () => {
 	assert.match(delegation, /declared `tools` in `subagent_list_agents` before launching/);
-	assert.match(delegation, /never give a read-only explorer shell, HTTP or MCP work/);
+	// P5b (C4): the explorer declares web and MCP tools; only shell work is outside a read-only explorer.
+	assert.match(delegation, /never give a read-only explorer shell work/);
+	assert.doesNotMatch(delegation, /HTTP or MCP work/);
 	assert.match(delegation, /report the capability gap; a fired trigger is never replaced by inline work/);
 	assert.equal(delegation.split("report the capability gap").length - 1, 1);
 });
@@ -275,7 +306,7 @@ test("T4: tracking updates edit in place and mirror without re-emitting the docu
 // moved clause must live in the module its pointer names.
 test("T6: each delegation module carries its own clauses and names the modules it depends on", () => {
 	const placement: Record<string, readonly string[]> = {
-		"orchestrator-tracking.md": ["#### Authorization and progress", "Delivery follows work units", "Raise a candidate you know is high risk"],
+		"orchestrator-tracking.md": ["#### Authorization and progress", "Delivery follows work units", "Raise known high-risk candidates"],
 		// The tier table header lost "Native risk" with verification by named
 		// risk: the high row is reached only through escalate, not a native tier.
 		"orchestrator-verification.md": [
@@ -306,7 +337,7 @@ test("S1: a fired evidence trigger overrides an initial size classification", ()
 
 test("S1: iterative discovery reassesses cumulative evidence without resetting batches", () => {
 	assert.match(renderedCore, /Reassess cumulative discovery each batch, never reset/);
-	assert.match(renderedCore, /more than one read batch or >~5 sequential lookups/);
+	assert.match(renderedCore, /more than one read batch or >3 lookups/);
 });
 
 test("S1: task size uses only small and large", () => {

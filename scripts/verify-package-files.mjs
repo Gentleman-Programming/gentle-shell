@@ -4,6 +4,9 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+// The generated copy of lib/design-canvas-assets.ts: plain `node` runs this check
+// (prepack, prepublishOnly), and Node 23.0-23.5 cannot load TypeScript unflagged.
+import { DESIGN_CANVAS_ASSETS } from "../runtime/design-canvas-assets.mjs";
 
 const root = join(fileURLToPath(new URL("..", import.meta.url)));
 
@@ -26,6 +29,10 @@ export const installerPaths = Object.freeze([
   "assets/install-wizard/wizard.js",
   "assets/install-wizard/wizard.css",
 ]);
+
+// The canvas server serves exactly these files; one list keeps the server and
+// the package in sync.
+export const designCanvasAssetPaths = Object.freeze(Object.keys(DESIGN_CANVAS_ASSETS).map((name) => `assets/design-canvas/${name}`));
 
 export const requiredPaths = [
   "bin/gentle-shell.mjs",
@@ -67,20 +74,24 @@ export const requiredPaths = [
   "lib/gentle-design.ts",
   // The design canvas server reads its page and scripts from assets/ by path.
   "lib/design-canvas-server.ts",
+  "lib/design-canvas-assets.ts",
+  "runtime/design-canvas-assets.mjs",
   "lib/design-open-browser.ts",
   "lib/design-comments.ts",
   "lib/design-handoffs.ts",
+  "lib/design-system-tokens.ts",
   "lib/design-sources.ts",
   "assets/design-canvas/index.html",
-  "assets/design-canvas/canvas.js",
-  "assets/design-canvas/canvas.css",
-  "assets/design-canvas/inspector.js",
+  ...designCanvasAssetPaths,
   "scripts/npm-pack-result.mjs",
   "assets/orchestrator.md",
   "assets/orchestrator-delegation.md",
+  "assets/orchestrator-full-delegation.md",
+  "assets/orchestrator-full-delegation-card.md",
   "assets/orchestrator-delegation-reference.md",
   "assets/orchestrator-tracking.md",
   "assets/orchestrator-verification.md",
+  "assets/orchestrator-quota-recovery.md",
   "assets/orchestrator-writer.md",
   "assets/orchestrator-prompts.md",
   "assets/orchestrator-memory.md",
@@ -120,9 +131,12 @@ export const requiredPaths = [
   "lib/gentle-shell-import-pi.ts",
   "lib/native-review-cli.ts",
   "lib/review-coordinator.ts",
+  "lib/review-delivery-preflight.ts",
+	"lib/review-candidate-symlink-scan.ts",
   "lib/status-timing-diagnostics.ts",
   "lib/provider-contract-bundle.ts",
   "lib/review-host-relay.ts",
+  "lib/reviewer-stream.ts",
   "lib/review-integration-v2.ts",
   "lib/review-relay-contract.ts",
   "lib/agent-assets.ts",
@@ -145,9 +159,11 @@ export const requiredPaths = [
 	"runtime/review-relay-contract.mjs",
 	"runtime/telemetry-trigger.mjs",
   "scripts/check-provider-contract.mjs",
+  "scripts/download-progress.mjs",
   "scripts/gentle-ai-installer.mjs",
   "scripts/install-gentle-ai.mjs",
   "scripts/install-tui-mode-setting.mjs",
+  "scripts/prepare-verifier.mjs",
   "scripts/mirror-provider-contract.mjs",
   "tests/fixtures/native-review-cli/v2.1.3/start.json",
   "tests/fixtures/provider-contract-bundle/v1.1.0/README.md",
@@ -162,22 +178,22 @@ export const requiredPaths = [
   // exact bytes are pinned by the lock-driven scripts/check-provider-contract.mjs
   // drift check, which runs in the same pnpm test flow.
   "contracts/review-provider-contract-mirror/provider-contract.lock.json",
-  "contracts/review-provider-contract-mirror/v1.4.0/bundle/README.md",
-  "contracts/review-provider-contract-mirror/v1.4.0/bundle/manifest.json",
-  "contracts/review-provider-contract-mirror/v1.4.0/bundle/orchestration/pi.md",
-  "contracts/review-provider-contract-mirror/v1.4.0/bundle/routing/pi.md",
-  "contracts/review-provider-contract-mirror/v1.4.0/bundle/schemas/lens.schema.json",
-  "contracts/review-provider-contract-mirror/v1.4.0/bundle/schemas/refuter.schema.json",
-  "contracts/review-provider-contract-mirror/v1.4.0/bundle/schemas/targeted-validator.schema.json",
-  "contracts/review-provider-contract-mirror/v1.4.0/bundle/vectors/lens.json",
-  "contracts/review-provider-contract-mirror/v1.4.0/bundle/vectors/refuter.json",
-  "contracts/review-provider-contract-mirror/v1.4.0/bundle/vectors/targeted-validator.json",
-  "contracts/review-provider-contract-mirror/v1.4.0/generated/provider-capabilities.baseline.json",
-  "contracts/review-provider-contract-mirror/v1.4.0/generated/provider-roles.baseline.json",
+  "contracts/review-provider-contract-mirror/v1.5.0/bundle/README.md",
+  "contracts/review-provider-contract-mirror/v1.5.0/bundle/manifest.json",
+  "contracts/review-provider-contract-mirror/v1.5.0/bundle/orchestration/pi.md",
+  "contracts/review-provider-contract-mirror/v1.5.0/bundle/routing/pi.md",
+  "contracts/review-provider-contract-mirror/v1.5.0/bundle/schemas/lens.schema.json",
+  "contracts/review-provider-contract-mirror/v1.5.0/bundle/schemas/refuter.schema.json",
+  "contracts/review-provider-contract-mirror/v1.5.0/bundle/schemas/targeted-validator.schema.json",
+  "contracts/review-provider-contract-mirror/v1.5.0/bundle/vectors/lens.json",
+  "contracts/review-provider-contract-mirror/v1.5.0/bundle/vectors/refuter.json",
+  "contracts/review-provider-contract-mirror/v1.5.0/bundle/vectors/targeted-validator.json",
+  "contracts/review-provider-contract-mirror/v1.5.0/generated/provider-capabilities.baseline.json",
+  "contracts/review-provider-contract-mirror/v1.5.0/generated/provider-roles.baseline.json",
   "prompts/skill-creation.md",
-  "skills/_shared/review-ledger-contract.md",
   "skills/branch-pr/SKILL.md",
   "skills/chained-pr/SKILL.md",
+  "skills/chained-pr/references/chaining-details.md",
   "skills/cognitive-doc-design/SKILL.md",
   "skills/comment-writer/SKILL.md",
   "skills/design/SKILL.md",
@@ -188,11 +204,20 @@ export const requiredPaths = [
   "skills/gentle-ui-design/references/adaptive-interfaces.md",
   "skills/gentle-ai/SKILL.md",
   "skills/issue-creation/SKILL.md",
+  "skills/issue-creation/references/delegated-workflow-actions.md",
   "skills/judgment-day/SKILL.md",
+  "skills/judgment-day/references/prompts-and-formats.md",
   "skills/rdd-defect-workflow/SKILL.md",
   "skills/skill-creator/SKILL.md",
   "skills/skill-improver/SKILL.md",
   "skills/skill-registry/SKILL.md",
+  "skills/tui-design/NOTICE.md",
+  "skills/tui-design/SKILL.md",
+  "skills/tui-design/references/commands.md",
+  "skills/tui-design/references/critique.md",
+  "skills/tui-design/references/design-doc.md",
+  "skills/tui-design/references/terminal-craft.md",
+  "skills/tui-design/references/visual-loop.md",
   "skills/work-unit-commits/SKILL.md",
 ];
 
@@ -433,7 +458,7 @@ async function main() {
   });
 
   if (driftedContracts.length > 0) {
-    console.error("gentle-pi packaged review-integration/v1 and review-integration/v2 contract bytes drifted from the pinned v4.3.1 runtime's vendored Gentle AI contract artifacts:");
+    console.error("gentle-pi packaged review-integration/v1 and review-integration/v2 contract bytes drifted from the pinned v4.4.0 runtime's vendored Gentle AI contract artifacts:");
     for (const drift of driftedContracts) console.error(`- ${drift.relativePath}: expected ${drift.expected}, got ${drift.actual}`);
     process.exit(1);
   }
@@ -465,7 +490,7 @@ async function main() {
     process.exit(1);
   }
 
-  const { GENTLE_AI_VERSION } = await import(new URL("../lib/gentle-ai-binary.ts", import.meta.url));
+  const { GENTLE_AI_VERSION } = await import(new URL("../runtime/gentle-ai-binary.mjs", import.meta.url));
   const versionMismatches = gentleAiVersionPinMismatches({
     installerVersion: INSTALLER_VERSION,
     releaseBaseUrl: RELEASE_BASE_URL,
@@ -478,7 +503,7 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`gentle-pi package resource check passed (${requiredPaths.length} files; ${Object.keys(contractHashes).length} exact byte-pinned contract artifacts for the v4.3.1 runtime).`);
+  console.log(`gentle-pi package resource check passed (${requiredPaths.length} files; ${Object.keys(contractHashes).length} exact byte-pinned contract artifacts for the v4.4.0 runtime).`);
 }
 
 const isMainModule = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;

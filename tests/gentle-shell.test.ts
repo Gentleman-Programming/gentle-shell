@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test, { after, afterEach, type TestContext } from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
 import { CURSOR_MARKER, matchesKey, stripTerminalSequences as stripAnsi, TuiAltScreen, TuiMainScreen, VStack, visibleWidth, type Terminal, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import installGentleShell, { backgroundChangeRefreshesSettled, buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
+import installGentleShell, { backgroundChangeRefreshesSettled, buildShellBarModel, createFooterStatusMemo, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { CODEX_USAGE_URL, NAN_QUOTA_URL, USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA } from "../lib/shell-usage.ts";
 import { bindSessionProfile, clearSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import { createVimEditorAdapter, isAuditedPiEditorVersion } from "../lib/vim-editor-adapter.ts";
@@ -21,7 +21,7 @@ import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE } from ".
 import { sidebarPart, sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
 import { installSidebar } from "../lib/shell-sidebar-layout.ts";
 import { renderTodoCard } from "../lib/shell-todo.ts";
-import type { ShellBarTheme } from "../lib/shell-bar.ts";
+import { renderShellBar, type ShellBarTheme } from "../lib/shell-bar.ts";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { decodeReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import { REVIEW_SIDEBAR_EVENT } from "../lib/review-sidebar-state.ts";
@@ -32,6 +32,7 @@ import { DEFAULT_VISUAL_SETTINGS, DENSITY, VISUAL_PRESET, VISUAL_SCHEMA, resolve
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy } from "../lib/vim-policy.ts";
 import { resolveHistoryCapturePolicy, writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
+import { HERDR_TASK_SUMMARY_CHANGED, resolveHerdrTaskSummarySettings, writeHerdrTaskSummarySettings } from "../lib/herdr-task-summary-policy.ts";
 import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
 import { readBannerConfig } from "../extensions/startup-banner.ts";
 import { listVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
@@ -300,61 +301,62 @@ test("buildShellBarModel shortens the home directory and hides effort for non-re
 	assert.equal(built.branch, null);
 });
 
-test("buildShellBarModel reports auto effort for NaN models that manage their own depth", () => {
+test("NaN and non-NaN shell bars show selected effort and refresh the memo on changes", () => {
 	const { pi } = fakePi();
 	const { ctx } = fakeContext();
 	const model = ctx.model as unknown as { id: string; provider: string };
-	model.provider = "nan";
-	model.id = "deepseek-v4-flash";
+	let effort: "medium" | "xhigh" | "off" = "medium";
+	pi.getThinkingLevel = () => effort;
 	const footerData = {
 		getGitBranch: () => null,
 		getExtensionStatuses: () => new Map(),
 		getAvailableProviderCount: () => 1,
 		onBranchChange: () => () => {},
 	};
-	assert.equal(buildShellBarModel(pi, ctx, footerData, { home: "/home/alan" }).effort, "auto");
-	// A NaN model that honors the level keeps reporting the selected one.
-	model.id = "glm5.3";
-	assert.equal(buildShellBarModel(pi, ctx, footerData, { home: "/home/alan" }).effort, "medium");
+	const memo = createFooterStatusMemo({
+		pi, ctx, footerData, usage: () => undefined, profile: () => undefined,
+		jobs: () => undefined, review: () => undefined,
+		tracker: () => ({ model: { files: [], added: 0, deleted: 0, digest: "empty" } as never, unbornRoots: [] }),
+		visualSettings: () => undefined, cardStyle: () => undefined,
+	});
+	for (const [provider, id] of [
+		["nan", "deepseek-v4-flash"], ["nan", "qwen3.8-flash"], ["nan", "mimo-v2.6-flash"],
+		["nan", "glm5.3"], ["openai", "deepseek-v4-flash"],
+	]) {
+		model.provider = provider;
+		model.id = id;
+		effort = "medium";
+		assert.equal(memo.model().effort, "medium");
+		assert.ok(renderShellBar(memo.model(), plainTheme, 120).join("\n").includes(`${id} · medium`));
+		const before = memo.key();
+		effort = "xhigh";
+		assert.notEqual(memo.key(), before, `${provider}/${id} must invalidate on effort change`);
+		assert.equal(memo.model().effort, "xhigh");
+		assert.ok(renderShellBar(memo.model(), plainTheme, 120).join("\n").includes(`${id} · xhigh`));
+		effort = "off";
+		assert.equal(memo.model().effort, "off");
+	}
 });
 
-test("a self-managing NaN model announces its automatic depth once per session", async () => {
+test("NaN startup, model selection and effort changes never announce an automatic depth", async () => {
 	const { pi, handlers } = fakePi();
-	gentleShell(pi, {});
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: async () => { assert.fail("unexpected network"); } });
 	const { ctx, ui } = fakeContext();
-	const adaptive = { id: "qwen3.8-flash", provider: "nan", name: "Qwen 3.8 Flash", reasoning: true };
-	const budget = { id: "glm5.3", provider: "nan", name: "GLM 5.3", reasoning: true };
-	(ctx as unknown as { model: unknown }).model = adaptive;
 	const emit = async (event: string, payload: unknown) => {
 		for (const handler of handlers.get(event) ?? []) await handler(payload, ctx);
 	};
-	await emit("thinking_level_select", { type: "thinking_level_select", level: "high", previousLevel: "medium" });
-	assert.deepEqual(ui.notices.filter((notice) => notice.includes("automatically")), [
-		"Qwen 3.8 Flash chooses its reasoning depth automatically; the selected thinking level is accepted but does not change it.",
-	]);
-	// Re-selecting the same model or level never repeats the notice.
-	await emit("model_select", { type: "model_select", model: adaptive, previousModel: budget, source: "set" });
-	assert.equal(ui.notices.filter((notice) => notice.includes("automatically")).length, 1);
-	// A model that applies the level never announces.
-	(ctx as unknown as { model: unknown }).model = budget;
-	await emit("model_select", { type: "model_select", model: budget, previousModel: adaptive, source: "set" });
-	assert.equal(ui.notices.filter((notice) => notice.includes("automatically")).length, 1);
-});
-
-test("a session that starts on a self-managing NaN model announces it once", async () => {
-	const { pi, handlers } = fakePi();
-	gentleShell(pi, {});
-	const { ctx, ui } = fakeContext();
-	const adaptive = { id: "mimo-v2.6-flash", provider: "nan", name: "MiMo V2.6 Flash", reasoning: true };
-	(ctx as unknown as { model: unknown }).model = adaptive;
-	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
-	assert.deepEqual(ui.notices.filter((notice) => notice.includes("automatically")), [
-		"MiMo V2.6 Flash chooses its reasoning depth automatically; the selected thinking level is accepted but does not change it.",
-	]);
-	// A session that starts on a model which honors the level stays silent.
-	(ctx as unknown as { model: unknown }).model = { id: "gemma4", provider: "nan", name: "Gemma 4", reasoning: true };
-	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
-	assert.equal(ui.notices.filter((notice) => notice.includes("automatically")).length, 1);
+	try {
+		for (const id of ["deepseek-v4-flash", "qwen3.8-flash", "mimo-v2.6-flash"]) {
+			const model = { id, provider: "nan", name: id, reasoning: true };
+			(ctx as unknown as { model: unknown }).model = model;
+			await emit("session_start", {});
+			await emit("model_select", { type: "model_select", model, source: "set" });
+			await emit("thinking_level_select", { type: "thinking_level_select", level: "high", previousLevel: "medium" });
+		}
+		assert.deepEqual(ui.notices.filter((notice) => /automatically|does not change/i.test(notice)), []);
+	} finally {
+		await emit("session_shutdown", {});
+	}
 });
 
 test("gentleShell installs the footer on session_start when a UI exists", () => {
@@ -969,6 +971,30 @@ test("gentleShell stays out of the way without a UI or when disabled", () => {
 const fakeTui = { terminal: { rows: 40, columns: 120 }, requestRender() {} };
 const editorTheme = { borderColor: (text: string) => text, selectList: {} };
 const fakeKeybindings = { matches: () => false };
+
+// Time-based cadence (fixes the render-count drift that froze or strobed the
+// working wave): repaints inside one pulse window must paint one identical
+// frame, and elapsed windows must advance the wave without any streaming
+// frame arriving.
+test("the working wave keeps time-based cadence across silent repaints", () => {
+	const roleFg = (role: string, text: string) => `<${role}>${text}</${role}>`;
+	let now = 0;
+	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, {
+		fg: roleFg, bold: (text: string) => text, requestRender() {}, pending: () => false, now: () => now,
+		doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => INSTALLED_PI,
+	});
+	try {
+		editor.setWorking(true);
+		now = 400;
+		const first = editor.render(80).join("\n");
+		const second = editor.render(80).join("\n");
+		assert.equal(second, first, "repaints within one pulse window paint one identical frame");
+		now = 480;
+		assert.notEqual(editor.render(80).join("\n"), first, "the next window advances the wave");
+	} finally {
+		editor.dispose();
+	}
+});
 
 test("panel control owns its rendered mouse cells across top rows and Vim modes", () => {
 	for (const vim of [false, true]) {
@@ -3175,7 +3201,7 @@ test("vim selector exposes enable, disable and status; status and cancellation d
  } finally { editor.dispose(); }
 });
 
-test("animations command reports without writing and switches the live watchdog", async (t) => {
+test("animations command reports without writing and switches the live animation timer", async (t) => {
 	const configHome = scopedDoubleEscCancelConfigHome(t);
 	const delays: number[] = [];
 	let active = 0;
@@ -3193,9 +3219,9 @@ test("animations command reports without writing and switches the live watchdog"
 	assert.match(ui.notices.at(-1)!, /animations: quality/);
 	assert.equal(existsSync(join(configHome, "animations.json")), false);
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
-	assert.deepEqual(delays, [2000, 1000]);
+	assert.deepEqual(delays, [2000, 80]);
 	await command.handler("performance", ctx);
-	assert.deepEqual(delays, [2000, 1000, 1000]);
+	assert.deepEqual(delays, [2000, 80, 1000]);
 	assert.equal(active, 2);
 	await command.handler("potato", ctx);
 	assert.equal(active, 1);
@@ -3204,7 +3230,7 @@ test("animations command reports without writing and switches the live watchdog"
 	await command.handler("invalid", ctx);
 	assert.equal(JSON.parse(readFileSync(join(configHome, "animations.json"), "utf8")).policy, "potato");
 	await command.handler("quality", ctx);
-	assert.deepEqual(delays, [2000, 1000, 1000, 1000]);
+	assert.deepEqual(delays, [2000, 80, 1000, 80]);
 	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
 	assert.equal(active, 1);
 	editor.dispose();
@@ -3293,7 +3319,7 @@ test("animations with no argument opens a selectable menu and applies the chosen
 	assert.equal(existsSync(join(dismissHome, "animations.json")), false);
 });
 
-test("prompt installs the silence watchdog unref'd and releases it at settlement", async (t) => {
+test("prompt installs the working pulse timer unref'd and releases it at settlement", async (t) => {
 	const configHome = scopedDoubleEscCancelConfigHome(t);
 	writeFileSync(join(configHome, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"quality"}');
 	const delays: number[] = [];
@@ -3311,7 +3337,7 @@ test("prompt installs the silence watchdog unref'd and releases it at settlement
 	const editor = installedPrompt(ctx, ui, handlers);
 	assert.equal(active, 1);
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
-	assert.deepEqual(delays, [2000, 1000]);
+	assert.deepEqual(delays, [2000, 80]);
 	assert.equal(unrefs, 2);
 	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
 	assert.equal(active, 1);
@@ -3320,9 +3346,11 @@ test("prompt installs the silence watchdog unref'd and releases it at settlement
 	assert.equal(active, 0);
 });
 
-// gentle-shell#994: the working animation is render-driven. Frames the host
-// already paints while streaming advance the petal for free; a low-cadence
-// watchdog repaints only silent phases (long tool runs with no output).
+// Time-based working animation: the phase derives from elapsed working time
+// (workingTick), not render count — a burst of repaints inside one pulse
+// window paints one identical frame (#2643), and silent phases advance
+// through the policy's pulse timer (quality 80ms, performance 1000ms;
+// potato installs no timer and never animates).
 interface RecordedInterval { tick: () => void; delay: number; stopped: boolean }
 
 function recordIntervals(t: TestContext): RecordedInterval[] {
@@ -3340,7 +3368,7 @@ function petalGlyphOf(editor: GentlePromptEditor): string {
 	return stripAnsi(editor.render(60)[0]).match(/[✿❀❁✾]/)?.[0] ?? "";
 }
 
-test("streaming frames advance the working petal and the quality watchdog stays silent while renders flow", (t) => {
+test("streaming render bursts paint one identical working frame while the quality pulse keeps flowing", (t) => {
 	const configHome = scopedDoubleEscCancelConfigHome(t);
 	writeFileSync(join(configHome, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"quality"}');
 	const intervals = recordIntervals(t);
@@ -3350,18 +3378,18 @@ test("streaming frames advance the working petal and the quality watchdog stays 
 	const { ctx, ui } = fakeContext();
 	const editor = installedPrompt(ctx, ui, handlers);
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
-	const watchdog = intervals.find((entry) => entry.delay === 1000);
-	assert.ok(watchdog, "working installs the 1000ms silence watchdog");
+	const pulse = intervals.find((entry) => entry.delay === 80);
+	assert.ok(pulse, "working installs the 80ms quality pulse timer");
 	const glyphs = [0, 1, 2, 3].map(() => petalGlyphOf(editor));
-	assert.ok(new Set(glyphs).size > 1, `each streamed frame must advance the petal, got ${glyphs.join("")}`);
+	assert.equal(new Set(glyphs).size, 1, `a render burst inside one window must paint one identical frame, got ${glyphs.join("")}`);
 	const before = renders.mock.callCount();
-	watchdog!.tick();
-	assert.equal(renders.mock.callCount(), before, "renders are already flowing, so the watchdog must not force one");
+	pulse!.tick();
+	assert.equal(renders.mock.callCount(), before + 1, "the pulse drives repaints at its cadence regardless of render traffic");
 	editor.dispose();
-	assert.equal(watchdog!.stopped, true);
+	assert.equal(pulse!.stopped, true);
 });
 
-test("silent working phases repaint only through the 1000ms watchdog window", (t) => {
+test("silent working phases repaint through the 80ms pulse window", (t) => {
 	const configHome = scopedDoubleEscCancelConfigHome(t);
 	writeFileSync(join(configHome, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"quality"}');
 	const intervals = recordIntervals(t);
@@ -3372,20 +3400,19 @@ test("silent working phases repaint only through the 1000ms watchdog window", (t
 	const { ctx, ui } = fakeContext();
 	const editor = installedPrompt(ctx, ui, handlers);
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
-	const watchdog = intervals.find((entry) => entry.delay === 1000);
-	assert.ok(watchdog, "working installs the 1000ms silence watchdog");
+	const pulse = intervals.find((entry) => entry.delay === 80);
+	assert.ok(pulse, "working installs the 80ms quality pulse timer");
 	const baseline = petalGlyphOf(editor);
 	const before = renders.mock.callCount();
-	watchdog!.tick();
-	assert.equal(renders.mock.callCount(), before, "no frame painted within the window, but the window has not elapsed yet");
-	clock += 1000;
-	watchdog!.tick();
-	assert.equal(renders.mock.callCount(), before + 1, "silence past the window forces exactly one repaint");
-	assert.notEqual(petalGlyphOf(editor), baseline, "the watchdog advanced the petal tick");
-	const afterForced = renders.mock.callCount();
-	watchdog!.tick();
-	assert.equal(renders.mock.callCount(), afterForced, "the watchdog's own repaint counts as render traffic for the next window");
+	pulse!.tick();
+	assert.equal(renders.mock.callCount(), before + 1, "the pulse forces repaints while working, even in silence");
+	assert.equal(petalGlyphOf(editor), baseline, "inside one window the frame is stable");
+	clock += 80;
+	assert.notEqual(petalGlyphOf(editor), baseline, "each elapsed window advances the frame one step");
+	const stepped = petalGlyphOf(editor);
+	assert.equal(petalGlyphOf(editor), stepped, "the phase never drifts with render count");
 	editor.dispose();
+	assert.equal(pulse!.stopped, true);
 });
 
 test("potato installs no working watchdog and the petal never advances", (t) => {
@@ -3403,7 +3430,7 @@ test("potato installs no working watchdog and the petal never advances", (t) => 
 	editor.dispose();
 });
 
-test("the working watchdog is cleared on settlement and on dispose", (t) => {
+test("the working animation timer is cleared on settlement and on dispose", (t) => {
 	const configHome = scopedDoubleEscCancelConfigHome(t);
 	writeFileSync(join(configHome, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"quality"}');
 	const intervals = recordIntervals(t);
@@ -3412,15 +3439,15 @@ test("the working watchdog is cleared on settlement and on dispose", (t) => {
 	const { ctx, ui } = fakeContext();
 	const editor = installedPrompt(ctx, ui, handlers);
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
-	const watchdog = intervals.filter((entry) => entry.delay === 1000).at(-1);
-	assert.ok(watchdog && !watchdog.stopped, "working keeps the watchdog armed");
+	const pulse = intervals.filter((entry) => entry.delay === 80).at(-1);
+	assert.ok(pulse && !pulse.stopped, "working keeps the pulse timer armed");
 	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
-	assert.equal(watchdog!.stopped, true, "settlement must clear the watchdog");
+	assert.equal(pulse!.stopped, true, "settlement must clear the pulse timer");
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
-	const rearmWatchdog = intervals.filter((entry) => entry.delay === 1000).at(-1);
-	assert.ok(rearmWatchdog && rearmWatchdog !== watchdog && !rearmWatchdog.stopped, "the next turn re-arms a fresh watchdog");
+	const rearmPulse = intervals.filter((entry) => entry.delay === 80).at(-1);
+	assert.ok(rearmPulse && rearmPulse !== pulse && !rearmPulse.stopped, "the next turn re-arms a fresh pulse timer");
 	editor.dispose();
-	assert.equal(rearmWatchdog!.stopped, true, "dispose must clear the watchdog");
+	assert.equal(rearmPulse!.stopped, true, "dispose must clear the pulse timer");
 });
 
 // ---------------------------------------------------------------------------
@@ -3586,6 +3613,100 @@ test("customize History rows persist prompt history capture and keep stored hist
 	assert.equal(resolveHistoryCapturePolicy({ gentlePiConfigHome: home }).policy, "off");
 	assert.match(ui.notices.at(-1)!, /stored history is kept/i);
 	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("customize Layout offers explicit task summary choices without saving on navigation", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	try {
+		assert.ok(findCustomizeRow(ui, "Task summary: on (current)"));
+		assert.ok(findCustomizeRow(ui, "Task summary: off"));
+		const frame = ui.overlayView!.render(180).join("\n");
+		assert.match(frame, /Layout ·/);
+		assert.match(frame, /Task summary\s+● on\s+› off/);
+		assert.match(frame, /task summary published to terminal tools/i);
+		ui.overlayView!.handleInput("\x1b[D");
+		ui.overlayView!.handleInput("\x1b[C");
+		await new Promise<void>(resolve => setImmediate(resolve));
+		assert.equal(existsSync(join(home, "herdr-task-summary.json")), false);
+	} finally { ui.closeOverlay?.(); await pending; }
+});
+
+test("customize task summary persists only enabled then emits once per choice for the same home", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const options = { gentlePiConfigHome: home };
+	writeHerdrTaskSummarySettings({ enabled: true, summaryColor: "success", continuationColor: "warning" }, options);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const events: unknown[] = [];
+	const saved: boolean[] = [];
+	pi.events.on(HERDR_TASK_SUMMARY_CHANGED, payload => {
+		events.push(payload);
+		saved.push(resolveHerdrTaskSummarySettings(options).settings.enabled);
+	});
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	try {
+		for (const enabled of [false, true]) {
+			await customizeAction(ui, `Task summary: ${enabled ? "on" : "off"}`);
+			assert.deepEqual(resolveHerdrTaskSummarySettings(options).settings, { enabled, summaryColor: "success", continuationColor: "warning" });
+			assert.ok(findCustomizeRow(ui, `Task summary: ${enabled ? "on" : "off"} (current)`));
+			assert.match(ui.notices.at(-1)!, /applies now.*active-task summary published to terminal tools/i);
+		}
+		assert.deepEqual(events, [{ configHome: home }, { configHome: home }]);
+		assert.deepEqual(saved, [false, true], "each listener sees the completed write");
+		assert.equal(existsSync(join(home, "visual-customization.json")), false);
+	} finally { ui.closeOverlay?.(); await pending; }
+});
+
+for (const [kind, bytes] of [["malformed", "{"], ["unreadable oversized", " ".repeat(4097)]] as const) {
+	test(`customize task summary refuses ${kind} storage without events or overwritten bytes`, async (t) => {
+		const home = scopedDoubleEscCancelConfigHome(t);
+		const file = join(home, "herdr-task-summary.json");
+		const { pi, commands } = fakePi();
+		gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+		let events = 0;
+		pi.events.on(HERDR_TASK_SUMMARY_CHANGED, () => { events++; });
+		const { ctx, ui, overlayReady } = fakeContext();
+		const notices: Array<{ message: string; type: unknown }> = [];
+		const notify = ctx.ui.notify.bind(ctx.ui);
+		ctx.ui.notify = (message, type) => { notices.push({ message, type }); notify(message, type); };
+		const pending = commands.get("gentle:customize")!.handler("", ctx);
+		await overlayReady;
+		try {
+			// Re-read at activation: a file can become invalid while the card is open.
+			writeFileSync(file, bytes);
+			await customizeAction(ui, "Task summary: off");
+			assert.match(notices.at(-1)!.message, /malformed or unreadable task summary preference/i);
+			assert.equal(notices.at(-1)!.type, "error");
+			assert.equal(events, 0);
+			assert.equal(readFileSync(file, "utf8"), bytes);
+		} finally { ui.closeOverlay?.(); await pending; }
+	});
+}
+
+test("customize task summary leaves the previous Layout controls working independently", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	try {
+		assert.ok(findCustomizeRow(ui, "Task summary: off"));
+		for (const label of ["Preset: Light", "Status placement: bottom", "Header placement: split", "Density: compact", "Surface: tinted"]) await customizeAction(ui, label);
+		const settings = resolveVisualSettings({ gentlePiConfigHome: home }).settings;
+		assert.equal(settings.statusPlacement, "bottom");
+		assert.equal(settings.headerPlacement, "split");
+		assert.equal(settings.density, "compact");
+		assert.equal(settings.surface, "tinted");
+		assert.equal(existsSync(join(home, "herdr-task-summary.json")), false);
+	} finally { ui.closeOverlay?.(); await pending; }
 });
 
 test("customize Cards rows persist the card style and switch live conversation cards", async (t) => {
@@ -5341,7 +5462,11 @@ test("registered canonical root governs real Git discovery, status and diff desp
 	// Pi exec has no env option and inherits routing. Model that boundary with
 	// a child-only env, without changing this test process's environment.
 	h.pi.exec = ((command: string, args: string[], options: { timeout?: number } = {}) => new Promise((resolve) => {
-		execFile(command, args, { env: poisoned, encoding: "utf8", timeout: options.timeout, maxBuffer: Infinity }, (error, stdout, stderr) => resolve({ stdout, stderr, code: error ? typeof error.code === "number" ? error.code : 1 : 0, killed: Boolean(error?.killed) }));
+		execFile(command, args, { env: poisoned, encoding: "utf8", timeout: options.timeout, maxBuffer: Infinity }, (error, stdout, stderr) => {
+			// Pi 1.5's ExecResult adds `truncated`; an unbounded maxBuffer never truncates. A named object keeps Pi 1.4's narrower type from rejecting it.
+			const result = { stdout, stderr, code: error ? typeof error.code === "number" ? error.code : 1 : 0, killed: Boolean(error?.killed), truncated: false };
+			resolve(result);
+		});
 	})) as ExtensionAPI["exec"];
 	const { ctx, ui, overlayReady } = fakeContext();
 	(ctx as unknown as { cwd: string }).cwd = selected;
@@ -5788,14 +5913,15 @@ test("gentleShell fetches NaN quota on session start and shows it in the bar", a
 	const { fetchFn, calls } = fakeFetch(NAN_QUOTA_PAYLOAD);
 	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => 1_788_600_000_000 });
 	const { ctx, ui } = fakeContext({ token: "sk-nan-secret" });
-	(ctx as unknown as { model: { provider: string } }).model.provider = "nan";
+	Object.assign((ctx as unknown as { model: object }).model, { provider: "nan", id: "glm5.3" });
 	await fire(handlers, "session_start", ctx);
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	assert.equal(calls.length, 1);
 	assert.equal(calls[0].url, "https://cloud-api.nan.builders/api/usage/quota");
-	// The fixture's session model holds no NaN allowance of its own, so the
-	// account names the meter: a NaN payload of one model is still per-model data.
-	assert.match(renderFooter(ui), /\$0\.000 sub ⟡ nan total ▰+▱+ 27%/);
+	// The session model's own quota names the meter; NaN never shows an account
+	// total, which would read as a credit balance it is not.
+	assert.match(renderFooter(ui), /\$0\.000 sub ⟡ glm5\.3 ▰+▱+ 27%/);
+	assert.doesNotMatch(renderFooter(ui), /nan total/);
 
 	await fire(handlers, "agent_end", ctx);
 	await new Promise((resolve) => setTimeout(resolve, 0));
@@ -5814,17 +5940,17 @@ test("a failed NaN refresh keeps the last valid snapshot", async () => {
 	let now = 1_788_600_000_000;
 	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => now });
 	const { ctx, ui } = fakeContext({ token: "sk-nan-secret" });
-	(ctx as unknown as { model: { provider: string } }).model.provider = "nan";
+	Object.assign((ctx as unknown as { model: object }).model, { provider: "nan", id: "glm5.3" });
 	await fire(handlers, "session_start", ctx);
 	await new Promise((resolve) => setTimeout(resolve, 0));
-	assert.match(renderFooter(ui), /nan total ▰+▱+/);
+	assert.match(renderFooter(ui), /glm5\.3 ▰+▱+/);
 
 	fail = true;
 	now += 6 * 60_000;
 	await fire(handlers, "agent_end", ctx);
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	assert.equal(calls.length, 2, "the refresh window elapsed, so the retry was attempted");
-	assert.match(renderFooter(ui), /nan total ▰+▱+/, "a failed refresh cannot erase the last valid snapshot");
+	assert.match(renderFooter(ui), /glm5\.3 ▰+▱+/, "a failed refresh cannot erase the last valid snapshot");
 });
 
 test("gentleShell fetches Codex usage on session start and shows it in the bar", async () => {
@@ -6019,10 +6145,10 @@ test("a registered source resolving usage for another provider is rejected witho
 	const { fetchFn } = fakeFetch(NAN_QUOTA_PAYLOAD);
 	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fetchFn, now: () => 1_788_600_000_000 });
 	const { ctx, ui } = fakeContext({ token: "sk-nan-secret" });
-	(ctx as unknown as { model: { provider: string } }).model.provider = "nan";
+	Object.assign((ctx as unknown as { model: object }).model, { provider: "nan", id: "glm5.3" });
 	await fire(handlers, "session_start", ctx);
 	await new Promise((resolve) => setTimeout(resolve, 0));
-	assert.match(renderFooter(ui), /nan total ▰+▱+/, "the real nan snapshot recorded first");
+	assert.match(renderFooter(ui), /glm5\.3 ▰+▱+/, "the real nan snapshot recorded first");
 
 	(ctx as unknown as { model: { provider: string } }).model.provider = "acme-cloud";
 	pi.events.emit(USAGE_SOURCE_EVENT, {
@@ -6034,7 +6160,7 @@ test("a registered source resolving usage for another provider is rejected witho
 	assert.doesNotMatch(renderFooter(ui), /acme-cloud/, "a resolution naming another provider must not surface as the active one");
 
 	(ctx as unknown as { model: { provider: string } }).model.provider = "nan";
-	assert.match(renderFooter(ui), /nan total ▰+▱+/, "the real nan snapshot must survive a mismatched acme-cloud resolution untouched");
+	assert.match(renderFooter(ui), /glm5\.3 ▰+▱+/, "the real nan snapshot must survive a mismatched acme-cloud resolution untouched");
 });
 
 test("gentleShell leaves a generic failure note when a registered source resolves a malformed usage", async () => {

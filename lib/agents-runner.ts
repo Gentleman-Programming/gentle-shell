@@ -2,18 +2,19 @@ import { pickModel, sharedCooldown, shouldFallBack, type ModelCooldown } from ".
 import type { FallbackChain } from "./model-fallback-store.ts";
 import { fallbackContinuePrompt } from "./model-fallback-notice.ts";
 import { isSessionChangeEvidence, type SessionChangeEvidence } from "./session-changes.ts";
-import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { tmpdir, userInfo } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, win32 } from "node:path";
 import { Duplex, type Readable, type Writable } from "node:stream";
 import { stripVTControlCharacters } from "node:util";
+import { fileURLToPath } from "node:url";
 import { withoutInteractiveHost } from "./rpc-host.ts";
 import { gentlePiConfigHome } from "./agent-home.ts";
 import { resolveBackgroundSubagentsPolicy } from "./background-subagents-policy.ts";
 import { childPackageExtensionArgs } from "./child-package-injection.ts";
 import { AGENT_MODE, formatModelRef, parseModelRef, type AgentDefinition, type AgentMode, type ModelRef } from "./agents-config.ts";
-import { CHILD_QUERY_MAX_INFLIGHT, CHILD_QUERY_TIMEOUT_MS, parseChildFrame, validChildMessage, validChildQueryId } from "./agents-messaging.ts";
+import { CHILD_MESSAGE_MAX_BYTES, CHILD_QUERY_MAX_INFLIGHT, CHILD_QUERY_TIMEOUT_ERROR, CHILD_QUERY_TIMEOUT_MS, parseChildFrame, parseChildJobState, validChildMessage, validChildQueryId } from "./agents-messaging.ts";
 import { ParentStandingReviewPermissionBroker } from "./review-session-standing-permission-ipc.ts";
 import { isFinished, normalizeRpcEvent, ToolArgumentProgress, TASK_EVENT, TASK_STATUS, taskLabel, type AskRequest, type ChildResponseObservation, type TaskRecord, type TaskStore, type TerminalErrorCategory } from "./agents-protocol.ts";
 import { WriterSurfaceRegistry, writerSurfaceConflictMessage } from "./writer-surfaces.ts";
@@ -79,6 +80,8 @@ export interface RunnerLimits {
 	toolStallTimeoutMs?: number;
 	// Bounded asynchronous cleanup window allowed after settlement before escalating to SIGTERM/SIGKILL.
 	cleanupTimeoutMs?: number;
+	// One bounded drain granted when agent_settled arrives while a child background job still runs.
+	drainTimeoutMs?: number;
 }
 
 export interface AskAnswer {
@@ -190,6 +193,7 @@ interface ProcessLike {
 	execPath: string;
 	argv: string[];
 	env: NodeJS.ProcessEnv;
+	platform?: NodeJS.Platform;
 }
 
 interface Pending {
@@ -199,6 +203,8 @@ interface Pending {
 interface PendingQuery {
 	cancel: () => void;
 	replying: boolean;
+	/** When the query expires; the stall watchdog never fires before it. */
+	deadline: number;
 }
 
 interface PendingReply {
@@ -219,6 +225,8 @@ interface LiveTask {
 	queries: Map<string, PendingQuery>;
 	replies: Map<string, PendingReply>;
 	cancelStall: () => void;
+	/** True while the armed stall budget was lengthened to cover a pending query. */
+	stallCoversQuery?: boolean;
 	cancelGrace: () => void;
 	processGroup: number | undefined;
 	terminal: { status: TaskRecord["status"]; error: string | null } | undefined;
@@ -228,6 +236,10 @@ interface LiveTask {
 	/** The child's own TMPDIR, removed when the child ends unless its exit is unconfirmed. */
 	scratchDir?: string;
 	cleanupDeadlineAt: number | undefined;
+	/** The child's last reported background-job state, if any (#2266). */
+	childJobState?: { running: number; pending: boolean };
+	/** One bounded post-settlement drain while the child's background jobs finish (#2266). */
+	drain?: { status: TaskRecord["status"]; error: string | null; cancel: () => void };
 	quarantined: boolean;
 	nextId: number;
 	permissionBroker?: ParentStandingReviewPermissionBroker;
@@ -254,15 +266,21 @@ export const MAX_INLINE_INSTRUCTIONS_BYTES = 1000;
 const MAX_TRANSPORT_PREFIX_CHARS = 64;
 const CHILD_MARKER = "GENTLE_PI_AGENTS_CHILD";
 const IPC_MARKER = "GENTLE_PI_AGENTS_OWNED_IPC";
+/** Forwarded to the child only when a declared `bash_background` admitted its policy (#2266). */
+export const CHILD_JOBS_ENV = "GENTLE_PI_AGENTS_CHILD_JOBS";
 const PARENT_NOTIFICATION_TOOL = "subagent_parent_message";
 /** The exact --tools list, so the child can report requested names Pi dropped silently (#1690). */
 export const REQUESTED_TOOLS_ENV = "GENTLE_PI_AGENTS_REQUESTED_TOOLS";
+/** Set only for the package-owned generic agents: the child drops Pi's skills catalog. */
+export const CHILD_SKILLS_CATALOG_ENV = "GENTLE_PI_AGENTS_NO_SKILLS_CATALOG";
 const DEFAULT_TOOLS: readonly string[] = [];
 const TERMINATION_GRACE_MS = 250;
 const GROUP_CONFIRM_MS = 25;
 const GROUP_CONFIRM_DEADLINE_MS = 1_000;
 const QUARANTINE_PROBE_MS = 1_000;
 export const DEFAULT_CLEANUP_TIMEOUT_MS = 5_000;
+// One bounded drain window for a child's own background jobs at settlement (#2266).
+export const DEFAULT_DRAIN_TIMEOUT_MS = 5_000;
 const QUERY_REJECTION_ERRORS = new Set([
 	"invalid child IPC frame",
 	"invalid child IPC correlation",
@@ -273,10 +291,25 @@ const QUERY_REJECTION_ERRORS = new Set([
 	"task parent is not the active host session",
 	"duplicate query request",
 	"too many pending parent queries",
-	"parent query timed out",
+	CHILD_QUERY_TIMEOUT_ERROR,
 	"parent rejected query",
 ]);
 const QUERY_REJECTION = Symbol("query rejection");
+// Queries that settled unanswered (expired or closed) stay answerable once as a
+// steering message; bounded per task and across tasks.
+const CLOSED_QUERIES_PER_TASK = 16;
+const CLOSED_QUERY_TASKS = 64;
+// A child waiting on its query is not stalled: the watchdog waits for the
+// query's own deadline plus this margin, then the normal budget returns.
+export const QUERY_STALL_MARGIN_MS = 5_000;
+
+/** What a late answer to a closed query became; see `AgentRunner.replyLate`. */
+export type LateReply = "delivered" | "not running" | "too large";
+
+/** The steering text a late answer reaches the child with. */
+export function lateQueryAnswer(requestId: string, message: string): string {
+	return `Answer to your earlier question (${requestId}; it expired before the reply arrived): ${message}`;
+}
 
 function rejectQuery(error: string): never {
 	throw { [QUERY_REJECTION]: error };
@@ -329,6 +362,18 @@ function requestedWebPackagePaths(request: TaskRequest): string[] {
 	}
 }
 
+// The package-owned generic agents receive the exact skill paths they need in
+// the task and read them with `read`, so their children drop Pi's skills
+// catalog (extensions/child-context.ts). Identified by name plus the global
+// `agents/` directory the package installs into; a project or `subagents/`
+// agent reusing a name keeps the catalog.
+const NO_SKILLS_CATALOG_AGENTS = new Set(["gentle-ai-worker", "gentle-ai-explore", "gentle-ai-verify"]);
+
+function dropsSkillsCatalog(agent: TaskRequest["agent"]): boolean {
+	return NO_SKILLS_CATALOG_AGENTS.has(agent.name) && agent.scope === "global" &&
+		basename(dirname(agent.filePath)) === "agents" && basename(agent.filePath) === `${agent.name}.md`;
+}
+
 export function childArguments(request: TaskRequest, instructionsPath?: string): string[] {
 	const args = ["--mode", "rpc", "--session-dir", request.sessionDir];
 	const extensionPaths = [...new Set(request.extensionPaths ?? [])];
@@ -353,16 +398,124 @@ export function childArguments(request: TaskRequest, instructionsPath?: string):
 	return args;
 }
 
-// Reuse the running pi entry while it exists; upgrades may remove it.
-// GENTLE_PI_AGENTS_PI overrides it with a command line.
-export function piCommand(proc: ProcessLike = process, exists: (path: string) => boolean = existsSync): PiCommand {
+/**
+ * Resolves the underlying JavaScript entry point targeted by a Windows .cmd or .bat shim.
+ *
+ * Scans the shim text for referenced .js/.mjs/.cjs files (such as npm or pnpm cmd-shims)
+ * or inspects adjacent package metadata without invoking cmd.exe or a shell.
+ */
+export function resolvePiScriptFromCmd(
+	cmdPath: string,
+	exists: (path: string) => boolean = existsSync,
+	readFile: (path: string) => string = (p) => readFileSync(p, "utf8"),
+): string | undefined {
+	const baseDir = win32.dirname(cmdPath);
+	let text = "";
+	try {
+		text = readFile(cmdPath);
+	} catch {
+		text = "";
+	}
+
+	if (text) {
+		const targetMatch = /^#\s*cmd-shim-target\s*=\s*([^\r\n]+)$/m.exec(text);
+		if (targetMatch) {
+			const candidate = targetMatch[1].trim();
+			const resolved = win32.isAbsolute(candidate) ? candidate : win32.resolve(baseDir, candidate);
+			if (exists(resolved)) return resolved;
+		}
+
+		const scriptMatches = text.matchAll(/(?:["'])([^"']+\.[cm]?js)(?:["'])|(?:^|\s)((?:%~?dp0|%dp0%)\\?[^\s"']+\.[cm]?js)(?:\s|$)/gi);
+		for (const m of scriptMatches) {
+			const raw = (m[1] ?? m[2])?.trim();
+			if (!raw) continue;
+			const stripped = raw.replace(/^(?:%~?dp0|%dp0%)\\?/i, "");
+			const candidate = /^(?:%~?dp0|%dp0%)/i.test(raw) || !win32.isAbsolute(stripped)
+				? win32.resolve(baseDir, stripped)
+				: stripped;
+			if (exists(candidate)) return candidate;
+		}
+	}
+
+	const standardPaths = [
+		win32.join(baseDir, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"),
+		win32.join(baseDir, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js"),
+		win32.join(baseDir, "pi-launcher.js"),
+		win32.join(baseDir, "dist", "cli.js"),
+		win32.join(baseDir, "dist", "bundle", "cli.js"),
+	];
+	for (const candidate of standardPaths) {
+		if (exists(candidate)) return candidate;
+	}
+
+	return undefined;
+}
+
+/**
+ * Searches the Windows PATH and known locations for an installed pi command,
+ * resolving .cmd shims to their direct Node script entry points to avoid cmd.exe shell invocation.
+ */
+export function findWindowsPiCommand(
+	proc: ProcessLike = process,
+	exists: (path: string) => boolean = existsSync,
+	readFile: (path: string) => string = (p) => readFileSync(p, "utf8"),
+): PiCommand | undefined {
+	const pathEnv = proc.env.Path ?? proc.env.PATH ?? "";
+	for (const entry of pathEnv.split(";")) {
+		const dir = entry.length >= 2 && entry.startsWith('"') && entry.endsWith('"')
+			? entry.slice(1, -1)
+			: entry;
+		if (!dir) continue;
+
+		const candidateExe = win32.join(dir, "pi.exe");
+		if (exists(candidateExe)) {
+			return { command: candidateExe, args: [] };
+		}
+
+		for (const ext of [".cmd", ".bat"]) {
+			const candidateCmd = win32.join(dir, `pi${ext}`);
+			if (exists(candidateCmd)) {
+				const script = resolvePiScriptFromCmd(candidateCmd, exists, readFile);
+				if (script) {
+					return { command: proc.execPath, args: [script] };
+				}
+			}
+		}
+	}
+	return undefined;
+}
+
+/**
+ * Resolves the pi invocation command for subagent execution.
+ *
+ * Reuses the running pi CLI entry point while it exists on disk.
+ * When the running entry point disappears (e.g. after a package upgrade on Windows),
+ * re-resolves the current installation from PATH and returns Node plus the target script
+ * so arguments are never passed through an unescaped shell wrapper.
+ */
+export function piCommand(
+	proc: ProcessLike = process,
+	exists: (path: string) => boolean = existsSync,
+	readFile: (path: string) => string = (p) => readFileSync(p, "utf8"),
+): PiCommand {
 	const override = proc.env.GENTLE_PI_AGENTS_PI?.trim();
 	if (override) {
 		const [command, ...args] = override.split(/\s+/);
+		if (/\.(?:cmd|bat)$/i.test(command) && exists(command)) {
+			const script = resolvePiScriptFromCmd(command, exists, readFile);
+			if (script) return { command: proc.execPath, args: [script, ...args] };
+		}
 		return { command, args };
 	}
 	const entry = proc.argv[1];
 	if (entry && /(^|[\\/])cli\.js$/.test(entry) && exists(entry)) return { command: proc.execPath, args: [entry] };
+	const isWin32 = proc.platform !== undefined
+		? proc.platform === "win32"
+		: (proc === process ? process.platform === "win32" : /^[a-zA-Z]:\\/i.test(proc.execPath) || /\\/.test(proc.execPath));
+	if (isWin32) {
+		const resolved = findWindowsPiCommand(proc, exists, readFile);
+		if (resolved) return resolved;
+	}
 	return { command: "pi", args: [] };
 }
 
@@ -407,6 +560,7 @@ export class AgentRunner {
 	private readonly waiters = new Map<string, Array<(task: TaskRecord) => void>>();
 	private readonly queryWaiters = new Map<string, Array<(query: TaskQuery | undefined) => void>>();
 	private readonly firstQueries = new Map<string, TaskQuery>();
+	private readonly closedQueries = new Map<string, string[]>();
 	private readonly writers = new WriterSurfaceRegistry();
 	private counter = 0;
 
@@ -500,8 +654,32 @@ export class AgentRunner {
 			query.cancel();
 			live.queries.delete(requestId);
 			this.hooks.onQuerySettled?.(id, requestId, "replied");
+			this.restoreStall(id, live);
 		}
 		return accepted;
+	}
+
+	/** A reply to a query that settled unanswered: delivered once through `steer`
+	 * while the task runs; otherwise reported as not running. Undefined when the
+	 * request was never a closed query of this owner, or was already answered. */
+	replyLate(id: string, requestId: string, message: string, parentSessionId: string): LateReply | undefined {
+		const task = this.store.get(id);
+		const closed = this.closedQueries.get(id);
+		if (!task || task.parentSessionId !== parentSessionId || !closed?.includes(requestId)) return undefined;
+		// Too large is reported, not consumed: a shorter answer can still go.
+		if (Buffer.byteLength(message, "utf8") > CHILD_MESSAGE_MAX_BYTES) return "too large";
+		if (!validChildMessage(message)) return undefined;
+		closed.splice(closed.indexOf(requestId), 1);
+		const live = this.live.get(id);
+		if (!live || live.terminal || isFinished(task.status)) return "not running";
+		return this.steer(id, lateQueryAnswer(requestId, message)) ? "delivered" : "not running";
+	}
+
+	private recordClosedQuery(taskId: string, requestId: string): void {
+		const closed = this.closedQueries.get(taskId) ?? [];
+		this.closedQueries.delete(taskId);
+		this.closedQueries.set(taskId, [...closed.filter((id) => id !== requestId), requestId].slice(-CLOSED_QUERIES_PER_TASK));
+		if (this.closedQueries.size > CLOSED_QUERY_TASKS) this.closedQueries.delete(this.closedQueries.keys().next().value!);
 	}
 
 	cancel(id: string, reason = "cancelled"): boolean {
@@ -569,6 +747,8 @@ export class AgentRunner {
 		// Do not forward stale legacy child selection or authorization.
 		delete env.GENTLE_PI_SDD_REMEDIATION_PLAN;
 		delete env.GENTLE_PI_RESEARCH_SELECTION;
+		if (request.agent.name === "gentle-ai-verify") env.GENTLE_PI_VERIFIER_PREPARER = fileURLToPath(new URL("../scripts/prepare-verifier.mjs", import.meta.url));
+		else delete env.GENTLE_PI_VERIFIER_PREPARER;
 		const tools = requestedTools(request);
 		if (request.agent.tools.includes("bash_background")) {
 			const policy = resolveBackgroundSubagentsPolicy(request.cwd, { env: request.env, gentlePiConfigHome: gentlePiConfigHome(request.env) });
@@ -578,9 +758,14 @@ export class AgentRunner {
 				this.finish(id, TASK_STATUS.FAILED, `could not start pi: explicit tool bash_background requires background-subagents policy on. Set ${file} to {"schema":"gentle-pi.background-subagents/v1","policy":"on"}; inspect or change policy with /gentle:background-subagents enable|disable|status.`);
 				return;
 			}
-		}
+			// Admission passed: the child registers its own private job tools and is
+			// trusted to report job state for the settlement drain.
+			env[CHILD_JOBS_ENV] = "1";
+		} else delete env[CHILD_JOBS_ENV];
 		if (tools !== undefined) env[REQUESTED_TOOLS_ENV] = tools;
 		else delete env[REQUESTED_TOOLS_ENV];
+		if (dropsSkillsCatalog(request.agent)) env[CHILD_SKILLS_CATALOG_ENV] = "1";
+		else delete env[CHILD_SKILLS_CATALOG_ENV];
 		let instructionsTransportDir: string | undefined;
 		let instructionsTransportPath: string | undefined;
 		if (Buffer.byteLength(request.agent.instructions, "utf8") > MAX_INLINE_INSTRUCTIONS_BYTES) {
@@ -728,7 +913,12 @@ export class AgentRunner {
 	private armStall(id: string, live: LiveTask): void {
 		live.cancelStall();
 		const tool = live.inFlightTools.values().next().value;
-		const budget = tool === undefined ? this.limits.stallTimeoutMs : Math.max(this.limits.toolStallTimeoutMs ?? this.limits.stallTimeoutMs, this.limits.stallTimeoutMs);
+		const base = tool === undefined ? this.limits.stallTimeoutMs : Math.max(this.limits.toolStallTimeoutMs ?? this.limits.stallTimeoutMs, this.limits.stallTimeoutMs);
+		const now = this.deps.now();
+		let queryWait = 0;
+		for (const query of live.queries.values()) queryWait = Math.max(queryWait, query.deadline - now + QUERY_STALL_MARGIN_MS);
+		const budget = Math.max(base, queryWait);
+		live.stallCoversQuery = budget > base;
 		live.cancelStall = this.deps.schedule(() => {
 			const lastStep = this.store.get(id)?.lastStep ?? "starting";
 			const minutes = Math.round(budget / 60_000);
@@ -846,8 +1036,8 @@ export class AgentRunner {
 		}
 		const task = this.store.get(id);
 		if (!task || live.terminal || isFinished(task.status) || task.parentSessionId === "") {
-			if (parsed.frame.kind === "notification") this.acknowledge(live, parsed.frame.id, false, "task is not a live owned recipient");
-			else this.sendQueryError(live, parsed.frame.id, "task is not a live owned recipient");
+			if (parsed.frame.kind === "query") this.sendQueryError(live, parsed.frame.id, "task is not a live owned recipient");
+			else this.acknowledge(live, parsed.frame.id, false, "task is not a live owned recipient");
 			return;
 		}
 		if (parsed.frame.kind === "notification") {
@@ -858,12 +1048,28 @@ export class AgentRunner {
 			} catch { this.acknowledge(live, parsed.frame.id, false, "parent rejected notification"); }
 			return;
 		}
+		if (parsed.frame.kind === "job") {
+			const state = parseChildJobState(parsed.frame.message);
+			if (!state) {
+				this.acknowledge(live, parsed.frame.id, false, "invalid child job state");
+				return;
+			}
+			// Ack before the report can open a drain that closes IPC.
+			this.acknowledge(live, parsed.frame.id, true);
+			live.childJobState = state;
+			if (live.drain && state.running === 0 && !state.pending) this.beginSettle(id, live);
+			return;
+		}
 		let query: PendingQuery | undefined;
 		try {
 			if (live.queries.has(parsed.frame.id)) rejectQuery("duplicate query request");
 			if (live.queries.size >= CHILD_QUERY_MAX_INFLIGHT) rejectQuery("too many pending parent queries");
-			query = { replying: false, cancel: this.deps.schedule(() => this.expireQuery(id, live, parsed.frame!.id), CHILD_QUERY_TIMEOUT_MS) };
+			query = { replying: false, deadline: this.deps.now() + CHILD_QUERY_TIMEOUT_MS, cancel: () => {} };
 			live.queries.set(parsed.frame.id, query);
+			// Lengthen the stall budget first, so the query's own deadline stays the last timer armed.
+			this.armStall(id, live);
+			const admitted = query;
+			admitted.cancel = this.deps.schedule(() => this.expireQuery(id, live, parsed.frame!.id), CHILD_QUERY_TIMEOUT_MS);
 			if (!this.hooks.onQuery) rejectQuery("task parent cannot accept queries");
 			if (this.hooks.onQuery(task, parsed.frame.id, parsed.frame.message) === false) rejectQuery("task parent is not the active host session");
 			if (task.mode === AGENT_MODE.TASK && !this.firstQueries.has(id)) {
@@ -876,6 +1082,7 @@ export class AgentRunner {
 			if (query && live.queries.get(parsed.frame.id) === query) {
 				query.cancel();
 				live.queries.delete(parsed.frame.id);
+				this.restoreStall(id, live);
 			}
 			this.sendQueryError(live, parsed.frame.id, queryRejection(error));
 		}
@@ -887,7 +1094,16 @@ export class AgentRunner {
 		live.queries.delete(id);
 		this.hooks.onQuerySettled?.(taskId, id, "expired");
 		if (query.replying) this.settleReply(live, id, false);
-		else this.sendQueryError(live, id, "parent query timed out");
+		else {
+			this.recordClosedQuery(taskId, id);
+			this.sendQueryError(live, id, CHILD_QUERY_TIMEOUT_ERROR);
+		}
+		this.restoreStall(taskId, live);
+	}
+
+	/** After a query settles, a stall budget lengthened for it returns to normal. */
+	private restoreStall(taskId: string, live: LiveTask): void {
+		if (live.stallCoversQuery && !live.terminal && this.live.get(taskId) === live) this.armStall(taskId, live);
 	}
 
 	private sendQueryError(live: LiveTask, id: string, error: string): void {
@@ -925,8 +1141,11 @@ export class AgentRunner {
 	private closeIpc(live: LiveTask): void {
 		if (live.ipcClosed) return;
 		live.ipcClosed = true;
+		const taskId = [...this.live].find(([, entry]) => entry === live)?.[0];
+		for (const [requestId, query] of live.queries) if (taskId !== undefined && !query.replying) this.recordClosedQuery(taskId, requestId);
 		for (const query of live.queries.values()) query.cancel();
 		live.queries.clear();
+		if (taskId !== undefined) this.restoreStall(taskId, live);
 		for (const pending of live.replies.values()) pending.resolve(false);
 		live.replies.clear();
 		live.child.channel?.unref?.();
@@ -1021,9 +1240,9 @@ export class AgentRunner {
 				if (live.observations) live.observations.agentSettled = true;
 				const terminal = this.store.get(id);
 				if (terminal?.error && this.fallBack(id, request, live)) { /* The child keeps going on its next model. */ }
-				else if (terminal?.error) this.settleOrderly(id, TASK_STATUS.FAILED, terminal.error);
-				else if (terminal?.result) this.settleOrderly(id, TASK_STATUS.COMPLETED, null);
-				else this.settleOrderly(id, TASK_STATUS.FAILED, "assistant settled without a final report");
+				else if (terminal?.error) this.settleOrDrain(id, TASK_STATUS.FAILED, terminal.error, live);
+				else if (terminal?.result) this.settleOrDrain(id, TASK_STATUS.COMPLETED, null, live);
+				else this.settleOrDrain(id, TASK_STATUS.FAILED, "assistant settled without a final report", live);
 			}
 		}
 		if (!live.terminal && progress) this.armStall(id, live);
@@ -1065,12 +1284,42 @@ export class AgentRunner {
 	}
 
 	/**
+	 * Settles a task, but when the child still reports running background jobs
+	 * (#2266) it grants one bounded drain window first so the jobs can finish;
+	 * the drain ends early when the child reports nothing left.
+	 */
+	private settleOrDrain(id: string, status: TaskRecord["status"], error: string | null, live: LiveTask): void {
+		if (live.drain || live.terminal) return;
+		const state = live.childJobState;
+		// No child job work, or the child already reports none: settle as before.
+		if (!state || (state.running === 0 && !state.pending)) {
+			this.settleOrderly(id, status, error);
+			return;
+		}
+		// One bounded extension: the child keeps running its jobs, and the drain
+		// ends early on a report with nothing left. A late report cannot re-open it.
+		const cancel = this.deps.schedule(() => this.beginSettle(id, live), this.limits.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS);
+		live.drain = { status, error, cancel };
+		if (this.store.get(id)?.status === TASK_STATUS.RUNNING) this.store.update(id, { lastStep: "draining background jobs" });
+	}
+
+	private beginSettle(id: string, live: LiveTask): void {
+		const drain = live.drain;
+		if (!drain || this.live.get(id) !== live) return;
+		live.drain = undefined;
+		drain.cancel();
+		this.settleOrderly(id, drain.status, drain.error);
+	}
+
+	/**
 	 * Requests orderly child shutdown via stdin upon settlement and schedules
 	 * bounded signal escalation if the child process does not exit within cleanupTimeoutMs.
 	 */
 	private settleOrderly(id: string, status: TaskRecord["status"], error: string | null): void {
 		const live = this.live.get(id);
 		if (!live || live.terminal) return;
+		live.drain?.cancel();
+		live.drain = undefined;
 		live.terminal = { status, error };
 		live.mutationStarts.clear();
 		live.inFlightTools.clear();
@@ -1102,6 +1351,8 @@ export class AgentRunner {
 	private requestStop(id: string, status: TaskRecord["status"], error: string | null, abort = false): void {
 		const live = this.live.get(id);
 		if (!live || live.terminal) return;
+		live.drain?.cancel();
+		live.drain = undefined;
 		live.terminal = { status, error };
 		live.mutationStarts.clear();
 		live.inFlightTools.clear();
@@ -1181,6 +1432,8 @@ export class AgentRunner {
 		this.closeIpc(live);
 		live.cancelStall();
 		live.cancelGrace();
+		live.drain?.cancel();
+		live.drain = undefined;
 		if (live.instructionsTransportDir) {
 			try { rmSync(live.instructionsTransportDir, { recursive: true, force: true }); } catch { /* best effort */ }
 			live.instructionsTransportDir = undefined;
@@ -1213,6 +1466,9 @@ export class AgentRunner {
 		if (!live) return;
 		live.childExit = code;
 		live.childExitSignal = signal ?? null;
+		// A child that exits mid-drain still settles on the run agent_settled already
+		// produced; the ordinary orderly shutdown then owns the exit.
+		if (live.drain) this.beginSettle(id, live);
 		const exitDesc = formatChildExit(code, signal);
 		if (this.groupExists(live)) {
 			if (!live.terminal) this.requestStop(id, TASK_STATUS.FAILED, `pi exited with ${exitDesc} before agent_settled${this.stderrSuffix(live)}`);

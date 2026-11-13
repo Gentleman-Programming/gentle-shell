@@ -183,7 +183,8 @@ test("ask_user_question guides the model toward the supported contract", () => {
 	assert.match(guidelines, /preview/);
 	assert.match(guidelines, /multiSelect/);
 	assert.match(guidelines, /Type something\./);
-	assert.match(guidelines, /Never use this tool for decisions that must not be delegated to the user\./);
+	assert.match(guidelines, /Consent, maintenance authorizations and exact-token decisions use ask_user_choice, never this tool\./);
+	assert.doesNotMatch(guidelines, /must not be delegated to the user/);
 });
 
 test("ask_user_question rejects invalid parameters before mounting any UI", async () => {

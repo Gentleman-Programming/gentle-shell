@@ -28,6 +28,7 @@ import { OrchestratorScopeCache } from "../lib/orchestrator-scope.ts";
 import { TODO_PROGRESS_EVENT } from "../lib/shell-todo.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
+import { CHILD_QUERY_TIMEOUT_MS } from "../lib/agents-messaging.ts";
 import { AgentRunner, REQUESTED_TOOLS_ENV, type TaskRequest } from "../lib/agents-runner.ts";
 import { bindSessionRepositoryPreparation } from "../lib/bounded-writer-admission.ts";
 import { bindSessionProfile, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
@@ -299,6 +300,24 @@ for (const scenario of ["background", "task", "append-failure", "overflow", "byt
 		}
 	});
 }
+
+test("orchestrator_session_id accepts a JSON-string state with actionable errors", async t => {
+	const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+	gentleAgents(h.pi, {}, runtime.deps);
+	await h.fire("session_start", ctx);
+	const tool = h.tools.get("orchestrator_session_id")!;
+	const before = h.entries.length;
+	// A JSON-encoded string publishes exactly like the equivalent object.
+	const result = await tool.execute("string", { state: JSON.stringify({ objective: "From string", work: { area: "gentle-ai", topic: "string-state" } }) }, undefined, undefined, ctx);
+	assert.match(result.content[0].text, /Current alias \(CURRENT TASK\): string-state/);
+	const published = h.entries.at(-1)!.data as { state: { objective: string } };
+	assert.equal(published.state.objective, "From string");
+	assert.equal(h.entries.length, before + 1);
+	// Malformed JSON fails with an actionable message, never a schema riddle.
+	await assert.rejects(tool.execute("bad-json", { state: "{objective:" }, undefined, undefined, ctx), /JSON/);
+	// A valid JSON string with a flat shape names the nesting rule.
+	await assert.rejects(tool.execute("bad-shape", { state: JSON.stringify({ objective: "x", area: "flat" }) }, undefined, undefined, ctx), /work/);
+});
 
 test("invalid run work rejects before foreign consent or allocation", async t => {
 	const h = fakePi(), runtime = deps(), { ctx, dialogs } = fakeContext();
@@ -683,6 +702,105 @@ test("host query delivery exposes correlation and accepts one current-session re
 	assert.equal((await tools.get("subagent_reply")!.execute("reply", { task_id: taskId, request_id: "q1", message: "src/a.ts" }, undefined, undefined, ctx)).content[0].text, "Reply accepted for delivery.");
 	assert.deepEqual(harness.children[0].sent.at(-1), { id: "q1", kind: "reply", message: "src/a.ts" });
 	assert.match((await tools.get("subagent_reply")!.execute("duplicate", { task_id: taskId, request_id: "q1", message: "again" }, undefined, undefined, ctx)).content[0].text, /unavailable/);
+});
+
+// S15 P9a: a parent busy past the query deadline still gets its answer to the
+// child, as a steering message, and the tool result says what happened.
+function expiringQueryHarness() {
+	const h = fakePi();
+	const harness = deps();
+	const timers: Array<{ fn: () => void; ms: number }> = [];
+	harness.deps.schedule = (fn, ms) => { timers.push({ fn, ms }); return () => {}; };
+	gentleAgents(h.pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	const reply = async (requestId: string, message: string) => (await h.tools.get("subagent_reply")!.execute("reply", { task_id: taskId, request_id: requestId, message }, undefined, undefined, ctx));
+	let taskId = "";
+	let sessionStarted = false;
+	const begin = async () => { if (!sessionStarted) await h.fire("session_start", ctx); sessionStarted = true; };
+	const start = async () => {
+		await begin();
+		const started = await h.tools.get("subagent_run")!.execute("query", { agent: "explore", task: "Ask once", mode: "background" }, undefined, undefined, ctx);
+		taskId = (started.details.gentleAgents as { taskId: string }).taskId;
+		await tick();
+		harness.children[0].message({ id: "q1", kind: "query", message: "Which file?" });
+		await tick();
+		return taskId;
+	};
+	const expire = () => timers.filter((timer) => timer.ms === CHILD_QUERY_TIMEOUT_MS).at(-1)!.fn();
+	const steers = () => harness.children[0].written.filter((command) => command.type === "steer").map((command) => command.message);
+	return { h, ctx, harness, timers, reply, begin, start, expire, steers };
+}
+
+test("a query that expires while the parent is busy still reaches the parent once, marked expired", async () => {
+	const q = expiringQueryHarness();
+	await q.begin();
+	await q.h.fire("agent_start", q.ctx);
+	const sentBefore = q.h.sent.length;
+	const taskId = await q.start();
+	const asks = () => q.h.sent.slice(sentBefore).filter((entry) => String(entry.message.content).startsWith("Subagent "));
+	assert.equal(asks().length, 0, "a busy parent holds the question");
+	q.expire();
+	await q.h.fire("agent_end", q.ctx);
+	await tick();
+	assert.equal(asks().length, 1);
+	assert.equal(String(asks()[0]!.message.content), `Subagent explore asks:\nTask ID: ${taskId}\nRequest ID: q1\nQuestion: Which file?\nThis query expired before it reached you; a reply is delivered to the task as a message.`);
+	assert.equal((await q.reply("q1", "src/a.ts")).content[0].text, `Query q1 had expired; the answer was delivered to task ${taskId} as a message.`);
+	await q.h.fire("agent_settled", q.ctx);
+	await tick();
+	assert.equal(asks().length, 1, "shown once");
+});
+
+test("an oversize late reply says the limit and leaves the request answerable", async () => {
+	const q = expiringQueryHarness();
+	const taskId = await q.start();
+	q.expire();
+	assert.equal((await q.reply("q1", "x".repeat(8193))).content[0].text, "Error: the reply exceeds the 8192-byte message limit and was not delivered; query q1 can still be answered with a shorter reply.");
+	assert.equal((await q.reply("q1", "short")).content[0].text, `Query q1 had expired; the answer was delivered to task ${taskId} as a message.`);
+});
+
+test("a reply after the query expired is delivered to the running task as a prefixed message", async () => {
+	const h = expiringQueryHarness();
+	const taskId = await h.start();
+	h.expire();
+	const result = await h.reply("q1", "src/a.ts");
+	await tick();
+	assert.equal(result.content[0].text, `Query q1 had expired; the answer was delivered to task ${taskId} as a message.`);
+	assert.deepEqual(h.steers(), ["Answer to your earlier question (q1; it expired before the reply arrived): src/a.ts"]);
+	assert.equal(h.harness.children[0].sent.some((frame) => frame.kind === "reply" && "message" in frame), false, "no reply frame reaches a settled query");
+});
+
+test("a reply after the query expired and the task finished says it was not delivered", async () => {
+	const h = expiringQueryHarness();
+	const taskId = await h.start();
+	h.expire();
+	h.harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" }] });
+	h.harness.children[0].emit({ type: "agent_settled" });
+	for (let index = 0; index < 5; index += 1) await tick();
+	const result = await h.reply("q1", "src/a.ts");
+	await tick();
+	assert.equal(result.content[0].text, `Error: query q1 had expired and task ${taskId} is no longer running, so the answer was not delivered. Pass it with subagent_continue.`);
+	assert.deepEqual(h.steers(), []);
+});
+
+test("a second reply to an expired query is rejected", async () => {
+	const h = expiringQueryHarness();
+	await h.start();
+	h.expire();
+	await h.reply("q1", "src/a.ts");
+	assert.equal((await h.reply("q1", "again")).content[0].text, "Error: query is unavailable.");
+	await tick();
+	assert.equal(h.steers().length, 1);
+});
+
+test("a query waits 120 s and a reply before expiry keeps its exact result", async () => {
+	const h = expiringQueryHarness();
+	await h.start();
+	assert.equal(CHILD_QUERY_TIMEOUT_MS, 120_000);
+	assert.equal(h.timers.some((timer) => timer.ms === 120_000), true);
+	assert.equal((await h.reply("q1", "src/a.ts")).content[0].text, "Reply accepted for delivery.");
+	await tick();
+	assert.deepEqual(h.harness.children[0].sent.at(-1), { id: "q1", kind: "reply", message: "src/a.ts" });
+	assert.deepEqual(h.steers(), []);
 });
 
 test("first foreground query yields while its child runs and delivers one completion", async () => {
@@ -1204,6 +1322,65 @@ test("child parent-message tooling admits notifications and the active parent pr
 	assert.deepEqual(runtime.children[0].sent, [{ id: "n1", kind: "ack", accepted: true }, { id: "n2", kind: "ack", accepted: false, error: "task parent is not the active host session" }]);
 	await parent.fire("session_shutdown", ctx);
 });
+
+// #2266: a child with the forwarded job capability and owned IPC registers the
+// background job tools for its own session; the monitor stays parent-only.
+function childJobsChild(env: NodeJS.ProcessEnv, overrides: Partial<AgentsDeps> = {}) {
+	const child = fakePi();
+	const listeners = new Map<string, Array<(value: Record<string, unknown>) => void>>();
+	const frames: Array<Record<string, unknown>> = [];
+	gentleAgents(child.pi, { GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: "fixture", ...env }, {
+		childIpc: {
+			send: (frame: Record<string, unknown>) => { frames.push(frame); return true; },
+			on: (event: string, listener: (value: Record<string, unknown>) => void) => listeners.set(event, [...(listeners.get(event) ?? []), listener]),
+		},
+		...overrides,
+	});
+	return { child, frames, listeners };
+}
+
+test("a child with the forwarded job capability registers bash_background/job_list/job_stop privately, never the monitor", () => {
+	const jobs = fakeJobShell();
+	const { child } = childJobsChild({ GENTLE_PI_AGENTS_CHILD_JOBS: "1" }, { jobShell: jobs.shell, jobOutputDir: () => jobs.dir, now: () => 1_000 });
+	try {
+		assert.deepEqual([...child.tools.keys()].sort(), ["bash_background", "job_list", "job_stop", "subagent_parent_message"]);
+		assert.equal(child.tools.has("monitor"), false, "the monitor stays parent-only");
+	} finally { jobs.cleanup(); }
+});
+
+test("a child without the forwarded job capability keeps only parent messaging", () => {
+	const child = fakePi();
+	gentleAgents(child.pi, { GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: "fixture" }, {
+		childIpc: { send: () => true, on: () => undefined },
+	});
+	assert.deepEqual([...child.tools.keys()], ["subagent_parent_message"]);
+});
+
+test("a child without owned IPC never registers background job tools even with the forwarded capability", () => {
+	const child = fakePi();
+	gentleAgents(child.pi, { GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_CHILD_JOBS: "1" });
+	assert.deepEqual([...child.tools.keys()], []);
+});
+
+test("a child reports its background job state to the parent and delivers the exit notice to its own session", async () => {
+	const jobs = fakeJobShell();
+	const { child, frames } = childJobsChild({ GENTLE_PI_AGENTS_CHILD_JOBS: "1" }, { jobShell: jobs.shell, jobOutputDir: () => jobs.dir, now: () => 1_000 });
+	const { ctx } = fakeContext();
+	try {
+		await child.tools.get("bash_background")!.execute("b1", { command: "gh run watch 1 --exit-status", label: "CI" }, undefined, undefined, ctx);
+		assert.deepEqual(frames.at(-1), { id: "j1", kind: "job", message: JSON.stringify({ running: 1, pending: true }) });
+		await child.fire("agent_settled", ctx);
+		assert.deepEqual(frames.at(-1), { id: "j2", kind: "job", message: JSON.stringify({ running: 1, pending: true }) }, "settlement reports the still-running job");
+		jobs.runs[0]!.exit(0);
+		await eventually(() => child.sent.some((entry) => entry.message.customType === "gentle-jobs.notice"), "the child delivers its own job exit notice");
+		assert.deepEqual(frames.at(-1), { id: "j3", kind: "job", message: JSON.stringify({ running: 0, pending: false }) }, "the settlement report clears the running count");
+		const notice = child.sent.find((entry) => entry.message.customType === "gentle-jobs.notice")!;
+		assert.deepEqual(notice.options, { deliverAs: "steer", triggerTurn: true });
+		assert.equal(notice.message.display, true);
+		assert.match(String(notice.message.content), /Background job job-1/);
+	} finally { jobs.cleanup(); }
+});
+
 for (const boundary of ["allowed", "env", "session", "replacement", "bus-throws", "no-spawn", "long-running"] as const) {
 	test(`local child composition through real extensions and RPC runner: ${boundary}`, async (t) => {
 		const discarded: number[] = [];
@@ -4106,6 +4283,146 @@ test("once the last task is done the card asks for one frame when its finished r
 	assert.equal(timers.filter((timer) => !timer.cancelled && timer.ms === 60_000).length, 0, "nothing is rescheduled once the card is empty");
 });
 
+// P9b: the report delivered into the parent's context is capped; the stored
+// result and subagent_result keep the full text.
+const reportNotice = (id: string, first: number, last: number, full: number) => `Report truncated: the first ${first} and the last ${last} of ${full} bytes were delivered. Call subagent_result with task_id ${id} for the full text.`;
+const finishChild = (child: FakeChild, answer: string) => {
+	child.emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: answer }] }] });
+	child.emit({ type: "agent_settled" });
+};
+
+test("a background report over the cap is delivered truncated with the notice, and subagent_result returns the full text", async () => {
+	const { pi, tools, fire, sent } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	const started = await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Big job", mode: "background" }, undefined, undefined, ctx);
+	const id = (started.details.gentleAgents as { taskId: string }).taskId;
+	await tick();
+	const report = "row of a long table\n".repeat(1000); // 20,000 bytes
+	finishChild(harness.children[0], report);
+	await tick();
+	const results = sent.filter((entry) => entry.message.customType === "gentle-agents.result");
+	assert.equal(results.length, 1);
+	const head = "row of a long table\n".repeat(818) + "row of a long table"; // cut back to the last line break inside the cap: 16,379 bytes
+	const tail = "row of a long table\n".repeat(102); // the end of the report, from the first line break of its last 2,048 bytes: 2,040 bytes
+	assert.equal(String(results[0]!.message.content), `Subagent explore (task ${id}, "Big job") finished.\n\n${head}\n\n${reportNotice(id, 16_379, 2040, 20_000)}\n\n${tail}`);
+	const details = (results[0]!.message.details as { gentleAgents: Record<string, unknown> }).gentleAgents;
+	assert.deepEqual([details.taskId, details.status, details.reportTruncated, details.reportBytes, details.reportDeliveredBytes], [id, "completed", true, 20_000, 16_379 + 2040]);
+	const full = await tools.get("subagent_result")!.execute("c2", { task_id: id }, undefined, undefined, ctx);
+	assert.equal(full.content[0].text, report, "subagent_result is the explicit uncapped route");
+	assert.equal((full.details.gentleAgents as Record<string, unknown>).reportTruncated, undefined);
+	await fire("session_shutdown", ctx);
+});
+
+test("task-mode run and continue results over the cap are truncated without splitting a multi-byte character", async () => {
+	const { pi, tools, fire } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	const report = `${"a".repeat(16_383)}€${"z".repeat(3000)}€${"y".repeat(2046)}`; // a € straddles both cuts
+	const run = tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Wide", mode: "task" }, undefined, undefined, ctx);
+	await tick();
+	finishChild(harness.children[0], report);
+	const result = await run;
+	const id = (result.details.gentleAgents as { taskId: string }).taskId;
+	const notice = reportNotice(id, 16_383, 2046, 21_435);
+	assert.equal(result.content[0].text, `Subagent explore (task ${id}, "Wide") finished.\n\n${"a".repeat(16_383)}\n\n${notice}\n\n${"y".repeat(2046)}`);
+	assert.equal(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(result.content[0].text, "utf8")), result.content[0].text, "valid UTF-8");
+	assert.deepEqual((({ reportTruncated, reportBytes, reportDeliveredBytes }) => [reportTruncated, reportBytes, reportDeliveredBytes])(result.details.gentleAgents as Record<string, unknown>), [true, 21_435, 16_383 + 2046]);
+	assert.equal((await tools.get("subagent_result")!.execute("c2", { task_id: id }, undefined, undefined, ctx)).content[0].text, report);
+	const resumed = tools.get("subagent_continue")!.execute("c3", { task_id: id, prompt: "Again", mode: "task" }, undefined, undefined, ctx);
+	await tick();
+	await tick();
+	const closing = ["## Summary", "", "- The end of the report is kept."].join("\n"); // 44 bytes
+	finishChild(harness.children[1], `${"line\n".repeat(4000)}${closing}`);
+	const continued = await resumed;
+	const continuedId = (continued.details.gentleAgents as { taskId: string }).taskId;
+	const end = `${"line\n".repeat(400)}${closing}`; // the last 2,048 bytes start mid-line; the tail starts at the next line: 2,044 bytes
+	assert.ok(continued.content[0].text.endsWith(`\n\n${reportNotice(continuedId, 16_379, 2044, 20_044)}\n\n${end}`));
+	await fire("session_shutdown", ctx);
+});
+
+test("reports at the cap or one byte under keep today's exact text and details in task mode and background delivery", async () => {
+	for (const size of [16_384, 16_383, 9]) {
+		const { pi, tools, fire, sent } = fakePi();
+		const harness = deps();
+		gentleAgents(pi, {}, harness.deps);
+		const { ctx } = fakeContext();
+		await fire("session_start", ctx);
+		const report = size === 9 ? "All done." : "r".repeat(size);
+		const run = tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Edge", mode: "task" }, undefined, undefined, ctx);
+		await tick();
+		finishChild(harness.children[0], report);
+		const result = await run;
+		const id = (result.details.gentleAgents as { taskId: string }).taskId;
+		assert.equal(result.content[0].text, `Subagent explore (task ${id}, "Edge") finished.\n\n${report}`);
+		assert.equal("reportTruncated" in (result.details.gentleAgents as object), false);
+		const started = await tools.get("subagent_run")!.execute("c2", { agent: "explore", task: "Edge bg", mode: "background" }, undefined, undefined, ctx);
+		const bgId = (started.details.gentleAgents as { taskId: string }).taskId;
+		await tick();
+		finishChild(harness.children[1], report);
+		await tick();
+		const delivered = sent.filter((entry) => entry.message.customType === "gentle-agents.result");
+		assert.equal(String(delivered[0]!.message.content), `Subagent explore (task ${bgId}, "Edge bg") finished.\n\n${report}`);
+		assert.equal("reportTruncated" in (delivered[0]!.message.details as { gentleAgents: object }).gentleAgents, false);
+		await fire("session_shutdown", ctx);
+	}
+});
+
+test("report_max_bytes from subagents.json sets the delivered report cap", async () => {
+	const agentHome = join(root, "report-cap-profile", "agent");
+	mkdirSync(join(agentHome, "agents"), { recursive: true });
+	copyFileSync(join(home, ".pi", "agent", "agents", "explore.md"), join(agentHome, "agents", "explore.md"));
+	writeFileSync(join(agentHome, "subagents.json"), JSON.stringify({ report_max_bytes: 64 }));
+	const { pi, tools, fire, sent } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, { ...harness.deps, agentHome });
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	const started = await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Small cap", mode: "background" }, undefined, undefined, ctx);
+	const id = (started.details.gentleAgents as { taskId: string }).taskId;
+	await tick();
+	// A line break at byte 2 is outside the 16-byte window of a 64-byte cap: the head keeps all 64 bytes.
+	finishChild(harness.children[0], `ab\n${"x".repeat(3000)}`);
+	await tick();
+	const delivered = sent.filter((entry) => entry.message.customType === "gentle-agents.result");
+	assert.equal(String(delivered[0]!.message.content), `Subagent explore (task ${id}, "Small cap") finished.\n\nab\n${"x".repeat(61)}\n\n${reportNotice(id, 64, 2048, 3003)}\n\n${"x".repeat(2048)}`);
+	await fire("session_shutdown", ctx);
+});
+
+// Verifier blocker 4: strict-JSON reports would arrive as invalid JSON plus a notice.
+test("strict-JSON agents and single JSON documents over the cap are delivered whole; prose is still truncated", async () => {
+	const agentHome = join(root, "report-cap-json", "agent");
+	mkdirSync(join(agentHome, "agents"), { recursive: true });
+	for (const name of ["explore", "review-risk"]) copyFileSync(join(home, ".pi", "agent", "agents", "explore.md"), join(agentHome, "agents", `${name}.md`));
+	writeFileSync(join(agentHome, "subagents.json"), JSON.stringify({ report_max_bytes: 64 }));
+	const { pi, tools, fire } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, { ...harness.deps, agentHome });
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	const json = JSON.stringify({ schema: "compact-v2", findings: [{ id: "F1", text: "x".repeat(200) }] });
+	const runOnce = async (agent: string, answer: string, child: number) => {
+		const run = tools.get("subagent_run")!.execute(`c${child}`, { agent, task: "Judge", mode: "task" }, undefined, undefined, ctx);
+		await tick();
+		finishChild(harness.children[child], answer);
+		const result = await run;
+		return { text: result.content[0].text as string, id: (result.details.gentleAgents as { taskId: string }).taskId, details: result.details.gentleAgents as Record<string, unknown> };
+	};
+	const strict = await runOnce("review-risk", `\`\`\`json\n${json}\n\`\`\``, 0);
+	assert.equal(strict.text, `Subagent review-risk (task ${strict.id}, "Judge") finished.\n\n\`\`\`json\n${json}\n\`\`\``);
+	assert.deepEqual(JSON.parse(strict.text.split("\n\n").slice(1).join("\n\n").replace(/^```json\n|\n```$/g, "")), JSON.parse(json));
+	assert.equal("reportTruncated" in strict.details, false);
+	const generic = await runOnce("explore", json, 1);
+	assert.equal(generic.text, `Subagent explore (task ${generic.id}, "Judge") finished.\n\n${json}`);
+	const prose = await runOnce("explore", "x".repeat(3000), 2);
+	assert.equal(prose.text, `Subagent explore (task ${prose.id}, "Judge") finished.\n\n${"x".repeat(64)}\n\n${reportNotice(prose.id, 64, 2048, 3000)}\n\n${"x".repeat(2048)}`);
+	await fire("session_shutdown", ctx);
+});
+
 test("completionText names the outcome before the answer", () => {
 	const base = { id: "t1", agent: "explore", mode: "background", prompt: "p", label: "map lib", cwd: "/r", parentSessionId: "s", status: "failed" as const, createdAt: 1, startedAt: 1, endedAt: 2, model: "m", thinking: undefined, sessionPath: null, error: "pi exited with code 1", result: null, lastStep: "x", lastActivityAt: 2, turns: 0, toolCalls: 0, tokens: 0, cost: 0 };
 	assert.equal(completionText(base), 'Subagent explore (task t1, "map lib") failed.\n\nSubagent explore failed: pi exited with code 1');
@@ -4426,16 +4743,23 @@ test("a task that finishes live stays visible as history, in both scopes, and it
 	const started = await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Persist me", mode: "background" }, undefined, undefined, ctx);
 	const id = (started.details.gentleAgents as { taskId: string }).taskId;
 	await tick();
-	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Kept." }] }] });
-	harness.children[0].emit({ type: "agent_settled" });
-	await tick();
 	const tasksDir = join(home, ".pi", "agent", "gentle-agents", "tasks");
 	let stored = await loadHistory(tasksDir);
 	for (let attempt = 0; attempt < 40 && !stored.some((entry) => entry.task.id === id); attempt += 1) {
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		stored = await loadHistory(tasksDir);
 	}
-	assert.ok(stored.some((entry) => entry.task.id === id && entry.task.result === "Kept."), "the finished task is on disk");
+	assert.ok(stored.some((entry) => entry.task.id === id && entry.task.result !== "Kept."), "observe the launch record before the child finishes");
+	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Kept." }] }] });
+	harness.children[0].emit({ type: "agent_settled" });
+	await tick();
+	// The last observed history can still contain the durable launch record.
+	const hasFinishedResult = () => stored.some((entry) => entry.task.id === id && entry.task.status === TASK_STATUS.COMPLETED && entry.task.result === "Kept.");
+	for (let attempt = 0; attempt < 40 && !hasFinishedResult(); attempt += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		stored = await loadHistory(tasksDir);
+	}
+	assert.ok(hasFinishedResult(), "the finished task is on disk");
 
 	// A completely different session still resolves it by id on demand, with
 	// nothing restored in advance.
@@ -5021,6 +5345,179 @@ test("session transport startup failure cleans the constructed Windows-capable t
 	assert.equal(listenerCloses, 1);
 	assert.equal(registryCloses, 1);
 	assert.match((await h.tools.get("orchestrator_session_id")!.execute("id", {}, undefined, undefined, ctx)).content[0].text, /not ready/);
+});
+
+test("session transport startup failure re-arms exactly once on a later session event", async (t) => {
+	for (const mode of ["recovers", "fails-again", "first-succeeds", "agent-start"] as const) {
+		await t.test(mode, async () => {
+			const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+			const notices: Array<{ message: string; level: unknown }> = [];
+			ctx.ui.notify = (message, level) => { notices.push({ message, level }); };
+			let registries = 0, starts = 0, closes = 0;
+			const registry = { list: async () => [], listActivations: async () => [] };
+			runtime.deps.sessionTransport = {
+				createRegistry: async () => { registries++; return registry; },
+				createListener: () => ({ registry, start: async () => {
+					starts++;
+					if (mode !== "first-succeeds" && (starts === 1 || mode === "fails-again")) throw new Error("SECRET path token");
+				}, close: async () => { closes++; } }),
+				createClient: inertSessionTransport.createClient,
+			};
+			gentleAgents(h.pi, {}, runtime.deps);
+			await h.fire("session_start", ctx);
+			const id = async () => (await h.tools.get("orchestrator_session_id")!.execute("id", {}, undefined, undefined, ctx)).content[0].text;
+			const warning = { message: "Session transport startup failed: phase=listener diagnostics=unavailable.", level: "warning" };
+			if (mode === "first-succeeds") {
+				await eventually(() => starts === 1, "first startup");
+				await h.fire("turn_end", ctx);
+				await h.fire("agent_start", ctx);
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				assert.equal(registries, 1, "a live transport is never re-armed");
+				assert.deepEqual(notices, []);
+				await h.fire("session_shutdown", ctx);
+				return;
+			}
+			await eventually(() => notices.length === 1 && closes === 1, "first startup failure and cleanup");
+			assert.match(await id(), /not ready/);
+			await h.fire(mode === "agent-start" ? "agent_start" : "turn_end", ctx);
+			await eventually(() => starts === 2, "one re-arm attempt");
+			if (mode === "fails-again") {
+				await eventually(() => notices.length === 2 && closes === 2, "second failure warns again");
+				for (const event of ["turn_end", "agent_start", "turn_end"]) await h.fire(event, ctx);
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				assert.equal(registries, 2, "no further retries after the bounded re-arm");
+				assert.deepEqual(notices, [warning, warning]);
+				assert.match(await id(), /not ready/);
+			} else {
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				assert.doesNotMatch(await id(), /not ready/, "re-armed transport is active");
+				await h.fire("turn_end", ctx);
+				assert.equal(registries, 2);
+				assert.deepEqual(notices, [warning]);
+			}
+			await h.fire("session_shutdown", ctx);
+		});
+	}
+});
+
+test("session transport re-arm stays bounded across shutdown, pending close, and session replacement races", async (t) => {
+	for (const mode of ["shutdown", "close-pending", "session-switch", "changed-id"] as const) {
+		await t.test(mode, async () => {
+			const h = fakePi(), runtime = deps(), { ctx } = fakeContext(), { ctx: other } = fakeContext();
+			Object.assign(other.sessionManager, { getSessionId: () => "s2" });
+			const notices: string[] = [];
+			ctx.ui.notify = (message) => { notices.push(message); };
+			other.ui.notify = (message) => { notices.push(message); };
+			const starts = new Map<string, number>();
+			let registries = 0, closes = 0;
+			let releaseClose: (() => void) | undefined;
+			const closeGate = mode === "close-pending" ? new Promise<void>((resolve) => { releaseClose = resolve; }) : undefined;
+			const registry = { list: async () => [], listActivations: async () => [] };
+			runtime.deps.sessionTransport = {
+				createRegistry: async () => { registries++; return registry; },
+				createListener: (_registry, sessionId) => ({ registry, start: async () => {
+					starts.set(sessionId, (starts.get(sessionId) ?? 0) + 1);
+					throw new Error("SECRET");
+				}, close: async () => { closes++; if (closes === 1) await closeGate; } }),
+				createClient: inertSessionTransport.createClient,
+			};
+			gentleAgents(h.pi, {}, runtime.deps);
+			await h.fire("session_start", ctx);
+			await eventually(() => notices.length === 1, "first startup failure");
+			const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+			if (mode === "shutdown") {
+				await Promise.all([h.fire("session_shutdown", ctx), h.fire("agent_start", ctx), h.fire("turn_end", ctx)]);
+				const after = registries;
+				for (const event of ["agent_start", "turn_end"]) await h.fire(event, ctx);
+				await settle();
+				assert.equal(starts.get("s1"), 1, "no listener starts after shutdown");
+				assert.equal(registries, after, "no startup begins after shutdown completed");
+				return;
+			}
+			if (mode === "close-pending") {
+				try {
+					await h.fire("turn_end", ctx);
+					await h.fire("agent_start", ctx);
+					await settle();
+					assert.equal(registries, 1, "no re-arm while the failed startup is still closing");
+				} finally {
+					// A failed assertion must not leave shutdown waiting on the gated close.
+					releaseClose!();
+				}
+				await settle();
+				await h.fire("turn_end", ctx);
+				await eventually(() => starts.get("s1") === 2, "exactly one re-arm after close resolves");
+				await eventually(() => notices.length === 2, "re-arm failure warns");
+				for (const event of ["turn_end", "agent_start"]) await h.fire(event, ctx);
+				await settle();
+				assert.equal(registries, 2);
+			}
+			if (mode === "session-switch") {
+				await settle();
+				await h.fire("session_start", other);
+				await eventually(() => notices.length === 2, "replacement session startup failure");
+				await settle();
+				await h.fire("turn_end", ctx);
+				await h.fire("agent_start", ctx);
+				await settle();
+				assert.equal(starts.get("s1"), 1, "the retired session is never re-armed");
+				assert.equal(starts.get("s2"), 1);
+				await h.fire("turn_end", other);
+				await eventually(() => starts.get("s2") === 2, "the replacement session gets its own single re-arm");
+				await eventually(() => notices.length === 3, "replacement re-arm failure warns");
+				for (const event of ["turn_end", "agent_start"]) await h.fire(event, other);
+				await settle();
+				assert.equal(starts.get("s2"), 2);
+				assert.equal(starts.get("s1"), 1);
+				await h.fire("session_shutdown", other);
+				return;
+			}
+			if (mode === "changed-id") {
+				await settle();
+				Object.assign(ctx.sessionManager, { getSessionId: () => "replacement" });
+				for (const event of ["turn_end", "agent_start"]) await h.fire(event, ctx);
+				await settle();
+				assert.equal(registries, 1, "a changed session id on the same manager is never re-armed");
+				assert.equal(notices.length, 1);
+			}
+			await h.fire("session_shutdown", ctx);
+		});
+	}
+});
+
+test("a failed presence start at session_start warns with a fixed code and clears presence", async (t) => {
+	const start = t.mock.method(PresencePublisher, "start", () => { throw new Error("SECRET C:\\Users\\private token"); });
+	const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+	const notices: Array<{ message: string; level: unknown }> = [];
+	ctx.ui.notify = (message, level) => { notices.push({ message, level }); };
+	gentleAgents(h.pi, {}, runtime.deps);
+	await h.fire("session_start", ctx);
+	assert.ok(start.mock.callCount() >= 1);
+	assert.deepEqual(notices.filter((notice) => notice.message.includes("presence")), [{ message: "Session presence unavailable: phase=presence class=transport code=presence-cleared.", level: "warning" }]);
+	assert.ok(notices.every((notice) => !notice.message.includes("SECRET")));
+	await h.fire("session_shutdown", ctx);
+});
+
+test("Windows bootstrap stderr codes reach the startup warning without raw stderr", async () => {
+	const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+	const notices: Array<{ message: string; level: unknown }> = [];
+	ctx.ui.notify = (message, level) => { notices.push({ message, level }); };
+	runtime.deps.sessionTransport = {
+		...inertSessionTransport,
+		createRegistry: async (_home, observe, observeBootstrap) => {
+			observeBootstrap?.("rejection-transport-assert-owned");
+			observeBootstrap?.("SECRET stderr" as never);
+			observe?.({ phase: "start", status: "succeeded", error: null, lastStartupMarker: "native-ready" });
+			observe?.({ phase: "initialize", status: "failed", error: { class: "rejected", code: "protocol" }, lastStartupMarker: "native-ready" });
+			observe?.({ phase: "cleanup", status: "succeeded", error: null, lastStartupMarker: "native-ready" });
+			throw new Error("SECRET");
+		},
+	};
+	gentleAgents(h.pi, {}, runtime.deps);
+	await h.fire("session_start", ctx);
+	await eventually(() => notices.length === 1, "startup warning");
+	await h.fire("session_shutdown", ctx);
+	assert.deepEqual(notices, [{ message: "Session transport startup failed: phase=initialize class=rejected code=protocol lastStartupMarker=native-ready bootstrap=rejection-transport-assert-owned.", level: "warning" }]);
 });
 
 test("registered task aliases persist independently of human names and curated state", async () => {
@@ -7231,6 +7728,39 @@ test("bash_background returns at once, and an idle parent gets one stored exit n
 	}
 });
 
+test("a job notice survives session switching and is delivered only to its owner (#3205)", async () => {
+	const { pi, tools, fire, sent } = fakePi();
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx: owner } = fakeContext();
+	const { ctx: other } = fakeContext();
+	Object.assign(other.sessionManager, { getSessionId: () => "s2" });
+	const notices = () => sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
+	try {
+		await fire("session_start", owner);
+		await fire("agent_start", owner);
+		await tools.get("bash_background")!.execute("b1", { command: "make build", label: "owner job" }, undefined, undefined, owner);
+		jobs.runs[0]!.exit(0);
+		await jobIo();
+		assert.equal(notices().length, 0, "the busy owner holds the exit notice");
+
+		await fire("session_start", other, { reason: "new" });
+		await fire("agent_settled", other);
+		await fire("turn_end", other);
+		assert.equal(notices().length, 0, "the inactive owner's notice is never delivered to another session");
+
+		await fire("session_start", owner, { reason: "resume" });
+		await fire("turn_end", owner);
+		await eventually(() => notices().length === 1, "resuming the owner delivers its retained notice");
+		assert.match(String(notices()[0]!.message.content), /job-1 \(\"owner job\"\) exited with code 0/);
+		await fire("turn_end", owner);
+		assert.equal(notices().length, 1, "the retained notice is delivered exactly once");
+	} finally {
+		await fire("session_shutdown", owner);
+		jobs.cleanup();
+	}
+});
+
 test("a busy parent gets the exit notice steered into its run at the next turn boundary", async () => {
 	const { pi, tools, fire, sent, userMessages } = fakePi();
 	const jobs = fakeJobShell();
@@ -8343,5 +8873,32 @@ test("a job notice held for a parent busy without a run is delivered by the held
 	} finally {
 		await fire("session_shutdown", ctx);
 		jobs.cleanup();
+	}
+});
+
+// P3 (tools by mode): the rarely used cross-session tools leave the primary
+// request only while codemode, which the appended route names, reaches them.
+test("cross-session coordination tools are hidden behind codemode and named by a route; direct without codemode", async () => {
+	const { pi, tools, fire } = fakePi();
+	gentleAgents(pi, {}, deps().deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	try {
+		type Hook = (loadout: { declared: Array<{ name: string }> }) => { hiddenDeclarations?: readonly string[] } | undefined;
+		const registered = [...tools.keys()];
+		const hidden = (names: string[]) => registered.flatMap((name) => ((tools.get(name) as unknown as { prepareLoadout?: Hook }).prepareLoadout?.({ declared: names.map((tool) => ({ name: tool })) })?.hiddenDeclarations ?? []));
+		const coordination = ["orchestrator_consult", "orchestrator_list", "orchestrator_send_message"];
+		assert.deepEqual(hidden([...registered, "codemode"]).sort(), coordination);
+		assert.deepEqual(hidden(registered), [], "without codemode every tool stays declared");
+		assert.deepEqual(hidden([...registered.filter((name) => name !== "orchestrator_list"), "codemode"]).sort(), ["orchestrator_consult", "orchestrator_send_message"], "an inactive tool is never hidden");
+		const route = /Cross-session tools orchestrator_list, orchestrator_consult and orchestrator_send_message are not declared: call them from codemode as `tools\.<name>\(args\)`/;
+		const withRoute = { appendSystemPrompt: "", selectedTools: [...registered, "codemode"] };
+		await fire("before_agent_start", ctx, { type: "before_agent_start", prompt: "hi", systemPrompt: "", systemPromptOptions: withRoute });
+		assert.match(withRoute.appendSystemPrompt, route);
+		const direct = { appendSystemPrompt: "", selectedTools: registered };
+		await fire("before_agent_start", ctx, { type: "before_agent_start", prompt: "hi", systemPrompt: "", systemPromptOptions: direct });
+		assert.doesNotMatch(direct.appendSystemPrompt, route);
+	} finally {
+		await fire("session_shutdown", ctx);
 	}
 });

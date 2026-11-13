@@ -39,7 +39,11 @@ const FIXTURE_PATH = join(import.meta.dirname, "fixtures", "orchestrator.pre-die
 // Issue #2935 (user decision 2026-11-06): 9,250 -> 9,350 B so the confinement clause keeps its full wording
 // (registered same-clone worktrees, never-blanket grants) while adding the resolved-skill-read exception; the
 // controlled 128-char assets root needs the headroom for platform-independent rendering.
-const BUDGET_BYTES = 9350;
+// cost-speed-painpoints S5 (T4): the duplicate `## Identity Contract` pointer left the core (the Language Boundary
+// intro carries the same pointer); measured 9,347 -> 9,197 B at the 128-char root: 9,350 -> 9,197 B.
+// cost-speed-painpoints S15 P5a: verdicts C7, C9, C12, X1, X3 and C8 (L41); measured 9,197 -> 9,189 B at the 128-char root.
+// cost-speed P14 (PD-81): the Evidence-budget lookup number matches the runtime notice; measured 9,189 -> 9,177 B.
+const BUDGET_BYTES = 9177;
 const MIN_CONTROLLED_LONG_ASSETS_ROOT_CHARS = 93;
 
 const LAZY_ASSET_NAMES = [
@@ -132,7 +136,7 @@ function measureOrchestratorPromptBytes(assetsDir: string): number {
 // measuring a shorter render again.
 const RDD_WORST_CASE_LINE = "Receipt-driven development: unknown (native status unavailable)";
 
-test("getOrchestratorPrompt return value stays within the canonical 9,350 B budget at a short assets root", () => {
+test("getOrchestratorPrompt return value stays within the canonical 9,197 B budget at a short assets root", () => {
 	const rendered = __testing.renderOrchestratorPrompt(representativeProductionAssetsDir);
 	assert.ok(
 		rendered.includes(RDD_WORST_CASE_LINE),
@@ -203,7 +207,7 @@ const TARGET_FILE: Record<Target, string> = {
 // (frozen byte-identical copy of assets/orchestrator.md at 23,047 B / 312 lines).
 const DISPOSITION_MAP: DispositionRange[] = [
 	{ lines: [1, 4], target: "replaced", label: "Header + bind: retired phase qualification" },
-	{ lines: [5, 8], target: "core", label: "Identity Contract" },
+	{ lines: [5, 8], target: "replaced", label: "Identity Contract pointer: dropped as a duplicate of the Language Boundary intro pointer (cost-speed-painpoints S5)" },
 	{ lines: [9, 13], target: "core", label: "Core Role" },
 	{ lines: [15, 15], target: "core", label: "Language Boundary heading" },
 	{ lines: [17, 17], target: "core", label: "Language Boundary LB1 pointer" },
@@ -277,7 +281,9 @@ const DISPOSITION_MAP: DispositionRange[] = [
 	{ lines: [232, 232], target: "core", label: "Skill Registry Protocol heading" },
 	{ lines: [234, 253], target: "replaced", label: "Skill resolution retained without phase roles" },
 	{ lines: [255, 255], target: "core", label: "Intent-Driven Skill Discovery heading" },
-	{ lines: [257, 276], target: "skills", label: "Intent-Driven Skill Discovery detail" },
+	{ lines: [257, 260], target: "skills", label: "Intent-Driven Skill Discovery introduction" },
+	{ lines: [261, 264], target: "replaced", label: "Disk-first discovery replaced by the S7 effective session view" },
+	{ lines: [265, 276], target: "skills", label: "Intent-Driven Skill Discovery fallback and intent hints" },
 	{ lines: [278, 283], target: "core", label: "Safety" },
 	{ lines: [285, 312], target: "obsolete", label: "Superseded pre-transaction review contract" },
 ];
@@ -336,6 +342,8 @@ for (const range of DISPOSITION_MAP) {
 				const trimmed = raw.trim();
 				const expected =
 					// Preserve the synthesis rule while reserving core bytes for the RDD scope condition.
+					// cost-speed-painpoints S15 P5a (verdict C7): organic is inline by default; delegation only by a Mechanism trigger.
+					ln === 11 ? "You are a COORDINATOR who executes understood work inline. Maintain one thin conversation thread, delegate only when a Mechanism trigger fires, and synthesize results for the user." :
 					ln === 13 ? "Default to concise synthesis: decision, outcome, next action. Expand on request or when detail is needed." :
 					ln === 36 ? "- Substantial authorized work: use ODD; track feature progress automatically." :
 					trimmed;
@@ -361,6 +369,22 @@ for (const range of DISPOSITION_MAP) {
 		},
 	);
 }
+
+test("lazy skill discovery selects and delegates from the effective view with a disclosed disk-only fallback", () => {
+	const skills = readRealAsset("orchestrator-skills.md");
+	for (const required of [
+		"Match task context and target files against the effective view's `Trigger / description` column.",
+		"Pass only matching exact `Path` values to subagents under `## Skills to load before work`.",
+		"Tell subagents to read those exact `SKILL.md` files before reading, writing, reviewing, testing, or creating artifacts.",
+		"The effective view is `<available_skills>` plus the on-disk rows of the `Effective session skills` system-prompt block",
+		"Consult `<available_skills>` and the `Effective session skills` block, when present, before acting or delegating.",
+		"Read the matching exact `SKILL.md` path when acting; pass it to the subagent when delegating.",
+		"If the view is unavailable, disclose the limitation; `.atl/skill-registry.md` is a disk-only fallback, not a complete Pi view.",
+		"If an expected workflow is absent, search configured skill roots only as a fallback. Prefer the most specific project skill over a global skill with the same intent.",
+		"If no matching skill exists, continue with the smallest safe fallback and say which expected skill was unavailable.",
+	]) assert.ok(skills.includes(required), `missing skill-discovery rule: ${required}`);
+	assert.doesNotMatch(skills, /1\. Read `\.atl\/skill-registry\.md` when present\./);
+});
 
 // ---------------------------------------------------------------------------
 // 2.4 — Core-alone load-bearing tokens (JD-007) — assert on the raw core
@@ -394,7 +418,8 @@ test("lazy coordination detail retains subject guidance without inflating the co
 
 test("core-alone: dynamic Gentle AI ownership replaces package lifecycle instructions", () => {
 	const core = readRealAsset("orchestrator.md");
-	assert.match(core, /injects the mirrored provider-bundle review execution contract into this session's system prompt at start/);
+	// cost-speed-painpoints S15 P5a (verdict X1): the contract is injected only while RDD is not off.
+	assert.match(core, /While RDD is not off, this package injects the mirrored provider-bundle review execution contract;/);
 	assert.match(core, /Absent that mirrored contract, this package invents no lifecycle instructions/);
 	assert.doesNotMatch(core, /start -> finalize -> validate/i);
 	assert.doesNotMatch(core, /receipt validation/i);

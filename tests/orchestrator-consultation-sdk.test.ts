@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -52,7 +53,7 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 		const ai = await import("@earendil-works/pi-ai");
 		const { default: gentleAgents } = await import("../extensions/gentle-agents.ts");
 		const { default: gentleShell } = await import("../extensions/gentle-shell.ts");
-		const { resolveSessionWorktreeWithGit } = await import("../lib/session-worktree-registry.ts");
+		const { resolveSessionWorktreeWithGit, SESSION_WORKTREE_CHANGED } = await import("../lib/session-worktree-registry.ts");
 		const { ORCHESTRATOR_STATE_ENTRY } = await import("../lib/orchestrator-state.ts");
 		assert.equal(sdk.getAgentDir(), profile);
 		const gitEnv = { PATH: process.env.PATH, HOME: root, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(root, "gitconfig") };
@@ -71,16 +72,18 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 		const roots = Array.from({ length: 10 }, (_, i) => join(root, `wt${i}`));
 		for (const cwd of roots) git(clone, "worktree", "add", "--detach", cwd, "HEAD");
 		const gitProbes = new Map<string, number>();
-		const gitProbeOrigins: Array<{ cwd: string; operation: string; origin: string[] }> = [];
+		const metadataQuery = new AsyncLocalStorage<string>();
+		const gitProbeOrigins: Array<{ cwd: string; caller?: string; operation: string; origin: string[] }> = [];
 		const runGit = new Proxy(execFileSync, { apply(target, _this, [command, args, options]) {
 			assert.equal(command, "git");
 			assert.ok(String(args[args.indexOf("-C") + 1]).startsWith(root + "/"));
 			const cwd = String(args[args.indexOf("-C") + 1]);
-			gitProbeOrigins.push({ cwd, operation: String(args.at(-1)), origin: (new Error().stack ?? "").split("\n").flatMap(line => {
+			const caller = metadataQuery.getStore();
+			gitProbeOrigins.push({ cwd, caller, operation: String(args.at(-1)), origin: (new Error().stack ?? "").split("\n").flatMap(line => {
 				const name = line.match(/\bat (?:async )?([A-Za-z_][\w.$]*)\s*\(/)?.[1];
 				return name ? [name] : [];
 			}).slice(0, 8) });
-			gitProbes.set(cwd, (gitProbes.get(cwd) ?? 0) + 1);
+			if (caller !== undefined) gitProbes.set(caller, (gitProbes.get(caller) ?? 0) + 1);
 			return Reflect.apply(target, undefined, [command, args, { ...options, env: gitEnv }]);
 		} });
 		const resolver = (path: string, cwd: string) => resolveSessionWorktreeWithGit(path, cwd, runGit);
@@ -124,13 +127,24 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 			let ctx: ExtensionContext | undefined;
 			const shutdown: Array<() => Promise<void>> = [];
 			const errors: string[] = [];
+			let publishScopeChange = () => {};
 			const loader = new sdk.DefaultResourceLoader({ cwd, agentDir: profile, settingsManager: settings,
 				noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
 				systemPrompt: "PRIVATE_PARENT_INSTRUCTIONS_SENTINEL. Local acceptance fixture. Only execute the requested tools.", appendSystemPrompt: [],
 				extensionFactories: [pi => {
+					publishScopeChange = () => pi.events.emit(SESSION_WORKTREE_CHANGED, { sessionId: manager.getSessionId() });
 					// Capture ONLY public shutdown registrations for cleanup. Business
 					// tools/events receive actual SDK contexts, never fabricated contexts.
 					const captured = new Proxy(pi, { get(target, key) {
+						// Attribute async query work, not unrelated event-time publications
+						// that happen to run between SDK tool start/end notifications.
+						if (key === "registerTool") {
+							const register: ExtensionAPI["registerTool"] = definition => {
+								if (!["orchestrator_consult", "orchestrator_list"].includes(definition.name)) return target.registerTool(definition);
+								return target.registerTool({ ...definition, execute: (...args) => metadataQuery.run(cwd, () => definition.execute(...args)) });
+							};
+							return register;
+						}
 						if (key !== "on") return Reflect.get(target, key);
 						const on: ExtensionAPI["on"] = (event, handler) => {
 							if (event === "session_shutdown") shutdown.push(async () => { assert.ok(ctx); await handler({ type: "session_shutdown" }, ctx); });
@@ -227,7 +241,7 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 			await session.bindExtensions({ mode: simulatedUI ? "rpc" : "json", uiContext: simulatedUI ? ui : undefined,
 				onError: error => { errors.push(error.error); } });
 			assert.ok(ctx); assert.equal(ctx.mode, simulatedUI ? "rpc" : "json"); assert.equal(ctx.hasUI, simulatedUI);
-			async function tool(name: string, args: ToolCall["arguments"] = {}) {
+			async function tool(name: string, args: ToolCall["arguments"] = {}, interleavePublication = false) {
 				request = { name, arguments: args };
 				let result: { content: Array<{ type: string; text?: string }>; details?: any } | undefined;
 				const before = calls;
@@ -238,11 +252,12 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 					if (event.type === "tool_execution_start" && event.toolName === name) {
 						toolProbes = gitProbes.get(cwd) ?? 0;
 						toolProbeStart = gitProbeOrigins.length;
+						if (interleavePublication) queueMicrotask(publishScopeChange);
 					}
 					if (event.type === "tool_execution_end" && event.toolName === name) {
 						result = event.result; failed = event.isError;
 						if (name === "orchestrator_consult" || name === "orchestrator_list") {
-							const added = gitProbeOrigins.slice(toolProbeStart).filter(probe => probe.cwd === cwd).slice(0, 2)
+							const added = gitProbeOrigins.slice(toolProbeStart).filter(probe => probe.caller === cwd).slice(0, 2)
 								.map(({ operation, origin }) => ({ operation, origin }));
 							assert.equal(gitProbes.get(cwd) ?? 0, toolProbes, `metadata query adds no caller Git probes; origins=${JSON.stringify(added)}`);
 						}
@@ -339,8 +354,19 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 			assert.doesNotMatch(JSON.stringify(receipt), /PRIVATE_OWNER_HISTORY_SENTINEL|endpoint|consent|activation/);
 			return receipt;
 		};
+		// Negative control: a Git lookup started by an async query is counted,
+		// including after an await. The real metadata operations must add none.
+		const beforeControl = gitProbes.get(roots[1]) ?? 0;
+		await metadataQuery.run(roots[1], async () => {
+			await new Promise<void>(resolve => setImmediate(resolve));
+			resolver(roots[1], roots[1]);
+		});
+		assert.equal(gitProbes.get(roots[1]), beforeControl + 2, "query-origin Git probes must remain detectable");
 		const first = await consult();
 		assert.equal(first.status, "available");
+		// A discrete publication can race an unrelated query in the real SDK.
+		const coincident = await caller.tool("orchestrator_consult", { recipient_session_id: sid }, true);
+		assert.equal(coincident.details.gentleAgents.receipt.status, "available");
 		// Hold A's actual SDK main lane busy. B must read the published snapshot
 		// before releasing A, without messaging or a helper/receiver model call.
 		const busy = owner.deferMain();

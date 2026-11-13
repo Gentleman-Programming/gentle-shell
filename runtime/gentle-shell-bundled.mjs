@@ -287,16 +287,50 @@ export const ENGRAM_COMPATIBILITY_MIN_VERSION = "3.4.0";
 export function engramOutdatedServerNotice(version        )         {
 	return `Engram memory disabled: the running Engram server reports version ${version}, which cannot prove store compatibility. Back up your Engram data, update that server to ${ENGRAM_COMPATIBILITY_MIN_VERSION} or later with the method you installed it with, and restart it; updating Shell alone does not replace a running server. Shell rechecks on every launch and remains usable without memory.`;
 }
+// A canonical numeric x.y.z (optionally v-prefixed, no leading zeros), split
+// into numeric parts; undefined otherwise. The version comes from the server,
+// so anything else is never echoed to the user.
+function canonicalVersion(version                    )                       {
+	const match = /^v?(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})$/.exec(version ?? "");
+	return match === null ? undefined : match.slice(1).map(Number);
+}
+
+// "older" or "same-or-newer" over canonical numeric parts, or undefined when
+// the version itself is not canonical.
+function compareVersion(version                    , minimum        )                                        {
+	const parts = canonicalVersion(version);
+	if (parts === undefined) return undefined;
+	const base = canonicalVersion(minimum);
+	if (base === undefined) return undefined;
+	for (let i = 0; i < parts.length; i += 1) {
+		if (parts[i] !== base[i]) return parts[i] < base[i] ? "older" : "same-or-newer";
+	}
+	return "same-or-newer";
+}
+
 // A canonical numeric x.y.z (optionally v-prefixed, no leading zeros) older than
 // the minimum. The version comes from the server, so anything else is never
 // echoed to the user.
 function outdatedServerVersion(version                    )                     {
-	const match = /^v?(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})$/.exec(version ?? "");
-	if (match === null) return undefined;
-	const parts = match.slice(1).map(Number);
-	const minimum = ENGRAM_COMPATIBILITY_MIN_VERSION.split(".").map(Number);
-	const index = parts.findIndex((part, i) => part !== minimum[i]);
-	return index >= 0 && parts[index] < minimum[index] ? parts.join(".") : undefined;
+	const parts = canonicalVersion(version);
+	if (parts === undefined) return undefined;
+	return compareVersion(version, ENGRAM_COMPATIBILITY_MIN_VERSION) === "older" ? parts.join(".") : undefined;
+}
+
+// The first release whose CLI runs the shared server's whole lifecycle as a
+// pidfile-tracked daemon (`engram run -d` plus the `ps`, `stop`, `logs`,
+// `restart` verbs; engram issues #2228 and #2346): a core older than this
+// knows only `serve`, which no daemon verb can adopt.
+export const ENGRAM_DAEMON_LIFECYCLE_MIN_VERSION = "3.7.0";
+export function engramSupportsDaemonLifecycle(version                    )          {
+	return compareVersion(version, ENGRAM_DAEMON_LIFECYCLE_MIN_VERSION) === "same-or-newer";
+}
+
+// The command line Shell starts the shared server with: daemon-lifecycle cores
+// register with `run -d` so the standard verbs manage the server; older cores
+// spawn only the legacy detached `serve`.
+export function engramSpawnArgs(version                    )           {
+	return engramSupportsDaemonLifecycle(version) ? ["run", "-d"] : ["serve"];
 }
 // The default endpoint gentle-engram uses without ENGRAM_URL or ENGRAM_PORT.
 export const ENGRAM_DEFAULT_PORT = 7437;
@@ -411,12 +445,66 @@ export function parseEngramProvenance(text                    )                 
 }
 
 // The bundled core's own schema (SQLite user_version), verified from the
-// tagged sources v3.3.2, v3.4.0 and v3.5.2: internal/store/store.go `const schemaVersion = 1`.
-// A pin without a verified entry leaves the header check unavailable.
-const BUNDLED_ENGRAM_SCHEMA                         = { "3.3.2": 1, "3.4.0": 1, "3.5.2": 1 };
+// tagged sources v3.3.2, v3.4.0, v3.5.2 and the v3.7.0 tree: internal/store/store.go
+// `const schemaVersion = 1`. A pin without a verified entry leaves the header
+// check unavailable.
+const BUNDLED_ENGRAM_SCHEMA                         = { "3.3.2": 1, "3.4.0": 1, "3.5.2": 1, "3.7.0": 1 };
 
 export function bundledEngramSchema(coreVersion        )                     {
 	return Object.hasOwn(BUNDLED_ENGRAM_SCHEMA, coreVersion) ? BUNDLED_ENGRAM_SCHEMA[coreVersion] : undefined;
+}
+
+// Companion-vs-core contract gate (gentle-shell#3015): the runtime-contract
+// digest each pinned core answers on GET /runtime-contract, read from the real
+// release binaries during development; the 3.5.2 windows archive sha256 matched
+// the retired 3.5.2 pin exactly. gentle-engram 0.7.0 requires the 3.7.0 digest,
+// and only the digest differs between the two (both report contract_id
+// engram.pi-http-runtime/v1, revision 1). A pin without a verified entry leaves
+// the gate unavailable, and the gate only ever warns (S3: "Instalar y avisar
+// fuerte"), never blocks.
+const BUNDLED_ENGRAM_CONTRACT                         = {
+	"3.5.2": "4bf32703e111162b24073d090bec1c15c9120708587000bf595a07264e768672",
+	"3.7.0": "0af9af176928e98562ab1396d3196efe582dd5d1c5d2c5f8f546ab4ed609810f",
+};
+
+export function bundledEngramContract(coreVersion        )                     {
+	return Object.hasOwn(BUNDLED_ENGRAM_CONTRACT, coreVersion) ? BUNDLED_ENGRAM_CONTRACT[coreVersion] : undefined;
+}
+
+// The runtime contract a gentle-engram companion ships (runtime-contract.json)
+// and the running core answers on GET /runtime-contract. Only the exact
+// contract id, an integer revision and a lowercase 64-hex digest count as
+// evidence; anything else is no signal, never an error.
+
+
+export function parseEngramRuntimeContract(payload         )                                          {
+	if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return undefined;
+	const record = payload                           ;
+	const revision = record.revision;
+	if (record.contract_id !== "engram.pi-http-runtime/v1" || typeof revision !== "number" || !Number.isInteger(revision)) return undefined;
+	if (typeof record.digest !== "string" || !/^[0-9a-f]{64}$/.test(record.digest)) return undefined;
+	return { contract_id: "engram.pi-http-runtime/v1", revision, digest: record.digest };
+}
+
+// The loud, warn-only mismatch notice (S3): Shell still installs and runs the
+// pair, and the human decides whether to update the core or the companion.
+// Silent when the digests are equal or either side is unknown — never a false
+// alarm. `coreDigest` lets the launch path pass the digest the running server
+// actually answered; the default is the pinned core's verified table entry.
+// `coreLabel` names whoever answered, so a reused older server is never
+// misattributed to the pinned version.
+export function engramContractMismatchNotice(companionDigest                    , coreVersion        , coreDigest                     = bundledEngramContract(coreVersion), coreLabel         = `the Engram core ${coreVersion}`)                     {
+	if (companionDigest === undefined || coreDigest === undefined || !/^[0-9a-f]{64}$/.test(companionDigest) || companionDigest === coreDigest) return undefined;
+	return `Engram contract mismatch: the gentle-engram companion declares runtime-contract digest ${companionDigest}, while ${coreLabel} answers ${coreDigest}; memory may be unavailable until the pair matches. Update the core with a new Gentle Shell release, or update the companion.`;
+}
+
+// One bounded read-only GET /runtime-contract on the shared server (the same
+// loopback rules as probeEngramEndpoint): the parsed digest, or undefined when
+// the server does not answer with a well-formed contract.
+export async function probeEngramRuntimeContract(input                                        = {})                              {
+	const answer = await localGet(input.port ?? ENGRAM_DEFAULT_PORT, "/runtime-contract", input.timeoutMs ?? 1000);
+	if (answer.kind !== "response" || answer.status !== 200) return undefined;
+	return parseEngramRuntimeContract(parseJson(answer.body))?.digest;
 }
 
 // SQLite's user_version from the raw database header (bytes 60-63), or

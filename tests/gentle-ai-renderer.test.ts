@@ -48,11 +48,13 @@ test("completed review cards fit Pi's default Box at terminal width 57", () => {
 
 test("review registrations own their shell", () => {
 	const tools: ToolDefinition[] = [];
-	createGentleAiExtension({ nativeReviewCli: null } as never)({
+	// An explicit empty environment: an inherited GENTLE_PI_AGENTS_CHILD=1 or
+	// GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR=0 would drop gentle_review_run.
+	createGentleAiExtension({ nativeReviewCli: null, processEnv: {} } as never)({
 		on() {}, registerCommand() {}, registerTool(tool: ToolDefinition) { tools.push(tool); },
 	} as unknown as ExtensionAPI);
 	const review = tools.filter((tool) => tool.name.startsWith("gentle_review"));
-	assert.equal(review.length, 4);
+	assert.equal(review.length, 5);
 	for (const tool of review) assert.equal(tool.renderShell, "self", tool.name);
 });
 
@@ -469,6 +471,38 @@ test("JSON summaries stay bounded at every width", () => {
 	const narrow = bodyRows(renderGentleAiResult(jsonResult(assessEnvelope), { expanded: false }, plainTheme).render(40));
 	assert.equal(narrow.length, 1);
 	assert.match(narrow[0], /^unassessable · native.*…$/);
+});
+
+// T9: with a UI the run shows each reviewer-run forecast as a partial update
+// right before the reviewers run; its collapsed line says what will run.
+const groupForecast = { tool: "gentle_review_capture_group", status: "blocked", outcome: "reviewer-model-run-forecast",
+	cost_forecast: { transport: "pi_host_relay", model_runs: 2, lenses: ["review-risk", "review-reliability"] }, mutation_performed: false, mutation_outcome: "none" };
+const refuterForecast = { tool: "gentle_review_capture", status: "blocked", outcome: "reviewer-model-run-forecast",
+	cost_forecast: { transport: "pi_host_relay", model_runs: 1, roles: ["review-refuter"] }, mutation_performed: false, mutation_outcome: "none" };
+
+test("a collapsed reviewer-run forecast shows the model-run count and the lenses or roles", () => {
+	for (const isPartial of [true, false]) {
+		const render = (envelope: unknown, width: number) => bodyRows(renderGentleAiResult(jsonResult(envelope), { expanded: false, isPartial }, plainTheme).render(width));
+		assert.deepEqual(render(groupForecast, 120), ["2 model runs · review-risk, review-reliability · blocked · reviewer-model-run-forecast"]);
+		assert.deepEqual(render(refuterForecast, 120), ["1 model run · review-refuter · blocked · reviewer-model-run-forecast"]);
+		const at80 = render(groupForecast, 80);
+		assert.equal(at80.length, 1);
+		assert.match(at80[0], /^2 model runs · review-risk, review-reliability · .*…$/, "the count and lenses survive the cut");
+		assert.match(render(groupForecast, 40)[0], /^2 model runs · review-risk, revie.*…$/);
+	}
+	for (const width of [0, 1, 2, 3, 4, 5, 6, 7, 8, 24, 40, 80]) {
+		const rows = renderGentleAiResult(jsonResult(groupForecast), { expanded: false }, plainTheme).render(width);
+		if (width === 0) { assert.deepEqual(rows, []); continue; }
+		assert.ok(rows.length <= 3, `width ${width}: ${rows.length} rows`);
+		assert.ok(rows.every((row) => visibleWidth(row) <= width), `width ${width}`);
+	}
+});
+
+test("envelopes that are not a reviewer-run forecast keep their ordinary collapsed line", () => {
+	const render = (envelope: unknown) => bodyRows(renderGentleAiResult(jsonResult(envelope), { expanded: false }, plainTheme).render(120));
+	// Same cost_forecast shape under another outcome: unchanged.
+	assert.deepEqual(render({ ...groupForecast, outcome: "native-reviewer-result-captured" }), ["blocked · native-reviewer-result-captured"]);
+	assert.deepEqual(render(inspectEnvelope), ["blocked · start · fresh_target_ready"]);
 });
 
 // The rose call card reads like the quiet read card: glyph, a short name and

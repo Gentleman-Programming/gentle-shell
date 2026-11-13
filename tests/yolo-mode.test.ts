@@ -3,6 +3,8 @@ import test from "node:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { captureReviewSessionIdentity, grantReviewSessionPermission, hasReviewSessionPermission, revokeReviewSessionPermission } from "../lib/review-session-standing-permission.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
@@ -180,6 +182,43 @@ test("structured primary prompt gains and loses directive; named child does not 
 	await h.emit("before_agent_start", { ...event, agent: { name: "worker" } });
 	assert.doesNotMatch(options.appendSystemPrompt, /YOLO session standing permission/);
 	assert.ok(await h.emit("tool_call", { toolName: "bash", input: { command: "git push origin main" } }), "named child has no push waiver");
+});
+
+test("prompt preparation captures permission mode once per primary turn and never for children", async t => {
+	const original = fsPromises.realpath;
+	let workspace: string | undefined, captures = 0;
+	t.mock.method(fsPromises, "realpath", async (...args: Parameters<typeof original>) => {
+		if (args[0] === workspace) captures++;
+		return original(...args);
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	for (const mode of ["normal", "auto", "yolo", "super-yolo"] as const) {
+		const h = harness();
+		await h.commands.get("gentle:mode")!.handler(mode, h.ctx);
+		workspace = h.ctx.cwd;
+		const event = { prompt: "task", systemPromptOptions: { appendSystemPrompt: "base" } };
+		for (let turn = 0; turn < 2; turn++) {
+			captures = 0;
+			await h.emit("before_agent_start", event);
+			assert.equal(captures, 1, `${mode}: each primary turn captures once, without cross-turn reuse`);
+			const prompt = event.systemPromptOptions.appendSystemPrompt;
+			assert.equal(prompt.includes("<gentle-yolo-session>"), mode === "yolo");
+			assert.equal(prompt.includes("<gentle-super-yolo-session>"), mode === "super-yolo");
+			assert.equal(prompt.includes("<gentle-auto-permissions>"), mode === "auto");
+		}
+		captures = 0;
+		await h.emit("tool_call", { toolName: "bash", toolCallId: `fresh-${mode}`, input: { command: "git status" } });
+		assert.ok(captures > 0, "tool admission rechecks identity instead of using the prompt snapshot");
+		captures = 0;
+		await h.emit("before_agent_start", { ...event, agent: { name: "worker" } });
+		assert.equal(captures, 0, "named children do not capture the primary permission mode");
+		assert.doesNotMatch(event.systemPromptOptions.appendSystemPrompt, /<gentle-(?:(?:super-yolo|yolo)-session|auto-permissions)>/);
+	}
+	const child = harness({ GENTLE_PI_AGENTS_CHILD: "1" });
+	captures = 0;
+	await child.emit("before_agent_start", { prompt: "child task", systemPromptOptions: { appendSystemPrompt: "base" } });
+	assert.equal(captures, 0, "child-process sessions do not capture the primary permission mode");
 });
 
 test("session loss and shutdown (including reload) revoke visible state", async () => {

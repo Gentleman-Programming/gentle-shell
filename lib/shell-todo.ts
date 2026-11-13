@@ -1,4 +1,5 @@
 import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import type { OrchestratorMode } from "./agent-profiles.ts";
 import { CARD_TONE, panelHeaderRow, panelInnerWidth, renderCard, type CardTheme, type CardTone } from "./shell-card.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { paintHoverable } from "./shell-hover.ts";
@@ -285,6 +286,8 @@ export function replayTodo(entries: readonly unknown[]): TodoState {
 // hidden transcript message appended when it changes (todoStateMessage,
 // gentle-shell#2195), so requests stay append-only and a change costs only
 // the tail of the conversation, never the prefix.
+const TODO_SMALL_TASK_ORGANIC = "A small task (Task Size) uses no todo list: do it and report.";
+const TODO_SMALL_TASK_FULL_DELEGATION = "A small task (Task Size) uses no todo list: delegate it and report.";
 const TODO_PROMPT_BLOCK = [
 	"## Todo list",
 	"A small task (Task Size) uses no todo list: do it and report. For tracked or multi-step work, keep it current with the `todo` tool: mark a task in_progress before starting it, done right after finishing it, and rewrite the whole list with `write` whenever the plan changes. Update it before you end the turn.",
@@ -293,7 +296,9 @@ const TODO_PROMPT_BLOCK = [
 ].join("\n");
 
 /** The byte-stable rules block appended to every system prompt. */
-export function todoPromptBlock(): string {
+export function todoPromptBlock(mode: OrchestratorMode = "organic"): string {
+	// Full delegation mode: a small task still skips the list, but it goes to a writer.
+	if (mode === "full-delegation") return TODO_PROMPT_BLOCK.replace(TODO_SMALL_TASK_ORGANIC, TODO_SMALL_TASK_FULL_DELEGATION);
 	return TODO_PROMPT_BLOCK;
 }
 

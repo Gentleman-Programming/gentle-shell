@@ -243,6 +243,64 @@ for (const scenario of ["child", "primary"] as const) {
 	});
 }
 
+// Pi loads context files from the root toward the working directory, nearest
+// last. The engram-protocol block is deduplicated: only the nearest copy stays.
+const PROJECT_WITH_ENGRAM = `# Plain\n\n${block("engram-protocol", "project engram")}\n`;
+const EXPECTED_REALISTIC_WITHOUT_ENGRAM = EXPECTED_REALISTIC.replace(`${block("engram-protocol", "## Engram\n\nSave decisions.")}\n\n`, "");
+
+async function runChildStart(env: NodeJS.ProcessEnv, project: string, cwd: unknown = "/work/repo") {
+	const { handlers } = childContextHandlers(env);
+	const contextFiles = [
+		{ path: "/work/AGENTS.md", content: REALISTIC_AGENTS_MD },
+		{ path: "/work/repo/AGENTS.md", content: project },
+	];
+	const systemPromptOptions = { appendSystemPrompt: "", contextFiles };
+	const event = { systemPrompt: "base", systemPromptOptions };
+	const handler = handlers.get("before_agent_start")!;
+	await handler(event, { cwd });
+	return { contextFiles, systemPromptOptions, rerun: () => handler(event, { cwd }) };
+}
+
+test("a child with engram-protocol in two loaded files keeps only the copy nearest to the working directory", async () => {
+	const { contextFiles, systemPromptOptions, rerun } = await runChildStart({ GENTLE_PI_AGENTS_CHILD: "1" }, PROJECT_WITH_ENGRAM);
+	assert.deepEqual(systemPromptOptions.contextFiles.map((file) => file.content), [EXPECTED_REALISTIC_WITHOUT_ENGRAM, PROJECT_WITH_ENGRAM]);
+	assert.match(systemPromptOptions.contextFiles[0].content, /<!-- gentle-ai:remote-authorization -->\n## Remote operation authorization/);
+	assert.equal(contextFiles[0].content, REALISTIC_AGENTS_MD, "the loaded entries are never mutated");
+	const filtered = systemPromptOptions.contextFiles;
+	await rerun();
+	assert.equal(systemPromptOptions.contextFiles, filtered, "a repeated turn removes nothing more");
+});
+
+test("without a working directory a child still deduplicates along the files' own ancestor chain", async () => {
+	const { systemPromptOptions } = await runChildStart({ GENTLE_PI_AGENTS_CHILD: "1" }, PROJECT_WITH_ENGRAM, undefined);
+	assert.deepEqual(systemPromptOptions.contextFiles.map((file) => file.content), [EXPECTED_REALISTIC_WITHOUT_ENGRAM, PROJECT_WITH_ENGRAM]);
+});
+
+test("a child with a single engram-protocol copy keeps it", async () => {
+	const { systemPromptOptions } = await runChildStart({ GENTLE_PI_AGENTS_CHILD: "1" }, "# Plain\n");
+	assert.deepEqual(systemPromptOptions.contextFiles.map((file) => file.content), [EXPECTED_REALISTIC, "# Plain\n"]);
+});
+
+test("a child keeps both engram-protocol copies when the files sit at the same level or off the working-directory chain", async () => {
+	for (const cwd of ["/work", "/elsewhere"]) {
+		const { contextFiles, systemPromptOptions } = await runChildStart({ GENTLE_PI_AGENTS_CHILD: "1" }, PROJECT_WITH_ENGRAM, cwd);
+		assert.equal(systemPromptOptions.contextFiles[1].content, PROJECT_WITH_ENGRAM, `cwd ${cwd}`);
+		assert.match(systemPromptOptions.contextFiles[0].content, /gentle-ai:engram-protocol -->/, `cwd ${cwd}`);
+		assert.equal(contextFiles[1].content, PROJECT_WITH_ENGRAM);
+	}
+	const sameLevel = filterChildContextFiles([
+		{ path: "/work/repo/AGENTS.md", content: PROJECT_WITH_ENGRAM },
+		{ path: "/work/repo/CLAUDE.md", content: PROJECT_WITH_ENGRAM },
+	], { cwd: "/work/repo" });
+	assert.deepEqual(sameLevel.files.map((file) => file.content), [PROJECT_WITH_ENGRAM, PROJECT_WITH_ENGRAM]);
+	assert.equal(sameLevel.removedBlocks, 0);
+});
+
+test("outside a child session the child-context extension leaves duplicated engram-protocol copies alone", async () => {
+	const { contextFiles, systemPromptOptions } = await runChildStart({ GENTLE_PI_AGENTS_CHILD: "0" }, PROJECT_WITH_ENGRAM);
+	assert.equal(systemPromptOptions.contextFiles, contextFiles);
+});
+
 test("the child-context extension never throws on missing or malformed options", async () => {
 	const { handlers } = childContextHandlers({ GENTLE_PI_AGENTS_CHILD: "1" });
 	const handler = handlers.get("before_agent_start")!;

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test, { after } from "node:test";
 import {
 	AGENT_MODE,
+	PROVIDER_REVIEW_ROLES,
 	THINKING_LEVEL,
 	agentDirectories,
 	discoverAgents,
@@ -14,9 +15,13 @@ import {
 	parseFrontmatter,
 	parseModelRef,
 	resolveAgentProfile,
+	staleRoutingKeys,
+	removeRoutingKeys,
+	removeRoutingKeysFromProfilesFile,
 	unmatchedProfileKeys,
 	withPinnedModelProfiles,
 } from "../lib/agents-config.ts";
+import type { AgentProfilesFile } from "../lib/agent-profiles.ts";
 import { THINKING_LEVELS } from "../lib/model-routing-authority.ts";
 
 // Gentle Agents configuration: markdown agent definitions (the same files
@@ -156,7 +161,7 @@ test("discoverAgents merges the four directories with project over global and su
 	assert.deepEqual(agents.map((agent) => `${agent.name}:${agent.description}:${agent.scope}`), ["gentle-ai-explore:Read-only exploration and mapping.:global", "shared:project agents:project"]);
 	assert.equal(errors.length, 1);
 	assert.match(errors[0], /broken\.md/);
-	assert.deepEqual(discoverAgents({ cwd: join(root, "empty"), home: join(root, "nohome") }), { agents: [], errors: [] });
+	assert.deepEqual(discoverAgents({ cwd: join(root, "empty"), home: join(root, "nohome") }), { agents: [], errors: [], notices: [] });
 });
 
 test("profile agent roots isolate global definitions and subagents.json while explicit homes keep their fallback", () => {
@@ -208,6 +213,15 @@ test("parseAgentsConfig resolves the tool-call stall ceiling above the idle sile
 		assert.equal(parseAgentsConfig({ tool_stall_timeout_ms: invalid }, undefined).toolStallTimeoutMs, 30 * 60_000, `invalid tool_stall_timeout_ms ${String(invalid)} must fall back to the default`);
 	}
 	assert.equal(parseAgentsConfig({ stall_timeout_ms: 45 * 60_000, tool_stall_timeout_ms: 1_000 }, undefined).toolStallTimeoutMs, 45 * 60_000, "the tool ceiling must never fall below the idle budget");
+});
+
+test("parseAgentsConfig bounds the delivered child report at 16,384 bytes unless report_max_bytes says otherwise", () => {
+	assert.equal(parseAgentsConfig(undefined, undefined).reportMaxBytes, 16_384);
+	assert.equal(parseAgentsConfig({ report_max_bytes: 8_192 }, undefined).reportMaxBytes, 8_192);
+	assert.equal(parseAgentsConfig({ report_max_bytes: 8_192 }, { report_max_bytes: 32_768 }).reportMaxBytes, 32_768);
+	for (const invalid of ["big", 0, -1, 12.5, null]) {
+		assert.equal(parseAgentsConfig({ report_max_bytes: invalid }, undefined).reportMaxBytes, 16_384, `invalid report_max_bytes ${String(invalid)} must fall back to the default`);
+	}
 });
 
 test("resolveAgentProfile prefers the profile, then the definition, then the defaults", () => {
@@ -281,6 +295,97 @@ test("unmatchedProfileKeys reports profile keys that match no discovered agent",
 	// profile set reports nothing.
 	assert.deepEqual(unmatchedProfileKeys({ "gentle-ai-worker": { model: undefined, thinking: undefined } }, [worker]), []);
 	assert.deepEqual(unmatchedProfileKeys({}, [worker]), []);
+});
+
+test("staleRoutingKeys returns sorted unmatched keys with no suggestion", () => {
+	const config = { zebra: {}, abandoned: {} };
+	assert.deepEqual(staleRoutingKeys(config, []), ["abandoned", "zebra"]);
+	assert.deepEqual(config, { zebra: {}, abandoned: {} });
+	assert.deepEqual(staleRoutingKeys({}, []), []);
+});
+
+test("staleRoutingKeys excludes exact matches and near-miss suggestions", () => {
+	const agents = [{ name: "gentle-ai-worker" }, { name: "gentle-ai-explore" }];
+	assert.deepEqual(staleRoutingKeys({
+		"gentle-ai-worker": {}, worker: {}, WORKER: {},
+		"GENTLE-AI-WORKER": {}, explore: {}, review_risk: {},
+	}, agents), ["review_risk"]);
+});
+
+test("staleRoutingKeys protects reserved routing targets without discovered definitions", () => {
+	const config = {
+		"review-refuter": { model: "refuter" },
+		"review-validator": { model: "validator" },
+		orchestrator: { model: "main" },
+		abandoned: { model: "old" },
+	};
+	const before = structuredClone(config);
+	for (const agents of [[], [{ name: "unrelated" }]]) {
+		assert.deepEqual(staleRoutingKeys(config, agents), ["abandoned"]);
+		assert.deepEqual(config, before);
+	}
+});
+
+test("staleRoutingKeys excludes every provider review role without discovered agents", () => {
+	const config = Object.fromEntries(PROVIDER_REVIEW_ROLES.map((role) => [role, { model: "provider/model" }]));
+	const before = structuredClone(config);
+	assert.deepEqual(staleRoutingKeys(config, []), []);
+	assert.deepEqual(config, before);
+});
+
+test("staleRoutingKeys protects provider review roles supplied by the caller", () => {
+	assert.deepEqual(staleRoutingKeys({
+		"review-refuter": {}, "review-validator": {}, abandoned: {},
+	}, [{ name: "review-refuter" }, { name: "review-validator" }]), ["abandoned"]);
+});
+
+test("removeRoutingKeys removes only selected own keys without cloning retained values", () => {
+	const config = { stale: { model: "old" }, keep: { model: "live" }, other: {} };
+	const result = removeRoutingKeys(config, ["stale", "missing", "stale"]);
+	assert.notEqual(result, config);
+	assert.deepEqual(result, { keep: config.keep, other: config.other });
+	assert.equal(result.keep, config.keep);
+	assert.equal(result.other, config.other);
+	assert.deepEqual(config, { stale: { model: "old" }, keep: { model: "live" }, other: {} });
+});
+
+test("removeRoutingKeys preserves identity for empty or absent selections", () => {
+	const config = { keep: {} };
+	assert.equal(removeRoutingKeys(config, []), config);
+	assert.equal(removeRoutingKeys(config, ["missing", "toString"]), config);
+});
+
+test("removeRoutingKeysFromProfilesFile changes only affected profiles and preserves metadata", () => {
+	const file: AgentProfilesFile = {
+		kind: "gentle-pi.agent_model_profiles", version: 1, active: "primary",
+		profiles: {
+			primary: { stale: { model: "old" }, keep: { model: "live" } },
+			secondary: { stale: {}, another: {} },
+			untouched: { keep: {} },
+		},
+	};
+	const result = removeRoutingKeysFromProfilesFile(file, ["stale", "missing"]);
+	assert.notEqual(result, file);
+	assert.notEqual(result.profiles, file.profiles);
+	assert.deepEqual(result, { ...file, profiles: {
+		primary: { keep: file.profiles.primary.keep },
+		secondary: { another: file.profiles.secondary.another },
+		untouched: file.profiles.untouched,
+	} });
+	assert.equal(result.profiles.untouched, file.profiles.untouched);
+	assert.equal(result.profiles.primary.keep, file.profiles.primary.keep);
+	assert.equal(result.active, file.active);
+	assert.ok(Object.hasOwn(file.profiles.primary, "stale"));
+	assert.ok(Object.hasOwn(file.profiles.secondary, "stale"));
+});
+
+test("removeRoutingKeysFromProfilesFile preserves identity when no profile changes", () => {
+	const file: AgentProfilesFile = {
+		kind: "gentle-pi.agent_model_profiles", version: 1, profiles: { main: { keep: {} } },
+	};
+	assert.equal(removeRoutingKeysFromProfilesFile(file, []), file);
+	assert.equal(removeRoutingKeysFromProfilesFile(file, ["missing"]), file);
+	assert.equal(removeRoutingKeysFromProfilesFile({ ...file, profiles: {} }, []).active, undefined);
 });
 
 // Cortex QA adversarial follow-up (R5 pin): the did-you-mean mapping exists to

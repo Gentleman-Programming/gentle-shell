@@ -1,4 +1,5 @@
 import type { ToolResultEvent, ToolResultEventResult } from "@earendil-works/pi-coding-agent";
+import type { OrchestratorMode } from "./agent-profiles.ts";
 
 // Harness roadmap R1: the parent-context backstop was a fixed "~150k tokens" in
 // prompt text, so the model had to estimate its own context. The runtime now
@@ -48,18 +49,26 @@ export function contextBackstopReached(usage: MeasuredContext | undefined, env: 
 
 const count = (value: number) => Math.round(value).toLocaleString("en-US");
 
-function contextBackstopNotice(tokens: number, contextWindow: number | null | undefined, threshold: number): string {
+function contextBackstopNotice(tokens: number, contextWindow: number | null | undefined, threshold: number, fullDelegation: boolean): string {
 	const share = positive(contextWindow) ? ` (${Math.round((tokens / contextWindow) * 100)}% of the ${count(contextWindow)}-token context window)` : "";
-	return `Context backstop: the parent context measures ${count(tokens)} tokens${share}, at or past the ${count(threshold)}-token backstop: delegate the next bounded unit that needs several steps (its reads, edits, and checks) with a short handoff, while single small edits and state checks stay inline.`;
+	// In full delegation mode no edit stays with the parent, whatever its size, so the
+	// organic carve-out for small edits would contradict the session's own rules.
+	const tail = fullDelegation
+		? "delegate the next bounded unit with a short handoff, and keep only state checks in this context."
+		: "delegate the next bounded unit that needs several steps (its reads, edits, and checks) with a short handoff, while single small edits and state checks stay inline.";
+	return `Context backstop: the parent context measures ${count(tokens)} tokens${share}, at or past the ${count(threshold)}-token backstop: ${tail}`;
 }
 
 /**
  * One notice per crossing for each session: the first measurement at or past the backstop returns it, and a
  * measurement below the backstop re-arms it (for example after compaction). Unknown tokens change nothing.
  */
-export function createContextBackstopSignal(env: Env = process.env): (session: unknown, usage: MeasuredContext | undefined) => string | undefined {
+export function createContextBackstopSignal(
+	env: Env = process.env,
+): (session: unknown, usage: MeasuredContext | undefined, mode?: () => OrchestratorMode) => string | undefined {
 	const notified = new Set<unknown>();
-	return (session, usage) => {
+	// `mode` is a thunk: it is read only when a notice is emitted, never on every measurement.
+	return (session, usage, mode) => {
 		if (typeof usage?.tokens !== "number") return undefined;
 		const threshold = contextBackstopThreshold(usage.contextWindow, env);
 		if (usage.tokens < threshold) {
@@ -68,7 +77,7 @@ export function createContextBackstopSignal(env: Env = process.env): (session: u
 		}
 		if (notified.has(session)) return undefined;
 		notified.add(session);
-		return contextBackstopNotice(usage.tokens, usage.contextWindow, threshold);
+		return contextBackstopNotice(usage.tokens, usage.contextWindow, threshold, mode?.() === "full-delegation");
 	};
 }
 

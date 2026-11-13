@@ -56,6 +56,6 @@ test("[neutral] the voseo prohibition covers regular and irregular forms, not on
 test("[gentleman] Spanish replies keep Rioplatense voseo and get no neutral-only rule", () => {
 	const prompt = __testing.buildGentlePrompt("gentleman");
 	assert.match(prompt, /When the user writes Spanish, answer in natural Rioplatense Spanish with voseo\./);
-	assert.match(prompt, /Language: natural Rioplatense Spanish with voseo when the user writes Spanish\./);
+	assert.ok(!prompt.includes("Language: natural Rioplatense"), "P14 PD-57: the persona bullet states the register once, with no second Language line");
 	assert.doesNotMatch(prompt, /never vos forms/, "gentleman prompt must not inherit the neutral voseo prohibition");
 });

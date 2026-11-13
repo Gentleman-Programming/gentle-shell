@@ -73,7 +73,9 @@ import {
 	ENGRAM_RECOVERY_NOTICE,
 	ENGRAM_START_FAILED_NOTICE,
 	GENTLE_SHELL_CONFIG_HOME_ENV,
+	engramContractMismatchNotice,
 	engramProbeAllowed,
+	engramSupportsDaemonLifecycle,
 	sharedEngramEnv,
 	piVersionOrHelpRequested,
 	probeEngramEndpoint,
@@ -86,6 +88,8 @@ import {
 	bundledUpdatePlan,
 	nodeBundledFs,
 	parseBundledUpgradeArgs,
+	parseEngramRuntimeContract,
+	probeEngramRuntimeContract,
 	resolveBundledInstall,
 	withBundledNpmCommand,
 	withoutMissingBundledNpmCommand,
@@ -230,23 +234,37 @@ async function classifyBundledMemory() {
 }
 
 // Like other agents' hooks, Shell starts the shared server when nothing
-// listens: the verified core's plain `serve` on Engram's own default port and
-// data directory, detached so it outlives Pi. Its environment drops the user's
-// Engram settings and GitHub tokens and skips the update check. Ready means the
-// same /compatibility contract any reused server must answer, so a concurrent
-// launch that wins the bind converges too: after the child exits, polling
-// continues for a short grace within the overall bound.
+// listens. Cores with the daemon lifecycle (>= 3.7.0) become a first-class
+// daemon through `engram run -d`, so the standard engram verbs manage them;
+// anything else (older cores, a failed daemon handoff) keeps the legacy
+// detached plain `serve` on Engram's own default port and data directory, so it
+// outlives Pi. Both paths' environment drops the user's Engram settings and
+// GitHub tokens and skips the update check. Ready means the same
+// /compatibility contract any reused server must answer, and a concurrent
+// launch that wins the bind converges through it within the overall bounds.
 const ENGRAM_START_TIMEOUT_MS = 10000;
 const ENGRAM_START_EXIT_GRACE_MS = 2000;
+// `engram run -d` itself waits up to 15 s for its daemon's readiness before the
+// wrapper exits (engram cmd/engram/run.go), so the daemon wrapper await can run
+// slightly longer than the serve-only start budget.
+const ENGRAM_DAEMON_START_TIMEOUT_MS = 16000;
 
 async function startSharedEngram() {
 	const failed = { policy: "disabled", notice: ENGRAM_START_FAILED_NOTICE };
 	const core = verifiedBundledCore();
 	if (core === undefined) return failed;
+	const env = sharedEngramEnv(process.env);
+	// Cores with the daemon lifecycle (>= 3.7.0) start through `engram run -d`:
+	// the pidfile it keeps is what `engram ps/stop/logs/restart` manage, so the
+	// shared server becomes a first-class daemon (engram#2346). Anything short of
+	// a compatible running server falls back to the legacy detached serve below,
+	// which is the only option an older core would have had anyway.
+	if (engramSupportsDaemonLifecycle(engramPinVersion) && (await startEngramDaemon(core, env))) {
+		return { policy: "allow", url: ENGRAM_DEFAULT_URL };
+	}
 	let deadline = Date.now() + ENGRAM_START_TIMEOUT_MS;
 	const exited = () => { deadline = Math.min(deadline, Date.now() + ENGRAM_START_EXIT_GRACE_MS); };
 	try {
-		const env = sharedEngramEnv(process.env);
 		const child = spawn(core, ["serve"], { cwd: homedir(), env, detached: true, stdio: "ignore", windowsHide: true });
 		child.once("error", exited);
 		child.once("exit", exited);
@@ -260,6 +278,34 @@ async function startSharedEngram() {
 		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
 	return failed;
+}
+
+// Runs `engram run -d` to completion and reports whether a compatible server is
+// listening: the wrapper exits 0 after the daemon reported readiness and exits
+// non-zero on failure; a concurrent launch that wins the bind converges through
+// the same probed contract as serve. Spawn errors and a wrapper that never ends
+// are cut off at the start budget. Bounded either way.
+async function startEngramDaemon(core, env) {
+	try {
+		const child = spawn(core, ["run", "-d"], { cwd: homedir(), env, stdio: "ignore", windowsHide: true });
+		await Promise.race([
+			new Promise((resolve, reject) => {
+				child.once("error", reject);
+				child.once("exit", (status) => resolve(typeof status === "number" ? status : -1));
+			}),
+			new Promise((_, reject) => setTimeout(() => reject(new Error("engram run -d start budget exceeded")), ENGRAM_DAEMON_START_TIMEOUT_MS)),
+		]);
+		const deadline = Date.now() + ENGRAM_START_EXIT_GRACE_MS;
+		while (Date.now() < deadline) {
+			const endpoint = await probeEngramEndpoint({ timeoutMs: 500 });
+			if (endpoint.kind === "listening" && endpoint.compatible) return true;
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
+	} catch {
+		// Spawn error or the wrapper outlived the start budget: fall back to the
+		// legacy detached serve.
+	}
+	return false;
 }
 
 const LEGACY_ENGRAM_COMPANION_SOURCE = "npm:gentle-engram@0.4.2";
@@ -323,10 +369,56 @@ async function migrateManagedEngramCompanion(home, homeHadContentBeforeBootstrap
 	}
 }
 
+// A stderr write that resolves once the bytes are handed to the stream. When
+// stderr is a pipe (a parent process, a test harness) Node writes
+// asynchronously, so an immediate process.exit() truncates the message. Anything
+// written right before the process exits must go through this.
+function writeStderrAndFlush(text) {
+	return new Promise((resolve) => { process.stderr.write(text, () => resolve()); });
+}
+
+// Companion-vs-core contract gate (S1, S3, S4), warn only: a companion whose
+// runtime contract differs from the bundled core's is still installed and run,
+// and the mismatch is only announced loudly — never a failure, never an exit
+// code change, never a rewritten selection. A missing or malformed contract
+// file is not an error: without a parsed digest there is nothing to compare.
+function warnEngramContractMismatch(home) {
+	try {
+		const contract = parseEngramRuntimeContract(JSON.parse(readJsonIfExists(join(home.dir, "npm", "node_modules", "gentle-engram", "runtime-contract.json")) ?? "null"));
+		const notice = engramContractMismatchNotice(contract?.digest, engramPinVersion);
+		if (notice) process.stderr.write(`gentle-shell: ${notice}\n`);
+	} catch {
+		// Warn only: an unreadable contract file never blocks anything.
+	}
+}
+
+// At launch, after the shared server is ready: compare the digest the running
+// server answers on GET /runtime-contract with the companion's own contract
+// file, and warn loudly on a mismatch. Warn only: a probe failure, an
+// unparseable answer or a missing file never disables memory or changes the
+// exit code, and the selection is never rewritten.
+async function warnLiveEngramContractMismatch(home) {
+	try {
+		const companion = parseEngramRuntimeContract(JSON.parse(readJsonIfExists(join(home.dir, "npm", "node_modules", "gentle-engram", "runtime-contract.json")) ?? "null"));
+		if (companion === undefined) return;
+		const live = await probeEngramRuntimeContract();
+		// Without a well-formed live answer the core side is unknown: the gate is
+		// silent here, and the companion-vs-pinned check already warned above.
+		if (live === undefined) return;
+		const notice = engramContractMismatchNotice(companion.digest, engramPinVersion, live, "the running Engram server");
+		if (notice) process.stderr.write(`gentle-shell: ${notice}\n`);
+	} catch {
+		// Warn only: an unreadable contract file never blocks anything.
+	}
+}
+
 // Use Pi's install command, never an alternate extension loader. A user's
 // selected companion stays selected; missing or unverified capability is only
 // warned about, while the guard continues to protect unverified stores.
 async function ensureEngramCompanion(home, runtime, stdio, timeoutMs, homeHadContentBeforeBootstrap) {
+	// S1/S3/S4: warn on a companion whose contract does not match the bundled
+	// core, but never fail, never change the exit code, never rewrite the selection.
+	warnEngramContractMismatch(home);
 	const metadata = join(home.dir, "npm", "node_modules", "gentle-engram", "package.json");
 	let packages;
 	try {
@@ -2002,7 +2094,7 @@ async function main() {
 	const args = parseLauncherArgs(process.argv.slice(2));
 	if (args.error !== undefined) fail(`${args.error}\nRun 'gentle-shell --help' for usage.`, 2);
 	if (args.help) {
-		process.stdout.write("Pi updates: update reinstalls the verified supplier of the Pi this launcher runs (a global Pi, or the\nShell package whose adjacent peer it is, at the same Shell version) and reads the resulting Pi version back.\nA linked source Shell updates its local Pi with its project manager and one matching lockfile;\npnpm may be newer than the declared minimum; npm must match its pin. No manager is downloaded;\nGit roots only, no lifecycle scripts or range changes. Root-only pnpm configuration is preserved;\nmulti-project/ancestor workspaces and conflicting lockfiles refuse before installation. Unknown ownership refuses; update --extensions-only stays Pi-only.\nPrefix-bundled Pi updates with gentle-shell upgrade.\n");
+		process.stdout.write("Pi updates: update resolves the newest published stable Pi and updates its verified supplier\n(a global Pi, or its Shell package at the same Shell version), then reads the Pi version back.\npnpm temporarily exempts only Pi and the @earendil-works packages it pins exactly (transitively) from\nminimumReleaseAge, merged into their existing exclusions; other exclusions and policy stay in force.\nA linked source Shell updates local Pi with its project manager and one matching lockfile;\npnpm may be newer than the declared minimum; npm must match its pin. No manager is downloaded;\nGit roots only, no lifecycle scripts or manifest range changes. Root-only pnpm configuration is preserved;\nmulti-project/ancestor workspaces and conflicting lockfiles refuse before installation. Unknown ownership refuses; update --extensions-only stays Pi-only.\nPrefix-bundled update also selects the latest stable Pi; upgrade updates Shell.\n");
 		process.stdout.write(`${helpText()}\nBundled Engram memory: Shell shares the global Engram server on 127.0.0.1:7437, like other agents' hooks.\nA running server is reused only with verified /compatibility evidence; when nothing listens, Shell starts the\nbundled core's engram serve (default ~/.engram) and waits for that evidence. Otherwise ENGRAM_BIN is Shell's\nguard and memory stays off for that launch. Matching versions or updating alone do not prove compatibility.\nBack up existing data before manual changes; do not delete it or bypass the safety check.\nShell rechecks on every launch and remains usable without memory.\nAn explicit ENGRAM_BIN or ENGRAM_URL is kept and bypasses the guard.\n`);
 		process.exit(0);
 	}
@@ -2317,6 +2409,9 @@ async function main() {
 			// Only this final decision starts the shared server, and Pi gets its
 			// URL only once the server verified.
 			if (bundledMemory.spawn) bundledMemory = await startSharedEngram();
+			// S1/S4: with the shared server ready, the live GET /runtime-contract is
+			// compared with the companion's file. Warn only.
+			if (bundledMemory.policy === "allow") await warnLiveEngramContractMismatch(home);
 			if (bundledMemory.notice) process.stderr.write(`gentle-shell: ${bundledMemory.notice}\n`);
 		}
 		bundledEnv = bundledProcessEnv();
@@ -2371,7 +2466,7 @@ async function main() {
 		resumeHandoff?.dispose();
 		fail(`Could not start pi: ${error.message}`, 1);
 	});
-	child.on("exit", (code, signal) => {
+	child.on("exit", async (code, signal) => {
 		const exitCode = signal ? signalExitCode(signal) : ((code ?? 1) || updateExitCode);
 		if (resumeHandoff) {
 			const hint = planResumeHint({
@@ -2391,6 +2486,30 @@ async function main() {
 				process.stdout.once("error", () => process.exit(exitCode));
 				process.stdout.write(hint, () => process.exit(exitCode));
 				return;
+			}
+		}
+		// T4 (S2, S5): after the `pi update --extensions` child completes for a
+		// bundled, Shell-owned home, run the same companion verification that setup
+		// and launch run, instead of skipping it because a piSubcommand is set: the
+		// migration above un-pins the source, Pi replaces it with @latest, and
+		// nothing else re-verifies the replaced companion. Warn only: a successful
+		// update is never reported as failed because of this, the user's package
+		// selection is never rewritten or deleted, and the version found after the
+		// update is reported. A signal-killed child did not complete; the next
+		// launch re-verifies as always.
+		// `signal` is null, not undefined, on a normal exit; keep the truthiness the
+		// exit code above already relies on.
+		if (bundled && extensionUpdate && !signal && ownsCompanionHome(home, homeHadContentBeforeBootstrap)) {
+			try {
+				const companion = await ensureEngramCompanion(home, runtime, ["ignore", 2, 2], 10000, homeHadContentBeforeBootstrap);
+				if (companion.ok) {
+					const version = JSON.parse(readJsonIfExists(join(home.dir, "npm", "node_modules", "gentle-engram", "package.json")) ?? "null")?.version;
+					if (typeof version === "string") await writeStderrAndFlush(`gentle-shell: gentle-engram ${version} verified after the extensions update\n`);
+				} else {
+					await writeStderrAndFlush(`${companion.message}\n`);
+				}
+			} catch (error) {
+				await writeStderrAndFlush(`gentle-shell: could not verify the gentle-engram companion after the extensions update (${error.message}); continuing\n`);
 			}
 		}
 		process.exit(exitCode);

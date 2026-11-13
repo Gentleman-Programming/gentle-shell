@@ -2780,3 +2780,42 @@ test("package installation retires owned sync but preserves modified copies and 
 		assert.equal(installedAssetManifest(agentHome).assets["agents/sdd-sync.md"], undefined);
 	});
 });
+
+// Byte-exact backup, occupied name and completed reset with routing preserved.
+test("raw-byte reset uses a free backup suffix and writes exact routed package content", (t) => {
+	t.mock.timers.enable({ apis: ["Date"], now: 0 });
+	withIsolatedAssetHome((home) => {
+		installPackageAssets(home, false, ["delegation"]);
+		const path = join(home, WORKER_AGENT_KEY);
+		const packaged = packagedWorkerAgent();
+		const routed = packaged.replace(/^description:.*$/m, "$&\nmodel: local/test\nthinking: high");
+		const before = Buffer.concat([Buffer.from(routed), Buffer.from([0xff, 0xfe, 0x0a])]);
+		writeFileSync(path, before);
+		const occupied = `${path}.local-1970-01-01T00-00-00`;
+		writeFileSync(occupied, "earlier backup");
+
+		const result = installPackageAssets(home, true, ["delegation"]);
+		assert.deepEqual(result.resetFailures, []);
+		assert.equal(result.resets.length, 1);
+		assert.equal(result.resets[0].backup, `${occupied}-2`);
+		assert.deepEqual(readFileSync(result.resets[0].backup), before);
+		assert.equal(readFileSync(occupied, "utf8"), "earlier backup");
+		assert.equal(readFileSync(path, "utf8"), routed);
+	});
+});
+
+// The reset → hash-match transition the documentation now scopes.
+test("routing retained by reset is removed by the next managed refresh", () => {
+	withIsolatedAssetHome((home) => {
+		installPackageAssets(home, false, ["delegation"]);
+		const path = join(home, WORKER_AGENT_KEY);
+		const packaged = packagedWorkerAgent();
+		const routed = packaged.replace(/^description:.*$/m, "$&\nmodel: local/test\nthinking: high");
+		writeFileSync(path, `${routed}\nUser body edit.\n`);
+
+		assert.equal(installPackageAssets(home, true, ["delegation"]).resets.length, 1);
+		assert.equal(readFileSync(path, "utf8"), routed);
+		installPackageAssets(home, true, ["delegation"]);
+		assert.equal(readFileSync(path, "utf8"), packaged);
+	});
+});

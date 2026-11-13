@@ -1424,7 +1424,10 @@ const FULL_DELEGATION_STEP_REPLACEMENTS: ReadonlyArray<{ step: number; line: str
 	},
 ];
 const FULL_DELEGATION_SENTENCE_REPLACEMENTS: ReadonlyArray<readonly [string, string]> = [
-	["Do not delegate exploration of files you will read anyway to work inline; explore only", "Explore only"],
+	[
+		"Do not delegate exploration of files you will read anyway to work inline; explore only for a map you need to decide or route.",
+		"Explore only for a map you need to decide or route, and derive a nonempty `## Allowed edit surfaces` from the repository layout (directory and file names, e.g. `ls`), never by reading the full task docs into your own context; the writer reads the docs.",
+	],
 	[
 		"Route each task through the orchestrator's Mechanisms, honoring its delegation triggers when their conditions truly hold, with applicable test-first development and checks. No trigger holds by default and, when in doubt, work inline; executing past a fired trigger inline is a routing defect even if the work succeeds.",
 		"Route every task to a bounded writer through the orchestrator's Mechanisms, with applicable test-first development and checks.",
@@ -12918,12 +12921,14 @@ function createGentleAiExtensionForTesting(
 		// context files (for example a gentle-ai managed ~/AGENTS.md) whenever this
 		// orchestrator prompt is injected, exactly as delegated children do
 		// (gentle-shell#1587): they carry a second, conflicting orchestrator policy.
-		// The engram-protocol block is deduplicated: only the copy in the file
-		// nearest to the working directory stays. Nested kept blocks such as
-		// remote-authorization stay; the filter never throws and keeps the
-		// original files on malformed markers.
+		// The engram-protocol memory block goes too: gentle-engram injects its own
+		// protocol every turn, so the loaded copy is a duplicate that only adds
+		// session-start ceremony. The file on disk is untouched, which keeps it
+		// available to runtimes with no runtime-injected equivalent (OpenClaw).
+		// Nested kept blocks such as remote-authorization stay; the filter never
+		// throws and keeps the original files on malformed markers.
 		if (isPrimarySession && gentlePrompt !== "") {
-			filterChildSessionContextFiles(event.systemPromptOptions as ContextFileOptions | undefined, { cwd: ctx.cwd });
+			filterChildSessionContextFiles(event.systemPromptOptions as ContextFileOptions | undefined);
 		}
 		// gentle-shell#1485: pi-claude-bridge drops a handler-returned systemPrompt
 		// and forwards only systemPromptOptions, so the harness is delivered

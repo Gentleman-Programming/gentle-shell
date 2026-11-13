@@ -20,7 +20,7 @@ Task size decides tracking and risk, never who writes. A task is **small** when 
 
 ## Delegation Rules
 
-One writer per unit of behavior: its code, tests and docs together, never split across writers, and never launched while a unit it depends on still runs. Derive a nonempty `## Allowed edit surfaces` for every launch — narrow repository-relative paths or globs, never `.`, a bare repository root, or an absolute path — and never ask the human to author it. Handoff, launch, edit-surface and background rules: `orchestrator-full-delegation-card.md`; tracked work: `orchestrator-tracking.md`.
+One writer per unit of behavior: its code, tests and docs together, never split across writers, and never launched while a unit it depends on still runs. Handoff, launch, edit-surface and background rules: `orchestrator-full-delegation-card.md`; tracked work: `orchestrator-tracking.md`.
 
 Independent units with disjoint surfaces launch together: all their `subagent_run` calls in the same assistant message or one `codemode` script, never one launch per message nor beside a sequential `todo`, `ask_user_*`, `codegraph` or `gentle_review*` (it serializes them); units needing the same file run one at a time. Fixes to one unit continue its worker (`subagent_continue`), never a new worker per fix. You own git: writers never commit, push, or run repository-wide formatters and installs.
 

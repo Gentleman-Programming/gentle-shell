@@ -14,8 +14,9 @@ function block(name: string, body: string): string {
 }
 
 // Synthetic file shaped like a gentle-ai managed AGENTS.md: unmanaged project
-// text, kept blocks, orchestrator-only blocks, a nested kept block inside
-// agent-routing, and a nested orchestrator-only block inside sdd-orchestrator.
+// text, kept blocks, orchestrator-only blocks, the engram-protocol block, a
+// nested kept block inside agent-routing, and a nested orchestrator-only block
+// inside sdd-orchestrator.
 const REALISTIC_AGENTS_MD = [
 	"# Project conventions",
 	"",
@@ -56,8 +57,6 @@ const EXPECTED_REALISTIC = [
 	"",
 	block("codegraph-guidance", "## CodeGraph\n\nUse CodeGraph first."),
 	"",
-	block("engram-protocol", "## Engram\n\nSave decisions."),
-	"",
 	block("remote-authorization", "## Remote operation authorization\n\nAsk before remote work."),
 	"",
 	"## Local notes",
@@ -80,17 +79,24 @@ test("filters a realistic managed AGENTS.md: nested kept blocks survive, nested 
 	const output = stripOrchestratorOnlyBlocks(REALISTIC_AGENTS_MD);
 	assert.equal(output, EXPECTED_REALISTIC);
 	assert.doesNotMatch(output, /COORDINATOR|sdd-model-assignments|Implementation Routing|4-file rule/);
+	assert.doesNotMatch(output, /gentle-ai:engram-protocol/);
 	assert.match(output, /<!-- gentle-ai:remote-authorization -->\n## Remote operation authorization/);
 });
 
-test("keeps codegraph-guidance, engram-protocol, and unknown managed blocks byte-for-byte", () => {
-	const input = [
+test("drops engram-protocol while codegraph-guidance and unknown managed blocks stay byte-for-byte", () => {
+	const kept = [
+		block("codegraph-guidance", "cg"),
+		block("some-future-block", "future"),
+		"",
+	].join("\n");
+	assert.equal(stripOrchestratorOnlyBlocks(kept), kept);
+	const withEngram = [
 		block("codegraph-guidance", "cg"),
 		block("engram-protocol", "engram\n\n\n\nspacing kept"),
 		block("some-future-block", "future"),
 		"",
 	].join("\n");
-	assert.equal(stripOrchestratorOnlyBlocks(input), input);
+	assert.equal(stripOrchestratorOnlyBlocks(withEngram), kept);
 });
 
 test("unmanaged text before, between, and after removed blocks is preserved byte-for-byte", () => {
@@ -172,7 +178,7 @@ test("filterChildContextFiles returns filtered copies, never mutates inputs, and
 	assert.equal(result.files[1].content, "# Plain\n");
 	assert.equal(result.files[2].content, files[2].content);
 	assert.equal(files[0].content, REALISTIC_AGENTS_MD);
-	assert.equal(result.removedBlocks, 3, "sdd-orchestrator, its nested sdd-model-assignments, and agent-routing");
+	assert.equal(result.removedBlocks, 4, "sdd-orchestrator, its nested sdd-model-assignments, agent-routing, and engram-protocol");
 	assert.equal(result.removedBytes, Buffer.byteLength(REALISTIC_AGENTS_MD) - Buffer.byteLength(EXPECTED_REALISTIC));
 	assert.deepEqual(result.failSafePaths, ["/repo/sub/AGENTS.md"]);
 });
@@ -243,12 +249,13 @@ for (const scenario of ["child", "primary"] as const) {
 	});
 }
 
-// Pi loads context files from the root toward the working directory, nearest
-// last. The engram-protocol block is deduplicated: only the nearest copy stays.
+// The engram-protocol block is dropped from every injected context file, at any
+// depth: the file on disk keeps it for runtimes that read it as a workspace
+// file, and gentle-engram injects its own protocol every turn.
 const PROJECT_WITH_ENGRAM = `# Plain\n\n${block("engram-protocol", "project engram")}\n`;
-const EXPECTED_REALISTIC_WITHOUT_ENGRAM = EXPECTED_REALISTIC.replace(`${block("engram-protocol", "## Engram\n\nSave decisions.")}\n\n`, "");
+const PROJECT_WITHOUT_ENGRAM = "# Plain\n";
 
-async function runChildStart(env: NodeJS.ProcessEnv, project: string, cwd: unknown = "/work/repo") {
+async function runChildStart(env: NodeJS.ProcessEnv, project: string) {
 	const { handlers } = childContextHandlers(env);
 	const contextFiles = [
 		{ path: "/work/AGENTS.md", content: REALISTIC_AGENTS_MD },
@@ -257,48 +264,39 @@ async function runChildStart(env: NodeJS.ProcessEnv, project: string, cwd: unkno
 	const systemPromptOptions = { appendSystemPrompt: "", contextFiles };
 	const event = { systemPrompt: "base", systemPromptOptions };
 	const handler = handlers.get("before_agent_start")!;
-	await handler(event, { cwd });
-	return { contextFiles, systemPromptOptions, rerun: () => handler(event, { cwd }) };
+	await handler(event, { cwd: "/work/repo" });
+	return { contextFiles, systemPromptOptions, rerun: () => handler(event, { cwd: "/work/repo" }) };
 }
 
-test("a child with engram-protocol in two loaded files keeps only the copy nearest to the working directory", async () => {
+test("a child drops the engram-protocol block from every loaded file, at any depth", async () => {
 	const { contextFiles, systemPromptOptions, rerun } = await runChildStart({ GENTLE_PI_AGENTS_CHILD: "1" }, PROJECT_WITH_ENGRAM);
-	assert.deepEqual(systemPromptOptions.contextFiles.map((file) => file.content), [EXPECTED_REALISTIC_WITHOUT_ENGRAM, PROJECT_WITH_ENGRAM]);
+	assert.deepEqual(systemPromptOptions.contextFiles.map((file) => file.content), [EXPECTED_REALISTIC, PROJECT_WITHOUT_ENGRAM]);
 	assert.match(systemPromptOptions.contextFiles[0].content, /<!-- gentle-ai:remote-authorization -->\n## Remote operation authorization/);
 	assert.equal(contextFiles[0].content, REALISTIC_AGENTS_MD, "the loaded entries are never mutated");
+	assert.equal(contextFiles[1].content, PROJECT_WITH_ENGRAM, "the loaded entries are never mutated");
 	const filtered = systemPromptOptions.contextFiles;
 	await rerun();
 	assert.equal(systemPromptOptions.contextFiles, filtered, "a repeated turn removes nothing more");
 });
 
-test("without a working directory a child still deduplicates along the files' own ancestor chain", async () => {
-	const { systemPromptOptions } = await runChildStart({ GENTLE_PI_AGENTS_CHILD: "1" }, PROJECT_WITH_ENGRAM, undefined);
-	assert.deepEqual(systemPromptOptions.contextFiles.map((file) => file.content), [EXPECTED_REALISTIC_WITHOUT_ENGRAM, PROJECT_WITH_ENGRAM]);
+test("a child with no engram-protocol block anywhere still loses nothing else", async () => {
+	const { systemPromptOptions } = await runChildStart({ GENTLE_PI_AGENTS_CHILD: "1" }, PROJECT_WITHOUT_ENGRAM);
+	assert.deepEqual(systemPromptOptions.contextFiles.map((file) => file.content), [EXPECTED_REALISTIC, PROJECT_WITHOUT_ENGRAM]);
 });
 
-test("a child with a single engram-protocol copy keeps it", async () => {
-	const { systemPromptOptions } = await runChildStart({ GENTLE_PI_AGENTS_CHILD: "1" }, "# Plain\n");
-	assert.deepEqual(systemPromptOptions.contextFiles.map((file) => file.content), [EXPECTED_REALISTIC, "# Plain\n"]);
-});
-
-test("a child keeps both engram-protocol copies when the files sit at the same level or off the working-directory chain", async () => {
-	for (const cwd of ["/work", "/elsewhere"]) {
-		const { contextFiles, systemPromptOptions } = await runChildStart({ GENTLE_PI_AGENTS_CHILD: "1" }, PROJECT_WITH_ENGRAM, cwd);
-		assert.equal(systemPromptOptions.contextFiles[1].content, PROJECT_WITH_ENGRAM, `cwd ${cwd}`);
-		assert.match(systemPromptOptions.contextFiles[0].content, /gentle-ai:engram-protocol -->/, `cwd ${cwd}`);
-		assert.equal(contextFiles[1].content, PROJECT_WITH_ENGRAM);
-	}
-	const sameLevel = filterChildContextFiles([
+test("filterChildContextFiles drops engram-protocol from files at the same level", () => {
+	const result = filterChildContextFiles([
 		{ path: "/work/repo/AGENTS.md", content: PROJECT_WITH_ENGRAM },
 		{ path: "/work/repo/CLAUDE.md", content: PROJECT_WITH_ENGRAM },
-	], { cwd: "/work/repo" });
-	assert.deepEqual(sameLevel.files.map((file) => file.content), [PROJECT_WITH_ENGRAM, PROJECT_WITH_ENGRAM]);
-	assert.equal(sameLevel.removedBlocks, 0);
+	]);
+	assert.deepEqual(result.files.map((file) => file.content), [PROJECT_WITHOUT_ENGRAM, PROJECT_WITHOUT_ENGRAM]);
+	assert.equal(result.removedBlocks, 2);
 });
 
-test("outside a child session the child-context extension leaves duplicated engram-protocol copies alone", async () => {
+test("outside a child session the child-context extension leaves context files untouched", async () => {
 	const { contextFiles, systemPromptOptions } = await runChildStart({ GENTLE_PI_AGENTS_CHILD: "0" }, PROJECT_WITH_ENGRAM);
 	assert.equal(systemPromptOptions.contextFiles, contextFiles);
+	assert.deepEqual(systemPromptOptions.contextFiles.map((file) => file.content), [REALISTIC_AGENTS_MD, PROJECT_WITH_ENGRAM]);
 });
 
 test("the child-context extension never throws on missing or malformed options", async () => {

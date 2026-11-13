@@ -128,6 +128,31 @@ Shell recognition remains deliberately conservative: commands mentioning the con
 
 Live mode selection is bound to the SessionManager, session ID and canonical Git clone identity, or the canonical workspace directory outside Git. Session replacement, shutdown and reload revoke live callbacks and pending actions. A newly initialized primary session may select its saved default; this is a new application of the global preference, not restoration of an old session grant. Disable the saved default as well if future sessions must stay Normal.
 
+## Outside-worktree path consent
+
+In Git-backed sessions, `read`, `write`, `edit`, `grep`, `find`, and `ls` require per-target, per-session consent outside the session worktree and registered same-clone worktrees. Headless sessions block ungranted outside targets. Paths using `@/absolute/path` or `file:///absolute/path` are checked against the same destination as Pi's built-in tools, not treated as project-relative names.
+
+The Gentle config home (`GENTLE_PI_CONFIG_HOME`, by default `~/.pi/gentle-ai`) is not fenced: its own policy already governs it. Authority files such as the permission mode and runtime guardrails stay blocked for model tools, and updater-owned companion files go through the current mode's ordinary checks. A config home that cannot be resolved stays fenced.
+
+Harness-owned locations are **read-only** exempt roots: `read`, `grep`, `find` and `ls` pass there without consent, so delegated runs can read what the harness tells them to read. `write` and `edit` to the same locations stay fenced (interactive confirmation, or a block when headless). This is an allowlist with default deny, and nothing outside it is exempt:
+
+- `<agent home>/skills`, where the agent home is `GENTLE_PI_AGENT_HOME`, else `PI_CODING_AGENT_DIR`, else `~/.pi/agent`;
+- `<agent home>/npm/node_modules`, where Pi installs npm packages;
+- the Gentle Pi package `assets/` directory, the root the orchestrator prompt names for `orchestrator-*.md` and the other lazy assets;
+- the Gentle Pi package `skills/` directory, wherever the package is installed. A bundled Gentle Shell install keeps the package under `~/.gentle-shell/versions/<id>/`, outside `<agent home>/npm`, so its skills need their own root. The package root itself is not exempt;
+- `~/.agents/skills`, the user skill directory Pi loads from;
+- Pi's output files, such as the full text of truncated tool output: only direct children of the OS temp directory named `pi-<name>-<16 hex>.<ext>`, never other temp files.
+
+The agent home itself and everything else under it stay fenced for every tool, including `grep`, `find` and `ls` on the directory: `auth.json`, `mcp.json`, `settings.json`, `models*.json`, `trust.json`, `sessions/`, `agents/`, `AGENTS.md` and the rest. A listed root is exempt only from its own directory downward; its parents are never exempt. As with the config home, a root that cannot be resolved is left out and stays fenced. Paths are judged by their canonical destination, so `..` segments and symlinks cannot leave a root; a skill directory that is a symlink to a location outside these roots is fenced like any other outside path.
+
+If a symlink or requested target changes while the confirmation dialog is open, the call is blocked without storing a grant or reporting an approved permission event:
+
+> Gentle AI safety policy blocked the path access because its target changed during confirmation. Retry the tool call to request fresh consent.
+
+Retry the tool call to confirm the current target. Ordinary unchanged approvals, denials, and session-bound grants retain their existing behavior.
+
+**Residual race:** revalidation after the dialog does not bind the built-in filesystem operation to an opened object. A path component can still change between the final check and the actual operation. This is a consent boundary, not an OS sandbox; use process/container isolation for protection against concurrent filesystem replacement. The broader race-resistant execution redesign remains out of scope.
+
 ## Limits
 
 Auto is contextual permission checking, **not an operating-system sandbox or a guarantee against prompt injection**. The model can misjudge an action; bounded file evidence, lexical guards and secret projection are not comprehensive inspection of scripts, their dependencies or tool implementations. Use constrained credentials and process/container isolation for containment.

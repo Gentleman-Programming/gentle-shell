@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { parseNpmPackResult } from "../scripts/npm-pack-result.mjs";
 import { createHash } from "node:crypto";
 import {
+	chmodSync,
 	existsSync,
 	mkdtempSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
 	rmSync,
+	statSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
@@ -101,6 +103,16 @@ function installCounts(
 function localBackups(agentHome: string): string[] {
 	return readdirSync(join(agentHome, "agents"))
 		.filter((name) => name.includes(".local-"))
+		.sort();
+}
+
+// The reset write goes through `replaceManagedAssetFileAtomically`, whose
+// temporary file is `.<uuid>.tmp` beside the agent and is renamed away when it
+// succeeds. Atomicity itself is not observable from a test; the leftover check
+// and the surviving mode are what a reset can be pinned on.
+function agentTemporaryFiles(agentHome: string): string[] {
+	return readdirSync(join(agentHome, "agents"))
+		.filter((name) => name.endsWith(".tmp"))
 		.sort();
 }
 
@@ -1142,6 +1154,7 @@ test("an agent whose body was edited is reset to the packaged body and keeps its
 		installPackageAssets(agentHome, false, ["delegation"]);
 		const edited = `${packagedWorkerAgent()}\nUser-authored instruction.\n\n${guidance}`;
 		writeFileSync(installedPath, edited);
+		chmodSync(installedPath, 0o644);
 
 		const result = installPackageAssets(agentHome, true, ["delegation"]);
 
@@ -1149,6 +1162,8 @@ test("an agent whose body was edited is reset to the packaged body and keeps its
 		assert.equal(written, `${packagedWorkerAgent()}\n${guidance}`);
 		assert.doesNotMatch(written, /User-authored instruction\./);
 		assert.equal(installedAssetManifest(agentHome).assets[WORKER_AGENT_KEY], sha256(written));
+		assert.equal(statSync(installedPath).mode & 0o777, 0o644, "a reset must keep the installed file mode");
+		assert.deepEqual(agentTemporaryFiles(agentHome), [], "a reset must leave no temporary file behind");
 		assert.equal(result.resets.length, 1);
 		const reset = result.resets.at(0);
 		assert.ok(reset);

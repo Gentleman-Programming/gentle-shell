@@ -641,6 +641,10 @@ function copyDirectoryFiles(
 		const source = readFileSync(sourcePath, "utf8");
 		let nextSource = source;
 		let keepsLocalRouting = false;
+		// The reset overwrites a copy that already has a verified backup beside it,
+		// so its write goes through the atomic helper: a crash mid-write must not
+		// leave a truncated agent next to that backup.
+		let resetsAgentCopy = false;
 		let carriedBlocks: readonly ManagedBlock[] = [];
 		if (existsSync(targetPath)) {
 			if (!force) {
@@ -750,6 +754,7 @@ function copyDirectoryFiles(
 				}
 				nextSource = reset.content;
 				resets.push({ key: ownershipKey, backup: reset.backup });
+				resetsAgentCopy = true;
 			} else if (managedHash === undefined) {
 				delete manifest.assets[ownershipKey];
 				skipped += 1;
@@ -777,7 +782,8 @@ function copyDirectoryFiles(
 		// Re-attach the recognised blocks to whatever this branch decided to write,
 		// so an update never drops a block (the ownership hash below covers them).
 		if (carriedBlocks.length > 0) nextSource = attachManagedBlocks(nextSource, carriedBlocks);
-		writeFileSync(targetPath, nextSource);
+		if (resetsAgentCopy) replaceManagedAssetFileAtomically(targetPath, nextSource);
+		else writeFileSync(targetPath, nextSource);
 		if (keepsLocalRouting) delete manifest.assets[ownershipKey];
 		else manifest.assets[ownershipKey] = managedAssetHash(nextSource);
 		copied += 1;

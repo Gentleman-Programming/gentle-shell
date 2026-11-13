@@ -864,18 +864,34 @@ test("with nothing off the system Ask the agent to fix is disabled and says why;
 	assert.equal(fix.title, "");
 });
 
-test("Copy writes the same text to the clipboard, falls back to the copy command, and says when neither works", async () => {
+test("S3: Copy copies the panel's text: the element, its selector and every row as shown, also with nothing off the system", async () => {
+	const written: string[] = [];
+	const canvas = await inspecting({ extraWindow: { navigator: { clipboard: { writeText: async (text: string) => { written.push(text); } } } } });
+	inspect(canvas, canvas.boards[0].frame, MATCHING);
+	const labels = rows(canvas).map((row) => texts(row, "gd-inspector-label")[0]);
+	assert.deepEqual(labels, ["Color", "Background", "Contrast", "Font", "Size", "Line height", "Spacing", "Radius"]);
+	$(canvas, "gd-inspector-copy").dispatch("click");
+	await settle();
+	assert.equal(written.length, 1);
+	const lines = written[0].split("\n");
+	assert.deepEqual(lines, ["p.or", "main > p.or", ...labels.map((label) => `${label}: ${rowText(canvas, label)}`)]);
+	assert.match(lines[2], /^Color: #f6eff3 ✓ --text$/);
+	assert.doesNotMatch(written[0], /Nothing is off the design system/);
+});
+
+test("Copy writes the panel's text to the clipboard, falls back to the copy command, and says when neither works", async () => {
 	const written: string[] = [];
 	const canvas = await inspecting({ extraWindow: { navigator: { clipboard: { writeText: async (text: string) => { written.push(text); } } } } });
 	inspect(canvas, canvas.boards[0].frame, OFF);
 	$(canvas, "gd-inspector-copy").dispatch("click");
 	await settle();
 	assert.equal(written.length, 1);
-	assert.equal(written[0].split("\n")[0], "Fix the values on main > p.or that are off the design system (design/system.md):");
+	assert.deepEqual(written[0].split("\n").slice(0, 3), ["p.or", "main > p.or", `Color: ${rowText(canvas, "Color")}`]);
+	assert.match(written[0], /⚠ no token/, "the flagged values are in the rows it copies");
 	assert.equal($(canvas, "gd-toast").textContent, "Copied");
 	assert.equal($(canvas, "gd-toast").classes.has("gd-error"), false);
 	$(canvas, "gd-inspector-fix").dispatch("click");
-	assert.equal($(canvas, "gd-popover-text").value, written[0], "what Copy copies is what Ask the agent to fix prefills");
+	assert.match($(canvas, "gd-popover-text").value, /^Fix the values on main > p\.or /, "Ask the agent to fix still prefills the instructions");
 
 	const commands: Array<[string, string]> = [];
 	const refused = await inspecting({ extraWindow: { navigator: { clipboard: { writeText: async () => { throw new Error("denied"); } } } } });
@@ -886,7 +902,7 @@ test("Copy writes the same text to the clipboard, falls back to the copy command
 	await settle();
 	assert.equal(commands.length, 1);
 	assert.equal(commands[0][0], "copy");
-	assert.equal(commands[0][1].split("\n")[0], "Fix the values on main > p.or that are off the design system (design/system.md):", "the hidden text area holds the text");
+	assert.deepEqual(commands[0][1].split("\n").slice(0, 2), ["p.or", "main > p.or"], "the hidden text area holds the text");
 	assert.equal($(refused, "gd-toast").textContent, "Copied");
 	assert.equal(refused.document.body.children.filter((child) => child.localName === "textarea").length, 0, "the text area is removed");
 	assert.equal(refused.document.activeElement?.id, "gd-inspector-copy", "focus goes back");

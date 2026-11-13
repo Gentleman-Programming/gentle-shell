@@ -43,7 +43,7 @@ const TEXT = Object.freeze({
 	nothingToFix: "Nothing is off the design system, so there is nothing to fix.",
 	copied: "Copied",
 	copyFailed: "Could not copy. Use Ask the agent to fix and copy the text from the comment box.",
-	// The comment Ask the agent to fix prefills (and Copy copies): instructions for the session.
+	// The comment Ask the agent to fix prefills: instructions for the session.
 	session: {
 		textColor: "Text color",
 		background: "Background",
@@ -210,7 +210,7 @@ export function init(ctx) {
 	let tokenLoads = 0;
 	// Why the last read found no tokens in an existing design/system.md ("too-large", "unreadable"), else "".
 	let problem = "";
-	// The element the panel shows ({ surface, measure, flags, text }) or null; the generation a pending hide
+	// The element the panel shows ({ surface, measure, flags, text, copy }) or null; the generation a pending hide
 	// belongs to (a newer element or a hide cancels it); the element the panel may switch to ({ surface, measure })
 	// or null, and the generation of that pending switch; whether the pointer is on the panel.
 	let inspect = null;
@@ -282,7 +282,7 @@ export function init(ctx) {
 		return box;
 	}
 
-	function row(label, nodes) {
+	function rowElement(label, nodes) {
 		const item = doc.createElement("div");
 		item.className = "gd-inspector-row";
 		const term = doc.createElement("dt");
@@ -381,10 +381,18 @@ export function init(ctx) {
 		return nodes;
 	}
 
-	/** The panel's rows for one measured element, the flagged values, and the comment that asks to fix them. */
+	/**
+	 * The panel's rows for one measured element, the flagged values, the comment that asks to fix them, and the
+	 * rows as plain text (`label: value`, one per line), which Copy copies after the element's label and selector.
+	 */
 	function describe(m) {
 		const flags = [];
 		const { labels } = TEXT;
+		const lines = [];
+		const row = (label, nodes) => {
+			lines.push(`${label}: ${nodes.map((node) => node.textContent).filter(Boolean).join(" ")}`);
+			return rowElement(label, nodes);
+		};
 		const rows = [
 			row(labels.color, m.color ? colorValue(m.color, flags, TEXT.session.textColor) : [code(TEXT.unreadable)]),
 			row(labels.background, m.background ? colorValue(m.background, flags, TEXT.session.background) : [code(TEXT.imageBackground)]),
@@ -396,7 +404,7 @@ export function init(ctx) {
 			row(labels.radius, radiusValue(m, flags)),
 		];
 		const text = flags.length > 0 ? TEXT.session.fix(m.selector, flags) : TEXT.session.nothing(m.selector);
-		return { rows, flags, text: text.slice(0, LIMITS.comment) };
+		return { rows, flags, text: text.slice(0, LIMITS.comment), lines };
 	}
 
 	// ---- what an artboard reports (gd:inspect)
@@ -537,7 +545,9 @@ export function init(ctx) {
 	/** The panel's title, rows, note and Ask the agent to fix for `measure`, compared with the current tokens. */
 	function renderInspector(surface, measure) {
 		const result = describe(measure);
-		inspect = { surface, measure, flags: result.flags, text: result.text };
+		// Copy copies what the panel shows: the element, its selector and every row.
+		const copy = [measure.label, measure.selector, ...result.lines].join("\n");
+		inspect = { surface, measure, flags: result.flags, text: result.text, copy };
 		els.inspectorTitle.textContent = measure.label;
 		els.inspectorSelector.textContent = measure.selector;
 		els.inspectorSelector.title = measure.selector;
@@ -644,7 +654,7 @@ export function init(ctx) {
 	els.inspectorCopy.addEventListener("click", async () => {
 		const current = inspect;
 		if (!current) return;
-		const ok = await copyText(current.text);
+		const ok = await copyText(current.copy);
 		ui.showToast(ok ? TEXT.copied : TEXT.copyFailed, !ok);
 	});
 

@@ -12,7 +12,7 @@ export const INIT_TIMEOUT_MS = 600_000;
 /** How long a killed command may take to be gone before the timeout is reported anyway. */
 const KILL_WAIT_MS = 10_000;
 /** The environment variable a subagent child carries; children never start an index operation of their own. */
-const CHILD_ENV = "GENTLE_PI_AGENTS_CHILD";
+export const CHILD_ENV = "GENTLE_PI_AGENTS_CHILD";
 /** One of these next to a `.git` is what makes a directory a project worth indexing automatically. */
 const MARKERS = ["composer.json", "package.json", "pyproject.toml", "go.mod", "Cargo.toml", "Gemfile", "pom.xml", "build.gradle", "build.gradle.kts"];
 /** CodeGraph answers an explore without a project with this plain text, not with an error. */
@@ -191,6 +191,40 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 	})();
 	inFlight.set(input.cwd, started);
 	return started;
+}
+
+export interface SearchSyncInput {
+	cwd: string;
+	run(args: readonly string[], cwd: string, timeoutMs: number): Promise<boolean>;
+	onFailed?(stage: "unlock" | "sync"): void;
+}
+
+/** One in-flight search sync per cwd: calls that arrive together never run two jobs. */
+const searchSyncInFlight = new Map<string, Promise<void>>();
+
+/**
+ * Refreshes the index before a search, in the background: unlock, then sync -q, each within the
+ * sync timeout. The unlock is a precondition, not best-effort — when it fails the sync never runs.
+ * Never blocks and never rejects; failures surface only through onFailed.
+ */
+export function syncBeforeSearch(input: SearchSyncInput): void {
+	if (searchSyncInFlight.has(input.cwd)) return;
+	const job = (async (): Promise<void> => {
+		try {
+			const unlocked = await input.run(["unlock"], input.cwd, SYNC_TIMEOUT_MS);
+			if (!unlocked) {
+				input.onFailed?.("unlock");
+				return;
+			}
+			const synced = await input.run(["sync", "-q"], input.cwd, SYNC_TIMEOUT_MS);
+			if (!synced) input.onFailed?.("sync");
+		} catch {
+			/* a detached job never surfaces; a rejection is not a stage failure */
+		} finally {
+			searchSyncInFlight.delete(input.cwd);
+		}
+	})();
+	searchSyncInFlight.set(input.cwd, job);
 }
 
 /**

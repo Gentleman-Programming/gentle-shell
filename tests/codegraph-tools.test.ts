@@ -6,11 +6,14 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import codeGraphTools, {
+	clearSearchSync,
 	createCodeGraphTool,
 	codeGraphNodeScript,
 	findCodeGraphNodeScriptOnPath,
 	isSameDirectory,
+	triggerSearchSync,
 	type CodeGraphRunner,
+	type DaemonExplore,
 } from "../extensions/codegraph-tools.ts";
 
 function workspace(t: test.TestContext): string {
@@ -18,6 +21,30 @@ function workspace(t: test.TestContext): string {
 	execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	return cwd;
+}
+
+/** Lets a detached background job settle before its effects are asserted. */
+function settled(): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, 10));
+}
+
+/** A daemon that always answers, so a test never warms or spawns anything real. */
+const daemonOk: DaemonExplore = async () => ({ status: "ok", text: "daemon answer" });
+
+/** A syncRun that starts nothing real; tests count its calls when they care. */
+const syncNothing = async (): Promise<boolean> => true;
+
+/**
+ * The test runner may itself be flagged as a subagent child (GENTLE_PI_AGENTS_CHILD=1), which
+ * suppresses the sync; tests that assert triggering run as a plain parent session.
+ */
+function withoutChildEnv(t: test.TestContext): void {
+	const previous = process.env.GENTLE_PI_AGENTS_CHILD;
+	delete process.env.GENTLE_PI_AGENTS_CHILD;
+	t.after(() => {
+		if (previous === undefined) delete process.env.GENTLE_PI_AGENTS_CHILD;
+		else process.env.GENTLE_PI_AGENTS_CHILD = previous;
+	});
 }
 
 test("CodeGraph tool rejects non-project, nested-project, HOME, and temporary workspaces before init", async (t) => {
@@ -65,10 +92,16 @@ test("CodeGraph tool accepts the Git root reached through a different spelling o
 		return;
 	}
 	const cwds: string[] = [];
-	const tool = createCodeGraphTool(async (_args, options) => {
-		cwds.push(options.cwd);
-		return { stdout: "ok", stderr: "" };
-	});
+	const tool = createCodeGraphTool(
+		async () => ({ stdout: "ok", stderr: "" }),
+		{
+			daemonExplore: async (cwd) => {
+				cwds.push(cwd);
+				return { status: "ok", text: "daemon answer" };
+			},
+			syncRun: syncNothing,
+		},
+	);
 	await tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd: respelled } as ExtensionContext);
 	assert.deepEqual(cwds, [realpathSync(respelled)]);
 });
@@ -108,7 +141,7 @@ test("CodeGraph workspace rejection names the compared paths and Git's own error
 	assert.equal(calls, 0);
 });
 
-test("CodeGraph query timeout is reported distinctly from user abort and never bounds init (#1901)", async (t) => {
+test("CodeGraph init is never bounded by the query timeout; only the user's signal bounds it (#1901)", async (t) => {
 	const cwd = workspace(t);
 	const ctx = { cwd } as ExtensionContext;
 	// Behaves like execFile: settles only when its signal aborts, then rejects with AbortError.
@@ -116,24 +149,10 @@ test("CodeGraph query timeout is reported distinctly from user abort and never b
 		options.signal?.addEventListener("abort", () => reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError", code: "ABORT_ERR" })), { once: true });
 	});
 
-	const bounded = createCodeGraphTool(hanging, { queryTimeoutMs: 20 });
-	// AbortSignal.timeout is unref'd; on Node 22 nothing else keeps the loop alive while the hanging runner awaits it.
-	const keepalive = setTimeout(() => {}, 2000);
-	try {
-		for (const parameters of [{ operation: "query", query: "x" }, { operation: "explore", query: "x" }] as const) {
-			const result = await bounded.execute("test", parameters, undefined, undefined, ctx);
-			assert.match(result.content[0].text, /CodeGraph timed out after 20 ms/);
-			assert.match(result.content[0].text, /Use read, grep, and find/);
-			assert.equal((result.details as { status: string }).status, "failed");
-		}
-	} finally {
-		clearTimeout(keepalive);
-	}
-
-	// A user cancellation is not a timeout.
+	// A user cancellation is a failure, not a timeout.
 	const user = new AbortController();
 	setTimeout(() => user.abort(), 5);
-	const cancelled = await createCodeGraphTool(hanging, { queryTimeoutMs: 60_000 }).execute("test", { operation: "query", query: "x" }, user.signal, undefined, ctx);
+	const cancelled = await createCodeGraphTool(hanging, { queryTimeoutMs: 60_000 }).execute("test", { operation: "init" }, user.signal, undefined, ctx);
 	assert.doesNotMatch(cancelled.content[0].text, /timed out/);
 	assert.match(cancelled.content[0].text, /CodeGraph failed to run/);
 
@@ -151,12 +170,21 @@ test("CodeGraph query timeout is reported distinctly from user abort and never b
 
 test("CodeGraph tool runs only fixed cwd-scoped init, query, and explore commands", async (t) => {
 	const cwd = workspace(t);
-	const calls: Array<{ args: readonly string[]; cwd: string }> = [];
-	const runner: CodeGraphRunner = async (args, options) => {
-		calls.push({ args, cwd: options.cwd });
-		return { stdout: "indexed", stderr: "" };
-	};
-	const tool = createCodeGraphTool(runner);
+	const runnerCalls: Array<{ args: readonly string[]; cwd: string }> = [];
+	const daemonCalls: string[] = [];
+	const tool = createCodeGraphTool(
+		async (args, options) => {
+			runnerCalls.push({ args, cwd: options.cwd });
+			return { stdout: "indexed", stderr: "" };
+		},
+		{
+			daemonExplore: async (_cwd, parameters) => {
+				daemonCalls.push(parameters.operation);
+				return { status: "ok", text: "daemon answer" };
+			},
+			syncRun: syncNothing,
+		},
+	);
 	const ctx = { cwd } as ExtensionContext;
 
 	for (const parameters of [
@@ -165,20 +193,13 @@ test("CodeGraph tool runs only fixed cwd-scoped init, query, and explore command
 		{ operation: "explore", query: "review gate", limit: 3 },
 	] as const) {
 		const result = await tool.execute("test", parameters, undefined, undefined, ctx);
-		assert.deepEqual(result.content, [{ type: "text", text: "indexed" }]);
+		assert.deepEqual(result.content, [{ type: "text", text: parameters.operation === "init" ? "indexed" : "daemon answer" }]);
 	}
 
-	assert.deepEqual(calls, [
+	assert.deepEqual(runnerCalls, [
 		{ args: ["init", cwd], cwd },
-		{
-			args: ["query", "--path", cwd, "--limit", "4", "--", "buildGentlePrompt"],
-			cwd,
-		},
-		{
-			args: ["explore", "--path", cwd, "--max-files", "3", "--", "review gate"],
-			cwd,
-		},
-	]);
+	], "only init runs the CLI");
+	assert.deepEqual(daemonCalls, ["query", "explore"], "query and explore go through the daemon");
 });
 
 test("CodeGraph tool rejects pre-existing .codegraph symlinks and non-directories", async (t) => {
@@ -206,23 +227,58 @@ test("CodeGraph tool rejects pre-existing .codegraph symlinks and non-directorie
 	}
 });
 
-test("CodeGraph tool passes hyphen-leading queries after the option terminator", async (t) => {
+test("CodeGraph tool accepts hyphen-leading queries after the option terminator", async (t) => {
 	const cwd = workspace(t);
-	const calls: Array<readonly string[]> = [];
-	const tool = createCodeGraphTool(async (args) => {
-		calls.push(args);
-		return { stdout: "safe", stderr: "" };
-	});
+	const seen: Array<{ operation: string; query?: string }> = [];
+	const tool = createCodeGraphTool(
+		async () => ({ stdout: "safe", stderr: "" }),
+		{
+			daemonExplore: async (_cwd, parameters) => {
+				seen.push({ operation: parameters.operation, query: parameters.query });
+				return { status: "ok", text: "safe" };
+			},
+			syncRun: syncNothing,
+		},
+	);
 	const ctx = { cwd } as ExtensionContext;
 
-	await tool.execute("test", { operation: "query", query: "--help" }, undefined, undefined, ctx);
+	const result = await tool.execute("test", { operation: "query", query: "--help" }, undefined, undefined, ctx);
 
-	assert.deepEqual(calls, [
-		["query", "--path", cwd, "--limit", "10", "--", "--help"],
+	assert.deepEqual(seen, [{ operation: "query", query: "--help" }]);
+	assert.deepEqual((result.details as { args: string[] }).args, [
+		"query", "--path", cwd, "--limit", "10", "--", "--help",
 	]);
 });
 
-test("CodeGraph tool returns structured fallback instructions when the binary is unavailable", async (t) => {
+test("CodeGraph search reports the daemon-unavailable fallback with its details", async (t) => {
+	withoutChildEnv(t);
+	const cwd = workspace(t);
+	const tool = createCodeGraphTool(
+		async () => ({ stdout: "cli", stderr: "" }),
+		{
+			daemonExplore: async () => ({ status: "unavailable" }),
+			warm: async () => true,
+			syncRun: syncNothing,
+		},
+	);
+	const ctx = { cwd } as ExtensionContext;
+
+	const result = await tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, ctx);
+
+	assert.deepEqual(result.content, [{
+		type: "text",
+		text: "The CodeGraph daemon is unavailable, so the search could not run. Use read, grep, and find for this exploration.",
+	}]);
+	assert.deepEqual(result.details, {
+		status: "unavailable",
+		operation: "query",
+		cwd,
+		fallback: "Use read, grep, and find for this exploration.",
+		syncTriggered: true,
+	});
+});
+
+test("CodeGraph init reports the missing binary distinctly", async (t) => {
 	const cwd = workspace(t);
 	const unavailable = Object.assign(new Error("spawn codegraph ENOENT"), { code: "ENOENT" });
 	const tool = createCodeGraphTool(async () => {
@@ -230,7 +286,7 @@ test("CodeGraph tool returns structured fallback instructions when the binary is
 	});
 	const ctx = { cwd } as ExtensionContext;
 
-	const result = await tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, ctx);
+	const result = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
 
 	assert.deepEqual(result.content, [{
 		type: "text",
@@ -238,28 +294,7 @@ test("CodeGraph tool returns structured fallback instructions when the binary is
 	}]);
 	assert.deepEqual(result.details, {
 		status: "unavailable",
-		operation: "query",
-		cwd,
-		fallback: "Use read, grep, and find for this exploration.",
-	});
-});
-
-test("CodeGraph tool returns fallback instructions when CodeGraph fails", async (t) => {
-	const cwd = workspace(t);
-	const tool = createCodeGraphTool(async () => {
-		throw new Error("CodeGraph exited with status 1");
-	});
-	const ctx = { cwd } as ExtensionContext;
-
-	const result = await tool.execute("test", { operation: "explore", query: "call path" }, undefined, undefined, ctx);
-
-	assert.deepEqual(result.content, [{
-		type: "text",
-		text: "CodeGraph failed to run. Use read, grep, and find for this exploration.",
-	}]);
-	assert.deepEqual(result.details, {
-		status: "failed",
-		operation: "explore",
+		operation: "init",
 		cwd,
 		fallback: "Use read, grep, and find for this exploration.",
 	});
@@ -274,7 +309,7 @@ test("CodeGraph tool configures a process buffer above the returned-output trunc
 	});
 	const ctx = { cwd } as ExtensionContext;
 
-	const result = await tool.execute("test", { operation: "explore", query: "large result" }, undefined, undefined, ctx);
+	const result = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
 
 	assert.ok(maxBuffer > 100_000);
 	assert.match(result.content[0]?.text ?? "", /\[CodeGraph output truncated\]$/);
@@ -323,6 +358,39 @@ test("CodeGraph tool registration exposes a single constrained custom tool", () 
 			limit: { type: "integer", minimum: 1, maximum: 20 },
 		},
 	});
+});
+
+test("the extension hooks turn_start and session_start; turn_start resets the per-turn sync", async (t) => {
+	withoutChildEnv(t);
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
+	const pi = {
+		registerTool() {
+			/* the registered tool's shape is covered above */
+		},
+		on(event: string, handler: (event: unknown, ctx: unknown) => void) {
+			handlers.set(event, handler);
+		},
+	} as unknown as ExtensionAPI;
+
+	codeGraphTools(pi);
+
+	assert.ok(handlers.has("turn_start"), "turn_start clears the per-turn sync set");
+	assert.ok(handlers.has("session_start"), "session_start still prepares readiness");
+
+	const cwd = workspace(t);
+	const calls: string[][] = [];
+	const syncRun = async (args: readonly string[]): Promise<boolean> => {
+		calls.push([...args]);
+		return true;
+	};
+	const ctx = { cwd } as ExtensionContext;
+	assert.equal(triggerSearchSync(cwd, ctx, syncRun), true);
+	assert.equal(triggerSearchSync(cwd, ctx, syncRun), false, "one background sync per turn");
+	await settled();
+	(handlers.get("turn_start") as () => void)();
+	assert.equal(triggerSearchSync(cwd, ctx, syncRun), true, "the turn_start handler cleared the set");
+	await settled();
+	assert.deepEqual(calls, [["unlock"], ["sync", "-q"], ["unlock"], ["sync", "-q"]]);
 });
 
 function writeCodeGraphPackage(binDir: string, scriptSource = "#!/usr/bin/env node\n"): string {
@@ -416,10 +484,9 @@ test("Windows launcher passes command metacharacters as one literal argv value",
 	Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
 	t.after(() => Object.defineProperty(process, "platform", { configurable: true, value: previousPlatform }));
 
-	const query = "literal & echo injected > shell-injection.txt";
 	const result = await createCodeGraphTool().execute(
 		"test",
-		{ operation: "query", query },
+		{ operation: "init" },
 		undefined,
 		undefined,
 		{ cwd } as ExtensionContext,
@@ -427,7 +494,7 @@ test("Windows launcher passes command metacharacters as one literal argv value",
 
 	assert.deepEqual(result.content, [{
 		type: "text",
-		text: JSON.stringify(["query", "--path", cwd, "--limit", "10", "--", query]),
+		text: JSON.stringify(["init", cwd]),
 	}]);
 	assert.equal(existsSync(join(cwd, "shell-injection.txt")), false);
 });
@@ -507,13 +574,25 @@ test("CodeGraph exclusion uses the exclude file git resolves for a linked worktr
 test("CodeGraph query excludes an index that already exists, and leaves the exclude file alone without one", async (t) => {
 	const indexed = workspace(t);
 	await writeIndex(["init", indexed], { cwd: indexed, maxBuffer: 1 });
-	const answer: CodeGraphRunner = async () => ({ stdout: "found", stderr: "" });
-	await createCodeGraphTool(answer).execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd: indexed } as ExtensionContext);
+	const daemonFound: DaemonExplore = async () => ({ status: "ok", text: "found" });
+	await createCodeGraphTool(async () => ({ stdout: "found", stderr: "" }), { daemonExplore: daemonFound, syncRun: syncNothing }).execute(
+		"test",
+		{ operation: "query", query: "symbol" },
+		undefined,
+		undefined,
+		{ cwd: indexed } as ExtensionContext,
+	);
 	assert.deepEqual(excludeLines(indexed), [".codegraph/"]);
 	assert.equal(gitOutput(indexed, "status", "--porcelain", "--untracked-files=all"), "");
 
 	const bare = workspace(t);
-	const result = await createCodeGraphTool(answer).execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd: bare } as ExtensionContext);
+	const result = await createCodeGraphTool(async () => ({ stdout: "found", stderr: "" }), { daemonExplore: daemonFound, syncRun: syncNothing }).execute(
+		"test",
+		{ operation: "query", query: "symbol" },
+		undefined,
+		undefined,
+		{ cwd: bare } as ExtensionContext,
+	);
 	assert.deepEqual(excludeLines(bare), []);
 	assert.equal((result.details as { localExclude?: unknown }).localExclude, undefined);
 });
@@ -522,7 +601,10 @@ test("CodeGraph query does not treat a .codegraph directory without codegraph.db
 	const partial = workspace(t);
 	mkdirSync(join(partial, ".codegraph"));
 	writeFileSync(join(partial, ".codegraph", ".gitignore"), "*\n!.gitignore\n");
-	const result = await createCodeGraphTool(async () => ({ stdout: "found", stderr: "" })).execute(
+	const result = await createCodeGraphTool(
+		async () => ({ stdout: "found", stderr: "" }),
+		{ daemonExplore: async () => ({ status: "ok", text: "found" }), syncRun: syncNothing },
+	).execute(
 		"test",
 		{ operation: "query", query: "symbol" },
 		undefined,
@@ -542,7 +624,7 @@ test("CodeGraph query prefers the daemon socket and never spawns the CLI", async
 			runnerCalls += 1;
 			return { stdout: "cli", stderr: "" };
 		},
-		{ daemonExplore: async () => ({ status: "ok", text: "daemon answer" }) },
+		{ daemonExplore: daemonOk, syncRun: syncNothing },
 	);
 	const result = await tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd } as ExtensionContext);
 	assert.deepEqual(result.content, [{ type: "text", text: "daemon answer" }]);
@@ -550,34 +632,170 @@ test("CodeGraph query prefers the daemon socket and never spawns the CLI", async
 	assert.equal((result.details as { viaDaemon?: boolean }).viaDaemon, true);
 });
 
-test("CodeGraph falls back to the CLI when the daemon misses, and init never consults it", async (t) => {
+test("a daemon that never answers tries twice, warms once, and never spawns the CLI", async (t) => {
+	withoutChildEnv(t);
 	const cwd = workspace(t);
+	let daemonCalls = 0;
+	let warmCalls = 0;
 	let runnerCalls = 0;
-	const fallback = createCodeGraphTool(
+	const tool = createCodeGraphTool(
 		async () => {
 			runnerCalls += 1;
-			return { stdout: "cli answer", stderr: "" };
+			return { stdout: "cli", stderr: "" };
 		},
-		{ daemonExplore: async () => ({ status: "unavailable" }) },
-	);
-	const query = await fallback.execute("test", { operation: "explore", query: "symbol" }, undefined, undefined, { cwd } as ExtensionContext);
-	assert.deepEqual(query.content, [{ type: "text", text: "cli answer" }]);
-	assert.equal(runnerCalls, 1);
-	assert.equal((query.details as { viaDaemon?: boolean }).viaDaemon, undefined);
-
-	const daemonCalls: string[] = [];
-	const initTool = createCodeGraphTool(
-		async () => ({ stdout: "init", stderr: "" }),
 		{
-			daemonExplore: async (_cwd, parameters) => {
-				daemonCalls.push(parameters.operation);
+			daemonExplore: async () => {
+				daemonCalls += 1;
+				return { status: "unavailable" };
+			},
+			warm: async () => {
+				warmCalls += 1;
+				return true;
+			},
+			syncRun: syncNothing,
+		},
+	);
+	const ctx = { cwd } as ExtensionContext;
+
+	const first = await tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, ctx);
+
+	assert.match(first.content[0].text, /daemon is unavailable/i);
+	assert.match(first.content[0].text, /Use read, grep, and find/);
+	assert.equal((first.details as { status?: string }).status, "unavailable");
+	assert.equal((first.details as { syncTriggered?: boolean }).syncTriggered, true);
+	assert.equal(daemonCalls, 2, "one attempt, then exactly one more after the warm-up");
+	assert.equal(warmCalls, 1);
+	assert.equal(runnerCalls, 0, "query and explore never spawn the CLI");
+
+	const second = await tool.execute("test", { operation: "explore", query: "symbol" }, undefined, undefined, ctx);
+
+	assert.equal((second.details as { syncTriggered?: boolean }).syncTriggered, undefined, "one background sync per turn");
+	assert.equal(daemonCalls, 4);
+	assert.equal(warmCalls, 2);
+	assert.equal(runnerCalls, 0);
+});
+
+test("a daemon miss recovers after one warm-up attempt", async (t) => {
+	const cwd = workspace(t);
+	const answers: Array<{ status: "ok"; text: string } | { status: "unavailable" }> = [
+		{ status: "unavailable" },
+		{ status: "ok", text: "daemon answer" },
+	];
+	let warmCalls = 0;
+	let runnerCalls = 0;
+	const tool = createCodeGraphTool(
+		async () => {
+			runnerCalls += 1;
+			return { stdout: "cli", stderr: "" };
+		},
+		{
+			daemonExplore: async () => answers.shift() ?? { status: "unavailable" },
+			warm: async () => {
+				warmCalls += 1;
+				return true;
+			},
+			syncRun: syncNothing,
+		},
+	);
+
+	const result = await tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd } as ExtensionContext);
+
+	assert.deepEqual(result.content, [{ type: "text", text: "daemon answer" }]);
+	assert.equal((result.details as { viaDaemon?: boolean }).viaDaemon, true);
+	assert.equal(answers.length, 0, "exactly two daemon attempts");
+	assert.equal(warmCalls, 1);
+	assert.equal(runnerCalls, 0);
+});
+
+test("init runs the CLI with the workspace, never the daemon, and never triggers a sync", async (t) => {
+	const cwd = workspace(t);
+	const calls: Array<{ args: readonly string[]; cwd: string }> = [];
+	let daemonCalls = 0;
+	let syncCalls = 0;
+	const tool = createCodeGraphTool(
+		async (args, options) => {
+			calls.push({ args, cwd: options.cwd });
+			return { stdout: "indexed", stderr: "" };
+		},
+		{
+			daemonExplore: async () => {
+				daemonCalls += 1;
 				return { status: "ok", text: "daemon answer" };
+			},
+			syncRun: async () => {
+				syncCalls += 1;
+				return true;
 			},
 		},
 	);
-	const init = await initTool.execute("test", { operation: "init" }, undefined, undefined, { cwd } as ExtensionContext);
-	assert.deepEqual(init.content, [{ type: "text", text: "init" }]);
-	assert.deepEqual(daemonCalls, [], "init is a lifecycle operation and never goes through the daemon");
+
+	const result = await tool.execute("test", { operation: "init" }, undefined, undefined, { cwd } as ExtensionContext);
+
+	assert.deepEqual(result.content, [{ type: "text", text: "indexed" }]);
+	assert.deepEqual(calls, [{ args: ["init", cwd], cwd }]);
+	assert.equal(daemonCalls, 0, "init never consults the daemon");
+	await settled();
+	assert.equal(syncCalls, 0, "init never triggers the background sync");
+});
+
+test("the first search of a turn triggers one background unlock+sync, later searches none", async (t) => {
+	withoutChildEnv(t);
+	const cwd = workspace(t);
+	const calls: string[][] = [];
+	const tool = createCodeGraphTool(
+		async () => ({ stdout: "cli", stderr: "" }),
+		{
+			daemonExplore: daemonOk,
+			syncRun: async (args) => {
+				calls.push([...args]);
+				return true;
+			},
+		},
+	);
+	const ctx = { cwd } as ExtensionContext;
+
+	const first = await tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, ctx);
+
+	assert.equal((first.details as { syncTriggered?: boolean }).syncTriggered, true);
+	await settled();
+	assert.deepEqual(calls, [["unlock"], ["sync", "-q"]]);
+
+	await tool.execute("test", { operation: "explore", query: "symbol" }, undefined, undefined, ctx);
+	await settled();
+	assert.deepEqual(calls, [["unlock"], ["sync", "-q"]], "one background sync per turn");
+
+	clearSearchSync();
+	await tool.execute("test", { operation: "query", query: "again" }, undefined, undefined, ctx);
+	await settled();
+	assert.deepEqual(calls, [["unlock"], ["sync", "-q"], ["unlock"], ["sync", "-q"]], "a new turn syncs again");
+});
+
+test("a subagent child never triggers the background sync", async (t) => {
+	const cwd = workspace(t);
+	const calls: string[][] = [];
+	const tool = createCodeGraphTool(
+		async () => ({ stdout: "cli", stderr: "" }),
+		{
+			daemonExplore: daemonOk,
+			syncRun: async (args) => {
+				calls.push([...args]);
+				return true;
+			},
+		},
+	);
+	const previous = process.env.GENTLE_PI_AGENTS_CHILD;
+	process.env.GENTLE_PI_AGENTS_CHILD = "1";
+	t.after(() => {
+		if (previous === undefined) delete process.env.GENTLE_PI_AGENTS_CHILD;
+		else process.env.GENTLE_PI_AGENTS_CHILD = previous;
+	});
+
+	const result = await tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd } as ExtensionContext);
+
+	assert.deepEqual(result.content, [{ type: "text", text: "daemon answer" }]);
+	assert.equal((result.details as { syncTriggered?: boolean }).syncTriggered, undefined);
+	await settled();
+	assert.deepEqual(calls, []);
 });
 
 test("CodeGraph init still succeeds and reports when git is unavailable for the local exclusion", async (t) => {

@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { exploreViaDaemon, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
-import { maybeRewarm, prepareReadiness, runCodegraph, warmUpDaemon, type SessionStartReason } from "../lib/codegraph-readiness.ts";
+import { CHILD_ENV, maybeRewarm, prepareReadiness, runCodegraph, syncBeforeSearch, warmUpDaemon, type SearchSyncInput, type SessionStartReason } from "../lib/codegraph-readiness.ts";
 
 const CODEGRAPH_OPERATION = {
 	INIT: "init",
@@ -52,6 +52,7 @@ interface CodeGraphFallbackDetails {
 	cwd: string;
 	fallback: string;
 	localExclude?: CodeGraphLocalExclude;
+	syncTriggered?: boolean;
 }
 
 export type CodeGraphRunner = (
@@ -75,9 +76,9 @@ const MAX_LIMIT = 20;
 const MAX_OUTPUT_CHARS = 100_000;
 const PROCESS_MAX_BUFFER = MAX_OUTPUT_CHARS * 2;
 const FALLBACK_INSTRUCTIONS = "Use read, grep, and find for this exploration.";
-// query and explore read an existing index; on a slow filesystem (for example
-// WSL /mnt mounts) they could otherwise block the turn indefinitely (#1901).
-// init is the legitimately slow first index, so only the user's signal bounds it.
+// each daemon query attempt is bounded, so a hung daemon on a slow filesystem (for example a
+// WSL /mnt mount) cannot block the turn indefinitely (#1901); init is the legitimately slow
+// first index, so only the user's signal bounds it.
 const CODEGRAPH_QUERY_TIMEOUT_MS = 180_000;
 const execFileAsync = promisify(execFile);
 const GIT_ROOT_REQUIRED = "CodeGraph requires a real Git project root equal to the current workspace.";
@@ -397,12 +398,47 @@ async function queryViaDaemon(cwd: string, parameters: CodeGraphToolParameters, 
 	}
 }
 
+/** The cwds whose index this turn's first search already refreshed in the background. */
+const searchSynced = new Set<string>();
+
+/** A new user prompt starts a new turn: its first search refreshes the index again. */
+export function clearSearchSync(): void {
+	searchSynced.clear();
+}
+
+/**
+ * Fires the per-turn unlock+sync for `cwd` in the background and returns whether a job was
+ * started: a subagent child or a cwd already refreshed this turn never starts one, so the first
+ * search of a turn is neither blocked nor duplicated.
+ */
+export function triggerSearchSync(cwd: string, ctx: ExtensionContext, run: SearchSyncInput["run"] = runCodegraph): boolean {
+	if (process.env[CHILD_ENV] === "1" || searchSynced.has(cwd)) return false;
+	searchSynced.add(cwd);
+	syncBeforeSearch({
+		cwd,
+		run,
+		onFailed: (stage) => {
+			if (ctx.hasUI) ctx.ui.notify(`codegraph ${stage} failed in ${cwd}`, "warning");
+		},
+	});
+	return true;
+}
+
 export function createCodeGraphTool(
 	runner: CodeGraphRunner = runCodeGraphCommand,
 	{
 		queryTimeoutMs = CODEGRAPH_QUERY_TIMEOUT_MS,
 		daemonExplore = queryViaDaemon,
-	}: { queryTimeoutMs?: number; daemonExplore?: DaemonExplore } = {},
+		warm = (project: string, timeoutMs: number) => warmUpDaemon(project, false, timeoutMs),
+		syncRun = runCodegraph,
+	}: {
+		queryTimeoutMs?: number;
+		daemonExplore?: DaemonExplore;
+		/** Warms the daemon between the two query attempts; the default never rejects. */
+		warm?: (cwd: string, timeoutMs: number) => Promise<boolean>;
+		/** Runs the per-turn unlock+sync fired before the first search; injected in tests. */
+		syncRun?: SearchSyncInput["run"];
+	} = {},
 ) {
 	return {
 		name: "codegraph",
@@ -423,32 +459,54 @@ export function createCodeGraphTool(
 			signal: AbortSignal | undefined,
 			_onUpdate: undefined,
 			ctx: ExtensionContext,
-		): Promise<{ content: { type: "text"; text: string }[]; details: { operation: CodeGraphOperation; cwd: string; args: string[]; localExclude?: CodeGraphLocalExclude; viaDaemon?: boolean } | CodeGraphFallbackDetails }> {
+		): Promise<{ content: { type: "text"; text: string }[]; details: { operation: CodeGraphOperation; cwd: string; args: string[]; localExclude?: CodeGraphLocalExclude; viaDaemon?: boolean; syncTriggered?: boolean } | CodeGraphFallbackDetails }> {
 			const cwd = resolveWorkspaceCwd(ctx.cwd);
 			assertSafeIndexDirectory(cwd);
-			// Lazy re-warm: if the project's daemon died mid-session, warm it in the background so the
-			// next query is fast again. Never blocks this call.
-			if (parameters.operation !== CODEGRAPH_OPERATION.INIT) maybeRewarm(cwd);
 			const args = commandArguments(parameters, cwd);
-			// Daemon-first query path: a warm daemon answers over its socket without the per-call CLI
-			// process (roughly 75 ms local against ~590 ms, 0.5-2 s on a network share against 2.5-6 s).
-			// Any miss - no daemon, protocol drift, a timeout, an error result - falls through to the CLI
-			// path below, unchanged.
+			// MCP-only query path: query and explore always go through the daemon socket (roughly 75 ms
+			// local against ~590 ms, 0.5-2 s on a network share against 2.5-6 s for a CLI process),
+			// so a search never spawns a CLI process of its own.
 			if (parameters.operation !== CODEGRAPH_OPERATION.INIT) {
-				const viaDaemon = await daemonExplore(cwd, parameters, Math.min(queryTimeoutMs, DAEMON_ATTEMPT_TIMEOUT_MS));
+				// Lazy re-warm: if the project's daemon died mid-session, warm it in the background so the
+				// next query is fast again. Never blocks this call.
+				maybeRewarm(cwd);
+				// One background unlock+sync per turn before the first search keeps the index fresh;
+				// the search never waits for it.
+				const syncTriggered = triggerSearchSync(cwd, ctx, syncRun);
+				const attempt = () => daemonExplore(cwd, parameters, Math.min(queryTimeoutMs, DAEMON_ATTEMPT_TIMEOUT_MS));
+				let viaDaemon = await attempt();
+				if (viaDaemon?.status !== "ok") {
+					// Best-effort warm-up between the two attempts: a daemon that was never started gets one.
+					await warm(cwd, DAEMON_ATTEMPT_TIMEOUT_MS).catch(() => { /* best effort */ });
+					viaDaemon = await attempt();
+				}
+				const syncDetails = syncTriggered ? { syncTriggered: true } : {};
 				if (viaDaemon?.status === "ok") {
 					const output = truncateOutput(viaDaemon.text);
 					const localExclude = indexExists(cwd) ? excludeIndexLocally(cwd) : undefined;
 					return {
 						content: [{ type: "text" as const, text: withLocalExcludeNote(output || "CodeGraph completed without output.", localExclude) }],
-						details: { operation: parameters.operation, cwd, args, viaDaemon: true, ...(localExclude ? { localExclude } : {}) },
+						details: { operation: parameters.operation, cwd, args, viaDaemon: true, ...syncDetails, ...(localExclude ? { localExclude } : {}) },
 					};
 				}
+				// Still no daemon: the search falls back to read, grep, and find.
+				const localExclude = indexExists(cwd) ? excludeIndexLocally(cwd) : undefined;
+				const details: CodeGraphFallbackDetails = {
+					status: CODEGRAPH_STATUS.UNAVAILABLE,
+					operation: parameters.operation,
+					cwd,
+					fallback: FALLBACK_INSTRUCTIONS,
+					...syncDetails,
+				};
+				if (localExclude) details.localExclude = localExclude;
+				return {
+					content: [{ type: "text" as const, text: withLocalExcludeNote(`The CodeGraph daemon is unavailable, so the search could not run. ${FALLBACK_INSTRUCTIONS}`, localExclude) }],
+					details,
+				};
 			}
-			const timeout = parameters.operation === "init" ? undefined : AbortSignal.timeout(queryTimeoutMs);
-			const runSignal = timeout && signal ? AbortSignal.any([signal, timeout]) : (timeout ?? signal);
+			// init keeps its CLI path: it is the legitimately slow first index, bounded only by the user's signal.
 			try {
-				const result = await runner(args, { cwd, signal: runSignal, maxBuffer: PROCESS_MAX_BUFFER });
+				const result = await runner(args, { cwd, signal, maxBuffer: PROCESS_MAX_BUFFER });
 				const output = truncateOutput([result.stdout, result.stderr].filter(Boolean).join("\n"));
 				const localExclude = parameters.operation === CODEGRAPH_OPERATION.INIT || indexExists(cwd)
 					? excludeIndexLocally(cwd)
@@ -462,12 +520,8 @@ export function createCodeGraphTool(
 				// A failed init can still leave a partial index behind.
 				const localExclude = indexExists(cwd) ? excludeIndexLocally(cwd) : undefined;
 				if (localExclude) details.localExclude = localExclude;
-				const timedOut = timeout?.aborted === true && signal?.aborted !== true;
-				const text = timedOut
-					? `CodeGraph timed out after ${queryTimeoutMs} ms (a slow filesystem such as a WSL /mnt mount, or a very large workspace). ${FALLBACK_INSTRUCTIONS}`
-					: codeGraphFailureMessage(details.status);
 				return {
-					content: [{ type: "text" as const, text: withLocalExcludeNote(text, localExclude) }],
+					content: [{ type: "text" as const, text: withLocalExcludeNote(codeGraphFailureMessage(details.status), localExclude) }],
 					details,
 				};
 			}
@@ -481,6 +535,8 @@ export function registerCodeGraphTool(pi: ExtensionAPI): void {
 
 export default function codeGraphTools(pi: ExtensionAPI): void {
 	registerCodeGraphTool(pi);
+	// One background unlock+sync per user prompt: the first search of every turn fires it.
+	pi.on?.("turn_start", () => clearSearchSync());
 	// Session-start readiness: the index first (sync or init, in the background), then the daemon
 	// warm-up, so the first real query of the session is fast. The session never waits for any of it.
 	pi.on?.("session_start", (event, ctx) => {

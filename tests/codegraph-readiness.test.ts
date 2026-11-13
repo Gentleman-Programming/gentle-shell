@@ -11,7 +11,9 @@ import {
 	planIndexAction,
 	prepareReadiness,
 	skipsSession,
+	syncBeforeSearch,
 	type ReadinessInput,
+	type SearchSyncInput,
 	type SessionStartReason,
 } from "../lib/codegraph-readiness.ts";
 
@@ -37,6 +39,11 @@ function fakeInput(cwd: string, overrides: Partial<ReadinessInput> = {}): Readin
 		warm: async () => true,
 		...overrides,
 	};
+}
+
+/** Lets a detached background job settle before its effects are asserted. */
+function settled(): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, 10));
 }
 
 test("indexState: the database file is the index, not the directory", (t) => {
@@ -253,4 +260,82 @@ test("maybeRewarm: warms in the background only when the daemon is not alive", a
 	maybeRewarm(cwd, warm, registry);
 	await new Promise((resolve) => setTimeout(resolve, 10));
 	assert.deepEqual(warmed, [], "a live daemon needs no re-warm");
+});
+
+test("syncBeforeSearch: unlock first, then sync -q; a failed sync reports only sync", async (t) => {
+	const cwd = dir(t, "search-order");
+	const calls: string[] = [];
+	const failures: string[] = [];
+	syncBeforeSearch({
+		cwd,
+		run: async (args) => {
+			calls.push(args.join(" "));
+			return args[0] === "unlock";
+		},
+		onFailed: (stage) => failures.push(stage),
+	});
+	await settled();
+	assert.deepEqual(calls, ["unlock", "sync -q"]);
+	assert.deepEqual(failures, ["sync"]);
+});
+
+test("syncBeforeSearch: a failed unlock never runs the sync and reports only unlock", async (t) => {
+	const cwd = dir(t, "search-unlock-fail");
+	const calls: string[] = [];
+	const failures: string[] = [];
+	syncBeforeSearch({
+		cwd,
+		run: async (args) => {
+			calls.push(args.join(" "));
+			return false;
+		},
+		onFailed: (stage) => failures.push(stage),
+	});
+	await settled();
+	assert.deepEqual(calls, ["unlock"], "the unlock failed, so the sync never ran");
+	assert.deepEqual(failures, ["unlock"]);
+});
+
+test("syncBeforeSearch: concurrent calls for one cwd coalesce into a single unlock+sync", async (t) => {
+	const cwd = dir(t, "search-coalesce");
+	const calls: string[] = [];
+	let release: (() => void) | undefined;
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const run: SearchSyncInput["run"] = async (args) => {
+		calls.push(args.join(" "));
+		if (args[0] === "unlock") await gate;
+		return true;
+	};
+
+	syncBeforeSearch({ cwd, run });
+	syncBeforeSearch({ cwd, run });
+	assert.deepEqual(calls, ["unlock"], "the second call starts no second job while one is in flight");
+
+	release?.();
+	await settled();
+	assert.deepEqual(calls, ["unlock", "sync -q"], "exactly one unlock+sync sequence serves both callers");
+
+	syncBeforeSearch({ cwd, run });
+	await settled();
+	assert.deepEqual(calls, ["unlock", "sync -q", "unlock", "sync -q"], "a settled job frees the cwd for the next turn");
+});
+
+test("syncBeforeSearch: a rejecting run never surfaces an unhandled rejection", async (t) => {
+	const cwd = dir(t, "search-reject");
+	const rejections: unknown[] = [];
+	const onUnhandled = (reason: unknown) => rejections.push(reason);
+	process.on("unhandledRejection", onUnhandled);
+	t.after(() => process.off("unhandledRejection", onUnhandled));
+
+	syncBeforeSearch({
+		cwd,
+		run: async () => {
+			throw new Error("unlock exploded");
+		},
+	});
+	await settled();
+
+	assert.deepEqual(rejections, []);
 });

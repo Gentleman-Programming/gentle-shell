@@ -29,6 +29,8 @@ export const TASK_EVENT = {
 	TURN_END: "turn_end",
 	AGENT_END: "agent_end",
 	AGENT_SETTLED: "agent_settled",
+	COMPACTION_START: "compaction_start",
+	COMPACTION_END: "compaction_end",
 	ERROR: "error",
 	ASK: "ask",
 	NOTE: "note",
@@ -83,6 +85,10 @@ export interface AgentEndEvent {
 	errorCategory?: TerminalErrorCategory;
 }
 export interface AgentSettledEvent { type: typeof TASK_EVENT.AGENT_SETTLED }
+export interface CompactionStartEvent { type: typeof TASK_EVENT.COMPACTION_START; reason: string }
+export interface CompactionEndEvent { type: typeof TASK_EVENT.COMPACTION_END; outcome: CompactionOutcome }
+/** Pi ends a compaction run with a result, an abort, or an error; the label must not merge them. */
+export type CompactionOutcome = "completed" | "cancelled" | "failed";
 export interface ErrorEvent { type: typeof TASK_EVENT.ERROR; message: string }
 export interface AskEvent { type: typeof TASK_EVENT.ASK; request: AskRequest }
 export interface NoteEvent { type: typeof TASK_EVENT.NOTE; text: string }
@@ -105,7 +111,7 @@ export interface ChildResponseObservation {
 }
 export interface ResponseObservationEvent { type: typeof TASK_EVENT.RESPONSE_OBSERVATION; observation: ChildResponseObservation }
 
-export type TaskEvent = ResponseObservationEvent | TextEvent | ThinkingEvent | ToolStartEvent | ToolUpdateEvent | ToolEndEvent | TurnEndEvent | AgentEndEvent | AgentSettledEvent | ErrorEvent | AskEvent | NoteEvent | UsageEvent;
+export type TaskEvent = ResponseObservationEvent | TextEvent | ThinkingEvent | ToolStartEvent | ToolUpdateEvent | ToolEndEvent | TurnEndEvent | AgentEndEvent | AgentSettledEvent | CompactionStartEvent | CompactionEndEvent | ErrorEvent | AskEvent | NoteEvent | UsageEvent;
 
 export interface TextItem { kind: typeof THREAD_ITEM.TEXT; text: string }
 export interface ThinkingItem { kind: typeof THREAD_ITEM.THINKING; text: string }
@@ -427,6 +433,15 @@ export function normalizeRpcEvent(raw: unknown, options: { observeResponses?: bo
 			return [{ type: TASK_EVENT.AGENT_END, ...terminalAssistant(event.messages) }];
 		case "agent_settled":
 			return [{ type: TASK_EVENT.AGENT_SETTLED }];
+		// Compaction runs after the final report and can call the model for minutes.
+		// It is announced work, so it must reach the host instead of looking like silence.
+		case "compaction_start":
+			return [{ type: TASK_EVENT.COMPACTION_START, reason: clean(event.reason) || "compaction" }];
+		case "compaction_end": {
+			const aborted = event.aborted === true;
+			const failed = !aborted && event.result === undefined;
+			return [{ type: TASK_EVENT.COMPACTION_END, outcome: aborted ? "cancelled" : failed ? "failed" : "completed" }];
+		}
 		case "extension_ui_request":
 			if (event.method === "notify" && typeof event.message === "string" && event.message.startsWith(MISSING_TOOLS_NOTE_PREFIX)) return [{ type: TASK_EVENT.NOTE, text: clean(event.message) }];
 			return DIALOG_METHODS.has(String(event.method)) ? [{ type: TASK_EVENT.ASK, request: askRequest(event) }] : [];
@@ -525,6 +540,10 @@ function recordPatch(task: TaskRecord, event: TaskEvent): Partial<TaskRecord> {
 			return { ...resumed, lastStep: event.name, toolCalls: task.toolCalls + 1 };
 		case TASK_EVENT.TURN_END:
 			return { ...resumed, turns: task.turns + 1 };
+		case TASK_EVENT.COMPACTION_START:
+			return { ...resumed, lastStep: "compacting" };
+		case TASK_EVENT.COMPACTION_END:
+			return { ...resumed, lastStep: event.outcome === "completed" ? "compacted" : event.outcome === "cancelled" ? "compaction cancelled" : "compaction failed" };
 		case TASK_EVENT.AGENT_END:
 			return event.outcome === "success"
 				? { ...resumed, result: event.text, error: null, lastStep: "responded" }

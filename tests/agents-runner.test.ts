@@ -2633,3 +2633,105 @@ test("a task cancelled after Pi accepted the new model records that model", asyn
 	assert.equal(done.model, "fb-za/two");
 	assert.equal(done.fallbackFrom, "fb-z/one");
 });
+
+// Compaction runs after the final report and can call the model for minutes. It is
+// announced work, so the idle silence budget must not end a child that is compacting;
+// the longer ceiling still bounds it. Regression for a verifier that reported a full
+// final answer and was then killed as "stalled for 4 min after: responded".
+test("an announced compaction is live work, bounded by the longer ceiling", async () => {
+	const h = harness({ maxConcurrency: 1, stallTimeoutMs: FOUR_MIN_MS, toolStallTimeoutMs: 30 * 60_000 });
+	const task = h.runner.run(request());
+	await tick();
+	h.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "final report" }], stopReason: "end_turn" }] });
+	await tick();
+	h.children[0].emit({ type: "compaction_start", reason: "threshold" });
+	await tick();
+
+	assert.equal(h.store.get(task.id)?.lastStep, "compacting");
+	assert.equal(h.timers.filter((timer) => timer.ms === FOUR_MIN_MS && !timer.cancelled).length, 0, "an announced compaction is not silence");
+	const compacting = h.timers.filter((timer) => timer.ms === 30 * 60_000 && !timer.cancelled).at(-1);
+	assert.ok(compacting);
+	compacting.fn();
+	await tick(); await tick();
+	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.TIMED_OUT);
+	assert.equal(h.store.get(task.id)?.error, "stalled for 30 min during compaction after: compacting");
+});
+
+test("compaction_end returns the child to the idle silence budget", async () => {
+	const h = harness({ maxConcurrency: 1, stallTimeoutMs: FOUR_MIN_MS, toolStallTimeoutMs: 30 * 60_000 });
+	const task = h.runner.run(request());
+	await tick();
+	h.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "final report" }], stopReason: "end_turn" }] });
+	await tick();
+	h.children[0].emit({ type: "compaction_start", reason: "threshold" });
+	await tick();
+	h.children[0].emit({ type: "compaction_end", reason: "threshold", result: { summary: "kept" }, aborted: false, willRetry: false });
+	await tick();
+
+	assert.equal(h.store.get(task.id)?.lastStep, "compacted");
+	const idle = h.timers.filter((timer) => timer.ms === FOUR_MIN_MS && !timer.cancelled).at(-1);
+	assert.ok(idle);
+	idle.fn();
+	await tick(); await tick();
+	assert.equal(h.store.get(task.id)?.error, "stalled for 4 min after: compacted");
+});
+
+test("without compaction an answered child is still bounded by the idle budget", async () => {
+	const h = harness({ maxConcurrency: 1, stallTimeoutMs: FOUR_MIN_MS });
+	const task = h.runner.run(request());
+	await tick();
+	h.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "final report" }], stopReason: "end_turn" }] });
+	await tick();
+
+	const idle = h.timers.filter((timer) => timer.ms === FOUR_MIN_MS && !timer.cancelled).at(-1);
+	assert.ok(idle);
+	idle.fn();
+	await tick(); await tick();
+	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.TIMED_OUT);
+	assert.equal(h.store.get(task.id)?.error, "stalled for 4 min after: responded");
+});
+
+test("an aborted compaction is not reported as a completed one", async () => {
+	const h = harness({ maxConcurrency: 1, stallTimeoutMs: FOUR_MIN_MS, toolStallTimeoutMs: 30 * 60_000 });
+	const task = h.runner.run(request());
+	await tick();
+	h.children[0].emit({ type: "compaction_start", reason: "threshold" });
+	await tick();
+	// Pi ends an aborted compaction with no result and aborted: true.
+	h.children[0].emit({ type: "compaction_end", reason: "threshold", result: undefined, aborted: true, willRetry: false });
+	await tick();
+
+	assert.equal(h.store.get(task.id)?.lastStep, "compaction cancelled");
+	const idle = h.timers.filter((timer) => timer.ms === FOUR_MIN_MS && !timer.cancelled).at(-1);
+	assert.ok(idle, "a cancelled compaction returns the child to the idle budget");
+});
+
+test("a failed compaction is not reported as a completed one", async () => {
+	const h = harness({ maxConcurrency: 1, stallTimeoutMs: FOUR_MIN_MS, toolStallTimeoutMs: 30 * 60_000 });
+	const task = h.runner.run(request());
+	await tick();
+	h.children[0].emit({ type: "compaction_start", reason: "overflow" });
+	await tick();
+	// Pi ends a failed compaction with no result, aborted: false and an error message.
+	h.children[0].emit({ type: "compaction_end", reason: "overflow", result: undefined, aborted: false, willRetry: false, errorMessage: "Context overflow recovery failed" });
+	await tick();
+
+	assert.equal(h.store.get(task.id)?.lastStep, "compaction failed");
+});
+
+test("a compaction before the current run does not claim a previous answer", async () => {
+	const h = harness({ maxConcurrency: 1, stallTimeoutMs: FOUR_MIN_MS, toolStallTimeoutMs: 30 * 60_000 });
+	const task = h.runner.run(request());
+	await tick();
+	// No agent_end yet: this is the resumed-session case that compacts before the run.
+	h.children[0].emit({ type: "compaction_start", reason: "threshold" });
+	await tick();
+	const compacting = h.timers.filter((timer) => timer.ms === 30 * 60_000 && !timer.cancelled).at(-1);
+	assert.ok(compacting);
+	compacting.fn();
+	await tick(); await tick();
+
+	const record = h.store.get(task.id)!;
+	assert.equal(record.status, TASK_STATUS.TIMED_OUT);
+	assert.equal(record.error, "stalled for 30 min during compaction after: compacting");
+});

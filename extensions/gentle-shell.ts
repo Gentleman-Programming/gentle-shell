@@ -31,6 +31,8 @@ import { discoverYoloUiAdapter, MODE_STATUS_KEY, YOLO_DISPLAY, YOLO_STATUS_KEY, 
 import { discoverRddModeControl, type RddModeControl } from "../lib/rdd-mode-control.ts";
 import { NATIVE_REVIEW_MODE_SOURCE } from "../lib/native-review-cli.ts";
 import { VisualCustomizeView, type CustomizeCategory, type CustomizeRow, type ProfileActions } from "../lib/visual-customize-view.ts";
+import { contributionSlot, guard, readContributions, type Contribution, type PluginHeaderContext, type PluginRow } from "../lib/plugin-contract.ts";
+import { readPluginOrder, type PluginOrderOptions } from "../lib/plugin-order.ts";
 import { deleteVisualProfile, getVisualProfile, listVisualProfiles, resetVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
 import { gaugePaintFor } from "../lib/gauge-theme.ts";
 import type { GaugePaint } from "../lib/shell-gauge.ts";
@@ -2036,6 +2038,176 @@ export async function backgroundChangeRefreshesSettled(timeoutMs = 2000): Promis
 	clearTimeout(timer);
 }
 
+/** The label a contributed row shows while its own label is broken; the row is dropped right after. */
+const PLUGIN_ROW_LABEL = "Plugin row";
+const PLUGIN_PREVIEW_FALLBACK = { title: "Plugin preview unavailable", sample: "" };
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+	return (typeof value === "object" || typeof value === "function") && value !== null && typeof (value as { then?: unknown }).then === "function";
+}
+
+/**
+ * Runs a synchronous row slot (`label`, `preview`, `visible`, `choice.current`)
+ * through `guard`. A plugin that breaks the declared shape by answering with a
+ * promise cannot fill a synchronous slot, so this answers `fallback` instead of
+ * awaiting inside a render; `guard` already owns that promise's rejection.
+ */
+function guardedSync<T>(run: () => T | Promise<T>, fallback: T, onError: (error: unknown) => void): T {
+	const answered = guard(run, fallback, onError);
+	return isThenable(answered) ? fallback : answered;
+}
+
+/**
+ * Adapts one public `PluginRow` to the internal `CustomizeRow`. Every callback is
+ * guarded, so a broken plugin hides its own row or does nothing and never breaks
+ * the panel. `action` is passed through untouched: a plugin's state lives in the
+ * plugin's own file and it must never write a gentle-pi preference.
+ */
+function pluginCustomizeRow(id: string, row: PluginRow, notifyError: (message: string) => void): CustomizeRow {
+	let reported = false;
+	const fail = (error: unknown) => {
+		// One report per row keeps a render-loop failure from spamming the panel.
+		if (reported) return;
+		reported = true;
+		try { notifyError(`Plugin ${id}: ${error instanceof Error ? error.message : String(error)}`); } catch { /* A broken notifier must not break the panel. */ }
+	};
+	let labelBroken = false;
+	const pluginLabel = row.label;
+	const label = (): string => {
+		if (labelBroken) return PLUGIN_ROW_LABEL;
+		if (typeof pluginLabel === "string") return pluginLabel;
+		const answered = guard<string>(pluginLabel, PLUGIN_ROW_LABEL, (error) => { labelBroken = true; fail(error); });
+		// A promise cannot fill a synchronous slot: drop the row rather than await here.
+		if (isThenable(answered)) { labelBroken = true; return PLUGIN_ROW_LABEL; }
+		return answered;
+	};
+	const visible = row.visible;
+	const mapped: CustomizeRow = {
+		category: row.category,
+		label,
+		visible: () => {
+			// A label that threw (or answered with a promise) cannot be painted: drop the row.
+			if (labelBroken) return false;
+			if (typeof pluginLabel === "function") label();
+			if (labelBroken) return false;
+			if (visible === undefined) return true;
+			return guardedSync(() => visible(), false, fail);
+		},
+		action: () => {
+			const answered = guard<unknown>(() => row.action(), undefined, fail);
+			return isThenable(answered) ? Promise.resolve(answered).then(() => undefined) : undefined;
+		},
+	};
+	const preview = row.preview;
+	if (preview !== undefined) mapped.preview = () => {
+		// The pane splits `sample` on newlines outside any guard, so an answer that
+		// is not { title, sample } as strings must be refused here, not painted.
+		const answered = guardedSync<unknown>(() => preview(), PLUGIN_PREVIEW_FALLBACK, fail);
+		const shaped = answered as { title?: unknown; sample?: unknown } | null;
+		if (typeof shaped === "object" && shaped !== null && typeof shaped.title === "string" && typeof shaped.sample === "string") {
+			return { title: shaped.title, sample: shaped.sample };
+		}
+		fail(new Error("preview must answer { title, sample } with string fields"));
+		return PLUGIN_PREVIEW_FALLBACK;
+	};
+	const choice = row.choice;
+	if (choice !== undefined) mapped.choice = {
+		// Namespaced, so a plugin switch can never merge into a built-in setting line.
+		setting: `${id} · ${choice.setting}`,
+		value: choice.value,
+		current: () => guardedSync(() => choice.current(), false, fail),
+		hint: choice.hint,
+		applyOnMove: choice.applyOnMove,
+	};
+	return mapped;
+}
+
+/**
+ * Append every contributed row to `/gentle:customize`, after every built-in row
+ * and never in place of one (S2). The public DTO is adapted here so gentle-pi
+ * internals stay private; with an empty box this appends nothing at all.
+ *
+ * The box is read here, at use time, with the owner order `plugins.json`
+ * declares right now, so the appended rows follow that order and an owner the
+ * file does not name keeps registration order.
+ */
+export function appendPluginCustomizeRows(
+	rows: CustomizeRow[],
+	notifyError: (message: string) => void,
+	options: PluginOrderOptions = {},
+): void {
+	for (const contribution of readContributions({ order: readPluginOrder(options).order })) {
+		for (const row of contribution.rows ?? []) rows.push(pluginCustomizeRow(contribution.id, row, notifyError));
+	}
+}
+
+/**
+ * Whether this box entry declares a `header` payload, the only kind of
+ * contribution `plugins.json` can reorder here. The property can be a plugin
+ * getter, so a throw is "no header" for this purpose; validation already
+ * reports the contribution itself.
+ */
+function declaresHeader(value: unknown): boolean {
+	if ((typeof value !== "object" && typeof value !== "function") || value === null) return false;
+	try {
+		return (value as { header?: unknown }).header !== undefined;
+	} catch {
+		return false;
+	}
+}
+
+function boxDeclaresHeader(store: Map<string, Contribution>): boolean {
+	for (const contribution of store.values()) if (declaresHeader(contribution)) return true;
+	return false;
+}
+
+/**
+ * Append every contributed header row after the core header rows, in the same
+ * order the other read points use: the owners `plugins.json` names first, then
+ * the rest in registration order. The core rows stay where they are; a plugin
+ * can add rows but never replace, hide or reorder one. With an empty box this
+ * appends nothing.
+ *
+ * The rows function is called on each render with the live context, and a
+ * throwing function contributes no rows and reaches `notifyError` instead: a
+ * broken plugin degrades its own rows, never the header. The header paints on
+ * every frame, so the order file is read only while some contribution declares
+ * a header: a box that contributes rows or commands pays no I/O for a frame.
+ */
+export function appendPluginHeaderRows(
+	rows: string[],
+	context: PluginHeaderContext,
+	notifyError: (message: string) => void,
+	options: PluginOrderOptions = {},
+): void {
+	const fail = (id: string, error: unknown): void => {
+		try {
+			notifyError(`Plugin ${id}: ${error instanceof Error ? error.message : String(error)}`);
+		} catch {
+			// A broken notifier must not break the header either.
+		}
+	};
+	const store = contributionSlot();
+	const contributions = readContributions(boxDeclaresHeader(store) ? { order: readPluginOrder(options).order } : {});
+	for (const contribution of contributions) {
+		const header = contribution.header;
+		if (header === undefined) continue;
+		const supplied = header.rows;
+		if (typeof supplied === "function") {
+			const answered = guardedSync<readonly string[] | undefined>(() => supplied(context), undefined, (error) => fail(contribution.id, error));
+			if (answered === undefined) continue;
+			if (!Array.isArray(answered) || answered.some((row) => typeof row !== "string")) {
+				fail(contribution.id, new TypeError("header rows must be an array of strings"));
+				continue;
+			}
+			rows.push(...answered);
+			continue;
+		}
+		// Static rows were validated at read time; a later mutation is filtered.
+		if (Array.isArray(supplied)) for (const row of supplied) if (typeof row === "string") rows.push(row);
+	}
+}
+
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	installSessionChangeCapture(pi, env, overrides.resolveWorktree ?? resolveSessionWorktree);
 	// Replaced before persistence, so the footer, /gentle:stats and the session file
@@ -2883,9 +3055,25 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const statusBarChrome = (width: number) => narrowSplit()
 				? renderShellStatusBar(footerModel(), theme, width, usageShortcutKey, { ...visualSettings, visibility: { ...visualSettings.visibility, modelDetails: false } }, gaugePaint(ctx), { jobs: true })
 				: chromeBar(width);
+			// One report per contribution per footer lifetime: a rows function that
+			// throws on every frame must not notify on every frame.
+			const reportedHeaderFailures = new Set<string>();
+			const notifyHeaderFailure = (message: string): void => {
+				if (reportedHeaderFailures.has(message)) return;
+				reportedHeaderFailures.add(message);
+				try { ctx.ui.notify(message, "warning"); } catch { /* A broken notifier must not break the header. */ }
+			};
+			const contributedHeaderRows = (width: number): string[] => {
+				const rows: string[] = [];
+				appendPluginHeaderRows(rows, { width, placement: visualSettings.headerPlacement }, notifyHeaderFailure, { gentlePiConfigHome: gentlePiConfigHome(env) });
+				return rows;
+			};
 			const disposeHeader = sidebarHeader(tui, {
 				digest: () => footerStatus.key(),
-				render: (width) => splitChrome() ? titleRows(width) : narrowSplit() ? [renderShellTitleRow(footerModel(), theme, width, { model: true })] : (narrowTop() || topChrome()) ? topHeader(width).rows : headerBar(width).rows,
+				render: (width) => {
+					const core = splitChrome() ? titleRows(width) : narrowSplit() ? [renderShellTitleRow(footerModel(), theme, width, { model: true })] : (narrowTop() || topChrome()) ? topHeader(width).rows : headerBar(width).rows;
+					return [...core, ...contributedHeaderRows(width)];
+				},
 				invalidate() {},
 				handleMouse(event) {
 					if (splitChrome() || narrowSplit() || narrowBelow() || event.type !== "click" || event.button !== "left") return undefined;
@@ -2896,7 +3084,14 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			});
 			const disposeStatusBar = sidebarStatusBar(tui, {
 				digest: () => footerStatus.key(),
-				render: (width) => splitChrome() || narrowSplit() || narrowBelow() ? statusBarChrome(width).rows : belowRail() ? chromeBar(width).rows : [],
+				render: (width) => {
+					// Split paints its status bar, never the header, so contributed rows stay out of it.
+					if (splitChrome() || narrowSplit()) return statusBarChrome(width).rows;
+					// Narrow below-input and the wide below-rail bar are the header's own
+					// surface in those modes: append after the core rows, as the widget does.
+					if (narrowBelow() || belowRail()) return [...chromeBar(width).rows, ...contributedHeaderRows(width)];
+					return [];
+				},
 				invalidate() {},
 				handleMouse(event) {
 					if (!(splitChrome() || narrowSplit() || narrowBelow() || belowRail()) || event.type !== "click" || event.button !== "left") return undefined;
@@ -2917,9 +3112,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				render(width: number) {
 					if (disposed || narrowChrome()) return [];
 					if (belowRail() && sidebarState(tui).active) return [];
-					if (belowChrome()) return chromeBar(width).rows;
-					if (belowFloat(width, false)) return footerSuppressed() ? widgetChrome(width).rows : [];
-					return belowHeader() ? headerBar(width).rows : [];
+					if (belowChrome()) return [...chromeBar(width).rows, ...contributedHeaderRows(width)];
+					if (belowFloat(width, false)) return footerSuppressed() ? [...widgetChrome(width).rows, ...contributedHeaderRows(width)] : [];
+					return belowHeader() ? [...headerBar(width).rows, ...contributedHeaderRows(width)] : [];
 				},
 				invalidate() {},
 				handleMouse(event) {
@@ -3570,6 +3765,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return false;
 				}
 		}, () => ({ title: "Restore visual defaults", sample: "[Header] → [Input]  [responsive status] · quality" }));
+			// Additive only: contributed rows land after every built-in row, never before
+			// one and never in place of one.
+			appendPluginCustomizeRows(rows, (message) => ctx.ui.notify(message, "warning"), { gentlePiConfigHome: gentlePiConfigHome(env) });
 			const profiles: ProfileActions = {
 				list: catalog,
 				save: async (name, replace) => {

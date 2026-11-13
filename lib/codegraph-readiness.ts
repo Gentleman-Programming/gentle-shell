@@ -3,7 +3,7 @@ import { existsSync, realpathSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { daemonFor } from "./codegraph-daemon.ts";
+import { daemonFor, mcpCallText, parseMcpReply } from "./codegraph-daemon.ts";
 import type { DaemonInfo } from "./codegraph-daemon.ts";
 import { acquireInitLock, tryAcquireSyncLease } from "./codegraph-lease.ts";
 import type { SeedOutcome } from "./codegraph-seed.ts";
@@ -18,8 +18,6 @@ const KILL_WAIT_MS = 10_000;
 export const CHILD_ENV = "GENTLE_PI_AGENTS_CHILD";
 /** One of these next to a `.git` is what makes a directory a project worth indexing automatically. */
 const MARKERS = ["composer.json", "package.json", "pyproject.toml", "go.mod", "Cargo.toml", "Gemfile", "pom.xml", "build.gradle", "build.gradle.kts"];
-/** CodeGraph answers an explore without a project with this plain text, not with an error. */
-const NO_PROJECT_TEXT = "No CodeGraph project is loaded";
 
 /**
  * Makes the project's CodeGraph daemon open its database and start a read worker, so the next real call
@@ -83,17 +81,14 @@ export function warmUpDaemon(cwd: string, background = false, timeoutMs = WARMUP
 				const line = buffer.slice(0, newline).trim();
 				buffer = buffer.slice(newline + 1);
 				if (line.length === 0) continue;
-				let message: { id?: number; error?: unknown; result?: { isError?: boolean; content?: { text?: string }[] } };
-				try { message = JSON.parse(line); } catch { continue; }
+				const message = parseMcpReply(line);
+				if (message === undefined) continue;
 				if (stage === 0 && message.id === 1) {
 					send({ jsonrpc: "2.0", method: "notifications/initialized" });
 					stage = 1;
 					send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "codegraph_explore", arguments: { query: "main" } } });
 				} else if (stage === 1 && message.id === 2) {
-					// CodeGraph reports a crashed query worker with isError and a text, not a JSON-RPC error.
-					const text = message.result?.content?.[0]?.text;
-					const failed = message.error !== undefined || message.result?.isError === true;
-					finish(!failed && typeof text === "string" && !text.startsWith(NO_PROJECT_TEXT));
+					finish(mcpCallText(message) !== undefined);
 				}
 			}
 		});

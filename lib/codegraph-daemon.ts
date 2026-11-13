@@ -133,6 +133,33 @@ export type DaemonCallResult =
 /** A socket that accepted but never said hello: the next one gets the rest of the budget. */
 type AskOutcome = DaemonCallResult | { status: "silent" };
 
+/** One reply line of an MCP conversation, in the shape both conversations read it. */
+export interface McpReply {
+	id?: number;
+	error?: unknown;
+	result?: { isError?: boolean; content?: { text?: string }[] };
+}
+
+/** Parses one newline-delimited reply line; undefined when it is not JSON — each conversation decides what that means. */
+export function parseMcpReply(line: string): McpReply | undefined {
+	try {
+		return JSON.parse(line) as McpReply;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * The text of a tools/call reply, or undefined when the reply is a failure: a JSON-RPC error, an isError
+ * result, a missing text, or the no-project answer CodeGraph gives instead of an error. CodeGraph reports
+ * a crashed query worker with isError and a text, not with a JSON-RPC error.
+ */
+export function mcpCallText(message: McpReply): string | undefined {
+	const text = message.result?.content?.[0]?.text;
+	if (message.error !== undefined || message.result?.isError === true || typeof text !== "string" || text.startsWith(NO_PROJECT_TEXT)) return undefined;
+	return text;
+}
+
 /** One conversation with one daemon: hello, initialize, one tools/call. */
 function ask(socketPath: string, tool: string, args: Record<string, unknown>, timeoutMs: number, helloTimeoutMs: number): Promise<AskOutcome> {
 	return new Promise((resolveResult) => {
@@ -164,12 +191,8 @@ function ask(socketPath: string, tool: string, args: Record<string, unknown>, ti
 				const line = buffer.slice(0, newline).trim();
 				buffer = buffer.slice(newline + 1);
 				if (line.length === 0) continue;
-				let message: { id?: number; method?: string; error?: unknown; result?: { isError?: boolean; content?: { text?: string }[] } };
-				try {
-					message = JSON.parse(line);
-				} catch {
-					return finish({ status: "unavailable" });
-				}
+				const message = parseMcpReply(line);
+				if (message === undefined) return finish({ status: "unavailable" });
 				if (stage === "hello") {
 					if (typeof (message as { codegraph?: unknown }).codegraph !== "string" || (message as { protocol?: unknown }).protocol !== DAEMON_PROTOCOL) {
 						return finish({ status: "unavailable" });
@@ -183,10 +206,8 @@ function ask(socketPath: string, tool: string, args: Record<string, unknown>, ti
 					send({ jsonrpc: "2.0", method: "notifications/initialized" });
 					send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: tool, arguments: args } });
 				} else if (stage === "call" && message.id === 2) {
-					// CodeGraph reports a crashed query worker with isError and a text, not with a JSON-RPC error.
-					const text = message.result?.content?.[0]?.text;
-					const failed = message.error !== undefined || message.result?.isError === true;
-					if (failed || typeof text !== "string" || text.startsWith(NO_PROJECT_TEXT)) return finish({ status: "unavailable" });
+					const text = mcpCallText(message);
+					if (text === undefined) return finish({ status: "unavailable" });
 					return finish({ status: "ok", text });
 				}
 			}

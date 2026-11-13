@@ -43,7 +43,7 @@ all seven items, six commits (hygiene items share one commit), user chose Start 
 - T2 (S2): perf(codegraph): scan the daemon registry once per window — inline — commit: 10e8cd8
 - T3 (S3): chore(codegraph): drop dead branch, unify guards, narrow exports — inline — commit: 70d639c
 - T4 (S4): test(codegraph): shared fakeRegistry helper and stat core — inline — commit: ba870a1
-- T5 (S5): feat(codegraph): skip a failed daemon until the next turn — inline — commit: —
+- T5 (S5): feat(codegraph): skip a failed daemon until the next turn — inline — commit: c6248d5
 - T6 (S6): refactor(codegraph): one MCP line-conversation helper — inline — commit: —
 
 ## Log
@@ -61,3 +61,4 @@ all seven items, six commits (hygiene items share one commit), user chose Start 
 - L9: T3 implemented — unreachable spawn guard removed; the one unguarded daemonFor call (runCodegraph's project line, the unit text's "maybeRewarm" quote) wrapped with the not-alive fallback to realpathSync(cwd), while the maybeRewarm and syncBeforeSearch daemonFor calls were already guarded at HEAD and stay as-is; exports audited 7 demoted, 2 annotated as test seams, evidence tmp/u3-export-audit.txt; gates: suite 84/0, tsc 16 unchanged; Risk: none (behavior-preserving chore; suite is the differential; no new RED test for that reason)
 - L10: T4 implemented — 6 record.json fixture copies replaced by one parameterized helper (values preserved per copy); indexExists delegates to indexState === "present" (verified equivalent for present/absent/unknown); gates: readiness file 27/0, suite 84/0, tsc 16 unchanged; Risk: none (test-only dedup plus behavior-identical delegation; suite green pre/post is the differential; no new RED test for that reason)
 - L11: T5 implemented — a wedged daemon (post-warm attempt timeout) is skipped per cwd until the next turn; unavailable daemons never set the flag so the warm-then-retry design keeps its original pin (S5 narrowed to the audit's wedged case; the conflicting pre-existing pin was left untouched); gates: tools 35/0, suite 85/0, tsc 16 unchanged; Risk: none (behavior change pinned by the new test; the unavailable path keeps its original pin)
+- L12: T6 implemented — shared: McpReply type + parseMcpReply (one JSON-RPC reply line) and mcpCallText (the tools/call failure judgment incl. the single NO_PROJECT_TEXT, now read only by that helper); transport state machines untouched; gates: suite 85/0 pre/post, tsc 16 unchanged; Risk: none (pure refactor; suite is the differential; no test edits)

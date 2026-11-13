@@ -143,7 +143,7 @@ A palette entry naming a command that is not registered, or one the catalog alre
 { "schema": "gentle-pi.plugins/v1", "order": ["acme", "demo"] }
 ```
 
-An owner the file names is presented first, in the order the file gives; every owner it does not name keeps the box's registration order after the named ones. A missing file, or one that is unreadable, not JSON or wrongly schemated, means registration order. gentle-pi only reads this file and never writes it, so a hand edit can break the order but never a read point.
+An owner the file names is presented first, in the order the file gives; every owner it does not name keeps the box's registration order after the named ones. A missing file, or one that is unreadable, not JSON or wrongly schemated, means registration order. A rejected file, or a missing one once a contribution is loaded, falls back to registration order and is reported by `/gentle:plugins` with the file it looked for and the check that failed. gentle-pi only reads this file and never writes it, so a hand edit can break the order but never a read point.
 
 ### With an empty box
 

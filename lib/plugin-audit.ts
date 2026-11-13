@@ -4,8 +4,8 @@ import type { Contribution, ContributionIssue, ContributionReport } from "./plug
 // read point applies it too. It is re-exported here so `/gentle:plugins` and
 // its test keep one import for the audit surface.
 export { PLUGINS_SCHEMA, parsePluginOrderFile, readPluginOrder } from "./plugin-order.ts";
-export type { PluginOrderOptions, PluginOrderResolution } from "./plugin-order.ts";
-import type { PluginOrderResolution } from "./plugin-order.ts";
+export type { PluginOrderOptions, PluginOrderReason, PluginOrderResolution } from "./plugin-order.ts";
+import { PLUGINS_SCHEMA, type PluginOrderReason, type PluginOrderResolution } from "./plugin-order.ts";
 
 // The audit surface behind /gentle:plugins: what the contribution box loaded,
 // what the contract refused, which ids were replaced, which owners the order
@@ -140,6 +140,32 @@ function capped<T>(items: readonly T[], limit: number, line: (item: T) => string
 }
 
 /**
+ * The condition that left the order empty, in the audit's own words. A
+ * maintainer asking "why is my plugin not first" reads the file's path and the
+ * one check it failed, instead of a generic "malformed".
+ */
+const ORDER_FILE_CONDITION: Record<Exclude<PluginOrderReason, "none">, string> = {
+	missing: "missing",
+	unreadable: "unreadable",
+	"not-json": "not JSON",
+	"wrong-schema": `schema is not ${PLUGINS_SCHEMA}`,
+	"wrong-shape": "wrong shape",
+};
+
+/**
+ * The order-file line, or `undefined` when there is nothing to answer. A
+ * missing file is the normal state for the optional `plugins.json`, so it says
+ * nothing over an empty box — but the moment a contribution is loaded that
+ * author expects an order and needs to learn the file is not there. Any
+ * rejection of a file somebody wrote is always named, whatever the box holds.
+ */
+function orderFileLine(order: PluginOrderResolution, loadedCount: number): string | undefined {
+	if (order.reason === "none") return undefined;
+	if (order.reason === "missing" && loadedCount === 0) return undefined;
+	return `order file: ${order.globalFile} (${ORDER_FILE_CONDITION[order.reason]}; insertion order is used and the file is left untouched)`;
+}
+
+/**
  * The audit as plain text lines, bounded so a box with hundreds of entries
  * still fits a terminal: every capped list ends with how many it omitted.
  * No colors and no theme, so the same lines serve the overlay and `notify`.
@@ -149,9 +175,8 @@ export function formatPluginAudit(audit: PluginAudit, options: PluginAuditFormat
 	const summary = [`Gentle plugins: ${counted(audit.loaded.length, "loaded")}, ${counted(audit.skipped.length, "skipped")}`];
 	if (audit.replacedIds.length > 0) summary.push(`${counted(audit.replacedIds.length, "replaced")}`);
 	const lines: string[] = [summary.join(", ")];
-	if (audit.order.malformed) {
-		lines.push(`order file: ${audit.order.globalFile} (malformed or unreadable; insertion order is used and the file is left untouched)`);
-	}
+	const orderLine = orderFileLine(audit.order, audit.loaded.length);
+	if (orderLine !== undefined) lines.push(orderLine);
 	if (audit.owners.length > 0) {
 		lines.push(`order: ${audit.owners.map((owner) => `${owner.owner} (${owner.source})`).join(", ")}`);
 	}

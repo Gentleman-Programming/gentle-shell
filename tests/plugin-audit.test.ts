@@ -71,6 +71,7 @@ test("a missing plugins.json means no explicit order", (t) => {
 		order: [],
 		source: "default",
 		malformed: false,
+		reason: "missing",
 		globalFile: join(dir, "plugins.json"),
 	});
 });
@@ -82,6 +83,7 @@ test("a valid plugins.json supplies the owner order", (t) => {
 		order: ["beta", "acme"],
 		source: "global_file",
 		malformed: false,
+		reason: "none",
 		globalFile: path,
 	});
 });
@@ -89,23 +91,23 @@ test("a valid plugins.json supplies the owner order", (t) => {
 test("a malformed or unreadable plugins.json reads as no explicit order and is never rewritten", (t) => {
 	const dir = scratch(t);
 	const path = join(dir, "plugins.json");
-	const malformed = [
-		"",
-		"{",
-		"[]",
-		"null",
-		`{"schema":"${PLUGINS_SCHEMA}"}`,
-		`{"schema":"other/v1","order":["acme"]}`,
-		`{"schema":"${PLUGINS_SCHEMA}","order":"acme"}`,
-		`{"schema":"${PLUGINS_SCHEMA}","order":["acme",7]}`,
-		`{"schema":"${PLUGINS_SCHEMA}","order":["acme",""]}`,
-		`{"schema":"${PLUGINS_SCHEMA}","order":["acme"],"extra":1}`,
+	const malformed: Array<[string, string]> = [
+		["", "not-json"],
+		["{", "not-json"],
+		["[]", "wrong-shape"],
+		["null", "wrong-shape"],
+		[`{"schema":"${PLUGINS_SCHEMA}"}`, "wrong-shape"],
+		[`{"schema":"other/v1","order":["acme"]}`, "wrong-schema"],
+		[`{"schema":"${PLUGINS_SCHEMA}","order":"acme"}`, "wrong-shape"],
+		[`{"schema":"${PLUGINS_SCHEMA}","order":["acme",7]}`, "wrong-shape"],
+		[`{"schema":"${PLUGINS_SCHEMA}","order":["acme",""]}`, "wrong-shape"],
+		[`{"schema":"${PLUGINS_SCHEMA}","order":["acme"],"extra":1}`, "wrong-shape"],
 	];
-	for (const raw of malformed) {
+	for (const [raw, reason] of malformed) {
 		writeFileSync(path, raw);
 		assert.deepEqual(
 			readPluginOrder({ gentlePiConfigHome: dir }),
-			{ order: [], source: "global_file", malformed: true, globalFile: path },
+			{ order: [], source: "global_file", malformed: true, reason, globalFile: path },
 			raw,
 		);
 		assert.equal(readFileSync(path, "utf8"), raw, "the malformed file is preserved");
@@ -117,8 +119,77 @@ test("a malformed or unreadable plugins.json reads as no explicit order and is n
 		order: [],
 		source: "global_file",
 		malformed: true,
+		reason: "unreadable",
 		globalFile: join(unreadable, "plugins.json"),
 	});
+});
+
+/** The audit text for a box with nothing in it, so only the order-file line can differ. */
+function orderFileLines(dir: string): string[] {
+	return formatPluginAudit(
+		buildPluginAudit({
+			contributions: [],
+			report: { skipped: [], replaced: [] },
+			order: readPluginOrder({ gentlePiConfigHome: dir }),
+		}),
+	);
+}
+
+test("a missing plugins.json is silent over an empty box and named once a contribution loads", (t) => {
+	const dir = scratch(t);
+	const path = join(dir, "plugins.json");
+
+	// The optional file was never created and nothing contributes: there is no
+	// ordering question, so the audit adds nothing.
+	assert.deepEqual(orderFileLines(dir), [
+		"Gentle plugins: 0 loaded, 0 skipped",
+		"No community contributions are registered.",
+	]);
+
+	// A plugin author with a contribution expects an order: name the file that
+	// is not there. A rejection of a file somebody wrote always prints.
+	reset();
+	t.after(reset);
+	contributionSlot().set("acme.hello", contribution("acme.hello", { rows: [row()] }));
+	const order = readPluginOrder({ gentlePiConfigHome: dir });
+	const lines = formatPluginAudit(
+		buildPluginAudit({ contributions: readContributions({ order: order.order }), report: readContributionReport(), order }),
+	);
+	assert.equal(lines[0], "Gentle plugins: 1 loaded, 0 skipped");
+	assert.equal(lines[1], `order file: ${path} (missing; insertion order is used and the file is left untouched)`);
+});
+
+test("the audit names the order file it looked for and the condition that rejected it", (t) => {
+	const dir = scratch(t);
+	const path = join(dir, "plugins.json");
+	const rejected = (condition: string) =>
+		`order file: ${path} (${condition}; insertion order is used and the file is left untouched)`;
+
+	writeFileSync(path, "{");
+	assert.equal(orderFileLines(dir)[1], rejected("not JSON"));
+
+	writeFileSync(path, `{"schema":"other/v1","order":["acme"]}`);
+	assert.equal(orderFileLines(dir)[1], rejected(`schema is not ${PLUGINS_SCHEMA}`));
+
+	writeFileSync(path, `{"schema":"${PLUGINS_SCHEMA}","order":["acme",7]}`);
+	assert.equal(orderFileLines(dir)[1], rejected("wrong shape"));
+
+	// Unreadable: the path is a directory.
+	const unreadable = scratch(t);
+	const unreadablePath = join(unreadable, "plugins.json");
+	mkdirSync(unreadablePath);
+	assert.equal(
+		orderFileLines(unreadable)[1],
+		`order file: ${unreadablePath} (unreadable; insertion order is used and the file is left untouched)`,
+	);
+});
+
+test("a valid plugins.json adds no line to the audit text", (t) => {
+	const dir = scratch(t);
+	pluginsFile(dir, ["acme"]);
+	const lines = orderFileLines(dir);
+	assert.deepEqual(lines, ["Gentle plugins: 0 loaded, 0 skipped", "No community contributions are registered."]);
+	assert.ok(!lines.some((line) => line.startsWith("order file:")), `a good file is silent: ${lines.join(" | ")}`);
 });
 
 
@@ -259,6 +330,9 @@ test("without sidebar refusals the audit text is byte-identical to today's outpu
 	slot.set("acme.hello", hello);
 	slot.set("acme.hello", hello);
 	slot.set("beta.v2", { id: "beta.v2", owner: "beta", contract: 2 });
+	// A valid order file naming no contribution of this box: it is accepted, so
+	// it adds nothing to the text this slice already printed.
+	pluginsFile(dir, ["ghost"]);
 	// A fresh sidebar read of this box: it carries no sidebar payload, so that
 	// seam reports nothing and the audit text is the one this slice always printed.
 	installContributedSidebar(fakeTui());
@@ -420,4 +494,24 @@ test("/gentle:plugins says the box is empty instead of failing", async (t) => {
 	await fire("session_start", context.ctx);
 	await commands.get(PLUGINS_COMMAND_NAME)!.handler("", context.ctx);
 	assert.match(context.notices.at(-1) ?? "", /No community contributions are registered\./);
+});
+
+test("/gentle:plugins names a rejected plugins.json and the condition that failed", async (t) => {
+	const dir = scratch(t);
+	reset();
+	const path = join(dir, "plugins.json");
+	writeFileSync(path, `{"schema":"${PLUGINS_SCHEMA}","order":"acme"}`);
+
+	const { pi, commands, fire } = fakePi();
+	installGentlePlugins(pi, { env: { GENTLE_PI_CONFIG_HOME: dir } });
+	const context = fakeContext({ hasUI: false, mode: "print" });
+	await fire("session_start", context.ctx);
+	await commands.get(PLUGINS_COMMAND_NAME)!.handler("", context.ctx);
+
+	const text = context.notices.at(-1) ?? "";
+	assert.match(text, /^Gentle plugins: 0 loaded, 0 skipped$/m);
+	assert.equal(
+		text.split("\n").find((line) => line.startsWith("order file:")),
+		`order file: ${path} (wrong shape; insertion order is used and the file is left untouched)`,
+	);
 });

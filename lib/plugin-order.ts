@@ -14,6 +14,14 @@ import { gentlePiConfigHome } from "./agent-home.ts";
 export const PLUGINS_SCHEMA = "gentle-pi.plugins/v1";
 const PLUGINS_FILE = "plugins.json";
 
+/**
+ * Why no owner order came out of `plugins.json`: `none` means the file was
+ * read and accepted. Every other value names the check that failed, so
+ * `/gentle:plugins` can tell a maintainer which one instead of printing a
+ * generic "malformed".
+ */
+export type PluginOrderReason = "none" | "missing" | "unreadable" | "not-json" | "wrong-schema" | "wrong-shape";
+
 export interface PluginOrderOptions {
 	/** Defaults to the gentle-pi config home; only a test or a caller with an env passes it. */
 	gentlePiConfigHome?: string;
@@ -26,7 +34,41 @@ export interface PluginOrderResolution {
 	source: "global_file" | "default";
 	/** A file exists but is unreadable, not JSON or wrongly schemated. */
 	malformed: boolean;
+	/** Which check left `order` empty; `none` only when the file was accepted. */
+	reason: PluginOrderReason;
 	globalFile: string;
+}
+
+/** One parse attempt: the owner order when the text is accepted, and why not otherwise. */
+export interface PluginOrderParse {
+	/** The accepted owner order, `undefined` when the text is not a valid file. */
+	order: string[] | undefined;
+	reason: PluginOrderReason;
+}
+
+/**
+ * The explicit owner order and the check that decided it. Two keys exactly,
+ * this schema, and no coercion, so a hand edit is accepted or reported, never
+ * half-read.
+ */
+export function parsePluginOrderText(raw: string): PluginOrderParse {
+	let value: unknown;
+	try {
+		value = JSON.parse(raw);
+	} catch {
+		return { order: undefined, reason: "not-json" };
+	}
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return { order: undefined, reason: "wrong-shape" };
+	const record = value as Record<string, unknown>;
+	if (Object.keys(record).length !== 2 || !("schema" in record) || !("order" in record)) {
+		return { order: undefined, reason: "wrong-shape" };
+	}
+	if (record.schema !== PLUGINS_SCHEMA) return { order: undefined, reason: "wrong-schema" };
+	const order = record.order;
+	if (!Array.isArray(order) || !order.every((owner) => typeof owner === "string" && owner.length > 0)) {
+		return { order: undefined, reason: "wrong-shape" };
+	}
+	return { order: [...order], reason: "none" };
 }
 
 /**
@@ -34,17 +76,7 @@ export interface PluginOrderResolution {
  * Mirrors `parseCardStyleFile`: two keys exactly, this schema, and no coercion.
  */
 export function parsePluginOrderFile(raw: string): string[] | undefined {
-	try {
-		const value: unknown = JSON.parse(raw);
-		if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-		const record = value as Record<string, unknown>;
-		if (Object.keys(record).length !== 2 || record.schema !== PLUGINS_SCHEMA) return undefined;
-		const order = record.order;
-		if (!Array.isArray(order) || !order.every((owner) => typeof owner === "string" && owner.length > 0)) return undefined;
-		return [...order];
-	} catch {
-		return undefined;
-	}
+	return parsePluginOrderText(raw).order;
 }
 
 /**
@@ -52,20 +84,33 @@ export function parsePluginOrderFile(raw: string): string[] | undefined {
  * schemated or unreadable one also means no explicit order — the same
  * "malformed reads as default" contract as `lib/card-style-policy.ts` — so a
  * hand edit can break arbitration but never a read point, and this reader
- * never throws and never rewrites the file.
+ * never throws and never rewrites the file. `reason` says which check made the
+ * reader fall back, so the audit can report it without changing any read.
  *
  * Callers read it at use time (one read per build or prepare), never once at
  * load time, so an edit takes effect without a reload.
  */
 export function readPluginOrder(options: PluginOrderOptions = {}): PluginOrderResolution {
 	const globalFile = join(options.gentlePiConfigHome ?? gentlePiConfigHome(), PLUGINS_FILE);
+	let raw: string;
 	try {
-		const order = parsePluginOrderFile(readFileSync(globalFile, "utf8"));
-		return order === undefined
-			? { order: [], source: "global_file", malformed: true, globalFile }
-			: { order, source: "global_file", malformed: false, globalFile };
+		raw = readFileSync(globalFile, "utf8");
 	} catch (error) {
 		const missing = typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
-		return { order: [], source: missing ? "default" : "global_file", malformed: !missing, globalFile };
+		return {
+			order: [],
+			source: missing ? "default" : "global_file",
+			malformed: !missing,
+			reason: missing ? "missing" : "unreadable",
+			globalFile,
+		};
 	}
+	const parsed = parsePluginOrderText(raw);
+	return {
+		order: parsed.order ?? [],
+		source: "global_file",
+		malformed: parsed.order === undefined,
+		reason: parsed.reason,
+		globalFile,
+	};
 }

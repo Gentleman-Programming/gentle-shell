@@ -70,6 +70,10 @@ function customLabels(rows: readonly CustomizeRow[]): string[] {
 	return rows.slice(1).map((entry) => (typeof entry.label === "function" ? entry.label() : entry.label));
 }
 
+// The resolution reports *why* it fell back, so `/gentle:plugins` can tell a
+// maintainer that the file was rejected instead of silently using insertion
+// order. One case per failure mode, plus `reason: "none"` for an accepted file.
+
 test("a missing plugins.json means no declared order, and the reader owns the schema", (t) => {
 	assert.equal(PLUGINS_SCHEMA, "gentle-pi.plugins/v1");
 	const dir = scratch(t);
@@ -77,55 +81,91 @@ test("a missing plugins.json means no declared order, and the reader owns the sc
 		order: [],
 		source: "default",
 		malformed: false,
+		reason: "missing",
 		globalFile: join(dir, "plugins.json"),
 	});
 });
 
-test("a valid plugins.json supplies the owner order in the sequence it names", (t) => {
+test("a valid plugins.json supplies the owner order in the sequence it names and reports no reason", (t) => {
 	const dir = scratch(t);
 	const path = pluginsFile(dir, ["beta", "acme"]);
 	assert.deepEqual(readPluginOrder({ gentlePiConfigHome: dir }), {
 		order: ["beta", "acme"],
 		source: "global_file",
 		malformed: false,
+		reason: "none",
 		globalFile: path,
 	});
 	assert.deepEqual(parsePluginOrderFile(readFileSync(path, "utf8")), ["beta", "acme"]);
 });
 
-test("a malformed, wrongly schemated or unreadable plugins.json reads as no order and is never rewritten", (t) => {
+test("an unreadable plugins.json reports unreadable and is never rewritten", (t) => {
+	// The path is a directory, so reading it fails with EISDIR.
 	const dir = scratch(t);
 	const path = join(dir, "plugins.json");
-	const malformed = [
-		"",
-		"{",
-		"[]",
-		"null",
-		`{"schema":"${PLUGINS_SCHEMA}"}`,
-		`{"schema":"other/v1","order":["acme"]}`,
-		`{"schema":"${PLUGINS_SCHEMA}","order":"acme"}`,
-		`{"schema":"${PLUGINS_SCHEMA}","order":["acme",7]}`,
-		`{"schema":"${PLUGINS_SCHEMA}","order":["acme"],"extra":1}`,
-	];
-	for (const raw of malformed) {
+	mkdirSync(path);
+	assert.deepEqual(readPluginOrder({ gentlePiConfigHome: dir }), {
+		order: [],
+		source: "global_file",
+		malformed: true,
+		reason: "unreadable",
+		globalFile: path,
+	});
+});
+
+test("a plugins.json that is not JSON reports not-json and is never rewritten", (t) => {
+	const dir = scratch(t);
+	const path = join(dir, "plugins.json");
+	for (const raw of ["", "{", `{"schema":`]) {
 		writeFileSync(path, raw);
 		assert.equal(parsePluginOrderFile(raw), undefined, raw);
 		assert.deepEqual(
 			readPluginOrder({ gentlePiConfigHome: dir }),
-			{ order: [], source: "global_file", malformed: true, globalFile: path },
+			{ order: [], source: "global_file", malformed: true, reason: "not-json", globalFile: path },
 			raw,
 		);
-		assert.equal(readFileSync(path, "utf8"), raw, "the malformed file is preserved");
+		assert.equal(readFileSync(path, "utf8"), raw, "the rejected file is preserved");
 	}
-	// Unreadable: the path is a directory, so reading it fails.
-	const unreadable = scratch(t);
-	mkdirSync(join(unreadable, "plugins.json"));
-	assert.deepEqual(readPluginOrder({ gentlePiConfigHome: unreadable }), {
-		order: [],
-		source: "global_file",
-		malformed: true,
-		globalFile: join(unreadable, "plugins.json"),
-	});
+});
+
+test("a plugins.json with another schema reports wrong-schema and is never rewritten", (t) => {
+	const dir = scratch(t);
+	const path = join(dir, "plugins.json");
+	for (const raw of [`{"schema":"other/v1","order":["acme"]}`, `{"schema":"gentle-pi.plugins/v2","order":["acme"]}`]) {
+		writeFileSync(path, raw);
+		assert.equal(parsePluginOrderFile(raw), undefined, raw);
+		assert.deepEqual(
+			readPluginOrder({ gentlePiConfigHome: dir }),
+			{ order: [], source: "global_file", malformed: true, reason: "wrong-schema", globalFile: path },
+			raw,
+		);
+		assert.equal(readFileSync(path, "utf8"), raw, "the rejected file is preserved");
+	}
+});
+
+test("a plugins.json whose shape is not { schema, order } with owner names reports wrong-shape", (t) => {
+	const dir = scratch(t);
+	const path = join(dir, "plugins.json");
+	const wrongShape = [
+		"[]",
+		"null",
+		`{"schema":"${PLUGINS_SCHEMA}"}`,
+		`{"order":["acme"]}`,
+		`{"schema":"${PLUGINS_SCHEMA}","order":"acme"}`,
+		`{"schema":"${PLUGINS_SCHEMA}","order":["acme",7]}`,
+		`{"schema":"${PLUGINS_SCHEMA}","order":["acme",""]}`,
+		`{"schema":"${PLUGINS_SCHEMA}","order":["acme"],"extra":1}`,
+	];
+	for (const raw of wrongShape) {
+		writeFileSync(path, raw);
+		assert.equal(parsePluginOrderFile(raw), undefined, raw);
+		assert.deepEqual(
+			readPluginOrder({ gentlePiConfigHome: dir }),
+			{ order: [], source: "global_file", malformed: true, reason: "wrong-shape", globalFile: path },
+			raw,
+		);
+		assert.equal(readFileSync(path, "utf8"), raw, "the rejected file is preserved");
+	}
 });
 
 test("the injected home is the only place the reader looks", (t) => {

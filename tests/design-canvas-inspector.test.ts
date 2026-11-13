@@ -646,7 +646,7 @@ test("the contrast check flags text under AA (4.5 : 1, 3 : 1 for large text) on 
 	assert.deepEqual(report.checks.find((check) => check.id === "contrast"), { id: "contrast", label: "Text contrast", count: 5, advice: 0 });
 });
 
-test("the contrast check multiplies the text's alpha by the opacity of the element and its ancestors up to its opaque background", () => {
+test("the contrast check fades the text by its own alpha and by the opacity of the element and its ancestors", () => {
 	const page = checkPage([
 		{ tag: "p", attrs: { id: "half" }, text: "Half", style: { opacity: "0.5" } },
 		{ tag: "div", style: { opacity: "0.5" }, kids: [{ tag: "p", attrs: { id: "in-faded" }, text: "Inside" }] },
@@ -658,6 +658,18 @@ test("the contrast check multiplies the text's alpha by the opacity of the eleme
 	assert.deepEqual(issuesOf(report, "contrast").map((issue) => issue.selector), ["#half", "#in-faded"]);
 	assert.equal(issuesOf(report, "contrast")[0].detail, '"Half" is 3.94 : 1 (#808080 on #ffffff); WCAG AA needs 4.5 : 1.', "black on white at opacity 0.5 is about 3.95 : 1, not 21 : 1");
 	assert.equal(issuesOf(report, "contrast")[1].detail, '"Inside" is 3.94 : 1 (#808080 on #ffffff); WCAG AA needs 4.5 : 1.', "an ancestor's opacity counts too");
+});
+
+test("S6: an ancestor's opacity fades the text and its opaque background together over what lies behind that ancestor", () => {
+	const page = checkPage([
+		{ tag: "div", style: { opacity: "0.5" }, kids: [{ tag: "p", attrs: { id: "opaque-child" }, text: "On its own white", style: { color: "rgb(0, 0, 0)", backgroundColor: "rgb(255, 255, 255)" } }] },
+		{ tag: "div", style: { opacity: "0.5" }, kids: [{ tag: "p", attrs: { id: "in-faded" }, text: "Inside" }] },
+		{ tag: "p", attrs: { id: "opaque-unfaded" }, text: "Not faded", style: { color: "rgb(0, 0, 0)", backgroundColor: "rgb(255, 255, 255)" } },
+	]);
+	const report = page.run();
+	assert.deepEqual(issuesOf(report, "contrast").map((issue) => issue.selector), ["#opaque-child", "#in-faded"], "no finding for black on an opaque white with no faded ancestor");
+	assert.equal(issuesOf(report, "contrast")[0].detail, '"On its own white" is 3.94 : 1 (#808080 on #ffffff); WCAG AA needs 4.5 : 1.', "black on white faded to 0.5 over the white page: #808080 on #ffffff, not 21 : 1");
+	assert.equal(issuesOf(report, "contrast")[1].detail, '"Inside" is 3.94 : 1 (#808080 on #ffffff); WCAG AA needs 4.5 : 1.', "the transparent-child control is unchanged");
 	assert.equal(report.checks.find((check) => check.id === "contrast")?.count, 2, "text under an ancestor at opacity 0 is not drawn, so it is not judged");
 });
 

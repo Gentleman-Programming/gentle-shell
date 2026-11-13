@@ -216,20 +216,52 @@
 		return base;
 	}
 
+	/** `top` composited over `under`, either of them translucent (alpha kept, channels not premultiplied), rounded to whole channels. */
+	function overLayer(top, under) {
+		const a = top.a + under.a * (1 - top.a);
+		if (a <= 0) return { r: 0, g: 0, b: 0, a: 0 };
+		const mix = (t, u) => Math.round((t * top.a + u * under.a * (1 - top.a)) / a);
+		return { r: mix(top.r, under.r), g: mix(top.g, under.g), b: mix(top.b, under.b), a };
+	}
+
 	/**
-	 * How opaque the element's text is drawn: its own opacity times its ancestors', up to and including the one whose
-	 * background is opaque (the layer backgroundOf stops at). 0 when the text is not drawn at all.
+	 * The element's text `color` and the background next to it as finally seen: each element from it up to the page draws
+	 * its background under what it holds, and its opacity fades all of that (text and background together) over what lies
+	 * behind it; the white page under everything. Null when the text is not drawn at all (an opacity of 0, a transparent
+	 * color), or when an image, a gradient or a color it cannot read shows through.
 	 */
-	function opacityOf(element) {
-		let opacity = 1;
+	function seenColorsOf(element, color) {
+		let text = color;
+		let beside = { r: 0, g: 0, b: 0, a: 0 };
+		let drawn = color.a;
 		for (let node = element; node; node = node.parentElement) {
 			const style = getComputedStyle(node);
+			// Under an opaque layer a background does not show, until an opacity above fades the layer over it.
+			const covered = text.a >= 1 && beside.a >= 1;
+			if (!covered) {
+				if (style.backgroundImage && style.backgroundImage !== "none") return null;
+				const fill = parseColor(style.backgroundColor);
+				if (fill === null && style.backgroundColor && style.backgroundColor !== "transparent") return null;
+				if (fill && fill.a > 0) {
+					text = overLayer(text, fill);
+					beside = overLayer(beside, fill);
+				}
+			}
 			const own = Number.parseFloat(style.opacity);
-			if (Number.isFinite(own)) opacity *= Math.min(Math.max(own, 0), 1);
-			const color = parseColor(style.backgroundColor);
-			if (color && color.a >= 1) break;
+			if (Number.isFinite(own) && own < 1) {
+				const fade = Math.max(own, 0);
+				drawn *= fade;
+				text = { ...text, a: text.a * fade };
+				beside = { ...beside, a: beside.a * fade };
+			}
 		}
-		return opacity;
+		if (drawn <= 0) return null;
+		const page = { r: 255, g: 255, b: 255, a: 1 };
+		const seen = (layer) => {
+			const { r, g, b } = overLayer(layer, page);
+			return { r, g, b };
+		};
+		return { foreground: seen(text), background: seen(beside) };
 	}
 
 	/** CSS px of a computed length; a percentage (a radius) of `basis`. */
@@ -461,10 +493,9 @@
 
 			if (text && !element.hasAttribute("disabled")) {
 				const color = parseColor(style.color);
-				const behind = color ? backgroundOf(element) : null;
-				const alpha = behind ? color.a * opacityOf(element) : 0;
-				if (color && behind && alpha > 0) {
-					const foreground = alpha < 1 ? over({ ...color, a: alpha }, behind) : color;
+				const seen = color ? seenColorsOf(element, color) : null;
+				if (seen) {
+					const { foreground, background: behind } = seen;
 					const { ratio, text: shownRatio } = contrastOf(foreground, behind);
 					const size = px(style.fontSize, 0);
 					const large = size >= 24 || (size >= 18.66 && weightOf(style.fontWeight) >= 700);

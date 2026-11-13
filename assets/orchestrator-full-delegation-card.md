@@ -21,7 +21,6 @@ Before delegating, declare a subject via `orchestrator_session_id`.
 
 ## Launch
 
-- Derive nonempty `## Allowed edit surfaces` before launching a writer (below). Parallel writers only with disjoint Allowed edit surfaces (runtime-enforced) or isolated worktrees.
 - Pass the session's resolved skill paths under `## Skills to load before work`; children read them first (`orchestrator-skills.md`).
 - A child must be able to do the task it is given. Check the agent's declared `tools` in `subagent_list_agents` before launching: never give a read-only explorer shell work, and never assume your own tools transfer to the child. With no qualified agent, report the capability gap; never do the work yourself instead.
 - Background (policy on, `subagent_run` present): omit `mode`; it returns a task id at once. End the turn and resume on its `gentle-agents.result` completion message; never sleep or poll `subagent_status`. Otherwise run in the foreground. Detail: below.

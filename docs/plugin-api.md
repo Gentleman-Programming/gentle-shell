@@ -173,6 +173,8 @@ export default function gentleDemo(pi) {
       ? globalThis[CONTRIBUTIONS]
       : new Map();
     globalThis[CONTRIBUTIONS] = box;
+    // The first value this process stored is the one that answers.
+    if (box.has("demo.hello")) return;
 
     box.set("demo.hello", {
       id: "demo.hello",
@@ -194,7 +196,9 @@ export default function gentleDemo(pi) {
 }
 ```
 
-`session_start` is where the box is filled, because Pi may load an extension without starting a session, and because a session is where a live `ctx` exists. It also comes after gentle-pi has adopted the box: Pi loads every extension before it starts a session, and gentle-pi claims the box while it loads, so the refusing `set` is already installed when this handler runs. Fill the box once per process: the entry the process stored first is the one that answers. This example re-sets `demo.hello` on every `session_start`, and from the second session that `set` passes a different object and is refused — the id appears in `/gentle:plugins` under replaced ids, with a `duplicate-id` refusal, and the first entry, with the `ctx` it closed over, stays live. Re-setting the very same reference only marks the id as replaced.
+`session_start` is where the box is filled, because Pi may load an extension without starting a session, and because a session is where a live `ctx` exists. It also comes after gentle-pi has adopted the box: Pi loads every extension before it starts a session, and gentle-pi claims the box while it loads, so the refusing `set` is already installed when this handler runs.
+
+Fill the box once per process: the entry the process stored first is the one that answers, and `has` is how a plugin honours that rule. The guard above returns before `set` once `demo.hello` is in the box, so only the first `session_start` of the process registers anything, and later sessions raise no refusal — the first entry, with the `ctx` it closed over, stays live. Leave the guard out and the second session calls `set` with a different object, which is refused: the id appears in `/gentle:plugins` under replaced ids, with a `duplicate-id` refusal, while the first entry still answers. Re-setting the very same reference only marks the id as replaced. A `duplicate-id` in `/gentle:plugins` therefore means a plugin is missing its guard, not that gentle-pi misplaced its contribution.
 
 ## What a plugin may touch
 

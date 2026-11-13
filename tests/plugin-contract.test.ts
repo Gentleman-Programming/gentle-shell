@@ -131,6 +131,43 @@ test("re-setting the same stored entry still reports the id as replaced without 
 	assert.deepEqual(report.skipped, []);
 });
 
+test("the documented session_start guard registers once and reports no duplicate", () => {
+	reset();
+	// gentle-pi claims the box while it loads, before any session starts.
+	contributionSlot();
+
+	const answered: number[] = [];
+	const sessionStart = (session: number): void => {
+		const holder = globalThis as unknown as { [key: symbol]: unknown };
+		const box = holder[CONTRIBUTIONS] instanceof Map
+			? (holder[CONTRIBUTIONS] as Map<string, Contribution>)
+			: new Map<string, Contribution>();
+		holder[CONTRIBUTIONS] = box;
+		// The guard the documentation teaches, copied from its example.
+		if (box.has("acme.hello")) return;
+		box.set("acme.hello", contribution({
+			id: "acme.hello",
+			rows: [row({ action: () => { answered.push(session); } })],
+		}));
+	};
+
+	sessionStart(1);
+	const first = readContributions();
+	const firstReport = readContributionReport();
+	sessionStart(2);
+	const second = readContributions();
+	const secondReport = readContributionReport();
+
+	assert.deepEqual([firstReport, secondReport], [
+		{ skipped: [], replaced: [] },
+		{ skipped: [], replaced: [] },
+	], "the guarded pattern never produces a duplicate-id refusal");
+	assert.deepEqual(first.map((entry) => entry.id), ["acme.hello"]);
+	assert.deepEqual(second.map((entry) => entry.id), ["acme.hello"]);
+	second[0].rows?.[0].action();
+	assert.deepEqual(answered, [1], "the first session_start's payload is the one that answers");
+});
+
 test("a payload getter that throws is an invalid-contribution report, never an exception", () => {
 	reset();
 	const slot = contributionSlot();

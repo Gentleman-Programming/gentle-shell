@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -67,7 +67,7 @@ function seedHarness(cwd: string, overrides: Partial<SeedInput> = {}): { input: 
 
 test("worktreeMainRoot: the linked worktree resolves to its main checkout, the main does not", (t) => {
 	const { main, worktree } = worktreePair(t);
-	assert.equal(worktreeMainRoot(worktree), main, "a linked worktree's main is the common dir's root");
+	assert.equal(worktreeMainRoot(worktree), realpathSync(main), "a linked worktree's main is the common dir's root");
 	assert.equal(worktreeMainRoot(main), undefined, "the main checkout itself has no seeding source");
 });
 
@@ -116,6 +116,18 @@ test("seedWorktreeIndex: a failed sync removes the seeded database so absent sta
 	assert.equal(result.outcome, "seed-failed", "the caller learns to fall back to init");
 	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db")), true, "no corrupt half-seeded database is left behind");
 	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db.seeding")), true, "and no staged remnant either");
+});
+
+test("rename crash-window: a failing sidecar rename must not leave a torn database", async (t) => {
+	const { main, worktree } = worktreePair(t);
+	// The main checkout carries sidecars, so the seed stages and renames them too.
+	writeFileSync(join(main, ".codegraph", "codegraph.db-wal"), "wal-bytes");
+	writeFileSync(join(main, ".codegraph", "codegraph.db-shm"), "shm-bytes");
+	// A directory squatting on a sidecar's final name makes that rename fail.
+	mkdirSync(join(worktree, ".codegraph", "codegraph.db-wal"), { recursive: true });
+
+	await assert.rejects(() => seedWorktreeIndex(seedHarness(worktree).input));
+	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db")), true, "the database must not be in place while a sidecar failed");
 });
 
 test("seedWorktreeIndex: two real sessions seeding one worktree copy exactly once", async (t) => {

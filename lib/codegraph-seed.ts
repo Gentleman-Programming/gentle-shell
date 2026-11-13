@@ -101,8 +101,9 @@ export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: Se
 			return { outcome: "seed-failed" };
 		}
 		// Sidecars first, the database last: no intermediate state has a
-		// database without the sidecars it may need.
-		staged.sort(([, a], [, b]) => Number(b === targetDb) - Number(a === targetDb));
+		// database without the sidecars it may need, so a failing sidecar rename
+		// never leaves a torn database that counts as an index.
+		staged.sort(([, a], [, b]) => Number(a === targetDb) - Number(b === targetDb));
 		for (const [stagedPath, finalPath] of staged) renameSync(stagedPath, finalPath);
 
 		const synced = await input.run(["sync", "-q"], input.cwd, SYNC_TIMEOUT_MS);

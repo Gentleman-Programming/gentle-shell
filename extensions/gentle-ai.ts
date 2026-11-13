@@ -162,6 +162,15 @@ import {
 } from "../lib/profiles-orchestrator.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import {
+	DESKTOP_PROFILES_SERVICE_CHANNEL,
+	DESKTOP_PROFILES_SERVICE_SCHEMA,
+	desktopConfirmationToken,
+	type DesktopProfileApplyRequest,
+	type DesktopProfileApplyResult,
+	type DesktopProfileNote,
+	type DesktopProfilesService,
+} from "../lib/desktop-rpc-profiles.ts";
+import {
 	REVIEW_HOST_RELAY_FAILURE,
 	REVIEW_HOST_RELAY_PI_TIMEOUT_ENV,
 	REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS,
@@ -6760,6 +6769,64 @@ async function loadProfilesStore(ctx: ExtensionContext): Promise<{ path: string;
 	return { path, file };
 }
 
+let desktopProfileApplyInFlight = false;
+
+/**
+ * Runs the screen's own "Make default" or "Use in this session" action for
+ * Gentle Desktop. The screen's UI is replaced by a recording adapter: notices
+ * become notes, and a confirmation passes only when the request carries the
+ * token bound to the exact title and message the screen asks and to the saved
+ * profile it applies, so declining semantics (nothing written) hold until
+ * Desktop showed that text to the human for that exact profile.
+ */
+async function applyDesktopProfile(context: ExtensionContext, live: LiveSession, request: DesktopProfileApplyRequest): Promise<DesktopProfileApplyResult> {
+	if (desktopProfileApplyInFlight) return { status: "busy" };
+	desktopProfileApplyInFlight = true;
+	try {
+		const notes: DesktopProfileNote[] = [];
+		let pending: { title: string; message: string; confirmation: string } | undefined;
+		// Some dialogs list no routes, so the token also binds the profile content applied.
+		let config: AgentModelConfig = {};
+		const adapter = {
+			notify(message: string, type?: "info" | "warning" | "error") {
+				notes.push({ level: type ?? "info", text: message });
+			},
+			async confirm(title: string, message: string) {
+				const token = desktopConfirmationToken(request.mode, request.profile, title, message, config);
+				const offered = Buffer.from(request.confirmation ?? "");
+				const expected = Buffer.from(token);
+				if (offered.length === expected.length && timingSafeEqual(offered, expected)) return true;
+				pending ??= { title, message, confirmation: token };
+				return false;
+			},
+			// The actions Desktop runs never prompt for text or choices; never open a dialog.
+			select: async () => undefined,
+			input: async () => undefined,
+		};
+		// Pi command contexts are lazy getters with stale checks; inherit them instead of copying.
+		const scoped = Object.create(context, { ui: { value: adapter, enumerable: true } }) as ExtensionContext;
+		const store = await loadProfilesStore(scoped);
+		if (!store) return { status: "not_applied", notes };
+		const name = request.profile;
+		if (!hasOwnProfile(store.file.profiles, name)) return { status: "unknown_profile" };
+		config = normalizeModelConfig(store.file.profiles[name]) ?? {};
+		// A first-run seeding notice precedes the action; only the action's own notices decide its status.
+		const actionStart = notes.length;
+		await runProfilesPanelAction(
+			scoped,
+			live,
+			store.path,
+			store.file,
+			request.mode === "default" ? { type: "apply-global", name, config: cloneModelConfig(config) } : { type: "use-session", name, config },
+		);
+		if (pending) return { status: "confirmation_required", ...pending };
+		// Every success path ends with an info notice; every failure ends with a warning or says nothing.
+		return { status: notes.slice(actionStart).at(-1)?.level === "info" ? "applied" : "not_applied", notes };
+	} finally {
+		desktopProfileApplyInFlight = false;
+	}
+}
+
 /**
  * The models screen loop: shows one profile's table, runs what the user chose,
  * and reopens with fresh store, binding, and pin state; a tab switch stays on
@@ -11912,6 +11979,7 @@ async function executeReviewControllerOperationImpl(
 
 /** @internal */
 export const __testing = {
+	applyDesktopProfile,
 	readSavedModelConfig,
 	readSavedModelConfigAsync,
 	setCandidateViewSymlinkProbeForTesting,
@@ -13204,6 +13272,28 @@ function createGentleAiExtensionForTesting(
 		handler: async (args, ctx) => {
 			await handleProfilesCommand(ctx, pi, typeof args === "string" ? args : "");
 		},
+	});
+
+	// Desktop's apply_profile reaches the screen's own apply through this
+	// versioned, adapter-shaped seam; there is no second apply implementation.
+	// Hosts without an event bus (some embedders and test hosts) skip the seam.
+	if (typeof pi.events?.on === "function") pi.events.on(DESKTOP_PROFILES_SERVICE_CHANNEL, (payload: unknown) => {
+		if (!payload || typeof payload !== "object") return;
+		const request = payload as Partial<{ context: ExtensionContext; respond(service: DesktopProfilesService): void }>;
+		if (typeof request.respond !== "function" || !request.context) return;
+		const ctx = request.context;
+		try {
+			let disposed = false;
+			request.respond({
+				schema: DESKTOP_PROFILES_SERVICE_SCHEMA,
+				apply: (applyRequest) => (disposed ? Promise.resolve({ status: "not_applied", notes: [] }) : applyDesktopProfile(ctx, pi, applyRequest)),
+				dispose: () => {
+					disposed = true;
+				},
+			});
+		} catch {
+			/* obsolete trusted context: discovery expires closed */
+		}
 	});
 
 	pi.registerCommand("gentle:persona", {

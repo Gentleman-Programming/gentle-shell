@@ -62,12 +62,12 @@ Returns the currently implemented contract; clients must not infer support from 
   "schema": "gentle-shell.desktop-rpc/v1",
   "command": "gentle:desktop",
   "widget": "gentle-desktop-rpc",
-  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "list_subagents", "cancel_subagent"],
-  "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "agents_update"]
+  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "apply_profile", "list_subagents", "cancel_subagent"],
+  "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update"]
 }
 ```
 
-The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list and cancel, the subagents list and cancel, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, and `agents_update` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list and cancel methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The subagents slice advertises exactly its list and cancel methods and its one transition event, not the agent dispatch tools, which stay agent tools. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), and [Subagents limits](#subagents-limits).
+The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list and cancel, the profile apply, the subagents list and cancel, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, and `agents_update` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list and cancel methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list and cancel methods and its one transition event, not the agent dispatch tools, which stay agent tools. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), and [Subagents limits](#subagents-limits).
 
 ### `get_snapshot`
 
@@ -836,6 +836,72 @@ The response is the **actual post-action state**, re-read from the owner — nev
 - A **running** task is cancelled asynchronously: `runner.cancel` returns `true` but the store has not transitioned yet, so the response reports the still-`running` state and emits **no immediate event**. The real transition (the child exit to `cancelled`) arrives later through the normal `agents_update` path. A repeated in-flight cancel is likewise `changed: false` with no event.
 - An already-terminal task returns its terminal state with no event; there is no race-driven error for a task that finished just before the cancel. An unknown or foreign id is a typed `not_found`. The response line always precedes any `agents_update` event.
 
+### `apply_profile`
+
+Applies one saved profile through the `/gentle:profiles` screen's own actions: `mode: "default"` runs **Make default for new sessions**, and `mode: "session"` runs **Use in this session**. There is no second apply implementation, so the diff confirmation, the pinned-repository rule, and the rollback are the screen's own.
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-62", "method": "apply_profile", "params": { "profile": "team", "mode": "default" } }
+```
+
+| Param | Required | Type | Meaning |
+| --- | --- | --- | --- |
+| `profile` | yes | string, 1–128 characters | A saved profile name in `profiles.json`. |
+| `mode` | yes | `"default"` or `"session"` | `default` makes the profile the global default; `session` binds it to this RPC session only. |
+| `confirmation` | no | string, 1–128 characters | The `token` from a previous `confirmation_required` answer for the same `profile` and `mode`. |
+
+Any other key or a malformed value is `invalid_request`. A name that is not a saved profile is `unknown_profile`, and no routing, settings, agents, or pins are written. Like the screen on first open, a missing `profiles.json` is first seeded with a `current` profile from the routing in effect; that is the only write an `apply_profile` can make before its checks.
+
+When the screen would ask before writing (`Apply profile "<name>"?`, `Apply empty profile?`, `Apply orchestrator-only profile?`), the answer is that same dialog, and nothing has been written:
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-62",
+  "ok": true,
+  "data": {
+    "profile": "team",
+    "mode": "default",
+    "status": "confirmation_required",
+    "confirmation": {
+      "title": "Apply profile \"team\"?",
+      "message": "Profile \"team\" has agent routing entries. Applying it will replace global routing in … with this profile's routes: worker: openai/alpha (added). Continue?",
+      "token": "3f1c…"
+    }
+  }
+}
+```
+
+Desktop must show `title` and `message` to the human. Only when the human approves does it resend the request with `confirmation` set to `token`. Declining means not resending; nothing was written.
+
+- **The token is bound to what was shown.** It hashes the mode, the profile name, the exact title and message, and the exact saved profile content the apply uses. If the diff, the current routing, or the saved profile changed since it was shown, the old token no longer matches, and the request answers `confirmation_required` again with the new text and a new token. Editing the profile asks again even when the dialog lists no routes (for example the empty, orchestrator-only, or unreadable-routing dialogs).
+- **The token is not authentication.** Whoever can write Pi's RPC stdin can read the token and resend it. Getting a human to confirm is Desktop's job; the token only guarantees that the apply runs against the text that was shown.
+- **Not every apply asks.** A pinned repository applies repo-scoped (it re-pins this clone and writes no global routing or orchestrator) and never asks. A profile that already matches the current global routing and orchestrator never asks: as on the screen, it still claims the profile and re-materializes the same routing, reports `applied`, and its `notes` start with the "already matches" line. `session` never asks.
+
+Otherwise the answer is the outcome, with the screen's notices as `notes` (`level` is `info`, `warning`, or `error`):
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-63",
+  "ok": true,
+  "data": {
+    "profile": "team",
+    "mode": "default",
+    "status": "applied",
+    "notes": [{ "level": "info", "text": "el Gentleman applied profile \"team\" — 1 agent updated. …" }]
+  }
+}
+```
+
+`applied` is followed by one `profile_applied` event. The status follows the screen's last notice: `applied` when it ended with an `info` notice, `not_applied` when it ended with a warning or with no notice; `notes` lists every notice in order, including a first-run seeding notice. For `not_applied` they say why, and when a write failed after the profile was claimed, the screen's rollback has already restored what it could. `not_applied` emits no event.
+
+`session` binds the profile to the RPC session through the same session-profile path as the screen's Enter: it writes no global routing, no pins, no materialized stores, and does not change the active marker in `profiles.json`.
+
+Only one apply runs at a time in a Pi process, across sessions. A request that arrives while another apply is running answers `profile_apply_busy` and changes nothing.
+
 ## Responses
 
 Success:
@@ -865,11 +931,11 @@ Failure:
 }
 ```
 
-Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invalid_data`, `revision_conflict`, `write_failed`, `unsupported_method`, `permission_unavailable`, `permission_denied`, `config_unavailable`, `usage_unavailable`, `design_unavailable`, `jobs_unavailable`, `agents_unavailable`, `not_found`, and `internal_error`. A request that cannot supply a valid correlation ID uses `requestId: null`. State/provider failures use the generic `internal_error` message rather than exposing raw paths, credentials, or provider errors. Transport failures from `setWidget` are never retried as a second response.
+Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invalid_data`, `revision_conflict`, `write_failed`, `unsupported_method`, `permission_unavailable`, `permission_denied`, `config_unavailable`, `usage_unavailable`, `design_unavailable`, `jobs_unavailable`, `agents_unavailable`, `profiles_unavailable`, `unknown_profile`, `profile_apply_busy`, `not_found`, and `internal_error`. A request that cannot supply a valid correlation ID uses `requestId: null`. State/provider failures use the generic `internal_error` message rather than exposing raw paths, credentials, or provider errors. Transport failures from `setWidget` are never retried as a second response.
 
 | Code | Meaning |
 | --- | --- |
-| `invalid_request` | Malformed envelope, unsupported params (including a physical path, or `set_config` without `data`), or an unknown permission mode. State unchanged. |
+| `invalid_request` | Malformed envelope, unsupported params (including a physical path, `set_config` without `data`, or an `apply_profile` mode other than `default`/`session`), or an unknown permission mode. State unchanged. |
 | `unknown_store` | A store identifier this slice does not implement. Nothing was read or written. |
 | `read_only` | `set_config` named `models`, `subagents`, or `managed_assets`. Rejected before the payload was inspected; nothing was written. |
 | `invalid_data` | `set_config` data the owner would reject or would silently drop. Nothing was written, and no file was created. |
@@ -883,6 +949,9 @@ Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invali
 | `design_unavailable` | The design canvas owner did not answer for this session (the owning extension is not loaded, or the session changed). State unchanged. |
 | `jobs_unavailable` | The background-jobs owner did not answer for this session (the owning extension is not loaded, or the session changed). State unchanged. |
 | `agents_unavailable` | The subagents owner did not answer for this session (the owning extension is not loaded, or the session changed). State unchanged. |
+| `profiles_unavailable` | The profiles owner did not answer for this session (the owning extension is not loaded, the session changed, or no Desktop command bound a session context). Nothing was written. |
+| `unknown_profile` | `apply_profile` named a profile that is not saved in `profiles.json`. No routing, settings, agents, or pins were written (a missing `profiles.json` may have been seeded). |
+| `profile_apply_busy` | Another `apply_profile` is still running. Nothing was written by this request. |
 | `not_found` | `cancel_job` named a job id, or `cancel_subagent` named a subagent id, that does not exist or belongs to another session. Nothing was stopped. |
 | `internal_error` | Unexpected failure; message stays generic. |
 
@@ -1051,6 +1120,22 @@ Carries the active session's projected subagent list whenever the existing agent
 
 `agents` is the same whitelisted, bounded projection as `list_subagents` (`id`, `agent`, `status`, `model`, `modelSource?`, `fallbackFrom?`, `thinking?`, `lastStep`, `usage`), so a client that missed a response can reconcile from the event alone. The event is filtered to the active owner session; a foreign-session transition emits nothing to this bridge. Bursts of transitions are coalesced into one event per window and byte-identical projected lists are deduped, matching the activity publisher. A no-op or failed cancellation emits nothing: an already-terminal `cancel_subagent` changes nothing, so no event follows. When a changed `cancel_subagent` triggers the event, its response line always precedes the event line through the same router sequencer.
 
+### `profile_applied`
+
+Follows an `apply_profile` answer whose `status` is `applied`, after the response line.
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "event",
+  "seq": 3,
+  "event": "profile_applied",
+  "data": { "profile": "team", "mode": "default", "source": "desktop" }
+}
+```
+
+`source` is always `desktop`: an apply from the `/gentle:profiles` screen emits nothing on this channel. `confirmation_required`, `not_applied`, and every error emit nothing. Clients that show profile state should re-read `get_config` for `profiles` after this event.
+
 ## Configuration limits
 
 - **One reader and one writer per store.** Each `get_config` answer and each `set_config` write comes from the module that already owns that file (`agent-profiles.ts`, `model-routing-authority.ts`, `model-fallback-store.ts`, `agents-config.ts`, `agent-profile-pin.ts`, `agent-assets.ts`). There is no second store, no cached copy, no parallel parser, no shadow precedence, and no re-implemented invariant: the merge rules are the owner's own (`readSavedModelConfig`, `parseAgentsConfig`, `evaluateProfilePin`) and the writes are the owner's validated atomic writers (`writeProfilesFileSync`, `writeFallbacksFile`, `writeProfilePinSync`).
@@ -1118,6 +1203,13 @@ Carries the active session's projected subagent list whenever the existing agent
 - **Truthful absence.** When the owning extension is not loaded, `list_subagents` and `cancel_subagent` answer `agents_unavailable` rather than inventing an empty list or a fake stop. A task that exists but belongs to another session is indistinguishable from an unknown id at this boundary: both answer `not_found`.
 - **Unproven live-child boundary.** The deterministic tests drive the real owner with a real `TaskStore` and a real `AgentRunner` over a fake child (never a real process), and the maintainer probe lists the owner-loaded empty list without starting a child. This slice does not yet prove a live `cancel_subagent` of a running child over the installed runtime end to end; the in-process real-owner test exercises the real `runner.cancel` path and its eventual `agents_update`, but a real OS child is out of scope.
 
+## Profiles limits
+
+- **One owner, no second apply.** `apply_profile` reaches the `/gentle:profiles` owner in `extensions/gentle-ai.ts` through a defensive, versioned owner-service adapter, like the usage and design seams. The owner runs the screen's own **Use in this session** and **Make default** actions with a UI that records notices and answers confirmations only with a matching token. It never opens a dialog in Pi.
+- **Apply only.** This slice has one method and one event. Creating, editing, or deleting profiles stays `set_config` on the `profiles` store; pins stay `set_config` on `pins`.
+- **Confirmation is Desktop's job.** The token binds an apply to the title and message that were shown and to the exact saved profile; it is not a proof that a person saw them.
+- **Truthful absence.** When the owning extension is not loaded, `apply_profile` answers `profiles_unavailable` rather than inventing an outcome.
+
 ## Verification
 
 ```sh
@@ -1129,6 +1221,7 @@ node --experimental-strip-types --test \
   tests/desktop-rpc-design.test.ts \
   tests/desktop-rpc-jobs.test.ts \
   tests/desktop-rpc-agents.test.ts \
+  tests/desktop-rpc-profiles.test.ts \
   tests/maintainer/desktop-rpc.maintest.ts
 ```
 
@@ -1141,6 +1234,8 @@ The usage tests use a fake owner service and a fake fetch/modelRegistry only: th
 The jobs tests use the existing background-job fake (the same fake shell operations and monitor controller as the background-jobs tests) and a fake owner service only: they cover the whitelisted projection and field redaction, the bounded running + recent-finished selection, list/cancel param shapes, the active-session filter, owner absence (`jobs_unavailable`, never a fabricated empty list), the `job_stop` stop path (monitor cancel + registry stop), already-terminal idempotency with no event, unknown and foreign-session `not_found`, invalid params rejected before discovery, agent-driven `jobs_update` events with foreign-session filtering, the response-before-event order over the router, session reset disconnecting observers and dropping late outcomes, late-discovery disposal, and the versioned adapter discovery. They also drive the real `job_stop` tool to prove the change descriptor distinguishes a running→stopped stop from a no-op stop.
 
 The subagents tests use a real `TaskStore` plus a fake runner (never a child process) and a fake owner service only: they cover the whitelisted model/usage/cost projection and field redaction, the closed `lastStep` vocabulary (raw error/path/secret/provider text never crosses), the bounded active + recent-finished selection, list/cancel param shapes, the active-session filter, owner absence (`agents_unavailable`, never a fabricated empty list), the `runner.cancel` stop path and its boolean result, already-terminal idempotency with no event, unknown and foreign-session `not_found`, invalid params rejected before discovery, agent-driven `agents_update` events with foreign-session filtering, content dedupe and burst coalescing, the response-before-event order over the router, session reset disconnecting observers and dropping late outcomes, late-discovery disposal, and the versioned adapter discovery. They also run the real `gentleAgents` owner seam in-process over a fake child (real `TaskStore` + real `AgentRunner`, never a real process): a truthful empty list, a typed `not_found` cancel, a live-task cancel that honors `runner.cancel`'s result with no immediate event and one eventual `agents_update`, and the persisted usage breakdown surviving `saveTask`/`loadStoredTask` restore.
+
+The profiles tests use a fake owner service only: they cover param validation, owner absence (`profiles_unavailable`), the result shapes, the `profile_applied` event only after `applied`, and that the token changes with the mode, name, title, message, and profile content. The owner itself is covered in `tests/gentle-ai.test.ts`, which drives the real screen actions in a temporary config home: a default apply asks the screen's diff and writes nothing without its token, a wrong or stale token asks again and writes nothing, an unknown profile writes nothing, a session apply binds without writing shared state, and only one apply runs at a time.
 
 The config tests build six stores in a temporary root and inject the worktree identity, so no real user config, agent home, or repository pin is read. On the read side they cover every store, current path precedence, missing and malformed layers, revision stability and change, the read-only split, rejected stores/params/paths, the bounded snapshot projection, and a byte-and-mtime comparison proving a read never mutates a store. On the write side they cover a valid write for each writable store and both pin layers, clearing either pin layer and observing the winner fall back, clearing an already-missing layer as a no-op, clearing and replacing an unreadable layer, creating a missing store, a stale or missing `expectedRevision` (including on a clear), the documented rejection order (envelope, then store identity, then mutability, then revision, then payload), data the owner would drop, malformed pin clear shapes, extra and physical-path keys, every read-only store, a forced owner write failure (the store path is a directory) answering `write_failed` with no path, OS code, or event and an unchanged tree, the no-op path with untouched bytes and mtime, the resulting disk bytes, revision movement and its invalid-state coarseness, the response-then-event order over the real transport, and that a stopped session neither answers nor writes. They also re-check that the config dispatcher still falls through to the permission bridge.
 

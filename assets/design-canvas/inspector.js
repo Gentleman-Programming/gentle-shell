@@ -442,9 +442,14 @@
 		return tabindex !== null && /^\s*\d+\s*$/.test(tabindex);
 	}
 
-	/** A name for a target: its aria-label, own text, value, title or alt, quoted; else its tag and id or class. */
+	/** A target's name: its aria-label, own text, value, title or alt; "" when it has none. */
+	function nameOf(element) {
+		return clip(squeeze(element.getAttribute("aria-label") || ownText(element) || element.getAttribute("value") || element.getAttribute("title") || element.getAttribute("alt")), 40);
+	}
+
+	/** A name for a target: its name, quoted; else its tag and id or class. */
 	function subjectOf(element) {
-		const name = clip(squeeze(element.getAttribute("aria-label") || ownText(element) || element.getAttribute("value") || element.getAttribute("title") || element.getAttribute("alt")), 40);
+		const name = nameOf(element);
 		return name ? `"${name}"` : labelOf(element);
 	}
 
@@ -482,7 +487,9 @@
 	function collectChecks() {
 		const everything = Array.from(document.querySelectorAll("*")).filter((element) => element instanceof Element && !isOwn(element) && !SKIPPED.has(element.localName)).slice(0, MAX_SCAN);
 		const found = Object.fromEntries(CHECKS.map(([id]) => [id, { count: 0, advice: 0, failures: [], advised: [] }]));
-		const add = (check, severity, title, detail, element) => {
+		// key and vars name the finding for the canvas, which shows it in its own language (canvas-checks.js findings); the
+		// English title and detail go with them, for the agent and for a canvas that cannot read them.
+		const add = (check, severity, key, vars, title, detail, element) => {
 			const entry = found[check];
 			const fail = severity === "fail";
 			const list = fail ? entry.failures : entry.advised;
@@ -490,7 +497,7 @@
 			else entry.advice += 1;
 			if (list.length >= (fail ? MAX_FAILURES : MAX_ADVICE)) return;
 			const rect = element.getBoundingClientRect();
-			const issue = { check, severity, title, detail, selector: cssSelector(element), label: labelOf(element), excerpt: excerptOf(element), rect: { x: rect.left, y: rect.top, width: rect.width, height: rect.height } };
+			const issue = { check, severity, title, detail, selector: cssSelector(element), label: labelOf(element), excerpt: excerptOf(element), rect: { x: rect.left, y: rect.top, width: rect.width, height: rect.height }, key, vars };
 			// Only a finding out of sight carries `hidden`, so the canvas draws no ring for it.
 			if (isOutOfSight(element)) issue.hidden = true;
 			list.push(issue);
@@ -516,7 +523,8 @@
 					const size = px(style.fontSize, 0);
 					const large = size >= 24 || (size >= 18.66 && weightOf(style.fontWeight) >= 700);
 					const needed = large ? 3 : 4.5;
-					if (ratio < needed) add("contrast", "fail", "Low contrast", `"${clip(text, 40)}" is ${shownRatio} : 1 (${hexOf(foreground)} on ${hexOf(behind)}); WCAG AA needs ${needed} : 1${large ? " for large text" : ""}.`, element);
+					const vars = { text: clip(text, 40), ratio: shownRatio, foreground: hexOf(foreground), background: hexOf(behind), needed };
+					if (ratio < needed) add("contrast", "fail", large ? "contrastLarge" : "contrast", vars, "Low contrast", `"${vars.text}" is ${shownRatio} : 1 (${vars.foreground} on ${vars.background}); WCAG AA needs ${needed} : 1${large ? " for large text" : ""}.`, element);
 				}
 			}
 
@@ -525,8 +533,9 @@
 				const width = Math.round(rect.width);
 				const height = Math.round(rect.height);
 				// Advice, never a problem: WCAG 2.2 accepts a smaller target with enough space around it, which this cannot measure.
-				if (width < MIN_TARGET || height < MIN_TARGET) add("target", "advice", "Small touch target", `${subjectOf(element)} is ${width} × ${height} px; WCAG 2.2 asks for ${MIN_TARGET} × ${MIN_TARGET} px, or enough space around it that a ${MIN_TARGET} px circle on it touches no other target.`, element);
-				else if (width < ADVISED_TARGET || height < ADVISED_TARGET) add("target", "advice", "Touch target under 44 px", `${subjectOf(element)} is ${width} × ${height} px; ${ADVISED_TARGET} × ${ADVISED_TARGET} px is recommended for touch.`, element);
+				const subject = { name: nameOf(element), element: labelOf(element), width, height };
+				if (width < MIN_TARGET || height < MIN_TARGET) add("target", "advice", "targetSmall", { ...subject, min: MIN_TARGET }, "Small touch target", `${subjectOf(element)} is ${width} × ${height} px; WCAG 2.2 asks for ${MIN_TARGET} × ${MIN_TARGET} px, or enough space around it that a ${MIN_TARGET} px circle on it touches no other target.`, element);
+				else if (width < ADVISED_TARGET || height < ADVISED_TARGET) add("target", "advice", "targetAdvised", { ...subject, advised: ADVISED_TARGET }, "Touch target under 44 px", `${subjectOf(element)} is ${width} × ${height} px; ${ADVISED_TARGET} × ${ADVISED_TARGET} px is recommended for touch.`, element);
 			}
 
 			const type = (element.getAttribute("type") || "").toLowerCase();
@@ -534,19 +543,21 @@
 			// Not rendered (display: none on it or an ancestor): no box at all. A rendered image not loaded yet has one, even 0 × 0.
 			if ((tag === "img" || (tag === "input" && type === "image")) && element.getClientRects().length > 0 && !element.hasAttribute("alt") && role !== "presentation" && role !== "none" && element.getAttribute("aria-hidden") !== "true") {
 				const source = (element.getAttribute("src") || "").split(/[?#]/)[0].split("/").pop();
-				add("alt", "fail", "Image without alt text", `${source ? clip(source, 60) : "The image"} has no alt attribute. Describe it, or use alt="" if it is decorative.`, element);
+				add("alt", "fail", "alt", { source: source ? clip(source, 60) : "" }, "Image without alt text", `${source ? clip(source, 60) : "The image"} has no alt attribute. Describe it, or use alt="" if it is decorative.`, element);
 			}
 
 			if (shown && (tag === "select" || tag === "textarea" || (tag === "input" && !UNLABELED_INPUTS.has(type))) && !hasAccessibleLabel(element, labelled)) {
 				const hint = squeeze(element.getAttribute("placeholder"));
-				add("label", "fail", "Form field without a label", `The ${fieldKind(element)}${hint ? ` "${clip(hint, 40)}"` : ""} has no label. ${LABEL_HINT}`, element);
+				const field = tag === "input" ? "input" : tag;
+				add("label", "fail", "label", { field, type: field === "input" ? (type || "text") : "", hint: hint ? clip(hint, 40) : "" }, "Form field without a label", `The ${fieldKind(element)}${hint ? ` "${clip(hint, 40)}"` : ""} has no label. ${LABEL_HINT}`, element);
 			}
 
 			const level = shown ? headingLevel(element) : 0;
 			if (level > 0) {
 				if (previousHeading > 0 && level > previousHeading + 1) {
 					const missing = Array.from({ length: level - previousHeading - 1 }, (_, index) => `h${previousHeading + 1 + index}`);
-					add("heading", "fail", "Heading level skipped", `h${level} "${clip(squeeze(element.textContent), 40)}" follows h${previousHeading}: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} missing.`, element);
+					const vars = { level, previous: previousHeading, text: clip(squeeze(element.textContent), 40), missing: missing.join(", "), count: missing.length };
+					add("heading", "fail", "heading", vars, "Heading level skipped", `h${level} "${vars.text}" follows h${previousHeading}: ${vars.missing} ${missing.length === 1 ? "is" : "are"} missing.`, element);
 				}
 				previousHeading = level;
 			}

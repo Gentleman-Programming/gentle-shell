@@ -748,15 +748,13 @@ test("index.html: a labeled rail with Move, Comment, Overview and Settings, one 
 	for (const fixed of [/<dt><kbd>0<\/kbd><\/dt><dd data-i18n="fitAll">Fit all directions<\/dd>/, /<dt><kbd>\+<\/kbd> <kbd>-<\/kbd><\/dt><dd data-i18n="zoomInOut">Zoom in and out<\/dd>/, /<kbd>&larr;<\/kbd>/, /<dt><kbd>Esc<\/kbd><\/dt>/, /<dt><kbd data-i18n="shift">Shift<\/kbd> \+ <kbd>Esc<\/kbd><\/dt>/]) assert.match(dialog, fixed);
 
 	// The words are keyed for the language (ES.html, tests/design-canvas-i18n.test.ts); the English stays in the markup.
-	for (const cut of ["gd-appearance", "gd-theme", "gd-language", "i-help", "gd-variant", "gd-mark", "data-theme"]) assert.ok(!html.includes(cut), `${cut} stays out`);
+	for (const cut of ["gd-appearance", "gd-theme", "i-help", "gd-variant", "gd-mark", "data-theme"]) assert.ok(!html.includes(cut), `${cut} stays out`);
 	assert.ok(!/[\u{1F300}-\u{1FAFF}☀-➿]/u.test(html), "no emoji icons");
 });
 
-test("canvas-rail.js and canvas-menu.js keep their English strings grouped at the top, with no catalog, theme or help", () => {
+test("canvas-rail.js and canvas-menu.js keep their English strings grouped at the top, with no theme or help", () => {
 	for (const name of ["canvas-rail.js", "canvas-menu.js"]) {
 		const source = read(name);
-		// The rail reads its strings through ctx.i18n (tests/design-canvas-i18n.test.ts), never through the old catalog helpers.
-		assert.ok(!/\bloc\(|\bt\(|data-i18n|CATALOG|refreshLoc|applyLanguage/.test(source), `${name}: no old i18n helpers`);
 		assert.ok(!/theme|appearance|renderGuide|guideBlocked|variant/i.test(source), `${name}: no cut feature`);
 	}
 	const rail = read("canvas-rail.js");

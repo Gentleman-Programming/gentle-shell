@@ -640,6 +640,7 @@ test("the contrast check flags text under AA (4.5 : 1, 3 : 1 for large text) on 
 	assert.deepEqual(low, {
 		check: "contrast", severity: "fail", title: "Low contrast", selector: "#low", label: "p#low", excerpt: "or pay with card", rect: { x: 8, y: 68, width: 100, height: 24 },
 		detail: '"or pay with card" is 4.47 : 1 (#777777 on #ffffff); WCAG AA needs 4.5 : 1.',
+		key: "contrast", vars: { text: "or pay with card", ratio: "4.47", foreground: "#777777", background: "#ffffff", needed: 4.5 },
 	});
 	assert.match(issuesOf(report, "contrast")[1].detail, /WCAG AA needs 3 : 1 for large text\.$/);
 	assert.match(issuesOf(report, "contrast")[3].detail, /\(#cccccc on #ffffff\)/, "translucent text is judged as composited over its background");
@@ -804,6 +805,53 @@ test("the heading check flags levels that skip, in document order", () => {
 	assert.equal(issuesOf(report, "heading")[1].detail, 'h6 "Fine print" follows h3: h4, h5 are missing.');
 	const clean = checkPage([{ tag: "h2", text: "Starts at two" }, { tag: "h3", text: "x" }, { tag: "h2", text: "y" }]);
 	assert.deepEqual(clean.run().issues, [], "the first heading may be any level; going back up is fine");
+});
+
+/** canvas-checks.js's English TEXT block, evaluated from its source: the canvas's own English for each finding key. */
+function canvasFindings(): Record<string, { title: string; detail: (vars: Record<string, unknown>) => string }> {
+	const source = read("canvas-checks.js");
+	const start = source.indexOf("const TEXT = Object.freeze({");
+	return new Function(`return ${source.slice(start + "const TEXT = ".length, source.indexOf("\n});", start) + 3)}`)().findings;
+}
+
+test("each finding carries its key and plain vars, from which the canvas's English gives back the inspector's title and detail", () => {
+	const page = checkPage([
+		{ tag: "p", attrs: { id: "low" }, text: "or pay with card", style: gray(119) },
+		{ tag: "p", attrs: { id: "large-low" }, text: "Big", style: { ...gray(170), fontSize: "24px" } },
+		{ tag: "button", attrs: { id: "tiny" }, text: "Go", size: [20, 20] },
+		{ tag: "div", attrs: { id: "tab0", tabindex: "0" }, size: [20, 20] },
+		{ tag: "a", attrs: { id: "advice", href: "/pay" }, text: "Pay", size: [100, 28] },
+		{ tag: "img", attrs: { id: "bad", src: "/img/hero-photo.png?x=1" } },
+		{ tag: "img", attrs: { id: "nosrc" } },
+		{ tag: "input", attrs: { id: "placeholder", type: "text", placeholder: "Search" } },
+		{ tag: "select", attrs: { id: "select" } },
+		{ tag: "textarea", attrs: { id: "area" } },
+		{ tag: "h1", text: "Title" }, { tag: "h2", text: "A" }, { tag: "h4", attrs: { id: "skip1" }, text: "Detail" },
+		{ tag: "h3", text: "B1" }, { tag: "h6", attrs: { id: "skip2" }, text: "Fine print" },
+	]);
+	const findings = canvasFindings();
+	const issues = page.run().issues;
+	assert.deepEqual([...new Set(issues.map((issue) => issue.key))].sort(), ["alt", "contrast", "contrastLarge", "heading", "label", "targetAdvised", "targetSmall"]);
+	assert.deepEqual(Object.keys(findings).sort(), ["alt", "contrast", "contrastLarge", "heading", "label", "targetAdvised", "targetSmall"]);
+	for (const issue of issues) {
+		assert.ok(Object.values(issue.vars).every((value) => typeof value === "string" || Number.isFinite(value)), `${issue.selector}: plain vars`);
+		assert.deepEqual([findings[issue.key].title, findings[issue.key].detail(issue.vars)], [issue.title, issue.detail], issue.selector);
+	}
+	assert.deepEqual(issues.filter((issue) => issue.check !== "contrast").map((issue) => [issue.selector, issue.key, JSON.stringify(issue.vars)]), [
+		["#tiny", "targetSmall", '{"name":"Go","element":"button#tiny","width":20,"height":20,"min":24}'],
+		["#tab0", "targetSmall", '{"name":"","element":"div#tab0","width":20,"height":20,"min":24}'],
+		["#advice", "targetAdvised", '{"name":"Pay","element":"a#advice","width":100,"height":28,"advised":44}'],
+		["#placeholder", "targetAdvised", '{"name":"","element":"input#placeholder","width":100,"height":24,"advised":44}'],
+		["#select", "targetAdvised", '{"name":"","element":"select#select","width":100,"height":24,"advised":44}'],
+		["#area", "targetAdvised", '{"name":"","element":"textarea#area","width":100,"height":24,"advised":44}'],
+		["#bad", "alt", '{"source":"hero-photo.png"}'],
+		["#nosrc", "alt", '{"source":""}'],
+		["#placeholder", "label", '{"field":"input","type":"text","hint":"Search"}'],
+		["#select", "label", '{"field":"select","type":"","hint":""}'],
+		["#area", "label", '{"field":"textarea","type":"","hint":""}'],
+		["#skip1", "heading", '{"level":4,"previous":2,"text":"Detail","missing":"h3","count":1}'],
+		["#skip2", "heading", '{"level":6,"previous":3,"text":"Fine print","missing":"h4, h5","count":2}'],
+	]);
 });
 
 test("each check lists at most 20 problems and 10 advice items, with the full counts", () => {

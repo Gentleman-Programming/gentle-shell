@@ -9,7 +9,8 @@
 // match uses computed values, not the CSS that produced them.
 // The tokens and Technical details live in the store (setTokens, setTechnical); the element the
 // panel shows, the one it may switch to, its timers and whether the pointer is on it are this
-// module's own view state.
+// module's own view state. The panel's words follow the canvas language (canvas-i18n-es.js); what Ask the agent
+// to fix prefills (TEXT.session) stays English, since it is an instruction for the session.
 
 const TEXT = Object.freeze({
 	labels: { color: "Color", background: "Background", contrast: "Contrast", font: "Font", size: "Size", lineHeight: "Line height", spacing: "Spacing", radius: "Radius" },
@@ -204,6 +205,7 @@ export function init(ctx) {
 	const { win, doc, els, store, api, ui, actions } = ctx;
 	const { state } = store;
 	const { getJson, isFiniteNumber } = api;
+	const T = ctx.i18n.text("tokens", TEXT);
 
 	// The tokens parsed by kind, once per load (never per hover), and the latest load: an older reply landing last changes nothing.
 	let kinds = tokenKinds([]);
@@ -271,8 +273,8 @@ export function init(ctx) {
 
 	const code = (text) => chip("gd-inspector-code", text);
 	const near = (text) => chip("gd-inspector-near", text);
-	const okChip = (text) => chip("gd-inspector-ok", TEXT.ok(text));
-	const badChip = (text) => chip("gd-inspector-bad", TEXT.bad(text));
+	const okChip = (text) => chip("gd-inspector-ok", T.ok(text));
+	const badChip = (text) => chip("gd-inspector-bad", T.bad(text));
 	const names = (tokens) => tokens.map((token) => token.name).join(" / ");
 
 	function swatch(color) {
@@ -301,82 +303,82 @@ export function init(ctx) {
 		if (kinds.color.length === 0) return nodes;
 		const same = kinds.color.filter((entry) => entry.color.r === color.r && entry.color.g === color.g && entry.color.b === color.b && Math.abs(entry.color.a - (color.a ?? 1)) < ALPHA_EPSILON);
 		if (same.length > 0) return [...nodes, okChip(names(same.map((entry) => entry.token)))];
-		nodes.push(badChip(TEXT.noToken));
+		nodes.push(badChip(T.noToken));
 		const nearest = nearestColor(color, kinds.color);
-		if (nearest) nodes.push(near(TEXT.nearest(nearest.name)), code(nearest.value));
-		flags.push(TEXT.session.color(label, colorHex(color), nearest));
+		if (nearest) nodes.push(near(T.nearest(nearest.name)), code(nearest.value));
+		flags.push(T.session.color(label, colorHex(color), nearest));
 		return nodes;
 	}
 
 	/** A px value against the tokens of one kind (rem in px of the page's `root` font size); no tokens of that kind means nothing to compare. */
 	function lengthValue(px, candidates, root, flags, label) {
-		const nodes = [code(TEXT.px(fmt(px)))];
+		const nodes = [code(T.px(fmt(px)))];
 		if (candidates.length === 0) return nodes;
 		const match = matchLength(px, candidates, root);
 		if (match.exact.length > 0) return [...nodes, okChip(names(match.exact))];
-		nodes.push(badChip(TEXT.noToken));
-		if (match.nearest) nodes.push(near(TEXT.nearest(match.nearest.name)), code(match.nearest.value));
-		flags.push(TEXT.session.length(label, fmt(px), match.nearest));
+		nodes.push(badChip(T.noToken));
+		if (match.nearest) nodes.push(near(T.nearest(match.nearest.name)), code(match.nearest.value));
+		flags.push(T.session.length(label, fmt(px), match.nearest));
 		return nodes;
 	}
 
 	function contrastValue(m, flags) {
 		const text = m.color;
 		const behind = m.background;
-		if (!m.hasText || !text) return [code(TEXT.none)];
-		if (!behind) return [code(TEXT.unknownBackground)];
+		if (!m.hasText || !text) return [code(T.none)];
+		if (!behind) return [code(T.unknownBackground)];
 		// Translucent text is composited over its background first.
 		const shown = text.a < 1 ? { r: Math.round(text.r * text.a + behind.r * (1 - text.a)), g: Math.round(text.g * text.a + behind.g * (1 - text.a)), b: Math.round(text.b * text.a + behind.b * (1 - text.a)) } : text;
 		const ratio = fmtRatio(contrastRatio(shown, behind));
 		const large = m.fontSize >= 24 || (m.fontSize >= 18.66 && m.fontWeight >= 700);
 		const needed = large ? 3 : 4.5;
-		if (Number(ratio) >= needed) return [okChip(TEXT.ratio(ratio)), near(large ? TEXT.aaLarge : TEXT.aa)];
-		flags.push(TEXT.session.contrast(ratio, needed, large));
-		return [badChip(TEXT.ratio(ratio)), near(large ? TEXT.needsLarge(needed) : TEXT.needs(needed))];
+		if (Number(ratio) >= needed) return [okChip(T.ratio(ratio)), near(large ? T.aaLarge : T.aa)];
+		flags.push(T.session.contrast(ratio, needed, large));
+		return [badChip(T.ratio(ratio)), near(large ? T.needsLarge(needed) : T.needs(needed))];
 	}
 
 	function familyValue(m, flags) {
 		const mine = familyList(m.fontFamily);
-		const first = mine[0] || TEXT.none;
+		const first = mine[0] || T.none;
 		const nodes = [code(first)];
 		nodes[0].title = m.fontFamily;
 		if (kinds.family.length === 0) return nodes;
 		const exact = kinds.family.filter((entry) => sameFamilies(entry.families, mine));
 		const byFirst = exact.length > 0 ? exact : kinds.family.filter((entry) => mine.length > 0 && entry.families[0]?.toLowerCase() === mine[0].toLowerCase());
 		if (byFirst.length > 0) return [...nodes, okChip(names(byFirst.map((entry) => entry.token)))];
-		flags.push(TEXT.session.family(first, kinds.family.map((entry) => entry.token.name).join(", ")));
-		return [...nodes, badChip(TEXT.noToken)];
+		flags.push(T.session.family(first, kinds.family.map((entry) => entry.token.name).join(", ")));
+		return [...nodes, badChip(T.noToken)];
 	}
 
 	function spacingValue(m, flags) {
 		const nodes = [];
-		if (m.margin.some((value) => value !== 0)) nodes.push(code(TEXT.margin(sides(m.margin))));
-		if (m.padding.some((value) => value !== 0)) nodes.push(code(TEXT.padding(sides(m.padding))));
-		if (nodes.length === 0) return [code(TEXT.none)];
+		if (m.margin.some((value) => value !== 0)) nodes.push(code(T.margin(sides(m.margin))));
+		if (m.padding.some((value) => value !== 0)) nodes.push(code(T.padding(sides(m.padding))));
+		if (nodes.length === 0) return [code(T.none)];
 		if (kinds.spacing.length === 0) return nodes;
 		// A negative margin pulls by a step of the scale: its size is what is checked.
 		const values = [...new Set([...m.margin, ...m.padding].filter((value) => value !== 0))];
 		const off = values.map((value) => ({ value, match: matchLength(Math.abs(value), kinds.spacing, m.rootFontSize) })).filter((entry) => entry.match.exact.length === 0);
-		if (off.length === 0) nodes.push(okChip(TEXT.onScale));
+		if (off.length === 0) nodes.push(okChip(T.onScale));
 		for (const { value, match } of off) {
-			nodes.push(badChip(TEXT.offScale(fmt(value))));
-			if (match.nearest) nodes.push(near(TEXT.nearest(match.nearest.name)), code(match.nearest.value));
-			flags.push(TEXT.session.spacing(fmt(value), match.nearest));
+			nodes.push(badChip(T.offScale(fmt(value))));
+			if (match.nearest) nodes.push(near(T.nearest(match.nearest.name)), code(match.nearest.value));
+			flags.push(T.session.spacing(fmt(value), match.nearest));
 		}
 		return nodes;
 	}
 
 	function radiusValue(m, flags) {
 		const corners = m.radius;
-		if (corners.every((value) => value === 0)) return [code(TEXT.none)];
-		if (corners.every((value) => value === corners[0])) return lengthValue(corners[0], kinds.radius, m.rootFontSize, flags, TEXT.session.radius);
-		const nodes = [code(TEXT.px(sides(corners)))];
+		if (corners.every((value) => value === 0)) return [code(T.none)];
+		if (corners.every((value) => value === corners[0])) return lengthValue(corners[0], kinds.radius, m.rootFontSize, flags, T.session.radius);
+		const nodes = [code(T.px(sides(corners)))];
 		if (kinds.radius.length === 0) return nodes;
 		for (const value of new Set(corners.filter((corner) => corner > 0))) {
 			const match = matchLength(value, kinds.radius, m.rootFontSize);
 			if (match.exact.length > 0) continue;
-			nodes.push(badChip(TEXT.radiusNoToken(fmt(value))));
-			flags.push(TEXT.session.length(TEXT.session.radius, fmt(value), match.nearest));
+			nodes.push(badChip(T.radiusNoToken(fmt(value))));
+			flags.push(T.session.length(T.session.radius, fmt(value), match.nearest));
 		}
 		return nodes;
 	}
@@ -387,23 +389,23 @@ export function init(ctx) {
 	 */
 	function describe(m) {
 		const flags = [];
-		const { labels } = TEXT;
+		const { labels } = T;
 		const lines = [];
 		const row = (label, nodes) => {
 			lines.push(`${label}: ${nodes.map((node) => node.textContent).filter(Boolean).join(" ")}`);
 			return rowElement(label, nodes);
 		};
 		const rows = [
-			row(labels.color, m.color ? colorValue(m.color, flags, TEXT.session.textColor) : [code(TEXT.unreadable)]),
-			row(labels.background, m.background ? colorValue(m.background, flags, TEXT.session.background) : [code(TEXT.imageBackground)]),
+			row(labels.color, m.color ? colorValue(m.color, flags, T.session.textColor) : [code(T.unreadable)]),
+			row(labels.background, m.background ? colorValue(m.background, flags, T.session.background) : [code(T.imageBackground)]),
 			row(labels.contrast, contrastValue(m, flags)),
 			row(labels.font, familyValue(m, flags)),
-			row(labels.size, [...lengthValue(m.fontSize, kinds.fontSize, m.rootFontSize, flags, TEXT.session.fontSize), near(TEXT.weight(m.fontWeight))]),
-			row(labels.lineHeight, [code(m.lineHeight === null ? TEXT.normal : TEXT.px(fmt(m.lineHeight)))]),
+			row(labels.size, [...lengthValue(m.fontSize, kinds.fontSize, m.rootFontSize, flags, T.session.fontSize), near(T.weight(m.fontWeight))]),
+			row(labels.lineHeight, [code(m.lineHeight === null ? T.normal : T.px(fmt(m.lineHeight)))]),
 			row(labels.spacing, spacingValue(m, flags)),
 			row(labels.radius, radiusValue(m, flags)),
 		];
-		const text = flags.length > 0 ? TEXT.session.fix(m.selector, flags) : TEXT.session.nothing(m.selector);
+		const text = flags.length > 0 ? T.session.fix(m.selector, flags) : T.session.nothing(m.selector);
 		return { rows, flags, text: text.slice(0, LIMITS.comment), lines };
 	}
 
@@ -552,11 +554,11 @@ export function init(ctx) {
 		els.inspectorSelector.textContent = measure.selector;
 		els.inspectorSelector.title = measure.selector;
 		els.inspectorList.replaceChildren(...result.rows);
-		els.inspectorNote.textContent = Object.hasOwn(TEXT.problems, problem) ? TEXT.problems[problem] : TEXT.noTokens;
+		els.inspectorNote.textContent = Object.hasOwn(T.problems, problem) ? T.problems[problem] : T.noTokens;
 		els.inspectorNote.hidden = state.tokens.length > 0;
 		const nothing = result.flags.length === 0;
 		els.inspectorFix.disabled = nothing;
-		els.inspectorFix.title = nothing ? TEXT.nothingToFix : "";
+		els.inspectorFix.title = nothing ? T.nothingToFix : "";
 	}
 
 	/**
@@ -655,8 +657,18 @@ export function init(ctx) {
 		const current = inspect;
 		if (!current) return;
 		const ok = await copyText(current.copy);
-		ui.showToast(ok ? TEXT.copied : TEXT.copyFailed, !ok);
+		ui.showToast(ok ? T.copied : T.copyFailed, !ok);
 	});
 
-	return { loadTokens, setTechnical, startTokens, inspectFrom, hideInspector, hideGoneInspector };
+	/** A new language: an open panel's rows, note and tooltip, where it is. */
+	function relabel() {
+		if (inspect) renderInspector(inspect.surface, inspect.measure);
+	}
+
+	/** The panel beside its element again, after the artboard moved (a language switch re-centers it). */
+	function placeInspectorAgain() {
+		if (inspect && !els.inspector.hidden) placeInspector(inspect.surface, inspect.measure.rect);
+	}
+
+	return { relabel, placeInspector: placeInspectorAgain, loadTokens, setTechnical, startTokens, inspectFrom, hideInspector, hideGoneInspector };
 }

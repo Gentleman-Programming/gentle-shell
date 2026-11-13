@@ -443,13 +443,13 @@ export function init(ctx) {
 	 * laid out again, so its gaps stay 80 px; a free layout, or a board being moved, stays where it is. The artboard
 	 * in use stays centered, since focus mode cannot pan.
 	 */
-	function boardsResized() {
+	function boardsResized(options) {
 		if (!moving && (!state.layout || state.layout.arrangement !== "free")) applyLayout();
 		else {
 			sizeWorld();
 			actions.renderMinimap();
 		}
-		if (state.focus) actions.centerFocus();
+		if (state.focus) actions.centerFocus(options);
 	}
 
 	/**

@@ -37,6 +37,7 @@ const TEXT = Object.freeze({
 	resetDone: (action, key) => `“${action}” is back to ${key}.`,
 	restored: "All shortcuts are back to their defaults.",
 	spaceKey: "Space",
+	shiftEscKey: "Shift+Esc",
 	// The language choices (canvas-i18n.js) under their heading: each language by its own name.
 	language: "Language",
 	spanish: "Español",
@@ -312,7 +313,7 @@ export function init(ctx) {
 			return;
 		}
 		if (FIXED_KEYS.includes(event.key)) {
-			const name = event.key === "Escape" ? "Shift+Esc" : event.key === " " ? T.spaceKey : ARROW_KEYS[event.key] ?? event.key;
+			const name = event.key === "Escape" ? T.shiftEscKey : event.key === " " ? T.spaceKey : ARROW_KEYS[event.key] ?? event.key;
 			showKeysMessage(T.fixed(name), true);
 			return;
 		}

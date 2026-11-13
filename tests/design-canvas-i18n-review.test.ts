@@ -188,6 +188,38 @@ test("the comment box in Spanish: its title, field, placeholder, screenshot cont
 	]);
 });
 
+test("a validation message already on screen is worded again when the language switches", async () => {
+	const canvas = await loadLanguage();
+	pick(canvas);
+	$(canvas, "gd-popover-text").value = "";
+	$(canvas, "gd-popover-form").dispatch("submit");
+	assert.equal($(canvas, "gd-popover-message").textContent, "Write a comment of 1 to 2000 characters.");
+	choose(canvas, "Español");
+	assert.equal($(canvas, "gd-popover-message").textContent, "Escribe un comentario de 1 a 2000 caracteres.", "the message follows the language");
+	assert.equal($(canvas, "gd-popover-message").classes.has("gd-error"), true, "and stays an error");
+	choose(canvas, "English");
+	assert.equal($(canvas, "gd-popover-message").textContent, "Write a comment of 1 to 2000 characters.");
+	// A message that is a server's own text (a failed send) is not the canvas's wording: it stays as it came.
+	$(canvas, "gd-popover-text").value = "x";
+	$(canvas, "gd-popover-form").dispatch("submit");
+	await settle();
+	choose(canvas, "Español");
+	assert.doesNotMatch($(canvas, "gd-popover-message").textContent, /^Escribe un comentario/, "a later message replaced the validation one");
+});
+
+test("the offline note of Implement only this is in the stored language from the start, not only after a switch", async () => {
+	const storage = memoryStorage({ [LANGUAGE_KEY]: "es" });
+	const navigator = { languages: ["en-US"], language: "en-US" };
+	const canvas = await loadCanvas(300, {}, { delivery: {} }, { localStorage: storage.localStorage, navigator }, true);
+	for (const id of ["gd-popover", "gd-menu", "gd-device-menu", "gd-inspector", "gd-quality"]) canvas.document.getElementById(id).hidden = true;
+	canvas.boards.forEach((board, index) => { board.frame.rect = { left: 100 + index * 500, top: 120, width: 400, height: 300 }; });
+	pick(canvas as unknown as Canvas);
+	const note = () => findAll(canvas.document.getElementById("gd-popover-form"), (element) => element.id === "gd-popover-part-note")[0].textContent;
+	assert.equal(note(), "El canvas no está conectado a una sesión de Pi; ábrelo con /gentle:design open");
+	choose(canvas as unknown as Canvas, "English");
+	assert.equal(note(), "The canvas is not connected to a Pi session; open it with /gentle:design open");
+});
+
 test("in Spanish a comment is posted as written, with no word of the canvas in it, and the box says it was sent in Spanish", async () => {
 	const canvas = await loadLanguage({ "/t/api/comments": { __http: 202, ok: true } }, "es");
 	pick(canvas);

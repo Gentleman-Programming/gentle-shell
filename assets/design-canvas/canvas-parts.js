@@ -338,6 +338,8 @@ export function init(ctx) {
 		const offline = !delivery.part;
 		els.partAdd.disabled = offline || Boolean(state.pick && sending.has(sendKey(state.pick)));
 		els.partAdd.title = offline ? T.partOffline : T.partTitle;
+		// Worded where it is shown: the language may have been set after init (a stored choice).
+		partNote.textContent = T.partOffline;
 		partNote.hidden = !offline;
 		if (offline) els.partAdd.setAttribute("aria-describedby", partNote.id);
 		else els.partAdd.removeAttribute("aria-describedby");

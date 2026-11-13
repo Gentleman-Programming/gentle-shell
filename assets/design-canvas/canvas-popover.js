@@ -78,8 +78,11 @@ export function init(ctx) {
 	}
 
 	/** The popover's message line; a refusal's raw code in its tooltip (canvas-parts.js) goes with the message it explained. */
+	// Set when the message is the canvas's own wording, given as a function so a language switch words it again.
+	let worded = null;
 	function showMessage(text, isError) {
-		els.message.textContent = text;
+		worded = typeof text === "function" ? text : null;
+		els.message.textContent = worded ? worded() : text;
 		els.message.title = "";
 		els.message.classList.toggle("gd-error", isError);
 	}
@@ -189,9 +192,9 @@ export function init(ctx) {
 		const pick = state.pick;
 		if (!pick) return;
 		const comment = els.text.value.trim();
-		if (!comment || comment.length > LIMITS.comment) return showMessage(T.limits(LIMITS.comment), true);
+		if (!comment || comment.length > LIMITS.comment) return showMessage(() => T.limits(LIMITS.comment), true);
 		els.send.disabled = true;
-		showMessage(T.sending, false);
+		showMessage(() => T.sending, false);
 		const shot = state.shot;
 		try {
 			const response = await win.fetch(`${base}api/comments`, {
@@ -209,16 +212,21 @@ export function init(ctx) {
 			if (state.pick !== pick) return;
 			els.text.value = "";
 			if (state.shot === shot) clearShot();
-			const done = savedOnly ? T.savedOnly : response.status === 201 ? T.saved : T.sent;
-			showMessage(done, savedOnly);
-			setStatus(done, savedOnly);
+			const done = () => (savedOnly ? T.savedOnly : response.status === 201 ? T.saved : T.sent);
+			showMessage(() => done(), savedOnly);
+			setStatus(done(), savedOnly);
 			store.setPopover({ closeTimer: win.setTimeout(closePopover, savedOnly ? 2500 : 1200) });
 		} catch (error) {
 			if (state.pick !== pick) return;
 			els.send.disabled = false;
-			showMessage(T.notSent(error.message), true);
+			showMessage(() => T.notSent(error.message), true);
 		}
 	});
 
-	return { readPick, openPopover, closePopover };
+	/** A new language: the message on screen, when it is the canvas's own wording (the rest of the box is keyed markup). */
+	function relabel() {
+		if (worded) els.message.textContent = worded();
+	}
+
+	return { relabel, readPick, openPopover, closePopover };
 }

@@ -510,7 +510,8 @@
 			issues.push(...entry.failures, ...entry.advised);
 			return { id, label, count: entry.count, advice: entry.advice };
 		});
-		return { type: "gd:checks", checks, issues };
+		// Tagged like a pick: a scan made before the page heard of the frame's latest size describes a size it no longer has.
+		return { type: "gd:checks", checks, issues, generation };
 	}
 
 	/** Posts the result when it differs from the last one posted. */

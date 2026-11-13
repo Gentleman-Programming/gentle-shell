@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { findAll, flush, loadCanvas, read, texts, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
+import { findAll, flush, heardGeneration, loadCanvas, read, texts, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
 
 // Accessibility checks (canvas-checks.js): each design artboard's own frame checks its page after it loads and
 // after a resize (inspector.js gd:checks); the panel's Quality tab lists the findings per artboard, with Show
@@ -36,7 +36,8 @@ type Canvas = Awaited<ReturnType<typeof loadChecks>>;
 
 const $ = (canvas: Canvas, id: string) => canvas.document.getElementById(id);
 const settle = async () => { for (let i = 0; i < 10; i++) await flush(); };
-const report = (canvas: Canvas, frame: FakeElement, issues: Array<Record<string, any>> = []) => canvas.message(frame.contentWindow, checksReport(issues));
+/** A gd:checks as inspector.js posts it from `frame`'s page: tagged with the size generation that page heard last (or `generation`). */
+const report = (canvas: Canvas, frame: FakeElement, issues: Array<Record<string, any>> = [], generation = heardGeneration(frame)) => canvas.message(frame.contentWindow, { ...checksReport(issues), generation });
 const openQuality = (canvas: Canvas) => $(canvas, "gd-tab-quality").dispatch("click");
 const quality = (canvas: Canvas) => $(canvas, "gd-quality");
 const count = (canvas: Canvas) => $(canvas, "gd-count-quality").textContent;
@@ -544,6 +545,37 @@ test("Ask the agent to fix opens the comment box on that artboard's element, pre
 	assert.equal((canvas.posts.at(-1)!.body as Record<string, unknown>).excerpt, "x".repeat(300), "bounded like a pick's excerpt");
 	fixButton(canvas, 1).dispatch("click");
 	assert.match($(canvas, "gd-popover-text").value, /^Accessibility advice on #pay: Touch target under 44 px\.\n"Pay" is 100 × 28 px; 44 × 44 px is recommended for touch\.\nConsider fixing it, keeping the design's tokens\.$/);
+});
+
+test("S4: a finding made at Phone keeps Phone's size when Ask the agent to fix files it after the switch to Tablet; a Phone report arriving late is dropped", async () => {
+	const canvas = await loadChecks();
+	const [first] = canvas.boards;
+	const phoneDetail = '"or pay with card" is 2.32 : 1 (#999999 on #ffffff); WCAG AA needs 4.5 : 1.';
+	const tabletDetail = '"or pay with card" is 4.47 : 1 (#767676 on #ffffff); WCAG AA needs 4.5 : 1.';
+	openQuality(canvas);
+	focusOn(canvas, 0);
+	chooseSize(canvas, "phone");
+	const phoneGeneration = heardGeneration(first.frame);
+	report(canvas, first.frame, [finding({ detail: phoneDetail })]);
+	chooseSize(canvas, "tablet");
+	// The page's scan from before it heard of Tablet arrives now: it describes Phone and changes nothing.
+	report(canvas, first.frame, [finding({ detail: "late" })], phoneGeneration);
+	assert.deepEqual(texts(quality(canvas), "gd-check-detail"), [phoneDetail], "the late Phone report is dropped");
+	// Before Tablet's own scan, the retained Phone finding is filed with the size it was found at.
+	fixButton(canvas, 0).dispatch("click");
+	assert.match($(canvas, "gd-popover-text").value, /2\.32 : 1/);
+	$(canvas, "gd-popover-form").dispatch("submit");
+	await settle();
+	let body = canvas.posts.at(-1)!.body as Record<string, unknown>;
+	assert.deepEqual([body.selector, body.viewport], ["main > p.or", { width: 390, height: 844 }], "Phone's finding, Phone's size");
+	// Tablet's scan arrives: its finding is filed with Tablet's size.
+	report(canvas, first.frame, [finding({ detail: tabletDetail })]);
+	fixButton(canvas, 0).dispatch("click");
+	assert.match($(canvas, "gd-popover-text").value, /4\.47 : 1/);
+	$(canvas, "gd-popover-form").dispatch("submit");
+	await settle();
+	body = canvas.posts.at(-1)!.body as Record<string, unknown>;
+	assert.deepEqual(body.viewport, { width: 820, height: 1180 });
 });
 
 test("in All sizes Ask the agent to fix asks on the frame as designed, with no size recorded", async () => {

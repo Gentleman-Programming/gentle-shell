@@ -573,6 +573,18 @@ function checkPage(specs: PageSpec[]) {
 const issuesOf = (report: { issues: Array<Record<string, any>> }, check: string, severity?: string) => report.issues.filter((issue) => issue.check === check && (severity === undefined || issue.severity === severity));
 const gray = (value: number) => ({ color: `rgb(${value}, ${value}, ${value})` });
 
+test("S4: each check result is tagged with the size generation the page heard last, and a new size sends even an unchanged result again", () => {
+	const page = checkPage([{ tag: "p", attrs: { id: "faint" }, text: "World", style: gray(200) }]);
+	page.inspector.fromParent({ type: "gd:size", generation: 2 });
+	const first = page.run() as unknown as Record<string, unknown>;
+	assert.equal(first.generation, 2);
+	page.inspector.fromParent({ type: "gd:size", generation: 3 });
+	page.inspector.fire("resize", {});
+	page.inspector.runTimeouts();
+	assert.equal(page.reports().length, 2, "the same findings at a new size are reported again");
+	assert.equal((page.reports().at(-1) as Record<string, unknown>).generation, 3);
+});
+
 test("checks run only in a frame the canvas asks (the artboard's own), once the page settles after load and after a resize, and post a changed result only", () => {
 	const page = checkPage([{ tag: "h1", text: "Hello" }, { tag: "p", attrs: { id: "faint" }, text: "World", style: gray(200) }, { tag: "button", text: "Go", size: [120, 48] }]);
 	page.inspector.fire("load", {});

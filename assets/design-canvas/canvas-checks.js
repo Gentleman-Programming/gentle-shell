@@ -103,12 +103,18 @@ export function init(ctx) {
 		return { x: value.x, y: value.y, width: value.width, height: value.height };
 	}
 
-	/** A gd:checks from `surface` (canvas-messages.js): only a design artboard's own frame, of the design shown, speaks for it. */
+	/**
+	 * A gd:checks from `surface` (canvas-messages.js): only a design artboard's own frame, of the design shown, speaks for
+	 * it, and only about the size it has now: a scan made before its page heard of the latest size (gd:size, canvas-sizes.js
+	 * resized) is dropped. The result keeps that size (viewport, null at the artboard's own), so Ask the agent to fix files
+	 * a finding with the size it was found at even after the frame changes size and before its next scan arrives.
+	 */
 	function checksFrom(surface, data) {
 		const board = actions.ownerOf(surface);
 		if (surface !== board || board.system || !designBoards().includes(board)) return;
+		if (data.generation !== surface.generation) return;
 		const result = readChecks(data);
-		if (result) setChecks(board, result);
+		if (result) setChecks(board, { ...result, viewport: actions.viewportOf(surface) });
 	}
 
 	/** The one way board.checks changes: a new result, or null when the artboard reloads. The ring and Quality follow. */
@@ -291,7 +297,10 @@ export function init(ctx) {
 		// A ring it keeps goes on following the element.
 		highlight(board, issue, marked);
 		const sizes = board.sizeFrames;
-		actions.openPopover(sizes.length > 0 ? sizes[sizes.length - 1] : board, { selector: issue.selector, excerpt: issue.excerpt, rect: issue.rect });
+		const pick = { selector: issue.selector, excerpt: issue.excerpt, rect: issue.rect };
+		// On the artboard's own frame the comment records the size the finding was made at, not the size shown now.
+		if (sizes.length > 0) actions.openPopover(sizes[sizes.length - 1], pick);
+		else actions.openPopover(board, { ...pick, viewport: board.checks.viewport });
 		els.text.value = TEXT.session[issue.severity](issue).slice(0, LIMITS.comment);
 	}
 

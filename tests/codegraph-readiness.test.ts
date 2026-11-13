@@ -539,6 +539,72 @@ test("syncBeforeSearch: a live sync lease in another session means zero CLI call
 	assert.deepEqual(failures, []);
 });
 
+test("prepareReadiness: a linked worktree is seeded instead of initialized", async (t) => {
+	const fresh = dir(t, "seed-ok");
+	writeFileSync(join(fresh, "package.json"), "{}\n");
+	const calls: string[] = [];
+	const result = await prepareReadiness(fakeInput(fresh, {
+		seed: async () => ({ outcome: "seeded" }),
+		run: async (args) => {
+			calls.push(`run:${args.join(" ")}`);
+			return true;
+		},
+		warm: async () => {
+			calls.push("warm");
+			return true;
+		},
+	}));
+	assert.deepEqual(result, { action: "init", ok: true, warm: "ok" });
+	assert.deepEqual(calls, ["warm"], "no init ran: the seed produced the index");
+});
+
+test("prepareReadiness: seed outcomes target-exists, deferred, and the fall-backs", async (t) => {
+	const exists = dir(t, "seed-exists");
+	writeFileSync(join(exists, "package.json"), "{}\n");
+	const existsCalls: string[] = [];
+	const existsResult = await prepareReadiness(fakeInput(exists, {
+		seed: async () => ({ outcome: "target-exists" }),
+		run: async () => {
+			existsCalls.push("run");
+			return true;
+		},
+	}));
+	assert.deepEqual(existsResult, { action: "init", ok: true, warm: "ok" });
+	assert.deepEqual(existsCalls, [], "an existing index needs no init");
+
+	const deferred = dir(t, "seed-deferred");
+	writeFileSync(join(deferred, "package.json"), "{}\n");
+	const deferredCalls: string[] = [];
+	const deferredResult = await prepareReadiness(fakeInput(deferred, {
+		seed: async () => ({ outcome: "deferred" }),
+		run: async () => {
+			deferredCalls.push("run");
+			return true;
+		},
+		warm: async () => {
+			deferredCalls.push("warm");
+			return true;
+		},
+	}));
+	assert.deepEqual(deferredResult, { action: "init", ok: false, warm: "skipped" }, "another session owns creation: fail closed");
+	assert.deepEqual(deferredCalls, [], "deferred runs neither init nor warm");
+
+	for (const outcome of ["seed-failed", "not-seedable"] as const) {
+		const fresh = dir(t, `seed-${outcome}`);
+		writeFileSync(join(fresh, "package.json"), "{}\n");
+		const calls: string[] = []
+		const result = await prepareReadiness(fakeInput(fresh, {
+			seed: async () => ({ outcome }),
+			run: async (args) => {
+				calls.push(`run:${args.join(" ")}`);
+				return true;
+			},
+		}));
+		assert.deepEqual(result, { action: "init", ok: true, warm: "ok" }, `${outcome} falls back to init`);
+		assert.deepEqual(calls, ["run:init -y"], `${outcome} runs the ordinary init`);
+	}
+});
+
 test("two real sessions racing one fresh project run exactly one init", async (t) => {
 	const cwd = dir(t, "init-race");
 	writeFileSync(join(cwd, "package.json"), "{}\n");

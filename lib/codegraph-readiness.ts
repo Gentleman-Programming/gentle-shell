@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { daemonFor } from "./codegraph-daemon.ts";
 import { acquireInitLock, tryAcquireSyncLease } from "./codegraph-lease.ts";
+import type { SeedOutcome } from "./codegraph-seed.ts";
 
 /** A cold daemon on a network share can need over a minute for its first read. */
 const WARMUP_TIMEOUT_MS = 120_000;
@@ -143,6 +144,9 @@ export interface ReadinessInput {
 	locksDir?: string;
 	/** Bounded wait for another session's init before failing closed; defaults to the init-lock budget. */
 	initLockWaitMs?: number;
+
+	/** Seeds a linked worktree from its main checkout; undefined disables seeding. */
+	seed?(cwd: string): Promise<{ outcome: SeedOutcome }>;
 	env: Record<string, string | undefined>;
 	reason: SessionStartReason;
 	/** Whether cwd is a real git project root equal to the workspace (the tool's workspace guard). */
@@ -210,18 +214,29 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 				// The init lock keeps two sessions on one fresh project from building the same index
 				// twice; after acquiring, the state is re-checked — another init may have finished
 				// while this one waited for the lock.
-				const lock = await acquireInitLock(input.cwd, {
-					locksDir: input.locksDir,
-					waitMs: input.initLockWaitMs,
-				});
-				if (lock.outcome === "acquired") {
-					try {
-						ok = indexState(input.cwd) === "present" || await input.run(["init", "-y"], input.cwd, INIT_TIMEOUT_MS);
-					} finally {
-						lock.release();
-					}
+				// A linked worktree with a main-checkout index is seeded (copy + sync) instead of
+				// initialized: seeded and target-exists stand done, deferred fails closed like a
+				// skipped lock, and every other outcome falls through to the ordinary init path.
+				let seeded: { outcome: SeedOutcome } | undefined;
+				if (input.seed) seeded = await input.seed(input.cwd);
+				if (seeded !== undefined && (seeded.outcome === "seeded" || seeded.outcome === "target-exists")) {
+					ok = true;
+				} else if (seeded?.outcome === "deferred") {
+					ok = false;
 				} else {
-					ok = lock.outcome === "present";
+					const lock = await acquireInitLock(input.cwd, {
+						locksDir: input.locksDir,
+						waitMs: input.initLockWaitMs,
+					});
+					if (lock.outcome === "acquired") {
+						try {
+							ok = indexState(input.cwd) === "present" || await input.run(["init", "-y"], input.cwd, INIT_TIMEOUT_MS);
+						} finally {
+							lock.release();
+						}
+					} else {
+						ok = lock.outcome === "present";
+					}
 				}
 			}
 			try { input.onIndexed?.({ action, ok }); } catch { /* never worth stopping the warm-up */ }

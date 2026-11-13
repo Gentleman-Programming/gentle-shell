@@ -5,6 +5,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { exploreViaDaemon, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
+import { seedWorktreeIndex } from "../lib/codegraph-seed.ts";
 import { CHILD_ENV, maybeRewarm, prepareReadiness, runCodegraph, syncBeforeSearch, warmUpDaemon, type SearchSyncInput, type SessionStartReason } from "../lib/codegraph-readiness.ts";
 
 const CODEGRAPH_OPERATION = {
@@ -597,6 +598,7 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 				}
 			},
 			run: runCodegraph,
+			seed: (workspace) => seedWorktreeIndex({ cwd: workspace, run: runCodegraph }),
 			warm: (workspace) => warmUpDaemon(workspace),
 			onStart: (action) => say(
 				action === "sync"

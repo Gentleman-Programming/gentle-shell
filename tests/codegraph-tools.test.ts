@@ -250,11 +250,15 @@ test("CodeGraph tool accepts hyphen-leading queries after the option terminator"
 	]);
 });
 
-test("CodeGraph search reports the daemon-unavailable fallback with its details", async (t) => {
+test("CodeGraph search falls back to one CLI process when the daemon cannot serve it", async (t) => {
 	withoutChildEnv(t);
 	const cwd = workspace(t);
+	const runnerCalls: Array<{ args: readonly string[]; cwd: string }> = [];
 	const tool = createCodeGraphTool(
-		async () => ({ stdout: "cli", stderr: "" }),
+		async (args, options) => {
+			runnerCalls.push({ args, cwd: options.cwd });
+			return { stdout: "cli answer", stderr: "" };
+		},
 		{
 			daemonExplore: async () => ({ status: "unavailable" }),
 			warm: async () => true,
@@ -265,17 +269,12 @@ test("CodeGraph search reports the daemon-unavailable fallback with its details"
 
 	const result = await tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, ctx);
 
-	assert.deepEqual(result.content, [{
-		type: "text",
-		text: "The CodeGraph daemon is unavailable, so the search could not run. Use read, grep, and find for this exploration.",
-	}]);
-	assert.deepEqual(result.details, {
-		status: "unavailable",
-		operation: "query",
-		cwd,
-		fallback: "Use read, grep, and find for this exploration.",
-		syncTriggered: true,
-	});
+	assert.deepEqual(result.content, [{ type: "text", text: "cli answer" }]);
+	assert.deepEqual(runnerCalls, [
+		{ args: ["query", "--path", cwd, "--limit", "10", "--", "symbol"], cwd },
+	], "the daemon could not serve, so exactly one CLI process answered");
+	assert.equal((result.details as { viaDaemon?: boolean }).viaDaemon, false);
+	assert.equal((result.details as { syncTriggered?: boolean }).syncTriggered, true);
 });
 
 test("CodeGraph init reports the missing binary distinctly", async (t) => {
@@ -686,7 +685,7 @@ test("CodeGraph query prefers the daemon socket and never spawns the CLI", async
 	assert.equal((result.details as { viaDaemon?: boolean }).viaDaemon, true);
 });
 
-test("a daemon that never answers tries twice, warms once, and never spawns the CLI", async (t) => {
+test("a daemon that never answers tries twice, warms once, then answers through the CLI", async (t) => {
 	withoutChildEnv(t);
 	const cwd = workspace(t);
 	let daemonCalls = 0;
@@ -713,20 +712,66 @@ test("a daemon that never answers tries twice, warms once, and never spawns the 
 
 	const first = await tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, ctx);
 
-	assert.match(first.content[0].text, /daemon is unavailable/i);
-	assert.match(first.content[0].text, /Use read, grep, and find/);
-	assert.equal((first.details as { status?: string }).status, "unavailable");
+	assert.deepEqual(first.content, [{ type: "text", text: "cli" }]);
+	assert.equal((first.details as { viaDaemon?: boolean }).viaDaemon, false);
 	assert.equal((first.details as { syncTriggered?: boolean }).syncTriggered, true);
 	assert.equal(daemonCalls, 2, "one attempt, then exactly one more after the warm-up");
 	assert.equal(warmCalls, 1);
-	assert.equal(runnerCalls, 0, "query and explore never spawn the CLI");
+	assert.equal(runnerCalls, 1, "the CLI answers as the last resort");
 
 	const second = await tool.execute("test", { operation: "explore", query: "symbol" }, undefined, undefined, ctx);
 
 	assert.equal((second.details as { syncTriggered?: boolean }).syncTriggered, undefined, "one background sync per turn");
 	assert.equal(daemonCalls, 4);
 	assert.equal(warmCalls, 2);
-	assert.equal(runnerCalls, 0);
+	assert.equal(runnerCalls, 2);
+});
+
+test("a hung daemon also falls back to the CLI", async (t) => {
+	const cwd = workspace(t);
+	let runnerCalls = 0;
+	const tool = createCodeGraphTool(
+		async () => {
+			runnerCalls += 1;
+			return { stdout: "cli", stderr: "" };
+		},
+		{
+			daemonExplore: async () => ({ status: "timeout" }),
+			warm: async () => true,
+			syncRun: syncNothing,
+		},
+	);
+
+	const result = await tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd } as ExtensionContext);
+
+	assert.deepEqual(result.content, [{ type: "text", text: "cli" }]);
+	assert.equal((result.details as { viaDaemon?: boolean }).viaDaemon, false);
+	assert.equal(runnerCalls, 1);
+});
+
+test("when the daemon and the CLI both fail, the search reports the standard failure", async (t) => {
+	const cwd = workspace(t);
+	const daemonDown: DaemonExplore = async () => ({ status: "unavailable" });
+	const warmOk = async () => true;
+
+	const failed = await createCodeGraphTool(
+		async () => {
+			throw new Error("CodeGraph exited with status 1");
+		},
+		{ daemonExplore: daemonDown, warm: warmOk, syncRun: syncNothing },
+	).execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd } as ExtensionContext);
+	assert.deepEqual(failed.content, [{ type: "text", text: "CodeGraph failed to run. Use read, grep, and find for this exploration." }]);
+	assert.equal((failed.details as { status?: string }).status, "failed");
+
+	const missingBinary = Object.assign(new Error("spawn codegraph ENOENT"), { code: "ENOENT" });
+	const unavailable = await createCodeGraphTool(
+		async () => {
+			throw missingBinary;
+		},
+		{ daemonExplore: daemonDown, warm: warmOk, syncRun: syncNothing },
+	).execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd } as ExtensionContext);
+	assert.deepEqual(unavailable.content, [{ type: "text", text: "CodeGraph is unavailable because the codegraph binary was not found. Use read, grep, and find for this exploration." }]);
+	assert.equal((unavailable.details as { status?: string }).status, "unavailable");
 });
 
 test("a daemon miss recovers after one warm-up attempt", async (t) => {

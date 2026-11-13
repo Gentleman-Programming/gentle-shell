@@ -506,20 +506,26 @@ export function createCodeGraphTool(
 						details: { operation: parameters.operation, cwd, args, viaDaemon: true, ...syncDetails, ...(localExclude ? { localExclude } : {}) },
 					};
 				}
-				// Still no daemon: the search falls back to read, grep, and find.
-				const localExclude = indexExists(cwd) ? excludeIndexLocally(cwd) : undefined;
-				const details: CodeGraphFallbackDetails = {
-					status: CODEGRAPH_STATUS.UNAVAILABLE,
-					operation: parameters.operation,
-					cwd,
-					fallback: FALLBACK_INSTRUCTIONS,
-					...syncDetails,
-				};
-				if (localExclude) details.localExclude = localExclude;
-				return {
-					content: [{ type: "text" as const, text: withLocalExcludeNote(`The CodeGraph daemon is unavailable, so the search could not run. ${FALLBACK_INSTRUCTIONS}`, localExclude) }],
-					details,
-				};
+				// Still no daemon: the search still runs — one CLI process as the last resort. The daemon
+				// stays the only path while it answers; when it cannot serve (never started, died, hung, or
+				// has no project loaded), a slower correct answer beats the read/grep/find dead end.
+				try {
+					const result = await runner(args, { cwd, signal, maxBuffer: PROCESS_MAX_BUFFER });
+					const output = truncateOutput([result.stdout, result.stderr].filter(Boolean).join("\n"));
+					const localExclude = indexExists(cwd) ? excludeIndexLocally(cwd) : undefined;
+					return {
+						content: [{ type: "text" as const, text: withLocalExcludeNote(output || "CodeGraph completed without output.", localExclude) }],
+						details: { operation: parameters.operation, cwd, args, viaDaemon: false, ...syncDetails, ...(localExclude ? { localExclude } : {}) },
+					};
+				} catch (error: unknown) {
+					const details = codeGraphFailureDetails(error, parameters.operation, cwd);
+					const localExclude = indexExists(cwd) ? excludeIndexLocally(cwd) : undefined;
+					if (localExclude) details.localExclude = localExclude;
+					return {
+						content: [{ type: "text" as const, text: withLocalExcludeNote(codeGraphFailureMessage(details.status), localExclude) }],
+						details: { ...details, ...syncDetails },
+					};
+				}
 			}
 			// init keeps its CLI path: it is the legitimately slow first index, bounded only by the user's signal.
 			try {

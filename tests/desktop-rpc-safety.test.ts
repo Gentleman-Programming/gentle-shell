@@ -27,6 +27,10 @@ test("a job without its own label is projected by program name, never by its com
 		["  npm run build  ", "npm"],
 		['"C:\\Program Files\\Tools\\app.exe" --token=s3cr3t', "app.exe"],
 		["API_KEY=s3cr3t '/home/devel/my tools/run.sh' --key=s3cr3t", "run.sh"],
+		['API_KEY="prefix s3cr3t" /usr/bin/curl https://example.com', "curl"],
+		["TOKEN='a s3cr3t b' OTHER=\"x y\" ./run.sh", "run.sh"],
+		['API_KEY="unterminated s3cr3t /usr/bin/curl', "Background job"],
+		['pre"fix s3cr3t" --flag', "Background job"],
 		["A=1 B=2", "Background job"],
 		["", "Background job"],
 	];

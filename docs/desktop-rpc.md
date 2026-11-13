@@ -716,7 +716,7 @@ Each entry carries only the whitelisted fields of the owner's `JobRecord`:
 | Field | Meaning |
 | --- | --- |
 | `id` | The owner's opaque job identifier. |
-| `label` | The label the agent gave the job. A job started without one shows only its program's base name (leading `VAR=value` assignments skipped, directories dropped, for example `deploy.sh`), or `Background job` when no usable name remains; its command text, arguments and paths never cross the wire. |
+| `label` | The label the agent gave the job. A job started without one shows only its program's base name (leading `VAR=value` assignments skipped as whole shell words even when their value is quoted, directories dropped, for example `deploy.sh`), or `Background job` when no usable name remains or the quoting is unclear; its command text, arguments and paths never cross the wire. |
 | `status` | One of `running`, `exited`, `stopped`, or `failed`. |
 | `startedAt` | When the job started, in milliseconds. |
 | `endedAt` | When a non-running job ended, present only after it ends. |

@@ -90,11 +90,46 @@ const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
  */
 export function desktopJobLabel(job: Pick<JobRecord, "label" | "command">): string {
 	if (job.label.trim() !== job.command.trim()) return job.label;
-	// Words are split on whitespace, but a quoted word (a path with spaces) stays whole.
-	const words = job.command.trim().match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
-	const program = words.find((word) => !ENV_ASSIGNMENT.test(word));
-	const name = program?.replace(/^["']|["']$/g, "").split(/[\\/]/).pop() ?? "";
+	const words = shellWords(job.command);
+	const program = words?.find((word) => !ENV_ASSIGNMENT.test(word));
+	if (!program) return DESKTOP_JOB_FALLBACK_LABEL;
+	// A program word may be wholly quoted (a path with spaces); a quote anywhere
+	// else means the word is not a plain program name, so nothing of it is shown.
+	const unquoted = /^"[^"]*"$|^'[^']*'$/.test(program) ? program.slice(1, -1) : program;
+	if (/["']/.test(unquoted)) return DESKTOP_JOB_FALLBACK_LABEL;
+	const name = unquoted.split(/[\\/]/).pop() ?? "";
 	return /^[A-Za-z0-9._+-]{1,64}$/.test(name) ? name : DESKTOP_JOB_FALLBACK_LABEL;
+}
+
+/**
+ * Whole shell words, quotes kept: quoted spans join the word they touch, so
+ * `KEY="a b"` is one word and an assignment never splits into a fake program.
+ * An unterminated quote makes the command unreadable (`undefined`), never a
+ * best guess.
+ */
+function shellWords(command: string): string[] | undefined {
+	const words: string[] = [];
+	let word = "";
+	let inWord = false;
+	for (let index = 0; index < command.length; index += 1) {
+		const char = command[index]!;
+		if (char === "\"" || char === "'") {
+			const close = command.indexOf(char, index + 1);
+			if (close === -1) return undefined;
+			word += command.slice(index, close + 1);
+			inWord = true;
+			index = close;
+		} else if (/\s/.test(char)) {
+			if (inWord) words.push(word);
+			word = "";
+			inWord = false;
+		} else {
+			word += char;
+			inWord = true;
+		}
+	}
+	if (inWord) words.push(word);
+	return words;
 }
 
 /**

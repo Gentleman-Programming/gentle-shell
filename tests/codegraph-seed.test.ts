@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { seedWorktreeIndex, worktreeMainRoot, type SeedInput } from "../lib/codegraph-seed.ts";
+import { retryTransient, seedWorktreeIndex, worktreeMainRoot, type SeedInput } from "../lib/codegraph-seed.ts";
 
 /** git that fails the test WITH stderr instead of swallowing it. */
 function git(args: readonly string[], cwd: string): void {
@@ -118,7 +118,7 @@ test("seedWorktreeIndex: a failed sync removes the seeded database so absent sta
 	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db.seeding")), true, "and no staged remnant either");
 });
 
-test("rename crash-window: a failing sidecar rename must not leave a torn database", async (t) => {
+test("a failing sidecar placement returns seed-failed and leaves no torn database", async (t) => {
 	const { main, worktree } = worktreePair(t);
 	// The main checkout carries sidecars, so the seed stages and renames them too.
 	writeFileSync(join(main, ".codegraph", "codegraph.db-wal"), "wal-bytes");
@@ -126,8 +126,13 @@ test("rename crash-window: a failing sidecar rename must not leave a torn databa
 	// A directory squatting on a sidecar's final name makes that rename fail.
 	mkdirSync(join(worktree, ".codegraph", "codegraph.db-wal"), { recursive: true });
 
-	await assert.rejects(() => seedWorktreeIndex(seedHarness(worktree).input));
+	const result = await seedWorktreeIndex(seedHarness(worktree).input);
+	assert.equal(result.outcome, "seed-failed", "the caller learns to fall back to init, not a rejection");
 	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db")), true, "the database must not be in place while a sidecar failed");
+	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db.seeding")), true, "no staged database remnant stays behind");
+	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db-wal.seeding")), true, "no staged sidecar remnant stays behind");
+	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db-shm")), true, "an already-placed sidecar is cleaned too");
+	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db-wal")), false, "the squatter directory is not ours to remove");
 });
 
 test("seedWorktreeIndex: two real sessions seeding one worktree copy exactly once", async (t) => {
@@ -164,4 +169,47 @@ test("seedWorktreeIndex: two real sessions seeding one worktree copy exactly onc
 	assert.deepEqual(codes, [0, 0]);
 	const lines = readFileSync(log, "utf8").trim().split("\n").filter((line) => line.length > 0);
 	assert.equal(lines.length, 1, `exactly one seed ran, got: ${lines.join(" | ")}`);
+});
+
+test("a busy main index defers seeding without touching the worktree", async (t) => {
+	const { main, worktree } = worktreePair(t);
+	writeFileSync(join(main, ".codegraph", "codegraph.lock"), String(process.pid));
+	const { input, calls } = seedHarness(worktree);
+	const result = await seedWorktreeIndex(input);
+	assert.equal(result.outcome, "main-busy");
+	assert.deepEqual(calls, [], "nothing ran and nothing was copied");
+	assert.equal(fileAbsent(join(worktree, ".codegraph")), true, "the worktree is untouched");
+});
+
+test("retryTransient retries transient codes with backoff and fails others at once", async () => {
+	const sleeps: number[] = [];
+	const sleep = async (ms: number) => {
+		sleeps.push(ms);
+	};
+	let eperm = 0;
+	assert.equal(
+		await retryTransient(() => {
+			eperm += 1;
+			if (eperm < 3) throw Object.assign(new Error("locked"), { code: "EPERM" });
+			return "ok";
+		}, sleep),
+		"ok",
+	);
+	assert.deepEqual(sleeps, [50, 100], "two retries, gentle backoff");
+	sleeps.length = 0;
+	let ebusy = 0;
+	await assert.rejects(() =>
+		retryTransient(() => {
+			ebusy += 1;
+			throw Object.assign(new Error("busy"), { code: "EBUSY" });
+		}, sleep));
+	assert.equal(ebusy, 3, "three attempts, then the transient error surfaces");
+	let enosys = 0;
+	await assert.rejects(() =>
+		retryTransient(() => {
+			enosys += 1;
+			throw Object.assign(new Error("nope"), { code: "ENOSYS" });
+		}, sleep));
+	assert.equal(enosys, 1, "non-transient codes fail on the first attempt");
+	assert.deepEqual(sleeps, [50, 100], "no sleep was spent on the non-transient code");
 });

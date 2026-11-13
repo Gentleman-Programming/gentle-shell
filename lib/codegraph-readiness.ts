@@ -180,6 +180,7 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 			if (action === "none") return { action, ok: true, warm: "skipped" };
 			try { input.onStart?.(action); } catch { /* never worth stopping the index */ }
 			let ok: boolean;
+			let standDown = false;
 			if (action === "sync") {
 				// A live daemon holds the writer lock and its index is never stale: a CLI `sync -q` coexists
 				// with it (daemon.log auto-syncs), so it is never unlocked — "if an index exists, do not
@@ -221,6 +222,10 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 				if (input.seed) seeded = await input.seed(input.cwd);
 				if (seeded !== undefined && (seeded.outcome === "seeded" || seeded.outcome === "target-exists")) {
 					ok = true;
+				} else if (seeded?.outcome === "main-busy") {
+					// The main checkout is mid-write: nothing failed, but there is no index to warm either.
+					ok = true;
+					standDown = true;
 				} else if (seeded?.outcome === "deferred") {
 					ok = false;
 				} else {
@@ -241,7 +246,7 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 			}
 			try { input.onIndexed?.({ action, ok }); } catch { /* never worth stopping the warm-up */ }
 			// A failed sync still leaves an index to warm; a failed init leaves nothing worth warming.
-			if (!(action === "sync" || (action === "init" && ok))) return { action, ok, warm: "skipped" };
+			if (standDown || !(action === "sync" || (action === "init" && ok))) return { action, ok, warm: "skipped" };
 			try { input.onWarmStart?.(); } catch { /* never worth stopping the warm-up */ }
 			try {
 				return { action, ok, warm: (await input.warm(input.cwd)) ? "ok" : "failed" };
@@ -323,8 +328,8 @@ export function syncBeforeSearch(input: SearchSyncInput): void {
 function killProcessTree(child: { pid?: number } | undefined): void {
 	if (child?.pid === undefined) return;
 	if (process.platform === "win32") {
-		execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], () => {
-			/* already gone: the grace timer reports the failure anyway */
+		execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true }, () => {
+			/* already gone: the grace timer reports the failure anyway; windowsHide keeps the kill invisible */
 		});
 		return;
 	}

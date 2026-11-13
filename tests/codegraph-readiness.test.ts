@@ -703,3 +703,22 @@ test("prepareReadiness: the init run receives the lock's adopt hook", async (t) 
 	assert.deepEqual(result, { action: "init", ok: true, warm: "ok" });
 	assert.equal(seen.length, 0);
 });
+
+test("prepareReadiness: a main-busy seed stands down benignly with nothing to warm", async (t) => {
+	const fresh = dir(t, "seed-main-busy");
+	writeFileSync(join(fresh, "package.json"), "{}\n");
+	const calls: string[] = [];
+	const result = await prepareReadiness(fakeInput(fresh, {
+		seed: async () => ({ outcome: "main-busy" }),
+		run: async (args) => {
+			calls.push(`run:${args.join(" ")}`);
+			return true;
+		},
+		warm: async () => {
+			calls.push("warm");
+			return true;
+		},
+	}));
+	assert.deepEqual(result, { action: "init", ok: true, warm: "skipped" }, "the busy main is not this session's failure");
+	assert.deepEqual(calls, [], "no init, no warm: the main checkout owns the moment");
+});

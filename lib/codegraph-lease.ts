@@ -215,7 +215,7 @@ export async function acquireInitLock(
 	for (;;) {
 		const verdict = readLeaseVerdict(path, now(), cwd);
 		if (verdict === "free" || verdict === "held-stale") {
-			const lease = tryAcquireLease(path, "init", ttlMs, now());
+			const lease = tryAcquireLease(path, "init", ttlMs, now(), cwd);
 			if (lease) return { outcome: "acquired", release: lease.release, adopt: (pid, proxy) => adoptWriterPid(path, pid, proxy) };
 			// The steal race was lost between verdict and create: keep waiting like a live holder.
 		} else if (verdict === "held-live" && exists(cwd)) {

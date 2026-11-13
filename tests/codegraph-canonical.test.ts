@@ -35,3 +35,10 @@ test("unfoldRoot: a missing tail keeps the nearest resolvable parent instead of 
 	assert.equal(unfoldRoot(missing), missing, "a resolvable parent plus the given tail");
 	assert.equal(unfoldRoot(join(missing, "deeper")), join(missing, "deeper"), "every missing level walks up to the same base");
 });
+
+test("canonicalRoot on POSIX equals realpath: lock tokens never re-key", (t) => {
+	if (process.platform === "win32") return;
+	const real = realpathSync(dir(t, "posix"));
+	assert.equal(canonicalRoot(real), real);
+	assert.equal(canonicalRoot(`${real}/`), real);
+});

@@ -365,6 +365,25 @@ test("in All sizes the ring follows only the frame it is drawn on, the frame as 
 	assert.deepEqual([markBox(canvas), marks(canvas)[0].hidden], [["130px 260px 200px 20px"], false]);
 });
 
+test("S5: in All sizes a new report from the artboard's own frame keeps the ring where the frame as designed located it", async () => {
+	const canvas = await loadChecks();
+	const [first] = canvas.boards;
+	report(canvas, first.frame, [finding()]);
+	openQuality(canvas);
+	focusOn(canvas, 0);
+	chooseSize(canvas, "all");
+	showCard(canvas, 0);
+	const designed = sizeSections(canvas).map(iframeOf).at(-1)!;
+	canvas.message(designed.contentWindow, { type: "gd:located", selector: "main > p.or", rect: { x: 30, y: 92, width: 200, height: 20 } });
+	assert.deepEqual([markBox(canvas), marks(canvas)[0].hidden], [["130px 102px 200px 20px"], false], "the ring where the frame as designed shows the element");
+	// The hidden own frame reports the same finding at its own coordinates: the displayed element has not moved.
+	report(canvas, first.frame, [finding({ title: "Lower contrast", rect: { x: 30, y: 252, width: 200, height: 20 } })]);
+	assert.deepEqual([markBox(canvas), marks(canvas)[0].hidden, texts(marks(canvas)[0], "gd-check-mark-label"), activeCards(canvas)], [["130px 102px 200px 20px"], false, ["Lower contrast"], [0]], "the same ring, on the same finding, still where it was located");
+	// The finding gone from a report still clears it.
+	report(canvas, first.frame, []);
+	assert.equal(marks(canvas).length, 0);
+});
+
 test("Show zooms in under 100% about the element and centers it, and never zooms out", async () => {
 	const canvas = await loadChecks();
 	const [first] = canvas.boards;

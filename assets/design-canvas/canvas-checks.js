@@ -355,7 +355,11 @@ export function init(ctx) {
 		mark.label.textContent = mark.issue.title;
 	}
 
-	/** A new report of the ringed artboard: the ring moves to the same finding (check, kind, element), or goes. */
+	/**
+	 * A new report of the ringed artboard: the ring moves to the same finding (check, kind, element), or goes. Its rect is in
+	 * the report's frame, the artboard's own: in All sizes the ring is on the frame as designed, whose page keeps saying where
+	 * the element is (gd:located), so the ring stays where that frame located it.
+	 */
 	function followMark() {
 		const { board, issue } = mark;
 		const same = board.checks ? board.checks.issues.find((entry) => entry.check === issue.check && entry.severity === issue.severity && entry.selector === issue.selector) : null;
@@ -364,7 +368,7 @@ export function init(ctx) {
 			return;
 		}
 		mark.issue = same;
-		mark.rect = same.rect;
+		if (markSurface(board) === board) mark.rect = same.rect;
 		renderMark();
 	}
 

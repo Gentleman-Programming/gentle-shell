@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { existsSync, realpathSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { daemonFor } from "./codegraph-daemon.ts";
 
 /** A cold daemon on a network share can need over a minute for its first read. */
 const WARMUP_TIMEOUT_MS = 120_000;
@@ -16,63 +17,6 @@ const CHILD_ENV = "GENTLE_PI_AGENTS_CHILD";
 const MARKERS = ["composer.json", "package.json", "pyproject.toml", "go.mod", "Cargo.toml", "Gemfile", "pom.xml", "build.gradle", "build.gradle.kts"];
 /** CodeGraph answers an explore without a project with this plain text, not with an error. */
 const NO_PROJECT_TEXT = "No CodeGraph project is loaded";
-
-/** One canonical form for root comparison: the real path on disk, trailing separator removed; on Windows
- * also lowercased, so drive-letter case does not split one project into two daemons. */
-function canonical(path: string): string {
-	let resolved = path;
-	try {
-		resolved = realpathSync(path);
-	} catch {
-		/* keep the spelling we were given */
-	}
-	return (process.platform === "win32" ? resolved.toLowerCase() : resolved).replace(/[\\/]$/, "");
-}
-
-export interface DaemonInfo {
-	/** A daemon for this project is running (pid alive, socket present). */
-	alive: boolean;
-	/** How the newest registered daemon spells this project: passing this spelling keeps the warm-up on
-	 * that daemon instead of starting a second one for the same project. Undefined when nothing matches. */
-	root?: string;
-}
-
-/** The project's newest daemon from CodeGraph's own registry. Reads only; starts nothing. */
-export function daemonFor(cwd: string, registryDir: string = join(homedir(), ".codegraph", "daemons")): DaemonInfo {
-	let files: string[];
-	try {
-		files = readdirSync(registryDir).filter((file) => file.endsWith(".json"));
-	} catch {
-		return { alive: false, root: undefined };
-	}
-	const wanted = canonical(cwd);
-	const entries: { root: string; socketPath: string; startedAt: number; pid?: number }[] = [];
-	for (const file of files) {
-		try {
-			const entry = JSON.parse(readFileSync(join(registryDir, file), "utf8"));
-			if (typeof entry.root !== "string" || typeof entry.socketPath !== "string" || canonical(entry.root) !== wanted) continue;
-			entries.push({
-				root: entry.root,
-				socketPath: entry.socketPath,
-				startedAt: typeof entry.startedAt === "number" ? entry.startedAt : 0,
-				pid: typeof entry.pid === "number" ? entry.pid : undefined,
-			});
-		} catch {
-			/* a damaged record is not a daemon */
-		}
-	}
-	entries.sort((a, b) => b.startedAt - a.startedAt);
-	for (const entry of entries) {
-		if (entry.pid === undefined) continue;
-		try {
-			process.kill(entry.pid, 0);
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "EPERM") continue;
-		}
-		if (existsSync(entry.socketPath)) return { alive: true, root: entry.root };
-	}
-	return { alive: false, root: entries[0]?.root };
-}
 
 /**
  * Makes the project's CodeGraph daemon open its database and start a read worker, so the next real call

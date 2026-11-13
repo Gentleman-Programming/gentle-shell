@@ -4,8 +4,8 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { daemonFor } from "../lib/codegraph-daemon.ts";
 import {
-	daemonFor,
 	indexState,
 	maybeRewarm,
 	planIndexAction,

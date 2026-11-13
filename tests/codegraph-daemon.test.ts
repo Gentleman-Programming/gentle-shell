@@ -4,7 +4,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { daemonFor, exploreViaDaemon } from "../lib/codegraph-daemon.ts";
+import { daemonFor, exploreViaDaemon, registeredDaemons, resetDaemonRegistryMemo } from "../lib/codegraph-daemon.ts";
 
 function dir(t: test.TestContext, name: string): string {
 	const cwd = mkdtempSync(join(tmpdir(), `gentle-codegraph-daemon-${name}-`));
@@ -101,4 +101,20 @@ test("daemonFor and the sockets iterate live daemons newest first", async (t) =>
 	const found = daemonFor(project, daemon.registryDir);
 	assert.equal(found.alive, true);
 	assert.equal(found.root, project);
+});
+
+test("registeredDaemons reads the registry once per project per window", (t) => {
+	const project = dir(t, "memo");
+	const registry = dir(t, "memo-registry");
+	const record = join(registry, "record.json");
+	const entry = { root: project, socketPath: join(registry, "daemon.sock"), pid: process.pid };
+	writeFileSync(record, JSON.stringify({ ...entry, startedAt: 1 }));
+	const read = registeredDaemons(project, registry);
+	assert.equal(read.length, 1);
+	writeFileSync(record, JSON.stringify({ ...entry, startedAt: 2 }));
+	assert.deepEqual(registeredDaemons(project, registry), read, "within the window the second read is the memoized first one");
+	resetDaemonRegistryMemo();
+	const fresh = registeredDaemons(project, registry);
+	assert.equal(fresh.length, 1);
+	assert.equal(fresh[0]?.startedAt, 2, "after the reset the mutated record is read again");
 });

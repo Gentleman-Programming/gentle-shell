@@ -35,6 +35,15 @@ interface RegisteredDaemon {
 	pid?: number;
 }
 
+/** One query can trigger several registry scans (daemonFor, daemonSockets, one per daemon attempt), so one read per project per window suffices. */
+const REGISTRY_MEMO_MS = 1_000;
+let registryMemo: { key: string; at: number; daemons: RegisteredDaemon[] } | undefined;
+
+/** Tests reset the window so fixtures written between calls are seen again. */
+export function resetDaemonRegistryMemo(): void {
+	registryMemo = undefined;
+}
+
 /** Daemons registered for `root` in any spelling, newest first. Reads the registry only; starts nothing. */
 export function registeredDaemons(root: string, registryDir: string = join(homedir(), ".codegraph", "daemons")): RegisteredDaemon[] {
 	let files: string[];
@@ -44,6 +53,9 @@ export function registeredDaemons(root: string, registryDir: string = join(homed
 		return [];
 	}
 	const wanted = canonical(root);
+	// The listing is fresh on every call: a record that appeared or vanished changes it and busts the memo.
+	const key = `${registryDir}|${wanted}|${files.join(",")}`;
+	if (registryMemo !== undefined && registryMemo.key === key && Date.now() - registryMemo.at < REGISTRY_MEMO_MS) return registryMemo.daemons;
 	const found: RegisteredDaemon[] = [];
 	for (const file of files) {
 		try {
@@ -59,6 +71,7 @@ export function registeredDaemons(root: string, registryDir: string = join(homed
 			/* a damaged record is not a daemon */
 		}
 	}
+	registryMemo = { key, at: Date.now(), daemons: found };
 	return found.sort((a, b) => b.startedAt - a.startedAt);
 }
 

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { daemonFor } from "./codegraph-daemon.ts";
+import type { DaemonInfo } from "./codegraph-daemon.ts";
 import { acquireInitLock, tryAcquireSyncLease } from "./codegraph-lease.ts";
 import type { SeedOutcome } from "./codegraph-seed.ts";
 
@@ -32,13 +33,18 @@ export function warmUpDaemon(cwd: string, background = false, timeoutMs = WARMUP
 	// A daemon that is already alive is already warm: a second `serve --mcp` cannot take the daemon
 	// lock and only logs "Could not acquire the daemon lock; exiting" (26+ such lines in daemon.log)
 	// before it is reported as a failed warm-up. No spawn, no handshake — it resolves at once.
+	let daemon: DaemonInfo;
 	try {
-		if (daemonFor(cwd, registryDir).alive) return Promise.resolve(true);
-	} catch { /* an unreadable registry is no reason to skip the warm-up */ }
+		daemon = daemonFor(cwd, registryDir);
+		if (daemon.alive) return Promise.resolve(true);
+	} catch {
+		/* an unreadable registry is no reason to skip the warm-up */
+		daemon = { alive: false, root: undefined };
+	}
 	return new Promise((resolve) => {
 		let settled = false;
 		let child: ReturnType<typeof spawn> | undefined;
-		const project = daemonFor(cwd, registryDir).root ?? realpathSync(cwd);
+		const project = daemon.root ?? realpathSync(cwd);
 		const finish = (ok: boolean) => {
 			if (settled) return;
 			settled = true;

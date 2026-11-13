@@ -67,6 +67,10 @@ test("indexState: the database file is the index, not the directory", (t) => {
 });
 
 test("indexState: an access error is unknown, not absent", (t) => {
+	// Windows ACLs do not map a chmod 000 to a statSync denial (the same guard the
+	// lease suite's unreadable-token test uses), so the access-error path cannot be
+	// exercised there: the test is POSIX-only.
+	if (process.platform === "win32") return;
 	const cwd = mkdtempSync(join(tmpdir(), "gentle-codegraph-readiness-denied-"));
 	mkdirSync(join(cwd, ".codegraph"));
 	writeFileSync(join(cwd, ".codegraph", "codegraph.db"), "index");

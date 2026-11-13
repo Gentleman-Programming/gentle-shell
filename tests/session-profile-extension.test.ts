@@ -51,6 +51,7 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
  fastOrder?: "ai-first" | "fast-first";
  agents?: boolean;
  routing?: Record<string, AgentRoutingEntry>;
+ headless?: boolean;
 }) {
  const root = mkdtempSync(join(tmpdir(), "u3-public-"));
  const config = join(root, "config"),
@@ -138,6 +139,14 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
   errors: string[] = [],
   events: string[] = [],
   tierEvents: unknown[] = [];
+ // A headless session has no notify surface; the extension reports through
+ // stderr, so the fixture captures console.error for assertions.
+ const headlessNotes: string[] = [];
+ const boundConsoleError = console.error;
+ if (startup?.headless) console.error = (...args: unknown[]) => void headlessNotes.push(args.map(String).join(" "));
+ t.after(() => {
+  if (startup?.headless) console.error = boundConsoleError;
+ });
  let selection: keyof typeof profiles | undefined;
  let currentApi: ExtensionAPI | undefined;
  let cancel = false;
@@ -311,11 +320,11 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
   reason: startup?.reason ?? "startup",
  });
  const bind = (session: AgentSession) =>
-  session.bindExtensions({
-   uiContext: ui,
-   mode: "tui",
-   onError: (e) => errors.push(JSON.stringify(e)),
-  });
+  session.bindExtensions(
+   startup?.headless
+    ? { mode: "print", onError: (e) => errors.push(JSON.stringify(e)) }
+    : { uiContext: ui, mode: "tui", onError: (e) => errors.push(JSON.stringify(e)) },
+  );
  await bind(first.session);
  const runtime = new AgentSessionRuntime(
   first.session,
@@ -380,6 +389,7 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
    return next.session;
   },
   notices,
+  headlessNotes,
   events,
   tierEvents,
   errors,
@@ -746,6 +756,25 @@ for (const failure of ["model", "credentials"] as const)
   assert.ok(f.notices.some((n) => n.text.includes(text)), JSON.stringify(f.notices));
   f.settingsUnchanged();
  });
+
+test(`A3 headless own start reports the switch outcome on stderr`, async (t) => {
+ const f = await fixture(t, false, false, "live", {
+  env: {},
+  orchestrator: { model: "openai/not-in-catalog", thinking: "high" as const },
+  headless: true,
+ });
+ assert.equal(f.runtime.session.model?.id, "gpt-4o");
+ assert.equal(f.authCalls(), 0);
+ assert.equal(f.family().length, 0);
+ assert.ok(
+  f.headlessNotes.some((line) =>
+   line.includes('profile "live"') &&
+   line.includes("openai/not-in-catalog is not in the model catalog; this session keeps its current model")),
+  JSON.stringify(f.headlessNotes),
+ );
+ assert.equal(f.notices.length, 0, "a headless session has no UI notifications");
+ f.settingsUnchanged();
+});
 
 for (const env of [{ GENTLE_PI_PROFILE_FOLLOW: "1" }, { GENTLE_PI_AGENTS_CHILD: "1" }])
  test(`A3 ${Object.keys(env)[0]} skips startup switching and freezing`, async (t) => {

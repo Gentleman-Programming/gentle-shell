@@ -12629,7 +12629,12 @@ function createGentleAiExtensionForTesting(
 					|| "\nThe profile's orchestrator model is invalid; this session keeps its current model."
 				: `\nprofile "${startupProfile.name}" has no orchestrator model; this session keeps its current model.`;
 			if (!current()) return;
-			if (ctx.hasUI) ctx.ui.notify(`el Gentleman started with profile "${startupProfile.name}".${note}`, "info");
+			// A headless session (pi -p) has no notify surface: the startup note
+			// falls back to stderr, the same channel Pi's own startup notifications
+			// use headlessly, so a failed switch is observable instead of silent.
+			const startedWith = `el Gentleman started with profile "${startupProfile.name}".${note}`;
+			if (ctx.hasUI) ctx.ui.notify(startedWith, "info");
+			else console.error(startedWith);
 		}
 		readSessionProfileAuthority(ctx.sessionManager);
 		if (ctx.hasUI) notifySessionProfileProblem(ctx);

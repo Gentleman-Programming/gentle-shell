@@ -1440,6 +1440,23 @@ test("automatic Git tracking check times out into the fail-closed path", { skip:
 	assert.equal(existsSync(fixture.ignore), false);
 });
 
+// A runtime without `git` on PATH is not a broken repository: the tracking
+// check answers "no Git metadata" and regeneration proceeds, instead of warning
+// and letting the watcher repeat it on every tick.
+test("automatic Git tracking check treats a missing git binary as non-Git instead of warning", async (t) => {
+	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-no-git-"));
+	const emptyBin = mkdtempSync(join(tmpdir(), "gentle-pi-empty-bin-"));
+	const previousPath = process.env.PATH;
+	process.env.PATH = emptyBin;
+	t.after(() => {
+		process.env.PATH = previousPath;
+		rmSync(cwd, { recursive: true, force: true });
+		rmSync(emptyBin, { recursive: true, force: true });
+	});
+	assert.equal(await __testing.ensureAtlIgnored(cwd), undefined);
+	assert.equal(readFileSync(join(cwd, ".atl", ".gitignore"), "utf8").trim(), "*");
+});
+
 // S2: a repository rooted at HOME makes every Git call scan the whole home.
 // Startup skips the automatic Git work there; deliberate refresh still works.
 test("registered startup skips Git work and watchers when the repository is rooted at HOME", async (t) => {

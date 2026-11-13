@@ -77,59 +77,21 @@ export const INVALID_JOBS_PARAMS = { code: "invalid_request", message: "Invalid 
 export const JOBS_UNAVAILABLE = { code: "jobs_unavailable", message: "Background jobs owner unavailable for this session" } as const;
 export const JOB_NOT_FOUND = { code: "not_found", message: "No background job with that id in this session" } as const;
 
-/** Shown for a job whose command names no usable program. */
+/** Shown for a command job the agent started without a label. */
 export const DESKTOP_JOB_FALLBACK_LABEL = "Background job";
-const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+/** Shown for a monitor the agent started without a label. */
+export const DESKTOP_MONITOR_FALLBACK_LABEL = "Background monitor";
 
 /**
- * The label a job may show on the wire. The registry falls back to the full
- * command when the agent gave no label, and a command can carry tokens, paths
- * or arguments, so such a label is reduced to the program's base name: leading
- * `VAR=value` assignments are skipped and directories dropped. An explicit
- * label is the agent's own wording and is kept.
+ * The label a job may show on the wire. An explicit label is the agent's own
+ * wording and is kept. Without one, the registry falls back to the command
+ * itself, and a command can hide a secret in more shell forms (headers,
+ * quoted or escaped assignments, substitutions) than any parser here could
+ * safely cover, so no part of it is derived: the label is fixed by kind.
  */
-export function desktopJobLabel(job: Pick<JobRecord, "label" | "command">): string {
+export function desktopJobLabel(job: Pick<JobRecord, "label" | "command" | "kind">): string {
 	if (job.label.trim() !== job.command.trim()) return job.label;
-	const words = shellWords(job.command);
-	const program = words?.find((word) => !ENV_ASSIGNMENT.test(word));
-	if (!program) return DESKTOP_JOB_FALLBACK_LABEL;
-	// A program word may be wholly quoted (a path with spaces); a quote anywhere
-	// else means the word is not a plain program name, so nothing of it is shown.
-	const unquoted = /^"[^"]*"$|^'[^']*'$/.test(program) ? program.slice(1, -1) : program;
-	if (/["']/.test(unquoted)) return DESKTOP_JOB_FALLBACK_LABEL;
-	const name = unquoted.split(/[\\/]/).pop() ?? "";
-	return /^[A-Za-z0-9._+-]{1,64}$/.test(name) ? name : DESKTOP_JOB_FALLBACK_LABEL;
-}
-
-/**
- * Whole shell words, quotes kept: quoted spans join the word they touch, so
- * `KEY="a b"` is one word and an assignment never splits into a fake program.
- * An unterminated quote makes the command unreadable (`undefined`), never a
- * best guess.
- */
-function shellWords(command: string): string[] | undefined {
-	const words: string[] = [];
-	let word = "";
-	let inWord = false;
-	for (let index = 0; index < command.length; index += 1) {
-		const char = command[index]!;
-		if (char === "\"" || char === "'") {
-			const close = command.indexOf(char, index + 1);
-			if (close === -1) return undefined;
-			word += command.slice(index, close + 1);
-			inWord = true;
-			index = close;
-		} else if (/\s/.test(char)) {
-			if (inWord) words.push(word);
-			word = "";
-			inWord = false;
-		} else {
-			word += char;
-			inWord = true;
-		}
-	}
-	if (inWord) words.push(word);
-	return words;
+	return job.kind === "monitor" ? DESKTOP_MONITOR_FALLBACK_LABEL : DESKTOP_JOB_FALLBACK_LABEL;
 }
 
 /**

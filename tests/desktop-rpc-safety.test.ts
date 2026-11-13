@@ -5,10 +5,10 @@ import { projectDesktopJob } from "../lib/desktop-rpc-jobs.ts";
 import { DesktopPermissionBridge } from "../lib/desktop-rpc-permissions.ts";
 import { YOLO_DISPLAY } from "../lib/yolo-session-policy.ts";
 
-function job(command: string, label = command): JobRecord {
+function job(command: string, label = command, kind: JobRecord["kind"] = "command"): JobRecord {
 	return {
 		id: "job-1",
-		kind: "command",
+		kind,
 		label,
 		command,
 		cwd: "/home/devel/secret-repo",
@@ -20,28 +20,29 @@ function job(command: string, label = command): JobRecord {
 	};
 }
 
-test("a job without its own label is projected by program name, never by its command text", () => {
-	const cases: Array<[string, string]> = [
-		['curl -H "Authorization: Bearer sk-live-123" https://api.example.com', "curl"],
-		["GITHUB_TOKEN=ghp_secret /home/devel/bin/deploy.sh --key=s3cr3t", "deploy.sh"],
-		["  npm run build  ", "npm"],
-		['"C:\\Program Files\\Tools\\app.exe" --token=s3cr3t', "app.exe"],
-		["API_KEY=s3cr3t '/home/devel/my tools/run.sh' --key=s3cr3t", "run.sh"],
-		['API_KEY="prefix s3cr3t" /usr/bin/curl https://example.com', "curl"],
-		["TOKEN='a s3cr3t b' OTHER=\"x y\" ./run.sh", "run.sh"],
-		['API_KEY="unterminated s3cr3t /usr/bin/curl', "Background job"],
-		['pre"fix s3cr3t" --flag', "Background job"],
-		["A=1 B=2", "Background job"],
-		["", "Background job"],
+test("a job without its own label never shows any part of its command", () => {
+	// Every form a shell can hide a value in: headers, assignments (plain,
+	// quoted, escaped), quoted and Windows paths, substitutions, unbalanced quotes.
+	const commands = [
+		'curl -H "Authorization: Bearer sk-live-123" https://api.example.com',
+		"GITHUB_TOKEN=ghp_secret /home/devel/bin/deploy.sh --key=s3cr3t",
+		'"C:\\Program Files\\Tools\\app.exe" --token=s3cr3t',
+		'API_KEY="prefix s3cr3t" /usr/bin/curl https://example.com',
+		"TOKEN=prefix\\ s3cr3t /usr/bin/curl",
+		"$(printf s3cr3t) --flag",
+		'API_KEY="unterminated s3cr3t /usr/bin/curl',
+		"  npm run build  ",
+		"",
 	];
-	for (const [command, expected] of cases) {
+	for (const [index, command] of commands.entries()) {
 		const projected = projectDesktopJob(job(command));
-		assert.equal(projected.label, expected, `case ${cases.findIndex(([c]) => c === command)}`);
+		assert.equal(projected.label, "Background job", `case ${index}`);
 		const wire = JSON.stringify(projected);
-		for (const secret of ["sk-live-123", "ghp_secret", "s3cr3t", "/home/devel", "Authorization"]) {
-			assert.equal(wire.includes(secret), false, `case ${cases.findIndex(([c]) => c === command)} leaks a command fragment`);
+		for (const secret of ["sk-live-123", "ghp_secret", "s3cr3t", "/home/devel", "Authorization", "npm"]) {
+			assert.equal(wire.includes(secret), false, `case ${index} leaks a command fragment`);
 		}
 	}
+	assert.equal(projectDesktopJob(job("tail -f /var/log/app.log", undefined, "monitor")).label, "Background monitor");
 });
 
 test("an explicit job label is kept as the agent wrote it", () => {

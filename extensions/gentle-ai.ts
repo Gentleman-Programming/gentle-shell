@@ -12624,17 +12624,27 @@ function createGentleAiExtensionForTesting(
 		if (startupProfile && startupProfile !== "none" && permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && !profileFollowEnabled(permissionEnvironment)) {
 			const orchestrator = readProfileOrchestrator(startupProfile.modelProfiles);
 			const current = () => startupEpoch === reminderEpoch && sessionProfiles.isCurrent(ctx.sessionManager);
-			const note = orchestrator?.model
-				? await switchLiveOrchestrator(ctx, pi, orchestrator, current)
-					|| "\nThe profile's orchestrator model is invalid; this session keeps its current model."
-				: `\nprofile "${startupProfile.name}" has no orchestrator model; this session keeps its current model.`;
-			if (!current()) return;
-			// A headless session (pi -p) has no notify surface: the startup note
-			// falls back to stderr, the same channel Pi's own startup notifications
-			// use headlessly, so a failed switch is observable instead of silent.
-			const startedWith = `el Gentleman started with profile "${startupProfile.name}".${note}`;
-			if (ctx.hasUI) ctx.ui.notify(startedWith, "info");
-			else console.error(startedWith);
+			// The switch is best-effort and contained: a reload or session
+			// replacement racing the awaited switch must neither abort the rest
+			// of session_start (Pi's runner throws on any access to a stale ctx)
+			// nor leave the outcome unreported. Checked before and after the await.
+			try {
+				if (!current()) return;
+				const note = orchestrator?.model
+					? await switchLiveOrchestrator(ctx, pi, orchestrator, current)
+						|| "\nThe profile's orchestrator model is invalid; this session keeps its current model."
+					: `\nprofile "${startupProfile.name}" has no orchestrator model; this session keeps its current model.`;
+				if (!current()) return;
+				// A headless session (pi -p) has no notify surface: the startup note
+				// falls back to stderr, the same channel Pi's own startup notifications
+				// use headlessly, so a failed switch is observable instead of silent.
+				const startedWith = `el Gentleman started with profile "${startupProfile.name}".${note}`;
+				if (ctx.hasUI) ctx.ui.notify(startedWith, "info");
+				else console.error(startedWith);
+			} catch {
+				// The startup switch stays best-effort: a staled context or a
+				// reporting failure never aborts the remaining startup work.
+			}
 		}
 		readSessionProfileAuthority(ctx.sessionManager);
 		if (ctx.hasUI) notifySessionProfileProblem(ctx);

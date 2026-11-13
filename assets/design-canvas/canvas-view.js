@@ -180,5 +180,5 @@ export function init(ctx) {
 	els.zoomOut.addEventListener("click", () => zoomAtCenter(0.8));
 	els.fit.addEventListener("click", fit);
 
-	return { applyView, panBy, fit, refit, handleWheel };
+	return { applyView, zoomAt, panBy, fit, refit, handleWheel };
 }

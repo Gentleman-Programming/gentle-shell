@@ -3,8 +3,9 @@
 // are trusted only by matching event.source to a known artboard's frame or, in All
 // sizes, one of its size frames (canvas-sizes.js). The canvas's own messages to
 // artboards (gd:mode, gd:focus, gd:size, gd:pins, gd:pick-at, gd:hover-at, gd:highlight,
-// gd:clear) are posted by the module that owns each state. gd:inspect (the element under the
-// pointer, measured) belongs to the token inspector (canvas-tokens.js).
+// gd:clear, gd:run-checks) are posted by the module that owns each state. gd:inspect (the element under the
+// pointer, measured) belongs to the token inspector (canvas-tokens.js), and gd:checks (the page's
+// accessibility checks) and gd:located (where the element of a check's ring is now) to canvas-checks.js.
 
 export function init(ctx) {
 	const { win, els, store, api, actions } = ctx;
@@ -67,9 +68,14 @@ export function init(ctx) {
 			// file them with the new size: it is dropped (canvas-sizes.js resized).
 			if (data.generation !== surface.generation) return;
 			actions.inspectFrom(surface, data.element);
+		} else if (data.type === "gd:checks") {
+			actions.checksFrom(surface, data);
+		} else if (data.type === "gd:located") {
+			actions.locatedFrom(surface, data);
 		} else if (data.type === "gd:escape") {
+			// The comment box first, then a check's ring, then Comment mode.
 			if (!els.popover.hidden) actions.closePopover();
-			else if (state.commenting) actions.setCommenting(false);
+			else if (!actions.clearMark() && state.commenting) actions.setCommenting(false);
 		} else if (data.type === "gd:exit-focus") {
 			// Only the focused artboard may end its own focus mode.
 			if (board === state.focus) actions.exitFocus();

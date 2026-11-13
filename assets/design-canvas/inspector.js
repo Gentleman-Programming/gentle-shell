@@ -12,6 +12,13 @@
 // the pointer (gd:inspect), once per element and again after a scroll, a late load or a page change (at most
 // once per animation frame): the canvas's token inspector compares those computed values with the project's design
 // tokens (canvas-tokens.js). With Technical details off it measures nothing.
+// When the canvas asks (gd:run-checks: only the artboard's own frame, never a size frame or the system
+// board) it runs a few accessibility checks once the page settles after load and after each resize
+// (gd:checks): text contrast, target size, images without alt, unlabeled form fields and skipped heading
+// levels. They are heuristics, not an audit; a finding whose element is out of sight says so (`hidden`).
+// A highlight with `locate` (Show of a check) answers gd:located with where the element is once scrolled into
+// view, and again after a scroll (at most once per animation frame) while it stays the selected element,
+// until gd:clear or another highlight: the canvas keeps its ring on the element as the page scrolls.
 (() => {
 	"use strict";
 
@@ -35,6 +42,14 @@
 	let inspected = null;
 	let inspecting = false;
 	let inspectQueued = false;
+	// Whether the canvas asked this frame for the accessibility checks, the pending run and the last result posted.
+	let checking = false;
+	let checksTimer = 0;
+	let lastChecks = "";
+	// The element whose place the canvas follows ({ selector, element }, from a highlight with `locate`) and
+	// whether a report after a scroll waits for the next frame.
+	let locating = null;
+	let locateQueued = false;
 
 	function makeBox(color) {
 		const box = document.createElement("div");
@@ -201,6 +216,70 @@
 		return base;
 	}
 
+	/** `top` composited over `under`, either of them translucent (alpha kept, channels not premultiplied), rounded to whole channels. */
+	function overLayer(top, under) {
+		const a = top.a + under.a * (1 - top.a);
+		if (a <= 0) return { r: 0, g: 0, b: 0, a: 0 };
+		const mix = (t, u) => Math.round((t * top.a + u * under.a * (1 - top.a)) / a);
+		return { r: mix(top.r, under.r), g: mix(top.g, under.g), b: mix(top.b, under.b), a };
+	}
+
+	/** Whether the element or an ancestor has an opacity under 1. */
+	function fadedUp(element) {
+		for (let node = element; node; node = node.parentElement) {
+			const own = Number.parseFloat(getComputedStyle(node).opacity);
+			if (Number.isFinite(own) && own < 1) return true;
+		}
+		return false;
+	}
+
+	/**
+	 * The element's text `color` and the background next to it as finally seen: each element from it up to the page draws
+	 * its background under what it holds, and its opacity fades all of that (text and background together) over what lies
+	 * behind it; the white page under everything. Null when the text is not drawn at all (an opacity of 0, a transparent
+	 * color), or when an image, a gradient or a color it cannot read shows through. With no opacity under 1 on the
+	 * way, the colors are worked out as they always were (backgroundOf, then the text over it), so their rounding
+	 * and the reported hex values stay the same.
+	 */
+	function seenColorsOf(element, color) {
+		if (!fadedUp(element)) {
+			const behind = backgroundOf(element);
+			if (!behind || color.a <= 0) return null;
+			return { foreground: color.a < 1 ? over(color, behind) : { r: color.r, g: color.g, b: color.b }, background: behind };
+		}
+		let text = color;
+		let beside = { r: 0, g: 0, b: 0, a: 0 };
+		let drawn = color.a;
+		for (let node = element; node; node = node.parentElement) {
+			const style = getComputedStyle(node);
+			// Under an opaque layer a background does not show, until an opacity above fades the layer over it.
+			const covered = text.a >= 1 && beside.a >= 1;
+			if (!covered) {
+				if (style.backgroundImage && style.backgroundImage !== "none") return null;
+				const fill = parseColor(style.backgroundColor);
+				if (fill === null && style.backgroundColor && style.backgroundColor !== "transparent") return null;
+				if (fill && fill.a > 0) {
+					text = overLayer(text, fill);
+					beside = overLayer(beside, fill);
+				}
+			}
+			const own = Number.parseFloat(style.opacity);
+			if (Number.isFinite(own) && own < 1) {
+				const fade = Math.max(own, 0);
+				drawn *= fade;
+				text = { ...text, a: text.a * fade };
+				beside = { ...beside, a: beside.a * fade };
+			}
+		}
+		if (drawn <= 0) return null;
+		const page = { r: 255, g: 255, b: 255, a: 1 };
+		const seen = (layer) => {
+			const { r, g, b } = overLayer(layer, page);
+			return { r, g, b };
+		};
+		return { foreground: seen(text), background: seen(beside) };
+	}
+
 	/** CSS px of a computed length; a percentage (a radius) of `basis`. */
 	function px(value, basis) {
 		if (typeof value !== "string") return 0;
@@ -283,6 +362,221 @@
 		});
 	}
 
+	// ---- accessibility checks (gd:checks)
+
+	const CHECKS = [["contrast", "Text contrast"], ["target", "Target size"], ["alt", "Images have alt text"], ["label", "Form fields have labels"], ["heading", "Headings in order"]];
+	const MAX_FAILURES = 20;
+	const MAX_ADVICE = 10;
+	const MAX_SCAN = 3000;
+	const MIN_TARGET = 24;
+	const ADVISED_TARGET = 44;
+	// How long the page settles before a run: after load (late images, fonts, scripts) and after a resize.
+	const LOAD_DELAY = 250;
+	const RESIZE_DELAY = 400;
+	const SKIPPED = new Set(["html", "head", "meta", "link", "script", "style", "noscript", "template", "title", "base"]);
+	const UNLABELED_INPUTS = new Set(["hidden", "submit", "button", "reset", "image"]);
+	const LABEL_HINT = "Add a <label for>, aria-label or aria-labelledby; a placeholder is not a label.";
+
+	function linear(value) {
+		const unit = value / 255;
+		return unit <= 0.04045 ? unit / 12.92 : ((unit + 0.055) / 1.055) ** 2.4;
+	}
+
+	function luminance(color) {
+		return 0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b);
+	}
+
+	/** WCAG contrast ratio, and the same to two decimals, never rounded up (4.499 must not read as a pass). */
+	function contrastOf(a, b) {
+		const [high, low] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+		const ratio = (high + 0.05) / (low + 0.05);
+		return { ratio, text: String(Math.floor(ratio * 100) / 100) };
+	}
+
+	const hexOf = (color) => `#${[color.r, color.g, color.b].map((channel) => Math.round(channel).toString(16).padStart(2, "0")).join("")}`;
+	const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+	const squeeze = (text) => String(text || "").replace(/\s+/g, " ").trim();
+
+	/** Drawn on the page: not display:none or hidden, not fully transparent, with a box. */
+	function isShown(element, style) {
+		if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse" || Number.parseFloat(style.opacity) === 0) return false;
+		const rect = element.getBoundingClientRect();
+		return rect.width > 0 && rect.height > 0;
+	}
+
+	/**
+	 * Out of sight though it is on the page: about no size, cut away by a clip or by an ancestor that clips, or outside the
+	 * page where no scroll reaches it (a skip link before it gets focus). Below the fold is not out of sight: it scrolls into view.
+	 */
+	function isOutOfSight(element) {
+		const rect = element.getBoundingClientRect();
+		if (rect.width < 2 || rect.height < 2) return true;
+		const style = getComputedStyle(element);
+		const box = /^rect\(([^)]*)\)$/.exec(String(style.clip || "").trim());
+		if (box) {
+			const [top, right, bottom, left] = box[1].split(/[\s,]+/).map((value) => Number.parseFloat(value));
+			if (bottom <= top || right <= left) return true;
+		}
+		if (/^inset\(\s*(50|100)%/.test(String(style.clipPath || "").trim())) return true;
+		const x = rect.left + (window.scrollX || 0);
+		const y = rect.top + (window.scrollY || 0);
+		const pageWidth = document.documentElement.scrollWidth;
+		if (x + rect.width <= 0 || y + rect.height <= 0 || (Number.isFinite(pageWidth) && x >= pageWidth)) return true;
+		for (let node = element.parentElement; node && node !== document.body && node !== document.documentElement; node = node.parentElement) {
+			const parent = getComputedStyle(node);
+			if (![parent.overflow, parent.overflowX, parent.overflowY].some((value) => value === "hidden" || value === "clip")) continue;
+			const edge = node.getBoundingClientRect();
+			if (rect.left >= edge.left + edge.width || rect.left + rect.width <= edge.left || rect.top >= edge.top + edge.height || rect.top + rect.height <= edge.top) return true;
+		}
+		return false;
+	}
+
+	function isInteractive(element) {
+		const tag = element.localName;
+		if (element.hasAttribute("disabled")) return false;
+		if (tag === "a") return element.hasAttribute("href");
+		if (tag === "button" || tag === "select" || tag === "textarea") return true;
+		if (tag === "input") return (element.getAttribute("type") || "").toLowerCase() !== "hidden";
+		if (element.getAttribute("role") === "button") return true;
+		const tabindex = element.getAttribute("tabindex");
+		return tabindex !== null && /^\s*\d+\s*$/.test(tabindex);
+	}
+
+	/** A name for a target: its aria-label, own text, value, title or alt, quoted; else its tag and id or class. */
+	function subjectOf(element) {
+		const name = clip(squeeze(element.getAttribute("aria-label") || ownText(element) || element.getAttribute("value") || element.getAttribute("title") || element.getAttribute("alt")), 40);
+		return name ? `"${name}"` : labelOf(element);
+	}
+
+	/** `label`: the ids a <label for> with text names, read once per run. */
+	function hasAccessibleLabel(element, labelled) {
+		if (squeeze(element.getAttribute("aria-label")) || squeeze(element.getAttribute("title"))) return true;
+		const named = (id) => {
+			const target = document.getElementById(id);
+			return Boolean(target && (squeeze(target.textContent) || squeeze(target.getAttribute("aria-label"))));
+		};
+		if ((element.getAttribute("aria-labelledby") || "").split(/\s+/).some((id) => id && named(id))) return true;
+		if (element.id && labelled().has(element.id)) return true;
+		for (let node = element.parentElement; node; node = node.parentElement) if (node.localName === "label" && squeeze(node.textContent)) return true;
+		return false;
+	}
+
+	function fieldKind(element) {
+		if (element.localName === "select") return "select";
+		if (element.localName === "textarea") return "text area";
+		return `${(element.getAttribute("type") || "text").toLowerCase()} field`;
+	}
+
+	function headingLevel(element) {
+		const match = /^h([1-6])$/.exec(element.localName);
+		if (match) return Number(match[1]);
+		if (element.getAttribute("role") !== "heading") return 0;
+		const level = Number.parseInt(element.getAttribute("aria-level"), 10);
+		return level >= 1 && level <= 6 ? level : 2;
+	}
+
+	/**
+	 * Runs the checks over the page's first MAX_SCAN elements. The counts cover all of those; each list keeps the first
+	 * MAX_FAILURES problems and MAX_ADVICE advice items, and only those are described (selector, text, box, whether out of sight).
+	 */
+	function collectChecks() {
+		const everything = Array.from(document.querySelectorAll("*")).filter((element) => element instanceof Element && !isOwn(element) && !SKIPPED.has(element.localName)).slice(0, MAX_SCAN);
+		const found = Object.fromEntries(CHECKS.map(([id]) => [id, { count: 0, advice: 0, failures: [], advised: [] }]));
+		const add = (check, severity, title, detail, element) => {
+			const entry = found[check];
+			const fail = severity === "fail";
+			const list = fail ? entry.failures : entry.advised;
+			if (fail) entry.count += 1;
+			else entry.advice += 1;
+			if (list.length >= (fail ? MAX_FAILURES : MAX_ADVICE)) return;
+			const rect = element.getBoundingClientRect();
+			const issue = { check, severity, title, detail, selector: cssSelector(element), label: labelOf(element), excerpt: excerptOf(element), rect: { x: rect.left, y: rect.top, width: rect.width, height: rect.height } };
+			// Only a finding out of sight carries `hidden`, so the canvas draws no ring for it.
+			if (isOutOfSight(element)) issue.hidden = true;
+			list.push(issue);
+		};
+		let labelledIds = null;
+		const labelled = () => {
+			labelledIds ??= new Set(everything.filter((node) => node.localName === "label" && node.getAttribute("for") && squeeze(node.textContent)).map((node) => node.getAttribute("for")));
+			return labelledIds;
+		};
+		let previousHeading = 0;
+		for (const element of everything) {
+			const style = getComputedStyle(element);
+			const shown = isShown(element, style);
+			const tag = element.localName;
+			const text = shown ? ownText(element) : "";
+
+			if (text && !element.hasAttribute("disabled")) {
+				const color = parseColor(style.color);
+				const seen = color ? seenColorsOf(element, color) : null;
+				if (seen) {
+					const { foreground, background: behind } = seen;
+					const { ratio, text: shownRatio } = contrastOf(foreground, behind);
+					const size = px(style.fontSize, 0);
+					const large = size >= 24 || (size >= 18.66 && weightOf(style.fontWeight) >= 700);
+					const needed = large ? 3 : 4.5;
+					if (ratio < needed) add("contrast", "fail", "Low contrast", `"${clip(text, 40)}" is ${shownRatio} : 1 (${hexOf(foreground)} on ${hexOf(behind)}); WCAG AA needs ${needed} : 1${large ? " for large text" : ""}.`, element);
+				}
+			}
+
+			if (shown && isInteractive(element) && !(tag === "a" && style.display === "inline")) {
+				const rect = element.getBoundingClientRect();
+				const width = Math.round(rect.width);
+				const height = Math.round(rect.height);
+				// Advice, never a problem: WCAG 2.2 accepts a smaller target with enough space around it, which this cannot measure.
+				if (width < MIN_TARGET || height < MIN_TARGET) add("target", "advice", "Small touch target", `${subjectOf(element)} is ${width} × ${height} px; WCAG 2.2 asks for ${MIN_TARGET} × ${MIN_TARGET} px, or enough space around it that a ${MIN_TARGET} px circle on it touches no other target.`, element);
+				else if (width < ADVISED_TARGET || height < ADVISED_TARGET) add("target", "advice", "Touch target under 44 px", `${subjectOf(element)} is ${width} × ${height} px; ${ADVISED_TARGET} × ${ADVISED_TARGET} px is recommended for touch.`, element);
+			}
+
+			const type = (element.getAttribute("type") || "").toLowerCase();
+			const role = element.getAttribute("role");
+			// Not rendered (display: none on it or an ancestor): no box at all. A rendered image not loaded yet has one, even 0 × 0.
+			if ((tag === "img" || (tag === "input" && type === "image")) && element.getClientRects().length > 0 && !element.hasAttribute("alt") && role !== "presentation" && role !== "none" && element.getAttribute("aria-hidden") !== "true") {
+				const source = (element.getAttribute("src") || "").split(/[?#]/)[0].split("/").pop();
+				add("alt", "fail", "Image without alt text", `${source ? clip(source, 60) : "The image"} has no alt attribute. Describe it, or use alt="" if it is decorative.`, element);
+			}
+
+			if (shown && (tag === "select" || tag === "textarea" || (tag === "input" && !UNLABELED_INPUTS.has(type))) && !hasAccessibleLabel(element, labelled)) {
+				const hint = squeeze(element.getAttribute("placeholder"));
+				add("label", "fail", "Form field without a label", `The ${fieldKind(element)}${hint ? ` "${clip(hint, 40)}"` : ""} has no label. ${LABEL_HINT}`, element);
+			}
+
+			const level = shown ? headingLevel(element) : 0;
+			if (level > 0) {
+				if (previousHeading > 0 && level > previousHeading + 1) {
+					const missing = Array.from({ length: level - previousHeading - 1 }, (_, index) => `h${previousHeading + 1 + index}`);
+					add("heading", "fail", "Heading level skipped", `h${level} "${clip(squeeze(element.textContent), 40)}" follows h${previousHeading}: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} missing.`, element);
+				}
+				previousHeading = level;
+			}
+		}
+		const issues = [];
+		const checks = CHECKS.map(([id, label]) => {
+			const entry = found[id];
+			issues.push(...entry.failures, ...entry.advised);
+			return { id, label, count: entry.count, advice: entry.advice };
+		});
+		// Tagged like a pick: a scan made before the page heard of the frame's latest size describes a size it no longer has.
+		return { type: "gd:checks", checks, issues, generation };
+	}
+
+	/** Posts the result when it differs from the last one posted. */
+	function runChecks() {
+		checksTimer = 0;
+		const result = collectChecks();
+		const key = JSON.stringify(result);
+		if (key === lastChecks) return;
+		lastChecks = key;
+		post(result);
+	}
+
+	/** One run, once the page has settled for `delay` ms: a newer request replaces a pending one. */
+	function scheduleChecks(delay) {
+		clearTimeout(checksTimer);
+		checksTimer = setTimeout(runChecks, delay);
+	}
+
 	function find(selector) {
 		try {
 			return document.querySelector(selector);
@@ -339,8 +633,12 @@
 		requestAnimationFrame(reportPins);
 	}
 
-	/** The element of a comment pin (`id`) or of a part (`selector`, canvas-parts.js Show). */
+	/**
+	 * The element of a comment pin (`id`), of a part (`selector`, canvas-parts.js Show) or of a check (`selector` with
+	 * `locate`, canvas-checks.js Show: then where it is once in view, and after each scroll). Any highlight ends the last follow.
+	 */
 	function highlight(data) {
+		locating = null;
 		let element = null;
 		if (typeof data.selector === "string") element = data.selector.length <= MAX_SELECTOR ? find(data.selector) : null;
 		else {
@@ -350,8 +648,31 @@
 		if (!element) return;
 		ensureBoxes();
 		selected = element;
-		element.scrollIntoView({ block: "nearest", inline: "nearest" });
+		const locate = data.locate === true && typeof data.selector === "string";
+		// The place is read right after the scroll, so a page with smooth scrolling jumps there at once.
+		element.scrollIntoView(locate ? { block: "nearest", inline: "nearest", behavior: "instant" } : { block: "nearest", inline: "nearest" });
 		refresh();
+		if (!locate) return;
+		locating = { selector: data.selector, element };
+		reportLocated();
+	}
+
+	/** Where the followed element is now; nothing once it is no longer the selected one (a pick, gd:clear, leaving Comment mode). */
+	function reportLocated() {
+		locateQueued = false;
+		if (!locating || selected !== locating.element) {
+			locating = null;
+			return;
+		}
+		const rect = locating.element.getBoundingClientRect();
+		post({ type: "gd:located", selector: locating.selector, rect: { x: rect.left, y: rect.top, width: rect.width, height: rect.height } });
+	}
+
+	/** Scrolling moves the followed element: one report on the next frame, however many scroll events came. */
+	function queueLocate() {
+		if (locateQueued || !locating) return;
+		locateQueued = true;
+		requestAnimationFrame(reportLocated);
 	}
 
 	window.addEventListener("message", (event) => {
@@ -362,6 +683,11 @@
 		}
 		else if (event.data.type === "gd:pins") setPins(event.data.pins);
 		else if (event.data.type === "gd:highlight") highlight(event.data);
+		else if (event.data.type === "gd:run-checks") {
+			// The canvas asks once per page load; resizes keep the result current from then on.
+			checking = true;
+			scheduleChecks(LOAD_DELAY);
+		}
 		else if (event.data.type === "gd:focus") focused = event.data.enabled === true;
 		else if (event.data.type === "gd:size") {
 			if (Number.isInteger(event.data.generation) && event.data.generation >= 0) generation = event.data.generation;
@@ -376,6 +702,7 @@
 			setHovered(elementAt(event.data));
 		} else if (event.data.type === "gd:clear") {
 			selected = null;
+			locating = null;
 			refresh();
 		}
 	});
@@ -465,8 +792,8 @@
 		post({ type: "gd:wheel", deltaX: event.deltaX, deltaY: event.deltaY, deltaMode: event.deltaMode, zoom, shift: event.shiftKey, x: event.clientX, y: event.clientY });
 	}, { passive: false, capture: true });
 
-	window.addEventListener("scroll", () => { refresh(); queueReport(); if (enabled && hovered && inspecting) queueInspect(); }, true);
-	window.addEventListener("resize", () => { refresh(); queueReport(); queueOverflow(); });
+	window.addEventListener("scroll", () => { refresh(); queueReport(); if (enabled && hovered && inspecting) queueInspect(); if (locating) queueLocate(); }, true);
+	window.addEventListener("resize", () => { refresh(); queueReport(); queueOverflow(); if (checking) scheduleChecks(RESIZE_DELAY); });
 	window.addEventListener("load", () => { queueReport(); queueOverflow(); });
 	// An image that loads after the page did can widen it with no mutation or resize; its load does not bubble, so the
 	// document catches it on the way down. It can also resize the hovered element: measure it again.

@@ -489,10 +489,27 @@ button:disabled { opacity: 0.5; cursor: default; }
 
 .gd-panel[hidden] { display: none; }
 
-.gd-panel-title {
-	margin: 0 0 8px;
-	font-size: 15px;
+/* The panel's tabs (canvas-checks.js): Comments and Quality, each with its count; the selected one is underlined. */
+.gd-tabs { display: flex; gap: 4px; margin: 0 0 12px; border-bottom: 1px solid var(--gd-border); }
+
+.gd-tab {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	border: 0;
+	border-bottom: 2px solid transparent;
+	border-radius: 6px 6px 0 0;
+	background: transparent;
+	color: var(--gd-muted);
 }
+
+.gd-tab:hover { color: var(--gd-text); }
+.gd-tab[aria-selected="true"] { color: var(--gd-text); border-bottom-color: var(--gd-accent); }
+.gd-tab:focus-visible { outline: 2px solid var(--gd-focus); outline-offset: -2px; }
+.gd-count { min-width: 20px; padding: 0 5px; border: 1px solid var(--gd-border); border-radius: 4px; font-size: 12px; text-align: center; }
+/* Quality has no count until an artboard has reported. */
+.gd-count:empty { display: none; }
+.gd-tabpanel[hidden], .gd-quality[hidden] { display: none; }
 
 .gd-filter { margin-bottom: 8px; }
 .gd-filter button[aria-pressed="true"] { border-color: var(--gd-accent); color: var(--gd-accent); }
@@ -544,6 +561,77 @@ button:disabled { opacity: 0.5; cursor: default; }
 	display: flex;
 	justify-content: flex-end;
 	padding: 0 8px 8px;
+}
+
+/* Quality (canvas-checks.js): a group per design artboard and a card per finding. The kind is a word in a chip,
+   never a dot: a problem in the danger color, advice in the focus amber. */
+.gd-quality { display: flex; flex-direction: column; gap: 16px; }
+.gd-check-group { display: flex; flex-direction: column; gap: 8px; }
+.gd-check-head { display: flex; align-items: center; gap: 8px; }
+.gd-check-heading { flex: 1; min-width: 0; margin: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gd-check-summary { flex: none; padding: 0 6px; border: 1px solid var(--gd-border); border-radius: 4px; color: var(--gd-muted); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.gd-check-summary-ok { color: var(--gd-success); border-color: var(--gd-success); }
+.gd-check-summary-fail { color: var(--gd-danger); border-color: var(--gd-danger); }
+
+.gd-check {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: 8px;
+	border: 1px solid var(--gd-border);
+	border-radius: 6px;
+	background: var(--gd-stage);
+	font-size: 12px;
+}
+
+.gd-check-top { display: flex; align-items: center; gap: 8px; }
+.gd-check-title { flex: 1; min-width: 0; color: var(--gd-text); font-size: 13px; overflow-wrap: anywhere; }
+.gd-check-kind { flex: none; padding: 0 6px; border: 1px solid currentColor; border-radius: 4px; font-weight: 600; }
+.gd-check-fail .gd-check-kind { color: var(--gd-danger); }
+.gd-check-advice .gd-check-kind { color: var(--gd-focus); }
+.gd-check-detail { color: var(--gd-muted); overflow-wrap: anywhere; }
+.gd-check-hidden { color: var(--gd-muted); font-style: italic; }
+.gd-check-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.gd-check-show { display: inline-flex; align-items: center; gap: 4px; }
+/* The card whose element the ring marks (aria-current), outlined in its kind's color. */
+.gd-check-active { border-color: var(--gd-focus); box-shadow: 0 0 0 1px var(--gd-focus); }
+.gd-check-fail.gd-check-active { border-color: var(--gd-danger); box-shadow: 0 0 0 1px var(--gd-danger); }
+.gd-check-passed, .gd-check-empty { padding: 8px; border: 1px dashed var(--gd-border); border-radius: 6px; color: var(--gd-muted); font-size: 12px; }
+
+/* The ring Show draws around a check's element: by the canvas, never by the artboard's page, beside the frame like the
+   pins (in the world, or on the All sizes frame as designed), centered on the element's rect (--gd-mark-w/-h, artboard px).
+   The inverse zoom keeps its stroke, its label and its smallest size the same on screen, so a tiny element stays visible. */
+.gd-check-mark {
+	--gd-mark-color: var(--gd-focus);
+	position: absolute;
+	z-index: 2;
+	width: max(calc(var(--gd-mark-w) + 8px * var(--gd-inv-zoom, 1)), calc(28px * var(--gd-inv-zoom, 1)));
+	height: max(calc(var(--gd-mark-h) + 8px * var(--gd-inv-zoom, 1)), calc(28px * var(--gd-inv-zoom, 1)));
+	border: calc(2px * var(--gd-inv-zoom, 1)) solid var(--gd-mark-color);
+	border-radius: calc(6px * var(--gd-inv-zoom, 1));
+	box-shadow: 0 0 0 calc(2px * var(--gd-inv-zoom, 1)) var(--gd-bg);
+	transform: translate(-50%, -50%);
+	pointer-events: none;
+}
+
+.gd-check-mark-fail { --gd-mark-color: var(--gd-danger); }
+
+.gd-check-mark-label {
+	position: absolute;
+	left: 0;
+	bottom: calc(100% + 4px * var(--gd-inv-zoom, 1));
+	max-width: 40ch;
+	padding: 1px 8px;
+	border-radius: 4px;
+	background: var(--gd-mark-color);
+	color: var(--gd-accent-text);
+	font-size: 11px;
+	font-weight: 700;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	transform: scale(var(--gd-inv-zoom, 1));
+	transform-origin: 0 100%;
 }
 
 /* Partial implementations (canvas-parts.js): the panel's last section, one card per part. The state is a word in
@@ -1195,6 +1283,8 @@ button:disabled { opacity: 0.5; cursor: default; }
 .gd-exporting .gd-viewport > :not(.gd-world),
 .gd-exporting .gd-artboard:not(.gd-focus-board),
 .gd-exporting .gd-pins { visibility: hidden; }
+/* A check's ring lives in the world, beside the frame: never in an export. */
+.gd-exporting .gd-check-mark { visibility: hidden; }
 
 .gd-exporting .gd-focus-board .gd-artboard-frame { box-shadow: none; outline: none; }
 
@@ -1288,4 +1378,8 @@ kbd, .gd-menu-kbd {
 @media (prefers-reduced-motion: no-preference) {
 	button { transition: border-color 120ms ease; }
 	.gd-shield-hint { transition: opacity 120ms ease; }
+	.gd-check-mark { animation: gd-mark-pulse 900ms ease 2; }
 }
+
+/* Show's ring pulses twice when it appears, only with motion allowed. */
+@keyframes gd-mark-pulse { 50% { box-shadow: 0 0 0 calc(6px * var(--gd-inv-zoom, 1)) var(--gd-mark-color); } }

@@ -31,6 +31,7 @@
 		<symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/></symbol>
 		<symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></symbol>
 		<symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></symbol>
+		<symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2"/></symbol>
 	</svg>
 	<header class="gd-bar" role="toolbar" aria-label="Design canvas controls">
 		<h1 class="gd-title" id="gd-title">Gentle Design</h1>
@@ -90,13 +91,20 @@
 			</section>
 		</main>
 		<aside id="gd-panel" class="gd-panel" aria-labelledby="gd-panel-title">
-			<h2 id="gd-panel-title" class="gd-panel-title">Comments</h2>
-			<div class="gd-group gd-filter" role="group" aria-label="Show comments">
-				<button type="button" id="gd-filter-open" aria-pressed="true">Open (0)</button>
-				<button type="button" id="gd-filter-resolved" aria-pressed="false">Resolved (0)</button>
+			<h2 id="gd-panel-title" class="gd-visually-hidden">Review</h2>
+			<div id="gd-tabs" class="gd-tabs" role="tablist" aria-label="Review">
+				<button type="button" role="tab" id="gd-tab-comments" class="gd-tab" aria-selected="true" aria-controls="gd-tabpanel-comments">Comments <span id="gd-count-comments" class="gd-count">0</span></button>
+				<button type="button" role="tab" id="gd-tab-quality" class="gd-tab" aria-selected="false" aria-controls="gd-quality" tabindex="-1">Quality <span id="gd-count-quality" class="gd-count"></span></button>
 			</div>
-			<p id="gd-panel-empty" class="gd-panel-empty">No comments yet. Turn on Comment mode and click an element.</p>
-			<ol id="gd-comment-list" class="gd-comment-list" aria-label="Comments"></ol>
+			<div id="gd-tabpanel-comments" class="gd-tabpanel" role="tabpanel" aria-labelledby="gd-tab-comments">
+				<div class="gd-group gd-filter" role="group" aria-label="Show comments">
+					<button type="button" id="gd-filter-open" aria-pressed="true">Open (0)</button>
+					<button type="button" id="gd-filter-resolved" aria-pressed="false">Resolved (0)</button>
+				</div>
+				<p id="gd-panel-empty" class="gd-panel-empty">No comments yet. Turn on Comment mode and click an element.</p>
+				<ol id="gd-comment-list" class="gd-comment-list" aria-label="Comments"></ol>
+			</div>
+			<div id="gd-quality" class="gd-quality" role="tabpanel" aria-labelledby="gd-tab-quality" hidden></div>
 			<section id="gd-parts" class="gd-parts" aria-labelledby="gd-parts-title" hidden>
 				<h3 id="gd-parts-title" class="gd-parts-title">Partial implementations</h3>
 				<ol id="gd-parts-list" class="gd-parts-list"></ol>
@@ -129,7 +137,7 @@
 			<dt><kbd>+</kbd> <kbd>-</kbd></dt><dd>Zoom in and out</dd>
 			<dt><kbd>&larr;</kbd> <kbd>&rarr;</kbd> <kbd>&uarr;</kbd> <kbd>&darr;</kbd></dt><dd>Pan (Shift for larger steps)</dd>
 			<dt><kbd>Space</kbd> + drag</dt><dd>Pan from anywhere, even over an artboard</dd>
-			<dt><kbd>Esc</kbd></dt><dd>Clear the selected artboard, leave Comment mode or close the comment box</dd>
+			<dt><kbd>Esc</kbd></dt><dd>Clear a check's ring or the selected artboard, leave Comment mode or close the comment box</dd>
 			<dt><kbd>Shift</kbd> + <kbd>Esc</kbd></dt><dd>Back to canvas from an artboard or Compare</dd>
 		</dl>
 		<p class="gd-dialog-note">Change gives an action another single key; your keys are saved in this browser, for every design.</p>

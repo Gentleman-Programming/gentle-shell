@@ -224,13 +224,29 @@
 		return { r: mix(top.r, under.r), g: mix(top.g, under.g), b: mix(top.b, under.b), a };
 	}
 
+	/** Whether the element or an ancestor has an opacity under 1. */
+	function fadedUp(element) {
+		for (let node = element; node; node = node.parentElement) {
+			const own = Number.parseFloat(getComputedStyle(node).opacity);
+			if (Number.isFinite(own) && own < 1) return true;
+		}
+		return false;
+	}
+
 	/**
 	 * The element's text `color` and the background next to it as finally seen: each element from it up to the page draws
 	 * its background under what it holds, and its opacity fades all of that (text and background together) over what lies
 	 * behind it; the white page under everything. Null when the text is not drawn at all (an opacity of 0, a transparent
-	 * color), or when an image, a gradient or a color it cannot read shows through.
+	 * color), or when an image, a gradient or a color it cannot read shows through. With no opacity under 1 on the
+	 * way, the colors are worked out as they always were (backgroundOf, then the text over it), so their rounding
+	 * and the reported hex values stay the same.
 	 */
 	function seenColorsOf(element, color) {
+		if (!fadedUp(element)) {
+			const behind = backgroundOf(element);
+			if (!behind || color.a <= 0) return null;
+			return { foreground: color.a < 1 ? over(color, behind) : { r: color.r, g: color.g, b: color.b }, background: behind };
+		}
 		let text = color;
 		let beside = { r: 0, g: 0, b: 0, a: 0 };
 		let drawn = color.a;

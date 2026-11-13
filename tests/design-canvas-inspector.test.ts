@@ -670,7 +670,22 @@ test("S6: an ancestor's opacity fades the text and its opaque background togethe
 	assert.deepEqual(issuesOf(report, "contrast").map((issue) => issue.selector), ["#opaque-child", "#in-faded"], "no finding for black on an opaque white with no faded ancestor");
 	assert.equal(issuesOf(report, "contrast")[0].detail, '"On its own white" is 3.94 : 1 (#808080 on #ffffff); WCAG AA needs 4.5 : 1.', "black on white faded to 0.5 over the white page: #808080 on #ffffff, not 21 : 1");
 	assert.equal(issuesOf(report, "contrast")[1].detail, '"Inside" is 3.94 : 1 (#808080 on #ffffff); WCAG AA needs 4.5 : 1.', "the transparent-child control is unchanged");
-	assert.equal(report.checks.find((check) => check.id === "contrast")?.count, 2, "text under an ancestor at opacity 0 is not drawn, so it is not judged");
+	assert.equal(report.checks.find((check) => check.id === "contrast")?.count, 2, "only the two faded paragraphs fail");
+});
+
+test("S6: nested, zero and dark-backdrop opacities fade the group as drawn; a gradient behind a faded group stays unknown; with no opacity the colors are as before", () => {
+	const white = { color: "rgb(0, 0, 0)", backgroundColor: "rgb(255, 255, 255)" };
+	const page = checkPage([
+		{ tag: "div", style: { opacity: "0.5" }, kids: [{ tag: "div", style: { opacity: "0.5" }, kids: [{ tag: "p", attrs: { id: "nested" }, text: "x", style: white }] }] },
+		{ tag: "div", style: { backgroundColor: "rgb(0, 0, 0)" }, kids: [{ tag: "div", style: { opacity: "0.5" }, kids: [{ tag: "p", attrs: { id: "on-black" }, text: "x", style: white }] }] },
+		{ tag: "div", style: { backgroundImage: "linear-gradient(red, blue)" }, kids: [{ tag: "div", style: { opacity: "0.5" }, kids: [{ tag: "p", attrs: { id: "on-gradient" }, text: "x", style: white }] }] },
+		{ tag: "div", style: { opacity: "0" }, kids: [{ tag: "p", attrs: { id: "unseen" }, text: "x", style: { color: "rgb(200, 200, 200)", backgroundColor: "rgb(255, 255, 255)" } }] },
+		{ tag: "p", attrs: { id: "translucent" }, text: "x", style: { color: "rgba(0, 0, 0, 0.3)", backgroundColor: "rgba(255, 0, 0, 0.2)" } },
+	]);
+	const found = issuesOf(page.run(), "contrast");
+	assert.deepEqual(found.map((issue) => issue.selector), ["#nested", "#translucent"], "black on white faded to 0.5 over black passes (about 5.3 : 1), a gradient behind is unknown, opacity 0 is not drawn");
+	assert.equal(found[0].detail, '"x" is 1.83 : 1 (#bfbfbf on #ffffff); WCAG AA needs 4.5 : 1.', "0.5 × 0.5: the group at 0.25");
+	assert.equal(found[1].detail, '"x" is 2.03 : 1 (#b38f8f on #ffcccc); WCAG AA needs 4.5 : 1.', "translucent text on a translucent background, no opacity: the same colors as before");
 });
 
 test("a target under 24 × 24 px is advice, never a problem: the spacing exception cannot be measured", () => {

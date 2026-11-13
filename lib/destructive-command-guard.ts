@@ -17,6 +17,7 @@ interface Token {
 	raw: string;
 	operator: boolean;
 	index: number;
+	redirect?: "target";
 }
 const separators = new Set([";", "&&", "||", "|", "&", "\n", "(", ")"]);
 // Separators after which the next segment starts only once this one finished.
@@ -25,35 +26,206 @@ const separators = new Set([";", "&&", "||", "|", "&", "\n", "(", ")"]);
 const SEQUENTIAL_SEPARATORS = new Set(["", ";", "&&", "||", "\n"]);
 
 /** Literal, named heredocs are data, not executable shell segments; offsets are preserved. */
-function blankHeredocs(command: string): string {
+function blankHeredocs(command: string, joinBody = false): string {
 	return command.replace(/<<-?\s*(['"]?)([A-Za-z_]\w*)\1[^\n]*\n[\s\S]*?\n\2(?=\n|$)/g, (raw) => {
-		const headerLength = raw.indexOf("\n") + 1;
+		const headerLength = raw.indexOf("\n") + (joinBody ? 0 : 1);
 		return raw.slice(0, headerLength) + " ".repeat(raw.length - headerLength);
 	});
 }
 
+const deliveryTokenPattern = /(?:\\\n)*#[^\n]*|(?:\d*(?:[<>]&|>\||<>|>>?|<<-?)|&>>?)|(?:"(?:\\[\s\S]|[^"\\])*"|'[^']*'|`(?:\\[\s\S]|[^`\\])*`|\\[\s\S]|[^\s;&|()<>'"\\])+|&&|\|\||[;&|()\n]/g;
+
 /** Keep quoted arguments intact so harmless prose is never treated as a command. */
-function tokenize(command: string, blank = true): Token[] {
+function tokenize(command: string, blank = true, delivery = false): Token[] {
 	const tokens: Token[] = [];
-	if (blank) command = blankHeredocs(command);
-	const pattern = /(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s;&|()'"\\])+|&&|\|\||[;&|()\n]/g;
+	if (blank) command = blankHeredocs(command, delivery);
+	// Delivery routing needs redirections as separate tokens, including attached
+	// forms (`push>out`) and descriptor merges whose & is not a shell boundary.
+	const pattern = delivery
+		? deliveryTokenPattern
+		: /(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s;&|()'"\\])+|&&|\|\||[;&|()\n]/g;
 	for (const match of command.matchAll(pattern)) {
 		const raw = match[0];
-		const value = raw.replace(/"((?:\\.|[^"\\])*)"|'([^']*)'|\\(.)/g,
+		if (delivery && /^(?:\\\n)*#/.test(raw)) continue;
+		const wordPattern = delivery
+			? /"((?:\\[\s\S]|[^"\\])*)"|'([^']*)'|\\([\s\S])/g
+			: /"((?:\\.|[^"\\])*)"|'([^']*)'|\\(.)/g;
+		const value = raw.replace(wordPattern,
 			(_raw, double: string | undefined, single: string | undefined, escaped: string | undefined) => {
 				if (double !== undefined) return double.replace(/\\(["\\$`\n])/g, (_escape, char: string) => char === "\n" ? "" : char);
-				return single ?? escaped ?? "";
+				return single ?? (delivery && escaped === "\n" ? "" : escaped) ?? "";
 			});
+		if (delivery && !value && /^(?:\\\n)+$/.test(raw)) continue;
 		// Only raw operators are boundaries; quoted/escaped operators are words.
-		tokens.push({ value, raw, operator: separators.has(raw), index: match.index });
+		// Consume the whole operand as one word: >&1--dry-run is a filename,
+		// never descriptor 1 followed by a git option.
+		const redirect = delivery && /^(?:\d*(?:[<>]&|>\||<>|>>?|<<-?)|&>>?)$/.test(raw) ? "target" : undefined;
+		tokens.push({ value, raw, operator: separators.has(raw), index: match.index, ...(redirect ? { redirect } : {}) });
 	}
 	return tokens;
 }
 const executable = (value: string) => value.split("/").at(-1) ?? value;
 
+/** `&` schedules its whole and/or list, including a closed compound command. */
+function deliveryCommandScopes(tokens: readonly Token[], substitutions: readonly { index: number; end: number }[]): { background: Array<readonly [number, number]>; subshells: Array<readonly [number, number]> } {
+	const ranges: Array<readonly [number, number]> = [];
+	const subshells: Array<readonly [number, number]> = [];
+	const scopes = [{ start: 0, close: "", opening: -1 }];
+	const compoundEnds: Record<string, string> = { if: "fi", while: "done", until: "done", for: "done", select: "done", case: "esac", "{": "}" };
+	let commandHead = true;
+	let continuation = false;
+	for (const token of tokens) {
+		if (substitutions.some(body => token.index >= body.index && token.index < body.end)) continue;
+		if (token.operator && token.raw === "(") { scopes.push({ start: token.index + 1, close: ")", opening: token.index }); commandHead = true; continue; }
+		if ((token.operator && token.raw === ")") || (commandHead && token.raw === token.value && token.raw === scopes.at(-1)!.close)) {
+			if (scopes.length > 1 && scopes.at(-1)!.close === token.raw) {
+				const closed = scopes.pop()!;
+				if (closed.opening >= 0) subshells.push([closed.opening, token.index + 1]);
+			}
+			commandHead = false;
+			continue;
+		}
+		if (token.operator) {
+			const scope = scopes.at(-1)!;
+			if (token.raw === "&") ranges.push([scope.start, token.index]);
+			if (["&", ";", "\n"].includes(token.raw) && !(token.raw === "\n" && continuation)) scope.start = token.index + token.raw.length;
+			if (token.raw !== "\n") continuation = ["&&", "||", "|"].includes(token.raw);
+			commandHead = true;
+			continue;
+		}
+		continuation = false;
+		if (commandHead && token.raw === token.value) {
+			const close = compoundEnds[token.raw];
+			if (close) scopes.push({ start: token.index, close, opening: -1 });
+			if (["if", "while", "until", "then", "else", "elif", "do", "{", "!"].includes(token.raw)) continue;
+		}
+		commandHead = false;
+	}
+	for (const scope of scopes) if (scope.opening >= 0) subshells.push([scope.opening, Number.POSITIVE_INFINITY]);
+	return { background: ranges, subshells };
+}
+
+/** Delivery and candidate changes share the guard's existing command-position rules. */
+export function recognizeReviewDeliveryActions(command: string, depth = 0): Array<{ kind: "change" | "delivery"; directories?: readonly string[]; unresolvedDirectory?: true; background?: true }> {
+	return collectReviewDeliveryActions(command, depth);
+}
+
+function collectReviewDeliveryActions(command: string, depth: number, onRoutingExport?: () => void): ReturnType<typeof recognizeReviewDeliveryActions> {
+	if (depth > 8) return [];
+	// Preserve offsets while removing comment data from every delivery scan,
+	// including the secondary command-substitution and backtick scans.
+	command = blankHeredocs(command, true).replace(deliveryTokenPattern, raw => /^(?:\\\n)*#/.test(raw) ? " ".repeat(raw.length) : raw);
+	const matches: ReturnType<typeof recognizeReviewDeliveryActions> = [];
+	const tokens = tokenize(command, true, true);
+	const backticks = backtickBodies(command);
+	const scopes = deliveryCommandScopes(tokens, backticks);
+	const isBackground = (index: number) => scopes.background.some(([from, to]) => index >= from && index < to);
+	const childScopes = [...scopes.subshells, ...scopes.background, ...backticks.map(body => [body.index, body.end] as const)];
+	const exports: Array<{ index: number; children: Array<readonly [number, number]> }> = [];
+	const routingUnknown = (index: number) => exports.some(entry => entry.index <= index && entry.children.every(([from, to]) => index >= from && index < to));
+	const recordRoutingExport = (index: number) => {
+		const children = childScopes.filter(([from, to]) => index >= from && index < to);
+		exports.push({ index, children });
+		if (!children.length) onRoutingExport?.();
+	};
+	const directories: string[] = [];
+	const contexts: Array<{ from: number; to: number; unresolved: boolean; directories: string[] }> = [];
+	let unresolvedDirectory = false;
+	let leadingCdChain = true;
+	const ambiguousCdScope = tokens.some(token => token.operator && !["&&", "||", "|"].includes(token.raw));
+	let start = 0;
+	for (let end = 0; end <= tokens.length; end++) {
+		if (end < tokens.length && !tokens[end].operator) continue;
+		const preceding = tokens[start - 1]?.raw;
+		// A fallback may execute after cd itself failed. Never carry its selected
+		// directory into a later delivery, even though the earlier push was scoped.
+		if (tokens[start - 1]?.raw === "||" && directories.length) unresolvedDirectory = true;
+		const words = tokens.slice(start, end);
+		const from = tokens[start]?.index ?? command.length;
+		const segment = words.filter((token, at) => !token.redirect && words[at - 1]?.redirect !== "target");
+		start = end + 1;
+		let unresolvedPrefix = false;
+		const cursor = headCursor(segment, () => { unresolvedPrefix = true; });
+		const name = executable(segment[cursor]?.value ?? "").replace(/\.exe$/i, "");
+		const args = segment.slice(cursor + 1).map(token => token.value);
+		// A persistent export may change the later Git target; never borrow the cwd's mode.
+		if (name === "export" && args.some(arg => /^GIT_(?:DIR|WORK_TREE|COMMON_DIR|NAMESPACE)(?:=|$)/.test(arg))) recordRoutingExport(segment[cursor].index);
+		let index = 0;
+		const gitDirectories: string[] = [];
+		let unresolvedGitDirectory = false;
+		if (name === "cd") {
+			if (leadingCdChain && !ambiguousCdScope && (preceding === undefined || preceding === "&&") && cursor === 0 && tokens[end]?.raw === "&&" &&
+				args.length === 1 && !/[\n\r$`~]/.test(args[0]) && !args[0].startsWith("-")) directories.push(args[0]);
+			else unresolvedDirectory = true;
+		}
+		if (name === "pushd" || name === "popd") unresolvedDirectory = true;
+		if (segment.length && name !== "cd") leadingCdChain = false;
+		contexts.push({ from, to: tokens[end]?.index ?? command.length, unresolved: unresolvedDirectory || unresolvedPrefix, directories: [...directories] });
+		while (name === "git" && index < args.length && args[index].startsWith("-")) {
+			if (args[index] === "-C") {
+				if (!args[index + 1] || /[\n\r$`~]/.test(args[index + 1])) unresolvedGitDirectory = true;
+				else gitDirectories.push(args[index + 1]);
+				index += 2;
+			}
+			else if (args[index].startsWith("-C") && args[index].length > 2) {
+				const directory = args[index++].slice(2);
+				if (/[\n\r$`~]/.test(directory)) unresolvedGitDirectory = true;
+				else gitDirectories.push(directory);
+			}
+			else if (args[index] === "-c") index += 2;
+			else if (["--git-dir", "--work-tree", "--namespace"].includes(args[index])) { unresolvedGitDirectory = true; index += 2; }
+			else if (/^--(?:git-dir|work-tree|namespace)=/.test(args[index])) { unresolvedGitDirectory = true; index++; }
+			else index++;
+		}
+		while (name === "gh" && index < args.length && args[index].startsWith("-")) {
+			index += ["-R", "--repo"].includes(args[index]) ? 2 : 1;
+		}
+		if (name === "git" && args[index] === "push" && args.slice(index + 1).some(arg => ["--dry-run", "-n", "--delete", "-d"].includes(arg))) continue;
+		if (name === "git" && ["commit", "merge", "rebase", "reset", "checkout", "switch", "cherry-pick", "revert", "am", "pull", "update-ref"].includes(args[index])) matches.push({ kind: "change" });
+		if ((name === "git" && args[index] === "push") || (name === "gh" && args[index] === "pr" && ["create", "merge"].includes(args[index + 1]))) {
+			matches.push({ kind: "delivery",
+				...(isBackground(segment[cursor].index) ? { background: true as const } : {}),
+				...(unresolvedDirectory || unresolvedGitDirectory || unresolvedPrefix || routingUnknown(segment[cursor].index) ? { unresolvedDirectory: true as const } : {}),
+				...(!directories.length && !gitDirectories.length ? {} : { directories: [...directories, ...gitDirectories] }) });
+		}
+		if (["sh", "bash", "zsh", "dash", "eval"].includes(name)) {
+			const flag = args.findIndex(arg => /^-[a-z]*c[a-z]*$/.test(arg));
+			const payload = name === "eval" ? (args[0] === "--" ? args.slice(1) : args).join(" ") : flag >= 0 ? args[flag + 1] : undefined;
+			if (payload) {
+				const inheritedUnknown = unresolvedDirectory || unresolvedPrefix || routingUnknown(segment[cursor].index);
+				const nested = collectReviewDeliveryActions(payload, depth + 1, name === "eval" ? () => recordRoutingExport(segment[cursor].index) : undefined);
+				matches.push(...nested.map(match => ({ ...match,
+					...(match.kind === "delivery" && isBackground(segment[cursor].index) ? { background: true as const } : {}),
+					...(inheritedUnknown ? { unresolvedDirectory: true as const } : {}), directories: [...directories, ...(match.directories ?? [])] })));
+			}
+		}
+	}
+	const inheritSubstitution = (payload: string, index: number) => {
+		const context = contexts.find(scope => index >= scope.from && index < scope.to);
+		return collectReviewDeliveryActions(payload, depth + 1).map(match => ({ ...match,
+			...(context?.unresolved || routingUnknown(index) ? { unresolvedDirectory: true as const } : {}),
+			...(context?.directories.length ? { directories: [...context.directories, ...(match.directories ?? [])] } : {}),
+			...(match.kind === "delivery" && isBackground(index) ? { background: true as const } : {}),
+		}));
+	};
+	for (const match of command.matchAll(/\$\(([^()]*)\)/g)) {
+		let quote: "'" | '"' | undefined;
+		for (let index = 0; index < match.index; index++) {
+			const char = command[index];
+			if (quote === "'") { if (char === "'") quote = undefined; }
+			else if (char === "\\") index++;
+			else if (char === "'" && quote === undefined) quote = "'";
+			else if (char === '"') quote = quote === '"' ? undefined : '"';
+		}
+		if (quote !== "'") matches.push(...inheritSubstitution(match[1], match.index));
+	}
+	for (const { body, index } of backticks) matches.push(...inheritSubstitution(body, index));
+	return matches;
+}
+
 const WRAPPER_VALUE_OPTIONS: Record<string, readonly string[]> = {
 	env: ["-u", "--unset", "-C", "--chdir"],
-	sudo: ["-u", "-g", "-h", "-p", "-C", "--user", "--group", "--host", "--prompt", "--chdir"],
+	sudo: ["-u", "-g", "-h", "-p", "-C", "-D", "--user", "--group", "--host", "--prompt", "--chdir"],
 	timeout: ["-s", "--signal", "-k", "--kill-after"],
 	xargs: ["-n", "-I", "-P", "--max-args", "--replace", "--max-procs"],
 };
@@ -63,12 +235,13 @@ const WRAPPERS = ["env", "sudo", "command", "exec", "nohup", "timeout", "xargs"]
 const RESERVED_WORDS = new Set(["then", "else", "elif", "do", "{", "!", "if", "while", "until"]);
 
 /** Index of the executable token after reserved words, assignments and familiar wrappers. */
-function headCursor(segment: readonly Token[]): number {
+function headCursor(segment: readonly Token[], onTargetRedirect?: () => void): number {
 	let cursor = 0;
 	while (cursor < segment.length && segment[cursor].raw === segment[cursor].value && RESERVED_WORDS.has(segment[cursor].value)) cursor++;
 	while (cursor < segment.length) {
 		const value = segment[cursor].value;
 		if (/^[A-Za-z_][A-Za-z_0-9]*=/.test(value)) {
+			if (/^GIT_(?:DIR|WORK_TREE|COMMON_DIR|NAMESPACE)=/.test(value)) onTargetRedirect?.();
 			cursor++;
 			continue;
 		}
@@ -78,6 +251,8 @@ function headCursor(segment: readonly Token[]): number {
 		while (cursor < segment.length && segment[cursor].value.startsWith("-")) {
 			const flag = segment[cursor++].value;
 			if (flag === "--") break;
+			if (name === "env" && /^(?:-C.*|--chdir(?:=|$))/.test(flag)) onTargetRedirect?.();
+			if (name === "sudo" && /^(?:-D.*|--chdir(?:=|$))/.test(flag)) onTargetRedirect?.();
 			if (WRAPPER_VALUE_OPTIONS[name]?.includes(flag)) cursor++;
 		}
 		if (name === "timeout") cursor++;
@@ -260,8 +435,8 @@ function removalTargets(args: readonly Token[]): string[] | undefined {
  * backtick. An unterminated substitution is a shell syntax error and runs
  * nothing, so it yields no body. Heredoc bodies stay data, as elsewhere.
  */
-function backtickBodies(command: string): Array<{ body: string; index: number }> {
-	const bodies: Array<{ body: string; index: number }> = [];
+function backtickBodies(command: string): Array<{ body: string; index: number; end: number }> {
+	const bodies: Array<{ body: string; index: number; end: number }> = [];
 	const text = blankHeredocs(command);
 	let quote: "'" | '"' | undefined;
 	for (let index = 0; index < text.length; index++) {
@@ -278,7 +453,7 @@ function backtickBodies(command: string): Array<{ body: string; index: number }>
 			let end = index + 1;
 			while (end < text.length && text[end] !== "`") end += text[end] === "\\" ? 2 : 1;
 			if (end >= text.length) break;
-			bodies.push({ body: text.slice(index + 1, end).replace(/\\([\\$`])/g, "$1"), index });
+			bodies.push({ body: text.slice(index + 1, end).replace(/\\([\\$`])/g, "$1"), index, end: end + 1 });
 			index = end;
 		}
 	}

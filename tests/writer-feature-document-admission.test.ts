@@ -271,3 +271,162 @@ test("S1: an omitted or organic mode decides exactly alike; full delegation wide
 	}
 });
 
+
+// cost-speed P6 (R1, option A of L50): the parallel reason is "two or more independent units launched together in
+// one turn", in background mode or not. Pi persists the assistant message on `message_end`, before it prepares any
+// of its tool calls, so the `tool_call` hook reads the whole batch from the session branch. Organic admits a generic
+// writer below the backstop, without a feature document, only when every tool call of that message is a generic
+// writer launch, there are at least two, and their `## Allowed edit surfaces` are pairwise disjoint.
+
+type BatchCall = { id: string; name: string; arguments: Record<string, unknown> };
+type BatchHandler = (event: { toolName: string; toolCallId: string; input: unknown; parentToolCallId?: string }, ctx: ExtensionContext) => Promise<{ block?: boolean; reason?: string } | undefined>;
+
+const writerCall = (id: string, surface: string, extra: Record<string, unknown> = {}): BatchCall => ({
+	id, name: "subagent_run", arguments: { agent: "gentle-ai-worker", task: `Implement ${id}.\n\n## Allowed edit surfaces\n${surface}\n`, ...extra },
+});
+
+/** One session branch of assistant messages (each a batch of tool calls), every call answered before the next message. */
+function sessionOf(messages: BatchCall[][]) {
+	const entries: Array<{ type: string; id: string; parentId: string | null; message: Record<string, unknown> }> = [];
+	for (const [index, calls] of messages.entries()) {
+		entries.push({ type: "message", id: `a${index}`, parentId: entries.at(-1)?.id ?? null, message: { role: "assistant", content: calls.map(call => ({ type: "toolCall", ...call })) } });
+		if (index < messages.length - 1) for (const call of calls) entries.push({ type: "message", id: `r${call.id}`, parentId: entries.at(-1)!.id, message: { role: "toolResult", toolCallId: call.id, content: [] } });
+	}
+	const byId = new Map(entries.map(entry => [entry.id, entry]));
+	return { getLeafEntry: () => entries.at(-1), getEntry: (id: string) => byId.get(id) };
+}
+
+async function launchBatchThroughHook(messages: BatchCall[][], target: BatchCall, cwd: string, tokens = 20_000, processEnv: NodeJS.ProcessEnv = {}, parentToolCallId?: string) {
+	const handlers = new Map<string, BatchHandler>();
+	const pi = { on(name: string, handler: BatchHandler) { handlers.set(name, handler); }, events: { emit() {} }, registerCommand() {}, registerTool() {} } as unknown as ExtensionAPI;
+	createGentleAiExtension({ nativeReviewCli: null, processEnv })(pi);
+	return handlers.get("tool_call")!({ toolName: target.name, toolCallId: target.id, input: target.arguments, ...(parentToolCallId ? { parentToolCallId } : {}) }, {
+		cwd, hasUI: false, ui: { confirm: async () => true },
+		sessionManager: sessionOf(messages),
+		getContextUsage: () => ({ tokens, contextWindow: 272_000, percent: Math.round((tokens / 272_000) * 100) }),
+	} as unknown as ExtensionContext);
+}
+
+const loneRejection = async (cwd: string) => (await launchThroughHook(writerCall("solo", "src/solo.ts").arguments, cwd, 20_000))?.reason;
+
+test("P6: two generic writers with disjoint surfaces in one assistant message are both admitted in organic mode", async (t) => {
+	const bare = workspace(false);
+	t.after(() => rmSync(bare, { recursive: true, force: true }));
+	await withConfigHome(undefined, async () => {
+		const pair = [writerCall("w1", "src/budget.ts"), writerCall("w2", "src/ledger/**")];
+		for (const target of pair) {
+			const result = await launchBatchThroughHook([pair], target, bare);
+			assert.equal(result?.block, undefined, `${target.id}: ${result?.reason}`);
+		}
+		// Background mode or not is how they run, never a condition (L41).
+		const background = [writerCall("b1", "src/a.ts", { mode: "background" }), writerCall("b2", "src/b.ts", { mode: "background" }), writerCall("b3", "docs/c.md")];
+		for (const target of background) assert.equal((await launchBatchThroughHook([background], target, bare))?.block, undefined, target.id);
+	});
+});
+
+test("P6: a lone writer, overlapping or uninterpretable surfaces, and a writer beside another tool keep today's rejection", async (t) => {
+	const bare = workspace(false);
+	t.after(() => rmSync(bare, { recursive: true, force: true }));
+	await withConfigHome(undefined, async () => {
+		const expected = await loneRejection(bare);
+		assert.ok(expected?.includes("write this unit inline yourself now; do not retry the launch, and never create a feature document only to launch writers"));
+		const cases: Record<string, BatchCall[]> = {
+			lone: [writerCall("l1", "src/budget.ts")],
+			overlapping: [writerCall("o1", "src/**"), writerCall("o2", "src/budget.ts")],
+			"same file": [writerCall("s1", "src/budget.ts"), writerCall("s2", "SRC/budget.ts")],
+			uninterpretable: [writerCall("u1", "src/[ab].ts"), writerCall("u2", "lib/c.ts")],
+			"writer plus explorer": [writerCall("e1", "src/a.ts"), { id: "e2", name: "subagent_run", arguments: { agent: "gentle-ai-explore", task: "Map src/b.ts" } }],
+			"writer plus verifier": [writerCall("v1", "src/a.ts"), { id: "v2", name: "subagent_run", arguments: { agent: "gentle-ai-verify", task: "Verify.\nRisk: item 3 (shared parser)" } }],
+			"writer plus Judgment Day fix agent": [writerCall("j1", "src/a.ts"), { id: "j2", name: "subagent_run", arguments: { agent: "jd-fix-agent", task: "Fix.\n\n## Allowed edit surfaces\nsrc/b.ts\n" } }],
+			// A sequential tool serializes the whole message (L36); any other tool beside the launches is refused too.
+			"writers plus todo": [writerCall("t1", "src/a.ts"), writerCall("t2", "src/b.ts"), { id: "t3", name: "todo", arguments: { action: "list" } }],
+			"writers plus read": [writerCall("r1", "src/a.ts"), writerCall("r2", "src/b.ts"), { id: "r3", name: "read", arguments: { path: "README.md" } }],
+		};
+		for (const [label, batch] of Object.entries(cases)) {
+			const result = await launchBatchThroughHook([batch], batch[0], bare);
+			assert.equal(result?.block, true, label);
+			assert.equal(result?.reason, expected, `${label}: the rejection stays byte-identical`);
+		}
+	});
+});
+
+test("P6: writers split across two assistant messages, or launched through codemode, are each rejected", async (t) => {
+	const bare = workspace(false);
+	t.after(() => rmSync(bare, { recursive: true, force: true }));
+	await withConfigHome(undefined, async () => {
+		const expected = await loneRejection(bare);
+		const first = writerCall("m1", "src/a.ts");
+		const second = writerCall("m2", "src/b.ts");
+		assert.equal((await launchBatchThroughHook([[first]], first, bare))?.reason, expected, "first message");
+		assert.equal((await launchBatchThroughHook([[first], [second]], second, bare))?.reason, expected, "second message");
+		// A codemode script's calls are nested: the message holds one `codemode` call, never the launches themselves.
+		const script = { id: "cm", name: "codemode", arguments: { code: "await Promise.all([subagent_run(a), subagent_run(b)])" } };
+		const nested = writerCall("n1", "src/a.ts");
+		assert.equal((await launchBatchThroughHook([[script]], nested, bare, 20_000, {}, "cm"))?.reason, expected, "codemode launch");
+	});
+});
+
+test("P6 preserve: full delegation, a feature-document task and the backstop still admit a lone writer", async (t) => {
+	const bare = workspace(false);
+	const documented = workspace(true);
+	t.after(() => { rmSync(bare, { recursive: true, force: true }); rmSync(documented, { recursive: true, force: true }); });
+	await withConfigHome(undefined, async () => {
+		const lone = writerCall("p1", "src/a.ts");
+		assert.equal((await launchBatchThroughHook([[lone]], lone, bare, 20_000, { GENTLE_PI_ORCHESTRATOR_MODE: "full-delegation" }))?.block, undefined, "full delegation");
+		const spec = writerCall("p2", "src/a.ts", { task: "Spec: odd/tasks/ledger.md, T1\n\n## Allowed edit surfaces\nsrc/a.ts\n" });
+		assert.equal((await launchBatchThroughHook([[spec]], spec, documented))?.block, undefined, "feature-document task");
+		assert.equal((await launchBatchThroughHook([[lone]], lone, bare, 150_000))?.block, undefined, "context backstop");
+		// The edit-surface guard still runs first, inside a batch too.
+		const unscoped = { id: "p3", name: "subagent_run", arguments: { agent: "gentle-ai-worker", task: "No surfaces." } };
+		const batch = [writerCall("p4", "src/a.ts"), unscoped];
+		const denied = await launchBatchThroughHook([batch], unscoped, bare);
+		assert.equal(denied?.block, true);
+		assert.doesNotMatch(denied?.reason ?? "", /write this unit inline yourself/);
+		// ...and its sibling, whose batch partner has no valid surfaces, is not admitted by the batch rule.
+		assert.equal((await launchBatchThroughHook([batch], batch[0], bare))?.block, true, "a sibling without surfaces voids the batch");
+	});
+});
+
+// cost-speed P6b: full delegation launched its independent writers from one `codemode` script before PR #3110 and the
+// children overlapped; the prompt now names both routes, so the hook must keep admitting both (preservation).
+test("P6b preserve: full delegation admits three writers launched from one codemode script and three in one message", async (t) => {
+	const bare = workspace(false);
+	t.after(() => rmSync(bare, { recursive: true, force: true }));
+	await withConfigHome(undefined, async () => {
+		const full = { GENTLE_PI_ORCHESTRATOR_MODE: "full-delegation" };
+		const script = { id: "cm", name: "codemode", arguments: { code: "await Promise.allSettled([tools.subagent_run(a), tools.subagent_run(b), tools.subagent_run(c)])" } };
+		const nested = [writerCall("cm/1", "src/alpha.ts"), writerCall("cm/2", "src/beta.ts"), writerCall("cm/3", "src/gamma.ts")];
+		for (const target of nested) {
+			const result = await launchBatchThroughHook([[script]], target, bare, 20_000, full, "cm");
+			assert.equal(result?.block, undefined, `codemode ${target.id}: ${result?.reason}`);
+		}
+		const trio = [writerCall("t1", "src/alpha.ts"), writerCall("t2", "src/beta.ts"), writerCall("t3", "src/gamma.ts")];
+		for (const target of trio) {
+			const result = await launchBatchThroughHook([trio], target, bare, 20_000, full);
+			assert.equal(result?.block, undefined, `same message ${target.id}: ${result?.reason}`);
+		}
+	});
+});
+
+test("P6: the rejection names the same-message route and keeps the inline instruction", () => {
+	const root = workspace(false);
+	try {
+		const denied = rejectUndocumentedWriterLaunch({ agent: "gentle-ai-worker", task: `Implement it.${surfaces}` }, { root, contextUsage: { tokens: 0, contextWindow: 400_000 } });
+		assert.match(denied?.reason ?? "", /two or more writers with disjoint `## Allowed edit surfaces` launched together in one message with no other tool call/);
+		assert.ok(denied?.reason.endsWith("write this unit inline yourself now; do not retry the launch, and never create a feature document only to launch writers."));
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// Verifier mwb9qlc5-22-nfsa probes, kept as regression tests.
+test("P6: a writer beside gentle-ai-explore, and a path beside an uninterpretable glob, are rejected with the new text", async (t) => {
+	const bare = workspace(false);
+	t.after(() => rmSync(bare, { recursive: true, force: true }));
+	await withConfigHome(undefined, async () => {
+		const withExplorer = [writerCall("x1", "src/alpha.ts"), { id: "x2", name: "subagent_run", arguments: { agent: "gentle-ai-explore", task: "Map src/beta.ts" } }];
+		const denied = await launchBatchThroughHook([withExplorer], withExplorer[0], bare);
+		assert.equal(denied?.block, true);
+		assert.match(denied?.reason ?? "", /two or more writers with disjoint `## Allowed edit surfaces` launched together in one message with no other tool call/);
+		const glob = [writerCall("g1", "src/alpha.ts"), writerCall("g2", "src/[ab].ts")];
+		for (const target of glob) assert.equal((await launchBatchThroughHook([glob], target, bare))?.block, true, target.id);
+	});
+});

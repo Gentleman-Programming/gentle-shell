@@ -11,10 +11,17 @@
 //
 // The anchor is added only when the context's tail is automated, never mid tool
 // loop, and only when no anchor already follows that tail. The caller persists it
-// once, so the following requests stay append-only and the provider's prompt
-// cache keeps its prefix (gentle-shell#1662, #2195). Pure: no pi imports.
+// once (gentle-shell#1662, #2195), but Pi appends a message sent while streaming
+// only once the turn ends, after the reply and its tool results, so the saved copy
+// lands later than the request's trailing copy did. Each anchor therefore records
+// the message it followed and its own timestamp, and `placePersistedReplyAnchors`
+// moves every saved copy back to that spot: request k+1 then starts with exactly
+// the messages of request k, and the provider's prompt cache keeps its prefix
+// (pi-claude-bridge "Extensions that add a message to every request"). The
+// placement lives in lib/request-context-placement.ts. Pure: no pi imports.
 
 import type { ContextEvent } from "@earendil-works/pi-coding-agent";
+import { placePersistedMessages, requestMessagePosition, type PersistedPlacement } from "./request-context-placement.ts";
 
 type AgentMessage = ContextEvent["messages"][number];
 
@@ -60,6 +67,24 @@ function isAutomated(message: Message): boolean {
 
 function isHumanMessage(message: Message): boolean {
 	return message.role === "user" && !isAutomated(message) && text(message.content).trim() !== "";
+}
+
+/** Where an anchor sat in the request that first carried it: right after `after`, with timestamp `at`. */
+export type ReplyLanguageAnchorDetails = PersistedPlacement;
+
+/** A message's position key: stable across requests, since Pi never rewrites a stored message. */
+export const replyLanguageAnchorPosition = requestMessagePosition;
+
+const ANCHOR_TYPES: ReadonlySet<string> = new Set([REPLY_LANGUAGE_ANCHOR_TYPE]);
+
+/**
+ * Moves each saved anchor back to where its request carried it, with that
+ * request's timestamp, so consecutive requests stay append-only. Returns
+ * `undefined` when nothing moved. An anchor whose predecessor is gone (compacted
+ * away) or that carries no placement (saved by an earlier version) stays put.
+ */
+export function placePersistedReplyAnchors<T>(messages: readonly T[]): T[] | undefined {
+	return placePersistedMessages(messages, ANCHOR_TYPES);
 }
 
 export function replyLanguageAnchorText(excerpt: string): string {

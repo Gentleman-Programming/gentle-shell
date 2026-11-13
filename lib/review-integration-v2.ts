@@ -689,7 +689,30 @@ export interface ReviewStatusV3 {
 	validationRequest?: ReviewTargetedValidationRequestV1;
 	/** status/v7 only: the eligible untracked-path inventory digest, absent on the `staged` projection. */
 	eligibleUntrackedInventory?: string;
+	/**
+	 * status/v9 opt-in (`--non-blocking-findings`, gentle-ai#6088): the admitted
+	 * findings of a compact correction_required or escalated authority that are
+	 * neither to correct nor unresolved, with the reviewer's claim. Display
+	 * data only; nothing routes on it.
+	 */
+	nonBlockingFindings?: ReviewNonBlockingFindingsV1;
 	raw: Readonly<Record<string, unknown>>;
+}
+
+export interface ReviewNonBlockingFindingV1 {
+	id: string;
+	lens?: string;
+	location?: string;
+	severity: string;
+	disposition: ReviewAdvisoryFindingDisposition;
+	/** The reviewer's admitted text, unbounded; never an instruction. */
+	claim: string;
+}
+
+export interface ReviewNonBlockingFindingsV1 {
+	statement: string;
+	/** Empty when every finding of the review blocks. */
+	findings: readonly ReviewNonBlockingFindingV1[];
 }
 
 export interface ReviewConsentChoiceV2 {
@@ -2048,8 +2071,9 @@ export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
 	// branch's contract, ahead of the released v8) adds nothing at this top
 	// level either: its one addition is the host-mediated role `submission`
 	// on a next_transition.collect input (gentle-pi#311 P3), gated on v9 in
-	// decodeCollectInput, not here. v3 keeps rejecting every
-	// v5/v6/v7/v8/v9-only field.
+	// decodeCollectInput, not here. Its one top-level key is the opt-in
+	// `non_blocking_findings` (gentle-ai#6088), decoded below. v3 keeps
+	// rejecting every v5/v6/v7/v8/v9-only field.
 	const schema = typeof value === "object" && value !== null ? (value as Record<string, unknown>).schema : undefined;
 	const v9 = schema === "gentle-ai.review-integration.status/v9";
 	const v8 = v9 || schema === "gentle-ai.review-integration.status/v8";
@@ -2058,7 +2082,7 @@ export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
 	const v5 = v6 || schema === "gentle-ai.review-integration.status/v5";
 	const body = exactRecord(value, "status", [
 		"schema", "contract", "operation", "applicability", "action", "replayability", "target_identity", "projection", "repair", "candidates",
-	], ["authority", "frozen", "action_disposition", "eligibility", "next_transition", "authority_target_identity", ...(v5 ? ["receipt", "forecast", "repository_context", "validation_request"] : []), ...(v7 ? ["eligible_untracked_inventory", "escalation"] : [])]);
+	], ["authority", "frozen", "action_disposition", "eligibility", "next_transition", "authority_target_identity", ...(v5 ? ["receipt", "forecast", "repository_context", "validation_request"] : []), ...(v7 ? ["eligible_untracked_inventory", "escalation"] : []), ...(v9 ? ["non_blocking_findings"] : [])]);
 	requireIdentity(body, v9 ? "gentle-ai.review-integration.status/v9" : v8 ? "gentle-ai.review-integration.status/v8" : v7 ? "gentle-ai.review-integration.status/v7" : v6 ? "gentle-ai.review-integration.status/v6" : v5 ? "gentle-ai.review-integration.status/v5" : "gentle-ai.review-integration.status/v3", REVIEW_INTEGRATION_OPERATION.STATUS);
 
 	const applicability = enumeration(body.applicability, ["current_target", "unrelated", "ambiguous", "corrupted"] as const, "status.applicability");
@@ -2155,6 +2179,16 @@ export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
 		? sha256(body.eligible_untracked_inventory, "status.eligible_untracked_inventory")
 		: undefined;
 
+	// status/v9 opt-in (gentle-ai#6088): the same rule as the provider's schema,
+	// a current compact-v2 authority in correction_required or escalated.
+	let nonBlockingFindings: ReviewNonBlockingFindingsV1 | undefined;
+	if (Object.hasOwn(body, "non_blocking_findings")) {
+		if (authority?.version !== REVIEW_AUTHORITY_VERSION.COMPACT_V2 || (authority.state !== "correction_required" && authority.state !== "escalated")) {
+			throw new TypeError("status.non_blocking_findings requires a current compact-v2 authority in correction_required or escalated");
+		}
+		nonBlockingFindings = decodeReviewNonBlockingFindingsV1(body.non_blocking_findings, "status.non_blocking_findings");
+	}
+
 	return {
 		contract: REVIEW_INTEGRATION_CONTRACT,
 		applicability,
@@ -2175,7 +2209,26 @@ export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
 		...(validationRequest === undefined ? {} : { validationRequest }),
 		...(escalation === undefined ? {} : { escalation }),
 		...(eligibleUntrackedInventory === undefined ? {} : { eligibleUntrackedInventory }),
+		...(nonBlockingFindings === undefined ? {} : { nonBlockingFindings }),
 		raw: body,
+	};
+}
+
+function decodeReviewNonBlockingFindingsV1(value: unknown, label: string): ReviewNonBlockingFindingsV1 {
+	const body = exactRecord(value, label, ["statement", "findings"]);
+	return {
+		statement: nonempty(body.statement, `${label}.statement`),
+		findings: array(body.findings, `${label}.findings`, (entry, itemLabel) => {
+			const finding = exactRecord(entry, itemLabel, ["id", "severity", "disposition", "claim"], ["lens", "location"]);
+			return {
+				id: nonempty(finding.id, `${itemLabel}.id`),
+				...(finding.lens === undefined ? {} : { lens: nonempty(finding.lens, `${itemLabel}.lens`) }),
+				...(finding.location === undefined ? {} : { location: nonempty(finding.location, `${itemLabel}.location`) }),
+				severity: nonempty(finding.severity, `${itemLabel}.severity`),
+				disposition: enumeration(finding.disposition, Object.values(REVIEW_ADVISORY_FINDING_DISPOSITION), `${itemLabel}.disposition`),
+				claim: text(finding.claim, `${itemLabel}.claim`),
+			};
+		}),
 	};
 }
 

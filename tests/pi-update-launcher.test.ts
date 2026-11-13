@@ -51,6 +51,8 @@ function launch(args: string[], scenario = 'owned', piVersion = '1.2.0') {
   run: async (cmd, args, options) => {
    if(args.includes('list') || args.includes('ls')) return {code:0,stdout:${JSON.stringify(listing)}};
    if(args.includes('--version')) return {code:0,stdout:'11.1.1'};
+   if(args.includes('view')) { const version = '${scenario === 'unstable' ? '1.3.0-rc.1' : '1.2.0'}'; return {code:0,stdout:args.includes('--json') ? JSON.stringify({name:'${PI}',version}) : version}; }
+   if(args.includes('config')) return {code:0,stdout:''};
    console.log('MUTATION ' + JSON.stringify(args)); if (${source}) console.log('CWD ' + options.cwd); return {code:0};
   }
  };
@@ -61,11 +63,12 @@ function launch(args: string[], scenario = 'owned', piVersion = '1.2.0') {
 for (const scenario of ['owned','adjacent','separate']) test(`public linked-store update succeeds for ${scenario}`, () => {
  const result = launch(['update'], scenario);
  assert.equal(result.status, 0, result.stderr);
- assert.match(result.stdout, scenario === 'adjacent' ? /MUTATION \["add","-g","gentle-pi@4\.1\.0","--allow-build=gentle-pi"\]/ : /MUTATION \["add","-g","@earendil-works\/pi-coding-agent@latest"\]/);
+ assert.match(result.stdout, scenario === 'adjacent' ? /MUTATION \["add","-g","gentle-pi@4\.1\.0","--allow-build=gentle-pi",/ : /MUTATION \["add","-g","@earendil-works\/pi-coding-agent@1\.2\.0",/);
+ assert.match(result.stdout, /--config\.minimum-release-age-exclude=@earendil-works\/pi-coding-agent/);
  assert.doesNotMatch(result.stdout, /FORWARD/);
- // The fake manager changes nothing, so the readback reports the same version and pnpm's release-age rule.
+ // The fake manager changes nothing, and the selected version matches latest.
  assert.match(result.stdout, /the selected Pi is still 1\.2\.0\./);
- assert.match(result.stdout, /minimumReleaseAge/);
+ assert.doesNotMatch(result.stdout, /minimumReleaseAge/);
  assert.equal(result.stderr, '');
 });
 
@@ -73,13 +76,13 @@ for (const all of [false, true]) test(`public source-linked update uses the chec
  const result = launch(all ? ['update', '--all'] : ['update'], 'source');
  assert.equal(result.status, 0, result.stderr);
  assert.equal(result.stderr, '');
- assert.match(result.stdout, /MUTATION \["update","@earendil-works\/pi-coding-agent","--no-save","--ignore-scripts","--global=false","--prefix","\/store\/shell-peer\/node_modules\/gentle-pi","--workspaces=false","--no-audit","--no-fund"\]/);
+ assert.match(result.stdout, /MUTATION \["install","@earendil-works\/pi-coding-agent@1\.2\.0","--no-save","--ignore-scripts","--global=false","--prefix","\/store\/shell-peer\/node_modules\/gentle-pi","--workspaces=false","--no-audit","--no-fund"\]/);
  assert.match(result.stdout, /CWD \/store\/shell-peer\/node_modules\/gentle-pi/);
  assert.doesNotMatch(result.stdout, /"-g"|@latest/);
  assert.equal(result.stdout.includes('FORWARD ["update","--extensions"]'), all);
 });
 
-test('source-linked --latest preserves the ordinary local, range-respecting plan', () => {
+test('source-linked --latest remains an alias for the ordinary latest update', () => {
  const normal = launch(['update'], 'source');
  const latest = launch(['update', '--latest'], 'source');
  assert.equal(latest.status, 0, latest.stderr);
@@ -90,7 +93,7 @@ test('source-linked --latest preserves the ordinary local, range-respecting plan
 test('public all updates only its owner and then forwards extension updates', () => {
  const result = launch(['update', '--all']);
  assert.equal(result.status, 0, result.stderr);
- assert.match(result.stdout, /MUTATION .*add.*@earendil-works\/pi-coding-agent@latest/);
+ assert.match(result.stdout, /MUTATION .*add.*@earendil-works\/pi-coding-agent@1\.2\.0/);
  assert.match(result.stdout, /FORWARD \["update","--extensions"\]/);
  assert.equal(result.stderr, '');
 });
@@ -111,11 +114,18 @@ for (const scenario of ['ambiguous', 'malformed', 'npm-link', 'npm-file', 'share
  assert.doesNotMatch(result.stdout + result.stderr, /MUTATION/);
 });
 
+test('public update rejects a prerelease latest tag before mutation', () => {
+ const result = launch(['update'], 'unstable');
+ assert.equal(result.status, 1);
+ assert.equal(result.stdout, '');
+ assert.equal(result.stderr, 'gentle-shell update: the latest published Pi version "1.3.0-rc.1" was rejected. No installation changed.\n');
+});
+
 // `update` is how an old Pi gets replaced, so the minimum-version gate must not block it.
 test('public update replaces a Pi older than the required minimum', () => {
  const result = launch(['update'], 'owned', '1.1.0');
  assert.equal(result.status, 0, result.stderr);
- assert.match(result.stdout, /MUTATION \["add","-g","@earendil-works\/pi-coding-agent@latest"\]/);
+ assert.match(result.stdout, /MUTATION \["add","-g","@earendil-works\/pi-coding-agent@1\.2\.0",/);
  assert.doesNotMatch(result.stdout + result.stderr, /older than the required minimum/);
  assert.equal(result.stderr, '');
 });

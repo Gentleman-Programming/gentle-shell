@@ -82,7 +82,9 @@ test("organic progress preserves both complete feature copies and reconciles act
 		"preserve valid completed and unrelated work",
 		"reopen invalidated items",
 		"Check off only observed outcomes",
-		"Read back both writes",
+		"explicit, complete save acknowledgement",
+		"inspect the changed local task/log lines as needed",
+		"do not routinely reread both full copies",
 		"not atomic",
 		"mirror pending",
 		"Preserve both versions",
@@ -98,21 +100,41 @@ test("organic progress preserves both complete feature copies and reconciles act
 	assert.doesNotMatch(memory, /`todo` tool is an optional session\/UI projection/);
 });
 
-test("assumption challenge and task checks do not activate or duplicate native review", () => {
+// gentle-shell#1494 field follow-up: tracking must not grow its own reconciliation
+// scripts, invented size gates, or repeated malformed writer launches.
+test("tracking sync recovers from partial writes without custom reconciliation gates", () => {
+	containsAll(memory, [
+		"These writes are not atomic",
+		"never author comparison or reconciliation scripts or gates for them",
+		"A missing, partial, truncated, failed, or uncertain acknowledgement requires checking which writes already applied before any retry; never replay an applied write",
+		"If the tool reports a payload it cannot preserve, keep the file and mark its mirror pending rather than repeatedly resending the same payload",
+		"a mirror that differs from the file just written is refreshed from the file, never a blocker",
+		"Preserve both versions on irreconcilable edits",
+	]);
 	containsAll(delegation, [
-		"at most one scoped independent read-only assumption challenge",
-		"high-consequence unproven premise",
+		"A user's line limit is a ceiling, never an exact-count gate; never invent acceptance gates the user did not ask for",
+	]);
+	const writerClause = "Every new writer launch carries the section (a continuation inherits it); after an admission rejection, repair what it names once, never relaunch the same prompt unchanged";
+	containsAll(delegation, [writerClause]);
+	containsAll(read("assets/orchestrator-full-delegation-card.md"), [writerClause]);
+});
+
+test("assumption challenge and task checks do not activate or duplicate native review", () => {
+	// P5b: the step 3 limit lives in the always-on steps; tracking keeps only what step 3 does not carry.
+	containsAll(wrapper, ["at most one scoped read-only assumption challenge for a high-consequence unproven premise"]);
+	containsAll(delegation, [
+		"The step 3 assumption challenge is independent",
 		"Deterministic failures need fixes",
 		"native RDD refuter",
 		"functional checks per task",
 		"native review runs at that work-unit commit or PR slice boundary",
-		"native candidate risk assessment",
-		"gentle_review` with `{\"operation\":\"assess\"}",
-		"Passive/low",
-		"no reviewer or consent ceremony",
-		"only on grant",
-		"decline continues under ordinary policy",
-		"never infer low risk from a failed assessment",
+		"Never replace assessment with model judgment, task size or defect severity",
+		"`gentle_review` `{\"operation\":\"assess\"}`",
+		// P5b (C5): the injected contract governs how a review starts, runs, and gets consent; tracking keeps the
+		// commit-boundary rules mirrored from routing/pi.md, which the rendered prompt carries nowhere else.
+		"When RDD is enabled, the injected Gentle AI contract governs native review start, execution and consent; this module adds only assessment and commit boundaries.",
+		"A not-due `passive` commit needs no review and the boundary advances; `under_budget` stays pending in the slice until a later commit reaches the budget.",
+		"lower the tier or infer low risk",
 		"When RDD is disabled, do not start or prompt for RDD",
 	]);
 });
@@ -157,14 +179,10 @@ test("ODD commits work units in reviewable slices and reviews the commit or PR s
 	);
 	assert.ok(!core.includes("- Never commit unless the user explicitly asks."), "core Safety contradicts ODD step 6 work-unit commits");
 	containsAll(delegation, [
-		'after each work-unit commit, assess it with that same call and `{"baseRef":"<last reviewed boundary>","committedOnly":true}`',
-		"Passive/low: silent structural checks, no reviewer or consent ceremony, and the boundary advances",
-		'start native review on it right away at that base with `gentle_review` `{"operation":"start"}`',
-		"Medium: defer to the PR slice",
-		"bounded by the delivery budget of about 400 authored changed lines",
-		"The first boundary is the branch point, and every reviewed boundary becomes the next base",
+		'After each work-unit commit, assess it with `gentle_review` `{"operation":"assess"}` and `{"baseRef":"<last reviewed boundary>","committedOnly":true}`',
+		"start at the branch point; each reviewed boundary is the next base",
 		// S14: commit per reviewable slice; one commit may hold several tasks, so outcomes are recorded per commit.
-		"Record per commit the assessed tier and outcome: granted, declined, passive, deferred to slice, or unavailable",
+		"Record each commit's assessed tier, outcome (not due, granted, declined, unavailable) and `reviewDueReason`",
 		"Delivery follows work units",
 		"forecast authored changed lines (additions plus deletions, generated files excluded) from the task list",
 		"keep a running count from work-unit commits",
@@ -253,7 +271,10 @@ test("one feature document carries intent, accepted rationale and worker context
 		"automatically update affected intent and TODOs",
 		"add genuinely new tasks or reopen invalidated items with a reason",
 		"Findings alone never authorize scope expansion or automatic acceptance",
-		"Before implementation or resume, the parent reads both the actual file and full observation",
+		"At initial implementation or recovery after interruption or context loss, the parent reads both the actual file and full observation",
+		"Within an intact continuation, reuse the established specs, next task, route, and applicable proof",
+		"A progress question does not restart preparation",
+		"New scope, external edits, stale proof, or missing context require inspecting the affected state before editing",
 		"passes the locator, task IDs, and linked `S#`; workers read the document until `## Log` before edits",
 	]);
 	containsAll(read("assets/agents/gentle-ai-worker.md"), [
@@ -322,19 +343,23 @@ test("ODD defaults to applicable test-first without chat or TUI activation", () 
 	// rendered parent prompt (harness + core) now carries that policy exactly
 	// once, from the harness, instead of the core carrying its own copy.
 	const rendered = __testing.buildGentlePrompt("gentleman");
-	for (const text of [rendered, delegation, worker, verify, support, skill, wrapper]) {
+	// P5b (C3): the delegation modules forward the policy instead of restating its cycle.
+	for (const text of [rendered, worker, verify, support, skill, wrapper]) {
 		containsAll(text, ["applicable", "RED", "GREEN"]);
 		assert.doesNotMatch(text, /(?:configured TDD mode|Strict TDD Mode is enabled|explicit user choice|test presence does not enable it|tests existing does not activate it)/i);
 	}
 	assert.equal(rendered.split("use test-first by default").length - 1, 1, "the parent prompt states the test-first policy once");
 	assert.ok(!core.includes("GREEN"), "core restates the harness test-first policy");
-	for (const [actor, text] of [["delegation", delegation], ["extension", wrapper], ["skill", skill]] as const) {
+	// P5b (C3): the lazy modules no longer restate the policy; they forward it (below).
+	for (const [actor, text] of [["extension", wrapper], ["skill", skill]] as const) {
 		assert.match(text, /behavior changes with applicable runnable deterministic tests and a clear expected outcome/i, `${actor} must require applicability, not test presence`);
 		assert.match(text, /passive documentation/i, `${actor} must handle passive docs`);
 		assert.match(text, /unavailable runner/i, `${actor} must handle unavailable runners`);
 		assert.match(text, /ordinary functional or structural verification/i, `${actor} must specify fallback checks`);
 	}
-	containsAll(delegation, ["by default", "Forward this policy"]);
+	// P5b (C3): the "use test-first by default" policy lives once, in the rendered always-on principle
+	// (asserted above); tracking alone forwards it to writers.
+	containsAll(read("assets/orchestrator-tracking.md"), ["Test-first is the always-on harness principle", "forward this policy"]);
 	containsAll(worker, ["before implementation", "ordinary functional or structural verification", "no meaningful RED"]);
 	containsAll(verify, ["observed RED", "observed GREEN", "exception"]);
 	assert.doesNotMatch(skill, /SDD|OpenSpec/i, "the ODD-only skill must not prime SDD");
@@ -491,15 +516,42 @@ test("ODD protocol is always-on in the rendered system prompt and runs by defaul
 	assert.doesNotMatch(core + delegation + memory, /SDD|sdd-|OpenSpec|openspec/i);
 });
 
-// S14: commit per reviewable slice. Mirrors gentle-ai 06ad2776: a high-risk unit that follows pending medium commits
-// closes the open slice first, so native review takes the high-risk commit alone; outcomes are recorded per commit,
-// since one commit may hold several tasks.
-test("S14: RDD tracking closes the open slice before a high-risk commit and records outcomes per commit", () => {
+// S14: commit per reviewable slice; outcomes are recorded per commit, since one commit may hold several tasks.
+// Mirrors gentle-ai#6110: a high-risk unit following pending `under_budget`
+// commits assesses that slice first without forcing review. The rendered prompt carries
+// only steps 1-7 of routing/pi.md and the injected orchestration contract has no slice rule, so tracking states it;
+// P5b removed only the sentences that restated the injected contract (start, consent, Medium deferral).
+test("S14: RDD tracking assesses the open slice before a high-risk commit and records outcomes per commit", () => {
 	const tracking = readFileSync(join(import.meta.dirname, "..", "assets", "orchestrator-tracking.md"), "utf8");
 	assert.ok(
-		tracking.includes("When a high-risk unit follows pending medium commits still under the slice budget, close the open slice first, assessing and reviewing it as the slice, so the high-risk commit is then reviewed alone against the new boundary."),
-		"tracking must close the open slice before a high-risk commit",
+		tracking.includes("Before a high-risk unit, assess any pending `under_budget` slice."),
+		"tracking must assess the open slice before a high-risk commit",
 	);
-	assert.ok(tracking.includes("Record per commit the assessed tier and outcome"), "tracking must record outcomes per commit");
+	assert.ok(
+		wrapper.includes("a unit whose Risk line names a high-risk item gets its own commit so native review can take it alone"),
+		"step 6 must keep a high-risk unit in its own commit",
+	);
+	assert.ok(tracking.includes("Record each commit's assessed tier, outcome"), "tracking must record outcomes per commit");
 	assert.ok(!tracking.includes("Record per task the assessed tier and outcome"), "tracking must not record outcomes per task");
+});
+
+test("pending slice review follows provider due or explicit request without inventing a boundary", () => {
+	const tracking = read("assets/orchestrator-tracking.md");
+	containsAll(tracking, [
+		"Before a high-risk unit, assess any pending `under_budget` slice.",
+		"Review the pending slice only when `reviewDue` is true or the user explicitly asks",
+		"otherwise preserve the pending boundary and proceed without review",
+		"A task boundary neither authorizes review nor advances a reviewed boundary.",
+	]);
+	assert.doesNotMatch(tracking, /close the open slice first, assessing and reviewing it as the slice/);
+});
+
+test("failed assessment reports missing proof without inventing due or preflight", () => {
+	const tracking = read("assets/orchestrator-tracking.md");
+	containsAll(tracking, [
+		"report missing assessment proof",
+		"never infer `reviewDue`, construct a preflight transition",
+		"lower the tier or infer low risk",
+	]);
+	assert.doesNotMatch(tracking, /treat the commit as due/);
 });

@@ -1,6 +1,6 @@
 ---
 name: gentle-ai-work-unit-commits
-description: "Plan commits as reviewable work units. Trigger: implementation, commit splitting, chained PRs, or keeping tests and docs with code."
+description: "Trigger: commit splitting, chained PRs, keeping tests and docs with code. Plan commits as reviewable work units."
 license: Apache-2.0
 metadata:
   author: gentleman-programming
@@ -30,7 +30,7 @@ Use it for:
 | Tell a story | A reviewer should understand why each commit exists from its diff and message. |
 | Future PR-ready | Each commit should be a candidate chained PR when the change grows. |
 | Delivery workload guard | If the task forecast produces a >400-line change, honor the selected `delivery_strategy`. On chaining paths only, group commits into chained PR slices before implementation. For explicit `single-pr` or `exception-ok`, keep one PR, report the review load, and follow the destination repository's documented contribution/size policy; selection alone does not accept an exception. |
-| Budget is not code-golf | Never shrink a diff by deleting comments, blank lines, docs, or tests, or by compressing code, to fit the review budget (400 by default, or the session `review_budget_lines`). Slice by work unit or report the overage. |
+| Budget is not code-golf | Never shrink a diff by deleting comments, blank lines, docs, or tests, or by compressing code, to fit the review budget (about 400 authored changed lines). Slice by work unit or report the overage. |
 
 ## Work Unit Checklist
 
@@ -64,9 +64,9 @@ Use work-unit commits as the foundation for chained PRs:
 
 The chosen `delivery_strategy` governs how commits group into PRs, and the budget constrains how work is sliced, never the code itself.
 
-- Low risk: keep work-unit commits inside one PR.
-- Medium risk: commit by work unit and monitor changed lines before PR creation.
-- High risk: follow the selected `delivery_strategy` — ask on `ask-on-risk`, auto-slice with the cached chain choice on `auto-chain`, follow the destination repository's documented contribution/size policy on over-budget `single-pr`, or record an explicitly accepted policy exception on `exception-ok`. A single-PR selection does not itself accept an exception.
+- Up to about 400 forecast or running authored changed lines: keep work-unit commits inside one PR.
+- Above it: follow the selected `delivery_strategy` — ask on `ask-on-risk`, auto-slice with the cached chain choice on `auto-chain`, follow the destination repository's documented contribution/size policy on over-budget `single-pr`, or record an explicitly accepted policy exception on `exception-ok`. A single-PR selection does not itself accept an exception.
+- Risk never picks the delivery strategy; a unit whose Risk line names a high-risk item gets its own commit.
 - `size:exception` is a Gentle-owned repository policy, not a universal label requirement. Never request, create, or add the label for generic users unless the destination policy uses it; preserve its maintainer acceptance and protected-label authorization gates.
 - Splitting is bounded: after one honest slicing pass, if no cohesive work-unit split fits the budget, stop and report the smallest honest count and rationale. Recommend an exception only where destination policy provides it. Do not iterate shrinking the code to reach the number.
 

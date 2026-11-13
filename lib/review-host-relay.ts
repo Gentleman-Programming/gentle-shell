@@ -34,6 +34,7 @@ import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
+import { reviewerStreamLimits, publishReviewerProgress } from "./reviewer-stream.ts";
 import { gentleAiIsolationEnv, resolveGentleAiBinary } from "./gentle-ai-binary.ts";
 import {
 	INPROCESS_REVIEWER_FAILURE,
@@ -591,7 +592,8 @@ function relayReviewerRefusalError(
 			return new ReviewHostRelayError(
 				REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT,
 				"pi",
-				reviewHostRelayPiTimeoutMessage(timing.elapsedMs, timing.timeoutMs, promptByteLength),
+				outcome.evidence?.timeoutPhase === "first-output" || outcome.evidence?.timeoutPhase === "stream-idle"
+					? outcome.message : reviewHostRelayPiTimeoutMessage(timing.elapsedMs, timing.timeoutMs, promptByteLength),
 				{ ...details, timedOut: true },
 			);
 		case INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED:
@@ -785,10 +787,12 @@ export async function prepareReviewHostRelaySlot(
 				...(preparedRequest.reviewerSessionId === undefined ? {} : { sessionId: preparedRequest.reviewerSessionId }),
 				prompt: promptBytes,
 				timeoutMs: piTimeoutMs,
+				...reviewerStreamLimits(preparedRequest.environment!),
 				...(preparedRequest.signal === undefined ? {} : { signal: preparedRequest.signal }),
 				routingKey: preparedRequest.routingKey!,
 			},
 			{ registry: preparedRequest.reviewerRegistry!, complete: completeSimple,
+				onProgress: publishReviewerProgress,
 				onEvidence: (evidence) => { reviewerEvidence = evidence; } },
 		);
 	} catch (error) {

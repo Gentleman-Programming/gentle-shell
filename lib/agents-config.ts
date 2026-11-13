@@ -1,6 +1,9 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { gentlePiConfigHome } from "./agent-home.ts";
+import { applyToolOverlay, loadToolOverlays } from "./agent-tool-overlay.ts";
 import type { AgentProfilesFile } from "./agent-profiles.ts";
+import { DEFAULT_REPORT_MAX_BYTES } from "./agents-report-cap.ts";
 import { THINKING_LEVELS as ROUTING_THINKING_LEVELS, isServiceTier, type AgentModelConfig, type ServiceTier, type ThinkingLevel as RoutingThinkingLevel } from "./model-routing-authority.ts";
 
 // Gentle Agents configuration. Agent definitions are markdown files with YAML
@@ -75,6 +78,8 @@ export interface AgentsConfig {
 	toolStallTimeoutMs: number;
 	maxConcurrency: number;
 	historyMaxTasks: number;
+	/** UTF-8 bytes of a child report delivered into the parent's context (`report_max_bytes`); subagent_result always returns the full text. */
+	reportMaxBytes: number;
 }
 
 export interface ProfileSources {
@@ -93,11 +98,13 @@ export interface DiscoveryRoots {
 	cwd: string;
 	home: string;
 	agentHome?: string;
+	configHome?: string;
 }
 
 export interface DiscoveryResult {
 	agents: AgentDefinition[];
 	errors: string[];
+	notices: string[];
 }
 
 export type FrontmatterValue = string | string[];
@@ -222,6 +229,7 @@ export function agentDirectories(roots: DiscoveryRoots): Array<{ dir: string; sc
 }
 
 export function discoverAgents(roots: DiscoveryRoots): DiscoveryResult {
+	const overlays = loadToolOverlays(roots.configHome ?? gentlePiConfigHome(), roots.cwd);
 	const agents = new Map<string, AgentDefinition>();
 	const errors: string[] = [];
 	for (const { dir, scope } of agentDirectories(roots)) {
@@ -230,10 +238,16 @@ export function discoverAgents(roots: DiscoveryRoots): DiscoveryResult {
 			const filePath = join(dir, file);
 			const parsed = parseAgentDefinition(readFileSync(filePath, "utf8"), filePath, scope);
 			if ("error" in parsed) errors.push(`${filePath}: ${parsed.error}`);
-			else agents.set(parsed.name, parsed);
+			else {
+				const tools = applyToolOverlay(parsed.tools, overlays.entries[parsed.name]);
+				agents.set(parsed.name, { ...parsed, tools });
+			}
 		}
 	}
-	return { agents: [...agents.values()].sort((a, b) => a.name.localeCompare(b.name)), errors };
+	for (const name of Object.keys(overlays.entries).filter((name) => !agents.has(name))) {
+		overlays.notices.push(`overlay names unknown agent "${name}"`);
+	}
+	return { agents: [...agents.values()].sort((a, b) => a.name.localeCompare(b.name)), errors, notices: overlays.notices };
 }
 
 type RawConfig = Record<string, unknown> | undefined;
@@ -283,6 +297,7 @@ export function parseAgentsConfig(global: RawConfig, project: RawConfig): Agents
 		toolStallTimeoutMs: Math.max(positiveInteger(merged.tool_stall_timeout_ms, DEFAULT_TOOL_STALL_TIMEOUT_MS), stallTimeoutMs),
 		maxConcurrency: positiveInteger(merged.max_concurrency, DEFAULT_MAX_CONCURRENCY),
 		historyMaxTasks: positiveInteger(merged.history_max_tasks, DEFAULT_HISTORY_MAX_TASKS),
+		reportMaxBytes: positiveInteger(merged.report_max_bytes, DEFAULT_REPORT_MAX_BYTES),
 	};
 }
 

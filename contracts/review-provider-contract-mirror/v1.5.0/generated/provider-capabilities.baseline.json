@@ -1,0 +1,29 @@
+{
+  "schema": "gentle-pi.provider-contract-capabilities-baseline/v1",
+  "contract_semver": "1.5.0",
+  "transport_capability": "gentle-ai.provider-transport/v1",
+  "mandatory_capabilities": [
+    "gentle-ai.provider-transport/v1"
+  ],
+  "runtimes": [
+    "claude-code",
+    "codex",
+    "opencode",
+    "pi"
+  ],
+  "pi_registered": true,
+  "orchestration": [
+    {
+      "runtime": "pi",
+      "path": "orchestration/pi.md",
+      "sha256": "c0e7c4c2ab07a695ecf108b476bee81e6d9ca553b7a3860299fe2870b68d8bfc"
+    }
+  ],
+  "routing": [
+    {
+      "runtime": "pi",
+      "path": "routing/pi.md",
+      "sha256": "f34508b060197339fc73dd885565a24d037366c02b3f91b4db15431b42a5c573"
+    }
+  ]
+}

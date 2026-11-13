@@ -16,7 +16,8 @@ import test, { after } from "node:test";
 const REPO_ROOT = join(import.meta.dirname, "..");
 const REAL_ASSETS_DIR = join(REPO_ROOT, "assets");
 const VARIANT_FILE = "orchestrator-full-delegation.md";
-const ORGANIC_START = "You are a COORDINATOR, not the default executor for substantial work.";
+// cost-speed-painpoints S15 P5a (verdict C7): the anchor changes together with DELEGATION_MODE_REGION_START.
+const ORGANIC_START = "You are a COORDINATOR who executes understood work inline.";
 const ORGANIC_END = "{{GENTLE_PI_BACKGROUND_POLICY}}";
 
 const { __testing } = await import("../extensions/gentle-ai.ts");

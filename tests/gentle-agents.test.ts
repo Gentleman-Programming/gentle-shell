@@ -8902,3 +8902,41 @@ test("cross-session coordination tools are hidden behind codemode and named by a
 		await fire("session_shutdown", ctx);
 	}
 });
+
+// Orca's pi status extension keeps the pane "working" only while it hears the
+// pi-subagents lifecycle names on pi.events; owned background tasks announce there.
+const orcaEvents = (h: ReturnType<typeof fakePi>) => h.events
+	.filter((entry) => entry.name === "subagent:async-started" || entry.name === "subagent:async-complete")
+	.map((entry) => ({ name: entry.name, id: (entry.data as { id: string }).id }));
+
+test("Orca hears owned background subagents start and finish, not the parent run", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+	assert.deepEqual(orcaEvents(h), []);
+
+	const a = await h.tools.get("subagent_run")!.execute("orca-a", { agent: "explore", task: "Map one", mode: "background" }, undefined, undefined, ctx);
+	const b = await h.tools.get("subagent_run")!.execute("orca-b", { agent: "explore", task: "Map two", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	const idA = (a.details.gentleAgents as { taskId: string }).taskId;
+	const idB = (b.details.gentleAgents as { taskId: string }).taskId;
+	assert.deepEqual(orcaEvents(h), [{ name: "subagent:async-started", id: idA }, { name: "subagent:async-started", id: idB }]);
+	const started = h.events.find((entry) => entry.name === "subagent:async-started")!.data as { agent?: string };
+	assert.equal(started.agent, "explore");
+
+	await h.fire("agent_start", ctx);
+	await h.fire("agent_settled", ctx);
+	assert.equal(orcaEvents(h).length, 2, "the parent settling announces nothing");
+
+	runtime.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "one" }] }] });
+	runtime.children[0].emit({ type: "agent_settled" });
+	runtime.children[1].fail("boom");
+	await tick();
+	const completed = orcaEvents(h).slice(2);
+	assert.ok(completed.every((entry) => entry.name === "subagent:async-complete"));
+	assert.deepEqual(completed.map((entry) => entry.id).sort(), [idA, idB].sort(), "a settled and a failed child both complete");
+	await tick();
+	assert.equal(orcaEvents(h).length, 4, "each task completes exactly once");
+});

@@ -364,7 +364,7 @@ test("in Comment mode with Technical details on the inspector measures the hover
 	inspector.fromParent({ type: "gd:mode", enabled: true, inspect: true });
 	assert.deepEqual(inspector.posted, [], "Comment mode with nothing hovered says nothing");
 	inspector.fromParent({ type: "gd:hover-at", x: 10, y: 12 });
-	assert.deepEqual(inspector.posted, [{ type: "gd:inspect", element: BUTTON_MEASURE }]);
+	assert.deepEqual(inspector.posted, [{ type: "gd:inspect", element: BUTTON_MEASURE, generation: 0 }]);
 	inspector.fromParent({ type: "gd:hover-at", x: 11, y: 12 });
 	inspector.fire("pointerover", { target: inspector.button });
 	inspector.fromParent({ type: "gd:mode", enabled: true, inspect: true });
@@ -375,15 +375,28 @@ test("in Comment mode with Technical details on the inspector measures the hover
 	inspector.fire("pointerout", { relatedTarget: inspector.button });
 	assert.equal(inspects(inspector).length, 2, "moving to another element of the page is not leaving it");
 	inspector.fire("pointerout", { relatedTarget: null });
-	assert.deepEqual(inspector.posted.at(-1), { type: "gd:inspect", element: null }, "the pointer left the page");
+	assert.deepEqual(inspector.posted.at(-1), { type: "gd:inspect", element: null, generation: 0 }, "the pointer left the page");
 	inspector.fire("scroll", {});
 	inspector.runFrames();
 	assert.equal(inspects(inspector).length, 3, "nothing hovered, nothing to report on scroll");
 	inspector.fire("pointerover", { target: inspector.button });
-	assert.deepEqual(inspector.posted.at(-1), { type: "gd:inspect", element: BUTTON_MEASURE });
+	assert.deepEqual(inspector.posted.at(-1), { type: "gd:inspect", element: BUTTON_MEASURE, generation: 0 });
 	inspector.fromParent({ type: "gd:mode", enabled: false, inspect: true });
-	assert.deepEqual(inspector.posted.at(-1), { type: "gd:inspect", element: null }, "leaving Comment mode clears it");
+	assert.deepEqual(inspector.posted.at(-1), { type: "gd:inspect", element: null, generation: 0 }, "leaving Comment mode clears it");
 	assert.equal(inspects(inspector).length, 5);
+});
+
+test("S1: each measurement is tagged with the size generation the page heard last, so the canvas can drop one made at an old size", () => {
+	const inspector = loadInspector();
+	inspector.button.computed = BUTTON_STYLE;
+	inspector.fromParent({ type: "gd:size", generation: 3 });
+	inspector.fromParent({ type: "gd:mode", enabled: true, inspect: true });
+	inspector.fromParent({ type: "gd:hover-at", x: 10, y: 12 });
+	assert.deepEqual(inspects(inspector), [{ type: "gd:inspect", element: BUTTON_MEASURE, generation: 3 }]);
+	inspector.fromParent({ type: "gd:size", generation: 4 });
+	inspector.fire("scroll", {});
+	inspector.runFrames();
+	assert.deepEqual(inspects(inspector).at(-1), { type: "gd:inspect", element: BUTTON_MEASURE, generation: 4 });
 });
 
 test("the measured background composites translucent layers up to the first opaque one, and is unknown over an image or gradient", () => {
@@ -427,7 +440,7 @@ test("with Technical details off the inspector outlines the element but never me
 	inspector.runFrames();
 	assert.deepEqual([inspects(inspector).length, styles], [0, 0], "nothing measured, nothing posted");
 	inspector.fromParent({ type: "gd:mode", enabled: true, inspect: true });
-	assert.deepEqual(inspects(inspector), [{ type: "gd:inspect", element: BUTTON_MEASURE }], "on: the element already hovered, at once");
+	assert.deepEqual(inspects(inspector), [{ type: "gd:inspect", element: BUTTON_MEASURE, generation: 0 }], "on: the element already hovered, at once");
 	inspector.fromParent({ type: "gd:mode", enabled: true, inspect: true });
 	assert.equal(inspects(inspector).length, 1, "still on: not again");
 	inspector.fromParent({ type: "gd:mode", enabled: true, inspect: false });
@@ -449,7 +462,7 @@ test("scrolls in one animation frame re-measure the hovered element once", () =>
 	inspector.fire("scroll", {});
 	inspector.fire("pointerout", { relatedTarget: null });
 	inspector.runFrames();
-	assert.deepEqual(inspects(inspector).slice(2), [{ type: "gd:inspect", element: null }], "the pointer left before the frame: nothing to re-measure");
+	assert.deepEqual(inspects(inspector).slice(2), [{ type: "gd:inspect", element: null, generation: 0 }], "the pointer left before the frame: nothing to re-measure");
 });
 
 /** Comment mode with Technical details on and the button hovered and measured; then the button grows without a scroll. */
@@ -458,12 +471,12 @@ function measuredThenResized({ fonts = false } = {}) {
 	inspector.button.computed = BUTTON_STYLE;
 	inspector.fromParent({ type: "gd:mode", enabled: true, inspect: true });
 	inspector.fromParent({ type: "gd:hover-at", x: 10, y: 12 });
-	assert.deepEqual(inspects(inspector), [{ type: "gd:inspect", element: BUTTON_MEASURE }]);
+	assert.deepEqual(inspects(inspector), [{ type: "gd:inspect", element: BUTTON_MEASURE, generation: 0 }]);
 	inspector.button.getBoundingClientRect = () => ({ left: 4, top: 8, width: 120, height: 48 });
 	inspector.button.computed = { ...BUTTON_STYLE, fontSize: "18px" };
 	return inspector;
 }
-const RESIZED = { type: "gd:inspect", element: { ...BUTTON_MEASURE, rect: { x: 4, y: 8, width: 120, height: 48 }, fontSize: 18, radius: [6, 6, 24, 6] } };
+const RESIZED = { type: "gd:inspect", element: { ...BUTTON_MEASURE, rect: { x: 4, y: 8, width: 120, height: 48 }, fontSize: 18, radius: [6, 6, 24, 6] }, generation: 0 };
 
 test("a late load on the page re-measures the hovered element once per frame", () => {
 	const inspector = measuredThenResized();

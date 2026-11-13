@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { findAll, flush, inspectorPick, loadCanvas, memoryStorage, read, texts, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
+import { findAll, flush, heardGeneration, inspectorPick, loadCanvas, memoryStorage, read, texts, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
 
 // The token inspector (canvas-tokens.js): with Technical details on (a checkbox in the rail's Settings,
 // off by default, saved in this browser), Comment mode shows a panel beside the frame of the hovered
@@ -117,8 +117,9 @@ async function inspecting(options: Options = {}) {
 	commentMode(canvas);
 	return canvas;
 }
-function inspect(canvas: Canvas, frame: FakeElement, element: unknown = MEASURE) {
-	canvas.message(frame.contentWindow, { type: "gd:inspect", element });
+/** A gd:inspect as inspector.js posts it from `frame`'s page now: tagged with the size generation that page heard last. */
+function inspect(canvas: Canvas, frame: FakeElement, element: unknown = MEASURE, generation = heardGeneration(frame)) {
+	canvas.message(frame.contentWindow, { type: "gd:inspect", element, generation });
 }
 
 const panelOf = (canvas: Canvas) => $(canvas, "gd-inspector");
@@ -802,6 +803,30 @@ test("Ask the agent to fix from an All sizes frame records that size; a long lis
 	$(canvas, "gd-popover-form").dispatch("submit");
 	await settle();
 	assert.deepEqual((canvas.posts.at(-1)!.body as Record<string, unknown>).viewport, { width: 390, height: 844 });
+});
+
+test("S1: a measurement made at Phone whose report arrives after the switch to Tablet shows nothing and files nothing; a report made at Tablet files Tablet's size", async () => {
+	const canvas = await inspecting({ replies: WIDE_ALPHA });
+	const [first] = canvas.boards;
+	focusOn(canvas, 0);
+	chooseSize(canvas, "phone");
+	const phoneGeneration = heardGeneration(first.frame);
+	chooseSize(canvas, "tablet");
+	assert.notEqual(heardGeneration(first.frame), phoneGeneration, "the switch tells the page its new size generation");
+	inspect(canvas, first.frame, { ...OFF, fontSize: 13 }, phoneGeneration);
+	assert.equal(shown(canvas), false, "the Phone-era report opens no panel");
+	assert.equal($(canvas, "gd-popover").hidden, true);
+	const before = canvas.posts.length;
+	inspect(canvas, first.frame, OFF);
+	assert.equal(shown(canvas), true, "a report made at the current size still shows");
+	$(canvas, "gd-inspector-fix").dispatch("click");
+	$(canvas, "gd-popover-form").dispatch("submit");
+	await settle();
+	assert.equal(canvas.posts.length, before + 1);
+	assert.equal(canvas.posts.at(-1)!.url, "/t/api/comments");
+	const body = canvas.posts.at(-1)!.body as Record<string, unknown>;
+	assert.deepEqual(body.viewport, { width: 820, height: 1180 });
+	assert.doesNotMatch(String(body.comment), /13px/);
 });
 
 test("with nothing off the system Ask the agent to fix is disabled and says why; Copy still works", async () => {

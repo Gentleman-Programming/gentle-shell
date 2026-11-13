@@ -63,6 +63,9 @@ export function init(ctx) {
 			if (Math.round(data.width) !== surface.viewWidth) return;
 			actions.setOverflow(surface, data.overflow ? { scrollWidth: data.scrollWidth } : null);
 		} else if (data.type === "gd:inspect") {
+			// Like a pick, a measurement made at a size the frame no longer has would show stale values and
+			// file them with the new size: it is dropped (canvas-sizes.js resized).
+			if (data.generation !== surface.generation) return;
 			actions.inspectFrom(surface, data.element);
 		} else if (data.type === "gd:escape") {
 			if (!els.popover.hidden) actions.closePopover();

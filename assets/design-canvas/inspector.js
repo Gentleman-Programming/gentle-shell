@@ -269,7 +269,8 @@
 		const element = enabled ? hovered : null;
 		if (!force && element === inspected) return;
 		inspected = element;
-		post({ type: "gd:inspect", element: element ? measure(element) : null });
+		// Tagged like a pick: a measurement made before the page heard of the frame's latest size is refused by the canvas.
+		post({ type: "gd:inspect", element: element ? measure(element) : null, generation });
 	}
 
 	/** Scrolling, a late load or a page change moves or resizes the hovered element: measure it again on the next frame, however many came. */

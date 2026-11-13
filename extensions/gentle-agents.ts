@@ -69,6 +69,7 @@ import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/ag
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { HERDR_BUSY_CHANNEL, nextHerdrBusyAction, type HerdrBusyEmitted } from "../lib/herdr-busy.ts";
+import { nextOrcaSubagentEvents } from "../lib/orca-subagent-lifecycle.ts";
 import { AGENTS_GLYPH, agentsCardTone, agentsSpend, agentsSummary, renderAgentsAlert, renderAgentsCard, renderAgentsSection, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
 import { CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardInnerWidth, cardRunningLine, cardTop, floatRows, headingFits, markCardResult, panelHeaderRow, panelInnerWidth, renderCard, type CardRowContext, type CardTheme, type CardTone } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
@@ -2137,8 +2138,18 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// every summary notification and on the session lifecycle edges; the
 	// consumer owns blocked-over-busy precedence, so no gating happens here.
 	let emittedBusy: HerdrBusyEmitted;
+	// Orca's pane status hears the pi-subagents lifecycle names; announce owned
+	// background tasks there so the pane stays "working" while they run.
+	let orcaAnnounced: ReadonlySet<string> = new Set();
+	const refreshOrcaSubagents = (sessionId: string | undefined): void => {
+		const owned = sessionId ? store.list(sessionId).filter((task) => ownedTaskIds.has(task.id)) : [];
+		const next = nextOrcaSubagentEvents(owned, orcaAnnounced);
+		orcaAnnounced = next.emitted;
+		for (const event of next.events) pi.events.emit(event.name, event.payload);
+	};
 	const refreshHerdrBusy = (): void => {
 		const sessionId = activeSessionId();
+		refreshOrcaSubagents(sessionId);
 		if (!sessionId) {
 			// No active session owns work: never raise, and lower anything this
 			// runtime already raised so busy never outlives its session.
@@ -3315,6 +3326,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// No stale busy may survive the runtime.
 		if (emittedBusy?.active) pi.events.emit(HERDR_BUSY_CHANNEL, { active: false });
 		emittedBusy = { active: false };
+		// Orca closes out its own roster on shutdown; only forget what was announced.
+		orcaAnnounced = new Set();
 		// Jobs never outlive their session: a stopped job sends no notice.
 		monitors.cancelAll();
 		const jobsStopped = jobs.stopAll();

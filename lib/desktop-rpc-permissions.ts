@@ -38,6 +38,7 @@ export class DesktopPermissionBridge {
 	private adapter: YoloUiAdapter | undefined;
 	private discovering: Promise<YoloUiAdapter | undefined> | undefined;
 	private host: ExtensionContext | undefined;
+	private generation = 0;
 
 	constructor(pi: ExtensionAPI, discover: typeof discoverYoloUiAdapter = discoverYoloUiAdapter) {
 		this.pi = pi;
@@ -51,6 +52,7 @@ export class DesktopPermissionBridge {
 
 	/** Session start/shutdown: the owner adapter of a previous session is invalid. */
 	reset(): void {
+		this.generation += 1;
 		const adapter = this.adapter;
 		this.adapter = undefined;
 		this.discovering = undefined;
@@ -77,16 +79,28 @@ export class DesktopPermissionBridge {
 	private async owner(context: ExtensionContext): Promise<YoloUiAdapter | undefined> {
 		if (this.adapter) return this.adapter;
 		if (!this.discovering) {
-			this.discovering = Promise.resolve()
+			// A discovery that outlives a reset belongs to the replaced session: its
+			// adapter is disposed and never cached, like the other Desktop bridges.
+			const generation = this.generation;
+			const discovering: Promise<YoloUiAdapter | undefined> = Promise.resolve()
 				.then(() => this.discover(this.pi, context))
 				.then((adapter) => {
+					if (generation !== this.generation) {
+						try {
+							adapter?.dispose();
+						} catch {
+							/* display-only owner teardown */
+						}
+						return undefined;
+					}
 					this.adapter = adapter ?? undefined;
 					return adapter;
 				})
 				.catch(() => undefined)
 				.finally(() => {
-					this.discovering = undefined;
+					if (this.discovering === discovering) this.discovering = undefined;
 				});
+			this.discovering = discovering;
 		}
 		return this.discovering;
 	}
@@ -134,9 +148,13 @@ export class DesktopPermissionBridge {
 			persistFailed = !persisted;
 		}
 
+		// The response reports only what the owner confirms. If the session was
+		// replaced or revoked meanwhile, echoing the request could claim a mode the
+		// owner is not enforcing.
 		const after = await this.read(context);
-		const mode = after?.mode ?? parsed.mode;
-		const defaultMode = after?.defaultMode ?? (persisted ? parsed.mode : before.defaultMode);
+		if (!after) return { ok: false, error: UNAVAILABLE };
+		const mode = after.mode;
+		const defaultMode = after.defaultMode;
 		const changed = mode !== before.mode || defaultMode !== before.defaultMode;
 		const data: Record<string, unknown> = { mode, default_mode: defaultMode, persisted, changed };
 		if (persistFailed) data.persist_error = { ...DEFAULT_UNCHANGED };

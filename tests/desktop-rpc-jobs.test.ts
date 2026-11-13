@@ -755,7 +755,7 @@ test("the real owner notifies a monitor self-timeout exactly once and suppresses
 
 	await monitor.execute(undefined, { command: "tail -f app.log", timeout_seconds: 1 }, undefined, undefined, harness.ctx);
 	assert.equal(harness.events.length, 1, "the monitor start emits one jobs_update");
-	assert.deepEqual(harness.events[0]!.data, { jobs: [{ id: "job-1", label: "tail -f app.log", status: "running", startedAt: 1000 }] });
+	assert.deepEqual(harness.events[0]!.data, { jobs: [{ id: "job-1", label: "tail", status: "running", startedAt: 1000 }] });
 
 	// A pending output line means the self-stop flushes events (refresh while
 	// still running, byte-identical list) before the stopped notice (refresh
@@ -766,7 +766,7 @@ test("the real owner notifies a monitor self-timeout exactly once and suppresses
 
 	assert.equal(harness.events.length, 2, "the monitor self-stop emits exactly one more jobs_update");
 	assert.deepEqual(harness.events[1]!.data, {
-		jobs: [{ id: "job-1", label: "tail -f app.log", status: "stopped", startedAt: 1000, endedAt: 1000 }],
+		jobs: [{ id: "job-1", label: "tail", status: "stopped", startedAt: 1000, endedAt: 1000 }],
 	});
 });
 
@@ -780,7 +780,7 @@ test("the real owner notifies a monitor self-timeout once even without pending l
 
 	assert.equal(harness.events.length, 2, "start then stop, exactly once each");
 	assert.deepEqual(harness.events[1]!.data, {
-		jobs: [{ id: "job-1", label: "tail -f app.log", status: "stopped", startedAt: 1000, endedAt: 1000 }],
+		jobs: [{ id: "job-1", label: "tail", status: "stopped", startedAt: 1000, endedAt: 1000 }],
 	});
 });
 

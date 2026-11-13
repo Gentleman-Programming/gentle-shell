@@ -36,6 +36,23 @@ const markedAttribute = (canvas: Canvas, attribute: string, key: string) => find
 const focusOn = (canvas: Canvas) => canvas.boards[0].shield!.dispatch("keydown", { key: "Enter" });
 const deviceItems = (canvas: Canvas) => findAll($(canvas, "gd-device-menu"), (element) => element.getAttribute("role") === "menuitemradio");
 
+// ---- the focused layout after a switch
+
+test("a switch re-centers the focused artboard, since a longer label can change the room above its frame", async () => {
+	const canvas = await loadLanguage();
+	canvas.viewport.rect = { left: 0, top: 50, width: 1000, height: 700 };
+	focusOn(canvas);
+	const board = canvas.boards[0];
+	const before = canvas.world.style.transform;
+	// The Spanish label wraps to more lines: the frame sits lower inside its box.
+	board.frame.parentElement!.offsetTop += 36;
+	choose(canvas, "Español");
+	assert.notEqual(canvas.world.style.transform, before, "the view was worked out again with the new label height");
+	board.frame.parentElement!.offsetTop -= 36;
+	choose(canvas, "English");
+	assert.equal(canvas.world.style.transform, before, "and back with the English one");
+});
+
 // ---- the device button, its menu and the custom width (canvas-sizes.js)
 
 /** The device button as it reads now, and its menu opened, with a bad custom width entered, then closed. */

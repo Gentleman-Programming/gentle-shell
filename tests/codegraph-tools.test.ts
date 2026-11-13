@@ -781,6 +781,50 @@ test("a hung daemon also falls back to the CLI", async (t) => {
 	assert.equal(runnerCalls, 1);
 });
 
+test("a failed daemon chain skips the daemon for the rest of the turn", async (t) => {
+	withoutChildEnv(t);
+	const cwd = workspace(t);
+	let daemonCalls = 0;
+	let runnerCalls = 0;
+	const tool = createCodeGraphTool(
+		async () => {
+			runnerCalls += 1;
+			return { stdout: "cli answer", stderr: "" };
+		},
+		{
+			daemonExplore: async () => {
+				daemonCalls += 1;
+				return { status: "timeout" };
+			},
+			warm: async () => true,
+			syncRun: syncNothing,
+		},
+	);
+	const ctx = { cwd } as ExtensionContext;
+
+	// q1: one full failed chain (attempt, warm, attempt), then the CLI answers.
+	const first = await tool.execute("test", { operation: "query", query: "q1" }, undefined, undefined, ctx);
+	assert.deepEqual(first.content, [{ type: "text", text: "cli answer" }]);
+	assert.equal((first.details as { viaDaemon?: boolean }).viaDaemon, false);
+	assert.equal(daemonCalls, 2, "one attempt, then exactly one more after the warm-up");
+	assert.equal(runnerCalls, 1);
+
+	// q2, same turn: the daemon is skipped, so the CLI answers directly.
+	const second = await tool.execute("test", { operation: "query", query: "q2" }, undefined, undefined, ctx);
+	assert.deepEqual(second.content, [{ type: "text", text: "cli answer" }]);
+	assert.equal((second.details as { viaDaemon?: boolean }).viaDaemon, false);
+	assert.equal(daemonCalls, 2, "the failed chain is not repeated this turn");
+	assert.equal(runnerCalls, 2);
+
+	// q3, a new turn: clearSearchSync (what turn_start fires) re-asks the daemon once more.
+	clearSearchSync();
+	const third = await tool.execute("test", { operation: "query", query: "q3" }, undefined, undefined, ctx);
+	assert.deepEqual(third.content, [{ type: "text", text: "cli answer" }]);
+	assert.equal((third.details as { viaDaemon?: boolean }).viaDaemon, false);
+	assert.equal(daemonCalls, 4, "a fresh turn runs one full chain again");
+	assert.equal(runnerCalls, 3);
+});
+
 test("when the daemon and the CLI both fail, the search reports the standard failure", async (t) => {
 	const cwd = workspace(t);
 	const daemonDown: DaemonExplore = async () => ({ status: "unavailable" });

@@ -425,11 +425,18 @@ async function queryViaDaemon(cwd: string, parameters: CodeGraphToolParameters, 
 /** The cwds whose index this turn's first search already refreshed in the background. */
 const searchSynced = new Set<string>();
 
-/** A new user prompt starts a new turn: its first search refreshes the index and re-asks git once. */
+/** The cwds whose daemon was wedged this turn (the post-warm attempt timed out): the CLI answers directly until the next turn. */
+const daemonSkipUntil = new Map<string, number>();
+
+/** How long a wedged daemon is bypassed after its post-warm attempt times out. */
+const DAEMON_SKIP_MS = 60_000;
+
+/** A new user prompt starts a new turn: its first search refreshes the index and re-asks git and the daemon once. */
 export function clearSearchSync(): void {
 	searchSynced.clear();
 	workspaceVerified.clear();
 	excludeApplied.clear();
+	daemonSkipUntil.clear();
 }
 
 /**
@@ -503,11 +510,18 @@ export function createCodeGraphTool(
 				// the search never waits for it.
 				const syncTriggered = triggerSearchSync(cwd, ctx, syncRun);
 				const attempt = () => daemonExplore(cwd, parameters, Math.min(queryTimeoutMs, DAEMON_ATTEMPT_TIMEOUT_MS));
-				let viaDaemon = await attempt();
-				if (viaDaemon?.status !== "ok") {
-					// Best-effort warm-up between the two attempts: a daemon that was never started gets one.
-					await warm(cwd, DAEMON_ATTEMPT_TIMEOUT_MS).catch(() => { /* best effort */ });
+				let viaDaemon: DaemonCallResult | undefined;
+				if (Date.now() >= (daemonSkipUntil.get(cwd) ?? 0)) {
 					viaDaemon = await attempt();
+					if (viaDaemon?.status !== "ok") {
+						// Best-effort warm-up between the two attempts: a daemon that was never started gets one.
+						await warm(cwd, DAEMON_ATTEMPT_TIMEOUT_MS).catch(() => { /* best effort */ });
+						viaDaemon = await attempt();
+					}
+					if (viaDaemon?.status === "timeout") {
+						// The post-warm attempt timed out: the daemon is wedged, so the CLI answers until the next turn.
+						daemonSkipUntil.set(cwd, Date.now() + DAEMON_SKIP_MS);
+					}
 				}
 				const syncDetails = syncTriggered ? { syncTriggered: true } : {};
 				if (viaDaemon?.status === "ok") {

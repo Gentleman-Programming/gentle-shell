@@ -22,9 +22,12 @@ all seven items, six commits (hygiene items share one commit), user chose Start 
   copies in tests/codegraph-readiness.test.ts (copies differ: root/socket/pid/dead variants);
   `indexState` (unknown) and `indexExists` (false) share one stat core while PRESERVING their
   different error semantics.
-- S5 (daemon-skip flag): after a full failed daemon chain (attempt → warm → attempt), the
-  daemon is skipped for that cwd until the next `turn_start` or a successful daemon answer;
-  CLI fallback stays the answer in between.
+- S5 (daemon-skip flag): after a full failed chain against a WEDGED daemon (the post-warm attempt
+  times out), the daemon is skipped for that cwd until the next turn_start (clearSearchSync);
+  within that turn the CLI answers directly, and the flag cannot be cleared by a successful
+  daemon answer because the daemon is not asked again that turn. An unavailable daemon (never
+  started, died, or no project loaded) never sets the flag: the warm-up exists to start one,
+  and the next query re-asks it.
 - S6 (MCP dedup): one shared MCP line-conversation helper serves both `ask()` (daemon.ts) and
   `warmUpDaemon` (readiness.ts): same initialize→tools/call staging, same isError/text
   parsing, single NO_PROJECT_TEXT. Hard constraint: zero behavior change, zero existing-test
@@ -39,7 +42,7 @@ all seven items, six commits (hygiene items share one commit), user chose Start 
 - T1 (S1): perf(codegraph): cache git interrogations per cwd per turn — inline — commit: f121d12
 - T2 (S2): perf(codegraph): scan the daemon registry once per window — inline — commit: 10e8cd8
 - T3 (S3): chore(codegraph): drop dead branch, unify guards, narrow exports — inline — commit: 70d639c
-- T4 (S4): test(codegraph): shared fakeRegistry helper and stat core — inline — commit: —
+- T4 (S4): test(codegraph): shared fakeRegistry helper and stat core — inline — commit: ba870a1
 - T5 (S5): feat(codegraph): skip a failed daemon until the next turn — inline — commit: —
 - T6 (S6): refactor(codegraph): one MCP line-conversation helper — inline — commit: —
 
@@ -57,3 +60,4 @@ all seven items, six commits (hygiene items share one commit), user chose Start 
 - L8: T2 implemented — registry read once per project per window + warmUpDaemon single daemonFor; gates: daemon file pass, 5-file suite pass, tsc 16 unchanged; Risk: none (stale liveness within 1s degrades to the existing CLI fallback)
 - L9: T3 implemented — unreachable spawn guard removed; the one unguarded daemonFor call (runCodegraph's project line, the unit text's "maybeRewarm" quote) wrapped with the not-alive fallback to realpathSync(cwd), while the maybeRewarm and syncBeforeSearch daemonFor calls were already guarded at HEAD and stay as-is; exports audited 7 demoted, 2 annotated as test seams, evidence tmp/u3-export-audit.txt; gates: suite 84/0, tsc 16 unchanged; Risk: none (behavior-preserving chore; suite is the differential; no new RED test for that reason)
 - L10: T4 implemented — 6 record.json fixture copies replaced by one parameterized helper (values preserved per copy); indexExists delegates to indexState === "present" (verified equivalent for present/absent/unknown); gates: readiness file 27/0, suite 84/0, tsc 16 unchanged; Risk: none (test-only dedup plus behavior-identical delegation; suite green pre/post is the differential; no new RED test for that reason)
+- L11: T5 implemented — a wedged daemon (post-warm attempt timeout) is skipped per cwd until the next turn; unavailable daemons never set the flag so the warm-then-retry design keeps its original pin (S5 narrowed to the audit's wedged case; the conflicting pre-existing pin was left untouched); gates: tools 35/0, suite 85/0, tsc 16 unchanged; Risk: none (behavior change pinned by the new test; the unavailable path keeps its original pin)

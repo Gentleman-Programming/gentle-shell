@@ -9,6 +9,7 @@
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
+		"mermaid": "^11.17.2",
 		"pixi.js": "^8.23.0"
 	},
 	"devDependencies": {

@@ -30,8 +30,17 @@ export interface TowerSnapshot {
 	todos: TowerTodo[];
 	subagents: TowerSubagent[];
 	phase?: string;
+	permission?: string;
+	review?: "on" | "off";
+	waiting?: true;
+	notice?: { text: string; ok: boolean; at: number };
+	said?: string;
+	models?: Array<{ model: string; cost: number; tokens: number }>;
+	artifacts?: TowerArtifact[];
 	updatedAt: number;
 }
+
+export interface TowerArtifact { path: string; kind: "doc" | "diagram" | "image" }
 
 export interface Project {
 	id: string;

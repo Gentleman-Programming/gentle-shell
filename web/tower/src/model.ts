@@ -36,7 +36,7 @@ export function todoProgress(todos: readonly TowerTodo[]): { done: number; total
 
 export function floorState(s: TowerSnapshot): FloorState {
 	const p = todoProgress(s.todos);
-	if (s.todos.some((t) => t.status === "blocked")) return "need";
+	if (s.waiting || s.todos.some((t) => t.status === "blocked")) return "need";
 	if (p.total > 0 && p.done === p.total && !s.subagents.some((a) => a.status === "running")) return "done";
 	return "work";
 }

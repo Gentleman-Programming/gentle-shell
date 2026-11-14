@@ -48,6 +48,8 @@ export class TowerScene {
 	private byKey = new Map<string, Person>();
 	layout: Layout | undefined;
 	onPick: (p: Pick | undefined) => void = () => {};
+	onRoom: (room: RoomId, floor: number) => void = () => {};
+	private floors = 0;
 	private reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
 	private bgKey = "";
 
@@ -57,7 +59,12 @@ export class TowerScene {
 		this.app.stage.addChild(this.bg, this.notes, this.props, this.people);
 		this.app.stage.eventMode = "static";
 		this.bg.eventMode = "static";
-		this.bg.on("pointertap", () => this.onPick(undefined));
+		this.bg.on("pointertap", (e) => {
+			const p = e.getLocalPosition(this.bg), L = this.layout;
+			const floor = L ? Math.floor((p.y - L.roof) / 100) : -1;
+			const r = (["map", "workshop", "lab", "review", "engram", "engine", "lounge"] as RoomId[]).find((id) => { const x = room(id); return p.x >= x.x && p.x < x.x + x.w; });
+			if (L && r && floor >= 0 && floor < this.floors) this.onRoom(r, floor); else this.onPick(undefined);
+		});
 		bubbleTex = { need: BUBBLES.need(), done: BUBBLES.done() };
 		elephantTex = Texture.from(elephant());
 		this.app.ticker.add((t) => this.tick(t.deltaMS / 1000));
@@ -82,6 +89,7 @@ export class TowerScene {
 			this.people.removeChildren();
 		}
 		const L = this.layout!;
+		this.floors = project.sessions.length;
 		this.drawNotes(project, L);
 		const seen = new Set<string>();
 		project.sessions.forEach((s, floor) => {

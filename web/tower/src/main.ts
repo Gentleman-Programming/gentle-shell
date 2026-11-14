@@ -4,6 +4,7 @@ import "./style.css";
 import { floorTop } from "./art";
 import { FLOOR_COLORS, floorState, groupProjects, money, todoProgress } from "./model";
 import { TowerScene, type Pick } from "./scene";
+import { closeModals, openArtifacts, openLibrary, openTab, postAction, renderIntercom } from "./panels";
 import type { Project, TowerSnapshot, TowerTodo } from "./types";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -43,7 +44,7 @@ function renderFloors(p: Project) {
 		const segs = s.todos.filter((t) => t.status !== "dropped").map((t) => `<i class="${t.status}" style="background:${TODO_COLOR[t.status]}"></i>`).join("");
 		const now = prog.now ? `${prog.now.status === "blocked" ? '<b class="warn">blocked:</b>' : "now:"} <b>${esc(prog.now.title)}</b>` : prog.total ? "<b>all done</b>" : "no task list yet";
 		return `<div class="floor" style="top:${(floorTop(L, i) + 50) * scale}px;--c:${col}">
-			<button class="fl px" data-i="${i}" aria-pressed="${selected?.floor === i}"><span class="key" style="background:${col}">${i + 1}</span><span class="nm">${esc(s.name)}</span><span class="st ${st}">${GLYPH[st]}</span><span class="sub">${money(s.cost.total)} · ${esc(crew)}</span></button>
+			<button class="fl px" data-i="${i}" aria-pressed="${selected?.floor === i}"><span class="fkey" style="background:${col}">${i + 1}</span><span class="nm">${esc(s.name)}</span><span class="st ${st}">${GLYPH[st]}</span><span class="sub">${money(s.cost.total)} · ${esc(crew)}</span></button>
 			<button class="prog px" data-i="${i}" aria-expanded="${todoFloor === i}" aria-label="Tasks of floor ${i + 1}: ${prog.done} of ${prog.total} done"><span class="segs">${segs}</span><span class="now">${prog.done}/${prog.total} · ${now}</span></button>
 		</div>`;
 	}).join("");
@@ -60,19 +61,54 @@ function renderTodo(p: Project) {
 		+ (s.todos.length ? `<ol>${s.todos.map((t, k) => `<li class="${t.status}"><span class="ic" style="background:${TODO_COLOR[t.status]}">${t.status === "done" ? "✓" : t.status === "blocked" ? "!" : ""}</span><span>${k + 1}. ${esc(t.title)}</span><span class="st">${t.status.replace("_", " ")}</span>${t.note ? `<span class="meta">${esc(t.note)}</span>` : ""}</li>`).join("")}</ol>` : `<p class="empty">This session has no task list yet.</p>`);
 }
 
+const LOWER: Record<string, string[]> = { "super-yolo": ["yolo", "auto", "normal"], yolo: ["auto", "normal"], auto: ["normal"], normal: [] };
+let intercomFloor: number | undefined;
+let armedStop: string | undefined;
+
 function renderSelection() {
 	const el = $("sel");
 	if (!selected) { el.hidden = true; return; }
-	const s = selected.session, st = floorState(s);
+	const s = selected.session, st = floorState(s), floor = selected.floor;
 	el.hidden = false;
 	if (selected.kind === "helper" && selected.helper) {
-		const a = selected.helper;
-		el.innerHTML = `<div><div class="nm">${esc(a.name)} · floor ${selected.floor + 1}</div><div class="meta">${esc(a.status)}${a.lastStep ? ` · ${esc(a.lastStep)}` : ""} · ${money(a.cost)} · ${a.tokens.toLocaleString()} tokens</div></div>`;
+		const a = selected.helper, armed = armedStop === a.id, running = a.status === "running" || a.status === "queued" || a.status === "waiting";
+		el.innerHTML = `<div><div class="nm">${esc(a.name)} · floor ${floor + 1}</div><div class="meta">${esc(a.status)}${a.lastStep ? ` · ${esc(a.lastStep)}` : ""} · ${money(a.cost)} · ${a.tokens.toLocaleString()} tokens</div></div>${running ? `<button class="btn ${armed ? "danger" : ""}" id="stop">${armed ? "Click again to stop" : "Stop helper"}</button>` : ""}`;
+		el.querySelector("#stop")?.addEventListener("click", async () => {
+			if (!armed) { armedStop = a.id; renderSelection(); return; }
+			armedStop = undefined;
+			await postAction({ type: "cancel-helper", sessionId: s.sessionId, helperId: a.id });
+			renderSelection();
+		});
 		return;
 	}
 	const prog = todoProgress(s.todos);
 	const ctx = s.context.percent === null ? "context —" : `context ${Math.round(s.context.percent)}%`;
-	el.innerHTML = `<div><div class="nm">Floor ${selected.floor + 1} · ${esc(s.name)}</div><div class="meta">${STATE_LABEL[st]} · ${prog.done}/${prog.total} tasks${prog.now ? ` · now: ${esc(prog.now.title)}` : ""} · ${money(s.cost.total)} · ${ctx} · ${esc(s.model)}${s.effort ? ` (${esc(s.effort)})` : ""}${s.phase ? ` · ${esc(s.phase)}` : ""}</div></div>`;
+	const lower = LOWER[s.permission ?? ""] ?? [];
+	el.innerHTML = `<div><div class="nm">Floor ${floor + 1} · ${esc(s.name)}</div><div class="meta">${s.waiting ? "a question is waiting in the terminal" : STATE_LABEL[st]} · ${prog.done}/${prog.total} tasks${prog.now ? ` · now: ${esc(prog.now.title)}` : ""} · ${money(s.cost.total)} · ${ctx} · ${esc(s.model)}${s.effort ? ` (${esc(s.effort)})` : ""}${s.phase ? ` · ${esc(s.phase)}` : ""}</div></div>
+		<button class="btn primary" id="talk">Talk <kbd>T</kbd></button><button class="btn" id="tasks">Tasks</button><button class="btn" id="arts">Artifacts${s.artifacts?.length ? ` (${s.artifacts.length})` : ""}</button>
+		${s.permission ? `<label class="door">Permissions <select id="door" aria-label="Permissions (the web can only lower them)"><option selected>${esc(s.permission)}</option>${lower.map((m) => `<option value="${m}">lower to ${m}</option>`).join("")}</select></label>` : ""}`;
+	el.querySelector("#talk")!.addEventListener("click", () => openIntercom(floor));
+	el.querySelector("#tasks")!.addEventListener("click", () => { todoFloor = floor; render(); });
+	el.querySelector("#arts")!.addEventListener("click", () => openArtifacts(s));
+	el.querySelector("#door")?.addEventListener("change", async (e) => {
+		const mode = (e.target as HTMLSelectElement).value;
+		if (LOWER[s.permission ?? ""]?.includes(mode)) await postAction({ type: "permission", sessionId: s.sessionId, mode });
+	});
+}
+
+function openIntercom(floor: number) {
+	const p = project(); if (!p?.sessions[floor]) return;
+	intercomFloor = floor;
+	renderIntercom(p.sessions[floor], floor);
+}
+
+function renderLobby(p: Project) {
+	const L = scene.layout; if (!L) return;
+	const review = p.sessions.find((s) => s.review)?.review;
+	const btn = $("review-btn") as HTMLButtonElement;
+	btn.textContent = `Review: ${review ?? "—"}`;
+	btn.setAttribute("aria-pressed", String(review === "on"));
+	btn.disabled = !review;
 }
 
 function select(p: Pick | undefined) { selected = p; renderSelection(); const pr = project(); if (pr) renderFloors(pr); }
@@ -88,6 +124,12 @@ function render() {
 	fit();
 	renderFloors(p);
 	renderTodo(p);
+	renderLobby(p);
+	if (intercomFloor !== undefined && !$("intercom").hidden && p.sessions[intercomFloor]) {
+		const draft = $("intercom").querySelector("textarea")?.value ?? "";
+		renderIntercom(p.sessions[intercomFloor], intercomFloor);
+		const box = $("intercom").querySelector("textarea"); if (box) box.value = draft;
+	}
 	if (selected) { const s = p.sessions.find((x) => x.sessionId === selected!.session.sessionId); selected = s ? { ...selected, session: s, helper: selected.helper && s.subagents.find((a) => a.id === selected!.helper!.id) } : undefined; }
 	renderSelection();
 }
@@ -114,7 +156,9 @@ function connect() {
 }
 
 addEventListener("keydown", (e) => {
-	if (e.key === "Escape") { if (todoFloor !== undefined) { todoFloor = undefined; render(); } else select(undefined); }
+	if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+	if (e.key === "Escape") { if (closeModals()) return; if (!$("intercom").hidden) { $("intercom").hidden = true; return; } if (todoFloor !== undefined) { todoFloor = undefined; render(); } else select(undefined); }
+	if ((e.key === "t" || e.key === "T") && !e.metaKey && !e.ctrlKey) { e.preventDefault(); openIntercom(selected?.floor ?? 0); }
 	if (e.altKey && /^[1-9]$/.test(e.key) && projects[+e.key - 1]) { current = projects[+e.key - 1].cwd; selected = undefined; render(); }
 	const p = project();
 	if ((e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key) && p?.sessions[+e.key - 1]) { e.preventDefault(); select({ kind: "orchestrator", floor: +e.key - 1, session: p.sessions[+e.key - 1] }); }
@@ -123,4 +167,19 @@ addEventListener("resize", () => { fit(); const p = project(); if (p) renderFloo
 
 await scene.mount($("canvas"));
 scene.onPick = (p) => select(p);
+scene.onRoom = (roomId, floor) => {
+	const p = project(); if (!p) return;
+	if (roomId === "engram") return openLibrary(p);
+	if (roomId === "lounge" || roomId === "engine") return openTab(projects);
+	if (roomId === "map") { todoFloor = floor; render(); return; }
+	select({ kind: "orchestrator", floor, session: p.sessions[floor] });
+};
+$("lib-btn").addEventListener("click", () => { const p = project(); if (p) openLibrary(p); });
+$("tab-btn").addEventListener("click", () => openTab(projects));
+$("review-btn").addEventListener("click", async () => {
+	const p = project(); const s = p?.sessions.find((x) => x.review); if (!s) return;
+	const next = s.review !== "on";
+	if (!next && !confirm("Turn review mode off for every floor? Outside reviews stop until you turn it back on.")) return;
+	await postAction({ type: "review", sessionId: s.sessionId, enabled: next });
+});
 connect();

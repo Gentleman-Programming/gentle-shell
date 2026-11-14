@@ -5,6 +5,8 @@ import {
 	emptyThread,
 	MISSING_TOOLS_NOTE_PREFIX,
 	normalizeRpcEvent,
+	RETAINED_DIFF_MAX_BYTES,
+	RETAINED_DIFF_MAX_LINES,
 	ToolArgumentProgress,
 	TASK_EVENT,
 	TASK_STATUS,
@@ -356,6 +358,53 @@ test("TaskStore keeps a bounded window of finished tasks and silences terminal l
 	assert.deepEqual(store.thread("done-0"), emptyThread(), "an evicted task's thread weight is released");
 	assert.ok(store.thread("done-1").limits.maxItems > 0, "a retained finished task stays renderable");
 	assert.equal(store.summary().finished, TERMINAL_RETENTION, "summaries reflect the bounded window");
+});
+
+// A tool result's diff is evidence the card can draw, so it is retained whole
+// or not at all: a truncated diff would no longer be the one the tool produced.
+function editEnd(diff: unknown) {
+	return normalizeRpcEvent({ type: "tool_execution_end", toolCallId: "c1", toolName: "edit", isError: false,
+		result: { content: [{ type: "text", text: "Successfully replaced 1 block" }], details: { diff } } });
+}
+
+function editThreadItem(diff: string): Record<string, unknown> {
+	let thread = applyTaskEvent(emptyThread(), { type: TASK_EVENT.TOOL_START, callId: "c1", name: "edit", args: { path: "src/b.ts" } });
+	thread = applyTaskEvent(thread, { type: TASK_EVENT.TOOL_END, callId: "c1", output: "ok", isError: false, diff });
+	return thread.items[0] as unknown as Record<string, unknown>;
+}
+
+test("normalizeRpcEvent retains the tool result diff next to the text, and nothing else from the result", () => {
+	assert.deepEqual(editEnd("+added\n-removed"), [{ type: TASK_EVENT.TOOL_END, callId: "c1", output: "Successfully replaced 1 block", isError: false, diff: "+added\n-removed" }]);
+	assert.deepEqual(editEnd(""), [{ type: TASK_EVENT.TOOL_END, callId: "c1", output: "Successfully replaced 1 block", isError: false, diff: "" }], "an empty diff is still what the tool produced");
+	assert.deepEqual(editEnd("\u001b[31m+red\u001b[0m"), [{ type: TASK_EVENT.TOOL_END, callId: "c1", output: "Successfully replaced 1 block", isError: false, diff: "+red" }], "child escapes never enter the retained diff");
+	assert.deepEqual(editEnd({ hidden: "payload" }), [{ type: TASK_EVENT.TOOL_END, callId: "c1", output: "Successfully replaced 1 block", isError: false }], "a non-string diff is not retained");
+	assert.deepEqual(normalizeRpcEvent({ type: "tool_execution_end", toolCallId: "c1", toolName: "edit", result: { content: [{ type: "text", text: "ok" }], details: { changed: 1 } } }), [{ type: TASK_EVENT.TOOL_END, callId: "c1", output: "ok", isError: false }], "a result without a diff keeps today's event exactly");
+});
+
+test("an edit diff is retained at both caps and dropped whole when it exceeds either", () => {
+	const atLineCap = Array.from({ length: RETAINED_DIFF_MAX_LINES }, () => "+x").join("\n");
+	assert.equal((editEnd(atLineCap)[0] as { diff?: string }).diff, atLineCap, "a diff exactly at the line cap is kept");
+	assert.equal("diff" in editEnd(`${atLineCap}\n+x`)[0]!, false, "one line over the cap drops it entirely: no truncation, no marker");
+
+	const atByteCap = `+${"x".repeat(RETAINED_DIFF_MAX_BYTES - 1)}`;
+	assert.equal(Buffer.byteLength(atByteCap, "utf8"), RETAINED_DIFF_MAX_BYTES);
+	assert.equal((editEnd(atByteCap)[0] as { diff?: string }).diff, atByteCap, "a diff exactly at the byte cap is kept");
+	assert.equal("diff" in editEnd(`${atByteCap}x`)[0]!, false, "one byte over the cap drops it entirely");
+
+	assert.equal("diff" in editEnd(`${atLineCap}\n+x`)[0]!, false, "the bounded event carries no diff key at all");
+});
+
+test("applyTaskEvent keeps the bounded diff through updates and drops an oversized one from a hand-built event", () => {
+	assert.deepEqual(editThreadItem("+x\n-y"), { kind: THREAD_ITEM.TOOL, callId: "c1", name: "edit", args: { path: "src/b.ts" }, output: "ok", running: false, isError: false, diff: "+x\n-y" });
+	let thread = applyTaskEvent(emptyThread(), { type: TASK_EVENT.TOOL_START, callId: "c1", name: "edit", args: {} });
+	thread = applyTaskEvent(thread, { type: TASK_EVENT.TOOL_END, callId: "c1", output: "ok", isError: false, diff: "+x" });
+	thread = applyTaskEvent(thread, { type: TASK_EVENT.TOOL_UPDATE, callId: "c1", output: "later" });
+	assert.equal((thread.items[0] as { diff?: string }).diff, "+x", "an update keeps the retained diff");
+	const oversized = Array.from({ length: RETAINED_DIFF_MAX_LINES + 1 }, () => "+x").join("\n");
+	assert.equal("diff" in editThreadItem(oversized), false, "a hand-built event cannot retain an unbounded diff");
+	let plain = applyTaskEvent(emptyThread(), { type: TASK_EVENT.TOOL_START, callId: "c1", name: "bash", args: {} });
+	plain = applyTaskEvent(plain, { type: TASK_EVENT.TOOL_END, callId: "c1", output: "ok", isError: false });
+	assert.deepEqual(plain.items[0], { kind: THREAD_ITEM.TOOL, callId: "c1", name: "bash", args: {}, output: "ok", running: false, isError: false }, "a result without a diff keeps today's item exactly");
 });
 
 test("TaskStore.apply moves the task to waiting on ask, back to running on any later event, and counts turns", () => {

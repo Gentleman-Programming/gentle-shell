@@ -11,12 +11,13 @@ import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
 import { SessionChanges, type SessionChangeEvidence } from "../lib/session-changes.ts";
 import test, { after, afterEach, before, mock } from "node:test";
 import type { TestContext } from "node:test";
-import { generateUnifiedPatch, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { generateUnifiedPatch, initTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { KeybindingsManager } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js";
 import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import { visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sidebarState } from "../lib/shell-sidebar.ts";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection } from "../lib/child-package-injection.ts";
-import installGentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, HOLD_RECHECK_MS, INPUT_PROMPT_GRACE_MS, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
+import installGentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, HOLD_RECHECK_MS, INPUT_PROMPT_GRACE_MS, PARENT_WAKE_GRACE_MS, threadDetailDefaults, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry, type PresenceRecord } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener } from "../lib/windows-session-transport.ts";
 import { historyDir, loadHistory, loadStoredTask, saveTask } from "../lib/agents-history.ts";
@@ -35,11 +36,13 @@ import { bindSessionProfile, resetSessionProfileBindingsForTesting } from "../li
 import { taskHeader } from "../lib/agents-view.ts";
 import { readFrozenInheritedProfile, resetFrozenInheritedProfilesForTesting } from "../lib/session-profile-freeze.ts";
 import { CHILD_METRICS_EVENT } from "../lib/runtime-metrics-children.ts";
-import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
+import { AGENTS_VIEW_STYLE_SCHEMA, resolveAgentsViewStyle, writeAgentsViewStyle } from "../lib/agents-view-style-policy.ts";
+import productionQuietTools from "../extensions/quiet-tools.ts";
+import { CARD_STYLE, CARD_TONE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
+import { AGENT_MESSAGE, agentCardParts, agentMessageCard, agentTheme } from "../lib/agents-message-card.ts";
 import { isolatedConfigEnv, keymapsConfigHome, removeIsolatedConfigHomes } from "./isolated-config-home.ts";
 
 const gentleAgents: typeof installGentleAgents = (pi, env, overrides) => installGentleAgents(pi, isolatedConfigEnv(env), overrides);
-after(removeIsolatedConfigHomes);
 // The card style defaults to float; these assertions pin the outlined (neon)
 // panels unless a test switches the style itself.
 const initialCardStyle = cardStyle();
@@ -202,7 +205,7 @@ function fakePi(initialProvider: string = "claude-bridge") {
 	return { pi, tools, shortcuts, commands, fire, sent, userMessages, delivery, setIdle, setProvider, renderers, entryRenderers, entries, events, listeners, transformers };
 }
 
-function fakeContext(tui: { requestRender(): void } = fakeTui, confirmResult: (title: string, message: string) => Promise<boolean> = async () => true, inputResult: (title: string, placeholder: string | undefined) => Promise<string | undefined> = async () => undefined, overlayTui: { terminal: { rows: number }; requestRender(): void } = { terminal: { rows: 30 }, requestRender() {} }, selectResult: (title: string, options: string[]) => Promise<string | undefined> = async (_title, options) => options[0]) {
+function fakeContext(tui: { requestRender(): void } = fakeTui, confirmResult: (title: string, message: string) => Promise<boolean> = async () => true, inputResult: (title: string, placeholder: string | undefined) => Promise<string | undefined> = async () => undefined, overlayTui: { terminal: { rows: number }; requestRender(): void } = { terminal: { rows: 30 }, requestRender() {} }, selectResult: (title: string, options: string[]) => Promise<string | undefined> = async (_title, options) => options[0], keybindings: unknown = {}) {
 	const widgets = new Map<string, (tui: unknown, theme: unknown) => { render(width: number): string[] }>();
 	const dialogs: string[] = [];
 	const overlays: Overlay[] = [];
@@ -222,7 +225,7 @@ function fakeContext(tui: { requestRender(): void } = fakeTui, confirmResult: (t
 						customCompletions.push(value);
 						resolve(value);
 					};
-					const component = factory(overlayTui, plainTheme, {}, done);
+					const component = factory(overlayTui, plainTheme, keybindings, done);
 					overlays.push(component);
 				}),
 			setWidget(key: string, content: ((tui: unknown, theme: unknown) => { render(width: number): string[] }) | undefined) {
@@ -1511,10 +1514,16 @@ function liveProfile(name: string): string {
 	return profile;
 }
 
-function liveInstance(t: test.TestContext, profile: string, sessionId: string, metadata = false) {
+function liveInstance(t: test.TestContext, profile: string, sessionId: string, metadata = false, keybindings: unknown = {}, env: NodeJS.ProcessEnv = {}) {
 	const h = fakePi();
+	// Every live instance reads its own config home: the overlay's renderer is a
+	// saved preference, so an ambient home would let a developer's file decide
+	// what these tests draw.
+	const configHome = mkdtempSync(join(tmpdir(), "gentle-agents-config-"));
+	t.after(() => rmSync(configHome, { recursive: true, force: true }));
+	const configEnv = { GENTLE_PI_CONFIG_HOME: configHome, ...env };
 	const runtime = deps();
-	const context = fakeContext();
+	const context = fakeContext(undefined, undefined, undefined, undefined, undefined, keybindings);
 	if (metadata) {
 		runtime.deps.sessionTransport = {
 			...inertSessionTransport,
@@ -1531,7 +1540,7 @@ function liveInstance(t: test.TestContext, profile: string, sessionId: string, m
 		timer.unref();
 		return () => clearTimeout(timer);
 	};
-	gentleAgents(h.pi, {}, { ...runtime.deps, agentHome: profile });
+	gentleAgents(h.pi, configEnv, { ...runtime.deps, agentHome: profile });
 	t.after(async () => {
 		for (const overlay of context.overlays) overlay.handleInput("q");
 		await h.fire("session_shutdown", context.ctx, { reason: "quit" });
@@ -1546,6 +1555,104 @@ async function liveOverlay(instance: ReturnType<typeof liveInstance>) {
 	const frame = () => overlay.render(160).map(stripAnsi).join("\n");
 	return { overlay, frame, opened };
 }
+
+// The cards are only real when the chat's renderers are registered, so this loads
+// the production quiet tools against a minimal host, as a live session does. The
+// cards draw through pi's global theme, so this installs one for the test and puts
+// the previous state back on teardown: a theme left behind paints escapes into
+// every later card a test compares.
+const THEME_SLOT = Symbol.for("@earendil-works/pi-coding-agent:theme");
+function installQuietToolCards(t: test.TestContext): void {
+	const state = globalThis as typeof globalThis & { [THEME_SLOT]?: unknown };
+	const installed = THEME_SLOT in state;
+	const previousTheme = state[THEME_SLOT];
+	t.after(() => {
+		if (installed) state[THEME_SLOT] = previousTheme;
+		else delete state[THEME_SLOT];
+	});
+	initTheme("dark");
+	const previous = process.env.GENTLE_PI_QUIET_TOOLS;
+	delete process.env.GENTLE_PI_QUIET_TOOLS;
+	try {
+		productionQuietTools({ registerTool() {}, registerCommand() {}, on() {}, registerToolRenderer() {} } as never);
+	} finally {
+		if (previous === undefined) delete process.env.GENTLE_PI_QUIET_TOOLS;
+		else process.env.GENTLE_PI_QUIET_TOOLS = previous;
+	}
+}
+
+test("cards' detail levels open from the host's thinking visibility and tool expansion", (t) => {
+	const home = mkdtempSync(join(tmpdir(), "gentle-agents-detail-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	const ctx = (ui: Record<string, unknown>) => ({ cwd: home, ui } as unknown as ExtensionContext);
+
+	writeFileSync(join(home, "settings.json"), JSON.stringify({ hideThinkingBlock: true }));
+	assert.deepEqual(threadDetailDefaults(ctx({ getToolsExpanded: () => true }), home), { thinkingExpanded: false, toolsExpanded: true }, "hidden thinking and expanded tools reach the cards");
+	writeFileSync(join(home, "settings.json"), JSON.stringify({ hideThinkingBlock: false }));
+	assert.deepEqual(threadDetailDefaults(ctx({ getToolsExpanded: () => false }), home), { thinkingExpanded: true, toolsExpanded: false }, "shown thinking and collapsed tools reach the cards");
+	writeFileSync(join(home, "settings.json"), "{ not json");
+	assert.equal(threadDetailDefaults(ctx({ getToolsExpanded: () => false }), home).thinkingExpanded, true, "unreadable settings keep thinking visible");
+	assert.equal(threadDetailDefaults(ctx({}), home).toolsExpanded, false, "a host without the probe keeps cards collapsed");
+	assert.equal(threadDetailDefaults(ctx({ getToolsExpanded: () => { throw new Error("boom"); } }), home).toolsExpanded, false, "a failing probe keeps cards collapsed");
+	assert.equal(threadDetailDefaults(ctx({ getToolsExpanded: () => true }), home).toolsExpanded, true, "the probe is read, not guessed");
+});
+
+test("the overlay's log keeps its original detail and ignores the cards' keys", async (t) => {
+	const profile = liveProfile("detail-profile");
+	writeFileSync(join(profile, "settings.json"), JSON.stringify({ hideThinkingBlock: true }));
+	const instance = liveInstance(t, profile, "detail-live", false, new KeybindingsManager({ "app.thinking.toggle": "ctrl+e" }));
+	await instance.fire("session_start", instance.ctx, { reason: "startup" });
+	const panel = await liveOverlay(instance);
+	await instance.tools.get("subagent_run")!.execute("local", { agent: "local", task: "local", mode: "background" }, undefined, undefined, instance.ctx);
+	for (let index = 0; index < 6; index += 1) instance.children[0].emit({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: `thought ${index}\n` } });
+	await eventually(() => /thought 5/.test(panel.frame()), "thinking reaches the open overlay");
+	panel.overlay.handleInput("\x05");
+	panel.overlay.handleInput("\x14");
+	assert.match(panel.frame(), /thought 5/, "the log never hides thinking, whatever the global setting or key says");
+	assert.doesNotMatch(panel.frame(), /… hidden|… \d+ more lines|to expand|Thinking\.\.\./, "the log offers no detail control, hint, or hidden row");
+	panel.overlay.handleInput("q");
+	await panel.opened;
+});
+
+test("the saved agents renderer decides the presentation the overlay opens with", async (t) => {
+	installQuietToolCards(t);
+	const profile = liveProfile("renderer-profile");
+	const configHome = mkdtempSync(join(tmpdir(), "gentle-agents-renderer-"));
+	t.after(() => rmSync(configHome, { recursive: true, force: true }));
+	writeFileSync(join(profile, "settings.json"), JSON.stringify({ hideThinkingBlock: true }));
+	const instance = liveInstance(t, profile, "renderer-live", false, new KeybindingsManager(), { GENTLE_PI_CONFIG_HOME: configHome });
+	await instance.fire("session_start", instance.ctx, { reason: "startup" });
+	const panel = await liveOverlay(instance);
+	await instance.tools.get("subagent_run")!.execute("local", { agent: "local", task: "local", mode: "background" }, undefined, undefined, instance.ctx);
+	instance.children[0].emit({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "private reasoning" } });
+	instance.children[0].emit({ type: "tool_execution_start", toolCallId: "c", toolName: "read", args: { path: "src/a.ts" } });
+	instance.children[0].emit({ type: "tool_execution_end", toolCallId: "c", toolName: "read", result: { content: [{ type: "text", text: "file body" }] }, isError: false });
+	await eventually(() => /file body/.test(panel.frame()), "the finished call reaches the open overlay");
+	assert.equal(existsSync(join(configHome, "agents-view-style.json")), false, "the fixture starts without a saved renderer");
+	assert.match(panel.frame(), /Tool · read · Complete/, "no preference file keeps the overlay's own labelled log");
+	assert.doesNotMatch(panel.frame(), /≡ read/, "the log draws no card");
+	assert.match(panel.frame(), /private reasoning/, "the log always draws thinking whole");
+	panel.overlay.handleInput("q");
+	await panel.opened;
+
+	writeAgentsViewStyle("cards", { gentlePiConfigHome: configHome });
+	assert.deepEqual(JSON.parse(readFileSync(join(configHome, "agents-view-style.json"), "utf8")), { schema: AGENTS_VIEW_STYLE_SCHEMA, style: "cards" });
+	const cards = await liveOverlay(instance);
+	await eventually(() => /≡ read/.test(cards.frame()), "the reopened overlay draws with the saved cards choice");
+	assert.equal(resolveAgentsViewStyle({ gentlePiConfigHome: configHome }).style, "cards");
+	assert.doesNotMatch(cards.frame(), /Tool · read · Complete/, "the card replaces the generic block instead of stacking on it");
+	assert.match(cards.frame(), /Thinking\.\.\./, "the cards follow the host's hidden thinking");
+	assert.doesNotMatch(cards.frame(), /private reasoning/);
+	cards.overlay.handleInput("q");
+	await cards.opened;
+
+	writeAgentsViewStyle("log", { gentlePiConfigHome: configHome });
+	const log = await liveOverlay(instance);
+	await eventually(() => /Tool · read · Complete/.test(log.frame()), "the saved log choice draws the labelled rows again");
+	assert.doesNotMatch(log.frame(), /≡ read/);
+	log.overlay.handleInput("q");
+	await log.opened;
+});
 
 test("live-only extension instances discover same-profile peers across cwd boundaries without importing their tasks", async (t) => {
 	const profile = liveProfile("live-peer-profile");
@@ -4119,6 +4226,42 @@ test("the iris float tint stays on agent info cards and leaves success cards on 
 	} finally {
 		setCardStyle(CARD_STYLE.NEON);
 	}
+});
+
+test("the chat's Messaging agent card and the Agents thread message card share one identity and one drawing boundary", () => {
+	const { pi, tools } = fakePi();
+	gentleAgents(pi, {}, deps().deps);
+	const taggedTheme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>` };
+	const call = (name: string, args: Record<string, unknown>, width = 80): string[] =>
+		tools.get(name)!.renderCall(args, taggedTheme, { expanded: false, state: {} } as never).render(width);
+	const result = (name: string, text: string, expanded: boolean, width: number): string[] =>
+		tools.get(name)!.renderResult({ content: [{ type: "text", text }], details: {} }, { expanded }, taggedTheme, { expanded, state: {} } as never).render(width);
+
+	const sent = call("subagent_send_message", { task_id: "t1" });
+	const head = stripAnsi(sent[0] ?? "");
+	assert.equal(head.includes(`${AGENT_MESSAGE.glyph} ${AGENT_MESSAGE.title}`), true, "the chat's card draws the shared title, glyph and its gap");
+	assert.match(head, /✉ {2}Messaging agent/, "the envelope never sits against the title in the chat either");
+	assert.ok(sent.join("\n").includes("\x1b[38;2;185;167;242m"), "the chat's card keeps the iris accent");
+	assert.ok(sent.join("\n").includes("\x1b[38;2;143;122;217m"), "the chat's card keeps the iris border");
+	assert.match(stripAnsi(sent.at(-1) ?? ""), /╰/, "the call still closes its own frame while it waits");
+	assert.match(stripAnsi(call("subagent_reply", { task_id: "t1" }).join("\n")), /✉ {2}Replying to agent/, "the reply action shares the envelope identity");
+
+	const iris = agentTheme(taggedTheme, CARD_TONE.INFO);
+	assert.equal(iris.fg("border", "x"), "\x1b[38;2;143;122;217mx\x1b[39m", "the thread card reads the same chrome the chat's agent cards do");
+	for (const width of [20, 80]) {
+		// Both surfaces draw their rows from the one shared card boundary: the chat's
+		// result continues the card it did not head, the thread wraps the same parts
+		// in one card of its own.
+		const parts = agentCardParts({ title: AGENT_MESSAGE.title, glyph: AGENT_MESSAGE.glyph, tone: CARD_TONE.INFO, body: ["hi"], expanded: true }, iris, width);
+		assert.deepEqual(result("subagent_send_message", "hi", true, width), [...(parts.body ?? []), parts.bottom], `width ${width}: the chat's messaging body and frame are the shared parts`);
+		assert.deepEqual(agentMessageCard("hi", taggedTheme, width), [...(parts.head ?? []), ...(parts.body ?? []), parts.bottom], `width ${width}: the received card is the same shared parts behind its heading`);
+	}
+
+	const long = "a\nb\nc\nd\ne\nf";
+	assert.match(stripAnsi(result("subagent_send_message", long, true, 80).join("\n")), /f/, "an expanded chat card draws the whole message");
+	assert.doesNotMatch(stripAnsi(result("subagent_send_message", long, false, 80).join("\n")), /f/, "a collapsed chat card keeps its own three-row preview");
+	assert.match(stripAnsi(agentMessageCard(long, plainTheme, 80).join("\n")), /f/, "the thread's received message is never previewed away");
+	assert.equal(stripAnsi(agentMessageCard("hi", plainTheme, 80).join("\n")).includes(`${AGENT_MESSAGE.glyph} ${AGENT_MESSAGE.title}`), true, "both cards answer to one shared identity, so a design change reaches both");
 });
 
 test("the Agents card moves to the fullscreen rail like Todos and its header toggles collapse on left click", async () => {

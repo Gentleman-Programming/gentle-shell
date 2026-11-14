@@ -855,6 +855,62 @@ export function createQuietToolRenderer(
 	};
 }
 
+/** One quiet tool's drawing slots: the same shape pi's own tool definitions carry. */
+export type QuietToolRenderer = Pick<ToolDefinition, "renderShell" | "renderCall" | "renderResult">;
+
+// Pi loads every extension with its own module cache, so the agents pane and the
+// chat can hold different copies of this module. The renderers this extension
+// hands the host therefore live in a process-wide slot: one record of what the
+// chat's canvas actually received, which a second consumer reads instead of
+// building lookalikes that could drift from the registration.
+//
+// `active` is read at call time: a tool the chat draws only under some condition
+// (bash, under the minimal Card content preference) must not be offered while
+// that condition is off, because the host is then drawing it some other way.
+// `rowStable` says what these cards do: the same call and result always draw the
+// same rows, so a second consumer may keep one drawing of them.
+// `publisher` names whose record this is: the slot is shared with every other
+// extension, so a load withdraws the records it published and never another's.
+interface PublishedQuietToolRenderer {
+	renderer: QuietToolRenderer;
+	active(): boolean;
+	rowStable: true;
+	publisher: typeof QUIET_TOOL_RENDERER_PUBLISHER;
+}
+
+const QUIET_TOOL_RENDERER_PUBLISHER = "gentle-pi.quiet-tools";
+const QUIET_TOOL_RENDERER_SLOT = Symbol.for("gentle-pi.quiet-tool-renderers");
+const rendererState = globalThis as typeof globalThis & { [QUIET_TOOL_RENDERER_SLOT]?: Map<string, PublishedQuietToolRenderer> };
+
+function publishedQuietToolRenderers(): Map<string, PublishedQuietToolRenderer> {
+	return rendererState[QUIET_TOOL_RENDERER_SLOT] ??= new Map();
+}
+
+function publishQuietToolRenderer(
+	toolName: QuietToolName,
+	renderer: QuietToolRenderer,
+	active: () => boolean = () => true,
+): QuietToolRenderer {
+	publishedQuietToolRenderers().set(toolName, { renderer, active, rowStable: true, publisher: QUIET_TOOL_RENDERER_PUBLISHER });
+	return renderer;
+}
+
+function withdrawPublishedQuietToolRenderers(): void {
+	const published = publishedQuietToolRenderers();
+	for (const [toolName, record] of published) {
+		if (record?.publisher === QUIET_TOOL_RENDERER_PUBLISHER) published.delete(toolName);
+	}
+}
+
+/**
+ * The renderer this extension actually handed the host for `toolName`, or
+ * undefined when it handed none or is not drawing that tool this way right now.
+ */
+export function registeredQuietToolRenderer(toolName: string): QuietToolRenderer | undefined {
+	const published = publishedQuietToolRenderers().get(toolName);
+	return published?.active() === true ? published.renderer : undefined;
+}
+
 function registerQuietTool(pi: ExtensionAPI, toolName: RegisteredToolName, resolveOverride: GentleAiDevBinaryOverrideResolver, timing: () => GentleAiElapsedTimingLedger | undefined): void {
 	const registrationTool = getBuiltInTools(process.cwd())[toolName];
 	pi.registerTool({
@@ -862,7 +918,7 @@ function registerQuietTool(pi: ExtensionAPI, toolName: RegisteredToolName, resol
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			return getBuiltInTools(ctx.cwd)[toolName].execute(toolCallId, params, signal, onUpdate, ctx);
 		},
-		...createQuietToolRenderer(toolName, resolveOverride, timing, registrationTool.renderResult),
+		...publishQuietToolRenderer(toolName, createQuietToolRenderer(toolName, resolveOverride, timing, registrationTool.renderResult)),
 	});
 }
 
@@ -871,6 +927,10 @@ export default function quietTools(
 	resolveOverride: GentleAiDevBinaryOverrideResolver = () => resolveGentleAiDevBinaryOverride(),
 	codemodeOptOut: Omit<BuiltinCodemodeOptOutOptions, "effectiveExtensions"> = {},
 ): ReturnType<ExtensionFactory> {
+	// A fresh load replaces whatever an earlier instance published, so a disabled
+	// extension leaves nothing behind for a second consumer to reuse. Only its own
+	// records go: another extension may have published into the same slot first.
+	withdrawPublishedQuietToolRenderers();
 	if (!quietToolsEnabled()) return;
 	let elapsedTiming: GentleAiElapsedTimingLedger | undefined;
 	let codemodeOptOutOffered = false;
@@ -909,8 +969,14 @@ export default function quietTools(
 	// — and the default content preference — keep pi's native bash rendering.
 	const host = pi as typeof pi & { registerToolRenderer?: (resolver: (toolName: string, next: () => unknown) => unknown) => void };
 	if (typeof host.registerToolRenderer === "function") {
+		// One bash renderer for this process, created now with the same dynamic
+		// elapsed-timing closure the host's resolver would have had: it is offered to
+		// other consumers immediately, and the host receives this very object rather
+		// than a copy. Only eligibility is live, so a preference change moves both
+		// drawings together.
+		publishQuietToolRenderer("bash", createQuietToolRenderer("bash", resolveOverride, () => elapsedTiming), () => cardContent() === CARD_CONTENT.MINIMAL);
 		host.registerToolRenderer((toolName, next) =>
-			toolName === "bash" && cardContent() === CARD_CONTENT.MINIMAL ? createQuietToolRenderer("bash", resolveOverride, () => elapsedTiming) : next());
+			toolName === "bash" ? registeredQuietToolRenderer("bash") ?? next() : next());
 	}
 	return registerCompactCodemode(pi);
 }

@@ -1,8 +1,17 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
+import { statSync } from "node:fs";
 import { measureAgentsViewLayout, type AgentsViewLayout } from "./agents-view-layout.ts";
 import { HOVER_ROLE, paintHoverable } from "./shell-hover.ts";
-import { emptyThread, isFinished, TASK_STATUS, type TaskRecord, type TaskStore, type TaskThread, type ThreadItem } from "./agents-protocol.ts";
-import { renderThreadItem, type AgentsThreadTheme } from "./agents-thread-view.ts";
+import { emptyThread, isFinished, TASK_STATUS, THREAD_ITEM, type TaskRecord, type TaskStore, type TaskThread, type ThreadItem } from "./agents-protocol.ts";
+import { agentMessageCard } from "./agents-message-card.ts";
+import { isMemoryToolName } from "./agents-memory-card.ts";
+import { agentToolRowCard, type AgentToolRowCard } from "./agents-tool-renderers.ts";
+import { cardContent } from "./card-content-policy.ts";
+import { cardBash } from "./card-bash-policy.ts";
+import { GENTLE_AI_DEV_BINARY_ENV, gentleAiDevBinaryRegistrationPath, resolveGentleAiDevBinaryOverride } from "./gentle-ai-binary.ts";
+import { cardStyle } from "./shell-card.ts";
+import { drawThreadItem, THREAD_PRESENTATION, type AgentsThreadTheme, type ThreadItemDrawing, type ThreadPresentation } from "./agents-thread-view.ts";
 import { formatElapsed } from "./agents-widget.ts";
 import { createNativePointerScope, type NativePointerRegion } from "./native-pointer-region.ts";
 import { formatCost, formatTokens } from "./shell-bar.ts";
@@ -34,6 +43,25 @@ export interface AgentsViewDeps {
 	onCancel(task: TaskRecord): void;
 	canCancel?(task: TaskRecord): boolean;
 	isLocalTask?(task: TaskRecord): boolean;
+	/**
+	 * Presentation for the selected thread: the overlay's labeled log (the default)
+	 * or the chat's own tool cards. Read as a hook so a preference applies live
+	 * instead of being copied when the overlay opens.
+	 */
+	threadPresentation?(): ThreadPresentation;
+	/**
+	 * The host's live keybindings. The cards' thinking and tool-detail actions are
+	 * the host's own, so a reader's rebinding applies there and an action left
+	 * unbound has no key; without a manager the documented defaults still work.
+	 */
+	keybindings?: KeybindingsManager;
+	/**
+	 * The cards' detail levels as the host holds them when the overlay opens: its
+	 * thinking visibility and its tool-output expansion. Seeds the cards only; the
+	 * labeled log has no detail controls. They are read once here, never followed
+	 * live and never written back to the chat's state.
+	 */
+	cardDetail?: { thinkingExpanded?: boolean; toolsExpanded?: boolean };
 	onOpen(task: TaskRecord): void;
 	onClose(): void;
 	requestRender(): void;
@@ -95,6 +123,15 @@ const EMPTY_COMPONENT: Component = {
 	invalidate() {},
 };
 
+// The host owns both actions; these are its documented defaults, used only when
+// no keybinding manager was handed down.
+const FALLBACK_BINDING = {
+	"app.thinking.toggle": "ctrl+t",
+	"app.tools.expand": "ctrl+o",
+} as const;
+
+type DetailBinding = keyof typeof FALLBACK_BINDING;
+
 interface PointerButtonLayout {
 	x: number;
 	width: number;
@@ -106,6 +143,8 @@ interface PointerLayout extends AgentsViewLayout {
 	closeButton?: PointerButtonLayout;
 	modeButton?: PointerButtonLayout;
 	actions?: Array<PointerButtonLayout & { region: NativePointerRegion }>;
+	/** Per body row, the card key drawn there; only in cards mode. */
+	threadCards?: Array<string | undefined>;
 }
 
 interface SessionGroup {
@@ -121,6 +160,71 @@ type VisibleRow =
 
 function rule(length: number): string {
 	return "─".repeat(Math.max(0, length));
+}
+
+// A published card names itself in a cache key by a per-process ordinal: a
+// drawing belongs to that exact renderer, so a republication (a new object) or a
+// withdrawn card never reuses rows the previous one drew. The WeakMap holds the
+// publisher's object weakly; nothing here keeps it alive.
+const cardIds = new WeakMap<object, number>();
+let nextCardId = 0;
+
+function cardId(card: object | undefined): string {
+	if (card === undefined) return "none";
+	const known = cardIds.get(card);
+	if (known !== undefined) return String(known);
+	const assigned = (nextCardId += 1);
+	cardIds.set(card, assigned);
+	return String(assigned);
+}
+
+// A registered dev-binary override changes how a bash card reads its command, so
+// its identity is part of what a frame's rows were drawn under. Resolving it reads
+// the binary — and hashes it once an override is registered — which no frame should
+// pay twice. The identity is therefore kept until what it was resolved from moves:
+// the declared override, the registration file that selects one, or the binary the
+// identity names. An override that cannot be resolved is its own identity instead
+// of a frame-breaking error.
+interface DevBinaryIdentity {
+	identity: string;
+	/** The binary the identity names, so its own file is one of the inputs re-checked. */
+	binary: string | undefined;
+	/** What the identity was resolved from, re-checked on every frame instead of resolved again. */
+	stamp: string;
+}
+
+function fileStamp(path: string | undefined): string {
+	if (path === undefined || path.length === 0) return "-";
+	try {
+		const details = statSync(path, { bigint: true });
+		return `${details.mtimeNs}:${details.size}:${details.mode}`;
+	} catch {
+		return "absent";
+	}
+}
+
+// The declared override is read from the process environment, which is the
+// resolver's ambient environment outside tests.
+function devBinaryStamp(binary: string | undefined): string {
+	const declared = process.env[GENTLE_AI_DEV_BINARY_ENV] ?? "";
+	let registration: string | undefined;
+	try {
+		registration = gentleAiDevBinaryRegistrationPath();
+	} catch {
+		registration = undefined;
+	}
+	return [declared, fileStamp(declared), fileStamp(registration), fileStamp(binary)].join("\u0000");
+}
+
+function resolveDevBinaryIdentity(): Pick<DevBinaryIdentity, "identity" | "binary"> {
+	try {
+		const override = resolveGentleAiDevBinaryOverride();
+		return override === undefined
+			? { identity: "none", binary: undefined }
+			: { identity: `${override.source}\u0000${override.path}`, binary: override.path };
+	} catch {
+		return { identity: "invalid", binary: undefined };
+	}
 }
 
 function fit(text: string, width: number): string {
@@ -160,6 +264,14 @@ export class AgentsView {
 	private footerPage = 0;
 	private readonly actionRegions = new Map<string, NativePointerRegion>();
 	private readonly expanded = new Map<string, boolean>();
+	private readonly cardExpansion = new Map<string, boolean>();
+	// Cards only, and local to this overlay: seeded from the host's thinking
+	// visibility and tool expansion when it opened, never the thread's content and
+	// never a global chat setting. The log always draws thinking and output whole.
+	private thinkingExpanded = true;
+	private cardToolsExpanded = false;
+	/** The dev-binary identity this pane's frames are keyed on, with what it was resolved from. */
+	private devBinary: DevBinaryIdentity | undefined;
 	private readonly observedActiveGroups = new Set<string>();
 	private listScroll = 0;
 	private readonly manualListOffsets = new Map<string, number>();
@@ -183,8 +295,7 @@ export class AgentsView {
 	private unsubscribeTask: (() => void) | undefined;
 	private subscribedTaskId: string | undefined;
 	private readonly unsubscribeSummary: () => void;
-	private cache = new WeakMap<ThreadItem, string[]>();
-	private cacheWidth = -1;
+	private cache = new WeakMap<ThreadItem, ThreadItemDrawing & { key: string }>();
 	private peers: SessionGroup[] = [];
 	private remoteThreads = new Map<string, TaskThread>();
 	private presenceCursor?: PresenceCursor;
@@ -269,12 +380,15 @@ export class AgentsView {
 
 	constructor(deps: AgentsViewDeps) {
 		this.deps = deps;
+		this.thinkingExpanded = deps.cardDetail?.thinkingExpanded !== false;
+		this.cardToolsExpanded = deps.cardDetail?.toolsExpanded === true;
 		this.scope = VIEW_SCOPE.SESSION;
 		this.listRegion = this.pointerScope.wrap(EMPTY_COMPONENT, {
 			onWheel: (event) => this.wheelList(event),
 		});
 		this.threadRegion = this.pointerScope.wrap(EMPTY_COMPONENT, {
 			onWheel: (event) => this.wheelThread(event),
+			onClick: (event) => this.clickThread(event),
 		});
 		this.followRegion = this.pointerScope.wrap(EMPTY_COMPONENT, {
 			onHover: () => this.hoverControl("follow"),
@@ -329,6 +443,10 @@ export class AgentsView {
 		if (this.closed) return;
 		if (data === "q") return this.close();
 		if (matchesKey(data, Key.escape)) return this.back();
+		// These detail actions belong to the cards; the log keeps every key it always
+		// had, so it never consumes them.
+		if (this.threadPresentation() === THREAD_PRESENTATION.CARDS && this.matchesBinding(data, "app.thinking.toggle")) return this.toggleThinking();
+		if (this.threadPresentation() === THREAD_PRESENTATION.CARDS && this.matchesBinding(data, "app.tools.expand")) return this.toggleToolOutput();
 		if (data === "F" && !this.isNarrow()) {
 			this.setNarrowView(this.narrowView === "list" ? "details" : "list");
 			return;
@@ -350,8 +468,10 @@ export class AgentsView {
 		else if (data === "k" || matchesKey(data, Key.up)) this.select(index - 1, rows);
 		else if (matchesKey(data, Key.left) && selected?.kind === "heading") this.setExpanded(selected.group, false);
 		else if (matchesKey(data, Key.right) && selected?.kind === "heading") this.setExpanded(selected.group, true);
-		else if (matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("j"))) this.scrollBy(this.pageRows());
-		else if (matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("k"))) this.scrollBy(-this.pageRows());
+		else if (matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("j")) || matchesKey(data, Key.ctrlShift("j"))) this.scrollBy(this.pageRows());
+		else if (matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("k")) || matchesKey(data, Key.ctrlShift("k"))) this.scrollBy(-this.pageRows());
+		else if (matchesKey(data, Key.ctrl("home"))) this.scrollToStart();
+		else if (matchesKey(data, Key.ctrl("end"))) this.scrollToEnd();
 		else if (data === "f" && task) {
 			this.follow = true;
 			this.deps.requestRender();
@@ -375,7 +495,8 @@ export class AgentsView {
 			const row = event.y - 1;
 			if (layout.mode === "narrow" && event.x >= layout.listX && event.x < layout.listX + layout.listWidth) {
 				if (event.type === "wheel") return this.narrowView === "list" ? this.listRegion.handleMouse(event) : this.threadRegion.handleMouse(event);
-				const visible = this.narrowView === "list" ? this.visibleRows()[this.listScroll + row] : undefined;
+				if (this.narrowView === "details") return this.threadRegion.handleMouse(event);
+				const visible = this.visibleRows()[this.listScroll + row];
 				return visible ? this.taskRegion(row).handleMouse(event) : undefined;
 			}
 			if (layout.mode === "panes" && event.x >= layout.listX && event.x < layout.listX + layout.listWidth) {
@@ -383,7 +504,7 @@ export class AgentsView {
 				const visible = this.visibleRows()[this.listScroll + row];
 				return visible ? this.taskRegion(row).handleMouse(event) : undefined;
 			}
-			if (layout.mode === "panes" && event.x >= layout.threadX && event.x < layout.threadX + layout.threadWidth && event.type === "wheel") return this.threadRegion.handleMouse(event);
+			if (layout.mode === "panes" && event.x >= layout.threadX && event.x < layout.threadX + layout.threadWidth) return this.threadRegion.handleMouse(event);
 		}
 		if (event.y === layout.footerY) {
 			for (const action of layout.actions ?? []) if (this.isInButton(event.x, action)) return action.region.handleMouse(event);
@@ -450,6 +571,13 @@ export class AgentsView {
 
 	invalidate(): void {
 		this.clearFooterLayout();
+		// Every retained drawing was painted with the theme this pane was handed and
+		// no theme is part of its key, so a theme change has to drop the cache: the
+		// log served rows painted by the previous theme before this was cleared here.
+		this.cache = new WeakMap();
+		// The dev-binary identity is derived from the environment, so an invalidation
+		// drops it too and the next frame resolves it afresh.
+		this.devBinary = undefined;
 	}
 
 	private counts(): string {
@@ -475,7 +603,81 @@ export class AgentsView {
 		const details = narrow && task ? [["tab", this.narrowView === "list" ? "details" : "back"]] as const : [];
 		const stop = task && this.canCancel(task) ? [["s", "Stop selected"]] as const : [];
 		const scope = this.deps.sessionId === undefined ? [] : [["a", SCOPE_KEY[this.scope]]] as const;
-		return [...KEYS.slice(0, 1), ...details, ...KEYS.slice(1, 3), ...stop, ...scope, ...KEYS.slice(3)];
+		return [...KEYS.slice(0, 1), ...details, ...KEYS.slice(1, 3), ...stop, ...scope, ...this.detailHints(), ...KEYS.slice(3)];
+	}
+
+	// The two detail hints belong to the cards alone: the log has no cards to
+	// expand and no thinking to hide, so it never advertises a key that would
+	// draw nothing. Each names the state its key leads to, and an action the host
+	// left unbound has no key, so it gets no hint.
+	private detailHints(): ReadonlyArray<readonly [string, string]> {
+		if (this.threadPresentation() !== THREAD_PRESENTATION.CARDS) return [];
+		const thinking = this.bindingKeys("app.thinking.toggle")[0];
+		const expand = this.bindingKeys("app.tools.expand")[0];
+		return [
+			...(thinking === undefined ? [] : [[thinking, this.thinkingExpanded ? "hide thinking" : "show thinking"] as const]),
+			...(expand === undefined ? [] : [[expand, this.cardToolsExpanded ? "collapse" : "expand"] as const]),
+		];
+	}
+
+	private threadPresentation(): ThreadPresentation {
+		return this.deps.threadPresentation?.() ?? THREAD_PRESENTATION.LOG;
+	}
+
+	// The host owns both actions: a configured binding replaces its documented
+	// default, and one a reader unbound has no key at all.
+	private bindingKeys(binding: DetailBinding): readonly string[] {
+		const configured = typeof this.deps.keybindings?.getKeys === "function" ? this.deps.keybindings.getKeys(binding) : undefined;
+		return configured ?? [FALLBACK_BINDING[binding]];
+	}
+
+	private matchesBinding(data: string, binding: DetailBinding): boolean {
+		if (typeof this.deps.keybindings?.matches === "function") return this.deps.keybindings.matches(data, binding);
+		return matchesKey(data, FALLBACK_BINDING[binding]);
+	}
+
+	// Cards only: the key a collapsed tool result offers to open it. Hidden thinking
+	// never advertises a key, exactly as the chat's own hidden row does not.
+	private outputExpandHint(): string | undefined {
+		const key = this.bindingKeys("app.tools.expand")[0];
+		return key === undefined ? undefined : `${key} to expand`;
+	}
+
+	private toggleThinking(): void {
+		this.thinkingExpanded = !this.thinkingExpanded;
+		this.clearFooterLayout();
+		this.deps.requestRender();
+	}
+
+	private toggleToolOutput(): void {
+		this.cardToolsExpanded = !this.cardToolsExpanded;
+		// The control speaks for the whole thread, so a card's own level must not
+		// outvote it; clicking a card afterwards sets that card's level again.
+		this.cardExpansion.clear();
+		this.clearFooterLayout();
+		this.deps.requestRender();
+	}
+
+	// A click flips what the reader sees, so a card still following the cards' own
+	// level starts from that level rather than from a stale default.
+	private flipCardExpansion(card: string): void {
+		this.cardExpansion.set(card, !(this.cardExpansion.get(card) ?? this.cardToolsExpanded));
+	}
+
+	// A card belongs to one task's call: two tasks may reuse a callId, and each
+	// keeps its own level. The task id is the namespace, so switching tasks never
+	// shares or drops the other's state.
+	private cardKey(task: TaskRecord, callId: string): string {
+		return `${task.id}\u0000${callId}`;
+	}
+
+	// Only this task's cards are pruned: their override lasts while their call is
+	// retained, and no other task's cards are touched by this thread's renders.
+	private pruneCardExpansion(task: TaskRecord, thread: TaskThread): void {
+		if (this.cardExpansion.size === 0) return;
+		const prefix = `${task.id}\u0000`;
+		const retained = new Set(thread.items.flatMap((item) => (item.kind === THREAD_ITEM.TOOL ? [this.cardKey(task, item.callId)] : [])));
+		for (const card of this.cardExpansion.keys()) if (card.startsWith(prefix) && !retained.has(card)) this.cardExpansion.delete(card);
 	}
 
 	// A new scope reads from the top: selection, list window, and thread reset.
@@ -593,6 +795,7 @@ export class AgentsView {
 		if (!this.selectedTask()) this.narrowView = "list";
 		this.listScroll = Math.max(0, Math.min(this.listScroll, Math.max(0, rows.length - this.bodyRows())));
 		if (this.hoveredId && !rows.some((row) => row.id === this.hoveredId)) this.hoveredId = undefined;
+		for (const card of this.cardExpansion.keys()) if (!this.tasks.some((task) => card.startsWith(`${task.id}\u0000`))) this.cardExpansion.delete(card);
 		this.subscribeSelected();
 	}
 
@@ -717,22 +920,111 @@ export class AgentsView {
 		return `Orchestrator ${group.sessionId.slice(0, 8)}`;
 	}
 
-	private threadLines(thread: TaskThread, width: number): string[] {
-		if (this.cacheWidth !== width) {
-			this.cache = new WeakMap();
-			this.cacheWidth = width;
-		}
+	private threadRows(task: TaskRecord, thread: TaskThread, width: number): { lines: string[]; owners: Array<string | undefined>; cards: boolean } {
+		const presentation = this.threadPresentation();
+		const cards = presentation === THREAD_PRESENTATION.CARDS;
+		this.pruneCardExpansion(task, thread);
 		const lines: string[] = [];
-		if (thread.dropped > 0) lines.push(this.deps.theme.fg(ROLE.META, `… ${thread.dropped} earlier items not kept`));
-		for (const item of thread.items) {
-			let rendered = this.cache.get(item);
-			if (!rendered) {
-				rendered = renderThreadItem(item, this.deps.theme, width);
-				this.cache.set(item, rendered);
+		const owners: Array<string | undefined> = [];
+		// The layout keeps exactly one unpainted row between two drawn blocks -- a
+		// tool card, prose, thinking, a note, whatever -- in the cards presentation.
+		// The seam is layout, not part of a block's drawing, so it never depends on a
+		// block owning a frame or on the style that drew the frame: a block that
+		// falls back to plain rows is separated exactly like a card. Nothing is added
+		// inside a block, before the first one or after the last, and the labeled log
+		// keeps the spacing it always had.
+		let drawn = 0;
+		const pushBlock = (drawing: ThreadItemDrawing, owner?: string): void => {
+			if (drawing.lines.length === 0) return;
+			if (cards && drawn > 0) {
+				lines.push("");
+				owners.push(undefined);
 			}
-			lines.push(...rendered);
+			lines.push(...drawing.lines);
+			for (let index = 0; index < drawing.lines.length; index += 1) owners.push(owner);
+			drawn += 1;
+		};
+		// The message the subagent was asked is the one input outside the thread — a
+		// delivery to the child is retained as a note, this is not. Only cards draw
+		// it; the log never showed it and still does not.
+		if (cards && task.prompt.trim().length > 0) pushBlock({ lines: agentMessageCard(task.prompt, this.deps.theme, width), card: true });
+		if (thread.dropped > 0) pushBlock({ lines: [this.deps.theme.fg(ROLE.META, `… ${thread.dropped} earlier items not kept`)], card: false });
+		// A retained item's rows are drawn once and reused on a full match. The frame
+		// part names what every card in it was drawn under — width, the two detail
+		// levels, the shared card style and content preference, the pane's own expand
+		// binding, and the dev-binary override a bash card reads — and is resolved once
+		// per frame. The item part adds what this one row adds on top: its kind, its
+		// resolved level, the hint text, and the identity of the card that will draw it.
+		// The labeled log keeps the plain key it always had: its rows depend on the
+		// width alone, and it has no cards, detail levels or hints to vary.
+		const frame = cards ? this.cardFrame(width) : `${width}\u0000${presentation}\u0000log`;
+		const expandHint = cards ? this.outputExpandHint() : undefined;
+		// Rows the thread itself contributes. The input card above is not thread
+		// content, so it never stands in for the state line below.
+		let retained = 0;
+		for (const item of thread.items) {
+			const card = cards && item.kind === THREAD_ITEM.TOOL ? this.cardKey(task, item.callId) : undefined;
+			const expanded = card === undefined ? this.cardToolsExpanded : this.cardExpansion.get(card) ?? this.cardToolsExpanded;
+			// Only a tool has a card to read; anything else was drawn by this pane alone.
+			const slot = cards && item.kind === THREAD_ITEM.TOOL ? agentToolRowCard(item.name) : undefined;
+			// The labeled log keeps the one key it always had: its rows depend on the
+			// width alone, so nothing per item belongs in it.
+			const key = cards ? `${frame}\u0000${item.kind}\u0000${expanded}\u0000${expandHint ?? ""}\u0000${cardId(slot?.renderer)}` : frame;
+			// A call still receiving output is never reused: its rows are being written.
+			const finished = item.kind !== THREAD_ITEM.TOOL || !item.running;
+			const cached = finished ? this.cache.get(item) : undefined;
+			const drawing = cached?.key === key ? cached : drawThreadItem(item, this.deps.theme, width, { presentation, expanded, thinkingExpanded: this.thinkingExpanded, expandHint });
+			if (finished && cached?.key !== key && this.reusableRow(item, slot)) this.cache.set(item, { ...drawing, key });
+			pushBlock(drawing, card);
+			retained += drawing.lines.length;
 		}
-		return lines;
+		// A task with nothing retained still says what it recorded — the error it
+		// ended with, or that it is waiting — exactly as the empty thread always did.
+		if (retained === 0 && thread.dropped === 0) {
+			pushBlock({ lines: [this.deps.theme.fg(ROLE.EMPTY, task.error ?? EMPTY_THREAD)], card: false });
+		}
+		return { lines, owners, cards };
+	}
+
+	// Everything one frame's cards were drawn under, resolved once: repeating any of
+	// it per item would resolve the dev-binary override for every retained call.
+	private cardFrame(width: number): string {
+		return [
+			String(width),
+			THREAD_PRESENTATION.CARDS,
+			String(this.thinkingExpanded),
+			String(this.cardToolsExpanded),
+			cardStyle(),
+			cardContent(),
+			// A bash card's heading is the preference's identity, so its rows belong to it.
+			cardBash(),
+			this.bindingKeys("app.tools.expand").join("\u0000"),
+			this.devBinaryIdentity(),
+		].join("\u0000");
+	}
+
+	// The identity a frame is keyed on: resolving it reads and hashes the binary, so
+	// it is kept until one of its inputs moves and the frame re-checks three files
+	// instead.
+	private devBinaryIdentity(): string {
+		const stamp = devBinaryStamp(this.devBinary?.binary);
+		if (this.devBinary?.stamp === stamp) return this.devBinary.identity;
+		const resolved = resolveDevBinaryIdentity();
+		this.devBinary = { ...resolved, stamp: devBinaryStamp(resolved.binary) };
+		return resolved.identity;
+	}
+
+	// The pane's own drawings — prose, thinking, notes, the memory design — depend on
+	// the item and the frame alone, so they are always reusable. A published card is
+	// reused only where its publisher declares its rows stable; a card that declares
+	// nothing stays valid and is simply drawn again, and a tool the pane drew because
+	// no record published a stable card keeps being drawn per frame.
+	private reusableRow(item: ThreadItem, slot: AgentToolRowCard | undefined): boolean {
+		if (slot === undefined) return true;
+		if (slot.rowStable) return true;
+		// An external memory plugin publishes no card for this pane, so its compact
+		// design is this pane's own pure drawing.
+		return item.kind === THREAD_ITEM.TOOL && slot.renderer === undefined && isMemoryToolName(item.name);
 	}
 
 	private threadWindow(rows: number, width: number): string[] {
@@ -740,13 +1032,15 @@ export class AgentsView {
 		if (!task) return [this.deps.theme.fg(ROLE.EMPTY, "Select a task to inspect its thread")];
 		const theme = this.deps.theme;
 		const header = theme.fg(ROLE.META, truncateToWidth(taskHeader(task, this.deps.now()), width, "…"));
-		const lines = this.threadLines(this.remoteThreads.get(task.id) ?? this.deps.store.thread(task.id), width);
-		if (lines.length === 0) return [header, theme.fg(ROLE.EMPTY, task.error ?? EMPTY_THREAD)];
+		const { lines, owners, cards } = this.threadRows(task, this.remoteThreads.get(task.id) ?? this.deps.store.thread(task.id), width);
 		const visible = Math.max(0, rows - 1);
 		const maxScroll = Math.max(0, lines.length - visible);
 		if (this.follow) this.scroll = maxScroll;
 		// A taller/wider presentation may clamp its window, not the saved position.
 		const start = Math.min(this.scroll, maxScroll);
+		// Only a cards view has a card under the pointer; the log's rows belong to
+		// no call, so a click there stays as inert as it always was.
+		if (this.pointerLayout) this.pointerLayout.threadCards = cards ? [undefined, ...owners.slice(start, start + visible)] : undefined;
 		return [header, ...lines.slice(start, start + visible)];
 	}
 
@@ -780,11 +1074,25 @@ export class AgentsView {
 	private scrollBy(delta: number): void {
 		const task = this.selectedTask();
 		const layout = this.layout();
-		const lines = task ? this.threadLines(this.remoteThreads.get(task.id) ?? this.deps.store.thread(task.id), layout.threadWidth) : [];
+		const lines = task ? this.threadRows(task, this.remoteThreads.get(task.id) ?? this.deps.store.thread(task.id), layout.threadWidth).lines : [];
 		const maxScroll = Math.max(0, lines.length - Math.max(0, layout.bodyRows - 1));
 		this.follow = false;
 		// Clamp the current visible position before moving, including after resize.
 		this.scroll = Math.max(0, Math.min(maxScroll, Math.min(this.scroll, maxScroll) + delta));
+		this.deps.requestRender();
+	}
+
+	// Ctrl+Home leaves follow at the thread's first row, so a live event cannot
+	// pull the reader back down while they are reading from the start.
+	private scrollToStart(): void {
+		this.follow = false;
+		this.scroll = 0;
+		this.deps.requestRender();
+	}
+
+	// Ctrl+End returns to the tail and resumes following it.
+	private scrollToEnd(): void {
+		this.follow = true;
 		this.deps.requestRender();
 	}
 
@@ -966,6 +1274,19 @@ export class AgentsView {
 		const delta = event.wheelDelta ?? 0;
 		if (delta === 0) return { handled: true, render: false };
 		this.scrollBy(delta);
+		return { handled: true, render: true };
+	}
+
+	// A click belongs to the card under it, not to the whole pane: only that
+	// card's expansion changes, so one call can be opened without losing the
+	// collapsed overview around it.
+	private clickThread(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (event.button !== "left") return undefined;
+		const card = this.pointerLayout?.threadCards?.[event.y - 1];
+		if (card === undefined) return undefined;
+		this.flipCardExpansion(card);
+		this.clearFooterLayout();
+		this.deps.requestRender();
 		return { handled: true, render: true };
 	}
 }

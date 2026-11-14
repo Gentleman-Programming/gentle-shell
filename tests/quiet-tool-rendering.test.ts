@@ -16,6 +16,7 @@ import productionQuietTools, {
 	extractTextContent,
 	formatToolResultOutput,
 	gentleAiRoutineCommand,
+	registeredQuietToolRenderer,
 	tailLines,
 } from "../extensions/quiet-tools.ts";
 
@@ -1814,3 +1815,60 @@ test("a finished card restored from the session history keeps its expand hint ev
 		}
 	}
 });
+
+// The names and the resolver above are the extension's own availability
+// contract. Anything else that consumes these renderers — the agents pane does —
+// reads what was published here instead of keeping a list or a copy of its own.
+test("quiet tools publishes the renderers it hands the host, and only those", (t) => {
+	setCardContent(CARD_CONTENT.DEFAULT);
+	const { pi, tools } = createPi();
+	const resolvers: Array<(toolName: string, next: () => unknown) => unknown> = [];
+	(pi as any).registerToolRenderer = (resolver: (toolName: string, next: () => unknown) => unknown) => {
+		resolvers.push(resolver);
+	};
+	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => productionQuietTools(pi as any));
+
+	for (const [name, tool] of tools) {
+		if (name === "codemode") continue;
+		assert.equal(registeredQuietToolRenderer(name)?.renderCall, tool.renderCall, `${name}: the published call slot is the one the host was handed`);
+		assert.equal(registeredQuietToolRenderer(name)?.renderResult, tool.renderResult, `${name}: the published result slot is the one the host was handed`);
+		assert.equal(registeredQuietToolRenderer(name)?.renderShell, "self", `${name}: the published renderer owns its frame`);
+	}
+	// The compact codemode tool is decorated by its own renderer, not by a quiet
+	// tool card, so it is never published as a reusable quiet renderer.
+	assert.equal(registeredQuietToolRenderer("codemode"), undefined, "the codemode decoration is not published as a quiet card");
+	assert.equal(registeredQuietToolRenderer("webfetch"), undefined, "a tool with no quiet renderer is never published");
+
+	const native = { marker: "native" };
+	assert.equal(resolvers.at(-1)!("bash", () => native), native, "default content registers no bash renderer");
+	assert.equal(registeredQuietToolRenderer("bash"), undefined, "so none is published either");
+
+	useCardContent(t, CARD_CONTENT.MINIMAL);
+	const publishedBash = registeredQuietToolRenderer("bash");
+	assert.notEqual(publishedBash, undefined, "minimal content publishes bash before the host resolves it");
+	const bash = resolvers.at(-1)!("bash", () => native) as any;
+	assert.notEqual(bash, native, "minimal content takes over bash drawing");
+	assert.equal(bash, publishedBash, "the resolver hands the host the published object itself");
+	assert.equal(registeredQuietToolRenderer("bash"), publishedBash, "and the publication is unchanged by the hand-off");
+	assert.equal(resolvers.at(-1)!("read", () => native), native, "non-bash tools still defer to the next renderer");
+
+	setCardContent(CARD_CONTENT.DEFAULT);
+	assert.equal(registeredQuietToolRenderer("bash"), undefined, "the publication is withdrawn while pi draws bash again");
+	assert.equal(resolvers.at(-1)!("bash", () => native), native, "so the resolver defers with it");
+});
+
+// A disabled extension attaches nothing, so it publishes nothing: a second
+// consumer must not draw chat cards that this process never registered.
+test("a disabled quiet tools extension publishes no renderer", (t) => {
+	setCardContent(CARD_CONTENT.DEFAULT);
+	const { pi, tools } = createPi();
+	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => productionQuietTools(pi as any));
+	assert.ok(tools.has("read"), "an enabled extension publishes its tools");
+	assert.notEqual(registeredQuietToolRenderer("read"), undefined);
+
+	const disabled = createPi();
+	withEnv({ GENTLE_PI_QUIET_TOOLS: "0" }, () => productionQuietTools(disabled.pi as any));
+	assert.equal(disabled.tools.size, 0, "a disabled extension registers no tool");
+	assert.equal(registeredQuietToolRenderer("read"), undefined, "and leaves nothing published to reuse");
+});
+

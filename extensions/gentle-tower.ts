@@ -17,7 +17,7 @@ import { replayTodo, TODO_PROGRESS_EVENT } from "../lib/shell-todo.ts";
 import { removeTowerSnapshot, towerHubDir, writeTowerSnapshot } from "../lib/tower-hub.ts";
 import { consumeTowerActions, type TowerAction } from "../lib/tower-actions.ts";
 import { discoverYoloUiAdapter } from "../lib/yolo-session-policy.ts";
-import { buildTowerSnapshot, type TowerAgentInput, type TowerTodo } from "../lib/tower-snapshot.ts";
+import { artifactsFromBranch, buildTowerSnapshot, latestAssistantText, type TowerAgentInput, type TowerTodo } from "../lib/tower-snapshot.ts";
 
 type AgentsService = Awaited<ReturnType<typeof discoverDesktopAgentsService>>;
 
@@ -100,6 +100,9 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 				review,
 				waiting,
 				notice,
+				said: latestAssistantText(branch),
+				models: stats.models.map((m) => ({ model: m.model, cost: m.cost, tokens: m.tokens })),
+				artifacts: artifactsFromBranch(branch, ctx.sessionManager.getCwd()),
 				now: now(),
 			}));
 		} catch {
@@ -207,7 +210,7 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 				c.ui.notify(`Gentle Tower: the web app is not built (${webDir}). Run: pnpm build:tower`, "warning");
 				return;
 			}
-			server ??= startTowerServer({ hubDir: dir, webDir, token: randomBytes(24).toString("base64url") });
+			server ??= startTowerServer({ hubDir: dir, webDir, token: randomBytes(24).toString("base64url"), engramUrl: env.ENGRAM_URL || "http://127.0.0.1:7437" });
 			try {
 				const s = await server;
 				c.ui.notify(`Gentle Tower: ${s.url}`, "info");

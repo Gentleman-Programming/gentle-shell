@@ -16,7 +16,13 @@ export interface TowerServerOptions {
 	token: string;
 	port?: number;
 	pollMs?: number;
+	/** Local Engram HTTP API for the read-only memory window. */
+	engramUrl?: string;
 }
+
+const ARTIFACT_TYPES: Record<string, string> = { ".md": "text/plain; charset=utf-8", ".markdown": "text/plain; charset=utf-8", ".txt": "text/plain; charset=utf-8", ".mmd": "text/plain; charset=utf-8", ".mermaid": "text/plain; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" };
+const ARTIFACT_MAX_BYTES = 2 * 1024 * 1024;
+const MEMORY_MAX_BYTES = 512 * 1024;
 
 export interface TowerServer {
 	host: "127.0.0.1";
@@ -49,7 +55,7 @@ export function startTowerServer(options: TowerServerOptions): Promise<TowerServ
 	const sessionsBody = () => JSON.stringify({ sessions: readTowerSnapshots(options.hubDir) });
 	let port = 0;
 
-	const MESSAGES: Record<number, string> = { 400: "Bad request", 404: "Not found", 405: "Method not allowed", 413: "Too large", 500: "Server error" };
+	const MESSAGES: Record<number, string> = { 400: "Bad request", 404: "Not found", 405: "Method not allowed", 413: "Too large", 500: "Server error", 502: "Engram unavailable" };
 	const deny = (res: ServerResponse, status = 403) => { if (res.headersSent) return; res.writeHead(status, { "Content-Type": "text/plain", ...SECURITY_HEADERS }); res.end(MESSAGES[status] ?? "Forbidden"); };
 
 	const serveStatic = (res: ServerResponse, pathname: string) => {
@@ -84,6 +90,40 @@ export function startTowerServer(options: TowerServerOptions): Promise<TowerServ
 		});
 	};
 
+	// Only a path the session itself listed, and only inside its own project.
+	const serveArtifact = (res: ServerResponse, sessionId: string | null, wanted: string | null) => {
+		const session = readTowerSnapshots(options.hubDir).find((x) => x.sessionId === sessionId);
+		if (!session || !wanted || !session.artifacts?.some((a) => a.path === wanted)) return deny(res, 404);
+		try {
+			const root = realpathSync(session.project.cwd);
+			const real = realpathSync(wanted);
+			if (!real.startsWith(root + sep)) return deny(res, 404);
+			const st = statSync(real);
+			const type = ARTIFACT_TYPES[extname(real).toLowerCase()];
+			if (!st.isFile() || !type || st.size > ARTIFACT_MAX_BYTES) return deny(res, 404);
+			res.writeHead(200, { "Content-Type": type, ...SECURITY_HEADERS, "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:" });
+			res.end(readFileSync(real));
+		} catch { deny(res, 404); }
+	};
+
+	const proxyMemory = async (res: ServerResponse, kind: string, query: URLSearchParams) => {
+		if (!options.engramUrl) return deny(res, 404);
+		const project = query.get("project") ?? "";
+		const q = (query.get("q") ?? "").slice(0, 200);
+		if (!project || project.length > 200 || (kind === "search" && !q)) return deny(res, 400);
+		const target = kind === "search"
+			? `${options.engramUrl}/search?${new URLSearchParams({ q, project, limit: "40" })}`
+			: `${options.engramUrl}/review?${new URLSearchParams({ project, limit: "40" })}`;
+		try {
+			const r = await fetch(target, { signal: AbortSignal.timeout(4000) });
+			const body = await r.text();
+			if (!r.ok || body.length > MEMORY_MAX_BYTES) return deny(res, 502);
+			JSON.parse(body);
+			res.writeHead(200, { "Content-Type": "application/json", ...SECURITY_HEADERS });
+			res.end(body);
+		} catch { deny(res, 502); }
+	};
+
 	const handler = (req: IncomingMessage, res: ServerResponse) => {
 		if (req.method !== "GET" && req.method !== "POST") return deny(res, 405);
 		const origin = req.headers.origin;
@@ -104,6 +144,9 @@ export function startTowerServer(options: TowerServerOptions): Promise<TowerServ
 			return receiveAction(req, res);
 		}
 		if (req.method !== "GET") return deny(res, 405);
+		const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+		if (rest === "/api/artifact") return serveArtifact(res, query.get("session"), query.get("path"));
+		if (rest === "/api/memory/search" || rest === "/api/memory/review") return void proxyMemory(res, rest.slice("/api/memory/".length), query);
 		if (rest === "/api/sessions") {
 			res.writeHead(200, { "Content-Type": "application/json", ...SECURITY_HEADERS });
 			return res.end(sessionsBody());

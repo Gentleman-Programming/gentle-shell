@@ -265,3 +265,22 @@ test("a question waiting in the terminal shows on the floor", async () => {
 	assert.equal(readTowerSnapshots(dir)[0].waiting, undefined);
 	await fire("session_shutdown", ctx);
 });
+
+test("the floor carries the orchestrator's latest words, bounded", async () => {
+	const dir = hub();
+	const { pi, fire } = fakePi();
+	const long = "Found it. ".repeat(100);
+	const branch = [
+		{ type: "message", message: { role: "assistant", content: [{ type: "text", text: "old reply" }], usage: { input: 1, output: 1, cost: { total: 0 } } } },
+		{ type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "hidden" }, { type: "toolCall", name: "read", arguments: {} }, { type: "text", text: long }], usage: { input: 1, output: 1, cost: { total: 0 } } } },
+	];
+	createTowerPublisher(pi, { env: { GENTLE_TOWER_HOME: dir }, debounceMs: 0, reviewCli: async () => "{}" });
+	const ctx = fakeCtx(branch);
+	await fire("session_start", ctx);
+	await wait(180);
+	const said = readTowerSnapshots(dir)[0].said ?? "";
+	assert.ok(said.startsWith("Found it."));
+	assert.ok(said.length <= 600);
+	assert.doesNotMatch(said, /hidden|old reply/);
+	await fire("session_shutdown", ctx);
+});

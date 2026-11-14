@@ -2,6 +2,18 @@
 // that the web tower draws as a floor. Pure: no I/O, no clocks of its own.
 
 export const TOWER_SNAPSHOT_VERSION = 1;
+export const TOWER_SAID_MAX = 600;
+
+/** The latest visible assistant text on the branch (no thinking, no tool calls). */
+export function latestAssistantText(entries: readonly unknown[]): string | undefined {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const m = (entries[i] as { type?: string; message?: { role?: string; content?: unknown } })?.message;
+		if ((entries[i] as { type?: string })?.type !== "message" || m?.role !== "assistant" || !Array.isArray(m.content)) continue;
+		const text = m.content.filter((p: { type?: string; text?: unknown }) => p?.type === "text" && typeof p.text === "string").map((p: { text: string }) => p.text).join("\n").trim();
+		if (text) return text;
+	}
+	return undefined;
+}
 
 export type TowerTodoStatus = "pending" | "in_progress" | "blocked" | "done" | "dropped";
 
@@ -44,7 +56,45 @@ export interface TowerSnapshot {
 	waiting?: true;
 	/** Result of the last action requested from the web view. */
 	notice?: { text: string; ok: boolean; at: number };
+	/** The orchestrator's latest visible words, bounded. */
+	said?: string;
+	/** Spend per model in this session, for the bar tab. */
+	models?: TowerModelSpend[];
+	/** Docs, diagrams and images the session wrote. */
+	artifacts?: TowerArtifact[];
 	updatedAt: number;
+}
+
+export interface TowerModelSpend { model: string; cost: number; tokens: number }
+export interface TowerArtifact { path: string; kind: "doc" | "diagram" | "image" }
+
+const ARTIFACT_KINDS: Record<string, TowerArtifact["kind"]> = { ".md": "doc", ".markdown": "doc", ".txt": "doc", ".mmd": "diagram", ".mermaid": "diagram", ".svg": "image", ".png": "image", ".jpg": "image", ".jpeg": "image", ".webp": "image", ".gif": "image" };
+export const TOWER_ARTIFACTS_MAX = 12;
+
+/** Files the session wrote or edited successfully that the viewer can show, newest first. */
+export function artifactsFromBranch(entries: readonly unknown[], cwd: string): TowerArtifact[] {
+	const failed = new Set<string>();
+	for (const e of entries as Array<{ type?: string; message?: { role?: string; toolCallId?: string; isError?: boolean } }>) {
+		if (e?.type === "message" && e.message?.role === "toolResult" && e.message.isError === true && e.message.toolCallId) failed.add(e.message.toolCallId);
+	}
+	const seen = new Set<string>();
+	const out: TowerArtifact[] = [];
+	for (let i = entries.length - 1; i >= 0 && out.length < TOWER_ARTIFACTS_MAX; i--) {
+		const m = (entries[i] as { type?: string; message?: { role?: string; content?: unknown } })?.message;
+		if ((entries[i] as { type?: string })?.type !== "message" || m?.role !== "assistant" || !Array.isArray(m.content)) continue;
+		for (const part of [...m.content].reverse() as Array<{ type?: string; id?: string; name?: string; arguments?: { path?: unknown } }>) {
+			if (part?.type !== "toolCall" || (part.name !== "write" && part.name !== "edit") || typeof part.arguments?.path !== "string") continue;
+			if (part.id && failed.has(part.id)) continue;
+			const raw = part.arguments.path;
+			const path = raw.startsWith("/") ? raw : `${cwd.replace(/\/$/, "")}/${raw.replace(/^\.\//, "")}`;
+			const ext = path.slice(path.lastIndexOf(".")).toLowerCase();
+			const kind = ARTIFACT_KINDS[ext];
+			if (!kind || seen.has(path)) continue;
+			seen.add(path);
+			out.push({ path, kind });
+		}
+	}
+	return out;
 }
 
 export interface TowerAgentInput {
@@ -71,6 +121,9 @@ export interface TowerSnapshotInput {
 	review?: "on" | "off";
 	waiting?: boolean;
 	notice?: { text: string; ok: boolean; at: number };
+	said?: string;
+	models?: readonly TowerModelSpend[];
+	artifacts?: readonly TowerArtifact[];
 	now: number;
 }
 
@@ -127,6 +180,9 @@ export function buildTowerSnapshot(input: TowerSnapshotInput): TowerSnapshot {
 		...(input.review ? { review: input.review } : {}),
 		...(input.waiting ? { waiting: true as const } : {}),
 		...(input.notice ? { notice: input.notice } : {}),
+		...(input.said ? { said: input.said.length > TOWER_SAID_MAX ? `${input.said.slice(0, TOWER_SAID_MAX - 1)}…` : input.said } : {}),
+		...(input.models?.length ? { models: input.models.map((m) => ({ model: m.model, cost: m.cost, tokens: m.tokens })) } : {}),
+		...(input.artifacts?.length ? { artifacts: input.artifacts.slice(0, TOWER_ARTIFACTS_MAX).map((a) => ({ path: a.path, kind: a.kind })) } : {}),
 		updatedAt: input.now,
 	};
 }

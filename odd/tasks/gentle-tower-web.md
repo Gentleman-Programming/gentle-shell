@@ -17,9 +17,9 @@ Branch `feat/gentle-tower-web` (from `design/herdr-gentle-ui`). The Herdr spikes
 - **Web app** `web/tower/`: Vite + TypeScript + PixiJS, built into a static bundle shipped with the package.
 
 ## Tasks
-- T1 Snapshot contract (types + publisher) for the current session, with tests — inline — pending
-- T2 Hub + `/gentle:tower` server (127.0.0.1, token, origin, SSE) with tests — inline — pending
-- T3 Web app scaffold: Vite + TS + PixiJS, tower scene ported from the artboard, fed by SSE — inline — pending
+- T1 Snapshot contract (types + publisher) for the current session, with tests — inline — done
+- T2 Hub + `/gentle:tower` server (127.0.0.1, token, origin, SSE) with tests — inline — done
+- T3 Web app scaffold: Vite + TS + PixiJS, tower scene ported from the artboard, fed by SSE — inline — in progress
 - T4 Multi-session: projects/floors from every published session — inline — pending
 - T5 Actions: answer questions, intercom / @helper steer, stop helper, permission door, review switch — inline — pending
 - T6 Artifacts + viewer, Engram library, bar tab — inline — pending
@@ -33,3 +33,5 @@ Branch `feat/gentle-tower-web` (from `design/herdr-gentle-ui`). The Herdr spikes
 - L1 (user): "y una cosa sino, hagamos algo, implementemos el disenno como una vista web te va? no como para herdr, y para este ultimo despues haciemos una vista mas... seniorial, mas seria, como una replica de gentle-shell"
 - L2 (user choices): data "Reales desde el inicio (recomendado)"; location "Dentro de gentle-pi (recomendado)"; stack "Vite + TypeScript + PixiJS (recomendado)".
 - L3: The existing desktop RPC is per-session over the pi RPC channel (`ctx.ui.setWidget`), not a server; multi-session needs the publisher/hub above.
+- L4: T1+T2 verified: 18/18 focused tests (snapshot, hub, publisher, server, command), `pnpm typecheck` clean. Full `pnpm test`: 10606 pass, 2 fail — `#2997 … committed-range assessment` (tests/review-delivery-preflight.test.ts) and `capture forwards no selection when the lens has no configured model` (tests/review-relay-transport-agent.test.ts); both also fail on base 3dc902975 without these changes (13/1, 30/1), so pre-existing/environment-dependent (the second sees the local `claude-bridge/claude-opus-5-5` config).
+- L5: web/tower is a standalone pnpm project (own node_modules, same supply-chain policy; allows esbuild's install script). Installed pixi.js 8.23.0, vite 7.3.8, typescript 5.9.3; the repo's node_modules untouched.

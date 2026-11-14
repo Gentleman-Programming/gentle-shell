@@ -23,12 +23,25 @@ function fixture() {
 	const historyHolds = new Map<string, Promise<void>>();
 	let releaseHistory: (() => void) | undefined;
 	const holdHistory = (root: string) => historyHolds.set(root, new Promise<void>(resolve => { releaseHistory = resolve; }));
+	// Holds exactly the NEXT status call for one root: a recovery retry can hang
+	// in flight while a replacement reader's scan completes normally.
+	let statusHoldRoot: string | undefined;
+	let heldStatus: Promise<void> | undefined;
+	let releaseHeldStatus: (() => void) | undefined;
+	const holdNextStatus = (root: string) => {
+		statusHoldRoot = root;
+		heldStatus = new Promise<void>(resolve => { releaseHeldStatus = resolve; });
+	};
 	let publishes = 0;
 	const hold = (root: string) => { holds.set(root, new Promise<void>(resolve => releases.set(root, resolve))); };
 	const release = (root: string) => { const resolve = releases.get(root); holds.delete(root); releases.delete(root); resolve?.(); };
 	const git = (root: string): GitRunner => async args => {
 		calls.push({ root, args });
 		if (hardFailure) throw new Error("git runner crashed");
+		if (args[0] === "status" && root === statusHoldRoot) {
+			statusHoldRoot = undefined;
+			await heldStatus;
+		}
 		const gate = holds.get(root);
 		if (gate) await gate;
 		if (args[0] === "symbolic-ref") await historyHolds.get(root);
@@ -49,7 +62,7 @@ function fixture() {
 	}, { history: true, diff: true });
 	const render = () => [...cards.historyRows(theme, 80, 4), ...cards.changesRows(theme, 80, 4)];
 	const settle = async () => { for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve)); };
-	return { cards, calls, hold, release, render, settle, extra, failures, holdHistory, releaseHistory: () => releaseHistory?.(), publishes: () => publishes, setHardFailure: (v: boolean) => { hardFailure = v; } };
+	return { cards, calls, hold, release, render, settle, extra, failures, holdHistory, releaseHistory: () => releaseHistory?.(), publishes: () => publishes, setHardFailure: (v: boolean) => { hardFailure = v; }, holdNextStatus, releaseHeldStatus: () => releaseHeldStatus?.(), statusCalls: (root: string) => calls.filter(c => c.root === root && c.args[0] === "status").length };
 }
 
 test("initial pending is not an error or a reusable settled snapshot", async () => {
@@ -353,4 +366,40 @@ test("a recovery retry whose start() rejects never rejects card.start", async ()
 	}
 	assert.deepEqual(unhandled, [], "no rejection escapes the retry chain");
 	assert.equal(f.cards.statusRead, false, "the failed recovery leaves the status unread for the next retry");
+});
+
+test("loadDiff replaces a stale retry guard: the new reader retries its own tracker", async () => {
+	const f = fixture();
+	// First reader fails its initial status scan...
+	f.failures.add(WT);
+	f.cards.enter(WT);
+	await f.settle();
+	assert.equal(f.cards.statusRead, false, "precondition: the first read failed");
+	// ...and its recovery retry hangs in flight (the retry guard is set).
+	f.holdNextStatus(WT);
+	const staleRetry = f.cards.refreshDiff();
+	await new Promise(resolve => setImmediate(resolve));
+	// The user switches away and back: loadDiff replaces the tracker. The stale
+	// guard must not survive the replacement (CodeRabbit finding).
+	f.cards.leave();
+	f.cards.enter(WT);
+	await f.settle();
+	assert.equal(f.cards.statusRead, false, "the replacement reader's first scan also failed (Git still down)");
+	// The next refresh must retry the NEW tracker, not await the stale guard:
+	// raced so a regression fails fast instead of hanging the suite.
+	const before = f.statusCalls(WT);
+	const raced = await Promise.race([
+		f.cards.refreshDiff().then(() => "retried" as const),
+		new Promise<"stale"[]>(resolve => setTimeout(() => resolve(["stale"]), 100)),
+	]);
+	assert.notDeepEqual(raced, ["stale"], "refreshDiff must not await the stale retry guard");
+	assert.ok(f.statusCalls(WT) > before, "the replacement reader started its own retry");
+	assert.equal(f.cards.statusRead, false, "its retry also failed (Git is still down), leaving the status unread");
+	// The stale reader unwinds harmlessly and Git recovers on its own turn.
+	f.releaseHeldStatus();
+	f.failures.delete(WT);
+	await staleRetry.catch(() => { /* the abandoned tracker was stopped. */ });
+	await f.cards.refreshDiff();
+	await f.settle();
+	assert.equal(f.cards.statusRead, true, "once Git recovers the replacement recovers on its own turn");
 });

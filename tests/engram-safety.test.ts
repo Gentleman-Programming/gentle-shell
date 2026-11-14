@@ -246,6 +246,7 @@ test("the header is a newer-schema tripwire against the verified bundled schema,
 	assert.equal(shell.bundledEngramSchema("3.3.2"), 1);
 	assert.equal(shell.bundledEngramSchema("3.4.0"), 1);
 	assert.equal(shell.bundledEngramSchema("3.5.2"), 1);
+	assert.equal(shell.bundledEngramSchema("3.7.2"), 1);
 	assert.equal(shell.bundledEngramSchema("3.3.3"), undefined);
 	for (const userVersion of [0, 1]) assert.equal(shell.engramHeaderAllows(userVersion, 1), true, String(userVersion));
 	assert.equal(shell.engramHeaderAllows(2, 1), false);
@@ -260,10 +261,11 @@ test("the compatibility comparator keeps its old semantics across the refactor",
 // T3 (S1, S3, S4): the companion-vs-core contract gate, warn only.
 const CONTRACT_352 = "4bf32703e111162b24073d090bec1c15c9120708587000bf595a07264e768672";
 const CONTRACT_370 = "0af9af176928e98562ab1396d3196efe582dd5d1c5d2c5f8f546ab4ed609810f";
+const CONTRACT_372 = "0af9af176928e98562ab1396d3196efe582dd5d1c5d2c5f8f546ab4ed609810f";
 const RUNTIME_CONTRACT = { contract_id: "engram.pi-http-runtime/v1", revision: 1, digest: CONTRACT_370 };
 
-test("the bundled core contract table holds exactly the two verified release digests", () => {
-	assert.deepEqual([shell.bundledEngramContract("3.5.2"), shell.bundledEngramContract("3.7.0")], [CONTRACT_352, CONTRACT_370]);
+test("the bundled core contract table holds exactly the three verified release digests", () => {
+	assert.deepEqual([shell.bundledEngramContract("3.5.2"), shell.bundledEngramContract("3.7.0"), shell.bundledEngramContract("3.7.2")], [CONTRACT_352, CONTRACT_370, CONTRACT_372]);
 	for (const version of ["3.3.2", "3.4.0", "3.6.9", "9.9.9", ""]) assert.equal(shell.bundledEngramContract(version), undefined, version);
 	// The provenance stays named in the source: read from GET /runtime-contract
 	// of the real release binaries during development, and the 3.5.2 windows

@@ -276,7 +276,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const active = tabs.find(tab => tab.id === prepared!.destination)!;
 			const labels = tabs.map(tab => theme.fg(tab.id === active.id ? "accent" : "muted", tab.id === active.id ? `[${tab.label}]` : ` ${tab.label} `)).join("   ");
 			const rule = theme.fg("border", "─".repeat(active.start)) + theme.fg("accent", "─".repeat(active.end - active.start)) + theme.fg("border", "─".repeat(width - active.end));
-			return [labels + " ".repeat(width - visibleWidth(labels)), rule].map(row => paintSurfaceRow(row, panelSurfaceOpener(theme)));
+			return [labels + " ".repeat(width - visibleWidth(labels)), rule, " ".repeat(width)].map(row => paintSurfaceRow(row, panelSurfaceOpener(theme)));
 		},
 		invalidate() {},
 		handleMouse(event) {

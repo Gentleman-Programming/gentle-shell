@@ -1,5 +1,4 @@
 import { sharedCooldown, syncUsageCooldown } from "../lib/model-fallback-policy.ts";
-import { collectQuotaWarnings, type QuotaThresholdState } from "../lib/quota-threshold.ts";
 import { CustomEditor, keyHint, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { isHomeOrBroadUserDirectory } from "../lib/bounded-writer-admission.ts";
 import { Editor, Image, Key, decodeKittyPrintable, getCapabilities, isKeyRelease, matchesKey, parseKey, truncateToWidth, visibleWidth, type Component, type EditorTheme, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
@@ -151,7 +150,6 @@ import { layoutSchematic } from "../lib/visual-layout-preview.ts";
 import { collectSessionStats, type SessionStats } from "../lib/shell-stats.ts";
 import { sessionChangeRoots } from "../lib/session-changes.ts";
 import { REVIEW_SIDEBAR_EVENT, isReviewSidebarSnapshot, type ReviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
-import { requestProfilesOpen } from "../lib/profiles-open-request.ts";
 import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY, isJobsSidebarSnapshot, jobsCollapseKey, type RunningJobDisplay } from "../lib/jobs-sidebar-state.ts";
 import { JOBS_FINISHED_TTL_MS, renderJobsSection } from "../lib/jobs-widget.ts";
 import { todoCollapseKey } from "../lib/shell-todo.ts";
@@ -2109,18 +2107,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		profileReader.reset();
 	};
 	// A full subscription window makes model fallbacks skip that provider until it resets.
-	// The same readings drive quota-threshold warnings: one system notification per
-	// window cycle, at the configured threshold (95% default). State lives per
-	// extension instance; a reading never notifies through a stale context.
-	const quotaThresholdState: QuotaThresholdState = { warned: new Map() };
-	const usage = new UsageStore((reading) => {
-		syncUsageCooldown(reading, sharedCooldown(), Date.now());
-		const ctx = currentContext;
-		if (!ctx?.hasUI) return;
-		try {
-			for (const warning of collectQuotaWarnings(quotaThresholdState, reading, deps.now())) ctx.ui.notify(warning.message, "warning");
-		} catch { /* A warning never breaks the usage refresh. */ }
-	});
+	const usage = new UsageStore((reading) => syncUsageCooldown(reading, sharedCooldown(), Date.now()));
 	// Providers gentle-shell has never heard of get a usage source too, when
 	// the extension that owns them registers one on pi.events; see the
 	// USAGE_SOURCE_EVENT subscription below.

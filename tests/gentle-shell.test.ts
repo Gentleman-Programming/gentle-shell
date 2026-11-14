@@ -9,7 +9,6 @@ import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandI
 import { CURSOR_MARKER, matchesKey, stripTerminalSequences as stripAnsi, TuiAltScreen, TuiMainScreen, VStack, visibleWidth, type Terminal, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { renderLayoutFrame, type LayoutBox } from "@earendil-works/pi-tui/dist/layout.js";
 import installGentleShell, { backgroundChangeRefreshesSettled, buildShellBarModel, createFooterStatusMemo, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
-import { PROFILES_OPEN_EVENT } from "../lib/profiles-open-request.ts";
 import { CODEX_USAGE_URL, NAN_QUOTA_URL, USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA } from "../lib/shell-usage.ts";
 import { bindSessionProfile, clearSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import { createVimEditorAdapter, isAuditedPiEditorVersion } from "../lib/vim-editor-adapter.ts";
@@ -437,29 +436,6 @@ test("GIT tab loads bounded HEAD history only while selected", async t => {
  } finally { footer.dispose(); await fire(handlers, "session_shutdown", ctx); }
 });
 
-test("a usage reading crossing the quota threshold notifies once per window cycle", async t => {
-	const home = scopedDoubleEscCancelConfigHome(t);
-	writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, surface: "tinted", density: "compact" }, { gentlePiConfigHome: home });
-	writeFileSync(join(home, "sidebar-tabs.json"), JSON.stringify({ schema: "gentle-pi.sidebar-tabs/v1", policy: "on", main: "on", git: "off", gitHistory: "on", diff: "off", tree: "off", profile: "on" }));
-	const { pi, handlers } = fakePi();
-	let fetches = 0, now = 1_788_600_000_000;
-	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { now: () => now, fetch: (async () => { fetches++; return { ok: false } as Response; }) as typeof fetch });
-	const { ctx, ui } = fakeContext({ token: JWT }); await fire(handlers, "session_start", ctx); await settle();
-	const response = async (percent: number) => {
-		for (const handler of handlers.get("after_provider_response") ?? []) await handler({ headers: { "x-codex-primary-used-percent": String(percent), "x-codex-primary-window-minutes": "300", "x-codex-primary-reset-at": String((now + 3600000) / 1000) } }, ctx);
-	};
-	try {
-		const notifications = ui.notices;
-		await response(96);
-		assert.match(notifications.at(-1) ?? "", /openai-codex codex 5h is at 96%/, "crossing the threshold notifies");
-		const afterFirst = notifications.length;
-		await response(98);
-		assert.equal(notifications.length, afterFirst, "the same window cycle never re-notifies");
-		await response(40);
-		await response(99);
-		assert.match(notifications.at(-1) ?? "", /is at 99%/, "recovered below the threshold, a new crossing notifies again");
-	} finally { await fire(handlers, "session_shutdown", ctx); }
-});
 
 test("turn end during initial Diff load waits and refreshes the selected root", async t => {
  const home = scopedDoubleEscCancelConfigHome(t);
@@ -4038,17 +4014,17 @@ test("animations command reports without writing and switches the live animation
 	assert.deepEqual(delays, [80]);
 	await command.handler("performance", ctx);
 	assert.deepEqual(delays, [80, 1000]);
-	assert.equal(active, 0);
+	assert.equal(active, 1, "the performance watchdog replaces the quality pulse");
 	await command.handler("potato", ctx);
-	assert.equal(active, 1);
+	assert.equal(active, 0, "potato installs no watchdog timer");
 	assert.match(stripAnsi(editor.render(60)[0]), /working/);
 	assert.equal(JSON.parse(readFileSync(join(configHome, "animations.json"), "utf8")).policy, "potato");
 	await command.handler("invalid", ctx);
 	assert.equal(JSON.parse(readFileSync(join(configHome, "animations.json"), "utf8")).policy, "potato");
 	await command.handler("quality", ctx);
-	assert.deepEqual(delays, [2000, 80, 1000, 80]);
+	assert.deepEqual(delays, [80, 1000, 80]);
 	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
-	assert.equal(active, 1);
+	assert.equal(active, 0, "settling releases the working watchdog");
 	editor.dispose();
 	await fire(handlers, "session_shutdown", ctx);
 	assert.equal(active, 0);
@@ -4057,8 +4033,9 @@ test("animations command reports without writing and switches the live animation
 test("potato repaints start/settle and shows queued state on the host's next render without intervals", async (t) => {
 	const configHome = scopedDoubleEscCancelConfigHome(t);
 	writeFileSync(join(configHome, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"potato"}');
-	const intervals = t.mock.method(globalThis, "setInterval", (_callback: () => void, delay: number) => {
-		assert.equal(delay, 2000, "potato must not animate");
+	const delays: number[] = [];
+	t.mock.method(globalThis, "setInterval", (_callback: () => void, delay: number) => {
+		delays.push(delay);
 		return { unref() {} };
 	});
 	const renders = t.mock.method(fakeTui, "requestRender", () => {});
@@ -4088,7 +4065,7 @@ test("potato repaints start/settle and shows queued state on the host's next ren
 	await commands.get("gentle:animations")!.handler("status", ctx);
 	assert.match(ui.notices.at(-1)!, /animations: potato/);
 	for (const handler of handlers.get("session_shutdown") ?? []) handler({}, ctx);
-	assert.equal(intervals.mock.callCount(), 1);
+	assert.deepEqual(delays, [], "potato never animates and session start installs no idle poll timer");
 });
 
 test("animations status attributes malformed files and reports a failed write", async (t) => {
@@ -4151,12 +4128,13 @@ test("prompt installs the working pulse timer unref'd and releases it at settlem
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome });
 	const { ctx, ui } = fakeContext();
 	const editor = installedPrompt(ctx, ui, handlers);
-	assert.equal(active, 1);
+	assert.equal(active, 0, "session start installs no idle poll timer");
+	assert.deepEqual(delays, []);
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
 	assert.deepEqual(delays, [80]);
-	assert.equal(unrefs, 2);
+	assert.equal(unrefs, 1, "only the working pulse is unref'd");
 	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
-	assert.equal(active, 1);
+	assert.equal(active, 0, "settling releases the pulse");
 	editor.dispose();
 	await fire(handlers, "session_shutdown", ctx);
 	assert.equal(active, 0);

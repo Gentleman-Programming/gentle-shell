@@ -40,7 +40,7 @@ gone or that were not updated for a day. The folder is created `0700` and files
 | `permission` | `mode` (`normal`, `auto`, `yolo`, `super-yolo`), `defaultMode`, `yolo`, `detail` |
 | `statuses`, `integrations` | always `null` (pi exposes extension statuses only to the footer owner) |
 | `todo` | `items[]` (`id`, `title`, `state`, `note`), `progress` (`done`, `total`, `open`), `current`, `truncated` |
-| `changes` | `files[]` (`path`, `status`, `added`, `deleted`), `summary`, `worktrees[]`, `truncated`; `null` before the first scan |
+| `changes` | `files[]` (`path`, `status`, `added`, `deleted`), `summary`, `worktrees[]`, `truncated`; `null` before the first scan. An untracked file's `added` is its line count (git's numstat never lists it); a binary file, a file over 1 MiB, an unreadable file or one past 200 untracked files per scan has `added` and `deleted` `null` (no count) |
 | `agents` | `items[]` (`id`, `name`, `role` = `null`, `state`, `step`, `model`, `thinking`, `spend`), `active`, `spend` |
 | `jobs` | `running[]` and `recent[]` (finished tail) with `startedAt`, `endedAt`, `exitCode`, `elapsedMs` at write time |
 | `review` | `state`, `label`, `scope` |

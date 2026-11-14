@@ -19,7 +19,7 @@ and the layout. The centre column (4, `gentle-chat`) is T5.
    session: 7 changes, todo 3/6, three subagents, three jobs, review ready, 18 turns), a
    snapshot with every nullable section null, and no snapshot at all. Every run passes, and the
    printed specs carry the values below.
-4. The live side-by-side (`herdr-app shot` vs the crop at the same size) is the parent's.
+4. The live side-by-side: see "Live side-by-side" at the end.
 
 Artboard frame: `.window` has a 1px `--line-strong` border (l.58) that belongs to the page, not to
 the app (the macOS window has no such border). Inside it the app is 1598×998, so the artboard
@@ -152,7 +152,7 @@ Rendering (gpui-kit / Herdr 0.1.15):
 7. The sidebar width is `251 + 1 px divider`; if Herdr counts the divider inside `px`, set 252 (live check).
 
 Data (the T4 snapshot has no field for it; shown as an empty state or left out, never invented):
-8. Spaces' second line: the artboard says "$4.74 today"; the snapshot has live session spend, not a daily total: the row says "3 sessions · $4.74".
+8. Spaces' second line: the artboard says "$4.74 today"; the snapshot has live session spend, not a daily total: the row always says "<n> sessions · $<spend>" ("2 sessions · $5.78"), never the status word.
 9. Subagents: no task title and `role` is always null (docs/desktop-feed.md): the card shows the agent name as the role tag and no bold title; no start time, so no "Running · 3m 12s" (shown: "Running · <step>").
 10. Status bar TPS ("58 tok/s"): no TPS in the snapshot; shown only if a future snapshot carries `activity.tps`. The streaming item names the session, not the subagent ("writer streaming").
 11. "ODD Build · T5 of 9": the snapshot has the ODD phase word (`implementing`, …) and the todo list, not the ODD task id: the bar says "ODD Implementing · todo 4 of 6".
@@ -168,3 +168,44 @@ Actions (T7, buttons drawn, marked `TODO(T7)` in `gentle-inspector/main.js`): Op
 - gpui-shell refuses imports outside a mod's folder (`Module ../b/x.js resolves outside the application directory`, observed with `herdr-app check`), so `gentle-sidebar`, `gentle-spaces`, `gentle-agents`, `gentle-tabs`, `gentle-inspector` and `gentle-status` carry byte-identical copies (`cmp` clean). `gentle-tokens` has a small `main.js` (a token swatch, `place: none`) so the folder is a valid mod.
 - Each mod folder has a `.gitignore` for the `gpui-kit.d.ts` / `jsconfig.json` that `herdr-app check` writes.
 - Data refresh: `watchFolder(<agentDir>/desktop/sessions)` plus a 10 s fallback timer; redraw only when a snapshot changed. Extra timers: the inspector redraws each second only while the Jobs tab shows a running job; the usage footer once a minute (its reset countdown).
+
+## Live side-by-side (1908×1019, S8)
+
+Same method as `herdr/mods/gentle-chat/FIDELITY.md` (headless artboard at 1908×1019 against
+`herdr-app shot`, PIL samples at the same logical coordinates). Region edges measured equal:
+sidebar 0…251 + 1px rule, work body padding 8 (card 261…1519, inspector 1528…1899), tab bar
+0…41 + rule at 41, active tab 7…41 with its 2px accent at 7…9, inspector strip 51…116 + rule,
+status 991…1019 with its rule at 991, avatar 22 px at x 16…38, spaces row 48.75 (±0.5 from the
+fractional height). Colours equal at every sampled point.
+
+Differences found, and what happened to each:
+
+1. Not a mod bug: after `tab.new` + `pane.focus` the shot showed one tab and t5. `herdr-app
+   shot` returns the last drawn frame, and the covered window was not drawing (three shots
+   byte-identical across minutes and a mod reinstall). With the window in front, the strip
+   listed both tabs and every mod followed the focused tab (t6).
+2. Fixed: the + button sat at the far right of the bar; it follows the last tab (l.256).
+3. Fixed: tabs and the agents list showed the terminal title `π - herdr-gentle-shell`; they show
+   the session name, else the tab's given name, else the title without `π - `.
+4. Fixed: Projects row "1 session · idle"; now sessions + live spend ("2 sessions · $5.78").
+5. Fixed: Changes showed untracked files as `U +0 −0`. The publisher now counts their lines
+   (`lib/desktop-feed-sources.ts` createUntrackedLineCounter: 1 MiB per file, 200 files per
+   scan; binary / too large / unreadable / over budget = `added: null`), the letter is `A` in
+   `--ok` as the artboard, and a file without counts shows none. Live: the running sessions
+   loaded the old publisher, so t5 and t6 still publish `+0` until they restart (not restarted:
+   they are the person's sessions).
+6. Fixed: subagent role tag was the agent name (`GENTLE-AI-WORKER`); it is the role
+   (`WORKER`, `EXPLORE`), as the chat card. Model names are shortened (`Opus 5.5`, not
+   `claude-bridge/claude-opus-5-5`), in the Agents tab and the Session tab's By model.
+7. Fixed: the current todo used `--info` while the session worked; the artboard's `.now` is
+   always `--warn` (tick and second line, l.205-208).
+8. Fixed: status bar "ODD — · todo 5 of 10" with no phase; now "ODD · todo 5 of 10" ("ODD —"
+   only when there is nothing to say). The palette kbd was 17 px tall and 1 px high; 15.5 px at
+   998.5…1014 like the artboard.
+9. Data gap (unchanged): plan usage — the live sessions run `claude-bridge`, whose usage is
+   `unavailable`, so the footer says "Plan usage unavailable" instead of the 5h / 7d bars.
+10. Real binding, not a defect: the palette hint is `⌘⇧P`, read from the person's keys; the
+    artboard shows `⌘K`.
+11. Not seen live: Jobs (no session had jobs), Review (RDD off in both sessions), a running
+    subagent, a needs-you state; Todo, Agents and Session were seen live on t6 through a
+    temporary install that fixed the shown tab, then the real mod was installed again.

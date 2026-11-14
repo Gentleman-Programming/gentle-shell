@@ -10,7 +10,8 @@
 
 import { REVIEW_SIDEBAR_LABELS, type ReviewSidebarSnapshot } from "./review-sidebar-state.ts";
 import { todoSummary, type TodoState } from "./shell-todo.ts";
-import type { ChangesModel, WorktreeChanges } from "./shell-changes.ts";
+import { join } from "node:path";
+import type { ChangedFile, ChangesModel, WorktreeChanges } from "./shell-changes.ts";
 import type { SessionStats } from "./shell-stats.ts";
 import type { DesktopJobEntry } from "./desktop-rpc-jobs.ts";
 import type { DesktopAgentEntry } from "./desktop-rpc-agents.ts";
@@ -125,7 +126,8 @@ export interface DesktopFeedSnapshot {
 		truncated: boolean;
 	};
 	changes: {
-		files: Array<{ path: string; status: string; added: number; deleted: number }>;
+		/** added / deleted are null for an untracked file whose lines were not counted (binary, too large). */
+		files: Array<{ path: string; status: string; added: number | null; deleted: number | null }>;
 		summary: { files: number; added: number; deleted: number };
 		worktrees: Array<{ root: string; branch: string | null; files: number }>;
 		truncated: boolean;
@@ -183,7 +185,7 @@ export interface DesktopFeedInput {
 	permission: { mode: string; defaultMode?: string; detail?: string } | undefined;
 	todo: TodoState;
 	/** Undefined until the first scan answered. */
-	changes: { model: ChangesModel; worktrees: readonly WorktreeChanges[] } | undefined;
+	changes: { model: ChangesModel; worktrees: readonly WorktreeChanges[]; uncounted?: ReadonlySet<string> } | undefined;
 	agents: readonly DesktopAgentEntry[] | undefined;
 	jobs: readonly DesktopJobEntry[] | undefined;
 	review: ReviewSidebarSnapshot | undefined;
@@ -285,9 +287,14 @@ function usageSection(entry: DesktopUsageEntry | undefined): DesktopFeedSnapshot
 
 function changesSection(input: DesktopFeedInput["changes"]): DesktopFeedSnapshot["changes"] {
 	if (!input) return null;
-	const { model, worktrees } = input;
+	const { model, worktrees, uncounted } = input;
+	// The combined model's paths are relative to the one root, else already absolute (WorktreeChangesTracker.model).
+	const absolute = (path: string) => join(worktrees.length === 1 ? worktrees[0]!.root : "", path);
+	const counted = (file: ChangedFile) => !(file.status === "untracked" && uncounted?.has(absolute(file.path)));
 	return {
-		files: model.files.slice(0, DESKTOP_FEED_LIMITS.changes).map((file) => ({ path: clipText(file.path, 1000), status: file.status, added: finite(file.added), deleted: finite(file.deleted) })),
+		files: model.files.slice(0, DESKTOP_FEED_LIMITS.changes).map((file) => counted(file)
+			? { path: clipText(file.path, 1000), status: file.status, added: finite(file.added), deleted: finite(file.deleted) }
+			: { path: clipText(file.path, 1000), status: file.status, added: null, deleted: null }),
 		summary: { files: model.files.length, added: finite(model.added), deleted: finite(model.deleted) },
 		worktrees: worktrees.slice(0, DESKTOP_FEED_LIMITS.worktrees).map((tree) => ({ root: clipText(tree.root, 1000), branch: optionalText(tree.branch), files: tree.model.files.length })),
 		truncated: model.files.length > DESKTOP_FEED_LIMITS.changes,

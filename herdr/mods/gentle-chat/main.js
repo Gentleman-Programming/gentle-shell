@@ -8,12 +8,12 @@
 // Drawing: ui.js; colours, type and radii: tokens.js (shared with the T6 mods).
 
 import { View, div } from "gpui-kit";
-import { v_flex, TextView, TextareaState, ScrollHandle } from "gpui-base";
+import { v_flex, TextareaState, ScrollHandle } from "gpui-base";
 import { agents, terminals, focused, props, layout, hc, run, theme, watchFolder } from "herdr";
 import { sessionFileFor, readAfter, feedDir } from "./session.js";
 import { createFeed, ingest } from "./feed.js";
 import { palette, sans, R } from "./tokens.js";
-import { header, entries, entry, lane, stateLabel, askCard, askOptions, composer } from "./ui.js";
+import { header, entries, entry, lane, stateLabel, askCard, askOptions, composer, icon } from "./ui.js";
 
 const APPS = new Set(["gentle-shell", "pi"]);
 const PAGE = 150; // entries drawn at first; "Show earlier" adds this many
@@ -281,6 +281,7 @@ export default class GentleChat extends View {
   render(_cx) {
     const p = palette(theme());
     const agent = this.address ? agents().find((a) => a.address === this.address) : null;
+    this.agentInfo = agent;
     const working = agent?.status === "working" || this.snap?.activity?.state === "working";
     const list = entries(this.feed.items);
     const from = Math.max(0, list.length - this.limit);
@@ -288,15 +289,26 @@ export default class GentleChat extends View {
     if (from > 0) {
       rows.push(div().flex_none().self_center().child(div().id("earlier").px(10).py(3).rounded(R.inner).text_size(12).text_color(p.muted)
         .cursor_pointer().hover((s) => s.bg(p.selected))
-        .on_click((_e, cx) => { this.limit += PAGE; cx.notify(); })
+        .on_click((_e, cx) => { this.limit += PAGE; this.pinned = false; cx.notify(); })
         .child(`Show earlier (${from} ${from === 1 ? "message" : "messages"})`)));
     }
     for (let i = from; i < list.length; i++) rows.push(lane(entry(this, p, list[i], working && i === list.length - 1)));
     const pq = this.snap?.pendingQuestion;
     if (pq) rows.push(lane(askCard(this, p, pq)));
     else if (working) rows.push(lane(stateLabel(p, "work", "Working")));
-    if (!rows.length) rows.push(lane(this.empty(p)));
-    if (this.stick && rows.length) { this.scroll.scroll_to_item(rows.length - 1); this.stick = false; }
+    const empty = !rows.length;
+    // Pinned to the newest entry: new items pin it, scrolling up unpins it. scroll_to_item
+    // reveals a child with the least scroll, so the target is a 1px sentinel after the last row,
+    // asked again whenever the last row changes height (markdown settles a frame later).
+    if (this.stick) { this.pinned = true; this.stick = false; }
+    if (this.pinned && rows.length) {
+      this.scroll.scroll_to_item(rows.length);
+      const n = rows.length - 1;
+      rows[n] = rows[n].on_size_change((size, cx) => {
+        if (this.pinned && Math.abs((this.lastH ?? 0) - size.height) >= 1) { this.lastH = size.height; cx.notify(); }
+      });
+    }
+    rows.push(div().id("log-end").flex_none().w_full().h(1));
 
     return v_flex().id("root").size_full().min_h(0).bg(p.background).text_color(p.text).text_size(13).line_height(1.5)
       .font_family(sans()).rounded(R.window - 1)
@@ -304,19 +316,26 @@ export default class GentleChat extends View {
       .on_key_down((e, cx) => this.key(e, cx))
       .on_action("gentle_chat_terminal", (_e, cx) => this.go("terminal", cx))
       .child(header(this, p))
-      .child(v_flex().id("log").flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.scroll)
-        .pt(18).pb(22).gap(14)
+      .child(empty ? this.empty(p) : v_flex().id("log").flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.scroll)
+        .pt(18).pb(7).gap(14) // .log padding-bottom 22 = gap 14 + the 1px sentinel + 7
+        .on_scroll_wheel((e) => { if ((e.delta?.y ?? 0) > 0) this.pinned = false; })
         .on_mouse_down("left", () => this.focus.focus())
         .children(rows))
       .child(composer(this, p, pq));
   }
 
+  // No conversation yet (the artboard has no such state): a calm block in the middle of the
+  // log, in the design's type: the mark in faint, a 14px semibold line, a 12.5px muted line.
   empty(p) {
-    const msg = !this.address
-      ? "No Gentle Shell terminal. Start one with `gentle-shell` in a terminal."
+    const [title, about] = !this.address
+      ? ["No Gentle Shell session", "Start one with + in the tab bar, or run gentle-shell in a terminal."]
       : !this.file
-        ? "Waiting for this session's first message…"
-        : "No messages yet.";
-    return div().mt(40).text_color(p.muted).child(TextView.markdown("empty", msg));
+        ? ["Waiting for the first message", "This session has not written its conversation yet."]
+        : ["No messages yet", "Type below to start. ⌘J shows the Terminal."];
+    return v_flex().id("log").flex_1().min_h(0).items_center().justify_center().gap(6).px(28).pb(40)
+      .on_mouse_down("left", () => this.focus.focus())
+      .child(icon("mark", 26).text_color(p.faint).mb(4))
+      .child(div().text_size(14).font_semibold().text_color(p.text).child(title))
+      .child(div().text_size(12.5).text_color(p.muted).text_center().child(about));
   }
 }

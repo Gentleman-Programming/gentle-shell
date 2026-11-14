@@ -16,7 +16,7 @@ import {
 	type DesktopFeedTimers,
 } from "../lib/desktop-feed.ts";
 import { createDesktopFeedStore, sweepDesktopFeedOrphans, type DesktopFeedStore } from "../lib/desktop-feed-store.ts";
-import { createDesktopFeedProfileReader, desktopFeedGitRunner, processAncestors, psParentOf, type DesktopFeedProfile, type ParentOf } from "../lib/desktop-feed-sources.ts";
+import { createDesktopFeedProfileReader, createUntrackedLineCounter, desktopFeedGitRunner, processAncestors, psParentOf, type DesktopFeedProfile, type ParentOf, type UntrackedLineCounter } from "../lib/desktop-feed-sources.ts";
 import { DesktopAgentsBridge } from "../lib/desktop-agents-service.ts";
 import { DesktopJobsBridge } from "../lib/desktop-jobs-service.ts";
 import { DesktopUsageBridge } from "../lib/desktop-usage-service.ts";
@@ -86,7 +86,7 @@ interface Live {
 	permission: { mode: string; defaultMode?: string; detail?: string } | undefined;
 	profile: DesktopFeedProfile;
 	branch: string | null | undefined;
-	changes: { tracker: WorktreeChangesTracker; scanned: boolean; requested: boolean };
+	changes: { tracker: WorktreeChangesTracker; lines: UntrackedLineCounter; scanned: boolean; requested: boolean };
 	stats: { count: number; stats: SessionStats } | undefined;
 	jobsBridge: DesktopJobsBridge;
 	agentsBridge: DesktopAgentsBridge;
@@ -178,7 +178,7 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 					usage: session.usage,
 					permission: session.permission,
 					todo: session.todo,
-					changes: session.changes.scanned ? { model: session.changes.tracker.model, worktrees: session.changes.tracker.worktrees } : undefined,
+					changes: session.changes.scanned ? { model: session.changes.tracker.model, worktrees: session.changes.tracker.worktrees, uncounted: session.changes.lines.uncounted() } : undefined,
 					agents: session.agents,
 					jobs: session.jobs,
 					review: session.review,
@@ -259,6 +259,7 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 				try { return sessionChangeRoots(sessionId, ctx.sessionManager.getEntries() as never).filter((root) => rootExists(root) && !isHomeOrBroadUserDirectory(root)); }
 				catch { return []; }
 			};
+			const lines = createUntrackedLineCounter();
 			const session: Live = {
 				ctx, sessionId, store, lastDigest: undefined,
 				realCwd: realpath(ctx.cwd), ancestors: [],
@@ -266,7 +267,7 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 				askTool: undefined, uiPrompt: undefined, review: undefined, todo,
 				jobs: undefined, agents: undefined, usage: undefined, permission: undefined,
 				profile: { name: undefined, tier: undefined }, branch: undefined,
-				changes: { tracker: new WorktreeChangesTracker(gitFor(ctx.cwd), gitFor, undefined, roots), scanned: false, requested: false },
+				changes: { tracker: new WorktreeChangesTracker(gitFor(ctx.cwd), gitFor, lines.forRoot, roots), lines, scanned: false, requested: false },
 				stats: undefined,
 				jobsBridge: new DesktopJobsBridge(pi), agentsBridge: new DesktopAgentsBridge(pi), usageBridge: new DesktopUsageBridge(pi),
 				yolo: undefined, closed: false,

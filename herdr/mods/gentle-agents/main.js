@@ -8,7 +8,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, terminals, spaces, run, setAgentOrder, layout } from "herdr";
-import { tokens, eyebrow, state } from "./tokens.js";
+import { tokens, eyebrow, state, sessionTitle } from "./tokens.js";
 import { FeedSource } from "./snapshot.js";
 
 function find(node, id) {
@@ -21,7 +21,8 @@ function find(node, id) {
 }
 const narrow = () => (find(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
 
-const clean = (s) => (s ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
+// pi titles its terminal "π - <folder>"; π is a letter, so it is cut by name first.
+const clean = (s) => sessionTitle(s).replace(/^[^\p{L}\p{N}]+/u, "").trim();
 const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
 // Herdr status → artboard .state kind and label.
 const KIND = { blocked: ["need", "Needs you"], working: ["work", "Working"], done: ["done", "Done"], idle: ["idle", "Idle"] };

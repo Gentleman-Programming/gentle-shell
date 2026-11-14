@@ -13,7 +13,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { home } from "herdr";
-import { tokens, eyebrow, state, bar, btn, money, span, clock, ago, cap } from "./tokens.js";
+import { tokens, eyebrow, state, bar, btn, money, span, clock, ago, cap, prettyModel, agentRole } from "./tokens.js";
 import { FeedSource, targetTerminal } from "./snapshot.js";
 
 const ICON = (name) => `mods/gentle-inspector/icons/${name}.svg`;
@@ -28,7 +28,8 @@ const TABS = [
 const TODO_T7 = () => {}; // TODO(T7): the action goes through the desktop action channel.
 
 // File status letter and colour (.fst.m warn, .fst.a ok).
-const FST = { modified: ["M", "warn"], added: ["A", "ok"], untracked: ["U", "ok"], deleted: ["D", "err"], renamed: ["R", "info"] };
+// An untracked file is a new file: the artboard's "A" (l.497-498).
+const FST = { modified: ["M", "warn"], added: ["A", "ok"], untracked: ["A", "ok"], deleted: ["D", "err"], renamed: ["R", "info"] };
 // Subagent status → .state kind and word.
 const AGENT = {
   queued: ["queue", "Queued"], running: ["work", "Running"], waiting: ["need", "Waiting"],
@@ -159,8 +160,9 @@ export default class GentleInspector extends View {
         .child(h_flex().flex_1().min_w(0).overflow_hidden()
           .when(cut > 0, (el) => el.child(div().flex_shrink(1).min_w(0).truncate().text_color(c.muted).child(path.slice(0, cut))))
           .child(div().flex_none().text_color(c.text).child(path.slice(cut))))
-        .child(div().flex_none().font_family(c.mono).text_color(c.ok).child(`+${file.added ?? 0}`))
-        .child(div().flex_none().font_family(c.mono).text_color(c.err).child(`−${file.deleted ?? 0}`));
+        // null counts: a binary or oversized new file (docs/desktop-feed.md); it shows none.
+        .when(file.added !== null, (el) => el.child(div().flex_none().font_family(c.mono).text_color(c.ok).child(`+${file.added ?? 0}`)))
+        .when(file.deleted !== null, (el) => el.child(div().flex_none().font_family(c.mono).text_color(c.err).child(`−${file.deleted ?? 0}`)));
     });
     return [head, v_flex().gap(10).child(sum).when(Boolean(where), (el) => el.child(where))
       .child(v_flex().gap(1).children(rows))
@@ -177,7 +179,7 @@ export default class GentleInspector extends View {
       const isDone = t.state === "done";
       const dropped = t.state === "dropped";
       const now = t.state === "in_progress" || t.state === "blocked";
-      const tone = t.state === "blocked" || (now && blocked) ? "warn" : now ? "info" : null;
+      const tone = now ? "warn" : null; // .todo .now: warn tick, warn second line (l.205-208)
       const tick = div().size(16).flex_none().mt(1).rounded(4).border(1.5).flex().items_center().justify_center()
         .border_color(isDone ? c.ok : tone ? c[tone] : c.lineStrong)
         .when(isDone, (el) => el.text_color(c.ok).child(svg(ICON("check")).size(13)))
@@ -209,11 +211,11 @@ export default class GentleInspector extends View {
       return v_flex().id(`ag-${a.id ?? i}`).when(i > 0, (el) => el.mt(6)).p(8).gap(2).rounded(8).border(1).border_color(c.line)
         .child(h_flex().gap(6).items_baseline().min_w(0)
           .child(div().flex_none().font_family(c.mono).font_weight(600).text_size(10.5).line_height("16.8px").text_color(c.accent)
-            .child(String(a.role ?? a.name ?? "agent").toUpperCase()))
+            .child((a.role ? String(a.role) : agentRole(a.name)).toUpperCase()))
           .when(Boolean(a.title), (el) => el.child(div().min_w(0).truncate().font_weight(600).text_color(c.text).child(String(a.title)))))
         .child(h_flex().gap(10).items_center().text_size(12).line_height("18px").text_color(c.muted)
           .child(state(c, kind, `${word}${step}`))
-          .when(Boolean(a.model), (el) => el.child(div().min_w(0).truncate().child(String(a.model))))
+          .when(Boolean(a.model), (el) => el.child(div().min_w(0).truncate().child(prettyModel(String(a.model)))))
           .when(Boolean(a.spend?.cost), (el) => el.child(div().flex_none().font_family(c.mono).child(money(a.spend.cost)))))
         .when(live, (el) => el.child(h_flex().mt(4).gap(6)
           .child(btn(c, `ag-view-${i}`, "View", { onClick: TODO_T7 }))
@@ -280,7 +282,7 @@ export default class GentleInspector extends View {
       ["Cost", money(f.cost?.total ?? st.cost)],
       ["Subagent spend", money(f.agents?.spend?.cost ?? 0)],
     ];
-    const models = (st.models ?? []).map((m) => [`${m.model} · ${m.turns} ${m.turns === 1 ? "turn" : "turns"}`, money(m.cost)]);
+    const models = (st.models ?? []).map((m) => [`${prettyModel(m.model) ?? m.model} · ${m.turns} ${m.turns === 1 ? "turn" : "turns"}`, money(m.cost)]);
     const integrations = Array.isArray(f.integrations) ? f.integrations : null;
     return [this.h2(c, "Session"),
       v_flex().gap(10).child(this.kv(c, rows))

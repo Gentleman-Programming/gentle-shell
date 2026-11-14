@@ -133,9 +133,10 @@ export function btn(c, id, label, opts = {}) {
   return el;
 }
 
-// kbd: 0 5px, 1px line-strong border, radius 5, 11px muted mono.
+// kbd: 0 5px, 1px line-strong border, radius 5, 11px muted mono. An inline box is as tall as
+// the font's content area: 13.5 + 2 × 1 = 15.5 (measured in the render).
 export function kbd(c, text) {
-  return div().flex_none().px(5).rounded(5).border(1).border_color(c.lineStrong).font_family(c.mono).text_size(11).line_height("15px").text_color(c.muted).child(text);
+  return div().flex_none().px(5).rounded(5).border(1).border_color(c.lineStrong).font_family(c.mono).text_size(11).line_height("13.5px").text_color(c.muted).child(text);
 }
 
 // ---- Formats ---------------------------------------------------------------------------------
@@ -186,6 +187,25 @@ export function until(at, now = Date.now()) {
 
 // A usage window's short label: "week" → "7d" (the artboard's 5h / 7d).
 export const windowLabel = (w) => (w?.label === "week" ? "7d" : String(w?.label ?? ""));
+
+// A Gentle Shell terminal's own title without pi's "π - " prefix: "π - herdr-gentle-shell" →
+// "herdr-gentle-shell". The fallback name when a session has no name (the artboard names tabs
+// and agents by session).
+export const sessionTitle = (title) => String(title ?? "").replace(/^\s*π\s*[-–—·:]?\s*/u, "").trim();
+
+// "claude-bridge/claude-opus-5-5" → "Opus 5.5" (the artboard's model names); anything else as
+// given, without its provider. Same rule as gentle-chat/feed.js prettyModel.
+export function prettyModel(id) {
+  if (typeof id !== "string" || !id) return null;
+  const bare = id.slice(id.lastIndexOf("/") + 1);
+  const m = /^claude-([a-z]+)-(\d+)(?:-(\d+))?/.exec(bare);
+  if (!m) return bare;
+  return `${m[1][0].toUpperCase()}${m[1].slice(1)} ${m[2]}${m[3] ? `.${m[3]}` : ""}`;
+}
+
+// A subagent's role tag: the agent name without the "gentle-ai-" / "gentle-" prefix
+// ("gentle-ai-worker" → "worker"), as the chat's subagent card.
+export const agentRole = (name) => String(name ?? "agent").replace(/^gentle-ai-/, "").replace(/^gentle-/, "");
 
 // The sentence-case word for a phase: "implementing" → "Implementing".
 export const cap = (s) => (s ? String(s).charAt(0).toUpperCase() + String(s).slice(1) : "");

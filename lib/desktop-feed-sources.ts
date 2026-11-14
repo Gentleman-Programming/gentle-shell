@@ -4,11 +4,13 @@
 // session). Each adapter is injectable so the extension stays testable.
 
 import { execFile } from "node:child_process";
+import { lstat, readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { gentlePiConfigHome } from "./agent-home.ts";
 import { profilesFilePath, readProfilesFileResult } from "./agent-profiles.ts";
 import { resolveSessionProfile, sessionProfileLabel } from "./session-profile-freeze.ts";
 import { resolveSessionWorktree, worktreeGitEnvironment, type WorktreeIdentity, type WorktreeResolver } from "./session-worktree-registry.ts";
-import type { GitRunner } from "./shell-changes.ts";
+import { DIFF_MAX_BYTES, type GitRunner, type LineCounter } from "./shell-changes.ts";
 
 const GIT_TIMEOUT_MS = 5000;
 /** A porcelain inventory past this is a failed scan, never a partial one. */
@@ -89,5 +91,56 @@ export function createDesktopFeedProfileReader(env: NodeJS.ProcessEnv = process.
 		} catch {
 			return { name: undefined, tier: undefined };
 		}
+	};
+}
+
+/** Bounds for counting untracked files: bytes per file (the Changes diff bound) and files per scan of a root. */
+export const DESKTOP_FEED_UNTRACKED_LIMITS = { bytes: DIFF_MAX_BYTES, files: 200 } as const;
+/** How many uncounted paths are remembered (oldest forgotten first). */
+const UNCOUNTED_MAX = 1000;
+
+export interface UntrackedLineCounter {
+	/** The LineCounter for one scan of `root` (WorktreeChangesTracker's linesForRoot). */
+	forRoot(root: string): LineCounter;
+	/** Absolute paths of untracked files whose lines were not counted (binary, too large, unreadable, past the budget). */
+	uncounted(): ReadonlySet<string>;
+}
+
+/**
+ * Line counts for untracked files, which git's numstat never lists: the same
+ * count the shell's Changes uses (lines, a last line without a newline counts),
+ * bounded per file and per scan. A binary file (a NUL byte), a file past the byte
+ * bound, a non-regular or unreadable file and every file past the per-scan budget
+ * count 0 and are listed in uncounted(), so the snapshot can say "no count".
+ */
+export function createUntrackedLineCounter(limits: { bytes: number; files: number } = DESKTOP_FEED_UNTRACKED_LIMITS): UntrackedLineCounter {
+	const uncounted = new Set<string>();
+	const skip = (target: string) => {
+		uncounted.delete(target);
+		uncounted.add(target);
+		if (uncounted.size > UNCOUNTED_MAX) uncounted.delete(uncounted.values().next().value as string);
+		return 0;
+	};
+	return {
+		forRoot(root) {
+			let budget = limits.files;
+			return async (path) => {
+				const target = join(root, path);
+				if (budget <= 0) return skip(target);
+				budget -= 1;
+				try {
+					const info = await lstat(target);
+					if (!info.isFile() || info.size > limits.bytes) return skip(target);
+					const bytes = await readFile(target);
+					if (bytes.length > limits.bytes || bytes.includes(0)) return skip(target);
+					uncounted.delete(target);
+					const text = bytes.toString("utf8");
+					return text === "" ? 0 : text.split("\n").length - (text.endsWith("\n") ? 1 : 0);
+				} catch {
+					return skip(target);
+				}
+			};
+		},
+		uncounted: () => uncounted,
 	};
 }

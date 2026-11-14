@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -16,6 +16,8 @@ import {
 	type DesktopFeedTimers,
 } from "../lib/desktop-feed.ts";
 import { createDesktopFeedStore, desktopFeedFile } from "../lib/desktop-feed-store.ts";
+import { createUntrackedLineCounter } from "../lib/desktop-feed-sources.ts";
+import { SESSION_WORKTREE_ENTRY } from "../lib/session-worktree-registry.ts";
 import { changesModel, type ChangedFile } from "../lib/shell-changes.ts";
 import { DESKTOP_JOBS_SERVICE_CHANNEL, DESKTOP_JOBS_SERVICE_SCHEMA, type DesktopJobEntry } from "../lib/desktop-rpc-jobs.ts";
 import { DESKTOP_RPC_SCHEMA } from "../lib/desktop-rpc.ts";
@@ -248,6 +250,74 @@ test("S2: arrays and long strings are capped", () => {
 	assert.equal(snapshot.agents!.items.length, DESKTOP_FEED_LIMITS.agents);
 	assert.deepEqual(snapshot.agents!.spend, { runs: 80, tokens: 80, cost: 80 });
 	assert.ok(JSON.stringify(snapshot).length < 256 * 1024);
+});
+
+// ---- Untracked files (the artboard's "A  path  +64 −0") ----
+
+test("S8: untracked text files carry their line count; binary, oversized and over-budget files carry none", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "desktop-feed-untracked-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	writeFileSync(join(root, "notes.md"), "a\nb\nc\n");
+	writeFileSync(join(root, "tail.txt"), "x\ny");
+	writeFileSync(join(root, "empty.txt"), "");
+	writeFileSync(join(root, "logo.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0x0a]));
+	writeFileSync(join(root, "big.log"), "line\n".repeat(10));
+	writeFileSync(join(root, "late.md"), "one\n");
+	const counter = createUntrackedLineCounter({ bytes: 32, files: 6 });
+	const count = counter.forRoot(root);
+	assert.equal(await count("notes.md"), 3);
+	assert.equal(await count("tail.txt"), 2);
+	assert.equal(await count("empty.txt"), 0);
+	assert.equal(await count("logo.png"), 0);
+	assert.equal(await count("big.log"), 0);
+	assert.equal(await count("missing.md"), 0);
+	assert.equal(await count("late.md"), 0, "past the per-scan file budget nothing is read");
+	assert.deepEqual([...counter.uncounted()].sort(), ["big.log", "late.md", "logo.png", "missing.md"].map((name) => join(root, name)).sort());
+	// A later scan that can count a file again clears its mark.
+	writeFileSync(join(root, "logo.png"), "now text\n");
+	assert.equal(await counter.forRoot(root)("logo.png"), 1);
+	assert.equal(counter.uncounted().has(join(root, "logo.png")), false);
+});
+
+test("S8: an uncounted untracked file is published without counts", () => {
+	const files: ChangedFile[] = [
+		{ path: "assets/logo.png", added: 0, deleted: 0, status: "untracked" },
+		{ path: "docs/new.md", added: 10, deleted: 0, status: "untracked" },
+	];
+	const model = changesModel(files);
+	const snapshot = buildDesktopFeedSnapshot(fixtureInput({ changes: { model, worktrees: [{ root: "/w", branch: "feat/x", model }], uncounted: new Set(["/w/assets/logo.png"]) } }));
+	assert.deepEqual(snapshot.changes!.files, [
+		{ path: "assets/logo.png", status: "untracked", added: null, deleted: null },
+		{ path: "docs/new.md", status: "untracked", added: 10, deleted: 0 },
+	]);
+	assert.deepEqual(snapshot.changes!.summary, { files: 2, added: 10, deleted: 0 });
+});
+
+test("S8: the extension counts the lines of a session's untracked files", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "desktop-feed-root-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	writeFileSync(join(root, "main.js"), "1\n2\n3\n4\n");
+	writeFileSync(join(root, "mark.png"), Buffer.from([0, 1, 2]));
+	const git = () => async (args: string[]) => {
+		const cmd = args.join(" ");
+		if (cmd.startsWith("worktree list")) return { stdout: `worktree ${root}\0branch refs/heads/feat/x\0\0`, code: 0 };
+		if (cmd.startsWith("symbolic-ref")) return { stdout: "feat/x\n", code: 0 };
+		if (cmd.startsWith("rev-parse")) return { stdout: "abc\n", code: 0 };
+		if (cmd.startsWith("diff --numstat")) return { stdout: "", code: 0 };
+		if (cmd.startsWith("status")) return { stdout: "?? main.js\0?? mark.png\0", code: 0 };
+		return { stdout: "", code: 1 };
+	};
+	const h = feedHarness(t, { git, rootExists: () => true });
+	const ctx = fakeCtx({ cwd: root });
+	(ctx.entries as unknown[]).push({ type: "custom", customType: SESSION_WORKTREE_ENTRY, data: { sessionId: "sess-1", root } });
+	await h.start(ctx);
+	await settle();
+	h.clock.run();
+	assert.deepEqual(h.read().changes!.files, [
+		{ path: "main.js", status: "untracked", added: 4, deleted: 0 },
+		{ path: "mark.png", status: "untracked", added: null, deleted: null },
+	]);
+	assert.deepEqual(h.read().changes!.summary, { files: 2, added: 4, deleted: 0 });
 });
 
 // ---- Store and debounce ----

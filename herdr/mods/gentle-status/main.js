@@ -50,9 +50,10 @@ export default class GentleStatus extends View {
       bar = bar.child(div().child("No Gentle Shell session focused"));
     } else {
       // .phase: text colour, the phase word in accent 600.
+      // Without a phase: "ODD · todo 5 of 10", or "ODD —" when there is nothing to say.
       bar = bar.child(h_flex().gap(3.5).flex_none().text_color(c.text)
         .child("ODD")
-        .child(div().font_weight(600).text_color(a?.phase ? c.accent : c.muted).child(a?.phase ? cap(a.phase) : "—"))
+        .when(Boolean(a?.phase) || !position, (el) => el.child(div().font_weight(600).text_color(a?.phase ? c.accent : c.muted).child(a?.phase ? cap(a.phase) : "—")))
         .when(Boolean(position), (el) => el.child(`· ${position}`)));
       if (a?.streaming || a?.state === "working") {
         bar = bar.child(state(c, "work", a.streaming ? "streaming" : "working",
@@ -72,7 +73,8 @@ export default class GentleStatus extends View {
     }
     return bar.child(h_flex().id("palette").gap(6).items_center().cursor_pointer().hover((s) => s.text_color(c.text))
       .on_click(() => run("app.palette"))
-      .when(Boolean(key), (el) => el.child(kbd(c, key)))
+      // The artboard's kbd sits on the text baseline of an 18px line: 1px lower than centred.
+      .when(Boolean(key), (el) => el.child(kbd(c, key).mt(2)))
       .child("Commands"));
   }
 }

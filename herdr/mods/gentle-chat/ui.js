@@ -3,6 +3,7 @@
 // each one to its CSS line. `v` is the GentleChat view, `p` the palette (tokens.js).
 
 import { div, svg } from "gpui-kit";
+import { home } from "herdr";
 import { v_flex, h_flex, TextView, Textarea, Popover } from "gpui-base";
 import { alpha, mono, R } from "./tokens.js";
 import { money, prettyModel, seconds, parsePatch } from "./feed.js";
@@ -24,9 +25,16 @@ export const lane = (el) => div().flex_none().w_full().max_w(780).px(28).self_ce
 // .num (l.50): mono; tabular figures are the font's own.
 const num = (text, color) => div().font_family(mono()).when(Boolean(color), (el) => el.text_color(color)).child(text);
 
-// kbd (l.47): 0 5px, 1px line-strong, radius 5, muted 11px mono.
-const kbd = (p, text) => div().px(5).border(1).border_color(p.lineStrong).rounded(R.kbd).text_color(p.muted)
-  .text_size(11).font_family(mono()).child(text);
+// kbd (l.47): 0 5px, 1px line-strong, radius 5, muted 11px mono. An inline box is as tall as
+// the font's content area, not the line: 13.5 + 2 × 1 = 15.5 (measured in the render).
+const kbd = (p, text) => div().flex_none().px(5).border(1).border_color(p.lineStrong).rounded(R.kbd).text_color(p.muted)
+  .text_size(11).line_height("13.5px").font_family(mono()).child(text);
+
+// pi titles its terminal "π - <folder>": the name without the prefix.
+export const sessionTitle = (title) => String(title ?? "").replace(/^\s*π\s*[-–—·:]?\s*/u, "").trim();
+
+// Rough text widths for the header's fit (12px: sans ≈ 0.56 em per character, mono 0.5).
+const textW = (s, size = 12, monoFont = false) => String(s ?? "").length * size * (monoFont ? 0.5 : 0.56);
 
 // .state (l.79-88): a 7px dot (a ring for idle, dashed for queue) and a label, never colour alone.
 // The ring is ::before, which `* { box-sizing: border-box }` does not reach: 5px + 2 × 1.5px = 8px.
@@ -54,13 +62,32 @@ function btn(p, id, label, { danger = false, tip = null, onClick = null, iconNam
 
 const chev = (open) => icon(open ? "down" : "chev", 13);
 
+// A tool's path as the artboard writes it: relative to the session's project or one of its
+// worktrees ("herdr/mods/gentle-chat/main.js"), else from the home folder ("~/…").
+function shortPath(v, path) {
+  const s = v.snap;
+  const roots = [s?.project?.cwd, ...(s?.changes?.worktrees ?? []).map((w) => w?.root), v.feed.cwd, v.cwd]
+    .filter((r) => typeof r === "string" && r.length > 1).map((r) => r.replace(/\/+$/, "")).sort((a, b) => b.length - a.length);
+  const root = roots.find((r) => path.startsWith(r + "/"));
+  if (root) return path.slice(root.length + 1);
+  let h = "";
+  try { h = home(); } catch { h = ""; }
+  return h && path.startsWith(h + "/") ? "~" + path.slice(h.length) : path;
+}
+
+// The summary beside a tool's name, with its path shortened.
+function toolSay(v, call) {
+  const path = [call.args?.path, call.args?.file_path].find((x) => typeof x === "string" && x);
+  return path && call.summary.startsWith(path) ? shortPath(v, path) + call.summary.slice(path.length) : call.summary;
+}
+
 // ---------------------------------------------------------------- 4a header (l.259-270, 369-399)
 
 export function header(v, p) {
   const s = v.snap;
   const f = v.feed;
   const { stack } = v.stackProps();
-  const title = s?.identity?.sessionName || f.name || "Gentle Shell";
+  const title = s?.identity?.sessionName || f.name || sessionTitle(v.agentInfo?.title) || "Gentle Shell";
   const row1 = h_flex().min_h(30).items_center().justify_between().gap(16).min_w(0)
     .child(div().id("title").min_w(0).truncate().text_size(14).font_semibold()
       .tooltip(v.address ? `${v.address}${v.file ? ` · ${v.file}` : ""}` : "No Gentle Shell terminal")
@@ -71,6 +98,7 @@ export function header(v, p) {
     .child(facts(v, p));
   return v_flex().id("chat-head").flex_none().gap(4).px(14).pt(8).pb(7).border_b(1).border_color(p.line).bg(p.chrome)
     .rounded_t(R.window - 1)
+    .on_size_change((size, cx) => { if (Math.abs((v.headW ?? 0) - size.width) >= 1) { v.headW = size.width; cx.notify(); } })
     .on_mouse_down("left", () => v.focus.focus())
     .child(row1).child(row2);
 }
@@ -87,11 +115,12 @@ function viewSwitch(v, p) {
     .child(seg("sw-term", "term", "Terminal", !showing, (_e, cx) => v.go("terminal", cx)));
 }
 
-// .crumbs (l.263-264): project / branch · N changed.
+// .crumbs (l.263-264): project / branch · N changed. The project is the Herdr space the session
+// runs in ("gentle-pi"), else its folder's name.
 function crumbs(v, p) {
   const pr = v.snap?.project;
   const cwd = pr?.cwd ?? v.feed.cwd ?? v.cwd;
-  const project = cwd ? cwd.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || cwd : null;
+  const project = v.agentInfo?.space_name || (cwd ? cwd.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || cwd : null);
   const sep = (t) => div().text_color(p.faint).child(t);
   const parts = [icon("folder", 13), div().child(project ?? "No project")];
   if (pr?.branch) parts.push(sep("/"), icon("branch", 13), div().child(pr.branch));
@@ -134,8 +163,26 @@ function facts(v, p) {
   const total = Number.isFinite(s?.cost?.total) ? s.cost.total : f.total;
   const costFact = fact("f-cost", [k("Cost"), num(money(total))], s?.cost?.subscription ? "Session spend (subscription)" : "Session spend");
 
+  // Narrow cards drop facts instead of clipping (the artboard has room for all): Persona first,
+  // then Ctx, then Model, then Cost; the permission menu always stays. Widths are estimates
+  // (padding 4 + 4, gap 6, gap 14 between facts); the crumbs keep 180px.
+  const permLabel = PERM.find((m) => m.mode === s?.permission?.mode)?.label ?? (s?.permission?.mode || "—");
+  const est = {
+    persona: 14 + 13 + 6 + textW(persona ?? "No persona"),
+    ctx: 14 + 8 + textW("Ctx") + 6 + 46 + 6 + textW(pct === null ? "—" : `${pct}%`, 12, true),
+    model: 14 + 8 + textW("Model") + 6 + textW(model || "—"),
+    cost: 14 + 8 + textW("Cost") + 6 + textW(money(total), 12, true),
+  };
+  const room = Number.isFinite(v.headW) ? v.headW - 28 - 16 - 180 : Infinity;
+  let need = 20 + 13 + 6 + textW(permLabel) + 6 + 13 + Object.values(est).reduce((a, b) => a + b, 0);
+  const drop = new Set();
+  for (const k of ["persona", "ctx", "model", "cost"]) if (need > room) { drop.add(k); need -= est[k]; }
   return h_flex().flex_none().items_center().gap(14).text_size(12)
-    .child(modelFact).child(personaFact).child(ctxFact).child(costFact).child(permission(v, p));
+    .when(!drop.has("model"), (el) => el.child(modelFact))
+    .when(!drop.has("persona"), (el) => el.child(personaFact))
+    .when(!drop.has("ctx"), (el) => el.child(ctxFact))
+    .when(!drop.has("cost"), (el) => el.child(costFact))
+    .child(permission(v, p));
 }
 
 // .bar (l.89-91): 4px, pill, raised groove.
@@ -291,7 +338,7 @@ function toolCard(v, p, call, key, live) {
     .child(summaryRow(v, p, id, [
       mark(p, call, live),
       div().flex_none().font_semibold().child(call.name),
-      div().flex_1().min_w(0).truncate().font_family(mono()).text_size(12).text_color(p.muted).child(call.summary + countNote(call)),
+      div().flex_1().min_w(0).truncate().font_family(mono()).text_size(12).text_color(p.muted).child(toolSay(v, call) + countNote(call)),
       note ? div().flex_none().text_color(p.muted).child(note) : null,
       chev(open),
     ]))
@@ -347,7 +394,7 @@ function diffCard(v, p, call, key, patch, live) {
     else rows.push(row(null, String(r.ln), "", null, r.text));
   }
   if (h.rows.length > HUNK_ROWS) rows.push(row(null, "", "", null, `… ${h.rows.length - HUNK_ROWS} more lines`, p.muted));
-  const path = typeof call.args?.path === "string" ? call.args.path : call.summary;
+  const path = typeof call.args?.path === "string" ? shortPath(v, call.args.path) : toolSay(v, call);
   return v_flex().w_full().border(1).border_color(p.line).bg(p.surface).rounded(R.sm)
     .child(summaryRow(v, p, id, [
       mark(p, call, live),
@@ -388,6 +435,7 @@ function subagentCard(v, p, call, key) {
   const model = prettyModel(live?.model ?? started?.model);
   const cost = live?.spend?.cost;
   const step = live?.step ?? started?.lastStep;
+  const running = kind === "work" || kind === "need" || kind === "queue";
   return v_flex().w_full().gap(4).px(12).py(10).border(1).border_color(p.lineStrong).rounded(R.md).bg(p.surface)
     .child(h_flex().items_start().gap(12)
       .child(v_flex().flex_1().min_w(0).gap(4)
@@ -398,10 +446,11 @@ function subagentCard(v, p, call, key) {
           .child(stateLabel(p, kind, label))
           .when(Boolean(model), (el) => el.child(div().child(model)))
           .when(Number.isFinite(cost), (el) => el.child(num(money(cost))))))
-      // TODO(T7): View opens the subagent; Stop cancels it with the CLI's authority.
-      .child(h_flex().flex_none().gap(6).items_start()
+      // TODO(T7): View opens the subagent; Stop cancels it with the CLI's authority. Only a
+      // subagent that still runs has them (the inspector's .acts, l.213).
+      .when(running, (el) => el.child(h_flex().flex_none().gap(6).items_start()
         .child(btn(p, `sub-view-${key}`, "View", { tip: `View: ${T7}` }))
-        .child(btn(p, `sub-stop-${key}`, "Stop", { danger: true, iconName: "stop", tip: `Stop: ${T7}` }))))
+        .child(btn(p, `sub-stop-${key}`, "Stop", { danger: true, iconName: "stop", tip: `Stop: ${T7}` })))))
     .when(Boolean(step) && step !== status, (el) => el.child(div().mt(2).pt(6).border_t(1).border_color(p.line)
       .font_family(mono()).text_size(12).text_color(p.muted).truncate().child(`› ${step}`)));
 }
@@ -471,14 +520,22 @@ export function composer(v, p, pq) {
       .bg(v.address ? p.accent : p.raised).text_color(v.address ? p.onAccent : p.faint).font_semibold().text_size(13)
       .cursor_pointer().on_click((_e, cx) => v.send(cx))
       .child(v.sending ? div().frames(SPINNER, 90) : icon("send", 13)).child("Send"));
-  const hint = (key, text) => h_flex().items_center().gap(3).child(kbd(p, key)).child(text);
+  const hint = (key, text) => h_flex().flex_none().items_center().gap(3).child(kbd(p, key)).child(text);
+  // The hints row is one line: a narrow card drops hints from the right (Esc Esc, then ⌘J,
+  // then /, then ⇧ Enter) instead of wrapping or clipping; Enter send stays.
+  const w = Number.isFinite(v.composerW) ? Math.min(780, v.composerW - 32) : 780;
+  const show = { esc: w >= 600, term: w >= 430, cmd: w >= 340, nl: w >= 250 };
   return v_flex().id("composer").flex_none().px(16).pt(10).pb(12).border_t(1).border_color(p.line).bg(p.chrome)
     .rounded_b(R.window - 1)
+    .on_size_change((size, cx) => { if (Math.abs((v.composerW ?? 0) - size.width) >= 1) { v.composerW = size.width; cx.notify(); } })
     .child(v_flex().w_full().max_w(780).self_center()
       .child(field)
       .when(Boolean(v.error), (el) => el.child(div().mt(6).text_size(12).text_color(p.err).child(v.error)))
-      .child(h_flex().mt(6).gap(14).items_center().text_size(11.5).text_color(p.muted)
-        .child(hint("Enter", "send")).child(hint("⇧ Enter", "new line")).child(hint("/", "commands")).child(hint("⌘J", "Terminal"))
+      .child(h_flex().mt(6).gap(14).items_center().overflow_hidden().whitespace_nowrap().text_size(11.5).text_color(p.muted)
+        .child(hint("Enter", "send"))
+        .when(show.nl, (el) => el.child(hint("⇧ Enter", "new line")))
+        .when(show.cmd, (el) => el.child(hint("/", "commands")))
+        .when(show.term, (el) => el.child(hint("⌘J", "Terminal")))
         .child(div().flex_1())
-        .child(div().child("Esc Esc stops the agent"))));
+        .when(show.esc, (el) => el.child(div().flex_none().child("Esc Esc stops the agent")))));
 }

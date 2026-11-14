@@ -29,9 +29,7 @@ composer) as built by `main.js` + `ui.js` + `tokens.js`. "l.N" is the line in
   below was read back from that spec. A second fixture checked the answered question
   (pressed option, others at 0.55, "Answer sent: 2. The agent continues."), the Super-YOLO pill
   (`#e0c27a` text, `#e0c27a99` border, `#e0c27a14` fill) and the empty context ("—").
-- Not done here: a screenshot of the mod. `herdr-app shot` needs the running window; a second
-  window on a scratch `HERDR_APP_HOME` would share herdr-core and its layout document with the
-  person's live window, so it was not started. The live side-by-side is the parent's step.
+- Live side-by-side: see "Live side-by-side" at the end (the person's window, 1908×1019).
 
 ## Colours
 
@@ -170,3 +168,65 @@ hex. `LAYOUT_COLORS` is the layout root `"colors"` that makes the roles equal th
 | Model / Persona open `/gentle:models`, `/gentle:persona`; permission items switch mode; View / Stop; Open in Changes; attach image; "Esc Esc" | drawn with their tooltips; no action | T7 (marked `TODO(T7)` in the code) |
 | Clicking an option answers through an action | presses the number in the TUI, then Enter (`hc keys`) | T7 replaces it (`TODO(T7)` in `main.js`) |
 | Fonts on the reference machine | Inter is not installed, so the artboard renders in the system font; the mod picks the same stack | `fonts()` decides at run time. Under `herdr-app check` it returns an empty list, so the check prints the stacks' last entries (`.SystemUIFont`, `Menlo`); IosevkaTerm NF is installed here, so the window should pick it: confirm in the live shot |
+
+## Live side-by-side (1908×1019, S8)
+
+Method: the artboard rendered by headless Chrome at the window's logical size
+(`--force-device-scale-factor=2 --window-size=1908,1019`, a scratch copy whose CSS hides the page
+caption and gives `.window` 1908×1019 with no page border) against `herdr-app shot` of the
+person's window (2×). Pixels sampled with PIL along fixed rows and columns at the same logical
+coordinates. Real data: t5 (this worktree, empty session) and t6 (a 2.2 MB copy of a real
+session resumed with `--session /tmp/…`, 52 entries: 19 user messages, 66 thinking blocks, 98
+tools, 10 `subagent_run`, 2 edits with patches). Scrolled-back states (diff card, subagent card)
+were seen through a temporary install of this mod that cut the log at an entry, then the real
+mod was installed again.
+
+Measured equal (logical px, live = artboard): card frame 261…1519 and 528…1252 lanes; header
+51…126 with its 1px rule at 126; composer rule 876, field 887…947, hints kbd 954…969.5 ±0.5,
+composer bottom 982; tool card 34.5 tall, x 528…1252; subagent card x 528…1252, border
+`#563040`; diff hunk header row 19 px on `#241822`, rows 19 px, added `#2c262b`, deleted
+`#311d27`; bubble 1 + 9 + 21.7 + 9 + 1; every background (`#060407` log, card gaps and
+inspector gap; `#100a0f` header, composer, inspector, sidebar, status).
+
+Differences found, and what happened to each:
+
+1. Fixed: the log was not at the newest entry (scroll_to_item reveals with the least scroll and
+   ran before the markdown settled). Now a 1px sentinel after the last row is the target, asked
+   again while the last row changes height; scrolling up unpins it; "Show earlier" unpins it.
+2. Fixed: a session file outside the home folder was not read at all (Herdr grants mods read
+   access to the home folder only: "outside every granted read root"). `readAfter` falls back
+   to one `sh` (`wc -c` + `tail -c +N | head -c`, the path as a positional argument) through
+   `exec`, still incremental by byte offset. The 2.2 MB copy showed within ~2 s of the mod
+   loading.
+3. Fixed: the crumb named the folder (`herdr-gentle-shell`); it names the project, the Herdr
+   space (`gentle-pi`), as the artboard; the folder is the fallback.
+4. Fixed: with no session name the title fell back to "Gentle Shell"; it now uses the
+   terminal title without pi's `π - ` prefix (same rule as the tabs and agents list).
+5. Fixed: tool and diff paths were absolute; they are relative to the session's project or one
+   of its worktrees (`herdr/mods/gentle-chat/main.js`), else `~/…`.
+6. Fixed: a finished subagent card showed View / Stop; only a running, waiting or queued one has
+   them (the inspector's rule, l.213).
+7. Fixed: kbd boxes were 18.5 / 17 px tall; 15.5 (11px content area 13.5 + borders), which also
+   brought the composer from 107.5 to the artboard's 106.
+8. Fixed: empty state. The artboard has none; it is now a centred block in the log (the mark in
+   `--faint`, 14px semibold line, 12.5px muted line), not text pinned to the top-left.
+9. Fixed (not seen live: the window was not resized): narrow header. The facts row drops
+   Persona, then Ctx, then Model, then Cost when the header is narrower than their estimated
+   width plus 180px for the crumbs; the permission menu always stays. Narrow composer: the
+   hints row drops Esc Esc, ⌘J, / and ⇧ Enter in that order (Enter send stays); the field keeps
+   the artboard's structure.
+10. Data / content, not a defect: the artboard's demo content (title, "Opus 5.5 · high ·
+    balanced", "Gentleman", 38 %, $3.42, Auto) differs from the live sessions'; the formats
+    match ("Opus 5.5 · medium · claude (session)", "No persona", "26%", "$5.78", Super-YOLO pill).
+11. Herdr limitation (unchanged): markdown inline code, lists and strong use Herdr's markdown
+    styles (`TextView.markdown`), not `.md code` accent-soft on raised; no letter spacing; no
+    chevron rotation; Textarea placeholder colour.
+12. Not in the artboard: per-message cost (the artboard's replies carry none; the header's Cost
+    is the session total) and subagent output notes (`custom_message`), drawn as a note with a
+    2px accent edge.
+13. Not seen live: the question card (no session had an open question; `ask_user_question` in
+    t6's history is a finished tool card), a running subagent (all ten in t6 are finished), the
+    Thinking… / spinner states, the Terminal side of the switch, the permission menu open.
+    They were checked with the fixture spec above.
+14. 1px residual: the subagent card is 62.5 px without its last-step line where the CSS gives
+    63.5 (title row 19.5 + facts 18 + paddings).

@@ -9,7 +9,7 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex, ScrollHandle } from "gpui-base";
 import { spaces, agents, terminals, run, openOverlay, window, layout, settings } from "herdr";
-import { tokens, stateDot } from "./tokens.js";
+import { tokens, stateDot, sessionTitle } from "./tokens.js";
 import { FeedSource, isGentle } from "./snapshot.js";
 
 function find(node, id) {
@@ -32,14 +32,15 @@ export default class GentleTabs extends View {
     this.source.start(cx);
   }
 
-  // The tab's name: the Gentle Shell session name of its agent, else the name it was given.
+  // The tab's name: the Gentle Shell session name of its agent, else the name someone gave the
+  // tab, else the terminal's own title without pi's "π - " prefix.
   name(tab) {
     const a = agents().find((x) => x.tab === tab.id && isGentle(x.app));
     const term = a && terminals().find((t) => t.address === a.address);
     const session = this.source.of(term)?.identity?.sessionName;
     if (session) return session;
     if (tab.named || !/^\d+$/.test(tab.name)) return tab.name;
-    return a?.title?.trim() || (a ? "Gentle Shell" : `Tab ${tab.name}`);
+    return sessionTitle(a?.title) || (a ? "Gentle Shell" : `Tab ${tab.name}`);
   }
 
   item(c, tab, i, shown, space, active) {
@@ -85,14 +86,15 @@ export default class GentleTabs extends View {
       .border_b(1).border_color(c.line)
       .on_mouse_up("left", () => { this.pressed = null; })
       .on_scroll_wheel((e) => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
-      .child(h_flex().id("tab-scroll").min_w(0).h_full().items_end().gap(2).overflow_x_scrollbar().track_scroll(this.scroll)
+      // .tab-add (a 32px icon button, margin 0 0 4px 4px) right after the last tab, as in the
+      // artboard: it is the scroller's last item, so it follows the tabs instead of the bar's end.
+      .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_end().gap(2).overflow_x_scrollbar().track_scroll(this.scroll)
         .on_size_change((_s, cx) => { if (active >= 0) { this.scroll.scroll_to_item(active); cx.notify(); } })
-        .children(shown.map((t, i) => this.item(c, t, i, shown, space, active))))
-      // .tab-add: a 32px icon button, margin 0 0 4px 4px.
-      .child(div().id("tab-new").size(32).ml(4).mb(4).flex_none().flex().items_center().justify_center().rounded(8).text_color(c.muted)
-        .hover((s) => s.bg(c.selected).text_color(c.text)).tooltip("New Gentle Shell session")
-        .on_mouse_down("left", stop)
-        .on_click(() => run("tab.new", { argv: ["gentle-shell"] }))
-        .child(svg("mods/gentle-tabs/icons/plus.svg").size(13)));
+        .children(shown.map((t, i) => this.item(c, t, i, shown, space, active)))
+        .child(div().id("tab-new").size(32).ml(4).mb(4).flex_none().flex().items_center().justify_center().rounded(8).text_color(c.muted)
+          .hover((s) => s.bg(c.selected).text_color(c.text)).tooltip("New Gentle Shell session")
+          .on_mouse_down("left", stop)
+          .on_click(() => run("tab.new", { argv: ["gentle-shell"] }))
+          .child(svg("mods/gentle-tabs/icons/plus.svg").size(13))));
   }
 }

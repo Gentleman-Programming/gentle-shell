@@ -11,7 +11,7 @@ Branch `design/herdr-gentle-ui`. Spike code lives in `~/.config/herdr-app/mods/t
 - S6 "Viewer: render a Mermaid diagram and Markdown inside a mod" — pass when "the token-refresh diagram and `plan.md` display correctly".
 
 ## Tasks
-- T1 S1 sprite frames via `.frames()` — inline — in progress (sbix colour font fails; next: layered monochrome glyph fonts)
+- T1 S1 sprite frames via `.frames()` — inline — done: mechanism pass, CPU fail (L10)
 - T2 S2 painted PNG crispness at ×2 — inline — pending
 - T3 S5 overlays + keyboard — inline — pending
 - T4 S6 Markdown (`TextView.markdown`) + Mermaid as SVG/PNG — inline — pending
@@ -28,3 +28,5 @@ Branch `design/herdr-gentle-ui`. Spike code lives in `~/.config/herdr-app/mods/t
 - L6: Next attempt: layered monochrome glyph fonts (one outline glyph per frame per colour layer: outline, skin, hair, shirt, pants), each layer an element tinted with `text_color` and animated with `.frames()` on the shared clock, stacked absolutely. Then compare CPU with a no-animation baseline.
 - L7: Layered monochrome font (TowerPix, 6 colour layers × 12 frames, outline glyphs) with PUA codepoints: still missing-glyph boxes. Control test: the win98 mod's "PxPlus IBM VGA 8x16" renders in the same overlay, so mod fonts do load in overlays. Remapped the 72 glyphs to ASCII 0x21–0x68: layers now render tinted per element, but several characters fall back to the UI font (letters like R, M, ")" appear), so GPUI's per-character font choice is not reliable for this font yet. Cause unknown; next check: which codepoints fall back, cmap formats, glyph names, and whether `.frames()` text keeps `font_family`.
 - L8: CPU of the Herdr app process (8 s samples): 15 layered sprites animated (90 `.frames` layers + 8 `.loop`) ≈ 15–20 %; same overlay static ≈ 0.1–0.3 %; no overlay ≈ 0.1 %. Animation cost is real; the final design must cap animated sprites or lower the frame rate.
+- L9: Probe grid showed every TowerPix character falling back to the UI font: Herdr/GPUI ignored the fontBuilder-made TTF entirely. Rebuilding the same glyphs on top of the win98 template (PxPlus IBM VGA 8x16, renamed TowerPix, glyphs scaled to its 1600 UPM) makes all 72 glyphs render. Scripts: design/herdr-gentle-shell/spikes/{mklayers.py,fromtemplate.py,main.layers.js}.
+- L10: S1 verdict — mechanism PASS: 15 characters × 6 tinted layers stepped natively by `.frames()` (walk 8 f @125 ms, type 4 f @170 ms) render in colour and animate (two shots 0.4 s apart differ), one font for every shirt colour. Cost criterion FAIL: 14–18 % app CPU vs 0.1 % static. Design rule: animate only the shown floor, ≤3 layers per sprite or ≤6 fps, idle poses static.

@@ -774,8 +774,10 @@ test("Windows bootstrap bridge admits only explicit partial or initialized publi
 	});
 	// The wire accepts at most 64 records: 65 valid ones are still a protocol failure rather than a
 	// busy, which is why the helper refuses the over-bound reply before it is assembled.
-	const overBound = Array.from({ length: 65 }, (_, index) => ({ version: 1, sessionId: `s${index}`, endpoint: "\\\\\\.\\pipe\\gentle-pi-over-bound", createdAt: index }));
+	const overBound = Array.from({ length: 65 }, (_, index) => ({ version: 1, sessionId: `s${index}`, endpoint: "\\\\.\\pipe\\gentle-pi-over-bound", createdAt: index }));
 	assert.throws(() => parseWindowsHostFrame(JSON.stringify({ requestId: "records-1", ok: true, result: { records: overBound } })), /invalid Windows transport frame/);
+	// The endpoints are valid, so only the record bound rejects the larger frame.
+	assert.doesNotThrow(() => parseWindowsHostFrame(JSON.stringify({ requestId: "records-2", ok: true, result: { records: overBound.slice(0, 64) } })), "the 64-record frame must parse: the bound alone rejects 65");
 	assert.throws(() => parseWindowsHostFrame('{"requestId":"start-1","ok":true,"result":{"ready":true}}'), /invalid Windows transport frame/);
 });
 

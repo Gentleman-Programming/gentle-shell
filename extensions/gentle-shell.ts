@@ -14,14 +14,14 @@ import { fileURLToPath } from "node:url";
 import { profilesFilePath, profileRoleEntries, readProfilesFileResult } from "../lib/agent-profiles.ts";
 import { resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles } from "../lib/session-profile-freeze.ts";
 import * as os from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, basename } from "node:path";
 import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, renderShellStatusBar, renderShellStatusSections, renderShellChromeBar, renderShellChromePad, renderShellTitleRow, type StatusSection, type StatusTarget, keepNativeWorkingRow, shellEnabled, shellHeaderUsageHit, shellJobsCount, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
-import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE, WorktreeChangesTracker, changesDigest, renderChangesWidget, type ChangedFile, type ChangesModel, type FileRevision, type GitRunner, type LineCounter, type WorktreeChanges } from "../lib/shell-changes.ts";
+import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE, ChangesTracker, WorktreeChangesTracker, changesDigest, renderChangesWidget, type ChangedFile, type ChangesModel, type FileRevision, type GitRunner, type LineCounter, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { windowsProcessTreeKiller, type ProcessTreeKiller } from "../lib/native-review-cli.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
-import { CARD_STYLE, CARD_TONE, cardStyle, panelHeaderRow, renderCard, setCardStyle, type Card, type CardTheme } from "../lib/shell-card.ts";
+import { CARD_STYLE, CARD_TONE, cardStyle, panelHeaderRow, panelInnerWidth, renderCard, setCardStyle, type Card, type CardTheme } from "../lib/shell-card.ts";
 import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
 import { CARD_CONTENT, resolveCardContent, setCardContent, writeCardContent } from "../lib/card-content-policy.ts";
 import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
@@ -48,6 +48,7 @@ import { isInteractiveMode } from "../lib/rpc-host.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { resolveAnimationPolicy, writeAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy, type VimPolicy } from "../lib/vim-policy.ts";
+import { resolveSidebarTabs, writeSidebarTabs } from "../lib/sidebar-tabs-policy.ts";
 import { resolveHistoryCapture, writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
 import { HERDR_TASK_SUMMARY_CHANGED, resolveHerdrTaskSummarySettings, writeHerdrTaskSummarySettings } from "../lib/herdr-task-summary-policy.ts";
 import { createRequire } from "node:module";
@@ -141,7 +142,9 @@ import {
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { releaseSidebarHover, setSidebarHover, sidebarHeader, sidebarPart, sidebarState, sidebarStatusBar, VISUAL_SETTINGS_CHANGED, type SidebarRail } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar, narrowStatusOwner, SIDEBAR_BREAKPOINT, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
-import { panelSheetBackHit, renderPanelSheet, renderWorkRow, setChromeSurface, workRowLead } from "../lib/shell-panel.ts";
+import { SidebarGitCards } from "../lib/git-cards.ts";
+import { discoverSidebarGitRoots, type SidebarGitRoots } from "../lib/sidebar-git-roots.ts";
+import { chromeSurface, panelSheetBackHit, renderPanelSheet, renderWorkRow, setChromeSurface, workRowLead } from "../lib/shell-panel.ts";
 import { installPagePaint, type PageTheme } from "../lib/shell-page.ts";
 import { layoutSchematic } from "../lib/visual-layout-preview.ts";
 import { collectSessionStats, type SessionStats } from "../lib/shell-stats.ts";
@@ -199,6 +202,7 @@ export interface ShellDeps {
 	gitRunner(cwd: string, maxBuffer?: number): GitRunner;
 	/** A root Changes may scan: removed worktrees and leftover directories are skipped. */
 	rootExists(root: string): boolean;
+	/** The Vim editor adapter version injected by deterministic tests. */
 	vimRuntimeVersion?(): string | undefined;
 	/** Clipboard image source for the prompt's attachment chips; tests inject a fake. */
 	readClipboardImage?(): Promise<ClipboardImage | null>;
@@ -206,6 +210,10 @@ export interface ShellDeps {
 
 export type ActiveProfileReader = (() => string | undefined) & {
 	tier(): ShellBarModel["profileTier"];
+	/** The configured profile name (no origin label); memory-only snapshot like tier(). */
+	configured(): string | undefined;
+	/** The cached role→model routing rows of a profile, defaulting to the configured one; memory-only snapshot. */
+	routes(profile?: string): Array<{ role: string; model: string; effort?: string }>;
 	bind(cwd: string, resolveWorktree: WorktreeResolver, sessionId?: string): boolean;
 	refresh(): boolean;
 	reset(): void;
@@ -218,12 +226,14 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 	let fingerprint: string | undefined;
 	let name: string | undefined;
 	let tiers: Record<string, ShellBarModel["profileTier"]> = {};
+	let routes: Record<string, Array<{ role: string; model: string }>> = {};
 	let effectiveTier: ShellBarModel["profileTier"];
 	let bound = false;
 	let cwd: string | undefined;
 	let identity: WorktreeIdentity | undefined;
 	let sessionId: string | undefined;
 	let effective: string | undefined;
+	let effectiveConfig: string | undefined;
 	const global = () => {
 		try {
 			const stat = statSync(path, { bigint: true });
@@ -232,12 +242,14 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 				const result = readProfilesFileResult(path);
 				name = result.status === "valid" ? result.file.active : undefined;
 				tiers = result.status === "valid" ? Object.fromEntries(Object.entries(result.file.profiles).map(([name, config]) => [name, config.orchestrator?.tier])) : {};
+				routes = result.status === "valid" ? Object.fromEntries(Object.entries(result.file.profiles).map(([profileName, config]) => [profileName, profileRoleEntries(config).map(([role, entry]) => ({ role, model: entry.model ?? "inherit", effort: entry.thinking }))])) : {};
 				fingerprint = next;
 			}
 			return name;
 		} catch {
 			fingerprint = undefined;
 			name = undefined;
+			routes = {};
 			return undefined;
 		}
 	};
@@ -247,6 +259,11 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 		const active = global();
 		return active ? tiers[active] : undefined;
 	};
+	reader.configured = () => {
+		if (bound) return effectiveConfig;
+		return global() ? name : undefined;
+	};
+	reader.routes = (profile?: string) => routes[profile ?? (bound ? effectiveConfig : name)] ?? [];
 	reader.refresh = () => {
 		if (!bound) return false;
 		// gentle-shell#1064: the status shows the profile launches use, through
@@ -268,6 +285,7 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 		const changed = next !== effective || nextTier !== effectiveTier;
 		effective = next;
 		effectiveTier = nextTier;
+		effectiveConfig = configuredName;
 		return changed;
 	};
 	reader.bind = (nextCwd, resolveWorktree, nextSessionId) => {
@@ -278,7 +296,7 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 		bound = true;
 		return reader.refresh();
 	};
-	reader.reset = () => { bound = false; cwd = undefined; identity = undefined; sessionId = undefined; effective = undefined; effectiveTier = undefined; };
+	reader.reset = () => { bound = false; cwd = undefined; identity = undefined; sessionId = undefined; effective = undefined; effectiveTier = undefined; effectiveConfig = undefined; };
 	return reader;
 }
 
@@ -1774,12 +1792,15 @@ function changesFingerprint(model: ChangesModel): string {
 }
 
 interface OverlayDeps {
+	available?(): boolean;
+	initial?: { root: string; path: string };
 	loadDiff(root: string, file: ChangedFile): Promise<string>;
 	worktrees(): WorktreeChanges[];
 	refresh(): Promise<ChangesModel>;
 	apply(ctx: ExtensionContext, model: ChangesModel): void;
-	pollMs: number;
+	pollMs?: number;
 }
+
 
 // The overlay polls each root's Git state while it is open; diffs load lazily.
 // Like Gentle Agents it takes the whole terminal, and the native fullscreen
@@ -1787,19 +1808,42 @@ interface OverlayDeps {
 async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps): Promise<void> {
 	let host: ExternalEditorHost | undefined;
 	let view: WorktreeChangesView | undefined;
+	let open = true;
+	const available = () => open && (deps.available?.() ?? true);
+	let refreshing = false;
+	let refreshQueued = false;
 	const refresh = async () => {
-		const latest = await deps.refresh();
-		view?.update(deps.worktrees());
-		deps.apply(ctx, latest);
+		if (!available()) return;
+		if (!deps.available) {
+			const latest = await deps.refresh();
+			view?.update(deps.worktrees());
+			deps.apply(ctx, latest);
+			return;
+		}
+		if (refreshing) { refreshQueued = true; return; }
+		refreshing = true;
+		try {
+			do {
+				refreshQueued = false;
+				const latest = await deps.refresh();
+				if (!available()) return;
+				view?.update(deps.worktrees());
+				deps.apply(ctx, latest);
+			} while (refreshQueued && available());
+		} finally {
+			refreshing = false;
+		}
 	};
-	const poll = setInterval(() => void refresh().catch(() => {}), deps.pollMs);
-	poll.unref();
+	const poll = deps.pollMs === undefined ? undefined : setInterval(() => void refresh().catch(() => {}), deps.pollMs);
+	poll?.unref();
 	try {
 		const chosen = await ctx.ui.custom<{ root: string; file: ChangedFile } | null>(
 			(tui, theme, _keybindings, done) => {
-				const close = withOverlayRepaint(tui, done);
+				const finish = withOverlayRepaint(tui, done);
+				const close = (value: { root: string; file: ChangedFile } | null) => { open = false; finish(value); };
 				host = tui;
 				view = new WorktreeChangesView(deps.worktrees(), {
+					initial: deps.initial,
 					theme,
 					rows: () => Math.max(0, tui.terminal.rows),
 					loadDiff: deps.loadDiff,
@@ -1814,14 +1858,15 @@ async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps): Pro
 			},
 			{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } },
 		);
-		if (!chosen || !host) return;
+		if (!chosen || !host || !(deps.available?.() ?? true)) return;
 		try {
 			if (!openInExternalEditor(host, chosen.file.path, process.env, spawnSync, chosen.root)) ctx.ui.notify("No editor configured. Set $VISUAL or $EDITOR.", "warning");
 		} catch (error) {
 			ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
 		}
 	} finally {
-		clearInterval(poll);
+		open = false;
+		if (poll) clearInterval(poll);
 		view?.dispose();
 		view = undefined;
 	}
@@ -2058,10 +2103,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const deps: ShellDeps = { ...defaultShellDeps, activeProfile: profileReader, ...overrides };
 	let closeCustomize: (() => void) | undefined;
 	let customizeGeneration = 0;
-	let profilePoll: ReturnType<typeof setInterval> | undefined;
 	const stopProfilePoll = () => {
-		if (profilePoll) clearInterval(profilePoll);
-		profilePoll = undefined;
 		profileReader.reset();
 	};
 	// A full subscription window makes model fallbacks skip that provider until it resets.
@@ -2494,6 +2536,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const animationOptions = { gentlePiConfigHome: doubleEscCancelConfigHome };
 	let animationPolicy = resolveAnimationPolicy(animationOptions).policy;
 	let vimPolicy = resolveVimPolicy(animationOptions).policy;
+	let tabsSettings = resolveSidebarTabs(animationOptions);
 	// Conversation cards read the style from a process-wide slot; the saved
 	// preference fills it at startup and again on every session start.
 	const applyCardStyle = () => setCardStyle(resolveCardStyle(animationOptions).style);
@@ -2530,6 +2573,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let registry: SessionWorktreeRegistry | undefined;
 	let currentContext: ExtensionContext | undefined;
 	let disposeFooter: (() => void) | undefined;
+	let refreshSidebarHistory: (() => Promise<void>) | undefined;
+	let refreshSidebarDiff: (() => Promise<void>) | undefined;
+	let toggleSidebarDiff: (() => void) | undefined;
+	let toggleSidebarHistory: (() => void) | undefined;
 	let review: ReviewSidebarSnapshot | undefined;
 	let runningJobs: RunningJobDisplay[] | undefined;
 	let jobsCollapsed = false;
@@ -2563,6 +2610,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		showChanges(ctx, model, visualSettings.visibility.changes, (width) => groupedChangesOwner(width));
 	};
 	const gitForRoot = (root: string) => deps.gitRunner(root);
+	// A Git discovery failure is the same as no Git root: an injected resolver
+	// that throws must never abort session startup.
+	const worktreeOrNone: WorktreeResolver = (path, cwd) => {
+		try { return deps.resolveWorktree(path, cwd); } catch { return undefined; }
+	};
 	// Changes is the Git state of the session's roots that still exist: read
 	// at turn end, on panel open and by the panel's poll, never at startup.
 	const changesTracker = (ctx: ExtensionContext) => {
@@ -2576,7 +2628,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const refreshChanges = async (ctx: ExtensionContext) => {
 		const tracker = changes;
 		if (!tracker || !ctx.hasUI || registry?.sessionId !== ctx.sessionManager.getSessionId()) return;
-		const model = await tracker.refresh();
+		const [model] = await Promise.all([tracker.refresh(), refreshSidebarHistory?.() ?? Promise.resolve()]);
 		if (changes === tracker) applyChanges(ctx, model);
 	};
 	pi.registerTool({
@@ -2613,7 +2665,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		registry?.close();
 		currentContext = ctx;
 		changes = undefined;
-		registry = new SessionWorktreeRegistry(pi, ctx.sessionManager, ctx.cwd, deps.resolveWorktree);
+		registry = new SessionWorktreeRegistry(pi, ctx.sessionManager, ctx.cwd, worktreeOrNone);
 		registry.start();
 		applyCardStyle();
 		applyCardContent();
@@ -2622,22 +2674,177 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		setChromeSurface(visualSettings.surface);
 		if (!overrides.activeProfile) {
 			profileReader.bind(ctx.cwd, deps.resolveWorktree, ctx.sessionManager.getSessionId());
-			const sessionId = ctx.sessionManager.getSessionId();
-			profilePoll = setInterval(() => {
-				if (currentContext !== ctx || ctx.sessionManager.getSessionId() !== sessionId) return;
-				if (!profileReader.refresh()) return;
-				renderHost?.invalidateSidebar?.();
-				renderHost?.requestRender();
-			}, 2_000);
-			profilePoll.unref?.();
 		}
 		changes = changesTracker(ctx);
 		const tracker = changes;
+		const hasGitRoot = !!worktreeOrNone(ctx.cwd, ctx.cwd);
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			disposeFooter?.();
 			sidebarTui = tui;
 			if (tui.terminal) sidebarState(tui).visibility = { todo: visualSettings.visibility.todo };
 			renderHost = { requestRender: () => tui.requestRender(), invalidateSidebar: () => invalidateSidebar(tui) };
+			let gitActive = false, aliveGit = true, generation = 0, diffOpening = false;
+			let roots: SidebarGitRoots | undefined;
+			let selectedRoot = ctx.cwd;
+			const valid = (version: number) => aliveGit && gitActive && generation === version && currentContext === ctx && changes === tracker;
+			const guardedGit = (root: string, version: number): GitRunner => async args => valid(version) ? deps.gitRunner(root, 1024 * 1024)(args) : { code: 128, stdout: "" };
+			// The GIT history and changes cards are one root-keyed state machine: a
+			// MAIN/WORKTREE switch keeps the last good frame painted until the newly
+			// selected root's history and diff have answered, then swaps it with a
+			// single repaint. Re-entry paints the cached frame again.
+			let historyOffset = 0, diffOffset = 0;
+			let offsetRoot: string | undefined;
+			const offsets = new Map<string, { history: number; diff: number }>();
+			const syncGitOffsets = () => {
+				const root = gitCardsState.paintedRoot;
+				if (root === offsetRoot) return;
+				if (offsetRoot !== undefined) offsets.set(offsetRoot, { history: historyOffset, diff: diffOffset });
+				historyOffset = root ? offsets.get(root)?.history ?? 0 : 0;
+				diffOffset = root ? offsets.get(root)?.diff ?? 0 : 0;
+				offsetRoot = root;
+			};
+			const gitCardsState = new SidebarGitCards({
+				git: root => deps.gitRunner(root, 1024 * 1024),
+				untrackedLines, fileRevision,
+				publish: () => { if (!aliveGit) return; syncGitOffsets(); invalidateSidebar(tui); tui.requestRender(); },
+			}, { history: tabsSettings.gitHistory === "on", diff: tabsSettings.diff === "on" });
+			const configureGitCards = () => gitCardsState.configure({ history: tabsSettings.gitHistory === "on", diff: tabsSettings.diff === "on" });
+			toggleSidebarHistory = configureGitCards;
+			toggleSidebarDiff = configureGitCards;
+			const refreshHistoryCards = () => gitCardsState.refreshHistory();
+			const refreshDiffCards = () => gitCardsState.refreshDiff();
+			refreshSidebarHistory = refreshHistoryCards;
+			refreshSidebarDiff = refreshDiffCards;
+			let historyViewport = 1, historyCardViewport = 1, historyCollapsed = false, historyHovered = false;
+			const clearHistoryHover = () => {
+				releaseSidebarHover(tui, gitRail);
+				if (!historyHovered) return;
+				historyHovered = false;
+				tui.requestRender();
+			};
+			const maxHistoryOffset = (viewport = historyCardViewport) => Math.max(0, (gitCardsState.graph.state === "ready" ? gitCardsState.graph.lines.length : 0) - Math.max(1, viewport - 1));
+			const gitRail: SidebarRail = {
+				surface: "panel",
+				digest: () => `${gitCardsState.digest()}:${visualSettings.density}:${historyViewport}:${historyOffset}:${historyCollapsed}:${historyHovered}`,
+				render: width => gitCardsState.historyRows(theme, width, historyViewport, Math.min(historyOffset, maxHistoryOffset()), historyCollapsed, historyHovered),
+				invalidate() {},
+				handleMouse(event) {
+					if (event.type === "move" && event.button === "none") {
+						const next = event.y === 0;
+						if (next) setSidebarHover(tui, gitRail, clearHistoryHover);
+						else setSidebarHover(tui);
+						if (next === historyHovered) return { handled: true };
+						historyHovered = next;
+						return { handled: true, render: true };
+					}
+					if (event.type === "click" && event.button === "left" && event.y === 0) {
+						historyCollapsed = !historyCollapsed;
+						invalidateSidebar(tui);
+						tui.requestRender();
+						return { handled: true, render: true };
+					}
+					if (event.type !== "wheel") return undefined;
+					if (historyCollapsed) return { handled: true };
+					const next = Math.max(0, Math.min(maxHistoryOffset(), historyOffset + (event.wheelDelta ?? 0)));
+					if (next === historyOffset) return { handled: true };
+					historyOffset = next;
+					return { handled: true, render: true };
+				},
+			};
+			let diffCollapsed = false, diffHovered = false, diffStart = 0, diffLength = 0;
+			const files = () => gitCardsState.model?.files ?? [];
+			const selectorVisible = () => roots?.state === "ready" && roots.main !== roots.wt;
+			// Transparent cards render loose rows at the card's inner width, from
+			// the rail's left edge. Match the right inset at that width locally.
+			const selectorInset = () => visualSettings.surface === "transparent" ? 50 - (panelInnerWidth(theme, 50) + 2) : 0;
+			const selector = (width: number) => {
+				const inset = selectorInset();
+				if (!selectorVisible() || roots?.state !== "ready" || width < 16 + inset) return "";
+				const paintedRoot = gitCardsState.paintedRoot ?? selectedRoot;
+				const left = paintedRoot === roots.main ? "[MAIN]" : " MAIN ";
+				const right = paintedRoot === roots.wt ? "[WORKTREE]" : " WORKTREE ";
+				return " ".repeat(inset) + theme.fg(paintedRoot === roots.main ? "accent" : "muted", left) + " ".repeat(width - inset - left.length - right.length) + theme.fg(paintedRoot === roots.wt ? "accent" : "muted", right);
+			};
+			const gitCards: SidebarRail = {
+				surface: "panel",
+				// The selector and offsets follow the painted root during a deferred switch.
+				digest: () => JSON.stringify([gitRail.digest?.(), roots, selectedRoot, diffOffset, diffCollapsed, diffHovered, visualSettings.density]),
+				render(width) {
+					const showGit = tabsSettings.gitHistory === "on", showDiff = tabsSettings.diff === "on";
+					const bothOpen = showGit && showDiff && !historyCollapsed && !diffCollapsed;
+					// The separating row between the two equal-weight cards reserves one
+					// viewport row on the tinted surface, so both cards share what is
+					// left: the gap never grows the rail beyond MAIN's per-section gaps.
+					// On transparent there is no painted gap row: the card chrome keeps
+					// the two frames side by side, so the viewport budget is untouched.
+					const tintedGap = bothOpen && chromeSurface() !== "transparent";
+					const available = Math.max(1, historyViewport - Number(selectorVisible()) - (tintedGap ? 1 : 0));
+					const gitHeight = showGit ? (bothOpen ? Math.ceil(available / 2) : historyCollapsed ? 1 : Math.max(1, available - Number(showDiff))) : 0;
+					const diffHeight = showDiff ? (bothOpen ? Math.floor(available / 2) : diffCollapsed ? 1 : Math.max(1, available - Number(showGit))) : 0;
+					historyCardViewport = gitHeight;
+					const rows = selectorVisible() ? [selector(width)] : [];
+					if (showGit) rows.push(...gitCardsState.historyRows(theme, width, gitHeight, Math.min(historyOffset, maxHistoryOffset(gitHeight)), historyCollapsed, historyHovered));
+					// Filler rows between the two cards must paint the full width: the tinted
+					// surface fills per cell, and a one-space filler leaves a bare notch.
+					if (bothOpen) while (rows.length < gitHeight + Number(selectorVisible())) rows.push(" ".repeat(width));
+					// Git and Changes are two equal-weight cards, never a nested one: a
+					// separating row always sits between them when both are open. The tinted
+					// surface paints it full-width; on transparent the card chrome already
+					// separates both frames and this row only keeps the same space.
+					if (tintedGap) rows.push(" ".repeat(width));
+					diffStart = rows.length;
+					if (showDiff) {
+						const list = files();
+						diffOffset = Math.min(diffOffset, Math.max(0, list.length - Math.max(0, diffHeight - 2)));
+						rows.push(...gitCardsState.changesRows(theme, width, diffHeight, diffOffset, diffCollapsed, diffHovered));
+					}
+					diffLength = rows.length - diffStart;
+					return rows;
+				},
+				// The separating row belongs to neither card: the history group ends
+				// before it, so both cards keep equal spans and the tinted paint fills it.
+				cardGroups: () => {
+					const tintedGap = tabsSettings.gitHistory === "on" && tabsSettings.diff === "on" && !historyCollapsed && !diffCollapsed && chromeSurface() !== "transparent";
+					// The separating row belongs to neither card: the history group ends
+					// before it, so both cards keep equal spans and the tinted paint fills it.
+					return { groups: [...(tabsSettings.gitHistory === "on" ? [{ start: Number(selectorVisible()), end: diffStart - (tintedGap ? 1 : 0) }] : []), ...(tabsSettings.diff === "on" ? [{ start: diffStart, end: diffStart + diffLength }] : [])], loose: selectorVisible() ? [0] : [] };
+				},
+				invalidate() {},
+				handleMouse(event) {
+					if (selectorVisible() && event.y === 0) {
+						if (event.type !== "click" || event.button !== "left" || roots?.state !== "ready") return undefined;
+						if (event.width < 16 + selectorInset()) return undefined;
+						const main = selectorInset() + 1, wt = event.width - 9;
+						const root = event.x >= main && event.x < main + 4 ? roots.main : event.x >= wt && event.x < wt + 8 ? roots.wt : undefined;
+						if (!root) return undefined;
+						if (root !== selectedRoot) { selectedRoot = root; gitCardsState.select(root); invalidateSidebar(tui); tui.requestRender(); }
+						return { handled: true, render: true };
+					}
+					if (tabsSettings.diff !== "on" || event.y < diffStart) return gitRail.handleMouse?.({ ...event, y: event.y - Number(selectorVisible()) });
+					const row = event.y - diffStart;
+					if (event.type === "move" && event.button === "none") { diffHovered = row === 0; setSidebarHover(tui, diffHovered ? gitCards : undefined, diffHovered ? () => { diffHovered = false; tui.requestRender(); } : undefined); return { handled: true, render: true }; }
+					if (event.type === "wheel") { if (!diffCollapsed) diffOffset = Math.max(0, Math.min(Math.max(0, files().length - Math.max(0, diffLength - 2)), diffOffset + (event.wheelDelta ?? 0))); return { handled: true, render: true }; }
+					if (event.type !== "click" || event.button !== "left") return undefined;
+					if (row === 0) { diffCollapsed = !diffCollapsed; invalidateSidebar(tui); return { handled: true, render: true }; }
+					const file = row >= 2 ? files()[diffOffset + row - 2] : undefined;
+					if (file && !diffCollapsed && !diffOpening) {
+						diffOpening = true;
+						// The painted root owns the rows the click hit: a deferred switch
+						// still shows the previous root's files.
+						const root = gitCardsState.paintedRoot ?? selectedRoot, version = generation;
+						const direct = new ChangesTracker(guardedGit(root, version), untrackedLines(root), fileRevision(root));
+						let model = gitCardsState.model ?? { files: [], added: 0, deleted: 0 };
+						let started: Promise<void> | undefined;
+						void showChangesOverlay(ctx, { initial: { root, path: file.path }, available: () => valid(version), loadDiff: (targetRoot, target) => loadFileDiff(guardedGit(targetRoot, version), target), worktrees: () => [{ root, model }], refresh: async () => { // A failed first capture leaves the tracker unread; retry start()
+									// instead of refreshing a tracker that can no longer read (CodeRabbit finding).
+									if (!started) { started = direct.start(); await started; model = direct.model; }
+									else if (!direct.statusRead) { await direct.start(); model = direct.model; }
+									else { await started; model = await direct.refresh(); }
+									return model; }, apply: () => {} }).catch(() => { if (currentContext === ctx) ctx.ui.notify("Could not open changes.", "warning"); }).finally(() => { diffOpening = false; });
+					}
+					return { handled: true, render: true };
+				},
+			};
 			const bottom = createShellBarComponent(pi, ctx, renderHost, theme, footerData, () => tracker.model.files.length, () => usage.get(ctx.model?.provider ?? ""), () => visualSettings);
 			// The Status card paints live session state that no event re-registers a
 			// part for: model, effort, context, cost, session name and extension
@@ -2905,7 +3112,36 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return { handled: true, render: true };
 				},
 			});
-			const uninstall = installSidebar(tui, theme, () => visualSettings.statusPlacement, () => visualSettings.headerPlacement, () => visualSettings.density);
+			const uninstall = installSidebar(tui, theme, () => visualSettings.statusPlacement, () => visualSettings.headerPlacement, () => visualSettings.density, () => tabsSettings.policy === "on" ? [...(tabsSettings.main === "on" ? [{ id: "main", label: "MAIN" }] : []), ...(hasGitRoot && tabsSettings.git === "on" && (tabsSettings.gitHistory === "on" || tabsSettings.diff === "on") ? [{ id: "git", label: "GIT", rail: gitCards }] : [])] : [], id => {
+				const active = id === "git";
+				if (active === gitActive) return;
+				gitActive = active;
+				if (!active) { generation++; gitCardsState.leave(); return; }
+				const version = ++generation;
+				// Re-entry runs discovery once to reconcile metadata and keeps a
+				// surviving selection; only a removed selection falls back to the
+				// surviving root before the cards are shown.
+				const reentry = roots?.state === "ready";
+				void discoverSidebarGitRoots(guardedGit(ctx.cwd, version)).then(result => {
+					if (!valid(version)) return;
+					if (result.state === "ready") {
+						if (selectedRoot !== result.main && selectedRoot !== result.wt) selectedRoot = result.wt;
+						if (!reentry) selectedRoot = result.wt;
+						roots = result;
+					} else if (!reentry) roots = result;
+					// A failed re-entry discovery must not leave the cards dormant:
+					// resume the cached root with the data already captured (CodeRabbit
+					// finding) — the next turn's discovery reconciles the metadata.
+					if (!reentry || result.state === "ready" || !gitCardsState.paintedRoot) gitCardsState.enter(selectedRoot);
+					else gitCardsState.enter(gitCardsState.paintedRoot);
+					invalidateSidebar(tui); tui.requestRender();
+				});
+			}, (id, height) => {
+				if (id !== "git" || height === historyViewport) return;
+				historyViewport = Math.max(1, height);
+				historyOffset = Math.min(historyOffset, maxHistoryOffset());
+				queueMicrotask(() => tui.requestRender());
+			});
 			// A light theme paints the whole fullscreen frame (prose, gaps, the
 			// column beside the rail) instead of leaving the terminal's dark cells.
 			const unpaintPage = installPagePaint(tui as never, () => ((tui as TUI & { mode?: string }).mode === "fullscreen" ? ctx.ui.theme as PageTheme : {}));
@@ -2942,6 +3178,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const dispose = () => {
 				if (disposed) return;
 				disposed = true;
+				aliveGit = false; gitActive = false; generation++; gitCardsState.dispose();
 				if (disposeFooter === dispose) disposeFooter = undefined;
 				clearInterval(jobsTimer);
 				jobsPart.dispose();
@@ -2950,6 +3187,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				disposeStatusBar();
 				statusRegion.dispose();
 				uninstall();
+				if (refreshSidebarHistory === refreshHistoryCards) refreshSidebarHistory = undefined;
+				if (refreshSidebarDiff === refreshDiffCards) { refreshSidebarDiff = undefined; toggleSidebarDiff = undefined; toggleSidebarHistory = undefined; }
 				unpaintPage();
 				part.dispose();
 				if (sidebarTui === tui) { sidebarTui = undefined; renderHost = undefined; groupedChangesOwner = () => false; }
@@ -3474,6 +3713,23 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				layoutChoice("Density", value, () => visual().density === value, "Spacing: comfortable adds gaps between rail sections and a padding row under a top header; compact removes them; minimal also drops the brand and the key hints"));
 			for (const value of Object.values(CHROME_SURFACE)) add(() => `Surface: ${value}${visual().surface === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, surface: value })), () => layoutPreview({ ...visual(), surface: value }),
 				layoutChoice("Surface", value, () => visual().surface === value, "Chrome background: transparent (default) lets the terminal background show through; tinted paints the rail, header rows and panel"));
+			const saveTabs = (policy: "on" | "off", destination?: "main" | "git" | "gitHistory" | "diff") => {
+				const current = resolveSidebarTabs(animationOptions);
+				writeSidebarTabs(destination ? current.policy : policy, animationOptions, { main: destination === "main" ? policy : current.main, git: destination === "git" ? policy : current.git, gitHistory: destination === "gitHistory" ? policy : current.gitHistory, diff: destination === "diff" ? policy : current.diff });
+				tabsSettings = resolveSidebarTabs(animationOptions);
+				if (destination === "diff" && current.diff !== tabsSettings.diff) toggleSidebarDiff?.();
+				if (destination === "gitHistory" && current.gitHistory !== tabsSettings.gitHistory) toggleSidebarHistory?.();
+				if (sidebarTui) { invalidateSidebar(sidebarTui); sidebarTui.requestRender(); }
+			};
+			for (const [label, policy] of [["shown", "on"], ["hidden", "off"]] as const) add(
+				() => `Tabs: ${label}`, pending, () => saveTabs(policy),
+				() => { const result = resolveSidebarTabs(animationOptions); return { title: "Tabs · global", sample: result.malformed ? "Malformed or unreadable Tabs preference; not overwritten." : `Preference: ${result.policy}. Destinations appear only when real content is available.` }; },
+				explicitChoice("Tabs", label, () => resolveSidebarTabs(animationOptions).policy === policy),
+			);
+			rows.push({ category, label: "Configure tabs", indent: 2, visible: () => { const result = resolveSidebarTabs(animationOptions); return !result.malformed && result.policy === "on"; }, action: () => {}, children: [
+				...(["main", "git"] as const).flatMap(destination => (["on", "off"] as const).map(policy => ({ label: `${destination.toUpperCase()}: ${policy}`, choice: { setting: destination.toUpperCase(), value: policy, current: () => resolveSidebarTabs(animationOptions)[destination] === policy }, action: () => saveTabs(policy, destination) })).concat(destination === "git" ? (["gitHistory", "diff"] as const).map(key => ({ label: () => `[${resolveSidebarTabs(animationOptions)[key] === "on" ? "x" : " "}] ${key === "diff" ? "Diff" : "Git history"}`, indent: 2, visible: () => resolveSidebarTabs(animationOptions).git === "on", action: () => saveTabs(resolveSidebarTabs(animationOptions)[key] === "on" ? "off" : "on", key) })) as never[] : [])),
+				...["MEMORY", "STATS"].map(name => ({ label: `${name} · coming soon`, inert: true, action: () => {} })),
+			] });
 			category = "Cards";
 			// One live style for conversation cards, panels, header/footer and prompt.
 			const cardStylePreview = { [CARD_STYLE.NEON]: "╭─ ✿ read ─╮  outlined chrome + prompt", [CARD_STYLE.FLOAT]: "▎ ✿ read  painted chrome + prompt" };
@@ -3790,6 +4046,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	pi.on("agent_end", async (_event, ctx) => {
 		// A slow or failing Git never holds the turn end.
 		trackChangeRefresh(refreshChanges(ctx));
+		if (currentContext === ctx) trackChangeRefresh(refreshSidebarDiff?.() ?? Promise.resolve());
 		void refreshUsage(ctx, false);
 	});
 }

@@ -182,6 +182,7 @@ function fingerprint(file: ChangedFile): string {
 }
 
 export interface WorktreeChangesViewDeps {
+	initial?: { root: string; path: string };
 	theme: ChangesViewTheme;
 	rows: number | (() => number);
 	loadDiff(root: string, file: ChangedFile): Promise<string>;
@@ -218,6 +219,14 @@ export class WorktreeChangesView {
 	constructor(trees: WorktreeChanges[], deps: WorktreeChangesViewDeps) {
 		this.trees = trees;
 		this.deps = deps;
+		// A caller that already knows the file (the GIT Diff card) opens focused on it.
+		const initial = deps.initial;
+		if (initial && trees.some(tree => tree.root === initial.root && tree.model.files.some(file => file.path === initial.path))) {
+			this.expanded.add(initial.root);
+			this.selected = this.visibleRows().findIndex(row => row.tree.root === initial.root && row.file?.path === initial.path);
+			this.ensureSelectedVisible();
+			this.ensurePreview();
+		}
 	}
 
 	private visibleRows(): WorktreeRow[] {

@@ -19,8 +19,8 @@ Branch `feat/gentle-tower-web` (from `design/herdr-gentle-ui`). The Herdr spikes
 ## Tasks
 - T1 Snapshot contract (types + publisher) for the current session, with tests — inline — done
 - T2 Hub + `/gentle:tower` server (127.0.0.1, token, origin, SSE) with tests — inline — done
-- T3 Web app scaffold: Vite + TS + PixiJS, tower scene ported from the artboard, fed by SSE — inline — in progress
-- T4 Multi-session: projects/floors from every published session — inline — pending
+- T3 Web app scaffold: Vite + TS + PixiJS, tower scene ported from the artboard, fed by SSE — inline — done (4880ad4f4, d2f94f6a9)
+- T4 Multi-session: projects/floors from every published session — inline — done (hub reads every session; projects grouped by folder)
 - T5 Actions: answer questions, intercom / @helper steer, stop helper, permission door, review switch — inline — pending
 - T6 Artifacts + viewer, Engram library, bar tab — inline — pending
 - T7 Docs (command help, README section) and package wiring — inline — pending
@@ -43,3 +43,6 @@ Branch `feat/gentle-tower-web` (from `design/herdr-gentle-ui`). The Herdr spikes
 - L4: T1+T2 verified: 18/18 focused tests (snapshot, hub, publisher, server, command), `pnpm typecheck` clean. Full `pnpm test`: 10606 pass, 2 fail — `#2997 … committed-range assessment` (tests/review-delivery-preflight.test.ts) and `capture forwards no selection when the lens has no configured model` (tests/review-relay-transport-agent.test.ts); both also fail on base 3dc902975 without these changes (13/1, 30/1), so pre-existing/environment-dependent (the second sees the local `claude-bridge/claude-opus-5-5` config).
 - L5: web/tower is a standalone pnpm project (own node_modules, same supply-chain policy; allows esbuild's install script). Installed pixi.js 8.23.0, vite 7.3.8, typescript 5.9.3; the repo's node_modules untouched.
 - L6: Slice boundary recorded: 4611 authored lines since origin/main at 7a788f63e (mostly design artboards); delivery split above.
+- L7: End-to-end with the real server + built app in headless Chrome, 4 snapshots in 2 projects: tower renders at ×2 with the project switcher (`engram 1`, `gentle-ai 3 ?`), the waiting project opens first, floors with todo bars (`2/4 · blocked: …`, `1/2 · now: …`, `1/1 · all done`), orchestrators waving/thinking/sipping, `worker-change` + `worker-tests` named, `verify` in the lab, corkboard notes = tasks; console clean.
+- L8: Two defects found by that e2e and fixed: (1) the query token did not reach assets/lazy chunks → token moved into the path (security commit 4880ad4f4, tests updated first); (2) Pixi needs eval for shaders → `pixi.js/unsafe-eval` keeps the strict CSP. Also `[hidden]` was overridden by CSS, scale fell to ×1 by 8 px, and a transient SSE error showed a false offline banner — all fixed.
+- L9: Not yet verified inside a live Gentle Shell (the installed Gentle Shell loads the published package, not this worktree). Pending: T5 actions, T6 artifacts/Engram/tab, T7 docs + packaging of web/tower/dist.

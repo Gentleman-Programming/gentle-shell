@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -85,4 +85,13 @@ test("runTower --no-open only prints the URL, and honours a fixed port", async (
 	assert.deepEqual(opened, []);
 	assert.ok(url.startsWith(`http://127.0.0.1:${port}/`), url);
 	assert.match(out.join(""), new RegExp(`^Gentle Tower: http://127\\.0\\.0\\.1:${port}/`));
+});
+
+test("the package check needs the built tower only when packing after a build", async () => {
+	const { packageRequiredPaths, requiredPaths: base } = await import("../scripts/verify-package-files.mjs");
+	assert.ok(!base.includes("web/tower/dist/index.html"), "a plain check (tests, CI) never needs the gitignored build");
+	assert.ok(!packageRequiredPaths(["node", "verify"]).includes("web/tower/dist/index.html"));
+	assert.ok(packageRequiredPaths(["node", "verify", "--with-built-web"]).includes("web/tower/dist/index.html"));
+	const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+	for (const hook of ["prepack", "prepublishOnly"]) assert.match(pkg.scripts[hook], /build:tower && node scripts\/verify-package-files\.mjs --with-built-web/);
 });

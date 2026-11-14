@@ -39,10 +39,8 @@ export const requiredPaths = [
   ...installerPaths,
   "extensions/gentle-notifications.ts",
   "extensions/gentle-star-prompt.ts",
-  // Gentle Tower: /gentle:tower serves this built web app; a package without it ships a broken command.
   "extensions/gentle-tower.ts",
   "lib/tower-server.ts",
-  "web/tower/dist/index.html",
   "lib/notification-audio.ts",
   "lib/notification-audio-native.ts",
   "lib/notification-audio-windows.ts",
@@ -422,13 +420,21 @@ export function reconcileGeneratedRuntimeSources(packageRoot, sources, paths) {
   return { drifted };
 }
 
+// Gentle Tower: /gentle:tower serves this built web app. It is a build output
+// (gitignored), so it is required only when the caller built it first:
+// prepack and prepublishOnly pass --with-built-web right after `pnpm build:tower`.
+export const builtWebPaths = Object.freeze(["web/tower/dist/index.html"]);
+export function packageRequiredPaths(argv = process.argv) {
+  return argv.includes("--with-built-web") ? [...requiredPaths, ...builtWebPaths] : requiredPaths;
+}
+
 async function main() {
   if (existsSync(join(root, "extensions/sdd-init.ts"))) {
     console.error("gentle-pi package must not restore the retired SDD init extension");
     process.exit(1);
   }
 
-  const missing = missingRequiredPaths(root, requiredPaths);
+  const missing = missingRequiredPaths(root, packageRequiredPaths());
 
   if (missing.length > 0) {
     console.error("gentle-pi package is missing required Pi resources:");

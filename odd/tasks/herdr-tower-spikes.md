@@ -14,7 +14,7 @@ Branch `design/herdr-gentle-ui`. Spike code lives in `~/.config/herdr-app/mods/t
 - T1 S1 sprite frames via `.frames()` — inline — done: mechanism pass, CPU fail (L10)
 - T2 S2 painted PNG crispness at ×2 — inline — done: pass with pre-scaled ×4 nearest assets (L11)
 - T3 S5 overlays + keyboard — inline — pending
-- T4 S6 Markdown (`TextView.markdown`) + Mermaid as SVG/PNG — inline — pending
+- T4 S6 Markdown (`TextView.markdown`) + Mermaid as SVG/PNG — inline — done: pass with notes (L12)
 - T5 S3 data feed from Gentle Shell — inline — pending
 - T6 S4 intercom → pi session — inline — pending
 - T7 Record evidence in SPIKES.md, commit — inline — pending
@@ -31,3 +31,5 @@ Branch `design/herdr-gentle-ui`. Spike code lives in `~/.config/herdr-app/mods/t
 - L9: Probe grid showed every TowerPix character falling back to the UI font: Herdr/GPUI ignored the fontBuilder-made TTF entirely. Rebuilding the same glyphs on top of the win98 template (PxPlus IBM VGA 8x16, renamed TowerPix, glyphs scaled to its 1600 UPM) makes all 72 glyphs render. Scripts: design/herdr-gentle-shell/spikes/{mklayers.py,fromtemplate.py,main.layers.js}.
 - L10: S1 verdict — mechanism PASS: 15 characters × 6 tinted layers stepped natively by `.frames()` (walk 8 f @125 ms, type 4 f @170 ms) render in colour and animate (two shots 0.4 s apart differ), one font for every shirt colour. Cost criterion FAIL: 14–18 % app CPU vs 0.1 % static. Design rule: animate only the shown floor, ≤3 layers per sprite or ≤6 fps, idle poses static.
 - L11: S2 verdict — `image()` upscales with linear filtering: a 360×225 PNG shown at ×2 (720×450 logical, ×4 device on retina) is blurred. Pre-scaling the PNG ×4 with nearest-neighbour and drawing it 1:1 in device pixels is crisp (dither pixels sharp in `herdr-app shot`). PASS with the rule: ship art pre-scaled to device resolution, never let GPUI upscale.
+- L12: S6 verdict — PASS with notes: a Mermaid-style diagram saved as SVG renders fully through `image()` (boxes, arrows, text, pink fix path); `TextView.markdown` renders headings and lists but uses the Herdr theme colours, ignoring the container's `text_color`, so it must sit on a theme surface (not the parchment page) or be styled. Converting real Mermaid source to SVG (e.g. mermaid-cli through `exec`) is not tested yet.
+- L13: Pending after this session: T3 (S5 overlays + keyboard), T5 (S3 data feed), T6 (S4 intercom → pi), T7 (SPIKES.md). Local test artefacts outside the repo: ~/.config/herdr-app/mods/tower-spike/, ~/.config/herdr-app/fonts/TowerPix.ttf, /tmp/tower-spike/.

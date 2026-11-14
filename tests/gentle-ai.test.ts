@@ -34,6 +34,7 @@ import type { ReviewCollectInputV3, ReviewStatusV3 } from "../lib/review-integra
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { cardBody, cardTitle, cardTone } from "./gentle-card-text.ts";
 import { readDelegationDetail } from "./support/orchestrator-modules.ts";
+import { beginDesktopProfileApply, endDesktopProfileApply } from "../lib/desktop-rpc-profiles.ts";
 
 initTheme("dark");
 
@@ -1891,7 +1892,7 @@ test(`${channel} emits only a private, balanced Herdr projection`, () => {
 		registerTool() {},
 	} as unknown as ExtensionAPI;
 	createGentleAiExtension({ nativeReviewCli: null })(pi);
-	const privateHostDiscovery = new Set(["gentle:yolo:host-ui", "gentle:rdd:host-ui"]);
+	const privateHostDiscovery = new Set(["gentle:yolo:host-ui", "gentle:rdd:host-ui", "gentle:desktop:profiles-service"]);
 	for (const channel of privateHostDiscovery) assert.equal(eventHandlers.has(channel), true);
 	assert.deepEqual([...eventHandlers.keys()].filter(name => !privateHostDiscovery.has(name)).sort(), [
 		"gentle-pi:ask-user-choice:blocked", "gentle-pi:ask-user-question:blocked", "rpiv:ask-user:blocked",
@@ -5095,6 +5096,112 @@ test("a keeps the legacy global apply semantics", async (t) => {
 	await __testing.runProfilesPanelAction(ctx, live, storePath, file, { type: "apply-global", name: "team", config: file.profiles["team"] }, {});
 	assert.equal(JSON.parse(readFileSync(storePath, "utf8")).active, "team", "the global store claims the profile");
 	assert.ok(existsSync(fixture.globalPath), "the global routing is materialized");
+});
+
+function desktopApplyHarness(t: test.TestContext) {
+	const store = profilesStoreFixture(t);
+	const ctx = {
+		cwd: store.fixture.root,
+		hasUI: true,
+		ui: { notify() { throw new Error("the screen UI is never used by a Desktop apply"); }, confirm: async () => { throw new Error("the screen UI is never used by a Desktop apply"); } },
+		sessionManager: { getSessionId: () => "session-desktop" },
+	} as unknown as ExtensionContext;
+	const live = { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel(): ThinkingLevel { return "medium"; } };
+	return { ...store, ctx, live };
+}
+
+test("Desktop apply_profile default asks the screen's own confirmation and writes nothing without its token", async (t) => {
+	const h = desktopApplyHarness(t);
+	h.writeStore({ team: { worker: { model: "openai/alpha" } }, old: {} }, "old");
+	// A readable, empty global routing makes the screen list the concrete diff.
+	writeFileSync(h.fixture.globalPath, "{}\n");
+	const storeBefore = readFileSync(h.storePath, "utf8");
+	const asked = await __testing.applyDesktopProfile(h.ctx, h.live, { profile: "team", mode: "default" });
+	assert.equal(asked.status, "confirmation_required");
+	assert.ok(asked.status === "confirmation_required");
+	assert.equal(asked.title, 'Apply profile "team"?');
+	assert.match(asked.message, /worker: openai\/alpha \(added\)/);
+	assert.match(asked.confirmation, /^[0-9a-f]{64}$/);
+	assert.equal(readFileSync(h.storePath, "utf8"), storeBefore, "asking writes nothing");
+	assert.equal(readFileSync(h.fixture.globalPath, "utf8"), "{}\n", "asking writes no routing");
+
+	const wrong = await __testing.applyDesktopProfile(h.ctx, h.live, { profile: "team", mode: "default", confirmation: "0".repeat(64) });
+	assert.deepEqual(wrong, asked, "a wrong token asks again with the same text");
+	assert.equal(readFileSync(h.storePath, "utf8"), storeBefore);
+	assert.equal(readFileSync(h.fixture.globalPath, "utf8"), "{}\n");
+
+	const applied = await __testing.applyDesktopProfile(h.ctx, h.live, { profile: "team", mode: "default", confirmation: asked.confirmation });
+	assert.equal(applied.status, "applied");
+	assert.ok(applied.status === "applied");
+	assert.match(applied.notes.at(-1)?.text ?? "", /applied profile "team"/);
+	assert.equal(applied.notes.at(-1)?.level, "info");
+	assert.equal(JSON.parse(readFileSync(h.storePath, "utf8")).active, "team", "the store claims the profile");
+	assert.match(readFileSync(h.fixture.globalPath, "utf8"), /openai\/alpha/, "the global routing is materialized");
+});
+
+test("Desktop apply_profile refuses a token for a diff that changed since it was shown", async (t) => {
+	const h = desktopApplyHarness(t);
+	h.writeStore({ team: { worker: { model: "openai/alpha" } }, old: {} }, "old");
+	const asked = await __testing.applyDesktopProfile(h.ctx, h.live, { profile: "team", mode: "default" });
+	assert.ok(asked.status === "confirmation_required");
+	h.writeStore({ team: { worker: { model: "openai/beta" } }, old: {} }, "old");
+	const storeBefore = readFileSync(h.storePath, "utf8");
+	const stale = await __testing.applyDesktopProfile(h.ctx, h.live, { profile: "team", mode: "default", confirmation: asked.confirmation });
+	assert.ok(stale.status === "confirmation_required", "the changed diff is shown again");
+	// Without a readable routing the screen's text does not list routes, so the
+	// token must also bind the profile itself for an edit to ask again.
+	assert.notEqual(stale.confirmation, asked.confirmation);
+	assert.equal(readFileSync(h.storePath, "utf8"), storeBefore, "a stale token writes nothing");
+	assert.equal(existsSync(h.fixture.globalPath), false);
+});
+
+test("Desktop apply_profile names an unknown profile and writes nothing", async (t) => {
+	const h = desktopApplyHarness(t);
+	h.writeStore({ team: { worker: { model: "openai/alpha" } } }, undefined);
+	const storeBefore = readFileSync(h.storePath, "utf8");
+	assert.deepEqual(await __testing.applyDesktopProfile(h.ctx, h.live, { profile: "missing", mode: "default" }), { status: "unknown_profile" });
+	assert.deepEqual(await __testing.applyDesktopProfile(h.ctx, h.live, { profile: "missing", mode: "session" }), { status: "unknown_profile" });
+	assert.equal(readFileSync(h.storePath, "utf8"), storeBefore);
+	assert.equal(existsSync(h.fixture.globalPath), false);
+});
+
+test("Desktop apply_profile session binds through the screen's path and writes nothing shared", async (t) => {
+	const h = desktopApplyHarness(t);
+	h.writeStore({ team: { worker: { model: "openai/alpha" } }, old: {} }, "old");
+	const storeBefore = readFileSync(h.storePath, "utf8");
+	const manager = profileActionManager(h.fixture.root);
+	const ctx = { cwd: h.fixture.root, hasUI: true, ui: {}, sessionManager: manager } as unknown as ExtensionContext;
+	const bound = await __testing.applyDesktopProfile(ctx, h.live, { profile: "team", mode: "session" });
+	assert.equal(bound.status, "applied");
+	assert.equal(readSessionProfileBinding(manager.getSessionId())?.name, "team");
+	assert.equal(readFileSync(h.storePath, "utf8"), storeBefore, "the store is untouched");
+	assert.equal(existsSync(h.fixture.globalPath), false, "no global routing is written");
+});
+
+test("the screen's Make default waits for a running Desktop apply instead of racing it", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } }, old: {} }, "old");
+	const storeBefore = readFileSync(storePath, "utf8");
+	assert.equal(beginDesktopProfileApply(), true);
+	t.after(() => endDesktopProfileApply());
+	let asked = false;
+	fixture.onConfirm(async () => { asked = true; return true; });
+	applyOnce(fixture, "team");
+	await fixture.run("gentle:profiles");
+	assert.equal(asked, false, "nothing is asked while another apply runs");
+	assert.equal(readFileSync(storePath, "utf8"), storeBefore, "the store is untouched");
+	assert.equal(existsSync(fixture.globalPath), false, "no routing is written");
+	assert.equal(beginDesktopProfileApply(), false, "the screen never releases a gate it did not take");
+});
+
+test("Desktop apply_profile runs one apply at a time", async (t) => {
+	const h = desktopApplyHarness(t);
+	h.writeStore({ team: { worker: { model: "openai/alpha" } }, old: {} }, "old");
+	const first = __testing.applyDesktopProfile(h.ctx, h.live, { profile: "team", mode: "default" });
+	const second = __testing.applyDesktopProfile(h.ctx, h.live, { profile: "team", mode: "default" });
+	assert.deepEqual(await second, { status: "busy" });
+	assert.equal((await first).status, "confirmation_required");
+	assert.equal((await __testing.applyDesktopProfile(h.ctx, h.live, { profile: "team", mode: "default" })).status, "confirmation_required", "the gate reopens");
 });
 
 test("Enter with a winning pin binds the session and never touches the pin layers", async (t) => {

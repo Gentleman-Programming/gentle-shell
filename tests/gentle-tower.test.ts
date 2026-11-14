@@ -134,7 +134,7 @@ test("/gentle:tower opens the local tower once and reuses it", async () => {
 	await cmd.handler("", uiCtx(messages));
 	assert.equal(opened.length, 2);
 	assert.equal(opened[0], opened[1]);
-	assert.match(opened[0], /^http:\/\/127\.0\.0\.1:\d+\/\?t=[A-Za-z0-9_-]{32,}$/);
+	assert.match(opened[0], /^http:\/\/127\.0\.0\.1:\d+\/[A-Za-z0-9_-]{32,}\/$/);
 	assert.match(messages[0], /Gentle Tower: http:\/\/127\.0\.0\.1/);
 	await tower?.close();
 });

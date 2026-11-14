@@ -47,13 +47,26 @@ test("binds to localhost and serves the app only with the token", async () => {
 	const s = await start(hub, web);
 	assert.equal(s.host, "127.0.0.1");
 	assert.ok(s.port > 0);
-	assert.equal(s.url, `http://127.0.0.1:${s.port}/?t=tok-123`);
+	assert.equal(s.url, `http://127.0.0.1:${s.port}/tok-123/`);
 	assert.equal((await get(s.port, "/")).status, 403);
-	assert.equal((await get(s.port, "/?t=wrong")).status, 403);
-	const ok = await get(s.port, "/?t=tok-123");
+	assert.equal((await get(s.port, "/wrong/")).status, 403);
+	assert.equal((await get(s.port, "/?t=tok-123")).status, 403);
+	const ok = await get(s.port, "/tok-123/");
 	assert.equal(ok.status, 200);
 	assert.match(ok.body, /Gentle Tower/);
 	assert.match(ok.type ?? "", /text\/html/);
+});
+
+test("app assets are served under the token path with their real type", async () => {
+	const { hub, web } = setup();
+	mkdirSync(join(web, "assets"));
+	writeFileSync(join(web, "assets", "app.css"), "body{}");
+	writeFileSync(join(web, "assets", "app.js"), "export {}");
+	const s = await start(hub, web);
+	assert.match((await get(s.port, "/tok-123/assets/app.css")).type ?? "", /text\/css/);
+	assert.match((await get(s.port, "/tok-123/assets/app.js")).type ?? "", /javascript/);
+	assert.equal((await get(s.port, "/assets/app.js")).status, 403);
+	assert.equal((await get(s.port, "/tok-123")).status, 308);
 });
 
 test("the API lists every published floor", async () => {
@@ -61,7 +74,7 @@ test("the API lists every published floor", async () => {
 	writeTowerSnapshot(hub, snap("s-1", "Token refresh fix"));
 	writeTowerSnapshot(hub, snap("s-2", "Release notes"));
 	const s = await start(hub, web);
-	const r = await get(s.port, "/api/sessions?t=tok-123");
+	const r = await get(s.port, "/tok-123/api/sessions");
 	assert.equal(r.status, 200);
 	assert.deepEqual(JSON.parse(r.body).sessions.map((x: { name: string }) => x.name), ["Token refresh fix", "Release notes"]);
 	assert.equal((await get(s.port, "/api/sessions")).status, 403);
@@ -70,14 +83,14 @@ test("the API lists every published floor", async () => {
 test("a foreign Origin is refused even with the token", async () => {
 	const { hub, web } = setup();
 	const s = await start(hub, web);
-	assert.equal((await get(s.port, "/api/sessions?t=tok-123", { Origin: "https://evil.example" })).status, 403);
-	assert.equal((await get(s.port, "/api/sessions?t=tok-123", { Origin: `http://127.0.0.1:${s.port}` })).status, 200);
+	assert.equal((await get(s.port, "/tok-123/api/sessions", { Origin: "https://evil.example" })).status, 403);
+	assert.equal((await get(s.port, "/tok-123/api/sessions", { Origin: `http://127.0.0.1:${s.port}` })).status, 200);
 });
 
 test("static files never escape the web folder", async () => {
 	const { hub, web } = setup();
 	const s = await start(hub, web);
-	for (const path of ["/../secret.txt?t=tok-123", "/%2e%2e/secret.txt?t=tok-123", "/..%2fsecret.txt?t=tok-123"]) {
+	for (const path of ["/tok-123/../secret.txt", "/tok-123/%2e%2e/secret.txt", "/tok-123/..%2fsecret.txt", "/tok-123/%2e%2e%2fsecret.txt"]) {
 		const r = await get(s.port, path);
 		assert.notEqual(r.status, 200, path);
 		assert.doesNotMatch(r.body, /do not serve/);
@@ -90,7 +103,7 @@ test("the event stream pushes a fresh list when a floor changes", async () => {
 	const s = await start(hub, web);
 	const lines: string[] = [];
 	await new Promise<void>((resolve, reject) => {
-		const req = request({ host: "127.0.0.1", port: s.port, path: "/api/events?t=tok-123" }, (res) => {
+		const req = request({ host: "127.0.0.1", port: s.port, path: "/tok-123/api/events" }, (res) => {
 			assert.equal(res.statusCode, 200);
 			assert.match(String(res.headers["content-type"]), /text\/event-stream/);
 			res.setEncoding("utf8");

@@ -35,7 +35,7 @@ const SECURITY_HEADERS = {
 	"Content-Security-Policy": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
 };
 
-function sameToken(given: string | null, token: string): boolean {
+function sameToken(given: string | null | undefined, token: string): boolean {
 	if (!given) return false;
 	const a = Buffer.from(given), b = Buffer.from(token);
 	return a.length === b.length && timingSafeEqual(a, b);
@@ -67,22 +67,29 @@ export function startTowerServer(options: TowerServerOptions): Promise<TowerServ
 
 	const handler = (req: IncomingMessage, res: ServerResponse) => {
 		if (req.method !== "GET") return deny(res, 405);
-		const url = new URL(req.url ?? "/", `http://127.0.0.1:${port}`);
 		const origin = req.headers.origin;
 		if (origin && origin !== `http://127.0.0.1:${port}`) return deny(res);
-		if (!sameToken(url.searchParams.get("t"), options.token)) return deny(res);
-		if (url.pathname === "/api/sessions") {
+		// The token is the first path segment, so every relative request the app
+		// makes (assets, lazy chunks, the API) carries it without cookies, which
+		// browsers would share with every other port on 127.0.0.1.
+		const raw = (req.url ?? "/").split("?")[0];
+		const slash = raw.indexOf("/", 1);
+		const head = slash === -1 ? raw.slice(1) : raw.slice(1, slash);
+		if (!sameToken(head, options.token)) return deny(res);
+		if (slash === -1) { res.writeHead(308, { Location: `/${head}/`, ...SECURITY_HEADERS }); return res.end(); }
+		const rest = raw.slice(slash);
+		if (rest === "/api/sessions") {
 			res.writeHead(200, { "Content-Type": "application/json", ...SECURITY_HEADERS });
 			return res.end(sessionsBody());
 		}
-		if (url.pathname === "/api/events") {
+		if (rest === "/api/events") {
 			res.writeHead(200, { "Content-Type": "text/event-stream", Connection: "keep-alive", ...SECURITY_HEADERS });
 			res.write(`data: ${sessionsBody()}\n\n`);
 			clients.add(res);
 			req.on("close", () => clients.delete(res));
 			return;
 		}
-		serveStatic(res, url.pathname);
+		serveStatic(res, rest);
 	};
 
 	const server = createServer(handler);
@@ -104,7 +111,7 @@ export function startTowerServer(options: TowerServerOptions): Promise<TowerServ
 			resolveStart({
 				host: "127.0.0.1",
 				port,
-				url: `http://127.0.0.1:${port}/?t=${encodeURIComponent(options.token)}`,
+				url: `http://127.0.0.1:${port}/${options.token}/`,
 				close: () => new Promise<void>((done) => {
 					clearInterval(poll);
 					for (const c of clients) c.end();

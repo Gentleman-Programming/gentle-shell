@@ -290,15 +290,18 @@ export class SidebarGitCards {
 			this.deps.fileRevision(card.root),
 		);
 		card.tracker = tracker;
-		card.start = tracker.start().then(() => {
+		// Only start() failures mark the status unread: a repaint failure inside
+		// settle() would otherwise corrupt a successful load (CodeRabbit finding).
+		const startFailed = tracker.start().catch(() => {
+			if (epoch !== card.diffEpoch) return;
+			card.statusRead = false;
+			card.diffLoaded = true;
+			this.settle(card);
+		});
+		card.start = startFailed.then(() => {
 			if (epoch !== card.diffEpoch) return;
 			card.model = tracker.model;
 			card.statusRead = tracker.statusRead;
-			card.diffLoaded = true;
-			this.settle(card);
-		}).catch(() => {
-			if (epoch !== card.diffEpoch) return;
-			card.statusRead = false;
 			card.diffLoaded = true;
 			this.settle(card);
 		});

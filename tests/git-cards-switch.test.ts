@@ -275,3 +275,26 @@ test("Changes rows never show a zero count; the header keeps the full totals", a
 	assert.match(text, /new\.ts\s+\[diff\]/, "the untracked row shows no numbers");
 	assert.match(text, /\+36 -6 · partial counts/, "the header keeps the full totals");
 });
+
+test("a repaint failure during a diff load never marks the status unread", async () => {
+	const events: string[] = [];
+	let repaints = 0;
+	let failing = false;
+	const cards = new SidebarGitCards({
+		git: () => async args => ({ code: 0, stdout: args[0] === "status" ? " M a.ts\0" : args[0] === "rev-parse" ? "main\n" : args[0] === "log" ? "* \x1eabc\x1f\x1ffeat: x\x1e\n" : "" }),
+		untrackedLines: () => async () => 0,
+		fileRevision: () => async () => undefined,
+		publish: () => {
+			repaints++;
+			if (failing) throw new Error("repaint failure");
+			events.push("publish");
+		},
+	}, { history: false, diff: true });
+	cards.enter("/repo");
+	await cards.refreshDiff();
+	// The load succeeded; a repaint failure during settle must not mark the
+	// status unread (the CodeRabbit finding): the catch guards only start().
+	assert.equal(cards.statusRead, true, "a successful start() keeps statusRead true even if a repaint threw");
+	assert.ok(cards.model, "the model is kept");
+	failing = true;
+});

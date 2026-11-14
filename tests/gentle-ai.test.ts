@@ -34,6 +34,7 @@ import type { ReviewCollectInputV3, ReviewStatusV3 } from "../lib/review-integra
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { cardBody, cardTitle, cardTone } from "./gentle-card-text.ts";
 import { readDelegationDetail } from "./support/orchestrator-modules.ts";
+import { beginDesktopProfileApply, endDesktopProfileApply } from "../lib/desktop-rpc-profiles.ts";
 
 initTheme("dark");
 
@@ -5175,6 +5176,22 @@ test("Desktop apply_profile session binds through the screen's path and writes n
 	assert.equal(readSessionProfileBinding(manager.getSessionId())?.name, "team");
 	assert.equal(readFileSync(h.storePath, "utf8"), storeBefore, "the store is untouched");
 	assert.equal(existsSync(h.fixture.globalPath), false, "no global routing is written");
+});
+
+test("the screen's Make default waits for a running Desktop apply instead of racing it", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } }, old: {} }, "old");
+	const storeBefore = readFileSync(storePath, "utf8");
+	assert.equal(beginDesktopProfileApply(), true);
+	t.after(() => endDesktopProfileApply());
+	let asked = false;
+	fixture.onConfirm(async () => { asked = true; return true; });
+	applyOnce(fixture, "team");
+	await fixture.run("gentle:profiles");
+	assert.equal(asked, false, "nothing is asked while another apply runs");
+	assert.equal(readFileSync(storePath, "utf8"), storeBefore, "the store is untouched");
+	assert.equal(existsSync(fixture.globalPath), false, "no routing is written");
+	assert.equal(beginDesktopProfileApply(), false, "the screen never releases a gate it did not take");
 });
 
 test("Desktop apply_profile runs one apply at a time", async (t) => {

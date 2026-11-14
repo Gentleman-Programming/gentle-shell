@@ -6981,39 +6981,59 @@ async function openProfilesPanelLoop(
 					else draftOverride = result.config;
 					continue;
 				case "use-session": {
-					// What you see is what the session uses: edits are saved first.
-					// A tab switch may have changed the shown profile since this visit opened.
-					const config = result.config ?? cloneModelConfig(normalizeModelConfig(file.profiles[previous]) ?? {});
-					const saved = differsFromStore(previous, config);
-					// A toggled mode persists before the bind: Enter never leaves it behind,
-					// and the status line says so.
-					const modeChanged = result.orchestratorMode !== undefined
-						&& result.orchestratorMode !== readProfileWorkflow(file, previous).orchestratorMode;
-					if ((saved || modeChanged) && !writeDraft(previous, config, result.orchestratorMode)) {
-						draftOverride = config;
+					// A Desktop apply_profile rewrites the same store and routing from its own
+					// snapshot; this action, including its save, waits until it answers.
+					if (!beginDesktopProfileApply()) {
+						feedback = "Gentle Desktop is applying a profile right now; nothing was saved or applied. Try again when it finishes.";
 						continue;
 					}
-					const report: ProfilesPanelReport = {};
-					file = await step(() => runProfilesPanelAction(ctx, live, path, file, { type: "use-session", name: previous, config }, report));
-					feedback = `${saved ? `Saved "${previous}". ` : ""}${modeChanged ? `"${previous}" now keeps its orchestrator in ${result.orchestratorMode} mode. ` : ""}${report.status ?? ""}`.trim() || undefined;
-					continue;
+					try {
+						// What you see is what the session uses: edits are saved first.
+						// A tab switch may have changed the shown profile since this visit opened.
+						const config = result.config ?? cloneModelConfig(normalizeModelConfig(file.profiles[previous]) ?? {});
+						const saved = differsFromStore(previous, config);
+						// A toggled mode persists before the bind: Enter never leaves it behind,
+						// and the status line says so.
+						const modeChanged = result.orchestratorMode !== undefined
+							&& result.orchestratorMode !== readProfileWorkflow(file, previous).orchestratorMode;
+						if ((saved || modeChanged) && !writeDraft(previous, config, result.orchestratorMode)) {
+							draftOverride = config;
+							continue;
+						}
+						const report: ProfilesPanelReport = {};
+						file = await step(() => runProfilesPanelAction(ctx, live, path, file, { type: "use-session", name: previous, config }, report));
+						feedback = `${saved ? `Saved "${previous}". ` : ""}${modeChanged ? `"${previous}" now keeps its orchestrator in ${result.orchestratorMode} mode. ` : ""}${report.status ?? ""}`.trim() || undefined;
+						continue;
+					} finally {
+						endDesktopProfileApply();
+					}
 				}
 				case "apply-global": {
-					// Make default saves what you see, then runs the guarded global
-					// apply with its diff confirmation, pin honesty, and rollback.
-					const saved = differsFromStore(previous, result.config);
-					if (saved && !writeDraft(previous, result.config)) {
-						draftOverride = result.config;
+					// A Desktop apply_profile rewrites the same store and routing from its own
+					// snapshot; this action, including its save, waits until it answers.
+					if (!beginDesktopProfileApply()) {
+						feedback = "Gentle Desktop is applying a profile right now; nothing was saved or applied. Try again when it finishes.";
 						continue;
 					}
-					file = await step(() => runProfilesPanelAction(ctx, live, path, file, { type: "apply-global", name: previous, config: cloneModelConfig(result.config) }));
-					const prefix = saved ? `Saved "${previous}". ` : "";
-					feedback = file.active === previous
-						? `${prefix}"${previous}" is the default for new sessions.`
-						: pinWinner() === previous
-							? `${prefix}This repo pins its profile, so "${previous}" now applies to this repo only.`
-							: `${prefix}"${previous}" was not made the default.`;
-					continue;
+					try {
+						// Make default saves what you see, then runs the guarded global
+						// apply with its diff confirmation, pin honesty, and rollback.
+						const saved = differsFromStore(previous, result.config);
+						if (saved && !writeDraft(previous, result.config)) {
+							draftOverride = result.config;
+							continue;
+						}
+						file = await step(() => runProfilesPanelAction(ctx, live, path, file, { type: "apply-global", name: previous, config: cloneModelConfig(result.config) }));
+						const prefix = saved ? `Saved "${previous}". ` : "";
+						feedback = file.active === previous
+							? `${prefix}"${previous}" is the default for new sessions.`
+							: pinWinner() === previous
+								? `${prefix}This repo pins its profile, so "${previous}" now applies to this repo only.`
+								: `${prefix}"${previous}" was not made the default.`;
+						continue;
+					} finally {
+						endDesktopProfileApply();
+					}
 				}
 				case "create-live": {
 					if (!authorityAvailable) {

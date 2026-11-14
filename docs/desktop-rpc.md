@@ -900,7 +900,7 @@ Otherwise the answer is the outcome, with the screen's notices as `notes` (`leve
 
 `session` binds the profile to the RPC session through the same session-profile path as the screen's Enter: it writes no global routing, no pins, no materialized stores, and does not change the active marker in `profiles.json`.
 
-Only one apply runs at a time in a Pi process, across sessions. A request that arrives while another apply is running answers `profile_apply_busy` and changes nothing. While an apply runs, `set_config` for `profiles`, `profile_fallbacks`, and `pins` also answers `profile_apply_busy` and writes nothing: the apply rewrites the profiles store (and restores it on failure) from the snapshot it read, so an edit accepted mid-apply would otherwise be lost. Retry after the apply answers.
+Only one apply runs at a time in a Pi process, across sessions. A request that arrives while another apply is running answers `profile_apply_busy` and changes nothing. While an apply runs, `set_config` for `profiles`, `profile_fallbacks`, and `pins` also answers `profile_apply_busy` and writes nothing: the apply rewrites the profiles store (and restores it on failure) from the snapshot it read, so an edit accepted mid-apply would otherwise be lost. Retry after the apply answers. The `/gentle:profiles` screen's Use in this session and Make default (including the save they make first) take the same gate, so they never run alongside a Desktop apply and a Desktop apply answers `profile_apply_busy` while one of them runs.
 
 ## Responses
 

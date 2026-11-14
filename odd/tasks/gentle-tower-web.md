@@ -21,9 +21,9 @@ Branch `feat/gentle-tower-web` (from `design/herdr-gentle-ui`). The Herdr spikes
 - T2 Hub + `/gentle:tower` server (127.0.0.1, token, origin, SSE) with tests — inline — done
 - T3 Web app scaffold: Vite + TS + PixiJS, tower scene ported from the artboard, fed by SSE — inline — done (4880ad4f4, d2f94f6a9)
 - T4 Multi-session: projects/floors from every published session — inline — done (hub reads every session; projects grouped by folder)
-- T5 Actions: answer questions, intercom / @helper steer, stop helper, permission door, review switch — inline — pending
-- T6 Artifacts + viewer, Engram library, bar tab — inline — pending
-- T7 Docs (command help, README section) and package wiring — inline — pending
+- T5 Actions: answer questions, intercom / @helper steer, stop helper, permission door, review switch — inline — done with limits (7c6cd5158, 034a7aaea): intercom message, stop helper, lower-only permissions, review switch. Not possible yet: answering an ask_user question from the web and @helper steering (no API in Gentle Shell; shown as "waiting in the terminal").
+- T6 Artifacts + viewer, Engram library, bar tab — inline — done (7ff87f0f1, 034a7aaea). Plan usage meter left out: the usage service read shape was not confirmed.
+- T7 Docs (command help, README section) and package wiring — inline — done (a7bc098ab)
 
 ## Delivery (chained PRs, ~400 authored lines each where possible; push/PR are the user's call)
 - PR1 `design/herdr-gentle-ui`: artboards, SPEC.md, Herdr spikes (design-only, large static HTML — reviewed visually, not line by line).
@@ -46,3 +46,7 @@ Branch `feat/gentle-tower-web` (from `design/herdr-gentle-ui`). The Herdr spikes
 - L7: End-to-end with the real server + built app in headless Chrome, 4 snapshots in 2 projects: tower renders at ×2 with the project switcher (`engram 1`, `gentle-ai 3 ?`), the waiting project opens first, floors with todo bars (`2/4 · blocked: …`, `1/2 · now: …`, `1/1 · all done`), orchestrators waving/thinking/sipping, `worker-change` + `worker-tests` named, `verify` in the lab, corkboard notes = tasks; console clean.
 - L8: Two defects found by that e2e and fixed: (1) the query token did not reach assets/lazy chunks → token moved into the path (security commit 4880ad4f4, tests updated first); (2) Pixi needs eval for shaders → `pixi.js/unsafe-eval` keeps the strict CSP. Also `[hidden]` was overridden by CSS, scale fell to ×1 by 8 px, and a transient SSE error showed a false offline banner — all fixed.
 - L9: Not yet verified inside a live Gentle Shell (the installed Gentle Shell loads the published package, not this worktree). Pending: T5 actions, T6 artifacts/Engram/tab, T7 docs + packaging of web/tower/dist.
+- L10 (user): "termima todo y luego pruebo".
+- L11: T5–T7 verified: 33/33 focused tests (actions parse/inbox/server, session execution incl. lower-only permissions and review switch, artifacts served only if listed and inside the project, Engram read-only proxy, latest words); `pnpm typecheck` clean; web build clean; DevTools-driven e2e in headless Chrome (select floor, intercom send → the message landed in that session's inbox, Mermaid diagram, Markdown doc, Engram library with the real local memories, the tab), console clean; package check refuses a pack without web/tower/dist/index.html.
+- L12: Gentle AI's path guard blocked a shell command containing the CSS class `.key` (false positive for a private-key path); renamed the class to `.fkey` instead of working around the guard.
+- L13: Delivery update: PR3 = 4880ad4f4, d2f94f6a9 (web app); PR4 = 7c6cd5158 (actions, security); PR5 = 7ff87f0f1, 034a7aaea, a7bc098ab (artifacts, Engram, tab, packaging, docs).

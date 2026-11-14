@@ -152,7 +152,7 @@ import { createSessionProfileIntegration, hasPendingSessionProfileSelection, rea
 import { publishSessionProfileOutcome, readSessionProfileAuthority, requireSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import { isSessionProfileFamilyEntry, type SessionProfileStartupState } from "../lib/session-profile-persistence.ts";
 import type { SessionProfileAppendOutcome } from "../lib/session-profile-append-controller.ts";
-import { freezeSessionProfileAtOwnStart, profileFollowEnabled, readSessionProfileOwnStartup, resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles, sessionProfileRoutingAt, setFrozenDefaultOrchestrator } from "../lib/session-profile-freeze.ts";
+import { freezeSessionProfileAtOwnStart, profileFollowEnabled, readFrozenDefaultOrchestrator, readSessionProfileOwnStartup, resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles, sessionProfileRoutingAt, setFrozenDefaultOrchestrator } from "../lib/session-profile-freeze.ts";
 import {
 	applyOrchestratorSettings,
 	readOrchestratorSettings,
@@ -3258,13 +3258,16 @@ function readReviewerRouting(cwd: string, sessionId: string | undefined, session
 		: resolution.kind === "inherited" && resolution.profile !== undefined ? "frozen session profile"
 		: resolution.kind === "follow" ? "followed session profile"
 		: "repository profile pin";
-	// Only a profile chosen with Use in this session, or recorded as the session's
-	// startup profile, carries its orchestrator to the provider review roles; an
-	// in-memory freeze, pinned and global routing leave them on Pi's persisted
-	// default (gentle-shell#2716 A1, gentle-shell#2742 section 8).
+	// Provider review roles inherit the explicit binding's orchestrator, the
+	// startup record's, or the in-memory frozen profile's, before Pi's persisted
+	// default. Pins and global routing never supply this fallback; a session
+	// frozen without a profile has no orchestrator to carry to a foreign target.
 	if (resolution.kind !== "explicit") delete config.orchestrator;
-	const recorded = resolution.kind === "inherited" ? readSessionProfileBinding(sessionId)?.modelProfiles.orchestrator : undefined;
-	if (recorded !== undefined) config.orchestrator = { ...recorded };
+	const orchestrator = resolution.kind === "inherited"
+		? readSessionProfileBinding(sessionId)?.modelProfiles.orchestrator
+			?? (resolution.profile === undefined ? undefined : readFrozenDefaultOrchestrator(sessionId))
+		: undefined;
+	if (orchestrator !== undefined) config.orchestrator = { ...orchestrator };
 	return { config, source };
 }
 
@@ -9663,8 +9666,8 @@ function reviewHostRelayFailureReport(error: ReviewHostRelayError): Record<strin
 // gentle-pi#2271: review-refuter and review-validator are provider review
 // roles, not installable agents, so nothing seeds their entries and profiles
 // never carry them. For those two keys only, a snapshot with no model falls
-// back to Pi's persisted default model and effort, the default the routing
-// panel already labels them with. Lens keys keep the fail-closed rule.
+// back to the session profile's orchestrator, then Pi's persisted default model
+// and effort. Lens keys keep the fail-closed rule.
 //
 // gentle-shell#2163: a caller that knows where the snapshot came from passes
 // it, so the relay's refusal names the routing source and whether the entry
@@ -12786,10 +12789,40 @@ function createGentleAiExtensionForTesting(
 		sessionProfiles.start(ctx.sessionManager, (type, data) => pi.appendEntry(type, data), event);
 		// gentle-shell#2742: only a session's own start tells this process its
 		// startup state; anything else leaves it unknown.
+		let startupProfile: SessionProfileStartupState | undefined;
 		try {
-			if (profileSessionId && isSessionOwnStart(event, ctx.sessionManager))
+			if (profileSessionId && isSessionOwnStart(event, ctx.sessionManager)) {
 				freezeSessionProfileAtOwnStart({ sessionId: profileSessionId, cwd: ctx.sessionManager.getCwd(), configHome: gentleAiConfigHome() });
+				startupProfile = readSessionProfileOwnStartup(profileSessionId);
+			}
 		} catch { /* The startup state stays unknown. */ }
+		// A3: only this session's own start applies its frozen full definition.
+		// The workflow mode remains live; launches still receive role routing only.
+		if (startupProfile && startupProfile !== "none" && permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && !profileFollowEnabled(permissionEnvironment)) {
+			const orchestrator = readProfileOrchestrator(startupProfile.modelProfiles);
+			const current = () => startupEpoch === reminderEpoch && sessionProfiles.isCurrent(ctx.sessionManager);
+			// The switch is best-effort and contained: a reload or session
+			// replacement racing the awaited switch must neither abort the rest
+			// of session_start (Pi's runner throws on any access to a stale ctx)
+			// nor leave the outcome unreported. Checked before and after the await.
+			try {
+				if (!current()) return;
+				const note = orchestrator?.model
+					? await switchLiveOrchestrator(ctx, pi, orchestrator, current)
+						|| "\nThe profile's orchestrator model is invalid; this session keeps its current model."
+					: `\nprofile "${startupProfile.name}" has no orchestrator model; this session keeps its current model.`;
+				if (!current()) return;
+				// A headless session (pi -p) has no notify surface: the startup note
+				// falls back to stderr, the same channel Pi's own startup notifications
+				// use headlessly, so a failed switch is observable instead of silent.
+				const startedWith = `el Gentleman started with profile "${startupProfile.name}".${note}`;
+				if (ctx.hasUI) ctx.ui.notify(startedWith, "info");
+				else console.error(startedWith);
+			} catch {
+				// The startup switch stays best-effort: a staled context or a
+				// reporting failure never aborts the remaining startup work.
+			}
+		}
 		readSessionProfileAuthority(ctx.sessionManager);
 		if (ctx.hasUI) notifySessionProfileProblem(ctx);
 		auto.reset();

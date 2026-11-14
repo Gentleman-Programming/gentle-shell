@@ -90,6 +90,34 @@ canvas{display:block;image-rendering:pixelated}
 .vw-b{padding:16px;overflow:auto;background:#f3ecdf;color:#2a1838;font-family:Georgia,serif}
 .vw-b h3{font-family:var(--font-mono);font-size:16px;margin:4px 0 8px}.vw-b li{margin:3px 0 3px 18px}.vw-b code{font-family:var(--font-mono);background:#e4dac8;padding:0 4px}
 .vw-f{display:flex;gap:8px;padding:10px 14px;border-top:1px solid #5a3a6e;justify-content:flex-end}
+.room{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(900px,calc(100% - 48px));height:min(560px,86%);display:none;z-index:5;flex-direction:column}
+.room.open{display:flex}.rv-h{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid #5a3a6e}.rv-h small{color:var(--text-muted)}
+.rv-b{flex:1;display:grid;min-height:0}
+.lib{grid-template-columns:330px 1fr;background:linear-gradient(180deg,#2a1838,#1a0f26)}
+.shelves{padding:12px;overflow:auto;display:grid;gap:12px;border-right:1px solid #3a2a4a}
+.search{width:100%;background:#140c1e;border:1px solid #5a3a6e;border-radius:3px;color:var(--text);font:13px var(--font-mono);padding:7px 9px}
+.search:focus{outline:none;border-color:var(--accent)}
+.shelf h4{font-size:11px;letter-spacing:.12em;color:var(--text-muted);margin-bottom:6px;display:flex;justify-content:space-between}
+.spines{display:flex;gap:3px;align-items:flex-end;padding:0 4px 4px;border-bottom:4px solid #5a3a4a;min-height:62px}
+.spine{width:22px;border-radius:2px 2px 0 0;writing-mode:vertical-rl;transform:rotate(180deg);font-size:9.5px;color:#f6eff3cc;padding:5px 0;text-align:left;overflow:hidden;white-space:nowrap;box-shadow:inset -3px 0 0 #00000040,inset 2px 0 0 #ffffff20}
+.spine:hover,.spine[aria-pressed="true"]{outline:2px solid var(--accent);outline-offset:1px}
+.page{margin:14px;padding:22px 26px;background:#f3ecdf;color:#2a1838;border-radius:3px;font:15px/1.6 Georgia,serif;overflow:auto;box-shadow:0 10px 30px #00000070}
+.page h3{font:700 17px var(--font-mono);margin-bottom:4px}.page .tag{font:11px var(--font-mono);color:#7a6a88;margin-bottom:12px}
+.page dt{font:700 12px var(--font-mono);color:#8a2f6a;margin-top:10px;letter-spacing:.06em}.page dd{margin:2px 0 0}
+.page code{font-family:var(--font-mono);background:#e4dac8;padding:0 4px}
+.page .acts{margin-top:16px;display:flex;gap:8px}
+.page .btn{color:var(--text);font-family:var(--font-mono)}.page .btn.primary{color:#1a0f26}
+.tab{grid-template-columns:1fr 300px;background:radial-gradient(ellipse at 30% 20%,#3a1a3a,#140a1a)}
+.receipt{margin:16px auto;width:min(380px,90%);background:#f6f1e6;color:#2a1838;padding:18px 20px 26px;font:13px/1.55 var(--font-mono);overflow:auto;
+  -webkit-mask:linear-gradient(#000 0 0) top/100% calc(100% - 8px) no-repeat,conic-gradient(from -45deg at bottom,#0000,#000 1deg 89deg,#0000 90deg) bottom/16px 8px repeat-x}
+.receipt h3{text-align:center;font-size:15px;letter-spacing:.2em}.receipt .c{text-align:center;color:#7a6a88;font-size:11px;margin-bottom:10px}
+.receipt .r{display:flex;justify-content:space-between;gap:10px}.receipt .r small{color:#7a6a88}.receipt hr{border:0;border-top:1px dashed #b8aec8;margin:8px 0}
+.receipt .tot{font-weight:800;font-size:15px}
+.bars{display:flex;gap:5px;align-items:flex-end;height:70px;margin:8px 0 2px}.bars i{flex:1;background:#c2456f;border-radius:1px}.bars i.today{background:#ff76c3;outline:1px solid #2a1838}
+.days{display:flex;gap:5px;font-size:10px;color:#7a6a88}.days span{flex:1;text-align:center}
+.side2{padding:16px;border-left:1px solid #3a2a4a;display:grid;gap:12px;align-content:start}
+.side2 .k{font-size:11px;color:var(--text-muted);letter-spacing:.1em}.side2 .v{font-size:20px;font-weight:700}
+.limit{display:flex;gap:6px;align-items:center}.limit input{width:70px;background:#140c1e;border:1px solid #5a3a6e;color:var(--text);font:13px var(--font-mono);padding:5px 7px;border-radius:2px}
 .dim{position:absolute;inset:0;background:#07040d80;z-index:3;display:none}.dim.open{display:block}
 </style>
 </head>
@@ -107,6 +135,7 @@ canvas{display:block;image-rendering:pixelated}
   <aside class="intercom px" id="ic" aria-label="Floor intercom"><div class="ic-h" id="ic-h"></div><div class="ic-log" id="ic-log" role="log" aria-live="polite"></div>
     <div class="ic-in"><label class="sr" for="ic-t" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Message</label><textarea id="ic-t" rows="2"></textarea>
     <div class="ic-row"><button class="chip">@ helpers</button><button class="chip">/ commands</button><button class="chip">＋ attach</button><span style="flex:1"></span><span>T talk · Esc close</span><button class="btn primary" id="ic-send">Send</button></div></div></aside>
+  <section class="room px" id="rv" role="dialog" aria-modal="true" aria-labelledby="rv-t"><div class="rv-h"><b id="rv-t"></b><small id="rv-s"></small><span style="flex:1"></span><button class="ic-x" id="rv-x" aria-label="Close">✕</button></div><div class="rv-b" id="rv-b"></div></section>
   <section class="viewer px" id="vw" role="dialog" aria-modal="true" aria-labelledby="vw-t"><div class="vw-h"><b id="vw-t"></b><small id="vw-s"></small><span style="flex:1"></span><button class="ic-x" id="vw-x" aria-label="Close">✕</button></div><div class="vw-b" id="vw-b"></div>
     <div class="vw-f"><button class="btn">Download</button><button class="btn primary" id="vw-ask">Ask about this</button></div></section>
   <section class="event px" id="event" role="dialog" aria-modal="true" aria-labelledby="ev-from"><div class="from" id="ev-from"></div><p id="ev-text"></p><ol id="ev-ch"></ol><div class="ans" id="ev-ans" aria-live="polite"></div></section>
@@ -429,7 +458,7 @@ function openEvent(i){evFloor=i;const e=EV[floors[i].id];if(e)panel(e)}
 function answer(i){const [,ans,res]=evCur.choices[i];if(ans===null)return closeEvent();$('ev-ans').textContent=ans;$('ev-ans').className='ans show';
   if(typeof res==='function'){res();setTimeout(closeEvent,800);return}if(res){floors[evFloor].state='work';const o=people.find(p=>p.floor===evFloor&&p.kind==='orch');o.state='work';renderProjects();setTimeout(()=>{closeEvent();goFloor(evFloor)},800)}}
 function closeEvent(){$('event').classList.remove('open');$('dim').classList.remove('open')}
-$('dim').onclick=()=>{closeEvent();$('vw').classList.remove('open')};
+$('dim').onclick=()=>{closeEvent();$('vw').classList.remove('open');$('rv').classList.remove('open')};
 const MODES={normal:'Normal: the bouncer asks you before anything risky.',auto:'Auto: routine work goes in; anything destructive still waits for you.',yolo:'YOLO: no questions for ordinary work. The bouncer is on a break.','super-yolo':'Super YOLO: no permission questions at all. Private files and secrets stay locked.'};
 const openDoor=()=>panel({from:'THE DOOR · permissions for every floor',text:'Who gets in without asking you?',choices:Object.entries(MODES).map(([k,v])=>[v,'Done.',()=>{mode=k;draw()},k===mode?'current':''])});
 function togglePause(){paused=!paused;$('pause').setAttribute('aria-pressed',paused);$('pause').textContent=paused?'▶ RESUME ALL':'❚❚ PAUSE ALL';draw()}
@@ -439,7 +468,8 @@ addEventListener('keydown',e=>{if($('event').classList.contains('open')){if(/^[1
   if((e.metaKey||e.ctrlKey)&&/^[1-9]$/.test(e.key)&&+e.key<=NF){e.preventDefault();goFloor(+e.key-1)}
   if(e.altKey&&/^[1-9]$/.test(e.key)&&PROJECTS[+e.key-1]){e.preventDefault();setProject(PROJECTS[+e.key-1])}
   if(e.key==='t'||e.key==='T'){e.preventDefault();openIntercom(cur)}
-  if(e.code==='Space'){e.preventDefault();togglePause()}if(e.key==='Escape'&&todoOpen>=0){return toggleTodo(todoOpen)}
+  if(e.code==='Space'){e.preventDefault();togglePause()}if(e.key==='Escape'&&$('rv').classList.contains('open'))return $('rv-x').onclick();
+  if(e.key==='Escape'&&todoOpen>=0){return toggleTodo(todoOpen)}
   if(e.key==='Escape'){if($('vw').classList.contains('open'))return $('vw-x').onclick();if($('ic').classList.contains('open'))return $('ic').classList.remove('open');$('sel').classList.remove('open')}});
 
 const toC=e=>{const r=cv.getBoundingClientRect();return[(e.clientX-r.left)/r.width*W,(e.clientY-r.top)/r.height*H]};
@@ -470,6 +500,7 @@ cv.addEventListener('click',e=>{const [x,y]=toC(e);const h=hitTest(x,y);if(!h)re
   if(h.t==='switch'){review=!review;buildBg();draw();return strip(`<div><div class="nm">Review mode ${review?'on':'off'}</div><div class="meta">${review?'REVIEW rooms wake up for high-risk changes.':'REVIEW rooms stay dark on every floor.'}</div></div>`)}
   if(h.t==='floor')return goFloor(h.i);
   if(h.t==='meter'){cur=h.i;renderFloors();const f=floors[h.i];return strip(`<div><div class="nm">Floor ${h.i+1} · this session</div><div class="meta">${f.cost} · context ${f.ctx} · helpers $0.11 of it</div></div><button class="btn primary">Breakdown</button>`)}
+  if(h.r.id==='engram')return openLibrary(h.i);if(h.r.id==='lounge')return openTab(h.i);
   cur=h.i;renderFloors();const n=people.filter(p=>p.floor===h.i&&p.room===h.r.id).length;
   strip(`<div><div class="nm">Floor ${h.i+1} · ${h.r.sign==='GENTLE AI'?'Gentle AI':h.r.sign[0]+h.r.sign.slice(1).toLowerCase()}</div><div class="meta">${ROOMTXT[h.r.id]} · ${n} here now</div></div><button class="btn primary">Open</button>`)});
 
@@ -514,6 +545,40 @@ function openArt(sid,id){const a=(ARTS[sid]||[]).find(x=>x.id===id);if(!a)return
 $('vw-x').onclick=()=>{$('vw').classList.remove('open');$('dim').classList.remove('open')};
 $('vw-ask').onclick=()=>{$('vw-x').onclick();openIntercom(cur);$('ic-t').value=`About “${$('vw-t').textContent}”: `;$('ic-t').focus()};
 
+// ---------- rooms you can walk into: the Engram library and the bar tab ----------
+const MEM=[
+  {k:'decision',t:'Re-arm the refresh timer after every renewal',what:'Schedule the next refresh each time a token is renewed, not only at login.',why:'Users were signed out after one hour while active (Token refresh fix).',where:'internal/auth/session.go',when:'today · this session',col:'#c86a9a'},
+  {k:'decision',t:'Sign out with a message when refresh fails',what:'Retry once, then sign out and say why.',why:'A silent retry loop can hide a broken auth server.',where:'internal/auth',when:'today · waiting for your answer',col:'#b8508a'},
+  {k:'bugfix',t:'Full CLI suite needs more than 10 minutes',what:'Run the whole CLI suite with a longer timeout.',why:'Go’s default 10-minute timeout kills it before it ends.',where:'go test ./...',when:'yesterday',col:'#4a7ab0'},
+  {k:'bugfix',t:'Tab-separated TOML keys were missed',what:'Detect keys with a parser, not string prefixes.',why:'Valid TOML may use tabs around =.',where:'config migration',when:'yesterday',col:'#3a6aa0'},
+  {k:'preference',t:'One branch per feature',what:'Never mix features on one branch.',why:'You asked for it after a fix landed on the wrong branch.',where:'every repo',when:'last month',col:'#6aa88a'},
+  {k:'preference',t:'Calm UI, details on demand',what:'Summary first, list on click, detail on second click.',why:'“lo que gana es la limpieza”',where:'Gentle Shell on Herdr',when:'today',col:'#5a9a7a'},
+  {k:'review',t:'Pinned versions for Shell 4.8.0',what:'gentle-ai 4.5.0 and Engram 3.7.2.',why:'Release pin bump.',where:'gentle-pi',when:'needs your review',col:'#c8a85a'},
+  {k:'review',t:'Herdr status shows task titles',what:'Proposed: titles cut to fit.',why:'Pending your answer on floor gentle-pi.',where:'gentle-pi',when:'needs your review',col:'#b8984a'}];
+const SH={decision:'Decisions',bugfix:'Bug fixes',preference:'Your preferences',review:'Waiting for your review'};
+function openLibrary(i){const f=floors[i];$('rv-t').textContent='Engram · the library';$('rv-s').textContent=`floor ${i+1} · ${f.name} · ${MEM.length} memories`;
+  $('rv-b').className='rv-b lib';$('rv-b').innerHTML=`<div class="shelves"><input class="search" id="msearch" placeholder="Search memories…" aria-label="Search memories">${Object.entries(SH).map(([k,lab])=>{const m=MEM.filter(x=>x.k===k);
+    return `<div class="shelf"><h4>${lab.toUpperCase()}<span>${m.length}</span></h4><div class="spines">${m.map(x=>`<button class="spine" data-i="${MEM.indexOf(x)}" style="background:${x.col};height:${52+(x.t.length%3)*5}px" title="${x.t}" aria-pressed="false">${x.t}</button>`).join('')}</div></div>`}).join('')}</div><div class="page" id="mpage"></div>`;
+  const show=k=>{const m=MEM[k];document.querySelectorAll('.spine').forEach(b=>b.setAttribute('aria-pressed',b.dataset.i==k));
+    $('mpage').innerHTML=`<h3>${m.t}</h3><div class="tag">${m.k} · ${m.when}</div><dl><dt>WHAT</dt><dd>${m.what}</dd><dt>WHY</dt><dd>${m.why}</dd><dt>WHERE</dt><dd><code>${m.where}</code></dd></dl><div class="acts">${m.k==='review'?'<button class="btn primary">Keep it</button><button class="btn">Edit</button><button class="btn">Forget</button>':'<button class="btn">Edit</button><button class="btn">Forget</button>'}</div>`};
+  document.querySelectorAll('.spine').forEach(b=>b.onclick=()=>show(+b.dataset.i));show(0);
+  $('msearch').oninput=e=>{const q=e.target.value.toLowerCase();document.querySelectorAll('.spine').forEach(b=>b.style.opacity=!q||MEM[b.dataset.i].t.toLowerCase().includes(q)?1:.2)};
+  $('rv').classList.add('open');$('dim').classList.add('open')}
+function openTab(i){$('rv-t').textContent='The bar · your tab';$('rv-s').textContent='this week · every floor, every project';$('rv-b').className='rv-b tab';
+  const days=[.4,.9,.6,1,.7,.3,.5];
+  $('rv-b').innerHTML=`<div class="receipt" aria-label="Your tab this week"><h3>THE GENTLEMAN CLUB</h3><div class="c">tab · week of Nov 9 · 31 sessions</div>
+    <div class="r"><span>Opus 5.5 <small>412k tok</small></span><span>$2.41</span></div><div class="r"><span>Sonnet 5.5 <small>690k tok</small></span><span>$0.58</span></div>
+    <div class="r"><span>Helpers <small>9 runs</small></span><span>$0.13</span></div><hr>
+    <div class="r"><span>gentle-ai <small>3 floors</small></span><span>$1.90</span></div><div class="r"><span>gentle-pi</span><span>$0.71</span></div><div class="r"><span>engram</span><span>$0.27</span></div><div class="r"><span>gentleman-landing</span><span>$0.24</span></div><hr>
+    <div class="bars">${days.map((d,k)=>`<i class="${k===4?'today':''}" style="height:${d*100}%" title="$${(d*.75).toFixed(2)}"></i>`).join('')}</div><div class="days">${['M','T','W','T','F','S','S'].map(d=>`<span>${d}</span>`).join('')}</div><hr>
+    <div class="r tot"><span>TOTAL</span><span>$3.12</span></div><div class="c" style="margin-top:8px">cache hit 71% saved you about $1.40<br>thank you, come again</div></div>
+    <div class="side2"><div><div class="k">PLAN LEFT</div><div class="v">64%</div><div class="pips">${Array.from({length:10},(_,k)=>`<i class="${k<6.4?'on':''}"></i>`).join('')}</div><small class="muted" style="color:var(--text-muted)">resets Monday</small></div>
+    <div><div class="k">THIS SESSION</div><div class="v">${floors[i].cost}</div><small style="color:var(--text-muted)">floor ${i+1} · ${floors[i].name}</small></div>
+    <div><div class="k">WEEKLY LIMIT</div><div class="limit"><span>$</span><input value="10" aria-label="Weekly limit in dollars"><button class="btn">Set</button></div><small style="color:var(--text-muted)">The bouncer warns you at 80%.</small></div>
+    <button class="btn">All sessions</button></div>`;
+  $('rv').classList.add('open');$('dim').classList.add('open')}
+$('rv-x').onclick=()=>{$('rv').classList.remove('open');$('dim').classList.remove('open')};
+
 // ---------- loop ----------
 function fit(){scale=Math.min(innerWidth/W,innerHeight/H);scale=scale>=2?Math.floor(scale):scale;cv.style.width=W*scale+'px';cv.style.height=H*scale+'px';renderFloors()}
 addEventListener('resize',fit);
@@ -556,7 +621,7 @@ function draw(){ctx.imageSmoothingEnabled=false;ctx.drawImage(bg,0,0);
   if(mode==='super-yolo'){ctx.save();ctx.globalAlpha=.4;ctx.fillStyle=C.warn;ctx.fillRect(BX+BW-14,LOBBY+14,30,GROUND-LOBBY-24);ctx.restore();ctx.save();ctx.font='800 11px monospace';ctx.shadowColor=C.red;ctx.shadowBlur=8;ctx.fillStyle=C.red;ctx.fillText('OPEN',dx-2,LOBBY-2);ctx.restore()}
   if(hover&&hover.t==='room'){ctx.save();ctx.globalAlpha=.7;ctx.fillStyle=C.teal;ctx.fillRect(hover.r.x,fy0(hover.i)+92,hover.r.w,1);ctx.restore()}}
 setProject(PROJECTS[0]);draw();requestAnimationFrame(step);
-if(location.hash==='#ask')openEvent(0);if(location.hash==='#talk')openIntercom(0);if(location.hash==='#todo')setTimeout(()=>toggleTodo(0),50);if(location.hash==='#flow')openArt('refresh','flow');
+if(location.hash==='#ask')openEvent(0);if(location.hash==='#talk')openIntercom(0);if(location.hash==='#lib')openLibrary(0);if(location.hash==='#tab')openTab(0);if(location.hash==='#todo')setTimeout(()=>toggleTodo(0),50);if(location.hash==='#flow')openArt('refresh','flow');
 </script>
 </body>
 </html>

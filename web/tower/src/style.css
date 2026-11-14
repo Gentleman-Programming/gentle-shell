@@ -7,7 +7,7 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 [hidden] { display: none !important; }
 html { color-scheme: dark; }
-body { background: #07040d; color: var(--text); font: 13px/1.45 var(--mono); min-height: 100vh; overflow: auto; }
+body { background: #07040d; color: var(--text); font: 13px/1.45 var(--mono); min-height: 100vh; overflow-x: hidden; overflow-y: auto; }
 button { font: inherit; color: inherit; cursor: pointer; background: none; border: 0; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .px { background: #0d0816e6; border: 1px solid #5a3a6e; border-radius: 3px; box-shadow: 0 0 0 1px #00000090, 0 8px 24px #00000060; }
@@ -21,10 +21,10 @@ button { font: inherit; color: inherit; cursor: pointer; background: none; borde
 .projects i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
 .projects .cnt { color: var(--faint); font-size: 11px; }
 .projects .nd { color: #0c0714; background: var(--warn); font-weight: 800; font-size: 11px; padding: 0 5px; border-radius: 2px; }
-.stage { position: relative; display: block; width: max-content; margin: 0 auto; }
+.stage { position: relative; display: block; width: 100%; }
 .canvas canvas { display: block; image-rendering: pixelated; }
 .floors { position: absolute; left: 0; top: 0; width: 0; }
-.floor { position: absolute; left: 12px; transform: translateY(-50%); display: grid; gap: 4px; width: 290px; }
+.floor { position: absolute; left: 12px; transform: translateY(-50%); display: grid; gap: 4px; width: var(--floor-w, 290px); }
 .fl { display: grid; grid-template-columns: auto 1fr auto; gap: 0 9px; align-items: center; padding: 6px 10px 6px 0; text-align: left; overflow: hidden; }
 .fl[aria-pressed="true"] { border-color: var(--c); box-shadow: 0 0 0 1px #00000090, 0 0 20px color-mix(in srgb, var(--c) 40%, transparent); }
 .fl .fkey { grid-row: span 2; align-self: stretch; display: grid; place-items: center; width: 30px; color: #0c0714; font-weight: 800; }

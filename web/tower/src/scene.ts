@@ -70,11 +70,11 @@ export class TowerScene {
 		this.app.ticker.add((t) => this.tick(t.deltaMS / 1000));
 	}
 
-	show(project: Project, colors: string[], reviewOn = true): void {
-		const key = `${project.cwd}|${project.sessions.length}|${colors.join()}|${reviewOn}`;
+	show(project: Project, colors: string[], reviewOn = true, minHeight = 450): void {
+		const key = `${project.cwd}|${project.sessions.length}|${colors.join()}|${reviewOn}|${Math.round(minHeight)}`;
 		if (key !== this.bgKey) {
 			this.bgKey = key;
-			const { canvas, layout } = paintBackground({ floors: project.sessions.length, colors, projectName: project.id, projectColor: colors[0] ?? "#f095c8", reviewOn });
+			const { canvas, layout } = paintBackground({ floors: project.sessions.length, colors, projectName: project.id, projectColor: colors[0] ?? "#f095c8", reviewOn, minHeight });
 			this.layout = layout;
 			this.bg.texture = Texture.from(canvas);
 			this.app.renderer.resize(canvas.width, canvas.height);

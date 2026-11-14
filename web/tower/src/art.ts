@@ -18,14 +18,14 @@ export const ROOMS: RoomDef[] = (() => { let x = BX + 4; return RS.map(([id, sig
 export const room = (id: RoomId) => ROOMS.find((r) => r.id === id)!;
 
 export interface Layout { floors: number; roof: number; lobby: number }
-/** Floors stack up from the lobby; the view scrolls when there are more than fit. */
-export function layout(floors: number): Layout {
-	const lobby = Math.max(GROUND - LOBBY_H, 60 + floors * FH);
+/** The building stands on the ground at the bottom of a scene at least `minHeight` tall; more floors make it taller (the page scrolls). */
+export function layout(floors: number, minHeight = H): Layout {
+	const lobby = Math.max(Math.round(minHeight) - 32 - LOBBY_H, 60 + floors * FH);
 	return { floors, lobby, roof: lobby - floors * FH };
 }
 export const floorTop = (L: Layout, i: number) => L.roof + i * FH;
 export const floorLine = (L: Layout, i: number) => floorTop(L, i) + 90;
-export const sceneHeight = (L: Layout) => Math.max(H, L.lobby + LOBBY_H + 32);
+export const sceneHeight = (L: Layout) => L.lobby + LOBBY_H + 32;
 
 // ---------- helpers ----------
 const rnd = (s: number) => { const v = Math.sin(s * 12.9898) * 43758.5453; return v - Math.floor(v); };
@@ -163,10 +163,10 @@ function paintLobby(g: G, L: Layout, projectName: string, projectCol: string) {
 	g.beginPath(); g.moveTo(BX + BW - 18, y0 + 6); g.lineTo(W, y0 + 2); g.lineTo(W, y0 + 14); g.lineTo(BX + BW - 18, y0 + 12); g.closePath(); g.fillStyle = lg(g, 0, y0 + 2, 0, y0 + 14, [[0, C.neon], [1, "#7a2a5a"]]); g.fill();
 }
 
-export interface BackgroundInput { floors: number; colors: string[]; projectName: string; projectColor: string; reviewOn: boolean }
+export interface BackgroundInput { floors: number; colors: string[]; projectName: string; projectColor: string; reviewOn: boolean; minHeight?: number }
 /** The whole static building for one project, finished. */
 export function paintBackground(input: BackgroundInput): { canvas: HTMLCanvasElement; layout: Layout } {
-	const L = layout(input.floors), h = sceneHeight(L), c = mk(W, h), g = c.getContext("2d")!;
+	const L = layout(input.floors, input.minHeight), h = sceneHeight(L), c = mk(W, h), g = c.getContext("2d")!;
 	paintSky(g, h); paintShell(g, L, L.lobby + LOBBY_H); paintFloors(g, L, input.colors, input.reviewOn); paintLobby(g, L, input.projectName, input.projectColor);
 	g.save(); g.globalCompositeOperation = "multiply"; g.fillStyle = "rgba(120,95,160,0.55)"; g.fillRect(BX - 10, L.roof - 14, BW + 20, L.lobby + LOBBY_H - L.roof + 14); g.restore();
 	for (let i = 0; i < L.floors; i++) for (const r of ROOMS) { if (r.id === "review" && !input.reviewOn) continue; light(g, r.x + r.w / 2, floorTop(L, i) + 30, r.w * .6, shade(r.col, .5), .12); }

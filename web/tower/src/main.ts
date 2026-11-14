@@ -120,8 +120,9 @@ function render() {
 	renderProjects();
 	if (!p) return;
 	current = p.cwd;
-	scene.show(p, p.sessions.map((_, i) => FLOOR_COLORS[i % FLOOR_COLORS.length]));
 	fit();
+	scene.show(p, p.sessions.map((_, i) => FLOOR_COLORS[i % FLOOR_COLORS.length]), p.sessions.some((s) => s.review === "on") || !p.sessions.some((s) => s.review), innerHeight / scale);
+	sizeCanvas();
 	renderFloors(p);
 	renderTodo(p);
 	renderLobby(p);
@@ -134,11 +135,13 @@ function render() {
 	renderSelection();
 }
 
-function fit() {
+// The scene fills the window's width; its sky grows to fill the height, with the building on the ground.
+function fit() { scale = Math.max(1, innerWidth / 720); }
+function sizeCanvas() {
 	const c = scene.app.canvas;
-	scale = Math.max(1, Math.floor(Math.min(innerWidth / 720, innerHeight / 450) + 0.05));
 	c.style.width = `${c.width * scale}px`;
 	c.style.height = `${c.height * scale}px`;
+	document.documentElement.style.setProperty("--floor-w", `${Math.max(170, Math.min(320, 172 * scale - 28))}px`);
 }
 
 function connect() {
@@ -163,7 +166,8 @@ addEventListener("keydown", (e) => {
 	const p = project();
 	if ((e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key) && p?.sessions[+e.key - 1]) { e.preventDefault(); select({ kind: "orchestrator", floor: +e.key - 1, session: p.sessions[+e.key - 1] }); }
 });
-addEventListener("resize", () => { fit(); const p = project(); if (p) renderFloors(p); });
+let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(render, 120); });
 
 await scene.mount($("canvas"));
 scene.onPick = (p) => select(p);

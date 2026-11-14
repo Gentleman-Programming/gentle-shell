@@ -1,0 +1,720 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>A · Inspector — Gentle Shell Desktop</title>
+<style>
+/*@BASE*/
+/* Palette: surfaces from themes/Gentleman-Cute.json (the Gentle Shell TUI theme); text, accent and
+   state colors are design/system.md tokens (identical values in that theme). Each var names the
+   Herdr theme role it maps to, so mods read them with theme() and never hard-code a hex.
+   Buildable with Herdr mods: flex boxes, text, inline SVG icons, borders, radius, native markdown.
+   No blur, backdrop filters, gradients or web-only effects. */
+:root {
+	color-scheme: dark;
+	--canvas: #060407;      /* Gentleman-Cute bg          → Herdr "canvas" / "background" */
+	--chrome: #100A0F;      /* Gentleman-Cute bgPanel     → "chrome" */
+	--surface: #20161e;     /* system.md --surface        → "surface" (cards) */
+	--raised: #241822;      /* system.md --surface-1      → "raised" (chips, inputs) */
+	--user: #2A1523;        /* Gentleman-Cute userMessageBg */
+	--selected: #28121E;    /* Gentleman-Cute selection   → "selected" / "hover" */
+	--line: #2A1720;        /* Gentleman-Cute borderSubtle → "border" */
+	--line-strong: #563040; /* Gentleman-Cute border      → card borders that must read */
+	--text: #f6eff3;        /* system.md --text           → "foreground" */
+	--muted: #a78e9b;       /* system.md --text-muted     → "muted" */
+	--faint: #76616b;       /* system.md --text-faint     → decorative only */
+	--accent: #f095c8;      /* system.md --accent (neon rose) → "accent" */
+	--accent-soft: #ffb1dd; /* system.md --accent-soft */
+	--ok: #b4e7c7;          /* system.md --success → "done" */
+	--warn: #e0c27a;        /* system.md --warning → "blocked" (needs you) */
+	--err: #ff718f;         /* system.md --error */
+	--info: #a9c7ee;        /* system.md --info    → "working" */
+	--sans: Inter, "SF Pro Text", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+	--mono: "IosevkaTerm NF", "Iosevka Term", "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+	--r-sm: 8px; --r-md: 12px; --r-lg: 16px; --r-pill: 999px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: #000000; color: var(--text); font: 13px/1.5 var(--sans); width: 1600px; }
+button, input, textarea { font: inherit; color: inherit; }
+button { background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+::selection { background: #f095c84d; }
+svg.i { width: 15px; height: 15px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+svg.i.s { width: 13px; height: 13px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+code, kbd, .mono { font-family: var(--mono); font-size: 12px; }
+kbd { padding: 0 5px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--muted); font-size: 11px; }
+.dim { color: var(--muted); }
+.add { color: var(--ok); } .del { color: var(--err); }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+/* Page frame around the window (not part of the app) */
+.page-head { display: flex; align-items: center; gap: 16px; padding: 12px 4px 12px; }
+.page-head h1 { margin: 0; font-size: 15px; font-weight: 700; }
+.page-head p { margin: 0; color: var(--muted); flex: 1; }
+.map-toggle { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); cursor: pointer; padding: 4px 10px; border: 1px solid #ffffff17; border-radius: var(--r-pill); }
+.map-toggle input { accent-color: var(--accent); }
+.window { width: 1600px; height: 1000px; display: flex; overflow: hidden; background: var(--canvas); border: 1px solid var(--line-strong); border-radius: 10px; position: relative; }
+.legend { padding: 18px 4px 32px; color: var(--muted); }
+.legend h2 { margin: 0 0 8px; font-size: 13px; color: var(--text); }
+.legend table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 18px; }
+.legend th, .legend td { text-align: left; vertical-align: top; padding: 5px 10px 5px 0; border-bottom: 1px solid var(--line); }
+.legend th { color: var(--text); font-weight: 600; }
+.legend td:first-child { color: var(--accent); font-family: var(--mono); width: 28px; }
+.legend code { color: var(--accent-soft); }
+.parity { columns: 2; column-gap: 32px; font-size: 12px; margin: 0; padding: 0; list-style: none; }
+.parity li { break-inside: avoid; padding: 3px 0; border-bottom: 1px solid var(--line); }
+.parity b { color: var(--text); font-weight: 600; }
+
+/* Herdr map overlay: outlines every region with its layout node and mod */
+[data-block] { position: relative; }
+body:has(#map:checked) [data-block] { outline: 1px dashed #f095c8b3; outline-offset: -1px; }
+body:has(#map:checked) [data-block]::after {
+	content: attr(data-n) " · " attr(data-block); position: absolute; top: 2px; right: 2px; z-index: 50;
+	padding: 1px 6px; border-radius: 6px; background: var(--accent); color: #1a1218; font: 600 10.5px/1.5 var(--mono); pointer-events: none; white-space: nowrap; max-width: calc(100% - 4px); overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Status and state (always a label, never color alone) */
+.state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
+.state::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
+.state.work { color: var(--info); } .state.need { color: var(--warn); } .state.done { color: var(--ok); }
+.state.idle { color: var(--muted); } .state.idle::before { background: none; border: 1.5px solid currentColor; width: 5px; height: 5px; }
+.state.fail { color: var(--err); }
+.state.queue { color: var(--muted); } .state.queue::before { background: none; border: 1.5px dashed currentColor; width: 5px; height: 5px; }
+@media (prefers-reduced-motion: no-preference) {
+	.state.work::before { animation: pulse 1.6s ease-in-out infinite; }
+	@keyframes pulse { 50% { opacity: .35; } }
+}
+.bar { height: 4px; border-radius: var(--r-pill); background: var(--raised); overflow: hidden; flex: 1; min-width: 40px; }
+.bar > i { display: block; height: 100%; background: var(--muted); border-radius: inherit; }
+.bar.accent > i { background: var(--accent); } .bar.info > i { background: var(--info); } .bar.ok > i { background: var(--ok); }
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: var(--r-sm); border: 1px solid #ffffff17; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.btn:hover { border-color: var(--accent); color: var(--accent-soft); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #1a1218; font-weight: 600; }
+.btn.danger:hover { border-color: var(--err); color: var(--err); }
+.seg { display: inline-flex; padding: 2px; gap: 2px; border: 1px solid var(--line-strong); border-radius: var(--r-sm); }
+.seg button { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 6px; color: var(--muted); font-size: 12px; }
+.seg button[aria-pressed="true"] { background: var(--selected); color: var(--text); box-shadow: inset 0 0 0 1px var(--line-strong); }
+.seg button:hover { color: var(--text); }
+.eyebrow { font: 600 11px/1.4 var(--mono); text-transform: uppercase; letter-spacing: .1em; color: var(--muted); margin: 0; }
+
+/* Permission control (menu of the four live modes) */
+.perm { position: relative; }
+.perm > summary { list-style: none; display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: var(--r-pill); border: 1px solid var(--line-strong); font-size: 12px; cursor: pointer; white-space: nowrap; }
+.perm > summary::-webkit-details-marker { display: none; }
+.perm.yolo > summary { color: var(--warn); border-color: #e0c27a99; background: #e0c27a14; }
+.perm-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 40; width: 330px; padding: 6px; background: var(--raised); border: 1px solid var(--line-strong); border-radius: var(--r-md); box-shadow: 0 12px 28px #00000080; }
+.perm-menu button { display: grid; grid-template-columns: 18px 1fr; gap: 2px 8px; width: 100%; padding: 7px 8px; border-radius: 6px; }
+.perm-menu button:hover { background: var(--selected); }
+.perm-menu b { font-weight: 600; } .perm-menu span { grid-column: 2; color: var(--muted); font-size: 12px; }
+.perm-menu [aria-checked="true"] svg { color: var(--accent); }
+.perm-menu .warnline b { color: var(--warn); } .perm-menu .errline b { color: var(--err); }
+
+/* Chat log (gentle-chat mod) */
+.log { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 0 22px; scroll-behavior: auto; }
+.log-in { max-width: 780px; margin: 0 auto; padding: 0 28px; display: flex; flex-direction: column; gap: 14px; }
+.earlier { align-self: center; margin: 0; }
+.earlier button { color: var(--muted); font-size: 12px; padding: 3px 10px; border-radius: 6px; }
+.earlier button:hover { background: var(--selected); }
+.msg-user { align-self: flex-end; max-width: 82%; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.bubble { background: var(--user); border: 1px solid var(--line-strong); border-radius: var(--r-md); padding: 9px 13px; font-size: 14px; line-height: 1.55; }
+.meta { font-size: 11.5px; color: var(--muted); display: flex; gap: 10px; }
+.msg-ai { display: flex; flex-direction: column; gap: 10px; }
+.md { font-size: 14px; line-height: 1.6; }
+.md p { margin: 0 0 8px; } .md ol { margin: 0; padding-left: 22px; } .md li { margin: 2px 0; }
+.md code { color: var(--accent-soft); background: var(--raised); padding: 1px 5px; border-radius: 5px; }
+.md strong { color: var(--text); }
+details > summary { list-style: none; cursor: pointer; } details > summary::-webkit-details-marker { display: none; }
+details > summary .chev { transition: transform .15s; }
+details[open] > summary .chev { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { details > summary .chev { transition: none; } }
+.think > summary { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; font-style: italic; }
+.think > summary:hover { color: var(--text); }
+.think-body { margin: 6px 0 0 6px; padding-left: 12px; border-left: 2px solid var(--line-strong); color: var(--muted); font-size: 13px; }
+.tool { border: 1px solid var(--line); background: var(--surface); border-radius: var(--r-sm); }
+.tool > summary { display: flex; align-items: center; gap: 8px; padding: 7px 10px; font-size: 12.5px; }
+.tool > summary:hover { background: var(--selected); border-radius: var(--r-sm); }
+.tool .tn { font-weight: 600; flex: none; }
+.tool .ta { font-family: var(--mono); font-size: 12px; color: var(--muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool .ok { color: var(--ok); } .tool .x { color: var(--err); }
+.tool-body { border-top: 1px solid var(--line); padding: 8px 10px 10px; font-size: 12px; }
+.tool-body pre { margin: 0; font: 12px/1.55 var(--mono); color: var(--text); white-space: pre-wrap; }
+.tool-group > summary { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); padding: 2px 0; }
+.tool-group > summary:hover { color: var(--text); }
+.tool-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.diff .tool-body { padding: 0; }
+.hunk { margin: 0; padding: 4px 0; font: 12px/1.6 var(--mono); }
+.hunk div { display: grid; grid-template-columns: 40px 16px minmax(0, 1fr); padding-right: 10px; white-space: pre; }
+.hunk div > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.hunk .ln { color: var(--muted); text-align: right; padding-right: 8px; }
+.hunk .h { color: var(--muted); background: var(--raised); }
+.hunk .a { background: #b4e7c714; } .hunk .a .sg { color: var(--ok); }
+.hunk .d { background: #ff718f14; } .hunk .d .sg { color: var(--err); }
+.diff-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 10px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.sub { border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface); padding: 10px 12px; display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; }
+.sub h3 { margin: 0; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.sub .role { font: 600 11px/1.6 var(--mono); color: var(--accent); text-transform: uppercase; letter-spacing: .08em; }
+.sub .facts { grid-column: 1; display: flex; gap: 12px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+.sub .last { grid-column: 1 / -1; font: 12px/1.5 var(--mono); color: var(--muted); border-top: 1px solid var(--line); padding-top: 6px; margin-top: 2px; }
+.sub .acts { grid-row: 1 / span 2; grid-column: 2; display: flex; gap: 6px; align-items: start; }
+.ask { border: 1px solid var(--line-strong); border-left: 3px solid var(--accent); border-radius: var(--r-md); background: var(--surface); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.ask h3 { margin: 0; font-size: 14.5px; font-weight: 600; }
+.ask .opts { display: flex; flex-direction: column; gap: 6px; margin: 2px 0 0; padding: 0; list-style: none; }
+.ask-opt { width: 100%; display: grid; grid-template-columns: 26px 1fr; gap: 1px 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--canvas); min-height: 44px; }
+.ask-opt:hover { border-color: var(--accent); }
+.ask-opt .k { grid-row: 1 / span 2; width: 22px; height: 22px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 6px; font: 600 12px/1 var(--mono); color: var(--accent-soft); }
+.ask-opt b { font-weight: 600; font-size: 13.5px; } .ask-opt span { color: var(--muted); font-size: 12.5px; }
+.ask-opt .rec { color: var(--accent); font: 600 10.5px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; margin-left: 8px; }
+.ask-opt[aria-pressed="true"] { border-color: var(--accent); background: var(--selected); }
+.ask-foot { font-size: 12px; color: var(--muted); }
+.ask[data-answered] .ask-opt:not([aria-pressed="true"]) { opacity: .55; }
+.typing { display: inline-flex; gap: 8px; align-items: center; font-size: 12px; color: var(--warn); }
+
+/* Composer */
+.composer { flex: none; padding: 10px 16px 12px; border-top: 1px solid var(--line); background: var(--chrome); }
+.composer-in { max-width: 780px; margin: 0 auto; }
+.field { display: flex; align-items: flex-end; gap: 8px; padding: 8px 8px 8px 12px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--canvas); }
+.field:focus-within { border-color: var(--accent); }
+.field textarea { flex: 1; resize: none; border: 0; background: none; outline: none; font-size: 14px; line-height: 1.5; height: 42px; }
+.field textarea::placeholder { color: var(--muted); }
+.icon-btn { display: inline-grid; place-items: center; width: 32px; height: 32px; border-radius: var(--r-sm); color: var(--muted); flex: none; }
+.icon-btn:hover { background: var(--selected); color: var(--text); }
+.send { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: var(--r-sm); background: var(--accent); color: #1a1218; font-weight: 600; font-size: 13px; }
+.hints { display: flex; gap: 14px; margin-top: 6px; font-size: 11.5px; color: var(--muted); }
+
+/* Terminal view (the real TUI in a Herdr pane) */
+.tui { flex: 1; min-height: 0; margin: 0; padding: 14px 16px; background: var(--canvas); font: 12.5px/1.45 var(--mono); color: var(--text); white-space: pre; overflow: hidden; }
+.tui .p { color: var(--accent); } .tui .m { color: var(--muted); } .tui .g { color: var(--ok); } .tui .y { color: var(--warn); } .tui .b { color: var(--info); }
+
+/* Panels (Changes, Todo, Agents, Jobs, Review, Stats, Integrations) */
+.pn { display: flex; flex-direction: column; gap: 10px; font-size: 12.5px; }
+.pn-sum { display: flex; gap: 10px; align-items: baseline; font-size: 13px; }
+.pn-sum b { font-weight: 600; }
+.pn-note { margin: 0; color: var(--muted); font-size: 12px; }
+.pn ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 6px; border-radius: 6px; min-height: 28px; }
+button.row:hover, .row.hov:hover { background: var(--selected); }
+.row .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fst { width: 16px; font: 600 11px/1 var(--mono); flex: none; } .fst.m { color: var(--warn); } .fst.a { color: var(--ok); }
+.fp .dir { color: var(--muted); }
+.todo li { display: flex; gap: 8px; align-items: flex-start; padding: 4px 6px; }
+.todo .tick { width: 16px; height: 16px; flex: none; margin-top: 1px; display: grid; place-items: center; border-radius: 4px; border: 1.5px solid var(--line-strong); }
+.todo .done .tick { border-color: var(--ok); color: var(--ok); }
+.todo .done .grow { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--faint); }
+.todo .now .tick { border-color: var(--warn); }
+.todo .now .tick::after { content: ""; width: 6px; height: 6px; border-radius: 2px; background: var(--warn); }
+.todo .grow { white-space: normal; }
+.todo .sub-l { display: block; font-size: 11.5px; color: var(--warn); }
+.ag { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; padding: 8px; border-radius: var(--r-sm); border: 1px solid var(--line); }
+.ag + .ag { margin-top: 6px; }
+.ag b { font-weight: 600; } .ag .role { font: 600 10.5px/1.6 var(--mono); color: var(--accent); text-transform: uppercase; letter-spacing: .08em; margin-right: 6px; }
+.ag .facts { grid-column: 1 / -1; display: flex; gap: 10px; color: var(--muted); font-size: 12px; align-items: center; }
+.ag .acts { grid-column: 1 / -1; display: flex; gap: 6px; margin-top: 4px; }
+.job { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; padding: 6px; border-radius: 6px; }
+.job code { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job .facts { grid-column: 1 / -1; display: flex; gap: 10px; align-items: center; font-size: 12px; color: var(--muted); }
+.kv { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; margin: 0; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.subhead { margin: 6px 0 2px; font: 600 11px/1.4 var(--mono); text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
+.rev-state { display: flex; align-items: center; gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: var(--r-sm); }
+.rev-state b { font-weight: 600; font-size: 13px; }
+/*/@BASE*/
+
+/* ===== A · Inspector layout ===== */
+.sidebar { width: 252px; flex: none; display: flex; flex-direction: column; background: var(--chrome); border-right: 1px solid var(--line); }
+.brand { height: 46px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 14px 0 78px; }
+.lights { position: absolute; left: 14px; top: 17px; display: flex; gap: 8px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; background: #3a2a34; }
+.brand .mark { color: var(--accent); width: 26px; height: 26px; }
+.brand b { font-weight: 700; letter-spacing: -.01em; }
+.sb-sec { padding: 10px 10px 6px; }
+.sb-sec header { display: flex; align-items: center; justify-content: space-between; padding: 0 6px 6px; }
+.space { display: flex; align-items: center; gap: 10px; width: 100%; padding: 6px; border-radius: 6px; min-height: 34px; }
+.space:hover { background: var(--selected); }
+.space[aria-current="true"] { background: var(--selected); box-shadow: inset 2px 0 0 var(--accent); }
+.space .av { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; font: 700 10.5px/1 var(--mono); background: var(--raised); color: var(--muted); flex: none; }
+.space[aria-current="true"] .av { color: var(--accent-soft); }
+.space .grow { flex: 1; min-width: 0; }
+.space small { display: block; color: var(--muted); font-size: 11.5px; }
+.count { font: 600 11px/1 var(--mono); color: var(--warn); }
+.agent-row { display: grid; grid-template-columns: 1fr auto; gap: 0 8px; width: 100%; padding: 6px; border-radius: 6px; }
+.agent-row:hover { background: var(--selected); }
+.agent-row small { grid-column: 1 / -1; color: var(--muted); font-size: 11.5px; }
+.sb-foot { margin-top: auto; padding: 10px 16px 12px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 7px; font-size: 12px; }
+.usage { display: grid; grid-template-columns: 22px 1fr 36px; gap: 8px; align-items: center; }
+.usage span:first-child { color: var(--muted); font-family: var(--mono); font-size: 11px; }
+.usage .num { text-align: right; font-size: 11.5px; }
+.sb-foot .reset { color: var(--muted); font-size: 11.5px; display: flex; justify-content: space-between; }
+
+.workcol { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.tabs { height: 42px; flex: none; display: flex; align-items: flex-end; gap: 2px; padding: 0 10px; border-bottom: 1px solid var(--line); background: var(--chrome); }
+.tab { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px; border-radius: 8px 8px 0 0; color: var(--muted); font-size: 12.5px; max-width: 260px; }
+.tab:hover { color: var(--text); }
+.tab[aria-selected="true"] { background: var(--canvas); color: var(--text); box-shadow: inset 0 2px 0 var(--accent), 1px 0 0 var(--line), -1px 0 0 var(--line); }
+.tab .grow { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab-add { margin: 0 0 4px 4px; }
+.body { flex: 1; min-height: 0; display: flex; gap: 8px; padding: 8px; }
+.views { flex: 1; min-width: 0; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; background: var(--canvas); overflow: hidden; }
+.chat-head { flex: none; display: flex; flex-direction: column; gap: 4px; padding: 8px 14px 7px; border-bottom: 1px solid var(--line); background: var(--chrome); }
+.head-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-width: 0; }
+.who { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.who h1 { margin: 0; font-size: 14px; font-weight: 600; white-space: nowrap; }
+.crumbs { margin: 1px 0 0; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.crumbs .sep { color: var(--faint); }
+.facts-row { display: flex; align-items: center; gap: 14px; font-size: 12px; flex: none; }
+.fact { display: inline-flex; align-items: center; gap: 6px; color: var(--text); white-space: nowrap; padding: 3px 4px; border-radius: 6px; }
+button.fact:hover { background: var(--selected); }
+.fact .k { color: var(--muted); }
+.fact .bar { width: 46px; flex: none; }
+.vr { width: 1px; height: 20px; background: var(--line); }
+.inspector { width: 372px; flex: none; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; background: var(--chrome); overflow: hidden; }
+.itabs { display: flex; flex: none; padding: 6px 6px 0; gap: 2px; border-bottom: 1px solid var(--line); }
+.itab { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 2px 7px; color: var(--muted); font-size: 11px; border-radius: 6px 6px 0 0; }
+.itab:hover { color: var(--text); background: var(--selected); }
+.itab[aria-selected="true"] { color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
+.itab .c { font: 600 10.5px/1 var(--mono); color: var(--muted); }
+.itab .c.need { color: var(--warn); } .itab .c.work { color: var(--info); }
+.ipanel { flex: 1; min-height: 0; overflow-y: auto; padding: 14px; }
+.ipanel h2 { margin: 0 0 10px; font-size: 13px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+.ipanel[hidden] { display: none; }
+.status { height: 28px; flex: none; display: flex; align-items: center; gap: 18px; padding: 0 14px; border-top: 1px solid var(--line); background: var(--chrome); font-size: 12px; color: var(--muted); }
+.status .phase { color: var(--text); } .status .phase b { color: var(--accent); font-weight: 600; }
+.status .spacer { flex: 1; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+<!--@ICONS-->
+<symbol id="i-mark" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M12 12.6c-1.3-2.2-3.7-3-5.6-1.9-1.4.8-2.6.6-3.4-.5.1 2.6 2.2 4.6 4.9 4.4 1.9-.1 3.3-1 4.1-1.8.8.8 2.2 1.7 4.1 1.8 2.7.2 4.8-1.8 4.9-4.4-.8 1.1-2 1.3-3.4.5-1.9-1.1-4.3-.3-5.6 1.9z"/></symbol>
+<symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+<symbol id="i-branch" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10M18 9c0 4-4 5-10 8"/></symbol>
+<symbol id="i-chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></symbol>
+<symbol id="i-term" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M12 15h5"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 5 5 9-10"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+<symbol id="i-chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+<symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+<symbol id="i-diff" viewBox="0 0 24 24"><path d="M14 3H6v18h12V7z"/><path d="M14 3v4h4M12 9v6M9 12h6M9 17h6"/></symbol>
+<symbol id="i-todo" viewBox="0 0 24 24"><path d="M10 6h10M10 12h10M10 18h10"/><path d="m3 6 1.5 1.5L7 5M3 12l1.5 1.5L7 11"/><circle cx="5" cy="18" r="1.3"/></symbol>
+<symbol id="i-bot" viewBox="0 0 24 24"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M9 13v1M15 13v1"/></symbol>
+<symbol id="i-jobs" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></symbol>
+<symbol id="i-review" viewBox="0 0 24 24"><path d="M12 3 5 6v6c0 4 3 7 7 9 4-2 7-5 7-9V6z"/><path d="m9 12 2 2 4-4"/></symbol>
+<symbol id="i-stats" viewBox="0 0 24 24"><path d="M5 20V11M11 20V5M17 20v-6M3 20h18"/></symbol>
+<symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></symbol>
+<symbol id="i-clip" viewBox="0 0 24 24"><path d="m20 11-8 8a5 5 0 0 1-7-7l8-8a3.5 3.5 0 0 1 5 5l-8 8a2 2 0 0 1-3-3l7-7"/></symbol>
+<symbol id="i-send" viewBox="0 0 24 24"><path d="M5 12h13M13 6l6 6-6 6"/></symbol>
+<symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5"/></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="i-gear" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></symbol>
+<symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 5 6v6c0 4 3 7 7 9 4-2 7-5 7-9V6z"/></symbol>
+<symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 4v4M12 16v4M4 12h4M16 12h4M7 7l2 2M15 15l2 2M7 17l2-2M15 9l2-2"/></symbol>
+<symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/></symbol>
+<symbol id="i-cmd" viewBox="0 0 24 24"><path d="M9 6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3z"/></symbol>
+<symbol id="i-db" viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3 3 7 3s7-1.3 7-3V6M5 12c0 1.7 3 3 7 3s7-1.3 7-3"/></symbol>
+<symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></symbol>
+<symbol id="i-rail" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></symbol>
+<symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H6v18h12V7z"/><path d="M14 3v4h4"/></symbol>
+<symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 3 5 14h6l-1 7 8-11h-6z"/></symbol>
+<!--/@ICONS-->
+</svg>
+
+<header class="page-head">
+	<h1>A · Inspector</h1>
+	<p>Herdr-native: spaces + agents on the left, sessions as tabs, chat in the centre, a tabbed inspector on the right. Everything one click away; the inspector costs 372 px of chat width.</p>
+	<label class="map-toggle"><input type="checkbox" id="map"> Show Herdr blocks</label>
+</header>
+
+<main class="window" aria-label="Gentle Shell Desktop window">
+	<div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
+
+	<nav class="sidebar" aria-label="Spaces and agents" data-n="1" data-block="column sidebar">
+		<div class="brand" data-n="1a" data-block="block brand · workspace-chrome">
+			<svg class="i mark" aria-hidden="true"><use href="#i-mark"/></svg><b>Gentle Shell</b>
+		</div>
+		<section class="sb-sec" aria-labelledby="sp-h" data-n="1b" data-block="block spaces · gentle-spaces (skin of spaces)">
+			<header><h2 class="eyebrow" id="sp-h">Projects</h2><button class="icon-btn" aria-label="Open a project"><svg class="i s"><use href="#i-plus"/></svg></button></header>
+			<ul style="list-style:none;margin:0;padding:0">
+				<li><button class="space" aria-current="true"><span class="av">gp</span><span class="grow">gentle-pi<small>3 sessions · $4.74 today</small></span><span class="count" title="1 session needs you">1</span></button></li>
+				<li><button class="space"><span class="av">ga</span><span class="grow">gentle-ai<small>1 session · idle</small></span></button></li>
+				<li><button class="space"><span class="av">hz</span><span class="grow">herdr-zoo<small>No Gentle Shell session</small></span></button></li>
+			</ul>
+		</section>
+		<section class="sb-sec" aria-labelledby="ag-h" data-n="1c" data-block="block agents · agents (built-in)">
+			<header><h2 class="eyebrow" id="ag-h">Agents</h2><span class="dim" style="font-size:11.5px">Needs you first</span></header>
+			<button class="agent-row"><span>T5 · Chat switch</span><span class="state need">Needs you</span><small>gentle-shell · gentle-pi · t2</small></button>
+			<button class="agent-row"><span>Review follow-up</span><span class="state work">Working</span><small>gentle-shell · gentle-pi · t4</small></button>
+			<button class="agent-row"><span>Desktop recipe</span><span class="state idle">Idle</span><small>gentle-shell · gentle-pi · t5</small></button>
+			<button class="agent-row"><span>Release notes</span><span class="state idle">Idle</span><small>gentle-shell · gentle-ai · t1</small></button>
+		</section>
+		<footer class="sb-foot" aria-label="Plan usage" data-n="1d" data-block="block sidebar-footer · gentle-usage">
+			<p class="eyebrow">Plan usage · Claude Max</p>
+			<div class="usage"><span>5h</span><span class="bar accent"><i style="width:46%"></i></span><span class="num">46%</span></div>
+			<div class="usage"><span>7d</span><span class="bar"><i style="width:22%"></i></span><span class="num">22%</span></div>
+			<p class="reset" style="margin:0"><span>5h resets in 2h 10m</span><button class="dim" style="font-size:11.5px" aria-label="Settings"><svg class="i s"><use href="#i-gear"/></svg></button></p>
+		</footer>
+	</nav>
+
+	<div class="workcol">
+		<div class="tabs" role="tablist" aria-label="Sessions in gentle-pi" data-n="2" data-block="block tabs · tabs (built-in)">
+			<button class="tab" role="tab" aria-selected="true"><span class="state need"><span class="sr">Needs you</span></span><span class="grow">T5 · Chat | Terminal switch</span></button>
+			<button class="tab" role="tab" aria-selected="false"><span class="state work"><span class="sr">Working</span></span><span class="grow">Review follow-up #1858</span></button>
+			<button class="tab" role="tab" aria-selected="false"><span class="state idle"><span class="sr">Idle</span></span><span class="grow">Desktop recipe</span></button>
+			<button class="icon-btn tab-add" aria-label="New Gentle Shell session"><svg class="i s"><use href="#i-plus"/></svg></button>
+		</div>
+
+		<div class="body" data-n="3" data-block="row work-body">
+			<section class="views" aria-label="Session" data-n="4" data-block="stack views → block chat · gentle-chat">
+				<header class="chat-head" data-n="4a" data-block="gentle-chat · header">
+					<div class="head-row">
+						<h1 class="who" style="margin:0;font-size:14px;font-weight:600">T5 · Chat | Terminal switch</h1>
+<!--@SWITCH-->
+						<div class="seg" role="group" aria-label="View">
+							<button data-switch="chat" aria-pressed="true"><svg class="i s"><use href="#i-chat"/></svg>Chat</button>
+							<button data-switch="term" aria-pressed="false"><svg class="i s"><use href="#i-term"/></svg>Terminal</button>
+						</div>
+<!--/@SWITCH-->
+					</div>
+					<div class="head-row">
+						<p class="crumbs"><svg class="i s"><use href="#i-folder"/></svg>gentle-pi <span class="sep">/</span> <svg class="i s"><use href="#i-branch"/></svg>feat/herdr-gentle-shell <span class="sep">·</span> <span>7 changed</span></p>
+					<div class="facts-row">
+						<button class="fact" title="Model · effort · profile (opens /gentle:models)"><span class="k">Model</span>Opus 5.5 · high · balanced</button>
+						<button class="fact" title="Persona (opens /gentle:persona)"><svg class="i s dim"><use href="#i-user"/></svg>Gentleman</button>
+						<span class="fact" title="Context window"><span class="k">Ctx</span><span class="bar info" role="img" aria-label="Context 38 percent of 400k"><i style="width:38%"></i></span><span class="num">38%</span></span>
+						<span class="fact"><span class="k">Cost</span><span class="num">$3.42</span></span>
+						<details class="perm">
+							<summary aria-label="Permission mode: auto"><svg class="i s"><use href="#i-shield"/></svg>Auto<svg class="i s"><use href="#i-down"/></svg></summary>
+<!--@PERMMENU-->
+							<div class="perm-menu" role="menu" aria-label="Permission mode">
+								<button role="menuitemradio" aria-checked="false"><svg class="i s"></svg><b>Normal</b><span>Standard permission prompts</span></button>
+								<button role="menuitemradio" aria-checked="true"><svg class="i s"><use href="#i-check"/></svg><b>Auto</b><span>Independent checks; extra model calls</span></button>
+								<button role="menuitemradio" aria-checked="false" class="warnline"><svg class="i s"></svg><b>YOLO</b><span>Scoped work; destructive actions ask</span></button>
+								<button role="menuitemradio" aria-checked="false" class="errline"><svg class="i s"></svg><b>Super-YOLO</b><span>No permission prompts; private paths blocked; consent remains</span></button>
+							</div>
+<!--/@PERMMENU-->
+						</details>
+					</div>
+					</div>
+				</header>
+
+				<div class="log" data-view="chat" tabindex="0" aria-label="Conversation" data-n="4b" data-block="gentle-chat · log (v_virtual_list + TextView.markdown)">
+					<div class="log-in">
+<!--@CHAT-->
+						<p class="earlier"><button>Show earlier (12 messages)</button></p>
+						<article class="msg-user" aria-label="You">
+							<div class="bubble">Implement T5: the <b>Chat | Terminal</b> switch in <code class="mono">gentle-chat</code>. The way back from the terminal can't rely on the stack's <code class="mono">tabs</code> header — Herdr 0.1.15 rejects it.</div>
+							<div class="meta">You · 14:02</div>
+						</article>
+						<article class="msg-ai" aria-label="Gentle Shell">
+							<details class="think"><summary><svg class="i s chev"><use href="#i-chev"/></svg>Thought for 14s</summary>
+								<div class="think-body">The CLI <code>layout.select</code> did nothing in L7 because t2 is not in a window space. From inside the mod, <code>run("layout.select")</code> targets the shown layout, so Chat → Terminal works. The way back needs a control that stays visible while the terminal is shown: the pane header.</div>
+							</details>
+							<details class="tool-group"><summary><svg class="i s chev"><use href="#i-chev"/></svg><span class="add">✓</span> Explored the spike · 3 reads, 1 search <span class="dim">0.8s</span></summary>
+								<div class="tool-list">
+									<details class="tool"><summary><span class="ok">✓</span><span class="tn">read</span><span class="ta">herdr/mods/gentle-chat/main.js · 299 lines</span><svg class="i s chev"><use href="#i-chev"/></svg></summary><div class="tool-body"><pre>export default class GentleChat extends View { … }</pre></div></details>
+									<details class="tool"><summary><span class="ok">✓</span><span class="tn">read</span><span class="ta">herdr/layouts/gentle-shell.json · 266 lines</span><svg class="i s chev"><use href="#i-chev"/></svg></summary></details>
+									<details class="tool"><summary><span class="ok">✓</span><span class="tn">read</span><span class="ta">herdr-zoo/mods/claude-chat/main.js · 412 lines</span><svg class="i s chev"><use href="#i-chev"/></svg></summary></details>
+									<details class="tool"><summary><span class="ok">✓</span><span class="tn">grep</span><span class="ta">"layout.select" herdr/ herdr-zoo/ · 6 matches</span><svg class="i s chev"><use href="#i-chev"/></svg></summary></details>
+								</div>
+							</details>
+							<div class="md">
+								<p>The forward switch already works from inside the mod; what is missing is the way back. Plan:</p>
+								<ol>
+									<li>Route both segments through one <code>go(child)</code> helper over <code>run("layout.select")</code>.</li>
+									<li>Add a <strong>Chat</strong> button to the <code>pane</code> header mod for Terminal → Chat.</li>
+									<li>Show the <kbd>⌘J</kbd> toggle next to the switch.</li>
+								</ol>
+							</div>
+							<details class="tool diff" open>
+								<summary><span class="ok">✓</span><span class="tn">edit</span><span class="ta">herdr/mods/gentle-chat/main.js</span><span class="num add">+18</span><span class="num del">−6</span><svg class="i s chev"><use href="#i-chev"/></svg></summary>
+								<div class="tool-body">
+<div class="hunk" role="img" aria-label="Diff hunk: one helper added, two lines replaced by three">
+<div class="h"><span class="ln"></span><span class="sg"></span><span>@@ -181,8 +181,10 @@ header(t, agent, working)</span></div>
+<div><span class="ln">181</span><span class="sg"></span><span>    const showing = this.showing();</span></div>
+<div class="a"><span class="ln">182</span><span class="sg">+</span><span>    const go = (child) =&gt; run("layout.select", { stack, child });</span></div>
+<div><span class="ln">183</span><span class="sg"></span><span>    return h_flex().id("header").h(40).flex_shrink_0().px(14)</span></div>
+<div class="d"><span class="ln">196</span><span class="sg">−</span><span>        .child(seg("sw-chat", "Chat", showing, (_e, _cx) =&gt; run("layout.select", { stack, child: self })))</span></div>
+<div class="d"><span class="ln">197</span><span class="sg">−</span><span>        .child(seg("sw-term", "Terminal", !showing, (_e, _cx) =&gt; run("layout.select", { stack, child: other }))))));</span></div>
+<div class="a"><span class="ln">197</span><span class="sg">+</span><span>        .child(seg("sw-chat", "Chat", showing, () =&gt; go(self)))</span></div>
+<div class="a"><span class="ln">198</span><span class="sg">+</span><span>        .child(seg("sw-term", "Terminal", !showing, () =&gt; go(other)))</span></div>
+<div class="a"><span class="ln">199</span><span class="sg">+</span><span>        .child(div().text_size(11).text_color(t.dim).child("⌘J")))));</span></div>
+</div>
+									<div class="diff-foot"><span>Hunk 1 of 3</span><span style="display:flex;gap:6px"><button class="btn">Next hunk</button><button class="btn">Open in Changes</button></span></div>
+								</div>
+							</details>
+							<details class="tool"><summary><span class="ok">✓</span><span class="tn">bash</span><span class="ta">herdr-app check herdr/mods/gentle-chat</span><span class="dim">check passed · 1.9s</span><svg class="i s chev"><use href="#i-chev"/></svg></summary><div class="tool-body"><pre>check passed (gentle-chat: 1 view, 0 errors, 0 warnings)</pre></div></details>
+							<section class="sub" aria-label="Subagent writer">
+								<h3><span class="role">writer</span>Add the Chat button to the pane header mod</h3>
+								<div class="facts"><span class="state work">Running · 3m 12s</span><span>Sonnet 5.5</span><span class="num">$0.41</span><span>todo 2/4</span></div>
+								<div class="acts"><button class="btn">View</button><button class="btn danger"><svg class="i s"><use href="#i-stop"/></svg>Stop</button></div>
+								<div class="last">› bash herdr-app check herdr/mods/pane-gentle</div>
+							</section>
+						</article>
+						<section class="ask" role="group" aria-labelledby="ask-q">
+							<p class="eyebrow" style="color:var(--accent)">Question · the agent waits for you</p>
+							<h3 id="ask-q">How should the Terminal view offer the way back to Chat?</h3>
+							<ol class="opts">
+								<li><button class="ask-opt" aria-pressed="false"><span class="k">1</span><b>Chat button in the pane header<span class="rec">Recommended</span></b><span>Visible whenever the terminal is shown; uses the pane mod already in the layout.</span></button></li>
+								<li><button class="ask-opt" aria-pressed="false"><span class="k">2</span><b>Floating “Back to chat” pill</b><span>Always visible, but it covers the bottom-right corner of the TUI.</span></button></li>
+								<li><button class="ask-opt" aria-pressed="false"><span class="k">3</span><b>Keyboard only (⌘J)</b><span>No extra chrome; hard to discover.</span></button></li>
+								<li><button class="ask-opt" aria-pressed="false"><span class="k">4</span><b>Something else…</b><span>Type your own answer in the composer.</span></button></li>
+							</ol>
+							<p class="ask-foot" role="status">Press 1–4 or click · Esc answers later</p>
+						</section>
+<!--/@CHAT-->
+					</div>
+				</div>
+<!--@TERM-->
+				<pre class="tui" data-view="term" hidden aria-label="Gentle Shell terminal (real TUI in a Herdr pane)"><span class="m"> gentle-pi  feat/herdr-gentle-shell ●7   T5 · Chat | Terminal switch          Opus 5.5 high · ctx 38% · $3.42</span>
+<span class="m"> ─────────────────────────────────────────────────────────────────────────────────────────────────────</span>
+ <span class="p">›</span> Implement T5: the Chat | Terminal switch in gentle-chat. The way back from the terminal
+   can't rely on the stack's tabs header — Herdr 0.1.15 rejects it.
+
+ <span class="m">▸ Thought for 14s</span>
+ <span class="g">✓</span> Explored the spike · 3 reads, 1 search
+   The forward switch already works from inside the mod; what is missing is the way back.
+ <span class="g">✓</span> edit herdr/mods/gentle-chat/main.js <span class="g">+18</span> <span style="color:var(--err)">−6</span>
+ <span class="g">✓</span> bash herdr-app check herdr/mods/gentle-chat  <span class="m">check passed · 1.9s</span>
+ <span class="b">◐</span> writer  Add the Chat button to the pane header mod      <span class="m">3m 12s · $0.41</span>
+
+ <span class="y">?</span> How should the Terminal view offer the way back to Chat?
+   <span class="p">❯ 1. Chat button in the pane header (Recommended)</span>
+     2. Floating “Back to chat” pill
+     3. Keyboard only (⌘J)
+     4. Something else…
+
+<span class="m"> ╭───────────────────────────────────────────────────────────────────────────────────────────────────╮</span>
+<span class="m"> │</span> ▏                                                                                                  <span class="m">│</span>
+<span class="m"> ╰───────────────────────────────────────────────────────────────────────────────────────────────────╯</span>
+<span class="m"> AUTO · ODD Build T5 · writer 58 tok/s · jobs 1 · 5h 46%</span></pre>
+<!--/@TERM-->
+<!--@COMPOSER-->
+				<form class="composer" data-view="chat" onsubmit="return false" aria-label="Message composer" data-n="4c" data-block="gentle-chat · composer (Input + Button)">
+					<div class="composer-in">
+						<div class="field">
+							<button type="button" class="icon-btn" aria-label="Attach image"><svg class="i"><use href="#i-clip"/></svg></button>
+							<label class="sr" for="msg">Message</label>
+							<textarea id="msg" rows="2" placeholder="Answer above, or message Gentle Shell…  / for commands"></textarea>
+							<button type="submit" class="send"><svg class="i s"><use href="#i-send"/></svg>Send</button>
+						</div>
+						<div class="hints"><span><kbd>Enter</kbd> send</span><span><kbd>⇧ Enter</kbd> new line</span><span><kbd>/</kbd> commands</span><span><kbd>⌘J</kbd> Terminal</span><span style="margin-left:auto">Esc Esc stops the agent</span></div>
+					</div>
+				</form>
+<!--/@COMPOSER-->
+			</section>
+
+			<aside class="inspector" aria-label="Inspector" data-n="5" data-block="column panel → stack panel-body · gentle-inspector">
+				<div class="itabs" role="tablist" aria-label="Inspector views">
+					<button class="itab" role="tab" id="t-changes" aria-controls="p-changes" aria-selected="true"><svg class="i"><use href="#i-diff"/></svg>Changes<span class="c">7</span></button>
+					<button class="itab" role="tab" id="t-todo" aria-controls="p-todo" aria-selected="false"><svg class="i"><use href="#i-todo"/></svg>Todo<span class="c need">3/6</span></button>
+					<button class="itab" role="tab" id="t-agents" aria-controls="p-agents" aria-selected="false"><svg class="i"><use href="#i-bot"/></svg>Agents<span class="c work">1 run</span></button>
+					<button class="itab" role="tab" id="t-jobs" aria-controls="p-jobs" aria-selected="false"><svg class="i"><use href="#i-jobs"/></svg>Jobs<span class="c work">1 run</span></button>
+					<button class="itab" role="tab" id="t-review" aria-controls="p-review" aria-selected="false"><svg class="i"><use href="#i-review"/></svg>Review<span class="c">ready</span></button>
+					<button class="itab" role="tab" id="t-session" aria-controls="p-session" aria-selected="false"><svg class="i"><use href="#i-stats"/></svg>Session<span class="c">18 turns</span></button>
+				</div>
+				<section class="ipanel" role="tabpanel" id="p-changes" aria-labelledby="t-changes" data-n="5a" data-block="block changes · gentle-changes">
+					<h2>Changes <button class="btn">Open diff viewer</button></h2>
+<!--@CHANGES-->
+					<div class="pn">
+						<div class="pn-sum"><b>7 files</b><span class="num add">+255</span><span class="num del">−25</span></div>
+						<p class="pn-note">Worktree <code>.worktrees/herdr-gentle-shell</code> · uncommitted</p>
+						<ul aria-label="Changed files">
+							<li><button class="row"><span class="fst m" aria-label="Modified">M</span><span class="grow fp"><span class="dir">herdr/mods/gentle-chat/</span>main.js</span><span class="num add">+42</span><span class="num del">−11</span></button></li>
+							<li><button class="row"><span class="fst m" aria-label="Modified">M</span><span class="grow fp"><span class="dir">herdr/mods/gentle-chat/</span>feed.js</span><span class="num add">+8</span><span class="num del">−2</span></button></li>
+							<li><button class="row"><span class="fst m" aria-label="Modified">M</span><span class="grow fp"><span class="dir">herdr/mods/gentle-chat/</span>session.js</span><span class="num add">+3</span><span class="num del">−1</span></button></li>
+							<li><button class="row"><span class="fst m" aria-label="Modified">M</span><span class="grow fp"><span class="dir">herdr/layouts/</span>gentle-shell.json</span><span class="num add">+12</span><span class="num del">−4</span></button></li>
+							<li><button class="row"><span class="fst a" aria-label="Added">A</span><span class="grow fp"><span class="dir">herdr/mods/pane-gentle/</span>main.js</span><span class="num add">+64</span><span class="num del">−0</span></button></li>
+							<li><button class="row"><span class="fst a" aria-label="Added">A</span><span class="grow fp"><span class="dir">lib/</span>desktop-snapshot.ts</span><span class="num add">+120</span><span class="num del">−0</span></button></li>
+							<li><button class="row"><span class="fst m" aria-label="Modified">M</span><span class="grow fp"><span class="dir">odd/tasks/</span>herdr-desktop.md</span><span class="num add">+6</span><span class="num del">−7</span></button></li>
+						</ul>
+					</div>
+<!--/@CHANGES-->
+				</section>
+				<section class="ipanel" role="tabpanel" id="p-todo" aria-labelledby="t-todo" hidden data-n="5b" data-block="block todo · gentle-todo">
+					<h2>Todo</h2>
+<!--@TODO-->
+					<div class="pn">
+						<div class="pn-sum" style="align-items:center"><b>3 of 6</b><span class="bar ok" role="img" aria-label="3 of 6 done"><i style="width:50%"></i></span></div>
+						<ul class="todo" aria-label="Tasks">
+							<li class="done"><span class="tick"><svg class="i s"><use href="#i-check"/></svg></span><span class="grow">Read the spike and the layout<span class="sr"> (done)</span></span></li>
+							<li class="done"><span class="tick"><svg class="i s"><use href="#i-check"/></svg></span><span class="grow">Find why the CLI select did nothing<span class="sr"> (done)</span></span></li>
+							<li class="done"><span class="tick"><svg class="i s"><use href="#i-check"/></svg></span><span class="grow">Route both segments through one helper<span class="sr"> (done)</span></span></li>
+							<li class="now"><span class="tick"></span><span class="grow">Way back from the Terminal<span class="sub-l">Waiting for your answer</span></span></li>
+							<li><span class="tick"></span><span class="grow">herdr-app check on both mods</span></li>
+							<li><span class="tick"></span><span class="grow">Live shot in the Herdr window</span></li>
+						</ul>
+					</div>
+<!--/@TODO-->
+				</section>
+				<section class="ipanel" role="tabpanel" id="p-agents" aria-labelledby="t-agents" hidden data-n="5c" data-block="block subagents · gentle-subagents">
+					<h2>Agents <span class="dim num" style="font-weight:400">$0.49 spent</span></h2>
+<!--@AGENTS-->
+					<div class="pn">
+						<div class="ag"><span><span class="role">writer</span><b>Add the Chat button to the pane header mod</b></span><span></span>
+							<div class="facts"><span class="state work">Running · 3m 12s</span><span>Sonnet 5.5</span><span class="num">$0.41</span></div>
+							<div class="acts"><button class="btn">View</button><button class="btn danger"><svg class="i s"><use href="#i-stop"/></svg>Stop</button></div></div>
+						<div class="ag"><span><span class="role">explorer</span><b>Map layout.select uses in herdr-zoo</b></span><span></span>
+							<div class="facts"><span class="state done">Done · 41s</span><span>Haiku 5.5</span><span class="num">$0.08</span></div></div>
+						<div class="ag"><span><span class="role">verifier</span><b>Check both mods and take a live shot</b></span><span></span>
+							<div class="facts"><span class="state queue">Queued · after writer</span></div></div>
+					</div>
+<!--/@AGENTS-->
+				</section>
+				<section class="ipanel" role="tabpanel" id="p-jobs" aria-labelledby="t-jobs" hidden data-n="5d" data-block="block jobs · gentle-jobs">
+					<h2>Jobs</h2>
+<!--@JOBS-->
+					<div class="pn">
+						<p class="subhead">Running</p>
+						<div class="job"><code>bun test tests/desktop-snapshot.test.ts</code><button class="btn danger">Cancel</button><div class="facts"><span class="state work">Running</span><span class="num">0:42</span></div></div>
+						<p class="subhead">Finished</p>
+						<div class="job"><code>herdr-app check herdr/mods/gentle-chat</code><span></span><div class="facts"><span class="state done">Passed</span><span class="num">0:09</span><span>2 min ago</span></div></div>
+						<div class="job"><code>bun test tests/feed.test.ts</code><button class="btn">Output</button><div class="facts"><span class="state fail">Failed · 1 test</span><span class="num">0:06</span><span>9 min ago</span></div></div>
+					</div>
+<!--/@JOBS-->
+				</section>
+				<section class="ipanel" role="tabpanel" id="p-review" aria-labelledby="t-review" hidden data-n="5e" data-block="block review · gentle-review">
+					<h2>Review</h2>
+<!--@REVIEW-->
+					<div class="pn">
+						<div class="rev-state"><svg class="i" style="color:var(--muted)"><use href="#i-review"/></svg><span class="grow"><b>Not reviewed yet</b><br><span class="dim">Candidate: herdr/mods/** · 4 files</span></span></div>
+						<dl class="kv"><dt>RDD</dt><dd>on · standard</dd><dt>Reviewers</dt><dd>2 lenses</dd></dl>
+						<div style="display:flex;gap:6px"><button class="btn primary">Start review</button><button class="btn">Skip for this change</button></div>
+					</div>
+<!--/@REVIEW-->
+				</section>
+				<section class="ipanel" role="tabpanel" id="p-session" aria-labelledby="t-session" hidden data-n="5f" data-block="block session · gentle-stats">
+					<h2>Session</h2>
+<!--@STATS-->
+					<div class="pn">
+						<dl class="kv"><dt>Turns</dt><dd>18</dd><dt>Tool calls</dt><dd>64</dd><dt>Duration</dt><dd>41m</dd><dt>Cost</dt><dd>$3.42</dd><dt>Subagent spend</dt><dd>$0.49</dd></dl>
+						<p class="subhead">By model</p>
+						<dl class="kv"><dt>Opus 5.5 · 14 turns</dt><dd>$2.93</dd><dt>Sonnet 5.5 · writer</dt><dd>$0.41</dd><dt>Haiku 5.5 · explorer</dt><dd>$0.08</dd></dl>
+					</div>
+<!--/@STATS-->
+<!--@INTEG-->
+					<div class="pn" style="margin-top:14px">
+						<p class="subhead">Integrations</p>
+						<ul>
+							<li class="row"><svg class="i s dim"><use href="#i-db"/></svg><span class="grow">Engram · project gentle-pi</span><span class="state done">Connected</span></li>
+							<li class="row"><svg class="i s dim"><use href="#i-plug"/></svg><span class="grow">MCP · codegraph</span><span class="state done">Ready</span></li>
+							<li class="row"><svg class="i s dim"><use href="#i-plug"/></svg><span class="grow">MCP · context7</span><span class="state done">Ready</span></li>
+							<li class="row"><svg class="i s dim"><use href="#i-plug"/></svg><span class="grow">MCP · tubemaster</span><span class="state idle">Not loaded</span></li>
+							<li class="row"><svg class="i s dim"><use href="#i-bolt"/></svg><span class="grow">Other statuses</span><span class="dim">music paused</span></li>
+						</ul>
+					</div>
+<!--/@INTEG-->
+				</section>
+			</aside>
+		</div>
+
+		<footer class="status" aria-label="Status" data-n="6" data-block="block status · gentle-status (replaces workspace-status)">
+			<span class="phase">ODD <b>Build</b> · T5 of 9</span>
+			<span class="state work">writer streaming · <span class="num">58 tok/s</span></span>
+			<span class="state need">Main agent waiting for your answer</span>
+			<span>Jobs <span class="num">1</span> running · <span class="num">2</span> done</span>
+			<span class="spacer"></span>
+			<span>Engram · MCP 2/3</span>
+			<span><kbd>⌘K</kbd> Commands</span>
+		</footer>
+	</div>
+</main>
+
+<section class="legend" aria-label="Herdr build map">
+	<h2>Herdr build map</h2>
+	<table>
+		<thead><tr><th>#</th><th>Region</th><th>Layout node (herdr/layouts/gentle-shell.json)</th><th>Content</th><th>gpui pieces</th><th>Data</th></tr></thead>
+		<tbody>
+			<tr><td>1</td><td>Sidebar</td><td><code>column sidebar</code> 252 px, min 44</td><td>—</td><td>—</td><td>—</td></tr>
+			<tr><td>1a</td><td>Brand + traffic lights</td><td><code>block brand</code> 46 px, <code>window_drag</code></td><td>built-in <code>workspace-chrome</code></td><td>svg mark, text</td><td>—</td></tr>
+			<tr><td>1b</td><td>Projects (Herdr spaces)</td><td><code>block spaces</code></td><td>new <code>gentle-spaces</code> (skin of built-in <code>spaces</code>)</td><td>v_flex rows</td><td>herdr <code>spaces()</code> + snapshot cost/needs-you</td></tr>
+			<tr><td>1c</td><td>Agents, needs-you first</td><td><code>block agents</code></td><td>built-in <code>agents</code></td><td>rows, status dot + label</td><td>herdr <code>agents()</code> (reporter already live)</td></tr>
+			<tr><td>1d</td><td>Plan usage 5h / 7d</td><td><code>block sidebar-footer</code> 92 px</td><td>new <code>gentle-usage</code></td><td>Progress</td><td>snapshot usage</td></tr>
+			<tr><td>2</td><td>Sessions as tabs</td><td><code>block tabs</code> 42 px</td><td>built-in <code>tabs</code></td><td>—</td><td>herdr tabs; title from <code>report_agent_session</code></td></tr>
+			<tr><td>4</td><td>Chat ⇄ Terminal</td><td><code>stack views</code> (children <code>chat</code>, <code>main</code>), switched by <code>run("layout.select")</code></td><td><code>gentle-chat</code> / tab terminals with <code>pane</code> header</td><td>—</td><td>session JSONL (T1)</td></tr>
+			<tr><td>4a</td><td>Session header</td><td>inside <code>gentle-chat</code></td><td>header row</td><td>h_flex, Progress, Popover menu, ToggleGroup</td><td>snapshot (model, persona, ctx, cost, permission)</td></tr>
+			<tr><td>4b</td><td>Conversation</td><td>inside <code>gentle-chat</code></td><td>log</td><td>v_virtual_list, TextView.markdown, Collapsible</td><td>session; question payload from snapshot</td></tr>
+			<tr><td>4c</td><td>Composer</td><td>inside <code>gentle-chat</code></td><td>composer</td><td>Textarea, Button</td><td><code>hc send</code>; answers via action (T7)</td></tr>
+			<tr><td>5</td><td>Inspector</td><td><code>column panel</code> 372 px (min 280) → <code>stack panel-body</code></td><td>tab header inside <code>gentle-inspector</code>, one block per tab</td><td>Tabs</td><td>—</td></tr>
+			<tr><td>5a–f</td><td>Changes · Todo · Agents · Jobs · Review · Session</td><td>children of <code>panel-body</code></td><td><code>gentle-changes</code> (or built-in <code>changes</code> for the diff viewer), <code>gentle-todo</code>, <code>gentle-subagents</code>, <code>gentle-jobs</code>, <code>gentle-review</code>, <code>gentle-stats</code></td><td>rows, Progress, Button</td><td>snapshot; stop/cancel/review via action</td></tr>
+			<tr><td>6</td><td>Status bar</td><td><code>block status</code> 28 px</td><td>new <code>gentle-status</code> (replaces <code>workspace-status</code>)</td><td>h_flex text</td><td>snapshot phase, TPS, jobs</td></tr>
+		</tbody>
+	</table>
+	<h2>Parity (odd/tasks/herdr-desktop-parity.md) → place in A</h2>
+	<ul class="parity">
+		<li><b>Project, branch, dirty</b> — 4a crumbs</li>
+		<li><b>Model, effort, profile</b> — 4a Model (opens /gentle:models)</li>
+		<li><b>Persona</b> — 4a</li>
+		<li><b>Session name</b> — 2 tab + 4a title</li>
+		<li><b>Context % + window</b> — 4a Ctx gauge (tooltip 152k / 400k)</li>
+		<li><b>Cost total / subscription</b> — 4a Cost; 1d names the plan</li>
+		<li><b>Plan usage 5h / 7d</b> — 1d</li>
+		<li><b>Permission mode incl. YOLO / Super-YOLO</b> — 4a menu</li>
+		<li><b>Jobs counter</b> — 6</li>
+		<li><b>Opaque extension statuses</b> — 5f Other statuses</li>
+		<li><b>Changes + diff viewer</b> — 5a; diff in chat; Open diff viewer</li>
+		<li><b>Todo + progress</b> — 5b</li>
+		<li><b>Agents: state, spend, view/stop</b> — 5c + inline card in 4b</li>
+		<li><b>Jobs: running, finished, cancel</b> — 5d</li>
+		<li><b>Review / RDD state + scope</b> — 5e</li>
+		<li><b>Stats</b> — 5f</li>
+		<li><b>Integrations (Engram, MCP)</b> — 5f; summary in 6</li>
+		<li><b>Image attachments</b> — 4c paperclip</li>
+		<li><b>Vim, voice, double-Esc</b> — Terminal view; 4c native editing + hint</li>
+		<li><b>Thinking / phase, TPS, ODD phase</b> — 6</li>
+		<li><b>Messages, tool calls, thinking</b> — 4b</li>
+		<li><b>Questions (ask_user_*, subagent select)</b> — 4b question card</li>
+		<li><b>Review consent prompt</b> — same card in 4b, “Needs your consent” in 5e</li>
+		<li><b>Profiles, models, fallbacks</b> — 4a Model → /gentle:models</li>
+		<li><b>Customize, theme</b> — theme sync; ⌘K</li>
+		<li><b>Palette, guide, stats, history, music…</b> — ⌘K sends the slash command</li>
+		<li><b>Notifications</b> — Herdr native on needs-you / done</li>
+		<li><b>Activity working / blocked / idle</b> — 1c + 2</li>
+	</ul>
+</section>
+
+<script>
+/*@JS*/
+// Chat | Terminal: in Herdr this is run("layout.select", { stack: "views", child }).
+document.querySelectorAll("[data-switch]").forEach((b) => b.addEventListener("click", () => {
+	const v = b.dataset.switch;
+	document.querySelectorAll("[data-view]").forEach((p) => { p.hidden = p.dataset.view !== v; });
+	document.querySelectorAll("[data-switch]").forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.switch === v)));
+}));
+// ask_user_choice: click or press 1–4. In Herdr the answer goes through the T7 action.
+const askOpts = [...document.querySelectorAll(".ask-opt")];
+function answer(i) {
+	const ask = document.querySelector(".ask");
+	if (!ask || ask.hasAttribute("data-answered")) return;
+	ask.setAttribute("data-answered", "");
+	askOpts.forEach((o, k) => o.setAttribute("aria-pressed", String(k === i)));
+	ask.querySelector(".ask-foot").textContent = i === askOpts.length - 1
+		? "Type your answer in the composer; it goes to this question."
+		: "Answer sent: " + (i + 1) + ". The agent continues.";
+	if (i === askOpts.length - 1) document.getElementById("msg")?.focus();
+}
+askOpts.forEach((o, i) => o.addEventListener("click", () => answer(i)));
+document.addEventListener("keydown", (e) => {
+	if (e.target.closest("textarea, input") || e.metaKey || e.ctrlKey) return;
+	const n = Number(e.key);
+	if (n >= 1 && n <= askOpts.length) answer(n - 1);
+});
+// The log sticks to the newest item, like the mod's ScrollHandle.
+document.querySelectorAll(".log").forEach((l) => { l.scrollTop = l.scrollHeight; });
+/*/@JS*/
+// Inspector tabs (arrow keys move between tabs).
+const itabs = [...document.querySelectorAll(".itab")];
+function selectTab(t) {
+	itabs.forEach((x) => { const on = x === t; x.setAttribute("aria-selected", String(on)); x.tabIndex = on ? 0 : -1; document.getElementById(x.getAttribute("aria-controls")).hidden = !on; });
+}
+itabs.forEach((t, i) => {
+	t.tabIndex = t.getAttribute("aria-selected") === "true" ? 0 : -1;
+	t.addEventListener("click", () => selectTab(t));
+	t.addEventListener("keydown", (e) => {
+		const d = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+		if (d) { const n = itabs[(i + d + itabs.length) % itabs.length]; selectTab(n); n.focus(); }
+	});
+});
+</script>
+</body>
+</html>

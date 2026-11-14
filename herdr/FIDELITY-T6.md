@@ -156,11 +156,11 @@ Data (the T4 snapshot has no field for it; shown as an empty state or left out, 
 9. Subagents: no task title and `role` is always null (docs/desktop-feed.md): the card shows the agent name as the role tag and no bold title; no start time, so no "Running · 3m 12s" (shown: "Running · <step>").
 10. Status bar TPS ("58 tok/s"): no TPS in the snapshot; shown only if a future snapshot carries `activity.tps`. The streaming item names the session, not the subagent ("writer streaming").
 11. "ODD Build · T5 of 9": the snapshot has the ODD phase word (`implementing`, …) and the todo list, not the ODD task id: the bar says "ODD Implementing · todo 4 of 6".
-12. Review: no RDD mode or lens count ("RDD on · standard", "Reviewers 2 lenses"): the key/value shows the state only.
+12. Review: the RDD row shows `gentle-ai review mode status` ("on · global") and is the review switch; no lens count ("Reviewers 2 lenses").
 13. Integrations and other statuses (Engram, MCP, "music paused", status bar "Engram · MCP 2/3"): `integrations` / `statuses` are always null today; the Session tab says "Engram and MCP status are not published by this session yet" and the status bar leaves the item out.
 14. Jobs: a finished job's "Failed · 1 test" detail is not in the snapshot; it says "Failed · exit N".
 
-Actions (T7, buttons drawn, marked `TODO(T7)` in `gentle-inspector/main.js`): Open diff viewer, change rows, View / Stop subagent, Cancel / Output job, Start review / Skip.
+Actions (T7, `actions.js`, docs/desktop-feed.md "Actions"): Stop subagent and Cancel job are desktop actions through the session's owners; Open diff viewer and change rows type `/gentle:changes`, View `/gentle:agents`, Output `/gentle:jobs` into the terminal and show it; Start review / Skip show the Terminal, where the review consent stays your answer; the RDD value runs `gentle-ai review mode enable|disable --cwd <project>` after a confirmation dialog.
 
 ## Token modules
 

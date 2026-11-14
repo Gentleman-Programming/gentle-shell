@@ -18,10 +18,14 @@ export function desktopFeedDirectory(agentDir: string): string {
 	return join(agentDir, "desktop", "sessions");
 }
 
+/** The session's name on disk: the id when it is a plain name, else its SHA-256 (never escapes a folder). */
+export function desktopFeedName(sessionId: string): string {
+	return SAFE_ID.test(sessionId) ? sessionId : createHash("sha256").update(sessionId).digest("hex");
+}
+
 /** `<sessionId>.json` for an ordinary id; a hashed name for anything that could escape the folder. */
 export function desktopFeedFile(agentDir: string, sessionId: string): string {
-	const name = SAFE_ID.test(sessionId) ? sessionId : createHash("sha256").update(sessionId).digest("hex");
-	return join(desktopFeedDirectory(agentDir), `${name}.json`);
+	return join(desktopFeedDirectory(agentDir), `${desktopFeedName(sessionId)}.json`);
 }
 
 export interface DesktopFeedStore {

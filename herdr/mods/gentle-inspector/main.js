@@ -7,14 +7,18 @@
 // and a header mod would need its own copy of the snapshot reader anyway. The layout block gives
 // the frame (372px, 1px border, radius 10, chrome background).
 //
-// Actions are T7: Stop / View (subagents), Cancel / Output (jobs), Start review / Skip, Open diff
-// viewer render as the artboard's buttons and do nothing yet (TODO(T7)).
+// Actions (T7, ./actions.js): Stop (subagent) and Cancel (job) ask the session's owners, as the
+// desktop RPC does; View, Output, Open diff viewer and a change row open the TUI's own screens
+// (/gentle:agents, /gentle:jobs, /gentle:changes) in the Terminal; Start review / Skip show the
+// Terminal, where the review consent is answered by you; the RDD row runs
+// `gentle-ai review mode enable|disable` after a confirmation, as you would in a shell.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { home } from "herdr";
+import { exec, home, shared, nextCommand } from "herdr";
 import { tokens, eyebrow, state, bar, btn, money, span, clock, ago, cap, prettyModel, agentRole } from "./tokens.js";
 import { FeedSource, targetTerminal } from "./snapshot.js";
+import { sendAction, errorText, tuiCommand, showTerminal, confirm, confirmed } from "./actions.js";
 
 const ICON = (name) => `mods/gentle-inspector/icons/${name}.svg`;
 const TABS = [
@@ -25,7 +29,8 @@ const TABS = [
   { id: "review", label: "Review", icon: "review" },
   { id: "session", label: "Session", icon: "stats" },
 ];
-const TODO_T7 = () => {}; // TODO(T7): the action goes through the desktop action channel.
+const REVEAL = "gentle-inspector.reveal"; // set by gentle-chat's "Open in Changes"
+const RDD_EVERY = 30000; // the RDD switch is re-read this often while the Review tab shows
 
 // File status letter and colour (.fst.m warn, .fst.a ok).
 // An untracked file is a new file: the artboard's "A" (l.497-498).
@@ -57,18 +62,125 @@ export default class GentleInspector extends View {
   init(_props, cx) {
     this.tab = TABS.some((t) => t.id === localStorage.getItem("tab")) ? localStorage.getItem("tab") : "changes";
     this.last = null;
+    this.busy = null; // the action in flight ("job-<id>", "agent-<id>", "rdd", …)
+    this.error = null; // the last action's refusal or failure, shown under the panel
+    this.notice = null;
+    this.revealAt = 0;
+    this.reveal = null; // the changed file "Open in Changes" asked for
+    this.rdd = null; // { cwd, effective, source, at } from `gentle-ai review mode status`
     this.source = new FeedSource();
     this.source.start(cx);
     // Running jobs show their elapsed time: a 1s redraw only while one is shown.
+    // The Review tab's RDD row reads `gentle-ai review mode status` (at most every RDD_EVERY).
     cx.timer.every(1000, (cx) => {
       if (this.tab === "jobs" && (this.feed?.jobs?.running?.length ?? 0) > 0) cx.notify();
+      if (this.tab === "review" && this.feed) this.readRdd(cx);
+    });
+    // Commands: a confirm dialog's Confirm (the RDD switch), and tab-<id> to show a tab.
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const c = String(await nextCommand());
+        try {
+          if (confirmed(c, cx)) { /* handled */ }
+          else if (c.startsWith("tab-") && TABS.some((t) => t.id === c.slice(4))) this.select(c.slice(4), cx);
+        } catch (e) {
+          this.error = String(e?.message ?? e);
+        }
+        cx.notify();
+      }
     });
   }
 
   select(id, cx) {
     this.tab = id;
     localStorage.setItem("tab", id);
+    this.error = null;
+    this.notice = null;
     cx.notify();
+  }
+
+  // ---- Actions (T7) ----
+
+  // One action at a time; its refusal shows under the panel.
+  act(key, cx, work) {
+    if (this.busy) return;
+    this.busy = key;
+    this.error = null;
+    this.notice = null;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const line = await work(cx);
+        if (line) this.error = line;
+      } catch (e) {
+        this.error = String(e?.message ?? e);
+      }
+      this.busy = null;
+      cx.notify();
+    });
+  }
+
+  owner(key, kind, args, cx) {
+    this.act(key, cx, async (cx) => {
+      const r = await sendAction(cx, this.feed?.identity?.sessionId, kind, args);
+      return r.ok ? null : errorText(r);
+    });
+  }
+
+  command(key, text, cx) {
+    const address = this.last;
+    this.act(key, cx, () => tuiCommand(address, this.feed, text, () => showTerminal(address)));
+  }
+
+  // `gentle-ai review mode status` for the session's project: read-only, re-read now and then.
+  readRdd(cx, force = false) {
+    const cwd = this.feed?.project?.cwd ?? this.feed?.identity?.cwd;
+    if (!cwd || this.rddLoading) return;
+    if (!force && this.rdd?.cwd === cwd && Date.now() - this.rdd.at < RDD_EVERY) return;
+    this.rddLoading = true;
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec("gentle-ai", ["review", "mode", "status", "--cwd", cwd, "--json"], { cwd, timeout: 15000 });
+        const st = r.code === 0 ? JSON.parse(r.stdout)?.status : null;
+        this.rdd = { cwd, effective: st?.effective ?? null, source: st?.source ?? null, at: Date.now() };
+      } catch {
+        this.rdd = { cwd, effective: null, source: null, at: Date.now() };
+      }
+      this.rddLoading = false;
+      cx.notify();
+    });
+  }
+
+  // The review switch: `gentle-ai review mode enable|disable`, exactly as you would run it, after
+  // a confirmation. Its own output is the answer.
+  switchRdd(cx) {
+    const cwd = this.rdd?.cwd;
+    const on = this.rdd?.effective === "on";
+    if (!cwd || this.busy) return;
+    const op = on ? "disable" : "enable";
+    confirm("gentle-inspector", {
+      title: on ? "Turn receipt-driven review off?" : "Turn receipt-driven review on?",
+      detail: `Runs \`gentle-ai review mode ${op} --cwd ${tilde(cwd)}\`, the same switch you run in a shell. ${on ? "Review stops gating new candidates." : "It applies to future candidates only."}`,
+    }, (cx) => this.act("rdd", cx, async () => {
+      const r = await exec("gentle-ai", ["review", "mode", op, "--cwd", cwd, "--json"], { cwd, timeout: 30000 });
+      let st = null;
+      try { st = JSON.parse(r.stdout)?.status ?? null; } catch { st = null; }
+      if (st?.effective) this.rdd = { cwd, effective: st.effective, source: st.source ?? null, at: Date.now() };
+      else this.rdd = { ...this.rdd, at: 0 }; // read it again
+      if (r.code !== 0) return (r.stderr || r.stdout || `gentle-ai review mode ${op} failed`).trim().split("\n")[0];
+      this.notice = `RDD is ${st?.effective ?? (op === "enable" ? "on" : "off")}${st?.source ? ` (${st.source})` : ""}.`;
+      return null;
+    }));
+  }
+
+  // gentle-chat's "Open in Changes" (a shared value): show the Changes tab with that file marked.
+  takeReveal() {
+    let r = null;
+    try { r = shared(REVEAL); } catch { r = null; }
+    if (!r || typeof r !== "object" || !(r.at > this.revealAt)) return;
+    this.revealAt = r.at;
+    this.reveal = typeof r.path === "string" ? r.path : null;
+    if (TABS.some((t) => t.id === r.tab)) { this.tab = r.tab; localStorage.setItem("tab", r.tab); }
   }
 
   // ---- Tab strip (.itabs / .itab) ----
@@ -86,7 +198,7 @@ export default class GentleInspector extends View {
       todo: [todo?.total ? `${todo.done}/${todo.total}` : "0", blockedTodo ? "warn" : runningTodo ? "info" : null],
       agents: [agentsActive ? `${agentsActive} run` : String(f.agents?.spend?.runs ?? 0), agentsActive ? "info" : null],
       jobs: [jobsRunning ? `${jobsRunning} run` : String(f.jobs?.recent?.length ?? 0), jobsRunning ? "info" : null],
-      review: [review ? (REVIEW_SHORT[review] ?? review) : "off", review === "consent" ? "warn" : null],
+      review: [review ? (REVIEW_SHORT[review] ?? review) : "none", review === "consent" ? "warn" : null],
       session: [`${f.stats?.turns ?? 0} turns`, null],
     };
   }
@@ -137,7 +249,9 @@ export default class GentleInspector extends View {
 
   changes(c, f) {
     const ch = f.changes;
-    const head = this.h2(c, "Changes", btn(c, "open-diff", "Open diff viewer", { onClick: TODO_T7 }));
+    const head = this.h2(c, "Changes", btn(c, "open-diff", this.busy === "diff" ? "Opening…" : "Open diff viewer", {
+      onClick: (_e, cx) => this.command("diff", "/gentle:changes", cx),
+    }).tooltip("Open /gentle:changes in the Terminal"));
     if (!ch) return [head, this.note(c, "Scanning the working tree…")];
     const s = ch.summary ?? { files: 0, added: 0, deleted: 0 };
     const wt = ch.worktrees?.[0];
@@ -154,8 +268,11 @@ export default class GentleInspector extends View {
       const [letter, tone] = FST[file.status] ?? ["?", "muted"];
       const path = String(file.path ?? "");
       const cut = path.lastIndexOf("/") + 1;
+      const marked = Boolean(this.reveal) && (path === this.reveal || path.endsWith(`/${this.reveal}`) || this.reveal.endsWith(`/${path}`));
       return h_flex().id(`file-${i}`).w_full().min_h(28).px(6).py(5).gap(8).items_center().rounded(6).cursor_pointer()
-        .hover((s) => s.bg(c.selected)).on_click(TODO_T7)
+        .when(marked, (el) => el.bg(c.selected))
+        .hover((s) => s.bg(c.selected)).tooltip("Open /gentle:changes in the Terminal")
+        .on_click((_e, cx) => { this.reveal = path; this.command("diff", "/gentle:changes", cx); })
         .child(div().w(16).flex_none().font_family(c.mono).font_weight(600).text_size(11).line_height("11px").text_color(c[tone]).child(letter))
         .child(h_flex().flex_1().min_w(0).overflow_hidden()
           .when(cut > 0, (el) => el.child(div().flex_shrink(1).min_w(0).truncate().text_color(c.muted).child(path.slice(0, cut))))
@@ -218,8 +335,10 @@ export default class GentleInspector extends View {
           .when(Boolean(a.model), (el) => el.child(div().min_w(0).truncate().child(prettyModel(String(a.model)))))
           .when(Boolean(a.spend?.cost), (el) => el.child(div().flex_none().font_family(c.mono).child(money(a.spend.cost)))))
         .when(live, (el) => el.child(h_flex().mt(4).gap(6)
-          .child(btn(c, `ag-view-${i}`, "View", { onClick: TODO_T7 }))
-          .child(btn(c, `ag-stop-${i}`, "Stop", { danger: true, icon: ICON("stop"), onClick: TODO_T7 }))));
+          .child(btn(c, `ag-view-${i}`, "View", { onClick: (_e, cx) => this.command(`view-${i}`, "/gentle:agents", cx) }).tooltip("Open /gentle:agents in the Terminal"))
+          .when(Boolean(a.id), (el) => el.child(btn(c, `ag-stop-${i}`, this.busy === `agent-${a.id}` ? "Stopping…" : "Stop", {
+            danger: true, icon: ICON("stop"), onClick: (_e, cx) => this.owner(`agent-${a.id}`, "cancel_subagent", { id: a.id }, cx),
+          }).tooltip("Stop this subagent")))));
     });
     return [head, v_flex().children(cards)];
   }
@@ -232,13 +351,19 @@ export default class GentleInspector extends View {
     const now = Date.now();
     const job = (j, i, live) => {
       let kind, word, action = null;
-      if (live) { kind = "work"; word = "Running"; action = btn(c, `job-cancel-${i}`, "Cancel", { danger: true, onClick: TODO_T7 }); }
+      if (live) {
+        kind = "work"; word = "Running";
+        action = j.id ? btn(c, `job-cancel-${i}`, this.busy === `job-${j.id}` ? "Cancelling…" : "Cancel", {
+          danger: true, onClick: (_e, cx) => this.owner(`job-${j.id}`, "cancel_job", { id: j.id }, cx),
+        }).tooltip("Stop this background job") : null;
+      }
       else if (j.status === "exited" && (j.exitCode ?? 0) === 0) { kind = "done"; word = "Passed"; }
       else if (j.status === "stopped") { kind = "idle"; word = "Stopped"; }
       else {
         kind = "fail";
         word = j.exitCode != null && j.exitCode !== 0 ? `Failed · exit ${j.exitCode}` : "Failed";
-        action = btn(c, `job-output-${i}`, "Output", { onClick: TODO_T7 });
+        action = btn(c, `job-output-${i}`, "Output", { onClick: (_e, cx) => this.command(`output-${i}`, "/gentle:jobs", cx) })
+          .tooltip("Open /gentle:jobs in the Terminal");
       }
       const elapsed = live ? now - (Number(j.startedAt) || now) : j.elapsedMs;
       return v_flex().id(`job-${live ? "r" : "f"}-${j.id ?? i}`).p(6).gap(2).rounded(6)
@@ -262,15 +387,32 @@ export default class GentleInspector extends View {
     const box = h_flex().p(10).gap(10).items_center().rounded(8).border(1).border_color(c.line)
       .child(svg(ICON("review")).size(15).flex_none().text_color(c[tone]))
       .child(v_flex().flex_1().min_w(0)
-        .child(div().font_weight(600).text_size(13).line_height("19.5px").text_color(c.text).child(r ? String(r.label || cap(r.state)) : "Review is off"))
-        .child(div().truncate().text_color(c.muted).child(r ? (r.scope ? `Candidate: ${r.scope}` : "No candidate yet") : "RDD is not active in this session")));
-    if (!r) return [head, v_flex().gap(10).child(box)];
+        .child(div().font_weight(600).text_size(13).line_height("19.5px").text_color(c.text).child(r ? String(r.label || cap(r.state)) : "No review yet"))
+        .child(div().truncate().text_color(c.muted).child(r ? (r.scope ? `Candidate: ${r.scope}` : "No candidate yet") : "Nothing has asked for review in this session")));
+    const rdd = this.rddRow(c);
+    if (!r) return [head, v_flex().gap(10).child(box).child(rdd)];
     const ask = r.state === "ready" || r.state === "consent";
+    // Review consent is yours, in the real prompt: both buttons show it in the Terminal.
+    const toPrompt = () => showTerminal(this.last);
     return [head, v_flex().gap(10).child(box)
       .child(this.kv(c, [["State", REVIEW_SHORT[r.state] ?? r.state]]))
+      .child(rdd)
       .when(ask, (el) => el.child(h_flex().gap(6)
-        .child(btn(c, "review-start", "Start review", { primary: true, onClick: TODO_T7 }))
-        .child(btn(c, "review-skip", "Skip for this change", { onClick: TODO_T7 }))))];
+        .child(btn(c, "review-start", "Start review", { primary: true, onClick: toPrompt }).tooltip("Answer the review consent in the Terminal"))
+        .child(btn(c, "review-skip", "Skip for this change", { onClick: toPrompt }).tooltip("Answer the review consent in the Terminal"))))];
+  }
+
+  // The kv row "RDD  on · global" (01-inspector.html l.581); the value is the switch.
+  rddRow(c) {
+    const st = this.rdd;
+    const word = this.busy === "rdd" ? "switching…" : st?.effective ? `${st.effective}${st.source ? ` · ${st.source}` : ""}` : st ? "unknown" : "…";
+    const can = Boolean(st?.effective) && !this.busy;
+    return h_flex().id("kv-rdd").gap(12).items_center()
+      .child(div().flex_1().min_w(0).truncate().text_color(c.muted).child("RDD"))
+      .child(div().id("rdd-switch").flex_none().text_right().font_family(c.mono).text_color(c.text).child(word)
+        .when(can, (el) => el.cursor_pointer().hover((s) => s.text_color(c.accentSoft))
+          .tooltip(st.effective === "on" ? "Turn receipt-driven review off (gentle-ai review mode disable)" : "Turn receipt-driven review on (gentle-ai review mode enable)")
+          .on_click((_e, cx) => this.switchRdd(cx))));
   }
 
   session(c, f) {
@@ -307,10 +449,13 @@ export default class GentleInspector extends View {
     if (term) this.last = term.address;
     const f = this.source.of(term);
     this.feed = f;
+    this.takeReveal();
     const body = f ? this[this.tab](c, f) : this.empty(c);
+    const line = this.error ?? this.notice;
     return v_flex().id("root").size_full().min_h(0).font_family(c.sans).text_color(c.text)
       .child(this.strip(c, f))
       .child(v_flex().id("ipanel").flex_1().min_h(0).p(14).overflow_y_scrollbar().text_size(12.5).line_height("18.75px")
-        .children(body));
+        .children(body)
+        .when(Boolean(line), (el) => el.child(div().mt(10).text_size(12).line_height("18px").text_color(this.error ? c.err : c.muted).child(line))));
   }
 }

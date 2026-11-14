@@ -13,7 +13,6 @@ const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", 
 const CLEAR = "#00000000";
 const CLIP = 6000; // characters of a tool's output shown when expanded
 const HUNK_ROWS = 80; // diff rows drawn per hunk
-const T7 = "Arrives with the desktop actions (T7)";
 
 export const icon = (name, size = 15) => svg(`mods/${MOD}/icons/${name}.svg`).size(size).flex_none();
 const clip = (s) => (s.length > CLIP ? s.slice(0, CLIP) + "\n… (truncated)" : s);
@@ -129,7 +128,7 @@ function crumbs(v, p) {
     .children(parts);
 }
 
-const PERM = [
+export const PERM = [
   { mode: "normal", label: "Normal", about: "Standard permission prompts", tone: null },
   { mode: "auto", label: "Auto", about: "Independent checks; extra model calls", tone: null },
   { mode: "yolo", label: "YOLO", about: "Scoped work; destructive actions ask", tone: "warn" },
@@ -147,12 +146,14 @@ function facts(v, p) {
 
   const model = [prettyModel(s?.model?.id ?? f.model), s?.model?.effort ?? (s ? null : f.thinking), s?.model?.profile?.name]
     .filter(Boolean).join(" · ");
-  // TODO(T7): Model and Persona open /gentle:models and /gentle:persona.
+  // Model and Persona open the TUI's own screens (/gentle:profiles, /gentle:persona) in the Terminal.
   const modelFact = fact("f-model", [k("Model"), model ? div().child(model) : none()],
-    "Model · effort · profile (opens /gentle:models)").cursor_pointer().hover((st) => st.bg(p.selected));
+    "Model · effort · profile (opens /gentle:profiles in the Terminal)").cursor_pointer().hover((st) => st.bg(p.selected))
+    .on_click((_e, cx) => v.command("model", "/gentle:profiles", cx));
   const persona = typeof s?.persona === "string" ? s.persona : s?.persona?.name ?? null;
   const personaFact = fact("f-persona", [icon("user", 13).text_color(p.muted), persona ? div().child(persona) : none("No persona")],
-    "Persona (opens /gentle:persona)").cursor_pointer().hover((st) => st.bg(p.selected));
+    "Persona (opens /gentle:persona in the Terminal)").cursor_pointer().hover((st) => st.bg(p.selected))
+    .on_click((_e, cx) => v.command("persona", "/gentle:persona", cx));
 
   const ctx = s?.context;
   const pct = Number.isFinite(ctx?.percent) ? Math.max(0, Math.min(100, Math.round(ctx.percent))) : null;
@@ -191,13 +192,15 @@ export function bar(p, pct, color, width) {
     .when(pct !== null && pct > 0, (el) => el.child(div().h_full().w(`${pct}%`).rounded_full().bg(color)));
 }
 
-// .perm + .perm-menu (l.102-112): the four live modes. Choosing one is T7.
+// .perm + .perm-menu (l.102-112): the four live modes. Choosing one asks the session's permission
+// owner (the one /gentle:mode uses); Super-YOLO asks first.
 function permission(v, p) {
   const perm = v.snap?.permission;
   const cur = PERM.find((m) => m.mode === perm?.mode);
   const yolo = Boolean(perm?.yolo);
   const pill = h_flex().id("perm").items_center().gap(6).px(9).py(3).rounded_full().border(1).text_size(12).whitespace_nowrap()
     .cursor_pointer()
+    .when(v.busy === "perm", (el) => el.opacity(0.6))
     .border_color(yolo ? alpha(p.warn, 0x99 / 255) : p.lineStrong)
     .when(yolo, (el) => el.bg(alpha(p.warn, 0x14 / 255)))
     .text_color(yolo ? p.warn : cur ? p.text : p.muted)
@@ -207,8 +210,8 @@ function permission(v, p) {
     const on = m === cur;
     const color = m.tone === "warn" ? p.warn : m.tone === "err" ? p.err : p.text;
     return h_flex().id(`perm-${m.mode}`).w_full().items_start().gap(8).px(8).py(7).rounded(R.inner).cursor_pointer()
-      .hover((st) => st.bg(p.selected)).tooltip(`Switch to ${m.label}: ${T7}`)
-      // TODO(T7): run the permission mode change with the CLI's authority.
+      .hover((st) => st.bg(p.selected)).tooltip(on ? `${m.label} is this session's mode` : `Switch this session to ${m.label}`)
+      .on_click((_e, cx) => v.setMode(m.mode, cx))
       .child(div().w(18).h(18).flex_none().items_center().justify_center().flex()
         .when(on, (el) => el.child(icon("check", 13).text_color(p.accent))))
       .child(v_flex().flex_1().min_w(0).gap(2)
@@ -413,8 +416,10 @@ function diffCard(v, p, call, key, patch, live) {
             tip: patch.hunks.length > 1 ? null : "This edit has one hunk",
             onClick: (_e, cx) => { v.hunkAt.set(id, (at + 1) % patch.hunks.length); cx.notify(); },
           }))
-          // TODO(T6/T7): open this file in the inspector's Changes tab.
-          .child(btn(p, `${id}-changes`, "Open in Changes", { tip: `Open in Changes: ${T7}` }))))));
+          .child(btn(p, `${id}-changes`, "Open in Changes", {
+            tip: "Show this file in the inspector's Changes tab",
+            onClick: (_e, cx) => v.openInChanges(typeof call.args?.path === "string" ? shortPath(v, call.args.path) : "", cx),
+          }))))));
 }
 
 const AGENT_STATE = {
@@ -436,6 +441,8 @@ function subagentCard(v, p, call, key) {
   const cost = live?.spend?.cost;
   const step = live?.step ?? started?.lastStep;
   const running = kind === "work" || kind === "need" || kind === "queue";
+  const taskId = live?.id ?? started?.taskId ?? null;
+  const stopping = Boolean(taskId) && v.busy === `stop-${taskId}`;
   return v_flex().w_full().gap(4).px(12).py(10).border(1).border_color(p.lineStrong).rounded(R.md).bg(p.surface)
     .child(h_flex().items_start().gap(12)
       .child(v_flex().flex_1().min_w(0).gap(4)
@@ -446,11 +453,13 @@ function subagentCard(v, p, call, key) {
           .child(stateLabel(p, kind, label))
           .when(Boolean(model), (el) => el.child(div().child(model)))
           .when(Number.isFinite(cost), (el) => el.child(num(money(cost))))))
-      // TODO(T7): View opens the subagent; Stop cancels it with the CLI's authority. Only a
-      // subagent that still runs has them (the inspector's .acts, l.213).
+      // View opens the TUI's /gentle:agents; Stop asks the subagent owner (as desktop RPC
+      // cancel_subagent). Only a subagent that still runs has them (the inspector's .acts, l.213).
       .when(running, (el) => el.child(h_flex().flex_none().gap(6).items_start()
-        .child(btn(p, `sub-view-${key}`, "View", { tip: `View: ${T7}` }))
-        .child(btn(p, `sub-stop-${key}`, "Stop", { danger: true, iconName: "stop", tip: `Stop: ${T7}` })))))
+        .child(btn(p, `sub-view-${key}`, "View", { tip: "Open /gentle:agents in the Terminal", onClick: (_e, cx) => v.command(`view-${key}`, "/gentle:agents", cx) }))
+        .when(Boolean(taskId), (el) => el.child(btn(p, `sub-stop-${key}`, stopping ? "Stopping…" : "Stop", {
+          danger: true, iconName: "stop", tip: "Stop this subagent", onClick: (_e, cx) => v.stopAgent(taskId, cx),
+        }))))))
     .when(Boolean(step) && step !== status, (el) => el.child(div().mt(2).pt(6).border_t(1).border_color(p.line)
       .font_family(mono()).text_size(12).text_color(p.muted).truncate().child(`› ${step}`)));
 }
@@ -503,7 +512,10 @@ export function askCard(v, p, pq) {
         .child(`QUESTION · THE AGENT WAITS FOR YOU${many.toUpperCase()}`))
       .child(div().text_size(14.5).font_semibold().child(pq.header && pq.header !== pq.question ? `${pq.header}: ${pq.question}` : pq.question))
       .when(n > 0, (el) => el.child(v_flex().mt(2).gap(6).children(opts.map(opt))))
-      .child(div().text_size(12).text_color(p.muted).child(foot)));
+      .child(h_flex().items_center().justify_between().gap(8)
+        .child(div().text_size(12).text_color(p.muted).child(foot))
+        // A prompt or consent has no options here: it is answered in the real terminal, by you.
+        .when(n === 0, (el) => el.child(btn(p, "ask-terminal", "Open Terminal", { iconName: "term", tip: "Answer it in the Terminal", onClick: () => v.toTerminal() })))));
 }
 
 // ---------------------------------------------------------------- 4c composer (l.175-184)
@@ -511,9 +523,11 @@ export function askCard(v, p, pq) {
 export function composer(v, p, pq) {
   const field = h_flex().w_full().items_end().gap(8).pl(12).pr(8).py(8).border(1)
     .border_color(v.typing ? p.accent : p.lineStrong).rounded(R.md).bg(p.background)
-    // TODO(T7): image attachments.
+    // Attach: the clipboard's image (or files) into the session's draft, as Ctrl+V in the terminal.
     .child(h_flex().id("attach").w(32).h(32).flex_none().items_center().justify_center().rounded(R.sm).text_color(p.muted)
-      .hover((st) => st.bg(p.selected).text_color(p.text)).tooltip(`Attach image: ${T7}`).child(icon("clip", 15)))
+      .cursor_pointer().when(v.busy === "attach", (el) => el.opacity(0.6))
+      .hover((st) => st.bg(p.selected).text_color(p.text)).tooltip("Attach: paste the clipboard image into the draft (Ctrl+V)")
+      .on_click((_e, cx) => v.attach(cx)).child(icon("clip", 15)))
     .child(div().flex_1().min_w(0).key_context("GentleChatComposer").on_action("gentle_chat_send", (_e, cx) => v.send(cx))
       .child(Textarea.new(v.input).w_full().h(42).text_size(14).line_height(1.5).text_color(p.text).bg(CLEAR)))
     .child(h_flex().id("send").h(32).flex_none().items_center().gap(6).px(12).rounded(R.sm)
@@ -531,6 +545,7 @@ export function composer(v, p, pq) {
     .child(v_flex().w_full().max_w(780).self_center()
       .child(field)
       .when(Boolean(v.error), (el) => el.child(div().mt(6).text_size(12).text_color(p.err).child(v.error)))
+      .when(!v.error && Boolean(v.notice), (el) => el.child(div().mt(6).text_size(12).text_color(p.muted).child(v.notice)))
       .child(h_flex().mt(6).gap(14).items_center().overflow_hidden().whitespace_nowrap().text_size(11.5).text_color(p.muted)
         .child(hint("Enter", "send"))
         .when(show.nl, (el) => el.child(hint("⇧ Enter", "new line")))

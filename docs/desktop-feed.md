@@ -67,3 +67,56 @@ The snapshot holds workspace paths, the session file path, todo titles and notes
 changed file names, and open question text. It never holds prompts, tool
 arguments other than an open question, tool output, or job commands. Do not
 expose the folder through a public server.
+
+## Actions: `gentle-shell.desktop-action/v1`
+
+The desktop acts on a session with exactly the authority the person has in its
+terminal, never more. Each session that publishes a snapshot also keeps a private
+inbox and outbox:
+
+```
+<agentDir>/desktop/inbox/<session>/<id>.json    the desktop drops one action
+<agentDir>/desktop/outbox/<session>/<id>.json   the session answers it
+```
+
+`<session>` is the snapshot's file name without `.json`. The session creates both
+folders `0700` when it starts and removes them when it ends; the desktop never
+creates them (no inbox means the session takes no actions). An action file is
+
+```json
+{ "schema": "gentle-shell.desktop-action/v1", "id": "<[A-Za-z0-9_-], 1-64, = file name>",
+  "sessionId": "<this session>", "kind": "<kind>", "args": { }, "createdAt": "<ISO time>" }
+```
+
+| `kind` | `args` | Runs through |
+|---|---|---|
+| `set_permission_mode` | `{ mode }` (`normal`, `auto`, `yolo`, `super-yolo`) | the permission owner, as desktop RPC `set_permission_mode` (the `/gentle:mode` controller decides) |
+| `cancel_job` | `{ id }` | the background-jobs owner, as desktop RPC `cancel_job` |
+| `cancel_subagent` | `{ id }` | the subagents owner, as desktop RPC `cancel_subagent` |
+| `answer_question` | `{ toolCallId, option }` or `{ toolCallId, text }` | nothing is answered here: the session checks that `toolCallId` is the open `ask_user_choice` / single-question `ask_user_question` and answers the keys its real list takes (`up` to the top, `down` to the row, `enter`); the desktop presses them in the terminal, then types `text` into the list's own editor |
+
+The session refuses, removes and answers (code in `error.code`) a file that is a
+link, not a private regular file (`unsafe_file`), over 16 KiB (`too_large`), older
+than 60 s or dated ahead (`stale`), of another kind (`unknown_kind`), for another
+session (`wrong_session`), malformed or with other args (`invalid_action`), already
+run (`duplicate`), or a question that is no longer open (`question_mismatch`).
+Multi-question and multi-select questions, extension prompts and consent are
+answered in the terminal (`answer_in_terminal`); consent is never answered from
+the desktop. Every file is removed once read; a fresh file that does not parse
+yet is read again 250 ms later (it may still be written).
+
+The answer is `{ schema: "gentle-shell.desktop-action-result/v1", id, sessionId,
+kind, ok, data | error, finishedAt }`, `0600`, `data` at most 4 KiB. Owner errors
+keep the owner's code and message (`permission_denied`, `not_found`, …); the
+desktop shows them. The session keeps at most 32 answers for 10 minutes and
+removes the folder when it ends (Herdr mods may write files only under the app's
+own folder, so the desktop leaves answers in place). A session killed without
+its shutdown leaves both folders behind; a later session start removes them once
+their snapshot is gone and they have not changed for 10 minutes.
+
+What the desktop does without this inbox, as the person would: it sends prompts
+and the TUI's own slash commands (`/gentle:changes`, `/gentle:agents`,
+`/gentle:jobs`, `/gentle:profiles`, `/gentle:persona`) with `hc send`, only while
+no question is open; it pastes the clipboard with Ctrl+V; and the review switch
+runs `gentle-ai review mode enable|disable --cwd <project>` after a confirmation.
+Super-YOLO and the review switch ask in a Herdr dialog first.

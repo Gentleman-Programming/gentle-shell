@@ -9,11 +9,12 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, TextareaState, ScrollHandle } from "gpui-base";
-import { agents, terminals, focused, props, layout, hc, run, theme, watchFolder } from "herdr";
+import { agents, terminals, focused, props, layout, hc, run, setShared, theme, watchFolder, nextCommand } from "herdr";
 import { sessionFileFor, readAfter, feedDir } from "./session.js";
 import { createFeed, ingest } from "./feed.js";
 import { palette, sans, R } from "./tokens.js";
-import { header, entries, entry, lane, stateLabel, askCard, askOptions, composer, icon } from "./ui.js";
+import { header, entries, entry, lane, stateLabel, askCard, askOptions, composer, icon, PERM } from "./ui.js";
+import { sendAction, errorText, safeKeys, terminalFree, tuiCommand, showTerminal, confirm, confirmed } from "./actions.js";
 
 const APPS = new Set(["gentle-shell", "pi"]);
 const PAGE = 150; // entries drawn at first; "Show earlier" adds this many
@@ -46,7 +47,9 @@ export default class GentleChat extends View {
     this.sending = false;
     this.typing = false; // the composer has the keyboard
     this.permOpen = false;
-    this.answered = null; // { key, index } once an option of the open question was picked
+    this.answered = null; // { key, index, custom } once an option of the open question was picked
+    this.busy = null; // the desktop action in flight ("perm", "stop-<id>", "attach", …), for its pending look
+    this.notice = null; // one calm line under the composer after an action that has no other trace
     this.scroll = ScrollHandle.new();
     this.focus = cx.focus_handle();
     this.makeInput(PLACEHOLDER);
@@ -57,6 +60,28 @@ export default class GentleChat extends View {
     ]);
     cx.timer.every(TICK, (cx) => this.tick(cx));
     this.tick(cx);
+    this.commands(cx);
+  }
+
+  // Key commands ("<key>": "gentle-chat:<command>" in keys.json, or `herdr-app do gentle-chat.<command>`):
+  // chat, terminal, perm (opens the permission menu) and mode-<normal|auto|yolo|super-yolo>, the
+  // menu's own path: Super-YOLO asks in a dialog first, as from the menu.
+  commands(cx) {
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const c = String(await nextCommand());
+        try {
+          const mode = c.startsWith("mode-") ? c.slice(5) : null;
+          if (confirmed(c, cx)) { /* a confirm dialog's Confirm */ }
+          else if (c === "chat" || c === "terminal") this.go(c, cx);
+          else if (c === "perm") this.permOpen = true;
+          else if (mode && PERM.some((m) => m.mode === mode)) this.setMode(mode, cx);
+        } catch (e) {
+          this.error = String(e?.message ?? e);
+        }
+        cx.notify();
+      }
+    });
   }
 
   // props.terminal, else the focused Gentle Shell, else one in the shown tab, else the first.
@@ -200,12 +225,22 @@ export default class GentleChat extends View {
     const text = this.input.value().trim();
     const address = this.address;
     if (!text || !address || this.sending) return;
+    const pq = this.snap?.pendingQuestion;
+    // "Something else…" was picked: this text is the answer to that question.
+    const typedAnswer = this.answered?.custom && pq && this.answered.key === questionKey(pq) ? pq : null;
     this.sending = true;
     this.error = null;
+    this.notice = null;
     this.input.set_value("");
     cx.notify();
     cx.spawn(async (cx) => {
       try {
+        if (typedAnswer) {
+          await this.pressAnswer(cx, address, typedAnswer, { text });
+          this.sending = false;
+          cx.notify();
+          return;
+        }
         const r = await hc(["send", address, text]);
         if (r.code !== 0) { this.error = (r.stderr || r.stdout || "hc send failed").trim(); this.input.set_value(text); }
       } catch (e) {
@@ -225,23 +260,113 @@ export default class GentleChat extends View {
     if (!pq || !address || this.answered) return;
     const o = askOptions(pq)[i];
     if (!o) return;
-    this.answered = { key: questionKey(pq), index: i };
+    this.answered = { key: questionKey(pq), index: i, custom: o.custom };
+    this.error = null;
     cx.notify();
     if (o.custom) { this.input.focus(); return; }
-    // TODO(T7): answer through the desktop action (same authority as the CLI). Until then the
-    // option's number is pressed in the TUI, then Enter as a fallback for a list that only moves.
+    cx.spawn(async (cx) => { await this.pressAnswer(cx, address, pq, { option: i }); });
+  }
+
+  // Answers the open question like the person would in the terminal: the session first checks
+  // that it is still the open one (by its toolCallId) and names the keys its real list takes
+  // (the lists ignore digits); then those keys, and a typed answer, go to the terminal.
+  async pressAnswer(cx, address, pq, answer) {
+    try {
+      if (!pq.toolCallId) throw new Error("Answer it in the Terminal view.");
+      const r = await sendAction(cx, this.snap?.identity?.sessionId, "answer_question", { toolCallId: pq.toolCallId, ...answer });
+      if (!r.ok) {
+        if (r.error?.code === "answer_in_terminal") this.toTerminal();
+        throw new Error(errorText(r));
+      }
+      if (!safeKeys(r.data.keys)) throw new Error("The session answered keys this view does not press.");
+      const k = await hc(["keys", address, ...r.data.keys]);
+      if (k.code !== 0) throw new Error((k.stderr || k.stdout || "hc keys failed").trim());
+      if (answer.text !== undefined) {
+        const t = await hc(["send", address, answer.text]);
+        if (t.code !== 0) throw new Error((t.stderr || t.stdout || "hc send failed").trim());
+      }
+    } catch (err) {
+      this.error = String(err?.message ?? err);
+      this.answered = null;
+      if (answer.text !== undefined && !this.input.value()) this.input.set_value(answer.text);
+    }
+    cx.notify();
+  }
+
+  // ---- Desktop actions (T7): the person's own authority, through the session's owners ----
+
+  toTerminal() {
+    const { stack, other } = this.stackProps();
+    showTerminal(this.address, stack ?? "views", other ?? "main");
+  }
+
+  // One action at a time per control; the result or refusal shows under the composer.
+  act(key, cx, work) {
+    if (this.busy) return;
+    this.busy = key;
+    this.error = null;
+    this.notice = null;
+    cx.notify();
     cx.spawn(async (cx) => {
       try {
-        const r = await hc(["keys", address, String(i + 1)]);
-        if (r.code !== 0) throw new Error((r.stderr || r.stdout || "hc keys failed").trim());
-        const e = await hc(["keys", address, "enter"]);
-        if (e.code !== 0) throw new Error((e.stderr || e.stdout || "hc keys failed").trim());
-      } catch (err) {
-        this.error = String(err?.message ?? err);
-        this.answered = null;
+        const line = await work(cx);
+        if (line) this.error = line;
+      } catch (e) {
+        this.error = String(e?.message ?? e);
       }
+      this.busy = null;
       cx.notify();
     });
+  }
+
+  // The TUI's own screen for this (its slash command), shown in the Terminal.
+  command(key, text, cx) {
+    this.act(key, cx, () => tuiCommand(this.address, this.snap, text, () => this.toTerminal()));
+  }
+
+  // The permission menu: the same owner as /gentle:mode decides. Super-YOLO asks first, with the
+  // TUI's own words for it.
+  setMode(mode, cx) {
+    this.permOpen = false;
+    cx.notify();
+    if (mode === this.snap?.permission?.mode) return;
+    const go = (cx) => this.act("perm", cx, async (cx) => {
+      const r = await sendAction(cx, this.snap?.identity?.sessionId, "set_permission_mode", { mode });
+      return r.ok ? null : errorText(r);
+    });
+    if (mode !== "super-yolo") return go(cx);
+    confirm("gentle-chat", {
+      title: "Switch this session to Super-YOLO?",
+      detail: "The agent runs ordinary and destructive shell work without asking; private paths stay blocked and consent prompts remain. Only this session changes.",
+    }, go);
+  }
+
+  stopAgent(id, cx) {
+    this.act(`stop-${id}`, cx, async (cx) => {
+      const r = await sendAction(cx, this.snap?.identity?.sessionId, "cancel_subagent", { id });
+      return r.ok ? null : errorText(r);
+    });
+  }
+
+  // Pastes the clipboard (an image, or files on macOS) into the session's draft, as Ctrl+V in the
+  // terminal does; it goes with the next message sent.
+  attach(cx) {
+    this.act("attach", cx, async () => {
+      const address = this.address;
+      if (!address) return "No Gentle Shell terminal.";
+      const busy = terminalFree(this.snap);
+      if (busy) return busy;
+      const r = await hc(["keys", address, "ctrl+v"]);
+      if (r.code !== 0) return (r.stderr || r.stdout || "hc keys failed").trim();
+      this.notice = "Clipboard pasted into the session's draft; it goes with your next message.";
+      return null;
+    });
+  }
+
+  // "Open in Changes": the inspector shows its Changes tab with this file marked.
+  openInChanges(path, cx) {
+    setShared("gentle-inspector.reveal", { tab: "changes", path: String(path ?? ""), at: Date.now() });
+    cx.notify();
   }
 
   stackProps() {

@@ -165,8 +165,13 @@ hex. `LAYOUT_COLORS` is the layout root `"colors"` that makes the roles equal th
 | Textarea placeholder colour muted | the Textarea's own placeholder colour | not styleable from a script |
 | Hunk rows `white-space: pre` with ellipsis | one-line truncated text | GPUI truncates with an ellipsis; leading spaces kept |
 | `:focus-visible` outline | none | keyboard focus is shown by the field border only |
-| Model / Persona open `/gentle:models`, `/gentle:persona`; permission items switch mode; View / Stop; Open in Changes; attach image; "Esc Esc" | drawn with their tooltips; no action | T7 (marked `TODO(T7)` in the code) |
-| Clicking an option answers through an action | presses the number in the TUI, then Enter (`hc keys`) | T7 replaces it (`TODO(T7)` in `main.js`) |
+| Model / Persona open the models and persona screens | type `/gentle:profiles` (the TUI's models screen) or `/gentle:persona` into the terminal and show it; refused while a question is open | there is no `/gentle:models`; `/gentle:profiles` is the models screen |
+| Permission items switch mode | a desktop action through the session's permission owner (as desktop RPC `set_permission_mode`); Super-YOLO first asks in a Herdr dialog; a refusal shows under the composer | — |
+| View / Stop on a subagent card | View types `/gentle:agents`; Stop is a desktop action through the subagents owner (as `cancel_subagent`) | — |
+| Open in Changes | marks the file in the inspector's Changes tab (shared value `gentle-inspector.reveal`) | — |
+| Attach image | presses Ctrl+V in the terminal: pi pastes the clipboard image (or files) into its draft, sent with the next message | no file picker for files in Herdr 0.1.15 (only `pickFolder`) |
+| "Esc Esc" hint | text only, as in the artboard | — |
+| Clicking an option answers it | the session checks the toolCallId is the open question and names the keys its real list takes (the lists ignore digits: ups to the top, downs, Enter); the view presses them with `hc keys`. "Something else…" sends the typed text after the list opens its editor. Multi-question and multi-select questions, prompts and consent: "Open Terminal" | consent is never answered from the desktop |
 | Fonts on the reference machine | Inter is not installed, so the artboard renders in the system font; the mod picks the same stack | `fonts()` decides at run time. Under `herdr-app check` it returns an empty list, so the check prints the stacks' last entries (`.SystemUIFont`, `Menlo`); IosevkaTerm NF is installed here, so the window should pick it: confirm in the live shot |
 
 ## Live side-by-side (1908×1019, S8)

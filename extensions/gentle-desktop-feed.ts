@@ -16,6 +16,8 @@ import {
 	type DesktopFeedTimers,
 } from "../lib/desktop-feed.ts";
 import { createDesktopFeedStore, sweepDesktopFeedOrphans, type DesktopFeedStore } from "../lib/desktop-feed-store.ts";
+import { createDesktopActionInbox, questionShape, sweepDesktopActionOrphans, watchDesktopActionInbox, type DesktopActionInbox, type DesktopActionQuestion } from "../lib/desktop-feed-actions.ts";
+import { DesktopPermissionBridge } from "../lib/desktop-rpc-permissions.ts";
 import { createDesktopFeedProfileReader, createUntrackedLineCounter, desktopFeedGitRunner, processAncestors, psParentOf, type DesktopFeedProfile, type ParentOf, type UntrackedLineCounter } from "../lib/desktop-feed-sources.ts";
 import { DesktopAgentsBridge } from "../lib/desktop-agents-service.ts";
 import { DesktopJobsBridge } from "../lib/desktop-jobs-service.ts";
@@ -55,6 +57,8 @@ export interface DesktopFeedOptions {
 	realpath?: (path: string) => string | undefined;
 	rootExists?: (root: string) => boolean;
 	sweep?: (agentDir: string, keep: string) => void;
+	/** Watches the action inbox (T7); defaults to fs.watch. */
+	actionWatch?: (dir: string, onChange: () => void) => () => void;
 }
 
 const SUBSCRIPTION_PROVIDERS = new Set([CLAUDE_BRIDGE_PROVIDER]);
@@ -77,6 +81,8 @@ interface Live {
 	blockedLabel: string | undefined;
 	blockedAt: number;
 	askTool: DesktopFeedPendingQuestion | undefined;
+	/** The open ask tool's real list shape, for desktop answers (T7). */
+	askShape: DesktopActionQuestion | undefined;
 	uiPrompt: DesktopFeedPendingQuestion | undefined;
 	review: ReviewSidebarSnapshot | undefined;
 	todo: TodoState;
@@ -91,6 +97,8 @@ interface Live {
 	jobsBridge: DesktopJobsBridge;
 	agentsBridge: DesktopAgentsBridge;
 	usageBridge: DesktopUsageBridge;
+	permissionBridge: DesktopPermissionBridge;
+	actions: DesktopActionInbox | undefined;
 	yolo: { adapter: YoloUiAdapter; unobserve: () => void } | undefined;
 	closed: boolean;
 }
@@ -242,7 +250,8 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 			scheduler.cancel();
 			if (!session) return;
 			session.closed = true;
-			for (const bridge of [session.jobsBridge, session.agentsBridge, session.usageBridge]) {
+			try { session.actions?.close(); } catch { /* never break shutdown */ }
+			for (const bridge of [session.jobsBridge, session.agentsBridge, session.usageBridge, session.permissionBridge]) {
 				try { bridge.reset(); } catch { /* owner teardown */ }
 			}
 			try { session.yolo?.unobserve(); session.yolo?.adapter.dispose(); } catch { /* owner teardown */ }
@@ -264,16 +273,24 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 				ctx, sessionId, store, lastDigest: undefined,
 				realCwd: realpath(ctx.cwd), ancestors: [],
 				working: ctx.isIdle?.() === false, streaming: false, blocked: 0, blockedLabel: undefined, blockedAt: 0,
-				askTool: undefined, uiPrompt: undefined, review: undefined, todo,
+				askTool: undefined, askShape: undefined, uiPrompt: undefined, review: undefined, todo,
 				jobs: undefined, agents: undefined, usage: undefined, permission: undefined,
 				profile: { name: undefined, tier: undefined }, branch: undefined,
 				changes: { tracker: new WorktreeChangesTracker(gitFor(ctx.cwd), gitFor, lines.forRoot, roots), lines, scanned: false, requested: false },
 				stats: undefined,
 				jobsBridge: new DesktopJobsBridge(pi), agentsBridge: new DesktopAgentsBridge(pi), usageBridge: new DesktopUsageBridge(pi),
+				permissionBridge: new DesktopPermissionBridge(pi), actions: undefined,
 				yolo: undefined, closed: false,
 			};
 			live = session;
-			try { (options.sweep ?? sweepDesktopFeedOrphans)(agentDir, store.path); } catch { /* never block a start */ }
+			try {
+				if (options.sweep) options.sweep(agentDir, store.path);
+				else {
+					sweepDesktopFeedOrphans(agentDir, store.path);
+					// After the snapshot sweep: a dead session's inbox/outbox has no snapshot left.
+					sweepDesktopActionOrphans(agentDir, sessionId);
+				}
+			} catch { /* never block a start */ }
 
 			// Owners reached through their existing desktop seams; each change schedules a write.
 			session.jobsBridge.attach(ctx);
@@ -313,7 +330,29 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 				schedule();
 			});
 			refreshProfile(session);
+			openActions(session);
 			schedule();
+		};
+
+		// Desktop actions (T7): the same owners and bridges the desktop RPC uses,
+		// bound to this session; each owner still decides.
+		const openActions = (session: Live) => {
+			session.permissionBridge.attach(session.ctx);
+			const actions = createDesktopActionInbox({
+				agentDir,
+				sessionId: session.sessionId,
+				now,
+				timers,
+				watch: options.actionWatch ?? watchDesktopActionInbox,
+				owners: {
+					setPermissionMode: (mode) => session.permissionBridge.handle("set_permission_mode", { mode }),
+					cancelJob: (id) => session.jobsBridge.handle("cancel_job", { id }),
+					cancelSubagent: (id) => session.agentsBridge.handle("cancel_subagent", { id }),
+					question: () => (current(session) ? session.askShape : undefined),
+				},
+			});
+			session.actions = actions;
+			actions.start();
 		};
 
 		// Bus listeners are registered once; each one only speaks for the live session.
@@ -385,6 +424,7 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 			if (!owns(ctx)) return;
 			if (!event.parentToolCallId && (DESKTOP_FEED_QUESTION_TOOLS as readonly string[]).includes(event.toolName)) {
 				live!.askTool = pendingQuestionFromTool(event.toolName, event.toolCallId, event.args, now());
+				live!.askShape = questionShape(event.toolName, event.toolCallId, event.args);
 			}
 			schedule();
 		});
@@ -392,6 +432,7 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 			if (!owns(ctx)) return;
 			const session = live!;
 			if (session.askTool?.toolCallId === event.toolCallId) session.askTool = undefined;
+			if (session.askShape?.toolCallId === event.toolCallId) session.askShape = undefined;
 			if (event.toolName === TODO_TOOL_NAME && !event.isError) {
 				const details = record(record(event.result).details);
 				const state = details[TODO_DETAILS_KEY] as TodoState | undefined;

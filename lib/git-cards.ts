@@ -311,6 +311,10 @@ export class SidebarGitCards {
 		card.diffEpoch++;
 		card.tracker = undefined;
 		card.start = undefined;
+		// The stale retry's callbacks check retryEpoch and its finally only clears
+		// its own guard, so a replacement reader must not inherit it (CodeRabbit:
+		// an abandoned recovery must never block the current reader's retry).
+		card.retry = undefined;
 		card.diffLoaded = !on;
 		if (!on) return;
 		const epoch = card.diffEpoch;

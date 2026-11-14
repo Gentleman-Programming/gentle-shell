@@ -214,6 +214,20 @@ You should not have to run `git status` in every worktree to find out what your 
 
 ---
 
+### Gentle Tower — Every session as a floor, in your browser
+
+Not everyone lives in a terminal. `/gentle:tower` opens a local web view where each project is a painted building and each open Gentle Shell session is a floor of it. The orchestrator and its named helpers (`worker`, `explore`, `verify`, or `worker-tests` when a role repeats) stand in the room of what they are doing: the map while exploring, the workshop while building, the lab while testing, the lounge when done. A `?` means a floor needs you.
+
+- **Tasks at a glance**: each floor shows its todo progress (`2/4 · blocked: …`); click it for the full list. The map's corkboard notes are the same tasks.
+- **Talk to a floor** (`T`): read the orchestrator's latest words and send a message; it arrives as a new turn, or as a follow-up while the agent works. Questions asked in the terminal show as waiting; answer them there or tell the floor.
+- **Artifacts**: the docs, Mermaid diagrams and images a floor wrote open in a viewer.
+- **Engram library and your tab**: a read-only window on the project's memories and on what the open sessions spent, by model and by project.
+- **Controls**: stop a helper, lower a floor's permissions, and switch review mode.
+
+The web never has more power than the terminal: it listens on `127.0.0.1` only, with a fresh token in the path on every launch, refuses other origins, and can only *lower* permissions; raising them stays in the terminal. Each session runs the requests itself, with its own rules.
+
+---
+
 ### Gentle Agents — Parallel work with a live view
 
 <img width="100%" src="docs/assets/features/agents-view.png" alt="Gentle Agents overlay showing a completed subagent thread with model, tokens, and elapsed columns, and the structured handoff it returned">

@@ -39,6 +39,10 @@ export const requiredPaths = [
   ...installerPaths,
   "extensions/gentle-notifications.ts",
   "extensions/gentle-star-prompt.ts",
+  // Gentle Tower: /gentle:tower serves this built web app; a package without it ships a broken command.
+  "extensions/gentle-tower.ts",
+  "lib/tower-server.ts",
+  "web/tower/dist/index.html",
   "lib/notification-audio.ts",
   "lib/notification-audio-native.ts",
   "lib/notification-audio-windows.ts",

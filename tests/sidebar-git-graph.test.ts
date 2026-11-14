@@ -131,3 +131,13 @@ test("graph rows fill the rail width so the tinted surface has no bare notches",
   }
  }
 });
+
+test("subject roles come from own properties only, never the prototype", () => {
+ const theme = { fg: (role: string, text: string) => `<${role}>${text}</${role}>` };
+ for (const subject of ["constructor: update", "toString: report", "hasOwnProperty: audit"]) {
+  const rows = renderSidebarGitGraph({ state: "ready", branch: "main", lines: [`* \x1eabc\x1f\x1f${subject}\x1e`] }, theme, 80, 4);
+  assert.doesNotMatch(rows.join("\n"), /<\[object|<function|<bound/), `the subject "${subject}" must not receive a function role`;
+ }
+ const rows = renderSidebarGitGraph({ state: "ready", branch: "main", lines: ["* \x1eabc\x1f\x1ffeat: add\x1e"] }, theme, 200, 4);
+ assert.match(rows.join("\n"), /<success>feat:<\/success>/, "real type roles still apply");
+});

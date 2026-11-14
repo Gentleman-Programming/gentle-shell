@@ -27,7 +27,9 @@ const FRAME_ROLES = ["accent", "muted", "text", "success", "warning", "syntaxFun
 function renderSubject(subject: string, theme: GraphTheme): string {
  const safe = clean(subject);
  const match = /^(merge)(?=\s)|^([a-z]+)(?:\([^\r\n)]*\))?!?:/i.exec(safe);
- const role = match && TYPE_ROLES[(match[1] ?? match[2]).toLowerCase()];
+ // Own properties only: Object.prototype's function-valued keys (constructor,
+ // hasOwnProperty, toString) would otherwise hand theme.fg a function role.
+ const role = match && Object.prototype.hasOwnProperty.call(TYPE_ROLES, (match[1] ?? match[2]).toLowerCase()) ? TYPE_ROLES[(match[1] ?? match[2]).toLowerCase()] : undefined;
  return role ? theme.fg(role, match![0]) + theme.fg("text", safe.slice(match![0].length)) : theme.fg("text", safe);
 }
 function renderLine(line: string, theme: GraphTheme): string {

@@ -1,0 +1,35 @@
+# Gentle Tower — web view of Gentle Shell
+The chosen tower design (`design/herdr-gentle-shell/11-tower-painted.html`) built as a real web view inside gentle-pi, fed by real Gentle Shell sessions.
+Branch `feat/gentle-tower-web` (from `design/herdr-gentle-ui`). The Herdr spikes (`odd/tasks/herdr-tower-spikes.md`) are paused; Herdr gets a separate, more serious view later.
+
+## Specs
+- S1 "implementemos el disenno como una vista web te va? no como para herdr"
+- S2 Data: "Reales desde el inicio" — connects to the open Gentle Shell sessions; what is not exposed yet (tasks, questions, artifacts) is added in gentle-pi.
+- S3 Location: "Dentro de gentle-pi" — a Gentle Shell extension starts a local server and opens the browser with a command (e.g. `/gentle:tower`).
+- S4 Stack: "Vite + TypeScript + PixiJS" — PixiJS draws the tower; panels (intercom, tasks, viewer) are plain HTML/TS.
+- S5 Behaviour and look follow the chosen artboard ("me encanta vamos con esto"): project = building, session = floor, rooms = harness functions, named subagents moving between rooms, lobby = global state, intercom, in-world artifacts + viewer, per-floor TODO ("quiero ver facil el TODO de cada piso, para saber todo el trabjo que se tiene y por donde van"), Engram library, bar tab.
+- S6 Later, not now: for Herdr "una vista mas... seniorial, mas seria, como una replica de gentle-shell".
+
+## Architecture (decided defaults)
+- **Publisher** (in every Gentle Shell session, extension `gentle-tower`): writes a bounded snapshot of its own session (name, cwd/project, model, cost/tokens/context, todo list, subagents with role/name/state, jobs, pending question, permission mode, review mode) to a per-user hub directory on change, debounced.
+- **Hub + web server** (started by `/gentle:tower` in the session that runs it): reads the snapshots, serves the built web bundle and a Server-Sent Events stream. Binds `127.0.0.1` only, random port, a fresh random token required on every request (passed in the opened URL), `Origin` checked, no CORS.
+- **Actions** go back through what Gentle Shell already has (peer messaging for intercom/answers, subagent cancel, permission mode, review switch) with the same authority rules; the web view never gets more power than the CLI.
+- **Web app** `web/tower/`: Vite + TypeScript + PixiJS, built into a static bundle shipped with the package.
+
+## Tasks
+- T1 Snapshot contract (types + publisher) for the current session, with tests — inline — pending
+- T2 Hub + `/gentle:tower` server (127.0.0.1, token, origin, SSE) with tests — inline — pending
+- T3 Web app scaffold: Vite + TS + PixiJS, tower scene ported from the artboard, fed by SSE — inline — pending
+- T4 Multi-session: projects/floors from every published session — inline — pending
+- T5 Actions: answer questions, intercom / @helper steer, stop helper, permission door, review switch — inline — pending
+- T6 Artifacts + viewer, Engram library, bar tab — inline — pending
+- T7 Docs (command help, README section) and package wiring — inline — pending
+
+## Risks
+- Item 2 (security): a local control surface over sessions → localhost-only, token, origin checks, no new authority.
+- Item 5 (dependencies): adds vite, typescript tooling for the web app and pixi.js.
+
+## Log
+- L1 (user): "y una cosa sino, hagamos algo, implementemos el disenno como una vista web te va? no como para herdr, y para este ultimo despues haciemos una vista mas... seniorial, mas seria, como una replica de gentle-shell"
+- L2 (user choices): data "Reales desde el inicio (recomendado)"; location "Dentro de gentle-pi (recomendado)"; stack "Vite + TypeScript + PixiJS (recomendado)".
+- L3: The existing desktop RPC is per-session over the pi RPC channel (`ctx.ui.setWidget`), not a server; multi-session needs the publisher/hub above.

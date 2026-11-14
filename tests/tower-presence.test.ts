@@ -84,3 +84,26 @@ test("the tower shows detailed floors and every other live session once; basic f
 	assert.equal(existsSync(towerInboxDir(hub, basic.sessionId)) ? readdirSync(towerInboxDir(hub, basic.sessionId)).length : 0, 0);
 	assert.equal(await post(s.port, "/tok-123/api/action", JSON.stringify({ type: "message", sessionId: "sess-a", text: "hi" })), 202);
 });
+
+test("finished helpers never reach the web, even from a session running older publisher code", async () => {
+	const { root, hub } = setup();
+	const agent = (id: string, status: string) => ({ id, agent: "gentle-ai-explore", status, usage: { total: 1, cost: 0 } });
+	writeTowerSnapshot(hub, buildTowerSnapshot({ sessionId: "old", cwd: "/w/a", stats: { cost: 0, input: 0, output: 0 }, todos: [], agents: [agent("a", "completed"), agent("b", "failed"), agent("c", "running"), agent("d", "cancelled")], now: NOW }));
+	const web = join(root, "web"); mkdirSync(web); writeFileSync(join(web, "index.html"), "<title>t</title>");
+	const s = await startTowerServer({ hubDir: hub, webDir: web, token: "tok-123" });
+	servers.push(s);
+	const [floor] = JSON.parse((await get(s.port, "/tok-123/api/sessions")).body).sessions as Array<{ subagents: Array<{ id: string }> }>;
+	assert.deepEqual(floor.subagents.map((a) => a.id), ["c"]);
+});
+
+test("a detailed floor whose snapshot is older than its heartbeat takes its live helpers from presence", async () => {
+	const { root, dir, hub } = setup();
+	writeTowerSnapshot(hub, buildTowerSnapshot({ sessionId: "sess-a", cwd: "/w/a", stats: { cost: 2, input: 0, output: 0 }, todos: [], agents: [], now: NOW - 60_000 }));
+	presence(dir, "sess-a", { label: "x", workspace: "/w/a", heartbeat: NOW - 1000, tasks: [{ id: "t9", agent: "gentle-ai-worker", label: "T4 publisher", status: "running" }] });
+	const web = join(root, "web"); mkdirSync(web); writeFileSync(join(web, "index.html"), "<title>t</title>");
+	const s = await startTowerServer({ hubDir: hub, webDir: web, token: "tok-123", presenceDirs: [dir], now: () => NOW });
+	servers.push(s);
+	const [floor] = JSON.parse((await get(s.port, "/tok-123/api/sessions")).body).sessions as Array<{ cost: { total: number }; subagents: Array<{ id: string; name: string }> }>;
+	assert.equal(floor.cost.total, 2);
+	assert.deepEqual(floor.subagents.map((a) => [a.id, a.name]), [["t9", "worker"]]);
+});

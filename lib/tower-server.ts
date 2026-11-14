@@ -61,11 +61,21 @@ export function startTowerServer(options: TowerServerOptions): Promise<TowerServ
 	let lastBody = "";
 	const now = options.now ?? Date.now;
 	// Detailed floors (tower extension) win; every other live session joins as a basic floor.
+	const LIVE = new Set(["queued", "running", "waiting"]);
 	const allSessions = () => {
-		const detailed = readTowerSnapshots(options.hubDir);
+		// Finished helpers never show, even if a session still runs an older publisher.
+		const detailed = readTowerSnapshots(options.hubDir).map((s) => ({ ...s, subagents: s.subagents.filter((a) => LIVE.has(a.status)) }));
 		if (!options.presenceDirs?.length) return detailed;
-		const known = new Set(detailed.map((s) => createHash("sha256").update(s.sessionId).digest("hex")));
-		const basic = readPresenceFloors(options.presenceDirs, now()).filter((f) => !known.has(f.sessionHash)).map(({ sessionHash: _h, ...f }) => f);
+		const presence = new Map(readPresenceFloors(options.presenceDirs, now()).map((f) => [f.sessionHash, f]));
+		const known = new Set<string>();
+		for (const s of detailed) {
+			const hash = createHash("sha256").update(s.sessionId).digest("hex");
+			known.add(hash);
+			// The heartbeat is fresher than a snapshot that stopped updating: trust its live helpers.
+			const p = presence.get(hash);
+			if (p && p.updatedAt > s.updatedAt) s.subagents = p.subagents;
+		}
+		const basic = [...presence.values()].filter((f) => !known.has(f.sessionHash)).map(({ sessionHash: _h, ...f }) => f);
 		return [...detailed, ...basic];
 	};
 	const sessionsBody = () => JSON.stringify({ sessions: allSessions() });

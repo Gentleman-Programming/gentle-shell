@@ -4,7 +4,7 @@ import "./style.css";
 import { floorTop } from "./art";
 import { FLOOR_COLORS, floorState, groupProjects, money, todoProgress } from "./model";
 import { TowerScene, type Pick } from "./scene";
-import { closeModals, openArtifacts, openLibrary, openTab, postAction, renderIntercom } from "./panels";
+import { closeModals, openArtifact, openArtifacts, openLibrary, openNewFloor, openTab, postAction, renderIntercom } from "./panels";
 import type { Project, TowerSnapshot, TowerTodo } from "./types";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -162,6 +162,7 @@ addEventListener("keydown", (e) => {
 	if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
 	if (e.key === "Escape") { if (closeModals()) return; if (!$("intercom").hidden) { $("intercom").hidden = true; return; } if (todoFloor !== undefined) { todoFloor = undefined; render(); } else select(undefined); }
 	if ((e.key === "t" || e.key === "T") && !e.metaKey && !e.ctrlKey) { e.preventDefault(); openIntercom(selected?.floor ?? 0); }
+	if ((e.key === "n" || e.key === "N") && !e.metaKey && !e.ctrlKey) { const p = project(); if (p) { e.preventDefault(); openNewFloor(p); } }
 	if (e.altKey && /^[1-9]$/.test(e.key) && projects[+e.key - 1]) { current = projects[+e.key - 1].cwd; selected = undefined; render(); }
 	const p = project();
 	if ((e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key) && p?.sessions[+e.key - 1]) { e.preventDefault(); select({ kind: "orchestrator", floor: +e.key - 1, session: p.sessions[+e.key - 1] }); }
@@ -178,7 +179,10 @@ scene.onRoom = (roomId, floor) => {
 	if (roomId === "map") { todoFloor = floor; render(); return; }
 	select({ kind: "orchestrator", floor, session: p.sessions[floor] });
 };
+scene.onDoor = (floor) => { const p = project(); if (!p) return; select({ kind: "orchestrator", floor, session: p.sessions[floor] }); (document.getElementById("door") as HTMLSelectElement | null)?.focus(); };
+scene.onArtifact = (floor, a) => { const p = project(); if (p?.sessions[floor]) void openArtifact(p.sessions[floor], a); };
 $("lib-btn").addEventListener("click", () => { const p = project(); if (p) openLibrary(p); });
+$("newfloor-btn").addEventListener("click", () => { const p = project(); if (p) openNewFloor(p); });
 $("tab-btn").addEventListener("click", () => openTab(projects));
 $("review-btn").addEventListener("click", async () => {
 	const p = project(); const s = p?.sessions.find((x) => x.review); if (!s) return;

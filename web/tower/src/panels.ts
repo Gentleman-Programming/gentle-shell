@@ -39,6 +39,7 @@ function modal(id: string, title: string, sub: string, body: string, wide = fals
 	el.id = id; el.className = `modal px${wide ? " wide" : ""}`; el.setAttribute("role", "dialog"); el.setAttribute("aria-modal", "true"); el.setAttribute("aria-label", title);
 	el.innerHTML = `<header><b>${esc(title)}</b><small>${esc(sub)}</small><button class="x" aria-label="Close">✕</button></header><div class="body">${body}</div>`;
 	document.body.appendChild(el);
+	const todo = document.getElementById("todo"); if (todo) todo.hidden = true;
 	const dim = document.getElementById("dim")!; dim.hidden = false;
 	const close = () => { el.remove(); if (!document.querySelector(".modal")) dim.hidden = true; };
 	el.querySelector(".x")!.addEventListener("click", close);
@@ -121,13 +122,26 @@ export function openLibrary(project: Project): void {
 	const el = modal("library", "Engram · the library", `${project.id} · what your agents remember`, `<div class="lib"><div class="shelves"><input class="search" placeholder="Search memories…" aria-label="Search memories" value="${esc(project.id)}"><div class="shelfset"></div></div><article class="page muted">Pick a book.</article></div>`, true);
 	const set = el.querySelector(".shelfset")!, page = el.querySelector(".page")!, input = el.querySelector("input")!;
 	const show = (m: Memory) => { page.classList.remove("muted"); page.innerHTML = `<h3>${esc(m.title ?? "Untitled")}</h3><div class="tag">${esc(m.type ?? "memory")}${m.created_at ? ` · ${esc(m.created_at)}` : ""}</div>${renderMarkdown(m.content ?? "")}`; };
-	const shelf = (label: string, items: Memory[]) => items.length ? `<div class="shelf"><h4>${esc(label)}<span>${items.length}</span></h4><div class="spines">${items.map((m, i) => `<button class="spine" data-id="${m.id}" style="background:${SPINE[(m.id + i) % SPINE.length]}" title="${esc(m.title ?? "")}">${esc(m.title ?? "")}</button>`).join("")}</div></div>` : "";
+	const SHOWN = 6;
+	const open = new Set<string>();
+	// A book is a readable row with a coloured spine; a shelf shows a few and folds the rest.
+	const shelf = (label: string, items: Memory[], folded = false) => {
+		if (!items.length) return "";
+		const all = open.has(label), visible = folded && !all ? [] : all ? items : items.slice(0, SHOWN);
+		const more = items.length - visible.length;
+		return `<div class="shelf"><h4>${esc(label)}<span>${items.length}</span></h4><div class="books">${visible.map((m) => `<button class="book" data-id="${m.id}" title="${esc(m.title ?? "")}"><i style="background:${SPINE[m.id % SPINE.length]}"></i><span>${esc(m.title ?? "Untitled")}</span></button>`).join("")}</div>${more > 0 ? `<button class="more" data-shelf="${esc(label)}">${folded && !all ? `Show ${more} waiting for review` : `Show all ${items.length}`}</button>` : ""}</div>`;
+	};
 	let found: Memory[] = [];
 	const draw = (review: Memory[]) => {
 		const byType = new Map<string, Memory[]>();
 		for (const m of found) { const k = SHELVES[m.type ?? ""] ? m.type! : "other"; byType.set(k, [...(byType.get(k) ?? []), m]); }
-		set.innerHTML = [...byType].map(([k, v]) => shelf(SHELVES[k] ?? "Other", v)).join("") + shelf("Waiting for your review", review) || `<p class="muted">Nothing found.</p>`;
-		set.querySelectorAll<HTMLButtonElement>(".spine").forEach((b) => b.addEventListener("click", () => { const m = [...found, ...review].find((x) => x.id === +b.dataset.id!); if (m) show(m); }));
+		set.innerHTML = ([...byType].map(([k, v]) => shelf(SHELVES[k] ?? "Other", v)).join("") + shelf("Waiting for your review", review, true)) || `<p class="muted">Nothing found.</p>`;
+		set.querySelectorAll<HTMLButtonElement>(".book").forEach((b) => b.addEventListener("click", () => {
+			set.querySelectorAll(".book[aria-pressed]").forEach((x) => x.removeAttribute("aria-pressed"));
+			b.setAttribute("aria-pressed", "true");
+			const m = [...found, ...review].find((x) => x.id === +b.dataset.id!); if (m) show(m);
+		}));
+		set.querySelectorAll<HTMLButtonElement>(".more").forEach((b) => b.addEventListener("click", () => { open.add(b.dataset.shelf!); draw(review); }));
 	};
 	let review: Memory[] = [];
 	const search = async () => {
@@ -146,6 +160,26 @@ export function openLibrary(project: Project): void {
 	input.addEventListener("input", () => { clearTimeout(t); t = setTimeout(() => void search(), 300); });
 	input.addEventListener("keydown", (e) => e.stopPropagation());
 	void search();
+}
+
+// ---------- a new floor ----------
+export function openNewFloor(project: Project): void {
+	const el = modal("new-floor", "New floor", `${project.id} · a new Gentle Shell session`, `<form class="newfloor">
+		<label for="nf-prompt">What should this floor work on? <small>optional — you can also tell it later</small></label>
+		<textarea id="nf-prompt" rows="4" placeholder="Fix the login bug and add a test for it"></textarea>
+		<p class="muted">It opens in a new terminal window in <code>${esc(project.cwd)}</code> and shows up here as a floor.</p>
+		<div class="row"><span class="status" role="status"></span><button class="btn primary">Open the floor</button></div></form>`);
+	const form = el.querySelector("form")!, box = el.querySelector("textarea")!, status = el.querySelector(".status")!;
+	box.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) form.requestSubmit(); e.stopPropagation(); });
+	form.addEventListener("submit", async (e) => {
+		e.preventDefault();
+		const prompt = box.value.trim();
+		status.textContent = "Opening…";
+		const ok = await postAction({ type: "new-floor", project: project.cwd, ...(prompt ? { prompt } : {}) });
+		status.textContent = ok ? "Opened. It will appear as a new floor in a moment." : "Could not open a new floor.";
+		if (ok) setTimeout(() => closeModals(), 1500);
+	});
+	box.focus();
 }
 
 // ---------- the bar tab ----------

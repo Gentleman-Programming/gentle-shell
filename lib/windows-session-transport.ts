@@ -35,7 +35,7 @@ const PIPE = /^\\\\\.\\pipe\\gentle-pi-[A-Za-z0-9-]{1,96}$/;
 const SESSION = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
 type HostState = Readonly<{ state: "partial" }> | Readonly<{ state: "initialized"; bootstrap: "complete" }> | Readonly<{ state: "initialized"; bootstrap: "complete"; entries: number }>;
-type HostReply = Readonly<{ requestId: string; ok: boolean; result?: HostState | WindowsRecord | Readonly<{ records: readonly WindowsRecord[] }>; error?: "unavailable" | "unsafe" | "busy" | "not_found" | "invalid" }>;
+export type HostReply = Readonly<{ requestId: string; ok: boolean; result?: HostState | WindowsRecord | Readonly<{ records: readonly WindowsRecord[] }>; error?: "unavailable" | "unsafe" | "busy" | "not_found" | "invalid" }>;
 type HostEvent = Readonly<{ event: "startup-marker"; marker: WindowsSessionStartupMarker }> | Readonly<{ event: "notification"; connectionId: string; generation: number; frame: NotificationFrame }> | Readonly<{ event: "listener-failed"; generation: number; error: "unavailable" }>;
 type Pending = { kind: "rpc" | "ack"; resolve: (value: Record<string, unknown>) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> };
 type WindowsHostFailureCallback = (generation: number) => void;
@@ -142,6 +142,24 @@ const transportError = (message: string, code: WindowsSessionRegistryPhaseErrorC
 	const error = safeError(message);
 	transportFailureCodes.set(error, code);
 	return error;
+};
+/**
+ * A failed helper reply keeps the one code its caller must distinguish. The helper
+ * answers `busy` when the presence directory is over its bound, and collapsing that
+ * into `io_error` would report an occupied directory as a missing host. Every other
+ * failure stays the generic protocol error, and phase observation still reports the
+ * protocol code it reports for all of them.
+ */
+export const windowsReplyFailure = (reply: HostReply): Error | undefined => {
+	if (reply.ok) return undefined;
+	if (reply.error === "busy") {
+		// The message stays the one every failed reply reports, so a caller that only
+		// reads text keeps its contract; only the class and code carry the distinction.
+		const error = new SessionPresenceError("busy", "Windows transport request unavailable");
+		transportFailureCodes.set(error, "protocol");
+		return error;
+	}
+	return transportError("Windows transport request unavailable", "protocol");
 };
 // This sink intentionally captures no host state. It prevents a late stream error from
 // becoming unhandled after bounded cleanup times out but before the child confirms close.
@@ -483,7 +501,7 @@ export class WindowsSessionTransportHost {
 				}
 				const reply = parseWindowsHostFrame(line);
 				if (reply.requestId === "start-1") this.startupReplyObserved = true;
-				this.settle(reply.requestId, reply.ok ? undefined : transportError("Windows transport request unavailable", "protocol"), reply.result);
+				this.settle(reply.requestId, windowsReplyFailure(reply), reply.result);
 			} catch (error) {
 				// Only a schema-validated private event can isolate its embedded client wire.
 				if (error instanceof InvalidClientWireError) continue;
@@ -723,7 +741,7 @@ export class WindowsSessionPresenceRegistry {
 	presencePath(_record: PresenceRecord) { throw new SessionPresenceError("unsafe_path", "unsafe transport path"); }
 	async publish(record: PresenceRecord) { try { await this.host.request("publish", { record: validRecord(record as unknown as Record<string, unknown>) }); } catch { registryError(undefined); } }
 	async list(excludeSessionId?: string): Promise<readonly SessionPresenceCandidate[]> { return (await this.listActivations(excludeSessionId)).map((record) => Object.freeze({ sessionId: record.sessionId, reachability: "unknown" as const })); }
-	async listActivations(excludeSessionId?: string): Promise<readonly WindowsRecord[]> { try { const value = await this.host.request("list", { ...(excludeSessionId === undefined ? {} : { excludeSessionId }) }); if (!Array.isArray(value.records) || value.records.length > 64) throw new Error(); return Object.freeze(value.records.map((record) => validRecord(record))); } catch { registryError(undefined); } }
+	async listActivations(excludeSessionId?: string): Promise<readonly WindowsRecord[]> { try { const value = await this.host.request("list", { ...(excludeSessionId === undefined ? {} : { excludeSessionId }) }); if (!Array.isArray(value.records) || value.records.length > 64) throw new Error(); return Object.freeze(value.records.map((record) => validRecord(record))); } catch (error) { registryError(error); } }
 	async resolve(sessionId: string): Promise<WindowsRecord> { try { return validRecord(await this.host.request("resolve", { sessionId })); } catch { registryError(undefined); } }
 	async removeOwn(record: PresenceRecord) { try { await this.host.request("remove", { record: validRecord(record as unknown as Record<string, unknown>) }); } catch { /* identity-bound owned cleanup is intentionally best effort */ } }
 	async startListener(sessionId: string): Promise<WindowsRecord> {

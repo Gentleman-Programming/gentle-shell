@@ -1,0 +1,86 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { request } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test, { after } from "node:test";
+import { readPresenceFloors } from "../lib/tower-presence.ts";
+import { writeTowerSnapshot } from "../lib/tower-hub.ts";
+import { buildTowerSnapshot } from "../lib/tower-snapshot.ts";
+import { startTowerServer, type TowerServer } from "../lib/tower-server.ts";
+import { towerInboxDir } from "../lib/tower-actions.ts";
+
+const roots: string[] = [];
+const servers: TowerServer[] = [];
+after(async () => { for (const s of servers) await s.close(); roots.forEach((r) => rmSync(r, { recursive: true, force: true })); });
+const NOW = 1_800_000_000_000;
+const sha = (s: string) => createHash("sha256").update(s).digest("hex");
+
+function presence(dir: string, sessionId: string, opts: { label: string; workspace: string; heartbeat?: number; tasks?: unknown[]; unavailable?: unknown }) {
+	mkdirSync(dir, { recursive: true });
+	const hash = sha(sessionId), inc = "11111111-2222-3333-4444-555555555555", base = `${hash}.${inc}`;
+	writeFileSync(join(dir, `${base}.header.json`), JSON.stringify({ schema: 1, sessionHash: hash, incarnation: inc, label: opts.label, heartbeat: opts.heartbeat ?? NOW - 5000, generation: 1, counts: {}, unavailable: opts.unavailable ?? null }));
+	writeFileSync(join(dir, `${base}.discovery.json`), JSON.stringify({ schema: 1, sessionHash: hash, incarnation: inc, generation: 1, metadata: { workspace: opts.workspace, tasks: opts.tasks ?? [] } }));
+	return hash;
+}
+function setup() {
+	const root = mkdtempSync(join(tmpdir(), "gentle-tower-presence-"));
+	roots.push(root);
+	return { root, dir: join(root, "presence"), hub: join(root, "sessions") };
+}
+
+test("every live Gentle Shell session becomes a basic floor, its helpers named by role and task", () => {
+	const { dir } = setup();
+	presence(dir, "sess-a", { label: "Herdr app package", workspace: "/w/gentle-ai", tasks: [
+		{ id: "t1", agent: "gentle-ai-worker", label: "T4 desktop snapshot publisher", status: "running" },
+		{ id: "t2", agent: "gentle-ai-worker", label: "Write the parity tests", status: "queued" },
+		{ id: "t3", agent: "gentle-ai-explore", label: "map the sidebar", status: "completed" },
+	] });
+	const [f] = readPresenceFloors([dir], NOW);
+	assert.equal(f.basic, true);
+	assert.equal(f.name, "Herdr app package");
+	assert.deepEqual(f.project, { cwd: "/w/gentle-ai", name: "gentle-ai" });
+	assert.deepEqual(f.subagents.map((a) => [a.name, a.status]), [["worker-t4", "running"], ["worker-parity", "queued"]]);
+	assert.deepEqual(f.todos, []);
+	assert.match(f.sessionId, /^p-[0-9a-f]{32}$/);
+});
+
+test("stale, unavailable and malformed presence entries are skipped", () => {
+	const { dir } = setup();
+	presence(dir, "old", { label: "Closed yesterday", workspace: "/w/a", heartbeat: NOW - 10 * 60_000 });
+	presence(dir, "gone", { label: "Unavailable", workspace: "/w/a", unavailable: { reason: "x" } });
+	writeFileSync(join(dir, "junk.header.json"), "{not json");
+	presence(dir, "live", { label: "Live one", workspace: "/w/a" });
+	assert.deepEqual(readPresenceFloors([dir], NOW).map((f) => f.name), ["Live one"]);
+	assert.deepEqual(readPresenceFloors([join(dir, "missing")], NOW), []);
+});
+
+function get(port: number, path: string): Promise<{ status: number; body: string }> {
+	return new Promise((resolve, reject) => {
+		const req = request({ host: "127.0.0.1", port, path }, (res) => { let b = ""; res.on("data", (c) => (b += c)); res.on("end", () => resolve({ status: res.statusCode ?? 0, body: b })); });
+		req.on("error", reject); req.end();
+	});
+}
+function post(port: number, path: string, body: string): Promise<number> {
+	return new Promise((resolve, reject) => {
+		const req = request({ host: "127.0.0.1", port, path, method: "POST", headers: { "Content-Type": "application/json", Origin: `http://127.0.0.1:${port}` } }, (res) => { res.resume(); res.on("end", () => resolve(res.statusCode ?? 0)); });
+		req.on("error", reject); req.end(body);
+	});
+}
+
+test("the tower shows detailed floors and every other live session once; basic floors take no actions", async () => {
+	const { root, dir, hub } = setup();
+	writeTowerSnapshot(hub, buildTowerSnapshot({ sessionId: "sess-a", sessionName: "Detailed", cwd: "/w/gentle-ai", stats: { cost: 1, input: 0, output: 0 }, todos: [], agents: [], now: NOW }));
+	presence(dir, "sess-a", { label: "Detailed (presence copy)", workspace: "/w/gentle-ai" });
+	presence(dir, "sess-b", { label: "Only in presence", workspace: "/w/engram" });
+	const web = join(root, "web"); mkdirSync(web); writeFileSync(join(web, "index.html"), "<title>t</title>");
+	const s = await startTowerServer({ hubDir: hub, webDir: web, token: "tok-123", presenceDirs: [dir], now: () => NOW });
+	servers.push(s);
+	const sessions = JSON.parse((await get(s.port, "/tok-123/api/sessions")).body).sessions as Array<{ name: string; basic?: boolean; sessionId: string }>;
+	assert.deepEqual(sessions.map((x) => [x.name, x.basic ?? false]), [["Detailed", false], ["Only in presence", true]]);
+	const basic = sessions.find((x) => x.basic)!;
+	assert.equal(await post(s.port, "/tok-123/api/action", JSON.stringify({ type: "message", sessionId: basic.sessionId, text: "hi" })), 404);
+	assert.equal(existsSync(towerInboxDir(hub, basic.sessionId)) ? readdirSync(towerInboxDir(hub, basic.sessionId)).length : 0, 0);
+	assert.equal(await post(s.port, "/tok-123/api/action", JSON.stringify({ type: "message", sessionId: "sess-a", text: "hi" })), 202);
+});

@@ -8,6 +8,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { basename, dirname, extname, resolve, sep } from "node:path";
 import { timingSafeEqual } from "node:crypto";
 import { readTowerSnapshots } from "./tower-hub.ts";
+import { readPresenceFloors } from "./tower-presence.ts";
+import { createHash } from "node:crypto";
 import { parseTowerAction, TOWER_ACTION_MAX_BYTES, writeTowerAction } from "./tower-actions.ts";
 
 export interface TowerServerOptions {
@@ -18,6 +20,9 @@ export interface TowerServerOptions {
 	pollMs?: number;
 	/** Local Engram HTTP API for the read-only memory window. */
 	engramUrl?: string;
+	/** Peer presence registries: every live session shows, detailed or basic. */
+	presenceDirs?: readonly string[];
+	now?: () => number;
 	/** Opens a new Gentle Shell session (a floor) in a project already in the tower. */
 	onNewFloor?: (cwd: string, prompt?: string) => Promise<void>;
 }
@@ -54,7 +59,16 @@ export function startTowerServer(options: TowerServerOptions): Promise<TowerServ
 	const webRoot = realpathSync(options.webDir);
 	const clients = new Set<ServerResponse>();
 	let lastBody = "";
-	const sessionsBody = () => JSON.stringify({ sessions: readTowerSnapshots(options.hubDir) });
+	const now = options.now ?? Date.now;
+	// Detailed floors (tower extension) win; every other live session joins as a basic floor.
+	const allSessions = () => {
+		const detailed = readTowerSnapshots(options.hubDir);
+		if (!options.presenceDirs?.length) return detailed;
+		const known = new Set(detailed.map((s) => createHash("sha256").update(s.sessionId).digest("hex")));
+		const basic = readPresenceFloors(options.presenceDirs, now()).filter((f) => !known.has(f.sessionHash)).map(({ sessionHash: _h, ...f }) => f);
+		return [...detailed, ...basic];
+	};
+	const sessionsBody = () => JSON.stringify({ sessions: allSessions() });
 	let port = 0;
 
 	const MESSAGES: Record<number, string> = { 400: "Bad request", 404: "Not found", 405: "Method not allowed", 413: "Too large", 500: "Server error", 502: "Engram unavailable" };
@@ -92,6 +106,8 @@ export function startTowerServer(options: TowerServerOptions): Promise<TowerServ
 					() => deny(res, 500));
 				return;
 			}
+			// Only a floor that publishes its own snapshot has a session reading its inbox.
+			if (!readTowerSnapshots(options.hubDir).some((s) => s.sessionId === action.sessionId)) return deny(res, 404);
 			try {
 				const id = writeTowerAction(options.hubDir, action);
 				res.writeHead(202, { "Content-Type": "application/json", ...SECURITY_HEADERS });

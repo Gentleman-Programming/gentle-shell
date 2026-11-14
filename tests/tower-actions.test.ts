@@ -69,6 +69,7 @@ function post(port: number, path: string, body: string, headers: Record<string, 
 
 test("the server queues a valid action for its floor and refuses the rest", async () => {
 	const { hub, web } = scratch();
+	writeTowerSnapshot(hub, buildTowerSnapshot({ sessionId: "s-1", cwd: "/w/app", stats: { cost: 0, input: 0, output: 0 }, todos: [], agents: [], now: 1 }));
 	const s = await startTowerServer({ hubDir: hub, webDir: web, token: "tok-123" });
 	servers.push(s);
 	const own = { Origin: `http://127.0.0.1:${s.port}` };

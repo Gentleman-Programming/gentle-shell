@@ -17,6 +17,7 @@ import { replayTodo, TODO_PROGRESS_EVENT } from "../lib/shell-todo.ts";
 import { removeTowerSnapshot, towerHubDir, writeTowerSnapshot } from "../lib/tower-hub.ts";
 import { consumeTowerActions, type TowerSessionAction } from "../lib/tower-actions.ts";
 import { launchInTerminal } from "../lib/tower-launch.ts";
+import { defaultPresenceDirs } from "../lib/tower-presence.ts";
 import { discoverYoloUiAdapter } from "../lib/yolo-session-policy.ts";
 import { artifactsFromBranch, buildTowerSnapshot, latestAssistantText, type TowerAgentInput, type TowerTodo } from "../lib/tower-snapshot.ts";
 
@@ -214,6 +215,7 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 				return;
 			}
 			server ??= startTowerServer({ hubDir: dir, webDir, token: randomBytes(24).toString("base64url"), engramUrl: env.ENGRAM_URL || "http://127.0.0.1:7437",
+				presenceDirs: defaultPresenceDirs(),
 				onNewFloor: (cwd, prompt) => launchInTerminal({ cwd, node: process.execPath, launcher: join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "gentle-shell.mjs"), ...(prompt ? { prompt } : {}) }) });
 			try {
 				const s = await server;

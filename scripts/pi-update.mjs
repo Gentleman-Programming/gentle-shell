@@ -446,14 +446,18 @@ async function suppliedPiVersion(owner, {platform, adapters, cwd}) {
  }
 }
 
-const MANAGED_INSTALL = 'gentle-shell-user-install/v1';
+const MANAGED_INSTALL_SCHEMA = 'gentle-shell-user-install/v1';
 
 /** The Gentle AI installation whose recorded prefix holds the owner's global
  * group, or null. Gentle AI authenticates that prefix's package graph and
  * refuses every launch once a package manager changes it (gentle-ai#6045), so
- * only its own reconfigure may replace Pi there. Its launches export
- * GENTLE_PI_CONFIG_HOME as `<root>/config`; a Separate prefix is `<root>/prefix`.
- * An unreadable or foreign manifest proves nothing and is skipped.
+ * only its own reconfigure may replace Pi there. Candidate roots: the parent of
+ * the launch's GENTLE_PI_CONFIG_HOME (`<root>/config`), then the parent of the
+ * group's prefix (npm's POSIX group is `<prefix>/lib/node_modules`, otherwise
+ * `<prefix>/node_modules`), where a Separate install keeps `<root>/prefix`.
+ * Only a manifest whose recorded Prefix contains the group proves ownership; a
+ * missing manifest or another schema is skipped, but one that exists and
+ * cannot be read or parsed refuses, since it may be exactly that proof.
  */
 async function managedInstallRoot(owner, {env, adapters, platform = process.platform}) {
  const {path, key} = pathsFor(platform);
@@ -463,9 +467,11 @@ async function managedInstallRoot(owner, {env, adapters, platform = process.plat
  const config = env?.GENTLE_PI_CONFIG_HOME;
  if (typeof config === 'string' && path.isAbsolute(config) && path.basename(config) === 'config') roots.unshift(path.dirname(config));
  for (const root of roots) {
+  const file = path.join(root, 'installation.json');
   let manifest;
-  try { manifest = JSON.parse(await optionalFile(adapters.fs, path.join(root, 'installation.json')) ?? 'null'); } catch { continue; }
-  if (!object(manifest) || manifest.Schema !== MANAGED_INSTALL || typeof manifest.Prefix !== 'string' || !path.isAbsolute(manifest.Prefix)) continue;
+  try { manifest = JSON.parse(await optionalFile(adapters.fs, file) ?? 'null'); }
+  catch { throw new Error(`gentle-shell update: ${file} could not be verified, so a Gentle AI installation may own the Pi this launcher runs. Inspect that file before retrying. No installation changed.`); }
+  if (!object(manifest) || manifest.Schema !== MANAGED_INSTALL_SCHEMA || typeof manifest.Prefix !== 'string' || !path.isAbsolute(manifest.Prefix)) continue;
   const inside = path.relative(key(manifest.Prefix), key(modules));
   if (inside && !inside.startsWith('..') && !path.isAbsolute(inside)) return root;
  }

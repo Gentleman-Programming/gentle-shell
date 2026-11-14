@@ -502,6 +502,40 @@ The canvas opens in navigation mode: the mouse wheel and trackpad pan or zoom th
 
 The canvas server binds `127.0.0.1` on a random port and needs a random per-server token in every URL. It rejects any `Host` other than its own loopback address, accepts every write (comments, Send all, resolve/reopen, Implement, parts) only with its own `Origin` (`http://127.0.0.1:<port>` or `http://localhost:<port>`), a JSON body, and bounded lengths, keeps at most 500 comments per design, and serves only files under `design/` in the session cwd (design folders, plus exactly `design/system.html` for the system board), resolved by real path so neither `..` nor a symlink can escape. Artboards run in iframes sandboxed without `allow-same-origin`, so they cannot read the canvas or post comments themselves. The canvas may frame only loopback origins (its `frame-src`), and the Compare preview frame keeps its own origin (`allow-scripts allow-same-origin allow-forms allow-popups`, never top navigation) only because it is another origin than the canvas: the canvas refuses a preview on its own port, and sends no referrer, so the app never sees the token. No other network traffic is involved. The server and the tool write `comments.json`, `handoffs.json` and `parts.json` one at a time through an atomic replace, and never overwrite a file they cannot parse.
 
+### Gentle Tower
+
+Gentle Tower is a web view of every open Gentle Shell session, for people who prefer a picture to a terminal. Each project is a painted building and each session is a floor of it. Open it with `/gentle:tower` inside a session, or with `gentle-shell tower` from any terminal (`--no-open` prints the URL only, `--port <n>` fixes the port). It serves until Ctrl+C or until the session that opened it ends.
+
+<img width="100%" src="assets/features/gentle-tower.png" alt="Gentle Tower with two floors of the gentle-pi building, their todo bars on the left and the selection strip with Talk, Tasks, Artifacts and Permissions at the bottom">
+
+**What each part means**
+
+| In the tower | In Gentle Shell |
+| --- | --- |
+| Building | A project folder; the switcher at the top changes building, and a `?` marks a project where someone waits for you. |
+| Floor (`⌘1…⌘9`) | A session. Its card shows the name, cost and helpers; the bar below it is the todo list (`2/4 · blocked: …`), and a click opens the full list with notes. |
+| Orchestrator (bowler hat) | The session's main agent. It waves with `?` when it needs you, thinks while working, and has a drink in the lounge when done. |
+| Helpers (hats by role) | Live subagents, named by role (`worker`, `explore`, `verify`) with a task word when a role repeats (`worker-tests`). Finished helpers leave the building. |
+| Rooms | What an agent is doing: MAP explore and plan (its corkboard notes are the floor's tasks), WORKSHOP build, LAB test, REVIEW outside review (dark when review mode is off), ENGRAM memory, GENTLE AI the engine room with the session's cost meter, LOUNGE done. |
+| The door | The most permissive floor: a bouncer and closed rope for normal, half-open rope for auto, `BRB` for yolo, an open door for super-yolo. A click opens that floor's permissions. |
+
+**What you can do**
+
+- **Talk** (`T`): read the orchestrator's latest words and send a message. It arrives as a new turn, or as a follow-up while the agent works. A question asked in the terminal shows as waiting; answer it there or tell the floor.
+- **Artifacts**: docs, Mermaid diagrams and images the session wrote open in a viewer (tables, lists and code rendered; raw HTML is shown as text). In the building, the newest diagram is pinned on the map board, the newest doc lies on the workshop desk and the newest image hangs on its wall.
+- **New floor** (`N`): opens a new Gentle Shell session in a new terminal window, in the project you are looking at, with an optional first message.
+- **Engram library**: a read-only search over the project's memories, grouped by type, plus the ones waiting for your review.
+- **Your tab**: what the open sessions spent, by model, project and session.
+- **Controls**: stop a helper (two clicks), switch review mode, and change a floor's permissions. Lowering applies at once; raising asks for confirmation in that session's own terminal and applies only on yes.
+
+**How it works**
+
+Every session with the tower extension writes a small snapshot of itself to `~/.gentle-shell/tower/sessions/` (folder `0700`, files `0600`), with its tasks, live helpers, cost, context, model, phase, permission and review state, latest words and artifacts. Sessions without the extension still appear as **basic floors** (name, project and live helpers, from the peer presence registry Gentle Agents already keeps), with no tasks, cost or controls. A snapshot whose process has ended is ignored, so a session closed without shutdown never leaves a frozen floor behind.
+
+The server listens on `127.0.0.1` only, on a random port unless you pick one, with a fresh token as the first path segment on every launch; it refuses other origins. A request from the page is checked and queued to that session's private inbox, and the session runs it itself with its own rules; the web never has more power than the terminal. Set `GENTLE_TOWER=off` to stop a session from publishing.
+
+The web app is built with Vite, TypeScript and PixiJS into `web/tower/dist`, which ships with the package (`pnpm build:tower` rebuilds it).
+
 ### Gentle Music
 
 `/gentle:music [mood]` hands the terminal to the [gentle-stream](https://github.com/Gentleman-Programming/gentle-stream) player, like Pi's external editor, passing the mood and the session model. In the player, `b` returns to Pi with the music playing and `q` returns and stops it. `/gentle:music next`, `pause`, `play`, `stop`, and `status` control the music without leaving Pi. Quitting Pi after using the command stops the music. gentle-stream runs from `PATH`, or through `uvx`/`uv` when it is not installed. On native Windows the player is not available yet (it needs POSIX; WSL works), so the command only says so. A bundled Gentle Shell on macOS or Linux without any of them offers, with your consent, to install the player inside its own folder: a pinned, checksum-verified uv 0.13.6 in `runtime/`, and the uv-managed Python 3.13 and gentle-stream in `music/` (about 150 MB to download, about 210 MB on disk). A pnpm or npm install keeps the manual install hint. See [Gentle Music](gentle-music.md).

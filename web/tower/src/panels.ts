@@ -11,24 +11,63 @@ export async function postAction(action: Record<string, unknown>): Promise<boole
 	} catch { return false; }
 }
 
-/** A small, escape-first Markdown renderer: headings, lists, code, bold, italic, inline code. No raw HTML. */
+/** Escape-first Markdown renderer: headings, paragraphs, lists (incl. task lists), tables,
+ * code blocks, blockquotes, rules, links, bold, italic, strikethrough, inline code. No raw HTML. */
 export function renderMarkdown(md: string): string {
-	const inline = (t: string) => esc(t).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/(^|\W)\*([^*]+)\*(?=\W|$)/g, "$1<i>$2</i>");
+	const inline = (t: string) => {
+		const codes: string[] = [];
+		let out = esc(t).replace(/`([^`]+)`/g, (_m, c) => { codes.push(c); return `\u0000${codes.length - 1}\u0000`; });
+		out = out
+			.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_m, label, url) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`)
+			.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+			.replace(/~~([^~]+)~~/g, "<s>$1</s>")
+			.replace(/(^|[^\w*])\*([^*\s][^*]*)\*(?=[^\w*]|$)/g, "$1<i>$2</i>")
+			.replace(/(^|[^\w])_([^_\s][^_]*)_(?=[^\w]|$)/g, "$1<i>$2</i>");
+		return out.replace(/\u0000(\d+)\u0000/g, (_m, n) => `<code>${codes[+n]}</code>`);
+	};
+	const cells = (line: string) => line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+	const isRule = (line: string) => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(line);
+	const lines = md.replace(/\r\n?/g, "\n").split("\n");
 	const out: string[] = [];
-	let list: "ul" | "ol" | null = null, code = false;
-	const close = () => { if (list) { out.push(`</${list}>`); list = null; } };
-	for (const line of md.split("\n")) {
-		if (line.startsWith("```")) { close(); out.push(code ? "</code></pre>" : "<pre><code>"); code = !code; continue; }
-		if (code) { out.push(esc(line) + "\n"); continue; }
-		const h = /^(#{1,4})\s+(.*)$/.exec(line);
-		const ul = /^\s*[-*]\s+(.*)$/.exec(line);
+	let list: "ul" | "ol" | null = null, para: string[] = [];
+	const flush = () => { if (para.length) { out.push(`<p>${inline(para.join(" "))}</p>`); para = []; } };
+	const close = () => { flush(); if (list) { out.push(`</${list}>`); list = null; } };
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		if (/^\s*```/.test(line)) {
+			close();
+			const code: string[] = [];
+			for (i++; i < lines.length && !/^\s*```/.test(lines[i]); i++) code.push(esc(lines[i]));
+			out.push(`<pre><code>${code.join("\n")}</code></pre>`);
+			continue;
+		}
+		if (line.includes("|") && i + 1 < lines.length && isRule(lines[i + 1])) {
+			close();
+			const head = cells(line);
+			const rows: string[][] = [];
+			for (i += 2; i < lines.length && lines[i].includes("|") && lines[i].trim(); i++) rows.push(cells(lines[i]));
+			i--;
+			out.push(`<div class="tbl"><table><thead><tr>${head.map((c) => `<th>${inline(c)}</th>`).join("")}</tr></thead><tbody>${rows.map((r) => `<tr>${head.map((_, k) => `<td>${inline(r[k] ?? "")}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
+			continue;
+		}
+		const h = /^(#{1,6})\s+(.*)$/.exec(line);
+		const ul = /^\s*[-*+]\s+(.*)$/.exec(line);
 		const ol = /^\s*\d+[.)]\s+(.*)$/.exec(line);
-		if (h) { close(); out.push(`<h${h[1].length + 2}>${inline(h[2])}</h${h[1].length + 2}>`); }
-		else if (ul || ol) { const kind = ul ? "ul" : "ol"; if (list !== kind) { close(); out.push(`<${kind}>`); list = kind; } out.push(`<li>${inline((ul ?? ol)![1])}</li>`); }
-		else if (!line.trim()) { close(); }
-		else { close(); out.push(`<p>${inline(line)}</p>`); }
+		const quote = /^\s*>\s?(.*)$/.exec(line);
+		if (h) { close(); const lv = Math.min(6, h[1].length + 2); out.push(`<h${lv}>${inline(h[2])}</h${lv}>`); }
+		else if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { close(); out.push("<hr>"); }
+		else if (quote) { close(); out.push(`<blockquote>${inline(quote[1])}</blockquote>`); }
+		else if (ul || ol) {
+			flush();
+			const kind = ul ? "ul" : "ol";
+			if (list !== kind) { if (list) out.push(`</${list}>`); out.push(`<${kind}>`); list = kind; }
+			const body = (ul ?? ol)![1], task = /^\[([ xX])\]\s+(.*)$/.exec(body);
+			out.push(task ? `<li class="task"><input type="checkbox" disabled${task[1] === " " ? "" : " checked"}> ${inline(task[2])}</li>` : `<li>${inline(body)}</li>`);
+		}
+		else if (!line.trim()) close();
+		else { if (list) { out.push(`</${list}>`); list = null; } para.push(line.trim()); }
 	}
-	close(); if (code) out.push("</code></pre>");
+	close();
 	return out.join("");
 }
 

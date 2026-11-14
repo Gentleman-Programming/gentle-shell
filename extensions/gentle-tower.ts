@@ -3,21 +3,16 @@
 // Read-only: it reuses the existing todo replay, session stats, ODD phase and
 // the desktop agents adapter; it owns no state of its own beyond the file.
 
-import { randomBytes } from "node:crypto";
-import { execFile, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { execFile } from "node:child_process";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { startTowerServer, type TowerServer } from "../lib/tower-server.ts";
+import type { TowerServer } from "../lib/tower-server.ts";
+import { openInBrowser, openTowerServer, TOWER_WEB_DIR, TowerNotBuiltError } from "../lib/tower-open.ts";
 import { discoverDesktopAgentsService } from "../lib/desktop-agents-service.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { collectSessionStats } from "../lib/shell-stats.ts";
 import { replayTodo, TODO_PROGRESS_EVENT } from "../lib/shell-todo.ts";
 import { removeTowerSnapshot, towerHubDir, writeTowerSnapshot } from "../lib/tower-hub.ts";
 import { consumeTowerActions, type TowerSessionAction } from "../lib/tower-actions.ts";
-import { launchInTerminal } from "../lib/tower-launch.ts";
-import { defaultPresenceDirs } from "../lib/tower-presence.ts";
 import { discoverYoloUiAdapter } from "../lib/yolo-session-policy.ts";
 import { artifactsFromBranch, buildTowerSnapshot, latestAssistantText, type TowerAgentInput, type TowerTodo } from "../lib/tower-snapshot.ts";
 
@@ -50,18 +45,12 @@ export interface TowerHandle {
 	close(): Promise<void>;
 }
 
-const DEFAULT_WEB_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "web", "tower", "dist");
-
-function openInBrowser(url: string): void {
-	const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
-	try { spawn(cmd, [url], { stdio: "ignore", detached: true }).unref(); } catch { /* the URL is also shown */ }
-}
 
 export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOptions = {}): TowerHandle | undefined {
 	const env = options.env ?? process.env;
 	if (env.GENTLE_PI_AGENTS_CHILD === "1" || env.GENTLE_TOWER === "off") return undefined;
 	const dir = towerHubDir(env);
-	const webDir = options.webDir ?? DEFAULT_WEB_DIR;
+	const webDir = options.webDir ?? TOWER_WEB_DIR;
 	const openUrl = options.openUrl ?? openInBrowser;
 	let server: Promise<TowerServer> | undefined;
 	const debounceMs = options.debounceMs ?? 300;
@@ -210,19 +199,15 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 	pi.registerCommand("gentle:tower", {
 		description: "Open the Gentle Tower: every Gentle Shell session as a floor, in your browser",
 		handler: async (_args, c) => {
-			if (!existsSync(join(webDir, "index.html"))) {
-				c.ui.notify(`Gentle Tower: the web app is not built (${webDir}). Run: pnpm build:tower`, "warning");
-				return;
-			}
-			server ??= startTowerServer({ hubDir: dir, webDir, token: randomBytes(24).toString("base64url"), engramUrl: env.ENGRAM_URL || "http://127.0.0.1:7437",
-				presenceDirs: defaultPresenceDirs(),
-				onNewFloor: (cwd, prompt) => launchInTerminal({ cwd, node: process.execPath, launcher: join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "gentle-shell.mjs"), ...(prompt ? { prompt } : {}) }) });
+			// Same startup as `gentle-shell tower`: hub, web app, token, presence, new floors.
+			server ??= openTowerServer(env, { webDir });
 			try {
 				const s = await server;
 				c.ui.notify(`Gentle Tower: ${s.url}`, "info");
 				openUrl(s.url);
 			} catch (error) {
 				server = undefined;
+				if (error instanceof TowerNotBuiltError) return c.ui.notify(error.message, "warning");
 				c.ui.notify(`Gentle Tower could not start: ${error instanceof Error ? error.message : String(error)}`, "error");
 			}
 		},

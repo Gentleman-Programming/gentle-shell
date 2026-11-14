@@ -17,7 +17,7 @@ Branch `feat/herdr-gentle-shell` from `origin/main` 3dc902975. References (read-
 
 ## Tasks
 - T1 Spike the feed: read a live pi session into a mod (session file / snapshot) and send prompt + answers back (hc / pane input); prove in running Herdr — S1, S5 — inline — pending
-- T2 Parity inventory: table of every TUI element (S2) → data source → desktop place — S2 — inline — pending
+- T2 Parity inventory: table of every TUI element (S2) → data source → desktop place — S2 — inline — done (`odd/tasks/herdr-desktop-parity.md`)
 - T3 Design the layout artboards (gentle-design), user approves — S1, S2, S5 — inline — pending
 - T4 Publisher extension: per-session desktop snapshot (todo, changes, jobs, agents, usage, review, permission, persona, model/profile, question) — S2 — pending
 - T5 Chat mod with Chat/Terminal switch — S5 — pending
@@ -35,3 +35,4 @@ Branch `feat/herdr-gentle-shell` from `origin/main` 3dc902975. References (read-
 - L2 (user): "ejemplos que podes tomar de referencia para codigo https://herdr.dev/gallery/"
 - L3 (user choices): package "Herdr app + mods Gentle (recomendado)"; centre "Chat nativo + switch a Terminal (recomendado)".
 - L4: Herdr app source is Apache-2.0 (`herdrdev/herdr-app/LICENSE`). Community `Mayloparra24/gentle-herdr` already reskins Herdr in Gentle Shell colours (theme sync, files, editor) but does not replicate Gentle Shell information. `mysteriousHerb/herdr-zoo` `mods/claude-chat` is the closest reference for S5.
+- L5: Parity inventory written; out-of-process gaps today: live session state, git, todo, review, stats, pending questions + answering, ODD phase. The publisher (T4) closes them.

@@ -439,19 +439,49 @@ export function clearSearchSync(): void {
 	daemonSkipUntil.clear();
 }
 
+/** What a failed unlock/sync knows about its own cause when the runner reported it. */
+export interface CodegraphSyncFailureInfo {
+	daemonAlive?: boolean;
+	exitCode?: number | null;
+	stderrTail?: string;
+}
+
+/**
+ * The notify for a failed index refresh: beside a live daemon the file watcher keeps the index
+ * fresh by itself (the CLI sync coexists with it), so that failure is information, not a warning;
+ * anywhere else it stays a warning, with the command outcome when the runner reported it.
+ */
+export function codegraphSyncFailureNotice(
+	cwd: string,
+	stage: "sync" | "unlock",
+	info: CodegraphSyncFailureInfo,
+): { text: string; level: "info" | "warning" } {
+	const reason = info.exitCode === undefined ? "" : info.exitCode === null ? " — killed (timeout)" : ` — exit ${info.exitCode}`;
+	const tail = info.stderrTail === undefined || info.stderrTail.length === 0 ? "" : `: ${info.stderrTail}`;
+	if (stage === "unlock") return { text: `codegraph unlock failed in ${cwd}${reason}${tail}`, level: "warning" };
+	if (info.daemonAlive) {
+		return { text: `codegraph sync failed in ${cwd} (daemon alive; its file watcher keeps the index fresh)${reason}${tail}`, level: "info" };
+	}
+	return { text: `codegraph sync failed in ${cwd}${reason}${tail}`, level: "warning" };
+}
+
 /**
  * Fires the per-turn unlock+sync for `cwd` in the background and returns whether a job was
  * started: a subagent child or a cwd already refreshed this turn never starts one, so the first
  * search of a turn is neither blocked nor duplicated.
  */
-export function triggerSearchSync(cwd: string, ctx: ExtensionContext, run: SearchSyncInput["run"] = runCodegraph): boolean {
+export function triggerSearchSync(cwd: string, ctx: ExtensionContext, run: SearchSyncInput["run"] = runCodegraph, opts?: { registryDir?: string; sleep?: (ms: number) => Promise<void> }): boolean {
 	if (process.env[CHILD_ENV] === "1" || searchSynced.has(cwd)) return false;
 	searchSynced.add(cwd);
 	syncBeforeSearch({
 		cwd,
+		registryDir: opts?.registryDir,
+		sleep: opts?.sleep,
 		run,
-		onFailed: (stage) => {
-			if (ctx.hasUI) ctx.ui.notify(`codegraph ${stage} failed in ${cwd}`, "warning");
+		onFailed: (stage, failure) => {
+			if (!ctx.hasUI) return;
+			const notice = codegraphSyncFailureNotice(cwd, stage, failure);
+			ctx.ui.notify(notice.text, notice.level);
 		},
 	});
 	return true;
@@ -632,8 +662,16 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 				"info",
 			),
 			onIndexed: (result) => {
-				if (!result.ok) say(`codegraph ${result.action} failed in ${ctx.cwd}`, "warning");
-				else say(result.action === "sync" ? "CodeGraph index synced" : "CodeGraph index created", "info");
+				if (result.ok) {
+					say(result.action === "sync" ? "CodeGraph index synced" : "CodeGraph index created", "info");
+					return;
+				}
+				if (result.action === "sync") {
+					const notice = codegraphSyncFailureNotice(ctx.cwd, "sync", result);
+					say(notice.text, notice.level);
+					return;
+				}
+				say(`codegraph ${result.action} failed in ${ctx.cwd}`, "warning");
 			},
 			onWarmStart: () => say("warming up CodeGraph...", "info"),
 		})

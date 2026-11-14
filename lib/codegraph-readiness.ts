@@ -11,6 +11,46 @@ import type { SeedOutcome } from "./codegraph-seed.ts";
 /** A cold daemon on a network share can need over a minute for its first read. */
 const WARMUP_TIMEOUT_MS = 120_000;
 export const SYNC_TIMEOUT_MS = 120_000;
+
+/** One retry after this backoff when a sync beside a live daemon fails: the daemon.log busy windows close by themselves in tens of seconds, well inside the 60s wedged-daemon bypass. */
+export const SYNC_RETRY_DELAY_MS = 15_000;
+
+/** What a codegraph command reported about itself; the stderr tail is bounded by the runner. */
+export interface CodegraphCommandInfo {
+	ok: boolean;
+	exitCode?: number | null;
+	stderrTail?: string;
+}
+
+/** Runs codegraph with fixed args for a cwd; the optional sink receives the command outcome for diagnostics. */
+export type CodegraphRun = (
+	args: readonly string[],
+	cwd: string,
+	timeoutMs: number,
+	onSpawn?: (pid: number, proxy: boolean) => void,
+	onInfo?: (info: CodegraphCommandInfo) => void,
+) => Promise<boolean>;
+
+/** The backoff sleep when no test seam is injected. */
+const defaultSyncSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * One sync -q beside a live daemon, retried once after a backoff when it fails: the CLI coexists
+ * with the daemon by design and its busy windows close by themselves, so one retry absorbs the
+ * transient failure without touching the lease design. The sink receives the last attempt outcome.
+ */
+async function runSyncWithRetry(
+	run: CodegraphRun,
+	cwd: string,
+	sleep: (ms: number) => Promise<void>,
+	sink?: (info: CodegraphCommandInfo) => void,
+): Promise<boolean> {
+	const attempt = (): Promise<boolean> => run(["sync", "-q"], cwd, SYNC_TIMEOUT_MS, undefined, sink);
+	if (await attempt()) return true;
+	await sleep(SYNC_RETRY_DELAY_MS);
+	return attempt();
+}
+
 const INIT_TIMEOUT_MS = 600_000;
 /** How long a killed command may take to be gone before the timeout is reported anyway. */
 const KILL_WAIT_MS = 10_000;
@@ -149,11 +189,13 @@ export interface ReadinessInput {
 	/** Whether cwd is a real git project root equal to the workspace (the tool's workspace guard). */
 	isProjectRoot(cwd: string): boolean;
 	/** Runs `codegraph <args...> <project>` from the temp dir; true when it exited 0. */
-	run(args: readonly string[], cwd: string, timeoutMs: number, onSpawn?: (pid: number, proxy: boolean) => void): Promise<boolean>;
+	run: CodegraphRun;
+	/** Sleeps the live-daemon sync retry backoff; injectable for tests. */
+	sleep?(ms: number): Promise<void>;
 	/** Warms the daemon; true when it worked. */
 	warm(cwd: string): Promise<boolean>;
 	onStart?(action: IndexAction): void;
-	onIndexed?(result: { action: IndexAction; ok: boolean }): void;
+	onIndexed?(result: { action: IndexAction; ok: boolean; daemonAlive?: boolean; exitCode?: number | null; stderrTail?: string }): void;
 	onWarmStart?(): void;
 }
 
@@ -180,7 +222,12 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 			if (action === "none") return { action, ok: true, warm: "skipped" };
 			try { input.onStart?.(action); } catch { /* never worth stopping the index */ }
 			let ok: boolean;
+			let lastSyncInfo: { exitCode?: number | null; stderrTail?: string } | undefined;
+			const sink = (info: CodegraphCommandInfo): void => {
+				lastSyncInfo = { exitCode: info.exitCode, stderrTail: info.stderrTail };
+			};
 			let standDown = false;
+			let alive = false;
 			if (action === "sync") {
 				// A live daemon holds the writer lock and its index is never stale: a CLI `sync -q` coexists
 				// with it (daemon.log auto-syncs), so it is never unlocked — "if an index exists, do not
@@ -188,10 +235,9 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 				// cleared first, mirroring the repo's refresh discipline ("codegraph unlock && codegraph
 				// sync"). That unlock is a precondition, not best-effort: when it fails, the sync does not
 				// run and the failure is reported as the sync's own.
-				let alive = false;
 				try { alive = daemonFor(input.cwd, input.registryDir).alive; } catch { /* not alive */ }
 				if (alive) {
-					ok = await input.run(["sync", "-q"], input.cwd, SYNC_TIMEOUT_MS);
+					ok = await runSyncWithRetry(input.run, input.cwd, input.sleep ?? defaultSyncSleep, sink);
 				} else if (codegraphWritingIndex(input.cwd)) {
 					// CodeGraph itself is writing (any launcher): an unlock would drop its live lock.
 					ok = true;
@@ -205,7 +251,7 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 					} else {
 						try {
 							const unlocked = await input.run(["unlock"], input.cwd, SYNC_TIMEOUT_MS);
-							ok = unlocked && await input.run(["sync", "-q"], input.cwd, SYNC_TIMEOUT_MS);
+							ok = unlocked && await input.run(["sync", "-q"], input.cwd, SYNC_TIMEOUT_MS, undefined, sink);
 						} finally {
 							lease.release();
 						}
@@ -244,7 +290,7 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 					}
 				}
 			}
-			try { input.onIndexed?.({ action, ok }); } catch { /* never worth stopping the warm-up */ }
+			try { input.onIndexed?.(action === "sync" ? { action, ok, daemonAlive: alive, ...(lastSyncInfo ?? {}) } : { action, ok }); } catch { /* never worth stopping the warm-up */ }
 			// A failed sync still leaves an index to warm; a failed init leaves nothing worth warming.
 			if (standDown || !(action === "sync" || (action === "init" && ok))) return { action, ok, warm: "skipped" };
 			try { input.onWarmStart?.(); } catch { /* never worth stopping the warm-up */ }
@@ -269,8 +315,10 @@ export interface SearchSyncInput {
 	registryDir?: string;
 	/** Where the cross-session sync lease token lives; the default is CodeGraph's own locks dir. */
 	locksDir?: string;
-	run(args: readonly string[], cwd: string, timeoutMs: number): Promise<boolean>;
-	onFailed?(stage: "unlock" | "sync"): void;
+	run: CodegraphRun;
+	/** Sleeps the live-daemon sync retry backoff; injectable for tests. */
+	sleep?(ms: number): Promise<void>;
+	onFailed?(stage: "unlock" | "sync", info: { daemonAlive: boolean; exitCode?: number | null; stderrTail?: string }): void;
 }
 
 /** One in-flight search sync per cwd: calls that arrive together never run two jobs. */
@@ -286,12 +334,17 @@ const searchSyncInFlight = new Map<string, Promise<void>>();
 export function syncBeforeSearch(input: SearchSyncInput): void {
 	if (searchSyncInFlight.has(input.cwd)) return;
 	const job = (async (): Promise<void> => {
+		const sleep = input.sleep ?? defaultSyncSleep;
+		let lastSyncInfo: { exitCode?: number | null; stderrTail?: string } | undefined;
+		const sink = (info: CodegraphCommandInfo): void => {
+			lastSyncInfo = { exitCode: info.exitCode, stderrTail: info.stderrTail };
+		};
 		try {
 			let alive = false;
 			try { alive = daemonFor(input.cwd, input.registryDir).alive; } catch { /* not alive */ }
 			if (alive) {
-				const synced = await input.run(["sync", "-q"], input.cwd, SYNC_TIMEOUT_MS);
-				if (!synced) input.onFailed?.("sync");
+				const synced = await runSyncWithRetry(input.run, input.cwd, sleep, sink);
+				if (!synced) input.onFailed?.("sync", { daemonAlive: true, ...(lastSyncInfo ?? {}) });
 				return;
 			}
 			// Daemon-less: the sync lease decides who refreshes. A live lease in another session
@@ -302,11 +355,11 @@ export function syncBeforeSearch(input: SearchSyncInput): void {
 			try {
 				const unlocked = await input.run(["unlock"], input.cwd, SYNC_TIMEOUT_MS);
 				if (!unlocked) {
-					input.onFailed?.("unlock");
+					input.onFailed?.("unlock", { daemonAlive: false });
 					return;
 				}
-				const synced = await input.run(["sync", "-q"], input.cwd, SYNC_TIMEOUT_MS);
-				if (!synced) input.onFailed?.("sync");
+				const synced = await input.run(["sync", "-q"], input.cwd, SYNC_TIMEOUT_MS, undefined, sink);
+				if (!synced) input.onFailed?.("sync", { daemonAlive: false, ...(lastSyncInfo ?? {}) });
 			} finally {
 				lease.release();
 			}
@@ -346,15 +399,18 @@ function killProcessTree(child: { pid?: number } | undefined): void {
  * daemon). On Windows the npm `.cmd` shim needs a shell. A timeout kills the child and only reports the
  * failure once that process is gone: its pid must not outlive the result.
  */
-export function runCodegraph(args: readonly string[], cwd: string, timeoutMs: number, onSpawn?: (pid: number, proxy: boolean) => void): Promise<boolean> {
+export function runCodegraph(args: readonly string[], cwd: string, timeoutMs: number, onSpawn?: (pid: number, proxy: boolean) => void, onInfo?: (info: CodegraphCommandInfo) => void): Promise<boolean> {
 	return new Promise((resolve) => {
 		let settled = false;
 		let grace: ReturnType<typeof setTimeout> | undefined;
+	let exitCode: number | null | undefined;
+	let stderrTail = "";
 		const finish = (ok: boolean) => {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
 			if (grace !== undefined) clearTimeout(grace);
+			onInfo?.({ ok, exitCode, stderrTail: stderrTail.length > 0 ? stderrTail : undefined });
 			resolve(ok);
 		};
 		let child: ReturnType<typeof spawn> | undefined;
@@ -367,9 +423,9 @@ export function runCodegraph(args: readonly string[], cwd: string, timeoutMs: nu
 				project = realpathSync(cwd);
 			}
 			if (process.platform === "win32") {
-				child = spawn(`codegraph ${[...args, project].map((part) => JSON.stringify(part)).join(" ")}`, { cwd: tmpdir(), env: process.env, shell: true, windowsHide: true, stdio: "ignore" });
+				child = spawn(`codegraph ${[...args, project].map((part) => JSON.stringify(part)).join(" ")}`, { cwd: tmpdir(), env: process.env, shell: true, windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
 			} else {
-				child = spawn("codegraph", [...args, project], { cwd: tmpdir(), env: process.env, windowsHide: true, stdio: "ignore" });
+				child = spawn("codegraph", [...args, project], { cwd: tmpdir(), env: process.env, windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
 			}
 		} catch {
 			resolve(false);
@@ -378,13 +434,20 @@ export function runCodegraph(args: readonly string[], cwd: string, timeoutMs: nu
 		if (child !== undefined && child.pid !== undefined) {
 			try { onSpawn?.(child.pid, process.platform === "win32"); } catch { /* bookkeeping is best effort */ }
 		}
+		child?.stderr?.on("data", (chunk: Buffer) => {
+		// Only the tail is ever shown: keep the last slice, never the whole stream.
+		stderrTail = (stderrTail + chunk.toString("utf8")).slice(-2_000);
+		});
 		const timer = setTimeout(() => {
 			killProcessTree(child);
 			// A killed command may still be closing; report the failure only once the process is gone.
 			grace = setTimeout(() => finish(false), KILL_WAIT_MS);
 		}, timeoutMs);
 		child?.on("error", () => finish(false));
-		child?.on("close", (code: number | null) => finish(code === 0));
+		child?.on("close", (code: number | null) => {
+			exitCode = code;
+			finish(code === 0);
+		});
 	});
 }
 

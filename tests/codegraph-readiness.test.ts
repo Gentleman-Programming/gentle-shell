@@ -13,6 +13,7 @@ import {
 	planIndexAction,
 	prepareReadiness,
 	skipsSession,
+	SYNC_RETRY_DELAY_MS,
 	syncBeforeSearch,
 	warmUpDaemon,
 	type ReadinessInput,
@@ -725,4 +726,122 @@ test("prepareReadiness: a main-busy seed stands down benignly with nothing to wa
 	}));
 	assert.deepEqual(result, { action: "init", ok: true, warm: "skipped" }, "the busy main is not this session's failure");
 	assert.deepEqual(calls, [], "no init, no warm: the main checkout owns the moment");
+});
+
+test("prepareReadiness: a failed sync beside a live daemon is retried once after a backoff", async (t) => {
+	const cwd = dir(t, "sync-live-retry");
+	writeDb(cwd);
+	const registry = dir(t, "sync-live-retry-registry");
+	const socket = join(registry, "live.sock");
+	writeFileSync(socket, "");
+	fakeRegistryRecord(registry, cwd, socket, process.pid);
+	const calls: string[] = [];
+	const sleeps: number[] = [];
+	const result = await prepareReadiness(fakeInput(cwd, {
+		registryDir: registry,
+		sleep: async (ms) => {
+			sleeps.push(ms);
+		},
+		run: async (args) => {
+			calls.push(`run:${args.join(" ")}`);
+			return calls.filter((call) => call === "run:sync -q").length > 1;
+		},
+	}));
+	assert.deepEqual(result, { action: "sync", ok: true, warm: "ok" });
+	assert.deepEqual(calls, ["run:sync -q", "run:sync -q"], "the failed first sync beside a live daemon is retried once");
+	assert.deepEqual(sleeps, [SYNC_RETRY_DELAY_MS], "the retry waits exactly one backoff");
+});
+
+test("prepareReadiness: a sync failing twice beside a live daemon reports daemonAlive and the command info", async (t) => {
+	const cwd = dir(t, "sync-live-fail");
+	writeDb(cwd);
+	const registry = dir(t, "sync-live-fail-registry");
+	const socket = join(registry, "live.sock");
+	writeFileSync(socket, "");
+	fakeRegistryRecord(registry, cwd, socket, process.pid);
+	const calls: string[] = [];
+	const events: unknown[] = [];
+	const result = await prepareReadiness(fakeInput(cwd, {
+		registryDir: registry,
+		sleep: async () => {},
+		run: async (args, _cwd, _timeoutMs, _onSpawn, onInfo) => {
+			calls.push(`run:${args.join(" ")}`);
+			if (args[0] === "sync") onInfo?.({ ok: false, exitCode: 1, stderrTail: "database is locked" });
+			return false;
+		},
+		onIndexed: (indexed) => {
+			events.push({ ...indexed });
+		},
+	}));
+	assert.equal(result.ok, false);
+	assert.equal(result.warm, "ok", "a failed sync still leaves an index to warm");
+	assert.deepEqual(calls, ["run:sync -q", "run:sync -q"], "two sync attempts, then the failure is reported");
+	assert.deepEqual(events, [{ action: "sync", ok: false, daemonAlive: true, exitCode: 1, stderrTail: "database is locked" }]);
+});
+
+test("prepareReadiness: without a live daemon unlock+sync stays single-shot and reports daemonAlive false", async (t) => {
+	const cwd = dir(t, "sync-dead-single");
+	writeDb(cwd);
+	const calls: string[] = [];
+	const sleeps: number[] = [];
+	const events: unknown[] = [];
+	await prepareReadiness(fakeInput(cwd, {
+		registryDir: dir(t, "sync-dead-single-registry"),
+		sleep: async (ms) => {
+			sleeps.push(ms);
+		},
+		run: async (args) => {
+			calls.push(`run:${args.join(" ")}`);
+			return args[0] === "unlock";
+		},
+		onIndexed: (indexed) => {
+			events.push({ ...indexed });
+		},
+	}));
+	assert.deepEqual(calls, ["run:unlock", "run:sync -q"], "the daemon-less path is unchanged: unlock once, sync once");
+	assert.deepEqual(sleeps, [], "the backoff belongs to the live-daemon branch only");
+	assert.deepEqual(events, [{ action: "sync", ok: false, daemonAlive: false }]);
+});
+
+test("syncBeforeSearch: beside a live daemon a failed sync retries once; daemon-less failures carry daemonAlive false", async (t) => {
+	const cwd = dir(t, "search-live-retry");
+	const registry = dir(t, "search-live-retry-registry");
+	const socket = join(registry, "live.sock");
+	writeFileSync(socket, "");
+	fakeRegistryRecord(registry, cwd, socket, process.pid);
+	const calls: string[] = [];
+	const sleeps: number[] = [];
+	const failures: Array<{ stage: string; info: Record<string, unknown> }> = [];
+	syncBeforeSearch({
+		cwd,
+		registryDir: registry,
+		sleep: async (ms) => {
+			sleeps.push(ms);
+		},
+		run: async (args, _cwd, _timeoutMs, _onSpawn, onInfo) => {
+			calls.push(args.join(" "));
+			if (args[0] === "sync") onInfo?.({ ok: false, exitCode: 2, stderrTail: "wedged" });
+			return args[0] !== "sync" || calls.filter((call) => call === "sync -q").length > 1;
+		},
+		onFailed: (stage, info) => {
+			failures.push({ stage, info: { ...info } });
+		},
+	});
+	await settled();
+	assert.deepEqual(calls, ["sync -q", "sync -q"], "the first failing sync is retried once beside a live daemon");
+	assert.deepEqual(sleeps, [SYNC_RETRY_DELAY_MS]);
+	assert.deepEqual(failures, [], "a successful retry reports nothing");
+
+	const deadCwd = dir(t, "search-dead-detail");
+	const deadFailures: Array<{ stage: string; info: Record<string, unknown> }> = [];
+	syncBeforeSearch({
+		cwd: deadCwd,
+		registryDir: dir(t, "search-dead-detail-registry"),
+		run: async (args) => args[0] === "unlock",
+		onFailed: (stage, info) => {
+			deadFailures.push({ stage, info: { ...info } });
+		},
+	});
+	await settled();
+	assert.deepEqual(deadFailures, [{ stage: "sync", info: { daemonAlive: false } }], "daemon-less failures report daemonAlive false");
 });

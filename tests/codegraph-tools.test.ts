@@ -9,6 +9,7 @@ import codeGraphTools, {
 	clearSearchSync,
 	createCodeGraphTool,
 	codeGraphNodeScript,
+	codegraphSyncFailureNotice,
 	findCodeGraphNodeScriptOnPath,
 	isSameDirectory,
 	triggerSearchSync,
@@ -1006,4 +1007,56 @@ test("CodeGraph excludes a partial index left behind by a failed init without ch
 	assert.equal((result.details as { status: string }).status, "failed");
 	assert.equal((result.details as { localExclude?: { status: string } }).localExclude?.status, "added");
 	assert.equal(gitOutput(cwd, "status", "--porcelain", "--untracked-files=all"), "");
+});
+
+test("codegraphSyncFailureNotice: beside a live daemon the note is info with the self-heal hint; otherwise a warning with diagnostics", () => {
+	assert.deepEqual(codegraphSyncFailureNotice("/repo", "sync", { daemonAlive: true }), {
+		text: "codegraph sync failed in /repo (daemon alive; its file watcher keeps the index fresh)",
+		level: "info",
+	});
+	assert.deepEqual(codegraphSyncFailureNotice("/repo", "sync", { daemonAlive: false, exitCode: 3, stderrTail: "lock busy" }), {
+		text: "codegraph sync failed in /repo — exit 3: lock busy",
+		level: "warning",
+	});
+	assert.deepEqual(codegraphSyncFailureNotice("/repo", "unlock", {}), {
+		text: "codegraph unlock failed in /repo",
+		level: "warning",
+	});
+	assert.deepEqual(codegraphSyncFailureNotice("/repo", "sync", { daemonAlive: true, exitCode: null }), {
+		text: "codegraph sync failed in /repo (daemon alive; its file watcher keeps the index fresh) — killed (timeout)",
+		level: "info",
+	});
+});
+
+test("triggerSearchSync: a failing sync beside a live daemon notifies info, a daemon-less one keeps the warning", async (t) => {
+	withoutChildEnv(t);
+	const cwd = workspace(t);
+	const registry = join(cwd, "registry");
+	mkdirSync(registry);
+	const socket = join(registry, "live.sock");
+	writeFileSync(socket, "");
+	writeFileSync(join(registry, "record.json"), JSON.stringify({ root: cwd, socketPath: socket, startedAt: 1, pid: process.pid }));
+	const notices: Array<{ text: string; level: "info" | "warning" }> = [];
+	const ctx = {
+		cwd,
+		hasUI: true,
+		ui: { notify: (text: string, level: "info" | "warning") => notices.push({ text, level }) },
+	} as unknown as ExtensionContext;
+	const alwaysFails = async (): Promise<boolean> => false;
+	const instant = async (): Promise<void> => {};
+
+	triggerSearchSync(cwd, ctx, alwaysFails, { registryDir: registry, sleep: instant });
+	await settled();
+	assert.equal(notices.length, 1, "one notify for one failed refresh");
+	assert.equal(notices[0].level, "info", "a live daemon self-heals the index: no warning");
+	assert.match(notices[0].text, /\(daemon alive/);
+
+	const deadCwd = workspace(t);
+	const deadCtx = { cwd: deadCwd, hasUI: true, ui: { notify: (text: string, level: "info" | "warning") => notices.push({ text, level }) } } as unknown as ExtensionContext;
+	const deadRun = async (args: readonly string[]): Promise<boolean> => args[0] === "unlock";
+	triggerSearchSync(deadCwd, deadCtx, deadRun, { registryDir: join(deadCwd, "no-registry"), sleep: instant });
+	await settled();
+	assert.equal(notices.length, 2);
+	assert.equal(notices[1].level, "warning", "without a daemon the failure stays a warning");
+	assert.equal(notices[1].text, `codegraph sync failed in ${deadCwd}`);
 });

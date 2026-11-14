@@ -608,3 +608,11 @@ for (const [name, installation] of Object.entries({
  assert.deepEqual(f.mutations, []);
  assert.deepEqual(f.probes, []);
 });
+
+test('a pnpm v11 group inside a Gentle AI prefix is found by walking up without a config home', async () => {
+ const f = fixture({runtime: 'path', installation: {root: '/pnpm', manifest: {...MANAGED, Destination: '/pnpm', Prefix: '/pnpm'}}});
+ const result = await captureUpdate(f.input, f.out);
+ assert.deepEqual(result, {exitCode: 1, stdout: '', stderr: managedRefusal('/pnpm', 'pnpm')});
+ assert.deepEqual(f.mutations, []);
+ assert.deepEqual(f.probes, []);
+});

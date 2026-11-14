@@ -452,18 +452,18 @@ const MANAGED_INSTALL_SCHEMA = 'gentle-shell-user-install/v1';
  * group, or null. Gentle AI authenticates that prefix's package graph and
  * refuses every launch once a package manager changes it (gentle-ai#6045), so
  * only its own reconfigure may replace Pi there. Candidate roots: the parent of
- * the launch's GENTLE_PI_CONFIG_HOME (`<root>/config`), then the parent of the
- * group's prefix (npm's POSIX group is `<prefix>/lib/node_modules`, otherwise
- * `<prefix>/node_modules`), where a Separate install keeps `<root>/prefix`.
- * Only a manifest whose recorded Prefix contains the group proves ownership; a
+ * the launch's GENTLE_PI_CONFIG_HOME (`<root>/config`), then every ancestor of
+ * the group, since a Separate root holds its prefix and npm (`lib/node_modules`)
+ * and pnpm v11 (`global/v11/<group>/node_modules`) nest the group at different
+ * depths. Only a manifest whose recorded Prefix contains the group proves ownership; a
  * missing manifest or another schema is skipped, but one that exists and
  * cannot be read or parsed refuses, since it may be exactly that proof.
  */
 async function managedInstallRoot(owner, {env, adapters, platform = process.platform}) {
  const {path, key} = pathsFor(platform);
  const modules = owner.groupRoot;
- const prefix = path.basename(path.dirname(modules)) === 'lib' ? path.dirname(path.dirname(modules)) : path.dirname(modules);
- const roots = [path.dirname(prefix)];
+ const roots = [];
+ for (let dir = path.dirname(modules); path.dirname(dir) !== dir; dir = path.dirname(dir)) roots.push(dir);
  const config = env?.GENTLE_PI_CONFIG_HOME;
  if (typeof config === 'string' && path.isAbsolute(config) && path.basename(config) === 'config') roots.unshift(path.dirname(config));
  for (const root of roots) {

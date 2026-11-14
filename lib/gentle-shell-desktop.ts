@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { accessSync, constants as fsConstants, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 
 // `gentle-shell desktop` (Gentle Shell Desktop, odd/tasks/herdr-desktop.md T8):
@@ -8,7 +8,10 @@ import { delimiter, join } from "node:path";
 // layout from this package's herdr/ folder, the way Gentle Shell ships Pi.
 // Everything it writes in Herdr's home is a gentle-* mod folder or
 // layouts/gentle-shell.json; its own state and backups live in
-// ~/.gentle-shell/desktop.
+// ~/.gentle-shell/desktop. Whatever was at one of those paths before Gentle
+// Shell first installed there (state.json says which paths are ours) is kept
+// in ~/.gentle-shell/desktop/originals, never rotated, and put back exactly by
+// --uninstall.
 
 // The Herdr app the mods were built and checked against (`herdr-app check`,
 // live fidelity passes). Newer apps are accepted; older or missing ones get
@@ -87,15 +90,17 @@ export function desktopUsage(): string {
 		"  (no option)   Install what is missing, then open Herdr on the gentle-shell layout with a",
 		"                Gentle Shell space in this folder. Shows what it will install and where, and",
 		`                asks first. A missing or older Herdr app gets the pinned ${HERDR_APP_VERSION} release`,
-		"                from releases.herdr.dev, verified against its pinned SHA-256. Only gentle-*",
-		"                mods and layouts/gentle-shell.json are written in Herdr's home; previous",
-		"                copies are kept in ~/.gentle-shell/desktop/backup, and each mod must pass",
-		"                'herdr-app check' or everything is restored.",
+		"                from releases.herdr.dev, verified against its pinned SHA-256. Each mod must",
+		"                pass 'herdr-app check' before anything is installed. Only gentle-* mods and",
+		"                layouts/gentle-shell.json are written in Herdr's home: anything Gentle Shell",
+		"                did not install there is kept in ~/.gentle-shell/desktop/originals until",
+		"                --uninstall puts it back; our own previous copy goes to .../desktop/backup.",
 		"  --yes, -y     Do not ask (needed when not run in an interactive terminal).",
 		"  --no-open     Install only; do not start or switch Herdr app.",
 		"  --status      Print versions and what is installed.",
-		"  --uninstall   Remove our mods and layout (a copy stays in the backup) and switch Herdr back",
-		"                to your previous layout. Herdr app itself stays installed.",
+		"  --uninstall   Remove our mods and layout (a copy stays in the backup), put back what was",
+		"                there before, and switch Herdr back to your previous layout. Herdr app itself",
+		"                stays installed.",
 		"  --refresh     Reinstall our mods and layout from this Gentle Shell when they are installed;",
 		"                'gentle-shell upgrade' runs it. Does nothing if desktop was never installed.",
 	].join("\n");
@@ -120,6 +125,13 @@ function parseDesktopArgs(args: string[]): { action: Action; yes: boolean; open:
 	return { action: actions[0] ?? "open", yes, open };
 }
 
+// Whether the Gentle Shell package at `packageRoot` has the `desktop` command:
+// a version without this module treats `desktop` as a prompt for the model, so
+// `gentle-shell upgrade` only asks a package that ships it to refresh.
+export function supportsDesktop(packageRoot: string): boolean {
+	return existsSync(join(packageRoot, "runtime", "gentle-shell-desktop.mjs")) && existsSync(join(packageRoot, "bin", "gentle-shell.mjs"));
+}
+
 // --- paths -------------------------------------------------------------------
 
 export interface DesktopPaths {
@@ -132,6 +144,7 @@ export interface DesktopPaths {
 	stage: string;
 	backup: string;
 	backupNext: string;
+	originals: string;
 	localBin: string;
 }
 
@@ -152,6 +165,7 @@ export function desktopPaths(env: Record<string, string | undefined>, home: stri
 		stage: join(stateDir, "stage"),
 		backup: join(stateDir, "backup"),
 		backupNext: join(stateDir, "backup.next"),
+		originals: join(stateDir, "originals"),
 		localBin: join(home, ".local", "bin"),
 	};
 }
@@ -218,8 +232,11 @@ function assetsUpToDate(assets: Assets, paths: DesktopPaths): boolean {
 
 // --- state -------------------------------------------------------------------
 
+// The paths in Herdr's home that are ours: `mods` folders and, when `layout`,
+// layouts/gentle-shell.json. Anything else there is the user's.
 interface DesktopState {
 	mods: string[];
+	layout: boolean;
 	previousLayout?: string;
 }
 
@@ -228,7 +245,7 @@ function readState(paths: DesktopPaths): DesktopState | undefined {
 		const parsed = JSON.parse(readFileSync(paths.stateFile, "utf8"));
 		const mods = Array.isArray(parsed?.mods) ? parsed.mods.filter((name: unknown) => typeof name === "string" && /^gentle-[A-Za-z0-9._-]+$/.test(name)) : [];
 		const previousLayout = typeof parsed?.previousLayout === "string" && parsed.previousLayout !== DESKTOP_LAYOUT ? parsed.previousLayout : undefined;
-		return { mods, ...(previousLayout ? { previousLayout } : {}) };
+		return { mods, layout: parsed?.layout !== false, ...(previousLayout ? { previousLayout } : {}) };
 	} catch {
 		return undefined;
 	}
@@ -427,13 +444,24 @@ function moveSync(source: string, destination: string) {
 
 interface Swap {
 	target: string;
-	backedUp?: string;
+	movedTo?: string;
 }
 
 function rollback(swaps: Swap[]) {
 	for (const swap of [...swaps].reverse()) {
 		rmSync(swap.target, { recursive: true, force: true });
-		if (swap.backedUp) moveSync(swap.backedUp, swap.target);
+		if (swap.movedTo) moveSync(swap.movedTo, swap.target);
+	}
+}
+
+// Removes each folder that is empty, in order (deepest first); others stay.
+function removeEmptyDirs(dirs: string[]) {
+	for (const dir of dirs) {
+		try {
+			rmdirSync(dir);
+		} catch {
+			// not empty, or already gone
+		}
 	}
 }
 
@@ -452,21 +480,34 @@ function prepareScratch(paths: DesktopPaths) {
 	for (const dir of [join(paths.stage, "mods"), join(paths.stage, "layouts"), join(paths.backupNext, "mods"), join(paths.backupNext, "layouts")]) mkdirSync(dir, { recursive: true });
 }
 
-// Stages our mods and layout, swaps each into Herdr's home (moving any previous
-// gentle-* copy to the backup), then runs `herdr-app check` on every installed
-// mod. Any failure puts every previous copy back.
+function cleanOriginals(paths: DesktopPaths) {
+	removeEmptyDirs([join(paths.originals, "mods"), join(paths.originals, "layouts"), paths.originals]);
+}
+
+// Where a path in Herdr's home goes when it is replaced or removed: our own
+// copy rotates through backup.next; anything else is an original, kept until
+// --uninstall. An original is never overwritten.
+function moveAside(target: string, ours: boolean, backupName: string, originalName: string): string {
+	if (ours) {
+		moveSync(target, backupName);
+		return backupName;
+	}
+	if (existsSync(originalName) || isSymlink(originalName)) {
+		throw new Error(`${target} was not installed by Gentle Shell Desktop and ${originalName} already keeps an earlier original; move one of them elsewhere and run gentle-shell desktop again`);
+	}
+	mkdirSync(join(originalName, ".."), { recursive: true });
+	moveSync(target, originalName);
+	return originalName;
+}
+
+// Stages our mods and layout and runs `herdr-app check` on every staged mod;
+// only then swaps each into Herdr's home. A path that was ours moves to the
+// backup; anything else moves to the originals. Any failure puts every
+// previous copy back and removes folders this install created.
 function installAssets(ctx: DesktopContext, paths: DesktopPaths, assets: Assets, app: string, previous: DesktopState | undefined): string | undefined {
 	prepareScratch(paths);
-	const swaps: Swap[] = [];
-	const swapIn = (staged: string, target: string, backupName: string) => {
-		const swap: Swap = { target };
-		if (existsSync(target) || isSymlink(target)) {
-			moveSync(target, backupName);
-			swap.backedUp = backupName;
-		}
-		swaps.push(swap);
-		if (staged) moveSync(staged, target);
-	};
+	const ownedMods = previous?.mods ?? [];
+	const ownedLayout = previous?.layout === true;
 	try {
 		for (const mod of assets.mods) {
 			const staged = join(paths.stage, "mods", mod);
@@ -477,29 +518,52 @@ function installAssets(ctx: DesktopContext, paths: DesktopPaths, assets: Assets,
 			}
 		}
 		cpSync(assets.layoutFile, join(paths.stage, "layouts", `${DESKTOP_LAYOUT}.json`));
-		mkdirSync(paths.mods, { recursive: true });
-		mkdirSync(paths.layouts, { recursive: true });
-		for (const mod of assets.mods) swapIn(join(paths.stage, "mods", mod), join(paths.mods, mod), join(paths.backupNext, "mods", mod));
-		// A gentle-* mod an earlier Gentle Shell installed and this one no longer ships.
-		for (const mod of previous?.mods ?? []) {
-			if (!assets.mods.includes(mod) && existsSync(join(paths.mods, mod))) swapIn("", join(paths.mods, mod), join(paths.backupNext, "mods", mod));
-		}
-		swapIn(join(paths.stage, "layouts", `${DESKTOP_LAYOUT}.json`), paths.layoutFile, join(paths.backupNext, "layouts", `${DESKTOP_LAYOUT}.json`));
 	} catch (error) {
-		rollback(swaps);
 		rmSync(paths.stage, { recursive: true, force: true });
 		rmSync(paths.backupNext, { recursive: true, force: true });
-		return `could not install the Gentle mods into ${paths.herdrHome}: ${(error as Error).message}; restored the previous Gentle mods and layout`;
+		return `could not stage the Gentle mods in ${paths.stage}: ${(error as Error).message}; nothing in ${paths.herdrHome} was changed`;
 	}
 	for (const mod of assets.mods) {
-		const result = ctx.io.run(app, ["check", join(paths.mods, mod)], { env: ctx.env });
+		const result = ctx.io.run(app, ["check", join(paths.stage, "mods", mod)], { env: ctx.env });
 		if (result.status !== 0) {
-			rollback(swaps);
 			rmSync(paths.stage, { recursive: true, force: true });
 			rmSync(paths.backupNext, { recursive: true, force: true });
 			const detail = `${result.stderr}${result.stdout}`.trim() || result.error?.message || `exit ${result.status}`;
-			return `herdr-app check failed for ${mod}:\n${detail}\nrestored the previous Gentle mods and layout; nothing else in ${paths.herdrHome} was changed`;
+			return `herdr-app check failed for ${mod}:\n${detail}\nthe Gentle mods and layout were not installed; nothing in ${paths.herdrHome} was changed`;
 		}
+	}
+	const created = [paths.layouts, paths.mods, paths.herdrHome].filter((dir) => !existsSync(dir));
+	const swaps: Swap[] = [];
+	const swapIn = (staged: string, target: string, ours: boolean, kind: "mods" | "layouts", name: string) => {
+		const swap: Swap = { target };
+		if (existsSync(target) || isSymlink(target)) swap.movedTo = moveAside(target, ours, join(paths.backupNext, kind, name), join(paths.originals, kind, name));
+		swaps.push(swap);
+		if (staged) moveSync(staged, target);
+	};
+	try {
+		mkdirSync(paths.mods, { recursive: true });
+		mkdirSync(paths.layouts, { recursive: true });
+		for (const mod of assets.mods) swapIn(join(paths.stage, "mods", mod), join(paths.mods, mod), ownedMods.includes(mod), "mods", mod);
+		// A gentle-* mod an earlier Gentle Shell installed and this one no longer ships;
+		// what was there before it comes back.
+		for (const mod of ownedMods) {
+			if (assets.mods.includes(mod)) continue;
+			const target = join(paths.mods, mod);
+			if (existsSync(target)) swapIn("", target, true, "mods", mod);
+			const original = join(paths.originals, "mods", mod);
+			if (existsSync(original)) {
+				moveSync(original, target);
+				swaps.push({ target: original, movedTo: target });
+			}
+		}
+		swapIn(join(paths.stage, "layouts", `${DESKTOP_LAYOUT}.json`), paths.layoutFile, ownedLayout, "layouts", `${DESKTOP_LAYOUT}.json`);
+	} catch (error) {
+		rollback(swaps);
+		removeEmptyDirs(created);
+		cleanOriginals(paths);
+		rmSync(paths.stage, { recursive: true, force: true });
+		rmSync(paths.backupNext, { recursive: true, force: true });
+		return `could not install the Gentle mods into ${paths.herdrHome}: ${(error as Error).message}; restored the previous Gentle mods and layout`;
 	}
 	rmSync(paths.stage, { recursive: true, force: true });
 	promoteBackup(paths);
@@ -607,15 +671,35 @@ function printStatus(ctx: DesktopContext, paths: DesktopPaths, assets: Assets | 
 	return 0;
 }
 
-function uninstall(ctx: DesktopContext, paths: DesktopPaths, assets: Assets | { error: string }): number {
+function uninstall(ctx: DesktopContext, paths: DesktopPaths): number {
 	const state = readState(paths);
-	const names = ((state?.mods ?? []).concat("mods" in assets ? assets.mods : [])).filter((mod, index, all) => all.indexOf(mod) === index && mod.startsWith("gentle-"));
-	const present = names.filter((mod) => existsSync(join(paths.mods, mod)));
-	if (present.length === 0 && !existsSync(paths.layoutFile)) {
+	const ours = (state?.mods ?? []).filter((mod) => existsSync(join(paths.mods, mod)));
+	const layoutOurs = state?.layout === true && existsSync(paths.layoutFile);
+	if (ours.length === 0 && !layoutOurs) {
 		rmSync(paths.stateFile, { force: true });
 		ctx.io.out(`Gentle Shell Desktop mods and layout are not installed in ${paths.herdrHome}; nothing to remove.`);
 		return 0;
 	}
+	prepareScratch(paths);
+	rmSync(paths.stage, { recursive: true, force: true });
+	const restored: string[] = [];
+	const putBack = (kind: "mods" | "layouts", name: string, target: string) => {
+		const original = join(paths.originals, kind, name);
+		if (!existsSync(original) && !isSymlink(original)) return;
+		moveSync(original, target);
+		restored.push(kind === "mods" ? `mods ${name}` : `layout ${DESKTOP_LAYOUT}`);
+	};
+	for (const mod of ours) {
+		moveSync(join(paths.mods, mod), join(paths.backupNext, "mods", mod));
+		putBack("mods", mod, join(paths.mods, mod));
+	}
+	if (layoutOurs) {
+		moveSync(paths.layoutFile, join(paths.backupNext, "layouts", `${DESKTOP_LAYOUT}.json`));
+		putBack("layouts", `${DESKTOP_LAYOUT}.json`, paths.layoutFile);
+	}
+	promoteBackup(paths);
+	cleanOriginals(paths);
+	rmSync(paths.stateFile, { force: true });
 	const app = detectApp(ctx);
 	const window = app ? windowStatus(ctx, app.path) : undefined;
 	if (app && window?.layout === DESKTOP_LAYOUT) {
@@ -623,13 +707,8 @@ function uninstall(ctx: DesktopContext, paths: DesktopPaths, assets: Assets | { 
 		const switched = herdrDo(ctx, app.path, "layout.switch", { name: back });
 		if (switched.status !== 0) ctx.io.err(`gentle-shell desktop: could not switch Herdr app back to the ${back} layout; choose another layout in Herdr.`);
 	}
-	prepareScratch(paths);
-	rmSync(paths.stage, { recursive: true, force: true });
-	for (const mod of present) moveSync(join(paths.mods, mod), join(paths.backupNext, "mods", mod));
-	if (existsSync(paths.layoutFile)) moveSync(paths.layoutFile, join(paths.backupNext, "layouts", `${DESKTOP_LAYOUT}.json`));
-	promoteBackup(paths);
-	rmSync(paths.stateFile, { force: true });
 	ctx.io.out(`Removed Gentle Shell Desktop mods and layout from ${paths.herdrHome}; a copy is in ${paths.backup}. Herdr app itself stays installed.`);
+	if (restored.length > 0) ctx.io.out(`Put back what was there before Gentle Shell Desktop: ${restored.join(", ")} in ${paths.herdrHome}.`);
 	return 0;
 }
 
@@ -651,7 +730,7 @@ function refresh(ctx: DesktopContext, paths: DesktopPaths, assets: Assets | { er
 		ctx.io.err(`gentle-shell desktop: ${failure}`);
 		return 1;
 	}
-	writeState(paths, { ...state, mods: assets.mods });
+	writeState(paths, { ...state, mods: assets.mods, layout: true });
 	ctx.io.out(`Gentle Shell Desktop: refreshed mods ${assets.mods.join(", ")} and layout ${DESKTOP_LAYOUT} in ${paths.herdrHome}.`);
 	return 0;
 }
@@ -671,7 +750,7 @@ export async function runDesktop(ctx: DesktopContext): Promise<number> {
 	const paths = desktopPaths(ctx.env, ctx.home);
 	const assets = shippedAssets(ctx.packageRoot);
 	if (parsed.action === "status") return printStatus(ctx, paths, assets, release);
-	if (parsed.action === "uninstall") return uninstall(ctx, paths, assets);
+	if (parsed.action === "uninstall") return uninstall(ctx, paths);
 	if (parsed.action === "refresh") return refresh(ctx, paths, assets);
 	if ("error" in assets) {
 		ctx.io.err(`gentle-shell desktop: ${assets.error}`);
@@ -700,7 +779,9 @@ export async function runDesktop(ctx: DesktopContext): Promise<number> {
 		if (assetsNeeded) {
 			ctx.io.out(`  - install mods ${assets.mods.join(", ")} into ${paths.mods}`);
 			ctx.io.out(`  - install layout ${DESKTOP_LAYOUT} into ${paths.layoutFile}`);
-			ctx.io.out(`  - keep any previous copy of them in ${paths.backup}, and check each mod with herdr-app check`);
+			ctx.io.out(`  - check each mod with herdr-app check before installing anything`);
+			ctx.io.out(`  - keep anything Gentle Shell did not install at those paths in ${paths.originals}, put back by --uninstall`);
+			ctx.io.out(`  - keep our own previous copy in ${paths.backup}`);
 			ctx.io.out(`  Your other mods, layouts and settings in ${paths.herdrHome} are not touched.`);
 		}
 		if (!parsed.yes) {
@@ -739,7 +820,7 @@ export async function runDesktop(ctx: DesktopContext): Promise<number> {
 			ctx.io.err(`gentle-shell desktop: ${failure}`);
 			return 1;
 		}
-		writeState(paths, { mods: assets.mods, ...(previous?.previousLayout ? { previousLayout: previous.previousLayout } : {}) });
+		writeState(paths, { mods: assets.mods, layout: true, ...(previous?.previousLayout ? { previousLayout: previous.previousLayout } : {}) });
 		ctx.io.out(`Installed mods ${assets.mods.join(", ")} and layout ${DESKTOP_LAYOUT} in ${paths.herdrHome}.`);
 	} else {
 		ctx.io.out("Gentle Shell Desktop is up to date.");

@@ -1879,18 +1879,32 @@ async function handleUpgradeCommand(commandArgs) {
 	if (process.exitCode === 0) await refreshDesktopAfterUpgrade(undefined);
 }
 
-// After an upgrade the new Gentle Shell refreshes Gentle Shell Desktop's gentle-*
-// mods and layout, only when `gentle-shell desktop` installed them (its state
-// file); a user who never ran desktop gets nothing installed. The old process
-// cannot do it: the new mods ship with the new package.
+// After a forward upgrade the new Gentle Shell refreshes Gentle Shell Desktop's
+// gentle-* mods and layout, only when `gentle-shell desktop` installed them (its
+// state file); a user who never ran desktop gets nothing installed. The old
+// process cannot do it: the new mods ship with the new package. A target
+// without the desktop command (an older release) would take `desktop` as a
+// prompt for the model, so it is never launched. `upgrade --rollback` never
+// calls this.
 async function refreshDesktopAfterUpgrade(bundled) {
-	const { desktopPaths } = await import("../runtime/gentle-shell-desktop.mjs");
-	if (!existsSync(desktopPaths(process.env, homedir()).stateFile)) return;
+	let stateFile;
+	let supportsDesktop;
+	try {
+		// After an npm upgrade this package folder holds the new version, which may not ship desktop.
+		const desktop = await import("../runtime/gentle-shell-desktop.mjs");
+		stateFile = desktop.desktopPaths(process.env, homedir()).stateFile;
+		supportsDesktop = desktop.supportsDesktop;
+	} catch {
+		return;
+	}
+	if (!existsSync(stateFile)) return;
 	const warn = (reason) => process.stderr.write(`gentle-shell upgrade: could not refresh Gentle Shell Desktop's mods (${reason}); run 'gentle-shell desktop'.\n`);
 	try {
 		const next = bundled
 			? await resolveStartupRelaunch({ root: bundled.root, home: homedir(), platform: process.platform, env: process.env, argv: ["desktop", "--refresh"] })
 			: { command: process.execPath, args: [join(packageRoot, "bin", "gentle-shell.mjs"), "desktop", "--refresh"], env: process.env };
+		// next.args[0] is the target's bin/gentle-shell.mjs.
+		if (!supportsDesktop(dirname(dirname(next.args[0])))) return;
 		const result = spawnSync(next.command, next.args, { stdio: "inherit", env: next.env });
 		if (result.error) warn(result.error.message);
 		else if (result.status !== 0) warn(`exit ${result.status}`);
@@ -1939,19 +1953,19 @@ async function handleBundledUpgrade(bundled, commandArgs) {
 		if (parsed.action === "rollback") {
 			const { from, to } = await rollbackBundled({ layout, home: homedir(), platform: process.platform, arch: process.arch, env: process.env });
 			out(`Switched Gentle Shell from ${from} to ${to}.`);
-		} else {
-			const { fetchDistribution } = await import("../scripts/bundled-wizard.mjs");
-			const { latestRelease } = await import("../scripts/main-channel.mjs");
-			await upgradeBundled({
-				layout,
-				home: homedir(),
-				platform: process.platform,
-				arch: process.arch,
-				env: process.env,
-				adapters: { latest: () => latestRelease(globalThis.fetch), distribution: (version) => fetchDistribution({ version }) },
-				out,
-			});
+			return 0;
 		}
+		const { fetchDistribution } = await import("../scripts/bundled-wizard.mjs");
+		const { latestRelease } = await import("../scripts/main-channel.mjs");
+		await upgradeBundled({
+			layout,
+			home: homedir(),
+			platform: process.platform,
+			arch: process.arch,
+			env: process.env,
+			adapters: { latest: () => latestRelease(globalThis.fetch), distribution: (version) => fetchDistribution({ version }) },
+			out,
+		});
 	} catch (error) {
 		process.stderr.write(`gentle-shell upgrade: ${error.message}${error.stderr ? `\n${error.stderr}` : ""}\n`);
 		return 1;

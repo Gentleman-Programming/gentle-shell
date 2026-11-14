@@ -12,6 +12,7 @@ import {
 	isShippedModFile,
 	nodeDesktopIO,
 	runDesktop,
+	supportsDesktop,
 	type DesktopContext,
 	type HerdrAppRelease,
 } from "../lib/gentle-shell-desktop.ts";
@@ -218,11 +219,14 @@ test("fresh install asks, downloads the pinned release, installs mods and layout
 	assert.deepEqual(Object.keys(tree(join(f.herdrHome, "mods", "gentle-a"))), ["icons/x.svg", "main.js", "mod.json"]);
 	assert.equal(readFileSync(join(f.herdrHome, "layouts", "gentle-shell.json"), "utf8"), "{\"id\":\"root\",\"v\":2}\n");
 	const calls = f.calls();
-	for (const mod of ["gentle-a", "gentle-b"]) assert.ok(calls.includes(`check ${join(f.herdrHome, "mods", mod)}`), mod);
+	// The staged copies are checked, so a running window never loads an unchecked mod.
+	const stage = join(f.home, ".gentle-shell", "desktop", "stage", "mods");
+	for (const mod of ["gentle-a", "gentle-b"]) assert.ok(calls.includes(`check ${join(stage, mod)}`), mod);
+	assert.ok(!calls.some((call) => call.startsWith(`check ${join(f.herdrHome, "mods")}`)), "never checks the live copies");
 	assert.ok(calls.includes(""), "starts the Herdr window");
 	assert.ok(calls.includes('do layout.switch {"name":"gentle-shell"}'));
 	assert.ok(calls.includes(`do space.new ${JSON.stringify({ folder: f.cwd, argv: ["gentle-shell"] })}`));
-	assert.ok(calls.indexOf(`check ${join(f.herdrHome, "mods", "gentle-b")}`) < calls.indexOf('do layout.switch {"name":"gentle-shell"}'));
+	assert.ok(calls.indexOf(`check ${join(stage, "gentle-b")}`) < calls.indexOf('do layout.switch {"name":"gentle-shell"}'));
 	assert.deepEqual(userSnapshot(f), before);
 	assert.equal(readFileSync(join(f.state, "layout"), "utf8"), "gentle-shell");
 });
@@ -258,7 +262,7 @@ test("an older Herdr app in ~/.local/bin is replaced by the pinned release (Linu
 	assert.equal(readlinkSync(local), join(data, "herdr-app"));
 	const version = spawnSync(local, ["--version"], { env: { FAKE_HERDR_DIR: f.state, PATH: "/usr/bin:/bin" }, encoding: "utf8" });
 	assert.equal(version.stdout.trim(), `herdr-app ${HERDR_APP_VERSION}`);
-	assert.ok(f.calls().includes(`check ${join(f.herdrHome, "mods", "gentle-a")}`));
+	assert.ok(f.calls().includes(`check ${join(f.home, ".gentle-shell", "desktop", "stage", "mods", "gentle-a")}`));
 	assert.ok(!f.calls().includes(""), "--no-open never starts the window");
 });
 
@@ -287,10 +291,80 @@ test("a failing herdr-app check restores the previous gentle-* copies and never 
 	const message = f.err.join("\n");
 	assert.match(message, /herdr-app check failed for gentle-b/);
 	assert.match(message, /SyntaxError in gentle-b\/main\.js/);
-	assert.match(message, /restored the previous Gentle mods and layout/);
+	assert.match(message, new RegExp(`the Gentle mods and layout were not installed; nothing in ${f.herdrHome} was changed`));
 	assert.deepEqual(tree(f.herdrHome), before);
 	assert.ok(!f.calls().some((call) => call.startsWith("do ")));
 	assert.equal(existsSync(join(f.home, ".gentle-shell", "desktop", "state.json")), false);
+});
+
+test("a failing herdr-app check on a fresh Herdr home leaves no empty mods/ or layouts/ folder behind", async (t) => {
+	const f = fixture(t);
+	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.15", f.state);
+	assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"], fail: "gentle-a" })), 1);
+	assert.match(f.err.join("\n"), /herdr-app check failed for gentle-a/);
+	assert.equal(existsSync(f.herdrHome), false);
+	assert.equal(existsSync(join(f.home, ".gentle-shell", "desktop", "state.json")), false);
+	assert.equal(existsSync(join(f.home, ".gentle-shell", "desktop", "stage")), false);
+});
+
+function hasMarker(dir: string, marker: string): boolean {
+	if (!existsSync(dir)) return false;
+	for (const name of readdirSync(dir)) {
+		const path = join(dir, name);
+		if (lstatSync(path).isDirectory() ? hasMarker(path, marker) : readFileSync(path, "utf8").includes(marker)) return true;
+	}
+	return false;
+}
+
+test("a user's own gentle-* mod and gentle-shell layout are never lost across install, refresh and uninstall", async (t) => {
+	const f = fixture(t);
+	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.15", f.state);
+	const userMod = join(f.herdrHome, "mods", "gentle-a");
+	const userLayout = join(f.herdrHome, "layouts", "gentle-shell.json");
+	mkdirSync(join(userMod, "lib"), { recursive: true });
+	writeFileSync(join(userMod, "main.js"), "// USER-MOD-MARKER\n");
+	writeFileSync(join(userMod, "lib", "util.js"), "export const own = 1;\n");
+	mkdirSync(join(f.herdrHome, "layouts"), { recursive: true });
+	writeFileSync(userLayout, "{\"USER-LAYOUT-MARKER\":1}\n");
+	const before = tree(f.herdrHome);
+	assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"] })), 0, f.err.join("\n"));
+	assert.equal(readFileSync(join(userMod, "main.js"), "utf8"), "// gentle-a v2\n");
+	writeFileSync(join(f.pkg, "herdr", "mods", "gentle-a", "main.js"), "// gentle-a v3\n");
+	assert.equal(await runDesktop(context(f, { args: ["--refresh"] })), 0, f.err.join("\n"));
+	// A second refresh rotates our own backup again; the user's originals must survive it.
+	writeFileSync(join(f.pkg, "herdr", "mods", "gentle-a", "main.js"), "// gentle-a v4\n");
+	writeFileSync(join(f.pkg, "herdr", "layouts", "gentle-shell.json"), "{\"id\":\"root\",\"v\":4}\n");
+	assert.equal(await runDesktop(context(f, { args: ["--refresh"] })), 0, f.err.join("\n"));
+	for (const marker of ["USER-MOD-MARKER", "USER-LAYOUT-MARKER"]) {
+		assert.ok(hasMarker(f.herdrHome, marker) || hasMarker(join(f.home, ".gentle-shell", "desktop"), marker), `${marker} was deleted`);
+	}
+	f.out.length = 0;
+	assert.equal(await runDesktop(context(f, { args: ["--uninstall"] })), 0, f.err.join("\n"));
+	// Back at their original paths, byte-identical; our gentle-b is gone.
+	assert.deepEqual(tree(f.herdrHome), before);
+	assert.ok(f.out.join("\n").includes(`Put back what was there before Gentle Shell Desktop: mods gentle-a, layout gentle-shell in ${f.herdrHome}.`));
+	assert.equal(existsSync(join(f.home, ".gentle-shell", "desktop", "state.json")), false);
+	assert.equal(hasMarker(join(f.home, ".gentle-shell", "desktop"), "USER-MOD-MARKER"), false, "the original moved back rather than being copied");
+});
+
+test("uninstall without Gentle Shell Desktop's state removes nothing, so an unknown gentle-shell layout stays", async (t) => {
+	const f = fixture(t);
+	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.15", f.state);
+	mkdirSync(join(f.herdrHome, "layouts"), { recursive: true });
+	mkdirSync(join(f.herdrHome, "mods", "gentle-a"), { recursive: true });
+	writeFileSync(join(f.herdrHome, "layouts", "gentle-shell.json"), "{\"mine\":1}\n");
+	writeFileSync(join(f.herdrHome, "mods", "gentle-a", "main.js"), "// mine\n");
+	const before = tree(f.herdrHome);
+	assert.equal(await runDesktop(context(f, { args: ["--uninstall"] })), 0, f.err.join("\n"));
+	assert.deepEqual(tree(f.herdrHome), before);
+	assert.deepEqual(f.out, [`Gentle Shell Desktop mods and layout are not installed in ${f.herdrHome}; nothing to remove.`]);
+});
+
+test("only a Gentle Shell that ships the desktop command is asked to refresh after an upgrade", (t) => {
+	const f = fixture(t);
+	assert.equal(supportsDesktop(realpathSync(new URL("..", import.meta.url))), true);
+	assert.equal(supportsDesktop(f.pkg), false);
+	assert.equal(supportsDesktop(join(f.root, "missing")), false);
 });
 
 test("uninstall removes only our mods and layout, keeps a backup and switches back to the previous layout", async (t) => {
@@ -319,10 +393,9 @@ test("uninstall removes only our mods and layout, keeps a backup and switches ba
 test("uninstall falls back to the main layout when none was recorded", async (t) => {
 	const f = fixture(t);
 	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.15", f.state);
+	assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"] })), 0, f.err.join("\n"));
 	writeFileSync(join(f.state, "running"), "");
 	writeFileSync(join(f.state, "layout"), "gentle-shell");
-	mkdirSync(join(f.herdrHome, "layouts"), { recursive: true });
-	writeFileSync(join(f.herdrHome, "layouts", "gentle-shell.json"), "{}\n");
 	assert.equal(await runDesktop(context(f, { args: ["--uninstall"] })), 0, f.err.join("\n"));
 	assert.ok(f.calls().includes('do layout.switch {"name":"main"}'));
 	assert.equal(existsSync(join(f.herdrHome, "layouts", "gentle-shell.json")), false);

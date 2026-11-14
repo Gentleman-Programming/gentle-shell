@@ -21,12 +21,17 @@ gentle-shell desktop --uninstall
    `<herdr home>/layouts/`. The Herdr home is `$HERDR_APP_HOME`, else `$XDG_CONFIG_HOME/herdr-app`,
    else `~/.config/herdr-app` (Herdr's own rule). Herdr's generated `gpui-kit.d.ts`/`jsconfig.json`
    and our design notes are not copied.
-   - The files are staged in `~/.gentle-shell/desktop/stage`, then each folder is swapped in.
-   - A previous copy of each of these `gentle-*` paths moves to `~/.gentle-shell/desktop/backup`.
-   - Every installed mod must pass `herdr-app check <mod>`. If one fails, Gentle Shell puts back
-     every previous copy, prints the check output and stops before it changes the Herdr window.
-   - Only the mods this package ships and `layouts/gentle-shell.json` are written. Your other mods
-     (including your own `gentle-*` ones), layouts and settings are never touched.
+   - The files are staged in `~/.gentle-shell/desktop/stage`, and every staged mod must pass
+     `herdr-app check <staged mod>` first. If one fails, Gentle Shell prints the check output and
+     stops: nothing in the Herdr home changes, so a running window never loads an unchecked mod.
+   - Then each folder is swapped in. `~/.gentle-shell/desktop/state.json` records which paths are
+     ours. Our own previous copy moves to `~/.gentle-shell/desktop/backup` (replaced each time).
+   - Anything at one of those paths that Gentle Shell did not install (for example your own
+     `mods/gentle-tabs` or `layouts/gentle-shell.json`) moves to `~/.gentle-shell/desktop/originals`.
+     Later installs and upgrades never overwrite or delete it; `--uninstall` puts it back.
+   - If a swap fails, every previous copy goes back and folders this install created are removed.
+   - Only the mods this package ships and `layouts/gentle-shell.json` are written. Your other mods,
+     layouts and settings are never touched.
 3. **Window.** Gentle Shell starts Herdr app if its window is not open and runs
    `herdr-app do layout.switch {"name":"gentle-shell"}`. If no Gentle Shell terminal runs in the
    current folder yet, it also runs `space.new` with `{"folder": <cwd>, "argv": ["gentle-shell"]}`.
@@ -66,13 +71,16 @@ Herdr app updates itself in the background after that; newer versions are accept
 - `--status` prints the Gentle Shell version, the Herdr app version and path, the Herdr home, whether
   the `gentle-shell` layout and each shipped mod are installed, and whether the window is running
   and which layout it shows.
-- `--uninstall` switches Herdr back to the layout it showed before Gentle Shell switched it (or
-  `main`) when ours is active. Then it moves our mods and layout into
-  `~/.gentle-shell/desktop/backup`. Herdr app itself stays installed.
-- `gentle-shell upgrade` (and `upgrade --rollback`) runs the new version's
-  `gentle-shell desktop --refresh` afterwards. That reinstalls our mods and layout in the same safe
-  way, only if `gentle-shell desktop` installed them before
-  (`~/.gentle-shell/desktop/state.json`). It never installs Herdr app or opens the window.
+- `--uninstall` moves only the mods and layout `state.json` records as ours into
+  `~/.gentle-shell/desktop/backup`, puts back byte for byte what was at those paths before
+  (`~/.gentle-shell/desktop/originals`), then switches Herdr back to the layout it showed before
+  Gentle Shell switched it (or `main`) when ours is active. Without `state.json` it removes
+  nothing. Herdr app itself stays installed.
+- `gentle-shell upgrade` runs the new version's `gentle-shell desktop --refresh` afterwards, only
+  when that version ships the `desktop` command and `gentle-shell desktop` installed the mods
+  before (`~/.gentle-shell/desktop/state.json`). That reinstalls our mods and layout in the same
+  safe way. It never installs Herdr app or opens the window. `upgrade --rollback` only switches the
+  version and runs nothing else.
 
 This works the same for every Gentle Shell install, bundled in `~/.gentle-shell` or the npm package.
 The mods always come from the `herdr/` folder of the Gentle Shell that is running.

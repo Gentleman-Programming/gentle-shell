@@ -11,6 +11,15 @@ import { TuiAltScreen, visibleWidth, type Terminal, type TuiMouseEvent, type Tui
 import { getThemeByName, Theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 
 const theme = { fg: (_role: string, text: string) => text };
+
+test("child screen opens from a row and Escape returns without closing", async () => {
+ let closed = 0;
+ const view = new VisualCustomizeView({ rows: [{ category: "Sections", label: "Configure tabs", action: () => {}, children: ["MAIN", "GIT · coming soon", "TREE · coming soon", "PROFILE · coming soon", "MEMORY · coming soon", "STATS · coming soon"].map(label => ({ label, action: () => {} })) }], theme, requestRender() {}, onClose() { closed++; } });
+ view.render(100); view.handleInput("\x1b[C"); view.handleInput("\r"); await new Promise(resolve => setImmediate(resolve));
+ const frame = view.render(100).join("\n");
+ for (const label of ["MAIN", "GIT · coming soon", "TREE · coming soon", "PROFILE · coming soon", "MEMORY · coming soon", "STATS · coming soon"]) assert.ok(frame.includes(label), label);
+ view.handleInput("\x1b"); assert.equal(closed, 0); assert.match(view.render(100).join("\n"), /Configure tabs/);
+});
 type FoldableRow = CustomizeRow & { visible?: () => boolean; keyhint?: string };
 
 test("Customize shares Commands card geometry, header and focused-row style at wide, narrow and short sizes", () => {
@@ -959,6 +968,41 @@ function click(view: VisualCustomizeView, frame: string[], text: string, button:
 	const { x, y } = point(frame, text);
 	return (view as unknown as { handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined }).handleMouse(pointer(frame, x, y, button));
 }
+
+test("nested Configure tabs aligns indented and uses the same idle and selected roles as settings", () => {
+ const roles = { fg: (role: string, text: string) => `\x1b[${role === "text" ? 31 : role === "muted" ? 32 : 33}m${text}\x1b[39m` };
+ const view = new VisualCustomizeView({ rows: [
+  { category: "Sections", label: "Tabs: shown", choice: { setting: "Tabs", value: "shown", current: () => true }, action() {} },
+  { category: "Sections", label: "Configure tabs", indent: 2, action() {} },
+ ], theme: roles, requestRender() {}, onClose() {} });
+ view.focus("Tabs: shown"); let frame = view.render(100).join("\n");
+ assert.match(frame, /\x1b\[31mTabs/); assert.match(frame, /\x1b\[32m  Configure tabs\s*\x1b\[39m/);
+ view.focus("Configure tabs"); frame = view.render(100).join("\n");
+ assert.match(frame, /\x1b\[31m  Configure tabs\s*\x1b\[39m/);
+ assert.match(frame, /\x1b\[32mTabs/);
+});
+
+test("tabs child click and narrow navigation leave unavailable entries inert and restore focus", () => {
+ for (const width of [100, 36]) {
+  let calls = 0, closed = 0;
+  const children: CustomizeRow[] = ["MAIN · available", ...["GIT", "TREE", "PROFILE", "MEMORY", "STATS"].map(x => `${x} · coming soon`)].map(label => ({ label, inert: true, action: () => { calls++; } }));
+  const view = new VisualCustomizeView({ rows: [{ category: "Sections", label: "Other", action() {} }, { category: "Sections", label: "Configure tabs", children, action() {} }, { category: "Layout", label: "Layout setting", action() {} }], theme, requestRender() {}, onClose() { closed++; } });
+  view.focus("Configure tabs"); let frame = view.render(width);
+  assert.ok(click(view, frame, "Configure tabs")?.handled);
+  frame = view.render(width); assert.match(frame.join("\n"), /Tabs · Esc back/);
+  for (let i = 0; i < children.length; i++) {
+   frame = view.render(width); const label = children[i]!.label as string;
+   assert.ok(frame.join("\n").includes(label));
+   assert.equal(click(view, frame, label), undefined);
+   view.handleInput("\r"); view.handleInput("\x1b[B");
+  }
+  view.handleInput("\t"); view.handleInput("\x1b[C");
+  assert.match(view.render(width).join("\n"), /Tabs · Esc back/);
+  view.handleInput("\x1b"); assert.equal(closed, 0);
+  assert.match(view.render(width).join("\n"), /▸ Configure tabs/);
+  assert.equal(calls, 0);
+ }
+});
 
 test("mouse selects categories, activates plain rows and explicitly applies visible choices", async () => {
 	const effects: string[] = [];

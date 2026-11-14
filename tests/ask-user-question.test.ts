@@ -445,12 +445,12 @@ test("ask_user_question commits a single-select answer end-to-end", async () => 
 
 test("ask_user_question mounts through ctx.ui.custom without an overlay option", async () => {
 	const { tool } = registerQuestionTool();
-	let customArgCount = -1;
+	let customOptions: Record<string, unknown> | undefined;
 	const ctx = {
 		mode: "tui",
 		ui: {
 			custom: async (...args: unknown[]) => {
-				customArgCount = args.length;
+				customOptions = args[1] as Record<string, unknown> | undefined;
 				const factory = args[0] as CustomFactory;
 				let result: unknown;
 				const component = factory({ requestRender() {} }, theme, {}, (value) => {
@@ -464,7 +464,7 @@ test("ask_user_question mounts through ctx.ui.custom without an overlay option",
 
 	await run(tool, { questions: single() }, ctx);
 
-	assert.equal(customArgCount, 1, "a dock swap passes the factory only; no overlay options");
+	assert.deepEqual(Object.keys(customOptions ?? {}), ["blocked"], "a dock swap passes no overlay option, only the blocked report");
 });
 
 for (const multiSelect of [false, true]) {
@@ -799,4 +799,23 @@ test("ask_user_question renderResult renders answered and cancelled rows", () =>
 		theme,
 	).render(200).join("\n");
 	assert.match(cancelled, /Cancelled/);
+});
+
+test("ask_user_question reports Pi blocked (kind=question) while the questionnaire is on screen", async () => {
+	const { tool } = registerQuestionTool();
+	let customOptions: { blocked?: { kind?: string; message?: string } } | undefined;
+	const ctx = {
+		mode: "tui",
+		ui: {
+			custom: async (_factory: CustomFactory, options?: typeof customOptions) => {
+				customOptions = options;
+				return undefined;
+			},
+		},
+	};
+
+	await run(tool, { questions: single() }, ctx);
+
+	assert.equal(customOptions?.blocked?.kind, "question");
+	assert.match(customOptions?.blocked?.message ?? "", /\S/);
 });

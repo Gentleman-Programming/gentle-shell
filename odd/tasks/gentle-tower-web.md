@@ -25,6 +25,13 @@ Branch `feat/gentle-tower-web` (from `design/herdr-gentle-ui`). The Herdr spikes
 - T6 Artifacts + viewer, Engram library, bar tab — inline — pending
 - T7 Docs (command help, README section) and package wiring — inline — pending
 
+## Delivery (chained PRs, ~400 authored lines each where possible; push/PR are the user's call)
+- PR1 `design/herdr-gentle-ui`: artboards, SPEC.md, Herdr spikes (design-only, large static HTML — reviewed visually, not line by line).
+- PR2 tower publisher + local server: commits 5ce2778f7, 7a788f63e (T1–T2, security-sensitive server in its own commit).
+- PR3 web app scaffold and scene (T3–T4).
+- PR4 actions (T5) — the security-sensitive control surface, alone.
+- PR5 artifacts, Engram library, bar tab, docs (T6–T7).
+
 ## Risks
 - Item 2 (security): a local control surface over sessions → localhost-only, token, origin checks, no new authority.
 - Item 5 (dependencies): adds vite, typescript tooling for the web app and pixi.js.
@@ -35,3 +42,4 @@ Branch `feat/gentle-tower-web` (from `design/herdr-gentle-ui`). The Herdr spikes
 - L3: The existing desktop RPC is per-session over the pi RPC channel (`ctx.ui.setWidget`), not a server; multi-session needs the publisher/hub above.
 - L4: T1+T2 verified: 18/18 focused tests (snapshot, hub, publisher, server, command), `pnpm typecheck` clean. Full `pnpm test`: 10606 pass, 2 fail — `#2997 … committed-range assessment` (tests/review-delivery-preflight.test.ts) and `capture forwards no selection when the lens has no configured model` (tests/review-relay-transport-agent.test.ts); both also fail on base 3dc902975 without these changes (13/1, 30/1), so pre-existing/environment-dependent (the second sees the local `claude-bridge/claude-opus-5-5` config).
 - L5: web/tower is a standalone pnpm project (own node_modules, same supply-chain policy; allows esbuild's install script). Installed pixi.js 8.23.0, vite 7.3.8, typescript 5.9.3; the repo's node_modules untouched.
+- L6: Slice boundary recorded: 4611 authored lines since origin/main at 7a788f63e (mostly design artboards); delivery split above.

@@ -207,26 +207,62 @@ test("stop helper cancels exactly that subagent", async () => {
 	await fire("session_shutdown", ctx);
 });
 
-test("the door only lowers permissions from the web; raising stays in the terminal", async () => {
+const confirmCtx = (confirm?: (title: string, message: string) => Promise<boolean>) => ({ ...fakeCtx([assistant(0.1)]), isIdle: () => true, hasUI: confirm !== undefined, ui: confirm ? { confirm, notify() {} } : undefined }) as unknown as ExtensionContext;
+
+async function doorCase(start: string, mode: "normal" | "auto" | "yolo" | "super-yolo", ctx: ExtensionContext) {
 	const dir = hub();
-	const { pi, fire, modes, current } = actionPi("yolo");
-	createTowerPublisher(pi, { env: { GENTLE_TOWER_HOME: dir }, debounceMs: 0, inboxMs: 20, reviewCli: async () => "{}" });
-	const ctx = busyCtx(true);
-	await fire("session_start", ctx);
+	const action = actionPi(start);
+	createTowerPublisher(action.pi, { env: { GENTLE_TOWER_HOME: dir }, debounceMs: 0, inboxMs: 20, reviewCli: async () => "{}" });
+	await action.fire("session_start", ctx);
 	await wait(150);
-	assert.equal(readTowerSnapshots(dir)[0].permission, "yolo");
-	writeTowerAction(dir, { type: "permission", sessionId: "sess-1", mode: "normal" });
+	assert.equal(readTowerSnapshots(dir)[0].permission, start);
+	writeTowerAction(dir, { type: "permission", sessionId: "sess-1", mode });
 	await wait(150);
-	assert.deepEqual(modes, ["normal"]);
-	assert.equal(readTowerSnapshots(dir)[0].permission, "normal");
-	writeTowerAction(dir, { type: "permission", sessionId: "sess-1", mode: "auto" });
-	await wait(150);
-	assert.deepEqual(modes, ["normal"], "raising to auto is refused");
-	assert.equal(current(), "normal");
 	const s = readTowerSnapshots(dir)[0];
-	assert.equal(s.notice?.ok, false);
-	assert.match(s.notice?.text ?? "", /terminal/);
-	await fire("session_shutdown", ctx);
+	await action.fire("session_shutdown", ctx);
+	return { ...action, s };
+}
+
+test("the door lowers permissions from the web at once, without asking", async () => {
+	const asked: string[] = [];
+	const { modes, current, s } = await doorCase("yolo", "normal", confirmCtx(async (t) => { asked.push(t); return true; }));
+	assert.deepEqual(asked, []);
+	assert.deepEqual(modes, ["normal"]);
+	assert.equal(current(), "normal");
+	assert.equal(s.permission, "normal");
+	assert.equal(s.notice?.ok, true);
+});
+
+test("raising permissions from the web applies only after the terminal approves", async () => {
+	const asked: Array<[string, string]> = [];
+	const { modes, current, s } = await doorCase("normal", "yolo", confirmCtx(async (t, m) => { asked.push([t, m]); return true; }));
+	assert.equal(asked.length, 1);
+	assert.equal(asked[0][0], "Gentle Tower");
+	assert.match(asked[0][1], /from normal to yolo/);
+	assert.deepEqual(modes, ["yolo"]);
+	assert.equal(current(), "yolo");
+	assert.equal(s.permission, "yolo");
+	assert.deepEqual([s.notice?.ok, s.notice?.text], [true, "Permissions: yolo (approved in the terminal)"]);
+});
+
+test("a raise declined in the terminal changes nothing", async () => {
+	for (const answer of [async () => false, async () => undefined as unknown as boolean, async () => { throw new Error("closed"); }]) {
+		const { modes, current, s } = await doorCase("normal", "super-yolo", confirmCtx(answer));
+		assert.deepEqual(modes, []);
+		assert.equal(current(), "normal");
+		assert.equal(s.permission, "normal");
+		assert.deepEqual([s.notice?.ok, s.notice?.text], [false, "Raising permissions to super-yolo was declined in the terminal"]);
+	}
+});
+
+test("a raise is refused when the session cannot ask in its terminal", async () => {
+	for (const ctx of [busyCtx(true), confirmCtx(), ({ ...fakeCtx([assistant(0.1)]), hasUI: false, ui: { confirm: async () => true } }) as unknown as ExtensionContext]) {
+		const { modes, current, s } = await doorCase("auto", "yolo", ctx);
+		assert.deepEqual(modes, []);
+		assert.equal(current(), "auto");
+		assert.equal(s.permission, "auto");
+		assert.deepEqual([s.notice?.ok, s.notice?.text], [false, "Raising permissions to yolo needs the terminal: this session cannot ask"]);
+	}
 });
 
 test("the review switch runs the review mode command and shows the new state", async () => {

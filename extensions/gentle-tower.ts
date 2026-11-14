@@ -34,7 +34,7 @@ export interface TowerPublisherOptions {
 
 const LIVE_HELPER = new Set(["queued", "running", "waiting"]);
 const QUESTION_EVENTS = ["gentle-pi:ask-user-question:blocked", "gentle-pi:ask-user-choice:blocked"];
-/** Strictness order: the web may only move a floor down this list, never up. */
+/** Strictness order: the web moves a floor down at once; up only with approval in its terminal. */
 const MODE_RANK: Record<string, number> = { normal: 0, auto: 1, yolo: 2, "super-yolo": 3 };
 
 function runGentleAi(args: string[], cwd: string): Promise<string> {
@@ -132,10 +132,18 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 			case "permission": {
 				await refreshPermission();
 				if (!yolo?.setMode || permission === undefined) return say("Permissions are not available in this session", false);
-				if (MODE_RANK[action.mode] > MODE_RANK[permission]) return say(`Raising permissions to ${action.mode} is only possible from the terminal`, false);
+				const raise = !(action.mode in MODE_RANK) || !(permission in MODE_RANK) || MODE_RANK[action.mode] > MODE_RANK[permission];
+				if (raise) {
+					// A higher permission always passes through the human, in this session's own terminal.
+					if (c.hasUI !== true || typeof c.ui?.confirm !== "function") return say(`Raising permissions to ${action.mode} needs the terminal: this session cannot ask`, false);
+					let approved = false;
+					try { approved = (await c.ui.confirm("Gentle Tower", `The tower asks to raise this session's permissions from ${permission} to ${action.mode}. Allow?`)) === true; } catch { approved = false; }
+					if (!approved) return say(`Raising permissions to ${action.mode} was declined in the terminal`, false);
+				}
 				const ok = await yolo.setMode(action.mode as never);
 				await refreshPermission();
-				return say(ok ? `Permissions: ${action.mode}` : "Permissions unchanged", ok);
+				if (!ok) return say("Permissions unchanged", false);
+				return say(raise ? `Permissions: ${action.mode} (approved in the terminal)` : `Permissions: ${action.mode}`, true);
 			}
 			case "review": {
 				const cwd = c.sessionManager.getCwd();

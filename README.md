@@ -224,9 +224,9 @@ To open it without a session, run `gentle-shell tower` from any terminal: it pri
 - **Talk to a floor** (`T`): read the orchestrator's latest words and send a message; it arrives as a new turn, or as a follow-up while the agent works. Questions asked in the terminal show as waiting; answer them there or tell the floor.
 - **Artifacts**: the docs, Mermaid diagrams and images a floor wrote open in a viewer.
 - **Engram library and your tab**: a read-only window on the project's memories and on what the open sessions spent, by model and by project.
-- **Controls**: stop a helper, lower a floor's permissions, and switch review mode.
+- **Controls**: stop a helper, change a floor's permissions, and switch review mode.
 
-The web never has more power than the terminal: it listens on `127.0.0.1` only, with a fresh token in the path on every launch, refuses other origins, and can only *lower* permissions; raising them stays in the terminal. Each session runs the requests itself, with its own rules.
+The web never has more power than the terminal: it listens on `127.0.0.1` only, with a fresh token in the path on every launch, refuses other origins. Lowering a floor's permissions applies at once; raising them asks for confirmation in that session's terminal. Each session runs the requests itself, with its own rules.
 
 ---
 

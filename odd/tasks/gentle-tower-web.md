@@ -21,7 +21,7 @@ Branch `feat/gentle-tower-web` (from `design/herdr-gentle-ui`). The Herdr spikes
 - T2 Hub + `/gentle:tower` server (127.0.0.1, token, origin, SSE) with tests — inline — done
 - T3 Web app scaffold: Vite + TS + PixiJS, tower scene ported from the artboard, fed by SSE — inline — done (4880ad4f4, d2f94f6a9)
 - T4 Multi-session: projects/floors from every published session — inline — done (hub reads every session; projects grouped by folder)
-- T5 Actions: answer questions, intercom / @helper steer, stop helper, permission door, review switch — inline — done with limits (7c6cd5158, 034a7aaea): intercom message, stop helper, lower-only permissions, review switch. Not possible yet: answering an ask_user question from the web and @helper steering (no API in Gentle Shell; shown as "waiting in the terminal").
+- T5 Actions: answer questions, intercom / @helper steer, stop helper, permission door, review switch — inline — done (7c6cd5158, 034a7aaea + permission confirm): intercom message, stop helper, permissions (lowering immediate; raising asks for confirmation in that session terminal), review switch. Not possible yet: answering an ask_user question from the web and @helper steering (no API in Gentle Shell; shown as "waiting in the terminal").
 - T6 Artifacts + viewer, Engram library, bar tab — inline — done (7ff87f0f1, 034a7aaea). Plan usage meter left out: the usage service read shape was not confirmed.
 - T7 Docs (command help, README section) and package wiring — inline — done (a7bc098ab)
 

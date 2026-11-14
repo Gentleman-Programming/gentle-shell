@@ -63,7 +63,8 @@ function renderTodo(p: Project) {
 		+ (s.todos.length ? `<ol>${s.todos.map((t, k) => `<li class="${t.status}"><span class="ic" style="background:${TODO_COLOR[t.status]}">${t.status === "done" ? "✓" : t.status === "blocked" ? "!" : ""}</span><span>${k + 1}. ${esc(t.title)}</span><span class="st">${t.status.replace("_", " ")}</span>${t.note ? `<span class="meta">${esc(t.note)}</span>` : ""}</li>`).join("")}</ol>` : `<p class="empty">This session has no task list yet.</p>`);
 }
 
-const LOWER: Record<string, string[]> = { "super-yolo": ["yolo", "auto", "normal"], yolo: ["auto", "normal"], auto: ["normal"], normal: [] };
+/** Strictness order. Lowering applies at once; raising is confirmed in that session's terminal. */
+const MODES = ["normal", "auto", "yolo", "super-yolo"];
 let intercomFloor: number | undefined;
 let armedStop: string | undefined;
 
@@ -89,16 +90,17 @@ function renderSelection() {
 	}
 	const prog = todoProgress(s.todos);
 	const ctx = s.context.percent === null ? "context —" : `context ${Math.round(s.context.percent)}%`;
-	const lower = LOWER[s.permission ?? ""] ?? [];
+	const rank = MODES.indexOf(s.permission ?? "");
+	const doorOptions = MODES.filter((m) => m !== s.permission).map((m) => `<option value="${m}">${rank >= 0 && MODES.indexOf(m) < rank ? `lower to ${m}` : `raise to ${m} (confirm in the terminal)`}</option>`).join("");
 	el.innerHTML = `<div><div class="nm">Floor ${floor + 1} · ${esc(s.name)}</div><div class="meta">${s.waiting ? "a question is waiting in the terminal" : STATE_LABEL[st]} · ${prog.done}/${prog.total} tasks${prog.now ? ` · now: ${esc(prog.now.title)}` : ""} · ${money(s.cost.total)} · ${ctx} · ${esc(s.model)}${s.effort ? ` (${esc(s.effort)})` : ""}${s.phase ? ` · ${esc(s.phase)}` : ""}</div></div>
 		<button class="btn primary" id="talk">Talk <kbd>T</kbd></button><button class="btn" id="tasks">Tasks</button><button class="btn" id="arts">Artifacts${s.artifacts?.length ? ` (${s.artifacts.length})` : ""}</button>
-		${s.permission ? `<label class="door">Permissions <select id="door" aria-label="Permissions (the web can only lower them)"><option selected>${esc(s.permission)}</option>${lower.map((m) => `<option value="${m}">lower to ${m}</option>`).join("")}</select></label>` : ""}`;
+		${s.permission ? `<label class="door">Permissions <select id="door" aria-label="Permissions (raising is confirmed in the terminal)"><option selected>${esc(s.permission)}</option>${doorOptions}</select></label>` : ""}`;
 	el.querySelector("#talk")!.addEventListener("click", () => openIntercom(floor));
 	el.querySelector("#tasks")!.addEventListener("click", () => { todoFloor = floor; render(); });
 	el.querySelector("#arts")!.addEventListener("click", () => openArtifacts(s));
 	el.querySelector("#door")?.addEventListener("change", async (e) => {
 		const mode = (e.target as HTMLSelectElement).value;
-		if (LOWER[s.permission ?? ""]?.includes(mode)) await postAction({ type: "permission", sessionId: s.sessionId, mode });
+		if (MODES.includes(mode) && mode !== s.permission) await postAction({ type: "permission", sessionId: s.sessionId, mode });
 	});
 }
 

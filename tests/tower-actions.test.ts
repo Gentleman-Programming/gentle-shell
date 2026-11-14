@@ -23,7 +23,8 @@ function scratch() {
 test("only the closed set of actions parses", () => {
 	assert.deepEqual(parseTowerAction({ type: "message", sessionId: "s-1", text: " hi " }), { type: "message", sessionId: "s-1", text: "hi" });
 	assert.deepEqual(parseTowerAction({ type: "cancel-helper", sessionId: "s-1", helperId: "t1" }), { type: "cancel-helper", sessionId: "s-1", helperId: "t1" });
-	assert.deepEqual(parseTowerAction({ type: "permission", sessionId: "s-1", mode: "normal" }), { type: "permission", sessionId: "s-1", mode: "normal" });
+	for (const mode of ["normal", "auto", "yolo", "super-yolo"]) assert.deepEqual(parseTowerAction({ type: "permission", sessionId: "s-1", mode }), { type: "permission", sessionId: "s-1", mode });
+	assert.equal(parseTowerAction({ type: "permission", sessionId: "s-1", mode: "SUPER-YOLO" }), undefined);
 	assert.deepEqual(parseTowerAction({ type: "review", sessionId: "s-1", enabled: false }), { type: "review", sessionId: "s-1", enabled: false });
 	for (const bad of [
 		null, "x", {}, { type: "shell", sessionId: "s-1", command: "rm -rf /" },
@@ -31,7 +32,6 @@ test("only the closed set of actions parses", () => {
 		{ type: "message", sessionId: "s-1", text: "x".repeat(4001) }, { type: "cancel-helper", sessionId: "s-1" },
 		{ type: "permission", sessionId: "s-1", mode: "root" }, { type: "review", sessionId: "s-1", enabled: "yes" },
 		{ type: "message", sessionId: "s-1", text: "hi", extra: 1 }, { type: "answer", sessionId: "s-1", answer: "x" },
-		{ type: "permission", sessionId: "s-1", mode: "super-yolo" }, { type: "permission", sessionId: "s-1", mode: "yolo" },
 	]) assert.equal(parseTowerAction(bad), undefined, JSON.stringify(bad));
 });
 

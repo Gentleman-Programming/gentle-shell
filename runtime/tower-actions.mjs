@@ -9,8 +9,9 @@ import { dirname, join } from "node:path";
 
 export const TOWER_ACTION_MAX_BYTES = 8 * 1024;
 export const TOWER_MESSAGE_MAX_CHARS = 4000;
-/** Modes the web may move a floor to. Escalation (yolo, super-yolo) stays in the terminal. */
-export const TOWER_PERMISSION_MODES = ["normal", "auto"]         ;
+/** Modes the web may request. The session lowers at once; a raise needs approval in its own terminal. */
+export const TOWER_PERMISSION_MODES = ["normal", "auto", "yolo", "super-yolo"]         ;
+
 
 
 
@@ -42,7 +43,7 @@ export function parseTowerAction(value         )                          {
 	switch (o.type) {
 		case "message": { const t = text(o.text, TOWER_MESSAGE_MAX_CHARS); return t && exactKeys(o, ["type", "sessionId", "text"]) ? { type: "message", sessionId, text: t } : undefined; }
 		case "cancel-helper": return okId(o.helperId) && exactKeys(o, ["type", "sessionId", "helperId"]) ? { type: "cancel-helper", sessionId, helperId: o.helperId } : undefined;
-		case "permission": return (TOWER_PERMISSION_MODES                      ).includes(o.mode) && exactKeys(o, ["type", "sessionId", "mode"]) ? { type: "permission", sessionId, mode: o.mode                      } : undefined;
+		case "permission": return (TOWER_PERMISSION_MODES                      ).includes(o.mode) && exactKeys(o, ["type", "sessionId", "mode"]) ? { type: "permission", sessionId, mode: o.mode                        } : undefined;
 		case "review": return typeof o.enabled === "boolean" && exactKeys(o, ["type", "sessionId", "enabled"]) ? { type: "review", sessionId, enabled: o.enabled } : undefined;
 		default: return undefined;
 	}

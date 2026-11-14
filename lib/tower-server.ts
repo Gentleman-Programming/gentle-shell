@@ -8,6 +8,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { extname, resolve, sep } from "node:path";
 import { timingSafeEqual } from "node:crypto";
 import { readTowerSnapshots } from "./tower-hub.ts";
+import { parseTowerAction, TOWER_ACTION_MAX_BYTES, writeTowerAction } from "./tower-actions.ts";
 
 export interface TowerServerOptions {
 	hubDir: string;
@@ -48,7 +49,8 @@ export function startTowerServer(options: TowerServerOptions): Promise<TowerServ
 	const sessionsBody = () => JSON.stringify({ sessions: readTowerSnapshots(options.hubDir) });
 	let port = 0;
 
-	const deny = (res: ServerResponse, status = 403) => { res.writeHead(status, { "Content-Type": "text/plain", ...SECURITY_HEADERS }); res.end(status === 404 ? "Not found" : "Forbidden"); };
+	const MESSAGES: Record<number, string> = { 400: "Bad request", 404: "Not found", 405: "Method not allowed", 413: "Too large", 500: "Server error" };
+	const deny = (res: ServerResponse, status = 403) => { if (res.headersSent) return; res.writeHead(status, { "Content-Type": "text/plain", ...SECURITY_HEADERS }); res.end(MESSAGES[status] ?? "Forbidden"); };
 
 	const serveStatic = (res: ServerResponse, pathname: string) => {
 		let decoded: string;
@@ -65,10 +67,29 @@ export function startTowerServer(options: TowerServerOptions): Promise<TowerServ
 		} catch { deny(res, 404); }
 	};
 
+	const receiveAction = (req: IncomingMessage, res: ServerResponse) => {
+		const chunks: Buffer[] = [];
+		let size = 0, over = false;
+		req.on("data", (c: Buffer) => { size += c.length; if (size > TOWER_ACTION_MAX_BYTES) { over = true; } else chunks.push(c); });
+		req.on("end", () => {
+			if (over) return deny(res, 413);
+			let action;
+			try { action = parseTowerAction(JSON.parse(Buffer.concat(chunks).toString("utf8"))); } catch { action = undefined; }
+			if (!action) return deny(res, 400);
+			try {
+				const id = writeTowerAction(options.hubDir, action);
+				res.writeHead(202, { "Content-Type": "application/json", ...SECURITY_HEADERS });
+				res.end(JSON.stringify({ id }));
+			} catch { deny(res, 500); }
+		});
+	};
+
 	const handler = (req: IncomingMessage, res: ServerResponse) => {
-		if (req.method !== "GET") return deny(res, 405);
+		if (req.method !== "GET" && req.method !== "POST") return deny(res, 405);
 		const origin = req.headers.origin;
 		if (origin && origin !== `http://127.0.0.1:${port}`) return deny(res);
+		// A browser always sends Origin on POST; a missing one is not our page.
+		if (req.method === "POST" && !origin) return deny(res);
 		// The token is the first path segment, so every relative request the app
 		// makes (assets, lazy chunks, the API) carries it without cookies, which
 		// browsers would share with every other port on 127.0.0.1.
@@ -78,6 +99,11 @@ export function startTowerServer(options: TowerServerOptions): Promise<TowerServ
 		if (!sameToken(head, options.token)) return deny(res);
 		if (slash === -1) { res.writeHead(308, { Location: `/${head}/`, ...SECURITY_HEADERS }); return res.end(); }
 		const rest = raw.slice(slash);
+		if (rest === "/api/action") {
+			if (req.method !== "POST") return deny(res, 405);
+			return receiveAction(req, res);
+		}
+		if (req.method !== "GET") return deny(res, 405);
 		if (rest === "/api/sessions") {
 			res.writeHead(200, { "Content-Type": "application/json", ...SECURITY_HEADERS });
 			return res.end(sessionsBody());

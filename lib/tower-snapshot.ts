@@ -36,6 +36,14 @@ export interface TowerSnapshot {
 	todos: TowerTodo[];
 	subagents: TowerSubagent[];
 	phase?: string;
+	/** Current permission mode (normal, auto, yolo, super-yolo). */
+	permission?: string;
+	/** Effective review mode. */
+	review?: "on" | "off";
+	/** A question is waiting for the person in the terminal. */
+	waiting?: true;
+	/** Result of the last action requested from the web view. */
+	notice?: { text: string; ok: boolean; at: number };
 	updatedAt: number;
 }
 
@@ -59,6 +67,10 @@ export interface TowerSnapshotInput {
 	todos: readonly TowerTodo[];
 	agents: readonly TowerAgentInput[];
 	phase?: string;
+	permission?: string;
+	review?: "on" | "off";
+	waiting?: boolean;
+	notice?: { text: string; ok: boolean; at: number };
 	now: number;
 }
 
@@ -111,6 +123,10 @@ export function buildTowerSnapshot(input: TowerSnapshotInput): TowerSnapshot {
 			tokens: a.usage?.total ?? 0,
 		})),
 		...(input.phase ? { phase: input.phase } : {}),
+		...(input.permission ? { permission: input.permission } : {}),
+		...(input.review ? { review: input.review } : {}),
+		...(input.waiting ? { waiting: true as const } : {}),
+		...(input.notice ? { notice: input.notice } : {}),
 		updatedAt: input.now,
 	};
 }

@@ -149,3 +149,119 @@ test("/gentle:tower explains when the web app is not built", async () => {
 	assert.deepEqual(opened, []);
 	assert.match(messages[0], /web app is not built/);
 });
+
+// ---------- T5: actions requested from the web view ----------
+import { writeTowerAction } from "../lib/tower-actions.ts";
+import { DESKTOP_AGENTS_SERVICE_SCHEMA } from "../lib/desktop-rpc-agents.ts";
+
+function actionPi(mode: string) {
+	const base = fakePi();
+	const sent: Array<{ text: string; opts?: unknown }> = [];
+	const cancelled: string[] = [];
+	const modes: string[] = [];
+	let current = mode;
+	const pi = base.pi as unknown as Record<string, unknown>;
+	pi.sendUserMessage = (text: string, opts?: unknown) => sent.push({ text, opts });
+	const events = pi.events as { on(n: string, fn: (d: unknown) => void): () => void };
+	events.on("gentle:yolo:host-ui", (req) => (req as { respond(a: unknown): void }).respond({
+		read: async () => "OFF", toggle: async () => {}, observe: () => () => {}, dispose() {},
+		readSnapshot: async () => ({ yolo: "OFF", mode: current, defaultMode: "normal" }),
+		setMode: async (m: string) => { modes.push(m); current = m; return true; },
+	}));
+	events.on("gentle:desktop:agents-service", (req) => (req as { respond(a: unknown): void }).respond({
+		read: () => ({ sessionId: "sess-1", agents: [{ id: "t1", agent: "gentle-ai-worker", status: "running", model: "m", lastStep: "editing", usage: { total: 10, cost: 0.01 } }] }),
+		schema: DESKTOP_AGENTS_SERVICE_SCHEMA, observe: () => () => {}, cancel: async (id: string) => { cancelled.push(id); return true; }, dispose() {},
+	}));
+	return { ...base, sent, cancelled, modes, current: () => current };
+}
+const busyCtx = (idle: boolean) => ({ ...fakeCtx([assistant(0.1)]), isIdle: () => idle }) as unknown as ExtensionContext;
+
+test("a web message reaches the floor: a new turn when idle, a follow-up when busy", async () => {
+	const dir = hub();
+	const { pi, fire, sent } = actionPi("normal");
+	createTowerPublisher(pi, { env: { GENTLE_TOWER_HOME: dir }, debounceMs: 0, inboxMs: 20, reviewCli: async () => "{}" });
+	let idle = true;
+	const ctx = { ...busyCtx(true), isIdle: () => idle } as unknown as ExtensionContext;
+	await fire("session_start", ctx);
+	await wait(150);
+	writeTowerAction(dir, { type: "message", sessionId: "sess-1", text: "also update the docs" });
+	await wait(120);
+	idle = false;
+	writeTowerAction(dir, { type: "message", sessionId: "sess-1", text: "and the changelog" });
+	await wait(120);
+	assert.deepEqual(sent, [{ text: "also update the docs", opts: undefined }, { text: "and the changelog", opts: { deliverAs: "followUp" } }]);
+	await fire("session_shutdown", ctx);
+});
+
+test("stop helper cancels exactly that subagent", async () => {
+	const dir = hub();
+	const { pi, fire, cancelled } = actionPi("normal");
+	createTowerPublisher(pi, { env: { GENTLE_TOWER_HOME: dir }, debounceMs: 0, inboxMs: 20, reviewCli: async () => "{}" });
+	const ctx = busyCtx(false);
+	await fire("session_start", ctx);
+	await wait(150);
+	writeTowerAction(dir, { type: "cancel-helper", sessionId: "sess-1", helperId: "t1" });
+	await wait(120);
+	assert.deepEqual(cancelled, ["t1"]);
+	assert.match(readTowerSnapshots(dir)[0].notice?.text ?? "", /Stopped worker/);
+	await fire("session_shutdown", ctx);
+});
+
+test("the door only lowers permissions from the web; raising stays in the terminal", async () => {
+	const dir = hub();
+	const { pi, fire, modes, current } = actionPi("yolo");
+	createTowerPublisher(pi, { env: { GENTLE_TOWER_HOME: dir }, debounceMs: 0, inboxMs: 20, reviewCli: async () => "{}" });
+	const ctx = busyCtx(true);
+	await fire("session_start", ctx);
+	await wait(150);
+	assert.equal(readTowerSnapshots(dir)[0].permission, "yolo");
+	writeTowerAction(dir, { type: "permission", sessionId: "sess-1", mode: "normal" });
+	await wait(150);
+	assert.deepEqual(modes, ["normal"]);
+	assert.equal(readTowerSnapshots(dir)[0].permission, "normal");
+	writeTowerAction(dir, { type: "permission", sessionId: "sess-1", mode: "auto" });
+	await wait(150);
+	assert.deepEqual(modes, ["normal"], "raising to auto is refused");
+	assert.equal(current(), "normal");
+	const s = readTowerSnapshots(dir)[0];
+	assert.equal(s.notice?.ok, false);
+	assert.match(s.notice?.text ?? "", /terminal/);
+	await fire("session_shutdown", ctx);
+});
+
+test("the review switch runs the review mode command and shows the new state", async () => {
+	const dir = hub();
+	const calls: string[][] = [];
+	let state = "on";
+	const { pi, fire } = actionPi("normal");
+	createTowerPublisher(pi, { env: { GENTLE_TOWER_HOME: dir }, debounceMs: 0, inboxMs: 20, reviewCli: async (args) => {
+		calls.push(args);
+		if (args[2] === "disable") state = "off";
+		if (args[2] === "enable") state = "on";
+		return JSON.stringify({ status: { effective: state } });
+	} });
+	const ctx = busyCtx(true);
+	await fire("session_start", ctx);
+	await wait(150);
+	assert.equal(readTowerSnapshots(dir)[0].review, "on");
+	writeTowerAction(dir, { type: "review", sessionId: "sess-1", enabled: false });
+	await wait(150);
+	assert.deepEqual(calls.map((a) => a.join(" ")), ["review mode status --json", "review mode disable", "review mode status --json"]);
+	assert.equal(readTowerSnapshots(dir)[0].review, "off");
+	await fire("session_shutdown", ctx);
+});
+
+test("a question waiting in the terminal shows on the floor", async () => {
+	const dir = hub();
+	const { pi, fire, emit } = actionPi("normal");
+	createTowerPublisher(pi, { env: { GENTLE_TOWER_HOME: dir }, debounceMs: 0, inboxMs: 20, reviewCli: async () => "{}" });
+	const ctx = busyCtx(false);
+	await fire("session_start", ctx);
+	emit("gentle-pi:ask-user-question:blocked", { active: true });
+	await wait(150);
+	assert.equal(readTowerSnapshots(dir)[0].waiting, true);
+	emit("gentle-pi:ask-user-question:blocked", { active: false });
+	await wait(80);
+	assert.equal(readTowerSnapshots(dir)[0].waiting, undefined);
+	await fire("session_shutdown", ctx);
+});

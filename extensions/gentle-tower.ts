@@ -4,7 +4,7 @@
 // the desktop agents adapter; it owns no state of its own beyond the file.
 
 import { randomBytes } from "node:crypto";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +15,8 @@ import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { collectSessionStats } from "../lib/shell-stats.ts";
 import { replayTodo, TODO_PROGRESS_EVENT } from "../lib/shell-todo.ts";
 import { removeTowerSnapshot, towerHubDir, writeTowerSnapshot } from "../lib/tower-hub.ts";
+import { consumeTowerActions, type TowerAction } from "../lib/tower-actions.ts";
+import { discoverYoloUiAdapter } from "../lib/yolo-session-policy.ts";
 import { buildTowerSnapshot, type TowerAgentInput, type TowerTodo } from "../lib/tower-snapshot.ts";
 
 type AgentsService = Awaited<ReturnType<typeof discoverDesktopAgentsService>>;
@@ -27,6 +29,18 @@ export interface TowerPublisherOptions {
 	webDir?: string;
 	/** Opens the tower URL; defaults to the system browser. */
 	openUrl?: (url: string) => void;
+	/** How often the session checks its action inbox. */
+	inboxMs?: number;
+	/** Runs `gentle-ai <args>` and returns stdout (injectable for tests). */
+	reviewCli?: (args: string[], cwd: string) => Promise<string>;
+}
+
+const QUESTION_EVENTS = ["gentle-pi:ask-user-question:blocked", "gentle-pi:ask-user-choice:blocked"];
+/** Strictness order: the web may only move a floor down this list, never up. */
+const MODE_RANK: Record<string, number> = { normal: 0, auto: 1, yolo: 2, "super-yolo": 3 };
+
+function runGentleAi(args: string[], cwd: string): Promise<string> {
+	return new Promise((resolve, reject) => execFile("gentle-ai", args, { cwd, timeout: 15000, maxBuffer: 256 * 1024 }, (error, stdout) => (error ? reject(error) : resolve(String(stdout)))));
 }
 
 export interface TowerHandle {
@@ -54,6 +68,14 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let agents: AgentsService;
 	let stopObserving: (() => void) | undefined;
+	let yolo: Awaited<ReturnType<typeof discoverYoloUiAdapter>>;
+	let permission: string | undefined;
+	let review: "on" | "off" | undefined;
+	let waiting = false;
+	let notice: { text: string; ok: boolean; at: number } | undefined;
+	let inbox: ReturnType<typeof setInterval> | undefined;
+	let busy = false;
+	const reviewCli = options.reviewCli ?? runGentleAi;
 
 	const publish = () => {
 		timer = undefined;
@@ -74,6 +96,10 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 				todos: replayTodo(branch).tasks as TowerTodo[],
 				agents: listed,
 				phase: oddPhaseRegistry.get(sessionId),
+				permission,
+				review,
+				waiting,
+				notice,
 				now: now(),
 			}));
 		} catch {
@@ -85,9 +111,59 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 		if (timer) clearTimeout(timer);
 		timer = setTimeout(publish, debounceMs);
 	};
+	const refreshPermission = async () => {
+		try { const snap = await yolo?.readSnapshot?.(); if (snap && snap.mode !== permission) { permission = snap.mode; schedule(); } } catch { /* unknown */ }
+	};
+	const refreshReview = async (cwd: string) => {
+		try {
+			const status = JSON.parse(await reviewCli(["review", "mode", "status", "--json"], cwd))?.status?.effective;
+			const next = status === "on" || status === "off" ? status : undefined;
+			if (next !== review) { review = next; schedule(); }
+		} catch { /* gentle-ai missing: no switch */ }
+	};
+	const say = (text: string, ok: boolean) => { notice = { text, ok, at: now() }; schedule(); };
+	const execute = async (action: TowerAction, c: ExtensionContext) => {
+		switch (action.type) {
+			case "message":
+				pi.sendUserMessage(action.text, c.isIdle?.() ? undefined : { deliverAs: "followUp" });
+				return say("Message delivered", true);
+			case "cancel-helper": {
+				const helper = agents?.read().agents.find((a) => a.id === action.helperId);
+				if (!agents || !helper) return say("That helper is no longer running", false);
+				await agents.cancel(action.helperId);
+				return say(`Stopped ${String(helper.agent).replace(/^gentle-ai-/, "")}`, true);
+			}
+			case "permission": {
+				await refreshPermission();
+				if (!yolo?.setMode || permission === undefined) return say("Permissions are not available in this session", false);
+				if (MODE_RANK[action.mode] > MODE_RANK[permission]) return say(`Raising permissions to ${action.mode} is only possible from the terminal`, false);
+				const ok = await yolo.setMode(action.mode as never);
+				await refreshPermission();
+				return say(ok ? `Permissions: ${action.mode}` : "Permissions unchanged", ok);
+			}
+			case "review": {
+				const cwd = c.sessionManager.getCwd();
+				try { await reviewCli(["review", "mode", action.enabled ? "enable" : "disable"], cwd); } catch { return say("Could not change review mode", false); }
+				await refreshReview(cwd);
+				return say(`Review mode ${action.enabled ? "on" : "off"}`, true);
+			}
+		}
+	};
+	const drainInbox = async () => {
+		if (busy || !ctx || !sessionId) return;
+		busy = true;
+		const c = ctx;
+		try { for (const action of consumeTowerActions(dir, sessionId)) await execute(action, c); }
+		catch { /* a bad action never disturbs the session */ }
+		finally { busy = false; }
+	};
 	const stop = () => {
 		if (timer) clearTimeout(timer);
 		timer = undefined;
+		if (inbox) clearInterval(inbox);
+		inbox = undefined;
+		yolo?.dispose();
+		yolo = undefined;
 		stopObserving?.();
 		stopObserving = undefined;
 		agents?.dispose();
@@ -99,16 +175,23 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 		ctx = c;
 		sessionId = c.sessionManager.getSessionId();
 		schedule();
-		const found = await discoverDesktopAgentsService(pi, c);
-		if (ctx !== c) { found?.dispose(); return; }
+		inbox = setInterval(() => void drainInbox(), options.inboxMs ?? 600);
+		inbox.unref?.();
+		void refreshReview(c.sessionManager.getCwd());
+		const [found, adapter] = await Promise.all([discoverDesktopAgentsService(pi, c), discoverYoloUiAdapter(pi, c)]);
+		if (ctx !== c) { found?.dispose(); adapter?.dispose(); return; }
 		agents = found;
+		yolo = adapter;
 		stopObserving = found?.observe(() => schedule());
+		await refreshPermission();
 		schedule();
 	});
 	for (const name of ["turn_end", "agent_end", "tool_execution_end", "model_select"] as const) {
 		pi.on(name as "turn_end", (_event, c) => { ctx = c; schedule(); });
 	}
 	pi.events.on(TODO_PROGRESS_EVENT, () => schedule());
+	for (const name of QUESTION_EVENTS) pi.events.on(name, (data) => { waiting = (data as { active?: boolean })?.active === true; schedule(); });
+	pi.on("turn_end", () => { void refreshPermission(); });
 	pi.on("session_shutdown", () => {
 		const id = sessionId;
 		stop();

@@ -10,6 +10,7 @@ Branch `feat/herdr-gentle-shell` from `origin/main` 3dc902975. References (read-
 - S5 Centre of the window (user choice): "Chat nativo + switch a Terminal" — each pi session is shown as a modern chat (markdown, tool calls, diffs, subagent cards, clickable questions), with a switch to the real TUI.
 - S7 Chosen direction (user): "me gusta mas el A" — `design/herdr-desktop/01-inspector.html`: native Herdr layout, two-row session header, right inspector with tabs (Changes, Todo, Agents, Jobs, Review, Session), plan usage in the sidebar footer, status bar with ODD phase / TPS / jobs.
 - S8 Fidelity (user): "fijate porfa que quede 1 a 1 con el diseño eh" — the built window must match `design/herdr-desktop/01-inspector.html` one to one (layout, regions, sizes, spacing, colours, typography, states). Each view task closes only after a side-by-side check: `herdr-app shot` of the live window vs a headless render of the artboard at the same size, with every difference fixed or listed as a Herdr limitation.
+- S9 Feature parity (user): "Una vez que termines todo fíjate que tengamos todas las mismas funcionadisded que gentle Shell y funcionen" — after T7-T9, a parity audit checks every Gentle Shell feature (commands, panels, modes, prompts, shortcuts, integrations) against the desktop and proves each one works, live where possible.
 - S6 Code references: "ejemplos que podes tomar de referencia para codigo https://herdr.dev/gallery/"
 
 ## Constraints (from the Herdr spikes, `.worktrees/herdr-gentle-ui` `odd/tasks/herdr-tower-spikes.md`)
@@ -26,6 +27,7 @@ Branch `feat/herdr-gentle-shell` from `origin/main` 3dc902975. References (read-
 - T6 Sidebar/status mods (sessions, todo, agents, jobs, usage, changes, review, modes) — S2 — pending
 - T7 Actions: prompt, answer questions, cancel subagent/job, permission mode, review switch (same authority as the CLI) — S2 — pending
 - T8 Package: layout + mods shipped in gentle-pi; `gentle-shell desktop` installs pinned Herdr app (checksum), installs layout/mods, `herdr-app check`, switches layout, launches — S3, S4 — pending
+- T10 Parity audit: every Gentle Shell feature present and working in the desktop (S9), with gaps closed or listed — S9 — pending
 - T9 Docs (command help, README, RECIPE.md) — S3 — pending
 
 ## Risks
@@ -46,3 +48,4 @@ Branch `feat/herdr-gentle-shell` from `origin/main` 3dc902975. References (read-
 - L11 (T4 evidence): `tests/desktop-feed.test.ts` 12/12 pass (mutation run: 6 fail when debounce, bounds, question clear, shutdown and dedupe are broken); `scripts/check-types.mjs` 0 diagnostics; `npm test` failures identical to base (environmental: worktree without own node_modules, plus known base failures). Live: `gentle-shell -e extensions/gentle-desktop-feed.ts` in hc t4 wrote `~/.gentle-shell/agent/desktop/sessions/<id>.json` with exact sessionFile, ppid 8447 = Herdr terminal pid (match works), paneId `wMJ:p1`, super-yolo permission, model/profile. Always null for now: persona (private in gentle-ai.ts), statuses and integrations (footer data owned by gentle-shell), agents[].role — need small owner hooks later.
 - L12 (user): "trata de resumir una conversacion existente y listo asi lo ves bien, esta por ejemplo" — a copy of the long real session is resumed in tab t6 for the fidelity pass.
 - L13 (user): "No me muestres nada hasta terminar todo y dejarlo listo fíjate que todo funcione" — finish T5-T9 end to end and verify everything works before reporting.
+- L14 (user): "Una vez que termines todo fíjate que tengamos todas las mismas funcionadisded que gentle Shell y funcionen"

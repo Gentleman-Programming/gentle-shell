@@ -1376,11 +1376,14 @@ export function describeVersion(input                      )         {
 // an older package and nothing on screen says so.
 export function declaredPackageSkewMessage(input                          )                     {
 	if (input.takeOver === true) return undefined;
+	// Only an npm declaration makes pi load an installed package. Without one the
+	// launcher injects its own package, so a leftover installation on disk is never
+	// what pi loads and naming it would be a false claim.
+	if (input.declaration?.kind !== "npm") return undefined;
 	if (input.installedVersion !== undefined) {
 		if (input.installedVersion === input.bundledVersion) return undefined;
 		return `gentle-shell: ${input.homeDir} loads gentle-pi ${input.installedVersion}, but this launcher ships ${input.bundledVersion}; the installed package is what pi loads (settings unchanged).\n`;
 	}
-	if (input.declaration?.kind !== "npm") return undefined;
 	const declaredVersion = input.declaration.version;
 	if (declaredVersion === undefined || declaredVersion === input.bundledVersion) return undefined;
 	return `gentle-shell: ${input.homeDir} declares gentle-pi ${declaredVersion}, but this launcher ships ${input.bundledVersion}; the declared package is what pi loads (settings unchanged).\n`;

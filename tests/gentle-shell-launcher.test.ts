@@ -2213,6 +2213,17 @@ test("declaredPackageSkewMessage falls back to the pin when installedVersion is 
 	);
 });
 
+test("declaredPackageSkewMessage stays silent without an npm declaration even when a leftover installation differs", () => {
+	assert.equal(
+		declaredPackageSkewMessage({ declaration: undefined, homeDir: "/pi/agent", bundledVersion: "4.9.0", installedVersion: "4.6.0" }),
+		undefined,
+	);
+	assert.equal(
+		declaredPackageSkewMessage({ declaration: { kind: "path", dir: "/checkout" }, homeDir: "/pi/agent", bundledVersion: "4.9.0", installedVersion: "4.6.0" }),
+		undefined,
+	);
+});
+
 test("helpText documents the launcher flags, the home subcommand, the env vars, and passthrough forwarding", () => {
 	const text = helpText();
 	assert.match(text, /--link/);

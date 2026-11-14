@@ -83,3 +83,35 @@ test("the server queues a valid action for its floor and refuses the rest", asyn
 	assert.equal((await post(s.port, "/tok-123/api/action", "x".repeat(TOWER_ACTION_MAX_BYTES + 10), own)).status, 413);
 	assert.equal(existsSync(towerInboxDir(hub, "s-1")) ? readdirSync(towerInboxDir(hub, "s-1")).length : 0, 0);
 });
+
+// ---------- new floor: a new Gentle Shell session in a project already in the tower ----------
+import { buildLaunchScript, shellQuote } from "../lib/tower-launch.ts";
+import { buildTowerSnapshot } from "../lib/tower-snapshot.ts";
+import { writeTowerSnapshot } from "../lib/tower-hub.ts";
+
+test("a new floor parses with a project path and an optional first message", () => {
+	assert.deepEqual(parseTowerAction({ type: "new-floor", project: "/w/app", prompt: " fix the login " }), { type: "new-floor", project: "/w/app", prompt: "fix the login" });
+	assert.deepEqual(parseTowerAction({ type: "new-floor", project: "/w/app" }), { type: "new-floor", project: "/w/app" });
+	for (const bad of [{ type: "new-floor", project: "relative/path" }, { type: "new-floor", project: "/w/app", prompt: "x".repeat(4001) }, { type: "new-floor" }, { type: "new-floor", project: "/w/app\nrm" }])
+		assert.equal(parseTowerAction(bad), undefined, JSON.stringify(bad));
+});
+
+test("the launch script quotes everything; a hostile message stays one argument", () => {
+	assert.equal(shellQuote("it's"), `'it'\\''s'`);
+	const script = buildLaunchScript({ cwd: "/w/my app", node: "/usr/bin/node", launcher: "/pkg/bin/gentle-shell.mjs", prompt: "'; rm -rf ~; echo '" });
+	assert.equal(script, `#!/bin/sh\ncd '/w/my app' && exec '/usr/bin/node' '/pkg/bin/gentle-shell.mjs' '--' '--' ''\\''; rm -rf ~; echo '\\'''\n`);
+	assert.equal(buildLaunchScript({ cwd: "/w/a", node: "/n", launcher: "/l" }), `#!/bin/sh\ncd '/w/a' && exec '/n' '/l'\n`);
+});
+
+test("the server opens a floor only in a project already in the tower", async () => {
+	const { hub, web } = scratch();
+	writeTowerSnapshot(hub, buildTowerSnapshot({ sessionId: "s-1", cwd: "/w/app", stats: { cost: 0, input: 0, output: 0 }, todos: [], agents: [], now: 1 }));
+	const opened: Array<[string, string | undefined]> = [];
+	const s = await startTowerServer({ hubDir: hub, webDir: web, token: "tok-123", onNewFloor: async (cwd, prompt) => { opened.push([cwd, prompt]); } });
+	servers.push(s);
+	const own = { Origin: `http://127.0.0.1:${s.port}` };
+	assert.equal((await post(s.port, "/tok-123/api/action", JSON.stringify({ type: "new-floor", project: "/w/app", prompt: "fix it" }), own)).status, 202);
+	assert.equal((await post(s.port, "/tok-123/api/action", JSON.stringify({ type: "new-floor", project: "/etc" }), own)).status, 403);
+	assert.equal((await post(s.port, "/tok-123/api/action", JSON.stringify({ type: "new-floor", project: "/w/app" }), {})).status, 403);
+	assert.deepEqual(opened, [["/w/app", "fix it"]]);
+});

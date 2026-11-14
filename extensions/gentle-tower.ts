@@ -15,7 +15,8 @@ import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { collectSessionStats } from "../lib/shell-stats.ts";
 import { replayTodo, TODO_PROGRESS_EVENT } from "../lib/shell-todo.ts";
 import { removeTowerSnapshot, towerHubDir, writeTowerSnapshot } from "../lib/tower-hub.ts";
-import { consumeTowerActions, type TowerAction } from "../lib/tower-actions.ts";
+import { consumeTowerActions, type TowerSessionAction } from "../lib/tower-actions.ts";
+import { launchInTerminal } from "../lib/tower-launch.ts";
 import { discoverYoloUiAdapter } from "../lib/yolo-session-policy.ts";
 import { artifactsFromBranch, buildTowerSnapshot, latestAssistantText, type TowerAgentInput, type TowerTodo } from "../lib/tower-snapshot.ts";
 
@@ -127,7 +128,7 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 		} catch { /* gentle-ai missing: no switch */ }
 	};
 	const say = (text: string, ok: boolean) => { notice = { text, ok, at: now() }; schedule(); };
-	const execute = async (action: TowerAction, c: ExtensionContext) => {
+	const execute = async (action: TowerSessionAction, c: ExtensionContext) => {
 		switch (action.type) {
 			case "message":
 				pi.sendUserMessage(action.text, c.isIdle?.() ? undefined : { deliverAs: "followUp" });
@@ -212,7 +213,8 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 				c.ui.notify(`Gentle Tower: the web app is not built (${webDir}). Run: pnpm build:tower`, "warning");
 				return;
 			}
-			server ??= startTowerServer({ hubDir: dir, webDir, token: randomBytes(24).toString("base64url"), engramUrl: env.ENGRAM_URL || "http://127.0.0.1:7437" });
+			server ??= startTowerServer({ hubDir: dir, webDir, token: randomBytes(24).toString("base64url"), engramUrl: env.ENGRAM_URL || "http://127.0.0.1:7437",
+				onNewFloor: (cwd, prompt) => launchInTerminal({ cwd, node: process.execPath, launcher: join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "gentle-shell.mjs"), ...(prompt ? { prompt } : {}) }) });
 			try {
 				const s = await server;
 				c.ui.notify(`Gentle Tower: ${s.url}`, "info");

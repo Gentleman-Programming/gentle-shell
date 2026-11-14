@@ -15,7 +15,11 @@ export type TowerAction =
 	| { type: "message"; sessionId: string; text: string }
 	| { type: "cancel-helper"; sessionId: string; helperId: string }
 	| { type: "permission"; sessionId: string; mode: (typeof TOWER_PERMISSION_MODES)[number] }
-	| { type: "review"; sessionId: string; enabled: boolean };
+	| { type: "review"; sessionId: string; enabled: boolean }
+	| { type: "new-floor"; project: string; prompt?: string };
+
+/** Actions the session executes; new-floor is handled by the tower server itself. */
+export type TowerSessionAction = Exclude<TowerAction, { type: "new-floor" }>;
 
 const ID = /^[A-Za-z0-9._-]{1,128}$/;
 const okId = (v: unknown): v is string => typeof v === "string" && ID.test(v) && !v.startsWith(".");
@@ -25,6 +29,13 @@ const exactKeys = (o: Record<string, unknown>, keys: string[]) => Object.keys(o)
 export function parseTowerAction(value: unknown): TowerAction | undefined {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
 	const o = value as Record<string, unknown>;
+	if (o.type === "new-floor") {
+		const project = o.project;
+		if (typeof project !== "string" || !project.startsWith("/") || project.length > 1024 || /[\0\n\r]/.test(project)) return undefined;
+		if (o.prompt === undefined) return exactKeys(o, ["type", "project"]) ? { type: "new-floor", project } : undefined;
+		const prompt = text(o.prompt, TOWER_MESSAGE_MAX_CHARS);
+		return prompt && exactKeys(o, ["type", "project", "prompt"]) ? { type: "new-floor", project, prompt } : undefined;
+	}
 	if (!okId(o.sessionId)) return undefined;
 	const sessionId = o.sessionId;
 	switch (o.type) {
@@ -49,9 +60,9 @@ function privateDir(dir: string) {
 }
 
 let sequence = 0;
-export function writeTowerAction(hubDir: string, action: TowerAction): string {
+export function writeTowerAction(hubDir: string, action: TowerSessionAction): string {
 	const checked = parseTowerAction(action);
-	if (!checked) throw new Error("Gentle Tower: invalid action");
+	if (!checked || checked.type === "new-floor") throw new Error("Gentle Tower: invalid action");
 	const dir = towerInboxDir(hubDir, checked.sessionId);
 	privateDir(dir);
 	const id = `${Date.now().toString().padStart(15, "0")}-${String(sequence++ % 1e6).padStart(6, "0")}-${randomBytes(6).toString("hex")}`;
@@ -62,18 +73,18 @@ export function writeTowerAction(hubDir: string, action: TowerAction): string {
 }
 
 /** Valid actions addressed to this session, oldest first; every file read is removed. */
-export function consumeTowerActions(hubDir: string, sessionId: string): TowerAction[] {
+export function consumeTowerActions(hubDir: string, sessionId: string): TowerSessionAction[] {
 	const dir = towerInboxDir(hubDir, sessionId);
 	let names: string[];
 	try { names = readdirSync(dir).filter((n) => n.endsWith(".json") && !n.startsWith(".")).sort(); } catch { return []; }
-	const out: TowerAction[] = [];
+	const out: TowerSessionAction[] = [];
 	for (const name of names) {
 		const path = join(dir, name);
 		try {
 			const st = lstatSync(path);
 			if (st.isFile() && st.size <= TOWER_ACTION_MAX_BYTES) {
 				const action = parseTowerAction(JSON.parse(readFileSync(path, "utf8")));
-				if (action && action.sessionId === sessionId) out.push(action);
+				if (action && action.type !== "new-floor" && action.sessionId === sessionId) out.push(action);
 			}
 		} catch { /* dropped */ }
 		rmSync(path, { force: true });

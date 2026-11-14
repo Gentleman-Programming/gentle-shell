@@ -1,6 +1,35 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { artifactFor, uvPinVersion } from "../scripts/installer-downloads.mjs";
+import { artifactFor, engramPinVersion, uvPinVersion } from "../scripts/installer-downloads.mjs";
+
+// The Engram core the bundled install ships (S9), from its checksums.txt and
+// the published asset digests; every archive was downloaded and re-hashed.
+const engramPins = {
+	"darwin-arm64": ["darwin_arm64.tar.gz", "f96e08db8f47ca49ebc034eba30e468db81eb56df98f9bf21a73366b510695e4", 8001813],
+	"darwin-x64": ["darwin_amd64.tar.gz", "d35623443a5d85e8f78338cda5d0bb73b2f7ec6217a57e4abb71904a3e0d6287", 8488340],
+	"linux-x64": ["linux_amd64.tar.gz", "8db9d5db1c1574b8b830aac4ffbe86c024014aed6b9a3f0406ac3361a152cdf0", 8365851],
+	"linux-arm64": ["linux_arm64.tar.gz", "cdbbcb68d3e842d3e52e27edccef55e6fe98ce3cdbc90cd79894323b029efb50", 7712574],
+	"win32-x64": ["windows_amd64.zip", "515a716ce966202058d4b9f310626fde72583cfc64ccefbf0dcc81456260089c", 8582764],
+	"win32-arm64": ["windows_arm64.zip", "01e4f5dab2f941cf810d1373e7c6998c014499bee9c2d5783e34da94c70ac7f2", 7780232],
+} as const;
+
+test("fixed Engram descriptors are the published 3.7.2 core archives and checksums, and nothing else", () => {
+	assert.equal(engramPinVersion, "3.7.2");
+	for (const [target, [suffix, sha256, size]] of Object.entries(engramPins)) {
+		const [platform, arch] = target.split("-");
+		const artifact = artifactFor("engram", platform, arch);
+		assert.equal(artifact.name, "engram");
+		assert.equal(artifact.version, "3.7.2");
+		assert.equal(artifact.url, `https://github.com/Gentleman-Programming/engram/releases/download/v3.7.2/engram_3.7.2_${suffix}`);
+		assert.equal(artifact.integrity, `sha256-${sha256}`);
+		assert.deepEqual([artifact.size, artifact.maxBytes], [size, size]);
+		assert.deepEqual(artifact.redirectHosts, ["objects.githubusercontent.com", "release-assets.githubusercontent.com"]);
+		assert.ok(Object.isFrozen(artifact));
+	}
+	for (const [platform, arch] of [["linux", "ia32"], ["freebsd", "x64"], ["win32", "ia32"], ["darwin", "ppc64"]]) {
+		assert.throws(() => artifactFor("engram", platform, arch), /Unsupported/);
+	}
+});
 
 // The uv the /gentle:music offer installs inside a bundled prefix (S5): the
 // astral-sh/uv release archives, each re-hashed after download before pinning.

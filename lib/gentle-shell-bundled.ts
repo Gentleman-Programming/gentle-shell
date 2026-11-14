@@ -444,10 +444,11 @@ export function parseEngramProvenance(text: string | undefined): EngramProvenanc
 }
 
 // The bundled core's own schema (SQLite user_version), verified from the
-// tagged sources v3.3.2, v3.4.0, v3.5.2 and the v3.7.0 tree: internal/store/store.go
-// `const schemaVersion = 1`. A pin without a verified entry leaves the header
-// check unavailable.
-const BUNDLED_ENGRAM_SCHEMA: Record<string, number> = { "3.3.2": 1, "3.4.0": 1, "3.5.2": 1, "3.7.0": 1 };
+// tagged sources v3.3.2, v3.4.0, v3.5.2 and the v3.7.0 and v3.7.2 trees:
+// internal/store/store.go `const schemaVersion = 1`, and the released 3.7.2
+// linux/darwin binaries stamp user_version 1 in an isolated store. A pin
+// without a verified entry leaves the header check unavailable.
+const BUNDLED_ENGRAM_SCHEMA: Record<string, number> = { "3.3.2": 1, "3.4.0": 1, "3.5.2": 1, "3.7.0": 1, "3.7.2": 1 };
 
 export function bundledEngramSchema(coreVersion: string): number | undefined {
 	return Object.hasOwn(BUNDLED_ENGRAM_SCHEMA, coreVersion) ? BUNDLED_ENGRAM_SCHEMA[coreVersion] : undefined;
@@ -456,14 +457,16 @@ export function bundledEngramSchema(coreVersion: string): number | undefined {
 // Companion-vs-core contract gate (gentle-shell#3015): the runtime-contract
 // digest each pinned core answers on GET /runtime-contract, read from the real
 // release binaries during development; the 3.5.2 windows archive sha256 matched
-// the retired 3.5.2 pin exactly. gentle-engram 0.7.0 requires the 3.7.0 digest,
-// and only the digest differs between the two (both report contract_id
-// engram.pi-http-runtime/v1, revision 1). A pin without a verified entry leaves
+// the retired 3.5.2 pin exactly. gentle-engram 0.8.0 requires the 3.7.2 digest:
+// the released 3.7.2 binary and the published 0.8.0 companion both report
+// contract_id engram.pi-http-runtime/v1, revision 1, with the same digest, and
+// only that digest differs from 3.5.2. A pin without a verified entry leaves
 // the gate unavailable, and the gate only ever warns (S3: "Instalar y avisar
 // fuerte"), never blocks.
 const BUNDLED_ENGRAM_CONTRACT: Record<string, string> = {
 	"3.5.2": "4bf32703e111162b24073d090bec1c15c9120708587000bf595a07264e768672",
 	"3.7.0": "0af9af176928e98562ab1396d3196efe582dd5d1c5d2c5f8f546ab4ed609810f",
+	"3.7.2": "0af9af176928e98562ab1396d3196efe582dd5d1c5d2c5f8f546ab4ed609810f",
 };
 
 export function bundledEngramContract(coreVersion: string): string | undefined {

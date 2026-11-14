@@ -193,6 +193,6 @@ export function openTab(projects: Project[]): void {
 	modal("tab", "The bar · your tab", "open sessions right now", `<div class="receipt"><h3>THE GENTLEMAN CLUB</h3><div class="c">tab · ${sessions.length} open session${sessions.length === 1 ? "" : "s"}</div>
 		${[...byModel].sort((a, b) => b[1].cost - a[1].cost).map(([m, v]) => row(m, `${k(v.tokens)} tok`, money(v.cost))).join("") || '<div class="c">no model usage yet</div>'}<hr>
 		${projects.map((p) => row(p.id, `${p.sessions.length} floor${p.sessions.length === 1 ? "" : "s"}`, money(p.sessions.reduce((a, s) => a + s.cost.total, 0)))).join("")}<hr>
-		${sessions.map((s) => row(s.name, s.project.name, money(s.cost.total))).join("")}<hr>
+		${sessions.filter((s) => !s.basic).map((s) => row(s.name, s.project.name, money(s.cost.total))).join("")}<hr>
 		<div class="r tot"><span>TOTAL</span><span>${money(total)}</span></div><div class="c">thank you, come again</div></div>`);
 }

@@ -38,6 +38,8 @@ export interface TowerSnapshot {
 	models?: Array<{ model: string; cost: number; tokens: number }>;
 	artifacts?: TowerArtifact[];
 	updatedAt: number;
+	/** A live Gentle Shell session without the tower extension: name, project and helpers only, no actions. */
+	basic?: true;
 }
 
 export interface TowerArtifact { path: string; kind: "doc" | "diagram" | "image" }

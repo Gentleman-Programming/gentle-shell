@@ -118,9 +118,11 @@ export class TowerScene {
 		const engine = room("engine"), map = room("map"), shop = room("workshop");
 		project.sessions.forEach((s, i) => {
 			const y0 = floorTop(L, i);
-			const meter = new Text({ text: `$${s.cost.total.toFixed(2)}`, style: { fontFamily: "Iosevka Term, JetBrains Mono, monospace", fontSize: 10, fontWeight: "800", fill: 0x1a1028 } });
-			meter.resolution = 4; meter.x = engine.x + 44; meter.y = y0 + 30;
-			this.world.addChild(meter);
+			if (!s.basic) {
+				const meter = new Text({ text: `$${s.cost.total.toFixed(2)}`, style: { fontFamily: "Iosevka Term, JetBrains Mono, monospace", fontSize: 10, fontWeight: "800", fill: 0x1a1028 } });
+				meter.resolution = 4; meter.x = engine.x + 44; meter.y = y0 + 30;
+				this.world.addChild(meter);
+			}
 			const newest = (kind: TowerArtifact["kind"]) => s.artifacts?.find((a) => a.kind === kind);
 			const hot = (g: Graphics, a: TowerArtifact | undefined) => {
 				if (!a) return;

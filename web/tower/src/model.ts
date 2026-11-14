@@ -35,6 +35,8 @@ export function todoProgress(todos: readonly TowerTodo[]): { done: number; total
 }
 
 export function floorState(s: TowerSnapshot): FloorState {
+	// Without the tower we cannot tell whether it waits or finished; it is live, so it works.
+	if (s.basic) return "work";
 	const p = todoProgress(s.todos);
 	if (s.waiting || s.todos.some((t) => t.status === "blocked")) return "need";
 	if (p.total > 0 && p.done === p.total && !s.subagents.some((a) => a.status === "running")) return "done";

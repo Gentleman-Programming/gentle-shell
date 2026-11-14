@@ -44,12 +44,14 @@ function renderFloors(p: Project) {
 		const segs = s.todos.filter((t) => t.status !== "dropped").map((t) => `<i class="${t.status}" style="background:${TODO_COLOR[t.status]}"></i>`).join("");
 		const now = prog.now ? `${prog.now.status === "blocked" ? '<b class="warn">blocked:</b>' : "now:"} <b>${esc(prog.now.title)}</b>` : prog.total ? "<b>all done</b>" : "no task list yet";
 		return `<div class="floor" style="top:${(floorTop(L, i) + 50) * scale}px;--c:${col}">
-			<button class="fl px" data-i="${i}" aria-pressed="${selected?.floor === i}"><span class="fkey" style="background:${col}">${i + 1}</span><span class="nm">${esc(s.name)}</span><span class="st ${st}">${GLYPH[st]}</span><span class="sub">${money(s.cost.total)} · ${esc(crew)}</span></button>
-			<button class="prog px" data-i="${i}" aria-expanded="${todoFloor === i}" aria-label="Tasks of floor ${i + 1}: ${prog.done} of ${prog.total} done"><span class="segs">${segs}</span><span class="now">${prog.done}/${prog.total} · ${now}</span></button>
+			<button class="fl px" data-i="${i}" aria-pressed="${selected?.floor === i}"><span class="fkey" style="background:${col}">${i + 1}</span><span class="nm">${esc(s.name)}</span><span class="st ${st}">${GLYPH[st]}</span><span class="sub">${s.basic ? "" : `${money(s.cost.total)} · `}${esc(crew)}</span></button>
+			${s.basic
+				? `<div class="prog px" style="opacity:.6;cursor:default"><span class="now">Details need the tower in this session</span></div>`
+				: `<button class="prog px" data-i="${i}" aria-expanded="${todoFloor === i}" aria-label="Tasks of floor ${i + 1}: ${prog.done} of ${prog.total} done"><span class="segs">${segs}</span><span class="now">${prog.done}/${prog.total} · ${now}</span></button>`}
 		</div>`;
 	}).join("");
 	el.querySelectorAll<HTMLButtonElement>(".fl").forEach((b) => b.addEventListener("click", () => { const i = +b.dataset.i!; select({ kind: "orchestrator", floor: i, session: p.sessions[i] }); }));
-	el.querySelectorAll<HTMLButtonElement>(".prog").forEach((b) => b.addEventListener("click", () => { const i = +b.dataset.i!; todoFloor = todoFloor === i ? undefined : i; render(); }));
+	el.querySelectorAll<HTMLButtonElement>("button.prog").forEach((b) => b.addEventListener("click", () => { const i = +b.dataset.i!; todoFloor = todoFloor === i ? undefined : i; render(); }));
 }
 
 function renderTodo(p: Project) {
@@ -81,6 +83,10 @@ function renderSelection() {
 		});
 		return;
 	}
+	if (s.basic) {
+		el.innerHTML = `<div><div class="nm">Floor ${floor + 1} · ${esc(s.name)}</div><div class="meta">${esc(s.project.name)} · Live in Gentle Shell · open details by restarting it with the tower</div></div>`;
+		return;
+	}
 	const prog = todoProgress(s.todos);
 	const ctx = s.context.percent === null ? "context —" : `context ${Math.round(s.context.percent)}%`;
 	const lower = LOWER[s.permission ?? ""] ?? [];
@@ -97,7 +103,7 @@ function renderSelection() {
 }
 
 function openIntercom(floor: number) {
-	const p = project(); if (!p?.sessions[floor]) return;
+	const p = project(); if (!p?.sessions[floor] || p.sessions[floor].basic) return;
 	intercomFloor = floor;
 	renderIntercom(p.sessions[floor], floor);
 }

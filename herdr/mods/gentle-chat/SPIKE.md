@@ -1,5 +1,10 @@
 # gentle-chat — T1 spike (read side + prompt)
 
+> T5 (2026-11-14) turned this spike into the centre column of
+> `design/herdr-desktop/01-inspector.html`: `ui.js` draws it, `tokens.js` holds the design
+> tokens, the header and question card read the T4 snapshot. `FIDELITY.md` lists every matched
+> value and what Herdr cannot draw. The notes below are the T1 record.
+
 Spec: `odd/tasks/herdr-desktop.md` T1 (S1, S5, S6). Write path (`hc send` → session JSONL) proven in L6.
 
 ## What is here

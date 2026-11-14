@@ -1,12 +1,15 @@
 // Turns Gentle Shell (pi) session JSONL lines into chat items. Pure: no host calls.
 //
 // Items:
-//   { kind: "user", id, text }
+//   { kind: "user", id, text, time }  (time: "14:02", local, or null)
 //   { kind: "assistant", id, blocks: [{ type: "text", text } | { type: "thinking", text }
-//       | { type: "tool", call }], cost, model, error }
+//       | { type: "tool", call }], cost, model, error, seconds }
+//       (seconds: how long the message took, entry write time − message start, or null)
 //   { kind: "note", id, text }        (a custom message the session displays)
-// Tool calls: { id, name, args, summary, result: null | { text, error } } kept in `feed.tools`
-// so a later toolResult line fills in the card that is already drawn.
+// Tool calls: { id, name, args, summary, result: null | { text, error, ms, patch, agent } } kept
+// in `feed.tools` so a later toolResult line fills in the card that is already drawn.
+// `patch`: an edit's unified diff (details.patch); `agent`: a subagent_run's
+// details.gentleAgents ({ taskId, agent, status, model, lastStep, ... }).
 
 export function createFeed() {
   return { items: [], tools: new Map(), model: null, provider: null, thinking: null, name: null, total: 0, cwd: null, seq: 0 };
@@ -45,6 +48,7 @@ export function ingest(feed, text) {
 function ingestEntry(feed, e) {
   const id = e.id ?? `seq-${feed.seq}`;
   feed.seq++;
+  const at = typeof e.timestamp === "string" ? Date.parse(e.timestamp) : NaN;
   switch (e.type) {
     case "session":
       feed.cwd = e.cwd ?? feed.cwd;
@@ -66,16 +70,25 @@ function ingestEntry(feed, e) {
       }
       return;
     case "message":
-      return ingestMessage(feed, id, e.message ?? {});
+      return ingestMessage(feed, id, e.message ?? {}, at);
     default:
       return;
   }
 }
 
-function ingestMessage(feed, id, m) {
+const PATCH_MAX = 200_000; // characters of a diff kept per edit
+
+// "14:02" for an epoch ms, local time; null when unknown.
+export function clock(ms) {
+  if (!Number.isFinite(ms)) return null;
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+function ingestMessage(feed, id, m, at) {
   if (m.role === "user") {
     const t = textOf(m.content).trim();
-    if (t) feed.items.push({ kind: "user", id, text: t });
+    if (t) feed.items.push({ kind: "user", id, text: t, time: clock(Number.isFinite(m.timestamp) ? m.timestamp : at) });
     return;
   }
   if (m.role === "assistant") {
@@ -93,22 +106,72 @@ function ingestMessage(feed, id, m) {
     feed.total += cost;
     if (m.model) feed.model = m.model;
     const error = m.stopReason === "error" ? (m.errorMessage ?? "error") : m.stopReason === "aborted" ? "aborted" : null;
-    if (blocks.length || error || cost) feed.items.push({ kind: "assistant", id, blocks, cost, model: m.model ?? null, error });
+    const took = Number.isFinite(at) && Number.isFinite(m.timestamp) && at >= m.timestamp ? Math.round((at - m.timestamp) / 1000) : null;
+    if (blocks.length || error || cost) feed.items.push({ kind: "assistant", id, blocks, cost, model: m.model ?? null, error, seconds: took });
     return;
   }
   if (m.role === "toolResult") {
     const call = feed.tools.get(m.toolCallId);
-    const result = { text: textOf(m.content), error: Boolean(m.isError) };
+    const d = m.details && typeof m.details === "object" ? m.details : {};
+    const result = {
+      text: textOf(m.content),
+      error: Boolean(m.isError),
+      ms: Number.isFinite(m.durationMs) ? m.durationMs : null,
+      patch: typeof d.patch === "string" ? d.patch.slice(0, PATCH_MAX) : null,
+      agent: d.gentleAgents && typeof d.gentleAgents === "object" ? d.gentleAgents : null,
+    };
     if (call) call.result = result;
     return;
   }
   // system, custom roles: not part of the visible conversation.
 }
 
-// Dollars, short: $0.25, $0.0031, $12.40.
+// Dollars as the artboard writes them: $3.42, $0.41; under a cent $0.0031; nothing $0.00.
 export function money(n) {
-  if (!n) return "$0";
-  if (n >= 1) return `$${n.toFixed(2)}`;
-  if (n >= 0.01) return `$${n.toFixed(3)}`;
+  if (!n) return "$0.00";
+  if (n >= 0.01) return `$${n.toFixed(2)}`;
   return `$${n.toFixed(4)}`;
+}
+
+// "claude-bridge/claude-opus-5-5" → "Opus 5.5"; anything else as given, without its provider.
+export function prettyModel(id) {
+  if (typeof id !== "string" || !id) return null;
+  const bare = id.slice(id.lastIndexOf("/") + 1);
+  const m = /^claude-([a-z]+)-(\d+)(?:-(\d+))?/.exec(bare);
+  if (!m) return bare;
+  return `${m[1][0].toUpperCase()}${m[1].slice(1)} ${m[2]}${m[3] ? `.${m[3]}` : ""}`;
+}
+
+// "1.9s", "41s", "3m 12s".
+export function seconds(ms) {
+  if (!Number.isFinite(ms)) return null;
+  if (ms < 10_000) return `${(ms / 1000).toFixed(1)}s`;
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
+// A unified diff → { hunks: [{ header, rows: [{ kind: "c" | "a" | "d", ln, text }] }], added, deleted }.
+// `ln` is the new file's line for context and additions, the old file's for deletions (artboard
+// diff card, design/herdr-desktop/01-inspector.html l.433-441).
+export function parsePatch(patch) {
+  const out = { hunks: [], added: 0, deleted: 0 };
+  if (typeof patch !== "string") return out;
+  let hunk = null, oldLn = 0, newLn = 0;
+  for (const line of patch.split("\n")) {
+    const h = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (h) {
+      hunk = { header: line, rows: [] };
+      out.hunks.push(hunk);
+      oldLn = Number(h[1]);
+      newLn = Number(h[2]);
+      continue;
+    }
+    if (!hunk || line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("\\")) continue;
+    const sign = line[0], text = line.slice(1);
+    if (sign === "+") { hunk.rows.push({ kind: "a", ln: newLn++, text }); out.added++; }
+    else if (sign === "-") { hunk.rows.push({ kind: "d", ln: oldLn++, text }); out.deleted++; }
+    else if (sign === " " || line === "") { hunk.rows.push({ kind: "c", ln: newLn++, text }); oldLn++; }
+  }
+  for (const k of out.hunks) while (k.rows.length && k.rows[k.rows.length - 1].kind === "c" && !k.rows[k.rows.length - 1].text) k.rows.pop();
+  return out;
 }

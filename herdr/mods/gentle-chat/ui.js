@@ -1,0 +1,484 @@
+// The centre column of design/herdr-desktop/01-inspector.html (region 4: header 4a, log 4b,
+// composer 4c), drawn from the view's state. Every number is the artboard's; FIDELITY.md maps
+// each one to its CSS line. `v` is the GentleChat view, `p` the palette (tokens.js).
+
+import { div, svg } from "gpui-kit";
+import { v_flex, h_flex, TextView, Textarea, Popover } from "gpui-base";
+import { alpha, mono, R } from "./tokens.js";
+import { money, prettyModel, seconds, parsePatch } from "./feed.js";
+
+const MOD = "gentle-chat";
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const CLEAR = "#00000000";
+const CLIP = 6000; // characters of a tool's output shown when expanded
+const HUNK_ROWS = 80; // diff rows drawn per hunk
+const T7 = "Arrives with the desktop actions (T7)";
+
+export const icon = (name, size = 15) => svg(`mods/${MOD}/icons/${name}.svg`).size(size).flex_none();
+const clip = (s) => (s.length > CLIP ? s.slice(0, CLIP) + "\n… (truncated)" : s);
+const firstLine = (s) => String(s ?? "").split("\n").find((l) => l.trim())?.trim() ?? "";
+
+// One centred lane of the log: .log-in max-width 780, padding 0 28 (l.116).
+export const lane = (el) => div().flex_none().w_full().max_w(780).px(28).self_center().child(el);
+
+// .num (l.50): mono; tabular figures are the font's own.
+const num = (text, color) => div().font_family(mono()).when(Boolean(color), (el) => el.text_color(color)).child(text);
+
+// kbd (l.47): 0 5px, 1px line-strong, radius 5, muted 11px mono.
+const kbd = (p, text) => div().px(5).border(1).border_color(p.lineStrong).rounded(R.kbd).text_color(p.muted)
+  .text_size(11).font_family(mono()).child(text);
+
+// .state (l.79-88): a 7px dot (a ring for idle, dashed for queue) and a label, never colour alone.
+// The ring is ::before, which `* { box-sizing: border-box }` does not reach: 5px + 2 × 1.5px = 8px.
+export function stateLabel(p, kind, label) {
+  const color = { work: p.info, need: p.warn, done: p.ok, idle: p.muted, fail: p.err, queue: p.muted }[kind] ?? p.muted;
+  let dot = div().flex_none().rounded_full();
+  if (kind === "idle" || kind === "queue") {
+    dot = dot.w(8).h(8).border(1.5).border_color(color);
+    if (kind === "queue") dot = dot.border_dashed();
+  } else dot = dot.w(7).h(7).bg(color);
+  if (kind === "work") dot = dot.loop("opacity", { from: 0.35, to: 1, period: 1600 });
+  return h_flex().gap(6).items_center().text_size(12).whitespace_nowrap().text_color(color).child(dot).child(label);
+}
+
+// .btn (l.92-95): 5px 10px, radius 8, 1px #ffffff17, muted 12px; hover accent border.
+function btn(p, id, label, { danger = false, tip = null, onClick = null, iconName = null } = {}) {
+  return h_flex().id(id).flex_none().items_center().gap(6).px(10).py(5).rounded(R.sm).border(1).border_color(p.btnLine)
+    .text_size(12).text_color(p.muted).whitespace_nowrap().cursor_pointer()
+    .hover((s) => (danger ? s.border_color(p.err).text_color(p.err) : s.border_color(p.accent).text_color(p.accentSoft)))
+    .when(Boolean(tip), (el) => el.tooltip(tip))
+    .when(Boolean(onClick), (el) => el.on_click(onClick))
+    .when(Boolean(iconName), (el) => el.child(icon(iconName, 13)))
+    .child(label);
+}
+
+const chev = (open) => icon(open ? "down" : "chev", 13);
+
+// ---------------------------------------------------------------- 4a header (l.259-270, 369-399)
+
+export function header(v, p) {
+  const s = v.snap;
+  const f = v.feed;
+  const { stack } = v.stackProps();
+  const title = s?.identity?.sessionName || f.name || "Gentle Shell";
+  const row1 = h_flex().min_h(30).items_center().justify_between().gap(16).min_w(0)
+    .child(div().id("title").min_w(0).truncate().text_size(14).font_semibold()
+      .tooltip(v.address ? `${v.address}${v.file ? ` · ${v.file}` : ""}` : "No Gentle Shell terminal")
+      .child(title))
+    .when(Boolean(stack), (el) => el.child(viewSwitch(v, p)));
+  const row2 = h_flex().items_center().justify_between().gap(16).min_w(0)
+    .child(crumbs(v, p))
+    .child(facts(v, p));
+  return v_flex().id("chat-head").flex_none().gap(4).px(14).pt(8).pb(7).border_b(1).border_color(p.line).bg(p.chrome)
+    .rounded_t(R.window - 1)
+    .on_mouse_down("left", () => v.focus.focus())
+    .child(row1).child(row2);
+}
+
+// .seg (l.96-99): Chat | Terminal, run("layout.select") on the layout stack.
+function viewSwitch(v, p) {
+  const showing = v.showing();
+  const seg = (id, iconName, label, active, onClick) => h_flex().id(id).items_center().gap(6).px(9).py(2).rounded(R.inner)
+    .border(1).border_color(active ? p.lineStrong : CLEAR).when(active, (el) => el.bg(p.selected))
+    .text_size(12).text_color(active ? p.text : p.muted).cursor_pointer().hover((st) => st.text_color(p.text))
+    .on_click(onClick).child(icon(iconName, 13)).child(label);
+  return h_flex().flex_none().p(2).gap(2).border(1).border_color(p.lineStrong).rounded(R.sm)
+    .child(seg("sw-chat", "chat", "Chat", showing, (_e, cx) => v.go("chat", cx)))
+    .child(seg("sw-term", "term", "Terminal", !showing, (_e, cx) => v.go("terminal", cx)));
+}
+
+// .crumbs (l.263-264): project / branch · N changed.
+function crumbs(v, p) {
+  const pr = v.snap?.project;
+  const cwd = pr?.cwd ?? v.feed.cwd ?? v.cwd;
+  const project = cwd ? cwd.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || cwd : null;
+  const sep = (t) => div().text_color(p.faint).child(t);
+  const parts = [icon("folder", 13), div().child(project ?? "No project")];
+  if (pr?.branch) parts.push(sep("/"), icon("branch", 13), div().child(pr.branch));
+  if (Number.isInteger(pr?.dirty)) parts.push(sep("·"), div().child(pr.dirty === 0 ? "clean" : `${pr.dirty} changed`));
+  return h_flex().mt(1).min_w(0).overflow_hidden().items_center().gap(6).text_size(12).text_color(p.muted).whitespace_nowrap()
+    .children(parts);
+}
+
+const PERM = [
+  { mode: "normal", label: "Normal", about: "Standard permission prompts", tone: null },
+  { mode: "auto", label: "Auto", about: "Independent checks; extra model calls", tone: null },
+  { mode: "yolo", label: "YOLO", about: "Scoped work; destructive actions ask", tone: "warn" },
+  { mode: "super-yolo", label: "Super-YOLO", about: "No permission prompts; private paths blocked; consent remains", tone: "err" },
+];
+
+// .facts-row (l.265-270): Model, Persona, Ctx, Cost, permission menu. Empty fields say so.
+function facts(v, p) {
+  const s = v.snap;
+  const f = v.feed;
+  const fact = (id, kids, tip) => h_flex().id(id).items_center().gap(6).px(4).py(3).rounded(R.inner).whitespace_nowrap()
+    .text_color(p.text).when(Boolean(tip), (el) => el.tooltip(tip)).children(kids);
+  const k = (t) => div().text_color(p.muted).child(t);
+  const none = (t = "—") => div().text_color(p.muted).child(t);
+
+  const model = [prettyModel(s?.model?.id ?? f.model), s?.model?.effort ?? (s ? null : f.thinking), s?.model?.profile?.name]
+    .filter(Boolean).join(" · ");
+  // TODO(T7): Model and Persona open /gentle:models and /gentle:persona.
+  const modelFact = fact("f-model", [k("Model"), model ? div().child(model) : none()],
+    "Model · effort · profile (opens /gentle:models)").cursor_pointer().hover((st) => st.bg(p.selected));
+  const persona = typeof s?.persona === "string" ? s.persona : s?.persona?.name ?? null;
+  const personaFact = fact("f-persona", [icon("user", 13).text_color(p.muted), persona ? div().child(persona) : none("No persona")],
+    "Persona (opens /gentle:persona)").cursor_pointer().hover((st) => st.bg(p.selected));
+
+  const ctx = s?.context;
+  const pct = Number.isFinite(ctx?.percent) ? Math.max(0, Math.min(100, Math.round(ctx.percent))) : null;
+  const kTok = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
+  const ctxTip = Number.isFinite(ctx?.tokens) && Number.isFinite(ctx?.window) ? `Context window · ${kTok(ctx.tokens)} / ${kTok(ctx.window)}` : "Context window";
+  const ctxFact = fact("f-ctx", [k("Ctx"), bar(p, pct, p.info, 46), pct === null ? none() : num(`${pct}%`)], ctxTip);
+
+  const total = Number.isFinite(s?.cost?.total) ? s.cost.total : f.total;
+  const costFact = fact("f-cost", [k("Cost"), num(money(total))], s?.cost?.subscription ? "Session spend (subscription)" : "Session spend");
+
+  return h_flex().flex_none().items_center().gap(14).text_size(12)
+    .child(modelFact).child(personaFact).child(ctxFact).child(costFact).child(permission(v, p));
+}
+
+// .bar (l.89-91): 4px, pill, raised groove.
+export function bar(p, pct, color, width) {
+  return div().flex_none().w(width).h(4).rounded_full().bg(p.raised).overflow_hidden()
+    .when(pct !== null && pct > 0, (el) => el.child(div().h_full().w(`${pct}%`).rounded_full().bg(color)));
+}
+
+// .perm + .perm-menu (l.102-112): the four live modes. Choosing one is T7.
+function permission(v, p) {
+  const perm = v.snap?.permission;
+  const cur = PERM.find((m) => m.mode === perm?.mode);
+  const yolo = Boolean(perm?.yolo);
+  const pill = h_flex().id("perm").items_center().gap(6).px(9).py(3).rounded_full().border(1).text_size(12).whitespace_nowrap()
+    .cursor_pointer()
+    .border_color(yolo ? alpha(p.warn, 0x99 / 255) : p.lineStrong)
+    .when(yolo, (el) => el.bg(alpha(p.warn, 0x14 / 255)))
+    .text_color(yolo ? p.warn : cur ? p.text : p.muted)
+    .tooltip(perm?.detail ? `Permission mode: ${cur?.label ?? perm.mode} · ${perm.detail}` : `Permission mode: ${cur?.label ?? "unknown"}`)
+    .child(icon("shield", 13)).child(cur?.label ?? (perm?.mode || "—")).child(icon("down", 13));
+  const item = (m) => {
+    const on = m === cur;
+    const color = m.tone === "warn" ? p.warn : m.tone === "err" ? p.err : p.text;
+    return h_flex().id(`perm-${m.mode}`).w_full().items_start().gap(8).px(8).py(7).rounded(R.inner).cursor_pointer()
+      .hover((st) => st.bg(p.selected)).tooltip(`Switch to ${m.label}: ${T7}`)
+      // TODO(T7): run the permission mode change with the CLI's authority.
+      .child(div().w(18).h(18).flex_none().items_center().justify_center().flex()
+        .when(on, (el) => el.child(icon("check", 13).text_color(p.accent))))
+      .child(v_flex().flex_1().min_w(0).gap(2)
+        .child(div().font_semibold().text_size(13).text_color(color).child(m.label))
+        .child(div().text_size(12).text_color(p.muted).child(m.about)));
+  };
+  const menu = v_flex().mt(6).w(330).p(6).bg(p.raised).border(1).border_color(p.lineStrong).rounded(R.md).shadow_lg()
+    .text_color(p.text).children(PERM.map(item));
+  // The menu's top-right corner on the pill: below it, right-aligned, 6px down (l.107).
+  return Popover.new("perm-menu").anchor("top_right").open(Boolean(v.permOpen))
+    .on_open_change((open, cx) => { v.permOpen = open; cx.notify(); })
+    .trigger(pill).content(menu);
+}
+
+// ---------------------------------------------------------------- 4b log (l.115-172)
+
+// Consecutive assistant messages are one reply (.msg-ai, gap 10); everything else stands alone.
+export function entries(items) {
+  const out = [];
+  for (const it of items) {
+    const last = out[out.length - 1];
+    if (it.kind === "assistant" && last?.kind === "turn") last.items.push(it);
+    else if (it.kind === "assistant") out.push({ kind: "turn", id: it.id, items: [it] });
+    else out.push(it);
+  }
+  return out;
+}
+
+export function entry(v, p, e, live) {
+  if (e.kind === "user") return userMessage(p, e);
+  if (e.kind === "note") {
+    return div().px(10).py(6).rounded(R.sm).border_l(2).border_color(p.accent).bg(p.surface).text_size(12)
+      .child(TextView.markdown(`n-${e.id}`, e.text).selectable(true));
+  }
+  return turn(v, p, e, live);
+}
+
+// .msg-user (l.120-122): right, max 82%, bubble 9px 13px, radius 12, 14px/1.55; meta 11.5px.
+function userMessage(p, e) {
+  return h_flex().w_full().justify_end()
+    .child(v_flex().max_w("82%").items_end().gap(4)
+      .child(div().bg(p.user).border(1).border_color(p.lineStrong).rounded(R.md).px(13).py(9).text_size(14).line_height(1.55)
+        .child(TextView.markdown(`u-${e.id}`, e.text).selectable(true)))
+      .child(div().text_size(11.5).text_color(p.muted).child(e.time ? `You · ${e.time}` : "You")));
+}
+
+const EXPLORE = { read: "read", grep: "search", find: "search", glob: "search", ls: "list" };
+
+function turn(v, p, e, live) {
+  const parts = [];
+  e.items.forEach((it, i) => {
+    const lastItem = live && i === e.items.length - 1;
+    const blocks = it.blocks;
+    for (let k = 0; k < blocks.length; k++) {
+      const b = blocks[k];
+      const key = `${it.id}-${k}`;
+      if (b.type === "text") {
+        parts.push(div().w_full().text_size(14).line_height(1.6).child(TextView.markdown(`a-${key}`, b.text).selectable(true)));
+      } else if (b.type === "thinking") {
+        parts.push(thinking(v, p, b, key, it.seconds, lastItem && k === blocks.length - 1));
+      } else {
+        // A run of read-only tools is one "Explored" group (.tool-group, l.143-145).
+        let j = k;
+        while (j < blocks.length && blocks[j].type === "tool" && EXPLORE[blocks[j].call.name]) j++;
+        if (j - k >= 2) {
+          parts.push(toolGroup(v, p, blocks.slice(k, j).map((x) => x.call), key, live));
+          k = j - 1;
+        } else parts.push(toolCard(v, p, b.call, key, live));
+      }
+    }
+    if (it.error) parts.push(div().text_size(12).text_color(p.err).child(`⚠ ${it.error}`));
+  });
+  return v_flex().w_full().gap(10).children(parts);
+}
+
+// .think (l.132-134): italic muted 12.5px summary; body 2px line-strong rule, muted 13px.
+function thinking(v, p, b, key, secs, now) {
+  const id = `th-${key}`;
+  const open = v.isOpen(id, false);
+  const label = now ? "Thinking…" : Number.isFinite(secs) && secs > 0 ? `Thought for ${secs}s` : "Thought";
+  return v_flex()
+    .child(h_flex().id(id).gap(6).items_center().text_size(12.5).italic().text_color(p.muted).cursor_pointer()
+      .hover((st) => st.text_color(p.text)).on_click((_e, cx) => v.toggle(id, false, cx))
+      .child(chev(open)).child(label))
+    .when(open, (el) => el.child(div().mt(6).ml(6).pl(12).border_l(2).border_color(p.lineStrong).text_size(13).text_color(p.muted)
+      .child(TextView.markdown(`tht-${key}`, b.text).selectable(true))));
+}
+
+function mark(p, call, live) {
+  const r = call.result;
+  if (r) return div().flex_none().text_color(r.error ? p.err : p.ok).child(r.error ? "✕" : "✓");
+  return live ? div().flex_none().text_color(p.info).frames(SPINNER, 90) : div().flex_none().text_color(p.faint).child("•");
+}
+
+// What a finished tool says beside its arguments: "· 299 lines", "· 6 matches".
+function countNote(call) {
+  const r = call.result;
+  if (!r || r.error) return "";
+  const n = r.text.split("\n").filter((l) => l.trim()).length;
+  if (call.name === "read") return ` · ${n} lines`;
+  if (EXPLORE[call.name] === "search") return ` · ${n} ${n === 1 ? "match" : "matches"}`;
+  return "";
+}
+
+// The dim note at the right of a tool summary: a bash outcome and the time it took.
+function sideNote(call) {
+  const r = call.result;
+  if (!r) return null;
+  const took = seconds(r.ms);
+  const said = call.name === "bash" && !r.error ? firstLine(r.text.split("\n").filter((l) => l.trim()).pop() ?? "") : "";
+  const short = said.length > 40 ? said.slice(0, 39) + "…" : said;
+  return [short, took].filter(Boolean).join(" · ") || null;
+}
+
+// .tool (l.135-142): 1px line, surface, radius 8; summary 7px 10px, 12.5px.
+function toolCard(v, p, call, key, live) {
+  if (call.name === "subagent_run") return subagentCard(v, p, call, key);
+  const patch = call.name === "edit" && call.result?.patch ? parsePatch(call.result.patch) : null;
+  if (patch?.hunks.length) return diffCard(v, p, call, key, patch, live);
+  const id = `tool-${key}`;
+  const open = v.isOpen(id, false);
+  const r = call.result;
+  const note = sideNote(call);
+  const args = JSON.stringify(call.args, null, 2) ?? "";
+  const argsSay = args.includes("\n") && args.length > call.summary.length + 20;
+  return v_flex().w_full().border(1).border_color(p.line).bg(p.surface).rounded(R.sm)
+    .child(summaryRow(v, p, id, [
+      mark(p, call, live),
+      div().flex_none().font_semibold().child(call.name),
+      div().flex_1().min_w(0).truncate().font_family(mono()).text_size(12).text_color(p.muted).child(call.summary + countNote(call)),
+      note ? div().flex_none().text_color(p.muted).child(note) : null,
+      chev(open),
+    ]))
+    .when(open, (el) => el.child(v_flex().gap(8).border_t(1).border_color(p.line).px(10).pt(8).pb(10).text_size(12)
+      .when(argsSay, (e2) => e2.child(pre(p, clip(args), p.muted)))
+      .child(pre(p, r ? clip(r.text || "(no output)") : live ? "Running…" : "No result yet", r?.error ? p.err : p.text))));
+}
+
+function summaryRow(v, p, id, kids, def = false) {
+  return h_flex().id(id).items_center().gap(8).px(10).py(7).text_size(12.5).rounded(R.sm).cursor_pointer()
+    .hover((st) => st.bg(p.selected)).on_click((_e, cx) => v.toggle(id, def, cx))
+    .children(kids.filter(Boolean));
+}
+
+// .tool-body pre (l.142): mono 12px/1.55, pre-wrap.
+const pre = (p, text, color) => div().w_full().font_family(mono()).text_size(12).line_height(1.55).text_color(color).child(text);
+
+// .tool-group (l.143-145): "✓ Explored · 3 reads, 1 search  0.8s", expands to the cards.
+function toolGroup(v, p, calls, key, live) {
+  const id = `grp-${key}`;
+  const open = v.isOpen(id, false);
+  const counts = {};
+  for (const c of calls) counts[EXPLORE[c.name]] = (counts[EXPLORE[c.name]] ?? 0) + 1;
+  const plural = { read: "reads", search: "searches", list: "lists" };
+  const said = Object.entries(counts).map(([k, n]) => `${n} ${n === 1 ? k : plural[k]}`).join(", ");
+  const failed = calls.some((c) => c.result?.error);
+  const pending = calls.some((c) => !c.result);
+  const ms = calls.reduce((n, c) => n + (c.result?.ms ?? 0), 0);
+  const m = pending ? (live ? div().text_color(p.info).frames(SPINNER, 90) : div().text_color(p.faint).child("•"))
+    : div().text_color(failed ? p.err : p.ok).child(failed ? "✕" : "✓");
+  return v_flex().w_full()
+    .child(h_flex().id(id).gap(8).py(2).items_center().text_size(12.5).text_color(p.muted).cursor_pointer()
+      .hover((st) => st.text_color(p.text)).on_click((_e, cx) => v.toggle(id, false, cx))
+      .child(chev(open)).child(m).child(`Explored · ${said}`)
+      .when(ms > 0, (el) => el.child(div().text_color(p.muted).child(seconds(ms)))))
+    .when(open, (el) => el.child(v_flex().mt(8).gap(6).children(calls.map((c, i) => toolCard(v, p, c, `${key}-${i}`, live)))));
+}
+
+// .tool.diff + .hunk + .diff-foot (l.146-154): open by default.
+function diffCard(v, p, call, key, patch, live) {
+  const id = `diff-${key}`;
+  const open = v.isOpen(id, true);
+  const at = Math.min(v.hunkAt.get(id) ?? 0, patch.hunks.length - 1);
+  const h = patch.hunks[at];
+  const row = (bg, ln, sign, signColor, text, textColor) => h_flex().w_full().pr(10).when(Boolean(bg), (el) => el.bg(bg))
+    .child(div().w(40).flex_none().pr(8).text_right().text_color(p.muted).child(ln))
+    .child(div().w(16).flex_none().when(Boolean(signColor), (el) => el.text_color(signColor)).child(sign))
+    .child(div().flex_1().min_w(0).truncate().text_color(textColor ?? p.text).child(text || " "));
+  const rows = [row(p.raised, "", "", null, h.header, p.muted)];
+  for (const r of h.rows.slice(0, HUNK_ROWS)) {
+    if (r.kind === "a") rows.push(row(alpha(p.ok, 0x14 / 255), String(r.ln), "+", p.ok, r.text));
+    else if (r.kind === "d") rows.push(row(alpha(p.err, 0x14 / 255), String(r.ln), "−", p.err, r.text));
+    else rows.push(row(null, String(r.ln), "", null, r.text));
+  }
+  if (h.rows.length > HUNK_ROWS) rows.push(row(null, "", "", null, `… ${h.rows.length - HUNK_ROWS} more lines`, p.muted));
+  const path = typeof call.args?.path === "string" ? call.args.path : call.summary;
+  return v_flex().w_full().border(1).border_color(p.line).bg(p.surface).rounded(R.sm)
+    .child(summaryRow(v, p, id, [
+      mark(p, call, live),
+      div().flex_none().font_semibold().child(call.name),
+      div().flex_1().min_w(0).truncate().font_family(mono()).text_size(12).text_color(p.muted).child(path),
+      num(`+${patch.added}`, p.ok),
+      num(`−${patch.deleted}`, p.err),
+      chev(open),
+    ], true))
+    .when(open, (el) => el.child(v_flex().border_t(1).border_color(p.line)
+      .child(v_flex().py(4).font_family(mono()).text_size(12).line_height(1.6).children(rows))
+      .child(h_flex().justify_between().items_center().gap(8).px(10).py(6).border_t(1).border_color(p.line).text_size(12).text_color(p.muted)
+        .child(`Hunk ${at + 1} of ${patch.hunks.length}`)
+        .child(h_flex().gap(6)
+          .child(btn(p, `${id}-next`, "Next hunk", {
+            tip: patch.hunks.length > 1 ? null : "This edit has one hunk",
+            onClick: (_e, cx) => { v.hunkAt.set(id, (at + 1) % patch.hunks.length); cx.notify(); },
+          }))
+          // TODO(T6/T7): open this file in the inspector's Changes tab.
+          .child(btn(p, `${id}-changes`, "Open in Changes", { tip: `Open in Changes: ${T7}` }))))));
+}
+
+const AGENT_STATE = {
+  queued: ["queue", "Queued"], running: ["work", "Running"], starting: ["work", "Running"], waiting: ["need", "Waiting"],
+  completed: ["done", "Done"], failed: ["fail", "Failed"], timed_out: ["fail", "Timed out"], cancelled: ["idle", "Cancelled"],
+};
+
+// .sub (l.155-160): a subagent run, live from the snapshot's agents when it lists the task.
+function subagentCard(v, p, call, key) {
+  const a = call.args ?? {};
+  const started = call.result?.agent ?? null;
+  const live = started?.taskId ? v.snap?.agents?.items?.find((x) => x.id === started.taskId) : null;
+  const name = String(live?.name ?? started?.agent ?? a.agent ?? "agent");
+  const role = name.replace(/^gentle-ai-/, "").replace(/^gentle-/, "");
+  const title = a.label || firstLine(a.task) || name;
+  const status = live?.state ?? started?.status ?? (call.result ? (call.result.error ? "failed" : "completed") : "queued");
+  const [kind, label] = AGENT_STATE[status] ?? ["idle", status];
+  const model = prettyModel(live?.model ?? started?.model);
+  const cost = live?.spend?.cost;
+  const step = live?.step ?? started?.lastStep;
+  return v_flex().w_full().gap(4).px(12).py(10).border(1).border_color(p.lineStrong).rounded(R.md).bg(p.surface)
+    .child(h_flex().items_start().gap(12)
+      .child(v_flex().flex_1().min_w(0).gap(4)
+        .child(h_flex().gap(8).items_center().min_w(0).text_size(13).font_semibold()
+          .child(div().flex_none().font_family(mono()).text_size(11).text_color(p.accent).child(role.toUpperCase()))
+          .child(div().min_w(0).truncate().child(title)))
+        .child(h_flex().flex_wrap().gap(12).items_center().text_size(12).text_color(p.muted)
+          .child(stateLabel(p, kind, label))
+          .when(Boolean(model), (el) => el.child(div().child(model)))
+          .when(Number.isFinite(cost), (el) => el.child(num(money(cost))))))
+      // TODO(T7): View opens the subagent; Stop cancels it with the CLI's authority.
+      .child(h_flex().flex_none().gap(6).items_start()
+        .child(btn(p, `sub-view-${key}`, "View", { tip: `View: ${T7}` }))
+        .child(btn(p, `sub-stop-${key}`, "Stop", { danger: true, iconName: "stop", tip: `Stop: ${T7}` }))))
+    .when(Boolean(step) && step !== status, (el) => el.child(div().mt(2).pt(6).border_t(1).border_color(p.line)
+      .font_family(mono()).text_size(12).text_color(p.muted).truncate().child(`› ${step}`)));
+}
+
+// The options a pending question offers: its own, then "Something else…" when it takes a
+// typed answer. "(Recommended)" in a label becomes the badge.
+export function askOptions(pq) {
+  const opts = (pq?.options ?? []).map((o) => {
+    const raw = String(o.label ?? "");
+    const rec = /\s*\(recommended\)\s*$/i.test(raw);
+    return { label: raw.replace(/\s*\(recommended\)\s*$/i, ""), about: o.description ?? null, rec, custom: false };
+  });
+  if (opts.length && pq.custom) opts.push({ label: "Something else…", about: "Type your own answer in the composer.", rec: false, custom: true });
+  return opts;
+}
+
+// .ask (l.161-171): the open question, clickable options, keys 1–N.
+export function askCard(v, p, pq) {
+  const opts = askOptions(pq);
+  const done = v.answered;
+  const n = opts.length;
+  const foot = done
+    ? (opts[done.index]?.custom ? "Type your answer in the composer; it goes to this question." : `Answer sent: ${done.index + 1}. The agent continues.`)
+    : n ? `Press ${n === 1 ? "1" : `1–${n}`} or click · Esc answers later` : "Answer it in the Terminal view.";
+  const many = (pq.questions?.length ?? 0) > 1 ? ` · 1 of ${pq.questions.length}` : "";
+  const opt = (o, i) => {
+    const pressed = done?.index === i;
+    return h_flex().id(`ask-${i}`).w_full().min_h(44).items_start().gap(10).px(10).py(8).rounded(R.sm).border(1)
+      .border_color(pressed ? p.accent : p.line).bg(pressed ? p.selected : p.background)
+      .when(Boolean(done) && !pressed, (el) => el.opacity(0.55))
+      .when(!done, (el) => el.cursor_pointer().hover((st) => st.border_color(p.accent)).on_click((_e, cx) => v.answer(i, cx)))
+      .child(div().w(26).flex_none()
+        .child(div().w(22).h(22).flex().items_center().justify_center().border(1).border_color(p.lineStrong).rounded(R.inner)
+          .font_family(mono()).font_semibold().text_size(12).line_height(1).text_color(p.accentSoft).child(String(i + 1))))
+      .child(v_flex().flex_1().min_w(0).gap(1)
+        .child(h_flex().items_center().flex_wrap()
+          .child(div().font_semibold().text_size(13.5).child(o.label))
+          .when(o.rec, (el) => el.child(div().ml(8).font_family(mono()).font_semibold().text_size(10.5).line_height(1)
+            .text_color(p.accent).child("RECOMMENDED"))))
+        .when(Boolean(o.about), (el) => el.child(div().text_size(12.5).text_color(p.muted).child(o.about))));
+  };
+  // A 3px accent left edge on a 1px line-strong card: Herdr draws one border colour per
+  // element, so the accent is the outer fill showing through a 3px left inset, and the card
+  // keeps its top, right and bottom borders.
+  return h_flex().w_full().rounded(R.md).bg(p.accent).pl(3)
+    .child(v_flex().flex_1().min_w(0).gap(8).py(12).pl(14).pr(14).bg(p.surface)
+      .rounded_tl(R.md - 3).rounded_bl(R.md - 3).rounded_tr(R.md).rounded_br(R.md)
+      .border_t(1).border_r(1).border_b(1).border_color(p.lineStrong)
+      .child(div().font_family(mono()).font_semibold().text_size(11).line_height(1.4).text_color(p.accent)
+        .child(`QUESTION · THE AGENT WAITS FOR YOU${many.toUpperCase()}`))
+      .child(div().text_size(14.5).font_semibold().child(pq.header && pq.header !== pq.question ? `${pq.header}: ${pq.question}` : pq.question))
+      .when(n > 0, (el) => el.child(v_flex().mt(2).gap(6).children(opts.map(opt))))
+      .child(div().text_size(12).text_color(p.muted).child(foot)));
+}
+
+// ---------------------------------------------------------------- 4c composer (l.175-184)
+
+export function composer(v, p, pq) {
+  const field = h_flex().w_full().items_end().gap(8).pl(12).pr(8).py(8).border(1)
+    .border_color(v.typing ? p.accent : p.lineStrong).rounded(R.md).bg(p.background)
+    // TODO(T7): image attachments.
+    .child(h_flex().id("attach").w(32).h(32).flex_none().items_center().justify_center().rounded(R.sm).text_color(p.muted)
+      .hover((st) => st.bg(p.selected).text_color(p.text)).tooltip(`Attach image: ${T7}`).child(icon("clip", 15)))
+    .child(div().flex_1().min_w(0).key_context("GentleChatComposer").on_action("gentle_chat_send", (_e, cx) => v.send(cx))
+      .child(Textarea.new(v.input).w_full().h(42).text_size(14).line_height(1.5).text_color(p.text).bg(CLEAR)))
+    .child(h_flex().id("send").h(32).flex_none().items_center().gap(6).px(12).rounded(R.sm)
+      .bg(v.address ? p.accent : p.raised).text_color(v.address ? p.onAccent : p.faint).font_semibold().text_size(13)
+      .cursor_pointer().on_click((_e, cx) => v.send(cx))
+      .child(v.sending ? div().frames(SPINNER, 90) : icon("send", 13)).child("Send"));
+  const hint = (key, text) => h_flex().items_center().gap(3).child(kbd(p, key)).child(text);
+  return v_flex().id("composer").flex_none().px(16).pt(10).pb(12).border_t(1).border_color(p.line).bg(p.chrome)
+    .rounded_b(R.window - 1)
+    .child(v_flex().w_full().max_w(780).self_center()
+      .child(field)
+      .when(Boolean(v.error), (el) => el.child(div().mt(6).text_size(12).text_color(p.err).child(v.error)))
+      .child(h_flex().mt(6).gap(14).items_center().text_size(11.5).text_color(p.muted)
+        .child(hint("Enter", "send")).child(hint("⇧ Enter", "new line")).child(hint("/", "commands")).child(hint("⌘J", "Terminal"))
+        .child(div().flex_1())
+        .child(div().child("Esc Esc stops the agent"))));
+}

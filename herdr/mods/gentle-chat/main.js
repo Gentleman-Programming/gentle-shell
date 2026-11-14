@@ -1,47 +1,61 @@
-// Gentle Shell as a native chat (T1 spike, read side + prompt). Shows one Gentle Shell (pi)
-// terminal's conversation, read incrementally from its session JSONL, and sends what you type
-// with `hc send`. The terminal stays the real Gentle Shell TUI.
+// Gentle Shell as a native chat: the centre column of design/herdr-desktop/01-inspector.html
+// (T5). Shows one Gentle Shell (pi) terminal's conversation, read incrementally from its session
+// JSONL, with the session header and the pending question from the session's desktop snapshot
+// (docs/desktop-feed.md), and sends what you type with `hc send`. The terminal stays the real
+// Gentle Shell TUI; the header's Chat | Terminal switch flips the layout stack.
 // props: { terminal? } (else the focused / shown tab's Gentle Shell), and in a layout stack
 // { stack, self, other } for the Chat / Terminal switch (see herdr/layouts/gentle-shell.json).
+// Drawing: ui.js; colours, type and radii: tokens.js (shared with the T6 mods).
 
 import { View, div } from "gpui-kit";
-import { v_flex, h_flex, TextView, InputState, Input, ScrollHandle } from "gpui-base";
+import { v_flex, TextView, TextareaState, ScrollHandle } from "gpui-base";
 import { agents, terminals, focused, props, layout, hc, run, theme, watchFolder } from "herdr";
-import { sessionFileFor, readAfter } from "./session.js";
-import { createFeed, ingest, money } from "./feed.js";
+import { sessionFileFor, readAfter, feedDir } from "./session.js";
+import { createFeed, ingest } from "./feed.js";
+import { palette, sans, R } from "./tokens.js";
+import { header, entries, entry, lane, stateLabel, askCard, askOptions, composer } from "./ui.js";
 
 const APPS = new Set(["gentle-shell", "pi"]);
-const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const PAGE = 150; // items drawn at first; "Show earlier" adds this many
-const CLIP = 6000; // characters of a tool's args/result shown when expanded
-const MONO = "Menlo";
+const PAGE = 150; // entries drawn at first; "Show earlier" adds this many
+const TICK = 5000; // fallback refresh when a watch event is missed (both folders are watched)
+const PLACEHOLDER = "Message Gentle Shell…  / for commands";
+const PLACEHOLDER_ASK = "Answer above, or message Gentle Shell…  / for commands";
 
 const isGentle = (v) => typeof v === "string" && APPS.has(v);
-const fence = (lang, s) => {
-  const body = s.length > CLIP ? s.slice(0, CLIP) + "\n… (truncated)" : s;
-  return "```" + lang + "\n" + body.replace(/```/g, "ˋˋˋ") + "\n```";
-};
+const questionKey = (q) => (q ? `${q.toolCallId ?? ""}|${q.openedAt ?? ""}|${q.question ?? ""}` : null);
 
 export default class GentleChat extends View {
   init(_props, cx) {
     this.feed = createFeed();
+    this.snap = null; // the session's desktop snapshot (gentle-shell.desktop-feed/v1), or null
     this.address = null;
+    this.cwd = null;
     this.file = null;
     this.dir = null;
     this.pos = 0;
     this.watched = null;
+    this.feedWatch = false;
     this.loading = false;
     this.again = false;
     this.real = new Map(); // cwd -> real path, for sessionFileFor
-    this.open = new Set(); // expanded thinking / tool cards
+    this.open = new Map(); // card id -> open, when flipped from its default
+    this.hunkAt = new Map(); // diff card id -> shown hunk
     this.limit = PAGE;
-    this.stick = true; // scroll to the newest item after the next draw
+    this.stick = true; // scroll to the newest entry after the next draw
     this.error = null;
     this.sending = false;
+    this.typing = false; // the composer has the keyboard
+    this.permOpen = false;
+    this.answered = null; // { key, index } once an option of the open question was picked
     this.scroll = ScrollHandle.new();
-    this.input = InputState.new({ placeholder: "Message Gentle Shell…  (Enter sends)" });
-    this.input.on("submit", (e, cx) => { if (!e?.shift) this.send(cx); });
-    cx.timer.every(2000, (cx) => this.tick(cx)); // fallback when a watch event is missed
+    this.focus = cx.focus_handle();
+    this.makeInput(PLACEHOLDER);
+    // Enter sends, Shift+Enter is the Textarea's new line; ⌘J shows the Terminal.
+    cx.bind_keys([
+      { keystroke: "enter", action: "gentle_chat_send", context: "GentleChatComposer > Input" },
+      { keystroke: "cmd-j", action: "gentle_chat_terminal", context: "GentleChat" },
+    ]);
+    cx.timer.every(TICK, (cx) => this.tick(cx));
     this.tick(cx);
   }
 
@@ -59,22 +73,54 @@ export default class GentleChat extends View {
   }
 
   tick(cx) {
+    this.watchFeeds(cx);
     cx.spawn(async (cx) => { await this.refresh(cx); });
   }
 
-  // Finds the session file for the target terminal and reads what was added.
+  // Finds the session file and snapshot for the target terminal and reads what was added.
   async refresh(cx) {
     const term = this.target();
     const address = term?.address ?? null;
-    if (address !== this.address) { this.address = address; this.reset(null); cx.notify(); }
+    if (address !== this.address) { this.address = address; this.cwd = term?.cwd ?? null; this.reset(null); this.setSnap(null); cx.notify(); }
     if (!term) return;
-    if (String(address).includes("/")) { this.error = "Remote terminals are not read in this spike."; cx.notify(); return; }
+    if (String(address).includes("/")) { this.error = "Remote terminals are not read yet."; cx.notify(); return; }
     const where = await sessionFileFor(term, this.real);
     if (this.address !== address) return;
+    if (this.setSnap(where?.feed ?? null)) cx.notify();
     if (!where) return;
     if (where.dir !== this.dir) { this.dir = where.dir; this.watch(where.dir, cx); }
     if (where.file !== this.file) { this.reset(where.file); cx.notify(); }
     if (this.file) await this.load(cx);
+  }
+
+  // Keeps the newest snapshot; true when what it shows changed. A new or cleared question
+  // forgets the option picked for the old one.
+  setSnap(snap) {
+    const before = this.snap;
+    if (before?.updatedAt === snap?.updatedAt && before?.identity?.sessionId === snap?.identity?.sessionId) return false;
+    this.snap = snap;
+    const q = questionKey(snap?.pendingQuestion);
+    if (this.answered && this.answered.key !== q) this.answered = null;
+    if (q && q !== questionKey(before?.pendingQuestion)) this.stick = true;
+    // The state has no placeholder setter: an empty composer gets a fresh one.
+    const want = q ? PLACEHOLDER_ASK : PLACEHOLDER;
+    if (want !== this.placeholder && !this.typing && !this.input.value()) {
+      const old = this.input;
+      try {
+        this.makeInput(want);
+        old.release();
+      } catch {
+        this.input = old; // the old placeholder stays; nothing else depends on it
+      }
+    }
+    return true;
+  }
+
+  makeInput(placeholder) {
+    this.placeholder = placeholder;
+    this.input = TextareaState.new({ placeholder, rows: 2 });
+    this.input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
+    this.input.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
   }
 
   reset(file) {
@@ -82,7 +128,8 @@ export default class GentleChat extends View {
     this.file = file;
     this.pos = 0;
     this.limit = PAGE;
-    this.open = new Set();
+    this.open = new Map();
+    this.hunkAt = new Map();
     this.stick = true;
     this.error = null;
   }
@@ -100,6 +147,23 @@ export default class GentleChat extends View {
         }
       } catch {
         if (this.watched === dir) this.watched = null; // the timer keeps it fresh
+      }
+    });
+  }
+
+  // Wakes on any snapshot write (<agentDir>/desktop/sessions). Before the first Gentle Shell
+  // session creates the folder the watch fails; the next tick tries again.
+  watchFeeds(cx) {
+    if (this.feedWatch) return;
+    this.feedWatch = true;
+    cx.spawn(async (cx) => {
+      try {
+        for (;;) {
+          await watchFolder(feedDir());
+          await this.refresh(cx);
+        }
+      } catch {
+        this.feedWatch = false;
       }
     });
   }
@@ -154,146 +218,105 @@ export default class GentleChat extends View {
     });
   }
 
+  // Picks option `i` of the open question (a click, or keys 1–N).
+  answer(i, cx) {
+    const pq = this.snap?.pendingQuestion;
+    const address = this.address;
+    if (!pq || !address || this.answered) return;
+    const o = askOptions(pq)[i];
+    if (!o) return;
+    this.answered = { key: questionKey(pq), index: i };
+    cx.notify();
+    if (o.custom) { this.input.focus(); return; }
+    // TODO(T7): answer through the desktop action (same authority as the CLI). Until then the
+    // option's number is pressed in the TUI, then Enter as a fallback for a list that only moves.
+    cx.spawn(async (cx) => {
+      try {
+        const r = await hc(["keys", address, String(i + 1)]);
+        if (r.code !== 0) throw new Error((r.stderr || r.stdout || "hc keys failed").trim());
+        const e = await hc(["keys", address, "enter"]);
+        if (e.code !== 0) throw new Error((e.stderr || e.stdout || "hc keys failed").trim());
+      } catch (err) {
+        this.error = String(err?.message ?? err);
+        this.answered = null;
+      }
+      cx.notify();
+    });
+  }
+
+  stackProps() {
+    return props() ?? {};
+  }
+
   // In a layout stack: whether the chat is the shown child.
   showing() {
-    const { stack, self } = props() ?? {};
+    const { stack, self } = this.stackProps();
     if (!stack) return true;
     const find = (node) => (node?.id === stack ? node : (node?.children ?? []).map(find).find(Boolean));
     const node = find(layout());
     return (node?.active ?? node?.children?.[0]?.id) === self;
   }
 
-  toggle(key, cx) {
-    if (this.open.has(key)) this.open.delete(key); else this.open.add(key);
+  go(which, _cx) {
+    const { stack, self, other } = this.stackProps();
+    if (stack) run("layout.select", { stack, child: which === "chat" ? self : other });
+  }
+
+  isOpen(id, def) {
+    return this.open.has(id) ? this.open.get(id) : def;
+  }
+
+  toggle(id, def, cx) {
+    this.open.set(id, !this.isOpen(id, def));
     cx.notify();
   }
 
+  key(e, cx) {
+    if (this.typing || e.modifiers?.platform || e.modifiers?.control || e.modifiers?.alt) return;
+    const pq = this.snap?.pendingQuestion;
+    const n = Number(e.key);
+    if (pq && Number.isInteger(n) && n >= 1 && n <= askOptions(pq).length) { this.answer(n - 1, cx); cx.stop_propagation(); }
+  }
+
   render(_cx) {
-    const t = theme();
+    const p = palette(theme());
     const agent = this.address ? agents().find((a) => a.address === this.address) : null;
-    const working = agent?.status === "working";
-    const items = this.feed.items;
-    const from = Math.max(0, items.length - this.limit);
+    const working = agent?.status === "working" || this.snap?.activity?.state === "working";
+    const list = entries(this.feed.items);
+    const from = Math.max(0, list.length - this.limit);
     const rows = [];
     if (from > 0) {
-      rows.push(div().id("earlier").self_center().px(10).py(4).rounded(6).text_size(12).text_color(t.muted)
-        .cursor_pointer().hover((s) => s.bg(t.hover))
+      rows.push(div().flex_none().self_center().child(div().id("earlier").px(10).py(3).rounded(R.inner).text_size(12).text_color(p.muted)
+        .cursor_pointer().hover((s) => s.bg(p.selected))
         .on_click((_e, cx) => { this.limit += PAGE; cx.notify(); })
-        .child(`Show earlier (${from})`));
+        .child(`Show earlier (${from} ${from === 1 ? "message" : "messages"})`)));
     }
-    for (let i = from; i < items.length; i++) rows.push(this.item(items[i], t, working));
-    if (working) {
-      rows.push(h_flex().gap(6).text_size(12).text_color(t.working)
-        .child(div().frames(SPINNER, 90)).child("Working…"));
-    }
-    if (!rows.length) rows.push(this.empty(t));
+    for (let i = from; i < list.length; i++) rows.push(lane(entry(this, p, list[i], working && i === list.length - 1)));
+    const pq = this.snap?.pendingQuestion;
+    if (pq) rows.push(lane(askCard(this, p, pq)));
+    else if (working) rows.push(lane(stateLabel(p, "work", "Working")));
+    if (!rows.length) rows.push(lane(this.empty(p)));
     if (this.stick && rows.length) { this.scroll.scroll_to_item(rows.length - 1); this.stick = false; }
 
-    return v_flex().id("root").size_full().bg(t.background).text_color(t.foreground).text_size(13)
-      .child(this.header(t, agent, working))
+    return v_flex().id("root").size_full().min_h(0).bg(p.background).text_color(p.text).text_size(13).line_height(1.5)
+      .font_family(sans()).rounded(R.window - 1)
+      .key_context("GentleChat").track_focus(this.focus)
+      .on_key_down((e, cx) => this.key(e, cx))
+      .on_action("gentle_chat_terminal", (_e, cx) => this.go("terminal", cx))
+      .child(header(this, p))
       .child(v_flex().id("log").flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.scroll)
-        .px(18).py(14).gap(14).children(rows))
-      .child(this.composer(t));
+        .pt(18).pb(22).gap(14)
+        .on_mouse_down("left", () => this.focus.focus())
+        .children(rows))
+      .child(composer(this, p, pq));
   }
 
-  header(t, agent, working) {
-    const f = this.feed;
-    const { stack, self, other } = props() ?? {};
-    const dot = { working: t.working, blocked: t.blocked, done: t.done, idle: t.idle }[agent?.status] ?? t.unknown;
-    const chip = (text, color) => div().px(7).py(2).rounded(6).bg(t.raised).text_size(11).text_color(color ?? t.muted).child(text);
-    const seg = (id, label, active, onClick) => div().id(id).px(10).py(3).rounded(6).text_size(12)
-      .text_color(active ? t.foreground : t.muted).when(active, (el) => el.bg(t.selected))
-      .cursor_pointer().hover((s) => s.bg(t.hover)).on_click(onClick).child(label);
-    const showing = this.showing();
-    return h_flex().id("header").h(40).flex_shrink_0().px(14).gap(8).items_center().justify_between()
-      .bg(t.chrome).border_b(1).border_color(t.border)
-      .child(h_flex().gap(8).items_center().min_w(0)
-        .child(working ? div().text_color(t.working).frames(SPINNER, 90) : div().w(8).h(8).rounded_full().bg(dot))
-        .child(div().font_semibold().truncate().child(f.name ?? "Gentle Shell"))
-        .child(div().text_size(11).text_color(t.dim).child(this.address ?? "no terminal")))
-      .child(h_flex().gap(6).items_center().flex_shrink_0()
-        .when(Boolean(f.model), (el) => el.child(chip(f.model)))
-        .when(Boolean(f.thinking), (el) => el.child(chip(`think ${f.thinking}`)))
-        .child(chip(money(f.total), t.foreground))
-        .when(Boolean(stack), (el) => el.child(h_flex().gap(2).p(2).rounded(8).border(1).border_color(t.border)
-          .child(seg("sw-chat", "Chat", showing, (_e, _cx) => run("layout.select", { stack, child: self })))
-          .child(seg("sw-term", "Terminal", !showing, (_e, _cx) => run("layout.select", { stack, child: other }))))));
-  }
-
-  empty(t) {
+  empty(p) {
     const msg = !this.address
       ? "No Gentle Shell terminal. Start one with `gentle-shell` in a terminal."
       : !this.file
         ? "Waiting for this session's first message…"
         : "No messages yet.";
-    return div().self_center().mt(40).text_color(t.muted).child(TextView.markdown("empty", msg));
-  }
-
-  item(item, t, working) {
-    if (item.kind === "user") {
-      return h_flex().justify_end().w_full()
-        .child(div().max_w("85%").px(12).py(8).rounded(12).bg(t.raised).border(1).border_color(t.border)
-          .child(TextView.markdown(`u-${item.id}`, item.text).selectable(true)));
-    }
-    if (item.kind === "note") {
-      return div().px(10).py(6).rounded(8).border_l(2).border_color(t.accent).bg(t.surface).text_size(12)
-        .child(TextView.markdown(`n-${item.id}`, item.text).selectable(true));
-    }
-    const parts = item.blocks.map((b, k) => this.block(item, b, k, t, working));
-    if (item.error) parts.push(div().text_size(12).text_color(t.blocked).child(`⚠ ${item.error}`));
-    if (item.cost) {
-      parts.push(h_flex().gap(8).text_size(11).text_color(t.dim)
-        .when(Boolean(item.model), (el) => el.child(item.model))
-        .child(money(item.cost)));
-    }
-    return v_flex().gap(8).w_full().children(parts);
-  }
-
-  block(item, b, k, t, working) {
-    const key = `${item.id}-${k}`;
-    if (b.type === "text") return div().w_full().child(TextView.markdown(`a-${key}`, b.text).selectable(true));
-    if (b.type === "thinking") {
-      const open = this.open.has(`th-${key}`);
-      return v_flex().gap(4)
-        .child(h_flex().id(`th-${key}`).gap(6).text_size(12).text_color(t.dim).italic().cursor_pointer()
-          .hover((s) => s.text_color(t.muted))
-          .on_click((_e, cx) => this.toggle(`th-${key}`, cx))
-          .child(open ? "▾" : "▸").child("Thinking"))
-        .when(open, (el) => el.child(div().pl(10).border_l(2).border_color(t.border).opacity(0.8)
-          .child(TextView.markdown(`tht-${key}`, b.text).selectable(true))));
-    }
-    return this.toolCard(b.call, key, t, working);
-  }
-
-  toolCard(call, key, t, working) {
-    const open = this.open.has(`tool-${key}`);
-    const r = call.result;
-    const mark = r ? div().text_color(r.error ? t.blocked : t.done).child(r.error ? "✕" : "✓")
-      : working ? div().text_color(t.working).frames(SPINNER, 90) : div().text_color(t.dim).child("•");
-    return v_flex().w_full().rounded(8).border(1).border_color(r?.error ? t.blocked : t.border).bg(t.surface)
-      .child(h_flex().id(`tool-${key}`).gap(8).px(10).py(6).items_center().cursor_pointer()
-        .hover((s) => s.bg(t.hover))
-        .on_click((_e, cx) => this.toggle(`tool-${key}`, cx))
-        .child(mark)
-        .child(div().font_semibold().text_size(12).flex_shrink_0().child(call.name))
-        .child(div().flex_1().min_w(0).truncate().font_family(MONO).text_size(12).text_color(t.muted).child(call.summary))
-        .child(div().text_size(11).text_color(t.dim).child(open ? "▾" : "▸")))
-      .when(open, (el) => el.child(v_flex().gap(6).px(10).pb(8).border_t(1).border_color(t.border).text_size(12)
-        .child(div().pt(6).text_color(t.dim).child("Arguments"))
-        .child(TextView.markdown(`ta-${key}`, fence("json", JSON.stringify(call.args, null, 2) ?? "")).selectable(true))
-        .child(div().text_color(t.dim).child(r ? (r.error ? "Error" : "Result") : "No result yet"))
-        .when(Boolean(r), (e2) => e2.child(TextView.markdown(`tr-${key}`, fence("", r.text || "(empty)")).selectable(true)))));
-  }
-
-  composer(t) {
-    return v_flex().flex_shrink_0().gap(6).px(14).py(10).bg(t.chrome).border_t(1).border_color(t.border)
-      .when(Boolean(this.error), (el) => el.child(div().text_size(12).text_color(t.blocked).child(this.error)))
-      .child(h_flex().gap(8).items_center()
-        .child(div().flex_1().min_w(0).px(10).py(6).rounded(10).bg(t.background).border(1).border_color(t.input)
-          .child(Input.new(this.input)))
-        .child(div().id("send").px(14).py(6).rounded(10).bg(this.address ? t.solid : t.raised)
-          .text_color(this.address ? t.solid_foreground : t.dim).font_semibold().cursor_pointer()
-          .on_click((_e, cx) => this.send(cx))
-          .child(this.sending ? div().frames(SPINNER, 90) : div().child("Send"))));
+    return div().mt(40).text_color(p.muted).child(TextView.markdown("empty", msg));
   }
 }

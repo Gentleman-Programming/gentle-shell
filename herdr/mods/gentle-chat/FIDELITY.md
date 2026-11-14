@@ -1,0 +1,172 @@
+# gentle-chat: fidelity to design/herdr-desktop/01-inspector.html (T5, S8)
+
+The centre column of the chosen artboard (A · Inspector, region 4: `4a` header, `4b` log, `4c`
+composer) as built by `main.js` + `ui.js` + `tokens.js`. "l.N" is the line in
+`design/herdr-desktop/01-inspector.html`.
+
+## How this was checked
+
+- Artboard: headless Chrome at 1600×1100 (`--headless=new --screenshot`), centre column cropped
+  at its measured box. Measured with `getBoundingClientRect` in the same render (CSS px):
+
+  | Box | Size |
+  |---|---|
+  | `.views` (the chat card, with its 1px border) | 950 × 912 |
+  | `.chat-head` | 948 × 76 (row 1 30, row 2 26) |
+  | `.log` | 948 × 728 |
+  | `.composer` | 948 × 107 |
+  | `.field` | 780 × 60 |
+  | `.seg` (Chat \| Terminal) | 161 × 30 |
+  | `.perm > summary` | 84 × 26 |
+  | `.send` | 75 × 32 |
+  | `.ask`, `.sub`, `.tool` | 724 wide (780 lane − 2 × 28) |
+
+- Mod: `herdr-app check herdr/mods/gentle-chat` (the real mod, empty state) and, in a scratch
+  copy outside the repo, a fixture subclass fed the artboard's demo session (user message,
+  thinking, 2 reads + 1 grep, markdown, an edit with a patch, bash, a `subagent_run`, the
+  snapshot with model/context/cost/permission/question) through `herdr-app check --print-spec`,
+  once with the live theme and once with `palette({})` to print the artboard hexes. Every value
+  below was read back from that spec. A second fixture checked the answered question
+  (pressed option, others at 0.55, "Answer sent: 2. The agent continues."), the Super-YOLO pill
+  (`#e0c27a` text, `#e0c27a99` border, `#e0c27a14` fill) and the empty context ("—").
+- Not done here: a screenshot of the mod. `herdr-app shot` needs the running window; a second
+  window on a scratch `HERDR_APP_HOME` would share herdr-core and its layout document with the
+  person's live window, so it was not started. The live side-by-side is the parent's step.
+
+## Colours
+
+`tokens.js` reads a Herdr theme role when the token has one and the layout sets it, else the
+hex. `LAYOUT_COLORS` is the layout root `"colors"` that makes the roles equal these values (T6).
+
+| Token | Value | Role | Source |
+|---|---|---|---|
+| background (card surface: root, question options, composer field) | `#060407` | background | `--canvas` l.15 on `.views` l.258, `.ask-opt` l.164, `.field` l.177 |
+| canvas (behind the cards; not drawn by the chat) | `#060407` | canvas | l.15 |
+| chrome (header, composer) | `#100A0F` | chrome | l.16, `.chat-head` l.259, `.composer` l.175 |
+| surface (tool, diff, subagent, question cards) | `#20161e` | surface | l.17, l.135, l.155, l.161 |
+| raised (menu, ctx groove, hunk header) | `#241822` | raised | l.18, l.89, l.107, l.151 |
+| user (bubble) | `#2A1523` | — | l.19, l.121 |
+| selected (pressed seg, hovers, answered option) | `#28121E` | selected / hover | l.20, l.98, l.109, l.137, l.169 |
+| line (header/composer rules, tool cards, options) | `#2A1720` | border | l.21 |
+| lineStrong (seg, perm pill, bubble, sub, ask, kbd, field) | `#563040` | input | l.22 |
+| text | `#f6eff3` | foreground | l.23 |
+| muted | `#a78e9b` | muted | l.24 |
+| faint (crumb separators) | `#76616b` | dim | l.25, l.264 |
+| accent (send, ask edge, eyebrow, role, checked) | `#f095c8` | accent | l.26 |
+| accentSoft (option numbers, button hover) | `#ffb1dd` | — | l.27, l.166 |
+| ok (✓, +N, added rows) | `#b4e7c7` | done | l.28 |
+| warn (YOLO pill) | `#e0c27a` | blocked | l.29, l.106 |
+| err (✕, −N, deleted rows, Super-YOLO, Stop hover) | `#ff718f` | — | l.30 |
+| info (ctx fill, Running) | `#a9c7ee` | working | l.31 |
+| onAccent (Send label) | `#1a1218` | — | l.183 |
+| btnLine (`.btn` border) | `#ffffff17` | — | l.92 |
+| YOLO pill border / fill | warn `99` / warn `14` | — | l.106 |
+| added / deleted row fill | ok `14` / err `14` | — | l.152-153 |
+
+## Type
+
+| Element | Size / weight / line | Source |
+|---|---|---|
+| Root | 13px, line 1.5, sans | `body` l.38 |
+| Sans | first installed of Inter, SF Pro Text, SF Pro, `.SystemUIFont` | `--sans` l.32 |
+| Mono | first installed of IosevkaTerm NF, Iosevka Term, JetBrains Mono, SF Mono, Menlo | `--mono` l.33 |
+| Session title | 14px semibold | `.who h1` l.262, l.371 |
+| Crumbs, facts, seg, perm pill | 12px | l.263, l.265, l.97, l.104 |
+| Numbers (ctx %, cost, +N/−N, sub cost) | mono | `.num` l.50 |
+| Perm menu label / about | 13px semibold / 12px muted | l.110 |
+| Bubble | 14px, line 1.55 | l.121 |
+| User meta "You · 14:02" | 11.5px muted | l.122 |
+| Reply markdown | 14px, line 1.6 | `.md` l.124 |
+| Thinking summary / body | 12.5px italic muted / 13px muted | l.132, l.134 |
+| Tool summary / args | 12.5px; name semibold; args mono 12px muted | l.136-139 |
+| Tool body | mono 12px, line 1.55 | l.141-142 |
+| Tool group summary | 12.5px muted | l.143 |
+| Hunk | mono 12px, line 1.6 | l.147 |
+| Diff foot | 12px muted | l.154 |
+| Subagent title / role / facts / last | 13px semibold / mono 11px accent upper / 12px muted / mono 12px muted | l.156-159 |
+| Question eyebrow | mono semibold 11px, line 1.4, accent, upper | l.100, l.455 |
+| Question | 14.5px semibold | l.162 |
+| Option label / about / number / badge | 13.5px semibold / 12.5px muted / mono semibold 12px accentSoft line 1 / mono semibold 10.5px accent line 1 | l.166-168 |
+| Question foot | 12px muted | l.170 |
+| Composer text | 14px, line 1.5 | l.179 |
+| Send | 13px semibold | l.183 |
+| Hints / kbd | 11.5px muted / mono 11px muted | l.184, l.47 |
+| State label | 12px | l.79 |
+
+## Sizes, spacing, radii
+
+| Element | Values | Source |
+|---|---|---|
+| Card corners | root 9 (inside the layout block's 1px border at radius 10); header top 9, composer bottom 9 | `.views` l.258 |
+| Header | padding 8 / 14 / 7, gap 4 between rows, 1px bottom rule; rows: space-between, gap 16; row 1 min 30 | l.259-260 |
+| Seg | padding 2, gap 2, 1px border, radius 8; buttons 3 / 10 with icon 13 + gap 6, radius 6; pressed: selected fill + 1px lineStrong ring (drawn as a border, padding 2 / 9 so the size stays 24) | l.96-98 |
+| Crumbs | gap 6, margin-top 1, icons 13 | l.263 |
+| Facts row | gap 14; each fact padding 3 / 4, radius 6, gap 6 | l.265-266 |
+| Ctx bar | 46 × 4, pill | l.89, l.269 |
+| Perm pill | padding 3 / 9, pill, 1px border, gap 6, icons 13 | l.104 |
+| Perm menu | 330 wide, padding 6, radius 12, 6 below the pill, right-aligned; items padding 7 / 8, radius 6, 18px check column, gap 8 / 2 | l.107-108 |
+| Log | padding 18 top, 22 bottom; lanes max 780 with 28 sides, centred; gap 14 | l.115-116 |
+| Show earlier | padding 3 / 10, radius 6, 12px muted | l.118 |
+| User message | right, max 82%, gap 4; bubble padding 9 / 13, radius 12, 1px lineStrong | l.120-121 |
+| Reply | blocks gap 10 | l.123 |
+| Thinking body | margin 6 top, 6 left, 12 left padding, 2px lineStrong rule | l.134 |
+| Tool card | 1px line, radius 8; summary padding 7 / 10, gap 8; body padding 8 / 10 / 10 under a 1px rule | l.135-141 |
+| Tool group | summary gap 8, padding 2 / 0; cards gap 6, 8 below | l.143-145 |
+| Diff | body padding 0; hunk padding 4 / 0; columns 40 (right, 8 padding) / 16 / rest, 10 right; foot padding 6 / 10, gap 8 | l.146-154 |
+| Buttons | padding 5 / 10, radius 8, gap 6 | l.92 |
+| Subagent card | 1px lineStrong, radius 12, padding 10 / 12, gap 4 / 12; title gap 8; facts gap 12; actions gap 6; last line 6 top padding, 2 top margin, 1px line rule | l.155-160 |
+| Question card | radius 12, 1px lineStrong, 3px accent left edge, padding 12 / 14, gap 8; options gap 6, 2 above | l.161-163 |
+| Option | min 44 tall, padding 8 / 10, radius 8, 1px line; number column 26 with a 22 × 22 box, radius 6; gap 10 / 1; badge 8 left | l.164-168 |
+| Answered | pressed: accent border + selected fill; others opacity 0.55 | l.169, l.171 |
+| Composer | padding 10 / 16 / 12, 1px top rule; inner max 780 centred | l.175-176 |
+| Field | padding 8 / 8 / 8 / 12, 1px lineStrong (accent while typing), radius 12, bottom-aligned, gap 8 | l.177-178 |
+| Attach | 32 × 32, radius 8, icon 15 | l.181 |
+| Textarea | 42 tall (2 rows) | l.179 |
+| Send | 32 tall, padding 0 / 12, radius 8, gap 6, icon 13 | l.183 |
+| Hints | 6 above, gap 14; kbd padding 0 / 5, radius 5; "Esc Esc stops the agent" pushed right | l.184, l.501 |
+| State dot | 7px (pulse 1.6 s, 0.35 ↔ 1, native `loop`); idle/queue ring 8px with a 1.5 border (pseudo-element, outside `* {box-sizing}`), queue dashed | l.79-88 |
+| Icons | the artboard's symbols (`icons/*.svg`, stroke 1.75), 13 (`.i.s`) or 15 (`.i`) | l.43-44, l.289-319 |
+
+## States and content
+
+- Header data is the T4 snapshot (`docs/desktop-feed.md`): `identity.sessionName`, `project`
+  (cwd basename, branch, dirty), `model` (id shortened `claude-opus-5-5` → "Opus 5.5", effort,
+  profile name), `persona`, `context`, `cost.total`, `permission`. Without a snapshot the session
+  JSONL gives the name, model, thinking level and summed cost.
+- Empty fields never say "null": no persona → "No persona" (muted); no context → empty bar and
+  "—"; no model → "—"; no permission → "—"; no branch → the branch crumb is left out;
+  `dirty: 0` → "clean"; no project → "No project".
+- Thinking: "Thought for Ns" from the reply's write time minus its start (the whole message,
+  not only the thinking); "Thinking…" while the newest reply is still streaming.
+- Tool group: two or more consecutive `read` / `grep` / `find` / `glob` / `ls` calls become
+  "✓ Explored · 2 reads, 1 search  0.9s" (the artboard's "the spike" is model prose we do not
+  have). Read and search cards add "· N lines" / "· N matches"; bash adds its last output line
+  and the time.
+- Diff card: an `edit` whose result carries `details.patch`; open by default; "+N −M" from the
+  patch; one hunk at a time, "Next hunk" cycles; 80 rows per hunk, then "… N more lines".
+- Subagent card: a `subagent_run` call; live state, step, model and spend from the snapshot's
+  `agents.items` matched by the run's `taskId`, else the run's own result. Role = the agent
+  name without `gentle-ai-`. No elapsed time or todo count (the snapshot has neither yet).
+- Question card: `pendingQuestion` from the snapshot; "(Recommended)" in a label becomes the
+  badge; `custom` adds "Something else…"; keys 1–N while the composer does not have the
+  keyboard; a questionnaire shows its first question and "· 1 OF N".
+
+## Differences Herdr cannot draw (or that wait for another task)
+
+| Artboard | Here | Why |
+|---|---|---|
+| `letter-spacing: .1em` / `.08em` on eyebrows, role and badge | none | GPUI has no letter spacing |
+| `text-transform: uppercase` | the string is upper-cased in code | same look |
+| `font-variant-numeric: tabular-nums` | the mono font's own figures | no font features |
+| Chevron rotates 90° in 0.15 s | the chevron swaps to the down chevron | no rotate transform |
+| Pressed seg `box-shadow: inset 0 0 0 1px` | a 1px border, 1px less padding | no inset shadow; same box |
+| Question card `border-left: 3px accent` with 1px on the other sides | accent fill behind a 3px left inset; the card has top/right/bottom borders | one border colour per element |
+| Perm menu `box-shadow: 0 12px 28px #00000080` | `shadow_lg` | preset shadows only |
+| `.md code` accent-soft on raised, `.md strong` colour, list indent 22 | Herdr's markdown styles from the theme | `TextView.markdown` uses theme colours (spike constraint) |
+| Thinking body text muted | the muted colour is set on the block; markdown may keep the theme foreground | same |
+| Textarea placeholder colour muted | the Textarea's own placeholder colour | not styleable from a script |
+| Hunk rows `white-space: pre` with ellipsis | one-line truncated text | GPUI truncates with an ellipsis; leading spaces kept |
+| `:focus-visible` outline | none | keyboard focus is shown by the field border only |
+| Model / Persona open `/gentle:models`, `/gentle:persona`; permission items switch mode; View / Stop; Open in Changes; attach image; "Esc Esc" | drawn with their tooltips; no action | T7 (marked `TODO(T7)` in the code) |
+| Clicking an option answers through an action | presses the number in the TUI, then Enter (`hc keys`) | T7 replaces it (`TODO(T7)` in `main.js`) |
+| Fonts on the reference machine | Inter is not installed, so the artboard renders in the system font; the mod picks the same stack | `fonts()` decides at run time. Under `herdr-app check` it returns an empty list, so the check prints the stacks' last entries (`.SystemUIFont`, `Menlo`); IosevkaTerm NF is installed here, so the window should pick it: confirm in the live shot |

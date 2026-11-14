@@ -35,6 +35,7 @@ export interface TowerPublisherOptions {
 	reviewCli?: (args: string[], cwd: string) => Promise<string>;
 }
 
+const LIVE_HELPER = new Set(["queued", "running", "waiting"]);
 const QUESTION_EVENTS = ["gentle-pi:ask-user-question:blocked", "gentle-pi:ask-user-choice:blocked"];
 /** Strictness order: the web may only move a floor down this list, never up. */
 const MODE_RANK: Record<string, number> = { normal: 0, auto: 1, yolo: 2, "super-yolo": 3 };
@@ -84,7 +85,8 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 			const branch = ctx.sessionManager.getBranch() as readonly unknown[];
 			const stats = collectSessionStats(branch);
 			const usage = ctx.getContextUsage?.();
-			const listed = (agents?.read().agents ?? []) as unknown as TowerAgentInput[];
+			// The agents service keeps finished tasks as history; only live helpers are on the floor.
+			const listed = ((agents?.read().agents ?? []) as unknown as TowerAgentInput[]).filter((a) => LIVE_HELPER.has(String(a.status)));
 			writeTowerSnapshot(dir, buildTowerSnapshot({
 				sessionId,
 				sessionName: ctx.sessionManager.getSessionName(),

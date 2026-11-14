@@ -284,3 +284,21 @@ test("the floor carries the orchestrator's latest words, bounded", async () => {
 	assert.doesNotMatch(said, /hidden|old reply/);
 	await fire("session_shutdown", ctx);
 });
+
+test("only live helpers are on the floor; finished ones leave the building", async () => {
+	const dir = hub();
+	const base = fakePi();
+	const events = (base.pi as unknown as { events: { on(n: string, fn: (d: unknown) => void): () => void } }).events;
+	const entry = (id: string, status: string) => ({ id, agent: "gentle-ai-explore", status, model: "m", lastStep: "reading", usage: { total: 1, cost: 0 } });
+	events.on("gentle:desktop:agents-service", (req) => (req as { respond(a: unknown): void }).respond({
+		schema: DESKTOP_AGENTS_SERVICE_SCHEMA,
+		read: () => ({ sessionId: "sess-1", agents: [entry("q", "queued"), entry("r", "running"), entry("w", "waiting"), entry("c", "completed"), entry("f", "failed"), entry("x", "cancelled"), entry("t", "timed_out")] }),
+		observe: () => () => {}, cancel: async () => true, dispose() {},
+	}));
+	createTowerPublisher(base.pi, { env: { GENTLE_TOWER_HOME: dir }, debounceMs: 0, reviewCli: async () => "{}" });
+	const ctx = fakeCtx([assistant(0.1)]);
+	await base.fire("session_start", ctx);
+	await wait(180);
+	assert.deepEqual(readTowerSnapshots(dir)[0].subagents.map((a) => a.id), ["q", "r", "w"]);
+	await base.fire("session_shutdown", ctx);
+});

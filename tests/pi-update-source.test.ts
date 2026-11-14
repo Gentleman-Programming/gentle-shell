@@ -162,6 +162,42 @@ test('source npm keeps its update unchanged and never reads the Pi manifest', as
  assert.ok(!f.updates[0].args.some(arg => arg.includes('minimum-release-age')));
 });
 
+test('source pnpm treats JSON null exclusions like [] without changing configuration', async t => {
+ for (const excludeOutput of ['null\n', '[]\n']) {
+  const f = await fixture(t, {configOnly:true, excludeOutput});
+  let exitCode, stderr = '';
+  try { exitCode = await updateSelectedPi(f.input); }
+  catch (error) { exitCode = 1; stderr = `${error instanceof Error ? error.message : String(error)}\n`; }
+  assert.deepEqual({exitCode, stdout:f.output.join('\n') + (f.output.length ? '\n' : ''), stderr},
+   {exitCode:0, stdout:`pnpm updated ${PI} in ${f.root}; the selected Pi is now 1.1.0 (was 1.0.0).\n`, stderr:''});
+  assert.deepEqual(f.updates, [{command:'/fake/pnpm', args:['update', `${PI}@1.1.0`, '--no-save', '--ignore-scripts', '--global=false',
+   '--dir', f.root, '--lockfile-dir', f.root, '--recursive=false', '--ignore-pnpmfile', '--workspace-root', '--pm-on-fail=ignore',
+   `--config.minimum-release-age-exclude=${PI}`, `--config.minimum-release-age-exclude=${PI}`], cwd:f.root,
+   env:{COREPACK_ENABLE_PROJECT_SPEC:'0', COREPACK_ENABLE_NETWORK:'0'}}]);
+  assert.deepEqual(f.calls.find(call => call.args.includes('minimumReleaseAgeExclude')),
+   {command:'/fake/pnpm', args:['config', 'get', 'minimumReleaseAgeExclude', '--json', '--dir', f.root, '--pm-on-fail=ignore'], cwd:f.root,
+    env:{COREPACK_ENABLE_PROJECT_SPEC:'0', COREPACK_ENABLE_NETWORK:'0'}});
+  const after = await f.snapshot();
+  assert.deepEqual(after, {...f.before, peer:JSON.stringify({name:PI, version:'1.1.0', bin:{pi:CLI}})});
+ }
+});
+
+for (const response of [
+ {code:1, stdout:'null'}, {code:0, stdout:'null', truncated:true},
+ {code:0, stdout:'{'}, {code:0, stdout:'{}'}, {code:0, stdout:'["ok", 1]'}, {code:0, stdout:'[""]'},
+]) test(`source pnpm preserves exclusion query rejection: ${JSON.stringify(response)}`, async t => {
+ const f = await fixture(t, {configOnly:true});
+ const run = f.input.adapters.run;
+ f.input.adapters.run = async (command, args, options) => args.includes('minimumReleaseAgeExclude') ? response : run(command, args, options);
+ let exitCode, stderr = '';
+ try { exitCode = await updateSelectedPi(f.input); }
+ catch (error) { exitCode = 1; stderr = `${error instanceof Error ? error.message : String(error)}\n`; }
+ assert.deepEqual({exitCode, stdout:f.output.join('\n'), stderr},
+  {exitCode:1, stdout:'', stderr:'gentle-shell update: pnpm release-age exclusions could not be verified. No installation changed.\n'});
+ assert.deepEqual(f.updates, []);
+ assert.deepEqual(await f.snapshot(), f.before);
+});
+
 test('source pnpm safely handles an empty release-age exclusion list', async t => {
  const f = await fixture(t, {excludeOutput:''});
  assert.equal(await updateSelectedPi(f.input), 0);

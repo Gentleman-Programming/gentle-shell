@@ -209,6 +209,31 @@ test('global pnpm keeps existing release-age exclusions and excludes only Pi add
  assert.ok(!f.mutations[0].some(arg => /^--(?:config\.)?minimum-release-age=/.test(arg)));
 });
 
+for (const runtime of ['path', 'adjacent']) test(`global pnpm ${runtime} treats JSON null exclusions like []`, async () => {
+ for (const excludeOutput of ['null\n', '[]\n']) {
+  const f = fixture({runtime, excludeOutput});
+  const result = await captureUpdate(f.input, f.out);
+  const spec = runtime === 'path' ? `${PI}@1.2.0` : 'gentle-pi@4.1.0';
+  assert.deepEqual(f.mutations, [['add', '-g', spec, ...(runtime === 'path' ? [] : ['--allow-build=gentle-pi']),
+   `--config.minimum-release-age-exclude=${PI}`, `--config.minimum-release-age-exclude=${PI}`]]);
+  assert.deepEqual(f.state, runtime === 'path' ? {peer:'1.1.0', group:'1.2.0'} : {peer:'1.2.0', group:'1.1.0'});
+  assert.deepEqual(result, {exitCode:0, stdout:`pnpm installed ${spec}; the selected Pi is now 1.2.0 (was 1.1.0).\n`, stderr:''});
+  assert.deepEqual(f.probes.find(args => args.includes('config')), ['config', 'get', 'minimumReleaseAgeExclude', '--json', '--global']);
+ }
+});
+
+for (const response of [
+ {code:1, stdout:'null'}, {code:0, stdout:'null', truncated:true},
+ {code:0, stdout:'{'}, {code:0, stdout:'{}'}, {code:0, stdout:'["ok", 1]'}, {code:0, stdout:'[""]'},
+]) test(`global pnpm preserves exclusion query rejection: ${JSON.stringify(response)}`, async () => {
+ const f = fixture({runtime:'path'});
+ const run = f.input.adapters.run;
+ f.input.adapters.run = async (command, args, options) => args.includes('config') ? response : run(command, args, options);
+ assert.deepEqual(await captureUpdate(f.input, f.out), {exitCode:1, stdout:'', stderr:'gentle-shell update: pnpm release-age exclusions could not be verified. No installation changed.\n'});
+ assert.deepEqual(f.mutations, []);
+ assert.deepEqual(f.state, {peer:'1.1.0', group:'1.1.0'});
+});
+
 for (const npm of [false, true]) test(`global ${npm ? 'npm' : 'pnpm'} refuses a nonstable latest tag without mutation`, async () => {
  const f = fixture({npm, latest:'1.3.0-rc.1'});
  await assert.rejects(updateSelectedPi(f.input), /latest published Pi.*rejected/);

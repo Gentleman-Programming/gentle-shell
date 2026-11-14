@@ -6985,6 +6985,9 @@ async function openProfilesPanelLoop(
 					// snapshot; this action, including its save, waits until it answers.
 					if (!beginDesktopProfileApply()) {
 						feedback = "Gentle Desktop is applying a profile right now; nothing was saved or applied. Try again when it finishes.";
+						// Keep what is on screen: the next visit shows the same unsaved edits.
+						if (result.config) draftOverride = cloneModelConfig(result.config);
+						modeDraftOverride = result.orchestratorMode;
 						continue;
 					}
 					try {
@@ -7013,6 +7016,7 @@ async function openProfilesPanelLoop(
 					// snapshot; this action, including its save, waits until it answers.
 					if (!beginDesktopProfileApply()) {
 						feedback = "Gentle Desktop is applying a profile right now; nothing was saved or applied. Try again when it finishes.";
+						draftOverride = cloneModelConfig(result.config);
 						continue;
 					}
 					try {

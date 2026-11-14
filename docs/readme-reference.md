@@ -737,7 +737,7 @@ Size and uncertainty can call for scoped exploration or delegation within ODD. T
 
 A context file such as a gentle-ai managed `~/AGENTS.md` can carry another orchestrator's policy. While Gentle Shell injects its own orchestrator prompt, the primary session drops the orchestrator-only managed blocks (the set listed in `lib/child-context-files.ts`) from the loaded context files, as delegated children already do. When the primary runs without Gentle Shell's orchestrator prompt, nothing is dropped.
 
-The `engram-protocol` managed block is deduplicated, never removed. When more than one loaded context file carries it, the primary (with Gentle Shell's orchestrator) and delegated children keep only the copy in the file nearest to the working directory, the same precedence Pi gives context files, and drop the copies in its ancestor directories. A single copy is always kept. Copies in the same directory, or in files outside the working directory's ancestor chain, are all kept. This does not depend on gentle-engram, whose own injected protocol is untouched.
+The `engram-protocol` managed block is dropped the same way, on the primary session and in delegated children, because gentle-engram injects its own memory protocol every turn. Only the injected context loses it: every file on disk keeps the block byte-for-byte, so a runtime that reads the same file as a workspace file and carries no runtime-injected protocol (OpenClaw) still gets it.
 
 Text outside managed markers, other managed blocks, and kept blocks nested inside a dropped one, such as `remote-authorization`, stay byte-for-byte. Files with unbalanced or ambiguous markers stay unchanged. The files on disk are never modified.
 
@@ -939,7 +939,7 @@ The host grant is held only in a schema-checked `globalThis[Symbol.for(...)]` We
 
 When RDD is on and an agent loop ends with an unreviewed candidate that the native assessment reports `review_due` (high risk), `gentle-pi` sends one read-only reminder pointing the agent back to `gentle_review {"operation":"inspect"}` before it reports completion. A candidate the assessment reports not due (medium or passive, already covered by verify) earns no reminder; an assessment that cannot answer keeps it. This nudge is idempotent (at most once per target identity per session), never fires for a headless session or a subagent's own loop, and never runs START or answers consent itself. Pi treats a child `agent_end` as a latest-answer update, not completion: queued retry, compaction, follow-up, required verification, and legitimate post-correction verification remain live until `agent_settled`. It does not claim ready or RDD-ready first, but this ordering rule does not impose a universal full-suite requirement or turn a receipt into a delivery gate. At session start, `gentle-pi` records the current target identity as a baseline, so a candidate that already existed before the session began (the user's own prior work, not this session's output) never draws the reminder.
 
-While RDD is not off, the parent runs an ordinary native review with `gentle_review_run`: one call follows the provider-issued transitions from assess to the acknowledged approval. It returns `closed` after the verified acknowledgement, or stops with `not-due`, `assessment-unavailable`, `request-context-requires-fresh-review`, `consent-required`, `input-required` (a correction plan), `selection-required` (an intended-untracked selection; resume with `resume_input`), `stopped`, `handoff` (maintenance or another unsupported operation), `repeated-capture`, `forecast` (not displayed), `binding-drift` (lineage or target drift), `transition-limit`, `cancelled` (after an approved closure, with its findings) or `blocked` (an error). Single review operations remain for what its result hands back, for a review the user explicitly asks for after `not-due`, and for ASSESS after a delegated writer. `GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR=0` opts out; see [ordinary review in one call](review-coordinator.md).
+While RDD is not off, the parent runs an ordinary native review with `gentle_review_run`: one call follows the provider-issued transitions from assess to the acknowledged approval. It returns `closed` after the verified acknowledgement, or stops with `not-due`, `assessment-unavailable`, `request-context-requires-fresh-review`, `consent-required`, `input-required` (a correction plan; with its findings and the review's non-blocking findings when the provider reports the non-blocking ones), `selection-required` (an intended-untracked selection; resume with `resume_input`), `stopped` (an escalated review: with its non-blocking findings), `handoff` (maintenance or another unsupported operation), `repeated-capture`, `forecast` (not displayed), `binding-drift` (lineage or target drift), `transition-limit`, `cancelled` (after an approved closure, with its findings) or `blocked` (an error). Single review operations remain for what its result hands back, for a review the user explicitly asks for after `not-due`, and for ASSESS after a delegated writer. `GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR=0` opts out; see [ordinary review in one call](review-coordinator.md).
 
 An ordinary `gentle_review` START input may carry the agent lens selection: `{"mode":"ordinary","lenses":["risk","reliability"],"lensesReason":"<what you touched and how>"}`. The agent names every 4R lens pertinent to what it touched and how (`risk`, `resilience`, `readability`, `reliability`), with one single-line reason of at most 500 bytes; both fields or neither, never with `focus`. Pi forwards the selection through the native STATUS preflight (`--lenses`, `--lenses-reason`) so the provider-issued START freezes exactly those lenses. A provider that predates lens selection refuses the flag before reading the repository; Pi then reruns STATUS without it and the review keeps the tier default.
 
@@ -1151,6 +1151,24 @@ Config shape (per agent):
 ```
 
 Legacy string entries are still accepted and treated as `model`-only config.
+
+## Subagent tool overlay
+
+Subagent tool allowlists ship inside the package-owned agent files, but a user or extension can add or remove tools without editing those files — the same way model routing is kept outside the agent definition. The overlay is applied at load and never written back to the agent file, so the file stays package-owned and keeps receiving upgrades.
+
+```json
+{
+  "gentle-ai-worker": { "add": ["bash_background"], "remove": ["mem_save"] }
+}
+```
+
+Overlay sources, lowest to highest precedence (the highest wins when one source adds and another removes the same tool):
+
+1. extension drop-ins — `agent-overlays.d/*.json` in the Gentle AI config home,
+2. global — `tools.json` in the Gentle AI config home (next to `models.json`),
+3. project — `.pi/gentle-ai/tools.json`.
+
+`add` appends tools (deduplicated); `remove` removes tools, including ones the package ships, and removing an absent tool is a no-op. An invalid overlay file or entry is ignored and reported as a notice next to agent parse errors; an overlay entry naming an agent that does not exist is reported the same way. A tool name the child runtime does not provide is passed through and surfaced by the child's own missing-tools notice.
 
 ## Agent-model profiles
 

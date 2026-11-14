@@ -1,40 +1,45 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { click, loadCanvas, read, type CanvasFixture, type FakeElement } from "./support/design-canvas-dom.ts";
+import { click, inspectorPick, loadCanvas, read, texts, type CanvasFixture, type FakeElement } from "./support/design-canvas-dom.ts";
 
 // The view transform: pan, zoom, Fit and refit (canvas-view.js).
 
-test("a drag over an artboard pans the canvas, and in comment mode a click is routed to the inspector as a pick", async () => {
+// In Move mode a drag on an artboard moves it (tests/design-canvas-layout.test.ts); in Comment mode it pans, as before.
+const commentMode = (canvas: CanvasFixture) => canvas.document.getElementById("gd-comment").dispatch("click");
+
+test("in comment mode a drag over an artboard pans the canvas and a click is routed to the inspector as a pick", async () => {
 	const canvas = await loadCanvas();
 	const [first] = canvas.boards;
 	first.frame.rect = { left: 100, top: 100, width: 200, height: 150 };
 	const before = canvas.world.style.transform;
+	commentMode(canvas);
 	first.shield!.dispatch("pointerdown", { button: 0, pointerId: 1, clientX: 150, clientY: 150 });
 	first.shield!.dispatch("pointermove", { pointerId: 1, clientX: 190, clientY: 170 });
 	first.shield!.dispatch("pointerup", { button: 0, pointerId: 1, clientX: 190, clientY: 170 });
 	assert.notEqual(canvas.world.style.transform, before, "the drag panned");
 	assert.equal(canvas.navMode.textContent, "Navigating", "a drag never enters focus mode");
 
-	canvas.document.getElementById("gd-comment").dispatch("click");
 	click(first.shield!, 150, 130);
 	assert.equal(canvas.navMode.textContent, "Navigating", "comment mode picks instead of focusing");
 	// The frame shows a 400x300 artboard at half size: (150-100)/0.5, (130-100)/0.5.
 	assert.deepEqual(first.frame.contentWindow!.posted.at(-1), { type: "gd:pick-at", x: 100, y: 60 });
 });
 
-const panTargets: Array<[string, (canvas: CanvasFixture) => FakeElement]> = [
-	["viewport", (canvas) => canvas.viewport],
-	["gap between artboards", (canvas) => canvas.world],
-	["artboard gap", (canvas) => canvas.boards[0].wrapper],
-	["frame box", (canvas) => canvas.boards[0].frame.parentElement!],
-	["artboard title", (canvas) => canvas.boards[0].wrapper.children[0].children[0]],
-	["actions gap", (canvas) => canvas.boards[0].wrapper.children[0].children.find((child) => child.classes.has("gd-board-actions"))!],
-	["shield", (canvas) => canvas.boards[0].shield!],
+// The third field: the target is part of an artboard, so it pans in Comment mode.
+const panTargets: Array<[string, (canvas: CanvasFixture) => FakeElement, boolean]> = [
+	["viewport", (canvas) => canvas.viewport, false],
+	["gap between artboards", (canvas) => canvas.world, false],
+	["artboard gap", (canvas) => canvas.boards[0].wrapper, true],
+	["frame box", (canvas) => canvas.boards[0].frame.parentElement!, true],
+	["artboard title", (canvas) => canvas.boards[0].wrapper.children[0].children[0], true],
+	["actions gap", (canvas) => canvas.boards[0].wrapper.children[0].children.find((child) => child.classes.has("gd-board-actions"))!, true],
+	["shield", (canvas) => canvas.boards[0].shield!, true],
 ];
 
-for (const [name, targetOf] of panTargets) {
-	test(`navigation pan starts on ${name} without selecting`, async () => {
+for (const [name, targetOf, onArtboard] of panTargets) {
+	test(`navigation pan starts on ${name}${onArtboard ? " in comment mode" : ""} without selecting`, async () => {
 		const canvas = await loadCanvas();
+		if (onArtboard) commentMode(canvas);
 		const target = targetOf(canvas);
 		const down = target.dispatch("pointerdown", { button: 0, pointerId: 7, clientX: 10, clientY: 10 });
 		canvas.viewport.dispatch("pointermove", { pointerId: 7, clientX: 45, clientY: 30 });
@@ -50,6 +55,7 @@ for (const [name, targetOf] of panTargets) {
 
 test("navigation pan cancels a stale native drag and continues until pointerup", async () => {
 	const canvas = await loadCanvas();
+	commentMode(canvas);
 	const title = canvas.boards[0].wrapper.children[0].children[0];
 	assert.equal(title.dispatch("dragstart").defaultPrevented, true, "a native viewport drag is canceled even before a pan");
 	const down = title.dispatch("pointerdown", { button: 0, pointerId: 2, clientX: 10, clientY: 10 });
@@ -64,6 +70,7 @@ test("navigation pan cancels a stale native drag and continues until pointerup",
 
 test("navigation pan leaves secondary buttons and interactive descendants to the browser", async () => {
 	const canvas = await loadCanvas();
+	commentMode(canvas);
 	const label = canvas.boards[0].wrapper.children[0];
 	const before = canvas.world.style.transform;
 	const secondary = label.dispatch("pointerdown", { button: 2, pointerId: 1, clientX: 10, clientY: 10 });
@@ -100,6 +107,7 @@ test("navigation pan leaves secondary buttons and interactive descendants to the
 test("navigation pan preserves implement controls, comment pins and toolbar zoom", async () => {
 	const comment = { id: "abc123", file: "01-a.html", selector: "h1", excerpt: "First", comment: "Update", status: "open", sentAt: null };
 	const canvas = await loadCanvas(300, { "/t/api/designs/alpha/comments": { comments: [comment] } });
+	commentMode(canvas);
 	const board = canvas.boards[0];
 	const label = board.wrapper.children[0];
 	const actions = label.children.find((child) => child.classes.has("gd-board-actions"))!;
@@ -242,7 +250,7 @@ test("a comment being written keeps its element and view when the panel toggles 
 	canvas.viewport.rect = { left: 0, top: 50, width: 400, height: 300 };
 	canvas.document.getElementById("gd-fit").dispatch("click");
 	canvas.document.getElementById("gd-comment").dispatch("click");
-	canvas.message(first.frame.contentWindow, { type: "gd:pick", selector: "#cta", excerpt: "Buy now", rect: { x: 4, y: 8, width: 60, height: 20 } });
+	canvas.message(first.frame.contentWindow, inspectorPick(first.frame, { type: "gd:pick", selector: "#cta", excerpt: "Buy now", rect: { x: 4, y: 8, width: 60, height: 20 } }));
 	const popover = canvas.document.getElementById("gd-popover");
 	assert.equal(popover.hidden, false);
 	const view = canvas.world.style.transform;
@@ -255,4 +263,37 @@ test("a comment being written keeps its element and view when the panel toggles 
 	canvas.document.getElementById("gd-popover-cancel").dispatch("click");
 	canvas.windowEvent("resize");
 	assert.equal(canvas.zoomLevel.textContent, "19%");
+});
+
+test("a pick on another artboard clears the previous artboard's pick; a new pick on the same artboard does not", async () => {
+	const canvas = await loadCanvas();
+	const [first, second] = canvas.boards;
+	commentMode(canvas);
+	const pick = { type: "gd:pick", selector: "#cta", excerpt: "Buy now", rect: { x: 4, y: 8, width: 60, height: 20 } };
+	const clears = (board: typeof first) => board.frame.contentWindow!.posted.filter((message) => message.type === "gd:clear").length;
+	canvas.message(first.frame.contentWindow, inspectorPick(first.frame, pick));
+	canvas.message(first.frame.contentWindow, inspectorPick(first.frame, { ...pick, selector: "#title" }));
+	assert.equal(clears(first), 0, "the same artboard replaces its own pick");
+	canvas.message(second.frame.contentWindow, inspectorPick(second.frame, pick));
+	assert.equal(clears(first), 1, "the first artboard's highlight is cleared");
+	assert.equal(clears(second), 0);
+	assert.equal(canvas.document.getElementById("gd-popover-target").textContent, "02-b.html · #cta");
+});
+
+test("a comment whose element reports a 0x0 rect (hidden or not rendered) gets no pin", async () => {
+	const comments = [
+		{ id: "hidden1", file: "01-a.html", selector: "#gone", excerpt: "", comment: "Hidden", status: "open", sentAt: null },
+		{ id: "shown01", file: "01-a.html", selector: "h1", excerpt: "First", comment: "Shown", status: "open", sentAt: null },
+	];
+	const canvas = await loadCanvas(300, { "/t/api/designs/alpha/comments": { comments } });
+	const board = canvas.boards[0];
+	canvas.message(board.frame.contentWindow, { type: "gd:pin-rects", rects: [
+		{ id: "hidden1", rect: { x: 0, y: 0, width: 0, height: 0 } },
+		{ id: "shown01", rect: { x: 10, y: 10, width: 30, height: 20 } },
+	] });
+	const pins = board.frame.parentElement!.children.find((child) => child.classes.has("gd-pins"))!;
+	assert.deepEqual(pins.children.map((pin) => pin.dataset.id), ["shown01"], "no pin at the artboard's corner for the hidden element");
+	const items = canvas.document.getElementById("gd-comment-list").children;
+	assert.equal(items.length, 2, "the hidden element's comment stays in the list");
+	assert.ok(items.every((item) => texts(item, "gd-badge-detached").length === 0), "a hidden element is not a detached comment");
 });

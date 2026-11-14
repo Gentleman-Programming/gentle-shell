@@ -189,10 +189,14 @@ function partFailure(error: unknown): never {
 	throw new HttpError(400, "invalid-part", { error: "invalid-part", reason: error.message });
 }
 
-/** layout.json failures as HTTP: an unknown design is 404, a refused layout 400 with its reason. */
+/**
+ * layout.json failures as HTTP: an unknown design is 404, a layout.json that cannot be read or used 422 with its reason
+ * (never overwritten here; the canvas keeps the layout it shows), a refused layout 400 with its reason.
+ */
 function layoutFailure(error: unknown): never {
 	if (!(error instanceof DesignLayoutError)) throw error;
 	if (error.code === "not-found") throw new HttpError(404, "not-found");
+	if (error.code === "invalid-file") throw new HttpError(422, "unreadable-layout", { error: "unreadable-layout", reason: error.message });
 	throw new HttpError(400, "invalid-layout", { error: "invalid-layout", reason: error.message });
 }
 
@@ -385,7 +389,18 @@ function scriptJson(value: unknown): string {
 	return JSON.stringify(value).replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 }
 
-function injectInspector(html: string, tag: string): string {
+/**
+ * The inspector tag the server injects into every artboard served under `base`. canvas-export.js builds the
+ * same tag (same escaping) to remove it again for Download HTML; its tests serve artboards through injectInspector,
+ * so a change here fails them.
+ */
+function inspectorTag(base: string): string {
+	return `<script src="${escapeHtml(base)}assets/inspector.js"></script>`;
+}
+
+/** The artboard HTML as served: the inspector tag before the last `</body>`, or at the end without one. */
+export function injectInspector(html: string, base: string): string {
+	const tag = inspectorTag(base);
 	const index = html.toLowerCase().lastIndexOf("</body>");
 	return index === -1 ? html + tag : html.slice(0, index) + tag + html.slice(index);
 }
@@ -668,7 +683,7 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 			await handle.close();
 		}
 		const body = type.startsWith("text/html")
-			? injectInspector(content.toString("utf8"), `<script src="${escapeHtml(base)}assets/inspector.js"></script>`)
+			? injectInspector(content.toString("utf8"), base)
 			: content;
 		raw(res, body, { "Content-Type": type, "Content-Security-Policy": artboardCsp(String(req.headers.host)) });
 	}
@@ -1090,9 +1105,10 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 				return slug && SLUG.test(slug) ? async (_req, res) => reply(res, 200, await partStore.read(slug).catch(partFailure)) : undefined;
 			}
 			if (tail.length === 3 && tail[2] === "layout") {
-				// A missing, unreadable or invalid layout.json is `layout: null`: the canvas lays the artboards out in a row.
+				// A missing layout.json is `layout: null` (the canvas lays the artboards out in a row); one that cannot be read
+				// or holds no valid layout is a 422 with the reason (canvas-layout S17), so a disk error never resets a layout.
 				const slug = safeSegment(tail[1]);
-				return slug && SLUG.test(slug) ? async (_req, res) => reply(res, 200, { layout: await layouts.read(slug).catch(layoutFailure) }) : undefined;
+				return slug && SLUG.test(slug) ? async (_req, res) => reply(res, 200, { layout: await layouts.load(slug).catch(layoutFailure) }) : undefined;
 			}
 		}
 		if (head === "files" && tail.length >= 2) {

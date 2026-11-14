@@ -15,6 +15,8 @@ export interface CoordinatorRuntimeOptions {
 	advisoryFindings?: unknown;
 	/** Provider `reviewer_results` carried by the approved last-event closure. */
 	reviewerResults?: unknown;
+	/** Provider `findings` of the STATUS correction request (scenario "correction"). */
+	correctionFindings?: unknown;
 	/** Effective native review mode per read; the fixture defaults to on. */
 	mode?: (read: number, nativeCalls: readonly string[]) => "on" | "off";
 	/**
@@ -31,8 +33,11 @@ export interface CoordinatorRuntimeOptions {
 	 * and fails. "provider-role": the "refuter" group, after which STATUS offers
 	 * an older provider's self-contained refuter vector (--execute=true) whose
 	 * capture returns the provider-role artifact, not a closure.
+	 * "correction": STATUS asks for a correction plan (correction_plan_required)
+	 * with a correction request carrying `correctionFindings`. "escalated":
+	 * STATUS stops (native_stop_required) with the provider's escalation.
 	 */
-	scenario?: "single" | "group" | "refuter" | "refuter-reoffers-group" | "untracked-selection" | "provider-role";
+	scenario?: "single" | "group" | "refuter" | "refuter-reoffers-group" | "untracked-selection" | "provider-role" | "correction" | "escalated";
 	/** Passed to every tool execute as its abort signal. */
 	signal?: AbortSignal;
 	/** Called right after a reviewer submission made the fixture's closure approved. */
@@ -117,6 +122,15 @@ export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coo
 	const startReady = { ...reviewing, authority: undefined, applicability: "unrelated", action: "start",
 		nextTransition: { kind: "execute", reasonCode: "start_required", execute: { operation: "review.start", command: "gentle-ai review start --fixture-only", arguments: [], preconditions: [] } },
 		raw: { schema: "gentle-ai.review-integration.status/v7", target_identity: target, next_transition: { kind: "execute", reason_code: "start_required", execute: { operation: "review.start" } } } } as unknown as ReviewStatusV3;
+	// A STATUS asking for the correction plan, with the provider's correction request.
+	const correctionRequest = { schema: "gentle-ai.review-correction-plan-request/v1", request_hash: `sha256:${"c".repeat(64)}`, lineage_id: lineage, expected_revision: revision,
+		target_identity: target, correction_budget: 10, fix_finding_ids: ["B1"], findings: options.correctionFindings };
+	const correcting = { ...reviewing, nextTransition: { kind: "collect", reasonCode: "correction_plan_required", collect: reviewing.nextTransition!.collect },
+		raw: { ...raw, next_transition: { kind: "collect", reason_code: "correction_plan_required", correction_request: correctionRequest } } } as unknown as ReviewStatusV3;
+	// A STATUS stop on an escalated review, with the provider's escalation diagnostic.
+	const escalation = { cause: "unknown_causality", finding_ids: ["B1"], refuter_outcomes: [{ finding_id: "B1", outcome: "corroborated", proof: "Fixture refuter proof; not real review output." }] };
+	const escalated = { ...reviewing, nextTransition: { kind: "stop", reasonCode: "native_stop_required" },
+		raw: { ...raw, authority: { ...raw.authority, state: "escalated" }, escalation, next_transition: { kind: "stop", reason_code: "native_stop_required" } } } as unknown as ReviewStatusV3;
 	const startRequests: Body[] = [];
 	const approvedClosure = (operation: string) => JSON.stringify({ schema: "gentle-ai.review-last-event-closure/v1", operation, lineage_id: lineage, state: "approved", action: "fixture approval; not real authority", store_revision: revision,
 		...(options.advisoryFindings === undefined ? {} : { advisory_findings: options.advisoryFindings }),
@@ -144,6 +158,8 @@ export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coo
 			options.onStatus?.(state);
 			if (state === "approved") return approved;
 			if (scenario === "untracked-selection") return request.intendedUntrackedSelection === undefined ? selecting : startReady;
+			if (scenario === "correction") return correcting;
+			if (scenario === "escalated") return escalated;
 			if (scenario === "single") return reviewing;
 			if (state === "refuting") {
 				if (scenario === "provider-role") return roleVector;

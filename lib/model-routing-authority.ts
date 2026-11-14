@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { access, readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 export const THINKING_LEVELS = [
 	"off",
@@ -105,6 +106,14 @@ function parseModelConfigFileValue(value: Record<string, unknown>): AgentModelCo
 		if (entry) config[name] = entry;
 	}
 	return config;
+}
+
+/** The two stores the saved global routing is read from: global first, then the legacy project file. */
+export function modelConfigPaths(configHome: string, cwd: string): { global: string; project: string } {
+	return {
+		global: join(configHome, "models.json"),
+		project: join(cwd, ".pi", "gentle-ai", "models.json"),
+	};
 }
 
 export function readModelConfigFile(path: string): ModelConfigFileResult {

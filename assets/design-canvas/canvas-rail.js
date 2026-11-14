@@ -1,14 +1,15 @@
 // The tool rail on the left: Move and Comment (one pressed pair over Comment
-// mode), Overview (Fit) and Settings (a menu with the design system board and the
-// keyboard shortcuts). Its single-key shortcuts, and the ? list where a person
+// mode), Overview (Fit) and Settings (a menu with the design system board, the
+// keyboard shortcuts, Technical details, which turns the token inspector on, and the language). Its single-key shortcuts, and the ? list where a person
 // gives any of them another single key, saved in this browser for every design
 // the canvas server shows (per address: a restarted server has a new port).
 
-// Every string the rail shows, in English until the i18n PR keys them.
+// Every string the rail shows, in English; canvas-i18n-es.js has the Spanish (S8 of odd/tasks/canvas-i18n.md).
 const TEXT = Object.freeze({
 	settings: "Settings",
 	system: "Design system board",
 	keys: "Keyboard shortcuts",
+	technical: "Technical details",
 	navigateTitle: (key) => `Move around the canvas (${key})`,
 	commentTitle: (key) => `Comment on an element (${key})`,
 	fitTitle: (key) => `See all the directions (${key})`,
@@ -18,6 +19,7 @@ const TEXT = Object.freeze({
 		comment: "Comment on an element",
 		fit: "Overview (fit all directions)",
 		panel: "Show or hide the comments panel",
+		minimap: "Show or hide the minimap",
 		help: "Show keyboard shortcuts",
 	},
 	change: "Change",
@@ -35,7 +37,17 @@ const TEXT = Object.freeze({
 	resetDone: (action, key) => `“${action}” is back to ${key}.`,
 	restored: "All shortcuts are back to their defaults.",
 	spaceKey: "Space",
+	shiftEscKey: "Shift+Esc",
+	// The language choices (canvas-i18n.js) under their heading: each language by its own name.
+	language: "Language",
+	spanish: "Español",
+	english: "English",
+	auto: "Match the browser",
+	languageNote: "Messages to the agent stay in English.",
 });
+
+// Settings' language radios, in order: the choice and its label.
+const LANGUAGES = [["es", "spanish"], ["en", "english"], ["auto", "auto"]];
 
 // The keys a person gave the single-key shortcuts in this browser, for every design at this canvas address: a JSON object, action id -> key.
 const SHORTCUTS_KEY = "gentle-design:shortcuts";
@@ -64,17 +76,19 @@ const keyText = (key) => (key.toUpperCase().length === key.length ? key.toUpperC
 export function init(ctx) {
 	const { win, doc, els, store, actions } = ctx;
 	const { state } = store;
+	const T = ctx.i18n.text("rail", TEXT);
 
-	// The rail and panel actions, each with its default key; keys match without letter case, so they are kept lower case.
+	// The rail, panel and minimap actions, each with its default key; keys match without letter case, so they are kept lower case.
 	const SHORTCUTS = [
 		{ id: "navigate", key: "v", run: () => actions.setCommenting(false) },
 		{ id: "comment", key: "c", run: () => actions.setCommenting(true) },
 		{ id: "fit", key: "f", run: () => actions.fit() },
 		{ id: "panel", key: "]", run: () => actions.setPanel(els.panel.hidden) },
+		{ id: "minimap", key: "m", run: () => actions.toggleMinimap() },
 		{ id: "help", key: "?", run: () => openShortcuts() },
 	];
 	const shortcutById = (id) => SHORTCUTS.find((shortcut) => shortcut.id === id);
-	const labelOf = (shortcut) => TEXT.actions[shortcut.id];
+	const labelOf = (shortcut) => T.actions[shortcut.id];
 
 	/** The custom keys saved in this browser; an entry that is no usable key, names no action or takes another action's key is left out. */
 	function storedShortcuts() {
@@ -119,7 +133,7 @@ export function init(ctx) {
 
 	/** The message after a change: `text`, plus a warning (read as an error) when it could not be saved. */
 	function showSavedMessage(text, saved) {
-		showKeysMessage(saved ? text : `${text} ${TEXT.unsaved}`, !saved);
+		showKeysMessage(saved ? text : `${text} ${T.unsaved}`, !saved);
 	}
 
 	/** The line under the list that says what a Change did; a refusal reads as an error. No text clears it. */
@@ -135,15 +149,16 @@ export function init(ctx) {
 	}
 
 	// Where the rail and the top bar name a key: in the tooltip, and in aria-keyshortcuts for screen readers.
-	const SHORTCUT_HINTS = [["navigate", els.toolNavigate, TEXT.navigateTitle], ["comment", els.comment, TEXT.commentTitle], ["fit", els.railFit, TEXT.fitTitle], ["panel", els.panelToggle, TEXT.panelTitle]];
+	const SHORTCUT_HINTS = [["navigate", els.toolNavigate, "navigateTitle"], ["comment", els.comment, "commentTitle"], ["fit", els.railFit, "fitTitle"], ["panel", els.panelToggle, "panelTitle"]];
 
-	/** Every place that shows a key shows the current one: the rail, the comments panel button and the list. */
+	/** Every place that shows a key shows the current one: the rail, the comments panel button, the minimap and the list. */
 	function renderShortcuts() {
 		for (const [id, element, title] of SHORTCUT_HINTS) {
 			const key = keyText(shortcutKey(shortcutById(id)));
 			element.setAttribute("aria-keyshortcuts", key);
-			element.title = title(key);
+			element.title = T[title](key);
 		}
+		els.minimapKey.textContent = keyText(shortcutKey(shortcutById("minimap")));
 		for (const shortcut of SHORTCUTS) renderShortcutRow(shortcut);
 	}
 
@@ -156,7 +171,6 @@ export function init(ctx) {
 			root.dataset.shortcut = shortcut.id;
 			const action = doc.createElement("span");
 			action.className = "gd-key-action";
-			action.textContent = labelOf(shortcut);
 			const key = doc.createElement("kbd");
 			key.className = "gd-key-current";
 			const change = doc.createElement("button");
@@ -165,12 +179,11 @@ export function init(ctx) {
 			const reset = doc.createElement("button");
 			reset.type = "button";
 			reset.className = "gd-key-reset gd-small";
-			reset.textContent = TEXT.reset;
 			change.addEventListener("click", () => {
 				if (keyWait !== shortcut) startKeyWait(shortcut);
 				else {
 					stopKeyWait();
-					showKeysMessage(TEXT.kept(labelOf(shortcut), keyText(shortcutKey(shortcut))));
+					showKeysMessage(T.kept(labelOf(shortcut), keyText(shortcutKey(shortcut))));
 				}
 			});
 			// Leaving the button (a click elsewhere, Restore defaults) ends its wait.
@@ -181,22 +194,24 @@ export function init(ctx) {
 			});
 			reset.addEventListener("click", () => {
 				stopKeyWait();
-				assignKey(shortcut, shortcut.key, TEXT.resetDone);
+				assignKey(shortcut, shortcut.key, T.resetDone);
 			});
 			root.append(action, key, change, reset);
 			els.keysCustom.append(root);
-			row = { root, key, change, reset };
+			row = { root, action, key, change, reset };
 			shortcutRows.set(shortcut.id, row);
 		}
 		const key = keyText(shortcutKey(shortcut));
 		const waiting = keyWait === shortcut;
 		row.root.classList.toggle("gd-key-waiting", waiting);
+		row.action.textContent = labelOf(shortcut);
 		row.key.textContent = key;
-		row.change.textContent = waiting ? TEXT.waiting : TEXT.change;
+		row.reset.textContent = T.reset;
+		row.change.textContent = waiting ? T.waiting : T.change;
 		// While it waits, its visible text is its name.
 		if (waiting) row.change.removeAttribute("aria-label");
-		else row.change.setAttribute("aria-label", TEXT.changeAria(labelOf(shortcut), key));
-		row.reset.setAttribute("aria-label", TEXT.resetAria(labelOf(shortcut), keyText(shortcut.key)));
+		else row.change.setAttribute("aria-label", T.changeAria(labelOf(shortcut), key));
+		row.reset.setAttribute("aria-label", T.resetAria(labelOf(shortcut), keyText(shortcut.key)));
 	}
 
 	function startKeyWait(shortcut) {
@@ -204,7 +219,7 @@ export function init(ctx) {
 		keyWait = shortcut;
 		if (previous) renderShortcutRow(previous);
 		renderShortcutRow(shortcut);
-		showKeysMessage(TEXT.waitingMessage(labelOf(shortcut)));
+		showKeysMessage(T.waitingMessage(labelOf(shortcut)));
 		shortcutRows.get(shortcut.id).change.focus();
 	}
 
@@ -219,7 +234,7 @@ export function init(ctx) {
 	function assignKey(shortcut, key, done) {
 		const owner = SHORTCUTS.find((other) => other !== shortcut && shortcutKey(other) === key);
 		if (owner) {
-			showKeysMessage(TEXT.taken(keyText(key), labelOf(owner)), true);
+			showKeysMessage(T.taken(keyText(key), labelOf(owner)), true);
 			return;
 		}
 		if (key === shortcut.key) delete customKeys[shortcut.id];
@@ -242,14 +257,20 @@ export function init(ctx) {
 		els.railSettings.focus();
 	}
 
-	/** What Settings offers: the design system board (when there is one, and not over Compare) and the keyboard shortcuts. */
+	/** What Settings offers: the design system board (when there is one, and not over Compare), the keyboard shortcuts, Technical details and the language. */
 	function settingsActions() {
 		return [
 			// Checked again when chosen: a live reload may have removed the board while the menu was open.
-			{ label: TEXT.system, icon: "i-palette", disabled: !state.systemBoard || Boolean(state.compare), run: () => {
+			{ label: T.system, icon: "i-palette", disabled: !state.systemBoard || Boolean(state.compare), run: () => {
 				if (state.systemBoard && !state.compare) actions.enterFocus(state.systemBoard);
 			} },
-			{ label: TEXT.keys, icon: "i-keys", shortcut: keyText(shortcutKey(shortcutById("help"))), run: openShortcuts },
+			{ label: T.keys, icon: "i-keys", shortcut: keyText(shortcutKey(shortcutById("help"))), run: openShortcuts },
+			// A checkbox: the token inspector in Comment mode (canvas-tokens.js).
+			{ label: T.technical, icon: "i-code", checked: state.technical, run: () => actions.setTechnical(!state.technical) },
+			// The language: radios under their heading, applied at once (canvas-i18n.js), and what stays English.
+			{ separator: true },
+			{ group: T.language, actions: LANGUAGES.map(([choice, label]) => ({ label: T[label], radio: true, checked: state.languageChoice === choice, run: () => ctx.i18n.setLanguage(choice) })) },
+			{ note: T.languageNote },
 		];
 	}
 
@@ -257,7 +278,7 @@ export function init(ctx) {
 	function startRail() {
 		renderTools();
 		renderShortcuts();
-		actions.wireMenu(els.railSettings, (last) => actions.showMenu(els.railSettings, settingsActions(), TEXT.settings, last, true));
+		actions.wireMenu(els.railSettings, (last) => actions.showMenu(els.railSettings, settingsActions(), T.settings, last, true));
 	}
 
 	els.toolNavigate.addEventListener("click", () => actions.setCommenting(false));
@@ -271,7 +292,7 @@ export function init(ctx) {
 		customKeys = {};
 		const saved = saveShortcuts();
 		renderShortcuts();
-		showSavedMessage(TEXT.restored, saved);
+		showSavedMessage(T.restored, saved);
 	});
 
 	// While a Change waits, the next key is the new one and nothing else gets it; Esc cancels the wait (in the capture
@@ -288,17 +309,17 @@ export function init(ctx) {
 		event.preventDefault();
 		stopKeyWait();
 		if (event.key === "Escape" && !event.shiftKey) {
-			showKeysMessage(TEXT.kept(labelOf(shortcut), keyText(shortcutKey(shortcut))));
+			showKeysMessage(T.kept(labelOf(shortcut), keyText(shortcutKey(shortcut))));
 			return;
 		}
 		if (FIXED_KEYS.includes(event.key)) {
-			const name = event.key === "Escape" ? "Shift+Esc" : event.key === " " ? TEXT.spaceKey : ARROW_KEYS[event.key] ?? event.key;
-			showKeysMessage(TEXT.fixed(name), true);
+			const name = event.key === "Escape" ? T.shiftEscKey : event.key === " " ? T.spaceKey : ARROW_KEYS[event.key] ?? event.key;
+			showKeysMessage(T.fixed(name), true);
 			return;
 		}
 		const key = isChord(event) ? "" : singleKey(event.key);
-		if (key) assignKey(shortcut, key, TEXT.assigned);
-		else showKeysMessage(TEXT.invalid, true);
+		if (key) assignKey(shortcut, key, T.assigned);
+		else showKeysMessage(T.invalid, true);
 	}, true);
 
 	// The shortcuts never fire while typing, with a browser chord, while the comment box, a menu or the list (where the
@@ -322,5 +343,6 @@ export function init(ctx) {
 		shortcut.run();
 	});
 
-	return { renderTools, renderShortcuts, startRail };
+	// A new language: the tooltips and the list's rows (the line under the list keeps the language it was written in).
+	return { renderTools, renderShortcuts, startRail, relabel: renderShortcuts };
 }

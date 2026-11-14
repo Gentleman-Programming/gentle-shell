@@ -1,6 +1,20 @@
 // The comment popover: the pick it opens on, the screenshot attach (file, paste,
 // drop), Esc and Shift+Esc in the canvas, and the submit that saves or sends the
-// comment.
+// comment. Its Implement only this button belongs to canvas-parts.js.
+
+// Every string the comment box shows, in English; canvas-i18n-es.js has the Spanish (its static labels are index.html's).
+// The comment the person writes is sent as written.
+const TEXT = Object.freeze({
+	shotType: "Attach a PNG, JPEG, WebP or GIF image.",
+	shotSize: "The screenshot must be at most 5 MB.",
+	shotRead: "The screenshot could not be read.",
+	limits: (max) => `Write a comment of 1 to ${max} characters.`,
+	sending: "Sending…",
+	savedOnly: "Saved, but not sent to the session",
+	saved: "Saved; use Send all to send it",
+	sent: "Sent to the session",
+	notSent: (reason) => `Not sent: ${reason}`,
+});
 
 const LIMITS = { selector: 500, excerpt: 300, comment: 2000, screenshotBytes: 5 * 1024 * 1024 };
 const SCREENSHOT_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
@@ -10,6 +24,7 @@ export function init(ctx) {
 	const { state } = store;
 	const { base, isFiniteNumber } = api;
 	const { setStatus } = ui;
+	const T = ctx.i18n.text("popover", TEXT);
 
 	function readPick(data) {
 		if (typeof data.selector !== "string") return null;
@@ -21,16 +36,27 @@ export function init(ctx) {
 		return { selector, excerpt, rect: { x: box.x, y: box.y, width: box.width, height: box.height } };
 	}
 
-	function openPopover(board, pick) {
+	/**
+	 * The pick of `surface`, a board's frame or one of its All sizes frames (canvas-sizes.js), with the size it was
+	 * made at (viewport, null at the artboard's own size); the popover opens beside the element in that frame.
+	 */
+	function openPopover(surface, pick) {
+		// The comment box takes the token inspector's place.
+		actions.hideInspector();
 		win.clearTimeout(state.closeTimer);
-		store.setPopover({ pick: { board, ...pick } });
+		const board = actions.ownerOf(surface);
+		// A pick in another frame replaces the open one: that frame's highlight goes, as on a close.
+		const previous = state.pick && state.pick.surface;
+		if (previous && previous !== surface) previous.frame.contentWindow?.postMessage({ type: "gd:clear" }, "*");
+		store.setPopover({ pick: { board, surface, viewport: actions.viewportOf(surface), ...pick } });
 		els.target.textContent = `${board.artboard.file} · ${pick.selector}`;
-		els.message.textContent = "";
-		els.message.classList.remove("gd-error");
+		showMessage("", false);
 		els.send.disabled = false;
+		actions.renderPartButton();
 		els.popover.hidden = false;
-		const frameRect = board.frame.getBoundingClientRect();
-		const scale = frameRect.width / board.artboard.width || 1;
+		// The frame may be scaled (All sizes) or resized (a single size).
+		const frameRect = surface.frame.getBoundingClientRect();
+		const scale = frameRect.width / surface.viewWidth || 1;
 		const width = els.popover.offsetWidth;
 		const height = els.popover.offsetHeight;
 		let left = frameRect.left + pick.rect.x * scale;
@@ -51,16 +77,26 @@ export function init(ctx) {
 		els.shotAttach.hidden = false;
 	}
 
+	/** The popover's message line; a refusal's raw code in its tooltip (canvas-parts.js) goes with the message it explained. */
+	// Set when the message is the canvas's own wording, given as a function so a language switch words it again.
+	let worded = null;
+	function showMessage(text, isError) {
+		worded = typeof text === "function" ? text : null;
+		els.message.setAttribute("data-gd-message-owner", "comment");
+		els.message.textContent = worded ? worded() : text;
+		els.message.title = "";
+		els.message.classList.toggle("gd-error", isError);
+	}
+
 	function shotError(message) {
-		els.message.textContent = message;
-		els.message.classList.add("gd-error");
+		showMessage(message, true);
 	}
 
 	/** Reads one image file into the popover; a later attach or a clear discards a read still running. */
 	function attachShot(file) {
 		if (!file || els.popover.hidden) return;
-		if (!SCREENSHOT_TYPES.includes(file.type)) return shotError("Attach a PNG, JPEG, WebP or GIF image.");
-		if (file.size === 0 || file.size > LIMITS.screenshotBytes) return shotError("The screenshot must be at most 5 MB.");
+		if (!SCREENSHOT_TYPES.includes(file.type)) return shotError(T.shotType);
+		if (file.size === 0 || file.size > LIMITS.screenshotBytes) return shotError(T.shotSize);
 		store.setPopover({ shotToken: state.shotToken + 1 });
 		const token = state.shotToken;
 		const reader = new win.FileReader();
@@ -71,10 +107,9 @@ export function init(ctx) {
 			els.shotImage.src = url;
 			els.shotPreview.hidden = false;
 			els.shotAttach.hidden = true;
-			els.message.textContent = "";
-			els.message.classList.remove("gd-error");
+			showMessage("", false);
 		});
-		reader.addEventListener("error", () => { if (token === state.shotToken) shotError("The screenshot could not be read."); });
+		reader.addEventListener("error", () => { if (token === state.shotToken) shotError(T.shotRead); });
 		reader.readAsDataURL(file);
 	}
 
@@ -112,14 +147,24 @@ export function init(ctx) {
 	});
 
 	function closePopover() {
+		// Before the early return: every path that closes the box (focus mode ending, another size, Comment mode off,
+		// a pan or a zoom) also ends the token inspector's panel, open or not.
+		actions.hideInspector();
 		if (els.popover.hidden) return;
 		win.clearTimeout(state.closeTimer);
-		const board = state.pick && state.pick.board;
+		// The frame that was picked clears its outline.
+		const surface = state.pick && state.pick.surface;
 		store.setPopover({ pick: null });
 		clearShot();
 		els.popover.hidden = true;
-		board?.frame.contentWindow?.postMessage({ type: "gd:clear" }, "*");
-		if (els.popover.contains(doc.activeElement) || doc.activeElement === doc.body) (state.focus ? state.focus.frame : els.comment).focus();
+		surface?.frame.contentWindow?.postMessage({ type: "gd:clear" }, "*");
+		if (els.popover.contains(doc.activeElement) || doc.activeElement === doc.body) returnFocus(surface);
+	}
+
+	/** Back to the size frame that was picked while it still shows, else the focused artboard, else Comment. */
+	function returnFocus(surface) {
+		const sizeFrame = Boolean(state.focus && surface && surface !== state.focus && actions.surfacesOf(state.focus).includes(surface));
+		(sizeFrame ? surface.frame : state.focus ? state.focus.frame : els.comment).focus();
 	}
 
 	els.cancel.addEventListener("click", closePopover);
@@ -148,21 +193,16 @@ export function init(ctx) {
 		const pick = state.pick;
 		if (!pick) return;
 		const comment = els.text.value.trim();
-		if (!comment || comment.length > LIMITS.comment) {
-			els.message.textContent = `Write a comment of 1 to ${LIMITS.comment} characters.`;
-			els.message.classList.add("gd-error");
-			return;
-		}
+		if (!comment || comment.length > LIMITS.comment) return showMessage(() => T.limits(LIMITS.comment), true);
 		els.send.disabled = true;
-		els.message.classList.remove("gd-error");
-		els.message.textContent = "Sending…";
+		showMessage(() => T.sending, false);
 		const shot = state.shot;
 		try {
 			const response = await win.fetch(`${base}api/comments`, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				cache: "no-store",
-				body: JSON.stringify({ slug: pick.board.slug, file: pick.board.artboard.file, selector: pick.selector, excerpt: pick.excerpt, comment, mode: state.mode, ...(shot ? { screenshot: shot } : {}) }),
+				body: JSON.stringify({ slug: pick.board.slug, file: pick.board.artboard.file, selector: pick.selector, excerpt: pick.excerpt, comment, mode: state.mode, ...(shot ? { screenshot: shot } : {}), ...(pick.viewport ? { viewport: pick.viewport } : {}) }),
 			});
 			let reply = {};
 			try { reply = await response.json(); } catch { /* keep the status */ }
@@ -173,18 +213,22 @@ export function init(ctx) {
 			if (state.pick !== pick) return;
 			els.text.value = "";
 			if (state.shot === shot) clearShot();
-			const done = savedOnly ? "Saved, but not sent to the session" : response.status === 201 ? "Saved; use Send all to send it" : "Sent to the session";
-			els.message.textContent = done;
-			els.message.classList.toggle("gd-error", savedOnly);
-			setStatus(done, savedOnly);
+			const done = () => (savedOnly ? T.savedOnly : response.status === 201 ? T.saved : T.sent);
+			showMessage(() => done(), savedOnly);
+			setStatus(done(), savedOnly);
 			store.setPopover({ closeTimer: win.setTimeout(closePopover, savedOnly ? 2500 : 1200) });
 		} catch (error) {
 			if (state.pick !== pick) return;
 			els.send.disabled = false;
-			els.message.textContent = `Not sent: ${error.message}`;
-			els.message.classList.add("gd-error");
+			showMessage(() => T.notSent(error.message), true);
 		}
 	});
 
-	return { readPick, openPopover, closePopover };
+	/** A new language: the message on screen, when it is the canvas's own wording (the rest of the box is keyed markup). */
+	function relabel() {
+		if (!worded || els.message.getAttribute("data-gd-message-owner") !== "comment") return;
+		els.message.textContent = worded();
+	}
+
+	return { relabel, readPick, openPopover, closePopover };
 }

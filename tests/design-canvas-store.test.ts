@@ -29,11 +29,22 @@ test("the store starts with the canvas defaults and no system field", () => {
 		focus: null,
 		savedView: null,
 		savedPanel: null,
+		size: { kind: "desktop" },
 		hoverBoard: null,
 		handoffs: { slug: null, chosen: null, handoffs: {} },
+		parts: { slug: null, parts: [] },
+		tokens: [],
+		technical: false,
+		tab: "comments",
 		compare: null,
 		toastTimer: 0,
 		menu: null,
+		layout: null,
+		selected: null,
+		space: false,
+		minimap: true,
+		language: "en",
+		languageChoice: "auto",
 	});
 	assert.equal(createStore({ slug: 3 }).state.slug, null, "a slug that is not a string shows the system-only view");
 	assert.equal(createStore().state.slug, null);
@@ -66,7 +77,7 @@ test("each patch mutator changes only the fields of its own concern", () => {
 	const concerns: Array<[string, Record<string, unknown>]> = [
 		["setDesign", { slug: "beta", manifest: { slug: "beta" }, boards: [], systemBoard: null, designCount: 2 }],
 		["setView", { zoom: 2, x: 1, y: 2, fitted: true }],
-		["setFocus", { focus: null, savedView: { zoom: 1, x: 0, y: 0 }, savedPanel: true }],
+		["setFocus", { focus: null, savedView: { zoom: 1, x: 0, y: 0 }, savedPanel: true, size: { kind: "custom", width: 600 } }],
 		["setComments", { comments: [], activeId: "abc123", filter: "resolved" }],
 		["setPopover", { pick: null, shot: null, shotToken: 4, closeTimer: 0 }],
 	];
@@ -130,4 +141,40 @@ test("the single-field mutators set their one field", () => {
 	assert.equal(store.state.menu, menu, "the open menu, shared, not copied");
 	store.setMenu(null);
 	assert.equal(store.state.menu, null);
+});
+
+test("the design tokens are frozen when they are set, and Technical details is one boolean", () => {
+	const store = createStore();
+	assert.throws(() => { (store.state.tokens as any[]).push({}); }, TypeError, "the initial tokens are protected too");
+	const token = { name: "--bg", value: "#1a1218", section: "Colors", group: "color" };
+	const tokens = [token];
+	store.setTokens(tokens);
+	assert.equal(store.state.tokens, tokens, "the same array, frozen when it is set, not copied per read");
+	assert.throws(() => { (store.state.tokens as any[]).push({}); }, TypeError);
+	assert.throws(() => { (store.state.tokens[0] as any).value = "#000"; }, TypeError);
+	assert.deepEqual(store.state.tokens, [{ name: "--bg", value: "#1a1218", section: "Colors", group: "color" }]);
+	store.setTechnical(true);
+	assert.equal(store.state.technical, true);
+	store.setTechnical(false);
+	assert.equal(store.state.technical, false);
+});
+
+test("the language changes only through setLanguage: the choice and the language it resolves to", () => {
+	const store = createStore();
+	assert.deepEqual([store.state.languageChoice, store.state.language], ["auto", "en"], "English until the canvas reads the browser");
+	store.setLanguage("auto", "es");
+	assert.deepEqual([store.state.languageChoice, store.state.language], ["auto", "es"]);
+	store.setLanguage("en", "en");
+	assert.deepEqual([store.state.languageChoice, store.state.language], ["en", "en"]);
+	assert.throws(() => { (store.state as any).language = "es"; }, TypeError);
+});
+
+test("the panel's tab is one of two names, set through setTab", () => {
+	const store = createStore();
+	assert.equal(store.state.tab, "comments", "every page starts on Comments");
+	store.setTab("quality");
+	assert.equal(store.state.tab, "quality");
+	store.setTab("comments");
+	assert.equal(store.state.tab, "comments");
+	assert.throws(() => { (store.state as any).tab = "quality"; }, TypeError);
 });

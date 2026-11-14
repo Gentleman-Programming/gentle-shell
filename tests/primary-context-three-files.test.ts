@@ -10,8 +10,8 @@ import { filterChildSessionContextFiles } from "../lib/child-context-files.ts";
 // Three loaded context files in Pi's order (root toward the working directory):
 // a home file with every managed block, a project file with engram-protocol and
 // agent-routing, and a nested package file with user text only. With Gentle
-// Shell's orchestrator injected, the primary drops the orchestrator-only blocks,
-// keeps remote-authorization, and keeps only the nearest engram-protocol copy.
+// Shell's orchestrator injected, the primary drops the orchestrator-only blocks
+// and the engram-protocol memory block, and keeps remote-authorization.
 
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 
@@ -52,7 +52,7 @@ const PROJECT_MD = [
 	block("agent-routing", "## Implementation Routing\n\n### Receipt-driven development is user-owned\n\nx"),
 	"",
 ].join("\n");
-const PROJECT_EXPECTED = ["# Project", "", "proj text", "", ENGRAM_PROJECT, ""].join("\n");
+const PROJECT_EXPECTED = ["# Project", "", "proj text", ""].join("\n");
 
 const NESTED_MD = "# Package notes\n\nOnly user text here.\n";
 
@@ -154,25 +154,21 @@ test("child and named-agent starts leave the three context files untouched", asy
 	}
 });
 
-test("hostile input never throws and a malformed nearer file does not cost the only valid copy", () => {
-	assert.doesNotThrow(() => filterChildSessionContextFiles({ contextFiles: [{ path: 5 as unknown as string, content: null as unknown as string }] }, { cwd: "/x" }));
-	assert.doesNotThrow(() => filterChildSessionContextFiles({ contextFiles: [{ path: "/a/AGENTS.md", content: ENGRAM_HOME }, { path: "/a/b/AGENTS.md", content: ENGRAM_PROJECT }] }, { cwd: "relative" }));
+test("hostile input never throws, and a malformed file never costs another file its filtering", () => {
+	assert.doesNotThrow(() => filterChildSessionContextFiles({ contextFiles: [{ path: 5 as unknown as string, content: null as unknown as string }] }));
 	const options = { contextFiles: [{ path: "/a/AGENTS.md", content: ENGRAM_HOME }, { path: "/a/b/AGENTS.md", content: "<!-- gentle-ai:engram-protocol -->\nunclosed\n" }] };
-	filterChildSessionContextFiles(options, { cwd: "/a/b" });
-	assert.equal(options.contextFiles[0].content, ENGRAM_HOME);
+	filterChildSessionContextFiles(options);
+	assert.equal(options.contextFiles[0].content, "", "the balanced copy is still dropped");
+	assert.equal(options.contextFiles[1].content, "<!-- gentle-ai:engram-protocol -->\nunclosed\n", "the malformed file is passed through unchanged");
 });
 
-test("a nearer engram-protocol copy nested inside agent-routing is the one copy that survives", () => {
+test("engram-protocol is dropped even when it sits inside a dropped agent-routing block", () => {
 	const options = {
 		contextFiles: [
 			{ path: "/a/AGENTS.md", content: `${ENGRAM_HOME}\n` },
 			{ path: "/a/b/AGENTS.md", content: `${block("agent-routing", `r\n${ENGRAM_PROJECT}`)}\n` },
 		],
 	};
-	filterChildSessionContextFiles(options, { cwd: "/a/b" });
-	const survivors = options.contextFiles.filter((file) => file.content.includes("<!-- gentle-ai:engram-protocol -->"));
-	assert.equal(survivors.length, 1);
-	assert.equal(survivors[0].path, "/a/b/AGENTS.md");
-	assert.ok(survivors[0].content.includes(ENGRAM_PROJECT), "the surviving copy is the project's");
-	assert.ok(!survivors[0].content.includes("gentle-ai:agent-routing -->"), "its enclosing agent-routing block is dropped");
+	filterChildSessionContextFiles(options);
+	assert.deepEqual(options.contextFiles.map((file) => file.content), ["", ""], "no engram-protocol copy survives, nested or not");
 });

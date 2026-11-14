@@ -26,7 +26,7 @@ test("the allowlist is frozen and names only flat .js and .css files with their 
 	assert.ok(Object.isFrozen(DESIGN_CANVAS_ASSETS));
 	assert.ok(!Object.hasOwn(DESIGN_CANVAS_ASSETS, "index.html"), "the page template is not an asset");
 	for (const [name, type] of Object.entries(DESIGN_CANVAS_ASSETS)) {
-		assert.match(name, /^[a-z][a-z-]*\.(?:js|css)$/, name);
+		assert.match(name, /^[a-z][a-z0-9-]*\.(?:js|css)$/, name);
 		assert.equal(type, name.endsWith(".js") ? "text/javascript; charset=utf-8" : "text/css; charset=utf-8", name);
 	}
 });

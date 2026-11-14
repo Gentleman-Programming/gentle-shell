@@ -187,7 +187,15 @@ for (const scenario of ["single", "group", "refuter"] as const) {
 			const modeReads = run.providerOperations.filter(({ operation }) => operation === "review-mode");
 			assert.deepEqual(modeReads, run.steps.map(() => ({ operation: "review-mode", request: { cwd: repo, operation: "status", signal: "<AbortSignal aborted=false>" } })), `${label}: one switch read per facade step`);
 			assert.equal(direct.providerOperations.some(({ operation }) => operation === "review-mode"), false);
-			assert.deepEqual(run.providerOperations.filter(({ operation }) => operation !== "review-mode"), direct.providerOperations, `${label}: provider operations and arguments`);
+			// L19: only STATUS reads made for the run ask for the provider's
+			// non-blocking findings (gentle-ai#6088); a parent's direct calls never do.
+			// That opt-in reaches no reviewer; every other argument is identical.
+			const optedIn = run.providerOperations.filter(({ operation, request }) => operation === "target-status" && (request as Record<string, unknown>).nonBlockingFindings === true);
+			assert.ok(optedIn.length > 0, `${label}: the run's STATUS asks for the non-blocking findings`);
+			assert.equal(direct.providerOperations.some(({ request }) => Object.hasOwn(request as object, "nonBlockingFindings")), false, `${label}: direct calls never ask`);
+			const withoutOptIn = run.providerOperations.filter(({ operation }) => operation !== "review-mode")
+				.map(({ operation, request }) => ({ operation, request: (({ nonBlockingFindings: _optIn, ...rest }) => rest)(request as Record<string, unknown>) }));
+			assert.deepEqual(withoutOptIn, direct.providerOperations, `${label}: provider operations and arguments`);
 		}
 		t.diagnostic(`relay request fields: ${fieldsOf(direct.launches.map((launch) => launch.relayRequest)).join(", ")}`);
 		t.diagnostic(`prepared request fields: ${fieldsOf(direct.launches.map((launch) => launch.preparedRequest)).join(", ")}`);

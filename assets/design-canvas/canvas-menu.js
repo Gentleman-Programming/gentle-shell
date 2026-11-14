@@ -3,7 +3,9 @@
 // of the canvas shares (arrows, Home, End, Enter and Space choose, Escape and Tab
 // close) and a press outside to close it. The rail's Settings uses it; the
 // per-artboard menu reuses it later. The open menu lives in the store (setMenu),
-// so the single-key shortcuts can stay off while it is open.
+// so the single-key shortcuts can stay off while it is open. A menu with its own
+// element and items (the screen sizes, canvas-sizes.js) opens through openMenu and
+// shares the rest: one menu at a time, closeMenu, the keys and the press outside.
 
 export function init(ctx) {
 	const { win, doc, els, store } = ctx;
@@ -25,14 +27,18 @@ export function init(ctx) {
 	}
 
 	/**
-	 * One item of a menu. action: { label, icon?, shortcut?, disabled? }; a disabled
-	 * item (nothing to act on) is announced as unavailable and choosing it does nothing.
+	 * One item of a menu. action: { label, icon?, shortcut?, disabled?, checked? }; a disabled
+	 * item (nothing to act on) is announced as unavailable and choosing it does nothing. An action
+	 * with `checked` (true or false) is a checkbox item, with a check mark shown while it is on;
+	 * with `radio: true` too, a radio item, one of the menu's choices (Settings: the language).
 	 */
 	function menuItem(action) {
+		const checkbox = typeof action.checked === "boolean";
 		const item = doc.createElement("button");
 		item.type = "button";
 		item.className = "gd-menu-item";
-		item.setAttribute("role", "menuitem");
+		item.setAttribute("role", !checkbox ? "menuitem" : action.radio ? "menuitemradio" : "menuitemcheckbox");
+		if (checkbox) item.setAttribute("aria-checked", String(action.checked));
 		item.setAttribute("tabindex", "-1");
 		if (action.icon) item.append(icon(action.icon, "gd-i gd-i-s"));
 		const label = doc.createElement("span");
@@ -48,6 +54,7 @@ export function init(ctx) {
 			key.textContent = action.shortcut;
 			item.append(key);
 		}
+		if (checkbox) item.append(icon("i-check", "gd-i gd-i-s gd-menu-check"));
 		if (action.disabled) item.setAttribute("aria-disabled", "true");
 		return item;
 	}
@@ -72,35 +79,74 @@ export function init(ctx) {
 
 	/**
 	 * Builds the menu from `actions` under `button`, named `label`, with focus on its first
-	 * (or `last`) item; `run(button)` is what choosing an action does.
+	 * (or `last`) item; `run(button)` is what choosing an action does. `{ separator: true }`
+	 * is a separator, `{ note }` a line of text the menu's radio items are described by, and
+	 * `{ group, actions }` a named group: its visible heading `group` names it and is no item.
 	 */
 	function showMenu(button, actions, label, last = false, beside = false) {
-		closeMenu(false);
 		const items = [];
 		const byItem = new Map();
-		for (const action of actions) {
+		const build = (action) => {
+			if (action.group) {
+				const group = doc.createElement("div");
+				group.className = "gd-menu-group";
+				group.setAttribute("role", "group");
+				group.setAttribute("aria-labelledby", "gd-menu-heading");
+				const heading = doc.createElement("p");
+				heading.id = "gd-menu-heading";
+				heading.className = "gd-menu-heading";
+				// Read once, as the group's name, never as a stop of its own.
+				heading.setAttribute("aria-hidden", "true");
+				heading.textContent = action.group;
+				group.append(heading, ...action.actions.map(build));
+				return group;
+			}
+			if (action.separator || action.note) {
+				const node = doc.createElement(action.note ? "p" : "div");
+				node.className = action.note ? "gd-menu-note" : "gd-menu-separator";
+				if (action.note) {
+					node.id = "gd-menu-note";
+					// Presentational, since a menu owns only items, groups and separators; its text still describes the radios.
+					node.setAttribute("role", "none");
+					node.textContent = action.note;
+				} else node.setAttribute("role", "separator");
+				return node;
+			}
 			const item = menuItem(action);
 			item.addEventListener("click", () => chooseMenuItem(item));
 			byItem.set(item, action);
 			items.push(item);
-		}
-		els.menu.setAttribute("aria-label", label);
-		els.menu.replaceChildren(...items);
-		els.menu.hidden = false;
-		button.setAttribute("aria-expanded", "true");
-		store.setMenu({ button, items, byItem });
-		placeMenu(button, els.menu, beside);
-		(last ? items[items.length - 1] : items[0]).focus();
+			return item;
+		};
+		const nodes = actions.map(build);
+		// A menu owns only items, separators and groups: the note reaches screen readers as the radio items' description.
+		if (actions.some((action) => action.note)) items.filter((item) => item.getAttribute("role") === "menuitemradio").forEach((item) => item.setAttribute("aria-describedby", "gd-menu-note"));
+		openMenu(button, els.menu, nodes, items, label, last ? items[items.length - 1] : items[0], beside, byItem);
 	}
 
-	/** Closes the menu; focus goes back to its button when it was inside the menu (or `refocus`). */
+	/**
+	 * Shows `root`, a menu element, filled with `nodes` under `button`, with focus on `first`;
+	 * `items` are the entries the arrow keys move through. Any other open menu closes first.
+	 */
+	function openMenu(button, root, nodes, items, label, first, beside = false, byItem = new Map()) {
+		closeMenu(false);
+		root.setAttribute("aria-label", label);
+		root.replaceChildren(...nodes);
+		root.hidden = false;
+		button.setAttribute("aria-expanded", "true");
+		store.setMenu({ button, root, items, byItem });
+		placeMenu(button, root, beside);
+		first.focus();
+	}
+
+	/** Closes the open menu; focus goes back to its button when it was inside the menu (or `refocus`). */
 	function closeMenu(refocus) {
 		const open = state.menu;
 		if (!open) return;
 		store.setMenu(null);
-		const inside = els.menu.contains(doc.activeElement);
-		els.menu.hidden = true;
-		els.menu.replaceChildren();
+		const inside = open.root.contains(doc.activeElement);
+		open.root.hidden = true;
+		open.root.replaceChildren();
 		open.button.setAttribute("aria-expanded", "false");
 		if (refocus || inside) open.button.focus();
 	}
@@ -155,13 +201,13 @@ export function init(ctx) {
 	}
 
 	els.menu.addEventListener("keydown", (event) => {
-		if (state.menu) menuKeydown(event, state.menu.items, closeMenu, chooseMenuItem);
+		if (state.menu && state.menu.root === els.menu) menuKeydown(event, state.menu.items, closeMenu, chooseMenuItem);
 	});
 
 	doc.addEventListener("pointerdown", (event) => {
 		const open = state.menu;
-		if (open && !els.menu.contains(event.target) && !open.button.contains(event.target)) closeMenu(false);
+		if (open && !open.root.contains(event.target) && !open.button.contains(event.target)) closeMenu(false);
 	});
 
-	return { icon, showMenu, closeMenu, wireMenu, menuKeydown };
+	return { icon, showMenu, openMenu, closeMenu, wireMenu, menuKeydown };
 }

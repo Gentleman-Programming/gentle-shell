@@ -9,6 +9,7 @@ Branch `feat/herdr-gentle-shell` from `origin/main` 3dc902975. References (read-
 - S4 Package form (user choice): "Herdr app + mods Gentle" — the Gentle Shell installer pins and installs a Herdr app version and adds our layout and mods; opened with `gentle-shell desktop`. No fork of Herdr.
 - S5 Centre of the window (user choice): "Chat nativo + switch a Terminal" — each pi session is shown as a modern chat (markdown, tool calls, diffs, subagent cards, clickable questions), with a switch to the real TUI.
 - S7 Chosen direction (user): "me gusta mas el A" — `design/herdr-desktop/01-inspector.html`: native Herdr layout, two-row session header, right inspector with tabs (Changes, Todo, Agents, Jobs, Review, Session), plan usage in the sidebar footer, status bar with ODD phase / TPS / jobs.
+- S8 Fidelity (user): "fijate porfa que quede 1 a 1 con el diseño eh" — the built window must match `design/herdr-desktop/01-inspector.html` one to one (layout, regions, sizes, spacing, colours, typography, states). Each view task closes only after a side-by-side check: `herdr-app shot` of the live window vs a headless render of the artboard at the same size, with every difference fixed or listed as a Herdr limitation.
 - S6 Code references: "ejemplos que podes tomar de referencia para codigo https://herdr.dev/gallery/"
 
 ## Constraints (from the Herdr spikes, `.worktrees/herdr-gentle-ui` `odd/tasks/herdr-tower-spikes.md`)
@@ -41,3 +42,4 @@ Branch `feat/herdr-gentle-shell` from `origin/main` 3dc902975. References (read-
 - L7 (T1 live evidence, herdr-app 0.1.15): mod + layout installed into `~/.config/herdr-app`, `layout.switch gentle-shell`, status errors `[]`. The chat shows t2's session (user bubble, markdown reply, model, per-message cost, header total $0.246). A second `hc send` appeared live through watchFolder (total $0.264, message $0.017). Stack `"header": "tabs"` is documented but rejected by 0.1.15 (`expected struct Header`); removed. `layout.select {stack: views, child: terminal}` from the CLI did not visibly switch: open item for T5 (the in-mod switch and t2 not belonging to a window space are suspects).
 - L8: T3 design directions in design/herdr-desktop/ — 01-inspector.html (A), 02-rail.html (B), 03-chat-first.html (C); pending user choice.
 - L9 (user): "me gusta mas el A". Canvas note: the gentle_design tool is bound to the session cwd; from a gentle-ai session it cannot see this clone, so the canvas was opened from a Gentle Shell session in this worktree (hc t3).
+- L10 (user): "fijate porfa que quede 1 a 1 con el diseño eh"

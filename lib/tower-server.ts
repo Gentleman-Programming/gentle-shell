@@ -7,7 +7,7 @@ import { readFileSync, realpathSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename, dirname, extname, resolve, sep } from "node:path";
 import { timingSafeEqual } from "node:crypto";
-import { readTowerSnapshots } from "./tower-hub.ts";
+import { readLiveTowerSnapshots as readTowerSnapshots } from "./tower-hub.ts";
 import { readPresenceFloors } from "./tower-presence.ts";
 import { createHash } from "node:crypto";
 import { parseTowerAction, TOWER_ACTION_MAX_BYTES, writeTowerAction } from "./tower-actions.ts";

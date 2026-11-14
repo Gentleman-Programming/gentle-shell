@@ -44,6 +44,16 @@ export function removeTowerSnapshot(dir: string, sessionId: string): void {
 	rmSync(join(dir, `${safeId(sessionId)}.json`), { force: true });
 }
 
+function alive(pid: number | undefined): boolean {
+	if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return true;
+	try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
+/** Snapshots whose publishing process is still running (one killed without shutdown left a frozen file). */
+export function readLiveTowerSnapshots(dir: string): TowerSnapshot[] {
+	return readTowerSnapshots(dir).filter((s) => alive(s.pid));
+}
+
 /** Every valid snapshot in the hub; unreadable, oversized or foreign files are skipped. */
 export function readTowerSnapshots(dir: string): TowerSnapshot[] {
 	let names: string[];

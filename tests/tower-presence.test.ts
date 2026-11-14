@@ -107,3 +107,18 @@ test("a detailed floor whose snapshot is older than its heartbeat takes its live
 	assert.equal(floor.cost.total, 2);
 	assert.deepEqual(floor.subagents.map((a) => [a.id, a.name]), [["t9", "worker"]]);
 });
+
+test("a snapshot whose process is gone is dropped; the live session shows from presence instead", async () => {
+	const { root, dir, hub } = setup();
+	const dead = 2 ** 22 + 12345;
+	writeTowerSnapshot(hub, { ...buildTowerSnapshot({ sessionId: "sess-a", sessionName: "Frozen", cwd: "/w/a", stats: { cost: 3, input: 0, output: 0 }, todos: [], agents: [], now: NOW - 600_000, said: "old words" }), pid: dead });
+	writeTowerSnapshot(hub, { ...buildTowerSnapshot({ sessionId: "sess-b", sessionName: "Alive", cwd: "/w/a", stats: { cost: 1, input: 0, output: 0 }, todos: [], agents: [], now: NOW }), pid: process.pid });
+	presence(dir, "sess-a", { label: "Live via presence", workspace: "/w/a" });
+	const web = join(root, "web"); mkdirSync(web); writeFileSync(join(web, "index.html"), "<title>t</title>");
+	const s = await startTowerServer({ hubDir: hub, webDir: web, token: "tok-123", presenceDirs: [dir], now: () => NOW });
+	servers.push(s);
+	const list = JSON.parse((await get(s.port, "/tok-123/api/sessions")).body).sessions as Array<{ name: string; basic?: boolean; said?: string }>;
+	assert.deepEqual(list.map((x) => [x.name, x.basic ?? false]), [["Alive", false], ["Live via presence", true]]);
+	assert.ok(!list.some((x) => x.said === "old words"));
+	assert.equal(await post(s.port, "/tok-123/api/action", JSON.stringify({ type: "message", sessionId: "sess-a", text: "hi" })), 404);
+});

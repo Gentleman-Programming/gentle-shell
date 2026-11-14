@@ -58,6 +58,8 @@ export interface TowerSnapshot {
 	notice?: { text: string; ok: boolean; at: number };
 	/** The orchestrator's latest visible words, bounded. */
 	said?: string;
+	/** Publishing process; a snapshot whose process is gone is stale. */
+	pid?: number;
 	/** A live session seen only through the peer presence registry (no tower extension): no tasks, cost or actions. */
 	basic?: true;
 	/** Spend per model in this session, for the bar tab. */

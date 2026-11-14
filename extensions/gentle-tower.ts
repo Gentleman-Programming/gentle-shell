@@ -89,7 +89,7 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 			const usage = ctx.getContextUsage?.();
 			// The agents service keeps finished tasks as history; only live helpers are on the floor.
 			const listed = ((agents?.read().agents ?? []) as unknown as TowerAgentInput[]).filter((a) => LIVE_HELPER.has(String(a.status)));
-			writeTowerSnapshot(dir, buildTowerSnapshot({
+			writeTowerSnapshot(dir, { pid: process.pid, ...buildTowerSnapshot({
 				sessionId,
 				sessionName: ctx.sessionManager.getSessionName(),
 				cwd: ctx.sessionManager.getCwd(),
@@ -108,7 +108,7 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 				models: stats.models.map((m) => ({ model: m.model, cost: m.cost, tokens: m.tokens })),
 				artifacts: artifactsFromBranch(branch, ctx.sessionManager.getCwd()),
 				now: now(),
-			}));
+			}) });
 		} catch {
 			// The tower is a view: a failed write never disturbs the session.
 		}

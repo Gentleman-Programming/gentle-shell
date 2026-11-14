@@ -1,9 +1,12 @@
 // Where a Gentle Shell terminal's conversation lives, and how to read only what was added.
 //
-// SPIKE MAPPING (T1): a terminal is mapped to its session by its folder. The publisher (T4)
-// will report the exact session file per terminal; replace `sessionFileFor` then and nothing
-// else needs to change. Known gap: several sessions in one folder are ambiguous (the newest
-// file wins).
+// MAPPING (T4): every live Gentle Shell session publishes a snapshot
+// (`gentle-shell.desktop-feed/v1`, extensions/gentle-desktop-feed.ts) under
+// `<agentDir>/desktop/sessions/<sessionId>.json` that names its exact session file, its
+// pid/ppid/ancestors and its Herdr pane id. `sessionFileFor` matches a terminal against those
+// snapshots first; only when none matches (an older Gentle Shell, a session before its first
+// write) does it fall back to the T1 folder heuristic, where several sessions in one folder
+// are ambiguous (the newest file wins).
 
 import { readFile, readdir } from "fs/promises";
 import { exec, home } from "herdr";
@@ -26,11 +29,64 @@ async function realpath(dir) {
   }
 }
 
-// THE mapping: { dir, file } for a terminal (an entry of `terminals()`), or null when it has no
-// folder. `file` is the newest `*.jsonl`, null before the first message (names start with an ISO
-// timestamp, so the name order is the time order). `real`: the caller's cwd -> real path memo,
-// so the folder is resolved once per terminal folder, not every tick.
+export const FEED_SCHEMA = "gentle-shell.desktop-feed/v1";
+// The snapshot folder the publisher writes (lib/desktop-feed-store.ts desktopFeedDirectory).
+export const feedDir = () => `${agentDir()}/desktop/sessions`;
+const MAX_FEEDS = 64; // a bounded read per refresh, even with many crashed leftovers
+
+// Every live snapshot, newest first. Unreadable, foreign or partial files are skipped.
+export async function readFeeds() {
+  let names;
+  try {
+    names = await readdir(feedDir());
+  } catch {
+    return [];
+  }
+  const feeds = [];
+  for (const name of names.filter((n) => n.endsWith(".json") && !n.startsWith(".")).slice(0, MAX_FEEDS)) {
+    try {
+      const feed = JSON.parse(await readFile(`${feedDir()}/${name}`, "utf8"));
+      if (feed?.schema === FEED_SCHEMA && feed.identity) feeds.push(feed);
+    } catch {
+      // being replaced or not ours: the next refresh reads it again
+    }
+  }
+  return feeds.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+}
+
+const positive = (n) => Number.isInteger(n) && n > 0;
+
+// The snapshot of the session running in `terminal` (an entry of `terminals()`), or null.
+// A terminal's own pid, or its foreground process, is the publisher or one of its ancestors
+// (the launcher, the shell); a Herdr pane id the publisher saw in HERDR_PANE_ID also matches.
+// The nearest process match wins; ties go to the newest snapshot.
+export function matchFeed(terminal, feeds) {
+  const pids = [terminal?.pid, terminal?.foreground?.pid].filter(positive);
+  const ids = [terminal?.address, terminal?.id, terminal?.pane, terminal?.pane_id].filter((v) => typeof v === "string" && v);
+  let best = null;
+  let bestRank = Infinity;
+  for (const feed of feeds) {
+    const id = feed.identity;
+    const chain = [id.pid, id.ppid, ...(Array.isArray(id.ancestors) ? id.ancestors : [])].filter(positive);
+    let rank = chain.findIndex((pid) => pids.includes(pid));
+    if (rank < 0 && id.herdr?.paneId && ids.includes(id.herdr.paneId)) rank = chain.length;
+    if (rank >= 0 && rank < bestRank) { best = feed; bestRank = rank; }
+  }
+  return best;
+}
+
+// THE mapping: { dir, file, feed } for a terminal (an entry of `terminals()`), or null when it
+// has neither a snapshot nor a folder. With a snapshot, `file` is its exact session file and
+// `feed` the snapshot. Otherwise `file` is the newest `*.jsonl` of the folder's session dir,
+// null before the first message (names start with an ISO timestamp, so the name order is the
+// time order). `real`: the caller's cwd -> real path memo, so the folder is resolved once per
+// terminal folder, not every tick.
 export async function sessionFileFor(terminal, real = new Map()) {
+  const feed = matchFeed(terminal, await readFeeds());
+  const exact = feed?.identity?.sessionFile;
+  if (typeof exact === "string" && exact.endsWith(".jsonl")) {
+    return { dir: exact.slice(0, Math.max(exact.lastIndexOf("/"), exact.lastIndexOf("\\"))), file: exact, feed };
+  }
   const cwd = terminal?.cwd;
   if (!cwd) return null;
   if (!real.has(cwd)) real.set(cwd, await realpath(cwd));
@@ -39,10 +95,10 @@ export async function sessionFileFor(terminal, real = new Map()) {
   try {
     names = await readdir(dir);
   } catch {
-    return { dir, file: null };
+    return { dir, file: null, feed };
   }
   const newest = names.filter((n) => n.endsWith(".jsonl")).sort().pop();
-  return { dir, file: newest ? `${dir}/${newest}` : null };
+  return { dir, file: newest ? `${dir}/${newest}` : null, feed };
 }
 
 // UTF-8 bytes to a string (no TextDecoder here, and Buffer can't decode). Invalid bytes

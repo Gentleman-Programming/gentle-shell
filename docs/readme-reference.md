@@ -99,6 +99,14 @@ small adapters in any terminal tool, independently of Herdr. See
 heartbeat/staleness rules and privacy guidance. The task-summary preference also
 controls titles in these files; existing Herdr behavior is unchanged.
 
+## Desktop session snapshot
+
+Interactive top-level Gentle Shell sessions also keep a bounded JSON snapshot of
+everything the terminal UI shows (model, profile, context, cost, plan usage,
+permission mode, todo, changes, subagents, jobs, review, stats, activity and the
+open question) under `<agentDir>/desktop/sessions/<sessionId>.json`, for the
+Gentle Shell Desktop mods. See [desktop feed format](desktop-feed.md).
+
 ## Herdr active-work summary
 
 Choose `/gentle:customize` → **Layout** → **Task summary: on/off** to show or

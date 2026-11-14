@@ -8,8 +8,11 @@ Spec: `odd/tasks/herdr-desktop.md` T1 (S1, S5, S6). Write path (`hc send` → se
   agent/report = `gentle-shell` or `pi`; `props.terminal` wins, then the focused one, then the
   shown tab's), reads its session, draws it, sends prompts with `hc(["send", address, text])`.
 - `session.js` — `sessionFileFor(terminal, memo)`: **the only mapping** terminal → session file
-  (cwd → `pwd -P` real path → `~/.gentle-shell/agent/sessions/--<path, / and : as ->--/`, newest
-  `*.jsonl` by name = timestamp). T4's publisher replaces this one function. Also `readAfter`
+  (T4: the publisher's snapshot in `~/.gentle-shell/agent/desktop/sessions/*.json` matched by the
+  terminal's pid / foreground pid against the snapshot's pid, ppid and ancestors, or by Herdr pane
+  id, gives the exact `sessionFile`; fallback: cwd → `pwd -P` real path →
+  `~/.gentle-shell/agent/sessions/--<path, / and : as ->--/`, newest `*.jsonl` by name =
+  timestamp). The match also returns the snapshot (`feed`) for T5/T6. Also `readAfter`
   (complete lines after a byte offset) and a UTF-8 decoder (the runtime has no TextDecoder).
 - `feed.js` — pure JSONL → chat items: user, assistant (text / thinking / toolCall blocks,
   `usage.cost.total`, model, error/aborted), tool results joined to their call by
@@ -60,7 +63,9 @@ shown, the chat is hidden, so the way back is the stack's `"tabs"` header.
 
 ## Open issues
 
-- Several sessions in one folder: the newest file wins (ambiguous; T4 must report the exact file).
+- Several sessions in one folder: resolved by the T4 snapshot; only the fallback (no snapshot
+  matches) still picks the newest file. The pid/pane matching is unproven in a running Herdr
+  window (`terminals()` fields `pid`, `foreground.pid`, `address` assumed from herdr-app source).
 - `~/.gentle-shell/agent` is hard-coded; an overridden agent dir is not followed.
 - Remote terminals (`machine/tN`) are not read (`readFile` is local); they show a notice.
 - The runtime has no ranged read or stat: every refresh fetches the file's bytes whole and

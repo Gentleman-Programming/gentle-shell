@@ -21,7 +21,7 @@ Branch `feat/herdr-gentle-shell` from `origin/main` 3dc902975. References (read-
 - T1 Spike the feed: read a live pi session into a mod (session file / snapshot) and send prompt + answers back (hc / pane input); prove in running Herdr — S1, S5 — inline — done (`herdr/mods/gentle-chat`, `herdr/layouts/gentle-shell.json`)
 - T2 Parity inventory: table of every TUI element (S2) → data source → desktop place — S2 — inline — done (`odd/tasks/herdr-desktop-parity.md`)
 - T3 Design the layout artboards (gentle-design), user approves — S1, S2, S5 — inline — done (direction A, `design/herdr-desktop/01-inspector.html`)
-- T4 Publisher extension: per-session desktop snapshot (todo, changes, jobs, agents, usage, review, permission, persona, model/profile, question) — S2 — pending
+- T4 Publisher extension: per-session desktop snapshot (todo, changes, jobs, agents, usage, review, permission, persona, model/profile, question) — S2 — done (`extensions/gentle-desktop-feed.ts`, `lib/desktop-feed*.ts`, `docs/desktop-feed.md`)
 - T5 Chat mod with Chat/Terminal switch — S5 — pending
 - T6 Sidebar/status mods (sessions, todo, agents, jobs, usage, changes, review, modes) — S2 — pending
 - T7 Actions: prompt, answer questions, cancel subagent/job, permission mode, review switch (same authority as the CLI) — S2 — pending
@@ -43,3 +43,4 @@ Branch `feat/herdr-gentle-shell` from `origin/main` 3dc902975. References (read-
 - L8: T3 design directions in design/herdr-desktop/ — 01-inspector.html (A), 02-rail.html (B), 03-chat-first.html (C); pending user choice.
 - L9 (user): "me gusta mas el A". Canvas note: the gentle_design tool is bound to the session cwd; from a gentle-ai session it cannot see this clone, so the canvas was opened from a Gentle Shell session in this worktree (hc t3).
 - L10 (user): "fijate porfa que quede 1 a 1 con el diseño eh"
+- L11 (T4 evidence): `tests/desktop-feed.test.ts` 12/12 pass (mutation run: 6 fail when debounce, bounds, question clear, shutdown and dedupe are broken); `scripts/check-types.mjs` 0 diagnostics; `npm test` failures identical to base (environmental: worktree without own node_modules, plus known base failures). Live: `gentle-shell -e extensions/gentle-desktop-feed.ts` in hc t4 wrote `~/.gentle-shell/agent/desktop/sessions/<id>.json` with exact sessionFile, ppid 8447 = Herdr terminal pid (match works), paneId `wMJ:p1`, super-yolo permission, model/profile. Always null for now: persona (private in gentle-ai.ts), statuses and integrations (footer data owned by gentle-shell), agents[].role — need small owner hooks later.

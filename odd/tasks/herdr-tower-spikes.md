@@ -12,7 +12,7 @@ Branch `design/herdr-gentle-ui`. Spike code lives in `~/.config/herdr-app/mods/t
 
 ## Tasks
 - T1 S1 sprite frames via `.frames()` — inline — done: mechanism pass, CPU fail (L10)
-- T2 S2 painted PNG crispness at ×2 — inline — pending
+- T2 S2 painted PNG crispness at ×2 — inline — done: pass with pre-scaled ×4 nearest assets (L11)
 - T3 S5 overlays + keyboard — inline — pending
 - T4 S6 Markdown (`TextView.markdown`) + Mermaid as SVG/PNG — inline — pending
 - T5 S3 data feed from Gentle Shell — inline — pending
@@ -30,3 +30,4 @@ Branch `design/herdr-gentle-ui`. Spike code lives in `~/.config/herdr-app/mods/t
 - L8: CPU of the Herdr app process (8 s samples): 15 layered sprites animated (90 `.frames` layers + 8 `.loop`) ≈ 15–20 %; same overlay static ≈ 0.1–0.3 %; no overlay ≈ 0.1 %. Animation cost is real; the final design must cap animated sprites or lower the frame rate.
 - L9: Probe grid showed every TowerPix character falling back to the UI font: Herdr/GPUI ignored the fontBuilder-made TTF entirely. Rebuilding the same glyphs on top of the win98 template (PxPlus IBM VGA 8x16, renamed TowerPix, glyphs scaled to its 1600 UPM) makes all 72 glyphs render. Scripts: design/herdr-gentle-shell/spikes/{mklayers.py,fromtemplate.py,main.layers.js}.
 - L10: S1 verdict — mechanism PASS: 15 characters × 6 tinted layers stepped natively by `.frames()` (walk 8 f @125 ms, type 4 f @170 ms) render in colour and animate (two shots 0.4 s apart differ), one font for every shirt colour. Cost criterion FAIL: 14–18 % app CPU vs 0.1 % static. Design rule: animate only the shown floor, ≤3 layers per sprite or ≤6 fps, idle poses static.
+- L11: S2 verdict — `image()` upscales with linear filtering: a 360×225 PNG shown at ×2 (720×450 logical, ×4 device on retina) is blurred. Pre-scaling the PNG ×4 with nearest-neighbour and drawing it 1:1 in device pixels is crisp (dither pixels sharp in `herdr-app shot`). PASS with the rule: ship art pre-scaled to device resolution, never let GPUI upscale.

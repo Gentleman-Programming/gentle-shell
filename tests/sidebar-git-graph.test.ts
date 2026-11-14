@@ -131,3 +131,12 @@ test("graph rows fill the rail width so the tinted surface has no bare notches",
   }
  }
 });
+
+test("a timed-out rev-parse is an error, never the unborn state", async () => {
+ const graph = await readSidebarGitGraph(async args => {
+  if (args[0] === "symbolic-ref") return { code: 0, stdout: "main\n" };
+  if (args[0] === "rev-parse") return { code: 1, stdout: "", timedOut: true };
+  return { code: 0, stdout: "" };
+ });
+ assert.equal(graph.state, "error", "a deadline is transient, not an unborn repository");
+});

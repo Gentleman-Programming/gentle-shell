@@ -77,9 +77,10 @@ test("an answered initial failure is visible and history refresh can recover", a
 	await f.cards.refreshHistory();
 	await f.cards.refreshDiff();
 	assert.match(f.render().join("\n"), /wt history/);
-	// A failed initial status read stays unavailable until a later change adds
-	// a retry scan; refresh intentionally skips a failed initial start.
-	assert.match(f.render().join("\n"), /Counts unavailable/);
+	// A failed initial status read recovers on the next refresh: refreshDiff
+	// restarts a tracker whose start() failed instead of pinning the gap
+	// (CodeRabbit finding — the old contract pinned "Counts unavailable").
+	assert.match(f.render().join("\n"), /\+\d/);
 });
 
 test("disabling an unanswered card settles the selected root barrier", async () => {

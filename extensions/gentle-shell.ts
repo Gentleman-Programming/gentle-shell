@@ -2835,7 +2835,12 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 						const direct = new ChangesTracker(guardedGit(root, version), untrackedLines(root), fileRevision(root));
 						let model = gitCardsState.model ?? { files: [], added: 0, deleted: 0 };
 						let started: Promise<void> | undefined;
-						void showChangesOverlay(ctx, { initial: { root, path: file.path }, available: () => valid(version), loadDiff: (targetRoot, target) => loadFileDiff(guardedGit(targetRoot, version), target), worktrees: () => [{ root, model }], refresh: async () => { if (!started) { started = direct.start(); await started; model = direct.model; } else { await started; model = await direct.refresh(); } return model; }, apply: () => {} }).catch(() => { if (currentContext === ctx) ctx.ui.notify("Could not open changes.", "warning"); }).finally(() => { diffOpening = false; });
+						void showChangesOverlay(ctx, { initial: { root, path: file.path }, available: () => valid(version), loadDiff: (targetRoot, target) => loadFileDiff(guardedGit(targetRoot, version), target), worktrees: () => [{ root, model }], refresh: async () => { // A failed first capture leaves the tracker unread; retry start()
+									// instead of refreshing a tracker that can no longer read (CodeRabbit finding).
+									if (!started) { started = direct.start(); await started; model = direct.model; }
+									else if (!direct.statusRead) { await direct.start(); model = direct.model; }
+									else { await started; model = await direct.refresh(); }
+									return model; }, apply: () => {} }).catch(() => { if (currentContext === ctx) ctx.ui.notify("Could not open changes.", "warning"); }).finally(() => { diffOpening = false; });
 					}
 					return { handled: true, render: true };
 				},
@@ -3124,7 +3129,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 						if (!reentry) selectedRoot = result.wt;
 						roots = result;
 					} else if (!reentry) roots = result;
-					if (!reentry || result.state === "ready") gitCardsState.enter(selectedRoot);
+					// A failed re-entry discovery must not leave the cards dormant:
+					// resume the cached root with the data already captured (CodeRabbit
+					// finding) — the next turn's discovery reconciles the metadata.
+					if (!reentry || result.state === "ready" || !gitCardsState.paintedRoot) gitCardsState.enter(selectedRoot);
+					else gitCardsState.enter(gitCardsState.paintedRoot);
 					invalidateSidebar(tui); tui.requestRender();
 				});
 			}, (id, height) => {

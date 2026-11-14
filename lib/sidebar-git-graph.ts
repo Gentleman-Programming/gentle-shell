@@ -14,8 +14,10 @@ export async function readSidebarGitGraph(git: GitRunner): Promise<SidebarGitGra
   if (symbolic.truncated || (symbolic.code !== 0 && symbolic.code !== 1)) return { state: "error" };
   const branch = symbolic.code === 0 ? clean(symbolic.stdout).trim() : "detached";
   const head = await git(["rev-parse", "--verify", "-q", "HEAD"]);
-  if (head.truncated) return { state: "error" };
-  if (head.code !== 0) return symbolic.code === 0 && head.code === 1 ? { state: "unborn", branch } : { state: "error" };
+  // A deadline (code 1 with timedOut) must reach the error state, never the
+  // unborn fallback: a timed-out rev-parse says nothing about HEAD (CodeRabbit finding).
+  if (head.truncated || head.timedOut) return { state: "error" };
+  if (head.code !== 0) return symbolic.code === 0 && head.code === 1 && !head.timedOut ? { state: "unborn", branch } : { state: "error" };
   const log = await git(["-c", "color.ui=false", "log", "--graph", "--no-color", "--max-count=50", "--format=%x1e%h%x1f%D%x1f%s%x1e", "HEAD"]);
   if (log.code !== 0 || log.truncated) return { state: "error" };
   return { state: "ready", branch, lines: log.stdout.replace(/\n$/, "").split("\n") };

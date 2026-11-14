@@ -148,6 +148,17 @@ export class SidebarGitCards {
 		if (epoch !== card.diffEpoch || !this.live(card)) return;
 		const tracker = card.tracker;
 		if (!tracker) return;
+		// A failed first capture leaves the tracker unread and its refresh() inert:
+		// restart it once so a transient Git failure recovers on the next turn
+		// instead of pinning "Counts unavailable" until re-navigation.
+		if (!tracker.statusRead) {
+			await tracker.start();
+			if (epoch !== card.diffEpoch || !this.live(card)) return;
+			card.model = tracker.model;
+			card.statusRead = tracker.statusRead;
+			this.settle(card);
+			return;
+		}
 		const model = await tracker.refresh();
 		if (epoch !== card.diffEpoch || !this.live(card)) return;
 		if (model.digest === card.model?.digest && tracker.statusRead === card.statusRead) return;

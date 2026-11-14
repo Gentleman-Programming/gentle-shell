@@ -15,7 +15,8 @@ function fixture({windows = false, npm = false, runtime = 'adjacent', groups = '
  badManifest = false, failed = false, mismatch = false, linked = false, readback = true, unrelatedPeer = false, shim = '',
  artifact = true, configHome = '', latest = '1.2.0', installFailure = undefined as undefined | {stdout?: string, stderrTail?: string},
  piDependencies = {} as Record<string, unknown>, manifestView = undefined as undefined | {code: number, stdout: string},
- siblingDependencies = {} as Record<string, Record<string, unknown> | null>, excludeOutput = '["existing-fixture"]\n'} = {}) {
+ siblingDependencies = {} as Record<string, Record<string, unknown> | null>, excludeOutput = '["existing-fixture"]\n',
+ installation = undefined as undefined | {root: string, manifest: Record<string, unknown>}} = {}) {
  const base = windows ? 'C:/pnpm' : '/pnpm';
  const home = windows ? 'C:/Users/u' : '/home/u';
  // The tarball `gentle-shell upgrade --channel main` packs, named after its version.
@@ -68,6 +69,7 @@ function fixture({windows = false, npm = false, runtime = 'adjacent', groups = '
  const readFile = async (value: string) => {
   const n = value.replaceAll('\\', '/');
   if (n === shimFile) return shimText;
+  if (installation && n === `${installation.root}/installation.json`) return JSON.stringify(installation.manifest);
   if (n === `${shell}/package.json`) return JSON.stringify({name: 'gentle-pi', ...(shellVersion ? {version: shellVersion} : {})});
   if (n === `${g1}/unrelated-tool/package.json`) return JSON.stringify({name: 'unrelated-tool'});
   const version = n.startsWith(nestedPeer) ? state.peer : npm && n === `${g2}/${PI}/package.json` ? state.group : /pi-coding-agent\/([\d.]+)\/h\//.exec(n)?.[1];
@@ -558,4 +560,37 @@ test('a stderr warning never hides the ERR_PNPM line pnpm printed on stdout', as
 test('without any error line the last stderr line is shown', async () => {
  const f = fixture({installFailure: {stderrTail: 'killed\n', stdout: 'Progress: resolved 1\n'}});
  await assert.rejects(updateSelectedPi(f.input), {message: 'gentle-shell update: pnpm (/fake/pnpm) could not install gentle-pi@4.1.0\nkilled'});
+});
+
+// gentle-ai#6045: Gentle AI seals the package graph of the prefix it installs
+// and refuses every launch once a package manager changes it, so a Shell
+// running from that prefix must leave the Pi update to Gentle AI.
+const MANAGED = {Schema: 'gentle-shell-user-install/v1', Mode: 'separate'};
+const managedRefusal = (root: string, manager: string) => `gentle-shell update: Gentle AI installed the Pi this launcher runs at ${root} and authenticates its package graph, so a direct ${manager} install would make that installation refuse every launch. Update Pi there through Gentle AI: run 'gentle-ai shell install' and reconfigure the installation at ${root}. No installation changed.\n`;
+
+test('a Shell in a Gentle AI Separate prefix refuses the package-manager update before any registry query', async () => {
+ const f = fixture({npm: true, installation: {root: '/pnpm', manifest: {...MANAGED, Destination: '/pnpm', Prefix: '/pnpm/npm'}}});
+ const result = await captureUpdate(f.input, f.out);
+ assert.deepEqual(result, {exitCode: 1, stdout: '', stderr: managedRefusal('/pnpm', 'npm')});
+ assert.deepEqual(f.mutations, []);
+ assert.deepEqual(f.probes, []);
+ assert.deepEqual(f.state, {peer: '1.1.0', group: '1.1.0'});
+});
+
+test('the Gentle AI installation named by the launch config home refuses an update of its shared prefix', async () => {
+ const f = fixture({runtime: 'path', configHome: '/srv/shell/config', installation: {root: '/srv/shell', manifest: {...MANAGED, Mode: 'shared', Destination: '/srv/shell', Prefix: '/pnpm'}}});
+ const result = await captureUpdate(f.input, f.out);
+ assert.deepEqual(result, {exitCode: 1, stdout: '', stderr: managedRefusal('/srv/shell', 'pnpm')});
+ assert.deepEqual(f.mutations, []);
+ assert.deepEqual(f.probes, []);
+});
+
+for (const [name, manifest] of Object.entries({
+ 'another prefix': {...MANAGED, Destination: '/pnpm', Prefix: '/pnpm/other'},
+ 'another schema': {Schema: 'something-else/v1', Destination: '/pnpm', Prefix: '/pnpm/npm'},
+})) test(`an installation manifest for ${name} still lets the owner update Pi`, async () => {
+ const f = fixture({npm: true, installation: {root: '/pnpm', manifest}});
+ assert.equal(await updateSelectedPi(f.input), 0);
+ assert.deepEqual(f.mutations, [['install', '-g', 'gentle-pi@4.1.0']]);
+ assert.deepEqual(f.out, ['npm installed gentle-pi@4.1.0; the selected Pi is now 1.2.0 (was 1.1.0).']);
 });

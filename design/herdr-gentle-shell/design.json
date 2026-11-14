@@ -1,0 +1,83 @@
+{
+  "title": "Gentle Shell on Herdr UI",
+  "brief": "A graphical Gentle Shell built on the open-source Herdr UI with pi underneath, so people who don't use the terminal can run agents. Clean, details on demand, guided; Gentleman Programming identity (mustache, neon pink and violet, Engram elephant, Gentle AI rose). Pixel art (90s adventure look), lo-fi vaporwave, calm; management like FTL/DotAge; no walking characters, every click instant. Rooms are harness functions; project = building, session = floor, subagents named by role (worker, worker-tests\u2026).",
+  "artboards": [
+    {
+      "file": "11-tower-painted.html",
+      "title": "The tower, painted (The Dig quality)",
+      "tradeoff": "Painted 720x450 pixel art with lighting and a VGA finish; animated people (walk, type, read, check, wave, sip); floor intercom with in-world artifacts (diagram on the map board, plan on the desk, image on the wall) and a viewer. Heaviest to build: needs PixiJS + Aseprite sheets in production.",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "10-tower.html",
+      "title": "The tower: project = building, session = floor",
+      "tradeoff": "Every project is a building and every session a floor with the same rooms (map, workshop, lab, review, Engram, Gentle AI, lounge); the orchestrator and its named subagents move between rooms. Global state lives in the lobby (door = permissions, bust = persona, switch = review). Most complete; densest picture.",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "09-club-harness.html",
+      "title": "Club = harness (single session)",
+      "tradeoff": "Rooms mean harness functions; one session only.",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "08-club-cutaway.html",
+      "title": "Club cutaway (FTL-style management)",
+      "tradeoff": "All projects visible at once as rooms; agents as crew; effort as room power; questions as numbered events; pause all. Calm lo-fi vaporwave pixel art. Dense work still needs the session view.",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "07-pixel-club.html",
+      "title": "Pixel club, adventure style",
+      "tradeoff": "Lo-fi vaporwave point-and-click: one room, dialogue choices, the marble bust as guide. Warmest; shows fewer projects at once.",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "06-gentleman-club.html",
+      "title": "The Gentleman Club",
+      "tradeoff": "World as the interface with brand identity: rooms per project, Engram library, the bar as usage, the Gentleman as guide. Needs a List view for dense work.",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "03-calm-home.html",
+      "title": "Calm home",
+      "tradeoff": "Clean, guided start; no world, little identity.",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "04-calm-session.html",
+      "title": "Calm session",
+      "tradeoff": "Conversation first, everything technical folded; candidate for the club's List view.",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "05-night-barrio.html",
+      "title": "Night barrio (reference)",
+      "tradeoff": "Same world mechanics, generic theme; rejected as not Gentleman.",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "01-control-room.html",
+      "title": "Control room (rejected)",
+      "tradeoff": "Too much visual noise.",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "02-el-directo.html",
+      "title": "El Directo (rejected)",
+      "tradeoff": "Too much visual noise.",
+      "width": 1440,
+      "height": 900
+    }
+  ]
+}

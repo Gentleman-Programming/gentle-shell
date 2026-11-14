@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gentle Shell — Home (calm)</title>
+<style>
+:root{
+  --bg:#1a1218;--bg-deep:#000000;--surface:#20161e;--surface-1:#241822;--surface-2:#342230;
+  --border:#342230;--border-soft:#ffffff17;--text:#f6eff3;--text-muted:#a78e9b;--text-faint:#76616b;
+  --accent:#f095c8;--accent-soft:#ffb1dd;--success:#b4e7c7;--warning:#e0c27a;--info:#a9c7ee;
+  --font-sans:Inter,"SF Pro Text",system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --font-mono:"IosevkaTerm NF","Iosevka Term","JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+  --radius-sm:8px;--radius-md:12px;--radius-pill:999px;--glow:0 10px 30px #f095c84d;--ease:cubic-bezier(.4,0,.2,1);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{color-scheme:dark;scrollbar-color:var(--surface-2) transparent}
+body{background:var(--bg);color:var(--text);font:15px/1.6 var(--font-sans);height:100vh;overflow:hidden}
+::selection{background:#f095c84d}
+button,input{font:inherit;color:inherit}
+button{cursor:pointer;background:none;border:0}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.app{display:grid;grid-template-columns:232px 1fr;height:100vh}
+
+/* navigation: short, worded, quiet */
+nav{border-right:1px solid var(--border);padding:52px 12px 16px;display:flex;flex-direction:column;gap:2px}
+.brand{display:flex;align-items:center;gap:8px;font-weight:800;padding:0 10px 20px}
+.mark{width:20px;height:20px;border-radius:6px;background:var(--accent);color:var(--bg);display:grid;place-items:center;font:800 11px var(--font-mono)}
+.nav-i{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:8px 10px;border-radius:var(--radius-sm);color:var(--text-muted);font-size:14.5px}
+.nav-i:hover{background:var(--surface);color:var(--text)}
+.nav-i[aria-current="page"]{background:var(--surface-1);color:var(--text);font-weight:600}
+.nav-i .ic{width:16px;text-align:center;opacity:.8}
+.nav-sep{height:1px;background:var(--border);margin:12px 10px}
+.nav-label{font-size:12px;color:var(--text-faint);padding:4px 10px}
+.sess{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:6px 10px;border-radius:var(--radius-sm);font-size:14px;color:var(--text-muted)}
+.sess:hover{background:var(--surface);color:var(--text)}
+.sd{width:7px;height:7px;border-radius:50%;flex:none}
+.sess small{margin-left:auto;font-size:12px}
+.nav-foot{margin-top:auto}
+
+/* main: one thing in front */
+main{overflow:auto;display:flex;justify-content:center;padding:96px 32px 48px}
+.col{width:min(680px,100%)}
+h1{font-size:30px;font-weight:700;letter-spacing:-.01em}
+.lead{color:var(--text-muted);margin-top:4px}
+.ask{margin-top:28px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface);padding:14px 14px 10px;transition:border-color .2s var(--ease)}
+.ask:focus-within{border-color:var(--accent)}
+.ask textarea{width:100%;background:transparent;border:0;resize:none;color:var(--text);font:16px/1.5 var(--font-sans);min-height:52px}
+.ask textarea:focus{outline:none}
+.ask-row{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-muted)}
+.where{display:flex;align-items:center;gap:6px;padding:4px 8px;border-radius:var(--radius-sm)}
+.where:hover{background:var(--surface-1);color:var(--text)}
+.go{margin-left:auto;background:var(--accent);color:var(--bg);font-weight:600;padding:7px 16px;border-radius:var(--radius-sm);box-shadow:var(--glow)}
+.ideas{margin-top:14px;display:flex;flex-wrap:wrap;gap:8px}
+.idea{border:1px solid var(--border-soft);border-radius:var(--radius-pill);padding:5px 12px;font-size:13.5px;color:var(--text-muted)}
+.idea:hover{border-color:var(--accent);color:var(--accent-soft)}
+
+/* one quiet line per thing, expandable */
+.section{margin-top:48px}
+.section h2{font-size:13px;font-weight:600;color:var(--text-muted);margin-bottom:8px}
+.line{display:flex;align-items:center;gap:12px;width:100%;text-align:left;padding:12px 14px;border-radius:var(--radius-md);border:1px solid transparent}
+.line:hover{background:var(--surface);border-color:var(--border)}
+.line .t{font-weight:600}
+.line .s{color:var(--text-muted);font-size:14px}
+.line .arrow{margin-left:auto;color:var(--text-faint)}
+.state{font-size:12.5px;font-weight:600;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.state.need{color:var(--warning)}
+.state.work{color:var(--info)}
+.state.done{color:var(--success)}
+.pulse{width:7px;height:7px;border-radius:50%;background:currentColor;animation:p 1.8s var(--ease) infinite}
+@keyframes p{50%{opacity:.3}}
+.more{margin-top:4px;font-size:13.5px;color:var(--text-muted);padding:6px 14px}
+.more:hover{color:var(--accent-soft)}
+
+.guide{margin-top:48px;display:flex;gap:14px;align-items:flex-start;padding:16px;border-radius:var(--radius-md);background:linear-gradient(180deg,#f095c814,transparent);border:1px solid var(--border)}
+.guide .g{width:32px;height:32px;border-radius:10px;background:var(--surface-2);display:grid;place-items:center;flex:none;color:var(--accent-soft);font-weight:800}
+.guide p{font-size:14px;color:var(--text-muted)}
+.guide b{color:var(--text)}
+.guide .acts{display:flex;gap:14px;margin-top:6px;font-size:13.5px}
+.guide .acts button{color:var(--accent)}
+.guide .acts button.dim{color:var(--text-muted)}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="app">
+  <nav aria-label="Main">
+    <div class="brand"><span class="mark" aria-hidden="true">g</span>gentle shell</div>
+    <button class="nav-i" aria-current="page"><span class="ic" aria-hidden="true">⌂</span>Home</button>
+    <button class="nav-i"><span class="ic" aria-hidden="true">±</span>Changes</button>
+    <button class="nav-i"><span class="ic" aria-hidden="true">◎</span>Memory</button>
+    <button class="nav-i"><span class="ic" aria-hidden="true">∿</span>Usage</button>
+    <button class="nav-i"><span class="ic" aria-hidden="true">⚙</span>Settings</button>
+    <div class="nav-sep"></div>
+    <div class="nav-label">Sessions</div>
+    <button class="sess"><span class="sd" style="background:var(--warning)"></span>Token refresh fix<small class="state need">you</small></button>
+    <button class="sess"><span class="sd" style="background:var(--info)"></span>Release notes 4.5.1</button>
+    <button class="sess"><span class="sd" style="background:var(--success)"></span>Triage #6102</button>
+    <button class="more" style="text-align:left">All sessions</button>
+    <div class="nav-foot"><button class="sess"><span class="sd" style="background:var(--accent)"></span>Alan<small>profile</small></button></div>
+  </nav>
+
+  <main>
+    <div class="col">
+      <h1>Good evening, Alan.</h1>
+      <p class="lead">What do you want to build?</p>
+
+      <div class="ask">
+        <label class="sr" for="q">Describe what you want to do</label>
+        <textarea id="q" rows="2" placeholder="Fix the logout bug in my app, explain this project to me, write tests for…"></textarea>
+        <div class="ask-row">
+          <button class="where" aria-label="Folder: gentle-ai, change">▸ gentle-ai</button>
+          <button class="where" aria-label="Profile: balanced, change">Balanced</button>
+          <button class="go">Start</button>
+        </div>
+      </div>
+      <div class="ideas" aria-label="Suggestions">
+        <button class="idea">Explain this project to me</button>
+        <button class="idea">Find and fix a bug</button>
+        <button class="idea">Review my last changes</button>
+      </div>
+
+      <section class="section" aria-labelledby="h-now">
+        <h2 id="h-now">Right now</h2>
+        <button class="line"><span class="state need">● Needs you</span><span><span class="t">Token refresh fix</span> <span class="s">· one question about failed refreshes</span></span><span class="arrow">→</span></button>
+        <button class="line"><span class="state work"><span class="pulse"></span>Working</span><span><span class="t">Release notes 4.5.1</span> <span class="s">· checking the draft</span></span><span class="arrow">→</span></button>
+        <button class="line"><span class="state done">✓ Done</span><span><span class="t">Triage #6102</span> <span class="s">· 3 files changed, ready to review</span></span><span class="arrow">→</span></button>
+      </section>
+
+      <aside class="guide" aria-label="Tip">
+        <span class="g" aria-hidden="true">G</span>
+        <div>
+          <p><b>New here?</b> Gentle Shell plans first, asks when something is your call, and shows you every change before it's saved.</p>
+          <div class="acts"><button>Take the 2-minute tour</button><button class="dim">Hide tips</button></div>
+        </div>
+      </aside>
+    </div>
+  </main>
+</div>
+</body>
+</html>

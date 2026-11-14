@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gentle Shell on Herdr — El Directo</title>
+<style>
+:root{
+  --bg:#1a1218;--bg-deep:#000000;--surface:#20161e;--surface-1:#241822;--surface-2:#342230;
+  --border:#342230;--border-soft:#ffffff17;--text:#f6eff3;--text-muted:#a78e9b;--text-faint:#76616b;
+  --accent:#f095c8;--accent-strong:#ff76c3;--accent-soft:#ffb1dd;
+  --success:#b4e7c7;--warning:#e0c27a;--error:#ff718f;--info:#a9c7ee;
+  --font-sans:Inter,"SF Pro Text",system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --font-mono:"IosevkaTerm NF","Iosevka Term","JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,"DejaVu Sans Mono",monospace;
+  --radius-sm:8px;--radius-md:12px;--radius-lg:16px;--radius-pill:999px;
+  --glow:0 10px 30px #f095c84d;--glow-hover:0 14px 36px #f095c86b;
+  --shadow-panel:0 24px 60px #00000073,0 0 40px #f095c81a;
+  --ease:cubic-bezier(.4,0,.2,1);
+}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font:15px/1.5 var(--font-sans);overflow:hidden;
+  background-image:radial-gradient(#ffffff0d 1px,transparent 1px);background-size:26px 26px}
+::selection{background:#f095c84d}
+html{color-scheme:dark;scrollbar-color:var(--surface-2) transparent}
+button{font:inherit;color:inherit;cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+.mono{font-family:var(--font-mono)}
+.muted{color:var(--text-muted)}
+.eyebrow{font:600 12px var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.spacer{flex:1}
+kbd{font:600 11px var(--font-mono);padding:1px 6px;border:1px solid var(--border-soft);border-radius:5px;color:var(--text-muted)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:36px;padding:7px 14px;border-radius:var(--radius-sm);border:1px solid var(--border);background:transparent;font-weight:600;font-size:14px;transition:.2s var(--ease)}
+.btn:hover{border-color:var(--accent);color:var(--accent-soft)}
+.btn.primary{background:var(--accent);color:var(--bg);border-color:var(--accent);box-shadow:var(--glow)}
+.btn.primary:hover{box-shadow:var(--glow-hover);color:var(--bg);transform:translateY(-1px)}
+.btn.sm{min-height:30px;padding:4px 10px;font-size:13px}
+.pill{font:600 12px var(--font-mono);padding:3px 10px;border:1px solid var(--border-soft);border-radius:var(--radius-pill);color:var(--text-muted);background:transparent}
+
+.app{display:grid;grid-template-rows:52px 1fr;height:100vh}
+
+/* on-air bar */
+.top{display:flex;align-items:center;gap:14px;padding:0 16px 0 88px;border-bottom:1px solid var(--border);background:#20161ef2}
+.word{display:flex;align-items:center;gap:8px;font-weight:800}
+.mark{width:22px;height:22px;border-radius:6px;background:var(--accent);color:var(--bg);display:grid;place-items:center;font:800 12px var(--font-mono)}
+.onair{display:inline-flex;align-items:center;gap:8px;font:700 12px var(--font-mono);letter-spacing:.12em;padding:4px 12px;border-radius:var(--radius-pill);background:var(--error);color:var(--bg)}
+.onair .dot{width:8px;height:8px;border-radius:50%;background:var(--bg);animation:blink 1.4s steps(2) infinite}
+@keyframes blink{50%{opacity:.2}}
+.stat{font:13px var(--font-mono);color:var(--text-muted)}
+.stat b{color:var(--text)}
+.goal{display:flex;align-items:center;gap:10px;padding:4px 12px;border:1px solid var(--border-soft);border-radius:var(--radius-pill);font-size:13px}
+.goal .bar{width:120px;height:6px;border-radius:var(--radius-pill);background:var(--surface-2);overflow:hidden}
+.goal .bar i{display:block;height:100%;width:60%;background:var(--accent)}
+.me{display:flex;align-items:center;gap:8px;padding:3px 12px 3px 3px;border:1px solid var(--border-soft);border-radius:var(--radius-pill);background:transparent}
+.av{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font:700 11px var(--font-sans);flex:none}
+
+.studio{display:grid;grid-template-columns:1fr 380px;gap:16px;padding:16px;min-height:0}
+
+/* stage */
+.left{display:grid;grid-template-rows:1fr auto auto;gap:12px;min-height:0}
+.stage{position:relative;border-radius:var(--radius-lg);border:1px solid var(--border);background:linear-gradient(180deg,#241822f2,#20161ef2);box-shadow:var(--shadow-panel);overflow:hidden;display:grid;grid-template-rows:auto 1fr auto;min-height:0}
+.scene-h{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border)}
+.tag{font:700 11px var(--font-mono);letter-spacing:.1em;text-transform:uppercase;padding:2px 8px;border-radius:5px}
+.tag.live{background:var(--error);color:var(--bg)}
+.tag.need{background:var(--warning);color:var(--bg)}
+.tag.done{background:var(--success);color:var(--bg)}
+.tag.idle{border:1px solid var(--border-soft);color:var(--text-muted)}
+.view{display:flex;gap:4px;margin-left:auto;padding:3px;border:1px solid var(--border-soft);border-radius:var(--radius-sm)}
+.view button{border:0;background:transparent;padding:3px 10px;border-radius:6px;font-size:13px;color:var(--text-muted)}
+.view button[aria-pressed="true"]{background:var(--surface-2);color:var(--text)}
+.program{padding:18px 22px;overflow:auto;display:flex;flex-direction:column;gap:12px}
+.line{display:grid;grid-template-columns:64px 1fr;gap:12px;font-size:14.5px}
+.line .k{font:600 11px var(--font-mono);text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);padding-top:3px}
+.line .ok{color:var(--success)}
+.codebox{background:var(--bg-deep);border:1px solid var(--border);border-radius:var(--radius-md);padding:12px 14px;font:13px/1.6 var(--font-mono)}
+.codebox .a{color:var(--success)}.codebox .d{color:var(--error)}.codebox .c{color:var(--text-faint)}
+/* lower third */
+.lower{display:flex;align-items:center;gap:14px;padding:12px 16px;border-top:1px solid var(--border);background:linear-gradient(90deg,#f095c826,transparent 60%)}
+.lower .who{font-weight:800;font-size:16px}
+.lower .what{font-size:13px;color:var(--text-muted)}
+.phase{display:flex;gap:4px;margin-left:auto;list-style:none;padding:0}
+.phase span{white-space:nowrap;font:600 11px var(--font-mono);text-transform:uppercase;letter-spacing:.08em;padding:3px 8px;border-radius:var(--radius-pill);color:var(--text-faint)}
+.phase .done{color:var(--success)}
+.phase .now{color:var(--bg);background:var(--accent)}
+
+/* alert overlay (like a stream alert) */
+.alert{position:absolute;top:64px;right:18px;width:400px;border-radius:var(--radius-md);border:1px solid var(--warning);background:var(--surface);box-shadow:0 18px 50px #000000a0,0 0 0 4px #e0c27a26;padding:14px 16px;display:grid;gap:10px;animation:rise .35s var(--ease)}
+@keyframes rise{from{transform:translateY(-8px);opacity:0}}
+.alert .head{display:flex;align-items:center;gap:8px}
+.alert .head b{color:var(--warning);font:700 12px var(--font-mono);letter-spacing:.12em;text-transform:uppercase}
+.alert .head span{margin-left:auto;font:12px var(--font-mono);color:var(--text-muted)}
+.alert p{font-size:15px;font-weight:600}
+.alert .opts{display:grid;gap:6px}
+.opt{display:flex;align-items:center;gap:10px;text-align:left;padding:9px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-1);font-size:14px;transition:.2s var(--ease)}
+.opt:hover{border-color:var(--accent)}
+.opt .n{font:700 12px var(--font-mono);color:var(--accent)}
+.opt.rec{border-color:#f095c84d}
+.opt.rec::after{content:"recommended";margin-left:auto;font:600 11px var(--font-mono);color:var(--accent-soft)}
+
+/* scene switcher */
+.scenes{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+.scene{position:relative;text-align:left;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface);padding:10px 12px;display:grid;gap:6px;transition:.2s var(--ease)}
+.scene:hover{border-color:var(--accent)}
+.scene[aria-current="true"]{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent),var(--glow)}
+.scene .thumb{height:46px;border-radius:6px;background:var(--bg-deep);border:1px solid var(--border-soft);padding:6px 8px;font:10px/1.45 var(--font-mono);color:var(--text-faint);overflow:hidden}
+.scene .t{font-weight:700;font-size:13.5px;line-height:1.25}
+.scene .s{font-size:12px;color:var(--text-muted)}
+.scene .tag{position:absolute;top:14px;right:16px}
+.scene.add{place-items:center;border-style:dashed;color:var(--text-muted);font-weight:600}
+.key{position:absolute;bottom:8px;right:10px}
+
+/* clips = finished work */
+.clips{display:flex;align-items:center;gap:10px;padding:10px 14px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface)}
+.clip{display:flex;align-items:center;gap:10px;padding:6px 10px;border:1px solid var(--border-soft);border-radius:var(--radius-sm);font-size:13px}
+.clip .a{color:var(--success);font-family:var(--font-mono)}.clip .d{color:var(--error);font-family:var(--font-mono)}
+
+/* chat */
+.chat{display:grid;grid-template-rows:auto auto 1fr auto;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface);min-height:0;overflow:hidden}
+.chat-h{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--border)}
+.chat-h h2{font-size:15px}
+.filters{display:flex;gap:6px;padding:8px 14px;border-bottom:1px solid var(--border-soft)}
+.filters button[aria-pressed="true"]{border-color:#f095c84d;background:#f095c81f;color:var(--accent-soft)}
+.log{overflow:auto;padding:10px 14px;display:flex;flex-direction:column;gap:9px;font-size:14px}
+.c{line-height:1.45}
+.c time{font:11px var(--font-mono);color:var(--text-faint);margin-right:6px}
+.c .n{font-weight:700}
+.c.sys{color:var(--text-muted)}
+.event{border-radius:var(--radius-sm);padding:8px 10px;border:1px solid var(--border);background:var(--surface-1)}
+.event.done{border-left:3px solid var(--success)}
+.event.raid{border:1px solid #f095c84d;background:linear-gradient(90deg,#f095c826,var(--surface-1))}
+.event.need{border-left:3px solid var(--warning)}
+.event .row{display:flex;gap:6px;margin-top:6px}
+.emote{display:inline-block;padding:0 6px;border-radius:5px;background:var(--surface-2);font:600 12px var(--font-mono);color:var(--accent-soft)}
+.say{padding:10px 12px;border-top:1px solid var(--border)}
+.say .box{display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:var(--radius-sm);padding:6px 6px 6px 10px;background:var(--surface-1)}
+.say .box:focus-within{border-color:var(--accent)}
+.say input{flex:1;background:transparent;border:0;color:var(--text);font:14px var(--font-sans)}
+.say input:focus{outline:none}
+.say .hint{font-size:12px;color:var(--text-muted);margin-top:6px}
+.say .hint code{font-family:var(--font-mono);color:var(--accent-soft)}
+
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top" aria-label="Window bar">
+    <div class="word"><span class="mark" aria-hidden="true">g</span>gentle shell</div>
+    <span class="onair" aria-label="Live: agents are working"><span class="dot"></span>ON AIR</span>
+    <span class="stat"><b>01:42:10</b> live</span>
+    <span class="stat"><b>4</b> scenes · <b>2</b> waiting on you</span>
+    <div class="goal" title="Today's goal: 5 tasks shipped"><span>Daily goal</span><span class="bar"><i></i></span><span class="mono">3/5 shipped</span></div>
+    <div class="spacer"></div>
+    <button class="btn sm" aria-pressed="false">Streamer mode: hide names & paths</button>
+    <button class="me" aria-label="Your profile: Alan, level 14"><span class="av" style="background:var(--accent);color:var(--bg)">AB</span><span class="mono" style="font-size:12px;color:var(--accent-soft)">Lv 14 · 9d 🔥</span></button>
+  </header>
+
+  <div class="studio">
+    <div class="left">
+      <section class="stage" aria-label="Main scene: Token refresh fix">
+        <div class="scene-h">
+          <span class="tag need">needs you</span>
+          <b>Token refresh fix</b><span class="muted mono" style="font-size:13px">gentle-ai · feat/token-refresh</span>
+          <div class="view" role="group" aria-label="Scene view">
+            <button aria-pressed="true">Story</button><button aria-pressed="false">Changes</button><button aria-pressed="false">Terminal</button>
+          </div>
+        </div>
+
+        <div class="program" role="log" aria-label="What the agent is doing">
+          <div class="line"><span class="k">you</span><span>Users get logged out after an hour even when they're active. Fix it, with a test.</span></div>
+          <div class="line"><span class="k">found</span><span>The refresh timer is created once at login and never rescheduled after a renewal.</span></div>
+          <div class="line"><span class="k">test</span><span>Wrote a test that fails after the first renewal — <span class="ok">red, as expected</span>.</span></div>
+          <div class="line"><span class="k">fix</span><span>Reschedule the timer on every renewal in <span class="mono">session.go</span>.</span></div>
+          <div class="codebox" aria-label="Change preview">
+            <div class="c">// internal/auth/session.go</div>
+            <div class="d">-  s.timer = time.AfterFunc(ttl, s.refresh)</div>
+            <div class="a">+  s.schedule(tok.ExpiresAt.Add(-refreshMargin))</div>
+            <div class="a">+  // re-armed after every successful renewal</div>
+          </div>
+          <div class="line"><span class="k">check</span><span><span class="ok">42 tests passed</span> · now deciding what happens when refresh fails.</span></div>
+        </div>
+
+        <div class="lower">
+          <span class="av" style="background:var(--surface-2);color:var(--accent-soft);border-radius:8px">π</span>
+          <div><div class="who">Gentle Shell</div><div class="what">with ⚒ worker (tests) and ⌕ explore · 14 min on air</div></div>
+          <ol class="phase" aria-label="Phase: implementing"><li><span class="done">✓ explore</span></li><li><span class="done">✓ plan</span></li><li><span class="now" aria-current="step">implement</span></li><li><span>check</span></li><li><span>close</span></li></ol>
+        </div>
+
+        <div class="alert" role="alertdialog" aria-labelledby="al-t" aria-describedby="al-d">
+          <div class="head"><b id="al-t">? Your call</b><span>answer with 1–3</span></div>
+          <p id="al-d">If the refresh request fails, what should the user see?</p>
+          <div class="opts">
+            <button class="opt rec"><span class="n">1</span>Retry once, then sign out with a message</button>
+            <button class="opt"><span class="n">2</span>Keep retrying in the background</button>
+            <button class="opt"><span class="n">3</span>Something else…</button>
+          </div>
+        </div>
+      </section>
+
+      <nav class="scenes" aria-label="Scenes (agents)">
+        <button class="scene" aria-current="true"><span class="tag need">you</span><span class="thumb">reschedule timer<br>42 passed ✓</span><span class="t">Token refresh fix</span><span class="s">gentle-ai</span><kbd class="key">1</kbd></button>
+        <button class="scene"><span class="tag live">live</span><span class="thumb">drafting notes…<br>## Fixes</span><span class="t">Release notes 4.5.1</span><span class="s">gentle-ai · checking</span><kbd class="key">2</kbd></button>
+        <button class="scene"><span class="tag live">live</span><span class="thumb">reading sync/…<br>3 conflicts found</span><span class="t">Sync conflict UI</span><span class="s">engram · exploring</span><kbd class="key">3</kbd></button>
+        <button class="scene"><span class="tag need">you</span><span class="thumb">“Programá con criterio”<br>review?</span><span class="t">Hero copy in Spanish</span><span class="s">landing · 6 min</span><kbd class="key">4</kbd></button>
+        <button class="scene add">+ New scene<span class="s">start an agent</span></button>
+      </nav>
+
+      <div class="clips" aria-label="Clips: finished work ready to ship">
+        <span class="eyebrow">Clips</span>
+        <div class="clip">✓ Triage #6102 <span class="a">+48</span><span class="d">−2</span><button class="btn sm primary">Review</button></div>
+        <div class="clip">✓ Fix flaky herdr test <span class="a">+12</span><span class="d">−9</span><span class="mono muted" style="font-size:12px">committed</span></div>
+        <span class="spacer"></span>
+        <button class="btn sm">Share recap card</button>
+      </div>
+    </div>
+
+    <aside class="chat" aria-label="Chat: agent events and team">
+      <div class="chat-h"><h2>Chat</h2><span class="muted" style="font-size:12px">agents + Gentleman Programming</span><span class="spacer"></span><span class="pill">4 here</span></div>
+      <div class="filters" role="group" aria-label="Filter chat">
+        <button class="pill" aria-pressed="true">All</button><button class="pill" aria-pressed="false">Needs you</button><button class="pill" aria-pressed="false">Agents</button><button class="pill" aria-pressed="false">Team</button>
+      </div>
+      <div class="log" role="log" aria-live="polite">
+        <div class="c sys"><time>14:31</time>⌕ <span class="n">explore</span> mapped 4 auth files</div>
+        <div class="c"><time>14:33</time><span class="n" style="color:var(--info)">⚒ worker</span>: wrote the failing test, it's red 🔴</div>
+        <div class="event done"><time class="mono muted" style="font-size:11px">14:36</time> ✓ <b>Triage #6102</b> finished — 3 files, 18 tests passed
+          <div class="row"><button class="btn sm primary">Review</button><button class="btn sm">Later</button></div></div>
+        <div class="c"><time>14:37</time><span class="n" style="color:#a9c7ee">Lu</span>: nice, that one was mine 👀 <span class="emote">:gentleclap:</span></div>
+        <div class="event raid" ><b>🚀 Marcos raided with 2 agents</b><div class="muted" style="font-size:13px">He's joining <i>Sync conflict UI</i> to pair on engram. You stay in control of approvals.</div>
+          <div class="row"><button class="btn sm primary">Accept</button><button class="btn sm">Not now</button></div></div>
+        <div class="c"><time>14:39</time><span class="n" style="color:var(--info)">⚒ worker</span>: 42 passed 🟢 <span class="emote">:redgreen:</span></div>
+        <div class="event need"><b style="color:var(--warning)">? Token refresh fix needs your call</b><div class="muted" style="font-size:13px">Answer on stage or type <span class="mono">1</span>, <span class="mono">2</span> or <span class="mono">3</span> here.</div></div>
+        <div class="c"><time>14:40</time><span class="n" style="color:#e0c27a">Sofi</span>: anyone free to review the landing copy? 🙏</div>
+        <div class="c sys"><time>14:40</time>🏅 You unlocked <b style="color:var(--accent-soft)">Red before green</b> · 10 test-first fixes</div>
+      </div>
+      <div class="say">
+        <label class="sr" for="say">Message an agent or the team</label>
+        <div class="box"><input id="say" placeholder="Talk to the scene, @agent or @teammate…"><button class="btn sm primary">Send</button></div>
+        <div class="hint"><code>@worker</code> steer a subagent · <code>/stop</code> · <kbd>Tab</kbd> next scene that needs you</div>
+      </div>
+    </aside>
+  </div>
+</div>
+</body>
+</html>

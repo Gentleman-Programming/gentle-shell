@@ -1876,6 +1876,52 @@ async function handleUpgradeCommand(commandArgs) {
 		if (error instanceof MainChannelError) fail(`gentle-shell upgrade: ${error.message}`, error.code === "upgrade-usage" ? 2 : 1);
 		throw error;
 	}
+	if (process.exitCode === 0) await refreshDesktopAfterUpgrade(undefined);
+}
+
+// After an upgrade the new Gentle Shell refreshes Gentle Shell Desktop's gentle-*
+// mods and layout, only when `gentle-shell desktop` installed them (its state
+// file); a user who never ran desktop gets nothing installed. The old process
+// cannot do it: the new mods ship with the new package.
+async function refreshDesktopAfterUpgrade(bundled) {
+	const { desktopPaths } = await import("../runtime/gentle-shell-desktop.mjs");
+	if (!existsSync(desktopPaths(process.env, homedir()).stateFile)) return;
+	const warn = (reason) => process.stderr.write(`gentle-shell upgrade: could not refresh Gentle Shell Desktop's mods (${reason}); run 'gentle-shell desktop'.\n`);
+	try {
+		const next = bundled
+			? await resolveStartupRelaunch({ root: bundled.root, home: homedir(), platform: process.platform, env: process.env, argv: ["desktop", "--refresh"] })
+			: { command: process.execPath, args: [join(packageRoot, "bin", "gentle-shell.mjs"), "desktop", "--refresh"], env: process.env };
+		const result = spawnSync(next.command, next.args, { stdio: "inherit", env: next.env });
+		if (result.error) warn(result.error.message);
+		else if (result.status !== 0) warn(`exit ${result.status}`);
+	} catch (error) {
+		warn(error.message);
+	}
+}
+
+// `gentle-shell desktop` (Gentle Shell Desktop): before any Pi runtime check,
+// since it never runs Pi; lib/gentle-shell-desktop.ts owns the decisions.
+async function handleDesktopCommand(commandArgs) {
+	const { nodeDesktopIO, runDesktop } = await import("../runtime/gentle-shell-desktop.mjs");
+	const { askLine } = await import("../runtime/gentle-shell-uninstall.mjs");
+	return runDesktop({
+		args: commandArgs,
+		env: process.env,
+		home: homedir(),
+		platform: process.platform,
+		arch: process.arch,
+		cwd: process.cwd(),
+		interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
+		packageRoot,
+		shellVersion: ownPackageVersion(),
+		io: {
+			...nodeDesktopIO(),
+			// End of input or Ctrl+C answers No.
+			ask: (question) => askLine(question, { input: process.stdin, output: process.stdout }).catch(() => ""),
+			out: (line) => process.stdout.write(`${line}\n`),
+			err: (line) => process.stderr.write(`${line}\n`),
+		},
+	});
 }
 
 // `gentle-shell upgrade` in a bundled install: the latest release installed
@@ -1893,24 +1939,25 @@ async function handleBundledUpgrade(bundled, commandArgs) {
 		if (parsed.action === "rollback") {
 			const { from, to } = await rollbackBundled({ layout, home: homedir(), platform: process.platform, arch: process.arch, env: process.env });
 			out(`Switched Gentle Shell from ${from} to ${to}.`);
-			return 0;
+		} else {
+			const { fetchDistribution } = await import("../scripts/bundled-wizard.mjs");
+			const { latestRelease } = await import("../scripts/main-channel.mjs");
+			await upgradeBundled({
+				layout,
+				home: homedir(),
+				platform: process.platform,
+				arch: process.arch,
+				env: process.env,
+				adapters: { latest: () => latestRelease(globalThis.fetch), distribution: (version) => fetchDistribution({ version }) },
+				out,
+			});
 		}
-		const { fetchDistribution } = await import("../scripts/bundled-wizard.mjs");
-		const { latestRelease } = await import("../scripts/main-channel.mjs");
-		await upgradeBundled({
-			layout,
-			home: homedir(),
-			platform: process.platform,
-			arch: process.arch,
-			env: process.env,
-			adapters: { latest: () => latestRelease(globalThis.fetch), distribution: (version) => fetchDistribution({ version }) },
-			out,
-		});
-		return 0;
 	} catch (error) {
 		process.stderr.write(`gentle-shell upgrade: ${error.message}${error.stderr ? `\n${error.stderr}` : ""}\n`);
 		return 1;
 	}
+	await refreshDesktopAfterUpgrade(bundled);
+	return 0;
 }
 
 // `gentle-shell update` in a bundled install: the newest published
@@ -2101,6 +2148,10 @@ async function main() {
 	if (args.command === "home") {
 		if (args.commandArgs[0] === "import-pi") await handleImportPiCommand(args);
 		else handleHomeCommand(args.commandArgs);
+		return;
+	}
+	if (args.command === "desktop") {
+		process.exitCode = await handleDesktopCommand(args.commandArgs);
 		return;
 	}
 	// The verification input applies to `--version` only (scripts/bundled-install.mjs upgradeBundled).

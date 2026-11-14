@@ -38,12 +38,12 @@ function isPiSubcommand(token        )                        {
 
 
 
-// Home-, upgrade- and self-uninstall-subcommand parsing is deliberately shallow:
+// Home-, upgrade-, self-uninstall-, memory- and desktop-subcommand parsing is deliberately shallow:
 // each only counts as the subcommand when it is argv[0], and everything after it is handed over
 // untouched as commandArgs — T2 owns interpreting `home link|isolated|<path>`.
 // `self-uninstall` is not `uninstall`, which stays pi's own alias for `remove`.
 export function parseLauncherArgs(argv          )                     {
-	if (argv[0] === "home" || argv[0] === "upgrade" || argv[0] === "self-uninstall" || argv[0] === "memory") {
+	if (argv[0] === "home" || argv[0] === "upgrade" || argv[0] === "self-uninstall" || argv[0] === "memory" || argv[0] === "desktop") {
 		return {
 			link: false,
 			isolated: false,
@@ -1340,6 +1340,7 @@ export function helpText()         {
 		"       gentle-shell upgrade --rollback",
 		"       gentle-shell memory migrate --confirm-quiescent",
 		"       gentle-shell self-uninstall [--dry-run] [--yes] [--include-shared]",
+		"       gentle-shell desktop [--yes] [--no-open] | --status | --uninstall",
 		"",
 		"Opens pi with the Gentle Shell package loaded, without touching your",
 		"vanilla pi installation.",
@@ -1383,6 +1384,11 @@ export function helpText()         {
 		"                   ~/.pi/gentle-ai configuration is kept unless",
 		"                   you accept or pass --include-shared; --dry-run only shows the plan.",
 		"                   Never touches your pi home or custom --home homes.",
+		"  desktop          Install and open Gentle Shell Desktop: Herdr app (pinned minimum",
+		"                   version, downloaded from releases.herdr.dev and checked against its pinned",
+		"                   SHA-256 when missing or older) with Gentle Shell's gentle-* mods and",
+		"                   gentle-shell layout. Shows the plan and asks first (--yes skips the",
+		"                   question); --status and --uninstall; 'gentle-shell desktop --help'.",
 		"",
 		"Managing packages:",
 		"  gentle-shell install npm:<pkg>   Run pi's own 'install' against the resolved home.",

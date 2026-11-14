@@ -5,7 +5,7 @@
 
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { extname, resolve, sep } from "node:path";
+import { basename, dirname, extname, resolve, sep } from "node:path";
 import { timingSafeEqual } from "node:crypto";
 import { readTowerSnapshots } from "./tower-hub.ts";
 import { parseTowerAction, TOWER_ACTION_MAX_BYTES, writeTowerAction } from "./tower-actions.ts";
@@ -18,6 +18,8 @@ export interface TowerServerOptions {
 	pollMs?: number;
 	/** Local Engram HTTP API for the read-only memory window. */
 	engramUrl?: string;
+	/** Opens a new Gentle Shell session (a floor) in a project already in the tower. */
+	onNewFloor?: (cwd: string, prompt?: string) => Promise<void>;
 }
 
 const ARTIFACT_TYPES: Record<string, string> = { ".md": "text/plain; charset=utf-8", ".markdown": "text/plain; charset=utf-8", ".txt": "text/plain; charset=utf-8", ".mmd": "text/plain; charset=utf-8", ".mermaid": "text/plain; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" };
@@ -82,6 +84,14 @@ export function startTowerServer(options: TowerServerOptions): Promise<TowerServ
 			let action;
 			try { action = parseTowerAction(JSON.parse(Buffer.concat(chunks).toString("utf8"))); } catch { action = undefined; }
 			if (!action) return deny(res, 400);
+			if (action.type === "new-floor") {
+				// Never an arbitrary folder: only a project that already has a floor.
+				if (!options.onNewFloor || !readTowerSnapshots(options.hubDir).some((s) => s.project.cwd === action.project)) return deny(res, 403);
+				options.onNewFloor(action.project, action.prompt).then(
+					() => { res.writeHead(202, { "Content-Type": "application/json", ...SECURITY_HEADERS }); res.end("{}"); },
+					() => deny(res, 500));
+				return;
+			}
 			try {
 				const id = writeTowerAction(options.hubDir, action);
 				res.writeHead(202, { "Content-Type": "application/json", ...SECURITY_HEADERS });
@@ -90,14 +100,14 @@ export function startTowerServer(options: TowerServerOptions): Promise<TowerServ
 		});
 	};
 
-	// Only a path the session itself listed, and only inside its own project.
+	// Only a file the session itself wrote (it is in its own list), reached
+	// directly: a symlink that points elsewhere is refused.
 	const serveArtifact = (res: ServerResponse, sessionId: string | null, wanted: string | null) => {
 		const session = readTowerSnapshots(options.hubDir).find((x) => x.sessionId === sessionId);
 		if (!session || !wanted || !session.artifacts?.some((a) => a.path === wanted)) return deny(res, 404);
 		try {
-			const root = realpathSync(session.project.cwd);
 			const real = realpathSync(wanted);
-			if (!real.startsWith(root + sep)) return deny(res, 404);
+			if (real !== realpathSync(dirname(wanted)) + sep + basename(wanted)) return deny(res, 404);
 			const st = statSync(real);
 			const type = ARTIFACT_TYPES[extname(real).toLowerCase()];
 			if (!st.isFile() || !type || st.size > ARTIFACT_MAX_BYTES) return deny(res, 404);

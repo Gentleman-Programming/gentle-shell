@@ -67,7 +67,7 @@ async function setup(engramUrl?: string) {
 	return { s, project, root };
 }
 
-test("only listed artifacts inside the project are served", async () => {
+test("only artifacts the session wrote are served, never through a symlink", async () => {
 	const { s, project, root } = await setup();
 	const q = (p: string) => `/tok-123/api/artifact?session=s-1&path=${encodeURIComponent(p)}`;
 	const doc = await get(s.port, q(join(project, "docs", "plan.md")));
@@ -80,7 +80,10 @@ test("only listed artifacts inside the project are served", async () => {
 	assert.match(svg.csp ?? "", /sandbox/);
 	assert.equal((await get(s.port, q(join(project, "secret.md")))).status, 404, "not listed");
 	assert.equal((await get(s.port, q(join(project, "docs", "link.md")))).status, 404, "symlink out of the project");
-	assert.equal((await get(s.port, q(join(root, "outside.md")))).status, 404, "listed but outside the project");
+	// Sessions write into other worktrees and repos; what they listed themselves is theirs to show.
+	const outside = await get(s.port, q(join(root, "outside.md")));
+	assert.equal(outside.status, 200, "listed and written outside the session folder");
+	assert.equal(outside.body, "outside the project");
 	assert.equal((await get(s.port, `/tok-123/api/artifact?session=nope&path=${encodeURIComponent(join(project, "docs", "plan.md"))}`)).status, 404);
 	assert.equal((await get(s.port, `/wrong/api/artifact?session=s-1&path=x`)).status, 403);
 });

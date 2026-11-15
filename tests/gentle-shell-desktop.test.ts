@@ -480,3 +480,33 @@ test("the real package herdr/ folder ships gentle-* mods and the gentle-shell la
 	assert.match(mods ?? "", /^ {2}Mods: none installed \(ships gentle-[a-z-]+(, gentle-[a-z-]+)*\)$/);
 	assert.ok(mods?.includes("gentle-chat"));
 });
+
+test("a swap conflict rolls back: Herdr home, originals and a created mods/ folder are as before (B1)", async (t) => {
+	const f = fixture(t);
+	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.15", f.state);
+	const originals = join(f.home, ".gentle-shell", "desktop", "originals", "layouts");
+	mkdirSync(originals, { recursive: true });
+	writeFileSync(join(originals, "gentle-shell.json"), "{\"earlier\":1}\n");
+	mkdirSync(join(f.herdrHome, "layouts"), { recursive: true });
+	writeFileSync(join(f.herdrHome, "layouts", "gentle-shell.json"), "{\"live\":1}\n");
+	const before = tree(f.herdrHome);
+	assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"] })), 1);
+	assert.match(f.err.join("\n"), /already keeps an earlier original/);
+	assert.deepEqual(tree(f.herdrHome), before);
+	assert.equal(existsSync(join(f.herdrHome, "mods")), false);
+	assert.equal(readFileSync(join(originals, "gentle-shell.json"), "utf8"), "{\"earlier\":1}\n");
+});
+
+test("a state.json written before `layout` existed treats our layout as ours (migration, B1)", async (t) => {
+	const f = fixture(t);
+	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.15", f.state);
+	assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"] })), 0, f.err.join("\n"));
+	const stateFile = join(f.home, ".gentle-shell", "desktop", "state.json");
+	const { layout: _layout, ...old } = JSON.parse(readFileSync(stateFile, "utf8"));
+	writeFileSync(stateFile, JSON.stringify(old));
+	writeFileSync(join(f.pkg, "herdr", "layouts", "gentle-shell.json"), "{\"v\":9}\n");
+	assert.equal(await runDesktop(context(f, { args: ["--refresh"] })), 0, f.err.join("\n"));
+	assert.equal(existsSync(join(f.home, ".gentle-shell", "desktop", "originals")), false);
+	assert.equal(await runDesktop(context(f, { args: ["--uninstall"] })), 0, f.err.join("\n"));
+	assert.equal(existsSync(join(f.herdrHome, "layouts", "gentle-shell.json")), false);
+});

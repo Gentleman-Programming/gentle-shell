@@ -73,7 +73,7 @@ export function money(n: number): string {
 const CHAT_TEXT_MAX = 1200;
 /** How much earlier than the send a turn may be stamped (same machine, but separate clocks reads). */
 const ECHO_SLACK_MS = 2000;
-const turnKey = (t: TowerChatTurn) => `${t.at}|${t.text}`;
+export const turnKey = (t: TowerChatTurn) => `${t.at}|${t.text}`;
 
 /** A message sent from the intercom, with the "you" turns already in the chat when it was sent. */
 export interface SentMessage { text: string; at: number; before: ReadonlySet<string> }
@@ -84,11 +84,36 @@ export function sentMessage(text: string, at: number, chat: readonly TowerChatTu
 /** The "you" turn that is the session's record of this message: new since sending, stamped at or after it
  * (within a small slack), not already used for another message, and with the same text (a prefix only when
  * the session cut the turn at its length limit). Undefined while the session has not recorded it. */
-export function echoTurn(o: SentMessage, chat: readonly TowerChatTurn[], used: ReadonlySet<TowerChatTurn>): TowerChatTurn | undefined {
+export function echoTurn(o: SentMessage, chat: readonly TowerChatTurn[], used: ReadonlySet<string>): TowerChatTurn | undefined {
 	return chat.find((t) => {
-		if (t.role !== "you" || used.has(t) || o.before.has(turnKey(t)) || t.at < o.at - ECHO_SLACK_MS) return false;
+		if (t.role !== "you" || used.has(turnKey(t)) || o.before.has(turnKey(t)) || t.at < o.at - ECHO_SLACK_MS) return false;
 		if (t.text === o.text) return true;
 		const cut = t.text.length === CHAT_TEXT_MAX && t.text.endsWith("…");
 		return cut && o.text.startsWith(t.text.slice(0, -1));
 	});
+}
+
+/** A message sent from the intercom, while its request is out. `echo` is the turn it claimed as its record. */
+export interface Outgoing extends SentMessage { state: "sending" | "sent" | "failed"; echo?: string }
+/** Matches the outbox against the session's chat. A message leaves only once its request succeeded and its
+ * turn arrived; that turn is then consumed for good (`consumed`, kept by the caller per session across
+ * renders), so it never acknowledges another message. A message still sending is hidden while it has a
+ * turn, and a failed one is always shown as not sent and never claims or consumes a turn. */
+export function settleOutbox(outbox: readonly Outgoing[], chat: readonly TowerChatTurn[], consumed: Set<string>): { keep: Outgoing[]; show: Outgoing[] } {
+	const present = new Set(chat.filter((t) => t.role === "you").map(turnKey));
+	// Turns gone from the chat can never match again.
+	for (const k of consumed) if (!present.has(k)) consumed.delete(k);
+	for (const o of outbox) if (o.echo && (o.state === "failed" || !present.has(o.echo))) o.echo = undefined;
+	const claimed = new Set([...consumed, ...outbox.flatMap((o) => (o.echo ? [o.echo] : []))]);
+	const keep: Outgoing[] = [], show: Outgoing[] = [];
+	for (const o of outbox) {
+		if (o.state !== "failed" && !o.echo) {
+			const t = echoTurn(o, chat, claimed);
+			if (t) claimed.add((o.echo = turnKey(t)));
+		}
+		if (o.echo && o.state === "sent") { consumed.add(o.echo); continue; }
+		keep.push(o);
+		if (!o.echo) show.push(o);
+	}
+	return { keep, show };
 }

@@ -1,5 +1,5 @@
 // Panels that open on demand: intercom, artifact viewer, Engram library, bar tab.
-import { echoTurn, FLOOR_COLORS, money, sentMessage, todoProgress, type SentMessage } from "./model";
+import { FLOOR_COLORS, money, sentMessage, settleOutbox, todoProgress, type Outgoing } from "./model";
 import type { Project, TowerArtifact, TowerChatTurn, TowerSnapshot } from "./types";
 
 export const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -99,15 +99,10 @@ export function closeModals(): boolean {
 // The log is a conversation: your messages on the right, the agent's on the left,
 // newest at the bottom. What you send shows at once and waits there until the
 // session's own record of it arrives.
-interface Outgoing extends SentMessage { state: "sending" | "sent" | "failed" }
 const outbox = new Map<string, Outgoing[]>();
+/** Per session: chat turns that already acknowledged a delivered message, kept across renders. */
+const consumedTurns = new Map<string, Set<string>>();
 const latest = new Map<string, { s: TowerSnapshot; floor: number }>();
-/** The session already holds this message: the local copy can go. Clocks are the same machine's. */
-const echoed = (o: Outgoing, chat: TowerChatTurn[], used: Set<TowerChatTurn>) => {
-	const turn = echoTurn(o, chat, used);
-	if (turn) used.add(turn);
-	return !!turn;
-};
 const drawn = new WeakMap<HTMLElement, string>();
 function intercomHead(s: TowerSnapshot, floor: number): string {
 	const prog = todoProgress(s.todos);
@@ -122,9 +117,11 @@ function intercomLog(s: TowerSnapshot): string {
 	const chat = s.chat ?? [];
 	// Older publishers send only the latest words: show them as the one agent turn there is.
 	const turns: TowerChatTurn[] = s.chat ? chat : s.said ? [{ role: "agent", text: s.said, at: 0 }] : [];
-	const used = new Set<TowerChatTurn>();
-	const pending = (outbox.get(s.sessionId) ?? []).filter((o) => o.state === "failed" || !echoed(o, chat, used));
-	outbox.set(s.sessionId, pending);
+	// The local copy goes once the session holds it and the request succeeded; a failure always stays visible.
+	let consumed = consumedTurns.get(s.sessionId);
+	if (!consumed) consumedTurns.set(s.sessionId, (consumed = new Set()));
+	const { keep, show: pending } = settleOutbox(outbox.get(s.sessionId) ?? [], chat, consumed);
+	outbox.set(s.sessionId, keep);
 	// One timeline: a reply newer than your message appears below it.
 	const items = [
 		...turns.map((t) => ({ at: t.at, html: bubble(t.role, t.role === "you" ? `<p>${esc(t.text)}</p>` : renderMarkdown(t.text), time(t.at)) })),

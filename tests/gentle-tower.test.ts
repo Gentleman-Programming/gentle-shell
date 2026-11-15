@@ -471,33 +471,58 @@ test("only live helpers are on the floor; finished ones leave the building", asy
 	await base.fire("session_shutdown", ctx);
 });
 
-test("a declined raise never applies, even while an earlier write lands late", async () => {
+test("a raise is decided on the action's own read, even when an earlier late write lands in between", async () => {
 	const dir = hub();
 	const base = fakePi();
 	const confirms: string[] = [];
 	const modes: string[] = [];
 	let current = "normal";
 	let releaseSlow: () => void = () => {};
+	let slowSettled = false;
+	/** While set, reads take the mode at call time and wait here; released together, they finish in call order, step by step. */
+	let gate: { open: () => void; wait: Promise<void>; reads: number } | undefined;
 	const events = (base.pi as unknown as { events: { on(n: string, fn: (d: unknown) => void): () => void } }).events;
 	(base.pi as unknown as { sendUserMessage: unknown }).sendUserMessage = () => {};
 	events.on("gentle:yolo:host-ui", (req) => (req as { respond(a: unknown): void }).respond({
 		read: async () => "OFF", toggle: async () => {}, observe: () => () => {}, dispose() {},
-		readSnapshot: async () => ({ yolo: "OFF", mode: current, defaultMode: "normal" }),
+		readSnapshot: async () => {
+			const mode = current;
+			if (gate) {
+				gate.reads++;
+				// The second action's own read: the earlier write now lands, and its follow-up re-reads.
+				if (gate.reads === 1) releaseSlow();
+				// That follow-up read: release both, so its result lands right after the action's own.
+				else setTimeout(gate.open, 0);
+				await gate.wait;
+			}
+			return { yolo: "OFF", mode, defaultMode: "normal" };
+		},
 		setMode: (m: string) => {
 			modes.push(m);
-			// The first write (to auto) hangs past the timeout, then lands late.
-			if (modes.length === 1) return new Promise<boolean>((r) => { releaseSlow = () => { current = m; r(true); }; });
+			// The first write (to super-yolo) hangs past the timeout, then lands late.
+			if (modes.length === 1) return new Promise<boolean>((r) => { releaseSlow = () => { current = m; slowSettled = true; r(true); }; });
 			current = m; return Promise.resolve(true);
 		},
 	}));
 	createTowerPublisher(base.pi, { env: { GENTLE_TOWER_HOME: dir }, debounceMs: 0, inboxMs: 20, actionTimeoutMs: 50, reviewCli: async () => "{}" });
-	const ctx = { ...fakeCtx([assistant(0.1)]), hasUI: true, isIdle: () => true, ui: { notify() {}, confirm: async (_t: string, m: string) => { confirms.push(m); releaseSlow(); return false; } } } as unknown as ExtensionContext;
+	// The first raise is approved in the terminal; the second is declined.
+	const ctx = { ...fakeCtx([assistant(0.1)]), hasUI: true, isIdle: () => true, ui: { notify() {}, confirm: async (_t: string, m: string) => { confirms.push(m); return confirms.length === 1; } } } as unknown as ExtensionContext;
 	await base.fire("session_start", ctx);
 	await wait(150);
-	// a raise asks in the terminal; the confirm also lets an earlier slow write land, and is declined
+	writeTowerAction(dir, { type: "permission", sessionId: "sess-1", mode: "super-yolo" });
+	await wait(300);
+	assert.deepEqual(modes, ["super-yolo"], "the approved write started");
+	assert.match(readTowerSnapshots(dir)[0].notice?.text ?? "", /change to super-yolo is still pending; the session is in normal/);
+	// The second action reads "normal". Between that read and its decision, the late write lands and
+	// its follow-up read publishes "super-yolo": a decision on the shared value would see a lowering.
+	let release = () => {};
+	gate = { open: () => { gate = undefined; release(); }, wait: new Promise<void>((r) => { release = r; }), reads: 0 };
 	writeTowerAction(dir, { type: "permission", sessionId: "sess-1", mode: "yolo" });
 	await wait(300);
-	assert.equal(confirms.length, 1, "the raise asked in the terminal");
-	assert.ok(!modes.includes("yolo"), "declined raise never applied");
+	assert.equal(slowSettled, true, "the earlier write settled");
+	assert.equal(confirms.length, 2, "the second action was treated as a raise and asked in the terminal");
+	assert.match(confirms[1], /from normal to yolo/);
+	assert.ok(!modes.includes("yolo"), "the declined raise never applied");
+	assert.equal(readTowerSnapshots(dir)[0].permission, "super-yolo", "the late write landed and was published");
 	await base.fire("session_shutdown", ctx);
 });

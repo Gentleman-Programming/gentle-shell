@@ -102,12 +102,29 @@ const KILL_WAIT_MS = 10_000;
 export const CHILD_ENV = "GENTLE_PI_AGENTS_CHILD";
 /** One of these next to a `.git` is what makes a directory a project worth indexing automatically. */
 const MARKERS = ["composer.json", "package.json", "pyproject.toml", "go.mod", "Cargo.toml", "Gemfile", "pom.xml", "build.gradle", "build.gradle.kts"];
+/** Quotes one argument the way cmd.exe and the npm `.cmd` shim keep it: backslashes are written
+ * exactly as given (JSON.stringify's doubling corrupted drive and UNC project paths, because
+ * cmd.exe preserves backslashes inside quotes), the surrounding double quotes keep cmd's
+ * metacharacters inert, and an embedded quote is doubled away. */
+function quoteForCmd(part: string): string {
+	const escaped = part.replaceAll("\"", "\"\"");
+	return `"${escaped}"`;
+}
+
+/** The full Windows command line for the fixed-argument vector: the npm `.cmd` shim needs
+ * cmd.exe, so the arguments become one cmd.exe-quoted string. Pure on purpose — the win32 spawn
+ * cannot run on a POSIX host, but the string it would build is fully checkable in a unit test. */
+export function buildWindowsCommand(args: readonly string[]): string {
+	return ["codegraph", ...args.map(quoteForCmd)].join(" ");
+}
+
 /** Spawns the codegraph CLI from the temp directory (cmd.exe cannot take a UNC working
- * directory): Windows needs a shell for the npm `.cmd` shim and quotes every part of the fixed
- * command line; POSIX takes a plain argument vector in its own detached group. */
+ * directory): Windows needs a shell for the npm `.cmd` shim and takes the whole fixed command
+ * line as one cmd.exe-quoted string (backslashes preserved); POSIX takes a plain argument
+ * vector in its own detached group. */
 function spawnCodegraph(args: readonly string[], stdio: ReadonlyArray<"pipe" | "ignore">): ReturnType<typeof spawn> {
 	if (process.platform === "win32") {
-		return spawn(`codegraph ${args.map((part) => JSON.stringify(part)).join(" ")}`, { cwd: tmpdir(), env: process.env, shell: true, windowsHide: true, stdio: [...stdio] });
+		return spawn(buildWindowsCommand(args), { cwd: tmpdir(), env: process.env, shell: true, windowsHide: true, stdio: [...stdio] });
 	}
 	return spawn("codegraph", [...args], { cwd: tmpdir(), env: process.env, detached: true, windowsHide: true, stdio: [...stdio] });
 }
@@ -346,7 +363,14 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 					});
 					if (lock.outcome === "acquired") {
 						try {
-							ok = indexState(input.cwd) === "present" || await input.run(["init", "-y"], input.cwd, INIT_TIMEOUT_MS, (pid, proxy) => lock.adopt(pid, proxy));
+							// The post-lock recheck is tri-state explicit: only a confirmed absence may
+							// initialize. "present" means another init finished while this one waited;
+							// "unknown" means the index cannot be confirmed, which is a fail-closed
+							// report — never a green light to initialize.
+							const rechecked = indexState(input.cwd);
+							if (rechecked === "present") ok = true;
+							else if (rechecked === "absent") ok = await input.run(["init", "-y"], input.cwd, INIT_TIMEOUT_MS, (pid, proxy) => lock.adopt(pid, proxy));
+							else ok = false;
 						} finally {
 							lock.release();
 						}
@@ -372,12 +396,17 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 			// An unexpected exception is not a deliberate skip: carry its reason so the session
 			// surfaces it instead of silently reporting that nothing happened.
 			return { action: "none", ok: false, warm: "skipped", error: firstLineOf(error, 200) };
-		} finally {
-			inFlight.delete(input.cwd);
 		}
 	})();
-	inFlight.set(input.cwd, started);
-	return started;
+	// The entry is removed when the REGISTERED promise settles, never inside the body: a body
+	// that settles before its first await (reload skip, action "none", a synchronous exception)
+	// would run that finally during the IIFE call itself — before the set below stores it — and
+	// the settled promise would then stay cached for the rest of the process.
+	const registered = started.finally(() => {
+		inFlight.delete(input.cwd);
+	});
+	inFlight.set(input.cwd, registered);
+	return registered;
 }
 
 export interface SearchSyncInput {
@@ -444,9 +473,10 @@ export function syncBeforeSearch(input: SearchSyncInput): void {
  * Kills the spawned command and, on Windows, its whole tree. The shell:true spawn there returns the
  * cmd.exe wrapper's pid, and killing only the wrapper would orphan the real codegraph process, which
  * would keep writing the shared index after the failure has already been reported. On POSIX the child
- * is the command itself, so a direct kill reaches it.
+ * is the command itself, so a direct kill reaches it. `signal` (default SIGTERM) feeds the POSIX group
+ * and direct kills, so the grace-window escalation can raise it to SIGKILL; Windows taskkill is /F.
  */
-function killProcessTree(child: { pid?: number } | undefined, group = false): void {
+function killProcessTree(child: { pid?: number } | undefined, group = false, signal: NodeJS.Signals = "SIGTERM"): void {
 	if (child?.pid === undefined) return;
 	if (process.platform === "win32") {
 		execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true }, () => {
@@ -457,13 +487,13 @@ function killProcessTree(child: { pid?: number } | undefined, group = false): vo
 	try {
 		// A detached child leads its own process group: the negative pid takes the command's
 		// workers with it instead of orphaning them under a killed leader.
-		if (group) process.kill(-child.pid);
+		if (group) process.kill(-child.pid, signal);
 		return;
 	} catch {
 		/* no such group (or not detached): fall through to the direct kill */
 	}
 	try {
-		process.kill(child.pid);
+		process.kill(child.pid, signal);
 	} catch {
 		/* already gone */
 	}
@@ -512,8 +542,13 @@ export function runCodegraph(args: readonly string[], cwd: string, timeoutMs: nu
 		});
 		const timer = setTimeout(() => {
 			killProcessTree(child, true);
-			// A killed command may still be closing; report the failure only once the process is gone.
-			grace = setTimeout(() => finish(false), KILL_WAIT_MS);
+			// A killed command may still be closing; report the failure only once the process is
+			// gone — and one that ignored SIGTERM is escalated to SIGKILL first, so its pid can
+			// never outlive the result and keep writing an index no lease covers any more.
+			grace = setTimeout(() => {
+				killProcessTree(child, true, "SIGKILL");
+				finish(false);
+			}, KILL_WAIT_MS);
 		}, timeoutMs);
 		child?.on("error", () => finish(false));
 		child?.on("close", (code: number | null) => {

@@ -8,6 +8,7 @@ import test from "node:test";
 import { daemonFor } from "../lib/codegraph-daemon.ts";
 import { lockPathFor, readLeaseVerdict } from "../lib/codegraph-lease.ts";
 import {
+	buildWindowsCommand,
 	childWorktreeNeedsIndex,
 	indexState,
 	maybeRewarm,
@@ -290,6 +291,23 @@ test("prepareReadiness: concurrent runs for one project are deduped in-process",
 	assert.deepEqual(first, second);
 });
 
+test("prepareReadiness: a reload followed by a startup for the same cwd still runs its sync", async (t) => {
+	const cwd = dir(t, "reload-then-startup");
+	writeDb(cwd);
+	const reload = await prepareReadiness(fakeInput(cwd, { reason: "reload" }));
+	assert.deepEqual(reload, { action: "none", ok: true, warm: "skipped" });
+	const calls: string[] = [];
+	const startup = await prepareReadiness(fakeInput(cwd, {
+		locksDir: dir(t, "reload-then-startup-locks"),
+		run: async (args) => {
+			calls.push(args.join(" "));
+			return true;
+		},
+	}));
+	assert.deepEqual(startup, { action: "sync", ok: true, warm: "ok" }, "the startup is never served the reload's cached skip");
+	assert.deepEqual(calls, ["unlock", "sync -q"], "the startup runs its own refresh");
+});
+
 test("daemonFor: newest live daemon wins and its registered spelling is returned", (t) => {
 	const cwd = dir(t, "daemon");
 	const registry = dir(t, "registry");
@@ -448,6 +466,65 @@ test("runCodegraph: a timeout kills the command's whole process group, grandchil
 	const deadline = Date.now() + 3_000;
 	while (pids.some(alive) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
 	assert.deepEqual(pids.map(alive), [false, false], "the direct child AND its grandchild die with the group kill");
+});
+
+test("buildWindowsCommand: a UNC project path keeps its backslashes and cmd metacharacters stay inert", () => {
+	const unc = "\\\\server\\share\\proj";
+	assert.equal(
+		buildWindowsCommand(["sync", "-q", unc]),
+		"codegraph \"sync\" \"-q\" \"\\\\server\\share\\proj\"",
+		"the UNC path reaches codegraph.cmd with its backslashes exactly as written",
+	);
+	assert.equal(
+		buildWindowsCommand(["sync", "C:\\proj & echo no"]),
+		"codegraph \"sync\" \"C:\\proj & echo no\"",
+		"spaces and cmd metacharacters stay inside the double quotes",
+	);
+});
+
+test("runCodegraph: a SIGTERM-ignoring command is SIGKILLed before the timeout result", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
+	const bin = dir(t, "sigkill-bin");
+	const pidFile = join(bin, "child.pid");
+	const grandFile = join(bin, "grandchild.pid");
+	// trap '' TERM: the shell and the sleep it backgrounds inherit an ignored SIGTERM, so only
+	// the grace-window SIGKILL escalation can end this tree.
+	writeFileSync(join(bin, "codegraph"), "#!/bin/sh\ntrap '' TERM\nsleep 60 &\nprintf '%s\\n' \"$!\" > \"$FAKE_GRANDCHILD\"\nprintf '%s\\n' \"$$\" > \"$FAKE_PIDFILE\"\nwait\n");
+	chmodSync(join(bin, "codegraph"), 0o755);
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${bin}:${previousPath}`;
+	process.env.FAKE_PIDFILE = pidFile;
+	process.env.FAKE_GRANDCHILD = grandFile;
+	t.after(() => {
+		process.env.PATH = previousPath;
+		delete process.env.FAKE_PIDFILE;
+		delete process.env.FAKE_GRANDCHILD;
+		for (const file of [pidFile, grandFile]) {
+			if (!existsSync(file)) continue;
+			try {
+				process.kill(Number(readFileSync(file, "utf8").trim()), "SIGKILL");
+			} catch {
+				/* already gone */
+			}
+		}
+	});
+	const ok = await runCodegraph(["sync", "-q"], dir(t, "sigkill-cwd"), 300);
+	assert.equal(ok, false, "the ignoring command still reports the timeout");
+	const fileDeadline = Date.now() + 3_000;
+	while ((!existsSync(pidFile) || !existsSync(grandFile)) && Date.now() < fileDeadline) await new Promise((resolve) => setTimeout(resolve, 25));
+	assert.ok(existsSync(pidFile) && existsSync(grandFile), "the fake command and its grandchild started");
+	const pids = [Number(readFileSync(pidFile, "utf8").trim()), Number(readFileSync(grandFile, "utf8").trim())];
+	const alive = (pid: number) => {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch {
+			return false;
+		}
+	};
+	const deadline = Date.now() + 3_000;
+	while (pids.some(alive) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.deepEqual(pids.map(alive), [false, false], "the SIGTERM-ignoring tree is SIGKILLed before the result is delivered");
 });
 
 test("syncBeforeSearch: unlock first, then sync -q; a failed sync reports only sync", async (t) => {
@@ -669,6 +746,46 @@ test("prepareReadiness: a foreign init still running past the wait budget fails 
 	assert.deepEqual(result, { action: "init", ok: false, warm: "skipped" }, "fail-closed: no second concurrent init");
 	assert.deepEqual(calls, []);
 	assert.equal(readLeaseVerdict(lockPathFor(cwd, "init", locks)), "held-live", "skipped never steals");
+});
+
+test("prepareReadiness: an index that turns unknown under the init lock fails closed without initializing", async (t) => {
+	// The chmod 000 access-error probe is POSIX-only (Windows ACLs do not map it to a statSync
+	// denial), so the tri-state recheck's fail-closed branch runs on POSIX only.
+	if (process.platform === "win32") return;
+	const cwd = mkdtempSync(join(tmpdir(), "gentle-codegraph-readiness-init-unknown-"));
+	t.after(() => {
+		try {
+			chmodSync(join(cwd, ".codegraph"), 0o755);
+		} catch {
+			/* never created, or already restored */
+		}
+		rmSync(cwd, { recursive: true, force: true });
+	});
+	writeFileSync(join(cwd, "package.json"), "{}\n");
+	const locks = dir(t, "init-unknown-locks");
+	// A foreign live init lock makes acquireInitLock poll, which opens the window between the
+	// plan (absent) and the post-lock recheck in which the index turns unreadable.
+	writeFileSync(lockPathFor(cwd, "init", locks), `${JSON.stringify({ kind: "init", pid: process.pid, startedAt: Date.now(), expiresAt: Date.now() + 600_000 })}\n`);
+	const calls: string[] = [];
+	const result = await prepareReadiness(fakeInput(cwd, {
+		locksDir: locks,
+		onStart: () => {
+			setTimeout(() => {
+				// The other session finished AND the index became unreadable at once: the recheck
+				// must see "unknown", never a green light to initialize.
+				rmSync(lockPathFor(cwd, "init", locks), { force: true });
+				mkdirSync(join(cwd, ".codegraph"));
+				chmodSync(join(cwd, ".codegraph"), 0o000);
+			}, 100);
+		},
+		run: async (args) => {
+			calls.push(args.join(" "));
+			return true;
+		},
+		warm: async () => true,
+	}));
+	assert.deepEqual(result, { action: "init", ok: false, warm: "skipped" }, "an unconfirmable index is a fail-closed report");
+	assert.deepEqual(calls, [], "unknown never initializes");
 });
 
 test("syncBeforeSearch: a live sync lease in another session means zero CLI calls", async (t) => {

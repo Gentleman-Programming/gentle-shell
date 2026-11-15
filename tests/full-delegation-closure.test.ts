@@ -142,6 +142,25 @@ test("S2: the projected ODD steps keep every unchanged step and the shared tail 
 	}
 });
 
+test("S3: both modes keep the canonical authorized-work boundary and a legitimate pending child", () => {
+	const canonical = [
+		"Authorized work continues: runnable in-scope steps run, a pending child is a wait event whose completion resumes the turn without asking the human",
+		"only a real human decision, the user's explicit stop, a denial, missing consent, or an exhausted limit stops the work it applies to, never independent authorized work",
+		"A tracked task ends the turn pending only while it waits on already-launched work, for the affected work a denial, missing consent, the user's explicit stop, or an exhausted limit applies to, or for a genuine human decision still outstanding",
+		"Missing, partial, unavailable, or declined proof forbids claiming completion of the affected work, never an independently authorized next step",
+		"while a required authorized check the existing budget still allows keeps running",
+		"Never turn a report into a blind self-reprompt loop.",
+		"Hedged wording is not a stop.",
+	];
+	for (const mode of ["organic", "full-delegation"] as const) {
+		const prompt = render(mode);
+		for (const clause of canonical) assert.ok(prompt.includes(clause), `[${mode}] canonical Close is missing: ${clause}`);
+		assert.ok(prompt.includes("An explicit user stop applies only to the work it names."), `[${mode}] explicit-stop coverage`);
+		assert.ok(!prompt.includes("Needs your decision"), `[${mode}] no generic terminal phrase`);
+		assert.ok(!prompt.includes("never more verification"), `[${mode}] no broad verification stop`);
+	}
+});
+
 test("S8: the organic render still carries the mirrored steps unprojected", () => {
 	const organic = render("organic");
 	assert.match(organic, /4\. \*\*Classify\.\*\* Size the task by the orchestrator's Task Size section; its criteria and resume test alone decide small or large, and small work follows its small path\./);

@@ -57,10 +57,12 @@ for (const persona of ["gentleman", "neutral"] as const) {
       assert.match(worker, /later explicit requests stay subject to native authority/);
       assert.match(worker, /new session does not reset any limit/);
       assert.match(worker, /specifically authorized.*actual native authority.*in-scope compilation or implementation/);
-      assert.match(worker, /unavailable proof still blocks completion and delivery/);
+      // harness-continuity T5: the proof boundary moved from this paragraph into the canonical Close.
+      assert.match(p, /7\. \*\*Close\.\*\*[^\n]*proof forbids claiming completion of the affected work, never an independently authorized next step/);
       assert.match(worker, /no child is active or has an uncertain status/);
-      assert.match(p, /7\. \*\*Close\.\*\*[^\n]*never more verification/);
+      assert.match(p, /7\. \*\*Close\.\*\*[^\n]*stop checking only inside an exhausted or denied boundary/);
       assert.doesNotMatch(p, /Stop only for[^\n]*unavailable required proof/);
+      assert.ok(!p.includes("unavailable required proof"), "no rendered prompt stops for unavailable proof");
     });
   }
 }

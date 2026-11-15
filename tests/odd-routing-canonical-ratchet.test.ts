@@ -212,6 +212,16 @@ const ANCHORS: readonly RoutingAnchor[] = [
 		],
 	},
 	{
+		// harness-continuity S3: authorized work continues; a pending child is a
+		// wait event, not a human decision. Pi's continuity scopes an explicit stop
+		// to the work it names without restating the boundary.
+		label: "authorized work continues across a pending child",
+		canonical: "a pending child is a wait event whose completion resumes the turn without asking the human",
+		mirrors: [
+			{ surface: EXTENSION, includes: "An explicit user stop applies only to the work it names." },
+		],
+	},
+	{
 		label: "handoffs pass the feature spec by reference (gentle-shell#1713)",
 		canonical: "Hand off by reference, never by paraphrase: name the document, task, and specs",
 		mirrors: [

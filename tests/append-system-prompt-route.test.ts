@@ -117,7 +117,7 @@ test("both extensions land their block in appendSystemPrompt on one shared optio
 	const appended = event.systemPromptOptions.appendSystemPrompt;
 	assert.match(appended, /el Gentleman Identity and Harness/);
 	const continuityStart = appended.indexOf("## Authorized work continuity");
-	const coreStart = appended.indexOf("# el Gentleman Orchestrator");
+	const coreStart = appended.indexOf("Default workflow: Organic Driven Development");
 	assert.ok(continuityStart >= 0 && continuityStart < coreStart,
 		"continuity must be always injected in the identity/harness, outside the budgeted core");
 	assert.equal(appended.split("## Authorized work continuity").length - 1, 1);
@@ -125,14 +125,25 @@ test("both extensions land their block in appendSystemPrompt on one shared optio
 	for (const clause of [
 		"necessary in-scope implementation, documentation and verification steps",
 		"Never end a turn merely announcing an immediately executable authorized next step; execute it instead",
-		"required explicit consent, a denied action, or the human's explicit stop",
-		"Unavailable required proof blocks completion and delivery; it does not alone prohibit specifically authorized in-scope implementation where actual native authority and other limits permit it.",
+		"A progress update is not a request for permission.",
+		"An explicit user stop applies only to the work it names.",
 		"Do not infer permission for publishing, destructive actions, unrelated scope or native consent",
-		"Report a concrete blocker and the exact decision needed",
+		"Honor explicit one-run, no-retry, or diagnostic-only limits.",
+		"Correct a failing check only within the existing correction budget",
+		"never reset budgets, add retry allowances, weaken checks, or override final outcomes",
 		"launch the bounded action and end the turn when no independent in-scope work remains",
 		"Retain its identity and resume the already-authorized continuation automatically on its completion event",
-		"do not ask the human to say \"continue\", poll, or claim completion while checks remain pending",
+		"do not ask the human to say \"continue\" or poll",
 	]) assert.ok(continuity.includes(clause), `missing continuity clause: ${clause}`);
+	// The canonical Close owns the authorized-work boundary; the Pi-owned block
+	// keeps its unique guards and budget clauses instead of restating it.
+	for (const duplicated of [
+		"Needs your decision",
+		"never more verification",
+		"Before a terminal bounded-stop outcome",
+		"a pending child is a wait event",
+		"Missing, partial, unavailable, or declined proof",
+	]) assert.ok(!continuity.includes(duplicated), `continuity must not duplicate or license: ${duplicated}`);
 	// cost-speed-painpoints S15 P4: the verifier-setup rules load with the Verification rule, not on every turn.
 	const verification = readFileSync(new URL("../assets/orchestrator-verification.md", import.meta.url), "utf8");
 	for (const clause of [

@@ -30,9 +30,10 @@ test("clarification preserves understanding without reopening informed approval"
 
 test("resolved subdecisions retain the original authorized objective", () => {
 	const prompt = __testing.buildGentlePrompt("gentleman");
-	assert.ok(prompt.includes("Resolving an incident or subdecision does not complete or cancel the original authorized objective; resume safe, necessary in-scope steps automatically, using judgment for proportionate recovery and respecting explicit user dispositions. Investigate pending technical uncertainty rather than treating it alone as a new human decision."));
-	assert.ok(prompt.includes("Stop for an unresolved consequential scope/product decision, required explicit consent, a denied action, or the human's explicit stop."));
-	assert.ok(prompt.includes("Unavailable required proof blocks completion and delivery; it does not alone prohibit specifically authorized in-scope implementation where actual native authority and other limits permit it."));
+	assert.ok(prompt.includes("Resolving an incident or subdecision does not complete or cancel the original authorized objective; resume safe, necessary in-scope steps automatically, using judgment for proportionate recovery and respecting explicit user dispositions."));
+	assert.ok(!prompt.includes("Investigate pending technical uncertainty"), "the canonical real-human-decision boundary owns that clause");
+	assert.ok(prompt.includes("only a real human decision, the user's explicit stop, a denial, missing consent, or an exhausted limit stops the work it applies to, never independent authorized work"));
+	assert.ok(prompt.includes("Missing, partial, unavailable, or declined proof forbids claiming completion of the affected work, never an independently authorized next step"));
 	// cost-speed-painpoints S15 P4: the verifier-setup rules load with the Verification rule, not on every turn.
 	const verification = read("assets/orchestrator-verification.md");
 	for (const sentence of [
@@ -80,21 +81,27 @@ test("T13: hedged delivery wording asks for resumable notes and separate commits
 	assert.doesNotMatch(sentence, /\bask (?:one|a|the user)\b|question/i, "the hedge rule must not add a product or design question");
 });
 
-test("T13: the Close gate requires continuing or quoting the user's explicit stop", () => {
+test("S3: the Close gate allows a pending tracked task only for a launched child, scoped denial/consent/exhaustion, or an open human decision", () => {
 	const section = authorizationSection();
-	assert.ok(
-		section.includes(
-			"Close gate: before the final answer, if any tracked task in the feature document or `todo` is still pending, continue it or quote the exact user sentence that orders the stop.",
-		),
-		"tracking module must carry the Close gate",
-	);
+	for (const clause of [
+		"continue every pending tracked task in the document or `todo` unless it waits on a launched child",
+		"an already-decided denial, missing consent, or exhausted limit applies to that affected work",
+		"the user stopped only that work",
+		"or a genuine human decision is open",
+		"Unrelated runnable authorized work continues",
+	]) assert.ok(section.includes(clause), `tracking Close gate is missing: ${clause}`);
+	assert.ok(!section.includes("tracked or untracked work alike"), "the unscoped stop exception must go");
+	assert.ok(!section.includes("Needs your decision"), "tracking must not license a generic terminal phrase");
+	assert.ok(!section.includes("also a valid stop"), "tracking must not keep the old terminal stop license");
 });
 
 test("T13: budgets hold and the pinned human-control line is untouched", () => {
 	const bytes = Buffer.byteLength(tracking, "utf8");
 	// S14: close the open slice before a high-risk commit; outcomes per commit (12,600 -> 12,850 B), same as MODULE_BUDGETS.
 	// P5b: contradictions and step 3 / Phase reporting restatements removed; 1.4.0 commit-boundary rules kept (12,850 -> 10,324 B).
-	assert.ok(bytes <= 10_324, `orchestrator-tracking.md is ${bytes} B, over its 10,324 B budget`);
+	// harness-continuity S3: the canonical Close owns the authorized-work boundary; the local gate now names only a launched
+	// child, an explicit stop, or an open human decision, so the generic terminal license leaves the tracking module.
+	assert.ok(bytes <= 10_308, `orchestrator-tracking.md is ${bytes} B, over its 10,308 B budget`);
 	assert.ok(core.includes("- Preserve human control: user decisions beat agent momentum."), "core human-control line must stay verbatim");
 	assert.ok(core.includes("4. **Track**") && core.includes("`orchestrator-tracking.md`"), "Track must still load the tracking module");
 });
@@ -114,7 +121,10 @@ test("T13: the always-on harness narrows conditional intent and gates Close on p
 		"harness must say hedged delivery wording is not a stop",
 	);
 	assert.ok(
-		harness.includes("Never end with a tracked task pending unless you quote the user's explicit stop."),
-		"harness Close step must gate pending tracked tasks",
+		harness.includes("A tracked task ends the turn pending only while it waits on already-launched work, for the affected work a denial, missing consent, the user's explicit stop, or an exhausted limit applies to, or for a genuine human decision still outstanding"),
+		"harness Close step must keep a legitimate pending child or scoped human decision",
 	);
+	assert.ok(harness.includes("Hedged wording is not a stop."), "harness Close step must keep hedged wording out of stops");
+	assert.ok(!harness.includes("Never end with a tracked task pending unless you quote the user's explicit stop."), "the broad pending-task gate must go");
+	assert.ok(!harness.includes("Needs your decision"), "the harness must not license a generic terminal phrase");
 });

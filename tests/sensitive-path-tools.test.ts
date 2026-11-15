@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -17,6 +17,8 @@ type Handler = (event: { toolName: string; input: unknown; toolCallId: string },
 interface HarnessOptions {
 	child?: boolean;
 	mode?: "normal" | "yolo" | "super-yolo";
+	/** The resolved Gentle Pi agent home (GENTLE_PI_AGENT_HOME) of this process. */
+	agentHome?: string;
 	/** Counts the approval dialog, so a test can prove the mode fixture is live. */
 	onApprovalPrompt?: () => void;
 }
@@ -35,7 +37,7 @@ function toolCall(options: HarnessOptions = {}) {
 	if (options.mode !== undefined) {
 		writeFileSync(join(home, "permission-mode.json"), `${JSON.stringify({ schema: "gentle-pi.permission-mode/v1", mode: options.mode })}\n`);
 	}
-	createGentleAiExtension({ processEnv: { GENTLE_PI_AGENTS_CHILD: options.child === true ? "1" : "0", GENTLE_PI_CONFIG_HOME: home }, nativeReviewCli: null })(pi);
+	createGentleAiExtension({ processEnv: { GENTLE_PI_AGENTS_CHILD: options.child === true ? "1" : "0", GENTLE_PI_CONFIG_HOME: home, ...(options.agentHome === undefined ? {} : { GENTLE_PI_AGENT_HOME: options.agentHome }) }, nativeReviewCli: null })(pi);
 	const sessionManager = { getSessionId: () => "session-2349", getBranch: () => [], getEntries: () => [] };
 	const ctx = { cwd: process.cwd(), hasUI: false, sessionManager, ui: { confirm: async () => false, select: async () => { options.onApprovalPrompt?.(); return undefined; } } } as unknown as ExtensionContext;
 	return async (toolName: string, input: unknown) => {
@@ -137,36 +139,69 @@ for (const mode of ["yolo", "super-yolo"] as const) {
 // T7 (odd/tasks/herdr-desktop.md, B1): the desktop inbox, outbox and snapshots
 // under `<agentDir>/desktop/` are the human's channel into a live session, so
 // the agent's own file tools and shell commands cannot write an action there.
+// Only the real folders are guarded: `<agent home>/desktop` for the resolved
+// Gentle Pi agent home and the two standard homes, on the normalized absolute
+// path. A project folder that happens to be named `agent/desktop` is not one.
+const CUSTOM_AGENT_HOME = "/tmp/customhome";
 const desktopPaths = [
-	"~/.gentle-shell/agent/desktop/inbox/sess-1/a1.json",
-	"/Users/u/.gentle-shell/agent/desktop/outbox/sess-1/a1.json",
-	"/home/u/.pi/agent/desktop/sessions/sess-1.json",
+	"~/.gentle-shell/agent/desktop/inbox/x.json",
+	"$HOME/.pi/agent/desktop/outbox",
+	"${HOME}/.pi/agent/desktop/sessions/s.json",
+	`${homedir()}/.gentle-shell/agent/desktop/outbox/sess-1/a1.json`,
+	`${homedir()}/.pi/agent/desktop/sessions/sess-1.json`,
 	"~/.gentle-shell/agent/desktop",
-	"/opt/custom/agent/desktop/inbox/sess-1/a1.json",
+	"~/.gentle-shell/agent/x/../desktop/inbox/a.json",
+	"~/.Gentle-Shell/Agent/Desktop/Inbox/a.json",
+	`${CUSTOM_AGENT_HOME}/desktop/sessions/a.json`,
+	`${CUSTOM_AGENT_HOME}/./desktop/inbox/s/a.json`,
 ] as const;
 
 for (const mode of [undefined, "super-yolo"] as const) {
 	test(`the desktop action folders are sensitive paths for file tools and bash${mode ? ` in ${mode}` : ""} (T7)`, async () => {
-		const call = toolCall(mode ? { mode } : {});
+		const call = toolCall({ ...(mode ? { mode } : {}), agentHome: CUSTOM_AGENT_HOME });
 		for (const path of desktopPaths) {
+			assert.deepEqual(await call("read", { path }), { block: true, reason: reason(path) }, `read ${path}`);
 			assert.deepEqual(await call("write", { path, content: "{}" }), { block: true, reason: reason(path) }, `write ${path}`);
 			assert.deepEqual(await call("edit", { path, edits: [] }), { block: true, reason: reason(path) }, `edit ${path}`);
 			assert.deepEqual(await call("ls", { path }), { block: true, reason: reason(path) }, `ls ${path}`);
 			assert.deepEqual(await call("bash", { command: `printf '{}' > ${path}` }), { block: true, reason: reason(path) }, `bash ${path}`);
 		}
 		assert.deepEqual(await call("bash", { command: "mv /tmp/a.json ~/.gentle-shell/agent/desktop/inbox/s/a.json" }), { block: true, reason: reason("~/.gentle-shell/agent/desktop/inbox/s/a.json") });
+		assert.deepEqual(await call("bash", { command: 'mkdir -p "$HOME/.pi/agent/desktop/outbox"' }), { block: true, reason: reason("$HOME/.pi/agent/desktop/outbox") });
 	});
 }
 
-test("adding the desktop folders keeps every earlier deny and the ordinary allow (T7)", async () => {
+test("a custom agent home's desktop folder is guarded only while that home is the resolved one (T7)", async () => {
 	const call = toolCall();
-	assert.deepEqual(await call("read", { path: ".env" }), { block: true, reason: reason(".env") });
-	assert.deepEqual(await call("bash", { command: "cat ~/.aws/credentials" }), { block: true, reason: reason("~/.aws/credentials") });
-	for (const path of ["src/desktop/inbox.ts", "docs/desktop-feed.md", "lib/desktop-feed-actions.ts", "desktop/inbox/readme.md"]) {
+	const path = `${CUSTOM_AGENT_HOME}/desktop/sessions/a.json`;
+	assert.equal(await call("write", { path, content: "x" }), undefined, path);
+	assert.equal(await call("bash", { command: `mkdir -p ${CUSTOM_AGENT_HOME}/desktop/inbox` }), undefined);
+	// A `..` that leaves the desktop folder leaves the guard too.
+	assert.equal(await call("read", { path: "~/.gentle-shell/agent/desktop/../notes.md" }), undefined);
+});
+
+test("ordinary project folders named agent/desktop/... stay readable and writable (T7 FP)", async () => {
+	const call = toolCall();
+	for (const path of ["src/agent/desktop/inbox/index.ts", "packages/agent/desktop/sessions/list.ts", "agent/desktop/outbox", ".pi/agent/desktop/notes.md"]) {
 		assert.equal(await call("read", { path }), undefined, path);
 		assert.equal(await call("write", { path, content: "x" }), undefined, path);
 	}
-	assert.equal(await call("bash", { command: "cat src/index.ts" }), undefined);
+	assert.equal(await call("bash", { command: "mkdir -p src/agent/desktop/sessions" }), undefined);
+});
+
+test("adding the desktop folders keeps every earlier deny and the ordinary allow (T7)", async () => {
+	for (const mode of [undefined, "super-yolo"] as const) {
+		const call = toolCall({ ...(mode ? { mode } : {}), agentHome: CUSTOM_AGENT_HOME });
+		for (const path of [".env", "~/.ssh/id_rsa", "secrets/x", "cert.pem", "~/.aws/credentials"]) {
+			assert.deepEqual(await call("read", { path }), { block: true, reason: reason(path) }, `${mode ?? "normal"} read ${path}`);
+		}
+		assert.deepEqual(await call("bash", { command: "cat ~/.aws/credentials" }), { block: true, reason: reason("~/.aws/credentials") });
+		for (const path of ["src/desktop/inbox.ts", "docs/desktop-feed.md", "lib/desktop-feed-actions.ts", "desktop/inbox/readme.md", "/opt/custom/agent/desktop/inbox/a.json"]) {
+			assert.equal(await call("read", { path }), undefined, path);
+			assert.equal(await call("write", { path, content: "x" }), undefined, path);
+		}
+		assert.equal(await call("bash", { command: "cat src/index.ts" }), undefined);
+	}
 });
 
 // The mode fixture above is only meaningful if it is live, so pin the modal it

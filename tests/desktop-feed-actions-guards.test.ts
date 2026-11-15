@@ -345,7 +345,7 @@ function sessionHarness(t: test.TestContext, options: { mode?: string; job?: str
 	const outbox = desktopActionOutboxDir(agentDir, "sess-1");
 	let n = 0;
 	return {
-		fire, setModes, ctx,
+		fire, setModes, ctx, inbox, outbox,
 		get aborts() { return aborts; },
 		set idle(value: boolean) { idle = value; },
 		set offset(value: number) { offset = value; },
@@ -468,6 +468,70 @@ test("S5: relayed consent and maintenance authorization are recognised from the 
 	// An ordinary question keeps its clickable answer.
 	const ordinary = questionShape("ask_user_choice", "c", { question: "Which name?", options: [{ label: "A", description: "a", value: "a" }, { label: "B", description: "b", value: "b" }] })!;
 	assert.deepEqual(answerKeys(ordinary, { option: 1 }), { keys: ["up", "up", "down", "enter"] });
+});
+
+// ---- Verifier regressions (350f066c6 re-verify) ----
+
+test("S2: an escalation file present before session_start is refused with zero owner calls", async (t) => {
+	const h = sessionHarness(t);
+	mkdirSync(h.inbox, { recursive: true, mode: 0o700 });
+	mkdirSync(h.outbox, { recursive: true, mode: 0o700 });
+	writeFileSync(join(h.inbox, "early.json"), actionText("early", "set_permission_mode", { mode: "super-yolo" }), { mode: 0o600 });
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	await h.start();
+	await h.flush();
+	assert.deepEqual(h.setModes, [], "the owner is never asked");
+	assert.equal(h.snapshot().permission!.mode, "normal");
+	const result = join(h.outbox, "early.json");
+	assert.ok(existsSync(result), "the refusal is answered");
+	assert.deepEqual(JSON.parse(readFileSync(result, "utf8")).error, BUSY);
+	assert.deepEqual(h.inboxFiles(), []);
+});
+
+test("S2: queued and waiting subagents count as busy for an escalation", async (t) => {
+	const h = sessionHarness(t, { agent: "queued" });
+	await h.start();
+	assert.deepEqual((await h.act("set_permission_mode", { mode: "yolo" })).error, BUSY, "a queued subagent");
+	await h.setAgent("waiting");
+	assert.deepEqual((await h.act("set_permission_mode", { mode: "super-yolo" })).error, BUSY, "a waiting subagent");
+	assert.deepEqual(h.setModes, []);
+	assert.equal(h.snapshot().permission!.mode, "normal");
+});
+
+test("S5: a provider consent relayed in the next agent run through ask_user_question is terminal-only", async (t) => {
+	const h = sessionHarness(t);
+	await h.start();
+	h.fire("agent_start", {});
+	const details = { operation: "start", status: "blocked", outcome: "native-review-consent-required", consent: { ...consentEnvelope, consentBinding: "binding-2" }, consent_binding: "binding-2" };
+	h.fire("tool_execution_end", { toolCallId: "r2", toolName: "gentle_review", isError: false, result: { content: [{ type: "text", text: JSON.stringify(details) }], details } });
+	h.fire("agent_settled", {});
+	// The next run relays it with a neutral questionnaire.
+	h.fire("agent_start", {});
+	h.fire("tool_execution_start", { toolCallId: "ask-3", toolName: "ask_user_question", args: { questions: [{ question: "Proceed?", header: "Review", options: [{ label: "Yes", description: "go" }, { label: "No", description: "stop" }] }] } });
+	await h.flush();
+	assert.equal(h.snapshot().pendingQuestion!.terminalOnly, true);
+	const answer = await h.act("answer_question", { toolCallId: "ask-3", option: 0 });
+	assert.equal(answer.ok, false);
+	assert.deepEqual(answer.error, TERMINAL);
+});
+
+test("S2: a spoofed createdAt and a set-back mtime cannot date an escalation before the busy span", async (t) => {
+	// Idle from 60 s ago, busy from 5 s ago: only the file's ctime (now) falls in the busy span.
+	let fake: number | undefined = Date.now() - 60_000;
+	const timeline = createDesktopActivityTimeline(() => fake ?? Date.now());
+	fake = Date.now() - 5_000;
+	timeline.set(true);
+	fake = undefined;
+	const h = inboxHarness(t, { busyAt: (time) => timeline.busyAt(time) });
+	assert.equal(h.inbox.start(), true);
+	const file = join(h.inbox.inbox, "sp1.json");
+	writeFileSync(file, JSON.stringify({ schema: DESKTOP_ACTION_SCHEMA, id: "sp1", sessionId: "sess-1", kind: "set_permission_mode", args: { mode: "super-yolo" }, createdAt: new Date(NOW - 50_000).toISOString() }));
+	const back = (Date.now() - 30_000) / 1000;
+	utimesSync(file, back, back);
+	assert.equal(timeline.busyAt(back * 1000), false, "the set-back mtime alone would read as idle");
+	await h.deliver();
+	assert.deepEqual(h.calls, []);
+	assert.deepEqual(h.result("sp1").error, BUSY);
 });
 
 test("S5: an ordinary question in a later turn stays clickable", async (t) => {

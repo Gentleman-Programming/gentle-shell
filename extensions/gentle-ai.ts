@@ -63,7 +63,7 @@ import {
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import { PROVIDER_REVIEW_ROLES, discoverAgents, loadAgentsConfig, unmatchedProfileKeys } from "../lib/agents-config.ts";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
 	ExtensionAPI,
@@ -2190,11 +2190,6 @@ const SENSITIVE_PATH_PATTERNS: RegExp[] = [
 	/(^|\/)\.env(?:$|[./_-])/,
 	/(^|\/)\.(?:envrc|netrc)(?:$|\/)/,
 	/\.(?:pem|key|p12|pfx)$/,
-	// Gentle Shell Desktop (odd/tasks/herdr-desktop.md T7): the inbox, outbox and
-	// snapshots under `<agentDir>/desktop/` are the human's channel into a live
-	// session; the agent never writes an action there.
-	/(^|\/)\.(?:gentle-shell|pi)\/agent\/desktop(?:\/|$)/,
-	/(^|\/)agent\/desktop\/(?:inbox|outbox|sessions)(?:\/|$)/,
 ];
 
 const JUDGMENT_DAY_AGENT_NAMES = [
@@ -2255,9 +2250,49 @@ function normalizePolicyPath(value: string): string {
 	return value.trim().replace(/^~(?=[/\\]|$)/, homedir()).replace(/\\/g, "/").toLowerCase();
 }
 
-function isSensitivePath(value: string): boolean {
+// Gentle Shell Desktop (odd/tasks/herdr-desktop.md T7): the inbox, outbox and
+// snapshots under `<agentDir>/desktop/` are the human's channel into a live
+// session; the agent never writes an action there. Only the real folders are
+// guarded, never a project folder that happens to be named `agent/desktop`:
+// `<home>/desktop` for the resolved Gentle Pi agent home (the one the desktop
+// feed writes under) and the two standard homes, compared as normalized
+// absolute paths. `~`, `$HOME` and `${HOME}` expand, `.` and `..` resolve
+// lexically, and a relative path never matches. Case folds like the patterns.
+function normalizeAbsolutePolicyPath(value: string): string | undefined {
+	const expanded = value.trim()
+		.replace(/^(?:~|\$HOME|\$\{HOME\})(?=[/\\]|$)/, homedir().replace(/\\/g, "/"))
+		.replace(/\\/g, "/");
+	if (!/^(?:\/|[a-zA-Z]:\/)/.test(expanded)) return undefined;
+	return posix.normalize(expanded).replace(/(.)\/+$/, "$1").toLowerCase();
+}
+
+function desktopActionRoots(env: NodeJS.ProcessEnv): string[] {
+	const homes = [
+		resolveGentlePiAgentHome(env),
+		resolveGentlePiAgentHome(process.env),
+		join(homedir(), ".gentle-shell", "agent"),
+		join(homedir(), ".pi", "agent"),
+	];
+	const roots = new Set<string>();
+	for (const home of homes) {
+		for (const spelling of [home, (() => { try { return realpathSync(home); } catch { return undefined; } })()]) {
+			if (spelling === undefined) continue;
+			const normalized = normalizeAbsolutePolicyPath(spelling);
+			if (normalized !== undefined) roots.add(posix.join(normalized, "desktop"));
+		}
+	}
+	return [...roots];
+}
+
+function isDesktopActionPath(value: string, env: NodeJS.ProcessEnv): boolean {
+	const normalized = normalizeAbsolutePolicyPath(value);
+	if (normalized === undefined) return false;
+	return desktopActionRoots(env).some((root) => normalized === root || normalized.startsWith(`${root}/`));
+}
+
+function isSensitivePath(value: string, env: NodeJS.ProcessEnv = process.env): boolean {
 	const normalized = normalizePolicyPath(value);
-	return SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(normalized));
+	return SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(normalized)) || isDesktopActionPath(value, env);
 }
 
 function isSensitiveRequestContextPath(path: string): boolean {
@@ -2375,8 +2410,8 @@ function shellCommandWords(command: string): string[] {
 	return words;
 }
 
-function findSensitiveCommandPath(command: string): string | undefined {
-	return shellCommandWords(command).find(isSensitivePath);
+function findSensitiveCommandPath(command: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+	return shellCommandWords(command).find((word) => isSensitivePath(word, env));
 }
 
 function sensitivePathBlock(sensitivePath: string): ToolCallEventResult {
@@ -2389,15 +2424,16 @@ function sensitivePathBlock(sensitivePath: string): ToolCallEventResult {
 function evaluateSensitivePathTool(
 	toolName: string,
 	input: unknown,
+	env: NodeJS.ProcessEnv = process.env,
 ): ToolCallEventResult | undefined {
 	const sensitivePath = PATH_GUARDED_TOOL_NAMES.has(toolName)
-		? collectPathInputs(input).find(isSensitivePath)
+		? collectPathInputs(input).find((path) => isSensitivePath(path, env))
 		: undefined;
 	if (sensitivePath !== undefined) return sensitivePathBlock(sensitivePath);
 	if (!SHELL_COMMAND_TOOLS.has(toolName)) return undefined;
 	const command = readStringPath(input, ["command"]);
 	if (command === undefined) return undefined;
-	const commandPath = findSensitiveCommandPath(command);
+	const commandPath = findSensitiveCommandPath(command, env);
 	return commandPath === undefined ? undefined : sensitivePathBlock(commandPath);
 }
 
@@ -13190,6 +13226,7 @@ function createGentleAiExtensionForTesting(
 		const sensitivePathDenied = evaluateSensitivePathTool(
 			event.toolName,
 			event.input,
+			permissionEnvironment,
 		);
 		if (sensitivePathDenied) return sensitivePathDenied;
 		const surfaceDenied = evaluateExecutionSurfaceTool(event.toolName, event.input);

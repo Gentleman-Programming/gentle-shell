@@ -337,6 +337,7 @@ gentle-shell upgrade [--channel release|main]
 gentle-shell upgrade --rollback
 gentle-shell update [pi|self|--self|--all] [--latest]
 gentle-shell self-uninstall [--dry-run] [--yes] [--include-shared]
+gentle-shell desktop [--yes] [--no-open] | --status | --uninstall
 ```
 
 ### Flags
@@ -625,6 +626,17 @@ when empty. Like `upgrade`, it runs before any Pi runtime check.
 
 `gentle-shell uninstall <source>` stays Pi's own alias for `remove`. Details,
 refusals and exit codes: [Removing Gentle Shell](gentle-shell-uninstall.md).
+
+### `desktop` subcommand
+
+`gentle-shell desktop` installs and opens Gentle Shell Desktop: Herdr app
+(0.1.15 or newer, unchanged; a missing or older one gets the pinned 0.1.15,
+checked against its SHA-256) with the package's `herdr/` mods, layout and
+shortcuts. It prints its plan and asks first (`--yes` skips the question);
+`--no-open` installs only, `--status` reports, `--uninstall` removes only what
+it installed and puts back what was there before. Like `upgrade`, it runs before
+any Pi runtime check, and `gentle-shell upgrade` refreshes it when it was
+installed. Guide: [Gentle Shell Desktop](gentle-shell-desktop.md).
 
 ### First run in an isolated or custom home
 
@@ -1603,6 +1615,7 @@ To opt out:
 | `docs/skill-style-guide.md`    | Normative style guide used by the packaged skill creation/improvement skills.                              |
 | `docs/native-authority-architecture.md` | Post-U8 ownership boundary, reproducible slimming metrics, Windows evidence, exact #191 seam, and the `review-integration/v1`→`v2` migration status, including the "compact-v2" naming disambiguation.     |
 | `docs/review-integration.md`   | Negotiated provider/consumer contract and the current Gentle Pi adoption boundary.                         |
+| `herdr/`                       | Gentle Shell Desktop for Herdr app: the `gentle-*` mods, the `gentle-shell` layout, `keys.json` shortcuts, the gallery brief `RECIPE.md` and `preview.png`. Installed by `gentle-shell desktop` ([guide](gentle-shell-desktop.md)). |
 
 ## Development
 

@@ -1,8 +1,22 @@
 # Gentle Shell Desktop
 
-`gentle-shell desktop` opens Gentle Shell Desktop: [Herdr app](https://herdr.dev), unchanged, with
-Gentle Shell's own `gentle-*` mods and its `gentle-shell` layout. Gentle Shell ships Herdr the way it
-ships Pi: one pinned version, an exact download it checks, and its own files kept separate.
+Gentle Shell Desktop shows your Gentle Shell sessions in a native window: the conversation as a
+chat, everything the TUI's sidebar shows beside it, and the real TUI one switch away. It is
+[Herdr app](https://herdr.dev), unchanged, with Gentle Shell's own `gentle-*` mods and its
+`gentle-shell` layout. Gentle Shell ships Herdr the way it ships Pi: one pinned version, an exact
+download it checks, and its own files kept separate.
+
+![Gentle Shell Desktop, design render](../herdr/preview.png)
+
+<sub>The approved design (`design/herdr-desktop/01-inspector.html`), rendered headless. The live
+window is checked against it side by side (`herdr/FIDELITY-T6.md`).</sub>
+
+## Quick path
+
+1. In a project folder, run `gentle-shell desktop`.
+2. Read the plan it prints and answer `y`. It installs Herdr app if needed, the mods, the layout
+   and the shortcuts, then opens Herdr with a Gentle Shell session in this folder.
+3. Talk to the session in the chat. Press `⌘J` for the real TUI, `⌘K` for every command.
 
 ```
 gentle-shell desktop [--yes] [--no-open]
@@ -10,7 +24,270 @@ gentle-shell desktop --status
 gentle-shell desktop --uninstall
 ```
 
-## What `gentle-shell desktop` does
+| Option | Does |
+|---|---|
+| (none) | Installs what is missing (asks first), then opens Herdr on the `gentle-shell` layout. |
+| `--yes`, `-y` | Does not ask. Needed when no terminal can answer. |
+| `--no-open` | Installs only; does not start or switch Herdr. |
+| `--status` | Prints versions, the Herdr home, what is installed, the shortcuts and the window state. |
+| `--uninstall` | Removes our mods, layout and shortcuts and puts back what was there before. Herdr stays. |
+| `--refresh` | Used by `gentle-shell upgrade`; reinstalls our files only if they were installed. |
+
+## Requirements
+
+| Need | Detail |
+|---|---|
+| A computer Herdr app runs on | macOS on Apple silicon and Linux (x86_64, arm64): Gentle Shell installs Herdr app for you. Windows: install Herdr app with its official installer first ([below](#how-herdr-app-is-installed)). |
+| Herdr app 0.1.15 or newer | Older or missing: Gentle Shell installs exactly 0.1.15. Newer: used as it is. |
+| herdr-core | Herdr app offers to set it up the first time it opens. |
+| Gentle Shell sessions in the default home | The mods read `~/.gentle-shell/agent/desktop/`. A session started with `--link` or `--home <path>` publishes under its own agent folder, so the window does not see it. |
+| A local terminal | Sessions on a remote Herdr machine are not read yet ("Remote terminals are not read yet."). |
+
+The live checks so far ran on macOS with Herdr app 0.1.15.
+
+## What you see
+
+Six regions, left to right and top to bottom. Every one reads the focused session's
+[desktop snapshot](desktop-feed.md), which each interactive Gentle Shell session keeps up to date.
+
+| Region | Shows |
+|---|---|
+| **Sidebar** | **Projects** (Herdr spaces: Gentle Shell sessions, their live spend, how many need you), **Agents** (every agent in the window, the ones that need you first), and **Plan usage** (5h and 7d windows of the active provider, and when they reset). |
+| **Tabs** | One tab per session in the shown project, named after the session, with a state dot (needs you, working, done, idle). |
+| **Chat header** | Session name and the **Chat \| Terminal** switch; then project / branch · changed files, and the facts: Model · effort · profile, Persona, Ctx, Cost, and the permission mode. |
+| **Chat** | The conversation: your messages, answers in markdown, thinking, tool calls (read-only runs grouped as "Explored"), diffs, subagent cards, and the open question. The composer sits at the bottom. |
+| **Inspector** | Six tabs: **Changes**, **Todo**, **Agents**, **Jobs**, **Review**, **Session** (turns, tool calls, duration, cost, subagent spend, cost by model, integrations). |
+| **Status bar** | The ODD phase and todo position, streaming / working / idle (with tok/s when published), what the session waits for, jobs running · done, and **⌘K Commands**. |
+
+**Terminal** shows the real Gentle Shell TUI of the same session, in the same place. Nothing is
+copied: the chat and the TUI are two views of one session.
+
+Some facts are not published yet and show as empty: the persona ("No persona"), integrations
+("Engram and MCP status are not published by this session yet"), and plan usage for providers
+that report none ("Plan usage unavailable").
+
+## Controls
+
+### Sidebar and tabs
+
+| Control | Does |
+|---|---|
+| Project row | Click selects the project; drag reorders; right-click opens Herdr's space menu. |
+| **+** next to Projects | Opens a new project (Herdr's `space.new`). |
+| Agent row | Focuses that agent's pane. |
+| Gear in Plan usage | Opens Herdr's settings. |
+| Tab | Click selects; drag reorders; double-click renames; right-click opens the tab menu; the wheel moves between tabs. |
+| **+** after the tabs | Starts a new Gentle Shell session in the project's folder. |
+
+### Chat header
+
+| Control | Does |
+|---|---|
+| **Chat \| Terminal** | Switches the centre between the chat and the real TUI. |
+| **Model** | Opens `/gentle:profiles` in the Terminal (models, effort, profiles). |
+| **Persona** | Opens `/gentle:persona` in the Terminal. |
+| Permission pill | Opens the mode menu: **Normal**, **Auto**, **YOLO**, **Super-YOLO**. Super-YOLO asks in a dialog first. See [Permissions and safety](#permissions-and-safety). |
+
+When the header is narrow it drops Persona, then Ctx, Model and Cost; the permission pill always
+stays.
+
+### Chat
+
+| Control | Does |
+|---|---|
+| **Show earlier** | Loads 150 more older messages. |
+| Thinking, tool call | Click to open or close. |
+| Diff card: **Next hunk** | Shows the edit's next hunk. |
+| Diff card: **Open in Changes** | Marks the file in the inspector's Changes tab. |
+| Subagent card: **View** | Opens `/gentle:agents` in the Terminal. |
+| Subagent card: **Stop** | Stops that subagent. |
+| Question option | Click it, or press `1`…`N`, to answer. **Something else…** puts the keyboard in the composer; what you send is the answer. |
+| **Answer in Terminal** | Shown when the question must be answered in the TUI (see [below](#what-stays-in-the-terminal)). |
+
+### Composer
+
+| Control | Does |
+|---|---|
+| `Enter` / **Send** | Sends the message. While a question is open, a plain message is refused: "Answer the open question first." |
+| `Shift+Enter` | New line. |
+| `/` | Opens the command menu (below). |
+| Paperclip | Pastes the clipboard (an image, or files on macOS) into the session's draft, as `Ctrl+V` does in the TUI. It goes with your next message. |
+| **Stop** | Replaces Send while the agent works and the draft is empty. Stops the turn, as `Esc Esc` does in the TUI. Typing brings Send back: the message is queued, as in the TUI. |
+
+### Inspector
+
+| Tab | Controls |
+|---|---|
+| **Changes** | **Open diff viewer** and each file row open `/gentle:changes` in the Terminal. |
+| **Todo** | Read only: tasks, states, the current one and what it waits for. |
+| **Agents** | **View** opens `/gentle:agents` in the Terminal; **Stop** stops that subagent. |
+| **Jobs** | **Cancel** stops a running job; **Output** (on a failed job) opens `/gentle:jobs` in the Terminal. |
+| **Review** | **Start review** and **Skip for this change** show the Terminal, where you answer the review consent. The **RDD** row turns receipt-driven review on or off **for every repository**, after a dialog that says so. |
+| **Session** | Read only: stats, cost by model, integrations. |
+
+### Status bar
+
+Click **Commands** to open the palette. Everything else on the bar is read only.
+
+## The ⌘K palette and the `/` menu
+
+**⌘K palette** (or the status bar's **Commands**). Type to filter, `↑`/`↓` to move, `Enter` to
+run, `Esc` to close. Its groups:
+
+| Group | Rows |
+|---|---|
+| **Needs you** | Every session or agent waiting for you; `Enter` focuses it. |
+| **Session** | **Stop the agent** (while it works), then Pi's session commands: `/new`, `/resume`, `/fork`, `/compact`, `/name`, `/export`, … |
+| **View** | Chat, Terminal and the six inspector tabs, with their keys. |
+| **Permission** | The four modes; the current one is checked. |
+| **Commands** | The session's own commands: extension commands, prompt templates and skills. |
+
+**`/` menu.** Type `/` at the start of the composer. Names that start with what you typed come
+first, then names and descriptions that contain it.
+
+| Key | Does |
+|---|---|
+| `↑` / `↓` | Move. |
+| `Enter`, click | Run the command. |
+| `Tab` | Complete it (`/name `) without running. |
+| `Esc` | Close the menu; the draft stays. |
+
+Both run a command the same way you would: it is typed into the session's TUI. A command that
+answers with a TUI screen (a picker, a panel, a report; marked with the terminal icon) shows the
+Terminal; prompt templates, skills and commands like `/new` stay in the chat. A command that needs
+an argument (`/name <name>`) goes into the composer for you to finish. `/quit` is never listed:
+type it.
+
+## Keyboard shortcuts
+
+Window-wide, while the `gentle-shell` layout shows (added to Herdr's `keys.json`):
+
+| Key | Does |
+|---|---|
+| `⌘K` | Opens the Gentle commands palette. |
+| `⌘J` | Switches Chat ↔ Terminal. |
+| `⌘.` | Stops the shown session's turn. |
+| `⌥⌘1` … `⌥⌘6` | Inspector tab: Changes, Todo, Agents, Jobs, Review, Session. |
+
+Inside the chat, even without those shortcuts:
+
+| Key | Does |
+|---|---|
+| `⌘K` | Palette. |
+| `⌘J` | Terminal. |
+| `Esc Esc` | Stops the agent's turn. The first `Esc` says "Press Esc again to stop the agent." for one second. `Esc` first closes the `/` menu. |
+| `1` … `N` | Answers the open question (when the composer does not have the keyboard). |
+
+In dialogs, `Enter` confirms and `Esc` cancels.
+
+## What stays in the Terminal
+
+Some things are answered or done only in the real TUI. The desktop shows them and points you
+there (**Answer in Terminal**, or it switches to the Terminal itself).
+
+| Stays in the Terminal | Why |
+|---|---|
+| **Consent**: review consent, and any provider consent or maintenance authorization the agent relays as a question | Consent must come from you at the session itself. A click elsewhere, or a file another process could write, is not proof of that. |
+| Questions with several parts or several picks, and extension prompts (select, confirm, input, editor) | The desktop can only answer a single-choice list safely, by pressing the same keys you would. |
+| Interactive pickers and panels (`/gentle:profiles`, `/gentle:customize`, `/model`, `/gentle:agents`, …) | They are TUI screens; the desktop sends the command and shows the Terminal instead of redrawing them. |
+| Vim prompt editing | It is a mode of the TUI's editor. The chat composer is a plain native text field. |
+| Voice dictation (`/gentle:voice`) | It pastes into the TUI's draft. |
+| `/quit` | Typed, never one click away. |
+
+## Permissions and safety
+
+**Same authority as the TUI, never more.** The desktop does only what you could do in the
+session's terminal, through the session's own owners:
+
+| Desktop action | Who decides |
+|---|---|
+| Change the permission mode | The same owner as `/gentle:mode`. |
+| Stop a subagent, cancel a job | The subagents and jobs owners. |
+| Stop the agent's turn | The session's own abort (the TUI's `Esc Esc`); refused while the agent is idle. |
+| Answer a question | The session checks it is still the open one and names the keys its list takes; the desktop presses them and nothing else. If the question changed meanwhile, nothing is pressed. |
+| Send a message or a slash command | Typed into the TUI, as you would; refused while a question is open. |
+| RDD switch | Runs `gentle-ai review mode enable\|disable --scope global --cwd <project> --json`, after a dialog that says it is global. |
+
+**Escalation rules.**
+
+- **Super-YOLO** and the **RDD switch** ask in a dialog first. **Confirm** runs it once; **Cancel**
+  or `Esc` forgets it; an unanswered dialog expires after two minutes.
+- Raising the mode (Normal → Auto → YOLO → Super-YOLO) is refused while the agent, a background
+  job or a subagent of the session is running, or within 2 s after: "Raising the permission mode
+  is refused while the agent, a background job or a subagent is running, or within 2 s after; try
+  again when the session is idle." This keeps the agent from raising its own mode through the
+  desktop.
+- Lowering the mode, stopping and cancelling are always accepted.
+- **Consent is never answered from the desktop.**
+
+The session's desktop folder is private (`0700`/`0600`) and the agent's own file and shell tools
+are denied it. For the file formats and every refusal code, see
+[desktop-feed.md](desktop-feed.md#actions-gentle-shelldesktop-actionv1).
+
+## Upgrade and rollback
+
+- **`gentle-shell upgrade`** refreshes the desktop afterwards (`gentle-shell desktop --refresh`),
+  only if `gentle-shell desktop` installed it before. It reinstalls our mods and layout safely and
+  updates the Gentle shortcuts already added: a shortcut the new version no longer ships is
+  removed; one it changes is updated, unless you rebound it. It never installs Herdr app or opens
+  the window.
+- **`gentle-shell upgrade --rollback`** only switches the version. Run `gentle-shell desktop`
+  afterwards to install that version's mods.
+- **Herdr app** updates itself in the background. Newer versions are accepted; see
+  [Herdr version pin](#herdr-version-pin) if a mod stops loading.
+
+## Uninstall
+
+```
+gentle-shell desktop --uninstall
+```
+
+It removes only what `~/.gentle-shell/desktop/state.json` records as ours, and:
+
+1. moves our mods and layout to `~/.gentle-shell/desktop/backup`;
+2. puts back, byte for byte, whatever was at those paths before (`~/.gentle-shell/desktop/originals`);
+3. removes from `keys.json` exactly the Gentle shortcuts that still hold the action we wrote
+   (the file from before Gentle Shell, byte for byte, when you have not edited it since;
+   otherwise every other byte stays);
+4. switches Herdr back to the layout it showed before (or `main`) when ours is showing.
+
+Without `state.json` it removes nothing. Herdr app itself stays installed; remove it with Herdr's
+own instructions. `gentle-shell self-uninstall` covers Gentle Shell itself
+([Removing Gentle Shell](gentle-shell-uninstall.md)).
+
+## Troubleshooting
+
+| Symptom | What to do |
+|---|---|
+| `gentle-shell desktop: Herdr app reports: [...]` | Herdr's own `herdr-app status` listed errors after the switch. Run `herdr-app check <herdr home>/mods/<mod>` on the mod it names. If the mods are ours and fail, see [Herdr version pin](#herdr-version-pin). |
+| "Herdr app did not open its window." | Open Herdr app once by hand (it may ask to set up herdr-core), then run `gentle-shell desktop` again. |
+| A mod failed `herdr-app check` during install | Nothing in the Herdr home changed. The printed output says why; this usually means a Herdr version the mods were not built for. |
+| The window looks stale, or `herdr-app shot` returns an old frame | Herdr does not draw a covered or hidden window. Bring it to the front. |
+| "No Gentle Shell session focused" / "No Gentle Shell session here" | Focus a tab that runs `gentle-shell`, or start one with **+** in the tab bar. Sessions started with `--link` or `--home` are not seen ([Requirements](#requirements)). |
+| "This session takes no desktop actions. Update Gentle Shell and restart it." | The session started before an update that added desktop actions. Restart it. |
+| "The session did not answer. Is it still running?" | The session did not answer within 6 s. Check its Terminal. |
+| "The agent is not working" | Stop was pressed while the agent was idle; nothing to stop. |
+| Raising the mode was refused | Wait until the agent, its jobs and subagents are idle, then try again ([Escalation rules](#permissions-and-safety)). |
+| A shortcut does not work | A key you already bound in `layout:gentle-shell` stays yours; install reported it once. `--status` shows how many Gentle shortcuts are in `keys.json`. In the chat, `⌘K`, `⌘J` and `Esc Esc` still work. The status bar shows the palette key Herdr actually has. |
+| "keys.json … it was not changed" or a `keys.error` | Gentle Shell never writes an invalid `keys.json` and puts the previous file back if Herdr rejects it. Fix the file it names and run the command again. |
+| The shortcuts did not appear on the first run | Herdr writes `keys.json` on its first start; they are added when the window opens, or with `--no-open` the next time `gentle-shell desktop` opens Herdr. |
+
+### Herdr version pin
+
+The mods are built and checked against Herdr app **0.1.15** (`HERDR_APP_VERSION` in
+`lib/gentle-shell-desktop.ts`). Herdr app is 0.1.x and changes its mod API between versions, so a
+newer Herdr can reject a mod. Then:
+
+1. run `gentle-shell desktop --status` and note the Herdr app version;
+2. run `herdr-app check` on the failing `gentle-*` mod;
+3. update Gentle Shell (`gentle-shell upgrade`) in case a newer release supports that Herdr, or
+   report the check output.
+
+Gentle Shell never downgrades a newer Herdr app.
+
+---
+
+## Reference: what `gentle-shell desktop` does
 
 1. **Herdr app.** It looks for `herdr-app` on your `PATH`, then in `~/.local/bin`, and reads
    `herdr-app --version`. Version 0.1.15 or newer is used as it is; we built and checked the mods
@@ -32,9 +309,8 @@ gentle-shell desktop --uninstall
    - If a swap fails, every previous copy goes back and folders this install created are removed.
    - Only the mods this package ships and `layouts/gentle-shell.json` are written. Your other mods,
      layouts and settings are never touched.
-3. **Keys.** It adds the Gentle shortcuts of `herdr/keys.json` (the `layout:gentle-shell` section:
-   ⌘K palette, ⌘J Chat ↔ Terminal, ⌘. stop, ⌥⌘1…⌥⌘6 inspector tabs; see
-   [desktop-feed.md](desktop-feed.md#desktop-keys)) to `<herdr home>/keys.json`, so they work
+3. **Keys.** It adds the Gentle shortcuts of `herdr/keys.json` (the `layout:gentle-shell` section;
+   see [Keyboard shortcuts](#keyboard-shortcuts)) to `<herdr home>/keys.json`, so they work
    anywhere in the window while the `gentle-shell` layout shows, not only with the chat focused.
    - Herdr reads one `keys.json` on every OS; only its built-in defaults differ (`keys.macos.json`
      on macOS). That file is the whole keymap: Herdr writes its defaults there on its first start
@@ -65,6 +341,13 @@ Before changing anything it prints exactly what it will install and where, then 
 and without `--yes`, it refuses and writes nothing. When everything is already installed and current,
 it opens Herdr without asking.
 
+`--status` prints the Gentle Shell version, the Herdr app version and path, the Herdr home, whether
+the `gentle-shell` layout and each shipped mod are installed, how many Gentle shortcuts are in
+`keys.json`, and whether the window is running and which layout it shows.
+
+This works the same for every Gentle Shell install, bundled in `~/.gentle-shell` or the npm package.
+The mods always come from the `herdr/` folder of the Gentle Shell that is running.
+
 ## How Herdr app is installed
 
 Herdr's documented installer is `curl -fsSL https://releases.herdr.dev/app/install.sh | sh`
@@ -89,25 +372,7 @@ but for one pinned version, and it does not pipe a script into a shell:
 
 Herdr app updates itself in the background after that; newer versions are accepted.
 
-## `--status`, `--uninstall`, upgrades
+## Related
 
-- `--status` prints the Gentle Shell version, the Herdr app version and path, the Herdr home, whether
-  the `gentle-shell` layout and each shipped mod are installed, how many Gentle shortcuts are in
-  `keys.json`, and whether the window is running
-  and which layout it shows.
-- `--uninstall` moves only the mods and layout `state.json` records as ours into
-  `~/.gentle-shell/desktop/backup`, puts back byte for byte what was at those paths before
-  (`~/.gentle-shell/desktop/originals`), removes from `keys.json` exactly the Gentle shortcuts that
-  still hold the action we wrote (the file from before Gentle Shell, byte for byte, when you have not
-  edited it since; otherwise every other byte stays), then switches Herdr back to the layout it showed before
-  Gentle Shell switched it (or `main`) when ours is active. Without `state.json` it removes
-  nothing. Herdr app itself stays installed.
-- `gentle-shell upgrade` runs the new version's `gentle-shell desktop --refresh` afterwards, only
-  when that version ships the `desktop` command and `gentle-shell desktop` installed the mods
-  before (`~/.gentle-shell/desktop/state.json`). That reinstalls our mods and layout in the same
-  safe way, and updates the Gentle shortcuts already added (a shortcut a new version no longer ships
-  is removed; one it changes is updated, unless you rebound it). It never installs Herdr app or opens the window. `upgrade --rollback` only switches the
-  version and runs nothing else.
-
-This works the same for every Gentle Shell install, bundled in `~/.gentle-shell` or the npm package.
-The mods always come from the `herdr/` folder of the Gentle Shell that is running.
+- [Desktop feed format](desktop-feed.md): the snapshot the mods read and the actions they send.
+- [`herdr/RECIPE.md`](../herdr/RECIPE.md): the layout's gallery brief.

@@ -305,6 +305,26 @@ The Status panel has a **Jobs** section with each running job's description. Whe
 
 **[Docs →](docs/gentle-shell.md#background-jobs)**
 
+---
+
+### Gentle Shell Desktop — The same session, in a native window
+
+<img width="100%" src="herdr/preview.png" alt="Design render of Gentle Shell Desktop: projects and agents in the left sidebar with plan usage below, sessions as tabs, the chat in the centre with a subagent card and a question waiting for an answer, a Changes inspector on the right, and a status bar with the ODD phase, streaming speed and jobs">
+
+<p align="center"><sub>The approved design (<code>design/herdr-desktop/01-inspector.html</code>), rendered headless; the live window is checked against it side by side.</sub></p>
+
+Gentle Shell Desktop shows your Gentle Shell sessions in [Herdr app](https://herdr.dev): the conversation as a native chat, with Changes, Todo, Agents, Jobs, Review and Session stats beside it, and the real TUI one switch away (`⌘J`). It is Herdr, unchanged, plus Gentle Shell's own mods and layout; the desktop acts with exactly the authority you have in the terminal, and consent is always answered in the terminal.
+
+```bash
+gentle-shell desktop              # install what is missing (asks first), then open the window
+gentle-shell desktop --status     # versions and what is installed
+gentle-shell desktop --uninstall  # remove our mods, layout and shortcuts; Herdr stays
+```
+
+Requires macOS on Apple silicon or Linux (x86_64, arm64); Gentle Shell installs Herdr app 0.1.15 for you, checked against a pinned SHA-256. On Windows, install Herdr app with its official installer first.
+
+**[Docs →](docs/gentle-shell-desktop.md)**
+
 <p align="center">
   <img src="docs/assets/brand/terminal-divider.svg" width="480" alt="">
 </p>
@@ -655,6 +675,7 @@ Start with the product-facing destination, then move into the operational refere
 | Destination | Purpose |
 | --- | --- |
 | [gentle-shell reference](docs/gentle-shell.md) | Workspace layout, changes, usage, agents, and todo interactions. |
+| [Gentle Shell Desktop](docs/gentle-shell-desktop.md) | Install, controls, shortcuts, safety and troubleshooting for the Herdr app window. |
 | [ODD workflow](docs/readme-reference.md#organic-driven-development) · [Technical reference](docs/readme-reference.md) | Everyday work and recovery, installation, configuration, commands, and contributor detail. |
 | [Installation wizard (preview)](docs/install-wizard.md) | How the browser installer checks your computer, what it installs on the release and main channels, its security model, and what is still being verified. |
 | [Removing Gentle Shell](docs/gentle-shell-uninstall.md) | What `gentle-shell self-uninstall` removes, keeps and never touches. |

@@ -35,7 +35,8 @@ import { REVIEW_SIDEBAR_EVENT, isReviewSidebarSnapshot, type ReviewSidebarSnapsh
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import { sessionChangeRoots } from "../lib/session-changes.ts";
 import { foreignRootBranch, WorktreeChangesTracker, type GitRunner } from "../lib/shell-changes.ts";
-import { collectSessionStats, type SessionStats } from "../lib/shell-stats.ts";
+import type { SessionStats } from "../lib/shell-stats.ts";
+import { createSessionStatsFold, type SessionStatsFold } from "../lib/desktop-feed-stats.ts";
 import { replayTodo, TODO_DETAILS_KEY, TODO_PROGRESS_EVENT, TODO_TOOL_NAME, type TodoState } from "../lib/shell-todo.ts";
 import { discoverYoloUiAdapter, SUPER_YOLO_STATUS_TEXT, YOLO_DISPLAY, YOLO_STATUS_TEXT, type YoloUiAdapter } from "../lib/yolo-session-policy.ts";
 import { NOTIFICATION_ATTENTION_EVENT } from "../lib/notification-events.ts";
@@ -49,6 +50,13 @@ import { FINISHED_STATUSES } from "../lib/agents-protocol.ts";
 // events, the todo/changes/stats functions); this extension keeps no store of
 // its own beyond the last snapshot it wrote. It arms no timer while nothing
 // changes, and an unchanged snapshot is never rewritten.
+//
+// S13: two tiers. A change to what the desktop must answer at once (an open or
+// answered question, the permission mode, the idle/working/blocked state, a held
+// prompt) is written within DESKTOP_FEED_URGENT_MS; anything else waits for the
+// routine tier, at most one write per DESKTOP_FEED_BUSY_INTERVAL_MS while the
+// session is busy. A flush folds only new session entries into the stats and
+// reuses pi's command registry until a session start or a resource rediscovery.
 
 export interface DesktopFeedOptions {
 	env?: NodeJS.ProcessEnv;
@@ -107,6 +115,13 @@ interface Live {
 	branch: string | null | undefined;
 	changes: { tracker: WorktreeChangesTracker; lines: UntrackedLineCounter; scanned: boolean; requested: boolean };
 	stats: { count: number; stats: SessionStats } | undefined;
+	/** S13: folds only the entries added since the last flush. */
+	statsFold: SessionStatsFold;
+	/** S13: pi's command registry as last read; re-read when `commandsStale`. */
+	commands: ReturnType<ExtensionAPI["getCommands"]> | undefined;
+	commandsStale: boolean;
+	/** S13: the urgent state the last flush published (see urgentKey). */
+	publishedKey: string | undefined;
 	jobsBridge: DesktopJobsBridge;
 	agentsBridge: DesktopAgentsBridge;
 	usageBridge: DesktopUsageBridge;
@@ -190,15 +205,17 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 		};
 		const current = (session: Live) => live === session && !session.closed;
 
+		// S13: getEntryCount() is free; only a changed count reads the entries, and the
+		// fold walks just the new ones.
 		const sessionStats = (session: Live): SessionStats => {
 			const manager = session.ctx.sessionManager as ExtensionContext["sessionManager"] & { getEntryCount?(): number };
-			let count = -1;
-			try { count = manager.getEntryCount?.() ?? manager.getEntries().length; } catch { /* stale context */ }
-			if (session.stats && session.stats.count === count && count >= 0) return session.stats.stats;
-			let entries: unknown[] = [];
+			let count: number | undefined;
+			try { count = manager.getEntryCount?.(); } catch { /* stale context */ }
+			if (session.stats && count !== undefined && session.stats.count === count) return session.stats.stats;
+			let entries: readonly unknown[] = [];
 			try { entries = manager.getEntries(); } catch { /* stale context */ }
-			const stats = collectSessionStats(entries);
-			session.stats = { count, stats };
+			const stats = session.statsFold.update(entries);
+			session.stats = { count: count ?? entries.length, stats };
 			return stats;
 		};
 
@@ -209,6 +226,17 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 			// the desktop shows its label and answers through the terminal (T7).
 			if (session.blocked > 0 && session.blockedLabel) return pendingPrompt("consent", session.blockedLabel, undefined, session.blockedAt);
 			return undefined;
+		};
+
+		// S13: what the desktop must see at once. A change here makes the write urgent.
+		const urgentKey = (session: Live): string => {
+			const question = pendingQuestion(session);
+			return JSON.stringify([
+				session.blocked > 0 ? "blocked" : session.working ? "working" : "idle",
+				question ? [question.kind, question.toolCallId, question.question, question.terminalOnly, question.openedAt] : null,
+				session.permission?.mode ?? null,
+				session.held ? 1 : 0,
+			]);
 		};
 
 		const flush = () => {
@@ -228,8 +256,13 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 				let thinkingLevel: string | undefined;
 				try { thinkingLevel = pi.getThinkingLevel(); } catch { thinkingLevel = undefined; }
 				// The command registry (T10): extension commands, prompt templates, skills.
-				let commands: ReturnType<ExtensionAPI["getCommands"]> | undefined;
-				try { commands = typeof pi.getCommands === "function" ? pi.getCommands() : undefined; } catch { commands = undefined; }
+				// S13: read once per session start or resource rediscovery, not per flush.
+				if (session.commandsStale) {
+					session.commandsStale = false;
+					try { session.commands = typeof pi.getCommands === "function" ? pi.getCommands() : undefined; } catch { session.commands = undefined; }
+				}
+				const commands = session.commands;
+				session.publishedKey = urgentKey(session);
 				const snapshot = buildDesktopFeedSnapshot({
 					now: now(),
 					identity: {
@@ -269,8 +302,14 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 				if (session.store.write(snapshot)) session.lastDigest = digest;
 			} catch { /* The feed is display data: it never interrupts Pi. */ }
 		};
-		const scheduler = createDesktopFeedScheduler(flush, timers);
-		const schedule = () => { if (live && !live.closed) scheduler.schedule(); };
+		const scheduler = createDesktopFeedScheduler(flush, timers, { now, busy: () => (live && !live.closed ? busyNow(live) : false) });
+		const schedule = () => {
+			const session = live;
+			if (!session || session.closed) return;
+			let urgent = false;
+			try { urgent = urgentKey(session) !== session.publishedKey; } catch { urgent = false; }
+			scheduler.schedule(urgent);
+		};
 
 		const refreshChanges = (session: Live) => {
 			session.changes.requested = true;
@@ -367,6 +406,7 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 			const { text, expand } = session.held;
 			session.held = undefined;
 			try { pi.sendUserMessage(text, { deliverAs: "steer", expandPromptTemplates: expand }); } catch { /* pi reports it */ }
+			schedule();
 		};
 		// After pi's own end event: pi clears its compaction state once its handlers return.
 		const compactionEnded = (session: Live) => {
@@ -413,7 +453,7 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 				jobs: undefined, agents: undefined, usage: undefined, usageProviders: undefined, usageFollow: undefined, usageEpoch: 0, permission: undefined,
 				profile: { name: undefined, tier: undefined }, branch: undefined,
 				changes: { tracker: new WorktreeChangesTracker(gitFor(ctx.cwd), gitFor, lines.forRoot, roots), lines, scanned: false, requested: false },
-				stats: undefined,
+				stats: undefined, statsFold: createSessionStatsFold(), commands: undefined, commandsStale: true, publishedKey: undefined,
 				jobsBridge: new DesktopJobsBridge(pi), agentsBridge: new DesktopAgentsBridge(pi), usageBridge: new DesktopUsageBridge(pi),
 				permissionBridge: new DesktopPermissionBridge(pi), profilesBridge: new DesktopProfilesBridge(pi), actions: undefined,
 				activity: createDesktopActivityTimeline(activityClock), providerRun: undefined, runs: 0,
@@ -513,6 +553,7 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 							if (session.held) return { compacting: true };
 							session.held = { text, expand };
 							armHeld(session, HELD_PROMPT_POLL_MS);
+							schedule();
 							return session.compacting ? { queued: true, after: "compaction" } : { queued: true };
 						}
 						let queued = false;
@@ -585,6 +626,12 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 			try { open(ctx); } catch { close(); }
 		});
 		pi.on("session_shutdown", (_event, ctx) => { if (owns(ctx)) close(); });
+		// S13: skills and prompt templates an extension adds are read again after pi rediscovers them.
+		pi.on("resources_discover", () => {
+			if (!live || live.closed) return;
+			live.commandsStale = true;
+			schedule();
+		});
 		pi.on("session_before_compact", (event, ctx) => {
 			// Only a manual compaction makes pi refuse prompts; automatic ones queue them.
 			if (owns(ctx) && (event as { reason?: string }).reason === "manual") live!.compacting = true;

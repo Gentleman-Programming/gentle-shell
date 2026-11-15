@@ -110,6 +110,15 @@ export function createDesktopFeedProfileReader(env: NodeJS.ProcessEnv = process.
 export const DESKTOP_FEED_UNTRACKED_LIMITS = { bytes: DIFF_MAX_BYTES, files: 200 } as const;
 /** How many uncounted paths are remembered (oldest forgotten first). */
 const UNCOUNTED_MAX = 1000;
+/** S13: how many counted files are remembered by (path, size, mtime) (oldest forgotten first). */
+const LINE_CACHE_MAX = 2000;
+
+/** The file reads the counter needs; injectable for tests. */
+export interface UntrackedLineIo {
+	lstat(path: string): Promise<{ isFile(): boolean; size: number; mtimeMs: number }>;
+	readFile(path: string): Promise<Buffer>;
+}
+const realLineIo: UntrackedLineIo = { lstat, readFile: (path) => readFile(path) };
 
 export interface UntrackedLineCounter {
 	/** The LineCounter for one scan of `root` (WorktreeChangesTracker's linesForRoot). */
@@ -124,9 +133,17 @@ export interface UntrackedLineCounter {
  * bounded per file and per scan. A binary file (a NUL byte), a file past the byte
  * bound, a non-regular or unreadable file and every file past the per-scan budget
  * count 0 and are listed in uncounted(), so the snapshot can say "no count".
+ * S13: a file whose size and mtime did not change since it was last read is not
+ * read again; its last answer (a count or a skip) stands.
  */
-export function createUntrackedLineCounter(limits: { bytes: number; files: number } = DESKTOP_FEED_UNTRACKED_LIMITS): UntrackedLineCounter {
+export function createUntrackedLineCounter(limits: { bytes: number; files: number } = DESKTOP_FEED_UNTRACKED_LIMITS, io: UntrackedLineIo = realLineIo): UntrackedLineCounter {
 	const uncounted = new Set<string>();
+	const known = new Map<string, { size: number; mtimeMs: number; lines: number | undefined }>();
+	const remember = (target: string, size: number, mtimeMs: number, lines: number | undefined) => {
+		known.delete(target);
+		known.set(target, { size, mtimeMs, lines });
+		if (known.size > LINE_CACHE_MAX) known.delete(known.keys().next().value as string);
+	};
 	const skip = (target: string) => {
 		uncounted.delete(target);
 		uncounted.add(target);
@@ -141,14 +158,23 @@ export function createUntrackedLineCounter(limits: { bytes: number; files: numbe
 				if (budget <= 0) return skip(target);
 				budget -= 1;
 				try {
-					const info = await lstat(target);
-					if (!info.isFile() || info.size > limits.bytes) return skip(target);
-					const bytes = await readFile(target);
-					if (bytes.length > limits.bytes || bytes.includes(0)) return skip(target);
+					const info = await io.lstat(target);
+					if (!info.isFile() || info.size > limits.bytes) { known.delete(target); return skip(target); }
+					const cached = known.get(target);
+					if (cached && cached.size === info.size && cached.mtimeMs === info.mtimeMs) {
+						if (cached.lines === undefined) return skip(target);
+						uncounted.delete(target);
+						return cached.lines;
+					}
+					const bytes = await io.readFile(target);
+					if (bytes.length > limits.bytes || bytes.includes(0)) { remember(target, info.size, info.mtimeMs, undefined); return skip(target); }
 					uncounted.delete(target);
 					const text = bytes.toString("utf8");
-					return text === "" ? 0 : text.split("\n").length - (text.endsWith("\n") ? 1 : 0);
+					const lines = text === "" ? 0 : text.split("\n").length - (text.endsWith("\n") ? 1 : 0);
+					remember(target, info.size, info.mtimeMs, lines);
+					return lines;
 				} catch {
+					known.delete(target);
 					return skip(target);
 				}
 			};

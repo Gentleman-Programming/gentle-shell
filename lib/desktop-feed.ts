@@ -24,6 +24,14 @@ import { CODEX_PROVIDER, providerNote, USAGE_FETCH_FAILED_NOTE } from "./shell-u
 export const DESKTOP_FEED_SCHEMA = "gentle-shell.desktop-feed/v1";
 /** Coalescing window: a burst of changes becomes one write at most this late. */
 export const DESKTOP_FEED_DEBOUNCE_MS = 250;
+/**
+ * S13: urgent state (an open or answered question, the permission mode, an
+ * idle/working/blocked transition, a held prompt) is written this soon, so the
+ * desktop answers without waiting for the routine tier.
+ */
+export const DESKTOP_FEED_URGENT_MS = 16;
+/** S13: while the session is busy, routine changes are written at most once per this interval. */
+export const DESKTOP_FEED_BUSY_INTERVAL_MS = 1000;
 
 /** Array caps: the snapshot never grows with the session's lifetime. */
 export const DESKTOP_FEED_LIMITS = {
@@ -522,11 +530,25 @@ function jobsSection(jobs: readonly DesktopJobEntry[] | undefined, now: number):
 	};
 }
 
+// S13: the registry array is cached by the extension until it changes, so its
+// shaped section is too (a frozen builtin-only one stands for "no registry").
+const commandSections = new WeakMap<readonly DesktopFeedCommandInput[], DesktopFeedSnapshot["commands"]>();
+const NO_REGISTRY: readonly DesktopFeedCommandInput[] = [];
+
 function commandsSection(registry: readonly DesktopFeedCommandInput[] | undefined): DesktopFeedSnapshot["commands"] {
+	const key = registry ?? NO_REGISTRY;
+	const cached = commandSections.get(key);
+	if (cached) return cached;
+	const section = shapeCommands(key);
+	commandSections.set(key, section);
+	return section;
+}
+
+function shapeCommands(registry: readonly DesktopFeedCommandInput[]): DesktopFeedSnapshot["commands"] {
 	const items: DesktopFeedSnapshot["commands"]["items"] = DESKTOP_FEED_BUILTIN_COMMANDS.map((command) => ({ ...command, source: "builtin" as const }));
 	const seen = new Set(items.map((item) => item.name));
 	let truncated = false;
-	for (const command of registry ?? []) {
+	for (const command of registry) {
 		const name = clipText(command?.name, 128);
 		if (!name || HIDDEN_COMMANDS.has(name) || seen.has(name)) continue;
 		if (items.length >= DESKTOP_FEED_LIMITS.commands) { truncated = true; break; }
@@ -624,7 +646,7 @@ export function desktopFeedDigest(snapshot: DesktopFeedSnapshot): string {
 	return JSON.stringify({ ...rest, jobs });
 }
 
-// ---- Debounce ----
+// ---- Two-tier scheduling (S13) ----
 
 export interface DesktopFeedTimers {
 	set(fn: () => void, ms: number): unknown;
@@ -642,24 +664,58 @@ export const realDesktopFeedTimers: DesktopFeedTimers = {
 	},
 };
 
+export interface DesktopFeedSchedulerOptions {
+	/** Routine debounce while idle (default 250 ms). */
+	delayMs?: number;
+	/** Delay for an urgent change (default 16 ms). */
+	urgentMs?: number;
+	/** Minimum spacing of routine writes while busy (default 1000 ms). */
+	intervalMs?: number;
+	/** The clock the busy interval is measured on. */
+	now?: () => number;
+	/** True while the agent, a job or a subagent works: routine writes are spaced. */
+	busy?: () => boolean;
+}
+
 /**
- * Coalesces change notifications: the first one arms a single timer, every
- * later one inside the window joins it, and the flush runs once. Nothing is
- * armed while nothing changes.
+ * Coalesces change notifications into one armed timer. An urgent change is
+ * flushed within `urgentMs` (pulling a pending routine write forward with it);
+ * a routine one joins the pending timer, waits `delayMs` while idle, and while
+ * busy waits until `intervalMs` after the previous flush. Nothing is armed
+ * while nothing changes.
  */
-export function createDesktopFeedScheduler(flush: () => void, timers: DesktopFeedTimers = realDesktopFeedTimers, delayMs: number = DESKTOP_FEED_DEBOUNCE_MS) {
+export function createDesktopFeedScheduler(flush: () => void, timers: DesktopFeedTimers = realDesktopFeedTimers, options: DesktopFeedSchedulerOptions = {}) {
+	const delayMs = options.delayMs ?? DESKTOP_FEED_DEBOUNCE_MS;
+	const urgentMs = options.urgentMs ?? DESKTOP_FEED_URGENT_MS;
+	const intervalMs = options.intervalMs ?? DESKTOP_FEED_BUSY_INTERVAL_MS;
+	const now = options.now ?? Date.now;
+	const busy = options.busy ?? (() => false);
 	let pending: unknown;
 	let armed = false;
+	let dueAt = 0;
+	let lastRun = -Infinity;
 	const run = () => {
 		armed = false;
 		pending = undefined;
+		lastRun = now();
 		flush();
 	};
 	return {
-		schedule(): void {
-			if (armed) return;
+		schedule(urgent = false): void {
+			const at = now();
+			let due = at + (urgent ? urgentMs : delayMs);
+			if (!urgent) {
+				let spaced = false;
+				try { spaced = busy(); } catch { spaced = false; }
+				if (spaced) due = Math.max(due, lastRun + intervalMs);
+			}
+			if (armed) {
+				if (dueAt <= due) return;
+				timers.clear(pending);
+			}
 			armed = true;
-			pending = timers.set(run, delayMs);
+			dueAt = due;
+			pending = timers.set(run, due - at);
 		},
 		/** Flush now, dropping the pending timer (shutdown, tests). */
 		flushNow(): void {

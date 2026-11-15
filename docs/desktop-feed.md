@@ -50,8 +50,11 @@ belonging to the agent dir it was found in. Herdr app lets mods read only under
 the home folder, so an agent dir outside it is not seen.
 
 The file is replaced atomically (exclusive temp file in the same folder, then
-rename), at most once per 250 ms burst of changes, and only when its content
-changed: an idle session never rewrites it and arms no timer. It is removed when
+rename), only when its content changed (`updatedAt` and job elapsed counters
+are not content): an idle session never rewrites it and arms no timer. Writes
+come in two tiers (see Performance below): urgent state within 16 ms, the rest
+at most once per second while the session is busy and 250 ms after a change
+while it is idle. It is removed when
 the session shuts down (quit, `/new`, `/resume`, reload). A crashed session can
 leave its file behind; the next session start drops files whose publisher pid is
 gone or that were not updated for a day. The folder is created `0700` and files
@@ -118,6 +121,43 @@ Arrays are capped (200 changes, 100 todo items, 50 jobs, 50 agents, 20 models,
 characters; free text is cut at 500 characters (questions at 2000,
 paths at 1000/4096) and stripped of control characters. Readers should ignore an
 unknown `schema`.
+
+## Performance
+
+S13 (`odd/tasks/herdr-desktop.md`): every write wakes every desktop reader, and
+every flush runs on pi's event loop, so the publisher keeps both rare and cheap.
+
+- **Urgent tier (≤ 16 ms):** a question opening or closing (`pendingQuestion`),
+  a permission mode change, an `activity.state` transition (idle ↔ working ↔
+  blocked) are written at once; a desktop prompt being held or released flushes
+  at once too (the snapshot has no field of its own for it, so it writes only
+  what changed with it). A pending routine write rides along.
+- **Routine tier:** everything else (stats, context, changes, usage, commands,
+  agents and jobs progress, streaming) coalesces: at most one write per 1000 ms
+  while the agent, a job or a subagent works, 250 ms after the change while
+  idle. A flush whose content did not change writes nothing.
+- **Cheap flushes:** session stats fold only the entries added since the last
+  flush (`lib/desktop-feed-stats.ts`; pi's `getEntryCount()` skips the read
+  when nothing was added); pi's command registry is read at the first flush
+  after `session_start` and after `resources_discover`, not per flush;
+  untracked files are counted again only when their size or mtime changed.
+
+Measured with `tests/desktop-feed-performance.test.ts` (virtual clock; real
+store writes on the local disk, Apple Silicon):
+
+| Measure | Before | After |
+| --- | --- | --- |
+| Writes for 100 tool events in 10 s while working | 34 (≈ 204/min) | 10 (≈ 60/min) |
+| Writes in a quiet minute | 0 | 0 |
+| Question / blocker / state change visible | ≤ 250 ms | ≤ 16 ms |
+| Flush, 5,000 entries + 200 changed files, incremental path (median) | 1.46 ms | 0.18–0.30 ms |
+| First stats walk of 5,000 entries (once per session start) | every count change | 1.5–2.2 ms once |
+
+The test asserts ≤ 11 routine writes per 10 s burst, writes at least one second
+apart, urgent changes within 50 ms, and a median flush under 15 ms.
+
+A command registered at runtime by another extension (no pi event announces it)
+appears after the next session start or resource rediscovery.
 
 ## Privacy
 

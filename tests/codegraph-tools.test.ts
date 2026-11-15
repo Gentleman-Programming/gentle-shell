@@ -5,7 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { DaemonCallResult } from "../lib/codegraph-daemon.ts";
+import { MAX_REPLY_CHARS, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
 import codeGraphTools, {
 	clearSearchSync,
 	createCodeGraphTool,
@@ -395,6 +395,7 @@ test("CodeGraph tool configures a process buffer above the returned-output trunc
 	const result = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
 
 	assert.ok(maxBuffer > 100_000);
+	assert.ok(maxBuffer >= MAX_REPLY_CHARS, "the CLI process buffer accepts what the daemon path accepts");
 	assert.match(result.content[0]?.text ?? "", /\[CodeGraph output truncated\]$/);
 });
 

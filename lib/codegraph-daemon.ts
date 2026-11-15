@@ -9,7 +9,7 @@ const DAEMON_PROTOCOL = 1;
 /** A daemon sends its hello line as soon as it accepts; one silent this long is hung, and the next one gets the rest of the budget. */
 const DAEMON_HELLO_TIMEOUT_MS = 2_000;
 /** An explore answer is tens of kilobytes; anything near this size is not one worth keeping in memory. */
-const MAX_REPLY_CHARS = 1_000_000;
+export const MAX_REPLY_CHARS = 1_000_000;
 /** CodeGraph answers an explore without a project with this plain text, not with an error. */
 const NO_PROJECT_TEXT = "No CodeGraph project is loaded";
 const PIPE_PREFIX = "\\\\.\\pipe\\";

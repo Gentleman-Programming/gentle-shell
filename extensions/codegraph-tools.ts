@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { exploreViaDaemon, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
+import { exploreViaDaemon, MAX_REPLY_CHARS, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
 import { seedWorktreeIndex } from "../lib/codegraph-seed.ts";
 import { CHILD_ENV, indexState, maybeRewarm, prepareReadiness, runCodegraph, syncBeforeSearch, warmUpDaemon, type SearchSyncInput, type SessionStartReason } from "../lib/codegraph-readiness.ts";
 import { seedSessionWorktrees } from "../lib/codegraph-session-seed.ts";
@@ -92,7 +92,9 @@ const CODEGRAPH_TOOL_PARAMETERS = {
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 20;
 const MAX_OUTPUT_CHARS = 100_000;
-const PROCESS_MAX_BUFFER = MAX_OUTPUT_CHARS * 2;
+// The CLI buffer matches the daemon reply cap: multibyte output the daemon path accepts must
+// never abort the CLI path (truncateOutput bounds what reaches the model either way).
+const PROCESS_MAX_BUFFER = MAX_REPLY_CHARS;
 const FALLBACK_INSTRUCTIONS = "Use read, grep, and find for this exploration.";
 // each daemon query attempt is bounded, so a hung daemon on a slow filesystem (for example a
 // WSL /mnt mount) cannot block the turn indefinitely (#1901); init is the legitimately slow
@@ -159,6 +161,10 @@ const defaultGitRun: GitRun = (args, cwd) => execFileSync("git", [...args], {
 	windowsHide: true,
 }).trim();
 
+/** HOME and TMP resolved once per process: the guard's comparisons never change while it runs. */
+const REAL_HOME = realpathSync(homedir());
+const REAL_TMP = realpathSync(tmpdir());
+
 /** Workspaces whose guard already passed this turn: git is asked once per cwd per turn. */
 const workspaceVerified = new Set<string>();
 
@@ -167,7 +173,7 @@ function resolveWorkspaceCwd(cwd: string, gitRun: GitRun = defaultGitRun): strin
 	if (!lstatSync(resolved).isDirectory()) {
 		throw new Error("CodeGraph can run only in the current workspace directory.");
 	}
-	if (resolved === realpathSync(homedir()) || resolved === realpathSync(tmpdir())) {
+	if (resolved === REAL_HOME || resolved === REAL_TMP) {
 		throw new Error("CodeGraph requires a real Git project root equal to the current workspace, not HOME or a temporary directory.");
 	}
 	if (workspaceVerified.has(resolved)) return resolved;
@@ -244,8 +250,10 @@ function isCodegraphIndexCommand(command: string): boolean {
 const LOCAL_EXCLUDE_PATTERN = ".codegraph/";
 const EQUIVALENT_EXCLUDE_PATTERNS = new Set([".codegraph", ".codegraph/", "/.codegraph", "/.codegraph/"]);
 
-/** The git-derived exclude path per cwd this turn: git is asked once, the exclude file is still checked on every call. */
+/** The git-derived exclude path per cwd this turn: git is asked once, the exclude file is checked on the first call. */
 const excludeApplied = new Map<string, string | undefined>();
+/** The cwds whose exclude file this turn already ends with the pattern: later calls skip the re-read. */
+const excludePresent = new Set<string>();
 
 function excludeIndexLocally(cwd: string, gitRun: GitRun = defaultGitRun): CodeGraphLocalExclude | undefined {
 	let path: string | undefined;
@@ -253,18 +261,25 @@ function excludeIndexLocally(cwd: string, gitRun: GitRun = defaultGitRun): CodeG
 		if (!excludeApplied.has(cwd)) {
 			const inside = gitRun(["rev-parse", "--is-inside-work-tree"], cwd) === "true";
 			// --git-path resolves the exclude file a linked worktree actually reads.
-			excludeApplied.set(cwd, inside ? resolve(cwd, gitRun(["rev-parse", "--git-path", "info/exclude"], cwd)) : undefined);
+			const raw = inside ? resolve(cwd, gitRun(["rev-parse", "--git-path", "info/exclude"], cwd)) : undefined;
+			let normalized: string | undefined;
+			if (raw !== undefined) {
+				mkdirSync(dirname(raw), { recursive: true });
+				normalized = join(realpathSync(dirname(raw)), basename(raw));
+			}
+			excludeApplied.set(cwd, normalized);
 		}
 		path = excludeApplied.get(cwd);
 		if (path === undefined) return undefined;
+		if (excludePresent.has(cwd)) return { status: "present", path };
 		const current = existsSync(path) ? readFileSync(path, "utf8") : "";
-		mkdirSync(dirname(path), { recursive: true });
-		path = join(realpathSync(dirname(path)), basename(path));
 		if (current.split(/\r?\n/).some((line) => EQUIVALENT_EXCLUDE_PATTERNS.has(line.trim()))) {
+			excludePresent.add(cwd);
 			return { status: "present", path };
 		}
 		const separator = current.length === 0 || current.endsWith("\n") ? "" : "\n";
 		appendFileSync(path, `${separator}${LOCAL_EXCLUDE_PATTERN}\n`);
+		excludePresent.add(cwd);
 		return { status: "added", path };
 	} catch (error: unknown) {
 		const reason = error instanceof Error ? error.message.split("\n")[0] : String(error);
@@ -456,6 +471,7 @@ export function clearSearchSync(): void {
 	searchSynced.clear();
 	workspaceVerified.clear();
 	excludeApplied.clear();
+	excludePresent.clear();
 	daemonSkipUntil.clear();
 }
 
@@ -490,11 +506,11 @@ export function codegraphSyncFailureNotice(
  * started: a subagent child or a cwd already refreshed this turn never starts one, so the first
  * search of a turn is neither blocked nor duplicated.
  */
-export function triggerSearchSync(cwd: string, ctx: ExtensionContext, run: SearchSyncInput["run"] = runCodegraph, opts?: { registryDir?: string; sleep?: (ms: number) => Promise<void> }): boolean {
+export function triggerSearchSync(cwd: string, ctx: ExtensionContext, run: SearchSyncInput["run"] = runCodegraph, opts?: { indexed?: boolean; registryDir?: string; sleep?: (ms: number) => Promise<void> }): boolean {
 	if (process.env[CHILD_ENV] === "1" || searchSynced.has(cwd)) return false;
 	// Nothing to refresh without an index: an unindexed workspace must not spawn a doomed
 	// unlock+sync CLI pair (plus failure notices) every turn — init owns the first index.
-	if (!indexExists(cwd)) return false;
+	if (!(opts?.indexed ?? indexExists(cwd))) return false;
 	searchSynced.add(cwd);
 	syncBeforeSearch({
 		cwd,
@@ -559,8 +575,8 @@ export function createCodeGraphTool(
 			// One shaped success result: every success path truncates its output, applies the same
 			// local-exclude handling, and shares the no-output line (excludeAlways: init just built
 			// the index, so its exclude is not gated on indexExists).
-			const finish = (output: string, extra: { viaDaemon?: boolean; excludeAlways?: boolean; syncTriggered?: boolean } = {}): CodeGraphToolResult => {
-				const localExclude = extra.excludeAlways || indexExists(cwd) ? excludeIndexLocally(cwd, gitRun) : undefined;
+			const finish = (output: string, extra: { viaDaemon?: boolean; excludeAlways?: boolean; indexed?: boolean; syncTriggered?: boolean } = {}): CodeGraphToolResult => {
+				const localExclude = extra.excludeAlways || (extra.indexed ?? indexExists(cwd)) ? excludeIndexLocally(cwd, gitRun) : undefined;
 				return {
 					content: [{ type: "text" as const, text: withLocalExcludeNote(output || "CodeGraph completed without output.", localExclude) }],
 					details: {
@@ -592,7 +608,10 @@ export function createCodeGraphTool(
 				maybeRewarm(cwd);
 				// One background unlock+sync per turn before the first search keeps the index fresh;
 				// the search never waits for it.
-				const syncTriggered = triggerSearchSync(cwd, ctx, syncRun);
+				// One indexExists per query serves the sync gate and the result paths below; a daemon
+				// that answers ok confirms the same fact.
+				const indexed = indexExists(cwd);
+				const syncTriggered = triggerSearchSync(cwd, ctx, syncRun, { indexed });
 				const attempt = () => daemonExplore(cwd, parameters, Math.min(queryTimeoutMs, DAEMON_ATTEMPT_TIMEOUT_MS));
 				let viaDaemon: DaemonCallResult | undefined;
 				if (Date.now() >= (daemonSkipUntil.get(cwd) ?? 0)) {
@@ -609,7 +628,7 @@ export function createCodeGraphTool(
 						daemonSkipUntil.set(cwd, Date.now() + DAEMON_SKIP_MS);
 					}
 				}
-				if (viaDaemon?.status === "ok") return finish(truncateOutput(viaDaemon.text), { viaDaemon: true, syncTriggered });
+				if (viaDaemon?.status === "ok") return finish(truncateOutput(viaDaemon.text), { viaDaemon: true, indexed, syncTriggered });
 				// Still no daemon: the search still runs — one CLI process as the last resort. The daemon
 				// stays the only path while it answers; when it cannot serve (never started, died, hung, or
 				// has no project loaded), a slower correct answer beats the read/grep/find dead end.
@@ -636,7 +655,7 @@ export function createCodeGraphTool(
 							signal?.removeEventListener("abort", onCallerAbort);
 						}
 					})();
-					return finish(truncateOutput([result.stdout, result.stderr].filter(Boolean).join("\n")), { viaDaemon: false, syncTriggered });
+					return finish(truncateOutput([result.stdout, result.stderr].filter(Boolean).join("\n")), { viaDaemon: false, indexed, syncTriggered });
 				} catch (error: unknown) {
 					return fail(error, { syncTriggered });
 				}

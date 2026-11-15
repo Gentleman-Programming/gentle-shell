@@ -22,7 +22,7 @@ import { View, div } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { run, window, keys, layout, nextCommand, notify } from "herdr";
 import { tokens, state, kbd, cap } from "./tokens.js";
-import { FeedSource, selectSession } from "./snapshot.js";
+import { FeedSource, selectSession, machineOf } from "./snapshot.js";
 import { sendAction, errorText, showTerminal } from "./actions.js";
 
 // The Gentle palette's key as bound (herdr/keys.json binds ⌘K in the layout's section), e.g.
@@ -102,7 +102,9 @@ export default class GentleStatus extends View {
     let bar = h_flex().id("root").size_full().px(14).gap(18).items_center().bg(c.chrome).border_t(1).border_color(c.line)
       .font_family(c.sans).text_size(12).line_height("18px").text_color(c.muted).whitespace_nowrap();
     if (!f) {
-      bar = bar.child(div().child("No Gentle Shell session focused"));
+      // S14: a Gentle Shell terminal on another machine: its feed is there, not read here.
+      const machine = machineOf(shown?.terminal?.address);
+      bar = bar.child(div().child(machine ? `Runs on ${machine} · its desktop feed stays on that machine` : "No Gentle Shell session focused"));
     } else {
       // .phase: text colour, the phase word in accent 600.
       // Without a phase: "ODD · todo 5 of 10", or "ODD —" when there is nothing to say.

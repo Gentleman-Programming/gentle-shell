@@ -9,11 +9,13 @@
 //
 // Colour policy (T5 brief): a token with a Herdr theme role reads `theme()[role]`, so the
 // window follows the layout's theme and the theme picker; a token without a role is the exact
-// artboard hex. The layout (T6, herdr/layouts/gentle-shell.json) makes the roles equal the
-// artboard by putting LAYOUT_COLORS in its root `"colors"`; without that, the roles show the
-// person's theme (graphite, ...) and only the hex tokens stay Gentle.
+// artboard hex. The layout (herdr/layouts/gentle-shell.json) makes the roles equal the artboard
+// through its root `"theme": { "light": "gentle-shell-light", "dark": "gentle-shell-dark" }`
+// (S14): herdr/themes/gentle-shell-dark.json carries LAYOUT_COLORS in its `colors`, the light
+// file LIGHT_COLORS; without them, the roles show the person's theme (graphite, ...) and only the
+// hex tokens stay Gentle. The hex of the appearance Herdr shows (`settings().dark`) is used.
 
-import { fonts } from "herdr";
+import { fonts, settings } from "herdr";
 
 // name: [artboard hex, Herdr theme role or null, artboard source]
 const TOKENS = {
@@ -54,12 +56,59 @@ export const LAYOUT_COLORS = {
   solid_foreground: "#1a1218",
 };
 
+// The light appearance (S14): the same names, derived from design/system.md (no light artboard;
+// herdr/FIDELITY-light.md has every value and its WCAG contrast). Same values as
+// herdr/mods/gentle-tokens/tokens.js HEX_LIGHT.
+const LIGHT = {
+  canvas: "#fbf7f9",
+  background: "#fbf7f9",
+  chrome: "#f4ecf0",
+  surface: "#efe6eb",
+  raised: "#eadfe5",
+  user: "#f8e6ef",
+  selected: "#f9e1ee",
+  hover: "#f9e1ee",
+  line: "#eadbe3",
+  lineStrong: "#cdb3c1",
+  text: "#1a1218",
+  muted: "#5f4a56",
+  faint: "#86707c",
+  accent: "#be1d7d",
+  accentSoft: "#9c1867",
+  ok: "#1d6b43",
+  warn: "#7f5300",
+  err: "#b3203f",
+  info: "#22589c",
+  onAccent: "#ffffff",
+  btnLine: "#1a12181f",
+};
+
+// What herdr/themes/gentle-shell-light.json `colors` sets (the light LAYOUT_COLORS).
+export const LIGHT_COLORS = {
+  ...Object.fromEntries(Object.entries(TOKENS).filter(([, [, role]]) => role).map(([name, [, role]]) => [role, LIGHT[name]])),
+  popover: "#ffffff",
+  accent_foreground: "#ffffff",
+  solid: "#be1d7d",
+  solid_foreground: "#ffffff",
+  idle: "#5f4a56",
+  selection: "#be1d7d33",
+};
+
 const isColor = (v) => typeof v === "string" && /^#[0-9a-fA-F]{3,8}$/.test(v);
+
+// Whether Herdr shows the dark appearance now (settings().dark); dark when it does not say.
+export function isDark() {
+  try { return settings()?.dark !== false; } catch { return true; }
+}
 
 // The palette for one render: `t` is `theme()`.
 export function palette(t) {
   const p = {};
-  for (const [name, [hex, role]] of Object.entries(TOKENS)) p[name] = role && isColor(t?.[role]) ? t[role] : hex;
+  const dark = isDark();
+  for (const [name, [hex, role]] of Object.entries(TOKENS)) {
+    const own = dark ? hex : LIGHT[name];
+    p[name] = role && isColor(t?.[role]) ? t[role] : own;
+  }
   return p;
 }
 

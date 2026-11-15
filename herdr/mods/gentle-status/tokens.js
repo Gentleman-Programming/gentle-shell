@@ -7,15 +7,17 @@
 // gentle-agents, gentle-tabs, gentle-inspector, gentle-status, gentle-palette, gentle-tokens and
 // gentle-pane (see herdr/FIDELITY-T6.md); gentle-chat has its own tokens.js.
 //
-// Colours: the layout (herdr/layouts/gentle-shell.json, root `colors`) sets the Herdr theme roles
-// to the artboard values, so `theme()` names come first and follow a theme pick; HEX is the
-// fallback and the home of the artboard colours that have no Herdr role.
+// Colours (S14): the layout's root `"theme": { "light": "gentle-shell-light", "dark":
+// "gentle-shell-dark" }` (herdr/themes/*.json) sets the Herdr theme roles to the palette of the
+// appearance Herdr shows (the system's, or settings.json `appearance`), so `theme()` names come
+// first and follow a theme pick; HEX (dark, the artboard) and HEX_LIGHT (herdr/FIDELITY-light.md)
+// are the fallback and the home of the colours that have no Herdr role, picked by `settings().dark`.
 
 import { div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { theme, fonts } from "herdr";
+import { theme, fonts, settings } from "herdr";
 
-// The artboard palette (01-inspector.html :root, lines 15-31).
+// The artboard palette (01-inspector.html :root, lines 15-31): the dark appearance.
 export const HEX = {
   canvas: "#060407", // --canvas → canvas (behind cards) and background (inside the centre card)
   chrome: "#100A0F", // --chrome → chrome
@@ -37,6 +39,37 @@ export const HEX = {
   onAccent: "#1a1218", // .btn.primary color → accent_foreground
   btnLine: "#ffffff17", // .btn border (no role)
 };
+const DARK = HEX;
+
+// The light palette (S14), in the same names: derived from design/system.md (no light artboard),
+// every text colour WCAG AA on canvas, chrome and selected (herdr/FIDELITY-light.md). Mirrors
+// herdr/themes/gentle-shell-light.json `colors`.
+export const HEX_LIGHT = {
+  canvas: "#fbf7f9",
+  chrome: "#f4ecf0",
+  surface: "#efe6eb",
+  raised: "#eadfe5",
+  user: "#f8e6ef",
+  selected: "#f9e1ee",
+  line: "#eadbe3",
+  lineStrong: "#cdb3c1",
+  text: "#1a1218",
+  muted: "#5f4a56",
+  faint: "#86707c",
+  accent: "#be1d7d",
+  accentSoft: "#9c1867",
+  ok: "#1d6b43",
+  warn: "#7f5300",
+  err: "#b3203f",
+  info: "#22589c",
+  onAccent: "#ffffff",
+  btnLine: "#1a12181f",
+};
+
+// Whether Herdr shows the dark appearance now (settings().dark); dark when it does not say.
+export function isDark() {
+  try { return settings()?.dark !== false; } catch { return true; }
+}
 
 // Fonts: the --sans / --mono stacks (01-inspector.html lines 32-33); the first installed family
 // wins, as in CSS (same stacks as herdr/mods/gentle-chat/tokens.js). Inter is not installed on the
@@ -61,6 +94,7 @@ const fontsOnce = () => {
 export function tokens() {
   const t = theme() ?? {};
   const f = fontsOnce();
+  const HEX = isDark() ? DARK : HEX_LIGHT;
   return {
     sans: f.sans,
     mono: f.mono,
@@ -145,13 +179,18 @@ export function kbd(c, text) {
 // (`mods/<mod>/icons/<kind.icon>.svg`, carried by every mod that shows it) and its word in the
 // kbd's mono look, so the kind never rests on colour alone. Herdr reads in the info tone, TUI in
 // the accent-soft tone.
-export function kindBadge(c, kind, mod) {
-  const tone = kind.kind === "herdr" ? c.info : c.accentSoft;
+// A remote session (S14) shows its machine's name instead of the word, in the warn tone, and says
+// in its tooltip that its feed stays on that machine. `machine`: the name, for remote only.
+export function kindBadge(c, kind, mod, machine) {
+  const tone = kind.kind === "herdr" ? c.info : kind.kind === "remote" ? c.warn : c.accentSoft;
+  const label = kind.kind === "remote" && machine ? machine : kind.label;
+  const remote = kind.kind === "remote";
   return h_flex().flex_none().h(17).px(5).gap(4).items_center().rounded(5).border(1).border_color(c.lineStrong)
     .font_family(c.mono).font_weight(600).text_size(10.5).line_height("13.5px").text_color(tone)
-    .tooltip(kind.about)
+    .when(remote, (el) => el.max_w(120).overflow_hidden())
+    .tooltip(remote && machine ? `${kind.about} (${machine})` : kind.about)
     .child(svg(`mods/${mod}/icons/${kind.icon}.svg`).size(11).flex_none())
-    .child(kind.label);
+    .child(remote ? div().min_w(0).truncate().child(label) : label);
 }
 
 // ---- Formats ---------------------------------------------------------------------------------

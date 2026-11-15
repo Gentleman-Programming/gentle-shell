@@ -15,6 +15,11 @@
 // session's subagent routes) with their windows or the panel's own note. The block grows to its
 // rows (the artboard's 111px holds two windows) and shrinks back. The refresh button asks the
 // session's usage owner for the panel's `r` (the `refresh_usage` action, actions.js).
+//
+// S14: the footer ends with "Add machine", Herdr's own sidebar entry (`workspace-chrome` footer:
+// `mod.open machine-add`, the shipped dialog that lists the ssh-config hosts and says what each
+// needs). Its machines and their state are the Projects headers (gentle-spaces). Not in the
+// artboard: one more 24.25px line under the usage rows.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
@@ -134,7 +139,7 @@ export default class GentleSidebar extends View {
           : !own.length
             ? noteText(u.note) || (u.status && u.status !== "ok" ? `Plan usage ${u.status}` : "No plan usage reported")
             : reset ? `${first.label} resets ${reset}` : "";
-    this.fit(lines.length + 1);
+    this.fit(lines.length + 2); // + the reset line and Add machine
     return v_flex().id("usage").size_full().bg(c.chrome).font_family(c.sans).border_t(1).border_color(c.line)
       .pt(10).px(16).pb(12).gap(7).text_size(12)
       .child(eyebrow(c, plan))
@@ -149,7 +154,14 @@ export default class GentleSidebar extends View {
           .child(svg(ICON("refresh")).size(13))))
         .child(div().id("usage-settings").flex_none().text_color(c.muted).cursor_pointer().hover((s) => s.text_color(c.text))
           .tooltip("Settings").on_click(() => run("app.settings"))
-          .child(svg(ICON("gear")).size(13))));
+          .child(svg(ICON("gear")).size(13))))
+      // Herdr's Add machine (workspace-chrome): another computer over ssh, its spaces in Projects.
+      .child(h_flex().id("add-machine").h(17.25).min_w(0).overflow_hidden().gap(8).items_center().text_size(11.5).line_height("17.25px")
+        .text_color(c.muted).cursor_pointer().hover((s) => s.text_color(c.text))
+        .tooltip("Add a machine you reach over ssh: its projects and Gentle Shell sessions show here")
+        .on_click(() => run("mod.open", { name: "machine-add" }))
+        .child(svg(ICON("server-plus")).size(13).flex_none())
+        .child(div().min_w(0).truncate().child("Add machine")));
   }
 
   render() {

@@ -20,7 +20,7 @@ import { v_flex, TextareaState, ScrollHandle } from "gpui-base";
 import { agents, props, layout, hc, run, setShared, shared, theme, watchFolder, nextCommand } from "herdr";
 import { readFile } from "fs/promises";
 import { sessionFileFor, readAfter, readTail, utf8 } from "./session.js";
-import { FeedSource, allSessions, targetSession } from "./snapshot.js";
+import { FeedSource, allSessions, targetSession, machineOf } from "./snapshot.js";
 import { createFeed, ingest, hideThinkingFrom } from "./feed.js";
 import { palette, sans, R } from "./tokens.js";
 import { header, entries, entry, lane, stateLabel, askCard, askOptions, composer, icon, PERM, ELSEWHERE } from "./ui.js";
@@ -264,7 +264,10 @@ export default class GentleChat extends View {
     }
     if (address !== this.address) { this.address = address; cx.notify(); }
     if (!s) return;
-    if (String(address ?? "").includes("/")) { this.error = "Remote terminals are not read yet."; cx.notify(); return; }
+    // S14: a terminal on another machine. Its session file and snapshot are on that machine and the
+    // desktop feed reads this computer's, so nothing is read (a local file of the same folder would
+    // be another session): the empty state says where it runs, the Terminal shows it.
+    if (machineOf(address)) return;
     // The snapshot names the exact session file; a terminal without one falls back to its folder.
     const exact = s.feed?.identity?.sessionFile;
     const where = typeof exact === "string" && exact.endsWith(".jsonl")
@@ -942,7 +945,10 @@ export default class GentleChat extends View {
   // No conversation yet (the artboard has no such state): a calm block in the middle of the
   // log, in the design's type: the mark in faint, a 14px semibold line, a 12.5px muted line.
   empty(p) {
-    const [title, about] = !this.key
+    const machine = machineOf(this.address);
+    const [title, about] = machine
+      ? [`Runs on ${machine}`, `Herdr shows its state and its Terminal (⌘J). Its conversation and desktop feed stay on ${machine}: this window reads this computer's.`]
+      : !this.key
       ? ["No Gentle Shell session", "Start one with + in the tab bar, or run gentle-shell in a terminal."]
       : !this.file
         ? ["Waiting for the first message", "This session has not written its conversation yet."]

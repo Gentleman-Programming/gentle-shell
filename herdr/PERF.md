@@ -76,6 +76,13 @@ Measured by turning things off one at a time:
   running job, and a 30 s one while the Review tab shows (the RDD status read).
 - **Sidebar**: the usage footer's minute timer redraws only when the reset words changed.
 
+## S14 (remote machines, light theme)
+
+No timer, watch or process was added. The machine headers read Herdr's live `machines()` (no
+`hc machine ls` poll), the appearance is `settings().dark` read in render, and "Add machine" is a
+click. Measured the same way (2026-11-15, Herdr app 0.1.16, an idle session shown): dark
+0.19–0.30 %, light 0.25 %, Herdr's `main` layout 0.47 %.
+
 ## Trade-offs
 
 - The artboard's pulsing working dot (S8) is still: the cost was ~40 % CPU for as long as any

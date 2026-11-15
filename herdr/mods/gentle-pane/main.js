@@ -10,7 +10,7 @@ import { View, div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { panes, props, run, home } from "herdr";
 import { tokens, state, sessionTitle, kindBadge } from "./tokens.js";
-import { FeedSource, SESSION_KINDS } from "./snapshot.js";
+import { FeedSource, SESSION_KINDS, machineOf } from "./snapshot.js";
 
 const ICON = (name) => `mods/gentle-pane/icons/${name}.svg`;
 // The layout's view stack and its chat child (herdr/layouts/gentle-shell.json).
@@ -62,7 +62,10 @@ export default class GentlePane extends View {
     if (!p) return div();
     const pane = p.pane;
     // The Gentle Shell session this terminal runs, for its name (snapshot.js allSessions).
-    const feed = p.terminal ? this.source.sessions().find((s) => s.terminal?.address === p.terminal)?.feed ?? null : null;
+    const session = p.terminal ? this.source.sessions().find((s) => s.terminal?.address === p.terminal) ?? null : null;
+    const feed = session?.feed ?? null;
+    // S14: a Gentle Shell terminal on another machine has no snapshot here; its badge names the machine.
+    const remote = session && machineOf(p.terminal);
     const name = feed?.identity?.sessionName || sessionTitle(p.title) || ((p.program?.agent || p.program?.shell) && p.program.name) || p.program?.name || "shell";
     const [kind, word] = KIND[p.status] ?? [null, null];
     const compact = Number.isFinite(this.w) && this.w < 420;
@@ -75,6 +78,7 @@ export default class GentlePane extends View {
       .child(div().min_w(56).flex_shrink_1().max_w(320).truncate().text_size(14).font_weight(600).text_color(c.text).child(name))
       // A Gentle Shell terminal of this window: the Herdr kind badge, as in the chat header.
       .when(Boolean(feed), (el) => el.child(kindBadge(c, SESSION_KINDS.herdr, "gentle-pane")))
+      .when(Boolean(remote), (el) => el.child(kindBadge(c, SESSION_KINDS.remote, "gentle-pane", remote)))
       .child(div().flex_1().min_w(0).flex_shrink_1().truncate().child(folder(p.cwd)))
       .when(Boolean(kind), (el) => el.child(state(c, kind, word)))
       .when(this.hovered, (el) => el

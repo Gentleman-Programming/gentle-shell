@@ -18,7 +18,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { exec, home, shared, nextCommand } from "herdr";
 import { tokens, eyebrow, state, bar, btn, money, sessionCost, span, clock, ago, cap, prettyModel, agentRole } from "./tokens.js";
-import { FeedSource } from "./snapshot.js";
+import { FeedSource, machineOf } from "./snapshot.js";
 import { sendAction, errorText, tuiCommand, showTerminal, confirm, confirmed } from "./actions.js";
 
 const ICON = (name) => `mods/gentle-inspector/icons/${name}.svg`;
@@ -467,6 +467,13 @@ export default class GentleInspector extends View {
   }
 
   empty(c) {
+    // S14: a Gentle Shell terminal on another machine publishes its feed there.
+    const machine = machineOf(this.address);
+    if (machine) {
+      return [v_flex().gap(6).pt(4)
+        .child(div().font_weight(600).text_size(13).line_height("19.5px").text_color(c.text).child(`Runs on ${machine}`))
+        .child(this.note(c, `Its changes, todo, agents, jobs, review and stats are published on ${machine}; this window reads this computer's desktop feed only.`))];
+    }
     return [v_flex().gap(6).pt(4)
       .child(div().font_weight(600).text_size(13).line_height("19.5px").text_color(c.text).child("No Gentle Shell session here"))
       .child(this.note(c, "Focus a tab running gentle-shell to see its changes, todo, agents, jobs, review and stats."))];

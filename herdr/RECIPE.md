@@ -84,7 +84,10 @@ sans and a mono stack, chosen at run time from `fonts()`.
 
 - **The layout** (`layouts/gentle-shell.json`): root `row`, `titlebar: "none"`,
   `traffic_lights: [14, 17]`, `background: "canvas"`, `terminal_padding: [14, 12]`, a 1px
-  `border` divider, and `colors` setting the Herdr theme roles to the colours above (no `theme`).
+  `border` divider, and `"theme": { "light": "gentle-shell-light", "dark": "gentle-shell-dark" }`
+  (`herdr/themes/`, S14): the dark theme file's `colors` set the Herdr theme roles to the colours
+  above, the light one to the light palette (`FIDELITY-light.md`); no root `colors`, which would
+  apply in both appearances.
   Sidebar `column` (`brand`, `spaces`, `agents`, `sidebar-footer` blocks); work `column` (`tabs`
   block, `work-body` row with the `views` stack and the `panel` column, `status` block). The
   `views` stack is `chat` (mod `gentle-chat`, props `{ stack: "views", self: "chat", other: "main" }`)

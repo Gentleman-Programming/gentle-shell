@@ -486,6 +486,130 @@ test("the real package herdr/ folder ships gentle-* mods and the gentle-shell la
 	assert.ok(mods?.includes("gentle-chat"));
 });
 
+// --- S14: the layout's light and dark themes (herdr/themes/gentle-shell-*.json) -----------
+
+test("themes: herdr/themes/gentle-shell-*.json install into themes/, a user's file there is kept and put back, refresh and uninstall follow (S14)", async (t) => {
+	const f = fixture(t);
+	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.15", f.state);
+	const pkgThemes = join(f.pkg, "herdr", "themes");
+	mkdirSync(pkgThemes, { recursive: true });
+	writeFileSync(join(pkgThemes, "gentle-shell-dark.json"), "{\"dark\":1}\n");
+	writeFileSync(join(pkgThemes, "gentle-shell-light.json"), "{\"light\":1}\n");
+	writeFileSync(join(pkgThemes, "other.json"), "{\"not\":\"ours\"}\n");
+	const themes = join(f.herdrHome, "themes");
+	mkdirSync(themes, { recursive: true });
+	writeFileSync(join(themes, "gentle-shell-light.json"), "{\"mine\":1}\n");
+	writeFileSync(join(themes, "atom-one-dark.json"), "{\"herdr\":1}\n");
+	assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"] })), 0, f.err.join("\n"));
+	const out = f.out.join("\n");
+	assert.ok(out.includes(`  - install its light and dark themes gentle-shell-dark.json, gentle-shell-light.json into ${themes}`), out);
+	assert.ok(out.includes(`Installed mods gentle-a, gentle-b, layout gentle-shell and themes gentle-shell-dark.json, gentle-shell-light.json in ${f.herdrHome}.`), out);
+	assert.deepEqual(readdirSync(themes).sort(), ["atom-one-dark.json", "gentle-shell-dark.json", "gentle-shell-light.json"]);
+	assert.equal(readFileSync(join(themes, "gentle-shell-dark.json"), "utf8"), "{\"dark\":1}\n");
+	assert.equal(readFileSync(join(themes, "gentle-shell-light.json"), "utf8"), "{\"light\":1}\n");
+	assert.equal(readFileSync(join(themes, "atom-one-dark.json"), "utf8"), "{\"herdr\":1}\n");
+	const originals = join(f.home, ".gentle-shell", "desktop", "originals", "themes");
+	assert.equal(readFileSync(join(originals, "gentle-shell-light.json"), "utf8"), "{\"mine\":1}\n");
+	const stateFile = join(f.home, ".gentle-shell", "desktop", "state.json");
+	assert.deepEqual(JSON.parse(readFileSync(stateFile, "utf8")).themes, ["gentle-shell-dark.json", "gentle-shell-light.json"]);
+	f.out.length = 0;
+	assert.equal(await runDesktop(context(f, { args: ["--status"] })), 0);
+	assert.ok(f.out.includes(`  Themes: gentle-shell-dark.json, gentle-shell-light.json installed in ${themes}`), f.out.join("\n"));
+	writeFileSync(join(pkgThemes, "gentle-shell-dark.json"), "{\"dark\":2}\n");
+	f.out.length = 0;
+	assert.equal(await runDesktop(context(f, { args: ["--refresh"], interactive: false })), 0, f.err.join("\n"));
+	assert.equal(readFileSync(join(themes, "gentle-shell-dark.json"), "utf8"), "{\"dark\":2}\n");
+	assert.deepEqual(f.out, [`Gentle Shell Desktop: refreshed mods gentle-a, gentle-b, layout gentle-shell and themes gentle-shell-dark.json, gentle-shell-light.json in ${f.herdrHome}.`]);
+	f.out.length = 0;
+	assert.equal(await runDesktop(context(f, { args: ["--uninstall"] })), 0, f.err.join("\n"));
+	assert.deepEqual(readdirSync(themes).sort(), ["atom-one-dark.json", "gentle-shell-light.json"]);
+	assert.equal(readFileSync(join(themes, "gentle-shell-light.json"), "utf8"), "{\"mine\":1}\n");
+	const backup = join(f.home, ".gentle-shell", "desktop", "backup");
+	assert.equal(readFileSync(join(backup, "themes", "gentle-shell-dark.json"), "utf8"), "{\"dark\":2}\n");
+	assert.ok(f.out.includes(`Removed Gentle Shell Desktop mods, layout and themes from ${f.herdrHome}; a copy is in ${backup}. Herdr app itself stays installed.`), f.out.join("\n"));
+	assert.ok(f.out.some((line) => line.startsWith("Put back what was there before Gentle Shell Desktop:") && line.includes("theme gentle-shell-light.json")), f.out.join("\n"));
+	assert.equal(existsSync(join(f.home, ".gentle-shell", "desktop", "originals")), false);
+	assert.equal(existsSync(stateFile), false);
+});
+
+// WCAG 2.x contrast of two #rrggbb colours.
+function contrast(a: string, b: string): number {
+	const lum = (hex: string) => {
+		const n = Number.parseInt(hex.slice(1, 7), 16);
+		const [r, g, bl] = [16, 8, 0].map((shift) => {
+			const c = ((n >> shift) & 255) / 255;
+			return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+		});
+		return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+	};
+	const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
+	return (x + 0.05) / (y + 0.05);
+}
+
+test("the real layout follows the appearance: gentle-shell-light / gentle-shell-dark themes, the dark one keeps the dark look, light text is WCAG AA (S14)", () => {
+	const read = (path: string) => JSON.parse(readFileSync(new URL(`../herdr/${path}`, import.meta.url), "utf8"));
+	const layout = read("layouts/gentle-shell.json");
+	assert.deepEqual(layout.theme, { light: "gentle-shell-light", dark: "gentle-shell-dark" });
+	// Root colors apply in both appearances (Herdr), so the layout must not force any.
+	assert.equal(layout.colors, undefined);
+	const isHex6 = (v: unknown) => typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v);
+	const isHex = (v: unknown) => typeof v === "string" && /^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/.test(v);
+	const files = readdirSync(new URL("../herdr/themes/", import.meta.url)).sort();
+	assert.deepEqual(files, ["gentle-shell-dark.json", "gentle-shell-light.json"]);
+	const allowed = new Set(["background", "foreground", "selection", "cursor", "ansi", "colors"]);
+	for (const name of files) {
+		const theme = read(`themes/${name}`);
+		// Herdr's ThemeFile (deny_unknown_fields): every key known, #rrggbb palette, 16 ansi.
+		for (const key of Object.keys(theme)) assert.ok(allowed.has(key), `${name}: ${key}`);
+		for (const key of ["background", "foreground", "selection"]) assert.ok(isHex6(theme[key]), `${name}: ${key}`);
+		if (theme.cursor !== undefined) assert.ok(isHex6(theme.cursor), `${name}: cursor`);
+		assert.equal(theme.ansi.length, 16);
+		for (const c of theme.ansi) assert.ok(isHex6(c), `${name}: ansi ${c}`);
+		for (const [key, c] of Object.entries(theme.colors)) assert.ok(isHex(c), `${name}: colors.${key}`);
+	}
+	// Dark: Herdr's graphite palette (terminal colours as before) plus the former root colors,
+	// so every theme() role resolves exactly as with the old layout.
+	const dark = read("themes/gentle-shell-dark.json");
+	assert.deepEqual({ background: dark.background, foreground: dark.foreground, selection: dark.selection, cursor: dark.cursor }, { background: "#17191d", foreground: "#d2d4d9", selection: "#394454", cursor: undefined });
+	assert.deepEqual(dark.ansi, ["#45484f", "#dc8c95", "#a6bd91", "#d8be87", "#96b2d7", "#b5a2ce", "#8cbdc3", "#d2d4d9", "#818793", "#f0a5ad", "#bad5a2", "#ead2a1", "#b0cbef", "#cbb7e6", "#a4d5db", "#f0f0f2"]);
+	assert.deepEqual(dark.colors, {
+		background: "#060407", canvas: "#060407", chrome: "#100A0F", surface: "#20161e", raised: "#241822", popover: "#241822",
+		selected: "#28121E", hover: "#28121E", border: "#2A1720", input: "#563040", foreground: "#f6eff3", muted: "#a78e9b",
+		dim: "#76616b", accent: "#f095c8", accent_foreground: "#1a1218", solid: "#f095c8", solid_foreground: "#1a1218",
+		done: "#b4e7c7", blocked: "#e0c27a", working: "#a9c7ee", idle: "#a78e9b", selection: "#f095c84d",
+	});
+	// Light: the same roles, and every text role at least 4.5:1 on the surfaces text sits on.
+	const light = read("themes/gentle-shell-light.json").colors;
+	assert.deepEqual(Object.keys(light).sort(), Object.keys(dark.colors).sort());
+	for (const text of ["foreground", "muted", "accent", "done", "blocked", "working"]) {
+		for (const surface of ["canvas", "chrome", "selected", "background", "popover"]) {
+			assert.ok(contrast(light[text], light[surface]) >= 4.5, `${text} on ${surface}: ${contrast(light[text], light[surface]).toFixed(2)}`);
+		}
+	}
+	assert.ok(contrast(light.accent_foreground, light.accent) >= 4.5, "text on the accent button");
+	assert.ok(contrast(light.solid_foreground, light.solid) >= 4.5, "text on the solid button");
+});
+
+test("Projects group by machine like Herdr's spaces once a machine is not this computer, with each machine's state (S14)", async () => {
+	const { machineGroups, STATE_WORD } = await import("../herdr/mods/gentle-spaces/machines.js");
+	assert.deepEqual(STATE_WORD, { loading: "loading…", ready: "ready", unavailable: "unavailable" });
+	// Only this computer: no headers, the plain list (unchanged look).
+	assert.equal(machineGroups([{ id: "w1", machine: null }], [{ name: null, layout: "ready" }]), null);
+	assert.equal(machineGroups([], []), null);
+	// This computer first, then machines by name; machines with no space are listed too.
+	const groups = machineGroups(
+		[{ id: "w1", machine: null }, { id: "vps/w2", machine: "vps" }, { id: "w3", machine: null }],
+		[{ name: null, layout: "ready" }, { name: "vps", layout: "loading" }, { name: "box", layout: "unavailable" }],
+	);
+	assert.deepEqual(groups, [
+		{ name: null, state: "ready", spaces: [{ id: "w1", machine: null }, { id: "w3", machine: null }] },
+		{ name: "box", state: "unavailable", spaces: [] },
+		{ name: "vps", state: "loading", spaces: [{ id: "vps/w2", machine: "vps" }] },
+	]);
+	// A space whose machine Herdr does not list (yet): unavailable, never "ready".
+	assert.deepEqual(machineGroups([{ id: "x/w9", machine: "x" }], [])?.map((g) => [g.name, g.state]), [[null, "ready"], ["x", "unavailable"]]);
+});
+
 test("a swap conflict rolls back: Herdr home, originals and a created mods/ folder are as before (B1)", async (t) => {
 	const f = fixture(t);
 	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.15", f.state);

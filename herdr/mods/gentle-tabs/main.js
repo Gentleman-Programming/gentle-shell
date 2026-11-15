@@ -19,7 +19,7 @@ import { View, div, svg } from "gpui-kit";
 import { h_flex, ScrollHandle } from "gpui-base";
 import { spaces, agents, terminals, run, openOverlay, window, layout, settings } from "herdr";
 import { tokens, stateDot, sessionTitle, kindBadge } from "./tokens.js";
-import { FeedSource, isGentle, followHerdr, selectSession, projectOf, spaceFor, SESSION_KINDS } from "./snapshot.js";
+import { FeedSource, isGentle, followHerdr, selectSession, projectOf, spaceFor, machineOf, SESSION_KINDS } from "./snapshot.js";
 
 const MOD = "gentle-tabs";
 
@@ -76,7 +76,10 @@ export default class GentleTabs extends View {
       .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: tab.id, space: space.id } } }); })
       .child(div().flex_none().tooltip(word).child(stateDot(c, kind)))
       .child(div().flex_shrink_1().min_w(0).truncate().child(tab.zoomed ? `${this.name(tab)} (zoomed)` : this.name(tab)))
-      .when(agents().some((x) => x.tab === tab.id && isGentle(x.app)), (el) => el.child(kindBadge(c, SESSION_KINDS.herdr, MOD)));
+      // S14: a tab of a space on another machine says so, with its machine's name.
+      .when(agents().some((x) => x.tab === tab.id && isGentle(x.app)), (el) => el.child(space?.machine
+        ? kindBadge(c, SESSION_KINDS.remote, MOD, space.machine)
+        : machineOf(tab.id) ? kindBadge(c, SESSION_KINDS.remote, MOD, machineOf(tab.id)) : kindBadge(c, SESSION_KINDS.herdr, MOD)));
   }
 
   // A session outside Herdr app (T11): the tab's look, its state from the snapshot, a click shows it.

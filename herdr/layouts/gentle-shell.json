@@ -7,29 +7,9 @@
     17
   ],
   "background": "canvas",
-  "colors": {
-    "background": "#060407",
-    "canvas": "#060407",
-    "chrome": "#100A0F",
-    "surface": "#20161e",
-    "raised": "#241822",
-    "popover": "#241822",
-    "selected": "#28121E",
-    "hover": "#28121E",
-    "border": "#2A1720",
-    "input": "#563040",
-    "foreground": "#f6eff3",
-    "muted": "#a78e9b",
-    "dim": "#76616b",
-    "accent": "#f095c8",
-    "accent_foreground": "#1a1218",
-    "solid": "#f095c8",
-    "solid_foreground": "#1a1218",
-    "done": "#b4e7c7",
-    "blocked": "#e0c27a",
-    "working": "#a9c7ee",
-    "idle": "#a78e9b",
-    "selection": "#f095c84d"
+  "theme": {
+    "light": "gentle-shell-light",
+    "dark": "gentle-shell-dark"
   },
   "terminal_padding": [
     14,

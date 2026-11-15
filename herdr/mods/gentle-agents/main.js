@@ -10,12 +10,15 @@
 // its eyebrow and count, needs-you first inside each: "Herdr · In this window" (the agents of
 // this window's herdr-core terminals) and "TUI · Other terminals" (Gentle Shell TUIs elsewhere);
 // every row also carries its kind badge (tokens.js kindBadge, snapshot.js SESSION_KINDS).
+// S14: an agent on another machine (a remote space, `hc machine ls`) stays in this window's section
+// with the Remote badge named after its machine; what it shows is herdr-core's (state, title,
+// space): its snapshot is on that machine, so no spend or session name from it.
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, terminals, spaces, run, setAgentOrder, layout } from "herdr";
 import { tokens, eyebrow, state, sessionTitle, sessionCost, kindBadge } from "./tokens.js";
-import { FeedSource, followHerdr, selectSession, projectOf, projectName, whereLabel, SESSION_KINDS } from "./snapshot.js";
+import { FeedSource, followHerdr, selectSession, projectOf, projectName, whereLabel, machineOf, SESSION_KINDS } from "./snapshot.js";
 
 const MOD = "gentle-agents";
 
@@ -71,15 +74,17 @@ export default class GentleAgents extends View {
   row(c, a, tab, feed, on) {
     const [kind, label] = KIND[a.status] ?? KIND.idle;
     const app = a.app ?? a.program?.key ?? a.program?.name ?? "terminal";
+    const machine = machineOf(a.address);
     return v_flex().id(`ag-${a.address}`).w_full().h(48.75).flex_none().p(6).rounded(6).cursor_pointer()
       .when(on, (el) => el.bg(c.selected))
       .hover((s) => s.bg(c.selected))
+      .when(Boolean(machine), (el) => el.tooltip(`Runs on ${machine}: herdr-core reports its state; its chat and inspector feed stay on that machine`))
       .on_click(() => { followHerdr(); run("pane.focus", { pane: a.pane }); })
       .child(h_flex().h(19.5).min_w(0).overflow_hidden().gap(8).items_center()
         .child(div().flex_1().min_w(0).truncate().text_size(13).line_height("19.5px").text_color(c.text).child(title(a, tab, feed)))
         .child(state(c, kind, label)))
       .child(h_flex().h(17.25).gap(6).items_center().min_w(0).overflow_hidden()
-        .child(kindBadge(c, SESSION_KINDS.herdr, MOD))
+        .child(machine ? kindBadge(c, SESSION_KINDS.remote, MOD, machine) : kindBadge(c, SESSION_KINDS.herdr, MOD))
         .child(div().min_w(0).truncate().text_size(11.5).line_height("17.25px").text_color(c.muted).child(`${app} · ${a.space_name} · ${a.address}`)));
   }
 

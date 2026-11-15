@@ -48,7 +48,9 @@ always shown, as in the artboard, and `gentle-tabs` has no Files/Changes toggles
 
 ## Colours
 
-The layout root `colors` sets the Herdr theme roles to the artboard values, so the mods read
+(S14: these values now live in `herdr/themes/gentle-shell-dark.json` `colors`, chosen by the layout
+root `"theme": { "light": "gentle-shell-light", "dark": "gentle-shell-dark" }`; the resolved roles
+are the same. See `FIDELITY-light.md`.) The layout root `colors` sets the Herdr theme roles to the artboard values, so the mods read
 `theme()` names; `gentle-tokens/tokens.js` `HEX` is the fallback and holds the colours with no
 role. Values equal T5's `LAYOUT_COLORS` (`herdr/mods/gentle-chat/tokens.js`) role by role (checked
 by script: 20/20 identical); the layout adds `idle` and `selection`.

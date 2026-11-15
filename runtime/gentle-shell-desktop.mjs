@@ -7,8 +7,9 @@ import { delimiter, join } from "node:path";
 // `gentle-shell desktop` (Gentle Shell Desktop, odd/tasks/herdr-desktop.md T8):
 // the pinned Herdr app, unchanged, plus our gentle-* mods and the gentle-shell
 // layout from this package's herdr/ folder, the way Gentle Shell ships Pi.
-// Everything it writes in Herdr's home is a gentle-* mod folder or
-// layouts/gentle-shell.json; its own state and backups live in
+// Everything it writes in Herdr's home is a gentle-* mod folder,
+// layouts/gentle-shell.json or a themes/gentle-shell-*.json (the layout's light
+// and dark palettes, S14); its own state and backups live in
 // ~/.gentle-shell/desktop. Whatever was at one of those paths before Gentle
 // Shell first installed there (state.json says which paths are ours) is kept
 // in ~/.gentle-shell/desktop/originals, never rotated, and put back exactly by
@@ -102,8 +103,9 @@ export function desktopUsage()         {
 		"                Gentle Shell space in this folder. Shows what it will install and where, and",
 		`                asks first. A missing or older Herdr app gets the pinned ${HERDR_APP_VERSION} release`,
 		"                from releases.herdr.dev, verified against its pinned SHA-256. Each mod must",
-		"                pass 'herdr-app check' before anything is installed. Only gentle-* mods and",
-		"                layouts/gentle-shell.json are written in Herdr's home: anything Gentle Shell",
+		"                pass 'herdr-app check' before anything is installed. Only gentle-* mods,",
+		"                layouts/gentle-shell.json and its light and dark themes (themes/gentle-shell-*.json)",
+		"                are written in Herdr's home: anything Gentle Shell",
 		"                did not install there is kept in ~/.gentle-shell/desktop/originals until",
 		"                --uninstall puts it back; our own previous copy goes to .../desktop/backup.",
 		"                The Gentle shortcuts (layout:gentle-shell: Cmd-K palette, Cmd-J chat/terminal,",
@@ -112,10 +114,10 @@ export function desktopUsage()         {
 		"  --yes, -y     Do not ask (needed when not run in an interactive terminal).",
 		"  --no-open     Install only; do not start or switch Herdr app.",
 		"  --status      Print versions and what is installed.",
-		"  --uninstall   Remove our mods, layout and shortcuts (a copy stays in the backup), put back",
+		"  --uninstall   Remove our mods, layout, themes and shortcuts (a copy stays in the backup), put back",
 		"                what was there before, and switch Herdr back to your previous layout. Herdr",
 		"                app itself stays installed.",
-		"  --refresh     Reinstall our mods, layout and shortcuts from this Gentle Shell when they are installed;",
+		"  --refresh     Reinstall our mods, layout, themes and shortcuts from this Gentle Shell when they are installed;",
 		"                'gentle-shell upgrade' runs it. Does nothing if desktop was never installed.",
 	].join("\n");
 }
@@ -166,6 +168,7 @@ export function supportsDesktop(packageRoot        )          {
 
 
 
+
 const nonEmpty = (value                    ) => (value !== undefined && value.length > 0 ? value : undefined);
 
 // Herdr's own rule (herdr-app src/mods.rs app_dir): $HERDR_APP_HOME, else
@@ -178,6 +181,7 @@ export function desktopPaths(env                                    , home      
 		mods: join(herdrHome, "mods"),
 		layouts: join(herdrHome, "layouts"),
 		layoutFile: join(herdrHome, "layouts", `${DESKTOP_LAYOUT}.json`),
+		themes: join(herdrHome, "themes"),
 		stateDir,
 		stateFile: join(stateDir, "state.json"),
 		stage: join(stateDir, "stage"),
@@ -210,6 +214,10 @@ export function isShippedModFile(name        )          {
 
 
 
+
+
+
+
 function shippedAssets(packageRoot        )                             {
 	const root = join(packageRoot, "herdr");
 	const modsDir = join(root, "mods");
@@ -221,13 +229,23 @@ function shippedAssets(packageRoot        )                             {
 		mods = [];
 	}
 	if (mods.length === 0 || !existsSync(layoutFile)) return { error: `this Gentle Shell (${packageRoot}) has no herdr/ mods and layout to install` };
+	const themesDir = join(root, "themes");
+	let themes           = [];
+	try {
+		themes = readdirSync(themesDir).filter((name) => isThemeFile(name) && !isDirectory(join(themesDir, name))).sort();
+	} catch {
+		themes = [];
+	}
 	const keysFile = join(root, "keys.json");
-	if (!existsSync(keysFile)) return { mods, modsDir, layoutFile };
+	if (!existsSync(keysFile)) return { mods, modsDir, layoutFile, themes, themesDir };
 	const keys = readKeysText(readFileSync(keysFile, "utf8"));
 	if ("problem" in keys) return { error: `this Gentle Shell's ${keysFile} ${keys.problem}` };
 	const section = keys.sections[DESKTOP_KEYS_SECTION]                                         ;
-	return { mods, modsDir, layoutFile, ...(section ? { keys: { ...section } } : {}) };
+	return { mods, modsDir, layoutFile, themes, themesDir, ...(section ? { keys: { ...section } } : {}) };
 }
+
+// Our theme files: themes/gentle-shell-<appearance>.json, named after the layout.
+const isThemeFile = (name        ) => new RegExp(`^${DESKTOP_LAYOUT}-[A-Za-z0-9._-]+\\.json$`).test(name);
 
 function isDirectory(path        )          {
 	try {
@@ -257,13 +275,15 @@ function sameFile(a        , b        )          {
 
 function assetsUpToDate(assets        , paths              )          {
 	if (!sameFile(assets.layoutFile, paths.layoutFile)) return false;
+	if (!assets.themes.every((name) => sameFile(join(assets.themesDir, name), join(paths.themes, name)))) return false;
 	return assets.mods.every((mod) => shippedFiles(join(assets.modsDir, mod)).every((file) => sameFile(join(assets.modsDir, mod, file), join(paths.mods, mod, file))));
 }
 
 // --- state -------------------------------------------------------------------
 
-// The paths in Herdr's home that are ours: `mods` folders and, when `layout`,
-// layouts/gentle-shell.json. Anything else there is the user's.
+// The paths in Herdr's home that are ours: `mods` folders, `themes` files and,
+// when `layout`, layouts/gentle-shell.json. Anything else there is the user's.
+
 
 
 
@@ -277,7 +297,8 @@ function readState(paths              )                           {
 		const mods = Array.isArray(parsed?.mods) ? parsed.mods.filter((name         ) => typeof name === "string" && /^gentle-[A-Za-z0-9._-]+$/.test(name)) : [];
 		const previousLayout = typeof parsed?.previousLayout === "string" && parsed.previousLayout !== DESKTOP_LAYOUT ? parsed.previousLayout : undefined;
 		const keys = parseKeysState(parsed?.keys);
-		return { mods, layout: parsed?.layout !== false, ...(previousLayout ? { previousLayout } : {}), ...(keys ? { keys } : {}) };
+		const themes = Array.isArray(parsed?.themes) ? parsed.themes.filter((name         ) => typeof name === "string" && isThemeFile(name)) : [];
+		return { mods, ...(themes.length > 0 ? { themes } : {}), layout: parsed?.layout !== false, ...(previousLayout ? { previousLayout } : {}), ...(keys ? { keys } : {}) };
 	} catch {
 		return undefined;
 	}
@@ -509,11 +530,11 @@ function promoteBackup(paths              ) {
 
 function prepareScratch(paths              ) {
 	for (const dir of [paths.stage, paths.backupNext]) rmSync(dir, { recursive: true, force: true });
-	for (const dir of [join(paths.stage, "mods"), join(paths.stage, "layouts"), join(paths.backupNext, "mods"), join(paths.backupNext, "layouts")]) mkdirSync(dir, { recursive: true });
+	for (const kind of ["mods", "layouts", "themes"]) for (const dir of [join(paths.stage, kind), join(paths.backupNext, kind)]) mkdirSync(dir, { recursive: true });
 }
 
 function cleanOriginals(paths              ) {
-	removeEmptyDirs([join(paths.originals, "mods"), join(paths.originals, "layouts"), paths.originals]);
+	removeEmptyDirs([join(paths.originals, "mods"), join(paths.originals, "layouts"), join(paths.originals, "themes"), paths.originals]);
 }
 
 // Where a path in Herdr's home goes when it is replaced or removed: our own
@@ -539,6 +560,7 @@ function moveAside(target        , ours         , backupName        , originalNa
 function installAssets(ctx                , paths              , assets        , app        , previous                          )                     {
 	prepareScratch(paths);
 	const ownedMods = previous?.mods ?? [];
+	const ownedThemes = previous?.themes ?? [];
 	const ownedLayout = previous?.layout === true;
 	try {
 		for (const mod of assets.mods) {
@@ -550,6 +572,7 @@ function installAssets(ctx                , paths              , assets        ,
 			}
 		}
 		cpSync(assets.layoutFile, join(paths.stage, "layouts", `${DESKTOP_LAYOUT}.json`));
+		for (const name of assets.themes) cpSync(join(assets.themesDir, name), join(paths.stage, "themes", name));
 	} catch (error) {
 		rmSync(paths.stage, { recursive: true, force: true });
 		rmSync(paths.backupNext, { recursive: true, force: true });
@@ -564,9 +587,9 @@ function installAssets(ctx                , paths              , assets        ,
 			return `herdr-app check failed for ${mod}:\n${detail}\nthe Gentle mods and layout were not installed; nothing in ${paths.herdrHome} was changed`;
 		}
 	}
-	const created = [paths.layouts, paths.mods, paths.herdrHome].filter((dir) => !existsSync(dir));
+	const created = [paths.layouts, paths.mods, ...(assets.themes.length > 0 ? [paths.themes] : []), paths.herdrHome].filter((dir) => !existsSync(dir));
 	const swaps         = [];
-	const swapIn = (staged        , target        , ours         , kind                    , name        ) => {
+	const swapIn = (staged        , target        , ours         , kind                               , name        ) => {
 		const swap       = { target };
 		if (existsSync(target) || isSymlink(target)) swap.movedTo = moveAside(target, ours, join(paths.backupNext, kind, name), join(paths.originals, kind, name));
 		swaps.push(swap);
@@ -583,6 +606,20 @@ function installAssets(ctx                , paths              , assets        ,
 			const target = join(paths.mods, mod);
 			if (existsSync(target)) swapIn("", target, true, "mods", mod);
 			const original = join(paths.originals, "mods", mod);
+			if (existsSync(original)) {
+				moveSync(original, target);
+				swaps.push({ target: original, movedTo: target });
+			}
+		}
+		// The layout's themes go in before the layout that names them.
+		if (assets.themes.length > 0) mkdirSync(paths.themes, { recursive: true });
+		for (const name of assets.themes) swapIn(join(paths.stage, "themes", name), join(paths.themes, name), ownedThemes.includes(name), "themes", name);
+		// A theme an earlier Gentle Shell installed and this one no longer ships; what was there before comes back.
+		for (const name of ownedThemes) {
+			if (assets.themes.includes(name)) continue;
+			const target = join(paths.themes, name);
+			if (existsSync(target)) swapIn("", target, true, "themes", name);
+			const original = join(paths.originals, "themes", name);
 			if (existsSync(original)) {
 				moveSync(original, target);
 				swaps.push({ target: original, movedTo: target });
@@ -1096,6 +1133,11 @@ function printStatus(ctx                , paths              , assets           
 	ctx.io.out(app ? `  Herdr app: ${app.version ?? "unknown version"} at ${app.path} (${needs})` : `  Herdr app: not installed (${needs})`);
 	ctx.io.out(`  Herdr home: ${paths.herdrHome}`);
 	ctx.io.out(existsSync(paths.layoutFile) ? `  Layout ${DESKTOP_LAYOUT}: installed at ${paths.layoutFile}` : `  Layout ${DESKTOP_LAYOUT}: not installed`);
+	const themes = "mods" in assets ? assets.themes : [];
+	if (themes.length > 0) {
+		const present = themes.filter((name) => existsSync(join(paths.themes, name)));
+		ctx.io.out(present.length === 0 ? `  Themes: none installed (ships ${themes.join(", ")})` : `  Themes: ${present.join(", ")} installed in ${paths.themes}${present.length < themes.length ? `; missing ${themes.filter((name) => !present.includes(name)).join(", ")}` : ""}`);
+	}
 	if (installed.length === 0) ctx.io.out(`  Mods: none installed (ships ${shipped.join(", ")})`);
 	else ctx.io.out(`  Mods: ${installed.join(", ")} installed in ${paths.mods}${missing.length > 0 ? `; missing ${missing.join(", ")}` : ""}`);
 	if ("mods" in assets && assets.keys) {
@@ -1110,7 +1152,8 @@ async function uninstall(ctx                , paths              )              
 	const state = readState(paths);
 	const ours = (state?.mods ?? []).filter((mod) => existsSync(join(paths.mods, mod)));
 	const layoutOurs = state?.layout === true && existsSync(paths.layoutFile);
-	if (ours.length === 0 && !layoutOurs && !state?.keys) {
+	const themesOurs = (state?.themes ?? []).filter((name) => existsSync(join(paths.themes, name)));
+	if (ours.length === 0 && !layoutOurs && themesOurs.length === 0 && !state?.keys) {
 		rmSync(paths.stateFile, { force: true });
 		ctx.io.out(`Gentle Shell Desktop mods and layout are not installed in ${paths.herdrHome}; nothing to remove.`);
 		return 0;
@@ -1118,14 +1161,14 @@ async function uninstall(ctx                , paths              )              
 	const app = detectApp(ctx);
 	const keysKept = state?.keys && !(await removeKeys(ctx, paths, state.keys, app?.path)) ? state.keys : undefined;
 	const restored           = [];
-	if (ours.length > 0 || layoutOurs) {
+	if (ours.length > 0 || layoutOurs || themesOurs.length > 0) {
 		prepareScratch(paths);
 		rmSync(paths.stage, { recursive: true, force: true });
-		const putBack = (kind                    , name        , target        ) => {
+		const putBack = (kind                               , name        , target        ) => {
 			const original = join(paths.originals, kind, name);
 			if (!existsSync(original) && !isSymlink(original)) return;
 			moveSync(original, target);
-			restored.push(kind === "mods" ? `mods ${name}` : `layout ${DESKTOP_LAYOUT}`);
+			restored.push(kind === "mods" ? `mods ${name}` : kind === "themes" ? `theme ${name}` : `layout ${DESKTOP_LAYOUT}`);
 		};
 		for (const mod of ours) {
 			moveSync(join(paths.mods, mod), join(paths.backupNext, "mods", mod));
@@ -1135,23 +1178,32 @@ async function uninstall(ctx                , paths              )              
 			moveSync(paths.layoutFile, join(paths.backupNext, "layouts", `${DESKTOP_LAYOUT}.json`));
 			putBack("layouts", `${DESKTOP_LAYOUT}.json`, paths.layoutFile);
 		}
+		for (const name of themesOurs) {
+			moveSync(join(paths.themes, name), join(paths.backupNext, "themes", name));
+			putBack("themes", name, join(paths.themes, name));
+		}
 		promoteBackup(paths);
 	}
 	cleanOriginals(paths);
 	// Shortcuts that could not be removed stay recorded, so a later --uninstall still finds them.
 	if (keysKept) writeState(paths, { mods: [], layout: false, keys: keysKept });
 	else rmSync(paths.stateFile, { force: true });
-	if (ours.length === 0 && !layoutOurs) return keysKept ? 1 : 0;
+	if (ours.length === 0 && !layoutOurs && themesOurs.length === 0) return keysKept ? 1 : 0;
 	const window = app ? windowStatus(ctx, app.path) : undefined;
 	if (app && window?.layout === DESKTOP_LAYOUT) {
 		const back = state?.previousLayout ?? "main";
 		const switched = herdrDo(ctx, app.path, "layout.switch", { name: back });
 		if (switched.status !== 0) ctx.io.err(`gentle-shell desktop: could not switch Herdr app back to the ${back} layout; choose another layout in Herdr.`);
 	}
-	ctx.io.out(`Removed Gentle Shell Desktop mods and layout from ${paths.herdrHome}; a copy is in ${paths.backup}. Herdr app itself stays installed.`);
+	ctx.io.out(`Removed Gentle Shell Desktop ${themesOurs.length > 0 ? "mods, layout and themes" : "mods and layout"} from ${paths.herdrHome}; a copy is in ${paths.backup}. Herdr app itself stays installed.`);
 	if (restored.length > 0) ctx.io.out(`Put back what was there before Gentle Shell Desktop: ${restored.join(", ")} in ${paths.herdrHome}.`);
 	return keysKept ? 1 : 0;
 }
+
+// "mods a, b and layout gentle-shell", or with themes "mods a, b, layout gentle-shell and themes x, y".
+const assetsText = (assets        ) => (assets.themes.length > 0
+	? `mods ${assets.mods.join(", ")}, layout ${DESKTOP_LAYOUT} and themes ${assets.themes.join(", ")}`
+	: `mods ${assets.mods.join(", ")} and layout ${DESKTOP_LAYOUT}`);
 
 async function refresh(ctx                , paths              , assets                            )                  {
 	const state = readState(paths);
@@ -1165,14 +1217,14 @@ async function refresh(ctx                , paths              , assets         
 		ctx.io.err("gentle-shell desktop: Herdr app is not installed, so the Gentle mods were not refreshed; run gentle-shell desktop.");
 		return 1;
 	}
-	if (!assetsUpToDate(assets, paths) || !(state.mods ?? []).every((mod) => assets.mods.includes(mod))) {
+	if (!assetsUpToDate(assets, paths) || !(state.mods ?? []).every((mod) => assets.mods.includes(mod)) || !(state.themes ?? []).every((name) => assets.themes.includes(name))) {
 		const failure = installAssets(ctx, paths, assets, app.path, state);
 		if (failure !== undefined) {
 			ctx.io.err(`gentle-shell desktop: ${failure}`);
 			return 1;
 		}
-		writeState(paths, { ...state, mods: assets.mods, layout: true });
-		ctx.io.out(`Gentle Shell Desktop: refreshed mods ${assets.mods.join(", ")} and layout ${DESKTOP_LAYOUT} in ${paths.herdrHome}.`);
+		writeState(paths, { ...state, mods: assets.mods, themes: assets.themes, layout: true });
+		ctx.io.out(`Gentle Shell Desktop: refreshed ${assetsText(assets)} in ${paths.herdrHome}.`);
 	}
 	// Only shortcuts the person already accepted with gentle-shell desktop are refreshed.
 	if (assets.keys && state.keys) await syncKeys(ctx, paths, assets.keys, app.path);
@@ -1226,6 +1278,7 @@ export async function runDesktop(ctx                )                  {
 		if (assetsNeeded) {
 			ctx.io.out(`  - install mods ${assets.mods.join(", ")} into ${paths.mods}`);
 			ctx.io.out(`  - install layout ${DESKTOP_LAYOUT} into ${paths.layoutFile}`);
+			if (assets.themes.length > 0) ctx.io.out(`  - install its light and dark themes ${assets.themes.join(", ")} into ${paths.themes}`);
 			ctx.io.out(`  - check each mod with herdr-app check before installing anything`);
 			ctx.io.out(`  - keep anything Gentle Shell did not install at those paths in ${paths.originals}, put back by --uninstall`);
 			ctx.io.out(`  - keep our own previous copy in ${paths.backup}`);
@@ -1273,8 +1326,8 @@ export async function runDesktop(ctx                )                  {
 			ctx.io.err(`gentle-shell desktop: ${failure}`);
 			return 1;
 		}
-		writeState(paths, { mods: assets.mods, layout: true, ...(previous?.previousLayout ? { previousLayout: previous.previousLayout } : {}), ...(previous?.keys ? { keys: previous.keys } : {}) });
-		ctx.io.out(`Installed mods ${assets.mods.join(", ")} and layout ${DESKTOP_LAYOUT} in ${paths.herdrHome}.`);
+		writeState(paths, { mods: assets.mods, themes: assets.themes, layout: true, ...(previous?.previousLayout ? { previousLayout: previous.previousLayout } : {}), ...(previous?.keys ? { keys: previous.keys } : {}) });
+		ctx.io.out(`Installed ${assetsText(assets)} in ${paths.herdrHome}.`);
 	} else {
 		ctx.io.out("Gentle Shell Desktop is up to date.");
 	}

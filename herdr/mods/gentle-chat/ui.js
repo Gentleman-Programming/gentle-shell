@@ -7,7 +7,7 @@ import { home } from "herdr";
 import { v_flex, h_flex, TextView, Textarea, Popover } from "gpui-base";
 import { alpha, mono, R } from "./tokens.js";
 import { money, prettyModel, seconds, parsePatch } from "./feed.js";
-import { SESSION_KINDS } from "./snapshot.js";
+import { SESSION_KINDS, machineOf } from "./snapshot.js";
 
 const MOD = "gentle-chat";
 // A session that runs outside Herdr app (T11): what the Terminal switch and ⌘J say instead.
@@ -97,7 +97,9 @@ export function header(v, p) {
       .child(div().id("title").min_w(0).truncate().text_size(14).font_semibold()
         .tooltip(v.address ? `${v.address}${v.file ? ` · ${v.file}` : ""}` : v.file ? `${ELSEWHERE} · ${v.file}` : "No Gentle Shell session")
         .child(title))
-      .when(Boolean(v.key), (el) => el.child(kindBadge(p, v.elsewhere() ? SESSION_KINDS.tui : SESSION_KINDS.herdr))))
+      .when(Boolean(v.key), (el) => el.child(machineOf(v.address)
+        ? kindBadge(p, SESSION_KINDS.remote, machineOf(v.address))
+        : kindBadge(p, v.elsewhere() ? SESSION_KINDS.tui : SESSION_KINDS.herdr))))
     .when(Boolean(stack), (el) => el.child(v.elsewhere() ? elsewhere(v, p) : viewSwitch(v, p)));
   // No clip here: the Model and permission menus open from this row.
   const row2 = h_flex().items_center().justify_between().gap(16).min_w(0)
@@ -127,13 +129,16 @@ function viewSwitch(v, p) {
 const sessionCost = (n) => { const v = Number(n); return Number.isFinite(v) ? `$${v >= 1 ? v.toFixed(2) : v.toFixed(3)}` : "$0.000"; };
 
 // A session's kind (snapshot.js SESSION_KINDS) as the shared badge (tokens.js kindBadge of the other
-// mods): its icon and word in the kbd's mono look; Herdr in the info tone, TUI in accent-soft.
-export function kindBadge(p, kind) {
+// mods): its icon and word in the kbd's mono look; Herdr in the info tone, TUI in accent-soft, a
+// remote session (S14) in the warn tone with its machine's name.
+export function kindBadge(p, kind, machine) {
+  const remote = kind.kind === "remote";
   return h_flex().id("kind").flex_none().h(17).px(5).gap(4).items_center().rounded(R.kbd).border(1).border_color(p.lineStrong)
-    .font_family(mono()).font_semibold().text_size(10.5).line_height(1.25).text_color(kind.kind === "herdr" ? p.info : p.accentSoft)
-    .tooltip(kind.about)
+    .font_family(mono()).font_semibold().text_size(10.5).line_height(1.25).text_color(kind.kind === "herdr" ? p.info : remote ? p.warn : p.accentSoft)
+    .when(remote, (el) => el.max_w(120).overflow_hidden())
+    .tooltip(remote && machine ? `${kind.about} (${machine})` : kind.about)
     .child(icon(kind.icon, 11).flex_none())
-    .child(kind.label);
+    .child(remote && machine ? div().min_w(0).truncate().child(machine) : kind.label);
 }
 
 // T11 (S10): a session that runs outside Herdr app has no Terminal here. The switch's place says
@@ -317,7 +322,7 @@ function profileMenu(v, p, trigger) {
       .child("No routing entries: every agent inherits its default model."))) : null;
   const canApply = Boolean(shown) && shown.name !== active && !v.busy;
   const apply = h_flex().id("prof-apply").flex_none().items_center().px(10).py(5).rounded(R.sm).text_size(12).font_semibold()
-    .when(canApply, (el) => el.bg(p.accent).text_color("#1a1218").cursor_pointer().hover((st) => st.opacity(0.88))
+    .when(canApply, (el) => el.bg(p.accent).text_color(p.onAccent).cursor_pointer().hover((st) => st.opacity(0.88))
       .on_click((_e, cx) => v.applyProfile(shown.name, cx)))
     .when(!canApply, (el) => el.border(1).border_color(p.btnLine).text_color(p.faint))
     .tooltip(shown && shown.name === active ? `${shown.name} is already this session's profile` : "Use this profile in this session (as /gentle:profiles does)")

@@ -43,7 +43,7 @@ gentle-shell desktop --uninstall
 | Herdr app 0.1.15 or newer | Older or missing: Gentle Shell installs exactly 0.1.15. Newer: used as it is. |
 | herdr-core | Herdr app offers to set it up the first time it opens. |
 | Gentle Shell sessions in a known home | The mods read the sessions of `~/.gentle-shell/agent` (bundled Gentle Shell) and `~/.pi/agent` (Gentle AI as a Pi extension). For another home (`--home <path>`, `GENTLE_PI_AGENT_HOME`, `PI_CODING_AGENT_DIR`), list its agent dir in `~/.config/herdr-app/gentle-shell-roots.json` as `{ "roots": ["~/my/agent"] }`. Herdr app lets mods read only inside your home folder. See [where readers look](desktop-feed.md#where-readers-look). |
-| A local terminal | Sessions on a remote Herdr machine are not read yet ("Remote terminals are not read yet."). |
+| Remote machines (optional) | Herdr's own machines (`hc machine ls`, **Add machine** in the sidebar). A session on another machine shows what herdr-core reports (state, title, its Terminal); its chat and inspector stay on that machine ([Remote machines](#remote-machines)). |
 
 The live checks so far ran on macOS with Herdr app 0.1.15.
 
@@ -61,6 +61,7 @@ tabs, chat header, Terminal header); Projects counts each kind.
 |---|---|---|
 | **Herdr** | Runs in a terminal of this window (herdr-core). | The **Chat \| Terminal** switch and `⌘J`; what you type goes to its terminal. |
 | **TUI** | A Gentle Shell TUI in another terminal: the Herdr TUI, Ghostty, any terminal, or a herdr-core terminal this window does not show. | Chat, inspector, status bar and modes as for any session. No Terminal here: the header says "This session runs in another terminal" ("Other terminal" when narrow). Messages, answers, Stop and modes go through the session's inbox. |
+| **Remote** (the machine's name, e.g. `vps`) | Runs in a terminal of this window on another machine (a Herdr space on that machine). | Its state, title and **Terminal** come from herdr-core. Its desktop snapshot and conversation are on that machine and the desktop reads this computer's only, so the chat and inspector say "Runs on vps" instead of showing data; Projects shows no spend for it. |
 
 A session stays listed while its process runs. Sessions started before this version of Gentle
 Shell show and answer like the others, but take messages from the desktop only after a restart.
@@ -83,6 +84,26 @@ Some facts are not published yet and show as empty: the persona ("No persona"), 
 ("Engram and MCP status are not published by this session yet"), and plan usage for providers
 that report none (the usage panel's own note, such as "usage arrives with the first response").
 
+### Remote machines
+
+Herdr can run spaces on other computers over ssh (`hc machine ls`). Add one with **Add machine**
+at the bottom of the sidebar. Once one exists, **Projects** groups by machine, as Herdr's own
+sidebar does: **This computer** first, then each machine by name with its state (**ready**,
+**loading…**, **unavailable**) and **+** for a new project there. A project on a machine starts its
+tabs, and new Gentle Shell sessions (**+** after the tabs), on that machine. Sessions there carry the
+**Remote** badge named after the machine (Agents, tabs, chat and Terminal headers). The desktop feed
+(snapshots, conversation, inspector data) is written on the machine that runs the session, so a
+remote session shows only what herdr-core reports and says "Runs on <machine>": nothing from this
+computer is matched to it.
+
+### Light and dark
+
+The window follows the appearance Herdr shows: the system's light or dark mode, or settings.json
+`"appearance": "light"` / `"dark"`. The layout picks `gentle-shell-light` or `gentle-shell-dark`
+(installed into `<herdr home>/themes/`); the dark one is the artboard, the light one keeps the
+Gentleman rose with WCAG AA text ([herdr/FIDELITY-light.md](../herdr/FIDELITY-light.md)). A theme
+chosen in Herdr's Settings still wins, as for any layout.
+
 ## Controls
 
 ### Sidebar and tabs
@@ -94,6 +115,8 @@ that report none (the usage panel's own note, such as "usage arrives with the fi
 | Agent row | **Herdr** section: focuses that agent's pane. **TUI** section: shows that session in every region. |
 | Project row of a project no space holds | Shows its session that needs you, else its newest one. |
 | Refresh in Plan usage | Fetches the subscription windows again (the usage panel's `r`). |
+| **Add machine** (sidebar footer) | Herdr's own Add machine dialog (`mod.open machine-add`, as in Herdr's sidebar): lists your ssh-config hosts and says what each needs. |
+| Machine header in Projects | Shown once a machine other than this computer exists. **+** opens a new project on that machine; an unavailable machine opens Settings › Machines (its login guidance). |
 | Gear in Plan usage | Opens Herdr's settings. |
 | Tab | Click selects; drag reorders; double-click renames; right-click opens the tab menu; the wheel moves between tabs. A TUI session's tab: click shows it. |
 | **+** after the tabs | Starts a new Gentle Shell session in the project's folder. |
@@ -284,7 +307,7 @@ are denied it. For the file formats and every refusal code, see
 ## Upgrade and rollback
 
 - **`gentle-shell upgrade`** refreshes the desktop afterwards (`gentle-shell desktop --refresh`),
-  only if `gentle-shell desktop` installed it before. It reinstalls our mods and layout safely and
+  only if `gentle-shell desktop` installed it before. It reinstalls our mods, layout and themes safely and
   updates the Gentle shortcuts already added: a shortcut the new version no longer ships is
   removed; one it changes is updated, unless you rebound it. It never installs Herdr app or opens
   the window.
@@ -301,7 +324,7 @@ gentle-shell desktop --uninstall
 
 It removes only what `~/.gentle-shell/desktop/state.json` records as ours, and:
 
-1. moves our mods and layout to `~/.gentle-shell/desktop/backup`;
+1. moves our mods, layout and themes to `~/.gentle-shell/desktop/backup`;
 2. puts back, byte for byte, whatever was at those paths before (`~/.gentle-shell/desktop/originals`);
 3. removes from `keys.json` exactly the Gentle shortcuts that still hold the action we wrote
    (the file from before Gentle Shell, byte for byte, when you have not edited it since;
@@ -356,7 +379,8 @@ Gentle Shell never downgrades a newer Herdr app.
    or older, Gentle Shell installs exactly 0.1.15 (see below).
 2. **Mods and layout.** It copies every `herdr/mods/gentle-*` folder of the running Gentle Shell
    package into `<herdr home>/mods/` and `herdr/layouts/gentle-shell.json` into
-   `<herdr home>/layouts/`. The Herdr home is `$HERDR_APP_HOME`, else `$XDG_CONFIG_HOME/herdr-app`,
+   `<herdr home>/layouts/`, and the layout's two themes, `herdr/themes/gentle-shell-light.json` and
+   `gentle-shell-dark.json`, into `<herdr home>/themes/`. The Herdr home is `$HERDR_APP_HOME`, else `$XDG_CONFIG_HOME/herdr-app`,
    else `~/.config/herdr-app` (Herdr's own rule). Herdr's generated `gpui-kit.d.ts`/`jsconfig.json`
    and our design notes are not copied.
    - The files are staged in `~/.gentle-shell/desktop/stage`, and every staged mod must pass
@@ -368,8 +392,8 @@ Gentle Shell never downgrades a newer Herdr app.
      `mods/gentle-tabs` or `layouts/gentle-shell.json`) moves to `~/.gentle-shell/desktop/originals`.
      Later installs and upgrades never overwrite or delete it; `--uninstall` puts it back.
    - If a swap fails, every previous copy goes back and folders this install created are removed.
-   - Only the mods this package ships and `layouts/gentle-shell.json` are written. Your other mods,
-     layouts and settings are never touched.
+   - Only the mods this package ships, `layouts/gentle-shell.json` and `themes/gentle-shell-*.json`
+     are written. Your other mods, layouts, themes and settings are never touched.
 3. **Keys.** It adds the Gentle shortcuts of `herdr/keys.json` (the `layout:gentle-shell` section;
    see [Keyboard shortcuts](#keyboard-shortcuts)) to `<herdr home>/keys.json`, so they work
    anywhere in the window while the `gentle-shell` layout shows, not only with the chat focused.
@@ -403,7 +427,7 @@ and without `--yes`, it refuses and writes nothing. When everything is already i
 it opens Herdr without asking.
 
 `--status` prints the Gentle Shell version, the Herdr app version and path, the Herdr home, whether
-the `gentle-shell` layout and each shipped mod are installed, how many Gentle shortcuts are in
+the `gentle-shell` layout, its themes and each shipped mod are installed, how many Gentle shortcuts are in
 `keys.json`, and whether the window is running and which layout it shows.
 
 This works the same for every Gentle Shell install, bundled in `~/.gentle-shell` or the npm package.

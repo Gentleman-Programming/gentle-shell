@@ -121,7 +121,10 @@ export const feedKey = (feed) => (feed?.identity ? `${feed.identity.agentDir}|${
 // A terminal's own pid, or its foreground process, is the publisher or one of its ancestors
 // (the launcher, the shell); a Herdr pane id the publisher saw in HERDR_PANE_ID also matches.
 // The nearest process match wins; ties go to the newest snapshot.
+// A terminal on another machine (S14: its address is "<machine>/<id>") never matches: its pids are
+// that machine's, and the snapshots read here are this computer's.
 export function matchFeed(terminal, feeds) {
+  if (machineOf(terminal?.address)) return null;
   const pids = [terminal?.pid, terminal?.foreground?.pid].filter(positive);
   const ids = [terminal?.address, terminal?.id, terminal?.pane, terminal?.pane_id].filter((v) => typeof v === "string" && v);
   let best = null;
@@ -134,6 +137,13 @@ export function matchFeed(terminal, feeds) {
     if (rank >= 0 && rank < bestRank) { best = feed; bestRank = rank; }
   }
   return best;
+}
+
+// The machine a Herdr address lives on: "vps/t7" → "vps"; a bare id ("t7", "wMJ:p1") is this
+// computer's (null). Herdr prefixes every remote space, tab, pane and terminal id with its machine.
+export function machineOf(address) {
+  const m = /^([^/]+)\/./.exec(typeof address === "string" ? address : "");
+  return m ? m[1] : null;
 }
 
 const APPS = new Set(["gentle-shell", "pi"]);
@@ -169,12 +179,17 @@ export function allSessions(feeds) {
 //          what you type goes to that terminal (hc send / keys);
 //   tui    a Gentle Shell TUI in another terminal (the Herdr TUI, Ghostty, …): no Terminal here;
 //          prompts, answers and actions go through its desktop inbox.
+//   remote a Herdr terminal of this window on another machine (S14, `hc machine ls`): herdr-core
+//          reports its state and the Terminal shows it, but its desktop snapshot and conversation
+//          are on that machine, so nothing of them is shown here (no feed, never a local match).
 export const SESSION_KINDS = {
   herdr: { kind: "herdr", label: "Herdr", section: "In this window", icon: "kind-herdr", about: "Runs in a Herdr terminal of this window: Chat | Terminal, typed input" },
   tui: { kind: "tui", label: "TUI", section: "Other terminals", icon: "kind-tui", about: "A Gentle Shell TUI in another terminal: no Terminal here, input through its inbox" },
+  remote: { kind: "remote", label: "Remote", section: "Other machines", icon: "kind-remote", about: "Runs on another machine: Herdr reports its state and shows its Terminal; its chat and inspector feed stay on that machine" },
 };
-// A session's kind: a Herdr terminal of this window runs it, or it runs elsewhere.
-export const sessionKind = (s) => (s?.terminal ? SESSION_KINDS.herdr : SESSION_KINDS.tui);
+// A session's kind: a Herdr terminal of this window (on this computer or another machine), or a
+// session that runs elsewhere on this computer.
+export const sessionKind = (s) => (s?.terminal ? (machineOf(s.terminal.address) ? SESSION_KINDS.remote : SESSION_KINDS.herdr) : SESSION_KINDS.tui);
 
 // Where a session runs, for a row's second line: its Herdr terminal, its Herdr TUI pane, else its pid.
 export function whereLabel(s) {

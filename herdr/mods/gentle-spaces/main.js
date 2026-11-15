@@ -2,7 +2,7 @@
 // design/herdr-desktop/01-inspector.html `.sb-sec` / `.space`, l.231-240). Cloned from Herdr
 // 0.1.15's `spaces` (mod.clone semantics) and restyled: click selects, drag reorders, right-click
 // opens the space menu, + opens a new space; each row tells its Gentle Shell sessions instead of
-// git (machine groups and worktree nesting are not in the artboard and were left out).
+// git (worktree nesting is not in the artboard and was left out; machine groups came back in S14).
 //
 // Row: 22px two-letter avatar, the space name and "<n> sessions · $<live spend>" (or the status),
 // the count of sessions that need you on the right. The block is sized to its rows (see fit()).
@@ -10,12 +10,20 @@
 // belongs to the space whose folder holds its project (its Git root), and a project no space
 // holds is a row of its own after the spaces (a click shows its newest session everywhere). The
 // count says each kind (snapshot.js SESSION_KINDS): "1 Herdr · 2 TUI · $4.74".
+// S14 (remote machines): once a space or a machine is not this computer (`hc machine ls`, Herdr's
+// `machines()`), the list groups by machine as Herdr's `spaces` does (machines.js): a header per
+// machine with its icon, name and state (ready / loading… / unavailable), + for a new space there
+// (`space.new {machine}`: its tabs and Gentle Shell sessions start on that machine), and a click
+// on an unavailable one opens Settings › Machines (its login guidance). A remote space counts its
+// Gentle Shell sessions from herdr-core ("1 Remote"): their snapshots and spend stay on that
+// machine, so no spend is shown for them. With only this computer, nothing changes.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, agents, terminals, run, openOverlay, layout } from "herdr";
+import { spaces, agents, terminals, machines, run, openOverlay, layout } from "herdr";
 import { tokens, eyebrow, money } from "./tokens.js";
-import { FeedSource, isGentle, followHerdr, selectSession, projectOf, projectName, spaceFor, SESSION_KINDS } from "./snapshot.js";
+import { FeedSource, isGentle, followHerdr, selectSession, projectOf, projectName, spaceFor, machineOf, SESSION_KINDS } from "./snapshot.js";
+import { machineGroups, STATE_WORD } from "./machines.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -30,6 +38,8 @@ const narrow = () => (find(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
 // Artboard metrics: .sb-sec padding 10 10 6, header 32px button + 6px, .space 6px padding around
 // 19.5px + 17.25px lines (48.75px).
 const PAD_TOP = 10, PAD_BOTTOM = 6, HEADER = 38, ROW = 48.75, MAX_ROWS = 6;
+// A machine header and a machine's "New space there" row (S14).
+const MACHINE = 26, EMPTY = 28;
 
 // "gentle-pi" → "gp", "herdr-zoo" → "hz", "web" → "we".
 export function initials(name) {
@@ -40,7 +50,7 @@ export function initials(name) {
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 // "1 Herdr · 2 TUI": the sessions of each kind, the kind's own word (snapshot.js SESSION_KINDS).
-const kinds = (info) => [[info.herdr, SESSION_KINDS.herdr.label], [info.tui, SESSION_KINDS.tui.label]]
+const kinds = (info) => [[info.herdr, SESSION_KINDS.herdr.label], [info.tui, SESSION_KINDS.tui.label], [info.remote ?? 0, SESSION_KINDS.remote.label]]
   .filter(([n]) => n > 0).map(([n, label]) => `${n} ${label}`).join(" · ");
 
 export default class GentleSpaces extends View {
@@ -53,8 +63,9 @@ export default class GentleSpaces extends View {
 
   // Sizes the `spaces` block to the section's natural height (the artboard's sections are not
   // split by weight: Projects takes its rows, Agents the rest), up to MAX_ROWS rows.
-  fit(rows) {
-    const want = PAD_TOP + HEADER + Math.min(Math.max(rows, 1), MAX_ROWS) * ROW + PAD_BOTTOM;
+  // `extra`: the machine headers and empty-machine rows (S14), in px, on top of the rows.
+  fit(rows, extra = 0) {
+    const want = PAD_TOP + HEADER + Math.min(Math.max(rows, 1), MAX_ROWS) * ROW + extra + PAD_BOTTOM;
     const node = find(layout(), "spaces");
     if (node && Math.abs((node.size?.px ?? 0) - want) > 0.5) run("layout.resize", { id: "spaces", px: want });
   }
@@ -68,9 +79,11 @@ export default class GentleSpaces extends View {
     const extra = new Map();
     for (const a of agents()) {
       if (!isGentle(a.app)) continue;
-      const s = (by[a.space] ??= { n: 0, herdr: 0, tui: 0, cost: 0, need: 0 });
+      const s = (by[a.space] ??= { n: 0, herdr: 0, tui: 0, remote: 0, cost: 0, need: 0 });
       s.n++;
-      s.herdr++;
+      // A terminal on another machine: herdr-core's state only, its snapshot stays there.
+      if (machineOf(a.address)) s.remote++;
+      else s.herdr++;
       if (a.status === "blocked") s.need++;
       const feed = this.source.of(terms.get(a.address));
       s.cost += Number(feed?.cost?.total) || 0;
@@ -81,7 +94,7 @@ export default class GentleSpaces extends View {
       const space = spaceFor(project, sp);
       const need = s.feed.pendingQuestion || s.feed.activity?.state === "blocked" ? 1 : 0;
       const cost = Number(s.feed.cost?.total) || 0;
-      const row = space ? (by[space.id] ??= { n: 0, herdr: 0, tui: 0, cost: 0, need: 0 }) : extra.get(project) ?? { id: `project-${project}`, name: projectName(project), path: project, n: 0, herdr: 0, tui: 0, cost: 0, need: 0, sessions: [] };
+      const row = space ? (by[space.id] ??= { n: 0, herdr: 0, tui: 0, remote: 0, cost: 0, need: 0 }) : extra.get(project) ?? { id: `project-${project}`, name: projectName(project), path: project, n: 0, herdr: 0, tui: 0, cost: 0, need: 0, sessions: [] };
       row.n++; row.tui++; row.need += need; row.cost += cost;
       if (!space) { row.sessions.push(s); extra.set(project, row); }
     }
@@ -90,9 +103,10 @@ export default class GentleSpaces extends View {
 
   row(c, w, info, on = w.active) {
     const n = info?.n ?? 0;
+    // A space on another machine: its sessions' spend is in their snapshots there, so none is shown.
     const small = n === 0
       ? "No Gentle Shell session"
-      : `${kinds(info)} · ${money(info.cost)}`; // the artboard's "3 sessions · $4.74 today", per kind (S10): live spend, not a daily total
+      : w.machine ? kinds(info) : `${kinds(info)} · ${money(info.cost)}`; // the artboard's "3 sessions · $4.74 today", per kind (S10): live spend, not a daily total
     return h_flex().id(`space-${w.id}`).relative().w_full().min_w(0).overflow_hidden().h(ROW).flex_none().p(6).gap(10).items_center().rounded(6).cursor_pointer()
       .when(on, (el) => el.bg(c.selected))
       .hover((s) => s.bg(c.selected))
@@ -144,6 +158,40 @@ export default class GentleSpaces extends View {
         .tooltip(`${plural(info.need, "session")} need${info.need === 1 ? "s" : ""} you`).child(String(info.need))));
   }
 
+  // A machine's header (S14), Herdr's `spaces` machine header in the section's look: its icon,
+  // name and state; + opens a new space there while it is reachable; an unavailable machine opens
+  // Settings › Machines, where Herdr shows what it needs (a login, a new host key, herdr-core).
+  machineHead(c, g) {
+    const id = g.name ?? "local";
+    const off = g.state === "unavailable";
+    const word = g.name ? STATE_WORD[g.state] : "";
+    const tone = g.state === "ready" ? c.ok : g.state === "loading" ? c.muted : c.warn;
+    return h_flex().id(`machine-${id}`).h(MACHINE).flex_none().px(6).gap(7).items_center().rounded(6)
+      .font_family(c.mono).text_size(11).line_height("15.4px").text_color(c.muted)
+      .tooltip(g.name ? `${g.name} · ${word}${off ? " · click for Settings › Machines" : ""}` : "This computer")
+      .when(off, (el) => el.cursor_pointer().hover((s) => s.bg(c.selected)).on_click(() => run("app.settings", { section: "machines" })))
+      .child(svg(`mods/gentle-spaces/icons/${g.name ? "server" : "monitor"}.svg`).size(13).flex_none())
+      .child(div().flex_1().min_w(0).truncate().font_weight(600).child(String(g.name ?? "This computer").toUpperCase()))
+      .when(Boolean(word), (el) => el.child(div().flex_none().text_color(tone).child(word)))
+      .when(!off, (el) => el.child(div().id(`machine-new-${id}`).size(20).flex_none().flex().items_center().justify_center().rounded(5)
+        .cursor_pointer().hover((s) => s.bg(c.selected).text_color(c.text))
+        .tooltip(`New space on ${g.name ?? "this computer"}`)
+        .on_click((_e, cx) => { cx.stop_propagation(); run("space.new", { machine: g.name ?? "" }); })
+        .child(svg("mods/gentle-spaces/icons/plus.svg").size(11))));
+  }
+
+  // A machine with no space yet: one calm row that opens a new space there.
+  machineEmpty(c, g) {
+    const id = g.name ?? "local";
+    const off = g.state !== "ready";
+    return h_flex().id(`machine-empty-${id}`).h(EMPTY).flex_none().px(6).gap(7).items_center().rounded(6)
+      .text_size(12).line_height("18px").text_color(c.faint)
+      .when(!off, (el) => el.cursor_pointer().hover((s) => s.bg(c.selected).text_color(c.text))
+        .on_click(() => run("space.new", { machine: g.name ?? "" }))
+        .child(svg("mods/gentle-spaces/icons/plus.svg").size(11).flex_none()).child("New space there"))
+      .when(off, (el) => el.child(g.state === "loading" ? "Loading…" : "Not reachable now"));
+  }
+
   compact(c, w, i, info) {
     return h_flex().id(`space-${w.id}`).w(32).h(26).rounded(6).justify_center().items_center().cursor_pointer()
       .when(w.active, (el) => el.bg(c.selected))
@@ -158,7 +206,11 @@ export default class GentleSpaces extends View {
     const sp = spaces();
     const { by: info, extra } = this.sessions(sp);
     const collapsed = narrow();
-    this.fit(sp.length + (collapsed ? 0 : extra.length));
+    // S14: grouped by machine once one is not this computer (machines.js); null keeps the plain list.
+    let groups = null;
+    try { groups = collapsed ? null : machineGroups(sp, machines()); } catch { groups = null; }
+    const heads = groups ? groups.length * MACHINE + groups.filter((g) => !g.spaces.length).length * EMPTY : 0;
+    this.fit(sp.length + (collapsed ? 0 : extra.length), heads);
     // The highlighted project is the shown session's (snapshot.js targetSession): a session outside
     // Herdr app shows its own project, else Herdr's shown space.
     const shown = this.source.target(this.last);
@@ -177,7 +229,11 @@ export default class GentleSpaces extends View {
       .child(v_flex().id("space-list").flex_1().min_h(0).overflow_y_scrollbar()
         .when(collapsed, (el) => el.items_center())
         .on_mouse_up("left", (_e, cx) => { this.pressed = null; cx.notify(); })
-        .children(sp.map((w, i) => (collapsed ? this.compact(c, w, i, info[w.id]) : this.row(c, w, info[w.id], isOn(w)))))
-        .children(collapsed ? [] : extra.map((p) => this.projectRow(c, p, Boolean(outside) && !outsideSpace && p.path === outside))));
+        .children(groups
+          ? groups.flatMap((g) => [this.machineHead(c, g), ...(g.spaces.length ? g.spaces.map((w) => this.row(c, w, info[w.id], isOn(w))) : [this.machineEmpty(c, g)]),
+            // Projects no space holds run on this computer: they close its group.
+            ...(g.name === null ? extra.map((p) => this.projectRow(c, p, Boolean(outside) && !outsideSpace && p.path === outside)) : [])])
+          : sp.map((w, i) => (collapsed ? this.compact(c, w, i, info[w.id]) : this.row(c, w, info[w.id], isOn(w)))))
+        .children(collapsed || groups ? [] : extra.map((p) => this.projectRow(c, p, Boolean(outside) && !outsideSpace && p.path === outside))));
   }
 }

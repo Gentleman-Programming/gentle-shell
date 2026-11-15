@@ -23,12 +23,12 @@ Branch `feat/herdr-gentle-shell` from `origin/main` 3dc902975. References (read-
 - T2 Parity inventory: table of every TUI element (S2) → data source → desktop place — S2 — inline — done (`odd/tasks/herdr-desktop-parity.md`)
 - T3 Design the layout artboards (gentle-design), user approves — S1, S2, S5 — inline — done (direction A, `design/herdr-desktop/01-inspector.html`)
 - T4 Publisher extension: per-session desktop snapshot (todo, changes, jobs, agents, usage, review, permission, persona, model/profile, question) — S2 — done (`extensions/gentle-desktop-feed.ts`, `lib/desktop-feed*.ts`, `docs/desktop-feed.md`)
-- T5 Chat mod with Chat/Terminal switch — S5 — pending
-- T6 Sidebar/status mods (sessions, todo, agents, jobs, usage, changes, review, modes) — S2 — pending
-- T7 Actions: prompt, answer questions, cancel subagent/job, permission mode, review switch (same authority as the CLI) — S2 — pending
-- T8 Package: layout + mods shipped in gentle-pi; `gentle-shell desktop` installs pinned Herdr app (checksum), installs layout/mods, `herdr-app check`, switches layout, launches — S3, S4 — pending
-- T10 Parity audit: every Gentle Shell feature present and working in the desktop (S9), with gaps closed or listed — S9 — pending
-- T9 Docs (command help, README, RECIPE.md) — S3 — pending
+- T5 Chat mod with Chat/Terminal switch — S5 — done (3b6723b87, 1c8af1b60)
+- T6 Sidebar/status mods (sessions, todo, agents, jobs, usage, changes, review, modes) — S2 — done (7fb683e99, 1c8af1b60)
+- T7 Actions: prompt, answer questions, cancel subagent/job, permission mode, review switch (same authority as the CLI) — S2 — in progress (c277ab243, 350f066c6, 7e8d41c04; guard relative-path regression being fixed)
+- T8 Package: layout + mods shipped in gentle-pi; `gentle-shell desktop` installs pinned Herdr app (checksum), installs layout/mods, `herdr-app check`, switches layout, launches — S3, S4 — done (84a5a2289, c508057e5, 1deeacc8b, 78567775b, 5e09abe4d)
+- T10 Parity audit: every Gentle Shell feature present and working in the desktop (S9), with gaps closed or listed — S9 — done (fcb04e7d1, 36a2ced1d; parity table in L-entries and docs/gentle-shell-desktop.md)
+- T9 Docs (command help, README, RECIPE.md) — S3 — done (c5b64549e)
 
 ## Risks
 - Item 5 (delivery/environment): installing a third-party desktop app and writing into `~/.config/herdr-app/`.
@@ -51,3 +51,4 @@ Branch `feat/herdr-gentle-shell` from `origin/main` 3dc902975. References (read-
 - L14 (user): "Una vez que termines todo fíjate que tengamos todas las mismas funcionadisded que gentle Shell y funcionen"
 - L15 (T7 verify, c277ab243): FAIL with 2 blockers. B1: any same-user process (including the agent's own write/bash tools) can drop an inbox file that sets super-yolo without the dialog — the desktop inbox path is not in SENSITIVE_PATH_PATTERNS and the session enforces no confirmation. B2: relayed provider consent / maintenance authorization arriving through ask_user_choice can be answered from the desktop, contradicting docs. Advisories: RDD switch is global but the dialog says --cwd; a directory named x.json is re-processed forever; idle >24h sweep drops a live session inbox; answer race with a question closing; stale nonce after a cancelled dialog. Fix queued after T10 finishes (same files).
 - L16 (final suite, HEAD 7e8d41c04): npm test unit-tests 10676 pass / 6 fail. Fixed in 5e09abe4d: package check missing runtime/gentle-shell-desktop.mjs in requiredPaths (2 failures; package-files + verify-package-files now 16/16). Pre-existing on base 3dc902975: review-relay "capture forwards no selection" (fails alone on base too) and review-delivery-preflight #2997 (known base failure). Load flakes: gentle-ai-proxy "truncated proxy" and skill-registry "watcher refresh" pass alone on head and base.
+- L17 (E2E verify, 7e8d41c04): installer fresh/refresh/uninstall byte-identical incl. user conflicts; live desktop features verified without model prompts (header, Changes A/M counts, inspector tabs, permission modes, super-yolo confirm dialog, Stop idle, palette, /gentle:status, Chat/Terminal); window regions and colours match the artboard; 714/714 focused tests. FAIL on one regression: the guard no longer blocks relative or `--opt=` embedded paths into the real desktop folder — fix in progress. Unverifiable without model turns or synthetic input: answering a live question, stopping a running turn/subagent/job, `/` menu and palette Enter keystrokes, attachments.

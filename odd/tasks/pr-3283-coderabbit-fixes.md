@@ -28,12 +28,12 @@ Verification evidence: tmp/pr-3283-verify-report.md (all 15 still-valid, with cu
 
 | ID | Specs | Route | Commit |
 | --- | --- | --- | --- |
-| T1 | S5-S8 (lease: writer liveness, serialized stale recovery, token-bound release, sync-lease coverage) | gentle-ai-worker bg | — |
-| T2 | S9-S12 (readiness: cmd.exe quoting, tri-state recheck, inFlight registration, SIGKILL escalation) | gentle-ai-worker bg | — |
-| T3 | S13-S14 (seed: symlink-safe writes, publish only after validation) | gentle-ai-worker bg | — |
-| T4 | S4+S15 (daemon: non-null MCP replies both transports, Windows named-pipe test) | gentle-ai-worker bg | — |
-| T5 | S1-S3 (tools/gate: active-execution credit, abort-aware stages, CHILD_ENV sibling gate) | gentle-ai-worker bg | — |
-| T6 | close: full codegraph test pass, typecheck, work-unit commits per cluster, Risk line, RDD assess | parent inline | — |
+| T1 | S5-S8 (lease: writer liveness, serialized stale recovery, token-bound release, sync-lease coverage) | gentle-ai-worker bg | aef44b6 |
+| T2 | S9-S12 (readiness: cmd.exe quoting, tri-state recheck, inFlight registration, SIGKILL escalation) | gentle-ai-worker bg | 017f604 |
+| T3 | S13-S14 (seed: symlink-safe writes, publish only after validation) | gentle-ai-worker bg | 8025a0e |
+| T4 | S4+S15 (daemon: non-null MCP replies both transports, Windows named-pipe test) | gentle-ai-worker bg | aaf3c3d |
+| T5 | S1-S3 (tools/gate: active-execution credit, abort-aware stages, CHILD_ENV sibling gate) | gentle-ai-worker bg | 57051bb |
+| T6 | close: full codegraph test pass, typecheck, work-unit commits per cluster, Risk line, RDD assess | parent inline | 29c7e24 + this doc |
 
 ## Log
 
@@ -49,3 +49,5 @@ Verification evidence: tmp/pr-3283-verify-report.md (all 15 still-valid, with cu
 - L10: T1 DONE (S5-S8): verdict retains dead launcher's token while adopted non-proxy writerPid alive (:88); per-path ${path}.mutex serializes stale recovery (wx create, 250ms bounded wait, liveness steal, verdict re-check in critical section, :126-210, :264-276); randomUUID nonce binds release to the acquisition (:20, :94-96, :227-244); SYNC_LEASE_TTL_MS 120s→300s with 2×(120+10)s derivation comment (:280-287). 6 new tests incl. two-process race; lease 20/20, typecheck 0, readiness 47/47 — clears T2's pending cross-checks. Residual documented: no portable CAS, loser of a simultaneous dead-mutex steal yields (fail-closed redundant skip). Evidence: tmp/pr-3283-t1-evidence.md.
 - L11: T5 DONE (S1-S3): gate tracks active graph executions via tool_execution_start, credit = ≥1 completed AND 0 active, new call re-blocks (first-gate :31, :47-53, :63-76, :85); search checks signal.aborted before warm-up and exits at CLI fallback entry, controller initialized from caller abort state (tools :620-623, :643, :649); sibling pre-warm parent-only via shouldSeedSessionWorktrees (:703-712, :790), prepareReadiness untouched, mcp-exposure code edited around. 3 RED→GREEN tests; tools+first-gate 56/56, mcp-exposure 6/6, typecheck 0. Evidence: tmp/pr-3283-t5-evidence.md.
 - L12: T3 DONE (S13-S14): lstat gate rejects symlinked .codegraph (:113-118), wx-exclusive .gitignore (:124), wx-probe staged copies (:145-146); validating sync runs in isolated staging project (:159), publish (sidecars-first/db-last, retry preserved) only after success (:166-170), failure cleanup touches only staging (:187). 2 RED→GREEN tests; seed 11/11, session-seed 8/8, typecheck 0. Evidence: tmp/pr-3283-t3-evidence.md. ALL 15 SPECS LANDED; T6 close begins.
+- L13: T6 verification on the merged tree: full codegraph suite 162/162 pass (canonical, daemon, first-gate, lease, mcp-exposure, readiness, seed, session-seed, tools), typecheck 0 diagnostics, tree clean of stray files. Work-unit commits: aef44b6 (lease, high-risk unit alone), 017f604 (readiness), 8025a0e (seed), aaf3c3d (daemon), 57051bb (tools/gate), 29c7e24 (docs + this doc). Slice base fb5c9af6cc897bec36acec6a273827d37ea14e2c.
+- L14: RDD assess (global on): risk medium (nativeRisk medium, executable_change), reviewDue false (under_budget), plan = writer self-verification, no independent verifier, no native review START (user did not request one for this candidate). Risk: item 2 (seed write path is security-relevant: symlink rejection + exclusive creation) and item 4 (lease mutex/nonce redesign is concurrency-sensitive) — both covered by deterministic + two-process race tests in the merged 162/162 suite. Not pushed: push/PR update remains the user's decision.

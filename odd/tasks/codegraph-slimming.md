@@ -37,11 +37,12 @@ S5 (U5 — first-gate cleanup), quoted:
 - T2 — S2 — U2 hot-path fs + buffer parity (tools.ts) — inline — commit: 2ebcc4e
 - T3 — S3 — U3 readiness slim (readiness.ts + helper import) — inline — commit: 3e150a8
 - T4 — S4 — U4 daemon share + liveness + comment (daemon.ts, readiness.ts) — inline — commit: 388724e
-- T5 — S5 — U5 first-gate dead try/catch — inline — commit: _pending_
-- T6 — S1-S5 — close: typecheck, full codegraph test sweep, RDD assess, diff report — inline — n/a
+- T5 — S5 — U5 first-gate dead try/catch — inline — commit: d724663
+- T6 — S1-S5 — close — inline — done: typecheck clean, 142/142 across all 9 codegraph suites, assess reviewDue:false (under budget), diff report tmp/diff-report-20261115-codegraph-slimming-u1-u5.html
 
 ## Log
 
 - L1 (user, verbatim): "review codegraph code and teel if there is something can be optimized and/or slimed"
 - L2 (user, verbatim): "plan to address all findings"
 - L3 (user decision, 2026-11-15): approved "Full plan U1-U5 (Recommended)" — all 5 units, work-unit commits on feat/improve-codegraph, focused tests per unit.
+- L4 (evidence, 2026-11-15): COMPLETE — commits 68a6466 (U1), 2ebcc4e (U2), 3e150a8 (U3), 388724e (U4, worker), d724663 (U5), doc backfills 249bc8b + this commit. Verification: npm run typecheck clean after every unit; full sweep 142 pass / 0 fail across tests/{child-codegraph-bootstrap,codegraph-canonical,codegraph-daemon,codegraph-first-gate,codegraph-lease,codegraph-readiness,codegraph-seed,codegraph-session-seed,codegraph-tools}.test.ts; RED->GREEN pins: buffer-cap parity (U2), liveDaemons + mcpLineReader (U4). RDD assess (committed range a2345ab..HEAD): nativeRisk medium, reviewDue false (under_budget) — no native review started per entry rule. Risk: none.

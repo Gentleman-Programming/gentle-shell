@@ -73,6 +73,13 @@ export const DESKTOP_ACTION_LIMITS = {
 	sweepEntries: 256,
 	/** An escalation written this long after the session's activity ended is still refused. */
 	activityGraceMs: 2_000,
+	/**
+	 * How far a file's time may lag the activity clock: Linux stamps files with
+	 * its coarse clock (up to a tick behind Date.now), and some filesystems keep
+	 * whole seconds (FAT: 2 s). A file stamped this long before a busy span may
+	 * have been written in it, so it counts as busy.
+	 */
+	fileClockLagMs: 2_000,
 	/** How long the session UI waits for the human to confirm an escalation. */
 	confirmMs: 60_000,
 	/** Activity spans remembered; older ones count as busy. */
@@ -344,7 +351,7 @@ export interface DesktopActivityTimeline {
  * When the session's agent, background jobs or subagents could act, on the
  * file clock (`clock`, real time). Bounded: forgotten spans count as busy.
  */
-export function createDesktopActivityTimeline(clock: () => number = Date.now, graceMs: number = DESKTOP_ACTION_LIMITS.activityGraceMs): DesktopActivityTimeline {
+export function createDesktopActivityTimeline(clock: () => number = Date.now, graceMs: number = DESKTOP_ACTION_LIMITS.activityGraceMs, lagMs: number = DESKTOP_ACTION_LIMITS.fileClockLagMs): DesktopActivityTimeline {
 	const spans: Array<{ start: number; end: number | undefined }> = [];
 	let knownFrom = clock();
 	return {
@@ -361,9 +368,13 @@ export function createDesktopActivityTimeline(clock: () => number = Date.now, gr
 			}
 		},
 		busyAt(time: number): boolean {
-			const at = Math.min(time, clock());
+			const now = clock();
+			const at = Math.min(time, now);
 			if (!Number.isFinite(at) || at < knownFrom) return true;
-			return spans.some((span) => at >= span.start && (span.end === undefined || at <= span.end + graceMs));
+			// The real write happened between `at` and `at + lagMs` (never after now):
+			// busy when any of that window meets a span or its grace.
+			const latest = Math.min(at + lagMs, now);
+			return spans.some((span) => latest >= span.start && (span.end === undefined || at <= span.end + graceMs));
 		},
 	};
 }

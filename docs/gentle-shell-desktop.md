@@ -96,6 +96,7 @@ that report none ("Plan usage unavailable").
 | Gear in Plan usage | Opens Herdr's settings. |
 | Tab | Click selects; drag reorders; double-click renames; right-click opens the tab menu; the wheel moves between tabs. A TUI session's tab: click shows it. |
 | **+** after the tabs | Starts a new Gentle Shell session in the project's folder. |
+| Window buttons (Windows, Linux) | Minimise, maximise (restore when maximised) and close, at the end of the tab bar, as in Herdr's own layout. On macOS the traffic lights stay at the top left. |
 
 ### Chat header
 
@@ -270,7 +271,8 @@ session's terminal, through the session's own owners:
   job or a subagent of the session is running, or within 2 s after: "Raising the permission mode
   is refused while the agent, a background job or a subagent is running, or within 2 s after; try
   again when the session is idle." This keeps the agent from raising its own mode through the
-  desktop.
+  desktop. The action file's time decides, and a file stamped up to 2 s before the activity also
+  counts as written during it, because file clocks lag (Linux's coarse clock, 2 s FAT stamps).
 - Lowering the mode, stopping and cancelling are always accepted.
 - **Consent is never answered from the desktop.**
 

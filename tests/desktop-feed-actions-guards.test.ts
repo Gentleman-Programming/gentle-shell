@@ -245,7 +245,9 @@ test("S2: the activity timeline marks busy spans, a 2 s tail, and time before it
 	clock = 110_000; timeline.set(true);
 	clock = 120_000; timeline.set(false);
 	clock = 130_000;
-	assert.equal(timeline.busyAt(109_999), false);
+	assert.equal(timeline.busyAt(107_999), false);
+	assert.equal(timeline.busyAt(108_000), true, "a file time up to 2 s behind the activity clock still reaches the span");
+	assert.equal(timeline.busyAt(109_999), true, "a coarse file clock lags: a file stamped just before the span may be written in it");
 	assert.equal(timeline.busyAt(110_000), true);
 	assert.equal(timeline.busyAt(115_000), true);
 	assert.equal(timeline.busyAt(122_000), true, "within 2 s after the activity ended");
@@ -378,6 +380,10 @@ test("S2: an escalation written while the agent works is refused before the owne
 	const h = sessionHarness(t, { mode: "auto" });
 	await h.start();
 	assert.equal(h.snapshot().permission!.mode, "auto");
+	// The file clock lags the activity clock (Linux stamps files with its coarse
+	// clock, up to a tick behind Date.now; some filesystems keep whole seconds):
+	// a file written after agent_start can carry a time just before it.
+	h.offset = 50;
 	h.idle = false;
 	h.fire("agent_start", {});
 	for (const mode of ["yolo", "super-yolo"]) {

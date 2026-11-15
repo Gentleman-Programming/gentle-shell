@@ -9,6 +9,11 @@
 // live session of that project that runs outside Herdr app (from its snapshot: name and state);
 // a click shows that session in every region (snapshot.js selectSession). A Gentle Shell tab ends
 // with its kind badge (tokens.js kindBadge): Herdr for this window's terminals, TUI for the others.
+// Window buttons: the layout hides the system title bar (`"titlebar": "none"`), so where the
+// system draws no buttons (`window().buttons`: Windows, Linux) the bar draws minimise, maximise
+// (restore when maximised) and close at its end, as Herdr's `tabs` does, with its vector icons on
+// Windows (icons/win-*.svg, copied from Herdr app's defaults, Apache-2.0). macOS keeps its
+// traffic lights at the layout's `traffic_lights`.
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, ScrollHandle } from "gpui-base";
@@ -119,6 +124,11 @@ export default class GentleTabs extends View {
       ? Math.max(10, (root.traffic_lights[0] + 64) / (settings().zoom ?? 1) - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0))
       : 10;
     const stop = (_e, cx) => cx.stop_propagation();
+    const win = w?.platform === "windows";
+    const control = (id, label, tip, action) => div().id(id).size(28).mb(6).flex_none().flex().items_center().justify_center()
+      .rounded(6).text_size(14).text_color(c.muted).tooltip(tip)
+      .hover((s) => s.bg(c.selected).text_color(c.text))
+      .on_mouse_down("left", stop).on_click(() => run(action)).child(label);
     return h_flex().id("root").size_full().min_w(0).pl(lights).pr(10).gap(2).items_end().bg(c.chrome).font_family(c.sans)
       .border_b(1).border_color(c.line)
       .on_mouse_up("left", () => { this.pressed = null; })
@@ -134,6 +144,10 @@ export default class GentleTabs extends View {
           .on_mouse_down("left", stop)
           // A new Gentle Shell session in the shown project's folder (the space's own folder).
           .on_click(() => run("tab.new", { argv: ["gentle-shell"], ...(space?.id ? { space: space.id } : {}), ...(space?.folder ? { folder: space.folder } : project ? { folder: project } : {}) }))
-          .child(svg("mods/gentle-tabs/icons/plus.svg").size(13))));
+          .child(svg("mods/gentle-tabs/icons/plus.svg").size(13))))
+      .when(Boolean(w?.buttons), (el) => el.child(h_flex().id("window-buttons").flex_none().items_end().gap(2).ml(6)
+        .child(control("minimize", win ? svg("mods/gentle-tabs/icons/win-min.svg").size(16) : "−", "Minimise", "window.minimize"))
+        .child(control("maximize", win ? svg(`mods/gentle-tabs/icons/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", w.maximized ? "Restore" : "Maximise", "window.maximize"))
+        .child(control("close-window", svg(`mods/gentle-tabs/icons/${win ? "win-close" : "close"}.svg`).size(win ? 16 : 13), "Close", "window.close"))));
   }
 }

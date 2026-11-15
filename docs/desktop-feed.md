@@ -146,7 +146,7 @@ whole `<agentDir>/desktop/` folder like any other sensitive path. An action file
 | `cancel_subagent` | `{ id }` | the subagents owner, as desktop RPC `cancel_subagent` |
 | `answer_question` | `{ toolCallId, option }` or `{ toolCallId, text }` | nothing is answered here: the session checks that `toolCallId` is the open `ask_user_choice` / single-question `ask_user_question` and answers the keys its real list takes (`up` to the top, `down` to the row, `enter`); the desktop presses them in the terminal, then types `text` into the list's own editor |
 | `abort_turn` | `{}` | the session's own abort, the one its TUI's Esc Esc runs (in the TUI, queued messages go back to the editor); refused with `not_working` while the agent is idle |
-| `send_prompt` | `{ text }` (1-4000 characters, not blank; new lines and tabs, no other control character) | pi's `sendUserMessage`, as if typed in the session's editor and submitted: a prompt while the agent is idle, a steer while it works (the TUI's Enter); trimmed like the editor. Refused with `question_open` while a question, an extension prompt or a consent is open. A prompt template or a skill (`/review …`, `/skill:…`) expands as in the editor; a pi built-in command, an extension command (`/gentle:mode`, …) or a `!` shell line is refused with `terminal_command` (they are TUI code with their own authority); a `/word` no command owns is plain text. Answers `{ queued }` |
+| `send_prompt` | `{ text }` (1-4000 characters, not blank; new lines and tabs, no other control character; a CRLF line end counts as one new line) | pi's `sendUserMessage`, as if typed in the session's editor and submitted: a prompt while the agent is idle, a steer while it works (the TUI's Enter); trimmed like the editor. Refused with `question_open` while a question, an extension prompt or a consent is open. A prompt template or a skill (`/review …`, `/skill:…`) expands as in the editor; a pi built-in command, an extension command (`/gentle:mode`, …) or a `!` shell line is refused with `terminal_command` (they are TUI code with their own authority); a `/word` no command owns is plain text. Answers `{ queued }`. While pi runs a manual compaction (`/compact`) or a `/tree` navigation it refuses prompts, so the session holds the text, as the TUI editor queues it, and submits it once pi takes prompts again; it answers `{ queued: true, after: "compaction" }` (`{ queued: true }` when pi is busy with no agent run the session heard of yet). One prompt is held at a time: another one is refused with `session_compacting`; a held prompt the session ends before submitting is dropped with an error in that session's UI |
 | `answer_question` with `via: "session"` | `{ toolCallId, option, via }` or `{ toolCallId, text, via }` | the same checks as the key path (still the open question, answerable from the desktop, an existing option or the list's free-text row), then the ask tool's own list takes the answer, exactly as a click or Enter in it would; answers `{ toolCallId, answered: true }`, or `answer_in_terminal` ("Answer this question in that session's terminal.") when the list has no handle (a Gentle Shell older than this one) |
 
 The session refuses, removes and answers (code in `error.code`) a file that is a
@@ -157,8 +157,9 @@ run (`duplicate`), a question that is no longer open (`question_mismatch`), a
 stop while the agent is idle (`not_working`), a permission escalation written
 while the session was busy (`escalation_while_busy`), a prompt while a question is
 open (`question_open`), a prompt that is a command or shell line only the terminal
-runs (`terminal_command`), or a prompt to a session without a prompt owner
-(`unsupported`).
+runs (`terminal_command`), a second prompt while one is held for after a
+compaction (`session_compacting`), or a prompt to a session without a prompt
+owner (`unsupported`).
 
 **Prompts are not human evidence.** A `send_prompt` reaches pi with the input
 source `extension`, as any extension message does, never `interactive`: Gentle
@@ -171,7 +172,8 @@ register, while their TUI list is open, one handle per tool call id in a
 process-wide registry (`lib/desktop-feed-answers.ts`; their event-bus traffic is
 unchanged). It finishes the list once, with the result a click gives; a finished
 list leaves the registry. Only a single single-select question can be answered
-through it.
+through it, and never with a consent token (`granted`, `declined`) as the option
+value, label or typed text.
 A non-regular entry (a folder, a FIFO, a device) is refused once: an empty
 folder is removed, anything that cannot be removed is skipped until it changes.
 

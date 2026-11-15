@@ -48,8 +48,12 @@ export function isAskAnswerHandle(value: unknown): value is AskAnswerHandle {
 
 const optionIndex = (pick: AskAnswerPick, count: number): number | undefined =>
 	Number.isInteger(pick.option) && (pick.option as number) >= 0 && (pick.option as number) < count ? pick.option : undefined;
+// A relayed provider consent's own answers: never given from the desktop, whatever
+// lib/desktop-feed-actions.ts decided (defence in depth).
+const CONSENT_TOKENS = new Set(["granted", "declined"]);
+const consentToken = (value: string | undefined): boolean => value !== undefined && CONSENT_TOKENS.has(value.trim().toLowerCase());
 const typed = (pick: AskAnswerPick): string | undefined =>
-	typeof pick.text === "string" && pick.text.trim().length > 0 ? pick.text : undefined;
+	typeof pick.text === "string" && pick.text.trim().length > 0 && !consentToken(pick.text) ? pick.text : undefined;
 
 function register(handle: AskAnswerHandle, finished: () => boolean): void {
 	const map = registry();
@@ -83,7 +87,7 @@ export function publishChoiceAnswerHandle(toolCallId: string, params: ChoicePara
 			}
 			const index = optionIndex(pick, params.options.length);
 			const option = index === undefined ? undefined : params.options[index];
-			if (index === undefined || !option) return false;
+			if (index === undefined || !option || consentToken(option.value) || consentToken(option.label)) return false;
 			finish({ value: option.value, label: option.label, index: index + 1 });
 			return true;
 		},
@@ -116,7 +120,7 @@ export function publishQuestionnaireAnswerHandle(toolCallId: string, questions: 
 			}
 			const index = optionIndex(pick, question.options.length);
 			const option = index === undefined ? undefined : question.options[index];
-			if (!option) return false;
+			if (!option || consentToken(option.label)) return false;
 			complete({ cancelled: false, answers: [{ questionIndex: 0, question: question.question, kind: "option", answer: option.label, ...(option.preview !== undefined ? { preview: option.preview } : {}) }] });
 			return true;
 		},

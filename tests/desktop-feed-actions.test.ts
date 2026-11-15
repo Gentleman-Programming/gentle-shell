@@ -19,8 +19,9 @@ import {
 	type DesktopActionOwners,
 } from "../lib/desktop-feed-actions.ts";
 import type { DesktopFeedSnapshot, DesktopFeedTimers } from "../lib/desktop-feed.ts";
+import { DESKTOP_FEED_BUILTIN_COMMANDS } from "../lib/desktop-feed.ts";
 import { desktopFeedFile } from "../lib/desktop-feed-store.ts";
-import { publishChoiceAnswerHandle } from "../lib/desktop-feed-answers.ts";
+import { publishChoiceAnswerHandle, publishQuestionnaireAnswerHandle } from "../lib/desktop-feed-answers.ts";
 import { DESKTOP_AGENTS_SERVICE_CHANNEL, DESKTOP_AGENTS_SERVICE_SCHEMA } from "../lib/desktop-rpc-agents.ts";
 import { DESKTOP_JOBS_SERVICE_CHANNEL, DESKTOP_JOBS_SERVICE_SCHEMA, type DesktopJobEntry } from "../lib/desktop-rpc-jobs.ts";
 import { DESKTOP_RPC_SCHEMA, type DesktopRpcOutcome } from "../lib/desktop-rpc.ts";
@@ -68,16 +69,20 @@ function fakePi() {
 	const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
 	// What pi.sendUserMessage received (T11 send_prompt).
 	const sent: Array<{ content: unknown; options: unknown }> = [];
+	// pi refuses a prompt while it compacts (agent-session prompt(): "Cannot submit a prompt
+	// while compaction is in progress") and its runtime swallows the error (V9).
+	const refused: Array<{ content: unknown; options: unknown }> = [];
+	const state = { compacting: false };
 	const pi = {
 		on(name: string, fn: Handler) { handlers.set(name, [...(handlers.get(name) ?? []), fn]); return () => {}; },
 		events: bus,
 		registerCommand(name: string, command: any) { commands.set(name, command); },
 		registerTool() {},
 		getThinkingLevel: () => "high",
-		sendUserMessage(content: unknown, options: unknown) { sent.push({ content, options }); },
+		sendUserMessage(content: unknown, options: unknown) { (state.compacting ? refused : sent).push({ content, options }); },
 	} as unknown as ExtensionAPI;
 	const fire = (name: string, event: unknown, ctx: unknown) => { for (const fn of handlers.get(name) ?? []) fn(event, ctx); };
-	return { pi, bus, commands, fire, sent };
+	return { pi, bus, commands, fire, sent, refused, setCompacting(value: boolean) { state.compacting = value; } };
 }
 
 function fakeCtx(cwd: string, overrides: Record<string, unknown> = {}) {
@@ -501,6 +506,7 @@ test("S10: send_prompt types the text into the session through pi, steering whil
 	assert.deepEqual(h.sent, [{ content: "hola", options: { deliverAs: "steer", expandPromptTemplates: false } }]);
 	assert.deepEqual(h.result("p1"), { schema: DESKTOP_ACTION_RESULT_SCHEMA, id: "p1", sessionId: "sess-1", kind: "send_prompt", ok: true, data: { queued: false }, finishedAt: new Date(NOW).toISOString() });
 	Object.assign(h.ctx, { isIdle: () => false });
+	h.fire("agent_start", {}, h.ctx);
 	h.drop("p2.json", h.action("p2", "send_prompt", { text: "/review the parser" }));
 	await h.deliver();
 	assert.deepEqual(h.sent[1], { content: "/review the parser", options: { deliverAs: "steer", expandPromptTemplates: true } });
@@ -559,4 +565,186 @@ test("S10: answer_question via session answers through the ask tool's handle; th
 	await h.deliver();
 	assert.equal(h.result("a3").error.code, "question_mismatch");
 	assert.equal(finished.length, 1);
+});
+
+// ---- T11 regressions (verifier, S10) ----
+
+const STEER = (content: string, expand = false) => ({ content, options: { deliverAs: "steer", expandPromptTemplates: expand } });
+
+test("S10: no pi built-in, extension command or ! line reaches pi, leading whitespace included", async (t) => {
+	const h = harness(t);
+	await h.start();
+	Object.assign(h.pi, { getCommands: () => [{ name: "gentle:mode", source: "extension" }, { name: "gentle:agents", source: "extension" }, { name: "review", source: "prompt" }] });
+	const texts = [
+		...DESKTOP_FEED_BUILTIN_COMMANDS.map((command) => `/${command.name}`),
+		"/quit", "/exit", "/settings", "/scoped-models", "/hotkeys", "/debug",
+		"/gentle:mode super-yolo", "/gentle:agents", "  /new", "\t/model x", "\n/gentle:mode yolo",
+		"!rm -rf build", "!!ls", "   !ls", "\n!ls",
+	];
+	// Batches under the outbox's 32 kept answers.
+	for (let start = 0; start < texts.length; start += 20) {
+		const batch = texts.slice(start, start + 20);
+		const id = (index: number) => `c${String(start + index).padStart(3, "0")}`;
+		batch.forEach((text, index) => h.drop(`${id(index)}.json`, h.action(id(index), "send_prompt", { text })));
+		await h.deliver();
+		batch.forEach((text, index) => assert.equal(h.result(id(index))?.error?.code, "terminal_command", JSON.stringify(text)));
+	}
+	assert.deepEqual(h.sent, [], "nothing reached pi");
+	assert.deepEqual(h.refused, []);
+	assert.deepEqual(h.setModes, [], "the permission owner was never asked");
+	assert.deepEqual(h.inboxFiles(), []);
+});
+
+test("S10: send_prompt bounds through the inbox: 4000 characters and multi-line text go in, CRLF as LF; the rest is invalid", async (t) => {
+	const h = harness(t);
+	await h.start();
+	h.drop("b1.json", h.action("b1", "send_prompt", { text: "x".repeat(4000) }));
+	h.drop("b2.json", h.action("b2", "send_prompt", { text: "x".repeat(4001) }));
+	h.drop("b3.json", h.action("b3", "send_prompt", { text: "" }));
+	h.drop("b4.json", h.action("b4", "send_prompt", { text: "  \n\t " }));
+	h.drop("b5.json", h.action("b5", "send_prompt", { text: "clear\u001b[2J" }));
+	h.drop("b6.json", h.action("b6", "send_prompt", { text: 42 }));
+	h.drop("b7.json", h.action("b7", "send_prompt", { text: "line one\nline two\tend" }));
+	h.drop("b8.json", h.action("b8", "send_prompt", { text: "from windows\r\nsecond line" }));
+	h.drop("b9.json", h.action("b9", "send_prompt", { text: "lone\rreturn" }));
+	await h.deliver();
+	for (const id of ["b1", "b7", "b8"]) assert.deepEqual(h.result(id).data, { queued: false }, id);
+	for (const id of ["b2", "b3", "b4", "b5", "b6", "b9"]) assert.equal(h.result(id).error.code, "invalid_action", id);
+	assert.deepEqual(h.sent, [STEER("x".repeat(4000)), STEER("line one\nline two\tend"), STEER("from windows\nsecond line")]);
+	assert.deepEqual(h.inboxFiles(), []);
+});
+
+test("S10: via session never answers a relayed consent, another call id or a multi-select list", async (t) => {
+	const h = harness(t);
+	await h.start();
+	const answered: unknown[] = [];
+	// A consent relayed by its own tokens.
+	const consent = { question: "Allow review?", options: [{ label: "Yes", description: "", value: "granted" }, { label: "No", description: "", value: "declined" }] };
+	h.fire("tool_execution_start", { toolCallId: "call-c", toolName: "ask_user_choice", args: consent }, h.ctx);
+	publishChoiceAnswerHandle("call-c", consent, (result) => answered.push(result), () => false);
+	h.drop("v1.json", h.action("v1", "answer_question", { toolCallId: "call-c", option: 0, via: "session" }));
+	h.drop("v2.json", h.action("v2", "answer_question", { toolCallId: "call-c", text: "granted", via: "session" }));
+	await h.deliver();
+	assert.deepEqual(h.result("v1").error, { code: "answer_in_terminal", message: "Answer this question in the Terminal view" });
+	assert.equal(h.result("v2").error.code, "answer_in_terminal");
+	h.fire("tool_execution_end", { toolCallId: "call-c", toolName: "ask_user_choice", isError: false, result: {} }, h.ctx);
+	// A consent relayed after a provider decision envelope in this run's tool results.
+	h.fire("agent_start", {}, h.ctx);
+	h.fire("tool_execution_end", { toolCallId: "b-1", toolName: "bash", isError: false, result: { content: [{ type: "text", text: "status: consent_required" }] } }, h.ctx);
+	const plain = { question: "Go on?", options: [{ label: "Yes", description: "", value: "yes" }, { label: "No", description: "", value: "no" }] };
+	h.fire("tool_execution_start", { toolCallId: "call-r", toolName: "ask_user_choice", args: plain }, h.ctx);
+	publishChoiceAnswerHandle("call-r", plain, (result) => answered.push(result), () => false);
+	h.drop("v3.json", h.action("v3", "answer_question", { toolCallId: "call-r", option: 0, via: "session" }));
+	await h.deliver();
+	assert.equal(h.result("v3").error.code, "answer_in_terminal");
+	h.fire("tool_execution_end", { toolCallId: "call-r", toolName: "ask_user_choice", isError: false, result: {} }, h.ctx);
+	// Another call id: the open question is call-o; a handle for call-x exists.
+	h.fire("agent_start", {}, h.ctx);
+	h.fire("agent_start", {}, h.ctx);
+	h.fire("tool_execution_start", { toolCallId: "call-o", toolName: "ask_user_choice", args: plain }, h.ctx);
+	publishChoiceAnswerHandle("call-x", plain, (result) => answered.push(result), () => false);
+	h.drop("v4.json", h.action("v4", "answer_question", { toolCallId: "call-x", option: 0, via: "session" }));
+	await h.deliver();
+	assert.deepEqual(h.result("v4").error, { code: "question_mismatch", message: "That question is no longer open" });
+	h.fire("tool_execution_end", { toolCallId: "call-o", toolName: "ask_user_choice", isError: false, result: {} }, h.ctx);
+	// A multi-select list.
+	const multi = [{ question: "Which?", header: "H", multiSelect: true, options: [{ label: "A", description: "" }, { label: "B", description: "" }] }];
+	h.fire("tool_execution_start", { toolCallId: "call-m", toolName: "ask_user_question", args: { questions: multi } }, h.ctx);
+	publishQuestionnaireAnswerHandle("call-m", multi, (result) => answered.push(result), () => false);
+	h.drop("v5.json", h.action("v5", "answer_question", { toolCallId: "call-m", option: 0, via: "session" }));
+	await h.deliver();
+	assert.equal(h.result("v5").error.code, "answer_in_terminal");
+	assert.deepEqual(answered, [], "no handle was ever used");
+	assert.deepEqual(h.sent, []);
+});
+
+test("S10 (V9): a prompt sent while pi compacts is held, never reported delivered while pi refuses it, and goes in once compaction ends", async (t) => {
+	const h = harness(t);
+	await h.start();
+	// /compact: pi refuses prompts until its compaction state clears.
+	h.setCompacting(true);
+	Object.assign(h.ctx, { isIdle: () => false });
+	h.fire("session_before_compact", { reason: "manual", willRetry: false }, h.ctx);
+	h.drop("k1.json", h.action("k1", "send_prompt", { text: "after the summary" }));
+	await h.deliver();
+	assert.deepEqual(h.refused, [], "nothing was handed to pi while it refuses prompts");
+	assert.deepEqual(h.sent, []);
+	assert.deepEqual(h.result("k1").data, { queued: true, after: "compaction" });
+	h.drop("k2.json", h.action("k2", "send_prompt", { text: "and this too" }));
+	await h.deliver();
+	assert.deepEqual(h.result("k2").error, { code: "session_compacting", message: "Pi is compacting this session and already holds one prompt for after it; send this one when compaction ends." });
+	h.clock.run();
+	h.clock.run();
+	assert.deepEqual([h.sent, h.refused], [[], []], "still compacting: still held");
+	// pi emits session_compact, then clears its compaction state.
+	h.fire("session_compact", { reason: "manual", willRetry: false }, h.ctx);
+	h.setCompacting(false);
+	Object.assign(h.ctx, { isIdle: () => true });
+	h.clock.run();
+	assert.deepEqual(h.sent, [STEER("after the summary")]);
+	h.clock.run();
+	assert.equal(h.sent.length, 1, "delivered once");
+	assert.deepEqual(h.refused, []);
+	assert.equal(h.clock.armed, 0, "no timer while nothing is held");
+});
+
+test("S10 (V9): /tree's summary holds a prompt too, also when the navigation ends without session_tree", async (t) => {
+	const h = harness(t);
+	await h.start();
+	h.setCompacting(true);
+	Object.assign(h.ctx, { isIdle: () => false });
+	h.fire("session_before_tree", { preparation: {} }, h.ctx);
+	h.drop("t1.json", h.action("t1", "send_prompt", { text: "first" }));
+	await h.deliver();
+	assert.deepEqual(h.result("t1").data, { queued: true, after: "compaction" });
+	h.fire("session_tree", { newLeafId: "x", oldLeafId: "y" }, h.ctx);
+	h.setCompacting(false);
+	Object.assign(h.ctx, { isIdle: () => true });
+	h.clock.run();
+	assert.deepEqual(h.sent, [STEER("first")]);
+	// A cancelled navigation emits no session_tree: pi turning idle releases the prompt.
+	h.setCompacting(true);
+	Object.assign(h.ctx, { isIdle: () => false });
+	h.fire("session_before_tree", { preparation: {} }, h.ctx);
+	h.drop("t2.json", h.action("t2", "send_prompt", { text: "second" }));
+	await h.deliver();
+	h.clock.run();
+	assert.equal(h.sent.length, 1);
+	h.setCompacting(false);
+	Object.assign(h.ctx, { isIdle: () => true });
+	h.clock.run();
+	assert.deepEqual(h.sent, [STEER("first"), STEER("second")]);
+	assert.deepEqual(h.refused, []);
+});
+
+test("S10 (V9): a busy pi with no agent run started is waited for, not handed a prompt it may refuse", async (t) => {
+	const h = harness(t);
+	await h.start();
+	// Compacting before this extension heard of it (an earlier handler still runs).
+	h.setCompacting(true);
+	Object.assign(h.ctx, { isIdle: () => false });
+	h.drop("w1.json", h.action("w1", "send_prompt", { text: "wait for it" }));
+	await h.deliver();
+	assert.deepEqual(h.result("w1").data, { queued: true });
+	assert.deepEqual([h.sent, h.refused], [[], []]);
+	h.setCompacting(false);
+	Object.assign(h.ctx, { isIdle: () => true });
+	h.clock.run();
+	assert.deepEqual(h.sent, [STEER("wait for it")]);
+});
+
+test("S10 (V9): a held prompt is dropped with a clear error when the session ends", async (t) => {
+	const h = harness(t);
+	await h.start();
+	h.setCompacting(true);
+	Object.assign(h.ctx, { isIdle: () => false });
+	h.fire("session_before_compact", { reason: "manual", willRetry: false }, h.ctx);
+	h.drop("s1.json", h.action("s1", "send_prompt", { text: "never mind" }));
+	await h.deliver();
+	assert.deepEqual(h.result("s1").data, { queued: true, after: "compaction" });
+	h.fire("session_shutdown", { reason: "quit" }, h.ctx);
+	h.clock.run();
+	assert.deepEqual([h.sent, h.refused], [[], []]);
+	assert.deepEqual(h.ctx.notices, ["Gentle Shell Desktop: a prompt sent during compaction was not delivered (the session ended)."]);
+	assert.equal(h.clock.armed, 0);
 });

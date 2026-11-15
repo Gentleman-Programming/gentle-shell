@@ -109,8 +109,17 @@ interface Live {
 	providerRun: number | undefined;
 	runs: number;
 	yolo: { adapter: YoloUiAdapter; unobserve: () => void } | undefined;
+	/** pi runs a manual compaction or a /tree navigation: it refuses prompts until it ends (T11). */
+	compacting: boolean;
+	/** The one desktop prompt held for after it, as the TUI editor queues one. */
+	held: { text: string; expand: boolean } | undefined;
+	heldTimer: unknown;
 	closed: boolean;
 }
+
+/** How often a held prompt checks that pi takes prompts again (only while one is held). */
+const HELD_PROMPT_POLL_MS = 500;
+const HELD_PROMPT_DROPPED = "Gentle Shell Desktop: a prompt sent during compaction was not delivered (the session ended).";
 
 const record = (value: unknown): Record<string, unknown> =>
 	value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -269,12 +278,47 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 			schedule();
 		};
 
+		// pi refuses a prompt during a manual compaction or a /tree navigation and its
+		// runtime swallows the error (V9): the session holds the text instead, as the TUI
+		// editor does, until pi takes prompts again. Busy with no agent run started is
+		// treated the same: a compaction this extension did not hear of yet.
+		const refusesPrompts = (session: Live): boolean => {
+			if (session.compacting) return true;
+			try { return session.ctx.isIdle() === false && !session.working; } catch { return false; }
+		};
+		const armHeld = (session: Live, ms: number) => {
+			if (session.heldTimer !== undefined) { timers.clear(session.heldTimer); session.heldTimer = undefined; }
+			if (!session.held || !current(session)) return;
+			session.heldTimer = timers.set(() => { session.heldTimer = undefined; releaseHeld(session); }, ms);
+		};
+		const releaseHeld = (session: Live) => {
+			if (!session.held || !current(session)) return;
+			// Idle means no compaction (pi: isIdle = no run and not compacting), whatever ended it.
+			let idle = false;
+			try { idle = session.ctx.isIdle() === true; } catch { idle = false; }
+			if (idle) session.compacting = false;
+			if (refusesPrompts(session)) { armHeld(session, HELD_PROMPT_POLL_MS); return; }
+			const { text, expand } = session.held;
+			session.held = undefined;
+			try { pi.sendUserMessage(text, { deliverAs: "steer", expandPromptTemplates: expand }); } catch { /* pi reports it */ }
+		};
+		// After pi's own end event: pi clears its compaction state once its handlers return.
+		const compactionEnded = (session: Live) => {
+			session.compacting = false;
+			armHeld(session, 0);
+		};
+
 		const close = () => {
 			const session = live;
 			live = undefined;
 			scheduler.cancel();
 			if (!session) return;
 			session.closed = true;
+			if (session.heldTimer !== undefined) { try { timers.clear(session.heldTimer); } catch { /* gone */ } session.heldTimer = undefined; }
+			if (session.held) {
+				session.held = undefined;
+				try { session.ctx.ui?.notify?.(HELD_PROMPT_DROPPED, "error"); } catch { /* the UI is gone */ }
+			}
 			try { session.actions?.close(); } catch { /* never break shutdown */ }
 			for (const bridge of [session.jobsBridge, session.agentsBridge, session.usageBridge, session.permissionBridge]) {
 				try { bridge.reset(); } catch { /* owner teardown */ }
@@ -306,7 +350,7 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 				jobsBridge: new DesktopJobsBridge(pi), agentsBridge: new DesktopAgentsBridge(pi), usageBridge: new DesktopUsageBridge(pi),
 				permissionBridge: new DesktopPermissionBridge(pi), actions: undefined,
 				activity: createDesktopActivityTimeline(activityClock), providerRun: undefined, runs: 0,
-				yolo: undefined, closed: false,
+				yolo: undefined, compacting: false, held: undefined, heldTimer: undefined, closed: false,
 			};
 			markActivity(session);
 			live = session;
@@ -394,6 +438,12 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 					},
 					// The TUI editor's submit: a prompt while idle, a steer while the agent works.
 					sendPrompt: (text, expand) => {
+						if (refusesPrompts(session)) {
+							if (session.held) return { compacting: true };
+							session.held = { text, expand };
+							armHeld(session, HELD_PROMPT_POLL_MS);
+							return session.compacting ? { queued: true, after: "compaction" } : { queued: true };
+						}
 						let queued = false;
 						try { queued = session.ctx.isIdle() === false; } catch { queued = false; }
 						pi.sendUserMessage(text, { deliverAs: "steer", expandPromptTemplates: expand });
@@ -448,20 +498,29 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 			try { open(ctx); } catch { close(); }
 		});
 		pi.on("session_shutdown", (_event, ctx) => { if (owns(ctx)) close(); });
+		pi.on("session_before_compact", (event, ctx) => {
+			// Only a manual compaction makes pi refuse prompts; automatic ones queue them.
+			if (owns(ctx) && (event as { reason?: string }).reason === "manual") live!.compacting = true;
+		});
+		pi.on("session_compact_failed", (_event, ctx) => { if (owns(ctx)) compactionEnded(live!); });
+		pi.on("session_before_tree", (_event, ctx) => { if (owns(ctx)) live!.compacting = true; });
 		pi.on("session_tree", (_event, ctx) => {
 			if (!owns(ctx)) return;
+			compactionEnded(live!);
 			try { live!.todo = replayTodo(ctx.sessionManager.getBranch()); } catch { /* keep */ }
 			live!.review = undefined;
 			schedule();
 		});
 		pi.on("session_info_changed", (_event, ctx) => { if (owns(ctx)) schedule(); });
-		pi.on("session_compact", (_event, ctx) => { if (owns(ctx)) schedule(); });
+		pi.on("session_compact", (_event, ctx) => { if (owns(ctx)) { compactionEnded(live!); schedule(); } });
 		pi.on("model_select", (_event, ctx) => { if (owns(ctx)) { live!.ctx = ctx; refreshUsage(live!); schedule(); } });
 		pi.on("thinking_level_select", (_event, ctx) => { if (owns(ctx)) schedule(); });
 		pi.on("agent_start", (_event, ctx) => {
 			if (!owns(ctx)) return;
 			live!.working = true;
 			live!.runs += 1;
+			// A run started: pi takes prompts (as steers) again.
+			if (live!.compacting || live!.held) compactionEnded(live!);
 			markActivity(live!);
 			refreshProfile(live!);
 		});

@@ -154,7 +154,9 @@ export function parseDesktopAction(text: string, sessionId: string, now: number)
 	if (!Number.isFinite(createdAt)) return INVALID();
 	if (now - createdAt > DESKTOP_ACTION_LIMITS.staleMs || createdAt - now > DESKTOP_ACTION_LIMITS.futureMs) return fail("stale", "This action is too old to run");
 	const kind = data.kind as DesktopActionKind;
-	const args = record(data.args);
+	let args = record(data.args);
+	// Typed text from Windows line ends: CRLF is one new line, as the editor takes it.
+	if (kind === "send_prompt" && args && typeof args.text === "string") args = { ...args, text: args.text.replace(/\r\n/g, "\n") };
 	if (!args || !argsValid(kind, args)) return INVALID();
 	return { ok: true, action: { id: data.id, sessionId, kind, args, createdAt } };
 }
@@ -280,8 +282,12 @@ export interface DesktopActionOwners {
 	questionOpen?(): boolean;
 	/** Where pi's registry says a slash command comes from, if it has one. */
 	commandSource?(name: string): string | undefined;
-	/** Submits `text` as if typed in the session's editor (`expand`: prompt templates and skills). */
-	sendPrompt?(text: string, expand: boolean): { queued: boolean };
+	/**
+	 * Submits `text` as if typed in the session's editor (`expand`: prompt templates and skills).
+	 * While pi compacts (it refuses prompts then) the session holds it for after, as the TUI
+	 * editor does (`after: "compaction"`), or answers `compacting` when it already holds one.
+	 */
+	sendPrompt?(text: string, expand: boolean): { queued: boolean; after?: "compaction" } | { compacting: true };
 	/** Answers the open ask tool question through the tool's own handle; false without one. */
 	answerQuestion?(toolCallId: string, answer: { option?: number; text?: string }): boolean;
 }
@@ -295,6 +301,7 @@ const TERMINAL_COMMAND = fail("terminal_command", "Open that session's terminal 
 const TERMINAL_SHELL = fail("terminal_command", "Open that session's terminal to run ! shell commands.");
 const QUESTION_OPEN = fail("question_open", "Answer the open question first.");
 const NO_PROMPTS = fail("unsupported", "This session takes no prompts from the desktop. Update Gentle Shell and restart it.");
+const SESSION_COMPACTING = fail("session_compacting", "Pi is compacting this session and already holds one prompt for after it; send this one when compaction ends.");
 const ANSWER_IN_SESSION_TERMINAL = fail("answer_in_terminal", "Answer this question in that session's terminal.");
 
 /** send_prompt (T11): plain text, prompt templates and skills, as the editor would submit them. */
@@ -312,8 +319,9 @@ function sendPrompt(text: string, owners: DesktopActionOwners): DesktopActionOut
 		// a "/word" no command owns is plain text, as in the editor.
 		else if (source !== undefined) return TERMINAL_COMMAND;
 	}
-	const { queued } = owners.sendPrompt(prompt, expand);
-	return { ok: true, data: { queued } };
+	const sent = owners.sendPrompt(prompt, expand);
+	if ("compacting" in sent) return SESSION_COMPACTING;
+	return { ok: true, data: { queued: sent.queued, ...(sent.after === "compaction" ? { after: sent.after } : {}) } };
 }
 
 // ---- Permission escalation ----

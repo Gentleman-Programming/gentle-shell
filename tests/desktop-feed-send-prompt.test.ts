@@ -201,6 +201,41 @@ test("S10: ask_user_question publishes a handle only a single single-select ques
 	assert.deepEqual(m, []);
 });
 
+test("S10: the answer handles never answer with a consent token (granted/declined)", () => {
+	const finished: unknown[] = [];
+	const consent = { question: "Allow?", options: [{ label: "Yes", description: "", value: "granted" }, { label: "No", description: "", value: " Declined " }, { label: "Later", description: "", value: "later" }], allowCustomResponse: true };
+	publishChoiceAnswerHandle("lib-tok-1", consent, (result) => finished.push(result), () => false);
+	const choice = askAnswerHandle("lib-tok-1")!;
+	assert.equal(choice.answer({ option: 0 }), false);
+	assert.equal(choice.answer({ option: 1 }), false);
+	assert.equal(choice.answer({ text: " GRANTED " }), false);
+	assert.equal(choice.answer({ text: "declined" }), false);
+	const questions = [{ question: "Allow?", options: [{ label: "granted", description: "" }, { label: "Declined", description: "" }, { label: "ok", description: "" }] }];
+	publishQuestionnaireAnswerHandle("lib-tok-2", questions, (result) => finished.push(result), () => false);
+	const questionnaire = askAnswerHandle("lib-tok-2")!;
+	assert.equal(questionnaire.answer({ option: 0 }), false);
+	assert.equal(questionnaire.answer({ option: 1 }), false);
+	assert.equal(questionnaire.answer({ text: "granted" }), false);
+	assert.deepEqual(finished, []);
+	assert.equal(choice.answer({ option: 2 }), true, "other options still answer");
+	assert.equal(questionnaire.answer({ option: 2 }), true);
+	assert.equal(finished.length, 2);
+});
+
+test("S10: send_prompt takes CRLF line ends as LF; a lone CR stays invalid", async () => {
+	const parsed = parseDesktopAction(envelope("send_prompt", { text: "one\r\ntwo\r\n" }), "s", NOW);
+	assert.ok("action" in parsed);
+	assert.equal(parsed.action.args.text, "one\ntwo\n");
+	assert.equal(code("send_prompt", { text: "x".repeat(3999) + "\r\n" }), "ok", "the bound counts the typed text");
+	assert.equal(code("send_prompt", { text: "one\rtwo" }), "invalid_action");
+});
+
+test("S10: an owner that holds the prompt for after compaction says so; a second one is refused", async () => {
+	const held = owners({ sendPrompt: (text) => (text === "first" ? { queued: true, after: "compaction" } : { compacting: true }) });
+	assert.deepEqual(await run(held.owners, "send_prompt", { text: "first" }), { ok: true, data: { queued: true, after: "compaction" } });
+	assert.deepEqual(await run(held.owners, "send_prompt", { text: "second" }), { ok: false, error: { code: "session_compacting", message: "Pi is compacting this session and already holds one prompt for after it; send this one when compaction ends." } });
+});
+
 test("S10: isAskAnswerHandle accepts only the handle shape", () => {
 	assert.equal(isAskAnswerHandle({ toolCallId: "c", answer: () => true }), true);
 	assert.equal(isAskAnswerHandle({ toolCallId: "", answer: () => true }), false);

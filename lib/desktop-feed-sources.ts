@@ -7,7 +7,8 @@ import { execFile } from "node:child_process";
 import { lstat, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { gentlePiConfigHome } from "./agent-home.ts";
-import { profilesFilePath, readProfilesFileResult } from "./agent-profiles.ts";
+import { profilesFilePath, readProfilesFileResult, readProfileWorkflow } from "./agent-profiles.ts";
+import type { DesktopFeedProfileCatalog } from "./desktop-feed.ts";
 import { resolveSessionProfile, sessionProfileLabel } from "./session-profile-freeze.ts";
 import { resolveSessionWorktree, worktreeGitEnvironment, type WorktreeIdentity, type WorktreeResolver } from "./session-worktree-registry.ts";
 import { DIFF_MAX_BYTES, type GitRunner, type LineCounter } from "./shell-changes.ts";
@@ -63,12 +64,16 @@ export async function processAncestors(ppid: number, depth: number, parentOf: Pa
 export interface DesktopFeedProfile {
 	name: string | undefined;
 	tier: "standard" | "fast" | undefined;
+	/** The saved profiles (S12), when the store reads as valid. */
+	catalog?: DesktopFeedProfileCatalog;
 }
 
 /**
  * The profile the status bar names, through the same single rule the shell's
  * active-profile reader applies (resolveSessionProfile + sessionProfileLabel),
- * and the orchestrator tier configured for it in the profiles store.
+ * the orchestrator tier configured for it in the profiles store, and (S12) the
+ * store's saved profiles as /gentle:profiles lists them, with the one this
+ * session routes with and the store's default.
  */
 export function createDesktopFeedProfileReader(env: NodeJS.ProcessEnv = process.env, resolveWorktree: WorktreeResolver = resolveSessionWorktree) {
 	let identity: WorktreeIdentity | undefined;
@@ -87,7 +92,14 @@ export function createDesktopFeedProfileReader(env: NodeJS.ProcessEnv = process.
 			const selected = resolveSessionProfile({ sessionId, cwd, configHome, resolveWorktree: () => identity, env });
 			const name = sessionProfileLabel(selected);
 			const configured = selected.kind === "explicit" ? selected.name : selected.profile?.name;
-			return { name, tier: configured ? tiers[configured] : undefined };
+			const catalog: DesktopFeedProfileCatalog | undefined = store.status === "valid"
+				? {
+					active: configured,
+					default: store.file.active,
+					items: Object.entries(store.file.profiles).map(([profile, config]) => ({ name: profile, config, mode: readProfileWorkflow(store.file, profile).orchestratorMode })),
+				}
+				: undefined;
+			return { name, tier: configured ? tiers[configured] : undefined, ...(catalog ? { catalog } : {}) };
 		} catch {
 			return { name: undefined, tier: undefined };
 		}

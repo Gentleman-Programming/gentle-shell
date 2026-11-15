@@ -184,7 +184,12 @@ test("S2: the snapshot carries every TUI field in the v1 schema shape", () => {
 		persona: null,
 		context: { percent: 42, tokens: 84_000, window: 200_000 },
 		cost: { total: 1.25, subscription: true },
-		usage: { provider: "anthropic", status: "ok", plan: "max", fetchedAt: 5, limits: [{ name: "all", limitReached: false, windows: [{ label: "5h", usedPercent: 30, windowSeconds: 18_000, resetAt: 9 }, { label: "7d", usedPercent: 12, windowSeconds: 604_800, resetAt: null }] }] },
+		usage: {
+			provider: "anthropic", status: "ok", plan: "max", fetchedAt: 5, note: null, limits: [{ name: "all", limitReached: false, windows: [{ label: "5h", usedPercent: 30, windowSeconds: 18_000, resetAt: 9 }, { label: "7d", usedPercent: 12, windowSeconds: 604_800, resetAt: null }] }],
+			// S12: every provider of the usage panel; without a scope, the session's own.
+			providers: [{ provider: "anthropic", status: "ok", plan: "max", fetchedAt: 5, note: null, limits: [{ name: "all", limitReached: false, windows: [{ label: "5h", usedPercent: 30, windowSeconds: 18_000, resetAt: 9 }, { label: "7d", usedPercent: 12, windowSeconds: 604_800, resetAt: null }] }] }],
+		},
+		profiles: null,
 		permission: { mode: "yolo", defaultMode: "normal", yolo: true, detail: "destructive confirmations remain" },
 		statuses: null,
 		integrations: null,

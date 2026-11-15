@@ -26,7 +26,9 @@ A row of two columns, filling the window (no title bar, macOS traffic lights at 
      A + opens a new space.
    - **Agents**, the rest: every agent, needs-you first, two lines each (session name and state,
      then app · space · address).
-   - **Plan usage**, 111px: "Plan usage · <plan>", 5h and 7d bars, when they reset, a gear for
+   - **Plan usage**, 111px for two windows (it grows with its rows): "Plan usage · <plan>", one
+     bar per window the TUI usage panel shows (5h and 7d, every limit), the other providers the
+     panel lists, when the first window resets, a refresh (the panel's `r`) and a gear for
      Herdr's settings.
 2. **The work column**:
    - **Tabs**, 42px: 34px tabs on the bottom edge, a state dot and the session name; the active tab

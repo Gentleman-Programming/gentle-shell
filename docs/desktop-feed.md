@@ -67,7 +67,8 @@ gone or that were not updated for a day. The folder is created `0700` and files
 | `persona` | always `null` (no reachable owner yet) |
 | `context` | `percent`, `tokens`, `window` |
 | `cost` | `total` (session spend), `subscription` |
-| `usage` | active provider's plan usage: `provider`, `status`, `plan`, `fetchedAt`, `limits[].windows[]` (`label`, `usedPercent`, `windowSeconds`, `resetAt`) |
+| `usage` | what the TUI usage panel (alt+u, `/gentle:usage`) shows, from the same owner: the session's provider at the top level (`provider`, `status`, `plan`, `fetchedAt`, `note`, `limits[]` with `name`, `limitReached` and every `windows[]` entry: `label`, `usedPercent`, `windowSeconds`, `resetAt`), and every provider the panel lists in `providers[]` (the session's own first, then its subagent routes; same fields). `note` is the panel's own words for a provider without windows (`usage arrives with the first response`, `no usage yet · r to fetch`, `fetch failed · r to retry`, `no subscription usage for this provider`), else `null`. `plan` is the plan name the provider reports (Codex does; Anthropic's headers carry none, so it stays `null` there, as in the panel). `null` before the owner answered |
+| `profiles` | the saved model profiles (`/gentle:profiles`' store): `active` (the profile this session routes with), `default` (the store's default for new sessions), `items[]` (`name`, `tier`, `mode`, `orchestrator` `{ model, thinking, tier }` or `null`, `roles[]` `{ agent, model, thinking }` alphabetical, `inherit` when unset, `truncated`), `truncated`; `null` when the store cannot be read |
 | `permission` | `mode` (`normal`, `auto`, `yolo`, `super-yolo`), `defaultMode`, `yolo`, `detail` |
 | `statuses`, `integrations` | always `null` (pi exposes extension statuses only to the footer owner) |
 | `todo` | `items[]` (`id`, `title`, `state`, `note`), `progress` (`done`, `total`, `open`), `current`, `truncated` |
@@ -92,6 +93,14 @@ consent, several questions or a multi-select question, and a provider consent or
 maintenance authorization the agent relays through an ask tool (below). The
 desktop then shows the options for reading only, with "Answer in Terminal".
 
+`usage` follows the panel's own fetches; the feed never asks a provider itself.
+gentle-shell fetches when the session starts (forced) and after each turn (at most
+once per provider every 5 minutes), and records the windows Claude and Codex send
+with every response. The feed reads the owner's store when the session starts and
+after each turn, then again 2 s and 12 s later (the fetch has no event of its own;
+its window is 10 s), and takes every response-carried snapshot as it is recorded.
+The desktop's refresh is the panel's `r` (`refresh_usage`, below).
+
 `commands.items` lists pi's built-in commands first (`source` `builtin`: `new`,
 `resume`, `fork`, `clone`, `tree`, `compact`, `name`, `export`, `session`, `copy`,
 `model`, `thinking`, … — every built-in but `/quit`, which is typed, never one click
@@ -105,7 +114,7 @@ desktop RPC's own `gentle:desktop` channel is never listed; source paths never
 reach the file.
 
 Arrays are capped (200 changes, 100 todo items, 50 jobs, 50 agents, 20 models,
-4 questions, 10 options, 200 commands); command descriptions are cut at 200
+4 questions, 10 options, 200 commands, 8 usage providers, 20 profiles of 40 roles); command descriptions are cut at 200
 characters; free text is cut at 500 characters (questions at 2000,
 paths at 1000/4096) and stripped of control characters. Readers should ignore an
 unknown `schema`.
@@ -147,6 +156,8 @@ whole `<agentDir>/desktop/` folder like any other sensitive path. An action file
 | `answer_question` | `{ toolCallId, option }` or `{ toolCallId, text }` | nothing is answered here: the session checks that `toolCallId` is the open `ask_user_choice` / single-question `ask_user_question` and answers the keys its real list takes (`up` to the top, `down` to the row, `enter`); the desktop presses them in the terminal, then types `text` into the list's own editor |
 | `abort_turn` | `{}` | the session's own abort, the one its TUI's Esc Esc runs (in the TUI, queued messages go back to the editor); refused with `not_working` while the agent is idle |
 | `send_prompt` | `{ text }` (1-4000 characters, not blank; new lines and tabs, no other control character; a CRLF line end counts as one new line) | pi's `sendUserMessage`, as if typed in the session's editor and submitted: a prompt while the agent is idle, a steer while it works (the TUI's Enter); trimmed like the editor. Refused with `question_open` while a question, an extension prompt or a consent is open. A prompt template or a skill (`/review …`, `/skill:…`) expands as in the editor; a pi built-in command, an extension command (`/gentle:mode`, …) or a `!` shell line is refused with `terminal_command` (they are TUI code with their own authority); a `/word` no command owns is plain text. Answers `{ queued }`. While pi runs a manual compaction (`/compact`) or a `/tree` navigation it refuses prompts, so the session holds the text, as the TUI editor queues it, and submits it once pi takes prompts again; it answers `{ queued: true, after: "compaction" }` (`{ queued: true }` when pi is busy with no agent run the session heard of yet). One prompt is held at a time: another one is refused with `session_compacting`; a held prompt the session ends before submitting is dropped with an error in that session's UI |
+| `refresh_usage` | `{}` or `{ provider }` (1-128 characters) | the usage owner's forced refresh, as desktop RPC `refresh_subscription_usage` and the TUI usage panel's `r`; answers `{ providers: [{ provider, status, refresh? }] }` (`refresh`: `unsupported` for a provider whose windows only come with responses, `out_of_scope` for a provider the session does not target); the snapshot's `usage` follows |
+| `apply_profile` | `{ name }` or `{ name, confirmation }` (each 1-128 characters) | `/gentle:profiles`' own "Use in this session", as desktop RPC `apply_profile` with mode `session` (never the global default, never another mode): the owner checks the name and binds the profile to this session. Answers `{ profile, mode, status, notes }` (`applied` or `not_applied`, with the screen's notices), or `status: "confirmation_required"` with `confirmation` `{ title, message, token }`: the desktop shows that dialog and, on Confirm, sends the same action with `confirmation: token` (the owner accepts it only while its dialog would still say the same). Owner refusals keep their codes: `unknown_profile`, `profile_apply_busy`, `profiles_unavailable`. Refused with `profile_while_busy` when its file was written while the session was busy (the escalation rule below) |
 | `answer_question` with `via: "session"` | `{ toolCallId, option, via }` or `{ toolCallId, text, via }` | the same checks as the key path (still the open question, answerable from the desktop, an existing option or the list's free-text row), then the ask tool's own list takes the answer, exactly as a click or Enter in it would; answers `{ toolCallId, answered: true }`, or `answer_in_terminal` ("Answer this question in that session's terminal.") when the list has no handle (a Gentle Shell older than this one) |
 
 The session refuses, removes and answers (code in `error.code`) a file that is a
@@ -158,8 +169,9 @@ stop while the agent is idle (`not_working`), a permission escalation written
 while the session was busy (`escalation_while_busy`), a prompt while a question is
 open (`question_open`), a prompt that is a command or shell line only the terminal
 runs (`terminal_command`), a second prompt while one is held for after a
-compaction (`session_compacting`), or a prompt to a session without a prompt
-owner (`unsupported`).
+compaction (`session_compacting`), a prompt to a session without a prompt
+owner (`unsupported`), or a profile switch written while the session was busy
+(`profile_while_busy`).
 
 **Prompts are not human evidence.** A `send_prompt` reaches pi with the input
 source `extension`, as any extension message does, never `interactive`: Gentle
@@ -185,7 +197,9 @@ the permission owner is asked, when its file was last written (the later of the
 file's `mtime` and `ctime`, never `createdAt`) while the agent worked, a
 background job or a subagent of the session ran, within 2 s after that activity
 ended, or before the session started. Lowering the mode, `abort_turn` and the
-`cancel_*` actions are always accepted. The desktop's confirmation dialog stays
+`cancel_*` actions are always accepted. `apply_profile` follows the same activity
+rule (`profile_while_busy`): a profile changes which models the agent and its
+subagents run. The desktop's confirmation dialog stays
 the human gate for Super-YOLO; the session does not ask for a dialog nonce,
 because a nonce file would be written by the same user the agent runs as and
 proves nothing the activity check does not.

@@ -67,7 +67,7 @@ Shell show and answer like the others, but take messages from the desktop only a
 
 | Region | Shows |
 |---|---|
-| **Sidebar** | **Projects** (Herdr spaces, and the project of each session no space holds: "1 Herdr · 2 TUI · $4.74", how many need you), two sections of sessions, each with its count and the ones that need you first: **Herdr · In this window** (every agent in the window) and **TUI · Other terminals**; and **Plan usage** (5h and 7d windows of the active provider, and when they reset). An empty section says so in one line. |
+| **Sidebar** | **Projects** (Herdr spaces, and the project of each session no space holds: "1 Herdr · 2 TUI · $4.74", how many need you), two sections of sessions, each with its count and the ones that need you first: **Herdr · In this window** (every agent in the window) and **TUI · Other terminals**; and **Plan usage** (what the TUI usage panel, alt+u, shows: the plan name when the provider reports one, every window of the session's provider, such as 5h and 7d, the other providers the panel lists with their windows or its note, when the first window resets, and a refresh button, the panel's `r`; the block grows with its rows). An empty section says so in one line. |
 | **Tabs** | One tab per session in the shown project, named after the session, with a state dot (needs you, working, done, idle) and its kind badge: the space's tabs, then the project's sessions in other terminals. |
 | **Chat header** | Session name, its kind badge and the **Chat \| Terminal** switch (for a TUI session, where it runs instead); then project / branch · changed files, and the facts: Model · effort · profile, Persona, Ctx, Cost ("sub" on a subscription, as the TUI footer says), and the permission mode. |
 | **Chat** | The conversation: your messages, answers in markdown, thinking, tool calls (read-only runs grouped as "Explored"), diffs, subagent cards, and the open question. The composer sits at the bottom. |
@@ -81,7 +81,7 @@ go back. Nothing is copied: the chat and the TUI are two views of one session.
 
 Some facts are not published yet and show as empty: the persona ("No persona"), integrations
 ("Engram and MCP status are not published by this session yet"), and plan usage for providers
-that report none ("Plan usage unavailable").
+that report none (the usage panel's own note, such as "usage arrives with the first response").
 
 ## Controls
 
@@ -93,6 +93,7 @@ that report none ("Plan usage unavailable").
 | **+** next to Projects | Opens a new project (Herdr's `space.new`). |
 | Agent row | **Herdr** section: focuses that agent's pane. **TUI** section: shows that session in every region. |
 | Project row of a project no space holds | Shows its session that needs you, else its newest one. |
+| Refresh in Plan usage | Fetches the subscription windows again (the usage panel's `r`). |
 | Gear in Plan usage | Opens Herdr's settings. |
 | Tab | Click selects; drag reorders; double-click renames; right-click opens the tab menu; the wheel moves between tabs. A TUI session's tab: click shows it. |
 | **+** after the tabs | Starts a new Gentle Shell session in the project's folder. |
@@ -103,7 +104,7 @@ that report none ("Plan usage unavailable").
 | Control | Does |
 |---|---|
 | **Chat \| Terminal** | Switches the centre between the chat and the real TUI. |
-| **Model** | Opens `/gentle:profiles` in the Terminal (models, effort, profiles). |
+| **Model** | Opens the profiles menu: every saved profile (the session's one checked, the default marked), the per-agent models and thinking of the hovered profile, **Apply** (`/gentle:profiles`' "Use in this session", through the session's own apply; its confirmation dialog shows when the owner asks for one; refused while the agent, a job or a subagent runs) and **Manage in Terminal** (`/gentle:profiles`, Herdr sessions). Works for Herdr and TUI sessions. The ⌘K palette lists the same profiles and "Refresh plan usage". |
 | **Persona** | Opens `/gentle:persona` in the Terminal. |
 | Permission pill | Opens the mode menu: **Normal**, **Auto**, **YOLO**, **Super-YOLO**. Super-YOLO asks in a dialog first. See [Permissions and safety](#permissions-and-safety). |
 

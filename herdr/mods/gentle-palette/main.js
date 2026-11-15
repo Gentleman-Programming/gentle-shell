@@ -10,6 +10,9 @@
 //                  fork, compact, name, export, …) from the session's snapshot `commands`
 //   View           Chat, Terminal, Expand all / Collapse all, the inspector tabs, with their keys
 //   Permission     the four live modes (the chat's menu path: Super-YOLO asks first)
+//   Profiles       the saved model profiles (S12), the session's one checked: the chat applies the
+//                  chosen one in this session (apply_profile, its confirmation dialog included);
+//                  and "Refresh plan usage" (the usage panel's r, refresh_usage)
 //   Commands       the session's own commands (extension commands, prompt templates, skills)
 // Choosing a row runs it on the path the rest of the desktop uses (actions.js, a byte-identical
 // copy): a slash command is typed into the TUI with `hc send` (refused while a question is open),
@@ -93,6 +96,16 @@ export function paletteRows(feed, sessions, blockedAgents, elsewhere = false) {
   const mode = feed?.permission?.mode;
   if (feed) {
     for (const m of PERM) add("Permission", { id: `mode-${m.mode}`, label: m.label, detail: m.about, icon: "shield", tone: m.tone, checked: m.mode === mode, act: { kind: "mode", mode: m.mode } });
+  }
+  if (feed) {
+    const list = feed.profiles;
+    for (const pr of Array.isArray(list?.items) ? list.items : []) {
+      const on = pr.name === list.active;
+      const roles = Array.isArray(pr.roles) ? pr.roles.length : 0;
+      const detail = [on ? "This session's profile" : "Use in this session", `${roles} ${roles === 1 ? "role" : "roles"}`, pr.tier].filter(Boolean).join(" · ");
+      add("Profiles", { id: `profile-${pr.name}`, label: pr.name, detail, icon: "bot", checked: on, tag: list.default === pr.name ? "default" : null, act: { kind: "profile", name: pr.name } });
+    }
+    add("Profiles", { id: "usage-refresh", label: "Refresh plan usage", detail: "Fetch the subscription windows again, as the usage panel's r", icon: "stats", act: { kind: "usage" } });
   }
   for (const c of commands.filter((c) => c.source !== "builtin")) {
     add("Commands", { id: `cmd-${c.name}`, label: `/${c.name}`, mono: true, detail: c.description, tag: TAG[c.source] ?? c.source, icon: c.terminal ? "term" : "cmd", act: { kind: "command", command: c } });
@@ -215,6 +228,15 @@ export default class GentlePalette extends View {
     } else if (act.kind === "mode") {
       this.close();
       chatRequest({ kind: "mode", mode: act.mode });
+    } else if (act.kind === "profile") {
+      // The chat runs it: the owner may ask for a confirmation dialog first.
+      this.close();
+      chatRequest({ kind: "profile", name: act.name });
+    } else if (act.kind === "usage") {
+      this.work(row.id, cx, async (cx) => {
+        const r = await sendAction(cx, feed, "refresh_usage", {});
+        return r.ok ? null : errorText(r);
+      }, () => {});
     } else if (act.kind === "stop") {
       this.work(row.id, cx, async (cx) => {
         const r = await sendAction(cx, feed, "abort_turn", {});

@@ -179,10 +179,12 @@ function facts(v, p) {
 
   const model = [prettyModel(s?.model?.id ?? f.model), s?.model?.effort ?? (s ? null : f.thinking), s?.model?.profile?.name]
     .filter(Boolean).join(" · ");
-  // Model and Persona open the TUI's own screens (/gentle:profiles, /gentle:persona) in the Terminal.
-  const modelFact = fact("f-model", [k("Model"), model ? div().child(model) : none()],
-    "Model · effort · profile (opens /gentle:profiles in the Terminal)").cursor_pointer().hover((st) => st.bg(p.selected))
-    .on_click((_e, cx) => v.command("model", "/gentle:profiles", cx));
+  // Model opens the profiles menu (S12: list, active, per-agent models, Apply); Persona opens the
+  // TUI's own screen (/gentle:persona) in the Terminal.
+  // A narrow card keeps a compact "Model ▾" so the profiles menu stays one click away.
+  const modelFact = (compact) => profileMenu(v, p, fact("f-model", [k("Model"), ...(compact ? [] : [model ? div().child(model) : none()]), icon("down", 13).text_color(p.muted)],
+    compact ? `Model · ${model || "—"} (switch profile)` : "Model · effort · profile (switch profile)").cursor_pointer().hover((st) => st.bg(p.selected))
+    .when(v.busy === "profile", (el) => el.opacity(0.6)));
   const persona = typeof s?.persona === "string" ? s.persona : s?.persona?.name ?? null;
   const personaFact = fact("f-persona", [icon("user", 13).text_color(p.muted), persona ? div().child(persona) : none("No persona")],
     "Persona (opens /gentle:persona in the Terminal)").cursor_pointer().hover((st) => st.bg(p.selected))
@@ -206,15 +208,16 @@ function facts(v, p) {
   const est = {
     persona: 14 + 13 + 6 + textW(persona ?? "No persona"),
     ctx: 14 + 8 + textW("Ctx") + 6 + 46 + 6 + textW(pct === null ? "—" : `${pct}%`, 12, true),
-    model: 14 + 8 + textW("Model") + 6 + textW(model || "—"),
+    model: 14 + 8 + textW("Model") + 6 + textW(model || "—") + 6 + 13,
     cost: 14 + 8 + textW("Cost") + 6 + textW(sessionCost(total), 12, true) + (sub ? 6 + textW("sub") : 0),
   };
   const room = Number.isFinite(v.headW) ? v.headW - 28 - 16 - 180 : Infinity;
   let need = 20 + 13 + 6 + textW(permLabel) + 6 + 13 + Object.values(est).reduce((a, b) => a + b, 0);
   const drop = new Set();
-  for (const k of ["persona", "ctx", "model", "cost"]) if (need > room) { drop.add(k); need -= est[k]; }
+  const compactModel = 14 + 8 + textW("Model") + 6 + 13;
+  for (const k of ["persona", "ctx", "model", "cost"]) if (need > room) { drop.add(k); need -= est[k] - (k === "model" ? compactModel : 0); }
   return h_flex().flex_none().items_center().gap(14).text_size(12)
-    .when(!drop.has("model"), (el) => el.child(modelFact))
+    .child(modelFact(drop.has("model")))
     .when(!drop.has("persona"), (el) => el.child(personaFact))
     .when(!drop.has("ctx"), (el) => el.child(ctxFact))
     .when(!drop.has("cost"), (el) => el.child(costFact))
@@ -259,6 +262,79 @@ function permission(v, p) {
   return Popover.new("perm-menu").anchor("top_right").open(Boolean(v.permOpen))
     .on_open_change((open, cx) => { v.permOpen = open; cx.notify(); })
     .trigger(pill).content(menu);
+}
+
+// The profiles menu (S12), in the permission menu's look (.perm-menu l.102-112): the saved
+// profiles (/gentle:profiles' store) with the session's one checked, the per-agent models of the
+// hovered (or selected) profile, Apply ("Use in this session", through the session's own
+// /gentle:profiles apply), and "Manage in Terminal" (the TUI screen, Herdr sessions only).
+const PROFILE_ROWS = 12; // agent rows shown before "+N more"
+function profileMenu(v, p, trigger) {
+  const list = v.snap?.profiles ?? null;
+  const active = list?.active ?? null;
+  // The session's profile first, then the store's order.
+  const items = (Array.isArray(list?.items) ? list.items : []).slice().sort((a, b) => (b.name === active) - (a.name === active));
+  const shown = items.find((i) => i.name === v.profAt) ?? items.find((i) => i.name === active) ?? items[0] ?? null;
+  const tag = (text, color) => div().flex_none().px(5).rounded(R.kbd).border(1).border_color(p.lineStrong)
+    .font_family(mono()).text_size(10.5).line_height("14px").text_color(color ?? p.muted).child(text);
+  const about = (i) => [`${i.roles.length}${i.truncated ? "+" : ""} ${i.roles.length === 1 ? "role" : "roles"}`, i.tier, i.mode && i.mode !== "organic" ? i.mode : null]
+    .filter(Boolean).join(" · ");
+  const item = (i) => {
+    const on = i.name === active;
+    const picked = i.name === shown?.name;
+    return h_flex().id(`prof-${i.name}`).w_full().items_start().gap(8).px(8).py(7).rounded(R.inner).cursor_pointer()
+      .when(picked, (el) => el.bg(p.selected)).hover((st) => st.bg(p.selected))
+      .tooltip(on ? `${i.name} is this session's profile` : `Show ${i.name}; Apply uses it in this session`)
+      .on_mouse_move((_e, cx) => { if (v.profAt !== i.name) { v.profAt = i.name; cx.notify(); } })
+      .on_click((_e, cx) => { v.profAt = i.name; cx.notify(); })
+      .child(div().w(18).h(18).flex_none().items_center().justify_center().flex()
+        .when(on, (el) => el.child(icon("check", 13).text_color(p.accent))))
+      .child(v_flex().flex_1().min_w(0).gap(2)
+        .child(h_flex().gap(6).items_center()
+          .child(div().font_semibold().text_size(13).text_color(p.text).truncate().child(i.name))
+          .when(list?.default === i.name, (el) => el.child(tag("default"))))
+        .child(div().text_size(12).text_color(p.muted).child(about(i))));
+  };
+  const route = (agent, r, key) => h_flex().id(key).w_full().gap(8).items_baseline().px(8).py(2).text_size(12)
+    .tooltip(`${agent}: ${r.model}${r.thinking && r.thinking !== "inherit" ? ` · ${r.thinking}` : ""}`)
+    .child(div().w(132).flex_none().truncate().font_family(mono()).text_size(11.5).text_color(p.muted).child(agent))
+    .child(div().flex_1().min_w(0).truncate().text_color(p.text).child(prettyModel(r.model) || r.model))
+    .when(Boolean(r.thinking) && r.thinking !== "inherit", (el) => el.child(div().flex_none().text_color(p.muted).child(r.thinking)));
+  const detail = shown ? v_flex().w_full().gap(1).pt(6).mt(2).border_t(1).border_color(p.line)
+    .when(Boolean(shown.orchestrator), (el) => el.child(route("orchestrator", shown.orchestrator, "prof-orch")))
+    .children(shown.roles.slice(0, PROFILE_ROWS).map((r) => route(r.agent, r, `prof-role-${r.agent}`)))
+    .when(shown.roles.length > PROFILE_ROWS || shown.truncated, (el) => el.child(div().px(8).py(2).text_size(11.5).text_color(p.faint)
+      .child(`+${Math.max(0, shown.roles.length - PROFILE_ROWS)} more in /gentle:profiles`)))
+    .when(!shown.roles.length && !shown.orchestrator, (el) => el.child(div().px(8).py(2).text_size(12).text_color(p.muted)
+      .child("No routing entries: every agent inherits its default model."))) : null;
+  const canApply = Boolean(shown) && shown.name !== active && !v.busy;
+  const apply = h_flex().id("prof-apply").flex_none().items_center().px(10).py(5).rounded(R.sm).text_size(12).font_semibold()
+    .when(canApply, (el) => el.bg(p.accent).text_color("#1a1218").cursor_pointer().hover((st) => st.opacity(0.88))
+      .on_click((_e, cx) => v.applyProfile(shown.name, cx)))
+    .when(!canApply, (el) => el.border(1).border_color(p.btnLine).text_color(p.faint))
+    .tooltip(shown && shown.name === active ? `${shown.name} is already this session's profile` : "Use this profile in this session (as /gentle:profiles does)")
+    .child(shown && shown.name === active ? "In use" : "Apply");
+  const manage = !v.elsewhere()
+    ? div().id("prof-manage").text_size(12).text_color(p.muted).cursor_pointer().hover((st) => st.text_color(p.accentSoft))
+      .tooltip("Opens /gentle:profiles in the Terminal").on_click((_e, cx) => { v.profOpen = false; v.command("model", "/gentle:profiles", cx); })
+      .child("Manage in Terminal")
+    : div().text_size(12).text_color(p.faint).child("Manage in that session's terminal");
+  const empty = !list
+    ? "This session publishes no profiles. Update Gentle Shell and restart it."
+    : "No saved profiles. Create them with /gentle:profiles.";
+  const menu = v_flex().mt(6).w(420).p(6).bg(p.raised).border(1).border_color(p.lineStrong).rounded(R.md).shadow_lg()
+    .text_color(p.text)
+    .child(h_flex().px(8).pt(2).pb(6).items_center().justify_between()
+      .child(div().font_family(mono()).font_weight(600).text_size(11).text_color(p.muted).child("PROFILES"))
+      .when(Boolean(active), (el) => el.child(div().text_size(12).text_color(p.muted).child(`Session: ${active}`))))
+    .when(!items.length, (el) => el.child(div().px(8).py(7).text_size(12.5).text_color(p.muted).child(empty)))
+    .child(v_flex().id("prof-list").w_full().max_h(260).overflow_y_scrollbar().children(items.map(item)))
+    .when(Boolean(detail), (el) => el.child(detail))
+    .child(h_flex().px(8).pt(8).pb(2).items_center().justify_between().child(manage).when(Boolean(shown), (el) => el.child(apply)));
+  // The menu's top-left corner under the Model fact, 6px down (the permission menu's offset).
+  return Popover.new("prof-menu").anchor("top_left").open(Boolean(v.profOpen))
+    .on_open_change((open, cx) => { v.profOpen = open; if (open) v.profAt = null; cx.notify(); })
+    .trigger(trigger).content(menu);
 }
 
 // ---------------------------------------------------------------- 4b log (l.115-172)

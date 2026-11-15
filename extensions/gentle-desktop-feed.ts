@@ -5,6 +5,7 @@ import { CLAUDE_BRIDGE_PROVIDER } from "../lib/bridge-cost.ts";
 import { isHomeOrBroadUserDirectory } from "../lib/bounded-writer-admission.ts";
 import {
 	buildDesktopFeedSnapshot,
+	clipText,
 	createDesktopFeedScheduler,
 	DESKTOP_FEED_LIMITS,
 	DESKTOP_FEED_QUESTION_TOOLS,
@@ -23,6 +24,8 @@ import { createDesktopFeedProfileReader, createUntrackedLineCounter, desktopFeed
 import { DesktopAgentsBridge } from "../lib/desktop-agents-service.ts";
 import { DesktopJobsBridge } from "../lib/desktop-jobs-service.ts";
 import { DesktopUsageBridge } from "../lib/desktop-usage-service.ts";
+import { DesktopProfilesBridge } from "../lib/desktop-rpc-profiles.ts";
+import type { DesktopRpcOutcome } from "../lib/desktop-rpc.ts";
 import type { DesktopAgentEntry } from "../lib/desktop-rpc-agents.ts";
 import type { DesktopJobEntry } from "../lib/desktop-rpc-jobs.ts";
 import type { DesktopUsageEntry } from "../lib/desktop-rpc-usage.ts";
@@ -93,6 +96,12 @@ interface Live {
 	jobs: DesktopJobEntry[] | undefined;
 	agents: DesktopAgentEntry[] | undefined;
 	usage: DesktopUsageEntry | undefined;
+	/** Every provider of the usage panel's scope, as the owner last answered (S12). */
+	usageProviders: DesktopUsageEntry[] | undefined;
+	/** The pending follow-up read of the usage owner, after a point where the TUI fetches. */
+	usageFollow: unknown;
+	/** Counts owner snapshots pushed to the feed: a read started before one is older than it. */
+	usageEpoch: number;
 	permission: { mode: string; defaultMode?: string; detail?: string } | undefined;
 	profile: DesktopFeedProfile;
 	branch: string | null | undefined;
@@ -102,6 +111,7 @@ interface Live {
 	agentsBridge: DesktopAgentsBridge;
 	usageBridge: DesktopUsageBridge;
 	permissionBridge: DesktopPermissionBridge;
+	profilesBridge: DesktopProfilesBridge;
 	actions: DesktopActionInbox | undefined;
 	/** When the agent, a job or a subagent could act: desktop escalations written then are refused (T7). */
 	activity: DesktopActivityTimeline;
@@ -117,12 +127,37 @@ interface Live {
 	closed: boolean;
 }
 
+/**
+ * S12: when the feed reads the usage owner again after a point where the TUI fetches
+ * (its forced fetch at session start, its throttled one after a turn): the fetch
+ * runs inside gentle-shell and tells no event when it settles, so the feed reads the
+ * owner's store once soon and once after the fetch window (10 s by default). Reads
+ * are in-memory: the feed itself never asks a provider.
+ */
+const USAGE_FOLLOW_MS = [2_000, 12_000] as const;
+/** Confirmation text and notes handed to the desktop stay inside its 4 KiB answer. */
+const PROFILE_ANSWER_TEXT = 1500;
+const PROFILE_ANSWER_NOTES = 4;
+
 /** How often a held prompt checks that pi takes prompts again (only while one is held). */
 const HELD_PROMPT_POLL_MS = 500;
 const HELD_PROMPT_DROPPED = "Gentle Shell Desktop: a prompt sent during compaction was not delivered (the session ended).";
 
 const record = (value: unknown): Record<string, unknown> =>
 	value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+
+// The owner's apply answer, bounded for the desktop's 4 KiB result: the dialog text and the
+// notes are cut (the confirmation token still binds the owner's full dialog).
+function profileAnswer(outcome: DesktopRpcOutcome | undefined): DesktopRpcOutcome | undefined {
+	if (!outcome || !outcome.ok) return outcome;
+	const data = record(outcome.data);
+	const cut = (value: unknown) => clipText(value, PROFILE_ANSWER_TEXT);
+	const answer: Record<string, unknown> = { profile: data.profile, mode: data.mode, status: data.status };
+	const confirmation = record(data.confirmation);
+	if (data.confirmation !== undefined) answer.confirmation = { title: cut(confirmation.title), message: cut(confirmation.message), token: confirmation.token };
+	if (Array.isArray(data.notes)) answer.notes = data.notes.slice(0, PROFILE_ANSWER_NOTES).map((note) => ({ level: record(note).level, text: cut(record(note).text) }));
+	return { ok: true, data: answer };
+}
 
 export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 	return (pi: ExtensionAPI): void => {
@@ -217,6 +252,7 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 					profile: session.profile,
 					context: context ? { percent: context.percent, tokens: context.tokens, contextWindow: context.contextWindow } : undefined,
 					usage: session.usage,
+					usageProviders: session.usageProviders,
 					permission: session.permission,
 					todo: session.todo,
 					changes: session.changes.scanned ? { model: session.changes.tracker.model, worktrees: session.changes.tracker.worktrees, uncounted: session.changes.lines.uncounted() } : undefined,
@@ -252,14 +288,44 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 			}, () => undefined);
 		};
 
-		const refreshUsage = (session: Live) => {
+		// The usage panel's scope as the owner answered it: the session's provider is `usage`.
+		const takeUsage = (session: Live, providers: DesktopUsageEntry[], only: string | undefined) => {
+			if (only === undefined) session.usageProviders = providers;
+			else {
+				const list = [...(session.usageProviders ?? [])];
+				for (const entry of providers) {
+					const at = list.findIndex((item) => item.provider === entry.provider);
+					if (at >= 0) list[at] = entry; else list.push(entry);
+				}
+				session.usageProviders = list;
+			}
+			const active = session.ctx.model?.provider;
+			session.usage = session.usageProviders.find((entry) => entry.provider === active);
+		};
+
+		// Reads the owner's store (never a fetch). `follow`: the TUI fetches now, so read
+		// again on USAGE_FOLLOW_MS to show what that fetch brings.
+		const refreshUsage = (session: Live, follow = false) => {
+			if (follow) followUsage(session, 0);
+			const epoch = session.usageEpoch;
 			void session.usageBridge.handle("get_subscription_usage", {}).then((outcome) => {
-				if (!current(session) || !outcome || !outcome.ok) return;
-				const providers = (record(outcome.data).providers ?? []) as DesktopUsageEntry[];
-				const active = session.ctx.model?.provider;
-				session.usage = providers.find((entry) => entry.provider === active);
+				// A snapshot pushed while this read was in flight is newer than its answer.
+				if (!current(session) || !outcome || !outcome.ok || epoch !== session.usageEpoch) return;
+				takeUsage(session, (record(outcome.data).providers ?? []) as DesktopUsageEntry[], undefined);
 				schedule();
 			}, () => undefined);
+		};
+		const followUsage = (session: Live, step: number) => {
+			if (session.usageFollow !== undefined) { timers.clear(session.usageFollow); session.usageFollow = undefined; }
+			const at = USAGE_FOLLOW_MS[step];
+			if (at === undefined || !current(session)) return;
+			const wait = at - (step > 0 ? USAGE_FOLLOW_MS[step - 1]! : 0);
+			session.usageFollow = timers.set(() => {
+				session.usageFollow = undefined;
+				if (!current(session)) return;
+				refreshUsage(session);
+				followUsage(session, step + 1);
+			}, wait);
 		};
 
 		const refreshPermission = (session: Live) => {
@@ -315,12 +381,13 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 			if (!session) return;
 			session.closed = true;
 			if (session.heldTimer !== undefined) { try { timers.clear(session.heldTimer); } catch { /* gone */ } session.heldTimer = undefined; }
+			if (session.usageFollow !== undefined) { try { timers.clear(session.usageFollow); } catch { /* gone */ } session.usageFollow = undefined; }
 			if (session.held) {
 				session.held = undefined;
 				try { session.ctx.ui?.notify?.(HELD_PROMPT_DROPPED, "error"); } catch { /* the UI is gone */ }
 			}
 			try { session.actions?.close(); } catch { /* never break shutdown */ }
-			for (const bridge of [session.jobsBridge, session.agentsBridge, session.usageBridge, session.permissionBridge]) {
+			for (const bridge of [session.jobsBridge, session.agentsBridge, session.usageBridge, session.permissionBridge, session.profilesBridge]) {
 				try { bridge.reset(); } catch { /* owner teardown */ }
 			}
 			try { session.yolo?.unobserve(); session.yolo?.adapter.dispose(); } catch { /* owner teardown */ }
@@ -343,12 +410,12 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 				realCwd: realpath(ctx.cwd), ancestors: [],
 				working: ctx.isIdle?.() === false, streaming: false, blocked: 0, blockedLabel: undefined, blockedAt: 0,
 				askTool: undefined, askShape: undefined, uiPrompt: undefined, review: undefined, todo,
-				jobs: undefined, agents: undefined, usage: undefined, permission: undefined,
+				jobs: undefined, agents: undefined, usage: undefined, usageProviders: undefined, usageFollow: undefined, usageEpoch: 0, permission: undefined,
 				profile: { name: undefined, tier: undefined }, branch: undefined,
 				changes: { tracker: new WorktreeChangesTracker(gitFor(ctx.cwd), gitFor, lines.forRoot, roots), lines, scanned: false, requested: false },
 				stats: undefined,
 				jobsBridge: new DesktopJobsBridge(pi), agentsBridge: new DesktopAgentsBridge(pi), usageBridge: new DesktopUsageBridge(pi),
-				permissionBridge: new DesktopPermissionBridge(pi), actions: undefined,
+				permissionBridge: new DesktopPermissionBridge(pi), profilesBridge: new DesktopProfilesBridge(pi), actions: undefined,
 				activity: createDesktopActivityTimeline(activityClock), providerRun: undefined, runs: 0,
 				yolo: undefined, compacting: false, held: undefined, heldTimer: undefined, closed: false,
 			};
@@ -383,12 +450,15 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 			session.usageBridge.attach(ctx);
 			session.usageBridge.wire((_event, data) => {
 				if (!current(session)) return;
-				const entry = ((data.snapshots ?? []) as DesktopUsageEntry[]).find((item) => item.provider === session.ctx.model?.provider);
-				if (!entry) return;
-				session.usage = entry;
+				// A response-carried (or refreshed) snapshot: one provider of the panel's scope.
+				const entries = ((data.snapshots ?? []) as DesktopUsageEntry[]).filter((item) => item && typeof item.provider === "string");
+				if (entries.length === 0) return;
+				session.usageEpoch += 1;
+				takeUsage(session, entries, entries[0]!.provider);
 				schedule();
 			});
-			refreshUsage(session);
+			// gentle-shell fetches at session start (forced): read now, and again once it settled.
+			refreshUsage(session, true);
 			void discoverYoloUiAdapter(pi, ctx).then((adapter) => {
 				if (!adapter) return;
 				if (!current(session)) { try { adapter.dispose(); } catch { /* owner teardown */ } return; }
@@ -411,6 +481,7 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 		// bound to this session; each owner still decides.
 		const openActions = (session: Live) => {
 			session.permissionBridge.attach(session.ctx);
+			session.profilesBridge.attach(session.ctx);
 			const actions = createDesktopActionInbox({
 				agentDir,
 				sessionId: session.sessionId,
@@ -454,6 +525,22 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 						const handle = current(session) ? askAnswerHandle(toolCallId) : undefined;
 						if (!handle) return false;
 						try { return handle.answer(answer) === true; } catch { return false; }
+					},
+					// S12: the TUI panel's r. The answer names each provider's status; the snapshot carries the rest.
+					refreshUsage: async (provider) => {
+						const outcome = await session.usageBridge.handle("refresh_subscription_usage", provider === undefined ? {} : { provider });
+						if (!outcome || !outcome.ok || !current(session)) return outcome;
+						const providers = (record(outcome.data).providers ?? []) as DesktopUsageEntry[];
+						session.usageEpoch += 1;
+						takeUsage(session, providers, provider);
+						schedule();
+						return { ok: true, data: { providers: providers.map((entry) => ({ provider: entry.provider, status: entry.status, ...(entry.refresh ? { refresh: entry.refresh } : {}) })) } };
+					},
+					// S12: /gentle:profiles' "Use in this session", through its own apply; never the global default.
+					applyProfile: async (name, confirmation) => {
+						const outcome = await session.profilesBridge.handle("apply_profile", { profile: name, mode: "session", ...(confirmation === undefined ? {} : { confirmation }) });
+						if (current(session)) refreshProfile(session);
+						return profileAnswer(outcome);
 					},
 					confirmEscalation: async (from, to) => {
 						const ui = session.ctx.ui as { confirm?: ExtensionContext["ui"]["confirm"] } | undefined;
@@ -531,7 +618,8 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 			session.streaming = false;
 			markActivity(session);
 			refreshChanges(session);
-			refreshUsage(session);
+			// gentle-shell's agent_end fetch (throttled to 5 minutes per provider): read, then follow it.
+			refreshUsage(session, true);
 			refreshPermission(session);
 			refreshProfile(session);
 		});

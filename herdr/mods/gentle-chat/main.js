@@ -56,6 +56,10 @@ const PROMPT_REFUSALS = {
   session_compacting: "A message is already waiting for compaction to finish.",
 };
 const promptRefusal = (r) => PROMPT_REFUSALS[r?.error?.code] ?? null;
+// An apply_profile refusal in words (S12): a session from before desktop profile switching.
+const PROFILE_REFUSALS = {
+  unknown_kind: "This session started before desktop profile switching: use /gentle:profiles in its terminal, or restart it.",
+};
 const questionKey = (q) => (q ? `${q.toolCallId ?? ""}|${q.openedAt ?? ""}|${q.question ?? ""}` : null);
 
 export default class GentleChat extends View {
@@ -87,6 +91,8 @@ export default class GentleChat extends View {
     this.sending = false;
     this.typing = false; // the composer has the keyboard
     this.permOpen = false;
+    this.profOpen = false; // the profiles menu (S12), on the header's Model fact
+    this.profAt = null; // the profile the menu shows the agents of (hovered or picked)
     this.answered = null; // { key, index, custom } once an option of the open question was picked
     this.busy = null; // the desktop action in flight ("perm", "stop-<id>", "attach", …), for its pending look
     this.notice = null; // one calm line under the composer after an action that has no other trace
@@ -130,8 +136,8 @@ export default class GentleChat extends View {
 
   // Key commands ("<key>": "gentle-chat.<command>" in keys.json, or `herdr-app do gentle-chat.<command>`;
   // herdr/keys.json binds them): chat, terminal, toggle (Chat ↔ Terminal), perm (opens the
-  // permission menu), mode-<normal|auto|yolo|super-yolo> (the menu's own path: Super-YOLO asks in
-  // a dialog first), stop (the agent's turn, as Esc Esc), palette (the Gentle commands palette)
+  // permission menu), profiles (opens or closes the profiles menu, S12), mode-<normal|auto|yolo|super-yolo>
+  // (the menu's own path: Super-YOLO asks in a dialog first), stop (the agent's turn, as Esc Esc), palette (the Gentle commands palette)
   // request (a palette row: the slash command it names, see gentle-palette), and the minimal
   // view's expand (⌘O: every row open ↔ the minimal view), expand-all and collapse-all (S11).
   commands(cx) {
@@ -144,6 +150,7 @@ export default class GentleChat extends View {
           else if (c === "chat" || c === "terminal") this.go(c, cx);
           else if (c === "toggle") this.go(this.showing() ? "terminal" : "chat", cx);
           else if (c === "perm") this.permOpen = true;
+          else if (c === "profiles") { this.profOpen = !this.profOpen; this.profAt = null; }
           else if (c === "stop") this.stop(cx);
           else if (c === "palette") this.palette();
           else if (c === "expand") this.expandToggle(cx);
@@ -610,6 +617,10 @@ export default class GentleChat extends View {
       if (PERM.some((m) => m.mode === req.mode)) this.setMode(req.mode, cx);
       return;
     }
+    if (req.kind === "profile") {
+      if (typeof req.name === "string" && req.name) this.applyProfile(req.name, cx);
+      return;
+    }
     if (typeof req.text !== "string" || !req.text.startsWith("/")) return;
     if (req.args) {
       // It needs an argument: the chat shows with "/name " in the composer.
@@ -636,6 +647,32 @@ export default class GentleChat extends View {
       title: "Switch this session to Super-YOLO?",
       detail: "The agent runs ordinary and destructive shell work without asking; private paths stay blocked and consent prompts remain. Only this session changes. The session accepts it only while its agent, jobs and subagents are idle.",
     }, go);
+  }
+
+  // S12: "Use in this session" through the session's own /gentle:profiles apply (apply_profile).
+  // When the owner shows a dialog (the routing it changes), the same words show here, and Confirm
+  // sends its token back; the owner checks it against what it would show now.
+  applyProfile(name, cx, confirmation = null) {
+    this.profOpen = false;
+    cx.notify();
+    if (!confirmation && name === this.snap?.profiles?.active) { this.notice = `"${name}" is already this session's profile.`; return; }
+    this.act("profile", cx, async (cx) => {
+      const r = await sendAction(cx, this.snap, "apply_profile", confirmation ? { name, confirmation } : { name });
+      if (!r.ok) return PROFILE_REFUSALS[r.error?.code] ?? errorText(r);
+      const d = r.data ?? {};
+      const said = (Array.isArray(d.notes) ? d.notes : []).map((n) => n?.text).filter(Boolean).at(-1);
+      if (d.status === "confirmation_required" && typeof d.confirmation?.token === "string") {
+        const c = d.confirmation;
+        this.later(cx, () => confirm("gentle-chat", {
+          title: c.title || `Use "${name}" in this session?`,
+          detail: c.message || `Routes this session's agents with the "${name}" profile.`,
+          height: 280,
+        }, (cx) => this.applyProfile(name, cx, c.token)));
+        return null;
+      }
+      if (d.status === "applied") { this.notice = said || `"${name}" is now this session's profile.`; return null; }
+      return said || `"${name}" was not applied.`;
+    });
   }
 
   stopAgent(id, cx) {

@@ -2,8 +2,8 @@
 // live Gentle Shell session, with exactly the authority the person has in the terminal.
 //
 // CANONICAL COPY, carried byte-identical as `./actions.js` by gentle-chat, gentle-inspector,
-// gentle-palette and gentle-status (gpui-shell refuses imports outside a mod's folder). Edit it in
-// gentle-chat, then copy it.
+// gentle-palette, gentle-sidebar and gentle-status (gpui-shell refuses imports outside a mod's
+// folder). Edit it in gentle-chat, then copy it.
 //
 // Herdr's ambient calls (run, props, setShared) only take effect inside a host call: after an
 // await on hc or a file read they are ignored, so callers show the Terminal from a timer callback
@@ -15,9 +15,10 @@
 // Three paths, never more:
 // - sendAction: drops one action file in the session's private inbox
 //   (<agentDir>/desktop/inbox/<session>/<id>.json); the session runs it through the owner the
-//   desktop RPC uses (permission mode, cancel job, cancel subagent), its own abort (abort_turn,
-//   the TUI's Esc Esc, only while the agent works) or checks that a question is still the open
-//   one, and answers in its outbox. The owner decides; a refusal is shown.
+//   desktop RPC uses (permission mode, cancel job, cancel subagent, refresh_usage: the usage
+//   panel's r, apply_profile: /gentle:profiles' "Use in this session"), its own abort
+//   (abort_turn, the TUI's Esc Esc, only while the agent works) or checks that a question is
+//   still the open one, and answers in its outbox. The owner decides; a refusal is shown.
 // - tuiCommand: types one of the TUI's own slash commands (/gentle:changes, /gentle:agents, …)
 //   into the terminal with `hc send`, like the person would, and shows the terminal.
 // - confirm: a confirm dialog (gentle-confirm, Herdr's confirm plus a cancel report) before

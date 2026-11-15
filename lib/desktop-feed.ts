@@ -17,6 +17,9 @@ import type { DesktopJobEntry } from "./desktop-rpc-jobs.ts";
 import type { DesktopAgentEntry } from "./desktop-rpc-agents.ts";
 import type { DesktopUsageEntry } from "./desktop-rpc-usage.ts";
 import { oddPhaseLabel, type OddPhase } from "./odd-phase.ts";
+import { profileRoutingRows, readProfileOrchestrator, type OrchestratorMode } from "./agent-profiles.ts";
+import type { AgentModelConfig } from "./model-routing-authority.ts";
+import { CODEX_PROVIDER, providerNote, USAGE_FETCH_FAILED_NOTE } from "./shell-usage.ts";
 
 export const DESKTOP_FEED_SCHEMA = "gentle-shell.desktop-feed/v1";
 /** Coalescing window: a burst of changes becomes one write at most this late. */
@@ -32,6 +35,11 @@ export const DESKTOP_FEED_LIMITS = {
 	models: 20,
 	usageLimits: 10,
 	usageWindows: 4,
+	/** Providers the usage panel lists: the session's own, then its subagent routes. */
+	usageProviders: 8,
+	/** Saved profiles listed, and routing roles listed per profile. */
+	profiles: 20,
+	profileRoles: 40,
 	questions: 4,
 	options: 10,
 	ancestors: 8,
@@ -154,6 +162,39 @@ export interface DesktopFeedPendingQuestion {
 	openedAt: string;
 }
 
+export interface DesktopFeedUsageEntry {
+	provider: string;
+	status: string;
+	plan: string | null;
+	fetchedAt: number | null;
+	/** What the TUI panel says for a provider with no windows (null when it has some). */
+	note: string | null;
+	limits: Array<{ name: string; limitReached: boolean; windows: Array<{ label: string; usedPercent: number; windowSeconds: number; resetAt: number | null }> }>;
+}
+
+export interface DesktopFeedProfileRoute {
+	model: string;
+	thinking: string;
+}
+
+export interface DesktopFeedProfileItem {
+	name: string;
+	/** The orchestrator's service tier, as the status bar shows it. */
+	tier: "standard" | "fast" | null;
+	mode: string;
+	orchestrator: (DesktopFeedProfileRoute & { tier: string | null }) | null;
+	/** One row per agent role, alphabetical, as the /gentle:profiles table lists them. */
+	roles: Array<DesktopFeedProfileRoute & { agent: string }>;
+	truncated: boolean;
+}
+
+/** The profiles store as the reader found it (lib/desktop-feed-sources.ts). */
+export interface DesktopFeedProfileCatalog {
+	active: string | undefined;
+	default: string | undefined;
+	items: ReadonlyArray<{ name: string; config: AgentModelConfig; mode: OrchestratorMode | string }>;
+}
+
 export interface DesktopFeedSnapshot {
 	schema: typeof DESKTOP_FEED_SCHEMA;
 	updatedAt: string;
@@ -169,12 +210,19 @@ export interface DesktopFeedSnapshot {
 	persona: null;
 	context: { percent: number | null; tokens: number | null; window: number | null } | null;
 	cost: { total: number; subscription: boolean };
-	usage: {
-		provider: string;
-		status: string;
-		plan: string | null;
-		fetchedAt: number | null;
-		limits: Array<{ name: string; limitReached: boolean; windows: Array<{ label: string; usedPercent: number; windowSeconds: number; resetAt: number | null }> }>;
+	/**
+	 * The TUI usage panel (alt+u, /gentle:usage): the session's provider first (its fields at the
+	 * top level, as before), and every provider the panel lists in `providers`, from the same owner.
+	 */
+	usage: (DesktopFeedUsageEntry & { providers: DesktopFeedUsageEntry[] }) | null;
+	/** The saved model profiles (/gentle:profiles), or null when the store cannot be read. */
+	profiles: {
+		/** The profile this session routes with (its configured name, without the label's marker). */
+		active: string | null;
+		/** The store's default for new sessions. */
+		default: string | null;
+		items: DesktopFeedProfileItem[];
+		truncated: boolean;
 	} | null;
 	permission: { mode: string; defaultMode: string | null; yolo: boolean; detail: string | null } | null;
 	/** Opaque setStatus map: only pi's footer data provider can read it (null, see the T4 report). */
@@ -251,9 +299,12 @@ export interface DesktopFeedInput {
 	model: { id: string; provider: string; reasoning?: boolean } | undefined;
 	thinkingLevel: string | undefined;
 	subscription: boolean;
-	profile: { name: string | undefined; tier: "standard" | "fast" | undefined };
+	profile: { name: string | undefined; tier: "standard" | "fast" | undefined; catalog?: DesktopFeedProfileCatalog };
 	context: { percent: number | null; tokens: number | null; contextWindow: number } | undefined;
+	/** The session's own provider, as the usage owner reports it. */
 	usage: DesktopUsageEntry | undefined;
+	/** Every provider in the usage panel's scope, in its order (the session's own first). */
+	usageProviders?: readonly DesktopUsageEntry[];
 	permission: { mode: string; defaultMode?: string; detail?: string } | undefined;
 	todo: TodoState;
 	/** Undefined until the first scan answered. */
@@ -340,13 +391,31 @@ function herdrIdentity(env: NodeJS.ProcessEnv): DesktopFeedIdentity["herdr"] {
 	return { paneId: paneId ? clipText(paneId) : null, env: inHerdr };
 }
 
-function usageSection(entry: DesktopUsageEntry | undefined): DesktopFeedSnapshot["usage"] {
-	if (!entry) return null;
+/** The panel's note for a provider it knows nothing of: no subscription usage. */
+const UNSUPPORTED_NOTE = providerNote("");
+
+// The usage panel's own words for a provider without windows (lib/shell-usage.ts
+// renderUsagePanel): a settled empty refresh, a pending fetch or response, or a
+// provider with no subscription usage at all.
+function usageNote(entry: DesktopUsageEntry): string | null {
+	if ((entry.limits ?? []).length > 0) return null;
+	if (entry.status === "failed") return USAGE_FETCH_FAILED_NOTE;
+	if (entry.status === "pending") {
+		const note = providerNote(entry.provider);
+		// A provider with a registered source: the panel's default pending note.
+		return note === UNSUPPORTED_NOTE ? providerNote(CODEX_PROVIDER) : note;
+	}
+	if (entry.status === "unavailable") return UNSUPPORTED_NOTE;
+	return null;
+}
+
+function usageEntry(entry: DesktopUsageEntry): DesktopFeedUsageEntry {
 	return {
 		provider: clipText(entry.provider),
 		status: clipText(entry.status),
 		plan: optionalText(entry.plan),
 		fetchedAt: finiteOrNull(entry.fetchedAt),
+		note: usageNote(entry),
 		limits: (entry.limits ?? []).slice(0, DESKTOP_FEED_LIMITS.usageLimits).map((limit) => ({
 			name: clipText(limit.name),
 			limitReached: limit.limitReached === true,
@@ -357,6 +426,41 @@ function usageSection(entry: DesktopUsageEntry | undefined): DesktopFeedSnapshot
 				resetAt: finiteOrNull(window.resetAt),
 			})),
 		})),
+	};
+}
+
+function usageSection(active: DesktopUsageEntry | undefined, scope: readonly DesktopUsageEntry[] | undefined): DesktopFeedSnapshot["usage"] {
+	const first = active ?? scope?.[0];
+	if (!first) return null;
+	const providers = (scope && scope.length > 0 ? scope : [first]).slice(0, DESKTOP_FEED_LIMITS.usageProviders).map(usageEntry);
+	return { ...usageEntry(first), providers };
+}
+
+const route = (entry: { model?: string; thinking?: string } | undefined): DesktopFeedProfileRoute => ({
+	model: clipText(entry?.model ?? "inherit"),
+	thinking: clipText(entry?.thinking ?? "inherit"),
+});
+
+function profilesSection(catalog: DesktopFeedProfileCatalog | undefined): DesktopFeedSnapshot["profiles"] {
+	if (!catalog) return null;
+	const items = catalog.items.slice(0, DESKTOP_FEED_LIMITS.profiles).map((item): DesktopFeedProfileItem => {
+		const rows = profileRoutingRows(item.config);
+		const orchestrator = readProfileOrchestrator(item.config);
+		const tier = orchestrator?.tier === "fast" || orchestrator?.tier === "standard" ? orchestrator.tier : null;
+		return {
+			name: clipText(item.name, 128),
+			tier,
+			mode: clipText(item.mode, 64),
+			orchestrator: orchestrator ? { ...route(orchestrator), tier: optionalText(orchestrator.tier) } : null,
+			roles: rows.slice(0, DESKTOP_FEED_LIMITS.profileRoles).map((row) => ({ agent: clipText(row.agent, 128), model: clipText(row.model), thinking: clipText(row.thinking) })),
+			truncated: rows.length > DESKTOP_FEED_LIMITS.profileRoles,
+		};
+	});
+	return {
+		active: optionalText(catalog.active, 128),
+		default: optionalText(catalog.default, 128),
+		items,
+		truncated: catalog.items.length > DESKTOP_FEED_LIMITS.profiles,
 	};
 }
 
@@ -464,7 +568,8 @@ export function buildDesktopFeedSnapshot(input: DesktopFeedInput): DesktopFeedSn
 		persona: null,
 		context: input.context ? { percent: finiteOrNull(input.context.percent), tokens: finiteOrNull(input.context.tokens), window: finiteOrNull(input.context.contextWindow) } : null,
 		cost: { total: finite(input.stats.cost), subscription: input.subscription },
-		usage: usageSection(input.usage),
+		usage: usageSection(input.usage, input.usageProviders),
+		profiles: profilesSection(input.profile.catalog),
 		permission: input.permission ? {
 			mode: clipText(input.permission.mode),
 			defaultMode: optionalText(input.permission.defaultMode),

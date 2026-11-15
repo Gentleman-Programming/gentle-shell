@@ -2261,16 +2261,49 @@ function normalizePolicyPath(value: string): string {
 // relative path with no cwd never matches), so a project folder that is named
 // `agent/desktop` stays outside the guard while `../../.gentle-shell/...` from
 // the project does not. Case folds like the patterns.
-function normalizeAbsolutePolicyPath(value: string, cwd?: string): string | undefined {
-	const expanded = value.trim()
-		.replace(/^(?:~|\$HOME|\$\{HOME\})(?=[/\\]|$)/, homedir().replace(/\\/g, "/"))
+//
+// On Windows the bash tool is Git for Windows (MSYS) bash, where `/c/Users/x`
+// and `/cygdrive/c/Users/x` are the same folder as `C:\Users\x`, and Win32
+// accepts `//?/C:/...`. On win32 only, those spellings read as the drive path
+// before the compare (separators normalized, case folded). Shell variables
+// such as `$USERPROFILE` are not expanded: that indirection stays the
+// documented fail-open limit of a word-level guard.
+interface PolicyPathHost {
+	platform: NodeJS.Platform;
+	home: string;
+}
+
+function currentPolicyPathHost(): PolicyPathHost {
+	return { platform: process.platform, home: homedir() };
+}
+
+function windowsDrivePath(path: string): string {
+	const msys = /^(?:\/cygdrive)?\/([a-zA-Z])(\/.*)?$/.exec(path);
+	if (msys !== null) return `${msys[1]}:${msys[2] ?? "/"}`;
+	const device = /^\/\/[?.]\/([a-zA-Z]:(?:\/.*)?)$/.exec(path);
+	return device === null ? path : device[1].length === 2 ? `${device[1]}/` : device[1];
+}
+
+function normalizeAbsolutePolicyPath(value: string, cwd?: string, host: PolicyPathHost = currentPolicyPathHost()): string | undefined {
+	let expanded = value.trim()
+		.replace(/^(?:~|\$HOME|\$\{HOME\})(?=[/\\]|$)/, host.home.replace(/\\/g, "/"))
 		.replace(/\\/g, "/");
 	if (expanded.length === 0) return undefined;
+	if (host.platform === "win32") expanded = windowsDrivePath(expanded);
 	if (!/^(?:\/|[a-zA-Z]:\/)/.test(expanded)) {
-		const base = cwd === undefined ? undefined : normalizeAbsolutePolicyPath(cwd);
+		const base = cwd === undefined ? undefined : normalizeAbsolutePolicyPath(cwd, undefined, host);
 		return base === undefined ? undefined : posix.join(base, expanded).replace(/(.)\/+$/, "$1").toLowerCase();
 	}
 	return posix.normalize(expanded).replace(/(.)\/+$/, "$1").toLowerCase();
+}
+
+function desktopActionRootsFor(homes: readonly string[], host: PolicyPathHost): string[] {
+	const roots = new Set<string>();
+	for (const home of homes) {
+		const normalized = normalizeAbsolutePolicyPath(home, undefined, host);
+		if (normalized !== undefined) roots.add(posix.join(normalized, "desktop"));
+	}
+	return [...roots];
 }
 
 function desktopActionRoots(env: NodeJS.ProcessEnv): string[] {
@@ -2280,21 +2313,28 @@ function desktopActionRoots(env: NodeJS.ProcessEnv): string[] {
 		join(homedir(), ".gentle-shell", "agent"),
 		join(homedir(), ".pi", "agent"),
 	];
-	const roots = new Set<string>();
+	const spellings: string[] = [];
 	for (const home of homes) {
-		for (const spelling of [home, (() => { try { return realpathSync(home); } catch { return undefined; } })()]) {
-			if (spelling === undefined) continue;
-			const normalized = normalizeAbsolutePolicyPath(spelling);
-			if (normalized !== undefined) roots.add(posix.join(normalized, "desktop"));
-		}
+		spellings.push(home);
+		try { spellings.push(realpathSync(home)); } catch { /* A missing home has only its own spelling. */ }
 	}
-	return [...roots];
+	return desktopActionRootsFor(spellings, currentPolicyPathHost());
+}
+
+function isUnderDesktopRoot(value: string, roots: readonly string[], cwd: string | undefined, host: PolicyPathHost): boolean {
+	const normalized = normalizeAbsolutePolicyPath(value, cwd, host);
+	if (normalized === undefined) return false;
+	return roots.some((root) => normalized === root || normalized.startsWith(`${root}/`));
+}
+
+/** Pure seam of the desktop-folder guard: `homes` are agent homes, `home` the user home that `~`/`$HOME` expand to. */
+export function isDesktopActionPathOn(value: string, options: PolicyPathHost & { homes: readonly string[]; cwd?: string }): boolean {
+	const host = { platform: options.platform, home: options.home };
+	return isUnderDesktopRoot(value, desktopActionRootsFor(options.homes, host), options.cwd, host);
 }
 
 function isDesktopActionPath(value: string, env: NodeJS.ProcessEnv, cwd?: string): boolean {
-	const normalized = normalizeAbsolutePolicyPath(value, cwd);
-	if (normalized === undefined) return false;
-	return desktopActionRoots(env).some((root) => normalized === root || normalized.startsWith(`${root}/`));
+	return isUnderDesktopRoot(value, desktopActionRoots(env), cwd, currentPolicyPathHost());
 }
 
 function isSensitivePath(value: string, env: NodeJS.ProcessEnv = process.env, cwd?: string): boolean {

@@ -70,10 +70,24 @@ test("X2: the dead Delivery strategy pointer section is gone; push and merge sta
 	}
 });
 
+// Step 3 as the harness renders it from the mirrored provider routing, so the
+// no-restatement check follows the canonical wording instead of a stale copy.
+const STEP_3 = "3. **Resolve uncertainty.** ";
+function renderedStepThree(prompt: string): string {
+	const line = prompt.split("\n").find((candidate) => candidate.startsWith(STEP_3));
+	assert.ok(line, "the rendered prompt must carry ODD step 3");
+	return line.slice(STEP_3.length);
+}
+
 test("Duplicates: tracking keeps no restatement of step 3 or of the Phase reporting line", () => {
+	const stepThree = renderedStepThree(prompts[0]);
+	for (const prompt of prompts) assert.equal(renderedStepThree(prompt), stepThree, "every persona renders the same step 3");
+	assert.ok(stepThree.includes("Recommend optional research only for a named uncertainty"), "step 3 must still own the research recommendation");
+	// Every clause of the rendered step 3, so a reworded step can never be restated in tracking unnoticed.
+	const stepThreeClauses = stepThree.split(/[.;,] /).map((clause) => clause.trim()).filter((clause) => clause.length >= 20);
+	assert.ok(stepThreeClauses.length >= 5, "step 3 must split into its clauses");
 	for (const restated of [
-		"Recommend optional research only for a named uncertainty",
-		"ask one focused user question only for a real unresolved product decision",
+		...stepThreeClauses,
 		"Use at most one scoped independent read-only assumption challenge",
 		"inferred automatically from the primary session's tool activity",
 		"never per tool call, per thought, or on a fixed cadence",
@@ -81,7 +95,6 @@ test("Duplicates: tracking keeps no restatement of step 3 or of the Phase report
 		assert.ok(!tracking.includes(restated), `tracking still restates an always-on rule: ${restated}`);
 	}
 	for (const prompt of prompts) {
-		assert.ok(prompt.includes("Recommend optional research only for a named uncertainty; ask one focused user question only for a real unresolved product decision, then stop and wait; use at most one scoped read-only assumption challenge for a high-consequence unproven premise."));
 		assert.ok(prompt.includes("call `gentle_odd_phase` only when the primary session's ODD phase actually changes, never per tool call or on a fixed cadence, and never from a subagent"));
 	}
 	// The rules step 3 does not carry stay in tracking.

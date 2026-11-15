@@ -45,7 +45,6 @@ test("research uses adaptive evidence gathering and existing general workers onl
 	containsAll(delegation, [
 		"problem, intended outcome, constraints, and current evidence",
 		"no fixed questionnaire or mandatory rounds",
-		"one focused user question",
 		"stop and wait",
 		"workers return gaps to the parent",
 		"available authorized documentation/web tools",
@@ -57,6 +56,10 @@ test("research uses adaptive evidence gathering and existing general workers onl
 		"existing fresh general exploration/research worker",
 		"do not create a specialized agent or create a new workflow",
 		"no new persistence or readiness machinery",
+	]);
+	// harness-continuity S4: step 3 as rendered replaced the retired "one focused user question" route.
+	containsAll(wrapper, [
+		"Continue when no human decision remains; ask with the available compatible tool; text only for a genuinely open clarification or no usable compatible interface",
 	]);
 });
 

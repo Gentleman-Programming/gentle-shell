@@ -432,7 +432,7 @@ test("S12: apply_profile hands the owner's confirmation to the desktop and passe
 	assert.deepEqual(calls, [{ profile: "fast", mode: "session" }, { profile: "fast", mode: "session", confirmation: "tok-1" }]);
 });
 
-test("S12: apply_profile keeps the owner's refusals and is refused while the session works", async (t) => {
+test("S12: apply_profile keeps the owner's refusals and, like /gentle:profiles, also runs while the session works", async (t) => {
 	const h = harness(t);
 	const calls = profilesOwner(h.bus, (request) => (request.profile === "busy" ? { status: "busy" } : { status: "unknown_profile" }));
 	await h.start();
@@ -444,12 +444,13 @@ test("S12: apply_profile keeps the owner's refusals and is refused while the ses
 		assert.equal((await h.act("apply_profile", args))?.error?.code, "invalid_action", JSON.stringify(args));
 	}
 	assert.equal(calls.length, 2);
-	// While the agent works, a routing change written to the inbox could be the agent's own.
+	// While the agent works the TUI still lets you switch the profile; the desktop matches it.
 	h.ctx.setIdle(false);
 	h.fire("agent_start", {}, h.ctx);
-	const refused = await h.act("apply_profile", { name: "fast" });
-	assert.equal(refused?.error?.code, "profile_while_busy");
-	assert.equal(calls.length, 2);
+	const busy = await h.act("apply_profile", { name: "fast" });
+	assert.notEqual(busy?.error?.code, "profile_while_busy");
+	assert.equal(calls.length, 3);
+	assert.equal(calls[2].profile, "fast");
 });
 
 test("S12: the action kinds add refresh_usage and apply_profile and keep every earlier kind", () => {

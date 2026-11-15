@@ -157,7 +157,7 @@ whole `<agentDir>/desktop/` folder like any other sensitive path. An action file
 | `abort_turn` | `{}` | the session's own abort, the one its TUI's Esc Esc runs (in the TUI, queued messages go back to the editor); refused with `not_working` while the agent is idle |
 | `send_prompt` | `{ text }` (1-4000 characters, not blank; new lines and tabs, no other control character; a CRLF line end counts as one new line) | pi's `sendUserMessage`, as if typed in the session's editor and submitted: a prompt while the agent is idle, a steer while it works (the TUI's Enter); trimmed like the editor. Refused with `question_open` while a question, an extension prompt or a consent is open. A prompt template or a skill (`/review …`, `/skill:…`) expands as in the editor; a pi built-in command, an extension command (`/gentle:mode`, …) or a `!` shell line is refused with `terminal_command` (they are TUI code with their own authority); a `/word` no command owns is plain text. Answers `{ queued }`. While pi runs a manual compaction (`/compact`) or a `/tree` navigation it refuses prompts, so the session holds the text, as the TUI editor queues it, and submits it once pi takes prompts again; it answers `{ queued: true, after: "compaction" }` (`{ queued: true }` when pi is busy with no agent run the session heard of yet). One prompt is held at a time: another one is refused with `session_compacting`; a held prompt the session ends before submitting is dropped with an error in that session's UI |
 | `refresh_usage` | `{}` or `{ provider }` (1-128 characters) | the usage owner's forced refresh, as desktop RPC `refresh_subscription_usage` and the TUI usage panel's `r`; answers `{ providers: [{ provider, status, refresh? }] }` (`refresh`: `unsupported` for a provider whose windows only come with responses, `out_of_scope` for a provider the session does not target); the snapshot's `usage` follows |
-| `apply_profile` | `{ name }` or `{ name, confirmation }` (each 1-128 characters) | `/gentle:profiles`' own "Use in this session", as desktop RPC `apply_profile` with mode `session` (never the global default, never another mode): the owner checks the name and binds the profile to this session. Answers `{ profile, mode, status, notes }` (`applied` or `not_applied`, with the screen's notices), or `status: "confirmation_required"` with `confirmation` `{ title, message, token }`: the desktop shows that dialog and, on Confirm, sends the same action with `confirmation: token` (the owner accepts it only while its dialog would still say the same). Owner refusals keep their codes: `unknown_profile`, `profile_apply_busy`, `profiles_unavailable`. Refused with `profile_while_busy` when its file was written while the session was busy (the escalation rule below) |
+| `apply_profile` | `{ name }` or `{ name, confirmation }` (each 1-128 characters) | `/gentle:profiles`' own "Use in this session", as desktop RPC `apply_profile` with mode `session` (never the global default, never another mode): the owner checks the name and binds the profile to this session. Answers `{ profile, mode, status, notes }` (`applied` or `not_applied`, with the screen's notices), or `status: "confirmation_required"` with `confirmation` `{ title, message, token }`: the desktop shows that dialog and, on Confirm, sends the same action with `confirmation: token` (the owner accepts it only while its dialog would still say the same). Owner refusals keep their codes: `unknown_profile`, `profile_apply_busy`, `profiles_unavailable`. Like `/gentle:profiles`, it also runs while the session works |
 | `answer_question` with `via: "session"` | `{ toolCallId, option, via }` or `{ toolCallId, text, via }` | the same checks as the key path (still the open question, answerable from the desktop, an existing option or the list's free-text row), then the ask tool's own list takes the answer, exactly as a click or Enter in it would; answers `{ toolCallId, answered: true }`, or `answer_in_terminal` ("Answer this question in that session's terminal.") when the list has no handle (a Gentle Shell older than this one) |
 
 The session refuses, removes and answers (code in `error.code`) a file that is a
@@ -170,8 +170,7 @@ while the session was busy (`escalation_while_busy`), a prompt while a question 
 open (`question_open`), a prompt that is a command or shell line only the terminal
 runs (`terminal_command`), a second prompt while one is held for after a
 compaction (`session_compacting`), a prompt to a session without a prompt
-owner (`unsupported`), or a profile switch written while the session was busy
-(`profile_while_busy`).
+owner (`unsupported`).
 
 **Prompts are not human evidence.** A `send_prompt` reaches pi with the input
 source `extension`, as any extension message does, never `interactive`: Gentle
@@ -197,9 +196,8 @@ the permission owner is asked, when its file was last written (the later of the
 file's `mtime` and `ctime`, never `createdAt`) while the agent worked, a
 background job or a subagent of the session ran, within 2 s after that activity
 ended, or before the session started. Lowering the mode, `abort_turn` and the
-`cancel_*` actions are always accepted. `apply_profile` follows the same activity
-rule (`profile_while_busy`): a profile changes which models the agent and its
-subagents run. The desktop's confirmation dialog stays
+`cancel_*` actions are always accepted. `apply_profile` does not follow this rule:
+like `/gentle:profiles` in the TUI, it runs while the session works. The desktop's confirmation dialog stays
 the human gate for Super-YOLO; the session does not ask for a dialog nonce,
 because a nonce file would be written by the same user the agent runs as and
 proves nothing the activity check does not.

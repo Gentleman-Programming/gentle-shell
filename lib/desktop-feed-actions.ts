@@ -396,7 +396,6 @@ export function createDesktopActivityTimeline(clock: () => number = Date.now, gr
 	};
 }
 
-const PROFILE_WHILE_BUSY = fail("profile_while_busy", "Switching the profile is refused while the agent, a background job or a subagent is running, or within 2 s after; try again when the session is idle.");
 const NO_OWNER = fail("unsupported", "This session cannot run this action. Update Gentle Shell and restart it.");
 
 const ESCALATION_WHILE_BUSY = fail("escalation_while_busy", "Raising the permission mode is refused while the agent, a background job or a subagent is running, or within 2 s after; try again when the session is idle.");
@@ -462,7 +461,7 @@ export async function runDesktopAction(action: DesktopAction, owners: DesktopAct
 				if (!owners.refreshUsage) return NO_OWNER;
 				return fromOwner(await owners.refreshUsage(action.args.provider as string | undefined));
 			case "apply_profile":
-				if (owners.busyAt(writtenAt ?? Date.now())) return PROFILE_WHILE_BUSY;
+				// Same as /gentle:profiles in the TUI: allowed while the session works; the owner decides.
 				if (!owners.applyProfile) return NO_OWNER;
 				return fromOwner(await owners.applyProfile(action.args.name as string, action.args.confirmation as string | undefined));
 		}

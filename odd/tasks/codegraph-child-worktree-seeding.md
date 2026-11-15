@@ -1,0 +1,21 @@
+# Feature: codegraph child + sibling worktree seeding
+
+Ports the two non-redundant worktree-seeding behaviors from @zhalker/gentle-shell-codegraph-subagents (v0.9.1) into gentle-shell's codegraph runtime: a subagent child dispatched into its own unindexed linked worktree brings that worktree's index up, and a parent session pre-warms the repo's other unindexed linked worktrees at session start.
+
+## Specs
+
+- S1: "Sibling-worktree seeding — NOT present: SESSION_WORKTREE_CHANGED is emitted (lib/session-worktree-registry.ts:7,189) but has no codegraph consumer; seedWorktreeIndex wires only the own-cwd path (extensions/codegraph-tools.ts:656)." — Scope per user decision "merge T1 with T2 ( no redundant )": keep only the non-redundant startup pre-warm scan (seed linked worktrees of the repo at session start, background, skipped on reload). The SESSION_WORKTREE_CHANGED event consumer is OUT (redundant with the child path; registration is explicit and rare).
+- S2: "Child-in-worktree seeding — NOT present: skipsSession (lib/codegraph-readiness.ts) returns true for any CHILD_ENV === "1" child — children skip readiness entirely." — A child whose cwd is a linked git worktree without an index is un-skipped for exactly the seed-or-init path, in the background, under the existing locks; ordinary children still skip entirely and no child ever touches the parent-shared project index (guard unchanged).
+
+## Tasks
+
+- T1 — Commit this feature document first (user: "commit first"). No S# (tracking artifact for S1-S2). Route: parent inline. Commit: <filled on commit>
+- T2 — Merged implementation unit (S1+S2): new `lib/codegraph-session-seed.ts` (`seedSessionWorktrees`: one `git worktree list --porcelain`, requires own index + not source-busy, per linked root seed-or-skip via existing `seedWorktreeIndex`); `childWorktreeNeedsIndex` + narrowed `skipsSession` in `lib/codegraph-readiness.ts` with the child seed-or-init path; wiring in `extensions/codegraph-tools.ts` (startup scan background at session_start, reason!=="reload"); tests: extend `tests/codegraph-readiness.test.ts` (pure skipsSession matrix) + new `tests/codegraph-session-seed.test.ts`. One work-unit commit. Route: parent inline, test-first (RED -> GREEN), full suite, differential check on shared skipsSession/session_start paths, then independent `gentle-ai-verify` (Risk: item 3 — shared session_start skip logic). Commit: <filled on commit>
+
+## Log
+
+- L1 (user, verbatim): "plan to implemebt this:\n - Index-notice UI — NOT implemented: registerMessageRenderer exists only for review-preflight/agents/jobs messages, nothing codegraph.\n - codegraph-workflow skill — NOT present in either repo (only rdd-defect-workflow mentions codegraph).\n - Sibling-worktree seeding — NOT present: SESSION_WORKTREE_CHANGED is emitted (lib/session-worktree-registry.ts:7,189) but has no codegraph consumer;\n   seedWorktreeIndex wires only the own-cwd path (extensions/codegraph-tools.ts:656).\n - Child-in-worktree seeding — NOT present: skipsSession (lib/codegraph-readiness.ts) returns true for any CHILD_ENV === \"1\" child — children skip readiness entirely.\n - Compaction-triggered sync — NOT present: all \"compact\" hits are unrelated (compaction UI, sidebar density, stats, review-legacy-detector)."
+- L2 (user, plan amendments): "Amend" + "Same branch" (commits land on feat/improve-codegraph) + "#5 excluded no skill" (no codegraph-workflow skill in any repo) + coordinator port chosen for compaction sync.
+- L3 (user): "#4 was already implement as an instruction in agents.md" — Index-notice UI dropped: the repo AGENTS.md codegraph-first policy already carries that instruction every session and survives compaction.
+- L4 (user): "check T1, T2 and T3" — redundancy check performed: T3 (compaction sync) almost fully redundant with the landed daemon file-watcher freshness + per-turn pre-search background sync (triggerSearchSync/syncBeforeSearch); T1 partially redundant once T2 exists (first-child pre-warm timing only).
+- L5 (user, final scope): "commit first then go with T2 and merge T1 with T2 ( no redundant )" — one implementation unit: T2 core + T1 startup pre-warm scan; no event consumer; T3 dropped. Doc commit first.

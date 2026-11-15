@@ -90,6 +90,7 @@ function fakeCtx(cwd: string, overrides: Record<string, unknown> = {}) {
 			notify(message: string) { notices.push(message); },
 			select: async () => undefined,
 			getAllThemes: () => [{}],
+			confirm: async () => true,
 		},
 		widgets, notices,
 		sessionManager: {
@@ -439,7 +440,7 @@ test("S2: runDesktopAction calls only the owner its kind names", async () => {
 	const seen: string[] = [];
 	const answer = (name: string) => async (value: string): Promise<DesktopRpcOutcome> => { seen.push(`${name}:${value}`); return { ok: true, data: { value } }; };
 	let working = true;
-	const owners: DesktopActionOwners = { setPermissionMode: answer("mode"), cancelJob: answer("job"), cancelSubagent: answer("agent"), question: () => undefined, working: () => working, abortTurn: () => { seen.push("abort"); }, permissionMode: () => "normal", busyAt: () => false };
+	const owners: DesktopActionOwners = { setPermissionMode: answer("mode"), cancelJob: answer("job"), cancelSubagent: answer("agent"), question: () => undefined, working: () => working, abortTurn: () => { seen.push("abort"); }, permissionMode: () => "normal", busyAt: () => false, confirmEscalation: async () => true };
 	const run = (kind: string, args: Record<string, unknown>) => runDesktopAction({ id: "x", sessionId: "s", kind: kind as never, args, createdAt: NOW }, owners);
 	assert.deepEqual(await run("set_permission_mode", { mode: "auto" }), { ok: true, data: { value: "auto" } });
 	assert.deepEqual(await run("cancel_job", { id: "j" }), { ok: true, data: { value: "j" } });

@@ -17,9 +17,11 @@
 // Any process of the same user can write the inbox, the agent's own tools
 // included (the guard in extensions/gentle-ai.ts denies the folder to the
 // agent's file and shell tools, but a shell can always spell a path some other
-// way). So a permission ESCALATION is refused when its file was written while
-// the agent, a background job or a subagent of this session could act, or
-// within 2 s after; lowering the mode and stopping work are always accepted.
+// way, and a detached process outlives the turn). So a permission ESCALATION is
+// refused when its file was written while the agent, a background job or a
+// subagent of this session could act, or within 2 s after, and is otherwise
+// applied only after the human confirms it in the session's own UI; lowering
+// the mode and stopping work are always accepted.
 
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
@@ -58,6 +60,8 @@ export const DESKTOP_ACTION_LIMITS = {
 	sweepEntries: 256,
 	/** An escalation written this long after the session's activity ended is still refused. */
 	activityGraceMs: 2_000,
+	/** How long the session UI waits for the human to confirm an escalation. */
+	confirmMs: 60_000,
 	/** Activity spans remembered; older ones count as busy. */
 	activitySpans: 64,
 	/** Non-regular inbox entries remembered so they are never reprocessed. */
@@ -252,6 +256,8 @@ export interface DesktopActionOwners {
 	permissionMode(): string | undefined;
 	/** Whether the agent, a background job or a subagent could act at `time` (file clock), or 2 s after. */
 	busyAt(time: number): boolean;
+	/** Asks the human in the session's own UI; absent without an interactive UI. */
+	confirmEscalation?(from: string | undefined, to: string): Promise<boolean>;
 }
 
 // ---- Permission escalation ----
@@ -300,6 +306,8 @@ export function createDesktopActivityTimeline(clock: () => number = Date.now, gr
 
 const ESCALATION_WHILE_BUSY = fail("escalation_while_busy", "Raising the permission mode is refused while the agent, a background job or a subagent is running, or within 2 s after; try again when the session is idle.");
 
+const NEEDS_CONFIRMATION = fail("escalation_needs_confirmation", "Raising the permission mode needs your confirmation in the session's Terminal; it was not confirmed.");
+
 const OWNER_FAILED = fail("owner_failed", "The session could not run this action");
 
 function fromOwner(outcome: DesktopRpcOutcome | undefined): DesktopActionOutcome {
@@ -312,14 +320,21 @@ function fromOwner(outcome: DesktopRpcOutcome | undefined): DesktopActionOutcome
 /**
  * Runs a parsed action through the one owner its kind names. `writtenAt` is
  * when its file was last written (fstat, the file clock); without it the
- * session's state now decides.
+ * session's state now decides. `onPending` runs before an escalation waits for
+ * the human's confirmation.
  */
-export async function runDesktopAction(action: DesktopAction, owners: DesktopActionOwners, writtenAt?: number): Promise<DesktopActionOutcome> {
+export async function runDesktopAction(action: DesktopAction, owners: DesktopActionOwners, writtenAt?: number, onPending?: () => void): Promise<DesktopActionOutcome> {
 	try {
 		switch (action.kind) {
 			case "set_permission_mode": {
 				const mode = action.args.mode as string;
-				if (isPermissionEscalation(owners.permissionMode(), mode) && owners.busyAt(writtenAt ?? Date.now())) return ESCALATION_WHILE_BUSY;
+				const from = owners.permissionMode();
+				if (isPermissionEscalation(from, mode)) {
+					if (owners.busyAt(writtenAt ?? Date.now())) return ESCALATION_WHILE_BUSY;
+					if (!owners.confirmEscalation) return NEEDS_CONFIRMATION;
+					onPending?.();
+					if ((await owners.confirmEscalation(from, mode)) !== true) return NEEDS_CONFIRMATION;
+				}
 				return fromOwner(await owners.setPermissionMode(mode));
 			}
 			case "cancel_job":
@@ -600,7 +615,7 @@ export function createDesktopActionInbox(options: DesktopActionInboxOptions): De
 		if (seen.includes(action.id)) { writeResult(answerId, action.kind, fail("duplicate", "This action already ran")); return; }
 		seen.push(action.id);
 		if (seen.length > DESKTOP_ACTION_LIMITS.seen) seen.shift();
-		const outcome = await runDesktopAction(action, options.owners, read.writtenAt);
+		const outcome = await runDesktopAction(action, options.owners, read.writtenAt, () => writeResult(action.id, action.kind, { ok: true, data: { pending: "confirmation" } }));
 		if (closed) return;
 		writeResult(action.id, action.kind, outcome);
 	};

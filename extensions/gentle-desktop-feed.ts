@@ -16,7 +16,7 @@ import {
 	type DesktopFeedTimers,
 } from "../lib/desktop-feed.ts";
 import { createDesktopFeedStore, sweepDesktopFeedOrphans, type DesktopFeedStore } from "../lib/desktop-feed-store.ts";
-import { answerableFromDesktop, createDesktopActionInbox, createDesktopActivityTimeline, providerDecisionIn, questionShape, sweepDesktopActionOrphans, watchDesktopActionInbox, type DesktopActionInbox, type DesktopActionQuestion, type DesktopActivityTimeline } from "../lib/desktop-feed-actions.ts";
+import { answerableFromDesktop, createDesktopActionInbox, DESKTOP_ACTION_LIMITS, createDesktopActivityTimeline, providerDecisionIn, questionShape, sweepDesktopActionOrphans, watchDesktopActionInbox, type DesktopActionInbox, type DesktopActionQuestion, type DesktopActivityTimeline } from "../lib/desktop-feed-actions.ts";
 import { DesktopPermissionBridge } from "../lib/desktop-rpc-permissions.ts";
 import { createDesktopFeedProfileReader, createUntrackedLineCounter, desktopFeedGitRunner, processAncestors, psParentOf, type DesktopFeedProfile, type ParentOf, type UntrackedLineCounter } from "../lib/desktop-feed-sources.ts";
 import { DesktopAgentsBridge } from "../lib/desktop-agents-service.ts";
@@ -384,6 +384,14 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 					permissionMode: () => session.permission?.mode,
 					// Read the state now first: an activity no event announced still counts.
 					busyAt: (time) => { markActivity(session); return session.activity.busyAt(time); },
+					// The inbox file alone never raises the mode: the human says yes here.
+					confirmEscalation: async (from, to) => {
+						const ui = session.ctx.ui as { confirm?: ExtensionContext["ui"]["confirm"] } | undefined;
+						if (!current(session) || typeof ui?.confirm !== "function") return false;
+						try {
+							return (await ui.confirm("Raise the permission mode?", `Gentle Shell Desktop asks to switch this session from ${from ?? "normal"} to ${to}. Confirm only if you asked for it there.`, { timeout: DESKTOP_ACTION_LIMITS.confirmMs })) === true;
+						} catch { return false; }
+					},
 				},
 			});
 			session.actions = actions;

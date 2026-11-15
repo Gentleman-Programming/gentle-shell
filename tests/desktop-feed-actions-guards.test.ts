@@ -315,6 +315,8 @@ function sessionHarness(t: test.TestContext, options: { mode?: string; job?: str
 	let fireWatch: (() => void) | undefined;
 	let idle = true;
 	let aborts = 0;
+	const prompts: string[] = [];
+	let confirmAnswer = true;
 	createDesktopFeedExtension({
 		env: GENTLE_ENV,
 		agentDir,
@@ -335,7 +337,7 @@ function sessionHarness(t: test.TestContext, options: { mode?: string; job?: str
 		model: { id: "claude-opus-5-5", provider: "anthropic", reasoning: true, contextWindow: 200_000 },
 		modelRegistry: { isUsingOAuth: () => true },
 		getContextUsage: () => undefined,
-		ui: { setWidget() {}, setStatus() {}, notify() {}, select: async () => undefined, getAllThemes: () => [{}] },
+		ui: { setWidget() {}, setStatus() {}, notify() {}, select: async () => undefined, getAllThemes: () => [{}], confirm: async (title: string, message: string) => { prompts.push(`${title} ${message}`); return confirmAnswer; } },
 		sessionManager: {
 			getSessionId: () => "sess-1", getSessionFile: () => "/s.jsonl", getSessionName: () => undefined,
 			getCwd: () => workspace, getBranch: () => [], getEntries: () => [], getLeafId: () => null,
@@ -345,8 +347,9 @@ function sessionHarness(t: test.TestContext, options: { mode?: string; job?: str
 	const outbox = desktopActionOutboxDir(agentDir, "sess-1");
 	let n = 0;
 	return {
-		fire, setModes, ctx, inbox, outbox,
+		fire, setModes, ctx, inbox, outbox, prompts,
 		get aborts() { return aborts; },
+		set confirmAnswer(value: boolean) { confirmAnswer = value; },
 		set idle(value: boolean) { idle = value; },
 		set offset(value: number) { offset = value; },
 		async start() { fire("session_start", { reason: "startup" }); await settle(); clock.run(); await settle(); clock.run(); },
@@ -426,6 +429,46 @@ test("S2: an escalation from an idle session runs through the owner once", async
 	assert.equal(result.ok, true, JSON.stringify(result));
 	assert.deepEqual(h.setModes, ["super-yolo"]);
 	assert.equal(h.snapshot().permission!.mode, "super-yolo");
+	assert.equal(h.prompts.length, 1, "the human confirmed it in the session UI");
+	assert.match(h.prompts[0]!, /Gentle Shell Desktop/);
+	assert.match(h.prompts[0]!, /super-yolo/);
+	const lower = await h.act("set_permission_mode", { mode: "normal" });
+	assert.equal(lower.ok, true);
+	assert.equal(h.prompts.length, 1, "a de-escalation never asks");
+});
+
+const NEEDS_CONFIRMATION = { code: "escalation_needs_confirmation", message: "Raising the permission mode needs your confirmation in the session's Terminal; it was not confirmed." };
+
+test("S2: an idle escalation the human declines is refused with zero owner calls", async (t) => {
+	const h = sessionHarness(t);
+	await h.start();
+	h.confirmAnswer = false;
+	assert.deepEqual((await h.act("set_permission_mode", { mode: "super-yolo" })).error, NEEDS_CONFIRMATION);
+	assert.equal(h.prompts.length, 1);
+	assert.deepEqual(h.setModes, []);
+	assert.equal(h.snapshot().permission!.mode, "normal");
+});
+
+test("S2: an escalation without an interactive confirm is refused; one awaiting it answers pending first", async (t) => {
+	const bare = inboxHarness(t);
+	bare.inbox.start();
+	writeFileSync(join(bare.inbox.inbox, "n1.json"), actionText("n1", "set_permission_mode", { mode: "yolo" }));
+	await bare.deliver();
+	assert.deepEqual(bare.result("n1").error, NEEDS_CONFIRMATION);
+	assert.deepEqual(bare.calls, [], "no owner call");
+	let answer: (yes: boolean) => void = () => {};
+	const asks: string[] = [];
+	const h = inboxHarness(t, { confirmEscalation: (from, to) => { asks.push(`${from}>${to}`); return new Promise((resolve) => { answer = resolve; }); } });
+	h.inbox.start();
+	writeFileSync(join(h.inbox.inbox, "c1.json"), actionText("c1", "set_permission_mode", { mode: "auto" }));
+	await h.deliver();
+	assert.deepEqual(h.result("c1").data, { pending: "confirmation" }, "the desktop shows the Terminal");
+	assert.deepEqual(h.calls, []);
+	answer(true);
+	await settle();
+	assert.deepEqual(h.result("c1").data, { mode: "auto" });
+	assert.deepEqual(h.calls, ["mode:auto"]);
+	assert.deepEqual(asks, ["normal>auto"]);
 });
 
 // ---- B2: relayed provider consent is answered in the terminal ----

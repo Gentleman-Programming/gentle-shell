@@ -169,6 +169,29 @@ test("CodeGraph init is never bounded by the query timeout; only the user's sign
 	assert.equal(initSignal, undefined);
 });
 
+test("a hung CLI query fallback is bounded by the query timeout, not the user's patience (#1901)", async (t) => {
+	const cwd = workspace(t);
+	const ctx = { cwd } as ExtensionContext;
+	// Behaves like execFile: settles only when its signal aborts, then rejects with AbortError.
+	const hanging: CodeGraphRunner = (_args, options) => new Promise((_resolve, reject) => {
+		options.signal?.addEventListener("abort", () => reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError", code: "ABORT_ERR" })), { once: true });
+	});
+	// The caller eventually aborts, so an unbounded RED run fails the elapsed assertion instead of hanging.
+	const caller = new AbortController();
+	setTimeout(() => caller.abort(), 2_000);
+	const started = Date.now();
+	const result = await createCodeGraphTool(hanging, {
+		queryTimeoutMs: 50,
+		daemonExplore: async () => ({ status: "timeout" as const }),
+		warm: async () => false,
+		syncRun: syncNothing,
+	}).execute("test", { operation: "query", query: "symbol" }, caller.signal, undefined, ctx);
+	const elapsed = Date.now() - started;
+	assert.match(result.content[0].text, /CodeGraph failed to run/);
+	assert.equal((result.details as { status?: string }).status, "failed");
+	assert.ok(elapsed < 500, `the hung CLI fallback must be bounded by the query timeout, took ${elapsed} ms`);
+});
+
 test("CodeGraph tool runs only fixed cwd-scoped init, query, and explore commands", async (t) => {
 	const cwd = workspace(t);
 	const runnerCalls: Array<{ args: readonly string[]; cwd: string }> = [];

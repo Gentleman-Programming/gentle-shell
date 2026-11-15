@@ -581,8 +581,29 @@ export function createCodeGraphTool(
 				// Still no daemon: the search still runs — one CLI process as the last resort. The daemon
 				// stays the only path while it answers; when it cannot serve (never started, died, hung, or
 				// has no project loaded), a slower correct answer beats the read/grep/find dead end.
+				// The CLI fallback carries the same query budget as the daemon attempts (#1901): a hung
+				// CLI process must not block the turn until the user aborts; init below stays signal-only.
 				try {
-					const result = await runner(args, { cwd, signal, maxBuffer: PROCESS_MAX_BUFFER });
+					const result = await (async () => {
+						const cliController = new AbortController();
+						const onCallerAbort = () => cliController.abort();
+						signal?.addEventListener("abort", onCallerAbort, { once: true });
+						let cliTimer: ReturnType<typeof setTimeout> | undefined;
+						try {
+							return await Promise.race([
+								runner(args, { cwd, signal: cliController.signal, maxBuffer: PROCESS_MAX_BUFFER }),
+								new Promise<never>((_, reject) => {
+									cliTimer = setTimeout(() => {
+										cliController.abort();
+										reject(new Error(`CodeGraph CLI timed out after ${queryTimeoutMs} ms.`));
+									}, queryTimeoutMs);
+								}),
+							]);
+						} finally {
+							clearTimeout(cliTimer);
+							signal?.removeEventListener("abort", onCallerAbort);
+						}
+					})();
 					const output = truncateOutput([result.stdout, result.stderr].filter(Boolean).join("\n"));
 					const localExclude = indexExists(cwd) ? excludeIndexLocally(cwd, gitRun) : undefined;
 					return {

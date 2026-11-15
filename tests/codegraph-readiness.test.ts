@@ -506,6 +506,24 @@ test("prepareReadiness: a live sync lease in another session skips the sync but 
 	assert.equal(readLeaseVerdict(lockPathFor(cwd, "sync", locks)), "held-live", "the foreign lease is never stolen");
 });
 
+test("prepareReadiness: a damaged sync lease is a loud failure, not another session's refresh", async (t) => {
+	const cwd = dir(t, "sync-lease-damaged");
+	writeDb(cwd);
+	const locks = dir(t, "sync-lease-damaged-locks");
+	writeFileSync(lockPathFor(cwd, "sync", locks), "{not-json\n");
+	const calls: string[] = [];
+	const result = await prepareReadiness(fakeInput(cwd, {
+		locksDir: locks,
+		run: async (args) => {
+			calls.push(`run:${args.join(" ")}`);
+			return true;
+		},
+	}));
+	assert.equal(result.ok, false, "an unowned damaged token must not report the refresh as handled");
+	assert.deepEqual(calls, [], "no unlock, no sync: nobody owns this refresh, and the failure says so");
+	assert.equal(readLeaseVerdict(lockPathFor(cwd, "sync", locks)), "unknown", "the damaged token stays untouched");
+});
+
 test("prepareReadiness: the daemon-less sync takes and releases the lease when it is free", async (t) => {
 	const cwd = dir(t, "sync-lease-free");
 	writeDb(cwd);

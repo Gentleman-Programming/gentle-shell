@@ -169,6 +169,16 @@ export function tryAcquireSyncLease(cwd: string, locksDir?: string, ttlMs: numbe
 	return tryAcquireLease(lockPathFor(cwd, "sync", locksDir ?? defaultLocksDir()), "sync", ttlMs, Date.now(), cwd);
 }
 
+/** One read for the daemon-less callers: "held-live" exactly when another session owns the refresh.
+ * A damaged or unreadable token is nobody's refresh — it must never be reported as handled. */
+export function syncLeaseHeldLive(cwd: string, locksDir?: string): boolean {
+	try {
+		return readLeaseVerdict(lockPathFor(cwd, "sync", locksDir ?? defaultLocksDir()), Date.now(), cwd) === "held-live";
+	} catch {
+		return false;
+	}
+}
+
 export type InitLockOutcome =
 	| { outcome: "acquired"; release(): void; adopt(pid: number, proxy: boolean): void }
 	/** The other session's init finished while we waited: the database file exists. */

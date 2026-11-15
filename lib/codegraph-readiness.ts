@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { daemonFor, mcpCallText, parseMcpReply } from "./codegraph-daemon.ts";
 import type { DaemonInfo } from "./codegraph-daemon.ts";
-import { acquireInitLock, codegraphWritingIndex, tryAcquireSyncLease } from "./codegraph-lease.ts";
+import { acquireInitLock, codegraphWritingIndex, syncLeaseHeldLive, tryAcquireSyncLease } from "./codegraph-lease.ts";
 import type { SeedOutcome } from "./codegraph-seed.ts";
 import { resolveSessionWorktree } from "./session-worktree-registry.ts";
 
@@ -284,7 +284,9 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 					// live lock — so this session runs nothing and reports the refresh as handled.
 					const lease = tryAcquireSyncLease(input.cwd, input.locksDir);
 					if (!lease) {
-						ok = true;
+						// Only a live holder means another session is refreshing right now. A damaged or
+						// unreadable token is nobody's refresh and must not silently disable it forever.
+						ok = syncLeaseHeldLive(input.cwd, input.locksDir);
 					} else {
 						try {
 							const unlocked = await input.run(["unlock"], input.cwd, SYNC_TIMEOUT_MS);
@@ -392,7 +394,12 @@ export function syncBeforeSearch(input: SearchSyncInput): void {
 			// means zero CLI calls here — an unlock would clear that session's live lock.
 			if (codegraphWritingIndex(input.cwd)) return; // a live CodeGraph writer is never unlocked under
 			const lease = tryAcquireSyncLease(input.cwd, input.locksDir);
-			if (!lease) return;
+			if (!lease) {
+				// A live holder owns this refresh; anything else that blocked the lease is an
+				// unlock-blocking condition this session reports instead of silently skipping.
+				if (!syncLeaseHeldLive(input.cwd, input.locksDir)) input.onFailed?.("unlock", { daemonAlive: false });
+				return;
+			}
 			try {
 				const unlocked = await input.run(["unlock"], input.cwd, SYNC_TIMEOUT_MS);
 				if (!unlocked) {

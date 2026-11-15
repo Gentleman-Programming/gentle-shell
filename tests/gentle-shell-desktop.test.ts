@@ -38,7 +38,12 @@ case "$1" in
   do)
     [ -f "$state/running" ] || exit 2
     if [ "$2" = layout.switch ]; then printf '%s' "$3" | sed -n 's/.*"name":"\\([^"]*\\)".*/\\1/p' > "$state/layout"; fi ;;
-  "") touch "$state/running" ;;
+  "")
+    touch "$state/running"
+    # Herdr writes its default keys.json when the window first starts and none exists.
+    if [ -f "$state/default-keys.json" ] && [ ! -f "$HOME/.config/herdr-app/keys.json" ]; then
+      mkdir -p "$HOME/.config/herdr-app" && cp "$state/default-keys.json" "$HOME/.config/herdr-app/keys.json"
+    fi ;;
 esac
 `;
 
@@ -509,4 +514,216 @@ test("a state.json written before `layout` existed treats our layout as ours (mi
 	assert.equal(existsSync(join(f.home, ".gentle-shell", "desktop", "originals")), false);
 	assert.equal(await runDesktop(context(f, { args: ["--uninstall"] })), 0, f.err.join("\n"));
 	assert.equal(existsSync(join(f.herdrHome, "layouts", "gentle-shell.json")), false);
+});
+
+// --- Desktop keys: herdr/keys.json merged into <herdr home>/keys.json ----------------
+
+const SHIPPED_KEYS = `{
+  "layout:gentle-shell": {
+    "cmd-k": "mod.open:gentle-palette",
+    "cmd-j": "gentle-status.toggle",
+    "cmd-alt-1": "gentle-inspector.tab-changes"
+  },
+  "global": { "cmd-q": "app.quit" }
+}
+`;
+const OUR_SECTION = { "cmd-k": "mod.open:gentle-palette", "cmd-j": "gentle-status.toggle", "cmd-alt-1": "gentle-inspector.tab-changes" };
+
+function keysFixture(t: TestContext, options: { running?: boolean } = {}) {
+	const f = fixture(t);
+	writeFileSync(join(f.pkg, "herdr", "keys.json"), SHIPPED_KEYS);
+	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.15", f.state);
+	if (options.running) writeFileSync(join(f.state, "running"), "");
+	const keysFile = join(f.herdrHome, "keys.json");
+	const stateFile = join(f.home, ".gentle-shell", "desktop", "state.json");
+	const writeKeys = (text: string) => {
+		mkdirSync(f.herdrHome, { recursive: true });
+		writeFileSync(keysFile, text);
+	};
+	const keys = () => readFileSync(keysFile, "utf8");
+	const state = () => JSON.parse(readFileSync(stateFile, "utf8"));
+	return { f, keysFile, stateFile, writeKeys, keys, state };
+}
+
+const USER_KEYS = `{
+\t"global": { "ctrl-shift-t": "tab.new" },
+\t"terminal": {
+\t\t"ctrl-left": "send:\\u001bb"
+\t}
+}
+`;
+const USER_KEYS_MERGED = `{
+\t"global": { "ctrl-shift-t": "tab.new" },
+\t"terminal": {
+\t\t"ctrl-left": "send:\\u001bb"
+\t},
+\t"layout:gentle-shell": {
+\t\t"cmd-k": "mod.open:gentle-palette",
+\t\t"cmd-j": "gentle-status.toggle",
+\t\t"cmd-alt-1": "gentle-inspector.tab-changes"
+\t}
+}
+`;
+
+test("keys: on a fresh Herdr home the Gentle shortcuts are merged into the keys.json Herdr writes on first start", async (t) => {
+	const { f, keysFile, keys, state } = keysFixture(t);
+	writeFileSync(join(f.state, "default-keys.json"), USER_KEYS);
+	assert.equal(await runDesktop(context(f, { args: ["--yes"] })), 0, f.err.join("\n"));
+	assert.ok(f.out.join("\n").includes(`add the Gentle shortcuts (layout:gentle-shell) to ${keysFile}, keeping every key you already use`));
+	assert.equal(keys(), USER_KEYS_MERGED);
+	assert.deepEqual(state().keys.entries, OUR_SECTION);
+	assert.equal(state().keys.createdSection, true);
+	assert.equal(readFileSync(join(f.home, ".gentle-shell", "desktop", "originals", "keys.json"), "utf8"), USER_KEYS, "the file before Gentle Shell is kept");
+	assert.equal(readFileSync(join(f.home, ".gentle-shell", "desktop", "keys-backup.json"), "utf8"), USER_KEYS, "the previous file is backed up");
+	assert.ok(f.out.includes(`Added the Gentle shortcuts cmd-k, cmd-j, cmd-alt-1 to ${keysFile} (layout:gentle-shell); the previous file is in ${join(f.home, ".gentle-shell", "desktop", "keys-backup.json")}.`), f.out.join("\n"));
+	assert.ok(!keys().includes("app.quit"), "only our layout section is merged");
+	f.out.length = 0;
+	assert.equal(await runDesktop(context(f, { args: ["--status"] })), 0);
+	assert.ok(f.out.includes(`  Keys: 3 Gentle shortcuts in ${keysFile} (layout:gentle-shell)`), f.out.join("\n"));
+});
+
+test("keys: --no-open with no keys.json yet writes none (Herdr's defaults come from its first start) and says when they are added", async (t) => {
+	const { f, keysFile, state } = keysFixture(t);
+	assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"] })), 0, f.err.join("\n"));
+	assert.equal(existsSync(keysFile), false);
+	assert.equal(state().keys, undefined);
+	assert.ok(f.out.includes(`Herdr writes ${keysFile} when its window first opens; the Gentle shortcuts are added the next time gentle-shell desktop opens Herdr.`), f.out.join("\n"));
+	f.out.length = 0;
+	assert.equal(await runDesktop(context(f, { args: ["--status"] })), 0);
+	assert.ok(f.out.includes("  Keys: Gentle shortcuts not added"), f.out.join("\n"));
+});
+
+test("keys: an existing keys.json keeps every byte of the user's keys; only our section is appended", async (t) => {
+	const { f, keys, writeKeys } = keysFixture(t);
+	writeKeys(USER_KEYS);
+	assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"] })), 0, f.err.join("\n"));
+	assert.equal(keys(), USER_KEYS_MERGED);
+	assert.deepEqual(f.err, []);
+});
+
+test("keys: a key the user already binds in layout:gentle-shell keeps theirs and reports the conflict once", async (t) => {
+	const { f, keysFile, keys, writeKeys, state } = keysFixture(t);
+	const user = `{"layout:gentle-shell":{"cmd-k":"space.new","alt-cmd-1":"tab.new"},"global":{}}\n`;
+	writeKeys(user);
+	assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"] })), 0, f.err.join("\n"));
+	assert.deepEqual(JSON.parse(keys()), { "layout:gentle-shell": { "cmd-k": "space.new", "alt-cmd-1": "tab.new", "cmd-j": "gentle-status.toggle" }, global: {} });
+	assert.ok(keys().startsWith(`{"layout:gentle-shell":{"cmd-k":"space.new","alt-cmd-1":"tab.new",`), keys());
+	assert.deepEqual(f.err, [
+		`gentle-shell desktop: your ${keysFile} binds cmd-k to "space.new" in layout:gentle-shell; kept yours, so the Gentle shortcut cmd-k (mod.open:gentle-palette) was not added.`,
+		`gentle-shell desktop: your ${keysFile} binds alt-cmd-1 to "tab.new" in layout:gentle-shell; kept yours, so the Gentle shortcut cmd-alt-1 (gentle-inspector.tab-changes) was not added.`,
+	]);
+	assert.deepEqual(state().keys.entries, { "cmd-j": "gentle-status.toggle" });
+	f.err.length = 0;
+	assert.equal(await runDesktop(context(f, { args: ["--refresh"] })), 0, f.err.join("\n"));
+	assert.deepEqual(f.err, [], "a known conflict is not reported again");
+	assert.equal(await runDesktop(context(f, { args: ["--uninstall"] })), 0, f.err.join("\n"));
+	assert.equal(keys(), user, "uninstall leaves the user's own cmd-k and alt-cmd-1");
+});
+
+test("keys: install, refresh and a second run are idempotent; a changed shipped key is updated and a dropped one removed", async (t) => {
+	const { f, keys, writeKeys, state } = keysFixture(t);
+	writeKeys(USER_KEYS);
+	assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"] })), 0, f.err.join("\n"));
+	const backup = join(f.home, ".gentle-shell", "desktop", "keys-backup.json");
+	f.out.length = 0;
+	assert.equal(await runDesktop(context(f, { args: ["--refresh"] })), 0, f.err.join("\n"));
+	assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"] })), 0, f.err.join("\n"));
+	assert.equal(keys(), USER_KEYS_MERGED);
+	assert.equal(readFileSync(backup, "utf8"), USER_KEYS, "no write, so no new backup");
+	assert.ok(!f.out.some((line) => line.includes("shortcuts")), f.out.join("\n"));
+	writeFileSync(join(f.pkg, "herdr", "keys.json"), JSON.stringify({ "layout:gentle-shell": { "cmd-k": "mod.open:gentle-palette", "cmd-j": "gentle-chat.toggle" } }));
+	f.out.length = 0;
+	assert.equal(await runDesktop(context(f, { args: ["--refresh"] })), 0, f.err.join("\n"));
+	assert.equal(keys(), USER_KEYS_MERGED.replace('"gentle-status.toggle"', '"gentle-chat.toggle"').replace(',\n\t\t"cmd-alt-1": "gentle-inspector.tab-changes"', ""));
+	assert.equal(readFileSync(backup, "utf8"), USER_KEYS_MERGED);
+	assert.deepEqual(state().keys.entries, { "cmd-k": "mod.open:gentle-palette", "cmd-j": "gentle-chat.toggle" });
+});
+
+test("keys: a Gentle shortcut the user deleted or rebound is theirs and never comes back", async (t) => {
+	const { f, keys, writeKeys, state } = keysFixture(t);
+	writeKeys(USER_KEYS);
+	assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"] })), 0, f.err.join("\n"));
+	const edited = keys().replace(',\n\t\t"cmd-j": "gentle-status.toggle"', "").replace('"gentle-inspector.tab-changes"', '"space.next"');
+	writeKeys(edited);
+	assert.equal(await runDesktop(context(f, { args: ["--refresh"] })), 0, f.err.join("\n"));
+	assert.equal(keys(), edited);
+	assert.deepEqual(state().keys.entries, { "cmd-k": "mod.open:gentle-palette" });
+	assert.equal(await runDesktop(context(f, { args: ["--uninstall"] })), 0, f.err.join("\n"));
+	assert.equal(keys(), `{
+\t"global": { "ctrl-shift-t": "tab.new" },
+\t"terminal": {
+\t\t"ctrl-left": "send:\\u001bb"
+\t},
+\t"layout:gentle-shell": {
+\t\t"cmd-alt-1": "space.next"
+\t}
+}
+`);
+});
+
+test("keys: --uninstall removes exactly our entries; the rest stays byte-identical, including later user edits", async (t) => {
+	const { f, keysFile, keys, writeKeys } = keysFixture(t);
+	writeKeys(USER_KEYS);
+	assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"] })), 0, f.err.join("\n"));
+	f.out.length = 0;
+	assert.equal(await runDesktop(context(f, { args: ["--uninstall"] })), 0, f.err.join("\n"));
+	assert.equal(keys(), USER_KEYS);
+	assert.ok(f.out.includes(`Removed the Gentle shortcuts from ${keysFile}; your own keys are unchanged.`), f.out.join("\n"));
+	assert.equal(existsSync(join(f.home, ".gentle-shell", "desktop", "originals")), false);
+	assert.equal(existsSync(join(f.home, ".gentle-shell", "desktop", "state.json")), false);
+	// Edited after install: our entries go, the user's edit stays.
+	assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"] })), 0, f.err.join("\n"));
+	writeKeys(keys().replace('"tab.new"', '"tab.new", "ctrl-shift-w": "tab.close"'));
+	assert.equal(await runDesktop(context(f, { args: ["--uninstall"] })), 0, f.err.join("\n"));
+	assert.equal(keys(), USER_KEYS.replace('"tab.new"', '"tab.new", "ctrl-shift-w": "tab.close"'));
+});
+
+test("keys: an invalid user keys.json is never written; mods still install and the message says why", async (t) => {
+	const { f, keysFile, keys, writeKeys, state } = keysFixture(t);
+	for (const [bad, why] of [["{ \"global\": { \"ctrl-shift-t\": \"tab.new\", } }\n", /is not valid JSON/], ["[1, 2]\n", /must be a JSON object of sections/], ["{\"global\": {\"ctrl-a\": 3}}\n", /global\.ctrl-a must be a command string or an object/]] as const) {
+		writeKeys(bad);
+		f.err.length = 0;
+		assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"] })), 0, f.err.join("\n"));
+		assert.equal(keys(), bad);
+		assert.equal(f.err.length, 1, f.err.join("\n"));
+		assert.match(f.err[0], new RegExp(`^gentle-shell desktop: ${keysFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} `));
+		assert.match(f.err[0], why);
+		assert.match(f.err[0], /it was not changed and the Gentle shortcuts were not added/);
+		assert.ok(existsSync(join(f.herdrHome, "mods", "gentle-a", "main.js")));
+		assert.equal(state().keys, undefined);
+	}
+});
+
+test("keys: when the running Herdr rejects the merged file (keys.error), the previous keys.json is restored", async (t) => {
+	const { f, keysFile, keys, writeKeys, state } = keysFixture(t, { running: true });
+	writeKeys(USER_KEYS);
+	const keysError = join(f.herdrHome, "keys.error");
+	const io = { ...context(f).io, sleep: async () => {
+		if (existsSync(keysFile) && readFileSync(keysFile, "utf8").includes("gentle-status.toggle")) writeFileSync(keysError, "keys.json was not applied: layout:gentle-shell.cmd-j: bad\n");
+		else rmSync(keysError, { force: true });
+	} };
+	assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"], io })), 0, f.err.join("\n"));
+	assert.equal(keys(), USER_KEYS);
+	assert.deepEqual(f.err, [`gentle-shell desktop: Herdr app did not accept the Gentle shortcuts (keys.json was not applied: layout:gentle-shell.cmd-j: bad); put back the previous ${keysFile}.`]);
+	assert.equal(state().keys, undefined);
+});
+
+test("keys: a running Herdr that already reports keys.error gets no write", async (t) => {
+	const { f, keysFile, keys, writeKeys, state } = keysFixture(t, { running: true });
+	writeKeys(USER_KEYS);
+	writeFileSync(join(f.herdrHome, "keys.error"), "keys.json was not applied: global.x: unknown action\n");
+	assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"] })), 0, f.err.join("\n"));
+	assert.equal(keys(), USER_KEYS);
+	assert.deepEqual(f.err, [`gentle-shell desktop: Herdr app reports a problem in your ${keysFile} (keys.json was not applied: global.x: unknown action); it was not changed and the Gentle shortcuts were not added. Fix it and run gentle-shell desktop again.`]);
+	assert.equal(state().keys, undefined);
+});
+
+test("keys: a package without herdr/keys.json never touches keys.json (PRESERVE)", async (t) => {
+	const f = fixture(t);
+	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.15", f.state);
+	mkdirSync(f.herdrHome, { recursive: true });
+	writeFileSync(join(f.herdrHome, "keys.json"), USER_KEYS);
+	assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"] })), 0, f.err.join("\n"));
+	assert.equal(await runDesktop(context(f, { args: ["--uninstall"] })), 0, f.err.join("\n"));
+	assert.equal(readFileSync(join(f.herdrHome, "keys.json"), "utf8"), USER_KEYS);
 });

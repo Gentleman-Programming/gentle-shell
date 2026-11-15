@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { accessSync, constants as fsConstants, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 
 // `gentle-shell desktop` (Gentle Shell Desktop, odd/tasks/herdr-desktop.md T8):
@@ -11,7 +11,10 @@ import { delimiter, join } from "node:path";
 // ~/.gentle-shell/desktop. Whatever was at one of those paths before Gentle
 // Shell first installed there (state.json says which paths are ours) is kept
 // in ~/.gentle-shell/desktop/originals, never rotated, and put back exactly by
-// --uninstall.
+// --uninstall. The one shared file it edits is keys.json: it adds only the
+// layout:gentle-shell shortcuts of herdr/keys.json (state.json records each
+// one), never changes a key the person binds, and --uninstall removes exactly
+// those entries.
 
 // The Herdr app the mods were built and checked against (`herdr-app check`,
 // live fidelity passes). Newer apps are accepted; older or missing ones get
@@ -43,6 +46,13 @@ export const DESKTOP_LAYOUT = "gentle-shell";
 const OFFICIAL_WINDOWS_INSTALL = 'powershell -c "irm https://releases.herdr.dev/app/install.ps1 | iex"';
 const START_ATTEMPTS = 40;
 const START_INTERVAL_MS = 500;
+// The keys.json section our shortcuts live in: they apply only while the gentle-shell layout shows.
+export const DESKTOP_KEYS_SECTION = `layout:${DESKTOP_LAYOUT}`;
+// A running Herdr reloads keys.json on its file event and writes keys.error when it rejects it.
+const KEYS_CHECK_ATTEMPTS = 4;
+const KEYS_CHECK_INTERVAL_MS = 250;
+// After starting the window: how long to wait for the keys.json Herdr writes on its first start.
+const KEYS_WAIT_ATTEMPTS = 10;
 
 export interface RunResult {
 	status: number | null;
@@ -95,13 +105,16 @@ export function desktopUsage(): string {
 		"                layouts/gentle-shell.json are written in Herdr's home: anything Gentle Shell",
 		"                did not install there is kept in ~/.gentle-shell/desktop/originals until",
 		"                --uninstall puts it back; our own previous copy goes to .../desktop/backup.",
+		"                The Gentle shortcuts (layout:gentle-shell: Cmd-K palette, Cmd-J chat/terminal,",
+		"                Cmd-. stop, Cmd-Alt-1..6 inspector tabs) are added to Herdr's keys.json; a key",
+		"                you already bind there stays yours and is reported.",
 		"  --yes, -y     Do not ask (needed when not run in an interactive terminal).",
 		"  --no-open     Install only; do not start or switch Herdr app.",
 		"  --status      Print versions and what is installed.",
-		"  --uninstall   Remove our mods and layout (a copy stays in the backup), put back what was",
-		"                there before, and switch Herdr back to your previous layout. Herdr app itself",
-		"                stays installed.",
-		"  --refresh     Reinstall our mods and layout from this Gentle Shell when they are installed;",
+		"  --uninstall   Remove our mods, layout and shortcuts (a copy stays in the backup), put back",
+		"                what was there before, and switch Herdr back to your previous layout. Herdr",
+		"                app itself stays installed.",
+		"  --refresh     Reinstall our mods, layout and shortcuts from this Gentle Shell when they are installed;",
 		"                'gentle-shell upgrade' runs it. Does nothing if desktop was never installed.",
 	].join("\n");
 }
@@ -146,6 +159,10 @@ export interface DesktopPaths {
 	backupNext: string;
 	originals: string;
 	localBin: string;
+	keysFile: string;
+	keysError: string;
+	keysBackup: string;
+	keysOriginal: string;
 }
 
 const nonEmpty = (value: string | undefined) => (value !== undefined && value.length > 0 ? value : undefined);
@@ -167,6 +184,11 @@ export function desktopPaths(env: Record<string, string | undefined>, home: stri
 		backupNext: join(stateDir, "backup.next"),
 		originals: join(stateDir, "originals"),
 		localBin: join(home, ".local", "bin"),
+		// One keys.json on every OS; only Herdr's built-in defaults differ (keys.macos.json on macOS).
+		keysFile: join(herdrHome, "keys.json"),
+		keysError: join(herdrHome, "keys.error"),
+		keysBackup: join(stateDir, "keys-backup.json"),
+		keysOriginal: join(stateDir, "originals", "keys.json"),
 	};
 }
 
@@ -183,6 +205,8 @@ interface Assets {
 	mods: string[];
 	modsDir: string;
 	layoutFile: string;
+	// The layout:gentle-shell section of herdr/keys.json, when this package ships one.
+	keys?: Record<string, KeyAction>;
 }
 
 function shippedAssets(packageRoot: string): Assets | { error: string } {
@@ -196,7 +220,12 @@ function shippedAssets(packageRoot: string): Assets | { error: string } {
 		mods = [];
 	}
 	if (mods.length === 0 || !existsSync(layoutFile)) return { error: `this Gentle Shell (${packageRoot}) has no herdr/ mods and layout to install` };
-	return { mods, modsDir, layoutFile };
+	const keysFile = join(root, "keys.json");
+	if (!existsSync(keysFile)) return { mods, modsDir, layoutFile };
+	const keys = readKeysText(readFileSync(keysFile, "utf8"));
+	if ("problem" in keys) return { error: `this Gentle Shell's ${keysFile} ${keys.problem}` };
+	const section = keys.sections[DESKTOP_KEYS_SECTION] as Record<string, KeyAction> | undefined;
+	return { mods, modsDir, layoutFile, ...(section ? { keys: { ...section } } : {}) };
 }
 
 function isDirectory(path: string): boolean {
@@ -238,6 +267,7 @@ interface DesktopState {
 	mods: string[];
 	layout: boolean;
 	previousLayout?: string;
+	keys?: KeysState;
 }
 
 function readState(paths: DesktopPaths): DesktopState | undefined {
@@ -245,7 +275,8 @@ function readState(paths: DesktopPaths): DesktopState | undefined {
 		const parsed = JSON.parse(readFileSync(paths.stateFile, "utf8"));
 		const mods = Array.isArray(parsed?.mods) ? parsed.mods.filter((name: unknown) => typeof name === "string" && /^gentle-[A-Za-z0-9._-]+$/.test(name)) : [];
 		const previousLayout = typeof parsed?.previousLayout === "string" && parsed.previousLayout !== DESKTOP_LAYOUT ? parsed.previousLayout : undefined;
-		return { mods, layout: parsed?.layout !== false, ...(previousLayout ? { previousLayout } : {}) };
+		const keys = parseKeysState(parsed?.keys);
+		return { mods, layout: parsed?.layout !== false, ...(previousLayout ? { previousLayout } : {}), ...(keys ? { keys } : {}) };
 	} catch {
 		return undefined;
 	}
@@ -570,6 +601,394 @@ function installAssets(ctx: DesktopContext, paths: DesktopPaths, assets: Assets,
 	return undefined;
 }
 
+// --- keys.json ---------------------------------------------------------------------
+
+// keys.json is the whole keymap: Herdr writes its defaults there on first start
+// and never layers them under it (herdr-app src/keys.rs), so Gentle Shell only
+// ever edits an existing file, as text: every byte outside the entries it adds
+// stays as the person wrote it. state.json's `keys` is the tag: the entries in
+// `entries` are ours while they still hold the action we wrote; a Gentle key
+// the person deleted or rebound is theirs (`dropped`) and is never added again.
+
+export type KeyAction = string | Record<string, unknown>;
+
+interface KeysState {
+	entries: Record<string, KeyAction>;
+	dropped: string[];
+	conflicts: string[];
+	// Whether Gentle Shell added the layout:gentle-shell section itself.
+	createdSection: boolean;
+	// SHA-256 of keys.json as Gentle Shell last wrote it.
+	written: string;
+}
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const stringList = (value: unknown) => (Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []);
+
+function parseKeysState(value: unknown): KeysState | undefined {
+	if (!isPlainObject(value) || !isPlainObject(value.entries) || typeof value.written !== "string") return undefined;
+	const entries: Record<string, KeyAction> = {};
+	for (const [key, action] of Object.entries(value.entries)) if (typeof action === "string" || isPlainObject(action)) entries[key] = action;
+	return { entries, dropped: stringList(value.dropped), conflicts: stringList(value.conflicts), createdSection: value.createdSection === true, written: value.written };
+}
+
+const sha256Text = (text: string) => createHash("sha256").update(text).digest("hex");
+const sameAction = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+// Herdr's sections (keys.rs `tab`): anything else makes Herdr reject the whole file.
+const knownSection = (name: string) => name === "global" || name === "terminal" || /^(layout|mod):.+$/.test(name);
+
+function readKeysText(text: string): { sections: Record<string, Record<string, unknown>> } | { problem: string } {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch (error) {
+		return { problem: `is not valid JSON (${(error as Error).message})` };
+	}
+	if (!isPlainObject(parsed)) return { problem: "must be a JSON object of sections (global, terminal, layout:<name>, mod:<name>)" };
+	for (const [section, bindings] of Object.entries(parsed)) {
+		if (!knownSection(section)) return { problem: `is not a keys file Herdr accepts: section ${JSON.stringify(section)} is not global, terminal, layout:<name> or mod:<name>` };
+		if (!isPlainObject(bindings)) return { problem: `is not a keys file Herdr accepts: ${section} must be an object of key bindings` };
+		for (const [keys, action] of Object.entries(bindings)) {
+			if (typeof action !== "string" && !isPlainObject(action)) return { problem: `is not a keys file Herdr accepts: ${section}.${keys} must be a command string or an object` };
+		}
+	}
+	return { sections: parsed as Record<string, Record<string, unknown>> };
+}
+
+// The same keystroke however it is spelled: modifiers in any order and case, cmd = super = win.
+export function normalizeKeystroke(keys: string): string {
+	const alias: Record<string, string> = { super: "cmd", win: "cmd", command: "cmd", option: "alt", control: "ctrl" };
+	return keys.trim().split(/\s+/).map((stroke) => {
+		if (stroke === "-") return "-";
+		const parts = stroke.endsWith("--") ? [...stroke.slice(0, -2).split("-"), "-"] : stroke.split("-");
+		const key = (parts.pop() ?? "").toLowerCase();
+		const modifiers = parts.map((part) => alias[part.toLowerCase()] ?? part.toLowerCase());
+		return [...new Set(modifiers)].sort().concat(key).join("-");
+	}).join(" ");
+}
+
+// A minimal scanner for text JSON.parse already accepted: where each member of an
+// object starts and ends, so entries are added, replaced or removed in place.
+interface JsonMember {
+	key: string;
+	keyStart: number;
+	valueStart: number;
+	valueEnd: number;
+}
+
+interface JsonObject {
+	open: number;
+	close: number;
+	members: JsonMember[];
+}
+
+const isJsonSpace = (char: string | undefined) => char === " " || char === "\t" || char === "\n" || char === "\r";
+
+function skipSpace(text: string, index: number): number {
+	let i = index;
+	while (isJsonSpace(text[i])) i += 1;
+	return i;
+}
+
+function skipString(text: string, index: number): number {
+	let i = index + 1;
+	while (text[i] !== '"') i += text[i] === "\\" ? 2 : 1;
+	return i + 1;
+}
+
+function skipValue(text: string, index: number): number {
+	const first = text[index];
+	if (first === '"') return skipString(text, index);
+	if (first === "{" || first === "[") {
+		let depth = 0;
+		let i = index;
+		for (;;) {
+			const char = text[i];
+			if (char === '"') {
+				i = skipString(text, i);
+				continue;
+			}
+			if (char === "{" || char === "[") depth += 1;
+			else if (char === "}" || char === "]") {
+				depth -= 1;
+				if (depth === 0) return i + 1;
+			}
+			i += 1;
+		}
+	}
+	let i = index;
+	while (i < text.length && !isJsonSpace(text[i]) && text[i] !== "," && text[i] !== "}" && text[i] !== "]") i += 1;
+	return i;
+}
+
+function objectAt(text: string, open: number): JsonObject {
+	const members: JsonMember[] = [];
+	let i = skipSpace(text, open + 1);
+	if (text[i] === "}") return { open, close: i, members };
+	for (;;) {
+		const keyStart = skipSpace(text, i);
+		const keyEnd = skipString(text, keyStart);
+		const valueStart = skipSpace(text, skipSpace(text, keyEnd) + 1);
+		const valueEnd = skipValue(text, valueStart);
+		members.push({ key: JSON.parse(text.slice(keyStart, keyEnd)), keyStart, valueStart, valueEnd });
+		i = skipSpace(text, valueEnd);
+		if (text[i] !== ",") return { open, close: i, members };
+		i += 1;
+	}
+}
+
+// JSON.parse keeps the last of duplicate keys; so do we.
+const lastMember = (object: JsonObject, key: string) => {
+	for (let i = object.members.length - 1; i >= 0; i -= 1) if (object.members[i].key === key) return i;
+	return -1;
+};
+
+// The whitespace from the start of the line to `index`, when only whitespace precedes it there.
+function indentAt(text: string, index: number | undefined): string | undefined {
+	if (index === undefined) return undefined;
+	const lineStart = text.lastIndexOf("\n", index - 1) + 1;
+	const before = text.slice(lineStart, index);
+	return lineStart > 0 && /^[ \t]*$/.test(before) ? before : undefined;
+}
+
+function sectionAt(text: string): { root: JsonObject; index: number; section?: JsonObject } {
+	const root = objectAt(text, skipSpace(text, 0));
+	const index = lastMember(root, DESKTOP_KEYS_SECTION);
+	const member = root.members[index];
+	return { root, index, ...(member && text[member.valueStart] === "{" ? { section: objectAt(text, member.valueStart) } : {}) };
+}
+
+// Appends `"key": value` after the last member, or fills an empty object.
+function insertMember(text: string, object: JsonObject, key: string, value: string, indent: string, closeIndent: string): string {
+	const last = object.members.at(-1);
+	if (last) return `${text.slice(0, last.valueEnd)},\n${indent}${JSON.stringify(key)}: ${value}${text.slice(last.valueEnd)}`;
+	return `${text.slice(0, object.open + 1)}\n${indent}${JSON.stringify(key)}: ${value}\n${closeIndent}${text.slice(object.close)}`;
+}
+
+// The inverse of insertMember: the member and the separator before it.
+function removeMember(text: string, object: JsonObject, index: number): string {
+	const member = object.members[index];
+	if (object.members.length === 1) return `${text.slice(0, object.open + 1)}${text.slice(object.close)}`;
+	if (index > 0) return `${text.slice(0, object.members[index - 1].valueEnd)}${text.slice(member.valueEnd)}`;
+	return `${text.slice(0, member.keyStart)}${text.slice(object.members[1].keyStart)}`;
+}
+
+function addKey(text: string, key: string, action: KeyAction): string {
+	let at = sectionAt(text);
+	const unit = indentAt(text, at.root.members[0]?.keyStart) ?? "  ";
+	if (!at.section) {
+		text = insertMember(text, at.root, DESKTOP_KEYS_SECTION, "{}", unit, "");
+		at = sectionAt(text);
+	}
+	const section = at.section as JsonObject;
+	const sectionIndent = indentAt(text, at.root.members[at.index].keyStart) ?? unit;
+	const indent = indentAt(text, section.members[0]?.keyStart) ?? `${sectionIndent}${unit}`;
+	return insertMember(text, section, key, JSON.stringify(action), indent, sectionIndent);
+}
+
+function replaceKey(text: string, key: string, action: KeyAction): string {
+	const { section } = sectionAt(text);
+	const member = section?.members[lastMember(section, key)];
+	return member ? `${text.slice(0, member.valueStart)}${JSON.stringify(action)}${text.slice(member.valueEnd)}` : text;
+}
+
+function removeKey(text: string, key: string): string {
+	const { section } = sectionAt(text);
+	const index = section ? lastMember(section, key) : -1;
+	return section && index >= 0 ? removeMember(text, section, index) : text;
+}
+
+// The section Gentle Shell added, once nothing is left in it.
+function removeEmptySection(text: string, created: boolean): string {
+	const at = sectionAt(text);
+	return created && at.section && at.section.members.length === 0 ? removeMember(text, at.root, at.index) : text;
+}
+
+interface KeysConflict {
+	key: string;
+	theirs: string;
+	theirAction: unknown;
+	action: KeyAction;
+}
+
+interface KeysMerge {
+	text: string;
+	keys: Omit<KeysState, "written">;
+	added: string[];
+	conflicts: KeysConflict[];
+}
+
+// keys.json text with `shipped` (our layout:gentle-shell entries) merged in.
+// `previous` says which entries are ours from an earlier merge.
+function mergeKeys(original: string, shipped: Record<string, KeyAction>, previous: KeysState | undefined): KeysMerge | { problem: string } {
+	const read = readKeysText(original);
+	if ("problem" in read) return read;
+	let text = original;
+	const sectionNow = () => (JSON.parse(text) as Record<string, Record<string, unknown> | undefined>)[DESKTOP_KEYS_SECTION] ?? {};
+	const own = (object: Record<string, unknown>, key: string) => (Object.hasOwn(object, key) ? object[key] : undefined);
+	const entries: Record<string, KeyAction> = {};
+	const dropped = new Set(previous?.dropped ?? []);
+	const createdSection = previous ? previous.createdSection : !Object.hasOwn(read.sections, DESKTOP_KEYS_SECTION);
+	for (const [key, action] of Object.entries(previous?.entries ?? {})) {
+		const value = own(sectionNow(), key);
+		if (value === undefined || !sameAction(value, action)) {
+			dropped.add(key);
+			continue;
+		}
+		if (!Object.hasOwn(shipped, key)) {
+			text = removeKey(text, key);
+			continue;
+		}
+		if (!sameAction(shipped[key], value)) text = replaceKey(text, key, shipped[key]);
+		entries[key] = shipped[key];
+	}
+	const added: string[] = [];
+	const conflicts: KeysConflict[] = [];
+	for (const [key, action] of Object.entries(shipped)) {
+		if (Object.hasOwn(entries, key) || dropped.has(key)) continue;
+		const section = sectionNow();
+		const theirs = Object.keys(section).find((bound) => normalizeKeystroke(bound) === normalizeKeystroke(key));
+		if (theirs !== undefined) {
+			if (theirs !== key || !sameAction(section[theirs], action)) conflicts.push({ key, theirs, theirAction: section[theirs], action });
+			continue;
+		}
+		text = addKey(text, key, action);
+		entries[key] = action;
+		added.push(key);
+	}
+	text = removeEmptySection(text, createdSection);
+	// What we wrote must read back as exactly what we meant.
+	const check = readKeysText(text);
+	if ("problem" in check || Object.entries(entries).some(([key, action]) => !sameAction(own(sectionNow(), key), action))) {
+		return { problem: "could not be merged safely" };
+	}
+	return { text, keys: { entries, dropped: [...dropped], conflicts: conflicts.map((conflict) => conflict.key), createdSection }, added, conflicts };
+}
+
+// keys.json without the entries that are still ours.
+function unmergeKeys(original: string, previous: KeysState): string | { problem: string } {
+	const read = readKeysText(original);
+	if ("problem" in read) return read;
+	const section = read.sections[DESKTOP_KEYS_SECTION] ?? {};
+	let text = original;
+	for (const [key, action] of Object.entries(previous.entries)) {
+		if (Object.hasOwn(section, key) && sameAction(section[key], action)) text = removeKey(text, key);
+	}
+	return removeEmptySection(text, previous.createdSection);
+}
+
+function writeAtomic(file: string, text: string) {
+	let mode = 0o644;
+	try {
+		mode = statSync(file).mode & 0o777;
+	} catch {
+		// a new file
+	}
+	const temp = `${file}.gentle-${process.pid}.tmp`;
+	writeFileSync(temp, text, { mode });
+	renameSync(temp, file);
+}
+
+const keysRefusal = (subject: string) => `gentle-shell desktop: ${subject}; it was not changed and the Gentle shortcuts were not added. Fix it and run gentle-shell desktop again.`;
+
+// Writes keys.json atomically, the previous file kept in keys-backup.json. A
+// running Herdr reloads it at once: if it writes keys.error, the previous file
+// goes back. Returns why it did not apply, or undefined.
+async function writeKeys(ctx: DesktopContext, paths: DesktopPaths, previousText: string, text: string, running: boolean): Promise<string | undefined> {
+	mkdirSync(paths.stateDir, { recursive: true });
+	writeAtomic(paths.keysBackup, previousText);
+	writeAtomic(paths.keysFile, text);
+	if (!running) return undefined;
+	for (let attempt = 0; attempt < KEYS_CHECK_ATTEMPTS; attempt += 1) {
+		await ctx.io.sleep(KEYS_CHECK_INTERVAL_MS);
+		if (existsSync(paths.keysError)) {
+			const why = readTextOr(paths.keysError).trim() || "keys.error";
+			writeAtomic(paths.keysFile, previousText);
+			return why;
+		}
+	}
+	return undefined;
+}
+
+function readTextOr(file: string): string {
+	try {
+		return readFileSync(file, "utf8");
+	} catch {
+		return "";
+	}
+}
+
+const isRunning = (ctx: DesktopContext, app: string | undefined) => app !== undefined && windowStatus(ctx, app) !== undefined;
+
+// Adds or refreshes our shortcuts in keys.json. "missing": Herdr has not written
+// keys.json yet (it does on its first start), so nothing was done.
+async function syncKeys(ctx: DesktopContext, paths: DesktopPaths, shipped: Record<string, KeyAction>, app: string | undefined): Promise<"missing" | "done" | "failed"> {
+	const state = readState(paths);
+	if (!state) return "failed";
+	if (!existsSync(paths.keysFile)) return "missing";
+	const original = readFileSync(paths.keysFile, "utf8");
+	const merged = mergeKeys(original, shipped, state.keys);
+	if ("problem" in merged) {
+		ctx.io.err(keysRefusal(`${paths.keysFile} ${merged.problem}`));
+		return "failed";
+	}
+	const changed = merged.text !== original;
+	const running = changed && isRunning(ctx, app);
+	if (running && existsSync(paths.keysError)) {
+		ctx.io.err(keysRefusal(`Herdr app reports a problem in your ${paths.keysFile} (${readTextOr(paths.keysError).trim()})`));
+		return "failed";
+	}
+	if (changed) {
+		if (!state.keys) {
+			mkdirSync(join(paths.keysOriginal, ".."), { recursive: true });
+			writeAtomic(paths.keysOriginal, original);
+		}
+		const rejected = await writeKeys(ctx, paths, original, merged.text, running);
+		if (rejected !== undefined) {
+			if (!state.keys) rmSync(paths.keysOriginal, { force: true });
+			cleanOriginals(paths);
+			ctx.io.err(`gentle-shell desktop: Herdr app did not accept the Gentle shortcuts (${rejected}); put back the previous ${paths.keysFile}.`);
+			return "failed";
+		}
+	}
+	const known = new Set(state.keys?.conflicts ?? []);
+	for (const conflict of merged.conflicts) {
+		if (known.has(conflict.key)) continue;
+		ctx.io.err(`gentle-shell desktop: your ${paths.keysFile} binds ${conflict.theirs} to ${JSON.stringify(conflict.theirAction)} in ${DESKTOP_KEYS_SECTION}; kept yours, so the Gentle shortcut ${conflict.key} (${typeof conflict.action === "string" ? conflict.action : JSON.stringify(conflict.action)}) was not added.`);
+	}
+	const written = changed ? sha256Text(merged.text) : state.keys?.written ?? sha256Text(original);
+	writeState(paths, { ...state, keys: { ...merged.keys, written } });
+	if (merged.added.length > 0) ctx.io.out(`Added the Gentle shortcuts ${merged.added.join(", ")} to ${paths.keysFile} (${DESKTOP_KEYS_SECTION}); the previous file is in ${paths.keysBackup}.`);
+	else if (changed) ctx.io.out(`Updated the Gentle shortcuts in ${paths.keysFile} (${DESKTOP_KEYS_SECTION}); the previous file is in ${paths.keysBackup}.`);
+	return "done";
+}
+
+// Removes the entries that are still ours. Returns false when keys.json could not be changed.
+async function removeKeys(ctx: DesktopContext, paths: DesktopPaths, keys: KeysState, app: string | undefined): Promise<boolean> {
+	if (!existsSync(paths.keysFile)) {
+		rmSync(paths.keysOriginal, { force: true });
+		return true;
+	}
+	const current = readFileSync(paths.keysFile, "utf8");
+	// Untouched since our last write: the file from before Gentle Shell, byte for byte.
+	const text = sha256Text(current) === keys.written && existsSync(paths.keysOriginal) ? readFileSync(paths.keysOriginal, "utf8") : unmergeKeys(current, keys);
+	if (typeof text !== "string") {
+		ctx.io.err(`gentle-shell desktop: ${paths.keysFile} ${text.problem}; it was not changed, so the Gentle shortcuts are still in it. Fix it and run gentle-shell desktop --uninstall again.`);
+		return false;
+	}
+	if (text !== current) {
+		const rejected = await writeKeys(ctx, paths, current, text, isRunning(ctx, app));
+		if (rejected !== undefined) {
+			ctx.io.err(`gentle-shell desktop: Herdr app did not accept ${paths.keysFile} without the Gentle shortcuts (${rejected}); put it back as it was.`);
+			return false;
+		}
+	}
+	rmSync(paths.keysOriginal, { force: true });
+	ctx.io.out(`Removed the Gentle shortcuts from ${paths.keysFile}; your own keys are unchanged.`);
+	return true;
+}
+
 // --- the Herdr window ------------------------------------------------------------
 
 function windowStatus(ctx: DesktopContext, app: string): { layout?: string; errors: unknown[] } | undefined {
@@ -619,11 +1038,18 @@ function herdrDo(ctx: DesktopContext, app: string, command: string, payload: Rec
 	return ctx.io.run(app, ["do", command, JSON.stringify(payload)], { env: ctx.env, cwd: ctx.cwd });
 }
 
-async function openDesktop(ctx: DesktopContext, paths: DesktopPaths, app: string): Promise<number> {
+const keysDeferred = (paths: DesktopPaths) => `Herdr writes ${paths.keysFile} when its window first opens; the Gentle shortcuts are added the next time gentle-shell desktop opens Herdr.`;
+
+async function openDesktop(ctx: DesktopContext, paths: DesktopPaths, app: string, keys: Record<string, KeyAction> | undefined): Promise<number> {
 	const status = await ensureWindow(ctx, app);
 	if (!status) {
 		ctx.io.err("gentle-shell desktop: Herdr app did not open its window. Open Herdr (it may ask to set up herdr-core), then run gentle-shell desktop again.");
 		return 1;
+	}
+	// Shortcuts waiting for the keys.json Herdr writes on its first start.
+	if (keys) {
+		for (let attempt = 0; attempt < KEYS_WAIT_ATTEMPTS && !existsSync(paths.keysFile); attempt += 1) await ctx.io.sleep(START_INTERVAL_MS);
+		if ((await syncKeys(ctx, paths, keys, app)) === "missing") ctx.io.out(keysDeferred(paths));
 	}
 	const state = readState(paths);
 	if (state && status.layout && status.layout !== DESKTOP_LAYOUT && state.previousLayout !== status.layout) {
@@ -667,40 +1093,50 @@ function printStatus(ctx: DesktopContext, paths: DesktopPaths, assets: Assets | 
 	ctx.io.out(existsSync(paths.layoutFile) ? `  Layout ${DESKTOP_LAYOUT}: installed at ${paths.layoutFile}` : `  Layout ${DESKTOP_LAYOUT}: not installed`);
 	if (installed.length === 0) ctx.io.out(`  Mods: none installed (ships ${shipped.join(", ")})`);
 	else ctx.io.out(`  Mods: ${installed.join(", ")} installed in ${paths.mods}${missing.length > 0 ? `; missing ${missing.join(", ")}` : ""}`);
+	if ("mods" in assets && assets.keys) {
+		const keys = readState(paths)?.keys;
+		ctx.io.out(keys ? `  Keys: ${Object.keys(keys.entries).length} Gentle shortcuts in ${paths.keysFile} (${DESKTOP_KEYS_SECTION})` : "  Keys: Gentle shortcuts not added");
+	}
 	ctx.io.out(window ? `  Window: running, layout ${window.layout ?? "unknown"}` : "  Window: not running");
 	return 0;
 }
 
-function uninstall(ctx: DesktopContext, paths: DesktopPaths): number {
+async function uninstall(ctx: DesktopContext, paths: DesktopPaths): Promise<number> {
 	const state = readState(paths);
 	const ours = (state?.mods ?? []).filter((mod) => existsSync(join(paths.mods, mod)));
 	const layoutOurs = state?.layout === true && existsSync(paths.layoutFile);
-	if (ours.length === 0 && !layoutOurs) {
+	if (ours.length === 0 && !layoutOurs && !state?.keys) {
 		rmSync(paths.stateFile, { force: true });
 		ctx.io.out(`Gentle Shell Desktop mods and layout are not installed in ${paths.herdrHome}; nothing to remove.`);
 		return 0;
 	}
-	prepareScratch(paths);
-	rmSync(paths.stage, { recursive: true, force: true });
-	const restored: string[] = [];
-	const putBack = (kind: "mods" | "layouts", name: string, target: string) => {
-		const original = join(paths.originals, kind, name);
-		if (!existsSync(original) && !isSymlink(original)) return;
-		moveSync(original, target);
-		restored.push(kind === "mods" ? `mods ${name}` : `layout ${DESKTOP_LAYOUT}`);
-	};
-	for (const mod of ours) {
-		moveSync(join(paths.mods, mod), join(paths.backupNext, "mods", mod));
-		putBack("mods", mod, join(paths.mods, mod));
-	}
-	if (layoutOurs) {
-		moveSync(paths.layoutFile, join(paths.backupNext, "layouts", `${DESKTOP_LAYOUT}.json`));
-		putBack("layouts", `${DESKTOP_LAYOUT}.json`, paths.layoutFile);
-	}
-	promoteBackup(paths);
-	cleanOriginals(paths);
-	rmSync(paths.stateFile, { force: true });
 	const app = detectApp(ctx);
+	const keysKept = state?.keys && !(await removeKeys(ctx, paths, state.keys, app?.path)) ? state.keys : undefined;
+	const restored: string[] = [];
+	if (ours.length > 0 || layoutOurs) {
+		prepareScratch(paths);
+		rmSync(paths.stage, { recursive: true, force: true });
+		const putBack = (kind: "mods" | "layouts", name: string, target: string) => {
+			const original = join(paths.originals, kind, name);
+			if (!existsSync(original) && !isSymlink(original)) return;
+			moveSync(original, target);
+			restored.push(kind === "mods" ? `mods ${name}` : `layout ${DESKTOP_LAYOUT}`);
+		};
+		for (const mod of ours) {
+			moveSync(join(paths.mods, mod), join(paths.backupNext, "mods", mod));
+			putBack("mods", mod, join(paths.mods, mod));
+		}
+		if (layoutOurs) {
+			moveSync(paths.layoutFile, join(paths.backupNext, "layouts", `${DESKTOP_LAYOUT}.json`));
+			putBack("layouts", `${DESKTOP_LAYOUT}.json`, paths.layoutFile);
+		}
+		promoteBackup(paths);
+	}
+	cleanOriginals(paths);
+	// Shortcuts that could not be removed stay recorded, so a later --uninstall still finds them.
+	if (keysKept) writeState(paths, { mods: [], layout: false, keys: keysKept });
+	else rmSync(paths.stateFile, { force: true });
+	if (ours.length === 0 && !layoutOurs) return keysKept ? 1 : 0;
 	const window = app ? windowStatus(ctx, app.path) : undefined;
 	if (app && window?.layout === DESKTOP_LAYOUT) {
 		const back = state?.previousLayout ?? "main";
@@ -709,10 +1145,10 @@ function uninstall(ctx: DesktopContext, paths: DesktopPaths): number {
 	}
 	ctx.io.out(`Removed Gentle Shell Desktop mods and layout from ${paths.herdrHome}; a copy is in ${paths.backup}. Herdr app itself stays installed.`);
 	if (restored.length > 0) ctx.io.out(`Put back what was there before Gentle Shell Desktop: ${restored.join(", ")} in ${paths.herdrHome}.`);
-	return 0;
+	return keysKept ? 1 : 0;
 }
 
-function refresh(ctx: DesktopContext, paths: DesktopPaths, assets: Assets | { error: string }): number {
+async function refresh(ctx: DesktopContext, paths: DesktopPaths, assets: Assets | { error: string }): Promise<number> {
 	const state = readState(paths);
 	if (!state) return 0;
 	if ("error" in assets) {
@@ -724,14 +1160,17 @@ function refresh(ctx: DesktopContext, paths: DesktopPaths, assets: Assets | { er
 		ctx.io.err("gentle-shell desktop: Herdr app is not installed, so the Gentle mods were not refreshed; run gentle-shell desktop.");
 		return 1;
 	}
-	if (assetsUpToDate(assets, paths) && (state.mods ?? []).every((mod) => assets.mods.includes(mod))) return 0;
-	const failure = installAssets(ctx, paths, assets, app.path, state);
-	if (failure !== undefined) {
-		ctx.io.err(`gentle-shell desktop: ${failure}`);
-		return 1;
+	if (!assetsUpToDate(assets, paths) || !(state.mods ?? []).every((mod) => assets.mods.includes(mod))) {
+		const failure = installAssets(ctx, paths, assets, app.path, state);
+		if (failure !== undefined) {
+			ctx.io.err(`gentle-shell desktop: ${failure}`);
+			return 1;
+		}
+		writeState(paths, { ...state, mods: assets.mods, layout: true });
+		ctx.io.out(`Gentle Shell Desktop: refreshed mods ${assets.mods.join(", ")} and layout ${DESKTOP_LAYOUT} in ${paths.herdrHome}.`);
 	}
-	writeState(paths, { ...state, mods: assets.mods, layout: true });
-	ctx.io.out(`Gentle Shell Desktop: refreshed mods ${assets.mods.join(", ")} and layout ${DESKTOP_LAYOUT} in ${paths.herdrHome}.`);
+	// Only shortcuts the person already accepted with gentle-shell desktop are refreshed.
+	if (assets.keys && state.keys) await syncKeys(ctx, paths, assets.keys, app.path);
 	return 0;
 }
 
@@ -750,8 +1189,8 @@ export async function runDesktop(ctx: DesktopContext): Promise<number> {
 	const paths = desktopPaths(ctx.env, ctx.home);
 	const assets = shippedAssets(ctx.packageRoot);
 	if (parsed.action === "status") return printStatus(ctx, paths, assets, release);
-	if (parsed.action === "uninstall") return uninstall(ctx, paths);
-	if (parsed.action === "refresh") return refresh(ctx, paths, assets);
+	if (parsed.action === "uninstall") return await uninstall(ctx, paths);
+	if (parsed.action === "refresh") return await refresh(ctx, paths, assets);
 	if ("error" in assets) {
 		ctx.io.err(`gentle-shell desktop: ${assets.error}`);
 		return 1;
@@ -766,7 +1205,10 @@ export async function runDesktop(ctx: DesktopContext): Promise<number> {
 	const appPlan = planned as AppPlan | undefined;
 	const previous = readState(paths);
 	const assetsNeeded = !previous || !assetsUpToDate(assets, paths);
-	if (appPlan || assetsNeeded) {
+	// Never merged yet: asked for with the rest. A keys.json Herdr has not written yet is
+	// merged once the window opens (and with --no-open, the next time it does).
+	const keysNeeded = assets.keys !== undefined && !previous?.keys && (parsed.open || existsSync(paths.keysFile));
+	if (appPlan || assetsNeeded || keysNeeded) {
 		ctx.io.out("Gentle Shell Desktop will:");
 		if (appPlan) {
 			const where = `${appPlan.destination} and link ${appPlan.link}`;
@@ -782,7 +1224,13 @@ export async function runDesktop(ctx: DesktopContext): Promise<number> {
 			ctx.io.out(`  - check each mod with herdr-app check before installing anything`);
 			ctx.io.out(`  - keep anything Gentle Shell did not install at those paths in ${paths.originals}, put back by --uninstall`);
 			ctx.io.out(`  - keep our own previous copy in ${paths.backup}`);
-			ctx.io.out(`  Your other mods, layouts and settings in ${paths.herdrHome} are not touched.`);
+		}
+		if (keysNeeded) {
+			ctx.io.out(`  - add the Gentle shortcuts (${DESKTOP_KEYS_SECTION}) to ${paths.keysFile}, keeping every key you already use`);
+			ctx.io.out(`      a key you already bind there stays yours; --uninstall removes exactly ours`);
+		}
+		if (assetsNeeded || keysNeeded) {
+			ctx.io.out(`  Your other mods, layouts, keys and settings in ${paths.herdrHome} are not touched.`);
 		}
 		if (!parsed.yes) {
 			if (!ctx.interactive) {
@@ -820,13 +1268,17 @@ export async function runDesktop(ctx: DesktopContext): Promise<number> {
 			ctx.io.err(`gentle-shell desktop: ${failure}`);
 			return 1;
 		}
-		writeState(paths, { mods: assets.mods, layout: true, ...(previous?.previousLayout ? { previousLayout: previous.previousLayout } : {}) });
+		writeState(paths, { mods: assets.mods, layout: true, ...(previous?.previousLayout ? { previousLayout: previous.previousLayout } : {}), ...(previous?.keys ? { keys: previous.keys } : {}) });
 		ctx.io.out(`Installed mods ${assets.mods.join(", ")} and layout ${DESKTOP_LAYOUT} in ${paths.herdrHome}.`);
 	} else {
 		ctx.io.out("Gentle Shell Desktop is up to date.");
 	}
-	if (!parsed.open) return 0;
-	return openDesktop(ctx, paths, app);
+	const keysPending = assets.keys !== undefined && (await syncKeys(ctx, paths, assets.keys, app)) === "missing";
+	if (!parsed.open) {
+		if (keysPending) ctx.io.out(keysDeferred(paths));
+		return 0;
+	}
+	return openDesktop(ctx, paths, app, keysPending ? assets.keys : undefined);
 }
 
 // --- the real process --------------------------------------------------------------

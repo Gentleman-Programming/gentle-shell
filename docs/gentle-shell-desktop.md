@@ -32,7 +32,30 @@ gentle-shell desktop --uninstall
    - If a swap fails, every previous copy goes back and folders this install created are removed.
    - Only the mods this package ships and `layouts/gentle-shell.json` are written. Your other mods,
      layouts and settings are never touched.
-3. **Window.** Gentle Shell starts Herdr app if its window is not open and runs
+3. **Keys.** It adds the Gentle shortcuts of `herdr/keys.json` (the `layout:gentle-shell` section:
+   ⌘K palette, ⌘J Chat ↔ Terminal, ⌘. stop, ⌥⌘1…⌥⌘6 inspector tabs; see
+   [desktop-feed.md](desktop-feed.md#desktop-keys)) to `<herdr home>/keys.json`, so they work
+   anywhere in the window while the `gentle-shell` layout shows, not only with the chat focused.
+   - Herdr reads one `keys.json` on every OS; only its built-in defaults differ (`keys.macos.json`
+     on macOS). That file is the whole keymap: Herdr writes its defaults there on its first start
+     and does not layer them under it. So Gentle Shell never creates `keys.json`: if Herdr has not
+     written it yet, the shortcuts are added right after the window opens, or with `--no-open` the
+     next time `gentle-shell desktop` opens Herdr.
+   - Only entries in `layout:gentle-shell` are added or updated, as text: every other byte of the
+     file stays as you wrote it. `state.json` records each entry we added (its tag; JSON has no
+     comments). A key you already bind in that section, spelled any way (`alt-cmd-1` is `cmd-alt-1`),
+     stays yours and is reported once; a Gentle shortcut you later delete or rebind is yours and is
+     never added again.
+   - An invalid `keys.json` (bad JSON, not an object of sections, a binding that is not a command
+     string or object) is never written; Gentle Shell says why and installs the rest.
+   - The write is atomic. The previous file is kept in `~/.gentle-shell/desktop/keys-backup.json`
+     and the file from before Gentle Shell's first change in `~/.gentle-shell/desktop/originals/keys.json`.
+     When Herdr is running on that Herdr home, it applies `keys.json` at once: if it then writes
+     `keys.error`, the previous file goes back. If it already reports `keys.error`, nothing is written.
+   - Herdr updates an untouched default `keys.json` to new default shortcuts on upgrade; once the
+     file has our shortcuts it counts as edited, so new Herdr defaults must be added by hand until
+     `--uninstall` puts the original back.
+4. **Window.** Gentle Shell starts Herdr app if its window is not open and runs
    `herdr-app do layout.switch {"name":"gentle-shell"}`. If no Gentle Shell terminal runs in the
    current folder yet, it also runs `space.new` with `{"folder": <cwd>, "argv": ["gentle-shell"]}`.
    `--no-open` installs only.
@@ -69,17 +92,21 @@ Herdr app updates itself in the background after that; newer versions are accept
 ## `--status`, `--uninstall`, upgrades
 
 - `--status` prints the Gentle Shell version, the Herdr app version and path, the Herdr home, whether
-  the `gentle-shell` layout and each shipped mod are installed, and whether the window is running
+  the `gentle-shell` layout and each shipped mod are installed, how many Gentle shortcuts are in
+  `keys.json`, and whether the window is running
   and which layout it shows.
 - `--uninstall` moves only the mods and layout `state.json` records as ours into
   `~/.gentle-shell/desktop/backup`, puts back byte for byte what was at those paths before
-  (`~/.gentle-shell/desktop/originals`), then switches Herdr back to the layout it showed before
+  (`~/.gentle-shell/desktop/originals`), removes from `keys.json` exactly the Gentle shortcuts that
+  still hold the action we wrote (the file from before Gentle Shell, byte for byte, when you have not
+  edited it since; otherwise every other byte stays), then switches Herdr back to the layout it showed before
   Gentle Shell switched it (or `main`) when ours is active. Without `state.json` it removes
   nothing. Herdr app itself stays installed.
 - `gentle-shell upgrade` runs the new version's `gentle-shell desktop --refresh` afterwards, only
   when that version ships the `desktop` command and `gentle-shell desktop` installed the mods
   before (`~/.gentle-shell/desktop/state.json`). That reinstalls our mods and layout in the same
-  safe way. It never installs Herdr app or opens the window. `upgrade --rollback` only switches the
+  safe way, and updates the Gentle shortcuts already added (a shortcut a new version no longer ships
+  is removed; one it changes is updated, unless you rebound it). It never installs Herdr app or opens the window. `upgrade --rollback` only switches the
   version and runs nothing else.
 
 This works the same for every Gentle Shell install, bundled in `~/.gentle-shell` or the npm package.

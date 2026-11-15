@@ -268,3 +268,54 @@ hints).
   (`later()` in main.js; the inspector the same). A hidden stack child stays alive but gets no
   key commands, so palette requests reach the chat through a consume-once shared value it looks
   at every 500 ms while shown.
+
+## T12: the minimal view (S11, MINIMAL.md)
+
+The artboard draws the log with the thinking, the tool group and the tool cards closed and the
+diff card open (l.411-446). The minimal view keeps every closed look as drawn and starts the
+diff, the subagent, notes, compaction, branch summaries and skill blocks closed too, each as a
+row in the closed `.tool` look. Nothing new is invented: every row is a `.tool > summary`.
+
+| Row | Look | Source |
+|---|---|---|
+| Every compact row | 1px `--line`, `--surface`, radius 8; summary padding 7 / 10, gap 8, 12.5px; hover `--selected`; chevron 13 at the right (down when open) | `.tool` l.135-140 |
+| Tool | ✓ `--ok` / ✕ `--err` / spinner `--info`; name semibold; argument mono 12px `--muted`, truncated; note `--muted` (a failure's last line in `--err`, at most 300px); duration | l.136-140, l.440 |
+| Tool group, thinking | unchanged (`.tool-group` l.143-145, `.think` l.132) | — |
+| Diff (closed) | the artboard's open card's summary: ✓, `edit`, path, `+N` `--ok` mono, `−M` `--err` mono, chevron | l.433 |
+| Subagent (closed) | role mono 11px `--accent` upper-cased (`.sub .role` l.157), task 12.5px `--text`, the `.state` dot and label 12px (l.79-88), model 12px `--muted`, spend mono 12px `--muted` | l.155-158 in the `.tool` row |
+| Subagent (open) | the artboard's `.sub` card unchanged; its title row carries the down chevron (`--muted`) and closes it; the answer below a 1px `--line` rule, 13px | l.155-160 |
+| Note / compaction / branch / skill (closed) | leading 13px mark (chat icon `--accent`; ⊟, ⑂ `--muted`; ✦ `--accent`), name semibold, first line mono 12px `--muted` | `.tool` l.136-139 |
+| Their body (open) | `.tool-body`: 1px top `--line`, padding 8 / 10 / 10, markdown 13px | l.141 |
+| "⌘O expand all" / "collapse all" | the composer hints' look: kbd (mono 11px, 1px `--line-strong`, radius 5, padding 0 / 5) + 11.5px `--muted`, gap 3; hover `--text`; right side, before "Esc Esc stops the agent" | l.184, l.47 |
+
+Composer hints on narrow cards now drop in this order: Esc Esc (< 700), ⌘J (< 540), / (< 450),
+⇧ Enter (< 360); Enter send and ⌘O stay. At the artboard's 780 lane every hint shows.
+
+Checked:
+
+- `herdr-app check --print-spec` of a scratch fixture (outside the repo) fed a compaction, a
+  skill invocation, a two-block thinking run, 2 reads + 1 grep, markdown, an edit with a patch,
+  a passing and a failing bash, a `subagent_run`, a two-paragraph custom message and a last
+  reply. Minimal: every item is one `summaryRow` with the values above (`cmp-c1`,
+  `skill-u0-skill`, `th-a1-0` "Thought for 14s" as one run, `grp-a1-2` "Explored · 2 reads, 1
+  search", `diff-a1-6` +2 −1, `tool-a1-7`, `tool-a1-8` with "AssertionError: expected 3 to
+  equal 4 · 2.1s" in `--err`, `sub-a1-9` WRITER · Done · Sonnet 5.5, `note-n1`); the last
+  reply and the user bubble whole; no row body built. Expand all: every body is built
+  (`cm-c1`, `sk-u0-skill`, `tht-a1-0`, the group's three cards, "Hunk 1 of 1" + Next hunk,
+  the `.sub` card with "› bash herdr-app check" and its answer `sr-a1-9`, `n-n1`), 13 down
+  chevrons, and the hint reads "collapse all".
+- Live (the person's window, 945 × 1007 logical, real sessions, read-only: selected with
+  `gentle-status.session-next/prev`, toggled with `gentle-chat.expand-all` /
+  `collapse-all`; no prompt, key or click sent): the working session showed its thinking runs
+  as "Thought for …" rows and a `read` as one `.tool` row with "⌘O expand all" in the hints;
+  after `expand-all` its tool bodies were open and the hint read "⌘O collapse all";
+  `collapse-all` brought the rows back. `herdr-app status` errors `[]` throughout.
+
+Differences:
+
+1. Not in the artboard: the ⌘O hint (S11 asks for the toggle), and the closed diff and
+   subagent states (the artboard draws them open).
+2. Herdr limitation (as before): the chevron swaps glyph instead of rotating.
+3. Not seen live: a closed diff, subagent, compaction or skill row in a real session — the
+   log is pinned to the newest entry and the live sessions' newest entries were long replies;
+   they were checked with the fixture spec above.

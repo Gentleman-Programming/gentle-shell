@@ -740,3 +740,64 @@ test("keys: a package without herdr/keys.json never touches keys.json (PRESERVE)
 	assert.equal(await runDesktop(context(f, { args: ["--uninstall"] })), 0, f.err.join("\n"));
 	assert.equal(readFileSync(join(f.herdrHome, "keys.json"), "utf8"), USER_KEYS);
 });
+
+// --- T12 (S11): the chat's minimal view -------------------------------------------------
+
+const REPO = join(import.meta.dirname, "..");
+
+test("keys: the shipped layout section adds ⌘O for the chat's expand-all and keeps the other Gentle shortcuts", () => {
+	const shipped = JSON.parse(readFileSync(join(REPO, "herdr", "keys.json"), "utf8"));
+	assert.deepEqual(shipped, {
+		"layout:gentle-shell": {
+			"cmd-k": "mod.open:gentle-palette",
+			"cmd-j": "gentle-status.toggle",
+			"cmd-.": "gentle-status.stop",
+			"cmd-o": "gentle-chat.expand",
+			"cmd-alt-1": "gentle-inspector.tab-changes",
+			"cmd-alt-2": "gentle-inspector.tab-todo",
+			"cmd-alt-3": "gentle-inspector.tab-agents",
+			"cmd-alt-4": "gentle-inspector.tab-jobs",
+			"cmd-alt-5": "gentle-inspector.tab-review",
+			"cmd-alt-6": "gentle-inspector.tab-session",
+		},
+	});
+});
+
+test("chat feed: compaction, branch summaries and skill invocations become their own foldable items, as the TUI draws them", async () => {
+	const { createFeed, ingest } = await import(join(REPO, "herdr", "mods", "gentle-chat", "feed.js"));
+	const feed = createFeed();
+	const lines = [
+		{ type: "compaction", id: "c1", summary: "## Goal\nShip T12", tokensBefore: 123456, firstKeptEntryId: "x" },
+		{ type: "branch_summary", id: "b1", summary: "Tried a fork\nthen came back", fromId: "a" },
+		{ type: "branch_summary", id: "b2", summary: "   " },
+		{ type: "message", id: "u1", message: { role: "user", content: [{ type: "text", text: '<skill name="odd" location="/s/odd/SKILL.md">\n# ODD\nrules\n</skill>\n\nplan this' }], timestamp: Date.parse("2026-11-15T10:00:00Z") } },
+		{ type: "message", id: "u2", message: { role: "user", content: '<skill name="odd" location="/s/odd/SKILL.md">\nonly the skill\n</skill>' } },
+		{ type: "custom_message", id: "n1", customType: "gentle-agents", display: true, content: "Subagent finished\n\nDetails" },
+	];
+	ingest(feed, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+	const items = feed.items.map(({ time: _t, ...rest }: Record<string, unknown>) => rest);
+	assert.deepEqual(items, [
+		{ kind: "compaction", id: "c1", summary: "## Goal\nShip T12", tokens: 123456 },
+		{ kind: "branch", id: "b1", summary: "Tried a fork\nthen came back" },
+		{ kind: "skill", id: "u1-skill", name: "odd", text: "# ODD\nrules" },
+		{ kind: "user", id: "u1", text: "plan this" },
+		{ kind: "skill", id: "u2-skill", name: "odd", text: "only the skill" },
+		{ kind: "note", id: "n1", text: "Subagent finished\n\nDetails", type: "gentle-agents" },
+	]);
+});
+
+test("chat feed: an ordinary user message stays one user item (PRESERVE)", async () => {
+	const { createFeed, ingest } = await import(join(REPO, "herdr", "mods", "gentle-chat", "feed.js"));
+	const feed = createFeed();
+	ingest(feed, JSON.stringify({ type: "message", id: "u1", message: { role: "user", content: "<skill> is a word here" } }) + "\n");
+	assert.deepEqual(feed.items.map((i: { kind: string; text: string }) => [i.kind, i.text]), [["user", "<skill> is a word here"]]);
+});
+
+test("chat feed: hideThinkingBlock follows pi's settings merge (project over agent dir, false when unset or unreadable)", async () => {
+	const { hideThinkingFrom } = await import(join(REPO, "herdr", "mods", "gentle-chat", "feed.js"));
+	assert.equal(hideThinkingFrom('{"hideThinkingBlock":true}', null), true);
+	assert.equal(hideThinkingFrom('{"hideThinkingBlock":true}', '{"hideThinkingBlock":false}'), false);
+	assert.equal(hideThinkingFrom('{"hideThinkingBlock":false}', '{"theme":"x"}'), false);
+	assert.equal(hideThinkingFrom(null, null), false);
+	assert.equal(hideThinkingFrom("{not json", '{"hideThinkingBlock":"yes"}'), false);
+});

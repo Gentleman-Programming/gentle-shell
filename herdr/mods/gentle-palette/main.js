@@ -8,7 +8,7 @@
 //   Needs you      every session (any agent) waiting for the person → focuses it
 //   Session        Stop the agent (while it works), then pi's session commands (new, resume,
 //                  fork, compact, name, export, …) from the session's snapshot `commands`
-//   View           Chat, Terminal and the inspector tabs, with their keys
+//   View           Chat, Terminal, Expand all / Collapse all, the inspector tabs, with their keys
 //   Permission     the four live modes (the chat's menu path: Super-YOLO asks first)
 //   Commands       the session's own commands (extension commands, prompt templates, skills)
 // Choosing a row runs it on the path the rest of the desktop uses (actions.js, a byte-identical
@@ -36,7 +36,7 @@ const icon = (name, size = 15) => svg(`mods/${MOD}/icons/${name}.svg`).size(size
 
 // The bindings herdr/keys.json ships for the Gentle layout (shown beside their rows).
 export const KEYS = {
-  palette: "⌘K", chat: "⌘J", stop: "⌘.",
+  palette: "⌘K", chat: "⌘J", stop: "⌘.", expand: "⌘O",
   changes: "⌥⌘1", todo: "⌥⌘2", agents: "⌥⌘3", jobs: "⌥⌘4", review: "⌥⌘5", session: "⌥⌘6",
 };
 
@@ -86,6 +86,9 @@ export function paletteRows(feed, sessions, blockedAgents, elsewhere = false) {
   }
   add("View", { id: "view-chat", label: "Chat", detail: "The conversation", icon: "chat", key: KEYS.chat, act: { kind: "view", which: "chat" } });
   if (!elsewhere) add("View", { id: "view-terminal", label: "Terminal", detail: "The real Gentle Shell TUI", icon: "term", key: KEYS.chat, act: { kind: "view", which: "terminal" } });
+  // The chat's minimal view (S11): every row open, or back to one line per item.
+  add("View", { id: "view-expand", label: "Expand all", detail: "Open every tool call, thought, diff and subagent in the chat", icon: "chat", key: KEYS.expand, act: { kind: "expand", expanded: true } });
+  add("View", { id: "view-collapse", label: "Collapse all", detail: "The minimal chat: one line per tool call, thought, diff and subagent", icon: "chat", key: KEYS.expand, act: { kind: "expand", expanded: false } });
   for (const t of TABS) add("View", { id: `tab-${t.id}`, label: t.label, detail: "Inspector tab", icon: t.icon, key: KEYS[t.id], act: { kind: "tab", tab: t.id } });
   const mode = feed?.permission?.mode;
   if (feed) {
@@ -206,6 +209,9 @@ export default class GentlePalette extends View {
     } else if (act.kind === "tab") {
       this.close();
       run(`gentle-inspector.tab-${act.tab}`);
+    } else if (act.kind === "expand") {
+      this.close();
+      chatRequest({ kind: "expand", expanded: act.expanded });
     } else if (act.kind === "mode") {
       this.close();
       chatRequest({ kind: "mode", mode: act.mode });

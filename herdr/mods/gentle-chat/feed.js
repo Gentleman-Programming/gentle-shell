@@ -5,7 +5,11 @@
 //   { kind: "assistant", id, blocks: [{ type: "text", text } | { type: "thinking", text }
 //       | { type: "tool", call }], cost, model, error, seconds }
 //       (seconds: how long the message took, entry write time − message start, or null)
-//   { kind: "note", id, text }        (a custom message the session displays)
+//   { kind: "note", id, text, type }  (a custom message the session displays; type: its customType)
+//   { kind: "skill", id, name, text }  (a skill the person invoked: pi's <skill> block, before the
+//       message typed with it, which follows as its own user item)
+//   { kind: "compaction", id, summary, tokens } (the context was compacted from `tokens` tokens)
+//   { kind: "branch", id, summary }    (a branch summary: what the abandoned path did)
 // Tool calls: { id, name, args, summary, result: null | { text, error, ms, patch, agent } } kept
 // in `feed.tools` so a later toolResult line fills in the card that is already drawn.
 // `patch`: an edit's unified diff (details.patch); `agent`: a subagent_run's
@@ -66,8 +70,14 @@ function ingestEntry(feed, e) {
     case "custom_message":
       if (e.display) {
         const t = textOf(e.content).trim();
-        if (t) feed.items.push({ kind: "note", id, text: t });
+        if (t) feed.items.push({ kind: "note", id, text: t, type: typeof e.customType === "string" ? e.customType : null });
       }
+      return;
+    case "compaction":
+      if (typeof e.summary === "string") feed.items.push({ kind: "compaction", id, summary: e.summary, tokens: Number.isFinite(e.tokensBefore) ? e.tokensBefore : null });
+      return;
+    case "branch_summary":
+      if (typeof e.summary === "string" && e.summary.trim()) feed.items.push({ kind: "branch", id, summary: e.summary });
       return;
     case "message":
       return ingestMessage(feed, id, e.message ?? {}, at);
@@ -78,6 +88,26 @@ function ingestEntry(feed, e) {
 
 const PATCH_MAX = 200_000; // characters of a diff kept per edit
 
+// pi's hideThinkingBlock for a session: its project settings (<cwd>/.pi/settings.json) over its
+// agent dir's settings.json, as pi's SettingsManager merges them; false when neither says.
+export function hideThinkingFrom(globalText, projectText) {
+  const read = (t) => {
+    try {
+      const v = JSON.parse(t ?? "");
+      return typeof v?.hideThinkingBlock === "boolean" ? v.hideThinkingBlock : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  return read(projectText) ?? read(globalText) ?? false;
+}
+
+// pi's parseSkillBlock (core/agent-session.js): { name, content, message } or null.
+export function skillBlock(text) {
+  const m = /^<skill name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n<\/skill>(?:\n\n([\s\S]+))?$/.exec(String(text ?? ""));
+  return m ? { name: m[1], content: m[3], message: m[4]?.trim() ?? "" } : null;
+}
+
 // "14:02" for an epoch ms, local time; null when unknown.
 export function clock(ms) {
   if (!Number.isFinite(ms)) return null;
@@ -87,8 +117,16 @@ export function clock(ms) {
 
 function ingestMessage(feed, id, m, at) {
   if (m.role === "user") {
-    const t = textOf(m.content).trim();
-    if (t) feed.items.push({ kind: "user", id, text: t, time: clock(Number.isFinite(m.timestamp) ? m.timestamp : at) });
+    let t = textOf(m.content).trim();
+    const time = clock(Number.isFinite(m.timestamp) ? m.timestamp : at);
+    // A skill invocation: the TUI draws its block as one "[skill] name" line and the typed
+    // message, if any, as the user's own (pi's parseSkillBlock).
+    const skill = skillBlock(t);
+    if (skill) {
+      feed.items.push({ kind: "skill", id: `${id}-skill`, name: skill.name, text: skill.content });
+      t = skill.message;
+    }
+    if (t) feed.items.push({ kind: "user", id, text: t, time });
     return;
   }
   if (m.role === "assistant") {

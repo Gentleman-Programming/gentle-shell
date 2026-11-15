@@ -3,6 +3,7 @@
     "cmd-k": "mod.open:gentle-palette",
     "cmd-j": "gentle-status.toggle",
     "cmd-.": "gentle-status.stop",
+    "cmd-o": "gentle-chat.expand",
     "cmd-alt-1": "gentle-inspector.tab-changes",
     "cmd-alt-2": "gentle-inspector.tab-todo",
     "cmd-alt-3": "gentle-inspector.tab-agents",

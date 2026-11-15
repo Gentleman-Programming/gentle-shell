@@ -114,13 +114,36 @@ stays.
 | Control | Does |
 |---|---|
 | **Show earlier** | Loads 150 more older messages. |
-| Thinking, tool call | Click to open or close. |
+| Any one-line item | Click to open it, click again to close it (see [The minimal chat](#the-minimal-chat)). |
+| **⌘O expand all** / **collapse all** | Opens every item in the chat, or brings back the minimal view. |
 | Diff card: **Next hunk** | Shows the edit's next hunk. |
 | Diff card: **Open in Changes** | Marks the file in the inspector's Changes tab. |
+| Subagent card (open) | Its title closes it again. |
 | Subagent card: **View** | Opens `/gentle:agents` in the Terminal. |
 | Subagent card: **Stop** | Stops that subagent. |
 | Question option | Click it, or press `1`…`N`, to answer. **Something else…** puts the keyboard in the composer; what you send is the answer. |
 | **Answer in Terminal** | Shown when the question must be answered in the TUI (see [below](#what-stays-in-the-terminal)). |
+
+### The minimal chat
+
+The chat starts in the same minimal view as the Gentle Shell TUI: everything that is not the
+conversation's own text is one line, and any line opens.
+
+| Item | One line | Open |
+|---|---|---|
+| Tool call | Status, tool, short argument, the result's gist (a failure's last line in red), duration | Arguments and output |
+| Reads and searches in a row | "Explored · 2 reads, 1 search" | The tool lines |
+| Thinking | "Thought for 14s" when the session hides thinking (`hideThinkingBlock`, ctrl+t in its TUI); open when it does not | The thinking |
+| Edit | File, +added −removed | The diff card |
+| Subagent | Role, task, state, model, spend | The subagent card (View, Stop, last step, its answer) |
+| Longer notices, compaction, branch summaries, skills | Type and first line ("Compacted from 182,345 tokens") | The whole text |
+
+Your messages, the agent's replies, the open question and "Working" are always whole.
+
+**Expand all / Collapse all** works like the TUI's ctrl+o, for every item including thinking:
+`⌘O`, the composer's "⌘O expand all" hint, or the palette's **Expand all** / **Collapse all**.
+An item you open or close by hand stays that way, also when new lines arrive or you come back
+from another session, until the next Expand all / Collapse all.
 
 ### Composer
 
@@ -156,7 +179,7 @@ run, `Esc` to close. Its groups:
 |---|---|
 | **Needs you** | Every session or agent waiting for you; `Enter` focuses it. |
 | **Session** | **Stop the agent** (while it works), then Pi's session commands: `/new`, `/resume`, `/fork`, `/compact`, `/name`, `/export`, … |
-| **View** | Chat, Terminal and the six inspector tabs, with their keys. |
+| **View** | Chat, Terminal, Expand all / Collapse all (the chat's minimal view) and the six inspector tabs, with their keys. |
 | **Permission** | The four modes; the current one is checked. |
 | **Commands** | The session's own commands: extension commands, prompt templates and skills. |
 
@@ -185,10 +208,12 @@ Window-wide, while the `gentle-shell` layout shows (added to Herdr's `keys.json`
 | `⌘K` | Opens the Gentle commands palette. |
 | `⌘J` | Switches Chat ↔ Terminal. For a TUI session it says "This session runs in another terminal." |
 | `⌘.` | Stops the shown session's turn. |
+| `⌘O` | Expand all / Collapse all in the chat (the TUI's ctrl+o). |
 | `⌥⌘1` … `⌥⌘6` | Inspector tab: Changes, Todo, Agents, Jobs, Review, Session. |
 
 `herdr-app do gentle-status.session-next` (or `session-prev`) shows the next (previous) live session,
-wherever it runs; bind it in `keys.json` if you want a key for it.
+wherever it runs; bind it in `keys.json` if you want a key for it. `herdr-app do
+gentle-chat.expand-all` (or `collapse-all`) sets the chat's view.
 
 Inside the chat, even without those shortcuts:
 
@@ -196,6 +221,7 @@ Inside the chat, even without those shortcuts:
 |---|---|
 | `⌘K` | Palette. |
 | `⌘J` | Terminal. |
+| `⌘O` | Expand all / Collapse all. |
 | `Esc Esc` | Stops the agent's turn. The first `Esc` says "Press Esc again to stop the agent." for one second. `Esc` first closes the `/` menu. |
 | `1` … `N` | Answers the open question (when the composer does not have the keyboard). |
 

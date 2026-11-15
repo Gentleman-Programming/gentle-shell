@@ -14,9 +14,10 @@
 import { View, div } from "gpui-kit";
 import { v_flex, TextareaState, ScrollHandle } from "gpui-base";
 import { agents, props, layout, hc, run, setShared, shared, theme, watchFolder, nextCommand } from "herdr";
-import { sessionFileFor, readAfter } from "./session.js";
+import { readFile } from "fs/promises";
+import { sessionFileFor, readAfter, utf8 } from "./session.js";
 import { FeedSource, allSessions, targetSession } from "./snapshot.js";
-import { createFeed, ingest } from "./feed.js";
+import { createFeed, ingest, hideThinkingFrom } from "./feed.js";
 import { palette, sans, R } from "./tokens.js";
 import { header, entries, entry, lane, stateLabel, askCard, askOptions, composer, icon, PERM, ELSEWHERE } from "./ui.js";
 import { sendAction, errorText, safeKeys, terminalFree, tuiCommand, showTerminal, confirm, confirmed, readSnapshot } from "./actions.js";
@@ -31,6 +32,9 @@ const SLASH_MAX = 50; // commands the "/" menu filters to at most
 const REQUEST_MS = 10000; // a palette request older than this is ignored (shared values persist)
 const REQUEST_POLL = 500; // how often a shown chat looks for a palette request (and a new session)
 const NO_COMMANDS = "Open that session's terminal to run /commands.";
+const KEPT = 30; // sessions whose opened rows are remembered when another session shows
+const SETTINGS_MS = 3000; // how often the shown session's settings are read again
+const DOUBLE_MS = 300; // one ⌘O that reaches both the chat's key and the layout's key toggles once
 
 // The composer's "/" menu: open while the draft is one "/word" (no space or line break yet).
 // Names that start with the word come first, then names and descriptions that contain it.
@@ -45,7 +49,13 @@ export function slashMatches(commands, draft) {
 }
 
 // A session started before desktop prompts refuses the kind: say what to do.
-const olderSession = (r) => (r?.error?.code === "unknown_kind" ? "This session started before desktop messages: type in its own terminal, or restart it." : null);
+// A send_prompt refusal in words: a session from before desktop prompts, or one compacting that
+// already holds a message.
+const PROMPT_REFUSALS = {
+  unknown_kind: "This session started before desktop messages: type in its own terminal, or restart it.",
+  session_compacting: "A message is already waiting for compaction to finish.",
+};
+const promptRefusal = (r) => PROMPT_REFUSALS[r?.error?.code] ?? null;
 const questionKey = (q) => (q ? `${q.toolCallId ?? ""}|${q.openedAt ?? ""}|${q.question ?? ""}` : null);
 
 export default class GentleChat extends View {
@@ -63,8 +73,14 @@ export default class GentleChat extends View {
     this.loading = false;
     this.again = false;
     this.real = new Map(); // cwd -> real path, for sessionFileFor
-    this.open = new Map(); // card id -> open, when flipped from its default
+    this.open = new Map(); // row id -> open, when flipped from its default (S11: per row, kept across reads)
     this.hunkAt = new Map(); // diff card id -> shown hunk
+    this.kept = new Map(); // session file -> { open, hunkAt } of a session shown before
+    this.expandAll = false; // ⌘O: every row open (the TUI's ctrl+o); a click on a row still flips it
+    this.expandAt = 0;
+    this.hideThinking = true; // the session's hideThinkingBlock (read with its snapshot)
+    this.settingsOf = null;
+    this.settingsAt = 0;
     this.limit = PAGE;
     this.stick = true; // scroll to the newest entry after the next draw
     this.error = null;
@@ -89,6 +105,7 @@ export default class GentleChat extends View {
       { keystroke: "enter", action: "gentle_chat_send", context: "GentleChatComposer > Input" },
       { keystroke: "cmd-j", action: "gentle_chat_terminal", context: "GentleChat" },
       { keystroke: "cmd-k", action: "gentle_chat_palette", context: "GentleChat" },
+      { keystroke: "cmd-o", action: "gentle_chat_expand", context: "GentleChat" },
       { keystroke: "escape", action: "gentle_chat_escape", context: "GentleChat" },
       { keystroke: "escape", action: "gentle_chat_escape", context: "GentleChatComposer > Input" },
       { keystroke: "up", action: "gentle_chat_slash_up", context: "GentleSlashMenu > Input" },
@@ -115,7 +132,8 @@ export default class GentleChat extends View {
   // herdr/keys.json binds them): chat, terminal, toggle (Chat ↔ Terminal), perm (opens the
   // permission menu), mode-<normal|auto|yolo|super-yolo> (the menu's own path: Super-YOLO asks in
   // a dialog first), stop (the agent's turn, as Esc Esc), palette (the Gentle commands palette)
-  // and request (a palette row: the slash command it names, see gentle-palette).
+  // request (a palette row: the slash command it names, see gentle-palette), and the minimal
+  // view's expand (⌘O: every row open ↔ the minimal view), expand-all and collapse-all (S11).
   commands(cx) {
     cx.spawn(async (cx) => {
       for (;;) {
@@ -128,6 +146,8 @@ export default class GentleChat extends View {
           else if (c === "perm") this.permOpen = true;
           else if (c === "stop") this.stop(cx);
           else if (c === "palette") this.palette();
+          else if (c === "expand") this.expandToggle(cx);
+          else if (c === "expand-all" || c === "collapse-all") this.setExpandAll(c === "expand-all", cx);
           else if (c === "request") this.request(cx);
           else if (mode && PERM.some((m) => m.mode === mode)) this.setMode(mode, cx);
         } catch (e) {
@@ -179,10 +199,28 @@ export default class GentleChat extends View {
       : s.terminal ? await sessionFileFor(s.terminal, this.real) : null;
     if (this.key !== key) return;
     if (this.setSnap(where?.feed ?? s.feed ?? null)) cx.notify();
+    await this.readSettings(s, cx);
     if (!where) return;
     if (where.dir !== this.dir) { this.dir = where.dir; this.watch(where.dir, cx); }
     if (where.file !== this.file) { this.reset(where.file); cx.notify(); }
     if (this.file) await this.load(cx);
+  }
+
+  // The session's hideThinkingBlock (pi settings; ctrl+t in its TUI writes it), read again on every
+  // refresh (at most every SETTINGS_MS: a streaming turn refreshes on every write). A missing or
+  // unreadable file reads as not set.
+  async readSettings(s, cx) {
+    const now = Date.now();
+    if (this.settingsOf === s.key && now - this.settingsAt < SETTINGS_MS) return;
+    this.settingsOf = s.key;
+    this.settingsAt = now;
+    const dir = s.feed?.identity?.agentDir;
+    const cwd = s.feed?.identity?.cwd ?? s.terminal?.cwd ?? null;
+    const text = async (path) => { try { return utf8(await readFile(path)); } catch { return null; } };
+    const hide = hideThinkingFrom(typeof dir === "string" ? await text(`${dir}/settings.json`) : null,
+      typeof cwd === "string" ? await text(`${cwd.replace(/\/+$/, "")}/.pi/settings.json`) : null);
+    if ((this.want?.key ?? null) !== s.key) return;
+    if (hide !== this.hideThinking) { this.hideThinking = hide; cx.notify(); }
   }
 
   // Keeps the newest snapshot; true when what it shows changed. A new or cleared question
@@ -222,12 +260,21 @@ export default class GentleChat extends View {
   }
 
   reset(file) {
+    // The rows opened in a session stay open when it is read again or shown again (S11).
+    if (file !== this.file) {
+      if (this.file && (this.open.size || this.hunkAt.size)) {
+        this.kept.delete(this.file);
+        this.kept.set(this.file, { open: this.open, hunkAt: this.hunkAt });
+        while (this.kept.size > KEPT) this.kept.delete(this.kept.keys().next().value);
+      }
+      const back = file ? this.kept.get(file) : null;
+      this.open = back?.open ?? new Map();
+      this.hunkAt = back?.hunkAt ?? new Map();
+    }
     this.feed = createFeed();
     this.file = file;
     this.pos = 0;
     this.limit = PAGE;
-    this.open = new Map();
-    this.hunkAt = new Map();
     this.stick = true;
     this.error = null;
   }
@@ -316,7 +363,8 @@ export default class GentleChat extends View {
         if (!address) {
           // Outside Herdr app: the session's inbox types it into its editor (T11 send_prompt).
           const r = await sendAction(cx, this.snap, "send_prompt", { text });
-          if (!r.ok) { this.error = olderSession(r) ?? errorText(r); this.input.set_value(text); }
+          if (!r.ok) { this.error = promptRefusal(r) ?? errorText(r); this.input.set_value(text); }
+          else if (r.data?.queued && r.data?.after === "compaction") this.notice = "Queued until compaction ends";
           else if (r.data?.queued) this.notice = "Queued: the agent reads it after its current step, as Enter does in the TUI.";
         } else {
           const r = await hc(["send", address, text]);
@@ -456,7 +504,7 @@ export default class GentleChat extends View {
     this.draft = "";
     this.act("command", cx, async (cx) => {
       const r = await sendAction(cx, this.snap, "send_prompt", { text });
-      if (!r.ok) { if (!this.input.value()) { this.input.set_value(text); this.draft = text; } return olderSession(r) ?? errorText(r); }
+      if (!r.ok) { if (!this.input.value()) { this.input.set_value(text); this.draft = text; } return promptRefusal(r) ?? errorText(r); }
       this.stick = true;
       this.notice = `${text.split(/\s/)[0]} sent to the session.`;
       return null;
@@ -549,6 +597,12 @@ export default class GentleChat extends View {
     const req = shared("gentle-chat.request");
     if (!req || typeof req !== "object" || !Number.isFinite(req.at) || req.at === this.lastRequest) return;
     if (Math.abs(Date.now() - req.at) > REQUEST_MS) { setShared("gentle-chat.request", null); return; }
+    if (req.kind === "expand") {
+      this.lastRequest = req.at;
+      setShared("gentle-chat.request", null);
+      this.setExpandAll(Boolean(req.expanded), cx);
+      return;
+    }
     if (!this.snap || !this.key) return;
     this.lastRequest = req.at;
     setShared("gentle-chat.request", null);
@@ -633,13 +687,31 @@ export default class GentleChat extends View {
     if (stack) run("layout.select", { stack, child: which === "chat" ? self : other });
   }
 
+  // A row's state: its own flip, else ⌘O's "every row open", else its default (the minimal view).
   isOpen(id, def) {
-    return this.open.has(id) ? this.open.get(id) : def;
+    return this.open.has(id) ? this.open.get(id) : this.expandAll || def;
   }
 
   toggle(id, def, cx) {
     this.open.set(id, !this.isOpen(id, def));
+    this.pinned = false; // the row stays where it was clicked
     cx.notify();
+  }
+
+  // ⌘O, "Expand all / Collapse all": every row of every session follows, like the TUI's ctrl+o;
+  // the rows flipped one by one start over.
+  setExpandAll(on, cx) {
+    this.expandAll = Boolean(on);
+    this.open = new Map();
+    this.kept = new Map();
+    cx.notify();
+  }
+
+  expandToggle(cx) {
+    const now = Date.now();
+    if (now - this.expandAt < DOUBLE_MS) return;
+    this.expandAt = now;
+    this.setExpandAll(!this.expandAll, cx);
   }
 
   key(e, cx) {
@@ -687,6 +759,7 @@ export default class GentleChat extends View {
       .on_key_down((e, cx) => this.key(e, cx))
       .on_action("gentle_chat_terminal", (_e, cx) => this.go("terminal", cx))
       .on_action("gentle_chat_palette", () => this.palette())
+      .on_action("gentle_chat_expand", (_e, cx) => this.expandToggle(cx))
       .on_action("gentle_chat_escape", (_e, cx) => this.escape(cx))
       .child(header(this, p))
       .child(empty ? this.empty(p) : v_flex().id("log").flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.scroll)

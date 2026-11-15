@@ -277,11 +277,56 @@ export function entries(items) {
 
 export function entry(v, p, e, live) {
   if (e.kind === "user") return userMessage(p, e);
-  if (e.kind === "note") {
+  if (e.kind === "note") return noteCard(v, p, e);
+  if (e.kind === "skill") {
+    return card(v, p, `skill-${e.id}`, false, [glyph(p, "✦", p.accent), name("skill"), arg(p, e.name)],
+      () => markdownBody(p, `sk-${e.id}`, e.text));
+  }
+  if (e.kind === "compaction") {
+    const said = Number.isFinite(e.tokens) ? `Compacted from ${grouped(e.tokens)} tokens` : "Compacted";
+    return card(v, p, `cmp-${e.id}`, false, [glyph(p, "⊟", p.muted), name("compaction"), arg(p, said)],
+      () => markdownBody(p, `cm-${e.id}`, e.summary));
+  }
+  if (e.kind === "branch") {
+    return card(v, p, `br-${e.id}`, false, [glyph(p, "⑂", p.muted), name("branch"), arg(p, firstLine(e.summary))],
+      () => markdownBody(p, `bs-${e.id}`, e.summary));
+  }
+  return turn(v, p, e, live);
+}
+
+// ---- The minimal view (T12, S11; MINIMAL.md): every non-text item is one row in the .tool look
+// (l.135-140: 1px line, surface, radius 8; summary 7px 10px, gap 8, 12.5px; status, semibold
+// name, mono 12px muted argument, a muted note, the chevron). A click on the row opens it and
+// closes it again; ⌘O (gentle-chat.expand) opens or closes every row. The body is built only
+// while it is open.
+
+function card(v, p, id, def, kids, body, note = null) {
+  const open = v.isOpen(id, def);
+  return v_flex().w_full().border(1).border_color(p.line).bg(p.surface).rounded(R.sm)
+    .child(summaryRow(v, p, id, [...kids, note, chev(open)], def))
+    .when(open, (el) => el.child(body()));
+}
+
+const glyph = (p, text, color) => div().flex_none().w(13).text_center().text_color(color).child(text);
+const name = (text) => div().flex_none().font_semibold().child(text);
+const arg = (p, text) => div().flex_1().min_w(0).truncate().font_family(mono()).text_size(12).text_color(p.muted).child(text);
+const grouped = (n) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+
+// .tool-body (l.141) holding markdown: 1px rule, 8px 10px 10px, 13px.
+const markdownBody = (p, key, text) => div().w_full().border_t(1).border_color(p.line).px(10).pt(8).pb(10).text_size(13)
+  .child(TextView.markdown(key, text).selectable(true));
+
+// A custom message the session displays (subagent output, review notes, …). One short line
+// stays as it is; anything longer is a row that opens to the whole message, as the TUI's
+// message renderers fold theirs.
+function noteCard(v, p, e) {
+  const first = firstLine(e.text);
+  if (e.text.trim() === first && first.length <= 160) {
     return div().px(10).py(6).rounded(R.sm).border_l(2).border_color(p.accent).bg(p.surface).text_size(12)
       .child(TextView.markdown(`n-${e.id}`, e.text).selectable(true));
   }
-  return turn(v, p, e, live);
+  return card(v, p, `note-${e.id}`, false, [icon("chat", 13).text_color(p.accent), name(e.type || "note"), arg(p, first)],
+    () => markdownBody(p, `n-${e.id}`, e.text));
 }
 
 // .msg-user (l.120-122): right, max 82%, bubble 9px 13px, radius 12, 14px/1.55; meta 11.5px.
@@ -306,7 +351,12 @@ function turn(v, p, e, live) {
       if (b.type === "text") {
         parts.push(div().w_full().text_size(14).line_height(1.6).child(TextView.markdown(`a-${key}`, b.text).selectable(true)));
       } else if (b.type === "thinking") {
-        parts.push(thinking(v, p, b, key, it.seconds, lastItem && k === blocks.length - 1));
+        // Consecutive thinking blocks are one run, one row (pi's AssistantMessageComponent).
+        let j = k + 1;
+        while (j < blocks.length && blocks[j].type === "thinking") j++;
+        const run = j - k > 1 ? { type: "thinking", text: blocks.slice(k, j).map((x) => x.text.trim()).join("\n\n") } : b;
+        parts.push(thinking(v, p, run, key, it.seconds, lastItem && j === blocks.length));
+        k = j - 1;
       } else {
         // A run of read-only tools is one "Explored" group (.tool-group, l.143-145).
         let j = k;
@@ -323,13 +373,16 @@ function turn(v, p, e, live) {
 }
 
 // .think (l.132-134): italic muted 12.5px summary; body 2px line-strong rule, muted 13px.
+// Closed by default when the session hides thinking blocks (pi's hideThinkingBlock), open
+// otherwise, as the TUI draws them.
 function thinking(v, p, b, key, secs, now) {
   const id = `th-${key}`;
-  const open = v.isOpen(id, false);
+  const def = !v.hideThinking;
+  const open = v.isOpen(id, def);
   const label = now ? "Thinking…" : Number.isFinite(secs) && secs > 0 ? `Thought for ${secs}s` : "Thought";
   return v_flex()
     .child(h_flex().id(id).gap(6).items_center().text_size(12.5).italic().text_color(p.muted).cursor_pointer()
-      .hover((st) => st.text_color(p.text)).on_click((_e, cx) => v.toggle(id, false, cx))
+      .hover((st) => st.text_color(p.text)).on_click((_e, cx) => v.toggle(id, def, cx))
       .child(chev(open)).child(label))
     .when(open, (el) => el.child(div().mt(6).ml(6).pl(12).border_l(2).border_color(p.lineStrong).text_size(13).text_color(p.muted)
       .child(TextView.markdown(`tht-${key}`, b.text).selectable(true))));
@@ -351,12 +404,14 @@ function countNote(call) {
   return "";
 }
 
-// The dim note at the right of a tool summary: a bash outcome and the time it took.
+// The dim note at the right of a tool summary: a bash outcome, or why it failed (the TUI keeps a
+// failed card's error tail while collapsed), and the time it took.
 function sideNote(call) {
   const r = call.result;
   if (!r) return null;
   const took = seconds(r.ms);
-  const said = call.name === "bash" && !r.error ? firstLine(r.text.split("\n").filter((l) => l.trim()).pop() ?? "") : "";
+  const last = firstLine(r.text.split("\n").filter((l) => l.trim()).pop() ?? "");
+  const said = r.error || call.name === "bash" ? last : "";
   const short = said.length > 40 ? said.slice(0, 39) + "…" : said;
   return [short, took].filter(Boolean).join(" · ") || null;
 }
@@ -377,7 +432,7 @@ function toolCard(v, p, call, key, live) {
       mark(p, call, live),
       div().flex_none().font_semibold().child(call.name),
       div().flex_1().min_w(0).truncate().font_family(mono()).text_size(12).text_color(p.muted).child(toolSay(v, call) + countNote(call)),
-      note ? div().flex_none().text_color(p.muted).child(note) : null,
+      note ? div().flex_none().max_w(300).truncate().text_color(r?.error ? p.err : p.muted).child(note) : null,
       chev(open),
     ]))
     .when(open, (el) => el.child(v_flex().gap(8).border_t(1).border_color(p.line).px(10).pt(8).pb(10).text_size(12)
@@ -415,10 +470,11 @@ function toolGroup(v, p, calls, key, live) {
     .when(open, (el) => el.child(v_flex().mt(8).gap(6).children(calls.map((c, i) => toolCard(v, p, c, `${key}-${i}`, live)))));
 }
 
-// .tool.diff + .hunk + .diff-foot (l.146-154): open by default.
+// .tool.diff + .hunk + .diff-foot (l.146-154). The artboard draws it open; the minimal view
+// (S11) starts it as its summary row (file, +N −M) like the TUI's command-only edit card.
 function diffCard(v, p, call, key, patch, live) {
   const id = `diff-${key}`;
-  const open = v.isOpen(id, true);
+  const open = v.isOpen(id, false);
   const at = Math.min(v.hunkAt.get(id) ?? 0, patch.hunks.length - 1);
   const h = patch.hunks[at];
   const row = (bg, ln, sign, signColor, text, textColor) => h_flex().w_full().pr(10).when(Boolean(bg), (el) => el.bg(bg))
@@ -441,7 +497,7 @@ function diffCard(v, p, call, key, patch, live) {
       num(`+${patch.added}`, p.ok),
       num(`−${patch.deleted}`, p.err),
       chev(open),
-    ], true))
+    ]))
     .when(open, (el) => el.child(v_flex().border_t(1).border_color(p.line)
       .child(v_flex().py(4).font_family(mono()).text_size(12).line_height(1.6).children(rows))
       .child(h_flex().justify_between().items_center().gap(8).px(10).py(6).border_t(1).border_color(p.line).text_size(12).text_color(p.muted)
@@ -462,7 +518,9 @@ const AGENT_STATE = {
   completed: ["done", "Done"], failed: ["fail", "Failed"], timed_out: ["fail", "Timed out"], cancelled: ["idle", "Cancelled"],
 };
 
-// .sub (l.155-160): a subagent run, live from the snapshot's agents when it lists the task.
+// .sub (l.155-160): a subagent run, live from the snapshot's agents when it lists the task. The
+// minimal view (S11) draws it as one row in the .tool look (role, task, state, model, spend);
+// open, it is the artboard's card, whose title row closes it again.
 function subagentCard(v, p, call, key) {
   const a = call.args ?? {};
   const started = call.result?.agent ?? null;
@@ -478,12 +536,27 @@ function subagentCard(v, p, call, key) {
   const running = kind === "work" || kind === "need" || kind === "queue";
   const taskId = live?.id ?? started?.taskId ?? null;
   const stopping = Boolean(taskId) && v.busy === `stop-${taskId}`;
+  const id = `sub-${key}`;
+  const roleTag = div().flex_none().font_family(mono()).text_size(11).text_color(p.accent).child(role.toUpperCase());
+  if (!v.isOpen(id, false)) {
+    return v_flex().w_full().border(1).border_color(p.line).bg(p.surface).rounded(R.sm)
+      .child(summaryRow(v, p, id, [
+        roleTag,
+        div().flex_1().min_w(0).truncate().child(title),
+        stateLabel(p, kind, label),
+        model ? div().flex_none().text_size(12).text_color(p.muted).child(model) : null,
+        Number.isFinite(cost) ? num(money(cost), p.muted).flex_none().text_size(12) : null,
+        chev(false),
+      ]));
+  }
   return v_flex().w_full().gap(4).px(12).py(10).border(1).border_color(p.lineStrong).rounded(R.md).bg(p.surface)
     .child(h_flex().items_start().gap(12)
       .child(v_flex().flex_1().min_w(0).gap(4)
-        .child(h_flex().gap(8).items_center().min_w(0).text_size(13).font_semibold()
-          .child(div().flex_none().font_family(mono()).text_size(11).text_color(p.accent).child(role.toUpperCase()))
-          .child(div().min_w(0).truncate().child(title)))
+        .child(h_flex().id(id).gap(8).items_center().min_w(0).text_size(13).font_semibold().cursor_pointer()
+          .hover((st) => st.text_color(p.accentSoft)).on_click((_e, cx) => v.toggle(id, false, cx))
+          .child(roleTag)
+          .child(div().flex_1().min_w(0).truncate().child(title))
+          .child(chev(true).text_color(p.muted)))
         .child(h_flex().flex_wrap().gap(12).items_center().text_size(12).text_color(p.muted)
           .child(stateLabel(p, kind, label))
           .when(Boolean(model), (el) => el.child(div().child(model)))
@@ -496,7 +569,10 @@ function subagentCard(v, p, call, key) {
           danger: true, iconName: "stop", tip: "Stop this subagent", onClick: (_e, cx) => v.stopAgent(taskId, cx),
         }))))))
     .when(Boolean(step) && step !== status, (el) => el.child(div().mt(2).pt(6).border_t(1).border_color(p.line)
-      .font_family(mono()).text_size(12).text_color(p.muted).truncate().child(`› ${step}`)));
+      .font_family(mono()).text_size(12).text_color(p.muted).truncate().child(`› ${step}`)))
+    // The run's own answer (its result text), as the TUI's expanded card shows it.
+    .when(Boolean(call.result?.text?.trim()), (el) => el.child(div().mt(2).pt(6).border_t(1).border_color(p.line)
+      .text_size(13).child(TextView.markdown(`sr-${key}`, clip(call.result.text)).selectable(true))));
 }
 
 // The options a pending question offers: its own, then "Something else…" when it takes a
@@ -641,9 +717,16 @@ export function composer(v, p, pq) {
     .child(sendOrStop(v, p));
   const hint = (key, text) => h_flex().flex_none().items_center().gap(3).child(kbd(p, key)).child(text);
   // The hints row is one line: a narrow card drops hints from the right (Esc Esc, then ⌘J,
-  // then /, then ⇧ Enter) instead of wrapping or clipping; Enter send stays.
+  // then /, then ⇧ Enter) instead of wrapping or clipping; Enter send and the minimal view's
+  // toggle stay.
   const w = Number.isFinite(v.composerW) ? Math.min(780, v.composerW - 32) : 780;
-  const show = { esc: w >= 600, term: w >= 430 && !v.elsewhere(), cmd: w >= 340, nl: w >= 250 };
+  const show = { esc: w >= 700, term: w >= 540 && !v.elsewhere(), cmd: w >= 450, nl: w >= 360 };
+  // S11: "⌘O Expand all" / "⌘O Collapse all", the TUI's ctrl+o for every row of the log.
+  const expand = h_flex().id("expand-all").flex_none().items_center().gap(3).rounded(R.kbd).cursor_pointer()
+    .hover((st) => st.text_color(p.text))
+    .tooltip(v.expandAll ? "Back to the minimal view: every tool call, thought, diff and subagent as one line" : "Open every tool call, thought, diff and subagent in the chat")
+    .on_click((_e, cx) => v.expandToggle(cx))
+    .child(kbd(p, "⌘O")).child(v.expandAll ? "collapse all" : "expand all");
   return v_flex().id("composer").flex_none().px(16).pt(10).pb(12).border_t(1).border_color(p.line).bg(p.chrome)
     .rounded_b(R.window - 1)
     .on_size_change((size, cx) => { if (Math.abs((v.composerW ?? 0) - size.width) >= 1) { v.composerW = size.width; cx.notify(); } })
@@ -657,5 +740,6 @@ export function composer(v, p, pq) {
         .when(show.cmd, (el) => el.child(hint("/", "commands")))
         .when(show.term, (el) => el.child(hint("⌘J", "Terminal")))
         .child(div().flex_1())
+        .child(expand)
         .when(show.esc, (el) => el.child(div().flex_none().child("Esc Esc stops the agent")))));
 }

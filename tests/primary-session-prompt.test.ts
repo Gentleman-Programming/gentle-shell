@@ -73,6 +73,21 @@ test("the ODD steps, phase reporting, and resume lines come from the mirrored ro
 	assert.ok(routing.includes(`${expected[6]}\n\n${expected[7]}\n\n${expected[8]}`), "the bundle separates step 7, phase reporting, and resume with blank lines");
 });
 
+test("S3: the mirrored routing Close owns the authorized-work boundary without a generic terminal license", () => {
+	const routing = mirroredRoutingText();
+	for (const clause of [
+		"Authorized work continues: runnable in-scope steps run, a pending child is a wait event whose completion resumes the turn without asking the human",
+		"only a real human decision, the user's explicit stop, a denial, missing consent, or an exhausted limit stops the work it applies to, never independent authorized work",
+		"A tracked task ends the turn pending only while it waits on already-launched work, for the affected work a denial, missing consent, the user's explicit stop, or an exhausted limit applies to, or for a genuine human decision still outstanding",
+		"Missing, partial, unavailable, or declined proof forbids claiming completion of the affected work, never an independently authorized next step",
+		"while a required authorized check the existing budget still allows keeps running",
+		"Never turn a report into a blind self-reprompt loop.",
+		"Hedged wording is not a stop.",
+	]) assert.ok(routing.includes(clause), `mirrored routing Close is missing: ${clause}`);
+	assert.ok(!routing.includes("Needs your decision"), "the canonical Close must not license a generic terminal phrase");
+	assert.ok(!routing.includes("never more verification"), "the canonical Close must not license a broad verification stop");
+});
+
 test("extensions/gentle-ai.ts no longer carries the ODD step lines as string literals", () => {
 	const source = readFileSync(join(REPO_ROOT, "extensions", "gentle-ai.ts"), "utf8");
 	for (const literal of ["1. **Authorize.**", "5. **Track before the first write.**", "7. **Close.**", "Phase reporting: the Gentle Shell prompt label", "Resume an interrupted feature with"]) {

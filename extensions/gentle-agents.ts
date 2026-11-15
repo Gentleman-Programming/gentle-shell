@@ -3094,8 +3094,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				});
 				if (peers.length === 0) return text("No other sessions are currently advertised. Advertisements have unknown reachability and do not guarantee a live session.");
 				const unlisted = peers.filter(peer => peer.freshness === "recent" && peer.legacyLabel === undefined && !peer.state && !peer.statePublished);
-				const mandate = unlisted.length > 0 ? `\n${unlisted.length} of ${peers.length} advertised sessions have never published work state. Publication is mandatory for classified work: each owner session publishes state (objective, work.topic) at session start and again on every task-topic change via orchestrator_session_id.` : "";
-				return text(`Advertised sessions (reachability is unknown):\n${rows.join("\n")}${mandate}`, { gentleAgents: { candidates: peers } });
+				const unpublishedNote = unlisted.length > 0 ? `\n${unlisted.length} of ${peers.length} advertised sessions have never published work state. Progress publishes automatically from the todo list; an owner session publishes objective, work.topic, decisions or blockers via orchestrator_session_id only when they change.` : "";
+				return text(`Advertised sessions (reachability is unknown):\n${rows.join("\n")}${unpublishedNote}`, { gentleAgents: { candidates: peers } });
 			} catch (error) {
 				// SessionPresenceError codes are a fixed enum with no record content,
 				// so surfacing the reason is safe and keeps diagnosis possible.

@@ -70,8 +70,8 @@ test("S4 reports: every child report is compact, cites exact commands with exit 
 		"Never claim a command ran or a check passed without observed output.",
 	], "verify report");
 	containsAll(agents.explore, ["Return a compact handoff of at most ~2k tokens", "`path:line`", "Never claim evidence you did not observe."], "explore report");
-	// The parent's Key Learnings closing block still follows the Return contract.
-	for (const [name, body] of Object.entries(agents)) containsAll(body, ["`## Key Learnings`"], `gentle-ai-${name}`);
+	// S8: the retired Key Learnings closing ritual no longer follows the Return contract.
+	for (const [name, body] of Object.entries(agents)) assert.ok(!body.includes("Key Learnings"), `gentle-ai-${name} still carries the retired Key Learnings ritual`);
 });
 
 test("S4 verifier setup pitfalls: clean env, short scratch, one file per config role, flag check, no executing entry points", () => {

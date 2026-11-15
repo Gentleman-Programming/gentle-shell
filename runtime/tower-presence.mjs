@@ -6,7 +6,7 @@
 
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { join, posix, win32 } from "node:path";
 import { nameSubagents, TOWER_SNAPSHOT_VERSION,                    } from "./tower-snapshot.mjs";
 
 const MAX_BYTES = 256 * 1024;
@@ -27,6 +27,10 @@ function readJson(path        )                                      {
 	} catch { return undefined; }
 }
 
+/** Absolute on any platform: `/home/me/app` or `C:\\work\\app` (the registry may come from another OS). */
+const absolute = (p        ) => posix.isAbsolute(p) || /^[A-Za-z]:[\\/]/.test(p);
+const basename = (p        ) => win32.basename(p) || p;
+
 
 
 export function readPresenceFloors(dirs                   , now        , maxAgeMs = PRESENCE_MAX_AGE_MS)                  {
@@ -40,10 +44,10 @@ export function readPresenceFloors(dirs                   , now        , maxAgeM
 			if (typeof hash !== "string" || !/^[0-9a-f]{64}$/.test(hash) || typeof heartbeat !== "number") continue;
 			if (header?.unavailable || now - heartbeat > maxAgeMs) continue;
 			const meta = (readJson(join(dir, name.replace(/\.header\.json$/, ".discovery.json")))?.metadata ?? {})                                            ;
-			const cwd = typeof meta.workspace === "string" && meta.workspace.startsWith("/") ? meta.workspace : undefined;
+			const cwd = typeof meta.workspace === "string" && absolute(meta.workspace) ? meta.workspace : undefined;
 			if (!cwd) continue;
 			const tasks = (Array.isArray(meta.tasks) ? meta.tasks : [])                                                                               ;
-			const live = tasks.filter((t) => typeof t.id === "string" && typeof t.agent === "string" && LIVE.has(String(t.status)))
+			const live = tasks.filter((t) => !!t && typeof t === "object" && typeof t.id === "string" && typeof t.agent === "string" && LIVE.has(String(t.status)))
 				.slice(0, 12).map((t) => ({ id: String(t.id), agent: String(t.agent), label: typeof t.label === "string" ? t.label : undefined, status: String(t.status) }));
 			const floor                = {
 				version: TOWER_SNAPSHOT_VERSION,

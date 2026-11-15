@@ -4,9 +4,9 @@
 import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { isTowerSnapshot, type TowerSnapshot } from "./tower-snapshot.ts";
+import { isTowerSnapshot, TOWER_SNAPSHOT_MAX_BYTES, type TowerSnapshot } from "./tower-snapshot.ts";
 
-export const TOWER_SNAPSHOT_MAX_BYTES = 64 * 1024;
+export { TOWER_SNAPSHOT_MAX_BYTES };
 
 /** `GENTLE_TOWER_HOME` overrides the hub for tests and isolated runs. */
 export function towerHubDir(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string {

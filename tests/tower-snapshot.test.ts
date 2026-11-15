@@ -118,3 +118,34 @@ test("reading skips files that are not valid snapshots", () => {
 	writeFileSync(join(dir, "old.json"), JSON.stringify({ version: 0 }), { mode: 0o600 });
 	assert.deepEqual(readTowerSnapshots(dir).map((x) => x.sessionId), ["s-1"]);
 });
+
+test("a session with huge history still publishes a snapshot within the hub limit, marking what it left out", () => {
+	const dir = scratch();
+	const long = (c: string, n: number) => c.repeat(n);
+	const huge = buildTowerSnapshot({
+		...base,
+		sessionName: long("n", 5000),
+		cwd: `/w/${long("d", 5000)}`,
+		todos: Array.from({ length: 600 }, (_, i) => ({ id: i + 1, title: long("t", 2000), status: (i % 2 ? "pending" : "done") as "pending" | "done", note: long("漢", 1500) })),
+		agents: Array.from({ length: 200 }, (_, i) => ({ id: `a${i}`, agent: "gentle-ai-worker", label: long("l", 500), status: "running", lastStep: long("s", 3000), usage: { total: 1, cost: 0 } })),
+		said: long("w", 10000),
+		models: Array.from({ length: 300 }, (_, i) => ({ model: `${long("m", 2000)}${i}`, cost: 1, tokens: 1 })),
+		artifacts: Array.from({ length: 50 }, (_, i) => ({ path: `/${long("p", 3000)}${i}.md`, kind: "doc" as const })),
+	});
+	assert.ok(Buffer.byteLength(JSON.stringify(huge)) <= TOWER_SNAPSHOT_MAX_BYTES, `snapshot is ${Buffer.byteLength(JSON.stringify(huge))} bytes`);
+	writeTowerSnapshot(dir, huge);
+	const [back] = readTowerSnapshots(dir);
+	assert.equal(back.sessionId, "s-1");
+	assert.ok(back.name.length <= 200 && back.name.endsWith("…"));
+	assert.ok(back.todos.length > 0 && back.todos.length < 600);
+	assert.ok(back.subagents.length > 0);
+	assert.ok(back.said!.length <= 600);
+	assert.ok((back.omitted?.todos ?? 0) > 0, "the snapshot says tasks were left out");
+	// The next update of the same session still publishes.
+	writeTowerSnapshot(dir, { ...huge, name: "renamed" });
+	assert.equal(readTowerSnapshots(dir)[0].name, "renamed");
+});
+
+test("a normal snapshot carries no omission marker", () => {
+	assert.equal(buildTowerSnapshot(base).omitted, undefined);
+});

@@ -64,11 +64,14 @@ let sequence = 0;
 export function writeTowerAction(hubDir: string, action: TowerSessionAction): string {
 	const checked = parseTowerAction(action);
 	if (!checked || checked.type === "new-floor") throw new Error("Gentle Tower: invalid action");
+	const body = JSON.stringify(checked);
+	// The session drops a larger file unread, so it is refused here, before it is queued.
+	if (Buffer.byteLength(body) > TOWER_ACTION_MAX_BYTES) throw new Error(`Gentle Tower: action too large (${Buffer.byteLength(body)} bytes)`);
 	const dir = towerInboxDir(hubDir, checked.sessionId);
 	privateDir(dir);
 	const id = `${Date.now().toString().padStart(15, "0")}-${String(sequence++ % 1e6).padStart(6, "0")}-${randomBytes(6).toString("hex")}`;
 	const temp = join(dir, `.${id}.tmp`);
-	writeFileSync(temp, JSON.stringify(checked), { mode: 0o600, flag: "wx" });
+	writeFileSync(temp, body, { mode: 0o600, flag: "wx" });
 	renameSync(temp, join(dir, `${id}.json`));
 	return id;
 }

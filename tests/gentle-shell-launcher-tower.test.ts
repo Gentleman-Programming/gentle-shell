@@ -76,8 +76,10 @@ test("gentle-shell tower --port with a bad value fails with exit 2 and the error
 });
 
 const built = existsSync(join(packageRoot, "web", "tower", "dist", "index.html"));
-test("gentle-shell tower --no-open serves until SIGINT, then exits 0", { skip: built ? false : "web/tower/dist is not built" }, async () => {
+test("gentle-shell tower --no-open serves until SIGINT, then exits 0", { skip: built ? false : "web/tower/dist is not built" }, async (t) => {
 	const child = spawn(process.execPath, [binPath, "tower", "--no-open"], { env: isolatedEnv(scratch()), stdio: ["ignore", "pipe", "pipe"] });
+	// A failed assertion must not leave the server running and the test file hanging.
+	t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
 	let stdout = "", stderr = "";
 	child.stderr.on("data", (d) => { stderr += d; });
 	const url = await new Promise<string>((resolve, reject) => {

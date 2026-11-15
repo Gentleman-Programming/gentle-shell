@@ -86,7 +86,8 @@ test("the server queues a valid action for its floor and refuses the rest", asyn
 });
 
 // ---------- new floor: a new Gentle Shell session in a project already in the tower ----------
-import { buildLaunchScript, shellQuote } from "../lib/tower-launch.ts";
+import { EventEmitter } from "node:events";
+import { buildLaunchScript, launchInTerminal, shellQuote } from "../lib/tower-launch.ts";
 import { buildTowerSnapshot } from "../lib/tower-snapshot.ts";
 import { writeTowerSnapshot } from "../lib/tower-hub.ts";
 
@@ -100,8 +101,8 @@ test("a new floor parses with a project path and an optional first message", () 
 test("the launch script quotes everything; a hostile message stays one argument", () => {
 	assert.equal(shellQuote("it's"), `'it'\\''s'`);
 	const script = buildLaunchScript({ cwd: "/w/my app", node: "/usr/bin/node", launcher: "/pkg/bin/gentle-shell.mjs", prompt: "'; rm -rf ~; echo '" });
-	assert.equal(script, `#!/bin/sh\ncd '/w/my app' && exec '/usr/bin/node' '/pkg/bin/gentle-shell.mjs' '--' '--' ''\\''; rm -rf ~; echo '\\'''\n`);
-	assert.equal(buildLaunchScript({ cwd: "/w/a", node: "/n", launcher: "/l" }), `#!/bin/sh\ncd '/w/a' && exec '/n' '/l'\n`);
+	assert.equal(script, `#!/bin/sh\nrm -f "$0"\ncd '/w/my app' && exec '/usr/bin/node' '/pkg/bin/gentle-shell.mjs' '--' '--' ''\\''; rm -rf ~; echo '\\'''\n`);
+	assert.equal(buildLaunchScript({ cwd: "/w/a", node: "/n", launcher: "/l" }), `#!/bin/sh\nrm -f "$0"\ncd '/w/a' && exec '/n' '/l'\n`);
 });
 
 test("the server opens a floor only in a project already in the tower", async () => {
@@ -115,4 +116,50 @@ test("the server opens a floor only in a project already in the tower", async ()
 	assert.equal((await post(s.port, "/tok-123/api/action", JSON.stringify({ type: "new-floor", project: "/etc" }), own)).status, 403);
 	assert.equal((await post(s.port, "/tok-123/api/action", JSON.stringify({ type: "new-floor", project: "/w/app" }), {})).status, 403);
 	assert.deepEqual(opened, [["/w/app", "fix it"]]);
+});
+
+const spec = { cwd: "/w/a", node: "/n", launcher: "/l" };
+function fakeSpawn(events: Array<[string, unknown]>) {
+	const calls: Array<[string, string[]]> = [];
+	const fn = ((cmd: string, args: string[]) => {
+		calls.push([cmd, args]);
+		const child = Object.assign(new EventEmitter(), { unref() {} });
+		setTimeout(() => { for (const [name, value] of events) child.emit(name, value); }, 5);
+		return child;
+	}) as unknown as typeof import("node:child_process").spawn;
+	return { fn, calls };
+}
+
+test("opening a floor rejects, never throws, when its script cannot be written", async () => {
+	const { root } = scratch();
+	let launched: Promise<void> | undefined;
+	assert.doesNotThrow(() => { launched = launchInTerminal(spec, { tmpRoot: join(root, "missing", "dir"), spawn: fakeSpawn([["spawn", undefined]]).fn }); });
+	await assert.rejects(launched!);
+});
+
+test("on macOS a floor opens only when `open` exits 0", async () => {
+	const { root } = scratch();
+	const bad = fakeSpawn([["spawn", undefined], ["exit", 1]]);
+	await assert.rejects(launchInTerminal(spec, { tmpRoot: root, platform: "darwin", spawn: bad.fn }), /exited with 1/);
+	assert.equal(bad.calls[0][0], "open");
+	const good = fakeSpawn([["spawn", undefined], ["exit", 0]]);
+	await launchInTerminal(spec, { tmpRoot: root, platform: "darwin", spawn: good.fn });
+	assert.deepEqual(good.calls[0][1].slice(0, 2), ["-a", "Terminal"]);
+	const missing = fakeSpawn([["error", new Error("ENOENT")]]);
+	await assert.rejects(launchInTerminal(spec, { tmpRoot: root, platform: "darwin", spawn: missing.fn }), /ENOENT/);
+});
+
+test("on Linux the terminal itself keeps running, so starting it is enough", async () => {
+	const { root } = scratch();
+	const term = fakeSpawn([["spawn", undefined]]);
+	await launchInTerminal(spec, { tmpRoot: root, platform: "linux", spawn: term.fn });
+	assert.equal(term.calls[0][0], "x-terminal-emulator");
+});
+
+test("an action bigger than the inbox limit is refused before it is written", () => {
+	const { hub } = scratch();
+	assert.throws(() => writeTowerAction(hub, { type: "message", sessionId: "s-1", text: "漢".repeat(4000) }), /too large/);
+	assert.equal(existsSync(towerInboxDir(hub, "s-1")) ? readdirSync(towerInboxDir(hub, "s-1")).length : 0, 0);
+	writeTowerAction(hub, { type: "message", sessionId: "s-1", text: "漢".repeat(2000) });
+	assert.deepEqual(consumeTowerActions(hub, "s-1").map((a) => a.type === "message" && a.text.length), [2000]);
 });

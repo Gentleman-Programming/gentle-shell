@@ -4,6 +4,11 @@
 
 export const TOWER_SNAPSHOT_VERSION = 1;
 export const TOWER_SAID_MAX = 600;
+/** The hub refuses a larger file; the snapshot is built to always fit under it. */
+export const TOWER_SNAPSHOT_MAX_BYTES = 64 * 1024;
+/** Per-field and per-list bounds; a list that is cut says how many entries it left out. */
+const TEXT_MAX = { name: 200, path: 1024, title: 300, note: 400, step: 300, model: 160, notice: 400, word: 80 }         ;
+const LIST_MAX = { todos: 200, subagents: 40, models: 40 }         ;
 
 /** The latest visible assistant text on the branch (no thinking, no tool calls). */
 export function latestAssistantText(entries                    )                     {
@@ -28,6 +33,8 @@ export function latestAssistantText(entries                    )                
 
 
 	                                                             
+
+
 
 
 
@@ -159,37 +166,80 @@ function baseName(path        )         {
 	return parts[parts.length - 1] ?? path;
 }
 
+function clip(text        , max        )         {
+	return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+const bytes = (value         ) => Buffer.byteLength(JSON.stringify(value));
+
+/** Cuts lists until the snapshot fits: notes and steps first, then finished tasks, then the oldest tail of each list. */
+function fit(s               , input                                                                         )                {
+	const record = () => {
+		const omitted = {
+			...(input.todos > s.todos.length ? { todos: input.todos - s.todos.length } : {}),
+			...(input.subagents > s.subagents.length ? { subagents: input.subagents - s.subagents.length } : {}),
+			...(input.models > (s.models?.length ?? 0) ? { models: input.models - (s.models?.length ?? 0) } : {}),
+			...(input.artifacts > (s.artifacts?.length ?? 0) ? { artifacts: input.artifacts - (s.artifacts?.length ?? 0) } : {}),
+		};
+		if (Object.keys(omitted).length) s.omitted = omitted; else delete s.omitted;
+	};
+	const fits = () => { record(); return bytes(s) <= TOWER_SNAPSHOT_MAX_BYTES; };
+	const halve =    (list                 ) => (list && list.length ? list.slice(0, Math.floor(list.length / 2)) : list);
+	const steps                       = [
+		() => { const had = s.todos.some((t) => t.note); s.todos = s.todos.map(({ note: _n, ...t }) => t); return had; },
+		() => { const had = s.subagents.some((a) => a.lastStep); s.subagents = s.subagents.map(({ lastStep: _l, ...a }) => a); return had; },
+		() => { const open = s.todos.filter((t) => t.status !== "done" && t.status !== "dropped"); const had = open.length < s.todos.length; s.todos = open; return had; },
+	];
+	if (fits()) return s;
+	for (const step of steps) if (step() && fits()) return s;
+	// Still too large: halve the longest list until it fits (each list is bounded, so this ends).
+	for (let guard = 0; guard < 64 && !fits(); guard++) {
+		const lists = [
+			["todos", bytes(s.todos)], ["subagents", bytes(s.subagents)], ["models", bytes(s.models ?? [])], ["artifacts", bytes(s.artifacts ?? [])],
+		]         ;
+		const [key] = [...lists].sort((a, b) => b[1] - a[1])[0];
+		if (key === "todos") s.todos = halve(s.todos) ;
+		else if (key === "subagents") s.subagents = halve(s.subagents) ;
+		else if (key === "models") s.models = halve(s.models);
+		else s.artifacts = halve(s.artifacts);
+	}
+	return s;
+}
+
 export function buildTowerSnapshot(input                    )                {
-	const project = { cwd: input.cwd, name: baseName(input.cwd) };
-	return {
+	const cwd = clip(input.cwd, TEXT_MAX.path);
+	const project = { cwd, name: clip(baseName(input.cwd), TEXT_MAX.name) };
+	const word = (v        ) => clip(v, TEXT_MAX.word);
+	const snapshot                = {
 		version: TOWER_SNAPSHOT_VERSION,
 		sessionId: input.sessionId,
-		name: input.sessionName?.trim() || project.name,
+		name: clip(input.sessionName?.trim() || project.name, TEXT_MAX.name),
 		project,
-		model: input.modelId ?? "no-model",
-		...(input.effort ? { effort: input.effort } : {}),
+		model: clip(input.modelId ?? "no-model", TEXT_MAX.model),
+		...(input.effort ? { effort: word(input.effort) } : {}),
 		context: { percent: input.context?.percent ?? null, window: input.context?.contextWindow ?? 0 },
 		cost: { total: input.stats.cost, input: input.stats.input, output: input.stats.output },
-		todos: input.todos.map((t) => ({ id: t.id, title: t.title, status: t.status, ...(t.note ? { note: t.note } : {}) })),
-		subagents: nameSubagents(input.agents).map((a) => ({
+		todos: input.todos.slice(0, LIST_MAX.todos).map((t) => ({ id: t.id, title: clip(t.title, TEXT_MAX.title), status: t.status, ...(t.note ? { note: clip(t.note, TEXT_MAX.note) } : {}) })),
+		subagents: nameSubagents(input.agents.slice(0, LIST_MAX.subagents)).map((a) => ({
 			id: a.id,
-			role: a.role,
-			name: a.name,
-			status: a.status ?? "unknown",
-			...(a.lastStep ? { lastStep: a.lastStep } : {}),
+			role: word(a.role),
+			name: word(a.name),
+			status: word(a.status ?? "unknown"),
+			...(a.lastStep ? { lastStep: clip(a.lastStep, TEXT_MAX.step) } : {}),
 			cost: a.usage?.cost ?? 0,
 			tokens: a.usage?.total ?? 0,
 		})),
-		...(input.phase ? { phase: input.phase } : {}),
-		...(input.permission ? { permission: input.permission } : {}),
+		...(input.phase ? { phase: word(input.phase) } : {}),
+		...(input.permission ? { permission: word(input.permission) } : {}),
 		...(input.review ? { review: input.review } : {}),
 		...(input.waiting ? { waiting: true          } : {}),
-		...(input.notice ? { notice: input.notice } : {}),
-		...(input.said ? { said: input.said.length > TOWER_SAID_MAX ? `${input.said.slice(0, TOWER_SAID_MAX - 1)}…` : input.said } : {}),
-		...(input.models?.length ? { models: input.models.map((m) => ({ model: m.model, cost: m.cost, tokens: m.tokens })) } : {}),
-		...(input.artifacts?.length ? { artifacts: input.artifacts.slice(0, TOWER_ARTIFACTS_MAX).map((a) => ({ path: a.path, kind: a.kind })) } : {}),
+		...(input.notice ? { notice: { ...input.notice, text: clip(input.notice.text, TEXT_MAX.notice) } } : {}),
+		...(input.said ? { said: clip(input.said, TOWER_SAID_MAX) } : {}),
+		...(input.models?.length ? { models: input.models.slice(0, LIST_MAX.models).map((m) => ({ model: clip(m.model, TEXT_MAX.model), cost: m.cost, tokens: m.tokens })) } : {}),
+		...(input.artifacts?.length ? { artifacts: input.artifacts.slice(0, TOWER_ARTIFACTS_MAX).map((a) => ({ path: clip(a.path, TEXT_MAX.path), kind: a.kind })) } : {}),
 		updatedAt: input.now,
 	};
+	return fit(snapshot, { todos: input.todos.length, subagents: input.agents.length, models: input.models?.length ?? 0, artifacts: Math.min(input.artifacts?.length ?? 0, TOWER_ARTIFACTS_MAX) });
 }
 
 export function isTowerSnapshot(value         )                         {

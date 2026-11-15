@@ -98,7 +98,7 @@ test("finished helpers never reach the web, even from a session running older pu
 
 test("a detailed floor whose snapshot is older than its heartbeat takes its live helpers from presence", async () => {
 	const { root, dir, hub } = setup();
-	writeTowerSnapshot(hub, buildTowerSnapshot({ sessionId: "sess-a", cwd: "/w/a", stats: { cost: 2, input: 0, output: 0 }, todos: [], agents: [], now: NOW - 60_000 }));
+	writeTowerSnapshot(hub, buildTowerSnapshot({ sessionId: "sess-a", cwd: "/w/a", stats: { cost: 2, input: 0, output: 0 }, todos: [], agents: [], now: NOW - 90_000 }));
 	presence(dir, "sess-a", { label: "x", workspace: "/w/a", heartbeat: NOW - 1000, tasks: [{ id: "t9", agent: "gentle-ai-worker", label: "T4 publisher", status: "running" }] });
 	const web = join(root, "web"); mkdirSync(web); writeFileSync(join(web, "index.html"), "<title>t</title>");
 	const s = await startTowerServer({ hubDir: hub, webDir: web, token: "tok-123", presenceDirs: [dir], now: () => NOW });
@@ -121,4 +121,36 @@ test("a snapshot whose process is gone is dropped; the live session shows from p
 	assert.deepEqual(list.map((x) => [x.name, x.basic ?? false]), [["Alive", false], ["Live via presence", true]]);
 	assert.ok(!list.some((x) => x.said === "old words"));
 	assert.equal(await post(s.port, "/tok-123/api/action", JSON.stringify({ type: "message", sessionId: "sess-a", text: "hi" })), 404);
+});
+
+test("a Windows workspace path is a floor; null or malformed tasks are skipped", () => {
+	const { dir } = setup();
+	presence(dir, "win", { label: "On Windows", workspace: "C:\\work\\project", tasks: [null, 7, "x", { id: "t1", agent: "gentle-ai-worker", status: "running" }] });
+	presence(dir, "rel", { label: "Relative", workspace: "work\\project" });
+	const floors = readPresenceFloors([dir], NOW);
+	assert.deepEqual(floors.map((f) => [f.name, f.project]), [["On Windows", { cwd: "C:\\work\\project", name: "project" }]]);
+	assert.deepEqual(floors[0].subagents.map((a) => a.id), ["t1"]);
+});
+
+test("a recently updated detailed floor keeps its own helper details over a newer heartbeat", async () => {
+	const { root, dir, hub } = setup();
+	writeTowerSnapshot(hub, buildTowerSnapshot({ sessionId: "sess-a", cwd: "/w/a", stats: { cost: 2, input: 0, output: 0 }, todos: [], agents: [{ id: "t1", agent: "gentle-ai-worker", status: "running", lastStep: "editing", usage: { total: 500, cost: 0.4 } }], now: NOW - 30_000 }));
+	presence(dir, "sess-a", { label: "x", workspace: "/w/a", heartbeat: NOW - 1000, tasks: [{ id: "t1", agent: "gentle-ai-worker", status: "running" }] });
+	const web = join(root, "web"); mkdirSync(web); writeFileSync(join(web, "index.html"), "<title>t</title>");
+	const s = await startTowerServer({ hubDir: hub, webDir: web, token: "tok-123", presenceDirs: [dir], now: () => NOW });
+	servers.push(s);
+	const [floor] = JSON.parse((await get(s.port, "/tok-123/api/sessions")).body).sessions as Array<{ subagents: Array<{ id: string; cost: number; tokens: number; lastStep?: string }> }>;
+	assert.deepEqual(floor.subagents.map((a) => [a.id, a.cost, a.tokens, a.lastStep]), [["t1", 0.4, 500, "editing"]]);
+});
+
+test("a new floor opens in a project that only has basic floors; still never an unknown folder", async () => {
+	const { root, dir, hub } = setup();
+	presence(dir, "sess-b", { label: "Only in presence", workspace: "/w/engram" });
+	const web = join(root, "web"); mkdirSync(web); writeFileSync(join(web, "index.html"), "<title>t</title>");
+	const opened: string[] = [];
+	const s = await startTowerServer({ hubDir: hub, webDir: web, token: "tok-123", presenceDirs: [dir], now: () => NOW, onNewFloor: async (cwd) => { opened.push(cwd); } });
+	servers.push(s);
+	assert.equal(await post(s.port, "/tok-123/api/action", JSON.stringify({ type: "new-floor", project: "/w/engram" })), 202);
+	assert.equal(await post(s.port, "/tok-123/api/action", JSON.stringify({ type: "new-floor", project: "/w/other" })), 403);
+	assert.deepEqual(opened, ["/w/engram"]);
 });

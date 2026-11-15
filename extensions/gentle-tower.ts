@@ -30,12 +30,23 @@ export interface TowerPublisherOptions {
 	inboxMs?: number;
 	/** Runs `gentle-ai <args>` and returns stdout (injectable for tests). */
 	reviewCli?: (args: string[], cwd: string) => Promise<string>;
+	/** Longest wait for one call into another extension while running a web action. */
+	actionTimeoutMs?: number;
 }
 
 const LIVE_HELPER = new Set(["queued", "running", "waiting"]);
 const QUESTION_EVENTS = ["gentle-pi:ask-user-question:blocked", "gentle-pi:ask-user-choice:blocked"];
 /** Strictness order: the web moves a floor down at once; up only with approval in its terminal. */
 const MODE_RANK: Record<string, number> = { normal: 0, auto: 1, yolo: 2, "super-yolo": 3 };
+
+/** Rejects when `work` does not settle in time, so one hung call cannot hold the inbox forever. */
+function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} did not answer in time`)), ms); });
+	return Promise.race([work, late]).finally(() => clearTimeout(timer));
+}
+
+const ACTION_LABEL: Record<TowerSessionAction["type"], string> = { message: "deliver the message", "cancel-helper": "stop the helper", permission: "change permissions", review: "change review mode" };
 
 function runGentleAi(args: string[], cwd: string): Promise<string> {
 	return new Promise((resolve, reject) => execFile("gentle-ai", args, { cwd, timeout: 15000, maxBuffer: 256 * 1024 }, (error, stdout) => (error ? reject(error) : resolve(String(stdout)))));
@@ -68,6 +79,9 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 	let inbox: ReturnType<typeof setInterval> | undefined;
 	let busy = false;
 	const reviewCli = options.reviewCli ?? runGentleAi;
+	const actionTimeoutMs = options.actionTimeoutMs ?? 10_000;
+	/** Notices of the inbox batch being run; published together when it ends. */
+	let batch: Array<{ text: string; ok: boolean }> | undefined;
 
 	const publish = () => {
 		timer = undefined;
@@ -108,7 +122,7 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 		timer = setTimeout(publish, debounceMs);
 	};
 	const refreshPermission = async () => {
-		try { const snap = await yolo?.readSnapshot?.(); if (snap && snap.mode !== permission) { permission = snap.mode; schedule(); } } catch { /* unknown */ }
+		try { const snap = yolo?.readSnapshot ? await within(yolo.readSnapshot(), actionTimeoutMs, "Permissions") : undefined; if (snap && snap.mode !== permission) { permission = snap.mode; schedule(); } } catch { /* unknown */ }
 	};
 	const refreshReview = async (cwd: string) => {
 		try {
@@ -117,7 +131,11 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 			if (next !== review) { review = next; schedule(); }
 		} catch { /* gentle-ai missing: no switch */ }
 	};
-	const say = (text: string, ok: boolean) => { notice = { text, ok, at: now() }; schedule(); };
+	const say = (text: string, ok: boolean) => {
+		if (batch) { batch.push({ text, ok }); return; }
+		notice = { text, ok, at: now() };
+		schedule();
+	};
 	const execute = async (action: TowerSessionAction, c: ExtensionContext) => {
 		switch (action.type) {
 			case "message":
@@ -126,7 +144,7 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 			case "cancel-helper": {
 				const helper = agents?.read().agents.find((a) => a.id === action.helperId);
 				if (!agents || !helper) return say("That helper is no longer running", false);
-				await agents.cancel(action.helperId);
+				await within(Promise.resolve(agents.cancel(action.helperId)), actionTimeoutMs, "The helper");
 				return say(`Stopped ${String(helper.agent).replace(/^gentle-ai-/, "")}`, true);
 			}
 			case "permission": {
@@ -135,12 +153,13 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 				const raise = !(action.mode in MODE_RANK) || !(permission in MODE_RANK) || MODE_RANK[action.mode] > MODE_RANK[permission];
 				if (raise) {
 					// A higher permission always passes through the human, in this session's own terminal.
+					// Not bounded on purpose: the person may take as long as they need to decide.
 					if (c.hasUI !== true || typeof c.ui?.confirm !== "function") return say(`Raising permissions to ${action.mode} needs the terminal: this session cannot ask`, false);
 					let approved = false;
 					try { approved = (await c.ui.confirm("Gentle Tower", `The tower asks to raise this session's permissions from ${permission} to ${action.mode}. Allow?`)) === true; } catch { approved = false; }
 					if (!approved) return say(`Raising permissions to ${action.mode} was declined in the terminal`, false);
 				}
-				const ok = await yolo.setMode(action.mode as never);
+				const ok = await within(Promise.resolve(yolo.setMode(action.mode as never)), actionTimeoutMs, "Permissions");
 				await refreshPermission();
 				if (!ok) return say("Permissions unchanged", false);
 				return say(raise ? `Permissions: ${action.mode} (approved in the terminal)` : `Permissions: ${action.mode}`, true);
@@ -157,9 +176,20 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 		if (busy || !ctx || !sessionId) return;
 		busy = true;
 		const c = ctx;
-		try { for (const action of consumeTowerActions(dir, sessionId)) await execute(action, c); }
-		catch { /* a bad action never disturbs the session */ }
-		finally { busy = false; }
+		batch = [];
+		try {
+			// Each action stands alone: one failure is reported and the rest still run.
+			for (const action of consumeTowerActions(dir, sessionId)) {
+				try { await execute(action, c); }
+				catch (error) { say(`Could not ${ACTION_LABEL[action.type]}: ${error instanceof Error ? error.message : String(error)}`, false); }
+			}
+		} catch { /* an unreadable inbox never disturbs the session */ }
+		finally {
+			const done = batch;
+			batch = undefined;
+			busy = false;
+			if (done.length) say(done.map((n) => n.text).join(" · "), done.every((n) => n.ok));
+		}
 	};
 	const stop = () => {
 		if (timer) clearTimeout(timer);

@@ -154,7 +154,7 @@ test("/gentle:tower explains when the web app is not built", async () => {
 import { writeTowerAction } from "../lib/tower-actions.ts";
 import { DESKTOP_AGENTS_SERVICE_SCHEMA } from "../lib/desktop-rpc-agents.ts";
 
-function actionPi(mode: string) {
+function actionPi(mode: string, cancel?: (id: string) => Promise<boolean>) {
 	const base = fakePi();
 	const sent: Array<{ text: string; opts?: unknown }> = [];
 	const cancelled: string[] = [];
@@ -170,7 +170,7 @@ function actionPi(mode: string) {
 	}));
 	events.on("gentle:desktop:agents-service", (req) => (req as { respond(a: unknown): void }).respond({
 		read: () => ({ sessionId: "sess-1", agents: [{ id: "t1", agent: "gentle-ai-worker", status: "running", model: "m", lastStep: "editing", usage: { total: 10, cost: 0.01 } }] }),
-		schema: DESKTOP_AGENTS_SERVICE_SCHEMA, observe: () => () => {}, cancel: async (id: string) => { cancelled.push(id); return true; }, dispose() {},
+		schema: DESKTOP_AGENTS_SERVICE_SCHEMA, observe: () => () => {}, cancel: cancel ?? (async (id: string) => { cancelled.push(id); return true; }), dispose() {},
 	}));
 	return { ...base, sent, cancelled, modes, current: () => current };
 }
@@ -205,6 +205,39 @@ test("stop helper cancels exactly that subagent", async () => {
 	assert.deepEqual(cancelled, ["t1"]);
 	assert.match(readTowerSnapshots(dir)[0].notice?.text ?? "", /Stopped worker/);
 	await fire("session_shutdown", ctx);
+});
+
+test("a failing action is reported and the rest of the batch still runs", async () => {
+	const dir = hub();
+	const action = actionPi("normal", async () => { throw new Error("agent host gone"); });
+	createTowerPublisher(action.pi, { env: { GENTLE_TOWER_HOME: dir }, debounceMs: 0, inboxMs: 20, reviewCli: async () => "{}" });
+	const ctx = busyCtx(true);
+	await action.fire("session_start", ctx);
+	await wait(150);
+	writeTowerAction(dir, { type: "cancel-helper", sessionId: "sess-1", helperId: "t1" });
+	writeTowerAction(dir, { type: "message", sessionId: "sess-1", text: "still here?" });
+	await wait(150);
+	assert.deepEqual(action.sent.map((m) => m.text), ["still here?"]);
+	const notice = readTowerSnapshots(dir)[0].notice;
+	assert.equal(notice?.ok, false);
+	assert.match(notice?.text ?? "", /Could not stop the helper: agent host gone/);
+	assert.match(notice?.text ?? "", /Message delivered/);
+	await action.fire("session_shutdown", ctx);
+});
+
+test("an action that never answers times out, so the inbox keeps working", async () => {
+	const dir = hub();
+	const action = actionPi("normal", () => new Promise(() => {}));
+	createTowerPublisher(action.pi, { env: { GENTLE_TOWER_HOME: dir }, debounceMs: 0, inboxMs: 20, actionTimeoutMs: 60, reviewCli: async () => "{}" });
+	const ctx = busyCtx(true);
+	await action.fire("session_start", ctx);
+	await wait(150);
+	writeTowerAction(dir, { type: "cancel-helper", sessionId: "sess-1", helperId: "t1" });
+	await wait(200);
+	writeTowerAction(dir, { type: "message", sessionId: "sess-1", text: "after the hang" });
+	await wait(150);
+	assert.deepEqual(action.sent.map((m) => m.text), ["after the hang"]);
+	await action.fire("session_shutdown", ctx);
 });
 
 const confirmCtx = (confirm?: (title: string, message: string) => Promise<boolean>) => ({ ...fakeCtx([assistant(0.1)]), isIdle: () => true, hasUI: confirm !== undefined, ui: confirm ? { confirm, notify() {} } : undefined }) as unknown as ExtensionContext;

@@ -63,6 +63,8 @@ export function startTowerServer(options                    )                   
 	const now = options.now ?? Date.now;
 	// Detailed floors (tower extension) win; every other live session joins as a basic floor.
 	const LIVE = new Set(["queued", "running", "waiting"]);
+	/** A snapshot this much older than the heartbeat has stopped updating. */
+	const STALE_SNAPSHOT_MS = 60_000;
 	const allSessions = () => {
 		// Finished helpers never show, even if a session still runs an older publisher.
 		const detailed = readTowerSnapshots(options.hubDir).map((s) => ({ ...s, subagents: s.subagents.filter((a) => LIVE.has(a.status)) }));
@@ -72,9 +74,10 @@ export function startTowerServer(options                    )                   
 		for (const s of detailed) {
 			const hash = createHash("sha256").update(s.sessionId).digest("hex");
 			known.add(hash);
-			// The heartbeat is fresher than a snapshot that stopped updating: trust its live helpers.
+			// Only a snapshot that stopped updating gives way to the heartbeat's live helpers;
+			// a recent one keeps its own, which carry spend and progress the heartbeat lacks.
 			const p = presence.get(hash);
-			if (p && p.updatedAt > s.updatedAt) s.subagents = p.subagents;
+			if (p && p.updatedAt - s.updatedAt > STALE_SNAPSHOT_MS) s.subagents = p.subagents;
 		}
 		const basic = [...presence.values()].filter((f) => !known.has(f.sessionHash)).map(({ sessionHash: _h, ...f }) => f);
 		return [...detailed, ...basic];
@@ -111,7 +114,7 @@ export function startTowerServer(options                    )                   
 			if (!action) return deny(res, 400);
 			if (action.type === "new-floor") {
 				// Never an arbitrary folder: only a project that already has a floor.
-				if (!options.onNewFloor || !readTowerSnapshots(options.hubDir).some((s) => s.project.cwd === action.project)) return deny(res, 403);
+				if (!options.onNewFloor || !allSessions().some((s) => s.project.cwd === action.project)) return deny(res, 403);
 				options.onNewFloor(action.project, action.prompt).then(
 					() => { res.writeHead(202, { "Content-Type": "application/json", ...SECURITY_HEADERS }); res.end("{}"); },
 					() => deny(res, 500));

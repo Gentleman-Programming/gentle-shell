@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -16,6 +16,8 @@ export interface LeaseToken {
 	pid: number;
 	startedAt: number;
 	expiresAt: number;
+	/** This acquisition's unique identity: release removes only the token that still carries it. */
+	nonce?: string;
 	/** The codegraph process this holder spawned, when observed: on win32 a shell wraps it. */
 	writerPid?: number;
 	/** The spawn was shelled (a cmd.exe wrapper): this pid is a proxy, not the real writer. */
@@ -80,14 +82,18 @@ export function readLeaseVerdict(path: string, now: number = Date.now(), cwd?: s
 	// trust window holds the same way — the real writer is still starting behind it.
 	if (cwd !== undefined && codegraphWritingIndex(cwd)) return "held-live";
 	if (token.writerProxy === true && token.writerPidAt !== undefined && now - token.writerPidAt < PROXY_TRUST_MS) return "held-live";
+	// An adopted direct writer (a detached init child on POSIX) can outlive its dead launcher while
+	// it has not written codegraph.lock yet: while that child lives, the token stays held — a live
+	// writer is never unlocked under, whatever the TTL or the dead launcher's pid say.
+	if (token.writerProxy !== true && typeof token.writerPid === "number" && token.writerPid > 0 && processAlive(token.writerPid)) return "held-live";
 	if (token.expiresAt <= now) return "held-stale";
 	return processAlive(token.pid) ? "held-live" : "held-stale";
 }
 
 /** Exclusive create: the only writer of a free or freshly cleared path wins. */
-function writeTokenExclusively(path: string, kind: LeaseKind, ttlMs: number, now: number): boolean {
+function writeTokenExclusively(path: string, kind: LeaseKind, ttlMs: number, now: number, nonce: string): boolean {
 	try {
-		const token: LeaseToken = { kind, pid: process.pid, startedAt: now, expiresAt: now + ttlMs };
+		const token: LeaseToken = { kind, pid: process.pid, startedAt: now, expiresAt: now + ttlMs, nonce };
 		writeFileSync(path, `${JSON.stringify(token)}\n`, { flag: "wx" });
 		return true;
 	} catch {
@@ -114,19 +120,138 @@ export interface AcquiredLease {
 	release(): void;
 }
 
-function releasePath(path: string): void {
+/** The per-path mutex's own holder record: liveness rules mirror the lease tokens themselves. */
+interface MutexToken {
+	pid: number;
+	startedAt: number;
+	expiresAt: number;
+}
+
+/** The mutex is held for one synchronous handful of syscalls; the TTL is only the crash backstop. */
+const MUTEX_TTL_MS = 10_000;
+/** Waiting for a live mutex holder is bounded: a wedged holder fail-closes the attempt instead. */
+const MUTEX_WAIT_MS = 250;
+const MUTEX_POLL_MS = 5;
+
+function mutexPathFor(path: string): string {
+	return `${path}.mutex`;
+}
+
+/** Parses the mutex holder's record; anything unreadable or malformed is undefined. */
+function parseMutex(mutex: string): MutexToken | undefined {
 	try {
-		rmSync(path, { force: true });
+		const parsed: unknown = JSON.parse(readFileSync(mutex, "utf8"));
+		if (typeof parsed !== "object" || parsed === null) return undefined;
+		const token = parsed as MutexToken;
+		if (typeof token.pid !== "number" || typeof token.startedAt !== "number" || typeof token.expiresAt !== "number") return undefined;
+		return token;
 	} catch {
-		/* best effort: the TTL is the backstop */
+		return undefined;
+	}
+}
+
+/** A damaged mutex (a crash mid-write) is still respected while its bytes are younger than the TTL. */
+function mutexFreshOnDisk(mutex: string, now: number): boolean {
+	try {
+		return statSync(mutex).mtimeMs > now - MUTEX_TTL_MS;
+	} catch {
+		return false; // gone: nothing blocks
+	}
+}
+
+/** The only synchronous sleep: slices short enough that a contended mutex never stalls its caller long. */
+function sleepSync(ms: number): void {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Exclusive create of the mutex file: the only writer of the mutex path wins it. */
+function tryTakeMutex(mutex: string, now: number): boolean {
+	try {
+		const token: MutexToken = { pid: process.pid, startedAt: now, expiresAt: now + MUTEX_TTL_MS };
+		writeFileSync(mutex, `${JSON.stringify(token)}\n`, { flag: "wx" });
+		return true;
+	} catch {
+		return false; // EEXIST (held) or unwritable: either way not ours
 	}
 }
 
 /**
- * Acquires a free or stale path exclusively; a live or unknown holder, an unwritable locks dir,
- * or a lost steal race returns undefined — the caller then skips what it wanted to do.
+ * Runs one critical section on a token path, serialized against every other session's stale
+ * recovery and release. A live mutex holder is waited for (bounded — its section is a handful of
+ * syscalls); a dead, expired, or damaged-past-TTL one is stolen under the same liveness rules as
+ * the tokens themselves, so a crashed reclaimer can never block a path forever. Returns undefined
+ * when the wait budget is spent: fail-closed, the caller skips what it wanted to do.
  */
-export function tryAcquireLease(path: string, kind: LeaseKind, ttlMs: number, now: number = Date.now(), cwd?: string): AcquiredLease | undefined {
+function withPathMutex<T>(path: string, waitMs: number, section: () => T | undefined): T | undefined {
+	const mutex = mutexPathFor(path);
+	const deadline = Date.now() + waitMs;
+	for (;;) {
+		const now = Date.now();
+		if (tryTakeMutex(mutex, now)) {
+			try {
+				return section();
+			} finally {
+				rmSync(mutex, { force: true }); // best effort: a leftover is stolen by TTL rules
+			}
+		}
+		const holder = parseMutex(mutex);
+		const blocking =
+			(holder !== undefined && holder.expiresAt > now && processAlive(holder.pid)) ||
+			(holder === undefined && mutexFreshOnDisk(mutex, now));
+		if (blocking) {
+			if (now >= deadline) return undefined;
+			sleepSync(MUTEX_POLL_MS);
+			continue;
+		}
+		// Vanished (the holder released between our create and read), or stale/damaged past its
+		// TTL: clear it and race the exclusive create again.
+		rmSync(mutex, { force: true });
+	}
+}
+
+/** This path's token nonce when the token is readable and carries one. */
+function readNonce(path: string): string | undefined {
+	try {
+		return (JSON.parse(readFileSync(path, "utf8")) as LeaseToken).nonce;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Creates the token exclusively and binds release to this acquisition's nonce. The read-back is
+ * defense in depth against a doubly-stolen mutex: if the token at the path is not the one this
+ * acquisition just wrote, a concurrent reclaimer raced past the serialization — yield the path
+ * and remove nothing (the newer owner's token stays).
+ */
+function createLease(path: string, kind: LeaseKind, ttlMs: number, now: number): AcquiredLease | undefined {
+	const nonce = randomUUID();
+	if (!writeTokenExclusively(path, kind, ttlMs, now, nonce)) return undefined;
+	if (readNonce(path) !== nonce) return undefined;
+	return { release: () => releaseOwnToken(path, nonce) };
+}
+
+/**
+ * Release removes only the token this acquisition wrote: an expired lease whose path was stolen
+ * and re-owned never removes the newer owner's token. The check and the remove run inside the
+ * same per-path mutex as recovery, so a release racing a reclaimer cannot remove the token the
+ * reclaimer just created either. Best effort: an unreachable mutex still leaves the TTL backstop.
+ */
+function releaseOwnToken(path: string, nonce: string): void {
+	withPathMutex(path, MUTEX_WAIT_MS, () => {
+		if (readNonce(path) === nonce) rmSync(path, { force: true });
+		return undefined;
+	});
+}
+
+/**
+ * Acquires a free or stale path exclusively; a live or unknown holder, an unwritable locks dir,
+ * or a lost steal race returns undefined — the caller then skips what it wanted to do. The stale
+ * path's read/remove/create sequence runs inside the per-path mutex, so concurrent reclaimers
+ * serialize and re-read the path inside the critical section: the first recovery's fresh token is
+ * a live holder to every later reclaimer, never something to remove.
+ */
+export function tryAcquireLease(path: string, kind: LeaseKind, ttlMs: number, now: number = Date.now(), cwd?: string, mutexWaitMs: number = MUTEX_WAIT_MS): AcquiredLease | undefined {
 	try {
 		mkdirSync(dirname(path), { recursive: true });
 	} catch {
@@ -134,19 +259,32 @@ export function tryAcquireLease(path: string, kind: LeaseKind, ttlMs: number, no
 	}
 	const verdict = readLeaseVerdict(path, now, cwd);
 	if (verdict !== "free" && verdict !== "held-stale") return undefined;
-	if (verdict === "held-stale") {
-		try {
-			rmSync(path, { force: true });
-		} catch {
-			return undefined; // cannot clear the stale token: do not write past it
+	if (verdict === "free") return createLease(path, kind, ttlMs, now); // exclusive create is atomic on its own
+	// held-stale: the remove/create sequence needs serializing against every other reclaimer and
+	// every release — the exclusive create alone does not protect it.
+	return withPathMutex(path, mutexWaitMs, (): AcquiredLease | undefined => {
+		const recheck = readLeaseVerdict(path, now, cwd);
+		if (recheck !== "free" && recheck !== "held-stale") return undefined; // a faster reclaimer owns it now
+		if (recheck === "held-stale") {
+			try {
+				rmSync(path, { force: true });
+			} catch {
+				return undefined; // cannot clear the stale token: do not write past it
+			}
 		}
-	}
-	if (!writeTokenExclusively(path, kind, ttlMs, now)) return undefined;
-	return { release: () => releasePath(path) };
+		return createLease(path, kind, ttlMs, now);
+	});
 }
 
-/** The sync lease outlives the longest sync by design; the TTL is the crash backstop. */
-const SYNC_LEASE_TTL_MS = 120_000;
+/**
+ * The sync lease outlives daemonlessRefresh's whole unlock+sync sequence (readiness.ts): each
+ * command runs up to SYNC_TIMEOUT_MS (120s) and may then spend KILL_WAIT_MS (10s) dying, so the
+ * real worst case is 2 × 130s = 260s and the TTL carries margin above it. The constants are
+ * mirrored by value on purpose — readiness value-imports this module, so importing them back
+ * would open a readiness -> lease -> readiness cycle. The TTL stays the crash backstop: a live
+ * holder is never displaced, it only expires when its session is truly gone.
+ */
+const SYNC_LEASE_TTL_MS = 300_000;
 /** A freshly reported proxy pid (a cmd.exe wrapper) is trusted this long once its holder is gone. */
 const PROXY_TRUST_MS = 60_000;
 /** The init lock outlives the longest init; the TTL is the crash backstop. */

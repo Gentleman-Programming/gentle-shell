@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync, spawn } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -12,6 +12,7 @@ import {
 	tryAcquireLease,
 	tryAcquireSyncLease,
 } from "../lib/codegraph-lease.ts";
+import { SYNC_TIMEOUT_MS } from "../lib/codegraph-readiness.ts";
 
 function project(t: test.TestContext): string {
 	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-lease-")));
@@ -109,6 +110,61 @@ test("tryAcquireLease never steals an unknown (fail-closed) token", (t) => {
 	assert.match(readFileSync(path, "utf8"), /\{not json/, "the damaged token is left untouched");
 });
 
+test("stale recovery waits for the per-path mutex: a live holder fail-closes it, the token untouched", (t) => {
+	const dir = locksDir(t);
+	const path = join(dir, "token.json");
+	const holder = deadPid();
+	const now = Date.now();
+	writeToken(path, { kind: "sync", pid: holder, startedAt: now, expiresAt: now - 1 });
+	// Another session is inside its recovery critical section right now: its mutex names a live holder.
+	writeToken(`${path}.mutex`, { pid: process.pid, startedAt: now, expiresAt: now + 60_000 });
+
+	assert.equal(tryAcquireLease(path, "sync", 120_000, now, undefined, 60), undefined, "recovery must not run beside the mutex holder");
+	assert.equal((JSON.parse(readFileSync(path, "utf8")) as { pid: number }).pid, holder, "the stale token is left exactly as it was");
+
+	// The holder finished and dropped its mutex: the same attempt proceeds again.
+	rmSync(`${path}.mutex`, { force: true });
+	const lease = tryAcquireLease(path, "sync", 120_000, now);
+	assert.ok(lease, "with the mutex free again the stale path is recovered");
+	lease.release();
+	assert.equal(readLeaseVerdict(path, now), "free");
+});
+
+test("a stale per-path mutex is stolen by the same liveness rules and released after recovery", (t) => {
+	const dir = locksDir(t);
+	const path = join(dir, "token.json");
+	const now = Date.now();
+	writeToken(path, { kind: "sync", pid: deadPid(), startedAt: now, expiresAt: now - 1 });
+	// A reclaimer that died mid-recovery left its mutex behind: its holder pid is verifiably dead.
+	writeToken(`${path}.mutex`, { pid: deadPid(), startedAt: now, expiresAt: now + 60_000 });
+
+	const lease = tryAcquireLease(path, "sync", 120_000, now);
+	assert.ok(lease, "a dead holder's mutex is stolen, not waited on");
+	assert.equal(readLeaseVerdict(path, now), "held-live", "the token is now this session's live one");
+	lease.release();
+	assert.equal(readLeaseVerdict(path, now), "free");
+	assert.equal(existsSync(`${path}.mutex`), false, "the mutex is dropped after the critical section");
+});
+
+test("release is bound to its own acquisition: it never removes a newer owner's token", (t) => {
+	const dir = locksDir(t);
+	const path = join(dir, "token.json");
+	const now = Date.now();
+
+	const first = tryAcquireLease(path, "sync", 120_000, now);
+	assert.ok(first, "the path is free: the first session acquires");
+	// The first lease expires; a second session steals the now-stale path and re-owns it.
+	const second = tryAcquireLease(path, "sync", 120_000, now + 121_000);
+	assert.ok(second, "the expired token is stolen by the second session");
+	// The first session's late release (its finally after the protected operation ran long) must
+	// remove nothing: the path belongs to the second session now.
+	first.release();
+	assert.equal(readLeaseVerdict(path, now + 121_000), "held-live", "the newer owner's token survives the old release");
+
+	second.release();
+	assert.equal(readLeaseVerdict(path, now + 121_000), "free", "its own release still hands the path back");
+});
+
 test("lock paths are keyed by the real project path and kind, under a shared locks dir", (t) => {
 	const dir = locksDir(t);
 	const cwd = project(t);
@@ -125,6 +181,22 @@ test("tryAcquireSyncLease is one call for the daemon-less sync path", (t) => {
 	assert.equal(readLeaseVerdict(lockPathFor(cwd, "sync", dir), Date.now()), "held-live");
 	lease.release();
 	assert.equal(readLeaseVerdict(lockPathFor(cwd, "sync", dir), Date.now()), "free");
+});
+
+test("the sync lease TTL outlives daemonlessRefresh's whole unlock+sync sequence", (t) => {
+	const dir = locksDir(t);
+	const cwd = project(t);
+	const lease = tryAcquireSyncLease(cwd, dir);
+	assert.ok(lease, "a free project acquires");
+	const token = JSON.parse(readFileSync(lockPathFor(cwd, "sync", dir), "utf8")) as { startedAt: number; expiresAt: number };
+	// daemonlessRefresh (readiness.ts) holds this lease across `unlock` and `sync -q`, each up to
+	// SYNC_TIMEOUT_MS plus KILL_WAIT_MS (10s, readiness.ts) of kill grace: 2 x 130s worst case.
+	const worstCaseMs = 2 * (SYNC_TIMEOUT_MS + 10_000);
+	assert.ok(
+		token.expiresAt - token.startedAt >= worstCaseMs,
+		`the sync TTL (${token.expiresAt - token.startedAt}ms) must cover the ${worstCaseMs}ms refresh worst case`,
+	);
+	lease.release();
 });
 
 test("acquireInitLock: free path acquires at once", async (t) => {
@@ -180,9 +252,13 @@ test("a token expiring exactly now is stale, and the token shape is exactly kind
 	const fresh = join(dir, "fresh.json");
 	const lease = tryAcquireLease(fresh, "sync", 120_000, now);
 	assert.ok(lease);
-	const keys = Object.keys(JSON.parse(readFileSync(fresh, "utf8"))).sort();
-	assert.deepEqual(keys, ["expiresAt", "kind", "pid", "startedAt"], "no extra fields leak into the token");
+	const token = JSON.parse(readFileSync(fresh, "utf8")) as Record<string, unknown>;
+	assert.deepEqual(Object.keys(token).sort(), ["expiresAt", "kind", "nonce", "pid", "startedAt"], "the token carries its acquisition's nonce identity and nothing else");
 	lease.release();
+	const again = tryAcquireLease(fresh, "sync", 120_000, now);
+	assert.ok(again);
+	assert.notEqual((JSON.parse(readFileSync(fresh, "utf8")) as { nonce: string }).nonce, token.nonce, "each acquisition's nonce is unique");
+	again.release();
 });
 
 test("lock tokens fold path spellings: trailing separators share one token, a missing directory still keys", (t) => {
@@ -217,6 +293,28 @@ test("a live CodeGraph writer lock keeps a dead-holder token held; the proxy win
 	assert.equal(readLeaseVerdict(path, now, cwd), "held-stale", "past the window the token is only as held as its holder");
 });
 
+test("a dead launcher's token holds while its adopted direct writer lives", (t) => {
+	const dir = locksDir(t);
+	const cwd = project(t);
+	const path = lockPathFor(cwd, "init", dir);
+	const now = Date.now();
+
+	// POSIX shape: the holder (launcher) is dead, its adopted writer is a live direct child that
+	// has not written codegraph.lock yet.
+	writeToken(path, { kind: "init", pid: deadPid(), startedAt: now, expiresAt: now + 60_000, writerPid: process.pid, writerProxy: false, writerPidAt: now });
+	assert.equal(readLeaseVerdict(path, now, cwd), "held-live", "the live adopted direct writer holds its dead launcher's token");
+	assert.equal(tryAcquireLease(path, "init", 600_000, now, cwd), undefined, "acquisition must not steal it");
+
+	// The TTL is only the crash backstop: a live writer is never unlocked under, even past it.
+	writeToken(path, { kind: "init", pid: deadPid(), startedAt: now, expiresAt: now - 1, writerPid: process.pid, writerProxy: false, writerPidAt: now });
+	assert.equal(readLeaseVerdict(path, now, cwd), "held-live", "an expired token still holds while its direct writer lives");
+	assert.equal(tryAcquireLease(path, "init", 600_000, now, cwd), undefined, "not stealable past the TTL either");
+
+	// Once the writer is gone too, only the dead holder remains: stale again.
+	writeToken(path, { kind: "init", pid: deadPid(), startedAt: now, expiresAt: now - 1, writerPid: deadPid(), writerProxy: false, writerPidAt: now });
+	assert.equal(readLeaseVerdict(path, now, cwd), "held-stale", "a dead writer leaves only the dead holder's stale token");
+});
+
 test("acquireInitLock adopts the spawned writer pid onto its own token", async (t) => {
 	const dir = locksDir(t);
 	const cwd = project(t);
@@ -229,4 +327,49 @@ test("acquireInitLock adopts the spawned writer pid onto its own token", async (
 	assert.equal(token.writerProxy, true);
 	assert.equal(typeof token.writerPidAt, "number");
 	outcome.release();
+});
+
+test("two real sessions reclaiming one stale token: exactly one acquisition, the winner's token survives", async (t) => {
+	const dir = locksDir(t);
+	const sandbox = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-lease-race-")));
+	t.after(() => rmSync(sandbox, { recursive: true, force: true }));
+	const path = join(dir, "race.json");
+	const now = Date.now();
+	writeToken(path, { kind: "sync", pid: deadPid(), startedAt: now, expiresAt: now - 1 });
+
+	const log = join(sandbox, "race.log");
+	const script = join(sandbox, "child.mjs");
+	// Both children wait for each other's marker before reclaiming, so both verdicts read the same
+	// stale token instead of one seeing the other's fresh one.
+	writeFileSync(script, [
+		'import { appendFileSync, existsSync, writeFileSync } from "node:fs";',
+		"const [libHref, tokenPath, logPath, mine, theirs] = process.argv.slice(2);",
+		"writeFileSync(mine, String(process.pid));",
+		"const deadline = Date.now() + 10_000;",
+		"while (!existsSync(theirs)) {",
+		"	if (Date.now() >= deadline) process.exit(2);",
+		"}",
+		"const { tryAcquireLease } = await import(libHref);",
+		"const lease = tryAcquireLease(tokenPath, \"sync\", 60_000);",
+		"if (!lease) {",
+		'	appendFileSync(logPath, `lost ${process.pid}\\n`);',
+		"	process.exit(0);",
+		"}",
+		'	appendFileSync(logPath, `acquired ${process.pid}\\n`);',
+		"	await new Promise((resolve) => setTimeout(resolve, 200));",
+		"	lease.release();",
+	].join("\n") + "\n");
+	const libHref = new URL("../lib/codegraph-lease.ts", import.meta.url).href;
+	const closed = (child: ReturnType<typeof spawn>) => new Promise<number>((resolve) => {
+		child.on("close", (code: number | null) => resolve(code ?? -1));
+	});
+	const children = [
+		spawn(process.execPath, ["--experimental-strip-types", script, libHref, path, log, join(sandbox, "ready-a"), join(sandbox, "ready-b")], { stdio: "ignore" }),
+		spawn(process.execPath, ["--experimental-strip-types", script, libHref, path, log, join(sandbox, "ready-b"), join(sandbox, "ready-a")], { stdio: "ignore" }),
+	];
+	const codes = await Promise.all(children.map(closed));
+	assert.deepEqual(codes, [0, 0]);
+	const lines = readFileSync(log, "utf8").trim().split("\n").filter((line) => line.length > 0).map((line) => line.split(" ")[0]).sort();
+	assert.deepEqual(lines, ["acquired", "lost"], `exactly one session may acquire, got: ${lines.join(" | ")}`);
+	assert.equal(readLeaseVerdict(path, Date.now()), "free", "the winner released and the loser removed nothing");
 });

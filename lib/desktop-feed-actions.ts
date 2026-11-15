@@ -9,16 +9,24 @@
 // owner's own rules still decide. Questions are never answered here: the
 // session only checks that the question the desktop shows is the one open and
 // tells it which keys the real TUI list takes; the keys are pressed in the
-// terminal like a person would. Consent prompts have no action at all.
-// `abort_turn` (T10) is the TUI's Esc Esc: the session's own abort, and only
-// while its agent works.
+// terminal like a person would. Consent prompts have no action at all, and a
+// provider consent or maintenance authorization the agent relays through an
+// ask tool is answered in the terminal only. `abort_turn` (T10) is the TUI's
+// Esc Esc: the session's own abort, and only while its agent works.
+//
+// Any process of the same user can write the inbox, the agent's own tools
+// included (the guard in extensions/gentle-ai.ts denies the folder to the
+// agent's file and shell tools, but a shell can always spell a path some other
+// way). So a permission ESCALATION is refused when its file was written while
+// the agent, a background job or a subagent of this session could act, or
+// within 2 s after; lowering the mode and stopping work are always accepted.
 
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import { join } from "node:path";
 import type { DesktopRpcOutcome } from "./desktop-rpc.ts";
 import { clipText, type DesktopFeedTimers } from "./desktop-feed.ts";
-import { desktopFeedFile, desktopFeedName } from "./desktop-feed-store.ts";
+import { desktopFeedFile, desktopFeedName, desktopFeedProcessGone } from "./desktop-feed-store.ts";
 import { isPermissionMode } from "./permission-mode-policy.ts";
 
 export const DESKTOP_ACTION_SCHEMA = "gentle-shell.desktop-action/v1";
@@ -48,7 +56,18 @@ export const DESKTOP_ACTION_LIMITS = {
 	/** A folder without a live snapshot is swept once it is this old (a crashed session). */
 	orphanMs: 10 * 60_000,
 	sweepEntries: 256,
+	/** An escalation written this long after the session's activity ended is still refused. */
+	activityGraceMs: 2_000,
+	/** Activity spans remembered; older ones count as busy. */
+	activitySpans: 64,
+	/** Non-regular inbox entries remembered so they are never reprocessed. */
+	ignored: 64,
+	/** Text of a tool result read for a provider decision envelope. */
+	scanChars: 256 * 1024,
 } as const;
+
+/** The session's pid, written in its inbox so the sweep can tell a live session. */
+export const DESKTOP_ACTION_OWNER_FILE = ".owner";
 
 const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -130,23 +149,68 @@ export interface DesktopActionQuestion {
 	custom: boolean;
 	questions: number;
 	multi: boolean;
+	/** A provider consent or maintenance authorization relayed by the agent: terminal only. */
+	provider: boolean;
 }
 
-/** The shape of an ask tool call from its arguments, or undefined for any other tool. */
-export function questionShape(toolName: string, toolCallId: string, args: unknown): DesktopActionQuestion | undefined {
+// Provider-owned decisions (assets/orchestrator-prompts.md): review consent
+// envelopes, their bindings, and maintenance/repair authorizations. Matching
+// more than needed only sends a question to the terminal.
+const PROVIDER_DECISION = /gentle-ai\.review-integration\.consent\/|gentle-ai\.review-repair-authorization\/|native-review-consent-required|\bconsent_required\b|\bconsent_?binding\b|maintainer_authorization|explicit-maintainer-action|--consent\s+(?:granted|declined)\b/i;
+// A relayed consent's option tokens are the envelope's own answers.
+const CONSENT_TOKENS = new Set(["granted", "declined"]);
+
+/** Whether a tool result (or any value) carries a provider decision envelope; reads a bounded amount. */
+export function providerDecisionIn(value: unknown): boolean {
+	let budget: number = DESKTOP_ACTION_LIMITS.scanChars;
+	const seen = new Set<unknown>();
+	const visit = (item: unknown, depth: number): boolean => {
+		if (budget <= 0 || depth > 8) return false;
+		if (typeof item === "string") {
+			const text = item.length > budget ? item.slice(0, budget) : item;
+			budget -= text.length;
+			return PROVIDER_DECISION.test(text);
+		}
+		if (item === null || typeof item !== "object" || seen.has(item)) return false;
+		seen.add(item);
+		if (Array.isArray(item)) return item.some((entry) => visit(entry, depth + 1));
+		return Object.entries(item as Record<string, unknown>).some(([key, entry]) => visit(key, depth + 1) || visit(entry, depth + 1));
+	};
+	try { return visit(value, 0); } catch { return true; }
+}
+
+/** Whether an ask call's own text or option tokens are a relayed provider decision. */
+function relayedDecision(input: Record<string, unknown>): boolean {
+	const options = [input.options, ...(Array.isArray(input.questions) ? input.questions.map((question) => record(question)?.options) : [])]
+		.flatMap((list) => (Array.isArray(list) ? list : []));
+	if (options.some((option) => { const value = record(option)?.value; return typeof value === "string" && CONSENT_TOKENS.has(value.trim().toLowerCase()); })) return true;
+	return providerDecisionIn(input);
+}
+
+/**
+ * The shape of an ask tool call from its arguments, or undefined for any other
+ * tool. `relayed`: the session saw a provider decision envelope in this turn's
+ * tool results, so this question is the agent relaying it.
+ */
+export function questionShape(toolName: string, toolCallId: string, args: unknown, relayed = false): DesktopActionQuestion | undefined {
 	const input = record(args) ?? {};
 	if (toolName === "ask_user_choice") {
 		const options = Array.isArray(input.options) ? input.options.length : 0;
-		return { toolCallId, tool: toolName, options, custom: input.allowCustomResponse === true, questions: 1, multi: false };
+		return { toolCallId, tool: toolName, options, custom: input.allowCustomResponse === true, questions: 1, multi: false, provider: relayed || relayedDecision(input) };
 	}
 	if (toolName === "ask_user_question") {
 		const questions = Array.isArray(input.questions) ? input.questions : [];
 		const first = record(questions[0]) ?? {};
 		const options = Array.isArray(first.options) ? first.options.length : 0;
 		// The questionnaire view always offers its free-text row after the options.
-		return { toolCallId, tool: toolName, options, custom: true, questions: questions.length, multi: first.multiSelect === true };
+		return { toolCallId, tool: toolName, options, custom: true, questions: questions.length, multi: first.multiSelect === true, provider: relayed || relayedDecision(input) };
 	}
 	return undefined;
+}
+
+/** Whether the desktop may pick an answer for this question (else: the terminal). */
+export function answerableFromDesktop(question: DesktopActionQuestion): boolean {
+	return !question.provider && question.questions === 1 && !question.multi && question.options >= 1;
 }
 
 const TERMINAL_ONLY: DesktopActionError = { code: "answer_in_terminal", message: "Answer this question in the Terminal view" };
@@ -158,7 +222,7 @@ const TERMINAL_ONLY: DesktopActionError = { code: "answer_in_terminal", message:
  * answer opens the list's own editor; the text is then typed like any input.
  */
 export function answerKeys(question: DesktopActionQuestion, answer: { option?: number; text?: string }): { keys: string[] } | { error: DesktopActionError } {
-	if (question.questions !== 1 || question.multi || question.options < 1) return { error: TERMINAL_ONLY };
+	if (!answerableFromDesktop(question)) return { error: TERMINAL_ONLY };
 	const rows = question.options + (question.custom ? 1 : 0);
 	let row: number;
 	if (answer.text !== undefined) {
@@ -184,7 +248,57 @@ export interface DesktopActionOwners {
 	working(): boolean;
 	/** The session's own abort, the one its TUI's Esc Esc runs. */
 	abortTurn(): void;
+	/** The session's permission mode now, if known. */
+	permissionMode(): string | undefined;
+	/** Whether the agent, a background job or a subagent could act at `time` (file clock), or 2 s after. */
+	busyAt(time: number): boolean;
 }
+
+// ---- Permission escalation ----
+
+const PERMISSION_RANK: Record<string, number> = { normal: 0, auto: 1, yolo: 2, "super-yolo": 3 };
+
+/** Whether `to` is less restrictive than `from`; an unknown current mode counts as `normal`. */
+export function isPermissionEscalation(from: string | undefined, to: string): boolean {
+	return (PERMISSION_RANK[to] ?? Number.POSITIVE_INFINITY) > (PERMISSION_RANK[from ?? "normal"] ?? 0);
+}
+
+export interface DesktopActivityTimeline {
+	/** Records whether the session is busy now. */
+	set(busy: boolean): void;
+	/** Busy at `time`, or within the grace after; anything before the timeline started counts as busy. */
+	busyAt(time: number): boolean;
+}
+
+/**
+ * When the session's agent, background jobs or subagents could act, on the
+ * file clock (`clock`, real time). Bounded: forgotten spans count as busy.
+ */
+export function createDesktopActivityTimeline(clock: () => number = Date.now, graceMs: number = DESKTOP_ACTION_LIMITS.activityGraceMs): DesktopActivityTimeline {
+	const spans: Array<{ start: number; end: number | undefined }> = [];
+	let knownFrom = clock();
+	return {
+		set(busy: boolean): void {
+			const last = spans[spans.length - 1];
+			const open = last !== undefined && last.end === undefined;
+			if (busy === open) return;
+			const now = clock();
+			if (busy) spans.push({ start: now, end: undefined });
+			else last!.end = now;
+			while (spans.length > DESKTOP_ACTION_LIMITS.activitySpans) {
+				const dropped = spans.shift()!;
+				knownFrom = Math.max(knownFrom, (dropped.end ?? now) + graceMs + 1);
+			}
+		},
+		busyAt(time: number): boolean {
+			const at = Math.min(time, clock());
+			if (!Number.isFinite(at) || at < knownFrom) return true;
+			return spans.some((span) => at >= span.start && (span.end === undefined || at <= span.end + graceMs));
+		},
+	};
+}
+
+const ESCALATION_WHILE_BUSY = fail("escalation_while_busy", "Raising the permission mode is refused while the agent, a background job or a subagent is running, or within 2 s after; try again when the session is idle.");
 
 const OWNER_FAILED = fail("owner_failed", "The session could not run this action");
 
@@ -195,12 +309,19 @@ function fromOwner(outcome: DesktopRpcOutcome | undefined): DesktopActionOutcome
 	return { ok: true, data: outcome.data };
 }
 
-/** Runs a parsed action through the one owner its kind names. */
-export async function runDesktopAction(action: DesktopAction, owners: DesktopActionOwners): Promise<DesktopActionOutcome> {
+/**
+ * Runs a parsed action through the one owner its kind names. `writtenAt` is
+ * when its file was last written (fstat, the file clock); without it the
+ * session's state now decides.
+ */
+export async function runDesktopAction(action: DesktopAction, owners: DesktopActionOwners, writtenAt?: number): Promise<DesktopActionOutcome> {
 	try {
 		switch (action.kind) {
-			case "set_permission_mode":
-				return fromOwner(await owners.setPermissionMode(action.args.mode as string));
+			case "set_permission_mode": {
+				const mode = action.args.mode as string;
+				if (isPermissionEscalation(owners.permissionMode(), mode) && owners.busyAt(writtenAt ?? Date.now())) return ESCALATION_WHILE_BUSY;
+				return fromOwner(await owners.setPermissionMode(mode));
+			}
 			case "cancel_job":
 				return fromOwner(await owners.cancelJob(action.args.id as string));
 			case "cancel_subagent":
@@ -269,25 +390,42 @@ function safeDirectory(dir: string): void {
 	if (!stat.isDirectory() || stat.isSymbolicLink() || !owned(stat)) throw Error("unsafe-directory");
 }
 
-/** Removes the regular files a session folder holds, then the folder; never follows a link. */
-function clearDirectory(dir: string): void {
+/**
+ * Removes what a session folder holds, then the folder: links and files are
+ * unlinked (never followed), owned subfolders are cleared the same way, a few
+ * levels deep at most.
+ */
+function clearDirectory(dir: string, depth = 0): void {
 	try {
 		safeDirectory(dir);
-		for (const name of fs.readdirSync(dir)) {
+		for (const name of fs.readdirSync(dir).slice(0, DESKTOP_ACTION_LIMITS.sweepEntries)) {
 			try {
-				const stat = fs.lstatSync(join(dir, name));
-				if (stat.isFile() || stat.isSymbolicLink()) fs.unlinkSync(join(dir, name));
+				const path = join(dir, name);
+				const stat = fs.lstatSync(path);
+				if (stat.isDirectory() && !stat.isSymbolicLink()) { if (depth < 3) clearDirectory(path, depth + 1); }
+				else fs.unlinkSync(path);
 			} catch { /* best effort */ }
 		}
 		fs.rmdirSync(dir);
 	} catch { /* missing, unsafe or not empty */ }
 }
 
+/** The pid a session recorded in its inbox, if the marker is a small private file. */
+function recordedPid(file: string): unknown {
+	try {
+		const stat = fs.lstatSync(file);
+		if (!stat.isFile() || stat.nlink !== 1 || !owned(stat) || stat.size > 4096) return undefined;
+		const value = JSON.parse(fs.readFileSync(file, "utf8")) as { pid?: unknown; identity?: { pid?: unknown } } | null;
+		return value?.pid ?? value?.identity?.pid;
+	} catch { return undefined; }
+}
+
 /**
  * A session killed without its shutdown leaves its inbox and outbox behind. A
- * later session start removes the folders whose session has no snapshot (the
- * snapshot sweep drops dead sessions' first) and that have not changed for
- * `orphanMs`; a session that is still starting is younger than that.
+ * later session start removes the folders that have not changed for
+ * `orphanMs` and whose session is proven gone: the pid it recorded in its
+ * inbox (or, for a folder without one, in its snapshot) no longer runs, or it
+ * has neither. A live session's folders stay however long it is idle.
  */
 export function sweepDesktopActionOrphans(agentDir: string, keepSessionId: string, now: number = Date.now()): void {
 	const keep = desktopFeedName(keepSessionId);
@@ -305,14 +443,20 @@ export function sweepDesktopActionOrphans(agentDir: string, keepSessionId: strin
 				const stat = fs.lstatSync(dir);
 				if (!stat.isDirectory() || stat.isSymbolicLink() || !owned(stat)) continue;
 				if (now - stat.mtimeMs < DESKTOP_ACTION_LIMITS.orphanMs) continue;
-				if (fs.existsSync(desktopFeedFile(agentDir, name))) continue;
+				const marker = join(agentDir, "desktop", "inbox", name, DESKTOP_ACTION_OWNER_FILE);
+				const snapshot = desktopFeedFile(agentDir, name);
+				if (fs.existsSync(marker) || fs.existsSync(snapshot)) {
+					const pid = recordedPid(fs.existsSync(marker) ? marker : snapshot);
+					if (!desktopFeedProcessGone(pid)) continue;
+				}
 				clearDirectory(dir);
 			} catch { /* never touch what cannot be proven an orphan */ }
 		}
 	}
 }
 
-type Read = { kind: "text"; text: string; mtimeMs: number } | { kind: "rejected"; error: DesktopActionError } | { kind: "gone" };
+/** mtime can be set back by its writer; ctime cannot: the later of the two. */
+type Read = { kind: "text"; text: string; mtimeMs: number; writtenAt: number } | { kind: "rejected"; error: DesktopActionError } | { kind: "gone" };
 
 function readActionFile(path: string): Read {
 	let fd: number;
@@ -330,7 +474,7 @@ function readActionFile(path: string): Read {
 		const buffer = Buffer.alloc(DESKTOP_ACTION_LIMITS.bytes + 1);
 		const length = fs.readSync(fd, buffer, 0, buffer.length, 0);
 		if (length > DESKTOP_ACTION_LIMITS.bytes) return { kind: "rejected", error: { code: "too_large", message: "Action file too large" } };
-		return { kind: "text", text: buffer.subarray(0, length).toString("utf8"), mtimeMs: stat.mtimeMs };
+		return { kind: "text", text: buffer.subarray(0, length).toString("utf8"), mtimeMs: stat.mtimeMs, writtenAt: Math.max(stat.mtimeMs, stat.ctimeMs) };
 	} finally {
 		fs.closeSync(fd);
 	}
@@ -353,6 +497,11 @@ export function createDesktopActionInbox(options: DesktopActionInboxOptions): De
 	const inbox = desktopActionInboxDir(options.agentDir, options.sessionId);
 	const outbox = desktopActionOutboxDir(options.agentDir, options.sessionId);
 	const seen: string[] = [];
+	/** Entries that could not be removed (a non-empty folder): name → identity, skipped while unchanged. */
+	const ignored = new Map<string, string>();
+	const identity = (path: string): string | undefined => {
+		try { const stat = fs.lstatSync(path); return `${stat.dev}:${stat.ino}:${stat.mtimeMs}`; } catch { return undefined; }
+	};
 	let closed = false;
 	let started = false;
 	let running = false;
@@ -406,6 +555,17 @@ export function createDesktopActionInbox(options: DesktopActionInboxOptions): De
 
 	const remove = (path: string) => { try { fs.unlinkSync(path); } catch { /* gone */ } };
 
+	// A refused entry is unlinked; an empty folder is removed; anything that
+	// stays is remembered so the next scans skip it instead of answering again.
+	const discard = (name: string, path: string) => {
+		try { fs.unlinkSync(path); return; } catch { /* a folder, or gone */ }
+		try { fs.rmdirSync(path); return; } catch { /* not empty, or gone */ }
+		const id = identity(path);
+		if (id === undefined) return;
+		ignored.set(name, id);
+		while (ignored.size > DESKTOP_ACTION_LIMITS.ignored) ignored.delete(ignored.keys().next().value!);
+	};
+
 	const armRetry = () => {
 		if (retry !== undefined || closed) return;
 		retry = options.timers.set(() => { retry = undefined; scan(); }, DESKTOP_ACTION_LIMITS.retryMs);
@@ -415,10 +575,14 @@ export function createDesktopActionInbox(options: DesktopActionInboxOptions): De
 		const path = join(inbox, name);
 		const stem = name.slice(0, -".json".length);
 		const answerId = SAFE_ID.test(stem) ? stem : undefined;
+		if (ignored.has(name)) {
+			if (ignored.get(name) === identity(path)) return;
+			ignored.delete(name);
+		}
 		const read = readActionFile(path);
 		if (read.kind === "gone") return;
 		if (read.kind === "rejected") {
-			remove(path);
+			discard(name, path);
 			if (answerId) writeResult(answerId, null, { ok: false, error: read.error });
 			return;
 		}
@@ -436,7 +600,7 @@ export function createDesktopActionInbox(options: DesktopActionInboxOptions): De
 		if (seen.includes(action.id)) { writeResult(answerId, action.kind, fail("duplicate", "This action already ran")); return; }
 		seen.push(action.id);
 		if (seen.length > DESKTOP_ACTION_LIMITS.seen) seen.shift();
-		const outcome = await runDesktopAction(action, options.owners);
+		const outcome = await runDesktopAction(action, options.owners, read.writtenAt);
 		if (closed) return;
 		writeResult(action.id, action.kind, outcome);
 	};
@@ -476,6 +640,7 @@ export function createDesktopActionInbox(options: DesktopActionInboxOptions): De
 				privateDirectory(join(options.agentDir, "desktop", "outbox"));
 				privateDirectory(inbox);
 				privateDirectory(outbox);
+				writeOwnerMarker(inbox);
 			} catch { return false; }
 			started = true;
 			unwatch = options.watch(inbox, scan);
@@ -493,6 +658,19 @@ export function createDesktopActionInbox(options: DesktopActionInboxOptions): De
 			clearDirectory(outbox);
 		},
 	};
+}
+
+/** `{ pid }` of this process in the inbox (exclusive temp file, then rename), for the orphan sweep. */
+function writeOwnerMarker(inbox: string): void {
+	const candidate = join(inbox, `.${randomUUID()}.tmp`);
+	const fd = fs.openSync(candidate, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
+	try {
+		try { fs.writeFileSync(fd, `${JSON.stringify({ pid: process.pid })}\n`); } finally { fs.closeSync(fd); }
+		fs.renameSync(candidate, join(inbox, DESKTOP_ACTION_OWNER_FILE));
+	} catch (error) {
+		try { fs.unlinkSync(candidate); } catch { /* best effort */ }
+		throw error;
+	}
 }
 
 /** A complete JSON object ends with "}" (and a newline at most). */

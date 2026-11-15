@@ -134,6 +134,41 @@ for (const mode of ["yolo", "super-yolo"] as const) {
 	});
 }
 
+// T7 (odd/tasks/herdr-desktop.md, B1): the desktop inbox, outbox and snapshots
+// under `<agentDir>/desktop/` are the human's channel into a live session, so
+// the agent's own file tools and shell commands cannot write an action there.
+const desktopPaths = [
+	"~/.gentle-shell/agent/desktop/inbox/sess-1/a1.json",
+	"/Users/u/.gentle-shell/agent/desktop/outbox/sess-1/a1.json",
+	"/home/u/.pi/agent/desktop/sessions/sess-1.json",
+	"~/.gentle-shell/agent/desktop",
+	"/opt/custom/agent/desktop/inbox/sess-1/a1.json",
+] as const;
+
+for (const mode of [undefined, "super-yolo"] as const) {
+	test(`the desktop action folders are sensitive paths for file tools and bash${mode ? ` in ${mode}` : ""} (T7)`, async () => {
+		const call = toolCall(mode ? { mode } : {});
+		for (const path of desktopPaths) {
+			assert.deepEqual(await call("write", { path, content: "{}" }), { block: true, reason: reason(path) }, `write ${path}`);
+			assert.deepEqual(await call("edit", { path, edits: [] }), { block: true, reason: reason(path) }, `edit ${path}`);
+			assert.deepEqual(await call("ls", { path }), { block: true, reason: reason(path) }, `ls ${path}`);
+			assert.deepEqual(await call("bash", { command: `printf '{}' > ${path}` }), { block: true, reason: reason(path) }, `bash ${path}`);
+		}
+		assert.deepEqual(await call("bash", { command: "mv /tmp/a.json ~/.gentle-shell/agent/desktop/inbox/s/a.json" }), { block: true, reason: reason("~/.gentle-shell/agent/desktop/inbox/s/a.json") });
+	});
+}
+
+test("adding the desktop folders keeps every earlier deny and the ordinary allow (T7)", async () => {
+	const call = toolCall();
+	assert.deepEqual(await call("read", { path: ".env" }), { block: true, reason: reason(".env") });
+	assert.deepEqual(await call("bash", { command: "cat ~/.aws/credentials" }), { block: true, reason: reason("~/.aws/credentials") });
+	for (const path of ["src/desktop/inbox.ts", "docs/desktop-feed.md", "lib/desktop-feed-actions.ts", "desktop/inbox/readme.md"]) {
+		assert.equal(await call("read", { path }), undefined, path);
+		assert.equal(await call("write", { path, content: "x" }), undefined, path);
+	}
+	assert.equal(await call("bash", { command: "cat src/index.ts" }), undefined);
+});
+
 // The mode fixture above is only meaningful if it is live, so pin the modal it
 // changes: YOLO waives the push approval, and the same push without the fixture
 // still needs one.

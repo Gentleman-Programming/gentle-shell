@@ -139,6 +139,12 @@ export interface DesktopFeedPendingQuestion {
 	questions: DesktopFeedQuestion[];
 	/** The pi dialog kind for `prompt` (select, confirm, input, editor, custom). */
 	promptKind: string | null;
+	/**
+	 * Answered in the terminal only (T7): prompts, consent, multi-question or
+	 * multi-select questions, and a provider consent or maintenance
+	 * authorization the agent relays through an ask tool.
+	 */
+	terminalOnly: boolean;
 	openedAt: string;
 }
 
@@ -290,7 +296,7 @@ function questionOptions(value: unknown): DesktopFeedQuestionOption[] {
  * The open question an ask tool call shows, from its call arguments, or
  * undefined for any other tool. The toolCallId is kept so T7 can answer it.
  */
-export function pendingQuestionFromTool(toolName: string, toolCallId: string, args: unknown, now: number): DesktopFeedPendingQuestion | undefined {
+export function pendingQuestionFromTool(toolName: string, toolCallId: string, args: unknown, now: number, terminalOnly = false): DesktopFeedPendingQuestion | undefined {
 	const input = record(args);
 	let kind: DesktopFeedPendingQuestion["kind"];
 	let questions: DesktopFeedQuestion[];
@@ -307,14 +313,15 @@ export function pendingQuestionFromTool(toolName: string, toolCallId: string, ar
 		});
 	} else return undefined;
 	const first = questions[0] ?? { question: "", header: null, options: [], multi: false, custom: false };
-	return { kind, tool: toolName, toolCallId: clipText(toolCallId), ...first, questions, promptKind: null, openedAt: new Date(now).toISOString() };
+	const desktop = !terminalOnly && questions.length === 1 && !first.multi && first.options.length > 0;
+	return { kind, tool: toolName, toolCallId: clipText(toolCallId), ...first, questions, promptKind: null, terminalOnly: !desktop, openedAt: new Date(now).toISOString() };
 }
 
 /** A pi extension dialog (select/confirm/input/editor) or a content-free blocker (consent, guarded command). */
 export function pendingPrompt(kind: "prompt" | "consent", title: string | undefined, promptKind: string | undefined, now: number): DesktopFeedPendingQuestion {
 	const question = clipText(title ?? "", DESKTOP_FEED_LIMITS.question);
 	const custom = promptKind === "input" || promptKind === "editor";
-	return { kind, tool: null, toolCallId: null, question, header: null, options: [], multi: false, custom, questions: [{ question, header: null, options: [], multi: false, custom }], promptKind: promptKind ?? null, openedAt: new Date(now).toISOString() };
+	return { kind, tool: null, toolCallId: null, question, header: null, options: [], multi: false, custom, questions: [{ question, header: null, options: [], multi: false, custom }], promptKind: promptKind ?? null, terminalOnly: true, openedAt: new Date(now).toISOString() };
 }
 
 // ---- Snapshot builder ----

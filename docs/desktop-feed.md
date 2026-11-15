@@ -56,6 +56,10 @@ review consent; `question` is its label). Ask tool questions carry `tool` and
 `toolCallId`, the flattened first `question`, `header`, `options`
 (`label`, `description`), `multi`, `custom`, and every question in `questions`.
 Opaque answer tokens (`ask_user_choice` option values) are never written.
+`terminalOnly` is `true` when the desktop must not pick an answer: prompts,
+consent, several questions or a multi-select question, and a provider consent or
+maintenance authorization the agent relays through an ask tool (below). The
+desktop then shows the options for reading only, with "Answer in Terminal".
 
 `commands.items` lists pi's built-in commands first (`source` `builtin`: `new`,
 `resume`, `fork`, `clone`, `tree`, `compact`, `name`, `export`, `session`, `copy`,
@@ -94,8 +98,10 @@ inbox and outbox:
 ```
 
 `<session>` is the snapshot's file name without `.json`. The session creates both
-folders `0700` when it starts and removes them when it ends; the desktop never
-creates them (no inbox means the session takes no actions). An action file is
+folders `0700` when it starts (with its pid in `inbox/<session>/.owner`) and
+removes them when it ends; the desktop never creates them (no inbox means the
+session takes no actions). The agent's own file and shell tools are denied the
+whole `<agentDir>/desktop/` folder like any other sensitive path. An action file is
 
 ```json
 { "schema": "gentle-shell.desktop-action/v1", "id": "<[A-Za-z0-9_-], 1-64, = file name>",
@@ -104,7 +110,7 @@ creates them (no inbox means the session takes no actions). An action file is
 
 | `kind` | `args` | Runs through |
 |---|---|---|
-| `set_permission_mode` | `{ mode }` (`normal`, `auto`, `yolo`, `super-yolo`) | the permission owner, as desktop RPC `set_permission_mode` (the `/gentle:mode` controller decides) |
+| `set_permission_mode` | `{ mode }` (`normal`, `auto`, `yolo`, `super-yolo`) | the permission owner, as desktop RPC `set_permission_mode` (the `/gentle:mode` controller decides); an escalation is first checked against the session's activity (below) |
 | `cancel_job` | `{ id }` | the background-jobs owner, as desktop RPC `cancel_job` |
 | `cancel_subagent` | `{ id }` | the subagents owner, as desktop RPC `cancel_subagent` |
 | `answer_question` | `{ toolCallId, option }` or `{ toolCallId, text }` | nothing is answered here: the session checks that `toolCallId` is the open `ask_user_choice` / single-question `ask_user_question` and answers the keys its real list takes (`up` to the top, `down` to the row, `enter`); the desktop presses them in the terminal, then types `text` into the list's own editor |
@@ -114,12 +120,36 @@ The session refuses, removes and answers (code in `error.code`) a file that is a
 link, not a private regular file (`unsafe_file`), over 16 KiB (`too_large`), older
 than 60 s or dated ahead (`stale`), of another kind (`unknown_kind`), for another
 session (`wrong_session`), malformed or with other args (`invalid_action`), already
-run (`duplicate`), a question that is no longer open (`question_mismatch`), or a
-stop while the agent is idle (`not_working`).
+run (`duplicate`), a question that is no longer open (`question_mismatch`), a
+stop while the agent is idle (`not_working`), or a permission escalation written
+while the session was busy (`escalation_while_busy`).
+A non-regular entry (a folder, a FIFO, a device) is refused once: an empty
+folder is removed, anything that cannot be removed is skipped until it changes.
+
+**Escalations.** Any process of the same user can write the inbox, the agent's
+own tools included (the tool guard covers the folder by name, but a shell can
+spell a path other ways). So a change to a less restrictive mode (`normal` →
+`auto` → `yolo` → `super-yolo`) is refused with `escalation_while_busy`, before
+the permission owner is asked, when its file was last written (the later of the
+file's `mtime` and `ctime`, never `createdAt`) while the agent worked, a
+background job or a subagent of the session ran, within 2 s after that activity
+ended, or before the session started. Lowering the mode, `abort_turn` and the
+`cancel_*` actions are always accepted. The desktop's confirmation dialog stays
+the human gate for Super-YOLO; the session does not ask for a dialog nonce,
+because a nonce file would be written by the same user the agent runs as and
+proves nothing the activity check does not.
+
 Multi-question and multi-select questions, extension prompts and consent are
 answered in the terminal (`answer_in_terminal`); consent is never answered from
-the desktop. Every file is removed once read; a fresh file that does not parse
-yet is read again 250 ms later (it may still be written).
+the desktop. That includes a provider consent or maintenance authorization the
+agent relays through `ask_user_choice` / `ask_user_question`: the session treats
+an ask call as such a relay when a tool result in the same or the previous agent
+run carried a provider decision (a `gentle-ai.review-integration.consent/…` or
+`gentle-ai.review-repair-authorization/…` envelope, a consent binding,
+`maintainer_authorization`), or when the call's own options carry the consent
+answers (`granted` / `declined`) or such an envelope. Every file is removed once
+read; a fresh file that does not parse yet is read again 250 ms later (it may
+still be written).
 
 The answer is `{ schema: "gentle-shell.desktop-action-result/v1", id, sessionId,
 kind, ok, data | error, finishedAt }`, `0600`, `data` at most 4 KiB. Owner errors
@@ -128,16 +158,23 @@ desktop shows them. The session keeps at most 32 answers for 10 minutes and
 removes the folder when it ends (Herdr mods may write files only under the app's
 own folder, so the desktop leaves answers in place). A session killed without
 its shutdown leaves both folders behind; a later session start removes them once
-their snapshot is gone and they have not changed for 10 minutes.
+they have not changed for 10 minutes and their session is proven gone: the pid in
+`.owner` (or, without one, in its snapshot) no longer runs, or there is neither.
+A live session's folders stay however long it is idle.
 
 What the desktop does without this inbox, as the person would: it sends prompts
 and the TUI's own slash commands (any command typed in the composer or chosen in
 the `/` menu or the ⌘K palette, and the views' own `/gentle:changes`,
 `/gentle:agents`, `/gentle:jobs`, `/gentle:profiles`, `/gentle:persona`) with
-`hc send`, only while no question is open; it pastes the clipboard with Ctrl+V;
-and the review switch runs `gentle-ai review mode enable|disable --cwd <project>`
-after a confirmation. Super-YOLO and the review switch ask in a Herdr dialog
-first.
+`hc send`, only while no question is open (the composer refuses to send while
+one is); it pastes the clipboard with Ctrl+V; and the review switch runs
+`gentle-ai review mode enable|disable --scope global --cwd <project> --json`
+after a confirmation that says it is global: it changes receipt-driven review for
+every repository (a repository's clone-local `off` still wins). Super-YOLO and
+the review switch ask in a dialog first (`gentle-confirm`: Confirm runs the
+action once; Cancel or Esc forgets it, and an unanswered dialog expires after two
+minutes). Right before pressing an answer's keys, the chat reads the snapshot
+again and presses nothing if the question changed.
 
 ## Desktop keys
 

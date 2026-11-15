@@ -88,7 +88,7 @@ export function createDesktopFeedStore(agentDir: string, sessionId: string): Des
 }
 
 /** Only ESRCH proves a recorded publisher dead; EPERM means it is alive under another account. */
-function processGone(pid: unknown): boolean {
+export function desktopFeedProcessGone(pid: unknown): boolean {
 	if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
 	try { process.kill(pid, 0); } catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
 	return false;
@@ -117,7 +117,7 @@ export function sweepDesktopFeedOrphans(agentDir: string, keep: string, now: num
 			const value = JSON.parse(fs.readFileSync(candidate, "utf8")) as { identity?: { pid?: unknown }; updatedAt?: unknown } | null;
 			if (typeof value !== "object" || value === null) continue;
 			const updated = typeof value.updatedAt === "string" ? Date.parse(value.updatedAt) : Number.NaN;
-			if (!processGone(value.identity?.pid) && !(Number.isFinite(updated) && now - updated > ORPHAN_AGE_MS)) continue;
+			if (!desktopFeedProcessGone(value.identity?.pid) && !(Number.isFinite(updated) && now - updated > ORPHAN_AGE_MS)) continue;
 			fs.unlinkSync(candidate);
 		} catch { /* Never touch what cannot be proven an orphan. */ }
 	}

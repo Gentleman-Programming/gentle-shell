@@ -11,7 +11,8 @@
 // desktop RPC does; View, Output, Open diff viewer and a change row open the TUI's own screens
 // (/gentle:agents, /gentle:jobs, /gentle:changes) in the Terminal; Start review / Skip show the
 // Terminal, where the review consent is answered by you; the RDD row runs
-// `gentle-ai review mode enable|disable` after a confirmation, as you would in a shell.
+// `gentle-ai review mode enable|disable --scope global` after a confirmation that says it is
+// global (every repository), as you would in a shell.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
@@ -154,17 +155,21 @@ export default class GentleInspector extends View {
   }
 
   // The review switch: `gentle-ai review mode enable|disable`, exactly as you would run it, after
-  // a confirmation. Its own output is the answer.
+  // a confirmation. It is the GLOBAL switch (its default scope): every repository of this user
+  // changes, and a repository's own clone-local "off" still wins. Its own output is the answer.
   switchRdd(cx) {
     const cwd = this.rdd?.cwd;
     const on = this.rdd?.effective === "on";
     if (!cwd || this.busy) return;
     const op = on ? "disable" : "enable";
+    const args = ["review", "mode", op, "--scope", "global", "--cwd", cwd, "--json"];
+    const shown = ["gentle-ai", ...args.map((a) => (a === cwd ? tilde(cwd) : a))].join(" ");
     confirm("gentle-inspector", {
-      title: on ? "Turn receipt-driven review off?" : "Turn receipt-driven review on?",
-      detail: `Runs \`gentle-ai review mode ${op} --cwd ${tilde(cwd)}\`, the same switch you run in a shell. ${on ? "Review stops gating new candidates." : "It applies to future candidates only."}`,
+      title: on ? "Turn receipt-driven review off everywhere?" : "Turn receipt-driven review on everywhere?",
+      detail: `This is the GLOBAL switch: it changes receipt-driven review for ALL your repositories, not only this one (a repository's own clone-local "off" still wins). ${on ? "Review stops gating new candidates." : "It applies to future candidates only."} Runs, as in a shell: ${shown}`,
+      height: 230,
     }, (cx) => this.act("rdd", cx, async () => {
-      const r = await exec("gentle-ai", ["review", "mode", op, "--cwd", cwd, "--json"], { cwd, timeout: 30000 });
+      const r = await exec("gentle-ai", args, { cwd, timeout: 30000 });
       let st = null;
       try { st = JSON.parse(r.stdout)?.status ?? null; } catch { st = null; }
       if (st?.effective) this.rdd = { cwd, effective: st.effective, source: st.source ?? null, at: Date.now() };
@@ -413,7 +418,7 @@ export default class GentleInspector extends View {
       .child(div().flex_1().min_w(0).truncate().text_color(c.muted).child("RDD"))
       .child(div().id("rdd-switch").flex_none().text_right().font_family(c.mono).text_color(c.text).child(word)
         .when(can, (el) => el.cursor_pointer().hover((s) => s.text_color(c.accentSoft))
-          .tooltip(st.effective === "on" ? "Turn receipt-driven review off (gentle-ai review mode disable)" : "Turn receipt-driven review on (gentle-ai review mode enable)")
+          .tooltip(st.effective === "on" ? "Turn receipt-driven review off for all repositories (gentle-ai review mode disable)" : "Turn receipt-driven review on for all repositories (gentle-ai review mode enable)")
           .on_click((_e, cx) => this.switchRdd(cx))));
   }
 

@@ -14,7 +14,7 @@ import { sessionFileFor, readAfter, feedDir } from "./session.js";
 import { createFeed, ingest } from "./feed.js";
 import { palette, sans, R } from "./tokens.js";
 import { header, entries, entry, lane, stateLabel, askCard, askOptions, composer, icon, PERM } from "./ui.js";
-import { sendAction, errorText, safeKeys, terminalFree, tuiCommand, showTerminal, confirm, confirmed } from "./actions.js";
+import { sendAction, errorText, safeKeys, terminalFree, tuiCommand, showTerminal, confirm, confirmed, readSnapshot } from "./actions.js";
 
 const APPS = new Set(["gentle-shell", "pi"]);
 const PAGE = 150; // entries drawn at first; "Show earlier" adds this many
@@ -283,6 +283,11 @@ export default class GentleChat extends View {
       this.runCommand(text, known ? known.terminal !== false : true, cx);
       return;
     }
+    // An open question or prompt would take the typed text (and its Enter) as its answer.
+    if (!typedAnswer) {
+      const busy = terminalFree(this.snap);
+      if (busy) { this.error = busy; cx.notify(); return; }
+    }
     this.sending = true;
     this.error = null;
     this.notice = null;
@@ -334,9 +339,17 @@ export default class GentleChat extends View {
         throw new Error(errorText(r));
       }
       if (!safeKeys(r.data.keys)) throw new Error("The session answered keys this view does not press.");
+      // The question may have closed or changed since the session answered: read it again and
+      // press nothing unless it is still the same one.
+      const still = async () => {
+        const fresh = await readSnapshot(this.snap?.identity?.sessionId);
+        if (questionKey(fresh?.pendingQuestion) !== questionKey(pq)) throw new Error("The question changed before the answer was sent; nothing was pressed.");
+      };
+      await still();
       const k = await hc(["keys", address, ...r.data.keys]);
       if (k.code !== 0) throw new Error((k.stderr || k.stdout || "hc keys failed").trim());
       if (answer.text !== undefined) {
+        await still();
         const t = await hc(["send", address, answer.text]);
         if (t.code !== 0) throw new Error((t.stderr || t.stdout || "hc send failed").trim());
       }
@@ -520,7 +533,7 @@ export default class GentleChat extends View {
     if (mode !== "super-yolo") return go(cx);
     confirm("gentle-chat", {
       title: "Switch this session to Super-YOLO?",
-      detail: "The agent runs ordinary and destructive shell work without asking; private paths stay blocked and consent prompts remain. Only this session changes.",
+      detail: "The agent runs ordinary and destructive shell work without asking; private paths stay blocked and consent prompts remain. Only this session changes. The session accepts it only while its agent, jobs and subagents are idle.",
     }, go);
   }
 

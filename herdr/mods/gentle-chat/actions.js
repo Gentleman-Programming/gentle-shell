@@ -17,10 +17,17 @@
 //   one, and answers in its outbox. The owner decides; a refusal is shown.
 // - tuiCommand: types one of the TUI's own slash commands (/gentle:changes, /gentle:agents, …)
 //   into the terminal with `hc send`, like the person would, and shows the terminal.
-// - confirm: Herdr's own confirm dialog before Super-YOLO and the review switch. Its Confirm runs
-//   `<mod>.confirm-<nonce>`, which the mod's command loop hands to `confirmed`; only the newest
-//   dialog's nonce runs, so no key binding or script can skip the dialog by naming the command.
-//   Consent prompts have no action: the person answers them in the terminal.
+// - confirm: a confirm dialog (gentle-confirm, Herdr's confirm plus a cancel report) before
+//   Super-YOLO and the review switch. Its Confirm runs `<mod>.confirm-<nonce>`, which the mod's
+//   command loop hands to `confirmed`; only the newest dialog's nonce runs, Cancel/Esc runs
+//   `<mod>.cancel-<nonce>` which forgets it, and an unanswered nonce expires after CONFIRM_MS, so
+//   no key binding or script can skip the dialog by naming the command.
+//   Consent prompts, and a provider consent the agent relays as a question, have no action: the
+//   person answers them in the terminal.
+//
+// The session itself refuses a permission escalation whose file was written while its agent, a
+// background job or a subagent could act (docs/desktop-feed.md): the dialog is the human gate,
+// the session's check keeps the agent from writing an escalation of its own.
 
 import { hc, home, openOverlay, readTextFile, run, writeTextFile } from "herdr";
 import { exists } from "fs/promises";
@@ -38,6 +45,17 @@ const desktopDir = () => `${home()}/.gentle-shell/agent/desktop`;
 const folderOf = (sessionId) => (SAFE_ID.test(sessionId) ? sessionId : String(createHash("sha256").update(sessionId).digest("hex")));
 
 const failure = (code, message) => ({ ok: false, error: { code, message } });
+
+// The session's current snapshot (<agentDir>/desktop/sessions/<session>.json), read again now; null
+// when it is missing or unreadable.
+export async function readSnapshot(sessionId) {
+  if (typeof sessionId !== "string" || !sessionId) return null;
+  try {
+    return JSON.parse(await readTextFile(`${desktopDir()}/sessions/${folderOf(sessionId)}.json`));
+  } catch {
+    return null;
+  }
+}
 
 // Asks the session to run one action and waits for its answer: { ok, data } or { ok: false, error }.
 export async function sendAction(cx, sessionId, kind, args) {
@@ -116,22 +134,32 @@ export function showTerminal(address, stack = "views", child = "main") {
   }
 }
 
-// Herdr's confirm dialog (the shipped `confirm` mod: title, detail, Cancel / Confirm; Enter
-// confirms, Esc cancels). `onConfirm(cx)` runs when its command comes back to `mod`.
+// The confirm dialog (gentle-confirm: title, detail, Cancel / Confirm; Enter confirms, Esc
+// cancels). `onConfirm(cx)` runs when its confirm command comes back to `mod`; its cancel command
+// forgets the nonce.
+const CONFIRM_MS = 120000;
 const pending = new Map();
-export function confirm(mod, { title, detail }, onConfirm) {
+export function confirm(mod, { title, detail, height = 200 }, onConfirm) {
   const nonce = randomUUID().replace(/-/g, "");
   pending.clear(); // only the newest dialog can confirm
-  pending.set(nonce, onConfirm);
-  openOverlay({ mod: "confirm", kind: "dialog", modal: true, width: 440, height: 200, props: { title, detail, command: { name: `${mod}.confirm-${nonce}` } } });
+  pending.set(nonce, { fn: onConfirm, at: Date.now() });
+  openOverlay({
+    mod: "gentle-confirm", kind: "dialog", modal: true, width: 460, height,
+    props: { title, detail, command: { name: `${mod}.confirm-${nonce}` }, cancel: { name: `${mod}.cancel-${nonce}` } },
+  });
 }
 
-// For the mod's nextCommand loop: true when `command` was a confirmation (run if it is the live one).
+// For the mod's nextCommand loop: true when `command` was a dialog's confirm (run if it is the live,
+// unexpired one) or cancel (its nonce is forgotten).
 export function confirmed(command, cx) {
+  if (command.startsWith("cancel-")) {
+    pending.delete(command.slice("cancel-".length));
+    return true;
+  }
   if (!command.startsWith("confirm-")) return false;
   const nonce = command.slice("confirm-".length);
-  const fn = pending.get(nonce);
+  const entry = pending.get(nonce);
   pending.delete(nonce);
-  if (fn) fn(cx);
+  if (entry && Date.now() - entry.at <= CONFIRM_MS) entry.fn(cx);
   return true;
 }

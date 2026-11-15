@@ -412,7 +412,7 @@ test("S2/S5: an open ask_user_choice appears with its toolCallId and clears when
 		kind: "choice", tool: "ask_user_choice", toolCallId: "call-9", question: "Which layout?", header: null,
 		options: [{ label: "A", description: "Inspector" }, { label: "B", description: "Rail" }], multi: false, custom: true,
 		questions: [{ question: "Which layout?", header: null, options: [{ label: "A", description: "Inspector" }, { label: "B", description: "Rail" }], multi: false, custom: true }],
-		promptKind: null, openedAt: "2026-11-14T12:00:00.000Z",
+		promptKind: null, terminalOnly: false, openedAt: "2026-11-14T12:00:00.000Z",
 	});
 	assert.equal(open.activity.state, "blocked");
 	assert.equal(open.activity.blockedLabel, "Choice awaiting input");
@@ -435,15 +435,17 @@ test("S2/S5: questionnaires, extension dialogs and content-free consent prompts 
 	assert.equal(questionnaire.question, "Pick tabs");
 	assert.equal(questionnaire.multi, true);
 	assert.equal(questionnaire.custom, true);
+	assert.equal(questionnaire.terminalOnly, true, "several questions are answered in the terminal");
 	assert.deepEqual(questionnaire.questions.map((q) => [q.question, q.header, q.multi, q.options.length]), [["Pick tabs", "Tabs", true, 2], ["Theme?", "Theme", false, 2]]);
 	h.fire("tool_execution_end", { toolCallId: "q1", toolName: "ask_user_question", isError: false, result: {} }, h.ctx);
 	h.fire("ui_prompt_start", { type: "ui_prompt_start", reason: "ui_prompt", kind: "confirm", title: "Allow review?" }, h.ctx);
 	h.clock.run();
-	assert.deepEqual({ ...h.read().pendingQuestion!, questions: undefined }, { kind: "prompt", tool: null, toolCallId: null, question: "Allow review?", header: null, options: [], multi: false, custom: false, questions: undefined, promptKind: "confirm", openedAt: "2026-11-14T12:00:00.000Z" });
+	assert.deepEqual({ ...h.read().pendingQuestion!, questions: undefined }, { kind: "prompt", tool: null, toolCallId: null, question: "Allow review?", header: null, options: [], multi: false, custom: false, questions: undefined, promptKind: "confirm", terminalOnly: true, openedAt: "2026-11-14T12:00:00.000Z" });
 	h.fire("ui_prompt_end", { type: "ui_prompt_end", reason: "ui_prompt", kind: "confirm" }, h.ctx);
 	h.bus.emit("herdr:blocked", { active: true, label: "Review authorization awaiting input" });
 	h.clock.run();
 	assert.equal(h.read().pendingQuestion!.kind, "consent");
+	assert.equal(h.read().pendingQuestion!.terminalOnly, true);
 	assert.equal(h.read().pendingQuestion!.question, "Review authorization awaiting input");
 	h.bus.emit("herdr:blocked", { active: false });
 	h.clock.run();

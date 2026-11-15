@@ -2190,6 +2190,11 @@ const SENSITIVE_PATH_PATTERNS: RegExp[] = [
 	/(^|\/)\.env(?:$|[./_-])/,
 	/(^|\/)\.(?:envrc|netrc)(?:$|\/)/,
 	/\.(?:pem|key|p12|pfx)$/,
+	// Gentle Shell Desktop (odd/tasks/herdr-desktop.md T7): the inbox, outbox and
+	// snapshots under `<agentDir>/desktop/` are the human's channel into a live
+	// session; the agent never writes an action there.
+	/(^|\/)\.(?:gentle-shell|pi)\/agent\/desktop(?:\/|$)/,
+	/(^|\/)agent\/desktop\/(?:inbox|outbox|sessions)(?:\/|$)/,
 ];
 
 const JUDGMENT_DAY_AGENT_NAMES = [

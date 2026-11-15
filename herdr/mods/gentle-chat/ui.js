@@ -465,8 +465,14 @@ function subagentCard(v, p, call, key) {
 }
 
 // The options a pending question offers: its own, then "Something else…" when it takes a
-// typed answer. "(Recommended)" in a label becomes the badge.
+// typed answer. "(Recommended)" in a label becomes the badge. A question the session marks
+// `terminalOnly` (consent, a relayed provider decision, several questions) offers none here.
 export function askOptions(pq) {
+  if (pq?.terminalOnly) return [];
+  return choiceRows(pq);
+}
+
+function choiceRows(pq) {
   const opts = (pq?.options ?? []).map((o) => {
     const raw = String(o.label ?? "");
     const rec = /\s*\(recommended\)\s*$/i.test(raw);
@@ -484,6 +490,11 @@ export function askCard(v, p, pq) {
   const foot = done
     ? (opts[done.index]?.custom ? "Type your answer in the composer; it goes to this question." : `Answer sent: ${done.index + 1}. The agent continues.`)
     : n ? `Press ${n === 1 ? "1" : `1–${n}`} or click · Esc answers later` : "Answer it in the Terminal view.";
+  // Terminal-only: the options are shown for reading, never numbered or clickable.
+  const shown = n ? [] : (pq.terminalOnly ? choiceRows(pq).filter((o) => !o.custom) : []);
+  const readOnly = (o, i) => v_flex().id(`ask-ro-${i}`).w_full().gap(1).px(10).py(6).rounded(R.sm).border(1).border_color(p.line).bg(p.background)
+    .child(div().font_semibold().text_size(13.5).child(o.label))
+    .when(Boolean(o.about), (el) => el.child(div().text_size(12.5).text_color(p.muted).child(o.about)));
   const many = (pq.questions?.length ?? 0) > 1 ? ` · 1 of ${pq.questions.length}` : "";
   const opt = (o, i) => {
     const pressed = done?.index === i;
@@ -512,10 +523,11 @@ export function askCard(v, p, pq) {
         .child(`QUESTION · THE AGENT WAITS FOR YOU${many.toUpperCase()}`))
       .child(div().text_size(14.5).font_semibold().child(pq.header && pq.header !== pq.question ? `${pq.header}: ${pq.question}` : pq.question))
       .when(n > 0, (el) => el.child(v_flex().mt(2).gap(6).children(opts.map(opt))))
+      .when(shown.length > 0, (el) => el.child(v_flex().mt(2).gap(6).children(shown.map(readOnly))))
       .child(h_flex().items_center().justify_between().gap(8)
         .child(div().text_size(12).text_color(p.muted).child(foot))
         // A prompt or consent has no options here: it is answered in the real terminal, by you.
-        .when(n === 0, (el) => el.child(btn(p, "ask-terminal", "Open Terminal", { iconName: "term", tip: "Answer it in the Terminal", onClick: () => v.toTerminal() })))));
+        .when(n === 0, (el) => el.child(btn(p, "ask-terminal", "Answer in Terminal", { iconName: "term", tip: "Answer it in the Terminal", onClick: () => v.toTerminal() })))));
 }
 
 // ---------------------------------------------------------------- 4c composer (l.175-184)

@@ -108,8 +108,9 @@ function fakeCtx(cwd: string, overrides: Record<string, unknown> = {}) {
 interface OwnerCalls { cancelJob: string[]; cancelSubagent: string[] }
 
 /** Minimal jobs and agents owners speaking the existing owner-service contracts. */
-function fakeOwners(bus: ReturnType<typeof fakeBus>, calls: OwnerCalls) {
-	const job: DesktopJobEntry = { id: "j1", label: "npm test", status: "running", startedAt: 1 };
+function fakeOwners(bus: ReturnType<typeof fakeBus>, calls: OwnerCalls, idle = false) {
+	// `idle`: the job and the subagent have finished, so nothing of the session runs (T7 escalations).
+	const job: DesktopJobEntry = idle ? { id: "j1", label: "npm test", status: "exited", startedAt: 1, endedAt: 2 } : { id: "j1", label: "npm test", status: "running", startedAt: 1 };
 	bus.on(DESKTOP_JOBS_SERVICE_CHANNEL, (payload) => {
 		(payload as { respond(service: unknown): void }).respond({
 			schema: DESKTOP_JOBS_SERVICE_SCHEMA,
@@ -119,7 +120,7 @@ function fakeOwners(bus: ReturnType<typeof fakeBus>, calls: OwnerCalls) {
 			dispose: () => {},
 		});
 	});
-	const agent = { id: "a1", agent: "gentle-writer", status: "running", model: "sonnet", lastStep: "writing", usage: { total: 10, cost: 0.1 } };
+	const agent = { id: "a1", agent: "gentle-writer", status: idle ? "completed" : "running", model: "sonnet", lastStep: "writing", usage: { total: 10, cost: 0.1 } };
 	bus.on(DESKTOP_AGENTS_SERVICE_CHANNEL, (payload) => {
 		(payload as { respond(service: unknown): void }).respond({
 			schema: DESKTOP_AGENTS_SERVICE_SCHEMA,
@@ -131,7 +132,7 @@ function fakeOwners(bus: ReturnType<typeof fakeBus>, calls: OwnerCalls) {
 	});
 }
 
-function harness(t: test.TestContext, options: Partial<DesktopFeedOptions> & { owner?: "real" | "refusing" | "none" } = {}) {
+function harness(t: test.TestContext, { idle, ...options }: Partial<DesktopFeedOptions> & { owner?: "real" | "refusing" | "none"; idle?: boolean } = {}) {
 	const root = mkdtempSync(join(tmpdir(), "desktop-actions-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const agentDir = join(root, "agent");
@@ -143,7 +144,7 @@ function harness(t: test.TestContext, options: Partial<DesktopFeedOptions> & { o
 	const h = fakePi();
 	const calls: OwnerCalls = { cancelJob: [], cancelSubagent: [] };
 	const setModes: string[] = [];
-	fakeOwners(h.bus, calls);
+	fakeOwners(h.bus, calls, idle);
 	const ownerEnv = { ...GENTLE_ENV, GENTLE_PI_CONFIG_HOME: configHome };
 	if ((options.owner ?? "real") === "real") {
 		// Count every owner setMode the adapter receives without changing what it
@@ -205,7 +206,8 @@ function harness(t: test.TestContext, options: Partial<DesktopFeedOptions> & { o
 			const file = join(outbox, `${id}.json`);
 			return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : undefined;
 		},
-		inboxFiles: () => readdirSync(inbox),
+		// The session's pid marker (`.owner`) is not an action.
+		inboxFiles: () => readdirSync(inbox).filter((name) => !name.startsWith(".")),
 		snapshot: () => JSON.parse(readFileSync(feedFile, "utf8")) as DesktopFeedSnapshot,
 	};
 }
@@ -224,7 +226,7 @@ test("S2: the session creates a private inbox and outbox, and removes them when 
 });
 
 test("S2: set_permission_mode goes through the permission owner once and the snapshot follows it", async (t) => {
-	const h = harness(t);
+	const h = harness(t, { idle: true });
 	await h.start();
 	assert.equal(h.snapshot().permission!.mode, "normal");
 	h.drop("p1.json", h.action("p1", "set_permission_mode", { mode: "super-yolo" }));
@@ -246,7 +248,7 @@ test("S2: set_permission_mode goes through the permission owner once and the sna
 });
 
 test("S2: an owner refusal of super-yolo is reported and changes nothing", async (t) => {
-	const h = harness(t, { owner: "refusing" });
+	const h = harness(t, { owner: "refusing", idle: true });
 	await h.start();
 	h.drop("p1.json", h.action("p1", "set_permission_mode", { mode: "super-yolo" }));
 	await h.deliver();
@@ -437,7 +439,7 @@ test("S2: runDesktopAction calls only the owner its kind names", async () => {
 	const seen: string[] = [];
 	const answer = (name: string) => async (value: string): Promise<DesktopRpcOutcome> => { seen.push(`${name}:${value}`); return { ok: true, data: { value } }; };
 	let working = true;
-	const owners: DesktopActionOwners = { setPermissionMode: answer("mode"), cancelJob: answer("job"), cancelSubagent: answer("agent"), question: () => undefined, working: () => working, abortTurn: () => { seen.push("abort"); } };
+	const owners: DesktopActionOwners = { setPermissionMode: answer("mode"), cancelJob: answer("job"), cancelSubagent: answer("agent"), question: () => undefined, working: () => working, abortTurn: () => { seen.push("abort"); }, permissionMode: () => "normal", busyAt: () => false };
 	const run = (kind: string, args: Record<string, unknown>) => runDesktopAction({ id: "x", sessionId: "s", kind: kind as never, args, createdAt: NOW }, owners);
 	assert.deepEqual(await run("set_permission_mode", { mode: "auto" }), { ok: true, data: { value: "auto" } });
 	assert.deepEqual(await run("cancel_job", { id: "j" }), { ok: true, data: { value: "j" } });

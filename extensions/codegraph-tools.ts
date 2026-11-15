@@ -57,6 +57,22 @@ interface CodeGraphFallbackDetails {
 	syncTriggered?: boolean;
 }
 
+/** The success-details shape of every codegraph tool result; failures use CodeGraphFallbackDetails. */
+interface CodeGraphToolSuccessDetails {
+	operation: CodeGraphOperation;
+	cwd: string;
+	args: string[];
+	localExclude?: CodeGraphLocalExclude;
+	viaDaemon?: boolean;
+	syncTriggered?: boolean;
+}
+
+/** One shaped tool result: content plus success or fallback details. */
+type CodeGraphToolResult = {
+	content: { type: "text"; text: string }[];
+	details: CodeGraphToolSuccessDetails | CodeGraphFallbackDetails;
+};
+
 export type CodeGraphRunner = (
 	args: readonly string[],
 	options: CodeGraphRunOptions,
@@ -280,36 +296,12 @@ function requireQuery(query: string | undefined): string {
 }
 
 function commandArguments(parameters: CodeGraphToolParameters, cwd: string): string[] {
-	switch (parameters.operation) {
-		case CODEGRAPH_OPERATION.INIT:
-			return [CODEGRAPH_OPERATION.INIT, cwd];
-		case CODEGRAPH_OPERATION.QUERY: {
-			const query = requireQuery(parameters.query);
-			return [
-				CODEGRAPH_OPERATION.QUERY,
-				"--path",
-				cwd,
-				"--limit",
-				String(resolveLimit(parameters.limit)),
-				"--",
-				query,
-			];
-		}
-		case CODEGRAPH_OPERATION.EXPLORE: {
-			const query = requireQuery(parameters.query);
-			return [
-				CODEGRAPH_OPERATION.EXPLORE,
-				"--path",
-				cwd,
-				"--max-files",
-				String(resolveLimit(parameters.limit)),
-				"--",
-				query,
-			];
-		}
-	}
+	if (parameters.operation === CODEGRAPH_OPERATION.INIT) return [CODEGRAPH_OPERATION.INIT, cwd];
+	// query and explore share the argument shape; only the limit flag name differs.
+	const query = requireQuery(parameters.query);
+	const limitFlag = parameters.operation === CODEGRAPH_OPERATION.QUERY ? "--limit" : "--max-files";
+	return [parameters.operation, "--path", cwd, limitFlag, String(resolveLimit(parameters.limit)), "--", query];
 }
-
 function truncateOutput(output: string): string {
 	return output.length <= MAX_OUTPUT_CHARS
 		? output
@@ -560,10 +552,37 @@ export function createCodeGraphTool(
 			signal: AbortSignal | undefined,
 			_onUpdate: undefined,
 			ctx: ExtensionContext,
-		): Promise<{ content: { type: "text"; text: string }[]; details: { operation: CodeGraphOperation; cwd: string; args: string[]; localExclude?: CodeGraphLocalExclude; viaDaemon?: boolean; syncTriggered?: boolean } | CodeGraphFallbackDetails }> {
+		): Promise<CodeGraphToolResult> {
 			const cwd = resolveWorkspaceCwd(ctx.cwd, gitRun);
 			assertSafeIndexDirectory(cwd);
 			const args = commandArguments(parameters, cwd);
+			// One shaped success result: every success path truncates its output, applies the same
+			// local-exclude handling, and shares the no-output line (excludeAlways: init just built
+			// the index, so its exclude is not gated on indexExists).
+			const finish = (output: string, extra: { viaDaemon?: boolean; excludeAlways?: boolean; syncTriggered?: boolean } = {}): CodeGraphToolResult => {
+				const localExclude = extra.excludeAlways || indexExists(cwd) ? excludeIndexLocally(cwd, gitRun) : undefined;
+				return {
+					content: [{ type: "text" as const, text: withLocalExcludeNote(output || "CodeGraph completed without output.", localExclude) }],
+					details: {
+						operation: parameters.operation,
+						cwd,
+						args,
+						...(extra.viaDaemon !== undefined ? { viaDaemon: extra.viaDaemon } : {}),
+						...(extra.syncTriggered ? { syncTriggered: true } : {}),
+						...(localExclude ? { localExclude } : {}),
+					},
+				};
+			};
+			// One shaped failure result: fallback details plus the same local-exclude handling.
+			const fail = (error: unknown, extra: { syncTriggered?: boolean } = {}): CodeGraphToolResult => {
+				const details = codeGraphFailureDetails(error, parameters.operation, cwd);
+				const localExclude = indexExists(cwd) ? excludeIndexLocally(cwd, gitRun) : undefined;
+				if (localExclude) details.localExclude = localExclude;
+				return {
+					content: [{ type: "text" as const, text: withLocalExcludeNote(codeGraphFailureMessage(details.status), localExclude) }],
+					details: { ...details, ...(extra.syncTriggered ? { syncTriggered: true } : {}) },
+				};
+			};
 			// MCP-only query path: query and explore always go through the daemon socket (roughly 75 ms
 			// local against ~590 ms, 0.5-2 s on a network share against 2.5-6 s for a CLI process),
 			// so a search never spawns a CLI process of its own.
@@ -590,15 +609,7 @@ export function createCodeGraphTool(
 						daemonSkipUntil.set(cwd, Date.now() + DAEMON_SKIP_MS);
 					}
 				}
-				const syncDetails = syncTriggered ? { syncTriggered: true } : {};
-				if (viaDaemon?.status === "ok") {
-					const output = truncateOutput(viaDaemon.text);
-					const localExclude = indexExists(cwd) ? excludeIndexLocally(cwd, gitRun) : undefined;
-					return {
-						content: [{ type: "text" as const, text: withLocalExcludeNote(output || "CodeGraph completed without output.", localExclude) }],
-						details: { operation: parameters.operation, cwd, args, viaDaemon: true, ...syncDetails, ...(localExclude ? { localExclude } : {}) },
-					};
-				}
+				if (viaDaemon?.status === "ok") return finish(truncateOutput(viaDaemon.text), { viaDaemon: true, syncTriggered });
 				// Still no daemon: the search still runs — one CLI process as the last resort. The daemon
 				// stays the only path while it answers; when it cannot serve (never started, died, hung, or
 				// has no project loaded), a slower correct answer beats the read/grep/find dead end.
@@ -625,42 +636,18 @@ export function createCodeGraphTool(
 							signal?.removeEventListener("abort", onCallerAbort);
 						}
 					})();
-					const output = truncateOutput([result.stdout, result.stderr].filter(Boolean).join("\n"));
-					const localExclude = indexExists(cwd) ? excludeIndexLocally(cwd, gitRun) : undefined;
-					return {
-						content: [{ type: "text" as const, text: withLocalExcludeNote(output || "CodeGraph completed without output.", localExclude) }],
-						details: { operation: parameters.operation, cwd, args, viaDaemon: false, ...syncDetails, ...(localExclude ? { localExclude } : {}) },
-					};
+					return finish(truncateOutput([result.stdout, result.stderr].filter(Boolean).join("\n")), { viaDaemon: false, syncTriggered });
 				} catch (error: unknown) {
-					const details = codeGraphFailureDetails(error, parameters.operation, cwd);
-					const localExclude = indexExists(cwd) ? excludeIndexLocally(cwd, gitRun) : undefined;
-					if (localExclude) details.localExclude = localExclude;
-					return {
-						content: [{ type: "text" as const, text: withLocalExcludeNote(codeGraphFailureMessage(details.status), localExclude) }],
-						details: { ...details, ...syncDetails },
-					};
+					return fail(error, { syncTriggered });
 				}
 			}
 			// init keeps its CLI path: it is the legitimately slow first index, bounded only by the user's signal.
 			try {
 				const result = await runner(args, { cwd, signal, maxBuffer: PROCESS_MAX_BUFFER });
-				const output = truncateOutput([result.stdout, result.stderr].filter(Boolean).join("\n"));
-				const localExclude = parameters.operation === CODEGRAPH_OPERATION.INIT || indexExists(cwd)
-					? excludeIndexLocally(cwd, gitRun)
-					: undefined;
-				return {
-					content: [{ type: "text" as const, text: withLocalExcludeNote(output || "CodeGraph completed without output.", localExclude) }],
-					details: { operation: parameters.operation, cwd, args, ...(localExclude ? { localExclude } : {}) },
-				};
+				return finish(truncateOutput([result.stdout, result.stderr].filter(Boolean).join("\n")), { excludeAlways: true });
 			} catch (error: unknown) {
-				const details = codeGraphFailureDetails(error, parameters.operation, cwd);
 				// A failed init can still leave a partial index behind.
-				const localExclude = indexExists(cwd) ? excludeIndexLocally(cwd, gitRun) : undefined;
-				if (localExclude) details.localExclude = localExclude;
-				return {
-					content: [{ type: "text" as const, text: withLocalExcludeNote(codeGraphFailureMessage(details.status), localExclude) }],
-					details,
-				};
+				return fail(error);
 			}
 		},
 	};

@@ -132,10 +132,12 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 		} catch { return undefined; }
 	};
 	/** An unreadable mode is shown as unknown, never as the last one seen. */
-	const refreshPermission = async () => {
-		if (!yolo?.readSnapshot) return;
+	/** Re-reads the mode, updates the published one, and returns this read's own value. */
+	const refreshPermission = async (): Promise<string | undefined> => {
+		if (!yolo?.readSnapshot) return undefined;
 		const mode = await readMode();
 		if (mode !== permission) { permission = mode; schedule(); }
+		return mode;
 	};
 	const refreshReview = async (cwd: string) => {
 		try {
@@ -165,9 +167,9 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 			case "permission": {
 				if (!yolo?.setMode || !yolo.readSnapshot) return say("Permissions are not available in this session", false);
 				// Fail closed: the raise-or-lower decision needs the mode the session is in now, never a cached one.
-				await refreshPermission();
-				if (permission === undefined) return say("Permissions unchanged: could not read the current mode", false);
-				const from = permission;
+				// Decide on this action's own read: a late result of an earlier write may rewrite the shared value meanwhile.
+				const from = await refreshPermission();
+				if (from === undefined) return say("Permissions unchanged: could not read the current mode", false);
 				const raise = !(action.mode in MODE_RANK) || !(from in MODE_RANK) || MODE_RANK[action.mode] > MODE_RANK[from];
 				if (raise) {
 					// A higher permission always passes through the human, in this session's own terminal.
@@ -179,18 +181,21 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 				}
 				const applied = `Permissions: ${action.mode}${raise ? " (approved in the terminal)" : ""}`;
 				const write = Promise.resolve(yolo.setMode(action.mode as never));
+				const owner = sessionId;
 				let ok: boolean;
 				try { ok = await within(write, actionTimeoutMs, "Permissions"); }
 				catch {
 					// A late write can still land: say what the session is in now, and report the real result once it settles.
+					// Contexts are per event, so the session id (not the ctx object) tells whether it is still this session.
 					void write.then(() => undefined, () => undefined).then(async () => {
-						if (!ctx || ctx !== c) return;
-						await refreshPermission();
-						say(permission === action.mode ? applied : `Permissions unchanged: the session is in ${permission ?? "an unknown mode"}`, permission === action.mode);
+						if (sessionId !== owner) return;
+						const now = await refreshPermission();
+						if (sessionId !== owner) return;
+						say(now === action.mode ? applied : `Permissions unchanged: the session is in ${now ?? "an unknown mode"}`, now === action.mode);
 					});
-					await refreshPermission();
-					if (permission === action.mode) return say(applied, true);
-					return say(`Permissions: the change to ${action.mode} is still pending; the session is in ${permission ?? "an unknown mode"}`, false);
+					const now = await refreshPermission();
+					if (now === action.mode) return say(applied, true);
+					return say(`Permissions: the change to ${action.mode} is still pending; the session is in ${now ?? "an unknown mode"}`, false);
 				}
 				await refreshPermission();
 				if (!ok) return say("Permissions unchanged", false);

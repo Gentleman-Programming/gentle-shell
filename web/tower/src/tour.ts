@@ -2,6 +2,9 @@
 // Dismissible; "Don't show again" is remembered in this browser; the "?" button reopens it.
 import { esc } from "./panels";
 
+/** Text-entry targets keep their arrow keys. */
+const editable = (t: EventTarget | null) => t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement || (t instanceof HTMLElement && t.isContentEditable);
+
 export interface Box { x: number; y: number; w: number; h: number }
 export interface TourStep { title: string; text: string; target: () => Box | undefined }
 
@@ -33,8 +36,8 @@ export class Tour {
 		document.addEventListener("keydown", (e) => {
 			if (!this.isOpen) return;
 			if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); this.close(); }
-			else if (e.key === "ArrowRight" && !(e.target instanceof HTMLInputElement)) { e.preventDefault(); e.stopImmediatePropagation(); this.go(1); }
-			else if (e.key === "ArrowLeft" && !(e.target instanceof HTMLInputElement)) { e.preventDefault(); e.stopImmediatePropagation(); this.go(-1); }
+			else if (e.key === "ArrowRight" && !editable(e.target)) { e.preventDefault(); e.stopImmediatePropagation(); this.go(1); }
+			else if (e.key === "ArrowLeft" && !editable(e.target)) { e.preventDefault(); e.stopImmediatePropagation(); this.go(-1); }
 		}, true);
 		addEventListener("scroll", () => this.place(), { passive: true });
 		addEventListener("resize", () => this.place());
@@ -85,7 +88,7 @@ export class Tour {
 		const cw = this.card.offsetWidth, ch = this.card.offsetHeight;
 		const b = box ?? { x: innerWidth / 2 - cw / 2, y: innerHeight / 2 - ch / 2 - 20, w: cw, h: 0 };
 		const below = b.y + b.h + pad + 12;
-		const top = below + ch < innerHeight - 8 ? below : Math.max(8, b.y - pad - 12 - ch);
+		const top = Math.min(Math.max(8, below + ch < innerHeight - 8 ? below : b.y - pad - 12 - ch), Math.max(8, innerHeight - ch - 8));
 		const left = Math.min(Math.max(8, b.x), innerWidth - cw - 8);
 		Object.assign(this.card.style, { left: `${left}px`, top: `${box ? top : b.y}px` });
 	}

@@ -470,3 +470,34 @@ test("only live helpers are on the floor; finished ones leave the building", asy
 	assert.deepEqual(readTowerSnapshots(dir)[0].subagents.map((a) => a.id), ["q", "r", "w"]);
 	await base.fire("session_shutdown", ctx);
 });
+
+test("a declined raise never applies, even while an earlier write lands late", async () => {
+	const dir = hub();
+	const base = fakePi();
+	const confirms: string[] = [];
+	const modes: string[] = [];
+	let current = "normal";
+	let releaseSlow: () => void = () => {};
+	const events = (base.pi as unknown as { events: { on(n: string, fn: (d: unknown) => void): () => void } }).events;
+	(base.pi as unknown as { sendUserMessage: unknown }).sendUserMessage = () => {};
+	events.on("gentle:yolo:host-ui", (req) => (req as { respond(a: unknown): void }).respond({
+		read: async () => "OFF", toggle: async () => {}, observe: () => () => {}, dispose() {},
+		readSnapshot: async () => ({ yolo: "OFF", mode: current, defaultMode: "normal" }),
+		setMode: (m: string) => {
+			modes.push(m);
+			// The first write (to auto) hangs past the timeout, then lands late.
+			if (modes.length === 1) return new Promise<boolean>((r) => { releaseSlow = () => { current = m; r(true); }; });
+			current = m; return Promise.resolve(true);
+		},
+	}));
+	createTowerPublisher(base.pi, { env: { GENTLE_TOWER_HOME: dir }, debounceMs: 0, inboxMs: 20, actionTimeoutMs: 50, reviewCli: async () => "{}" });
+	const ctx = { ...fakeCtx([assistant(0.1)]), hasUI: true, isIdle: () => true, ui: { notify() {}, confirm: async (_t: string, m: string) => { confirms.push(m); releaseSlow(); return false; } } } as unknown as ExtensionContext;
+	await base.fire("session_start", ctx);
+	await wait(150);
+	// a raise asks in the terminal; the confirm also lets an earlier slow write land, and is declined
+	writeTowerAction(dir, { type: "permission", sessionId: "sess-1", mode: "yolo" });
+	await wait(300);
+	assert.equal(confirms.length, 1, "the raise asked in the terminal");
+	assert.ok(!modes.includes("yolo"), "declined raise never applied");
+	await base.fire("session_shutdown", ctx);
+});

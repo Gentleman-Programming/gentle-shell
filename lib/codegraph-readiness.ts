@@ -98,6 +98,8 @@ function daemonlessOk(outcome: DaemonlessRefresh): boolean {
 const INIT_TIMEOUT_MS = 600_000;
 /** How long a killed command may take to be gone before the timeout is reported anyway. */
 const KILL_WAIT_MS = 10_000;
+/** Grace a timed-out command gets to obey SIGTERM before the unignorable SIGKILL ends its tree. */
+const KILL_ESCALATE_MS = 1_000;
 /** The environment variable a subagent child carries; children never start an index operation of their own. */
 export const CHILD_ENV = "GENTLE_PI_AGENTS_CHILD";
 /** One of these next to a `.git` is what makes a directory a project worth indexing automatically. */
@@ -543,12 +545,15 @@ export function runCodegraph(args: readonly string[], cwd: string, timeoutMs: nu
 		const timer = setTimeout(() => {
 			killProcessTree(child, true);
 			// A killed command may still be closing; report the failure only once the process is
-			// gone — and one that ignored SIGTERM is escalated to SIGKILL first, so its pid can
-			// never outlive the result and keep writing an index no lease covers any more.
+			// gone — and one that ignored SIGTERM is escalated to the unignorable SIGKILL after a
+			// short grace, not the whole KILL_WAIT_MS, so a stubborn tree cannot delay the result;
+			// KILL_WAIT_MS stays the absolute cap for a close that never comes (a descendant
+			// holding the pipe), so the pid can never outlive the result and keep writing an
+			// index no lease covers any more.
 			grace = setTimeout(() => {
 				killProcessTree(child, true, "SIGKILL");
-				finish(false);
-			}, KILL_WAIT_MS);
+				grace = setTimeout(() => finish(false), KILL_WAIT_MS);
+			}, KILL_ESCALATE_MS);
 		}, timeoutMs);
 		child?.on("error", () => finish(false));
 		child?.on("close", (code: number | null) => {

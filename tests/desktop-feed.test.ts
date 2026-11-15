@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createDesktopFeedExtension, type DesktopFeedOptions } from "../extensions/gentle-desktop-feed.ts";
@@ -9,6 +10,7 @@ import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
 import {
 	buildDesktopFeedSnapshot,
 	createDesktopFeedScheduler,
+	DESKTOP_FEED_BUILTIN_COMMANDS,
 	DESKTOP_FEED_LIMITS,
 	DESKTOP_FEED_SCHEMA,
 	type DesktopFeedInput,
@@ -214,6 +216,7 @@ test("S2: the snapshot carries every TUI field in the v1 schema shape", () => {
 		stats: { turns: 4, toolCalls: 7, toolErrors: 1, cost: 1.25, input: 100, output: 50, cacheRead: 300, cacheWrite: 10, cacheHitRate: 0.75, durationMs: 60_000, models: [{ model: "claude-opus-5-5", turns: 4, tokens: 460, cost: 1.25 }] },
 		activity: { state: "working", streaming: true, phase: "implementing", phaseLabel: "implementing…", blockedLabel: null },
 		pendingQuestion: null,
+		commands: { items: DESKTOP_FEED_BUILTIN_COMMANDS.map((command) => ({ ...command, source: "builtin" })), truncated: false },
 	});
 });
 
@@ -445,6 +448,65 @@ test("S2/S5: questionnaires, extension dialogs and content-free consent prompts 
 	h.bus.emit("herdr:blocked", { active: false });
 	h.clock.run();
 	assert.equal(h.read().pendingQuestion, null);
+});
+
+// ---- Commands (T10, S9: the desktop palette and the composer's "/" menu) ----
+
+test("S9: the snapshot lists the session's slash commands: pi's built-ins first, then its own, bounded", () => {
+	const snapshot = buildDesktopFeedSnapshot(fixtureInput({
+		commands: [
+			{ name: "gentle:status", description: "Show the Gentle status", source: "extension" },
+			{ name: "gentle:desktop", description: "Desktop RPC", source: "extension" },
+			{ name: "review", description: "x".repeat(900), source: "prompt" },
+			{ name: "skill:odd", description: undefined, source: "skill" },
+			{ name: "bad\u0007name", description: "control characters", source: "extension" },
+			{ name: "", description: "nameless", source: "extension" },
+		],
+	}));
+	const items = snapshot.commands.items;
+	assert.deepEqual(items.slice(0, DESKTOP_FEED_BUILTIN_COMMANDS.length).map((item) => item.source), DESKTOP_FEED_BUILTIN_COMMANDS.map(() => "builtin"));
+	assert.deepEqual(items.slice(DESKTOP_FEED_BUILTIN_COMMANDS.length), [
+		{ name: "gentle:status", description: "Show the Gentle status", args: null, terminal: true, source: "extension" },
+		{ name: "review", description: `${"x".repeat(DESKTOP_FEED_LIMITS.commandText - 1)}…`, args: null, terminal: false, source: "prompt" },
+		{ name: "skill:odd", description: null, args: null, terminal: false, source: "skill" },
+		{ name: "badname", description: "control characters", args: null, terminal: true, source: "extension" },
+	], "the desktop RPC channel and nameless entries are left out; prompts and skills answer in the chat");
+	assert.equal(snapshot.commands.truncated, false);
+	const many = buildDesktopFeedSnapshot(fixtureInput({ commands: Array.from({ length: 400 }, (_, i) => ({ name: `c${i}`, description: "d", source: "extension" as const })) }));
+	assert.equal(many.commands.items.length, DESKTOP_FEED_LIMITS.commands);
+	assert.equal(many.commands.truncated, true);
+});
+
+test("S9: session operations are listed with the screen they open", () => {
+	const byName = new Map(DESKTOP_FEED_BUILTIN_COMMANDS.map((command) => [command.name, command]));
+	for (const name of ["new", "resume", "fork", "clone", "compact", "name", "export", "tree", "session"]) assert.ok(byName.has(name), name);
+	assert.equal(byName.get("resume")!.terminal, true, "an interactive picker shows the Terminal");
+	assert.equal(byName.get("fork")!.terminal, true);
+	assert.equal(byName.get("new")!.terminal, false, "a new session shows in the chat");
+	assert.equal(byName.get("name")!.args, "<name>");
+	assert.equal(byName.has("quit"), false, "quitting the session is typed, never one click away");
+});
+
+test("S9: every listed built-in is one pi really has", async () => {
+	// pi keeps the list out of its exports: read it next to the package entry.
+	const entry = fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
+	const { BUILTIN_SLASH_COMMANDS } = await import(pathToFileURL(join(dirname(entry), "core", "slash-commands.js")).href) as { BUILTIN_SLASH_COMMANDS: Array<{ name: string }> };
+	const real = new Set(BUILTIN_SLASH_COMMANDS.map((command) => command.name));
+	assert.deepEqual(DESKTOP_FEED_BUILTIN_COMMANDS.filter((command) => !real.has(command.name)).map((command) => command.name), []);
+});
+
+test("S9: the extension publishes pi's command registry and keeps working without one", async (t) => {
+	const h = feedHarness(t);
+	(h.pi as unknown as { getCommands: () => unknown[] }).getCommands = () => [
+		{ name: "gentle:changes", description: "Open the changes panel", source: "extension", sourceInfo: { path: "/secret/ext.ts" } },
+	];
+	await h.start();
+	const extension = h.read().commands.items.filter((item) => item.source !== "builtin");
+	assert.deepEqual(extension, [{ name: "gentle:changes", description: "Open the changes panel", args: null, terminal: true, source: "extension" }]);
+	assert.ok(!readFileSync(h.file, "utf8").includes("/secret/ext.ts"), "source paths never reach the snapshot");
+	const bare = feedHarness(t);
+	await bare.start();
+	assert.equal(bare.read().commands.items.length, DESKTOP_FEED_BUILTIN_COMMANDS.length);
 });
 
 // ---- Lifecycle ----

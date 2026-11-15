@@ -94,7 +94,8 @@ export default class GentleTabs extends View {
         .child(div().id("tab-new").size(32).ml(4).mb(4).flex_none().flex().items_center().justify_center().rounded(8).text_color(c.muted)
           .hover((s) => s.bg(c.selected).text_color(c.text)).tooltip("New Gentle Shell session")
           .on_mouse_down("left", stop)
-          .on_click(() => run("tab.new", { argv: ["gentle-shell"] }))
+          // A new Gentle Shell session in the shown project's folder (the space's own folder).
+          .on_click(() => run("tab.new", { argv: ["gentle-shell"], ...(space?.id ? { space: space.id } : {}), ...(space?.folder ? { folder: space.folder } : {}) }))
           .child(svg("mods/gentle-tabs/icons/plus.svg").size(13))));
   }
 }

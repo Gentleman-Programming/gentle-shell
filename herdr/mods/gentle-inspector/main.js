@@ -127,9 +127,11 @@ export default class GentleInspector extends View {
     });
   }
 
+  // After the await, Herdr's ambient calls (run) only work from a host call: the Terminal is
+  // shown from a timer callback (T10, live: a run() right after `hc send` was ignored).
   command(key, text, cx) {
     const address = this.last;
-    this.act(key, cx, () => tuiCommand(address, this.feed, text, () => showTerminal(address)));
+    this.act(key, cx, (cx) => tuiCommand(address, this.feed, text, () => cx.timer.after(1, () => showTerminal(address))));
   }
 
   // `gentle-ai review mode status` for the session's project: read-only, re-read now and then.

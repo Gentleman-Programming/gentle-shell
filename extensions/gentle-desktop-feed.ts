@@ -163,6 +163,9 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 				try { context = ctx.getContextUsage(); } catch { context = undefined; }
 				let thinkingLevel: string | undefined;
 				try { thinkingLevel = pi.getThinkingLevel(); } catch { thinkingLevel = undefined; }
+				// The command registry (T10): extension commands, prompt templates, skills.
+				let commands: ReturnType<ExtensionAPI["getCommands"]> | undefined;
+				try { commands = typeof pi.getCommands === "function" ? pi.getCommands() : undefined; } catch { commands = undefined; }
 				const snapshot = buildDesktopFeedSnapshot({
 					now: now(),
 					identity: {
@@ -193,6 +196,7 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 					stats: sessionStats(session),
 					activity: { working: session.working, blocked: session.blocked, blockedLabel: session.blockedLabel, streaming: session.streaming, phase: oddPhaseRegistry.get(session.sessionId) },
 					pendingQuestion: pendingQuestion(session),
+					commands,
 				});
 				const digest = desktopFeedDigest(snapshot);
 				if (digest === session.lastDigest) return;
@@ -349,6 +353,10 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 					cancelJob: (id) => session.jobsBridge.handle("cancel_job", { id }),
 					cancelSubagent: (id) => session.agentsBridge.handle("cancel_subagent", { id }),
 					question: () => (current(session) ? session.askShape : undefined),
+					// The TUI's Esc Esc: in the TUI, ctx.abort() is pi's interrupt (queued
+					// messages go back to the editor), the same path the key takes.
+					working: () => { try { return current(session) && session.ctx.isIdle() === false; } catch { return false; } },
+					abortTurn: () => { session.ctx.abort(); },
 				},
 			});
 			session.actions = actions;

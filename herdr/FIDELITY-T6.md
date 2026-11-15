@@ -209,3 +209,27 @@ Differences found, and what happened to each:
 11. Not seen live: Jobs (no session had jobs), Review (RDD off in both sessions), a running
     subagent, a needs-you state; Todo, Agents and Session were seen live on t6 through a
     temporary install that fixed the shown tab, then the real mod was installed again.
+
+## T10 parity additions (S9)
+
+- **Status bar "⌘K Commands"** (l.618): the hint reads the binding of `mod.open:gentle-palette`
+  (herdr/keys.json binds ⌘K in `layout:gentle-shell`; unbound, it shows the artboard's ⌘K, which
+  the chat binds while it has the keyboard). A click opens the Gentle palette instead of Herdr's.
+  The bar also takes `gentle-status.toggle` (Chat ↔ Terminal) and `gentle-status.stop`
+  (`abort_turn`; a refusal is a toast): it is always mounted, the chat is not (a hidden stack
+  child gets no key commands). Seen live: toggle both ways, stop refused while idle.
+- **Tab bar "+"**: starts `gentle-shell` in the shown space and its folder (`tab.new {argv, space,
+  folder}`). Seen live: the same arguments started gentle-shell in the space's folder (t12,
+  closed again); the click itself could not be synthesized (System Events clicks do not reach
+  GPUI views).
+- **gentle-palette** (new, `mods/gentle-palette`): the "⌘K Commands" palette the artboard
+  promises (l.618, l.669-670) but does not draw. A top popup, 620 px wide, 64 px from the top:
+  the `.perm-menu` surface (`--raised`, 6px padding), a search field in the `.field` look
+  (38 px, radius 12, 1px `--accent`, `--canvas` fill, `i-search`, kbd Esc), `.eyebrow` group
+  titles (Needs you in `--warn`, Session, View, Permission, Commands), rows 7px 8px radius 6
+  with an 18px icon column, 13px semibold label (commands mono 12.5), 12px muted detail, a kbd
+  or a faint mono source tag on the right; a 440 px list; a hints row. Seen live: filtering
+  ("gentle:status", "/name"), running `/gentle:status` and `/gentle:changes` (Terminal shown with
+  the result), `/name` from the Terminal (Chat shown, "/name " in the composer), Normal and
+  Super-YOLO (Herdr's confirm dialog first), Esc. It carries byte-identical copies of tokens.js,
+  snapshot.js and actions.js.

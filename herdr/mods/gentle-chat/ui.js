@@ -520,7 +520,63 @@ export function askCard(v, p, pq) {
 
 // ---------------------------------------------------------------- 4c composer (l.175-184)
 
+// The "/" menu (T10): the session's commands above the field, in the .perm-menu look (l.107-111:
+// raised, 1px line-strong, radius 12, 6px padding, shadow; rows 7px 8px radius 6, hover fill).
+// The artboard has no open state of it; rows show "/name", the argument it takes, the
+// description, and the terminal mark when the command answers in the TUI. At most 8 rows show,
+// around the selected one.
+const SLASH_ROWS = 8;
+function slashMenu(v, p) {
+  const m = v.slashMenu();
+  if (!m) return null;
+  const from = Math.max(0, Math.min(m.at - Math.floor(SLASH_ROWS / 2), m.items.length - SLASH_ROWS));
+  const rows = m.items.slice(from, from + SLASH_ROWS).map((c, k) => {
+    const i = from + k;
+    const on = i === m.at;
+    return h_flex().id(`slash-${i}`).w_full().items_center().gap(10).px(8).py(7).rounded(R.inner).cursor_pointer()
+      .when(on, (el) => el.bg(p.selected)).hover((st) => st.bg(p.selected))
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => v.slashPick(i, false, cx))
+      .child(div().flex_none().font_family(mono()).text_size(12.5).font_semibold().text_color(on ? p.accentSoft : p.text).child(`/${c.name}`))
+      .when(Boolean(c.args), (el) => el.child(div().flex_none().font_family(mono()).text_size(12).text_color(p.faint).child(c.args)))
+      .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(p.muted).child(c.description ?? ""))
+      .when(c.terminal !== false, (el) => el.child(icon("term", 13).text_color(p.faint)));
+  });
+  const more = m.items.length > SLASH_ROWS ? `${m.at + 1} of ${m.items.length}` : null;
+  return v_flex().id("slash-menu").absolute().left(0).right(0).bottom(66).p(6).bg(p.raised).border(1).border_color(p.lineStrong)
+    .rounded(R.md).shadow_lg().text_color(p.text)
+    .children(rows)
+    .child(h_flex().px(8).pt(4).gap(14).items_center().text_size(11.5).text_color(p.muted)
+      .child(h_flex().gap(3).items_center().child(kbd(p, "↑↓")).child("move"))
+      .child(h_flex().gap(3).items_center().child(kbd(p, "Enter")).child("run"))
+      .child(h_flex().gap(3).items_center().child(kbd(p, "Tab")).child("complete"))
+      .child(div().flex_1())
+      .when(Boolean(more), (el) => el.child(div().font_family(mono()).child(more))));
+}
+
+// The Send button, or Stop while the agent works and the draft is empty (the artboard draws
+// only Send; Stop keeps its 32px size and radius in the .btn.danger look, l.92-95, with the
+// i-stop symbol, l.308). Typing while it works brings Send back: the message is queued, as in
+// the terminal.
+function sendOrStop(v, p) {
+  if (v.working() && !v.draft.trim() && v.address) {
+    const stopping = v.busy === "stop";
+    return h_flex().id("stop").h(32).flex_none().items_center().gap(6).px(12).rounded(R.sm).border(1).border_color(p.lineStrong)
+      .text_color(p.text).font_semibold().text_size(13).cursor_pointer()
+      .when(stopping, (el) => el.opacity(0.6))
+      .hover((st) => st.border_color(p.err).text_color(p.err))
+      .tooltip("Stop the agent's turn (Esc Esc)")
+      .on_click((_e, cx) => v.stop(cx))
+      .child(icon("stop", 13).text_color(p.err)).child(stopping ? "Stopping…" : "Stop");
+  }
+  return h_flex().id("send").h(32).flex_none().items_center().gap(6).px(12).rounded(R.sm)
+    .bg(v.address ? p.accent : p.raised).text_color(v.address ? p.onAccent : p.faint).font_semibold().text_size(13)
+    .cursor_pointer().on_click((_e, cx) => v.send(cx))
+    .child(v.sending ? div().frames(SPINNER, 90) : icon("send", 13)).child("Send");
+}
+
 export function composer(v, p, pq) {
+  const menu = slashMenu(v, p);
   const field = h_flex().w_full().items_end().gap(8).pl(12).pr(8).py(8).border(1)
     .border_color(v.typing ? p.accent : p.lineStrong).rounded(R.md).bg(p.background)
     // Attach: the clipboard's image (or files) into the session's draft, as Ctrl+V in the terminal.
@@ -529,11 +585,13 @@ export function composer(v, p, pq) {
       .hover((st) => st.bg(p.selected).text_color(p.text)).tooltip("Attach: paste the clipboard image into the draft (Ctrl+V)")
       .on_click((_e, cx) => v.attach(cx)).child(icon("clip", 15)))
     .child(div().flex_1().min_w(0).key_context("GentleChatComposer").on_action("gentle_chat_send", (_e, cx) => v.send(cx))
-      .child(Textarea.new(v.input).w_full().h(42).text_size(14).line_height(1.5).text_color(p.text).bg(CLEAR)))
-    .child(h_flex().id("send").h(32).flex_none().items_center().gap(6).px(12).rounded(R.sm)
-      .bg(v.address ? p.accent : p.raised).text_color(v.address ? p.onAccent : p.faint).font_semibold().text_size(13)
-      .cursor_pointer().on_click((_e, cx) => v.send(cx))
-      .child(v.sending ? div().frames(SPINNER, 90) : icon("send", 13)).child("Send"));
+      // While the "/" menu is open, ↑/↓/Tab are its keys (main.js binds them in GentleSlashMenu).
+      .child(div().w_full().key_context(menu ? "GentleSlashMenu" : "GentleSlashIdle")
+        .on_action("gentle_chat_slash_up", (_e, cx) => v.slashMove(-1, cx))
+        .on_action("gentle_chat_slash_down", (_e, cx) => v.slashMove(1, cx))
+        .on_action("gentle_chat_slash_complete", (_e, cx) => v.slashPick(v.slashAt, true, cx))
+        .child(Textarea.new(v.input).w_full().h(42).text_size(14).line_height(1.5).text_color(p.text).bg(CLEAR))))
+    .child(sendOrStop(v, p));
   const hint = (key, text) => h_flex().flex_none().items_center().gap(3).child(kbd(p, key)).child(text);
   // The hints row is one line: a narrow card drops hints from the right (Esc Esc, then ⌘J,
   // then /, then ⇧ Enter) instead of wrapping or clipping; Enter send stays.
@@ -543,7 +601,7 @@ export function composer(v, p, pq) {
     .rounded_b(R.window - 1)
     .on_size_change((size, cx) => { if (Math.abs((v.composerW ?? 0) - size.width) >= 1) { v.composerW = size.width; cx.notify(); } })
     .child(v_flex().w_full().max_w(780).self_center()
-      .child(field)
+      .child(div().w_full().relative().child(field).when(Boolean(menu), (el) => el.child(menu)))
       .when(Boolean(v.error), (el) => el.child(div().mt(6).text_size(12).text_color(p.err).child(v.error)))
       .when(!v.error && Boolean(v.notice), (el) => el.child(div().mt(6).text_size(12).text_color(p.muted).child(v.notice)))
       .child(h_flex().mt(6).gap(14).items_center().overflow_hidden().whitespace_nowrap().text_size(11.5).text_color(p.muted)

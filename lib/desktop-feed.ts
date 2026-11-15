@@ -35,6 +35,9 @@ export const DESKTOP_FEED_LIMITS = {
 	questions: 4,
 	options: 10,
 	ancestors: 8,
+	commands: 200,
+	/** A command description. */
+	commandText: 200,
 	/** Default bound for a free-text field (titles, labels, names, paths). */
 	text: 500,
 	/** Question text, the one field a human must read whole. */
@@ -43,6 +46,53 @@ export const DESKTOP_FEED_LIMITS = {
 
 /** Tools whose open call is a question the desktop can show (T7 answers it by toolCallId). */
 export const DESKTOP_FEED_QUESTION_TOOLS = ["ask_user_choice", "ask_user_question"] as const;
+
+// ---- Slash commands (T10, S9) ----
+
+/**
+ * pi's built-in slash commands the desktop offers (its palette and the
+ * composer's "/" menu). pi keeps BUILTIN_SLASH_COMMANDS out of its public
+ * exports, so this mirrors it (tests/desktop-feed.test.ts checks every name
+ * against pi's list); `/quit` is left out: it is typed, never one click away.
+ * `terminal`: the command shows its result or a picker in the TUI, so the
+ * desktop shows the Terminal after sending it. `args`: the command needs an
+ * argument, so the desktop puts it in the composer instead of sending it.
+ */
+export const DESKTOP_FEED_BUILTIN_COMMANDS: ReadonlyArray<{ name: string; description: string; args: string | null; terminal: boolean }> = [
+	{ name: "new", description: "Start a new session", args: null, terminal: false },
+	{ name: "resume", description: "Resume another session", args: null, terminal: true },
+	{ name: "fork", description: "Create a new fork from a previous user message", args: null, terminal: true },
+	{ name: "clone", description: "Duplicate the current session at the current position", args: null, terminal: false },
+	{ name: "tree", description: "Navigate session tree (switch branches)", args: null, terminal: true },
+	{ name: "compact", description: "Manually compact the session context", args: null, terminal: true },
+	{ name: "name", description: "Set session display name", args: "<name>", terminal: false },
+	{ name: "export", description: "Export session (HTML default, or specify path: .html/.jsonl)", args: null, terminal: true },
+	{ name: "session", description: "Show session info and stats", args: null, terminal: true },
+	{ name: "copy", description: "Copy last agent message to clipboard", args: null, terminal: false },
+	{ name: "model", description: "Select model (opens selector UI)", args: null, terminal: true },
+	{ name: "thinking", description: "Set thinking level", args: null, terminal: true },
+	{ name: "scoped-models", description: "Enable/disable models for Ctrl+P cycling", args: null, terminal: true },
+	{ name: "settings", description: "Open settings menu", args: null, terminal: true },
+	{ name: "hotkeys", description: "Show all keyboard shortcuts", args: null, terminal: true },
+	{ name: "reload", description: "Reload keybindings, extensions, skills, prompts, themes, and context files", args: null, terminal: true },
+	{ name: "import", description: "Import a JSONL session, preserving its ID and working directory", args: null, terminal: true },
+	{ name: "share", description: "Share session via a Radius artifact or a GitHub gist", args: null, terminal: true },
+	{ name: "changelog", description: "Show changelog entries", args: null, terminal: true },
+	{ name: "trust", description: "Save project trust decision for future sessions", args: null, terminal: true },
+	{ name: "login", description: "Configure provider authentication", args: null, terminal: true },
+	{ name: "logout", description: "Remove provider authentication", args: null, terminal: true },
+	{ name: "bug", description: "Report a bug to the Pi developers", args: "<description>", terminal: true },
+];
+
+/** The desktop RPC's own machine channel: not a command a person runs. */
+const HIDDEN_COMMANDS = new Set(["gentle:desktop"]);
+
+/** One entry of pi's command registry (`pi.getCommands()`), as far as the snapshot reads it. */
+export interface DesktopFeedCommandInput {
+	name: string;
+	description?: string;
+	source: string;
+}
 
 // ---- Snapshot schema ----
 
@@ -157,6 +207,15 @@ export interface DesktopFeedSnapshot {
 	};
 	activity: { state: "working" | "blocked" | "idle"; streaming: boolean; phase: string | null; phaseLabel: string | null; blockedLabel: string | null };
 	pendingQuestion: DesktopFeedPendingQuestion | null;
+	/**
+	 * The session's slash commands: pi's built-ins, then its registry (extension
+	 * commands, prompt templates, skills) in pi's order. Extension commands show
+	 * their result in the TUI (`terminal`); prompts and skills answer in the chat.
+	 */
+	commands: {
+		items: Array<{ name: string; description: string | null; args: string | null; terminal: boolean; source: "builtin" | "extension" | "prompt" | "skill" }>;
+		truncated: boolean;
+	};
 }
 
 // ---- Raw input the extension collects from the existing owners ----
@@ -192,6 +251,8 @@ export interface DesktopFeedInput {
 	stats: SessionStats;
 	activity: { working: boolean; blocked: number; blockedLabel: string | undefined; streaming: boolean; phase: OddPhase | undefined };
 	pendingQuestion: DesktopFeedPendingQuestion | undefined;
+	/** pi's command registry; undefined when the runtime has none. */
+	commands?: readonly DesktopFeedCommandInput[];
 }
 
 // ---- Bounding helpers ----
@@ -343,6 +404,21 @@ function jobsSection(jobs: readonly DesktopJobEntry[] | undefined, now: number):
 	};
 }
 
+function commandsSection(registry: readonly DesktopFeedCommandInput[] | undefined): DesktopFeedSnapshot["commands"] {
+	const items: DesktopFeedSnapshot["commands"]["items"] = DESKTOP_FEED_BUILTIN_COMMANDS.map((command) => ({ ...command, source: "builtin" as const }));
+	const seen = new Set(items.map((item) => item.name));
+	let truncated = false;
+	for (const command of registry ?? []) {
+		const name = clipText(command?.name, 128);
+		if (!name || HIDDEN_COMMANDS.has(name) || seen.has(name)) continue;
+		if (items.length >= DESKTOP_FEED_LIMITS.commands) { truncated = true; break; }
+		seen.add(name);
+		const source = command.source === "prompt" || command.source === "skill" ? command.source : "extension";
+		items.push({ name, description: optionalText(command.description, DESKTOP_FEED_LIMITS.commandText), args: null, terminal: source === "extension", source });
+	}
+	return { items, truncated };
+}
+
 export function buildDesktopFeedSnapshot(input: DesktopFeedInput): DesktopFeedSnapshot {
 	const { identity, now } = input;
 	const todo = input.todo;
@@ -413,6 +489,7 @@ export function buildDesktopFeedSnapshot(input: DesktopFeedInput): DesktopFeedSn
 			blockedLabel: input.activity.blocked > 0 ? optionalText(input.activity.blockedLabel) : null,
 		},
 		pendingQuestion: input.pendingQuestion ?? null,
+		commands: commandsSection(input.commands),
 	};
 }
 

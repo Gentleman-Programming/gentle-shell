@@ -235,3 +235,36 @@ Differences found, and what happened to each:
     They were checked with the fixture spec above.
 14. 1px residual: the subagent card is 62.5 px without its last-step line where the CSS gives
     63.5 (title row 19.5 + facts 18 + paddings).
+
+## T10 parity additions (S9)
+
+The artboard draws these controls closed or not at all; each is built from its own pieces and
+keeps the closed state 1:1 (the composer at rest is unchanged: field 887…947, Send, the five
+hints).
+
+- **Stop** (not drawn; l.501 only promises "Esc Esc stops the agent"). While the agent works and
+  the draft is empty, the Send slot shows Stop: the same 32px height, 12px padding and radius 8
+  as Send, in the `.btn.danger` look (l.92-95: 1px `--line-strong`, hover `--err`) with the
+  `i-stop` symbol (l.308) in `--err`, 13px semibold. Typing brings Send back (the message is
+  queued, as in the terminal). It sends `abort_turn` (docs/desktop-feed.md), the TUI's Esc Esc.
+- **Esc Esc**: the first Esc while the agent works shows "Press Esc again to stop the agent."
+  under the composer for one second (the TUI's double-Esc window); the second stops it. Idle,
+  Esc does nothing here.
+- **`/` menu** (not drawn; l.501 promises "/ commands"). Opens above the field while the draft is
+  one `/word`: the `.perm-menu` surface (l.107-111: `--raised`, 1px `--line-strong`, radius 12,
+  6px padding, shadow), rows 7px 8px radius 6 with the `--selected` fill on the chosen row and
+  on hover; `/name` mono 12.5px semibold (`--accent-soft` when chosen), the argument in
+  `--faint` mono, the description 12px muted, the `i-term` mark when the result is a TUI
+  screen; a hints row (kbd ↑↓ move, Enter run, Tab complete, "n of m"). At most 8 rows show,
+  around the chosen one. Its bottom sits 6px above the field.
+- Seen live (t11, an empty test session in /tmp/gs-spike.GAB6): `/gentle:st` opened the menu
+  (three matches), ↓ + Tab completed `/gentle:status `, Enter sent it and the Terminal showed its
+  report; Esc closed the menu and kept the draft. **Not seen live**: Stop and Esc Esc while the
+  agent works — a working turn needs a model prompt, which this pass does not send; the
+  session's side is covered by tests/desktop-feed-actions.test.ts and the idle refusal was seen
+  live ("The agent is not working").
+- Herdr behaviour found live: an ambient call (`run`, `props`, `setShared`) made right after an
+  await on `hc` or a file read is ignored; the views now show the Terminal from a timer callback
+  (`later()` in main.js; the inspector the same). A hidden stack child stays alive but gets no
+  key commands, so palette requests reach the chat through a consume-once shared value it looks
+  at every 500 ms while shown.

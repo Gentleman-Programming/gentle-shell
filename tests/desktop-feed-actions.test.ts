@@ -356,6 +356,31 @@ test("S2: a half-written file waits for the rest instead of being rejected", asy
 	assert.deepEqual(h.inboxFiles(), []);
 });
 
+// ---- Stop the agent's turn (T10, S9: the TUI's Esc Esc) ----
+
+test("S9: abort_turn stops a working turn through the session's own abort, once", async (t) => {
+	const h = harness(t);
+	await h.start();
+	let aborts = 0;
+	let idle = false;
+	Object.assign(h.ctx, { isIdle: () => idle, abort: () => { aborts += 1; } });
+	h.drop("s1.json", h.action("s1", "abort_turn", {}));
+	await h.deliver();
+	assert.equal(aborts, 1);
+	assert.deepEqual(h.result("s1"), { schema: DESKTOP_ACTION_RESULT_SCHEMA, id: "s1", sessionId: "sess-1", kind: "abort_turn", ok: true, data: { aborted: true }, finishedAt: new Date(NOW).toISOString() });
+	assert.deepEqual(h.inboxFiles(), []);
+	idle = true;
+	h.drop("s2.json", h.action("s2", "abort_turn", {}));
+	h.drop("s3.json", h.action("s3", "abort_turn", { force: true }));
+	await h.deliver();
+	assert.equal(aborts, 1, "an idle session or a malformed action aborts nothing");
+	assert.deepEqual(h.result("s2").error, { code: "not_working", message: "The agent is not working" });
+	assert.equal(h.result("s3").error.code, "invalid_action");
+	assert.deepEqual(h.inboxFiles(), []);
+	assert.deepEqual(h.calls, { cancelJob: [], cancelSubagent: [] }, "no other owner is reached");
+	assert.deepEqual(h.setModes, []);
+});
+
 // ---- Questions ----
 
 test("S5: answer_question answers only the open question with the keys the real list takes", async (t) => {
@@ -403,18 +428,24 @@ test("S2: parseDesktopAction checks schema, id, session, kind, args and age", ()
 	assert.equal(code({ ...base, args: { id: "j", more: 1 } }), "invalid_action");
 	assert.equal(code({ ...base, kind: "set_permission_mode", args: { mode: "root" } }), "invalid_action");
 	assert.equal(code({ ...base, kind: "answer_question", args: { toolCallId: "c", option: 0, text: "x" } }), "invalid_action");
+	assert.equal(code({ ...base, kind: "abort_turn", args: {} }), "ok");
+	assert.equal(code({ ...base, kind: "abort_turn", args: { id: "j" } }), "invalid_action");
 	assert.equal(parseDesktopAction("{", "s", NOW).ok, false);
 });
 
 test("S2: runDesktopAction calls only the owner its kind names", async () => {
 	const seen: string[] = [];
 	const answer = (name: string) => async (value: string): Promise<DesktopRpcOutcome> => { seen.push(`${name}:${value}`); return { ok: true, data: { value } }; };
-	const owners: DesktopActionOwners = { setPermissionMode: answer("mode"), cancelJob: answer("job"), cancelSubagent: answer("agent"), question: () => undefined };
+	let working = true;
+	const owners: DesktopActionOwners = { setPermissionMode: answer("mode"), cancelJob: answer("job"), cancelSubagent: answer("agent"), question: () => undefined, working: () => working, abortTurn: () => { seen.push("abort"); } };
 	const run = (kind: string, args: Record<string, unknown>) => runDesktopAction({ id: "x", sessionId: "s", kind: kind as never, args, createdAt: NOW }, owners);
 	assert.deepEqual(await run("set_permission_mode", { mode: "auto" }), { ok: true, data: { value: "auto" } });
 	assert.deepEqual(await run("cancel_job", { id: "j" }), { ok: true, data: { value: "j" } });
 	assert.deepEqual(await run("cancel_subagent", { id: "a" }), { ok: true, data: { value: "a" } });
-	assert.deepEqual(seen, ["mode:auto", "job:j", "agent:a"]);
+	assert.deepEqual(await run("abort_turn", {}), { ok: true, data: { aborted: true } });
+	working = false;
+	assert.deepEqual(await run("abort_turn", {}), { ok: false, error: { code: "not_working", message: "The agent is not working" } });
+	assert.deepEqual(seen, ["mode:auto", "job:j", "agent:a", "abort"]);
 	const failing: DesktopActionOwners = { ...owners, cancelJob: async () => { throw new Error("/secret/path exploded"); } };
 	const failed = await runDesktopAction({ id: "x", sessionId: "s", kind: "cancel_job", args: { id: "j" }, createdAt: NOW }, failing);
 	assert.deepEqual(failed, { ok: false, error: { code: "owner_failed", message: "The session could not run this action" } });

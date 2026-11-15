@@ -47,6 +47,7 @@ gone or that were not updated for a day. The folder is created `0700` and files
 | `stats` | `turns`, `toolCalls`, `toolErrors`, `cost`, token counts, `cacheHitRate`, `durationMs`, `models[]` |
 | `activity` | `state` (`working`, `blocked`, `idle`), `streaming`, ODD `phase` and `phaseLabel`, `blockedLabel` |
 | `pendingQuestion` | the open question or `null` (below) |
+| `commands` | the session's slash commands for the desktop palette and the composer's `/` menu: `items[]` (`name`, `description`, `args`, `terminal`, `source`) and `truncated` (below) |
 
 `pendingQuestion.kind` is `choice` (`ask_user_choice`), `questionnaire`
 (`ask_user_question`), `prompt` (an extension dialog: `promptKind` is `select`,
@@ -56,8 +57,21 @@ review consent; `question` is its label). Ask tool questions carry `tool` and
 (`label`, `description`), `multi`, `custom`, and every question in `questions`.
 Opaque answer tokens (`ask_user_choice` option values) are never written.
 
+`commands.items` lists pi's built-in commands first (`source` `builtin`: `new`,
+`resume`, `fork`, `clone`, `tree`, `compact`, `name`, `export`, `session`, `copy`,
+`model`, `thinking`, … — every built-in but `/quit`, which is typed, never one click
+away), then pi's command registry in its own order: extension commands
+(`extension`), prompt templates (`prompt`) and skills (`skill`). `terminal` is `true`
+when the command answers with a screen of the TUI (a picker, a panel, a status
+report), so the desktop shows the Terminal after sending it; prompt templates and
+skills answer in the conversation. `args` names the argument a command needs
+(`/name <name>`): the desktop puts it in the composer instead of sending it. The
+desktop RPC's own `gentle:desktop` channel is never listed; source paths never
+reach the file.
+
 Arrays are capped (200 changes, 100 todo items, 50 jobs, 50 agents, 20 models,
-4 questions, 10 options); free text is cut at 500 characters (questions at 2000,
+4 questions, 10 options, 200 commands); command descriptions are cut at 200
+characters; free text is cut at 500 characters (questions at 2000,
 paths at 1000/4096) and stripped of control characters. Readers should ignore an
 unknown `schema`.
 
@@ -94,12 +108,14 @@ creates them (no inbox means the session takes no actions). An action file is
 | `cancel_job` | `{ id }` | the background-jobs owner, as desktop RPC `cancel_job` |
 | `cancel_subagent` | `{ id }` | the subagents owner, as desktop RPC `cancel_subagent` |
 | `answer_question` | `{ toolCallId, option }` or `{ toolCallId, text }` | nothing is answered here: the session checks that `toolCallId` is the open `ask_user_choice` / single-question `ask_user_question` and answers the keys its real list takes (`up` to the top, `down` to the row, `enter`); the desktop presses them in the terminal, then types `text` into the list's own editor |
+| `abort_turn` | `{}` | the session's own abort, the one its TUI's Esc Esc runs (in the TUI, queued messages go back to the editor); refused with `not_working` while the agent is idle |
 
 The session refuses, removes and answers (code in `error.code`) a file that is a
 link, not a private regular file (`unsafe_file`), over 16 KiB (`too_large`), older
 than 60 s or dated ahead (`stale`), of another kind (`unknown_kind`), for another
 session (`wrong_session`), malformed or with other args (`invalid_action`), already
-run (`duplicate`), or a question that is no longer open (`question_mismatch`).
+run (`duplicate`), a question that is no longer open (`question_mismatch`), or a
+stop while the agent is idle (`not_working`).
 Multi-question and multi-select questions, extension prompts and consent are
 answered in the terminal (`answer_in_terminal`); consent is never answered from
 the desktop. Every file is removed once read; a fresh file that does not parse
@@ -115,8 +131,27 @@ its shutdown leaves both folders behind; a later session start removes them once
 their snapshot is gone and they have not changed for 10 minutes.
 
 What the desktop does without this inbox, as the person would: it sends prompts
-and the TUI's own slash commands (`/gentle:changes`, `/gentle:agents`,
-`/gentle:jobs`, `/gentle:profiles`, `/gentle:persona`) with `hc send`, only while
-no question is open; it pastes the clipboard with Ctrl+V; and the review switch
-runs `gentle-ai review mode enable|disable --cwd <project>` after a confirmation.
-Super-YOLO and the review switch ask in a Herdr dialog first.
+and the TUI's own slash commands (any command typed in the composer or chosen in
+the `/` menu or the ⌘K palette, and the views' own `/gentle:changes`,
+`/gentle:agents`, `/gentle:jobs`, `/gentle:profiles`, `/gentle:persona`) with
+`hc send`, only while no question is open; it pastes the clipboard with Ctrl+V;
+and the review switch runs `gentle-ai review mode enable|disable --cwd <project>`
+after a confirmation. Super-YOLO and the review switch ask in a Herdr dialog
+first.
+
+## Desktop keys
+
+The Herdr mods ship `herdr/keys.json`, a `layout:gentle-shell` section for the
+person's `~/.config/herdr-app/keys.json` (merged into it, never replacing a key
+they already use):
+
+| Key | Command | Does |
+|---|---|---|
+| ⌘K | `mod.open:gentle-palette` | the Gentle commands palette: needs-you items, session commands, views, permission modes, every command of the session |
+| ⌘J | `gentle-status.toggle` | Chat ↔ Terminal |
+| ⌘. | `gentle-status.stop` | stops the shown session's turn (`abort_turn`) |
+| ⌥⌘1 … ⌥⌘6 | `gentle-inspector.tab-<changes\|todo\|agents\|jobs\|review\|session>` | the inspector tab |
+
+Inside the chat, without that merge: ⌘K opens the palette, ⌘J shows the Terminal,
+Esc Esc stops the agent (Esc first closes the `/` menu), and `/` in the composer
+opens the command menu (↑/↓ move, Enter runs, Tab completes, Esc closes).

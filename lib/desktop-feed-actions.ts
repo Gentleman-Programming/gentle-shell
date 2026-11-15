@@ -10,6 +10,8 @@
 // session only checks that the question the desktop shows is the one open and
 // tells it which keys the real TUI list takes; the keys are pressed in the
 // terminal like a person would. Consent prompts have no action at all.
+// `abort_turn` (T10) is the TUI's Esc Esc: the session's own abort, and only
+// while its agent works.
 
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
@@ -21,7 +23,7 @@ import { isPermissionMode } from "./permission-mode-policy.ts";
 
 export const DESKTOP_ACTION_SCHEMA = "gentle-shell.desktop-action/v1";
 export const DESKTOP_ACTION_RESULT_SCHEMA = "gentle-shell.desktop-action-result/v1";
-export const DESKTOP_ACTION_KINDS = ["set_permission_mode", "cancel_job", "cancel_subagent", "answer_question"] as const;
+export const DESKTOP_ACTION_KINDS = ["set_permission_mode", "cancel_job", "cancel_subagent", "answer_question", "abort_turn"] as const;
 export type DesktopActionKind = (typeof DESKTOP_ACTION_KINDS)[number];
 
 export const DESKTOP_ACTION_LIMITS = {
@@ -92,6 +94,8 @@ function argsValid(kind: DesktopActionKind, args: Record<string, unknown>): bool
 			if (option) return Number.isInteger(args.option) && (args.option as number) >= 0 && (args.option as number) < 64;
 			return nonEmpty(args.text, DESKTOP_ACTION_LIMITS.text) && !/[\u0000-\u001f\u007f]/.test(args.text);
 		}
+		case "abort_turn":
+			return onlyKeys(args, []);
 	}
 }
 
@@ -176,6 +180,10 @@ export interface DesktopActionOwners {
 	cancelSubagent(id: string): Promise<DesktopRpcOutcome | undefined>;
 	/** The ask tool question open right now, if any. */
 	question(): DesktopActionQuestion | undefined;
+	/** Whether the session's agent is working now (abort_turn's guard). */
+	working(): boolean;
+	/** The session's own abort, the one its TUI's Esc Esc runs. */
+	abortTurn(): void;
 }
 
 const OWNER_FAILED = fail("owner_failed", "The session could not run this action");
@@ -206,6 +214,10 @@ export async function runDesktopAction(action: DesktopAction, owners: DesktopAct
 				if ("error" in keys) return { ok: false, error: keys.error };
 				return { ok: true, data: { toolCallId, keys: keys.keys, ...(text !== undefined ? { text } : {}) } };
 			}
+			case "abort_turn":
+				if (!owners.working()) return fail("not_working", "The agent is not working");
+				owners.abortTurn();
+				return { ok: true, data: { aborted: true } };
 		}
 	} catch {
 		return OWNER_FAILED;

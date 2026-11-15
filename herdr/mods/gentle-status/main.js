@@ -1,23 +1,34 @@
 // gentle-status: the window's status bar (region 6, design/herdr-desktop/01-inspector.html
 // `.status`, l.281-283), replacing Herdr's `workspace-status` (adapted from it: the palette hint
-// reads the real binding). For the focused Gentle Shell session's snapshot:
+// reads the real binding of the Gentle commands palette, `mod.open:gentle-palette`, T10). For the focused Gentle Shell session's snapshot:
 //   ODD <phase> · todo <n> of <total>   the ODD phase and the current todo position
 //   streaming / working / idle      activity (tok/s only when the snapshot carries it)
 //   <needs you>                     the blocked label while the session waits for the person
 //   Jobs <n> running · <m> done
 //   ...                             integrations summary (when published) and ⌘K Commands
+//
+// Key commands (T10, herdr/keys.json): the status bar is always mounted, unlike the chat (a hidden
+// stack child is unloaded while the Terminal shows), so the window-wide keys live here:
+//   toggle   Chat ↔ Terminal (layout.select on the `views` stack)
+//   stop     the shown session's turn, through its inbox (abort_turn: the TUI's Esc Esc; the
+//            session refuses it while its agent is idle)
 
 import { View, div } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { run, window, keys } from "herdr";
+import { run, window, keys, layout, nextCommand, notify } from "herdr";
 import { tokens, state, kbd, cap } from "./tokens.js";
 import { FeedSource, targetTerminal } from "./snapshot.js";
+import { sendAction, errorText, showTerminal } from "./actions.js";
 
-// The palette key as bound (workspace-status), e.g. "⌘K".
+// The Gentle palette's key as bound (herdr/keys.json binds ⌘K in the layout's section), e.g.
+// "⌘K". Unbound, the chat's own ⌘K (while the chat has the keyboard) is the artboard's ⌘K.
+const PALETTE = "mod.open:gentle-palette";
 function paletteKey() {
   const mac = window()?.platform === "macos";
   const mod = { cmd: mac ? "⌘" : "Ctrl+", ctrl: mac ? "⌃" : "Ctrl+", shift: mac ? "⇧" : "Shift+", alt: mac ? "⌥" : "Alt+", option: mac ? "⌥" : "Alt+" };
-  const b = keys().find((k) => k.section === "global" && k.action === "app.palette");
+  const all = keys().filter((k) => k.action === PALETTE);
+  const b = all.find((k) => k.section === "layout:gentle-shell") ?? all.find((k) => k.section === "global") ?? all[0];
+  if (!b) return mac ? "⌘K" : null;
   const parts = b && b.keys.endsWith("--") ? [...b.keys.slice(0, -2).split("-"), "-"] : b?.keys.split("-");
   return parts ? parts.map((p) => mod[p.toLowerCase()] ?? p.toUpperCase()).join("") : null;
 }
@@ -27,6 +38,33 @@ export default class GentleStatus extends View {
     this.last = null;
     this.source = new FeedSource();
     this.source.start(cx);
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const c = String(await nextCommand());
+        try {
+          if (c === "toggle") this.toggle();
+          else if (c === "stop") this.stop(cx);
+        } catch { /* a key command never breaks the bar */ }
+      }
+    });
+  }
+
+  toggle() {
+    const find = (node) => (node?.id === "views" ? node : (node?.children ?? []).map(find).find(Boolean));
+    const node = find(layout());
+    if (!node) return;
+    const chat = (node.active ?? node.children?.[0]?.id) === "chat";
+    if (chat) showTerminal(targetTerminal(this.last)?.address ?? null);
+    else run("layout.select", { stack: "views", child: "chat" });
+  }
+
+  // A refusal (idle agent, no session) is a toast: the bar has no line of its own for it.
+  stop(cx) {
+    const f = this.source.of(targetTerminal(this.last));
+    cx.spawn(async (cx) => {
+      const r = await sendAction(cx, f?.identity?.sessionId, "abort_turn", {});
+      if (!r.ok) cx.timer.after(1, () => notify({ title: "Stop the agent", body: errorText(r), level: "info", timeout: 4000 }));
+    });
   }
 
   render() {
@@ -72,7 +110,7 @@ export default class GentleStatus extends View {
       bar = bar.child(div().child(`Integrations ${ready}/${integrations.length}`));
     }
     return bar.child(h_flex().id("palette").gap(6).items_center().cursor_pointer().hover((s) => s.text_color(c.text))
-      .on_click(() => run("app.palette"))
+      .on_click(() => run("mod.open", { name: "gentle-palette" }))
       // The artboard's kbd sits on the text baseline of an 18px line: 1px lower than centred.
       .when(Boolean(key), (el) => el.child(kbd(c, key).mt(2)))
       .child("Commands"));

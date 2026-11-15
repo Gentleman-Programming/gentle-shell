@@ -9,7 +9,7 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, TextareaState, ScrollHandle } from "gpui-base";
-import { agents, terminals, focused, props, layout, hc, run, setShared, theme, watchFolder, nextCommand } from "herdr";
+import { agents, terminals, focused, props, layout, hc, run, setShared, shared, theme, watchFolder, nextCommand } from "herdr";
 import { sessionFileFor, readAfter, feedDir } from "./session.js";
 import { createFeed, ingest } from "./feed.js";
 import { palette, sans, R } from "./tokens.js";
@@ -21,6 +21,23 @@ const PAGE = 150; // entries drawn at first; "Show earlier" adds this many
 const TICK = 5000; // fallback refresh when a watch event is missed (both folders are watched)
 const PLACEHOLDER = "Message Gentle Shell…  / for commands";
 const PLACEHOLDER_ASK = "Answer above, or message Gentle Shell…  / for commands";
+const ESC_MS = 1000; // the TUI's double-Esc window for stopping a turn (DOUBLE_ESC_CANCEL_WINDOW_MS)
+const ESC_NOTICE = "Press Esc again to stop the agent.";
+const SLASH_MAX = 50; // commands the "/" menu filters to at most
+const REQUEST_MS = 10000; // a palette request older than this is ignored (shared values persist)
+const REQUEST_POLL = 500; // how often a shown chat looks for a palette request
+
+// The composer's "/" menu: open while the draft is one "/word" (no space or line break yet).
+// Names that start with the word come first, then names and descriptions that contain it.
+export function slashMatches(commands, draft) {
+  const m = /^\/([^\s]*)$/.exec(String(draft ?? ""));
+  if (!m) return null;
+  const q = m[1].toLowerCase();
+  const list = Array.isArray(commands) ? commands.filter((c) => c && typeof c.name === "string") : [];
+  const starts = list.filter((c) => c.name.toLowerCase().startsWith(q));
+  const contains = q ? list.filter((c) => !starts.includes(c) && `${c.name} ${c.description ?? ""}`.toLowerCase().includes(q)) : [];
+  return [...starts, ...contains].slice(0, SLASH_MAX);
+}
 
 const isGentle = (v) => typeof v === "string" && APPS.has(v);
 const questionKey = (q) => (q ? `${q.toolCallId ?? ""}|${q.openedAt ?? ""}|${q.question ?? ""}` : null);
@@ -50,22 +67,40 @@ export default class GentleChat extends View {
     this.answered = null; // { key, index, custom } once an option of the open question was picked
     this.busy = null; // the desktop action in flight ("perm", "stop-<id>", "attach", …), for its pending look
     this.notice = null; // one calm line under the composer after an action that has no other trace
+    this.draft = ""; // the composer's text, kept from its change events (Send / Stop, the "/" menu)
+    this.slashAt = 0; // the "/" menu's selected row
+    this.slashClosed = null; // the draft Esc closed the "/" menu on; it opens again once the draft changes
+    this.escAt = 0; // the first Esc of an Esc Esc while the agent works
+    this.lastRequest = 0;
     this.scroll = ScrollHandle.new();
     this.focus = cx.focus_handle();
     this.makeInput(PLACEHOLDER);
-    // Enter sends, Shift+Enter is the Textarea's new line; ⌘J shows the Terminal.
+    // Enter sends, Shift+Enter is the Textarea's new line; ⌘J shows the Terminal; ⌘K opens the
+    // Gentle commands palette; Esc Esc stops the agent's turn (Esc first closes the "/" menu).
+    // While the "/" menu is open, ↑/↓ move in it and Tab completes the command.
     cx.bind_keys([
       { keystroke: "enter", action: "gentle_chat_send", context: "GentleChatComposer > Input" },
       { keystroke: "cmd-j", action: "gentle_chat_terminal", context: "GentleChat" },
+      { keystroke: "cmd-k", action: "gentle_chat_palette", context: "GentleChat" },
+      { keystroke: "escape", action: "gentle_chat_escape", context: "GentleChat" },
+      { keystroke: "escape", action: "gentle_chat_escape", context: "GentleChatComposer > Input" },
+      { keystroke: "up", action: "gentle_chat_slash_up", context: "GentleSlashMenu > Input" },
+      { keystroke: "down", action: "gentle_chat_slash_down", context: "GentleSlashMenu > Input" },
+      { keystroke: "tab", action: "gentle_chat_slash_complete", context: "GentleSlashMenu > Input" },
     ]);
     cx.timer.every(TICK, (cx) => this.tick(cx));
     this.tick(cx);
     this.commands(cx);
+    // Palette requests: a hidden stack child stays alive but gets no commands, so a request made
+    // while the Terminal showed is picked up here once the chat shows (a shared read, no redraw).
+    cx.timer.every(REQUEST_POLL, (cx) => { if (this.showing()) this.request(cx); });
   }
 
-  // Key commands ("<key>": "gentle-chat:<command>" in keys.json, or `herdr-app do gentle-chat.<command>`):
-  // chat, terminal, perm (opens the permission menu) and mode-<normal|auto|yolo|super-yolo>, the
-  // menu's own path: Super-YOLO asks in a dialog first, as from the menu.
+  // Key commands ("<key>": "gentle-chat.<command>" in keys.json, or `herdr-app do gentle-chat.<command>`;
+  // herdr/keys.json binds them): chat, terminal, toggle (Chat ↔ Terminal), perm (opens the
+  // permission menu), mode-<normal|auto|yolo|super-yolo> (the menu's own path: Super-YOLO asks in
+  // a dialog first), stop (the agent's turn, as Esc Esc), palette (the Gentle commands palette)
+  // and request (a palette row: the slash command it names, see gentle-palette).
   commands(cx) {
     cx.spawn(async (cx) => {
       for (;;) {
@@ -74,7 +109,11 @@ export default class GentleChat extends View {
           const mode = c.startsWith("mode-") ? c.slice(5) : null;
           if (confirmed(c, cx)) { /* a confirm dialog's Confirm */ }
           else if (c === "chat" || c === "terminal") this.go(c, cx);
+          else if (c === "toggle") this.go(this.showing() ? "terminal" : "chat", cx);
           else if (c === "perm") this.permOpen = true;
+          else if (c === "stop") this.stop(cx);
+          else if (c === "palette") this.palette();
+          else if (c === "request") this.request(cx);
           else if (mode && PERM.some((m) => m.mode === mode)) this.setMode(mode, cx);
         } catch (e) {
           this.error = String(e?.message ?? e);
@@ -146,6 +185,12 @@ export default class GentleChat extends View {
     this.input = TextareaState.new({ placeholder, rows: 2 });
     this.input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
     this.input.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
+    this.input.on("change", (_e, cx) => {
+      const before = this.draft;
+      this.draft = this.input.value();
+      if (this.draft !== before) { this.slashAt = 0; if (this.slashClosed !== this.draft) this.slashClosed = null; }
+      cx.notify();
+    });
   }
 
   reset(file) {
@@ -222,12 +267,22 @@ export default class GentleChat extends View {
   }
 
   send(cx) {
+    // Enter on the "/" menu runs (or completes) the selected command.
+    if (this.slashMenu()) { this.slashPick(this.slashAt, false, cx); return; }
     const text = this.input.value().trim();
     const address = this.address;
     if (!text || !address || this.sending) return;
     const pq = this.snap?.pendingQuestion;
     // "Something else…" was picked: this text is the answer to that question.
     const typedAnswer = this.answered?.custom && pq && this.answered.key === questionKey(pq) ? pq : null;
+    // A slash command goes to the TUI as typed; one whose result is a TUI screen (or one this
+    // session does not list) shows the Terminal.
+    if (!typedAnswer && text.startsWith("/")) {
+      const name = text.slice(1).split(/\s/)[0];
+      const known = (this.snap?.commands?.items ?? []).find((c) => c.name === name);
+      this.runCommand(text, known ? known.terminal !== false : true, cx);
+      return;
+    }
     this.sending = true;
     this.error = null;
     this.notice = null;
@@ -275,7 +330,7 @@ export default class GentleChat extends View {
       if (!pq.toolCallId) throw new Error("Answer it in the Terminal view.");
       const r = await sendAction(cx, this.snap?.identity?.sessionId, "answer_question", { toolCallId: pq.toolCallId, ...answer });
       if (!r.ok) {
-        if (r.error?.code === "answer_in_terminal") this.toTerminal();
+        if (r.error?.code === "answer_in_terminal") this.later(cx, () => this.toTerminal());
         throw new Error(errorText(r));
       }
       if (!safeKeys(r.data.keys)) throw new Error("The session answered keys this view does not press.");
@@ -300,6 +355,12 @@ export default class GentleChat extends View {
     showTerminal(this.address, stack ?? "views", other ?? "main");
   }
 
+  // Runs `fn` in a host call (a timer callback): Herdr's ambient calls (run, props, setShared)
+  // throw after an await in a spawned task.
+  later(cx, fn) {
+    cx.timer.after(1, () => { try { fn(); } catch (e) { this.error = String(e?.message ?? e); } });
+  }
+
   // One action at a time per control; the result or refusal shows under the composer.
   act(key, cx, work) {
     if (this.busy) return;
@@ -321,7 +382,129 @@ export default class GentleChat extends View {
 
   // The TUI's own screen for this (its slash command), shown in the Terminal.
   command(key, text, cx) {
-    this.act(key, cx, () => tuiCommand(this.address, this.snap, text, () => this.toTerminal()));
+    this.act(key, cx, (cx) => tuiCommand(this.address, this.snap, text, () => this.later(cx, () => this.toTerminal())));
+  }
+
+  // A slash command from the composer, its "/" menu or the palette: typed into the TUI like the
+  // person would. `terminal`: its result is a TUI screen, so the Terminal shows; otherwise the
+  // chat stays (a prompt template's turn, /new, /name …). The draft comes back if it failed.
+  runCommand(text, terminal, cx) {
+    if (this.busy) return;
+    this.input.set_value("");
+    this.draft = "";
+    this.act("command", cx, async (cx) => {
+      // Herdr's ambient calls (run, props) only work inside a host call: after the await, the
+      // switch runs from a timer callback.
+      const line = await tuiCommand(this.address, this.snap, text, terminal ? () => this.later(cx, () => this.toTerminal()) : null);
+      if (line) { if (!this.input.value()) { this.input.set_value(text); this.draft = text; } return line; }
+      this.stick = true;
+      if (!terminal) this.notice = `${text.split(/\s/)[0]} sent to the session.`;
+      return null;
+    });
+  }
+
+  // ---- The "/" menu (T10): the session's commands, filtered as you type ----
+
+  slashMenu() {
+    if (!this.typing || this.slashClosed === this.draft) return null;
+    const items = slashMatches(this.snap?.commands?.items, this.draft);
+    if (!items?.length) return null;
+    this.slashAt = Math.max(0, Math.min(this.slashAt, items.length - 1));
+    return { items, at: this.slashAt };
+  }
+
+  slashMove(step, cx) {
+    const m = this.slashMenu();
+    if (!m) return;
+    this.slashAt = (m.at + step + m.items.length) % m.items.length;
+    cx.notify();
+  }
+
+  // Tab (or a command that needs an argument) puts "/name " in the composer; Enter and a click
+  // run it.
+  slashPick(i, complete, cx) {
+    const c = this.slashMenu()?.items[i];
+    if (!c) return;
+    if (complete || c.args) {
+      this.setDraft(`/${c.name} `);
+      cx.notify();
+      return;
+    }
+    this.runCommand(`/${c.name}`, c.terminal !== false, cx);
+  }
+
+  // Puts `text` in the composer with the caret at its end, and the keyboard on it.
+  setDraft(text) {
+    this.input.set_value(text);
+    this.draft = text;
+    try { this.input.set_selected_range({ start: text.length, end: text.length }); } catch { /* caret stays */ }
+    this.input.focus();
+  }
+
+  // ---- Stop the agent (T10): the TUI's Esc Esc, through the session's own abort ----
+
+  working() {
+    const agent = this.address ? agents().find((a) => a.address === this.address) : null;
+    return agent?.status === "working" || this.snap?.activity?.state === "working";
+  }
+
+  stop(cx) {
+    this.escAt = 0;
+    this.act("stop", cx, async (cx) => {
+      const r = await sendAction(cx, this.snap?.identity?.sessionId, "abort_turn", {});
+      if (!r.ok) return errorText(r);
+      this.notice = "Stopped the agent's turn.";
+      return null;
+    });
+  }
+
+  // Esc: closes the "/" menu; while the agent works, a second Esc within a second stops it.
+  escape(cx) {
+    if (this.slashMenu()) { this.slashClosed = this.draft; cx.notify(); return; }
+    if (!this.working()) { cx.propagate(); return; }
+    const now = Date.now();
+    if (this.escAt && now - this.escAt <= ESC_MS) { this.stop(cx); return; }
+    this.escAt = now;
+    this.notice = ESC_NOTICE;
+    cx.notify();
+    cx.timer.after(ESC_MS, (cx) => {
+      if (this.notice === ESC_NOTICE) this.notice = null;
+      this.escAt = 0;
+      cx.notify();
+    });
+  }
+
+  // ---- The Gentle commands palette (gentle-palette) ----
+
+  palette() {
+    // The palette is about this chat's session, not whichever pane had the keyboard.
+    setShared("gentle-palette.terminal", { address: this.address, at: Date.now() });
+    run("mod.open", { name: "gentle-palette" });
+  }
+
+  // A palette request (gentle-palette): a permission mode, or a slash command. Consume-once: it is
+  // cleared when taken, and one older than REQUEST_MS is dropped. Without the session's snapshot
+  // yet it waits for the next look (REQUEST_POLL).
+  request(cx) {
+    const req = shared("gentle-chat.request");
+    if (!req || typeof req !== "object" || !Number.isFinite(req.at) || req.at === this.lastRequest) return;
+    if (Math.abs(Date.now() - req.at) > REQUEST_MS) { setShared("gentle-chat.request", null); return; }
+    if (!this.snap || !this.address) return;
+    this.lastRequest = req.at;
+    setShared("gentle-chat.request", null);
+    if (req.kind === "mode") {
+      if (PERM.some((m) => m.mode === req.mode)) this.setMode(req.mode, cx);
+      return;
+    }
+    if (typeof req.text !== "string" || !req.text.startsWith("/")) return;
+    if (req.args) {
+      // It needs an argument: the chat shows with "/name " in the composer.
+      this.go("chat", cx);
+      this.setDraft(`${req.text} `);
+      return;
+    }
+    if (!req.terminal) this.go("chat", cx);
+    this.runCommand(req.text, Boolean(req.terminal), cx);
   }
 
   // The permission menu: the same owner as /gentle:mode decides. Super-YOLO asks first, with the
@@ -440,6 +623,8 @@ export default class GentleChat extends View {
       .key_context("GentleChat").track_focus(this.focus)
       .on_key_down((e, cx) => this.key(e, cx))
       .on_action("gentle_chat_terminal", (_e, cx) => this.go("terminal", cx))
+      .on_action("gentle_chat_palette", () => this.palette())
+      .on_action("gentle_chat_escape", (_e, cx) => this.escape(cx))
       .child(header(this, p))
       .child(empty ? this.empty(p) : v_flex().id("log").flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.scroll)
         .pt(18).pb(7).gap(14) // .log padding-bottom 22 = gap 14 + the 1px sentinel + 7

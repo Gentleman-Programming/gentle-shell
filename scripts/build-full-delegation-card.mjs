@@ -5,7 +5,7 @@
 // Full delegation mode must never put an organic routing rule ("small work stays
 // inline", "a large task alone never delegates") in front of the orchestrator,
 // but it still needs the rules both modes share: handoff language, launch
-// checks, allowed edit surfaces, background policy, the closing block. Those rules
+// checks, allowed edit surfaces, and background policy. Those rules
 // keep exactly one source, the organic assets that contract tests already pin;
 // this script projects the shared sections out of them, so the card can never
 // drift into a second, diverging copy.

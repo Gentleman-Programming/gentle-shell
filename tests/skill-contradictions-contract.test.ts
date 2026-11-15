@@ -41,10 +41,12 @@ const description = (name: string) => {
 	return tool.description ?? "";
 };
 
-test("C1: ~400 changed lines is a planning heuristic that applies the delivery strategy, never a hard stop", () => {
+test("C1: ~400 changed lines is a planning heuristic that records the slice boundary, never a hard stop or a pre-edit delivery prompt", () => {
 	assert.doesNotMatch(rdd, /The hard limit is|STOP for a chain|Chain or approved exception before edits/);
-	assert.match(rdd, /about 400 additions plus deletions \(a planning heuristic, not a hard limit\), apply the feature's delivery strategy and the target repository's size policy/);
-	assert.match(rdd, /\| Forecast exceeds about 400 lines \| Apply the delivery strategy and the target size policy; never a hard stop\. \|/);
+	assert.match(rdd, /about 400 additions plus deletions \(a planning heuristic, not a hard limit\), record the slice boundary in the feature document; the delivery shape and the target repository's size policy apply only when publishing/);
+	assert.match(rdd, /\| Forecast exceeds about 400 lines \| Record the slice boundary; choose the delivery shape and apply the target size policy only when publishing; never a hard stop\. \|/);
+	// harness-continuity S7: the delivery shape is chosen when publishing, never before an edit or a local commit.
+	assert.doesNotMatch(rdd, /apply the (feature's )?delivery strategy/);
 });
 
 test("C2: an approved issue or `status:approved` is required only where the target repository uses it", () => {

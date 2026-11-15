@@ -94,14 +94,19 @@ export function warmUpDaemon(cwd: string, background = false, timeoutMs = WARMUP
 			child?.unref();
 			resolve(ok);
 		};
-		const timer = setTimeout(() => finish(false), timeoutMs);
+		// A warm-up that never handshakes is not a daemon: kill it instead of leaking a process
+		// that can hold the daemon lock (the success path above still never kills a live daemon).
+		const timer = setTimeout(() => {
+			killProcessTree(child, true);
+			finish(false);
+		}, timeoutMs);
 		if (background) timer.unref?.();
 		try {
 			if (process.platform === "win32") {
 				// Windows needs a shell for the npm `.cmd` shim; the command line is fixed plus the quoted project.
 				child = spawn(`codegraph serve --mcp -p ${JSON.stringify(project)}`, { cwd: tmpdir(), env: process.env, shell: true, windowsHide: true, stdio: ["pipe", "pipe", "ignore"] });
 			} else {
-				child = spawn("codegraph", ["serve", "--mcp", "-p", project], { cwd: tmpdir(), env: process.env, windowsHide: true, stdio: ["pipe", "pipe", "ignore"] });
+				child = spawn("codegraph", ["serve", "--mcp", "-p", project], { cwd: tmpdir(), env: process.env, detached: true, windowsHide: true, stdio: ["pipe", "pipe", "ignore"] });
 			}
 			if (background) {
 				child.unref();
@@ -426,13 +431,21 @@ export function syncBeforeSearch(input: SearchSyncInput): void {
  * would keep writing the shared index after the failure has already been reported. On POSIX the child
  * is the command itself, so a direct kill reaches it.
  */
-function killProcessTree(child: { pid?: number } | undefined): void {
+function killProcessTree(child: { pid?: number } | undefined, group = false): void {
 	if (child?.pid === undefined) return;
 	if (process.platform === "win32") {
 		execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true }, () => {
 			/* already gone: the grace timer reports the failure anyway; windowsHide keeps the kill invisible */
 		});
 		return;
+	}
+	try {
+		// A detached child leads its own process group: the negative pid takes the command's
+		// workers with it instead of orphaning them under a killed leader.
+		if (group) process.kill(-child.pid);
+		return;
+	} catch {
+		/* no such group (or not detached): fall through to the direct kill */
 	}
 	try {
 		process.kill(child.pid);
@@ -473,7 +486,7 @@ export function runCodegraph(args: readonly string[], cwd: string, timeoutMs: nu
 			if (process.platform === "win32") {
 				child = spawn(`codegraph ${[...args, project].map((part) => JSON.stringify(part)).join(" ")}`, { cwd: tmpdir(), env: process.env, shell: true, windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
 			} else {
-				child = spawn("codegraph", [...args, project], { cwd: tmpdir(), env: process.env, windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
+				child = spawn("codegraph", [...args, project], { cwd: tmpdir(), env: process.env, detached: true, windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
 			}
 		} catch {
 			resolve(false);
@@ -487,7 +500,7 @@ export function runCodegraph(args: readonly string[], cwd: string, timeoutMs: nu
 		stderrTail = (stderrTail + chunk.toString("utf8")).slice(-2_000);
 		});
 		const timer = setTimeout(() => {
-			killProcessTree(child);
+			killProcessTree(child, true);
 			// A killed command may still be closing; report the failure only once the process is gone.
 			grace = setTimeout(() => finish(false), KILL_WAIT_MS);
 		}, timeoutMs);

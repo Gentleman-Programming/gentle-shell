@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -13,6 +13,7 @@ import {
 	maybeRewarm,
 	planIndexAction,
 	prepareReadiness,
+	runCodegraph,
 	sessionSkipsReadiness,
 	skipsSession,
 	SYNC_RETRY_DELAY_MS,
@@ -372,6 +373,81 @@ test("warmUpDaemon: a live daemon resolves true without spawning; a dead record 
 	fakeRegistryRecord(deadRegistry, deadCwd, staleSocket, exited.pid);
 	const dead = await warmUpDaemon(deadCwd, false, 5_000, deadRegistry);
 	assert.equal(dead, false, "a dead record does not short-circuit: the spawn path ran and failed without codegraph on PATH");
+});
+
+test("warmUpDaemon: a timed-out warm-up kills its spawned child instead of leaking it", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
+	const bin = dir(t, "warm-timeout-bin");
+	const pidFile = join(bin, "child.pid");
+	writeFileSync(join(bin, "codegraph"), "#!/bin/sh\nprintf '%s\\n' \"$$\" > \"$FAKE_PIDFILE\"\nsleep 30\n");
+	chmodSync(join(bin, "codegraph"), 0o755);
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${bin}:${previousPath}`;
+	process.env.FAKE_PIDFILE = pidFile;
+	t.after(() => {
+		process.env.PATH = previousPath;
+		delete process.env.FAKE_PIDFILE;
+	});
+	const warmed = await warmUpDaemon(dir(t, "warm-timeout"), false, 500);
+	assert.equal(warmed, false, "the fake daemon never handshakes: the warm-up times out");
+	const fileDeadline = Date.now() + 1_500;
+	while (!existsSync(pidFile) && Date.now() < fileDeadline) await new Promise((resolve) => setTimeout(resolve, 25));
+	assert.ok(existsSync(pidFile), "the fake daemon spawned");
+	const pid = Number(readFileSync(pidFile, "utf8").trim());
+	const alive = () => {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch {
+			return false;
+		}
+	};
+	const deadline = Date.now() + 2_000;
+	while (alive() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(alive(), false, "the timed-out warm-up child is killed, not leaked to hold the daemon lock");
+});
+
+test("runCodegraph: a timeout kills the command's whole process group, grandchildren included", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
+	const bin = dir(t, "tree-kill-bin");
+	const pidFile = join(bin, "child.pid");
+	const grandFile = join(bin, "grandchild.pid");
+	writeFileSync(join(bin, "codegraph"), "#!/bin/sh\nsleep 60 &\nprintf '%s\\n' \"$!\" > \"$FAKE_GRANDCHILD\"\nprintf '%s\\n' \"$$\" > \"$FAKE_PIDFILE\"\nwait\n");
+	chmodSync(join(bin, "codegraph"), 0o755);
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${bin}:${previousPath}`;
+	process.env.FAKE_PIDFILE = pidFile;
+	process.env.FAKE_GRANDCHILD = grandFile;
+	t.after(() => {
+		process.env.PATH = previousPath;
+		delete process.env.FAKE_PIDFILE;
+		delete process.env.FAKE_GRANDCHILD;
+		for (const file of [pidFile, grandFile]) {
+			if (!existsSync(file)) continue;
+			try {
+				process.kill(Number(readFileSync(file, "utf8").trim()), "SIGKILL");
+			} catch {
+				/* already gone */
+			}
+		}
+	});
+	const ok = await runCodegraph(["sync", "-q"], dir(t, "tree-kill-cwd"), 500);
+	assert.equal(ok, false, "the fake command never exits: the run times out");
+	const fileDeadline = Date.now() + 1_500;
+	while ((!existsSync(pidFile) || !existsSync(grandFile)) && Date.now() < fileDeadline) await new Promise((resolve) => setTimeout(resolve, 25));
+	assert.ok(existsSync(pidFile) && existsSync(grandFile), "the fake command and its grandchild started");
+	const pids = [Number(readFileSync(pidFile, "utf8").trim()), Number(readFileSync(grandFile, "utf8").trim())];
+	const alive = (pid: number) => {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch {
+			return false;
+		}
+	};
+	const deadline = Date.now() + 2_000;
+	while (pids.some(alive) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.deepEqual(pids.map(alive), [false, false], "the direct child AND its grandchild die with the group kill");
 });
 
 test("syncBeforeSearch: unlock first, then sync -q; a failed sync reports only sync", async (t) => {

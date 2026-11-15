@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { DaemonCallResult } from "../lib/codegraph-daemon.ts";
 import codeGraphTools, {
 	clearSearchSync,
 	createCodeGraphTool,
@@ -190,6 +191,32 @@ test("a hung CLI query fallback is bounded by the query timeout, not the user's 
 	assert.match(result.content[0].text, /CodeGraph failed to run/);
 	assert.equal((result.details as { status?: string }).status, "failed");
 	assert.ok(elapsed < 500, `the hung CLI fallback must be bounded by the query timeout, took ${elapsed} ms`);
+});
+
+test("a caller-aborted search stops paying for daemon attempts instead of running out the budget", async (t) => {
+	const cwd = workspace(t);
+	const ctx = { cwd } as ExtensionContext;
+	let attempts = 0;
+	const never: DaemonExplore = async () => {
+		attempts += 1;
+		return await new Promise<DaemonCallResult>(() => {
+			/* never settles: a wedged daemon socket */
+		});
+	};
+	const caller = new AbortController();
+	setTimeout(() => caller.abort(), 10);
+	const started = Date.now();
+	const result = await Promise.race([
+		createCodeGraphTool(async () => ({ stdout: "cli answer", stderr: "" }), {
+			daemonExplore: never,
+			warm: async () => true,
+			syncRun: syncNothing,
+		}).execute("test", { operation: "query", query: "symbol" }, caller.signal, undefined, ctx),
+		new Promise<never>((_, reject) => setTimeout(() => reject(new Error("execute did not return after caller abort")), 3_000)),
+	]);
+	const elapsed = Date.now() - started;
+	assert.ok(result, "execute returned after the caller aborted");
+	assert.ok(elapsed < 2_500, `the aborted call must not run out the daemon budget, took ${elapsed} ms`);
 });
 
 test("CodeGraph tool runs only fixed cwd-scoped init, query, and explore commands", async (t) => {

@@ -86,6 +86,19 @@ const execFileAsync = promisify(execFile);
 const GIT_ROOT_REQUIRED = "CodeGraph requires a real Git project root equal to the current workspace.";
 const GIT_DIAGNOSTIC_MAX_CHARS = 1_000;
 
+/** Races a daemon attempt (or a warm) against the caller's abort: a cancelled call stops paying for
+ * further attempts instead of running out the budget. The losing promise is left to settle on its
+ * own — only the wait is abandoned; its socket result, if any, is discarded. */
+function raceWithAbort<T>(signal: AbortSignal | undefined, promise: Promise<T>): Promise<T | undefined> {
+	if (!signal) return promise;
+	let onAbort: () => void = () => {};
+	const aborted = new Promise<undefined>((resolve) => {
+		onAbort = () => resolve(undefined);
+		signal.addEventListener("abort", onAbort, { once: true });
+	});
+	return Promise.race([promise, aborted]).finally(() => signal.removeEventListener("abort", onAbort)) as Promise<T | undefined>;
+}
+
 /**
  * Compare two directories by file identity, not path spelling. On Windows a mapped
  * drive (`X:\repo`) and the UNC path Git reports for it (`\\server\share\repo`) name
@@ -558,11 +571,11 @@ export function createCodeGraphTool(
 				const attempt = () => daemonExplore(cwd, parameters, Math.min(queryTimeoutMs, DAEMON_ATTEMPT_TIMEOUT_MS));
 				let viaDaemon: DaemonCallResult | undefined;
 				if (Date.now() >= (daemonSkipUntil.get(cwd) ?? 0)) {
-					viaDaemon = await attempt();
+					viaDaemon = await raceWithAbort(signal, attempt()) ?? undefined;
 					if (viaDaemon?.status !== "ok") {
 						// Best-effort warm-up between the two attempts: a daemon that was never started gets one.
-						await warm(cwd, DAEMON_ATTEMPT_TIMEOUT_MS).catch(() => { /* best effort */ });
-						viaDaemon = await attempt();
+						await raceWithAbort(signal, warm(cwd, DAEMON_ATTEMPT_TIMEOUT_MS).catch(() => { /* best effort */ }));
+						if (!signal?.aborted) viaDaemon = await raceWithAbort(signal, attempt()) ?? undefined;
 					}
 					if (viaDaemon?.status === "timeout") {
 						// The post-warm attempt timed out: the daemon is wedged, so the CLI answers until the next turn.

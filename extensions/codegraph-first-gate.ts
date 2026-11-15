@@ -28,11 +28,7 @@ export default function codegraphFirstGate(pi: ExtensionAPI): void {
 	// before_agent_start fires once per primary request (a user prompt or sendUserMessage),
 	// not per LLM turn, so credit earned in one turn of a request survives into its later turns.
 	pi.on?.("before_agent_start", () => {
-		try {
-			credited = false;
-		} catch {
-			/* the reset cannot fail, but a guard may never break the host */
-		}
+		credited = false;
 	});
 
 	// End-of-execution only: the call finalized, so it counts even when it failed — the

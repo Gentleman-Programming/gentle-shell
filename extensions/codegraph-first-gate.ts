@@ -15,6 +15,10 @@ const BLOCK_REASON =
  * finalized in the same user prompt. Credit is end-of-execution only — a failed or
  * unavailable codegraph attempt counts — and expires with every new prompt. The guard is
  * total: any internal error allows the call, so the gate can never break a tool call.
+ *
+ * Wired through pi's extension-directory discovery (discoverAndLoadExtensions over
+ * extensions/); no manifest entry is needed — the runtime-harness EXTENSIONS list is
+ * banner-test-specific, not a wiring manifest.
  */
 export default function codegraphFirstGate(pi: ExtensionAPI): void {
 	// Credit lives in this activation only and expires with every user prompt.

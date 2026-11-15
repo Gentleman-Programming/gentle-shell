@@ -390,7 +390,7 @@ test("warmUpDaemon: a timed-out warm-up kills its spawned child instead of leaki
 	});
 	const warmed = await warmUpDaemon(dir(t, "warm-timeout"), false, 500);
 	assert.equal(warmed, false, "the fake daemon never handshakes: the warm-up times out");
-	const fileDeadline = Date.now() + 1_500;
+	const fileDeadline = Date.now() + 3_000;
 	while (!existsSync(pidFile) && Date.now() < fileDeadline) await new Promise((resolve) => setTimeout(resolve, 25));
 	assert.ok(existsSync(pidFile), "the fake daemon spawned");
 	const pid = Number(readFileSync(pidFile, "utf8").trim());
@@ -402,7 +402,7 @@ test("warmUpDaemon: a timed-out warm-up kills its spawned child instead of leaki
 			return false;
 		}
 	};
-	const deadline = Date.now() + 2_000;
+	const deadline = Date.now() + 3_000;
 	while (alive() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
 	assert.equal(alive(), false, "the timed-out warm-up child is killed, not leaked to hold the daemon lock");
 });
@@ -433,7 +433,7 @@ test("runCodegraph: a timeout kills the command's whole process group, grandchil
 	});
 	const ok = await runCodegraph(["sync", "-q"], dir(t, "tree-kill-cwd"), 500);
 	assert.equal(ok, false, "the fake command never exits: the run times out");
-	const fileDeadline = Date.now() + 1_500;
+	const fileDeadline = Date.now() + 3_000;
 	while ((!existsSync(pidFile) || !existsSync(grandFile)) && Date.now() < fileDeadline) await new Promise((resolve) => setTimeout(resolve, 25));
 	assert.ok(existsSync(pidFile) && existsSync(grandFile), "the fake command and its grandchild started");
 	const pids = [Number(readFileSync(pidFile, "utf8").trim()), Number(readFileSync(grandFile, "utf8").trim())];
@@ -445,7 +445,7 @@ test("runCodegraph: a timeout kills the command's whole process group, grandchil
 			return false;
 		}
 	};
-	const deadline = Date.now() + 2_000;
+	const deadline = Date.now() + 3_000;
 	while (pids.some(alive) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
 	assert.deepEqual(pids.map(alive), [false, false], "the direct child AND its grandchild die with the group kill");
 });

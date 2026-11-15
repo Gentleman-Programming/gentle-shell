@@ -103,6 +103,8 @@ function raceWithAbort<T>(signal: AbortSignal | undefined, promise: Promise<T>):
  * Compare two directories by file identity, not path spelling. On Windows a mapped
  * drive (`X:\repo`) and the UNC path Git reports for it (`\\server\share\repo`) name
  * the same directory but never compare equal as strings (#2558).
+ *
+ * Exported as a test seam: production callers are in this file only.
  */
 export function isSameDirectory(left: string, right: string): boolean {
 	if (left === right) return true;

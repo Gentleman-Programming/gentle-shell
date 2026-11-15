@@ -7,7 +7,7 @@ import { declaredHighRiskItem, isVerifierLaunch } from "./verifier-admission.ts"
 export const VERIFIER_SETTLE_REMINDER_TYPE = "gentle-pi.verifier-settle-reminder";
 
 export function verifierSettleReminderText(item: number): string {
-	return `Verification reminder: your final message declares \`Risk: item ${item}\`, but no independent verifier was launched for this prompt. Now launch \`gentle-ai-verify\` with the \`Risk: item ${item}\` line in its \`task\`. A user's visual or manual approval does not replace technical verification. If verification is unavailable, close with **Needs your decision** naming the missing proof.`;
+	return `Verification reminder: your final message declares \`Risk: item ${item}\`, but no independent verifier was launched for this prompt. Now launch \`gentle-ai-verify\` with the \`Risk: item ${item}\` line in its \`task\`. A user's visual or manual approval does not replace technical verification. If verification is unavailable, report the missing proof and do not claim the change complete.`;
 }
 
 // The text of the last assistant message, or undefined when the run has none.

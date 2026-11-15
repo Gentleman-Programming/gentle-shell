@@ -72,7 +72,7 @@ function trackedPendingBoundary(text: string): string {
 test("T23(a): a partial or blocked writer gets the one correction; verification-specific blockers remain bounded", () => {
 	containsAll(lineStarting(verification, "5. **One correction**"), [
 		"A `partial` or `blocked` writer report gets only this correction, never an extra verify run beyond the risk tier's verifier",
-		"partial, blocked, unavailable, or exhausted proof left after it becomes that one **Needs your decision**",
+		"leftover partial, blocked, unavailable, or exhausted proof likewise",
 	], "verification correction bound");
 	for (const persona of personas) {
 		containsAll(closeStep(persona), [

@@ -123,12 +123,12 @@ test("P8: change kinds never change when a verifier runs, and the verifier keeps
 	containsAll(verify, ["No network, no installs, no writes outside the scratch directory."], "verify isolation");
 });
 
-// Part B, C1: second correction first, then the single Needs your decision.
-test("P8 C1: the second correction is stated before the remaining blockers become one Needs your decision", () => {
+// Part B, C1: second correction first, then the scoped partial stop (harness-continuity T6).
+test("P8 C1: the second correction is stated before the remaining blockers leave the unit partial", () => {
 	const second = verification.indexOf("A second correction runs automatically only when the recheck shows the same blocker still failing");
-	const decision = verification.indexOf("Blockers still open after that stop as one **Needs your decision**");
+	const decision = verification.indexOf("Blockers still open after that leave the unit `status: partial`");
 	assert.ok(second >= 0 && decision >= 0, "both correction sentences must stay");
-	assert.ok(second < decision, "the second correction must come before the Needs your decision stop");
+	assert.ok(second < decision, "the second correction must come before the partial stop");
 });
 
 // Part B, C2: writers add probes as tests; the parent owns git.

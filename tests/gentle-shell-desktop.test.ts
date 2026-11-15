@@ -662,9 +662,10 @@ test("keys: a Gentle shortcut the user deleted or rebound is theirs and never co
 });
 
 test("keys: --uninstall removes exactly our entries; the rest stays byte-identical, including later user edits", async (t) => {
-	const { f, keysFile, keys, writeKeys } = keysFixture(t);
+	const { f, keysFile, keys, writeKeys, state } = keysFixture(t);
 	writeKeys(USER_KEYS);
 	assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"] })), 0, f.err.join("\n"));
+	assert.equal(state().keys.firstWritten, state().keys.written, "untouched since the first write: byte-for-byte restore");
 	f.out.length = 0;
 	assert.equal(await runDesktop(context(f, { args: ["--uninstall"] })), 0, f.err.join("\n"));
 	assert.equal(keys(), USER_KEYS);
@@ -674,6 +675,18 @@ test("keys: --uninstall removes exactly our entries; the rest stays byte-identic
 	// Edited after install: our entries go, the user's edit stays.
 	assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"] })), 0, f.err.join("\n"));
 	writeKeys(keys().replace('"tab.new"', '"tab.new", "ctrl-shift-w": "tab.close"'));
+	assert.equal(await runDesktop(context(f, { args: ["--uninstall"] })), 0, f.err.join("\n"));
+	assert.equal(keys(), USER_KEYS.replace('"tab.new"', '"tab.new", "ctrl-shift-w": "tab.close"'));
+});
+
+test("keys: a user edit followed by a refresh that rewrites keys.json survives --uninstall (R1/R3)", async (t) => {
+	const { f, keys, writeKeys } = keysFixture(t);
+	writeKeys(USER_KEYS);
+	assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"] })), 0, f.err.join("\n"));
+	writeKeys(keys().replace('"tab.new"', '"tab.new", "ctrl-shift-w": "tab.close"'));
+	writeFileSync(join(f.pkg, "herdr", "keys.json"), JSON.stringify({ "layout:gentle-shell": { "cmd-k": "mod.open:gentle-palette" } }));
+	assert.equal(await runDesktop(context(f, { args: ["--refresh"] })), 0, f.err.join("\n"));
+	assert.ok(!keys().includes("gentle-status.toggle"), "the refresh rewrote keys.json");
 	assert.equal(await runDesktop(context(f, { args: ["--uninstall"] })), 0, f.err.join("\n"));
 	assert.equal(keys(), USER_KEYS.replace('"tab.new"', '"tab.new", "ctrl-shift-w": "tab.close"'));
 });

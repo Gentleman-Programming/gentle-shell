@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -7,6 +7,7 @@ import { daemonFor, mcpCallText, parseMcpReply } from "./codegraph-daemon.ts";
 import type { DaemonInfo } from "./codegraph-daemon.ts";
 import { acquireInitLock, codegraphWritingIndex, tryAcquireSyncLease } from "./codegraph-lease.ts";
 import type { SeedOutcome } from "./codegraph-seed.ts";
+import { resolveSessionWorktree } from "./session-worktree-registry.ts";
 
 /** A cold daemon on a network share can need over a minute for its first read. */
 const WARMUP_TIMEOUT_MS = 120_000;
@@ -173,6 +174,37 @@ export function skipsSession(env: Record<string, string | undefined>, reason: Se
 	return env[CHILD_ENV] === "1" || reason === "reload";
 }
 
+/** Whether `cwd` is itself a linked git worktree (not a main checkout). */
+function isLinkedWorktree(cwd: string): boolean {
+	try {
+		// The same shape as worktreeMainRoot in codegraph-seed.ts, deliberately re-implemented
+		// here instead of imported: codegraph-seed.ts already value-imports SYNC_TIMEOUT_MS from
+		// this module, so importing it back would close a readiness <-> seed cycle.
+		// A linked worktree's `.git` is a file pointing at the common dir; the main checkout's
+		// is a directory.
+		if (!lstatSync(join(cwd, ".git")).isFile()) return false;
+		const identity = resolveSessionWorktree(cwd, cwd);
+		return identity !== undefined && identity.root === realpathSync(cwd);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * A subagent child normally shares its parent's project index, with one exception: its cwd is
+ * its own unindexed linked worktree, whose index is no other session's job to bring up.
+ */
+export function childWorktreeNeedsIndex(env: Record<string, string | undefined>, cwd: string): boolean {
+	return env[CHILD_ENV] === "1" && indexState(cwd) === "absent" && isLinkedWorktree(cwd);
+}
+
+/** Reload dominates; only a child in its own unindexed linked worktree is un-skipped for the seed-or-init path. */
+export function sessionSkipsReadiness(env: Record<string, string | undefined>, reason: SessionStartReason, cwd: string): boolean {
+	if (reason === "reload") return true;
+	if (env[CHILD_ENV] === "1") return !childWorktreeNeedsIndex(env, cwd);
+	return skipsSession(env, reason);
+}
+
 export interface ReadinessInput {
 	cwd: string;
 	/** The daemon registry consulted for liveness; the default is CodeGraph's own. */
@@ -217,7 +249,12 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 	if (existing) return existing;
 	const started = (async (): Promise<ReadinessResult> => {
 		try {
-			if (skipsSession(input.env, input.reason)) return { action: "none", ok: true, warm: "skipped" };
+			// The narrowed gate: reload always skips, an ordinary child skips unless its cwd is its
+			// own unindexed linked worktree — the only exception that un-skips a child. A child past
+			// this gate can therefore only see action "init" or "none": childWorktreeNeedsIndex
+			// requires indexState absent, which keeps planIndexAction off "sync".
+			if (sessionSkipsReadiness(input.env, input.reason, input.cwd)) return { action: "none", ok: true, warm: "skipped" };
+			const childWorktree = input.env[CHILD_ENV] === "1";
 			const action = planIndexAction(input.cwd, indexState(input.cwd), input.isProjectRoot);
 			if (action === "none") return { action, ok: true, warm: "skipped" };
 			try { input.onStart?.(action); } catch { /* never worth stopping the index */ }
@@ -291,6 +328,10 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 				}
 			}
 			try { input.onIndexed?.(action === "sync" ? { action, ok, daemonAlive: alive, ...(lastSyncInfo ?? {}) } : { action, ok }); } catch { /* never worth stopping the warm-up */ }
+			// A child that just seeded or initialised its own worktree never warms a daemon: it must
+			// not reach for the parent-shared project daemon at session start, and maybeRewarm
+			// already covers its queries lazily.
+			if (childWorktree) return { action, ok, warm: "skipped" };
 			// A failed sync still leaves an index to warm; a failed init leaves nothing worth warming.
 			if (standDown || !(action === "sync" || (action === "init" && ok))) return { action, ok, warm: "skipped" };
 			try { input.onWarmStart?.(); } catch { /* never worth stopping the warm-up */ }

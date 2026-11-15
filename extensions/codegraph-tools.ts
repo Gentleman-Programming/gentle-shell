@@ -7,6 +7,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { exploreViaDaemon, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
 import { seedWorktreeIndex } from "../lib/codegraph-seed.ts";
 import { CHILD_ENV, indexState, maybeRewarm, prepareReadiness, runCodegraph, syncBeforeSearch, warmUpDaemon, type SearchSyncInput, type SessionStartReason } from "../lib/codegraph-readiness.ts";
+import { seedSessionWorktrees } from "../lib/codegraph-session-seed.ts";
 
 const CODEGRAPH_OPERATION = {
 	INIT: "init",
@@ -682,5 +683,13 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 			.catch(() => {
 				/* never surface: the session may already be gone */
 			});
+		// Sibling pre-warm: the repo's other unindexed linked worktrees are seeded from this
+		// session's index, quietly in the background — no notice, never awaited. A /reload is
+		// not a new session, so it never rescans.
+		if (reason !== "reload") {
+			void seedSessionWorktrees({ cwd: ctx.cwd, run: runCodegraph }).catch(() => {
+				/* never surface: pre-warm is best effort */
+			});
+		}
 	});
 }

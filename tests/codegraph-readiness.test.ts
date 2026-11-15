@@ -2,16 +2,18 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { daemonFor } from "../lib/codegraph-daemon.ts";
 import { lockPathFor, readLeaseVerdict } from "../lib/codegraph-lease.ts";
 import {
+	childWorktreeNeedsIndex,
 	indexState,
 	maybeRewarm,
 	planIndexAction,
 	prepareReadiness,
+	sessionSkipsReadiness,
 	skipsSession,
 	SYNC_RETRY_DELAY_MS,
 	syncBeforeSearch,
@@ -30,6 +32,37 @@ function dir(t: test.TestContext, name: string): string {
 function writeDb(cwd: string): void {
 	mkdirSync(join(cwd, ".codegraph"));
 	writeFileSync(join(cwd, ".codegraph", "codegraph.db"), "index");
+}
+
+/** git that fails the test WITH stderr instead of swallowing it. */
+function git(args: readonly string[], cwd: string): void {
+	const result = spawnSync("git", [...args], { cwd, encoding: "utf8" });
+	if (result.status !== 0) {
+		throw new Error(`git ${args.join(" ")} in ${cwd} failed (${result.status}): ${result.stderr ?? result.error ?? "no stderr"}`);
+	}
+}
+
+/** A main checkout with a tracked marker file and an index, plus a linked worktree of it. */
+function worktreePair(t: test.TestContext): { main: string; worktree: string } {
+	const main = mkdtempSync(join(tmpdir(), "gentle-codegraph-readiness-worktree-"));
+	git(["init", "-b", "main"], main);
+	// The marker is committed in main so `git worktree add` copies it: planIndexAction needs it for init.
+	writeFileSync(join(main, "package.json"), "{}\n");
+	const fixtureGit = ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false"];
+	git([...fixtureGit, "add", "package.json"], main);
+	git([...fixtureGit, "commit", "-m", "fixture"], main);
+	// A unique name per test: a leftover worktree from a crashed run must never
+	// collide with the next one (git worktree add refuses an existing path).
+	const worktree = join(dirname(main), `readiness-worktree-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+	git(["worktree", "add", "-b", "feature", worktree], main);
+	// Direct removal, not `git worktree remove`: after-hooks may run after the
+	// main repo is already gone, and the repo's own cleanup drops the registration.
+	t.after(() => {
+		rmSync(worktree, { recursive: true, force: true });
+		rmSync(main, { recursive: true, force: true });
+	});
+	writeDb(main);
+	return { main, worktree };
 }
 
 /** Writes one daemon-registry record for a project into `registry`. */
@@ -844,4 +877,90 @@ test("syncBeforeSearch: beside a live daemon a failed sync retries once; daemon-
 	});
 	await settled();
 	assert.deepEqual(deadFailures, [{ stage: "sync", info: { daemonAlive: false } }], "daemon-less failures report daemonAlive false");
+});
+
+test("childWorktreeNeedsIndex: only a child in its own unindexed linked worktree needs an index", (t) => {
+	const plain = dir(t, "child-plain");
+	writeFileSync(join(plain, "package.json"), "{}\n");
+	assert.equal(childWorktreeNeedsIndex({}, plain), false, "not a child");
+	assert.equal(childWorktreeNeedsIndex({ GENTLE_PI_AGENTS_CHILD: "1" }, plain), false, "a child in a plain directory shares its parent's project");
+
+	const { worktree } = worktreePair(t);
+	writeDb(worktree);
+	assert.equal(childWorktreeNeedsIndex({ GENTLE_PI_AGENTS_CHILD: "1" }, worktree), false, "the worktree already carries its own index");
+});
+
+test("sessionSkipsReadiness: a child in its own unindexed linked worktree is the only un-skipped child", (t) => {
+	const { main, worktree } = worktreePair(t);
+	const child = { GENTLE_PI_AGENTS_CHILD: "1" };
+	assert.equal(sessionSkipsReadiness(child, "startup", worktree), false, "that worktree's index is nobody else's job");
+	assert.equal(sessionSkipsReadiness(child, "reload", worktree), true, "reload dominates: /reload is not a new session");
+	assert.equal(sessionSkipsReadiness({}, "startup", main), false, "an ordinary session is never skipped");
+	assert.equal(sessionSkipsReadiness({ GENTLE_PI_AGENTS_CHILD: "0" }, "startup", worktree), false, "only \"1\" is a child: an ordinary session in a worktree still runs readiness");
+	writeDb(worktree);
+	assert.equal(sessionSkipsReadiness(child, "startup", worktree), true, "once the index exists the child skips again");
+});
+
+test("prepareReadiness: a child in its own unindexed linked worktree seeds and never warms", async (t) => {
+	const { worktree } = worktreePair(t);
+	const calls: string[] = [];
+	const seeded: string[] = [];
+	const events: string[] = [];
+	const result = await prepareReadiness(fakeInput(worktree, {
+		env: { GENTLE_PI_AGENTS_CHILD: "1" },
+		seed: async (workspace) => {
+			seeded.push(workspace);
+			return { outcome: "seeded" };
+		},
+		run: async (args) => {
+			calls.push(`run:${args.join(" ")}`);
+			return true;
+		},
+		warm: async () => {
+			calls.push("warm");
+			return true;
+		},
+		onIndexed: (indexed) => {
+			events.push(indexed.action);
+		},
+	}));
+	assert.deepEqual(result, { action: "init", ok: true, warm: "skipped" }, "a child seeds or initialises only; it never warms a daemon");
+	assert.deepEqual(seeded, [worktree], "the un-skipped child seeds its own worktree");
+	assert.deepEqual(calls, [], "no init and no warm ran");
+	assert.deepEqual(events, ["init"], "onIndexed still reports the finished index");
+});
+
+test("prepareReadiness: a child reload or an indexed worktree still skips entirely", async (t) => {
+	const { worktree } = worktreePair(t);
+	const calls: string[] = [];
+	const reload = await prepareReadiness(fakeInput(worktree, {
+		env: { GENTLE_PI_AGENTS_CHILD: "1" },
+		reason: "reload",
+		seed: async () => {
+			calls.push("seed");
+			return { outcome: "seeded" };
+		},
+		run: async (args) => {
+			calls.push(`run:${args.join(" ")}`);
+			return true;
+		},
+	}));
+	assert.deepEqual(reload, { action: "none", ok: true, warm: "skipped" }, "reload dominates the child exception");
+	assert.deepEqual(calls, []);
+
+	writeDb(worktree);
+	const indexedCalls: string[] = [];
+	const indexed = await prepareReadiness(fakeInput(worktree, {
+		env: { GENTLE_PI_AGENTS_CHILD: "1" },
+		seed: async () => {
+			indexedCalls.push("seed");
+			return { outcome: "seeded" };
+		},
+		run: async (args) => {
+			indexedCalls.push(`run:${args.join(" ")}`);
+			return true;
+		},
+	}));
+	assert.deepEqual(indexed, { action: "none", ok: true, warm: "skipped" }, "once the index exists the child skips entirely again");
+	assert.deepEqual(indexedCalls, [], "no seed, no sync: the child skips");
 });

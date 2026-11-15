@@ -35,6 +35,12 @@ export type CodegraphRun = (
 /** The backoff sleep when no test seam is injected. */
 const defaultSyncSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** The first line of an error's message (or its String form), bounded for reports. */
+export function firstLineOf(error: unknown, max?: number): string {
+	const text = error instanceof Error ? error.message.split("\n")[0] : String(error);
+	return max === undefined ? text : text.slice(0, max);
+}
+
 /**
  * One sync -q beside a live daemon, retried once after a backoff when it fails: the CLI coexists
  * with the daemon by design and its busy windows close by themselves, so one retry absorbs the
@@ -52,6 +58,43 @@ async function runSyncWithRetry(
 	return attempt();
 }
 
+type DaemonlessRefresh =
+	| { kind: "writing" }
+	| { kind: "held-live" }
+	| { kind: "lease-blocked" }
+	| { kind: "unlock-failed" }
+	| { kind: "done"; synced: boolean };
+
+/**
+ * The daemon-less half of an index refresh, shared by prepareReadiness and syncBeforeSearch: when
+ * CodeGraph itself is writing, its live lock is left alone; only the sync-lease holder refreshes —
+ * a live lease in another session means that session is unlocking+syncing right now (an unlock here
+ * would clear its live lock), so this session runs nothing. The unlock is a precondition, not
+ * best-effort: when it fails, the sync never runs.
+ */
+async function daemonlessRefresh(cwd: string, opts: { run: CodegraphRun; locksDir?: string; sink?: (info: CodegraphCommandInfo) => void }): Promise<DaemonlessRefresh> {
+	if (codegraphWritingIndex(cwd)) return { kind: "writing" };
+	const lease = tryAcquireSyncLease(cwd, opts.locksDir);
+	if (!lease) {
+		// Only a live holder means another session is refreshing right now. A damaged or unreadable
+		// token is nobody's refresh and must not silently disable it forever.
+		return syncLeaseHeldLive(cwd, opts.locksDir) ? { kind: "held-live" } : { kind: "lease-blocked" };
+	}
+	try {
+		if (!(await opts.run(["unlock"], cwd, SYNC_TIMEOUT_MS))) return { kind: "unlock-failed" };
+		return { kind: "done", synced: await opts.run(["sync", "-q"], cwd, SYNC_TIMEOUT_MS, undefined, opts.sink) };
+	} finally {
+		lease.release();
+	}
+}
+
+/** prepareReadiness's boolean view: another writer or holder handled the refresh, a blocked lease or
+ * failed unlock did not, and otherwise the sync outcome decides. */
+function daemonlessOk(outcome: DaemonlessRefresh): boolean {
+	if (outcome.kind === "done") return outcome.synced;
+	return outcome.kind === "writing" || outcome.kind === "held-live";
+}
+
 const INIT_TIMEOUT_MS = 600_000;
 /** How long a killed command may take to be gone before the timeout is reported anyway. */
 const KILL_WAIT_MS = 10_000;
@@ -59,6 +102,16 @@ const KILL_WAIT_MS = 10_000;
 export const CHILD_ENV = "GENTLE_PI_AGENTS_CHILD";
 /** One of these next to a `.git` is what makes a directory a project worth indexing automatically. */
 const MARKERS = ["composer.json", "package.json", "pyproject.toml", "go.mod", "Cargo.toml", "Gemfile", "pom.xml", "build.gradle", "build.gradle.kts"];
+/** Spawns the codegraph CLI from the temp directory (cmd.exe cannot take a UNC working
+ * directory): Windows needs a shell for the npm `.cmd` shim and quotes every part of the fixed
+ * command line; POSIX takes a plain argument vector in its own detached group. */
+function spawnCodegraph(args: readonly string[], stdio: ReadonlyArray<"pipe" | "ignore">): ReturnType<typeof spawn> {
+	if (process.platform === "win32") {
+		return spawn(`codegraph ${args.map((part) => JSON.stringify(part)).join(" ")}`, { cwd: tmpdir(), env: process.env, shell: true, windowsHide: true, stdio: [...stdio] });
+	}
+	return spawn("codegraph", [...args], { cwd: tmpdir(), env: process.env, detached: true, windowsHide: true, stdio: [...stdio] });
+}
+
 
 /**
  * Makes the project's CodeGraph daemon open its database and start a read worker, so the next real call
@@ -102,12 +155,7 @@ export function warmUpDaemon(cwd: string, background = false, timeoutMs = WARMUP
 		}, timeoutMs);
 		if (background) timer.unref?.();
 		try {
-			if (process.platform === "win32") {
-				// Windows needs a shell for the npm `.cmd` shim; the command line is fixed plus the quoted project.
-				child = spawn(`codegraph serve --mcp -p ${JSON.stringify(project)}`, { cwd: tmpdir(), env: process.env, shell: true, windowsHide: true, stdio: ["pipe", "pipe", "ignore"] });
-			} else {
-				child = spawn("codegraph", ["serve", "--mcp", "-p", project], { cwd: tmpdir(), env: process.env, detached: true, windowsHide: true, stdio: ["pipe", "pipe", "ignore"] });
-			}
+			child = spawnCodegraph(["serve", "--mcp", "-p", project], ["pipe", "pipe", "ignore"]);
 			if (background) {
 				child.unref();
 				(child.stdin as (NodeJS.WritableStream & { unref?(): void }) | null)?.unref?.();
@@ -194,7 +242,16 @@ export function childWorktreeNeedsIndex(env: Record<string, string | undefined>,
 export function sessionSkipsReadiness(env: Record<string, string | undefined>, reason: SessionStartReason, cwd: string): boolean {
 	if (reason === "reload") return true;
 	if (env[CHILD_ENV] === "1") return !childWorktreeNeedsIndex(env, cwd);
-	return skipsSession(env, reason);
+	return false; // reload and the child case returned above; skipsSession can only see the negative
+}
+
+/** Captures the last command outcome a refresh ran, for its failure reports. */
+function lastInfoSink(): { sink: (info: CodegraphCommandInfo) => void; get(): { exitCode?: number | null; stderrTail?: string } | undefined } {
+	let last: { exitCode?: number | null; stderrTail?: string } | undefined;
+	return {
+		sink: (info) => { last = { exitCode: info.exitCode, stderrTail: info.stderrTail }; },
+		get: () => last,
+	};
 }
 
 export interface ReadinessInput {
@@ -254,10 +311,7 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 			if (action === "none") return { action, ok: true, warm: "skipped" };
 			try { input.onStart?.(action); } catch { /* never worth stopping the index */ }
 			let ok: boolean;
-			let lastSyncInfo: { exitCode?: number | null; stderrTail?: string } | undefined;
-			const sink = (info: CodegraphCommandInfo): void => {
-				lastSyncInfo = { exitCode: info.exitCode, stderrTail: info.stderrTail };
-			};
+			const syncInfo = lastInfoSink();
 			let standDown = false;
 			let alive = false;
 			if (action === "sync") {
@@ -269,27 +323,10 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 				// run and the failure is reported as the sync's own.
 				try { alive = daemonFor(input.cwd, input.registryDir).alive; } catch { /* not alive */ }
 				if (alive) {
-					ok = await runSyncWithRetry(input.run, input.cwd, input.sleep ?? defaultSyncSleep, sink);
-				} else if (codegraphWritingIndex(input.cwd)) {
-					// CodeGraph itself is writing (any launcher): an unlock would drop its live lock.
-					ok = true;
+					ok = await runSyncWithRetry(input.run, input.cwd, input.sleep ?? defaultSyncSleep, syncInfo.sink);
 				} else {
-					// Daemon-less: only the sync-lease holder refreshes. A live lease in another session
-					// means that session is unlocking+syncing right now — an unlock here would clear its
-					// live lock — so this session runs nothing and reports the refresh as handled.
-					const lease = tryAcquireSyncLease(input.cwd, input.locksDir);
-					if (!lease) {
-						// Only a live holder means another session is refreshing right now. A damaged or
-						// unreadable token is nobody's refresh and must not silently disable it forever.
-						ok = syncLeaseHeldLive(input.cwd, input.locksDir);
-					} else {
-						try {
-							const unlocked = await input.run(["unlock"], input.cwd, SYNC_TIMEOUT_MS);
-							ok = unlocked && await input.run(["sync", "-q"], input.cwd, SYNC_TIMEOUT_MS, undefined, sink);
-						} finally {
-							lease.release();
-						}
-					}
+					// Daemon-less: only the sync-lease holder refreshes (daemonlessRefresh decides).
+					ok = daemonlessOk(await daemonlessRefresh(input.cwd, { run: input.run, locksDir: input.locksDir, sink: syncInfo.sink }));
 				}
 			} else {
 				// The init lock keeps two sessions on one fresh project from building the same index
@@ -324,7 +361,7 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 					}
 				}
 			}
-			try { input.onIndexed?.(action === "sync" ? { action, ok, daemonAlive: alive, ...(lastSyncInfo ?? {}) } : { action, ok }); } catch { /* never worth stopping the warm-up */ }
+			try { input.onIndexed?.(action === "sync" ? { action, ok, daemonAlive: alive, ...(syncInfo.get() ?? {}) } : { action, ok }); } catch { /* never worth stopping the warm-up */ }
 			// A child that just seeded or initialised its own worktree never warms a daemon: it must
 			// not reach for the parent-shared project daemon at session start, and maybeRewarm
 			// already covers its queries lazily.
@@ -340,8 +377,7 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 		} catch (error: unknown) {
 			// An unexpected exception is not a deliberate skip: carry its reason so the session
 			// surfaces it instead of silently reporting that nothing happened.
-			const reason = error instanceof Error ? error.message.split("\n")[0] : String(error);
-			return { action: "none", ok: false, warm: "skipped", error: reason.slice(0, 200) };
+			return { action: "none", ok: false, warm: "skipped", error: firstLineOf(error, 200) };
 		} finally {
 			inFlight.delete(input.cwd);
 		}
@@ -378,44 +414,31 @@ export function syncBeforeSearch(input: SearchSyncInput): void {
 	if (searchSyncInFlight.has(input.cwd)) return;
 	const job = (async (): Promise<void> => {
 		const sleep = input.sleep ?? defaultSyncSleep;
-		let lastSyncInfo: { exitCode?: number | null; stderrTail?: string } | undefined;
-		const sink = (info: CodegraphCommandInfo): void => {
-			lastSyncInfo = { exitCode: info.exitCode, stderrTail: info.stderrTail };
-		};
+		const info = lastInfoSink();
 		try {
 			let alive = false;
 			try { alive = daemonFor(input.cwd, input.registryDir).alive; } catch { /* not alive */ }
 			if (alive) {
-				const synced = await runSyncWithRetry(input.run, input.cwd, sleep, sink);
-				if (!synced) input.onFailed?.("sync", { daemonAlive: true, ...(lastSyncInfo ?? {}) });
+				const synced = await runSyncWithRetry(input.run, input.cwd, sleep, info.sink);
+				if (!synced) input.onFailed?.("sync", { daemonAlive: true, ...(info.get() ?? {}) });
 				return;
 			}
 			// Daemon-less: the sync lease decides who refreshes. A live lease in another session
 			// means zero CLI calls here — an unlock would clear that session's live lock.
-			if (codegraphWritingIndex(input.cwd)) return; // a live CodeGraph writer is never unlocked under
-			const lease = tryAcquireSyncLease(input.cwd, input.locksDir);
-			if (!lease) {
+			// Daemon-less: the sync lease decides who refreshes (daemonlessRefresh decides).
+			const outcome = await daemonlessRefresh(input.cwd, { run: input.run, locksDir: input.locksDir, sink: info.sink });
+			if (outcome.kind === "writing" || outcome.kind === "held-live") return;
+			if (outcome.kind === "lease-blocked" || outcome.kind === "unlock-failed") {
 				// A live holder owns this refresh; anything else that blocked the lease is an
 				// unlock-blocking condition this session reports instead of silently skipping.
-				if (!syncLeaseHeldLive(input.cwd, input.locksDir)) input.onFailed?.("unlock", { daemonAlive: false });
+				input.onFailed?.("unlock", { daemonAlive: false });
 				return;
 			}
-			try {
-				const unlocked = await input.run(["unlock"], input.cwd, SYNC_TIMEOUT_MS);
-				if (!unlocked) {
-					input.onFailed?.("unlock", { daemonAlive: false });
-					return;
-				}
-				const synced = await input.run(["sync", "-q"], input.cwd, SYNC_TIMEOUT_MS, undefined, sink);
-				if (!synced) input.onFailed?.("sync", { daemonAlive: false, ...(lastSyncInfo ?? {}) });
-			} finally {
-				lease.release();
-			}
+			if (!outcome.synced) input.onFailed?.("sync", { daemonAlive: false, ...(info.get() ?? {}) });
 		} catch (error: unknown) {
 			// Command failures flow through onFailed; an exception from the refresh itself would
 			// otherwise vanish with the detached job — surface its reason instead.
-			const reason = error instanceof Error ? error.message.split("\n")[0] : String(error);
-			input.onError?.(reason.slice(0, 200));
+			input.onError?.(firstLineOf(error, 200));
 		} finally {
 			searchSyncInFlight.delete(input.cwd);
 		}
@@ -462,8 +485,8 @@ export function runCodegraph(args: readonly string[], cwd: string, timeoutMs: nu
 	return new Promise((resolve) => {
 		let settled = false;
 		let grace: ReturnType<typeof setTimeout> | undefined;
-	let exitCode: number | null | undefined;
-	let stderrTail = "";
+		let exitCode: number | null | undefined;
+		let stderrTail = "";
 		const finish = (ok: boolean) => {
 			if (settled) return;
 			settled = true;
@@ -481,11 +504,7 @@ export function runCodegraph(args: readonly string[], cwd: string, timeoutMs: nu
 				/* not alive: no registry, so the command simply runs for the real project path */
 				project = realpathSync(cwd);
 			}
-			if (process.platform === "win32") {
-				child = spawn(`codegraph ${[...args, project].map((part) => JSON.stringify(part)).join(" ")}`, { cwd: tmpdir(), env: process.env, shell: true, windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
-			} else {
-				child = spawn("codegraph", [...args, project], { cwd: tmpdir(), env: process.env, detached: true, windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
-			}
+			child = spawnCodegraph([...args, project], ["ignore", "ignore", "pipe"]);
 		} catch {
 			resolve(false);
 			return;
@@ -494,8 +513,8 @@ export function runCodegraph(args: readonly string[], cwd: string, timeoutMs: nu
 			try { onSpawn?.(child.pid, process.platform === "win32"); } catch { /* bookkeeping is best effort */ }
 		}
 		child?.stderr?.on("data", (chunk: Buffer) => {
-		// Only the tail is ever shown: keep the last slice, never the whole stream.
-		stderrTail = (stderrTail + chunk.toString("utf8")).slice(-2_000);
+			// Only the tail is ever shown: keep the last slice, never the whole stream.
+			stderrTail = (stderrTail + chunk.toString("utf8")).slice(-2_000);
 		});
 		const timer = setTimeout(() => {
 			killProcessTree(child, true);

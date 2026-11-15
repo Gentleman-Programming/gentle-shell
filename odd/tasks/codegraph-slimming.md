@@ -34,7 +34,7 @@ S5 (U5 — first-gate cleanup), quoted:
 ## Tasks
 
 - T1 — S1 — U1 tool-wrapper slim (tools.ts) — inline — commit: 68a6466
-- T2 — S2 — U2 hot-path fs + buffer parity (tools.ts) — inline — commit: _pending_
+- T2 — S2 — U2 hot-path fs + buffer parity (tools.ts) — inline — commit: 2ebcc4e
 - T3 — S3 — U3 readiness slim (readiness.ts + helper import) — inline — commit: _pending_
 - T4 — S4 — U4 daemon share + liveness + comment (daemon.ts, readiness.ts) — inline — commit: _pending_
 - T5 — S5 — U5 first-gate dead try/catch — inline — commit: _pending_

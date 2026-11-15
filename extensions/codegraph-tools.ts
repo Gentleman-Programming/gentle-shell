@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { exploreViaDaemon, MAX_REPLY_CHARS, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
 import { seedWorktreeIndex } from "../lib/codegraph-seed.ts";
-import { CHILD_ENV, indexState, maybeRewarm, prepareReadiness, runCodegraph, syncBeforeSearch, warmUpDaemon, type SearchSyncInput, type SessionStartReason } from "../lib/codegraph-readiness.ts";
+import { CHILD_ENV, firstLineOf, indexState, maybeRewarm, prepareReadiness, runCodegraph, syncBeforeSearch, warmUpDaemon, type SearchSyncInput, type SessionStartReason } from "../lib/codegraph-readiness.ts";
 import { seedSessionWorktrees } from "../lib/codegraph-session-seed.ts";
 
 const CODEGRAPH_OPERATION = {
@@ -282,7 +282,7 @@ function excludeIndexLocally(cwd: string, gitRun: GitRun = defaultGitRun): CodeG
 		excludePresent.add(cwd);
 		return { status: "added", path };
 	} catch (error: unknown) {
-		const reason = error instanceof Error ? error.message.split("\n")[0] : String(error);
+		const reason = firstLineOf(error);
 		return { status: "failed", ...(path ? { path } : {}), reason };
 	}
 }

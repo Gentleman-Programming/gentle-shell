@@ -12,6 +12,7 @@ Branch `feat/herdr-gentle-shell` from `origin/main` 3dc902975. References (read-
 - S8 Fidelity (user): "fijate porfa que quede 1 a 1 con el diseño eh" — the built window must match `design/herdr-desktop/01-inspector.html` one to one (layout, regions, sizes, spacing, colours, typography, states). Each view task closes only after a side-by-side check: `herdr-app shot` of the live window vs a headless render of the artboard at the same size, with every difference fixed or listed as a Herdr limitation.
 - S9 Feature parity (user): "Una vez que termines todo fíjate que tengamos todas las mismas funcionadisded que gentle Shell y funcionen" — after T7-T9, a parity audit checks every Gentle Shell feature (commands, panels, modes, prompts, shortcuts, integrations) against the desktop and proves each one works, live where possible.
 - S10 (user): "no lo veo tal cual, no es un 1 a 1" / "compara los agentes y todo avas a ver que nada que ver"; choice "Todas mis sesiones": the desktop shows every Gentle Shell session on the machine wherever it runs (Herdr TUI, Ghostty, any terminal), with live chat, inspector and modes; prompts and answers go through the session's action inbox; the Terminal switch appears only for sessions hosted in Herdr app. The data shown must match the session's own TUI (agents, todo, changes, stats, usage, cost, context).
+- S11 (user): "agrega algo, vista mnimia de todo en el chat, como hacemos con gentle shell y que pueda expandirse cualquier cosa" — the chat defaults to a minimal view of everything (tool calls, thinking, diffs, subagents, long outputs) like Gentle Shell's TUI does, and any item can be expanded (and collapsed again).
 - S6 Code references: "ejemplos que podes tomar de referencia para codigo https://herdr.dev/gallery/"
 
 ## Constraints (from the Herdr spikes, `.worktrees/herdr-gentle-ui` `odd/tasks/herdr-tower-spikes.md`)
@@ -30,6 +31,7 @@ Branch `feat/herdr-gentle-shell` from `origin/main` 3dc902975. References (read-
 - T8 Package: layout + mods shipped in gentle-pi; `gentle-shell desktop` installs pinned Herdr app (checksum), installs layout/mods, `herdr-app check`, switches layout, launches — S3, S4 — done (84a5a2289, c508057e5, 1deeacc8b, 78567775b, 5e09abe4d)
 - T10 Parity audit: every Gentle Shell feature present and working in the desktop (S9), with gaps closed or listed — S9 — done (fcb04e7d1, 36a2ced1d; parity table in L-entries and docs/gentle-shell-desktop.md)
 - T11 Every session, not only Herdr-hosted ones: sessions/agents lists from feeds; chat + inspector for any feed; `send_prompt` (and answers) via the inbox; Terminal switch only when a Herdr terminal matches; then a field-by-field comparison against the session's TUI — S10 — pending
+- T12 Minimal chat view with expand-anything, mirroring Gentle Shell's compact rendering — S11 — pending
 - T9 Docs (command help, README, RECIPE.md) — S3 — done (c5b64549e)
 
 ## Risks
@@ -60,3 +62,4 @@ Branch `feat/herdr-gentle-shell` from `origin/main` 3dc902975. References (read-
 - L21 (user): "tendriamos que diferenciar claramente los que son sesiones de tui y los que son sesiones de Herdr core" — every session row, tab and chat header shows its kind with a labelled badge and icon: Herdr (herdr-core terminal in this window, Terminal switch) vs TUI (another terminal, input via the inbox).
 - L22 (user): "y cuando ntras en terminal no aparece mas lo de chat" — the Terminal view must keep the Chat | Terminal switch.
 - L23 (user): "y los podriamos separar en el sidebar tambien como dos secciones diferentes" — sidebar Agents splits into two sections (Herdr sessions in this window / TUI sessions in other terminals), each with header and count.
+- L24 (user): "agrega algo, vista mnimia de todo en el chat, como hacemos con gentle shell y que pueda expandirse cualquier cosa"

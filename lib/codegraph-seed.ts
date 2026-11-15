@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { acquireInitLock, codegraphWritingIndex, defaultLocksDir, lockPathFor, readLeaseVerdict } from "./codegraph-lease.ts";
 import { linkedWorktreeIdentity, SYNC_TIMEOUT_MS } from "./codegraph-readiness.ts";
@@ -15,7 +15,7 @@ export type SeedOutcome =
 	| "deferred"
 	/** The main checkout's index is being written right now: nothing was copied, nothing failed. */
 	| "main-busy"
-	/** Copy or validating sync failed; the worktree is left without a database. */
+	/** Copy, validating sync, or an unsafe (symlinked) destination failed; the worktree is left without a database. */
 	| "seed-failed";
 
 export interface SeedInput {
@@ -27,7 +27,7 @@ export interface SeedInput {
 	initLockWaitMs?: number;
 	/** Sleep between transient retries; injectable for tests. */
 	sleep?(ms: number): Promise<void>;
-	/** Runs `codegraph <args> <cwd>`; the validating sync. */
+	/** Runs `codegraph <args> <cwd>`; the validating sync, with the staging project as its cwd. */
 	run(args: readonly string[], cwd: string, timeoutMs: number): Promise<boolean>;
 }
 
@@ -54,8 +54,6 @@ function isFile(path: string): boolean {
 
 /** The database and its SQLite sidecars, in copy order; missing ones are skipped. */
 const SEED_FILES = ["codegraph.db", "codegraph.db-wal", "codegraph.db-shm"] as const;
-/** A staged copy never counts as an index, whatever crash interrupts it. */
-const SEEDING_SUFFIX = ".seeding";
 const INDEX_GITIGNORE = "*\n!.gitignore\n";
 
 /** Windows antivirus and indexers can hold a just-written file for a moment; these codes pass on a quick retry. */
@@ -79,10 +77,12 @@ export async function retryTransient<T>(step: () => T, sleep: (ms: number) => Pr
 }
 
 /**
- * Seeds a linked worktree's index by copying the main checkout's database and
- * syncing it, under the worktree's init lock. The sync is the integrity check:
- * a torn copy fails there, the database is removed, and the outcome tells the
- * caller to fall back to init — the worktree never keeps a half-seeded index.
+ * Seeds a linked worktree's index by copying the main checkout's database into
+ * an isolated staging project, validating the copy there, and publishing it
+ * only after that sync succeeds — all under the worktree's init lock. The sync
+ * is the integrity check: a torn copy fails in staging and nothing is
+ * published, so no other session can accept a database the seed might still
+ * remove, and the worktree never keeps a half-seeded index.
  */
 export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: SeedOutcome }> {
 	const { sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = input;
@@ -109,51 +109,84 @@ export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: Se
 		// Re-checked under the lock: another session may have finished while we waited.
 		if (isFile(targetDb)) return { outcome: "target-exists" };
 
-		mkdirSync(targetDir, { recursive: true });
-		writeFileSync(join(targetDir, ".gitignore"), INDEX_GITIGNORE);
-
-		const staged: Array<[staged: string, final: string]> = [];
+		// A symlinked index directory would redirect every seed write outside the worktree,
+		// so it is rejected before anything is written through it.
 		try {
-			for (const name of SEED_FILES) {
-				const source = join(main, ".codegraph", name);
-				if (!isFile(source)) continue;
-				const stagedPath = join(targetDir, `${name}${SEEDING_SUFFIX}`);
-				await retryTransient(() => copyFileSync(source, stagedPath), sleep);
-				staged.push([stagedPath, join(targetDir, name)]);
-			}
-			if (!staged.some(([, final]) => final === targetDb)) {
-				// The source database vanished mid-copy: nothing worth renaming.
-				for (const [stagedPath] of staged) rmSync(stagedPath, { force: true });
+			const target = lstatSync(targetDir);
+			if (target.isSymbolicLink() || !target.isDirectory()) return { outcome: "seed-failed" };
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+		mkdirSync(targetDir, { recursive: true });
+		// Exclusive creation: an existing .gitignore — a regular file or a planted symlink —
+		// is never truncated or followed, so the write cannot land outside the index directory.
+		try {
+			writeFileSync(join(targetDir, ".gitignore"), INDEX_GITIGNORE, { flag: "wx" });
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+		}
+
+		// The seed stays unpublished until validation succeeds: everything is staged in its
+		// own scratch project inside the index directory and the validating sync runs there,
+		// so codegraph.db only appears at its final path once the copy has passed — no other
+		// session can accept a database this seed might still remove.
+		const stagingRoot = mkdtempSync(join(targetDir, "seed-"));
+		const stagingIndex = join(stagingRoot, ".codegraph");
+		try {
+			mkdirSync(stagingIndex);
+			const staged: Array<[staged: string, final: string]> = [];
+			try {
+				for (const name of SEED_FILES) {
+					const source = join(main, ".codegraph", name);
+					if (!isFile(source)) continue;
+					const stagedPath = join(stagingIndex, name);
+					// The exclusive probe makes the destination this seed's own regular file: a
+					// pre-existing path (a symlink above all) rejects instead of redirecting the copy.
+					writeFileSync(stagedPath, "", { flag: "wx" });
+					await retryTransient(() => copyFileSync(source, stagedPath), sleep);
+					staged.push([stagedPath, join(targetDir, name)]);
+				}
+				if (!staged.some(([, final]) => final === targetDb)) {
+					// The source database vanished mid-copy: nothing worth publishing.
+					return { outcome: "seed-failed" };
+				}
+			} catch {
+				// A failing copy leaves no index: staging is removed whole, so the worktree is
+				// exactly as absent as before and init stays possible.
 				return { outcome: "seed-failed" };
 			}
-			// Sidecars first, the database last: no intermediate state has a
-			// database without the sidecars it may need, so a failing sidecar rename
-			// never leaves a torn database that counts as an index.
-			staged.sort(([, a], [, b]) => Number(a === targetDb) - Number(b === targetDb));
-			for (const [stagedPath, finalPath] of staged) await retryTransient(() => renameSync(stagedPath, finalPath), sleep);
-		} catch {
-			// A torn placement leaves no index: every staged and placed file goes, so the worktree
-			// is exactly as absent as before and init stays possible. (Behavior change: a placement
-			// failure is now the seed-failed outcome, never a rejection.)
-			for (const [stagedPath, finalPath] of staged) {
-				try {
-					rmSync(stagedPath, { force: true });
-				} catch { /* already gone */ }
-				try {
-					rmSync(finalPath, { force: true });
-				} catch { /* a final path this seed did not place is not ours to remove */ }
-			}
-			return { outcome: "seed-failed" };
-		}
 
-		const synced = await input.run(["sync", "-q"], input.cwd, SYNC_TIMEOUT_MS);
-		if (!synced) {
-			// A torn or stale copy fails the sync: remove it all, so the
-			// worktree is exactly as absent as before and init stays possible.
-			for (const [, finalPath] of staged) rmSync(finalPath, { force: true });
-			return { outcome: "seed-failed" };
+			const synced = await input.run(["sync", "-q"], stagingRoot, SYNC_TIMEOUT_MS);
+			if (!synced) {
+				// A torn or stale copy fails the validating sync in staging: nothing was published,
+				// so the worktree is exactly as absent as before and init stays possible.
+				return { outcome: "seed-failed" };
+			}
+			// Sidecars first, the database last: no intermediate state has a database without
+			// the sidecars it may need, and the file every consumer keys on — codegraph.db —
+			// appears only after the copy is already validated.
+			staged.sort(([, a], [, b]) => Number(a === targetDb) - Number(b === targetDb));
+			try {
+				for (const [stagedPath, finalPath] of staged) await retryTransient(() => renameSync(stagedPath, finalPath), sleep);
+			} catch {
+				// A torn placement leaves no index: every placed file goes, so the worktree is
+				// exactly as absent as before and init stays possible. (A placement failure is
+				// the seed-failed outcome, never a rejection; the database itself was never
+				// placed, so nothing another session accepted is removed here.)
+				for (const [, finalPath] of staged) {
+					try {
+						rmSync(finalPath, { force: true });
+					} catch { /* a final path this seed did not place is not ours to remove */ }
+				}
+				return { outcome: "seed-failed" };
+			}
+			return { outcome: "seeded" };
+		} finally {
+			// Staging never outlives the seed: published or failed, the scratch project goes.
+			try {
+				rmSync(stagingRoot, { recursive: true, force: true });
+			} catch { /* a leftover scratch dir is garbage, never an index */ }
 		}
-		return { outcome: "seeded" };
 	} finally {
 		lock.release();
 	}

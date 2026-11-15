@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -91,7 +91,7 @@ test("seedWorktreeIndex: staged copy, gitignore, rename, then one sync; the targ
 	assert.deepEqual(calls, ["sync -q"], "exactly one sync validates the copy");
 	assert.equal(readFileSync(join(worktree, ".codegraph", "codegraph.db"), "utf8"), "index-bytes");
 	assert.equal(readFileSync(join(worktree, ".codegraph", ".gitignore"), "utf8"), "*\n!.gitignore\n");
-	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db.seeding")), true, "no staged file remains");
+	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore", "codegraph.db"], "only the index and its gitignore remain: no staging leftovers");
 });
 
 test("seedWorktreeIndex: an existing target index is left alone", async (t) => {
@@ -115,7 +115,7 @@ test("seedWorktreeIndex: a failed sync removes the seeded database so absent sta
 
 	assert.equal(result.outcome, "seed-failed", "the caller learns to fall back to init");
 	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db")), true, "no corrupt half-seeded database is left behind");
-	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db.seeding")), true, "and no staged remnant either");
+	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore"], "and no staging remnant either");
 });
 
 test("a failing sidecar placement returns seed-failed and leaves no torn database", async (t) => {
@@ -129,10 +129,51 @@ test("a failing sidecar placement returns seed-failed and leaves no torn databas
 	const result = await seedWorktreeIndex(seedHarness(worktree).input);
 	assert.equal(result.outcome, "seed-failed", "the caller learns to fall back to init, not a rejection");
 	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db")), true, "the database must not be in place while a sidecar failed");
-	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db.seeding")), true, "no staged database remnant stays behind");
-	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db-wal.seeding")), true, "no staged sidecar remnant stays behind");
+	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore", "codegraph.db-wal"], "no staged remnant stays behind; only the squatter directory remains");
 	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db-shm")), true, "an already-placed sidecar is cleaned too");
 	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db-wal")), false, "the squatter directory is not ours to remove");
+});
+
+test("seedWorktreeIndex: symlinked destinations never receive or redirect seed writes", async (t) => {
+	if (process.platform === "win32") return t.skip("creating symlinks needs privileges on Windows");
+	const { worktree } = worktreePair(t);
+
+	// A planted .codegraph/.gitignore -> ../package.json must never be truncated through.
+	writeFileSync(join(worktree, "package.json"), "{\"name\":\"worktree-manifest\"}");
+	mkdirSync(join(worktree, ".codegraph"));
+	symlinkSync(join(worktree, "package.json"), join(worktree, ".codegraph", ".gitignore"));
+	const planted = await seedWorktreeIndex(seedHarness(worktree).input);
+	assert.equal(planted.outcome, "seeded", "an existing .gitignore is skipped, never followed: the seed itself completes safely");
+	assert.equal(readFileSync(join(worktree, "package.json"), "utf8"), "{\"name\":\"worktree-manifest\"}", "the manifest behind the symlink is never replaced with INDEX_GITIGNORE");
+	assert.equal(lstatSync(join(worktree, ".codegraph", ".gitignore")).isSymbolicLink(), true, "the planted link itself stays a link");
+	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore", "codegraph.db"], "the index lands beside the link without staging leftovers");
+
+	// A symlinked .codegraph directory would redirect every seed write outside the worktree.
+	const elsewhere = mkdtempSync(join(tmpdir(), "gentle-pi-seed-elsewhere-"));
+	t.after(() => rmSync(elsewhere, { recursive: true, force: true }));
+	rmSync(join(worktree, ".codegraph"), { recursive: true, force: true });
+	symlinkSync(elsewhere, join(worktree, ".codegraph"), "dir");
+	const redirected = await seedWorktreeIndex(seedHarness(worktree).input);
+	assert.equal(redirected.outcome, "seed-failed", "a symlinked index directory is not seeded: fail-closed");
+	assert.deepEqual(readdirSync(elsewhere), [], "nothing is ever written through the symlinked index directory");
+});
+
+test("a failed validating sync leaves no published codegraph.db", async (t) => {
+	const { worktree } = worktreePair(t);
+	let visibleDuringSync: boolean | undefined;
+	const { input } = seedHarness(worktree, {
+		run: async () => {
+			visibleDuringSync = !fileAbsent(join(worktree, ".codegraph", "codegraph.db"));
+			return false;
+		},
+	});
+
+	const result = await seedWorktreeIndex(input);
+
+	assert.equal(result.outcome, "seed-failed", "the caller learns to fall back to init");
+	assert.equal(visibleDuringSync, false, "codegraph.db is invisible to every consumer while the validating sync runs");
+	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db")), true, "no database is published from a failed validation");
+	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore"], "staging is cleaned and the worktree stays exactly as absent as before");
 });
 
 test("seedWorktreeIndex: two real sessions seeding one worktree copy exactly once", async (t) => {

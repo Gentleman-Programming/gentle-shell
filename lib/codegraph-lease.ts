@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:f
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { canonicalRoot } from "./codegraph-canonical.ts";
+import { processAlive } from "./codegraph-daemon.ts";
 
 /** A cross-process exclusion token for one project: init (long-held) or sync (short lease). */
 export type LeaseKind = "init" | "sync";
@@ -33,21 +34,11 @@ export function lockPathFor(cwd: string, kind: LeaseKind, locksDir: string = def
 	return join(locksDir, `${digest}.${kind}.json`);
 }
 
-/** Signal 0 only checks; EPERM means the process exists under another user. */
-function pidAlive(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "EPERM";
-	}
-}
-
 /** CodeGraph's own writer lock, any launcher's: a live pid in `.codegraph/codegraph.lock` means an index write is in progress right now. */
 export function codegraphWritingIndex(cwd: string): boolean {
 	try {
 		const pid = Number.parseInt(readFileSync(join(cwd, ".codegraph", "codegraph.lock"), "utf8").trim(), 10);
-		return Number.isInteger(pid) && pid > 0 && pidAlive(pid);
+		return Number.isInteger(pid) && pid > 0 && processAlive(pid);
 	} catch {
 		return false;
 	}
@@ -90,7 +81,7 @@ export function readLeaseVerdict(path: string, now: number = Date.now(), cwd?: s
 	if (cwd !== undefined && codegraphWritingIndex(cwd)) return "held-live";
 	if (token.writerProxy === true && token.writerPidAt !== undefined && now - token.writerPidAt < PROXY_TRUST_MS) return "held-live";
 	if (token.expiresAt <= now) return "held-stale";
-	return pidAlive(token.pid) ? "held-live" : "held-stale";
+	return processAlive(token.pid) ? "held-live" : "held-stale";
 }
 
 /** Exclusive create: the only writer of a free or freshly cleared path wins. */
@@ -186,12 +177,24 @@ export type InitLockOutcome =
 	/** Still held, or unknown, past the wait budget: fail-closed, this session inits nothing. */
 	| { outcome: "skipped" };
 
-function indexDatabasePresent(cwd: string): boolean {
+/**
+ * The index state per the repo's codegraph rules: an access error is unknown, NOT absent, and only a
+ * confirmed-missing database file may be initialised. An index is the database file, never the directory.
+ * The one tri-state every codegraph module keys on; readiness re-exports it for its importers.
+ */
+export type IndexState = "present" | "absent" | "unknown";
+
+export function indexState(cwd: string): IndexState {
 	try {
-		return statSync(join(cwd, ".codegraph", "codegraph.db")).isFile();
-	} catch {
-		return false;
+		return statSync(join(cwd, ".codegraph", "codegraph.db")).isFile() ? "present" : "absent";
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "unknown";
 	}
+}
+
+/** True exactly for the tri-state's "present": the init wait ends when the database file is confirmed. */
+function indexDatabasePresent(cwd: string): boolean {
+	return indexState(cwd) === "present";
 }
 
 /**

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import net from "node:net";
 import { join } from "node:path";
@@ -62,8 +62,9 @@ export function registeredDaemons(root: string, registryDir: string = join(homed
 	return found.sort((a, b) => b.startedAt - a.startedAt);
 }
 
-/** Whether a process with this pid exists; signal 0 only checks. EPERM means it exists under another user. */
-function processAlive(pid: number): boolean {
+/** Whether a process with this pid exists; signal 0 only checks. EPERM means it exists under another user.
+ * The one pid-liveness check: the lease module imports it for its token holders. */
+export function processAlive(pid: number): boolean {
 	try {
 		process.kill(pid, 0);
 		return true;
@@ -100,6 +101,12 @@ export function daemonFor(cwd: string, registryDir?: string): DaemonInfo {
 	const daemons = registeredDaemons(cwd, registryDir);
 	const alive = daemons.find((entry) => entry.pid !== undefined && processAlive(entry.pid) && socketPresent(entry.socketPath));
 	return { alive: alive !== undefined, root: (alive ?? daemons[0])?.root };
+}
+
+/** The project spelled as its daemon registered it, or the real path of `cwd` when no daemon matches:
+ * the one fold every CLI invocation and warm-up uses to stay on a live daemon's spelling. */
+export function projectSpelling(daemon: DaemonInfo | undefined, cwd: string): string {
+	return daemon?.root ?? realpathSync(cwd);
 }
 
 /** Sockets of the project's live daemons, newest first. */
@@ -146,6 +153,38 @@ export function mcpCallText(message: McpReply): string | undefined {
 	return text;
 }
 
+/** The MCP protocol version both conversations declare in their initialize request. */
+const MCP_PROTOCOL_VERSION = "2024-11-05";
+
+/** The initialize request every conversation opens with; the daemon socket sends it bare, the stdio
+ * warm-up adds its project as rootUri (the trailing spread keeps each one's wire bytes unchanged). */
+export function mcpInitializeRequest(rootUri?: string): object {
+	return {
+		jsonrpc: "2.0",
+		id: 1,
+		method: "initialize",
+		params: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "gentle-shell", version: "0" }, ...(rootUri === undefined ? {} : { rootUri }) },
+	};
+}
+
+/** What goes out once the initialize reply arrives: the initialized notice, then the one tools/call
+ * both conversations end on. */
+export function mcpCallRequests(tool: string, args: Record<string, unknown>): object[] {
+	return [
+		{ jsonrpc: "2.0", method: "notifications/initialized" },
+		{ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: tool, arguments: args } },
+	];
+}
+
+/** Which request a reply answers, by the id both conversations use: initialize is 1, the tools/call answer 2. */
+export type McpReplyKind = "initialize" | "call";
+
+export function mcpReplyKind(message: McpReply): McpReplyKind | undefined {
+	if (message.id === 1) return "initialize";
+	if (message.id === 2) return "call";
+	return undefined;
+}
+
 /** One conversation with one daemon: hello, initialize, one tools/call. */
 function ask(socketPath: string, tool: string, args: Record<string, unknown>, timeoutMs: number, helloTimeoutMs: number): Promise<AskOutcome> {
 	return new Promise((resolveResult) => {
@@ -185,13 +224,12 @@ function ask(socketPath: string, tool: string, args: Record<string, unknown>, ti
 					}
 					clearTimeout(helloTimer);
 					stage = "initialize";
-					send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "gentle-shell", version: "0" } } });
-				} else if (stage === "initialize" && message.id === 1) {
+					send(mcpInitializeRequest());
+				} else if (stage === "initialize" && mcpReplyKind(message) === "initialize") {
 					if (message.error !== undefined) return finish({ status: "unavailable" });
 					stage = "call";
-					send({ jsonrpc: "2.0", method: "notifications/initialized" });
-					send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: tool, arguments: args } });
-				} else if (stage === "call" && message.id === 2) {
+					for (const request of mcpCallRequests(tool, args)) send(request);
+				} else if (stage === "call" && mcpReplyKind(message) === "call") {
 					const text = mcpCallText(message);
 					if (text === undefined) return finish({ status: "unavailable" });
 					return finish({ status: "ok", text });

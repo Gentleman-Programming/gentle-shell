@@ -173,7 +173,7 @@ function assertSafeIndexDirectory(cwd: string): void {
 			throw new Error("CodeGraph .codegraph must be a real directory when it already exists.");
 		}
 	} catch (error: unknown) {
-		if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return;
+		if (isEnoent(error)) return;
 		throw error;
 	}
 }
@@ -319,10 +319,7 @@ function codeGraphFailureDetails(
 	operation: CodeGraphOperation,
 	cwd: string,
 ): CodeGraphFallbackDetails {
-	const status =
-		typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT"
-			? CODEGRAPH_STATUS.UNAVAILABLE
-			: CODEGRAPH_STATUS.FAILED;
+	const status = isEnoent(error) ? CODEGRAPH_STATUS.UNAVAILABLE : CODEGRAPH_STATUS.FAILED;
 	return { status, operation, cwd, fallback: FALLBACK_INSTRUCTIONS };
 }
 

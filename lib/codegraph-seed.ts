@@ -1,8 +1,7 @@
-import { copyFileSync, lstatSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync, realpathSync } from "node:fs";
+import { copyFileSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { resolveSessionWorktree } from "./session-worktree-registry.ts";
 import { acquireInitLock, codegraphWritingIndex, defaultLocksDir, lockPathFor, readLeaseVerdict } from "./codegraph-lease.ts";
-import { SYNC_TIMEOUT_MS } from "./codegraph-readiness.ts";
+import { linkedWorktreeIdentity, SYNC_TIMEOUT_MS } from "./codegraph-readiness.ts";
 
 /** What happened when a worktree asked to be seeded from its main checkout. */
 export type SeedOutcome =
@@ -39,16 +38,10 @@ export interface SeedInput {
  * keeps its ordinary init path.
  */
 export function worktreeMainRoot(cwd: string): string | undefined {
-	try {
-		// A linked worktree's `.git` is a file pointing at the common dir; the
-		// main checkout's is a directory and is never a seed target.
-		if (!lstatSync(join(cwd, ".git")).isFile()) return undefined;
-		const identity = resolveSessionWorktree(cwd, cwd);
-		if (!identity || identity.root !== realpathSync(cwd)) return undefined;
-		return dirname(identity.commonDir);
-	} catch {
-		return undefined;
-	}
+	// The probe is readiness's linkedWorktreeIdentity: seed already value-imports from readiness
+	// (SYNC_TIMEOUT_MS), so it reuses the probe over that same one-way edge.
+	const identity = linkedWorktreeIdentity(cwd);
+	return identity === undefined ? undefined : dirname(identity.commonDir);
 }
 
 function isFile(path: string): boolean {

@@ -1,13 +1,13 @@
 import { execFile, spawn } from "node:child_process";
-import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { daemonFor, mcpCallText, parseMcpReply } from "./codegraph-daemon.ts";
+import { daemonFor, mcpCallRequests, mcpCallText, mcpInitializeRequest, mcpReplyKind, parseMcpReply, projectSpelling } from "./codegraph-daemon.ts";
 import type { DaemonInfo } from "./codegraph-daemon.ts";
-import { acquireInitLock, codegraphWritingIndex, syncLeaseHeldLive, tryAcquireSyncLease } from "./codegraph-lease.ts";
+import { acquireInitLock, codegraphWritingIndex, indexState, syncLeaseHeldLive, tryAcquireSyncLease, type IndexState } from "./codegraph-lease.ts";
 import type { SeedOutcome } from "./codegraph-seed.ts";
-import { resolveSessionWorktree } from "./session-worktree-registry.ts";
+import { resolveSessionWorktree, type WorktreeIdentity } from "./session-worktree-registry.ts";
 
 /** A cold daemon on a network share can need over a minute for its first read. */
 const WARMUP_TIMEOUT_MS = 120_000;
@@ -83,7 +83,7 @@ export function warmUpDaemon(cwd: string, background = false, timeoutMs = WARMUP
 	return new Promise((resolve) => {
 		let settled = false;
 		let child: ReturnType<typeof spawn> | undefined;
-		const project = daemon.root ?? realpathSync(cwd);
+		const project = projectSpelling(daemon, cwd);
 		const finish = (ok: boolean) => {
 			if (settled) return;
 			settled = true;
@@ -118,7 +118,7 @@ export function warmUpDaemon(cwd: string, background = false, timeoutMs = WARMUP
 			return;
 		}
 		const send = (message: object) => child?.stdin?.write(JSON.stringify(message) + "\n");
-		let stage = 0;
+		let stage: "initialize" | "call" = "initialize";
 		let buffer = "";
 		child.stdout?.on("data", (chunk: Buffer) => {
 			buffer += chunk.toString("utf8");
@@ -129,11 +129,11 @@ export function warmUpDaemon(cwd: string, background = false, timeoutMs = WARMUP
 				if (line.length === 0) continue;
 				const message = parseMcpReply(line);
 				if (message === undefined) continue;
-				if (stage === 0 && message.id === 1) {
-					send({ jsonrpc: "2.0", method: "notifications/initialized" });
-					stage = 1;
-					send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "codegraph_explore", arguments: { query: "main" } } });
-				} else if (stage === 1 && message.id === 2) {
+				const kind = mcpReplyKind(message);
+				if (stage === "initialize" && kind === "initialize") {
+					stage = "call";
+					for (const request of mcpCallRequests("codegraph_explore", { query: "main" })) send(request);
+				} else if (stage === "call" && kind === "call") {
 					finish(mcpCallText(message) !== undefined);
 				}
 			}
@@ -141,28 +141,13 @@ export function warmUpDaemon(cwd: string, background = false, timeoutMs = WARMUP
 		child.on("error", () => finish(false));
 		child.on("close", () => finish(false));
 		child.stdin?.on("error", () => { /* the server exited first */ });
-		send({
-			jsonrpc: "2.0",
-			id: 1,
-			method: "initialize",
-			params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "gentle-shell", version: "0" }, rootUri: pathToFileURL(project).href },
-		});
+		send(mcpInitializeRequest(pathToFileURL(project).href));
 	});
 }
 
-/**
- * The index state per the repo's codegraph rules: an access error is unknown, NOT absent, and only a
- * confirmed-missing database file may be initialised. An index is the database file, never the directory.
- */
-export type IndexState = "present" | "absent" | "unknown";
-
-export function indexState(cwd: string): IndexState {
-	try {
-		return statSync(join(cwd, ".codegraph", "codegraph.db")).isFile() ? "present" : "absent";
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "unknown";
-	}
-}
+// The tri-state index check lives in the lease module now (the init lock waits on it); re-exported
+// here because readiness's own API and its importers (tools, session-seed, tests) speak it from here.
+export { indexState, type IndexState } from "./codegraph-lease.ts";
 
 export type IndexAction = "sync" | "init" | "none";
 export type SessionStartReason = "startup" | "reload" | "new" | "resume" | "fork";
@@ -179,19 +164,21 @@ export function skipsSession(env: Record<string, string | undefined>, reason: Se
 	return env[CHILD_ENV] === "1" || reason === "reload";
 }
 
-/** Whether `cwd` is itself a linked git worktree (not a main checkout). */
-function isLinkedWorktree(cwd: string): boolean {
+/**
+ * The worktree identity when `cwd` is itself a linked git worktree (not a main checkout), else
+ * undefined. The one probe for this module and codegraph-seed: seed already value-imports
+ * SYNC_TIMEOUT_MS from here, so it imports the probe too and the seed -> readiness edge stays
+ * one-way — no cycle opens.
+ */
+export function linkedWorktreeIdentity(cwd: string): WorktreeIdentity | undefined {
 	try {
-		// The same shape as worktreeMainRoot in codegraph-seed.ts, deliberately re-implemented
-		// here instead of imported: codegraph-seed.ts already value-imports SYNC_TIMEOUT_MS from
-		// this module, so importing it back would close a readiness <-> seed cycle.
 		// A linked worktree's `.git` is a file pointing at the common dir; the main checkout's
 		// is a directory.
-		if (!lstatSync(join(cwd, ".git")).isFile()) return false;
+		if (!lstatSync(join(cwd, ".git")).isFile()) return undefined;
 		const identity = resolveSessionWorktree(cwd, cwd);
-		return identity !== undefined && identity.root === realpathSync(cwd);
+		return identity !== undefined && identity.root === realpathSync(cwd) ? identity : undefined;
 	} catch {
-		return false;
+		return undefined;
 	}
 }
 
@@ -200,7 +187,7 @@ function isLinkedWorktree(cwd: string): boolean {
  * its own unindexed linked worktree, whose index is no other session's job to bring up.
  */
 export function childWorktreeNeedsIndex(env: Record<string, string | undefined>, cwd: string): boolean {
-	return env[CHILD_ENV] === "1" && indexState(cwd) === "absent" && isLinkedWorktree(cwd);
+	return env[CHILD_ENV] === "1" && indexState(cwd) === "absent" && linkedWorktreeIdentity(cwd) !== undefined;
 }
 
 /** Reload dominates; only a child in its own unindexed linked worktree is un-skipped for the seed-or-init path. */
@@ -489,7 +476,7 @@ export function runCodegraph(args: readonly string[], cwd: string, timeoutMs: nu
 		try {
 			let project: string;
 			try {
-				project = daemonFor(cwd).root ?? realpathSync(cwd);
+				project = projectSpelling(daemonFor(cwd), cwd);
 			} catch {
 				/* not alive: no registry, so the command simply runs for the real project path */
 				project = realpathSync(cwd);

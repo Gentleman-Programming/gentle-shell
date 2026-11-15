@@ -3,7 +3,7 @@ import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { daemonFor, mcpCallRequests, mcpCallText, mcpInitializeRequest, mcpReplyKind, parseMcpReply, projectSpelling } from "./codegraph-daemon.ts";
+import { daemonFor, mcpCallRequests, mcpCallText, mcpInitializeRequest, mcpLineReader, mcpReplyKind, projectSpelling } from "./codegraph-daemon.ts";
 import type { DaemonInfo } from "./codegraph-daemon.ts";
 import { acquireInitLock, codegraphWritingIndex, indexState, syncLeaseHeldLive, tryAcquireSyncLease, type IndexState } from "./codegraph-lease.ts";
 import type { SeedOutcome } from "./codegraph-seed.ts";
@@ -167,25 +167,19 @@ export function warmUpDaemon(cwd: string, background = false, timeoutMs = WARMUP
 		}
 		const send = (message: object) => child?.stdin?.write(JSON.stringify(message) + "\n");
 		let stage: "initialize" | "call" = "initialize";
-		let buffer = "";
-		child.stdout?.on("data", (chunk: Buffer) => {
-			buffer += chunk.toString("utf8");
-			let newline: number;
-			while ((newline = buffer.indexOf("\n")) >= 0) {
-				const line = buffer.slice(0, newline).trim();
-				buffer = buffer.slice(newline + 1);
-				if (line.length === 0) continue;
-				const message = parseMcpReply(line);
-				if (message === undefined) continue;
-				const kind = mcpReplyKind(message);
-				if (stage === "initialize" && kind === "initialize") {
-					stage = "call";
-					for (const request of mcpCallRequests("codegraph_explore", { query: "main" })) send(request);
-				} else if (stage === "call" && kind === "call") {
-					finish(mcpCallText(message) !== undefined);
-				}
+		const readLines = mcpLineReader((message) => {
+			if (message === undefined) return false;
+			const kind = mcpReplyKind(message);
+			if (stage === "initialize" && kind === "initialize") {
+				stage = "call";
+				for (const request of mcpCallRequests("codegraph_explore", { query: "main" })) send(request);
+			} else if (stage === "call" && kind === "call") {
+				finish(mcpCallText(message) !== undefined);
+				return true;
 			}
+			return false;
 		});
+		child.stdout?.on("data", readLines);
 		child.on("error", () => finish(false));
 		child.on("close", () => finish(false));
 		child.stdin?.on("error", () => { /* the server exited first */ });

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { daemonFor, exploreViaDaemon, registeredDaemons, resetDaemonRegistryMemo } from "../lib/codegraph-daemon.ts";
+import { daemonFor, exploreViaDaemon, liveDaemons, mcpLineReader, registeredDaemons, resetDaemonRegistryMemo } from "../lib/codegraph-daemon.ts";
 
 function dir(t: test.TestContext, name: string): string {
 	const cwd = mkdtempSync(join(tmpdir(), `gentle-codegraph-daemon-${name}-`));
@@ -126,4 +127,34 @@ test("registry roots in any separator spelling match the project", async (t) => 
 	const found = daemonFor(project, daemon.registryDir);
 	assert.equal(found.alive, true, "a trailing double separator is the same project");
 	assert.equal(found.root, `${project}//`, "the registered spelling is returned as-is");
+});
+
+test("liveDaemons keeps only the records whose pid is alive and socket present", (t) => {
+	const project = dir(t, "live");
+	const registry = dir(t, "live-registry");
+	const liveSocket = join(registry, "live.sock");
+	writeFileSync(liveSocket, "");
+	const deadSocket = join(registry, "dead-pid.sock");
+	writeFileSync(deadSocket, "");
+	const exited = spawnSync(process.execPath, ["-e", ""], { encoding: "utf8" });
+	assert.ok(typeof exited.pid === "number" && exited.pid > 0);
+	writeFileSync(join(registry, "one.json"), JSON.stringify({ root: project, socketPath: liveSocket, startedAt: 2, pid: process.pid }));
+	writeFileSync(join(registry, "two.json"), JSON.stringify({ root: project, socketPath: deadSocket, startedAt: 3, pid: exited.pid }));
+	writeFileSync(join(registry, "three.json"), JSON.stringify({ root: project, socketPath: join(registry, "gone.sock"), startedAt: 1, pid: process.pid }));
+	assert.deepEqual(liveDaemons(project, registry).map((entry) => entry.socketPath), [liveSocket], "a dead pid and a missing socket file are not live daemons");
+});
+
+test("mcpLineReader buffers chunks, skips empty and unparseable lines, stops on a truthy reply", () => {
+	const ids: Array<number | undefined> = [];
+	const read = mcpLineReader((message) => {
+		ids.push(message === undefined ? undefined : message.id);
+		return ids.length === 2;
+	});
+	assert.equal(read(Buffer.from('{"id":1')), false, "a line without its newline is buffered, not delivered");
+	assert.equal(read(Buffer.from('}\n\nnot json\n{"id":2}\n{"id":3}\n')), false, "an unbounded reader never reports overflow");
+	assert.deepEqual(ids, [1, undefined], "an unparseable line is handed over as undefined; lines after the truthy stop are never read");
+
+	const bounded = mcpLineReader(() => true, 9);
+	assert.equal(bounded('{"id":1}\n'), false, "under the cap lines are read");
+	assert.equal(bounded("0123456789"), true, "past the cap the reader answers overflow before reading a line");
 });

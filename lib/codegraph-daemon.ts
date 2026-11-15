@@ -30,7 +30,7 @@ export function resetDaemonRegistryMemo(): void {
 	registryMemo = undefined;
 }
 
-/** Test seam: exercised only by the test suite; not part of the tool's runtime surface. */
+/** Exported for the tests that read the registry directly; daemonFor and daemonSockets call it in production. */
 /** Daemons registered for `root` in any spelling, newest first. Reads the registry only; starts nothing. */
 export function registeredDaemons(root: string, registryDir: string = join(homedir(), ".codegraph", "daemons")): RegisteredDaemon[] {
 	let files: string[];
@@ -96,11 +96,15 @@ export interface DaemonInfo {
 	root?: string;
 }
 
+/** The project's daemons that are still there — pid alive, socket present — newest first. */
+export function liveDaemons(cwd: string, registryDir?: string): RegisteredDaemon[] {
+	return registeredDaemons(cwd, registryDir).filter((entry) => entry.pid !== undefined && processAlive(entry.pid) && socketPresent(entry.socketPath));
+}
+
 /** The project's newest daemon from CodeGraph's own registry. Reads only; starts nothing. */
 export function daemonFor(cwd: string, registryDir?: string): DaemonInfo {
-	const daemons = registeredDaemons(cwd, registryDir);
-	const alive = daemons.find((entry) => entry.pid !== undefined && processAlive(entry.pid) && socketPresent(entry.socketPath));
-	return { alive: alive !== undefined, root: (alive ?? daemons[0])?.root };
+	const alive = liveDaemons(cwd, registryDir)[0];
+	return { alive: alive !== undefined, root: (alive ?? registeredDaemons(cwd, registryDir)[0])?.root };
 }
 
 /** The project spelled as its daemon registered it, or the real path of `cwd` when no daemon matches:
@@ -111,9 +115,7 @@ export function projectSpelling(daemon: DaemonInfo | undefined, cwd: string): st
 
 /** Sockets of the project's live daemons, newest first. */
 function daemonSockets(cwd: string, registryDir?: string): string[] {
-	return registeredDaemons(cwd, registryDir)
-		.filter((entry) => entry.pid !== undefined && processAlive(entry.pid) && socketPresent(entry.socketPath))
-		.map((entry) => entry.socketPath);
+	return liveDaemons(cwd, registryDir).map((entry) => entry.socketPath);
 }
 
 export type DaemonCallResult =
@@ -185,6 +187,30 @@ export function mcpReplyKind(message: McpReply): McpReplyKind | undefined {
 	return undefined;
 }
 
+/**
+ * The line-buffered reader both MCP conversations share: it accumulates newline-delimited chunks (Buffers
+ * from a child's stdout, decoded strings from a socket), splits and trims lines, skips the empty ones, and
+ * hands each parsed reply to `onReply` — undefined marks a line `parseMcpReply` rejects; each conversation
+ * decides what that means. A truthy return from `onReply` stops the scan for the rest of the chunk, the
+ * data handler's `return`. The chunk handler itself answers true when the unparsed buffer grew past
+ * `maxBufferChars` — the runaway guard the socket conversation finishes on.
+ */
+export function mcpLineReader(onReply: (message: McpReply | undefined) => boolean | void, maxBufferChars: number = Number.POSITIVE_INFINITY): (chunk: string | Buffer) => boolean {
+	let buffer = "";
+	return (chunk: string | Buffer) => {
+		buffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+		if (buffer.length > maxBufferChars) return true;
+		let newline: number;
+		while ((newline = buffer.indexOf("\n")) >= 0) {
+			const line = buffer.slice(0, newline).trim();
+			buffer = buffer.slice(newline + 1);
+			if (line.length === 0) continue;
+			if (onReply(parseMcpReply(line))) return false;
+		}
+		return false;
+	};
+}
+
 /** One conversation with one daemon: hello, initialize, one tools/call. */
 function ask(socketPath: string, tool: string, args: Record<string, unknown>, timeoutMs: number, helloTimeoutMs: number): Promise<AskOutcome> {
 	return new Promise((resolveResult) => {
@@ -203,38 +229,31 @@ function ask(socketPath: string, tool: string, args: Record<string, unknown>, ti
 		// Only the hello line waits on this timer; the rest of the conversation keeps the whole budget.
 		const helloTimer = setTimeout(() => finish({ status: "silent" }), Math.max(1, Math.min(helloTimeoutMs, budget)));
 		const send = (message: object) => socket.write(JSON.stringify(message) + "\n");
-		let buffer = "";
 		let stage: "hello" | "initialize" | "call" = "hello";
 		socket.setEncoding("utf8");
 		socket.on("error", () => finish({ status: "unavailable" }));
 		socket.on("close", () => finish({ status: "unavailable" }));
-		socket.on("data", (chunk: string) => {
-			buffer += chunk;
-			if (buffer.length > MAX_REPLY_CHARS) return finish({ status: "unavailable" });
-			let newline: number;
-			while ((newline = buffer.indexOf("\n")) >= 0) {
-				const line = buffer.slice(0, newline).trim();
-				buffer = buffer.slice(newline + 1);
-				if (line.length === 0) continue;
-				const message = parseMcpReply(line);
-				if (message === undefined) return finish({ status: "unavailable" });
-				if (stage === "hello") {
-					if (typeof (message as { codegraph?: unknown }).codegraph !== "string" || (message as { protocol?: unknown }).protocol !== DAEMON_PROTOCOL) {
-						return finish({ status: "unavailable" });
-					}
-					clearTimeout(helloTimer);
-					stage = "initialize";
-					send(mcpInitializeRequest());
-				} else if (stage === "initialize" && mcpReplyKind(message) === "initialize") {
-					if (message.error !== undefined) return finish({ status: "unavailable" });
-					stage = "call";
-					for (const request of mcpCallRequests(tool, args)) send(request);
-				} else if (stage === "call" && mcpReplyKind(message) === "call") {
-					const text = mcpCallText(message);
-					if (text === undefined) return finish({ status: "unavailable" });
-					return finish({ status: "ok", text });
+		const readLines = mcpLineReader((message) => {
+			if (message === undefined) return finish({ status: "unavailable" });
+			if (stage === "hello") {
+				if (typeof (message as { codegraph?: unknown }).codegraph !== "string" || (message as { protocol?: unknown }).protocol !== DAEMON_PROTOCOL) {
+					return finish({ status: "unavailable" });
 				}
+				clearTimeout(helloTimer);
+				stage = "initialize";
+				send(mcpInitializeRequest());
+			} else if (stage === "initialize" && mcpReplyKind(message) === "initialize") {
+				if (message.error !== undefined) return finish({ status: "unavailable" });
+				stage = "call";
+				for (const request of mcpCallRequests(tool, args)) send(request);
+			} else if (stage === "call" && mcpReplyKind(message) === "call") {
+				const text = mcpCallText(message);
+				if (text === undefined) return finish({ status: "unavailable" });
+				return finish({ status: "ok", text });
 			}
+		}, MAX_REPLY_CHARS);
+		socket.on("data", (chunk: string) => {
+			if (readLines(chunk)) finish({ status: "unavailable" });
 		});
 	});
 }

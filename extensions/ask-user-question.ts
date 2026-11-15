@@ -246,8 +246,12 @@ export default function askUserQuestion(pi: ExtensionAPI): void {
 		renderShell: "self",
 		label: "Ask User Question",
 		description: "Ask one to four structured questions in a single call, each with two to four ordered options, and read the user's answers back in one result.",
+		promptSnippet: "Ask one to four structured questions in one call (2-4 ordered options each)",
 		promptGuidelines: [
-			"Use ask_user_question to collect decisions in one batch.",
+			"Use ask_user_question only when a genuine human decision remains and one to four structured questions represent it exactly; when no genuine human decision remains, execute the authorized work without asking, and a technical decision the agent owns never becomes an ask_user_question call.",
+			"When ask_user_question is available for a genuine human decision it represents, use it instead of asking in text.",
+			"Batch independent ordinary decisions as separate questions in one ask_user_question call, never one ask per decision.",
+			"Ordinary contextual approval of an action the human already understands needs no ask_user_question call and stays valid as text, never as a provider-owned consent answer.",
 			"Keep each header a short chip of at most 16 characters and each option label at most 60 characters.",
 			"Add a preview to an option when the user needs to compare rich detail side-by-side with the options.",
 			"Set multiSelect when the choices are not mutually exclusive.",

@@ -17,7 +17,7 @@ Before delegating, declare a subject via `orchestrator_session_id` (reference).
 
 These boundaries do not authorize children to orchestrate. Each trigger holds only when its condition truly holds; none holds by default. Inline stays within the evidence budget. When one fires, stop and delegate through the runtime's subagent mechanism before continuing; executing past a fired trigger inline is a routing defect even if the work succeeds.
 
-1. **Ask:** an open product or design decision gets one focused user question; stop and wait.
+1. **Ask:** open product or design decision, routed by ODD step 3; stop and wait.
 2. **Mapping trigger (Evidence-budget rule):** read inline only when the evidence fits one parallel batch of at most 3 calls totaling ~10k tokens. Reassess cumulative discovery after each batch; never reset it. When understanding needs more or over 3 lookups, delegate one explorer returning a handoff of at most ~2k tokens with `path:line` evidence; the trigger overrides initial size, including for read-only work. Re-evaluate size after. Preparation for an already understood inline write stays inline, not further discovery.
 3. **Verification rule** (gentle-pi#661/#662, RDD-aware): only a change whose Risk line names a high-risk item (Task Size, assess `escalate` when RDD is on or unknown) gets an independent `gentle-ai-verify` run after the change's own checks, as rarely as possible; otherwise whoever made the change runs its focused test and suite inline, small tasks included. Routing: `orchestrator-verification.md`.
 4. **Track:** a large task gets the feature document, Engram mirror, `todo`, and work-unit commits (`orchestrator-memory.md`).

@@ -162,7 +162,9 @@ const MODULE_BUDGETS: Record<string, number> = {
 	"orchestrator-delegation.md": 7_326,
 	// P5b (C14, X4, X5): no restated worker definition, no nonexistent agents or options (14,800 -> 13,969 B).
 	"orchestrator-delegation-reference.md": 13_969,
-	// gentle-shell#1731 T23: Close gate accepts one Needs your decision result as a stop (12,500 -> 12,600 B).
+	// harness-continuity S3 F1/F2: the canonical Close owns authorized-work boundaries; the local gate keeps a
+	// launched child, already-decided denial/missing consent/exhausted limit on affected work, a partial stop
+	// scoped to that work, or an open human decision, while unrelated runnable work continues.
 	// S14: close the open slice before a high-risk commit; outcomes per commit (12,600 -> 12,850 B).
 	// P5b (C3, C5, X2): contradictions and step 3 / Phase reporting restatements removed; 1.4.0 commit-boundary rules kept (12,850 -> 10,324 B).
 	// cost-speed P6 (X9): Task Size is named as the always-on section, not `orchestrator.md`, so full delegation can load

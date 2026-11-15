@@ -1,6 +1,6 @@
 {
   "schema": "gentle-pi.provider-contract-capabilities-baseline/v1",
-  "contract_semver": "1.5.0",
+  "contract_semver": "1.6.0",
   "transport_capability": "gentle-ai.provider-transport/v1",
   "mandatory_capabilities": [
     "gentle-ai.provider-transport/v1"
@@ -23,7 +23,7 @@
     {
       "runtime": "pi",
       "path": "routing/pi.md",
-      "sha256": "f34508b060197339fc73dd885565a24d037366c02b3f91b4db15431b42a5c573"
+      "sha256": "7251d74d5ce48f50f979c16a07b01323d5168bbb10bf996c3e1fb2de6a04e678"
     }
   ]
 }

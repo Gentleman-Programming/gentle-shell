@@ -163,6 +163,31 @@ test("S5 change 5: gentle_odd_phase does not restate the Phase reporting cadence
 	}
 });
 
+// --- harness-continuity S3: the authorized-work boundary is mode- and RDD-stable ---
+
+const CANONICAL_CLOSE = [
+	"Authorized work continues: runnable in-scope steps run, a pending child is a wait event whose completion resumes the turn without asking the human",
+	"A tracked task ends the turn pending only while it waits on already-launched work, for the affected work a denial, missing consent, the user's explicit stop, or an exhausted limit applies to, or for a genuine human decision still outstanding",
+	"only a real human decision, the user's explicit stop, a denial, missing consent, or an exhausted limit stops the work it applies to, never independent authorized work",
+	"Missing, partial, unavailable, or declined proof forbids claiming completion of the affected work, never an independently authorized next step",
+	"while a required authorized check the existing budget still allows keeps running",
+	"Never turn a report into a blind self-reprompt loop.",
+] as const;
+
+test("S3: organic and full delegation keep the authorized-work boundary under RDD on and off", () => {
+	const statuses = [
+		"Receipt-driven development: on (decided by global)",
+		"Receipt-driven development: off (decided by global)",
+	];
+	for (const status of statuses) for (const mode of MODES) {
+		const prompt = __testing.buildGentlePrompt("gentleman", join(scratch, "project"), ACTIVE_TOOLS, status, undefined, mode).replaceAll(ASSETS, "/a");
+		for (const clause of CANONICAL_CLOSE) assert.ok(prompt.includes(clause), `[${status}/${mode}] canonical Close is missing: ${clause}`);
+		assert.ok(prompt.includes("An explicit user stop applies only to the work it names."), `[${status}/${mode}] explicit-stop coverage`);
+		assert.ok(!prompt.includes("Needs your decision"), `[${status}/${mode}] no generic terminal phrase`);
+		assert.ok(!prompt.includes("never more verification"), `[${status}/${mode}] no broad verification stop`);
+	}
+});
+
 // --- Net bytes: both modes shrink, and the pins follow ----------------------
 
 // Measured at /a (normalized assets root), ACTIVE_TOOLS, default RDD line. Base c09189269 rendered

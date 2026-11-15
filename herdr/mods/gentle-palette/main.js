@@ -145,7 +145,7 @@ function showChat() {
 
 // Hands work only the chat does to it: consume-once in shared; the chat takes it now (its
 // command) or, while the Terminal shows (a hidden stack child gets no commands), as soon as it
-// shows again (it looks every 500 ms).
+// shows again (setting shared state re-renders it, and its render takes the request, S13).
 function chatRequest(req) {
   setShared("gentle-chat.request", { ...req, at: Date.now() });
   if (chatShowing()) run("gentle-chat.request");

@@ -47,7 +47,8 @@ export function stateLabel(p, kind, label) {
     dot = dot.w(8).h(8).border(1.5).border_color(color);
     if (kind === "queue") dot = dot.border_dashed();
   } else dot = dot.w(7).h(7).bg(color);
-  if (kind === "work") dot = dot.loop("opacity", { from: 0.35, to: 1, period: 1600 });
+  // No pulse on a working dot (S13, herdr/PERF.md): a native loop redraws the whole window every
+  // frame for as long as it is drawn (≈40 % CPU while a session works). The word says it.
   return h_flex().gap(6).items_center().text_size(12).whitespace_nowrap().text_color(color).child(dot).child(label);
 }
 
@@ -467,7 +468,9 @@ function thinking(v, p, b, key, secs, now) {
 function mark(p, call, live) {
   const r = call.result;
   if (r) return div().flex_none().text_color(r.error ? p.err : p.ok).child(r.error ? "✕" : "✓");
-  return live ? div().flex_none().text_color(p.info).frames(SPINNER, 90) : div().flex_none().text_color(p.faint).child("•");
+  // A running tool: a still mark in the working colour (S13: no spinner while a tool runs, which
+  // can be minutes; the Send button keeps its spinner for the second a send takes).
+  return div().flex_none().text_color(live ? p.info : p.faint).child("•");
 }
 
 // What a finished tool says beside its arguments: "· 299 lines", "· 6 matches".
@@ -536,7 +539,7 @@ function toolGroup(v, p, calls, key, live) {
   const failed = calls.some((c) => c.result?.error);
   const pending = calls.some((c) => !c.result);
   const ms = calls.reduce((n, c) => n + (c.result?.ms ?? 0), 0);
-  const m = pending ? (live ? div().text_color(p.info).frames(SPINNER, 90) : div().text_color(p.faint).child("•"))
+  const m = pending ? div().text_color(live ? p.info : p.faint).child("•")
     : div().text_color(failed ? p.err : p.ok).child(failed ? "✕" : "✓");
   return v_flex().w_full()
     .child(h_flex().id(id).gap(8).py(2).items_center().text_size(12.5).text_color(p.muted).cursor_pointer()

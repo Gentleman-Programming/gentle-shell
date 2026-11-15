@@ -60,8 +60,11 @@ sans and a mono stack, chosen at run time from `fonts()`.
 
 - Everything follows the **focused Gentle Shell session**: the chat, the header, the inspector,
   the status bar and the plan usage.
-- The chat reads the session's JSONL incrementally (`watchFolder` plus a 5 s fallback) and sends
-  what you type with `hc send`. A question card answers with a click or `1`…`N`.
+- The chat reads the session's JSONL incrementally: a long session opens at its end (≥ 300 KB
+  and 300 lines, ≤ 3 MB; "Show earlier" reads further back), a `watchFolder` wakes it only for
+  its own file, a big file's new bytes come through one `sh` (size and tail), and a look while
+  shown covers a missed event.
+  It sends what you type with `hc send`. A question card answers with a click or `1`…`N`.
 - **Chat | Terminal**, `⌘J` and the palette switch the `views` stack (`layout.select`).
 - `⌘K` opens the Gentle palette (needs-you items, session commands, views, permission modes, every
   command of the session); `/` in the composer opens the command menu.
@@ -71,8 +74,11 @@ sans and a mono stack, chosen at run time from `fonts()`.
   (`gentle-confirm`) first. Consent is never answered here: the Terminal shows instead.
 - Commands whose result is a TUI screen (`/gentle:changes`, `/gentle:agents`, `/gentle:profiles`,
   …) are typed into the TUI and the Terminal shows.
-- Redraws only when a snapshot changes; the Jobs tab ticks each second only while a job runs, the
-  usage footer once a minute. Nothing else animates.
+- Redraws only when a snapshot changes; the Jobs tab ticks each second only while it shows a
+  running job, the usage footer when its reset words change. Nothing animates while a session
+  works (no pulse, no spinner): any native animation redraws the whole window every frame
+  (`PERF.md`). Only the status bar (`gentle-status`) reads the snapshots and runs `ps`; it
+  publishes them in shared state (`gentle-shell.feeds`) and every other mod reads that.
 
 ## Built from
 

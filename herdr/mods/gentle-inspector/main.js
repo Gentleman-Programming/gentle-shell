@@ -71,12 +71,7 @@ export default class GentleInspector extends View {
     this.rdd = null; // { cwd, effective, source, at } from `gentle-ai review mode status`
     this.source = new FeedSource();
     this.source.start(cx);
-    // Running jobs show their elapsed time: a 1s redraw only while one is shown.
-    // The Review tab's RDD row reads `gentle-ai review mode status` (at most every RDD_EVERY).
-    cx.timer.every(1000, (cx) => {
-      if (this.tab === "jobs" && (this.feed?.jobs?.running?.length ?? 0) > 0) cx.notify();
-      if (this.tab === "review" && this.feed) this.readRdd(cx);
-    });
+    this.waiting = null; // the wake-up set now (see wake): "tick" | "review" | null
     // Commands: a confirm dialog's Confirm (the RDD switch), and tab-<id> to show a tab.
     cx.spawn(async (cx) => {
       for (;;) {
@@ -135,6 +130,29 @@ export default class GentleInspector extends View {
     // A session outside Herdr app (T11): its TUI screens open in its own terminal only.
     if (!address) { this.error = "Open that session's terminal to run /commands."; cx.notify(); return; }
     this.act(key, cx, (cx) => tuiCommand(address, this.feed, text, () => cx.timer.after(1, () => showTerminal(address))));
+  }
+
+  // No standing timer (S13): what the shown tab needs, set from render and gone once it is not.
+  // Running jobs show their elapsed time: a 1s redraw only while the Jobs tab shows one. The
+  // Review tab's RDD row reads `gentle-ai review mode status` (at most every RDD_EVERY).
+  wake(cx) {
+    const ticking = this.tab === "jobs" && (this.feed?.jobs?.running?.length ?? 0) > 0;
+    const review = this.tab === "review" && Boolean(this.feed);
+    if (review) this.readRdd(cx); // throttled there: a new project reads at once, the same one every RDD_EVERY
+    const want = ticking ? "tick" : review ? "review" : null;
+    if (!want || this.waiting === want) return;
+    const gen = (this.wakeGen = (this.wakeGen ?? 0) + 1);
+    this.waiting = want;
+    try {
+      cx.timer.after(want === "tick" ? 1000 : RDD_EVERY, (cx) => {
+        if (gen !== this.wakeGen) return;
+        this.waiting = null;
+        if (want === "tick") cx.notify(); // its render sets the next second while a job still runs
+        else this.wake(cx);
+      });
+    } catch {
+      this.waiting = null;
+    }
   }
 
   // `gentle-ai review mode status` for the session's project: read-only, re-read now and then.
@@ -452,7 +470,7 @@ export default class GentleInspector extends View {
       .child(this.note(c, "Focus a tab running gentle-shell to see its changes, todo, agents, jobs, review and stats."))];
   }
 
-  render() {
+  render(cx) {
     const c = tokens();
     // The shown session, wherever it runs (snapshot.js targetSession, T11).
     const shown = this.source.target(this.last);
@@ -461,6 +479,7 @@ export default class GentleInspector extends View {
     const f = shown?.feed ?? null;
     this.feed = f;
     this.takeReveal();
+    this.wake(cx);
     const body = f ? this[this.tab](c, f) : this.empty(c);
     const line = this.error ?? this.notice;
     return v_flex().id("root").size_full().min_h(0).font_family(c.sans).text_color(c.text)

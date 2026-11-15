@@ -102,9 +102,10 @@ export function stateDot(c, kind) {
   const color = c[STATE_COLOR[kind] ?? "muted"];
   if (kind === "idle") return div().size(8).flex_none().rounded(4).border(1.5).border_color(color);
   if (kind === "queue") return div().size(8).flex_none().rounded(4).border(1.5).border_dashed().border_color(color);
-  const dot = div().size(7).flex_none().rounded(4).bg(color);
-  // @media (prefers-reduced-motion: no-preference) pulse 1.6s, opacity 1 → .35: native loop.
-  return kind === "work" ? dot.loop("opacity", { from: 1, to: 0.35, period: 1600 }) : dot;
+  // The artboard pulses a working dot (opacity 1 → .35, 1.6s). Not here (S13, herdr/PERF.md): any
+  // native animation redraws the whole window every frame while it is drawn, and one pulsing dot
+  // kept Herdr app at ≈40 % CPU for as long as a session worked. The dot and its word say it.
+  return div().size(7).flex_none().rounded(4).bg(color);
 }
 export function state(c, kind, label, extra) {
   let el = h_flex().gap(6).items_center().flex_none().whitespace_nowrap().text_size(12).line_height("18px")

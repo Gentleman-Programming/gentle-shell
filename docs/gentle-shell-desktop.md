@@ -115,7 +115,7 @@ stays.
 
 | Control | Does |
 |---|---|
-| **Show earlier** | Loads 150 more older messages. |
+| **Show earlier** | Shows 40 more older messages. A long session opens at its end (its last ~300 KB and 300 lines, at most 3 MB); once those are all shown, **Show earlier messages** reads as much again before them. |
 | Any one-line item | Click to open it, click again to close it (see [The minimal chat](#the-minimal-chat)). |
 | **⌘O expand all** / **collapse all** | Opens every item in the chat, or brings back the minimal view. |
 | Diff card: **Next hunk** | Shows the edit's next hunk. |
@@ -320,6 +320,7 @@ own instructions. `gentle-shell self-uninstall` covers Gentle Shell itself
 | "Herdr app did not open its window." | Open Herdr app once by hand (it may ask to set up herdr-core), then run `gentle-shell desktop` again. |
 | A mod failed `herdr-app check` during install | Nothing in the Herdr home changed. The printed output says why; this usually means a Herdr version the mods were not built for. |
 | The window looks stale, or `herdr-app shot` returns an old frame | Herdr does not draw a covered or hidden window. Bring it to the front. |
+| A working session's dot does not pulse | On purpose: any animation redraws the whole Herdr window on every frame, which kept Herdr app near 40 % CPU while a session worked. The dot's colour and its word (Working, streaming) say it; the chat and the inspector update as the session writes. Measurements: `herdr/PERF.md`. |
 | "No Gentle Shell session focused" / "No Gentle Shell session here" | Focus a tab that runs `gentle-shell`, or start one with **+** in the tab bar. Sessions started with `--link` or `--home` are not seen ([Requirements](#requirements)). |
 | A session in another terminal is missing | It is listed while its process runs and once it published a snapshot (an interactive Gentle Shell TUI does). Check **TUI · Other terminals**. |
 | "This session started before desktop messages: type in its own terminal, or restart it." / "This session takes no prompts from the desktop. Update Gentle Shell and restart it." | The TUI session runs a Gentle Shell from before desktop messages. Restart it, or type in its own terminal. |

@@ -36,6 +36,7 @@
 		"!herdr/**/.gitignore",
 		"!herdr/**/FIDELITY*.md",
 		"!herdr/**/SPIKE*.md",
+		"!herdr/PERF.md",
 		"lib/",
 		"prompts/",
 		"runtime/",

@@ -38,10 +38,11 @@ async function realpath(dir) {
 // every agent dir (the matched snapshot's own agent dir first), null before the first message
 // (names start with an ISO timestamp, so the name order is the time order); `dir` is the folder
 // that file is in, else the first agent dir's. `real`: the caller's cwd -> real path memo, so the
-// folder is resolved once per terminal folder, not every tick.
-export async function sessionFileFor(terminal, real = new Map()) {
+// folder is resolved once per terminal folder, not every tick. `feeds`: the live snapshots the
+// caller already has (S13: the shared reader's), else they are read here.
+export async function sessionFileFor(terminal, real = new Map(), feeds = null) {
   const roots = await agentRoots();
-  const feed = matchFeed(terminal, await readFeeds(roots));
+  const feed = matchFeed(terminal, feeds ?? await readFeeds(roots));
   const exact = feed?.identity?.sessionFile;
   if (typeof exact === "string" && exact.endsWith(".jsonl")) {
     return { dir: exact.slice(0, Math.max(exact.lastIndexOf("/"), exact.lastIndexOf("\\"))), file: exact, feed };
@@ -88,12 +89,14 @@ export function utf8(bytes) {
   return out;
 }
 
-// The complete lines after byte `pos`, and the byte they end at. `text` is null when the file
-// shrank or vanished (start over). A half-written last line waits for the next read. Only the
-// new bytes are decoded and parsed; the runtime has no ranged read, so the bytes are fetched
-// whole (cheap) and sliced.
+// The complete lines after byte `pos`, the byte they end at and the file's size. `text` is null
+// when the file shrank or vanished (start over). A half-written last line waits for the next read.
+// Only the new bytes are decoded and parsed. The runtime has no ranged read and no stat, so the
+// bytes are fetched whole and sliced; `viaExec` (a big file, S13) asks `sh` for the size and the
+// new bytes only instead: one process, no multi-megabyte copy per write.
 // `max` caps one slice so a huge first read doesn't stall the UI thread (`more` = call again).
-export async function readAfter(file, pos, max = 2 * 1024 * 1024) {
+export async function readAfter(file, pos, max = 2 * 1024 * 1024, viaExec = false) {
+  if (viaExec) return readOutside(file, pos, max);
   let bytes;
   try {
     bytes = await readFile(file);
@@ -101,14 +104,51 @@ export async function readAfter(file, pos, max = 2 * 1024 * 1024) {
     // Herdr grants mods read access to the home folder only; a session resumed from elsewhere
     // (`gentle-shell --session /tmp/x.jsonl`) is read through `exec` instead.
     if (OUTSIDE.test(String(e?.message ?? e))) return readOutside(file, pos, max);
-    return { text: null, end: 0, more: false };
+    return { text: null, end: 0, more: false, size: 0 };
   }
-  if (bytes.length < pos) return { text: null, end: 0, more: false };
+  const size = bytes.length;
+  if (size < pos) return { text: null, end: 0, more: false, size };
   const last = bytes.lastIndexOf(10) + 1;
   let end = pos + max < last ? bytes.lastIndexOf(10, pos + max - 1) + 1 : last;
   if (end <= pos) end = last; // one line longer than max
-  if (end <= pos) return { text: "", end: pos, more: false };
-  return { text: utf8(bytes.subarray(pos, end)), end, more: end < last };
+  if (end <= pos) return { text: "", end: pos, more: false, size };
+  return { text: utf8(bytes.subarray(pos, end)), end, more: end < last, size };
+}
+
+// The last whole lines of a file (S13: a long session's first paint decodes and draws its end,
+// not megabytes of history): at least `tail` bytes and at least `lines` lines, but no more than
+// `max` bytes (a few huge tool results must not leave only three messages, nor a long run of
+// short lines a whole file). { text, start, end, size }, `start` the byte the first whole line
+// begins at (0: the whole file). Null when it cannot be read. Outside the read roots: `tail`
+// bytes, through `sh`.
+export async function readTail(file, tail, lines = 0, max = Infinity) {
+  let bytes;
+  try {
+    bytes = await readFile(file);
+  } catch (e) {
+    if (OUTSIDE.test(String(e?.message ?? e))) return readTailOutside(file, tail);
+    return null;
+  }
+  const size = bytes.length;
+  let start = Math.max(0, size - tail);
+  if (lines > 0 && start > 0) {
+    const floor = Math.max(0, size - max);
+    let i = size - 2; // past a final newline
+    let at = size;
+    for (let n = 0; n < lines; n++) {
+      const nl = i >= 0 ? bytes.lastIndexOf(10, i) : -1;
+      if (nl < floor) { at = floor; break; }
+      at = nl + 1;
+      i = nl - 1;
+    }
+    start = Math.min(start, at);
+  }
+  if (start > 0) {
+    const nl = bytes.indexOf(10, start - 1);
+    start = nl < 0 ? size : nl + 1;
+  }
+  const end = Math.max(start, bytes.lastIndexOf(10) + 1);
+  return { text: end > start ? utf8(bytes.subarray(start, end)) : "", start, end, size };
 }
 
 const OUTSIDE = /outside every granted read root/i;
@@ -139,11 +179,34 @@ async function readOutside(file, pos, max) {
   }
   const cut = r.stdout.indexOf("\n");
   const size = Number.parseInt(r.stdout.slice(0, cut), 10);
-  if (r.code !== 0 || cut < 0 || !Number.isFinite(size) || size < pos) return { text: null, end: 0, more: false };
+  if (r.code !== 0 || cut < 0 || !Number.isFinite(size) || size < pos) return { text: null, end: 0, more: false, size: Number.isFinite(size) ? size : 0 };
+  if (size === pos) return { text: "", end: pos, more: false, size }; // it did not grow
   const chunk = r.stdout.slice(cut + 1);
   const last = chunk.lastIndexOf("\n") + 1;
-  if (last === 0) return { text: "", end: pos, more: false };
+  if (last === 0) return { text: "", end: pos, more: false, size };
   const text = chunk.slice(0, last);
   const end = pos + utf8Length(text);
-  return { text, end, more: utf8Length(chunk) >= cap && end < size };
+  return { text, end, more: utf8Length(chunk) >= cap && end < size, size };
+}
+
+// readTail through `sh`: the size, then the byte the first whole line of the last `tail` bytes
+// starts at (counted in bytes by `awk` in the C locale), then the bytes from there.
+async function readTailOutside(file, tail) {
+  const script = 's=$(wc -c < "$2") || exit 1; p=0; if [ "$s" -gt "$1" ]; then p=$((s - $1)); '
+    + 'n=$(tail -c +"$p" "$2" | LC_ALL=C awk \'{ print length($0); exit }\'); p=$((p + n)); fi; '
+    + '[ "$p" -gt "$s" ] && p=$s; echo "$s"; echo "$p"; tail -c +"$((p + 1))" "$2" | head -c "$3"';
+  let r;
+  try {
+    r = await exec("sh", ["-c", script, "sh", String(tail), file, String(EXEC_MAX)], { timeout: 15000 });
+  } catch {
+    return null;
+  }
+  const a = r.stdout.indexOf("\n");
+  const b = r.stdout.indexOf("\n", a + 1);
+  const size = Number.parseInt(r.stdout.slice(0, a), 10);
+  const start = Number.parseInt(r.stdout.slice(a + 1, b), 10);
+  if (r.code !== 0 || a < 0 || b < 0 || !Number.isFinite(size) || !Number.isFinite(start)) return null;
+  const chunk = r.stdout.slice(b + 1);
+  const text = chunk.slice(0, chunk.lastIndexOf("\n") + 1);
+  return { text, start, end: start + utf8Length(text), size };
 }

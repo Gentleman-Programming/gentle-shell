@@ -14,6 +14,9 @@
 //            session refuses it while its agent is idle)
 //   session-next / session-prev   shows the next / previous live session, wherever it runs
 //            (T11; `herdr-app do gentle-status.session-next`)
+//
+// The snapshot reader's leader (S13, snapshot.js FeedSource): being always mounted, the status bar
+// is the one mod that reads the snapshots and publishes them in shared state for every other one.
 
 import { View, div } from "gpui-kit";
 import { h_flex } from "gpui-base";
@@ -39,7 +42,7 @@ export default class GentleStatus extends View {
   init(_props, cx) {
     this.last = null;
     this.source = new FeedSource();
-    this.source.start(cx);
+    this.source.start(cx, null, 10000, { lead: true });
     cx.spawn(async (cx) => {
       for (;;) {
         const c = String(await nextCommand());

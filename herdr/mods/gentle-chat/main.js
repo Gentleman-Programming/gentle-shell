@@ -10,30 +10,38 @@
 // props: { terminal? } (else the session the window is about), and in a layout stack
 // { stack, self, other } for the Chat / Terminal switch (see herdr/layouts/gentle-shell.json).
 // Drawing: ui.js; colours, type and radii: tokens.js (shared with the T6 mods).
+// Cost (S13, herdr/PERF.md): every redraw lays out every drawn row of the whole window, so the
+// chat draws the last PAGE entries of the session's end (readTail; "Show earlier" goes back),
+// wakes only for its own session file and settings files, follows the shared snapshot read
+// (snapshot.js) from render instead of polling, and keeps no timer while it is hidden.
 
 import { View, div } from "gpui-kit";
 import { v_flex, TextareaState, ScrollHandle } from "gpui-base";
 import { agents, props, layout, hc, run, setShared, shared, theme, watchFolder, nextCommand } from "herdr";
 import { readFile } from "fs/promises";
-import { sessionFileFor, readAfter, utf8 } from "./session.js";
+import { sessionFileFor, readAfter, readTail, utf8 } from "./session.js";
 import { FeedSource, allSessions, targetSession } from "./snapshot.js";
 import { createFeed, ingest, hideThinkingFrom } from "./feed.js";
 import { palette, sans, R } from "./tokens.js";
 import { header, entries, entry, lane, stateLabel, askCard, askOptions, composer, icon, PERM, ELSEWHERE } from "./ui.js";
 import { sendAction, errorText, safeKeys, terminalFree, tuiCommand, showTerminal, confirm, confirmed, readSnapshot } from "./actions.js";
 
-const PAGE = 150; // entries drawn at first; "Show earlier" adds this many
-const TICK = 5000; // fallback refresh when a watch event is missed (both folders are watched)
+const PAGE = 40; // entries drawn at first; "Show earlier" adds this many
+const TAIL = 300 * 1024; // a session's first paint reads its last TAIL bytes and LINES lines, up to
+const LINES = 300; //       TAIL_MAX bytes; each "Show earlier messages" reads as much again
+const TAIL_MAX = 3 * 1024 * 1024;
+const EXEC_ABOVE = 1024 * 1024; // a bigger session file is read through `sh`, only its new bytes
+const LOOK_MS = 5000; // while shown: a look for a missed session switch or request (no file read)
+const FILE_MS = 15000; // while shown without a folder watch: a read for missed writes
+const SAFETY_MS = 60000; // while shown with one: a read for a write made before the watch began
 const PLACEHOLDER = "Message Gentle Shell…  / for commands";
 const PLACEHOLDER_ASK = "Answer above, or message Gentle Shell…  / for commands";
 const ESC_MS = 1000; // the TUI's double-Esc window for stopping a turn (DOUBLE_ESC_CANCEL_WINDOW_MS)
 const ESC_NOTICE = "Press Esc again to stop the agent.";
 const SLASH_MAX = 50; // commands the "/" menu filters to at most
 const REQUEST_MS = 10000; // a palette request older than this is ignored (shared values persist)
-const REQUEST_POLL = 500; // how often a shown chat looks for a palette request (and a new session)
 const NO_COMMANDS = "Open that session's terminal to run /commands.";
 const KEPT = 30; // sessions whose opened rows are remembered when another session shows
-const SETTINGS_MS = 3000; // how often the shown session's settings are read again
 const DOUBLE_MS = 300; // one ⌘O that reaches both the chat's key and the layout's key toggles once
 
 // The composer's "/" menu: open while the draft is one "/word" (no space or line break yet).
@@ -72,10 +80,20 @@ export default class GentleChat extends View {
     this.cwd = null;
     this.file = null;
     this.dir = null;
-    this.pos = 0;
+    this.pos = 0; // the byte read up to
+    this.start = 0; // the byte the read part begins at (S13: a long session's tail; 0 = all of it)
+    this.size = 0; // the file's size at the last read
+    this.back = 1; // how many tails are read (readTail: TAIL, LINES and TAIL_MAX times this)
+    this.readAt = 0;
     this.watched = null;
     this.loading = false;
     this.again = false;
+    this.refreshing = false;
+    this.reagain = false;
+    this.kicked = false; // a refresh is set for the next host call (see follow)
+    this.looking = false; // the shown-only fallback look is set (see look)
+    this.requesting = false;
+    this.settingsDirs = new Set(); // the folders of the shown session's settings files, watched
     this.real = new Map(); // cwd -> real path, for sessionFileFor
     this.open = new Map(); // row id -> open, when flipped from its default (S11: per row, kept across reads)
     this.hunkAt = new Map(); // diff card id -> shown hunk
@@ -84,7 +102,6 @@ export default class GentleChat extends View {
     this.expandAt = 0;
     this.hideThinking = true; // the session's hideThinkingBlock (read with its snapshot)
     this.settingsOf = null;
-    this.settingsAt = 0;
     this.limit = PAGE;
     this.stick = true; // scroll to the newest entry after the next draw
     this.error = null;
@@ -118,20 +135,54 @@ export default class GentleChat extends View {
       { keystroke: "down", action: "gentle_chat_slash_down", context: "GentleSlashMenu > Input" },
       { keystroke: "tab", action: "gentle_chat_slash_complete", context: "GentleSlashMenu > Input" },
     ]);
-    // Every live snapshot (and whether its publisher still runs), watched: snapshot.js.
+    // Every live snapshot (and whether its publisher still runs): the status bar's shared read
+    // (snapshot.js FeedSource). A new read re-renders this view, and render follows it.
     this.source = new FeedSource();
-    this.source.start(cx, null, TICK);
-    cx.timer.every(TICK, (cx) => this.tick(cx));
+    this.source.start(cx);
     this.tick(cx);
     this.commands(cx);
-    // Palette requests: a hidden stack child stays alive but gets no commands, so a request made
-    // while the Terminal showed is picked up here once the chat shows (a shared read, no redraw).
-    // The same look follows the shown session and its snapshot (a pick in another mod, a write).
-    cx.timer.every(REQUEST_POLL, (cx) => {
-      if (this.showing()) this.request(cx);
-      const want = this.pick();
-      if (want?.key !== this.key || (want?.feed?.updatedAt ?? null) !== (this.snap?.updatedAt ?? null)) this.tick(cx);
-    });
+    this.look(cx);
+  }
+
+  // From render (every shared-state or Herdr change re-renders the mods) and the fallback look:
+  // a refresh when the shown session, its terminal or its snapshot changed, and a palette request
+  // once the chat shows (a hidden stack child gets no commands). Host work runs in a timer
+  // callback: render may not notify, and request() sets shared state.
+  follow(cx) {
+    const want = this.pick();
+    if (want?.key !== this.key || (want?.terminal?.address ?? null) !== this.address
+      || (want?.feed?.updatedAt ?? null) !== (this.snap?.updatedAt ?? null)) {
+      if (!this.kicked) {
+        this.kicked = true;
+        cx.timer.after(1, (cx) => { this.kicked = false; this.tick(cx); });
+      }
+    }
+    if (!this.requesting && this.showing()) {
+      const req = shared("gentle-chat.request");
+      if (req && typeof req === "object" && Number.isFinite(req.at) && req.at !== this.lastRequest) {
+        this.requesting = true;
+        cx.timer.after(1, (cx) => { this.requesting = false; this.request(cx); });
+      }
+    }
+  }
+
+  // The fallback for a missed event, only while the chat shows (S13): a look every LOOK_MS (no
+  // file read), and a read every FILE_MS when the session folder has no watch (SAFETY_MS when it
+  // has one). It stops once the chat is hidden; render starts it again.
+  look(cx) {
+    if (this.looking) return;
+    this.looking = true;
+    try {
+      cx.timer.after(LOOK_MS, (cx) => {
+        this.looking = false;
+        if (!this.showing()) return;
+        this.follow(cx);
+        if (this.file && Date.now() - this.readAt >= (this.watched ? SAFETY_MS : FILE_MS)) cx.spawn(async (cx) => { await this.load(cx); });
+        this.look(cx);
+      });
+    } catch {
+      this.looking = false;
+    }
   }
 
   // Key commands ("<key>": "gentle-chat.<command>" in keys.json, or `herdr-app do gentle-chat.<command>`;
@@ -175,7 +226,22 @@ export default class GentleChat extends View {
 
   tick(cx) {
     this.want = this.pick();
-    cx.spawn(async (cx) => { await this.refresh(cx); });
+    this.wantFeeds = this.source.feeds;
+    cx.spawn(async (cx) => { await this.refreshNow(cx); });
+  }
+
+  // One refresh at a time; a call during one runs it again after, for the newest `want`.
+  async refreshNow(cx) {
+    if (this.refreshing) { this.reagain = true; return; }
+    this.refreshing = true;
+    try {
+      do {
+        this.reagain = false;
+        await this.refresh(cx);
+      } while (this.reagain);
+    } finally {
+      this.refreshing = false;
+    }
   }
 
   // A session that runs outside Herdr app: no terminal to type into or to show.
@@ -203,31 +269,55 @@ export default class GentleChat extends View {
     const exact = s.feed?.identity?.sessionFile;
     const where = typeof exact === "string" && exact.endsWith(".jsonl")
       ? { dir: exact.slice(0, Math.max(exact.lastIndexOf("/"), exact.lastIndexOf("\\"))), file: exact, feed: s.feed }
-      : s.terminal ? await sessionFileFor(s.terminal, this.real) : null;
+      : s.terminal ? await sessionFileFor(s.terminal, this.real, this.wantFeeds) : null;
     if (this.key !== key) return;
     if (this.setSnap(where?.feed ?? s.feed ?? null)) cx.notify();
-    await this.readSettings(s, cx);
+    if (this.settingsOf !== key) await this.readSettings(s, cx);
     if (!where) return;
     if (where.dir !== this.dir) { this.dir = where.dir; this.watch(where.dir, cx); }
     if (where.file !== this.file) { this.reset(where.file); cx.notify(); }
-    if (this.file) await this.load(cx);
+    // Once read, the file's writes come through its watch (S13: a snapshot change reads nothing).
+    if (this.file && (this.pos === 0 || this.watched !== this.dir)) await this.load(cx);
   }
 
-  // The session's hideThinkingBlock (pi settings; ctrl+t in its TUI writes it), read again on every
-  // refresh (at most every SETTINGS_MS: a streaming turn refreshes on every write). A missing or
-  // unreadable file reads as not set.
+  // The session's hideThinkingBlock (pi settings; ctrl+t in its TUI writes it): read when the
+  // session shows and again when one of its two settings files changes (S13: a watch on their
+  // folders, not a read per refresh). A missing or unreadable file reads as not set.
   async readSettings(s, cx) {
-    const now = Date.now();
-    if (this.settingsOf === s.key && now - this.settingsAt < SETTINGS_MS) return;
     this.settingsOf = s.key;
-    this.settingsAt = now;
     const dir = s.feed?.identity?.agentDir;
     const cwd = s.feed?.identity?.cwd ?? s.terminal?.cwd ?? null;
+    const files = [typeof dir === "string" ? `${dir.replace(/\/+$/, "")}/settings.json` : null,
+      typeof cwd === "string" ? `${cwd.replace(/\/+$/, "")}/.pi/settings.json` : null];
+    this.settingsFiles = files;
+    for (const f of files) if (f) this.watchSettings(f.slice(0, f.lastIndexOf("/")), s.key, cx);
     const text = async (path) => { try { return utf8(await readFile(path)); } catch { return null; } };
-    const hide = hideThinkingFrom(typeof dir === "string" ? await text(`${dir}/settings.json`) : null,
-      typeof cwd === "string" ? await text(`${cwd.replace(/\/+$/, "")}/.pi/settings.json`) : null);
+    const hide = hideThinkingFrom(files[0] ? await text(files[0]) : null, files[1] ? await text(files[1]) : null);
     if ((this.want?.key ?? null) !== s.key) return;
     if (hide !== this.hideThinking) { this.hideThinking = hide; cx.notify(); }
+  }
+
+  // One watch per settings folder of the shown session; it ends at its next event once another
+  // session shows. Only a change of one of the two settings files reads them again.
+  watchSettings(dir, key, cx) {
+    if (this.settingsDirs.has(dir)) return;
+    this.settingsDirs.add(dir);
+    cx.spawn(async (cx) => {
+      try {
+        for (;;) {
+          const paths = await watchFolder(dir);
+          const files = (this.settingsFiles ?? []).filter(Boolean);
+          if (this.key !== key || !files.some((f) => f.startsWith(`${dir}/`))) break;
+          if (!Array.isArray(paths) || paths.some((p) => p === dir || files.includes(p))) {
+            const s = this.want;
+            if (s?.key === key) await this.readSettings(s, cx);
+          }
+        }
+      } catch {
+        // no such folder (a project without .pi): read when the session shows
+      }
+      this.settingsDirs.delete(dir);
+    });
   }
 
   // Keeps the newest snapshot; true when what it shows changed. A new or cleared question
@@ -281,29 +371,58 @@ export default class GentleChat extends View {
     this.feed = createFeed();
     this.file = file;
     this.pos = 0;
+    this.start = 0;
+    this.size = 0;
+    this.back = 1;
     this.limit = PAGE;
     this.stick = true;
     this.error = null;
   }
 
-  // Wakes on any change in the session folder (a new session file appears there too).
+  // Watches the session folder. With the snapshot's exact file, only a write to that file reads
+  // (S13: the other sessions of the folder write there too); without one (an older Gentle Shell,
+  // found by folder) any change looks again, since a new session file appears there.
   watch(dir, cx) {
     if (this.watched === dir) return;
     this.watched = dir;
     cx.spawn(async (cx) => {
       try {
         while (this.watched === dir) {
-          await watchFolder(dir);
+          const paths = await watchFolder(dir);
           if (this.watched !== dir) break;
-          await this.refresh(cx);
+          const file = this.file;
+          if (!file || typeof this.snap?.identity?.sessionFile !== "string") { await this.refreshNow(cx); continue; }
+          const name = file.slice(file.lastIndexOf("/") + 1);
+          if (!Array.isArray(paths) || paths.some((p) => p === file || p === dir || String(p).endsWith(`/${name}`))) await this.load(cx);
         }
       } catch {
-        if (this.watched === dir) this.watched = null; // the timer keeps it fresh
+        if (this.watched === dir) this.watched = null; // the fallback look reads it while shown
       }
     });
   }
 
-  // Reads only the complete lines added since `pos`. The file only grows; if it shrank, start over.
+  // A session with a snapshot starts from its tail (S13): the snapshot carries the header's facts
+  // (cost, model, name), so the history before the tail is needed only to scroll back.
+  useTail() {
+    return Boolean(this.snap);
+  }
+
+  // "Show earlier": the drawn entries go back PAGE more; once every read entry is drawn, one more
+  // tail of the file is read (the read part is rebuilt from the new start; opened rows stay).
+  earlier(from, cx) {
+    this.limit += PAGE;
+    this.pinned = false;
+    if (from <= 0 && this.start > 0 && this.file) {
+      this.back += 1;
+      this.pos = 0;
+      cx.spawn(async (cx) => { await this.load(cx); });
+    }
+    cx.notify();
+  }
+
+  // Reads only the complete lines added since `pos` (a long session: first its tail, readTail).
+  // The file only grows; if it shrank, start over. A big file is read through `sh`, which gives
+  // its size and only the new bytes; a small one is read whole and sliced (session.js).
   async load(cx) {
     if (this.loading) { this.again = true; return; }
     this.loading = true;
@@ -311,9 +430,26 @@ export default class GentleChat extends View {
     try {
       do {
         this.again = false;
+        this.readAt = Date.now();
         const before = this.feed.items.length;
-        const { text, end, more } = await readAfter(file, this.pos);
+        if (this.pos === 0 && this.useTail()) {
+          const first = !this.feed.items.length;
+          const t = await readTail(file, TAIL * this.back, LINES * this.back, TAIL_MAX * this.back);
+          if (file !== this.file) return;
+          if (!t) continue;
+          const feed = createFeed();
+          ingest(feed, t.text);
+          this.feed = feed;
+          this.start = t.start;
+          this.pos = t.end;
+          this.size = t.size;
+          if (first) this.stick = true;
+          cx.notify();
+          continue;
+        }
+        const { text, end, more, size } = await readAfter(file, this.pos, undefined, this.size > EXEC_ABOVE);
         if (file !== this.file) return;
+        if (Number.isFinite(size)) this.size = size;
         if (text === null) {
           if (this.pos > 0) { this.reset(file); this.again = true; }
           continue;
@@ -599,7 +735,7 @@ export default class GentleChat extends View {
 
   // A palette request (gentle-palette): a permission mode, or a slash command. Consume-once: it is
   // cleared when taken, and one older than REQUEST_MS is dropped. Without the session's snapshot
-  // yet it waits for the next look (REQUEST_POLL).
+  // yet it waits for the next render or look (follow).
   request(cx) {
     const req = shared("gentle-chat.request");
     if (!req || typeof req !== "object" || !Number.isFinite(req.at) || req.at === this.lastRequest) return;
@@ -758,7 +894,8 @@ export default class GentleChat extends View {
     if (pq && Number.isInteger(n) && n >= 1 && n <= askOptions(pq).length) { this.answer(n - 1, cx); cx.stop_propagation(); }
   }
 
-  render(_cx) {
+  render(cx) {
+    try { this.follow(cx); this.look(cx); } catch { /* the fallback look keeps it fresh */ }
     const p = palette(theme());
     const agent = this.address ? agents().find((a) => a.address === this.address) : null;
     this.agentInfo = agent;
@@ -766,11 +903,11 @@ export default class GentleChat extends View {
     const list = entries(this.feed.items);
     const from = Math.max(0, list.length - this.limit);
     const rows = [];
-    if (from > 0) {
+    if (from > 0 || this.start > 0) {
       rows.push(div().flex_none().self_center().child(div().id("earlier").px(10).py(3).rounded(R.inner).text_size(12).text_color(p.muted)
         .cursor_pointer().hover((s) => s.bg(p.selected))
-        .on_click((_e, cx) => { this.limit += PAGE; this.pinned = false; cx.notify(); })
-        .child(`Show earlier (${from} ${from === 1 ? "message" : "messages"})`)));
+        .on_click((_e, cx) => this.earlier(from, cx))
+        .child(from > 0 ? `Show earlier (${from} ${from === 1 ? "message" : "messages"})` : "Show earlier messages")));
     }
     for (let i = from; i < list.length; i++) rows.push(lane(entry(this, p, list[i], working && i === list.length - 1)));
     const pq = this.snap?.pendingQuestion;

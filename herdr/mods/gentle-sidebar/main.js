@@ -55,8 +55,11 @@ export default class GentleSidebar extends View {
     this.last = null;
     this.busy = false;
     this.error = null;
-    // The reset line counts down in minutes: redraw once a minute, nothing faster.
-    cx.timer.every(60000, (cx) => cx.notify());
+    // The reset line counts down in minutes: looked at once a minute, redrawn only when its words
+    // changed (S13: a redraw is the whole window's).
+    this.resetAt = null;
+    this.resetShown = "";
+    cx.timer.every(60000, (cx) => { if ((this.resetAt === null ? "" : until(this.resetAt)) !== this.resetShown) cx.notify(); });
   }
 
   brand(c) {
@@ -120,6 +123,8 @@ export default class GentleSidebar extends View {
     }
     const first = own[0];
     const reset = first && until(first.resetAt);
+    this.resetAt = first ? first.resetAt ?? null : null;
+    this.resetShown = this.resetAt === null ? "" : until(this.resetAt);
     const note = this.error
       ? this.error
       : !feed

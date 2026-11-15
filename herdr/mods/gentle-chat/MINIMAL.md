@@ -26,7 +26,7 @@ conversation's own text is one line, and any line opens and closes again.
 
 | Item | Minimal (default) | Open |
 |---|---|---|
-| Tool call | One `.tool` row: ✓ / ✕ / spinner, name, short argument (path relative to the project, "· N lines", "· N matches"), the bash outcome or the **error's last line in red**, the duration, chevron | Arguments (when they say more than the row) and the output, up to 6000 characters |
+| Tool call | One `.tool` row: ✓ / ✕ / a still • while it runs, name, short argument (path relative to the project, "· N lines", "· N matches"), the bash outcome or the **error's last line in red**, the duration, chevron | Arguments (when they say more than the row) and the output, up to 6000 characters |
 | Two or more reads / searches in a row | "✓ Explored · 2 reads, 1 search 0.9s" | The tool rows, each one minimal or open on its own |
 | Thinking run (consecutive blocks are one run) | "Thought for Ns" (italic, chevron) when the session hides thinking; **open** when it does not | The thinking text |
 | Edit with a patch | One `.tool` row: ✓, edit, file, +N −M | The artboard's diff card: hunk, Next hunk, Open in Changes |
@@ -49,12 +49,14 @@ conversation's own text is one line, and any line opens and closes again.
   The flips live in the view by row id (entry id + block index), so they survive new lines,
   re-reads of the file and switching to another session and back (the last 30 sessions).
 - **hideThinkingBlock**: read from the shown session's own settings (`<agentDir>/settings.json`,
-  overridden by `<cwd>/.pi/settings.json`, as pi merges them) at most every 3 s; ctrl+t in its
-  TUI is picked up on the next read. Missing or unreadable: not set (pi's default, false).
+  overridden by `<cwd>/.pi/settings.json`, as pi merges them) when the session shows and again
+  when one of those two files changes (a watch on their folders); ctrl+t in its TUI is picked up
+  then. Missing or unreadable: not set (pi's default, false).
 - **Cost**: a closed row builds no body (bodies are built only while open), so the minimal view
   is also the cheap one. One ⌘O reaching both the chat's key and the layout's key toggles once
-  (a 300 ms guard). The only animation stays the native `loop` / `frames` of the running dot
-  and spinner.
+  (a 300 ms guard). No animation while a session works (S13, `herdr/PERF.md`): the running dot
+  and a running tool's mark are still; only the Send button's spinner runs, for the second a
+  send takes.
 
 ## Where the desktop differs from the TUI, and why
 

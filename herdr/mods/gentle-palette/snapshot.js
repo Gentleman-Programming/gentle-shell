@@ -17,9 +17,16 @@
 // the window is about (`targetSession`) follows Herdr's focus, unless a session that runs outside
 // Herdr app was picked in a list (`selectSession`): every mod then shows that one, until Herdr's
 // focus moves to another terminal.
+//
+// ONE READER (S13, herdr/PERF.md): only the leader's FeedSource (gentle-status, always mounted in
+// the gentle-shell layout: `start(cx, null, every, { lead: true })`) watches the snapshot folders,
+// reads them and runs `ps`; it publishes what it read in shared state only when the digest
+// changes (`FEEDS_KEY`, then `FEEDS_DIGEST_KEY`). Every other FeedSource follows: no timer, no
+// watch, no `ps`; its `feeds` are the published ones, and setting shared state re-renders every
+// mod. A copy in a layout without the leader reads for itself, as before, and publishes nothing.
 
 import { readFile, readdir } from "fs/promises";
-import { agents, terminals, panes, focused, home, watchFolder, exec, run, shared, setShared } from "herdr";
+import { agents, terminals, panes, focused, home, layout, watchFolder, exec, run, shared, setShared } from "herdr";
 
 export const FEED_SCHEMA = "gentle-shell.desktop-feed/v1";
 // Extra agent dirs, one per custom Gentle Shell home: `{ "roots": ["/abs/dir", "~/dir"] }` (or a
@@ -256,22 +263,87 @@ export function targetTerminal(last) {
   return byAddr(f?.agent) ?? byAddr(f?.terminal) ?? byAddr(inTab[0]?.address) ?? byAddr(last) ?? all[0] ?? null;
 }
 
-// Keeps `feeds` fresh: a watch on every root's snapshot folder plus a gentle fallback timer (a
-// folder may not exist yet, and a missed event must not freeze the view). `onChange(cx)` runs only
-// when a snapshot really changed (the publisher rewrites a file only when its content changed).
+// The live snapshots as the leader published them ({ digest, at, feeds }), and their digest alone:
+// a follower compares the small digest and reads the big value only when it changed.
+export const FEEDS_KEY = "gentle-shell.feeds";
+export const FEEDS_DIGEST_KEY = "gentle-shell.feeds.digest";
+export const FEED_LEADER = "gentle-status";
+
+// Whether the shown layout places the leader mod in a block (gentle-shell.json: the status bar).
+export function leaderShown() {
+  const has = (n) => n?.content?.mod === FEED_LEADER || (Array.isArray(n?.children) && n.children.some(has));
+  try { return has(layout()); } catch { return false; }
+}
+
+// Keeps `feeds` fresh. The leader (and a copy without one): a watch on every root's snapshot folder
+// plus a gentle fallback timer (a folder may not exist yet, and a missed event must not freeze the
+// view). `onChange(cx)` runs only when a snapshot really changed (the publisher rewrites a file
+// only when its content changed). A follower reads the leader's shared value (see the header).
 export class FeedSource {
   constructor() {
-    this.feeds = [];
+    this.own = []; // what this copy read itself (the leader, or a copy without one)
     this.key = "";
     this.loading = false;
     this.again = false;
     this.watching = new Set(); // the snapshot folders watched now
+    this.mode = "alone"; // lead | follow | alone
+    this.digest = undefined; // the published digest `cache` belongs to
+    this.cache = [];
   }
 
-  start(cx, onChange, every = 10000) {
+  start(cx, onChange, every = 10000, { lead = false } = {}) {
     this.onChange = onChange;
-    cx.timer.every(every, (cx) => this.refresh(cx));
+    if (lead) { this.mode = "lead"; this.read(cx, every); return; }
+    this.mode = "follow";
+    if (leaderShown()) return;
+    // A layout switch starts the mods while layout() may still be the layout before (measured):
+    // look again before reading alone, and on every tick after.
+    cx.timer.after(500, (cx) => { if (!leaderShown()) { this.mode = "alone"; this.read(cx, every); } });
+  }
+
+  // Reads now and every `every` ms; a copy reading alone stops once its layout places the leader.
+  read(cx, every) {
+    this.task = cx.timer.every(every, (cx) => {
+      if (this.mode === "alone" && leaderShown()) {
+        this.mode = "follow";
+        this.task?.cancel();
+        cx.notify();
+        return;
+      }
+      this.refresh(cx);
+    });
     this.refresh(cx);
+  }
+
+  // Every live snapshot, newest first. A follower's read is ambient (a render, a timer, a handler);
+  // outside one it keeps the last value it read.
+  get feeds() {
+    if (this.mode !== "follow") return this.own;
+    try {
+      const digest = shared(FEEDS_DIGEST_KEY);
+      if (digest !== this.digest) {
+        const v = shared(FEEDS_KEY);
+        this.cache = Array.isArray(v?.feeds) ? v.feeds : [];
+        this.digest = digest;
+      }
+    } catch {
+      // not in a host call: the last value read
+    }
+    return this.cache;
+  }
+
+  // The leader's publish: from a host call (a timer callback), and only the newest read. Setting
+  // shared state re-renders every mod, the leader included.
+  publish(cx, key, feeds) {
+    cx.timer.after(1, (cx) => {
+      if (key !== this.key) return;
+      try {
+        setShared(FEEDS_KEY, { digest: key, at: Date.now(), feeds });
+        setShared(FEEDS_DIGEST_KEY, key);
+      } catch {
+        cx.notify(); // a copy being closed: at least this one shows it
+      }
+    });
   }
 
   refresh(cx) {
@@ -287,9 +359,10 @@ export class FeedSource {
           const key = feeds.map((f) => `${f.identity.agentDir}/${f.identity.sessionId}@${f.updatedAt}`).join("|");
           if (key !== this.key) {
             this.key = key;
-            this.feeds = feeds;
+            this.own = feeds;
             this.onChange?.(cx);
-            cx.notify();
+            if (this.mode === "lead") this.publish(cx, key, feeds);
+            else cx.notify();
           }
         } while (this.again);
       } finally {

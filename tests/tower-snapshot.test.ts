@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
-import { buildTowerSnapshot, nameSubagents, TOWER_SNAPSHOT_VERSION } from "../lib/tower-snapshot.ts";
+import { buildTowerSnapshot, chatFromBranch, nameSubagents, TOWER_CHAT_TEXT_MAX, TOWER_CHAT_TURNS, TOWER_SNAPSHOT_VERSION } from "../lib/tower-snapshot.ts";
 import { readTowerSnapshots, removeTowerSnapshot, TOWER_SNAPSHOT_MAX_BYTES, writeTowerSnapshot } from "../lib/tower-hub.ts";
 
 const roots: string[] = [];
@@ -148,4 +148,61 @@ test("a session with huge history still publishes a snapshot within the hub limi
 
 test("a normal snapshot carries no omission marker", () => {
 	assert.equal(buildTowerSnapshot(base).omitted, undefined);
+});
+
+// ---------- the intercom conversation ----------
+const msg = (role: string, content: unknown, timestamp: number, extra: Record<string, unknown> = {}) => ({ type: "message", message: { role, content, timestamp, ...extra } });
+
+test("the conversation keeps the visible turns in order: your words and the agent's visible text", () => {
+	const chat = chatFromBranch([
+		msg("user", "what did you do?", 1),
+		msg("assistant", [{ type: "thinking", thinking: "secret plan" }, { type: "toolCall", id: "c1", name: "read", arguments: { path: "a.ts" } }], 2),
+		msg("toolResult", [{ type: "text", text: "file body" }], 3, { toolCallId: "c1", toolName: "read" }),
+		msg("assistant", [{ type: "text", text: "I fixed the refresh." }, { type: "toolCall", id: "c2", name: "bash", arguments: {} }], 4),
+		msg("custom", "injected reminder", 5, { customType: "gentle-todo-reminder", display: false }),
+		{ type: "custom_message", customType: "note", content: "hidden note", display: false, timestamp: "1970-01-01T00:00:00.006Z" },
+		msg("user", "[System-generated wake] a helper finished", 7),
+		msg("user", [{ type: "text", text: "and the docs?" }, { type: "image", data: "x", mimeType: "image/png" }], 8),
+		msg("assistant", [{ type: "text", text: "  " }], 9),
+		msg("assistant", [{ type: "text", text: "Updated them too." }], 10),
+	]);
+	assert.deepEqual(chat, [
+		{ role: "you", text: "what did you do?", at: 1 },
+		{ role: "agent", text: "I fixed the refresh.", at: 4 },
+		{ role: "you", text: "and the docs?", at: 8 },
+		{ role: "agent", text: "Updated them too.", at: 10 },
+	]);
+});
+
+test("the conversation keeps only the latest turns, each bounded", () => {
+	const entries = Array.from({ length: 30 }, (_, i) => msg(i % 2 ? "assistant" : "user", i % 2 ? [{ type: "text", text: `reply ${i} ${"r".repeat(5000)}` }] : `ask ${i}`, 100 + i));
+	const chat = chatFromBranch(entries);
+	assert.equal(chat.length, TOWER_CHAT_TURNS);
+	assert.equal(chat[0].at, 100 + 30 - TOWER_CHAT_TURNS);
+	assert.equal(chat.at(-1)!.at, 129);
+	for (const t of chat) assert.ok(t.text.length <= TOWER_CHAT_TEXT_MAX, `turn of ${t.text.length} chars`);
+	assert.ok(chat.at(-1)!.text.endsWith("…"));
+	// The snapshot applies the same bounds to whatever it is given.
+	const s = buildTowerSnapshot({ ...base, chat: Array.from({ length: 20 }, (_, i) => ({ role: "agent" as const, text: "z".repeat(3000), at: i })) });
+	assert.equal(s.chat!.length, TOWER_CHAT_TURNS);
+	assert.equal(s.chat![0].at, 20 - TOWER_CHAT_TURNS);
+	assert.ok(s.chat!.every((t) => t.text.length <= TOWER_CHAT_TEXT_MAX));
+});
+
+test("a session with no conversation carries no chat, and the latest words stay for older views", () => {
+	const s = buildTowerSnapshot({ ...base, said: "hello" });
+	assert.equal(s.chat, undefined);
+	assert.equal(s.said, "hello");
+});
+
+test("when the snapshot is too large the oldest chat turns go first, before any task", () => {
+	const chat = Array.from({ length: TOWER_CHAT_TURNS }, (_, i) => ({ role: (i % 2 ? "agent" : "you") as "agent" | "you", text: `${i}:${"漢".repeat(TOWER_CHAT_TEXT_MAX)}`, at: i }));
+	const todos = Array.from({ length: 200 }, (_, i) => ({ id: i + 1, title: "t".repeat(60), status: "done" as const, note: "n".repeat(60) }));
+	const s = buildTowerSnapshot({ ...base, todos, chat });
+	assert.ok(Buffer.byteLength(JSON.stringify(s)) <= TOWER_SNAPSHOT_MAX_BYTES);
+	assert.ok(s.chat!.length > 0 && s.chat!.length < TOWER_CHAT_TURNS, `kept ${s.chat!.length} turns`);
+	assert.deepEqual(s.chat!.map((t) => t.at), chat.slice(-s.chat!.length).map((t) => t.at), "the newest turns stay");
+	assert.equal(s.omitted?.chat, TOWER_CHAT_TURNS - s.chat!.length);
+	assert.equal(s.todos.length, 200, "no task was dropped");
+	assert.ok(s.todos.every((t) => t.note), "no task note was dropped");
 });

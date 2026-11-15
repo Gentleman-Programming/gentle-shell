@@ -14,7 +14,7 @@ import { replayTodo, TODO_PROGRESS_EVENT } from "../lib/shell-todo.ts";
 import { removeTowerSnapshot, towerHubDir, writeTowerSnapshot } from "../lib/tower-hub.ts";
 import { consumeTowerActions, type TowerSessionAction } from "../lib/tower-actions.ts";
 import { discoverYoloUiAdapter } from "../lib/yolo-session-policy.ts";
-import { artifactsFromBranch, buildTowerSnapshot, latestAssistantText, type TowerAgentInput, type TowerTodo } from "../lib/tower-snapshot.ts";
+import { artifactsFromBranch, buildTowerSnapshot, chatFromBranch, latestAssistantText, type TowerAgentInput, type TowerTodo } from "../lib/tower-snapshot.ts";
 
 type AgentsService = Awaited<ReturnType<typeof discoverDesktopAgentsService>>;
 
@@ -82,6 +82,8 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 	const actionTimeoutMs = options.actionTimeoutMs ?? 10_000;
 	/** Notices of the inbox batch being run; published together when it ends. */
 	let batch: Array<{ text: string; ok: boolean }> | undefined;
+	/** A message of the running inbox batch reached the session. */
+	let delivered = false;
 
 	const publish = () => {
 		timer = undefined;
@@ -108,6 +110,7 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 				waiting,
 				notice,
 				said: latestAssistantText(branch),
+				chat: chatFromBranch(branch),
 				models: stats.models.map((m) => ({ model: m.model, cost: m.cost, tokens: m.tokens })),
 				artifacts: artifactsFromBranch(branch, ctx.sessionManager.getCwd()),
 				now: now(),
@@ -139,8 +142,10 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 	const execute = async (action: TowerSessionAction, c: ExtensionContext) => {
 		switch (action.type) {
 			case "message":
+				// The message shows in the conversation itself; a standalone "delivered" line only confused.
 				pi.sendUserMessage(action.text, c.isIdle?.() ? undefined : { deliverAs: "followUp" });
-				return say("Message delivered", true);
+				delivered = true;
+				return;
 			case "cancel-helper": {
 				const helper = agents?.read().agents.find((a) => a.id === action.helperId);
 				if (!agents || !helper) return say("That helper is no longer running", false);
@@ -177,6 +182,7 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 		busy = true;
 		const c = ctx;
 		batch = [];
+		delivered = false;
 		try {
 			// Each action stands alone: one failure is reported and the rest still run.
 			for (const action of consumeTowerActions(dir, sessionId)) {
@@ -189,6 +195,8 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 			batch = undefined;
 			busy = false;
 			if (done.length) say(done.map((n) => n.text).join(" · "), done.every((n) => n.ok));
+			// A message that went through clears an older failure, so it does not read as this one's.
+			else if (delivered && notice) { notice = undefined; schedule(); }
 		}
 	};
 	const stop = () => {

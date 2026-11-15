@@ -190,6 +190,8 @@ test("a web message reaches the floor: a new turn when idle, a follow-up when bu
 	writeTowerAction(dir, { type: "message", sessionId: "sess-1", text: "and the changelog" });
 	await wait(120);
 	assert.deepEqual(sent, [{ text: "also update the docs", opts: undefined }, { text: "and the changelog", opts: { deliverAs: "followUp" } }]);
+	// The message shows up in the conversation itself; no standalone "delivered" notice.
+	assert.equal(readTowerSnapshots(dir)[0].notice, undefined);
 	await fire("session_shutdown", ctx);
 });
 
@@ -221,7 +223,8 @@ test("a failing action is reported and the rest of the batch still runs", async 
 	const notice = readTowerSnapshots(dir)[0].notice;
 	assert.equal(notice?.ok, false);
 	assert.match(notice?.text ?? "", /Could not stop the helper: agent host gone/);
-	assert.match(notice?.text ?? "", /Message delivered/);
+	// The message itself shows in the conversation; only the failure is a notice.
+	assert.equal(notice?.text, "Could not stop the helper: agent host gone");
 	await action.fire("session_shutdown", ctx);
 });
 
@@ -351,6 +354,24 @@ test("the floor carries the orchestrator's latest words, bounded", async () => {
 	assert.ok(said.startsWith("Found it."));
 	assert.ok(said.length <= 600);
 	assert.doesNotMatch(said, /hidden|old reply/);
+	await fire("session_shutdown", ctx);
+});
+
+test("the floor carries the conversation: your messages and the agent's visible replies, in order", async () => {
+	const dir = hub();
+	const { pi, fire } = fakePi();
+	const branch = [
+		{ type: "message", message: { role: "user", content: "what did you do?", timestamp: 10 } },
+		{ type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "hidden" }, { type: "toolCall", name: "read", arguments: {} }, { type: "text", text: "Fixed the token refresh." }], timestamp: 20, usage: { input: 1, output: 1, cost: { total: 0 } } } },
+		{ type: "message", message: { role: "custom", customType: "gentle-todo-reminder", content: "injected", display: false, timestamp: 25 } },
+	];
+	createTowerPublisher(pi, { env: { GENTLE_TOWER_HOME: dir }, debounceMs: 0, reviewCli: async () => "{}" });
+	const ctx = fakeCtx(branch);
+	await fire("session_start", ctx);
+	await wait(180);
+	const s = readTowerSnapshots(dir)[0];
+	assert.deepEqual(s.chat, [{ role: "you", text: "what did you do?", at: 10 }, { role: "agent", text: "Fixed the token refresh.", at: 20 }]);
+	assert.equal(s.said, "Fixed the token refresh.");
 	await fire("session_shutdown", ctx);
 });
 

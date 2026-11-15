@@ -309,9 +309,20 @@ The Status panel has a **Jobs** section with each running job's description. Whe
 
 ### Gentle Shell Desktop — The same session, in a native window
 
-<img width="100%" src="herdr/preview.png" alt="Design render of Gentle Shell Desktop: projects and agents in the left sidebar with plan usage below, sessions as tabs, the chat in the centre with a subagent card and a question waiting for an answer, a Changes inspector on the right, and a status bar with the ODD phase, streaming speed and jobs">
+<img width="100%" src="docs/images/desktop/chat.png" alt="Gentle Shell Desktop running a real session: projects and agents in the left sidebar with plan usage below, sessions as tabs, the chat in the centre with an edit diff card, tool calls and the agent's summary, the Changes inspector on the right with per-file line counts, and a status bar with the ODD todo progress and jobs">
 
-<p align="center"><sub>The approved design (<code>design/herdr-desktop/01-inspector.html</code>), rendered headless; the live window is checked against it side by side.</sub></p>
+<p align="center"><sub>A real session: the agent edits <code>src/text.js</code>, runs the tests and reports, while Changes tracks the files.</sub></p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/desktop/todo.png" alt="The Todo tab of the inspector showing the session's task list completed, 3 of 3"></td>
+    <td width="50%"><img src="docs/images/desktop/palette.png" alt="The ⌘K Gentle palette open over the chat, listing session commands such as /new, /resume, /fork, /compact and /export"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>The session's todo, live in the inspector.</sub></td>
+    <td align="center"><sub><code>⌘K</code> opens every Gentle Shell command.</sub></td>
+  </tr>
+</table>
 
 Gentle Shell Desktop shows your Gentle Shell sessions in [Herdr app](https://herdr.dev): the conversation as a native chat, with Changes, Todo, Agents, Jobs, Review and Session stats beside it, and the real TUI one switch away (`⌘J`). It is Herdr, unchanged, plus Gentle Shell's own mods and layout; the desktop acts with exactly the authority you have in the terminal, and consent is always answered in the terminal.
 

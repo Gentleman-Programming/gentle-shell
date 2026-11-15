@@ -159,7 +159,7 @@ test("S5 change 5: gentle_odd_phase does not restate the Phase reporting cadence
 	assert.ok(prose.includes("Pass phase exactly as its schema enum"), "schema rule must stay");
 	assert.ok(prose.includes("Never call this from a subagent or background/child task"), "child rule must stay: children do not receive Phase reporting");
 	for (const mode of MODES) {
-		assert.ok(render("gentleman", mode).includes("call `gentle_odd_phase` only when the primary session's ODD phase actually changes, never per tool call or on a fixed cadence, and never from a subagent"), `[${mode}] Phase reporting keeps the cadence`);
+		assert.ok(render("gentleman", mode).includes("call it from the primary session only when its ODD phase actually changes, never per tool call or on a fixed cadence"), `[${mode}] Phase reporting keeps the cadence`);
 	}
 });
 

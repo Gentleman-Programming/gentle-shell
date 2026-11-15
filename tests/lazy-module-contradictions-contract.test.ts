@@ -95,7 +95,7 @@ test("Duplicates: tracking keeps no restatement of step 3 or of the Phase report
 		assert.ok(!tracking.includes(restated), `tracking still restates an always-on rule: ${restated}`);
 	}
 	for (const prompt of prompts) {
-		assert.ok(prompt.includes("call `gentle_odd_phase` only when the primary session's ODD phase actually changes, never per tool call or on a fixed cadence, and never from a subagent"));
+		assert.ok(prompt.includes("call it from the primary session only when its ODD phase actually changes, never per tool call or on a fixed cadence"));
 	}
 	// The rules step 3 does not carry stay in tracking.
 	for (const kept of [

@@ -8,6 +8,7 @@ import { exploreViaDaemon, MAX_REPLY_CHARS, type DaemonCallResult } from "../lib
 import { seedWorktreeIndex } from "../lib/codegraph-seed.ts";
 import { CHILD_ENV, firstLineOf, indexState, maybeRewarm, prepareReadiness, runCodegraph, syncBeforeSearch, warmUpDaemon, type SearchSyncInput, type SessionStartReason } from "../lib/codegraph-readiness.ts";
 import { seedSessionWorktrees } from "../lib/codegraph-session-seed.ts";
+import { ensureDirectExposureInAgentHomes } from "../lib/codegraph-mcp-exposure.ts";
 
 const CODEGRAPH_OPERATION = {
 	INIT: "init",
@@ -676,6 +677,20 @@ export function registerCodeGraphTool(pi: ExtensionAPI): void {
 	pi.registerTool(createCodeGraphTool());
 }
 
+/** The one in-process mcp.json exposure ensure: later session starts are no-ops. */
+let exposureEnsured = false;
+
+function ensureExposureOnce(): void {
+	// Subagent children never patch user config; the parent session owns it once.
+	if (exposureEnsured || process.env[CHILD_ENV] === "1") return;
+	exposureEnsured = true;
+	try {
+		ensureDirectExposureInAgentHomes();
+	} catch {
+		/* never surface: the exposure patch is best effort */
+	}
+}
+
 export default function codeGraphTools(pi: ExtensionAPI): void {
 	registerCodeGraphTool(pi);
 	// One background unlock+sync per user prompt: the first search of every turn fires it.
@@ -756,5 +771,10 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 				/* never surface: pre-warm is best effort */
 			});
 		}
+		// Direct MCP exposure: Pi defaults an MCP server's tools to codemode-only reach, so an
+		// existing `codegraph` entry in the pi or Gentle Shell agent mcp.json gets
+		// `"exposure": "direct"` once per process — only when the field is absent, never
+		// overwriting an existing value, never creating an entry, and silent like the pre-warm.
+		ensureExposureOnce();
 	});
 }

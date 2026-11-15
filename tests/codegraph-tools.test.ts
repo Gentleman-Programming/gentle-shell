@@ -13,6 +13,7 @@ import codeGraphTools, {
 	codegraphSyncFailureNotice,
 	findCodeGraphNodeScriptOnPath,
 	isSameDirectory,
+	shouldSeedSessionWorktrees,
 	triggerSearchSync,
 	type CodeGraphRunner,
 	type DaemonExplore,
@@ -217,6 +218,30 @@ test("a caller-aborted search stops paying for daemon attempts instead of runnin
 	const elapsed = Date.now() - started;
 	assert.ok(result, "execute returned after the caller aborted");
 	assert.ok(elapsed < 2_500, `the aborted call must not run out the daemon budget, took ${elapsed} ms`);
+});
+
+test("an already-aborted caller exits before the daemon warm-up and the CLI fallback stages", async (t) => {
+	const cwd = workspace(t);
+	const ctx = { cwd } as ExtensionContext;
+	let warmCalls = 0;
+	let runnerCalls = 0;
+	const caller = new AbortController();
+	caller.abort(); // the caller cancelled before the search even started
+	const result = await createCodeGraphTool(async () => {
+		runnerCalls += 1;
+		return { stdout: "cli answer", stderr: "" };
+	}, {
+		daemonExplore: async () => ({ status: "unavailable" as const }),
+		warm: async () => {
+			warmCalls += 1;
+			return true;
+		},
+		syncRun: syncNothing,
+	}).execute("test", { operation: "query", query: "symbol" }, caller.signal, undefined, ctx);
+	assert.equal(warmCalls, 0, "prior cancellation must not enter the warm-up stage");
+	assert.equal(runnerCalls, 0, "prior cancellation must not start the CLI fallback");
+	assert.match(result.content[0].text, /CodeGraph failed to run/);
+	assert.equal((result.details as { status?: string }).status, "failed");
 });
 
 test("CodeGraph tool runs only fixed cwd-scoped init, query, and explore commands", async (t) => {
@@ -476,6 +501,18 @@ test("the extension hooks turn_start and session_start; turn_start resets the pe
 	assert.equal(triggerSearchSync(cwd, ctx, syncRun), true, "the turn_start handler cleared the set");
 	await settled();
 	assert.deepEqual(calls, [["unlock"], ["sync", "-q"], ["unlock"], ["sync", "-q"]]);
+});
+
+test("the session_start sibling scan is parent-only: reloads and ordinary child sessions never rescan", (t) => {
+	withoutChildEnv(t);
+	// A parent session pre-warms its unindexed sibling worktrees; a /reload is not a new session.
+	assert.equal(shouldSeedSessionWorktrees("startup"), true);
+	assert.equal(shouldSeedSessionWorktrees("reload"), false);
+	// An ordinary child session (CHILD_ENV=1) never rescans siblings — the child's own
+	// unindexed-worktree initialization in prepareReadiness stays a separate, unchanged path.
+	process.env.GENTLE_PI_AGENTS_CHILD = "1";
+	assert.equal(shouldSeedSessionWorktrees("startup"), false);
+	assert.equal(shouldSeedSessionWorktrees("reload"), false);
 });
 
 test("triggerSearchSync: an unindexed workspace starts no doomed unlock+sync", async (t) => {

@@ -150,3 +150,26 @@ test("(i) a hostile event payload never throws: the guards return undefined", ()
 		reason: BLOCK_REASON,
 	});
 });
+
+test("(l) memory reads stay blocked while a graph execution is still active; a new graph call after credit re-opens the window", () => {
+	const handlers = installGate();
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	// Graph calls A and B run in parallel: A's completion must not credit while B still runs.
+	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "a" });
+	fire(handlers, "tool_execution_start", { toolName: "mcp__codegraph__codegraph_query", toolCallId: "b" });
+	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "a", result: { ok: true } });
+	assert.deepEqual(fire(handlers, "tool_call", { toolName: "mem_search" }), {
+		block: true,
+		reason: BLOCK_REASON,
+	}, "B is still active, so A's completion cannot credit the prompt yet");
+	fire(handlers, "tool_execution_end", { toolName: "mcp__codegraph__codegraph_query", toolCallId: "b" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "every graph call finalized: credit applies");
+	// A new graph call starting after credit was granted invalidates it until it completes.
+	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "c" });
+	assert.deepEqual(fire(handlers, "tool_call", { toolName: "mem_search" }), {
+		block: true,
+		reason: BLOCK_REASON,
+	}, "a new graph call re-opens the window until it finalizes");
+	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "c", result: { ok: false } });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
+});

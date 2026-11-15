@@ -617,7 +617,10 @@ export function createCodeGraphTool(
 				let viaDaemon: DaemonCallResult | undefined;
 				if (Date.now() >= (daemonSkipUntil.get(cwd) ?? 0)) {
 					viaDaemon = await raceWithAbort(signal, attempt()) ?? undefined;
-					if (viaDaemon?.status !== "ok") {
+					// A retry stage is entered only while the caller still wants the answer: Node emits
+					// abort once, so a listener registered on an already-aborted signal never fires, and the
+					// warm-up could otherwise consume its whole budget after the cancellation.
+					if (viaDaemon?.status !== "ok" && !signal?.aborted) {
 						// Best-effort warm-up between the two attempts: a daemon that was never started gets one.
 						await raceWithAbort(signal, warm(cwd, DAEMON_ATTEMPT_TIMEOUT_MS).catch(() => { /* best effort */ }));
 						if (!signal?.aborted) viaDaemon = await raceWithAbort(signal, attempt()) ?? undefined;
@@ -635,9 +638,15 @@ export function createCodeGraphTool(
 				// has no project loaded), a slower correct answer beats the read/grep/find dead end.
 				// The CLI fallback carries the same query budget as the daemon attempts (#1901): a hung
 				// CLI process must not block the turn until the user aborts; init below stays signal-only.
+				// A caller that already cancelled exits here instead: the fallback's fresh controller
+				// must never buy the search another full budget past the cancellation.
+				if (signal?.aborted) return fail(signal.reason ?? new Error("The operation was aborted"), { syncTriggered });
 				try {
 					const result = await (async () => {
 						const cliController = new AbortController();
+						// The controller starts from the caller's current abort state, so a cancellation that
+						// races past the exit above can never leave it uncancelled.
+						if (signal?.aborted) cliController.abort();
 						const onCallerAbort = () => cliController.abort();
 						signal?.addEventListener("abort", onCallerAbort, { once: true });
 						let cliTimer: ReturnType<typeof setTimeout> | undefined;
@@ -689,6 +698,17 @@ function ensureExposureOnce(): void {
 	} catch {
 		/* never surface: the exposure patch is best effort */
 	}
+}
+
+/**
+ * Whether session_start runs the sibling pre-warm scan: a /reload is not a new session, and
+ * sibling pre-warming is parent-only (the child-worktree spec) — an ordinary child session
+ * (GENTLE_PI_AGENTS_CHILD=1) never rescans its siblings. The child's own unindexed-worktree
+ * initialization in prepareReadiness is a separate path and stays unchanged. Exported as a
+ * test seam: the production caller is the session_start handler below.
+ */
+export function shouldSeedSessionWorktrees(reason: string): boolean {
+	return reason !== "reload" && process.env[CHILD_ENV] !== "1";
 }
 
 export default function codeGraphTools(pi: ExtensionAPI): void {
@@ -765,8 +785,9 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 			});
 		// Sibling pre-warm: the repo's other unindexed linked worktrees are seeded from this
 		// session's index, quietly in the background — no notice, never awaited. A /reload is
-		// not a new session, so it never rescans.
-		if (reason !== "reload") {
+		// not a new session, and an ordinary child session is parent-only territory, so neither
+		// ever rescans (shouldSeedSessionWorktrees).
+		if (shouldSeedSessionWorktrees(reason)) {
 			void seedSessionWorktrees({ cwd: ctx.cwd, run: runCodegraph }).catch(() => {
 				/* never surface: pre-warm is best effort */
 			});

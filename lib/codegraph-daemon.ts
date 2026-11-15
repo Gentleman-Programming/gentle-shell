@@ -135,10 +135,14 @@ export interface McpReply {
 	result?: { isError?: boolean; content?: { text?: string }[] };
 }
 
-/** Parses one newline-delimited reply line; undefined when it is not JSON — each conversation decides what that means. */
+/** Parses one newline-delimited reply line; undefined when it is not JSON or not a reply object — JSON.parse
+ * also returns null, numbers, strings, arrays and booleans, and reading .codegraph or .id on any of those
+ * (null throws) must never reach reply dispatch. Each conversation decides what undefined means. */
 export function parseMcpReply(line: string): McpReply | undefined {
 	try {
-		return JSON.parse(line) as McpReply;
+		const parsed: unknown = JSON.parse(line);
+		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+		return parsed as McpReply;
 	} catch {
 		return undefined;
 	}

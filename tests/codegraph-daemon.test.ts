@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { daemonFor, exploreViaDaemon, liveDaemons, mcpLineReader, registeredDaemons, resetDaemonRegistryMemo } from "../lib/codegraph-daemon.ts";
+import { daemonFor, exploreViaDaemon, liveDaemons, mcpLineReader, mcpReplyKind, parseMcpReply, registeredDaemons, resetDaemonRegistryMemo } from "../lib/codegraph-daemon.ts";
 
 function dir(t: test.TestContext, name: string): string {
 	const cwd = mkdtempSync(join(tmpdir(), `gentle-codegraph-daemon-${name}-`));
@@ -18,6 +19,16 @@ interface FakeDaemon {
 	registryDir: string;
 	/** Resolves when the server is listening and its socket file exists. */
 	ready: Promise<void>;
+}
+
+/**
+ * The path the fake daemon binds: a unique \\.\pipe\ name on Windows — an IPC path there must live
+ * in the pipe namespace or server.listen fails and daemon.ready never resolves, the same pipe
+ * handling lib/codegraph-daemon.ts speaks — and the socket file next to the registry elsewhere.
+ */
+function fakeDaemonSocketPath(platform: NodeJS.Platform, home: string): string {
+	if (platform === "win32") return `\\\\.\\pipe\\gentle-shell-codegraph-daemon-${randomUUID()}`;
+	return join(home, "daemon.sock");
 }
 
 /**
@@ -34,7 +45,7 @@ function fakeDaemon(
 	const home = dir(t, "home");
 	const registryDir = join(home, ".codegraph", "daemons");
 	mkdirSync(registryDir, { recursive: true });
-	const socketPath = join(home, "daemon.sock");
+	const socketPath = fakeDaemonSocketPath(process.platform, home);
 	let resolveReady: () => void = () => {};
 	const ready = new Promise<void>((resolve) => {
 		resolveReady = resolve;
@@ -73,6 +84,16 @@ test("exploreViaDaemon answers through the daemon socket without spawning a proc
 	assert.deepEqual(result, { status: "ok", text: "daemon answer" });
 });
 
+test("the fake daemon binds a unique Windows named pipe and a socket file elsewhere", (t) => {
+	const home = dir(t, "socket-path");
+	const pipe = fakeDaemonSocketPath("win32", home);
+	assert.ok(pipe.startsWith("\\\\.\\pipe\\"), "a Windows IPC path must live in the \\\\.\\pipe\\ namespace");
+	assert.ok(!pipe.includes(home), "the pipe name carries no filesystem path");
+	assert.notEqual(pipe, fakeDaemonSocketPath("win32", home), "every daemon binds its own pipe");
+	assert.equal(fakeDaemonSocketPath("darwin", home), join(home, "daemon.sock"), "other platforms keep the socket file next to the registry");
+	assert.equal(fakeDaemonSocketPath("linux", home), join(home, "daemon.sock"));
+});
+
 test("exploreViaDaemon treats a protocol mismatch or a broken reply as unavailable", async (t) => {
 	const wrongProtocol = dir(t, "wrong-protocol");
 	const wrong = fakeDaemon(t, wrongProtocol, JSON.stringify({ codegraph: "1.6.0", protocol: 2 }), INITIALIZED, ANSWER);
@@ -93,6 +114,40 @@ test("exploreViaDaemon reports a daemon that accepts but never says hello as a t
 		await exploreViaDaemon(project, "codegraph_explore", { query: "main" }, 5_000, daemon.registryDir, 50),
 		{ status: "timeout" },
 	);
+});
+
+test("null and other non-object JSON replies never reach dispatch on either transport", async (t) => {
+	// JSON.parse accepts null, numbers, strings, arrays and booleans too; reading .codegraph or .id on
+	// null throws outside every conversation's error handling, so only a reply object may leave the parser.
+	assert.equal(parseMcpReply("null"), undefined);
+	assert.equal(parseMcpReply("42"), undefined);
+	assert.equal(parseMcpReply('"a string"'), undefined);
+	assert.equal(parseMcpReply("[1,2]"), undefined);
+	assert.equal(parseMcpReply("true"), undefined);
+	assert.deepEqual(parseMcpReply('{"id":2}'), { id: 2 }, "a reply object still parses");
+
+	// The stdio warm-up drives this same reader and hands every line to mcpReplyKind (lib/codegraph-readiness.ts):
+	// null and non-object lines come back as undefined and the conversation keeps going instead of
+	// dying on message.id.
+	const kinds: Array<"initialize" | "call" | undefined> = [];
+	const readStdout = mcpLineReader((message) => {
+		kinds.push(message === undefined ? undefined : mcpReplyKind(message));
+		return false;
+	});
+	assert.equal(readStdout(Buffer.from('null\n42\n{"jsonrpc":"2.0","id":1}\n')), false);
+	assert.deepEqual(kinds, [undefined, undefined, "initialize"], "rejected lines are skipped and the valid reply still dispatches");
+
+	// The socket conversation reads message.codegraph with the same exposure: a daemon that opens
+	// with null is merely unavailable, never an uncaught exception.
+	const nullHello = dir(t, "null-hello");
+	const daemon = fakeDaemon(t, nullHello, "null", INITIALIZED, ANSWER);
+	await daemon.ready;
+	assert.deepEqual(await exploreViaDaemon(nullHello, "codegraph_explore", { query: "main" }, 2_000, daemon.registryDir), { status: "unavailable" });
+
+	const healthy = dir(t, "healthy");
+	const good = fakeDaemon(t, healthy, HELLO, INITIALIZED, ANSWER);
+	await good.ready;
+	assert.deepEqual(await exploreViaDaemon(healthy, "codegraph_explore", { query: "main" }, 2_000, good.registryDir), { status: "ok", text: "daemon answer" }, "a well-formed conversation still dispatches");
 });
 
 test("daemonFor and the sockets iterate live daemons newest first", async (t) => {

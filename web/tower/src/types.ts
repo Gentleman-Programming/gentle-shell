@@ -37,6 +37,8 @@ export interface TowerSnapshot {
 	said?: string;
 	models?: Array<{ model: string; cost: number; tokens: number }>;
 	artifacts?: TowerArtifact[];
+	/** Entries left out so the snapshot fits the hub limit. */
+	omitted?: { todos?: number; subagents?: number; models?: number; artifacts?: number };
 	updatedAt: number;
 	/** A live Gentle Shell session without the tower extension: name, project and helpers only, no actions. */
 	basic?: true;

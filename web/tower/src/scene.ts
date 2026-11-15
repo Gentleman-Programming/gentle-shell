@@ -83,7 +83,10 @@ export class TowerScene {
 			this.bgKey = key;
 			const { canvas, layout } = paintBackground({ floors: project.sessions.length, colors, projectName: project.id, projectColor: colors[0] ?? "#f095c8", reviewOn, minHeight });
 			this.layout = layout;
+			// Each background is a fresh canvas texture: free the one it replaces (never the shared character textures).
+			const previous = this.bg.texture;
 			this.bg.texture = Texture.from(canvas);
+			if (previous && previous !== Texture.EMPTY && previous !== Texture.WHITE) previous.destroy(true);
 			this.app.renderer.resize(canvas.width, canvas.height);
 			this.props.removeChildren();
 			for (let i = 0; i < project.sessions.length; i++) {

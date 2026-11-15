@@ -4,15 +4,16 @@ import "./style.css";
 import { floorTop } from "./art";
 import { FLOOR_COLORS, floorState, groupProjects, money, todoProgress } from "./model";
 import { TowerScene, type Pick } from "./scene";
-import { closeModals, openArtifact, openArtifacts, openLibrary, openNewFloor, openTab, postAction, renderIntercom } from "./panels";
+import { closeIntercom, closeModals, intercomSession, openArtifact, openArtifacts, openLibrary, openNewFloor, openTab, postAction, renderIntercom } from "./panels";
 import type { Project, TowerSnapshot, TowerTodo } from "./types";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const scene = new TowerScene();
 let projects: Project[] = [];
 let current = "";
+// Panels follow a session, not a floor number: floors reorder and sessions come and go.
 let selected: Pick | undefined;
-let todoFloor: number | undefined;
+let todoSession: string | undefined;
 let scale = 2;
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -32,7 +33,7 @@ function renderProjects() {
 		const need = p.sessions.filter((s) => floorState(s) === "need").length;
 		return `<button data-cwd="${esc(p.cwd)}" aria-pressed="${p === project()}" title="${esc(p.cwd)} (Alt+${k + 1})"><i style="background:${FLOOR_COLORS[k % FLOOR_COLORS.length]}"></i>${esc(p.id)}<span class="cnt">${p.sessions.length}</span>${need ? '<span class="nd">?</span>' : ""}</button>`;
 	}).join("");
-	el.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => { current = b.dataset.cwd!; selected = undefined; todoFloor = undefined; render(); }));
+	el.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => { current = b.dataset.cwd!; selected = undefined; todoSession = undefined; render(); }));
 }
 
 function renderFloors(p: Project) {
@@ -47,26 +48,27 @@ function renderFloors(p: Project) {
 			<button class="fl px" data-i="${i}" aria-pressed="${selected?.floor === i}"><span class="fkey" style="background:${col}">${i + 1}</span><span class="nm">${esc(s.name)}</span><span class="st ${st}">${GLYPH[st]}</span><span class="sub">${s.basic ? "" : `${money(s.cost.total)} · `}${esc(crew)}</span></button>
 			${s.basic
 				? `<div class="prog px" style="opacity:.6;cursor:default"><span class="now">Details need the tower in this session</span></div>`
-				: `<button class="prog px" data-i="${i}" aria-expanded="${todoFloor === i}" aria-label="Tasks of floor ${i + 1}: ${prog.done} of ${prog.total} done"><span class="segs">${segs}</span><span class="now">${prog.done}/${prog.total} · ${now}</span></button>`}
+				: `<button class="prog px" data-i="${i}" aria-expanded="${todoSession === s.sessionId}" aria-label="Tasks of floor ${i + 1}: ${prog.done} of ${prog.total} done"><span class="segs">${segs}</span><span class="now">${prog.done}/${prog.total} · ${now}</span></button>`}
 		</div>`;
 	}).join("");
 	el.querySelectorAll<HTMLButtonElement>(".fl").forEach((b) => b.addEventListener("click", () => { const i = +b.dataset.i!; select({ kind: "orchestrator", floor: i, session: p.sessions[i] }); }));
-	el.querySelectorAll<HTMLButtonElement>("button.prog").forEach((b) => b.addEventListener("click", () => { const i = +b.dataset.i!; todoFloor = todoFloor === i ? undefined : i; render(); }));
+	el.querySelectorAll<HTMLButtonElement>("button.prog").forEach((b) => b.addEventListener("click", () => { const id = p.sessions[+b.dataset.i!]?.sessionId; todoSession = todoSession === id ? undefined : id; render(); }));
 }
 
 function renderTodo(p: Project) {
 	const el = $("todo");
-	if (todoFloor === undefined || !p.sessions[todoFloor]) { el.hidden = true; return; }
-	const s = p.sessions[todoFloor], prog = todoProgress(s.todos);
+	const floor = p.sessions.findIndex((x) => x.sessionId === todoSession);
+	if (floor < 0) { todoSession = undefined; el.hidden = true; return; }
+	const s = p.sessions[floor], prog = todoProgress(s.todos);
 	el.hidden = false;
-	el.innerHTML = `<h3><span style="background:${FLOOR_COLORS[todoFloor % FLOOR_COLORS.length]}"></span>${esc(s.name)}<small>${prog.done} of ${prog.total} done</small></h3>`
+	el.innerHTML = `<h3><span style="background:${FLOOR_COLORS[floor % FLOOR_COLORS.length]}"></span>${esc(s.name)}<small>${prog.done} of ${prog.total} done</small></h3>`
 		+ (s.todos.length ? `<ol>${s.todos.map((t, k) => `<li class="${t.status}"><span class="ic" style="background:${TODO_COLOR[t.status]}">${t.status === "done" ? "✓" : t.status === "blocked" ? "!" : ""}</span><span>${k + 1}. ${esc(t.title)}</span><span class="st">${t.status.replace("_", " ")}</span>${t.note ? `<span class="meta">${esc(t.note)}</span>` : ""}</li>`).join("")}</ol>` : `<p class="empty">This session has no task list yet.</p>`);
 }
 
 /** Strictness order. Lowering applies at once; raising is confirmed in that session's terminal. */
 const MODES = ["normal", "auto", "yolo", "super-yolo"];
-let intercomFloor: number | undefined;
 let armedStop: string | undefined;
+let stopFailed: string | undefined;
 
 function renderSelection() {
 	const el = $("sel");
@@ -75,11 +77,14 @@ function renderSelection() {
 	el.hidden = false;
 	if (selected.kind === "helper" && selected.helper) {
 		const a = selected.helper, armed = armedStop === a.id, running = a.status === "running" || a.status === "queued" || a.status === "waiting";
-		el.innerHTML = `<div><div class="nm">${esc(a.name)} · floor ${floor + 1}</div><div class="meta">${esc(a.status)}${a.lastStep ? ` · ${esc(a.lastStep)}` : ""} · ${money(a.cost)} · ${a.tokens.toLocaleString()} tokens</div></div>${running ? `<button class="btn ${armed ? "danger" : ""}" id="stop">${armed ? "Click again to stop" : "Stop helper"}</button>` : ""}`;
+		// A basic floor takes no actions: its helpers are shown, never stopped from here.
+		const stoppable = running && !s.basic;
+		el.innerHTML = `<div><div class="nm">${esc(a.name)} · floor ${floor + 1}</div><div class="meta">${esc(a.status)}${a.lastStep ? ` · ${esc(a.lastStep)}` : ""}${s.basic ? "" : ` · ${money(a.cost)} · ${a.tokens.toLocaleString()} tokens`}${stopFailed === a.id ? ` · <b class="warn">could not ask it to stop</b>` : ""}</div></div>${stoppable ? `<button class="btn ${armed ? "danger" : ""}" id="stop">${armed ? "Click again to stop" : "Stop helper"}</button>` : ""}`;
 		el.querySelector("#stop")?.addEventListener("click", async () => {
 			if (!armed) { armedStop = a.id; renderSelection(); return; }
 			armedStop = undefined;
-			await postAction({ type: "cancel-helper", sessionId: s.sessionId, helperId: a.id });
+			const ok = await postAction({ type: "cancel-helper", sessionId: s.sessionId, helperId: a.id });
+			stopFailed = ok ? undefined : a.id;
 			renderSelection();
 		});
 		return;
@@ -95,8 +100,8 @@ function renderSelection() {
 	el.innerHTML = `<div><div class="nm">Floor ${floor + 1} · ${esc(s.name)}</div><div class="meta">${s.waiting ? "a question is waiting in the terminal" : STATE_LABEL[st]} · ${prog.done}/${prog.total} tasks${prog.now ? ` · now: ${esc(prog.now.title)}` : ""} · ${money(s.cost.total)} · ${ctx} · ${esc(s.model)}${s.effort ? ` (${esc(s.effort)})` : ""}${s.phase ? ` · ${esc(s.phase)}` : ""}</div></div>
 		<button class="btn primary" id="talk">Talk <kbd>T</kbd></button><button class="btn" id="tasks">Tasks</button><button class="btn" id="arts">Artifacts${s.artifacts?.length ? ` (${s.artifacts.length})` : ""}</button>
 		${s.permission ? `<label class="door">Permissions <select id="door" aria-label="Permissions (raising is confirmed in the terminal)"><option selected>${esc(s.permission)}</option>${doorOptions}</select></label>` : ""}`;
-	el.querySelector("#talk")!.addEventListener("click", () => openIntercom(floor));
-	el.querySelector("#tasks")!.addEventListener("click", () => { todoFloor = floor; render(); });
+	el.querySelector("#talk")!.addEventListener("click", () => openIntercom(s.sessionId));
+	el.querySelector("#tasks")!.addEventListener("click", () => { todoSession = s.sessionId; render(); });
 	el.querySelector("#arts")!.addEventListener("click", () => openArtifacts(s));
 	el.querySelector("#door")?.addEventListener("change", async (e) => {
 		const mode = (e.target as HTMLSelectElement).value;
@@ -104,9 +109,9 @@ function renderSelection() {
 	});
 }
 
-function openIntercom(floor: number) {
-	const p = project(); if (!p?.sessions[floor] || p.sessions[floor].basic) return;
-	intercomFloor = floor;
+function openIntercom(sessionId: string | undefined) {
+	const p = project(); const floor = p ? p.sessions.findIndex((x) => x.sessionId === sessionId) : -1;
+	if (!p || floor < 0 || p.sessions[floor].basic) return;
 	renderIntercom(p.sessions[floor], floor);
 }
 
@@ -134,12 +139,18 @@ function render() {
 	renderFloors(p);
 	renderTodo(p);
 	renderLobby(p);
-	if (intercomFloor !== undefined && !$("intercom").hidden && p.sessions[intercomFloor]) {
-		const draft = $("intercom").querySelector("textarea")?.value ?? "";
-		renderIntercom(p.sessions[intercomFloor], intercomFloor);
-		const box = $("intercom").querySelector("textarea"); if (box) box.value = draft;
+	// Re-find each panel's session; a panel whose session left this tower closes.
+	const talking = intercomSession();
+	if (talking) {
+		const floor = p.sessions.findIndex((x) => x.sessionId === talking);
+		if (floor < 0 || p.sessions[floor].basic) closeIntercom(); else renderIntercom(p.sessions[floor], floor);
 	}
-	if (selected) { const s = p.sessions.find((x) => x.sessionId === selected!.session.sessionId); selected = s ? { ...selected, session: s, helper: selected.helper && s.subagents.find((a) => a.id === selected!.helper!.id) } : undefined; }
+	if (selected) {
+		const floor = p.sessions.findIndex((x) => x.sessionId === selected!.session.sessionId);
+		const s = p.sessions[floor];
+		const helper = selected.helper && s?.subagents.find((a) => a.id === selected!.helper!.id);
+		selected = s ? { ...selected, floor, session: s, helper } : undefined;
+	}
 	renderSelection();
 }
 
@@ -168,8 +179,8 @@ function connect() {
 
 addEventListener("keydown", (e) => {
 	if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
-	if (e.key === "Escape") { if (closeModals()) return; if (!$("intercom").hidden) { $("intercom").hidden = true; return; } if (todoFloor !== undefined) { todoFloor = undefined; render(); } else select(undefined); }
-	if ((e.key === "t" || e.key === "T") && !e.metaKey && !e.ctrlKey) { e.preventDefault(); openIntercom(selected?.floor ?? 0); }
+	if (e.key === "Escape") { if (closeModals()) return; if (!$("intercom").hidden) { closeIntercom(); return; } if (todoSession !== undefined) { todoSession = undefined; render(); } else select(undefined); }
+	if ((e.key === "t" || e.key === "T") && !e.metaKey && !e.ctrlKey) { e.preventDefault(); openIntercom(selected?.session.sessionId ?? project()?.sessions[0]?.sessionId); }
 	if ((e.key === "n" || e.key === "N") && !e.metaKey && !e.ctrlKey) { const p = project(); if (p) { e.preventDefault(); openNewFloor(p); } }
 	if (e.altKey && /^[1-9]$/.test(e.key) && projects[+e.key - 1]) { current = projects[+e.key - 1].cwd; selected = undefined; render(); }
 	const p = project();
@@ -184,7 +195,7 @@ scene.onRoom = (roomId, floor) => {
 	const p = project(); if (!p) return;
 	if (roomId === "engram") return openLibrary(p);
 	if (roomId === "lounge" || roomId === "engine") return openTab(projects);
-	if (roomId === "map") { todoFloor = floor; render(); return; }
+	if (roomId === "map") { todoSession = p.sessions[floor]?.sessionId; render(); return; }
 	select({ kind: "orchestrator", floor, session: p.sessions[floor] });
 };
 scene.onDoor = (floor) => { const p = project(); if (!p) return; select({ kind: "orchestrator", floor, session: p.sessions[floor] }); (document.getElementById("door") as HTMLSelectElement | null)?.focus(); };

@@ -94,34 +94,66 @@ export function closeModals(): boolean {
 }
 
 // ---------- intercom ----------
+// The panel is bound to one session. Live updates rewrite its header and log
+// only; the form is built once, so typing keeps its focus, caret and draft.
 const sentLog = new Map<string, string[]>();
-export function renderIntercom(s: TowerSnapshot, floor: number): void {
-	const el = document.getElementById("intercom")!;
-	el.hidden = false;
+const latest = new Map<string, { s: TowerSnapshot; floor: number }>();
+function intercomHead(s: TowerSnapshot, floor: number): string {
 	const prog = todoProgress(s.todos);
+	return `<span class="fkey">${floor + 1}</span><div><b>${esc(s.name)}</b><small>${esc(s.project.name)} · ${money(s.cost.total)}${prog.now ? ` · now: ${esc(prog.now.title)}` : ""}</small></div><button class="x" aria-label="Close intercom">✕</button>`;
+}
+function intercomLog(s: TowerSnapshot): string {
 	const mine = sentLog.get(s.sessionId) ?? [];
-	el.style.setProperty("--c", FLOOR_COLORS[floor % FLOOR_COLORS.length]);
-	el.innerHTML = `<header><span class="fkey">${floor + 1}</span><div><b>${esc(s.name)}</b><small>${esc(s.project.name)} · ${money(s.cost.total)}${prog.now ? ` · now: ${esc(prog.now.title)}` : ""}</small></div><button class="x" aria-label="Close intercom">✕</button></header>
-		<div class="log" role="log" aria-live="polite">
-			${s.waiting ? `<div class="waiting">? A question is waiting for you in the terminal. Answer it there, or tell the floor here.</div>` : ""}
+	return `${s.waiting ? `<div class="waiting">? A question is waiting for you in the terminal. Answer it there, or tell the floor here.</div>` : ""}
 			${s.said ? `<div class="m"><small>orchestrator · latest</small>${renderMarkdown(s.said)}</div>` : `<div class="m muted">No reply yet.</div>`}
 			${mine.map((t) => `<div class="m you">${esc(t)}</div>`).join("")}
-			${s.notice ? `<div class="notice ${s.notice.ok ? "ok" : "bad"}">${esc(s.notice.text)}</div>` : ""}
-		</div>
-		<form class="say"><label class="sr" for="say">Message this floor</label><textarea id="say" rows="2" placeholder="Talk to floor ${floor + 1}… Enter sends, Shift+Enter new line"></textarea><button class="btn primary">Send</button></form>`;
-	el.querySelector(".x")!.addEventListener("click", () => { el.hidden = true; });
-	const form = el.querySelector("form")!, box = el.querySelector("textarea")!;
-	box.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } e.stopPropagation(); });
-	form.addEventListener("submit", async (e) => {
-		e.preventDefault();
-		const text = box.value.trim(); if (!text) return;
-		box.value = "";
-		const ok = await postAction({ type: "message", sessionId: s.sessionId, text });
-		sentLog.set(s.sessionId, [...(sentLog.get(s.sessionId) ?? []), ok ? text : `${text} (not sent)`].slice(-8));
-		renderIntercom(s, floor);
-		(document.getElementById("say") as HTMLTextAreaElement)?.focus();
-	});
-	const log = el.querySelector(".log")!; log.scrollTop = log.scrollHeight;
+			${s.notice ? `<div class="notice ${s.notice.ok ? "ok" : "bad"}">${esc(s.notice.text)}</div>` : ""}`;
+}
+/** The session the open intercom talks to, if any. */
+export function intercomSession(): string | undefined {
+	const el = document.getElementById("intercom");
+	return el && !el.hidden ? el.dataset.session : undefined;
+}
+export function closeIntercom(): void {
+	const el = document.getElementById("intercom")!;
+	el.hidden = true;
+	delete el.dataset.session;
+}
+export function renderIntercom(s: TowerSnapshot, floor: number): void {
+	const el = document.getElementById("intercom")!;
+	latest.set(s.sessionId, { s, floor });
+	el.hidden = false;
+	el.style.setProperty("--c", FLOOR_COLORS[floor % FLOOR_COLORS.length]);
+	const same = el.dataset.session === s.sessionId && el.querySelector("form.say");
+	if (!same) {
+		el.dataset.session = s.sessionId;
+		el.innerHTML = `<header></header><div class="log" role="log" aria-live="polite"></div>
+		<form class="say"><label class="sr" for="say">Message this floor</label><textarea id="say" rows="2"></textarea><button class="btn primary">Send</button></form>`;
+		const form = el.querySelector("form")!, box = el.querySelector("textarea")!;
+		box.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } e.stopPropagation(); });
+		form.addEventListener("submit", async (e) => {
+			e.preventDefault();
+			const text = box.value.trim(); if (!text) return;
+			box.value = "";
+			const ok = await postAction({ type: "message", sessionId: s.sessionId, text });
+			sentLog.set(s.sessionId, [...(sentLog.get(s.sessionId) ?? []), ok ? text : `${text} (not sent)`].slice(-8));
+			// Only the log of the session that sent it, and only if its intercom is still open.
+			const now = latest.get(s.sessionId);
+			if (now && intercomSession() === s.sessionId) updateLog(el, now.s);
+		});
+	}
+	const head = el.querySelector("header")!;
+	head.innerHTML = intercomHead(s, floor);
+	head.querySelector(".x")!.addEventListener("click", () => closeIntercom());
+	el.querySelector("textarea")!.placeholder = `Talk to floor ${floor + 1}… Enter sends, Shift+Enter new line`;
+	updateLog(el, s);
+	if (!same) el.querySelector("textarea")!.focus();
+}
+function updateLog(el: HTMLElement, s: TowerSnapshot): void {
+	const log = el.querySelector(".log")!;
+	const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 8;
+	log.innerHTML = intercomLog(s);
+	if (atEnd || log.scrollTop === 0) log.scrollTop = log.scrollHeight;
 }
 
 // ---------- artifact viewer ----------
@@ -183,17 +215,23 @@ export function openLibrary(project: Project): void {
 		set.querySelectorAll<HTMLButtonElement>(".more").forEach((b) => b.addEventListener("click", () => { open.add(b.dataset.shelf!); draw(review); }));
 	};
 	let review: Memory[] = [];
+	// Requests can overlap: only the newest search may draw its results.
+	let generation = 0;
 	const search = async () => {
 		const q = input.value.trim();
+		const mine = ++generation;
 		try {
 			const [r1, r2] = await Promise.all([
 				q ? fetch(`api/memory/search?${new URLSearchParams({ project: project.id, q })}`) : Promise.resolve(undefined),
 				fetch(`api/memory/review?${new URLSearchParams({ project: project.id })}`),
 			]);
-			found = r1 && r1.ok ? await r1.json() : [];
-			review = r2.ok ? ((await r2.json()).observations ?? []) : [];
+			const nextFound: Memory[] = r1 && r1.ok ? await r1.json() : [];
+			const nextReview: Memory[] = r2.ok ? ((await r2.json()).observations ?? []) : [];
+			if (mine !== generation) return;
+			found = nextFound;
+			review = nextReview;
 			draw(review);
-		} catch { set.innerHTML = `<p class="muted">Engram is not reachable. Is it running?</p>`; }
+		} catch { if (mine === generation) set.innerHTML = `<p class="muted">Engram is not reachable. Is it running?</p>`; }
 	};
 	let t: ReturnType<typeof setTimeout> | undefined;
 	input.addEventListener("input", () => { clearTimeout(t); t = setTimeout(() => void search(), 300); });
@@ -210,13 +248,18 @@ export function openNewFloor(project: Project): void {
 		<div class="row"><span class="status" role="status"></span><button class="btn primary">Open the floor</button></div></form>`);
 	const form = el.querySelector("form")!, box = el.querySelector("textarea")!, status = el.querySelector(".status")!;
 	box.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) form.requestSubmit(); e.stopPropagation(); });
+	const submit = form.querySelector("button")!;
 	form.addEventListener("submit", async (e) => {
 		e.preventDefault();
+		// One request at a time: every accepted one opens another terminal.
+		if (submit.disabled) return;
+		submit.disabled = true;
 		const prompt = box.value.trim();
 		status.textContent = "Opening…";
 		const ok = await postAction({ type: "new-floor", project: project.cwd, ...(prompt ? { prompt } : {}) });
 		status.textContent = ok ? "Opened. It will appear as a new floor in a moment." : "Could not open a new floor.";
 		if (ok) setTimeout(() => closeModals(), 1500);
+		else submit.disabled = false;
 	});
 	box.focus();
 }

@@ -25,7 +25,7 @@ Branch `feat/herdr-gentle-shell` from `origin/main` 3dc902975. References (read-
 - T4 Publisher extension: per-session desktop snapshot (todo, changes, jobs, agents, usage, review, permission, persona, model/profile, question) — S2 — done (`extensions/gentle-desktop-feed.ts`, `lib/desktop-feed*.ts`, `docs/desktop-feed.md`)
 - T5 Chat mod with Chat/Terminal switch — S5 — done (3b6723b87, 1c8af1b60)
 - T6 Sidebar/status mods (sessions, todo, agents, jobs, usage, changes, review, modes) — S2 — done (7fb683e99, 1c8af1b60)
-- T7 Actions: prompt, answer questions, cancel subagent/job, permission mode, review switch (same authority as the CLI) — S2 — in progress (c277ab243, 350f066c6, 7e8d41c04; guard relative-path regression being fixed)
+- T7 Actions: prompt, answer questions, cancel subagent/job, permission mode, review switch (same authority as the CLI) — S2 — done (c277ab243, 350f066c6, 7e8d41c04, HEAD guard fix)
 - T8 Package: layout + mods shipped in gentle-pi; `gentle-shell desktop` installs pinned Herdr app (checksum), installs layout/mods, `herdr-app check`, switches layout, launches — S3, S4 — done (84a5a2289, c508057e5, 1deeacc8b, 78567775b, 5e09abe4d)
 - T10 Parity audit: every Gentle Shell feature present and working in the desktop (S9), with gaps closed or listed — S9 — done (fcb04e7d1, 36a2ced1d; parity table in L-entries and docs/gentle-shell-desktop.md)
 - T9 Docs (command help, README, RECIPE.md) — S3 — done (c5b64549e)

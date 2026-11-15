@@ -40,6 +40,13 @@ function animFor(p: Pick, roomId: RoomId, walking: boolean, reduce: boolean): An
 	if (roomId === "workshop") return "type";
 	return "idle";
 }
+const ROOM_IDS: RoomId[] = ["map", "workshop", "lab", "review", "engram", "engine", "lounge"];
+/** What a click on a room does, named for the hover label. */
+const roomAction = (id: RoomId, floor: number) => (id === "map" ? `Tasks · floor ${floor + 1}` : id === "engram" ? "Engram library" : id === "lounge" || id === "engine" ? "Your tab" : `Floor ${floor + 1} · Talk, Tasks, Artifacts`);
+export interface Rect { x: number; y: number; w: number; h: number }
+interface Hover { label: () => string; rect: () => Rect | undefined; room?: boolean }
+const boundsOf = (c: Container): Rect | undefined => { if (c.destroyed) return undefined; const b = c.getBounds(); return { x: b.x, y: b.y, w: b.width, h: b.height }; };
+
 const roomX = (id: RoomId, slot: number) => { const r = room(id); return r.x + 14 + ((slot * 17) % Math.max(18, r.w - 22)); };
 
 export class TowerScene {
@@ -59,19 +66,94 @@ export class TowerScene {
 	private floors = 0;
 	private reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
 	private bgKey = "";
+	/** Hover feedback: an outline over what a click would act on, and a label naming the action. */
+	private glow = new Graphics();
+	private hovered: Hover | undefined;
+	private tip = document.createElement("div");
+	private tipText = "";
+	private pointer = { x: 0, y: 0 };
+
+	/** The room under a scene point, with its floor. */
+	private roomAt(x: number, y: number): { id: RoomId; floor: number } | undefined {
+		const L = this.layout; if (!L) return undefined;
+		const floor = Math.floor((y - L.roof) / 100);
+		const id = ROOM_IDS.find((r) => { const d = room(r); return x >= d.x && x < d.x + d.w; });
+		return id && floor >= 0 && floor < this.floors ? { id, floor } : undefined;
+	}
+	/** A room's rectangle on a floor, in scene units. */
+	roomRect(id: RoomId, floor: number): Rect | undefined {
+		const L = this.layout; if (!L || floor < 0 || floor >= this.floors) return undefined;
+		const r = room(id);
+		return { x: r.x, y: floorTop(L, floor) + 6, w: r.w, h: 84 };
+	}
+	/** A whole floor of rooms, in scene units. */
+	floorRect(floor: number): Rect | undefined {
+		const a = this.roomRect("map", floor), b = this.roomRect("lounge", floor);
+		return a && b ? { x: a.x, y: a.y, w: b.x + b.w - a.x, h: a.h } : undefined;
+	}
+	/** The orchestrator of a floor, in scene units. */
+	personRect(floor: number): Rect | undefined {
+		const p = [...this.byKey.values()].find((x) => x.floor === floor && x.pick.kind === "orchestrator");
+		return p ? boundsOf(p.sprite) : undefined;
+	}
+	doorRect(): Rect | undefined { return this.door.children.length ? boundsOf(this.door) : undefined; }
+	/** Scene units to page (client) pixels: the canvas is scaled by CSS. */
+	toClient(r: Rect): Rect {
+		const c = this.app.canvas, b = c.getBoundingClientRect(), k = b.width / (c.width || 1);
+		return { x: b.left + r.x * k, y: b.top + r.y * k, w: r.w * k, h: r.h * k };
+	}
+	/** Makes a scene object announce its click: pointer cursor, outline and label while hovered. */
+	private hot(c: Container, label: () => string) {
+		c.eventMode = "static"; c.cursor = "pointer";
+		const h: Hover = { label, rect: () => boundsOf(c) };
+		c.on("pointerover", () => this.setHover(h));
+		c.on("pointerout", () => { if (this.hovered === h) this.setHover(undefined); });
+	}
+	private setHover(h: Hover | undefined) {
+		this.hovered = h;
+		this.drawHover();
+	}
+	private drawHover() {
+		const g = this.glow.clear(), h = this.hovered, r = h?.rect();
+		if (!h || !r) { this.hovered = undefined; this.tip.hidden = true; this.tipText = ""; return; }
+		if (h.room) g.rect(r.x + .5, r.y + .5, r.w - 1, r.h - 1).fill({ color: 0xffb1dd, alpha: .1 }).stroke({ width: 1, color: 0xff76c3, alpha: .95 });
+		else g.roundRect(r.x - 1.5, r.y - 1.5, r.w + 3, r.h + 3, 2).fill({ color: 0xffb1dd, alpha: .14 }).stroke({ width: 1, color: 0xffb1dd });
+		const text = h.label(), was = this.tipText;
+		if (!text) { this.tip.hidden = true; this.tipText = ""; return; }
+		if (text === was && !this.tip.hidden) return;
+		this.tipText = text; this.tip.textContent = text; this.tip.hidden = false;
+		this.placeTip();
+	}
+	private placeTip() {
+		const w = this.tip.offsetWidth, x = Math.min(this.pointer.x + 14, innerWidth - w - 8);
+		this.tip.style.transform = `translate(${Math.max(8, x)}px, ${this.pointer.y + 18}px)`;
+	}
 
 	async mount(host: HTMLElement): Promise<void> {
 		await this.app.init({ width: 720, height: 450, background: "#07040d", antialias: false, resolution: 1, autoDensity: false, preference: "webgl" });
 		host.appendChild(this.app.canvas);
-		this.app.stage.addChild(this.bg, this.notes, this.props, this.world, this.door, this.people);
+		this.app.stage.addChild(this.bg, this.notes, this.props, this.world, this.door, this.people, this.glow);
 		this.app.stage.eventMode = "static";
 		this.bg.eventMode = "static";
 		this.bg.on("pointertap", (e) => {
-			const p = e.getLocalPosition(this.bg), L = this.layout;
-			const floor = L ? Math.floor((p.y - L.roof) / 100) : -1;
-			const r = (["map", "workshop", "lab", "review", "engram", "engine", "lounge"] as RoomId[]).find((id) => { const x = room(id); return p.x >= x.x && p.x < x.x + x.w; });
-			if (L && r && floor >= 0 && floor < this.floors) this.onRoom(r, floor); else this.onPick(undefined);
+			const p = e.getLocalPosition(this.bg), r = this.roomAt(p.x, p.y);
+			if (r) this.onRoom(r.id, r.floor); else this.onPick(undefined);
 		});
+		// Every room is clickable: outline the one under the pointer and name what a click does.
+		let roomKey = "";
+		this.bg.on("pointermove", (e) => {
+			const p = e.getLocalPosition(this.bg), r = this.roomAt(p.x, p.y), key = r ? `${r.id}:${r.floor}` : "";
+			this.bg.cursor = r ? "pointer" : "default";
+			if (key === roomKey && (this.hovered?.room || !r)) return;
+			roomKey = key;
+			this.setHover(r ? { room: true, label: () => roomAction(r.id, r.floor), rect: () => this.roomRect(r.id, r.floor) } : undefined);
+		});
+		this.bg.on("pointerout", () => { roomKey = ""; if (this.hovered?.room) this.setHover(undefined); });
+		this.tip.className = "tip px"; this.tip.setAttribute("role", "tooltip"); this.tip.hidden = true;
+		document.body.appendChild(this.tip);
+		const canvas = this.app.canvas;
+		canvas.addEventListener("pointermove", (e) => { this.pointer = { x: e.clientX, y: e.clientY }; if (!this.tip.hidden) this.placeTip(); });
+		canvas.addEventListener("pointerleave", () => { roomKey = ""; this.setHover(undefined); });
 		bubbleTex = { need: BUBBLES.need(), done: BUBBLES.done() };
 		elephantTex = Texture.from(elephant());
 		this.app.ticker.add((t) => this.tick(t.deltaMS / 1000));
@@ -129,7 +211,7 @@ export class TowerScene {
 			const newest = (kind: TowerArtifact["kind"]) => s.artifacts?.find((a) => a.kind === kind);
 			const hot = (g: Graphics, a: TowerArtifact | undefined) => {
 				if (!a) return;
-				g.eventMode = "static"; g.cursor = "pointer";
+				this.hot(g, () => `Open ${a.kind}: ${a.path.split("/").pop() ?? a.path}`);
 				g.on("pointertap", (e) => { e.stopPropagation(); this.onArtifact(i, a); });
 				this.world.addChild(g);
 			};
@@ -161,13 +243,14 @@ export class TowerScene {
 		}
 		if (mode === "super-yolo") g.rect(BX + BW - 14, L.lobby + 14, 30, LOBBY_H - 24).fill({ color: 0xe0c27a, alpha: .4 });
 		g.rect(dx - 18, L.lobby + 4, 46, LOBBY_H - 4).fill({ color: 0x000000, alpha: 0.001 });
-		g.eventMode = "static"; g.cursor = "pointer";
+		const label = () => `Permissions: ${mode} · floor ${floor + 1}`;
+		this.hot(g, label);
 		g.on("pointertap", (e) => { e.stopPropagation(); this.onDoor(floor); });
 		this.door.addChild(g);
 		if (mode === "normal" || mode === "auto") {
 			const b = new AnimatedSprite(frames({ shirt: "#1e1828", orch: true }, this.reduce ? "idle" : "idle"));
 			b.anchor.set(.5, 1); b.x = dx + 15; b.y = dy + 2; b.animationSpeed = FPS.idle / 60; if (!this.reduce) b.play();
-			b.eventMode = "static"; b.cursor = "pointer"; b.on("pointertap", (e) => { e.stopPropagation(); this.onDoor(floor); });
+			this.hot(b, label); b.on("pointertap", (e) => { e.stopPropagation(); this.onDoor(floor); });
 			this.door.addChild(b);
 		}
 		const sign = mode === "yolo" ? "BRB" : mode === "super-yolo" ? "OPEN" : "";
@@ -200,7 +283,12 @@ export class TowerScene {
 		let p = this.byKey.get(key);
 		if (!p) {
 			const sprite = new AnimatedSprite(frames(look, "idle"));
-			sprite.anchor.set(.5, 1); sprite.eventMode = "static"; sprite.cursor = "pointer";
+			sprite.anchor.set(.5, 1);
+			this.hot(sprite, () => {
+				const pk = this.byKey.get(key)?.pick; if (!pk) return "";
+				if (pk.kind === "helper" && pk.helper) return `${pk.helper.name} · ${pk.helper.status} · details`;
+				return pk.session.basic ? `${pk.session.name} · details` : `Talk to ${pk.session.name}`;
+			});
 			sprite.x = tx; sprite.y = floorLine(L, floor) + 3;
 			sprite.on("pointertap", (e) => { e.stopPropagation(); this.onPick(this.byKey.get(key)?.pick); });
 			this.people.addChild(sprite);
@@ -216,11 +304,13 @@ export class TowerScene {
 	}
 
 	private tick(dt: number) {
+		// People walk and objects are rebuilt on updates: keep the outline on what is hovered.
+		if (this.hovered) this.drawHover();
 		for (const p of this.byKey.values()) {
 			const walking = Math.abs(p.tx - p.x) > .5 && !this.reduce;
 			if (walking) { p.x += Math.sign(p.tx - p.x) * Math.min(Math.abs(p.tx - p.x), 24 * dt); p.sprite.scale.x = p.tx < p.x ? -1 : 1; }
 			else { p.x = p.tx; p.sprite.scale.x = 1; }
-			const roomId = (["map", "workshop", "lab", "review", "engram", "engine", "lounge"] as RoomId[]).find((id) => { const r = room(id); return p.x >= r.x && p.x < r.x + r.w; }) ?? "workshop";
+			const roomId = ROOM_IDS.find((id) => { const r = room(id); return p.x >= r.x && p.x < r.x + r.w; }) ?? "workshop";
 			const anim = animFor(p.pick, roomId, walking, this.reduce);
 			if (anim !== p.anim) {
 				p.anim = anim;

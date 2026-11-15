@@ -504,7 +504,7 @@ The canvas server binds `127.0.0.1` on a random port and needs a random per-serv
 
 ### Gentle Tower
 
-Gentle Tower is a web view of every open Gentle Shell session, for people who prefer a picture to a terminal. Each project is a painted building and each session is a floor of it. Open it with `/gentle:tower` inside a session, or with `gentle-shell tower` from any terminal (`--no-open` prints the URL only, `--port <n>` fixes the port). It serves until Ctrl+C or until the session that opened it ends.
+Gentle Tower is a web view of every open Gentle Shell session, for people who prefer a picture to a terminal. Each project is a painted building and each session is a floor of it. Open it with `/gentle:tower` inside a session, or with `gentle-shell tower` from any terminal (`--no-open` prints the URL only, `--port <n>` fixes the port). It serves until Ctrl+C or until the session that opened it ends. Hovering anything clickable outlines it and names what a click does; a short tour on the first visit points at the floors, people, rooms, door and top bar, and the `?` button (or the `?` key) shows it again.
 
 <img width="100%" src="assets/features/gentle-tower.png" alt="Gentle Tower with two floors of the gentle-pi building, their todo bars on the left and the selection strip with Talk, Tasks, Artifacts and Permissions at the bottom">
 
@@ -521,7 +521,7 @@ Gentle Tower is a web view of every open Gentle Shell session, for people who pr
 
 **What you can do**
 
-- **Talk** (`T`): read the orchestrator's latest words and send a message. It arrives as a new turn, or as a follow-up while the agent works. A question asked in the terminal shows as waiting; answer it there or tell the floor.
+- **Talk** (`T`, or click the orchestrator): a conversation with the floor, your messages on the right and the orchestrator's replies below them. A message arrives as a new turn, or as a follow-up while the agent works. A question asked in the terminal shows as waiting; answer it there or tell the floor.
 - **Artifacts**: docs, Mermaid diagrams and images the session wrote open in a viewer (tables, lists and code rendered; raw HTML is shown as text). In the building, the newest diagram is pinned on the map board, the newest doc lies on the workshop desk and the newest image hangs on its wall.
 - **New floor** (`N`): opens a new Gentle Shell session in a new terminal window, in the project you are looking at, with an optional first message.
 - **Engram library**: a read-only search over the project's memories, grouped by type, plus the ones waiting for your review.

@@ -5,6 +5,7 @@ import { floorTop } from "./art";
 import { FLOOR_COLORS, floorState, groupProjects, money, todoProgress } from "./model";
 import { TowerScene, type Pick } from "./scene";
 import { closeIntercom, closeModals, intercomSession, openArtifact, openArtifacts, openLibrary, openNewFloor, openTab, postAction, renderIntercom } from "./panels";
+import { domTarget, Tour, tourDismissed } from "./tour";
 import type { Project, TowerSnapshot, TowerTodo } from "./types";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -152,6 +153,7 @@ function render() {
 		selected = s ? { ...selected, floor, session: s, helper } : undefined;
 	}
 	renderSelection();
+	tour.place();
 }
 
 // The scene fills the window's width; its sky grows to fill the height, with the building on the ground.
@@ -163,6 +165,22 @@ function sizeCanvas() {
 	document.documentElement.style.setProperty("--floor-w", `${Math.max(170, Math.min(320, 172 * scale - 28))}px`);
 }
 
+// The tour points at live zones; the scene ones are converted from scene units to the page.
+const inScene = (r: ReturnType<typeof scene.roomRect>) => (r ? scene.toClient(r) : undefined);
+const tour = new Tour([
+	{ title: "Floors and their tasks", text: "Each card is a <b>floor</b>: one Gentle Shell session. The bar under it is its <b>task list</b>; click it to see every task and where the work is.", target: domTarget("#floors .floor") },
+	{ title: "The people", text: "The one in the bowler hat is the floor's orchestrator: click it to <b>Talk</b>. Hats are helpers; click one to see what it does or stop it. Hover anything to see what a click does.", target: () => inScene(scene.personRect(0)) },
+	{ title: "The rooms", text: "Rooms are clickable too: the <b>MAP</b> board opens the tasks, <b>ENGRAM</b> the memory library, the <b>LOUNGE</b> and <b>GENTLE AI</b> rooms your tab. Any other room selects the floor: Talk, Tasks and Artifacts.", target: () => inScene(scene.floorRect(0)) },
+	{ title: "The door", text: "The door shows the most permissive floor. Click it to change <b>permissions</b>: lowering applies at once, raising asks in that session's terminal.", target: () => inScene(scene.doorRect()) },
+	{ title: "The club", text: "<b>New floor</b> opens a session, <b>Engram</b> is the library, <b>Your tab</b> is what you spent and <b>Review</b> switches outside review. Press <kbd>?</kbd> or this <b>?</b> button to see the tour again.", target: domTarget("#lobby") },
+]);
+let toured = false;
+const help = document.createElement("button");
+help.id = "help-btn"; help.className = "btn"; help.textContent = "?";
+help.title = "Show the tour (?)"; help.setAttribute("aria-label", "Show the tour of what you can click");
+help.addEventListener("click", () => tour.open());
+$("lobby").appendChild(help);
+
 function connect() {
 	const es = new EventSource("api/events");
 	es.onmessage = (e) => {
@@ -170,6 +188,8 @@ function connect() {
 		const data = JSON.parse(e.data) as { sessions: TowerSnapshot[] };
 		projects = groupProjects(data.sessions);
 		render();
+		// First visit: once there is a building to point at, walk through what is clickable.
+		if (!toured && project() && !tourDismissed()) { toured = true; requestAnimationFrame(() => tour.open()); }
 	};
 	let lost: ReturnType<typeof setTimeout> | undefined;
 	es.onopen = () => { clearTimeout(lost); $("offline").hidden = true; };
@@ -179,6 +199,8 @@ function connect() {
 
 addEventListener("keydown", (e) => {
 	if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+	if (tour.isOpen) return;
+	if (e.key === "?" && !e.metaKey && !e.ctrlKey) { e.preventDefault(); tour.open(); return; }
 	if (e.key === "Escape") { if (closeModals()) return; if (!$("intercom").hidden) { closeIntercom(); return; } if (todoSession !== undefined) { todoSession = undefined; render(); } else select(undefined); }
 	if ((e.key === "t" || e.key === "T") && !e.metaKey && !e.ctrlKey) { e.preventDefault(); openIntercom(selected?.session.sessionId ?? project()?.sessions[0]?.sessionId); }
 	if ((e.key === "n" || e.key === "N") && !e.metaKey && !e.ctrlKey) { const p = project(); if (p) { e.preventDefault(); openNewFloor(p); } }
@@ -190,7 +212,8 @@ let resizeTimer: ReturnType<typeof setTimeout> | undefined;
 addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(render, 120); });
 
 await scene.mount($("canvas"));
-scene.onPick = (p) => select(p);
+// A click on an orchestrator talks to it (the hover says so); a helper shows its details.
+scene.onPick = (p) => { select(p); if (p?.kind === "orchestrator" && !p.session.basic) openIntercom(p.session.sessionId); };
 scene.onRoom = (roomId, floor) => {
 	const p = project(); if (!p) return;
 	if (roomId === "engram") return openLibrary(p);

@@ -34,6 +34,8 @@ button { font: inherit; color: inherit; cursor: pointer; background: none; borde
 .st.need { color: var(--warn); } .st.done { color: var(--ok); } .st.work { color: var(--teal); }
 .prog { display: grid; gap: 3px; padding: 6px 9px; text-align: left; }
 .prog:hover, .prog[aria-expanded="true"] { border-color: var(--accent); }
+.fl:hover { border-color: var(--accent); }
+.projects button:hover { color: var(--text); background: #ffffff0a; }
 .segs { display: flex; gap: 2px; min-height: 6px; }
 .segs i { flex: 1; height: 6px; border-radius: 1px; }
 .segs i.in_progress { animation: pulse 1.6s ease-in-out infinite; }
@@ -83,7 +85,15 @@ kbd { font: 700 10px var(--mono); border: 1px solid currentColor; border-radius:
 .intercom .log { flex: 1; overflow: auto; padding: 12px; display: grid; gap: 10px; align-content: start; }
 .intercom .m { font-size: 13px; line-height: 1.55; }
 .intercom .m small { display: block; color: var(--muted); font-size: 11px; margin-bottom: 2px; }
-.intercom .m.you { justify-self: end; max-width: 88%; background: #2a1838; padding: 8px 11px; border-radius: 3px; }
+.intercom .m.you, .intercom .m.agent { max-width: 88%; padding: 8px 11px; border-radius: 3px; overflow-wrap: anywhere; }
+.intercom .m.you { justify-self: end; background: #2a1838; border: 1px solid #5a3a6e; border-bottom-right-radius: 0; }
+.intercom .m.you p { white-space: pre-wrap; }
+.intercom .m.agent { justify-self: start; background: #140c1e; border: 1px solid #3a2a4a; border-bottom-left-radius: 0; }
+.intercom .m.you small { text-align: right; }
+.intercom .m.pending { opacity: .75; }
+.intercom .m.failed { border-color: #ff718f; } .intercom .m.failed small { color: #ff718f; }
+.intercom .m p { margin: 0 0 6px; } .intercom .m p:last-child { margin-bottom: 0; }
+.intercom .m pre { overflow: auto; background: #0a0612; padding: 6px; } .intercom .m ul, .intercom .m ol { margin: 2px 0 6px 18px; }
 .intercom .waiting { border: 1px solid #e0c27a80; border-left: 3px solid var(--warn); padding: 9px 11px; border-radius: 3px; color: var(--warn); }
 .notice { font-size: 12px; padding: 6px 9px; border-radius: 2px; } .notice.ok { color: var(--ok); } .notice.bad { color: #ff718f; }
 .muted { color: var(--muted); }
@@ -139,3 +149,17 @@ kbd { font: 700 10px var(--mono); border: 1px solid currentColor; border-radius:
 .paper a, .page a { color: #a0287e; }
 .paper p, .page p { margin: 0 0 10px; }
 .paper li.task, .page li.task { list-style: none; margin-left: -18px; }
+
+/* hover label for things in the building */
+.tip { position: fixed; left: 0; top: 0; z-index: 7; pointer-events: none; padding: 4px 8px; font-size: 12px; font-weight: 700; color: #ffb1dd; white-space: nowrap; border-color: var(--accent); }
+
+/* first-run tour */
+.tour-spot { position: fixed; z-index: 8; pointer-events: none; border: 2px solid var(--accent-strong); border-radius: 4px; box-shadow: 0 0 0 9999px #07040dad, 0 0 18px #ff76c380; transition: left .2s, top .2s, width .2s, height .2s; }
+.tour { position: fixed; z-index: 9; width: min(360px, calc(100% - 16px)); display: grid; gap: 10px; padding-bottom: 12px; }
+.tour header { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid #5a3a6e; }
+.tour header small { color: var(--muted); font-size: 11px; }
+.tour p { padding: 0 12px; line-height: 1.55; } .tour p b { color: #ffb1dd; }
+.tour footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 12px; }
+.tour footer label { color: var(--muted); font-size: 12px; display: flex; gap: 6px; align-items: center; cursor: pointer; }
+.tour footer span { display: flex; gap: 6px; }
+@media (prefers-reduced-motion: reduce) { .tour-spot { transition: none; } }

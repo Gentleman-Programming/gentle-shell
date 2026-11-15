@@ -35,14 +35,18 @@ export interface TowerSnapshot {
 	waiting?: true;
 	notice?: { text: string; ok: boolean; at: number };
 	said?: string;
+	/** The latest visible conversation turns, oldest first (absent from older publishers). */
+	chat?: TowerChatTurn[];
 	models?: Array<{ model: string; cost: number; tokens: number }>;
 	artifacts?: TowerArtifact[];
 	/** Entries left out so the snapshot fits the hub limit. */
-	omitted?: { todos?: number; subagents?: number; models?: number; artifacts?: number };
+	omitted?: { todos?: number; subagents?: number; models?: number; artifacts?: number; chat?: number };
 	updatedAt: number;
 	/** A live Gentle Shell session without the tower extension: name, project and helpers only, no actions. */
 	basic?: true;
 }
+
+export interface TowerChatTurn { role: "you" | "agent"; text: string; at: number }
 
 export interface TowerArtifact { path: string; kind: "doc" | "diagram" | "image" }
 

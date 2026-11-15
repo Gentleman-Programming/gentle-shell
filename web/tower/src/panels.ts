@@ -1,6 +1,6 @@
 // Panels that open on demand: intercom, artifact viewer, Engram library, bar tab.
 import { FLOOR_COLORS, money, todoProgress } from "./model";
-import type { Project, TowerArtifact, TowerSnapshot } from "./types";
+import type { Project, TowerArtifact, TowerChatTurn, TowerSnapshot } from "./types";
 
 export const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
@@ -96,18 +96,46 @@ export function closeModals(): boolean {
 // ---------- intercom ----------
 // The panel is bound to one session. Live updates rewrite its header and log
 // only; the form is built once, so typing keeps its focus, caret and draft.
-const sentLog = new Map<string, string[]>();
+// The log is a conversation: your messages on the right, the agent's on the left,
+// newest at the bottom. What you send shows at once and waits there until the
+// session's own record of it arrives.
+interface Outgoing { text: string; at: number; state: "sending" | "sent" | "failed" }
+const outbox = new Map<string, Outgoing[]>();
 const latest = new Map<string, { s: TowerSnapshot; floor: number }>();
+/** The session already holds this message: the local copy can go. Clocks are the same machine's. */
+const echoed = (o: Outgoing, chat: TowerChatTurn[], used: Set<TowerChatTurn>) => {
+	const turn = chat.find((t) => { const head = t.text.replace(/…$/, ""); return t.role === "you" && !used.has(t) && t.at >= o.at - 2000 && head.length > 0 && o.text.startsWith(head); });
+	if (turn) used.add(turn);
+	return !!turn;
+};
+const drawn = new WeakMap<HTMLElement, string>();
 function intercomHead(s: TowerSnapshot, floor: number): string {
 	const prog = todoProgress(s.todos);
 	return `<span class="fkey">${floor + 1}</span><div><b>${esc(s.name)}</b><small>${esc(s.project.name)} · ${money(s.cost.total)}${prog.now ? ` · now: ${esc(prog.now.title)}` : ""}</small></div><button class="x" aria-label="Close intercom">✕</button>`;
 }
+const STATE_TEXT = { sending: "sending…", sent: "sent", failed: "not sent" } as const;
+const time = (at: number) => (at > 0 ? new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
+function bubble(role: "you" | "agent", body: string, meta: string, extra = ""): string {
+	return `<div class="m ${role}${extra}"><small>${role === "you" ? "you" : "orchestrator"}${meta ? ` · ${meta}` : ""}</small>${body}</div>`;
+}
 function intercomLog(s: TowerSnapshot): string {
-	const mine = sentLog.get(s.sessionId) ?? [];
-	return `${s.waiting ? `<div class="waiting">? A question is waiting for you in the terminal. Answer it there, or tell the floor here.</div>` : ""}
-			${s.said ? `<div class="m"><small>orchestrator · latest</small>${renderMarkdown(s.said)}</div>` : `<div class="m muted">No reply yet.</div>`}
-			${mine.map((t) => `<div class="m you">${esc(t)}</div>`).join("")}
-			${s.notice ? `<div class="notice ${s.notice.ok ? "ok" : "bad"}">${esc(s.notice.text)}</div>` : ""}`;
+	const chat = s.chat ?? [];
+	// Older publishers send only the latest words: show them as the one agent turn there is.
+	const turns: TowerChatTurn[] = s.chat ? chat : s.said ? [{ role: "agent", text: s.said, at: 0 }] : [];
+	const used = new Set<TowerChatTurn>();
+	const pending = (outbox.get(s.sessionId) ?? []).filter((o) => o.state === "failed" || !echoed(o, chat, used));
+	outbox.set(s.sessionId, pending);
+	// One timeline: a reply newer than your message appears below it.
+	const items = [
+		...turns.map((t) => ({ at: t.at, html: bubble(t.role, t.role === "you" ? `<p>${esc(t.text)}</p>` : renderMarkdown(t.text), time(t.at)) })),
+		...pending.map((o) => ({ at: o.at, html: bubble("you", `<p>${esc(o.text)}</p>`, STATE_TEXT[o.state], o.state === "failed" ? " failed" : " pending") })),
+	].sort((a, b) => a.at - b.at);
+	// Successful requests need no line of their own; failures stay visible. Older publishers still say "Message delivered".
+	const notice = s.notice && (s.notice.ok ? s.notice.text.split(" · ").filter((t) => t !== "Message delivered").join(" · ") : s.notice.text);
+	return `${s.omitted?.chat ? `<div class="m muted"><small>Earlier messages are in the terminal.</small></div>` : ""}
+			${items.length ? items.map((i) => i.html).join("") : `<div class="m muted">No messages yet. Ask this floor anything.</div>`}
+			${s.waiting ? `<div class="waiting">? A question is waiting for you in the terminal. Answer it there, or tell the floor here.</div>` : ""}
+			${notice ? `<div class="notice ${s.notice!.ok ? "ok" : "bad"}">${esc(notice)}</div>` : ""}`;
 }
 /** The session the open intercom talks to, if any. */
 export function intercomSession(): string | undefined {
@@ -135,25 +163,31 @@ export function renderIntercom(s: TowerSnapshot, floor: number): void {
 			e.preventDefault();
 			const text = box.value.trim(); if (!text) return;
 			box.value = "";
-			const ok = await postAction({ type: "message", sessionId: s.sessionId, text });
-			sentLog.set(s.sessionId, [...(sentLog.get(s.sessionId) ?? []), ok ? text : `${text} (not sent)`].slice(-8));
+			const out: Outgoing = { text, at: Date.now(), state: "sending" };
+			outbox.set(s.sessionId, [...(outbox.get(s.sessionId) ?? []), out].slice(-8));
 			// Only the log of the session that sent it, and only if its intercom is still open.
-			const now = latest.get(s.sessionId);
-			if (now && intercomSession() === s.sessionId) updateLog(el, now.s);
+			const refresh = () => { const now = latest.get(s.sessionId); if (now && intercomSession() === s.sessionId) updateLog(el, now.s, true); };
+			refresh();
+			out.state = (await postAction({ type: "message", sessionId: s.sessionId, text })) ? "sent" : "failed";
+			refresh();
 		});
 	}
 	const head = el.querySelector("header")!;
 	head.innerHTML = intercomHead(s, floor);
 	head.querySelector(".x")!.addEventListener("click", () => closeIntercom());
 	el.querySelector("textarea")!.placeholder = `Talk to floor ${floor + 1}… Enter sends, Shift+Enter new line`;
-	updateLog(el, s);
+	updateLog(el, s, !same);
 	if (!same) el.querySelector("textarea")!.focus();
 }
-function updateLog(el: HTMLElement, s: TowerSnapshot): void {
-	const log = el.querySelector(".log")!;
-	const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 8;
-	log.innerHTML = intercomLog(s);
-	if (atEnd || log.scrollTop === 0) log.scrollTop = log.scrollHeight;
+/** Redraws the conversation only when it changed; follows the newest message only if you were already at the bottom. */
+function updateLog(el: HTMLElement, s: TowerSnapshot, toEnd = false): void {
+	const log = el.querySelector<HTMLElement>(".log")!;
+	const html = intercomLog(s);
+	if (html === drawn.get(log) && !toEnd) return;
+	const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 24;
+	drawn.set(log, html);
+	log.innerHTML = html;
+	if (toEnd || atEnd) log.scrollTop = log.scrollHeight;
 }
 
 // ---------- artifact viewer ----------

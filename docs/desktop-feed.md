@@ -13,10 +13,32 @@ Subagent children, plain Pi, and print/JSON runs publish nothing.
 <agentDir>/desktop/sessions/<sessionId>.json
 ```
 
-`agentDir` is the session's isolated Pi agent directory
-(`GENTLE_PI_AGENT_HOME`, then `PI_CODING_AGENT_DIR`; by default
-`~/.gentle-shell/agent`). A session id that is not a plain `[A-Za-z0-9_-]` name
-is stored under its SHA-256 instead.
+`agentDir` is the session's Pi agent directory (`GENTLE_PI_AGENT_HOME`, then
+`PI_CODING_AGENT_DIR`, then `~/.pi/agent`): `~/.gentle-shell/agent` for the
+bundled Gentle Shell, `~/.pi/agent` for Gentle AI installed as a Pi extension,
+or a custom home. The snapshot names it in `identity.agentDir` (absolute), and
+every other path of the session (its action inbox and outbox) is under it. A
+session id that is not a plain `[A-Za-z0-9_-]` name is stored under its SHA-256
+instead.
+
+### Where readers look
+
+The Herdr app mods read the snapshots of every agent dir they know, bundled
+first:
+
+1. `~/.gentle-shell/agent`
+2. `~/.pi/agent`
+3. each entry of `~/.config/herdr-app/gentle-shell-roots.json`, when that file
+   exists: `{ "roots": ["/abs/agent/dir", "~/other/agent"] }` (a bare array works
+   too). Entries are absolute or start with `~/`; anything else is ignored, and
+   at most 8 agent dirs are read in total.
+
+They watch each existing `desktop/sessions` folder (a 10 s timer catches a
+folder created later), match a terminal to a snapshot across all of them, and
+send that session's actions to the inbox under its own `identity.agentDir`. A
+snapshot from an older Gentle Shell without `identity.agentDir` is treated as
+belonging to the agent dir it was found in. Herdr app lets mods read only under
+the home folder, so an agent dir outside it is not seen.
 
 The file is replaced atomically (exclusive temp file in the same folder, then
 rename), at most once per 250 ms burst of changes, and only when its content
@@ -30,7 +52,7 @@ gone or that were not updated for a day. The folder is created `0700` and files
 
 | Field | Content |
 |---|---|
-| `identity` | `sessionId`, exact `sessionFile`, `sessionName`, `cwd`, `realCwd`, `pid`, `ppid`, `ancestors` (nearest first, best effort), `mode`, `herdr` (`paneId` from `HERDR_PANE_ID`, `env`) or `null` |
+| `identity` | `sessionId`, exact `sessionFile`, `sessionName`, `cwd`, `realCwd`, `pid`, `ppid`, `ancestors` (nearest first, best effort), `mode`, `agentDir` (absolute agent dir the snapshot lives under), `herdr` (`paneId` from `HERDR_PANE_ID`, `env`) or `null` |
 | `project` | `cwd`, `branch`, `dirty` (changed files, `null` before the first scan) |
 | `model` | `id`, `provider`, `effort` (thinking level when the model reasons), `profile` `{ name, tier }` |
 | `persona` | always `null` (no reachable owner yet) |

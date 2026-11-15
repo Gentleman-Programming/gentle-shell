@@ -62,7 +62,7 @@ export default class GentleStatus extends View {
   stop(cx) {
     const f = this.source.of(targetTerminal(this.last));
     cx.spawn(async (cx) => {
-      const r = await sendAction(cx, f?.identity?.sessionId, "abort_turn", {});
+      const r = await sendAction(cx, f, "abort_turn", {});
       if (!r.ok) cx.timer.after(1, () => notify({ title: "Stop the agent", body: errorText(r), level: "info", timeout: 4000 }));
     });
   }

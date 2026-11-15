@@ -10,7 +10,8 @@
 import { View, div } from "gpui-kit";
 import { v_flex, TextareaState, ScrollHandle } from "gpui-base";
 import { agents, terminals, focused, props, layout, hc, run, setShared, shared, theme, watchFolder, nextCommand } from "herdr";
-import { sessionFileFor, readAfter, feedDir } from "./session.js";
+import { sessionFileFor, readAfter } from "./session.js";
+import { agentRoots, feedDirOf } from "./snapshot.js";
 import { createFeed, ingest } from "./feed.js";
 import { palette, sans, R } from "./tokens.js";
 import { header, entries, entry, lane, stateLabel, askCard, askOptions, composer, icon, PERM } from "./ui.js";
@@ -52,7 +53,7 @@ export default class GentleChat extends View {
     this.dir = null;
     this.pos = 0;
     this.watched = null;
-    this.feedWatch = false;
+    this.feedWatch = new Set(); // the snapshot folders watched now
     this.loading = false;
     this.again = false;
     this.real = new Map(); // cwd -> real path, for sessionFileFor
@@ -221,19 +222,25 @@ export default class GentleChat extends View {
     });
   }
 
-  // Wakes on any snapshot write (<agentDir>/desktop/sessions). Before the first Gentle Shell
-  // session creates the folder the watch fails; the next tick tries again.
+  // Wakes on any snapshot write (<agentDir>/desktop/sessions of every agent dir, snapshot.js
+  // agentRoots). Before a Gentle Shell session creates a folder its watch fails; the next tick
+  // tries again.
   watchFeeds(cx) {
-    if (this.feedWatch) return;
-    this.feedWatch = true;
     cx.spawn(async (cx) => {
-      try {
-        for (;;) {
-          await watchFolder(feedDir());
-          await this.refresh(cx);
-        }
-      } catch {
-        this.feedWatch = false;
+      for (const root of await agentRoots()) {
+        const dir = feedDirOf(root);
+        if (this.feedWatch.has(dir)) continue;
+        this.feedWatch.add(dir);
+        cx.spawn(async (cx) => {
+          try {
+            for (;;) {
+              await watchFolder(dir);
+              await this.refresh(cx);
+            }
+          } catch {
+            this.feedWatch.delete(dir);
+          }
+        });
       }
     });
   }
@@ -333,7 +340,7 @@ export default class GentleChat extends View {
   async pressAnswer(cx, address, pq, answer) {
     try {
       if (!pq.toolCallId) throw new Error("Answer it in the Terminal view.");
-      const r = await sendAction(cx, this.snap?.identity?.sessionId, "answer_question", { toolCallId: pq.toolCallId, ...answer });
+      const r = await sendAction(cx, this.snap, "answer_question", { toolCallId: pq.toolCallId, ...answer });
       if (!r.ok) {
         if (r.error?.code === "answer_in_terminal") this.later(cx, () => this.toTerminal());
         throw new Error(errorText(r));
@@ -342,7 +349,7 @@ export default class GentleChat extends View {
       // The question may have closed or changed since the session answered: read it again and
       // press nothing unless it is still the same one.
       const still = async () => {
-        const fresh = await readSnapshot(this.snap?.identity?.sessionId);
+        const fresh = await readSnapshot(this.snap);
         if (questionKey(fresh?.pendingQuestion) !== questionKey(pq)) throw new Error("The question changed before the answer was sent; nothing was pressed.");
       };
       await still();
@@ -464,7 +471,7 @@ export default class GentleChat extends View {
   stop(cx) {
     this.escAt = 0;
     this.act("stop", cx, async (cx) => {
-      const r = await sendAction(cx, this.snap?.identity?.sessionId, "abort_turn", {});
+      const r = await sendAction(cx, this.snap, "abort_turn", {});
       if (!r.ok) return errorText(r);
       this.notice = "Stopped the agent's turn.";
       return null;
@@ -527,7 +534,7 @@ export default class GentleChat extends View {
     cx.notify();
     if (mode === this.snap?.permission?.mode) return;
     const go = (cx) => this.act("perm", cx, async (cx) => {
-      const r = await sendAction(cx, this.snap?.identity?.sessionId, "set_permission_mode", { mode });
+      const r = await sendAction(cx, this.snap, "set_permission_mode", { mode });
       return r.ok ? null : errorText(r);
     });
     if (mode !== "super-yolo") return go(cx);
@@ -539,7 +546,7 @@ export default class GentleChat extends View {
 
   stopAgent(id, cx) {
     this.act(`stop-${id}`, cx, async (cx) => {
-      const r = await sendAction(cx, this.snap?.identity?.sessionId, "cancel_subagent", { id });
+      const r = await sendAction(cx, this.snap, "cancel_subagent", { id });
       return r.ok ? null : errorText(r);
     });
   }

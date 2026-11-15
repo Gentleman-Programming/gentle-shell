@@ -194,7 +194,7 @@ export default class GentlePalette extends View {
       chatRequest({ kind: "mode", mode: act.mode });
     } else if (act.kind === "stop") {
       this.work(row.id, cx, async (cx) => {
-        const r = await sendAction(cx, feed?.identity?.sessionId, "abort_turn", {});
+        const r = await sendAction(cx, feed, "abort_turn", {});
         return r.ok ? null : errorText(r);
       }, () => {});
     } else if (act.kind === "command") {

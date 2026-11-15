@@ -10,7 +10,7 @@
 
 import { REVIEW_SIDEBAR_LABELS, type ReviewSidebarSnapshot } from "./review-sidebar-state.ts";
 import { todoSummary, type TodoState } from "./shell-todo.ts";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { ChangedFile, ChangesModel, WorktreeChanges } from "./shell-changes.ts";
 import type { SessionStats } from "./shell-stats.ts";
 import type { DesktopJobEntry } from "./desktop-rpc-jobs.ts";
@@ -108,6 +108,12 @@ export interface DesktopFeedIdentity {
 	/** Best-effort process ancestors above ppid (nearest first), for terminal matching. */
 	ancestors: number[];
 	mode: string;
+	/**
+	 * The absolute agent dir this snapshot lives under (`<agentDir>/desktop/sessions`): the bundled
+	 * `~/.gentle-shell/agent`, the Pi extension's `~/.pi/agent`, or a custom home. Readers send the
+	 * session's actions to this dir's inbox.
+	 */
+	agentDir: string;
 	herdr: { paneId: string | null; env: boolean } | null;
 }
 
@@ -238,6 +244,7 @@ export interface DesktopFeedInput {
 		ppid: number;
 		ancestors: readonly number[];
 		mode: string;
+		agentDir: string;
 		env: NodeJS.ProcessEnv;
 	};
 	branch: string | null | undefined;
@@ -444,6 +451,7 @@ export function buildDesktopFeedSnapshot(input: DesktopFeedInput): DesktopFeedSn
 			ppid: identity.ppid,
 			ancestors: identity.ancestors.filter((pid) => Number.isInteger(pid) && pid > 0).slice(0, DESKTOP_FEED_LIMITS.ancestors),
 			mode: clipText(identity.mode),
+			agentDir: resolve(identity.agentDir),
 			herdr: herdrIdentity(identity.env),
 		},
 		project: { cwd: clipText(identity.cwd, 4096), branch: optionalText(input.branch), dirty: input.changes ? input.changes.model.files.length : null },

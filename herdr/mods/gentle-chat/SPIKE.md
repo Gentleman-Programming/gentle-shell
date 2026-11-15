@@ -71,7 +71,8 @@ shown, the chat is hidden, so the way back is the stack's `"tabs"` header.
 - Several sessions in one folder: resolved by the T4 snapshot; only the fallback (no snapshot
   matches) still picks the newest file. The pid/pane matching is unproven in a running Herdr
   window (`terminals()` fields `pid`, `foreground.pid`, `address` assumed from herdr-app source).
-- `~/.gentle-shell/agent` is hard-coded; an overridden agent dir is not followed.
+- `~/.gentle-shell/agent` is hard-coded; an overridden agent dir is not followed. (Later fixed:
+  `snapshot.js` `agentRoots()` reads `~/.pi/agent` and listed homes too, docs/desktop-feed.md.)
 - Remote terminals (`machine/tN`) are not read (`readFile` is local); they show a notice.
 - The runtime has no ranged read or stat: every refresh fetches the file's bytes whole and
   slices them (only the new part is decoded/parsed). Fine for MB-sized sessions; a large one

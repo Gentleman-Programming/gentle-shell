@@ -9,6 +9,9 @@
 // await on hc or a file read they are ignored, so callers show the Terminal from a timer callback
 // (`cx.timer.after(1, …)`), never straight after the await (T10, seen live).
 //
+// Every path is under the session's own agent dir, the `identity.agentDir` of its snapshot
+// (~/.gentle-shell/agent, ~/.pi/agent or a custom home; snapshot.js fills it for older sessions).
+//
 // Three paths, never more:
 // - sendAction: drops one action file in the session's private inbox
 //   (<agentDir>/desktop/inbox/<session>/<id>.json); the session runs it through the owner the
@@ -29,7 +32,7 @@
 // background job or a subagent could act (docs/desktop-feed.md): the dialog is the human gate,
 // the session's check keeps the agent from writing an escalation of its own.
 
-import { hc, home, openOverlay, readTextFile, run, writeTextFile } from "herdr";
+import { hc, openOverlay, readTextFile, run, writeTextFile } from "herdr";
 import { exists } from "fs/promises";
 import { createHash, randomUUID } from "crypto";
 
@@ -39,29 +42,38 @@ const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const WAIT_MS = 6000; // the session answers within a few ms; a stuck one is reported
 const STEP_MS = 80;
 
-// <agentDir>/desktop, agentDir = ~/.gentle-shell/agent (as session.js / snapshot.js).
-const desktopDir = () => `${home()}/.gentle-shell/agent/desktop`;
+// <agentDir>/desktop of the session a snapshot belongs to, or null without an absolute agent dir.
+const desktopDir = (feed) => {
+  const dir = feed?.identity?.agentDir;
+  return typeof dir === "string" && (dir.startsWith("/") || /^[A-Za-z]:[/\\]/.test(dir)) ? `${dir.replace(/[/\\]+$/, "")}/desktop` : null;
+};
 // The session's folder name: lib/desktop-feed-store.ts desktopFeedName.
 const folderOf = (sessionId) => (SAFE_ID.test(sessionId) ? sessionId : String(createHash("sha256").update(sessionId).digest("hex")));
 
 const failure = (code, message) => ({ ok: false, error: { code, message } });
 
-// The session's current snapshot (<agentDir>/desktop/sessions/<session>.json), read again now; null
-// when it is missing or unreadable.
-export async function readSnapshot(sessionId) {
-  if (typeof sessionId !== "string" || !sessionId) return null;
+// The current snapshot of the session `feed` (an older snapshot of it) belongs to
+// (<agentDir>/desktop/sessions/<session>.json), read again now; null when it is missing or
+// unreadable.
+export async function readSnapshot(feed) {
+  const sessionId = feed?.identity?.sessionId;
+  const desktop = desktopDir(feed);
+  if (typeof sessionId !== "string" || !sessionId || !desktop) return null;
   try {
-    return JSON.parse(await readTextFile(`${desktopDir()}/sessions/${folderOf(sessionId)}.json`));
+    return JSON.parse(await readTextFile(`${desktop}/sessions/${folderOf(sessionId)}.json`));
   } catch {
     return null;
   }
 }
 
-// Asks the session to run one action and waits for its answer: { ok, data } or { ok: false, error }.
-export async function sendAction(cx, sessionId, kind, args) {
-  if (typeof sessionId !== "string" || !sessionId) return failure("no_session", "No Gentle Shell session for this view.");
+// Asks the session of snapshot `feed` to run one action and waits for its answer: { ok, data } or
+// { ok: false, error }.
+export async function sendAction(cx, feed, kind, args) {
+  const sessionId = feed?.identity?.sessionId;
+  const desktop = desktopDir(feed);
+  if (typeof sessionId !== "string" || !sessionId || !desktop) return failure("no_session", "No Gentle Shell session for this view.");
   const folder = folderOf(sessionId);
-  const inbox = `${desktopDir()}/inbox/${folder}`;
+  const inbox = `${desktop}/inbox/${folder}`;
   // The session creates its inbox (0700). Without it this Gentle Shell is older than T7; never
   // create it here (writeTextFile would make the folder with the default mode).
   let ready = false;
@@ -74,7 +86,7 @@ export async function sendAction(cx, sessionId, kind, args) {
   } catch (e) {
     return failure("write_failed", String(e?.message ?? e));
   }
-  const answer = `${desktopDir()}/outbox/${folder}/${id}.json`;
+  const answer = `${desktop}/outbox/${folder}/${id}.json`;
   for (let waited = 0; waited < WAIT_MS; waited += STEP_MS) {
     let text = null;
     try { text = await readTextFile(answer); } catch { text = null; }

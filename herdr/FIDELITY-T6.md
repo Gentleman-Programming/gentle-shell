@@ -164,10 +164,10 @@ Actions (T7, `actions.js`, docs/desktop-feed.md "Actions"): Stop subagent and Ca
 
 ## Token modules
 
-- Canonical: `herdr/mods/gentle-tokens/tokens.js` (palette, fonts, `.state`, `.bar`, `.btn`, `.eyebrow`, `kbd`, formats) and `herdr/mods/gentle-tokens/snapshot.js` (snapshot reader; `readFeeds` / `matchFeed` copied from `gentle-chat/session.js`, `targetTerminal` mirrors `GentleChat.target()`).
-- gpui-shell refuses imports outside a mod's folder (`Module ../b/x.js resolves outside the application directory`, observed with `herdr-app check`), so `gentle-sidebar`, `gentle-spaces`, `gentle-agents`, `gentle-tabs`, `gentle-inspector` and `gentle-status` carry byte-identical copies (`cmp` clean). `gentle-tokens` has a small `main.js` (a token swatch, `place: none`) so the folder is a valid mod.
+- Canonical: `herdr/mods/gentle-tokens/tokens.js` (palette, fonts, `.state`, `.bar`, `.btn`, `.eyebrow`, `kbd`, formats) and `herdr/mods/gentle-tokens/snapshot.js` (snapshot reader over every agent dir in `agentRoots()`; `gentle-chat/session.js` imports `readFeeds` / `matchFeed` from its copy, `targetTerminal` mirrors `GentleChat.target()`).
+- gpui-shell refuses imports outside a mod's folder (`Module ../b/x.js resolves outside the application directory`, observed with `herdr-app check`), so `gentle-sidebar`, `gentle-spaces`, `gentle-agents`, `gentle-tabs`, `gentle-inspector`, `gentle-status`, `gentle-palette` and `gentle-chat` carry byte-identical copies (`cmp` clean). `gentle-tokens` has a small `main.js` (a token swatch, `place: none`) so the folder is a valid mod.
 - Each mod folder has a `.gitignore` for the `gpui-kit.d.ts` / `jsconfig.json` that `herdr-app check` writes.
-- Data refresh: `watchFolder(<agentDir>/desktop/sessions)` plus a 10 s fallback timer; redraw only when a snapshot changed. Extra timers: the inspector redraws each second only while the Jobs tab shows a running job; the usage footer once a minute (its reset countdown).
+- Data refresh: `watchFolder(<agentDir>/desktop/sessions)` for each agent dir plus a 10 s fallback timer; redraw only when a snapshot changed. Extra timers: the inspector redraws each second only while the Jobs tab shows a running job; the usage footer once a minute (its reset countdown).
 
 ## Live side-by-side (1908×1019, S8)
 

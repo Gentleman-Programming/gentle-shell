@@ -2,33 +2,72 @@
 // Gentle Shell terminal, the same way the centre chat (herdr/mods/gentle-chat) does.
 //
 // CANONICAL COPY, carried byte-identical as `./snapshot.js` by every gentle-* mod that shows
-// snapshot data (gpui-shell refuses imports outside a mod's folder). `readFeeds` and `matchFeed`
-// are copied from herdr/mods/gentle-chat/session.js (owned by the chat task) and must keep the
-// same rules; `targetTerminal` mirrors GentleChat.target() so every region shows one session.
+// snapshot data, gentle-chat included (gpui-shell refuses imports outside a mod's folder).
+// `targetTerminal` mirrors GentleChat.target() so every region shows one session.
+//
+// Gentle Shell runs bundled (agent dir ~/.gentle-shell/agent), as the npm / Pi extension
+// (~/.pi/agent) or with its own home (GENTLE_PI_AGENT_HOME / PI_CODING_AGENT_DIR). Snapshots are
+// read from every agent dir in `agentRoots()`; each session's own `identity.agentDir` is where its
+// actions go (actions.js).
 
 import { readFile, readdir } from "fs/promises";
 import { agents, terminals, focused, home, watchFolder } from "herdr";
 
 export const FEED_SCHEMA = "gentle-shell.desktop-feed/v1";
-// <agentDir>/desktop/sessions, agentDir = ~/.gentle-shell/agent (as gentle-chat/session.js).
-export const feedDir = () => `${home()}/.gentle-shell/agent/desktop/sessions`;
-const MAX_FEEDS = 64; // a bounded read per refresh, even with many crashed leftovers
+// Extra agent dirs, one per custom Gentle Shell home: `{ "roots": ["/abs/dir", "~/dir"] }` (or a
+// bare array). Optional; the two default homes are always read.
+export const rootsFile = () => `${home()}/.config/herdr-app/gentle-shell-roots.json`;
+const MAX_ROOTS = 8;
+const MAX_FEEDS = 64; // a bounded read per root and refresh, even with many crashed leftovers
 
-// Every live snapshot, newest first. Unreadable, foreign or partial files are skipped.
-export async function readFeeds() {
-  let names;
+const trimSlash = (p) => (p.length > 1 ? p.replace(/[/\\]+$/, "") : p);
+export const isAbsolute = (p) => typeof p === "string" && (p.startsWith("/") || /^[A-Za-z]:[/\\]/.test(p));
+const expand = (p) => (p === "~" ? home() : p.startsWith("~/") ? `${home()}${p.slice(1)}` : p);
+
+// The agent dirs to read, bundled first: ~/.gentle-shell/agent, ~/.pi/agent, then the entries of
+// the roots file (absolute or ~/), without duplicates.
+export async function agentRoots() {
+  const roots = [`${home()}/.gentle-shell/agent`, `${home()}/.pi/agent`];
   try {
-    names = await readdir(feedDir());
+    const parsed = JSON.parse(await readFile(rootsFile(), "utf8"));
+    const extra = Array.isArray(parsed) ? parsed : parsed?.roots;
+    if (Array.isArray(extra)) for (const r of extra) if (typeof r === "string" && r.trim()) roots.push(expand(r.trim()));
   } catch {
-    return [];
+    // no roots file (the usual case) or not JSON: the default homes only
   }
+  const seen = new Set();
+  return roots.map(trimSlash).filter((r) => isAbsolute(r) && !seen.has(r) && seen.add(r)).slice(0, MAX_ROOTS);
+}
+
+// The snapshot folder of an agent dir (lib/desktop-feed-store.ts desktopFeedDirectory).
+export const feedDirOf = (root) => `${root}/desktop/sessions`;
+
+// Every live snapshot of every root (default: agentRoots()), newest first. Unreadable, foreign or
+// partial files are skipped. A snapshot from an older Gentle Shell without `identity.agentDir`
+// gets the root it was found in.
+export async function readFeeds(roots) {
   const feeds = [];
-  for (const name of names.filter((n) => n.endsWith(".json") && !n.startsWith(".")).slice(0, MAX_FEEDS)) {
+  const seen = new Set();
+  for (const root of roots ?? await agentRoots()) {
+    const dir = feedDirOf(root);
+    let names;
     try {
-      const feed = JSON.parse(await readFile(`${feedDir()}/${name}`, "utf8"));
-      if (feed?.schema === FEED_SCHEMA && feed.identity) feeds.push(feed);
+      names = await readdir(dir);
     } catch {
-      // being replaced or not ours: the next refresh reads it again
+      continue;
+    }
+    for (const name of names.filter((n) => n.endsWith(".json") && !n.startsWith(".")).slice(0, MAX_FEEDS)) {
+      try {
+        const feed = JSON.parse(await readFile(`${dir}/${name}`, "utf8"));
+        if (feed?.schema !== FEED_SCHEMA || !feed.identity) continue;
+        if (!isAbsolute(feed.identity.agentDir)) feed.identity.agentDir = root;
+        const id = `${feed.identity.sessionId}@${feed.identity.pid}`;
+        if (seen.has(id)) continue; // one home reached twice (a symlink, a repeated root)
+        seen.add(id);
+        feeds.push(feed);
+      } catch {
+        // being replaced or not ours: the next refresh reads it again
+      }
     }
   }
   return feeds.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
@@ -74,16 +113,16 @@ export function targetTerminal(last) {
   return byAddr(f?.agent) ?? byAddr(f?.terminal) ?? byAddr(inTab[0]?.address) ?? byAddr(last) ?? all[0] ?? null;
 }
 
-// Keeps `feeds` fresh: a watch on the snapshot folder plus a gentle fallback timer (the folder may
-// not exist yet, and a missed event must not freeze the view). `onChange(cx)` runs only when a
-// snapshot really changed (the publisher rewrites a file only when its content changed).
+// Keeps `feeds` fresh: a watch on every root's snapshot folder plus a gentle fallback timer (a
+// folder may not exist yet, and a missed event must not freeze the view). `onChange(cx)` runs only
+// when a snapshot really changed (the publisher rewrites a file only when its content changed).
 export class FeedSource {
   constructor() {
     this.feeds = [];
     this.key = "";
     this.loading = false;
     this.again = false;
-    this.watching = false;
+    this.watching = new Set(); // the snapshot folders watched now
   }
 
   start(cx, onChange, every = 10000) {
@@ -93,15 +132,16 @@ export class FeedSource {
   }
 
   refresh(cx) {
-    if (!this.watching) this.watch(cx);
     if (this.loading) { this.again = true; return; }
     this.loading = true;
     cx.spawn(async (cx) => {
       try {
         do {
           this.again = false;
-          const feeds = await readFeeds();
-          const key = feeds.map((f) => `${f.identity.sessionId}@${f.updatedAt}`).join("|");
+          const roots = await agentRoots();
+          for (const root of roots) this.watch(feedDirOf(root), cx);
+          const feeds = await readFeeds(roots);
+          const key = feeds.map((f) => `${f.identity.agentDir}/${f.identity.sessionId}@${f.updatedAt}`).join("|");
           if (key !== this.key) {
             this.key = key;
             this.feeds = feeds;
@@ -115,16 +155,18 @@ export class FeedSource {
     });
   }
 
-  watch(cx) {
-    this.watching = true;
+  // One watch per snapshot folder; a missing folder ends it, and the next refresh tries again.
+  watch(dir, cx) {
+    if (this.watching.has(dir)) return;
+    this.watching.add(dir);
     cx.spawn(async (cx) => {
       try {
         for (;;) {
-          await watchFolder(feedDir());
+          await watchFolder(dir);
           this.refresh(cx);
         }
       } catch {
-        this.watching = false; // no folder yet: the timer reads and tries the watch again
+        this.watching.delete(dir); // no folder yet: the timer reads and tries the watch again
       }
     });
   }

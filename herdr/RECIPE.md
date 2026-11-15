@@ -98,11 +98,13 @@ sans and a mono stack, chosen at run time from `fonts()`.
   | `gentle-tokens` | — | the shared `tokens.js` and `snapshot.js`; opened on its own it shows a token swatch |
 
 - **Data source: the desktop feed.** Each interactive Gentle Shell session publishes
-  `~/.gentle-shell/agent/desktop/sessions/<session>.json` (`gentle-shell.desktop-feed/v1`:
-  identity, project, model, context, cost, usage, permission, todo, changes, agents, jobs, review,
-  stats, activity, the open question, commands). Actions go to
-  `~/.gentle-shell/agent/desktop/inbox/<session>/` and are answered in `outbox/`
-  (`gentle-shell.desktop-action/v1`). Format: [`docs/desktop-feed.md`](../docs/desktop-feed.md).
+  `<agentDir>/desktop/sessions/<session>.json` (`gentle-shell.desktop-feed/v1`:
+  identity with its own `agentDir`, project, model, context, cost, usage, permission, todo,
+  changes, agents, jobs, review, stats, activity, the open question, commands). The mods read
+  every agent dir in `snapshot.js` `agentRoots()`: `~/.gentle-shell/agent` (bundled),
+  `~/.pi/agent` (Pi extension) and the entries of `~/.config/herdr-app/gentle-shell-roots.json`.
+  Actions go to the session's `<agentDir>/desktop/inbox/<session>/` and are answered in
+  `outbox/` (`gentle-shell.desktop-action/v1`). Format: [`docs/desktop-feed.md`](../docs/desktop-feed.md).
   The conversation itself comes from the session's own JSONL.
 - **Keys** (`keys.json`, section `layout:gentle-shell`): `cmd-k` palette, `cmd-j` Chat ↔
   Terminal, `cmd-.` stop, `cmd-alt-1`…`6` inspector tabs. Merged into the person's `keys.json`,
@@ -115,9 +117,10 @@ sans and a mono stack, chosen at run time from `fonts()`.
 
 ## Watch out
 
-- The mods **read files outside their folders**: `~/.gentle-shell/agent/desktop/` and the
-  sessions' JSONL under `~/.gentle-shell/agent/sessions/`. Sessions with another agent folder
-  (`--link`, `--home`) are not seen. Remote terminals are not read.
+- The mods **read files outside their folders**: `<agentDir>/desktop/` and the sessions' JSONL
+  under `<agentDir>/sessions/` for `~/.gentle-shell/agent`, `~/.pi/agent` and the agent dirs
+  listed in `~/.config/herdr-app/gentle-shell-roots.json`. Another agent dir is seen only once
+  listed there, and only inside the home folder. Remote terminals are not read.
 - They **run programs**: `hc send` / `hc keys` into Gentle Shell terminals, `pwd -P` to resolve a
   session folder, `gentle-ai review mode status` while the Review tab shows, and
   `gentle-ai review mode enable|disable --scope global` for the RDD switch, after a dialog.

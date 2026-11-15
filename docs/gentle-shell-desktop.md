@@ -40,7 +40,7 @@ gentle-shell desktop --uninstall
 | A computer Herdr app runs on | macOS on Apple silicon and Linux (x86_64, arm64): Gentle Shell installs Herdr app for you. Windows: install Herdr app with its official installer first ([below](#how-herdr-app-is-installed)). |
 | Herdr app 0.1.15 or newer | Older or missing: Gentle Shell installs exactly 0.1.15. Newer: used as it is. |
 | herdr-core | Herdr app offers to set it up the first time it opens. |
-| Gentle Shell sessions in the default home | The mods read `~/.gentle-shell/agent/desktop/`. A session started with `--link` or `--home <path>` publishes under its own agent folder, so the window does not see it. |
+| Gentle Shell sessions in a known home | The mods read the sessions of `~/.gentle-shell/agent` (bundled Gentle Shell) and `~/.pi/agent` (Gentle AI as a Pi extension). For another home (`--home <path>`, `GENTLE_PI_AGENT_HOME`, `PI_CODING_AGENT_DIR`), list its agent dir in `~/.config/herdr-app/gentle-shell-roots.json` as `{ "roots": ["~/my/agent"] }`. Herdr app lets mods read only inside your home folder. See [where readers look](desktop-feed.md#where-readers-look). |
 | A local terminal | Sessions on a remote Herdr machine are not read yet ("Remote terminals are not read yet."). |
 
 The live checks so far ran on macOS with Herdr app 0.1.15.

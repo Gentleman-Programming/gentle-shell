@@ -40,7 +40,7 @@ function fixtureInput(overrides: Partial<DesktopFeedInput> = {}): DesktopFeedInp
 	const model = changesModel(files);
 	return {
 		now: Date.UTC(2026, 10, 14, 12, 0, 0),
-		identity: { sessionId: "sess-1", sessionFile: "/agent/sessions/--w--/s.jsonl", sessionName: "Feed", cwd: "/w", realCwd: "/private/w", pid: 100, ppid: 99, ancestors: [98, 1, -3], mode: "tui", env: { HERDR_ENV: "1", HERDR_PANE_ID: "t7" } },
+		identity: { sessionId: "sess-1", sessionFile: "/agent/sessions/--w--/s.jsonl", sessionName: "Feed", cwd: "/w", realCwd: "/private/w", pid: 100, ppid: 99, ancestors: [98, 1, -3], mode: "tui", agentDir: "/agent", env: { HERDR_ENV: "1", HERDR_PANE_ID: "t7" } },
 		branch: "feat/x",
 		model: { id: "claude-opus-5-5", provider: "anthropic", reasoning: true },
 		thinkingLevel: "high",
@@ -178,7 +178,7 @@ test("S2: the snapshot carries every TUI field in the v1 schema shape", () => {
 	assert.deepEqual(snapshot, {
 		schema: DESKTOP_FEED_SCHEMA,
 		updatedAt: "2026-11-14T12:00:00.000Z",
-		identity: { sessionId: "sess-1", sessionFile: "/agent/sessions/--w--/s.jsonl", sessionName: "Feed", cwd: "/w", realCwd: "/private/w", pid: 100, ppid: 99, ancestors: [98, 1], mode: "tui", herdr: { paneId: "t7", env: true } },
+		identity: { sessionId: "sess-1", sessionFile: "/agent/sessions/--w--/s.jsonl", sessionName: "Feed", cwd: "/w", realCwd: "/private/w", pid: 100, ppid: 99, ancestors: [98, 1], mode: "tui", agentDir: "/agent", herdr: { paneId: "t7", env: true } },
 		project: { cwd: "/w", branch: "feat/x", dirty: 2 },
 		model: { id: "claude-opus-5-5", provider: "anthropic", effort: "high", profile: { name: "work (session)", tier: "fast" } },
 		persona: null,
@@ -228,6 +228,14 @@ test("S2: unknown sources stay null instead of guessed values", () => {
 	for (const key of ["context", "usage", "permission", "changes", "agents", "jobs", "review", "persona", "statuses", "integrations"] as const) assert.equal(snapshot[key], null, key);
 	assert.equal(snapshot.identity.herdr, null);
 	assert.equal(buildDesktopFeedSnapshot(fixtureInput({ activity: { working: true, blocked: 2, blockedLabel: "Choice awaiting input", streaming: false, phase: undefined } })).activity.state, "blocked");
+});
+
+test("S3: the snapshot names its agent dir as an absolute path, bundled, Pi extension or custom home", () => {
+	for (const dir of ["/Users/me/.gentle-shell/agent", "/Users/me/.pi/agent", "/srv/custom-home"]) {
+		assert.equal(buildDesktopFeedSnapshot(fixtureInput({ identity: { ...fixtureInput().identity, agentDir: dir } })).identity.agentDir, dir);
+	}
+	const relative = buildDesktopFeedSnapshot(fixtureInput({ identity: { ...fixtureInput().identity, agentDir: "rel/agent" } })).identity.agentDir;
+	assert.equal(relative, join(process.cwd(), "rel", "agent"));
 });
 
 // ---- Bounds ----
@@ -369,6 +377,7 @@ test("S2: the extension writes once per burst and never rewrites an unchanged sn
 	assert.equal(first.identity.realCwd, "/private/w");
 	assert.equal(first.identity.pid, process.pid);
 	assert.deepEqual(first.identity.herdr, { paneId: "t7", env: true });
+	assert.equal(first.identity.agentDir, h.agentDir, "the snapshot names the agent dir it was written under");
 	assert.deepEqual(first.model.profile, { name: "work (session)", tier: "fast" });
 	assert.equal(first.cost.total, 0.25);
 	assert.equal(first.stats.turns, 1);

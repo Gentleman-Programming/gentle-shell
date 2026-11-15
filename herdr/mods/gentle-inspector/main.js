@@ -123,7 +123,7 @@ export default class GentleInspector extends View {
 
   owner(key, kind, args, cx) {
     this.act(key, cx, async (cx) => {
-      const r = await sendAction(cx, this.feed?.identity?.sessionId, kind, args);
+      const r = await sendAction(cx, this.feed, kind, args);
       return r.ok ? null : errorText(r);
     });
   }

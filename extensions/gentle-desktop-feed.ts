@@ -197,6 +197,7 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 						ppid: process.ppid,
 						ancestors: session.ancestors,
 						mode: ctx.mode,
+						agentDir,
 						env,
 					},
 					branch: session.branch,

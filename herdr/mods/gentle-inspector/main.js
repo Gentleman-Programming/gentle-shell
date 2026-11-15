@@ -263,9 +263,10 @@ export default class GentleInspector extends View {
   }
 
   kv(c, rows) {
-    return v_flex().gap(4).children(rows.map(([k, v], i) => h_flex().id(`kv-${k}-${i}`).gap(12).items_center()
+    return v_flex().gap(4).children(rows.map(([k, v], i) => h_flex().id(`kv-${k}-${i}`).min_w(0).overflow_hidden().whitespace_nowrap().gap(12).items_center()
       .child(div().flex_1().min_w(0).truncate().text_color(c.muted).child(k))
-      .child(div().flex_none().text_right().font_family(c.mono).text_color(c.text).child(v))));
+      // The value keeps its width up to 60% of the row, then ends in an ellipsis.
+      .child(div().flex_none().max_w("60%").truncate().text_right().font_family(c.mono).text_color(c.text).child(v))));
   }
 
   subhead(c, text) {
@@ -296,7 +297,7 @@ export default class GentleInspector extends View {
       const path = String(file.path ?? "");
       const cut = path.lastIndexOf("/") + 1;
       const marked = Boolean(this.reveal) && (path === this.reveal || path.endsWith(`/${this.reveal}`) || this.reveal.endsWith(`/${path}`));
-      return h_flex().id(`file-${i}`).w_full().min_h(28).px(6).py(5).gap(8).items_center().rounded(6).cursor_pointer()
+      return h_flex().id(`file-${i}`).w_full().min_w(0).overflow_hidden().min_h(28).px(6).py(5).gap(8).items_center().rounded(6).cursor_pointer()
         .when(marked, (el) => el.bg(c.selected))
         .hover((s) => s.bg(c.selected)).tooltip("Open /gentle:changes in the Terminal")
         .on_click((_e, cx) => { this.reveal = path; this.command("diff", "/gentle:changes", cx); })
@@ -353,13 +354,14 @@ export default class GentleInspector extends View {
       const live = a.state === "running" || a.state === "waiting"; // .acts only on a live subagent
       const step = a.step && a.step !== a.state && !["running", "queued", "completed", "failed", "cancelled", "timed_out"].includes(a.step) ? ` · ${a.step}` : "";
       return v_flex().id(`ag-${a.id ?? i}`).when(i > 0, (el) => el.mt(6)).p(8).gap(2).rounded(8).border(1).border_color(c.line)
-        .child(h_flex().gap(6).items_baseline().min_w(0)
+        .child(h_flex().gap(6).items_baseline().min_w(0).overflow_hidden().whitespace_nowrap()
           .child(div().flex_none().font_family(c.mono).font_weight(600).text_size(10.5).line_height("16.8px").text_color(c.accent)
             .child((a.role ? String(a.role) : agentRole(a.name)).toUpperCase()))
           .when(Boolean(a.title), (el) => el.child(div().min_w(0).truncate().font_weight(600).text_color(c.text).child(String(a.title)))))
-        .child(h_flex().gap(10).items_center().text_size(12).line_height("18px").text_color(c.muted)
-          .child(state(c, kind, `${word}${step}`))
-          .when(Boolean(a.model), (el) => el.child(div().min_w(0).truncate().child(prettyModel(String(a.model)))))
+        // The state and its step give way (truncate); model and spend keep their width.
+        .child(h_flex().min_w(0).overflow_hidden().whitespace_nowrap().gap(10).items_center().text_size(12).line_height("18px").text_color(c.muted)
+          .child(state(c, kind, null, div().min_w(0).truncate().child(`${word}${step}`)).flex_shrink_1().min_w(0))
+          .when(Boolean(a.model), (el) => el.child(div().flex_none().max_w("40%").truncate().child(prettyModel(String(a.model)))))
           .when(Boolean(a.spend?.cost), (el) => el.child(div().flex_none().font_family(c.mono).child(money(a.spend.cost)))))
         .when(live, (el) => el.child(h_flex().mt(4).gap(6)
           .child(btn(c, `ag-view-${i}`, "View", { onClick: (_e, cx) => this.command(`view-${i}`, "/gentle:agents", cx) }).tooltip("Open /gentle:agents in the Terminal"))
@@ -394,12 +396,12 @@ export default class GentleInspector extends View {
       }
       const elapsed = live ? now - (Number(j.startedAt) || now) : j.elapsedMs;
       return v_flex().id(`job-${live ? "r" : "f"}-${j.id ?? i}`).p(6).gap(2).rounded(6)
-        .child(h_flex().gap(8).items_center()
+        .child(h_flex().min_w(0).overflow_hidden().gap(8).items_center()
           .child(div().flex_1().min_w(0).truncate().font_family(c.mono).text_size(12).line_height("18px").text_color(c.text).child(String(j.label ?? "")))
           .when(Boolean(action), (el) => el.child(action)))
-        .child(h_flex().gap(10).items_center().text_size(12).line_height("18px").text_color(c.muted)
-          .child(state(c, kind, word))
-          .child(div().font_family(c.mono).child(clock(elapsed)))
+        .child(h_flex().min_w(0).overflow_hidden().whitespace_nowrap().gap(10).items_center().text_size(12).line_height("18px").text_color(c.muted)
+          .child(state(c, kind, null, div().min_w(0).truncate().child(word)).flex_shrink_1().min_w(0))
+          .child(div().flex_none().font_family(c.mono).child(clock(elapsed)))
           .when(!live && Boolean(j.endedAt), (el) => el.child(div().child(ago(j.endedAt, now)))));
     };
     return [head, v_flex().gap(10)
@@ -458,7 +460,7 @@ export default class GentleInspector extends View {
         .when(models.length > 0, (el) => el.child(this.subhead(c, "By model")).child(this.kv(c, models))),
       v_flex().mt(14).gap(10).child(this.subhead(c, "Integrations"))
         .when(!integrations, (el) => el.child(this.note(c, "Engram and MCP status are not published by this session yet")))
-        .when(Boolean(integrations), (el) => el.child(v_flex().gap(1).children(integrations.map((it, i) => h_flex().id(`int-${i}`).min_h(28).px(6).py(5).gap(8).items_center()
+        .when(Boolean(integrations), (el) => el.child(v_flex().gap(1).children(integrations.map((it, i) => h_flex().id(`int-${i}`).min_w(0).overflow_hidden().min_h(28).px(6).py(5).gap(8).items_center()
           .child(svg(ICON(/engram/i.test(it.name) ? "db" : "plug")).size(13).flex_none().text_color(c.muted))
           .child(div().flex_1().min_w(0).truncate().child(String(it.name ?? "")))
           .child(state(c, it.ok ? "done" : "idle", String(it.state ?? "")))))))];

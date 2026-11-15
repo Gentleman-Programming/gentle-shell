@@ -75,10 +75,10 @@ export default class GentleAgents extends View {
       .when(on, (el) => el.bg(c.selected))
       .hover((s) => s.bg(c.selected))
       .on_click(() => { followHerdr(); run("pane.focus", { pane: a.pane }); })
-      .child(h_flex().h(19.5).gap(8).items_center()
+      .child(h_flex().h(19.5).min_w(0).overflow_hidden().gap(8).items_center()
         .child(div().flex_1().min_w(0).truncate().text_size(13).line_height("19.5px").text_color(c.text).child(title(a, tab, feed)))
         .child(state(c, kind, label)))
-      .child(h_flex().h(17.25).gap(6).items_center().min_w(0)
+      .child(h_flex().h(17.25).gap(6).items_center().min_w(0).overflow_hidden()
         .child(kindBadge(c, SESSION_KINDS.herdr, MOD))
         .child(div().min_w(0).truncate().text_size(11.5).line_height("17.25px").text_color(c.muted).child(`${app} · ${a.space_name} · ${a.address}`)));
   }
@@ -96,10 +96,10 @@ export default class GentleAgents extends View {
       .hover((st) => st.bg(c.selected))
       .tooltip(`Runs outside Herdr app (${whereLabel(s)}) · ${f.identity?.cwd ?? ""}`)
       .on_click(() => selectSession(s))
-      .child(h_flex().h(19.5).gap(8).items_center()
+      .child(h_flex().h(19.5).min_w(0).overflow_hidden().gap(8).items_center()
         .child(div().flex_1().min_w(0).truncate().text_size(13).line_height("19.5px").text_color(c.text).child(title))
         .child(state(c, kind, label)))
-      .child(h_flex().h(17.25).gap(6).items_center().min_w(0)
+      .child(h_flex().h(17.25).gap(6).items_center().min_w(0).overflow_hidden()
         .child(kindBadge(c, SESSION_KINDS.tui, MOD))
         .child(div().min_w(0).truncate().text_size(11.5).line_height("17.25px").text_color(c.muted)
           .child(`${projectName(projectOf(f))} · ${sessionCost(Number(f.cost?.total) || 0)} · ${whereLabel(s)}`)));

@@ -105,7 +105,7 @@ export default class GentleSidebar extends View {
     // .usage: grid 22px | 1fr | 36px, gap 8; the first window's bar is accent, the next muted.
     // A label longer than 22px (a named limit) takes the room it needs, up to half the row.
     const wide = own.some((w) => w.label.length > 3) || others.length > 0;
-    const row = (w, i, key) => h_flex().id(`usage-${key}-${i}`).h(17.25).gap(8).items_center()
+    const row = (w, i, key) => h_flex().id(`usage-${key}-${i}`).h(17.25).min_w(0).overflow_hidden().gap(8).items_center()
       .child(div().when(!wide, (el) => el.w(22)).when(wide, (el) => el.min_w(22).max_w(110)).flex_none().truncate().font_family(c.mono).text_size(11)
         .text_color(w.reached ? c.err : c.muted).child(w.label))
       .child(bar(c, w.pct, key === "own" && i === 0 ? "accent" : null))
@@ -116,8 +116,8 @@ export default class GentleSidebar extends View {
     for (const p of others) {
       if (lines.length >= MAX_LINES - 1) break;
       const rows = windowRows(p);
-      lines.push(h_flex().id(`usage-p-${p.provider}`).h(17.25).gap(6).items_center().text_size(11.5).text_color(c.muted)
-        .child(div().flex_none().font_family(c.mono).text_size(11).child(p.plan ? `${p.provider} · ${p.plan}` : p.provider))
+      lines.push(h_flex().id(`usage-p-${p.provider}`).h(17.25).min_w(0).overflow_hidden().whitespace_nowrap().gap(6).items_center().text_size(11.5).text_color(c.muted)
+        .child(div().flex_none().max_w(rows.length ? "100%" : "60%").truncate().font_family(c.mono).text_size(11).child(p.plan ? `${p.provider} · ${p.plan}` : p.provider))
         .when(!rows.length, (el) => el.child(div().min_w(0).truncate().text_color(c.faint).child(noteText(p.note) || p.status || ""))));
       rows.slice(0, Math.max(0, MAX_LINES - 1 - lines.length)).forEach((w, i) => lines.push(row(w, i, p.provider)));
     }
@@ -139,7 +139,7 @@ export default class GentleSidebar extends View {
       .pt(10).px(16).pb(12).gap(7).text_size(12)
       .child(eyebrow(c, plan))
       .children(lines)
-      .child(h_flex().h(17.25).gap(8).items_center().justify_between().text_size(11.5).line_height("17.25px").text_color(this.error ? c.err : c.muted)
+      .child(h_flex().h(17.25).min_w(0).overflow_hidden().gap(8).items_center().justify_between().text_size(11.5).line_height("17.25px").text_color(this.error ? c.err : c.muted)
         .child(div().min_w(0).flex_1().truncate().child(note))
         .when(Boolean(feed), (el) => el.child(div().id("usage-refresh").flex_none().text_color(c.muted).cursor_pointer()
           .when(this.busy, (d) => d.opacity(0.5))

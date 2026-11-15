@@ -6,6 +6,8 @@
 //       | { type: "tool", call }], cost, model, error, seconds }
 //       (seconds: how long the message took, entry write time − message start, or null)
 //   { kind: "note", id, text, type }  (a custom message the session displays; type: its customType)
+//   { kind: "note", id, text, type, label, system: true }  (a user-role message the runtime wrote,
+//       not the person: a Gentle Agents wake, a harness note; drawn as one closed notice row)
 //   { kind: "skill", id, name, text }  (a skill the person invoked: pi's <skill> block, before the
 //       message typed with it, which follows as its own user item)
 //   { kind: "compaction", id, summary, tokens } (the context was compacted from `tokens` tokens)
@@ -16,7 +18,31 @@
 // details.gentleAgents ({ taskId, agent, status, model, lastStep, ... }).
 
 export function createFeed() {
-  return { items: [], tools: new Map(), model: null, provider: null, thinking: null, name: null, total: 0, cwd: null, seq: 0 };
+  return { items: [], tools: new Map(), wakes: new Set(), model: null, provider: null, thinking: null, name: null, total: 0, cwd: null, seq: 0 };
+}
+
+// User-role messages the runtime writes (S11: never a "You" bubble). Structured first: Gentle
+// Agents persists a `custom` entry `gentle-agents.wake-identity` ({ sessionId, nonce, text })
+// before it sends the Claude Bridge wake, and the TUI hides the user message whose text is that
+// identity's (extensions/gentle-agents.ts restoreBridgeWakeIdentity). A wake whose identity is
+// outside the read tail, and the other runtime texts, are known by the exact prefixes the
+// harness gives them (gentle-agents.ts PARENT_WAKE_TEXT, lib/reply-language-anchor.ts).
+export const WAKE_IDENTITY_TYPE = "gentle-agents.wake-identity";
+const WAKE_PREFIX = "[System-generated Gentle Agents notification, not written by the user]";
+const SYSTEM_PREFIX = /^\[System-generated ([^\]]*?)(?: notification)?, not written by the (?:user|human)\]\s*/;
+const HARNESS_PREFIX = "[Harness note, not written by the human]";
+
+// { label, type, text } for a runtime-written user message, or null for the person's own.
+export function systemMessage(feed, text) {
+  const t = String(text ?? "").trim();
+  const body = (s) => s.replace(/\s*\[gentle-agents wake: [0-9a-f-]+\]\s*$/i, "").trim();
+  if (feed?.wakes?.has(t) || t.startsWith(WAKE_PREFIX)) {
+    return { label: "Gentle Agents · wake", type: "gentle-agents.wake", text: body(t.startsWith(WAKE_PREFIX) ? t.slice(WAKE_PREFIX.length) : t) };
+  }
+  if (t.startsWith(HARNESS_PREFIX)) return { label: "Harness note", type: "harness-note", text: t.slice(HARNESS_PREFIX.length).trim() };
+  const m = SYSTEM_PREFIX.exec(t);
+  if (m) return { label: `${m[1].trim() || "System"} · notice`, type: "system", text: body(t.slice(m[0].length)) };
+  return null;
 }
 
 const textOf = (content) =>
@@ -66,6 +92,10 @@ function ingestEntry(feed, e) {
       return;
     case "session_info":
       if (typeof e.name === "string") feed.name = e.name;
+      return;
+    case "custom":
+      if (e.customType === WAKE_IDENTITY_TYPE && typeof e.data?.text === "string" && typeof e.data?.nonce === "string"
+        && e.data.text.includes(e.data.nonce)) feed.wakes.add(e.data.text.trim());
       return;
     case "custom_message":
       if (e.display) {
@@ -119,6 +149,11 @@ function ingestMessage(feed, id, m, at) {
   if (m.role === "user") {
     let t = textOf(m.content).trim();
     const time = clock(Number.isFinite(m.timestamp) ? m.timestamp : at);
+    const sys = systemMessage(feed, t);
+    if (sys) {
+      feed.items.push({ kind: "note", id, text: sys.text || t, type: sys.type, label: sys.label, system: true, time });
+      return;
+    }
     // A skill invocation: the TUI draws its block as one "[skill] name" line and the typed
     // message, if any, as the user's own (pi's parseSkillBlock).
     const skill = skillBlock(t);

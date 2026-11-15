@@ -93,7 +93,7 @@ export default class GentleSpaces extends View {
     const small = n === 0
       ? "No Gentle Shell session"
       : `${kinds(info)} · ${money(info.cost)}`; // the artboard's "3 sessions · $4.74 today", per kind (S10): live spend, not a daily total
-    return h_flex().id(`space-${w.id}`).relative().w_full().h(ROW).flex_none().p(6).gap(10).items_center().rounded(6).cursor_pointer()
+    return h_flex().id(`space-${w.id}`).relative().w_full().min_w(0).overflow_hidden().h(ROW).flex_none().p(6).gap(10).items_center().rounded(6).cursor_pointer()
       .when(on, (el) => el.bg(c.selected))
       .hover((s) => s.bg(c.selected))
       .when(this.pressed === w.id && this.over !== w.id, (el) => el.opacity(0.5))
@@ -128,7 +128,7 @@ export default class GentleSpaces extends View {
   // needs you, else its newest one. It has no space menu and does not reorder.
   projectRow(c, info, on) {
     const pick = info.sessions.find((s) => s.feed.pendingQuestion || s.feed.activity?.state === "blocked") ?? info.sessions[0];
-    return h_flex().id(info.id).relative().w_full().h(ROW).flex_none().p(6).gap(10).items_center().rounded(6).cursor_pointer()
+    return h_flex().id(info.id).relative().w_full().min_w(0).overflow_hidden().h(ROW).flex_none().p(6).gap(10).items_center().rounded(6).cursor_pointer()
       .when(on, (el) => el.bg(c.selected))
       .hover((s) => s.bg(c.selected))
       .tooltip(`${info.path} · runs outside Herdr app`)

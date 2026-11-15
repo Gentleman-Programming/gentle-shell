@@ -58,7 +58,7 @@ export default class GentleTabs extends View {
     const on = tab.active && !outside;
     const [kind, word] = KIND[tab.status] ?? KIND.idle;
     const stop = (_e, cx) => cx.stop_propagation();
-    return h_flex().id(`tab-${tab.id}`).relative().h(34).flex_none().max_w(260).px(12).gap(8).items_center()
+    return h_flex().id(`tab-${tab.id}`).relative().h(34).flex_none().max_w(260).overflow_hidden().whitespace_nowrap().px(12).gap(8).items_center()
       .rounded_tl(8).rounded_tr(8).text_size(12.5).line_height("18.75px").cursor_pointer()
       .when(i <= active, (el) => el.on_size_change((_s, cx) => { this.scroll.scroll_to_item(active); cx.notify(); }))
       .when(on, (el) => el.bg(c.canvas).text_color(c.text)
@@ -75,7 +75,7 @@ export default class GentleTabs extends View {
       })
       .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: tab.id, space: space.id } } }); })
       .child(div().flex_none().tooltip(word).child(stateDot(c, kind)))
-      .child(div().min_w(0).truncate().child(tab.zoomed ? `${this.name(tab)} (zoomed)` : this.name(tab)))
+      .child(div().flex_shrink_1().min_w(0).truncate().child(tab.zoomed ? `${this.name(tab)} (zoomed)` : this.name(tab)))
       .when(agents().some((x) => x.tab === tab.id && isGentle(x.app)), (el) => el.child(kindBadge(c, SESSION_KINDS.herdr, MOD)));
   }
 
@@ -85,7 +85,7 @@ export default class GentleTabs extends View {
     const status = f.pendingQuestion || f.activity?.state === "blocked" ? "blocked" : f.activity?.state === "working" || f.activity?.streaming ? "working" : "idle";
     const [kind, word] = KIND[status];
     const pane = f.identity?.herdr?.paneId;
-    return h_flex().id(`tab-${s.key}`).relative().h(34).flex_none().max_w(260).px(12).gap(8).items_center()
+    return h_flex().id(`tab-${s.key}`).relative().h(34).flex_none().max_w(260).overflow_hidden().whitespace_nowrap().px(12).gap(8).items_center()
       .rounded_tl(8).rounded_tr(8).text_size(12.5).line_height("18.75px").cursor_pointer()
       .tooltip(`Runs outside Herdr app${pane ? ` (Herdr ${pane})` : ` (pid ${f.identity?.pid})`}`)
       .when(on, (el) => el.bg(c.canvas).text_color(c.text)
@@ -95,7 +95,7 @@ export default class GentleTabs extends View {
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_click(() => selectSession(s))
       .child(div().flex_none().tooltip(word).child(stateDot(c, kind)))
-      .child(div().min_w(0).truncate().child(f.identity?.sessionName || "Gentle Shell"))
+      .child(div().flex_shrink_1().min_w(0).truncate().child(f.identity?.sessionName || "Gentle Shell"))
       .child(kindBadge(c, SESSION_KINDS.tui, MOD));
   }
 

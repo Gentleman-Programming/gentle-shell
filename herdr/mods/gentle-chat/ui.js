@@ -92,13 +92,14 @@ export function header(v, p) {
   const { stack } = v.stackProps();
   const title = s?.identity?.sessionName || f.name || sessionTitle(v.agentInfo?.title) || "Gentle Shell";
   // The session's kind badge follows its name (S10): Herdr or TUI, as in the sidebar and tabs.
-  const row1 = h_flex().min_h(30).items_center().justify_between().gap(16).min_w(0)
+  const row1 = h_flex().min_h(30).items_center().justify_between().gap(16).min_w(0).overflow_hidden()
     .child(h_flex().flex_1().min_w(v.elsewhere() ? 150 : 0).gap(8).items_center()
       .child(div().id("title").min_w(0).truncate().text_size(14).font_semibold()
         .tooltip(v.address ? `${v.address}${v.file ? ` · ${v.file}` : ""}` : v.file ? `${ELSEWHERE} · ${v.file}` : "No Gentle Shell session")
         .child(title))
       .when(Boolean(v.key), (el) => el.child(kindBadge(p, v.elsewhere() ? SESSION_KINDS.tui : SESSION_KINDS.herdr))))
     .when(Boolean(stack), (el) => el.child(v.elsewhere() ? elsewhere(v, p) : viewSwitch(v, p)));
+  // No clip here: the Model and permission menus open from this row.
   const row2 = h_flex().items_center().justify_between().gap(16).min_w(0)
     .child(crumbs(v, p))
     .child(facts(v, p));
@@ -154,10 +155,16 @@ function crumbs(v, p) {
   const pr = v.snap?.project;
   const cwd = pr?.cwd ?? v.feed.cwd ?? v.cwd;
   const project = v.agentInfo?.space_name || (cwd ? cwd.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || cwd : null);
-  const sep = (t) => div().text_color(p.faint).child(t);
-  const parts = [icon("folder", 13), div().child(project ?? "No project")];
-  if (pr?.branch) parts.push(sep("/"), icon("branch", 13), div().child(pr.branch));
-  if (Number.isInteger(pr?.dirty)) parts.push(sep("·"), div().child(pr.dirty === 0 ? "clean" : `${pr.dirty} changed`));
+  const sep = (t) => div().flex_none().text_color(p.faint).child(t);
+  // The names give way (truncate with an ellipsis); icons, separators and the count keep their
+  // width. The branch gives way first (shrink 3 to the project's 1); a narrow header (< 560px)
+  // keeps only the project, so a name never shrinks to nothing between its icons.
+  const give = (el, n = 1) => el.flex_shrink(n).min_w(0).truncate();
+  const wide = (v.headW ?? Infinity) >= 560;
+  const projectEl = div().child(project ?? "No project");
+  const parts = [icon("folder", 13), give(projectEl)];
+  if (pr?.branch && wide) parts.push(sep("/"), icon("branch", 13), give(div().child(pr.branch), 3));
+  if (Number.isInteger(pr?.dirty) && wide) parts.push(sep("·"), div().flex_none().child(pr.dirty === 0 ? "clean" : `${pr.dirty} changed`));
   return h_flex().mt(1).min_w(0).overflow_hidden().items_center().gap(6).text_size(12).text_color(p.muted).whitespace_nowrap()
     .children(parts);
 }
@@ -379,14 +386,17 @@ export function entry(v, p, e, live) {
 
 function card(v, p, id, def, kids, body, note = null) {
   const open = v.isOpen(id, def);
-  return v_flex().w_full().border(1).border_color(p.line).bg(p.surface).rounded(R.sm)
+  return v_flex().w_full().min_w(0).overflow_hidden().border(1).border_color(p.line).bg(p.surface).rounded(R.sm)
     .child(summaryRow(v, p, id, [...kids, note, chev(open)], def))
     .when(open, (el) => el.child(body()));
 }
 
 const glyph = (p, text, color) => div().flex_none().w(13).text_center().text_color(color).child(text);
 const name = (text) => div().flex_none().font_semibold().child(text);
-const arg = (p, text) => div().flex_1().min_w(0).truncate().font_family(mono()).text_size(12).text_color(p.muted).child(text);
+// One line for a row: tabs, line breaks and runs of spaces become one space, so a summary never
+// carries a break or a tab stop past the truncation (a bash argument with "\t" did).
+const oneLine = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
+const arg = (p, text) => div().flex_1().min_w(0).truncate().font_family(mono()).text_size(12).text_color(p.muted).child(oneLine(text));
 const grouped = (n) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
 // .tool-body (l.141) holding markdown: 1px rule, 8px 10px 10px, 13px.
@@ -398,9 +408,16 @@ const markdownBody = (p, key, text) => div().w_full().border_t(1).border_color(p
 // message renderers fold theirs.
 function noteCard(v, p, e) {
   const first = firstLine(e.text);
+  // A user-role message the runtime wrote (a Gentle Agents wake, a harness note; feed.js
+  // systemMessage) is never a "You" bubble: one closed notice row that opens to its text.
+  if (e.system) {
+    return card(v, p, `note-${e.id}`, false, [icon("mark", 13).text_color(p.muted), name(e.label || "System"), arg(p, first),
+      e.time ? div().flex_none().text_size(11.5).text_color(p.faint).child(e.time) : null],
+    () => markdownBody(p, `n-${e.id}`, e.text));
+  }
   if (e.text.trim() === first && first.length <= 160) {
     return div().px(10).py(6).rounded(R.sm).border_l(2).border_color(p.accent).bg(p.surface).text_size(12)
-      .child(TextView.markdown(`n-${e.id}`, e.text).selectable(true));
+      .min_w(0).overflow_hidden().child(TextView.markdown(`n-${e.id}`, e.text).selectable(true));
   }
   return card(v, p, `note-${e.id}`, false, [icon("chat", 13).text_color(p.accent), name(e.type || "note"), arg(p, first)],
     () => markdownBody(p, `n-${e.id}`, e.text));
@@ -444,7 +461,7 @@ function turn(v, p, e, live) {
         } else parts.push(toolCard(v, p, b.call, key, live));
       }
     }
-    if (it.error) parts.push(div().text_size(12).text_color(p.err).child(`⚠ ${it.error}`));
+    if (it.error) parts.push(div().w_full().min_w(0).text_size(12).text_color(p.err).child(`⚠ ${it.error}`));
   });
   return v_flex().w_full().gap(10).children(parts);
 }
@@ -484,15 +501,17 @@ function countNote(call) {
 }
 
 // The dim note at the right of a tool summary: a bash outcome, or why it failed (the TUI keeps a
-// failed card's error tail while collapsed), and the time it took.
+// failed card's error tail while collapsed), and the time it took. The tail and the time are
+// separate pieces: the tail may truncate, the time never does.
 function sideNote(call) {
   const r = call.result;
-  if (!r) return null;
-  const took = seconds(r.ms);
+  if (!r) return { tail: "", took: "" };
+  const took = seconds(r.ms) || "";
   const last = firstLine(r.text.split("\n").filter((l) => l.trim()).pop() ?? "");
   const said = r.error || call.name === "bash" ? last : "";
-  const short = said.length > 40 ? said.slice(0, 39) + "…" : said;
-  return [short, took].filter(Boolean).join(" · ") || null;
+  // A failure's tail keeps its whole line (the row truncates it to fit); an outcome its 40.
+  const tail = !r.error && said.length > 40 ? said.slice(0, 39) + "…" : said;
+  return { tail, took };
 }
 
 // .tool (l.135-142): 1px line, surface, radius 8; summary 7px 10px, 12.5px.
@@ -503,15 +522,25 @@ function toolCard(v, p, call, key, live) {
   const id = `tool-${key}`;
   const open = v.isOpen(id, false);
   const r = call.result;
-  const note = sideNote(call);
+  const { tail, took } = sideNote(call);
   const args = JSON.stringify(call.args, null, 2) ?? "";
   const argsSay = args.includes("\n") && args.length > call.summary.length + 20;
-  return v_flex().w_full().border(1).border_color(p.line).bg(p.surface).rounded(R.sm)
+  const failed = Boolean(r?.error) && Boolean(tail);
+  const said = oneLine(toolSay(v, call) + countNote(call));
+  // One piece of the row takes the room that is left and truncates: the error's tail on a
+  // failure (the argument then keeps at most a third of the row, and is dropped when empty),
+  // else the argument (the outcome keeps at most a third). The bounded piece gives way too once
+  // the other is gone, so mark, name, time and chevron always stay inside the card.
+  const bounded = (el) => el.flex_grow_0().flex_shrink_1().min_w(0).max_w("33%");
+  const argEl = div().min_w(0).truncate().font_family(mono()).text_size(12).text_color(p.muted).child(said);
+  return v_flex().w_full().min_w(0).overflow_hidden().border(1).border_color(p.line).bg(p.surface).rounded(R.sm)
     .child(summaryRow(v, p, id, [
       mark(p, call, live),
       div().flex_none().font_semibold().child(call.name),
-      div().flex_1().min_w(0).truncate().font_family(mono()).text_size(12).text_color(p.muted).child(toolSay(v, call) + countNote(call)),
-      note ? div().flex_none().max_w(300).truncate().text_color(r?.error ? p.err : p.muted).child(note) : null,
+      failed ? (said ? bounded(argEl) : null) : argEl.flex_1(),
+      tail ? div().id(`${id}-tail`).min_w(0).truncate().text_color(failed ? p.err : p.muted)
+        .map((el) => (failed ? el.flex_1() : bounded(el))).child(took ? `${oneLine(tail)} ·` : oneLine(tail)) : null,
+      took ? div().flex_none().text_color(failed ? p.err : p.muted).child(took) : null,
       chev(open),
     ]))
     .when(open, (el) => el.child(v_flex().gap(8).border_t(1).border_color(p.line).px(10).pt(8).pb(10).text_size(12)
@@ -519,8 +548,10 @@ function toolCard(v, p, call, key, live) {
       .child(pre(p, r ? clip(r.text || "(no output)") : live ? "Running…" : "No result yet", r?.error ? p.err : p.text))));
 }
 
+// Every summary row is one line that never paints past its card: the row clips, and each
+// caller gives exactly one middle piece flex_1 + min_w(0) + truncate.
 function summaryRow(v, p, id, kids, def = false) {
-  return h_flex().id(id).items_center().gap(8).px(10).py(7).text_size(12.5).rounded(R.sm).cursor_pointer()
+  return h_flex().id(id).w_full().min_w(0).overflow_hidden().whitespace_nowrap().items_center().gap(8).px(10).py(7).text_size(12.5).rounded(R.sm).cursor_pointer()
     .hover((st) => st.bg(p.selected)).on_click((_e, cx) => v.toggle(id, def, cx))
     .children(kids.filter(Boolean));
 }
@@ -539,13 +570,15 @@ function toolGroup(v, p, calls, key, live) {
   const failed = calls.some((c) => c.result?.error);
   const pending = calls.some((c) => !c.result);
   const ms = calls.reduce((n, c) => n + (c.result?.ms ?? 0), 0);
-  const m = pending ? div().text_color(live ? p.info : p.faint).child("•")
-    : div().text_color(failed ? p.err : p.ok).child(failed ? "✕" : "✓");
-  return v_flex().w_full()
-    .child(h_flex().id(id).gap(8).py(2).items_center().text_size(12.5).text_color(p.muted).cursor_pointer()
+  const m = pending ? div().flex_none().text_color(live ? p.info : p.faint).child("•")
+    : div().flex_none().text_color(failed ? p.err : p.ok).child(failed ? "✕" : "✓");
+  // The words give way (no grow: the time sits right after them, as in .tool-group).
+  return v_flex().w_full().min_w(0)
+    .child(h_flex().id(id).w_full().min_w(0).overflow_hidden().whitespace_nowrap().gap(8).py(2).items_center().text_size(12.5)
+      .text_color(p.muted).cursor_pointer()
       .hover((st) => st.text_color(p.text)).on_click((_e, cx) => v.toggle(id, false, cx))
-      .child(chev(open)).child(m).child(`Explored · ${said}`)
-      .when(ms > 0, (el) => el.child(div().text_color(p.muted).child(seconds(ms)))))
+      .child(chev(open)).child(m).child(div().flex_shrink_1().min_w(0).truncate().child(`Explored · ${said}`))
+      .when(ms > 0, (el) => el.child(div().flex_none().text_color(p.muted).child(seconds(ms)))))
     .when(open, (el) => el.child(v_flex().mt(8).gap(6).children(calls.map((c, i) => toolCard(v, p, c, `${key}-${i}`, live)))));
 }
 
@@ -568,13 +601,13 @@ function diffCard(v, p, call, key, patch, live) {
   }
   if (h.rows.length > HUNK_ROWS) rows.push(row(null, "", "", null, `… ${h.rows.length - HUNK_ROWS} more lines`, p.muted));
   const path = typeof call.args?.path === "string" ? shortPath(v, call.args.path) : toolSay(v, call);
-  return v_flex().w_full().border(1).border_color(p.line).bg(p.surface).rounded(R.sm)
+  return v_flex().w_full().min_w(0).overflow_hidden().border(1).border_color(p.line).bg(p.surface).rounded(R.sm)
     .child(summaryRow(v, p, id, [
       mark(p, call, live),
       div().flex_none().font_semibold().child(call.name),
-      div().flex_1().min_w(0).truncate().font_family(mono()).text_size(12).text_color(p.muted).child(path),
-      num(`+${patch.added}`, p.ok),
-      num(`−${patch.deleted}`, p.err),
+      div().flex_1().min_w(0).truncate().font_family(mono()).text_size(12).text_color(p.muted).child(oneLine(path)),
+      num(`+${patch.added}`, p.ok).flex_none(),
+      num(`−${patch.deleted}`, p.err).flex_none(),
       chev(open),
     ]))
     .when(open, (el) => el.child(v_flex().border_t(1).border_color(p.line)
@@ -606,7 +639,7 @@ function subagentCard(v, p, call, key) {
   const live = started?.taskId ? v.snap?.agents?.items?.find((x) => x.id === started.taskId) : null;
   const name = String(live?.name ?? started?.agent ?? a.agent ?? "agent");
   const role = name.replace(/^gentle-ai-/, "").replace(/^gentle-/, "");
-  const title = a.label || firstLine(a.task) || name;
+  const title = oneLine(a.label || firstLine(a.task) || name);
   const status = live?.state ?? started?.status ?? (call.result ? (call.result.error ? "failed" : "completed") : "queued");
   const [kind, label] = AGENT_STATE[status] ?? ["idle", status];
   const model = prettyModel(live?.model ?? started?.model);
@@ -618,20 +651,22 @@ function subagentCard(v, p, call, key) {
   const id = `sub-${key}`;
   const roleTag = div().flex_none().font_family(mono()).text_size(11).text_color(p.accent).child(role.toUpperCase());
   if (!v.isOpen(id, false)) {
-    return v_flex().w_full().border(1).border_color(p.line).bg(p.surface).rounded(R.sm)
+    return v_flex().w_full().min_w(0).overflow_hidden().border(1).border_color(p.line).bg(p.surface).rounded(R.sm)
       .child(summaryRow(v, p, id, [
         roleTag,
+        // The task takes what is left; the state's word and the model give way after it (at
+        // most a third each); role, spend and chevron keep their width.
         div().flex_1().min_w(0).truncate().child(title),
-        stateLabel(p, kind, label),
-        model ? div().flex_none().text_size(12).text_color(p.muted).child(model) : null,
+        stateLabel(p, kind, div().min_w(0).truncate().child(label)).flex_grow_0().flex_shrink_1().min_w(0).max_w("33%"),
+        model ? div().flex_grow_0().flex_shrink_1().min_w(0).max_w("33%").truncate().text_size(12).text_color(p.muted).child(model) : null,
         Number.isFinite(cost) ? num(money(cost), p.muted).flex_none().text_size(12) : null,
         chev(false),
       ]));
   }
-  return v_flex().w_full().gap(4).px(12).py(10).border(1).border_color(p.lineStrong).rounded(R.md).bg(p.surface)
-    .child(h_flex().items_start().gap(12)
+  return v_flex().w_full().min_w(0).overflow_hidden().gap(4).px(12).py(10).border(1).border_color(p.lineStrong).rounded(R.md).bg(p.surface)
+    .child(h_flex().items_start().gap(12).min_w(0)
       .child(v_flex().flex_1().min_w(0).gap(4)
-        .child(h_flex().id(id).gap(8).items_center().min_w(0).text_size(13).font_semibold().cursor_pointer()
+        .child(h_flex().id(id).gap(8).items_center().min_w(0).overflow_hidden().whitespace_nowrap().text_size(13).font_semibold().cursor_pointer()
           .hover((st) => st.text_color(p.accentSoft)).on_click((_e, cx) => v.toggle(id, false, cx))
           .child(roleTag)
           .child(div().flex_1().min_w(0).truncate().child(title))
@@ -682,13 +717,13 @@ export function askCard(v, p, pq) {
     : n ? `Press ${n === 1 ? "1" : `1–${n}`} or click · Esc answers later` : "Answer it in the Terminal view.";
   // Terminal-only: the options are shown for reading, never numbered or clickable.
   const shown = n ? [] : (pq.terminalOnly ? choiceRows(pq).filter((o) => !o.custom) : []);
-  const readOnly = (o, i) => v_flex().id(`ask-ro-${i}`).w_full().gap(1).px(10).py(6).rounded(R.sm).border(1).border_color(p.line).bg(p.background)
-    .child(div().font_semibold().text_size(13.5).child(o.label))
+  const readOnly = (o, i) => v_flex().id(`ask-ro-${i}`).w_full().min_w(0).overflow_hidden().gap(1).px(10).py(6).rounded(R.sm).border(1).border_color(p.line).bg(p.background)
+    .child(div().min_w(0).font_semibold().text_size(13.5).child(o.label))
     .when(Boolean(o.about), (el) => el.child(div().text_size(12.5).text_color(p.muted).child(o.about)));
   const many = (pq.questions?.length ?? 0) > 1 ? ` · 1 of ${pq.questions.length}` : "";
   const opt = (o, i) => {
     const pressed = done?.index === i;
-    return h_flex().id(`ask-${i}`).w_full().min_h(44).items_start().gap(10).px(10).py(8).rounded(R.sm).border(1)
+    return h_flex().id(`ask-${i}`).w_full().min_w(0).overflow_hidden().min_h(44).items_start().gap(10).px(10).py(8).rounded(R.sm).border(1)
       .border_color(pressed ? p.accent : p.line).bg(pressed ? p.selected : p.background)
       .when(Boolean(done) && !pressed, (el) => el.opacity(0.55))
       .when(!done, (el) => el.cursor_pointer().hover((st) => st.border_color(p.accent)).on_click((_e, cx) => v.answer(i, cx)))
@@ -696,9 +731,9 @@ export function askCard(v, p, pq) {
         .child(div().w(22).h(22).flex().items_center().justify_center().border(1).border_color(p.lineStrong).rounded(R.inner)
           .font_family(mono()).font_semibold().text_size(12).line_height(1).text_color(p.accentSoft).child(String(i + 1))))
       .child(v_flex().flex_1().min_w(0).gap(1)
-        .child(h_flex().items_center().flex_wrap()
-          .child(div().font_semibold().text_size(13.5).child(o.label))
-          .when(o.rec, (el) => el.child(div().ml(8).font_family(mono()).font_semibold().text_size(10.5).line_height(1)
+        .child(h_flex().min_w(0).items_center().flex_wrap()
+          .child(div().min_w(0).font_semibold().text_size(13.5).child(o.label))
+          .when(o.rec, (el) => el.child(div().flex_none().ml(8).font_family(mono()).font_semibold().text_size(10.5).line_height(1)
             .text_color(p.accent).child("RECOMMENDED"))))
         .when(Boolean(o.about), (el) => el.child(div().text_size(12.5).text_color(p.muted).child(o.about))));
   };
@@ -711,11 +746,11 @@ export function askCard(v, p, pq) {
       .border_t(1).border_r(1).border_b(1).border_color(p.lineStrong)
       .child(div().font_family(mono()).font_semibold().text_size(11).line_height(1.4).text_color(p.accent)
         .child(`QUESTION · THE AGENT WAITS FOR YOU${many.toUpperCase()}`))
-      .child(div().text_size(14.5).font_semibold().child(pq.header && pq.header !== pq.question ? `${pq.header}: ${pq.question}` : pq.question))
+      .child(div().min_w(0).text_size(14.5).font_semibold().child(pq.header && pq.header !== pq.question ? `${pq.header}: ${pq.question}` : pq.question))
       .when(n > 0, (el) => el.child(v_flex().mt(2).gap(6).children(opts.map(opt))))
       .when(shown.length > 0, (el) => el.child(v_flex().mt(2).gap(6).children(shown.map(readOnly))))
-      .child(h_flex().items_center().justify_between().gap(8)
-        .child(div().text_size(12).text_color(p.muted).child(foot))
+      .child(h_flex().min_w(0).items_center().justify_between().gap(8)
+        .child(div().flex_1().min_w(0).text_size(12).text_color(p.muted).child(foot))
         // A prompt or consent has no options here: it is answered in the real terminal, by you.
         .when(n === 0, (el) => el.child(btn(p, "ask-terminal", "Answer in Terminal", { iconName: "term", tip: "Answer it in the Terminal", onClick: () => v.toTerminal() })))));
 }
@@ -728,6 +763,8 @@ export function askCard(v, p, pq) {
 // description, and the terminal mark when the command answers in the TUI. At most 8 rows show,
 // around the selected one.
 const SLASH_ROWS = 8;
+// Where the Textarea starts its text inside its box (its own left padding), for the placeholder.
+const PLACEHOLDER_INSET = 0;
 function slashMenu(v, p) {
   const m = v.slashMenu();
   if (!m) return null;
@@ -779,7 +816,10 @@ function sendOrStop(v, p) {
 
 export function composer(v, p, pq) {
   const menu = slashMenu(v, p);
-  const field = h_flex().w_full().items_end().gap(8).pl(12).pr(8).py(8).border(1)
+  // Clip, text and Send share one centre line (S8 report "no esta centrado"): the row centres
+  // its three, and the text sits in a 42px box (the artboard's textarea height, l.179) whose one
+  // line is centred; a longer draft grows the box, the clip and Send stay on its centre.
+  const field = h_flex().w_full().items_center().gap(8).pl(12).pr(8).py(8).border(1)
     .border_color(v.typing ? p.accent : p.lineStrong).rounded(R.md).bg(p.background)
     // Attach: the clipboard's image (or files) into the session's draft, as Ctrl+V in the terminal.
     .child(h_flex().id("attach").w(32).h(32).flex_none().items_center().justify_center().rounded(R.sm).text_color(p.muted)
@@ -792,7 +832,12 @@ export function composer(v, p, pq) {
         .on_action("gentle_chat_slash_up", (_e, cx) => v.slashMove(-1, cx))
         .on_action("gentle_chat_slash_down", (_e, cx) => v.slashMove(1, cx))
         .on_action("gentle_chat_slash_complete", (_e, cx) => v.slashPick(v.slashAt, true, cx))
-        .child(Textarea.new(v.input).w_full().h(42).text_size(14).line_height(1.5).text_color(p.text).bg(CLEAR))))
+        .child(div().relative().w_full().min_h(42).flex().items_center()
+          .child(Textarea.new(v.input).w_full().text_size(14).line_height(1.5).text_color(p.text).bg(CLEAR))
+          // The placeholder: one line, muted, an ellipsis when the card is narrow. It paints
+          // under nothing that listens, so a click still reaches the field.
+          .when(!v.draft, (el) => el.child(div().absolute().top(0).bottom(0).left(PLACEHOLDER_INSET).right(0).flex().items_center()
+            .child(div().w_full().min_w(0).truncate().text_size(14).line_height(1.5).text_color(p.muted).child(v.placeholder ?? "")))))))
     .child(sendOrStop(v, p));
   const hint = (key, text) => h_flex().flex_none().items_center().gap(3).child(kbd(p, key)).child(text);
   // The hints row is one line: a narrow card drops hints from the right (Esc Esc, then ⌘J,

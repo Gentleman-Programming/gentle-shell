@@ -329,23 +329,18 @@ export default class GentleChat extends View {
     const q = questionKey(snap?.pendingQuestion);
     if (this.answered && this.answered.key !== q) this.answered = null;
     if (q && q !== questionKey(before?.pendingQuestion)) this.stick = true;
-    // The state has no placeholder setter: an empty composer gets a fresh one.
-    const want = q ? PLACEHOLDER_ASK : PLACEHOLDER;
-    if (want !== this.placeholder && !this.typing && !this.input.value()) {
-      const old = this.input;
-      try {
-        this.makeInput(want);
-        old.release();
-      } catch {
-        this.input = old; // the old placeholder stays; nothing else depends on it
-      }
-    }
+    // The composer draws its own placeholder (ui.js composer: one line, truncated with an
+    // ellipsis, centred with the clip and Send), so a question only changes its words.
+    this.placeholder = q ? PLACEHOLDER_ASK : PLACEHOLDER;
     return true;
   }
 
   makeInput(placeholder) {
     this.placeholder = placeholder;
-    this.input = TextareaState.new({ placeholder, rows: 2 });
+    // No native placeholder: it can neither centre nor end in an ellipsis in a narrow card. One
+    // row while the draft is one line (centred in the 42px field), growing with the text.
+    this.input = TextareaState.new({ placeholder: "", rows: 1 });
+    try { this.input.set_auto_grow(1, 8); } catch { /* an older host keeps one row and scrolls */ }
     this.input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
     this.input.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
     this.input.on("change", (_e, cx) => {

@@ -304,6 +304,7 @@ test("CodeGraph tool accepts hyphen-leading queries after the option terminator"
 test("CodeGraph search falls back to one CLI process when the daemon cannot serve it", async (t) => {
 	withoutChildEnv(t);
 	const cwd = workspace(t);
+	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
 	const runnerCalls: Array<{ args: readonly string[]; cwd: string }> = [];
 	const tool = createCodeGraphTool(
 		async (args, options) => {
@@ -460,6 +461,7 @@ test("the extension hooks turn_start and session_start; turn_start resets the pe
 	assert.ok(handlers.has("session_start"), "session_start still prepares readiness");
 
 	const cwd = workspace(t);
+	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
 	const calls: string[][] = [];
 	const syncRun = async (args: readonly string[]): Promise<boolean> => {
 		calls.push([...args]);
@@ -473,6 +475,21 @@ test("the extension hooks turn_start and session_start; turn_start resets the pe
 	assert.equal(triggerSearchSync(cwd, ctx, syncRun), true, "the turn_start handler cleared the set");
 	await settled();
 	assert.deepEqual(calls, [["unlock"], ["sync", "-q"], ["unlock"], ["sync", "-q"]]);
+});
+
+test("triggerSearchSync: an unindexed workspace starts no doomed unlock+sync", async (t) => {
+	withoutChildEnv(t);
+	const cwd = workspace(t);
+	const calls: string[][] = [];
+	const syncRun = async (args: readonly string[]): Promise<boolean> => {
+		calls.push([...args]);
+		return true;
+	};
+	const ctx = { cwd } as ExtensionContext;
+	assert.equal(triggerSearchSync(cwd, ctx, syncRun), false, "nothing to refresh without an index");
+	assert.equal(triggerSearchSync(cwd, ctx, syncRun), false, "still nothing on a second call");
+	await settled();
+	assert.deepEqual(calls, [], "no unlock, no sync, no doomed CLI processes per turn");
 });
 
 test("the tool_call guard blocks bash codegraph index/init when an index exists and allows everything else", async (t) => {
@@ -813,6 +830,7 @@ test("CodeGraph query prefers the daemon socket and never spawns the CLI", async
 test("a daemon that never answers tries twice, warms once, then answers through the CLI", async (t) => {
 	withoutChildEnv(t);
 	const cwd = workspace(t);
+	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
 	let daemonCalls = 0;
 	let warmCalls = 0;
 	let runnerCalls = 0;
@@ -847,8 +865,8 @@ test("a daemon that never answers tries twice, warms once, then answers through 
 	const second = await tool.execute("test", { operation: "explore", query: "symbol" }, undefined, undefined, ctx);
 
 	assert.equal((second.details as { syncTriggered?: boolean }).syncTriggered, undefined, "one background sync per turn");
-	assert.equal(daemonCalls, 4);
-	assert.equal(warmCalls, 2);
+	assert.equal(daemonCalls, 2, "an unavailable daemon is skipped for the rest of the turn, not re-paid per query");
+	assert.equal(warmCalls, 1);
 	assert.equal(runnerCalls, 2);
 });
 
@@ -1009,6 +1027,7 @@ test("init runs the CLI with the workspace, never the daemon, and never triggers
 test("the first search of a turn triggers one background unlock+sync, later searches none", async (t) => {
 	withoutChildEnv(t);
 	const cwd = workspace(t);
+	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
 	const calls: string[][] = [];
 	const tool = createCodeGraphTool(
 		async () => ({ stdout: "cli", stderr: "" }),
@@ -1123,6 +1142,7 @@ test("codegraphSyncFailureNotice: beside a live daemon the note is info with the
 test("triggerSearchSync: a failing sync beside a live daemon notifies info, a daemon-less one keeps the warning", async (t) => {
 	withoutChildEnv(t);
 	const cwd = workspace(t);
+	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
 	const registry = join(cwd, "registry");
 	mkdirSync(registry);
 	const socket = join(registry, "live.sock");
@@ -1144,6 +1164,7 @@ test("triggerSearchSync: a failing sync beside a live daemon notifies info, a da
 	assert.match(notices[0].text, /\(daemon alive/);
 
 	const deadCwd = workspace(t);
+	await writeIndex(["init", deadCwd], { cwd: deadCwd, maxBuffer: 1 });
 	const deadCtx = { cwd: deadCwd, hasUI: true, ui: { notify: (text: string, level: "info" | "warning") => notices.push({ text, level }) } } as unknown as ExtensionContext;
 	const deadRun = async (args: readonly string[]): Promise<boolean> => args[0] === "unlock";
 	triggerSearchSync(deadCwd, deadCtx, deadRun, { registryDir: join(deadCwd, "no-registry"), sleep: instant });

@@ -501,6 +501,9 @@ export function codegraphSyncFailureNotice(
  */
 export function triggerSearchSync(cwd: string, ctx: ExtensionContext, run: SearchSyncInput["run"] = runCodegraph, opts?: { registryDir?: string; sleep?: (ms: number) => Promise<void> }): boolean {
 	if (process.env[CHILD_ENV] === "1" || searchSynced.has(cwd)) return false;
+	// Nothing to refresh without an index: an unindexed workspace must not spawn a doomed
+	// unlock+sync CLI pair (plus failure notices) every turn — init owns the first index.
+	if (!indexExists(cwd)) return false;
 	searchSynced.add(cwd);
 	syncBeforeSearch({
 		cwd,
@@ -577,8 +580,10 @@ export function createCodeGraphTool(
 						await raceWithAbort(signal, warm(cwd, DAEMON_ATTEMPT_TIMEOUT_MS).catch(() => { /* best effort */ }));
 						if (!signal?.aborted) viaDaemon = await raceWithAbort(signal, attempt()) ?? undefined;
 					}
-					if (viaDaemon?.status === "timeout") {
-						// The post-warm attempt timed out: the daemon is wedged, so the CLI answers until the next turn.
+					if (viaDaemon?.status === "timeout" || viaDaemon?.status === "unavailable") {
+						// The post-warm attempt still cannot serve — wedged (timeout) or refusing (unavailable,
+						// e.g. no project loaded): the CLI answers until the next turn instead of re-paying
+						// attempt+warm+attempt on every query.
 						daemonSkipUntil.set(cwd, Date.now() + DAEMON_SKIP_MS);
 					}
 				}

@@ -175,6 +175,21 @@ export function indexExists(cwd: string): boolean {
 	return indexState(cwd) === "present";
 }
 
+/**
+ * The git toplevel above a cwd, or undefined outside a repository or on any git error. The bash
+ * re-index guard keys on this root, so a session sitting in a subdirectory of an indexed repo
+ * still cannot rebuild (and kill) the shared daemon's index at the root. Never throws: the
+ * guard stays total — any failure allows the call.
+ */
+function gitTopLevel(cwd: string, gitRun: GitRun = defaultGitRun): string | undefined {
+	try {
+		const root = realpathSync(gitRun(["rev-parse", "--show-toplevel"], cwd));
+		return lstatSync(root).isDirectory() ? root : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /** A full re-index from bash is blocked when an index already exists; this is the reason it gets. */
 const CODEGRAPH_INDEX_BLOCK_REASON = "CodeGraph: an index already exists for this workspace. Re-indexing kills the shared daemon and rebuilds it; the runtime refreshes with sync (before the first search of each prompt). If you really need a full rebuild, set GENTLE_CODEGRAPH_ALLOW_INDEX=1.";
 
@@ -628,7 +643,8 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 			if (event.toolName !== "bash" && event.toolName !== "bash_background") return undefined;
 			const command = (event.input as { command?: unknown }).command;
 			if (typeof command !== "string" || !isCodegraphIndexCommand(command)) return undefined;
-			if (!indexExists(ctx.cwd) || process.env.GENTLE_CODEGRAPH_ALLOW_INDEX === "1") return undefined;
+			const repoRoot = gitTopLevel(ctx.cwd);
+			if (repoRoot === undefined || !indexExists(repoRoot) || process.env.GENTLE_CODEGRAPH_ALLOW_INDEX === "1") return undefined;
 			return { block: true, reason: CODEGRAPH_INDEX_BLOCK_REASON };
 		} catch {
 			return undefined;

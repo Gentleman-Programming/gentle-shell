@@ -479,6 +479,48 @@ test("the tool_call guard blocks bash codegraph index/init when an index exists 
 	assert.equal(verdict("codegraph index ."), undefined, "the explicit override allows a deliberate rebuild");
 });
 
+test("the tool_call guard blocks re-index from a subdirectory session of an indexed repo", async (t) => {
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	const pi = {
+		registerTool() {
+			/* the registered tool's shape is covered above */
+		},
+		on(event: string, handler: (event: unknown, ctx: unknown) => unknown) {
+			handlers.set(event, handler);
+		},
+	} as unknown as ExtensionAPI;
+	codeGraphTools(pi);
+	const guard = handlers.get("tool_call");
+	assert.ok(typeof guard === "function", "the extension registers a tool_call guard");
+
+	const root = workspace(t);
+	await writeIndex(["init", root], { cwd: root, maxBuffer: 1 });
+	const subdir = join(root, "packages", "inner");
+	mkdirSync(subdir, { recursive: true });
+	const previousOverride = process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	t.after(() => {
+		if (previousOverride === undefined) delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+		else process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = previousOverride;
+	});
+
+	const verdictFrom = (cwd: string, command = "codegraph index") =>
+		(guard as (event: unknown, ctx: unknown) => unknown)({ toolName: "bash", input: { command } }, { cwd } as ExtensionContext);
+
+	const blocked = verdictFrom(subdir) as { block?: boolean; reason?: string } | undefined;
+	assert.equal(blocked?.block, true, "a subdirectory session cannot rebuild the repo-root index");
+	assert.match(blocked?.reason ?? "", /an index already exists/);
+
+	process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = "1";
+	assert.equal(verdictFrom(subdir), undefined, "the explicit override allows a deliberate rebuild from a subdirectory");
+	delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+
+	const bare = workspace(t);
+	const bareSub = join(bare, "packages", "inner");
+	mkdirSync(bareSub, { recursive: true });
+	assert.equal(verdictFrom(bareSub), undefined, "no index anywhere: the first index stays the legitimate init path");
+});
+
 function writeCodeGraphPackage(binDir: string, scriptSource = "#!/usr/bin/env node\n"): string {
 	const pkgRoot = join(binDir, "node_modules", "@colbymchenry", "codegraph");
 	mkdirSync(pkgRoot, { recursive: true });

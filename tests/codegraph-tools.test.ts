@@ -492,6 +492,25 @@ test("triggerSearchSync: an unindexed workspace starts no doomed unlock+sync", a
 	assert.deepEqual(calls, [], "no unlock, no sync, no doomed CLI processes per turn");
 });
 
+test("triggerSearchSync: an unexpected exception notifies instead of vanishing", async (t) => {
+	withoutChildEnv(t);
+	const cwd = workspace(t);
+	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
+	const notices: Array<{ text: string; level: string }> = [];
+	const ctx = {
+		cwd,
+		hasUI: true,
+		ui: { notify: (text: string, level: string) => notices.push({ text, level }) },
+	} as unknown as ExtensionContext;
+	triggerSearchSync(cwd, ctx, async () => {
+		throw new Error("boom: refresh exploded");
+	});
+	await settled();
+	assert.equal(notices.length, 1, "one warning for one unexpected failure");
+	assert.match(notices[0].text, /boom: refresh exploded/);
+	assert.equal(notices[0].level, "warning");
+});
+
 test("the tool_call guard blocks bash codegraph index/init when an index exists and allows everything else", async (t) => {
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
 	const pi = {

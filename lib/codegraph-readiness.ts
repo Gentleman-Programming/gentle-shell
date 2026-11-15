@@ -240,6 +240,9 @@ export interface ReadinessResult {
 	action: IndexAction;
 	ok: boolean;
 	warm: "ok" | "failed" | "skipped";
+	/** The first line of an unexpected mid-run exception: a collapsed failure stays visible to the
+	 * session instead of silently looking like a deliberate skip. */
+	error?: string;
 }
 
 /** One in-flight readiness run per project: sessions that start together never run two of these. */
@@ -347,8 +350,11 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 			} catch {
 				return { action, ok, warm: "failed" };
 			}
-		} catch {
-			return { action: "none", ok: false, warm: "skipped" };
+		} catch (error: unknown) {
+			// An unexpected exception is not a deliberate skip: carry its reason so the session
+			// surfaces it instead of silently reporting that nothing happened.
+			const reason = error instanceof Error ? error.message.split("\n")[0] : String(error);
+			return { action: "none", ok: false, warm: "skipped", error: reason.slice(0, 200) };
 		} finally {
 			inFlight.delete(input.cwd);
 		}
@@ -367,6 +373,8 @@ export interface SearchSyncInput {
 	/** Sleeps the live-daemon sync retry backoff; injectable for tests. */
 	sleep?(ms: number): Promise<void>;
 	onFailed?(stage: "unlock" | "sync", info: { daemonAlive: boolean; exitCode?: number | null; stderrTail?: string }): void;
+	/** Surfaces an unexpected exception from the refresh itself (not a command failure). */
+	onError?(reason: string): void;
 }
 
 /** One in-flight search sync per cwd: calls that arrive together never run two jobs. */
@@ -416,8 +424,11 @@ export function syncBeforeSearch(input: SearchSyncInput): void {
 			} finally {
 				lease.release();
 			}
-		} catch {
-			/* a detached job never surfaces; a rejection is not a stage failure */
+		} catch (error: unknown) {
+			// Command failures flow through onFailed; an exception from the refresh itself would
+			// otherwise vanish with the detached job — surface its reason instead.
+			const reason = error instanceof Error ? error.message.split("\n")[0] : String(error);
+			input.onError?.(reason.slice(0, 200));
 		} finally {
 			searchSyncInFlight.delete(input.cwd);
 		}

@@ -600,6 +600,21 @@ test("prepareReadiness: a damaged sync lease is a loud failure, not another sess
 	assert.equal(readLeaseVerdict(lockPathFor(cwd, "sync", locks)), "unknown", "the damaged token stays untouched");
 });
 
+test("prepareReadiness: a mid-run exception surfaces as an error, not a silent skip", async (t) => {
+	const cwd = dir(t, "sync-throws");
+	writeDb(cwd);
+	const locks = dir(t, "sync-throws-locks");
+	const result = await prepareReadiness(fakeInput(cwd, {
+		locksDir: locks,
+		run: async () => {
+			throw new Error("boom: mid-run explosion");
+		},
+	}));
+	assert.equal(result.ok, false);
+	assert.equal(result.action, "none");
+	assert.match(result.error ?? "", /boom: mid-run explosion/, "the collapsed exception carries its reason");
+});
+
 test("prepareReadiness: the daemon-less sync takes and releases the lease when it is free", async (t) => {
 	const cwd = dir(t, "sync-lease-free");
 	writeDb(cwd);

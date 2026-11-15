@@ -515,6 +515,10 @@ export function triggerSearchSync(cwd: string, ctx: ExtensionContext, run: Searc
 			const notice = codegraphSyncFailureNotice(cwd, stage, failure);
 			ctx.ui.notify(notice.text, notice.level);
 		},
+		onError: (reason) => {
+			if (!ctx.hasUI) return;
+			ctx.ui.notify(`CodeGraph refresh failed in ${cwd}: ${reason}`, "warning");
+		},
 	});
 	return true;
 }
@@ -734,6 +738,7 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 			.then((result) => {
 				if (result.warm === "ok") say("CodeGraph ready", "info");
 				else if (result.warm === "failed") say(`CodeGraph warm-up failed in ${ctx.cwd}`, "warning");
+				else if (result.error !== undefined) say(`CodeGraph readiness failed in ${ctx.cwd}: ${result.error}`, "warning");
 			})
 			.catch(() => {
 				/* never surface: the session may already be gone */

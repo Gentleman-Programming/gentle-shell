@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
@@ -187,6 +187,36 @@ test("ordinary project folders named agent/desktop/... stay readable and writabl
 		assert.equal(await call("write", { path, content: "x" }), undefined, path);
 	}
 	assert.equal(await call("bash", { command: "mkdir -p src/agent/desktop/sessions" }), undefined);
+});
+
+test("relative and option-embedded paths into the real desktop folder stay blocked (T7)", async () => {
+	const call = toolCall();
+	// The harness hands the tool call `process.cwd()`, so the relative path is computed against it.
+	const rel = relative(process.cwd(), join(homedir(), ".gentle-shell", "agent", "desktop", "inbox", "s", "a.json"));
+	assert.equal((await call("write", { path: rel, content: "{}" }))?.block, true, rel);
+	assert.equal((await call("read", { path: rel }))?.block, true, rel);
+	assert.equal((await call("bash", { command: `printf '{}' > ${rel}` }))?.block, true, rel);
+	for (const command of [
+		"cp a.json --target-directory=$HOME/.gentle-shell/agent/desktop/inbox/s",
+		"VAR=$HOME/.gentle-shell/agent/desktop/inbox; cp a.json $VAR",
+		'cp a.json "--target-directory=$HOME/.gentle-shell/agent/desktop/inbox/s"',
+		"cp a.json '--target-directory=~/.pi/agent/desktop/outbox'",
+		'cp a.json --target-directory="${HOME}/.gentle-shell/agent/desktop/inbox/s"',
+		`cp a.json --target-directory=${rel}`,
+	]) {
+		assert.equal((await call("bash", { command }))?.block, true, command);
+	}
+});
+
+test("relative project paths named agent/desktop stay allowed when the cwd is a project dir (T7 FP)", async () => {
+	const call = toolCall();
+	for (const path of ["src/agent/desktop/inbox/index.ts", "agent/desktop/outbox", ".pi/agent/desktop/notes.md", "./agent/desktop/inbox/a.json"]) {
+		assert.equal(await call("write", { path, content: "x" }), undefined, path);
+		assert.equal(await call("bash", { command: `mkdir -p ${path}` }), undefined, path);
+		assert.equal(await call("bash", { command: `cp a.json --target-directory=${path}` }), undefined, path);
+		assert.equal(await call("bash", { command: `OUT=${path} make` }), undefined, path);
+	}
+	assert.equal(await call("bash", { command: "git log --format=%H --since=yesterday" }), undefined);
 });
 
 test("adding the desktop folders keeps every earlier deny and the ordinary allow (T7)", async () => {

@@ -2257,12 +2257,19 @@ function normalizePolicyPath(value: string): string {
 // `<home>/desktop` for the resolved Gentle Pi agent home (the one the desktop
 // feed writes under) and the two standard homes, compared as normalized
 // absolute paths. `~`, `$HOME` and `${HOME}` expand, `.` and `..` resolve
-// lexically, and a relative path never matches. Case folds like the patterns.
-function normalizeAbsolutePolicyPath(value: string): string | undefined {
+// lexically, and a relative path resolves against the tool call's cwd (a
+// relative path with no cwd never matches), so a project folder that is named
+// `agent/desktop` stays outside the guard while `../../.gentle-shell/...` from
+// the project does not. Case folds like the patterns.
+function normalizeAbsolutePolicyPath(value: string, cwd?: string): string | undefined {
 	const expanded = value.trim()
 		.replace(/^(?:~|\$HOME|\$\{HOME\})(?=[/\\]|$)/, homedir().replace(/\\/g, "/"))
 		.replace(/\\/g, "/");
-	if (!/^(?:\/|[a-zA-Z]:\/)/.test(expanded)) return undefined;
+	if (expanded.length === 0) return undefined;
+	if (!/^(?:\/|[a-zA-Z]:\/)/.test(expanded)) {
+		const base = cwd === undefined ? undefined : normalizeAbsolutePolicyPath(cwd);
+		return base === undefined ? undefined : posix.join(base, expanded).replace(/(.)\/+$/, "$1").toLowerCase();
+	}
 	return posix.normalize(expanded).replace(/(.)\/+$/, "$1").toLowerCase();
 }
 
@@ -2284,15 +2291,28 @@ function desktopActionRoots(env: NodeJS.ProcessEnv): string[] {
 	return [...roots];
 }
 
-function isDesktopActionPath(value: string, env: NodeJS.ProcessEnv): boolean {
-	const normalized = normalizeAbsolutePolicyPath(value);
+function isDesktopActionPath(value: string, env: NodeJS.ProcessEnv, cwd?: string): boolean {
+	const normalized = normalizeAbsolutePolicyPath(value, cwd);
 	if (normalized === undefined) return false;
 	return desktopActionRoots(env).some((root) => normalized === root || normalized.startsWith(`${root}/`));
 }
 
-function isSensitivePath(value: string, env: NodeJS.ProcessEnv = process.env): boolean {
+function isSensitivePath(value: string, env: NodeJS.ProcessEnv = process.env, cwd?: string): boolean {
 	const normalized = normalizePolicyPath(value);
-	return SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(normalized)) || isDesktopActionPath(value, env);
+	return SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(normalized)) || isDesktopActionPath(value, env, cwd);
+}
+
+// A shell word can carry a path after `=`: `--target-directory=$HOME/...` or
+// `VAR=~/...` (quotes are already stripped by shellCommandWords). Only the
+// desktop guard reads these values; the pattern list keeps its word-level reach.
+function isSensitiveCommandWord(word: string, env: NodeJS.ProcessEnv, cwd?: string): boolean {
+	if (isSensitivePath(word, env, cwd)) return true;
+	let index = word.indexOf("=");
+	while (index >= 0) {
+		if (isDesktopActionPath(word.slice(index + 1), env, cwd)) return true;
+		index = word.indexOf("=", index + 1);
+	}
+	return false;
 }
 
 function isSensitiveRequestContextPath(path: string): boolean {
@@ -2410,8 +2430,8 @@ function shellCommandWords(command: string): string[] {
 	return words;
 }
 
-function findSensitiveCommandPath(command: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
-	return shellCommandWords(command).find((word) => isSensitivePath(word, env));
+function findSensitiveCommandPath(command: string, env: NodeJS.ProcessEnv = process.env, cwd?: string): string | undefined {
+	return shellCommandWords(command).find((word) => isSensitiveCommandWord(word, env, cwd));
 }
 
 function sensitivePathBlock(sensitivePath: string): ToolCallEventResult {
@@ -2425,15 +2445,16 @@ function evaluateSensitivePathTool(
 	toolName: string,
 	input: unknown,
 	env: NodeJS.ProcessEnv = process.env,
+	cwd?: string,
 ): ToolCallEventResult | undefined {
 	const sensitivePath = PATH_GUARDED_TOOL_NAMES.has(toolName)
-		? collectPathInputs(input).find((path) => isSensitivePath(path, env))
+		? collectPathInputs(input).find((path) => isSensitivePath(path, env, cwd))
 		: undefined;
 	if (sensitivePath !== undefined) return sensitivePathBlock(sensitivePath);
 	if (!SHELL_COMMAND_TOOLS.has(toolName)) return undefined;
 	const command = readStringPath(input, ["command"]);
 	if (command === undefined) return undefined;
-	const commandPath = findSensitiveCommandPath(command, env);
+	const commandPath = findSensitiveCommandPath(command, env, cwd);
 	return commandPath === undefined ? undefined : sensitivePathBlock(commandPath);
 }
 
@@ -13227,6 +13248,7 @@ function createGentleAiExtensionForTesting(
 			event.toolName,
 			event.input,
 			permissionEnvironment,
+			typeof ctx.cwd === "string" && ctx.cwd.length > 0 ? ctx.cwd : undefined,
 		);
 		if (sensitivePathDenied) return sensitivePathDenied;
 		const surfaceDenied = evaluateExecutionSurfaceTool(event.toolName, event.input);

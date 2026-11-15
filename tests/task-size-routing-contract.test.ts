@@ -239,7 +239,6 @@ test("S11: the default delegation pointer resolves to the lean card and the refe
 		"Spec: odd/tasks/<feature>.md (read until \"## Log\"). Do T#; S#.",
 		"`## Skills to load before work`",
 		"`orchestrator-verification.md`",
-		"#### Key Learnings closing block",
 		"disjoint Allowed edit surfaces",
 		"Subagent-facing prompts should be written in English by default",
 		"technical artifacts default to English",
@@ -248,6 +247,7 @@ test("S11: the default delegation pointer resolves to the lean card and the refe
 	]) {
 		assert.ok(card.includes(clause), `the delegation card is missing: ${clause}`);
 	}
+	assert.ok(!card.includes("Key Learnings"), "S8: the retired Key Learnings ritual stays out of the card");
 	// Reference material lives once, in the reference.
 	for (const heading of ["### Work Routing Ladder", "#### Background Subagent Policy", "### Canonical Lightweight Workflows", "#### Pi Subagent Model Routing"]) {
 		assert.ok(reference.includes(heading), `the reference is missing: ${heading}`);
@@ -296,7 +296,9 @@ test("T4: tracking updates edit in place and mirror without re-emitting the docu
 	for (const clause of [
 		"Update the feature document with targeted edits; never rewrite the whole file to change a task line or append a log entry.",
 		"When a code-execution tool such as `codemode` is available, refresh the Engram mirror inside one script that reads the file and saves its content, so the document is never re-emitted as output tokens.",
-		"projection for large ODD,",
+		// harness-continuity S7: the projection rule lives in the one canonical-state statement.
+		"the Engram mirror and `todo` are projections refreshed at task transitions",
+		"The visible `todo` list is required for large ODD, not a third authority.",
 	]) {
 		assert.ok(memory.includes(clause), `orchestrator-memory.md is missing: ${clause}`);
 	}

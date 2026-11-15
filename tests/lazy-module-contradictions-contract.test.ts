@@ -169,3 +169,13 @@ test("X5: the large task pattern label matches its inline diagram", () => {
 	assert.equal(lines[label], "Large task pattern (no Writer rule reason; with one, one bounded worker per unit writes instead):");
 	assert.ok(lines[label + 3]?.includes("parent edits inline following the logbook"), "the diagram must stay the inline one");
 });
+
+// harness-continuity S8 (T8b): the runtime infers the phase label from tool activity, so the model call
+// is an optional refinement, never a per-phase obligation; the `clear` rule stays.
+test("S8: tracking makes `gentle_odd_phase` an optional refinement, never required per phase", () => {
+	const start = tracking.indexOf("#### Signaling the ODD phase to the Gentle prompt");
+	assert.ok(start >= 0, "tracking keeps the phase-signaling section");
+	const section = tracking.slice(start, tracking.indexOf("\n\n", tracking.indexOf("\n\n", start) + 2));
+	assert.ok(section.includes("`gentle_odd_phase` is an optional refinement, never required per phase"), "the phase call must be optional");
+	assert.ok(section.includes("Call `gentle_odd_phase` with `clear` only to leave the current phase before its turn ends."));
+});

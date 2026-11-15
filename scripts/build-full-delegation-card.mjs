@@ -43,16 +43,6 @@ function section(text, heading, source) {
 	return body.join("\n");
 }
 
-/** The first heading after the given heading's section starts. */
-function headingAfter(text, heading, source) {
-	const lines = text.split("\n");
-	const start = lines.indexOf(heading);
-	if (start === -1) throw new Error(`${source}: heading not found: ${JSON.stringify(heading)}`);
-	const next = lines.slice(start + 1).find((line) => HEADING.test(line));
-	if (next === undefined) throw new Error(`${source}: no heading follows ${JSON.stringify(heading)}`);
-	return next;
-}
-
 /** One paragraph line, selected by its exact leading text. */
 function paragraph(text, prefix, source) {
 	const line = text.split("\n").find((candidate) => candidate.startsWith(prefix));
@@ -110,12 +100,6 @@ export function renderFullDelegationCard(assetsDir) {
 	], delegationSource);
 	const surfaces = section(writer, "#### Allowed edit surfaces (MANDATORY)", writerSource);
 	const background = marked(reference, "gentle-pi:background-subagents", referenceSource);
-	// The closing-block section is selected by position, as the heading that follows
-	// the launch section, and its heading text is copied from the source. Pi runtime
-	// code must never carry the block's name (tests/delegated-key-learnings-contract
-	// .test.ts): this script copies documentation, it never reads model output.
-	const closingHeading = headingAfter(delegation, "## Launch", delegationSource);
-	const closing = section(delegation, closingHeading, delegationSource);
 
 	return [
 		"# Orchestrator — Full Delegation Card (lazy-loaded)",
@@ -143,10 +127,6 @@ export function renderFullDelegationCard(assetsDir) {
 		surfaces,
 		"",
 		background,
-		"",
-		closingHeading,
-		"",
-		closing,
 		"",
 	].join("\n");
 }

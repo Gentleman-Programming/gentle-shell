@@ -190,8 +190,8 @@ test("P8 preservation: verifier setup self-correction, first-launch reads, resum
 		"Run the spec's example commands on your first launch",
 		"When resumed in the same child session, do not re-read skill files or spec sections you already read there unless they changed or the parent says so",
 		"Probe on your first launch; never wait for further authorization.",
-		"any requested `## Key Learnings` block",
 	], "verify preserved rules");
+	assert.ok(!verify.includes("Key Learnings"), "S8: the retired Key Learnings ritual stays out of the verifier");
 	containsAll(verification, [
 		"one correction batch that fixes every reported blocker",
 		"a new finding never earns one",

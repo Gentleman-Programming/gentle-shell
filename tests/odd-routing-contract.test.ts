@@ -103,6 +103,13 @@ test("organic progress preserves both complete feature copies and reconciles act
 	assert.doesNotMatch(memory, /`todo` tool is an optional session\/UI projection/);
 });
 
+// harness-continuity S7 (T7b): one canonical-state statement, owned by the memory module.
+test("S7: the feature document is canonical and the Engram mirror and `todo` are projections, stated once", () => {
+	const statement = "The feature document is canonical; the Engram mirror and `todo` are projections refreshed at task transitions.";
+	assert.equal(memory.split(statement).length - 1, 1, "the memory module states the canonical source once");
+	assert.ok(!delegation.includes(statement), "the delegation modules do not restate it");
+});
+
 // gentle-shell#1494 field follow-up: tracking must not grow its own reconciliation
 // scripts, invented size gates, or repeated malformed writer launches.
 test("tracking sync recovers from partial writes without custom reconciliation gates", () => {
@@ -190,7 +197,10 @@ test("ODD commits work units in reviewable slices and reviews the commit or PR s
 		"forecast authored changed lines (additions plus deletions, generated files excluded) from the task list",
 		"keep a running count from work-unit commits",
 		"`ask-on-risk` (default), `auto-chain`, `single-pr`, or `exception-ok`",
-		"apply the chosen strategy before the next commit",
+		// harness-continuity S7 (T7): the oversized-delivery menu waits for a publish request.
+		"record the slice boundary in the feature document",
+		"apply the chosen strategy only when the user asks to publish (push or PR), never before a local work-unit commit",
+		"Local work-unit commits stay separate from publishing",
 		"`ask-on-risk` asks once using the ordered oversized-delivery menu",
 		"`auto-chain` asks only for a missing chain strategy and slices automatically",
 		"Cache both choices, and record slice boundaries",
@@ -199,7 +209,10 @@ test("ODD commits work units in reviewable slices and reviews the commit or PR s
 		"The delivery budget below reads the accumulated branch, not this per-task heuristic",
 	]);
 	assert.ok(!wrapper.includes("Every tracked task closes with at least one work-unit commit"), "step 6 keeps the per-task commit rule");
+	assert.ok(!delegation.includes("before the next commit"), "S7: the delivery menu no longer gates a local commit");
 	const docs = read("docs/readme-reference.md");
+	assert.ok(!docs.includes("before the next commit"), "S7: docs no longer gate a local commit on the delivery menu");
+	assert.ok(docs.includes("only when the user asks to publish (push or PR), never before a local work-unit commit"), "S7: docs say the menu waits for a publish request");
 	containsAll(docs, [
 		"Commit work units in reviewable slices of about 400 authored changed lines on the feature branch (branch first when on the default branch)",
 		"a unit whose Risk line names a high-risk item gets its own commit so native review can take it alone",

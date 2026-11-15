@@ -154,7 +154,8 @@ test("/gentle:tower explains when the web app is not built", async () => {
 import { writeTowerAction } from "../lib/tower-actions.ts";
 import { DESKTOP_AGENTS_SERVICE_SCHEMA } from "../lib/desktop-rpc-agents.ts";
 
-function actionPi(mode: string, cancel?: (id: string) => Promise<boolean>) {
+interface YoloFake { readSnapshot?: (current: string) => Promise<unknown>; setMode?: (m: string, commit: () => void) => Promise<boolean> }
+function actionPi(mode: string, cancel?: (id: string) => Promise<boolean>, yoloFake: YoloFake = {}) {
 	const base = fakePi();
 	const sent: Array<{ text: string; opts?: unknown }> = [];
 	const cancelled: string[] = [];
@@ -165,8 +166,13 @@ function actionPi(mode: string, cancel?: (id: string) => Promise<boolean>) {
 	const events = pi.events as { on(n: string, fn: (d: unknown) => void): () => void };
 	events.on("gentle:yolo:host-ui", (req) => (req as { respond(a: unknown): void }).respond({
 		read: async () => "OFF", toggle: async () => {}, observe: () => () => {}, dispose() {},
-		readSnapshot: async () => ({ yolo: "OFF", mode: current, defaultMode: "normal" }),
-		setMode: async (m: string) => { modes.push(m); current = m; return true; },
+		readSnapshot: async () => (yoloFake.readSnapshot ? yoloFake.readSnapshot(current) : { yolo: "OFF", mode: current, defaultMode: "normal" }),
+		setMode: async (m: string) => {
+			modes.push(m);
+			if (yoloFake.setMode) return yoloFake.setMode(m, () => { current = m; });
+			current = m;
+			return true;
+		},
 	}));
 	events.on("gentle:desktop:agents-service", (req) => (req as { respond(a: unknown): void }).respond({
 		read: () => ({ sessionId: "sess-1", agents: [{ id: "t1", agent: "gentle-ai-worker", status: "running", model: "m", lastStep: "editing", usage: { total: 10, cost: 0.01 } }] }),
@@ -299,6 +305,78 @@ test("a raise is refused when the session cannot ask in its terminal", async () 
 		assert.equal(s.permission, "auto");
 		assert.deepEqual([s.notice?.ok, s.notice?.text], [false, "Raising permissions to yolo needs the terminal: this session cannot ask"]);
 	}
+});
+
+test("permissions fail closed: when the current mode cannot be read, neither a raise nor a lower is applied", async () => {
+	const hang = () => new Promise<never>(() => {});
+	const reject = async () => { throw new Error("yolo host gone"); };
+	for (const broken of [reject, hang]) {
+		for (const mode of ["super-yolo", "normal"] as const) {
+			const dir = hub();
+			let readable = true;
+			const asked: string[] = [];
+			const action = actionPi("yolo", undefined, { readSnapshot: (current) => (readable ? Promise.resolve({ yolo: "OFF", mode: current, defaultMode: "normal" }) : broken()) });
+			createTowerPublisher(action.pi, { env: { GENTLE_TOWER_HOME: dir }, debounceMs: 0, inboxMs: 20, actionTimeoutMs: 60, reviewCli: async () => "{}" });
+			const ctx = confirmCtx(async (t) => { asked.push(t); return true; });
+			await action.fire("session_start", ctx);
+			await wait(150);
+			assert.equal(readTowerSnapshots(dir)[0].permission, "yolo");
+			readable = false;
+			writeTowerAction(dir, { type: "permission", sessionId: "sess-1", mode });
+			await wait(250);
+			const s = readTowerSnapshots(dir)[0];
+			assert.deepEqual(asked, [], `${mode}: never asks the terminal`);
+			assert.deepEqual(action.modes, [], `${mode}: never calls setMode`);
+			assert.equal(action.current(), "yolo");
+			assert.deepEqual([s.notice?.ok, s.notice?.text], [false, "Permissions unchanged: could not read the current mode"]);
+			assert.equal(s.permission, undefined, "an unknown mode is not shown as the old one");
+			await action.fire("session_shutdown", ctx);
+		}
+	}
+});
+
+test("a permission change that times out is followed until it settles and reports the real result", async () => {
+	const dir = hub();
+	const action = actionPi("yolo", undefined, { setMode: (_m, commit) => new Promise((done) => setTimeout(() => { commit(); done(true); }, 250)) });
+	createTowerPublisher(action.pi, { env: { GENTLE_TOWER_HOME: dir }, debounceMs: 0, inboxMs: 20, actionTimeoutMs: 60, reviewCli: async () => "{}" });
+	const ctx = confirmCtx(async () => true);
+	await action.fire("session_start", ctx);
+	await wait(150);
+	writeTowerAction(dir, { type: "permission", sessionId: "sess-1", mode: "normal" });
+	await wait(150);
+	let s = readTowerSnapshots(dir)[0];
+	assert.deepEqual([s.notice?.ok, s.notice?.text], [false, "Permissions: the change to normal is still pending; the session is in yolo"]);
+	assert.equal(s.permission, "yolo");
+	await wait(300);
+	s = readTowerSnapshots(dir)[0];
+	assert.equal(action.current(), "normal");
+	assert.equal(s.permission, "normal");
+	assert.deepEqual([s.notice?.ok, s.notice?.text], [true, "Permissions: normal"]);
+	await action.fire("session_shutdown", ctx);
+});
+
+test("a permission change still applies normally when it answers in time", async () => {
+	const { modes, s } = await doorCase("auto", "normal", confirmCtx(async () => true));
+	assert.deepEqual(modes, ["normal"]);
+	assert.deepEqual([s.permission, s.notice?.ok, s.notice?.text], ["normal", true, "Permissions: normal"]);
+});
+
+test("closing the session that opened the tower closes its server", async () => {
+	const dir = hub();
+	const web = join(dir, "..", "web");
+	(await import("node:fs")).mkdirSync(web, { recursive: true });
+	(await import("node:fs")).writeFileSync(join(web, "index.html"), "<title>Gentle Tower</title>");
+	const { pi, commands, fire } = commandPi();
+	const opened: string[] = [];
+	const tower = createTowerPublisher(pi, { env: { GENTLE_TOWER_HOME: dir }, debounceMs: 0, webDir: web, openUrl: (u) => opened.push(u) });
+	const ctx = fakeCtx([assistant(0.1)]);
+	await fire("session_start", ctx);
+	await commands.get("gentle:tower")!.handler("", uiCtx([]));
+	assert.equal((await fetch(opened[0])).status, 200);
+	await fire("session_shutdown", ctx);
+	await wait(50);
+	await assert.rejects(fetch(opened[0]), "the listener is gone");
+	await tower?.close();
 });
 
 test("the review switch runs the review mode command and shows the new state", async () => {

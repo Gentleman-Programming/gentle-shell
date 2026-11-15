@@ -163,3 +163,10 @@ test("an action bigger than the inbox limit is refused before it is written", ()
 	writeTowerAction(hub, { type: "message", sessionId: "s-1", text: "漢".repeat(2000) });
 	assert.deepEqual(consumeTowerActions(hub, "s-1").map((a) => a.type === "message" && a.text.length), [2000]);
 });
+
+test("a new floor accepts a project path up to the snapshot path limit", async () => {
+	const { TOWER_PATH_MAX } = await import("../lib/tower-snapshot.ts");
+	const long = "/" + "a".repeat(2000);
+	assert.deepEqual(parseTowerAction({ type: "new-floor", project: long }), { type: "new-floor", project: long });
+	assert.equal(parseTowerAction({ type: "new-floor", project: "/" + "a".repeat(TOWER_PATH_MAX) }), undefined);
+});

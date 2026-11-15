@@ -146,6 +146,32 @@ test("a session with huge history still publishes a snapshot within the hub limi
 	assert.equal(readTowerSnapshots(dir)[0].name, "renamed");
 });
 
+test("a long project folder is kept whole, so New floor launches in the real folder", () => {
+	const cwd = `/w/${"d".repeat(3000)}/project`;
+	const s = buildTowerSnapshot({ ...base, cwd, sessionName: undefined });
+	assert.equal(s.project.cwd, cwd);
+	assert.equal(s.project.name, "project");
+	// Even when everything else must shrink to fit, the folder stays whole.
+	const huge = buildTowerSnapshot({
+		...base,
+		cwd,
+		todos: Array.from({ length: 600 }, (_, i) => ({ id: i + 1, title: "t".repeat(2000), status: "pending" as const })),
+		artifacts: Array.from({ length: 12 }, (_, i) => ({ path: `/a/${"p".repeat(3000)}${i}.md`, kind: "doc" as const })),
+	});
+	assert.equal(huge.project.cwd, cwd);
+	assert.ok(Buffer.byteLength(JSON.stringify(huge)) <= TOWER_SNAPSHOT_MAX_BYTES);
+	assert.ok((huge.omitted?.todos ?? 0) > 0);
+});
+
+test("artifact paths are never cut: a path too long to carry leaves the artifact out and counts it", () => {
+	const kept = `/a/${"p".repeat(2000)}/notes.md`;
+	const tooLong = `/a/${"q".repeat(5000)}/plan.md`;
+	const s = buildTowerSnapshot({ ...base, artifacts: [{ path: tooLong, kind: "doc" }, { path: kept, kind: "doc" }, { path: "/a/short.md", kind: "doc" }] });
+	assert.deepEqual(s.artifacts, [{ path: kept, kind: "doc" }, { path: "/a/short.md", kind: "doc" }]);
+	assert.deepEqual(s.omitted, { artifacts: 1 });
+	assert.ok(s.artifacts!.every((a) => !a.path.endsWith("…")));
+});
+
 test("a normal snapshot carries no omission marker", () => {
 	assert.equal(buildTowerSnapshot(base).omitted, undefined);
 });

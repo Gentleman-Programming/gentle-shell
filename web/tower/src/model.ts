@@ -1,5 +1,5 @@
 // Pure mapping from live snapshots to what the tower shows. No DOM, no Pixi.
-import type { FloorState, Project, TowerSnapshot, TowerSubagent, TowerTodo } from "./types";
+import type { FloorState, Project, TowerChatTurn, TowerSnapshot, TowerSubagent, TowerTodo } from "./types";
 
 export type RoomId = "map" | "workshop" | "lab" | "review" | "engram" | "engine" | "lounge";
 
@@ -66,4 +66,29 @@ export function helperRoom(a: TowerSubagent): RoomId {
 
 export function money(n: number): string {
 	return `$${n.toFixed(2)}`;
+}
+
+// ---------- intercom: matching a sent message with the session's record of it ----------
+/** The session cuts a chat turn at this many characters, ending it with "…" (lib/tower-snapshot.ts TOWER_CHAT_TEXT_MAX). */
+const CHAT_TEXT_MAX = 1200;
+/** How much earlier than the send a turn may be stamped (same machine, but separate clocks reads). */
+const ECHO_SLACK_MS = 2000;
+const turnKey = (t: TowerChatTurn) => `${t.at}|${t.text}`;
+
+/** A message sent from the intercom, with the "you" turns already in the chat when it was sent. */
+export interface SentMessage { text: string; at: number; before: ReadonlySet<string> }
+export function sentMessage(text: string, at: number, chat: readonly TowerChatTurn[]): SentMessage {
+	return { text, at, before: new Set(chat.filter((t) => t.role === "you").map(turnKey)) };
+}
+
+/** The "you" turn that is the session's record of this message: new since sending, stamped at or after it
+ * (within a small slack), not already used for another message, and with the same text (a prefix only when
+ * the session cut the turn at its length limit). Undefined while the session has not recorded it. */
+export function echoTurn(o: SentMessage, chat: readonly TowerChatTurn[], used: ReadonlySet<TowerChatTurn>): TowerChatTurn | undefined {
+	return chat.find((t) => {
+		if (t.role !== "you" || used.has(t) || o.before.has(turnKey(t)) || t.at < o.at - ECHO_SLACK_MS) return false;
+		if (t.text === o.text) return true;
+		const cut = t.text.length === CHAT_TEXT_MAX && t.text.endsWith("…");
+		return cut && o.text.startsWith(t.text.slice(0, -1));
+	});
 }

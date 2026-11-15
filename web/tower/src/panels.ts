@@ -1,5 +1,5 @@
 // Panels that open on demand: intercom, artifact viewer, Engram library, bar tab.
-import { FLOOR_COLORS, money, todoProgress } from "./model";
+import { echoTurn, FLOOR_COLORS, money, sentMessage, todoProgress, type SentMessage } from "./model";
 import type { Project, TowerArtifact, TowerChatTurn, TowerSnapshot } from "./types";
 
 export const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -99,12 +99,12 @@ export function closeModals(): boolean {
 // The log is a conversation: your messages on the right, the agent's on the left,
 // newest at the bottom. What you send shows at once and waits there until the
 // session's own record of it arrives.
-interface Outgoing { text: string; at: number; state: "sending" | "sent" | "failed" }
+interface Outgoing extends SentMessage { state: "sending" | "sent" | "failed" }
 const outbox = new Map<string, Outgoing[]>();
 const latest = new Map<string, { s: TowerSnapshot; floor: number }>();
 /** The session already holds this message: the local copy can go. Clocks are the same machine's. */
 const echoed = (o: Outgoing, chat: TowerChatTurn[], used: Set<TowerChatTurn>) => {
-	const turn = chat.find((t) => { const head = t.text.replace(/…$/, ""); return t.role === "you" && !used.has(t) && t.at >= o.at - 2000 && head.length > 0 && o.text.startsWith(head); });
+	const turn = echoTurn(o, chat, used);
 	if (turn) used.add(turn);
 	return !!turn;
 };
@@ -163,7 +163,8 @@ export function renderIntercom(s: TowerSnapshot, floor: number): void {
 			e.preventDefault();
 			const text = box.value.trim(); if (!text) return;
 			box.value = "";
-			const out: Outgoing = { text, at: Date.now(), state: "sending" };
+			// Turns already in the chat when sending can never be this message's echo.
+			const out: Outgoing = { ...sentMessage(text, Date.now(), latest.get(s.sessionId)?.s.chat ?? []), state: "sending" };
 			outbox.set(s.sessionId, [...(outbox.get(s.sessionId) ?? []), out].slice(-8));
 			// Only the log of the session that sent it, and only if its intercom is still open.
 			const refresh = () => { const now = latest.get(s.sessionId); if (now && intercomSession() === s.sessionId) updateLog(el, now.s, true); };

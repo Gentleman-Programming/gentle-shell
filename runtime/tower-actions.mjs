@@ -5,6 +5,7 @@
 
 import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
+import { TOWER_PATH_MAX } from "./tower-snapshot.mjs";
 import { dirname, join } from "node:path";
 
 export const TOWER_ACTION_MAX_BYTES = 8 * 1024;
@@ -33,7 +34,7 @@ export function parseTowerAction(value         )                          {
 	const o = value                           ;
 	if (o.type === "new-floor") {
 		const project = o.project;
-		if (typeof project !== "string" || !project.startsWith("/") || project.length > 1024 || /[\0\n\r]/.test(project)) return undefined;
+		if (typeof project !== "string" || !project.startsWith("/") || project.length > TOWER_PATH_MAX || /[\0\n\r]/.test(project)) return undefined;
 		if (o.prompt === undefined) return exactKeys(o, ["type", "project"]) ? { type: "new-floor", project } : undefined;
 		const prompt = text(o.prompt, TOWER_MESSAGE_MAX_CHARS);
 		return prompt && exactKeys(o, ["type", "project", "prompt"]) ? { type: "new-floor", project, prompt } : undefined;

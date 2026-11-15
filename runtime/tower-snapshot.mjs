@@ -7,8 +7,10 @@ export const TOWER_SAID_MAX = 600;
 /** The hub refuses a larger file; the snapshot is built to always fit under it. */
 export const TOWER_SNAPSHOT_MAX_BYTES = 64 * 1024;
 /** Per-field and per-list bounds; a list that is cut says how many entries it left out. */
-const TEXT_MAX = { name: 200, path: 1024, title: 300, note: 400, step: 300, model: 160, notice: 400, word: 80 }         ;
+const TEXT_MAX = { name: 200, title: 300, note: 400, step: 300, model: 160, notice: 400, word: 80 }         ;
 const LIST_MAX = { todos: 200, subagents: 40, models: 40 }         ;
+/** Paths are used to open files and launch floors, so they are never cut: a longer artifact path is left out instead. The project folder is always kept whole. */
+export const TOWER_PATH_MAX = 4096;
 
 /** The latest visible assistant text on the branch (no thinking, no tool calls). */
 export function latestAssistantText(entries                    )                     {
@@ -246,8 +248,7 @@ function fit(s               , input                                            
 }
 
 export function buildTowerSnapshot(input                    )                {
-	const cwd = clip(input.cwd, TEXT_MAX.path);
-	const project = { cwd, name: clip(baseName(input.cwd), TEXT_MAX.name) };
+	const project = { cwd: input.cwd, name: clip(baseName(input.cwd), TEXT_MAX.name) };
 	const word = (v        ) => clip(v, TEXT_MAX.word);
 	const chat = (input.chat ?? []).slice(-TOWER_CHAT_TURNS).map((t) => ({ role: t.role, text: clip(t.text, TOWER_CHAT_TEXT_MAX), at: t.at }));
 	const snapshot                = {
@@ -277,7 +278,7 @@ export function buildTowerSnapshot(input                    )                {
 		...(input.said ? { said: clip(input.said, TOWER_SAID_MAX) } : {}),
 		...(chat.length ? { chat } : {}),
 		...(input.models?.length ? { models: input.models.slice(0, LIST_MAX.models).map((m) => ({ model: clip(m.model, TEXT_MAX.model), cost: m.cost, tokens: m.tokens })) } : {}),
-		...(input.artifacts?.length ? { artifacts: input.artifacts.slice(0, TOWER_ARTIFACTS_MAX).map((a) => ({ path: clip(a.path, TEXT_MAX.path), kind: a.kind })) } : {}),
+		...(input.artifacts?.length ? { artifacts: input.artifacts.slice(0, TOWER_ARTIFACTS_MAX).filter((a) => a.path.length <= TOWER_PATH_MAX).map((a) => ({ path: a.path, kind: a.kind })) } : {}),
 		updatedAt: input.now,
 	};
 	return fit(snapshot, { todos: input.todos.length, subagents: input.agents.length, models: input.models?.length ?? 0, artifacts: Math.min(input.artifacts?.length ?? 0, TOWER_ARTIFACTS_MAX), chat: chat.length });

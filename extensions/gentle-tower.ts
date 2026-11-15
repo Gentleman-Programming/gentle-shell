@@ -124,8 +124,18 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 		if (timer) clearTimeout(timer);
 		timer = setTimeout(publish, debounceMs);
 	};
+	/** Reads the session's current mode; undefined when it cannot be read (failed, timed out, or no mode). */
+	const readMode = async (): Promise<string | undefined> => {
+		try {
+			const snap = yolo?.readSnapshot ? await within(yolo.readSnapshot(), actionTimeoutMs, "Permissions") : undefined;
+			return typeof snap?.mode === "string" ? snap.mode : undefined;
+		} catch { return undefined; }
+	};
+	/** An unreadable mode is shown as unknown, never as the last one seen. */
 	const refreshPermission = async () => {
-		try { const snap = yolo?.readSnapshot ? await within(yolo.readSnapshot(), actionTimeoutMs, "Permissions") : undefined; if (snap && snap.mode !== permission) { permission = snap.mode; schedule(); } } catch { /* unknown */ }
+		if (!yolo?.readSnapshot) return;
+		const mode = await readMode();
+		if (mode !== permission) { permission = mode; schedule(); }
 	};
 	const refreshReview = async (cwd: string) => {
 		try {
@@ -153,21 +163,38 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 				return say(`Stopped ${String(helper.agent).replace(/^gentle-ai-/, "")}`, true);
 			}
 			case "permission": {
+				if (!yolo?.setMode || !yolo.readSnapshot) return say("Permissions are not available in this session", false);
+				// Fail closed: the raise-or-lower decision needs the mode the session is in now, never a cached one.
 				await refreshPermission();
-				if (!yolo?.setMode || permission === undefined) return say("Permissions are not available in this session", false);
-				const raise = !(action.mode in MODE_RANK) || !(permission in MODE_RANK) || MODE_RANK[action.mode] > MODE_RANK[permission];
+				if (permission === undefined) return say("Permissions unchanged: could not read the current mode", false);
+				const from = permission;
+				const raise = !(action.mode in MODE_RANK) || !(from in MODE_RANK) || MODE_RANK[action.mode] > MODE_RANK[from];
 				if (raise) {
 					// A higher permission always passes through the human, in this session's own terminal.
 					// Not bounded on purpose: the person may take as long as they need to decide.
 					if (c.hasUI !== true || typeof c.ui?.confirm !== "function") return say(`Raising permissions to ${action.mode} needs the terminal: this session cannot ask`, false);
 					let approved = false;
-					try { approved = (await c.ui.confirm("Gentle Tower", `The tower asks to raise this session's permissions from ${permission} to ${action.mode}. Allow?`)) === true; } catch { approved = false; }
+					try { approved = (await c.ui.confirm("Gentle Tower", `The tower asks to raise this session's permissions from ${from} to ${action.mode}. Allow?`)) === true; } catch { approved = false; }
 					if (!approved) return say(`Raising permissions to ${action.mode} was declined in the terminal`, false);
 				}
-				const ok = await within(Promise.resolve(yolo.setMode(action.mode as never)), actionTimeoutMs, "Permissions");
+				const applied = `Permissions: ${action.mode}${raise ? " (approved in the terminal)" : ""}`;
+				const write = Promise.resolve(yolo.setMode(action.mode as never));
+				let ok: boolean;
+				try { ok = await within(write, actionTimeoutMs, "Permissions"); }
+				catch {
+					// A late write can still land: say what the session is in now, and report the real result once it settles.
+					void write.then(() => undefined, () => undefined).then(async () => {
+						if (!ctx || ctx !== c) return;
+						await refreshPermission();
+						say(permission === action.mode ? applied : `Permissions unchanged: the session is in ${permission ?? "an unknown mode"}`, permission === action.mode);
+					});
+					await refreshPermission();
+					if (permission === action.mode) return say(applied, true);
+					return say(`Permissions: the change to ${action.mode} is still pending; the session is in ${permission ?? "an unknown mode"}`, false);
+				}
 				await refreshPermission();
 				if (!ok) return say("Permissions unchanged", false);
-				return say(raise ? `Permissions: ${action.mode} (approved in the terminal)` : `Permissions: ${action.mode}`, true);
+				return say(applied, true);
 			}
 			case "review": {
 				const cwd = c.sessionManager.getCwd();
@@ -240,6 +267,10 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 		ctx = undefined;
 		sessionId = undefined;
 		if (id) { try { removeTowerSnapshot(dir, id); } catch { /* best effort */ } }
+		// The tower this session opened ends with it.
+		const opened = server;
+		server = undefined;
+		void opened?.then((s) => s.close()).catch(() => undefined);
 	});
 
 	pi.registerCommand("gentle:tower", {

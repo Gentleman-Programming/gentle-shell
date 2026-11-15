@@ -623,6 +623,9 @@ function installAssets(ctx                , paths              , assets        ,
 
 
 
+
+
+
 const isPlainObject = (value         )                                   => typeof value === "object" && value !== null && !Array.isArray(value);
 const stringList = (value         ) => (Array.isArray(value) ? value.filter((item)                 => typeof item === "string") : []);
 
@@ -630,7 +633,7 @@ function parseKeysState(value         )                        {
 	if (!isPlainObject(value) || !isPlainObject(value.entries) || typeof value.written !== "string") return undefined;
 	const entries                            = {};
 	for (const [key, action] of Object.entries(value.entries)) if (typeof action === "string" || isPlainObject(action)) entries[key] = action;
-	return { entries, dropped: stringList(value.dropped), conflicts: stringList(value.conflicts), createdSection: value.createdSection === true, written: value.written };
+	return { entries, dropped: stringList(value.dropped), conflicts: stringList(value.conflicts), createdSection: value.createdSection === true, written: value.written, ...(typeof value.firstWritten === "string" ? { firstWritten: value.firstWritten } : {}) };
 }
 
 const sha256Text = (text        ) => createHash("sha256").update(text).digest("hex");
@@ -959,7 +962,8 @@ async function syncKeys(ctx                , paths              , shipped       
 		ctx.io.err(`gentle-shell desktop: your ${paths.keysFile} binds ${conflict.theirs} to ${JSON.stringify(conflict.theirAction)} in ${DESKTOP_KEYS_SECTION}; kept yours, so the Gentle shortcut ${conflict.key} (${typeof conflict.action === "string" ? conflict.action : JSON.stringify(conflict.action)}) was not added.`);
 	}
 	const written = changed ? sha256Text(merged.text) : state.keys?.written ?? sha256Text(original);
-	writeState(paths, { ...state, keys: { ...merged.keys, written } });
+	const firstWritten = state.keys ? state.keys.firstWritten : changed ? written : undefined;
+	writeState(paths, { ...state, keys: { ...merged.keys, written, ...(firstWritten ? { firstWritten } : {}) } });
 	if (merged.added.length > 0) ctx.io.out(`Added the Gentle shortcuts ${merged.added.join(", ")} to ${paths.keysFile} (${DESKTOP_KEYS_SECTION}); the previous file is in ${paths.keysBackup}.`);
 	else if (changed) ctx.io.out(`Updated the Gentle shortcuts in ${paths.keysFile} (${DESKTOP_KEYS_SECTION}); the previous file is in ${paths.keysBackup}.`);
 	return "done";
@@ -972,8 +976,8 @@ async function removeKeys(ctx                , paths              , keys        
 		return true;
 	}
 	const current = readFileSync(paths.keysFile, "utf8");
-	// Untouched since our last write: the file from before Gentle Shell, byte for byte.
-	const text = sha256Text(current) === keys.written && existsSync(paths.keysOriginal) ? readFileSync(paths.keysOriginal, "utf8") : unmergeKeys(current, keys);
+	// Untouched since our first write: the file from before Gentle Shell, byte for byte.
+	const text = sha256Text(current) === keys.firstWritten && existsSync(paths.keysOriginal) ? readFileSync(paths.keysOriginal, "utf8") : unmergeKeys(current, keys);
 	if (typeof text !== "string") {
 		ctx.io.err(`gentle-shell desktop: ${paths.keysFile} ${text.problem}; it was not changed, so the Gentle shortcuts are still in it. Fix it and run gentle-shell desktop --uninstall again.`);
 		return false;

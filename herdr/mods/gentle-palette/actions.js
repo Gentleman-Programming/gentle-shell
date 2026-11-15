@@ -28,9 +28,10 @@
 //   Consent prompts, and a provider consent the agent relays as a question, have no action: the
 //   person answers them in the terminal.
 //
-// The session itself refuses a permission escalation whose file was written while its agent, a
-// background job or a subagent could act (docs/desktop-feed.md): the dialog is the human gate,
-// the session's check keeps the agent from writing an escalation of its own.
+// The session refuses a permission escalation whose file was written while its agent, a background
+// job or a subagent could act, and applies any other one only after the human confirms it in the
+// session's own UI (docs/desktop-feed.md): the file alone never raises the mode. The session first
+// answers `{ pending: "confirmation" }`, and sendAction then shows the Terminal with that prompt.
 
 import { hc, openOverlay, readTextFile, run, writeTextFile } from "herdr";
 import { exists } from "fs/promises";
@@ -96,6 +97,7 @@ export async function sendAction(cx, feed, kind, args) {
         // Mods may write only under the app folder, so the answer stays: the session prunes its
         // outbox (32 answers, 10 minutes) and removes it when it ends.
         if (r?.schema === RESULT_SCHEMA && r.id === id) {
+          if (r.ok && r.data?.pending === "confirmation") cx.timer.after(1, () => showTerminal(null));
           return r.ok ? { ok: true, data: r.data ?? {} } : { ok: false, error: r.error ?? { code: "failed", message: "The session refused this action." } };
         }
       } catch {

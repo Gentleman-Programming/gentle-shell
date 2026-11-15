@@ -7,8 +7,11 @@ import { home } from "herdr";
 import { v_flex, h_flex, TextView, Textarea, Popover } from "gpui-base";
 import { alpha, mono, R } from "./tokens.js";
 import { money, prettyModel, seconds, parsePatch } from "./feed.js";
+import { SESSION_KINDS } from "./snapshot.js";
 
 const MOD = "gentle-chat";
+// A session that runs outside Herdr app (T11): what the Terminal switch and ⌘J say instead.
+export const ELSEWHERE = "This session runs in another terminal";
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const CLEAR = "#00000000";
 const CLIP = 6000; // characters of a tool's output shown when expanded
@@ -87,11 +90,14 @@ export function header(v, p) {
   const f = v.feed;
   const { stack } = v.stackProps();
   const title = s?.identity?.sessionName || f.name || sessionTitle(v.agentInfo?.title) || "Gentle Shell";
+  // The session's kind badge follows its name (S10): Herdr or TUI, as in the sidebar and tabs.
   const row1 = h_flex().min_h(30).items_center().justify_between().gap(16).min_w(0)
-    .child(div().id("title").min_w(0).truncate().text_size(14).font_semibold()
-      .tooltip(v.address ? `${v.address}${v.file ? ` · ${v.file}` : ""}` : "No Gentle Shell terminal")
-      .child(title))
-    .when(Boolean(stack), (el) => el.child(viewSwitch(v, p)));
+    .child(h_flex().flex_1().min_w(v.elsewhere() ? 150 : 0).gap(8).items_center()
+      .child(div().id("title").min_w(0).truncate().text_size(14).font_semibold()
+        .tooltip(v.address ? `${v.address}${v.file ? ` · ${v.file}` : ""}` : v.file ? `${ELSEWHERE} · ${v.file}` : "No Gentle Shell session")
+        .child(title))
+      .when(Boolean(v.key), (el) => el.child(kindBadge(p, v.elsewhere() ? SESSION_KINDS.tui : SESSION_KINDS.herdr))))
+    .when(Boolean(stack), (el) => el.child(v.elsewhere() ? elsewhere(v, p) : viewSwitch(v, p)));
   const row2 = h_flex().items_center().justify_between().gap(16).min_w(0)
     .child(crumbs(v, p))
     .child(facts(v, p));
@@ -112,6 +118,33 @@ function viewSwitch(v, p) {
   return h_flex().flex_none().p(2).gap(2).border(1).border_color(p.lineStrong).rounded(R.sm)
     .child(seg("sw-chat", "chat", "Chat", showing, (_e, cx) => v.go("chat", cx)))
     .child(seg("sw-term", "term", "Terminal", !showing, (_e, cx) => v.go("terminal", cx)));
+}
+
+// A session's own spend as its TUI footer writes it (lib/shell-bar.ts formatCost): $33.46 from a
+// dollar up, $0.247 below (S10). The per-message costs in the log keep feed.js money().
+const sessionCost = (n) => { const v = Number(n); return Number.isFinite(v) ? `$${v >= 1 ? v.toFixed(2) : v.toFixed(3)}` : "$0.000"; };
+
+// A session's kind (snapshot.js SESSION_KINDS) as the shared badge (tokens.js kindBadge of the other
+// mods): its icon and word in the kbd's mono look; Herdr in the info tone, TUI in accent-soft.
+export function kindBadge(p, kind) {
+  return h_flex().id("kind").flex_none().h(17).px(5).gap(4).items_center().rounded(R.kbd).border(1).border_color(p.lineStrong)
+    .font_family(mono()).font_semibold().text_size(10.5).line_height(1.25).text_color(kind.kind === "herdr" ? p.info : p.accentSoft)
+    .tooltip(kind.about)
+    .child(icon(kind.icon, 11).flex_none())
+    .child(kind.label);
+}
+
+// T11 (S10): a session that runs outside Herdr app has no Terminal here. The switch's place says
+// where it runs (its Herdr TUI pane, else its pid), in the switch's muted look.
+function elsewhere(v, p) {
+  const id = v.snap?.identity;
+  const where = id?.herdr?.paneId ? `Herdr ${id.herdr.paneId}` : id?.pid ? `pid ${id.pid}` : null;
+  // It gives way to the session's name: the words truncate, the icon stays.
+  return h_flex().id("sw-elsewhere").min_w(0).flex_shrink_1().items_center().gap(6).px(9).py(4).border(1).border_color(p.line).rounded(R.sm)
+    .text_size(12).text_color(p.muted)
+    .tooltip(`${ELSEWHERE}${where ? ` (${where})` : ""}: answer its prompts and run /commands there. Messages, answers, Stop and modes work from here.`)
+    // A narrow header says it in two words (the tooltip keeps the whole sentence).
+    .child(icon("term", 13).flex_none()).child(div().min_w(0).truncate().child((v.headW ?? Infinity) < 760 ? "Other terminal" : ELSEWHERE));
 }
 
 // .crumbs (l.263-264): project / branch · N changed. The project is the Herdr space the session
@@ -162,7 +195,9 @@ function facts(v, p) {
   const ctxFact = fact("f-ctx", [k("Ctx"), bar(p, pct, p.info, 46), pct === null ? none() : num(`${pct}%`)], ctxTip);
 
   const total = Number.isFinite(s?.cost?.total) ? s.cost.total : f.total;
-  const costFact = fact("f-cost", [k("Cost"), num(money(total))], s?.cost?.subscription ? "Session spend (subscription)" : "Session spend");
+  // The TUI footer's own words: "$32.57 sub" on a subscription (S10).
+  const sub = Boolean(s?.cost?.subscription);
+  const costFact = fact("f-cost", [k("Cost"), num(sessionCost(total)), ...(sub ? [k("sub")] : [])], sub ? "Session spend (subscription)" : "Session spend");
 
   // Narrow cards drop facts instead of clipping (the artboard has room for all): Persona first,
   // then Ctx, then Model, then Cost; the permission menu always stays. Widths are estimates
@@ -172,7 +207,7 @@ function facts(v, p) {
     persona: 14 + 13 + 6 + textW(persona ?? "No persona"),
     ctx: 14 + 8 + textW("Ctx") + 6 + 46 + 6 + textW(pct === null ? "—" : `${pct}%`, 12, true),
     model: 14 + 8 + textW("Model") + 6 + textW(model || "—"),
-    cost: 14 + 8 + textW("Cost") + 6 + textW(money(total), 12, true),
+    cost: 14 + 8 + textW("Cost") + 6 + textW(sessionCost(total), 12, true) + (sub ? 6 + textW("sub") : 0),
   };
   const room = Number.isFinite(v.headW) ? v.headW - 28 - 16 - 180 : Infinity;
   let need = 20 + 13 + 6 + textW(permLabel) + 6 + 13 + Object.values(est).reduce((a, b) => a + b, 0);
@@ -571,7 +606,7 @@ function slashMenu(v, p) {
 // i-stop symbol, l.308). Typing while it works brings Send back: the message is queued, as in
 // the terminal.
 function sendOrStop(v, p) {
-  if (v.working() && !v.draft.trim() && v.address) {
+  if (v.working() && !v.draft.trim() && v.key) {
     const stopping = v.busy === "stop";
     return h_flex().id("stop").h(32).flex_none().items_center().gap(6).px(12).rounded(R.sm).border(1).border_color(p.lineStrong)
       .text_color(p.text).font_semibold().text_size(13).cursor_pointer()
@@ -582,7 +617,7 @@ function sendOrStop(v, p) {
       .child(icon("stop", 13).text_color(p.err)).child(stopping ? "Stopping…" : "Stop");
   }
   return h_flex().id("send").h(32).flex_none().items_center().gap(6).px(12).rounded(R.sm)
-    .bg(v.address ? p.accent : p.raised).text_color(v.address ? p.onAccent : p.faint).font_semibold().text_size(13)
+    .bg(v.key ? p.accent : p.raised).text_color(v.key ? p.onAccent : p.faint).font_semibold().text_size(13)
     .cursor_pointer().on_click((_e, cx) => v.send(cx))
     .child(v.sending ? div().frames(SPINNER, 90) : icon("send", 13)).child("Send");
 }
@@ -608,7 +643,7 @@ export function composer(v, p, pq) {
   // The hints row is one line: a narrow card drops hints from the right (Esc Esc, then ⌘J,
   // then /, then ⇧ Enter) instead of wrapping or clipping; Enter send stays.
   const w = Number.isFinite(v.composerW) ? Math.min(780, v.composerW - 32) : 780;
-  const show = { esc: w >= 600, term: w >= 430, cmd: w >= 340, nl: w >= 250 };
+  const show = { esc: w >= 600, term: w >= 430 && !v.elsewhere(), cmd: w >= 340, nl: w >= 250 };
   return v_flex().id("composer").flex_none().px(16).pt(10).pb(12).border_t(1).border_color(p.line).bg(p.chrome)
     .rounded_b(R.window - 1)
     .on_size_change((size, cx) => { if (Math.abs((v.composerW ?? 0) - size.width) >= 1) { v.composerW = size.width; cx.notify(); } })

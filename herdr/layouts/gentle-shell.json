@@ -168,9 +168,9 @@
                       },
                       "header": {
                         "content": {
-                          "mod": "pane"
+                          "mod": "gentle-pane"
                         },
-                        "height": 30,
+                        "height": 40,
                         "position": "top",
                         "reveal": "always"
                       }

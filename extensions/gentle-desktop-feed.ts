@@ -17,6 +17,7 @@ import {
 } from "../lib/desktop-feed.ts";
 import { createDesktopFeedStore, sweepDesktopFeedOrphans, type DesktopFeedStore } from "../lib/desktop-feed-store.ts";
 import { answerableFromDesktop, createDesktopActionInbox, DESKTOP_ACTION_LIMITS, createDesktopActivityTimeline, providerDecisionIn, questionShape, sweepDesktopActionOrphans, watchDesktopActionInbox, type DesktopActionInbox, type DesktopActionQuestion, type DesktopActivityTimeline } from "../lib/desktop-feed-actions.ts";
+import { askAnswerHandle } from "../lib/desktop-feed-answers.ts";
 import { DesktopPermissionBridge } from "../lib/desktop-rpc-permissions.ts";
 import { createDesktopFeedProfileReader, createUntrackedLineCounter, desktopFeedGitRunner, processAncestors, psParentOf, type DesktopFeedProfile, type ParentOf, type UntrackedLineCounter } from "../lib/desktop-feed-sources.ts";
 import { DesktopAgentsBridge } from "../lib/desktop-agents-service.ts";
@@ -385,6 +386,25 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 					// Read the state now first: an activity no event announced still counts.
 					busyAt: (time) => { markActivity(session); return session.activity.busyAt(time); },
 					// The inbox file alone never raises the mode: the human says yes here.
+					// T11 (S10): prompts and answers for a session the desktop has no terminal for.
+					questionOpen: () => current(session) && pendingQuestion(session) !== undefined,
+					commandSource: (name) => {
+						try { return typeof pi.getCommands === "function" ? pi.getCommands().find((command) => command.name === name)?.source : undefined; }
+						catch { return undefined; }
+					},
+					// The TUI editor's submit: a prompt while idle, a steer while the agent works.
+					sendPrompt: (text, expand) => {
+						let queued = false;
+						try { queued = session.ctx.isIdle() === false; } catch { queued = false; }
+						pi.sendUserMessage(text, { deliverAs: "steer", expandPromptTemplates: expand });
+						return { queued };
+					},
+					// The ask tool's own list answers it (lib/desktop-feed-answers.ts), once.
+					answerQuestion: (toolCallId, answer) => {
+						const handle = current(session) ? askAnswerHandle(toolCallId) : undefined;
+						if (!handle) return false;
+						try { return handle.answer(answer) === true; } catch { return false; }
+					},
 					confirmEscalation: async (from, to) => {
 						const ui = session.ctx.ui as { confirm?: ExtensionContext["ui"]["confirm"] } | undefined;
 						if (!current(session) || typeof ui?.confirm !== "function") return false;

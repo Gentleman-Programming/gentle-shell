@@ -12,12 +12,14 @@
 //   toggle   Chat ↔ Terminal (layout.select on the `views` stack)
 //   stop     the shown session's turn, through its inbox (abort_turn: the TUI's Esc Esc; the
 //            session refuses it while its agent is idle)
+//   session-next / session-prev   shows the next / previous live session, wherever it runs
+//            (T11; `herdr-app do gentle-status.session-next`)
 
 import { View, div } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { run, window, keys, layout, nextCommand, notify } from "herdr";
 import { tokens, state, kbd, cap } from "./tokens.js";
-import { FeedSource, targetTerminal } from "./snapshot.js";
+import { FeedSource, selectSession } from "./snapshot.js";
 import { sendAction, errorText, showTerminal } from "./actions.js";
 
 // The Gentle palette's key as bound (herdr/keys.json binds ⌘K in the layout's section), e.g.
@@ -44,6 +46,7 @@ export default class GentleStatus extends View {
         try {
           if (c === "toggle") this.toggle();
           else if (c === "stop") this.stop(cx);
+          else if (c === "session-next" || c === "session-prev") this.cycle(c === "session-next" ? 1 : -1);
         } catch { /* a key command never breaks the bar */ }
       }
     });
@@ -54,13 +57,24 @@ export default class GentleStatus extends View {
     const node = find(layout());
     if (!node) return;
     const chat = (node.active ?? node.children?.[0]?.id) === "chat";
-    if (chat) showTerminal(targetTerminal(this.last)?.address ?? null);
+    const shown = this.source.target(this.last);
+    // A session outside Herdr app has no Terminal here (T11): say where it runs instead.
+    if (chat && shown && !shown.terminal) { notify({ title: "Terminal", body: "This session runs in another terminal.", level: "info", timeout: 3000 }); return; }
+    if (chat) showTerminal(shown?.terminal?.address ?? null);
     else run("layout.select", { stack: "views", child: "chat" });
+  }
+
+  // Every live session in turn (snapshot.js allSessions order: newest snapshot first).
+  cycle(step) {
+    const all = this.source.sessions();
+    if (!all.length) return;
+    const at = all.findIndex((s) => s.key === this.source.target(this.last)?.key);
+    selectSession(all[(at + step + all.length) % all.length]);
   }
 
   // A refusal (idle agent, no session) is a toast: the bar has no line of its own for it.
   stop(cx) {
-    const f = this.source.of(targetTerminal(this.last));
+    const f = this.source.target(this.last)?.feed ?? null;
     cx.spawn(async (cx) => {
       const r = await sendAction(cx, f, "abort_turn", {});
       if (!r.ok) cx.timer.after(1, () => notify({ title: "Stop the agent", body: errorText(r), level: "info", timeout: 4000 }));
@@ -69,9 +83,9 @@ export default class GentleStatus extends View {
 
   render() {
     const c = tokens();
-    const term = targetTerminal(this.last);
-    if (term) this.last = term.address;
-    const f = this.source.of(term);
+    const shown = this.source.target(this.last);
+    if (shown) this.last = shown.key;
+    const f = shown?.feed ?? null;
     const a = f?.activity;
     const items = f?.todo?.items ?? [];
     const at = items.findIndex((t) => t.state === "in_progress" || t.state === "blocked");

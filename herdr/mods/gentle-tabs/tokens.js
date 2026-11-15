@@ -4,7 +4,8 @@
 // CANONICAL COPY. gpui-shell refuses imports outside a mod's own folder ("Module `../x.js`
 // resolves outside the application directory"), so every gentle-* mod carries a byte-identical
 // copy of this file as `./tokens.js`. Edit it here, then copy it to: gentle-sidebar, gentle-spaces,
-// gentle-agents, gentle-tabs, gentle-inspector, gentle-status (see herdr/FIDELITY-T6.md).
+// gentle-agents, gentle-tabs, gentle-inspector, gentle-status, gentle-palette, gentle-tokens and
+// gentle-pane (see herdr/FIDELITY-T6.md); gentle-chat has its own tokens.js.
 //
 // Colours: the layout (herdr/layouts/gentle-shell.json, root `colors`) sets the Herdr theme roles
 // to the artboard values, so `theme()` names come first and follow a theme pick; HEX is the
@@ -139,12 +140,33 @@ export function kbd(c, text) {
   return div().flex_none().px(5).rounded(5).border(1).border_color(c.lineStrong).font_family(c.mono).text_size(11).line_height("13.5px").text_color(c.muted).child(text);
 }
 
+// A session's kind (snapshot.js SESSION_KINDS: Herdr, TUI) as a small labelled badge: its own icon
+// (`mods/<mod>/icons/<kind.icon>.svg`, carried by every mod that shows it) and its word in the
+// kbd's mono look, so the kind never rests on colour alone. Herdr reads in the info tone, TUI in
+// the accent-soft tone.
+export function kindBadge(c, kind, mod) {
+  const tone = kind.kind === "herdr" ? c.info : c.accentSoft;
+  return h_flex().flex_none().h(17).px(5).gap(4).items_center().rounded(5).border(1).border_color(c.lineStrong)
+    .font_family(c.mono).font_weight(600).text_size(10.5).line_height("13.5px").text_color(tone)
+    .tooltip(kind.about)
+    .child(svg(`mods/${mod}/icons/${kind.icon}.svg`).size(11).flex_none())
+    .child(kind.label);
+}
+
 // ---- Formats ---------------------------------------------------------------------------------
 
 // $3.42, $0.49 (the artboard always shows cents).
 export function money(n) {
   const v = Number(n);
   return Number.isFinite(v) ? `$${v.toFixed(2)}` : "$0.00";
+}
+
+// A session's own spend as its TUI footer writes it (lib/shell-bar.ts formatCost): $33.46 from a
+// dollar up, $0.247 below (S10: the same value the TUI shows). Sums keep money()'s cents.
+export function sessionCost(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return "$0.000";
+  return `$${v >= 1 ? v.toFixed(2) : v.toFixed(3)}`;
 }
 
 // 41m, 3m 12s, 41s, 1h 05m.

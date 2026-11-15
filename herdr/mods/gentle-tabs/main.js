@@ -5,12 +5,18 @@
 // 34px tabs on the bar's bottom edge, a state dot and the Gentle Shell session name, the active
 // tab in the canvas colour with a 2px accent top edge. The Files / Changes buttons of `tabs` are
 // gone (the inspector replaces them); + starts a new Gentle Shell session.
+// T11 (S10): the bar shows the shown session's project: its Herdr space's tabs, then one tab per
+// live session of that project that runs outside Herdr app (from its snapshot: name and state);
+// a click shows that session in every region (snapshot.js selectSession). A Gentle Shell tab ends
+// with its kind badge (tokens.js kindBadge): Herdr for this window's terminals, TUI for the others.
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, ScrollHandle } from "gpui-base";
 import { spaces, agents, terminals, run, openOverlay, window, layout, settings } from "herdr";
-import { tokens, stateDot, sessionTitle } from "./tokens.js";
-import { FeedSource, isGentle } from "./snapshot.js";
+import { tokens, stateDot, sessionTitle, kindBadge } from "./tokens.js";
+import { FeedSource, isGentle, followHerdr, selectSession, projectOf, spaceFor, SESSION_KINDS } from "./snapshot.js";
+
+const MOD = "gentle-tabs";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -43,8 +49,8 @@ export default class GentleTabs extends View {
     return sessionTitle(a?.title) || (a ? "Gentle Shell" : `Tab ${tab.name}`);
   }
 
-  item(c, tab, i, shown, space, active) {
-    const on = tab.active;
+  item(c, tab, i, shown, space, active, outside) {
+    const on = tab.active && !outside;
     const [kind, word] = KIND[tab.status] ?? KIND.idle;
     const stop = (_e, cx) => cx.stop_propagation();
     return h_flex().id(`tab-${tab.id}`).relative().h(34).flex_none().max_w(260).px(12).gap(8).items_center()
@@ -60,18 +66,49 @@ export default class GentleTabs extends View {
         const from = this.pressed;
         this.pressed = null;
         if (from !== null && from !== i) run("tab.move", { id: shown[from].id, index: space.tabs.findIndex((x) => x.id === tab.id) + 1 });
-        else run("tab.select", { id: tab.id });
+        else { followHerdr(); run("tab.select", { id: tab.id }); }
       })
       .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: tab.id, space: space.id } } }); })
       .child(div().flex_none().tooltip(word).child(stateDot(c, kind)))
-      .child(div().min_w(0).truncate().child(tab.zoomed ? `${this.name(tab)} (zoomed)` : this.name(tab)));
+      .child(div().min_w(0).truncate().child(tab.zoomed ? `${this.name(tab)} (zoomed)` : this.name(tab)))
+      .when(agents().some((x) => x.tab === tab.id && isGentle(x.app)), (el) => el.child(kindBadge(c, SESSION_KINDS.herdr, MOD)));
+  }
+
+  // A session outside Herdr app (T11): the tab's look, its state from the snapshot, a click shows it.
+  elsewhere(c, s, on) {
+    const f = s.feed;
+    const status = f.pendingQuestion || f.activity?.state === "blocked" ? "blocked" : f.activity?.state === "working" || f.activity?.streaming ? "working" : "idle";
+    const [kind, word] = KIND[status];
+    const pane = f.identity?.herdr?.paneId;
+    return h_flex().id(`tab-${s.key}`).relative().h(34).flex_none().max_w(260).px(12).gap(8).items_center()
+      .rounded_tl(8).rounded_tr(8).text_size(12.5).line_height("18.75px").cursor_pointer()
+      .tooltip(`Runs outside Herdr app${pane ? ` (Herdr ${pane})` : ` (pid ${f.identity?.pid})`}`)
+      .when(on, (el) => el.bg(c.canvas).text_color(c.text)
+        .border_l(1).border_r(1).border_color(c.line)
+        .child(div().absolute().top(0).left(0).right(0).h(2).rounded_tl(8).rounded_tr(8).bg(c.accent)))
+      .when(!on, (el) => el.text_color(c.muted).hover((st) => st.text_color(c.text)))
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click(() => selectSession(s))
+      .child(div().flex_none().tooltip(word).child(stateDot(c, kind)))
+      .child(div().min_w(0).truncate().child(f.identity?.sessionName || "Gentle Shell"))
+      .child(kindBadge(c, SESSION_KINDS.tui, MOD));
   }
 
   render() {
     const c = tokens();
-    const space = spaces().find((s) => s.active);
+    const list = spaces();
+    // The shown session's project (snapshot.js targetSession): a session outside Herdr app shows
+    // its own project's tabs, else Herdr's shown space.
+    const target = this.source.target(this.last);
+    if (target) this.last = target.key;
+    const outside = target && !target.terminal && target.feed ? projectOf(target.feed) : null;
+    const space = outside ? spaceFor(outside, list) : list.find((s) => s.active);
+    const project = outside ?? null;
+    const others = this.source.sessions().filter((s) => s.feed && !s.terminal && (project
+      ? projectOf(s.feed) === project || (space && spaceFor(projectOf(s.feed), list)?.id === space.id)
+      : space && spaceFor(projectOf(s.feed), list)?.id === space.id));
     const shown = space?.tabs ?? [];
-    const active = shown.findIndex((t) => t.active);
+    const active = outside ? -1 : shown.findIndex((t) => t.active);
     if (shown[active]?.id !== this.selected) {
       this.selected = shown[active]?.id;
       if (active >= 0) this.scroll.scroll_to_item(active);
@@ -90,12 +127,13 @@ export default class GentleTabs extends View {
       // artboard: it is the scroller's last item, so it follows the tabs instead of the bar's end.
       .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_end().gap(2).overflow_x_scrollbar().track_scroll(this.scroll)
         .on_size_change((_s, cx) => { if (active >= 0) { this.scroll.scroll_to_item(active); cx.notify(); } })
-        .children(shown.map((t, i) => this.item(c, t, i, shown, space, active)))
+        .children(shown.map((t, i) => this.item(c, t, i, shown, space, active, Boolean(outside))))
+        .children(others.map((s) => this.elsewhere(c, s, target?.key === s.key)))
         .child(div().id("tab-new").size(32).ml(4).mb(4).flex_none().flex().items_center().justify_center().rounded(8).text_color(c.muted)
           .hover((s) => s.bg(c.selected).text_color(c.text)).tooltip("New Gentle Shell session")
           .on_mouse_down("left", stop)
           // A new Gentle Shell session in the shown project's folder (the space's own folder).
-          .on_click(() => run("tab.new", { argv: ["gentle-shell"], ...(space?.id ? { space: space.id } : {}), ...(space?.folder ? { folder: space.folder } : {}) }))
+          .on_click(() => run("tab.new", { argv: ["gentle-shell"], ...(space?.id ? { space: space.id } : {}), ...(space?.folder ? { folder: space.folder } : project ? { folder: project } : {}) }))
           .child(svg("mods/gentle-tabs/icons/plus.svg").size(13))));
   }
 }

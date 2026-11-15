@@ -1,7 +1,9 @@
 # Gentle Shell Desktop
 
 Gentle Shell Desktop shows your Gentle Shell sessions in a native window: the conversation as a
-chat, everything the TUI's sidebar shows beside it, and the real TUI one switch away. It is
+chat, everything the TUI's sidebar shows beside it, and the real TUI one switch away. It shows
+every live Gentle Shell session on your computer, wherever it runs: in the window's own
+terminals, and in any other terminal (the Herdr TUI, Ghostty, …). It is
 [Herdr app](https://herdr.dev), unchanged, with Gentle Shell's own `gentle-*` mods and its
 `gentle-shell` layout. Gentle Shell ships Herdr the way it ships Pi: one pinned version, an exact
 download it checks, and its own files kept separate.
@@ -47,20 +49,35 @@ The live checks so far ran on macOS with Herdr app 0.1.15.
 
 ## What you see
 
-Six regions, left to right and top to bottom. Every one reads the focused session's
+Six regions, left to right and top to bottom. Every one reads the shown session's
 [desktop snapshot](desktop-feed.md), which each interactive Gentle Shell session keeps up to date.
+
+### Two kinds of session
+
+Every session carries a small labelled badge, with its own icon, wherever it appears (Agents,
+tabs, chat header, Terminal header); Projects counts each kind.
+
+| Badge | Kind | What you get |
+|---|---|---|
+| **Herdr** | Runs in a terminal of this window (herdr-core). | The **Chat \| Terminal** switch and `⌘J`; what you type goes to its terminal. |
+| **TUI** | A Gentle Shell TUI in another terminal: the Herdr TUI, Ghostty, any terminal, or a herdr-core terminal this window does not show. | Chat, inspector, status bar and modes as for any session. No Terminal here: the header says "This session runs in another terminal" ("Other terminal" when narrow). Messages, answers, Stop and modes go through the session's inbox. |
+
+A session stays listed while its process runs. Sessions started before this version of Gentle
+Shell show and answer like the others, but take messages from the desktop only after a restart.
 
 | Region | Shows |
 |---|---|
-| **Sidebar** | **Projects** (Herdr spaces: Gentle Shell sessions, their live spend, how many need you), **Agents** (every agent in the window, the ones that need you first), and **Plan usage** (5h and 7d windows of the active provider, and when they reset). |
-| **Tabs** | One tab per session in the shown project, named after the session, with a state dot (needs you, working, done, idle). |
-| **Chat header** | Session name and the **Chat \| Terminal** switch; then project / branch · changed files, and the facts: Model · effort · profile, Persona, Ctx, Cost, and the permission mode. |
+| **Sidebar** | **Projects** (Herdr spaces, and the project of each session no space holds: "1 Herdr · 2 TUI · $4.74", how many need you), two sections of sessions, each with its count and the ones that need you first: **Herdr · In this window** (every agent in the window) and **TUI · Other terminals**; and **Plan usage** (5h and 7d windows of the active provider, and when they reset). An empty section says so in one line. |
+| **Tabs** | One tab per session in the shown project, named after the session, with a state dot (needs you, working, done, idle) and its kind badge: the space's tabs, then the project's sessions in other terminals. |
+| **Chat header** | Session name, its kind badge and the **Chat \| Terminal** switch (for a TUI session, where it runs instead); then project / branch · changed files, and the facts: Model · effort · profile, Persona, Ctx, Cost ("sub" on a subscription, as the TUI footer says), and the permission mode. |
 | **Chat** | The conversation: your messages, answers in markdown, thinking, tool calls (read-only runs grouped as "Explored"), diffs, subagent cards, and the open question. The composer sits at the bottom. |
 | **Inspector** | Six tabs: **Changes**, **Todo**, **Agents**, **Jobs**, **Review**, **Session** (turns, tool calls, duration, cost, subagent spend, cost by model, integrations). |
 | **Status bar** | The ODD phase and todo position, streaming / working / idle (with tok/s when published), what the session waits for, jobs running · done, and **⌘K Commands**. |
 
-**Terminal** shows the real Gentle Shell TUI of the same session, in the same place. Nothing is
-copied: the chat and the TUI are two views of one session.
+**Terminal** shows the real Gentle Shell TUI of the same session, in the same place, under a header
+with the session's name, its Herdr badge, its folder and the same **Chat \| Terminal** switch
+(Terminal active; on a narrow card the switch keeps only its icons). Click **Chat** or press `⌘J` to
+go back. Nothing is copied: the chat and the TUI are two views of one session.
 
 Some facts are not published yet and show as empty: the persona ("No persona"), integrations
 ("Engram and MCP status are not published by this session yet"), and plan usage for providers
@@ -74,9 +91,10 @@ that report none ("Plan usage unavailable").
 |---|---|
 | Project row | Click selects the project; drag reorders; right-click opens Herdr's space menu. |
 | **+** next to Projects | Opens a new project (Herdr's `space.new`). |
-| Agent row | Focuses that agent's pane. |
+| Agent row | **Herdr** section: focuses that agent's pane. **TUI** section: shows that session in every region. |
+| Project row of a project no space holds | Shows its session that needs you, else its newest one. |
 | Gear in Plan usage | Opens Herdr's settings. |
-| Tab | Click selects; drag reorders; double-click renames; right-click opens the tab menu; the wheel moves between tabs. |
+| Tab | Click selects; drag reorders; double-click renames; right-click opens the tab menu; the wheel moves between tabs. A TUI session's tab: click shows it. |
 | **+** after the tabs | Starts a new Gentle Shell session in the project's folder. |
 
 ### Chat header
@@ -165,9 +183,12 @@ Window-wide, while the `gentle-shell` layout shows (added to Herdr's `keys.json`
 | Key | Does |
 |---|---|
 | `⌘K` | Opens the Gentle commands palette. |
-| `⌘J` | Switches Chat ↔ Terminal. |
+| `⌘J` | Switches Chat ↔ Terminal. For a TUI session it says "This session runs in another terminal." |
 | `⌘.` | Stops the shown session's turn. |
 | `⌥⌘1` … `⌥⌘6` | Inspector tab: Changes, Todo, Agents, Jobs, Review, Session. |
+
+`herdr-app do gentle-status.session-next` (or `session-prev`) shows the next (previous) live session,
+wherever it runs; bind it in `keys.json` if you want a key for it.
 
 Inside the chat, even without those shortcuts:
 
@@ -184,6 +205,13 @@ In dialogs, `Enter` confirms and `Esc` cancels.
 
 Some things are answered or done only in the real TUI. The desktop shows them and points you
 there (**Answer in Terminal**, or it switches to the Terminal itself).
+
+For a **TUI** session (it runs in another terminal) the desktop has no Terminal to switch to.
+From the chat you can send messages (queued as a steer while the agent works, as Enter does in the
+TUI), prompt templates and skills, answer a single-choice question, stop the agent, and change the
+permission mode. Everything else in the table below, plus pi's own commands (`/new`, `/model`, …),
+extension commands (`/gentle:mode`, `/gentle:agents`, …), `!` shell lines and attachments, is done in
+that session's own terminal: "Open that session's terminal to run /commands."
 
 | Stays in the Terminal | Why |
 |---|---|
@@ -205,7 +233,7 @@ session's terminal, through the session's own owners:
 | Stop a subagent, cancel a job | The subagents and jobs owners. |
 | Stop the agent's turn | The session's own abort (the TUI's `Esc Esc`); refused while the agent is idle. |
 | Answer a question | The session checks it is still the open one and names the keys its list takes; the desktop presses them and nothing else. If the question changed meanwhile, nothing is pressed. |
-| Send a message or a slash command | Typed into the TUI, as you would; refused while a question is open. |
+| Send a message or a slash command | Herdr session: typed into the TUI, as you would. TUI session: handed to pi as if typed in its editor (`send_prompt`); only plain text, prompt templates and skills. Refused while a question is open. A desktop message never counts as your typed consent. |
 | RDD switch | Runs `gentle-ai review mode enable\|disable --scope global --cwd <project> --json`, after a dialog that says it is global. |
 
 **Escalation rules.**
@@ -264,6 +292,9 @@ own instructions. `gentle-shell self-uninstall` covers Gentle Shell itself
 | A mod failed `herdr-app check` during install | Nothing in the Herdr home changed. The printed output says why; this usually means a Herdr version the mods were not built for. |
 | The window looks stale, or `herdr-app shot` returns an old frame | Herdr does not draw a covered or hidden window. Bring it to the front. |
 | "No Gentle Shell session focused" / "No Gentle Shell session here" | Focus a tab that runs `gentle-shell`, or start one with **+** in the tab bar. Sessions started with `--link` or `--home` are not seen ([Requirements](#requirements)). |
+| A session in another terminal is missing | It is listed while its process runs and once it published a snapshot (an interactive Gentle Shell TUI does). Check **TUI · Other terminals**. |
+| "This session started before desktop messages: type in its own terminal, or restart it." / "This session takes no prompts from the desktop. Update Gentle Shell and restart it." | The TUI session runs a Gentle Shell from before desktop messages. Restart it, or type in its own terminal. |
+| "Open that session's terminal to run /commands." | The shown session runs in another terminal; pi's and extensions' commands run only there. |
 | "This session takes no desktop actions. Update Gentle Shell and restart it." | The session started before an update that added desktop actions. Restart it. |
 | "The session did not answer. Is it still running?" | The session did not answer within 6 s. Check its Terminal. |
 | "The agent is not working" | Stop was pressed while the agent was idle; nothing to stop. |

@@ -35,7 +35,16 @@ first:
 
 They watch each existing `desktop/sessions` folder (a 10 s timer catches a
 folder created later), match a terminal to a snapshot across all of them, and
-send that session's actions to the inbox under its own `identity.agentDir`. A
+send that session's actions to the inbox under its own `identity.agentDir`.
+
+Every live snapshot is a session the desktop shows, wherever it runs: in a
+terminal of the Herdr app window (kind **Herdr**), or in any other terminal —
+the Herdr TUI, Ghostty, a herdr-core terminal this window does not show (kind
+**TUI**). A snapshot counts as live while its publisher's `identity.pid` runs
+(one `ps -p` per refresh for the pids not checked in the last 5 s; without `ps`
+every snapshot counts). A Herdr session takes typed input in its terminal; a TUI
+session takes prompts and answers through its inbox (`send_prompt`,
+`answer_question` with `via: "session"`, below). A
 snapshot from an older Gentle Shell without `identity.agentDir` is treated as
 belonging to the agent dir it was found in. Herdr app lets mods read only under
 the home folder, so an agent dir outside it is not seen.
@@ -137,14 +146,32 @@ whole `<agentDir>/desktop/` folder like any other sensitive path. An action file
 | `cancel_subagent` | `{ id }` | the subagents owner, as desktop RPC `cancel_subagent` |
 | `answer_question` | `{ toolCallId, option }` or `{ toolCallId, text }` | nothing is answered here: the session checks that `toolCallId` is the open `ask_user_choice` / single-question `ask_user_question` and answers the keys its real list takes (`up` to the top, `down` to the row, `enter`); the desktop presses them in the terminal, then types `text` into the list's own editor |
 | `abort_turn` | `{}` | the session's own abort, the one its TUI's Esc Esc runs (in the TUI, queued messages go back to the editor); refused with `not_working` while the agent is idle |
+| `send_prompt` | `{ text }` (1-4000 characters, not blank; new lines and tabs, no other control character) | pi's `sendUserMessage`, as if typed in the session's editor and submitted: a prompt while the agent is idle, a steer while it works (the TUI's Enter); trimmed like the editor. Refused with `question_open` while a question, an extension prompt or a consent is open. A prompt template or a skill (`/review …`, `/skill:…`) expands as in the editor; a pi built-in command, an extension command (`/gentle:mode`, …) or a `!` shell line is refused with `terminal_command` (they are TUI code with their own authority); a `/word` no command owns is plain text. Answers `{ queued }` |
+| `answer_question` with `via: "session"` | `{ toolCallId, option, via }` or `{ toolCallId, text, via }` | the same checks as the key path (still the open question, answerable from the desktop, an existing option or the list's free-text row), then the ask tool's own list takes the answer, exactly as a click or Enter in it would; answers `{ toolCallId, answered: true }`, or `answer_in_terminal` ("Answer this question in that session's terminal.") when the list has no handle (a Gentle Shell older than this one) |
 
 The session refuses, removes and answers (code in `error.code`) a file that is a
 link, not a private regular file (`unsafe_file`), over 16 KiB (`too_large`), older
 than 60 s or dated ahead (`stale`), of another kind (`unknown_kind`), for another
 session (`wrong_session`), malformed or with other args (`invalid_action`), already
 run (`duplicate`), a question that is no longer open (`question_mismatch`), a
-stop while the agent is idle (`not_working`), or a permission escalation written
-while the session was busy (`escalation_while_busy`).
+stop while the agent is idle (`not_working`), a permission escalation written
+while the session was busy (`escalation_while_busy`), a prompt while a question is
+open (`question_open`), a prompt that is a command or shell line only the terminal
+runs (`terminal_command`), or a prompt to a session without a prompt owner
+(`unsupported`).
+
+**Prompts are not human evidence.** A `send_prompt` reaches pi with the input
+source `extension`, as any extension message does, never `interactive`: Gentle
+AI's consent and reply-language rules, which count only interactive input as the
+person's own words, never treat a desktop prompt as a typed consent. Consent stays
+in the terminal.
+
+**The ask tools' answer handle.** `ask_user_choice` and `ask_user_question`
+register, while their TUI list is open, one handle per tool call id in a
+process-wide registry (`lib/desktop-feed-answers.ts`; their event-bus traffic is
+unchanged). It finishes the list once, with the result a click gives; a finished
+list leaves the registry. Only a single single-select question can be answered
+through it.
 A non-regular entry (a folder, a FIFO, a device) is refused once: an empty
 folder is removed, anything that cannot be removed is skipped until it changes.
 
@@ -184,7 +211,8 @@ they have not changed for 10 minutes and their session is proven gone: the pid i
 `.owner` (or, without one, in its snapshot) no longer runs, or there is neither.
 A live session's folders stay however long it is idle.
 
-What the desktop does without this inbox, as the person would: it sends prompts
+What the desktop does without this inbox, as the person would, for a session in
+a terminal of its window (kind Herdr): it sends prompts
 and the TUI's own slash commands (any command typed in the composer or chosen in
 the `/` menu or the ⌘K palette, and the views' own `/gentle:changes`,
 `/gentle:agents`, `/gentle:jobs`, `/gentle:profiles`, `/gentle:persona`) with
@@ -210,6 +238,10 @@ they already use):
 | ⌘J | `gentle-status.toggle` | Chat ↔ Terminal |
 | ⌘. | `gentle-status.stop` | stops the shown session's turn (`abort_turn`) |
 | ⌥⌘1 … ⌥⌘6 | `gentle-inspector.tab-<changes\|todo\|agents\|jobs\|review\|session>` | the inspector tab |
+
+`gentle-status.session-next` and `gentle-status.session-prev` (no default key; run
+them with `herdr-app do` or bind them) show the next or previous live session,
+wherever it runs.
 
 Inside the chat, without that merge: ⌘K opens the palette, ⌘J shows the Terminal,
 Esc Esc stops the agent (Esc first closes the `/` menu), and `/` in the composer

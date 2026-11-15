@@ -4,12 +4,20 @@
 // idle, then most recent change), pins first, setAgentOrder so agent.next / agent.prev follow
 // the list, click focuses the agent. Restyled to two-line rows: the session title and its state
 // label, then "<app> · <space> · <address>". Sub-agent trees are in the inspector's Agents tab.
+// T11 (S10): every live Gentle Shell session that runs outside Herdr app (the Herdr TUI, Ghostty,
+// …) is a row too, from its snapshot: its name, state, spend, project and where it runs; a click
+// shows it in every region (snapshot.js selectSession). The two kinds are two sections, each with
+// its eyebrow and count, needs-you first inside each: "Herdr · In this window" (the agents of
+// this window's herdr-core terminals) and "TUI · Other terminals" (Gentle Shell TUIs elsewhere);
+// every row also carries its kind badge (tokens.js kindBadge, snapshot.js SESSION_KINDS).
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, terminals, spaces, run, setAgentOrder, layout } from "herdr";
-import { tokens, eyebrow, state, sessionTitle } from "./tokens.js";
-import { FeedSource } from "./snapshot.js";
+import { tokens, eyebrow, state, sessionTitle, sessionCost, kindBadge } from "./tokens.js";
+import { FeedSource, followHerdr, selectSession, projectOf, projectName, whereLabel, SESSION_KINDS } from "./snapshot.js";
+
+const MOD = "gentle-agents";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -60,17 +68,53 @@ export default class GentleAgents extends View {
     localStorage.setItem("changed", JSON.stringify(this.changed));
   }
 
-  row(c, a, tab, feed) {
+  row(c, a, tab, feed, on) {
     const [kind, label] = KIND[a.status] ?? KIND.idle;
     const app = a.app ?? a.program?.key ?? a.program?.name ?? "terminal";
     return v_flex().id(`ag-${a.address}`).w_full().h(48.75).flex_none().p(6).rounded(6).cursor_pointer()
-      .when(a.focused, (el) => el.bg(c.selected))
+      .when(on, (el) => el.bg(c.selected))
       .hover((s) => s.bg(c.selected))
-      .on_click(() => run("pane.focus", { pane: a.pane }))
+      .on_click(() => { followHerdr(); run("pane.focus", { pane: a.pane }); })
       .child(h_flex().h(19.5).gap(8).items_center()
         .child(div().flex_1().min_w(0).truncate().text_size(13).line_height("19.5px").text_color(c.text).child(title(a, tab, feed)))
         .child(state(c, kind, label)))
-      .child(div().truncate().text_size(11.5).line_height("17.25px").text_color(c.muted).child(`${app} · ${a.space_name} · ${a.address}`));
+      .child(h_flex().h(17.25).gap(6).items_center().min_w(0)
+        .child(kindBadge(c, SESSION_KINDS.herdr, MOD))
+        .child(div().min_w(0).truncate().text_size(11.5).line_height("17.25px").text_color(c.muted).child(`${app} · ${a.space_name} · ${a.address}`)));
+  }
+
+  // A session outside Herdr app (T11): the same two lines, from its snapshot. Its state: needs you
+  // while a question or prompt is open, working, else idle; the second line names its project,
+  // its spend and where it runs.
+  elsewhereRow(c, s, on) {
+    const f = s.feed;
+    const status = statusOf(f);
+    const [kind, label] = KIND[status] ?? KIND.idle;
+    const title = f.identity?.sessionName || projectName(projectOf(f)) || "Gentle Shell";
+    return v_flex().id(`ag-${s.key}`).w_full().h(48.75).flex_none().p(6).rounded(6).cursor_pointer()
+      .when(on, (el) => el.bg(c.selected))
+      .hover((st) => st.bg(c.selected))
+      .tooltip(`Runs outside Herdr app (${whereLabel(s)}) · ${f.identity?.cwd ?? ""}`)
+      .on_click(() => selectSession(s))
+      .child(h_flex().h(19.5).gap(8).items_center()
+        .child(div().flex_1().min_w(0).truncate().text_size(13).line_height("19.5px").text_color(c.text).child(title))
+        .child(state(c, kind, label)))
+      .child(h_flex().h(17.25).gap(6).items_center().min_w(0)
+        .child(kindBadge(c, SESSION_KINDS.tui, MOD))
+        .child(div().min_w(0).truncate().text_size(11.5).line_height("17.25px").text_color(c.muted)
+          .child(`${projectName(projectOf(f))} · ${sessionCost(Number(f.cost?.total) || 0)} · ${whereLabel(s)}`)));
+  }
+
+  // A section's head: the kind's eyebrow ("HERDR · IN THIS WINDOW") and its row count.
+  head(c, kind, n, first) {
+    return h_flex().flex_none().px(6).pt(first ? 0 : 12).pb(6).items_center().justify_between()
+      .child(eyebrow(c, `${kind.label} · ${kind.section}`))
+      .child(div().font_family(c.mono).text_size(11.5).line_height("17.25px").text_color(c.muted).child(String(n)));
+  }
+
+  // An empty section: one calm line.
+  none(c, text) {
+    return div().flex_none().px(6).pb(4).text_size(12).line_height("18px").text_color(c.faint).child(text);
   }
 
   compact(c, a, i) {
@@ -94,14 +138,31 @@ export default class GentleAgents extends View {
     const tabs = new Map(spaces().flatMap((s) => s.tabs).map((t) => [t.id, t]));
     const terms = new Map(terminals().map((t) => [t.address, t]));
     const collapsed = narrow();
+    // The shown session (snapshot.js targetSession) is the highlighted row, Herdr's or not.
+    const shown = this.source.target(this.last);
+    if (shown) this.last = shown.key;
+    const elsewhere = this.source.sessions().filter((s) => s.feed && !s.terminal)
+      .sort((x, y) => (RANK[statusOf(y.feed)] ?? 0) - (RANK[statusOf(x.feed)] ?? 0) || String(y.feed.updatedAt).localeCompare(String(x.feed.updatedAt)));
+    const herdrOn = (a) => (shown ? shown.terminal?.address === a.address : a.focused);
+    if (collapsed) {
+      return v_flex().id("root").size_full().min_h(0).bg(c.chrome).font_family(c.sans).text_size(13).pt(10).pb(6)
+        .child(v_flex().id("ag-list").flex_1().min_h(0).overflow_y_scrollbar().children(list.map((a, i) => this.compact(c, a, i))));
+    }
+    // Two sections, one scroll: this window's Herdr terminals, then TUIs in other terminals.
     return v_flex().id("root").size_full().min_h(0).bg(c.chrome).font_family(c.sans).text_size(13)
-      .pt(10).px(collapsed ? 0 : 10).pb(6)
-      .when(!collapsed, (el) => el.child(h_flex().flex_none().px(6).pb(6).items_center().justify_between()
-        .child(eyebrow(c, "Agents"))
-        .child(div().text_size(11.5).line_height("17.25px").text_color(c.muted).child("Needs you first"))))
-      .when(list.length === 0 && !collapsed, (el) => el.child(div().px(6).text_size(12).line_height("18px").text_color(c.muted)
-        .child("No agent status yet. Agents show up here when they report their status.")))
+      .pt(10).px(10).pb(6)
       .child(v_flex().id("ag-list").flex_1().min_h(0).overflow_y_scrollbar()
-        .children(list.map((a, i) => (collapsed ? this.compact(c, a, i) : this.row(c, a, tabs.get(a.tab), this.source.of(terms.get(a.address)))))));
+        .child(this.head(c, SESSION_KINDS.herdr, list.length, true))
+        .when(list.length === 0, (el) => el.child(this.none(c, "No agent in this window yet.")))
+        .children(list.map((a) => this.row(c, a, tabs.get(a.tab), this.source.of(terms.get(a.address)), herdrOn(a))))
+        .child(this.head(c, SESSION_KINDS.tui, elsewhere.length, false))
+        .when(elsewhere.length === 0, (el) => el.child(this.none(c, "No Gentle Shell TUI in another terminal.")))
+        .children(elsewhere.map((s) => this.elsewhereRow(c, s, shown?.key === s.key))));
   }
+}
+
+// A snapshot's state in Herdr's words: blocked (a question, prompt or consent waits), working, idle.
+function statusOf(f) {
+  if (f?.pendingQuestion || f?.activity?.state === "blocked") return "blocked";
+  return f?.activity?.state === "working" || f?.activity?.streaming ? "working" : "idle";
 }

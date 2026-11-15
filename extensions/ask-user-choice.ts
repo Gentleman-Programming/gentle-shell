@@ -3,6 +3,7 @@ import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Container, Input, isKeyRelease, matchesKey, Text, type KeybindingsManager, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import { captureChoiceAnswer } from "../lib/auto-permission-answers.ts";
+import { publishChoiceAnswerHandle } from "../lib/desktop-feed-answers.ts";
 import { NativeChoiceList } from "../lib/native-choice-list.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { isInteractiveMode, isInteractiveRpcHost } from "../lib/rpc-host.ts";
@@ -295,6 +296,8 @@ export default function askUserChoice(pi: ExtensionAPI): void {
 						}
 					};
 					list.onCancel = () => finish(undefined);
+					// Gentle Shell Desktop answers a session outside Herdr app through this list's own finish.
+					publishChoiceAnswerHandle(_toolCallId, params, finish, () => completed);
 					container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
 					container.addChild(new Text(theme.fg("accent", theme.bold(params.question)), 1, 0));
 					container.addChild(view);

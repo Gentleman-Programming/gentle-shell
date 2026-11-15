@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { captureQuestionnaireAnswers } from "../lib/auto-permission-answers.ts";
+import { publishQuestionnaireAnswerHandle } from "../lib/desktop-feed-answers.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { type QuestionData, type QuestionParams, QuestionParamsSchema } from "../lib/questionnaire/schema.ts";
 import {
@@ -283,11 +284,13 @@ export default function askUserQuestion(pi: ExtensionAPI): void {
 			try {
 				pi.events.emit(ASK_USER_QUESTION_BLOCKED_EVENT, { active: true });
 				selection = await ctx.ui.custom<QuestionnaireResult>((tui, theme, keybindings, done) => {
+					let completed = false;
+					const complete = (result: QuestionnaireResult) => { if (!completed) { completed = true; done(result); } };
 					const view = new QuestionnaireView({
 						questions: params.questions,
 						theme,
 						keybindings,
-						onComplete: (result) => done(result),
+						onComplete: complete,
 						rows: () => tui?.terminal?.rows ?? 24,
 					});
 					// Native dock swap, never an overlay: the transcript stays scrollable
@@ -297,6 +300,8 @@ export default function askUserQuestion(pi: ExtensionAPI): void {
 						requestRender: () => tui.requestRender(),
 						mouseObserver: view.createMouseObserver(() => tui.requestRender()),
 					});
+					// Gentle Shell Desktop answers a session outside Herdr app through the view's own completion.
+					publishQuestionnaireAnswerHandle(_toolCallId, params.questions, complete, () => completed);
 					container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
 					container.addChild(view);
 					container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));

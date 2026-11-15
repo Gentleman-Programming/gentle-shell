@@ -17,8 +17,8 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { exec, home, shared, nextCommand } from "herdr";
-import { tokens, eyebrow, state, bar, btn, money, span, clock, ago, cap, prettyModel, agentRole } from "./tokens.js";
-import { FeedSource, targetTerminal } from "./snapshot.js";
+import { tokens, eyebrow, state, bar, btn, money, sessionCost, span, clock, ago, cap, prettyModel, agentRole } from "./tokens.js";
+import { FeedSource } from "./snapshot.js";
 import { sendAction, errorText, tuiCommand, showTerminal, confirm, confirmed } from "./actions.js";
 
 const ICON = (name) => `mods/gentle-inspector/icons/${name}.svg`;
@@ -131,7 +131,9 @@ export default class GentleInspector extends View {
   // After the await, Herdr's ambient calls (run) only work from a host call: the Terminal is
   // shown from a timer callback (T10, live: a run() right after `hc send` was ignored).
   command(key, text, cx) {
-    const address = this.last;
+    const address = this.address;
+    // A session outside Herdr app (T11): its TUI screens open in its own terminal only.
+    if (!address) { this.error = "Open that session's terminal to run /commands."; cx.notify(); return; }
     this.act(key, cx, (cx) => tuiCommand(address, this.feed, text, () => cx.timer.after(1, () => showTerminal(address))));
   }
 
@@ -400,7 +402,7 @@ export default class GentleInspector extends View {
     if (!r) return [head, v_flex().gap(10).child(box).child(rdd)];
     const ask = r.state === "ready" || r.state === "consent";
     // Review consent is yours, in the real prompt: both buttons show it in the Terminal.
-    const toPrompt = () => showTerminal(this.last);
+    const toPrompt = () => { if (this.address) showTerminal(this.address); else { this.error = "Answer the review consent in that session's terminal."; } };
     return [head, v_flex().gap(10).child(box)
       .child(this.kv(c, [["State", REVIEW_SHORT[r.state] ?? r.state]]))
       .child(rdd)
@@ -428,7 +430,7 @@ export default class GentleInspector extends View {
       ["Turns", String(st.turns ?? 0)],
       ["Tool calls", String(st.toolCalls ?? 0)],
       ["Duration", span(st.durationMs)],
-      ["Cost", money(f.cost?.total ?? st.cost)],
+      ["Cost", sessionCost(f.cost?.total ?? st.cost)],
       ["Subagent spend", money(f.agents?.spend?.cost ?? 0)],
     ];
     const models = (st.models ?? []).map((m) => [`${prettyModel(m.model) ?? m.model} · ${m.turns} ${m.turns === 1 ? "turn" : "turns"}`, money(m.cost)]);
@@ -452,9 +454,11 @@ export default class GentleInspector extends View {
 
   render() {
     const c = tokens();
-    const term = targetTerminal(this.last);
-    if (term) this.last = term.address;
-    const f = this.source.of(term);
+    // The shown session, wherever it runs (snapshot.js targetSession, T11).
+    const shown = this.source.target(this.last);
+    if (shown) this.last = shown.key;
+    this.address = shown?.terminal?.address ?? null;
+    const f = shown?.feed ?? null;
     this.feed = f;
     this.takeReveal();
     const body = f ? this[this.tab](c, f) : this.empty(c);

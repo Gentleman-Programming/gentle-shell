@@ -20,10 +20,12 @@ import {
 } from "../lib/desktop-feed-actions.ts";
 import type { DesktopFeedSnapshot, DesktopFeedTimers } from "../lib/desktop-feed.ts";
 import { desktopFeedFile } from "../lib/desktop-feed-store.ts";
+import { publishChoiceAnswerHandle } from "../lib/desktop-feed-answers.ts";
 import { DESKTOP_AGENTS_SERVICE_CHANNEL, DESKTOP_AGENTS_SERVICE_SCHEMA } from "../lib/desktop-rpc-agents.ts";
 import { DESKTOP_JOBS_SERVICE_CHANNEL, DESKTOP_JOBS_SERVICE_SCHEMA, type DesktopJobEntry } from "../lib/desktop-rpc-jobs.ts";
 import { DESKTOP_RPC_SCHEMA, type DesktopRpcOutcome } from "../lib/desktop-rpc.ts";
 import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
+import { NOTIFICATION_ATTENTION_EVENT } from "../lib/notification-events.ts";
 import { registerYoloSessionPolicy } from "../lib/yolo-session-policy.ts";
 
 // T7 (odd/tasks/herdr-desktop.md, S2/S5): the desktop's actions reach a live
@@ -64,15 +66,18 @@ function fakePi() {
 	const bus = fakeBus();
 	const handlers = new Map<string, Handler[]>();
 	const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
+	// What pi.sendUserMessage received (T11 send_prompt).
+	const sent: Array<{ content: unknown; options: unknown }> = [];
 	const pi = {
 		on(name: string, fn: Handler) { handlers.set(name, [...(handlers.get(name) ?? []), fn]); return () => {}; },
 		events: bus,
 		registerCommand(name: string, command: any) { commands.set(name, command); },
 		registerTool() {},
 		getThinkingLevel: () => "high",
+		sendUserMessage(content: unknown, options: unknown) { sent.push({ content, options }); },
 	} as unknown as ExtensionAPI;
 	const fire = (name: string, event: unknown, ctx: unknown) => { for (const fn of handlers.get(name) ?? []) fn(event, ctx); };
-	return { pi, bus, commands, fire };
+	return { pi, bus, commands, fire, sent };
 }
 
 function fakeCtx(cwd: string, overrides: Record<string, unknown> = {}) {
@@ -483,4 +488,75 @@ test("S2: desktop RPC set_permission_mode answers are byte-identical with the fe
 	const withFeed = await run(true);
 	assert.deepEqual(withFeed, without);
 	assert.equal(without.length, 5, "two answers with their events and one refusal");
+});
+
+// ---- T11: sessions outside Herdr app (S10) ----
+
+test("S10: send_prompt types the text into the session through pi, steering while the agent works", async (t) => {
+	const h = harness(t);
+	await h.start();
+	Object.assign(h.pi, { getCommands: () => [{ name: "gentle:mode", source: "extension" }, { name: "review", source: "prompt" }] });
+	h.drop("p1.json", h.action("p1", "send_prompt", { text: "hola" }));
+	await h.deliver();
+	assert.deepEqual(h.sent, [{ content: "hola", options: { deliverAs: "steer", expandPromptTemplates: false } }]);
+	assert.deepEqual(h.result("p1"), { schema: DESKTOP_ACTION_RESULT_SCHEMA, id: "p1", sessionId: "sess-1", kind: "send_prompt", ok: true, data: { queued: false }, finishedAt: new Date(NOW).toISOString() });
+	Object.assign(h.ctx, { isIdle: () => false });
+	h.drop("p2.json", h.action("p2", "send_prompt", { text: "/review the parser" }));
+	await h.deliver();
+	assert.deepEqual(h.sent[1], { content: "/review the parser", options: { deliverAs: "steer", expandPromptTemplates: true } });
+	assert.deepEqual(h.result("p2").data, { queued: true });
+	h.drop("p3.json", h.action("p3", "send_prompt", { text: "/gentle:mode super-yolo" }));
+	h.drop("p4.json", h.action("p4", "send_prompt", { text: "/new" }));
+	await h.deliver();
+	assert.equal(h.result("p3").error.code, "terminal_command");
+	assert.equal(h.result("p4").error.code, "terminal_command");
+	assert.equal(h.sent.length, 2, "no command reached pi");
+	assert.deepEqual(h.setModes, [], "the permission owner was never asked");
+	assert.deepEqual(h.inboxFiles(), []);
+});
+
+test("S10: send_prompt is refused while a question, an extension prompt or a consent is open", async (t) => {
+	const h = harness(t);
+	await h.start();
+	h.fire("tool_execution_start", { toolCallId: "call-1", toolName: "ask_user_choice", args: { question: "Which?", options: [{ label: "A", value: "a" }, { label: "B", value: "b" }] } }, h.ctx);
+	h.drop("p1.json", h.action("p1", "send_prompt", { text: "A" }));
+	await h.deliver();
+	assert.deepEqual(h.result("p1").error, { code: "question_open", message: "Answer the open question first." });
+	h.fire("tool_execution_end", { toolCallId: "call-1", toolName: "ask_user_choice", isError: false, result: {} }, h.ctx);
+	h.fire("ui_prompt_start", { title: "Continue?", kind: "confirm" }, h.ctx);
+	h.drop("p2.json", h.action("p2", "send_prompt", { text: "yes" }));
+	await h.deliver();
+	assert.equal(h.result("p2").error.code, "question_open");
+	h.fire("ui_prompt_end", {}, h.ctx);
+	h.bus.emit(NOTIFICATION_ATTENTION_EVENT, { active: true, label: "Review consent" });
+	h.drop("p3.json", h.action("p3", "send_prompt", { text: "yes" }));
+	await h.deliver();
+	assert.equal(h.result("p3").error.code, "question_open");
+	assert.deepEqual(h.sent, []);
+});
+
+test("S10: answer_question via session answers through the ask tool's handle; the key path is unchanged", async (t) => {
+	const h = harness(t);
+	await h.start();
+	const params = { question: "Which?", options: [{ label: "A", description: "", value: "tok-a" }, { label: "B", description: "", value: "tok-b" }] };
+	h.fire("tool_execution_start", { toolCallId: "call-1", toolName: "ask_user_choice", args: params }, h.ctx);
+	h.drop("a0.json", h.action("a0", "answer_question", { toolCallId: "call-1", option: 1, via: "session" }));
+	await h.deliver();
+	assert.deepEqual(h.result("a0").error, { code: "answer_in_terminal", message: "Answer this question in that session's terminal." }, "no handle yet");
+	const finished: unknown[] = [];
+	let done = false;
+	publishChoiceAnswerHandle("call-1", params, (result) => { finished.push(result); done = true; }, () => done);
+	h.drop("a1.json", h.action("a1", "answer_question", { toolCallId: "call-1", option: 1, via: "session" }));
+	await h.deliver();
+	assert.deepEqual(finished, [{ value: "tok-b", label: "B", index: 2 }]);
+	assert.deepEqual(h.result("a1").data, { toolCallId: "call-1", answered: true });
+	h.drop("a2.json", h.action("a2", "answer_question", { toolCallId: "call-1", option: 0 }));
+	await h.deliver();
+	assert.deepEqual(h.result("a2").data, { toolCallId: "call-1", keys: ["up", "up", "enter"] }, "keys, as before");
+	assert.equal(finished.length, 1, "the key path never answers by itself");
+	h.fire("tool_execution_end", { toolCallId: "call-1", toolName: "ask_user_choice", isError: false, result: {} }, h.ctx);
+	h.drop("a3.json", h.action("a3", "answer_question", { toolCallId: "call-1", option: 0, via: "session" }));
+	await h.deliver();
+	assert.equal(h.result("a3").error.code, "question_mismatch");
+	assert.equal(finished.length, 1);
 });

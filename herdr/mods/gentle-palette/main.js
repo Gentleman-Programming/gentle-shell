@@ -20,13 +20,16 @@
 // goes into the composer) — is a consume-once `gentle-chat.request` the chat takes on its
 // command or when it mounts. Opened with `mod.open:gentle-palette` (herdr/keys.json ⌘K, the
 // chat's ⌘K, the status bar's "Commands").
+// T11 (S10): every live session counts, wherever it runs (snapshot.js allSessions). For a session
+// outside Herdr app there is no Terminal row, and only its prompt templates and skills are listed:
+// the chat sends them through its inbox; every other command is TUI code that stays in its terminal.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, ScrollHandle } from "gpui-base";
 import { agents, closeOverlay, layout, props, run, setShared, shared } from "herdr";
 import { sendAction, errorText, tuiCommand, showTerminal } from "./actions.js";
 import { tokens, eyebrow, kbd, sessionTitle } from "./tokens.js";
-import { FeedSource, gentleTerminals, targetTerminal } from "./snapshot.js";
+import { FeedSource, selectSession, followHerdr } from "./snapshot.js";
 
 const MOD = "gentle-palette";
 const icon = (name, size = 15) => svg(`mods/${MOD}/icons/${name}.svg`).size(size).flex_none();
@@ -59,28 +62,30 @@ const TAG = { builtin: "pi", extension: "ext", prompt: "prompt", skill: "skill" 
 
 // Every row the palette offers for `feed` (the session's snapshot) and the window's sessions.
 // Pure but for `agents()`: rows carry what to run, never run it.
-export function paletteRows(feed, sessions, blockedAgents) {
+export function paletteRows(feed, sessions, blockedAgents, elsewhere = false) {
   const rows = [];
   const add = (section, row) => rows.push({ section, ...row });
   const seen = new Set();
-  for (const { terminal, feed: f } of sessions) {
+  for (const { key, terminal, feed: f } of sessions) {
     const q = f?.pendingQuestion;
     if (!q && f?.activity?.state !== "blocked") continue;
-    seen.add(terminal.address);
-    const name = f?.identity?.sessionName || sessionTitle(terminal.title) || "Gentle Shell";
-    add("Needs you", { id: `need-${terminal.address}`, label: name, detail: q?.question || f?.activity?.blockedLabel || "Waiting for you", icon: "bolt", tone: "warn", act: { kind: "focus", terminal: terminal.address } });
+    if (terminal) seen.add(terminal.address);
+    const name = f?.identity?.sessionName || sessionTitle(terminal?.title) || "Gentle Shell";
+    const id = terminal ? terminal.address : key;
+    add("Needs you", { id: `need-${id}`, label: name, detail: q?.question || f?.activity?.blockedLabel || "Waiting for you", icon: "bolt", tone: "warn", act: terminal ? { kind: "focus", terminal: terminal.address } : { kind: "select", key } });
   }
   for (const a of blockedAgents) {
     if (seen.has(a.address)) continue;
     add("Needs you", { id: `need-${a.address}`, label: a.tab_name || a.space_name || a.program?.name || "Agent", detail: `${a.program?.name ?? "Agent"} waits for you`, icon: "bolt", tone: "warn", act: { kind: "focus", terminal: a.address } });
   }
-  const commands = feed?.commands?.items ?? [];
+  // Outside Herdr app only prompt templates and skills run from here (they become a prompt).
+  const commands = (feed?.commands?.items ?? []).filter((c) => !elsewhere || c.source === "prompt" || c.source === "skill");
   if (feed?.activity?.state === "working") add("Session", { id: "stop", label: "Stop the agent", detail: "Stops this turn, as Esc Esc in the terminal", icon: "stop", tone: "err", key: KEYS.stop, act: { kind: "stop" } });
   for (const c of commands.filter((c) => c.source === "builtin")) {
     add("Session", { id: `cmd-${c.name}`, label: `/${c.name}`, mono: true, detail: c.description, tag: c.args ? c.args : null, icon: c.terminal ? "term" : "cmd", act: { kind: "command", command: c } });
   }
   add("View", { id: "view-chat", label: "Chat", detail: "The conversation", icon: "chat", key: KEYS.chat, act: { kind: "view", which: "chat" } });
-  add("View", { id: "view-terminal", label: "Terminal", detail: "The real Gentle Shell TUI", icon: "term", key: KEYS.chat, act: { kind: "view", which: "terminal" } });
+  if (!elsewhere) add("View", { id: "view-terminal", label: "Terminal", detail: "The real Gentle Shell TUI", icon: "term", key: KEYS.chat, act: { kind: "view", which: "terminal" } });
   for (const t of TABS) add("View", { id: `tab-${t.id}`, label: t.label, detail: "Inspector tab", icon: t.icon, key: KEYS[t.id], act: { kind: "tab", tab: t.id } });
   const mode = feed?.permission?.mode;
   if (feed) {
@@ -139,9 +144,11 @@ export default class GentlePalette extends View {
     this.error = null;
     // The chat names its session when it opens the palette (⌘K in the chat); otherwise the
     // session the window is about.
-    const hint = shared("gentle-palette.terminal");
-    const fresh = hint && typeof hint.address === "string" && Number.isFinite(hint.at) && Math.abs(Date.now() - hint.at) < 3000;
-    this.terminal = fresh ? hint.address : targetTerminal(null)?.address ?? null;
+    const named = shared("gentle-palette.terminal");
+    const fresh = named && Number.isFinite(named.at) && Math.abs(Date.now() - named.at) < 3000;
+    this.named = fresh ? { session: typeof named.key === "string" ? named.key : null, address: typeof named.address === "string" ? named.address : null } : null;
+    this.last = null;
+    this.terminal = null;
     this.source = new FeedSource();
     this.source.start(cx, null, 5000);
     this.scroll = ScrollHandle.new();
@@ -157,18 +164,22 @@ export default class GentlePalette extends View {
     try { closeOverlay(props().overlay); } catch { /* already closed */ }
   }
 
+  // The palette's session: the one the chat named when it opened it, else the shown one.
   feed() {
-    const all = gentleTerminals();
-    const term = all.find((t) => t.address === this.terminal) ?? null;
-    return { term, feed: this.source.of(term), all };
+    const sessions = this.source.sessions();
+    const n = this.named;
+    const hinted = n ? sessions.find((s) => (n.session && s.key === n.session) || (n.address && s.terminal?.address === n.address)) : null;
+    const session = hinted ?? this.source.target(this.last);
+    if (session) this.last = session.key;
+    this.terminal = session?.terminal?.address ?? null;
+    return { session, term: session?.terminal ?? null, feed: session?.feed ?? null, sessions };
   }
 
   shown() {
-    const { feed, all } = this.feed();
-    const sessions = all.map((terminal) => ({ terminal, feed: this.source.of(terminal) }));
+    const { session, feed, sessions } = this.feed();
     let blocked = [];
     try { blocked = agents().filter((a) => a.status === "blocked"); } catch { blocked = []; }
-    return filterRows(paletteRows(feed, sessions, blocked), this.query);
+    return filterRows(paletteRows(feed, sessions, blocked, Boolean(session && !session.terminal)), this.query);
   }
 
   // Runs a row (see the header): instant rows close first; a send or an action keeps the
@@ -176,11 +187,17 @@ export default class GentlePalette extends View {
   choose(row, cx) {
     if (!row || this.busy) return;
     const act = row.act;
-    const { feed } = this.feed();
+    const { feed, session, sessions } = this.feed();
     this.error = null;
     if (act.kind === "focus") {
       this.close();
+      followHerdr();
       run("agent.focus", { terminal: act.terminal });
+      showChat();
+    } else if (act.kind === "select") {
+      // A session outside Herdr app (T11): every region shows it.
+      this.close();
+      selectSession(sessions.find((s) => s.key === act.key));
       showChat();
     } else if (act.kind === "view") {
       this.close();
@@ -201,6 +218,8 @@ export default class GentlePalette extends View {
       const c = act.command;
       const text = `/${c.name}`;
       if (c.args) { this.close(); chatRequest({ kind: "command", text, args: c.args }); return; }
+      // Outside Herdr app the chat sends it through the session's inbox (send_prompt).
+      if (session && !session.terminal) { this.close(); chatRequest({ kind: "command", text, terminal: false }); return; }
       const terminal = c.terminal !== false;
       this.work(row.id, cx, () => tuiCommand(this.terminal, feed, text, null), () => (terminal ? showTerminal(this.terminal) : showChat()));
     }

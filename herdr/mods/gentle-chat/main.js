@@ -3,21 +3,24 @@
 // JSONL, with the session header and the pending question from the session's desktop snapshot
 // (docs/desktop-feed.md), and sends what you type with `hc send`. The terminal stays the real
 // Gentle Shell TUI; the header's Chat | Terminal switch flips the layout stack.
-// props: { terminal? } (else the focused / shown tab's Gentle Shell), and in a layout stack
+// T11 (S10): any live Gentle Shell session, also one that runs outside Herdr app (the Herdr TUI,
+// Ghostty, …; snapshot.js targetSession): its chat reads the exact session file its snapshot
+// names; prompts and answers go through its inbox (send_prompt, answer_question via the session);
+// it has no Terminal here, so the switch and ⌘J say where it runs instead.
+// props: { terminal? } (else the session the window is about), and in a layout stack
 // { stack, self, other } for the Chat / Terminal switch (see herdr/layouts/gentle-shell.json).
 // Drawing: ui.js; colours, type and radii: tokens.js (shared with the T6 mods).
 
 import { View, div } from "gpui-kit";
 import { v_flex, TextareaState, ScrollHandle } from "gpui-base";
-import { agents, terminals, focused, props, layout, hc, run, setShared, shared, theme, watchFolder, nextCommand } from "herdr";
+import { agents, props, layout, hc, run, setShared, shared, theme, watchFolder, nextCommand } from "herdr";
 import { sessionFileFor, readAfter } from "./session.js";
-import { agentRoots, feedDirOf } from "./snapshot.js";
+import { FeedSource, allSessions, targetSession } from "./snapshot.js";
 import { createFeed, ingest } from "./feed.js";
 import { palette, sans, R } from "./tokens.js";
-import { header, entries, entry, lane, stateLabel, askCard, askOptions, composer, icon, PERM } from "./ui.js";
+import { header, entries, entry, lane, stateLabel, askCard, askOptions, composer, icon, PERM, ELSEWHERE } from "./ui.js";
 import { sendAction, errorText, safeKeys, terminalFree, tuiCommand, showTerminal, confirm, confirmed, readSnapshot } from "./actions.js";
 
-const APPS = new Set(["gentle-shell", "pi"]);
 const PAGE = 150; // entries drawn at first; "Show earlier" adds this many
 const TICK = 5000; // fallback refresh when a watch event is missed (both folders are watched)
 const PLACEHOLDER = "Message Gentle Shell…  / for commands";
@@ -26,7 +29,8 @@ const ESC_MS = 1000; // the TUI's double-Esc window for stopping a turn (DOUBLE_
 const ESC_NOTICE = "Press Esc again to stop the agent.";
 const SLASH_MAX = 50; // commands the "/" menu filters to at most
 const REQUEST_MS = 10000; // a palette request older than this is ignored (shared values persist)
-const REQUEST_POLL = 500; // how often a shown chat looks for a palette request
+const REQUEST_POLL = 500; // how often a shown chat looks for a palette request (and a new session)
+const NO_COMMANDS = "Open that session's terminal to run /commands.";
 
 // The composer's "/" menu: open while the draft is one "/word" (no space or line break yet).
 // Names that start with the word come first, then names and descriptions that contain it.
@@ -40,20 +44,22 @@ export function slashMatches(commands, draft) {
   return [...starts, ...contains].slice(0, SLASH_MAX);
 }
 
-const isGentle = (v) => typeof v === "string" && APPS.has(v);
+// A session started before desktop prompts refuses the kind: say what to do.
+const olderSession = (r) => (r?.error?.code === "unknown_kind" ? "This session started before desktop messages: type in its own terminal, or restart it." : null);
 const questionKey = (q) => (q ? `${q.toolCallId ?? ""}|${q.openedAt ?? ""}|${q.question ?? ""}` : null);
 
 export default class GentleChat extends View {
   init(_props, cx) {
     this.feed = createFeed();
     this.snap = null; // the session's desktop snapshot (gentle-shell.desktop-feed/v1), or null
-    this.address = null;
+    this.key = null; // the shown session (snapshot.js allSessions key)
+    this.want = null; // the session to show, picked in a host call (render, a timer)
+    this.address = null; // its Herdr terminal, or null when it runs elsewhere
     this.cwd = null;
     this.file = null;
     this.dir = null;
     this.pos = 0;
     this.watched = null;
-    this.feedWatch = new Set(); // the snapshot folders watched now
     this.loading = false;
     this.again = false;
     this.real = new Map(); // cwd -> real path, for sessionFileFor
@@ -89,12 +95,20 @@ export default class GentleChat extends View {
       { keystroke: "down", action: "gentle_chat_slash_down", context: "GentleSlashMenu > Input" },
       { keystroke: "tab", action: "gentle_chat_slash_complete", context: "GentleSlashMenu > Input" },
     ]);
+    // Every live snapshot (and whether its publisher still runs), watched: snapshot.js.
+    this.source = new FeedSource();
+    this.source.start(cx, null, TICK);
     cx.timer.every(TICK, (cx) => this.tick(cx));
     this.tick(cx);
     this.commands(cx);
     // Palette requests: a hidden stack child stays alive but gets no commands, so a request made
     // while the Terminal showed is picked up here once the chat shows (a shared read, no redraw).
-    cx.timer.every(REQUEST_POLL, (cx) => { if (this.showing()) this.request(cx); });
+    // The same look follows the shown session and its snapshot (a pick in another mod, a write).
+    cx.timer.every(REQUEST_POLL, (cx) => {
+      if (this.showing()) this.request(cx);
+      const want = this.pick();
+      if (want?.key !== this.key || (want?.feed?.updatedAt ?? null) !== (this.snap?.updatedAt ?? null)) this.tick(cx);
+    });
   }
 
   // Key commands ("<key>": "gentle-chat.<command>" in keys.json, or `herdr-app do gentle-chat.<command>`;
@@ -124,34 +138,47 @@ export default class GentleChat extends View {
     });
   }
 
-  // props.terminal, else the focused Gentle Shell, else one in the shown tab, else the first.
-  target() {
-    const gentleAgents = agents().filter((a) => isGentle(a.app));
-    const set = new Set(gentleAgents.map((a) => a.address));
-    const all = terminals().filter((t) => set.has(t.address) || isGentle(t.agent) || isGentle(t.report?.app) || isGentle(t.app));
+  // props.terminal's session, else the session the window is about (snapshot.js targetSession).
+  // Herdr's ambient reads belong to a host call, so this runs in render and in timers only.
+  pick() {
     const want = props()?.terminal;
-    if (want) return all.find((t) => t.address === want) ?? null;
-    const f = focused();
-    const byAddr = (a) => all.find((t) => t.address === a);
-    const inTab = gentleAgents.filter((a) => a.tab === f?.tab);
-    return byAddr(f?.agent) ?? byAddr(f?.terminal) ?? byAddr(inTab[0]?.address) ?? byAddr(this.address) ?? all[0] ?? null;
+    if (want) return allSessions(this.source.feeds).find((s) => s.terminal?.address === want) ?? null;
+    return targetSession(this.source.feeds, this.key);
   }
 
   tick(cx) {
-    this.watchFeeds(cx);
+    this.want = this.pick();
     cx.spawn(async (cx) => { await this.refresh(cx); });
   }
 
-  // Finds the session file and snapshot for the target terminal and reads what was added.
+  // A session that runs outside Herdr app: no terminal to type into or to show.
+  elsewhere() {
+    return Boolean(this.key) && !this.address;
+  }
+
+  // Finds the session file and snapshot of the shown session and reads what was added.
   async refresh(cx) {
-    const term = this.target();
-    const address = term?.address ?? null;
-    if (address !== this.address) { this.address = address; this.cwd = term?.cwd ?? null; this.reset(null); this.setSnap(null); cx.notify(); }
-    if (!term) return;
-    if (String(address).includes("/")) { this.error = "Remote terminals are not read yet."; cx.notify(); return; }
-    const where = await sessionFileFor(term, this.real);
-    if (this.address !== address) return;
-    if (this.setSnap(where?.feed ?? null)) cx.notify();
+    const s = this.want;
+    const key = s?.key ?? null;
+    const address = s?.terminal?.address ?? null;
+    if (key !== this.key) {
+      this.key = key;
+      this.cwd = s?.terminal?.cwd ?? s?.feed?.identity?.cwd ?? null;
+      this.dir = null;
+      this.reset(null);
+      this.setSnap(null);
+      cx.notify();
+    }
+    if (address !== this.address) { this.address = address; cx.notify(); }
+    if (!s) return;
+    if (String(address ?? "").includes("/")) { this.error = "Remote terminals are not read yet."; cx.notify(); return; }
+    // The snapshot names the exact session file; a terminal without one falls back to its folder.
+    const exact = s.feed?.identity?.sessionFile;
+    const where = typeof exact === "string" && exact.endsWith(".jsonl")
+      ? { dir: exact.slice(0, Math.max(exact.lastIndexOf("/"), exact.lastIndexOf("\\"))), file: exact, feed: s.feed }
+      : s.terminal ? await sessionFileFor(s.terminal, this.real) : null;
+    if (this.key !== key) return;
+    if (this.setSnap(where?.feed ?? s.feed ?? null)) cx.notify();
     if (!where) return;
     if (where.dir !== this.dir) { this.dir = where.dir; this.watch(where.dir, cx); }
     if (where.file !== this.file) { this.reset(where.file); cx.notify(); }
@@ -222,29 +249,6 @@ export default class GentleChat extends View {
     });
   }
 
-  // Wakes on any snapshot write (<agentDir>/desktop/sessions of every agent dir, snapshot.js
-  // agentRoots). Before a Gentle Shell session creates a folder its watch fails; the next tick
-  // tries again.
-  watchFeeds(cx) {
-    cx.spawn(async (cx) => {
-      for (const root of await agentRoots()) {
-        const dir = feedDirOf(root);
-        if (this.feedWatch.has(dir)) continue;
-        this.feedWatch.add(dir);
-        cx.spawn(async (cx) => {
-          try {
-            for (;;) {
-              await watchFolder(dir);
-              await this.refresh(cx);
-            }
-          } catch {
-            this.feedWatch.delete(dir);
-          }
-        });
-      }
-    });
-  }
-
   // Reads only the complete lines added since `pos`. The file only grows; if it shrank, start over.
   async load(cx) {
     if (this.loading) { this.again = true; return; }
@@ -278,7 +282,8 @@ export default class GentleChat extends View {
     if (this.slashMenu()) { this.slashPick(this.slashAt, false, cx); return; }
     const text = this.input.value().trim();
     const address = this.address;
-    if (!text || !address || this.sending) return;
+    if (!text || !this.key || this.sending) return;
+    if (!address && !this.snap) { this.error = "This session publishes no snapshot; it takes no messages from here."; cx.notify(); return; }
     const pq = this.snap?.pendingQuestion;
     // "Something else…" was picked: this text is the answer to that question.
     const typedAnswer = this.answered?.custom && pq && this.answered.key === questionKey(pq) ? pq : null;
@@ -308,8 +313,15 @@ export default class GentleChat extends View {
           cx.notify();
           return;
         }
-        const r = await hc(["send", address, text]);
-        if (r.code !== 0) { this.error = (r.stderr || r.stdout || "hc send failed").trim(); this.input.set_value(text); }
+        if (!address) {
+          // Outside Herdr app: the session's inbox types it into its editor (T11 send_prompt).
+          const r = await sendAction(cx, this.snap, "send_prompt", { text });
+          if (!r.ok) { this.error = olderSession(r) ?? errorText(r); this.input.set_value(text); }
+          else if (r.data?.queued) this.notice = "Queued: the agent reads it after its current step, as Enter does in the TUI.";
+        } else {
+          const r = await hc(["send", address, text]);
+          if (r.code !== 0) { this.error = (r.stderr || r.stdout || "hc send failed").trim(); this.input.set_value(text); }
+        }
       } catch (e) {
         this.error = String(e?.message ?? e);
         this.input.set_value(text);
@@ -324,7 +336,7 @@ export default class GentleChat extends View {
   answer(i, cx) {
     const pq = this.snap?.pendingQuestion;
     const address = this.address;
-    if (!pq || !address || this.answered) return;
+    if (!pq || !this.key || this.answered) return;
     const o = askOptions(pq)[i];
     if (!o) return;
     this.answered = { key: questionKey(pq), index: i, custom: o.custom };
@@ -339,7 +351,15 @@ export default class GentleChat extends View {
   // (the lists ignore digits); then those keys, and a typed answer, go to the terminal.
   async pressAnswer(cx, address, pq, answer) {
     try {
-      if (!pq.toolCallId) throw new Error("Answer it in the Terminal view.");
+      if (!pq.toolCallId) throw new Error(address ? "Answer it in the Terminal view." : "Answer it in that session's terminal.");
+      if (!address) {
+        // Outside Herdr app: the question's own list takes the answer (T11, answer_question via the
+        // session); the session checks it is still the open one, as for the keys.
+        const r = await sendAction(cx, this.snap, "answer_question", { toolCallId: pq.toolCallId, ...answer, via: "session" });
+        if (!r.ok) throw new Error(r.error?.code === "invalid_action" ? "Answer it in that session's terminal: it started before desktop answers." : errorText(r));
+        cx.notify();
+        return;
+      }
       const r = await sendAction(cx, this.snap, "answer_question", { toolCallId: pq.toolCallId, ...answer });
       if (!r.ok) {
         if (r.error?.code === "answer_in_terminal") this.later(cx, () => this.toTerminal());
@@ -371,6 +391,7 @@ export default class GentleChat extends View {
   // ---- Desktop actions (T7): the person's own authority, through the session's owners ----
 
   toTerminal() {
+    if (this.elsewhere()) { this.notice = `${ELSEWHERE}.`; return; }
     const { stack, other } = this.stackProps();
     showTerminal(this.address, stack ?? "views", other ?? "main");
   }
@@ -402,6 +423,7 @@ export default class GentleChat extends View {
 
   // The TUI's own screen for this (its slash command), shown in the Terminal.
   command(key, text, cx) {
+    if (this.elsewhere()) { this.error = NO_COMMANDS; cx.notify(); return; }
     this.act(key, cx, (cx) => tuiCommand(this.address, this.snap, text, () => this.later(cx, () => this.toTerminal())));
   }
 
@@ -410,6 +432,7 @@ export default class GentleChat extends View {
   // chat stays (a prompt template's turn, /new, /name …). The draft comes back if it failed.
   runCommand(text, terminal, cx) {
     if (this.busy) return;
+    if (this.elsewhere()) { this.promptCommand(text, cx); return; }
     this.input.set_value("");
     this.draft = "";
     this.act("command", cx, async (cx) => {
@@ -419,6 +442,23 @@ export default class GentleChat extends View {
       if (line) { if (!this.input.value()) { this.input.set_value(text); this.draft = text; } return line; }
       this.stick = true;
       if (!terminal) this.notice = `${text.split(/\s/)[0]} sent to the session.`;
+      return null;
+    });
+  }
+
+  // Outside Herdr app (T11): a prompt template or a skill becomes the prompt it expands to, through
+  // the session's inbox; every other command is TUI code and stays in that session's terminal.
+  promptCommand(text, cx) {
+    const name = text.slice(1).split(/\s/)[0];
+    const known = (this.snap?.commands?.items ?? []).find((c) => c.name === name);
+    if (known?.source !== "prompt" && known?.source !== "skill") { this.error = NO_COMMANDS; cx.notify(); return; }
+    this.input.set_value("");
+    this.draft = "";
+    this.act("command", cx, async (cx) => {
+      const r = await sendAction(cx, this.snap, "send_prompt", { text });
+      if (!r.ok) { if (!this.input.value()) { this.input.set_value(text); this.draft = text; } return olderSession(r) ?? errorText(r); }
+      this.stick = true;
+      this.notice = `${text.split(/\s/)[0]} sent to the session.`;
       return null;
     });
   }
@@ -498,7 +538,7 @@ export default class GentleChat extends View {
 
   palette() {
     // The palette is about this chat's session, not whichever pane had the keyboard.
-    setShared("gentle-palette.terminal", { address: this.address, at: Date.now() });
+    setShared("gentle-palette.terminal", { address: this.address, key: this.key, at: Date.now() });
     run("mod.open", { name: "gentle-palette" });
   }
 
@@ -509,7 +549,7 @@ export default class GentleChat extends View {
     const req = shared("gentle-chat.request");
     if (!req || typeof req !== "object" || !Number.isFinite(req.at) || req.at === this.lastRequest) return;
     if (Math.abs(Date.now() - req.at) > REQUEST_MS) { setShared("gentle-chat.request", null); return; }
-    if (!this.snap || !this.address) return;
+    if (!this.snap || !this.key) return;
     this.lastRequest = req.at;
     setShared("gentle-chat.request", null);
     if (req.kind === "mode") {
@@ -556,6 +596,7 @@ export default class GentleChat extends View {
   attach(cx) {
     this.act("attach", cx, async () => {
       const address = this.address;
+      if (this.elsewhere()) return "Attachments are pasted in that session's terminal.";
       if (!address) return "No Gentle Shell terminal.";
       const busy = terminalFree(this.snap);
       if (busy) return busy;
@@ -585,7 +626,9 @@ export default class GentleChat extends View {
     return (node?.active ?? node?.children?.[0]?.id) === self;
   }
 
-  go(which, _cx) {
+  go(which, cx) {
+    // A session outside Herdr app has no Terminal here: say where it runs instead.
+    if (which === "terminal" && this.elsewhere()) { this.notice = `${ELSEWHERE}.`; cx?.notify?.(); return; }
     const { stack, self, other } = this.stackProps();
     if (stack) run("layout.select", { stack, child: which === "chat" ? self : other });
   }
@@ -657,11 +700,11 @@ export default class GentleChat extends View {
   // No conversation yet (the artboard has no such state): a calm block in the middle of the
   // log, in the design's type: the mark in faint, a 14px semibold line, a 12.5px muted line.
   empty(p) {
-    const [title, about] = !this.address
+    const [title, about] = !this.key
       ? ["No Gentle Shell session", "Start one with + in the tab bar, or run gentle-shell in a terminal."]
       : !this.file
         ? ["Waiting for the first message", "This session has not written its conversation yet."]
-        : ["No messages yet", "Type below to start. ⌘J shows the Terminal."];
+        : ["No messages yet", this.address ? "Type below to start. ⌘J shows the Terminal." : "Type below to start."];
     return v_flex().id("log").flex_1().min_h(0).items_center().justify_center().gap(6).px(28).pb(40)
       .on_mouse_down("left", () => this.focus.focus())
       .child(icon("mark", 26).text_color(p.faint).mb(4))

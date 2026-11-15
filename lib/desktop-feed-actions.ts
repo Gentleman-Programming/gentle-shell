@@ -14,6 +14,17 @@
 // ask tool is answered in the terminal only. `abort_turn` (T10) is the TUI's
 // Esc Esc: the session's own abort, and only while its agent works.
 //
+// T11 (S10): a session that runs outside Herdr app has no terminal the desktop
+// can type into, so two more paths go through the inbox, with the same
+// authority as its editor: `send_prompt` hands the text to pi as if typed and
+// submitted (steering while the agent works, as Enter does in the TUI), never
+// while a question, prompt or consent is open, and only for plain text, prompt
+// templates and skills: pi's built-in commands, extension commands (TUI code
+// with their own authority, /gentle:mode among them) and `!` shell lines stay
+// in that session's terminal. `answer_question { via: "session" }` answers an
+// ask tool question through the tool's own handle (lib/desktop-feed-answers.ts)
+// under the same rules as the key path.
+//
 // Any process of the same user can write the inbox, the agent's own tools
 // included (the guard in extensions/gentle-ai.ts denies the folder to the
 // agent's file and shell tools, but a shell can always spell a path some other
@@ -27,13 +38,13 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import { join } from "node:path";
 import type { DesktopRpcOutcome } from "./desktop-rpc.ts";
-import { clipText, type DesktopFeedTimers } from "./desktop-feed.ts";
+import { clipText, DESKTOP_FEED_BUILTIN_COMMANDS, type DesktopFeedTimers } from "./desktop-feed.ts";
 import { desktopFeedFile, desktopFeedName, desktopFeedProcessGone } from "./desktop-feed-store.ts";
 import { isPermissionMode } from "./permission-mode-policy.ts";
 
 export const DESKTOP_ACTION_SCHEMA = "gentle-shell.desktop-action/v1";
 export const DESKTOP_ACTION_RESULT_SCHEMA = "gentle-shell.desktop-action-result/v1";
-export const DESKTOP_ACTION_KINDS = ["set_permission_mode", "cancel_job", "cancel_subagent", "answer_question", "abort_turn"] as const;
+export const DESKTOP_ACTION_KINDS = ["set_permission_mode", "cancel_job", "cancel_subagent", "answer_question", "abort_turn", "send_prompt"] as const;
 export type DesktopActionKind = (typeof DESKTOP_ACTION_KINDS)[number];
 
 export const DESKTOP_ACTION_LIMITS = {
@@ -55,6 +66,8 @@ export const DESKTOP_ACTION_LIMITS = {
 	/** Largest answer `data` written; a bigger one is dropped. */
 	resultData: 4 * 1024,
 	text: 2_000,
+	/** Longest prompt a `send_prompt` carries (its file stays under `bytes`). */
+	prompt: 4_000,
 	/** A folder without a live snapshot is swept once it is this old (a crashed session). */
 	orphanMs: 10 * 60_000,
 	sweepEntries: 256,
@@ -110,7 +123,8 @@ function argsValid(kind: DesktopActionKind, args: Record<string, unknown>): bool
 		case "cancel_subagent":
 			return onlyKeys(args, ["id"]) && nonEmpty(args.id);
 		case "answer_question": {
-			if (!onlyKeys(args, ["toolCallId", "option", "text"]) || !nonEmpty(args.toolCallId)) return false;
+			if (!onlyKeys(args, ["toolCallId", "option", "text", "via"]) || !nonEmpty(args.toolCallId)) return false;
+			if (args.via !== undefined && args.via !== "session") return false;
 			const option = args.option !== undefined;
 			const text = args.text !== undefined;
 			if (option === text) return false;
@@ -119,6 +133,10 @@ function argsValid(kind: DesktopActionKind, args: Record<string, unknown>): bool
 		}
 		case "abort_turn":
 			return onlyKeys(args, []);
+		case "send_prompt":
+			// Typed text: new lines and tabs, never another control character.
+			return onlyKeys(args, ["text"]) && nonEmpty(args.text, DESKTOP_ACTION_LIMITS.prompt) && args.text.trim().length > 0
+				&& !/[\u0000-\u0008\u000b-\u001f\u007f]/.test(args.text);
 	}
 }
 
@@ -258,6 +276,44 @@ export interface DesktopActionOwners {
 	busyAt(time: number): boolean;
 	/** Asks the human in the session's own UI; absent without an interactive UI. */
 	confirmEscalation?(from: string | undefined, to: string): Promise<boolean>;
+	/** Whether a question, an extension prompt or a consent is open now (send_prompt's guard, T11). */
+	questionOpen?(): boolean;
+	/** Where pi's registry says a slash command comes from, if it has one. */
+	commandSource?(name: string): string | undefined;
+	/** Submits `text` as if typed in the session's editor (`expand`: prompt templates and skills). */
+	sendPrompt?(text: string, expand: boolean): { queued: boolean };
+	/** Answers the open ask tool question through the tool's own handle; false without one. */
+	answerQuestion?(toolCallId: string, answer: { option?: number; text?: string }): boolean;
+}
+
+/** pi's built-in commands: the interactive editor runs them, so they stay in the terminal. */
+const PI_BUILTIN_COMMANDS: ReadonlySet<string> = new Set([
+	...DESKTOP_FEED_BUILTIN_COMMANDS.map((command) => command.name),
+	"quit", "exit", "settings", "scoped-models", "hotkeys", "debug", "arminsayshi", "dementedelves",
+]);
+const TERMINAL_COMMAND = fail("terminal_command", "Open that session's terminal to run /commands.");
+const TERMINAL_SHELL = fail("terminal_command", "Open that session's terminal to run ! shell commands.");
+const QUESTION_OPEN = fail("question_open", "Answer the open question first.");
+const NO_PROMPTS = fail("unsupported", "This session takes no prompts from the desktop. Update Gentle Shell and restart it.");
+const ANSWER_IN_SESSION_TERMINAL = fail("answer_in_terminal", "Answer this question in that session's terminal.");
+
+/** send_prompt (T11): plain text, prompt templates and skills, as the editor would submit them. */
+function sendPrompt(text: string, owners: DesktopActionOwners): DesktopActionOutcome {
+	if (!owners.sendPrompt) return NO_PROMPTS;
+	if (owners.questionOpen?.() === true) return QUESTION_OPEN;
+	const prompt = text.trim();
+	if (prompt.startsWith("!")) return TERMINAL_SHELL;
+	let expand = false;
+	if (prompt.startsWith("/")) {
+		const name = prompt.slice(1).split(/\s/, 1)[0] ?? "";
+		const source = PI_BUILTIN_COMMANDS.has(name) ? "builtin" : name ? owners.commandSource?.(name) : undefined;
+		if (source === "prompt" || source === "skill") expand = true;
+		// Anything pi runs as code (a built-in, an extension command) stays in the terminal;
+		// a "/word" no command owns is plain text, as in the editor.
+		else if (source !== undefined) return TERMINAL_COMMAND;
+	}
+	const { queued } = owners.sendPrompt(prompt, expand);
+	return { ok: true, data: { queued } };
 }
 
 // ---- Permission escalation ----
@@ -346,14 +402,23 @@ export async function runDesktopAction(action: DesktopAction, owners: DesktopAct
 				const toolCallId = action.args.toolCallId as string;
 				if (!open || open.toolCallId !== toolCallId) return fail("question_mismatch", "That question is no longer open");
 				const text = action.args.text as string | undefined;
-				const keys = answerKeys(open, { option: action.args.option as number | undefined, text });
+				const option = action.args.option as number | undefined;
+				const keys = answerKeys(open, { option, text });
 				if ("error" in keys) return { ok: false, error: keys.error };
+				if (action.args.via === "session") {
+					// T11: no terminal to press keys in; the tool's own handle answers it.
+					const answer = text !== undefined ? { text } : { option: option as number };
+					if (owners.answerQuestion?.(toolCallId, answer) !== true) return ANSWER_IN_SESSION_TERMINAL;
+					return { ok: true, data: { toolCallId, answered: true } };
+				}
 				return { ok: true, data: { toolCallId, keys: keys.keys, ...(text !== undefined ? { text } : {}) } };
 			}
 			case "abort_turn":
 				if (!owners.working()) return fail("not_working", "The agent is not working");
 				owners.abortTurn();
 				return { ok: true, data: { aborted: true } };
+			case "send_prompt":
+				return sendPrompt(action.args.text as string, owners);
 		}
 	} catch {
 		return OWNER_FAILED;

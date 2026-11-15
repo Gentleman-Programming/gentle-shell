@@ -5,13 +5,14 @@
 // props: { part: "brand" | "usage" }
 //   brand  `.brand` (l.226-230): 46px row, mark + "Gentle Shell", left room for the traffic lights.
 //   usage  `.sb-foot` (l.244-248): "Plan usage · <plan>", 5h / 7d bars, the reset line and a gear.
-// Data: the focused Gentle Shell session's snapshot `usage` (docs/desktop-feed.md).
+// Data: the shown Gentle Shell session's snapshot `usage` (docs/desktop-feed.md), wherever it runs
+// (snapshot.js targetSession, T11).
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { props, run, window } from "herdr";
 import { tokens, eyebrow, bar, until, windowLabel } from "./tokens.js";
-import { FeedSource, targetTerminal } from "./snapshot.js";
+import { FeedSource } from "./snapshot.js";
 
 const ICON = (name) => `mods/gentle-sidebar/icons/${name}.svg`;
 
@@ -35,9 +36,9 @@ export default class GentleSidebar extends View {
   }
 
   usage(c) {
-    const term = targetTerminal(this.last);
-    if (term) this.last = term.address;
-    const feed = this.source?.of(term);
+    const shown = this.source?.target(this.last);
+    if (shown) this.last = shown.key;
+    const feed = shown?.feed ?? null;
     const u = feed?.usage ?? null;
     const windows = (u?.limits ?? []).flatMap((l) => l?.windows ?? []).slice(0, 2);
     const plan = u?.plan ? `Plan usage · ${u.plan}` : "Plan usage";

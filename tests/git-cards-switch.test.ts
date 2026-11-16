@@ -346,6 +346,149 @@ test("card.start never rejects: a repaint failure during the success path stays 
 	assert.deepEqual(unhandled, [], "no rejection escapes card.start");
 });
 
+test("an initial runner rejection contains a throwing error-path repaint and can recover", async () => {
+	let broken = true;
+	let throwPaint = false;
+	let throwingPaints = 0;
+	const cards = new SidebarGitCards({
+		git: () => async args => {
+			if (broken) throw new Error("runner failed");
+			return { code: 0, stdout: args[0] === "status" ? " M recovered.ts\0" : "" };
+		},
+		untrackedLines: () => async () => 0,
+		fileRevision: () => undefined,
+		publish: () => { if (throwPaint) { throwingPaints++; throw new Error("error-path repaint failed"); } },
+	}, { history: false, diff: true });
+	cards.enter(MAIN);
+	throwPaint = true;
+	await assert.doesNotReject(cards.refreshDiff());
+	assert.ok(throwingPaints > 0, "the failed load actually attempted a throwing repaint");
+	assert.equal(cards.statusRead, false);
+	assert.equal(cards.paintedRoot, MAIN);
+	assert.match(cards.changesRows(theme, 80, 4).join("\n"), /Counts unavailable/);
+	broken = false;
+	throwPaint = false;
+	await cards.refreshDiff();
+	assert.equal(cards.statusRead, true);
+	assert.match(cards.changesRows(theme, 80, 4).join("\n"), /recovered\.ts/);
+	cards.dispose();
+});
+
+test("changes frames cache without color work and invalidate every render input", async () => {
+	const f = fixture();
+	f.cards.enter(MAIN);
+	await f.settle();
+	let colors = 0;
+	let bolds = 0;
+	const counted = { fg: (_role: string, text: string) => { colors++; return text; }, bold: (text: string) => { bolds++; return text; } };
+	const draw = (width = 80, viewport = 4, offset = 0, collapsed = false, hovered = false, paint = counted) => f.cards.changesRows(paint, width, viewport, offset, collapsed, hovered);
+	const hit = (render: () => string[]) => {
+		const first = render();
+		const before = [colors, bolds];
+		assert.strictEqual(render(), first, "a hit reuses the single frame");
+		assert.deepEqual([colors, bolds], before, "a hit performs no theme work");
+		return first;
+	};
+	const original = hit(() => draw());
+	for (const render of [() => draw(60), () => draw(60, 3), () => draw(60, 3, 1), () => draw(60, 3, 1, true), () => draw(60, 3, 1, true, true), () => draw(60, 3, 1, true, true, { ...counted })]) {
+		const before = colors;
+		render();
+		assert.ok(colors > before, "each changed key repaints");
+	}
+	assert.notStrictEqual(draw(), original, "only the most recent frame is retained");
+	f.extra.add(MAIN);
+	await f.cards.refreshDiff();
+	assert.match(hit(() => draw()).join("\n"), /created\.ts/, "digest invalidates the frame");
+	const main = draw();
+	f.cards.select(WT);
+	await f.settle();
+	const wt = hit(() => draw());
+	assert.notStrictEqual(wt, main, "roots do not share frames");
+	assert.match(wt.join("\n"), /wt\.ts/);
+	assert.doesNotMatch(wt.join("\n"), /main\.ts|created\.ts/);
+	f.hold(MAIN);
+	f.cards.select(MAIN);
+	assert.strictEqual(draw(), main, "each root retains its own single frame");
+	f.release(MAIN);
+	await f.settle();
+	f.cards.dispose();
+});
+
+test("changes cache follows placeholder settlement even without a model", async () => {
+	let fail: (() => void) | undefined;
+	const gate = new Promise<void>((_resolve, reject) => { fail = () => reject(new Error("runner failed")); });
+	const cards = new SidebarGitCards({
+		git: () => async () => { await gate; return { code: 0, stdout: "" }; },
+		untrackedLines: () => async () => 0,
+		fileRevision: () => undefined,
+		publish: () => {},
+	}, { history: false, diff: true });
+	cards.enter(MAIN);
+	const loading = cards.changesRows(theme, 80, 4);
+	assert.match(loading.join("\n"), /Loading changes…/);
+	assert.strictEqual(cards.changesRows(theme, 80, 4), loading);
+	fail!();
+	await cards.refreshDiff();
+	const failed = cards.changesRows(theme, 80, 4);
+	assert.equal(cards.model, undefined);
+	assert.equal(cards.statusRead, false);
+	assert.notStrictEqual(failed, loading, "settlement invalidates unchanged digest and status");
+	assert.match(failed.join("\n"), /Counts unavailable/);
+	assert.strictEqual(cards.changesRows(theme, 80, 4), failed);
+	cards.leave();
+	cards.enter(MAIN);
+	assert.strictEqual(cards.changesRows(theme, 80, 4), failed, "a painted root stays settled during reload");
+	await cards.refreshDiff();
+	cards.dispose();
+});
+
+test("changes cache invalidates status independently of an unchanged empty digest", async () => {
+	let unavailable = true;
+	const cards = new SidebarGitCards({
+		git: () => async () => ({ code: unavailable ? 128 : 0, stdout: "" }),
+		untrackedLines: () => async () => 0,
+		fileRevision: () => undefined,
+		publish: () => {},
+	}, { history: false, diff: true });
+	cards.enter(MAIN);
+	await cards.refreshDiff();
+	const digest = cards.model?.digest;
+	const failed = cards.changesRows(theme, 80, 4);
+	assert.match(failed.join("\n"), /Counts unavailable/);
+	unavailable = false;
+	await cards.refreshDiff();
+	assert.equal(cards.model?.digest, digest);
+	assert.equal(cards.statusRead, true);
+	const empty = cards.changesRows(theme, 80, 4);
+	assert.notStrictEqual(empty, failed);
+	assert.match(empty.join("\n"), /No changes\./);
+	assert.strictEqual(cards.changesRows(theme, 80, 4), empty);
+	cards.dispose();
+});
+
+test("digest-less changes models stay uncached and preserve sanitized exact-width rows", async () => {
+	const f = fixture();
+	f.cards.enter(MAIN);
+	await f.settle();
+	const model = f.cards.model!;
+	const cached = f.cards.changesRows(theme, 40, 4);
+	delete model.digest;
+	model.files[0].path = "dir/unsafe\x1b[31m\n\tname.ts";
+	model.files[0].added = 7;
+	model.added = 7;
+	const rows = f.cards.changesRows(theme, 40, 4);
+	assert.notStrictEqual(rows, cached);
+	assert.notStrictEqual(f.cards.changesRows(theme, 40, 4), rows, "no digest means no frame reuse");
+	assert.match(rows[1], /\+7 -1 · partial counts/);
+	assert.match(rows[2], /unsafe  name\.ts/);
+	assert.doesNotMatch(rows[2], /\x1b|\n|\t/);
+	assert.ok(rows[2].endsWith("+7 -1 [diff]"));
+	for (const row of rows) assert.equal(visibleWidth(row), 40);
+	model.files[0].path = "renamed.ts";
+	assert.match(f.cards.changesRows(theme, 40, 4).join("\n"), /renamed\.ts/);
+	f.cards.dispose();
+});
+
 test("a recovery retry whose start() rejects never rejects card.start", async () => {
 	const f = fixture();
 	f.failures.add(WT);

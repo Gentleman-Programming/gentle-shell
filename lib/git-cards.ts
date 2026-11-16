@@ -24,12 +24,26 @@ export type GitCardsDeps = {
 
 const PLACEHOLDER_HISTORY: SidebarGitGraph = { state: "pending" };
 
+type ChangesFrame = {
+	digest: string | undefined;
+	statusRead: boolean;
+	placeholderSettled: boolean;
+	width: number;
+	viewport: number;
+	offset: number;
+	collapsed: boolean;
+	hovered: boolean;
+	theme: GraphTheme;
+	rows: string[];
+};
+
 /** One root's painted cards plus the readers that feed them. */
 type Card = {
 	root: string;
 	graph: SidebarGitGraph;
 	revision: number;
 	frame: SidebarGitFrameCache;
+	changesFrame?: ChangesFrame;
 	model?: ChangesModel;
 	statusRead: boolean;
 	history?: SidebarGitHistory;
@@ -207,6 +221,16 @@ export class SidebarGitCards {
 		const card = this.paintedCard();
 		const files = card?.model?.files ?? [];
 		const statusRead = card?.statusRead ?? false;
+		const digest = card?.model?.digest;
+		const placeholderSettled = !!card && (card.painted || card.diffLoaded);
+		// Hand-built models without a digest remain live, just like the changes widget.
+		const cacheable = !!card && (!card.model || digest !== undefined);
+		const frame = card?.changesFrame;
+		if (cacheable && frame && frame.digest === digest && frame.statusRead === statusRead && frame.placeholderSettled === placeholderSettled && frame.width === width && frame.viewport === viewport && frame.offset === offset && frame.collapsed === collapsed && frame.hovered === hovered && frame.theme === theme) return frame.rows;
+		const finish = (rows: string[]): string[] => {
+			if (card) card.changesFrame = cacheable ? { digest, statusRead, placeholderSettled, width, viewport, offset, collapsed, hovered, theme, rows } : undefined;
+			return rows;
+		};
 		const rows = [renderPanelHeader(theme, width, { title: "Changes", count: `${files.length}`, open: !collapsed, hovered })];
 		// The tinted surface paints per occupied cell: BODY rows fill the full
 		// width via renderPanelRow (the transparent card path strips that indent).
@@ -214,13 +238,13 @@ export class SidebarGitCards {
 		// glyph from an exact-width header row, and an indent would turn it into
 		// the default ✿ glyph with a clipped count.
 		const fit = (row: string) => renderPanelRow(width, row);
-		if (collapsed || viewport <= 1) return rows;
+		if (collapsed || viewport <= 1) return finish(rows);
 		// The shared tracker does not distinguish failed numstat or binary counts
 		// from zero, so its sums are necessarily provisional.
 		rows.push(fit(card?.model && statusRead
 			? truncateToWidth(`${theme.fg("success", `+${card.model.added}`)} ${theme.fg("error", `-${card.model.deleted}`)} ${theme.fg("muted", "· partial counts")}`, width, "…")
-			: theme.fg("muted", card && (card.painted || card.diffLoaded) ? "Counts unavailable" : "Loading changes…")));
-		if (viewport > 2 && !files.length && statusRead) { rows.push(fit(theme.fg("muted", "No changes."))); return rows; }
+			: theme.fg("muted", placeholderSettled ? "Counts unavailable" : "Loading changes…")));
+		if (viewport > 2 && !files.length && statusRead) { rows.push(fit(theme.fg("muted", "No changes."))); return finish(rows); }
 		for (const file of files.slice(offset, offset + Math.max(0, viewport - 2))) {
 			const status = { modified: "M", added: "A", deleted: "D", renamed: "R", untracked: "U" }[file.status];
 			const path = sanitizeTerminalText(file.path).replace(/[\r\n\t]/g, " ");
@@ -240,7 +264,7 @@ export class SidebarGitCards {
 			const painted = slash < 0 ? theme.fg("text", label) : theme.fg("muted", label.slice(0, slash + 1)) + theme.fg("text", label.slice(slash + 1));
 			rows.push(renderPanelRow(width, `${theme.fg("accent", status)} ${painted}`, right));
 		}
-		return rows;
+		return finish(rows);
 	}
 
 	private paintedCard(): Card | undefined {
@@ -337,7 +361,7 @@ export class SidebarGitCards {
 			if (epoch !== card.diffEpoch) return;
 			card.statusRead = false;
 			card.diffLoaded = true;
-			this.settle(card);
+			try { this.settle(card); } catch { /* repaint failures cannot reject the failed load. */ }
 		});
 	}
 

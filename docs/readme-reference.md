@@ -1051,7 +1051,8 @@ Behavior:
 - a best-effort watcher refreshes when skill files change; the cache is a non-authoritative SHA-256 hint, and each refresh compares actual rendered and on-disk bytes;
 - watcher events are debounced by 500 ms; a full fallback scan every 30 seconds also detects changes when watchers are unavailable or silently miss an event. Those missed changes can wait until the next scan; explicit refresh and the next prompt still read the current disk state;
 - each file is published atomically, registry before cache; they are not an atomic pair, and a later refresh repairs a mismatch;
-- the registry indexes skill names, descriptions, scope, and exact `SKILL.md` paths without copying skill body rules or runtime-only rows.
+- the registry indexes skill names, descriptions, scope, and exact `SKILL.md` paths without copying skill body rules or runtime-only rows;
+- dot-prefixed directories directly inside a skill root (for example `.backup-foo-2026/`) are not scanned; when sibling directories declare the same skill `name`, the directory named after the skill wins over copies such as `foo.backup-2026/`, otherwise project scope, root order, and direct-over-nested order decide.
 
 Skill discovery is a guardrail, not a workflow router: it helps Pi load the right skill without forcing extra ceremony.
 

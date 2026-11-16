@@ -34,6 +34,8 @@ export interface Transcript {
 	defaults: TranscriptDefaults;
 	/** The resumed process environment, e.g. follow mode; empty by default. */
 	env?: NodeJS.ProcessEnv;
+	/** Replay the session's own start instead of a resume. */
+	ownStart?: boolean;
 }
 
 export interface ReplayObservation {
@@ -118,7 +120,8 @@ function resume<T>(version: Version, transcript: Transcript, observe: (resumed: 
 		const manager = writeSession(base, transcript.records);
 		const authority = modules.authority.readSessionProfileAuthority(manager);
 		const options = { sessionId: SESSION_ID, cwd: home.root, configHome, resolveWorktree: () => home, env: transcript.env ?? {} };
-		modules.freeze.freezeSessionProfileAtStartup(options);
+		if (transcript.ownStart && version === "current") currentFreeze.freezeSessionProfileAtOwnStart(options);
+		else modules.freeze.freezeSessionProfileAtStartup(options);
 		return observe({ authority: authority.available, options, foreign, agentHome: join(base, "agent-home") });
 	} finally {
 		rmSync(base, { recursive: true, force: true });

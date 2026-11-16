@@ -10,6 +10,8 @@
 	--gd-accent-text: #0b1220;
 	/* A faint accent over an artboard under the pointer. */
 	--gd-accent-wash: rgba(138, 180, 255, 0.06);
+	/* The fill of the Comment mode outlines inside an artboard (inspector.js, sent with gd:mode). */
+	--gd-highlight-wash: rgba(138, 180, 255, 0.12);
 	--gd-danger: #ff9b9b;
 	--gd-focus: #ffd479;
 	--gd-pin: #8ab4ff;
@@ -33,6 +35,7 @@
 	--gd-accent: #f095c8;
 	--gd-accent-text: #1a1218;
 	--gd-accent-wash: rgba(240, 149, 200, 0.08);
+	--gd-highlight-wash: rgba(240, 149, 200, 0.12);
 	--gd-danger: #ff718f;
 	--gd-focus: #e0c27a;
 	--gd-pin: #f095c8;

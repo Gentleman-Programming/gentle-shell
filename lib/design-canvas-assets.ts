@@ -23,6 +23,7 @@ export const DESIGN_CANVAS_ASSETS: Readonly<Record<string, string>> = Object.fre
 	"canvas-menu.js": "text/javascript; charset=utf-8",
 	"canvas-rail.js": "text/javascript; charset=utf-8",
 	"canvas-theme.js": "text/javascript; charset=utf-8",
+	"theme-early.js": "text/javascript; charset=utf-8",
 	"canvas-sizes.js": "text/javascript; charset=utf-8",
 	"canvas-layout.js": "text/javascript; charset=utf-8",
 	"canvas-minimap.js": "text/javascript; charset=utf-8",

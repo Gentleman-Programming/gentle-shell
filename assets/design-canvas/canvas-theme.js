@@ -1,7 +1,10 @@
 // The canvas theme: Gentleman (the Gentleman brand's pink on plum) or Neutral (the gray and blue
 // of :root, the default), chosen in the rail's Settings, saved in this browser and applied at once.
 // canvas.css holds the palettes: Neutral is :root's own --gd-* tokens, Gentleman is
-// :root[data-theme="gentleman"], which sets every one of them; artboards keep their own colors.
+// :root[data-theme="gentleman"], which sets every one of them; artboards keep their own colors, but the
+// Comment mode outlines drawn inside them are canvas chrome: gd:mode carries the theme's (canvas-boards.js),
+// and a change of theme sends only the new colors (gd:colors) to every frame. theme-early.js, a classic script in index.html's <head>,
+// paints a saved Gentleman before the first frame; startTheme() stays the source of truth for the store.
 
 // Every string the theme shows, in English; canvas-i18n-es.js has the Spanish. Gentleman is a name and stays as is.
 const TEXT = Object.freeze({
@@ -18,7 +21,7 @@ const CHOICES = THEMES.map(([choice]) => choice);
 const DEFAULT_THEME = "neutral";
 
 export function init(ctx) {
-	const { win, doc, store } = ctx;
+	const { win, doc, store, actions } = ctx;
 	const { state } = store;
 	const T = ctx.i18n.text("theme", TEXT);
 
@@ -48,6 +51,8 @@ export function init(ctx) {
 			// Storage refused it: the choice holds for this page.
 		}
 		apply(choice);
+		// The outlines inside every frame, All sizes frames included, take the new colors at once.
+		actions.allBoards().flatMap(actions.surfacesOf).forEach(actions.sendColors);
 	}
 
 	/** The saved theme, before anything renders. */

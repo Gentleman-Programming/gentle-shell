@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { findAll, loadCanvas, memoryStorage, read, texts, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
+import vm from "node:vm";
+import { DESIGN_CANVAS_ASSETS } from "../lib/design-canvas-assets.ts";
+import { cssTokens, findAll, loadCanvas, memoryStorage, read, texts, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
 
 // The canvas theme (canvas-theme.js): Gentleman or Neutral, radio items under a Theme heading in the
 // rail's Settings, saved in this browser and applied at once through :root[data-theme] in canvas.css.
@@ -16,7 +18,8 @@ async function loadTheme(options: { stored?: string; broken?: boolean; full?: bo
 	const storage = memoryStorage(options.stored === undefined ? {} : { [THEME_KEY]: options.stored }, options.broken);
 	// `full`: reads work, every write throws (a full or read-only storage).
 	const localStorage = options.full ? { getItem: storage.localStorage.getItem, setItem() { throw new Error("QuotaExceededError"); } } : storage.localStorage;
-	const canvas = await loadCanvas(300, {}, {}, { localStorage, navigator: { languages: ["en-US"], language: "en-US" } }, true);
+	// getComputedStyle reads canvas.css's own tokens, so the outline colors the frames get are the stylesheet's.
+	const canvas = await loadCanvas(300, {}, {}, { localStorage, navigator: { languages: ["en-US"], language: "en-US" }, getComputedStyle: cssTokens }, true);
 	canvas.document.getElementById("gd-popover").hidden = true;
 	canvas.document.getElementById("gd-menu").hidden = true;
 	const themeWrites = () => storage.writes.filter(([key]) => key === THEME_KEY).map(([, value]) => value);
@@ -130,4 +133,66 @@ test("canvas.css: Gentleman sets every color token of :root on --gd-* names, and
 test("the docs describe the theme radios and where the choice is saved", () => {
 	const docs = readFileSync(fileURLToPath(new URL("../docs/gentle-shell.md", import.meta.url)), "utf8");
 	for (const part of ["**Theme**", "**Gentleman**", "**Neutral**", "`gentle-design:theme`"]) assert.ok(docs.includes(part), `the docs mention ${part}`);
+});
+
+// The Comment mode outlines inside an artboard (inspector.js) are canvas chrome: gd:mode carries the theme's
+// colors, read from canvas.css (--gd-accent, --gd-highlight-wash, --gd-focus). Neutral's are main's outlines.
+const NEUTRAL = { accent: "#8ab4ff", wash: "rgba(138, 180, 255, 0.12)", focus: "#ffd479" };
+const GENTLEMAN = { accent: "#f095c8", wash: "rgba(240, 149, 200, 0.12)", focus: "#e0c27a" };
+const lastMode = (frame: FakeElement) => frame.contentWindow!.posted.filter((message) => message.type === "gd:mode").at(-1);
+
+const lastPosted = (frame: FakeElement) => frame.contentWindow!.posted.at(-1);
+
+test("gd:mode carries the theme's outline colors, and choosing a theme sends only gd:colors to every frame at once", async () => {
+	const canvas = await loadTheme();
+	for (const frame of canvas.frames()) frame.dispatch("load");
+	for (const frame of canvas.frames()) assert.deepEqual(lastMode(frame), { type: "gd:mode", enabled: false, inspect: false, colors: NEUTRAL });
+	const modes = canvas.frames().map((frame) => frame.contentWindow!.posted.filter((message) => message.type === "gd:mode").length);
+	choose(canvas, "Gentleman");
+	for (const frame of canvas.frames()) assert.deepEqual(lastPosted(frame), { type: "gd:colors", colors: GENTLEMAN });
+	assert.deepEqual(canvas.frames().map((frame) => frame.contentWindow!.posted.filter((message) => message.type === "gd:mode").length), modes, "no gd:mode: the frame's mode and outlines stay");
+	canvas.document.getElementById("gd-comment").dispatch("click");
+	for (const frame of canvas.frames()) assert.deepEqual(lastMode(frame), { type: "gd:mode", enabled: true, inspect: false, colors: GENTLEMAN }, "Comment mode keeps the theme");
+	choose(canvas, "Neutral");
+	for (const frame of canvas.frames()) assert.deepEqual(lastPosted(frame), { type: "gd:colors", colors: NEUTRAL });
+});
+
+test("a saved Gentleman reaches each frame's first gd:mode; with no readable colors gd:mode leaves them out", async () => {
+	const canvas = await loadTheme({ stored: "gentleman" });
+	for (const frame of canvas.frames()) frame.dispatch("load");
+	for (const frame of canvas.frames()) assert.deepEqual(lastMode(frame), { type: "gd:mode", enabled: false, inspect: false, colors: GENTLEMAN });
+	// No getComputedStyle (or a stylesheet not applied yet): the frames keep the outlines they have.
+	const bare = await loadCanvas();
+	for (const frame of bare.frames()) frame.dispatch("load");
+	for (const frame of bare.frames()) assert.deepEqual(lastMode(frame), { type: "gd:mode", enabled: false, inspect: false });
+});
+
+// theme-early.js: a classic script in index.html's <head> that paints a saved Gentleman before the first frame;
+// canvas-theme.js (startTheme) stays the source of truth for the store.
+function runEarly(localStorage: unknown) {
+	const attributes = new Map<string, string>();
+	const documentElement = { setAttribute: (name: string, value: string) => attributes.set(name, String(value)) };
+	const context: Record<string, unknown> = { document: { documentElement } };
+	Object.defineProperty(context, "localStorage", { get: () => (localStorage instanceof Error ? (() => { throw localStorage; })() : localStorage) });
+	vm.runInNewContext(read("theme-early.js"), context);
+	return attributes.get("data-theme") ?? null;
+}
+
+test("index.html loads theme-early.js as a classic, synchronous script in <head>, before the stylesheet and canvas.js", () => {
+	const html = read("index.html");
+	const head = html.slice(0, html.indexOf("</head>"));
+	const tag = '<script src="{{BASE}}assets/theme-early.js"></script>';
+	assert.ok(head.includes(tag), "a plain <script src> (no type, async or defer)");
+	assert.ok(head.indexOf(tag) < head.indexOf('<link rel="stylesheet"'), "before the stylesheet");
+	assert.ok(head.indexOf(tag) < head.indexOf("assets/canvas.js"), "before canvas.js");
+	assert.equal(DESIGN_CANVAS_ASSETS["theme-early.js"], "text/javascript; charset=utf-8", "allowlisted, served as JavaScript");
+});
+
+test("theme-early.js sets data-theme only for a saved gentleman, and leaves Neutral on anything else or any error", () => {
+	const storage = (value: string | null) => ({ getItem: (key: string) => (key === THEME_KEY ? value : null) });
+	assert.equal(runEarly(storage("gentleman")), "gentleman");
+	for (const value of ["neutral", "Gentleman", " gentleman", "", "pink", null]) assert.equal(runEarly(storage(value)), null, JSON.stringify(value));
+	assert.equal(runEarly({ getItem() { throw new Error("denied"); } }), null, "getItem throws");
+	assert.equal(runEarly(new Error("SecurityError")), null, "reaching localStorage throws");
+	assert.equal(runEarly(undefined), null, "no localStorage");
 });

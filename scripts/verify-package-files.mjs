@@ -178,18 +178,18 @@ export const requiredPaths = [
   // exact bytes are pinned by the lock-driven scripts/check-provider-contract.mjs
   // drift check, which runs in the same pnpm test flow.
   "contracts/review-provider-contract-mirror/provider-contract.lock.json",
-  "contracts/review-provider-contract-mirror/v1.5.0/bundle/README.md",
-  "contracts/review-provider-contract-mirror/v1.5.0/bundle/manifest.json",
-  "contracts/review-provider-contract-mirror/v1.5.0/bundle/orchestration/pi.md",
-  "contracts/review-provider-contract-mirror/v1.5.0/bundle/routing/pi.md",
-  "contracts/review-provider-contract-mirror/v1.5.0/bundle/schemas/lens.schema.json",
-  "contracts/review-provider-contract-mirror/v1.5.0/bundle/schemas/refuter.schema.json",
-  "contracts/review-provider-contract-mirror/v1.5.0/bundle/schemas/targeted-validator.schema.json",
-  "contracts/review-provider-contract-mirror/v1.5.0/bundle/vectors/lens.json",
-  "contracts/review-provider-contract-mirror/v1.5.0/bundle/vectors/refuter.json",
-  "contracts/review-provider-contract-mirror/v1.5.0/bundle/vectors/targeted-validator.json",
-  "contracts/review-provider-contract-mirror/v1.5.0/generated/provider-capabilities.baseline.json",
-  "contracts/review-provider-contract-mirror/v1.5.0/generated/provider-roles.baseline.json",
+  "contracts/review-provider-contract-mirror/v1.6.0/bundle/README.md",
+  "contracts/review-provider-contract-mirror/v1.6.0/bundle/manifest.json",
+  "contracts/review-provider-contract-mirror/v1.6.0/bundle/orchestration/pi.md",
+  "contracts/review-provider-contract-mirror/v1.6.0/bundle/routing/pi.md",
+  "contracts/review-provider-contract-mirror/v1.6.0/bundle/schemas/lens.schema.json",
+  "contracts/review-provider-contract-mirror/v1.6.0/bundle/schemas/refuter.schema.json",
+  "contracts/review-provider-contract-mirror/v1.6.0/bundle/schemas/targeted-validator.schema.json",
+  "contracts/review-provider-contract-mirror/v1.6.0/bundle/vectors/lens.json",
+  "contracts/review-provider-contract-mirror/v1.6.0/bundle/vectors/refuter.json",
+  "contracts/review-provider-contract-mirror/v1.6.0/bundle/vectors/targeted-validator.json",
+  "contracts/review-provider-contract-mirror/v1.6.0/generated/provider-capabilities.baseline.json",
+  "contracts/review-provider-contract-mirror/v1.6.0/generated/provider-roles.baseline.json",
   "prompts/skill-creation.md",
   "skills/branch-pr/SKILL.md",
   "skills/chained-pr/SKILL.md",
@@ -207,6 +207,7 @@ export const requiredPaths = [
   "skills/issue-creation/references/delegated-workflow-actions.md",
   "skills/judgment-day/SKILL.md",
   "skills/judgment-day/references/prompts-and-formats.md",
+  "skills/provider-defect-report/SKILL.md",
   "skills/rdd-defect-workflow/SKILL.md",
   "skills/skill-creator/SKILL.md",
   "skills/skill-improver/SKILL.md",
@@ -458,7 +459,7 @@ async function main() {
   });
 
   if (driftedContracts.length > 0) {
-    console.error("gentle-pi packaged review-integration/v1 and review-integration/v2 contract bytes drifted from the pinned v4.4.0 runtime's vendored Gentle AI contract artifacts:");
+    console.error("gentle-pi packaged review-integration/v1 and review-integration/v2 contract bytes drifted from the pinned v4.5.0 runtime's vendored Gentle AI contract artifacts:");
     for (const drift of driftedContracts) console.error(`- ${drift.relativePath}: expected ${drift.expected}, got ${drift.actual}`);
     process.exit(1);
   }
@@ -503,7 +504,7 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`gentle-pi package resource check passed (${requiredPaths.length} files; ${Object.keys(contractHashes).length} exact byte-pinned contract artifacts for the v4.4.0 runtime).`);
+  console.log(`gentle-pi package resource check passed (${requiredPaths.length} files; ${Object.keys(contractHashes).length} exact byte-pinned contract artifacts for the v4.5.0 runtime).`);
 }
 
 const isMainModule = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;

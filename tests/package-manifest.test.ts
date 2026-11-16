@@ -431,20 +431,20 @@ test("package manifest installs pi-pretty through a wrapper without bundling nat
 	);
 });
 
-test("package verification binds the published Gentle AI v4.4.0 runtime pin", () => {
+test("package verification binds the published Gentle AI v4.5.0 runtime pin", () => {
 	const installer = readFileSync(join(PACKAGE_ROOT, "scripts", "gentle-ai-installer.mjs"), "utf8");
 	const binary = readFileSync(join(PACKAGE_ROOT, "lib", "gentle-ai-binary.ts"), "utf8");
 	const verifier = readFileSync(join(PACKAGE_ROOT, "scripts", "verify-package-files.mjs"), "utf8");
 
-	assert.match(installer, /INSTALLER_VERSION = "4\.4\.0"/);
+	assert.match(installer, /INSTALLER_VERSION = "4\.5\.0"/);
 	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_PACKAGE.*GENTLE_AI_WINDOWS_SOURCE_MODULE/);
-	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM = "h1:cAQAzIsbocYcQfOzA1CmgGpGgiCivUNcPjdfJE8RJ6g="/);
+	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM = "h1:81Hsy\+cboAbUse1ORVJuwji6V9sRIGlFwC73EtMdw0c="/);
 	assert.match(installer, /GOTOOLCHAIN: "local"/);
 	assert.match(installer, /GOSUMDB: "sum\.golang\.org"/);
 	assert.match(binary, /GENTLE_AI_VERSION = INSTALLER_VERSION/);
 	assert.match(binary, /GO_SUMDB_SOURCE_BUILD/);
 	assert.match(binary, /GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM/);
-	assert.match(verifier, /v4\.4\.0/);
+	assert.match(verifier, /v4\.5\.0/);
 });
 
 
@@ -1645,10 +1645,10 @@ test("gentle-ai-worker packages the exact scoped writer contract", () => {
 	const contextContract = readMarkdownSection(source, "Context contract");
 	assert.match(contextContract, /pre-existing untracked targets explicitly listed by the parent/);
 	assert.match(contextContract, /new files required by the delegated task/);
-	assert.match(contextContract, /derived candidate set the human can approve or narrow/);
-	assert.match(contextContract, /never an open request for the human to author paths or globs/);
-	assert.match(interactionContract, /closed set the human can approve, decline, or select from/);
-	assert.match(interactionContract, /never ask the human to author paths, globs, identifiers, or commands as free text/);
+	assert.match(contextContract, /derived candidate set the parent can approve, narrow, or route to the human/);
+	assert.match(contextContract, /never an open request for anyone to author paths or globs/);
+	assert.match(interactionContract, /closed set the decision owner can approve, decline, or select from/);
+	assert.match(interactionContract, /never ask anyone to author paths, globs, identifiers, or commands as free text/);
 
 	const implementationRules = readMarkdownSection(source, "Implementation rules");
 	assert.match(implementationRules, /`blocked` only for a non-human technical blocker/);
@@ -1949,9 +1949,9 @@ test("pi-pretty wrapper uses cached ESM loading for compiled and pnpm symlink in
 	assert.match(wrapper, /quietToolsEnabled/);
 });
 
-test("Gentle Shell v4.7.0 package manifest declares the release version", () => {
+test("Gentle Shell v4.8.0 package manifest declares the release version", () => {
 	const packageJson = readPackageJson();
-	assert.equal(packageJson.version, "4.7.0", "the release manifest must be explicitly pinned to v4.7.0");
+	assert.equal(packageJson.version, "4.8.0", "the release manifest must be explicitly pinned to v4.8.0");
 	assert.equal(packageJson.scripts?.test, "node scripts/run-test-suite.mjs");
 	assert.ok(packageJson.files?.includes("assets/"));
 	assert.ok(packageJson.files?.includes("contracts/"));

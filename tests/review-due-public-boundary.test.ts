@@ -4,6 +4,7 @@ import test from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
 
 const tracking = readFileSync(new URL("../assets/orchestrator-tracking.md", import.meta.url), "utf8");
+const lockedSemver = (JSON.parse(readFileSync(new URL("../contracts/review-provider-contract-mirror/provider-contract.lock.json", import.meta.url), "utf8")) as { contract_semver: string }).contract_semver;
 
 test("pending and failed assessment never manufacture review entry", () => {
 	assert.doesNotMatch(tracking, /close the open slice first, assessing and reviewing|treat the commit as due/);
@@ -17,7 +18,7 @@ test("pending and failed assessment never manufacture review entry", () => {
 test("delivered contract preserves consent, authority and risk floor", () => {
 	const contract = __testing.readMirroredReviewContractFragment();
 	assert.ok(contract);
-	assert.match(contract, /mirrored provider bundle 1\.5\.0/);
+	assert.ok(contract.includes(`mirrored provider bundle ${lockedSemver}`), "the fragment names the locked mirror version");
 	assert.match(contract, /only when its `reviewDue` is true.*or the user explicitly asks/);
 	assert.match(contract, /Global RDD enabled permits review; it never grants consent for this candidate/);
 	assert.match(contract, /prompt prose never creates authority or decides delivery/);

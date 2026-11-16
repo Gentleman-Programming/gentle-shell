@@ -5916,7 +5916,7 @@ test("orchestrator_list flags classified-work peers that never publish state (#2
 		assert.equal(result.content[0].text, "Advertised sessions (reachability is unknown):\n"
 			+ "- peer · Silent worker · Session name: Silent worker · Current alias (CURRENT TASK): unknown · Initial alias (FIRST TASK): unknown · recorded workspace: /repo"
 			+ " · repository: unknown · metadata: recent\n  recorded catalog (not Git identity): {\"tasks\":[],\"registered\":[],\"omittedTasks\":0,\"omittedRegistered\":0} · work state: never published"
-			+ "\n1 of 1 advertised sessions have never published work state. Publication is mandatory for classified work: each owner session publishes state (objective, work.topic) at session start and again on every task-topic change via orchestrator_session_id.");
+			+ "\n1 of 1 advertised sessions have never published work state. Progress publishes automatically from the todo list; an owner session publishes objective, work.topic, decisions or blockers via orchestrator_session_id only when they change.");
 		assert.equal((result.details.gentleAgents as any).candidates[0].statePublished, false);
 		publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [], state: {
 			schema: 2, sessionId: "peer", cwd: "/repo", recordedAt: 1, source: "owner-curated",

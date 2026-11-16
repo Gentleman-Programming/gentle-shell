@@ -12,6 +12,7 @@ import { PROFILES_KIND, PROFILES_VERSION, normalizeProfilesFile, profilesFilePat
 import { PROFILE_PIN_KIND, PROFILE_PIN_VERSION, localProfilePinPath, repoProfileDeclarationPath, serializeProfilePin } from "../lib/agent-profile-pin.ts";
 import { DESKTOP_CONFIG_EVENTS, DESKTOP_CONFIG_METHODS, DESKTOP_CONFIG_STORES, DesktopConfigBridge } from "../lib/desktop-rpc-config.ts";
 import { DESKTOP_RPC_SCHEMA, DESKTOP_RPC_WIDGET } from "../lib/desktop-rpc.ts";
+import { beginDesktopProfileApply, endDesktopProfileApply } from "../lib/desktop-rpc-profiles.ts";
 import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
 import type { WorktreeIdentity } from "../lib/session-worktree-registry.ts";
 
@@ -687,6 +688,28 @@ test("profiles accepts a validated write and reports the resulting store", async
 	assert.equal(JSON.stringify(outcome).includes(env.root), false, "no physical path crosses the contract");
 });
 
+test("profile writes wait for a running apply_profile instead of racing its store snapshot", async (t) => {
+	const env = isolatedEnvironment(t);
+	const path = profilesFilePath(env.configHome);
+	writeJson(path, profilesFixture());
+	const bridge = bridgeFor(env);
+	const beforeWrite = await writeTargetRevision(bridge, "profiles");
+	const bytes = readFileSync(path, "utf8");
+	assert.equal(beginDesktopProfileApply(), true);
+	t.after(() => endDesktopProfileApply());
+	assert.equal(beginDesktopProfileApply(), false, "only one apply holds the gate");
+	for (const store of ["profiles", "profile_fallbacks", "pins"]) {
+		const outcome = await setConfig(bridge, { store, data: store === "profiles" ? withProfile("extra", "openai/gpt-extra") : {}, expectedRevision: beforeWrite });
+		assertError(outcome, "profile_apply_busy");
+		assert.equal(outcome.event, undefined, store);
+	}
+	assert.equal(readFileSync(path, "utf8"), bytes, "a refused write leaves the store untouched");
+	await readStore(bridge, "profiles"); // reads still answer during an apply
+	endDesktopProfileApply();
+	const outcome = await setConfig(bridge, { store: "profiles", data: withProfile("extra", "openai/gpt-extra"), expectedRevision: beforeWrite });
+	assert.equal(outcome.ok, true, JSON.stringify(outcome));
+});
+
 test("profiles creates a missing store from its missing-state write revision", async (t) => {
 	const env = isolatedEnvironment(t);
 	const path = profilesFilePath(env.configHome);
@@ -1304,10 +1327,11 @@ test("capabilities advertise the wired config read and write surface", async (t)
 		"get_design_canvas",
 		"list_jobs",
 		"cancel_job",
+		"apply_profile",
 		"list_subagents",
 		"cancel_subagent",
 	]);
-	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "agents_update"]);
+	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update"]);
 });
 
 test("get_config answers through the transport with no physical path in the response", async (t) => {

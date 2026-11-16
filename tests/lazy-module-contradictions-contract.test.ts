@@ -70,10 +70,24 @@ test("X2: the dead Delivery strategy pointer section is gone; push and merge sta
 	}
 });
 
+// Step 3 as the harness renders it from the mirrored provider routing, so the
+// no-restatement check follows the canonical wording instead of a stale copy.
+const STEP_3 = "3. **Resolve uncertainty.** ";
+function renderedStepThree(prompt: string): string {
+	const line = prompt.split("\n").find((candidate) => candidate.startsWith(STEP_3));
+	assert.ok(line, "the rendered prompt must carry ODD step 3");
+	return line.slice(STEP_3.length);
+}
+
 test("Duplicates: tracking keeps no restatement of step 3 or of the Phase reporting line", () => {
+	const stepThree = renderedStepThree(prompts[0]);
+	for (const prompt of prompts) assert.equal(renderedStepThree(prompt), stepThree, "every persona renders the same step 3");
+	assert.ok(stepThree.includes("Recommend optional research only for a named uncertainty"), "step 3 must still own the research recommendation");
+	// Every clause of the rendered step 3, so a reworded step can never be restated in tracking unnoticed.
+	const stepThreeClauses = stepThree.split(/[.;,] /).map((clause) => clause.trim()).filter((clause) => clause.length >= 20);
+	assert.ok(stepThreeClauses.length >= 5, "step 3 must split into its clauses");
 	for (const restated of [
-		"Recommend optional research only for a named uncertainty",
-		"ask one focused user question only for a real unresolved product decision",
+		...stepThreeClauses,
 		"Use at most one scoped independent read-only assumption challenge",
 		"inferred automatically from the primary session's tool activity",
 		"never per tool call, per thought, or on a fixed cadence",
@@ -81,8 +95,7 @@ test("Duplicates: tracking keeps no restatement of step 3 or of the Phase report
 		assert.ok(!tracking.includes(restated), `tracking still restates an always-on rule: ${restated}`);
 	}
 	for (const prompt of prompts) {
-		assert.ok(prompt.includes("Recommend optional research only for a named uncertainty; ask one focused user question only for a real unresolved product decision, then stop and wait; use at most one scoped read-only assumption challenge for a high-consequence unproven premise."));
-		assert.ok(prompt.includes("call `gentle_odd_phase` only when the primary session's ODD phase actually changes, never per tool call or on a fixed cadence, and never from a subagent"));
+		assert.ok(prompt.includes("call it from the primary session only when its ODD phase actually changes, never per tool call or on a fixed cadence"));
 	}
 	// The rules step 3 does not carry stay in tracking.
 	for (const kept of [
@@ -155,4 +168,14 @@ test("X5: the large task pattern label matches its inline diagram", () => {
 	assert.ok(label !== -1);
 	assert.equal(lines[label], "Large task pattern (no Writer rule reason; with one, one bounded worker per unit writes instead):");
 	assert.ok(lines[label + 3]?.includes("parent edits inline following the logbook"), "the diagram must stay the inline one");
+});
+
+// harness-continuity S8 (T8b): the runtime infers the phase label from tool activity, so the model call
+// is an optional refinement, never a per-phase obligation; the `clear` rule stays.
+test("S8: tracking makes `gentle_odd_phase` an optional refinement, never required per phase", () => {
+	const start = tracking.indexOf("#### Signaling the ODD phase to the Gentle prompt");
+	assert.ok(start >= 0, "tracking keeps the phase-signaling section");
+	const section = tracking.slice(start, tracking.indexOf("\n\n", tracking.indexOf("\n\n", start) + 2));
+	assert.ok(section.includes("`gentle_odd_phase` is an optional refinement, never required per phase"), "the phase call must be optional");
+	assert.ok(section.includes("Call `gentle_odd_phase` with `clear` only to leave the current phase before its turn ends."));
 });

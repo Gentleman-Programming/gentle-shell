@@ -1,31 +1,31 @@
 # Orchestrator — Writer Handoff (lazy-loaded)
 
-Parent Pi session only. Load it when the Writer rule fires or an explicitly activated Judgment Day fix batch is dispatched; small tasks never need it. The Writer rule fires on a named reason (parallel units, the context backstop), never on size alone or a price ratio: a large task without a reason stays inline, following its logbook. Configured per-agent models (`subagents.json` `model_profiles`) still apply to every writer it launches. Each writer prompt requires the self-review of the Parallel review protocol in `orchestrator-verification.md`. A reason holds only when the launch delivers it:
+Parent Pi session only. Load it when the Writer rule fires or an explicitly activated Judgment Day fix batch is dispatched. The Writer rule fires on a named reason (parallel units, the context backstop), never on size alone or a price ratio: a large task without one stays inline. Configured per-agent models (`subagents.json` `model_profiles`) still apply to every writer it launches. Writer prompts require the Parallel review protocol self-review (`orchestrator-verification.md`). A reason holds only when the launch delivers it:
 
-- **Invariants**: each writer prompt names the existing helpers its unit must reuse for shared state and the invariants they keep; units built in parallel cannot see each other, so this is the only place they learn them.
+- **Invariants**: each writer prompt names the existing helpers its unit must reuse for shared state and the invariants they keep; units built in parallel cannot see each other.
 - **Size threshold**: a subagent costs one to two minutes of reading and setup before it writes anything; delegate a unit only when it needs several minutes of work (several files or roughly 100+ changed lines). Several small independent changes are faster inline, one after another.
 - **Parallelism**: a unit is one independent piece of behavior with its own code, tests, and docs; never split one behavior into a test writer, a docs writer, and inline code, and never delegate a unit that depends on another unit still in progress. In every mode, launch every independent unit in the same turn via `subagent_run` without `mode`, in one assistant message with no other tool call (in background when background mode is on), then wait for all completions before the Seam check; serial launches void the reason: if units cannot launch together, work inline.
 
 #### Allowed edit surfaces (MANDATORY)
 
-The bounded writer refuses to write outside the exact allowed edit surfaces and stops with `status: interaction_required` when they are missing. Every new writer launch carries the section (a continuation inherits it); after an admission rejection, repair what it names once, never relaunch the same prompt unchanged.
+The writer refuses to write outside its exact surfaces and stops with `interaction_required` without them. Every new writer launch carries the section (a continuation inherits it); after an admission rejection, repair what it names once, never relaunch the same prompt unchanged.
 
-Before launching a bounded writer (`gentle-ai-worker`, a user-configured `worker`, or the native `Agent` fallback), derive the allowed edit surface from the delegated task — files the change must touch, plus directories where it authorizes new files — and pass it in the prompt under an `## Allowed edit surfaces` heading, in the exact-path form of `## Skills to load before work`:
+Before launching any bounded writer, even the native `Agent` fallback, derive its surface from the task (files the change touches, plus directories where it authorizes new files) and pass it under `## Allowed edit surfaces`:
 
-- exact repository-relative paths or narrow globs, one per line; never `.` and never a bare repository root; paths containing whitespace require whole-entry backticks (for example, ``- `Directory With Spaces/note.md` ``); a list marker alone does not permit whitespace;
-- the section ends only at the next canonical ATX Markdown heading of any level (zero to three leading ASCII spaces, one to six `#`, then an ASCII space); every non-empty line before that heading must be a valid surface entry, so put explanatory prose under a following heading;
-- pre-existing untracked targets the writer may write, listed explicitly;
-- nothing beyond the delegated task — a surface wider than the task is the same defect as no surface at all.
+- exact repository-relative paths or narrow globs, one per line; never `.` and never a bare repository root; whitespace needs whole-entry backticks (``- `My Dir/a.md` ``), not just a list marker;
+- the section ends at the next heading of any level (0-3 leading ASCII spaces, 1-6 `#`, an ASCII space); every non-empty line before it must be an entry; prose goes under a later heading;
+- pre-existing untracked targets it may write, listed explicitly;
+- nothing beyond the task; wider is the same defect as none.
 
-Test scratch stays outside the worktree (`mktemp -d`), never in the repository (nor caches or `TMPDIR`); state needed inside uses an excluded path the test removes. The runtime owns session scratch; `/gentle:scratch` lists or cleans recorded clones and worktrees.
+Test scratch stays outside the worktree (`mktemp -d`), never in the repository (nor caches or `TMPDIR`); inside state uses an excluded path the test removes. The runtime owns session scratch; `/gentle:scratch` lists or cleans recorded clones and worktrees.
 
-If the surface genuinely cannot be derived, do not launch the writer or ask the human to author paths. Derive a candidate set first — the exact paths this task would touch — and present that enumerated list as an approve/decline choice under the Lossless Blocking Prompts rules in `orchestrator-prompts.md`.
+If the surface cannot be derived, do not launch or make the human author paths: offer the derived exact paths as an approve/decline choice (Lossless Blocking Prompts, `orchestrator-prompts.md`). Investigate technical route doubt; it is not a human question.
 
-Relay a writer's `interaction_required` payload about edit surfaces the same way: present its derived candidate paths as the choice, and add or drop paths only on the human's explicit instruction.
+A writer never widens its surface; it reports exact candidate paths with reasons and awaits your replacement. Add a necessary path (test, helper) yourself, without the human, only in the authorized objective and repository, after checking ownership, existing work, risk, and concurrent writers and units; a cosmetic refactor never qualifies; an unresolved ownership or overlap conflict blocks it. New objective or scope, unapproved repository, private material, destructive or prohibited operation, missing consent, denial, or exhausted limit go to the human under existing protocols. Continue the same writer with a replacement, not a union: every still-needed path plus a concise reason, never repository-wide, no budget reset. A surface grants no repository authority or prohibited operation.
 
 #### Judgment Day fix dispatch
 
-Use `jd-fix-agent` only for an explicitly activated Judgment Day fix batch, never as a lexical or generic-writer fallback. Judgment Day is independent: it neither enables nor replaces ordinary review; a separately requested ordinary review remains independent. A standalone Judgment Day fix requires no graph-v1 or native review lineage. Its dispatch carries this exact runtime-accepted Markdown shape: `## Judgment Day activation` contains only `User explicitly requested Judgment Day.`. Replace the example ID, frozen ledger hash, row data, and surface with controller-authorized values. The correction batch contains only one round (`1 of 2` or `2 of 2`) and one lowercase SHA-256. The exact frozen finding rows are one JSON object per line, use only the canonical row fields, and exactly match the authorized IDs.
+Use `jd-fix-agent` only for an explicitly activated Judgment Day fix batch, never as a lexical or generic-writer fallback. Judgment Day is independent: it neither enables nor replaces ordinary review; a separately requested ordinary review remains independent. A standalone Judgment Day fix requires no graph-v1 or native review lineage. Its dispatch carries this exact runtime-accepted shape: `## Judgment Day activation` contains only `User explicitly requested Judgment Day.`. Replace the example ID, frozen ledger hash, row data, and surface with controller-authorized values. The correction batch contains only one round (`1 of 2` or `2 of 2`) and one lowercase SHA-256. The exact frozen finding rows are one JSON object per line, use only the canonical row fields, and exactly match the authorized IDs.
 
 ```markdown
 ## Judgment Day activation

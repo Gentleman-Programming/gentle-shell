@@ -123,12 +123,12 @@ test("P8: change kinds never change when a verifier runs, and the verifier keeps
 	containsAll(verify, ["No network, no installs, no writes outside the scratch directory."], "verify isolation");
 });
 
-// Part B, C1: second correction first, then the single Needs your decision.
-test("P8 C1: the second correction is stated before the remaining blockers become one Needs your decision", () => {
+// Part B, C1: second correction first, then the scoped partial stop (harness-continuity T6).
+test("P8 C1: the second correction is stated before the remaining blockers leave the unit partial", () => {
 	const second = verification.indexOf("A second correction runs automatically only when the recheck shows the same blocker still failing");
-	const decision = verification.indexOf("Blockers still open after that stop as one **Needs your decision**");
+	const decision = verification.indexOf("Blockers still open after that leave the unit `status: partial`");
 	assert.ok(second >= 0 && decision >= 0, "both correction sentences must stay");
-	assert.ok(second < decision, "the second correction must come before the Needs your decision stop");
+	assert.ok(second < decision, "the second correction must come before the partial stop");
 });
 
 // Part B, C2: writers add probes as tests; the parent owns git.
@@ -190,8 +190,8 @@ test("P8 preservation: verifier setup self-correction, first-launch reads, resum
 		"Run the spec's example commands on your first launch",
 		"When resumed in the same child session, do not re-read skill files or spec sections you already read there unless they changed or the parent says so",
 		"Probe on your first launch; never wait for further authorization.",
-		"any requested `## Key Learnings` block",
 	], "verify preserved rules");
+	assert.ok(!verify.includes("Key Learnings"), "S8: the retired Key Learnings ritual stays out of the verifier");
 	containsAll(verification, [
 		"one correction batch that fixes every reported blocker",
 		"a new finding never earns one",

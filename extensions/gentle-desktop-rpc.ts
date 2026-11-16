@@ -24,6 +24,7 @@ import { DESKTOP_JOBS_EVENTS, DESKTOP_JOBS_METHODS } from "../lib/desktop-rpc-jo
 import { DesktopJobsBridge } from "../lib/desktop-jobs-service.ts";
 import { DESKTOP_AGENTS_EVENTS, DESKTOP_AGENTS_METHODS } from "../lib/desktop-rpc-agents.ts";
 import { DesktopAgentsBridge } from "../lib/desktop-agents-service.ts";
+import { DESKTOP_PROFILES_EVENTS, DESKTOP_PROFILES_METHODS, DesktopProfilesBridge } from "../lib/desktop-rpc-profiles.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 
 function publisher(ctx: ExtensionContext): DesktopRpcPublish {
@@ -43,16 +44,18 @@ export default function desktopRpc(pi: ExtensionAPI) {
 	// to the existing design owner; background jobs list/cancel delegate to the
 	// existing parent-session job registry and monitor controller; subagents
 	// list/cancel delegate to the existing parent-session TaskStore and
-	// AgentRunner. None has a store of its own.
+	// AgentRunner; profile applies delegate to the existing `/gentle:profiles`
+	// owner and its own apply actions. None has a store of its own.
 	const permissions = new DesktopPermissionBridge(pi);
 	const config = new DesktopConfigBridge();
 	const usage = new DesktopUsageBridge(pi);
 	const design = new DesktopDesignBridge(pi);
 	const jobs = new DesktopJobsBridge(pi);
 	const agents = new DesktopAgentsBridge(pi);
+	const profiles = new DesktopProfilesBridge(pi);
 	const domain: DesktopRpcDomain = (method, params) => {
 		// Config is the only synchronous bridge; permission, usage, design, jobs,
-		// and agents answers are awaited in fall-through order, so an unknown
+		// profiles, and agents answers are awaited in fall-through order, so an unknown
 		// method still resolves to the router's `unsupported_method` instead of an
 		// early `undefined`.
 		const configOutcome = config.handle(method, params);
@@ -66,12 +69,14 @@ export default function desktopRpc(pi: ExtensionAPI) {
 			if (designOutcome !== undefined) return designOutcome;
 			const jobsOutcome = await jobs.handle(method, params);
 			if (jobsOutcome !== undefined) return jobsOutcome;
+			const profilesOutcome = await profiles.handle(method, params);
+			if (profilesOutcome !== undefined) return profilesOutcome;
 			return agents.handle(method, params);
 		})();
 	};
 	const router = new DesktopRpcRouter(
-		["capabilities", "get_snapshot", ...DESKTOP_CONFIG_METHODS, ...DESKTOP_PERMISSION_METHODS, ...DESKTOP_USAGE_METHODS, ...DESKTOP_DESIGN_METHODS, ...DESKTOP_JOBS_METHODS, ...DESKTOP_AGENTS_METHODS],
-		[...DESKTOP_CONFIG_EVENTS, DESKTOP_PERMISSION_EVENT, ...DESKTOP_USAGE_EVENTS, ...DESKTOP_DESIGN_EVENTS, ...DESKTOP_JOBS_EVENTS, ...DESKTOP_AGENTS_EVENTS],
+		["capabilities", "get_snapshot", ...DESKTOP_CONFIG_METHODS, ...DESKTOP_PERMISSION_METHODS, ...DESKTOP_USAGE_METHODS, ...DESKTOP_DESIGN_METHODS, ...DESKTOP_JOBS_METHODS, ...DESKTOP_PROFILES_METHODS, ...DESKTOP_AGENTS_METHODS],
+		[...DESKTOP_CONFIG_EVENTS, DESKTOP_PERMISSION_EVENT, ...DESKTOP_USAGE_EVENTS, ...DESKTOP_DESIGN_EVENTS, ...DESKTOP_JOBS_EVENTS, ...DESKTOP_PROFILES_EVENTS, ...DESKTOP_AGENTS_EVENTS],
 		() => config.snapshotState(),
 		domain,
 	);
@@ -82,6 +87,7 @@ export default function desktopRpc(pi: ExtensionAPI) {
 		usage.reset();
 		design.reset();
 		jobs.reset();
+		profiles.reset();
 		agents.reset();
 		router.stop();
 		if (!isInteractiveRpcHost(ctx.mode)) return;
@@ -115,6 +121,7 @@ export default function desktopRpc(pi: ExtensionAPI) {
 		usage.reset();
 		design.reset();
 		jobs.reset();
+		profiles.reset();
 		agents.reset();
 		router.stop();
 	});
@@ -128,6 +135,7 @@ export default function desktopRpc(pi: ExtensionAPI) {
 			usage.attach(ctx);
 			design.attach(ctx);
 			jobs.attach(ctx);
+			profiles.attach(ctx);
 			agents.attach(ctx);
 			await router.handle(args);
 		},

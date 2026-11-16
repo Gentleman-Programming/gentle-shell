@@ -1170,6 +1170,16 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// 58450471280aeb357443d6a28c819132d8c8eb78dd25b12bac64296b2f8c27c2.
 	// No new negotiated capability identity is asserted.
 	"4.4.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v4.5.0 repeats 4.4.0: the published binary still advertises
+	// capabilities/v2.6 (protocol minor 6) under review-integration/v2, and the
+	// provider contract moved from 1.4.0 to 1.5.0 additively (one stop reason,
+	// no negotiated START/STATUS field), with published provider-contract tarball
+	// SHA-256 08fdb65329b47a2cd2563edfa62b5781fd5ec7b0d1e8812e8e29a01a486da838.
+	// Ground truth: `review capabilities --contract gentle-ai.review-integration/v2`
+	// on the released darwin/arm64 v4.5.0 binary reports schema
+	// gentle-ai.review-integration.capabilities/v2.6 with protocol minor 6.
+	// No new negotiated capability identity is asserted.
+	"4.5.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 });
 
 

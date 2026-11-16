@@ -17,21 +17,6 @@ const ASSETS = join(ROOT, "assets");
 // this guard with an ENOENT instead of a real assertion.
 const STRICT_JSON_PREFIX = /^(jd-|review-)/;
 
-// Canonical semantics every Key Learnings section must encode.
-const KL_SEMANTICS: Array<[string, RegExp]> = [
-	["heading `## Key Learnings`", /`## Key Learnings`/],
-	["1–5 numbered items", /1[–-]5 numbered/],
-	["standalone factual sentence", /standalone factual sentence/],
-	["at least 20 characters", /at least 20 characters/],
-	["at least 4 words", /at least 4 words/],
-	["final report text only", /final (?:report|response) text only/],
-	["Engram extracts and persists", /Engram[^\n]*automatically extracts[^\n]*persists/i],
-	["executor does not parse", /do(?:es)? not parse/],
-	["passive-capture tool wording", /passive.capture/i],
-	["omit when no reusable learning", /[Oo]mit[^\n]*no reusable learning/],
-	["separate from mem_save", /separate from[^\n]*mem_save/],
-];
-
 function readSection(source: string, heading: string): string | null {
 	const lines = source.split(/\r?\n/);
 	const start = lines.findIndex((l) => /^#{1,6}\s+/.test(l) && l.replace(/^#{1,6}\s+/, "").trim() === heading);
@@ -53,16 +38,29 @@ function strictJsonAgents(): string[] {
 	return agentFiles().filter((f) => STRICT_JSON_PREFIX.test(f));
 }
 
-test("generic delegation contract instructs the same `## Key Learnings` closing block", () => {
+// S8 (harness-continuity T8): the generic mandatory `## Key Learnings` closing
+// ritual is retired in favor of memory-owned learning (workers save validated
+// facts through Engram when given a project). Neither the delegation modules,
+// the full-delegation card, nor the generic agent bodies may instruct it.
+const GENERIC_AGENTS = ["gentle-ai-explore.md", "gentle-ai-worker.md", "gentle-ai-verify.md"];
+
+test("S8: the delegation contract no longer instructs a mandatory `## Key Learnings` closing block", () => {
 	const delegation = readDelegationDetail();
-	const section = readSection(delegation, "Key Learnings closing block");
-	assert.ok(section, "orchestrator-delegation.md must have a Key Learnings closing block section");
-	for (const [label, regex] of KL_SEMANTICS) {
-		assert.match(section, regex, `delegation missing semantic: ${label}`);
+	assert.equal(readSection(delegation, "Key Learnings closing block"), null, "the Key Learnings closing block section must be retired");
+	assert.doesNotMatch(delegation, /Key Learnings/, "no delegation module may instruct the Key Learnings ritual");
+	const card = readFileSync(join(ASSETS, "orchestrator-full-delegation-card.md"), "utf8");
+	assert.doesNotMatch(card, /Key Learnings/, "the full-delegation card must not carry the ritual");
+});
+
+test("S8: generic agents keep their Return contract without the Key Learnings ritual; the worker keeps memory-owned learning", () => {
+	for (const file of GENERIC_AGENTS) {
+		const source = readFileSync(join(AGENTS, file), "utf8");
+		assert.doesNotMatch(source, /Key Learnings/, `${file} must not mention the retired ritual`);
 	}
-	assert.match(section, /native `Agent`/, "must cover native Agent fallback");
-	assert.match(section, /strict JSON/i, "must exclude strict-JSON agents");
-	assert.match(section, /layers on after/, "must state the block layers on after the envelope");
+	const worker = readFileSync(join(AGENTS, "gentle-ai-worker.md"), "utf8");
+	const memory = readSection(worker, "Memory safety");
+	assert.ok(memory, "the worker keeps its Memory safety section");
+	assert.match(memory, /Use `mem_save` only when the parent supplies a validated project name/);
 });
 
 test("provider ownership: no Pi TypeScript runtime parses Key Learnings or invokes passive-capture tools", () => {
@@ -157,9 +155,4 @@ test("strict review and Judgment Day agents do not gain Key Learnings or trailin
 		}
 	}
 	assert.deepEqual(failures, [], "strict-JSON/ledger agents must remain untouched");
-});
-
-test("the canonical Key Learnings heading has no trailing colon in any asset", () => {
-	const delegation = readDelegationDetail();
-	assert.doesNotMatch(delegation, /`## Key Learnings:`/);
 });

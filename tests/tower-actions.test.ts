@@ -41,8 +41,11 @@ test("the inbox is private and consuming empties it in order", () => {
 	writeTowerAction(hub, { type: "message", sessionId: "s-1", text: "second" });
 	writeTowerAction(hub, { type: "message", sessionId: "s-2", text: "other floor" });
 	const box = towerInboxDir(hub, "s-1");
-	assert.equal(statSync(box).mode & 0o777, 0o700);
-	for (const f of readdirSync(box)) assert.equal(statSync(join(box, f)).mode & 0o777, 0o600);
+	// Windows has no POSIX file modes (stat reports 0o666); the private inbox is the user's own profile there.
+	if (process.platform !== "win32") {
+		assert.equal(statSync(box).mode & 0o777, 0o700);
+		for (const f of readdirSync(box)) assert.equal(statSync(join(box, f)).mode & 0o777, 0o600);
+	}
 	assert.deepEqual(consumeTowerActions(hub, "s-1").map((a) => a.type === "message" && a.text), ["first", "second"]);
 	assert.deepEqual(readdirSync(box), []);
 	assert.deepEqual(consumeTowerActions(hub, "s-1"), []);
@@ -87,7 +90,8 @@ test("the server queues a valid action for its floor and refuses the rest", asyn
 
 // ---------- new floor: a new Gentle Shell session in a project already in the tower ----------
 import { EventEmitter } from "node:events";
-import { buildLaunchScript, launchInTerminal, shellQuote } from "../lib/tower-launch.ts";
+import { readFileSync } from "node:fs";
+import { buildLaunchScript, buildWindowsLaunchScript, launchInTerminal, shellQuote } from "../lib/tower-launch.ts";
 import { buildTowerSnapshot } from "../lib/tower-snapshot.ts";
 import { writeTowerSnapshot } from "../lib/tower-hub.ts";
 
@@ -96,6 +100,13 @@ test("a new floor parses with a project path and an optional first message", () 
 	assert.deepEqual(parseTowerAction({ type: "new-floor", project: "/w/app" }), { type: "new-floor", project: "/w/app" });
 	for (const bad of [{ type: "new-floor", project: "relative/path" }, { type: "new-floor", project: "/w/app", prompt: "x".repeat(4001) }, { type: "new-floor" }, { type: "new-floor", project: "/w/app\nrm" }])
 		assert.equal(parseTowerAction(bad), undefined, JSON.stringify(bad));
+});
+
+test("a new floor accepts absolute Windows project paths and still refuses relative ones", () => {
+	for (const project of ["C:\\Users\\dev\\tower", "c:/work/app", "D:\\", "\\\\server\\share\\app", "\\\\server\\share"])
+		assert.deepEqual(parseTowerAction({ type: "new-floor", project, prompt: " go " }), { type: "new-floor", project, prompt: "go" }, project);
+	for (const project of ["C:relative", "C:", "\\rooted\\no-drive", "\\\\server", "\\\\server\\", "..\\up", "app\\src", "CC:\\x", "1:\\x", "C:\\a\0b", "C:\\a\r\nb", "\\\\srv\\share\nx", "C:\\" + "a".repeat(4096)])
+		assert.equal(parseTowerAction({ type: "new-floor", project }), undefined, JSON.stringify(project));
 });
 
 test("the launch script quotes everything; a hostile message stays one argument", () => {
@@ -120,9 +131,14 @@ test("the server opens a floor only in a project already in the tower", async ()
 
 const spec = { cwd: "/w/a", node: "/n", launcher: "/l" };
 function fakeSpawn(events: Array<[string, unknown]>) {
-	const calls: Array<[string, string[]]> = [];
-	const fn = ((cmd: string, args: string[]) => {
-		calls.push([cmd, args]);
+	return fakeSpawns([events]);
+}
+/** One event list per spawn call, in order (the last list repeats). */
+function fakeSpawns(perCall: Array<Array<[string, unknown]>>) {
+	const calls: Array<[string, string[], Record<string, unknown>]> = [];
+	const fn = ((cmd: string, args: string[], options: Record<string, unknown>) => {
+		const events = perCall[Math.min(calls.length, perCall.length - 1)];
+		calls.push([cmd, args, options]);
 		const child = Object.assign(new EventEmitter(), { unref() {} });
 		setTimeout(() => { for (const [name, value] of events) child.emit(name, value); }, 5);
 		return child;
@@ -154,6 +170,65 @@ test("on Linux the terminal itself keeps running, so starting it is enough", asy
 	const term = fakeSpawn([["spawn", undefined]]);
 	await launchInTerminal(spec, { tmpRoot: root, platform: "linux", spawn: term.fn });
 	assert.equal(term.calls[0][0], "x-terminal-emulator");
+});
+
+const winSpec = { cwd: "C:\\w\\my app", node: "C:\\Program Files\\nodejs\\node.exe", launcher: "C:\\pkg\\bin\\gentle-shell.mjs" };
+
+test("the Windows launch script quotes for cmd; a hostile message stays one literal argument", () => {
+	const head = "@echo off\r\nsetlocal DisableDelayedExpansion\r\nchcp 65001 >nul\r\n";
+	const tail = `(goto) 2>nul & del "%~f0"\r\n`;
+	assert.equal(buildWindowsLaunchScript({ ...winSpec, prompt: `& del C:\\x %PATH% "` }),
+		`${head}cd /d "C:\\w\\my app" && "C:\\Program Files\\nodejs\\node.exe" "C:\\pkg\\bin\\gentle-shell.mjs" "--" "--" "& del C:\\x %%PATH%% """\r\n${tail}`);
+	assert.equal(buildWindowsLaunchScript({ cwd: "C:\\a%b", node: "C:\\n.exe", launcher: "C:\\l.mjs" }),
+		`${head}cd /d "C:\\a%%b" && "C:\\n.exe" "C:\\l.mjs"\r\n${tail}`);
+	// cmd metacharacters stay literal inside the quotes; backslashes before a quote are doubled for the C runtime.
+	assert.equal(buildWindowsLaunchScript({ ...winSpec, cwd: "C:\\w", prompt: `a|b<c>d^e(f)!g \\"h\\` }),
+		`${head}cd /d "C:\\w" && "C:\\Program Files\\nodejs\\node.exe" "C:\\pkg\\bin\\gentle-shell.mjs" "--" "--" "a|b<c>d^e(f)!g \\\\""h\\\\"\r\n${tail}`);
+});
+
+test("the Windows launch script refuses what cmd cannot carry safely", () => {
+	assert.throws(() => buildWindowsLaunchScript({ ...winSpec, prompt: "one\r\ntwo" }), /^Error: Gentle Tower: the first message has a line break or control character, which cmd cannot pass safely$/);
+	assert.throws(() => buildWindowsLaunchScript({ ...winSpec, prompt: "a\0b" }), /first message has a line break or control character/);
+	assert.throws(() => buildWindowsLaunchScript({ ...winSpec, cwd: "C:\\w\"x" }), /^Error: Gentle Tower: the project folder has a double quote, which cmd cannot pass safely$/);
+	assert.throws(() => buildWindowsLaunchScript({ ...winSpec, cwd: "C:\\w\nx" }), /project folder has a line break or control character/);
+	assert.throws(() => buildWindowsLaunchScript({ ...winSpec, prompt: "%".repeat(4000) + "x".repeat(200) }), /^Error: Gentle Tower: the command is longer than cmd's 8191-character line limit$/);
+	assert.doesNotThrow(() => buildWindowsLaunchScript({ ...winSpec, prompt: "tab\there" }));
+});
+
+test("on Windows a floor opens in Windows Terminal, the script run from its own folder by a fixed name", async () => {
+	const { root } = scratch();
+	const wt = fakeSpawns([[["spawn", undefined], ["exit", 0]]]);
+	await launchInTerminal({ ...winSpec, prompt: "& del C:\\x" }, { tmpRoot: root, platform: "win32", spawn: wt.fn });
+	assert.equal(wt.calls.length, 1);
+	const [cmd, args, options] = wt.calls[0];
+	const dir = options.cwd as string;
+	assert.equal(cmd, "wt.exe");
+	assert.deepEqual(args, ["-d", dir, "cmd", "/d", "/c", ".\\new-floor.cmd"]);
+	assert.ok(dir.startsWith(join(root, "gentle-tower-floor-")), dir);
+	assert.equal(readFileSync(join(dir, "new-floor.cmd"), "utf8"), buildWindowsLaunchScript({ ...winSpec, prompt: "& del C:\\x" }));
+	// No user text reaches any command line: the message lives only in the script.
+	assert.ok(!JSON.stringify(wt.calls).includes("del C:"));
+});
+
+test("on Windows without Windows Terminal a floor opens with cmd start; a failing starter rejects", async () => {
+	const { root } = scratch();
+	const fallback = fakeSpawns([[["error", Object.assign(new Error("spawn wt.exe ENOENT"), { code: "ENOENT" })]], [["spawn", undefined], ["exit", 0]]]);
+	await launchInTerminal(winSpec, { tmpRoot: root, platform: "win32", spawn: fallback.fn });
+	assert.deepEqual(fallback.calls.map((c) => c[0]), ["wt.exe", "cmd.exe"]);
+	const [, args, options] = fallback.calls[1];
+	assert.deepEqual(args, ["/d", "/c", "start", '""', "cmd", "/d", "/k", ".\\new-floor.cmd"]);
+	assert.equal(options.windowsVerbatimArguments, true);
+	assert.equal(options.cwd, fallback.calls[0][2].cwd);
+	const failing = fakeSpawns([[["error", Object.assign(new Error("spawn wt.exe ENOENT"), { code: "ENOENT" })]], [["spawn", undefined], ["exit", 1]]]);
+	await assert.rejects(launchInTerminal(winSpec, { tmpRoot: root, platform: "win32", spawn: failing.fn }), /cmd\.exe exited with 1/);
+	const wtFails = fakeSpawns([[["spawn", undefined], ["exit", 2]]]);
+	await assert.rejects(launchInTerminal(winSpec, { tmpRoot: root, platform: "win32", spawn: wtFails.fn }), /wt\.exe exited with 2/);
+	assert.equal(wtFails.calls.length, 1, "a Windows Terminal that started and failed is not retried in a second window");
+	const bothMissing = fakeSpawns([[["error", Object.assign(new Error("spawn wt.exe ENOENT"), { code: "ENOENT" })]], [["error", new Error("spawn cmd.exe EACCES")]]]);
+	await assert.rejects(launchInTerminal(winSpec, { tmpRoot: root, platform: "win32", spawn: bothMissing.fn }), /EACCES/);
+	const unsafe = fakeSpawns([[["spawn", undefined], ["exit", 0]]]);
+	await assert.rejects(launchInTerminal({ ...winSpec, prompt: "a\nb" }, { tmpRoot: root, platform: "win32", spawn: unsafe.fn }), /line break/);
+	assert.equal(unsafe.calls.length, 0);
 });
 
 test("an action bigger than the inbox limit is refused before it is written", () => {

@@ -94,7 +94,10 @@ test("gentle-shell tower --no-open serves until SIGINT, then exits 0", { skip: b
 	assert.equal((await fetch(url)).status, 200);
 	const exited = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
 	child.kill("SIGINT");
-	assert.equal(await exited, 0);
+	// Windows cannot deliver SIGINT to another process: kill() terminates it (exit code null),
+	// so there only the stop itself is checked; POSIX checks the clean exit 0.
+	const code = await exited;
+	if (process.platform !== "win32") assert.equal(code, 0);
 	assert.equal(stderr, "");
 	assert.equal(stdout, `Gentle Tower: ${url}\nPress Ctrl+C to stop.\n`);
 	await assert.rejects(fetch(url));

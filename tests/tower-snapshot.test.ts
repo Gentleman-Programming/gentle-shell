@@ -84,10 +84,12 @@ test("the hub writes atomically with private permissions and reads every session
 	const s = buildTowerSnapshot(base);
 	writeTowerSnapshot(dir, s);
 	writeTowerSnapshot(dir, { ...s, name: "renamed" });
-	assert.equal(statSync(dir).mode & 0o777, 0o700);
+	// Windows has no POSIX file modes (stat reports 0o666), so only POSIX checks them.
+	const posix = process.platform !== "win32";
+	if (posix) assert.equal(statSync(dir).mode & 0o777, 0o700);
 	const files = readdirSync(dir);
 	assert.deepEqual(files, ["s-1.json"]);
-	assert.equal(statSync(join(dir, "s-1.json")).mode & 0o777, 0o600);
+	if (posix) assert.equal(statSync(join(dir, "s-1.json")).mode & 0o777, 0o600);
 	assert.deepEqual(readTowerSnapshots(dir).map((x) => x.name), ["renamed"]);
 	removeTowerSnapshot(dir, "s-1");
 	assert.deepEqual(readdirSync(dir), []);

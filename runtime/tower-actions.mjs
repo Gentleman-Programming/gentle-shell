@@ -28,13 +28,15 @@ const ID = /^[A-Za-z0-9._-]{1,128}$/;
 const okId = (v         )              => typeof v === "string" && ID.test(v) && !v.startsWith(".");
 const text = (v         , max        ) => (typeof v === "string" && v.trim().length > 0 && v.length <= max ? v.trim() : undefined);
 const exactKeys = (o                         , keys          ) => Object.keys(o).length === keys.length && keys.every((k) => k in o);
+/** Absolute only: POSIX `/...`, a Windows drive `C:\...` / `C:/...`, or a UNC share `\\server\share...`. */
+const ABSOLUTE = /^(?:\/|[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)/;
 
 export function parseTowerAction(value         )                          {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
 	const o = value                           ;
 	if (o.type === "new-floor") {
 		const project = o.project;
-		if (typeof project !== "string" || !project.startsWith("/") || project.length > TOWER_PATH_MAX || /[\0\n\r]/.test(project)) return undefined;
+		if (typeof project !== "string" || !ABSOLUTE.test(project) || project.length > TOWER_PATH_MAX || /[\0\n\r]/.test(project)) return undefined;
 		if (o.prompt === undefined) return exactKeys(o, ["type", "project"]) ? { type: "new-floor", project } : undefined;
 		const prompt = text(o.prompt, TOWER_MESSAGE_MAX_CHARS);
 		return prompt && exactKeys(o, ["type", "project", "prompt"]) ? { type: "new-floor", project, prompt } : undefined;

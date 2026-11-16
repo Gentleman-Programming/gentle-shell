@@ -11,7 +11,7 @@ const clean = (text: string) => sanitizeTerminalText(text).replace(/[\r\n\t]/g, 
 export async function readSidebarGitGraph(git: GitRunner): Promise<SidebarGitGraph> {
  try {
   const symbolic = await git(["symbolic-ref", "--quiet", "--short", "HEAD"]);
-  if (symbolic.truncated || (symbolic.code !== 0 && symbolic.code !== 1)) return { state: "error" };
+  if (symbolic.truncated || symbolic.timedOut || (symbolic.code !== 0 && symbolic.code !== 1)) return { state: "error" };
   const branch = symbolic.code === 0 ? clean(symbolic.stdout).trim() : "detached";
   const head = await git(["rev-parse", "--verify", "-q", "HEAD"]);
   // A deadline (code 1 with timedOut) must reach the error state, never the
@@ -26,6 +26,15 @@ export async function readSidebarGitGraph(git: GitRunner): Promise<SidebarGitGra
 
 const TYPE_ROLES: Record<string, string> = { feat: "success", fix: "warning", chore: "muted", merge: "syntaxFunction", refactor: "syntaxFunction", perf: "success", test: "syntaxFunction", build: "warning", ci: "warning" };
 const FRAME_ROLES = ["accent", "muted", "text", "success", "warning", "syntaxFunction"];
+const themeSignatures = new WeakMap<GraphTheme, string>();
+function themeSignature(theme: GraphTheme): string {
+ let signature = themeSignatures.get(theme);
+ if (signature === undefined) {
+  signature = FRAME_ROLES.map(role => theme.fg(role, "·")).join("") + (theme.bold?.("·") ?? "");
+  themeSignatures.set(theme, signature);
+ }
+ return signature;
+}
 function renderSubject(subject: string, theme: GraphTheme): string {
  const safe = clean(subject);
  const match = /^(merge)(?=\s)|^([a-z]+)(?:\([^\r\n)]*\))?!?:/i.exec(safe);
@@ -100,7 +109,7 @@ export class SidebarGitFrameCache {
  private frame?: { revision: number; width: number; viewport: number; offset: number; collapsed: boolean; hovered: boolean; theme: GraphTheme; signature: string; lines: string[] };
  render(graph: SidebarGitGraph, revision: number, theme: GraphTheme, width: number, viewport: number, offset = 0, collapsed = false, hovered = false): string[] {
   const frame = this.frame;
-  const signature = FRAME_ROLES.map(role => theme.fg(role, "·")).join("") + (theme.bold?.("·") ?? "");
+  const signature = themeSignature(theme);
   if (frame && frame.revision === revision && frame.width === width && frame.viewport === viewport && frame.offset === offset && frame.collapsed === collapsed && frame.hovered === hovered && frame.theme === theme && frame.signature === signature) return frame.lines;
   const lines = renderSidebarGitGraph(graph, theme, width, viewport, offset, collapsed, hovered);
   this.frame = { revision, width, viewport, offset, collapsed, hovered, theme, signature, lines };

@@ -27,16 +27,55 @@ test("reads only bounded HEAD history and rejects partial output", async () => {
 });
 
 test("graph rendering sanitizes input, clips widths, bounds viewport and caches theme", () => {
- let color = 32;
- const theme = { fg: (_role: string, text: string) => `\x1b[${color}m${text}\x1b[0m` };
+ const theme = { fg: (_role: string, text: string) => `\x1b[32m${text}\x1b[0m` };
  const graph = { state: "ready" as const, branch: "branch-".repeat(20), lines: Array.from({ length: 30 }, (_, i) => `* \x1eabc\x1fref\x1ffeat: row ${i}\x1b]0;bad\x07\x1e`) };
  const cache = new SidebarGitFrameCache();
  const rows = cache.render(graph, 1, theme, 24, 5, 12);
  assert.equal(rows.length, 5); assert.ok(rows.every(row => visibleWidth(row) === 24), "padded rows fill the rail exactly");
  assert.match(rows.join(""), /row/); assert.doesNotMatch(rows.join(""), /\x1b\]/);
  assert.strictEqual(cache.render(graph, 1, theme, 24, 5, 12), rows);
- color = 33; assert.notStrictEqual(cache.render(graph, 1, theme, 24, 5, 12), rows);
+ const replacementTheme = { fg: (_role: string, text: string) => `\x1b[33m${text}\x1b[0m` };
+ const recolored = cache.render(graph, 1, replacementTheme, 24, 5, 12);
+ assert.notStrictEqual(recolored, rows);
+ assert.match(recolored.join(""), /\x1b\[33m/);
  assert.deepEqual(renderSidebarGitGraph(graph, theme, 0, 5), []);
+});
+
+test("frame cache memoizes signatures per theme object and preserves every frame key", () => {
+ let fgCalls = 0, boldCalls = 0, signatureFgCalls = 0, signatureBoldCalls = 0;
+ const theme = {
+  fg: (_role: string, text: string) => { fgCalls++; if (text === "·") signatureFgCalls++; return text; },
+  bold: (text: string) => { boldCalls++; if (text === "·") signatureBoldCalls++; return text; },
+ };
+ const graph = { state: "ready" as const, branch: "main", lines: ["* first", "* second", "* third"] };
+ const cache = new SidebarGitFrameCache();
+ const frames: [number, number, number, number, boolean, boolean][] = [
+  [1, 40, 3, 0, false, false],
+  [2, 40, 3, 0, false, false],
+  [2, 41, 3, 0, false, false],
+  [2, 41, 2, 0, false, false],
+  [2, 41, 2, 1, false, false],
+  [2, 41, 2, 1, true, false],
+  [2, 41, 2, 1, true, true],
+ ];
+ let previous: string[] | undefined;
+ for (const [revision, width, viewport, offset, collapsed, hovered] of frames) {
+  const rows = cache.render(graph, revision, theme, width, viewport, offset, collapsed, hovered);
+  assert.notStrictEqual(rows, previous, "each changed frame key invalidates the frame");
+  assert.deepEqual(rows, renderSidebarGitGraph(graph, theme, width, viewport, offset, collapsed, hovered));
+  const callsBeforeHit = { fgCalls, boldCalls };
+  assert.strictEqual(cache.render(graph, revision, theme, width, viewport, offset, collapsed, hovered), rows);
+  assert.deepEqual({ fgCalls, boldCalls }, callsBeforeHit, "a hit invokes neither fg nor bold, including signature probes");
+  previous = rows;
+ }
+ new SidebarGitFrameCache().render(graph, 1, theme, 40, 3);
+ assert.equal(signatureFgCalls, 6, "all frames and cache instances share one signature per theme object");
+ assert.equal(signatureBoldCalls, 1);
+ const replacementTheme = { ...theme };
+ const replaced = cache.render(graph, 2, replacementTheme, 41, 2, 1, true, true);
+ assert.notStrictEqual(replaced, previous, "theme identity invalidates even when its signature is identical");
+ assert.equal(signatureFgCalls, 12);
+ assert.equal(signatureBoldCalls, 2);
 });
 
 test("identical completed history captures signal settlement without increasing revision", async () => {
@@ -140,6 +179,33 @@ test("subject roles come from own properties only, never the prototype", () => {
  }
  const rows = renderSidebarGitGraph({ state: "ready", branch: "main", lines: ["* \x1eabc\x1f\x1ffeat: add\x1e"] }, theme, 200, 4);
  assert.match(rows.join("\n"), /<success>feat:<\/success>/, "real type roles still apply");
+});
+
+test("a timed-out symbolic-ref rejects the snapshot before reading HEAD", async () => {
+ for (const code of [0, 1]) {
+  const calls: string[][] = [];
+  const graph = await readSidebarGitGraph(async args => {
+   calls.push(args);
+   return args[0] === "symbolic-ref" ? { code, stdout: "main\n", timedOut: true } : { code: 0, stdout: "abc\n" };
+  });
+  assert.deepEqual(graph, { state: "error" });
+  assert.deepEqual(calls, [["symbolic-ref", "--quiet", "--short", "HEAD"]], "no downstream Git reads follow a deadline");
+  assert.match(renderSidebarGitGraph(graph, { fg: (_role, text) => text }, 80, 3)[0]!, /history unavailable/);
+ }
+});
+
+test("genuine detached HEAD and unborn branches retain their states", async () => {
+ for (const detached of [true, false]) {
+  const calls: string[][] = [];
+  const graph = await readSidebarGitGraph(async args => {
+   calls.push(args);
+   if (args[0] === "symbolic-ref") return { code: detached ? 1 : 0, stdout: detached ? "" : "main\n" };
+   if (args[0] === "rev-parse") return { code: detached ? 0 : 1, stdout: detached ? "abc\n" : "" };
+   return { code: 0, stdout: "* history\n" };
+  });
+  assert.deepEqual(graph, detached ? { state: "ready", branch: "detached", lines: ["* history"] } : { state: "unborn", branch: "main" });
+  assert.equal(calls.length, detached ? 3 : 2);
+ }
 });
 
 test("a timed-out rev-parse is an error, never the unborn state", async () => {

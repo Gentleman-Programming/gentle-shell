@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { exploreViaDaemon, MAX_REPLY_CHARS, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
 import { seedWorktreeIndex } from "../lib/codegraph-seed.ts";
-import { CHILD_ENV, firstLineOf, indexState, maybeRewarm, prepareReadiness, runCodegraph, syncBeforeSearch, warmUpDaemon, type SearchSyncInput, type SessionStartReason } from "../lib/codegraph-readiness.ts";
+import { CHILD_ENV, firstLineOf, indexState, maybeRewarm, prepareReadiness, runCodegraph, runCodegraphSeedSync, syncBeforeSearch, warmUpDaemon, type SearchSyncInput, type SessionStartReason } from "../lib/codegraph-readiness.ts";
 import { seedSessionWorktrees } from "../lib/codegraph-session-seed.ts";
 import { ensureDirectExposureInAgentHomes } from "../lib/codegraph-mcp-exposure.ts";
 
@@ -93,9 +93,12 @@ const CODEGRAPH_TOOL_PARAMETERS = {
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 20;
 const MAX_OUTPUT_CHARS = 100_000;
-// The CLI buffer matches the daemon reply cap: multibyte output the daemon path accepts must
-// never abort the CLI path (truncateOutput bounds what reaches the model either way).
-const PROCESS_MAX_BUFFER = MAX_REPLY_CHARS;
+// The CLI buffer matches the daemon reply cap in bytes: maxBuffer counts UTF-8 bytes while
+// MAX_REPLY_CHARS counts UTF-16 code units, and the widest UTF-8 encoding of a code unit is
+// 3 bytes (a surrogate pair's 4-byte sequence spans two units), so 3x the character cap
+// accepts every output the daemon path accepts — Node kills a child that overruns maxBuffer
+// before truncateOutput could bound it (400k CJK characters are ~1.2 MB against a 1 MB buffer).
+const PROCESS_MAX_BUFFER = 3 * MAX_REPLY_CHARS;
 const FALLBACK_INSTRUCTIONS = "Use read, grep, and find for this exploration.";
 // each daemon query attempt is bounded, so a hung daemon on a slow filesystem (for example a
 // WSL /mnt mount) cannot block the turn indefinitely (#1901); init is the legitimately slow
@@ -162,11 +165,32 @@ const defaultGitRun: GitRun = (args, cwd) => execFileSync("git", [...args], {
 	windowsHide: true,
 }).trim();
 
-/** HOME and TMP resolved once per process: the guard's comparisons never change while it runs. */
-const REAL_HOME = realpathSync(homedir());
-const REAL_TMP = realpathSync(tmpdir());
+/** HOME and TMP, resolved lazily on the first workspace check and cached for the process: the
+ * guard's comparisons never change while it runs. Resolution lives here, never at module
+ * evaluation, so a missing or inaccessible HOME/TMP (environment overrides are allowed)
+ * cannot throw during module evaluation and keep the extension from registering its tool and
+ * hooks. A directory that cannot be resolved keeps its unresolved spelling — fail-closed for
+ * the guard, because an existing workspace can never equal a missing directory. */
+let realHome: string | undefined;
+let realTmp: string | undefined;
 
-/** Workspaces whose guard already passed this turn: git is asked once per cwd per turn. */
+function realpathOrSelf(path: string): string {
+	try {
+		return realpathSync(path);
+	} catch {
+		return path;
+	}
+}
+
+function homeForGuard(): string {
+	return (realHome ??= realpathOrSelf(homedir()));
+}
+
+function tmpForGuard(): string {
+	return (realTmp ??= realpathOrSelf(tmpdir()));
+}
+
+/** Workspaces whose guard already passed this prompt: git is asked once per cwd per prompt. */
 const workspaceVerified = new Set<string>();
 
 function resolveWorkspaceCwd(cwd: string, gitRun: GitRun = defaultGitRun): string {
@@ -174,7 +198,7 @@ function resolveWorkspaceCwd(cwd: string, gitRun: GitRun = defaultGitRun): strin
 	if (!lstatSync(resolved).isDirectory()) {
 		throw new Error("CodeGraph can run only in the current workspace directory.");
 	}
-	if (resolved === REAL_HOME || resolved === REAL_TMP) {
+	if (resolved === homeForGuard() || resolved === tmpForGuard()) {
 		throw new Error("CodeGraph requires a real Git project root equal to the current workspace, not HOME or a temporary directory.");
 	}
 	if (workspaceVerified.has(resolved)) return resolved;
@@ -229,7 +253,26 @@ function gitTopLevel(cwd: string, gitRun: GitRun = defaultGitRun): string | unde
 }
 
 /** A full re-index from bash is blocked when an index already exists; this is the reason it gets. */
-const CODEGRAPH_INDEX_BLOCK_REASON = "CodeGraph: an index already exists for this workspace. Re-indexing kills the shared daemon and rebuilds it; the runtime refreshes with sync (before the first search of each prompt). If you really need a full rebuild, set GENTLE_CODEGRAPH_ALLOW_INDEX=1.";
+const CODEGRAPH_INDEX_BLOCK_REASON = "CodeGraph: an index already exists for this workspace. Re-indexing kills the shared daemon and rebuilds it; the runtime refreshes with sync (before the first search of each prompt). If you really need a full rebuild, set GENTLE_CODEGRAPH_ALLOW_INDEX=1 in the launch environment or as a leading assignment in the command.";
+
+/**
+ * The command past its leading whitespace and `FOO=1 BAR=2` assignments — shell syntax, not the
+ * command itself — plus whether one of those assignments is a literal
+ * `GENTLE_CODEGRAPH_ALLOW_INDEX=1`, the in-command form of the launch-environment override.
+ * Only the exact `=1` value overrides: any other value is an ordinary assignment and the
+ * launch environment stays authoritative.
+ */
+function leadingAssignments(command: string): { rest: string; allowIndexOverride: boolean } {
+	let rest = command.trimStart();
+	let allowIndexOverride = false;
+	// An assignment token ends at the whitespace that separates it from the next word.
+	const assignment = /^([A-Za-z_][A-Za-z0-9_]*=\S*)\s+/;
+	for (let match = assignment.exec(rest); match !== null; match = assignment.exec(rest)) {
+		if (match[1] === "GENTLE_CODEGRAPH_ALLOW_INDEX=1") allowIndexOverride = true;
+		rest = rest.slice(match[0].length);
+	}
+	return { rest, allowIndexOverride };
+}
 
 /**
  * Whether a shell command, past its leading whitespace and env-var assignments, starts with
@@ -238,11 +281,7 @@ const CODEGRAPH_INDEX_BLOCK_REASON = "CodeGraph: an index already exists for thi
  * `sync`, `query`, `unlock`, `status`) allowed.
  */
 function isCodegraphIndexCommand(command: string): boolean {
-	let rest = command.trimStart();
-	// Leading `FOO=1 BAR=2` assignments are shell syntax, not the command itself.
-	const assignment = /^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/;
-	while (assignment.test(rest)) rest = rest.replace(assignment, "");
-	return /^codegraph\s+(index|init)\b/.test(rest);
+	return /^codegraph\s+(index|init)\b/.test(leadingAssignments(command).rest);
 }
 
 // CodeGraph writes .codegraph/.gitignore with `*` and `!.gitignore`, so that file
@@ -251,9 +290,9 @@ function isCodegraphIndexCommand(command: string): boolean {
 const LOCAL_EXCLUDE_PATTERN = ".codegraph/";
 const EQUIVALENT_EXCLUDE_PATTERNS = new Set([".codegraph", ".codegraph/", "/.codegraph", "/.codegraph/"]);
 
-/** The git-derived exclude path per cwd this turn: git is asked once, the exclude file is checked on the first call. */
+/** The git-derived exclude path per cwd this prompt: git is asked once, the exclude file is checked on the first call. */
 const excludeApplied = new Map<string, string | undefined>();
-/** The cwds whose exclude file this turn already ends with the pattern: later calls skip the re-read. */
+/** The cwds whose exclude file this prompt already ends with the pattern: later calls skip the re-read. */
 const excludePresent = new Set<string>();
 
 function excludeIndexLocally(cwd: string, gitRun: GitRun = defaultGitRun): CodeGraphLocalExclude | undefined {
@@ -458,16 +497,16 @@ async function queryViaDaemon(cwd: string, parameters: CodeGraphToolParameters, 
 	}
 }
 
-/** The cwds whose index this turn's first search already refreshed in the background. */
+/** The cwds whose index this prompt's first search already refreshed in the background. */
 const searchSynced = new Set<string>();
 
-/** The cwds whose daemon was wedged this turn (the post-warm attempt timed out): the CLI answers directly until the next turn. */
+/** The cwds whose daemon was wedged this prompt (the post-warm attempt timed out): the CLI answers directly until the next prompt. */
 const daemonSkipUntil = new Map<string, number>();
 
 /** How long a wedged daemon is bypassed after its post-warm attempt times out. */
 const DAEMON_SKIP_MS = 60_000;
 
-/** A new user prompt starts a new turn: its first search refreshes the index and re-asks git and the daemon once. */
+/** A new user prompt starts a new search window: its first search refreshes the index and re-asks git and the daemon once. */
 export function clearSearchSync(): void {
 	searchSynced.clear();
 	workspaceVerified.clear();
@@ -503,9 +542,9 @@ export function codegraphSyncFailureNotice(
 }
 
 /**
- * Fires the per-turn unlock+sync for `cwd` in the background and returns whether a job was
- * started: a subagent child or a cwd already refreshed this turn never starts one, so the first
- * search of a turn is neither blocked nor duplicated.
+ * Fires the per-prompt unlock+sync for `cwd` in the background and returns whether a job was
+ * started: a subagent child or a cwd already refreshed this prompt never starts one, so the
+ * first search of a prompt is neither blocked nor duplicated.
  */
 export function triggerSearchSync(cwd: string, ctx: ExtensionContext, run: SearchSyncInput["run"] = runCodegraph, opts?: { indexed?: boolean; registryDir?: string; sleep?: (ms: number) => Promise<void> }): boolean {
 	if (process.env[CHILD_ENV] === "1" || searchSynced.has(cwd)) return false;
@@ -537,6 +576,7 @@ export function createCodeGraphTool(
 		queryTimeoutMs = CODEGRAPH_QUERY_TIMEOUT_MS,
 		daemonExplore = queryViaDaemon,
 		warm = (project: string, timeoutMs: number) => warmUpDaemon(project, false, timeoutMs),
+		rewarm = (project: string) => maybeRewarm(project),
 		syncRun = runCodegraph,
 		gitRun = defaultGitRun,
 	}: {
@@ -544,7 +584,9 @@ export function createCodeGraphTool(
 		daemonExplore?: DaemonExplore;
 		/** Warms the daemon between the two query attempts; the default never rejects. */
 		warm?: (cwd: string, timeoutMs: number) => Promise<boolean>;
-		/** Runs the per-turn unlock+sync fired before the first search; injected in tests. */
+		/** Lazily re-warms a daemon that died mid-session before each search; the default keeps the real behavior, tests inject a no-op so their fakes never spawn anything real. */
+		rewarm?: (cwd: string) => void;
+		/** Runs the per-prompt unlock+sync fired before the first search; injected in tests. */
 		syncRun?: SearchSyncInput["run"];
 		/** Runs every git interrogation (workspace guard, exclude detection); injected in tests. */
 		gitRun?: GitRun;
@@ -605,9 +647,10 @@ export function createCodeGraphTool(
 			// so a search never spawns a CLI process of its own.
 			if (parameters.operation !== CODEGRAPH_OPERATION.INIT) {
 				// Lazy re-warm: if the project's daemon died mid-session, warm it in the background so the
-				// next query is fast again. Never blocks this call.
-				maybeRewarm(cwd);
-				// One background unlock+sync per turn before the first search keeps the index fresh;
+				// next query is fast again. Never blocks this call. Routed through the injected adapter so
+				// tests supplying the other query seams never reach the real daemon spawn.
+				rewarm(cwd);
+				// One background unlock+sync per prompt before the first search keeps the index fresh;
 				// the search never waits for it.
 				// One indexExists per query serves the sync gate and the result paths below; a daemon
 				// that answers ok confirms the same fact.
@@ -713,8 +756,15 @@ export function shouldSeedSessionWorktrees(reason: string): boolean {
 
 export default function codeGraphTools(pi: ExtensionAPI): void {
 	registerCodeGraphTool(pi);
-	// One background unlock+sync per user prompt: the first search of every turn fires it.
-	pi.on?.("turn_start", () => clearSearchSync());
+	// One background unlock+sync per user prompt: the first search of every prompt fires it.
+	// The reset binds to before_agent_start — the user-prompt boundary — not turn_start, which
+	// fires for every assistant response (including each response between tool calls) and would
+	// clear the 60-second daemon bypass and re-arm the background sync mid-prompt. Verified in
+	// the resolved @earendil-works/pi-coding-agent package: before_agent_start is emitted once
+	// per run start (a submitted prompt, RPC prompt, or sendUserMessage — plus an idle custom
+	// message with triggerTurn), while retries, queued continuations, and compaction inside
+	// that run continue through agent.continue() without re-emitting it.
+	pi.on?.("before_agent_start", () => clearSearchSync());
 	// `codegraph index`/`codegraph init` from bash rebuilds the index from scratch and kills the
 	// daemon every session shares (a full rebuild once took the daemon down), while the runtime
 	// already refreshes the index with sync before the first search of each prompt. When an index
@@ -726,8 +776,9 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 			if (event.toolName !== "bash" && event.toolName !== "bash_background") return undefined;
 			const command = (event.input as { command?: unknown }).command;
 			if (typeof command !== "string" || !isCodegraphIndexCommand(command)) return undefined;
+			const { allowIndexOverride } = leadingAssignments(command);
 			const repoRoot = gitTopLevel(ctx.cwd);
-			if (repoRoot === undefined || !indexExists(repoRoot) || process.env.GENTLE_CODEGRAPH_ALLOW_INDEX === "1") return undefined;
+			if (repoRoot === undefined || !indexExists(repoRoot) || process.env.GENTLE_CODEGRAPH_ALLOW_INDEX === "1" || allowIndexOverride) return undefined;
 			return { block: true, reason: CODEGRAPH_INDEX_BLOCK_REASON };
 		} catch {
 			return undefined;
@@ -753,7 +804,7 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 				}
 			},
 			run: runCodegraph,
-			seed: (workspace) => seedWorktreeIndex({ cwd: workspace, run: runCodegraph }),
+			seed: (workspace) => seedWorktreeIndex({ cwd: workspace, run: runCodegraphSeedSync }),
 			warm: (workspace) => warmUpDaemon(workspace),
 			onStart: (action) => say(
 				action === "sync"
@@ -788,7 +839,7 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 		// not a new session, and an ordinary child session is parent-only territory, so neither
 		// ever rescans (shouldSeedSessionWorktrees).
 		if (shouldSeedSessionWorktrees(reason)) {
-			void seedSessionWorktrees({ cwd: ctx.cwd, run: runCodegraph }).catch(() => {
+			void seedSessionWorktrees({ cwd: ctx.cwd, run: runCodegraphSeedSync }).catch(() => {
 				/* never surface: pre-warm is best effort */
 			});
 		}

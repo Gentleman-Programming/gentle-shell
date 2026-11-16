@@ -40,6 +40,7 @@ test("(a) fresh prompt: mem_search is blocked with the exact reason", () => {
 test("(b) a finalized codegraph call credits the prompt for memory reads", () => {
 	const handlers = installGate();
 	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "t1", args: { operation: "query", query: "symbol" } });
 	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "t1", result: { ok: false, error: "daemon down" } });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
 });
@@ -49,12 +50,13 @@ test("(c) a failed codegraph call still credits: the end handler never reads the
 	fire(handlers, "before_agent_start", { messageType: "user" });
 	// Reading any field besides toolName throws, so credit proves the handler ignores the
 	// outcome entirely: end-of-execution means the call finalized, failure included.
-	const ended: unknown = new Proxy({ toolName: "codegraph" }, {
+	const ended: unknown = new Proxy({ toolName: "codegraph", toolCallId: "t1" }, {
 		get(target, property, receiver) {
-			if (property === "toolName") return Reflect.get(target, property, receiver);
+			if (property === "toolName" || property === "toolCallId") return Reflect.get(target, property, receiver);
 			throw new Error(`the gate must not read .${String(property)} from tool_execution_end`);
 		},
 	});
+	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "t1", args: { operation: "query", query: "symbol" } });
 	fire(handlers, "tool_execution_end", ended);
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
 });
@@ -62,14 +64,16 @@ test("(c) a failed codegraph call still credits: the end handler never reads the
 test("(d) an mcp__codegraph__ tool call also credits the prompt", () => {
 	const handlers = installGate();
 	fire(handlers, "before_agent_start", { messageType: "user" });
-	fire(handlers, "tool_execution_end", { toolName: "mcp__codegraph__codegraph_explore" });
+	fire(handlers, "tool_execution_start", { toolName: "mcp__codegraph__codegraph_explore", toolCallId: "t1", args: { query: "flow" } });
+	fire(handlers, "tool_execution_end", { toolName: "mcp__codegraph__codegraph_explore", toolCallId: "t1" });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
 });
 
 test("(e) a new user prompt resets the credit", () => {
 	const handlers = installGate();
 	fire(handlers, "before_agent_start", { messageType: "user" });
-	fire(handlers, "tool_execution_end", { toolName: "codegraph" });
+	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "t1", args: { operation: "query", query: "symbol" } });
+	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "t1" });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
 	fire(handlers, "before_agent_start", { messageType: "user" });
 	assert.deepEqual(fire(handlers, "tool_call", { toolName: "mem_search" }), {
@@ -81,7 +85,8 @@ test("(e) a new user prompt resets the credit", () => {
 test("(j) credit survives turn boundaries within one user request", () => {
 	const handlers = installGate();
 	fire(handlers, "before_agent_start", { messageType: "user" });
-	fire(handlers, "tool_execution_end", { toolName: "codegraph" });
+	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "t1", args: { operation: "query", query: "symbol" } });
+	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "t1" });
 	// turn_start fires per LLM turn, not per user prompt: a later turn of the
 	// same request must not expire credit the AGENTS.md rule still honors.
 	// If the gate ever re-registers turn_start, calling it must stay harmless.
@@ -92,7 +97,8 @@ test("(j) credit survives turn boundaries within one user request", () => {
 
 test("(k) every before_agent_start resets the credit, user or custom run", () => {
 	const handlers = installGate();
-	fire(handlers, "tool_execution_end", { toolName: "codegraph" });
+	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "t1", args: { operation: "explore", query: "flow" } });
+	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "t1" });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
 	fire(handlers, "before_agent_start", { messageType: "custom" });
 	assert.deepEqual(fire(handlers, "tool_call", { toolName: "mem_search" }), {
@@ -155,8 +161,8 @@ test("(l) memory reads stay blocked while a graph execution is still active; a n
 	const handlers = installGate();
 	fire(handlers, "before_agent_start", { messageType: "user" });
 	// Graph calls A and B run in parallel: A's completion must not credit while B still runs.
-	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "a" });
-	fire(handlers, "tool_execution_start", { toolName: "mcp__codegraph__codegraph_query", toolCallId: "b" });
+	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "a", args: { operation: "query", query: "a" } });
+	fire(handlers, "tool_execution_start", { toolName: "mcp__codegraph__codegraph_query", toolCallId: "b", args: { query: "b" } });
 	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "a", result: { ok: true } });
 	assert.deepEqual(fire(handlers, "tool_call", { toolName: "mem_search" }), {
 		block: true,
@@ -165,11 +171,54 @@ test("(l) memory reads stay blocked while a graph execution is still active; a n
 	fire(handlers, "tool_execution_end", { toolName: "mcp__codegraph__codegraph_query", toolCallId: "b" });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "every graph call finalized: credit applies");
 	// A new graph call starting after credit was granted invalidates it until it completes.
-	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "c" });
+	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "c", args: { operation: "explore", query: "c" } });
 	assert.deepEqual(fire(handlers, "tool_call", { toolName: "mem_search" }), {
 		block: true,
 		reason: BLOCK_REASON,
 	}, "a new graph call re-opens the window until it finalizes");
 	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "c", result: { ok: false } });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
+});
+
+test("(m) only a query or explore completion credits the window: an init completion never does", () => {
+	const handlers = installGate();
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	// The session tool's init: a completed index build is not the query or explore the rule names.
+	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "i1", args: { operation: "init" } });
+	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "i1", result: { ok: true } });
+	assert.deepEqual(fire(handlers, "tool_call", { toolName: "mem_search" }), {
+		block: true,
+		reason: BLOCK_REASON,
+	}, "an init completion must not credit the memory window");
+	// The MCP proxy surface encodes the operation in its tool name: a non-query/explore name
+	// never credits either.
+	fire(handlers, "tool_execution_start", { toolName: "mcp__codegraph__codegraph_status", toolCallId: "s1", args: {} });
+	fire(handlers, "tool_execution_end", { toolName: "mcp__codegraph__codegraph_status", toolCallId: "s1", result: { ok: true } });
+	assert.deepEqual(fire(handlers, "tool_call", { toolName: "mem_search" }), {
+		block: true,
+		reason: BLOCK_REASON,
+	}, "an MCP non-query/explore completion must not credit either");
+	// A failed query still credits: the end handler never reads the result payload.
+	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "q1", args: { operation: "query", query: "symbol" } });
+	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "q1", result: { ok: false, error: "daemon down" } });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "a failed query credits like any finalized attempt");
+	// An explore through the MCP proxy name credits too.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "mcp__codegraph__codegraph_explore", toolCallId: "e1", args: { query: "flow" } });
+	fire(handlers, "tool_execution_end", { toolName: "mcp__codegraph__codegraph_explore", toolCallId: "e1", result: { ok: false } });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "an MCP explore credits");
+	// A hostile args payload never throws and never credits an unknown operation.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	const explosiveArgs = { operation: "query" };
+	Object.defineProperty(explosiveArgs, "operation", {
+		get() {
+			throw new Error("args must be read inside the guard's try/catch");
+		},
+	});
+	assert.doesNotThrow(() => fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "x1", args: explosiveArgs }));
+	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "x1", result: { ok: true } });
+	assert.deepEqual(fire(handlers, "tool_call", { toolName: "mem_search" }), {
+		block: true,
+		reason: BLOCK_REASON,
+	}, "an unreadable operation stays uncredited");
 });

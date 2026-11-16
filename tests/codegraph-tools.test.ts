@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -33,6 +33,9 @@ function settled(): Promise<void> {
 
 /** A daemon that always answers, so a test never warms or spawns anything real. */
 const daemonOk: DaemonExplore = async () => ({ status: "ok", text: "daemon answer" });
+
+/** A lazy re-warm that starts nothing real: tests injecting the query seams never warm a daemon. */
+const noRewarm = (): void => {};
 
 /** A syncRun that starts nothing real; tests count its calls when they care. */
 const syncNothing = async (): Promise<boolean> => true;
@@ -102,6 +105,7 @@ test("CodeGraph tool accepts the Git root reached through a different spelling o
 				cwds.push(cwd);
 				return { status: "ok", text: "daemon answer" };
 			},
+			rewarm: noRewarm,
 			syncRun: syncNothing,
 		},
 	);
@@ -186,6 +190,7 @@ test("a hung CLI query fallback is bounded by the query timeout, not the user's 
 		queryTimeoutMs: 50,
 		daemonExplore: async () => ({ status: "timeout" as const }),
 		warm: async () => false,
+		rewarm: noRewarm,
 		syncRun: syncNothing,
 	}).execute("test", { operation: "query", query: "symbol" }, caller.signal, undefined, ctx);
 	const elapsed = Date.now() - started;
@@ -211,6 +216,7 @@ test("a caller-aborted search stops paying for daemon attempts instead of runnin
 		createCodeGraphTool(async () => ({ stdout: "cli answer", stderr: "" }), {
 			daemonExplore: never,
 			warm: async () => true,
+			rewarm: noRewarm,
 			syncRun: syncNothing,
 		}).execute("test", { operation: "query", query: "symbol" }, caller.signal, undefined, ctx),
 		new Promise<never>((_, reject) => setTimeout(() => reject(new Error("execute did not return after caller abort")), 3_000)),
@@ -232,6 +238,7 @@ test("an already-aborted caller exits before the daemon warm-up and the CLI fall
 		return { stdout: "cli answer", stderr: "" };
 	}, {
 		daemonExplore: async () => ({ status: "unavailable" as const }),
+		rewarm: noRewarm,
 		warm: async () => {
 			warmCalls += 1;
 			return true;
@@ -258,6 +265,7 @@ test("CodeGraph tool runs only fixed cwd-scoped init, query, and explore command
 				daemonCalls.push(parameters.operation);
 				return { status: "ok", text: "daemon answer" };
 			},
+			rewarm: noRewarm,
 			syncRun: syncNothing,
 		},
 	);
@@ -313,6 +321,7 @@ test("CodeGraph tool accepts hyphen-leading queries after the option terminator"
 				seen.push({ operation: parameters.operation, query: parameters.query });
 				return { status: "ok", text: "safe" };
 			},
+			rewarm: noRewarm,
 			syncRun: syncNothing,
 		},
 	);
@@ -339,6 +348,7 @@ test("CodeGraph search falls back to one CLI process when the daemon cannot serv
 		{
 			daemonExplore: async () => ({ status: "unavailable" }),
 			warm: async () => true,
+			rewarm: noRewarm,
 			syncRun: syncNothing,
 		},
 	);
@@ -370,6 +380,7 @@ test("CodeGraph tool asks git once per cwd per turn, not once per search", async
 	const tool = createCodeGraphTool(async () => ({ stdout: "unused", stderr: "" }), {
 		daemonExplore: daemonOk,
 		warm: async () => true,
+		rewarm: noRewarm,
 		syncRun: syncNothing,
 		gitRun,
 	});
@@ -424,6 +435,58 @@ test("CodeGraph tool configures a process buffer above the returned-output trunc
 	assert.match(result.content[0]?.text ?? "", /\[CodeGraph output truncated\]$/);
 });
 
+test("the CLI process buffer is a byte budget covering the character cap at maximum UTF-8 width", async (t) => {
+	const cwd = workspace(t);
+	let maxBuffer = 0;
+	const tool = createCodeGraphTool(async (_args, options) => {
+		maxBuffer = options.maxBuffer;
+		return { stdout: "x", stderr: "" };
+	});
+	const ctx = { cwd } as ExtensionContext;
+
+	await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
+
+	// maxBuffer counts UTF-8 bytes while MAX_REPLY_CHARS counts UTF-16 code units, and the widest
+	// UTF-8 encoding of a code unit is 3 bytes (a surrogate pair's 4-byte sequence spans two
+	// units): 400k CJK characters are ~1.2 MB, and Node kills an overrunning child before
+	// truncateOutput could bound it, so the byte budget must cover the character cap.
+	assert.ok(maxBuffer >= 3 * MAX_REPLY_CHARS, `maxBuffer ${maxBuffer} cannot hold ${MAX_REPLY_CHARS} characters at 3 bytes each`);
+});
+
+test("module evaluation survives an unresolvable HOME and TMP: registration never breaks", async (t) => {
+	// Environment overrides can point HOME/TMP at missing directories; resolving them must happen
+	// inside the guarded workspace check, never at module evaluation — a throw there would keep
+	// the extension from registering its tool and startup hooks at all.
+	const holder = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-nohome-")));
+	t.after(() => rmSync(holder, { recursive: true, force: true }));
+	const missing = join(holder, "gone");
+	const script = join(holder, "import-check.mjs");
+	writeFileSync(script, `await import(${JSON.stringify(new URL("../extensions/codegraph-tools.ts", import.meta.url).href)});\nconsole.log("codegraph-tools loaded");\n`);
+	const child = spawnSync(process.execPath, ["--experimental-strip-types", script], {
+		encoding: "utf8",
+		env: { ...process.env, HOME: missing, TMPDIR: missing },
+		timeout: 60_000,
+	});
+	assert.equal(child.status, 0, `the module must evaluate with a missing HOME/TMP; stderr: ${child.stderr}`);
+	assert.match(child.stdout, /codegraph-tools loaded/);
+});
+
+test("the lazy re-warm is an injected seam: query seams never reach the real daemon spawn", async (t) => {
+	const cwd = workspace(t);
+	const rewarmCalls: string[] = [];
+	const tool = createCodeGraphTool(async () => ({ stdout: "cli", stderr: "" }), {
+		daemonExplore: daemonOk,
+		rewarm: (project: string) => {
+			rewarmCalls.push(project);
+		},
+		syncRun: syncNothing,
+	});
+
+	await tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd } as ExtensionContext);
+
+	assert.deepEqual(rewarmCalls, [cwd], "the injected adapter is what the search calls, once, with the resolved cwd");
+});
+
 test("CodeGraph tool rejects incomplete or oversized query requests before running a process", async (t) => {
 	const cwd = workspace(t);
 	let calls = 0;
@@ -469,7 +532,7 @@ test("CodeGraph tool registration exposes a single constrained custom tool", () 
 	});
 });
 
-test("the extension hooks turn_start and session_start; turn_start resets the per-turn sync", async (t) => {
+test("the per-prompt sync reset binds to before_agent_start, never to a prompt's tool-call turns", async (t) => {
 	withoutChildEnv(t);
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
 	const pi = {
@@ -483,7 +546,7 @@ test("the extension hooks turn_start and session_start; turn_start resets the pe
 
 	codeGraphTools(pi);
 
-	assert.ok(handlers.has("turn_start"), "turn_start clears the per-turn sync set");
+	assert.ok(handlers.has("before_agent_start"), "the reset lives at the user-prompt boundary");
 	assert.ok(handlers.has("session_start"), "session_start still prepares readiness");
 
 	const cwd = workspace(t);
@@ -495,10 +558,17 @@ test("the extension hooks turn_start and session_start; turn_start resets the pe
 	};
 	const ctx = { cwd } as ExtensionContext;
 	assert.equal(triggerSearchSync(cwd, ctx, syncRun), true);
-	assert.equal(triggerSearchSync(cwd, ctx, syncRun), false, "one background sync per turn");
 	await settled();
-	(handlers.get("turn_start") as () => void)();
-	assert.equal(triggerSearchSync(cwd, ctx, syncRun), true, "the turn_start handler cleared the set");
+	assert.equal(triggerSearchSync(cwd, ctx, syncRun), false, "one background sync per user prompt");
+	await settled();
+	// A turn boundary inside the same user prompt — every assistant response between tool calls
+	// fires turn_start — must not re-arm the background sync or drop the daemon bypass.
+	const turnStart = handlers.get("turn_start") as ((event: unknown) => void) | undefined;
+	turnStart?.({});
+	assert.equal(triggerSearchSync(cwd, ctx, syncRun), false, "a tool-call turn never re-arms the per-prompt sync");
+	// The next user prompt is the boundary that resets.
+	(handlers.get("before_agent_start") as () => void)();
+	assert.equal(triggerSearchSync(cwd, ctx, syncRun), true, "a new user prompt re-arms the sync");
 	await settled();
 	assert.deepEqual(calls, [["unlock"], ["sync", "-q"], ["unlock"], ["sync", "-q"]]);
 });
@@ -599,6 +669,12 @@ test("the tool_call guard blocks bash codegraph index/init when an index exists 
 		"no index database: the first index is the legitimate init path",
 	);
 
+	// The literal leading assignment is the inline form of the override, recognized in the
+	// detected command itself rather than only the parent process environment.
+	assert.equal(verdict("GENTLE_CODEGRAPH_ALLOW_INDEX=1 codegraph index ."), undefined, "the inline leading override allows the deliberate rebuild");
+	assert.equal(verdict("FOO=1 GENTLE_CODEGRAPH_ALLOW_INDEX=1 codegraph init"), undefined, "the override counts anywhere in the leading assignment run");
+	const refused = verdict("GENTLE_CODEGRAPH_ALLOW_INDEX=0 codegraph index .") as { block?: boolean } | undefined;
+	assert.equal(refused?.block, true, "only the exact =1 value overrides");
 	process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = "1";
 	assert.equal(verdict("codegraph index ."), undefined, "the explicit override allows a deliberate rebuild");
 });
@@ -827,7 +903,7 @@ test("CodeGraph query excludes an index that already exists, and leaves the excl
 	const indexed = workspace(t);
 	await writeIndex(["init", indexed], { cwd: indexed, maxBuffer: 1 });
 	const daemonFound: DaemonExplore = async () => ({ status: "ok", text: "found" });
-	await createCodeGraphTool(async () => ({ stdout: "found", stderr: "" }), { daemonExplore: daemonFound, syncRun: syncNothing }).execute(
+	await createCodeGraphTool(async () => ({ stdout: "found", stderr: "" }), { daemonExplore: daemonFound, syncRun: syncNothing, rewarm: noRewarm }).execute(
 		"test",
 		{ operation: "query", query: "symbol" },
 		undefined,
@@ -838,7 +914,7 @@ test("CodeGraph query excludes an index that already exists, and leaves the excl
 	assert.equal(gitOutput(indexed, "status", "--porcelain", "--untracked-files=all"), "");
 
 	const bare = workspace(t);
-	const result = await createCodeGraphTool(async () => ({ stdout: "found", stderr: "" }), { daemonExplore: daemonFound, syncRun: syncNothing }).execute(
+	const result = await createCodeGraphTool(async () => ({ stdout: "found", stderr: "" }), { daemonExplore: daemonFound, syncRun: syncNothing, rewarm: noRewarm }).execute(
 		"test",
 		{ operation: "query", query: "symbol" },
 		undefined,
@@ -855,7 +931,7 @@ test("CodeGraph query does not treat a .codegraph directory without codegraph.db
 	writeFileSync(join(partial, ".codegraph", ".gitignore"), "*\n!.gitignore\n");
 	const result = await createCodeGraphTool(
 		async () => ({ stdout: "found", stderr: "" }),
-		{ daemonExplore: async () => ({ status: "ok", text: "found" }), syncRun: syncNothing },
+		{ daemonExplore: async () => ({ status: "ok", text: "found" }), syncRun: syncNothing, rewarm: noRewarm },
 	).execute(
 		"test",
 		{ operation: "query", query: "symbol" },
@@ -876,7 +952,7 @@ test("CodeGraph query prefers the daemon socket and never spawns the CLI", async
 			runnerCalls += 1;
 			return { stdout: "cli", stderr: "" };
 		},
-		{ daemonExplore: daemonOk, syncRun: syncNothing },
+		{ daemonExplore: daemonOk, syncRun: syncNothing, rewarm: noRewarm },
 	);
 	const result = await tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd } as ExtensionContext);
 	assert.deepEqual(result.content, [{ type: "text", text: "daemon answer" }]);
@@ -901,6 +977,7 @@ test("a daemon that never answers tries twice, warms once, then answers through 
 				daemonCalls += 1;
 				return { status: "unavailable" };
 			},
+			rewarm: noRewarm,
 			warm: async () => {
 				warmCalls += 1;
 				return true;
@@ -938,6 +1015,7 @@ test("a hung daemon also falls back to the CLI", async (t) => {
 		{
 			daemonExplore: async () => ({ status: "timeout" }),
 			warm: async () => true,
+			rewarm: noRewarm,
 			syncRun: syncNothing,
 		},
 	);
@@ -964,6 +1042,7 @@ test("a failed daemon chain skips the daemon for the rest of the turn", async (t
 				daemonCalls += 1;
 				return { status: "timeout" };
 			},
+			rewarm: noRewarm,
 			warm: async () => true,
 			syncRun: syncNothing,
 		},
@@ -984,7 +1063,7 @@ test("a failed daemon chain skips the daemon for the rest of the turn", async (t
 	assert.equal(daemonCalls, 2, "the failed chain is not repeated this turn");
 	assert.equal(runnerCalls, 2);
 
-	// q3, a new turn: clearSearchSync (what turn_start fires) re-asks the daemon once more.
+	// q3, a new user prompt: clearSearchSync (what before_agent_start fires) re-asks the daemon once more.
 	clearSearchSync();
 	const third = await tool.execute("test", { operation: "query", query: "q3" }, undefined, undefined, ctx);
 	assert.deepEqual(third.content, [{ type: "text", text: "cli answer" }]);
@@ -1002,7 +1081,7 @@ test("when the daemon and the CLI both fail, the search reports the standard fai
 		async () => {
 			throw new Error("CodeGraph exited with status 1");
 		},
-		{ daemonExplore: daemonDown, warm: warmOk, syncRun: syncNothing },
+		{ daemonExplore: daemonDown, warm: warmOk, syncRun: syncNothing, rewarm: noRewarm },
 	).execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd } as ExtensionContext);
 	assert.deepEqual(failed.content, [{ type: "text", text: "CodeGraph failed to run. Use read, grep, and find for this exploration." }]);
 	assert.equal((failed.details as { status?: string }).status, "failed");
@@ -1012,7 +1091,7 @@ test("when the daemon and the CLI both fail, the search reports the standard fai
 		async () => {
 			throw missingBinary;
 		},
-		{ daemonExplore: daemonDown, warm: warmOk, syncRun: syncNothing },
+		{ daemonExplore: daemonDown, warm: warmOk, syncRun: syncNothing, rewarm: noRewarm },
 	).execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd } as ExtensionContext);
 	assert.deepEqual(unavailable.content, [{ type: "text", text: "CodeGraph is unavailable because the codegraph binary was not found. Use read, grep, and find for this exploration." }]);
 	assert.equal((unavailable.details as { status?: string }).status, "unavailable");
@@ -1033,6 +1112,7 @@ test("a daemon miss recovers after one warm-up attempt", async (t) => {
 		},
 		{
 			daemonExplore: async () => answers.shift() ?? { status: "unavailable" },
+			rewarm: noRewarm,
 			warm: async () => {
 				warmCalls += 1;
 				return true;
@@ -1090,6 +1170,7 @@ test("the first search of a turn triggers one background unlock+sync, later sear
 		async () => ({ stdout: "cli", stderr: "" }),
 		{
 			daemonExplore: daemonOk,
+			rewarm: noRewarm,
 			syncRun: async (args) => {
 				calls.push([...args]);
 				return true;
@@ -1121,6 +1202,7 @@ test("a subagent child never triggers the background sync", async (t) => {
 		async () => ({ stdout: "cli", stderr: "" }),
 		{
 			daemonExplore: daemonOk,
+			rewarm: noRewarm,
 			syncRun: async (args) => {
 				calls.push([...args]);
 				return true;

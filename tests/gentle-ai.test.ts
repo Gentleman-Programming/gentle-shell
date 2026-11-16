@@ -2327,8 +2327,8 @@ function applyOnce(fixture: { onInput(action: (panel: ScreenPanel) => void): voi
 	actOnProfile(fixture, "d", name);
 }
 
-function profilesStoreFixture(t: test.TestContext) {
-	const fixture = routingConsumerFixture(t, ["worker"]);
+function profilesStoreFixture(t: test.TestContext, agents = ["worker"]) {
+	const fixture = routingConsumerFixture(t, agents);
 	const storePath = join(fixture.configHome, "profiles.json");
 	const settingsPath = join(fixture.agentHome, "settings.json");
 	// The panel resolves the per-repository profile pin through a Git seam, so
@@ -3568,6 +3568,52 @@ test("effective routing prefers models.json over the materialized stores", (t) =
 		helper: { model: "openai/beta" },
 	});
 	assert.equal(existsSync(join(fixture.root, ".pi", "gentle-ai", "models.json")), false, "reading never writes");
+});
+
+for (const root of ["project .agents", "home .agents", "bundled pi-subagents"] as const) {
+	test(`models screen stale cleanup preserves agents from ${root}`, async (t) => {
+		const { fixture, writeStore, storePath } = profilesStoreFixture(t, []);
+		const name = root === "bundled pi-subagents" ? "worker" : "inventory-helper";
+		const dir = root === "project .agents" ? join(fixture.root, ".agents")
+			: root === "home .agents" ? join(process.env.HOME!, ".agents")
+			: join(fixture.root, ".pi", "npm", "node_modules", "pi-subagents", "agents");
+		writeMarkdown(join(dir, `${name}.md`), `---\nname: ${name}\ndescription: Inventory fixture\n---\nbody\n`);
+		const routes = { [name]: { model: "openai/alpha" }, abandoned: { model: "openai/alpha" } };
+		writeStore({ team: routes }, "team");
+		const subPath = join(fixture.root, ".pi", "subagents.json");
+		writeFileSync(subPath, JSON.stringify({ model_profiles: routes }));
+		writeFileSync(fixture.globalPath, JSON.stringify(routes));
+		const paths = [subPath, fixture.globalPath, storePath];
+		const before = paths.map((path) => readFileSync(path));
+		fixture.tui.terminal.rows = 40;
+		fixture.onInput((panel) => {
+			panel.handleInput("x");
+			const text = stripAnsi(renderComponent(panel));
+			assert.doesNotMatch(text, new RegExp(`\\[x\\] ${name}`), "a panel-discoverable agent is never a cleanup candidate");
+			assert.match(text, /\[x\] abandoned/);
+			// Leave no stale keys selected: confirming must not rewrite any store.
+			panel.handleInput(" ");
+			panel.handleInput("\r");
+			panel.handleInput("\x1b");
+		});
+		await fixture.run("gentle:profiles");
+		assert.deepEqual(paths.map((path) => readFileSync(path)), before, "confirming preserves every store byte-for-byte");
+	});
+}
+
+test("models screen stale cleanup refreshes existing notices after success", async (t) => {
+	const { fixture } = cleanupTransactionFixture(t);
+	fixture.onInput((panel) => {
+		const before = stripAnsi(renderComponent(panel));
+		assert.match(before, /Profile key "abandoned" matches no agent configured in gentle-shell/);
+		panel.handleInput("x");
+		panel.handleInput("\r");
+		const after = stripAnsi(renderComponent(panel));
+		assert.match(after, /Removed 1 stale routing key\./);
+		assert.doesNotMatch(after, /Profile key "abandoned"/, "successful cleanup refreshes the cached notices");
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
 });
 
 for (const action of ["confirm", "deselect", "empty", "escape", "nothing"] as const) {

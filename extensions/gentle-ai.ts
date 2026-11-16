@@ -4368,7 +4368,7 @@ function followProfileFallbacks(profilesPath: string, from: string, to: string |
 	try { followProfileRename(dirname(profilesPath), from, to); } catch { /* The profile change already succeeded. */ }
 }
 
-type RoutingCleanup = { keys: string[]; apply: (keys: string[]) => AgentProfilesFile };
+type RoutingCleanup = { keys: string[]; apply: (keys: string[]) => AgentProfilesFile; notices: () => string[] };
 
 class RoutingTablePanel implements OverlayComponent {
 	private overlay: "model" | "effort" | "menu" | "new" | "switch" | "fallbacks" | "cleanup" | undefined;
@@ -5081,6 +5081,7 @@ class RoutingTablePanel implements OverlayComponent {
 			if (selected.length === 0) return;
 			try {
 				this.file = this.cleanup!.apply(selected);
+				this.notices = this.cleanup!.notices();
 				this.stored = removeRoutingKeys(this.stored, selected);
 				this.draft = removeRoutingKeys(this.draft, selected);
 				this.say(`Removed ${selected.length} stale routing key${selected.length === 1 ? "" : "s"}.`);
@@ -7173,7 +7174,7 @@ async function openProfilesPanelLoop(
 				switchProfile,
 				prepareCleanup: () => {
 					const roots = { cwd: ctx.sessionManager?.getCwd?.() ?? ctx.cwd, home: homedir(), agentHome: resolveGentlePiAgentHome() };
-					const discovered = discoverAgents(roots).agents;
+					const discovered = listDiscoverableAgents(roots.cwd);
 					const known = [...PROVIDER_REVIEW_ROLES.map((name) => ({ name })), ...discovered];
 					const subPaths = ["project", "user"].map((source) => agentModelProfileConfigPath(roots.cwd, source as AgentSource));
 					const modelPath = modelConfigPath(ctx.cwd);
@@ -7213,7 +7214,9 @@ async function openProfilesPanelLoop(
 					});
 					const keys = [...new Set([...subStores.flatMap((sub) => sub.keys), ...modelKeys,
 						...profileStores.flatMap((profile) => profile.keys)])].sort();
-					return { keys, apply: (selected) => {
+					return { keys,
+						notices: () => routingScreenNotices(ctx, file, shown, launch?.name, launch?.modelProfiles, authorityAvailable),
+						apply: (selected) => {
 						const replacements = new Map<string, Uint8Array>();
 						const add = (input: string, raw: Record<string, unknown>) => {
 							replacements.set(input, Buffer.from(`${JSON.stringify(raw, null, 2)}\n`));

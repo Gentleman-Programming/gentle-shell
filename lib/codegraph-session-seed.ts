@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { CodegraphRun, IndexState } from "./codegraph-readiness.ts";
+import type { CodegraphSeedRun, IndexState } from "./codegraph-readiness.ts";
 import { indexState } from "./codegraph-readiness.ts";
 import { seedWorktreeIndex, type SeedOutcome } from "./codegraph-seed.ts";
 
@@ -41,8 +41,8 @@ export interface SessionSeedInput {
 	locksDir?: string;
 	/** Bounded wait for another session's init lock; defaults to the init budget. */
 	initLockWaitMs?: number;
-	/** Runs `codegraph <args> <project>`; the validating sync of each seed. */
-	run: CodegraphRun;
+	/** Runs `codegraph <args> <project>`; the validating sync of each seed, reporting entry removal. */
+	run: CodegraphSeedRun;
 	/** Lists the repo's worktree roots; the default is one `git worktree list --porcelain` in cwd. */
 	roots?(): Promise<string[]>;
 	/** The index state probe; the default is indexState. */

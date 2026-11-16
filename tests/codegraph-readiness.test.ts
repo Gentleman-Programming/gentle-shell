@@ -15,6 +15,7 @@ import {
 	planIndexAction,
 	prepareReadiness,
 	runCodegraph,
+	runCodegraphSeedSync,
 	sessionSkipsReadiness,
 	skipsSession,
 	SYNC_RETRY_DELAY_MS,
@@ -527,6 +528,116 @@ test("runCodegraph: a SIGTERM-ignoring command is SIGKILLed before the timeout r
 	assert.deepEqual(pids.map(alive), [false, false], "the SIGTERM-ignoring tree is SIGKILLed before the result is delivered");
 });
 
+/** The seed's mid-flight staging shape — `<worktree>/.codegraph/seed-xxxx/.codegraph/codegraph.db`
+ * with real sources in the worktree — plus a fake codegraph CLI on PATH: `status` prints the
+ * counter file's tracked-file count (the shape a real `codegraph status <project>` reports),
+ * and the per-test `syncScript` fakes the sync at the runCodegraph/exec boundary, so the REAL
+ * runner (link materialization + probes + sync) is what the test exercises. */
+function seedSyncHarness(t: test.TestContext, name: string, syncScript: string): { staging: string; seen: () => string } {
+	const bin = dir(t, `${name}-bin`);
+	const countFile = join(bin, "count");
+	const seenFile = join(bin, "seen.log");
+	writeFileSync(countFile, "3\n");
+	writeFileSync(join(bin, "codegraph"), [
+		"#!/bin/sh",
+		'case "$1" in',
+		'  status) printf "CodeGraph Status\\n\\n  Files:     %s\\n" "$(cat "$FAKE_COUNT" 2>/dev/null || echo 0)" ;;',
+		`  sync) ${syncScript} ;;`,
+		"esac",
+		"exit 0",
+	].join("\n"));
+	chmodSync(join(bin, "codegraph"), 0o755);
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${bin}:${previousPath}`;
+	process.env.FAKE_COUNT = countFile;
+	process.env.FAKE_SEEN = seenFile;
+	t.after(() => {
+		process.env.PATH = previousPath;
+		delete process.env.FAKE_COUNT;
+		delete process.env.FAKE_SEEN;
+	});
+	const worktree = dir(t, `${name}-wt`);
+	mkdirSync(join(worktree, "src"), { recursive: true });
+	writeFileSync(join(worktree, "src", "a.ts"), "export const a = 1;\n");
+	const staging = join(worktree, ".codegraph", "seed-ab12cd");
+	mkdirSync(join(staging, ".codegraph"), { recursive: true });
+	writeFileSync(join(staging, ".codegraph", "codegraph.db"), "index-bytes");
+	return {
+		staging,
+		seen: () => {
+			try {
+				return readFileSync(seenFile, "utf8");
+			} catch {
+				return "";
+			}
+		},
+	};
+}
+
+test("runCodegraphSeedSync: an exit-0 staging sync that drops tracked entries reports removedEntries", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
+	// The fake sync empties the tracked-file counter exactly like a real sources-less sync does
+	// (probed: a 3-file index synced in an empty project exits 0 with 0 files) — while checking
+	// that the staging project really sees the worktree's sources through the runner's links.
+	const { staging, seen } = seedSyncHarness(t, "seed-drop", 'printf 0 > "$FAKE_COUNT"; [ -f "$3/src/a.ts" ] && printf seen >> "$FAKE_SEEN"');
+	const report = await runCodegraphSeedSync(["sync", "-q"], staging, 10_000);
+	assert.deepEqual(report, { ok: true, removedEntries: true }, "an exit-0 sync that emptied the staged index is a failed validation, never a publishable one");
+	assert.equal(seen(), "seen", "the validating sync ran with the worktree's real sources visible in the staging project");
+});
+
+test("runCodegraphSeedSync: a clean staging sync against the worktree's real sources reports no removal", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
+	const { staging, seen } = seedSyncHarness(t, "seed-keep", '[ -f "$3/src/a.ts" ] && printf seen >> "$FAKE_SEEN"');
+	const report = await runCodegraphSeedSync(["sync", "-q"], staging, 10_000);
+	assert.deepEqual(report, { ok: true, removedEntries: false }, "a sync that preserved every tracked entry validates the copy");
+	assert.equal(seen(), "seen", "the validating sync ran with the worktree's real sources visible in the staging project");
+});
+
+test("runCodegraphSeedSync: a staging copy whose status cannot be counted fails closed", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
+	const bin = dir(t, "seed-torn-bin");
+	const seenFile = join(bin, "seen.log");
+	writeFileSync(join(bin, "codegraph"), [
+		"#!/bin/sh",
+		'case "$1" in',
+		'  status) printf "CodeGraph Status\\n\\n(no statistics)\\n" ;;',
+		'  sync) printf seen >> "$FAKE_SEEN" ;;',
+		"esac",
+		"exit 0",
+	].join("\n"));
+	chmodSync(join(bin, "codegraph"), 0o755);
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${bin}:${previousPath}`;
+	process.env.FAKE_SEEN = seenFile;
+	t.after(() => {
+		process.env.PATH = previousPath;
+		delete process.env.FAKE_SEEN;
+	});
+	const worktree = dir(t, "seed-torn-wt");
+	mkdirSync(join(worktree, "src"), { recursive: true });
+	writeFileSync(join(worktree, "src", "a.ts"), "export const a = 1;\n");
+	const staging = join(worktree, ".codegraph", "seed-ab12cd");
+	mkdirSync(join(staging, ".codegraph"), { recursive: true });
+	writeFileSync(join(staging, ".codegraph", "codegraph.db"), "torn-copy");
+	const report = await runCodegraphSeedSync(["sync", "-q"], staging, 10_000);
+	assert.deepEqual(report, { ok: false, removedEntries: false }, "an unreadable entry count is an unprovable validation: fail closed, never publish");
+	assert.equal(existsSync(seenFile), false, "the sync itself never runs when the copy cannot be counted");
+});
+
+test("runCodegraphSeedSync: an ordinary sync outside a seed staging project keeps the boolean report", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
+	const bin = dir(t, "seed-plain-bin");
+	writeFileSync(join(bin, "codegraph"), "#!/bin/sh\nexit 0\n");
+	chmodSync(join(bin, "codegraph"), 0o755);
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${bin}:${previousPath}`;
+	t.after(() => {
+		process.env.PATH = previousPath;
+	});
+	const report = await runCodegraphSeedSync(["sync", "-q"], dir(t, "seed-plain"), 10_000);
+	assert.equal(report, true, "a non-staging call delegates to the plain runCodegraph contract");
+});
+
 test("syncBeforeSearch: unlock first, then sync -q; a failed sync reports only sync", async (t) => {
 	const cwd = dir(t, "search-order");
 	const calls: string[] = [];
@@ -637,7 +748,7 @@ test("syncBeforeSearch: a rejecting run never surfaces an unhandled rejection", 
 	assert.deepEqual(rejections, []);
 });
 
-test("prepareReadiness: a live sync lease in another session skips the sync but still warms", async (t) => {
+test("prepareReadiness: a live sync lease in another session skips the sync and stands the warm-up down", async (t) => {
 	const cwd = dir(t, "sync-lease-live");
 	writeDb(cwd);
 	const locks = dir(t, "sync-lease-locks");
@@ -645,8 +756,8 @@ test("prepareReadiness: a live sync lease in another session skips the sync but 
 	const calls: string[] = [];
 	const result = await prepareReadiness(fakeInput(cwd, {
 		locksDir: locks,
-		run: async (args) => {
-			calls.push(`run:${args.join(" ")}`);
+		run: async () => {
+			calls.push("run");
 			return true;
 		},
 		warm: async () => {
@@ -654,9 +765,32 @@ test("prepareReadiness: a live sync lease in another session skips the sync but 
 			return true;
 		},
 	}));
-	assert.deepEqual(result, { action: "sync", ok: true, warm: "ok" }, "another session is refreshing: not a failure");
-	assert.deepEqual(calls, ["warm"], "no unlock, no sync — the lease holder owns the refresh");
+	assert.deepEqual(result, { action: "sync", ok: true, warm: "skipped" }, "another session is refreshing: not a failure, and its unlock may still be running");
+	assert.deepEqual(calls, [], "no unlock, no sync, no warm: the holder owns the refresh and no daemon starts under it");
 	assert.equal(readLeaseVerdict(lockPathFor(cwd, "sync", locks)), "held-live", "the foreign lease is never stolen");
+});
+
+test("prepareReadiness: the daemon-less unlock and sync children are adopted onto the sync lease", async (t) => {
+	const cwd = dir(t, "sync-adopt");
+	writeDb(cwd);
+	const locks = dir(t, "sync-adopt-locks");
+	const seen: Array<{ args: string; mine: boolean; writerPid?: number }> = [];
+	const result = await prepareReadiness(fakeInput(cwd, {
+		locksDir: locks,
+		run: async (args, _cwd, _timeoutMs, onSpawn) => {
+			assert.equal(typeof onSpawn, "function", "the " + args[0] + " child can report its spawn to the lease");
+			onSpawn?.(4242, false);
+			const token = JSON.parse(readFileSync(lockPathFor(cwd, "sync", locks), "utf8")) as { pid: number; writerPid?: number };
+			seen.push({ args: args.join(" "), mine: token.pid === process.pid, writerPid: token.writerPid });
+			return true;
+		},
+	}));
+	assert.deepEqual(result, { action: "sync", ok: true, warm: "ok" });
+	assert.deepEqual(seen, [
+		{ args: "unlock", mine: true, writerPid: 4242 },
+		{ args: "sync -q", mine: true, writerPid: 4242 },
+	], "both the unlock and the sync child land on the sync lease token while it is held");
+	assert.equal(readLeaseVerdict(lockPathFor(cwd, "sync", locks)), "free", "the lease is released after the refresh");
 });
 
 test("prepareReadiness: a damaged sync lease is a loud failure, not another session's refresh", async (t) => {

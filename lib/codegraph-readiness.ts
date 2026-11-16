@@ -1,12 +1,12 @@
 import { execFile, spawn } from "node:child_process";
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, readdirSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { daemonFor, mcpCallRequests, mcpCallText, mcpInitializeRequest, mcpLineReader, mcpReplyKind, projectSpelling } from "./codegraph-daemon.ts";
 import type { DaemonInfo } from "./codegraph-daemon.ts";
 import { acquireInitLock, codegraphWritingIndex, indexState, syncLeaseHeldLive, tryAcquireSyncLease, type IndexState } from "./codegraph-lease.ts";
-import type { SeedOutcome } from "./codegraph-seed.ts";
+import type { SeedOutcome, SeedSyncReport } from "./codegraph-seed.ts";
 import { resolveSessionWorktree, type WorktreeIdentity } from "./session-worktree-registry.ts";
 
 /** A cold daemon on a network share can need over a minute for its first read. */
@@ -16,11 +16,13 @@ export const SYNC_TIMEOUT_MS = 120_000;
 /** One retry after this backoff when a sync beside a live daemon fails: the daemon.log busy windows close by themselves in tens of seconds, well inside the 60s wedged-daemon bypass. */
 export const SYNC_RETRY_DELAY_MS = 15_000;
 
-/** What a codegraph command reported about itself; the stderr tail is bounded by the runner. */
+/** What a codegraph command reported about itself; the stdout/stderr tails are bounded by the runner. */
 export interface CodegraphCommandInfo {
 	ok: boolean;
 	exitCode?: number | null;
 	stderrTail?: string;
+	/** The captured stdout tail — `sync -q` prints nothing, but `status` output carries the entry counts the seed runner parses. */
+	stdoutTail?: string;
 }
 
 /** Runs codegraph with fixed args for a cwd; the optional sink receives the command outcome for diagnostics. */
@@ -31,6 +33,16 @@ export type CodegraphRun = (
 	onSpawn?: (pid: number, proxy: boolean) => void,
 	onInfo?: (info: CodegraphCommandInfo) => void,
 ) => Promise<boolean>;
+
+/** Runs codegraph for a seed's validating sync: the same shape and CLI call as CodegraphRun, but
+ * the report also says whether the sync removed tracked entries from the staged index. */
+export type CodegraphSeedRun = (
+	args: readonly string[],
+	cwd: string,
+	timeoutMs: number,
+	onSpawn?: (pid: number, proxy: boolean) => void,
+	onInfo?: (info: CodegraphCommandInfo) => void,
+) => Promise<SeedSyncReport>;
 
 /** The backoff sleep when no test seam is injected. */
 const defaultSyncSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -81,8 +93,12 @@ async function daemonlessRefresh(cwd: string, opts: { run: CodegraphRun; locksDi
 		return syncLeaseHeldLive(cwd, opts.locksDir) ? { kind: "held-live" } : { kind: "lease-blocked" };
 	}
 	try {
-		if (!(await opts.run(["unlock"], cwd, SYNC_TIMEOUT_MS))) return { kind: "unlock-failed" };
-		return { kind: "done", synced: await opts.run(["sync", "-q"], cwd, SYNC_TIMEOUT_MS, undefined, opts.sink) };
+		// Both children are adopted onto the lease: the detached child can outlive this launcher before
+		// it creates codegraph.lock, and its recorded pid keeps the verdict held-live — a live writer
+		// is never unlocked under, the same hook acquireInitLock gives its init child.
+		const adoptChild = (pid: number, proxy: boolean): void => lease.adopt(pid, proxy);
+		if (!(await opts.run(["unlock"], cwd, SYNC_TIMEOUT_MS, adoptChild))) return { kind: "unlock-failed" };
+		return { kind: "done", synced: await opts.run(["sync", "-q"], cwd, SYNC_TIMEOUT_MS, adoptChild, opts.sink) };
 	} finally {
 		lease.release();
 	}
@@ -339,7 +355,14 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 					ok = await runSyncWithRetry(input.run, input.cwd, input.sleep ?? defaultSyncSleep, syncInfo.sink);
 				} else {
 					// Daemon-less: only the sync-lease holder refreshes (daemonlessRefresh decides).
-					ok = daemonlessOk(await daemonlessRefresh(input.cwd, { run: input.run, locksDir: input.locksDir, sink: syncInfo.sink }));
+					const refreshed = await daemonlessRefresh(input.cwd, { run: input.run, locksDir: input.locksDir, sink: syncInfo.sink });
+					if (refreshed.kind === "held-live") {
+						// The holder may still be inside its "unlock": a daemon started now could lose its writer lock
+						// to that unlock, so the warm-up stands down. The ok verdict is unchanged: another session
+						// refreshing is not this session failing.
+						standDown = true;
+					}
+					ok = daemonlessOk(refreshed);
 				}
 			} else {
 				// The init lock keeps two sessions on one fresh project from building the same index
@@ -513,12 +536,13 @@ export function runCodegraph(args: readonly string[], cwd: string, timeoutMs: nu
 		let grace: ReturnType<typeof setTimeout> | undefined;
 		let exitCode: number | null | undefined;
 		let stderrTail = "";
+		let stdoutTail = "";
 		const finish = (ok: boolean) => {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
 			if (grace !== undefined) clearTimeout(grace);
-			onInfo?.({ ok, exitCode, stderrTail: stderrTail.length > 0 ? stderrTail : undefined });
+			onInfo?.({ ok, exitCode, stderrTail: stderrTail.length > 0 ? stderrTail : undefined, stdoutTail: stdoutTail.length > 0 ? stdoutTail : undefined });
 			resolve(ok);
 		};
 		let child: ReturnType<typeof spawn> | undefined;
@@ -530,7 +554,7 @@ export function runCodegraph(args: readonly string[], cwd: string, timeoutMs: nu
 				/* not alive: no registry, so the command simply runs for the real project path */
 				project = realpathSync(cwd);
 			}
-			child = spawnCodegraph([...args, project], ["ignore", "ignore", "pipe"]);
+			child = spawnCodegraph([...args, project], ["ignore", "pipe", "pipe"]);
 		} catch {
 			resolve(false);
 			return;
@@ -541,6 +565,11 @@ export function runCodegraph(args: readonly string[], cwd: string, timeoutMs: nu
 		child?.stderr?.on("data", (chunk: Buffer) => {
 			// Only the tail is ever shown: keep the last slice, never the whole stream.
 			stderrTail = (stderrTail + chunk.toString("utf8")).slice(-2_000);
+		});
+		child?.stdout?.on("data", (chunk: Buffer) => {
+			// The same bounded tail as stderr: the pipe is always drained (a full one would block the
+			// child), and `status` output parsed by the seed runner never needs more than the end.
+			stdoutTail = (stdoutTail + chunk.toString("utf8")).slice(-2_000);
 		});
 		const timer = setTimeout(() => {
 			killProcessTree(child, true);
@@ -561,6 +590,79 @@ export function runCodegraph(args: readonly string[], cwd: string, timeoutMs: nu
 			finish(code === 0);
 		});
 	});
+}
+
+/** The tracked-file count a `codegraph status <project>` run reports, or undefined when the
+ * output carries no readable count: a torn or corrupt database cannot prove anything. */
+export function indexedFileCount(statusOutput: string): number | undefined {
+	const match = /(?:^|\n)[ \t]*Files:[ \t]*([\d,]+)/.exec(statusOutput);
+	if (match === null) return undefined;
+	const count = Number(match[1].replaceAll(",", ""));
+	return Number.isFinite(count) ? count : undefined;
+}
+
+/** Whether `cwd` is a seed's staging project (`<worktree>/.codegraph/seed-<random>` holding the
+ * staged `.codegraph/codegraph.db`): the one call whose validating sync must see the target
+ * worktree's sources instead of the deliberately source-less staging directory. */
+function isSeedStagingRoot(cwd: string): boolean {
+	return basename(cwd).startsWith("seed-") && basename(dirname(cwd)) === ".codegraph" && existsSync(join(cwd, ".codegraph", "codegraph.db"));
+}
+
+/** Makes the staging project see the target worktree's real sources: one link per top-level
+ * entry, everything except `.codegraph` (the staged copy lives there). The scanner follows the
+ * links, so the validating sync reconciles the staged index against the worktree's own files
+ * rather than against an empty project — the emptied-index failure mode. Directories become
+ * symlinks (junctions on Windows, where they need no privilege), regular files become hardlinks
+ * (no privilege either, and the staging root lives inside the worktree so both share a volume);
+ * the seed's staging cleanup unlinks the links without ever following them. */
+function materializeStagingSources(worktree: string, stagingRoot: string): void {
+	for (const entry of readdirSync(worktree, { withFileTypes: true })) {
+		if (entry.name === ".codegraph") continue;
+		const target = join(worktree, entry.name);
+		const link = join(stagingRoot, entry.name);
+		if (entry.isDirectory()) symlinkSync(target, link, process.platform === "win32" ? "junction" : undefined);
+		else if (entry.isFile()) linkSync(target, link);
+		else symlinkSync(target, link);
+	}
+}
+
+/** One `codegraph status <project>` read of the staged index's tracked-file count. */
+async function stagedFileCount(cwd: string, onSpawn?: (pid: number, proxy: boolean) => void, onInfo?: (info: CodegraphCommandInfo) => void): Promise<number | undefined> {
+	let stdoutTail = "";
+	const ok = await runCodegraph(["status"], cwd, SYNC_TIMEOUT_MS, onSpawn, (info) => {
+		stdoutTail = info.stdoutTail ?? "";
+		onInfo?.(info);
+	});
+	return ok ? indexedFileCount(stdoutTail) : undefined;
+}
+
+/**
+ * The seed's validating-sync runner: `codegraph sync -q` for the staging project, run against the
+ * target worktree's real sources, reporting the SeedSyncReport object form. `sync -q` prints
+ * nothing (probed: it is quiet even while dropping every entry), so removal is detected by a
+ * before/after tracked-file-count probe through `codegraph status` — the same CLI: an exit-0
+ * sync that still dropped entries copied an index that does not match the worktree's files, and
+ * the seed must fail instead of publishing it. Any step that cannot prove the copy — a staging
+ * whose sources cannot be linked, a count that cannot be read — fails closed with ok=false, and
+ * every other call shape keeps runCodegraph's plain boolean contract.
+ */
+export function runCodegraphSeedSync(args: readonly string[], cwd: string, timeoutMs: number, onSpawn?: (pid: number, proxy: boolean) => void, onInfo?: (info: CodegraphCommandInfo) => void): Promise<SeedSyncReport> {
+	if (args.length !== 2 || args[0] !== "sync" || args[1] !== "-q" || !isSeedStagingRoot(cwd)) {
+		return runCodegraph(args, cwd, timeoutMs, onSpawn, onInfo);
+	}
+	return (async (): Promise<SeedSyncReport> => {
+		try {
+			materializeStagingSources(dirname(dirname(cwd)), cwd);
+		} catch {
+			return { ok: false, removedEntries: false };
+		}
+		const before = await stagedFileCount(cwd, onSpawn, onInfo);
+		if (before === undefined) return { ok: false, removedEntries: false };
+		if (!(await runCodegraph(args, cwd, timeoutMs, onSpawn, onInfo))) return { ok: false, removedEntries: false };
+		const after = await stagedFileCount(cwd, onSpawn, onInfo);
+		// An after-count that cannot be read cannot prove the entries survived: fail closed.
+		return { ok: true, removedEntries: after === undefined || after < before };
+	})();
 }
 
 /**
